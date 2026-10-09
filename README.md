@@ -398,8 +398,8 @@ def main :: unit -> i32 = \() ->
 
 #### ネットワーク API
 
-TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS と Linux の native。アドレスの解析と表示はどの target でも import なしで動きます）。
-操作は `IO<Result<T, Os.Error>>` で、ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
+TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS・Linux・Windows の native。アドレスの解析と表示はどの target でも import なしで動きます）。
+操作は `IO<Result<T, Os.Error>>` で、`Async.block_on` の中では `_async` の双子（`connect_async` など）を使えます。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
 
 #### エントリーポイント (`Main.tz`)
 
@@ -482,7 +482,7 @@ def main :: unit -> i32 = \() ->
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
-| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS と Linux の native） |
+| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS・Linux・Windows の native、`Async.block_on` の中では `_async` の双子） |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
 | `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
 | `Cbor` | `Json.Value` の CBOR（RFC 8949）の読み書き |
@@ -829,7 +829,7 @@ node tests/io.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
 node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
-node tests/net.mjs target/release/tsuzuri   # アドレス・ソケット・確保の追跡。127.0.0.1 の ephemeral port だけを使う
+node tests/net.mjs target/release/tsuzuri   # アドレス・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使う。TSUZURI_TSAN=1 で ThreadSanitizer も
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri

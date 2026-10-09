@@ -9,7 +9,8 @@
 ## この記事のポイント
 
 - アドレスの解析と表示（`parse_address`・`address_text` など）は純粋な計算です。どの target でも、import なしで動きます。
-- ソケット（`connect`・`read`・`write`・`bind`・`accept`・`bind_udp`・`send_to`・`recv_from`）は、macOS と Linux の native だけで動きます。
+- ソケット（`connect`・`read`・`write`・`bind`・`accept`・`bind_udp`・`send_to`・`recv_from`）は、macOS・Linux・Windows の native で動きます。
+- `Async.block_on` の中では、`_async` を付けた双子（`connect_async`・`read_async` など）を使います。実行器のスレッドは待たず、1 本の監視スレッドがソケットの準備を見て、待っている計算を再開します。
 - ハンドル（`TcpStream`・`TcpListener`・`UdpSocket`）は `Copy` の不透明な値です。自動では閉じません。`close` か `with_connection` などを使います。
 - 閉じたハンドルを使うと `InvalidInput` です。別のソケットに当たることはありません。
 - 時間制限は、呼び出し全体の期限（ミリ秒）です。`None` は無期限です。
@@ -264,6 +265,155 @@ invalid input
 
 host が空、NUL を含む、253 バイトを超える、または port が 0 から 65535 の外のときは、システムを呼ばずに `InvalidInput`（`code` は 0）です。孤立サロゲートは `InvalidEncoding` です。存在しない名前は `NotFound`（`code` は 0）です。
 
+## 非同期のソケット（Async）
+
+`Async` の計算の中では `IO` を実行できません。計算が必要とする操作には、`_async` を付けた双子があります。結果の型は同期版と同じで、`IO<...>` が `Async<...>` になるだけです。`Net` を使うプログラムは `Async` も読み込みます（`Net` が `Async` を使うためです）。
+
+| 関数 | 型 |
+| --- | --- |
+| `Net.connect_async` | `Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>` |
+| `Net.accept_async` | `TcpListener -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>` |
+| `Net.read_async` | `TcpStream -> i64 -> Maybe<i64> -> Async<Result<[ubyte], Os.Error>>` |
+| `Net.write_async` | `TcpStream -> [ubyte] -> Maybe<i64> -> Async<Result<unit, Os.Error>>` |
+| `Net.recv_from_async` | `UdpSocket -> i64 -> Maybe<i64> -> Async<Result<([ubyte] * Address), Os.Error>>` |
+| `Net.send_to_async` | `UdpSocket -> [ubyte] -> Address -> Async<Result<unit, Os.Error>>` |
+| `Net.bind_async`・`Net.bind_udp_async` | `Address -> Async<Result<TcpListener, Os.Error>>`・`Address -> Async<Result<UdpSocket, Os.Error>>` |
+| `Net.close_async`・`Net.close_listener_async`・`Net.close_udp_async` | 閉じるハンドルを取り、`Async<Result<unit, Os.Error>>` |
+| `Net.shutdown_async` | `TcpStream -> Shutdown -> Async<Result<unit, Os.Error>>` |
+
+次の 6 つは待ちません。同期版と同じシステムコールを、計算が動いたときに 1 回出します（`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）。残りの 6 つは、待つ必要があるときに、ソケットの準備ができるまで計算を中断します。`Async.block_on` で実行します。`Async.run` や `Async.start` に渡すと `E2000` です（完了を受け取る反応器が無いためです）。
+
+```tsuzuri run=server%205%20client%205%0Adone
+def bytes_of :: ref string -> [ubyte]
+fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
+
+def echo_one :: Net.TcpStream -> Async<i64>
+fn echo_one stream = Async {
+    match! Net.read_async stream 100 (Maybe.Some 5000) with
+    | Result.Error _ -> return -1
+    | Result.Ok bytes ->
+        let count = bytes.length
+        let! _written = Net.write_async stream bytes (Maybe.Some 5000)
+        let! _closed = Net.close_async stream
+        return count
+}
+
+def serve :: Net.TcpListener -> Async<i64>
+fn serve listener = Async {
+    match! Net.accept_async listener (Maybe.Some 5000) with
+    | Result.Error _ -> return -2
+    | Result.Ok stream -> return! echo_one stream
+}
+
+def exchange :: Net.TcpStream -> Async<i64>
+fn exchange stream = Async {
+    let! _written = Net.write_async stream (bytes_of (ref "hello")) (Maybe.Some 5000)
+    match! Net.read_async stream 100 (Maybe.Some 5000) with
+    | Result.Error _ -> return -3
+    | Result.Ok bytes ->
+        let! _closed = Net.close_async stream
+        return bytes.length
+}
+
+def client :: Net.Address -> Async<i64>
+fn client target = Async {
+    match! Net.connect_async target (Maybe.Some 5000) with
+    | Result.Error _ -> return -4
+    | Result.Ok stream -> return! exchange stream
+}
+
+def main :: unit -> i32 = \() ->
+    let loopback = Maybe.get (Net.parse_address (ref "127.0.0.1:0"))
+    let! bound = Net.bind loopback
+    match bound with
+    | Result.Error _ -> do! IO.write_line "bind failed"
+    | Result.Ok listener ->
+        let target = Net.local_addr listener
+        let! counts = Async.block_on (Async.all [serve listener, client target])
+        do! IO.write_line ("server " + to_string counts[0] + " client " + to_string counts[1])
+        let! _closed = Net.close_listener listener
+        do! IO.write_line "done"
+    0
+```
+
+実行結果:
+
+```text
+server 5 client 5
+done
+```
+
+サーバーとクライアントは、1 つのスレッドの 1 つの実行器で並行に動きます。`bind` は待たないので、`block_on` の前に同期版を使っています。
+
+**しくみ。**実行器のスレッドは、ソケットで待ちません。操作はまず待たずに試し（時間制限 0 の「1 回だけ試す」呼び出しで、待つ必要があれば「待つ」という状態が返ります）、待つ必要があれば、準備の監視を頼んで計算を中断します。監視は、最初の待ちで始まり、待ちが無くなると終わる 1 本のスレッドが、すべての待ちをまとめて `poll`（Windows は `WSAPoll`）で行います。準備ができた（またはエラーや切断が見えた）ら、スレッドが完了を実行器の mailbox（`tsuzuri_async_post`）へ入れます。再開した計算が、もう一度システムコールを試します。したがって、完了は何も所有しません。バイト列もディスクリプタも、監視のスレッドを通りません。準備の知らせは目安で、もう一度試して `EAGAIN` なら、また待ちます。
+
+- 時間制限は同期版と同じ範囲の `Maybe<i64>` で、**操作全体の期限**です。`Async.now ()`（実行器の単調時計）で測ります。期限が来ると `TimedOut` で、ソケットは壊れません。
+- 待っている操作は、**取り消せます**。`Async.all_results` で兄弟の計算が失敗すると、待っていた操作は取り消され、監視から外れます。接続の途中の `connect_async` は、そのソケットも閉じます。取り消しても、ソケットのデータは減りません。同じストリームで、あとから読めます。
+- 待っているソケットを（`close_async` や `Net.close` で）閉じると、待っていた操作は `InvalidInput`（`code` は `EBADF`）で再開します。
+- 成功した結果は、同期版と同じく、受け取った計算が閉じます。`Async.all_results` が捨てた成功の結果（`connect_async` や `accept_async` が返した `TcpStream`）は、閉じられないままプロセスの終了まで残ります。完了が届く前に捨てられた接続も同じです。
+- `resolve` の非同期版はありません。名前の解決は同期で、`block_on` の前に済ませてください。
+
+```tsuzuri run=cancelled%3A%20error%2099%0Astill%20works%3A%20read%3A1%0Atimeout%3A%20TimedOut
+def failing :: i64 -> Async<Result<i64, Os.Error>>
+fn failing delay = Async {
+    do! Async.sleep delay
+    return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
+}
+
+def idle_read :: Net.TcpStream -> Async<Result<i64, Os.Error>>
+fn idle_read stream = Async {
+    match! Net.read_async stream 16 Maybe.None with
+    | Result.Error error -> return Result.Error error
+    | Result.Ok bytes -> return Result.Ok bytes.length
+}
+
+def timed_read :: Net.TcpStream -> Async<string>
+fn timed_read stream = Async {
+    match! Net.read_async stream 16 (Maybe.Some 30) with
+    | Result.Error error -> return to_string (Net.error_kind error)
+    | Result.Ok bytes -> return "read:" + to_string bytes.length
+}
+
+def say_outcome :: Result<[i64], Os.Error> -> IO<unit>
+fn say_outcome outcome =
+    match outcome with
+    | Result.Error error -> IO.write_line ("cancelled: error " + to_string error.code)
+    | Result.Ok _ -> IO.write_line "cancelled: no"
+
+def main :: unit -> i32 = \() ->
+    let loopback = Maybe.get (Net.parse_address (ref "127.0.0.1:0"))
+    let! bound = Net.bind loopback
+    match bound with
+    | Result.Error _ -> do! IO.write_line "bind failed"
+    | Result.Ok listener ->
+        let! connected = Net.connect (Net.local_addr listener) (Maybe.Some 5000)
+        let! accepted = Net.accept listener (Maybe.Some 5000)
+        match (connected, accepted) with
+        | (Result.Ok client, Result.Ok server) ->
+            let! outcome = Async.block_on (Async.all_results [idle_read client, failing 20])
+            do! say_outcome outcome
+            let! _sent = Net.write server [1ubyte] (Maybe.Some 1000)
+            let! after = Net.read client 16 (Maybe.Some 1000)
+            do! IO.write_line ("still works: " + (match after with | Result.Ok bytes -> "read:" + to_string bytes.length | Result.Error _ -> "failed"))
+            let! quiet = Async.block_on (timed_read client)
+            do! IO.write_line ("timeout: " + quiet)
+            let! _closed_client = Net.close client
+            let! _closed_server = Net.close server
+            let! _closed_listener = Net.close_listener listener
+        | _ -> do! IO.write_line "no connection"
+    0
+```
+
+実行結果:
+
+```text
+cancelled: error 99
+still works: read:1
+timeout: TimedOut
+```
+
+何も届かない `idle_read` は、兄弟の `failing` が 20 ミリ秒後に失敗した時点で取り消されます。そのあと、同じストリームに届いたバイトを、同期の `read` が受け取ります。30 ミリ秒の `timed_read` は、何も来ないので `TimedOut` です。
+
 ## エラーの読み方
 
 `Os.ErrorKind` に case を足すのは major edition だけなので、`Net` の失敗の多くは `Os.ErrorKind.Other` で、システムの `errno` が `code` に入ります。`Net.error_kind` は、その `code` から、よく使う分類を返します。
@@ -288,22 +438,26 @@ host が空、NUL を含む、253 バイトを超える、または port が 0 �
 - `resolve` の結果は先頭の 64 件、host は 253 バイトまでです。
 - `listen` の backlog は `SOMAXCONN` で、ソケットの数は OS の上限に従います（上限で失敗すると `Other`）。
 - 相手が先に切れたソケットへ書いても、SIGPIPE でプロセスが終わることはありません（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）。`ConnectionReset` の `Error` になります。
-- `bind` は `SO_REUSEADDR` を付け、IPv6 は `IPV6_V6ONLY` を有効にします。`"::"` と `"0.0.0.0"` は別のソケットで、どの OS でも同じです。`0.0.0.0` や `::` で待つと、ネットワークの全体へ公開されます。ふつうは `127.0.0.1` か `::1` を使ってください。
-- ソケットはすべて `FD_CLOEXEC` 付きで、`Process.run` の子へ漏れません。
+- `bind` は、macOS と Linux では `SO_REUSEADDR` を付けます（Windows では、同じ port を生きたソケットと共有できてしまうので、代わりに `SO_EXCLUSIVEADDRUSE` を付けます）。IPv6 は `IPV6_V6ONLY` を有効にします。`"::"` と `"0.0.0.0"` は別のソケットで、どの OS でも同じです。`0.0.0.0` や `::` で待つと、ネットワークの全体へ公開されます。ふつうは `127.0.0.1` か `::1` を使ってください。
+- ソケットはすべて、子プロセスへ継承されません（POSIX は `FD_CLOEXEC`、Windows は継承しないハンドル）。`Process.run` の子へ漏れません。
 - 平文の TCP で秘密を送らないでください。
+- 非同期の操作が使う監視のスレッドは、プロセスに 1 本だけです（最初の待ちで始まり、待ちが無くなると終わります）。待ちの数に上限はなく、OS のディスクリプタの数に従います。
 
-`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。ソケットを使う操作は、同期的で、待っている間はプログラム全体が止まります。
+`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。同期版のソケット操作は、待っている間プログラム全体が止まります。待たせたくないときは、`Async.block_on` の中で `_async` の双子を使います。
 
 ## 対応環境
 
 | 環境 | 状態 |
 | --- | --- |
-| macOS・Linux の native | 対応 |
-| Windows の native | ソケットに到達するビルドは `E2002`（G10 の後）。アドレスの関数は使えます |
+| macOS の native | 対応（開発者が実行して検証） |
+| Linux の native | 対応。glibc と musl の x86_64・aarch64 で、警告なしにコンパイルできることを確かめています。実行は CI だけで検証します |
+| Windows の native | 対応（Winsock、`WSAPoll`）。MSVC と MinGW のツールチェーンで、x86_64 と aarch64 がコンパイルでき、x86_64 はリンクできることを確かめています。実行は CI だけで検証します |
 | 既定の wasm32 | ソケットに到達するビルドは `E2000`。アドレスの解析と表示は、import なしで動きます |
 | `--wasm-host wasi` | `E2000`。WASI preview1 には、`connect`・`bind`・`listen` がありません |
 
-`tsuzuri check` は IR を作らないので、上の診断は出ません。ブラウザーは、生の TCP と UDP を使えません。非同期のソケットと Windows は Phase 2、wasm32 の opt-in は Phase 3 として計画中です（[E09](../../../_features/E09-network.md)）。
+`tsuzuri check` は IR を作らないので、上の診断は出ません。ブラウザーは、生の TCP と UDP を使えません。wasm32 の opt-in は Phase 3 として計画中です（[E09](../../../_features/E09-network.md)）。
+
+macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
 
 ## 公開 API
 
@@ -330,6 +484,8 @@ host が空、NUL を含む、253 バイトを超える、または port が 0 �
 | `Net.with_listener` | `Capture<'a> => Address -> (TcpListener -> IO<'a>) -> IO<Result<'a, Os.Error>>` |
 | `Net.with_udp` | `Capture<'a> => Address -> (UdpSocket -> IO<'a>) -> IO<Result<'a, Os.Error>>` |
 | `Net.error_kind` | `Os.Error -> ErrorKind` |
+| `Net.connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async` | 同期版の `IO<...>` を `Async<...>` にした型（[非同期のソケット](#非同期のソケットasync)） |
+| `Net.bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` | 同上。待たない |
 
 `ErrorKind` は `TimedOut`・`ConnectionRefused`・`ConnectionReset`・`AddressInUse`・`AddressNotAvailable`・`Unreachable`・`Unclassified` です。`Shutdown` は `Read`・`Write`・`Both` です。`Address`・`TcpStream`・`TcpListener`・`UdpSocket` は不透明で、内部のフィールドへは触れません（`E1022`）。`Net.__open` などの内部の関数も、std の `Net` 以外からは `E1022` です。
 
@@ -347,7 +503,7 @@ host が空、NUL を含む、253 バイトを超える、または port が 0 �
 ## まとめ
 
 - アドレスの解析と表示は純粋で、どの target でも使えます。解析は厳密で、`127.1` のような書き方は受けません。
-- ソケットは macOS と Linux の native で、`IO<Result<T, Os.Error>>` として動きます。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
+- ソケットは macOS・Linux・Windows の native で、`IO<Result<T, Os.Error>>` として動きます。`Async.block_on` の中では `_async` の双子を使い、1 本の監視スレッドが準備を見ます。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
 - 時間制限は呼び出し全体の期限で、受信は最大長が必須、`write` は全部を送ります。
 - 通信は平文です。`bind` で `0.0.0.0` を使うとネットワークへ公開されます。
 

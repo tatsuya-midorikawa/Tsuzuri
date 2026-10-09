@@ -261,7 +261,7 @@ ok
 
 - ネイティブは macOS、Linux、Windows です。コンパイラが `src/runtime/async.c`（条件変数による待ち）を自動でリンクします。ほかのホスト（FreeBSD などの Unix）は、通常のビルドと test / debug-test / bench で `E2002`（`Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform`）です。ほかの実装を推測してリンクしません。
 - Windows の待ちは、Win32 の SRWLOCK、条件変数、`QueryPerformanceCounter` を使います。Windows の既定のタイマー分解能は約 15.6 ms（環境で変わります）で、短い `sleep` はその分だけ遅れることがあります。待ちは起きるたびに単調時計を読み直すので、早く起きることはありません。runtime を埋め込む COFF の `--emit object` は非対応で、LLVM IR を出して runtime を 1 回だけリンクするか、実行ファイルを作ります。
-- ほかのスレッドからは `tsuzuri_async_post(operation, value)` で操作を完了します。受理したときは 1、未知・二重・完了済み・取り消し済みの操作なら 0 を返し、失敗した post は確保を残しません。どのスレッドから呼んでもよく、待っているスレッドはすぐ起きます。同じスレッドのコールバックの中からは、`tsuzuri_async_complete` も使えます。
+- ほかのスレッドからは `tsuzuri_async_post(operation, value)` で操作を完了します。受理したときは 1、未知・二重・完了済み・取り消し済みの操作なら 0 を返し、失敗した post は確保を残しません。どのスレッドから呼んでもよく、待っているスレッドはすぐ起きます。同じスレッドのコールバックの中からは、`tsuzuri_async_complete` も使えます。[Net](../built-in-types-and-modules/net.md#非同期のソケットasync) の非同期操作は、ソケットの準備を見る 1 本のスレッドが、この関数で完了を届けます。
 - wasm32 / wasm64 では `--wasm-feature jspi` が要ります。モジュールは `tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、待つ間は JavaScript Promise Integration（JSPI）で WebAssembly のスタックを中断します。付けないと `E2000`（`Async.block_on on WebAssembly needs --wasm-feature jspi: ...`）です。生成グルーは wasm32 だけです。詳しくは [WebAssembly への出力](../compiler/webassembly.md#非同期計算と-jspi) を見てください。
 
 ## ホストが駆動する実行（Async.start）

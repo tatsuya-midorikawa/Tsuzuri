@@ -2765,6 +2765,11 @@ impl Checker<'_> {
                 | Builtin::NetWrite
                 | Builtin::NetClose
                 | Builtin::NetClassify
+                | Builtin::NetWatch
+                | Builtin::NetUnwatch
+                | Builtin::NetConnect
+                | Builtin::NetNames
+                | Builtin::NetSend
         ) && !(self.module == "Net" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::new(

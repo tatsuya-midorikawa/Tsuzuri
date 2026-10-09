@@ -1158,7 +1158,7 @@ match Random.pcg_next_u32 generator with
 - `Os.Error.code` には WASI 仕様の errno 番号が格納されます。ファイルパスは、preopen されたディレクトリのうちスラッシュ `/` 境界で最長一致するプレフィックスを起点として解決され、いずれにも一致しないパスは最初の preopen ディレクトリからの相対パスとして扱われます。`Env.current_dir ()` は最初の preopen ディレクトリ名（例: `/work`）を返し、`Process.run` は `Other` エラーとなります。
 - 動作は Node.js の `node:wasi` 実装を用いて検証されており、システム固有のエラーコード番号の差異を除いてネイティブ環境の実行結果と完全に一致します（なお、WASI preview2 および WebAssembly コンポーネントモデルは現時点で未対応です）。
 
-Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API や `Net` のソケットに到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API や `Net` のソケットを使用しない純粋計算プログラムには影響しません）。
+Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API を使用しない純粋計算プログラムには影響しません。`Net` のソケットは Winsock で対応し、実行は CI だけで検証します）。
 
 ### ネットワーク（Net）
 
@@ -1172,6 +1172,7 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 | TCP サーバー | `bind :: Address -> IO<Result<TcpListener, Os.Error>>`、`accept :: TcpListener -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`local_addr`、`close_listener` |
 | UDP | `bind_udp`、`send_to :: UdpSocket -> [ubyte] -> Address -> IO<Result<unit, Os.Error>>`、`recv_from :: UdpSocket -> i64 -> Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>`、`udp_local_addr`、`close_udp` |
 | 括弧 | `with_connection`・`with_accepted`・`with_listener`・`with_udp`（`Capture<'a> => ... (handle -> IO<'a>) -> IO<Result<'a, Os.Error>>`。本体の成否にかかわらず戻る前に閉じる） |
+| 非同期（`Async.block_on` の中） | `connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async`（同期版の `IO<...>` を `Async<...>` にした型）、待たない `bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` |
 | エラー | `error_kind :: Os.Error -> ErrorKind`（`TimedOut`・`ConnectionRefused`・`ConnectionReset`・`AddressInUse`・`AddressNotAvailable`・`Unreachable`・`Unclassified`） |
 
 `Address { v6, high, low, port }` は `Copy` の不透明な record で、`==`・`Hash`・`Display`（`address_text` と同じ文字列）を持ちます。`parse_address` は `a.b.c.d:port` か `[ipv6]:port` だけを受け、IPv4 は 1〜3 桁の 10 進 4 部分（先頭の 0 は `0` だけ、255 以下）、IPv6 は 1〜4 桁の 16 進（大文字可）で `::` は高々 1 回、最後の部分だけが IPv4 形式（2 group）でもよく、ゾーン（`%`）は受けません。port は 1〜5 桁で先頭の 0 は `0` だけ、65535 以下で、空白は受けません。`127.1`・`0x7f.0.0.1`・`010.0.0.1` のように `inet_aton` が受ける形を拒否するので、許可リストの検査と実際の接続先が食い違いません。`address_text` は RFC 5952 の形（小文字、先頭の 0 を省略、長さ 2 以上の最長の 0 の並びを `::` に、同長は先頭、IPv4 埋め込みは 16 進）です。
@@ -1184,7 +1185,9 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 
 すべてのソケットは `FD_CLOEXEC` 付きで（Linux は作成と同時、macOS は直後）、内部では非ブロッキングです。送信は SIGPIPE を起こさず（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）、相手が切れたソケットへの書き込みは `ConnectionReset` の `Error` です。IPv6 のソケットは `IPV6_V6ONLY` を有効にし、listener は `SO_REUSEADDR` と `SOMAXCONN` の backlog を付けます（`SO_REUSEPORT`・`TCP_NODELAY` は使いません）。ソケットの数の上限は OS に従います。`0.0.0.0` や `::` で待つとネットワークへ公開されるので、例と文書は `127.0.0.1` を使います。ソケットの操作は入口のスレッドで順に実行され、待っている間はプログラム全体が止まります。
 
-実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `declare i64 @tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`、Windows の native は `E2002`、`--freestanding` は `E2000` です。macOS と Linux だけに対応します。
+実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`・`__watch`・`__unwatch`・`__connect`・`__names`・`__send`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `@tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`、macOS・Linux・Windows 以外の native は `E2002`、`--freestanding` は `E2000` です。macOS・Linux は POSIX のソケット、Windows は Winsock（`WSAStartup` は最初の呼び出しで一度だけ、`closesocket`・`WSAPoll`・`ioctlsocket`、`ws2_32` をリンク）で動かします。
+
+**非同期の操作（`_async`）。**`Async` の計算は `IO` を実行できないので、`connect_async :: Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async` と、待たない `bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` を `Async.host` の上に足します（同期版は変わりません。`Net` は `Async` を使うので、`OPT_IN` の `uses` に `Async` があります）。実行器のスレッドは待ちません。操作は時間制限 0 で一度だけ試し（待つ必要があれば、`kind` が `Other` で `code` が 0 の状態が返ります）、必要ならソケットの準備の監視を `Net.__watch`（接続は `Net.__connect`、取り消しは `Net.__unwatch`）で頼み、準備ができたら再試行します。監視は、最初の待ちで始まり待ちが無くなると終わる 1 本の分離スレッドで、`poll`（Windows は `WSAPoll`）と起床用の pipe（Windows は自分宛ての UDP ソケット）で待ち、完了（0 か状態）を、IR が渡す `tsuzuri_async_post` へ入れます。完了は何も所有せず、接続の途中のソケットだけが待ちの所有物です（取り消しで閉じ、post が拒否されたら新しいソケットを閉じます）。ソケットを閉じるときは、記述子を閉じる前にそのソケットの待ちを外して起こします。時間制限は操作全体の期限で、`Async.now ()` で測ります。`Async.block_on` のない native のプログラムが非同期の操作に到達すると、完了を受け取る反応器が無いので `E2000` です。`resolve` の非同期版はありません。
 
 ## トラップ位置
 
@@ -3696,8 +3699,8 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1004` | 同一字句スコープ内での変数シャドーイング（コンパイラ内部オプション時のみ有効、デフォルト無効） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否 |
-| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API や `Net` のソケットに到達した場合の `E2002` エラー |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合 |
+| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
 | `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

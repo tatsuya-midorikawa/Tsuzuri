@@ -4,7 +4,7 @@
 // index of the thread that began the operation in its bits 39 to 62 (src/llvm.rs), so a posted
 // completion goes to that thread's mailbox. macOS and Linux use POSIX threads; Windows uses a
 // slim reader/writer lock and a condition variable. The driver links it when a program reaches
-// Async.block_on. Sockets (E09) will add their readiness to the same wait.
+// Async.block_on. The sockets of Net (E09) do not wait here: their poller thread completes an operation with tsuzuri_async_post.
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif

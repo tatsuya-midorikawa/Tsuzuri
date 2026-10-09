@@ -70,7 +70,7 @@ jobs:
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo -n tee /usr/share/keyrings/llvm.gpg >/dev/null
           printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main\n' | sudo -n tee /etc/apt/sources.list.d/llvm21.list >/dev/null
           sudo -n apt-get update
-          sudo -n apt-get install -y clang-21 lld-21 llvm-21
+          sudo -n apt-get install -y clang-21 lld-21 llvm-21 libclang-rt-21-dev
           printf 'LLVM_PREFIX=/usr/lib/llvm-21\n' >> "$GITHUB_ENV"
       - name: LLVM on Windows
         if: runner.os == 'Windows'
@@ -196,3 +196,28 @@ jobs:
           } else {
             Write-Output '::notice::llvm-pdbutil.exe is not installed; checked the PDB bytes only'
           }
+      # E09: the sockets of the Net module, blocking and async (macOS, Linux, and Windows). These steps come last so that
+      # a failure here does not skip the packaging and VSIX steps above. Linux and Windows are checked by this job only:
+      # the author could run macOS, and compiled the Linux (glibc and musl) and Windows (MSVC) runtimes without running them.
+      - name: Net sockets and async operations
+        if: runner.os != 'Windows'
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node ../tests/net.mjs toolchain/bin/tsuzuri
+      # Windows (Winsock): the bundled MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
+      # Only the blocks that do not need POSIX descriptors, sanitizers, or the POSIX socket tests run here.
+      - name: Net async operations on Windows
+        if: runner.os == 'Windows'
+        run: |
+          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
+          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          export TSUZURI_WASM64=0
+          node ../tests/net.mjs toolchain/bin/tsuzuri.exe address
+          node ../tests/net.mjs toolchain/bin/tsuzuri.exe async
+      - name: Net async operations with the LLVM MSVC toolchain
+        if: matrix.target == 'win32-x64'
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
+          export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
+          node ../tests/net.mjs toolchain/bin/tsuzuri.exe async

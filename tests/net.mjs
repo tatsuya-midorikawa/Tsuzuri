@@ -4,19 +4,25 @@ import dgram from "node:dgram";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os, { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 // E2E for the standard Net module (E09): address parsing and printing, blocking TCP and UDP sockets, name
 // resolution, the handle table, and the runtime's allocation. Peers are Node sockets on 127.0.0.1 with ephemeral
 // ports ("::1" when the machine has it); nothing leaves the machine, no port is fixed, and no pass or fail
 // depends on how long something took. A child that runs for 60 seconds is killed as hung, which is not a limit
 // that a test measures. Expectations come from Node's own net, dgram, URL, and os modules.
-//   node tests/net.mjs target/release/tsuzuri [address|sockets|alloc]
+//   node tests/net.mjs target/release/tsuzuri [address|sockets|async|runtime|alloc]
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const selected = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-net-"));
-const errno = os.constants.errno;
+// The error numbers by name: errno values, or the numbers of Winsock on Windows, which no Node module reports.
+const errno = process.platform === "win32"
+  ? {
+    EBADF: 10009, ECONNREFUSED: 10061, ETIMEDOUT: 10060, ECONNRESET: 10054, ECONNABORTED: 10053, EPIPE: 10058, EADDRINUSE: 10048,
+    EADDRNOTAVAIL: 10049, EMSGSIZE: 10040, ENETUNREACH: 10051, EHOSTUNREACH: 10065, ENETDOWN: 10050, EINVAL: 10022, EACCES: 10013, EMFILE: 10024,
+  }
+  : os.constants.errno;
 const optimizations = ["-O0", "-O3"];
 const wanted = name => selected === undefined || selected === name;
 
@@ -40,7 +46,7 @@ const executables = new Map();
 function build(directory, optimization, extra = []) {
   const key = `${directory}${optimization}${extra.join(" ")}`;
   if (!executables.has(key)) {
-    const executable = join(directory, `program${optimization}${executables.size}`);
+    const executable = join(directory, `program${optimization}${executables.size}${process.platform === "win32" ? ".exe" : ""}`);
     execute(compiler, ["build", directory, optimization, ...extra, "-o", executable]);
     executables.set(key, executable);
   }
@@ -499,6 +505,138 @@ try {
     console.log("Net sockets: blocking TCP and UDP, timeouts, resets, resolution, and the handle lifecycle passed at -O0 and -O3");
   }
 
+  if (wanted("async")) {
+    const project = fixture("net_async");
+    const v6Server = await listen(() => {}, "::1").then(server => server, () => undefined);
+    if (v6Server) await stop(v6Server);
+
+    // A program that starts a Net async operation needs the reactor of Async.block_on natively (E2000), and the default
+    // wasm32 output has no host to open a socket with.
+    const unaided = join(root, "unaided");
+    mkdirSync(unaided, { recursive: true });
+    writeFileSync(join(unaided, "Main.tz"), `def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref "127.0.0.1:9"))
+    let outcome = Async.run (Net.connect_async address Maybe.None)
+    do! IO.write_line (Result.is_ok (ref outcome))
+    0
+`);
+    for (const optimization of optimizations) {
+      const refused = execute(compiler, ["build", unaided, optimization, "-o", join(root, "unaided")], {}, false);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /error\[E2000\]: the Net async operations \(connect_async, accept_async, read_async, \.\.\.\) complete through the reactor of Async\.block_on/);
+      const wasm = execute(compiler, ["build", unaided, "--target", "wasm32", optimization, "-o", join(root, "unaided.wasm")], {}, false);
+      assert.match(wasm.stderr, /error\[E2000\]: wasm32 output cannot use the Net socket API/);
+    }
+    execute(compiler, ["check", unaided]);
+
+    for (const optimization of optimizations) {
+      const exe = build(project, optimization);
+
+      // The echo of 1024 bytes over IPv4 and IPv6: the addresses, the half-close, the end of the stream, and the stale handle.
+      for (const host of ["127.0.0.1", "::1"]) {
+        if (host === "::1" && !v6Server) continue;
+        const received = [];
+        const server = await listen(socket => {
+          socket.on("data", data => { received.push(data); socket.write(data); });
+          socket.on("end", () => socket.end());
+          socket.on("error", () => {});
+        }, host);
+        const result = await run(exe, "echo", server.address().port, host);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.signal, null);
+        assert.deepEqual(result.lines, ["peer=true local_port=true", "ok", `1024 ${patternSum(1024)}`, "ok rest=0 0", `ok stale=${stale}`]);
+        assert.deepEqual(Buffer.concat(received), pattern(1024));
+        await stop(server);
+      }
+
+      // The program accepts a connection of the Node client, answers, and both sides end.
+      {
+        let client;
+        let reply = "";
+        let ended = false;
+        const result = await run(exe, "server", 0, "127.0.0.1", line => {
+          const found = /^port=(\d+)$/.exec(line);
+          if (!found) return;
+          client = net.connect({ host: "127.0.0.1", port: Number(found[1]) }, () => client.write("hello\n"));
+          client.on("data", data => { reply += data; });
+          client.on("end", () => { ended = true; });
+          client.on("error", () => {});
+        });
+        await closed(client);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(reply, "HELLO\n");
+        assert.ok(ended, "the shutdown of the write side reached the peer as the end of the stream");
+        const port = /^port=(\d+)$/.exec(result.lines[0])[1];
+        assert.deepEqual(result.lines, [`port=${port}`, "got=6 542", "ok ok", "rest=0 0", "ok ok"]);
+      }
+
+      // Forty clients connect at once to a server in the same executor; sixty-four reads wait together; reads that
+      // nothing satisfies are cancelled again and again; closing a socket ends the waits on it.
+      assert.deepEqual((await run(exe, "crowd")).lines, ["crowd: server=40 clients=40"]);
+      assert.deepEqual((await run(exe, "waits")).lines, ["waits: sum=2016 sent=64", "closed=128"]);
+      assert.deepEqual((await run(exe, "cancel")).lines, [
+        `cancel: error ${failure("Unclassified", "Other", 99)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
+      ]);
+      assert.deepEqual((await run(exe, "close_wait")).lines, [`read: error ${stale}`, `accept: error ${stale}`, "done"]);
+
+      // Timeouts are for the whole operation and leave the socket good.
+      const timedOut = failure("TimedOut", "Other", errno.ETIMEDOUT);
+      assert.deepEqual((await run(exe, "timeouts")).lines, [`read: ${timedOut}`, `accept: ${timedOut}`, "late: 7 1", "closed"]);
+      assert.deepEqual((await run(exe, "validate")).lines, [...Array(7).fill(invalid), "ok", invalid, "closed"]);
+
+      // The peer sends three bytes and ends.
+      {
+        const server = await listen(socket => { socket.on("error", () => {}); socket.end("abc"); });
+        const result = await run(exe, "eof", server.address().port);
+        assert.deepEqual(result.lines, ["3 294", "again: read:0 read:0", "ok"]);
+        await stop(server);
+      }
+
+      // A port that nothing listens on.
+      {
+        const server = await listen(() => {});
+        const port = server.address().port;
+        await stop(server);
+        const result = await run(exe, "refused", port);
+        assert.deepEqual(result.lines, [failure("ConnectionRefused", "Other", errno.ECONNREFUSED)]);
+      }
+
+      // A big write waits for room again and again while the peer reads slowly; the peer gets every byte of it.
+      {
+        let total = 0;
+        let sum = 0;
+        const server = await listen(socket => {
+          socket.pause();
+          socket.on("data", chunk => { total += chunk.length; for (const byte of chunk) sum += byte; });
+          socket.on("error", () => {});
+          setTimeout(() => socket.resume(), 200);
+        });
+        const result = await run(exe, "bigwrite", server.address().port);
+        assert.deepEqual(result.lines, ["write: ok ok"]);
+        await new Promise(resolveWait => setTimeout(resolveWait, 100));
+        assert.equal(total, 8388608);
+        assert.equal(sum, patternSum(8388608));
+        await stop(server);
+      }
+
+      // A read in pieces of 64 KiB.
+      {
+        const server = await listen(socket => { socket.on("error", () => {}); socket.end(pattern(3145728)); });
+        const result = await run(exe, "bigread", server.address().port);
+        assert.deepEqual(result.lines, [`read: 3145728 ${patternSum(3145728)} ok`]);
+        await stop(server);
+      }
+
+      // Datagrams, a half-close, and every operation on a closed handle: no peer is needed.
+      assert.deepEqual((await run(exe, "udp")).lines, [
+        "exchange: 31 1", `quiet: ${timedOut}`, `truncated: ${failure("Unclassified", "InvalidInput", errno.EMSGSIZE)} then datagram:2 then datagram:0`, `closed: ok ok ${stale}`,
+      ]);
+      assert.deepEqual((await run(exe, "shutdown")).lines, [`ok read:0 ok read:3 ${failure("ConnectionReset", "Other", errno.EPIPE)}`, "closed"]);
+      assert.deepEqual((await run(exe, "stale")).lines, Array(9).fill(stale));
+    }
+    console.log("Net async: connect, accept, read, write, datagrams, timeouts, cancellation, and closing under Async.block_on passed at -O0 and -O3");
+  }
+
   if (wanted("alloc")) {
     // The error classes by this system's errno, which only the runtime knows (Net.error_kind asks it).
     const classify = join(root, "classify.c");
@@ -530,30 +668,43 @@ int main(int argc, char **argv) {
     execute(classifier, pairs);
 
     // Allocation tracking plus ASan and UBSan: every owned result and the runtime's own table are freed on every path.
-    const project = fixture("net_sockets");
-    const irPath = join(root, "tracked.ll");
-    execute(compiler, ["build", project, "--emit", "llvm", "-o", irPath]);
-    writeFileSync(irPath, readFileSync(irPath, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc"));
+    // A result may be freed by the poller thread of the async operations, so the counters are atomic, and a run ends only
+    // when that thread has gone and (for the async cases) every descriptor that the run opened is closed.
+    const trackedIr = (name, instrument = "") => {
+      const irPath = join(root, `tracked-${name}${instrument}.ll`);
+      execute(compiler, ["build", fixture(name), "--emit", "llvm", "-o", irPath]);
+      let text = readFileSync(irPath, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
+      // The functions of the IR carry the attribute that makes a sanitizer look at them.
+      if (instrument) text = text.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${instrument}`);
+      writeFileSync(irPath, text);
+      return irPath;
+    };
     const harness = join(root, "tracked-host.c");
-    writeFileSync(harness, `#include <assert.h>
+    writeFileSync(harness, `#undef NDEBUG
+#include <assert.h>
+#include <fcntl.h>
+#include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 extern int32_t tsuzuri_main(void);
-static uint64_t live;
+static _Atomic uint64_t live;
 void *tracked_alloc(uint64_t size) {
     uint64_t *value = malloc((size_t)size + 16);
     assert(value);
     value[0] = size;
     value[1] = UINT64_C(0x51a110ca7e);
-    live += size;
+    atomic_fetch_add(&live, size);
     return value + 2;
 }
 void tracked_free(void *pointer) {
     if (!pointer) return;
     uint64_t *value = (uint64_t *)pointer - 2;
-    assert(value[1] == UINT64_C(0x51a110ca7e) && live >= value[0]);
-    live -= value[0];
+    assert(value[1] == UINT64_C(0x51a110ca7e) && atomic_load(&live) >= value[0]);
+    atomic_fetch_sub(&live, value[0]);
     value[1] = 0;
     free(value);
 }
@@ -565,22 +716,40 @@ void *tracked_realloc(void *pointer, uint64_t size) {
     tracked_free(pointer);
     return next;
 }
-// The runtime's own table is counted as well: net.c is compiled with these in place of the C library's.
-static int64_t temporaries;
-void *tz_test_malloc(size_t size) { void *value = malloc(size); if (value) temporaries++; return value; }
+// The runtime's own memory is counted as well: net.c is compiled with these in place of the C library's.
+static _Atomic int64_t temporaries;
+void *tz_test_malloc(size_t size) { void *value = malloc(size); if (value) atomic_fetch_add(&temporaries, 1); return value; }
 void *tz_test_realloc(void *pointer, size_t size) {
     void *value = realloc(pointer, size);
-    if (value && !pointer) temporaries++;
+    if (value && !pointer) atomic_fetch_add(&temporaries, 1);
     return value;
 }
-void tz_test_free(void *pointer) { if (pointer) temporaries--; free(pointer); }
+void tz_test_free(void *pointer) { if (pointer) atomic_fetch_sub(&temporaries, 1); free(pointer); }
+static int open_descriptors(void) {
+    int count = 0;
+    for (int descriptor = 0; descriptor < 1024; descriptor++) {
+        if (fcntl(descriptor, F_GETFD) != -1) count++;
+    }
+    return count;
+}
+// The poller of the async operations ends soon after the last wait, and frees what it has then.
+static void settle(int descriptors) {
+    for (int attempt = 0; attempt < 2000; attempt++) {
+        if (atomic_load(&temporaries) == 0 && (descriptors < 0 || open_descriptors() == descriptors)) return;
+        struct timespec pause = {0, 5 * 1000000L};
+        nanosleep(&pause, NULL);
+    }
+    fprintf(stderr, "runtime memory left: %lld, descriptors %d (expected %d)\\n", (long long)atomic_load(&temporaries), open_descriptors(), descriptors);
+    abort();
+}
 int main(void) {
     const char *text = getenv("TZ_ITERATIONS");
     int iterations = text ? atoi(text) : 1;
+    int descriptors = getenv("TZ_CHECK_DESCRIPTORS") ? open_descriptors() : -1;
     for (int index = 0; index < iterations; index++) {
         assert(tsuzuri_main() == 0);
-        assert(live == 0);
-        assert(temporaries == 0);
+        assert(atomic_load(&live) == 0);
+        settle(descriptors);
     }
     return 0;
 }
@@ -599,19 +768,21 @@ void *tz_test_realloc(void *, size_t);
 void tz_test_free(void *);
 ${marker}`));
     const iterations = 12;
-    const looping = optimization => {
-      const executable = join(root, `tracked${optimization}`);
-      execute(clang, [optimization, "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-Wno-override-module", irPath, runtime, "src/runtime/os.c", "src/runtime/io.c", harness, "-lm", "-pthread", "-o", executable]);
+    const looping = (optimization, ir, sanitizers = "address,undefined") => {
+      const executable = join(root, `tracked-${sanitizers.replace(",", "-")}-${basename(ir)}${optimization}`);
+      execute(clang, [optimization, `-fsanitize=${sanitizers}`, "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
       return executable;
     };
-    const track = async (executable, caseName, port, lines, onLine) => {
-      const result = await run(executable, caseName, port, "127.0.0.1", onLine, { repeat: iterations, env: { TZ_ITERATIONS: String(iterations), ASAN_OPTIONS: "detect_stack_use_after_return=1" } });
+    const irPath = trackedIr("net_sockets");
+    const sanitizerEnv = { ASAN_OPTIONS: "detect_stack_use_after_return=1", TSAN_OPTIONS: "halt_on_error=1" };
+    const track = async (executable, caseName, port, lines, onLine, env = {}) => {
+      const result = await run(executable, caseName, port, "127.0.0.1", onLine, { repeat: iterations, env: { TZ_ITERATIONS: String(iterations), ...sanitizerEnv, ...env } });
       assert.equal(result.status, 0, `${caseName}\n${result.stderr}\n${result.stdout.slice(-400)}`);
       assert.equal(result.lines.length, lines * iterations, `${caseName}\n${result.stdout.slice(-400)}`);
       return result;
     };
     for (const optimization of optimizations) {
-      const executable = looping(optimization);
+      const executable = looping(optimization, irPath);
       // T1: an echo server that lives through all the runs.
       {
         const server = await listen(socket => { socket.on("data", data => socket.write(data)); socket.on("error", () => {}); });
@@ -666,6 +837,63 @@ ${marker}`));
       }
     }
     console.log(`Net allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result and the handle table`);
+
+    // The async cases add the poller thread and the mailbox: after every run the thread is gone, its memory is freed, and
+    // the descriptors are those of the start. With TSUZURI_TSAN=1 the same cases run under ThreadSanitizer, whose runs
+    // need the IR functions to carry the sanitizer attribute as well.
+    const asyncCases = async (executable, env) => {
+      const tracked = (caseName, port, lines, onLine) => track(executable, caseName, port, lines, onLine, { TZ_CHECK_DESCRIPTORS: "1", ...env });
+      const echoing = await listen(socket => { socket.on("data", data => socket.write(data)); socket.on("end", () => socket.end()); socket.on("error", () => {}); });
+      await tracked("echo", echoing.address().port, 5);
+      await stop(echoing);
+      const clients = [];
+      await tracked("server", 0, 5, line => {
+        const found = /^port=(\d+)$/.exec(line);
+        if (!found) return;
+        const client = net.connect({ host: "127.0.0.1", port: Number(found[1]) }, () => client.write("hello\n"));
+        client.on("data", () => {});
+        client.on("error", () => {});
+        clients.push(client);
+      });
+      await Promise.all(clients.map(closed));
+      assert.equal(clients.length, iterations);
+      for (const [name, lines] of [["crowd", 1], ["waits", 2], ["cancel", 6], ["close_wait", 3], ["timeouts", 4], ["validate", 10], ["udp", 4], ["shutdown", 2], ["stale", 9]]) {
+        await tracked(name, 0, lines);
+      }
+      const ending = await listen(socket => { socket.on("error", () => {}); socket.end("abc"); });
+      await tracked("eof", ending.address().port, 3);
+      const big = await listen(socket => { socket.on("error", () => {}); socket.end(pattern(3145728)); });
+      await tracked("bigread", big.address().port, 1);
+      const gone = await listen(() => {});
+      const gonePort = gone.address().port;
+      await stop(gone);
+      await tracked("refused", gonePort, 1);
+      await Promise.all([ending, big].map(stop));
+    };
+    const asyncIr = trackedIr("net_async");
+    for (const optimization of optimizations) await asyncCases(looping(optimization, asyncIr), {});
+    console.log(`Net async allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
+    if (process.env.TSUZURI_TSAN === "1") {
+      const instrumented = trackedIr("net_async", "thread");
+      for (const optimization of optimizations) await asyncCases(looping(optimization, instrumented, "thread"), {});
+      console.log("Net async threads: the same cases under ThreadSanitizer at -O0 and -O3 reported nothing");
+    }
+  }
+
+  if (wanted("runtime")) {
+    // The poller thread, the connect that a wait owns, closing and cancelling, without the compiler (tests/net_runtime.c):
+    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer.
+    const configurations = [["", []], ["address-undefined", ["-fsanitize=address,undefined"]]];
+    if (process.env.TSUZURI_TSAN === "1") configurations.push(["thread", ["-fsanitize=thread"]]);
+    for (const [name, flags] of configurations) {
+      for (const optimization of ["-O1", "-O3"]) {
+        const executable = join(root, `net-runtime-${name}${optimization}`);
+        execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", optimization, "-g", "-fno-omit-frame-pointer", ...flags, "-pthread", "tests/net_runtime.c", "src/runtime/net.c", "-o", executable]);
+        const result = execute(executable, [], { env: { ...process.env, ASAN_OPTIONS: "detect_stack_use_after_return=1", TSAN_OPTIONS: "halt_on_error=1" } });
+        assert.match(result.stdout, /net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed/);
+      }
+    }
+    console.log(`Net runtime: the poller, connects that a wait owns, close, cancel, and churn from four threads passed (${configurations.map(([name]) => name || "plain").join(", ")})`);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -1010,6 +1010,20 @@ pub enum Builtin {
     NetClose,
     /// `Net.__classify :: i32 -> i64`: an `errno` as the declaration-order index of `Net.ErrorKind`.
     NetClassify,
+    /// `Net.__watch :: i64 -> i64 -> i32 -> i64 -> unit` (E09 Phase 2): starts a wait of an async operation (its id)
+    /// for a socket to be readable (1) or writable (2) within a timeout in milliseconds (-1: none). The runtime
+    /// completes the operation: 0 when ready, otherwise a status.
+    NetWatch,
+    /// `Net.__unwatch :: i64 -> unit`: takes the operation back; a connect that is under way is closed.
+    NetUnwatch,
+    /// `Net.__connect :: i64 -> i64 -> i64 -> i64 -> i64 -> unit`: starts a connect for an async operation (id, address,
+    /// timeout); the runtime completes it with a new handle or the negated status.
+    NetConnect,
+    /// `Net.__names :: i64 -> (i64 * [ubyte])`: the 40 bytes of local and peer address records of an open socket.
+    NetNames,
+    /// `Net.__send :: i32 -> i64 -> ref [ubyte] -> i64 -> i64 -> i64 -> i64 -> i64`: sends without waiting from an
+    /// offset: the bytes sent, or the negated status (the "would wait" status among them).
+    NetSend,
     /// `Unicode.__table_length :: i64 -> i64`: the number of entries of a generated Unicode table
     /// (`src/runtime/unicode.ll`). Private to the std Unicode and Regex modules (D09).
     UnicodeTableLength,
@@ -1346,6 +1360,11 @@ impl Builtin {
         Self::NetWrite,
         Self::NetClose,
         Self::NetClassify,
+        Self::NetWatch,
+        Self::NetUnwatch,
+        Self::NetConnect,
+        Self::NetNames,
+        Self::NetSend,
         Self::UnicodeTableLength,
         Self::UnicodeTableEntry,
         Self::Display,
@@ -1570,6 +1589,11 @@ impl Builtin {
             Self::NetWrite => "Net.__write",
             Self::NetClose => "Net.__close",
             Self::NetClassify => "Net.__classify",
+            Self::NetWatch => "Net.__watch",
+            Self::NetUnwatch => "Net.__unwatch",
+            Self::NetConnect => "Net.__connect",
+            Self::NetNames => "Net.__names",
+            Self::NetSend => "Net.__send",
             Self::UnicodeTableLength => "Unicode.__table_length",
             Self::UnicodeTableEntry => "Unicode.__table_entry",
             Self::Display => "$builtin.display",
@@ -1820,7 +1844,7 @@ impl Builtin {
                 ]),
                 Vec::new(),
             ),
-            Self::NetResolve | Self::NetOpen | Self::NetAccept | Self::NetRead => {
+            Self::NetResolve | Self::NetOpen | Self::NetAccept | Self::NetRead | Self::NetNames => {
                 let integers = |count: usize| vec![Concrete(Type::I64); count];
                 let parameters = match self {
                     Self::NetResolve => vec![
@@ -1831,6 +1855,7 @@ impl Builtin {
                         [vec![Concrete(Type::Integer(32, true))], integers(4)].concat()
                     }
                     Self::NetAccept => integers(2),
+                    Self::NetNames => integers(1),
                     _ => [vec![Concrete(Type::Integer(32, true))], integers(3)].concat(),
                 };
                 (
@@ -1842,7 +1867,7 @@ impl Builtin {
                     Vec::new(),
                 )
             }
-            Self::NetWrite => (
+            Self::NetWrite | Self::NetSend => (
                 vec![
                     Concrete(Type::Integer(32, true)),
                     Concrete(Type::I64),
@@ -1856,6 +1881,22 @@ impl Builtin {
                     Concrete(Type::I64),
                 ],
                 Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::NetWatch => (
+                vec![
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                ],
+                Concrete(Type::Unit),
+                Vec::new(),
+            ),
+            Self::NetUnwatch => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
+            Self::NetConnect => (
+                vec![Concrete(Type::I64); 5],
+                Concrete(Type::Unit),
                 Vec::new(),
             ),
             Self::NetClose => (

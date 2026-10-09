@@ -2735,6 +2735,19 @@ pub fn uses_reactor(ir: &str) -> bool {
     ir.contains("declare void @tsuzuri_async_wait(")
 }
 
+/// Whether IR calls the socket runtime of the standard Net module, `src/runtime/net.c` (E09).
+pub fn uses_net(ir: &str) -> bool {
+    ir.contains("@tsuzuri_net_")
+}
+
+/// Whether IR starts an async Net operation, whose completion the runtime posts to the reactor with
+/// `tsuzuri_async_post` (E09 Phase 2).
+pub fn uses_net_async(ir: &str) -> bool {
+    ["@tsuzuri_net_watch(", "@tsuzuri_net_connect("]
+        .iter()
+        .any(|symbol| ir.contains(symbol))
+}
+
 /// Whether the program can reach `Async.block_on`, whose native runtime defines
 /// `tsuzuri_async_post`.
 pub fn reaches_reactor(module: &CheckedModule) -> bool {
@@ -6099,7 +6112,12 @@ fn emit_builtin(
         | Builtin::NetRead
         | Builtin::NetWrite
         | Builtin::NetClose
-        | Builtin::NetClassify => emit_typed_builtin(instance, ty, module, intrinsics, globals),
+        | Builtin::NetClassify
+        | Builtin::NetWatch
+        | Builtin::NetUnwatch
+        | Builtin::NetConnect
+        | Builtin::NetNames
+        | Builtin::NetSend => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
@@ -6473,6 +6491,11 @@ fn emit_typed_builtin(
             | Builtin::NetWrite
             | Builtin::NetClose
             | Builtin::NetClassify
+            | Builtin::NetWatch
+            | Builtin::NetUnwatch
+            | Builtin::NetConnect
+            | Builtin::NetNames
+            | Builtin::NetSend
     ) {
         emitter.net_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {

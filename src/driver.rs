@@ -195,10 +195,15 @@ pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
     "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
 /// Why wasm output cannot reach the sockets of the standard Net module (E09).
 pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, or keep to Net address parsing, which needs no host";
-/// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on.
-pub(crate) const NET_NATIVE_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
-/// Why a build for another host cannot reach the Net sockets yet.
-pub(crate) const NET_NATIVE_MESSAGE: &str = "the Net socket API is only available on macOS and Linux for now (Windows waits for G10); build on macOS or Linux";
+/// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on: POSIX sockets on macOS
+/// and Linux, Winsock on Windows.
+pub(crate) const NET_NATIVE_SUPPORTED: bool =
+    cfg!(any(target_os = "macos", target_os = "linux", windows));
+/// Why a build for another host cannot reach the Net sockets.
+pub(crate) const NET_NATIVE_MESSAGE: &str =
+    "the Net socket API is only available on macOS, Linux, and Windows; build on one of them";
+/// Why a program that starts a Net async operation needs the reactor of `Async.block_on` natively.
+pub(crate) const NET_ASYNC_MESSAGE: &str = "the Net async operations (connect_async, accept_async, read_async, ...) complete through the reactor of Async.block_on; run the computation with Async.block_on";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -2470,7 +2475,7 @@ fn build_complete(
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     // The sockets of the standard Net module are src/runtime/net.c (E09).
-    let net_runtime = text.contains("declare i64 @tsuzuri_net_");
+    let net_runtime = llvm::uses_net(&text);
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
     let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
@@ -2496,7 +2501,7 @@ fn build_complete(
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
-            ("declare i64 @tsuzuri_net_", "the Net socket API"),
+            ("@tsuzuri_net_", "the Net socket API"),
             ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
@@ -2560,6 +2565,10 @@ fn build_complete(
     }
     if net_runtime && options.target.is_wasm() {
         return Err(driver_error("E2000", NET_WASM_MESSAGE));
+    }
+    // The poller completes an async operation through the reactor's mailbox, which exists only in `Async.block_on`.
+    if net_runtime && llvm::uses_net_async(&text) && !async_reactor {
+        return Err(driver_error("E2000", NET_ASYNC_MESSAGE));
     }
     if net_runtime
         && !NET_NATIVE_SUPPORTED
@@ -2957,6 +2966,10 @@ fn build_complete(
             clang.args(["-x", "none"]).arg(&runtime_object);
             if (task_runtime || net_runtime) && !cfg!(windows) {
                 clang.arg("-pthread");
+            }
+            // The runtime also asks for it with a default-library request, which not every linker honors.
+            if net_runtime && cfg!(windows) {
+                clang.arg("-lws2_32");
             }
         }
         if stack_runtime && dwarf_sidecar.is_none() {
