@@ -416,7 +416,7 @@ tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
 - JSPI のグルーは export を呼び出し順に直列化し、待っている間に次の呼び出しで同じスタックや結果を使いません。入力は呼び出し時点のコピーで、`withBorrowed` はありません。生の `WebAssembly.promising` の呼び出しも、前の呼び出しを await してから次を始めます。
 - export が待っている間も JavaScript は動きます。`bindings.async.complete` は、待っている export を起こします。
 - `--wasm-feature jspi` は、`wasm32` と `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js` で使えます。`--wasm-feature threads` や `--wasm-host wasi` とは同時に指定できません（`E2000`）。
-- `--wasm-feature jspi` なしで `Async.block_on` に到達すると `E2000` です。JSPI を使う `.wasm` を JSPI なしのグルーで読むと、`load` が `module does not match bindings: it waits through JSPI; generate the bindings with --wasm-feature jspi as well` で失敗します。
+- `--wasm-feature jspi` なしで `Async.block_on` に到達すると、`.wasm` のビルドだけでなく `--emit bindings-js` の生成も `E2000` です。`.wasm` とグルーの両方に同じオプションを付けます。JSPI を使う `.wasm` を JSPI なしのグルーで読むと、`load` が `module does not match bindings: it waits through JSPI; generate the bindings with --wasm-feature jspi as well` で失敗します。
 - JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。リポジトリの `tests/async.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
 
 `--wasm-feature threads` は、実行器に到達するプログラムを `E2000` で拒否します。現在の WASM worker は Async 実行器の TLS を設定しません。

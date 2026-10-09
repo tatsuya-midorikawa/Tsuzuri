@@ -2281,6 +2281,12 @@ fn build_complete(
             "--wasm-feature threads cannot be combined with Async.start or Async.block_on: their executor keeps per-thread state that WebAssembly threads do not set up",
         ));
     }
+    if options.target.is_wasm() && !options.wasm_jspi && llvm::reaches_reactor(module) {
+        return Err(driver_error(
+            "E2000",
+            "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits",
+        ));
+    }
     if options.emit.is_bindings() {
         return build_bindings(module, project, output, options).map(|()| (Vec::new(), Vec::new()));
     }
@@ -2536,12 +2542,6 @@ fn build_complete(
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
-    }
-    if async_reactor && options.target.is_wasm() && !options.wasm_jspi {
-        return Err(driver_error(
-            "E2000",
-            "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits",
-        ));
     }
     if async_reactor
         && cfg!(windows)

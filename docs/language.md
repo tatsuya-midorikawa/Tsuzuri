@@ -2245,7 +2245,7 @@ native では `Async.block_on` が `src/runtime/async.c` の単調時計、条�
 
 WASM で `Async.start` を使う場合、既定の出力には import を追加せず、`tsuzuri_async_poll` と `tsuzuri_async_complete` をホストが呼びます。`Async.block_on` は WebAssembly のスタックを待機中に中断する JSPI を使うため、`--wasm-feature jspi` が必要です。`tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、JSPI に対応する export は Promise を返します。`--wasm-feature jspi` は `threads` や `--wasm-host wasi` と併用できません。`--wasm-feature threads` は、Async の per-thread executor を設定しないため、`Async.start` / `Async.block_on` と併用できません。
 
-`--emit bindings-js` で作ったグルーは、`Async.start` に到達する場合 `bindings.async.complete(operation, value)` と `bindings.async.settled()` を提供し、イベントループから自動的に poll します。`complete` は引数の i64 範囲と、同じ生成グルー内のインスタンス世代を検査します。raw WASM のホストは、再作成前と異なる正の epoch（2^24 未満）を `tsuzuri_async_set_epoch` に設定してから操作を開始します。生成グルーはこれを自動で行います。
+`--emit bindings-js` で作ったグルーは、`Async.start` に到達する場合 `bindings.async.complete(operation, value)` と `bindings.async.settled()` を提供し、イベントループから自動的に poll します。WASM の `Async.block_on` は `.wasm` とグルーの生成の両方で `--wasm-feature jspi` を要求し、省略は生成前に `E2000` です。`complete` は引数の i64 範囲と、同じ生成グルー内のインスタンス世代を検査します。raw WASM のホストは、再作成前と異なる正の epoch（2^24 未満）を `tsuzuri_async_set_epoch` に設定してから操作を開始します。生成グルーはこれを自動で行います。
 
 JSPI 用のグルーではすべての export が Promise を返し、同じインスタンスへの呼び出しを直列化します。typed array は呼び出し要求時にコピーし、`withBorrowed` は提供しません。raw JSPI のホストは前の `block_on` を await してから次を呼びます。バックグラウンド実行の失敗は `settled()` を reject し、インスタンスを再作成するまで保持します。Async の実行器は `--trap-mode return` と併用できません。
 

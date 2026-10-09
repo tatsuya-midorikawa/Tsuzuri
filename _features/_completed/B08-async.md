@@ -163,6 +163,9 @@ int32_t tsuzuri_async_post(int64_t operation, int64_t value);
   Homebrew LLVM 21.1.8 の ASan は空の C main でも起動が止まる環境問題を再現したため、ASan は Apple Clang 21 を使用。
 - 初回 macOS ARM64 CI は、4 個の Task に 4 個のスレッドを仮定したテストで失敗した。既存の pool は CPU 数で制限し worker を再利用するので、
   契約どおり操作 ID の非再利用を検査するよう修正し、1 / 2 CPU を強制する O0 / O3 の回帰も追加した。言語・runtime の挙動変更はない。
+- GitHub Copilot の再レビューで、bindings の early return が JSPI 必須検査を通らないことと、poll 内での同期完了がタイマーを重複させることを確認した。
+  どちらも修正前に回帰テストの失敗を再現し、到達可能性に基づく検査を bindings の生成前へ移動、poll 中に予約されたタイマーを次の予約前に取消した。
+  `.mjs` の生成にも同じ E2000 を要求し、同期する 2 操作は 3 polls、各時点で駆動タイマーは最大 1 本であることを検査する。
 - `tests/e2e.mjs`、`tests/wasm64.mjs`、`tests/docgen.mjs`、`tests/bindings.mjs`、
   `tests/bindings_threads.mjs`、`tests/host_bindings.mjs`、`tests/lsp_sessions.mjs` が成功。
   host bindings は Python / C++ / C#（.NET SDK 10.0.102）。Worker glue は Node Web Workers、実 browser は未実行。

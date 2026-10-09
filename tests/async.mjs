@@ -526,8 +526,33 @@ async function glue(directory) {
     "Main.cancel_operation": () => {},
     "Main.report": () => {},
   } });
-  other.exports.sequential(-1n);
-  await other.async.settled();
+  const scheduled = new Map();
+  const setTimer = globalThis.setTimeout;
+  const clearTimer = globalThis.clearTimeout;
+  let done;
+  try {
+    globalThis.setTimeout = (callback) => {
+      const handle = Symbol("timer");
+      scheduled.set(handle, callback);
+      return handle;
+    };
+    globalThis.clearTimeout = (handle) => scheduled.delete(handle);
+    other.exports.sequential(-1n);
+    done = other.async.settled();
+    let polls = 0;
+    while (scheduled.size) {
+      assert.equal(scheduled.size, 1, "synchronous completions must leave only one poll timer");
+      const [handle, callback] = scheduled.entries().next().value;
+      scheduled.delete(handle);
+      callback();
+      assert.ok(++polls <= 3, "two synchronous host operations need three polls");
+    }
+    assert.equal(polls, 3);
+  } finally {
+    globalThis.setTimeout = setTimer;
+    globalThis.clearTimeout = clearTimer;
+  }
+  await done;
   assert.notEqual(otherStarted[0], started[0]);
   assert.throws(() => bindings.async.complete(otherStarted[0], 0n), /different or discarded Async instance/);
   assert.throws(() => bindings.async.complete(1, 2n), TypeError);

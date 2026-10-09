@@ -482,14 +482,19 @@ fn the_driver_rejects_executors_that_the_target_cannot_drive() {
         }
     }
     let blocking = format!("{HOST}{BLOCKING}");
-    for emit in [Emit::Wasm, Emit::Object, Emit::Llvm] {
+    for (emit, name) in [
+        (Emit::Wasm, "api.wasm"),
+        (Emit::Object, "api.o"),
+        (Emit::Llvm, "api.ll"),
+        (Emit::BindingsJs, "api.mjs"),
+    ] {
         let options = BuildOptions {
             target: Target::Wasm32,
             emit,
             ..Default::default()
         };
         assert_eq!(
-            build_error(&blocking, "api.wasm", options).message,
+            build_error(&blocking, name, options).message,
             "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits"
         );
     }

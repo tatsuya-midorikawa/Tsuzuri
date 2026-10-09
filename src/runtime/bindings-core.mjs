@@ -824,6 +824,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
         if (!observed) console.error("Async executor failed:", error);
         return;
       }
+      clearTimeout(timer);
+      timer = undefined;
       if (next === -1n) {
         finish(NO_ERROR);
       } else if (next !== MAX_I64) {
