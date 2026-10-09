@@ -167,7 +167,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C08 | [可変スライスと要素のその場更新](_completed/C08-mutable-slices.md) | P2 | L | C03, (A13) | done |
 | C09 | [HashMap／HashSet](_completed/C09-hash-map.md) | P1 | M | A07, C02, C06 | done |
 | C10 | [共有所有と循環構造（Arena・Handle・Rc／Arc）](_completed/C10-shared-ownership.md) | P2 | XL | C02, (B07), (F10) | done |
-| C11 | [多次元配列と数値カーネル](C11-multidimensional-arrays.md) | P3 | L | A16, F02, F04, (C08), (F08) | todo |
+| C11 | [多次元配列と数値カーネル](_completed/C11-multidimensional-arrays.md) | P3 | L | A16, F02, F04, (C08), (F08) | done（Phase 1・2） |
 
 ### D. 文字列・数値・組み込み関数
 

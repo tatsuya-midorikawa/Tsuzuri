@@ -156,6 +156,7 @@ F09 は承認待ちの計画です。`Gpu.map_relaxed` や `--emit wgsl-relaxed`
 
 - [Parallel](parallel.md)
 - [Simd](simd.md)
+- [Matrix](matrix.md) — `Matrix.as_array` と `Matrix.of_array` で行列の要素を CPU 参照バッファへ渡せます。行列積の GPU カーネルはありません
 - [Result](result.md)
 - [コンパイラ オプション](../compiler/option.md)
 - [言語仕様の GPU Kernel](../../../docs/language.md#gpu-kernel実験的-phase-1)

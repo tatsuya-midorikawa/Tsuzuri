@@ -169,6 +169,7 @@ tsuzuri build --target wasm32 --emit wasm --wasm-feature threads -o app.wasm
 
 - [Task 式](../async-tasks-and-lazy/task.md)
 - [Array](array.md)
+- [Matrix](matrix.md) — `mul_parallel` は `for_each_chunk` で行を分けます。チャンクの境界は形だけで決まります
 - [Simd](simd.md)
 - [Math](math.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)

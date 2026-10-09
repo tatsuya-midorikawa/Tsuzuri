@@ -219,7 +219,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -227,10 +227,10 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`
 `Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -2908,16 +2908,37 @@ let row = Matrix.row (ref p) 1
 主な API は次のとおりです。
 `of_array rows cols values`（平らな配列を複製せずに所有）、`init rows cols initializer`（`initializer row col` を行優先に 1 回ずつ呼ぶ）、`rows (ref m)`、`cols (ref m)`、
 `at (ref m) row col`（共有借用 `ref 'a`）、`get (ref m) row col`（`Maybe<'a>`。`Copy<'a>` が必要）、`row (ref m) index`（1 行の部分参照 `ref ['a]`）、`as_array (ref m)`、`to_array m`（消費して複製せずに返す）、
-`map transform (ref m)`、`fold folder initial (ref m)`、`transpose (ref m)`、`add (ref a) (ref b)`、`mul (ref a) (ref b)`。
+`set m row col value`（消費して 1 要素をその場で置き換える）、`map transform (ref m)`、`fold folder initial (ref m)`、`transpose (ref m)`、`add (ref a) (ref b)`、
+`mul (ref a) (ref b)`、`mul_fma (ref a) (ref b)`、`mul_parallel (ref a) (ref b)`、`mul_fma_parallel (ref a) (ref b)`。
 `transform` と `folder` は行優先に 1 回ずつ呼ばれます。値で読む API は `Copy<'a>`、算術は `Numeric<'a>` を要求し、満たさない要素型は `E1005` です。
 
 `mul` の出力 `(i, j)` は、`+0`（`0i64 as 'a`）から `k = 0, 1, …, left.cols - 1` の順に `total = total + (left(i, k) * right(k, j))` を行った値です。積と和を別々に丸め、FMA にまとめず、順序も入れ替えません（D-14。`Array.dot` と同じ契約）。
 `left.cols` が 0 のとき、出力の全要素は `+0` です。NaN・無限大・符号付きゼロ・非正規化数は IEEE 754 のとおり伝播し、整数は幅ごとに折り返します。native と WASM、`-O0` と `-O3` で結果のビットは同じです（NaN の payload を除く）。
-次元が負、`rows * cols` の溢れ、`values.length != rows * cols`、添字の範囲外（`at` と `row`。行と列は別々に検査します）、`add` と `mul` の形の不一致は、確保や callback の前に `assert`（`TrapKind::Assert`）でトラップします。要素の byte 数の溢れは `AllocationSize` です。
+次元が負、`rows * cols` の溢れ、`values.length != rows * cols`、添字の範囲外（`at`・`row`・`set`。行と列は別々に検査します）、`add` と各種の積の形の不一致は、確保や callback の前に `assert`（`TrapKind::Assert`）でトラップします。要素の byte 数の溢れは `AllocationSize` です。
 
-`at`・`row`・`as_array` の戻り値は元の行列を共有借用し、借用が生きている間の move・置換は `E1014`、`to_array` の後の使用は `E1012` です。
-計算量は、`at`・`row`・`as_array`・`rows`・`cols` が確保なしの $O(1)$、`of_array`・`to_array` が複製なしの $O(1)$、`map`・`transpose`・`add` が $O(\text{rows} \times \text{cols})$、`mul` が $O(\text{rows} \times \text{inner} \times \text{cols})$ です。
-`mul` は逐次の i-j-k 順の std ソースで、再帰しません。SIMD・並列・BLAS 並みの速度は約束しません（性能は [docs/benchmarks.md](benchmarks.md) の計測だけを根拠にします）。
+`mul` の実装は、出力を行ごとに更新する i-k-j 順です。`out(i, j)` は `out(i, j) + left(i, k) * right(k, j)` だけで更新され `k` が昇順に進むので、出力要素ごとの演算の列は i-j-k の素朴な和と同じで、変わるのは別々の出力要素を訪れる順序だけです。内側の `j` のループは `right` の連続した 1 行を読み、各レーンが別の出力要素なので、和の順序を変えずに LLVM がベクトル化できます。新しい `Builtin`・`Type`・ランタイム関数はなく、std のソースだけです。
+`mul_fma` は 1 ステップごとに `Math.fma`（`llvm.fma`）を使う別名の積で、出力 `(i, j)` は `total = fma(left(i, k), right(k, j), total)` を `+0` から `k` の昇順に行った値です（`Array.dot_fma` と同じ順序）。要素型は `Float<'a>` で、ビットは `mul` と違うことがあります。暗黙の FMA 化はなく、`mul` の IR に `llvm.fma`・`fmuladd`・`contract` は現れません。wasm32 には 1 命令のスカラー fma がないので、`Math.fma` は `tz_soft_fma` を呼びます。
+`mul_parallel`・`mul_fma_parallel` は、出力の行を `Parallel.for_each_chunk` で分けます。1 チャンクは約 $2^{20}$ 回の積和になる行数（`max(1, 1048576 / (inner * cols))` 行）で、境界は形だけで決まり、CPU 数・SIMD 幅・ターゲットで変わりません（D-14）。各出力要素の演算は `mul`・`mul_fma` と同じなので、結果はスレッド数によらずビットが一致します。要素型には `Send<'a>` も要ります。1 チャンクで済む積は呼び出したスレッドで直接計算し、2 チャンク以上では入力を 1 回複製して `Arc` で共有します。
+
+`at`・`row`・`as_array` の戻り値は元の行列を共有借用し、借用が生きている間の move・置換は `E1014`、`to_array` と `set` の後の使用は `E1012` です。
+計算量は、`at`・`row`・`as_array`・`rows`・`cols` が確保なしの $O(1)$、`of_array`・`to_array`・`set` が複製なしの $O(1)$、`map`・`transpose`・`add` が $O(\text{rows} \times \text{cols})$、積が $O(\text{rows} \times \text{inner} \times \text{cols})$ です。`mul` は再帰しません。
+速度は API の約束ではなく、[docs/benchmarks.md](benchmarks.md) の計測だけを根拠にします。ブロッキング・pairwise の積、手書きの SIMD、行列積の GPU カーネルは提供しません。GPU の CPU 参照バッファへは `Matrix.as_array` と `Matrix.of_array` で行き来できます。
+
+### MatrixView
+
+`MatrixView<'a>` は、行列や平らな配列を借りて、行と列の並びを変えて見る窓です（`MatrixView` モジュール。opt-in で、`Matrix` を使います）。レコード `MatrixView<'a> { r } { data: ref { r } ['a], offset, rows, cols, row_stride, col_stride }` は A09・A12 の region 規則の借用レコードで、Copy です。
+要素 `(row, col)` は `data[offset + row * row_stride + col * col_stride]` で、ストライドは負にならず、窓の全要素は `data` の中にあります。`strided`・`of_array`・`of_matrix` が検査し、`transpose`・`sub`・`row`・`col` が保ちます（要素のない窓は `data` の外を指してよい）。内部は不透明（`E1022`）です。
+API は `of_matrix`・`of_array`・`strided`・`rows`・`cols`・`offset`・`row_stride`・`col_stride`・`data`・`at`・`get`・`transpose`（O(1)）・`sub`・`row`・`col`・`is_contiguous`・`to_matrix`・`fold`・`map`・`mul` です。`mul` は連続でない窓を行優先に複製してから `Matrix.mul` を呼び、ビットは複製した行列の `Matrix.mul` と同じです。
+窓は持ち主を共有借用します。持ち主の move・置換は `E1014`、局所の行列の窓を返すと `E1013`、窓を使うタスクは `E1013` です。
+書き込める窓 `MatrixView.Mut<'a> { r }` は排他スライス `ref mut { r } ['a..]`（C08）を持つ非 Copy のレコードで、`of_array_mut`・`write`・`row_mut`・`sub_mut`・`transpose_mut`・`fill`・`copy_from`・`map_in_place`・`freeze` を持ちます。配置は、行優先（`col_stride` が 1 で `row_stride` が列数以上）かその転置に限り、異なる要素が同じ場所を指すことはありません。生きている間は元の配列を排他借用するので、読むことも 2 つ目の窓を作ることも `E1014` です。
+
+### Tensor
+
+`Tensor<'a>` は形（`[i64]`）と行優先のバッファを所有する非 Copy の不透明レコード、`Tensor.View<'a> { r }` は `(data, offset, shape, strides)` を持つ借用の窓です（`Tensor` モジュール。opt-in で、`Matrix` と `MatrixView` を使います）。軸は 16 本までで、長さは 0 以上、長さが 0 の軸を除いた積は `i64` に収まる必要があります。長さが 0 の軸があれば要素は 0 個、軸が 0 本なら 1 個です。
+窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` で、ストライドは負にならず、全要素は `data` の中にあります。窓は非 Copy で、API は `ref` で受け取ります。
+所有者の API は `of_array`・`init`・`of_matrix`・`to_matrix`・`as_array`・`to_array`・`reshape`・`view`・`borrow`、窓の API は `rank`・`shape`・`count`・`strides`・`offset`・`data`・`at`・`get`・`permute`・`index_axis`・`narrow`・`is_contiguous`・`reshape_view`・`fold`・`to_tensor`・`map`・`as_matrix_view`・`of_matrix_view` です。
+`permute`・`index_axis`・`narrow`・`reshape_view` は複製せずに `(shape, strides, offset)` を変えます。`reshape_view` は連続な窓だけで、連続でなければトラップです。`at` と `get` は添字の配列を 1 つ確保します。
+書き込める N 次元の窓、ブロードキャスト、軸に沿った集計、並列・SIMD・GPU のカーネルは提供しません。
 
 ### HashMap / HashSet
 

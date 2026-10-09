@@ -1676,28 +1676,79 @@ Phase 3 では、値を表示するプログラムを先に検査し、`Display`
 
 ## 行列積（C11）
 
-`node benchmarks/run-matrix.mjs target/release/tsuzuri [--quick]` は、`Matrix.mul`（`benchmarks/matrix/Main.tz` の `matmul_checksum`）を、素朴な C の行列積と同じ条件で比べます。`n × n` の `f64` の入力 2 つ（式は両側で同じ）から `repeats` 回積を作り、積ごとに `total * 0.999 + x` を左から右に畳み込んだ checksum を足し合わせます。C 側は `-O3 -std=c11 -ffp-contract=off -fno-lto` でコンパイルし、Tsuzuri 側は `build --emit object -O3` の object を同じ実行ファイルにリンクします。
-比べる C は 2 つです。`C i-j-k` は出力要素ごとに `k` の和を取る形で、`Matrix.mul` と同じアルゴリズムです。`C i-k-j` は行ごとに `c[i][j] += a[i][k] * b[k][j]` を `k`、`j` の順に更新する形です。どの出力要素も `+0` から `k` の昇順に積と和を別々に丸めるので、3 つの checksum は 1 ビットの違いもなく一致します。runner は計時の前にこれを `memcmp` で検査し、違えば失敗します。
+`node benchmarks/run-matrix.mjs target/release/tsuzuri [--quick]` は、`Matrix` の積（`benchmarks/matrix/Main.tz`）を素朴な C の行列積と同じ条件で比べ、同じプログラムを wasm32 でも Node で実行します。`n × n` の入力 2 つ（式は両側で同じ）から `repeats` 回積を作り、積ごとに checksum（`f64` と `f32` は `total * 0.999 + x` を左から右に畳み込んだ値、`i64` は `total * 31 + x`）を足し合わせます。C 側は `-O3 -std=c11 -ffp-contract=off -fno-lto` でコンパイルし、Tsuzuri 側は `build --emit object -O3` の object を、ホストと `src/runtime/task.c` と同じ実行ファイルにリンクします。
+
+比べる実装は次のとおりです。
+
+| 型 | Tsuzuri | C |
+| --- | --- | --- |
+| `f64`（別々に丸める和） | `Matrix.mul`、i-j-k のループ（Phase 1 の `mul` と同じ順序を公開 API だけで書いたもの）、`Matrix.mul_parallel` | i-j-k、i-k-j、i-k-j を pthread で行ごとに分けたもの（オンライン CPU 数のスレッドを積ごとに作って join する） |
+| `f64`（融合） | `Matrix.mul_fma`、`Matrix.mul_fma_parallel` | `fma()` を使う i-k-j |
+| `f32`、`i64` | `Matrix.mul`、`Matrix.mul_parallel` | i-j-k、i-k-j |
+
+どの出力要素も同じ順序の演算列なので、同じ型の別々に丸める実装の checksum は 1 ビットの違いもなく一致します（C の i-j-k を基準にします）。融合する実装は、C の `fma()` の版と一致します。runner は計時の前に、各 `n` で全実装のビットの一致を検査し、違えば失敗します。WASM では、計時の前に wasm32 の結果のビットが native の C の基準と一致することも検査します（既定と simd128 の両方）。この入力は積も和もちょうど表現できる値（2^-5 の倍数）なので、融合する版としない版の checksum は同じビットになります。2 つの順序の違いは、このベンチマークではなく、`tests/matrix.rs` と suite `matrix` の probe が検査します。
 各実装を実行順を回しながら 9 回ずつ測り、1 回の積あたりの中央値・最小・最大（ms）を出します。速度の合否の閾値はなく、`--quick`（`n = 16`）は動作確認だけで性能の証拠ではありません。
 
-2026-10-10 に Apple M1 Max（10 コア）、macOS（darwin 27.0.0）、Apple clang 21.0.0、Node v20.19.6、release ビルドのコンパイラ（`96d7cbf` の上の C11 Phase 1）で 3 回実行した結果です（生データは `target/perf/C11-phase1/`）。ほかの作業のビルドとテストが同時に動き、load average は各回の開始時に 19〜22 でした。`n = 128` と `n = 512` は負荷で揺れます。
+2026-10-10 に Apple M1 Max（10 コア。性能 8・効率 2）、macOS（darwin 27.0.0）、Apple clang 21.0.0、Node v20.19.6、release ビルドのコンパイラ（`96d7cbf` の上の C11 Phase 2）で 3 回実行した結果です（生データは `target/perf/C11-phase2/`）。ほかの作業のビルドとテストが同時に動き、1 分間の load average は各回の前後で 8.0→6.0、11.2→27.6、26.1→27.2 でした。2 回目は特に並列の版が揺れています。表は、1 回の積の中央値から求めた GFLOP/s（`2n³` を中央値で割った値。積と和 1 組を 2 回と数える）の、3 回分（1 回目 / 2 回目 / 3 回目）です。
 
-| `n` | `Matrix.mul`（ms、3 回の範囲） | C i-j-k | C i-k-j | `Matrix.mul` の GFLOP/s |
-| --- | --- | --- | --- | --- |
-| 64 | 0.180–0.182 | 0.130–0.131 | 0.0453–0.0457 | 2.89–2.91 |
-| 128 | 1.66–1.76 | 1.36–1.85 | 0.348–0.381 | 2.39–2.53 |
-| 256 | 15.4–15.7 | 13.3–13.8 | 2.92–2.94 | 2.14–2.18 |
-| 512 | 153–198 | 145–188 | 22.6–23.0 | 1.35–1.76 |
+**native（arm64、`-O3`）、`f64`**
 
-`Matrix.mul` は同じアルゴリズムの C の i-j-k の約 0.7〜0.95 倍の速さで、i-k-j の C より約 4〜9 倍遅い測定です。GFLOP/s は `2n³` を中央値で割った値で、浮動小数点演算を「積と和 1 組を 2 回」と数えています。
+| 実装 | `n = 64` | `n = 256` | `n = 512` |
+| --- | --- | --- | --- |
+| Tsuzuri `Matrix.mul` | 11.1 / 9.11 / 10.7 | 11.6 / 11.3 / 11.5 | 11.9 / 11.6 / 11.8 |
+| Tsuzuri i-j-k のループ（Phase 1 の順序） | 2.80 / 2.24 / 2.78 | 2.22 / 2.13 / 2.16 | 1.99 / 1.78 / 1.90 |
+| Tsuzuri `Matrix.mul_parallel` | 11.2 / 7.44 / 11.2 | 46.6 / 14.8 / 44.8 | 58.0 / 49.7 / 50.6 |
+| C i-j-k | 4.06 / 3.41 / 4.06 | 2.56 / 2.34 / 2.55 | 2.11 / 1.73 / 2.03 |
+| C i-k-j | 11.6 / 10.0 / 11.6 | 11.8 / 11.0 / 11.7 | 12.2 / 11.9 / 12.2 |
+| C i-k-j、pthread | 3.53 / 1.11 / 3.36 | 40.8 / 17.8 / 40.9 | 50.7 / 51.3 / 45.8 |
+| Tsuzuri `Matrix.mul_fma` | 11.2 / 10.7 / 11.4 | 11.8 / 11.1 / 11.8 | 11.8 / 11.9 / 11.7 |
+| Tsuzuri `Matrix.mul_fma_parallel` | 11.3 / 8.56 / 11.4 | 45.8 / 25.1 / 44.7 | 63.5 / 52.2 / 49.8 |
+| C `fma()` i-k-j | 12.0 / 6.41 / 12.1 | 11.9 / 11.4 / 11.9 | 12.2 / 12.1 / 12.1 |
 
-生成コードの確認（2026-10-10、`llvm-objdump -d` と `--emit llvm`）:
+**native、`f32` と `i64`**
 
-- native `-O3` の object の `matmul_checksum` は、スカラーの `fmul` と `fadd` だけです。`fmadd`・`fmsub`・`fnmadd`・`fnmsub`・`fmla` はなく、`.2d` のベクトル命令の `fmul`・`fadd` もありません。`k` の和は前の和に依存する `fadd` の連鎖で、フラグのない浮動小数点の加算を LLVM は並べ替えないので、ベクトル化されません。
-- wasm32 `-O3` は `f64.mul`・`f64.add` のスカラーだけで、`--wasm-feature simd128` を付けても積の中に `v128` の命令はありません（`v128` が現れるのは 128-bit 整数の補助関数 `__ashlti3`・`__lshrti3` で、積とは無関係です）。`fma` の命令もありません。
-- `--emit llvm` の IR に `llvm.fmuladd`・`llvm.fma`・`fast`・`contract`・`reassoc` はありません。`tests/matrix.rs` が IR を、suite `matrix` の `contraction_probe` が最適化後の実行を検査します。probe は、LLVM のバックエンドに積和の融合を許す `llc -fp-contract=fast` でだけ `-2^-60`（binary32 は `-2^-26`）に変わることを確かめてあり、通常の `clang -O3` では `0` です。
+| 実装 | `n = 64` | `n = 256` | `n = 512` |
+| --- | --- | --- | --- |
+| `f32` Tsuzuri `Matrix.mul` | 14.1 / 12.5 / 13.8 | 22.1 / 21.1 / 21.8 | 23.2 / 22.8 / 23.0 |
+| `f32` Tsuzuri `Matrix.mul_parallel` | 14.0 / 11.2 / 14.1 | 67.9 / 34.3 / 68.0 | 104.1 / 85.4 / 84.6 |
+| `f32` C i-j-k | 4.05 / 2.58 / 4.04 | 2.60 / 2.52 / 2.56 | 2.32 / 2.29 / 2.33 |
+| `f32` C i-k-j | 14.4 / 11.6 / 14.2 | 21.9 / 21.6 / 21.8 | 23.8 / 23.4 / 23.7 |
+| `i64` Tsuzuri `Matrix.mul` | 5.57 / 4.55 / 5.39 | 5.83 / 5.52 / 5.74 | 5.97 / 5.84 / 5.96 |
+| `i64` Tsuzuri `Matrix.mul_parallel` | 5.51 / 4.11 / 5.53 | 33.9 / 12.1 / 25.7 | 36.9 / 27.3 / 30.8 |
+| `i64` C i-j-k | 5.74 / 5.06 / 5.56 | 2.95 / 2.74 / 2.89 | 2.33 / 1.91 / 2.18 |
+| `i64` C i-k-j | 5.59 / 4.92 / 5.55 | 5.87 / 5.52 / 5.76 | 6.03 / 5.88 / 5.96 |
 
-`Matrix.mul` は逐次の i-j-k 順の std ソースで、この測定は SIMD・並列・BLAS 並みの速度の根拠ではありません。1 台・1 負荷の測定で、x86_64 は未測定です。
+**wasm32（Node、`f64`）**
+
+| 実装 | `n = 64` | `n = 256` |
+| --- | --- | --- |
+| 既定 `Matrix.mul` | 4.63 / 4.54 / 4.57 | 4.78 / 4.70 / 4.69 |
+| 既定 i-j-k のループ | 2.54 / 2.47 / 2.46 | 2.00 / 1.98 / 2.00 |
+| 既定 `Matrix.mul_parallel`（スレッドなしなので逐次） | 4.71 / 4.68 / 4.61 | 4.42 / 4.60 / 4.52 |
+| `--wasm-feature simd128` `Matrix.mul` | 6.27 / 6.52 / 6.85 | 7.46 / 7.08 / 7.16 |
+| `--wasm-feature simd128` i-j-k のループ | 2.42 / 2.48 / 2.47 | 2.08 / 1.97 / 1.97 |
+| `--wasm-feature simd128` `Matrix.mul_parallel`（逐次） | 6.68 / 7.00 / 6.81 | 7.06 / 6.78 / 6.81 |
+
+wasm32 の `Matrix.mul_fma`・`mul_fma_parallel` は、`n = 64` の積 1 回が 459.7 / 472.1 / 465.3 ms（既定）、464.2 / 471.4 / 613.4 ms（simd128）でした。同じ形の `Matrix.mul` は 0.113 ms 前後で、約 4,000 倍です。wasm32 にスカラーの fma 命令はなく、`Math.fma` は正しく丸めるソフトウェアのルーチン（`tz_soft_fma`）を呼ぶためです。
+
+測定でわかること:
+
+- `Matrix.mul` は、同じ演算順序の C の i-k-j とほぼ同じ速さです（`f64` 約 11〜12 GFLOP/s、`f32` 約 22〜23、`i64` 約 5.6〜6.0）。Tsuzuri の i-j-k のループの約 4〜6 倍（`n = 64` で約 4 倍、`n = 512` で約 6 倍）、C の i-j-k の約 2.7〜5.6 倍（`n = 64` で小さく、`n = 512` で大きい）です。Phase 1 の `mul` は i-j-k 順で、当時の測定（コミット `4d5da26`、load average 19〜22）は `n = 64` から `512` で 2.9 から 1.35 GFLOP/s でした。
+- `mul_fma` は arm64 のハードウェアの FMA で、`mul` と同じ速さです（C の `fma()` の i-k-j とも同じ）。
+- `mul_parallel`・`mul_fma_parallel` は、`n = 64`（積和が $2^{18}$ 回で 1 チャンク）では `mul` と同じ速さです。`n = 256` と `512` では、1 回目と 3 回目が `f64` で 45〜64 GFLOP/s（`f32` は最大 104、`i64` は最大 37）で、同じ行分割の C の pthread（41〜51）と同程度でした。2 回目は `n = 256` で 15〜25 に落ちています。load average は 3 回とも 6〜28 で、落ちた原因は特定していません。
+- wasm32 の `mul` は、既定で i-j-k のループの約 1.8〜2.4 倍、simd128 で約 2.6〜3.6 倍です。simd128 は既定の `mul` の約 1.4〜1.6 倍でした。
+
+`C i-k-j、pthread` の `n = 64` は、積ごとにスレッドを作って join する費用が支配的です（1〜3.5 GFLOP/s）。Tsuzuri の並列の版は、約 $2^{20}$ 回以下の積和なら 1 チャンクで、スレッドを使いません。
+
+生成コードの確認（2026-10-10、`otool -tV` と、wasm32 の IR を `clang --target=wasm32 -O3 -S` で変換）:
+
+- native arm64 `-O3` の object で、`f64` の `multiply_rows` は `fmul.2d`・`fadd.2d` のループと、末尾のスカラーの `fmul`・`fadd` です。`fmla`・`fmadd`・`fmsub`・`fnmadd` はありません。`f32` は `fmul.4s`・`fadd.4s` のループです。`i64` は NEON に 64 ビット整数の積のベクトル命令がなく、`mul`・`madd` のスカラーだけです。`fma_rows`（`mul_fma`）は `fmla.2d` と `fmadd` です。
+- wasm32 `-O3` の既定は、`multiply_rows` が `f64.mul`・`f64.add` のスカラーだけです。`--wasm-feature simd128` を付けると `f64x2.mul`・`f64x2.add` のループが現れます。fma の命令はなく、`Math.fma` は `tz_soft_fma` を呼びます。
+- `--emit llvm` の IR に `llvm.fmuladd`・`fast`・`contract`・`reassoc` はなく、`multiply_rows` に `llvm.fma` もありません。`tests/matrix.rs` が IR を、suite `matrix` の `contraction_probe`・`kernel_probe` が最適化後の実行を検査します。probe は、LLVM のバックエンドに積和の融合を許す `llc -fp-contract=fast` でだけ `-2^-60`（binary32 は `-2^-26`）に変わることを確かめてあり、通常の `clang -O3` では `0` です。
+
+`multiply_rows` を out-of-line の関数として呼ぶ形（`matmul_checksum` の `mode` の切り替えで、インライン化されない）では、`left` の添字を `left[base + k]` で検査する実装は約 5.4〜8 GFLOP/s でした。ベクトル化したループに付く重なりの検査が配列の長さに依存し、検査に通らない配置でスカラーの経路を通るためと考えられます。`left` の 1 行を先にスライスにした今の実装は、同じ呼び出しで約 11.9 GFLOP/s です（インライン化された呼び出しは、どちらの実装でも約 12.5）。
+
+この測定は 1 台の arm64 での値です。x86-64、AVX・SVE のような広いベクトル、wasm32 の threads の速度、`n = 1024` 以上、BLAS とのブロッキングを含む比較は未測定で、行列積の GPU カーネルはありません。
 
 ## 現実的な次の指標
 
