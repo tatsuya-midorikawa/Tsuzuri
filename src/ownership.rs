@@ -639,6 +639,45 @@ impl Checker<'_> {
         closed(body, self.module, self.closed, &locals)
     }
 
+    /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
+    /// that calls it after lowering (every builtin is called through one): the type after its lock
+    /// and callback, which is a function when the callback's result is one (F10).
+    fn locked_result(&self, callee: &TypedExpr) -> Option<Type> {
+        let E::Function(function) = &callee.kind else {
+            return None;
+        };
+        let builtin = match function {
+            crate::check::FunctionRef::Builtin(instance) => instance.builtin,
+            crate::check::FunctionRef::User(id) => {
+                let wrapper = &self.module.functions[*id];
+                match &wrapper.body.kind {
+                    E::Call(inner, _) if wrapper.module == "$builtin" => match &inner.kind {
+                        E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                            instance.builtin
+                        }
+                        _ => return None,
+                    },
+                    _ => return None,
+                }
+            }
+        };
+        match &callee.ty {
+            Type::Function(parameters, _)
+                if builtin == crate::check::Builtin::MutexWith && parameters.len() >= 2 =>
+            {
+                Some(callee.ty.after_arguments(2))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `argument` is a parameter of a generated function, which passes on what its
+    /// callers gave it.
+    fn is_generated_parameter(&self, argument: &TypedExpr) -> bool {
+        matches!(&argument.kind, E::Local(id)
+            if self.state.locals.get(id).is_some_and(|(local, _)| local.provenance == crate::syntax::Provenance::Generated))
+    }
+
     /// Whether the tasks of a parallel operation that share the borrow `argument`, which evaluated
     /// to `value`, could reach a borrowed environment through it (F10). The loans of a place that
     /// is borrowed have the loans of the place as parents, and a loan of an external place says
@@ -1918,7 +1957,14 @@ impl Checker<'_> {
         uses(expression, &mut during);
         let mut result = Value::default();
         let start = self.held.len();
-        let value = self.eval(callee, Use::Consume, &during)?;
+        // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below;
+        // any other use of the builtin as a value is checked where it is evaluated.
+        let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
+        let value = if locked.is_some() {
+            Value::default()
+        } else {
+            self.eval(callee, Use::Consume, &during)?
+        };
         let (known, region_sources, callback) = self.call_contract(callee, arguments)?;
         let module = self.module;
         let slots = known
@@ -1937,6 +1983,23 @@ impl Checker<'_> {
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
             let value = self.eval(argument, Use::Consume, &during)?;
+            // The callback runs under the lock, so a result that holds a borrow of the locked value
+            // would use it after the lock is released: the value may be replaced and freed, or be
+            // written by another task, by then. Only a result that is proven free of borrows made
+            // inside the callback may hold borrows at all (F10). The generated function that
+            // applies the builtin to its own parameters proves nothing: its callers are checked.
+            if index == 1
+                && let Some(returned) = &locked
+                && returned.carries_loans(&self.module.types())
+                && !value.closed_result[0]
+                && !self.is_generated_parameter(argument)
+            {
+                return Err(error(
+                    "E1013",
+                    "Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy",
+                    argument.span,
+                ));
+            }
             if !value.loans.is_empty() && owned_dyn_of(callee) {
                 return Err(error(
                     "E1013",
@@ -2052,6 +2115,19 @@ impl Checker<'_> {
                 return Err(error(
                     "E1013",
                     "parallel operations must be fully applied directly; their ownership boundary cannot be erased into an ordinary function value",
+                    expression.span,
+                ));
+            }
+            // A result that may hold a borrow is checked at the direct call, so the builtin
+            // cannot be applied in stages or kept as a function value then.
+            E::Function(_)
+                if self
+                    .locked_result(expression)
+                    .is_some_and(|returned| returned.carries_loans(&self.module.types())) =>
+            {
+                return Err(error(
+                    "E1013",
+                    "Mutex.with_lock must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together",
                     expression.span,
                 ));
             }

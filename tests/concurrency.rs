@@ -411,6 +411,79 @@ fn a_shared_temporary_must_hold_no_borrow_just_as_a_named_value_must_not() {
 }
 
 #[test]
+fn a_mutex_result_never_holds_a_borrow_of_the_locked_value() {
+    let free = "Mutex.with_lock results must be proven free of borrowed environments";
+    let escaping = |result: &str| {
+        format!(
+            "let lock = Mutex.create 5i64\nlet kept = Mutex.with_lock (ref lock) (\\value -> {{ let view = ref (deref value); {result} }})\n0"
+        )
+    };
+    // A function value, alone or in a container, that reads the locked value after the lock is gone:
+    // the value could have been replaced and freed, or be written by another task, by then.
+    for result in [
+        "\\x -> deref view + x",
+        "Maybe.Some (\\x -> deref view + x)",
+        "(1, \\x -> deref view + x)",
+        "[\\x -> deref view + x]",
+        "Reader { read: \\x -> deref view + x }",
+        "Seq.unfold (\\n -> if n < 3 then Some (deref view + n, n + 1) else None) 0",
+    ] {
+        let source = format!("record Reader {{ read: i64 -> i64 }}\n{}", escaping(result));
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(free), "{result}: {message}");
+    }
+    // The same through a view of a locked array.
+    let message = rejects(
+        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet view = Mutex.with_lock (ref lock) (\\values -> { let items = ref (deref values); \\i -> items[i] })\n0",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A function applied right away runs after the lock is released.
+    let message = rejects(
+        "let lock = Mutex.create 5i64\nMutex.with_lock (ref lock) (\\value -> { let view = ref (deref value); \\x -> deref view + x }) 1",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A named callback is proven by its body.
+    let message = rejects(
+        "def peek :: ref mut i64 -> (i64 -> i64)\nfn peek value =\n    let view = ref (deref value)\n    \\x -> deref view + x\nlet lock = Mutex.create 5i64\nlet kept = Mutex.with_lock (ref lock) peek\n0",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A child of a scope keeps the function after its own lock is released.
+    let message = rejects(
+        "let lock = Mutex.create 5i64\nlet seen = Task.scope (ref lock) 2 (\\shared index -> {\n    let kept = Mutex.with_lock shared (\\value -> { let view = ref (deref value); \\x -> deref view + x });\n    kept index\n})\nArray.sum (ref seen)",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // The call has to be direct for its result to be checked, when the result may hold a borrow.
+    for source in [
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock (ref lock)\nlet kept = locker (\\value -> { let view = ref (deref value); \\x -> deref view + x })\n0",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock\nlet kept = locker (ref lock) (\\value -> { let view = ref (deref value); \\x -> deref view + x })\n0",
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(
+            message.contains("must be fully applied directly"),
+            "{message}"
+        );
+    }
+    // What is owned stays allowed: a copy of the value, in a function or a container; a borrow that
+    // the callback did not take from the locked value; a result that holds no borrow at all, however
+    // the call is spelled.
+    for source in [
+        "let lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + x })\nadder 1",
+        "let lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; Maybe.Some (\\x -> copy + x) })\nmatch adder with\n| Maybe.Some f -> f 1\n| Maybe.None -> 0",
+        "let lock = Mutex.create 5i64\nMutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + x }) 1",
+        "let other = 7i64\nlet outside = ref other\nlet lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + deref outside + x })\nadder 1",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock (ref lock)\nlocker (\\value -> deref value)",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock\nlocker (ref lock) (\\value -> deref value + 1)",
+        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\values -> { let items = ref (deref values); items[index] }))\nArray.sum (ref seen)",
+    ] {
+        emits(source);
+    }
+}
+
+#[test]
 fn mutex_programs_type_check_and_the_closure_result_is_owned() {
     for source in [
         "let lock = Mutex.create [1i64, 2i64]\nMutex.with_lock (ref lock) (\\values -> Array.length (deref values))",
