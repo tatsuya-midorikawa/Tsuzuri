@@ -93,6 +93,8 @@ jobs:
       - run: npm ci
       - run: cargo fmt --manifest-path ../Cargo.toml --check
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
+      - name: Async compiler contracts
+        run: cargo test --manifest-path ../Cargo.toml --locked --test async
       - run: npm run test:unit
       - run: npm run toolchain
       - name: Async executors and JSPI

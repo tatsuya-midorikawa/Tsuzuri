@@ -196,7 +196,7 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 
 `Async.run` は呼び出しごとに独立した仮想時計を持ちます。`Async.start` と `Async.block_on` は、`Async.__take` / `Async.__put` が管理する実行器状態を呼び出しスレッドごとに保持します。native の `Async.__next_id` は操作 ID の上位 bits にスレッド index を埋め込み、`src/runtime/async.c` の `tsuzuri_async_post` はその mailbox へ完了を配送します。`tsuzuri_async_complete` と poll の再入、未知・二重・取消済み ID は trap です。
 
-native reactor は操作を開始時に登録し、完了・取消時に退役させます。`tsuzuri_async_post` は未登録・二重・退役済みの操作を確保前に拒否して 0 を返し、受理した完了だけをキューへ置いて 1 を返します。取消と競合して届いた完了は退役時に取り除きます。mailbox とキューは `tsuzuri_alloc` / `tsuzuri_free` を使い、最後の登録操作がなくなると解放します。host/counting allocator と解放追跡の対象から外れません。時計・条件変数の失敗は診断を出して終了し、POSIX 以外の native reactor は `E2002` です。ソケットの多重化は E09 の範囲であり、この実行器はタイマーと外部からの完了を待ちます。
+native reactor は操作を開始時に登録し、完了・取消時に退役させます。`tsuzuri_async_post` は未登録・二重・退役済みの操作を確保前に拒否して 0 を返し、受理した完了だけをキューへ置いて 1 を返します。取消と競合して届いた完了は退役時に取り除きます。mailbox とキューは `tsuzuri_alloc` / `tsuzuri_free` を使い、最後の登録操作がなくなると解放します。host/counting allocator と解放追跡の対象から外れません。時計・条件変数の失敗は診断を出して終了し、macOS / Linux 以外の native reactor は、ほかの Unix も含め `E2002` です。build と test / debug-test / bench は同じ対応フラグと診断を共有します。ソケットの多重化は E09 の範囲であり、この実行器はタイマーと外部からの完了を待ちます。
 
 WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が操作 ID の上位 bits をインスタンス世代として設定します。生成グルーは同じ生成モジュール内で世代を再利用せず、古い完了通知を新しい状態へ渡しません。JSPI の待機は `WebAssembly.Suspending`、export は `WebAssembly.promising` を使い、同じインスタンスへの呼び出しを Promise キューで直列化します。渡された typed array は待ち行列へ入れる前にコピーします。WASM threads の executor TLS と trap-return 後の状態復旧は実装していないため、これらとの併用はビルド時に拒否します。
 

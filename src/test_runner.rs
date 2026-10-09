@@ -518,11 +518,8 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
     }
     if llvm::uses_reactor(text) {
-        if !cfg!(unix) {
-            return Err(driver_error(
-                "E2002",
-                "Async.block_on needs a POSIX native reactor; use Async.run on this platform",
-            ));
+        if !crate::driver::ASYNC_NATIVE_SUPPORTED {
+            return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
         }
         sources.push(("async.c", include_str!("runtime/async.c").to_owned()));
     }
@@ -738,11 +735,8 @@ fn compile_native_runner(
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
     }
-    if async_runtime && !cfg!(unix) {
-        return Err(driver_error(
-            "E2002",
-            "Async.block_on needs a POSIX native reactor; use Async.run on this platform",
-        ));
+    if async_runtime && !crate::driver::ASYNC_NATIVE_SUPPORTED {
+        return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
     }
     let kind = runner.kind;
     let ir = directory.join(format!("{}.ll", runner.stem));

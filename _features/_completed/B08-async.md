@@ -166,6 +166,9 @@ int32_t tsuzuri_async_post(int64_t operation, int64_t value);
 - GitHub Copilot の再レビューで、bindings の early return が JSPI 必須検査を通らないことと、poll 内での同期完了がタイマーを重複させることを確認した。
   どちらも修正前に回帰テストの失敗を再現し、到達可能性に基づく検査を bindings の生成前へ移動、poll 中に予約されたタイマーを次の予約前に取消した。
   `.mjs` の生成にも同じ E2000 を要求し、同期する 2 操作は 3 polls、各時点で駆動タイマーは最大 1 本であることを検査する。
+- さらに build の non-Windows / runner の Unix という広すぎる判定を指摘されたため、共有した macOS / Linux の対応フラグと E2002 診断へ統一した。
+  他の Unix の実行対応は推測せず、未対応の native reactor はリンク前に拒否する。Windows の従来の build メッセージは維持した。
+  FreeBSD / Windows x64 / ARM64 を cross-type-check し、Windows の native 拒否も実行する Async compiler contracts を全 CI ホストへ追加した。
 - `tests/e2e.mjs`、`tests/wasm64.mjs`、`tests/docgen.mjs`、`tests/bindings.mjs`、
   `tests/bindings_threads.mjs`、`tests/host_bindings.mjs`、`tests/lsp_sessions.mjs` が成功。
   host bindings は Python / C++ / C#（.NET SDK 10.0.102）。Worker glue は Node Web Workers、実 browser は未実行。

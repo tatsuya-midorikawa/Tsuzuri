@@ -187,6 +187,12 @@ impl Target {
 pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
 /// Why a Windows build cannot reach them yet.
 pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
+pub(crate) const ASYNC_NATIVE_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+pub(crate) const ASYNC_NATIVE_MESSAGE: &str = if cfg!(windows) {
+    "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)"
+} else {
+    "Async.block_on is only available on macOS and Linux; use Async.run on this platform (G10)"
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -2544,14 +2550,11 @@ fn build_complete(
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
     }
     if async_reactor
-        && cfg!(windows)
+        && !ASYNC_NATIVE_SUPPORTED
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error(
-            "E2002",
-            "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)",
-        ));
+        return Err(driver_error("E2002", ASYNC_NATIVE_MESSAGE));
     }
     if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
     {

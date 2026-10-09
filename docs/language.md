@@ -2241,7 +2241,7 @@ error[E1013]: async computations cannot keep borrowed values across 'let!', 'do!
 
 `Async.host` は `Async.Operation { start, cancel }` を受け取り、実行器から操作 ID を渡してホストを呼びます。ホストは完了時に `tsuzuri_async_complete(operation, value)` を呼び、次の poll で計算を再開させます。`tsuzuri_async_poll(now)` は時計を前へ進め、完了を配り、次に poll すべき時刻を返します。未登録・完了済み・取消済みの ID、poll の再入、`Async.run` でのホスト操作はトラップです。
 
-native では `Async.block_on` が `src/runtime/async.c` の単調時計、条件変数、操作 ID ごとの完了 mailbox を使います。ほかのスレッドからは `int32_t tsuzuri_async_post(int64_t operation, int64_t value)` を使い、受理時は 1、未知・二重・完了済み・取消済みの操作なら 0 を返します。登録は操作の開始時、退役は完了または取消時に行い、退役時には競合して届いた完了も破棄します。mailbox は標準の Tsuzuri allocator を使い、最後の操作を退役させると解放します。各 native スレッドは独立した実行器を持ち、操作 ID の高位ビットで完了先のスレッドを選びます。POSIX（macOS / Linux）以外の native `block_on` は `E2002` です。
+native では `Async.block_on` が `src/runtime/async.c` の単調時計、条件変数、操作 ID ごとの完了 mailbox を使います。ほかのスレッドからは `int32_t tsuzuri_async_post(int64_t operation, int64_t value)` を使い、受理時は 1、未知・二重・完了済み・取消済みの操作なら 0 を返します。登録は操作の開始時、退役は完了または取消時に行い、退役時には競合して届いた完了も破棄します。mailbox は標準の Tsuzuri allocator を使い、最後の操作を退役させると解放します。各 native スレッドは独立した実行器を持ち、操作 ID の高位ビットで完了先のスレッドを選びます。macOS / Linux 以外の native `block_on` は、ほかの Unix も含め `E2002` です。test / debug-test / bench の対応範囲も同じです。
 
 WASM で `Async.start` を使う場合、既定の出力には import を追加せず、`tsuzuri_async_poll` と `tsuzuri_async_complete` をホストが呼びます。`Async.block_on` は WebAssembly のスタックを待機中に中断する JSPI を使うため、`--wasm-feature jspi` が必要です。`tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、JSPI に対応する export は Promise を返します。`--wasm-feature jspi` は `threads` や `--wasm-host wasi` と併用できません。`--wasm-feature threads` は、Async の per-thread executor を設定しないため、`Async.start` / `Async.block_on` と併用できません。
 

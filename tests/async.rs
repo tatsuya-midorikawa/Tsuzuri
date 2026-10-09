@@ -529,3 +529,25 @@ fn javascript_bindings_drive_the_executor_and_return_promises_under_jspi() {
     );
     assert!(!bindings::declarations(&plain).contains("AsyncHost"));
 }
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[test]
+fn unsupported_native_reactors_report_the_platform_before_linking() {
+    let (project, module) = project(&format!("{HOST}{BLOCKING}"));
+    let root = std::env::temp_dir().join(format!("tsuzuri-async-platform-{}", std::process::id()));
+    let options = BuildOptions {
+        emit: Emit::Object,
+        ..Default::default()
+    };
+    let error = driver::build(&module, &project, &root.join("api.o"), options).unwrap_err();
+    assert_eq!(error.code, "E2002");
+    assert_eq!(
+        error.message,
+        if cfg!(windows) {
+            "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)"
+        } else {
+            "Async.block_on is only available on macOS and Linux; use Async.run on this platform (G10)"
+        }
+    );
+    assert!(!root.exists());
+}
