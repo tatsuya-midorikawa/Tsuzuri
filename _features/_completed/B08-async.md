@@ -98,8 +98,9 @@ int32_t tsuzuri_async_post(int64_t operation, int64_t value);
   世代を再利用せず、別の世代の完了を TypeError で拒否する。complete の引数は厳密な i64 範囲で、切り詰めない。
 - JSPI の生成 export はすべて Promise で直列化する。typed array は要求時にスナップショットを作り、withBorrowed は提供しない。
   raw 呼び出しの block_on の重ね実行は trap。失敗は settled を reject し、再作成まで保持する。未観測の background failure は診断する。
-- 未対応は明示的に拒否する: native Windows reactor は E2002、JSPI なしの WASM block_on、threads / WASI との JSPI の併用、
+- 未対応は明示的に拒否する: JSPI なしの WASM block_on、threads / WASI との JSPI の併用、
   executor と WASM threads / trap-return の併用、WASM の host executor を使うテスト実行器は E2000。
+  当初の native Windows reactor の E2002 は、後続の [D-43](../GUIDE.md#d-43-native-reactor-の-windows-対応とビルダーの別名alias) で Windows 対応に置き換えた。
   JSPI 機能のないエンジンでは生成グルーの load が Error。
 
 ## 旧計画から外れた判断
@@ -194,3 +195,15 @@ raw samples、入力、計測スクリプト、machine code は ignored の `tar
 条件と再現方法は [性能測定](../../docs/benchmarks.md#async-の中断と継続のコストb08)。
 代表的な i64 の bind_step は直接の tz.alloc 4 箇所、環境 clone helper は 2 箇所。
 非末尾の深い再開は O(n²) で、WASM の stack exhaustion の既知の限界を隠していない。
+
+## 後続: native reactor の Windows 対応（D-43、2026-10-09）
+
+- `src/runtime/async.c` に POSIX と Win32 の薄い層を置き、macOS・Linux に加えて Windows でも `Async.block_on`（build と test / debug-test / bench）を使えるようにした。
+  Win32 は SRWLOCK・条件変数・`QueryPerformanceCounter` だけで、IOCP と新しいライブラリは足していない。
+- 確認は CI。同梱の MinGW toolchain（x64 は Zig、ARM64 は llvm-mingw）と x64 の LLVM MSVC で `tests/async.mjs` の全部分、全ホストの toolchain smoke で
+  `Async.block_on` の実行ファイルと Async のテスト。同梱 toolchain は wasm32 だけを受けるため、その手順は wasm64 の JSPI を除く。
+- 最適化した x64 の同梱 toolchain で host テストが `0xC000001D` になったのは `zig cc` の `NDEBUG` が原因で、reactor の不具合ではなかった。
+  `assert` の中の executor 呼び出しが消えていた。host に `#undef NDEBUG` を足し、ARM64・x64 の両方で検査が実行されることを確かめ直した。
+- 未対応は、Windows の COFF `--emit object`（task・CPU・IO と同じ）と、FreeBSD などほかの Unix（`E2002`）。
+- 同じ依頼で、ビルダーの別名 `@alias` を追加した（GUIDE の D-43、[コンピュテーション式](../../_tsuzuri/language-reference/computation-expressions/computation-expressions.md#ビルダーの別名)）。
+  標準の `Async` は `@alias async` を宣言し、`async { ... }` は `Async { ... }` と同じ計算である。

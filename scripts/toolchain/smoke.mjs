@@ -97,6 +97,48 @@ try {
     assert.match(failed.stdout, /"status":"failed"/);
     console.log(`Bundled native ${optimization}: IO, arguments, DWARF, duplicate test selection, parallel tasks, failures passed.`);
   }
+  // Async.block_on waits on the real clock on every platform (B08, Windows: D-43), with one
+  // executor per thread: the compiler links its reactor, which runs on Win32 threads and locks
+  // on Windows. A test and a program both wait.
+  const waiting = path.join(directory, 'waiting');
+  await mkdir(waiting);
+  await writeFile(path.join(waiting, 'Main.tz'), [
+    'def span :: i64 -> Async<i64>',
+    'fn span delay = Async {',
+    '    let! start = Async.now ()',
+    '    do! Async.sleep delay',
+    '    let! finish = Async.now ()',
+    '    return finish - start',
+    '}',
+    '',
+    'def worker :: i64 -> i64',
+    'fn worker delay =',
+    '    let! value = Async.block_on (span delay)',
+    '    value',
+    '',
+    'def main :: unit -> i32 = \\() ->',
+    '    let jobs = new [Task<i64>](3, \\index -> task { return worker (10 + index) })',
+    '    let spans = Task.run (Task.parallel jobs)',
+    '    let! timed = Async.block_on (Async.all [span 20, span 40])',
+    '    if spans[0] >= 10 && spans[1] >= 11 && spans[2] >= 12 && timed[0] >= 20 && timed[1] >= 40 then',
+    '        do! IO.write_line "waited"',
+    '        0',
+    '    else',
+    '        1',
+    '',
+    'test "block_on waits for the timer" =',
+    '    let! elapsed = Async.block_on (span 15)',
+    '    assert (elapsed >= 15)',
+    '',
+  ].join('\n'));
+  for (const optimization of ['-O0', '-O3']) {
+    const artifact = path.join(directory, `waiting-application${suffix}`);
+    run(compiler, ['build', waiting, optimization, '--no-cache', '-o', artifact]);
+    assert.equal(run(artifact, []).stdout, 'waited\n');
+    const passed = run(compiler, ['test', waiting, optimization, '--json']);
+    assert.match(passed.stdout, /"passed":1,"failed":0,"ignored":0/);
+    console.log(`Bundled native ${optimization}: Async.block_on timers, per-thread executors, and tests passed.`);
+  }
   const kernel = path.join(directory, 'kernel');
   await mkdir(kernel);
   await writeFile(path.join(kernel, 'Main.tz'), 'export def answer :: i64 = 42\n');

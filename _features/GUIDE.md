@@ -259,7 +259,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/polymorph.rs` | `Constraint`、`Scheme`、`Inference`（`fresh`、`resolve`、`unify`、`default_numeric`）、`Classes`（`collect`、`resolve`、`inline_constraints`、`instances`、`method`、`intrinsic`、`validate`）、`map_type`、`substitute`、`bounded_type`、`require_concrete`、`type_expression`、`Checker::{builtin, function, method, require, annotation, call_signature, finish}`、`specialize`、`Specializer::{request, instantiate, lower, operator_call, intrinsic_function}` | 型推論・型クラス・単相化 |
 | `src/control.rs` | `Checker::control_expression`、`match_value`、`pattern_alternatives`、`active_pattern`、`length_test`、`combine` | 制御構文とパターンの型付け。パターンは `PatternStep::Test`（bool 式）と `Bind` の列へ展開 |
 | `src/closures.rs` | `Checker::lambda`、`free_locals`、`lower`、`lower_expression` | 匿名関数と lambda lifting |
-| `src/computation.rs` | `OPERATIONS`、`collect`、`expand`、`Lowering::{block, continuation, delay, call}` | ビルダー式の展開 |
+| `src/computation.rs` | `OPERATIONS`、`collect_all`（`@alias` の収集を含む）、`expand`、`resolved_builder`、`Lowering::{block, continuation, delay, call}` | ビルダー式の展開と、別名のビルダーへの書き換え（D-43） |
 | `src/recursion.rs` | `check`、`references` | `rec` 検査 |
 | `src/ownership.rs` | `check`、`infer_copy`、`check_body`、`closed_returns`、`Checker::{access, place, read_place(s), eval, eval_composed, eval_value, merge}`、`count_uses`、`uses` | 所有権と借用 |
 | `src/ownership_control.rs` | `eval_control`、`eval_match`、`check_loop`、`protect`、`alias_source` | ループの固定点、ガードの別名 |
@@ -1294,9 +1294,48 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `tsuzuri_async_set_epoch` を設定し、再作成前と異なる世代を使う。生成グルーは同じ生成モジュール内で世代を再利用せず、
   `bindings.async.complete` と `settled()` で自動駆動する。JSPI の export はすべて Promise で直列化し、typed array は要求時にコピーする。
   `withBorrowed` は提供しない。失敗はインスタンスを再作成するまで保持し、未観測のバックグラウンド失敗は診断する。
-- native の test/debug-test/bench も reactor をリンクする。未対応の native Windows reactor は E2002、
+- native の test/debug-test/bench も reactor をリンクする。未対応の native Windows reactor は E2002（D-43 で Windows 対応に置き換えた）、
   WASM の host executor を使うテスト実行器は E2000。WASM threads の executor TLS と `--trap-mode return` の状態復旧は未実装なので
   明示的に拒否する。新しい Rust crate、unsafe Rust、既定の host import、stack・特殊化の上限引き上げはない。
+
+### D-43 native reactor の Windows 対応とビルダーの別名（`@alias`）
+
+- 2026-10-09、利用者の「native 実時間リアクターの Windows 対応」と「コンピュテーション式の `@alias computation-alias` 構文」の依頼、
+  および必要な判断への包括承認を、B08 の後続として扱った。着手時点は `2cc2b21`（PR #19 のマージ）。
+- **Windows の reactor** は `src/runtime/async.c` の薄いプラットフォーム層（`tz_async_ready/acquire/release/notify/wait_signal/
+  wait_timeout`）で足す。POSIX は pthread の mutex・条件変数・`CLOCK_MONOTONIC`、Windows は `SRWLOCK`・`CONDITION_VARIABLE`
+  （`SleepConditionVariableSRW`）・`QueryPerformanceCounter`。mailbox・操作 ID・`tsuzuri_async_post` の規則は変えない。
+  IOCP は足さない（D-42 と同じく、B08 に必要なタイマーと外部完了だけ）。待ち時間は 1 日で頭打ちにし、起きるたびに単調時計を読み直すので、
+  Windows の約 15.6 ms の粒度は遅れとしてだけ現れ、早く起きない。`timeBeginPeriod` はプロセス全体の電源設定を変えるので使わない。
+  runtime を埋め込む Windows の COFF `--emit object` は task・CPU・IO と同じく非対応のまま（LLVM を出して runtime を 1 回リンクするか、実行ファイルを作る）。
+  対応の判定は driver と test_runner が共有する `ASYNC_NATIVE_SUPPORTED`（macOS・Linux・Windows）で、それ以外の host は E2002。
+- Windows の実行は CI だけで確かめる（ローカルに Windows の実行環境がない）。同梱の MinGW toolchain（x64 は Zig、ARM64 は llvm-mingw）と
+  x64 の LLVM MSVC で `tests/async.mjs` を実行し、toolchain の smoke にも `Async.block_on` の実行ファイルとテストを足した。同梱 toolchain は
+  `wasm32-unknown-unknown` だけを受けるので、その手順は `TSUZURI_WASM64=0` で wasm64 の JSPI を除く（既存の制限で、Async の制限ではない）。
+  x64 の同梱 toolchain で最適化した host テストが `0xC000001D` で落ちた原因は reactor ではなかった。`zig cc` は `-O1` 以上で `NDEBUG` を定義し、
+  テストの C host が `assert` の中で executor を呼んでいたため、呼び出し自体が消えて操作が始まらないまま完了を送っていた（`-O0` だけが通った）。
+  host に `#undef NDEBUG` を足して実際に確かめ直した。この教訓は AGENTS.md の CI の項に入れた。
+- **`@alias name`** は `.tc` のトップレベルに 1 行で書く。「コンピュテーション式に設定した alias」という依頼に合わせて、宣言はビルダー側の
+  `.tc` に置き、利用側の `.tz` に別名の宣言を増やさない。複数宣言でき、`.tz`・`.tt` に書くと E1018。
+  - 名前は同じ行の小文字 ASCII で始まる予約語でない識別子（`finally`・`is`・`namespace`・`of`・`try`・`using`・`where` も不可）。
+    ビルダー名（`.tc` のファイル名）は常に大文字始まりなので、小文字なら衝突せず、大文字始まりを許すとモジュール名や型名と区別できないため。
+    レコードは小文字でも宣言できるので、`name { field: value }` はレコードリテラルのまま、本体が空の `name {}` は別名を先に選ぶ
+    （`Name.tc` と空レコード `Name` と同じ規則）。ファイル内の重複とドキュメントコメントの前置も E0002。
+  - 別名はビルダー名のもう 1 つの綴り。`computation::expand` が別名をビルダーのモジュールの鍵へ書き換えるので、展開以降は同一で、
+    構文木・型付き IR・ランタイムに別名のための構造はない（`async {}` と `Async {}` の IR はバイト単位で一致する）。
+  - 解決は `Names::builder_name`。まずビルダーのモジュール名（名前空間付きを含む）、次に別名。別名は利用者 → std の層ごとに、
+    ビルダー自身の名前がその参照元から見える候補だけを数える（`Names::builder_in_sight`。2 つの `using` が同名のビルダーを持ち、
+    名前自体が曖昧なときも、そのどちらも候補に数える）。1 つなら採用し、複数なら E1004 でビルダーの名前を書くよう案内する。
+    本体が空の `name {}` は、別名があれば別名、なければその名前のレコードがない小文字の名前だけを宣言のないビルダーとして E1018 にする
+    （`Names::empty_block_is_computation`。小文字のレコードは宣言できるので、その空リテラルは残す）。
+    名前空間を前置した別名（`Ns::alias`）は作らない。レキサーは `::` の後に小文字の識別子をつなげず、利用者の混乱の元になる。
+  - opt-in std（D-40）の `Async` は `OptIn::aliases` に `async` を持ち、ソースに `async` の語があれば読み込む。`Names::choose` の
+    「opt-in の宣言を裸の名前から隠す」規則は別名に適用しない。そうしないと `async { ... }` が使えない。語の走査は小文字では別名と一致したものだけ数え、
+    ほかのプログラムの型検査の時間と IR は変わらない。`asynchronous` のような別の語の一部は数えない。
+  - 診断は新しいコードを足さず、E0002（宣言の誤り）、E1018（`.tc` 以外の `@alias`、宣言のない小文字のビルダー）、E1004（曖昧）を使う。
+  - tooling は formatter（正規化と AST の指紋）、syntax codec（interface を含む。`Program` の符号化が変わるので `FRONTEND_FORMAT` を 2 に上げ、
+    golden を更新した）、`tsuzuri doc`（`Builder alias:` の行）、VS Code の文法。
+    LSP はビルダー名のトークンを索引しないので、別名専用の処理は足さない。
 
 ## 10. 完了の定義（全チケット共通）
 

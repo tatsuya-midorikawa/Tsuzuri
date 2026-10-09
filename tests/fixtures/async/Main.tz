@@ -233,3 +233,18 @@ export def task_inside :: i64 -> i64
 fn task_inside n =
     let job = task { return Async.run (Async { do! Async.sleep 4; let! t = Async.now (); return t + n }) }
     Task.run job
+
+// `async { ... }` is the `@alias async` spelling of `Async { ... }`; both build the same computation.
+export def alias_spelling :: i64 -> i64
+fn alias_spelling n =
+    let lower = Async.run (async {
+        do! Async.sleep n
+        let! t = Async.now ()
+        return t + 1
+    })
+    let upper = Async.run (Async {
+        do! Async.sleep n
+        let! t = Async.now ()
+        return t + 1
+    })
+    lower * 1000 + upper

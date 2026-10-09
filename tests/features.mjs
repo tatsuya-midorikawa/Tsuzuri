@@ -430,6 +430,8 @@ const suites = {
       ["borrows_end", [4n], 3n * 100n + 4n],
       ["implicit_body", [21n], 42n],
       ["task_inside", [3n], 4n + 3n],
+      // Both spellings sleep n, read now = n, and add 1: 6 * 1000 + 6 for n = 5.
+      ["alias_spelling", [5n], 6n * 1000n + 6n], ["alias_spelling", [0n], 1n * 1000n + 1n],
     ],
     nativeCases: [["deep", [1000n], 1000n]],
     traps: [["divide_after_yield", [0n]]],

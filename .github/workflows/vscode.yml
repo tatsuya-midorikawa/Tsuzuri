@@ -104,6 +104,21 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node ../tests/features.mjs toolchain/bin/tsuzuri async
           node ../tests/async.mjs toolchain/bin/tsuzuri
+      # Windows (D-43): the reactor of Async.block_on runs on Win32 threads and locks. The bundled
+      # MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
+      - name: Async executors and JSPI on Windows
+        if: runner.os == 'Windows'
+        run: |
+          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
+          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          export TSUZURI_WASM64=0
+          node ../tests/async.mjs toolchain/bin/tsuzuri.exe
+      - name: Async executors with the LLVM MSVC toolchain
+        if: matrix.target == 'win32-x64'
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
+          export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
+          node ../tests/async.mjs toolchain/bin/tsuzuri.exe
       - name: Compiler LSP protocol
         run: node ../tests/lsp_sessions.mjs "toolchain/bin/tsuzuri${{ runner.os == 'Windows' && '.exe' || '' }}"
       - run: npm run test:toolchain

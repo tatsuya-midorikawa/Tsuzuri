@@ -254,6 +254,9 @@ pub struct Program {
     pub dyn_types: Vec<TypeExpr>,
     /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
     pub cpu_attributes: Vec<CpuAttribute>,
+    /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
+    /// the builder, so that `name { ... }` builds the same computation as `Builder { ... }`.
+    pub aliases: Vec<Ident>,
     /// Where each top-level declaration starts (its first token, a doc comment or an attribute
     /// included), in source order: a signature and its separate definition count apart. The
     /// REPL splits an input there (G13).
@@ -268,6 +271,11 @@ pub const CPU_TARGETS: [(&str, u8); 5] = [
     ("sve", 4),
     ("sve2", 5),
 ];
+
+/// Words that are keywords only in their own syntax and identifiers elsewhere. A builder alias
+/// (`@alias`) cannot take one of them.
+pub const CONTEXTUAL_KEYWORDS: [&str; 7] =
+    ["finally", "is", "namespace", "of", "try", "using", "where"];
 
 /// `@cpu ["avx2", ...]` before a `def` signature: native builds also compile the function for
 /// these CPU targets and pick one at run time (F08 Phase 3).

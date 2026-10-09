@@ -1,3 +1,6 @@
+// `async { ... }` builds the same computation as `Async { ... }`.
+@alias async
+
 /// One step of a computation, which an executor runs. The cases are the internal protocol of
 /// this module, not a stable API: build computations with the builder and the functions below.
 /// `Suspend (ready, timer, operations, resume)` waits until the executor resumes it with
@@ -630,7 +633,7 @@ fn __poll now =
 /// or until a host operation completes: with `tsuzuri_async_complete` from a callback on this
 /// thread, or with `tsuzuri_async_post` from any thread. The computations that `start` handed
 /// over on this thread run meanwhile on the same executor; other threads have executors of their
-/// own. Natively on macOS and Linux; on wasm32 it needs `--wasm-feature jspi`, which suspends the
+/// own. Natively on macOS, Linux, and Windows; on wasm32 it needs `--wasm-feature jspi`, which suspends the
 /// WebAssembly stack while it waits.
 def block_on :: Async<'a> -> IO<'a>
 fn block_on computation = IO.map (\() -> reactor computation) (IO.pure ())

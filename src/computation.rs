@@ -18,11 +18,17 @@ const OPERATIONS: &[&str] = &[
     "Using",
 ];
 
+/// The computation builders of `modules`: their public operations by module key, and the keys of
+/// the builders that declare each `@alias` name.
 pub(super) fn collect_all(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
-) -> BTreeMap<String, BTreeSet<String>> {
+) -> (
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, Vec<String>>,
+) {
     let mut builders = BTreeMap::new();
+    let mut aliases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (source, &ModuleInput { name, program, .. }) in modules.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -31,6 +37,18 @@ pub(super) fn collect_all(
             let Some(kind) = program.source_kind else {
                 return Ok(None);
             };
+            if kind != SourceKind::Computation
+                && let Some(alias) = program.aliases.first()
+            {
+                return Err(Diagnostic::new(
+                    "E1018",
+                    format!(
+                        "'@alias {}' names a computation builder, so it belongs in a .tc file; move it to the builder's .tc file or remove it",
+                        alias.text
+                    ),
+                    alias.span,
+                ));
+            }
             if kind != SourceKind::TypeClass {
                 if let Some(class) = program.classes.first() {
                     return Err(Diagnostic::new(
@@ -115,12 +133,18 @@ pub(super) fn collect_all(
         match collected {
             Ok(Some(methods)) => {
                 builders.insert(name.to_owned(), methods);
+                for alias in &program.aliases {
+                    aliases
+                        .entry(alias.text.clone())
+                        .or_default()
+                        .push(name.to_owned());
+                }
             }
             Ok(None) => {}
             Err(error) => diagnostics.push(error),
         }
     }
-    builders
+    (builders, aliases)
 }
 
 /// The hole expressions of an interpolated string, kept out of `expand`'s frame.
@@ -171,14 +195,14 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
                 return bounded_depth(expression.depth, span);
             }
             names.check_module(module, &builder.text, builder.span)?;
-            let lowered = lower(&resolved_builder(builder, names, module), body, names)?;
+            let lowered = lower(&resolved_builder(builder, names, module)?, body, names)?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
             return Ok(());
         }
         ExprKind::Record { name, fields }
-            if fields.is_empty() && names.builder(module, &name.text).is_some() =>
+            if fields.is_empty() && names.empty_block_is_computation(module, &name.text) =>
         {
             let body = ComputationBlock {
                 statements: Vec::new(),
@@ -186,7 +210,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
                 depth: 1,
             };
             names.check_module(module, &name.text, name.span)?;
-            let lowered = lower(&resolved_builder(name, names, module), &body, names)?;
+            let lowered = lower(&resolved_builder(name, names, module)?, &body, names)?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
@@ -295,15 +319,19 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
     bounded_depth(expression.depth, span)
 }
 
-/// `builder` spelled with the key of the builder module it names from
-/// `module`, or unchanged when it names none.
-fn resolved_builder(builder: &Ident, names: &Names, module: &str) -> Ident {
-    match names.builder(module, &builder.text) {
-        Some(key) if key != builder.text => Ident {
+/// `builder` spelled with the key of the builder module it names from `module`, as a module name
+/// or as an `@alias`, or unchanged when it names none. An alias that several builders in sight
+/// declare is an error.
+fn resolved_builder(builder: &Ident, names: &Names, module: &str) -> Result<Ident, Diagnostic> {
+    match names.builder_name(module, &builder.text) {
+        BuilderName::Builder(key) if key != builder.text => Ok(Ident {
             text: key.to_owned(),
             ..builder.clone()
-        },
-        _ => builder.clone(),
+        }),
+        BuilderName::Ambiguous(keys) => {
+            Err(names.ambiguous_alias(&builder.text, &keys, builder.span))
+        }
+        _ => Ok(builder.clone()),
     }
 }
 
@@ -387,14 +415,19 @@ fn expand_block(
 
 fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr, Diagnostic> {
     let methods = names.builders.get(&builder.text).ok_or_else(|| {
-        Diagnostic::new(
-            "E1018",
+        // Module names are capitalized, so a lowercase name can only be an alias.
+        let message = if builder.text.starts_with(|first: char| first.is_ascii_lowercase()) {
+            format!(
+                "unknown computation builder '{0}'; declare '@alias {0}' in the .tc file of its builder, or write the builder's name",
+                builder.text
+            )
+        } else {
             format!(
                 "unknown computation builder '{}'; define its operations in {}.tc",
                 builder.text, builder.text
-            ),
-            builder.span,
-        )
+            )
+        };
+        Diagnostic::new("E1018", message, builder.span)
     })?;
     let lowering = Lowering {
         builder,

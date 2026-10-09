@@ -548,6 +548,7 @@ impl Wire for Program {
             entry,
             dyn_types,
             cpu_attributes,
+            aliases,
             declaration_starts,
         } = self;
         source_kind.put(out)?;
@@ -570,6 +571,7 @@ impl Wire for Program {
         }
         dyn_types.put(out)?;
         cpu_attributes.put(out)?;
+        aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
             declaration_starts.put(out)?;
@@ -597,6 +599,7 @@ impl Wire for Program {
             entry: Option::get(input)?,
             dyn_types: Vec::get(input)?,
             cpu_attributes: Vec::get(input)?,
+            aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
         })
     }
@@ -2632,6 +2635,6 @@ add_one 41
         "36341b1e0100000000010001662627010000000000010178393a010000036936342b2e0100000003",
         "693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d01",
         "0e050f0a016650510100505101010100010052530101505301020002005758010150580103455801",
-        "00011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000003002245",
+        "00011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000003002245",
     );
 }

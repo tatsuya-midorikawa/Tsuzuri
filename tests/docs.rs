@@ -75,6 +75,23 @@ fn renders_public_apis_in_signature_order_and_keeps_markdown() {
 }
 
 #[test]
+fn renders_builder_aliases_below_the_title() {
+    let alias = |lines: &str| {
+        let program = parser::parse(lines).unwrap();
+        docgen::render_module("Async", &program)
+    };
+    assert_eq!(
+        alias("@alias async\n"),
+        "# Async\n\nBuilder alias: `async`\n\n"
+    );
+    assert_eq!(
+        alias("@alias async\n@alias job\n"),
+        "# Async\n\nBuilder aliases: `async`, `job`\n\n"
+    );
+    assert_eq!(alias("\n"), "# Async\n\n");
+}
+
+#[test]
 fn renders_declared_constraints_regions_and_class_method_docs() {
     let source = "/// Select.\ndef first {r s} :: (Copy<'a>, Eq<'a>) => ref {r} 'a -> ref {s} 'a -> ref {r} 'a\nfn first left right = left\n\
         record View<'a> {r} { value: ref {r} 'a }\n\

@@ -2,11 +2,12 @@
 
 コンピュテーション式は、束縛、失敗の短絡、要素の列挙、遅延を、ビルダーの操作として組み立てる構文です。
 
-見た目は F# のコンピュテーション式に近いです。違うのは、`Builder { ... }` の `Builder` が実行時のオブジェクトではなく、**`Builder.tc` のモジュール名**だということです。コンパイル時に静的に解決されます。同名のローカル変数があっても、ビルダーの解決は変わりません。
+見た目は F# のコンピュテーション式に近いです。違うのは、`Builder { ... }` の `Builder` が実行時のオブジェクトではなく、**`Builder.tc` のモジュール名**だということです。コンパイル時に静的に解決されます。同名のローカル変数があっても、ビルダーの解決は変わりません。`.tc` に `@alias` を書くと、小文字の別名でも同じビルダーを呼べます。
 
 ## この記事のポイント
 
 - `.tc` が 1 ファイルにつき 1 ビルダーです。ファイル名がビルダー名になります。`.tz` に関数を並べただけではビルダーになりません。
+- `.tc` に `@alias async` と書くと、`async { ... }` が `Async { ... }` と同じ意味になります。別名は小文字で始め、ビルダー名の代わりに `{` の前へ書けます。標準の `Async` はこの別名を宣言済みです。
 - `let!` や `return` は、`Bind` や `Return` などの操作へコンパイル時に展開されます。
 - 標準では `Result`、`Maybe`、`IO` が `.tc` です。`task` は別の組み込み構文です。
 - 関数本体、式ブロック、トップレベルではビルダー名を省略できます。型からビルダーを選びます。
@@ -25,7 +26,7 @@
 error[E1018]: unknown computation builder 'Identity'; define its operations in Identity.tc
 ```
 
-`Name {}` は、同じプロジェクトに `Name.tc` があるとき空のコンピュテーション式、ないときはフィールドのない空レコードです。別モジュールの空レコードは `Module.Name {}` と書きます。
+`Name {}` は、同じプロジェクトに `Name.tc` があるとき空のコンピュテーション式、ないときはフィールドのない空レコードです。別モジュールの空レコードは `Module.Name {}` と書きます。ビルダーの別名（[ビルダーの別名](#ビルダーの別名)）の `name {}` も空のコンピュテーション式です。
 
 カスタム演算子、暗黙の `yield`、実行時のビルダーオブジェクトは 0.1.0 にはありません。ビルダーは `.tc` ファイルごとに静的に決まるため、ビルダーそのものを高階型で抽象化して「どのビルダーでも動く汎用のコンピュテーション式」を書く仕組みもありません（型クラスでのランク 1 の高階型は使えます。[ジェネリック](../types-and-type-inference/generics.md)を参照してください）。`try` / `with` / `finally` はビルダー操作ではなく、`Result` を作る独立した式です。
 
@@ -122,6 +123,66 @@ Identity {
 
 操作は普通の関数なので、`Identity.Return 42` のように直接呼べます。
 
+## ビルダーの別名
+
+ビルダーの `.tc` に `@alias 名前` と書くと、`名前 { ... }` でそのビルダーを呼べます。別名はビルダー名のもう 1 つの綴りです。展開も生成されるコードも、ビルダー名で書いたときと同じです。標準の `Async` は `@alias async` を宣言しているので、`async { ... }` と `Async { ... }` は同じ計算になります。
+
+`Identity.tc`:
+
+```tsuzuri project=identity-alias file=Identity.tc
+@alias identity
+
+def Return :: 'a -> 'a
+fn Return value = value
+
+def ReturnFrom :: 'a -> 'a
+fn ReturnFrom value = value
+
+def Bind :: 'a -> ('a -> 'b) -> 'b
+fn Bind value next = next value
+
+def Zero :: unit
+fn Zero = ()
+```
+
+`Main.tz`:
+
+```tsuzuri project=identity-alias file=Main.tz run=84
+let upper = Identity {
+    let! first = 20
+    let! second = 22
+    return first + second
+}
+let lower = identity {
+    let! first = 20
+    let! second = 22
+    return first + second
+}
+upper + lower
+```
+
+実行結果:
+
+```text
+84
+```
+
+別名の規則です。
+
+- `@alias` は `.tc` のトップレベルに、名前を同じ行に置いて 1 行で書きます。`def` などの宣言と並べられ、複数の名前を宣言できます。`.tz` や `.tt` に書くと `E1018` です。ドキュメントコメントは付けられません。
+- 別名は小文字で始まる識別子です。ビルダー名は `.tc` のファイル名で、モジュール名は大文字で始まるので、別名がビルダー名とぶつかりません。大文字で始まる名前は、モジュール名や型名と区別できないので使えません。予約語と、`finally`、`is`、`namespace`、`of`、`try`、`using`、`where` も使えず、同じファイルで同じ名前を 2 回宣言することもできません。違反は `E0002` です。
+- 別名を使えるのは、そのビルダー名が見える場所です。同じ名前空間、`using` した名前空間、標準ライブラリのビルダーはどこからでも見えます。
+- 別名は `{` の前にだけ書けます。値や型としては使えず、`async.run` のような修飾もできません（`Async.run` と書きます）。`Ns::async` のように名前空間をつなぐ書き方もありません。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません。`Name.tc` と空レコード `Name` の関係と同じです。
+- 見えているビルダーが複数で同じ別名を宣言していると、どれも選ばずに `E1004` です。ビルダー自身の名前（`Acme::Tools::Parser { ... }`）で選びます。`using` した 2 つの名前空間に同じ名前のビルダーがあっても、別名は宣言したほうを選び、両方が宣言していれば `E1004` です。
+- 利用者のビルダーの別名は、標準のビルダーの同名の別名より先に選ばれます。標準のビルダーは元の名前（`Async { ... }`）で呼べます。
+- 標準の `Async.tc` は、ソースに `Async` か `async` の語があるときだけ読み込まれます。`asynchronous` や `async_work` のように別の語の一部では読み込まれません。コメントや文字列の中の語も数えます。
+
+宣言のない小文字の名前は `E1018` です。本体が空の `name {}` も、その名前のレコードがなければ同じです。
+
+```text
+error[E1018]: unknown computation builder 'widget'; declare '@alias widget' in the .tc file of its builder, or write the builder's name
+```
+
 ## 標準のビルダー
 
 | ビルダー | 定義 | 用途 | 失敗したとき |
@@ -136,7 +197,7 @@ Identity {
 
 ### 標準 Async ビルダー
 
-`Async { ... }` は標準の `Async` ビルダーです。`Return`、`ReturnFrom`、`Bind`、`Delay`、`Zero`、`Combine`、`For` を定義し、`While`、`MergeSources`、`Yield` は定義しません。値を一度譲る操作は `Async.yield ()` と書きます。
+`Async { ... }` は標準の `Async` ビルダーです。`Return`、`ReturnFrom`、`Bind`、`Delay`、`Zero`、`Combine`、`For` を定義し、`While`、`MergeSources`、`Yield` は定義しません。値を一度譲る操作は `Async.yield ()` と書きます。`Async.tc` は `@alias async` を宣言しているので、`async { ... }` と小文字でも書けます。同じ計算で、`Async.run` や `Async.block_on` のような操作は `Async` で修飾します（[ビルダーの別名](#ビルダーの別名)）。
 
 ```tsuzuri run=7
 def worker :: i64 -> Async<i64>
@@ -145,6 +206,18 @@ fn worker n =
     return n + 1
 
 Async.run (worker 6)
+```
+
+```tsuzuri run=14
+let lower = async {
+    do! Async.yield ()
+    return 6
+}
+let upper = Async {
+    do! Async.yield ()
+    return 8
+}
+Async.run lower + Async.run upper
 ```
 
 `Async` の値は作成時には動きません。`Async.run`、`Async.block_on`、`Async.start` のどれかで明示的に実行します。`Async` ビルダーの詳細、`all` / `all_results`、仮想時刻、ホストの再開、借用規則は [Async 式](../async-tasks-and-lazy/async.md) を参照してください。
@@ -359,7 +432,7 @@ match answer with
 
 ## まとめ
 
-- ビルダーは `.tc` のファイル名です。実行時オブジェクトではありません。
+- ビルダーは `.tc` のファイル名です。実行時オブジェクトではありません。`@alias` で小文字の別名を足せます。標準の `Async` の別名は `async` です。
 - `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。標準の `Async` では `Async.yield ()` が中断点であり、文の `yield` は未定義です。
 - 関数本体ではビルダー名を省略できます。曖昧なときは型注釈か明示的な `Builder { ... }` が要ります。
 - `and!` は左から右の結合で、スレッド並列ではありません。
@@ -376,6 +449,7 @@ match answer with
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [Drop とリソースの解放](../ownership-and-memory/drop.md)
 - [言語仕様（コンピュテーション式）](../../../docs/language.md#コンピュテーション式)
+- [言語仕様（ビルダーの別名）](../../../docs/language.md#ビルダーの別名alias)
 - [言語仕様（ビルダー名を省略した本体）](../../../docs/language.md#ビルダー名を省略した本体)
 - [言語仕様（操作と展開規則）](../../../docs/language.md#操作と展開規則)
 - [言語仕様（構文・評価順序・所有権）](../../../docs/language.md#構文評価順序所有権)

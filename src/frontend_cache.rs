@@ -29,7 +29,7 @@ use crate::syntax::{Program, SourceKind};
 use crate::syntax_codec::{self, Invalid, Mode};
 
 /// The version of the pack, entry, manifest, codec and hash rules. Bump it whenever any changes.
-pub(crate) const FRONTEND_FORMAT: u32 = 1;
+pub(crate) const FRONTEND_FORMAT: u32 = 2;
 const PACK_MAGIC: &[u8; 8] = b"TZPACK\0\0";
 const PACK_HEADER_BYTES: usize = 84;
 const ENTRY_MAGIC: &[u8; 8] = b"TZFRONT\0";
@@ -1018,7 +1018,7 @@ mod tests {
         let (_temporary, root) = root();
         analyze(&mut open(&root, IDENTITY), &[SOURCE]);
         rewrite_entry(&root, |entry| {
-            entry[8..12].copy_from_slice(&2u32.to_le_bytes())
+            entry[8..12].copy_from_slice(&(FRONTEND_FORMAT + 1).to_le_bytes())
         });
         let mut cache = open(&root, IDENTITY);
         analyze(&mut cache, &[SOURCE]);
@@ -1035,12 +1035,12 @@ mod tests {
         // A pack of another format, and one of another compiler.
         let path = cache.pack_path();
         let mut bytes = fs::read(&path).unwrap();
-        bytes[8] = 2;
+        bytes[8] = (FRONTEND_FORMAT + 1) as u8;
         fs::write(&path, &bytes).unwrap();
         let mut cache = open(&root, IDENTITY);
         cache.parse(SOURCE, 0).unwrap();
         assert_eq!(cache.stats, stats(0, 1, 1));
-        bytes[8] = 1;
+        bytes[8] = FRONTEND_FORMAT as u8;
         fs::write(&path, &bytes).unwrap();
         let mut other = open(&root, [8; 32]);
         analyze(&mut other, &[SOURCE]);

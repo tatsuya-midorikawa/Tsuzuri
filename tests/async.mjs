@@ -33,7 +33,10 @@ const tracked = (ir) => {
 
 // The C host of tests/fixtures/async_host: it records the operations that start and the
 // cancellations and reports, and can call back into the executor from a report.
+// The hosts call the executor inside `assert`, so the checks must run in every build:
+// `zig cc` defines NDEBUG when it optimizes, which would skip the calls themselves.
 const TRACKING = `
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdatomic.h>
@@ -71,8 +74,61 @@ void *tracked_realloc(void *value, uint64_t size) {
 }
 `;
 
-const HOST = `${TRACKING}
+// Threads and a monotonic clock for the C hosts: POSIX threads, or Win32 on Windows.
+const PORTABLE = `
+#if defined(_WIN32)
+#include <windows.h>
+typedef HANDLE tz_thread;
+struct tz_launch { void *(*run)(void *); void *argument; };
+static DWORD WINAPI tz_launch_main(LPVOID raw) {
+    struct tz_launch launch = *(struct tz_launch *)raw;
+    free(raw);
+    launch.run(launch.argument);
+    return 0;
+}
+static int tz_thread_create(tz_thread *thread, void *(*run)(void *), void *argument) {
+    struct tz_launch *launch = malloc(sizeof *launch);
+    if (!launch) return 1;
+    launch->run = run;
+    launch->argument = argument;
+    *thread = CreateThread(NULL, 0, tz_launch_main, launch, 0, NULL);
+    if (!*thread) { free(launch); return 1; }
+    return 0;
+}
+static int tz_thread_join(tz_thread thread) { return WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0 && CloseHandle(thread) ? 0 : 1; }
+static int tz_thread_detach(tz_thread thread) { return CloseHandle(thread) ? 0 : 1; }
+static void tz_sleep_milliseconds(int64_t milliseconds) { Sleep((DWORD)milliseconds); }
+static int64_t tz_monotonic_milliseconds(void) {
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return counter.QuadPart / frequency.QuadPart * 1000 + counter.QuadPart % frequency.QuadPart * 1000 / frequency.QuadPart;
+}
+#else
 #include <pthread.h>
+#include <time.h>
+typedef pthread_t tz_thread;
+static int tz_thread_create(tz_thread *thread, void *(*run)(void *), void *argument) { return pthread_create(thread, NULL, run, argument); }
+static int tz_thread_join(tz_thread thread) { return pthread_join(thread, NULL); }
+static int tz_thread_detach(tz_thread thread) { return pthread_detach(thread); }
+static void tz_sleep_milliseconds(int64_t milliseconds) {
+    struct timespec delay = {(time_t)(milliseconds / 1000), (long)(milliseconds % 1000) * 1000000L};
+    nanosleep(&delay, NULL);
+}
+static int64_t tz_monotonic_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+#endif
+`;
+
+// Native executables take the platform's suffix, and POSIX programs that start threads link them.
+const windows = process.platform === "win32";
+const exe = (path) => (windows ? `${path}.exe` : path);
+const threads = windows ? [] : ["-pthread"];
+
+const HOST = `${TRACKING}${PORTABLE}
 #include "tz-async_host.h"
 static int64_t started_operation[16], started_request[16], cancelled[16], report_tag[16], report_value[16];
 static int started, cancels, reports, reenter, complete_inside;
@@ -181,9 +237,9 @@ int main(int argc, char **argv) {
     // A computation started on this thread waits for this thread's poll, whatever other threads do.
     reset();
     tz_sleeping(2);
-    pthread_t thread;
-    assert(pthread_create(&thread, NULL, elsewhere, NULL) == 0);
-    assert(pthread_join(thread, NULL) == 0);
+    tz_thread thread;
+    assert(tz_thread_create(&thread, elsewhere, NULL) == 0);
+    assert(tz_thread_join(thread) == 0);
     assert(tsuzuri_async_poll(0) == 2 && reports == 1);
     assert(tsuzuri_async_poll(2) == -1 && reports == 2 && report_value[1] == 2);
     assert(live == 0);
@@ -210,8 +266,8 @@ function hostDriven(directory) {
   const host = join(directory, "host.c");
   writeFileSync(host, HOST);
   for (const optimization of ["0", "3"]) {
-    const native = join(directory, `async_host-O${optimization}`);
-    execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host, "-pthread", "-o", native]);
+    const native = exe(join(directory, `async_host-O${optimization}`));
+    execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host, ...threads, "-o", native]);
     execute(native, []);
     for (let index = 0; index < TRAPS.length; index++) {
       const result = execute(native, [String(index)], false);
@@ -312,9 +368,7 @@ function wasmHost(module, optimization) {
 // The C host of tests/fixtures/async_reactor: operations complete 20 ms later on threads of
 // their own through tsuzuri_async_post, except those with a negative request. Operations start on
 // the workers of Task.parallel too, so the host counts them atomically.
-const REACTOR = `${TRACKING}
-#include <pthread.h>
-#include <time.h>
+const REACTOR = `${TRACKING}${PORTABLE}
 #include "tz-async_reactor.h"
 static int64_t started_operation[16], cancelled[16], report_tag[16], report_value[16];
 static _Atomic int started;
@@ -323,8 +377,7 @@ struct job { int64_t operation, value; };
 static void *complete_later(void *argument) {
     struct job job = *(struct job *)argument;
     free(argument);
-    struct timespec delay = {0, 20 * 1000 * 1000};
-    nanosleep(&delay, NULL);
+    tz_sleep_milliseconds(20);
     assert(tsuzuri_async_post(job.operation, job.value) == 1);
     return NULL;
 }
@@ -335,9 +388,9 @@ void tsuzuri_host_Main_start_operation(int64_t operation, int64_t request) {
     assert(job);
     job->operation = operation;
     job->value = request * 10;
-    pthread_t thread;
-    assert(pthread_create(&thread, NULL, complete_later, job) == 0);
-    assert(pthread_detach(thread) == 0);
+    tz_thread thread;
+    assert(tz_thread_create(&thread, complete_later, job) == 0);
+    assert(tz_thread_detach(thread) == 0);
 }
 void tsuzuri_host_Main_cancel_operation(int64_t operation) {
     cancelled[cancels++] = operation;
@@ -348,17 +401,12 @@ void tsuzuri_host_Main_report(int64_t tag, int64_t value) {
     report_tag[reports] = tag;
     report_value[reports++] = value;
 }
-static int64_t milliseconds(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
 int main(void) {
     assert(tsuzuri_async_post(5, 0) == 0);
     assert(tsuzuri_async_post((INT64_C(999) << 39) | 1, 0) == 0 && live == 0);
-    int64_t start = milliseconds();
+    int64_t start = tz_monotonic_milliseconds();
     assert(tz_timers(30) == 1);
-    assert(milliseconds() - start >= 60);
+    assert(tz_monotonic_milliseconds() - start >= 60);
     assert(live == 0);
     assert(tz_completed(4) == 40 * 1000 + 50 && started == 2 && live == 0);
     assert(tsuzuri_async_post(started_operation[0], 1) == 0 && live == 0);
@@ -398,19 +446,20 @@ function reactor(directory) {
     for (const processors of [undefined, 1, 2]) {
       const task = join(root, "src/runtime/task.c");
       const runtime = processors === undefined ? task : join(directory, `task-${processors}.c`);
-      if (processors !== undefined) writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include ${JSON.stringify(task)}\n`);
-      const native = join(directory, `async_reactor-O${optimization}-${processors ?? "host"}`);
+      // A header name is not a string literal: forward slashes keep a Windows path as it is.
+      if (processors !== undefined) writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include "${task.replaceAll("\\", "/")}"\n`);
+      const native = exe(join(directory, `async_reactor-O${optimization}-${processors ?? "host"}`));
       execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host,
-        join(root, "src/runtime/async.c"), runtime, "-pthread", "-o", native]);
+        join(root, "src/runtime/async.c"), runtime, ...threads, "-o", native]);
       execute(native, []);
     }
   }
   // The driver links the reactor into executables, objects, and shared libraries by itself.
   const program = join(directory, "Main.tz");
   writeFileSync(program, "def main :: unit -> i32 = \\() ->\n    let! value = Async.block_on (Async { do! Async.sleep 5; let! later = Async.now (); return later })\n    if value > 0 then 0 else 1\n");
-  const executable = join(directory, "reactor-program");
-  cli(["build", program, "-o", executable]);
-  execute(executable, []);
+  const reactorProgram = exe(join(directory, "reactor-program"));
+  cli(["build", program, "-o", reactorProgram]);
+  execute(reactorProgram, []);
   const wasm = join(directory, "plain.wasm");
   const refused = execute(compiler, ["build", fixture, "--target", "wasm32", "-o", wasm], false);
   assert.notEqual(refused.status, 0);
@@ -425,7 +474,9 @@ async function jspi(directory) {
     return;
   }
   const fixture = join(root, "tests/fixtures/async_reactor");
-  for (const target of ["wasm32", "wasm64"]) for (const optimization of ["0", "3"]) {
+  // The bundled toolchain compiles wasm32 only; its run sets TSUZURI_WASM64=0.
+  const targets = process.env.TSUZURI_WASM64 === "0" ? ["wasm32"] : ["wasm32", "wasm64"];
+  for (const target of targets) for (const optimization of ["0", "3"]) {
     const wasm = join(directory, `async_reactor-jspi-${target}-O${optimization}.wasm`);
     cli(["build", fixture, "--target", target, "--wasm-feature", "jspi", `-O${optimization}`, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
@@ -656,7 +707,7 @@ bench "async return" = \\n ->
     assert.match(tested.stdout, /2 passed/);
     cli(["bench", project, `-O${optimization}`, "--samples", "1"]);
   }
-  const debug = join(directory, "debug-test");
+  const debug = exe(join(directory, "debug-test"));
   cli(["test", project, "--index", "0", "-g", "-o", debug]);
   execute(debug, ["0"]);
   const refused = execute(compiler, ["test", project, "--target", "wasm32"], false);
@@ -673,5 +724,10 @@ try {
   await glue(directory);
   runnerTests(directory);
 } finally {
-  rmSync(directory, { recursive: true, force: true });
+  // Windows can keep a just-run executable locked for a moment.
+  try {
+    rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+  } catch (error) {
+    console.warn(`async: could not remove ${directory}: ${error.message}`);
+  }
 }

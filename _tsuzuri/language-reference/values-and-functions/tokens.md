@@ -37,7 +37,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `$" "` | 補間文字列リテラル（波括弧 `{expr}` で値を埋め込む） | `$"total={total}"` | [補間文字列](../literals-and-strings/interpolated-strings.md) |
 | `u8" "` | `utf8string`（UTF-8 文字列）リテラル | `u8"日本語"` | [文字列](../literals-and-strings/strings.md) |
 | `" "B` | ASCII バイト配列リテラル（`[byte]`） | `"GET /"B` | [リテラル](../literals-and-strings/literals.md) |
-| `@` | コンパイラ属性（`@literal`, `@checked`, `@cpu`）、制約行 | `@checked x + y`<br/>`@'a : Show` | [属性](./attributes.md) |
+| `@` | コンパイラ属性（`@literal`, `@checked`, `@cpu`, `@json`, `@alias`）、制約行 | `@checked x + y`<br/>`@alias async`<br/>`@'a : Show` | [属性](./attributes.md) |
 | `#` | 制約行の関数制約 | `@'a : #hash` | [制約 と 属性](../types-and-type-inference/constraints.md) |
 | `!` | 論理否定演算子、コンピュテーション式文 | `!flag`<br/>`let! x = task` | [演算子と式](./op-and-expressions.md)<br/>[ステートメント](./statements.md) |
 | `_` | ワイルドカード、数値区切り、未使用変数の接頭辞 | `\| _ -> 0`, `1_000` | [パターンマッチング](../pattern-matching/pattern-matching.md) |

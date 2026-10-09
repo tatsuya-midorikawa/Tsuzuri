@@ -3566,6 +3566,8 @@ struct Names {
     /// The namespaces that each module's `using` declarations import, by key.
     module_usings: BTreeMap<String, Vec<String>>,
     builders: BTreeMap<String, BTreeSet<String>>,
+    /// The keys of the builders that declare each `@alias` name (`.tc` files, in module order).
+    builder_aliases: BTreeMap<String, Vec<String>>,
     type_aliases: BTreeMap<String, (NameInfo, TypeAliasDecl)>,
     type_alias_names: BTreeMap<String, Vec<String>>,
     records: BTreeMap<String, NameInfo>,
@@ -3595,6 +3597,16 @@ struct Names {
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
     active_aliases: BTreeMap<String, Vec<String>>,
+}
+
+/// How the name before `{` of a computation expression resolves.
+enum BuilderName<'a> {
+    /// The key of the builder module that the name, or its `@alias`, names.
+    Builder(&'a str),
+    /// An `@alias` that these builders declare, all in sight.
+    Ambiguous(Vec<&'a str>),
+    /// No builder.
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4111,10 +4123,74 @@ impl Names {
         }
     }
 
-    /// The key of the computation builder that `name` names from `requester`.
-    fn builder(&self, requester: &str, name: &str) -> Option<&str> {
-        self.module_path(requester, name)
+    /// The computation builder that `name` names from `requester`: a builder module's name, which
+    /// may be qualified by namespaces, or one of its `@alias` names. An alias is another spelling
+    /// of its builder's name, so it is in sight wherever that name is. User builders take an alias
+    /// before std ones, as for declarations, and the opt-in rule for std types does not apply: the
+    /// std builder `Async` is reached as `async` once the program writes it (D-43).
+    fn builder_name(&self, requester: &str, name: &str) -> BuilderName<'_> {
+        if let Some(key) = self
+            .module_path(requester, name)
             .filter(|key| self.builders.contains_key(*key))
+        {
+            return BuilderName::Builder(key);
+        }
+        // An alias is a lowercase word. The lexer reads `::` before one as list cons, so no
+        // namespace path leads to it; a builder's own name does.
+        let Some(candidates) = self.builder_aliases.get(name) else {
+            return BuilderName::Missing;
+        };
+        for tier in self.tiers(requester) {
+            let visible: Vec<&str> = candidates
+                .iter()
+                .map(String::as_str)
+                .filter(|key| self.origin(key) == *tier && self.builder_in_sight(requester, key))
+                .collect();
+            match visible.as_slice() {
+                [] => {}
+                [key] => return BuilderName::Builder(key),
+                _ => return BuilderName::Ambiguous(visible),
+            }
+        }
+        BuilderName::Missing
+    }
+
+    /// Whether the bare name of the builder module `key` is in sight of `requester`: it names
+    /// `key`, or several `using` namespaces hold a module of that name and `key` is one of them.
+    /// The second case keeps same-named builders of two namespaces from hiding each other's alias.
+    fn builder_in_sight(&self, requester: &str, key: &str) -> bool {
+        let stem = module_stem(key);
+        match self.module_path(requester, stem) {
+            Some(found) => found == key,
+            None => self.module_usings.get(requester).is_some_and(|namespaces| {
+                self.imported(namespaces, stem).any(|found| found == key)
+            }),
+        }
+    }
+
+    /// Whether `name {}` is an empty computation expression, not an empty record: `name` is a
+    /// builder or an alias in sight, or a lowercase word that no record is named, which can only
+    /// be an alias that nobody declared (`computation::lower` says so).
+    fn empty_block_is_computation(&self, requester: &str, name: &str) -> bool {
+        !matches!(self.builder_name(requester, name), BuilderName::Missing)
+            || (name.starts_with(|first: char| first.is_ascii_lowercase())
+                && !self.record_aliases.contains_key(name))
+    }
+
+    /// The error for an alias that several builders in sight declare.
+    fn ambiguous_alias(&self, written: &str, keys: &[&str], span: Span) -> Diagnostic {
+        let builders = keys
+            .iter()
+            .map(|key| format!("'{}'", self.module_display(key)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Diagnostic::new(
+            "E1004",
+            format!(
+                "builder alias '{written}' is ambiguous: the builders {builders} declare it; write the name of the builder you mean, or rename an alias"
+            ),
+            span,
+        )
     }
 
     /// Chooses among same-named declarations of other modules, one tier of
@@ -5152,7 +5228,7 @@ fn check_modules_collect(
         }
     }
     diagnostics.check()?;
-    names.builders = computation::collect_all(modules, diagnostics);
+    (names.builders, names.builder_aliases) = computation::collect_all(modules, diagnostics);
     diagnostics.check()?;
     let record_declarations: Vec<_> = modules
         .iter()

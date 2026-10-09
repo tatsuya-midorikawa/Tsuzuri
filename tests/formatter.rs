@@ -243,6 +243,44 @@ fn namespace_and_using_headers_keep_their_lines() {
 }
 
 #[test]
+fn builder_aliases_keep_their_lines_and_fingerprints() {
+    let source = "// the spelling\n@alias    async   // lowercase\n\n@alias   other\n/// Returns the value.\ndef Return::'a->'a\nfn Return value=value\n";
+    let formatted = format_source("Async.tc", source, SourceKind::Computation)
+        .unwrap()
+        .formatted;
+    assert_eq!(
+        formatted,
+        "// the spelling\n@alias async   // lowercase\n\n@alias other\n/// Returns the value.\ndef Return :: 'a -> 'a\nfn Return value = value\n"
+    );
+    assert_eq!(
+        format_source("Async.tc", &formatted, SourceKind::Computation)
+            .unwrap()
+            .formatted,
+        formatted
+    );
+    let program = parser::parse(&formatted).unwrap();
+    let aliases: Vec<_> = program
+        .aliases
+        .iter()
+        .map(|alias| alias.text.as_str())
+        .collect();
+    assert_eq!(aliases, ["async", "other"]);
+    assert_eq!(
+        ast_fingerprint(parser::parse(source).unwrap()),
+        ast_fingerprint(program)
+    );
+    // The fingerprint sees which aliases a file declares.
+    assert_ne!(
+        ast_fingerprint(parser::parse("@alias async\n").unwrap()),
+        ast_fingerprint(parser::parse("@alias other\n").unwrap())
+    );
+    assert_ne!(
+        ast_fingerprint(parser::parse("@alias async\n").unwrap()),
+        ast_fingerprint(parser::parse("\n").unwrap())
+    );
+}
+
+#[test]
 fn layout_tracks_bodies_delimiters_and_else_owners() {
     for (source, expected) in [
         (
