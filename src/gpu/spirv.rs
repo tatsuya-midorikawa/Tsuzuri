@@ -74,8 +74,8 @@ pub struct SpirvKernel {
     pub relaxed: bool,
     /// Whether the module has the `init_main` entry point (a 32-bit integer input).
     pub init: bool,
-    /// The operations one lane executes, with calls counted at the size of their callees: the cost estimate that
-    /// `Gpu.Auto` uses.
+    /// The arithmetic, logic, comparison, conversion, and select instructions one lane executes, with a call counted
+    /// as its callee: the cost estimate that `Gpu.Auto` uses (at least 1).
     pub weight: u32,
 }
 
@@ -502,8 +502,14 @@ impl<'a, 'k> Emitter<'a, 'k> {
         self.block = id;
     }
 
-    /// An instruction with a result: returns the new id.
+    /// An instruction with a result: returns the new id. Arithmetic, logic, comparison, conversion, and select
+    /// instructions make up the weight of the kernel.
     fn result(&mut self, opcode: u16, ty: u32, operands: &[u32]) -> u32 {
+        if (op::CONVERT_F_TO_U..=op::F_DIV).contains(&opcode)
+            || (op::IS_NAN..=op::NOT).contains(&opcode)
+        {
+            self.weight = self.weight.saturating_add(1);
+        }
         let id = self.fresh();
         let mut all = vec![ty, id];
         all.extend_from_slice(operands);
@@ -848,7 +854,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
         init: bool,
     ) -> Result<SpirvKernel, Diagnostic> {
         let strict_float = !self.relaxed && self.module.uses_float;
-        let weight = self.weights[&self.kernel.function];
+        let weight = self.weights[&self.kernel.function].max(1);
         let module = &mut self.module;
         module.capabilities.insert(CAPABILITY_SHADER);
         if strict_float {
@@ -936,7 +942,6 @@ impl<'a, 'k> Emitter<'a, 'k> {
     }
 
     fn expression(&mut self, expression: &TypedExpr) -> Result<Option<Val>, Diagnostic> {
-        self.weight = self.weight.saturating_add(1);
         let span = expression.span;
         Ok(match &expression.kind {
             TypedExprKind::Int(value) => {
