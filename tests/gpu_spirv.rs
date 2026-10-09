@@ -1815,7 +1815,8 @@ fn strict_float_kernels(harness: &Harness) {
                 })
                 .count();
             eprintln!(
-                "UNCERTIFIED {}: with the capability check bypassed, {} of {} lanes equal the CPU reference",
+                "UNCERTIFIED [{}] {}: with the capability check bypassed, {} of {} lanes equal the CPU reference",
+                harness.label,
                 case.name,
                 inputs.len() - differing,
                 inputs.len()
@@ -1828,7 +1829,8 @@ fn strict_float_kernels(harness: &Harness) {
         );
     } else {
         eprintln!(
-            "Vulkan: this device does not report the strict float32 controls ({}); strict f32 kernels are Unavailable here",
+            "Vulkan [{}]: strict f32 kernels are Unavailable here (the device must report the float controls and pass the conformance probe): {}",
+            harness.label,
             probe
                 .log
                 .lines()

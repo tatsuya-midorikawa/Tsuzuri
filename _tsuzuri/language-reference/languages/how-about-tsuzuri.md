@@ -269,7 +269,7 @@ flowchart TD
 | --- | --- |
 | `tsuzuri check` | コード生成の前に、型と所有権を検査します。 |
 | `tsuzuri run` | `Main.tz` をネイティブで実行します。既定は `-O3` です。 |
-| `tsuzuri build` | ネイティブ、WebAssembly、オブジェクト、C ヘッダー、LLVM IR、実験的な WGSL を出します。 |
+| `tsuzuri build` | ネイティブ、WebAssembly、オブジェクト、C ヘッダー、LLVM IR、実験的な WGSL と SPIR-V を出します。 |
 | `tsuzuri test` | ソース内の `test` 宣言を実行します。 |
 | `tsuzuri fmt` | 意味を変えずに、空白とインデントを整えます。 |
 | `tsuzuri doc` | 公開宣言とドキュメントコメントから Markdown を生成します。 |

@@ -9,7 +9,7 @@
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
 - `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
 - [Async 式](../async-tasks-and-lazy/async.md) の `Async.start` は、グルーの `bindings.async` がイベントループで駆動します。`Async.block_on` は `--wasm-feature jspi` で JSPI を使い、export が `Promise` を返します。
-- `--wasm-feature webgpu` を足すと、`Gpu.request Gpu.WebGpu` のプログラムが `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。既定の出力は import を持ちません。
+- `--wasm-feature webgpu` を足すと、`Gpu.request Gpu.WebGpu` のプログラムが `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。既定の出力は import を持ちません。WebAssembly には Vulkan のホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable`、`Gpu.Auto` は CPU 参照が動かし、どちらも import を増やしません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
@@ -435,6 +435,7 @@ tsuzuri build app --target wasm32 --wasm-feature webgpu -o app.wasm
 - `wasm32` の `object`、`llvm`、`wasm` だけで使えます。`--wasm-feature threads`、`--wasm-host`、`--emit bindings-js` とは同時に指定できません（`E2000`）。`jspi` とは独立で、同時に付けられます。
 - `Gpu.request Gpu.WebGpu` が `Unavailable` になるのは、`navigator.gpu` や `webgpu` バインディングがない、アダプタがない、256 invocation のワークグループが使えない、`f16` のカーネルがあるのにアダプタが `shader-f16` を持たない、のどれかです。`createGpuImports` の `options.debug` が、理由と、デバイスで動かした呼び出しごとの 1 行を `console.error` に出します。
 - 線形メモリの既定の上限は 16 MiB のままです。ホスト配列の複製と結果の配列が同時にあるので、大きなバッファを GPU に渡すときは `--wasm-max-memory` を増やします。
+- Vulkan は WebAssembly では使えません。`Gpu.request Gpu.Vulkan` は、既定の出力でも `--wasm-feature webgpu` の出力でも常に `Unavailable` で、import は増えません。`Gpu.Auto` は常に `Ok` で、WebAssembly では CPU 参照だけが動かします（`Gpu.last_backend ()` は `CpuReference` のまま）。WebGPU は `Auto` の候補ではありません。
 - JSPI を持つエンジンが要ります。リポジトリの `tests/gpu_runtime.mjs` で、Node.js 24 と Dawn（Apple M1 Max の Metal）で動くことを確かめました。Node.js 20 には JSPI がないので、そのテストは import の検査だけをします。
 
 ## WASI
@@ -505,7 +506,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
-- `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。
+- `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 
 ## 関連項目

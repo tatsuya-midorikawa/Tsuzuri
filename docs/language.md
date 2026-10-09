@@ -2780,9 +2780,9 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 
 ### GPU Kernel（実験的）
 
-`Gpu` モジュールは、カーネル抽出、CPU 参照実装、WGSL シェーダーコード生成、および WebGPU 上の実行を検証するための実験的実装です。`Gpu.WebGpu` を使わないプログラムに GPU ランタイムがリンクされること、WebAssembly の import が増えることはありません。
-デバイス要求 API `Gpu.request Gpu.CpuReference` は常に `Result.Ok Device` を返します。`Gpu.request Gpu.WebGpu` は、言語ランタイムが WebGPU のデバイスを開けたときだけ `Result.Ok Device` を返し、ライブラリ・アダプタ・必要な機能（`shader-f16`）がなければ `Result.Error Gpu.Unavailable` です。他のバックエンド（`Vulkan`、`Cuda`、`Metal`、`Auto`）を要求した場合は一律で `Result.Error Gpu.Unavailable` となります。
-明示的に GPU バックエンドを要求したコードに対して勝手に CPU 実装を割り当てて成功扱いに偽装することはなく、`Auto` を指定した場合であっても CPU フォールバックを意味するものではありません。
+`Gpu` モジュールは、カーネル抽出、CPU 参照実装、WGSL と SPIR-V のシェーダーコード生成、WebGPU と Vulkan 上の実行、実行する場所の自動選択（`Gpu.Auto`）を検証するための実験的実装です。`Gpu.WebGpu`・`Gpu.Vulkan`・`Gpu.Auto` を使わないプログラムに GPU ランタイムがリンクされること、WebAssembly の import が増えることはありません。
+デバイス要求 API `Gpu.request Gpu.CpuReference` は常に `Result.Ok Device` を返します。`Gpu.request Gpu.WebGpu` は、言語ランタイムが WebGPU のデバイスを開けたときだけ `Result.Ok Device` を返し、ライブラリ・アダプタ・必要な機能（`shader-f16`）がなければ `Result.Error Gpu.Unavailable` です。`Gpu.request Gpu.Vulkan` は、native のランタイムが Vulkan のデバイスを開けて、プログラムの SPIR-V カーネルが要る機能（`shaderInt64`、厳密な `f32` の float controls と適合プローブ）をそのデバイスが持つときだけ `Result.Ok Device` を返し、そうでなければ（WebAssembly では常に）`Result.Error Gpu.Unavailable` です。`Gpu.request Gpu.Auto` は常に `Result.Ok Device` を返し、バックエンドは `Gpu.init`・`Gpu.map` の呼び出しごとに選ばれます。`Cuda` と `Metal` を要求した場合は一律で `Result.Error Gpu.Unavailable` となります。
+明示的に GPU バックエンドを要求したコードに対して勝手に CPU 実装を割り当てて成功扱いに偽装することはありません。`Gpu.Auto` は、その呼び出しの結果が同じ意味を保つ範囲で、どちらで動かすかを測ったコストで選ぶバックエンドで、CPU フォールバックとは別のものです。
 
 `Gpu.Device` および `Gpu.Buffer<'a>` は、外部から内部を覗けない不透明（opaque）な非 Copy 所有型です。`Device` インスタンスは各操作に対して共有借用参照経由で引き渡します。
 `Gpu.init (&device) count (\index -> index * index)` における `index` は `i32`、`count` は 0 〜 2,147,483,647 の範囲の `i64` 整数です。
@@ -2830,6 +2830,27 @@ GPU 上の浮動小数点は、上記の厳密な `f32` 規則（再結合・暗
 `map` や `toArray` はホストバッファを 1 回だけ消費し、GPU コマンドキューの完了後に古いバッファを破棄します。デバイス制限の超過や実行時エラーは JavaScript 例外として返され、CPU 実装への暗黙のフォールバックは行われません（使用後は `close()` を await して GPU リソースを確実に解放します）。
 `fromArray` は `Int32Array`・`Uint32Array`・`Float32Array`・`Uint16Array`（`f16` の bit 列）を受け、バッファは要素の種類（`f32`・`f16` か 32-bit 整数）を持ちます。`toArray` は `f32` のバッファを `Float32Array`、`f16` のバッファを `Uint16Array`、整数のバッファを `Uint32Array` で返します。`prepare(source, { float: "relaxed" })` がなければ、緩い WGSL（1 行目の宣言で判定）は拒否されます。カーネルの入力と種類が違うバッファを `map` に渡すと `TypeError` で、そのバッファは消費されません。
 具体的な実行例は `examples/gpu/run.mjs` に用意されています。標準の WebGPU バインディングまたはブラウザの `navigator.gpu` を透過的に利用可能であり、Tsuzuri コンパイラ自身に特定の GPU ベンダーの独自ドライバ依存が混入することはありません。
+
+#### Vulkan デバイスでの実行
+
+`Gpu.request Gpu.Vulkan` が `Result.Ok` を返したデバイスでは、`Gpu.init`・`Gpu.map`・`Gpu.init_relaxed`・`Gpu.map_relaxed` を、呼び出し箇所のコールバックから作った SPIR-V カーネルで実行します。コンパイラは、`Gpu.Vulkan` か `Gpu.Auto` を使うプログラムに限り、呼び出し箇所（コールバックと、厳密か緩いか）ごとに SPIR-V 1.3 のモジュールを 1 つ作り、実行ファイルに埋め込みます（`--emit spirv`・`--emit spirv-relaxed` が同じ生成を出します。コンパイラ自身の実装で、LLVM の SPIR-V ターゲットは使いません）。`Gpu.WebGpu` だけのプログラムの出力、どれも使わないプログラムの出力（IR、import、ABI）は、変わりません。
+
+1. 厳密な呼び出しが Vulkan で動くのは、lane が `i32`・`i32u`・`i64`・`i64u`・`f32` で、コールバックが厳格な SPIR-V に出せるときです。結果は CPU 参照とビット単位で一致します。整数の `/`・`%`・`**` と、`f32` の `/`（`OpFDiv` が 2.5 ULP の誤差を許すため）は出せず、`f64`・`f16`・`bool` の lane にはカーネルがありません。カーネルがない呼び出しを Vulkan デバイスで動かすと、理由を標準エラーに出してトラップします。CPU 参照や緩い意味へ黙って切り替えることはありません。
+2. `i64` と `i64u` の lane は `shaderInt64` を要し、厳密な `f32` は float controls を要します。要る機能は、プログラムの SPIR-V カーネル全部の和として、`Gpu.request Gpu.Vulkan` の時点でまとめて確かめます。1 つでも欠ければ `Result.Error Gpu.Unavailable` です。
+3. 厳密な `f32` のモジュールは、すべての浮動小数点演算の結果に `NoContraction` を付け、`SignedZeroInfNanPreserve`・`DenormPreserve`・`RoundingModeRTE`（幅 32）の execution mode を持ち、`f32` から整数へのキャストは、範囲の比較と `OpIsNan` の選択で CPU 参照の飽和と NaN の規則を再現します。ランタイムは、デバイスが対応する 3 つの float controls と、幅ごとに別の mode を許す独立性を報告し、さらに組み込みの適合プローブを通るときだけ、厳密な `f32` を許します。デバイスの報告は申告で、厳密さの証明ではありません（MoltenVK と SwiftShader で、報告と違う結果を観測しています）。プローブは 24 lane の標本で、通ったあとに残る不一致は、そのドライバの不具合です。プローブの詳細は [Gpu](../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md#厳密な-f32-と-float-controls) にあります。
+4. 呼び出しの流れ（複製、アップロード、実行、完了待ち、読み戻し）、`request` のあとの失敗がトラップになること、プロセスあたりのデバイスが 1 つで複数スレッドの呼び出しが直列に実行されることは、WebGPU と同じです。同じ SPIR-V のパイプラインは作り直しません。
+5. native のランタイムは、リンク時の依存なしに、Vulkan のローダーを `dlopen`／`LoadLibrary` で読み込み、必要な Vulkan の C API を自前の宣言で呼びます。`TSUZURI_VULKAN_LIBRARY` は、設定すればそのパスだけを試し、空なら Vulkan を無効にします。MoltenVK のような portability 実装のために、インスタンスの `VK_KHR_portability_enumeration` とデバイスの `VK_KHR_portability_subset` を有効にします。`TSUZURI_GPU_DEBUG` が空でなければ、`Unavailable` の理由、デバイスの能力、適合プローブの結果を標準エラーに出します。
+6. WebAssembly には Vulkan のホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable` で、import も増えません。
+
+#### Gpu.Auto
+
+`Gpu.Auto` のデバイスは、`Gpu.init`・`Gpu.map`（と `_relaxed`）の呼び出しごとに、CPU 参照と Vulkan のどちらで動かすかを選びます。WebGPU は候補ではありません。
+
+1. Vulkan が候補になるのは、そのカーネルに SPIR-V モジュールがあり、デバイスがそのカーネルの要る機能（適合プローブを含む）を持ち、デバイスが測った種類（メモリを共有する統合 GPU）で、バッファがデバイスの上限に収まり、パイプラインが作れるときだけです。離散 GPU とソフトウェアの実装は選びません。条件を 1 つでも満たさなければ、CPU 参照が動かします。
+2. 候補の呼び出しを Vulkan に出すのは、転送・同期・呼び出しの固定費を含めたデバイスの見積りが CPU 参照の見積りより小さく、デバイスを開く費用とパイプラインを作る費用（初回の費用）を、CPU 参照で動いた呼び出しが積んだ節約で払えたときです。見積りの定数は、1 台のマシンで測った経験則で、他のマシンの保証ではありません（[Gpu](../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ) と [性能測定](benchmarks.md#vulkan-と-gpuautof09-phase-3)）。`TSUZURI_GPU_AUTO_MIN_WORK` は、この規則を「lane 数 × カーネルの重みが指定の数以上」に置き換えますが、能力・上限・デバイスの種類の確認は省きません。
+3. 厳密な呼び出しの結果は、どちらが動かしても CPU 参照と同じです。緩い呼び出しは、Vulkan が動かすと緩い結果になりえます。
+4. 準備の失敗（能力の不足、上限、パイプラインの作成）は、その呼び出しを CPU 参照で動かします。呼び出しの途中の失敗（デバイスの喪失、メモリ不足）は、明示的なデバイスと同じようにトラップします。
+5. `Gpu.last_backend ()` は、直前の `Gpu.init`・`Gpu.map` を動かしたバックエンドを返します。プロセスで 1 つの値で、最初の呼び出しの前は `CpuReference` です。WebAssembly では、`Auto` は常に CPU 参照です。
 
 ### SIMD 値型
 

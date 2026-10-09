@@ -64,7 +64,7 @@ flowchart TD
   tuned --> scalar["型付きの CPU 命令"]
   tuned --> simd["SIMD と自動ベクトル化"]
   tuned --> parallel["明示的な CPU 並列"]
-  tuned --> gpu["実験的な GPU（整数と、名前で選ぶ緩い f32・f16）"]
+  tuned --> gpu["実験的な GPU（整数と、Vulkan の厳密な f32、名前で選ぶ緩い f32・f16、測って選ぶ Auto）"]
   portable --> same["折り返しと NaN を保つ"]
   scalar --> same
   simd --> same
@@ -81,12 +81,12 @@ flowchart TD
 | `--cpu native` | ビルド機の命令セットに合わせます。古い CPU へはそのバイナリを配布できません。 |
 | 実行時の命令選択 | 同梱の整数配列の和、最小、最大だけが、実行時に命令セットを選びます。選べない環境は基準実装です。利用者の関数が版を持つのが `@cpu` です。 |
 | 複数コア | `Task.parallel` が明示的な並列です。ネイティブは常駐プール、既定の WebAssembly は逐次です。自動並列化はありません。 |
-| GPU | 厳密な `i32` と `i32u` の WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、Node.js の WebGPU ホスト試作までです。実行できないときは `Unavailable` で、CPU への切り替えはプログラムが書きます。 |
+| GPU | 厳密な `i32` と `i32u` の WGSL 生成、厳密な `i32`・`i32u`・`i64`・`i64u`・`f32` の SPIR-V 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成と緩い `f32` の SPIR-V 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`・`--emit spirv-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto`、Node.js の WebGPU ホスト試作までです。実行できないときは `Unavailable` で、CPU への切り替えはプログラムが書きます。`Gpu.Auto` だけが、バックエンドを呼び出しごとに選びます。 |
 | WebAssembly | 既定は SIMD なし、threads なし、OS API の import なしです。それぞれ明示したときだけ有効になります。 |
 
 2026-09-27 実施の `tests/wasm_simd.mjs` による検証では、LLVM 21 の逆アセンブル解析を通じて、`-O3` のオプトイン出力にベクトル命令が生成されること、および既定出力にはベクトル命令が含まれないことを確認しています。これはコード生成の検証であり、実行速度の測定ではありません。また、x86 の SSE4.2 や AVX2 の実機における実行速度も未測定です。
 
-GPU については、2026-10-10 に Apple M1 Max で、厳密な `i32` と `i32u` の WebGPU 実行の CPU 参照との照合（native は wgpu-native、WebAssembly は Dawn）と、緩い `f32`・`f16` の許容誤差内の照合を実施済みです。転送と同期を含めて測った結果は [性能測定](../../../docs/benchmarks.md#gpu-デバイスのランタイムf09-phase-2) にあり、速度の優位性を主張するものではありません。厳密な浮動小数点と 64 bit 整数の GPU 実行、Vulkan、自動選択は計画中（[F09](../../../_features/F09-gpu-float-runtime.md) の Phase 3）です。
+GPU については、2026-10-10 に Apple M1 Max で、厳密な `i32` と `i32u` の WebGPU 実行の CPU 参照との照合（native は wgpu-native、WebAssembly は Dawn）と、緩い `f32`・`f16` の許容誤差内の照合、厳密な整数（`i64` を含む）の Vulkan 実行（MoltenVK）の CPU 参照との照合を実施済みです。転送と同期を含めて測った結果は [性能測定](../../../docs/benchmarks.md#gpu-デバイスのランタイムf09-phase-2) と [Vulkan と Gpu.Auto](../../../docs/benchmarks.md#vulkan-と-gpuautof09-phase-3) にあり、速度の優位性を主張するものではありません。`Gpu.Auto` の規則の定数は、その 1 台のマシンの経験則です。float controls をすべて報告して適合プローブを通るデバイスで、厳密な `f32` の Vulkan 実行が CPU 参照とビット単位で一致することは、まだ確かめていません。Linux、Windows、Apple 以外の GPU の実行も、確かめていません。
 
 明示したにもかかわらず利用できない経路は、暗黙のうちに別の緩い意味へ落としません。既定の WebAssembly で OS API に到達した場合は `E2000` エラーとなります。`@cpu` では、そのビルド先で選択できないレベルは安全に無視され、未知の名前を指定した場合は `E0002` エラーとなります。無視とエラーの扱いは明確に分かれており、実行要件は属性とビルドオプションの両面から厳格に判断されます。
 
@@ -136,14 +136,14 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | `HashMap`、文字列補間、OS API、C 連携の `extern` と `--link` | 実装済み | C09、D07、E08、E12。Windows の OS API は除く |
 | C ヘッダーからの `extern` 生成（`tsuzuri bindgen`） | 実装済み | E11。64-bit の Linux と macOS、ABI の一致を確かめられる宣言だけ |
 | WASM の型付きグルー、共有ライブラリ、C#・Python・C++ のバインディング | 実装済み | E13。Windows の共有ライブラリは G10 の後 |
-| 整数 WGSL、緩い `f32`・`f16` の WGSL（名前で選ぶ）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行と WebGPU ホスト試作 | 実験的 | F07、F09 の Phase 1・2。確かめたのは Apple M1 Max だけ |
+| 整数 WGSL、緩い `f32`・`f16` の WGSL（名前で選ぶ）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行と WebGPU ホスト試作、SPIR-V 生成と `Gpu.request Gpu.Vulkan` による Vulkan 上の実行（厳密な整数と、報告と適合プローブを通るデバイスの厳密な `f32`、緩い `f32`）、測って選ぶ `Gpu.Auto` | 実験的 | F07、F09 の Phase 1〜3。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけ |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
 | 非同期計算 | 実装済み（純粋な仮想時刻、native reactor、ホスト駆動、WASM JSPI は opt-in） | [Async 式](../async-tasks-and-lazy/async.md)、B08 |
 | ネットワーク | 計画中 | E09 |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
-| 厳密な浮動小数点と 64 bit 整数の GPU 実行、Vulkan、自動選択 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) の Phase 3 |
+| Vulkan の厳密な `f32` の実機での一致、離散 GPU、Linux・Windows・Apple 以外の GPU での Vulkan 実行 | 検証未完了 | F09 の Phase 3。float controls をすべて報告して適合プローブを通る実機がなく、確かめていない |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
 | Atomic / Mutex / Channel、多次元配列 | 計画中 | F10、C11 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
