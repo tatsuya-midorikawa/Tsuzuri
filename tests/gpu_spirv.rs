@@ -1006,13 +1006,19 @@ fn spirv_modules_validate_for_vulkan() {
 
 // ---- execution on a device ----
 
+/// The runtime harness together with the environment of one Vulkan implementation: the default one of the machine, and
+/// every driver manifest listed in `TSUZURI_VULKAN_TEST_ICDS` (a path list; each runs the same checks through the
+/// Vulkan loader with `VK_DRIVER_FILES` set, for example the SwiftShader that a browser ships).
+#[derive(Clone)]
 struct Harness {
     path: PathBuf,
+    label: String,
+    environment: Vec<(String, String)>,
 }
 
-static HARNESS: OnceLock<Result<Harness, String>> = OnceLock::new();
+static HARNESS: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
-fn harness() -> &'static Result<Harness, String> {
+fn harness_binary() -> &'static Result<PathBuf, String> {
     HARNESS.get_or_init(|| {
         let clang = std::env::var_os("TSUZURI_CLANG")
             .map(PathBuf::from)
@@ -1033,7 +1039,7 @@ fn harness() -> &'static Result<Harness, String> {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-        Ok(Harness { path })
+        Ok(path)
     })
 }
 
@@ -1044,10 +1050,19 @@ struct Outcome {
 }
 
 impl Harness {
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.path);
+        command.env("TSUZURI_GPU_DEBUG", "1");
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        command
+    }
+
     fn run(&self, directory: &Path, arguments: &[String], input: Option<&[u8]>) -> Outcome {
         let output_path = directory.join("output.bin");
         let _ = fs::remove_file(&output_path);
-        let mut command = Command::new(&self.path);
+        let mut command = self.command();
         command.args(arguments);
         if let Some(input) = input {
             let input_path = directory.join("input.bin");
@@ -1055,7 +1070,6 @@ impl Harness {
             command.arg("--input").arg(&input_path);
         }
         command.arg("--output").arg(&output_path);
-        command.env("TSUZURI_GPU_DEBUG", "1");
         let result = command.output().unwrap();
         Outcome {
             status: result.status.code().unwrap_or(-1),
@@ -1069,9 +1083,9 @@ impl Harness {
     }
 
     fn probe(&self, features: u32) -> Outcome {
-        let result = Command::new(&self.path)
+        let result = self
+            .command()
             .args(["probe", "--features", &features.to_string()])
-            .env("TSUZURI_GPU_DEBUG", "1")
             .output()
             .unwrap();
         Outcome {
@@ -1084,33 +1098,68 @@ impl Harness {
             output: Vec::new(),
         }
     }
+
+    fn scratch(&self, name: &str) -> PathBuf {
+        scratch(&format!("{}_{name}", self.label))
+    }
 }
 
-/// The harness, when a Vulkan device is usable; otherwise a loud skip.
-fn device() -> Option<&'static Harness> {
-    match harness() {
+/// The harness of every usable Vulkan implementation; a loud skip when there is none.
+fn devices() -> Vec<Harness> {
+    let binary = match harness_binary() {
         Err(reason) => {
             skip(
                 "TSUZURI_REQUIRE_VULKAN",
                 &format!("no Vulkan runtime harness: {reason}"),
             );
-            None
+            return Vec::new();
         }
-        Ok(harness) => {
-            let probe = harness.probe(0);
-            if probe.status != 0 {
-                skip(
-                    "TSUZURI_REQUIRE_VULKAN",
-                    &format!(
-                        "no usable Vulkan device (status {}):\n{}",
-                        probe.status, probe.log
-                    ),
-                );
-                return None;
-            }
-            Some(harness)
+        Ok(binary) => binary,
+    };
+    let mut candidates = vec![Harness {
+        path: binary.clone(),
+        label: "default".to_owned(),
+        environment: Vec::new(),
+    }];
+    if let Some(list) = std::env::var_os("TSUZURI_VULKAN_TEST_ICDS") {
+        for (index, manifest) in std::env::split_paths(&list).enumerate() {
+            let manifest = manifest.display().to_string();
+            candidates.push(Harness {
+                path: binary.clone(),
+                label: format!("icd{index}"),
+                environment: vec![
+                    ("VK_DRIVER_FILES".to_owned(), manifest.clone()),
+                    ("VK_ICD_FILENAMES".to_owned(), manifest),
+                ],
+            });
         }
     }
+    let mut usable = Vec::new();
+    for harness in candidates {
+        let probe = harness.probe(0);
+        if probe.status == 0 {
+            eprintln!(
+                "Vulkan implementation {}: {}",
+                harness.label,
+                probe
+                    .log
+                    .lines()
+                    .find(|line| line.contains("device="))
+                    .unwrap_or("")
+                    .trim()
+            );
+            usable.push(harness);
+        } else {
+            skip(
+                "TSUZURI_REQUIRE_VULKAN",
+                &format!(
+                    "no usable Vulkan device for {} (status {}):\n{}",
+                    harness.label, probe.status, probe.log
+                ),
+            );
+        }
+    }
+    usable
 }
 
 fn lane_bytes(lane: Lane) -> usize {
@@ -1235,7 +1284,7 @@ fn check_outputs(case: &Case, kernel: &SpirvKernel, inputs: &[u64], actual: &[u6
 
 fn execute(case: &Case, harness: &Harness, staged: bool) -> usize {
     let kernel = emit_ok(case.source, case.relaxed);
-    let directory = scratch(&format!(
+    let directory = harness.scratch(&format!(
         "run_{}_{}",
         case.name,
         if staged { "staged" } else { "direct" }
@@ -1289,7 +1338,12 @@ fn execute(case: &Case, harness: &Harness, staged: bool) -> usize {
 
 #[test]
 fn integer_kernels_match_the_reference_on_a_vulkan_device() {
-    let Some(harness) = device() else { return };
+    for harness in devices() {
+        integer_kernels(&harness);
+    }
+}
+
+fn integer_kernels(harness: &Harness) {
     let int64 = harness.probe(FEATURE_INT64);
     let mut executed = 0;
     let mut lanes = 0;
@@ -1303,7 +1357,7 @@ fn integer_kernels_match_the_reference_on_a_vulkan_device() {
                 "{}: the device has no shaderInt64; the Unavailable path is checked instead",
                 case.name
             );
-            let directory = scratch(&format!("run_{}_unavailable", case.name));
+            let directory = harness.scratch(&format!("run_{}_unavailable", case.name));
             let spv = write_module(&directory, case.name, &kernel);
             let inputs = [1u64, 2, 3];
             let outcome = harness.run(
@@ -1319,27 +1373,44 @@ fn integer_kernels_match_the_reference_on_a_vulkan_device() {
         }
         executed += 1;
     }
-    assert!(executed >= 5, "{executed} integer kernels executed");
+    // four 32-bit kernels, and four that need shaderInt64
+    assert_eq!(
+        executed,
+        if int64.status == 0 { 8 } else { 4 },
+        "{}",
+        harness.label
+    );
     eprintln!(
-        "Vulkan: {executed} integer/i64 kernels matched the reference on {lanes} lanes (direct and staged transfers)"
+        "Vulkan ({}): {executed} integer kernels matched the reference on {lanes} lanes (direct and staged transfers)",
+        harness.label
     );
 }
 
 #[test]
 fn relaxed_float_kernels_stay_within_the_relaxed_tolerance_on_a_vulkan_device() {
-    let Some(harness) = device() else { return };
-    let mut lanes = 0;
-    for case in cases().iter().filter(|case| case.relaxed) {
-        lanes += execute(case, harness, false);
+    for harness in devices() {
+        let mut lanes = 0;
+        for case in cases().iter().filter(|case| case.relaxed) {
+            lanes += execute(case, &harness, false);
+        }
+        eprintln!(
+            "Vulkan ({}): relaxed f32 kernels stayed within the D6 tolerances on {lanes} lanes",
+            harness.label
+        );
     }
-    eprintln!("Vulkan: relaxed f32 kernels stayed within the D6 tolerances on {lanes} lanes");
 }
 
 #[test]
 fn strict_float_kernels_run_only_where_the_device_reports_the_controls() {
-    let Some(harness) = device() else { return };
+    for harness in devices() {
+        strict_float_kernels(&harness);
+    }
+}
+
+fn strict_float_kernels(harness: &Harness) {
     let probe = harness.probe(FEATURE_STRICT_FLOAT);
     let certified = probe.status == 0;
+    let int64 = harness.probe(FEATURE_INT64).status == 0;
     let mut executed = 0;
     for case in cases()
         .iter()
@@ -1347,13 +1418,16 @@ fn strict_float_kernels_run_only_where_the_device_reports_the_controls() {
     {
         let kernel = emit_ok(case.source, false);
         assert_ne!(kernel.features & FEATURE_STRICT_FLOAT, 0, "{}", case.name);
+        if kernel.features & FEATURE_INT64 != 0 && !int64 {
+            continue;
+        }
         if certified {
             for staged in [false, true] {
                 executed += execute(case, harness, staged);
             }
             continue;
         }
-        let directory = scratch(&format!("strict_{}", case.name));
+        let directory = harness.scratch(&format!("strict_{}", case.name));
         let spv = write_module(&directory, case.name, &kernel);
         let inputs = (case.inputs)();
         let head = &inputs[..8.min(inputs.len())];

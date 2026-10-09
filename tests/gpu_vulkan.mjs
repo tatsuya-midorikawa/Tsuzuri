@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync as readRaw, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 if (process.platform === "win32") {
@@ -79,8 +79,12 @@ const mockBuild = run(clang, ["-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-fun
 assert.equal(mockBuild.status, 0, mockBuild.stderr);
 assert.doesNotMatch(mockBuild.stderr, /warning/, "the mock must compile without warnings");
 
+// The Vulkan implementations the device checks run on: the default one of the machine, and every driver manifest named in
+// TSUZURI_VULKAN_TEST_ICDS (a path list), each selected through VK_DRIVER_FILES (for example the SwiftShader of a browser).
+const implementations = [{ label: "default", env: {} }, ...(process.env.TSUZURI_VULKAN_TEST_ICDS ?? "").split(delimiter).filter(Boolean).map((manifest, index) => ({ label: `icd${index}`, env: { VK_DRIVER_FILES: manifest, VK_ICD_FILENAMES: manifest } }))];
+let current = implementations[0];
 const environment = (extra = {}) => ({ ...process.env, ASAN_OPTIONS: "detect_stack_use_after_return=1:abort_on_error=0", UBSAN_OPTIONS: "print_stacktrace=1", ...extra });
-const harness = (args, extra = {}) => run(harnessPath, args, { env: environment(extra) });
+const harness = (args, extra = {}) => run(harnessPath, args, { env: environment({ ...current.env, ...extra }) });
 const mock = (config, args, extra = {}) => harness(args, { TSUZURI_VULKAN_LIBRARY: mockPath, TZ_VK_MOCK: config, ...extra });
 const statusOf = result => Number(/status=(\d+)/.exec(result.stdout)?.[1] ?? NaN);
 
@@ -323,11 +327,10 @@ check("threads: concurrent runs and the lazy initialization are serialized (mock
   }
 }
 
-// ---- the real device ----
-const probe = harness(["probe", "--features", "0"], { TSUZURI_GPU_DEBUG: "1" });
-const realStatus = statusOf(probe);
+// ---- the real devices ----
 const spirvAs = tool("spirv-as", ["/opt/homebrew/opt/spirv-tools/bin/spirv-as", "/usr/local/bin/spirv-as", "/usr/bin/spirv-as"]);
 const spirvVal = tool("spirv-val", ["/opt/homebrew/opt/spirv-tools/bin/spirv-val", "/usr/local/bin/spirv-val", "/usr/bin/spirv-val"]);
+const usedImplementations = new Set();
 
 function assembly(wide) {
   const stride = wide ? 8 : 4;
@@ -443,9 +446,18 @@ function assemble(wide) {
 
 const hostMul = (value, wide) => wide ? (BigInt(value) * 1664525n + 1013904223n) & 0xffffffffffffffffn : (Math.imul(value, 1664525) + 1013904223) >>> 0;
 const device = (name, body) => {
-  if (realStatus !== 0) return skip(name, `no usable Vulkan device (status ${realStatus}): ${(probe.stderr + probe.stdout).trim().split("\n").pop()}`, "TSUZURI_REQUIRE_VULKAN");
   if (!spirvAs) return skip(name, "spirv-as was not found", "TSUZURI_REQUIRE_SPIRV_TOOLS");
-  check(name, body);
+  for (const implementation of implementations) {
+    current = implementation;
+    const probe = harness(["probe", "--features", "0"], { TSUZURI_GPU_DEBUG: "1" });
+    if (statusOf(probe) !== 0) {
+      skip(`${name} [${implementation.label}]`, `no usable Vulkan device (status ${statusOf(probe)}): ${(probe.stderr + probe.stdout).trim().split("\n").pop()}`, "TSUZURI_REQUIRE_VULKAN");
+      continue;
+    }
+    usedImplementations.add(`${implementation.label}: ${/device="([^"]*)"/.exec(probe.stdout)?.[1] ?? "?"}`);
+    check(`${name} [${implementation.label}]`, body);
+  }
+  current = implementations[0];
 };
 const realRun = (module, args) => harness(["run", "--spirv", module, ...args, "--output", join(directory, "real-out.bin")]);
 
@@ -508,5 +520,5 @@ device("device: an unloadable library, an unknown ICD, and a bad module are refu
 
 rmSync(directory, { recursive: true, force: true });
 const total = passed + failed;
-console.log(`GPU Vulkan runtime: ${passed} of ${total} checks passed${failed ? `, ${failed} FAILED` : ""}, ${skips.length} skipped${skips.length ? ` (${skips.map(entry => entry.split(":")[0]).join("; ")})` : ""}; real device: ${realStatus === 0 ? "used" : "not available"}; sanitizers: ${flags === sanitize ? "on" : "off"}`);
+console.log(`GPU Vulkan runtime: ${passed} of ${total} checks passed${failed ? `, ${failed} FAILED` : ""}, ${skips.length} skipped${skips.length ? ` (${skips.map(entry => entry.split(":")[0]).join("; ")})` : ""}; real devices: ${usedImplementations.size ? [...usedImplementations].join(", ") : "none available"}; sanitizers: ${flags === sanitize ? "on" : "off"}`);
 process.exit(failed ? 1 : 0);
