@@ -1,0 +1,235 @@
+// B08: pure async computations on the virtual clock of `Async.run`.
+
+def rec worker :: i64 -> i64 -> i64 -> Async<i64>
+fn rec worker delay count trace = Async {
+    do! Async.sleep delay
+    let! tick = Async.now ()
+    if count == 1 then return trace * 10 + tick
+    else return! worker delay (count - 1) (trace * 10 + tick)
+}
+
+export def basic :: i64 -> i64
+fn basic n = Async.run (Async {
+    let! a = Async.Return n
+    do! Async.yield ()
+    do! Async.sleep 3
+    let! t = Async.now ()
+    return a * 10 + t
+})
+
+export def sleep_zero :: i64 -> i64
+fn sleep_zero _unused = Async.run (Async {
+    do! Async.sleep 0
+    do! Async.sleep (-5)
+    let! t = Async.now ()
+    return t
+})
+
+export def saturated :: i64 -> i64
+fn saturated _unused = Async.run (Async {
+    do! Async.sleep 9223372036854775807
+    do! Async.sleep 9223372036854775807
+    let! t = Async.now ()
+    return t
+})
+
+export def timeline :: i64 -> i64
+fn timeline _unused =
+    let results = Async.run (Async.all [worker 1 3 0, worker 2 2 0])
+    results[0] * 1000 + results[1]
+
+def spin :: Async<i64>
+fn spin = Async {
+    do! Async.yield ()
+    do! Async.yield ()
+    do! Async.yield ()
+    let! t = Async.now ()
+    return t
+}
+
+def sleeper :: Async<i64>
+fn sleeper = Async {
+    do! Async.sleep 1
+    let! t = Async.now ()
+    return t
+}
+
+export def starvation :: i64 -> i64
+fn starvation _unused =
+    let results = Async.run (Async.all [spin(), sleeper()])
+    results[0] * 10 + results[1]
+
+export def nested_all :: i64 -> i64
+fn nested_all _unused =
+    let groups = Async.run (Async.all [Async.all [worker 1 2 0, worker 3 1 0], Async.all [worker 2 1 0]])
+    groups[0][0] * 10000 + groups[0][1] * 100 + groups[1][0]
+
+export def all_empty :: i64 -> i64
+fn all_empty _unused =
+    let empty: [Async<i64>] = []
+    let results = Async.run (Async.all empty)
+    results.length
+
+def outcome :: i64 -> i64 -> Async<Result<i64, i64>>
+fn outcome delay value = Async {
+    do! Async.sleep delay
+    if value > 0 then return Result.Ok value else return Result.Error (-value)
+}
+
+def summary :: Result<[i64], i64> -> i64
+fn summary result =
+    match result with
+    | Result.Ok values ->
+        let mut total = 0
+        for value in values do total = total * 10 + value
+        total
+    | Result.Error error -> -error
+
+export def results_ok :: i64 -> i64
+fn results_ok _unused = summary (Async.run (Async.all_results [outcome 1 1, outcome 0 2]))
+
+export def results_first_error :: i64 -> i64
+fn results_first_error _unused = summary (Async.run (Async.all_results [outcome 2 (-1), outcome 2 (-2), outcome 9 3]))
+
+export def results_time_order :: i64 -> i64
+fn results_time_order _unused = summary (Async.run (Async.all_results [outcome 3 (-1), outcome 1 (-2)]))
+
+def holder :: Async<Result<i64, i64>>
+fn holder =
+    let owned = Array.init 100 (\index -> index)
+    Async {
+        do! Async.sleep 10
+        return Result.Ok (Array.length (ref owned))
+    }
+
+export def cancel_frees :: i64 -> i64
+fn cancel_frees _unused = summary (Async.run (Async.all_results [holder(), outcome 1 (-5)]))
+
+def tick :: i64 -> Async<unit>
+fn tick _value = Async { do! Async.yield () }
+
+export def for_suspending :: i64 -> i64
+fn for_suspending count = Async.run (Async {
+    let values = Array.init count (\index -> index)
+    for value in values do
+        do! tick value
+    return count
+})
+
+export def for_sync :: i64 -> i64
+fn for_sync count = Async.run (Async {
+    let values = Array.init count (\index -> index)
+    for _value in values do
+        do! Async.Return ()
+    return count
+})
+
+// Unit elements let the million-iteration stack check fit the default WASM heap.
+export def for_sync_many :: i64 -> i64 = \count -> Async.run (Async {
+    for _value in new [unit](count, \_index -> ()) do
+        do! Async.Return ()
+    return count
+})
+
+def rec tail_loop_from :: i64 -> i64 -> Async<i64>
+fn rec tail_loop_from i n = Async {
+    if i >= n then return i
+    else
+        do! Async.yield ()
+        return! tail_loop_from (i + 1) n
+}
+
+export def tail_loop :: i64 -> i64
+fn tail_loop n = Async.run (tail_loop_from 0 n)
+
+def rec deep_from :: i64 -> Async<i64>
+fn rec deep_from n = Async {
+    if n == 0 then return 0
+    else
+        let! r = deep_from (n - 1)
+        do! Async.yield ()
+        return r + 1
+}
+
+export def deep :: i64 -> i64
+fn deep n = Async.run (deep_from n)
+
+export def nested_run :: i64 -> i64
+fn nested_run _unused = Async.run (Async {
+    do! Async.sleep 5
+    let inner = Async.run (Async {
+        do! Async.sleep 2
+        let! t = Async.now ()
+        return t
+    })
+    let! outer = Async.now ()
+    return inner * 10 + outer
+})
+
+export def unused :: i64 -> i64
+fn unused n =
+    let _ignored = Async.sleep 5
+    n
+
+export def divide_after_yield :: i64 -> i64
+fn divide_after_yield n = Async.run (Async {
+    do! Async.yield ()
+    return 10 / n
+})
+
+def label :: i64 -> i64 -> Async<string>
+fn label delay value = Async {
+    do! Async.sleep delay
+    return to_string value
+}
+
+export def owned_results :: i64 -> i64
+fn owned_results _unused =
+    let texts = Async.run (Async.all [label 2 7, label 1 42, Async.Return "abc"])
+    texts[0].length * 100 + texts[1].length * 10 + texts[2].length
+
+def text_outcome :: i64 -> i64 -> Async<Result<string, string>>
+fn text_outcome delay value = Async {
+    do! Async.sleep delay
+    if value > 0 then return Result.Ok (to_string value) else return Result.Error "failed"
+}
+
+export def owned_failure :: i64 -> i64
+fn owned_failure n =
+    match Async.run (Async.all_results [text_outcome 1 12, text_outcome 2 n]) with
+    | Result.Ok texts -> texts[0].length * 10 + texts[1].length
+    | Result.Error text -> -text.length
+
+def moved :: Async<i64>
+fn moved =
+    let values = Array.init 3 (\index -> index)
+    Async {
+        do! Async.yield ()
+        let view = ref values
+        return Array.length view
+    }
+
+def within :: i64 -> Async<i64>
+fn within n =
+    let values = Array.init n (\index -> index)
+    let count = Array.length (ref values)
+    Async {
+        do! Async.yield ()
+        return count
+    }
+
+export def borrows_end :: i64 -> i64
+fn borrows_end n = Async.run (moved()) * 100 + Async.run (within n)
+
+def implicit_worker :: i64 -> Async<i64>
+fn implicit_worker n =
+    do! Async.yield ()
+    return n * 2
+
+export def implicit_body :: i64 -> i64
+fn implicit_body n = Async.run (implicit_worker n)
+
+export def task_inside :: i64 -> i64
+fn task_inside n =
+    let job = task { return Async.run (Async { do! Async.sleep 4; let! t = Async.now (); return t + n }) }
+    Task.run job

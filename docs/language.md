@@ -26,7 +26,7 @@ WebAssembly における SIMD128 機能は、`build --target wasm32 --wasm-featu
   `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
-  なお、標準ライブラリの `Set.union` との整合性を保つため、`union` キーワードのみはモジュール関数の宣言名およびドットに後続するメンバー名としても例外的に使用可能です（変数名、型名、モジュール名としては使用できません）。
+  なお、`Set.union` と `Async.yield` のため、`union` と `yield` はモジュール関数の宣言名およびドットに後続するメンバー名としても使用可能です（変数名、型名、モジュール名としては使用できません）。単独の `yield` はコンピュテーション式の文のままです。
   同様に `new` は、ドットに後続するメンバー名としてだけ使用可能です（`Rc.new`、`Arc.new`。C10）。
 - コメント構文には、行末までをコメントアウトする `//`（行コメント）と、ネスト記述が可能な `/* ... */`（ブロックコメント）が利用できます。
 - ファイルの先頭（バイト 0）が `#!` で始まる場合、その 1 行（shebang 行。例: `#!/usr/bin/env -S tsuzuri script`）は行コメントとして読み飛ばされ、改行はそのまま残ります（G13）。`.tz`・`.tt`・`.tc` のどのソースにも同じ規則が適用され、位置（行・列）は shebang 行を含むファイルのまま数えます。BOM の後や 2 行目以降の `#!` はこれまでどおり構文エラーです。`#` で始まる正しいプログラムはないため、この規則で意味が変わる既存のプログラムはありません。
@@ -227,7 +227,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`
 
 `Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
 
@@ -2193,13 +2193,63 @@ WASM ターゲットにおいては、デフォルトでは同一の静的型、
 並列グループが戻るまで、すべてのコールバック関数の完了と結果データの同期公開が確実に待機されます。正常終了時は所有ヒープ領域が完全に回収されます（ワーカースレッドのスタックはプールの寿命に従い、トラップが発生したプールは再利用されずに安全に破棄・クローズされます）。
 extern 関数を使用するワーカーには同一のホスト環境定義が必要であり、`createThreadPool` の `importsModule` が各インスタンス用の `createImports({memory, workerId, data})` を返却します。
 なお Web ブラウザ環境で動作させる場合は、HTTP レスポンスヘッダーに `Cross-Origin-Opener-Policy: same-origin`（COOP）および `Cross-Origin-Embedder-Policy: require-corp`（COEP）を設定して cross-origin isolation を有効化し、専用の Web Worker ホストスクリプトを別途用意する必要があります（Node.js 用のホストコードをそのままブラウザ環境へインポートすることはできません）。
-ブラウザ向けの統合グルーコード、GPU 連携、およびホスト側の非同期 I/O・イベントループとの統合機能は、現時点で本機能の対象外です。
+ブラウザ向けの統合グルーコード、GPU 連携、およびホスト側の非同期 I/O・イベントループとの統合機能は、`Task` の機能には含まれません。待ち時間をほかの計算へ譲るには、次の `Async` を使います。
 `Task.run` はネイティブおよび WASM の双方において同期ブロッキングな呼び出しであり、GUI の UI スレッドをノンブロッキングに保つための非同期 API ではありません。
 POSIX または Windows 以外の未対応プラットフォームに対するネイティブ並列ビルドはビルドエラーとなります（Windows においてランタイムを内包する COFF オブジェクトの直接結合は未対応であり、実行バイナリ出力モードまたは明示的な LLVM IR リンクを使用してください）。
 ネイティブ環境におけるスレッドの生成失敗や join 待機エラーは、コンソールに詳細な診断メッセージを出力してプロセスを異常終了させ、暗黙の成功扱いにごまかすことはありません。
 タスク本体の内部で発生した言語トラップ、メモリ不足、および無限ループに関する規則は通常式とまったく同一であり、
 失敗時におけるスタックの巻き戻し、キャプチャされた所有変数のクリーンアップ、および兄弟タスクの強制キャンセルは保証されません。
 すべてのタスクが正常終了した場合、使用されたすべての所有メモリは漏れなく回収され、ガベージコレクションに依存することのないクリーンなメモリ管理が達成されます（`Arc` で共有した値は、最後の所有者を解放したタスクがその場で解放します）。
+
+## 非同期計算（Async）
+
+`Async<'a>` は、1 つのスレッドで中断点ごとに協調的に進む、コールドな非同期計算です。`Async { ... }` は標準 `Async` ビルダーのコンピュテーション式で、作っただけでは実行しません。
+
+| 実行器 | 実行モデル | 戻り値 |
+|---|---|---|
+| `Async.run` | 仮想時刻。すべてが `sleep` 中のときだけ最小の起床時刻へ進む | `'a` |
+| `Async.block_on` | 単調時計の実時間。タイマーまたはホスト完了まで現在のスレッドを待機 | `IO<'a>` |
+| `Async.start` | ホストが `tsuzuri_async_poll` で駆動する実行器へ投入 | `IO<unit>` |
+
+標準 API は次のとおりです。
+
+```text
+Async.yield       :: unit -> Async<unit>
+Async.sleep       :: i64 -> Async<unit>
+Async.now         :: unit -> Async<i64>
+Async.all         :: Capture<'a> => [Async<'a>] -> Async<['a]>
+Async.all_results :: (Capture<'a>, Capture<'e>) => [Async<Result<'a, 'e>>] -> Async<Result<['a], 'e>>
+Async.run         :: Async<'a> -> 'a
+Async.block_on    :: Async<'a> -> IO<'a>
+Async.start       :: Async<unit> -> IO<unit>
+Async.host        :: Async.Operation -> Async<i64>
+```
+
+`Async.yield ()` は時刻を進めずに一度だけ譲ります。`Async.sleep n` は `n <= 0` なら同じ動作で、`n > 0` なら現在時刻に `n` を飽和加算した時刻まで待ちます。`Async.now ()` は中断しません。
+
+`Async.all` は子を入力順に開始し、各 round で再開できる子を入力順に 1 step ずつ進め、結果を入力順に返します。`Async.all_results` は最初にスケジュール順で完了した `Error` を返し、残りを現在の中断点で破棄します。`Async` の中で通常の `for` を使うと、反復本体が `Async<unit>` になります。`while` と文の `yield` は `Async` ビルダーに定義されていないため `E1018` です。
+
+`Async.Async<'a>` は不透明で非 Copy です。`start` フィールドを読む、`Async { start: ... }` と構築する、または `Async` の値を move 後に使うと、それぞれ `E1022` または `E1012` です。`Async<T>` の式が loan を持つ場合は、開始も中断点とみなし、次の診断を出します。
+
+```text
+error[E1013]: async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead
+```
+
+借用は中断より前に終わらせるか、所有値をブロックへ move します。`Async` の計算の中で `Task` を作る特別な規則はなく、`Async` はスレッド間で共有しません。CPU の並列実行には `Task.parallel` を使います。
+
+### ホストの再開
+
+`Async.host` は `Async.Operation { start, cancel }` を受け取り、実行器から操作 ID を渡してホストを呼びます。ホストは完了時に `tsuzuri_async_complete(operation, value)` を呼び、次の poll で計算を再開させます。`tsuzuri_async_poll(now)` は時計を前へ進め、完了を配り、次に poll すべき時刻を返します。未登録・完了済み・取消済みの ID、poll の再入、`Async.run` でのホスト操作はトラップです。
+
+native では `Async.block_on` が `src/runtime/async.c` の単調時計、条件変数、操作 ID ごとの完了 mailbox を使います。ほかのスレッドからは `int32_t tsuzuri_async_post(int64_t operation, int64_t value)` を使い、受理時は 1、未知・二重・完了済み・取消済みの操作なら 0 を返します。登録は操作の開始時、退役は完了または取消時に行い、退役時には競合して届いた完了も破棄します。mailbox は標準の Tsuzuri allocator を使い、最後の操作を退役させると解放します。各 native スレッドは独立した実行器を持ち、操作 ID の高位ビットで完了先のスレッドを選びます。macOS / Linux 以外の native `block_on` は、ほかの Unix も含め `E2002` です。test / debug-test / bench の対応範囲も同じです。
+
+WASM で `Async.start` を使う場合、既定の出力には import を追加せず、`tsuzuri_async_poll` と `tsuzuri_async_complete` をホストが呼びます。`Async.block_on` は WebAssembly のスタックを待機中に中断する JSPI を使うため、`--wasm-feature jspi` が必要です。`tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、JSPI に対応する export は Promise を返します。`--wasm-feature jspi` は `threads` や `--wasm-host wasi` と併用できません。`--wasm-feature threads` は、Async の per-thread executor を設定しないため、`Async.start` / `Async.block_on` と併用できません。
+
+`--emit bindings-js` で作ったグルーは、`Async.start` に到達する場合 `bindings.async.complete(operation, value)` と `bindings.async.settled()` を提供し、イベントループから自動的に poll します。WASM の `Async.block_on` は `.wasm` とグルーの生成の両方で `--wasm-feature jspi` を要求し、省略は生成前に `E2000` です。`complete` は引数の i64 範囲と、同じ生成グルー内のインスタンス世代を検査します。raw WASM のホストは、再作成前と異なる正の epoch（2^24 未満）を `tsuzuri_async_set_epoch` に設定してから操作を開始します。生成グルーはこれを自動で行います。
+
+JSPI 用のグルーではすべての export が Promise を返し、同じインスタンスへの呼び出しを直列化します。typed array は呼び出し要求時にコピーし、`withBorrowed` は提供しません。raw JSPI のホストは前の `block_on` を await してから次を呼びます。バックグラウンド実行の失敗は `settled()` を reject し、インスタンスを再作成するまで保持します。Async の実行器は `--trap-mode return` と併用できません。
+
+native の `tsuzuri test`、`test --index N -g`、`tsuzuri bench` は実時間の実行器にも対応します。WASM のテスト実行器は `Async.start` / `Async.block_on` を駆動できないため `E2000` で拒否します（`Async.run` は使用可能）。詳細は [WebAssembly への出力](../_tsuzuri/language-reference/compiler/webassembly.md) の [非同期計算と JSPI](../_tsuzuri/language-reference/compiler/webassembly.md#非同期計算と-jspi) を参照してください。
 
 ## 制御構文
 
@@ -3564,7 +3614,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`） |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`） |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |

@@ -472,6 +472,43 @@ fn signature_help_counts_curried_arguments() {
 }
 
 #[test]
+fn keyword_member_yield_has_completion_hover_and_signature_help() {
+    use serde_json::json;
+    let source =
+        "def work :: i64 -> Async<i64>\nfn work n = Async { do! Async.yield (); return n }\n";
+    let responses = scripted(&[("Main.tz", source)], "utf-16", |uri| {
+        let main = uri("Main.tz");
+        vec![
+            json!({"id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":main},"position":position(source,"yield", "utf-16")}}),
+            json!({"id":2,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":main},"position":position(source,");", "utf-16")}}),
+            json!({"id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":main},"position":position(source," ();", "utf-16")}}),
+        ]
+    });
+    assert!(
+        responses[0]["result"]["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Async<unit>"),
+        "{responses:?}"
+    );
+    let label = responses[1]["result"]["signatures"][0]["label"]
+        .as_str()
+        .unwrap();
+    assert!(
+        label.starts_with("yield ") && label.contains("Async<unit>"),
+        "{label}"
+    );
+    assert_eq!(responses[1]["result"]["activeParameter"], json!(0));
+    assert!(
+        responses[2]["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "yield")
+    );
+}
+
+#[test]
 fn interpolated_holes_are_indexed_and_their_text_offers_no_completions() {
     use serde_json::json;
     let main = "def read :: i64 -> i64\nfn read number = number\ndef greet :: i64 -> string\nfn greet n = $\"n={read n:>4} done {{ok}}\"\n";

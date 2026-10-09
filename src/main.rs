@@ -86,7 +86,9 @@ Other source inputs can be checked or built as libraries.
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
-    --wasm-feature <name>   Opt in to simd128 (WASM build) or threads (wasm32 build)
+    --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), or jspi
+                            (WASM build; Async.block_on waits through JavaScript Promise
+                            Integration)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
                             Process APIs to WASI preview1 (wasm32 object or WASM output;
                             the default wasm32 output rejects those APIs)
@@ -262,6 +264,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
+    let mut wasm_jspi = false;
     let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
@@ -483,7 +486,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     let feature = match next_value(arguments, &mut position, "--wasm-feature")?.to_str() {
                         Some("simd128") => &mut wasm_simd,
                         Some("threads") => &mut wasm_threads,
-                        _ => return Err("supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported".into()),
+                        Some("jspi") => &mut wasm_jspi,
+                        _ => return Err("supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported".into()),
                     };
                     if *feature {
                         return Err("WASM feature specified more than once".into());
@@ -613,7 +617,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
-    if (wasm_simd || wasm_threads) && action != Action::Build {
+    if (wasm_simd || wasm_threads || wasm_jspi) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
     if wasm_host.is_some() && action != Action::Build {
@@ -747,6 +751,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         debug_info,
         wasm_simd,
         wasm_threads,
+        wasm_jspi,
         wasm_host,
         wasm_max_memory,
         wasm_stack_size,
@@ -2378,6 +2383,113 @@ mod tests {
             .options
             .wasm_simd
         );
+        for values in [
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "jspi",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm64",
+                "--emit",
+                "llvm",
+                "--wasm-feature",
+                "jspi",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "bindings-js",
+                "--wasm-feature",
+                "jspi",
+            ],
+        ] {
+            assert!(parse(&values).unwrap().options.wasm_jspi, "{values:?}");
+        }
+        for (values, message) in [
+            (
+                vec!["run", "Main.tz", "--wasm-feature", "jspi"],
+                "--wasm-feature is only valid with build",
+            ),
+            (
+                vec!["build", "Main.tz", "--wasm-feature", "jspi"],
+                "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "header",
+                    "--wasm-feature",
+                    "jspi",
+                ],
+                "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "jspi",
+                    "--wasm-feature",
+                    "threads",
+                ],
+                "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "jspi",
+                    "--wasm-host",
+                    "wasi",
+                ],
+                "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "jspi",
+                    "--wasm-feature",
+                    "jspi",
+                ],
+                "WASM feature specified more than once",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "asyncify",
+                ],
+                "supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
         assert!(
             parse(&["build", "Main.tz", "-g"])
                 .unwrap()

@@ -105,7 +105,10 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | 移植性 | デフォルトの `--cpu generic` ではターゲットアーキテクチャのベースライン命令セットを採用。同梱の i64 配列和のみ実行時 ISA 選択を実施。`native` 指定時は配布バイナリの前提条件にビルド機の ISA が含まれる |
 | 複数 CPU コア | `Task.parallel` 向けに遅延起動する常駐スレッドプールを実装。ハードウェアの CPU コア数に応じて追加スレッド数を適切に制限し、呼び出し元スレッド自身も自グループの処理を推進。WASM は逐次フォールバック。自動並列化は未実装 |
 | GPU | 実験的なカーネル抽出、CPU 参照実装、厳密な整数 WGSL 出力、および WebGPU ホスト試作を実装。通常ランタイムへの実 GPU 自動接続、浮動小数点 GPU 演算、自動オフロードは未実装 |
-| WASM | bulk-memory に標準対応。SIMD128、マルチスレッド（threads）、`--wasm-host wasi` はそれぞれ明示的なオプトイン（opt-in）制。デフォルトは SIMD なし・ホストインポートなし（IO は `tsuzuri_io`）・逐次実行であり、OS API の呼び出しは `E2000` で拒否 |
+| WASM | bulk-memory に標準対応。SIMD128、マルチスレッド（threads）、`--wasm-host wasi`、Async の JSPI はそれぞれ明示的なオプトイン（opt-in）制。デフォルトは SIMD なし・ホストインポートなし（IO は `tsuzuri_io`）・逐次実行であり、OS API の呼び出しは `E2000` で拒否 |
+| 協調的な非同期計算 | `std/Async.tc` の継続と `Step` で `Async.run`、native の `Async.block_on`、ホスト駆動の `Async.start` を実装。native の reactor は per-thread mailbox、WASM の `block_on` は JSPI を使う |
+
+B08 の測定（Apple M1 Max、macOS、`-O3`、9 回）は、末尾の `return!` で 100 万回 `yield` する計算が中央値 0.18 秒、最大 RSS 約 1.7 MB でした。非末尾の `let!` と `yield` を 1000 / 2000 / 4000 段重ねた計算は、それぞれ中央値 0.03 / 0.11 / 0.40 秒でした。これらは合否の閾値ではなく、継続の確保と非末尾再開のコストを記録した値です。条件・raw samples・再現方法は [性能測定](benchmarks.md#async-の中断と継続のコストb08) にあります。IR の `bind_step` 特殊化では、代表的な `i64` 結果の本体に `@tz.alloc` が 4 箇所、継続環境の clone helper に 2 箇所あり、同じ継続を再利用する最適化はまだ行っていません。
 
 新しい組み込み関数や標準ライブラリを設計する際は、要素ごとの汎用的な関数呼び出しを基本実装とせず、要素型・メモリ連続性・データサイズを静的に把握できる一括操作（バルク操作）として設計してください。必ず厳密で正確な基準実装（リファレンス）を用意し、スカラー、SIMD、並列 CPU、GPU の各経路で同一の契約が満たされているかを検証します。既存の所有権・借用・不変性の情報から別名関係（エイリアス）の不在や独立性を論理的に証明できる場合にのみ最適化を適用し、根拠のない `noalias` 属性などを安易に付与してはなりません。
 
@@ -113,7 +116,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 
 高速化を目的として、整数のオーバーフロー（折り返し）、飽和演算、最近接偶数丸め、NaN の扱い、符号付きゼロ、式の評価順序、トラップ挙動を変更することは禁止します。浮動小数点の集約順序の変更や FMA（積和演算）の融合が必要な場合は、まず独立した別名 API や明示的なモードとしての契約を策定し、既存の演算子へ暗黙的に適用してはなりません。新設した最適化経路には、境界値テストおよび参照実装との照合テストを用意し、同一条件下での C/C++ との比較検証を実施してください。共有 CI では意味論の正しさとリグレッション（性能退行）の有無を検査し、厳密な性能閾値の判定はノイズの少ない専用環境で行います。
 
-WebAssembly の機能フラグ（WASM feature）は `BuildOptions.wasm_simd` および `wasm_threads` で表現されます。ドライバーは SIMD 有効時に `-msimd128`、デフォルトでは `-mno-simd128` を Clang に渡します。生成される LLVM IR には feature 要件がコメントとして記録されます。`tests/wasm_simd.mjs` は `llvm-objdump` の逆アセンブル結果と `BigInt` 参照実装を用いて検証を行い、即値の `0xfd` を SIMD オペコードと誤認しないように厳密に命令解析を実施します。
+WebAssembly の機能フラグ（WASM feature）は `BuildOptions.wasm_simd`、`wasm_threads`、`wasm_jspi` で表現されます。ドライバーは SIMD 有効時に `-msimd128`、デフォルトでは `-mno-simd128` を Clang に渡します。生成される LLVM IR には feature 要件がコメントとして記録されます。`tests/wasm_simd.mjs` は `llvm-objdump` の逆アセンブル結果と `BigInt` 参照実装を用いて検証を行い、即値の `0xfd` を SIMD オペコードと誤認しないように厳密に命令解析を実施します。
 
 マルチスレッド対応（threads）は WASM およびオブジェクト出力専用の機能です。C11 の freestanding な `task-wasm-threads.c` を `-matomics` および `-mbulk-memory` でコンパイルし、`wasm-ld` の `--shared-memory` および `--import-memory` を用いて結合します。`heap-wasm.ll` 内のアロケータを内部名へ変更し、`heap-wasm-threads.ll` のロックラッパーから呼び出す設計とすることで、`realloc` 内部で行われるメモリ確保と解放も単一のロック内で安全に完結させています。
 共有状態はリニアメモリ上に配置され、`wasm-ld` による一度限りのデータ初期化を利用します。各インスタンスの `__stack_pointer` とスタック範囲（`tsuzuri_stack_base`、`tsuzuri_stack_top`。メインスレッドは 0）のみをホスト側から設定します。
@@ -188,6 +191,14 @@ wasm32 ではラッパー関数のアドレスが関数テーブルのインデ�
 GC（ガベージコレクション）は最大 4096 エントリまで走査し、最終アクセス日時、合計 2 GiB の容量上限、30 日間の有効期限を基準に最大 128 件ずつ回収します。古い不完全エントリ、残存ロック、一時領域も回収対象であり、上限はソフトリミットです。
 macOS のデバッグ実行ファイルとデバッグ共有ライブラリにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。Windows のデバッグ実行ファイルは隣の PDB をファイル名で指すので、その名前もキーに含めます（G16）。`--emit shared` はファイル名を install name（macOS）か soname（Linux）として埋め込むので、出力のファイル名もキーに含めます（`hash_output_path`）。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
 動作は `tests/cache.mjs` により、実際の CLI を用いたキャッシュヒット（ツール起動回数の削減確認）、ミス、破損時の回復、並行書き込み、no-cache 指定、実行権限の保持、トラップ情報／DWARF の整合性、依存関係変更時の無効化が検証されています。
+
+**Async の不変条件（B08）:** `Async<T>` の式は `Checker::eval` で loan を持たないことを検査します。これは `Async { ... }` の cold な開始、`let!` / `do!` の継続、`Async.start` の実行器表のいずれでも、字句スコープを越えて借用を保持しないための共通境界です。std の `Async.Async` は opaque かつ非 Copy で、`Async.Step` の継続は `Async.__resume` が一度だけ move して呼びます。
+
+`Async.run` は呼び出しごとに独立した仮想時計を持ちます。`Async.start` と `Async.block_on` は、`Async.__take` / `Async.__put` が管理する実行器状態を呼び出しスレッドごとに保持します。native の `Async.__next_id` は操作 ID の上位 bits にスレッド index を埋め込み、`src/runtime/async.c` の `tsuzuri_async_post` はその mailbox へ完了を配送します。`tsuzuri_async_complete` と poll の再入、未知・二重・取消済み ID は trap です。
+
+native reactor は操作を開始時に登録し、完了・取消時に退役させます。`tsuzuri_async_post` は未登録・二重・退役済みの操作を確保前に拒否して 0 を返し、受理した完了だけをキューへ置いて 1 を返します。取消と競合して届いた完了は退役時に取り除きます。mailbox とキューは `tsuzuri_alloc` / `tsuzuri_free` を使い、最後の登録操作がなくなると解放します。host/counting allocator と解放追跡の対象から外れません。時計・条件変数の失敗は診断を出して終了し、macOS / Linux 以外の native reactor は、ほかの Unix も含め `E2002` です。build と test / debug-test / bench は同じ対応フラグと診断を共有します。ソケットの多重化は E09 の範囲であり、この実行器はタイマーと外部からの完了を待ちます。
+
+WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が操作 ID の上位 bits をインスタンス世代として設定します。生成グルーは同じ生成モジュール内で世代を再利用せず、古い完了通知を新しい状態へ渡しません。JSPI の待機は `WebAssembly.Suspending`、export は `WebAssembly.promising` を使い、同じインスタンスへの呼び出しを Promise キューで直列化します。渡された typed array は待ち行列へ入れる前にコピーします。WASM threads の executor TLS と trap-return 後の状態復旧は実装していないため、これらとの併用はビルド時に拒否します。
 
 **Frontend cache（G17）:** `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果をキャッシュルートの `frontend/` に保存して再利用します（`Project::analyze_cached` から `analyze_inputs_with`）。`src/syntax_codec.rs` は `Program` から届くすべての構文型を手書きの `Wire` で符号化します。enum の tag は宣言順の 1 byte、整数は LEB128、文字列と列は長さ付きで、`match` は `_ =>` を使わず全 variant を書くので、構文型に variant や field を足すとここが compile error になります。span の source index は保存せず、復号のときに現在の index を付け直すので、ファイルを足したり消したりして index がずれても再利用できます。
 プロジェクトのルート（`fs::canonicalize` した場所）と解析の種類（`program`・`tests`・`docs`）ごとに、パック `p-<project key>.tzp` と manifest `m-<project key>.json` の 2 ファイルだけを読み書きします。パックは、ソースの byte 列と compiler の同一性から作る parse key ごとの entry（header、`syntax_codec` の符号、SHA-256）を並べたものです。ソースごとのファイルにしないのは、ファイルを開く費用（on-access scan のある環境では 1 回 0.3〜1 ms）がモジュールの構文解析より大きくなるためです。manifest はモジュールごとの parse key と interface hash を持ち、前回との比較から `FrontendDelta`（変わったソース、変わった interface、消えたモジュール）を作ります。interface hash は span・文書 comment・関数本体・test・入口式・instance method の本体を除いた符号（`Mode::Interface`）の SHA-256 です。compiler の同一性は形式番号、版、実行ファイルの大きさと更新時刻に、Unix では device・inode・状態変更時刻（ctime）、それ以外ではパスと作成時刻を加えたものです（`cp -p` や Nix のように更新時刻をそろえても、別のファイルや書き直したファイルを区別します）。
@@ -278,7 +289,7 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 無修飾の型名、case、レコード、型クラスの解決においては、まず自モジュール内、次いで完全修飾名（モジュールパスが同一名の型を表す場合を含む）を検索します。その後、参照元がユーザーコードであれば「ユーザー定義モジュール群 → std モジュール群」の順序で各段階ごとに一意な候補を探索し、参照元が std であれば std モジュール群のみを探索します。
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
-例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`。D-40・D-41）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
+例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`。D-40・D-41・D-42）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
 そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
@@ -1205,6 +1216,8 @@ f16 の単項基本演算は全 65,536 パターン、広幅形式は各 1,000 �
 ネイティブ環境におけるヒープ追跡と、WASM のメモリ上限を超過する累積メモリ確保テストを通じて、未実行のまま破棄されたタスクを含む確実なリソース解放を検証します。
 `tests/task_runtime.c` はハードウェア機能検出および pthread 呼び出しを計測用フックに差し替え、条件変数による実際の並行実行、共有プールの上限維持、全スレッドの完全ジョイン、逐次フォールバック、ならびにスレッド生成・ジョイン失敗時の適切な診断報告を検証します。
 単なる経過時間の短縮をテストの合否判定基準とすることはせず、通常の関数呼び出しが完了した後にバックグラウンドで不要なワーカースレッドが残存しないことを厳格に検査します。
+
+Async は `tests/async.rs` が opaque / non-Copy、実際の借用を持つ callback 環境の拒否、非 Copy の結果、決定的な IR と到達可能性、CLI・ABI・生成宣言を検証します。抽象的な引数の placeholder loan だけを呼び出し側の具体的な環境へ延期し、std 本体の検査を免除しません。`tests/features.mjs` の `async` suite は仮想時計、順序、短絡、飽和、深い継続、`For` を native/WASM の `-O0` / `-O3` で確認します。`tests/async.mjs` は host executor、native の登録・退役・他スレッドからの完了・`Task.parallel`、wasm32/wasm64 の JSPI、生成グルーの直列化・入力スナップショット・失敗保持・世代、native の test/debug-test/bench を検証します。native の各呼び出し後に mailbox を含む `live == 0` を確認し、ASan 時には生成 IR の関数にも `sanitize_address` を付けます。
 
 コンピュテーション式は、`tests/computations.rs` が拡張子ごとの宣言制限、複数型クラスの適用、ビルダーの各構文、単相化、クロージャ捕捉、生存期間、未実装操作の検出、ネスト展開深度、および未使用ビルダーの型検査を検証します。
 `tests/computations.mjs` は、ネイティブおよび WASM の `-O0`／`-O3` においてカスタム短絡評価、複数回の yield、入れ子の反復、`Delay`／`Run` の有無による挙動差異、評価順序、数値境界、トラップ、およびタスクとの相互合成をテストします。

@@ -179,7 +179,7 @@ Array.sum ref totals
 42
 ```
 
-ネイティブでは、常駐スレッドプールが仕事を分けます。既定の WebAssembly では、同じ計算を逐次で実行します。どちらも結果の順序は同じです。画面を止めない非同期 I/O ではありません。非同期計算は計画中です（[B08](../../../_features/B08-async.md)）。
+ネイティブでは、常駐スレッドプールが仕事を分けます。既定の WebAssembly では、同じ計算を逐次で実行します。どちらも結果の順序は同じです。画面を止めない待ち時間を扱う非同期計算は [Async 式](../async-tasks-and-lazy/async.md) で、CPU の並列計算は `Task` で表します。
 
 詳しくは[Task 式](../async-tasks-and-lazy/task.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。
 

@@ -1,0 +1,78 @@
+// B08 Phase 2: computations that the host drives with tsuzuri_async_poll and
+// tsuzuri_async_complete. The host implements the externs.
+
+extern def start_operation :: i64 -> i64 -> unit
+extern def cancel_operation :: i64 -> unit
+extern def report :: i64 -> i64 -> unit
+
+def wait_host :: i64 -> Async<i64>
+fn wait_host request = Async.host (Async.Operation {
+    start: \operation -> start_operation operation request,
+    cancel: \operation -> cancel_operation operation
+})
+
+// Two host operations one after the other; reports a + b with tag 1.
+export def sequential :: i64 -> unit
+fn sequential n =
+    do! Async.start (Async {
+        let! a = wait_host n
+        let! b = wait_host (n + 1)
+        report 1 (a + b)
+    })
+
+// Both operations start in one poll; reports first * 1000 + second with tag 2.
+export def concurrent :: i64 -> unit
+fn concurrent n =
+    do! Async.start (Async {
+        let! values = Async.all [wait_host n, wait_host (n + 1)]
+        report 2 (values[0] * 1000 + values[1])
+    })
+
+// The failure at time 5 cancels the operation that the other child waits for; reports -n with tag 3.
+export def cancelling :: i64 -> unit
+fn cancelling n =
+    do! Async.start (Async {
+        let waiting: Async<Result<i64, i64>> = Async {
+            let! value = wait_host n
+            return Result.Ok value
+        }
+        let failing: Async<Result<i64, i64>> = Async {
+            do! Async.sleep 5
+            return Result.Error n
+        }
+        let! outcome = Async.all_results [waiting, failing]
+        match outcome with
+        | Result.Ok _ -> report 3 0
+        | Result.Error error -> report 3 (-error)
+    })
+
+// Reports each step with tag 4 and yields after it: one step per poll.
+export def yielding :: i64 -> unit
+fn yielding count =
+    do! Async.start (Async {
+        let steps = Array.init count (\index -> index)
+        for step in steps do
+            report 4 step
+            do! Async.yield ()
+        report 4 count
+    })
+
+// Sleeps on the host's clock and reports the time with tag 5.
+export def sleeping :: i64 -> unit
+fn sleeping delay =
+    do! Async.start (Async {
+        do! Async.sleep delay
+        let! time = Async.now ()
+        report 5 time
+    })
+
+// Async.run cannot complete a host operation: a trap.
+export def run_host :: i64 -> i64
+fn run_host n = Async.run (wait_host n)
+
+export def failing :: i64 -> unit
+fn failing n =
+    do! Async.start (Async {
+        do! Async.yield ()
+        ignore (10 / n)
+    })

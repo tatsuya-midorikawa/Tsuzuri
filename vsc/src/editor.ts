@@ -6,7 +6,7 @@ import { toolchain } from './toolchain';
 import { endsInPath, libraryQualifier, runProcess } from './core';
 
 const keywords = 'def fn rec and export extern private record union type const test bench class instance deriving dyn let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false where';
-const types = 'bool unit string utf8string char utf8char byte ubyte i8 i16 i32 i64 i128 i8u i16u i32u i64u i128u f16 f32 f64 f128 d32 d64 d128 Task Maybe Result Vec Map Set Seq IO';
+const types = 'bool unit string utf8string char utf8char byte ubyte i8 i16 i32 i64 i128 i8u i16u i32u i64u i128u f16 f32 f64 f128 d32 d64 d128 Task Maybe Result Vec Map Set Seq IO Async';
 
 export function registerEditor(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.languages.registerDocumentFormattingEditProvider('tsuzuri', {

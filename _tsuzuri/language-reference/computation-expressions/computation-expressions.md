@@ -129,9 +129,25 @@ Identity {
 | `Result` | `std/Result.tc` | 理由つきの成功と失敗 | 最初の `Error` で継続を呼ばない |
 | `Maybe` | `std/Maybe.tc` | 値の有無 | `None` で継続を呼ばない |
 | `IO` | `std/IO.tc` | 副作用の遅延合成 | 実行するまで副作用は起きない |
+| `Async` | `std/Async.tc` | 協調的な中断とホスト駆動 | `run` は仮想時刻、`block_on` は実時間、`start` はホスト駆動 |
 | `task` | 言語組み込み | 並行タスク | コールドで 1 回消費。`.tc` ではない |
 
 `Maybe` と `Result` は `Bind`、`Return`、`ReturnFrom`、`Zero`、`Combine`、`Delay`、`Run`、`For`、`While`、`MergeSources`、`BindReturn`、`Bind2` を定義しています。`IO` はこれらに加え `Using` を定義しています。公開の `IO.run` はありません。実行するのは `main`、`do!`、`let!`、トップレベルの `IO` 式です。
+
+### 標準 Async ビルダー
+
+`Async { ... }` は標準の `Async` ビルダーです。`Return`、`ReturnFrom`、`Bind`、`Delay`、`Zero`、`Combine`、`For` を定義し、`While`、`MergeSources`、`Yield` は定義しません。値を一度譲る操作は `Async.yield ()` と書きます。
+
+```tsuzuri run=7
+def worker :: i64 -> Async<i64>
+fn worker n =
+    do! Async.yield ()
+    return n + 1
+
+Async.run (worker 6)
+```
+
+`Async` の値は作成時には動きません。`Async.run`、`Async.block_on`、`Async.start` のどれかで明示的に実行します。`Async` ビルダーの詳細、`all` / `all_results`、仮想時刻、ホストの再開、借用規則は [Async 式](../async-tasks-and-lazy/async.md) を参照してください。
 
 ```tsuzuri run=42
 let answer: Result<i64, string> = Result {
@@ -304,6 +320,7 @@ match answer with
 1. 継続は再利用できる関数です。`Task<T>` や `ref mut` を継続へ捕捉すると `E1005` です。
 2. 外の `let mut` への代入は、継続の中では可変束縛として見えず `E1014` です。
 3. `let! mut x = expr` は、その継続の中のローカルを可変にするだけです。後続の `let!` をまたいで、外の可変変数を共有する機能ではありません。
+4. `Async<T>` の式が借用を持つことはできません。`let!`、`do!`、または計算の開始をまたぐ借用は `E1013` です。値をブロックへ移すか、次の中断点より前に借用を終えます。
 
 ```tsuzuri run=42
 let answer = Maybe {
@@ -322,7 +339,7 @@ match answer with
 42
 ```
 
-裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。`task` の暗黙本体は `Task<T>` を作り、`and!` や `yield` は付きません。詳しくは [Task 式](../async-tasks-and-lazy/task.md) を見てください。
+裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。`task` の暗黙本体は `Task<T>` を作り、`and!` や計算式の `yield` は付きません。`Async` の暗黙本体は戻り値が `Async<T>` のときに選ばれます。詳しくは [Task 式](../async-tasks-and-lazy/task.md) と [Async 式](../async-tasks-and-lazy/async.md) を見てください。
 
 ## 性能
 
@@ -343,7 +360,7 @@ match answer with
 ## まとめ
 
 - ビルダーは `.tc` のファイル名です。実行時オブジェクトではありません。
-- `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。
+- `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。標準の `Async` では `Async.yield ()` が中断点であり、文の `yield` は未定義です。
 - 関数本体ではビルダー名を省略できます。曖昧なときは型注釈か明示的な `Builder { ... }` が要ります。
 - `and!` は左から右の結合で、スレッド並列ではありません。
 - 継続は普通の関数です。`Task`、`ref mut`、`Drop` 型は捕捉できません。

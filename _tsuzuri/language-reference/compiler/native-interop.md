@@ -372,13 +372,31 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 
 契約の詳細は [言語仕様のホスト提供の allocator](../../../docs/language.md#ホスト提供の-allocator) を見てください。
 
+## 非同期計算の実行器
+
+[Async 式](../async-tasks-and-lazy/async.md) の `Async.start` か `Async.block_on` に到達するプログラムは、実行器の入口を公開します。ヘッダーには次の宣言が入ります。`tsuzuri_async_post` は、`Async.block_on` に到達するときだけです。
+
+```c
+int64_t tsuzuri_async_poll(int64_t now);
+void tsuzuri_async_complete(int64_t operation, int64_t value);
+int32_t tsuzuri_async_post(int64_t operation, int64_t value);
+```
+
+`Async.host` に渡す操作の `start` と `cancel` は、普通の `extern`（`tsuzuri_host_<モジュール>_<名前>`）としてホストが実装します。`tsuzuri_async_poll` は時計を `now` まで進めて計算を再開し、次に poll する時刻を返します。`-1` は計算が残っていないこと、`INT64_MAX` はホストの操作の完了だけを待っていることを表します。規則と C のホストの骨組みは、[Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
+
+`Async.block_on` に到達する実行ファイル、オブジェクト、共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルして `-pthread` を付けます。対応するホストは macOS / Linux だけです。Windows とそれ以外の Unix を含むホストは `E2002` で、test / debug-test / bench も同じ対応範囲です。
+
+- 実行器はスレッドごとに独立しています。`Task.parallel` の各ワーカーから `Async.block_on` を呼んでも、操作の完了は開始したスレッドへ届きます。`Async.start` を投入したスレッドから poll し、そのスレッドを計算の終了まで生存させます。
+- ほかのスレッドから操作を完了するときは、`tsuzuri_async_post` を使います。受理すると 1 を返して待機を起こし、未知・二重・完了済み・取り消し済みなら 0 です。`tsuzuri_async_complete` は、実行器を動かしているスレッド（コールバックの中を含む）から呼びます。mailbox の確保も選択した Tsuzuri allocator を通り、終了・取り消しで解放されます。
+- `--trap-mode return` とは組み合わせられません（`E2000`）。トラップした呼び出しのブロックを境界が解放しても、実行器の状態から届いてしまうからです。
+
 ## スレッドとホストの責任
 
 `Task.parallel` は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、並列タスクの中から呼ばないでください。WASM の現行の Task は、threads を付けない限り逐次です。
 
 `extern type` の値は所有値なので、ある時点でそれを使えるタスクは 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数のタスクから同時に使うことはありません。
 
-export とコールバックは、Tsuzuri 側の大域的な可変状態を持ちません。ホストが複数スレッドから export を呼ぶこと自体は、Tsuzuri のロックを要しません。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
+export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。[非同期計算の実行器](#非同期計算の実行器) の状態はスレッドごとに保持し、別スレッドの完了配送だけを runtime が同期します。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 
 ホストは信頼境界です。例外の unwind、呼び出しが返ったあとのポインタの保持、回復不能な失敗から Tsuzuri のフレーム越しに戻ることはしません。`--trap-mode return` を指定すると、各エクスポート関数に対応する `tsuzuri_try_<name>` がヘッダーに追加され、トラップ発生時にプロセスを終了させる代わりにステータスコード 1 を返せます。その呼び出し中に確保されたヒープ領域は境界処理によって自動解放され、デストラクタは実行されません。オブジェクトを埋め込んだホストは、自分でシグナルハンドラを用意しない限り、スタック枯渇を Tsuzuri のメッセージとしては受け取りません。
 
@@ -560,10 +578,12 @@ C の名前はリンク名としてそのまま残り、Tsuzuri 側の名前だ�
 - 所有バッファは `tsuzuri_free`、ヒープの差し替えは `--allocator host` です。
 - `tsuzuri bindgen` は、ABI の一致を確かめられる C の宣言だけを生成し、推測で型を当てはめません。
 - `--emit shared` の共有ライブラリを、生成した C#、Python、C++ のバインディングから呼べます。
+- `Async.start` と `Async.block_on` を使うプログラムは、`tsuzuri_async_poll`・`tsuzuri_async_complete`（`block_on` では `tsuzuri_async_post` も）でホストが実行器を進めます。
 
 ## 関連項目
 
 - [WebAssembly への出力](webassembly.md)
+- [Async 式](../async-tasks-and-lazy/async.md)
 - [コンパイラ オプション](option.md)
 - [コンパイラの使い方](usage.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)

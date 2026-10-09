@@ -5,6 +5,7 @@
 pub const SOURCES: &[(&str, &str)] = &[
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
+    ("std/Async.tc", include_str!("../std/Async.tc")),
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
@@ -92,6 +93,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Cbor",
     "Bench",
     "Gen",
+    "Async",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -126,6 +128,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Json.Reader"
             | "Json.Writer"
             | "Gen.Gen"
+            | "Async.Async"
+            | "Async.Next"
     )
 }
 
@@ -187,6 +191,11 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Gen",
         names: &["Gen"],
+        uses: &[],
+    },
+    OptIn {
+        module: "Async",
+        names: &["Async"],
         uses: &[],
     },
 ];
@@ -485,7 +494,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 45);
+        assert_eq!(RESERVED_MODULES.len(), 46);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

@@ -720,6 +720,7 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   | `Regex`／`Unicode` | 線形時間の正規表現、Unicode 17.0.0 の表による分類・正規化・境界・大小変換。opt-in std モジュール（D-40） | D09 |
   | `Bench` | `bench` 宣言の本体を作る `Bench.of`・`Bench.with_input` と組み込み `Bench.now`（`tsuzuri bench` の実行器の中だけ）・`Bench.consume`。opt-in std モジュール（D-41） | G18 |
   | `Gen` | プロパティテストの生成器・組み合わせ・縮小と `Gen.for_all`。std 専用の組み込み `Gen.__seed`。opt-in std モジュール（D-41） | G18 |
+  | `Async`（`Async.tc`） | 協調的な非同期計算・仮想時計・ホストの再開・native reactor・WASM JSPI。opt-in std モジュール（D-42） | B08 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
@@ -978,7 +979,6 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 組み込みクラス | `Sync`（仮称） | F10 |
 | std | `Matrix` | C11 |
 | std | `Net` | E09 |
-| std | `Async` | B08 |
 | std | `Atomic`／`Mutex`／`Channel` | F10 |
 
 2026-09-29 の詳細化で、各チケットが次の名前を仮に決めた（衝突を避けるための台帳。確定は各チケットの決定事項と承認に従う）。
@@ -1269,6 +1269,34 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   プログラムはないので、既存のプログラムの意味は変わらない。D-15）。D13（JIT）は再検討しても採用しない。LLVM の C API への結合・新しい crate・
   `unsafe`・配布物の前提の変更が要り、docs/architecture.md の方針と衝突する。代わりに 1 入力の待ち時間を段ごとに測り（docs/benchmarks.md）、表示できる
   式の解析を 1 回にした。残る費用は PB01・PB05・PB06 の対象。
+
+### D-42 B08 の全フェーズと現行仕様の確定
+
+- 2026-10-09、利用者の B08 全フェーズの完遂、最新仕様との再検討、`yield_now` を `yield` とする依頼、および必要な判断への包括承認を、
+  B08 D1・D10 と Phase 3 の承認として扱った。着手時点は `ce7e8a1`。B07・E08・E13・E14 は完了済みで、旧 HEAD `f8dc655` の計画より
+  D-34〜D-41 の整数既定 i32、`def ... :: ... = \...`、名前空間、opt-in std、現在の文書配置を優先した。
+- 利用者向けの中断点は `Async.yield ()`。`yield` は `union` と同じく関数宣言名とドットの後で名前として読めるが、単独では計算式の文。
+  `Async` の builder operation `Yield` は実装せず、`yield_now` の別名も作らない。formatter・LSP・VS Code の文法も同じ規則にする。
+- `Async<'a>` は不透明・非 Copy の cold 計算。既存の計算式の展開を使い、状態機械や stackful coroutine は足さない。
+  通常の Copy な closure が継続環境を再帰的に複製する問題を避けるため、不透明・非 Copy の `Next<'x,'y>` と std 専用の consuming
+  builtin `Async.__resume` を使う（旧 D2 の LLVM 変更禁止を改めた）。Async を使わない 6 組の IR はバイト比較で維持する。
+- `Async<T>` の式は実際の loan を保持できない（E1013）。抽象的な関数引数の placeholder loan だけを呼び出し側で具体化して検査し、
+  std 本体の検査は免除しない。所有した捕捉値を中断点の内側で借用することはできる。継続・集約状態を `Vec.pop` で move するため、
+  `all` / `all_results` の結果に旧 D7 の Copy 制約は要らない。開始・round は入力順、Error の短絡はスケジュール順。
+- Phase 2 は `Async.Operation { start, cancel }`、`Async.host`、`Async.start`、`tsuzuri_async_poll(now)`、
+  `tsuzuri_async_complete(operation,value)`。start は cold な計算を投入して戻り、最初の poll が開始する。未完了のホスト操作を破棄すると
+  cancel を 1 回呼ぶ。poll の再入と未知・二重・取消済みの raw complete は trap。`run` は独立した仮想時計で、ホスト操作を拒否する。
+- Phase 3 は `Async.block_on :: Async<'a> -> IO<'a>`。native の状態は TLS、操作 ID の bits 39–62 は再利用しないスレッド index。
+  POSIX の単調時計・条件変数・登録操作の mailbox で待ち、他スレッドの `int32_t tsuzuri_async_post` は受理時 1、未知・二重・退役時 0 を返す。
+  完了・取消時には競合した完了を除去し、最後の操作の退役時に Tsuzuri allocator で確保した mailbox を解放する。
+  kqueue／epoll／IOCP を先に足す旧案は再検討し、B08 に必要なタイマーと外部完了だけを実装した。ソケット API は E09 に残す。
+- WASM の block_on は明示的な `--wasm-feature jspi`。既定の純粋な Async の WASM import は増やさない。raw WASM のホストは操作開始前に
+  `tsuzuri_async_set_epoch` を設定し、再作成前と異なる世代を使う。生成グルーは同じ生成モジュール内で世代を再利用せず、
+  `bindings.async.complete` と `settled()` で自動駆動する。JSPI の export はすべて Promise で直列化し、typed array は要求時にコピーする。
+  `withBorrowed` は提供しない。失敗はインスタンスを再作成するまで保持し、未観測のバックグラウンド失敗は診断する。
+- native の test/debug-test/bench も reactor をリンクする。未対応の native Windows reactor は E2002、
+  WASM の host executor を使うテスト実行器は E2000。WASM threads の executor TLS と `--trap-mode return` の状態復旧は未実装なので
+  明示的に拒否する。新しい Rust crate、unsafe Rust、既定の host import、stack・特殊化の上限引き上げはない。
 
 ## 10. 完了の定義（全チケット共通）
 

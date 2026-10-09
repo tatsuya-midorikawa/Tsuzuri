@@ -139,7 +139,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 整数 WGSL と WebGPU ホスト試作 | 実験的 | F07。通常ランタイムへは未接続 |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
 | Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002` |
-| 非同期計算、ネットワーク | 計画中 | [B08](../../../_features/B08-async.md)、E09 |
+| 非同期計算 | 実装済み（純粋な仮想時刻、native reactor、ホスト駆動、WASM JSPI は opt-in） | [Async 式](../async-tasks-and-lazy/async.md)、B08 |
+| ネットワーク | 計画中 | E09 |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
 | GPU の浮動小数点と自動接続 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) |
