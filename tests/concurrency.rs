@@ -150,6 +150,39 @@ fn atomics_and_mutexes_are_owned_and_never_copied() {
 }
 
 #[test]
+fn a_cell_behind_an_arc_is_captured_in_a_recursive_type_as_in_any_other() {
+    // The cell is shared through the Arc, so a copy of the function value shares it too, and the
+    // type being recursive makes no difference.
+    for source in [
+        "let node = Node { value: 1, next: Maybe.None }\nlet add = \\x -> x + node.value\nadd 41",
+        "let tail = Arc.new (Mutex.create (Node { value: 1, next: Maybe.None }))\nlet head = Node { value: 2, next: Maybe.Some (Arc.share (ref tail)) }\nlet add = \\x -> x + head.value\nadd 40",
+    ] {
+        emits(&format!("{NODE}{source}"));
+    }
+    emits(
+        "record Link { hits: Arc<Atomic<i64>>, next: Maybe<Arc<Link>> }\nlet link = Link { hits: Arc.new (Atomic.create 0i64), next: Maybe.None }\nlet bump = \\() -> Atomic.fetch_add (Arc.get (ref link.hits)) 1\nbump ()",
+    );
+    // A cell that the record owns outright would still be copied with the function value.
+    let message = rejects(
+        "record Chain { hits: Atomic<i64>, next: Maybe<Arc<Chain>> }\nlet chain = Chain { hits: Atomic.create 0i64, next: Maybe.None }\nlet read = \\() -> Atomic.load (ref chain.hits)\nread ()",
+        "E1005",
+    );
+    assert!(
+        message.contains("a copy of an Atomic or Mutex would be a separate cell"),
+        "{message}"
+    );
+    // An Rc in a recursive type is still refused, with the message about its counts.
+    let message = rejects(
+        "record Ring { value: i64, next: Maybe<Rc<Ring>> }\nlet ring = Ring { value: 1, next: Maybe.None }\nlet read = \\() -> ring.value\nread ()",
+        "E1005",
+    );
+    assert!(
+        message.contains("Rc counts its owners without atomic operations"),
+        "{message}"
+    );
+}
+
+#[test]
 fn sync_marks_what_tasks_may_share() {
     for body in [
         "let values = [1i64, 2i64]\nshare (ref values) + share (ref \"text\") + share (ref 5i64)",

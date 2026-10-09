@@ -720,17 +720,24 @@ impl Type {
             return false;
         }
         if types.recursive(self) {
-            return types.stored_all(self, |ty| {
-                !matches!(
-                    ty,
-                    Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
-                ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
-                    && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
-                    && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
-                    && !ty.has_user_drop(types)
-                    && !ty.is_owned_function(types)
-                    && !ty.is_shared_cell(types)
-            });
+            // The value of an `Arc` is shared, not copied, so what it holds is judged by `Sync` at
+            // the pointer and a cell behind it may be reached by every copy (as for a type that
+            // is not recursive); only a cell that the value owns outright is copied.
+            return types.stored_all_closed(
+                self,
+                |ty| {
+                    !matches!(
+                        ty,
+                        Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
+                    ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                        && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
+                        && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
+                        && !ty.has_user_drop(types)
+                        && !ty.is_owned_function(types)
+                        && !ty.is_shared_cell(types)
+                },
+                |ty| matches!(ty, Type::Shared(..)),
+            );
         }
         match self {
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
