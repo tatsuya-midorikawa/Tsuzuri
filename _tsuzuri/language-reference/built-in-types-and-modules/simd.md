@@ -155,6 +155,7 @@ WASM は既定でスカラーの代替です。`tsuzuri build --target wasm32 --
 
 - [Parallel](parallel.md)
 - [Math](math.md)
+- [Matrix](matrix.md) — `Matrix.mul` はこのモジュールを使わず、オプティマイザの自動ベクトル化に任せています（arm64 の native と、simd128 の WASM で確認）
 - [属性](../values-and-functions/attributes.md)
 - [コンパイラ オプション](../compiler/option.md)
 - [WebAssembly への出力](../compiler/webassembly.md)

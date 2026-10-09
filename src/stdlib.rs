@@ -47,6 +47,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
     ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
+    ("std/MatrixView.tz", include_str!("../std/MatrixView.tz")),
+    ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -102,6 +104,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Matrix",
     "Atomic",
     "Mutex",
+    "MatrixView",
+    "Tensor",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -145,6 +149,10 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Net.UdpSocket"
             | "Atomic.Atomic"
             | "Mutex.Mutex"
+            | "MatrixView.MatrixView"
+            | "MatrixView.Mut"
+            | "Tensor.Tensor"
+            | "Tensor.View"
     )
 }
 
@@ -247,6 +255,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Mutex"],
         aliases: &[],
         uses: &[],
+    },
+    OptIn {
+        module: "MatrixView",
+        names: &["MatrixView"],
+        aliases: &[],
+        uses: &["Matrix"],
+    },
+    OptIn {
+        module: "Tensor",
+        names: &["Tensor"],
+        aliases: &[],
+        uses: &["Matrix", "MatrixView"],
     },
 ];
 
@@ -581,9 +601,11 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 50);
+        assert_eq!(RESERVED_MODULES.len(), 52);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
+        assert!(is_reserved_module("MatrixView"));
+        assert!(is_reserved_module("Tensor"));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));

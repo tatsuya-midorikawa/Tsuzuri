@@ -151,30 +151,27 @@ fn matrix_ir_keeps_multiply_and_add_separate() {
             "let a = Matrix.init 2 2 (\\i j -> {literal})\nlet p = Matrix.mul (ref a) (ref a)\nMatrix.rows (ref p)"
         );
         for ir in emits(&source) {
-            let mut bodies = Vec::new();
-            let mut lines = ir.lines();
-            while let Some(line) = lines.next() {
-                if line.starts_with("define ") && line.contains("@tz.fn.Matrix.element.$mono.") {
-                    let mut body = String::new();
-                    for line in lines.by_ref().take_while(|line| *line != "}") {
-                        body.push_str(line);
-                        body.push('\n');
-                    }
-                    bodies.push(body);
-                }
-            }
+            let bodies = definitions(&ir, "@tz.fn.Matrix.multiply_rows.$mono.");
             assert_eq!(bodies.len(), 1, "{element}: {ir}");
-            let body = &bodies[0];
             let (multiply, add) = if element == "i64" {
                 (" mul ", " add ")
             } else {
                 (" fmul ", " fadd ")
             };
             assert!(
-                body.contains(multiply) && body.contains(add),
-                "{element}: {body}"
+                bodies[0].contains(multiply) && bodies[0].contains(add),
+                "{element}: {}",
+                bodies[0]
             );
             for word in forbidden {
+                assert!(!ir.contains(word), "{element}: {word}\n{ir}");
+            }
+            // The sequential product needs neither threads nor reference counts.
+            for word in [
+                "tsuzuri_task_parallel",
+                "atomicrmw",
+                "@tz.fn.Matrix.fma_rows",
+            ] {
                 assert!(!ir.contains(word), "{element}: {word}\n{ir}");
             }
             assert!(
@@ -183,6 +180,114 @@ fn matrix_ir_keeps_multiply_and_add_separate() {
             );
         }
     }
+}
+
+/// The bodies of the functions whose `define` line names `symbol`.
+fn definitions(ir: &str, symbol: &str) -> Vec<String> {
+    let mut bodies = Vec::new();
+    let mut lines = ir.lines();
+    while let Some(line) = lines.next() {
+        if line.starts_with("define ") && line.contains(symbol) {
+            let mut body = String::new();
+            for line in lines.by_ref().take_while(|line| *line != "}") {
+                body.push_str(line);
+                body.push('\n');
+            }
+            bodies.push(body);
+        }
+    }
+    bodies
+}
+
+#[test]
+fn explicit_fma_and_parallel_products_are_separate_apis() {
+    for element in ["f32", "f64"] {
+        let literal = if element == "f32" { "1.5f32" } else { "1.5" };
+        let (scalar, fma) = if element == "f32" {
+            ("float", "@llvm.fma.f32")
+        } else {
+            ("double", "@llvm.fma.f64")
+        };
+        let fused = format!(
+            "let a = Matrix.init 2 2 (\\i j -> {literal})\nlet p = Matrix.mul_fma (ref a) (ref a)\nMatrix.rows (ref p)"
+        );
+        for (index, ir) in emits(&fused).into_iter().enumerate() {
+            let bodies = definitions(&ir, "@tz.fn.Matrix.fma_rows.$mono.");
+            assert_eq!(bodies.len(), 1, "{element}: {ir}");
+            let call = format!("call {scalar} @tz.fn.$builtin.Math.fma.");
+            assert!(bodies[0].contains(&call), "{element}: {}", bodies[0]);
+            assert!(
+                !bodies[0].contains("fmul") && !bodies[0].contains("fadd"),
+                "{element}: {}",
+                bodies[0]
+            );
+            // Native code uses the hardware instruction; wasm32 has no scalar fma and uses the soft routine.
+            let lowered = if index == 0 { fma } else { "@tz_soft_fma" };
+            assert!(ir.contains(lowered), "{element}: {lowered}\n{ir}");
+            for word in [
+                "fmuladd",
+                " fast ",
+                "contract",
+                "reassoc",
+                "@tz.fn.Matrix.multiply_rows",
+            ] {
+                assert!(!ir.contains(word), "{element}: {word}\n{ir}");
+            }
+        }
+        let parallel = format!(
+            "let a = Matrix.init 2 2 (\\i j -> {literal})\nlet p = Matrix.mul_parallel (ref a) (ref a)\nlet q = Matrix.mul_fma_parallel (ref a) (ref a)\nMatrix.rows (ref p) + Matrix.rows (ref q)"
+        );
+        for ir in emits(&parallel) {
+            assert!(ir.contains("@tsuzuri_task_parallel"), "{element}: {ir}");
+            for word in ["fmuladd", " fast ", "contract", "reassoc"] {
+                assert!(!ir.contains(word), "{element}: {word}\n{ir}");
+            }
+        }
+    }
+    // The fused and the parallel products need a floating-point and a sendable element type.
+    for source in [
+        "let a = Matrix.init 1 1 (\\i j -> 1)\nlet p = Matrix.mul_fma (ref a) (ref a)\nMatrix.rows (ref p)",
+        "let a = Matrix.init 1 1 (\\i j -> true)\nlet p = Matrix.mul_parallel (ref a) (ref a)\nMatrix.rows (ref p)",
+        "let a = Matrix.init 1 1 (\\i j -> \"x\")\nlet p = Matrix.mul_parallel (ref a) (ref a)\nMatrix.rows (ref p)",
+    ] {
+        let message = rejects(source, "E1005");
+        assert!(
+            message.starts_with("no instance for "),
+            "{source}\n{message}"
+        );
+    }
+    // Integers have no fused multiply-add, but the parallel product works for them.
+    emits(
+        "let a = Matrix.init 2 2 (\\i j -> 3i64)\nlet p = Matrix.mul_parallel (ref a) (ref a)\nMatrix.rows (ref p)",
+    );
+}
+
+#[test]
+fn matrices_move_through_gpu_cpu_reference_buffers() {
+    // The public composition documented in matrix.md: flat arrays in and out of a Gpu buffer. There is
+    // no matrix-product kernel; Gpu.map is element-wise.
+    emits(
+        "let device = Result.get (Gpu.request Gpu.CpuReference)\nlet m = Matrix.init 2 3 (\\row col -> row * 10 + col)\nlet buffer = Gpu.from_array (ref device) (Matrix.as_array (ref m))\nlet doubled = Gpu.map (ref device) (\\x -> x * 2) buffer\nlet result = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Gpu.to_array doubled)\nderef (Matrix.at (ref result) 1 2)",
+    );
+}
+
+#[test]
+fn set_replaces_an_element_of_a_consumed_matrix() {
+    emits(
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet m = Matrix.set m 1 1 9\nderef (Matrix.at (ref m) 1 1)",
+    );
+    rejects(
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet n = Matrix.set m 0 0 1\nMatrix.rows (ref m)",
+        "E1012",
+    );
+    let message = rejects(
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet r = Matrix.row (ref m) 0\nlet n = Matrix.set m 0 0 1\nr[0]",
+        "E1014",
+    );
+    assert!(
+        message.starts_with("access conflicts with a live borrow"),
+        "{message}"
+    );
 }
 
 #[test]

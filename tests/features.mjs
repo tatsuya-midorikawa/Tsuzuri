@@ -7,7 +7,9 @@ import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
 import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
-import { cases as matrixCases, traps as matrixTraps } from "./matrix-cases.mjs";
+import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
+import { cases as matrixViewCases, traps as matrixViewTraps } from "./matrix-view-cases.mjs";
+import { cases as tensorCases, traps as tensorTraps } from "./tensor-cases.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -1463,8 +1465,31 @@ const suites = {
     traps: matrixTraps,
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Matrix\./);
-      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+      assert.doesNotMatch(ir, /fmuladd|\bfast\b|\bcontract\b|\breassoc\b/);
       assert.doesNotMatch(ir, /%tz\.matrix/);
+      // Only the explicit fused kernels may call llvm.fma; the separately rounded product never does.
+      for (const chunk of ir.split("\ndefine ")) {
+        if (/^[^\n]*@tz\.fn\.Matrix\.multiply_rows\./.test(chunk)) assert.doesNotMatch(chunk.split("\n}\n")[0], /llvm\.fma/);
+      }
+      assert.match(ir, /@llvm\.fma\.f64/);
+    },
+  },
+  // C11 Phase 2: windows are modelled in tests/matrix-view-cases.mjs as index mappings, not as strides.
+  matrix_view: {
+    cases: matrixViewCases,
+    traps: matrixViewTraps,
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.MatrixView\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // C11 Phase 2: tensor windows are modelled in tests/tensor-cases.mjs as index mappings, not as strides.
+  tensor: {
+    cases: tensorCases,
+    traps: tensorTraps,
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Tensor\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },
   // F10: Atomic, Mutex and Task.scope. Every case is a closed expression that does not depend on the
@@ -1776,7 +1801,7 @@ int main(int argc, char **argv) {
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
         `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), "-lm", "-o", native]);
       execute(native, []);
-      if (name === "parallel" && optimization === "3") {
+      if ((name === "parallel" || name === "matrix") && optimization === "3") {
         for (const processors of [1, 4]) {
           const runtime = join(temporary, `runtime-${processors}.c`);
           const binary = join(temporary, `parallel-cpus-${processors}`);
@@ -1980,11 +2005,40 @@ async function rcWasmThreadsChecks() {
   console.log("rc: Arc on WASM threads at O0/O3 passed");
 }
 
+// Matrix.mul_parallel on WASM threads: the workers share the copied operands and write disjoint row
+// chunks, and every result equals the sequential product bit for bit (the fixture counts mismatches).
+async function matrixWasmThreadsChecks() {
+  if (wasmTarget !== "wasm32") return;
+  const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-matrix-threads-"));
+  try {
+    for (const optimization of [0, 3]) {
+      const wasm = join(directory, `matrix-threads-${optimization}.wasm`);
+      cli(["build", join(root, "tests/fixtures/matrix"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", wasm]);
+      const pool = await createThreadPool(readFileSync(wasm), { workers: 3 });
+      try {
+        for (const [rows, inner, cols] of [[129n, 128n, 64n], [3n, 500n, 1500n], [64n, 64n, 64n]]) {
+          assert.equal(pool.call("tz_parallel_mismatches64", rows, inner, cols, 1n, 10n), 0n);
+          assert.equal(pool.call("tz_parallel_mismatches32", rows, inner, cols, 1n, 13n), 0n);
+          assert.equal(pool.call("tz_integer_parallel", rows, inner, cols, 5n), 0n);
+        }
+        assert.equal(pool.call("tz_kernel_entry64", 129n, 128n, 64n, 0n, 1n, 128n * 64n), productEntry(128, 0, 64, false, 128, 0));
+        assert.equal(pool.call("tz_kernel_entry64", 129n, 128n, 64n, 0n, 3n, 128n * 64n), productEntry(128, 0, 64, true, 128, 0));
+        assert.equal(pool.workerCount, 3);
+      } finally {
+        await pool.close();
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  console.log("matrix: mul_parallel on WASM threads at O0/O3 passed");
+}
+
 let total = 0;
 for (const [name, suite] of Object.entries(suites)) {
   if (only && only !== name) continue;
   total += run(name, suite);
   if (name === "rc") await rcWasmThreadsChecks();
+  if (name === "matrix") await matrixWasmThreadsChecks();
   if (name === "vec") wasmReallocationChecks();
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();

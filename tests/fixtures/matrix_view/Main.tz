@@ -1,0 +1,339 @@
+private def mix :: i64 -> i64 -> i64
+fn mix total x = total * 31 + x
+
+private def flag :: bool -> i64
+fn flag value = if value then 1 else 0
+
+// The shape, the layout, whether the window is one run of the buffer, the fold of its elements, and the fold
+// of the copy `to_matrix` makes (which must read the same elements).
+private def digest { r } :: MatrixView<i64> { r } -> i64
+fn digest view =
+    let copy = MatrixView.to_matrix view
+    let mut total = 7
+    total = mix total (MatrixView.rows view)
+    total = mix total (MatrixView.cols view)
+    total = mix total (MatrixView.offset view)
+    total = mix total (MatrixView.row_stride view)
+    total = mix total (MatrixView.col_stride view)
+    total = mix total (flag (MatrixView.is_contiguous view))
+    total = mix total (MatrixView.fold mix 0 view)
+    total = mix total (Matrix.fold mix 0 (ref copy))
+    mix total (Matrix.rows (ref copy) * 1000 + Matrix.cols (ref copy))
+
+// Needs rows >= 2 and cols >= 2.
+export def layouts :: i64 -> i64 -> i64
+fn layouts rows cols =
+    let m = Matrix.init rows cols (\i j -> i * 100 + j)
+    let whole = MatrixView.of_matrix (ref m)
+    let flipped = MatrixView.transpose whole
+    let inner = MatrixView.sub whole 1 1 (rows - 1) (cols - 1)
+    let twisted = MatrixView.transpose inner
+    let nested = MatrixView.sub twisted 1 0 (cols - 2) (rows - 1)
+    let last_row = MatrixView.row whole (rows - 1)
+    let last_col = MatrixView.col whole (cols - 1)
+    let flipped_col = MatrixView.col twisted 0
+    let mut total = 0
+    total = mix total (digest whole)
+    total = mix total (digest flipped)
+    total = mix total (digest inner)
+    total = mix total (digest twisted)
+    total = mix total (digest nested)
+    total = mix total (digest last_row)
+    total = mix total (digest last_col)
+    total = mix total (digest flipped_col)
+    mix total (digest (MatrixView.transpose flipped))
+
+export def degenerate :: i64 -> i64 -> i64
+fn degenerate rows cols =
+    let m = Matrix.init rows cols (\i j -> i * 100 + j + 1)
+    let whole = MatrixView.of_matrix (ref m)
+    mix (digest whole) (digest (MatrixView.transpose whole))
+
+export def array_view :: i64 -> i64 -> i64
+fn array_view rows cols =
+    let data = new [i64](rows * cols, k -> k * 3 + 1)
+    digest (MatrixView.of_array rows cols (ref data))
+
+// A buffer of 40 elements holding k * 7 + 3 at index k, with an arbitrary layout over it.
+export def strided_layout :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn strided_layout offset rows cols row_stride col_stride =
+    let data = new [i64](40, k -> k * 7 + 3)
+    digest (MatrixView.strided offset rows cols row_stride col_stride (ref data))
+
+// get inside and outside the transposed view, and at inside it.
+export def access :: i64 -> i64 -> i64
+fn access rows cols =
+    let m = Matrix.init rows cols (\i j -> i * 100 + j)
+    let view = MatrixView.transpose (MatrixView.of_matrix (ref m))
+    let mut total = 3
+    for i in (-1) .. (MatrixView.rows view) do
+        for j in (-1) .. (MatrixView.cols view) do
+            total = mix total (Maybe.default_value (-1) (MatrixView.get view i j))
+            if i >= 0 && i < MatrixView.rows view && j >= 0 && j < MatrixView.cols view then
+                total = mix total (deref (MatrixView.at view i j))
+    total
+
+private def special64 :: i64 -> f64
+fn special64 index =
+    match index with
+    | 0 -> 1e16
+    | 1 -> 1.0
+    | 2 -> -1e16
+    | 3 -> 3.0
+    | 4 -> -3.0
+    | 5 -> 0.5
+    | 6 -> -0.25
+    | 7 -> 1e-38
+    | 8 -> 5e-324
+    | 9 -> -0.0
+    | 10 -> 0.0 / 0.0
+    | 11 -> 1.0 / 0.0
+    | _ -> -1.0 / 0.0
+
+private def special32 :: i64 -> f32
+fn special32 index = if index == 8 then 1e-45 as f32 else (special64 index) as f32
+
+// The same value, including the sign of a zero; every NaN equals every NaN.
+private def same :: Float<'a> => 'a -> 'a -> bool
+fn same a b = (a == b && Math.copysign (1i64 as 'a) a == Math.copysign (1i64 as 'a) b) || (Math.is_nan a && Math.is_nan b)
+
+private def differences :: Float<'a> => ref ['a] -> ref ['a] -> i64
+fn differences left right =
+    assert (left.length == right.length)
+    let mut count = 0
+    let mut index = 0
+    while index < left.length do
+        if !(same left[index] right[index]) then count = count + 1
+        index = index + 1
+    count
+
+// The textbook product: every element sums k = 0, 1, ... from +0 with a separately rounded multiply and add.
+private def oracle_element :: Numeric<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> i64 -> 'a
+fn oracle_element left right inner cols row col =
+    let mut total = 0i64 as 'a
+    let mut k = 0
+    while k < inner do
+        total = total + (left[row * inner + k] * right[k * cols + col])
+        k = k + 1
+    total
+
+private def oracle_product :: Numeric<'a> => i64 -> i64 -> i64 -> ref ['a] -> ref ['a] -> ['a]
+fn oracle_product rows inner cols left right = new ['a](rows * cols, index -> oracle_element left right inner cols (index / cols) (index % cols))
+
+// (inner x rows)^T * (cols x inner)^T through windows, against the textbook sums of the explicit copies and
+// against Matrix.mul of those copies.
+private def product_check64 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn product_check64 rows inner cols seed span =
+    let a = Matrix.init inner rows (\k i -> special64 ((i * 37 + k * 11 + seed) % span))
+    let b = Matrix.init cols inner (\j k -> special64 ((k * 13 + j * 29 + seed + 3) % span))
+    let left = Matrix.transpose (ref a)
+    let right = Matrix.transpose (ref b)
+    let expected = oracle_product rows inner cols (Matrix.as_array (ref left)) (Matrix.as_array (ref right))
+    let plain = Matrix.mul (ref left) (ref right)
+    let windowed = MatrixView.mul (MatrixView.transpose (MatrixView.of_matrix (ref a))) (MatrixView.transpose (MatrixView.of_matrix (ref b)))
+    differences (ref expected) (Matrix.as_array (ref windowed)) + differences (Matrix.as_array (ref plain)) (Matrix.as_array (ref windowed))
+
+private def product_check32 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn product_check32 rows inner cols seed span =
+    let a = Matrix.init inner rows (\k i -> special32 ((i * 37 + k * 11 + seed) % span))
+    let b = Matrix.init cols inner (\j k -> special32 ((k * 13 + j * 29 + seed + 3) % span))
+    let left = Matrix.transpose (ref a)
+    let right = Matrix.transpose (ref b)
+    let expected = oracle_product rows inner cols (Matrix.as_array (ref left)) (Matrix.as_array (ref right))
+    let plain = Matrix.mul (ref left) (ref right)
+    let windowed = MatrixView.mul (MatrixView.transpose (MatrixView.of_matrix (ref a))) (MatrixView.transpose (MatrixView.of_matrix (ref b)))
+    differences (ref expected) (Matrix.as_array (ref windowed)) + differences (Matrix.as_array (ref plain)) (Matrix.as_array (ref windowed))
+
+private def product_sweep :: (i64 -> i64 -> i64 -> i64 -> i64 -> i64) -> i64 -> i64 -> i64
+fn product_sweep check seed span =
+    let mut total = 0
+    let mut rows = 0
+    while rows < 6 do
+        let mut inner = 0
+        while inner < 6 do
+            let mut cols = 0
+            while cols < 6 do
+                total = total + check rows inner cols seed span
+                cols = cols + 1
+            inner = inner + 1
+        rows = rows + 1
+    total
+
+export def view_product_mismatches64 :: i64 -> i64 -> i64
+fn view_product_mismatches64 seed span = product_sweep product_check64 seed span
+
+export def view_product_mismatches32 :: i64 -> i64 -> i64
+fn view_product_mismatches32 seed span = product_sweep product_check32 seed span
+
+// One element of the same product of finite inputs, for comparison with the JavaScript reference.
+export def view_product_entry64 :: i64 -> i64 -> i64 -> i64 -> i64 -> f64
+fn view_product_entry64 rows inner cols seed index =
+    let a = Matrix.init inner rows (\k i -> special64 ((i * 37 + k * 11 + seed) % 10))
+    let b = Matrix.init cols inner (\j k -> special64 ((k * 13 + j * 29 + seed + 3) % 10))
+    let product = MatrixView.mul (MatrixView.transpose (MatrixView.of_matrix (ref a))) (MatrixView.transpose (MatrixView.of_matrix (ref b)))
+    let flat = Matrix.as_array (ref product)
+    flat[index]
+
+// The integer inputs of the matrix suite's int_mul, stored transposed and multiplied through windows.
+export def view_int_product :: i64 -> i64 -> i64
+fn view_int_product n seed =
+    let a = Matrix.init (n + 1) n (\k i -> (i * 31 + k * 17 + seed) * 6364136223846793005)
+    let b = Matrix.init (n + 2) (n + 1) (\j k -> (k * 31 + j * 17 + seed + 1) * 6364136223846793005)
+    let product = MatrixView.mul (MatrixView.transpose (MatrixView.of_matrix (ref a))) (MatrixView.transpose (MatrixView.of_matrix (ref b)))
+    Matrix.fold (\total x -> total * 31 + x) 0 (ref product)
+
+// Every writable-window operation once; needs rows >= 2 and cols >= 2. The buffer is read after the last use of the window.
+export def mut_script :: i64 -> i64 -> i64
+fn mut_script rows cols =
+    let mut buffer = new [i64](rows * cols, k -> k)
+    let source = Matrix.init rows cols (\i j -> 1000 + i * 10 + j)
+    let mut window = MatrixView.of_array_mut rows cols (ref mut buffer)
+    MatrixView.write (ref mut window) 0 0 99
+    let top = MatrixView.row_mut (ref mut window) 1
+    Array.write top 0 77
+    Array.write top (cols - 1) 78
+    let mut inner = MatrixView.sub_mut (ref mut window) 1 1 (rows - 1) (cols - 1)
+    MatrixView.fill (ref mut inner) 5
+    MatrixView.write (ref mut inner) 0 0 6
+    let seen = MatrixView.fold mix 0 (MatrixView.freeze (ref window))
+    let mut flipped = MatrixView.transpose_mut window
+    MatrixView.write (ref mut flipped) (cols - 1) (rows - 1) 55
+    let mut block = MatrixView.sub_mut (ref mut flipped) 1 1 (cols - 1) (rows - 1)
+    MatrixView.copy_from (ref mut block) (MatrixView.sub (MatrixView.transpose (MatrixView.of_matrix (ref source))) 1 1 (cols - 1) (rows - 1))
+    let mut head = MatrixView.sub_mut (ref mut flipped) 0 0 1 rows
+    MatrixView.map_in_place (\x -> x * 3 + 1) (ref mut head)
+    let mut total = mix 0 seen
+    let mut index = 0
+    while index < rows * cols do
+        total = mix total buffer[index]
+        index = index + 1
+    total
+
+// Row-wise writes through exclusive row slices.
+export def rowwise :: i64 -> i64 -> i64
+fn rowwise rows cols =
+    let mut buffer = new [i64](rows * cols, _ -> 0)
+    let mut window = MatrixView.of_array_mut rows cols (ref mut buffer)
+    for i in 0i64 .. (rows - 1) do
+        let line = MatrixView.row_mut (ref mut window) i
+        for j in 0i64 .. (cols - 1) do
+            Array.write line j (i * 1000 + j)
+    let mut total = 0
+    let mut index = 0
+    while index < rows * cols do
+        total = mix total buffer[index]
+        index = index + 1
+    total
+
+// A writable window over a matrix's own buffer: take the array out, write, and wrap it again.
+export def owned_matrix :: i64 -> i64
+fn owned_matrix n =
+    let m = Matrix.init n (n + 1) (\i j -> i * 10 + j)
+    let mut data = Matrix.to_array m
+    let mut window = MatrixView.of_array_mut n (n + 1) (ref mut data)
+    MatrixView.map_in_place (\x -> x + 1000) (ref mut window)
+    let back = Matrix.of_array n (n + 1) data
+    Matrix.fold mix 0 (ref back)
+
+// Windows over matrices whose elements own memory (strings) borrow them; nothing is copied or leaked.
+export def owned_elements :: i64 -> i64
+fn owned_elements n =
+    let words = Matrix.init n (n + 1) (\i j -> $"{i}:{j}")
+    let view = MatrixView.transpose (MatrixView.of_matrix (ref words))
+    let part = MatrixView.sub view 1 0 (MatrixView.rows view - 1) (MatrixView.cols view)
+    let mut total = 0
+    for i in 0i64 .. (MatrixView.rows part - 1) do
+        for j in 0i64 .. (MatrixView.cols part - 1) do
+            let word = MatrixView.at part i j
+            total = mix total word.length
+    mix total (MatrixView.rows part * 100 + MatrixView.cols part)
+
+export def strided_trap :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn strided_trap offset rows cols row_stride col_stride =
+    let data = new [i64](10, k -> k)
+    MatrixView.rows (MatrixView.strided offset rows cols row_stride col_stride (ref data))
+
+export def of_array_trap :: i64
+fn of_array_trap =
+    let data = [1, 2, 3]
+    MatrixView.rows (MatrixView.of_array 2 2 (ref data))
+
+export def sub_trap :: i64 -> i64 -> i64 -> i64 -> i64
+fn sub_trap row col rows cols =
+    let m = Matrix.init 4 5 (\i j -> i + j)
+    MatrixView.rows (MatrixView.sub (MatrixView.of_matrix (ref m)) row col rows cols)
+
+export def row_trap :: i64 -> i64
+fn row_trap index =
+    let m = Matrix.init 4 5 (\i j -> i + j)
+    MatrixView.rows (MatrixView.row (MatrixView.of_matrix (ref m)) index)
+
+export def col_trap :: i64 -> i64
+fn col_trap index =
+    let m = Matrix.init 4 5 (\i j -> i + j)
+    MatrixView.rows (MatrixView.col (MatrixView.of_matrix (ref m)) index)
+
+export def at_trap :: i64 -> i64 -> i64
+fn at_trap row col =
+    let m = Matrix.init 4 5 (\i j -> i + j)
+    deref (MatrixView.at (MatrixView.transpose (MatrixView.of_matrix (ref m))) row col)
+
+export def mul_trap :: i64
+fn mul_trap =
+    let m = Matrix.init 2 3 (\i j -> i + j)
+    let view = MatrixView.of_matrix (ref m)
+    Matrix.rows (ref (MatrixView.mul view view))
+
+export def count_overflow :: i64
+fn count_overflow =
+    let data = [1]
+    MatrixView.rows (MatrixView.strided 0 4294967296 4294967296 0 0 (ref data))
+
+export def extent_overflow :: i64
+fn extent_overflow =
+    let data = [1]
+    MatrixView.rows (MatrixView.strided 9223372036854775807 2 1 1 0 (ref data))
+
+export def mut_of_array_trap :: i64
+fn mut_of_array_trap =
+    let mut data = [1, 2, 3]
+    let window = MatrixView.of_array_mut 2 2 (ref mut data)
+    MatrixView.rows (MatrixView.freeze (ref window))
+
+export def mut_write_trap :: i64 -> i64 -> i64
+fn mut_write_trap row col =
+    let mut data = [1, 2, 3, 4, 5, 6]
+    let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
+    MatrixView.write (ref mut window) row col 9
+    1
+
+export def mut_row_trap :: i64 -> i64
+fn mut_row_trap index =
+    let mut data = [1, 2, 3, 4, 5, 6]
+    let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
+    let line = MatrixView.row_mut (ref mut window) index
+    line[0]
+
+// row_mut needs col_stride 1; a transposed window has col_stride 3 here.
+export def mut_row_transposed_trap :: i64
+fn mut_row_transposed_trap =
+    let mut data = [1, 2, 3, 4, 5, 6]
+    let window = MatrixView.of_array_mut 2 3 (ref mut data)
+    let mut flipped = MatrixView.transpose_mut window
+    let line = MatrixView.row_mut (ref mut flipped) 0
+    line[0]
+
+export def mut_sub_trap :: i64 -> i64 -> i64 -> i64 -> i64
+fn mut_sub_trap row col rows cols =
+    let mut data = [1, 2, 3, 4, 5, 6]
+    let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
+    let part = MatrixView.sub_mut (ref mut window) row col rows cols
+    MatrixView.rows (MatrixView.freeze (ref part))
+
+export def mut_copy_trap :: i64
+fn mut_copy_trap =
+    let mut data = [1, 2, 3, 4, 5, 6]
+    let source = Matrix.init 3 2 (\i j -> i + j)
+    let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
+    MatrixView.copy_from (ref mut window) (MatrixView.of_matrix (ref source))
+    1

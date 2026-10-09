@@ -145,7 +145,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
 | 厳密な浮動小数点と 64 bit 整数の GPU 実行、Vulkan、自動選択 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) の Phase 3 |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。共有した値の書き換えは F10 の `Atomic` / `Mutex` |
-| 多次元配列 `Matrix`（行優先の連続バッファ、行列積の演算順序を固定） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)、C11 Phase 1。ビューと N 次元は含まない |
+| 多次元配列 `Matrix`・借用の窓 `MatrixView`・N 次元の `Tensor`（行優先の連続バッファ、行列積の演算順序を固定、FMA 版と行分割の並列版は別名） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)・[MatrixView](../built-in-types-and-modules/matrix-view.md)・[Tensor](../built-in-types-and-modules/tensor.md)、C11。行列積の GPU カーネルと、x86-64 の速度は含まない |
 | `Atomic`、`Mutex`、`Task.scope`、`Sync` | 実装済み。`--wasm-feature threads` と `Mutex` の組み合わせは `E2000` | F10 の Phase 1 |
 | `Channel` | 計画中 | F10 の Phase 2 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
