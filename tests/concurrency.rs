@@ -613,6 +613,18 @@ fn mutex_lowering_adds_no_runtime_to_other_programs() {
     }
 }
 
+/// The length operand of each call that starts a group of items in the IR of a program.
+fn group_lengths(ir: &str) -> Vec<&str> {
+    ir.lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("call void @tsuzuri_task_parallel("))
+        .map(|line| {
+            let (_, length) = line.rsplit_once("i64 ").expect(line);
+            length.strip_suffix(')').expect(line)
+        })
+        .collect()
+}
+
 #[test]
 fn task_scope_is_one_group_of_children() {
     let source = "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)";
@@ -629,4 +641,31 @@ fn task_scope_is_one_group_of_children() {
         wasm.contains("define internal void @tsuzuri_task_parallel("),
         "standalone WASM runs the children in index order\n{wasm}"
     );
+    // One item per child, so that any thread may take any child and the pool hands them out one
+    // at a time: the group is as long as the count, never a number of chunks of it.
+    for ir in [&native, &wasm] {
+        assert_eq!(group_lengths(ir), ["4"], "{ir}");
+    }
+    let [native, wasm] = emits(
+        "let counter = Atomic.create 0i64\nlet few = Task.scope (ref counter) 3 (\\shared index -> Atomic.fetch_add shared index)\nlet many = Task.scope (ref counter) 5000 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref few) + Array.length (ref many)",
+    );
+    for ir in [&native, &wasm] {
+        assert_eq!(group_lengths(ir), ["3", "5000"], "{ir}");
+    }
+    // A count that is not known is the same value that sizes the array of results: one slot, one child.
+    let [native, wasm] = emits(
+        "def spread :: i64 -> i64\nfn spread n =\n    let counter = Atomic.create 0i64\n    let seen = Task.scope (ref counter) n (\\shared index -> Atomic.fetch_add shared index)\n    Array.length (ref seen)\nspread 6",
+    );
+    for ir in [&native, &wasm] {
+        let lengths = group_lengths(ir);
+        assert_eq!(lengths.len(), 1, "{ir}");
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("insertvalue %tz.array")
+                    && line.ends_with(&format!(", i64 {}, 1", lengths[0]))
+            }),
+            "the length of the group is the length of the results ({})\n{ir}",
+            lengths[0]
+        );
+    }
 }
