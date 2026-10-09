@@ -1,0 +1,616 @@
+def os_kind_text :: Os.ErrorKind -> string
+fn os_kind_text kind =
+	match kind with
+	| Os.NotFound -> "NotFound"
+	| Os.PermissionDenied -> "PermissionDenied"
+	| Os.AlreadyExists -> "AlreadyExists"
+	| Os.InvalidInput -> "InvalidInput"
+	| Os.InvalidEncoding -> "InvalidEncoding"
+	| Os.Interrupted -> "Interrupted"
+	| Os.Other -> "Other"
+
+/// "<Net.ErrorKind> <Os.ErrorKind> <system code>".
+def failure_text :: Os.Error -> string
+fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
+
+def unit_text :: Result<unit, Os.Error> -> string
+fn unit_text result =
+	match result with
+	| Result.Ok _ -> "ok"
+	| Result.Error error -> failure_text error
+
+def read_text :: Result<[ubyte], Os.Error> -> string
+fn read_text result =
+	match result with
+	| Result.Ok bytes -> "read:" + to_string bytes.length
+	| Result.Error error -> failure_text error
+
+def bytes_of :: ref string -> [ubyte]
+fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
+
+def pattern :: i64 -> [ubyte]
+fn pattern count = Array.init count (\index -> (index % 256) as ubyte)
+
+def sum_of :: ref [ubyte] -> i64
+fn sum_of bytes =
+	let mut total = 0
+	let mut index = 0
+	while index < bytes.length do
+		total = total + (bytes[index] as i64)
+		index = index + 1
+	total
+
+def say :: string -> IO<unit>
+fn say text = IO.write_line text
+
+/// Reads until `wanted` bytes have arrived, the stream ends, or a read fails: "<count> <sum>", or the failure.
+def rec collect :: Net.TcpStream -> i64 -> i64 -> i64 -> i64 -> Async<string>
+fn rec collect stream size wanted total sum = Async {
+	match! Net.read_async stream size (Maybe.Some 20000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok bytes ->
+		let count = total + bytes.length
+		let all = sum + sum_of (ref bytes)
+		if bytes.length == 0 || count >= wanted then return to_string count + " " + to_string all
+		else return! collect stream size wanted count all
+}
+
+/// Exactly `wanted` bytes, or fewer when the stream ends first.
+def rec read_exact :: Net.TcpStream -> i64 -> [ubyte] -> Async<Result<[ubyte], Os.Error>>
+fn rec read_exact stream wanted seen = Async {
+	if seen.length >= wanted then return Result.Ok seen
+	else
+		match! Net.read_async stream (wanted - seen.length) (Maybe.Some 20000) with
+		| Result.Error error -> return Result.Error error
+		| Result.Ok bytes ->
+			if bytes.length == 0 then return Result.Ok seen
+			else return! read_exact stream wanted (Array.append (ref seen) (ref bytes))
+}
+
+/// An echo server (the peer) answers a connect_async client: addresses, a write, a read, a half-close, the end of the
+/// stream, a close, and the stale handle.
+def echo_client :: Net.Address -> Async<string>
+fn echo_client address = Async {
+	match! Net.connect_async address (Maybe.Some 5000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok stream ->
+		let here = Net.stream_local_addr stream
+		let! written = Net.write_async stream (pattern 1024) (Maybe.Some 5000)
+		let! outcome = collect stream 4096 1024 0 0
+		let! shut = Net.shutdown_async stream Net.Write
+		let! rest = collect stream 4096 1000000 0 0
+		let! closed = Net.close_async stream
+		let! stale = Net.read_async stream 16 (Maybe.Some 100)
+		return "peer=" + to_string (Net.peer_addr stream == address) + " local_port=" + to_string (Net.port here != 0) + "\n" + unit_text written + "\n" + outcome + "\n" + unit_text shut + " rest=" + rest + "\n" + unit_text closed + " stale=" + read_text stale
+}
+
+def run_echo :: Net.Address -> IO<unit>
+fn run_echo address = IO {
+	let! lines = Async.block_on (echo_client address)
+	do! say lines
+}
+
+/// A listener that waits for a peer's connection: the greeting arrives, the answer goes back, and both sides end.
+def serve_one :: Net.TcpListener -> Async<string>
+fn serve_one listener = Async {
+	match! Net.accept_async listener (Maybe.Some 10000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok stream ->
+		let! got = collect stream 4096 6 0 0
+		let! written = Net.write_async stream (bytes_of (ref "HELLO\n")) (Maybe.Some 5000)
+		let! shut = Net.shutdown_async stream Net.Write
+		let! rest = collect stream 4096 1000000 0 0
+		let! closed = Net.close_async stream
+		let! closed_listener = Net.close_listener_async listener
+		return "got=" + got + "\n" + unit_text written + " " + unit_text shut + "\nrest=" + rest + "\n" + unit_text closed + " " + unit_text closed_listener
+}
+
+def run_server :: unit -> IO<unit>
+fn run_server _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! bound = Net.bind loopback
+	match bound with
+	| Result.Error error -> do! say (failure_text error)
+	| Result.Ok listener ->
+		do! say ("port=" + to_string (Net.port (Net.local_addr listener)))
+		let! lines = Async.block_on (serve_one listener)
+		do! say lines
+}
+
+/// An empty byte array, which the checker cannot type from a bare `[]` in an argument.
+def nothing :: unit -> [ubyte]
+fn nothing _unit = []
+
+/// One client of the crowd: it sends 16 bytes of its number and expects one byte back, their sum modulo 256.
+def crowd_client :: Net.Address -> i64 -> Async<i64>
+fn crowd_client target index = Async {
+	match! Net.connect_async target (Maybe.Some 10000) with
+	| Result.Error _ -> return 0
+	| Result.Ok stream ->
+		let payload = Array.init 16 (\position -> ((index + position) % 256) as ubyte)
+		let wanted = sum_of (ref payload) % 256
+		let! written = Net.write_async stream payload (Maybe.Some 10000)
+		let sent = unit_text written == "ok"
+		match! read_exact stream 1 (nothing ()) with
+		| Result.Error _ -> return 0
+		| Result.Ok bytes ->
+			let! _closed = Net.close_async stream
+			return (if sent && bytes.length == 1 && (bytes[0] as i64) == wanted then 1 else 0)
+}
+
+def crowd_clients :: Net.Address -> i64 -> Async<i64>
+fn crowd_clients target count = Async {
+	let! results = Async.all (Array.init count (\index -> crowd_client target index))
+	return Array.sum (ref results)
+}
+
+/// The server of the crowd takes one connection after another while all the clients are already connecting.
+def rec crowd_server :: Net.TcpListener -> i64 -> i64 -> Async<i64>
+fn rec crowd_server listener remaining handled = Async {
+	if remaining == 0 then return handled
+	else
+		match! Net.accept_async listener (Maybe.Some 10000) with
+		| Result.Error _ -> return handled
+		| Result.Ok stream ->
+			match! read_exact stream 16 (nothing ()) with
+			| Result.Error _ -> return handled
+			| Result.Ok bytes ->
+				let reply = [(sum_of (ref bytes) % 256) as ubyte]
+				let! _written = Net.write_async stream reply (Maybe.Some 10000)
+				let! _closed = Net.close_async stream
+				return! crowd_server listener (remaining - 1) (handled + 1)
+}
+
+def run_crowd :: unit -> IO<unit>
+fn run_crowd _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! bound = Net.bind loopback
+	match bound with
+	| Result.Error error -> do! say (failure_text error)
+	| Result.Ok listener ->
+		let target = Net.local_addr listener
+		let! counts = Async.block_on (Async.all [crowd_server listener 40 0, crowd_clients target 40])
+		let! _closed = Net.close_listener listener
+		do! say ("crowd: server=" + to_string counts[0] + " clients=" + to_string counts[1])
+}
+
+/// `count` more connected pairs on a listener: the client ends and the server ends.
+def rec make_pairs :: Net.TcpListener -> Net.Address -> i64 -> Vec<Net.TcpStream> -> Vec<Net.TcpStream> -> IO<(Vec<Net.TcpStream> * Vec<Net.TcpStream>)>
+fn rec make_pairs listener target count clients servers =
+	if count == 0 then IO.pure (clients, servers)
+	else IO.bind (Net.connect target (Maybe.Some 5000)) (\connected ->
+		IO.bind (Net.accept listener (Maybe.Some 5000)) (\accepted ->
+			match (connected, accepted) with
+			| (Result.Ok client, Result.Ok server) -> make_pairs listener target (count - 1) (Vec.push clients client) (Vec.push servers server)
+			| _ -> IO.pure (clients, servers)))
+
+/// One connected pair on a listener of its own: the listener, the client end, and the server end.
+def make_pair :: unit -> IO<Maybe<(Net.TcpListener * Net.TcpStream * Net.TcpStream)>>
+fn make_pair _unit =
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	IO.bind (Net.bind loopback) (\bound ->
+		match bound with
+		| Result.Error _ -> IO.pure Maybe.None
+		| Result.Ok listener ->
+			IO.bind (Net.connect (Net.local_addr listener) (Maybe.Some 5000)) (\connected ->
+				IO.bind (Net.accept listener (Maybe.Some 5000)) (\accepted ->
+					match (connected, accepted) with
+					| (Result.Ok client, Result.Ok server) -> IO.pure (Maybe.Some (listener, client, server))
+					| _ -> IO.pure Maybe.None)))
+
+/// A wait of a socket that has bytes coming: the sum of what arrives, or -1000.
+def wait_for_byte :: Net.TcpStream -> Async<i64>
+fn wait_for_byte stream = Async {
+	match! Net.read_async stream 8 (Maybe.Some 20000) with
+	| Result.Error _ -> return -1000
+	| Result.Ok bytes -> return sum_of (ref bytes)
+}
+
+def send_one :: Net.TcpStream -> i64 -> Async<i64>
+fn send_one stream value = Async {
+	let! written = Net.write_async stream [value as ubyte] (Maybe.Some 20000)
+	return (if unit_text written == "ok" then 1 else 0)
+}
+
+def close_one :: Net.TcpStream -> Async<i64>
+fn close_one stream = Async {
+	let! closed = Net.close_async stream
+	return (if unit_text closed == "ok" then 1 else 0)
+}
+
+def wait_all :: [Net.TcpStream] -> Async<i64>
+fn wait_all servers = Async {
+	let! values = Async.all (Array.init servers.length (\index -> wait_for_byte servers[index]))
+	return Array.sum (ref values)
+}
+
+def send_all :: [Net.TcpStream] -> Async<i64>
+fn send_all clients = Async {
+	do! Async.sleep 30
+	let! sent = Async.all (Array.init clients.length (\index -> send_one clients[index] index))
+	return Array.sum (ref sent)
+}
+
+def close_all :: [Net.TcpStream] -> Async<i64>
+fn close_all streams = Async {
+	let! closed = Async.all (Array.init streams.length (\index -> close_one streams[index]))
+	return Array.sum (ref closed)
+}
+
+/// Sixty-four reads wait at once on sockets of their own; a writer feeds them one byte each after a pause.
+def run_waits :: unit -> IO<unit>
+fn run_waits _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! bound = Net.bind loopback
+	match bound with
+	| Result.Error error -> do! say (failure_text error)
+	| Result.Ok listener ->
+		let! made = make_pairs listener (Net.local_addr listener) 64 Vec.empty() Vec.empty()
+		match made with
+		| (clients, servers) ->
+			let client_array = Vec.to_array clients
+			let server_array = Vec.to_array servers
+			let both = Array.append (ref client_array) (ref server_array)
+			let! totals = Async.block_on (Async.all [wait_all server_array, send_all client_array])
+			do! say ("waits: sum=" + to_string totals[0] + " sent=" + to_string totals[1])
+			let! closed = Async.block_on (close_all both)
+			let! _closed_listener = Net.close_listener listener
+			do! say ("closed=" + to_string closed)
+}
+
+def failing :: i64 -> Async<Result<i64, Os.Error>>
+fn failing delay = Async {
+	do! Async.sleep delay
+	return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
+}
+
+def idle_read :: Net.TcpStream -> Async<Result<i64, Os.Error>>
+fn idle_read stream = Async {
+	match! Net.read_async stream 16 Maybe.None with
+	| Result.Error error -> return Result.Error error
+	| Result.Ok bytes -> return Result.Ok bytes.length
+}
+
+def outcome_text :: Result<[i64], Os.Error> -> string
+fn outcome_text outcome =
+	match outcome with
+	| Result.Ok values -> "ok " + to_string values.length
+	| Result.Error error -> "error " + failure_text error
+
+def rec cancel_rounds :: Net.TcpStream -> i64 -> i64 -> IO<i64>
+fn rec cancel_rounds stream remaining cancelled =
+	if remaining == 0 then IO.pure cancelled
+	else IO.bind (Async.block_on (Async.all_results [idle_read stream, failing 0])) (\outcome ->
+		cancel_rounds stream (remaining - 1) (match outcome with
+			| Result.Error _ -> cancelled + 1
+			| Result.Ok _ -> cancelled))
+
+/// A read that nothing satisfies is cancelled when a sibling fails; the stream still works, and the cancelling can be
+/// done again and again.
+def run_cancel :: unit -> IO<unit>
+fn run_cancel _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! cancelled = Async.block_on (Async.all_results [idle_read client, failing 20])
+		do! say ("cancel: " + outcome_text cancelled)
+		let! sent = Net.write server (bytes_of (ref "x")) (Maybe.Some 1000)
+		let! after = Net.read client 16 (Maybe.Some 1000)
+		do! say ("after: " + unit_text sent + " " + read_text after)
+		let! _sent_first = Net.write server (bytes_of (ref "a")) (Maybe.Some 1000)
+		let! again = Async.block_on (wait_for_byte client)
+		do! say ("again: " + to_string again)
+		let! rounds = cancel_rounds client 200 0
+		do! say ("rounds: " + to_string rounds)
+		let! _sent_again = Net.write server (bytes_of (ref "yz")) (Maybe.Some 1000)
+		let! last = Async.block_on (collect client 16 2 0 0)
+		do! say ("last: " + last)
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+def closer :: Net.TcpStream -> Async<Result<i64, Os.Error>>
+fn closer stream = Async {
+	do! Async.sleep 30
+	match! Net.close_async stream with
+	| Result.Error error -> return Result.Error error
+	| Result.Ok _ -> return Result.Ok 0
+}
+
+def accept_waiter :: Net.TcpListener -> Async<Result<i64, Os.Error>>
+fn accept_waiter listener = Async {
+	match! Net.accept_async listener Maybe.None with
+	| Result.Error error -> return Result.Error error
+	| Result.Ok _ -> return Result.Ok 1
+}
+
+def listener_closer :: Net.TcpListener -> Async<Result<i64, Os.Error>>
+fn listener_closer listener = Async {
+	do! Async.sleep 30
+	match! Net.close_listener_async listener with
+	| Result.Error error -> return Result.Error error
+	| Result.Ok _ -> return Result.Ok 0
+}
+
+/// Closing a socket ends the waits on it, and the waiting operations report the closed handle.
+def run_close_wait :: unit -> IO<unit>
+fn run_close_wait _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! first = Async.block_on (Async.all_results [idle_read server, idle_read server, closer server])
+		do! say ("read: " + outcome_text first)
+		let! second = Async.block_on (Async.all_results [accept_waiter listener, listener_closer listener])
+		do! say ("accept: " + outcome_text second)
+		let! _closed = Net.close client
+		do! say "done"
+}
+
+def timed_read :: Net.TcpStream -> i64 -> Async<string>
+fn timed_read stream wait = Async {
+	match! Net.read_async stream 16 (Maybe.Some wait) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok bytes -> return "read:" + to_string bytes.length
+}
+
+def timed_accept :: Net.TcpListener -> i64 -> Async<string>
+fn timed_accept listener wait = Async {
+	match! Net.accept_async listener (Maybe.Some wait) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok _ -> return "accepted"
+}
+
+def late_writer :: Net.TcpStream -> Async<i64>
+fn late_writer stream = Async {
+	do! Async.sleep 30
+	return! send_one stream 7
+}
+
+/// A read and an accept that wait past their timeouts report TimedOut, and the socket works after that: the
+/// same read with room in its timeout gets a byte that comes late.
+def run_timeouts :: unit -> IO<unit>
+fn run_timeouts _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! quiet = Async.block_on (timed_read client 40)
+		do! say ("read: " + quiet)
+		let! idle = Async.block_on (timed_accept listener 40)
+		do! say ("accept: " + idle)
+		let! late = Async.block_on (Async.all [wait_for_byte client, late_writer server])
+		do! say ("late: " + to_string late[0] + " " + to_string late[1])
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// Arguments that are out of range are InvalidInput, and the operation never suspends.
+def validation :: Net.Address -> Net.TcpStream -> Net.TcpListener -> Async<string>
+fn validation address stream listener = Async {
+	let! connect_zero = Net.connect_async address (Maybe.Some 0)
+	let! connect_negative = Net.connect_async address (Maybe.Some (-1))
+	let! accept_big = Net.accept_async listener (Maybe.Some 2147483648)
+	let! read_zero = Net.read_async stream 0 (Maybe.Some 100)
+	let! read_big = Net.read_async stream 16777217 (Maybe.Some 100)
+	let! read_timeout = Net.read_async stream 1 (Maybe.Some 0)
+	let! write_timeout = Net.write_async stream (pattern 4) (Maybe.Some (-7))
+	let! empty = Net.write_async stream (nothing ()) (Maybe.Some 100)
+	let! accepted = Net.accept_async listener (Maybe.Some 0)
+	return (unit_text (Result.map (\_ -> ()) connect_zero) + "\n" + unit_text (Result.map (\_ -> ()) connect_negative) + "\n" + unit_text (Result.map (\_ -> ()) accept_big) + "\n"
+		+ read_text read_zero + "\n" + read_text read_big + "\n" + read_text read_timeout + "\n" + unit_text write_timeout + "\n" + unit_text empty + "\n" + unit_text (Result.map (\_ -> ()) accepted))
+}
+
+def run_validate :: Net.Address -> IO<unit>
+fn run_validate address = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! text = Async.block_on (validation address client listener)
+		do! say text
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// A peer that sends three bytes and ends: the bytes, then the end of the stream, again and again.
+def run_eof :: Net.Address -> IO<unit>
+fn run_eof address = IO {
+	let! text = Async.block_on (Async {
+		match! Net.connect_async address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! first = collect stream 4096 1000000 0 0
+			let! again = Net.read_async stream 16 (Maybe.Some 5000)
+			let! third = Net.read_async stream 16 (Maybe.Some 5000)
+			let! closed = Net.close_async stream
+			return first + "\nagain: " + read_text again + " " + read_text third + "\n" + unit_text closed
+	})
+	do! say text
+}
+
+/// A port that nobody listens on.
+def run_refused :: Net.Address -> IO<unit>
+fn run_refused address = IO {
+	let! text = Async.block_on (Async {
+		match! Net.connect_async address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok _ -> return "connected"
+	})
+	do! say text
+}
+
+/// Eight mebibytes to a peer that reads slowly: the write waits for room again and again.
+def run_bigwrite :: Net.Address -> IO<unit>
+fn run_bigwrite address = IO {
+	let! text = Async.block_on (Async {
+		match! Net.connect_async address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! written = Net.write_async stream (pattern 8388608) (Maybe.Some 30000)
+			let! closed = Net.close_async stream
+			return "write: " + unit_text written + " " + unit_text closed
+	})
+	do! say text
+}
+
+/// Three mebibytes from a peer, read in pieces of 64 KiB.
+def run_bigread :: Net.Address -> IO<unit>
+fn run_bigread address = IO {
+	let! text = Async.block_on (Async {
+		match! Net.connect_async address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! outcome = collect stream 65536 100000000 0 0
+			let! closed = Net.close_async stream
+			return "read: " + outcome + " " + unit_text closed
+	})
+	do! say text
+}
+
+def datagram_receive :: Net.UdpSocket -> Net.Address -> Async<i64>
+fn datagram_receive socket sender = Async {
+	match! Net.recv_from_async socket 64 (Maybe.Some 5000) with
+	| Result.Error _ -> return -1
+	| Result.Ok (bytes, source) -> return bytes.length * 10 + (if source == sender then 1 else 0)
+}
+
+def datagram_send :: Net.UdpSocket -> Net.Address -> [ubyte] -> Async<i64>
+fn datagram_send socket target data = Async {
+	do! Async.sleep 20
+	let! sent = Net.send_to_async socket data target
+	return (if unit_text sent == "ok" then 1 else 0)
+}
+
+def udp_text :: Result<([ubyte] * Net.Address), Os.Error> -> string
+fn udp_text result =
+	match result with
+	| Result.Ok (bytes, _) -> "datagram:" + to_string bytes.length
+	| Result.Error error -> failure_text error
+
+/// Two UDP sockets in one executor: a receive waits for a send that comes later, then a timeout, a datagram that
+/// does not fit (consumed, InvalidInput), the next one, and an empty one.
+def run_udp :: unit -> IO<unit>
+fn run_udp _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! first = Net.bind_udp loopback
+	let! second = Net.bind_udp loopback
+	match (first, second) with
+	| (Result.Ok receiver, Result.Ok sender) ->
+		let target = Net.udp_local_addr receiver
+		let origin = Net.udp_local_addr sender
+		let! exchange = Async.block_on (Async.all [datagram_receive receiver origin, datagram_send sender target (bytes_of (ref "udp"))])
+		do! say ("exchange: " + to_string exchange[0] + " " + to_string exchange[1])
+		let! quiet = Async.block_on (Async {
+			let! result = Net.recv_from_async receiver 64 (Maybe.Some 40)
+			return udp_text result
+		})
+		do! say ("quiet: " + quiet)
+		let! truncated = Async.block_on (Async {
+			let! _sent = Net.send_to_async sender (pattern 100) target
+			let! result = Net.recv_from_async receiver 10 (Maybe.Some 5000)
+			let! _next = Net.send_to_async sender (bytes_of (ref "ok")) target
+			let! after = Net.recv_from_async receiver 10 (Maybe.Some 5000)
+			let! _empty = Net.send_to_async sender (nothing ()) target
+			let! blank = Net.recv_from_async receiver 10 (Maybe.Some 5000)
+			return udp_text result + " then " + udp_text after + " then " + udp_text blank
+		})
+		do! say ("truncated: " + truncated)
+		let! closed = Async.block_on (Async {
+			let! a = Net.close_udp_async receiver
+			let! b = Net.close_udp_async sender
+			let! c = Net.close_udp_async sender
+			return unit_text a + " " + unit_text b + " " + unit_text c
+		})
+		do! say ("closed: " + closed)
+	| _ -> do! say "no sockets"
+}
+
+/// A half-close: the other side reads the end of the stream and can still answer.
+def run_shutdown :: unit -> IO<unit>
+fn run_shutdown _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! text = Async.block_on (Async {
+			let! shut = Net.shutdown_async client Net.Write
+			let! ended = Net.read_async server 16 (Maybe.Some 5000)
+			let! replied = Net.write_async server (bytes_of (ref "bye")) (Maybe.Some 5000)
+			let! heard = Net.read_async client 16 (Maybe.Some 5000)
+			let! writing = Net.write_async client (bytes_of (ref "late")) (Maybe.Some 5000)
+			return unit_text shut + " " + read_text ended + " " + unit_text replied + " " + read_text heard + " " + unit_text writing
+		})
+		do! say text
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// Every async operation on a handle that was closed.
+def run_stale :: Net.Address -> IO<unit>
+fn run_stale address = IO {
+	let! made = make_pair ()
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! bound = Net.bind_udp loopback
+	match (made, bound) with
+	| (Maybe.Some (listener, client, server), Result.Ok socket) ->
+		let! _closed = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		let! _closed_socket = Net.close_udp socket
+		let! text = Async.block_on (Async {
+			let! read = Net.read_async client 16 (Maybe.Some 100)
+			let! write = Net.write_async client (pattern 4) (Maybe.Some 100)
+			let! shut = Net.shutdown_async client Net.Both
+			let! closed = Net.close_async client
+			let! accepted = Net.accept_async listener (Maybe.Some 100)
+			let! closed_listener = Net.close_listener_async listener
+			let! received = Net.recv_from_async socket 16 (Maybe.Some 100)
+			let! sent = Net.send_to_async socket (pattern 4) address
+			let! closed_socket = Net.close_udp_async socket
+			return read_text read + "\n" + unit_text write + "\n" + unit_text shut + "\n" + unit_text closed + "\n" + unit_text (Result.map (\_ -> ()) accepted) + "\n" + unit_text closed_listener + "\n" + udp_text received + "\n" + unit_text sent + "\n" + unit_text closed_socket
+		})
+		do! say text
+	| _ -> do! say "no sockets"
+}
+
+def run_case :: ref string -> Net.Address -> IO<unit>
+fn run_case name address =
+	match deref name with
+	| "echo" -> run_echo address
+	| "server" -> run_server ()
+	| "crowd" -> run_crowd ()
+	| "waits" -> run_waits ()
+	| "cancel" -> run_cancel ()
+	| "close_wait" -> run_close_wait ()
+	| "timeouts" -> run_timeouts ()
+	| "validate" -> run_validate address
+	| "eof" -> run_eof address
+	| "refused" -> run_refused address
+	| "bigwrite" -> run_bigwrite address
+	| "bigread" -> run_bigread address
+	| "udp" -> run_udp ()
+	| "shutdown" -> run_shutdown ()
+	| "stale" -> run_stale address
+	| _ -> say "unknown case"
+
+/// The case name, the port of the peer, and the peer's host come on three lines of the standard input.
+def main :: unit -> i32 = \() ->
+	let! name = IO.read_line ()
+	let! port_text = IO.read_line ()
+	let! host_text = IO.read_line ()
+	let case = Maybe.default_value "" name
+	let port: Maybe<i64> = Parse.parse (ref (Maybe.default_value "0" port_text))
+	match Net.parse_ip (ref (Maybe.default_value "127.0.0.1" host_text)) (Maybe.default_value 0 port) with
+	| Maybe.None -> do! say "bad target"
+	| Maybe.Some address -> do! run_case (ref case) address
+	0

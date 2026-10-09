@@ -242,7 +242,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Net",
         names: &["Net"],
         aliases: &[],
-        uses: &[],
+        uses: &["Async"],
     },
     OptIn {
         module: "Atomic",

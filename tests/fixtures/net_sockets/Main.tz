@@ -384,7 +384,12 @@ fn run_lifecycle address = IO {
 		| Result.Ok port -> "with=" + to_string (port == Net.port address)
 		| Result.Error error -> failure_text error)
 	let! leaked = Net.connect address (Maybe.Some 5000)
-	do! say (match leaked with | Result.Ok _ -> "leaked" | Result.Error error -> failure_text error)
+	match leaked with
+	| Result.Error error -> do! say (failure_text error)
+	| Result.Ok kept_open ->
+		// The greeting shows that the server has the connection, so the end of the process closes one that it knows.
+		let! hello = Net.read kept_open 16 (Maybe.Some 5000)
+		do! say (match hello with | Result.Ok _ -> "leaked" | Result.Error error -> failure_text error)
 }
 
 /// Writes a megabyte-scale body that the peer reads slowly at first, so that the call has to wait for room.

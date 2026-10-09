@@ -431,6 +431,7 @@ pub fn build_debug_runner(
     let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));
     link.args(["-g", &optimization])
         .args(native_compile_args(cfg!(windows), env::consts::ARCH));
+    let has_net = sources.iter().any(|(name, _)| *name == "net.c");
     for (name, source) in sources {
         let path = temporary.path.join(name);
         let runtime = path.with_extension("o");
@@ -455,6 +456,8 @@ pub fn build_debug_runner(
     link.arg(&object).arg("-o").arg(&artifact);
     if !cfg!(windows) {
         link.args(["-lm", "-pthread"]);
+    } else if has_net {
+        link.arg("-lws2_32");
     }
     links.add_to(&mut link);
     let staged_pdb = temporary.path.join("tests.pdb");
@@ -514,9 +517,12 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         }
         sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
     }
-    if text.contains("declare i64 @tsuzuri_net_") {
+    if llvm::uses_net(text) {
         if !crate::driver::NET_NATIVE_SUPPORTED {
             return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
+        }
+        if llvm::uses_net_async(text) && !llvm::uses_reactor(text) {
+            return Err(driver_error("E2000", crate::driver::NET_ASYNC_MESSAGE));
         }
         sources.push(("net.c", include_str!("runtime/net.c").to_owned()));
     }
@@ -639,7 +645,7 @@ fn build_runner(
     if text.contains("declare i64 @tsuzuri_os_") {
         return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
     }
-    if text.contains("declare i64 @tsuzuri_net_") {
+    if llvm::uses_net(&text) {
         return Err(driver_error("E2000", crate::driver::NET_WASM_MESSAGE));
     }
     if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
@@ -743,7 +749,7 @@ fn compile_native_runner(
     }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
-    let net_runtime = text.contains("declare i64 @tsuzuri_net_");
+    let net_runtime = llvm::uses_net(&text);
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
     let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
@@ -811,6 +817,9 @@ fn compile_native_runner(
     // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
     if gpu_runtime && cfg!(target_os = "linux") {
         clang.arg("-ldl");
+    }
+    if net_runtime && cfg!(windows) {
+        clang.arg("-lws2_32");
     }
     links.add_to(&mut clang);
     collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);

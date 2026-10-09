@@ -396,6 +396,33 @@ fn recv_with socket count timeout =
 		| (0, bytes) -> Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0)
 		| (status, _) -> failed status
 
+/// Whether `bytes`, a host, can be read as an IP address by the system's resolver: it holds a ':' or a '%' (IPv6, with
+/// or without a zone), a space or a control byte, or its last label (a final dot aside) is all digits or starts with
+/// "0x". `inet_aton` reads "127.1", "0x7f000001", "2130706433", and "010.0.0.1" as IPv4 addresses, and each system
+/// reads some more forms its own way, so `resolve` leaves every such host to `parse_ip` alone.
+private def numeric_looking :: ref [ubyte] -> bool
+fn numeric_looking bytes =
+	let length = bytes.length
+	let stop = if length > 0 && bytes[length - 1] == 46ubyte then length - 1 else length
+	let mut looks = false
+	let mut index = 0
+	while index < length do
+		let byte = bytes[index]
+		if byte == 58ubyte || byte == 37ubyte || byte <= 32ubyte || byte == 127ubyte then looks = true
+		index = index + 1
+	let mut start = stop
+	while start > 0 && bytes[start - 1] != 46ubyte do start = start - 1
+	let label = stop - start
+	if label > 0 then
+		let mut digits = true
+		index = start
+		while index < stop do
+			if bytes[index] < 48ubyte || bytes[index] > 57ubyte then digits = false
+			index = index + 1
+		let hexadecimal = label >= 2 && bytes[start] == 48ubyte && (bytes[start + 1] == 120ubyte || bytes[start + 1] == 88ubyte)
+		if digits || hexadecimal then looks = true
+	looks
+
 private def resolve_with :: ref string -> i64 -> Result<[Address], Os.Error>
 fn resolve_with host port =
 	if port < 0 || port > 65535 then Result.Error (invalid ())
@@ -410,15 +437,22 @@ fn resolve_with host port =
 				if bytes[index] == 0ubyte then has_nul = true
 				index = index + 1
 			if bytes.length == 0 || bytes.length > 253 || has_nul then Result.Error (invalid ())
+			elif numeric_looking (ref bytes) then
+				match parse_ip host port with
+				| Maybe.Some address -> Result.Ok (Array.init 1 (\_ -> address))
+				| Maybe.None -> Result.Error (invalid ())
 			else
 				match Net.__resolve (ref name) port with
 				| (0, found) -> Result.Ok (Array.init (found.length / 20) (\position -> address_at (ref found) (position * 20)))
 				| (status, _) -> failed status
 
-/// Resolves a host name or a numeric address to the addresses the system gives it for `port` (0 to 65535), in the
-/// system's order and without repeats, at most 64. It asks the system's resolver, which may read /etc/hosts or
-/// the network and cannot be interrupted, and whose answer is not authenticated. A host that is empty,
-/// longer than 253 bytes, or holds a NUL is `InvalidInput`; a name that does not exist is `NotFound`.
+/// Resolves a host name or an IP address to the addresses the system gives it for `port` (0 to 65535), in the
+/// system's order and without repeats, at most 64. A host that can be read as an address (a ':' or '%', a space or
+/// control byte, or a last label of digits or starting "0x"; see `numeric_looking`) is decided by `parse_ip` alone,
+/// never by the system: the one address it reads, without a call, or `InvalidInput`, so "127.1", "0x7f000001",
+/// "010.0.0.1", and "fe80::1%en0" are refused. Any other host asks the system's resolver, which may read /etc/hosts or
+/// the network and cannot be interrupted, and whose answer is not authenticated; a name that does not exist is
+/// `NotFound`. A host that is empty, longer than 253 bytes, or holds a NUL is `InvalidInput`.
 def resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>
 fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
 
@@ -554,3 +588,182 @@ fn with_udp address body =
 					match closed with
 					| Result.Ok _ -> Result.Ok value
 					| Result.Error error -> Result.Error error) (close_udp socket)))
+
+// The async operations. An async computation runs inside `Async.block_on` and cannot run an `IO` action, so each
+// operation that a computation needs has a twin here. It does its I/O on the thread of the executor and never
+// blocks it: when a call would have to wait, the computation suspends until the socket is ready, and then tries
+// again. The timeouts are for the whole operation, as for the blocking functions. An operation that the computation
+// stops waiting for (a sibling of `Async.all_results` failed) is cancelled; a connect under way is closed then.
+// What a computation holds is closed only by its own `close_async`: a stream that was accepted or connected and
+// whose result is discarded stays open until the process ends, like any stream nobody closes.
+
+/// The status that the runtime gives to a call that was told not to wait and would have had to.
+private def pending :: unit -> i64
+fn pending _unit = 30064771072
+
+/// Waits until the socket of `handle` can read (`events` 1) or write (2): 0 when it can (an error counts, the retry
+/// reports it) or was closed meanwhile, otherwise the status of why not (`remaining` milliseconds passed: -1 is no limit).
+private def watch :: i64 -> i32 -> i64 -> Async<i64>
+fn watch handle events remaining =
+	Async.host (Async.Operation {
+		start: \id -> Net.__watch id handle events remaining,
+		cancel: \id -> Net.__unwatch id })
+
+/// The time left until `deadline` at `now` in milliseconds: -1 without a deadline, and 0 once it has passed.
+private def left :: i64 -> i64 -> i64
+fn left deadline now = if deadline < 0 then -1 elif deadline > now then deadline - now else 0
+
+/// The deadline of an operation that starts now: the clock of the executor plus the wait (-1: none).
+private def deadline_of :: i64 -> Async<i64>
+fn deadline_of wait =
+	if wait < 0 then Async.Return (-1)
+	else Async.Bind (Async.now ()) (\now -> Async.Return (now + wait))
+
+/// Waits for readiness within what is left of the deadline.
+private def ready :: i64 -> i32 -> i64 -> Async<Result<unit, Os.Error>>
+fn ready handle events deadline =
+	Async.Bind (Async.now ()) (\now ->
+		Async.Bind (watch handle events (left deadline now)) (\outcome ->
+			Async.Return (if outcome == 0 then Result.Ok () else failed outcome)))
+
+private def connected :: i64 -> Async<Result<TcpStream, Os.Error>>
+fn connected outcome =
+	if outcome <= 0 then Async.Return (failed (0 - outcome))
+	else
+		match Net.__names outcome with
+		| (0, bytes) -> Async.Return (Result.Ok (stream_of outcome (ref bytes)))
+		| (status, _) -> Async.Return (failed status)
+
+/// Connects to an address without blocking the executor. The timeout is for the whole connect and `None` waits for
+/// the system, as for `connect`. The socket belongs to the operation until the connect ends: cancelling it closes the
+/// socket.
+def connect_async :: Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>
+fn connect_async address timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Async.Return (Result.Error (invalid ()))
+	else
+		Async.Bind (Async.host (Async.Operation {
+			start: \id -> Net.__connect id (meta_of address) (high_of address) (low_of address) wait,
+			cancel: \id -> Net.__unwatch id })) connected
+
+private def rec accept_loop :: TcpListener -> i64 -> Async<Result<TcpStream, Os.Error>>
+fn rec accept_loop listener deadline =
+	Async.Delay (\() ->
+		match Net.__accept listener.id 0 with
+		| (handle, bytes) ->
+			if handle > 0 then Async.Return (Result.Ok (stream_of handle (ref bytes)))
+			elif 0 - handle == pending () then
+				Async.Bind (ready listener.id 1i32 deadline) (\outcome ->
+					match outcome with
+					| Result.Ok _ -> accept_loop listener deadline
+					| Result.Error error -> Async.Return (Result.Error error))
+			else Async.Return (failed (0 - handle)))
+
+/// Waits for a connection without blocking the executor and returns it. A timeout is as for `connect_async`.
+def accept_async :: TcpListener -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>
+fn accept_async listener timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Async.Return (Result.Error (invalid ()))
+	else Async.Bind (deadline_of wait) (\deadline -> accept_loop listener deadline)
+
+private def rec read_loop :: TcpStream -> i64 -> i64 -> Async<Result<[ubyte], Os.Error>>
+fn rec read_loop stream count deadline =
+	Async.Delay (\() ->
+		match Net.__read 0i32 stream.id count 0 with
+		| (0, bytes) -> Async.Return (Result.Ok bytes)
+		| (status, _) ->
+			if status == pending () then
+				Async.Bind (ready stream.id 1i32 deadline) (\outcome ->
+					match outcome with
+					| Result.Ok _ -> read_loop stream count deadline
+					| Result.Error error -> Async.Return (Result.Error error))
+			else Async.Return (failed status))
+
+/// Reads what has arrived without blocking the executor, at most `count` bytes (1 to 16777216): the same result as
+/// `read`, an empty result at the end of the stream, and `TimedOut` when the timeout passes first.
+def read_async :: TcpStream -> i64 -> Maybe<i64> -> Async<Result<[ubyte], Os.Error>>
+fn read_async stream count timeout =
+	let wait = wait_of timeout
+	if wait == -2 || count < 1 || count > 16777216 then Async.Return (Result.Error (invalid ()))
+	else Async.Bind (deadline_of wait) (\deadline -> read_loop stream count deadline)
+
+private def rec write_loop :: TcpStream -> [ubyte] -> i64 -> i64 -> Async<Result<unit, Os.Error>>
+fn rec write_loop stream data offset deadline =
+	Async.Delay (\() ->
+		let sent = Net.__send 0i32 stream.id (ref data) offset 0 0 0
+		if sent >= 0 && offset + sent >= data.length then Async.Return (Result.Ok ())
+		elif sent >= 0 || 0 - sent == pending () then
+			Async.Bind (ready stream.id 2i32 deadline) (\outcome ->
+				match outcome with
+				| Result.Ok _ -> write_loop stream data (if sent > 0 then offset + sent else offset) deadline
+				| Result.Error error -> Async.Return (Result.Error error))
+		else Async.Return (failed (0 - sent)))
+
+/// Writes all the bytes without blocking the executor, however many sends that takes, within the timeout of the
+/// whole call.
+def write_async :: TcpStream -> [ubyte] -> Maybe<i64> -> Async<Result<unit, Os.Error>>
+fn write_async stream data timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Async.Return (Result.Error (invalid ()))
+	else Async.Bind (deadline_of wait) (\deadline -> write_loop stream data 0 deadline)
+
+private def rec recv_loop :: UdpSocket -> i64 -> i64 -> Async<Result<([ubyte] * Address), Os.Error>>
+fn rec recv_loop socket count deadline =
+	Async.Delay (\() ->
+		match Net.__read 1i32 socket.id count 0 with
+		| (0, bytes) -> Async.Return (Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0))
+		| (status, _) ->
+			if status == pending () then
+				Async.Bind (ready socket.id 1i32 deadline) (\outcome ->
+					match outcome with
+					| Result.Ok _ -> recv_loop socket count deadline
+					| Result.Error error -> Async.Return (Result.Error error))
+			else Async.Return (failed status))
+
+/// Receives one datagram without blocking the executor, as `recv_from` does.
+def recv_from_async :: UdpSocket -> i64 -> Maybe<i64> -> Async<Result<([ubyte] * Address), Os.Error>>
+fn recv_from_async socket count timeout =
+	let wait = wait_of timeout
+	if wait == -2 || count < 1 || count > 16777216 then Async.Return (Result.Error (invalid ()))
+	else Async.Bind (deadline_of wait) (\deadline -> recv_loop socket count deadline)
+
+private def rec send_loop :: UdpSocket -> [ubyte] -> Address -> Async<Result<unit, Os.Error>>
+fn rec send_loop socket data target =
+	Async.Delay (\() ->
+		let sent = Net.__send 1i32 socket.id (ref data) 0 (meta_of target) (high_of target) (low_of target)
+		if sent >= 0 then Async.Return (Result.Ok ())
+		elif 0 - sent == pending () then
+			Async.Bind (ready socket.id 2i32 (-1)) (\outcome ->
+				match outcome with
+				| Result.Ok _ -> send_loop socket data target
+				| Result.Error error -> Async.Return (Result.Error error))
+		else Async.Return (failed (0 - sent)))
+
+/// Sends all the bytes as one datagram without blocking the executor, as `send_to` does.
+def send_to_async :: UdpSocket -> [ubyte] -> Address -> Async<Result<unit, Os.Error>>
+fn send_to_async socket data target = send_loop socket data target
+
+/// Binds a listener for an async computation, as `bind` does. It never waits.
+def bind_async :: Address -> Async<Result<TcpListener, Os.Error>>
+fn bind_async address = Async.Delay (\() -> Async.Return (bind_with address))
+
+/// Binds a UDP socket for an async computation, as `bind_udp` does. It never waits.
+def bind_udp_async :: Address -> Async<Result<UdpSocket, Os.Error>>
+fn bind_udp_async address = Async.Delay (\() -> Async.Return (bind_udp_with address))
+
+/// Closes a stream for an async computation, as `close` does. A computation that waits on the stream resumes with
+/// `InvalidInput`.
+def close_async :: TcpStream -> Async<Result<unit, Os.Error>>
+fn close_async stream = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 stream.id)))
+
+/// Closes a listener for an async computation, as `close_listener` does.
+def close_listener_async :: TcpListener -> Async<Result<unit, Os.Error>>
+fn close_listener_async listener = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 listener.id)))
+
+/// Closes a UDP socket for an async computation, as `close_udp` does.
+def close_udp_async :: UdpSocket -> Async<Result<unit, Os.Error>>
+fn close_udp_async socket = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 socket.id)))
+
+/// Ends reading, writing, or both on a stream for an async computation, as `shutdown` does.
+def shutdown_async :: TcpStream -> Shutdown -> Async<Result<unit, Os.Error>>
+fn shutdown_async stream how = Async.Delay (\() -> Async.Return (no_value (Net.__close (shutdown_number how) stream.id)))

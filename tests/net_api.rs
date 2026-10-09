@@ -34,6 +34,89 @@ fn reserves_net_module() {
 }
 
 #[test]
+fn resolve_leaves_address_text_to_the_strict_parser() {
+    use std::path::Path;
+    use std::process::Command;
+    // A host that a system's resolver would read as an address in its own way ("127.1", "0x7f000001", "010.0.0.1",
+    // "fe80::1%lo0") is decided by the strict parser alone, so the answer is the same on every system, and nothing
+    // here asks a resolver or needs a network. tests/fixtures/net_resolve resolves a corpus that is all address text:
+    // its first twelve hosts are what the strict parser reads, and every other one is InvalidInput.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/net_resolve");
+    let corpus = std::fs::read_to_string(fixture.join("Corpus.tz")).unwrap();
+    let hosts = corpus
+        .lines()
+        .filter(|line| line.starts_with("\t\""))
+        .count();
+    for needed in [
+        "\"127.1\"",
+        "\"0x7f.1\"",
+        "\"0x7f000001\"",
+        "\"2130706433\"",
+        "\"1.2.3\"",
+        "\"0177.0.0.1\"",
+        "\"010.0.0.1\"",
+        "\"0\"",
+        "\"0x0\"",
+        "\"4294967296\"",
+        "\"fe80::1%lo0\"",
+    ] {
+        assert!(corpus.contains(needed), "the corpus has {needed}");
+    }
+    let root = std::env::temp_dir().join(format!("tsuzuri-net-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for optimization in ["-O0", "-O3"] {
+        let executable = root.join(format!(
+            "resolve{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let built = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("build")
+            .arg(&fixture)
+            .arg(optimization)
+            .arg("--no-cache")
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let run = Command::new(&executable).output().unwrap();
+        assert!(run.status.success());
+        let output = String::from_utf8(run.stdout).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), hosts, "{optimization}\n{output}");
+        assert_eq!(
+            lines[..12],
+            [
+                "1: 127.0.0.1:80",
+                "1: 0.0.0.0:80",
+                "1: 255.255.255.255:80",
+                "1: 192.0.2.7:80",
+                "1: [::1]:80",
+                "1: [::]:80",
+                "1: [2001:db8::1]:80",
+                "1: [2001:db8::1]:80",
+                "1: [::ffff:c000:201]:80",
+                "1: [1:2:3:4:5:6:7:8]:80",
+                "1: [::1]:80",
+                "1: [fe80::1]:80",
+            ],
+            "{optimization}"
+        );
+        for (index, line) in lines.iter().enumerate().skip(12) {
+            assert_eq!(
+                *line, "Unclassified InvalidInput 0",
+                "host {index} of the corpus at {optimization}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn addresses_and_handles_are_opaque_copies() {
     // The records are not built outside the module, so no address holds a port that is not a port.
     for source in [
@@ -89,6 +172,11 @@ fn net_primitives_are_private_to_std() {
         "Net.__write",
         "Net.__close",
         "Net.__classify",
+        "Net.__watch",
+        "Net.__unwatch",
+        "Net.__connect",
+        "Net.__names",
+        "Net.__send",
     ] {
         let error = analyze(&format!("let call = {name}\n0")).expect_err(name);
         assert_eq!(error.code, "E1022", "{name}: {}", error.message);
@@ -102,6 +190,142 @@ fn net_primitives_are_private_to_std() {
     }
     let error = analyze("Net.__close 0i32 3").unwrap_err();
     assert_eq!(error.code, "E1022", "{}", error.message);
+    let error = analyze("Net.__watch 1 1 1i32 -1").unwrap_err();
+    assert_eq!(error.code, "E1022", "{}", error.message);
+}
+
+#[test]
+fn types_the_async_api() {
+    // Every async operation is an `Async` computation of the same result that its blocking twin has.
+    module(
+        "def main :: unit -> i32 = \\() ->
+    let connect: Net.Address -> Maybe<i64> -> Async<Result<Net.TcpStream, Os.Error>> = Net.connect_async
+    let accept: Net.TcpListener -> Maybe<i64> -> Async<Result<Net.TcpStream, Os.Error>> = Net.accept_async
+    let read: Net.TcpStream -> i64 -> Maybe<i64> -> Async<Result<[ubyte], Os.Error>> = Net.read_async
+    let write: Net.TcpStream -> [ubyte] -> Maybe<i64> -> Async<Result<unit, Os.Error>> = Net.write_async
+    let recv_from: Net.UdpSocket -> i64 -> Maybe<i64> -> Async<Result<([ubyte] * Net.Address), Os.Error>> = Net.recv_from_async
+    let send_to: Net.UdpSocket -> [ubyte] -> Net.Address -> Async<Result<unit, Os.Error>> = Net.send_to_async
+    let bind: Net.Address -> Async<Result<Net.TcpListener, Os.Error>> = Net.bind_async
+    let bind_udp: Net.Address -> Async<Result<Net.UdpSocket, Os.Error>> = Net.bind_udp_async
+    let close: Net.TcpStream -> Async<Result<unit, Os.Error>> = Net.close_async
+    let close_listener: Net.TcpListener -> Async<Result<unit, Os.Error>> = Net.close_listener_async
+    let close_udp: Net.UdpSocket -> Async<Result<unit, Os.Error>> = Net.close_udp_async
+    let shutdown: Net.TcpStream -> Net.Shutdown -> Async<Result<unit, Os.Error>> = Net.shutdown_async
+    do! IO.write_line \"typed\"
+    0
+",
+    );
+    // A computation of several operations is an ordinary `Async` block.
+    module(
+        "def fetch :: Net.Address -> Async<i64>
+fn fetch address = Async {
+    match! Net.connect_async address (Maybe.Some 100) with
+    | Result.Error _ -> return -1
+    | Result.Ok stream ->
+        let! _written = Net.write_async stream [1ubyte] (Maybe.Some 100)
+        match! Net.read_async stream 8 (Maybe.Some 100) with
+        | Result.Error _ -> return -2
+        | Result.Ok bytes ->
+            let! _closed = Net.close_async stream
+            return bytes.length
+}
+def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! outcome = Async.block_on (Async.all [fetch address, fetch address])
+    do! IO.write_line outcome[0]
+    0
+",
+    );
+}
+
+#[test]
+fn async_operations_declare_what_they_reach_and_need_the_reactor() {
+    // `read_async` waits for readiness and tries to read; it never connects, and it hands the poller the function
+    // that completes an operation.
+    let reading = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! connected = Net.connect address Maybe.None
+    match connected with
+    | Result.Error _ -> do! IO.write_line \"none\"
+    | Result.Ok stream ->
+        let! count = Async.block_on (Async {
+            match! Net.read_async stream 8 (Maybe.Some 10) with
+            | Result.Error _ -> return -1
+            | Result.Ok bytes -> return bytes.length
+        })
+        do! IO.write_line count
+    0
+",
+    );
+    let native = ir(&reading, llvm::Entry::Console, false);
+    for declaration in [
+        "declare void @tsuzuri_net_watch(ptr, i64, i64, i32, i64)\n",
+        "declare void @tsuzuri_net_unwatch(i64)\n",
+        "declare i32 @tsuzuri_async_post(i64, i64)\n",
+        "declare i64 @tsuzuri_net_read(ptr, i32, i64, i64, i64)\n",
+    ] {
+        assert!(native.contains(declaration), "{declaration}\n{native}");
+    }
+    assert!(!native.contains("@tsuzuri_net_connect"), "{native}");
+    assert!(!native.contains("@tsuzuri_net_send"), "{native}");
+    assert!(
+        llvm::uses_net(&native) && llvm::uses_net_async(&native) && llvm::uses_reactor(&native)
+    );
+    // The two completions that net.c posts go through the pointer that the call passes.
+    assert!(
+        native.contains("call void @tsuzuri_net_watch(ptr @tsuzuri_async_post, "),
+        "{native}"
+    );
+
+    // A connect is its own primitive, which names its target and hands over the socket, and sends need no wait.
+    let connecting = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! outcome = Async.block_on (Net.connect_async address Maybe.None)
+    do! IO.write_line (Result.is_ok (ref outcome))
+    0
+",
+    );
+    let native = ir(&connecting, llvm::Entry::Console, false);
+    for declaration in [
+        "declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)\n",
+        "declare i64 @tsuzuri_net_names(ptr, i64)\n",
+    ] {
+        assert!(native.contains(declaration), "{declaration}\n{native}");
+    }
+    assert!(!native.contains("@tsuzuri_net_watch"), "{native}");
+
+    // Without Async.block_on nothing receives the completion: the checker accepts it, and the driver reports E2000.
+    let unaided = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let outcome = Async.run (Net.connect_async address Maybe.None)
+    do! IO.write_line (Result.is_ok (ref outcome))
+    0
+",
+    );
+    let text = ir(&unaided, llvm::Entry::Console, false);
+    assert!(
+        llvm::uses_net_async(&text) && !llvm::uses_reactor(&text),
+        "{text}"
+    );
+
+    // The blocking operations need neither the reactor nor the poller entry points, though Net loads Async.
+    let blocking = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! opened = Net.connect address Maybe.None
+    do! IO.write_line (Result.is_ok (ref opened))
+    0
+",
+    );
+    for wasm in [false, true] {
+        let text = ir(&blocking, llvm::Entry::Library, wasm);
+        assert!(!llvm::uses_net_async(&text), "{text}");
+        assert!(!text.contains("tsuzuri_async"), "{text}");
+        assert!(!text.contains("tsuzuri_net_watch"), "{text}");
+    }
 }
 
 #[test]

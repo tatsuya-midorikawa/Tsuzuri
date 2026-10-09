@@ -207,9 +207,15 @@ impl FunctionEmitter<'_, '_> {
     /// The network primitives of the standard `Net` module (E09). Each declares a C function that
     /// `src/runtime/net.c` defines when the program reaches it. A status of 0 is success; otherwise it
     /// is `(kind << 32) | code` with `kind` in 1..=7, and any other value traps like `os_builtin`.
-    /// `Net.__open` and `Net.__accept` return a handle (positive) or the negated status, and
-    /// `Net.__classify` an index below 7.
+    /// `Net.__open`, `Net.__accept`, and `Net.__send` return a count or handle (not negative) or the
+    /// negated status, and `Net.__classify` an index below 7.
     pub(super) fn net_builtin(&mut self, builtin: Builtin, signature: &Type) -> String {
+        if matches!(
+            builtin,
+            Builtin::NetWatch | Builtin::NetUnwatch | Builtin::NetConnect
+        ) {
+            return self.net_async_builtin(builtin);
+        }
         let (name, parameters) = match builtin {
             Builtin::NetResolve => ("resolve", "ptr, ptr, i64, i64"),
             Builtin::NetOpen => ("open", "ptr, i32, i64, i64, i64, i64"),
@@ -218,13 +224,19 @@ impl FunctionEmitter<'_, '_> {
             Builtin::NetWrite => ("write", "i32, i64, ptr, i64, i64, i64, i64, i64"),
             Builtin::NetClose => ("close", "i32, i64"),
             Builtin::NetClassify => ("classify", "i32"),
+            Builtin::NetNames => ("names", "ptr, i64"),
+            Builtin::NetSend => ("send", "i32, i64, ptr, i64, i64, i64, i64, i64"),
             _ => unreachable!(),
         };
         self.intrinsics
             .insert(format!("declare i64 @tsuzuri_net_{name}({parameters})"));
         let owned = matches!(
             builtin,
-            Builtin::NetResolve | Builtin::NetOpen | Builtin::NetAccept | Builtin::NetRead
+            Builtin::NetResolve
+                | Builtin::NetOpen
+                | Builtin::NetAccept
+                | Builtin::NetRead
+                | Builtin::NetNames
         );
         let bytes = Type::Array(Box::new(Type::Integer(8, false)));
         let slot = owned.then(|| self.host_result_slot(&bytes));
@@ -250,12 +262,16 @@ impl FunctionEmitter<'_, '_> {
                 "call i64 @tsuzuri_net_read(ptr {}, i32 %arg0, i64 %arg1, i64 %arg2, i64 %arg3)",
                 slot.as_ref().unwrap()
             ),
-            Builtin::NetWrite => {
+            Builtin::NetNames => format!(
+                "call i64 @tsuzuri_net_names(ptr {}, i64 %arg0)",
+                slot.as_ref().unwrap()
+            ),
+            Builtin::NetWrite | Builtin::NetSend => {
                 // A shared array is passed as its descriptor, not as a pointer to it.
                 let data = self.value("extractvalue %tz.array %arg2, 0");
                 let length = self.value("extractvalue %tz.array %arg2, 1");
                 format!(
-                    "call i64 @tsuzuri_net_write(i32 %arg0, i64 %arg1, ptr {data}, i64 {length}, i64 %arg3, i64 %arg4, i64 %arg5, i64 %arg6)"
+                    "call i64 @tsuzuri_net_{name}(i32 %arg0, i64 %arg1, ptr {data}, i64 {length}, i64 %arg3, i64 %arg4, i64 %arg5, i64 %arg6)"
                 )
             }
             Builtin::NetClose => "call i64 @tsuzuri_net_close(i32 %arg0, i64 %arg1)".to_owned(),
@@ -267,8 +283,11 @@ impl FunctionEmitter<'_, '_> {
             self.guard(&valid, TrapKind::BoundsCheck);
             return result;
         }
-        // A handle is not an error status; only the negated status of a failure is checked.
-        let status = if matches!(builtin, Builtin::NetOpen | Builtin::NetAccept) {
+        // A handle or a count is not an error status; only the negated status of a failure is checked.
+        let status = if matches!(
+            builtin,
+            Builtin::NetOpen | Builtin::NetAccept | Builtin::NetSend
+        ) {
             let failed = self.value(format!("icmp slt i64 {result}, 0"));
             let negated = self.value(format!("sub i64 0, {result}"));
             self.value(format!("select i1 {failed}, i64 {negated}, i64 0"))
@@ -287,6 +306,7 @@ impl FunctionEmitter<'_, '_> {
         let value = self.read_host_result(&bytes, &slot);
         let arguments = match builtin {
             Builtin::NetResolve | Builtin::NetAccept => 2,
+            Builtin::NetNames => 1,
             Builtin::NetOpen => 5,
             _ => 4,
         };
@@ -297,5 +317,33 @@ impl FunctionEmitter<'_, '_> {
         self.value(format!(
             "insertvalue {result_type} {tuple}, %tz.array {value}, 1"
         ))
+    }
+
+    /// The async operations of `Net` (E09 Phase 2): a call that starts, or takes back, an operation of
+    /// `Async.host`, and returns unit. The runtime completes the operation with the `tsuzuri_async_post`
+    /// that is passed in, so `net.c` itself needs no reactor; the driver rejects a program that starts one
+    /// without `Async.block_on`.
+    fn net_async_builtin(&mut self, builtin: Builtin) -> String {
+        let (declaration, call) = match builtin {
+            Builtin::NetWatch => (
+                "declare void @tsuzuri_net_watch(ptr, i64, i64, i32, i64)",
+                "call void @tsuzuri_net_watch(ptr @tsuzuri_async_post, i64 %arg0, i64 %arg1, i32 %arg2, i64 %arg3)",
+            ),
+            Builtin::NetConnect => (
+                "declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)",
+                "call void @tsuzuri_net_connect(ptr @tsuzuri_async_post, i64 %arg0, i64 %arg1, i64 %arg2, i64 %arg3, i64 %arg4)",
+            ),
+            _ => (
+                "declare void @tsuzuri_net_unwatch(i64)",
+                "call void @tsuzuri_net_unwatch(i64 %arg0)",
+            ),
+        };
+        self.intrinsics.insert(declaration.to_owned());
+        if builtin != Builtin::NetUnwatch {
+            self.intrinsics
+                .insert("declare i32 @tsuzuri_async_post(i64, i64)".to_owned());
+        }
+        self.instruction(call);
+        "0".to_owned()
     }
 }
