@@ -190,7 +190,7 @@ tsuzuri build --emit object --allocator host Main.tz
 | `host` | ホストの `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` に委譲する |
 | `counting` | `system` を包み、確保回数、解放回数、使用中バイト、ピークバイトを数える。`tsuzuri_alloc_stats` で読む |
 
-`host` と `counting` は、`--emit object`、`llvm`、`header`、または WASM だけで使えます。`--emit exe`、`wgsl`、`--trap-mode return` と一緒だと `E2000` です。`host` は `--wasm-feature threads` とも同時には指定できません。実行ファイルの既定ヒープは `system` のままです。
+`host` と `counting` は、`--emit object`、`llvm`、`header`、または WASM だけで使えます。`--emit exe`、`wgsl`、`wgsl-relaxed`、`--trap-mode return` と一緒だと `E2000` です。`host` は `--wasm-feature threads` とも同時には指定できません。実行ファイルの既定ヒープは `system` のままです。
 
 `--freestanding` は、C 標準ライブラリに依存しない native の `object` / `llvm` / `header` を出します。`--allocator host` が必須です。残ってよい外部は、ホストの allocator、自分で宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Debug`、プログラム引数は `E2000` で拒否されます。
 

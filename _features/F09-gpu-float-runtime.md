@@ -7,7 +7,7 @@
 | 規模 | XL |
 | 依存 | F07, (C11) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | doing（Phase 1・2 done。Phase 3 は未完了で、別の担当者が作業する） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D1（relaxed f32 の言語契約と名前 `Gpu.map_relaxed`・`Gpu.init_relaxed`・`--emit wgsl-relaxed`）, D9（Phase 2: 言語 runtime からの WebGPU 接続と opt-in の WASM import）, D10（Phase 3: Vulkan の strict float・i64・`Gpu.Auto`） |
 | 改善する劣位 | C/C++ 比: GPU は実験段階で、成熟した GPU 開発基盤の代替にならない（[なぜ Tsuzuri か](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md#cc-に対する劣位点)） |
@@ -24,9 +24,9 @@ Phase は次のとおり。実装者は Phase 1 だけを実装する。Phase 2�
 
 | Phase | 内容 | 状態 |
 | --- | --- | --- |
-| 1 | relaxed f32 カーネル: `Gpu.map_relaxed`・`Gpu.init_relaxed`（CPU 参照）、`--emit wgsl-relaxed`、`webgpu.mjs` の f32 buffer、GPU なしの検証と `TSUZURI_WEBGPU=1` の実 adapter 検証、転送を含む計測 | 実装対象（D1 の承認後） |
-| 2 | 言語 runtime からの WebGPU 接続（`Gpu.request Gpu.WebGpu`）、native の動的読み込み、`shader-f16` による f16 | 設計方針（D9） |
-| 3 | Vulkan・SPIR-V の strict f32（float controls）、`shaderInt64` の i64、`Gpu.Auto` | 設計方針（D10） |
+| 1 | relaxed f32 カーネル: `Gpu.map_relaxed`・`Gpu.init_relaxed`（CPU 参照）、`--emit wgsl-relaxed`、`webgpu.mjs` の f32 buffer、GPU なしの検証と `TSUZURI_WEBGPU=1` の実 adapter 検証、転送を含む計測 | done（2026-10-10。「実装状況」） |
+| 2 | 言語 runtime からの WebGPU 接続（`Gpu.request Gpu.WebGpu`）、native の動的読み込み、`shader-f16` による f16 | done（2026-10-10。「実装状況」） |
+| 3 | Vulkan・SPIR-V の strict f32（float controls）、`shaderInt64` の i64、`Gpu.Auto` | 設計方針（D10）。別の担当者が作業中 |
 
 ## 着手条件と停止条件
 
@@ -668,3 +668,53 @@ const ulp = x => { f32[0] = Math.abs(x); const low = f32[0]; u32[0] += 1; return
 - 理由: 旧版の Phase 1（Vulkan の strict float）は新しい driver 依存と SPIR-V 基盤を要し、WGSL と既存の Dawn 試作で届く relaxed f32 より
   先に着手する理由がない。能力の確認なしに strict と称さない方針は保つ。
 - 状態: 要承認（承認前は Phase 3 に着手しない）
+
+## 実装状況（2026-10-10、base `96d7cbf`）
+
+利用者の包括承認（`D1`・`D9`・`D10` を含む `要承認` のすべて）に基づく。実装は worktree `impl/f09-gpu` の Phase 1 と Phase 2。Phase 3 は別の担当者が行う。
+
+### Phase 1（done）
+
+- 実装: `Gpu.init_relaxed`・`Gpu.map_relaxed`（`std/Gpu.tz`）、`Emit::WgslRelaxed`（`--emit wgsl-relaxed`。`BuildOptions` に field なし。D3）、`GpuKernel::wgsl_relaxed`、
+  1 行目の宣言 `// tsuzuri-gpu float=relaxed input=<t> output=<t>`、`bitcast<f32>(<bits>u)` のリテラル、`(-x)`・`/`・`f32(x)`、
+  `webgpu.mjs` の f32 buffer（`Float32Array`、要素種別 `kind`、`prepare(source, { float: "relaxed" })`）。
+- ticket から外れた点: ① `src/cache.rs` の `Emit::Llvm | Header | Wgsl` も直した（ticket の表にない）。② 現行の `--emit` の一覧（`shared`・`bindings-*`）に合わせてメッセージを
+  `… wgsl, wgsl-relaxed, shared, …` にした（`src/main.rs` の既存テストの文面。ticket が許す変更）。③ f32 の `%` は言語にない（`Rem` は整数と `BigInt` だけ）ので、ticket の
+  「float の剰余」の拒否は到達しない。専用の arm も診断も作っていない。④ bool lane は専用の文面（`relaxed WebGPU buffer lanes must be f32, i32, or i32u; bool lanes are unavailable`）。
+  ⑤ ticket の「例」の WGSL は簡略化されていて、実際の出力は全式を `let value_N` に束縛する（strict と同じ生成規則）。テストは実際の出力を完全一致で比べる。
+  ⑥ `fromArray` の buffer に `COPY_SRC` を足した（`toArray` が upload 直後の buffer でも検証を通る。以前は未使用の経路）。
+- 検証: `cargo test --locked --test gpu` 7 passed、`--emit wgsl` の strict 出力は base と byte 一致（`cmp`）、`node tests/gpu.mjs`（CPU のみ）は 783 の整数参照と 1,315 の緩い f32 参照が成功、
+  `TSUZURI_WEBGPU=1 node tests/gpu.mjs`（Apple M1 Max、Dawn 0.6.1 の Metal）は成功。最大誤差は poly 1・horner 1・ratio 2・index 0・threshold 0 ulp（許容 4・12・9・5・0）。
+  性能は `docs/benchmarks.md`（9 回の中央値。転送を含む値と常駐の値を分け、速度の優位は主張しない）。
+
+### Phase 2（done）
+
+- 実装: `Gpu.request Gpu.WebGpu` は、言語ランタイムがデバイスを開けたときだけ `Result.Ok`、ほかは `Result.Error Gpu.Unavailable`（CPU への置き換えなし）。
+  `Gpu.WebGpu` を構築するユーザー関数があるプログラムだけが「デバイス対応」で、そのときだけ `request`・`init`・`map`・`init_relaxed`・`map_relaxed` を `std/Gpu.tz` の
+  `request_on`・`init_on`・`map_on`（内部）へ付け替え、呼び出し箇所ごとの WGSL を `CheckedModule.gpu` の表（`src/gpu_devices.rs`）と LLVM の定数（`src/llvm_gpu.rs`）に埋め込む。
+  そうでないプログラムの IR・import・ABI は変わらない（base との IR 比較は「検証」）。バッファは呼び出しごとに転送し、ホスト配列のまま（GPU 常駐は作っていない）。
+  ランタイムの境界は `tsuzuri_gpu_open(backend, features)` と `tsuzuri_gpu_run(backend, mode, flags, lanes, wgsl, wgsl_len, spirv, spirv_len, input, count, output)`。
+  native は `src/runtime/gpu.c`（wgpu-native 29 を `dlopen`／`LoadLibrary`、`webgpu.h` の必要な部分を自前で宣言、`wgpuGetVersion` の主バージョン 29 を確認、リンク時の依存なし）。
+  WebAssembly は `--wasm-feature webgpu`（`BuildOptions.wasm_webgpu`）のときだけ 2 つの import（`tsuzuri_gpu.open`・`tsuzuri_gpu.run`）を足し、ホストは `src/runtime/webgpu.mjs` の
+  `createGpuImports`（JSPI）。既定の WASM は import なしのまま。`f16` は緩い API の lane・局所値・引数・結果で、`enable f16;` と `shader-f16`（プログラム全体の要求。アダプタが持たなければ `Unavailable`）。
+- 決めた点（ticket が「Phase 2 の着手前レビューで決める」とした点を含む）:
+  ① 厳密な `Gpu.map`・`Gpu.init` を WebGpu device で動かすとき、GPU のカーネルがあるのは `i32`・`i32u` の lane だけ（CPU 参照とビット単位で一致）。ほかの厳密な呼び出し（`f32`・`f16`・64 bit・`bool`、
+  `f32` などの局所値を持つコールバック）はカーネルがなく、理由を標準エラーに出してトラップする。コンパイル時に拒否しないのは、device が実行時の値で、同じプログラムが CPU 参照の device で同じ呼び出しを使えるため。
+  CPU や緩い意味に黙って替えることはない。浮動小数点の GPU 実行は緩い名前だけ。② `request` が成功したあとの失敗は、理由を出してトラップする。③ f16 は緩い API だけで入れた
+  （`D10-f16-hardware` は CPU 側の経路の話で、`f16` 型は既に soft で言語にある）。`f16` は `export` できない（E1008）ので `--emit wgsl-relaxed` の根にはならず、`f32` の根の内部では使える。
+  ④ `--emit bindings-js` と `webgpu` の組み合わせは E2000（E13 のグルーに `tsuzuri_gpu` は実装していない）。⑤ ソースビルドの wgpu-native（Homebrew の 29.0.1.1 は `wgpuGetVersion` が 0）は、
+  `TSUZURI_WEBGPU_LIBRARY` で名指ししたときだけ受け入れる。
+- ticket から外れた点: ① `BuildOptions` に field を 1 つ足した（`wasm_webgpu`。struct リテラルのテストは `..Default::default()` を使うので影響なし。`EmitOptions` は変えていない）。
+  ② `src/main.rs` の既存テストの文面（`supported WASM features are …`）に `'webgpu'` を足した。③ `tests/gpu.mjs` の `unavailable` は、ホストの実 GPU 環境で結果が変わらないよう、`TSUZURI_WEBGPU_LIBRARY=""` で動かし、リンクに `src/runtime/gpu.c` を足した。
+  ④ 完了待ちは、最初の 5 ms をブロックしない poll で回す（wgpu-native 29 の Metal で、ブロックする poll が 1 呼び出し 1.6 ms 前後かかったため。0.46 ms になった）。
+  ⑤ `webgpu.mjs` の `fromArray`・`toArray` に `Uint16Array`（f16 の bit 列）を足した。⑥ IR の連番（`$intrinsic.<c>.<m>.<id>`、`$instance.<id>.`）は std のテンプレート数を数えるので、std に関数を足すと、
+  使わないプログラムでも 144 ファイル中 24 でこの連番だけが変わる（正規化した比較は差 0）。ticket の「byte 一致」は、この連番を除いて成り立つ。
+- 検証（Apple M1 Max、macOS 27.0.1、wgpu-native 29.0.1.1（Homebrew）、Dawn の `webgpu` 0.6.1、Node.js v20.19.6 と v24.21.0）: `cargo test --locked --test gpu` 11 passed、
+  `node tests/gpu_runtime.mjs`（GPU なし）、`TSUZURI_WEBGPU=1 TSUZURI_WEBGPU_LIBRARY=… TSUZURI_WEBGPU_MODULE=… node tests/gpu_runtime.mjs`（Node 24）で、native の wgpu-native と WebAssembly の Dawn（JSPI）が
+  strict の `i32`・`i32u` を CPU 参照とビット単位で、緩い `f32`・`f16` を許容誤差（`f32` は 1e-5、`f16` は 4 ulp）で一致し、デバイスでの実行回数（`TSUZURI_GPU_DEBUG` の出力）が期待どおり
+  （`i32` の掃引は 64 回、`f16` は 48 回）、native と WASM の `-O0`・`-O3`。`src/runtime/gpu.c` を ASan と UBSan で実 wgpu-native に対して実行（lane 数 1〜70,000、`f16` を含む）して指摘 0。
+  性能は `docs/benchmarks.md`（9 回の中央値、転送を含む）。
+- 確認していないこと: Windows と Linux の実行（`cargo check --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` の型検査と、`gpu.c` の両分岐の構文検査だけ）、x86-64、Apple 以外の GPU、
+  Dawn の native ライブラリ（`libwebgpu_dawn`。`webgpu.h` の版が違うので `Unavailable` になる設計）、ブラウザの `navigator.gpu`、wgpu-native 29 以外。
+- Phase 3 への接続点: `std/Gpu.tz` の `request_on`・`init_on`・`map_on` の `Vulkan` と `Auto` の arm（今は `Unavailable` と `unreachable ()`）、`src/gpu_devices.rs` の `blob`（`spirv` と、`FEATURE_*` の bit、64 bit の lane 種別）、
+  `src/runtime/gpu.c` の `tsuzuri_gpu_open`・`tsuzuri_gpu_run` の `backend == 2` の枝（Vulkan のコードを別のファイルにするなら、`src/driver.rs`・`src/test_runner.rs`・`tests/gpu.mjs` の `gpu.c` を連結・コンパイルする箇所）。

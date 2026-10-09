@@ -9,6 +9,7 @@
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
 - `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
 - [Async 式](../async-tasks-and-lazy/async.md) の `Async.start` は、グルーの `bindings.async` がイベントループで駆動します。`Async.block_on` は `--wasm-feature jspi` で JSPI を使い、export が `Promise` を返します。
+- `--wasm-feature webgpu` を足すと、`Gpu.request Gpu.WebGpu` のプログラムが `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。既定の出力は import を持ちません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
@@ -421,6 +422,21 @@ tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
 
 `--wasm-feature threads` は、実行器に到達するプログラムを `E2000` で拒否します。現在の WASM worker は Async 実行器の TLS を設定しません。
 
+## WebGPU デバイス
+
+[`Gpu`](../built-in-types-and-modules/gpu.md) の `Gpu.request Gpu.WebGpu` は、WebAssembly の既定の出力では `Unavailable` で、モジュールは import を持ちません。`--wasm-feature webgpu` を付けると、`Gpu.WebGpu` を使うプログラムのモジュールが、WebGPU を呼ぶ 2 つの import を持ちます。
+
+```sh
+tsuzuri build app --target wasm32 --wasm-feature webgpu -o app.wasm
+```
+
+- import は `tsuzuri_gpu.open`（`(backend: i32, features: i32) => i32`）と `tsuzuri_gpu.run`（`(backend: i32, mode: i32, flags: i32, lanes: i32, wgsl: i32, wgslLength: i32, spirv: i32, spirvLength: i32, input: i32, count: i64, output: i32) => i32`。`wgsl` と `spirv`、`input`、`output` は線形メモリ内のアドレス）の 2 つだけです。`backend` は `Gpu.Backend` の番号（`WebGpu` は 1）、`mode` は 0 が `Gpu.map`、1 が `Gpu.init`、`flags` の 1 は緩い呼び出し、`lanes` は入力の種類を下位 8 bit、出力の種類を次の 8 bit に持ちます（1 は 32 bit 整数、2 は `f32`、3 は `f16`）。`Gpu.WebGpu` を使わないプログラムは、付けても import を持ちません。どちらの戻り値も 0 が成功で、1 は利用不可、2 は機能不足か GPU のカーネルがない呼び出し、3 は上限超過、4 は実行時エラーです。
+- 2 つの import は、アダプタの応答と読み戻しを待つために JSPI でモジュールを中断します。`src/runtime/webgpu.mjs` の `createGpuImports(gpu, getMemory)` が、`WebAssembly.Suspending` で包んだ import（`host.imports`）と `host.close()` を返します。`gpu` は `navigator.gpu` か Node.js の `webgpu` バインディングで、`getMemory()` はインスタンスの `memory` を返します。export は `WebAssembly.promising` で包んで呼びます。
+- `wasm32` の `object`、`llvm`、`wasm` だけで使えます。`--wasm-feature threads`、`--wasm-host`、`--emit bindings-js` とは同時に指定できません（`E2000`）。`jspi` とは独立で、同時に付けられます。
+- `Gpu.request Gpu.WebGpu` が `Unavailable` になるのは、`navigator.gpu` や `webgpu` バインディングがない、アダプタがない、256 invocation のワークグループが使えない、`f16` のカーネルがあるのにアダプタが `shader-f16` を持たない、のどれかです。`createGpuImports` の `options.debug` が、理由と、デバイスで動かした呼び出しごとの 1 行を `console.error` に出します。
+- 線形メモリの既定の上限は 16 MiB のままです。ホスト配列の複製と結果の配列が同時にあるので、大きなバッファを GPU に渡すときは `--wasm-max-memory` を増やします。
+- JSPI を持つエンジンが要ります。リポジトリの `tests/gpu_runtime.mjs` で、Node.js 24 と Dawn（Apple M1 Max の Metal）で動くことを確かめました。Node.js 20 には JSPI がないので、そのテストは import の検査だけをします。
+
 ## WASI
 
 `--wasm-host wasi` は、標準入出力と `File`、`Dir`、`Env`、`Time`、`Random`、`Process` を WASI preview 1 の import へ下げます。wasm32 の object か WASM だけです。既定の wasm32 は、これらの API に到達した時点でビルドを拒否します。
@@ -489,6 +505,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
+- `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 
 ## 関連項目

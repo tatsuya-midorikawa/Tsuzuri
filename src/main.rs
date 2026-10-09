@@ -86,9 +86,11 @@ Other source inputs can be checked or built as libraries.
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
-    --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), or jspi
+    --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), jspi
                             (WASM build; Async.block_on waits through JavaScript Promise
-                            Integration)
+                            Integration), or webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
+                            the kernels on that device call the JSPI imports tsuzuri_gpu.open
+                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
                             Process APIs to WASI preview1 (wasm32 object or WASM output;
                             the default wasm32 output rejects those APIs)
@@ -96,9 +98,12 @@ Build options:
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
-    --emit KIND            exe, object, llvm, header, wasm, wgsl, shared, bindings-js,
-                         bindings-cs, bindings-py, or bindings-cpp
+    --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared,
+                         bindings-js, bindings-cs, bindings-py, or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
+                         wgsl writes the strict WebGPU compute shader of the one exported kernel
+                         (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
+                         whose results follow WGSL's floating-point rules (Gpu.map_relaxed)
                          shared links a native .dylib or .so that exports the C ABI
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
@@ -265,6 +270,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_simd = false;
     let mut wasm_threads = false;
     let mut wasm_jspi = false;
+    let mut wasm_webgpu = false;
     let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
@@ -487,7 +493,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         Some("simd128") => &mut wasm_simd,
                         Some("threads") => &mut wasm_threads,
                         Some("jspi") => &mut wasm_jspi,
-                        _ => return Err("supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported".into()),
+                        Some("webgpu") => &mut wasm_webgpu,
+                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported".into()),
                     };
                     if *feature {
                         return Err("WASM feature specified more than once".into());
@@ -539,6 +546,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("header") => Emit::Header,
                             Some("wasm") => Emit::Wasm,
                             Some("wgsl") => Emit::Wgsl,
+                            Some("wgsl-relaxed") => Emit::WgslRelaxed,
                             Some("shared") => Emit::Shared,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
@@ -546,7 +554,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -614,10 +622,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
-    if emit == Some(Emit::Wgsl) && (target.is_some() || optimization.is_some() || cpu.is_some()) {
+    if emit.is_some_and(Emit::is_wgsl)
+        && (target.is_some() || optimization.is_some() || cpu.is_some())
+    {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
-    if (wasm_simd || wasm_threads || wasm_jspi) && action != Action::Build {
+    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
     if wasm_host.is_some() && action != Action::Build {
@@ -752,6 +762,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_simd,
         wasm_threads,
         wasm_jspi,
+        wasm_webgpu,
         wasm_host,
         wasm_max_memory,
         wasm_stack_size,
@@ -2321,6 +2332,22 @@ mod tests {
         );
         assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "-O3"]).is_err());
         assert!(parse(&["build", "Kernel.tz", "--emit", "wgsl", "--target", "wasm32"]).is_err());
+        assert_eq!(
+            parse(&["build", "Kernel.tz", "--emit", "wgsl-relaxed"])
+                .unwrap()
+                .options
+                .emit,
+            Emit::WgslRelaxed
+        );
+        for extra in [
+            vec!["-O3"],
+            vec!["--target", "wasm32"],
+            vec!["--cpu", "native"],
+        ] {
+            let mut values = vec!["build", "Kernel.tz", "--emit", "wgsl-relaxed"];
+            values.extend(extra);
+            assert!(parse(&values).is_err(), "{values:?}");
+        }
         let threads = parse(&[
             "build",
             "Main.tz",
@@ -2485,7 +2512,42 @@ mod tests {
                     "--wasm-feature",
                     "asyncify",
                 ],
-                "supported WASM features are 'simd128', 'threads', and 'jspi'; relaxed SIMD is not supported",
+                "supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--wasm-feature",
+                    "webgpu",
+                ],
+                "--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "webgpu",
+                    "--wasm-feature",
+                    "threads",
+                ],
+                "--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "wgsl",
+                    "--wasm-feature",
+                    "webgpu",
+                ],
+                "WGSL output does not use target, CPU, debug, or WASM feature options",
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
@@ -2597,7 +2659,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],
