@@ -111,6 +111,7 @@ jobs:
         run: |
           export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          export TSUZURI_WASM64=0
           node ../tests/async.mjs toolchain/bin/tsuzuri.exe
       - name: Async executors with the LLVM MSVC toolchain
         if: matrix.target == 'win32-x64'

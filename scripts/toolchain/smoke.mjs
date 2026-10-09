@@ -132,7 +132,7 @@ try {
     '',
   ].join('\n'));
   for (const optimization of ['-O0', '-O3']) {
-    const artifact = path.join(directory, `waiting${suffix}`);
+    const artifact = path.join(directory, `waiting-application${suffix}`);
     run(compiler, ['build', waiting, optimization, '--no-cache', '-o', artifact]);
     assert.equal(run(artifact, []).stdout, 'waited\n');
     const passed = run(compiler, ['test', waiting, optimization, '--json']);

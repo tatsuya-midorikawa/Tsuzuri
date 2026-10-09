@@ -471,7 +471,9 @@ async function jspi(directory) {
     return;
   }
   const fixture = join(root, "tests/fixtures/async_reactor");
-  for (const target of ["wasm32", "wasm64"]) for (const optimization of ["0", "3"]) {
+  // The bundled toolchain compiles wasm32 only; its run sets TSUZURI_WASM64=0.
+  const targets = process.env.TSUZURI_WASM64 === "0" ? ["wasm32"] : ["wasm32", "wasm64"];
+  for (const target of targets) for (const optimization of ["0", "3"]) {
     const wasm = join(directory, `async_reactor-jspi-${target}-O${optimization}.wasm`);
     cli(["build", fixture, "--target", target, "--wasm-feature", "jspi", `-O${optimization}`, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
