@@ -13,6 +13,21 @@ fn generic value = Identity {
     return first + second
 }
 
+// `identity { ... }` is the `@alias identity` spelling of `Identity { ... }`.
+export def alias_spelling :: i64 -> i64
+fn alias_spelling value =
+    let lower = identity {
+        let! first = value
+        let! second = 2
+        return first + second
+    }
+    let upper = Identity {
+        let! first = value
+        let! second = 2
+        return first + second
+    }
+    lower * 100 + upper
+
 export def unit_bind :: i64
 fn unit_bind = Identity {
     let! mut value: i64 = 41

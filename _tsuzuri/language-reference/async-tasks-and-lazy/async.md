@@ -12,12 +12,12 @@ CPU のコアを並列に使う [Task 式](task.md) とは目的が違います�
 
 ## この記事のポイント
 
-- `Async { ... }` で `Async<T>` を作ります。`let!`、`do!`、`return`、`return!`、`match!`、`if`、`for` を書けます。
+- `Async { ... }` で `Async<T>` を作ります。`let!`、`do!`、`return`、`return!`、`match!`、`if`、`for` を書けます。小文字の `async { ... }` も同じ意味です（`Async.tc` が `@alias async` を宣言しています）。
 - `Async.yield ()` は中断点を 1 つ作ります。`Async.sleep n` は時刻が `n` 進むまで中断し、`Async.now ()` は今の時刻を返します。
 - `Async.run` の時計は 0 から始まります。すべての計算が眠ったときだけ、いちばん早い起床時刻まで進みます。
 - `Async.all` と `Async.all_results` は、子を入力の順に交代で進めます。結果は入力の順です。`all_results` は最初の `Error` で残りを止めます。
 - `Async<T>` は不透明で非 Copy です。二重に使うと `E1012`、中断をまたいで借用を持つと `E1013` です。
-- `Async.block_on` は単調時計のミリ秒で待ちます。ネイティブは macOS と Linux です。wasm32 / wasm64 では `--wasm-feature jspi` が要ります。
+- `Async.block_on` は単調時計のミリ秒で待ちます。ネイティブは macOS、Linux、Windows です。wasm32 / wasm64 では `--wasm-feature jspi` が要ります。
 - `Async.start` と `Async.host` を使うと、ホストのイベントループが計算を進め、ホストの操作が終わったところで再開します。C からは `tsuzuri_async_poll` と `tsuzuri_async_complete` を呼びます。JavaScript では、生成したグルーの `bindings.async` を使います。
 
 ## 基本の書き方
@@ -38,6 +38,25 @@ Async.run work
 ```
 
 `work` を作った時点では、何も実行されません。`Async.run` が最初から最後まで進めます。`Async.run` の時計は 0 から始まるので、`sleep 10` のあとの `now ()` は 10 です。
+
+`Async { ... }` は `async { ... }` とも書けます。小文字の綴りはビルダーの別名で、展開も生成されるコードも同じです。
+
+```tsuzuri run=42
+let work = async {
+    do! Async.sleep 10
+    let! time = Async.now ()
+    return time + 32
+}
+Async.run work
+```
+
+実行結果:
+
+```text
+42
+```
+
+別名はビルダーを呼ぶ位置の `{` の前だけで使えます。`Async.run` や `Async<T>` の `Async` は、これまでどおりモジュール名と型名です（`async.run` とは書けません）。別名の規則は [ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名) を参照してください。
 
 | 構文 | 意味 |
 | --- | --- |
@@ -82,7 +101,7 @@ Async.run (worker 6)
 | `Async.start` | `Async<unit> -> IO<unit>` | ホストが駆動する実行器へ渡し、すぐ戻る |
 | `Async.host` | `Async.Operation -> Async<i64>` | ホストの操作を始め、完了の値を待つ |
 
-`Async.Operation` は `record Operation { start: i64 -> unit, cancel: i64 -> unit }` です。ビルダーの操作 `Async.Return`、`Async.Bind` なども公開していますが、普段は `Async { }` から使います。`Async` は、名前を書いたプログラムだけが読み込む標準モジュールです。`Async` を使わないプログラムの生成コードは変わりません。
+`Async.Operation` は `record Operation { start: i64 -> unit, cancel: i64 -> unit }` です。ビルダーの操作 `Async.Return`、`Async.Bind` なども公開していますが、普段は `Async { }` から使います。`Async` は、`Async` か別名の `async` の語を書いたプログラムだけが読み込む標準モジュールです。どちらも使わないプログラムの生成コードは変わりません。
 
 ## 時刻と順序
 
@@ -240,7 +259,8 @@ ok
 
 `Async.now ()` は 0 からではなく、単調時計の値を返します。差だけに意味があります。
 
-- ネイティブは macOS と Linux です。コンパイラが `src/runtime/async.c`（条件変数による待ち）を自動でリンクします。Windows のネイティブでは `E2002`（`Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)`）です。ほかの Unix を含む未対応のホストも、通常のビルドと test / debug-test / bench で `E2002` にします。macOS / Linux 以外で POSIX の実装を推測してリンクしません。
+- ネイティブは macOS、Linux、Windows です。コンパイラが `src/runtime/async.c`（条件変数による待ち）を自動でリンクします。ほかのホスト（FreeBSD などの Unix）は、通常のビルドと test / debug-test / bench で `E2002`（`Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform`）です。ほかの実装を推測してリンクしません。
+- Windows の待ちは、Win32 の SRWLOCK、条件変数、`QueryPerformanceCounter` を使います。Windows の既定のタイマー分解能は約 15.6 ms（環境で変わります）で、短い `sleep` はその分だけ遅れることがあります。待ちは起きるたびに単調時計を読み直すので、早く起きることはありません。runtime を埋め込む COFF の `--emit object` は非対応で、LLVM IR を出して runtime を 1 回だけリンクするか、実行ファイルを作ります。
 - ほかのスレッドからは `tsuzuri_async_post(operation, value)` で操作を完了します。受理したときは 1、未知・二重・完了済み・取り消し済みの操作なら 0 を返し、失敗した post は確保を残しません。どのスレッドから呼んでもよく、待っているスレッドはすぐ起きます。同じスレッドのコールバックの中からは、`tsuzuri_async_complete` も使えます。
 - wasm32 / wasm64 では `--wasm-feature jspi` が要ります。モジュールは `tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、待つ間は JavaScript Promise Integration（JSPI）で WebAssembly のスタックを中断します。付けないと `E2000`（`Async.block_on on WebAssembly needs --wasm-feature jspi: ...`）です。生成グルーは wasm32 だけです。詳しくは [WebAssembly への出力](../compiler/webassembly.md#非同期計算と-jspi) を見てください。
 

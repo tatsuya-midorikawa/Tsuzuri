@@ -26,6 +26,8 @@ const cli = (args, success) => execute(compiler, args, success);
 const cases = [
   ["generic", [40n], 42n],
   ["generic", [(1n << 63n) - 1n], -(1n << 63n) + 1n],
+  // Both spellings give 40 + 2: 42 * 100 + 42.
+  ["alias_spelling", [40n], 4242n],
   ["unit_bind", [], 42n],
   ["choices", [1], 42n],
   ["choices", [0], 20n],

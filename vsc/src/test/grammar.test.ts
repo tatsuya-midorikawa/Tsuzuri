@@ -112,6 +112,21 @@ test('member-position keywords stay function names', async () => {
 	} finally { registry.dispose(); }
 });
 
+test('a builder alias is an attribute and a module-like name', async () => {
+	const { grammar, registry } = await loadGrammar();
+	try {
+		const line = '@alias async';
+		const tokens = grammar.tokenizeLine(line, INITIAL).tokens;
+		const at = (offset: number) => {
+			const token = tokens.find(candidate => candidate.startIndex <= offset && offset < candidate.endIndex);
+			assert.ok(token, `offset ${offset}`);
+			return token.scopes;
+		};
+		assert.ok(at(0).includes('storage.modifier.attribute.tsuzuri'));
+		assert.ok(at(line.indexOf('async')).includes('entity.name.namespace.tsuzuri'));
+	} finally { registry.dispose(); }
+});
+
 async function loadGrammar() {
 	const root = path.resolve(__dirname, '../..');
 	oniguruma ??= readFile(require.resolve('vscode-oniguruma/release/onig.wasm')).then(data => loadWASM(data));

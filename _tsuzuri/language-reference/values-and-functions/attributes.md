@@ -1,16 +1,17 @@
 # 属性
 
-`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、JSON での名前をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
+`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、4 つの属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。
+このページでは、5 つの属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@json` の 4 つです。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@json`、`@alias` の 5 つです。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
 - `@json "名前"` はレコードのフィールドや共用体の case の前に付け、導出した `Encode` / `Decode` が使う JSON の名前を変えます。
+- `@alias 名前` は `.tc` のトップレベルに書き、`名前 { ... }` でそのビルダーを呼べるようにします。標準の `Async` は `@alias async` を宣言済みです。
 - `@'a : 制約` は制約行です。属性の一覧には入りません。
 
 ## 属性の一覧と適用対象
@@ -22,6 +23,7 @@ flowchart TD
     at --> checked["@checked<br/>検査付き算術"]
     at --> cpu["@cpu<br/>関数の版"]
     at --> json["@json<br/>JSON での名前"]
+    at --> alias["@alias<br/>ビルダーの別名"]
     at --> row["型変数が続く行<br/>制約行。属性ではない"]
 ```
 
@@ -31,6 +33,7 @@ flowchart TD
 | `@checked` | 式、または対応する文の直前 | `+` `-` `*` `**` と単項 `-` の桁あふれ検査 | [演算子と式](./op-and-expressions.md) |
 | `@cpu` | `private` や `export` より前、トップレベル `def` の直前 | 命令セットごとの関数の版 | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
+| `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
 
 ## @literal (コンパイル時定数)
 
@@ -170,6 +173,26 @@ $"{String.from_utf8 (ref text)} {String.from_utf8 (ref state)}"
 - 名前を変えた結果、2 つのフィールドや 2 つの case が同じ JSON の名前になると `E1025` です。
 - `tsuzuri fmt` は `@json "名前"` の空白を整え、`tsuzuri doc` は属性を付けたまま表示します。言語サーバーでフィールドや case の名前を変えても、属性の名前は変わりません。
 
+## @alias (ビルダーの別名)
+
+`@alias 名前` は、ビルダーの `.tc` ファイルのトップレベルに 1 行で書きます。`名前 { ... }` が、そのビルダーの名前を書いた `Builder { ... }` と同じ計算になります。標準の `Async.tc` は `@alias async` を宣言しているので、`async { ... }` と `Async { ... }` は同じです。
+
+```text
+@alias identity
+
+def Return :: 'a -> 'a
+fn Return value = value
+```
+
+規則の全体と実行できる例は、[コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名)にあります。
+
+### 書ける位置とエラー
+
+- `.tc` だけです。`.tz` と `.tt` に書くと `E1018` です。
+- 名前は同じ行に置きます。小文字の ASCII で始まる識別子で、予約語と、`finally`、`is`、`namespace`、`of`、`try`、`using`、`where` は使えません。同じファイルで同じ名前を 2 回宣言しても、ドキュメントコメントを付けても、名前のあとに同じ行で別の語が続いても `E0002` です。
+- `alias` 自体は予約語ではありません。`@` の直後に書いたときだけ属性の名前として読みます。
+- `tsuzuri fmt` は `@alias 名前` の空白を整え、`tsuzuri doc` はモジュールのページに `Builder alias: ...` の行を出します。
+
 ## 制約行は属性ではない
 
 `def` の次の行に、より深くインデントして `@'a : Eq` と書くのは制約行です。コンパイラはこれを `@literal` などの属性とは別に読みます。インデントが足りないと `E0002` です。
@@ -178,23 +201,25 @@ $"{String.from_utf8 (ref text)} {String.from_utf8 (ref state)}"
 
 ## ユーザー定義の属性はない
 
-Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@json` 以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
+Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@json`、`@alias` 以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
 
 ## まとめ
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@json` の 4 つです。
+- 属性は `@literal`、`@checked`、`@cpu`、`@json`、`@alias` の 5 つです。
 - `@'a : 制約` は制約行であり、属性ではありません。
 - ユーザー定義の属性はありません。
 - `@literal` は `const` と同じコンパイル時定数です。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` は命令セットごとの関数の版を作ります。選べない名前は無視され、未知の名前は `E0002` です。
 - `@json` は導出した `Encode` / `Decode` が使うフィールドや case の名前を変えます。
+- `@alias` は `.tc` のビルダーに小文字の別名を足し、`async { ... }` のような書き方を可能にします。
 
 ## 関連項目
 
 - [値](./values.md)
 - [演算子と式](./op-and-expressions.md)
 - [関数 / 高階関数 / 再帰関数](./functions.md)
+- [コンピュテーション式](../computation-expressions/computation-expressions.md)
 - [制約 と 属性](../types-and-type-inference/constraints.md)
 - [ジェネリック関数と型パラメータ制約](./generics-functions.md)
 - [例外処理](../exception-handling/exception-handling.md)

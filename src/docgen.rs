@@ -294,7 +294,26 @@ fn module_page(name: &str, namespace: Option<&str>, program: &Program) -> String
     let namespace = namespace
         .map(|namespace| format!("Namespace: `{namespace}`\n\n"))
         .unwrap_or_default();
-    format!("# {name}\n\n{namespace}{}", render_declarations(program))
+    let aliases = match program.aliases.as_slice() {
+        [] => String::new(),
+        aliases => format!(
+            "Builder {}: {}\n\n",
+            if aliases.len() == 1 {
+                "alias"
+            } else {
+                "aliases"
+            },
+            aliases
+                .iter()
+                .map(|alias| format!("`{}`", alias.text))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!(
+        "# {name}\n\n{namespace}{aliases}{}",
+        render_declarations(program)
+    )
 }
 
 fn render_declarations(program: &Program) -> String {

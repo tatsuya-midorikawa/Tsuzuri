@@ -153,6 +153,9 @@ pub(crate) struct OptIn {
     /// the builtin classes it gives instances for types it does not declare.
     /// `opt_in_modules_are_reached_only_through_their_names` keeps the list complete.
     pub names: &'static [&'static str],
+    /// The `@alias` names of its computation builder: lowercase identifiers that stand for the
+    /// module in `alias { ... }`. The test above keeps this list complete too.
+    pub aliases: &'static [&'static str],
     /// The opt-in modules that its own source refers to.
     pub uses: &'static [&'static str],
 }
@@ -161,41 +164,49 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Arena",
         names: &["Arena"],
+        aliases: &[],
         uses: &[],
     },
     OptIn {
         module: "Regex",
         names: &["Regex"],
+        aliases: &[],
         uses: &["Unicode"],
     },
     OptIn {
         module: "Unicode",
         names: &["Unicode"],
+        aliases: &[],
         uses: &[],
     },
     OptIn {
         module: "Json",
         names: &["Json", "Encode", "Decode"],
+        aliases: &[],
         uses: &[],
     },
     OptIn {
         module: "Cbor",
         names: &["Cbor"],
+        aliases: &[],
         uses: &["Json"],
     },
     OptIn {
         module: "Bench",
         names: &["Bench"],
+        aliases: &[],
         uses: &[],
     },
     OptIn {
         module: "Gen",
         names: &["Gen"],
+        aliases: &[],
         uses: &[],
     },
     OptIn {
         module: "Async",
         names: &["Async"],
+        aliases: &["async"],
         uses: &[],
     },
 ];
@@ -212,6 +223,10 @@ pub(crate) fn is_opt_in(module: &str) -> bool {
 pub fn sources_for<'a>(
     texts: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(&'static str, &'static str)> {
+    let aliases: Vec<&str> = OPT_IN
+        .iter()
+        .flat_map(|module| module.aliases.iter().copied())
+        .collect();
     let mut words = std::collections::BTreeSet::new();
     for text in texts {
         let bytes = text.as_bytes();
@@ -229,7 +244,10 @@ pub fn sources_for<'a>(
                 {
                     index += 1;
                 }
-                if start < index && bytes[start].is_ascii_uppercase() {
+                // Module names are capitalized; the lowercase words that matter are builder aliases.
+                if start < index
+                    && (bytes[start].is_ascii_uppercase() || aliases.contains(&&text[start..index]))
+                {
                     words.insert(&text[start..index]);
                 }
             } else {
@@ -239,7 +257,13 @@ pub fn sources_for<'a>(
     }
     let mut needed: Vec<&str> = OPT_IN
         .iter()
-        .filter(|module| module.names.iter().any(|name| words.contains(name)))
+        .filter(|module| {
+            module
+                .names
+                .iter()
+                .chain(module.aliases)
+                .any(|name| words.contains(name))
+        })
         .map(|module| module.module)
         .collect();
     let mut next = 0;
@@ -372,6 +396,16 @@ mod tests {
             assert!(module.names.contains(&module.module), "{path}");
             // Instances for types declared elsewhere are reached through their class.
             let program = crate::parser::parse(source).unwrap();
+            // A builder's `@alias` names reach the module only through `OptIn::aliases`.
+            let declared: Vec<&str> = program
+                .aliases
+                .iter()
+                .map(|alias| alias.text.as_str())
+                .collect();
+            assert_eq!(
+                declared, module.aliases,
+                "{path}: OptIn aliases must list the '@alias' declarations of the module"
+            );
             for instance in &program.instances {
                 use crate::syntax::TypeExprKind;
                 let head = match &instance.ty.kind {
@@ -487,6 +521,12 @@ mod tests {
         );
         assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode"]);
         assert_eq!(loaded("42"), Vec::<&str>::new());
+        // A builder alias is a lowercase mention of the module; only the exact word counts.
+        assert_eq!(loaded("let _ = async { return 1 }"), ["Async"]);
+        assert_eq!(
+            loaded("let asynchronous = 1\nlet async_work = 2\nlet myasync = 3"),
+            Vec::<&str>::new()
+        );
         // The load order is the embedded order.
         let all = sources_for(OPT_IN.iter().map(|module| module.module));
         assert_eq!(all, SOURCES.to_vec());

@@ -291,6 +291,7 @@ impl Parser<'_> {
             entry: None,
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
+            aliases: Vec::new(),
             declaration_starts: Vec::new(),
         };
         let mut signatures = BTreeMap::new();
@@ -329,6 +330,18 @@ impl Parser<'_> {
             let start = self.position;
             let parsed = (|| -> Result<(), Diagnostic> {
                 let doc = self.take_doc();
+                if self.alias_ahead() {
+                    if let Some(documentation) = &doc {
+                        return Err(Diagnostic::new(
+                            "E0002",
+                            "doc comments attach to API declarations such as 'def', not to a builder alias",
+                            documentation.span,
+                        ));
+                    }
+                    let alias = self.alias_declaration(&program.aliases)?;
+                    program.aliases.push(alias);
+                    return Ok(());
+                }
                 let cpu = self.cpu_attribute()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -829,6 +842,74 @@ impl Parser<'_> {
         }
         self.expect(&TokenKind::RightBracket, "']' after the CPU targets")?;
         Ok(Some(levels))
+    }
+
+    /// `@alias` before a builder alias name.
+    fn alias_ahead(&self) -> bool {
+        self.at(&TokenKind::At)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "alias"
+            )
+    }
+
+    /// `@alias name` on its own line: another name for the builder of this `.tc` file, so that
+    /// `name { ... }` builds the same computation as `Builder { ... }`. The name starts with a
+    /// lowercase letter, which keeps it apart from module and record names, and is not a
+    /// contextual keyword. `declared` are the aliases of the file so far.
+    fn alias_declaration(&mut self, declared: &[Ident]) -> Result<Ident, Diagnostic> {
+        self.take();
+        let keyword = self.take();
+        if self.at(&TokenKind::End) || self.newline_before_current() {
+            return Err(Diagnostic::new(
+                "E0002",
+                "write the alias name on the same line as '@alias', as in '@alias async'",
+                keyword.span,
+            ));
+        }
+        if !matches!(self.current().kind, TokenKind::Ident(_)) {
+            return Err(self.error(
+                "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
+            ));
+        }
+        let name = self.ident()?;
+        let message = if !name
+            .text
+            .starts_with(|first: char| first.is_ascii_lowercase())
+        {
+            let mut message = String::from(
+                "a builder alias starts with a lowercase letter, as in '@alias async'",
+            );
+            if name
+                .text
+                .starts_with(|first: char| first.is_ascii_uppercase())
+            {
+                message += &format!(
+                    "; '{}' would collide with module and record names",
+                    name.text
+                );
+            }
+            Some(message)
+        } else if CONTEXTUAL_KEYWORDS.contains(&name.text.as_str()) {
+            Some(format!(
+                "'{}' is a contextual keyword and cannot be a builder alias",
+                name.text
+            ))
+        } else if declared.iter().any(|alias| alias.text == name.text) {
+            Some(format!(
+                "builder alias '{}' is declared twice in this file",
+                name.text
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            return Err(Diagnostic::new("E0002", message, name.span));
+        }
+        if !self.at(&TokenKind::End) && !self.newline_before_current() {
+            return Err(self.error("expected a line break after the builder alias"));
+        }
+        Ok(name)
     }
 
     fn literal_attribute_ahead(&self) -> bool {

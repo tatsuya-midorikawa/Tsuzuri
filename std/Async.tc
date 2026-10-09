@@ -1,3 +1,6 @@
+// `async { ... }` builds the same computation as `Async { ... }`.
+@alias async
+
 /// One step of a computation, which an executor runs. The cases are the internal protocol of
 /// this module, not a stable API: build computations with the builder and the functions below.
 /// `Suspend (ready, timer, operations, resume)` waits until the executor resumes it with

@@ -69,6 +69,8 @@ try {
   assert.match(maybe, /^# Maybe\n\nNamespace: `std`\n/);
   assert.match(maybe, /union Maybe/);
   assert.match(maybe, /## `Return`/);
+  const asyncPage = readFileSync(join(stdOutput, "Async.md"), "utf8");
+  assert.match(asyncPage, /^# Async\n\nNamespace: `std`\n\nBuilder alias: `async`\n\n/);
   console.log("docgen: deterministic public Markdown, hierarchy, builders/classes, protected publication, compiler-free std generation passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -9,7 +9,7 @@ use crate::check::{CheckedModule, ModuleOrigin, semantic};
 use crate::copies::{CopyKind, CopySite};
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::driver::Project;
-use crate::syntax::{Token, TokenKind};
+use crate::syntax::{CONTEXTUAL_KEYWORDS, Token, TokenKind};
 use serde_json::{Value, json};
 
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
@@ -24,9 +24,6 @@ const KEYWORDS: [&str; 43] = [
     "yield", "for", "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref",
     "new", "as", "if", "then", "elif", "else", "match", "with", "when", "true", "false",
 ];
-/// Words that are keywords only in their syntax and identifiers elsewhere.
-const CONTEXTUAL_KEYWORDS: [&str; 7] =
-    ["finally", "is", "namespace", "of", "try", "using", "where"];
 const TOKEN_TYPES: [&str; 11] = [
     "namespace",
     "struct",

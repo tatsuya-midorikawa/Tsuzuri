@@ -286,6 +286,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     for attribute in &mut program.cpu_attributes {
         canonical.ident(&mut attribute.function);
     }
+    for alias in &mut program.aliases {
+        canonical.ident(alias);
+    }
     (format!("{program:?}"), canonical.hints)
 }
 

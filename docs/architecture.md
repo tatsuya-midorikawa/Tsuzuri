@@ -35,7 +35,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR の構築、メモリレイアウト計算、公開 ABI |
 | `src/control.rs` / `recursion.rs` | 型付きループ、短絡評価を行うパターン手順と束縛、認識器呼び出し、参照グラフに基づく再帰検査 |
 | `src/exhaustiveness.rs` | 型付きの被覆パターン、usefulness アルゴリズムによる match の網羅性検査・到達不能節の検出、不足パターンの提示（check の子モジュール） |
-| `src/computation.rs` | ソース種別の検査、`.tc` ビルダーの収集、型検査前の関数・継続への展開（check の子モジュール） |
+| `src/computation.rs` | ソース種別の検査、`.tc` ビルダーと `@alias` の収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉解析、lambda lifting、公開 ABI 向けの完全適用ラッパー生成 |
 | `src/numeric.rs` | プリミティブ型名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
@@ -196,7 +196,7 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 
 `Async.run` は呼び出しごとに独立した仮想時計を持ちます。`Async.start` と `Async.block_on` は、`Async.__take` / `Async.__put` が管理する実行器状態を呼び出しスレッドごとに保持します。native の `Async.__next_id` は操作 ID の上位 bits にスレッド index を埋め込み、`src/runtime/async.c` の `tsuzuri_async_post` はその mailbox へ完了を配送します。`tsuzuri_async_complete` と poll の再入、未知・二重・取消済み ID は trap です。
 
-native reactor は操作を開始時に登録し、完了・取消時に退役させます。`tsuzuri_async_post` は未登録・二重・退役済みの操作を確保前に拒否して 0 を返し、受理した完了だけをキューへ置いて 1 を返します。取消と競合して届いた完了は退役時に取り除きます。mailbox とキューは `tsuzuri_alloc` / `tsuzuri_free` を使い、最後の登録操作がなくなると解放します。host/counting allocator と解放追跡の対象から外れません。時計・条件変数の失敗は診断を出して終了し、macOS / Linux 以外の native reactor は、ほかの Unix も含め `E2002` です。build と test / debug-test / bench は同じ対応フラグと診断を共有します。ソケットの多重化は E09 の範囲であり、この実行器はタイマーと外部からの完了を待ちます。
+native reactor は操作を開始時に登録し、完了・取消時に退役させます。`tsuzuri_async_post` は未登録・二重・退役済みの操作を確保前に拒否して 0 を返し、受理した完了だけをキューへ置いて 1 を返します。取消と競合して届いた完了は退役時に取り除きます。mailbox とキューは `tsuzuri_alloc` / `tsuzuri_free` を使い、最後の登録操作がなくなると解放します。host/counting allocator と解放追跡の対象から外れません。時計・条件変数の失敗は診断を出して終了します。`src/runtime/async.c` は POSIX（pthread の mutex・条件変数と `CLOCK_MONOTONIC`）と Windows（`SRWLOCK`・`CONDITION_VARIABLE`・`QueryPerformanceCounter`）を、`tz_async_ready`・`acquire`・`release`・`notify`・`wait_signal`・`wait_timeout` の薄い層で分けており、登録・退役・待機の規則は 1 つです（D-43）。待ちは起きるたびに単調時計を読み直すので、Windows の約 15.6 ms のタイマー分解能は遅れとしてだけ現れ、早く起きることはありません。対応は `ASYNC_NATIVE_SUPPORTED`（macOS・Linux・Windows）で、それ以外の native reactor は、ほかの Unix も含め `E2002` です。runtime を埋め込む Windows の COFF `--emit object` は、task・CPU・IO と同じく非対応です。build と test / debug-test / bench は同じ対応フラグと診断を共有します。ソケットの多重化は E09 の範囲であり、この実行器はタイマーと外部からの完了を待ちます。
 
 WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が操作 ID の上位 bits をインスタンス世代として設定します。生成グルーは同じ生成モジュール内で世代を再利用せず、古い完了通知を新しい状態へ渡しません。JSPI の待機は `WebAssembly.Suspending`、export は `WebAssembly.promising` を使い、同じインスタンスへの呼び出しを Promise キューで直列化します。渡された typed array は待ち行列へ入れる前にコピーします。WASM threads の executor TLS と trap-return 後の状態復旧は実装していないため、これらとの併用はビルド時に拒否します。
 
@@ -290,8 +290,8 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
 例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`。D-40・D-41・D-42）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
-そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
-`stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`uses` が正しいことを検査します。
+そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）か、`OptIn::aliases`（モジュールのビルダーの `@alias`。`Async` の `async`。小文字の語は別名と一致したものだけを数える）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
+`stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`@alias` の宣言が `aliases` と一致すること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
 LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
@@ -565,6 +565,7 @@ LLVM はループごとの分岐先、ローカル変数、および評価済み
 ループ制御用のメタデータは、同梱の数値ランタイムが使用するメタデータ ID 範囲と完全に分離されており、すべての LLVM IR を決定的に生成します。
 
 **コンピュテーション式:** `.tc` ファイル内に定義されたすべての関数名を順序付き集合として収集し、そのファイル名をビルダー名として扱います。
+`@alias name`（D-43）は `Program::aliases` に保持され、`computation::collect_all` が `.tc` の宣言だけを別名 → ビルダーの鍵の表（`Names::builder_aliases`）に集めます（`.tz`・`.tt` の `@alias` は `E1018`）。`Names::builder_name` が `{` の前の名前を解決します。まずビルダーのモジュール名（名前空間付きを含む）として探し、当たらなければ別名として探します。別名は層ごと（利用者 → std）に、ビルダー自身の名前がその参照元から見える候補だけを数え、1 つなら採用し、複数なら `E1004` です。別名は `computation::expand` の `resolved_builder` がビルダーのモジュールの鍵へ書き換えるので、以降の `lower` と型付き IR は名前を書いたときと同じです。構文木・型付き IR・ランタイムに別名のための構造はなく、opt-in std モジュールを隠す `Names::choose` の規則も適用しません（opt-in の読み込みは `OptIn::aliases` が決めます）。
 `match!` は `Bind` と通常の `match` 式の組み合わせへと展開され、`and!` は各入力ソースを順序付きの一時 `let` 変数に保持したうえで、`MergeSources` の左結合と `Bind` へと展開されます。
 構文的に末尾の 2 文が `let!` + `return`、または 2 要素の `and!` + `return` である場合に限り、ビルダー内に定義が存在すれば最適化された `BindReturn` または `Bind2` が優先選択されます。`Bind2` の継続関数は 2 つの引数を同時に束縛し、`mut` や型注釈の情報も適切に保持します。
 これらの解析および展開処理は専用のヘルパー関数に分離されており、構文解析の最大深度 128 および 2 MiB のテストスレッドスタックの安全性を維持します。新しい `TypedExpr` バリアントや専用ランタイムを追加することはありません。
@@ -583,7 +584,7 @@ LLVM はループごとの分岐先、ローカル変数、および評価済み
 必要な操作がビルダーに定義されていない場合は `E1018` エラーを報告し、型や所有権の不整合は既存の診断機構で厳格に拒否され、成功を装った既定実装への暗黙的なフォールバックは行いません。
 `Delay` が定義されていない場合は `Combine` の両引数は先行評価（正格評価）され、`Delay` が存在する場合は第 2 引数の本体が遅延関数へと渡されます。
 `While` は bool を返す unit 関数と、明示的な `Delay` の結果を受け取ります。
-空の `Name {}` 構文は、収集済みビルダーに該当名が存在する場合はビルダー式を優先し、存在しない場合は既存の空レコードとして解釈されます。
+空の `Name {}` 構文は、収集済みビルダーに該当名（別名を含む）が存在する場合はビルダー式を優先し、存在しない場合は既存の空レコードとして解釈されます。
 組み込みの `task` ビルダーにおけるコールド実行、非 Copy、Send 制約、および 1 回消費の最適化経路は独立して維持されます。
 カスタム展開の都合によって、通常の関数値に 1 回実行タスクや排他参照を不正に捕捉させるような特例を導入することはありません。
 

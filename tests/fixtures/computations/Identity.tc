@@ -1,3 +1,5 @@
+@alias identity
+
 def Return :: 'a -> 'a
 fn Return value = value
 
