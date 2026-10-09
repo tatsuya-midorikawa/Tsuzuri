@@ -1,0 +1,39 @@
+def os_kind_text :: Os.ErrorKind -> string
+fn os_kind_text kind =
+	match kind with
+	| Os.NotFound -> "NotFound"
+	| Os.PermissionDenied -> "PermissionDenied"
+	| Os.AlreadyExists -> "AlreadyExists"
+	| Os.InvalidInput -> "InvalidInput"
+	| Os.InvalidEncoding -> "InvalidEncoding"
+	| Os.Interrupted -> "Interrupted"
+	| Os.Other -> "Other"
+
+/// "<Net.ErrorKind> <Os.ErrorKind> <system code>".
+def failure_text :: Os.Error -> string
+fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
+
+/// "<count>: <address> ..." of what a resolve found, or its failure.
+def addresses_text :: Result<[Net.Address], Os.Error> -> string
+fn addresses_text result =
+	match result with
+	| Result.Error error -> failure_text error
+	| Result.Ok found ->
+		let mut text = to_string found.length + ":"
+		let mut index = 0
+		while index < found.length do
+			text = text + " " + Net.address_text found[index]
+			index = index + 1
+		text
+
+/// One line for each host of the corpus, which is all of address text (or text that a system's resolver reads as
+/// an address): the port is 80, and no host is a name, so nothing here asks a resolver.
+def rec resolve_each :: [string] -> i64 -> IO<unit>
+fn rec resolve_each hosts index =
+	if index >= hosts.length then IO.pure ()
+	else IO.bind (Net.resolve (String.repeat (ref hosts[index]) 1) 80) (\found ->
+		IO.bind (IO.write_line (addresses_text found)) (\_done -> resolve_each hosts (index + 1)))
+
+def main :: unit -> i32 = \() ->
+	do! resolve_each (Corpus.hosts ()) 0
+	0

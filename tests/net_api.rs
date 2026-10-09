@@ -34,6 +34,89 @@ fn reserves_net_module() {
 }
 
 #[test]
+fn resolve_leaves_address_text_to_the_strict_parser() {
+    use std::path::Path;
+    use std::process::Command;
+    // A host that a system's resolver would read as an address in its own way ("127.1", "0x7f000001", "010.0.0.1",
+    // "fe80::1%lo0") is decided by the strict parser alone, so the answer is the same on every system, and nothing
+    // here asks a resolver or needs a network. tests/fixtures/net_resolve resolves a corpus that is all address text:
+    // its first twelve hosts are what the strict parser reads, and every other one is InvalidInput.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/net_resolve");
+    let corpus = std::fs::read_to_string(fixture.join("Corpus.tz")).unwrap();
+    let hosts = corpus
+        .lines()
+        .filter(|line| line.starts_with("\t\""))
+        .count();
+    for needed in [
+        "\"127.1\"",
+        "\"0x7f.1\"",
+        "\"0x7f000001\"",
+        "\"2130706433\"",
+        "\"1.2.3\"",
+        "\"0177.0.0.1\"",
+        "\"010.0.0.1\"",
+        "\"0\"",
+        "\"0x0\"",
+        "\"4294967296\"",
+        "\"fe80::1%lo0\"",
+    ] {
+        assert!(corpus.contains(needed), "the corpus has {needed}");
+    }
+    let root = std::env::temp_dir().join(format!("tsuzuri-net-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for optimization in ["-O0", "-O3"] {
+        let executable = root.join(format!(
+            "resolve{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let built = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("build")
+            .arg(&fixture)
+            .arg(optimization)
+            .arg("--no-cache")
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let run = Command::new(&executable).output().unwrap();
+        assert!(run.status.success());
+        let output = String::from_utf8(run.stdout).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), hosts, "{optimization}\n{output}");
+        assert_eq!(
+            lines[..12],
+            [
+                "1: 127.0.0.1:80",
+                "1: 0.0.0.0:80",
+                "1: 255.255.255.255:80",
+                "1: 192.0.2.7:80",
+                "1: [::1]:80",
+                "1: [::]:80",
+                "1: [2001:db8::1]:80",
+                "1: [2001:db8::1]:80",
+                "1: [::ffff:c000:201]:80",
+                "1: [1:2:3:4:5:6:7:8]:80",
+                "1: [::1]:80",
+                "1: [fe80::1]:80",
+            ],
+            "{optimization}"
+        );
+        for (index, line) in lines.iter().enumerate().skip(12) {
+            assert_eq!(
+                *line, "Unclassified InvalidInput 0",
+                "host {index} of the corpus at {optimization}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn addresses_and_handles_are_opaque_copies() {
     // The records are not built outside the module, so no address holds a port that is not a port.
     for source in [

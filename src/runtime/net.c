@@ -1401,7 +1401,10 @@ static int64_t tz_net_resolve_error(int failure) {
 }
 
 // Looks a host up (the system's resolver, which blocks and cannot be interrupted): the 20-byte address records
-// with `port`, in the system's order, without repeats, at most 64.
+// with `port`, in the system's order, without repeats, at most 64. The runtime does not decide what an address is:
+// `Net.resolve` gives the host text that `Net.parse_ip` can read to that parser alone, and a host that the system
+// itself reads as a numeric address ("127.1", "0x7f000001", "fe80::1%en0": each system has its own forms) is
+// refused here (InvalidInput), so no text that the strict parser rejects is ever resolved as an address.
 TZ_NET_API int64_t tsuzuri_net_resolve(struct tz_net_buffer *output, const unsigned char *host, int64_t length, int64_t port) {
     tz_net_clear(output);
     if (length < 1 || length > 253 || port < 0 || port > 65535 || memchr(host, 0, (size_t)length) != NULL) return tz_net_invalid_input();
@@ -1415,6 +1418,14 @@ TZ_NET_API int64_t tsuzuri_net_resolve(struct tz_net_buffer *output, const unsig
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo *list = NULL;
+    // AI_NUMERICHOST forbids every name lookup: it only asks whether the system would read the text as an address.
+    hints.ai_flags = AI_NUMERICHOST;
+    if (getaddrinfo(name, NULL, &hints, &list) == 0) {
+        freeaddrinfo(list);
+        return tz_net_invalid_input();
+    }
+    hints.ai_flags = 0;
+    list = NULL;
     int failure = getaddrinfo(name, NULL, &hints, &list);
     if (failure != 0) return tz_net_resolve_error(failure);
     unsigned char records[TZ_NET_MAX_RESOLVED * TZ_NET_RECORD];

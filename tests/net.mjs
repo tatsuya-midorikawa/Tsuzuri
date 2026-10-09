@@ -113,6 +113,85 @@ const failure = (kind, osKind, code) => `${kind} ${osKind} ${code}`;
 const invalid = failure("Unclassified", "InvalidInput", 0);
 const stale = failure("Unclassified", "InvalidInput", errno.EBADF);
 
+// Address text that a system's resolver reads in its own way ("127.1", "0x7f000001", "fe80::1%lo0"): `Net.resolve` decides
+// such a host with the strict parser alone and never asks the system, so the answer does not depend on the system. A host
+// is address text when it holds ':' or '%', a space or control character, or its last label (a final dot aside) is all
+// digits or starts with "0x" (the same rule as `numeric_looking` in std/Net.tz).
+const looksNumeric = host => {
+  if (/[:%\u0000-\u0020\u007f]/.test(host)) return true;
+  const label = host.replace(/\.$/, "").split(".").pop();
+  return /^[0-9]+$/.test(label) || /^0[xX]/.test(label);
+};
+// The line that the program prints for such a host at port 80: the one address the strict parser reads (with Node's own
+// reading of the text as the reference), or an InvalidInput.
+const strictLine = host => {
+  let shown;
+  if (host.includes(":")) shown = !host.includes("%") && net.isIPv6(host) ? `${new URL(`http://[${host}]/`).hostname}:80` : undefined;
+  else shown = net.isIPv4(host) ? `${host}:80` : undefined;
+  return shown === undefined ? invalid : `1: ${shown}`;
+};
+// A Tsuzuri string literal for any text without a NUL: control characters and non-ASCII are escaped.
+const tzString = text => JSON.stringify(text).replace(/[\u007f-\uffff]/g, symbol => `\\u${symbol.charCodeAt(0).toString(16).padStart(4, "0")}`);
+// The hand-written hosts of tests/fixtures/net_resolve/Corpus.tz and a seeded sweep of forms around them: dotted numbers in
+// every base `inet_aton` knows, numbers that do not fit, trailing and leading dots, IPv6 with zones and brackets and
+// ports, and addresses with spaces or control characters around them. Every host of it is address text.
+function resolveCorpus() {
+  const written = readFileSync("tests/fixtures/net_resolve/Corpus.tz", "utf8");
+  const classic = [...written.matchAll(/^\t"(.*)"[,]?$/gm)].map(match => JSON.parse(`"${match[1]}"`));
+  assert.ok(classic.length >= 80, `the corpus file has ${classic.length} hosts`);
+  for (const host of classic) assert.ok(looksNumeric(host), `${JSON.stringify(host)} is address text`);
+  let state = 0x1f2e3d4c;
+  const random = bound => {
+    state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x297a2d39) >>> 0;
+    state ^= state >>> 12;
+    return (state >>> 0) % bound;
+  };
+  const pick = list => list[random(list.length)];
+  const numbers = ["0", "1", "7", "9", "10", "100", "127", "255", "256", "0x7f", "0X7F", "0x", "0xff", "0xFFFFFFFF", "00", "01", "010", "0177", "08", "0255", "65535", "65536", "16777215", "16777216", "2130706433", "4294967295", "4294967296", "99999999999999999999", "", "1e2", "+1", "-1", "0b1", "1_0"];
+  const finals = ["0", "1", "7", "127", "255", "256", "0x7f", "0X0", "0x", "0xg", "00", "010", "08", "65536", "2130706433", "4294967296", "0x7f000001"];
+  const octet = () => String(random(256));
+  const hex = () => Array.from({ length: 1 + random(4) }, () => pick([..."0123456789abcdefABCDEF"])).join("");
+  const dotted = () => {
+    const parts = Array.from({ length: random(5) }, () => pick(numbers));
+    parts.push(pick(finals));
+    if (random(10) === 0) parts.splice(random(parts.length), 0, "");
+    return `${random(10) === 0 ? "." : ""}${parts.join(".")}${random(6) === 0 ? "." : ""}`;
+  };
+  const colons = () => {
+    const groups = Array.from({ length: 1 + random(9) }, hex);
+    const at = random(groups.length + 1);
+    const text = random(3) === 0 ? groups.join(":") : `${groups.slice(0, at).join(":")}::${groups.slice(at).join(":")}`;
+    const tail = random(5) === 0 ? `:${octet()}.${octet()}.${octet()}.${octet()}` : "";
+    const zone = random(3) === 0 ? pick(["%eth0", "%1", "%", "%lo0", "%en0"]) : "";
+    const full = `${text}${tail}${zone}`;
+    return random(8) === 0 ? pick([`[${full}]`, `[${full}]:80`, `${full}:80`]) : full;
+  };
+  const spaced = () => {
+    const base = `${octet()}.${octet()}.${octet()}.${octet()}`;
+    const edge = pick(["", " ", "\t", "\n", "\r", "\u0001", "\u007f", "\u000b", " x", " 80", "\r\n"]);
+    return random(3) === 0 ? `${edge}${base}` : `${base}${edge}`;
+  };
+  const generated = new Set(classic);
+  while (generated.size < classic.length + 800) {
+    const host = pick([dotted, dotted, dotted, colons, colons, spaced])();
+    if (host.length > 0 && host.length <= 253 && looksNumeric(host)) generated.add(host);
+  }
+  return [...generated];
+}
+// The net_resolve project with that corpus, the lines that it must print, and how to write the corpus into another copy.
+function resolveLiterals() {
+  const hosts = resolveCorpus();
+  const literalLines = hosts.map(strictLine);
+  assert.ok(literalLines.filter(line => line !== invalid).length >= 25, "the corpus has addresses that the strict parser reads");
+  assert.ok(literalLines.filter(line => line === invalid).length >= 600, "the corpus has address text that it refuses");
+  for (const text of ["127.1", "0x7f.1", "0x7f000001", "2130706433", "1.2.3", "0177.0.0.1", "010.0.0.1", "0", "0x0", "4294967296", "fe80::1%lo0"]) {
+    assert.equal(strictLine(text), invalid, text);
+    assert.ok(hosts.includes(text), `the corpus has ${text}`);
+  }
+  const write = directory => writeFileSync(join(directory, "Corpus.tz"), `def hosts :: unit -> [string]\nfn hosts _unit = [\n${hosts.map(text => `\t${tzString(text)}`).join(",\n")}\n]\n`);
+  return { literals: fixture("net_resolve", write), literalLines, write };
+}
+
 try {
   if (wanted("address")) {
     // A1: the parser and the printer, on every target, against Node's own reading of the same text.
@@ -230,6 +309,7 @@ try {
 
   if (wanted("sockets")) {
     const project = fixture("net_sockets");
+    const { literals, literalLines } = resolveLiterals();
     const v6Server = await listen(() => {}, "::1").then(server => server, () => undefined);
     if (v6Server) await stop(v6Server);
     else console.log("Net: skip: ::1 (this machine has no IPv6 loopback)");
@@ -406,6 +486,13 @@ try {
         assert.deepEqual(result.lines.slice(3, 8), Array(5).fill(invalid));
         assert.equal(result.lines[8], failure("Unclassified", "InvalidEncoding", 0));
         assert.equal(result.lines[9], "1: 127.0.0.1:0");
+      }
+
+      // T9b: a host that the system would read as an address in its own way is decided by the strict parser alone
+      // ("127.1" is not 127.0.0.1): the same answer on every system, and none of these asks a resolver.
+      {
+        const outcome = execute(build(literals, optimization), []);
+        assert.equal(outcome.stdout, `${literalLines.join("\n")}\n`, `net_resolve ${optimization}`);
       }
 
       // T12: an address that is taken, and one that no interface has.
@@ -670,9 +757,9 @@ int main(int argc, char **argv) {
     // Allocation tracking plus ASan and UBSan: every owned result and the runtime's own table are freed on every path.
     // A result may be freed by the poller thread of the async operations, so the counters are atomic, and a run ends only
     // when that thread has gone and (for the async cases) every descriptor that the run opened is closed.
-    const trackedIr = (name, instrument = "") => {
+    const trackedIr = (name, instrument = "", change = undefined) => {
       const irPath = join(root, `tracked-${name}${instrument}.ll`);
-      execute(compiler, ["build", fixture(name), "--emit", "llvm", "-o", irPath]);
+      execute(compiler, ["build", fixture(name, change), "--emit", "llvm", "-o", irPath]);
       let text = readFileSync(irPath, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
       // The functions of the IR carry the attribute that makes a sanitizer look at them.
       if (instrument) text = text.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${instrument}`);
@@ -683,6 +770,7 @@ int main(int argc, char **argv) {
     writeFileSync(harness, `#undef NDEBUG
 #include <assert.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -725,6 +813,16 @@ void *tz_test_realloc(void *pointer, size_t size) {
     return value;
 }
 void tz_test_free(void *pointer) { if (pointer) atomic_fetch_sub(&temporaries, 1); free(pointer); }
+// Every call that net.c makes to getaddrinfo is counted, and so is every one that the system answered as a numeric
+// address: a host that got past Net.resolve as address text (the checks of std/Net.tz come before the runtime's).
+static _Atomic int64_t resolver_calls;
+static _Atomic int64_t numeric_hits;
+int tz_test_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **result) {
+    atomic_fetch_add(&resolver_calls, 1);
+    int status = getaddrinfo(node, service, hints, result);
+    if (status == 0 && hints != NULL && (hints->ai_flags & AI_NUMERICHOST) != 0) atomic_fetch_add(&numeric_hits, 1);
+    return status;
+}
 static int open_descriptors(void) {
     int count = 0;
     for (int descriptor = 0; descriptor < 1024; descriptor++) {
@@ -751,6 +849,15 @@ int main(void) {
         assert(atomic_load(&live) == 0);
         settle(descriptors);
     }
+    if (atomic_load(&numeric_hits) != 0) {
+        fprintf(stderr, "the system read %lld hosts as addresses that the checks of Net.resolve let through\\n", (long long)atomic_load(&numeric_hits));
+        abort();
+    }
+    const char *calls = getenv("TZ_RESOLVER_CALLS");
+    if (calls && atomic_load(&resolver_calls) != (int64_t)atoi(calls) * iterations) {
+        fprintf(stderr, "calls to getaddrinfo: %lld, expected %lld\\n", (long long)atomic_load(&resolver_calls), (long long)atoi(calls) * iterations);
+        abort();
+    }
     return 0;
 }
 `);
@@ -763,6 +870,7 @@ int main(void) {
 #define malloc tz_test_malloc
 #define realloc tz_test_realloc
 #define free tz_test_free
+#define getaddrinfo tz_test_getaddrinfo
 void *tz_test_malloc(size_t);
 void *tz_test_realloc(void *, size_t);
 void tz_test_free(void *);
@@ -774,6 +882,8 @@ ${marker}`));
       return executable;
     };
     const irPath = trackedIr("net_sockets");
+    const resolving = resolveLiterals();
+    const resolveIr = trackedIr("net_resolve", "", resolving.write);
     const sanitizerEnv = { ASAN_OPTIONS: "detect_stack_use_after_return=1", TSAN_OPTIONS: "halt_on_error=1" };
     const track = async (executable, caseName, port, lines, onLine, env = {}) => {
       const result = await run(executable, caseName, port, "127.0.0.1", onLine, { repeat: iterations, env: { TZ_ITERATIONS: String(iterations), ...sanitizerEnv, ...env } });
@@ -830,7 +940,10 @@ ${marker}`));
         await track(executable, "eof", ending.address().port, 4);
         await track(executable, "bigread", big.address().port, 2);
         await track(executable, "validate", quiet.address().port, 13);
-        await track(executable, "resolve", 0, 10);
+        // "localhost" is the only host of this case that asks the system (a probe for an address, then the lookup); the
+        // numeric ones, which the strict parser decides, do not. Nor does any of the corpus of address text.
+        await track(executable, "resolve", 0, 10, undefined, { TZ_RESOLVER_CALLS: "2" });
+        await track(looping(optimization, resolveIr), "resolve", 0, resolving.literalLines.length, undefined, { TZ_RESOLVER_CALLS: "0" });
         await track(executable, "waits", 0, 4);
         await track(executable, "reuse", 0, 3);
         await Promise.all([quiet, ending, big].map(stop));

@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -19,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -35,6 +37,7 @@ extern int64_t tsuzuri_net_write(int32_t, int64_t, const unsigned char *, int64_
 extern int64_t tsuzuri_net_send(int32_t, int64_t, const unsigned char *, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern int64_t tsuzuri_net_close(int32_t, int64_t);
 extern int64_t tsuzuri_net_names(struct tz_net_buffer *, int64_t);
+extern int64_t tsuzuri_net_resolve(struct tz_net_buffer *, const unsigned char *, int64_t, int64_t);
 extern void tsuzuri_net_watch(post_function, int64_t, int64_t, int32_t, int64_t);
 extern void tsuzuri_net_connect(post_function, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern void tsuzuri_net_unwatch(int64_t);
@@ -562,6 +565,81 @@ static void test_stress(void) {
     expect_descriptors(baseline);
 }
 
+// The system's own reading of an address text is not the strict one of Net.parse_ip, and each system has its forms. The
+// runtime refuses (InvalidInput, code 0) every host that the system reads as a numeric address, a valid one too, whatever
+// the std code checked before the call: Net.resolve gives it only what its strict parser cannot read. A name is still
+// looked up. getaddrinfo with AI_NUMERICHOST is the oracle, and it never asks a resolver, so nothing leaves the machine;
+// a host that the system takes for a name is not given to the runtime here, which would ask a resolver.
+static int numeric_for_system(const char *host) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST;
+    struct addrinfo *list = NULL;
+    if (getaddrinfo(host, NULL, &hints, &list) != 0) return 0;
+    freeaddrinfo(list);
+    return 1;
+}
+
+static int64_t resolve_text(const char *host, struct tz_net_buffer *found) {
+    return tsuzuri_net_resolve(found, (const unsigned char *)host, (int64_t)strlen(host), 80);
+}
+
+static void test_resolve(void) {
+    static const char *forms[] = {
+        "127.0.0.1", "0.0.0.0", "255.255.255.255", "::1", "::", "2001:db8::1", "::ffff:192.0.2.1", "1:2:3:4:5:6:7:8", "fe80::1",
+        "127.1", "0x7f.1", "0x7f000001", "2130706433", "1.2.3", "0177.0.0.1", "010.0.0.1", "0", "0x0", "4294967296", "fe80::1%lo0",
+        "00", "0x", "0X7F.0.0.1", "08.0.0.1", "0x.1", "1.256", "1.16777215", "99999999999999999999", "1.2.3.0x4", "1.2.0x304",
+        "0x1.0x2.0x3.0x4", "::1%", "fe80::1%1", "ff02::1%en0", "1.2.3.4 ", "1.2.3.4 x",
+    };
+    int refused = 0;
+    struct tz_net_buffer found = {NULL, 0};
+    for (size_t index = 0; index < sizeof forms / sizeof forms[0]; index++) {
+        if (!numeric_for_system(forms[index])) continue;
+        assert(resolve_text(forms[index], &found) == (INVALID_INPUT << 32));
+        assert(found.data == NULL && found.length == 0);
+        refused++;
+    }
+    assert(refused >= 9 && "every system reads the valid literals as addresses");
+    int lenient = numeric_for_system("0x7f.1");
+    int sweep = 0;
+    // A seeded sweep of dotted numbers in the bases that inet_aton knows, and of IPv6 forms with zones.
+    static const char *numbers[] = {"0", "1", "7", "127", "255", "256", "0x7f", "0X7F", "0x", "00", "010", "0177", "08", "65535", "65536", "16777215", "16777216", "2130706433", "4294967296", "99999999999999999999"};
+    static const char *groups[] = {"0", "1", "fe80", "2001", "db8", "ffff", "abcd", "ABCD", "1.2.3.4", "g", "", "12345"};
+    static const char *zones[] = {"", "", "%lo0", "%1", "%", "%eth0"};
+    uint32_t state = 0x1f2e3d4cu;
+#define NEXT(bound) (state = state * 1664525u + 1013904223u, (size_t)((state >> 8) % (bound)))
+    for (int round = 0; round < 3000; round++) {
+        char host[160];
+        size_t length = 0;
+        if (round % 2 == 0) {
+            size_t parts = 1 + NEXT(4);
+            for (size_t part = 0; part < parts; part++) length += (size_t)snprintf(host + length, sizeof host - length, "%s%s", part ? "." : "", numbers[NEXT(sizeof numbers / sizeof numbers[0])]);
+        } else {
+            size_t parts = 2 + NEXT(7);
+            if (NEXT(3) == 0) length += (size_t)snprintf(host + length, sizeof host - length, "::");
+            for (size_t part = 0; part < parts; part++) length += (size_t)snprintf(host + length, sizeof host - length, "%s%s", part ? ":" : "", groups[NEXT(sizeof groups / sizeof groups[0])]);
+            length += (size_t)snprintf(host + length, sizeof host - length, "%s", zones[NEXT(sizeof zones / sizeof zones[0])]);
+        }
+        if (length == 0 || length > 253 || !numeric_for_system(host)) continue;
+        assert(resolve_text(host, &found) == (INVALID_INPUT << 32));
+        assert(found.data == NULL && found.length == 0);
+        sweep++;
+    }
+#undef NEXT
+    // A system that reads only dotted decimal has no more forms to refuse; every system of the CI has them.
+    if (lenient) assert(sweep >= 100 && "the sweep reaches addresses that the system reads");
+    else printf("net runtime: skip: this system reads no hexadecimal or short IPv4 forms, so the sweep has little to refuse (%d)\n", sweep);
+    // A name goes through to the system's lookup: found (whole 20-byte records) or not found, never refused as an address.
+    int64_t local = resolve_text("localhost", &found);
+    assert(local == 0 || (local >> 32) != INVALID_INPUT);
+    if (local == 0) {
+        assert(found.data != NULL && found.length > 0 && found.length % 20 == 0);
+        tsuzuri_free(found.data);
+    }
+}
+
 int main(void) {
     // The first socket may make the system or a sanitizer open something of its own, which is not a leak.
     int port;
@@ -590,7 +668,9 @@ int main(void) {
     test_connect_cancel();
     test_stress();
     expect_descriptors(start);
+    // The system's resolver may keep a descriptor of its own (a connection to a resolver service), which is not a leak.
+    test_resolve();
     assert(atomic_load(&live) == 0 && "every buffer was freed");
-    printf("net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed (%lld completions of the churn)\n", (long long)atomic_load(&stress_completions));
+    printf("net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed (%lld completions of the churn); a host that the system reads as an address is refused\n", (long long)atomic_load(&stress_completions));
     return 0;
 }

@@ -396,6 +396,33 @@ fn recv_with socket count timeout =
 		| (0, bytes) -> Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0)
 		| (status, _) -> failed status
 
+/// Whether `bytes`, a host, can be read as an IP address by the system's resolver: it holds a ':' or a '%' (IPv6, with
+/// or without a zone), a space or a control byte, or its last label (a final dot aside) is all digits or starts with
+/// "0x". `inet_aton` reads "127.1", "0x7f000001", "2130706433", and "010.0.0.1" as IPv4 addresses, and each system
+/// reads some more forms its own way, so `resolve` leaves every such host to `parse_ip` alone.
+private def numeric_looking :: ref [ubyte] -> bool
+fn numeric_looking bytes =
+	let length = bytes.length
+	let stop = if length > 0 && bytes[length - 1] == 46ubyte then length - 1 else length
+	let mut looks = false
+	let mut index = 0
+	while index < length do
+		let byte = bytes[index]
+		if byte == 58ubyte || byte == 37ubyte || byte <= 32ubyte || byte == 127ubyte then looks = true
+		index = index + 1
+	let mut start = stop
+	while start > 0 && bytes[start - 1] != 46ubyte do start = start - 1
+	let label = stop - start
+	if label > 0 then
+		let mut digits = true
+		index = start
+		while index < stop do
+			if bytes[index] < 48ubyte || bytes[index] > 57ubyte then digits = false
+			index = index + 1
+		let hexadecimal = label >= 2 && bytes[start] == 48ubyte && (bytes[start + 1] == 120ubyte || bytes[start + 1] == 88ubyte)
+		if digits || hexadecimal then looks = true
+	looks
+
 private def resolve_with :: ref string -> i64 -> Result<[Address], Os.Error>
 fn resolve_with host port =
 	if port < 0 || port > 65535 then Result.Error (invalid ())
@@ -410,15 +437,22 @@ fn resolve_with host port =
 				if bytes[index] == 0ubyte then has_nul = true
 				index = index + 1
 			if bytes.length == 0 || bytes.length > 253 || has_nul then Result.Error (invalid ())
+			elif numeric_looking (ref bytes) then
+				match parse_ip host port with
+				| Maybe.Some address -> Result.Ok (Array.init 1 (\_ -> address))
+				| Maybe.None -> Result.Error (invalid ())
 			else
 				match Net.__resolve (ref name) port with
 				| (0, found) -> Result.Ok (Array.init (found.length / 20) (\position -> address_at (ref found) (position * 20)))
 				| (status, _) -> failed status
 
-/// Resolves a host name or a numeric address to the addresses the system gives it for `port` (0 to 65535), in the
-/// system's order and without repeats, at most 64. It asks the system's resolver, which may read /etc/hosts or
-/// the network and cannot be interrupted, and whose answer is not authenticated. A host that is empty,
-/// longer than 253 bytes, or holds a NUL is `InvalidInput`; a name that does not exist is `NotFound`.
+/// Resolves a host name or an IP address to the addresses the system gives it for `port` (0 to 65535), in the
+/// system's order and without repeats, at most 64. A host that can be read as an address (a ':' or '%', a space or
+/// control byte, or a last label of digits or starting "0x"; see `numeric_looking`) is decided by `parse_ip` alone,
+/// never by the system: the one address it reads, without a call, or `InvalidInput`, so "127.1", "0x7f000001",
+/// "010.0.0.1", and "fe80::1%en0" are refused. Any other host asks the system's resolver, which may read /etc/hosts or
+/// the network and cannot be interrupted, and whose answer is not authenticated; a name that does not exist is
+/// `NotFound`. A host that is empty, longer than 253 bytes, or holds a NUL is `InvalidInput`.
 def resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>
 fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
 
