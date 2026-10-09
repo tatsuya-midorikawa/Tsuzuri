@@ -5,7 +5,7 @@
 ## この記事のポイント
 
 - `Mutex.create value` で作り、共有借用 `ref Mutex<T>` に対する `Mutex.with_lock mutex callback` の中でだけ値に触れます。`callback` は排他借用 `ref mut T` を受け取り、その結果を返します。ロックは `callback` が終わると解放されます。
-- 結果は所有値で、`Send` でなければなりません。ロック中の値への参照は外へ持ち出せません（`E1013`）。`Mutex.create` も、タスクへ渡せる `T`（`Send`）だけを受け取ります。
+- 結果は `Send` でなければならず、ロック中の値への借用を持てません。`ref` を返すことは `E1013`（`tasks require owned values`）で、借用を捕捉した関数値と、それを含む `Maybe`・タプル・配列・レコード・`Seq` も `E1013`（`Mutex.with_lock results must be proven free of borrowed environments`）です。ロックが外れた後で、置き換えられたり別のタスクに書かれたりした値を読むことになるからです。値のコピーを捕捉した関数のように、借用を持たないと証明できる結果は返せます（[結果とロック](#結果とロック)）。`Mutex.create` も、タスクへ渡せる `T`（`Send`）だけを受け取ります。
 - ロックを持ったまま別の `Mutex.with_lock` を呼ぶこと（入れ子）と、ロック中に並列処理（`Task.parallel`・`Task.scope`・`Parallel.*`）を始めることは、トラップです。デッドロックはしません。
 - `Mutex<T>` は非 Copy の所有値で、`Send` かつ `Sync` です。関数値には捕捉できません（`E1005`）。複数のタスクへは、[Task.scope](../async-tasks-and-lazy/task.md#共有状態と-taskscope) の共有借用か `Arc<Mutex<T>>` で渡します。
 - `Mutex` のポイズンはありません。トラップが起きたときの扱いは[トラップとロック](#トラップとロック)に書きます。
@@ -84,6 +84,43 @@ total=36 owners=1
 
 各タスクの `Arc` はタスクの終わりに解放されるので、`Task.parallel` が返った後の所有者は `shared` だけです。
 
+## 結果とロック
+
+`callback` はロックを持ったまま走り、その結果はロックが外れた後で使われます。結果が、ロック中の値への借用を持っていると、その借用はロックの外で、置き換えられて解放された値や、ほかのタスクが書いている値を指します。結果の型が借用を持ちうる（関数値、またはそれを含む `Maybe`・タプル・配列・レコード・`Seq`）ときは、コンパイラーが、借用を持たない結果だと証明できるものだけを通します。
+
+- 通るもの: 値のコピーを取り、そのコピーを捕捉した関数。`Mutex` の外の借用で、ロック中の値から取っていないものを捕捉した関数。整数、文字列、配列などの所有値。
+- `E1013` になるもの: `let view = ref (deref value)` のように、ロック中の値から取った借用を捕捉した関数と、それを含む値。`ref` そのもの。
+
+```tsuzuri run=adder%3D15
+let total = Mutex.create 5i64
+let adder = Mutex.with_lock (ref total) (value -> {
+    let copy = deref value;
+    x -> copy + x
+})
+$"adder={adder 10}"
+```
+
+実行結果:
+
+```text
+adder=15
+```
+
+次のように、ロック中の値への借用を捕捉した関数を返すと、`E1013` です。
+
+```text
+let getter = Mutex.with_lock (ref total) (value -> {
+    let view = ref (deref value);
+    x -> deref view + x
+})
+```
+
+```text
+error[E1013]: Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy
+```
+
+証明は `Mutex.with_lock` を直接、ロックと `callback` を一度に渡して呼ぶ形で行います。結果が借用を持ちうるときは、`Mutex.with_lock (ref total)` のように引数を一部だけ渡すことと、`Mutex.with_lock` 自体を関数値にすることは、`E1013`（`Mutex.with_lock must be fully applied directly when its result may hold borrowed values`）です。結果が借用を持ちえない型（整数や文字列など）なら、どちらも書けます。`callback` が引数で受け取った関数値のように、本体を調べられないものは、結果が借用を持ちうる限り通りません。ジェネリックな関数が `callback` を引数で受け取って `Mutex.with_lock` に渡すときも、結果の型が借用を持ちうる型で使うと、同じ理由で通りません（結果が整数や文字列などなら、どちらも書けます）。
+
 ## ロックの規則
 
 | 操作 | 結果 |
@@ -111,7 +148,7 @@ total=36 owners=1
 - `Mutex<T>` は、`T` の中を見ずに `Sync` です。ロックの外から `T` に触れる道がなく、`T` はタスクの間を移れるものに限られるからです。
 - `Mutex<T>` は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
 - 関数値は複製されることがあり、複製した `Mutex` は別のロックになるので、捕捉は `E1005` です。借用 `ref mutex` を捕捉するか、`Arc` に入れるか、引数で渡します。
-- `callback` の結果は所有値です。`value` を返す `Mutex.with_lock m (v -> v)` は `E1013`（`tasks require owned values; ref mut i64 contains a reference`）です。
+- `callback` の結果は `Send` で、ロック中の値への借用を持てません。`value` を返す `Mutex.with_lock m (v -> v)` は `E1013`（`tasks require owned values; ref mut i64 contains a reference`）、借用を捕捉した関数値を返すと `E1013`（`Mutex.with_lock results must be proven free of borrowed environments`）です（[結果とロック](#結果とロック)）。
 
 ## 表現と性能
 
@@ -135,7 +172,7 @@ total=36 owners=1
 ## まとめ
 
 - 整数や `bool` 以外の共有状態、または 2 つ以上の値を 1 つの不変条件で守る共有状態は `Mutex` に入れ、`Mutex.with_lock` の中だけで触れます。
-- ロックの入れ子とロック中の並列開始はトラップです。結果は所有値で、ロックの外へ参照を出せません。
+- ロックの入れ子とロック中の並列開始はトラップです。結果は `Send` で、ロック中の値への借用（借用を捕捉した関数値を含む）を持てません。
 - 複数のタスクへは、`Task.scope` の共有借用か `Arc<Mutex<T>>` で渡します。`Arc` と `Mutex` で循環を作ると解放されないので、`Arc.Weak` を使います。
 
 ## 関連項目

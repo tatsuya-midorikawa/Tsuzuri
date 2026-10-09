@@ -150,6 +150,39 @@ fn atomics_and_mutexes_are_owned_and_never_copied() {
 }
 
 #[test]
+fn a_cell_behind_an_arc_is_captured_in_a_recursive_type_as_in_any_other() {
+    // The cell is shared through the Arc, so a copy of the function value shares it too, and the
+    // type being recursive makes no difference.
+    for source in [
+        "let node = Node { value: 1, next: Maybe.None }\nlet add = \\x -> x + node.value\nadd 41",
+        "let tail = Arc.new (Mutex.create (Node { value: 1, next: Maybe.None }))\nlet head = Node { value: 2, next: Maybe.Some (Arc.share (ref tail)) }\nlet add = \\x -> x + head.value\nadd 40",
+    ] {
+        emits(&format!("{NODE}{source}"));
+    }
+    emits(
+        "record Link { hits: Arc<Atomic<i64>>, next: Maybe<Arc<Link>> }\nlet link = Link { hits: Arc.new (Atomic.create 0i64), next: Maybe.None }\nlet bump = \\() -> Atomic.fetch_add (Arc.get (ref link.hits)) 1\nbump ()",
+    );
+    // A cell that the record owns outright would still be copied with the function value.
+    let message = rejects(
+        "record Chain { hits: Atomic<i64>, next: Maybe<Arc<Chain>> }\nlet chain = Chain { hits: Atomic.create 0i64, next: Maybe.None }\nlet read = \\() -> Atomic.load (ref chain.hits)\nread ()",
+        "E1005",
+    );
+    assert!(
+        message.contains("a copy of an Atomic or Mutex would be a separate cell"),
+        "{message}"
+    );
+    // An Rc in a recursive type is still refused, with the message about its counts.
+    let message = rejects(
+        "record Ring { value: i64, next: Maybe<Rc<Ring>> }\nlet ring = Ring { value: 1, next: Maybe.None }\nlet read = \\() -> ring.value\nread ()",
+        "E1005",
+    );
+    assert!(
+        message.contains("Rc counts its owners without atomic operations"),
+        "{message}"
+    );
+}
+
+#[test]
 fn sync_marks_what_tasks_may_share() {
     for body in [
         "let values = [1i64, 2i64]\nshare (ref values) + share (ref \"text\") + share (ref 5i64)",
@@ -331,6 +364,125 @@ fn task_scope_shares_a_sync_borrow() {
     );
 }
 
+// A function value that a scope shares runs in several tasks at once, so what it borrows must be
+// shared too. The environment is proven to hold no borrow, and a temporary has to meet the same
+// proof as a name does.
+const BORROWING_CLOSURE: &str = "\\x -> { let again = Rc.share r; deref (Rc.get (ref again)) + x }";
+
+#[test]
+fn a_shared_temporary_must_hold_no_borrow_just_as_a_named_value_must_not() {
+    let owned = "task scopes can share only values with proven owned environments";
+    let prelude = "let rc = Rc.new 5i64\nlet r = ref rc\n";
+    for source in [
+        // The closure bound to a name first: refused (and was before).
+        format!("{prelude}let f = {BORROWING_CLOSURE}\nlet seen = Task.scope (ref f) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        // The same closure as a temporary: its loan on the Rc has no parents, and was accepted.
+        format!("{prelude}let seen = Task.scope (ref ({BORROWING_CLOSURE})) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        format!("record Holder {{ f: i64 -> i64 }}\n{prelude}let seen = Task.scope (ref (Holder {{ f: {BORROWING_CLOSURE} }})) 4 (\\shared index -> shared.f index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Task.scope (ref [{BORROWING_CLOSURE}]) 4 (\\shared index -> (shared[0]) index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Task.scope (ref (Maybe.Some ({BORROWING_CLOSURE}))) 4 (\\shared index -> match shared with | Maybe.Some f -> f index | Maybe.None -> 0)\nArray.sum (ref seen)"),
+        // A borrow of a Sync place would be sound to share, but the rule is the one that a name
+        // meets, whatever the pointee.
+        "let counter = Atomic.create 0i64\nlet b = ref counter\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add b x)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)".to_owned(),
+    ] {
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(owned), "{source}\n{message}");
+    }
+    // The elements that Parallel.map_ref shares between its tasks meet the same rule.
+    let message = rejects(
+        &format!(
+            "{prelude}let seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [{BORROWING_CLOSURE}])\nArray.sum (ref seen)"
+        ),
+        "E1013",
+    );
+    assert!(
+        message.contains("parallel input elements must have proven owned environments"),
+        "{message}"
+    );
+    // A temporary whose environment owns what it holds is shared as before.
+    emits(
+        "let base = 10i64\nlet seen = Task.scope (ref (\\x -> x + base)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)",
+    );
+    emits(
+        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add (Arc.get (ref shared)) x)) 4 (\\f index -> (deref f) index)\nArray.sum (ref seen)",
+    );
+    analyze("let base = 10i64\nlet seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [\\x -> x + base])\nArray.sum (ref seen)")
+        .expect("an owned environment is shared");
+}
+
+#[test]
+fn a_mutex_result_never_holds_a_borrow_of_the_locked_value() {
+    let free = "Mutex.with_lock results must be proven free of borrowed environments";
+    let escaping = |result: &str| {
+        format!(
+            "let lock = Mutex.create 5i64\nlet kept = Mutex.with_lock (ref lock) (\\value -> {{ let view = ref (deref value); {result} }})\n0"
+        )
+    };
+    // A function value, alone or in a container, that reads the locked value after the lock is gone:
+    // the value could have been replaced and freed, or be written by another task, by then.
+    for result in [
+        "\\x -> deref view + x",
+        "Maybe.Some (\\x -> deref view + x)",
+        "(1, \\x -> deref view + x)",
+        "[\\x -> deref view + x]",
+        "Reader { read: \\x -> deref view + x }",
+        "Seq.unfold (\\n -> if n < 3 then Some (deref view + n, n + 1) else None) 0",
+    ] {
+        let source = format!("record Reader {{ read: i64 -> i64 }}\n{}", escaping(result));
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(free), "{result}: {message}");
+    }
+    // The same through a view of a locked array.
+    let message = rejects(
+        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet view = Mutex.with_lock (ref lock) (\\values -> { let items = ref (deref values); \\i -> items[i] })\n0",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A function applied right away runs after the lock is released.
+    let message = rejects(
+        "let lock = Mutex.create 5i64\nMutex.with_lock (ref lock) (\\value -> { let view = ref (deref value); \\x -> deref view + x }) 1",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A named callback is proven by its body.
+    let message = rejects(
+        "def peek :: ref mut i64 -> (i64 -> i64)\nfn peek value =\n    let view = ref (deref value)\n    \\x -> deref view + x\nlet lock = Mutex.create 5i64\nlet kept = Mutex.with_lock (ref lock) peek\n0",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // A child of a scope keeps the function after its own lock is released.
+    let message = rejects(
+        "let lock = Mutex.create 5i64\nlet seen = Task.scope (ref lock) 2 (\\shared index -> {\n    let kept = Mutex.with_lock shared (\\value -> { let view = ref (deref value); \\x -> deref view + x });\n    kept index\n})\nArray.sum (ref seen)",
+        "E1013",
+    );
+    assert!(message.contains(free), "{message}");
+    // The call has to be direct for its result to be checked, when the result may hold a borrow.
+    for source in [
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock (ref lock)\nlet kept = locker (\\value -> { let view = ref (deref value); \\x -> deref view + x })\n0",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock\nlet kept = locker (ref lock) (\\value -> { let view = ref (deref value); \\x -> deref view + x })\n0",
+    ] {
+        let message = rejects(source, "E1013");
+        assert!(
+            message.contains("must be fully applied directly"),
+            "{message}"
+        );
+    }
+    // What is owned stays allowed: a copy of the value, in a function or a container; a borrow that
+    // the callback did not take from the locked value; a result that holds no borrow at all, however
+    // the call is spelled.
+    for source in [
+        "let lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + x })\nadder 1",
+        "let lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; Maybe.Some (\\x -> copy + x) })\nmatch adder with\n| Maybe.Some f -> f 1\n| Maybe.None -> 0",
+        "let lock = Mutex.create 5i64\nMutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + x }) 1",
+        "let other = 7i64\nlet outside = ref other\nlet lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + deref outside + x })\nadder 1",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock (ref lock)\nlocker (\\value -> deref value)",
+        "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock\nlocker (ref lock) (\\value -> deref value + 1)",
+        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\values -> { let items = ref (deref values); items[index] }))\nArray.sum (ref seen)",
+    ] {
+        emits(source);
+    }
+}
+
 #[test]
 fn mutex_programs_type_check_and_the_closure_result_is_owned() {
     for source in [
@@ -461,6 +613,18 @@ fn mutex_lowering_adds_no_runtime_to_other_programs() {
     }
 }
 
+/// The length operand of each call that starts a group of items in the IR of a program.
+fn group_lengths(ir: &str) -> Vec<&str> {
+    ir.lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("call void @tsuzuri_task_parallel("))
+        .map(|line| {
+            let (_, length) = line.rsplit_once("i64 ").expect(line);
+            length.strip_suffix(')').expect(line)
+        })
+        .collect()
+}
+
 #[test]
 fn task_scope_is_one_group_of_children() {
     let source = "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)";
@@ -477,4 +641,31 @@ fn task_scope_is_one_group_of_children() {
         wasm.contains("define internal void @tsuzuri_task_parallel("),
         "standalone WASM runs the children in index order\n{wasm}"
     );
+    // One item per child, so that any thread may take any child and the pool hands them out one
+    // at a time: the group is as long as the count, never a number of chunks of it.
+    for ir in [&native, &wasm] {
+        assert_eq!(group_lengths(ir), ["4"], "{ir}");
+    }
+    let [native, wasm] = emits(
+        "let counter = Atomic.create 0i64\nlet few = Task.scope (ref counter) 3 (\\shared index -> Atomic.fetch_add shared index)\nlet many = Task.scope (ref counter) 5000 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref few) + Array.length (ref many)",
+    );
+    for ir in [&native, &wasm] {
+        assert_eq!(group_lengths(ir), ["3", "5000"], "{ir}");
+    }
+    // A count that is not known is the same value that sizes the array of results: one slot, one child.
+    let [native, wasm] = emits(
+        "def spread :: i64 -> i64\nfn spread n =\n    let counter = Atomic.create 0i64\n    let seen = Task.scope (ref counter) n (\\shared index -> Atomic.fetch_add shared index)\n    Array.length (ref seen)\nspread 6",
+    );
+    for ir in [&native, &wasm] {
+        let lengths = group_lengths(ir);
+        assert_eq!(lengths.len(), 1, "{ir}");
+        assert!(
+            ir.lines().any(|line| {
+                line.contains("insertvalue %tz.array")
+                    && line.ends_with(&format!(", i64 {}, 1", lengths[0]))
+            }),
+            "the length of the group is the length of the results ({})\n{ir}",
+            lengths[0]
+        );
+    }
 }
