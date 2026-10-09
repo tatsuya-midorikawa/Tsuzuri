@@ -135,6 +135,18 @@ int main(int argc, char **argv) {
       assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: ${operation === "atexit" ? "atexit" : `pthread_${operation}`} failed`));
     }
 
+    // F10: the lock of Mutex.with_lock (exclusion, parking, refusals and the abandonment that a trap
+    // boundary makes), also under the sanitizer that the environment asks for.
+    const locks = join(temporary, `sync-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`, "-pthread", "tests/sync_runtime.c", "-o", locks]);
+    assert.match(execute(locks, []).stdout, /^sync_runtime: .* passed/);
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      const checked = join(temporary, `sync-${sanitizer}-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/sync_runtime.c", "-o", checked]);
+      assert.match(execute(checked, []).stdout, /^sync_runtime: .* passed/);
+    }
+
     const native = join(temporary, `native-${optimization}`);
     execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", "-DTRACKING",
       host, ir, "src/runtime/task.c", "-pthread", "-lm", "-o", native]);

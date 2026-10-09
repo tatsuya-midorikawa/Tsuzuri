@@ -139,6 +139,8 @@ flowchart TD
 
 要素と結果には `Send` が要ります。スレッドへ渡せる所有値、という意味です。`ref` を要素に含めることはできません。
 
+コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Task.scope](../async-tasks-and-lazy/task.md#共有状態と-taskscope) を使います。`Mutex.with_lock` の中でこのページの API を呼ぶとトラップします。
+
 ## スレッドと WASM
 
 ネイティブでは、`Task` と同じ常駐プールを使います。追加で起動するワーカーは `min(オンラインの CPU 数, 32) - 1` 以下で、呼び出し元のスレッドも仕事をします。CPU 数が取れなければ追加ワーカーを作らず、逐次に倒れます。0 件や 1 件の `Task.parallel` はプールを起動しません。`Parallel` の短い配列は 1 チャンクになることが多く、そのときはワーカーを増やしても境界は 1 つのままです。
@@ -163,11 +165,14 @@ tsuzuri build --target wasm32 --emit wasm --wasm-feature threads -o app.wasm
 - `map` は要素を複製します。複製を避けたいときは `map_ref` です。
 - チャンク境界と `reduce` の結合順は、コア数で変わりません。
 - `Task.parallel` は別々のタスク用です。配列の要素変換には `Parallel` を使います。
+- 全員で 1 つの状態を更新するときは、`Task.scope` と `Atomic`・`Mutex` を使います。
 - 既定の WASM は逐次です。スレッドは `--wasm-feature threads` の明示が要ります。
 
 ## 関連項目
 
 - [Task 式](../async-tasks-and-lazy/task.md)
+- [Atomic](atomic.md)
+- [Mutex](mutex.md)
 - [Array](array.md)
 - [Simd](simd.md)
 - [Math](math.md)

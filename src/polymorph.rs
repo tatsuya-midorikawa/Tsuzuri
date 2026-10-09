@@ -619,7 +619,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 31] = [
+pub(super) const BUILTIN_CLASSES: [&str; 33] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -651,6 +651,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 31] = [
     "Err",
     "Encode",
     "Decode",
+    "Sync",
+    "AtomicValue",
 ];
 
 impl Classes {
@@ -2246,7 +2248,7 @@ impl Classes {
         if let Type::Simd(vector) = ty {
             use crate::simd::SimdKind;
             return match self.declarations[class].name.as_str() {
-                "SimdVector" | "Copy" | "Capture" | "Send" => true,
+                "SimdVector" | "Copy" | "Capture" | "Send" | "Sync" => true,
                 "SimdNumeric" | "Add" | "Sub" | "Mul" => vector.kind != SimdKind::Mask,
                 "SimdMask" => vector.kind == SimdKind::Mask,
                 "Div" => vector.kind == SimdKind::Float,
@@ -2270,6 +2272,8 @@ impl Classes {
             "Copy" => ty.is_copy(types),
             "Capture" => ty.can_capture(types),
             "Send" => ty.can_send(types),
+            "Sync" => ty.can_sync(types),
+            "AtomicValue" => matches!(ty, Type::Integer(8 | 16 | 32 | 64, _) | Type::Bool),
             "Display" => {
                 ty.is_numeric()
                     || ty.is_string()
@@ -2332,11 +2336,17 @@ impl Classes {
                     )
                 });
             }
-            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unshareable_arc(types) {
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unsync_arc(types) {
                 let ty = constraint.ty.display(types);
-                let reason = format!(
-                    "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
-                );
+                let reason = if constraint.ty.holds_host_state(types) {
+                    format!(
+                        "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
+                    )
+                } else {
+                    format!(
+                        "{ty} shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc, and several tasks could then use it at once"
+                    )
+                };
                 return Err(if class == "Capture" {
                     Diagnostic::new(
                         "E1005",
@@ -2354,6 +2364,36 @@ impl Classes {
                         constraint.span,
                     )
                 });
+            }
+            if class == "Capture" && constraint.ty.holds_cell(types) {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "cannot capture {} in a function value; a function value may be copied, and a copy of an Atomic or Mutex would be a separate cell; capture a borrow of it, share it through an Arc, or pass it as an argument",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
+            }
+            if class == "Sync" {
+                return Err(Diagnostic::new(
+                    "E1013",
+                    format!(
+                        "tasks can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between tasks); move the value into one task, or share an Arc of a Sync value",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
+            }
+            if class == "AtomicValue" {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for {}",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
             }
             if self.declarations[constraint.class].name == "Capture" {
                 return Err(Diagnostic::new(

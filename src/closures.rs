@@ -93,7 +93,7 @@ impl Checker<'_> {
                         if kind != LambdaKind::Owned
                             || error.code != "E1013"
                             || capture.ty.holds_rc(&self.types)
-                            || capture.ty.holds_unshareable_arc(&self.types)
+                            || capture.ty.holds_unsync_arc(&self.types)
                         {
                             return error;
                         }

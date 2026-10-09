@@ -291,6 +291,8 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_sync.rs"]
+mod sync;
 #[path = "llvm_task.rs"]
 mod task;
 pub(crate) use host_abi::uses_host_abi;
@@ -1225,14 +1227,49 @@ fn emit_program(
             let _ = writeln!(output, "declare {result} @{symbol}(ptr, i64)");
         }
     }
-    if output.contains("@tsuzuri_task_parallel(")
-        || output.contains("@tsuzuri_task_parallel_results(")
-    {
-        output.push_str(if wasm && !instrumentation.wasm_threads {
-            include_str!("runtime/task-wasm.ll")
-        } else {
-            "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n"
-        });
+    // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
+    // that no lock is held, so the renaming happens before the runtime text is appended (F10).
+    let mutex = output.contains("@tsuzuri_mutex_lock(");
+    let parallel = output.contains("@tsuzuri_task_parallel(")
+        || output.contains("@tsuzuri_task_parallel_results(");
+    if mutex && parallel {
+        output = output
+            .replace(
+                "call void @tsuzuri_task_parallel(",
+                "call void @tz.mutex.parallel(",
+            )
+            .replace(
+                "call i64 @tsuzuri_task_parallel_results(",
+                "call i64 @tz.mutex.parallel_results(",
+            );
+    }
+    if parallel || mutex {
+        // The runtime text above may end without a newline.
+        if mutex && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        // The native runtime, and the declarations that the driver and the test runner link it
+        // for, are the same for a program that only locks.
+        let sequential = wasm && !instrumentation.wasm_threads;
+        if parallel && sequential {
+            output.push_str(include_str!("runtime/task-wasm.ll"));
+        } else if !sequential {
+            output.push_str(
+                "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
+            );
+        }
+        if mutex {
+            if sequential {
+                output.push_str(include_str!("runtime/sync-wasm.ll"));
+            } else {
+                output.push_str(
+                    "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+                );
+            }
+            if parallel {
+                output.push_str(include_str!("runtime/sync.ll"));
+            }
+        }
     }
     if output.contains("@tz.debug.write") {
         output.push_str(include_str!("runtime/debug.ll"));
@@ -6289,6 +6326,15 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
+        builtin
+            if builtin.is_atomic()
+                || matches!(
+                    builtin,
+                    Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
+                ) =>
+        {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
         Builtin::Parse => emit_parse(instance, ty, module),
         Builtin::ToFloat => format!(
@@ -6481,6 +6527,13 @@ fn emit_typed_builtin(
         emitter.vector_builtin(instance, ty)
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
+    } else if instance.builtin.is_atomic()
+        || matches!(
+            instance.builtin,
+            Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
+        )
+    {
+        emitter.sync_builtin(instance, ty)
     } else if instance.builtin == Builtin::FixedArrayInit {
         // A function value of `FixedArray.init`; its instance types include the array (A16).
         let Type::Function(parameters, _) = ty else {

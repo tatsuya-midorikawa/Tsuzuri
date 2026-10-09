@@ -6,6 +6,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/Async.tc", include_str!("../std/Async.tc")),
+    ("std/Atomic.tz", include_str!("../std/Atomic.tz")),
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
@@ -26,6 +27,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Maybe.tc", include_str!("../std/Maybe.tc")),
+    ("std/Mutex.tz", include_str!("../std/Mutex.tz")),
     ("std/Os.tz", include_str!("../std/Os.tz")),
     ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
@@ -94,6 +96,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Bench",
     "Gen",
     "Async",
+    "Atomic",
+    "Mutex",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -130,6 +134,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Gen.Gen"
             | "Async.Async"
             | "Async.Next"
+            | "Atomic.Atomic"
+            | "Mutex.Mutex"
     )
 }
 
@@ -207,6 +213,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Async",
         names: &["Async"],
         aliases: &["async"],
+        uses: &[],
+    },
+    OptIn {
+        module: "Atomic",
+        names: &["Atomic"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Mutex",
+        names: &["Mutex"],
+        aliases: &[],
         uses: &[],
     },
 ];
@@ -514,6 +532,14 @@ mod tests {
         assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
         assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
         assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
+        // F10: each shared-state type loads only its own module; `Task.scope` needs none.
+        assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
+        assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
+        assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
+        assert_eq!(
+            loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
+            Vec::<&str>::new()
+        );
         // Bare names of opt-in declarations never resolve to them, so they load nothing.
         assert_eq!(
             loaded("match c with | Lu -> 1 | Null -> 0 | _ -> 2"),
@@ -534,7 +560,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 46);
+        assert_eq!(RESERVED_MODULES.len(), 48);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));

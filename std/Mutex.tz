@@ -1,0 +1,5 @@
+/// A value that one task at a time reads and updates inside `Mutex.with_lock`. The first part of
+/// the cell is the lock word of the runtime; `Mutex.create` makes it free. The value is not Copy
+/// and no function value can capture it. The cell lives in the buffer of `cell`, so a borrow of
+/// the mutex stays valid however the record is moved.
+record Mutex<'a> { cell: [(i32u * 'a)] }

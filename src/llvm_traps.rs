@@ -160,7 +160,7 @@ fn marked<'a>(line: &'a str, marks: &Marks) -> (&'a str, Option<(Span, Option<Tr
 fn runtime_kind(function: &str) -> TrapKind {
     if function == "@tz.stack.check" {
         TrapKind::StackOverflow
-    } else if function.contains("builtin.assert") {
+    } else if function.contains("builtin.assert") || function.starts_with("@tz.mutex.") {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {
         TrapKind::MatchFailure
@@ -310,6 +310,9 @@ pub(super) fn instrument(
             "@tsuzuri_test_run",
             "@tsuzuri_task_parallel",
             "@tsuzuri_task_parallel_results",
+            "@tsuzuri_mutex_lock",
+            "@tsuzuri_mutex_unlock",
+            "@tsuzuri_mutex_parallel_ok",
             "@tsuzuri_alloc",
             "@tsuzuri_free",
         ]

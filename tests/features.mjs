@@ -363,6 +363,26 @@ const interpolationIntegers = [min, -255n, -1n, 0n, 1n, 42n, max];
 // Each suite is a fixture directory whose exports are called with the listed
 // arguments. Native hosts track every allocation, so each call must leave no
 // live heap bytes; WASM modules must stay import-free.
+// F10: the fixture's `sequence` of atomic operations, written from the instructions' definitions. Every
+// operation wraps to `bits`, signed or not; the compare-exchanges see the value before they write.
+function atomicSequence(bits, signed, start, delta, mask) {
+  const wrap = (value) => signed ? BigInt.asIntN(bits, value) : BigInt.asUintN(bits, value);
+  let cell = wrap(start);
+  const seen = [];
+  const update = (operate) => { seen.push(cell); cell = wrap(operate(cell)); };
+  update((value) => value + delta);
+  update((value) => value + delta);
+  update((value) => value - mask);
+  update((value) => value ^ mask);
+  update((value) => value | delta);
+  update((value) => value & mask);
+  update(() => start);
+  update((value) => value === wrap(start) ? delta : value);
+  update((value) => value === wrap(start) ? mask : value);
+  seen.push(cell);
+  return BigInt.asIntN(64, seen.reduce((total, value) => total + BigInt.asIntN(64, value), 0n));
+}
+
 const suites = {
   higher_kinds: {
     cases: [
@@ -1435,6 +1455,70 @@ const suites = {
     ],
     traps: [["replaced", [2n]], ["other", [1n]], ["past_end", [0n]], ["past_end", [3n]], ["literal_past", [0n]]],
     inspect(ir) { assert.doesNotMatch(ir, /llvm\.assume|!range| nsw | nuw /); },
+  },
+  // F10: Atomic, Mutex and Task.scope. Every case is a closed expression that does not depend on the
+  // schedule: sums of commutative updates and results in index order.
+  concurrency: {
+    cases: [
+      ["atomic_i8", [], atomicSequence(8, true, 100n, 100n, 90n)],
+      ["atomic_i16", [], atomicSequence(16, true, 30000n, 20000n, 12345n)],
+      ["atomic_i32", [], atomicSequence(32, true, 2000000000n, 1500000000n, 123456789n)],
+      ["atomic_i64", [], atomicSequence(64, true, 9000000000000000000n, 4000000000000000000n, 1234567890123456789n)],
+      ["atomic_u8", [], atomicSequence(8, false, 100n, 100n, 90n)],
+      ["atomic_u16", [], atomicSequence(16, false, 60000n, 20000n, 12345n)],
+      ["atomic_u32", [], atomicSequence(32, false, 4000000000n, 1500000000n, 123456789n)],
+      ["atomic_u64", [], atomicSequence(64, false, 18000000000000000000n, 4000000000000000000n, 1234567890123456789n)],
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["atomic_counter", [n], n * (n + 1n) / 2n]),
+      ["atomic_compare_exchange", [], 5n * 10000n + 9n * 100n + 9n],
+      ["atomic_wrapping_i32", [], -2147483648n],
+      ["atomic_bool_flag", [], 1n],
+      ["atomic_into_inner", [], 42n],
+      ...[0n, 1n, 10n, 100n, 1000n].map((n) => {
+        const misses = (n + 2n) / 3n;
+        return ["counters_record", [n], 2n * (n - misses) * 1000000n + misses];
+      }),
+      ...[0n, 1n, 2n, 1000n].map((n) => {
+        let checksum = 0n;
+        for (let position = 0n; position < n; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
+        return ["scope_results_order", [n], checksum];
+      }),
+      ...[0n, 1n, 4n, 4097n].map((n) => ["scope_shared_array", [n], n * (n + 1n)]),
+      ...[0n, 1n, 9n, 300n].map((n) => ["scope_shared_function", [n], n * (n - 1n) / 2n + 7n * n]),
+      ["scope_nested_parallel", [], 4n * 4096n * 4097n / 2n],
+      ["scope_empty", [], 0n],
+      // Four children each see the array 0, 2, ... 2(n-1) of sum n(n-1), then two see "<n>ab".
+      ...[0n, 1n, 5n, 100n, 1000n].map((n) => ["scope_temporary", [n], (4n * n * (n - 1n) + 6n) * 1000n + 2n * BigInt(String(n).length + 2) + 1n]),
+      // The total n(n+1)/2 of the locked additions, and the indices n(n-1)/2 that the children return.
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["mutex_total", [n], n * n]),
+      ...[0n, 1n, 4n, 257n].map((n) => ["mutex_owned_array", [n], n * n]),
+      ...[0n, 1n, 257n].map((n) => ["mutex_record", [n], n * 1000000n + n * (n - 1n) / 2n]),
+      ["mutex_text", [], 6n * 100n + 6n],
+      // The tasks drop their Arcs before the call returns, so one owner is left.
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_mutex_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_atomic_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["scope_arc_mutex", [n], n * (n + 1n) / 2n]),
+      // The task takes `head` with it, and dropping it releases the Arc that it holds of `tail`.
+      ["linked_mutex", [], 2n * 10n + 1n],
+    ],
+    traps: [["mutex_nested", []], ["mutex_parallel_inside", []], ["scope_negative", []]],
+    inspect(ir) {
+      // One sequentially consistent instruction per operation, and no runtime call for it.
+      assert.match(ir, /atomicrmw add ptr %[\w.]+, i64 %[\w.]+ seq_cst, align 8/);
+      assert.match(ir, /atomicrmw xchg ptr/);
+      assert.match(ir, /cmpxchg ptr %[\w.]+, i8 %[\w.]+, i8 %[\w.]+ seq_cst seq_cst, align 1/);
+      assert.match(ir, /load atomic i8, ptr %[\w.]+ seq_cst, align 1/);
+      assert.match(ir, /load atomic i64, ptr %[\w.]+ seq_cst, align 8/);
+      assert.doesNotMatch(ir, /call [^\n]*@tsuzuri_atomic/);
+      // The lock and the parallel entries come from the runtime that the driver links.
+      for (const declaration of ["declare i32 @tsuzuri_mutex_lock(ptr)", "declare void @tsuzuri_mutex_unlock(ptr)", "declare i32 @tsuzuri_mutex_parallel_ok()",
+        "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+      // Parallel work starts through the wrappers that refuse to start inside a lock.
+      assert.match(ir, /^define internal void @tz\.mutex\.parallel\(ptr %run, ptr %context, i64 %length\)/m);
+      assert.doesNotMatch(ir, /call void @tsuzuri_task_parallel\(ptr @tz\.parallel/);
+      assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
+    },
   },
 };
 

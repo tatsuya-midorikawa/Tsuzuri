@@ -195,7 +195,7 @@ Tsuzuri の標準ライブラリにおけるファイル操作型 `File.Handle` 
 
 同じデータを複数の場所から読みたいときは、所有者を親のスコープに残し、共有借用（`ref T`）を渡します。
 
-同じ値を複数の所有者で持ちたいときは、参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を使います。`Rc.share` で所有者を明示的に増やし、最後の所有者がスコープを抜けたときに値の drop が 1 回走ります。`Arc` は計数が atomic で、複数のタスクで共有できます。共有した値は変更できないので、`Rc`／`Arc` だけでは循環は作れません。
+同じ値を複数の所有者で持ちたいときは、参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を使います。`Rc.share` で所有者を明示的に増やし、最後の所有者がスコープを抜けたときに値の drop が 1 回走ります。`Arc` は計数が atomic で、複数のタスクで共有できます。共有した値は共有されている間は変わらないので、`Rc`／`Arc` だけでは循環は作れません。共有した値を書き換えるには [Atomic](../built-in-types-and-modules/atomic.md) か [Mutex](../built-in-types-and-modules/mutex.md) を入れます。`Arc` を `Mutex` に入れると循環を作れて、解放されないので、循環の一方は `Arc.Weak` で持ちます。
 
 グラフやキャッシュのように、複数の値から同じ値を指す構造や、循環する構造は [Arena](../built-in-types-and-modules/arena.md) で表します。値は arena がまとめて所有し、ほかの値は Copy のハンドル `Arena.Handle<T>` で指します。ハンドルは値の寿命を延ばさないので、循環しても解放漏れは起きず、arena の drop で循環を含むすべての値が再帰なしで解放されます。削除済みや別の arena のハンドルは、実行時に世代と arena ID で検出します。
 

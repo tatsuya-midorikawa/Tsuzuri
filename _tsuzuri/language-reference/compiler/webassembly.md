@@ -316,6 +316,8 @@ api.tsuzuri_free(out);
 
 COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
 
+共有状態の型は、既定の wasm32 では import を増やしません。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行です。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、いまは `E2000`（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）です（[Mutex](../built-in-types-and-modules/mutex.md)）。
+
 ### スレッドのグルー
 
 `--emit bindings-js` に `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーを出します。`.wasm` も、同じソースから `--wasm-feature threads` でビルドします。

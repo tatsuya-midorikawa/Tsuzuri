@@ -2485,6 +2485,7 @@ fn build_complete(
             text.as_str()
         };
         if let Some((_, feature)) = [
+            ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
@@ -2555,6 +2556,14 @@ fn build_complete(
         && options.emit != Emit::Llvm
     {
         return Err(driver_error("E2002", ASYNC_NATIVE_MESSAGE));
+    }
+    // The lock of Mutex.with_lock parks on a pthread condition variable natively; threads builds do
+    // not have it yet (F10 Phase 1). Atomic and Task.scope work there.
+    if options.wasm_threads && text.contains("@tsuzuri_mutex_lock(") {
+        return Err(driver_error(
+            "E2000",
+            "Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic",
+        ));
     }
     if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
     {

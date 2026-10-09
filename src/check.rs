@@ -557,7 +557,26 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next" | "Atomic.Atomic" | "Mutex.Mutex"))
+    }
+
+    /// The std `Atomic.Atomic` and `Mutex.Mutex`, whose cell changes under a shared borrow (F10).
+    /// Copying one would make an independent cell, so neither is Copy or Capture.
+    pub(crate) fn is_shared_cell(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Atomic.Atomic" | "Mutex.Mutex"))
+    }
+
+    /// The std `Mutex.Mutex`. `Mutex.create` needs `Send` of its value, so a `Mutex<T>` exists
+    /// only for a `T` that may move between threads, which is all that `Sync` asks of it.
+    fn is_mutex(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Mutex.Mutex")
+    }
+
+    /// Std records that borrows must not share between threads: a lazy sequence and an async
+    /// computation hold function values whose environments are not visible, and GPU handles are
+    /// not thread-safe (F10 D6).
+    fn is_unsync_record(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Async.Async" | "Async.Next" | "Owned.Function"))
     }
 
     /// The std `Async.Async`, whose values hold no loans (B08 D6).
@@ -694,8 +713,10 @@ impl Type {
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {
-        // Copying a function value copies its captures, which would drop a resource twice.
-        if self.has_user_drop(types) || self.is_owned_function(types) {
+        // Copying a function value copies its captures, which would drop a resource twice, and
+        // would make a second, independent counter or lock out of an `Atomic` or `Mutex`.
+        if self.has_user_drop(types) || self.is_owned_function(types) || self.is_shared_cell(types)
+        {
             return false;
         }
         if types.recursive(self) {
@@ -705,15 +726,17 @@ impl Type {
                     Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
                 ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                     && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
+                    && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
                     && !ty.has_user_drop(types)
                     && !ty.is_owned_function(types)
+                    && !ty.is_shared_cell(types)
             });
         }
         match self {
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another task: an `Arc` whose value tasks may share, never an `Rc` (C10).
-            Self::Shared(value, kind) => kind.atomic() && value.shareable(types),
+            Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
             // Copying a function value clones its captures, which needs the vtable's clone slot.
             Self::Dyn(dyn_type) => dyn_type.copy,
             Self::Array(element)
@@ -743,17 +766,17 @@ impl Type {
             return types.stored_all(self, |ty| {
                 !matches!(ty, Type::Reference(..))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
-                    && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.shareable(types))
+                    && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
         }
         match self {
             Self::Reference(..) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
-            // Rc counts are not atomic. Without interior mutability, the tasks that share an
-            // `Arc` only read its value, so it is Send when they may share it (C10; F10 adds
-            // `Sync`).
+            // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
+            // Sync: every owner reads the value through a shared borrow, and the last one drops it
+            // (C10, F10).
             Self::Shared(value, kind) => {
-                kind.atomic() && value.can_send(types) && value.shareable(types)
+                kind.atomic() && value.can_send(types) && value.can_sync(types)
             }
             Self::Array(element)
             | Self::List(element)
@@ -781,25 +804,74 @@ impl Type {
         )
     }
 
-    /// Whether several tasks may use a value of this type at once through an `Arc` (C10). Every
-    /// owner of the `Arc` borrows the value, so it must not own an `Rc` or `Rc.Weak`, whose
-    /// counts are not atomic, or anything that may call the host: an extern handle, which host
-    /// libraries rarely make thread-safe, a dyn value that is not Copy, which may hide one, or
-    /// an `Owned.Function`, which may capture one. F10 replaces this rule with `Sync`.
-    pub(crate) fn shareable(&self, types: &TypeContext<'_>) -> bool {
-        types.stored_all(self, |ty| {
-            !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
-                && !matches!(ty, Type::Handle(_))
-                && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
-                && !ty.is_owned_function(types)
-        })
+    /// Whether several threads may hold shared borrows of a value of this type at once, which is
+    /// what a task scope asks of the value it shares and what an `Arc` asks of its value (F10).
+    ///
+    /// Immutable data is shared freely. Memory changes under a shared borrow in three places:
+    /// an `Atomic` (Sync), a `Mutex<T>` (Sync: `Mutex.create` admits only a `T` that may move
+    /// between threads, so the type stands for `T` without being looked into), and the counts of
+    /// shared pointers (an `Arc` counts atomically and is Sync when its value is; an `Rc` counts
+    /// through `Rc.share`'s shared borrow and is never Sync). Function values are Sync: they
+    /// capture only values that tasks may hold, and `Task.scope` checks that the environment of
+    /// a function it shares is proven owned. Not Sync are an extern handle (host libraries are
+    /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a task, an exclusive
+    /// reference, an `Owned.Function`, a lazy sequence, an async computation and the GPU handles.
+    pub(crate) fn can_sync(&self, types: &TypeContext<'_>) -> bool {
+        types.stored_all_closed(self, |ty| ty.sync_here(types), |ty| ty.sync_closed(types))
+    }
+
+    fn sync_here(&self, types: &TypeContext<'_>) -> bool {
+        match self {
+            // A type variable has no known value yet. `false` keeps `Sync<'a>` as a constraint on a
+            // generic function, which is checked again for every type that it is used at.
+            Self::Variable(_) | Self::Infer(_) => false,
+            Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
+            Self::Reference(value, false) => value.can_sync(types),
+            // A Copy dyn value holds plain data; any other may hide a host handle.
+            Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
+            Self::Shared(_, kind) => kind.atomic(),
+            Self::Record(..) => !self.is_unsync_record(types),
+            _ => true,
+        }
+    }
+
+    /// The types whose contents `sync_here` has already judged, or that need no judgement.
+    fn sync_closed(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Reference(..)) || self.is_mutex(types)
+    }
+
+    /// Whether a shared borrow of a value of this type reaches memory that other threads change:
+    /// an `Atomic` or a `Mutex`, however deep (F10). A reference to a type without it never sees
+    /// a change under it, which is what `noalias readonly` on such a parameter asks (PR01).
+    #[allow(dead_code)]
+    pub(crate) fn has_interior_mutability(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| ty.is_shared_cell(types))
+    }
+
+    /// Whether a value of this type owns an `Atomic` or `Mutex` outright, not behind an `Arc`.
+    pub(crate) fn holds_cell(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all_closed(
+            self,
+            |ty| !ty.is_shared_cell(types),
+            |ty| matches!(ty, Type::Shared(..)),
+        )
     }
 
     /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tasks may not share
-    /// (C10).
-    pub(crate) fn holds_unshareable_arc(&self, types: &TypeContext<'_>) -> bool {
+    /// (C10, F10).
+    pub(crate) fn holds_unsync_arc(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
-            !matches!(ty, Type::Shared(value, kind) if kind.atomic() && !value.shareable(types))
+            !matches!(ty, Type::Shared(value, kind) if kind.atomic() && !value.can_sync(types))
+        })
+    }
+
+    /// Whether a value of this type reaches what makes a host call unsafe to share: an extern
+    /// handle, a dyn value that is not Copy, or an `Owned.Function` (C10).
+    pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| {
+            matches!(ty, Type::Handle(_))
+                || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                || ty.is_owned_function(types)
         })
     }
 }
@@ -1185,6 +1257,39 @@ pub enum Builtin {
     AsyncPosted,
     /// Removes a completed or cancelled operation from the native reactor's mailbox.
     AsyncRetire,
+    /// `Task.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`
+    /// runs the callback once per index below a count, in parallel, lending every child the
+    /// same shared borrow, and returns the results in index order (F10).
+    TaskScope,
+    /// `Atomic.create :: AtomicValue<'a> => 'a -> Atomic<'a>` (F10).
+    AtomicCreate,
+    /// `Atomic.load :: AtomicValue<'a> => ref Atomic<'a> -> 'a`.
+    AtomicLoad,
+    /// `Atomic.store :: AtomicValue<'a> => ref Atomic<'a> -> 'a -> unit`.
+    AtomicStore,
+    /// `Atomic.swap :: AtomicValue<'a> => ref Atomic<'a> -> 'a -> 'a`.
+    AtomicSwap,
+    /// `Atomic.compare_exchange cell expected desired`: `Ok previous` after writing `desired`,
+    /// or `Error current` without writing.
+    AtomicCompareExchange,
+    /// `Atomic.fetch_add :: (AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a`
+    /// returns the value before it wrapped around; `fetch_sub`, `fetch_and`, `fetch_or` and
+    /// `fetch_xor` likewise.
+    AtomicFetchAdd,
+    AtomicFetchSub,
+    AtomicFetchAnd,
+    AtomicFetchOr,
+    AtomicFetchXor,
+    /// `Atomic.into_inner :: Atomic<'a> -> 'a`.
+    AtomicIntoInner,
+    /// `Mutex.create :: Send<'a> => 'a -> Mutex<'a>`.
+    MutexCreate,
+    /// `Mutex.with_lock :: Send<'b> => ref Mutex<'a> -> (ref mut 'a -> 'b) -> 'b` runs the
+    /// callback once while the calling thread holds the lock (`with` is a keyword, which cannot
+    /// follow a dot, so the name is `with_lock` as `Bench.with_input` is).
+    MutexWith,
+    /// `Mutex.into_inner :: Mutex<'a> -> 'a`.
+    MutexIntoInner,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1461,6 +1566,21 @@ impl Builtin {
         Self::AsyncWait,
         Self::AsyncPosted,
         Self::AsyncRetire,
+        Self::TaskScope,
+        Self::AtomicCreate,
+        Self::AtomicLoad,
+        Self::AtomicStore,
+        Self::AtomicSwap,
+        Self::AtomicCompareExchange,
+        Self::AtomicFetchAdd,
+        Self::AtomicFetchSub,
+        Self::AtomicFetchAnd,
+        Self::AtomicFetchOr,
+        Self::AtomicFetchXor,
+        Self::AtomicIntoInner,
+        Self::MutexCreate,
+        Self::MutexWith,
+        Self::MutexIntoInner,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1657,6 +1777,21 @@ impl Builtin {
             Self::AsyncWait => "Async.__wait",
             Self::AsyncPosted => "Async.__posted",
             Self::AsyncRetire => "Async.__retire",
+            Self::TaskScope => "Task.scope",
+            Self::AtomicCreate => "Atomic.create",
+            Self::AtomicLoad => "Atomic.load",
+            Self::AtomicStore => "Atomic.store",
+            Self::AtomicSwap => "Atomic.swap",
+            Self::AtomicCompareExchange => "Atomic.compare_exchange",
+            Self::AtomicFetchAdd => "Atomic.fetch_add",
+            Self::AtomicFetchSub => "Atomic.fetch_sub",
+            Self::AtomicFetchAnd => "Atomic.fetch_and",
+            Self::AtomicFetchOr => "Atomic.fetch_or",
+            Self::AtomicFetchXor => "Atomic.fetch_xor",
+            Self::AtomicIntoInner => "Atomic.into_inner",
+            Self::MutexCreate => "Mutex.create",
+            Self::MutexWith => "Mutex.with_lock",
+            Self::MutexIntoInner => "Mutex.into_inner",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::GenSeed => "Gen.__seed",
@@ -2592,6 +2727,21 @@ impl Builtin {
                     )
                 }
             }
+            Self::TaskScope
+            | Self::AtomicCreate
+            | Self::AtomicLoad
+            | Self::AtomicStore
+            | Self::AtomicSwap
+            | Self::AtomicCompareExchange
+            | Self::AtomicFetchAdd
+            | Self::AtomicFetchSub
+            | Self::AtomicFetchAnd
+            | Self::AtomicFetchOr
+            | Self::AtomicFetchXor
+            | Self::AtomicIntoInner
+            | Self::MutexCreate
+            | Self::MutexWith
+            | Self::MutexIntoInner => self.sync_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -2702,15 +2852,96 @@ impl Builtin {
                 | Self::ParallelMapRef
                 | Self::ParallelReduce
                 | Self::ParallelForEachChunk
+                | Self::TaskScope
         )
     }
 
     /// The argument of a parallel operation that holds the callback.
     pub(crate) fn parallel_callback(self) -> usize {
-        usize::from(matches!(
-            self,
-            Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk
-        ))
+        match self {
+            Self::TaskScope => 2,
+            Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk => 1,
+            _ => 0,
+        }
+    }
+
+    /// Whether this builtin is an `Atomic` operation, which the LLVM lowering emits inline as
+    /// one atomic instruction (F10).
+    pub(crate) fn is_atomic(self) -> bool {
+        self.name().starts_with("Atomic.")
+    }
+
+    /// The schemes of `Task.scope`, `Atomic.*`, and `Mutex.*` (F10), kept out of `scheme` so
+    /// that its frame stays small.
+    #[inline(never)]
+    fn sync_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Array, Concrete, Reference, Var};
+        let a = || Var("a");
+        let constraint = |class, ty| BuiltinConstraint { class, ty };
+        let atomic = || BuiltinType::Std {
+            module: "Atomic",
+            name: "Atomic",
+            args: vec![a()],
+        };
+        let mutex = || BuiltinType::Std {
+            module: "Mutex",
+            name: "Mutex",
+            args: vec![a()],
+        };
+        let atomic_value = || vec![constraint("AtomicValue", a())];
+        let borrowed = |ty| Reference(Box::new(ty), false);
+        match self {
+            Self::TaskScope => {
+                let shared = || Reference(Box::new(Var("s")), false);
+                (
+                    vec![
+                        shared(),
+                        Concrete(Type::I64),
+                        BuiltinType::Function(vec![shared(), Concrete(Type::I64)], Box::new(a())),
+                    ],
+                    Array(Box::new(a())),
+                    vec![constraint("Sync", Var("s")), constraint("Send", a())],
+                )
+            }
+            Self::AtomicCreate => (vec![a()], atomic(), atomic_value()),
+            Self::AtomicLoad => (vec![borrowed(atomic())], a(), atomic_value()),
+            Self::AtomicStore => (
+                vec![borrowed(atomic()), a()],
+                Concrete(Type::Unit),
+                atomic_value(),
+            ),
+            Self::AtomicSwap => (vec![borrowed(atomic()), a()], a(), atomic_value()),
+            Self::AtomicCompareExchange => (
+                vec![borrowed(atomic()), a(), a()],
+                BuiltinType::Std {
+                    module: "Result",
+                    name: "Result",
+                    args: vec![a(), a()],
+                },
+                atomic_value(),
+            ),
+            Self::AtomicFetchAdd
+            | Self::AtomicFetchSub
+            | Self::AtomicFetchAnd
+            | Self::AtomicFetchOr
+            | Self::AtomicFetchXor => {
+                let mut constraints = atomic_value();
+                constraints.push(constraint("Integer", a()));
+                (vec![borrowed(atomic()), a()], a(), constraints)
+            }
+            Self::AtomicIntoInner => (vec![atomic()], a(), atomic_value()),
+            Self::MutexCreate => (vec![a()], mutex(), vec![constraint("Send", a())]),
+            Self::MutexWith => (
+                vec![
+                    borrowed(mutex()),
+                    BuiltinType::Function(vec![Reference(Box::new(a()), true)], Box::new(Var("b"))),
+                ],
+                Var("b"),
+                vec![constraint("Send", Var("b"))],
+            ),
+            Self::MutexIntoInner => (vec![mutex()], a(), Vec::new()),
+            _ => unreachable!("not a concurrency builtin"),
+        }
     }
 }
 
@@ -10790,8 +11021,50 @@ impl<'a> Checker<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::Builtin;
+    use super::{Builtin, ModuleOrigin, Type};
     use crate::analyze;
+
+    #[test]
+    fn interior_mutability_reaches_atomics_and_mutexes_at_any_depth() {
+        let module = analyze(
+            "record Plain { count: i64, names: [string] }\n\
+             record Counter { hits: Atomic<i64> }\n\
+             record Nested { inner: Counter, name: string }\n\
+             record Locked { value: Mutex<[i64]> }\n\
+             record Behind { counter: Arc<Atomic<i64>> }\n\
+             record Linked { value: i64, next: Maybe<Arc<Mutex<Linked>>> }\n\
+             0",
+        )
+        .unwrap();
+        let types = module.types();
+        let record = |name: &str| {
+            let id = module
+                .records
+                .iter()
+                .position(|record| {
+                    record.origin == ModuleOrigin::User
+                        && record.name.rsplit('.').next() == Some(name)
+                })
+                .unwrap();
+            Type::Record(id, Box::default())
+        };
+        for (ty, expected) in [
+            (Type::I64, false),
+            (Type::String, false),
+            (record("Plain"), false),
+            (Type::Array(Box::new(record("Plain"))), false),
+            (Type::Reference(Box::new(record("Plain")), false), false),
+            (record("Counter"), true),
+            (Type::Reference(Box::new(record("Counter")), false), true),
+            (Type::Array(Box::new(record("Counter"))), true),
+            (record("Nested"), true),
+            (record("Locked"), true),
+            (record("Behind"), true),
+            (record("Linked"), true),
+        ] {
+            assert_eq!(ty.has_interior_mutability(&types), expected, "{ty:?}");
+        }
+    }
 
     #[test]
     fn string_comparison_borrows_do_not_make_pipelines_nonconsuming() {

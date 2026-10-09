@@ -1,0 +1,44 @@
+// A trap inside Mutex.with_lock under --trap-mode return (F10): the boundary that catches it releases
+// the lock and the thread forgets it, so the call after it and the children that wait for the lock go on.
+export def lock_trap :: i64 -> i64
+fn lock_trap divisor =
+    let cell = Mutex.create 100i64
+    Mutex.with_lock (ref cell) (value -> {
+        deref value = deref value / divisor;
+        deref value
+    })
+
+export def lock_after :: i64
+fn lock_after =
+    let cell = Mutex.create 5i64
+    Mutex.with_lock (ref cell) (value -> deref value + 1)
+
+// Every child adds to one total under the lock; the child `bad` traps while it holds the lock, and
+// the children that wait for it must not wait for ever.
+export def group_lock_trap :: i64 -> i64 -> i64
+fn group_lock_trap count bad =
+    let total = Mutex.create 0i64
+    let results = Task.scope (ref total) count (shared -> index -> Mutex.with_lock shared (value -> {
+        deref value = deref value + 100 / (if index == bad then 0 else 1);
+        index
+    }))
+    Mutex.into_inner total + Array.sum (ref results)
+
+// A nested lock is refused through the ordinary trap, which the boundary reports as well.
+export def nested_lock :: i64
+fn nested_lock =
+    let outer = Mutex.create 1i64
+    let inner = Mutex.create 2i64
+    let inner_borrow = ref inner
+    Mutex.with_lock (ref outer) (_value -> Mutex.with_lock inner_borrow (other -> deref other))
+
+export def start_inside :: i64
+fn start_inside =
+    let outer = Mutex.create 1i64
+    let unit_value = 0i64
+    Mutex.with_lock (ref outer) (_value -> Array.sum (ref (Task.scope (ref unit_value) 3 (_shared -> index -> index))))
+
+export def lock_again :: i64
+fn lock_again =
+    let cell = Mutex.create 41i64
+    Mutex.with_lock (ref cell) (value -> deref value + 1)

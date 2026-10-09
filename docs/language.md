@@ -2,7 +2,7 @@
 
 Tsuzuri 初版は、**ファイル単位のモジュール構成、ランク 1 の多相性、先行評価（正格評価）、ならびに所有権と借用モデルを備えた静的型付けの式指向言語** です。
 値の純粋な計算および所有権に基づくローカル可変状態の管理を核とし、IO モナドによる安全な標準入出力、および標準の OS API（ファイル、ディレクトリ、パス、環境変数、時刻、乱数、プロセス制御。[OS API](#os-api) 参照）を直接サポートします。GUI、DOM、ネットワーク通信、および標準 OS API の管轄外となる高度なホスト機能は、ホスト環境との境界（外部インターフェイス）側に隔離して配置するアーキテクチャをとります。
-可変状態へのアクセスには常に排他借用（`ref mut`）が要求され、安全性を損なうデータ共有可変状態は言語レベルで一切導入されません。
+可変状態へのアクセスには排他借用（`ref mut`）が要求されます。タスクの間で共有して書き換える状態は、共有借用から更新できる `Atomic` と `Mutex` の中に限られ、それ以外の安全性を損なうデータ共有可変状態は言語レベルで導入されません。
 非停止ループ、スタックオーバーフローによる枯渇、および契約違反時のトラップは発生し得るため、全関数の停止性を数学的に保証するものではありません。
 コンパイル時に解釈・検証できない構文や型を、別の緩い意味論へと暗黙に置き換えることはありません。
 
@@ -219,7 +219,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Atomic`、`Mutex`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -227,9 +227,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Atomic`、`Mutex`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>` のように書いて区別します。
 
 `HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
@@ -621,7 +621,9 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `UnsignedInteger` | 符号なし整数制約（メソッドなし） | i8u／i16u／i32u／i64u／i128u |
 | `Copy` | 所有権モデルにおける値の複製可能性制約（メソッドなし） | 構造的に Copy 可能な型 |
 | `Capture` | 再利用可能なクロージャ環境への捕捉制約（メソッドなし） | 排他参照を含まない型（string、関数値、共有参照を含む） |
-| `Send` | 並行タスクへ所有権を移転可能な制約（メソッドなし） | 格納された参照型を含まない型（関数の捕捉環境は別途所有権検査される） |
+| `Send` | 並行タスクへ所有権を移転可能な制約（メソッドなし） | 格納された参照型を含まない型（関数の捕捉環境は別途所有権検査される）。`Arc<'a>` は `'a` が `Send` かつ `Sync` のとき |
+| `Sync` | 複数のタスクが共有借用で同時に使える制約（メソッドなし） | 整数、浮動小数点、bool、文字、文字列、関数値、`Atomic`、`Mutex`、`Copy` な `dyn`、それらだけを格納した配列・リスト・タプル・レコード・共用体、`'a` が `Sync` な `Arc<'a>`。`Rc`、extern ハンドル、`Task`、排他参照、`Seq`、`Async`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は含まない |
+| `AtomicValue` | `Atomic` に入れられる型の制約（メソッドなし） | i8／i16／i32／i64／i8u／i16u／i32u／i64u／bool |
 | `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string |
 | `Parse` | `parse :: ref string -> Maybe<'a>` | 全数値型、bool |
 | `Hash` | `hash :: ref 'a -> i64u` | 全数値型、bool、unit、文字列型、文字型。全要素が Hash を満たす配列・リスト・タプル |
@@ -633,6 +635,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 
 `Capture` 制約は、1 回実行専用の `Task<T>` およびそれを含む集約値の捕捉を静的に拒否します。
 `Send` 制約はタスクの捕捉値および戻り値の型から自動推論され、特殊化の際にも再検査されます。
+`Sync` 制約は `Task.scope` が共有する値の型から要求され、`Arc` の中の値にも課されます。`Sync<'a>` を書いたジェネリック関数は、呼び出す型ごとに再検査されます。`Copy`、`Capture`、`Send`、`Sync`、`AtomicValue` は利用者の `instance` を持てず（`E1016`）、`dyn (C, Sync)` のように `dyn` の印には並べられません（`E1028`）。
 関数型の引数や戻り値に参照型が出現することと、関数値自体が環境として参照を捕捉していることは厳密に区別されます。
 
 比較用型クラス `Eq` および `Ord` のメソッドは、引数として共有借用（`ref`）を受け取り、bool を返します（算術演算やビット演算のクラスは従来どおり値そのものを受け取ります）。
@@ -2150,6 +2153,7 @@ Task.run computation
 | `Task.run : Task<'a> -> 'a` | 指定されたタスクを消費し、完了まで現在のスレッドをブロックして同期実行したうえで、所有権を持つ結果値を返却 |
 | `Task.parallel : [Task<'a>] -> Task<['a]>` | タスクの配列を消費し、並列フォーク・ジョイン区間を表現する新しい遅延タスクを生成（結果配列は入力順序を維持） |
 | `Task.parallel_results : [Task<Result<'a, 'e>>] -> Task<Result<['a], 'e>>` | 最小入力インデックスの Error を検出した時点で未開始タスクを安全にキャンセルし、開始済みタスクを join して結果を返却 |
+| `Task.scope : (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]` | 共有借用 `shared` を子どもに貸し、`callback shared index` を `index = 0 .. count - 1` で 1 回ずつ並列に呼ぶ。すべての子どもが終わってから、`index` 順の結果配列を返す（[共有状態と Task.scope](#共有状態と-taskscope)） |
 
 `task` 構文は言語に組み込まれた専用のビルダー構文であり、任意の型コンストラクタを抽象化する高階型（HKT）や汎用 Monad 型クラスではありません。
 他のカスタム計算の合成ロジックはユーザー定義の `.tc` ビルダーで柔軟に記述できますが、`task` 自身の動作規則をユーザーコードから上書き再定義することはできません。
@@ -2177,7 +2181,7 @@ Task.run computation
 並列タスクグループ内における個々のタスクの実行開始順序や完了順序は未規定ですが、返却される結果配列のインデックス番号は入力タスク配列の並び順と厳密に対応します。
 空配列を渡した場合は空の結果配列が即座に返され、タスク本体の実行は発生しません。
 異なる結果型を持つタスクを同一の並列配列に混在させることはできません。なお、`and!`、タスクのデタッチ（切り離しバックグラウンド実行）、スレッド ID の直接取得、
-スレッド間での可変状態の共有、外部キャンセルトークン、および回復可能なタスク例外といった複雑な機能は意図的に提供していません。
+外部キャンセルトークン、および回復可能なタスク例外といった複雑な機能は意図的に提供していません。スレッド間での状態の共有は、次の [共有状態と Task.scope](#共有状態と-taskscope) の `Task.scope`、`Atomic`、`Mutex` で行います。
 
 `Task.parallel_results` は、`Result` を返すタスクの配列を消費して並列実行します。すべてのタスクが正常に `Ok` を返した場合は、入力順序を維持した結果配列を `Ok` で包んで返し、空の配列に対しては `Ok []` を返します。
 いずれかのタスクで `Error` が検出された場合、そのインデックス以降のまだワーカーへ配布されていない未開始タスクの実行は安全に抑止され、すでに実行が開始されていたタスクは完了するまで確実に join 待機されます。返却されるエラー値は、実行完了のタイミングによらず、入力配列の中で最も小さいインデックス番号を持つタスクの `Error` が決定論的に選定されます。
@@ -2196,11 +2200,28 @@ Task インスタンス自身およびキャプチャされた所有変数は、
 キャプチャされる変数およびタスクの戻り値型には、参照型（`ref T` や `ref mut T`）を含めることはできません。配列やリストの内部に潜む参照や、
 クロージャの環境内部に隠蔽された借用参照も厳格に拒否されます。
 所有権を持つ完全な所有値をキャプチャしたうえで、そのタスクの内部スコープでのみ局所的に借用参照を作成して処理を行うことは完全に合法です。
-`Rc`／`Rc.Weak` とそれを持つ値は所有値でも `Send` でないため、タスクへ持ち込めません（`E1013`）。読み取り専用のデータを複数のタスクで共有するときは、タスクごとに `Arc.share` した `Arc` を持ち込みます（[Rc / Arc](#rc--arc)）。
+`Rc`／`Rc.Weak` とそれを持つ値は所有値でも `Send` でないため、タスクへ持ち込めません（`E1013`）。複数のタスクで共有するときは、タスクごとに `Arc.share` した `Arc` を持ち込みます。`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send` です（[Rc / Arc](#rc--arc)）。
 通常の関数ポインタ値は、そのキャプチャ環境に一切の借用が含まれていないことが静的に証明できる場合に限り、タスク内へキャプチャしたり戻り値として返却したりできます。
 高階関数の引数として渡された未知の関数値は借用参照を保持している可能性があるため、引数の関数値をそのままタスク内へキャプチャすることは保守的に禁止されています（静的な名前付き関数をタスク内から直接呼び出すか、必要な所有データを引数経由で明示的に渡してください）。
 なお、Copy 型の配列や関数ポインタ値をタスク内へキャプチャする際は、既存の所有権規則に従って独立した完全なスナップショットがディープコピーされるため、巨大なデータ構造のキャプチャには相応のコピーコストが伴います。
 また、何度でも再呼び出し可能な通常の無名ラムダ式の内部へ 1 回限りのタスクをキャプチャすることはデータ競合防止のため `Capture` 制約によって拒否されますが、1 回実行限りのタスクが別のタスクを内部にキャプチャして合成することは完全に合法です。
+
+### 共有状態と Task.scope
+
+`Task.scope shared count callback` は、`Task.scope : (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]` の型を持ちます。共有借用 `shared` を子どもたちに貸し、`callback shared index` を `index = 0 .. count - 1` の各値で 1 回ずつ呼びます。子ども 1 つが並列グループの 1 要素で、プールの任意のスレッドで走りえます。
+呼び出しはすべての子どもが終わってから戻り、結果は `index` の順に並びます。`count` が 0 のときは空配列で、負のときは結果配列の確保でトラップします（`allocation size overflow`）。
+`shared` は呼び出しの間だけ貸す借用なので、`Task.parallel` のタスクと違い、外の値を持ち込まずに共有できます。
+
+- `shared` の型は `Sync` でなければならず、満たさない型は `E1013`（`tasks can share only Sync values; ... is not Sync`）です。共有する関数値の環境が借用を保持するか、環境を所有値と証明できないとき（引数で受け取った未知の関数値など）は、`E1013`（`task scopes can share only values with proven owned environments`）です。
+- `callback` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は引数の `shared` で受け取ります。
+- 結果は `Send` の所有値で、`shared` を返せません（`E1013`）。
+- `Task.scope` は、ほかの並列 API と同じく、引数をすべて渡して直接呼びます（部分適用や関数値化は `E1013`、`parallel operations must be fully applied directly`）。
+- 子どもの中で `Task.parallel`、`Parallel.*`、`Task.scope` を始められます。呼び出したスレッドも子どもを実行するので、空きワーカーの枯渇でデッドロックしません。
+- 子どもがトラップしたときの扱いは `Task.parallel` と同じです。
+
+`Sync` は、複数のタスクが同じ値の共有借用を同時に使ってよいことを表す組み込みの印（メソッドなし）です。共有借用から値を書き換えられる型は、`Atomic<T>` と `Mutex<T>` だけです（[Atomic / Mutex](#atomic--mutex)）。
+`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`Rc`、extern ハンドル、`Task`、排他参照、`Seq`、`Async`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は `Sync` ではありません。
+`Atomic` と `Mutex` は、関数値に捕捉できません（`E1005`）。関数値は複製されることがあり、複製した `Atomic` や `Mutex` は別のセルになるためです。共有借用 `ref cell` を捕捉するか、`Arc` に入れるか、引数で渡します。
 
 ### 実行バックエンドと失敗
 
@@ -2225,6 +2246,7 @@ WASM ターゲットにおいては、デフォルトでは同一の静的型、
 ホスト側は各ワーカーインスタンスにおいて、エントリポイント `tsuzuri_thread_entry` の呼び出し前にグローバル変数 `__stack_pointer` をスタック上端アドレスに、`tsuzuri_stack_base` および `tsuzuri_stack_top` をスタックの有効範囲へと正しく初期化します（両方が 0 の場合はメインスレッドのスタックを意味するため、範囲が未設定のワーカーは最初の関数呼び出しで安全にトラップします）。
 `--emit object` で出力されたオブジェクトファイルを独自にリンクする場合は、これらのグローバル変数、`__stack_pointer`、およびスレッドランタイム関数を忘れずに `--export` してください。
 並列グループが戻るまで、すべてのコールバック関数の完了と結果データの同期公開が確実に待機されます。正常終了時は所有ヒープ領域が完全に回収されます（ワーカースレッドのスタックはプールの寿命に従い、トラップが発生したプールは再利用されずに安全に破棄・クローズされます）。
+既定の WASM では、`Task.scope` の子どもは `index` の昇順に 1 つずつ実行され、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、`E2000`（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）です。`--freestanding` では、`Mutex` は `E2000` で、`Task.scope` も並列タスクとして `E2000` です。`Atomic` はランタイムを使わないので通ります。
 extern 関数を使用するワーカーには同一のホスト環境定義が必要であり、`createThreadPool` の `importsModule` が各インスタンス用の `createImports({memory, workerId, data})` を返却します。
 なお Web ブラウザ環境で動作させる場合は、HTTP レスポンスヘッダーに `Cross-Origin-Opener-Policy: same-origin`（COOP）および `Cross-Origin-Embedder-Policy: require-corp`（COEP）を設定して cross-origin isolation を有効化し、専用の Web Worker ホストスクリプトを別途用意する必要があります（Node.js 用のホストコードをそのままブラウザ環境へインポートすることはできません）。
 ブラウザ向けの統合グルーコード、GPU 連携、およびホスト側の非同期 I/O・イベントループとの統合機能は、`Task` の機能には含まれません。待ち時間をほかの計算へ譲るには、次の `Async` を使います。
@@ -3042,7 +3064,7 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 ### Rc / Arc
 
 `Rc<'a>` と `Arc<'a>` は、1 つの値を複数の所有者で共有する参照カウントのポインタです（C10 Phase 2）。`Rc.Weak<'a>` と `Arc.Weak<'a>` は値の寿命を延ばさない弱参照です。型は組み込みで、std のソースはなく、関数は組み込み関数です（予約モジュール `Rc`・`Arc`）。
-4 つの型はいずれも非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入・引数渡し・戻り値はムーブです。中の値は共有借用 `Rc.get (ref rc)` で読み、内部可変性はありません。
+4 つの型はいずれも非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入・引数渡し・戻り値はムーブです。中の値は共有借用 `Rc.get (ref rc)` で読みます。共有した値を書き換えられるのは、中に `Atomic` か `Mutex` を入れたときだけです（[Atomic / Mutex](#atomic--mutex)）。
 `Rc` と `Arc` の関数は同じ名前と型を持ち、`Arc` 版はモジュール名を `Arc` に置き換えたものです。
 
 | API | 型 | 意味 |
@@ -3059,12 +3081,39 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 表現: 値は 1 つのポインタで、ヒープのブロック `{ 強い数, 弱い数, 値 }` を指します。強い所有者全体で弱い数を 1 つ持ちます。最後の強い所有者がスコープを抜けると値を drop し、続いてこの 1 つを減らし、弱い数が 0 になったブロックを解放します。ムーブ済みの領域（ヌル）の drop は何もしません。
 - `Arc` の計数: 増加は `atomicrmw add ... monotonic`、減少は `atomicrmw sub ... release` で、0 にしたタスクは `fence acquire` の後で値とブロックを解放します。`Arc.try_unwrap` は強い数を `cmpxchg` で 1 から 0 にしたときだけ値を取り出し、`Arc.upgrade` は 0 でない強い数を `cmpxchg`（成功は `acquire`）で増やすまで繰り返します。`Rc` は通常のロード・ストアだけを使います。既定の wasm32 では atomic 命令が通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。WASM の import は増えません。
 - 計数が `i64` の最大値を超える増加はトラップします。
-- `Send`: `Rc`／`Rc.Weak` は `Send` ではなく、`Arc<'a>`／`Arc.Weak<'a>` は `'a` が `Send` で、かつタスク間で共有できるとき `Send` です。`Arc` を持つ各タスクは `Arc.get` で同時に値を借用できるので、共有できる値は、`Rc`／`Rc.Weak`、extern ハンドル（`extern type`。ホストのハンドルはスレッド安全とは限らない）、ハンドルを隠しうる Copy でない `dyn` 値、ハンドルを捕捉しうる `Owned.Function` を、格納グラフのどこにも持たない値に限ります。共有できない値の `Arc` を持つ値をタスクへ渡すと `E1013` です（同じタスクの中での `Arc.share` は自由です）。内部可変性がないので、`Arc` で共有した値は読まれるだけです（F10 が内部可変性を導入するときは、この共有できる条件を `Sync` に置き換えます）。
-- 捕捉: 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せるので、`Rc`／`Rc.Weak` とそれを持つ値は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません（`E1005`）。`Arc` は値が共有できる（上記）ときだけ捕捉でき（そうでなければ `E1005`）、関数値の複製は所有者を 1 増やします。
+- `Send`: `Rc`／`Rc.Weak` は `Send` ではなく、`Arc<'a>`／`Arc.Weak<'a>` は `'a` が `Send` かつ `Sync` のとき `Send` です（Rust の `Arc<T>: Send` と同じ規則です）。`Arc` を持つ各タスクは `Arc.get` で同時に値を借用できるので、`'a` は複数のタスクが共有借用で同時に使える `Sync` な型に限ります。`Sync` でないのは、`Rc`／`Rc.Weak`、extern ハンドル（`extern type`。ホストのハンドルはスレッド安全とは限らない）、Copy でない `dyn` 値、`Owned.Function`、`Task`、排他参照、`Seq`、`Async`、GPU のハンドルを、格納グラフのどこかに持つ値です。`Sync` でない値の `Arc` を持つ値をタスクへ渡すと `E1013` です（同じタスクの中での `Arc.share` は自由です）。`Atomic<'a>` と `Mutex<'a>` は `Sync` なので、`Arc<Atomic<i64>>` と `Arc<Mutex<'a>>` が、タスクの間で状態を共有する書き方です（[共有状態と Task.scope](#共有状態と-taskscope)）。
+- 捕捉: 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せるので、`Rc`／`Rc.Weak` とそれを持つ値は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません（`E1005`）。`Arc` は値が `Sync` のときだけ捕捉でき（そうでなければ `E1005`）、関数値の複製は所有者を 1 増やします。
 - 中身の制約: 排他参照を含む値は入れられません（`E1005`）。共有参照を含む値（`Rc<ref string>`）は参照先より長く生きられず、`share` や `upgrade` の結果も同じ借用を持ちます。
-- 循環: 値ができる前にその値を指す `Rc` は作れず、共有した値は変更できないので、`Rc`／`Arc` だけでは循環を作れません（参照カウントの循環による解放漏れは起きません）。サイクルコレクターはありません。循環するグラフは [Arena](#arena) で表します。
+- 循環: 値ができる前にその値を指す `Rc` は作れず、`Rc`／`Arc` の値は共有されている間は変更できないので、`Rc`／`Arc` だけでは循環を作れません。`Mutex` は共有された値を書き換えられ、`Arc` は `Mutex` の中に入れられる（`Rc` は `Send` ではないので入れられません）ので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指すと循環を作れ、その循環のブロックは所有者がいなくなっても解放されません。サイクルコレクターはなく、循環の一方は `Arc.Weak` で持ちます。循環するグラフは [Arena](#arena) でも表せます。
 - 再帰型: 型の循環は `Rc`／`Arc` を経由できます（[再帰的なデータ型](#再帰的なデータ型) の節）。自分自身を含みうる値（再帰型を格納する値）を持つブロックは先頭に `%tz.rec.header` の 2 語を持ち、最後の強い所有者はその解放を再帰型の解放と同じ待ちリストに積むので、100 万要素の鎖も native のスタックを溢れさせずに解放します。共有ポインタを経由する循環の中の union も再帰型のノードになるので、`union List = Nil | Cons of (i64 * Rc<List>)` は要素ごとに 2 回確保します。
 - 型の比較・表示・ハッシュ（`Eq`・`Ord`・`Hash`・`Display`）の instance はありません。`Rc.get` で取り出した値を比べます。公開 ABI（`export def`・`extern def`）には使えず（`E1008`）、const にもできません（`E1026`）。高カインドの型構築子としては使えません。
+### Atomic / Mutex
+
+`Atomic<'a>` と `Mutex<'a>` は、共有借用 `ref` から値を書き換えられる std の型です（F10）。予約モジュール `Atomic`・`Mutex` として、ソースに名前が現れたプログラムだけに読み込まれます。どちらも非 Copy の不透明な record で、`Atomic<'a>` は `{ cell: ['a] }`、`Mutex<'a>` は `{ cell: [(i32u * 'a)] }` です。セルは配列のバッファに置くので、record をムーブしてもセルの位置は変わらず、借用は有効なままです。構築・フィールド参照・パターン分解・更新構文は `E1022`、公開 ABI は `E1008`、const の初期化は `E1026` で、`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
+関数値は複製されることがあるので、`Atomic` と `Mutex`（とそれを持つ値）は関数値に捕捉できません（`E1005`）。`task { ... }` へは、所有値のムーブで持ち込めます。
+
+| API | 型 | 意味 |
+|---|---|---|
+| `Atomic.create v` | `AtomicValue<'a> => 'a -> Atomic<'a>` | 初期値 `v` のセルを作る |
+| `Atomic.load cell` | `ref Atomic<'a> -> 'a` | 値を読む |
+| `Atomic.store cell v` | `ref Atomic<'a> -> 'a -> unit` | 値を書く |
+| `Atomic.swap cell v` | `ref Atomic<'a> -> 'a -> 'a` | 値を書き、更新前の値を返す |
+| `Atomic.compare_exchange cell expected desired` | `ref Atomic<'a> -> 'a -> 'a -> Result<'a, 'a>` | いまの値が `expected` なら `desired` を書いて `Ok 更新前の値`、違えば何も書かずに `Error いまの値`（見かけ上の失敗はない） |
+| `Atomic.fetch_add` / `fetch_sub` / `fetch_and` / `fetch_or` / `fetch_xor` | `(AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a` | 更新して、更新前の値を返す。オーバーフローは 2 の補数でラップする |
+| `Atomic.into_inner cell` | `Atomic<'a> -> 'a` | セルを消費して値を返す |
+| `Mutex.create v` | `Send<'a> => 'a -> Mutex<'a>` | 値を入れたロックを作る |
+| `Mutex.with_lock mutex callback` | `Send<'b> => ref Mutex<'a> -> (ref mut 'a -> 'b) -> 'b` | ロックを取り、`callback` に排他借用を渡して、その結果を返し、ロックを解放する |
+| `Mutex.into_inner mutex` | `Mutex<'a> -> 'a` | ロックを消費して値を返す |
+
+- `AtomicValue`: `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` だけが満たす組み込みの印です。ほかの型は `E1005`（`atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for ...`）です。`fetch_*` は、さらに `Integer` を要求します（`bool` は `E1005`）。
+- 順序: すべての `Atomic` 操作は sequentially consistent です。ネイティブでは `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`（`seq_cst`）に下がり、ランタイムの関数は呼びません（`fetch_add` は AArch64 の LSE では `ldaddal` 1 命令、x86-64 では `lock` 付きの 1 命令です）。`bool` は 1 バイトです。既定の wasm32 では通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。セルは `@tz.alloc` が返す 16 バイト境界のブロックに置かれるので、`--allocator host`・`counting` でも整列を満たします。
+- `Sync`: `Atomic<'a>` と、`Send` な値を入れた `Mutex<'a>` は `Sync`（と `Send`）です。`Mutex<'a>` は `'a` の中身を見ずに `Sync` と判定します。ロックの外から `'a` に触れる道はなく、`Mutex.create` が `'a` に `Send` を求めるためです。
+- `Mutex.with_lock`: `callback` の結果は `Send` の所有値で、ロック中の値への参照は外へ持ち出せません（`E1013`）。同じスレッドでロックを持ったまま別の `with_lock` を呼ぶこと（入れ子）と、ロック中に `Task.parallel`・`Task.parallel_results`・`Task.scope`・`Parallel.*` を始めることは、ネイティブでは標準エラーに診断（`Mutex.with_lock cannot be nested; release the outer mutex first`、`parallel work cannot start inside Mutex.with_lock; move it outside the critical section`）を出してトラップします（WASM はトラップだけです）。ロック中に待つ場所をなくすので、デッドロックしません。待つスレッドは眠り、順序（公平性）は保証しません。`with` は予約語でドットの後ろにも書けないので、名前は `with_lock` です。作る関数も `new` が予約語なので `create` です。
+- ロックの実装: ネイティブでは、セルの先頭の語（0 解放、1 保持、2 保持して待ちがいる）を compare-exchange（acquire）で取り、exchange（release）で解放します。待つスレッドは、全 `Mutex` で共有する 1 組の pthread の mutex と条件変数で眠ります。既定の wasm32 は 1 スレッドで、ロックは開いている `with_lock` の有無を示す 1 つのフラグです。`Mutex` を使うと、ネイティブでは `Task.parallel` と `Task.scope` の呼び出しが、開始前にロックの有無を検査するラッパー経由になります。`Mutex` を使わないプログラムの IR は変わりません。
+- トラップ: `Mutex.with_lock` の中のトラップはポイズンを残しません。既定ではプロセスが終わります。`--trap-mode return` では、境界がそのスレッドの持つロックを解放して状態を消し、同じグループの待っている子どもも終わらせてから、トラップを呼び出し元へ返します。ロックの中の値は、その呼び出しが確保したほかのものと同じく境界が解放します。
+- 循環: `Arc` は `Mutex` の中に入れられるので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指す循環を作れます。サイクルコレクターはなく、循環のブロックは解放されません。循環の一方は `Arc.Weak` で持ちます（[Rc / Arc](#rc--arc)）。
+- ターゲット: `--wasm-feature threads` と `Mutex` の組み合わせは、いまは `E2000` です。`--freestanding` では `Mutex` は `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting` で使えます。
+
 ### Regex
 
 `Regex` は線形時間の正規表現です。`Regex.compile :: ref string -> Result<Regex, Regex.Error>` がパターン（常に `string`）を命令列にコンパイルし、Pike VM（捕捉付きの Thompson NFA の同時実行）が入力の Unicode スカラーを 1 個ずつ読みます。
@@ -3648,7 +3697,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名（複数のビルダーが宣言する別名の曖昧さを含む）、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`） |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`）、`Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値（`tasks can share only Sync values; ... is not Sync`）、`Mutex.with_lock` の結果に含まれる借用 |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |
@@ -3657,7 +3706,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
 | `E1021` | 明示的な `match` 式および関数ガードにおけるパターンの網羅性不足（不足している具体的なケース例を提示） |
-| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Arena.__next_id` プリミティブの不正参照 |
+| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle`、`Atomic`、`Mutex` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Arena.__next_id` プリミティブの不正参照 |
 | `E1023` | ループ外での脱出、関数・Task・ビルダー境界を越える不正な `break`／`continue`、`finally` 節を持つ `try` 式から抜け出す不正なジャンプ |
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |
@@ -3670,7 +3719,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1004` | 同一字句スコープ内での変数シャドーイング（コンパイラ内部オプション時のみ有効、デフォルト無効） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否 |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否、`--wasm-feature threads` および `--freestanding` での `Mutex` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |

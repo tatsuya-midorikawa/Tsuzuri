@@ -254,6 +254,29 @@ fn bulk = {
         await barrierPool.close();
       }
       console.log(`WASM threads O${optimization}: atomic barrier proves 3 participants; bulk callbacks, worker failure, unavailable host and SIMD/debug options passed`);
+      // F10: atomics and the children of a scope on real workers. A lost update or a child that runs
+      // twice or never would change a total, whatever the schedule.
+      const shared = join(directory, `concurrency-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", shared]);
+      const sharedPool = await createThreadPool(readFileSync(shared), { workers: 2 });
+      try {
+        for (const count of [0n, 1n, 4n, 64n, 257n]) {
+          const total = count * (count + 1n) / 2n;
+          assert.equal(sharedPool.call("tz_atomic_counter", count), total);
+          assert.equal(sharedPool.call("tz_atomic_compare_exchange_loop", count), total);
+          assert.equal(sharedPool.call("tz_arc_atomic_tasks", count), total * 1001n);
+        }
+        for (const count of [0n, 1n, 3n, 64n]) assert.equal(sharedPool.call("tz_atomic_contended", count), count * 1000n);
+        for (const count of [0n, 1n, 2n, 1000n]) {
+          let checksum = 0n;
+          for (let position = 0n; position < count; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
+          assert.equal(sharedPool.call("tz_scope_results_order", count), checksum);
+        }
+        assert.equal(sharedPool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
+      } finally {
+        await sharedPool.close();
+      }
+      console.log(`WASM threads O${optimization}: Atomic and Task.scope on 2 workers lose no update and run every child once`);
       const object = join(directory, `threads-${optimization}.o`);
       const linked = join(directory, `linked-${optimization}.wasm`);
       cli(["build", source, "--target", "wasm32", "--emit", "object", "--wasm-feature", "threads", `-O${optimization}`, "-o", object]);
@@ -266,6 +289,11 @@ fn bulk = {
       assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(plain))), []);
       await assert.rejects(createThreadPool(readFileSync(plain)), TypeError);
     }
+    // A Mutex that waits across workers is not built for the thread runtime yet: an explicit error.
+    const mutexBuild = spawnSync(compiler, ["build", resolve("tests/fixtures/concurrency/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "-o", join(directory, "mutex.wasm")], { encoding: "utf8", timeout: 120000 });
+    assert.notEqual(mutexBuild.status, 0);
+    assert.match(mutexBuild.stderr, /E2000.*Mutex/s);
+    console.log("WASM threads: a program with Mutex is rejected with E2000");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

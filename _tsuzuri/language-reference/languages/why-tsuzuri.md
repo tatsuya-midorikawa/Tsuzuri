@@ -89,7 +89,7 @@ C# と F# は、静的な型と .NET のライブラリでアプリケーショ�
 
 - .NET の標準ライブラリ、NuGet、GUI、Web、データベース、ネットワーク API を、そのままは使えません。標準の OS API は、ファイル、ディレクトリ、環境、時刻、乱数、プロセスに限られます。
 - 直列化は JSON（[Json](../built-in-types-and-modules/json.md)）と CBOR（[Cbor](../built-in-types-and-modules/cbor.md)）を `deriving (Encode, Decode)` で扱えますが、.NET の `System.Text.Json` のような多くの形式・属性・変換器の生態系はありません。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
-- GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換える内部可変性はまだありません（F10）。
+- GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。
 - C# の `async` / `await` と同じ構文ではありませんが、標準の [Async 式](../async-tasks-and-lazy/async.md) で協調的な中断、仮想時刻、ホストによる再開を扱えます。CPU の並列は `Task` と分担します。
 - 対話環境の [`tsuzuri repl`](../compiler/usage.md#repl) は、`dotnet fsi` と違って JIT を持たず、入力ごとにプログラムを作り直して Clang でコンパイルし、別プロセスで実行します。1 回の評価に Clang の起動を含む時間がかかり、値は持ち越さず、受け付けた `let` を毎回実行し直します。`;;` ではなく空行で複数行の入力を終え、`#r` のような外部参照の読み込みはありません。
 - 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`Task` は非同期ではなく、一回実行の計算です。
