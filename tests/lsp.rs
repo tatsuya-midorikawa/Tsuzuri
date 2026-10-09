@@ -1316,3 +1316,48 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         "{roots:?}"
     );
 }
+
+#[test]
+fn opt_in_matrix_module_completes_and_hovers_when_named() {
+    use serde_json::json;
+    let valid = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.rows (ref m)\n";
+    let incomplete = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.";
+    let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+        let main = uri("Main.tz");
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(valid, "rows", "utf-16")}}),
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": 2}, "contentChanges": [{"text": incomplete}]}}),
+            json!({"id": 2, "method": "textDocument/completion", "params": {"textDocument": {"uri": main}, "position": {"line": 1, "character": 15}}}),
+        ]
+    });
+    assert_eq!(
+        responses[0]["result"]["contents"]["value"],
+        json!("```tsuzuri\nref Matrix<i64> -> i64\n```"),
+        "{}",
+        responses[0]
+    );
+    let labels: Vec<&str> = responses[1]["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", responses[1]))
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect();
+    for member in [
+        "of_array",
+        "init",
+        "rows",
+        "cols",
+        "at",
+        "get",
+        "row",
+        "as_array",
+        "to_array",
+        "map",
+        "fold",
+        "transpose",
+        "add",
+        "mul",
+    ] {
+        assert!(labels.contains(&member), "{member}: {labels:?}");
+    }
+}

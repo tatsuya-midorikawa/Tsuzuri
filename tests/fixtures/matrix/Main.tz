@@ -1,0 +1,172 @@
+private def pool64 :: i64 -> f64
+fn pool64 index =
+    match index with
+    | 0 -> 1e16
+    | 1 -> 1.0
+    | 2 -> -1e16
+    | 3 -> 3.0
+    | 4 -> -3.0
+    | 5 -> 0.5
+    | 6 -> -0.25
+    | 7 -> 1e-38
+    | 8 -> 5e-324
+    | _ -> -0.0
+
+private def pool32 :: i64 -> f32
+fn pool32 index = if index == 8 then 1e-45 as f32 else (pool64 index) as f32
+
+export def int_mul :: i64 -> i64 -> i64
+fn int_mul n seed =
+    let a = Matrix.init n (n + 1) (\i k -> (i * 31 + k * 17 + seed) * 6364136223846793005)
+    let b = Matrix.init (n + 1) (n + 2) (\k j -> (k * 31 + j * 17 + seed + 1) * 6364136223846793005)
+    let product = Matrix.mul (ref a) (ref b)
+    Matrix.fold (\total x -> total * 31 + x) 0 (ref product)
+
+export def f64_entry :: i64 -> i64 -> i64 -> f64
+fn f64_entry n seed index =
+    let a = Matrix.init n (n + 1) (\i k -> pool64 ((i * 37 + k * 11 + seed) % 10))
+    let b = Matrix.init (n + 1) (n + 2) (\k j -> pool64 ((k * 13 + j * 29 + seed + 3) % 10))
+    let product = Matrix.mul (ref a) (ref b)
+    let flat = Matrix.as_array (ref product)
+    flat[index]
+
+export def f32_entry :: i64 -> i64 -> i64 -> f64
+fn f32_entry n seed index =
+    let a = Matrix.init n (n + 1) (\i k -> pool32 ((i * 37 + k * 11 + seed) % 10))
+    let b = Matrix.init (n + 1) (n + 2) (\k j -> pool32 ((k * 13 + j * 29 + seed + 3) % 10))
+    let product = Matrix.mul (ref a) (ref b)
+    let flat = Matrix.as_array (ref product)
+    flat[index] as f64
+
+private def negative :: f64 -> i64
+fn negative x = if 1.0 / x < 0.0 then 1 else 0
+
+// The input `one` is 1.0; passing it keeps the optimizer from folding the probe's arithmetic at compile time.
+// The two products are different pairs, so the optimizer cannot merge them. a1 * b1 = 1 + 2^-29 is exact,
+// a2 * b2 = -(1 + 2^-29 + 2^-60) rounds to -(1 + 2^-29): separately rounded, the sum is +0, but a fused
+// multiply-add of the second step would leave -2^-60.
+export def contraction_probe64 :: f64 -> f64
+fn contraction_probe64 one =
+    let left = Matrix.of_array 1 2 [one + 0.000000001862645149230957031250, -(one + 0.000000000931322574615478515625)]
+    let right = Matrix.of_array 2 1 [one, one + 0.000000000931322574615478515625]
+    let product = Matrix.mul (ref left) (ref right)
+    deref (Matrix.at (ref product) 0 0)
+
+export def contraction_probe32 :: f64 -> f64
+fn contraction_probe32 one =
+    let unit = one as f32
+    let left = Matrix.of_array 1 2 [unit + 0.000244140625f32, -(unit + 0.0001220703125f32)]
+    let right = Matrix.of_array 2 1 [unit, unit + 0.0001220703125f32]
+    let product = Matrix.mul (ref left) (ref right)
+    deref (Matrix.at (ref product) 0 0) as f64
+
+export def zero_signs :: i64
+fn zero_signs =
+    let empty_left = Matrix.init 1 0 (\_i _j -> 1.0)
+    let empty_right = Matrix.init 0 1 (\_i _j -> 1.0)
+    let inner_zero = Matrix.mul (ref empty_left) (ref empty_right)
+    let minus_zero = Matrix.of_array 1 1 [-0.0]
+    let one = Matrix.of_array 1 1 [1.0]
+    let product = Matrix.mul (ref minus_zero) (ref one)
+    let summed = Matrix.add (ref minus_zero) (ref minus_zero)
+    let transposed = Matrix.transpose (ref minus_zero)
+    negative (deref (Matrix.at (ref inner_zero) 0 0)) + 2 * negative (deref (Matrix.at (ref product) 0 0)) + 4 * negative (deref (Matrix.at (ref summed) 0 0)) + 8 * negative (deref (Matrix.at (ref transposed) 0 0))
+
+private def nan :: f64 -> i64
+fn nan x = if Math.is_nan x then 1 else 0
+
+export def nan_count :: i64
+fn nan_count =
+    let zero = 0.0
+    let missing = Matrix.of_array 1 2 [zero / zero, 1.0]
+    let ones = Matrix.of_array 2 1 [1.0, 1.0]
+    let from_nan = Matrix.mul (ref missing) (ref ones)
+    let infinite = Matrix.of_array 1 1 [1.0 / zero]
+    let nothing = Matrix.of_array 1 1 [zero]
+    let infinite_times_zero = Matrix.mul (ref infinite) (ref nothing)
+    let negative_infinite = Matrix.of_array 1 1 [-1.0 / zero]
+    let opposite = Matrix.add (ref infinite) (ref negative_infinite)
+    nan (deref (Matrix.at (ref from_nan) 0 0)) + nan (deref (Matrix.at (ref infinite_times_zero) 0 0)) + nan (deref (Matrix.at (ref opposite) 0 0))
+
+export def shapes :: i64 -> i64
+fn shapes n =
+    let m = Matrix.init n (n + 2) (\i j -> i * 100 + j)
+    let t = Matrix.transpose (ref m)
+    let mut total = Matrix.fold (\acc x -> acc * 31 + x) 7 (ref t)
+    for i in 0i64 .. (n - 1) do
+        total = total * 17 + Array.sum (Matrix.row (ref m) i)
+    let doubled = Matrix.map (\x -> x * 2) (ref m)
+    total = total * 13 + Matrix.fold (\acc x -> acc + x) 0 (ref doubled)
+    let inside = Maybe.default_value (-1) (Matrix.get (ref m) (n - 1) (n + 1))
+    let below = Maybe.default_value (-1) (Matrix.get (ref m) n 0)
+    let right = Maybe.default_value (-1) (Matrix.get (ref m) 0 (n + 2))
+    let before = Maybe.default_value (-1) (Matrix.get (ref m) (-1) 0)
+    total = total * 11 + inside + below * 3 + right * 5 + before * 7
+    let rebuilt = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Matrix.to_array m)
+    total * 7 + Matrix.rows (ref rebuilt) * 3 + Matrix.cols (ref rebuilt) + Array.length (Matrix.as_array (ref rebuilt))
+
+export def owned_elements :: i64 -> i64
+fn owned_elements n =
+    let m = Matrix.init n n (\i j -> new [i64](i + j, \x -> x * 3 + i))
+    let mut total = 0
+    for i in 0i64 .. (n - 1) do
+        for j in 0i64 .. (n - 1) do
+            let e = Matrix.at (ref m) i j
+            total = total * 3 + e.length + (if e.length > 0 then e[e.length - 1] else 0)
+    if n > 0 then total = total * 5 + Array.length (Matrix.row (ref m) (n - 1))
+    let words = Matrix.init n 2 (\i j -> $"{i}:{j}")
+    for i in 0i64 .. (n - 1) do
+        let word = Matrix.at (ref words) i 1
+        total = total * 11 + word.length
+    let transposed = Matrix.transpose (ref m)
+    let flat = Matrix.to_array transposed
+    let mut index = 0
+    while index < flat.length do
+        total = total * 7 + Array.length (Array.at (ref flat) index)
+        index = index + 1
+    let kept = Matrix.to_array words
+    total * 13 + kept.length
+
+export def of_array_length :: i64
+fn of_array_length = Matrix.rows (ref (Matrix.of_array 2 2 [1, 2, 3]))
+
+export def add_shape :: i64
+fn add_shape =
+    let a = Matrix.init 2 3 (\i j -> i + j)
+    let b = Matrix.init 3 2 (\i j -> i + j)
+    Matrix.rows (ref (Matrix.add (ref a) (ref b)))
+
+export def mul_shape :: i64
+fn mul_shape =
+    let a = Matrix.init 2 3 (\i j -> i + j)
+    Matrix.rows (ref (Matrix.mul (ref a) (ref a)))
+
+export def at_col :: i64 -> i64
+fn at_col col =
+    let m = Matrix.init 2 3 (\i j -> i * 10 + j)
+    deref (Matrix.at (ref m) 0 col)
+
+export def at_row :: i64 -> i64
+fn at_row row =
+    let m = Matrix.init 2 3 (\i j -> i * 10 + j)
+    deref (Matrix.at (ref m) row 0)
+
+export def row_index :: i64 -> i64
+fn row_index index =
+    let m = Matrix.init 2 3 (\i j -> i * 10 + j)
+    Array.sum (Matrix.row (ref m) index)
+
+export def negative_dims :: i64
+fn negative_dims = Matrix.rows (ref (Matrix.init (-1) 3 (\_i _j -> 0)))
+
+export def count_overflow :: i64
+fn count_overflow = Matrix.rows (ref (Matrix.init 4294967296 4294967296 (\_i _j -> 0)))
+
+export def mul_count_overflow :: i64
+fn mul_count_overflow =
+    let tall = Matrix.init 4294967296 0 (\_i _j -> 0)
+    let wide = Matrix.init 0 4294967296 (\_i _j -> 0)
+    Matrix.rows (ref (Matrix.mul (ref tall) (ref wide)))
+
+export def alloc_size :: i64
+fn alloc_size = Matrix.rows (ref (Matrix.init 2147483648 2147483648 (\_i _j -> 0.0)))

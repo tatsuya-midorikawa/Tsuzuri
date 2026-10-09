@@ -1,0 +1,20 @@
+private def left_value :: i64 -> i64 -> f64
+fn left_value i j = ((i * 7 + j * 3) % 13) as f64 * 0.25 - 1.5
+
+private def right_value :: i64 -> i64 -> f64
+fn right_value i j = ((i * 5 + j * 11) % 17) as f64 * 0.125 - 1.0
+
+private def checksum :: ref Matrix<f64> -> f64
+fn checksum matrix = Matrix.fold (\total x -> total * 0.999 + x) 0.0 matrix
+
+// Sums the checksum of `repeats` products of two n x n matrices. The C comparators compute the same
+// inputs, the same per-element order and the same checksum, so the results must be bit-equal.
+export def matmul_checksum :: i64 -> i64 -> f64
+fn matmul_checksum n repeats =
+    let left = Matrix.init n n left_value
+    let right = Matrix.init n n right_value
+    let mut sum = 0.0
+    for _ in 0i64 .. (repeats - 1) do
+        let product = Matrix.mul (ref left) (ref right)
+        sum = sum + checksum (ref product)
+    sum

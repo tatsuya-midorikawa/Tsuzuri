@@ -441,6 +441,7 @@ total=11
 
 - [List](./list.md) — 不変な連結リスト
 - [Vec](./vec.md) — 伸縮可能な所有バッファ
+- [Matrix](./matrix.md) — 行優先の連続バッファの行列。`Matrix.as_array` と `Matrix.of_array` で平らな配列と行き来できます
 - [Seq](./seq.md) — 遅延シーケンスと明示的な反復
 - [スタックとヒープ](../ownership-and-memory/stack-and-heap.md)
 - [借用と参照](../ownership-and-memory/borrowing.md)

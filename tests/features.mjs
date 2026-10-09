@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
 import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
+import { cases as matrixCases, traps as matrixTraps } from "./matrix-cases.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -1435,6 +1436,16 @@ const suites = {
     ],
     traps: [["replaced", [2n]], ["other", [1n]], ["past_end", [0n]], ["past_end", [3n]], ["literal_past", [0n]]],
     inspect(ir) { assert.doesNotMatch(ir, /llvm\.assume|!range| nsw | nuw /); },
+  },
+  // C11: every expected value is computed by tests/matrix-cases.mjs from JavaScript numbers and BigInt.
+  matrix: {
+    cases: matrixCases,
+    traps: matrixTraps,
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Matrix\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+      assert.doesNotMatch(ir, /%tz\.matrix/);
+    },
   },
 };
 

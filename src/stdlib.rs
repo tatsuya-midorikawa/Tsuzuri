@@ -43,6 +43,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
+    ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -94,6 +95,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Bench",
     "Gen",
     "Async",
+    "Matrix",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -130,6 +132,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Gen.Gen"
             | "Async.Async"
             | "Async.Next"
+            | "Matrix.Matrix"
     )
 }
 
@@ -207,6 +210,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Async",
         names: &["Async"],
         aliases: &["async"],
+        uses: &[],
+    },
+    OptIn {
+        module: "Matrix",
+        names: &["Matrix"],
+        aliases: &[],
         uses: &[],
     },
 ];
@@ -534,8 +543,9 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 46);
+        assert_eq!(RESERVED_MODULES.len(), 47);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
+        assert!(is_reserved_module("Matrix"));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));

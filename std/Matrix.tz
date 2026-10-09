@@ -1,0 +1,93 @@
+/// A row-major matrix in one contiguous buffer: element (row, col) is data[row * cols + col].
+/// Invariants: rows >= 0, cols >= 0, rows * cols <= i64::MAX, data.length == rows * cols.
+record Matrix<'a> { rows: i64, cols: i64, data: ['a] }
+
+private def checked_count :: i64 -> i64 -> i64
+fn checked_count rows cols =
+    assert (rows >= 0 && cols >= 0 && (cols == 0 || rows <= 9223372036854775807 / cols))
+    rows * cols
+
+/// Takes a row-major array without copying; traps unless its length is rows * cols.
+def of_array :: i64 -> i64 -> ['a] -> Matrix<'a>
+fn of_array rows cols values =
+    assert (values.length == checked_count rows cols)
+    Matrix { rows: rows, cols: cols, data: values }
+
+/// Calls `initializer row col` once per element in row-major order.
+def init :: i64 -> i64 -> (i64 -> i64 -> 'a) -> Matrix<'a>
+fn init rows cols initializer =
+    let count = checked_count rows cols
+    Matrix { rows: rows, cols: cols, data: new ['a](count, index -> initializer (index / cols) (index % cols)) }
+
+def rows :: ref Matrix<'a> -> i64
+fn rows matrix = matrix.rows
+
+def cols :: ref Matrix<'a> -> i64
+fn cols matrix = matrix.cols
+
+/// Borrows one element; traps when the row or the column is out of range.
+def at :: ref Matrix<'a> -> i64 -> i64 -> ref 'a
+fn at matrix row col =
+    assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
+    ref matrix.data[row * matrix.cols + col]
+
+/// Copies one element, or `None` when the row or the column is out of range.
+def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>
+fn get matrix row col =
+    if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
+    else Maybe.Some matrix.data[row * matrix.cols + col]
+
+/// Borrows one row as a slice without copying; traps when the row is out of range.
+def row :: ref Matrix<'a> -> i64 -> ref ['a]
+fn row matrix index =
+    assert (index >= 0 && index < matrix.rows)
+    let start = index * matrix.cols
+    ref matrix.data[start .. start + matrix.cols]
+
+/// Borrows all elements in row-major order.
+def as_array :: ref Matrix<'a> -> ref ['a]
+fn as_array matrix = ref matrix.data
+
+/// Consumes the matrix and returns its row-major buffer without copying.
+def to_array :: Matrix<'a> -> ['a]
+fn to_array matrix = matrix.data
+
+/// Applies `transform` to every element in row-major order.
+def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
+fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map transform (ref matrix.data) }
+
+/// Folds the elements left to right in row-major order.
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state
+fn fold folder initial matrix = Array.fold folder initial (ref matrix.data)
+
+/// Returns a new cols x rows matrix whose element (j, i) is the input element (i, j).
+def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
+fn transpose matrix =
+    let out_rows = matrix.cols
+    let out_cols = matrix.rows
+    Matrix { rows: out_rows, cols: out_cols, data: new ['a](matrix.data.length, index -> matrix.data[(index % out_cols) * out_rows + index / out_cols]) }
+
+/// Element-wise sum; traps unless both shapes are equal.
+def add :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn add left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, index -> left.data[index] + right.data[index]) }
+
+private def element :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> i64 -> i64 -> 'a
+fn element left right row col =
+    let mut total = 0i64 as 'a
+    let mut k = 0
+    while k < left.cols do
+        total = total + (left.data[row * left.cols + k] * right.data[k * right.cols + col])
+        k = k + 1
+    total
+
+/// Row-major product. Each element sums k = 0, 1, ... left to right from +0,
+/// rounding every multiply and add separately (no FMA contraction).
+/// Traps unless left.cols == right.rows.
+def mul :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn mul left right =
+    assert (left.cols == right.rows)
+    let count = checked_count left.rows right.cols
+    let cols = right.cols
+    Matrix { rows: left.rows, cols: cols, data: new ['a](count, index -> element left right (index / cols) (index % cols)) }

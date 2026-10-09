@@ -96,6 +96,7 @@
 - [HashMap](./built-in-types-and-modules/hashmap.md)
 - [HashSet](./built-in-types-and-modules/hashset.md)
 - [Arena](./built-in-types-and-modules/arena.md)
+- [Matrix](./built-in-types-and-modules/matrix.md)
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)

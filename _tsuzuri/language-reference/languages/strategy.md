@@ -145,7 +145,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
 | GPU の浮動小数点と自動接続 | 計画中 | [F09](../../../_features/F09-gpu-float-runtime.md) |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
-| Atomic / Mutex / Channel、多次元配列 | 計画中 | F10、C11 |
+| 多次元配列 `Matrix`（行優先の連続バッファ、行列積の演算順序を固定） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)、C11 Phase 1。ビューと N 次元は含まない |
+| Atomic / Mutex / Channel | 計画中 | F10 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |

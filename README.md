@@ -164,6 +164,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
 - **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で複数のタスクから読めます。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md) を参照してください。
 - **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
+- **行列 (`Matrix<T>`)**: 行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。常に非 Copy で、内部は不透明です。詳細は [Matrix](_tsuzuri/language-reference/built-in-types-and-modules/matrix.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -467,7 +468,7 @@ def main :: unit -> i32 = \() ->
 | 予約名 | 用途 |
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
-| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena` | 各種コレクションおよびデータ構造 |
+| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix` | 各種コレクションおよびデータ構造 |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
@@ -856,6 +857,7 @@ node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
+node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix.mul と C の行列積の同条件比較（C11。--quick は動作確認だけ）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。
