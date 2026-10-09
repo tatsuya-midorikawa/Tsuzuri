@@ -288,6 +288,87 @@ try {
       halfNote = "the adapter lacks shader-f16, so f16 resident lanes were not run";
     }
   }
+  // WGSL shapes that the emitter used to get wrong (review of F09 Phase 1). A mutable parameter was assigned in the
+  // body, which WGSL rejects ("parameters are immutable"). Each else-if arm nested an if in the else block, and Tint
+  // rejects statements nested 128 levels deep, which the arm 63 reached; an if, an arm, and the right operand of && or
+  // || each take two levels, so the compiler now reports E1017 beyond that. The kernels below run on the CPU (WASM)
+  // and, with an adapter, on the device, at the deepest nesting that is accepted: 126 levels, and 127 for empty blocks.
+  let shapeNote = "";
+  {
+    const arms = (count, literal) => Array.from({ length: count }, (_, arm) => `if value == ${literal(arm)} then ${literal(100 + arm)} else `).join("");
+    const integerLiteral = number => String(number);
+    const floatLiteral = number => `${number}.0`;
+    // `levels` of one shape below 40 else-if arms (the same shapes as the Rust tests).
+    const nested = (shape, levels) => {
+      let tail = shape === "if" ? "1" : shape === "empty" ? "()" : `value == ${levels}`;
+      for (let level = levels - 1; level >= 0; level--) tail = shape === "if" ? `if value == ${level} then (${tail}) else 0` : shape === "empty" ? `if value == ${level} then (${tail}) else ()` : `value == ${level} ${shape} (${tail})`;
+      tail = shape === "if" ? tail : shape === "empty" ? `{ ${tail}; value }` : `if ${tail} then 1 else 0`;
+      return `${arms(40, integerLiteral)}(${tail})`;
+    };
+    const inChain = value => (value >= 0 && value < 40 ? 100 + value : 0);
+    const integerInputs = [...Array.from({ length: 70 }, (_, value) => value), -1, 1000, 2147483647, -2147483648];
+    const floatShapeInputs = [...Array.from({ length: 70 }, (_, value) => value), -1, 2.5, 1000, -3.25];
+    const strictChain = value => (value >= 0 && value < 62 ? 100 + value : 0);
+    const shapes = [
+      { name: "mutable-i32", emit: "wgsl", lanes: "i32 -> i32", prelude: "def bump :: i32 -> i32\nfn bump mut x = { x = x + 1; x * 2 }\n\n", body: "bump value", inputs: integerInputs, reference: value => bits((signed(value) + 1n) * 2n) },
+      { name: "mutable-helpers", emit: "wgsl", lanes: "i32 -> i32", prelude: "def toggle :: bool -> bool\nfn toggle mut flag = { flag = !flag; flag }\n\ndef wrap :: i32u -> i32u\nfn wrap mut x = { x = x * 3i32u; x ^ 7i32u }\n\n", body: "if toggle (value > 10) then (wrap (value as i32u)) as i32 else value", inputs: integerInputs, reference: value => (signed(value) > 10n ? bits(value) : (bits(value) * 3 % 2 ** 32) ^ 7) >>> 0 },
+      { name: "mutable-f32", emit: "wgsl-relaxed", lanes: "f32 -> f32", parameter: "mut value", body: "{ value = value * 2.0 + 1.0; value * 0.5 }", inputs: floatShapeInputs, reference: value => (value * 2 + 1) * 0.5 },
+      { name: "chain-62-i32", emit: "wgsl", lanes: "i32 -> i32", body: `${arms(62, integerLiteral)}0`, inputs: integerInputs, reference: value => bits(strictChain(value)) },
+      { name: "chain-62-f32", emit: "wgsl-relaxed", lanes: "f32 -> f32", body: `${arms(62, floatLiteral)}0.0`, inputs: floatShapeInputs.map(value => (value === 2.5 ? 61 : value)), reference: value => (Number.isInteger(value) ? strictChain(value) : 0) },
+      { name: "nested-if-22", emit: "wgsl", lanes: "i32 -> i32", body: nested("if", 22), inputs: integerInputs, reference: value => bits(inChain(value)) },
+      { name: "nested-and-22", emit: "wgsl", lanes: "i32 -> i32", body: nested("&&", 22), inputs: integerInputs, reference: value => bits(inChain(value)) },
+      { name: "nested-or-22", emit: "wgsl", lanes: "i32 -> i32", body: nested("||", 22), inputs: integerInputs, reference: value => bits(inChain(value)) },
+      { name: "nested-empty-23", emit: "wgsl", lanes: "i32 -> i32", body: nested("empty", 23), inputs: integerInputs, reference: value => bits(value >= 0 && value < 40 ? 100 + value : value) },
+    ];
+    const source = shape => `${shape.prelude ?? ""}export def kernel :: ${shape.lanes}\nfn kernel ${shape.parameter ?? "value"} = ${shape.body}\n`;
+    for (const shape of shapes) {
+      const project = join(directory, `shape-${shape.name}`);
+      mkdirSync(project);
+      const file = join(project, "Main.tz");
+      writeFileSync(file, source(shape));
+      const wgsl = join(project, "kernel.wgsl");
+      cli(["build", file, "--emit", shape.emit, "-o", wgsl]);
+      const text = readFileSync(wgsl, "utf8");
+      if (shape.name.startsWith("mutable")) assert.ok(/\(param_\d+: \w+/.test(text) && /var local_\d+: \w+ = param_\d+;/.test(text), `${shape.name}: a mutable parameter is copied into a variable`);
+      const relaxed = shape.emit === "wgsl-relaxed";
+      const floats = shape.lanes.startsWith("f32");
+      const wasm = join(project, "kernel.wasm");
+      cli(["build", file, "--target", "wasm32", "-O3", "-o", wasm]);
+      const { exports } = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(wasm)));
+      const expected = shape.inputs.map(value => (floats ? Math.fround(shape.reference(value)) : shape.reference(value)));
+      shape.inputs.forEach((value, index) => {
+        const actual = floats ? exports.tz_kernel(value) : exports.tz_kernel(value) >>> 0;
+        assert.ok(Object.is(actual, expected[index]) || actual === expected[index], `${shape.name}(${value}): CPU ${actual} != ${expected[index]}`);
+      });
+      if (runtime) {
+        const program = await runtime.prepare(text, relaxed ? { float: "relaxed" } : {});
+        const uploaded = await runtime.fromArray(floats ? new Float32Array(shape.inputs) : new Int32Array(shape.inputs));
+        const actual = Array.from(await runtime.toArray(await runtime.map(program, uploaded)));
+        assert.deepEqual(actual, expected, `${shape.name}: device`);
+      }
+    }
+    // Beyond the limit the compiler says so, and keeps the existing output file.
+    const refusals = [
+      ["chain-63-i32", "wgsl", "i32 -> i32", `${arms(63, integerLiteral)}0`],
+      ["chain-63-f32", "wgsl-relaxed", "f32 -> f32", `${arms(63, floatLiteral)}0.0`],
+      ["nested-and-23", "wgsl", "i32 -> i32", nested("&&", 23)],
+      ["nested-if-23", "wgsl", "i32 -> i32", nested("if", 23)],
+      ["nested-empty-24", "wgsl", "i32 -> i32", nested("empty", 24)],
+    ];
+    for (const [name, emit, lanes, body] of refusals) {
+      const project = join(directory, `refused-${name}`);
+      mkdirSync(project);
+      const file = join(project, "Main.tz");
+      writeFileSync(file, source({ lanes, body }));
+      const output = join(project, "old.wgsl");
+      writeFileSync(output, "preserved");
+      const failure = JSON.parse(cli(["build", file, "--emit", emit, "-o", output, "--json"], false).stderr);
+      assert.equal(failure.code, "E1017", name);
+      assert.match(failure.message, /exceeds 127 levels of WGSL statement nesting/, name);
+      assert.equal(readFileSync(output, "utf8"), "preserved", name);
+    }
+    shapeNote = `; ${shapes.length} WGSL shapes (mutable parameters, else-if chains of 62 arms, nesting at depth 126 and 127) matched on the CPU${runtime ? " and the device" : ""} and ${refusals.length} beyond the limit were refused`;
+  }
   const api = join(directory, "api");
   mkdirSync(api);
   const source = join(api, "Main.tz");
@@ -368,7 +449,7 @@ fn unavailable = {
   assert.equal(JSON.parse(failure.stderr).code, "E1018");
   assert.equal(readFileSync(protectedOutput, "utf8"), "preserved");
   if (benchmark) console.log(JSON.stringify({ note: "CPU scalar host calls are not a bulk speed comparison; GPU times include upload, dispatch, completion wait, and readback unless the column says resident; no speed thresholds", rows }));
-  else console.log(`GPU phase 1: ${kernels.length * inputs.length} integer references and ${relaxedKernels.length * floatInputs.length} relaxed f32 references, native/WASM O0/O3, owned heap and strict float CPU reference; WebGPU ${useGpu ? `executed and matched (relaxed within the D6 tolerances; max ulp error ${Object.entries(relaxedErrors).map(([name, worst]) => `${name} ${worst.toFixed(2)}`).join(", ")}; ${halfNote})` : "not requested (CPU reference validation only)"}`);
+  else console.log(`GPU phase 1: ${kernels.length * inputs.length} integer references and ${relaxedKernels.length * floatInputs.length} relaxed f32 references, native/WASM O0/O3, owned heap and strict float CPU reference; WebGPU ${useGpu ? `executed and matched (relaxed within the D6 tolerances; max ulp error ${Object.entries(relaxedErrors).map(([name, worst]) => `${name} ${worst.toFixed(2)}`).join(", ")}; ${halfNote})` : "not requested (CPU reference validation only)"}${shapeNote}`);
 } finally {
   if (runtime) await runtime.close();
   runtime = undefined;

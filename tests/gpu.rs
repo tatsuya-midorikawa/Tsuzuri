@@ -491,3 +491,265 @@ fn device_aware_programs_validate_relaxed_kernels_and_hide_the_runtime_primitive
     ))
     .unwrap();
 }
+
+/// The parameters that a function of the WGSL text assigns; WGSL parameters are immutable.
+fn assigned_parameters(wgsl: &str) -> Vec<String> {
+    let mut parameters: Vec<String> = Vec::new();
+    let mut assigned = Vec::new();
+    for line in wgsl.lines() {
+        if let Some(rest) = line.strip_prefix("fn kernel_") {
+            let list = rest.split_once('(').unwrap().1.split_once(')').unwrap().0;
+            parameters = list
+                .split(", ")
+                .filter(|parameter| !parameter.is_empty())
+                .map(|parameter| parameter.split(':').next().unwrap().to_owned())
+                .collect();
+        } else if line.starts_with("fn ") {
+            parameters.clear();
+        } else if let Some((target, _)) = line.split_once(" = ")
+            && parameters.iter().any(|parameter| parameter == target)
+        {
+            assigned.push(line.to_owned());
+        }
+    }
+    assigned
+}
+
+/// The deepest statement of the kernel functions in the WGSL text, counted as Tint counts: a function
+/// body is depth 1, a statement is one deeper than its block, and the blocks of an `if` are one deeper
+/// than the `if`.
+fn statement_depth(wgsl: &str) -> usize {
+    let (mut open, mut deepest, mut inside) = (0usize, 0usize, false);
+    for line in wgsl.lines() {
+        if line.starts_with("fn kernel_") {
+            (inside, open, deepest) = (true, 0, deepest.max(1));
+        } else if inside && line == "}" && open == 0 {
+            inside = false;
+        } else if inside {
+            match line {
+                "}" => open -= 1,
+                "} else {" => deepest = deepest.max(1 + 2 * open),
+                _ => {
+                    deepest = deepest.max(2 + 2 * open);
+                    if line.ends_with('{') {
+                        open += 1;
+                        deepest = deepest.max(1 + 2 * open);
+                    }
+                }
+            }
+        }
+    }
+    deepest
+}
+
+#[test]
+fn mutable_parameters_become_variables_in_wgsl() {
+    let module = analyze(
+        "export def kernel :: f32 -> f32\nfn kernel mut x = { x = x * 2.0f32; x + 1.0f32 }",
+    )
+    .unwrap();
+    let id = kernel_id(&module);
+    let local = module.functions[id].parameters[0].id;
+    let wgsl = gpu::extract_kernel(&module, id)
+        .unwrap()
+        .wgsl_relaxed()
+        .unwrap();
+    let expected = format!(
+        "fn kernel_{id}(param_{local}: f32) -> f32 {{\nvar local_{local}: f32 = param_{local};\nlet value_0: f32 = local_{local};\nlet value_1: f32 = bitcast<f32>(1073741824u);\nlet value_2: f32 = (value_0 * value_1);\nlocal_{local} = value_2;\nlet value_3: f32 = local_{local};\nlet value_4: f32 = bitcast<f32>(1065353216u);\nlet value_5: f32 = (value_3 + value_4);\nlet value_6: f32 = value_5;\nreturn value_6;\n}}\n"
+    );
+    assert!(wgsl.contains(&expected), "{wgsl}");
+    assert!(assigned_parameters(&wgsl).is_empty(), "{wgsl}");
+
+    // Strict kernels: mutable parameters of helpers (integer, unsigned, bool) are copied too, and the
+    // parameters that no one assigns keep their name.
+    let module = analyze(
+        "def bump :: i32 -> i32\nfn bump mut x = { x = x + 1; x * 2 }\ndef toggle :: bool -> bool\nfn toggle mut flag = { flag = !flag; flag }\ndef wrap :: i32u -> i32u\nfn wrap mut x = { x = x * 3i32u; x ^ 7i32u }\nexport def kernel :: i32 -> i32\nfn kernel value = if toggle (value > 0) then bump value else (wrap (value as i32u)) as i32",
+    )
+    .unwrap();
+    let id = kernel_id(&module);
+    let local = module.functions[id].parameters[0].id;
+    let wgsl = gpu::extract_kernel(&module, id).unwrap().wgsl().unwrap();
+    assert_eq!(wgsl.matches(" = param_").count(), 3, "{wgsl}");
+    for ty in ["i32", "bool", "u32"] {
+        assert!(wgsl.contains(&format!(": {ty} = param_")), "{ty}: {wgsl}");
+    }
+    assert!(
+        wgsl.contains(&format!("fn kernel_{id}(local_{local}: i32) -> i32 {{\n")),
+        "{wgsl}"
+    );
+    assert!(assigned_parameters(&wgsl).is_empty(), "{wgsl}");
+
+    // The kernels that a device-aware program embeds come from the same emitter.
+    let module = analyze(
+        "def bump :: f32 -> f32\nfn bump mut x = { x = x * 2.0f32; x + 1.0f32 }\ndef count :: i32 -> i32\nfn count mut n = { n = n + 1; n }\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet floats: [f32] = [1.0, 2.0]\nlet a = Gpu.to_array (Gpu.map_relaxed (&device) bump (Gpu.from_array (&device) (&floats)))\nlet b = Gpu.to_array (Gpu.init (&device) 4 count)\n0",
+    )
+    .unwrap();
+    assert_eq!(module.gpu.kernels.len(), 2);
+    for kernel in &module.gpu.kernels {
+        let wgsl = kernel.wgsl.as_deref().unwrap();
+        assert!(wgsl.contains(" = param_"), "{wgsl}");
+        assert!(assigned_parameters(wgsl).is_empty(), "{wgsl}");
+    }
+}
+
+/// The debug build of the checker needs about 100 KB of stack for each else-if arm, so the tests with
+/// deep sources run on a thread with a large stack. The compiler's own limits are not involved.
+fn on_large_stack(test: impl FnOnce() + Send + 'static) {
+    let worker = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(test)
+        .unwrap();
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// `if value == 0 then 100 else if value == 1 then 101 else ... else <tail>` with `arms` conditions.
+fn chain_expression(arms: usize, ty: &str, tail: &str) -> String {
+    let literal = |number: usize| {
+        if ty == "f32" {
+            format!("{number}.0")
+        } else {
+            number.to_string()
+        }
+    };
+    let mut body = String::new();
+    for arm in 0..arms {
+        body += &format!(
+            "if value == {} then {} else ",
+            literal(arm),
+            literal(100 + arm)
+        );
+    }
+    body + tail
+}
+
+fn else_if_chain(arms: usize, ty: &str) -> String {
+    let zero = if ty == "f32" { "0.0" } else { "0" };
+    format!(
+        "export def kernel :: {ty} -> {ty}\nfn kernel value = {}",
+        chain_expression(arms, ty, zero)
+    )
+}
+
+/// A kernel that nests `shape(levels)` below `arms` else-if arms.
+fn nested_kernel(arms: usize, shape: &str, levels: usize) -> String {
+    let mut tail = match shape {
+        // if value == 0 then (if value == 1 then (... 1 else 0) else 0) else 0
+        "if" => "1".to_owned(),
+        // if value == 0 && (value == 1 && (... && value == N)) then 1 else 0
+        "&&" | "||" => format!("value == {levels}"),
+        // { if value == 0 then (if value == 1 then (... () else ()) else ()) else (); value }, which is
+        // empty inside
+        "empty" => "()".to_owned(),
+        _ => unreachable!(),
+    };
+    for level in (0..levels).rev() {
+        tail = match shape {
+            "if" => format!("if value == {level} then ({tail}) else 0"),
+            "empty" => format!("if value == {level} then ({tail}) else ()"),
+            operator => format!("value == {level} {operator} ({tail})"),
+        };
+    }
+    let tail = match shape {
+        "if" => tail,
+        "empty" => format!("{{ {tail}; value }}"),
+        _ => format!("if {tail} then 1 else 0"),
+    };
+    format!(
+        "export def kernel :: i32 -> i32\nfn kernel value = {}",
+        chain_expression(arms, "i32", &format!("({tail})"))
+    )
+}
+
+fn strict_wgsl(source: &str) -> Result<String, tsuzuri::diagnostic::Diagnostic> {
+    let module = analyze(source).unwrap();
+    gpu::extract_kernel(&module, kernel_id(&module))?.wgsl()
+}
+
+#[test]
+fn rejects_statements_nested_deeper_than_wgsl_allows() {
+    on_large_stack(|| {
+        // Tint rejects 128 levels ("statement nesting depth / chaining length exceeds limit of 127"). An
+        // else-if chain of 62 arms is the longest that it accepts: each arm nests an if in the else block,
+        // and everything else that nests (an if in a then branch, the right operand of && or ||) costs two
+        // levels as well. The depth is counted again from the emitted text.
+        for ty in ["i32", "f32"] {
+            let wgsl = |source: &str| {
+                if ty == "f32" {
+                    relaxed_wgsl(source)
+                } else {
+                    strict_wgsl(source)
+                }
+            };
+            let accepted = wgsl(&else_if_chain(62, ty)).unwrap();
+            assert_eq!(statement_depth(&accepted), 126, "{ty}");
+            let error = wgsl(&else_if_chain(63, ty)).unwrap_err();
+            assert_eq!(error.code, "E1017", "{ty}");
+            assert!(
+                error
+                    .message
+                    .contains("127 levels of WGSL statement nesting"),
+                "{}",
+                error.message
+            );
+        }
+        // 40 arms, then `levels` of one shape: (shape, deepest accepted levels, the depth there). The sum of
+        // arms and levels is at most 62, or 63 when the innermost blocks are empty and hold no statement (a
+        // block of depth 127 is accepted).
+        for (shape, levels, depth) in [
+            ("if", 22, 126),
+            ("&&", 22, 126),
+            ("||", 22, 126),
+            ("empty", 23, 127),
+        ] {
+            let accepted = strict_wgsl(&nested_kernel(40, shape, levels)).unwrap();
+            assert_eq!(statement_depth(&accepted), depth, "{shape}");
+            let error = strict_wgsl(&nested_kernel(40, shape, levels + 1)).unwrap_err();
+            assert_eq!(error.code, "E1017", "{shape}");
+        }
+        // A helper function starts a new body, so a long chain can continue in it.
+        let chain = else_if_chain(62, "i32");
+        let chain = chain.split_once("= ").unwrap().1;
+        let wgsl = strict_wgsl(&format!(
+            "def tail :: i32 -> i32\nfn tail value = {chain}\nexport def kernel :: i32 -> i32\nfn kernel value = {}",
+            chain.replace(" else 0", " else tail value")
+        ))
+        .unwrap();
+        assert_eq!(wgsl.matches("fn kernel_").count(), 2);
+        assert_eq!(statement_depth(&wgsl), 126);
+    });
+}
+
+#[test]
+fn the_nesting_limit_reaches_relaxed_calls_and_embedded_kernels() {
+    on_large_stack(|| {
+        // A program that calls a callback with `arms` else-if arms (of `ty`) on a backend.
+        let program = |arms: usize, ty: &str, backend: &str, call: &str| {
+            let chain = else_if_chain(arms, ty)
+                .replace("export def kernel", "def chain")
+                .replace("fn kernel", "fn chain");
+            let values = if ty == "f32" { "[1.0, 2.0]" } else { "[1, 2]" };
+            format!(
+                "{chain}\nlet device = Result.get (Gpu.request Gpu.{backend})\nlet values: [{ty}] = {values}\nGpu.to_array (Gpu.{call} (&device) chain (Gpu.from_array (&device) (&values)))"
+            )
+        };
+        // The CPU reference does not need WGSL: a strict call is fine, a relaxed call is validated.
+        analyze(&program(63, "i32", "CpuReference", "map")).unwrap();
+        for backend in ["CpuReference", "WebGpu"] {
+            let error = analyze(&program(63, "f32", backend, "map_relaxed")).unwrap_err();
+            assert_eq!(error.code, "E1017", "{backend}: {error:?}");
+            assert!(error.message.contains("127 levels"), "{}", error.message);
+        }
+        // On a device a strict call has no kernel, like any strict call whose WGSL cannot be written.
+        let module = analyze(&program(63, "i32", "WebGpu", "map")).unwrap();
+        assert!(module.gpu.kernels.is_empty());
+        // 62 arms embed, strict (i32) and relaxed (f32).
+        for (ty, call) in [("i32", "map"), ("f32", "map_relaxed")] {
+            let module = analyze(&program(62, ty, "WebGpu", call)).unwrap();
+            assert_eq!(module.gpu.kernels.len(), 1, "{call}");
+            let wgsl = module.gpu.kernels[0].wgsl.as_deref().unwrap();
+            assert_eq!(statement_depth(wgsl), 126, "{call}");
+        }
+    });
+}

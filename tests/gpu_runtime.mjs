@@ -205,13 +205,81 @@ const wasmHalfSource = `${half}
 export def wasm_half_sweep :: i32
 fn wasm_half_sweep = if half_available() then half_sweep() else -1
 `;
+// Kernels that once produced WGSL that Tint and Naga reject: a mutable parameter (WGSL parameters are immutable) and
+// an else-if chain at the deepest nesting that Tint accepts (62 arms; a 63rd arm is E1017 in a relaxed call, and a strict
+// call has no kernel then). Their results are exact, so the device is compared bit for bit.
+const arms = (count, literal) => Array.from({ length: count }, (_, arm) => `if value == ${literal(arm)} then ${literal(100 + arm)} else `).join("");
+const shapes = `def bump :: i32 -> i32
+fn bump mut x = { x = x + 1; x * 2 }
+
+def bump_float :: f32 -> f32
+fn bump_float mut x = { x = x * 2.0 + 1.0; x * 0.5 }
+
+def chain62 :: i32 -> i32
+fn chain62 value = ${arms(62, String)}0
+
+def chain63 :: i32 -> i32
+fn chain63 value = ${arms(63, String)}0
+
+def sample :: i32 -> f32
+fn sample index = (index as f32) * 0.015625 + 0.5
+
+def shapes_available :: bool
+fn shapes_available = Result.is_ok (&(Gpu.request Gpu.WebGpu))
+
+def shape_mismatches :: i32 -> i32
+fn shape_mismatches count = {
+    let reference = Result.get (Gpu.request Gpu.CpuReference);
+    let device = Result.get (Gpu.request Gpu.WebGpu);
+    let expected = Gpu.to_array (Gpu.map (&reference) bump (Gpu.init (&reference) (count as i64) (\\index -> index * 3 - 7)));
+    let actual = Gpu.to_array (Gpu.map (&device) bump (Gpu.init (&device) (count as i64) (\\index -> index * 3 - 7)));
+    let chained = Gpu.to_array (Gpu.init (&reference) (count as i64) chain62);
+    let chain_actual = Gpu.to_array (Gpu.init (&device) (count as i64) chain62);
+    let floats = Gpu.to_array (Gpu.map_relaxed (&reference) bump_float (Gpu.init_relaxed (&reference) (count as i64) sample));
+    let float_actual = Gpu.to_array (Gpu.map_relaxed (&device) bump_float (Gpu.init_relaxed (&device) (count as i64) sample));
+    let mut wrong = 0;
+    for index in 0i64 .. ((count as i64) - 1) do {
+        if actual[index] != expected[index] then wrong = wrong + 1 else ();
+        if chain_actual[index] != chained[index] then wrong = wrong + 1 else ();
+        if float_actual[index] != floats[index] then wrong = wrong + 1 else ()
+    };
+    wrong
+}
+
+def shapes_sweep :: i32
+fn shapes_sweep = {
+    let counts = [0, 1, 3, 255, 256, 257, 1000, 4097, 70000];
+    let mut wrong = 0;
+    for position in 0i64 .. 8i64 do
+        wrong = wrong + shape_mismatches counts[position];
+    wrong
+}
+
+def deep63 :: i32
+fn deep63 = {
+    let device = Result.get (Gpu.request Gpu.WebGpu);
+    let values = [5];
+    let mapped = Gpu.map (&device) chain63 (Gpu.from_array (&device) (&values));
+    (Gpu.to_array mapped)[0]
+}
+`;
+const shapeDispatches = { "0101": 24, "0201": 8, "0202": 8 };
+const wasmShapesSource = `${shapes}
+export def wasm_shapes_sweep :: i32
+fn wasm_shapes_sweep = if shapes_available() then shapes_sweep() else -1
+
+export def wasm_deep63 :: i32
+fn wasm_deep63 = deep63()
+`;
+nativeSources.shapes = `${shapes}\nif shapes_available() then shapes_sweep() else -1\n`;
+nativeSources.deep = `${shapes}\ndeep63()\n`;
 
 try {
   // ---- Native: the runtime of src/runtime/gpu.c loads wgpu-native at run time --------------------------------------
   const builds = {};
   for (const optimization of [0, 3]) {
     for (const [name, source] of Object.entries(nativeSources)) {
-      if (optimization === 3 && name !== "sweep" && name !== "half") continue;
+      if (optimization === 3 && name !== "sweep" && name !== "half" && name !== "shapes") continue;
       const path = project(`${name}-${optimization}`, source);
       const output = join(path, `program${executable}`);
       cli(["build", path, `-O${optimization}`, "-o", output]);
@@ -236,6 +304,20 @@ try {
   assert.match(missing.stderr, /no WebGPU library \(wgpu-native\) could be loaded/);
   assert.equal(execute(sweep, [], { env: { TSUZURI_WEBGPU_LIBRARY: join(directory, "no-such-library") } }).stderr, "", "a failed open is silent without TSUZURI_GPU_DEBUG");
   assert.equal(execute(builds["half-0"], [], { env: { TSUZURI_WEBGPU_LIBRARY: "" } }).stdout.trim(), "-1");
+  assert.equal(execute(builds["shapes-0"], [], { env: { TSUZURI_WEBGPU_LIBRARY: "" } }).stdout.trim(), "-1");
+  // The embedded kernels of the shapes: a mutable parameter is a variable of the body, the 62-arm chain is embedded, and
+  // the strict 63-arm call has no kernel (its last arm, 162, is in no embedded text).
+  {
+    const ir = join(directory, "shapes.ll");
+    cli(["build", join(directory, "shapes-0"), "--emit", "llvm", "-o", ir]);
+    const text = readFileSync(ir, "utf8");
+    assert.match(text, /var local_\d+: i32 = param_\d+;/);
+    assert.match(text, /var local_\d+: f32 = param_\d+;/);
+    assert.ok(text.includes("bitcast<i32>(161u)") && !text.includes("bitcast<i32>(162u)"));
+  }
+  // A relaxed call with 63 arms is refused at compile time (E1017), like `--emit wgsl-relaxed`.
+  const refused63 = project("deep-relaxed", `def chain :: f32 -> f32\nfn chain value = ${arms(63, number => `${number}.0`)}0.0\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f32] = [1.0]\nGpu.to_array (Gpu.map_relaxed (&device) chain (Gpu.from_array (&device) (&values)))\n`);
+  assert.equal(JSON.parse(cli(["build", refused63, "--json", "-o", join(refused63, "never")], false).stderr).code, "E1017");
 
   // Libraries that are not wgpu-native 29 fail closed with a reason.
   if (windows) {
@@ -294,6 +376,17 @@ try {
       }
     }
     notes.push(halfRan ? "native f16 lanes (shader-f16) matched the CPU reference within 4 ulp" : "the native adapter lacks shader-f16, so the f16 request was Unavailable");
+    // Kernels with a mutable parameter and 62 else-if arms (Tint's nesting limit) run on the device; a strict call with 63 arms has no kernel.
+    for (const optimization of [0, 3]) {
+      const result = execute(builds[`shapes-${optimization}`], [], { env: { TSUZURI_GPU_DEBUG: "1" } });
+      assert.equal(result.stdout.trim(), "0", `native shapes -O${optimization}: ${result.stderr}`);
+      assert.deepEqual(dispatched(result.stderr), shapeDispatches);
+    }
+    const deep = execute(builds["deep-0"], [], { success: false });
+    assert.ok(trapped(deep));
+    assert.equal(deep.stdout, "");
+    assert.match(deep.stderr, /this call has no WGSL kernel/);
+    notes.push("native kernels with a mutable parameter and 62 else-if arms matched the CPU reference bit for bit, and a strict call with 63 arms trapped");
   } else {
     notes.push("native WebGPU dispatch not requested");
   }
@@ -301,21 +394,24 @@ try {
   // ---- WASM: the default module has no imports; --wasm-feature webgpu adds exactly tsuzuri_gpu.open and run ---------
   const wasmProject = project("wasm", wasmSource);
   const wasmHalfProject = project("wasm-half", wasmHalfSource);
+  const wasmShapesProject = project("wasm-shapes", wasmShapesSource);
   const modules = {};
   for (const optimization of [0, 3]) {
     const plain = join(wasmProject, `plain-${optimization}.wasm`);
     const opted = join(wasmProject, `webgpu-${optimization}.wasm`);
     const halved = join(wasmHalfProject, `webgpu-${optimization}.wasm`);
+    const shaped = join(wasmShapesProject, `webgpu-${optimization}.wasm`);
     cli(["build", wasmProject, "--target", "wasm32", `-O${optimization}`, "-o", plain]);
     cli(["build", wasmProject, "--target", "wasm32", "--wasm-feature", "webgpu", `-O${optimization}`, "-o", opted]);
     cli(["build", wasmHalfProject, "--target", "wasm32", "--wasm-feature", "webgpu", `-O${optimization}`, "-o", halved]);
+    cli(["build", wasmShapesProject, "--target", "wasm32", "--wasm-feature", "webgpu", `-O${optimization}`, "-o", shaped]);
     const unused = join(wasmProject, `unused-${optimization}.wasm`);
     const pure = project(`pure-${optimization}`, "export def double :: i32 -> i32\nfn double value = value * 2\n");
     cli(["build", pure, "--target", "wasm32", "--wasm-feature", "webgpu", `-O${optimization}`, "-o", unused]);
     assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(plain))), [], "the default WASM output of a program with a WebGPU request has no imports");
     assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(opted))).map(({ module, name, kind }) => `${module}.${name}:${kind}`).sort(), ["tsuzuri_gpu.open:function", "tsuzuri_gpu.run:function"]);
     assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(unused))), [], "a program with no GPU device adds no imports under the flag");
-    modules[optimization] = { plain, opted, halved };
+    modules[optimization] = { plain, opted, halved, shaped };
   }
   // Without the feature the request is Unavailable and the module runs on its own.
   for (const optimization of [0, 3]) {
@@ -351,6 +447,9 @@ try {
       const halved = instantiate(modules[optimization].halved, none);
       assert.equal(await halved.call("tz_wasm_half_sweep")(), -1);
       await halved.host.close();
+      const shaped = instantiate(modules[optimization].shaped, none);
+      assert.equal(await shaped.call("tz_wasm_shapes_sweep")(), -1);
+      await shaped.host.close();
     }
     if (useGpu) {
       const binding = await import(process.env.TSUZURI_WEBGPU_MODULE ?? pathToFileURL(resolve("target/webgpu-runtime/node_modules/webgpu/index.js")).href);
@@ -377,8 +476,18 @@ try {
           halfRan = true;
         }
         await halved.host.close();
+        // The shapes: a mutable parameter and 62 else-if arms run on Dawn bit for bit, and the strict call with 63 arms traps.
+        const shaped = instantiate(modules[optimization].shaped, binding.create(process.platform === "darwin" ? ["backend=metal"] : []), true);
+        const sweptShapes = await capture(() => shaped.call("tz_wasm_shapes_sweep")());
+        assert.equal(sweptShapes.value, 0, `WASM shapes -O${optimization}: ${sweptShapes.error ?? ""}\n${sweptShapes.lines.join("\n")}`);
+        assert.deepEqual(dispatched(sweptShapes.lines.map(line => `${line}\n`).join("")), shapeDispatches);
+        const deep = await capture(() => shaped.call("tz_wasm_deep63")());
+        assert.ok(deep.error instanceof WebAssembly.RuntimeError);
+        assert.match(deep.lines.join("\n"), /this call has no WGSL kernel/);
+        await shaped.host.close();
       }
       notes.push("WASM WebGPU dispatch under JSPI matched the CPU reference at -O0 and -O3");
+      notes.push("WASM kernels with a mutable parameter and 62 else-if arms matched the CPU reference bit for bit");
       notes.push(halfRan ? "WASM f16 lanes (shader-f16) matched the CPU reference within 4 ulp" : "the WASM adapter lacks shader-f16, so the f16 request was Unavailable");
     } else {
       notes.push("WASM WebGPU dispatch not requested");

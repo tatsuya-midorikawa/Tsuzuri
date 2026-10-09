@@ -103,10 +103,10 @@ match Gpu.request Gpu.WebGpu with
 | --- | --- | --- |
 | `Gpu.init`・`Gpu.map` | `i32`、`i32u` | GPU で動く。CPU 参照とビット単位で一致 |
 | `Gpu.init`・`Gpu.map` | `f32`、`f16`、`f64`、`i64`、`i64u`、`bool` | GPU のカーネルがない。理由を標準エラーに 1 行出してトラップ |
-| `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f32`、`f16`、`i32`、`i32u` | GPU で動く。浮動小数点の結果は緩い |
+| `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f32`、`f16`、`i32`、`i32u` | GPU で動く。浮動小数点の結果は緩い。文の入れ子が 127 段を超えるとコンパイル時に `E1017` |
 | `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f64`、`i64`、`i64u`、`bool` | コンパイル時に `E1018` |
 
-2 行目が、厳密な言語の意味を黙って変えないための選択です。コールバックの中に `f32` などの局所値があれば、lane が `i32` でも同じです。厳密な `Gpu.map` に `f32` のバッファを渡して WebGPU デバイスで動かすと、`this call has no WGSL kernel: a strict Gpu.map or Gpu.init runs on a WebGPU device only with i32 or i32u lanes; use Gpu.map_relaxed or Gpu.init_relaxed for f32 or f16` を標準エラーに出してトラップします。CPU 参照で動かす、緩い名前に替える、のどちらかをプログラムが選びます。
+2 行目が、厳密な言語の意味を黙って変えないための選択です。コールバックの中に `f32` などの局所値があれば、lane が `i32` でも同じです。除算のように WGSL に出せない式や、文の入れ子が 127 段を超えるコールバックも、GPU のカーネルがありません（このとき、メッセージは lane の型だけを挙げます。理由は、同じコールバックを `export` して `--emit wgsl` に渡すと分かります）。厳密な `Gpu.map` に `f32` のバッファを渡して WebGPU デバイスで動かすと、`this call has no WGSL kernel: a strict Gpu.map or Gpu.init runs on a WebGPU device only with i32 or i32u lanes; use Gpu.map_relaxed or Gpu.init_relaxed for f32 or f16` を標準エラーに出してトラップします。CPU 参照で動かす、緩い名前に替える、のどちらかをプログラムが選びます。
 
 デバイスは呼び出しごとに、配列を複製してアップロードし、カーネルを実行し、完了を待ち、結果を読み戻します。バッファは、CPU 参照と同じホストの配列のままです（`Gpu.to_array` は転送をしません）。呼び出しのあとデバイスに残るものはありません。`Gpu.map` を重ねた分だけ、アップロードと読み戻しも重なります。
 
@@ -175,9 +175,11 @@ await host.close();
 
 CPU 参照バッファの要素型は `i32`、`i32u`、`i64`、`i64u`、`f16`、`f32`、`f64` です。標準の配列と同じアロケータで解放します。`init` の `count` は 0 以上 2,147,483,647 以下です。範囲外は `assert` によるトラップで、`Result` にはなりません。
 
-`init`、`map`、`from_array`（と `init_relaxed`、`map_relaxed`）は、その場で全部の引数を渡して呼ぶ必要があります。`let make = Gpu.init` は `E1018` です。コールバックは、捕捉のない静的な関数かラムダに限ります。使えるのはスカラーの局所変数、算術、比較、キャスト、`if`、既知の関数呼び出しです。
+`init`、`map`、`from_array`（と `init_relaxed`、`map_relaxed`）は、その場で全部の引数を渡して呼ぶ必要があります。`let make = Gpu.init` は `E1018` です。コールバックは、捕捉のない静的な関数かラムダに限ります。使えるのはスカラーの局所変数、算術、比較、キャスト、`if`、既知の関数呼び出しです。`mut` の引数も使えます。WGSL の引数には代入できないので、WGSL では本体の先頭で、同じ番号の変数へ引数を複製します。
 
 ヒープ確保、借用、ホスト関数、タスク、ループ、再帰、`assert`、未知の関数値は `E1018` です。カーネル抽出の入れ子 128、関数呼び出し 1024、式 65536 を超えると `E1017` です。CPU 参照の実行そのものは `Array.init` と `Array.map` なので、WGSL に出せない `f32` のバッファも、この参照実装では作れます。出せることと、CPU で試せることの範囲が違います。
+
+WGSL を出すときは、文の入れ子が 127 段までで、超えると `E1017`（`GPU kernel exceeds 127 levels of WGSL statement nesting; …`）です。WebGPU の実装（Tint）が、それより深い文を拒否するためです。数えるのは関数ごとで、`if` と `else if` の 1 本と、`&&`・`||` の右辺が、それぞれ 2 段です。`else if` の連鎖は 62 本までで、63 本目が `E1017` です。連鎖の続きを別の関数へ移すと、段が数え直されます。`--emit wgsl`、`--emit wgsl-relaxed`、緩い呼び出しは、この検査を通らないとコンパイルが失敗します。厳密な呼び出しは CPU 参照ではこの制限を受けず、WebGPU デバイスでは GPU のカーネルがありません（[WebGPU デバイスで動かす](#webgpu-デバイスで動かす)）。
 
 ## WGSL を出す
 
