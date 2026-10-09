@@ -289,3 +289,205 @@ fn relaxed_gpu_api_validates_kernels_on_the_cpu_reference() {
         );
     }
 }
+
+const DEVICE_PROGRAM: &str = "def mix :: i32 -> i32\nfn mix value = value * 3 + 1\ndef poly :: f32 -> f32\nfn poly value = value * value + value\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet a = Gpu.to_array (Gpu.init (&device) 8 mix)\nlet b = Gpu.to_array (Gpu.map (&device) mix (Gpu.init (&device) 8 mix))\nlet floats: [f32] = [1.0, 2.0]\nlet c = Gpu.to_array (Gpu.map_relaxed (&device) poly (Gpu.from_array (&device) (&floats)))\nlet d = Gpu.to_array (Gpu.map (&device) (\\item -> item + 1.0) (Gpu.from_array (&device) (&floats)))\nArray.sum (&a) + Array.sum (&b)";
+
+#[test]
+fn device_aware_programs_embed_one_kernel_per_call_site() {
+    use tsuzuri::gpu_devices::{FLAG_RELAXED, LANE_32, LANE_F32};
+    let module = analyze(DEVICE_PROGRAM).unwrap();
+    // The strict i32 kernel serves both of its calls, the relaxed f32 kernel is a second one, and the strict
+    // f32 lambda has none: a strict float call never runs on a device.
+    let kernels = &module.gpu.kernels;
+    assert_eq!(kernels.len(), 2, "{kernels:?}");
+    assert_eq!(
+        (kernels[0].relaxed, kernels[0].flags, kernels[0].lanes),
+        (false, 0, LANE_32 | LANE_32 << 8)
+    );
+    assert_eq!(
+        (kernels[1].relaxed, kernels[1].flags, kernels[1].lanes),
+        (true, FLAG_RELAXED, LANE_F32 | LANE_F32 << 8)
+    );
+    assert_eq!(module.gpu.features, 0);
+    let strict = kernels[0].wgsl.as_deref().unwrap();
+    assert!(strict.starts_with("struct Params") && strict.contains("array<i32>"));
+    let relaxed = kernels[1].wgsl.as_deref().unwrap();
+    assert!(relaxed.starts_with("// tsuzuri-gpu float=relaxed input=f32 output=f32\n"));
+    assert!(kernels.iter().all(|kernel| kernel.spirv.is_none()));
+    for wasm in [false, true] {
+        let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
+        assert_eq!(
+            ir,
+            tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap()
+        );
+        // The runtime functions are declared once, without import attributes: the driver gives them a host.
+        assert_eq!(
+            ir.matches("declare i32 @tsuzuri_gpu_open(i32, i32)\n")
+                .count(),
+            1
+        );
+        assert_eq!(ir.matches("declare i32 @tsuzuri_gpu_run(").count(), 1);
+        assert!(!ir.contains("wasm-import-module\"=\"tsuzuri_gpu"));
+        assert_eq!(
+            ir.matches("@tz.gpu.kernels = private constant [2 x ")
+                .count(),
+            1
+        );
+        assert!(ir.contains("c\"// tsuzuri-gpu float=relaxed input=f32 output=f32\\0A"));
+        // Every device-aware call passes its kernel number last: 0 and 1, and -1 for the strict f32 call.
+        assert!(ir.contains("i64 0)") && ir.contains("i64 1)"));
+        assert!(ir.contains("i64 18446744073709551615)"));
+        assert!(ir.contains("@tz.fn.Gpu.request_on("));
+        assert!(!ir.contains("@tz.fn.Gpu.request("));
+    }
+}
+
+#[test]
+fn relaxed_f16_kernels_enable_f16_and_need_the_shader_f16_feature() {
+    use tsuzuri::gpu_devices::{FEATURE_F16, FLAG_RELAXED, LANE_32, LANE_F16, LANE_F32};
+    let module = analyze(
+        "def half :: f16 -> f16\nfn half value = (value * 0.5f16 + 0.25f16) * value - (-value)\ndef widen :: f16 -> f32\nfn widen value = (value as f32) * 3.0\ndef narrow :: f32 -> f16\nfn narrow value = value as f16\ndef index :: i32 -> f16\nfn index value = value as f16\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet halves: [f16] = [1.0f16, 2.0f16]\nlet floats: [f32] = [1.0, 2.0]\nlet a = Gpu.to_array (Gpu.map_relaxed (&device) half (Gpu.from_array (&device) (&halves)))\nlet b = Gpu.to_array (Gpu.map_relaxed (&device) widen (Gpu.from_array (&device) (&halves)))\nlet c = Gpu.to_array (Gpu.map_relaxed (&device) narrow (Gpu.from_array (&device) (&floats)))\nlet d = Gpu.to_array (Gpu.init_relaxed (&device) 4 index)\nlet e = Gpu.to_array (Gpu.map (&device) half (Gpu.from_array (&device) (&halves)))\n0",
+    )
+    .unwrap();
+    // The strict call of `half` has no kernel: strict f16 never runs on a device.
+    let kernels = &module.gpu.kernels;
+    assert_eq!(kernels.len(), 4, "{kernels:?}");
+    assert_eq!(module.gpu.features, FEATURE_F16);
+    let lanes = |input: u32, output: u32| input | output << 8;
+    assert_eq!(
+        kernels
+            .iter()
+            .map(|kernel| kernel.lanes)
+            .collect::<Vec<_>>(),
+        [
+            lanes(LANE_F16, LANE_F16),
+            lanes(LANE_F16, LANE_F32),
+            lanes(LANE_F32, LANE_F16),
+            lanes(LANE_32, LANE_F16)
+        ]
+    );
+    assert!(kernels.iter().all(|kernel| kernel.relaxed
+        && kernel.flags == FLAG_RELAXED
+        && kernel.features == FEATURE_F16));
+    let texts: Vec<_> = kernels
+        .iter()
+        .map(|kernel| kernel.wgsl.as_deref().unwrap())
+        .collect();
+    for (text, header) in texts.iter().zip(["f16", "f16", "f32", "i32"]) {
+        assert!(
+            text.starts_with("// tsuzuri-gpu float=relaxed input="),
+            "{text}"
+        );
+        assert!(text.contains("enable f16;\nstruct Params"), "{text}");
+        assert_eq!(text.matches("enable f16;").count(), 1);
+        assert!(text.lines().next().unwrap().contains(header), "{text}");
+    }
+    assert!(texts[0].starts_with(
+        "// tsuzuri-gpu float=relaxed input=f16 output=f16\nenable f16;\nstruct Params"
+    ));
+    assert!(texts[0].contains("var<storage, read> input_values: array<f16>"));
+    assert!(texts[0].contains("var<storage, read_write> output_values: array<f16>"));
+    for bits in [1056964608u32, 1048576000] {
+        assert!(
+            texts[0].contains(&format!("f16(bitcast<f32>({bits}u))")),
+            "{bits}"
+        );
+    }
+    assert!(texts[0].contains("(-value_"));
+    assert!(texts[0].contains("kernel_") && texts[0].contains("(f16(invocation.x))"));
+    assert!(texts[1].contains("input=f16 output=f32") && texts[1].contains("f32(value_"));
+    assert!(texts[2].contains("input=f32 output=f16") && texts[2].contains("f16(value_"));
+    assert!(texts[3].contains("input=i32 output=f16"));
+    for wasm in [false, true] {
+        let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
+        assert!(ir.contains("@tz.fn.$builtin.Gpu.__features()"));
+        assert!(ir.contains("ret i32 1\n"));
+        assert!(ir.contains("i64 18446744073709551615)"));
+    }
+    // A program without an f16 kernel does not ask the device for shader-f16.
+    let plain = analyze(DEVICE_PROGRAM).unwrap();
+    assert_eq!(plain.gpu.features, 0);
+    // Strict f16 on the CPU reference is accepted; casts from f16 to an integer are not reproduced on the GPU.
+    analyze("let device = Result.get (Gpu.request Gpu.CpuReference)\nlet halves: [f16] = [1.0f16]\nlet mapped = Gpu.map (&device) (\\item -> item + 1.0f16) (Gpu.from_array (&device) (&halves))\n0").unwrap();
+    let error =
+        relaxed_wgsl("export def kernel :: f32 -> i32\nfn kernel value = (value as f16) as i32")
+            .unwrap_err();
+    assert!(
+        error.message.contains("float-to-integer"),
+        "{}",
+        error.message
+    );
+    let internal = relaxed_wgsl(
+        "export def kernel :: f32 -> f32\nfn kernel value = ((value as f16) * 0.5f16) as f32",
+    )
+    .unwrap();
+    assert!(internal.starts_with(
+        "// tsuzuri-gpu float=relaxed input=f32 output=f32\nenable f16;\nstruct Params"
+    ));
+}
+
+#[test]
+fn programs_without_a_non_cpu_backend_keep_the_cpu_only_gpu_module() {
+    let module = analyze("let device = Result.get (Gpu.request Gpu.CpuReference)\nlet buffer = Gpu.init (&device) 4 (\\index -> index * 2)\nlet mapped = Gpu.map (&device) (\\value -> value + 1) buffer\nlet values = Gpu.to_array mapped\nArray.sum (&values)").unwrap();
+    assert!(module.gpu.kernels.is_empty());
+    for wasm in [false, true] {
+        let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
+        for absent in ["tsuzuri_gpu", "tz.gpu", "request_on", "init_on", "map_on"] {
+            assert!(!ir.contains(absent), "{absent}");
+        }
+        assert!(ir.contains("@tz.fn.Gpu.request("));
+    }
+    // Naming any non-CPU backend makes a program device aware, even without a kernel.
+    for backend in ["Vulkan", "Cuda", "Metal", "Auto", "WebGpu"] {
+        let source = format!("let outcome = Gpu.request Gpu.{backend}\nResult.is_error (&outcome)");
+        let module = analyze(&source).unwrap();
+        assert!(module.gpu.kernels.is_empty(), "{backend}");
+        let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, false).unwrap();
+        assert!(ir.contains("@tz.fn.Gpu.request_on("), "{backend}");
+    }
+}
+
+#[test]
+fn device_aware_programs_validate_relaxed_kernels_and_hide_the_runtime_primitives() {
+    let prefix = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet wide: [f64] = [1.0]\nlet floats: [f32] = [1.0]\n";
+    for (body, code, fragment) in [
+        (
+            "Gpu.map_relaxed (&device) (\\item -> item + 1.0) (Gpu.from_array (&device) (&wide))",
+            "E1018",
+            "no f64 or 64-bit integers",
+        ),
+        (
+            "Gpu.map_relaxed (&device) (\\item -> item as i32) (Gpu.from_array (&device) (&floats))",
+            "E1018",
+            "float-to-integer",
+        ),
+        (
+            "let escaped = Gpu.map\nescaped (&device) (\\item -> item + 1.0) (Gpu.from_array (&device) (&floats))",
+            "E1018",
+            "cannot escape",
+        ),
+        (
+            "Gpu.__open 1 0",
+            "E1022",
+            "private to the standard Gpu module",
+        ),
+        (
+            "let status = Gpu.__features()\nstatus",
+            "E1022",
+            "private to the standard Gpu module",
+        ),
+    ] {
+        let error = analyze(&format!("{prefix}{body}")).unwrap_err();
+        assert_eq!(error.code, code, "{body}: {error:?}");
+        assert!(
+            error.message.contains(fragment),
+            "{body}: {}",
+            error.message
+        );
+    }
+    // A strict f32 call is not an error: it only has no kernel for a device.
+    analyze(&format!(
+        "{prefix}Gpu.to_array (Gpu.map (&device) (\\item -> item + 1.0) (Gpu.from_array (&device) (&floats)))"
+    ))
+    .unwrap();
+}

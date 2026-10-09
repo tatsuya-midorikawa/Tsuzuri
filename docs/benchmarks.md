@@ -41,8 +41,42 @@ GPU 実行の測定試作は `node benchmarks/run-gpu.mjs target/release/tsuzuri
 | 緩い `threshold`（263） | 1.05（0.90〜1.45） | 0.86（0.75〜0.99） | — | 0.52（0.38〜0.56） | 完全一致 |
 
 デバイスの起動（アダプタとデバイスの取得）は中央値 13.4 ms（12.2〜71.5 ms）です。
-この大きさ（260 個前後）では、転送・dispatch・完了待ち・読み戻しの 1 回が 0.7〜3 ms で、CPU の WASM は 30 走査の合計で 0.4〜1.3 ms（1 走査は 1/30）です。固定費が支配するため、**GPU が速いという主張はしません**。バルクで大きな入力を使った測定は、言語ランタイムへの接続後（F09 の Phase 2）に、同じ Tsuzuri プログラムを CPU 参照と GPU で比べる形で行います。
+この大きさ（260 個前後）では、転送・dispatch・完了待ち・読み戻しの 1 回が 0.7〜3 ms で、CPU の WASM は 30 走査の合計で 0.4〜1.3 ms（1 走査は 1/30）です。固定費が支配するため、**GPU が速いという主張はしません**。バルクで大きな入力を使った、同じ Tsuzuri プログラムの CPU 参照と GPU の比較は、次の節にあります。
 これは速度の合否の閾値ではなく、共有 CI にも入れません。
+
+### GPU デバイスのランタイム（F09 Phase 2）
+
+`node benchmarks/run-gpu-device.mjs target/release/tsuzuri [--runs 9] [--json]` は、同じ Tsuzuri プログラムを `Gpu.request Gpu.CpuReference` と `Gpu.request Gpu.WebGpu` のデバイスで動かします。1 回の呼び出しは `Gpu.to_array (Gpu.map_relaxed device kernel (Gpu.from_array device values))` で、ホスト配列の複製、アップロード、実行、完了待ち、読み戻し、配列への複製を、GPU の側に全部含めます。カーネルは、`f32` の 3 次式（lane あたり乗算 3 回、加算 3 回の `light`）と、`x * 1.0001 + 0.0001` を 64 回つないだ `heavy` です。native は wgpu-native 29（`TSUZURI_WEBGPU_LIBRARY`）、WebAssembly は Dawn の Node.js バインディングと JSPI（Node.js 24 以降）で動かします。
+
+2026-10-10、Apple M1 Max（10 コア）、macOS 27.0.1、アダプタは Metal（`metal-3`）、wgpu-native 29.0.1.1（Homebrew）、Node.js v24.21.0、`webgpu` 0.6.1、native は `-O3`、WebAssembly は `-O3` の `wasm32` に `--wasm-feature webgpu --wasm-max-memory 256MiB` です。CPU 参照は 1 スレッドで、WebAssembly は SIMD なしです。共有の作業機では他のビルドが動いており、測定終了時のロードアベレージ（1 分）は 4.9 でした。値は、`--runs 9` の 9 回の中央値です（native は実行のたびに新しいプロセス、WebAssembly は新しいインスタンスと新しいデバイス）。1 回あたりの時間（µs）で、括弧は GPU の最小〜最大です。「最初の呼び出し」はパイプライン作成を含み、「デバイスを開く」は `Gpu.request Gpu.WebGpu` の時間です（native は `dlopen`、インスタンス、アダプタ、デバイスで、WebAssembly は Dawn の読み込みと `create()` を含みません）。生データは `target/perf/F09-phase2/device.json`（`target/` は追跡されません）にあります。
+
+| ターゲット | カーネル | lane 数 | CPU 参照 µs/回 | WebGPU µs/回（最小〜最大） | 最初の呼び出し ms | デバイスを開く ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| native | light | 1,024 | 0.3 | 462（426〜487） | 6.3 | 20.9 |
+| native | light | 16,384 | 5.8 | 556（544〜611） | 7.5 | 22.4 |
+| native | light | 262,144 | 74.8 | 983（902〜1,109） | 7.7 | 20.5 |
+| native | light | 4,194,304 | 1,401 | 7,866（7,700〜8,393） | 13.3 | 20.1 |
+| native | heavy | 1,024 | 12.4 | 455（420〜467） | 6.4 | 22.4 |
+| native | heavy | 16,384 | 200.6 | 583（506〜595） | 8.2 | 23.3 |
+| native | heavy | 262,144 | 3,147 | 997（924〜1,055） | 8.5 | 24.4 |
+| native | heavy | 4,194,304 | 50,507 | 7,882（7,468〜8,238） | 14.5 | 22.8 |
+| WebAssembly | light | 1,024 | 1.3 | 400（379〜6,578） | 3.6 | 1.3 |
+| WebAssembly | light | 16,384 | 20.4 | 500（475〜15,540） | 4.2 | 1.1 |
+| WebAssembly | light | 262,144 | 358 | 1,589（1,247〜16,636） | 5.2 | 1.3 |
+| WebAssembly | light | 4,194,304 | 5,430 | 21,495（12,376〜24,161） | 16.6 | 1.2 |
+| WebAssembly | heavy | 1,024 | 48.9 | 406（385〜8,467） | 7.2 | 1.2 |
+| WebAssembly | heavy | 16,384 | 796 | 516（474〜24,018） | 8.3 | 1.2 |
+| WebAssembly | heavy | 262,144 | 12,607 | 1,200（1,058〜16,005） | 8.9 | 1.2 |
+| WebAssembly | heavy | 4,194,304 | 205,161 | 12,709（12,330〜13,154） | 76.9 | 1.2 |
+
+読み方は次のとおりです。
+
+- 呼び出しごとの転送と同期があるので、GPU の側には、lane 数によらない固定の時間があります。native は約 0.45 ms、WebAssembly（Dawn）は約 0.4 ms で、`light` のように 1 lane あたりの計算が小さいカーネルでは、測った全部の lane 数で CPU 参照より遅く、4,194,304 lane でも native は 5.6 倍、WebAssembly は 4.0 倍遅いままでした。
+- 1 lane あたりの計算が大きい `heavy` では、lane 数が増えると逆転します。native は 16,384 lane で GPU が 2.9 倍遅く、262,144 lane で 3.2 倍速く、4,194,304 lane で 6.4 倍速くなりました。WebAssembly の CPU 参照は SIMD なしなので、逆転は 16,384 lane で起き、4,194,304 lane で 16 倍です。この比は、この 2 つのカーネルと、この機械の 1 回の測定だけの値で、別のカーネルや GPU には当てはまりません。
+- WebAssembly の最大値には、数 ms から 24 ms の外れ値があります（中央値は安定）。ホストが JSPI で待つ間の JavaScript の事象ループの揺らぎによるものと考えられますが、原因は調べていません。
+- native の完了待ちは、最初の実装（ブロックする poll だけ）では 1 呼び出しが 1.6〜1.7 ms（1,024 lane の `light`、1 回の測定）で、wgpu-native 29 の Metal での待ちが 1 ms を超えていました。最初の 5 ms をブロックしない poll で回す現在の実装は 0.46 ms です（9 回の中央値）。待ちを短縮した方法は、より長いカーネルでは 5 ms のあと、ブロックする poll に切り替わります。
+
+GPU 常駐バッファがない（呼び出しごとの転送）ことが、小さい lane 数での固定費の大きな部分です。この測定は速度の合否の閾値ではなく、共有 CI にも入れません。
 
 ## Async の中断と継続のコスト（B08）
 

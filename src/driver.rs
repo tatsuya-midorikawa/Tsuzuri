@@ -278,6 +278,9 @@ pub struct BuildOptions {
     pub wasm_threads: bool,
     /// `--wasm-feature jspi`: `Async.block_on` waits through JavaScript Promise Integration (B08).
     pub wasm_jspi: bool,
+    /// `--wasm-feature webgpu`: `Gpu.request Gpu.WebGpu` and the kernels on that device call the
+    /// JSPI imports `tsuzuri_gpu.open` and `tsuzuri_gpu.run` (F09 Phase 2).
+    pub wasm_webgpu: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -306,6 +309,7 @@ impl Default for BuildOptions {
             wasm_simd: false,
             wasm_threads: false,
             wasm_jspi: false,
+            wasm_webgpu: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -327,7 +331,8 @@ impl BuildOptions {
                 || self.trap_info
                 || self.wasm_simd
                 || self.wasm_threads
-                || self.wasm_jspi)
+                || self.wasm_jspi
+                || self.wasm_webgpu)
         {
             return Err(driver_error(
                 "E2000",
@@ -365,6 +370,21 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ));
+        }
+        if self.wasm_webgpu
+            && (self.target != Target::Wasm32
+                || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs",
+            ));
+        }
+        if self.wasm_webgpu && (self.wasm_threads || self.wasm_host.is_some()) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration",
             ));
         }
         if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
@@ -2465,6 +2485,9 @@ fn build_complete(
                 "; wasm-feature: simd128; compile this IR with -msimd128\n",
             );
         }
+        // The GPU runtime functions are JSPI imports under `--wasm-feature webgpu` and report
+        // "unavailable" without it, so the default module has no import (F09 Phase 2).
+        text = llvm::with_wasm_gpu_host(text, options.wasm_webgpu);
         text.push_str(include_str!("runtime/wasm.ll"));
     }
     let task_runtime =
@@ -2476,6 +2499,9 @@ fn build_complete(
             .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c (F09 Phase 2).
+    let gpu_runtime =
+        options.target == Target::Native && text.contains("declare i32 @tsuzuri_gpu_");
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
     let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
@@ -2501,6 +2527,7 @@ fn build_complete(
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
+            ("declare i32 @tsuzuri_gpu_", "GPU devices"),
             ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
@@ -2537,6 +2564,7 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
+        || gpu_runtime
         || (options.target == Target::Native
             && (io_runtime || os_runtime || arguments_runtime || async_reactor));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
@@ -2708,7 +2736,7 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c must precede every include, so it comes first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
@@ -2717,6 +2745,11 @@ fn build_complete(
                 },
                 if async_reactor && options.target == Target::Native {
                     include_str!("runtime/async.c")
+                } else {
+                    ""
+                },
+                if gpu_runtime {
+                    include_str!("runtime/gpu.c")
                 } else {
                     ""
                 },
@@ -2753,7 +2786,7 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if (task_runtime || trap_runtime || async_reactor) && !cfg!(windows) {
+            if (task_runtime || trap_runtime || async_reactor || gpu_runtime) && !cfg!(windows) {
                 runtime.arg("-pthread");
             }
             if trap_runtime {
@@ -2946,6 +2979,10 @@ fn build_complete(
             if task_runtime && !cfg!(windows) {
                 clang.arg("-pthread");
             }
+            // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
+            if gpu_runtime && cfg!(target_os = "linux") {
+                clang.args(["-pthread", "-ldl"]);
+            }
         }
         if stack_runtime && dwarf_sidecar.is_none() {
             if options.debug_info {
@@ -3001,6 +3038,9 @@ fn build_complete(
                 linker.arg(&runtime_object);
                 if task_runtime {
                     linker.arg("-pthread");
+                }
+                if gpu_runtime && cfg!(target_os = "linux") {
+                    linker.args(["-pthread", "-ldl"]);
                 }
             }
             if stack_runtime {
@@ -3275,6 +3315,10 @@ fn link_shared(
     linker.args(["-x", "none"]).arg(object);
     if let Some(runtime) = runtime {
         linker.arg(runtime).arg("-pthread");
+        // The runtime may load a WebGPU library with dlopen, which older glibc keeps in libdl.
+        if cfg!(target_os = "linux") {
+            linker.arg("-ldl");
+        }
     }
     linker.arg("-lm");
     links.add_to(&mut linker);

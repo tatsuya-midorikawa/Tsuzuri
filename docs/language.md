@@ -2780,43 +2780,55 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 
 ### GPU Kernel（実験的）
 
-`Gpu` モジュールは、将来の GPU オフロードに向けたカーネル抽出、CPU 参照実装、および WGSL シェーダーコード生成を検証するための実験的実装です。通常の Tsuzuri コンパイルにおいて実際の GPU ランタイムライブラリが自動リンクされることはありません。
-デバイス要求 API `Gpu.request Gpu.CpuReference` のみが `Result.Ok Device` を返却し、他のバックエンド（`WebGpu`、`Vulkan`、`Cuda`、`Metal`、`Auto`）を要求した場合は一律で `Result.Error Gpu.Unavailable` となります。
+`Gpu` モジュールは、カーネル抽出、CPU 参照実装、WGSL シェーダーコード生成、および WebGPU 上の実行を検証するための実験的実装です。`Gpu.WebGpu` を使わないプログラムに GPU ランタイムがリンクされること、WebAssembly の import が増えることはありません。
+デバイス要求 API `Gpu.request Gpu.CpuReference` は常に `Result.Ok Device` を返します。`Gpu.request Gpu.WebGpu` は、言語ランタイムが WebGPU のデバイスを開けたときだけ `Result.Ok Device` を返し、ライブラリ・アダプタ・必要な機能（`shader-f16`）がなければ `Result.Error Gpu.Unavailable` です。他のバックエンド（`Vulkan`、`Cuda`、`Metal`、`Auto`）を要求した場合は一律で `Result.Error Gpu.Unavailable` となります。
 明示的に GPU バックエンドを要求したコードに対して勝手に CPU 実装を割り当てて成功扱いに偽装することはなく、`Auto` を指定した場合であっても CPU フォールバックを意味するものではありません。
 
 `Gpu.Device` および `Gpu.Buffer<'a>` は、外部から内部を覗けない不透明（opaque）な非 Copy 所有型です。`Device` インスタンスは各操作に対して共有借用参照経由で引き渡します。
 `Gpu.init (&device) count (\index -> index * index)` における `index` は `i32`、`count` は 0 〜 2,147,483,647 の範囲の `i64` 整数です。
 `Gpu.map (&device) transform buffer` は入力バッファを消費し、`Gpu.from_array (&device) (&values)` は配列をディープコピーしてバッファを生成し、`Gpu.to_array buffer` はバッファを消費して配列を返却します。
-CPU 参照バッファの要素型として `i32`、`i32u`、`i64`、`i64u`、`f32`、`f64` がサポートされています。これらは標準の配列アロケータとデストラクタによって安全に管理され、現時点で GPU メモリ上に常駐していると主張するものではありません。
+CPU 参照バッファの要素型として `i32`、`i32u`、`i64`、`i64u`、`f16`、`f32`、`f64` がサポートされています。これらは標準の配列アロケータとデストラクタによって安全に管理されます。バッファは、WebGPU デバイスでもホストの配列のままで、GPU メモリ上に常駐しません。
 `init`、`map`、`from_array`、`init_relaxed`、および `map_relaxed` は直接の完全適用呼び出しのみが許可されます。`init` や `map` に渡すコールバック関数は、既知の静的関数または環境キャプチャを持たない純粋な無名ラムダ式に限定され、スカラー局所変数、算術演算、比較演算、型キャスト、`if` 分岐、および既知の関数の呼び出しのみが許可されます。
 ヒープメモリの動的確保、借用参照の生成、ホスト関数の呼び出し、並行タスク、ループ構文、再帰呼び出し、`assert`、および動的な未知の関数ポインタ値の呼び出しはコンパイルエラー `E1018` となり、カーネル抽出のネスト深度 128、関数呼び出し数 1024、式数 65536 を超過した場合は `E1017` エラーとなります。
 
 `tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` コマンドは、エクスポートされた単一引数のスカラー関数から WebGPU 向けの WGSL シェーダーコードを生成します（専用のスタンドアロンプロジェクトとしてビルドし、ターゲットや最適化オプションは指定しません）。
 WGSL の厳格な生成パスにおいてサポートされる型は `i32` および `i32u` に限定され、整数間の型変換はビット列を厳密に保持し、ビットシフト量は下位 5-bit でマスクされ、整数の加減乗算はモジュロ折り返し（wrap）としてコード生成されます。除算および剰余演算は、WGSL と Tsuzuri のトラップ仕様の差異を安全に吸収できないため生成が拒否されます。
-WGSL にはネイティブな 64-bit 整数型が存在せず、浮動小数点演算においてもハードウェアごとの融合積和（FMA）や非正規化数（subnormal）の扱いに差異が生じるため、64-bit 整数や浮動小数点型に対する厳格な WGSL シェーダー生成は `E1018` エラーとなります（なお、前述の CPU 参照実装における厳密な数値契約は変更されません）。`f32` の局所値を持つ `i32` カーネルも、厳格な出力では同じ `E1018` です。
+WGSL にはネイティブな 64-bit 整数型が存在せず、浮動小数点演算においてもハードウェアごとの融合積和（FMA）や非正規化数（subnormal）の扱いに差異が生じるため、64-bit 整数や浮動小数点型に対する厳格な WGSL シェーダー生成は `E1018` エラーとなります（なお、前述の CPU 参照実装における厳密な数値契約は変更されません）。`f32` や `f16` の局所値を持つ `i32` カーネルも、厳格な出力では同じ `E1018` です。
 出力される WGSL コードは、ワークグループサイズ `@workgroup_size(256)`、エントリーポイント `map_main` または `init_main`、ならびに `binding(0)` の入力ストレージバッファ、`binding(1)` の出力ストレージバッファ、およびデータ長を格納した `binding(2)` の uniform バッファで構成されます（`init` カーネルでは入力バッファは生成されません）。
 
-#### 緩い f32 カーネル（relaxed）
+#### 緩い f32・f16 カーネル（relaxed）
 
 GPU 上の浮動小数点は、上記の厳密な `f32` 規則（再結合・暗黙の FMA の禁止、非正規化数・NaN・符号付きゼロの保持）を満たせません。そこで、緩い意味を持つ別名の API と出力種別を用意し、利用者が名前で選んだときだけ使います。厳密な `Gpu.init`・`Gpu.map` と `--emit wgsl` が、緩い意味へ黙って切り替わることはありません。
 
 - `Gpu.init_relaxed :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>` と `Gpu.map_relaxed :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>` は、`Gpu.init`・`Gpu.map` と同じ所有権・借用・`count` の検査を持ち、CPU 参照では `Gpu.init`・`Gpu.map` へ委譲します。違いは、コールバックに緩いカーネルの規則をかけることです。
-- `tsuzuri build Kernel.tz --emit wgsl-relaxed -o kernel.wgsl` は、`--emit wgsl` と同じく `export` が一つの専用プロジェクトを受け、`--target`・`-O`・`--cpu`・デバッグ・WASM 機能と併用できません。1 行目に `// tsuzuri-gpu float=relaxed input=<t> output=<t>`（`<t>` は `f32`・`i32`・`u32`）を出し、厳格な出力にはこの行がありません。`f32` のリテラルは `bitcast<f32>(<bit 列>u)` で出し、丸めを WGSL の字句解析に任せません。
-- 緩いカーネルの型と演算は次のとおりです。バッファの要素（引数と結果）は `f32`・`i32`・`i32u`、局所値と呼ぶ関数の引数・結果は `f32`・`i32`・`i32u` に加えて `bool`、`f32` の演算は単項 `-`・`+`・`-`・`*`・`/`・比較、キャストは `i32`／`i32u` から `f32`・同じ型・`i32` と `i32u` の間、整数の演算は厳格な場合と同じです。`f64`・`i64`・`i64u`、`bool` のバッファ要素、`f32` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余は `E1018` です（浮動小数点の剰余演算子は言語にありません）。
+- `tsuzuri build Kernel.tz --emit wgsl-relaxed -o kernel.wgsl` は、`--emit wgsl` と同じく `export` が一つの専用プロジェクトを受け、`--target`・`-O`・`--cpu`・デバッグ・WASM 機能と併用できません。1 行目に `// tsuzuri-gpu float=relaxed input=<t> output=<t>`（`<t>` は `f16`・`f32`・`i32`・`u32`）を出し、厳格な出力にはこの行がありません。`f16` を使う WGSL は、続く行に `enable f16;` を持ちます。`f32` のリテラルは `bitcast<f32>(<bit 列>u)`、`f16` のリテラルは `f16(bitcast<f32>(<bit 列>u))` で出し、丸めを WGSL の字句解析に任せません。
+- 緩いカーネルの型と演算は次のとおりです。バッファの要素（引数と結果）は `f16`・`f32`・`i32`・`i32u`、局所値と呼ぶ関数の引数・結果は `f16`・`f32`・`i32`・`i32u` に加えて `bool`、`f16` と `f32` の演算は単項 `-`・`+`・`-`・`*`・`/`・比較、キャストは `i32`／`i32u` から `f32`・`f16`、`f16` から `f32`、`f32` から `f16`、同じ型、`i32` と `i32u` の間、整数の演算は厳格な場合と同じです。`f64`・`i64`・`i64u`、`bool` のバッファ要素、`f32`・`f16` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余は `E1018` です（浮動小数点の剰余演算子は言語にありません）。`f16` は `export` できない（`E1008`）ので、`--emit wgsl-relaxed` の根の型にはならず、`f32` の根の中の局所値として現れます。
 
-緩い `f32` の数値契約は、この API と出力種別の中にだけ適用します。
+緩い `f32`・`f16` の数値契約は、この API と出力種別の中にだけ適用します。
 
 1. CPU 参照（`Gpu.CpuReference` のデバイス）は、緩いカーネルも厳密な規則で評価します。結果は `Gpu.map` とビット単位で同じで、native と WASM の `-O0`／`-O3` で一致します。厳密な結果は、緩い規則が許す結果の一つです。
-2. `--emit wgsl-relaxed` の shader を GPU で実行した結果は、`a * b + c` を一回丸めの積和へ縮約する、`+`・`*` の結合と順序を変える、非正規化数の入力・中間値・結果をどちらかの符号のゼロへ置き換える、`/` を WGSL の精度（2.5 ulp）で計算する、`i32`／`i32u` から `f32` への変換を隣り合う二つの `f32` のどちらかにする、ことが許されます。
-3. 入力・中間値・結果のどれかが NaN・無限大、またはオーバーフローしたとき、その要素の結果は未規定の `f32`（比較なら未規定の `bool`）です。トラップはせず、ほかの要素には影響しません。`f32` に依存する分岐の選択と、その先の整数結果も変わることがあります。
+2. `--emit wgsl-relaxed` の shader を GPU で実行した結果は、`a * b + c` を一回丸めの積和へ縮約する、`+`・`*` の結合と順序を変える、非正規化数の入力・中間値・結果をどちらかの符号のゼロへ置き換える、`/` を WGSL の精度（2.5 ulp）で計算する、`i32`／`i32u` から `f32`・`f16` への変換と `f32` から `f16` への変換を隣り合う二つの値のどちらかにする、ことが許されます。
+3. 入力・中間値・結果のどれかが NaN・無限大、またはオーバーフローしたとき、その要素の結果は未規定の `f32`・`f16`（比較なら未規定の `bool`）です。トラップはせず、ほかの要素には影響しません。浮動小数点に依存する分岐の選択と、その先の整数結果も変わることがあります。
 4. 整数の値と演算は、厳格な場合と同じ意味を保ちます。
 5. 同じデバイス・ドライバでも、実行ごとの一致は保証しません。数値の誤差の上限は言語として約束しません。テストの許容誤差は検証用の規約です。
 6. 緩いカーネルはトラップしません。
 7. WGSL の生成は target に依存せず、WASM の既定出力に import は増えません。
 
-プロトタイプ実装として同梱されている Node.js 向けランタイム `src/runtime/webgpu.mjs` は、WebGPU アダプタを明示的に要求し、`fromArray`、`init`、`map` の実行結果バッファを GPU デバイス上に保持し、`toArray` が呼び出されたタイミングで初めて GPU から CPU ホストメモリへの同期読み出しを実行します。
+#### WebGPU デバイスでの実行
+
+`Gpu.request Gpu.WebGpu` が `Result.Ok` を返したデバイスでは、`Gpu.init`・`Gpu.map`・`Gpu.init_relaxed`・`Gpu.map_relaxed` を、呼び出し箇所のコールバックから作った WGSL カーネルで実行します。コンパイラは、`Gpu.WebGpu` を使うプログラムに限り、呼び出し箇所（コールバックと、厳密か緩いか）ごとに WGSL を 1 つ作り、実行ファイルに埋め込みます。`Gpu.WebGpu` を使わないプログラムの出力（IR、import、ABI）は変わりません。
+
+1. 厳密な呼び出しは、lane が `i32`・`i32u` で、コールバックが厳格な WGSL に出せるときだけ GPU で動き、CPU 参照とビット単位で一致します。そうでない厳密な呼び出し（`f32`・`f16`・64-bit・`bool` の lane、`f32` などの局所値を持つコールバック）には GPU のカーネルがなく、WebGPU デバイスで動かすと理由を標準エラーに出してトラップします。CPU 参照や緩い意味へ黙って切り替えることはありません。浮動小数点の GPU 実行は、緩い名前の API だけです。
+2. 緩い呼び出しの `f16` は、デバイスが `shader-f16` 機能を持つ場合だけ使えます。`f16` のカーネルを持つプログラムは、`Gpu.request Gpu.WebGpu` の時点で `shader-f16` を要求し、アダプタが持たなければ `Result.Error Gpu.Unavailable` です。
+3. 1 回の呼び出しは、ホスト配列の複製、アップロード、実行、完了待ち、読み戻しを行い、デバイスにバッファを残しません。`Gpu.to_array` と `Gpu.from_array` は転送をしません。
+4. `Gpu.request` が成功したあとの失敗（シェーダーのコンパイル失敗、デバイスの喪失、デバイス上限の超過）は、理由を標準エラーに出してトラップします。`Result` では返りません。
+5. native のランタイムは、リンク時の依存なしに、wgpu-native 29 を `dlopen`／`LoadLibrary` で読み込みます。ライブラリがない、`wgpuGetVersion` の主バージョンが 29 でない、必要な関数が足りない、アダプタがない、256 invocation のワークグループが使えない、のどれでも `Unavailable` です。バージョン 0 を返すソースビルドは、`TSUZURI_WEBGPU_LIBRARY` で名指ししたときだけ受け入れます。`TSUZURI_WEBGPU_LIBRARY` は、設定すればそのパスだけを試し、空なら WebGPU を無効にします。`TSUZURI_GPU_DEBUG` が空でなければ、`Unavailable` の理由とデバイスでの実行を標準エラーに出します。
+6. WebAssembly の既定の出力は import を持たず、`Gpu.request Gpu.WebGpu` は `Unavailable` です。`--wasm-feature webgpu`（`wasm32` の object・LLVM IR・WASM だけ。threads、`--wasm-host`、`bindings-js` とは `E2000`）は、`tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。ホストは JSPI で中断する関数としてこれらを実装し（`src/runtime/webgpu.mjs` の `createGpuImports`）、モジュールの export は `WebAssembly.promising` で呼びます。
+7. ランタイムのプロセスあたりのデバイスは 1 つで、複数スレッドからの呼び出しは直列に実行されます。
+
+プロトタイプ実装として同梱されている Node.js 向けランタイム `src/runtime/webgpu.mjs` の `createWebGpu(gpu, { features })` は、WebGPU アダプタを明示的に要求し（`features` で `shader-f16` などを要求できます）、`fromArray`、`init`、`map` の実行結果バッファを GPU デバイス上に保持し、`toArray` が呼び出されたタイミングで初めて GPU から CPU ホストメモリへの同期読み出しを実行します。
 `map` や `toArray` はホストバッファを 1 回だけ消費し、GPU コマンドキューの完了後に古いバッファを破棄します。デバイス制限の超過や実行時エラーは JavaScript 例外として返され、CPU 実装への暗黙のフォールバックは行われません（使用後は `close()` を await して GPU リソースを確実に解放します）。
-`fromArray` は `Int32Array`・`Uint32Array`・`Float32Array` を受け、バッファは要素の種類（`f32` か 32-bit 整数）を持ちます。`toArray` は `f32` のバッファを `Float32Array`、整数のバッファを `Uint32Array` で返します。`prepare(source, { float: "relaxed" })` がなければ、緩い WGSL（1 行目の宣言で判定）は拒否されます。カーネルの入力と種類が違うバッファを `map` に渡すと `TypeError` で、そのバッファは消費されません。
+`fromArray` は `Int32Array`・`Uint32Array`・`Float32Array`・`Uint16Array`（`f16` の bit 列）を受け、バッファは要素の種類（`f32`・`f16` か 32-bit 整数）を持ちます。`toArray` は `f32` のバッファを `Float32Array`、`f16` のバッファを `Uint16Array`、整数のバッファを `Uint32Array` で返します。`prepare(source, { float: "relaxed" })` がなければ、緩い WGSL（1 行目の宣言で判定）は拒否されます。カーネルの入力と種類が違うバッファを `map` に渡すと `TypeError` で、そのバッファは消費されません。
 具体的な実行例は `examples/gpu/run.mjs` に用意されています。標準の WebGPU バインディングまたはブラウザの `navigator.gpu` を透過的に利用可能であり、Tsuzuri コンパイラ自身に特定の GPU ベンダーの独自ドライバ依存が混入することはありません。
 
 ### SIMD 値型

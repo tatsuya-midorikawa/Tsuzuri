@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use rustc_apfloat::ieee::{Half, Single};
+use rustc_apfloat::{Float, FloatConvert};
+
 use crate::{
     check::{CheckedModule, FunctionRef, Type, TypedExpr, TypedExprKind},
     diagnostic::{Diagnostic, Span},
@@ -18,7 +21,7 @@ pub struct GpuKernel<'a> {
 fn scalar(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Bool | Type::Integer(32 | 64, _) | Type::Binary(32 | 64)
+        Type::Bool | Type::Integer(32 | 64, _) | Type::Binary(16 | 32 | 64)
     )
 }
 
@@ -38,7 +41,13 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
             let name = function.name.split('.').next().unwrap();
             matches!(
                 name,
-                "init" | "map" | "init_relaxed" | "map_relaxed" | "from_array"
+                "init"
+                    | "map"
+                    | "init_relaxed"
+                    | "map_relaxed"
+                    | "init_on"
+                    | "map_on"
+                    | "from_array"
             )
             .then_some((id, name))
         })
@@ -99,7 +108,13 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                         }
                     };
                     let kernel = extract_kernel(module, target)?;
-                    if name.ends_with("_relaxed") {
+                    // A device-aware call carries whether it was relaxed in its kernel number.
+                    let relaxed = name.ends_with("_relaxed")
+                        || arguments
+                            .last()
+                            .and_then(crate::gpu_devices::marked)
+                            .unwrap_or(false);
+                    if relaxed {
                         kernel.wgsl_relaxed()?;
                     }
                 }
@@ -272,18 +287,18 @@ impl GpuKernel<'_> {
 
     fn emit_wgsl(&self, relaxed: bool) -> Result<String, Diagnostic> {
         let root = &self.module.functions[self.function];
-        let mut text = String::new();
         if !relaxed
             && (!matches!(root.signature.parameters[0], Type::Integer(32, _))
                 || !matches!(root.signature.result, Type::Integer(32, _)))
         {
             return Err(unsupported(
-                "strict WebGPU kernels require i32 or i32u buffer lanes; 64-bit lanes are unavailable and f32 lanes need --emit wgsl-relaxed",
+                "strict WebGPU kernels require i32 or i32u buffer lanes; 64-bit lanes are unavailable and f32 or f16 lanes need --emit wgsl-relaxed",
                 root.span,
             ));
         }
         let input = wgsl_type(&root.signature.parameters[0], relaxed, root.span)?;
         let output = wgsl_type(&root.signature.result, relaxed, root.span)?;
+        let mut text = String::new();
         if relaxed {
             if input == "bool" || output == "bool" {
                 return Err(unsupported(RELAXED_BOOL_LANE, root.span));
@@ -293,8 +308,9 @@ impl GpuKernel<'_> {
                 "// tsuzuri-gpu float=relaxed input={input} output={output}"
             );
         }
+        let mut body = String::new();
         let _ = write!(
-            text,
+            body,
             "struct Params {{ length: u32 }}\n@group(0) @binding(0) var<storage, read> input_values: array<{input}>;\n@group(0) @binding(1) var<storage, read_write> output_values: array<{output}>;\n@group(0) @binding(2) var<uniform> params: Params;\n"
         );
         for id in &self.functions {
@@ -319,24 +335,28 @@ impl GpuKernel<'_> {
             let result = wgsl_type(&function.signature.result, relaxed, function.span)?;
             let value = emitter.expression(&function.body)?;
             let _ = writeln!(
-                text,
+                body,
                 "fn kernel_{id}({parameters}) -> {result} {{\n{}return {value};\n}}",
                 emitter.text
             );
         }
         let id = self.function;
         let _ = writeln!(
-            text,
+            body,
             "@compute @workgroup_size(256)\nfn map_main(@builtin(global_invocation_id) invocation: vec3<u32>) {{\nif (invocation.x < params.length) {{ output_values[invocation.x] = kernel_{id}(input_values[invocation.x]); }}\n}}\n@compute @workgroup_size(256)\nfn init_main(@builtin(global_invocation_id) invocation: vec3<u32>) {{\nif (invocation.x < params.length) {{ output_values[invocation.x] = kernel_{id}({input}(invocation.x)); }}\n}}"
         );
+        // WGSL wants `enable f16;` before the first declaration, so it follows once the whole kernel is known.
+        if body.contains("f16") {
+            text.push_str("enable f16;\n");
+        }
+        text.push_str(&body);
         Ok(text)
     }
 }
 
-const RELAXED_TYPES: &str =
-    "relaxed WebGPU kernels support f32, i32, and i32u values; WGSL has no f64 or 64-bit integers";
+const RELAXED_TYPES: &str = "relaxed WebGPU kernels support f16, f32, i32, and i32u values; WGSL has no f64 or 64-bit integers";
 const RELAXED_BOOL_LANE: &str =
-    "relaxed WebGPU buffer lanes must be f32, i32, or i32u; bool lanes are unavailable";
+    "relaxed WebGPU buffer lanes must be f16, f32, i32, or i32u; bool lanes are unavailable";
 const RELAXED_CASTS: &str =
     "relaxed WGSL cannot reproduce Tsuzuri float-to-integer or f64 casts; compute them on the CPU";
 
@@ -346,6 +366,7 @@ fn wgsl_type(ty: &Type, relaxed: bool, span: Span) -> Result<&'static str, Diagn
         Type::Integer(32, false) => Ok("u32"),
         Type::Bool => Ok("bool"),
         Type::Binary(32) if relaxed => Ok("f32"),
+        Type::Binary(16) if relaxed => Ok("f16"),
         _ if relaxed => Err(unsupported(RELAXED_TYPES, span)),
         _ => Err(unsupported(
             "WGSL cannot preserve this scalar type; use the explicit CPU reference path",
@@ -360,6 +381,20 @@ fn f32_bits(text: &str) -> u32 {
     let bits = u64::from_str_radix(text.trim_start_matches("0x"), 16)
         .expect("a float literal is an LLVM hexadecimal constant");
     (f64::from_bits(bits) as f32).to_bits()
+}
+
+/// The f32 bit pattern of the same value as an f16 literal, which the checker keeps as the decimal
+/// number of its 16 bits. Every f16 value is an f32 value, so the conversion is exact.
+fn f16_bits_as_f32(text: &str) -> u32 {
+    let bits: u128 = text
+        .parse()
+        .expect("an f16 literal is the decimal number of its bits");
+    let widened: Single = Half::from_bits(bits).convert(&mut false).value;
+    widened.to_bits() as u32
+}
+
+fn half_or_single(ty: &Type) -> bool {
+    matches!(ty, Type::Binary(16 | 32))
 }
 
 struct Wgsl {
@@ -390,6 +425,9 @@ impl Wgsl {
             TypedExprKind::Float(text) if self.relaxed && expression.ty == Type::Binary(32) => {
                 format!("bitcast<f32>({}u)", f32_bits(text))
             }
+            TypedExprKind::Float(text) if self.relaxed && expression.ty == Type::Binary(16) => {
+                format!("f16(bitcast<f32>({}u))", f16_bits_as_f32(text))
+            }
             TypedExprKind::Unit => return Ok(String::new()),
             TypedExprKind::Local(id) => format!("local_{id}"),
             TypedExprKind::Unary(operator, operand) => {
@@ -398,7 +436,7 @@ impl Wgsl {
                     UnaryOp::Negate if expression.ty == Type::Integer(32, true) => {
                         format!("bitcast<i32>(0u - bitcast<u32>({value}))")
                     }
-                    UnaryOp::Negate if self.relaxed && expression.ty == Type::Binary(32) => {
+                    UnaryOp::Negate if self.relaxed && half_or_single(&expression.ty) => {
                         format!("(-{value})")
                     }
                     UnaryOp::Negate => format!("(0u - {value})"),
@@ -426,7 +464,7 @@ impl Wgsl {
                 } else {
                     let right_value = self.expression(right)?;
                     let signed = left.ty == Type::Integer(32, true);
-                    let float = self.relaxed && left.ty == Type::Binary(32);
+                    let float = self.relaxed && half_or_single(&left.ty);
                     let bits = |value: &str, ty: &Type| {
                         if *ty == Type::Integer(32, true) {
                             format!("bitcast<u32>({value})")
@@ -503,8 +541,11 @@ impl Wgsl {
                     (Type::Integer(32, false), Type::Integer(32, true)) => {
                         format!("bitcast<i32>({value})")
                     }
-                    (Type::Integer(32, _), Type::Binary(32)) if self.relaxed => {
+                    (Type::Integer(32, _) | Type::Binary(16), Type::Binary(32)) if self.relaxed => {
                         format!("f32({value})")
+                    }
+                    (Type::Integer(32, _) | Type::Binary(32), Type::Binary(16)) if self.relaxed => {
+                        format!("f16({value})")
                     }
                     (Type::Binary(_), _) | (_, Type::Binary(_)) if self.relaxed => {
                         return Err(unsupported(RELAXED_CASTS, span));

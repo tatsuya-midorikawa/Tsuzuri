@@ -104,7 +104,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | SIMD | `-O3` におけるループおよび SLP 自動ベクトル化。メモリ上で連続した配列配置、型の特殊化、不要なコピーの徹底排除により、LLVM が最適化しやすい IR を生成。`--cpu native` 指定時にはビルドホスト固有の命令セットを有効化 |
 | 移植性 | デフォルトの `--cpu generic` ではターゲットアーキテクチャのベースライン命令セットを採用。同梱の i64 配列和のみ実行時 ISA 選択を実施。`native` 指定時は配布バイナリの前提条件にビルド機の ISA が含まれる |
 | 複数 CPU コア | `Task.parallel` 向けに遅延起動する常駐スレッドプールを実装。ハードウェアの CPU コア数に応じて追加スレッド数を適切に制限し、呼び出し元スレッド自身も自グループの処理を推進。WASM は逐次フォールバック。自動並列化は未実装 |
-| GPU | 実験的なカーネル抽出、CPU 参照実装、厳密な整数 WGSL 出力、名前で選ぶ緩い `f32` の WGSL 出力（`Gpu.map_relaxed`・`--emit wgsl-relaxed`。CPU 上の評価は厳密のまま）、および WebGPU ホスト試作を実装。通常ランタイムへの実 GPU 接続、厳密な浮動小数点 GPU 演算、自動オフロードは未実装 |
+| GPU | 実験的なカーネル抽出、CPU 参照実装、厳密な整数 WGSL 出力、名前で選ぶ緩い `f32`・`f16` の WGSL 出力（`Gpu.map_relaxed`・`--emit wgsl-relaxed`。CPU 上の評価は厳密のまま）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native の動的読み込み、WebAssembly は `--wasm-feature webgpu` と JSPI のホスト）、および WebGPU ホスト試作を実装。厳密な浮動小数点と 64 bit 整数の GPU 演算、Vulkan、自動選択、GPU 常駐バッファ、自動オフロードは未実装 |
 | WASM | bulk-memory に標準対応。SIMD128、マルチスレッド（threads）、`--wasm-host wasi`、Async の JSPI はそれぞれ明示的なオプトイン（opt-in）制。デフォルトは SIMD なし・ホストインポートなし（IO は `tsuzuri_io`）・逐次実行であり、OS API の呼び出しは `E2000` で拒否 |
 | 協調的な非同期計算 | `std/Async.tc` の継続と `Step` で `Async.run`、native の `Async.block_on`、ホスト駆動の `Async.start` を実装。native の reactor は per-thread mailbox、WASM の `block_on` は JSPI を使う |
 
@@ -241,6 +241,11 @@ WGSL の型制約および浮動小数点・トラップの言語契約に基づ
 CLI の `--emit wgsl` オプションは、単一のエクスポート関数を持つカーネルプロジェクトを通常の安全な出力保護経路を通じて公開します。WebGPU ホストの試作実装は、デバイスの各種制限（limits）、シェーダー診断情報、所有バッファ、エラースコープ、およびコマンドキューの同期を処理し、GPU 実行の明示要求を勝手に CPU 実行へ縮退させることはありません。
 LLVM において列挙型のスカラー別名は前方参照できないため、すべての enum 別名は record／union 構造体の定義よりも前に先行して生成されます。構造体同士の相互前方参照は従来どおりサポートされます。
 検証は `cargo test --test gpu` および `tests/gpu.mjs` で行われます。`TSUZURI_WEBGPU=1` 環境変数設定時には、実際の GPU アダプタ上でシェーダー実行、初期化／マッピング、常駐チェーン、および境界の動作がテストされます。
+
+**GPU Phase 2:** `Gpu.WebGpu` を構築するユーザー関数が 1 つでもあるプログラムだけが「デバイス対応」で、そうでないプログラムの IR・import・ABI は変わりません（`src/gpu_devices.rs`）。単相化の前に `request`・`init`・`map`・`init_relaxed`・`map_relaxed` の呼び出しを std の `request_on`・`init_on`・`map_on` へ付け替え、呼び出しの最後に整数のマーカー引数を足します。単相化と closure lowering のあとで、呼び出し箇所のコールバックごとに、`extract_kernel` から厳密または緩い WGSL を作って `CheckedModule.gpu` の表へ入れ、マーカーをカーネル番号に書き換えます（厳密な WGSL に出せない呼び出しは番号なし）。表は（コールバック、厳密か緩いか）の順に決定的に並び、LLVM の定数 `@tz.gpu.kernels` と WGSL テキストとして埋め込まれます（`src/llvm_gpu.rs`）。
+`std/Gpu.tz` の `request_on`・`init_on`・`map_on` は、std 専用の組み込み関数 `Gpu.__open`・`Gpu.__features`・`Gpu.__run` を呼びます。ランタイムの境界は 2 つの C 関数で、`tsuzuri_gpu_open(backend, features)` は 0 か利用不可などの状態を、`tsuzuri_gpu_run(backend, mode, flags, lanes, wgsl, wgsl_length, spirv, spirv_length, input, count, output)` はカーネル 1 回の実行を表します（0 成功、1 利用不可、2 機能不足またはカーネルなし、3 上限超過、4 実行時エラー。0 以外は理由を 1 行出してトラップ）。native は `src/runtime/gpu.c` が定義し、WebAssembly は `--wasm-feature webgpu` のときだけ import にし、そうでなければ状態 1 を返すモジュール内の定義に置き換えます。`backend` は `Gpu.Backend` の番号で、`spirv` の欄は Vulkan 用に空けてあります。
+`src/runtime/gpu.c` は、`dlopen` した wgpu-native 29 の WebGPU C API の必要な部分だけを自前で宣言し、バージョンを確かめてから、パイプラインを WGSL ごとにキャッシュして、呼び出しごとにバッファ作成、アップロード、実行、読み戻しをします。完了待ちは最初の 5 ms をブロックしない poll で回し（wgpu-native 29 の Metal では、ブロックする poll で待つと、0.35 ms ほどで終わる小さなカーネルの呼び出しが 1.5 ms 前後かかったため。原因はソースで確かめていない）、それを過ぎればブロックします。WebAssembly のホストは、同じ境界を JSPI で中断する関数として `createGpuImports` が実装します。
+検証は `tests/gpu_runtime.mjs` で行います。ローダー（ライブラリなし、空、名指しのパスがない、バージョン違い、`wgpuGetVersion` なし、関数不足、バージョン 0 の扱い）と WebAssembly の import は、GPU なしで検査します。`TSUZURI_WEBGPU=1` では、native は wgpu-native、WebAssembly は Dawn（JSPI）で、i32・i32u を CPU 参照とビット単位で、緩い `f32`・`f16` を許容誤差で比べ、デバイスでの実行回数を `TSUZURI_GPU_DEBUG` の出力で数えます。
 
 **モジュール:** 「1 ファイルにつき 1 モジュール」を強制し、モジュール名はファイル名から自動的に導出されます。
 プロジェクトルート配下を再帰的に走査し、`SourceFile.relative_path` を正規化した順序で処理します。例えば `Geometry/Point.tz` のコンパイラ内部名（キー）は `Geometry.Point` となり、ソースコード上では `Geometry::Point` と記述します。
