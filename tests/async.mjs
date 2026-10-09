@@ -370,9 +370,11 @@ int main(void) {
     // Each worker waits for its own operation; the posts reach the threads that began them.
     started = 0;
     assert(tz_parallel_completed(1) == 10 * (1 + 2 + 3 + 4) && started == 4);
+    // A bounded pool may reuse a worker for several jobs, but never reuses an operation id.
     for (int index = 0; index < 4; index++) {
+        assert((started_operation[index] >> 39) > 0);
         for (int other = 0; other < index; other++) {
-            assert((started_operation[index] >> 39) != (started_operation[other] >> 39));
+            assert(started_operation[index] != started_operation[other]);
         }
     }
     assert(live == 0);
@@ -393,10 +395,15 @@ function reactor(directory) {
   const host = join(directory, "reactor.c");
   writeFileSync(host, REACTOR);
   for (const optimization of ["0", "3"]) {
-    const native = join(directory, `async_reactor-O${optimization}`);
-    execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host,
-      join(root, "src/runtime/async.c"), join(root, "src/runtime/task.c"), "-pthread", "-o", native]);
-    execute(native, []);
+    for (const processors of [undefined, 1, 2]) {
+      const task = join(root, "src/runtime/task.c");
+      const runtime = processors === undefined ? task : join(directory, `task-${processors}.c`);
+      if (processors !== undefined) writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include ${JSON.stringify(task)}\n`);
+      const native = join(directory, `async_reactor-O${optimization}-${processors ?? "host"}`);
+      execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host,
+        join(root, "src/runtime/async.c"), runtime, "-pthread", "-o", native]);
+      execute(native, []);
+    }
   }
   // The driver links the reactor into executables, objects, and shared libraries by itself.
   const program = join(directory, "Main.tz");
