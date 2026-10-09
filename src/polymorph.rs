@@ -2756,6 +2756,23 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::NetResolve
+                | Builtin::NetOpen
+                | Builtin::NetAccept
+                | Builtin::NetRead
+                | Builtin::NetWrite
+                | Builtin::NetClose
+                | Builtin::NetClassify
+        ) && !(self.module == "Net" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "network primitives are private to the standard Net module; use the Net API instead",
+                span,
+            ));
+        }
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

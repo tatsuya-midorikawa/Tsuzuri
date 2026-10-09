@@ -26,6 +26,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Maybe.tc", include_str!("../std/Maybe.tc")),
+    ("std/Net.tz", include_str!("../std/Net.tz")),
     ("std/Os.tz", include_str!("../std/Os.tz")),
     ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
@@ -80,6 +81,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Random",
     "Os",
     "Process",
+    "Net",
     "Format",
     "Exception",
     "BigInt",
@@ -133,6 +135,10 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Async.Async"
             | "Async.Next"
             | "Matrix.Matrix"
+            | "Net.Address"
+            | "Net.TcpStream"
+            | "Net.TcpListener"
+            | "Net.UdpSocket"
     )
 }
 
@@ -215,6 +221,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Matrix",
         names: &["Matrix"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Net",
+        names: &["Net"],
         aliases: &[],
         uses: &[],
     },
@@ -543,7 +555,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 47);
+        assert_eq!(RESERVED_MODULES.len(), 48);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(!is_reserved_module("Task"));

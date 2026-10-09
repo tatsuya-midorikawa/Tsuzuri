@@ -122,6 +122,7 @@
 - [Random](./built-in-types-and-modules/random.md)
 - [Os](./built-in-types-and-modules/os.md)
 - [Process](./built-in-types-and-modules/process.md)
+- [Net](./built-in-types-and-modules/net.md)
 - [Format](./built-in-types-and-modules/format.md)
 - [Exception](./built-in-types-and-modules/exception.md)
 - [Json](./built-in-types-and-modules/json.md)

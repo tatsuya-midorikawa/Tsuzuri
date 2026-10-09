@@ -1,0 +1,556 @@
+/// An IPv4 or IPv6 address and a port. Only `parse_address`, `parse_ip`, `resolve`, and the sockets make one, so
+/// the port is always 0 to 65535 and an IPv4 address always has `high == 0`.
+record Address { v6: bool, high: i64u, low: i64u, port: i64 } deriving (Eq, Hash)
+
+/// The value of an ASCII hexadecimal digit, or -1.
+private def hex_digit_value :: ubyte -> i64
+fn hex_digit_value byte =
+	if byte >= 48ubyte && byte <= 57ubyte then (byte as i64) - 48
+	elif byte >= 97ubyte && byte <= 102ubyte then (byte as i64) - 87
+	elif byte >= 65ubyte && byte <= 70ubyte then (byte as i64) - 55
+	else -1
+
+/// The port that is all of `bytes[start, stop)`: 1 to 5 decimal digits, no leading zero, at most 65535; else -1.
+private def parse_port :: ref [ubyte] -> i64 -> i64 -> i64
+fn parse_port bytes start stop =
+	let digits = stop - start
+	let mut value = 0
+	let mut index = start
+	let mut valid = digits >= 1 && digits <= 5 && !(digits > 1 && bytes[start] == 48ubyte)
+	while valid && index < stop do
+		let byte = bytes[index]
+		if byte >= 48ubyte && byte <= 57ubyte then value = value * 10 + (byte as i64) - 48 else valid = false
+		index = index + 1
+	if valid && value <= 65535 then value else -1
+
+/// The 32-bit value of the dotted-decimal IPv4 address that is all of `bytes[start, stop)`, or -1: four
+/// parts of 1 to 3 digits, each at most 255, with no leading zero except a lone "0".
+private def parse_v4 :: ref [ubyte] -> i64 -> i64 -> i64
+fn parse_v4 bytes start stop =
+	let mut result = 0
+	let mut parts = 0
+	let mut index = start
+	let mut valid = start < stop
+	while valid && parts < 4 do
+		let begin = index
+		let mut number = 0
+		while index < stop && bytes[index] >= 48ubyte && bytes[index] <= 57ubyte do
+			number = number * 10 + (bytes[index] as i64) - 48
+			index = index + 1
+		let digits = index - begin
+		if digits < 1 || digits > 3 || number > 255 || (digits > 1 && bytes[begin] == 48ubyte) then valid = false
+		else
+			result = result * 256 + number
+			parts = parts + 1
+			if parts < 4 then
+				if index < stop && bytes[index] == 46ubyte then index = index + 1 else valid = false
+	if valid && parts == 4 && index == stop then result else -1
+
+/// The eight 16-bit groups of the IPv6 address that is all of `bytes[start, stop)`, or `None`. Groups are
+/// 1 to 4 hexadecimal digits; "::" stands for one or more zero groups and appears at most once; only the
+/// last part may be a dotted IPv4 address, which makes two groups. A zone ("%eth0") is not accepted.
+private def parse_v6 :: ref [ubyte] -> i64 -> i64 -> Maybe<[i64]>
+fn parse_v6 bytes start stop =
+	let mut groups: Vec<i64> = Vec.with_capacity 8
+	let mut gap = -1
+	let mut index = start
+	let mut valid = stop > start
+	if valid && bytes[index] == 58ubyte then
+		if index + 1 < stop && bytes[index + 1] == 58ubyte then
+			gap = 0
+			index = index + 2
+		else valid = false
+	let mut more = valid && index < stop
+	while valid && more do
+		let begin = index
+		let mut value = 0
+		while index < stop && hex_digit_value bytes[index] >= 0 do
+			value = value * 16 + hex_digit_value bytes[index]
+			index = index + 1
+		let digits = index - begin
+		if index < stop && bytes[index] == 46ubyte then
+			let tail = parse_v4 bytes begin stop
+			if tail >= 0 && Vec.length (ref groups) <= 6 then
+				groups = Vec.push groups (tail / 65536)
+				groups = Vec.push groups (tail % 65536)
+				index = stop
+				more = false
+			else valid = false
+		elif digits >= 1 && digits <= 4 && Vec.length (ref groups) < 8 then
+			groups = Vec.push groups value
+			if index == stop then more = false
+			elif bytes[index] == 58ubyte then
+				if index + 1 < stop && bytes[index + 1] == 58ubyte then
+					if gap >= 0 then valid = false
+					else
+						gap = Vec.length (ref groups)
+						index = index + 2
+						if index == stop then more = false
+				else
+					index = index + 1
+					if index == stop then valid = false
+			else valid = false
+		else valid = false
+	let count = Vec.length (ref groups)
+	if !valid || (gap < 0 && count != 8) || (gap >= 0 && count > 7) then Maybe.None
+	else
+		let found = Vec.to_array groups
+		let missing = 8 - count
+		Maybe.Some (Array.init 8 (\position ->
+			if gap < 0 || position < gap then found[position]
+			elif position < gap + missing then 0
+			else found[position - missing]))
+
+private def address_of_groups :: ref [i64] -> i64 -> Address
+fn address_of_groups groups port =
+	let word = \from -> ((groups[from] as i64u) <<< 48) ||| ((groups[from + 1] as i64u) <<< 32) ||| ((groups[from + 2] as i64u) <<< 16) ||| (groups[from + 3] as i64u)
+	Address { v6: true, high: word 0, low: word 4, port: port }
+
+private def ascii_bytes :: ref string -> Maybe<[ubyte]>
+fn ascii_bytes text =
+	if String.is_well_formed text then Maybe.Some (Utf8String.to_bytes (Utf8String.from_string text)) else Maybe.None
+
+/// The address and port of a socket address: "127.0.0.1:80" or "[::1]:80". Only plain dotted-decimal IPv4
+/// ("127.1" and "0x7f.0.0.1" are not accepted) and IPv6 text are read, a port is required, and there is
+/// no room for spaces, a zone, or a leading zero in a number, so a check made on the text means the
+/// same address a connection goes to.
+def parse_address :: ref string -> Maybe<Address>
+fn parse_address text =
+	match ascii_bytes text with
+	| Maybe.None -> Maybe.None
+	| Maybe.Some bytes ->
+		let length = bytes.length
+		if length >= 3 && bytes[0] == 91ubyte then
+			let mut close = 1
+			let mut searching = true
+			while searching do
+				if close >= length || bytes[close] == 93ubyte then searching = false else close = close + 1
+			let port = if close + 2 < length && bytes[close + 1] == 58ubyte then parse_port (ref bytes) (close + 2) length else -1
+			if port < 0 then Maybe.None
+			else
+				match parse_v6 (ref bytes) 1 close with
+				| Maybe.Some groups -> Maybe.Some (address_of_groups (ref groups) port)
+				| Maybe.None -> Maybe.None
+		else
+			let mut colon = 0
+			let mut colons = 0
+			let mut index = 0
+			while index < length do
+				if bytes[index] == 58ubyte then
+					colons = colons + 1
+					colon = index
+				index = index + 1
+			let port = if colons == 1 then parse_port (ref bytes) (colon + 1) length else -1
+			let host = if port >= 0 then parse_v4 (ref bytes) 0 colon else -1
+			if host < 0 then Maybe.None
+			else Maybe.Some (Address { v6: false, high: 0i64u, low: host as i64u, port: port })
+
+/// An IP address without a port ("127.0.0.1" or "::1", no brackets) with the port `port`, which must be 0 to 65535.
+def parse_ip :: ref string -> i64 -> Maybe<Address>
+fn parse_ip text port =
+	match ascii_bytes text with
+	| Maybe.None -> Maybe.None
+	| Maybe.Some bytes ->
+		if port < 0 || port > 65535 then Maybe.None
+		else
+			let mut colons = 0
+			let mut index = 0
+			while index < bytes.length do
+				if bytes[index] == 58ubyte then colons = colons + 1
+				index = index + 1
+			if colons > 0 then
+				match parse_v6 (ref bytes) 0 bytes.length with
+				| Maybe.Some groups -> Maybe.Some (address_of_groups (ref groups) port)
+				| Maybe.None -> Maybe.None
+			else
+				let host = parse_v4 (ref bytes) 0 bytes.length
+				if host < 0 then Maybe.None
+				else Maybe.Some (Address { v6: false, high: 0i64u, low: host as i64u, port: port })
+
+private def hex_char :: i64 -> string
+fn hex_char value =
+	match value with
+	| 0 -> "0"
+	| 1 -> "1"
+	| 2 -> "2"
+	| 3 -> "3"
+	| 4 -> "4"
+	| 5 -> "5"
+	| 6 -> "6"
+	| 7 -> "7"
+	| 8 -> "8"
+	| 9 -> "9"
+	| 10 -> "a"
+	| 11 -> "b"
+	| 12 -> "c"
+	| 13 -> "d"
+	| 14 -> "e"
+	| _ -> "f"
+
+/// A group in lowercase hexadecimal without leading zeros.
+private def hex_group :: i64 -> string
+fn hex_group value =
+	if value >= 4096 then hex_char (value / 4096) + hex_char ((value / 256) % 16) + hex_char ((value / 16) % 16) + hex_char (value % 16)
+	elif value >= 256 then hex_char (value / 256) + hex_char ((value / 16) % 16) + hex_char (value % 16)
+	elif value >= 16 then hex_char (value / 16) + hex_char (value % 16)
+	else hex_char value
+
+private def group_of :: Address -> i64 -> i64
+fn group_of address position =
+	let word = if position < 4 then address.high else address.low
+	((word >>> (((3 - position % 4) * 16) as i64u)) &&& 65535i64u) as i64
+
+private def groups_text :: ref [i64] -> i64 -> i64 -> string
+fn groups_text groups from stop =
+	let mut text = ""
+	let mut position = from
+	while position < stop do
+		if position > from then text = text + ":"
+		text = text + hex_group groups[position]
+		position = position + 1
+	text
+
+/// The text of an IPv6 address as RFC 5952 writes it: lowercase, no leading zeros, and the first longest
+/// run of two or more zero groups as "::". An IPv4 address inside an IPv6 one is written in hexadecimal.
+private def v6_text :: Address -> string
+fn v6_text address =
+	let groups = Array.init 8 (\position -> group_of address position)
+	let mut best_start = -1
+	let mut best_length = 0
+	let mut position = 0
+	while position < 8 do
+		if groups[position] == 0 then
+			let begin = position
+			while position < 8 && groups[position] == 0 do position = position + 1
+			if position - begin > best_length then
+				best_start = begin
+				best_length = position - begin
+		else position = position + 1
+	if best_length < 2 then groups_text (ref groups) 0 8
+	else groups_text (ref groups) 0 best_start + "::" + groups_text (ref groups) (best_start + best_length) 8
+
+private def v4_part :: i64u -> i64u -> string
+fn v4_part low shift = to_string (((low >>> shift) &&& 255i64u) as i64)
+
+/// The IP address as text without its port: "127.0.0.1" or "::1".
+def ip_text :: Address -> string
+fn ip_text address =
+	if address.v6 then v6_text address
+	else v4_part address.low 24i64u + "." + v4_part address.low 16i64u + "." + v4_part address.low 8i64u + "." + v4_part address.low 0i64u
+
+/// The address as `parse_address` reads it: "127.0.0.1:80" or "[::1]:80".
+def address_text :: Address -> string
+fn address_text address =
+	if address.v6 then "[" + ip_text address + "]:" + to_string address.port
+	else ip_text address + ":" + to_string address.port
+
+instance Display<Address> {
+	fn display address = address_text (deref address)
+}
+
+/// The port, 0 to 65535.
+def port :: Address -> i64
+fn port address = address.port
+
+/// Whether the address is an IPv6 one.
+def is_ipv6 :: Address -> bool
+fn is_ipv6 address = address.v6
+
+/// What a network failure was, read from the system's own code. `Os.ErrorKind` has no case for these, and one
+/// is only added with a major edition, so `error_kind` looks at the code.
+union ErrorKind = TimedOut | ConnectionRefused | ConnectionReset | AddressInUse | AddressNotAvailable | Unreachable | Unclassified deriving (Eq, Display)
+
+/// Classifies a failure of a `Net` operation by its `errno`: `TimedOut` (also a timeout that Tsuzuri detected),
+/// `ConnectionRefused`, `ConnectionReset` (also an aborted connection and a broken pipe), `AddressInUse`,
+/// `AddressNotAvailable`, and `Unreachable` (network or host down or unreachable). A failure without a code
+/// (0) and any other is `Unclassified`; its `Os.ErrorKind` still says more.
+def error_kind :: Os.Error -> ErrorKind
+fn error_kind error =
+	match Net.__classify error.code with
+	| 0 -> TimedOut
+	| 1 -> ConnectionRefused
+	| 2 -> ConnectionReset
+	| 3 -> AddressInUse
+	| 4 -> AddressNotAvailable
+	| 5 -> Unreachable
+	| _ -> Unclassified
+
+/// A TCP connection. Inside it is a number and the two addresses, so it is `Copy` and an action can hold
+/// it, but nothing closes it for you: `close` it (or use `with_connection` or `with_accepted`); the process
+/// end closes what is left. A closed stream is never mistaken for another socket: using it is `InvalidInput`.
+record TcpStream { id: i64, local: Address, peer: Address }
+
+/// A listening TCP socket; close it with `close_listener` (or use `with_listener`).
+record TcpListener { id: i64, local: Address }
+
+/// A UDP socket bound to an address; close it with `close_udp` (or use `with_udp`).
+record UdpSocket { id: i64, local: Address }
+
+/// Which direction `shutdown` ends: reading, writing (the peer reads the end of the data), or both.
+union Shutdown = Read | Write | Both deriving (Eq)
+
+private def invalid :: unit -> Os.Error
+fn invalid _unit = Os.Error { kind: Os.InvalidInput, code: 0i32 }
+
+/// A timeout as the runtime takes it: -1 for none, the milliseconds (1 to 2147483647), or -2 for a value that is out of range.
+private def wait_of :: Maybe<i64> -> i64
+fn wait_of timeout =
+	match timeout with
+	| Maybe.None -> -1
+	| Maybe.Some milliseconds -> if milliseconds >= 1 && milliseconds <= 2147483647 then milliseconds else -2
+
+private def failed :: i64 -> Result<'a, Os.Error>
+fn failed status = Result.Error (Os.error_of_status status)
+
+private def be_value :: ref [ubyte] -> i64 -> i64 -> i64u
+fn be_value bytes at count =
+	let mut value = 0i64u
+	let mut index = 0
+	while index < count do
+		value = (value <<< 8) ||| (bytes[at + index] as i64u)
+		index = index + 1
+	value
+
+/// The address of the 20-byte record at `at`: its family (4 or 6), 0, the port, and 16 bytes of address.
+private def address_at :: ref [ubyte] -> i64 -> Address
+fn address_at bytes at =
+	let v6 = bytes[at] == 6ubyte
+	let port = (be_value bytes (at + 2) 2) as i64
+	if v6 then Address { v6: true, high: be_value bytes (at + 4) 8, low: be_value bytes (at + 12) 8, port: port }
+	else Address { v6: false, high: 0i64u, low: be_value bytes (at + 16) 4, port: port }
+
+/// The port and family of an address as the runtime takes them: `family << 16 | port`.
+private def meta_of :: Address -> i64
+fn meta_of address = (if address.v6 then 65536 else 0) + address.port
+
+private def high_of :: Address -> i64
+fn high_of address = address.high as i64
+
+private def low_of :: Address -> i64
+fn low_of address = address.low as i64
+
+/// Opens a socket of kind `operation` (0 connect, 1 listen, 2 UDP) for an address: the handle and the 40 bytes of local and peer address.
+private def open_with :: i32 -> Address -> i64 -> Result<(i64 * [ubyte]), Os.Error>
+fn open_with operation address wait =
+	match Net.__open operation (meta_of address) (high_of address) (low_of address) wait with
+	| (handle, bytes) -> if handle > 0 then Result.Ok (handle, bytes) else failed (0 - handle)
+
+private def stream_of :: i64 -> ref [ubyte] -> TcpStream
+fn stream_of handle bytes = TcpStream { id: handle, local: address_at bytes 0, peer: address_at bytes 20 }
+
+private def connect_with :: Address -> Maybe<i64> -> Result<TcpStream, Os.Error>
+fn connect_with address timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Result.Error (invalid ())
+	else
+		match open_with 0i32 address wait with
+		| Result.Ok (handle, bytes) -> Result.Ok (stream_of handle (ref bytes))
+		| Result.Error error -> Result.Error error
+
+private def bind_with :: Address -> Result<TcpListener, Os.Error>
+fn bind_with address =
+	match open_with 1i32 address (-1) with
+	| Result.Ok (handle, bytes) -> Result.Ok (TcpListener { id: handle, local: address_at (ref bytes) 0 })
+	| Result.Error error -> Result.Error error
+
+private def bind_udp_with :: Address -> Result<UdpSocket, Os.Error>
+fn bind_udp_with address =
+	match open_with 2i32 address (-1) with
+	| Result.Ok (handle, bytes) -> Result.Ok (UdpSocket { id: handle, local: address_at (ref bytes) 0 })
+	| Result.Error error -> Result.Error error
+
+private def accept_with :: TcpListener -> Maybe<i64> -> Result<TcpStream, Os.Error>
+fn accept_with listener timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Result.Error (invalid ())
+	else
+		match Net.__accept listener.id wait with
+		| (handle, bytes) -> if handle > 0 then Result.Ok (stream_of handle (ref bytes)) else failed (0 - handle)
+
+private def read_with :: TcpStream -> i64 -> Maybe<i64> -> Result<[ubyte], Os.Error>
+fn read_with stream count timeout =
+	let wait = wait_of timeout
+	if wait == -2 || count < 1 || count > 16777216 then Result.Error (invalid ())
+	else
+		match Net.__read 0i32 stream.id count wait with
+		| (0, bytes) -> Result.Ok bytes
+		| (status, _) -> failed status
+
+private def write_with :: TcpStream -> ref [ubyte] -> Maybe<i64> -> Result<unit, Os.Error>
+fn write_with stream data timeout =
+	let wait = wait_of timeout
+	if wait == -2 then Result.Error (invalid ())
+	else
+		let status = Net.__write 0i32 stream.id data 0 0 0 wait
+		if status == 0 then Result.Ok () else failed status
+
+private def no_value :: i64 -> Result<unit, Os.Error>
+fn no_value status = if status == 0 then Result.Ok () else failed status
+
+private def recv_with :: UdpSocket -> i64 -> Maybe<i64> -> Result<([ubyte] * Address), Os.Error>
+fn recv_with socket count timeout =
+	let wait = wait_of timeout
+	if wait == -2 || count < 1 || count > 16777216 then Result.Error (invalid ())
+	else
+		match Net.__read 1i32 socket.id count wait with
+		| (0, bytes) -> Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0)
+		| (status, _) -> failed status
+
+private def resolve_with :: ref string -> i64 -> Result<[Address], Os.Error>
+fn resolve_with host port =
+	if port < 0 || port > 65535 then Result.Error (invalid ())
+	else
+		match Os.encode host with
+		| Result.Error error -> Result.Error error
+		| Result.Ok name ->
+			let bytes = Utf8String.to_bytes (Utf8String.from_string host)
+			let mut has_nul = false
+			let mut index = 0
+			while index < bytes.length do
+				if bytes[index] == 0ubyte then has_nul = true
+				index = index + 1
+			if bytes.length == 0 || bytes.length > 253 || has_nul then Result.Error (invalid ())
+			else
+				match Net.__resolve (ref name) port with
+				| (0, found) -> Result.Ok (Array.init (found.length / 20) (\position -> address_at (ref found) (position * 20)))
+				| (status, _) -> failed status
+
+/// Resolves a host name or a numeric address to the addresses the system gives it for `port` (0 to 65535), in the
+/// system's order and without repeats, at most 64. It asks the system's resolver, which may read /etc/hosts or
+/// the network and cannot be interrupted, and whose answer is not authenticated. A host that is empty,
+/// longer than 253 bytes, or holds a NUL is `InvalidInput`; a name that does not exist is `NotFound`.
+def resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>
+fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
+
+/// Connects to an address. A timeout is milliseconds (1 to 2147483647) for the whole call and `None` waits for the
+/// system; anything else is `InvalidInput`. A refused connection is `Error` with `error_kind` `ConnectionRefused`.
+def connect :: Address -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
+fn connect address timeout = IO.map (\() -> connect_with address timeout) (IO.pure ())
+
+/// Reads what has arrived, at most `count` bytes (1 to 16777216): one receive, so fewer bytes than `count` is
+/// normal. An empty result means the peer ended its sending (the end of the stream). The timeout is for the whole
+/// call and, when it passes with nothing to read, the result is `Error` with `error_kind` `TimedOut` and the
+/// stream is still good.
+def read :: TcpStream -> i64 -> Maybe<i64> -> IO<Result<[ubyte], Os.Error>>
+fn read stream count timeout = IO.map (\() -> read_with stream count timeout) (IO.pure ())
+
+/// Writes all the bytes, however many sends that takes, within the timeout of the whole call. A failure
+/// part way does not say how much was sent.
+def write :: TcpStream -> [ubyte] -> Maybe<i64> -> IO<Result<unit, Os.Error>>
+fn write stream data timeout = IO.map (\() -> write_with stream (ref data) timeout) (IO.pure ())
+
+private def shutdown_number :: Shutdown -> i32
+fn shutdown_number how =
+	match how with
+	| Read -> 1i32
+	| Write -> 2i32
+	| Both -> 3i32
+
+/// Ends reading, writing, or both on a stream without closing it. `Write` tells the peer that no more data comes.
+def shutdown :: TcpStream -> Shutdown -> IO<Result<unit, Os.Error>>
+fn shutdown stream how = IO.map (\() -> no_value (Net.__close (shutdown_number how) stream.id)) (IO.pure ())
+
+/// Closes a stream. The handle is dead afterwards even when the system reports a failure, so closing twice is `InvalidInput`.
+def close :: TcpStream -> IO<Result<unit, Os.Error>>
+fn close stream = IO.map (\() -> no_value (Net.__close 0i32 stream.id)) (IO.pure ())
+
+/// The address of this end of the connection.
+def stream_local_addr :: TcpStream -> Address
+fn stream_local_addr stream = stream.local
+
+/// The address of the other end of the connection.
+def peer_addr :: TcpStream -> Address
+fn peer_addr stream = stream.peer
+
+/// Starts listening on an address, with `SO_REUSEADDR` and the system's longest backlog. Port 0 takes a free port,
+/// which `local_addr` tells. Listening on "0.0.0.0" or "::" is open to the network; use "127.0.0.1" or "::1"
+/// for the machine itself.
+def bind :: Address -> IO<Result<TcpListener, Os.Error>>
+fn bind address = IO.map (\() -> bind_with address) (IO.pure ())
+
+/// Waits for a connection and returns it. A timeout is as for `connect`.
+def accept :: TcpListener -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
+fn accept listener timeout = IO.map (\() -> accept_with listener timeout) (IO.pure ())
+
+/// The address a listener is bound to, with the real port when it was bound to port 0.
+def local_addr :: TcpListener -> Address
+fn local_addr listener = listener.local
+
+/// Closes a listener; the handle is dead afterwards, as for `close`.
+def close_listener :: TcpListener -> IO<Result<unit, Os.Error>>
+fn close_listener listener = IO.map (\() -> no_value (Net.__close 0i32 listener.id)) (IO.pure ())
+
+/// Binds a UDP socket to an address; port 0 takes a free port, which `udp_local_addr` tells.
+def bind_udp :: Address -> IO<Result<UdpSocket, Os.Error>>
+fn bind_udp address = IO.map (\() -> bind_udp_with address) (IO.pure ())
+
+/// Sends all the bytes as one datagram. A datagram the system finds too large is `InvalidInput`.
+def send_to :: UdpSocket -> [ubyte] -> Address -> IO<Result<unit, Os.Error>>
+fn send_to socket data target = IO.map (\() -> no_value (Net.__write 1i32 socket.id (ref data) (meta_of target) (high_of target) (low_of target) (-1))) (IO.pure ())
+
+/// Receives one datagram of at most `count` bytes (1 to 16777216) and where it came from. A datagram that is longer
+/// than `count` is dropped and the result is `InvalidInput`, never a shortened datagram. The source address is not
+/// authenticated. The timeout is as for `read`.
+def recv_from :: UdpSocket -> i64 -> Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>
+fn recv_from socket count timeout = IO.map (\() -> recv_with socket count timeout) (IO.pure ())
+
+/// The address a UDP socket is bound to, with the real port when it was bound to port 0.
+def udp_local_addr :: UdpSocket -> Address
+fn udp_local_addr socket = socket.local
+
+/// Closes a UDP socket; the handle is dead afterwards, as for `close`.
+def close_udp :: UdpSocket -> IO<Result<unit, Os.Error>>
+fn close_udp socket = IO.map (\() -> no_value (Net.__close 0i32 socket.id)) (IO.pure ())
+
+/// Connects, runs the action with the stream, and closes it before returning, whether or not the action's own
+/// result is an error. The action's value is returned unless closing fails.
+def with_connection :: Capture<'a> => Address -> Maybe<i64> -> (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
+fn with_connection address timeout body =
+	IO.bind (connect address timeout) (\opened ->
+		match opened with
+		| Result.Error error -> IO.pure (Result.Error error)
+		| Result.Ok stream ->
+			IO.bind (body stream) (\value ->
+				IO.map (\closed ->
+					match closed with
+					| Result.Ok _ -> Result.Ok value
+					| Result.Error error -> Result.Error error) (close stream)))
+
+/// Waits for a connection, runs the action with the stream, and closes it, as `with_connection` does.
+def with_accepted :: Capture<'a> => TcpListener -> Maybe<i64> -> (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
+fn with_accepted listener timeout body =
+	IO.bind (accept listener timeout) (\accepted ->
+		match accepted with
+		| Result.Error error -> IO.pure (Result.Error error)
+		| Result.Ok stream ->
+			IO.bind (body stream) (\value ->
+				IO.map (\closed ->
+					match closed with
+					| Result.Ok _ -> Result.Ok value
+					| Result.Error error -> Result.Error error) (close stream)))
+
+/// Binds a listener, runs the action with it, and closes it, as `with_connection` does.
+def with_listener :: Capture<'a> => Address -> (TcpListener -> IO<'a>) -> IO<Result<'a, Os.Error>>
+fn with_listener address body =
+	IO.bind (bind address) (\opened ->
+		match opened with
+		| Result.Error error -> IO.pure (Result.Error error)
+		| Result.Ok listener ->
+			IO.bind (body listener) (\value ->
+				IO.map (\closed ->
+					match closed with
+					| Result.Ok _ -> Result.Ok value
+					| Result.Error error -> Result.Error error) (close_listener listener)))
+
+/// Binds a UDP socket, runs the action with it, and closes it, as `with_connection` does.
+def with_udp :: Capture<'a> => Address -> (UdpSocket -> IO<'a>) -> IO<Result<'a, Os.Error>>
+fn with_udp address body =
+	IO.bind (bind_udp address) (\opened ->
+		match opened with
+		| Result.Error error -> IO.pure (Result.Error error)
+		| Result.Ok socket ->
+			IO.bind (body socket) (\value ->
+				IO.map (\closed ->
+					match closed with
+					| Result.Ok _ -> Result.Ok value
+					| Result.Error error -> Result.Error error) (close_udp socket)))

@@ -90,6 +90,8 @@ not found (os error 2)
 
 番号は環境で違います。macOS と Linux で `ENOENT` はどちらも 2 ですが、`ENOTEMPTY` は違います。分岐は `kind` で行い、`Os.message` は人に見せる文字列として使います。
 
+[Net](./net.md) の失敗も `Os.Error` です。接続の拒否やタイムアウトのように `Os.ErrorKind` の 7 種類に当てはまらないものは `Other` で、`code` に `errno` が入ります。`Net.error_kind` がその `code` を、`ConnectionRefused` や `TimedOut` などへ分類します。
+
 ```text
 match failed with
 | Result.Ok value -> value
@@ -165,6 +167,7 @@ Windows 環境でコンパイラがネイティブバイナリをビルドする
 - [IO](./io.md)
 - [File](./file.md)
 - [Process](./process.md)
+- [Net](./net.md)
 - [Result](./result.md)
 - [WebAssembly への出力](../compiler/webassembly.md)
 - [言語仕様の OS API](../../../docs/language.md#os-api)

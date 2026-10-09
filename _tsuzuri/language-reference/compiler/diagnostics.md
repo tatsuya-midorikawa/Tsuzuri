@@ -150,16 +150,16 @@ flowchart TD
 | `E1019` | `rec` の過不足、単独の `and` |
 | `E1020` | パターンの形、OR パターンの束縛、共用体のペイロード |
 | `E1021` | `match` と関数ガードの網羅性。足りないケースを示す |
-| `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Arena.__next_id` など）の呼び出し |
+| `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス |
 | `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前 |
 | `E1026` | コンパイル時定数のトラップ、循環、ステップ上限 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
-| `E2000` | 引数、拡張子、組み合わせ、既定 wasm32 で OS API に到達したビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ |
+| `E2000` | 引数、拡張子、組み合わせ、既定 wasm32 で OS API や `Net` のソケットに到達したビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ |
 | `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです |
-| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows で OS API に到達した場合、macOS・Linux・Windows 以外で Async の native reactor に到達した場合を含む |
+| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows で OS API や `Net` のソケットに到達した場合、macOS・Linux・Windows 以外で Async の native reactor に到達した場合を含む |
 | `E2003` | 出力ファイルの保護。既存の成果物を壊さないための失敗 |
 | `E2004` | 入口の要件。`Main.tz` が無い実行ファイル、export も `main` も無い WASM、`export def` の無いバインディングと共有ライブラリ、`main` のシグネチャ違反、`def main` とトップレベル実行の併用、`Main.tz` 以外のモジュールでのトップレベル実行 |
 | `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む |

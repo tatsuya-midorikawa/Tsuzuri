@@ -41,7 +41,7 @@ add 20 22
 
 同じソースを `wasm32` と `wasm64` に出し、Node.js から `tz_add(20n, 22n)` を呼ぶと、どちらも `42n` でした。`tsuzuri test --target wasm64` は、Node.js 24 以降で空の memory64 モジュールを検査してからテストを始めます。コンパイラ本体が wasm64 を拒否するわけではありません。
 
-既定の wasm32 はホスト import を持ちません。`File`、`Dir`、`Env`、`Time`、`Random`（`Random.Pcg` を除く）、`Process` に到達するコードは `E2000` です。OS の API が要るなら native にするか、後述の `--wasm-host wasi` を使います。`Path` はホスト不要です。
+既定の wasm32 はホスト import を持ちません。`File`、`Dir`、`Env`、`Time`、`Random`（`Random.Pcg` を除く）、`Process` に到達するコードは `E2000` です。OS の API が要るなら native にするか、後述の `--wasm-host wasi` を使います。`Path` はホスト不要です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve` など）に到達するコードも `E2000` です。`Net` のアドレスの解析と表示（`parse_address`・`address_text` など）はホスト不要で、import は増えません（[Net](../built-in-types-and-modules/net.md)）。
 
 ```mermaid
 flowchart TD
@@ -423,7 +423,7 @@ tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
 
 ## WASI
 
-`--wasm-host wasi` は、標準入出力と `File`、`Dir`、`Env`、`Time`、`Random`、`Process` を WASI preview 1 の import へ下げます。wasm32 の object か WASM だけです。既定の wasm32 は、これらの API に到達した時点でビルドを拒否します。
+`--wasm-host wasi` は、標準入出力と `File`、`Dir`、`Env`、`Time`、`Random`、`Process` を WASI preview 1 の import へ下げます。wasm32 の object か WASM だけです。既定の wasm32 は、これらの API に到達した時点でビルドを拒否します。`Net` のソケットは下げません。WASI preview 1 には `connect`・`bind`・`listen` が無く（開いてある socket を受け取る `sock_accept` などだけです）、`--wasm-host wasi` でもソケットに到達するビルドは `E2000` です。
 
 WASI を付けない計算モジュールは、WASI もブラウザ固有の import も持ちません。ホストを用意できない環境へ計算だけを渡すときは、こちらを使います。
 

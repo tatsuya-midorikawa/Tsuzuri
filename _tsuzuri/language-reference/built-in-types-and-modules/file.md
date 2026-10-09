@@ -267,6 +267,7 @@ record Metadata { kind: EntryKind, size: i64, modified_ns: i64 }
 - [Dir](./dir.md)
 - [Path](./path.md)
 - [Os](./os.md)
+- [Net](./net.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [Drop とリソースの解放](../ownership-and-memory/drop.md)
 - [言語仕様のファイルとディレクトリ](../../../docs/language.md#ファイルとディレクトリ)
