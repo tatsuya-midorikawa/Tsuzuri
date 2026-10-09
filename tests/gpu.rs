@@ -127,3 +127,165 @@ fn gpu_reference_api_is_explicit_opaque_and_owned() {
         "E1011"
     );
 }
+
+fn relaxed_wgsl(source: &str) -> Result<String, tsuzuri::diagnostic::Diagnostic> {
+    let module = analyze(source).unwrap();
+    gpu::extract_kernel(&module, kernel_id(&module))?.wgsl_relaxed()
+}
+
+#[test]
+fn generates_relaxed_f32_wgsl_with_explicit_header() {
+    let module =
+        analyze("export def kernel :: f32 -> f32\nfn kernel value = value * value + value")
+            .unwrap();
+    let id = kernel_id(&module);
+    let local = module.functions[id].parameters[0].id;
+    let kernel = gpu::extract_kernel(&module, id).unwrap();
+    let wgsl = kernel.wgsl_relaxed().unwrap();
+    assert_eq!(wgsl, kernel.wgsl_relaxed().unwrap());
+    let expected = format!(
+        "// tsuzuri-gpu float=relaxed input=f32 output=f32\nstruct Params {{ length: u32 }}\n@group(0) @binding(0) var<storage, read> input_values: array<f32>;\n@group(0) @binding(1) var<storage, read_write> output_values: array<f32>;\n@group(0) @binding(2) var<uniform> params: Params;\nfn kernel_{id}(local_{local}: f32) -> f32 {{\nlet value_0: f32 = local_{local};\nlet value_1: f32 = local_{local};\nlet value_2: f32 = (value_0 * value_1);\nlet value_3: f32 = local_{local};\nlet value_4: f32 = (value_2 + value_3);\nreturn value_4;\n}}\n@compute @workgroup_size(256)\nfn map_main(@builtin(global_invocation_id) invocation: vec3<u32>) {{\nif (invocation.x < params.length) {{ output_values[invocation.x] = kernel_{id}(input_values[invocation.x]); }}\n}}\n@compute @workgroup_size(256)\nfn init_main(@builtin(global_invocation_id) invocation: vec3<u32>) {{\nif (invocation.x < params.length) {{ output_values[invocation.x] = kernel_{id}(f32(invocation.x)); }}\n}}\n"
+    );
+    assert_eq!(wgsl, expected);
+    let strict = kernel.wgsl().unwrap_err();
+    assert_eq!(strict.code, "E1018");
+    assert!(strict.message.contains("--emit wgsl-relaxed"));
+
+    let horner = relaxed_wgsl(
+        "export def kernel :: f32 -> f32\nfn kernel value = ((value * 0.5 + 0.25) * value + 0.125) * value + 1.0",
+    )
+    .unwrap();
+    for bits in [1056964608u32, 1048576000, 1040187392, 1065353216] {
+        assert!(horner.contains(&format!("bitcast<f32>({bits}u)")), "{bits}");
+    }
+    let ratio =
+        relaxed_wgsl("export def kernel :: f32 -> f32\nfn kernel value = -value / 0.1").unwrap();
+    assert!(ratio.contains("(-value_0)"));
+    assert!(ratio.contains("(value_1 / value_2)"));
+    assert!(ratio.contains("bitcast<f32>(1036831949u)"));
+    let index = relaxed_wgsl(
+        "export def kernel :: i32 -> f32\nfn kernel index = (index as f32) * 0.5 + 0.25",
+    )
+    .unwrap();
+    assert!(index.starts_with("// tsuzuri-gpu float=relaxed input=i32 output=f32\n"));
+    assert!(index.contains("array<i32>") && index.contains("f32(value_0)"));
+    let threshold = relaxed_wgsl(
+        "export def kernel :: f32 -> i32\nfn kernel value = if value * value > 2.0 then 1 else 0",
+    )
+    .unwrap();
+    assert!(threshold.starts_with("// tsuzuri-gpu float=relaxed input=f32 output=i32\n"));
+    let integer = relaxed_wgsl(
+        "export def kernel :: i32u -> i32u\nfn kernel value = (value * 3i32u) ^ (value >>> 3)",
+    )
+    .unwrap();
+    assert!(integer.starts_with("// tsuzuri-gpu float=relaxed input=u32 output=u32\n"));
+}
+
+#[test]
+fn rejects_relaxed_wgsl_outside_f32_i32_lanes() {
+    for (source, fragment) in [
+        (
+            "export def kernel :: f64 -> f64\nfn kernel value = value + 1.0",
+            "no f64 or 64-bit integers",
+        ),
+        (
+            "export def kernel :: i64 -> i64\nfn kernel value = value + 1",
+            "no f64 or 64-bit integers",
+        ),
+        (
+            "export def kernel :: f32 -> bool\nfn kernel value = value > 1.0",
+            "bool lanes",
+        ),
+        (
+            "export def kernel :: f32 -> i32\nfn kernel value = if value * value > 2.0 then 1 else (value as i32)",
+            "float-to-integer",
+        ),
+        (
+            "export def kernel :: i32 -> i32\nfn kernel value = 100 / value",
+            "division/remainder",
+        ),
+        (
+            "export def kernel :: f32 -> f32\nfn kernel value = { let wide = (value as f64) + 1.0; wide as f32 }",
+            "float-to-integer or f64 casts",
+        ),
+        (
+            "export def kernel :: f32 -> f32\nfn kernel value = { let wide = (value as i64) + 1; wide as f32 }",
+            "float-to-integer or f64 casts",
+        ),
+    ] {
+        let error = relaxed_wgsl(source).unwrap_err();
+        assert_eq!(error.code, "E1018", "{source}: {error:?}");
+        assert!(
+            error.message.contains(fragment),
+            "{source}: {}",
+            error.message
+        );
+    }
+    for source in [
+        "export def kernel :: f32 -> f32\nfn kernel value = value * value + value",
+        "export def kernel :: i32 -> i32\nfn kernel value = if (value as f32) < 1.5 then 1 else 0",
+        "export def kernel :: i32 -> i32\nfn kernel value = { let half = 0.5; if half < 1.0 then value else 0 }",
+    ] {
+        let module = analyze(source).unwrap();
+        let error = gpu::extract_kernel(&module, kernel_id(&module))
+            .unwrap()
+            .wgsl()
+            .unwrap_err();
+        assert_eq!(error.code, "E1018", "{source}");
+    }
+}
+
+#[test]
+fn relaxed_gpu_api_validates_kernels_on_the_cpu_reference() {
+    let prefix = "let device = Result.get (Gpu.request Gpu.CpuReference)\nlet floats: [f32] = [1.0, 2.0]\nlet buffer = Gpu.from_array (&device) (&floats)\n";
+    for body in [
+        "let mapped = Gpu.map_relaxed (&device) (\\item -> item * item + item) buffer\nlet result = Gpu.to_array mapped\nresult[0]",
+        "let generated = Gpu.init_relaxed (&device) 8 (\\index -> (index as f32) * 0.5 + 0.25)\nlet values = Gpu.to_array generated\nArray.sum (&values)",
+        "let mapped = Gpu.map (&device) (\\item -> item as i32) buffer\nlet result = Gpu.to_array mapped\nresult[0]",
+    ] {
+        let module = analyze(&format!("{prefix}{body}"))
+            .unwrap_or_else(|error| panic!("{body}\n{}: {}", error.code, error.message));
+        for wasm in [false, true] {
+            let ir =
+                tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
+            assert_eq!(
+                ir,
+                tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap()
+            );
+        }
+    }
+    for (body, fragment) in [
+        (
+            "let wide: [f64] = [1.0]\nlet wide_buffer = Gpu.from_array (&device) (&wide)\nGpu.map_relaxed (&device) (\\item -> item + 1.0) wide_buffer",
+            "no f64 or 64-bit integers",
+        ),
+        (
+            "Gpu.map_relaxed (&device) (\\item -> item as i32) buffer",
+            "float-to-integer",
+        ),
+        (
+            "let escaped = Gpu.map_relaxed\nescaped (&device) (\\item -> item + 1.0) buffer",
+            "cannot escape",
+        ),
+        (
+            "let partial = Gpu.map_relaxed (&device)\npartial (\\item -> item + 1.0) buffer",
+            "direct full application",
+        ),
+        (
+            "let offset = 1.0f32\nGpu.map_relaxed (&device) (\\item -> item + offset) buffer",
+            "known function or capture-free lambda",
+        ),
+        (
+            "Gpu.init_relaxed (&device) 2 (\\index -> index as f64)",
+            "no f64 or 64-bit integers",
+        ),
+    ] {
+        let error = analyze(&format!("{prefix}{body}")).unwrap_err();
+        assert_eq!(error.code, "E1018", "{body}: {error:?}");
+        assert!(
+            error.message.contains(fragment),
+            "{body}: {}",
+            error.message
+        );
+    }
+}

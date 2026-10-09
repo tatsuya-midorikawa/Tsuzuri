@@ -106,7 +106,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | SIMD | `-O3` におけるループおよび SLP 自動ベクトル化。メモリ上で連続した配列配置、型の特殊化、不要なコピーの徹底排除により、LLVM が最適化しやすい IR を生成。`--cpu native` 指定時にはビルドホスト固有の命令セットを有効化 |
 | 移植性 | デフォルトの `--cpu generic` ではターゲットアーキテクチャのベースライン命令セットを採用。同梱の i64 配列和のみ実行時 ISA 選択を実施。`native` 指定時は配布バイナリの前提条件にビルド機の ISA が含まれる |
 | 複数 CPU コア | `Task.parallel` 向けに遅延起動する常駐スレッドプールを実装。ハードウェアの CPU コア数に応じて追加スレッド数を適切に制限し、呼び出し元スレッド自身も自グループの処理を推進。WASM は逐次フォールバック。自動並列化は未実装 |
-| GPU | 実験的なカーネル抽出、CPU 参照実装、厳密な整数 WGSL 出力、および WebGPU ホスト試作を実装。通常ランタイムへの実 GPU 自動接続、浮動小数点 GPU 演算、自動オフロードは未実装 |
+| GPU | 実験的なカーネル抽出、CPU 参照実装、厳密な整数 WGSL 出力、名前で選ぶ緩い `f32` の WGSL 出力（`Gpu.map_relaxed`・`--emit wgsl-relaxed`。CPU 上の評価は厳密のまま）、および WebGPU ホスト試作を実装。通常ランタイムへの実 GPU 接続、厳密な浮動小数点 GPU 演算、自動オフロードは未実装 |
 | WASM | bulk-memory に標準対応。SIMD128、マルチスレッド（threads）、`--wasm-host wasi`、Async の JSPI はそれぞれ明示的なオプトイン（opt-in）制。デフォルトは SIMD なし・ホストインポートなし（IO は `tsuzuri_io`）・逐次実行であり、OS API の呼び出しは `E2000` で拒否 |
 | 協調的な非同期計算 | `std/Async.tc` の継続と `Step` で `Async.run`、native の `Async.block_on`、ホスト駆動の `Async.start` を実装。native の reactor は per-thread mailbox、WASM の `block_on` は JSPI を使う |
 

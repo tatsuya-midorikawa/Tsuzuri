@@ -37,8 +37,8 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu) {
     return Math.max(count * 4, 4);
   }
 
-  function own(buffer, count) {
-    const handle = { buffer, count, destroy() { if (live.delete(handle)) buffer.destroy(); } };
+  function own(buffer, count, kind) {
+    const handle = { buffer, count, kind, destroy() { if (live.delete(handle)) buffer.destroy(); } };
     live.add(handle);
     return handle;
   }
@@ -50,6 +50,7 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu) {
 
   function dispatch(program, mode, count, input) {
     if (program.device !== device) throw new Error("GPU kernel belongs to another device");
+    if (input && input.kind !== program.input) throw new TypeError("GPU buffer element type does not match the kernel input");
     const size = bytesFor(count);
     const inputBuffer = input ? take(input) : undefined;
     return checked(async () => {
@@ -73,7 +74,7 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu) {
         pass.end();
         device.queue.submit([encoder.finish()]);
         await device.queue.onSubmittedWorkDone();
-        return own(output, count);
+        return own(output, count, program.output);
       } catch (error) {
         output?.destroy();
         throw error;
@@ -86,7 +87,15 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu) {
 
   return {
     info,
-    prepare(source) {
+    // `options.float` must be "relaxed" for a kernel from `--emit wgsl-relaxed` (F09): its results follow
+    // WGSL's floating-point rules, so the host never accepts it by accident.
+    prepare(source, options = {}) {
+      const header = /^\/\/ tsuzuri-gpu float=relaxed input=(f32|i32|u32) output=(f32|i32|u32)\n/.exec(source);
+      if (source.startsWith("// tsuzuri-gpu") && !header) return Promise.reject(new Error("unsupported tsuzuri-gpu WGSL header"));
+      if (header && options.float !== "relaxed") return Promise.reject(new Error('relaxed floating-point WGSL requires prepare(source, { float: "relaxed" })'));
+      const kind = type => (type === "f32" ? "f32" : "u32");
+      const input = header ? kind(header[1]) : "u32";
+      const output = header ? kind(header[2]) : "u32";
       return checked(async () => {
         const shader = device.createShaderModule({ code: source });
         const diagnostics = await shader.getCompilationInfo();
@@ -94,32 +103,34 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu) {
         if (errors.length) throw new Error(errors.map(message => `${message.lineNum}:${message.linePos}: ${message.message}`).join("\n"));
         const map = await device.createComputePipelineAsync({ layout: "auto", compute: { module: shader, entryPoint: "map_main" } });
         const init = await device.createComputePipelineAsync({ layout: "auto", compute: { module: shader, entryPoint: "init_main" } });
-        return { device, map, init };
+        return { device, map, init, input, output };
       });
     },
     fromArray(values) {
-      if (!(values instanceof Int32Array || values instanceof Uint32Array)) throw new TypeError("strict GPU buffers require Int32Array or Uint32Array");
+      const kind = values instanceof Float32Array ? "f32" : values instanceof Int32Array || values instanceof Uint32Array ? "u32" : undefined;
+      if (!kind) throw new TypeError("GPU buffers require Int32Array, Uint32Array, or Float32Array");
       const size = bytesFor(values.length);
       return checked(() => {
-        const buffer = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const buffer = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
         if (values.byteLength) device.queue.writeBuffer(buffer, 0, values);
-        return own(buffer, values.length);
+        return own(buffer, values.length, kind);
       });
     },
     init(program, count) { return dispatch(program, "init", count); },
     map(program, buffer) { return dispatch(program, "map", buffer.count, buffer); },
     toArray(handle) {
       const buffer = take(handle);
+      const ElementArray = handle.kind === "f32" ? Float32Array : Uint32Array;
       return checked(async () => {
         let readback;
         try {
-          if (!handle.count) return new Uint32Array();
+          if (!handle.count) return new ElementArray();
           readback = device.createBuffer({ size: handle.count * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
           const encoder = device.createCommandEncoder();
           encoder.copyBufferToBuffer(buffer, 0, readback, 0, handle.count * 4);
           device.queue.submit([encoder.finish()]);
           await readback.mapAsync(GPUMapMode.READ);
-          const result = new Uint32Array(readback.getMappedRange().slice(0));
+          const result = new ElementArray(readback.getMappedRange().slice(0));
           readback.unmap();
           return result;
         } finally {

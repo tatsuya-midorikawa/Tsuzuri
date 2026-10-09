@@ -21,6 +21,12 @@ fn map _device transform buffer =
     let values = buffer.values
     Buffer { values: Array.map transform (ref values) }
 
+def init_relaxed :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>
+fn init_relaxed device count initializer = init device count initializer
+
+def map_relaxed :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
+fn map_relaxed device transform buffer = map device transform buffer
+
 def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
 fn from_array _device values = Buffer { values: deref values }
 
