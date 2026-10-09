@@ -312,6 +312,22 @@ fn cases() -> Vec<Case> {
             init: true,
         },
         Case {
+            name: "mutable_parameters",
+            source: "def bump :: i32 -> i32\nfn bump mut x = { x = x + 1; x * 2 }\ndef toggle :: bool -> bool\nfn toggle mut flag = { flag = !flag; flag }\ndef wrap :: i32u -> i32u\nfn wrap mut x = { x = x * 3i32u; x ^ 7i32u }\nexport def kernel :: i32 -> i32\nfn kernel value = if toggle (value > 0) then bump value else (wrap (value as i32u)) as i32",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32 as i32;
+                if v <= 0 {
+                    u64::from(v.wrapping_add(1).wrapping_mul(2) as u32)
+                } else {
+                    u64::from((v as u32).wrapping_mul(3) ^ 7)
+                }
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
             name: "mix64",
             source: "def helper :: i64 -> i64\nfn helper value = value * 6364136223846793005l + 1442695040888963407l\n\nexport def kernel :: i64 -> i64\nfn kernel value = {\n    let mut state = helper value;\n    state = state ^ (state >>> 13l);\n    state = state ^ (state <<< 7l);\n    if state < 0l && value != 5l then -state else (Bits.ushr state 3l)\n}",
             relaxed: false,
@@ -458,6 +474,15 @@ fn cases() -> Vec<Case> {
             relaxed: false,
             inputs: special_floats,
             reference: |x| bits_of(-(f(x) * 0.0)),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "mutable_float_parameter_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel mut x = { x = x * 2.0f32; x + 1.0f32 }",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| bits_of(f(x) * 2.0 + 1.0),
             compare: Compare::Exact,
             init: false,
         },
@@ -1711,10 +1736,10 @@ fn integer_kernels(harness: &Harness) {
         }
         executed += 1;
     }
-    // four 32-bit kernels, and four that need shaderInt64
+    // five 32-bit kernels, and four that need shaderInt64
     assert_eq!(
         executed,
-        if int64.status == 0 { 8 } else { 4 },
+        if int64.status == 0 { 9 } else { 5 },
         "{}",
         harness.label
     );
@@ -1839,4 +1864,117 @@ fn strict_float_kernels(harness: &Harness) {
                 .trim()
         );
     }
+}
+
+// ---- the defects of the WGSL emitter that the SPIR-V emitter must not share ----
+
+/// The arms of the `else if` chain: Tint's limit of 127 nested statements stops WGSL at 62.
+const CHAIN_ARMS: usize = 100;
+
+fn chain_source() -> &'static str {
+    static SOURCE: OnceLock<String> = OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let mut source = String::from("export def kernel :: i32 -> i32\nfn kernel value = ");
+        for arm in 0..CHAIN_ARMS {
+            source.push_str(&format!("if value == {arm} then {} else ", 1000 + arm * 3));
+        }
+        source.push('7');
+        source
+    })
+}
+
+fn chain_inputs() -> Vec<u64> {
+    let mut values: Vec<u64> = (0..CHAIN_ARMS as u64 + 20).collect();
+    values.extend([u64::from(u32::MAX), u64::from(i32::MIN as u32), 5000]);
+    values
+}
+
+/// The checker of a debug build recurses once per arm and needs a large stack; the compiler's limits are not involved.
+fn on_large_stack(test: impl FnOnce() + Send + 'static) {
+    let worker = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(test)
+        .unwrap();
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A WGSL function parameter cannot be assigned, so the WGSL emitter copies the ones that a body assigns; and an `else if`
+/// chain of 63 arms exceeds the statement nesting of Tint, which the WGSL emitter rejects with E1017. A SPIR-V function
+/// has neither limit: the long chain emits deterministically, validates, and runs like the CPU reference (the mutable
+/// parameters are in the kernels `mutable_parameters` and `mutable_float_parameter_strict` of the shared list).
+#[test]
+fn a_long_else_if_chain_emits_valid_spirv_where_wgsl_has_a_nesting_limit() {
+    on_large_stack(|| {
+        let module = analyze(chain_source()).unwrap();
+        let kernel = gpu::extract_kernel(&module, kernel_id(&module)).unwrap();
+        let wgsl = kernel
+            .wgsl()
+            .expect_err("WGSL cannot nest this many statements");
+        assert_eq!(wgsl.code, "E1017", "{}", wgsl.message);
+        let first = kernel.spirv().unwrap();
+        assert_eq!(
+            first.bytes(),
+            kernel.spirv().unwrap().bytes(),
+            "the module is deterministic"
+        );
+        assert!(!first.relaxed);
+
+        let case = Case {
+            name: "else_if_chain",
+            source: chain_source(),
+            relaxed: false,
+            inputs: chain_inputs,
+            reference: |x| {
+                let value = x as u32 as i32;
+                if (0..CHAIN_ARMS as i32).contains(&value) {
+                    1000 + 3 * value as u64
+                } else {
+                    7
+                }
+            },
+            compare: Compare::Exact,
+            init: true,
+        };
+        if let Some(validator) = find_tool(
+            "SPIRV_VAL",
+            &[
+                "/opt/homebrew/opt/spirv-tools/bin/spirv-val",
+                "/usr/local/bin/spirv-val",
+                "/usr/bin/spirv-val",
+            ],
+            "spirv-val",
+        ) {
+            let directory = scratch("else_if_chain");
+            let path = write_module(&directory, case.name, &first);
+            for environment in ["vulkan1.1", "vulkan1.2"] {
+                let output = Command::new(&validator)
+                    .args(["--target-env", environment])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "spirv-val --target-env {environment} rejects the chain:\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        } else {
+            skip(
+                "TSUZURI_REQUIRE_SPIRV_TOOLS",
+                "spirv-val was not found; the long else-if chain was not validated",
+            );
+        }
+        let mut lanes = 0;
+        for harness in devices() {
+            for staged in [false, true] {
+                lanes += execute(&case, &harness, staged);
+            }
+        }
+        eprintln!(
+            "Vulkan: the {CHAIN_ARMS}-arm else-if chain matched the reference on {lanes} lanes"
+        );
+    });
 }
