@@ -11,6 +11,9 @@
 //                           const void *wgsl, int32_t wgsl_length,
 //                           const void *spirv, int32_t spirv_length,
 //                           const void *input, int64_t count, void *output);
+//   int32_t tsuzuri_gpu_select(int32_t mode, int32_t lanes, int32_t features,
+//                              const void *spirv, int32_t spirv_length,
+//                              int32_t weight, int64_t count);      // native only (F09 Phase 3)
 // `backend` is the tag of `Gpu.Backend` (1 WebGpu, 2 Vulkan, ...). `features` and the kernel's
 // `lanes` are described below. Every function returns a status: 0 success, 1 unavailable (no
 // library, host, adapter), 2 unsupported (library version, missing feature, no kernel source for
@@ -24,6 +27,8 @@
 // file; if it is set, only that file is tried, and an empty value disables the backend. The
 // runtime declares the part of the C API it needs itself and checks `wgpuGetVersion`: only
 // wgpu-native 29.x is accepted, whose headers this declaration copies (verified with 29.0.1.1).
+// The Vulkan backend (backend 2, F09 Phase 3) is the file gpu-vulkan.c, which comes before this one
+// in the translation unit of a program that names Vulkan or `Gpu.Auto`.
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
@@ -843,8 +848,15 @@ finish:
 
 // ---- The entry points -----------------------------------------------------------------------------
 
+// The Vulkan backend (F09 Phase 3) is in src/runtime/gpu-vulkan.c, which the driver puts before this file
+// in the same translation unit when the program names `Gpu.Vulkan` or `Gpu.Auto` and defines TZ_GPU_VULKAN. It
+// has its own lock, so a Vulkan call does not wait for a WebGPU call.
+
 TZ_GPU_API int32_t tsuzuri_gpu_open(int32_t backend, int32_t features) {
     int status = TZ_GPU_UNAVAILABLE;
+#ifdef TZ_GPU_VULKAN
+    if (backend == 2) return tz_vulkan_open(features);
+#endif
     tz_gpu_acquire();
     if (backend == 1) status = tz_wgpu_open(features);
     tz_gpu_release();
@@ -853,10 +865,31 @@ TZ_GPU_API int32_t tsuzuri_gpu_open(int32_t backend, int32_t features) {
 
 TZ_GPU_API int32_t tsuzuri_gpu_run(int32_t backend, int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length, const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
     int status = TZ_GPU_UNAVAILABLE;
+#ifdef TZ_GPU_VULKAN
+    if (backend == 2) return tz_vulkan_run(mode, flags, lanes, wgsl, wgsl_length, spirv, spirv_length, input, count, output);
+#endif
     (void)spirv;
     (void)spirv_length;
     tz_gpu_acquire();
     if (backend == 1) status = tz_wgpu_run(mode, flags, lanes, wgsl, wgsl_length, input, count, output);
     tz_gpu_release();
     return status;
+}
+
+// The backend that serves one call of a `Gpu.Auto` device (F09 Phase 3): 0 is the CPU reference and 2 is Vulkan.
+// Only a backend with a measured cost rule is a candidate, and that is Vulkan alone: WebGPU has no such rule yet,
+// so it never serves an `Auto` call. The arguments are the call's mode and its kernel descriptor.
+TZ_GPU_API int32_t tsuzuri_gpu_select(int32_t mode, int32_t lanes, int32_t features, const void *spirv, int32_t spirv_length, int32_t weight, int64_t count) {
+#ifdef TZ_GPU_VULKAN
+    if (tz_vulkan_auto(mode, lanes, features, spirv, spirv_length, weight, count)) return 2;
+#else
+    (void)mode;
+    (void)lanes;
+    (void)features;
+    (void)spirv;
+    (void)spirv_length;
+    (void)weight;
+    (void)count;
+#endif
+    return 0;
 }

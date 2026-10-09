@@ -78,6 +78,7 @@ struct job {
     int mode;
     int32_t lanes;
     int32_t features;
+    int32_t weight;
     int64_t count;
     int repeat;
     int threads;
@@ -96,6 +97,7 @@ static int parse_job(int argc, char **argv, struct job *job) {
     memset(job, 0, sizeof *job);
     job->repeat = 1;
     job->threads = 1;
+    job->weight = 1;
     for (int index = 2; index < argc; index++) {
         const char *flag = argv[index];
         const char *value = index + 1 < argc ? argv[index + 1] : NULL;
@@ -124,6 +126,9 @@ static int parse_job(int argc, char **argv, struct job *job) {
             index++;
         } else if (strcmp(flag, "--features") == 0) {
             job->features = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--weight") == 0) {
+            job->weight = atoi(value);
             index++;
         } else if (strcmp(flag, "--count") == 0) {
             job->count = atoll(value);
@@ -407,15 +412,87 @@ static int probe_job(const struct job *job) {
     return (int)status;
 }
 
+/* Asks Gpu.Auto `repeat` times whether it would run the kernel on this backend, and prints the answers (1: here, 0: the
+   CPU reference) after the capability line of the device that the first question opened, if it did. */
+static int auto_job(const struct job *job) {
+    size_t size = 0;
+    void *module = job->spirv_path != NULL ? read_file(job->spirv_path, &size) : NULL;
+    if (module == NULL) {
+        fprintf(stderr, "cannot read the module %s\n", job->spirv_path != NULL ? job->spirv_path : "(none)");
+        return HARNESS_ERROR;
+    }
+    char answers[256] = "";
+    size_t used = 0;
+    for (int round = 0; round < job->repeat && used + 3 < sizeof answers; round++) {
+        int chosen = tz_vulkan_auto(job->mode, job->lanes, job->features, module, (int32_t)size, job->weight, job->count);
+        used += (size_t)snprintf(answers + used, sizeof answers - used, "%s%d", round == 0 ? "" : ",", chosen);
+    }
+    char text[1024];
+    tz_vulkan_describe(text, sizeof text);
+    printf("status=0 chosen=%s opened=%d\n", answers, text[0] != '\0');
+    free(module);
+    return 0;
+}
+
+/* The fault sweep of the Auto question: the Nth fallible Vulkan call fails, for N = 1, 2, ... until a pass meets no fault.
+   A fault never makes the answer 1 (the CPU reference runs the call), and no Vulkan object or runtime allocation is left. */
+static int autosweep_job(const struct job *job, const char *base_config) {
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (!load_mock(&mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    size_t size = 0;
+    void *module = job->spirv_path != NULL ? read_file(job->spirv_path, &size) : NULL;
+    if (module == NULL) return HARNESS_ERROR;
+    int failures = 0, passes = 0, chosen_passes = 0;
+    for (int fault = 1; fault < 4096; fault++) {
+        char config[512];
+        snprintf(config, sizeof config, "%s,fail=%d", base_config, fault);
+        tz_vk_test_reset();
+        if (!mock.configure(config)) {
+            fprintf(stderr, "the mock rejects %s\n", config);
+            failures++;
+            break;
+        }
+        int chosen = tz_vulkan_auto(job->mode, job->lanes, job->features, module, (int32_t)size, job->weight, job->count);
+        int injected = mock.injected();
+        tz_vk_test_reset();
+        passes++;
+        if (mock.leaked() != 0) {
+            fprintf(stderr, "fault %d: the runtime leaked Vulkan objects:\n%s\n", fault, mock.leak_report());
+            failures++;
+        }
+        if (tz_live_allocations != 0) {
+            fprintf(stderr, "fault %d: %ld runtime allocations are still live\n", fault, tz_live_allocations);
+            failures++;
+            tz_live_allocations = 0;
+        }
+        if (injected != 0 && chosen != 0) {
+            fprintf(stderr, "fault %d was injected and Gpu.Auto still chose Vulkan\n", fault);
+            failures++;
+        }
+        if (injected == 0) {
+            chosen_passes += chosen;
+            break;
+        }
+    }
+    printf("autosweep passes=%d chosen=%d failures=%d\n", passes, chosen_passes, failures);
+    free(module);
+    return failures == 0 ? 0 : HARNESS_ERROR;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: harness probe|run|bench|sweep [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
+        fprintf(stderr, "usage: harness probe|run|bench|sweep|auto|autosweep [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
         return HARNESS_ERROR;
     }
     struct job job;
     if (!parse_job(argc, argv, &job)) return HARNESS_ERROR;
     const char *mock_config = getenv("TZ_VK_MOCK");
-    if (mock_config != NULL && strcmp(argv[1], "sweep") != 0) {
+    int sweeping = strcmp(argv[1], "sweep") == 0 || strcmp(argv[1], "autosweep") == 0;
+    if (mock_config != NULL && !sweeping) {
         struct mock_api mock;
         memset(&mock, 0, sizeof mock);
         if (!load_mock(&mock) || !mock.configure(mock_config)) {
@@ -432,6 +509,10 @@ int main(int argc, char **argv) {
         code = bench_job(&job);
     } else if (strcmp(argv[1], "sweep") == 0) {
         code = sweep_job(&job, mock_config != NULL ? mock_config : "");
+    } else if (strcmp(argv[1], "autosweep") == 0) {
+        code = autosweep_job(&job, mock_config != NULL ? mock_config : "");
+    } else if (strcmp(argv[1], "auto") == 0) {
+        code = auto_job(&job);
     } else {
         fprintf(stderr, "unknown mode %s\n", argv[1]);
         return HARNESS_ERROR;

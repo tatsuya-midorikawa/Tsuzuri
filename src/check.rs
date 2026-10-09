@@ -1143,6 +1143,15 @@ pub enum Builtin {
     /// kernel table on a device, with the lanes of a borrowed input array (or none for `init`),
     /// and returns the new output array; a failing run traps (F09 Phase 2).
     GpuRun,
+    /// `Gpu.__select :: i32 -> i64 -> i32 -> i64 -> i32` takes the tag of a `Gpu.Backend`, the
+    /// kernel number, the mode (0 map, 1 init), and the lane count of a device call. It returns the
+    /// tag of the backend that serves the call and records it for `Gpu.__last`: a named backend
+    /// serves it, and `Gpu.Auto` picks the CPU reference (0) or a device by the runtime's cost
+    /// rule (F09 Phase 3).
+    GpuSelect,
+    /// `Gpu.__last :: i32`, called as `Gpu.__last()`: the backend tag that `Gpu.__select` chose
+    /// for the most recent device call (0 before any) (F09 Phase 3).
+    GpuLast,
     /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
     RcNew,
     /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
@@ -1451,6 +1460,8 @@ impl Builtin {
         Self::GpuOpen,
         Self::GpuFeatures,
         Self::GpuRun,
+        Self::GpuSelect,
+        Self::GpuLast,
         Self::RcNew,
         Self::RcShare,
         Self::RcGet,
@@ -1679,6 +1690,8 @@ impl Builtin {
             Self::GpuOpen => "Gpu.__open",
             Self::GpuFeatures => "Gpu.__features",
             Self::GpuRun => "Gpu.__run",
+            Self::GpuSelect => "Gpu.__select",
+            Self::GpuLast => "Gpu.__last",
             Self::RcNew => "Rc.new",
             Self::RcShare => "Rc.share",
             Self::RcGet => "Rc.get",
@@ -2533,6 +2546,17 @@ impl Builtin {
                 Array(Box::new(Var("b"))),
                 Vec::new(),
             ),
+            Self::GpuSelect => (
+                vec![
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                    Concrete(Type::Integer(32, true)),
+                    Concrete(Type::I64),
+                ],
+                Concrete(Type::Integer(32, true)),
+                Vec::new(),
+            ),
+            Self::GpuLast => (Vec::new(), Concrete(Type::Integer(32, true)), Vec::new()),
             Self::RcNew
             | Self::RcShare
             | Self::RcGet

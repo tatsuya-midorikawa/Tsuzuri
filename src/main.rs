@@ -98,12 +98,17 @@ Build options:
                             at most 4GiB-64KiB on wasm32 and 16GiB on wasm64)
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
-    --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared,
-                         bindings-js, bindings-cs, bindings-py, or bindings-cpp
+    --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv,
+                         spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or
+                         bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
                          wgsl writes the strict WebGPU compute shader of the one exported kernel
                          (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
                          whose results follow WGSL's floating-point rules (Gpu.map_relaxed)
+                         spirv writes the strict Vulkan compute module (SPIR-V binary) of the one
+                         exported kernel (32- and 64-bit integer lanes, and f32 lanes whose
+                         device must report the strict float controls); spirv-relaxed also
+                         allows f32 division and follows the device's floating-point rules
                          shared links a native .dylib or .so that exports the C ABI
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
@@ -547,6 +552,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("wasm") => Emit::Wasm,
                             Some("wgsl") => Emit::Wgsl,
                             Some("wgsl-relaxed") => Emit::WgslRelaxed,
+                            Some("spirv") => Emit::Spirv,
+                            Some("spirv-relaxed") => Emit::SpirvRelaxed,
                             Some("shared") => Emit::Shared,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
@@ -554,7 +561,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -622,10 +629,15 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
-    if emit.is_some_and(Emit::is_wgsl)
+    if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
     {
-        return Err("WGSL output does not use target, optimization, or CPU options".into());
+        return Err(if emit.is_some_and(Emit::is_spirv) {
+            "SPIR-V output does not use target, optimization, or CPU options"
+        } else {
+            "WGSL output does not use target, optimization, or CPU options"
+        }
+        .into());
     }
     if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
@@ -2348,6 +2360,31 @@ mod tests {
             values.extend(extra);
             assert!(parse(&values).is_err(), "{values:?}");
         }
+        for (name, emit) in [
+            ("spirv", Emit::Spirv),
+            ("spirv-relaxed", Emit::SpirvRelaxed),
+        ] {
+            assert_eq!(
+                parse(&["build", "Kernel.tz", "--emit", name])
+                    .unwrap()
+                    .options
+                    .emit,
+                emit
+            );
+            for extra in [
+                vec!["-O3"],
+                vec!["--target", "wasm32"],
+                vec!["--cpu", "native"],
+            ] {
+                let mut values = vec!["build", "Kernel.tz", "--emit", name];
+                values.extend(extra);
+                let error = parse(&values).unwrap_err();
+                assert_eq!(
+                    error, "SPIR-V output does not use target, optimization, or CPU options",
+                    "{values:?}"
+                );
+            }
+        }
         let threads = parse(&[
             "build",
             "Main.tz",
@@ -2659,7 +2696,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],

@@ -328,7 +328,7 @@ export def unavailable :: bool
 fn unavailable = {
   let explicit = Gpu.request Gpu.WebGpu;
   let automatic = Gpu.request Gpu.Auto;
-  Result.is_error (&explicit) && Result.is_error (&automatic)
+  Result.is_error (&explicit) && Result.is_ok (&automatic)
 }
 `);
   const ir = join(api, "api.ll");
@@ -340,7 +340,9 @@ fn unavailable = {
     const native = join(api, `host-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
     // `unavailable` names Gpu.WebGpu, so the program calls the GPU runtime of src/runtime/gpu.c. The run has
     // no WebGPU library (an empty TSUZURI_WEBGPU_LIBRARY disables the backend), so the result does not depend on
-    // the machine: Gpu.request Gpu.WebGpu is Unavailable and no CPU run is substituted.
+    // the machine: Gpu.request Gpu.WebGpu is Unavailable and no CPU run is substituted, while Gpu.request Gpu.Auto
+    // always succeeds (F09 Phase 3: it needs no device, and the CPU reference serves its calls). This clang line
+    // has no Vulkan backend, which only a program that names Gpu.Vulkan or Gpu.Auto gets from the driver.
     execute(clang, [ir, host, resolve("src/runtime/gpu.c"), `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-o", native, ...(process.platform === "win32" ? [] : ["-lm", "-pthread"]), ...(process.platform === "linux" ? ["-ldl"] : [])]);
     execute(native, [], true, { ...process.env, TSUZURI_WEBGPU_LIBRARY: "" });
     const wasm = join(api, `api-${optimization}.wasm`);

@@ -12,6 +12,10 @@
 //!    the call's kernel (-1 when a strict call has no kernel for a device, which traps there).
 //!
 //! A program that never names a non-CPU backend takes neither pass, so its IR does not change.
+//!
+//! A kernel carries the sources of the backends that the program names (F09 Phase 3): WGSL when it
+//! constructs `Gpu.WebGpu`, a SPIR-V module when it constructs `Gpu.Vulkan` or `Gpu.Auto`, whose
+//! per-call choice between the CPU reference and Vulkan reads the same descriptor.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,16 +25,21 @@ use crate::{
     gpu,
 };
 
-/// The device features that a kernel can need (`tsuzuri_gpu_open`'s `features`).
+/// The device features that a kernel can need (`tsuzuri_gpu_open`'s `features`). Each backend tests
+/// only its own bits: shader-f16 for WebGPU; 64-bit integers and the strict float controls for
+/// Vulkan.
 pub const FEATURE_F16: u32 = 1;
+pub use crate::gpu::{FEATURE_INT64, FEATURE_STRICT_FLOAT};
+const _: () = assert!(FEATURE_F16 & (FEATURE_INT64 | FEATURE_STRICT_FLOAT) == 0);
 
 /// The bit of a kernel's `flags` that marks floating-point operations as relaxed.
 pub const FLAG_RELAXED: u32 = 1;
 
-/// The lane kinds of a kernel descriptor: 32-bit integers, f32, and f16.
+/// The lane kinds of a kernel descriptor: 32-bit integers, f32, f16, and 64-bit integers.
 pub const LANE_32: u32 = 1;
 pub const LANE_F32: u32 = 2;
 pub const LANE_F16: u32 = 3;
+pub const LANE_64: u32 = 4;
 
 /// A retargeted call carries `MARKER + relaxed` as its kernel number until `lower_kernels`.
 const MARKER: u128 = 1 << 40;
@@ -50,10 +59,14 @@ pub struct GpuKernelBlob {
     pub lanes: u32,
     /// The device features the kernel needs.
     pub features: u32,
-    /// WGSL text for WebGPU.
+    /// WGSL text for WebGPU, when the program constructs `Gpu.WebGpu` and the kernel has WGSL.
     pub wgsl: Option<String>,
-    /// A SPIR-V module for Vulkan, when a backend wants one (Phase 3).
+    /// A SPIR-V module for Vulkan (little-endian words), when the program constructs `Gpu.Vulkan`
+    /// or `Gpu.Auto` and the kernel can be expressed in SPIR-V.
     pub spirv: Option<Vec<u8>>,
+    /// The operations one lane of the SPIR-V kernel executes, which `Gpu.Auto` prices the CPU run
+    /// with; 0 without SPIR-V.
+    pub weight: u32,
 }
 
 /// The kernels that a program embeds and the features they need together.
@@ -61,38 +74,62 @@ pub struct GpuKernelBlob {
 pub struct GpuProgram {
     pub kernels: Vec<GpuKernelBlob>,
     pub features: u32,
+    /// The program constructs `Gpu.Vulkan` or `Gpu.Auto`, so its build carries the Vulkan runtime.
+    pub vulkan: bool,
 }
 
 fn is_user(module: &CheckedModule, id: usize) -> bool {
     module.functions[id].origin.module != ModuleOrigin::Std
 }
 
-/// Whether some user function builds a `Gpu.Backend` other than `CpuReference`.
-pub fn uses_devices(module: &CheckedModule) -> bool {
+/// The `Gpu.Backend` cases other than `CpuReference` that some user function builds, by name.
+fn constructed_backends(module: &CheckedModule) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
     let Some(backend) = module
         .unions
         .iter()
         .position(|union| union.origin == ModuleOrigin::Std && union.name == "Gpu.Backend")
     else {
-        return false;
+        return names;
     };
-    (0..module.functions.len())
-        .filter(|id| is_user(module, *id))
-        .any(|id| {
-            let mut pending = vec![&module.functions[id].body];
-            while let Some(expression) = pending.pop() {
-                if let TypedExprKind::Construct {
-                    union_id, case_id, ..
-                } = &expression.kind
-                    && *union_id == backend
-                    && *case_id != 0
-                {
-                    return true;
-                }
-                pending.extend(expression.children());
+    for id in (0..module.functions.len()).filter(|id| is_user(module, *id)) {
+        let mut pending = vec![&module.functions[id].body];
+        while let Some(expression) = pending.pop() {
+            if let TypedExprKind::Construct {
+                union_id, case_id, ..
+            } = &expression.kind
+                && *union_id == backend
+                && *case_id != 0
+            {
+                names.insert(module.unions[backend].cases[*case_id].0.as_str());
             }
-            false
-        })
+            pending.extend(expression.children());
+        }
+    }
+    names
+}
+
+/// Whether some user function builds a `Gpu.Backend` other than `CpuReference`.
+pub fn uses_devices(module: &CheckedModule) -> bool {
+    !constructed_backends(module).is_empty()
+}
+
+/// The sources that the program's backends read: WGSL for `Gpu.WebGpu`, SPIR-V for `Gpu.Vulkan` and
+/// `Gpu.Auto`.
+#[derive(Clone, Copy)]
+struct Sources {
+    wgsl: bool,
+    spirv: bool,
+}
+
+impl Sources {
+    fn of(module: &CheckedModule) -> Self {
+        let names = constructed_backends(module);
+        Self {
+            wgsl: names.contains("WebGpu"),
+            spirv: names.contains("Vulkan") || names.contains("Auto"),
+        }
+    }
 }
 
 fn std_gpu_function(module: &CheckedModule, name: &str) -> Option<usize> {
@@ -228,48 +265,65 @@ fn lane(ty: &Type) -> Option<u32> {
         Type::Integer(32, _) => Some(LANE_32),
         Type::Binary(32) => Some(LANE_F32),
         Type::Binary(16) => Some(LANE_F16),
+        Type::Integer(64, _) => Some(LANE_64),
         _ => None,
     }
 }
 
-/// The kernel of a callback for the non-CPU backends, or `None` when a strict call has none.
+/// The kernel of a callback for the backends that the program names, or `None` when a strict call
+/// has no source for any of them. A strict float call has WGSL on no device and SPIR-V only where
+/// the emitter can reproduce the CPU reference, so a kernel can have either source or both.
 fn blob(
     module: &CheckedModule,
     callback: usize,
     relaxed: bool,
+    sources: Sources,
 ) -> Result<Option<GpuKernelBlob>, Diagnostic> {
     let kernel = gpu::extract_kernel(module, callback)?;
-    let wgsl = if relaxed {
-        Some(kernel.wgsl_relaxed()?)
-    } else {
-        kernel.wgsl().ok()
+    let wgsl = match (sources.wgsl, relaxed) {
+        (false, _) => None,
+        (true, true) => Some(kernel.wgsl_relaxed()?),
+        (true, false) => kernel.wgsl().ok(),
+    };
+    let spirv = match (sources.spirv, relaxed) {
+        (false, _) => None,
+        (true, true) => kernel.spirv_relaxed().ok(),
+        (true, false) => kernel.spirv().ok(),
     };
     let signature = &module.functions[callback].signature;
-    let (Some(wgsl), Some(input), Some(output)) = (
-        wgsl,
-        lane(&signature.parameters[0]),
-        lane(&signature.result),
-    ) else {
+    let (Some(input), Some(output)) = (lane(&signature.parameters[0]), lane(&signature.result))
+    else {
         return Ok(None);
     };
-    let features = if wgsl.contains("enable f16;") {
+    if wgsl.is_none() && spirv.is_none() {
+        return Ok(None);
+    }
+    let mut features = if wgsl
+        .as_deref()
+        .is_some_and(|text| text.contains("enable f16;"))
+    {
         FEATURE_F16
     } else {
         0
     };
+    let weight = spirv.as_ref().map_or(0, |module| module.weight);
+    features |= spirv.as_ref().map_or(0, |module| module.features);
     Ok(Some(GpuKernelBlob {
         callback,
         relaxed,
         flags: if relaxed { FLAG_RELAXED } else { 0 },
         lanes: input | (output << 8),
         features,
-        wgsl: Some(wgsl),
-        spirv: None,
+        wgsl,
+        spirv: spirv.map(|module| module.bytes()),
+        weight,
     }))
 }
 
 /// Builds the kernels of the calls of `init_on` and `map_on` and numbers them (pass 2).
 pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<(), Diagnostic> {
+    let sources = Sources::of(module);
+    module.gpu.vulkan = sources.spirv;
     let instances = instances(module);
     if instances.is_empty() {
         return Ok(());
@@ -289,7 +343,7 @@ pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<(), Diagnostic
     let mut kernels = Vec::new();
     let mut numbers = BTreeMap::new();
     for (callback, relaxed) in sites {
-        if let Some(blob) = blob(module, callback, relaxed)? {
+        if let Some(blob) = blob(module, callback, relaxed, sources)? {
             numbers.insert((callback, relaxed), kernels.len() as u128);
             kernels.push(blob);
         }
@@ -301,7 +355,11 @@ pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<(), Diagnostic
         number(&mut module.functions[id].body, &instances, &numbers);
     }
     let features = kernels.iter().fold(0, |all, kernel| all | kernel.features);
-    module.gpu = GpuProgram { kernels, features };
+    module.gpu = GpuProgram {
+        kernels,
+        features,
+        vulkan: sources.spirv,
+    };
     Ok(())
 }
 

@@ -2,12 +2,14 @@
  *
  * The library is loaded at run time (dlopen / LoadLibrary), so a program that never asks for Vulkan has no
  * link-time or load-time dependency on it. TSUZURI_VULKAN_LIBRARY names the library exactly; when it is set
- * and cannot be loaded the backend is unavailable, and no other library is tried. The small part of the Vulkan
- * ABI that is needed is declared here by hand and checked against the real headers by tests/gpu_vulkan_abi.c.
+ * and cannot be loaded the backend is unavailable, and no other library is tried; an empty value disables the
+ * backend. The small part of the Vulkan ABI that is needed is declared here by hand and checked against the
+ * real headers by tests/gpu_vulkan_abi.c.
  *
  * Entry points (called by the backend table of gpu.c, with the status codes of that table):
  *   tz_vulkan_open(features)  0 ok, 1 unavailable, 2 unsupported
  *   tz_vulkan_run(...)        0 ok, 1 unavailable, 2 unsupported, 3 limit exceeded, 4 failed
+ *   tz_vulkan_auto(...)       1 when Gpu.Auto should run a call here, 0 for the CPU reference; never a status
  * `features` carries the device features the program's kernels need (bit 1 = shaderInt64, bit 2 = the strict
  * float32 controls); the bits of other backends are ignored. Initialization is lazy, serialized by one mutex, and
  * idempotent: the outcome of the first attempt is kept for the life of the process. Every run submits one command
@@ -831,8 +833,14 @@ static void tz_vk_debug(const char *format, ...) {
     va_end(arguments);
 }
 
+/* Set while Gpu.Auto prepares a kernel: a failure there is not an error, because the call then runs on the CPU
+   reference, so it is reported only when TSUZURI_GPU_DEBUG is set. Per thread, because a run on another thread
+   reports its own failures. */
+static _Thread_local int tz_vk_quiet;
+
 /* Reports why a run failed; the status is returned by the caller. */
 static int32_t tz_vk_report(int32_t status, const char *format, ...) {
+    if (tz_vk_quiet && !tz_vk_debug_enabled()) return status;
     va_list arguments;
     va_start(arguments, format);
     fputs("tsuzuri: Vulkan: ", stderr);
@@ -862,7 +870,12 @@ static void *tz_vk_symbol(void *library, const char *name) {
 
 static void *tz_vk_find_library(void) {
     const char *override = getenv("TSUZURI_VULKAN_LIBRARY");
-    if (override != NULL && override[0] != '\0') {
+    if (override != NULL) {
+        /* Set means exactly that file, and an empty value disables the backend, like TSUZURI_WEBGPU_LIBRARY. */
+        if (override[0] == '\0') {
+            tz_vk_debug("TSUZURI_VULKAN_LIBRARY is empty; the backend is disabled");
+            return NULL;
+        }
         void *library = tz_vk_open_library(override);
         if (library == NULL) tz_vk_debug("TSUZURI_VULKAN_LIBRARY=%s cannot be loaded", override);
         return library;
@@ -1631,6 +1644,7 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
     if (count < 0 || count > TZ_VK_MAX_LANES) return tz_vk_report(TZ_VK_LIMIT, "%lld lanes exceed 2147483647", (long long)count);
     if (count == 0) return TZ_VK_OK;
     if (output == NULL || (mode == 0 && input == NULL)) return tz_vk_report(TZ_VK_FAILED, "a buffer is missing");
+    tz_vk_debug("%s %lld lanes, kinds 0x%04x", mode ? "init" : "map", (long long)count, (unsigned)lanes);
 
     TZ_VK_LOCK();
     int32_t status = tz_vk_ensure(0);
@@ -1814,6 +1828,122 @@ done:
     TZ_VK_FREE(aligned);
     TZ_VK_UNLOCK();
     return status;
+}
+
+/* ---- Gpu.Auto: is a call worth running here? ---- */
+
+/* The measured cost rule of Gpu.Auto for this backend. The constants come from benchmarks/run-gpu-vulkan.mjs, which
+   times the same Tsuzuri kernels on the CPU reference and on Vulkan with the transfers included (docs/benchmarks.md
+   has the method, the machine, the medians, and the load of that machine). They describe one machine (an Apple
+   M1 Max through MoltenVK: an integrated GPU with unified memory), so they are heuristics, not guarantees: another
+   GPU or driver has other constants, and TSUZURI_GPU_AUTO_MIN_WORK replaces the rule with a threshold of one's own. */
+#define TZ_VK_AUTO_CPU_NS_PER_OP 0.1 /* one lane-operation of the CPU reference */
+#define TZ_VK_AUTO_CALL_NS 300000.0 /* one Vulkan call with no work: buffers, submit, fence wait, release */
+#define TZ_VK_AUTO_BYTE_NS 0.14 /* one byte of input or output: host copy and device access */
+#define TZ_VK_AUTO_GPU_NS_PER_OP 0.002 /* one lane-operation on the device */
+#define TZ_VK_AUTO_OPEN_NS 60000000.0 /* the first use: loader, instance, device, pools */
+#define TZ_VK_AUTO_COMPILE_NS 10000000.0 /* the first call of a kernel: shader module and pipeline */
+#define TZ_VK_AUTO_MARGIN 1.0 /* the device must be this many times cheaper than the estimate of the CPU reference */
+
+/* The measurements are of an integrated GPU that the host reaches without a copy (the memory of the machine is
+   shared). A discrete GPU, whose transfers cross a bus, and a software device are never chosen by Gpu.Auto: no
+   measured rule covers them, and an explicit Gpu.Vulkan still runs there. */
+static int tz_vk_auto_device_measured(const struct tz_vk_caps *caps) {
+    return caps->device_type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && caps->direct_transfer;
+}
+
+/* TSUZURI_GPU_AUTO_MIN_WORK=<n> replaces the cost rule by "lanes times kernel weight reaches n" (0: always, when the
+   device is eligible); it never relaxes the capability, limit, or device checks. -1 when unset or not a count. */
+static long long tz_vk_auto_minimum(void) {
+    const char *text = getenv("TSUZURI_GPU_AUTO_MIN_WORK");
+    if (text == NULL || text[0] == '\0') return -1;
+    char *end = NULL;
+    long long value = strtoll(text, &end, 10);
+    if (*end != '\0' || value < 0) {
+        tz_vk_debug("TSUZURI_GPU_AUTO_MIN_WORK=%s is not a count; the measured rule applies", text);
+        return -1;
+    }
+    return value;
+}
+
+/* Whether the pipeline of a module is already built, so that no compile time is ahead; the lock is held. */
+static int tz_vk_cached(const uint32_t *words, uint32_t length, int mode) {
+    for (uint32_t index = 0; index < tz_vk.program_count; index++) {
+        const struct tz_vk_program *candidate = &tz_vk.programs[index];
+        if (candidate->length == length && memcmp(candidate->words, words, (size_t)length * 4) == 0) {
+            return candidate->pipelines[mode] != 0;
+        }
+    }
+    return 0;
+}
+
+/* Gpu.Auto asks, for one call of a kernel, whether to run it here (1) or on the CPU reference (0). It chooses this
+   backend only when everything that can be checked before the run holds: the kernel has a module, its lanes are
+   ones Vulkan has, the device is open with the features of the kernel, the device is of the measured kind, the
+   buffers fit, and the pipeline builds; and the estimated cost, with the open and the compile if they are still
+   ahead, is below the estimated cost of the CPU reference. A device that is unavailable is not asked again. A
+   failure while the run itself is under way (a lost device, no memory) traps like an explicit device does. */
+static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const void *spirv, int32_t spirv_length,
+    int32_t weight, int64_t count) {
+    int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
+    if (spirv == NULL || spirv_length < 20 || (spirv_length & 3) != 0 || (mode != 0 && mode != 1)
+        || (mode == 0 && input_size == 0) || output_size == 0 || count <= 0 || count > TZ_VK_MAX_LANES) {
+        return 0;
+    }
+    double lane_bytes = (double)(mode == 0 ? input_size : 0) + (double)output_size;
+    double work = (double)count * (double)(weight > 0 ? weight : 1);
+    long long minimum = tz_vk_auto_minimum();
+    int chosen = 0;
+    uint32_t *aligned = NULL;
+    const uint32_t *words = (const uint32_t *)spirv;
+    uint32_t length_words = (uint32_t)spirv_length / 4;
+    if (((uintptr_t)spirv & 3U) != 0) {
+        aligned = (uint32_t *)TZ_VK_ALLOC((size_t)spirv_length);
+        if (aligned == NULL) return 0;
+        memcpy(aligned, spirv, (size_t)spirv_length);
+        words = aligned;
+    }
+    TZ_VK_LOCK();
+    tz_vk_quiet = 1;
+    if (tz_vk.state == 2 || tz_vk.poisoned) goto done;
+    {
+        int ready = tz_vk.state == 1;
+        if (minimum >= 0) {
+            if (work < (double)minimum) goto done;
+        } else {
+            double cpu = work * TZ_VK_AUTO_CPU_NS_PER_OP;
+            double device = TZ_VK_AUTO_CALL_NS + (double)count * lane_bytes * TZ_VK_AUTO_BYTE_NS
+                + work * TZ_VK_AUTO_GPU_NS_PER_OP + (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
+                + (ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS);
+            if (device * TZ_VK_AUTO_MARGIN >= cpu) goto done;
+        }
+    }
+    if (tz_vk_ensure(features & TZ_VK_FEATURE_MASK) != TZ_VK_OK) goto done;
+    {
+        const struct tz_vk_caps *caps = &tz_vk.caps;
+        if (!tz_vk_auto_device_measured(caps)) {
+            tz_vk_debug("Gpu.Auto does not use %s: the cost rule is measured for integrated GPUs with unified memory", caps->name);
+            goto done;
+        }
+        VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
+        VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
+        if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
+            || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
+            tz_vk_debug("Gpu.Auto: %lld lanes do not fit the buffer limits of the device", (long long)count);
+            goto done;
+        }
+    }
+    {
+        VkPipeline pipeline = 0;
+        if (tz_vk_check_module(words, length_words) != TZ_VK_OK) goto done;
+        if (tz_vk_pipeline(words, length_words, mode, &pipeline) != TZ_VK_OK) goto done;
+    }
+    chosen = 1;
+done:
+    tz_vk_quiet = 0;
+    TZ_VK_UNLOCK();
+    TZ_VK_FREE(aligned);
+    return chosen;
 }
 
 /* The capability line of the selected device, for diagnostics and tests; empty when the backend is not open. */

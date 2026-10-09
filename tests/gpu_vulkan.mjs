@@ -264,6 +264,106 @@ check("run: a module that needs what the device lacks is refused even when the f
   assert.equal(statusOf(mock("", ["run", "--spirv", join(directory, "truncated.spv"), "--mode", "map", "--lanes", "1,1", "--count", "8", "--input", join(directory, "in.bin")])), 2, "a truncated module");
 });
 
+// ---- Gpu.Auto: is a call worth running on this backend? (the mock is an integrated GPU with unified memory by default) ----
+const measured = { TSUZURI_GPU_AUTO_MIN_WORK: undefined };
+const always = { TSUZURI_GPU_AUTO_MIN_WORK: "0" };
+const ask = (config, { mode = "map", lanes = "1,1", count = 1, features = 0, weight = 1, repeat = 1, module = mockModule, env = measured } = {}) => {
+  const result = mock(config, ["auto", "--spirv", module, "--mode", mode, "--lanes", lanes, "--count", String(count), "--features", String(features), "--weight", String(weight), "--repeat", String(repeat)], env);
+  const parsed = /status=0 chosen=([01](?:,[01])*) opened=([01])/.exec(result.stdout);
+  assert.ok(parsed, `${result.stdout}${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr);
+  return { chosen: parsed[1].split(",").map(Number), opened: parsed[2] === "1", stderr: result.stderr };
+};
+
+check("auto: the measured cost rule keeps cheap work on the CPU reference and never opens the device for it", () => {
+  for (const [count, weight] of [[1, 1], [1000, 5], [1000000, 5], [100000, 20]]) {
+    const answer = ask("", { count, weight });
+    assert.deepEqual(answer.chosen, [0], `${count} lanes of weight ${weight}`);
+    assert.equal(answer.opened, false, "no device is opened for work that the CPU does faster");
+  }
+});
+
+check("auto: work that outweighs the transfer, the open, and the compile opens the device and is chosen, again and again", () => {
+  for (const [lanes, count] of [["1,1", 4000000], ["4,4", 2000000], ["1,4", 3000000]]) {
+    const answer = ask("", { count, weight: 1280, lanes, repeat: 3 });
+    assert.deepEqual(answer.chosen, [1, 1, 1], `${count} lanes ${lanes}`);
+    assert.equal(answer.opened, true);
+  }
+  assert.deepEqual(ask("", { mode: "init", count: 4000000, weight: 1280 }).chosen, [1], "init has no input to move");
+});
+
+check("auto: TSUZURI_GPU_AUTO_MIN_WORK replaces the cost rule by a threshold on lanes times weight, and nothing else", () => {
+  assert.deepEqual(ask("", { count: 1, weight: 1, env: always }).chosen, [1]);
+  assert.deepEqual(ask("", { count: 100, weight: 50, env: { TSUZURI_GPU_AUTO_MIN_WORK: "5000" } }).chosen, [1], "5000 reaches 5000");
+  assert.deepEqual(ask("", { count: 100, weight: 49, env: { TSUZURI_GPU_AUTO_MIN_WORK: "5000" } }).chosen, [0], "4900 does not");
+  assert.deepEqual(ask("", { count: 4000000, weight: 1280, env: { TSUZURI_GPU_AUTO_MIN_WORK: "9999999999999" } }).chosen, [0], "a threshold above the work wins over the rule");
+  for (const bad of ["abc", "-1", "5x"]) {
+    const answer = ask("", { count: 1000, weight: 5, env: { TSUZURI_GPU_AUTO_MIN_WORK: bad, TSUZURI_GPU_DEBUG: "1" } });
+    assert.deepEqual(answer.chosen, [0], `${bad}: the measured rule applies`);
+    assert.match(answer.stderr, /TSUZURI_GPU_AUTO_MIN_WORK=.* is not a count/);
+  }
+  // The threshold does not relax what the device must be able to do.
+  assert.deepEqual(ask("int64=0", { count: 1000, features: 2, env: always }).chosen, [0], "64-bit integers without shaderInt64");
+  assert.deepEqual(ask("", { count: 1000, features: 4, env: always }).chosen, [0], "strict float without the controls");
+  assert.deepEqual(ask("strict=1", { count: 1000, features: 4, env: always }).chosen, [1], "strict float with the controls");
+  assert.deepEqual(ask("", { count: 1000, features: 1, env: always }).chosen, [1], "a feature bit of another backend is not this backend's");
+  assert.deepEqual(ask("devices=0", { count: 1000, repeat: 3, env: always }).chosen, [0, 0, 0], "no device");
+  assert.deepEqual(ask("no_version=1", { count: 1000, env: always }).chosen, [0], "no usable loader");
+});
+
+check("auto: only the measured kind of device is chosen, and only when the buffers fit and the pipeline builds", () => {
+  for (const config of ["type=discrete", "type=cpu", "type=virtual", "type=other", "unified=0"]) {
+    assert.deepEqual(ask(config, { count: 4000000, weight: 1280, env: always }).chosen, [0], config);
+  }
+  assert.deepEqual(ask("type=integrated", { count: 1000, env: always }).chosen, [1]);
+  assert.deepEqual(ask("max_range=1024", { count: 1000, env: always }).chosen, [0], "4000 bytes exceed maxStorageBufferRange");
+  assert.deepEqual(ask("max_range=1024", { count: 256, env: always }).chosen, [1]);
+  assert.deepEqual(ask("max_allocation=2048", { count: 513, env: always }).chosen, [0], "maxMemoryAllocationSize");
+  assert.deepEqual(ask("", { count: 2147483648, env: always }).chosen, [0], "more lanes than a call can have");
+  assert.deepEqual(ask("", { count: 0, env: always }).chosen, [0], "an empty call has nothing to run");
+  assert.deepEqual(ask("", { count: 8, lanes: "3,3", env: always }).chosen, [0], "f16 lanes have no Vulkan kernel");
+  assert.deepEqual(ask("", { count: 8, lanes: "9,1", env: always }).chosen, [0], "an unknown lane kind");
+  assert.deepEqual(ask("", { count: 8, lanes: "9,2", mode: "init", env: always }).chosen, [1], "init has no input lanes to check");
+  const garbage = join(directory, "auto-garbage.spv");
+  writeFileSync(garbage, Buffer.alloc(64, 0xAB));
+  const wide = join(directory, "auto-int64.spv");
+  writeFileSync(wide, fakeModule([1, 11]));
+  const odd = join(directory, "auto-odd.spv");
+  writeFileSync(odd, fakeModule([1, 9999]));
+  const tiny = join(directory, "auto-tiny.spv");
+  writeFileSync(tiny, Buffer.alloc(8));
+  for (const [config, module, why] of [["", garbage, "not SPIR-V"], ["int64=0", wide, "a module that needs shaderInt64 whatever the features say"], ["", odd, "an unknown capability"], ["", tiny, "too short to be a module"]]) {
+    assert.deepEqual(ask(config, { count: 1000, module, env: always }).chosen, [0], why);
+  }
+  assert.deepEqual(ask("int64=1", { count: 1000, module: wide, env: always }).chosen, [1]);
+});
+
+check("auto: a kernel that cannot be prepared is not chosen, and says why only under TSUZURI_GPU_DEBUG", () => {
+  const garbage = join(directory, "auto-garbage.spv");
+  const quiet = ask("", { count: 1000, module: garbage, env: always });
+  assert.deepEqual(quiet.chosen, [0]);
+  assert.equal(quiet.stderr, "", "the CPU reference serves the call without a message");
+  const verbose = ask("", { count: 1000, module: garbage, env: { ...always, TSUZURI_GPU_DEBUG: "1" } });
+  assert.match(verbose.stderr, /not a SPIR-V module/);
+  const strict = ask("", { count: 1000, features: 4, env: { ...always, TSUZURI_GPU_DEBUG: "1" } });
+  assert.deepEqual(strict.chosen, [0]);
+  assert.match(strict.stderr, /strict float32 controls/);
+});
+
+check("auto: the Nth Vulkan call fails for every N: the answer is never Vulkan, and no object or allocation is left", () => {
+  let passes = 0;
+  for (const config of ["", "type=integrated,max_groups=1", "int64=0", "strict=1"]) {
+    const result = mock(config, ["autosweep", "--spirv", mockModule, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--features", config === "strict=1" ? "4" : "0", "--weight", "1"], always);
+    const summary = /autosweep passes=(\d+) chosen=(\d+) failures=(\d+)/.exec(result.stdout);
+    assert.ok(summary, `[${config}] ${result.stdout}${result.stderr}`);
+    assert.equal(result.status, 0, `[${config}] ${result.stderr}`);
+    assert.equal(Number(summary[2]), 1, `[${config}] the fault-free pass chooses Vulkan`);
+    assert.equal(Number(summary[3]), 0);
+    passes += Number(summary[1]);
+  }
+  assert.ok(passes > 40, `${passes} faulted passes`);
+});
+
 const sweep = (config, { mode = "map", lanes = "1,1", count = 1000, features = 0, input = u32(sample(count)) } = {}) => {
   const args = ["sweep", "--spirv", mockModule, "--mode", mode, "--lanes", lanes, "--count", String(count), "--features", String(features), "--output", join(directory, "sweep.bin")];
   if (mode === "map") { writeFileSync(join(directory, "sweep-in.bin"), input); args.push("--input", join(directory, "sweep-in.bin")); }
@@ -512,6 +612,9 @@ device("device: an unloadable library, an unknown ICD, and a bad module are refu
   writeFileSync(join(directory, "real-in.bin"), u32(sample(8)));
   const args = ["run", "--spirv", module, "--mode", "map", "--lanes", "1,1", "--count", "8", "--input", join(directory, "real-in.bin"), "--output", join(directory, "real-out.bin")];
   assert.equal(statusOf(harness(args, { TSUZURI_VULKAN_LIBRARY: "/nonexistent/libvulkan" })), 1);
+  const disabled = harness(args, { TSUZURI_VULKAN_LIBRARY: "", TSUZURI_GPU_DEBUG: "1" });
+  assert.equal(statusOf(disabled), 1, "an empty TSUZURI_VULKAN_LIBRARY disables the backend, like the WebGPU one");
+  assert.match(disabled.stderr, /TSUZURI_VULKAN_LIBRARY is empty/);
   const icd = harness(args, { VK_DRIVER_FILES: join(directory, "no-such-icd.json"), VK_ICD_FILENAMES: join(directory, "no-such-icd.json"), TSUZURI_GPU_DEBUG: "1" });
   assert.equal(statusOf(icd), 1, icd.stdout + icd.stderr);
   writeFileSync(join(directory, "bad.spv"), Buffer.alloc(40, 7));
