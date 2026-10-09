@@ -33,7 +33,10 @@ const tracked = (ir) => {
 
 // The C host of tests/fixtures/async_host: it records the operations that start and the
 // cancellations and reports, and can call back into the executor from a report.
+// The hosts call the executor inside `assert`, so the checks must run in every build:
+// `zig cc` defines NDEBUG when it optimizes, which would skip the calls themselves.
 const TRACKING = `
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdatomic.h>

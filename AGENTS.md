@@ -77,3 +77,15 @@ Lessons from the PR #3 and #4 VS Code workflow failures:
   Windows behavior is verified only by a green Windows CI job.
 - `gh run view <run> --log-failed` shows failed steps. Logs of finished jobs in a
   running workflow come from `gh api repos/<owner>/<repo>/actions/jobs/<job>/logs`.
+- The bundled Windows x64 toolchain compiles C with `zig cc`, which defines
+  `NDEBUG` from `-O1` up, unlike clang elsewhere. A C test host that calls the
+  code under test inside `assert(...)` then skips the call, and later steps see
+  a state that never happened (the Async host test died with `0xC000001D` at
+  `-O1` and passed at `-O0`). Start such hosts with `#undef NDEBUG`, and read a
+  pass of an optimized run as meaningful only if its checks were compiled in.
+- To debug a Windows-only failure without 25-minute loops, push a throwaway
+  branch whose workflow runs `on: push` for that branch only, cache
+  `vsc/toolchain` with `actions/cache` (about 4 minutes per loop once cached),
+  print what the failing program does (progress lines, an unhandled-exception
+  filter that prints the code and address), and delete the branch, its runs, and
+  its cache afterwards.
