@@ -187,12 +187,12 @@ impl Target {
 pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
 /// Why a Windows build cannot reach them yet.
 pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
-pub(crate) const ASYNC_NATIVE_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
-pub(crate) const ASYNC_NATIVE_MESSAGE: &str = if cfg!(windows) {
-    "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)"
-} else {
-    "Async.block_on is only available on macOS and Linux; use Async.run on this platform (G10)"
-};
+/// Whether the native reactor of `Async.block_on` (`src/runtime/async.c`) has an implementation
+/// for the host this compiler runs on: POSIX threads on macOS and Linux, Win32 on Windows.
+pub(crate) const ASYNC_NATIVE_SUPPORTED: bool =
+    cfg!(any(target_os = "macos", target_os = "linux", windows));
+pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
+    "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -2563,7 +2563,7 @@ fn build_complete(
     if cfg!(windows) && native_runtime && options.emit == Emit::Object {
         return Err(driver_error(
             "E2002",
-            "Windows COFF objects with embedded task, CPU, or IO runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+            "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;

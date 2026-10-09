@@ -530,9 +530,11 @@ fn javascript_bindings_drive_the_executor_and_return_promises_under_jspi() {
     assert!(!bindings::declarations(&plain).contains("AsyncHost"));
 }
 
+/// A host without a native reactor, or a Windows object that cannot embed one, is refused before
+/// anything is written. Windows runs `Async.block_on` in executables (tests/async.mjs).
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[test]
-fn unsupported_native_reactors_report_the_platform_before_linking() {
+fn hosts_without_an_embeddable_reactor_report_why_before_linking() {
     let (project, module) = project(&format!("{HOST}{BLOCKING}"));
     let root = std::env::temp_dir().join(format!("tsuzuri-async-platform-{}", std::process::id()));
     let options = BuildOptions {
@@ -544,9 +546,9 @@ fn unsupported_native_reactors_report_the_platform_before_linking() {
     assert_eq!(
         error.message,
         if cfg!(windows) {
-            "Async.block_on is not available on Windows yet; its reactor is POSIX only (G10)"
+            "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable"
         } else {
-            "Async.block_on is only available on macOS and Linux; use Async.run on this platform (G10)"
+            "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform"
         }
     );
     assert!(!root.exists());
