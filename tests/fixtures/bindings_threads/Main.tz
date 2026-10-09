@@ -52,3 +52,41 @@ fn helper_results = Task.run task {
     let! results = Task.parallel (new [Task<i64>](3, index -> task { (narrow_on_helpers (barrier index)) as i64 }))
     return results[0] + results[1] + results[2]
 }
+
+// F10: shared state and channels on the pool of the glue. Every helper has its own instance, so the
+// lock and the wait state of each thread are per worker, and the deadlock rule counts all of them.
+export def locked_total :: i64 -> i64
+fn locked_total n =
+    let total = Mutex.create 0i64
+    let indices = Task.scope (ref total) n (shared -> index -> Mutex.with_lock shared (value -> {
+        deref value = deref value + index + 1;
+        index
+    }))
+    Mutex.into_inner total + Array.sum (ref indices)
+
+def produce :: Channel.Sender<i64> -> i64 -> Task<i64>
+fn produce sender count = task {
+    let mut index = 0
+    while index < count do
+        let _sent = Channel.send (ref sender) (index + 1)
+        index = index + 1
+    return count
+}
+
+def consume :: Channel.Receiver<i64> -> Task<i64>
+fn consume receiver = task {
+    let mut sum = 0
+    let mut open = true
+    while open do
+        match Channel.recv (ref receiver) with
+        | Maybe.Some value -> sum = sum + value
+        | Maybe.None -> open = false
+    return sum
+}
+
+export def piped :: i64 -> i64 -> i64
+fn piped capacity count =
+    match Channel.bounded capacity with
+    | (sender, receiver) ->
+        let results = Task.run (Task.parallel [produce sender count, consume receiver])
+        results[1]

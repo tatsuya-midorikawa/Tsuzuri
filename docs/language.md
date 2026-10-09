@@ -2246,7 +2246,7 @@ WASM ターゲットにおいては、デフォルトでは同一の静的型、
 ホスト側は各ワーカーインスタンスにおいて、エントリポイント `tsuzuri_thread_entry` の呼び出し前にグローバル変数 `__stack_pointer` をスタック上端アドレスに、`tsuzuri_stack_base` および `tsuzuri_stack_top` をスタックの有効範囲へと正しく初期化します（両方が 0 の場合はメインスレッドのスタックを意味するため、範囲が未設定のワーカーは最初の関数呼び出しで安全にトラップします）。
 `--emit object` で出力されたオブジェクトファイルを独自にリンクする場合は、これらのグローバル変数、`__stack_pointer`、およびスレッドランタイム関数を忘れずに `--export` してください。
 並列グループが戻るまで、すべてのコールバック関数の完了と結果データの同期公開が確実に待機されます。正常終了時は所有ヒープ領域が完全に回収されます（ワーカースレッドのスタックはプールの寿命に従い、トラップが発生したプールは再利用されずに安全に破棄・クローズされます）。
-既定の WASM では、`Task.scope` の子どもは `index` の昇順に 1 つずつ実行され、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、`E2000`（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）です。`--freestanding` では、`Mutex` は `E2000` で、`Task.scope` も並列タスクとして `E2000` です。`Atomic` はランタイムを使わないので通ります。
+既定の WASM では、`Task.scope` の子どもは `index` の昇順に 1 つずつ実行され、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、`Channel` の操作はモジュールの中の IR（満たされない待ちはその場でトラップ）で、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `Channel` も使えます（ロックの語と待ちは共有メモリの atomic 命令と `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとの WebAssembly のグローバルです。ホストのグルーは変わりません）。`--freestanding` では、`Mutex` と `Channel` は `E2000` で、`Task.scope` も並列タスクとして `E2000` です。`Atomic` はランタイムを使わないので通ります。
 extern 関数を使用するワーカーには同一のホスト環境定義が必要であり、`createThreadPool` の `importsModule` が各インスタンス用の `createImports({memory, workerId, data})` を返却します。
 なお Web ブラウザ環境で動作させる場合は、HTTP レスポンスヘッダーに `Cross-Origin-Opener-Policy: same-origin`（COOP）および `Cross-Origin-Embedder-Policy: require-corp`（COEP）を設定して cross-origin isolation を有効化し、専用の Web Worker ホストスクリプトを別途用意する必要があります（Node.js 用のホストコードをそのままブラウザ環境へインポートすることはできません）。
 ブラウザ向けの統合グルーコード、GPU 連携、およびホスト側の非同期 I/O・イベントループとの統合機能は、`Task` の機能には含まれません。待ち時間をほかの計算へ譲るには、次の `Async` を使います。
@@ -3112,7 +3112,27 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - ロックの実装: ネイティブでは、セルの先頭の語（0 解放、1 保持、2 保持して待ちがいる）を compare-exchange（acquire）で取り、exchange（release）で解放します。待つスレッドは、全 `Mutex` で共有する 1 組の pthread の mutex と条件変数で眠ります。既定の wasm32 は 1 スレッドで、ロックは開いている `with_lock` の有無を示す 1 つのフラグです。`Mutex` を使うと、ネイティブでは `Task.parallel` と `Task.scope` の呼び出しが、開始前にロックの有無を検査するラッパー経由になります。`Mutex` を使わないプログラムの IR は変わりません。
 - トラップ: `Mutex.with_lock` の中のトラップはポイズンを残しません。既定ではプロセスが終わります。`--trap-mode return` では、境界がそのスレッドの持つロックを解放して状態を消し、同じグループの待っている子どもも終わらせてから、トラップを呼び出し元へ返します。ロックの中の値は、その呼び出しが確保したほかのものと同じく境界が解放します。
 - 循環: `Arc` は `Mutex` の中に入れられるので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指す循環を作れます。サイクルコレクターはなく、循環のブロックは解放されません。循環の一方は `Arc.Weak` で持ちます（[Rc / Arc](#rc--arc)）。
-- ターゲット: `--wasm-feature threads` と `Mutex` の組み合わせは、いまは `E2000` です。`--freestanding` では `Mutex` は `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting` で使えます。
+- ターゲット: `Mutex` は、ネイティブ、既定の wasm32、`--wasm-feature threads`（Worker 間で待ちます）で使え、`--freestanding` では `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting` で使えます。
+
+### Channel
+
+`Channel` は、容量の決まった MPMC のキューです（F10 Phase 2）。予約モジュール `Channel` として、ソースに名前が現れたプログラムだけに読み込まれます。`Channel.Sender<'a>` と `Channel.Receiver<'a>` は、どちらも非 Copy の不透明な record（`{ block: i64 }`）で、`std/Channel.tz` が宣言し、drop でチャンネルを閉じる `Drop` の instance も書きます（std のモジュールが自分で宣言した型にだけ、std が `Drop` の instance を書けます。利用者が std の型に書くことは `E1016` のままです）。
+
+| API | 型 | 意味 |
+|---|---|---|
+| `Channel.bounded n` | `Send<'a> => i64 -> (Sender<'a> * Receiver<'a>)` | 容量 `n`（1 以上）のチャンネルを作る。`n` が 0 以下ならトラップ |
+| `Channel.send sender item` | `ref Sender<'a> -> 'a -> Result<unit, 'a>` | 要素を入れる。満杯なら待つ。受け手が 1 つも残っていないときは、待たずに `Error item` |
+| `Channel.recv receiver` | `ref Receiver<'a> -> Maybe<'a>` | 要素を取る。空なら待つ。すべての `Sender` が drop されて空なら `None` |
+| `Channel.clone_sender sender` | `ref Sender<'a> -> Sender<'a>` | 独立した所有者の `Sender` を作る |
+
+- 閉じる: 最後の `Sender` の drop で、受け手は残りの要素を読み、そのあと `None` を受け取ります。最後の `Receiver` の drop で、以後の `send` は `Error` を返します。最後の端が drop されるとき、残っている要素を 1 回ずつ drop して、ブロックを解放します。`Channel.__close_sender`・`__close_receiver` は std 専用で、利用者が呼ぶと `E1022` です。
+- 型: `Channel.bounded` が `Send<'a>` を求めるので、`Rc` などを運ぶチャンネルは作れません（`E1013`）。両端は `Sync` で、`Task.scope` の `shared` か `Arc` に入れて共有できます。両端は関数値に捕捉できません（`E1005`）。借用 `ref` なら捕捉できます。構築、フィールド参照、パターン分解は `E1022`、`export def` と `extern def` は `E1008`、`const` は `E1026` です。
+- 待ちの規則: `send` が満杯、`recv` が空のスレッドは、先にプールの未着手の仕事（`Task.parallel` と `Task.scope` の子ども）を自分のスタックの上で走らせます（空きワーカーがいないときだけ。深さは 16 まで）。手伝う仕事がなければ眠り、チャンネルが変わると、その待ちだけが起きます。すべてのスレッドが待ち（チャンネル、結合、仕事待ちのワーカー）、動かせる仕事もないとき、待ちスレッドすべてを起こし、native では `Tsuzuri runtime: deadlock: every task is waiting on a channel` を標準エラーに出して、トラップ（assert）します。既定の wasm32 と CPU が 1 つの native では、子どもは `index` の順に 1 つのスレッドで走るので、満たされない待ちはその場でトラップになります。
+- スレッド数への依存: プールは固定の大きさで、子どもごとの専用スレッドは保証されません。生産者と消費者が容量不足で互いを待つパイプラインは 2 スレッド以上、3 段のパイプラインは 3 スレッド以上が必要で、足りないとハングせずに判定のトラップになります。
+- `Mutex.with_lock` の中: `Channel.send` と `Channel.recv` は、待つかどうかにかかわらず、トラップします（native では `a Channel operation may wait; move it outside Mutex.with_lock` を出します）。待つ操作をロックの中に置かないためです。
+- `--trap-mode return`: 判定は呼び出しのトラップとして境界へ返ります。待っていたスレッドは全員起き、グループは終わり、境界はチャンネルのブロックを解放し、次の呼び出しは通常どおり動きます。
+- 実装: チャンネルは、先頭の 80 バイト（容量、要素の大きさ、先頭の位置、要素数、送り手・受け手・所有者の数）と、リングバッファの 1 つのブロックです。IR がブロックを確保して初期化し、要素の drop を生成します。要素のコピー、待ち、起こし、判定は、ターゲットのランタイム（native の `task.c`、threads の `task-wasm-threads.c`、既定の wasm32 の `channel-wasm.ll`）です。native は、プールの mutex 1 つで全チャンネルの操作と待ちの数え上げを守り、待つスレッドごとの条件変数で 1 つだけを起こします。性能の限界は、この 1 つの mutex です。threads は、共有の `epoch` で眠り、全員が起きて条件を見直します。
+- ターゲット: `Channel` は、ネイティブ、既定の wasm32、`--wasm-feature threads` で使えます。`--freestanding` では `E2000` です。`Channel` を書かないプログラムの IR は変わりません。
 
 ### Regex
 
@@ -3719,7 +3739,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1004` | 同一字句スコープ内での変数シャドーイング（コンパイラ内部オプション時のみ有効、デフォルト無効） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否、`--wasm-feature threads` および `--freestanding` での `Mutex` |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）に到達するコードのビルド拒否、`--freestanding` での `Mutex` と `Channel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |

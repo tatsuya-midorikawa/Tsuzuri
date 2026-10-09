@@ -316,7 +316,16 @@ api.tsuzuri_free(out);
 
 COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
 
-共有状態の型は、既定の wasm32 では import を増やしません。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行です。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、いまは `E2000`（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）です（[Mutex](../built-in-types-and-modules/mutex.md)）。
+共有状態と `Channel` の型は、既定の wasm32 では import を増やしません。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行で、`Channel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `Channel` も使えます。
+
+- ランタイムは `task-wasm-threads.c` の C で、`tsuzuri_mutex_lock`・`tsuzuri_mutex_unlock`・`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok` と `tsuzuri_channel_send`・`recv`・`clone_sender`・`close` を定義します。import は増えず、ホストのグルー（`wasm-threads.mjs`、`bindings-threads.mjs`）は変わりません。
+- `Mutex` のロックの語は、セルの先頭にあります（0 解放、1 保持、2 保持して待ちがいる）。待つスレッドは、プール共有の `epoch` の語で `memory.atomic.wait32` します。ロックを解放して待ちがいたとき、`epoch` を進めて全員を起こします。ホストが失敗を伝えるときも、同じ語を進めて起こすので、ロックを待つスレッドも、失敗したプールでは待ち続けずにトラップします。
+- スレッドごとの状態（いま持っているロック、チャンネルの待ちで手伝っている仕事の深さ）は、C の `address_space(1)` の変数、つまりインスタンスごとの WebAssembly のグローバルです。各 Worker は自分のインスタンスを作るので、グローバルはスレッドごとの変数になり、TLS（`__wasm_init_tls`）の領域を作って初期化する手順は要りません。
+- `Channel` の待ちは、`epoch` で眠り、チャンネルが変わるたび（待っている者がいるとき）に全員を起こして、各自が条件を見直します。「全員が待っている」の判定は、`epoch` を進めた時点からの、待ちの登録の数で行います。スレッド数は、プールを始めた後はメインとワーカーの数、始める前は 1 です。最後に登録したスレッドが、チャンネルの待ちを含む全員の待ちを見つけると、その待ちスレッド全員に判定を伝え、各自がトラップします。トラップは、プール全体を止めます。
+- ブラウザの UI スレッドは atomic wait できないので、計算を呼ぶ側を Worker に置きます（上の「COOP / COEP」の節のとおりです）。`Mutex` と `Channel` の待ちも、同じ制約を受けます。
+- 検証は `tests/wasm_threads.mjs`（本物の Worker の `createThreadPool` で、`Mutex` のロックの競合、生産者と消費者、3 段のパイプライン、複数の生産者、作業キュー、ピンポン、デッドロックのトラップを 1 から 4 スレッドで）と、`tests/bindings_threads.mjs`（グルーのコーディネーターとヘルパーで、ロックとパイプライン）です。
+
+（[Mutex](../built-in-types-and-modules/mutex.md)、[Channel](../built-in-types-and-modules/channel.md)）
 
 ### スレッドのグルー
 

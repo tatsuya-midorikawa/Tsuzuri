@@ -154,6 +154,10 @@ try {
     await assert.rejects(api.exports.squares({ start: 1n }), { name: "TypeError", message: "argument 0 of 'squares' field 'count' must be a bigint" });
     await assert.rejects(api.exports.divide(1n), { name: "TypeError", message: "'divide' expects 2 arguments" });
     assert.equal(await api.exports.divide(7n, 2n), 3n);
+    // F10: a lock and a channel pipeline across the coordinator and the helpers.
+    assert.equal(await api.exports.locked_total(64n), 64n * 64n);
+    assert.equal(await api.exports.piped(3n, 1000n), 500500n);
+    assert.equal(await api.exports.piped(1n, 257n), 257n * 258n / 2n);
     // Calls queue in the coordinator and resolve in order.
     assert.deepEqual(await Promise.all([api.exports.divide(9n, 3n), api.exports.squares({ start: 2n, count: 3n }), api.exports.divide(-7n, 2n)]), [3n, 29n, -3n]);
     // A trap stops the pool: the call rejects with the site, and the pool takes no more calls.
@@ -166,9 +170,14 @@ try {
     await assert.rejects(failing.exports.divide(1n, 1n), /stopped after a failure/);
     await failing.close();
     // Without workers the coordinator runs every task itself: the count is the caller's choice.
-    const alone = await load(new WebAssembly.Module(bytes), { workers: 0, importsModule, importData: { counters: new SharedArrayBuffer(16) } });
+    const alone = await load(new WebAssembly.Module(bytes), { workers: 0, importsModule, importData: { counters: new SharedArrayBuffer(16) }, sites });
     assert.equal(alone.workerCount, 0);
     assert.equal(await alone.exports.squares({ start: 1n, count: 10n }), sumOfSquares(1n, 10n));
+    assert.equal(await alone.exports.locked_total(8n), 64n);
+    // One thread cannot run both ends of a pipeline that has less room than items: a deadlock trap,
+    // which stops the pool like any other and is reported at the line that waits.
+    await assert.rejects(alone.exports.piped(3n, 100n), (error) => error instanceof TsuzuriTrap && error.trap.reason === "trap" && error.trap.kind === "assertion failed" && error.trap.path.endsWith("Main.tz"));
+    await assert.rejects(alone.exports.divide(1n, 1n), /stopped after a failure/);
     await alone.close();
     await assert.rejects(alone.exports.squares({ start: 1n, count: 1n }), { message: "the WASM thread pool is closed" });
     // A host function's error on a helper reaches the call as that error, not as stack exhaustion

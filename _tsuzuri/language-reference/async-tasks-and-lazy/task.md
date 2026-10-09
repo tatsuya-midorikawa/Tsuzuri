@@ -286,6 +286,7 @@ Atomic.load (ref hits)
 - `count` が 0 なら空配列です。負の数は、結果の配列を確保するときにトラップします（`allocation size overflow`）。
 - `Task.scope` は引数をすべて渡して直接呼びます。関数値として持ち回すことはできません（`E1013`、`parallel operations must be fully applied directly`）。
 - 子どもの中で `Task.parallel`、`Parallel.*`、`Task.scope` を使えます。呼び出したスレッドも子どもを実行するので、空きワーカーがなくてもデッドロックしません。ただし、`Mutex.with_lock` の中では始められません（トラップ）。
+- 子どもの中で [Channel](../built-in-types-and-modules/channel.md) の `send` と `recv` を使えます。満杯や空で待つ子どもは、先に、ほかの未着手の子どもを自分のスタックの上で走らせ（空きワーカーがいなければ）、それでも進めなければ眠ります。すべてのスレッドが待ったときは、ハングせずに、判定のトラップ（`deadlock: every task is waiting on a channel`）です。互いを待つ子どもの数がスレッド数を超えると完了しないので、完了するかどうかはスレッド数に左右されます（[待ちの規則](../built-in-types-and-modules/channel.md#待ちの規則)）。
 - 子どもがトラップしたときの扱いは `Task.parallel` と同じです。
 
 状態を共有する方法は、次のように選びます。
@@ -296,6 +297,7 @@ Atomic.load (ref hits)
 | 整数や `bool` のカウンター、フラグ | `Atomic` を `Task.scope` の `shared` か `Arc` で共有する |
 | `string`・配列・レコード、複数の値の組 | `Mutex` を `Task.scope` の `shared` か `Arc` で共有する |
 | `Task.parallel` で作ったタスクが持つ共有値 | タスクごとに `Arc.share` した `Arc<T>`（`T` は `Send` かつ `Sync`）を渡す |
+| タスクの間で所有値を 1 つずつ受け渡す | [Channel](../built-in-types-and-modules/channel.md)。端を所有するタスクを `Task.parallel` に渡す |
 | 1 つのタスクだけが使う値 | 所有値をそのタスクへ移す |
 
 ## 失敗の伝播
@@ -365,7 +367,7 @@ Workers で並列にするのは、`tsuzuri build --target wasm32 --wasm-feature
 
 `Task.run` はネイティブでも WASM でも同期呼び出しです。UI スレッドをブロックしない API ではありません。
 
-`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` を使うプログラムを threads でビルドすると、いまは `E2000` です（`Mutex is not supported with --wasm-feature threads yet; build without threads or use Atomic`）。
+`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもと `Task.parallel` のタスクは Workers で動きます。`Mutex` は、ロックの語を WebAssembly の atomic 命令で取り、待つスレッドは共有メモリの `memory.atomic.wait32` で眠ります。`Channel` も同じ仕組みで、メインと Worker のすべてが待ったときに、判定のトラップ（`RuntimeError`）になります（[Mutex](../built-in-types-and-modules/mutex.md)、[Channel](../built-in-types-and-modules/channel.md)、[WebAssembly への出力](../compiler/webassembly.md)）。
 
 ## Async との違い
 

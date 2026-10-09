@@ -99,6 +99,7 @@
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
 - [Atomic](./built-in-types-and-modules/atomic.md)
 - [Mutex](./built-in-types-and-modules/mutex.md)
+- [Channel](./built-in-types-and-modules/channel.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)

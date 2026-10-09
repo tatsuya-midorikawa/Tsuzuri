@@ -1230,6 +1230,7 @@ fn emit_program(
     // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
     // that no lock is held, so the renaming happens before the runtime text is appended (F10).
     let mutex = output.contains("@tsuzuri_mutex_lock(");
+    let channel = output.contains("@tsuzuri_channel_");
     let parallel = output.contains("@tsuzuri_task_parallel(")
         || output.contains("@tsuzuri_task_parallel_results(");
     if mutex && parallel {
@@ -1243,13 +1244,13 @@ fn emit_program(
                 "call i64 @tz.mutex.parallel_results(",
             );
     }
-    if parallel || mutex {
+    if parallel || mutex || channel {
         // The runtime text above may end without a newline.
-        if mutex && !output.ends_with('\n') {
+        if (mutex || channel) && !output.ends_with('\n') {
             output.push('\n');
         }
         // The native runtime, and the declarations that the driver and the test runner link it
-        // for, are the same for a program that only locks.
+        // for, are the same for a program that only locks or only uses a channel.
         let sequential = wasm && !instrumentation.wasm_threads;
         if parallel && sequential {
             output.push_str(include_str!("runtime/task-wasm.ll"));
@@ -1258,15 +1259,25 @@ fn emit_program(
                 "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
             );
         }
-        if mutex {
+        if mutex || channel {
             if sequential {
                 output.push_str(include_str!("runtime/sync-wasm.ll"));
+                if channel {
+                    output.push_str(include_str!("runtime/channel-wasm.ll"));
+                }
             } else {
-                output.push_str(
-                    "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
-                );
+                if mutex {
+                    output.push_str(
+                        "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+                    );
+                }
+                if channel {
+                    output.push_str(
+                        "declare i32 @tsuzuri_mutex_wait_ok()\ndeclare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
+                    );
+                }
             }
-            if parallel {
+            if mutex && parallel {
                 output.push_str(include_str!("runtime/sync.ll"));
             }
         }
@@ -6328,6 +6339,7 @@ fn emit_builtin(
         }
         builtin
             if builtin.is_atomic()
+                || builtin.is_channel()
                 || matches!(
                     builtin,
                     Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
@@ -6528,6 +6540,7 @@ fn emit_typed_builtin(
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
     } else if instance.builtin.is_atomic()
+        || instance.builtin.is_channel()
         || matches!(
             instance.builtin,
             Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner

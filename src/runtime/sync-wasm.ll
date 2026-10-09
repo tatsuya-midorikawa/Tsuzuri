@@ -29,3 +29,10 @@ entry:
   %ok = zext i1 %free to i32
   ret i32 %ok
 }
+
+; Nonzero when a channel operation may run: it may wait, and no critical section waits.
+define internal i32 @tsuzuri_mutex_wait_ok() nounwind {
+entry:
+  %ok = call i32 @tsuzuri_mutex_parallel_ok()
+  ret i32 %ok
+}

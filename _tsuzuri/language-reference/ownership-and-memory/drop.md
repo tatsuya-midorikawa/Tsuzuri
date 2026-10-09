@@ -49,7 +49,7 @@ drop 1
 
 ### Drop 実装のルール
 
-- **対象型**: ソースコード上で明示宣言した `record` または `union` のみ指定できます。組み込み型（`i64` や `string` など）への実装や、一部の型引数のみを具体化した宣言は `E1016` です。また `deriving (Drop)` による自動導出は `E1025` です。
+- **対象型**: ソースコード上で明示宣言した `record` または `union` のみ指定できます。組み込み型（`i64` や `string` など）への実装や、一部の型引数のみを具体化した宣言は `E1016` です。また `deriving (Drop)` による自動導出は `E1025` です。利用者が std の型（`Channel.Sender` など）に `Drop` の instance を書くことも `E1016` です。std のモジュールは、自分が宣言した型にだけ `Drop` の instance を書けます。`Channel` の `Sender` と `Receiver` は、これで、drop のときにチャンネルを閉じます（[Channel](../built-in-types-and-modules/channel.md)）。
 - **メソッドシグネチャ**: `drop :: ref mut 'a -> unit` です。Copy なフィールドは読めます。非 Copy なフィールドは `ref value.field` のように借ります。フィールドへの代入はできません。引数全体の置換も、別の関数へ `ref mut` で渡すことも `E1012` です。
 - **直接呼び出しの禁止**: `Drop.drop` を自分で呼ぶと `E1016` です。二重解放を防ぐため、コンパイラの解放処理からだけ実行されます。
 

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifndef TZ_TASK_SYSCONF
 #define TZ_TASK_SYSCONF sysconf
@@ -32,6 +33,9 @@
 #endif
 #ifndef TZ_TASK_COND_BROADCAST
 #define TZ_TASK_COND_BROADCAST pthread_cond_broadcast
+#endif
+#ifndef TZ_TASK_COND_SIGNAL
+#define TZ_TASK_COND_SIGNAL pthread_cond_signal
 #endif
 #ifndef TZ_TASK_ONCE
 #define TZ_TASK_ONCE pthread_once
@@ -89,6 +93,8 @@ struct tz_task_group {
 #endif
 };
 
+struct tz_waiter;
+
 static struct {
     pthread_mutex_t mutex;
     pthread_cond_t work_available;
@@ -98,11 +104,27 @@ static struct {
     int stopping;
     struct tz_task_group *groups;
     struct tz_task_group *tail;
+    /* Threads that run Tsuzuri code under the pool: a worker with an item, a thread inside a
+       submit that is not waiting to join, a thread that was woken from a channel wait. Counted
+       under the mutex so that the last one to stop can tell that every task is waiting (F10). */
+    uint64_t busy;
+    /* The threads that wait on a channel and have not been woken. */
+    struct tz_waiter *waiters;
+    /* Workers that run no item and are free to take one: those that wait for work and those that
+       are starting. A thread that waits on a channel runs an unstarted item itself only when
+       there is no such worker, because an item that runs on top of a waiting one can never end
+       before the waiting one goes on. */
+    unsigned idle;
 } tz_task_pool = {
     .mutex = PTHREAD_MUTEX_INITIALIZER,
     .work_available = PTHREAD_COND_INITIALIZER,
     .work_done = PTHREAD_COND_INITIALIZER,
 };
+
+/* Whether this thread is one of the `busy` count, and how many items it runs on top of a channel
+   wait (a bound that keeps a long chain of waits from using up the stack). */
+static _Thread_local int tz_task_counted;
+static _Thread_local unsigned tz_task_help_depth;
 
 static pthread_once_t tz_task_once = PTHREAD_ONCE_INIT;
 
@@ -192,6 +214,85 @@ static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
     tz_task_unlock();
 }
 
+/* A thread that waits for a channel to change. It lives on the stack of the waiting thread; the
+   thread that changes the channel wakes it (F10 Phase 2). */
+struct tz_waiter {
+    struct tz_waiter *next;
+    pthread_cond_t condition;
+    void *channel;
+    int sender; /* waits for room (1), or for an item (0) */
+    int woken;
+    int doomed; /* woken because every task is waiting */
+    int counted;
+};
+
+/* How many items a thread runs on top of one another while it waits on channels. */
+enum { TZ_CHANNEL_HELP_DEPTH = 16 };
+
+/* With the mutex held: the waiter is off the list. A thread that was counted as running is
+   counted again from now on, so that no other thread mistakes it for a parked one. */
+static void tz_waiter_wake(struct tz_waiter *waiter, int doomed) {
+    waiter->woken = 1;
+    waiter->doomed = doomed;
+    if (waiter->counted) ++tz_task_pool.busy;
+    tz_task_check("pthread_cond_signal", TZ_TASK_COND_SIGNAL(&waiter->condition));
+}
+
+/* With the mutex held: wakes the first waiter of `channel` for room (`sender`) or for an item, or all. */
+static void tz_channel_wake(void *channel, int sender, int all) {
+    struct tz_waiter **link = &tz_task_pool.waiters;
+    while (*link) {
+        struct tz_waiter *waiter = *link;
+        if (waiter->channel == channel && waiter->sender == sender) {
+            *link = waiter->next;
+            tz_waiter_wake(waiter, 0);
+            if (!all) return;
+        } else {
+            link = &waiter->next;
+        }
+    }
+}
+
+/* With the mutex held, after a thread stopped running or started to wait: when no thread runs, no
+   worker is free, and no group waits for a join that can end, nothing will ever change a channel
+   again, so every waiter is woken to trap. An item that nobody started does not prevent that when
+   no worker is free to take it: the threads that could are all waiting. */
+static void tz_channel_check_deadlock(void) {
+    if (!tz_task_pool.waiters || tz_task_pool.busy != 0) return;
+    for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
+        if (tz_task_pool.idle != 0 && group->next < group->length) return;
+        if (atomic_load_explicit(&group->remaining, memory_order_acquire) == 0) return;
+    }
+    fprintf(stderr, "Tsuzuri runtime: deadlock: every task is waiting on a channel\n");
+    fflush(stderr);
+    struct tz_waiter *waiter = tz_task_pool.waiters;
+    tz_task_pool.waiters = NULL;
+    while (waiter) {
+        struct tz_waiter *next = waiter->next;
+        tz_waiter_wake(waiter, 1);
+        waiter = next;
+    }
+}
+
+/* With the mutex held: runs one unstarted item of any group on top of this thread's work, as a
+   thread that waits for a join does, and returns 1; 0 when there is none or the stack of items is
+   deep. The mutex is not held while the item runs. */
+static int tz_task_help_one(void) {
+    if (tz_task_pool.idle != 0 || tz_task_help_depth >= TZ_CHANNEL_HELP_DEPTH) return 0;
+    for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
+        if (group->next < group->length) {
+            uint64_t index = group->next++;
+            ++tz_task_help_depth;
+            tz_task_unlock();
+            tz_task_execute(group, index);
+            tz_task_lock();
+            --tz_task_help_depth;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void *tz_task_worker_main(void *pointer) {
     (void)pointer;
 #ifdef TZ_STACK_GUARD
@@ -206,9 +307,16 @@ static void *tz_task_worker_main(void *pointer) {
             continue;
         }
         uint64_t index = group->next++;
+        ++tz_task_pool.busy;
+        --tz_task_pool.idle;
+        tz_task_counted = 1;
         tz_task_unlock();
         tz_task_execute(group, index);
         tz_task_lock();
+        tz_task_counted = 0;
+        --tz_task_pool.busy;
+        ++tz_task_pool.idle;
+        tz_channel_check_deadlock();
     }
     tz_task_unlock();
     return NULL;
@@ -233,6 +341,11 @@ static void tz_task_start_pool(void) {
     if (count == 0) return;
     tz_task_check("atexit", TZ_TASK_ATEXIT(tz_task_shutdown));
     for (unsigned index = 0; index < count; ++index) {
+        // A worker that is starting is free to take an item; the mutex is taken because other
+        // threads already read the count.
+        tz_task_lock();
+        ++tz_task_pool.idle;
+        tz_task_unlock();
         tz_task_check("pthread_create", TZ_TASK_PTHREAD_CREATE(&tz_task_pool.threads[index], NULL, tz_task_worker_main, NULL));
         ++tz_task_pool.thread_count;
     }
@@ -265,6 +378,12 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
 #endif
     tz_task_lock();
     if (tz_task_pool.stopping) tz_task_fail("submit after shutdown", EINVAL);
+    // A thread that is not running an item of the pool counts as running while it submits.
+    int counted_here = !tz_task_counted;
+    if (counted_here) {
+        ++tz_task_pool.busy;
+        tz_task_counted = 1;
+    }
     if (tz_task_pool.tail) tz_task_pool.tail->next_group = &group;
     else tz_task_pool.groups = &group;
     tz_task_pool.tail = &group;
@@ -276,7 +395,11 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
             tz_task_execute(&group, index);
             tz_task_lock();
         } else {
+            // Waiting for the join, this thread cannot change a channel.
+            --tz_task_pool.busy;
+            tz_channel_check_deadlock();
             tz_task_wait(&tz_task_pool.work_done);
+            ++tz_task_pool.busy;
         }
     }
     struct tz_task_group **link = &tz_task_pool.groups;
@@ -284,6 +407,11 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
     while (*link != &group) { previous = *link; link = &(*link)->next_group; }
     *link = group.next_group;
     if (tz_task_pool.tail == &group) tz_task_pool.tail = previous;
+    if (counted_here) {
+        tz_task_counted = 0;
+        --tz_task_pool.busy;
+        tz_channel_check_deadlock();
+    }
     tz_task_unlock();
 #if !defined(_WIN32)
     /* A trapped item leaves its task in no defined state, so the group cannot go on: the trap of
@@ -358,6 +486,148 @@ int32_t tsuzuri_mutex_parallel_ok(void) {
     if (!tz_mutex_held) return 1;
     tz_mutex_refuse("parallel work cannot start inside Mutex.with_lock; move it outside the critical section");
     return 0;
+}
+
+/* Nonzero when a channel operation may run: it may wait, which a critical section never does. */
+TZ_TASK_API
+int32_t tsuzuri_mutex_wait_ok(void) {
+    if (!tz_mutex_held) return 1;
+    tz_mutex_refuse("a Channel operation may wait; move it outside Mutex.with_lock");
+    return 0;
+}
+
+/* Channel (F10 Phase 2). A channel is one block that the generated code allocates and initializes
+   (src/llvm_sync.rs), with the ring of items after the header, which is laid out as below. Every
+   operation runs under the pool mutex, which also guards the count of running threads, so that
+   "every task is waiting" is decided on one consistent view of the pool and the channels.
+   A thread that cannot go on first runs an unstarted item of the pool, as a thread that waits for
+   a join does, and parks only when there is none. The thread that changes the channel wakes
+   exactly the waiter that can go on: one for an item or for room, all when the channel closes. */
+struct tz_channel {
+    uint64_t capacity;
+    uint64_t item_size;
+    uint64_t head;
+    uint64_t count;
+    uint64_t senders;
+    uint64_t receivers;
+    uint64_t owners;
+    uint64_t reserved;
+    uint64_t waiters[2]; /* unused here: the waiters are the pool's */
+};
+enum { TZ_CHANNEL_ITEMS = 80 };
+_Static_assert(sizeof(struct tz_channel) == TZ_CHANNEL_ITEMS, "channel block layout");
+
+static unsigned char *tz_channel_slot(struct tz_channel *channel, uint64_t offset) {
+    uint64_t stride = channel->item_size ? channel->item_size : 1;
+    return (unsigned char *)channel + TZ_CHANNEL_ITEMS
+        + ((channel->head + offset) % channel->capacity) * stride;
+}
+
+/* With the mutex held: counts this thread as running for the length of a channel operation if it
+   is not counted already. The result says whether `tz_channel_leave` has to undo it. */
+static int tz_channel_enter(void) {
+    if (tz_task_counted) return 0;
+    ++tz_task_pool.busy;
+    tz_task_counted = 1;
+    return 1;
+}
+
+static void tz_channel_leave(int temporary) {
+    if (!temporary) return;
+    tz_task_counted = 0;
+    --tz_task_pool.busy;
+    tz_channel_check_deadlock();
+}
+
+/* With the mutex held: runs an unstarted item or waits until the channel may have changed.
+   0: try the operation again; 2: every task is waiting. */
+static int tz_channel_wait(struct tz_channel *channel, int sender) {
+    if (tz_task_help_one()) return 0;
+    struct tz_waiter waiter;
+    waiter.channel = channel;
+    waiter.sender = sender;
+    waiter.woken = 0;
+    waiter.doomed = 0;
+    waiter.counted = tz_task_counted;
+    tz_task_check("pthread_cond_init", pthread_cond_init(&waiter.condition, NULL));
+    waiter.next = tz_task_pool.waiters;
+    tz_task_pool.waiters = &waiter;
+    if (waiter.counted) --tz_task_pool.busy;
+    tz_channel_check_deadlock();
+    while (!waiter.woken) tz_task_wait(&waiter.condition);
+    tz_task_check("pthread_cond_destroy", pthread_cond_destroy(&waiter.condition));
+    return waiter.doomed ? 2 : 0;
+}
+
+/* 0: sent; 1: no receiver is left, and the item is still the caller's; 2: deadlock. */
+TZ_TASK_API
+int32_t tsuzuri_channel_send(void *block, const void *item) {
+    struct tz_channel *channel = block;
+    tz_task_lock();
+    int temporary = tz_channel_enter();
+    int32_t status = 0;
+    for (;;) {
+        if (channel->receivers == 0) { status = 1; break; }
+        if (channel->count < channel->capacity) {
+            memcpy(tz_channel_slot(channel, channel->count), item, channel->item_size);
+            ++channel->count;
+            tz_channel_wake(channel, 0, 0);
+            break;
+        }
+        if (tz_channel_wait(channel, 1)) { status = 2; break; }
+    }
+    tz_channel_leave(temporary);
+    tz_task_unlock();
+    return status;
+}
+
+/* 0: received; 1: empty and no sender is left; 2: deadlock. */
+TZ_TASK_API
+int32_t tsuzuri_channel_recv(void *block, void *item) {
+    struct tz_channel *channel = block;
+    tz_task_lock();
+    int temporary = tz_channel_enter();
+    int32_t status = 0;
+    for (;;) {
+        if (channel->count > 0) {
+            memcpy(item, tz_channel_slot(channel, 0), channel->item_size);
+            channel->head = (channel->head + 1) % channel->capacity;
+            --channel->count;
+            tz_channel_wake(channel, 1, 0);
+            break;
+        }
+        if (channel->senders == 0) { status = 1; break; }
+        if (tz_channel_wait(channel, 0)) { status = 2; break; }
+    }
+    tz_channel_leave(temporary);
+    tz_task_unlock();
+    return status;
+}
+
+TZ_TASK_API
+void tsuzuri_channel_clone_sender(void *block) {
+    struct tz_channel *channel = block;
+    tz_task_lock();
+    ++channel->senders;
+    ++channel->owners;
+    tz_task_unlock();
+}
+
+/* Releases a sender (kind 0) or a receiver (kind 1). The last sender closes the channel for the
+   receivers that wait for an item; the last receiver makes the waiting senders give up. The
+   result is 1 for the owner of the last handle, which drops what is left and frees the block. */
+TZ_TASK_API
+int32_t tsuzuri_channel_close(void *block, int32_t kind) {
+    struct tz_channel *channel = block;
+    tz_task_lock();
+    if (kind == 0) {
+        if (--channel->senders == 0) tz_channel_wake(channel, 0, 1);
+    } else if (--channel->receivers == 0) {
+        tz_channel_wake(channel, 1, 1);
+    }
+    int32_t last = --channel->owners == 0;
+    tz_task_unlock();
+    return last;
 }
 
 #if !defined(_WIN32)

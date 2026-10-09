@@ -10,6 +10,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
+    ("std/Channel.tz", include_str!("../std/Channel.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -98,6 +99,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Async",
     "Atomic",
     "Mutex",
+    "Channel",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -136,6 +138,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Async.Next"
             | "Atomic.Atomic"
             | "Mutex.Mutex"
+            | "Channel.Sender"
+            | "Channel.Receiver"
     )
 }
 
@@ -224,6 +228,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Mutex",
         names: &["Mutex"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Channel",
+        names: &["Channel"],
         aliases: &[],
         uses: &[],
     },
@@ -536,6 +546,8 @@ mod tests {
         assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
         assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
         assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
+        assert_eq!(loaded("let (s, r) = Channel.bounded 4"), ["Channel"]);
+        assert_eq!(loaded("let s: Channel.Sender<i64> = x"), ["Channel"]);
         assert_eq!(
             loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
             Vec::<&str>::new()
@@ -560,7 +572,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 48);
+        assert_eq!(RESERVED_MODULES.len(), 49);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
