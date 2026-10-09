@@ -940,8 +940,15 @@ fn find_tool(variable: &str, candidates: &[&str], name: &str) -> Option<PathBuf>
         .map(|_| PathBuf::from(name))
 }
 
+/// A skipped test is announced on stderr through the handle itself: `eprintln!` is captured by the test harness and
+/// shown only for a failing test, so a skip written with it would leave a plain `cargo test` printing `ok` and nothing
+/// else. The requirement variable (`TSUZURI_REQUIRE_SPIRV_TOOLS` or `TSUZURI_REQUIRE_VULKAN`) turns the skip into a
+/// failure.
 fn skip(requirement: &str, reason: &str) {
-    eprintln!("\n*** SKIPPED (tests/gpu_spirv.rs): {reason} ***\n");
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(
+        format!("\n*** SKIPPED (tests/gpu_spirv.rs, {requirement}): {reason} ***\n\n").as_bytes(),
+    );
     assert!(
         std::env::var_os(requirement).is_none(),
         "{requirement} is set but the test would be skipped: {reason}"
@@ -1016,31 +1023,74 @@ struct Harness {
     environment: Vec<(String, String)>,
 }
 
-static HARNESS: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+/// Why the runtime harness is not there. A compiler that cannot be run is a missing tool, and a test may skip for it. A
+/// compiler that runs and rejects the harness is a defect of the runtime or the harness, which no skip may hide.
+enum HarnessError {
+    Missing(String),
+    Build(String),
+}
 
-fn harness_binary() -> &'static Result<PathBuf, String> {
+static HARNESS: OnceLock<Result<PathBuf, HarnessError>> = OnceLock::new();
+
+fn compile_harness(clang: &Path, source: &Path, path: &Path) -> Result<(), HarnessError> {
+    let output = Command::new(clang)
+        .args(["-std=c11", "-O1", "-g"])
+        .arg(source)
+        .arg("-o")
+        .arg(path)
+        .output()
+        .map_err(|error| HarnessError::Missing(format!("{} cannot run: {error}", clang.display())))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(HarnessError::Build(format!(
+            "{} does not compile {}:\n{}",
+            clang.display(),
+            source.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+}
+
+fn harness_binary() -> &'static Result<PathBuf, HarnessError> {
     HARNESS.get_or_init(|| {
         let clang = std::env::var_os("TSUZURI_CLANG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("clang"));
-        let directory = scratch("harness");
-        let path = directory.join("gpu_vulkan_harness");
+        let path = scratch("harness").join("gpu_vulkan_harness");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_runtime.c");
-        let output = Command::new(&clang)
-            .args(["-std=c11", "-O1", "-g"])
-            .arg(&source)
-            .arg("-o")
-            .arg(&path)
-            .output()
-            .map_err(|error| format!("{} cannot run: {error}", clang.display()))?;
-        if !output.status.success() {
-            return Err(format!(
-                "the runtime harness does not compile:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        compile_harness(&clang, &source, &path)?;
         Ok(path)
     })
+}
+
+/// What the device tests do with the harness: run with it, or skip for a reason. A build failure is neither: it fails.
+enum Verdict<'a> {
+    Run(&'a PathBuf),
+    Skip(String),
+}
+
+fn classify(result: &Result<PathBuf, HarnessError>) -> Verdict<'_> {
+    match result {
+        Ok(path) => Verdict::Run(path),
+        Err(HarnessError::Missing(reason)) => {
+            Verdict::Skip(format!("no Vulkan runtime harness: {reason}"))
+        }
+        Err(HarnessError::Build(reason)) => {
+            panic!("the runtime harness does not compile although the C compiler runs: {reason}")
+        }
+    }
+}
+
+/// The harness of the device tests: a missing tool is a loud skip (`None`), and a build failure is a failure of the test.
+fn harness_or_skip(result: &Result<PathBuf, HarnessError>) -> Option<&PathBuf> {
+    match classify(result) {
+        Verdict::Run(path) => Some(path),
+        Verdict::Skip(reason) => {
+            skip("TSUZURI_REQUIRE_VULKAN", &reason);
+            None
+        }
+    }
 }
 
 struct Outcome {
@@ -1106,15 +1156,8 @@ impl Harness {
 
 /// The harness of every usable Vulkan implementation; a loud skip when there is none.
 fn devices() -> Vec<Harness> {
-    let binary = match harness_binary() {
-        Err(reason) => {
-            skip(
-                "TSUZURI_REQUIRE_VULKAN",
-                &format!("no Vulkan runtime harness: {reason}"),
-            );
-            return Vec::new();
-        }
-        Ok(binary) => binary,
+    let Some(binary) = harness_or_skip(harness_binary()) else {
+        return Vec::new();
     };
     let mut candidates = vec![Harness {
         path: binary.clone(),
@@ -1164,6 +1207,59 @@ fn devices() -> Vec<Harness> {
 
 fn lane_bytes(lane: Lane) -> usize {
     if lane == Lane::Int64 { 8 } else { 4 }
+}
+
+/// The reviewer's defect, kept as a regression: a C compiler that runs but rejects the runtime (an `#error` appended to
+/// `src/runtime/gpu-vulkan.c`) once made `devices()` skip, so the three device tests passed without running anything.
+#[test]
+fn a_harness_that_does_not_compile_fails_and_a_missing_compiler_skips() {
+    let clang = std::env::var_os("TSUZURI_CLANG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("clang"));
+    if Command::new(&clang).arg("--version").output().is_err() {
+        skip(
+            "TSUZURI_REQUIRE_VULKAN",
+            "no C compiler to break a harness with",
+        );
+        return;
+    }
+    let directory = scratch("broken_harness");
+    let source = directory.join("broken.c");
+    fs::write(
+        &source,
+        "#error the runtime does not compile\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+    match compile_harness(&clang, &source, &directory.join("broken")) {
+        Err(HarnessError::Build(reason)) => {
+            assert!(reason.contains("the runtime does not compile"), "{reason}")
+        }
+        Err(HarnessError::Missing(reason)) => panic!("a compile error is not a missing tool: {reason}"),
+        Ok(()) => panic!("the broken harness compiled"),
+    }
+    match compile_harness(
+        Path::new("/nonexistent/tsuzuri-clang"),
+        &source,
+        &directory.join("missing"),
+    ) {
+        Err(HarnessError::Missing(_)) => {}
+        _ => panic!("a compiler that cannot run is a missing tool"),
+    }
+    // The policy of the device tests: a build failure is a failure, never a skip; a missing tool is a skip.
+    let outcome = std::panic::catch_unwind(|| {
+        matches!(
+            classify(&Err(HarnessError::Build("broken".to_owned()))),
+            Verdict::Skip(_)
+        )
+    });
+    assert!(
+        outcome.is_err(),
+        "a harness that does not compile must fail the device tests"
+    );
+    assert!(matches!(
+        classify(&Err(HarnessError::Missing("none".to_owned()))),
+        Verdict::Skip(_)
+    ));
 }
 
 fn encode(values: &[u64], lane: Lane) -> Vec<u8> {
