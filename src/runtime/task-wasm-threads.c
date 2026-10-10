@@ -18,10 +18,9 @@ _Static_assert(sizeof(ThreadState) == 28, "host control layout");
    `queue_mutex`, and the host never reads it. `blocked` counts the threads that found nothing to do
    since the last progress event, `channel_waiters` those of them that wait on a channel. When all
    threads are blocked and one of them waits on a channel, no thread can ever change a channel
-   again, and the waiters are told (`verdicts`). `idle` counts the threads that run no item and are
-   free to take one: the workers that run none, and the threads that wait for the end of a group
-   they started (they take its items, and any other, themselves). `wake` says that the epoch moved
-   and the threads that sleep on it are not yet notified. */
+   again, and the waiters are told (`verdicts`). `idle` counts the workers that run no item, as in
+   the native pool. `wake` says that the epoch moved and the threads that sleep on it are not yet
+   notified. */
 typedef struct {
     unsigned blocked;
     unsigned channel_waiters;
@@ -92,12 +91,16 @@ static void unlock_queue(void) {
 }
 
 /* Sleeps on the epoch that the thread registered as blocked at, until it moves. A notify that comes
-   for another reason, or late, finds the thread still registered and sends it back to sleep. */
+   for another reason, or late, finds the thread still registered and sends it back to sleep. The
+   host's `fail` stores `failed` before it moves the epoch, so a thread that read the epoch after
+   that move finds the flag at the check before the wait, and one that read an older epoch is not
+   put to sleep by the wait: without the check, the first would wait on a word that never moves again. */
 static void sleep_until_progress(unsigned epoch) {
     do {
-        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, (int)epoch, -1);
         check_failed();
+        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, (int)epoch, -1);
     } while (atomic_load_explicit(&state.epoch, memory_order_acquire) == epoch);
+    check_failed();
 }
 
 /* The threads that can change a channel: all of them once the pool runs, the one before. */
@@ -161,56 +164,37 @@ typedef struct Group {
     atomic_uint_least64_t next;
     atomic_uint_least64_t remaining;
     uint64_t failure;
-    struct Group *previous;
+    struct Group *next_group;
 } Group;
 
+/* The groups that have not been joined, in the order they were submitted (the oldest first, as in
+   the native pool), guarded by `queue_mutex`. */
 static Group *groups;
+static Group *groups_tail;
 
-/* With `queue_mutex` held: whether some group has an item that no thread has started. */
-static int has_unstarted(void) {
-    for (Group *group = groups; group; group = group->previous) {
-        if (atomic_load_explicit(&group->next, memory_order_relaxed) < group->length) return 1;
-    }
-    return 0;
+/* With `queue_mutex` held: whether `group` has an item that no thread has started. */
+static int has_unstarted(Group *group) {
+    return atomic_load_explicit(&group->next, memory_order_relaxed) < group->length;
 }
 
-/* Runs one unstarted item, of `preferred` if it has one. A `counted` thread (a worker, or a thread
-   that waits for a group it started) that runs an item is not idle meanwhile.
-   Returns 1 when an item ran. When none is left to start, the result is 0 and nothing ran; if
-   `epoch` is not null, the caller is about to sleep (an idle worker, or a thread that waits for the
-   group `preferred`): it is counted as blocked under the lock that found nothing to start, so that
-   no item can appear between the two, and `*epoch` is the epoch to sleep on (`sleep_until_progress`).
-   The result is -1 instead when `preferred` has already ended, and the caller needs no sleep. */
-static int run_one(Group *preferred, int counted, unsigned *epoch) {
-    lock(&state.queue_mutex);
-    Group *group = preferred;
-    if (!group || atomic_load_explicit(&group->next, memory_order_relaxed) >= group->length) {
-        group = groups;
-        while (group && atomic_load_explicit(&group->next, memory_order_relaxed) >= group->length)
-            group = group->previous;
-    }
-    if (!group) {
-        int result = 0;
-        if (epoch) {
-            if (preferred && atomic_load_explicit(&preferred->remaining, memory_order_acquire) == 0) {
-                result = -1;
-            } else {
-                *epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
-                register_blocked(0);
-            }
-        }
-        unlock_queue();
-        return result;
-    }
-    uint64_t index = atomic_fetch_add_explicit(&group->next, 1, memory_order_relaxed);
-    if (counted) --waiting.idle;
-    void (*run)(void *, uint64_t) = group->run;
-    void *context = group->context;
-    uint32_t (*run_result)(void *, uint64_t) = group->run_result;
-    unlock_queue();
+/* With `queue_mutex` held: the oldest group that has an item that no thread has started. */
+static Group *unstarted_group(void) {
+    Group *group = groups;
+    while (group && !has_unstarted(group)) group = group->next_group;
+    return group;
+}
+
+/* With `queue_mutex` held: takes the next item of a group that has one to start. */
+static uint64_t claim(Group *group) {
+    return atomic_fetch_add_explicit(&group->next, 1, memory_order_relaxed);
+}
+
+/* Runs item `index` of `group`, which the calling thread took, and records its end. Called without
+   `queue_mutex`; returns with it held. A `worker` is idle again afterwards. */
+static void run_item(Group *group, uint64_t index, int worker) {
     uint32_t failed = 0;
-    if (run_result) failed = run_result(context, index);
-    else run(context, index);
+    if (group->run_result) failed = group->run_result(group->context, index);
+    else group->run(group->context, index);
     lock(&state.queue_mutex);
     if (failed && index < group->failure) {
         group->failure = index;
@@ -222,8 +206,40 @@ static int run_one(Group *preferred, int counted, unsigned *epoch) {
     atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_release);
     // The group is the joiner's, which cannot unlink it before this lock is released.
     int ended = atomic_load_explicit(&group->remaining, memory_order_relaxed) == 0;
-    if (counted) ++waiting.idle;
+    if (worker) ++waiting.idle;
     if (ended) progress();
+}
+
+/* Runs one unstarted item: of the group `own` when it is not null, otherwise of the oldest group
+   that has one. A thread that waits for the end of its group (`own`) runs that group's items and
+   no others: an item of another group would run on top of the frame that waits for the join, and
+   could wait for something that only the code after the join, lower on the same stack, produces.
+   A `worker` that runs an item is not idle meanwhile.
+   Returns 1 when an item ran. When none is left to start, the result is 0 and nothing ran; if
+   `epoch` is not null, the caller is about to sleep (an idle worker, or a thread that waits for the
+   group `own`): it is counted as blocked under the lock that found nothing to start, so that no
+   item can appear between the two, and `*epoch` is the epoch to sleep on (`sleep_until_progress`).
+   The result is -1 instead when `own` has already ended, and the caller needs no sleep. */
+static int run_one(Group *own, int worker, unsigned *epoch) {
+    lock(&state.queue_mutex);
+    Group *group = own ? (has_unstarted(own) ? own : 0) : unstarted_group();
+    if (!group) {
+        int result = 0;
+        if (epoch) {
+            if (own && atomic_load_explicit(&own->remaining, memory_order_acquire) == 0) {
+                result = -1;
+            } else {
+                *epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
+                register_blocked(0);
+            }
+        }
+        unlock_queue();
+        return result;
+    }
+    uint64_t index = claim(group);
+    if (worker) --waiting.idle;
+    unlock_queue();
+    run_item(group, index, worker);
     unlock_queue();
     return 1;
 }
@@ -238,29 +254,40 @@ static uint64_t submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(voi
     group.context = context;
     group.length = length;
     group.failure = UINT64_MAX;
+    group.next_group = 0;
     atomic_init(&group.next, 0);
     atomic_init(&group.remaining, length);
     lock(&state.queue_mutex);
-    group.previous = groups;
-    groups = &group;
-    // This thread waits for the group, and takes its items: it is free to take one until it does.
-    ++waiting.idle;
+    if (groups_tail) groups_tail->next_group = &group;
+    else groups = &group;
+    groups_tail = &group;
+    // The first item is this thread's, taken under the lock that publishes the group, as in the
+    // native pool: no worker can take every item before the thread that waits for the group has
+    // started one.
+    uint64_t first = claim(&group);
     progress();
+    unlock_queue();
+    run_item(&group, first, 0);
     unlock_queue();
     for (;;) {
         check_failed();
         if (atomic_load_explicit(&group.remaining, memory_order_acquire) == 0) break;
-        // With nothing to start, the thread waits for the join, which cannot change a channel.
+        // With nothing of its own group to start, the thread waits for the join, which cannot change
+        // a channel.
         unsigned epoch;
-        int ran = run_one(&group, 1, &epoch);
+        int ran = run_one(&group, 0, &epoch);
         if (ran < 0) break;
         if (!ran) sleep_until_progress(epoch);
     }
     lock(&state.queue_mutex);
-    --waiting.idle;
     Group **link = &groups;
-    while (*link != &group) link = &(*link)->previous;
-    *link = group.previous;
+    Group *before = 0;
+    while (*link != &group) {
+        before = *link;
+        link = &before->next_group;
+    }
+    *link = group.next_group;
+    if (groups_tail == &group) groups_tail = before;
     unlock_queue();
     return group.failure;
 }
@@ -341,18 +368,20 @@ static void channel_changed(void) {
 /* How many items a thread runs on top of one another while it waits on channels, which bounds the stack. */
 enum { HELP_DEPTH = 16 };
 
-/* With `queue_mutex` held: runs an unstarted item on top of this thread's work, as a thread that
-   waits for a join does, unless a thread is free to take it: an idle worker, or a thread that waits
-   for a group (an item that runs on top of a waiting one can never end before the waiting one goes
-   on, so a pipeline that needs every stage to run at once would stall if the third stage were
-   stacked on the second while a thread was free to run it). Returns 1 when the lock was released,
-   so the caller has to look at its channel again. */
+/* With `queue_mutex` held: runs an unstarted item, of the oldest group that has one, on top of this
+   thread's work, unless a worker is free to take it (an item that runs on top of a waiting one can
+   never end before the waiting one goes on, so a pipeline that needs every stage to run at once
+   would stall if the third stage were stacked on the second while a worker was free to run it).
+   Returns 1 when the lock was released while the item ran, so the caller has to look at its
+   channel again; the lock is held again when it returns. */
 static int help_one(void) {
-    if (waiting.idle != 0 || help_depth >= HELP_DEPTH || !has_unstarted()) return 0;
+    if (waiting.idle != 0 || help_depth >= HELP_DEPTH) return 0;
+    Group *group = unstarted_group();
+    if (!group) return 0;
+    uint64_t index = claim(group);
     ++help_depth;
     unlock_queue();
-    (void)run_one(0, 0, 0);
-    lock(&state.queue_mutex);
+    run_item(group, index, 0);
     --help_depth;
     return 1;
 }

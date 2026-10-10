@@ -398,6 +398,76 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
     emits(&pack("Square { side: 3 }"));
 }
 
+const CELL: &str = "class Cell<'f: * -> *> {\n    def wrap :: 'a -> 'f<'a>\n}\n";
+const RC_HOLDER: &str = "record Holder<'a> { counted: Rc<'a> }\ninstance Cell.Cell<Holder> {\n    fn wrap x = Holder { counted: Rc.new x }\n}\n";
+const PLAIN_HOLDER: &str = "record Holder<'a> { value: 'a }\ninstance Cell.Cell<Holder> {\n    fn wrap x = Holder { value: x }\n}\n";
+
+// A constructor variable applied to arguments (`'f<i64>`) stands for a type that is not known until
+// the function is used, as a type variable does, so what a builtin asks of it (`Send`, `Sync`) is
+// asked again where the constructor is known. Such a type fell into the "plain data" arm.
+#[test]
+fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for() {
+    let build = |holder: &str, main: &str| {
+        analyze_modules(&[("Cell.tt", CELL), ("Main.tz", &format!("{holder}{main}"))])
+    };
+    // Each program asks a builtin, or a constraint of its own, for `Send` of `'f<i64>` where the
+    // function is written, and gives `'f` a type where the function is used.
+    let programs = [
+        (
+            "the items of a channel",
+            "def mk :: Cell.Cell<'f> => i64 -> (Channel.Sender<'f<i64>> * Channel.Receiver<'f<i64>>)\nfn mk n = Channel.bounded n\nlet _pair: (Channel.Sender<Holder<i64>> * Channel.Receiver<Holder<i64>>) = mk 1\n0",
+        ),
+        (
+            "Parallel.init",
+            "def build :: Cell.Cell<'f> => i64 -> ['f<i64>]\nfn build count = Parallel.init count (\\index -> Cell.wrap index)\nlet _built: [Holder<i64>] = build 2\n0",
+        ),
+        (
+            "Mutex.create",
+            "def keep :: Cell.Cell<'f> => i64 -> Mutex<'f<i64>>\nfn keep n = Mutex.create (Cell.wrap n)\nlet _lock: Mutex<Holder<i64>> = keep 1\n0",
+        ),
+        (
+            "a send through a channel made here",
+            "def ship :: Cell.Cell<'f> => 'f<i64> -> i64\nfn ship value = match Channel.bounded 1 with\n    | (sender, _receiver) ->\n        let _sent = Channel.send (ref sender) value\n        0\nlet value: Holder<i64> = Cell.wrap 1i64\nship value",
+        ),
+        (
+            "a constraint that the program writes",
+            "def need :: (Cell.Cell<'f>, Send<'f<i64>>) => 'f<i64> -> i64\nfn need _value = 1\nlet value: Holder<i64> = Cell.wrap 1i64\nneed value",
+        ),
+    ];
+    for (name, main) in programs {
+        let error = build(RC_HOLDER, main).expect_err(name);
+        assert_eq!(error.code, "E1013", "{name}\n{}", error.message);
+        assert!(
+            error.message.contains("tasks require Send values")
+                && error.message.contains("holds an Rc"),
+            "{name}: {}",
+            error.message
+        );
+        let module = build(PLAIN_HOLDER, main)
+            .unwrap_or_else(|error| panic!("{name}\n{}: {}", error.code, error.message));
+        for wasm in [false, true] {
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        }
+    }
+    // `Sync` of a shared borrow of the application, which a scope asks for.
+    let scope = "def spread :: Cell.Cell<'f> => ref 'f<i64> -> i64\nfn spread held = Array.sum (ref (Task.scope held 2 (\\_shared index -> index)))\nlet held: Holder<i64> = Cell.wrap 5\nspread (ref held)";
+    let error = build(RC_HOLDER, scope).expect_err("a scope that shares the application");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert!(
+        error.message.contains("tasks can share only Sync values")
+            && error.message.contains("is not Sync"),
+        "{}",
+        error.message
+    );
+    build(PLAIN_HOLDER, scope).expect("a Sync holder is shared by a scope");
+    // Generic code that never asks for Send or Sync of the application is not refused.
+    build(
+        RC_HOLDER,
+        "def keep :: Cell.Cell<'f> => i64 -> 'f<i64>\nfn keep n = Cell.wrap n\nlet _kept: Holder<i64> = keep 1\n0",
+    )
+    .expect("an Rc holder that is only built");
+}
+
 #[test]
 fn task_scope_shares_a_sync_borrow() {
     for source in [

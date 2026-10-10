@@ -1558,6 +1558,10 @@ const suites = {
       ...[0n, 1n, 4n, 64n, 257n].map((n) => ["scope_arc_mutex", [n], n * (n + 1n) / 2n]),
       // The task takes `head` with it, and dropping it releases the Arc that it holds of `tail`.
       ["linked_mutex", [], 2n * 10n + 1n],
+      // The builtins are asked for Send and Sync of `'f<i64>`, and a holder of plain values passes.
+      ["hkt_parallel", [], 6n],
+      ["hkt_mutex", [], 42n],
+      ["hkt_scope", [], 6n],
     ],
     traps: [["mutex_nested", []], ["mutex_parallel_inside", []], ["scope_negative", []]],
     inspect(ir) {
@@ -1602,6 +1606,8 @@ const suites = {
       ["functions", [], 4112n],
       ["forwarded", [], 42n * 10n + 1n],
       ["function_drop", [], 31n],
+      // The channel is made through a constructor variable, and its items are plain values.
+      ["hkt_channel", [], 42n],
     ],
     traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []],
       ["send_inside_lock", []], ["recv_inside_lock", []]],

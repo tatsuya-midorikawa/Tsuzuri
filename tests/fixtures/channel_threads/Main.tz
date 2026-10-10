@@ -225,3 +225,40 @@ fn deadlock_pair =
         | (second_sender, second_receiver) ->
             let results = Task.run (Task.parallel [relay first_receiver second_sender, relay second_receiver first_sender])
             results[0] + results[1]
+
+// A long computation: the children of a nested group, which the threads must share.
+def spin :: i64 -> Task<i64>
+fn spin n = task {
+    let mut sum = 0
+    let mut index = 0
+    while index < n do
+        sum = sum + index % 7
+        index = index + 1
+    return sum
+}
+
+// The task starts a group of its own, then sends what the group computed.
+def nested_producer :: Channel.Sender<i64> -> i64 -> i64 -> Task<i64>
+fn nested_producer sender parts n = task {
+    let! sums = Task.parallel (new [Task<i64>](parts, \_index -> spin n))
+    let _sent = Channel.send (ref sender) (Array.sum (ref sums))
+    return 0
+}
+
+def nested_consumer :: Channel.Receiver<i64> -> Task<i64>
+fn nested_consumer receiver = task {
+    match Channel.recv (ref receiver) with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0 - 1
+}
+
+// The consumer can only be fed by the code after the join of the producer's group, which is on the
+// producer's thread: the thread that waits for the group runs the group's items and nothing else,
+// as in the native pool, or the consumer could land on top of its own producer and wait for ever
+// (2 threads or more, for any number of parts).
+export def nested_then_send :: i64 -> i64 -> i64
+fn nested_then_send parts n =
+    match Channel.bounded 1 with
+    | (sender, receiver) ->
+        let results = Task.run (Task.parallel [nested_producer sender parts n, nested_consumer receiver])
+        results[1]

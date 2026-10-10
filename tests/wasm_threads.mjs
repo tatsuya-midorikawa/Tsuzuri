@@ -321,11 +321,14 @@ fn bulk = {
       const piped = join(directory, `channel-threads-${optimization}.wasm`);
       cli(["build", resolve("tests/fixtures/channel_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", piped]);
       const pipedBytes = readFileSync(piped);
+      // What nested_then_send returns: `parts` sums of index % 7 over the n indexes below n.
+      const nestedSum = (parts, n) => parts * (n / 7n * 21n + (n % 7n) * ((n % 7n) - 1n) / 2n);
       const pipelines = [
         ["pipeline", [3n, 1000n], 500500n, 2], ["pipeline", [1n, 257n], 257n * 258n / 2n, 2],
         ["ping_pong", [2000n], 2000002000n, 2], ["tokens_across", [200n], 200200001n, 2],
         ["three_stages", [500n], 250500n, 3], ["fan_in", [2n, 50n, 3n], 5050100n, 3],
         ["job_queue", [100n, 4n], 338350100n, 3],
+        ["nested_then_send", [2n, 100000n], nestedSum(2n, 100000n), 1], ["nested_then_send", [4n, 100000n], nestedSum(4n, 100000n), 1],
       ];
       for (const workers of [1, 2, 3]) {
         const pool = await createThreadPool(pipedBytes, { workers });
@@ -342,10 +345,11 @@ fn bulk = {
         }
       }
       // The least that a pipeline needs is a thread for each stage. A thread that waits on a channel
-      // helps with an item that nobody has started only when no thread is free to take it, and a
-      // thread that waits for its group is free. With every CPU busy, the thread that started the
-      // group can be late to its first item, which a fresh pool makes likely; the third stage must
-      // not be stacked on the second then, because it would wait for the stage below it.
+      // helps with an item that nobody has started only when no worker is free to take it, and the
+      // thread that started the group has taken its first item under the lock that publishes it.
+      // With every CPU busy, a worker can be late to its first item, which a fresh pool makes likely;
+      // the third stage must not be stacked on the second then, because it would wait for the stage
+      // below it.
       const stopBurners = startBurners(availableParallelism());
       try {
         for (let round = 0; round < 8; round++) {
@@ -362,6 +366,43 @@ fn bulk = {
         await stopBurners();
       }
       console.log(`WASM threads O${optimization}: three stages on the 3 threads that they need complete on a busy machine`);
+      // A task that starts a group of its own and then sends what the group computed to a task of the
+      // outer group (nested_then_send). The thread that waits for the end of the nested group runs
+      // that group's items and no others, as in the native pool, and the group's first item is taken
+      // under the lock that publishes it. A thread that waits for the nested group and takes the
+      // consumer of the outer group instead puts the consumer on top of the producer that must feed
+      // it, and the pool reports a deadlock that the native pool does not have. Which thread is late
+      // depends on the schedule, so the interleaving cannot be forced: the test runs fresh pools of 2
+      // to 4 threads, and 2 threads again with a busy thread on every CPU, and is written to pass on
+      // any schedule. A runtime that let the waiting thread take an item of any group trapped in some
+      // pools of every size here.
+      const nestedPools = async (workers, parts, pools, label) => {
+        for (let round = 0; round < pools; round++) {
+          const fresh = await createThreadPool(pipedBytes, { workers });
+          try {
+            for (let call = 0; call < 4; call++) {
+              assert.equal(fresh.call("tz_nested_then_send", parts, 5000000n), nestedSum(parts, 5000000n), `${label}, pool ${round}, call ${call}`);
+            }
+          } finally {
+            await fresh.close();
+          }
+        }
+      };
+      for (const [workers, parts] of [[1, 2n], [2, 3n], [3, 4n]]) await nestedPools(workers, parts, 10, `nested_then_send on ${workers + 1} threads`);
+      const stopNestedBurners = startBurners(availableParallelism());
+      try {
+        await nestedPools(1, 2n, 12, "nested_then_send on 2 threads on a busy machine");
+      } finally {
+        await stopNestedBurners();
+      }
+      // One thread runs the items of a group in index order, so the producer is done before the consumer starts.
+      const single = await createThreadPool(pipedBytes, { workers: 0 });
+      try {
+        assert.equal(single.call("tz_nested_then_send", 2n, 100000n), nestedSum(2n, 100000n));
+      } finally {
+        await single.close();
+      }
+      console.log(`WASM threads O${optimization}: a task that starts a group and then feeds a task of the outer group completes on 1 to 4 threads`);
       // With every thread waiting on a channel, no thread can ever send: a trap instead of a hang,
       // however many threads there are. The pipelines that need more threads than there are trap too.
       for (const [name, args, workers] of [["leaked_sender", [], 0], ["leaked_sender", [], 1], ["leaked_sender", [], 3],
