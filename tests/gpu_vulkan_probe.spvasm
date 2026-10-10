@@ -4,7 +4,7 @@
 ; rounded a conversion from a 32-bit unsigned integer wrongly. The runtime runs this module once, on the first request
 ; that needs strict f32, and refuses the device when a result differs from the bits that the table beside the words holds.
 ;
-; 24 lanes, 8 operations of 3 operand pairs each. Lane i reads the words a = in[2i] and b = in[2i + 1], performs
+; 27 lanes, 9 operations of 3 operand pairs each. Lane i reads the words a = in[2i] and b = in[2i + 1], performs
 ; operation i / 3, and stores the bits of the result in out[i] (a NaN as the canonical 0x7FC00000, because a NaN has
 ; many bit patterns). Every floating-point result carries NoContraction, and the modes are those of a strict f32 kernel.
 ;
@@ -16,6 +16,10 @@
 ;   5  a - b          infinities and NaNs (SignedZeroInfNanPreserve), the NaN canonicalized
 ;   6  float(a)       a as a 32-bit unsigned integer (OpConvertUToF), above 2^31 included
 ;   7  float(a)       a as a 32-bit signed integer (OpConvertSToF)
+;   8  float(a)       a as a 32-bit unsigned integer again, at the rounding boundaries above 2^31 (ulp 256): 2^31 + 129 is
+;                     above a half, so truncation differs from round to nearest even; 2^31 + 128 and 2^31 + 384 are
+;                     ties, which round to the even neighbor (down for the first, up for the second), so truncation and
+;                     round-half-up each differ from round to nearest even on one of them
 ;
 ; Assemble with:  spirv-as --target-env vulkan1.1 tests/gpu_vulkan_probe.spvasm -o probe.spv
                OpCapability Shader
@@ -54,6 +58,7 @@
                OpDecorate %difference5 NoContraction
                OpDecorate %converted6 NoContraction
                OpDecorate %converted7 NoContraction
+               OpDecorate %converted8 NoContraction
        %void = OpTypeVoid
    %function = OpTypeFunction %void
        %uint = OpTypeInt 32 0
@@ -109,7 +114,7 @@
           %b = OpBitcast %float %b_bits
   %operation = OpUDiv %uint %index %uint_3
                OpSelectionMerge %merge None
-               OpSwitch %operation %fallback 0 %case0 1 %case1 2 %case2 3 %case3 4 %case4 5 %case5 6 %case6 7 %case7
+               OpSwitch %operation %fallback 0 %case0 1 %case1 2 %case2 3 %case3 4 %case4 5 %case5 6 %case6 7 %case7 8 %case8
       %case0 = OpLabel
    %product0 = OpFMul %float %a %b
        %sum0 = OpFAdd %float %product0 %float_c0
@@ -146,10 +151,14 @@
 %converted7 = OpConvertSToF %float %a_bits
     %result7 = OpBitcast %uint %converted7
                OpBranch %merge
+      %case8 = OpLabel
+%converted8 = OpConvertUToF %float %a_bits
+    %result8 = OpBitcast %uint %converted8
+               OpBranch %merge
    %fallback = OpLabel
                OpBranch %merge
       %merge = OpLabel
-     %result = OpPhi %uint %result0 %case0 %result1 %case1 %result2 %case2 %result3 %case3 %result4 %case4 %result5 %case5 %result6 %case6 %result7 %case7 %uint_none %fallback
+     %result = OpPhi %uint %result0 %case0 %result1 %case1 %result2 %case2 %result3 %case3 %result4 %case4 %result5 %case5 %result6 %case6 %result7 %case7 %result8 %case8 %uint_none %fallback
     %out_ptr = OpAccessChain %ptr_buffer_uint %output %uint_0 %index
                OpStore %out_ptr %result
                OpBranch %exit

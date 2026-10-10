@@ -88,6 +88,7 @@ struct configuration {
     int probe_fault; /* the lane of the conformance probe whose result is corrupted, plus one; 0 for none */
     int lose_wait; /* the first wait for a fence reports VK_ERROR_DEVICE_LOST */
     int block_wait; /* every wait for a fence blocks until tz_vk_mock_release_wait, and says that it entered */
+    int u32_mode; /* how the probe's OpConvertUToF rounds: 0 to nearest even (a conforming device), 1 toward zero, 2 ties up */
     char missing[64];
 };
 
@@ -241,6 +242,9 @@ int tz_vk_mock_configure(const char *text) {
         else if (strcmp(key, "code") == 0) config.fail_code = atoi(value);
         else if (strcmp(key, "lose") == 0 && strcmp(value, "wait") == 0) config.lose_wait = 1;
         else if (strcmp(key, "block_wait") == 0) config.block_wait = atoi(value);
+        else if (strcmp(key, "u32") == 0 && (strcmp(value, "trunc") == 0 || strcmp(value, "half_up") == 0)) {
+            config.u32_mode = strcmp(value, "trunc") == 0 ? 1 : 2;
+        }
         else ok = 0;
     }
     for (int index = 0; index < MOCK_MAX_DEVICES; index++) {
@@ -1079,7 +1083,28 @@ static uint64_t lane_load(const unsigned char *data, uint64_t index, uint64_t si
     return value;
 }
 
-/* The eight operations of the conformance probe (tests/gpu_vulkan_probe.spvasm) as a device that honours the strict
+/* OpConvertUToF as the mock's device does it: round to nearest even (the contract), or a defective rounding that a probe
+   must be able to tell: toward zero, or to nearest with ties away from zero. The neighbors are bit patterns (the values
+   are positive and normal), so that no math library is needed. */
+static float neighbor(float value, int step) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof bits);
+    bits += (uint32_t)step;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+static float convert_unsigned(uint32_t value) {
+    float nearest = (float)value;
+    if (config.u32_mode == 0) return nearest;
+    double exact = (double)value;
+    float truncated = (double)nearest > exact ? neighbor(nearest, -1) : nearest;
+    if (config.u32_mode == 1 || (double)truncated == exact) return truncated;
+    float upper = neighbor(truncated, 1);
+    return exact - (double)truncated >= (double)upper - exact ? upper : truncated;
+}
+
+/* The nine operations of the conformance probe (tests/gpu_vulkan_probe.spvasm) as a device that honours the strict
    controls computes them: IEEE binary32 arithmetic, no fused multiply-add (the mock is built with -ffp-contract=off),
    subnormals and the sign of a zero preserved, a NaN as the canonical 0x7FC00000. Lane i performs operation i / 3. */
 static uint32_t probe_operation(uint32_t lane, uint32_t a_bits, uint32_t b_bits) {
@@ -1094,7 +1119,8 @@ static uint32_t probe_operation(uint32_t lane, uint32_t a_bits, uint32_t b_bits)
     case 3:
     case 4: result = a * b; break;
     case 5: result = a - b; break;
-    case 6: result = (float)a_bits; break;
+    case 6:
+    case 8: result = convert_unsigned(a_bits); break;
     default: result = (float)(int32_t)a_bits; break;
     }
     uint32_t bits;

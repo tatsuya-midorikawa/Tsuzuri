@@ -319,7 +319,7 @@ check("vulkan: an empty or wrong TSUZURI_VULKAN_LIBRARY makes Gpu.Vulkan Unavail
     check("probe: Gpu.request of a program with strict f32 kernels is Ok only where the controls are reported and the conformance probe passes", () => {
       const strict = availability("strictf32");
       assert.match(request(strict, "strict=1").stdout, /^available 1$/m, "the controls are reported and the probe passes");
-      assert.match(request(strict, "strict=1").stderr, /the strict float32 probe passed \(24 lanes\)/);
+      assert.match(request(strict, "strict=1").stderr, /the strict float32 probe passed \(27 lanes\)/);
       const refused = request(strict, "strict=1,probe=3");
       assert.match(refused.stdout, /^available 0$/m, "the controls are reported but a lane of the probe differs");
       assert.match(refused.stderr, /the strict float32 probe: -\(a \* b\), lane 3: the device computed/);

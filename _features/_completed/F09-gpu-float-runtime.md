@@ -178,7 +178,7 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
     `gpu.c` は `backend == 2` をここへ回し、3 つ目の境界の関数 `tsuzuri_gpu_select(mode, lanes, features, spirv, spirv_len, weight, count)` を持つ（native だけ。WebAssembly では 0 を返し、import を足さない）。
     IR のマーカー `; tsuzuri-gpu: vulkan` があるときだけ、リンクに `gpu-vulkan.c` が入る（`llvm::gpu_runtime_source`）。ステータスは 0 成功、1 利用不可、2 機能不足またはカーネルなし、3 上限超過、4 実行時エラー。
   - 適合プローブ: float controls のプロパティは申告で、証明ではない（MoltenVK は `SignedZeroInfNanPreserve` を報告して `-(x * 0.0)` の符号を失い、SwiftShader は 2^31 以上の `i32u` から `f32` への変換を丸め違えた。独立したレビューが見つけた）。
-    ランタイムは、プロパティを報告するデバイスに、strict な `f32` が要る最初の要求で、24 lane の SPIR-V（8 つの演算 × 3 組の入力。`tests/gpu_vulkan_probe.spvasm` を組み立てた語を `gpu-vulkan.c` に埋め込む）を 1 回動かし、
+    ランタイムは、プロパティを報告するデバイスに、strict な `f32` が要る最初の要求で、27 lane の SPIR-V（9 つの演算 × 3 組の入力。`tests/gpu_vulkan_probe.spvasm` を組み立てた語を `gpu-vulkan.c` に埋め込む。9 つ目は 2^31 を超える `i32u` から `f32` への丸めの境目で、切り捨てと、同点を上へ丸める変換を、最近接偶数と区別する）を 1 回動かし、
     CPU 参照のビット列と比べる。1 lane でも違うか、動かせなければ、そのプロセスでは strict な `f32` を許さず（`Unavailable`。`Gpu.Auto` はそのカーネルを CPU 参照で動かす）、理由は `TSUZURI_GPU_DEBUG` に出る。
     他のカーネルには影響しない。プローブは標本で、通ることは一致の証明ではない。
   - `Gpu.Auto`: `tz_vulkan_auto` が、呼び出しごとに「使えるか」（SPIR-V、能力、測った種類のデバイス = メモリを共有する統合 GPU、上限、パイプライン）、「割に合うか」（CPU 参照の見積り `n × w × 0.03 ns` と、Vulkan の見積り
@@ -204,7 +204,7 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
   - `node tests/gpu_vulkan.mjs` 34 件（宣言した ABI と実際のヘッダーの照合、能力と機能の表、ローダーの失敗、上限、`Gpu.Auto` の規則、N 番目の Vulkan 呼び出しを失敗させる掃引と、オブジェクト・割り当ての漏れの有無、
     ASan・UBSan・TSan、プローブの判定。合成した Vulkan ライブラリとハーネス）、`node tests/gpu_vulkan_language.mjs` 46 件（言語としての実行を CPU 参照と照合、トラッキングしたヒープで漏れ 0、ドライバのビルド、WebAssembly の import なし）。
   - 厳密な整数（`i64` を含む）の Vulkan 実行は、MoltenVK で CPU 参照とビット単位で一致した（direct と staged の転送の両方、lane 数は 1 から 100,003）。緩い `f32` は許容誤差の範囲。
-  - strict な `f32`: MoltenVK は `DenormPreserve` と独立性を報告せず、SwiftShader は `RoundingModeRTE` を報告しないので、どちらも `Unavailable`（実際の結果）。プローブを強制すると、MoltenVK は 24 lane 中 7（`-(x * 0.0)` の符号 2、非正規化数 5）、
+  - strict な `f32`: MoltenVK は `DenormPreserve` と独立性を報告せず、SwiftShader は `RoundingModeRTE` を報告しないので、どちらも `Unavailable`（実際の結果）。プローブを強制すると、MoltenVK は 27 lane 中 7（`-(x * 0.0)` の符号 2、非正規化数 5）、
     SwiftShader は 1（`i32u` から `f32`）が違った。
   - 決まった入力の再現: `--emit spirv` の出力は同じソースでバイトまで一致、Vulkan も `Gpu.Auto` も構築しないプログラムの IR は、Phase 2 の版（`3d60e5c`）と、std のテンプレートの連番を除いて一致、`--freestanding` は `Gpu.Vulkan`・`Gpu.Auto`・`Gpu.WebGpu` を E2000 で拒否する。
   - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`、`git diff --check`、GUIDE §3.1 の 4 つの回帰テスト、`node scripts/check-docs.mjs`（変更したページ）、

@@ -1179,7 +1179,7 @@ fn the_probe_tables_hold_what_the_cpu_reference_computes() {
     let lanes = runtime_constant("TZ_VK_PROBE_LANES");
     let input = runtime_table("tz_vk_probe_input");
     let expected = runtime_table("tz_vk_probe_expected");
-    assert_eq!((lanes, input.len(), expected.len()), (24, 48, 24));
+    assert_eq!((lanes, input.len(), expected.len()), (27, 54, 27));
     let c0 = f32::from_bits(0xBF80_1000);
     for lane in 0..lanes {
         let (a_bits, b_bits) = (input[2 * lane], input[2 * lane + 1]);
@@ -1190,7 +1190,7 @@ fn the_probe_tables_hold_what_the_cpu_reference_computes() {
             2 => a + b,
             3 | 4 => a * b,
             5 => a - b,
-            6 => a_bits as f32,
+            6 | 8 => a_bits as f32,
             _ => a_bits as i32 as f32,
         };
         let bits = if lane / 3 == 5 && result.is_nan() {
@@ -1235,6 +1235,83 @@ fn the_probe_tables_hold_what_the_cpu_reference_computes() {
     }
     assert_eq!(expected[3], 0, "-(-1 * 0) is +0");
     assert_eq!(expected[4], 0x8000_0000, "-(1 * 0) is -0");
+    // The conversions from integers must tell the rounding that a device really does. `as f32` rounds to nearest even.
+    // A conversion that truncates (round toward zero) or rounds ties away from zero must give other bits on some lane of
+    // each kind, which is checked here against those two roundings computed from the exact value. The unsigned lanes of
+    // operation 6 alone did not tell a truncation: 0xFFFFFF7F and 0x80000001 are less than half an ulp above a
+    // representable value, so they round down either way, and 0x01000001 is a tie whose even neighbor is the lower one.
+    // Operation 8 adds the lanes that do.
+    let truncated = |value: u32| {
+        let nearest = value as f32;
+        if f64::from(nearest) > f64::from(value) {
+            f32::from_bits(nearest.to_bits() - 1)
+        } else {
+            nearest
+        }
+    };
+    let half_up = |value: u32| {
+        let lower = truncated(value);
+        if f64::from(lower) == f64::from(value) {
+            return lower;
+        }
+        let upper = f32::from_bits(lower.to_bits() + 1);
+        let (low, high, exact) = (f64::from(lower), f64::from(upper), f64::from(value));
+        if exact - low >= high - exact {
+            upper
+        } else {
+            lower
+        }
+    };
+    let unsigned_lane = |lane: usize| input[2 * lane];
+    let tells_truncation = |lane: usize| truncated(unsigned_lane(lane)).to_bits() != expected[lane];
+    let tells_half_up = |lane: usize| half_up(unsigned_lane(lane)).to_bits() != expected[lane];
+    assert!(
+        !(18..21).any(tells_truncation),
+        "this is why operation 6 cannot tell a truncating unsigned conversion"
+    );
+    for (lane, value, nearest_even, other) in [
+        (24, 0x8000_0081u32, 0x4F00_0001u32, 0x4F00_0000u32),
+        (26, 0x8000_0180, 0x4F00_0002, 0x4F00_0001),
+    ] {
+        assert_eq!(unsigned_lane(lane), value, "lane {lane}");
+        assert_eq!(
+            expected[lane], nearest_even,
+            "lane {lane}: rounds to nearest even"
+        );
+        assert_eq!(truncated(value).to_bits(), other, "lane {lane}: truncation");
+        assert!(
+            tells_truncation(lane),
+            "lane {lane} must tell a truncating conversion"
+        );
+    }
+    assert_eq!(
+        unsigned_lane(25),
+        0x8000_0080,
+        "a tie whose even neighbor is the lower one"
+    );
+    assert_eq!(expected[25], 0x4F00_0000);
+    assert_eq!(half_up(0x8000_0080).to_bits(), 0x4F00_0001);
+    assert!(
+        tells_half_up(25),
+        "lane 25 must tell rounding ties away from zero"
+    );
+    assert!(
+        !tells_half_up(26) && !tells_half_up(24),
+        "the other two lanes are above a half or on a tie that goes up: they say nothing about the tie rule"
+    );
+    // The signed conversion tells both on its own lanes (the magnitude is rounded the same way).
+    let signed_truncated = |value: i32| {
+        let magnitude = truncated(value.unsigned_abs());
+        if value < 0 { -magnitude } else { magnitude }
+    };
+    for lane in [21usize, 22] {
+        let value = input[2 * lane] as i32;
+        assert_ne!(
+            signed_truncated(value).to_bits(),
+            expected[lane],
+            "lane {lane}: the signed lanes tell a truncation"
+        );
+    }
 }
 
 #[test]

@@ -247,15 +247,15 @@ check("strict probe: runs once, on the first request that needs strict float32, 
   assert.deepEqual(verdict(strictProbe("strict=1", 6, { repeat: 5 })), [0, "1", "passed", 1], "once, however many requests follow");
   assert.deepEqual(verdict(strictProbe("", 4)), [2, "0", "not-run", 0], "a device without the controls does not get the probe");
   assert.deepEqual(verdict(strictProbe("strict=1,denorm=0", 4)), [2, "0", "not-run", 0]);
-  assert.match(strictProbe("strict=1", 4, { env: { TSUZURI_GPU_DEBUG: "1" } }).stderr, /the strict float32 probe passed \(24 lanes\)/);
+  assert.match(strictProbe("strict=1", 4, { env: { TSUZURI_GPU_DEBUG: "1" } }).stderr, /the strict float32 probe passed \(27 lanes\)/);
 });
 
 check("strict probe: a device that reports the controls but computes any lane differently refuses strict float32, and only that", () => {
-  for (let lane = 0; lane < 24; lane++) {
+  for (let lane = 0; lane < 27; lane++) {
     const answer = strictProbe(`strict=1,probe=${lane}`, 4, { env: { TSUZURI_GPU_DEBUG: "1" } });
     assert.deepEqual(verdict(answer), [2, "0", "failed", 1], `lane ${lane}`);
     assert.match(answer.stderr, new RegExp(`lane ${lane}: the device computed`));
-    assert.match(answer.stderr, /but 1 of 24 probe lanes differ from the reference; strict float32 kernels are refused/);
+    assert.match(answer.stderr, /but 1 of 27 probe lanes differ from the reference; strict float32 kernels are refused/);
   }
   assert.deepEqual(verdict(strictProbe("strict=1,probe=3", 6, { repeat: 3 })), [2, "0", "failed", 1], "a failed probe is not run again");
   // The kernels that do not need strict float32 still run on the same device, in the same process.
@@ -275,11 +275,26 @@ check("strict probe: a kernel with the strict modes triggers it, and the verdict
 });
 
 check("strict probe: the harness mode conform prints every lane against the reference, on any device", () => {
-  assert.match(mock("strict=1", ["conform"]).stdout, /conform lanes=24 different=0/);
-  assert.match(mock("", ["conform"]).stdout, /conform lanes=24 different=0/, "it runs whatever the properties say");
+  assert.match(mock("strict=1", ["conform"]).stdout, /conform lanes=27 different=0/);
+  assert.match(mock("", ["conform"]).stdout, /conform lanes=27 different=0/, "it runs whatever the properties say");
   const bad = mock("strict=1,probe=5", ["conform"]);
-  assert.match(bad.stdout, /conform lanes=24 different=1/);
+  assert.match(bad.stdout, /conform lanes=27 different=1/);
   assert.match(bad.stdout, /lane  5 -\(a \* b\) .*DIFFERENT/);
+});
+
+// A device whose OpConvertUToF truncates passed the probe while its signed conversion was right: the unsigned lanes of
+// operation 6 (0xFFFFFF7F, 0x80000001, 0x01000001) give the same bits under truncation and under round to nearest even.
+// Operation 8 adds 0x80000081 (above a half), 0x80000080 (a tie that goes down) and 0x80000180 (a tie that goes up).
+check("strict probe: a device whose unsigned conversion truncates, or rounds ties up, fails it, on the lanes that tell them", () => {
+  const differing = config => [...mock(config, ["conform"]).stdout.matchAll(/^lane +(\d+) .*DIFFERENT$/gm)].map(match => Number(match[1]));
+  assert.deepEqual(differing("strict=1"), []);
+  assert.deepEqual(differing("strict=1,u32=trunc"), [24, 26], "truncation: above a half, and a tie that goes up");
+  assert.deepEqual(differing("strict=1,u32=half_up"), [20, 25], "ties away from zero: the two ties whose even neighbor is the lower one");
+  for (const mode of ["trunc", "half_up"]) {
+    const answer = strictProbe(`strict=1,u32=${mode}`, 4, { env: { TSUZURI_GPU_DEBUG: "1" } });
+    assert.deepEqual(verdict(answer), [2, "0", "failed", 1], `${mode}: the runtime refuses strict float32`);
+    assert.match(answer.stderr, /float of a 32-bit unsigned integer/, `${mode}: the operation is named`);
+  }
 });
 
 check("loader: a library that cannot be loaded makes the backend unavailable, and no other library is tried", () => {
@@ -938,7 +953,7 @@ device("device: the conformance probe agrees with what the device reports about 
   const name = /device="([^"]*)"/.exec(reported)?.[1] ?? "?";
   const propertiesSay = /strict_f32=1/.test(reported);
   const conform = harness(["conform", "--features", "0"]);
-  const lanes = /conform lanes=24 different=(\d+)/.exec(conform.stdout);
+  const lanes = /conform lanes=27 different=(\d+)/.exec(conform.stdout);
   if (/float_controls=1/.test(reported)) assert.ok(lanes, `a device that reports float controls runs the probe module: ${conform.stdout}${conform.stderr}`);
   const differing = lanes ? [...conform.stdout.matchAll(/^lane +(\d+) .*DIFFERENT$/gm)].map(match => Number(match[1])) : undefined;
   assert.equal(differing?.length ?? 0, lanes ? Number(lanes[1]) : 0);
