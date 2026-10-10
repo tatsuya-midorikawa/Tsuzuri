@@ -9,8 +9,12 @@
   // destroyed when the instance is discarded (`owner.dispose`, called by `fail`), because nothing could close them then.
   function netImports(owner) {
     if (NODE_NET === undefined) throw new Error("Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP");
-    const { net, dgram, dns, os } = NODE_NET;
-    const errno = os.constants.errno;
+    const { net, dgram, dns, os, util } = NODE_NET;
+    // The error numbers by name: those of `os.constants.errno`, then the names that libuv gives to errors that it reports and
+    // the system lists no constant for (EHOSTDOWN, ENONET, ...), with libuv's number negated, which is the system's own where
+    // the system has the error. The table is the glue's alone, so that an error which Node names always has a status.
+    const errno = Object.assign(Object.create(null), os.constants.errno);
+    for (const [number, [name]] of util.getSystemErrorMap()) if (number < 0 && !(name in errno)) errno[name] = -number;
     const codeNames = new Map(Object.entries(errno).map(([name, number]) => [number, name]));
     const status = (kind, code) => (BigInt(kind) << 32n) | BigInt(code >>> 0);
     const KINDS = { EACCES: 2, EPERM: 2, EADDRINUSE: 3, EINVAL: 4, EAFNOSUPPORT: 4, EADDRNOTAVAIL: 4, EMSGSIZE: 4, EINTR: 6 };
@@ -26,6 +30,11 @@
     const BAD_HANDLE = status(4, errno.EBADF);
     const INVALID = status(4, 0);
     const PENDING = status(7, 0);
+    // What a datagram send answers (negated) when Node has taken the datagram and has not yet said how it went: ACCEPTED plus the
+    // token of that send, which `watch` takes (events 2 + 4 * token) and completes with the send's own status. No error number
+    // is as large as ACCEPTED, and its kind is the last, so that the compiler's check of a status lets it through.
+    const ACCEPTED = status(7, 16777216);
+    const MAX_TOKEN = 268435455;
     const RECORD = 20;
     const LIMIT = 1048576;
     const SEND_CHUNK = 65536n;
@@ -73,6 +82,10 @@
     const free = [];
     // The sockets that a call is still making: not in the table, but the instance's all the same.
     const making = new Set();
+    // The datagram sends that Node has taken and not finished, by token: a send is over when its callback has run, and its
+    // outcome is waited for by the operation that started it (`watch` with that token), which deletes the flight.
+    const flights = new Map();
+    let nextToken = 0;
     let generation = 0n;
     const slotOf = (handle) => Number(handle & 0xffffffffn) - 1;
     function register(entry) {
@@ -116,7 +129,7 @@
       try {
         if (entry.kind === 1) entry.socket.destroy();
         else if (entry.kind === 2) {
-          for (const pending of entry.queue) pending.destroy();
+          for (const pending of entry.queue) pending.socket.destroy();
           entry.queue.length = 0;
           entry.server.close();
         } else entry.socket.close();
@@ -130,6 +143,7 @@
       operations.clear();
       for (const entry of [...making, ...slots]) if (entry !== undefined) destroy(entry);
       making.clear();
+      flights.clear();
       slots.length = 0;
       free.length = 0;
     }
@@ -274,18 +288,19 @@
     // Whether a call on the entry can go on now: it has something to read or accept, or can take a write.
     const readable = (entry) => (entry.kind === 1 ? entry.chunks.length > 0 || entry.ended || entry.readShut || (entry.error !== undefined && !entry.reported)
       : entry.kind === 2 ? entry.queue.length > 0 || entry.error !== undefined : entry.messages.length > 0 || entry.error !== undefined);
-    // A datagram socket is writable when no send of it is still with Node: the call that started one collects how it went.
-    const writable = (entry) => (entry.kind === 1 ? !entry.socket.writableNeedDrain || entry.socket.destroyed || entry.error !== undefined
-      : entry.kind === 3 ? entry.inflight === 0 : true);
+    // A datagram socket takes a send at any time (Node queues it); what a module waits for after one is that send's own end.
+    const writable = (entry) => (entry.kind === 1 ? !entry.socket.writableNeedDrain || entry.socket.destroyed || entry.error !== undefined : true);
 
     // The connection that waits in the queue of a listener, as a handle, or the negated status of what went wrong with
-    // the listener; undefined when none waits. A connection that is gone before it is taken is skipped, as natively.
+    // the listener; undefined when none waits. A connection that is gone before it is taken is skipped, as natively. The
+    // addresses of a queued connection are those that it had when it arrived: a peer that resets it meanwhile leaves no
+    // peer name to ask for, and net.c, too, names the connection by what `accept` gave it.
     function takeConnection(pointer, entry) {
       while (entry.queue.length > 0) {
-        const socket = entry.queue.shift();
+        const { socket, names } = entry.queue.shift();
         if (socket.destroyed) continue;
         const accepted = streamEntry(socket, entry.family);
-        accepted.names = streamNames(socket, record(socket.remoteAddress ?? "", socket.remotePort ?? 0));
+        accepted.names = names;
         socket.resume();
         release(accepted);
         const opened = register(accepted);
@@ -331,7 +346,7 @@
             socket.resetAndDestroy();
             return;
           }
-          entry.queue.push(socket);
+          entry.queue.push({ socket, names: streamNames(socket, record(socket.remoteAddress ?? "", socket.remotePort ?? 0)) });
           notify(entry);
         });
         const outcome = await new Promise((resolve) => {
@@ -361,7 +376,7 @@
         return handle;
       }
       const socket = dgram.createSocket(family === 6 ? { type: "udp6", ipv6Only: true } : { type: "udp4" });
-      const entry = { kind: 3, socket, family, holds: 1, waiters: new Set(), messages: [], queued: 0, flights: [], inflight: 0, error: undefined, names: undefined };
+      const entry = { kind: 3, socket, family, holds: 1, waiters: new Set(), messages: [], queued: 0, inflight: 0, closing: false, error: undefined, names: undefined };
       making.add(entry);
       // A datagram that finds the queue full is dropped, as a full receive buffer drops it.
       socket.on("message", (data, info) => {
@@ -458,10 +473,28 @@
       }
     }
 
-    // A datagram to a blocking call: it waits for Node to say how the send went.
-    const sendDatagram = (entry, bytes, meta, high, low) => new Promise((resolve) => {
-      entry.socket.send(bytes, portOf(meta), hostOf(meta, high, low), (error) => resolve(error ? failed(error) : 0n));
-    });
+    // Hands a datagram to Node, which sends it in a later turn and then says how it went: `done` gets the status. `inflight`
+    // counts the sends that Node still has, because a datagram socket that is closed drops a send that has not left yet.
+    function sendDatagram(entry, bytes, meta, high, low, done) {
+      entry.inflight++;
+      try {
+        entry.socket.send(bytes, portOf(meta), hostOf(meta, high, low), (error) => {
+          entry.inflight--;
+          if (entry.closing && entry.inflight === 0) closeDatagram(entry);
+          done(error ? failed(error) : 0n);
+        });
+      } catch (error) {
+        entry.inflight--;
+        throw error;
+      }
+    }
+    function closeDatagram(entry) {
+      try {
+        entry.socket.close();
+      } catch {
+        // Closed already.
+      }
+    }
 
     async function write(operation, handle, data, length, meta, high, low, timeout) {
       data >>>= 0;
@@ -471,7 +504,8 @@
       const bytes = copyOf(data, length);
       if (operation === 1) {
         if (bytes.length > 65536) return named("EMSGSIZE");
-        return portOf(meta) === 0 ? ZERO_PORT : sendDatagram(entry, bytes, meta, high, low);
+        // A blocking send waits for Node to say how it went.
+        return portOf(meta) === 0 ? ZERO_PORT : new Promise((resolve) => sendDatagram(entry, bytes, meta, high, low, resolve));
       }
       if (entry.error !== undefined) return failed(entry.error);
       if (entry.writeShut || entry.socket.destroyed) return named("EPIPE");
@@ -486,15 +520,15 @@
     // Sends without waiting: the bytes taken, or the negated status. Node queues what it takes and hands it to the system as
     // the system has room, so one call takes at most SEND_CHUNK bytes, and the caller waits (PENDING, then a drain) for the
     // rest: what is accepted but not yet with the system stays small, and `close` delivers it before it closes.
-    // A datagram is the system's to send in a later turn and a call cannot wait for it, so the first call with these
-    // arguments starts the send and says PENDING, and the call that comes when the socket is writable again (no send is
-    // with Node any more) collects how it went: the length, or the failure that Node reported for this very send.
+    // A datagram is the system's to send in a later turn and a call cannot wait for it: the call hands it to Node, once, and
+    // answers ACCEPTED plus a token (never the datagram again); the caller then waits for that token (`watch`), which completes
+    // with how this very send went. So a send has its own result, a failed one leaves no datagram, and nothing is sent twice.
     function send(operation, handle, data, length, offset, meta, high, low) {
       data >>>= 0;
       if ((operation !== 0 && operation !== 1) || length < 0n || offset < 0n || offset > length) return -INVALID;
       const entry = find(handle, operation === 0 ? 1 : 3);
       if (entry === undefined) return -BAD_HANDLE;
-      if (operation === 1) return sendFlight(entry, data, length, meta, high, low);
+      if (operation === 1) return startSend(entry, data, length, meta, high, low);
       if (offset === length) return 0n;
       if (entry.error !== undefined) return -failed(entry.error);
       if (entry.writeShut || entry.socket.destroyed) return -named("EPIPE");
@@ -503,35 +537,58 @@
       entry.socket.write(copyOf(data + Number(offset), taken));
       return taken;
     }
-    function sendFlight(entry, data, length, meta, high, low) {
+    function startSend(entry, data, length, meta, high, low) {
       if (length > 65536n) return -named("EMSGSIZE");
       if (portOf(meta) === 0) return -ZERO_PORT;
-      const bytes = copyOf(data, length);
-      // The same datagram to the same address from the same place in memory is the retry of the call that started it.
-      const flight = entry.flights.find((earlier) => earlier.pointer === data && earlier.meta === meta && earlier.high === high && earlier.low === low && earlier.bytes.equals(bytes));
-      if (flight === undefined) {
-        // The results that nobody collected (an operation that was cancelled) are dropped when they pile up.
-        while (entry.flights.length >= 64 && entry.flights.some((earlier) => earlier.done)) entry.flights.splice(entry.flights.findIndex((earlier) => earlier.done), 1);
-        const started = { pointer: data, meta, high, low, bytes, done: false, status: 0n };
-        entry.flights.push(started);
-        entry.inflight++;
-        try {
-          entry.socket.send(bytes, portOf(meta), hostOf(meta, high, low), (error) => {
-            started.done = true;
-            started.status = error ? failed(error) : 0n;
-            entry.inflight--;
-            notify(entry);
-          });
-        } catch (error) {
-          entry.flights.pop();
-          entry.inflight--;
-          throw error;
-        }
-        return -PENDING;
+      do nextToken = nextToken === MAX_TOKEN ? 1 : nextToken + 1; while (flights.has(nextToken));
+      const token = nextToken;
+      const flight = { handle: entry.handle, done: false, status: 0n, attached: undefined, abandoned: false };
+      flights.set(token, flight);
+      try {
+        sendDatagram(entry, copyOf(data, length), meta, high, low, (outcome) => {
+          flight.done = true;
+          flight.status = outcome;
+          if (flight.attached !== undefined) flight.attached();
+          else if (flight.abandoned) flights.delete(token);
+        });
+      } catch (error) {
+        flights.delete(token);
+        throw error;
       }
-      if (!flight.done) return -PENDING;
-      entry.flights.splice(entry.flights.indexOf(flight), 1);
-      return flight.status === 0n ? length : -flight.status;
+      return -(ACCEPTED + BigInt(token));
+    }
+    // The wait of an async operation for the end of the send with `token` on the socket `handle`: it completes with the status
+    // of that send (0, or why it failed), whatever happened to the handle meanwhile (a close waits for the send, and the send
+    // has a result of its own). A wait that is cancelled or times out leaves the send going, and its flight is dropped when it ends.
+    function watchSend(operation, handle, token, timeout) {
+      const flight = flights.get(token);
+      if (flight === undefined || flight.handle !== handle || flight.attached !== undefined) return later(operation, INVALID);
+      if (flight.done) {
+        flights.delete(token);
+        return later(operation, flight.status);
+      }
+      if (timeout === 0n) {
+        flight.abandoned = true;
+        return later(operation, TIMED_OUT);
+      }
+      let timer;
+      flight.attached = () => {
+        clearTimeout(timer);
+        flights.delete(token);
+        later(operation, flight.status);
+      };
+      if (timeout > 0n) {
+        timer = setTimeout(() => {
+          flight.attached = undefined;
+          flight.abandoned = true;
+          finish(operation, TIMED_OUT);
+        }, Number(timeout));
+      }
+      operations.set(operation, () => {
+        clearTimeout(timer);
+        flight.attached = undefined;
+        flight.abandoned = true;
+      });
     }
 
     function close(operation, handle) {
@@ -546,9 +603,12 @@
           entry.readShut = true;
           entry.socket.end(() => entry.socket.destroy());
         } else if (entry.kind === 2) {
-          for (const pending of entry.queue) pending.destroy();
+          for (const pending of entry.queue) pending.socket.destroy();
           entry.server.close();
-        } else entry.socket.close();
+        } else if (entry.inflight > 0) {
+          // A datagram socket that is closed drops the sends that Node has not finished: it closes after the last of them.
+          entry.closing = true;
+        } else closeDatagram(entry);
         notify(entry);
         return 0n;
       }
@@ -644,12 +704,17 @@
       const timer = setImmediate(() => finish(operation, value));
       operations.set(operation, () => clearImmediate(timer));
     }
+    // `events` 1 waits until the socket can read (or accept), 2 until it can write; 2 + 4 * token waits for the end of the datagram
+    // send that `send` answered with that token, and completes with the status of that send.
     function watch(operation, handle, events, timeout) {
-      if ((events !== 1 && events !== 2) || timeout < -1n) return later(operation, INVALID);
+      const wanted = events & 3;
+      const token = events >>> 2;
+      if (events < 1 || (wanted !== 1 && wanted !== 2) || (token !== 0 && wanted !== 2) || timeout < -1n) return later(operation, INVALID);
+      if (token !== 0) return watchSend(operation, handle, token, timeout);
       if (timeout === 0n) return later(operation, TIMED_OUT);
       const entry = find(handle, 0);
       if (entry === undefined) return later(operation, BAD_HANDLE);
-      const ready = () => (events === 1 ? readable(entry) : writable(entry));
+      const ready = () => (wanted === 1 ? readable(entry) : writable(entry));
       if (ready()) return later(operation, 0n);
       let timer;
       retain(entry);
