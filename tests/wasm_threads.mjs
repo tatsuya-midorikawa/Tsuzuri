@@ -292,6 +292,14 @@ fn bulk = {
           for (let position = 0n; position < count; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
           assert.equal(sharedPool.call("tz_scope_results_order", count), checksum);
         }
+        // What sleeps on the epoch waits for new work, the end of a group, a channel or a lock, so an
+        // item that is done while others of its group still run wakes nobody: the epoch moves a few
+        // times for a group of any size, not once for each of its items.
+        const epochAddress = sharedPool.instance.exports.tsuzuri_threads_control() >>> 0;
+        const epoch = () => Atomics.load(new Int32Array(sharedPool.memory.buffer, epochAddress, 7), 1);
+        const startedAt = epoch();
+        assert.equal(sharedPool.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
+        assert.ok(epoch() - startedAt <= 8, `the epoch moved ${epoch() - startedAt} times for the 5,000 children of one scope`);
         assert.equal(sharedPool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
       } finally {
         await sharedPool.close();

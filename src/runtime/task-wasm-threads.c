@@ -20,12 +20,14 @@ _Static_assert(sizeof(ThreadState) == 28, "host control layout");
    threads are blocked and one of them waits on a channel, no thread can ever change a channel
    again, and the waiters are told (`verdicts`). `idle` counts the threads that run no item and are
    free to take one: the workers that run none, and the threads that wait for the end of a group
-   they started (they take its items, and any other, themselves). */
+   they started (they take its items, and any other, themselves). `wake` says that the epoch moved
+   and the threads that sleep on it are not yet notified. */
 typedef struct {
     unsigned blocked;
     unsigned channel_waiters;
     unsigned verdicts;
     unsigned idle;
+    unsigned wake;
 } Waiting;
 
 static Waiting waiting;
@@ -45,10 +47,9 @@ static void check_failed(void) {
     if (atomic_load_explicit(&state.failed, memory_order_acquire)) __builtin_trap();
 }
 
-/* Wakes every thread that waits on the epoch: idle workers, joins, lock waiters and channel waiters.
+/* Wakes every thread that sleeps on the epoch: idle workers, joins, lock waiters and channel waiters.
    The host's `fail` bumps the same word, so each of them also wakes to trap when the pool failed. */
-static void wake_all(void) {
-    atomic_fetch_add_explicit(&state.epoch, 1, memory_order_release);
+static void notify_all(void) {
     __builtin_wasm_memory_atomic_notify((int *)&state.epoch, UINT32_MAX);
 }
 
@@ -67,12 +68,36 @@ static void unlock(atomic_uint *mutex) {
     __builtin_wasm_memory_atomic_notify((int *)mutex, UINT32_MAX);
 }
 
-/* With `queue_mutex` held: something that a waiting thread waits for may have happened, so every
-   waiter wakes, looks again and counts itself blocked again if it still cannot go on. */
+/* With `queue_mutex` held: something that a waiting thread waits for may have happened. Every
+   registration of a blocked thread is void from here on, and a thread counts itself blocked again
+   only after it saw the epoch move, so no thread is counted twice in one window. The epoch moves
+   now, so that a thread that is about to sleep sees it; the sleepers are notified when the lock is
+   released (`unlock_queue`), so that they do not wake to wait for a lock that this thread holds.
+   Only an event that a sleeper waits for calls this: new work, the end of a group, a change of a
+   channel and the release of a contended lock. An item that is done while others of its group still
+   run wakes nobody, because every thread that is asleep waits for one of those events. */
 static void progress(void) {
     waiting.blocked = 0;
     waiting.channel_waiters = 0;
-    wake_all();
+    waiting.wake = 1;
+    atomic_fetch_add_explicit(&state.epoch, 1, memory_order_release);
+}
+
+/* Releases `queue_mutex`, then notifies the sleepers if the critical section moved the epoch. */
+static void unlock_queue(void) {
+    unsigned wake = waiting.wake;
+    waiting.wake = 0;
+    unlock(&state.queue_mutex);
+    if (wake) notify_all();
+}
+
+/* Sleeps on the epoch that the thread registered as blocked at, until it moves. A notify that comes
+   for another reason, or late, finds the thread still registered and sends it back to sleep. */
+static void sleep_until_progress(unsigned epoch) {
+    do {
+        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, (int)epoch, -1);
+        check_failed();
+    } while (atomic_load_explicit(&state.epoch, memory_order_acquire) == epoch);
 }
 
 /* The threads that can change a channel: all of them once the pool runs, the one before. */
@@ -112,12 +137,12 @@ static void start_pool(void) {
         // A worker that is starting is free to take an item.
         lock(&state.queue_mutex);
         waiting.idle = requested - 1;
-        unlock(&state.queue_mutex);
+        unlock_queue();
         if (spawn_workers((int32_t)(requested - 1)) != (int32_t)(requested - 1)) __builtin_trap();
         atomic_store_explicit(&state.initialized, 2, memory_order_release);
         lock(&state.queue_mutex);
         progress();
-        unlock(&state.queue_mutex);
+        unlock_queue();
     } else {
         for (;;) {
             unsigned epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
@@ -150,8 +175,13 @@ static int has_unstarted(void) {
 }
 
 /* Runs one unstarted item, of `preferred` if it has one. A `counted` thread (a worker, or a thread
-   that waits for a group it started) that runs an item is not idle meanwhile. */
-static int run_one(Group *preferred, int counted) {
+   that waits for a group it started) that runs an item is not idle meanwhile.
+   Returns 1 when an item ran. When none is left to start, the result is 0 and nothing ran; if
+   `epoch` is not null, the caller is about to sleep (an idle worker, or a thread that waits for the
+   group `preferred`): it is counted as blocked under the lock that found nothing to start, so that
+   no item can appear between the two, and `*epoch` is the epoch to sleep on (`sleep_until_progress`).
+   The result is -1 instead when `preferred` has already ended, and the caller needs no sleep. */
+static int run_one(Group *preferred, int counted, unsigned *epoch) {
     lock(&state.queue_mutex);
     Group *group = preferred;
     if (!group || atomic_load_explicit(&group->next, memory_order_relaxed) >= group->length) {
@@ -160,15 +190,24 @@ static int run_one(Group *preferred, int counted) {
             group = group->previous;
     }
     if (!group) {
-        unlock(&state.queue_mutex);
-        return 0;
+        int result = 0;
+        if (epoch) {
+            if (preferred && atomic_load_explicit(&preferred->remaining, memory_order_acquire) == 0) {
+                result = -1;
+            } else {
+                *epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
+                register_blocked(0);
+            }
+        }
+        unlock_queue();
+        return result;
     }
     uint64_t index = atomic_fetch_add_explicit(&group->next, 1, memory_order_relaxed);
     if (counted) --waiting.idle;
     void (*run)(void *, uint64_t) = group->run;
     void *context = group->context;
     uint32_t (*run_result)(void *, uint64_t) = group->run_result;
-    unlock(&state.queue_mutex);
+    unlock_queue();
     uint32_t failed = 0;
     if (run_result) failed = run_result(context, index);
     else run(context, index);
@@ -181,9 +220,11 @@ static int run_one(Group *preferred, int counted) {
         atomic_fetch_sub_explicit(&group->remaining, skipped, memory_order_relaxed);
     }
     atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_release);
+    // The group is the joiner's, which cannot unlink it before this lock is released.
+    int ended = atomic_load_explicit(&group->remaining, memory_order_relaxed) == 0;
     if (counted) ++waiting.idle;
-    progress();
-    unlock(&state.queue_mutex);
+    if (ended) progress();
+    unlock_queue();
     return 1;
 }
 
@@ -205,28 +246,22 @@ static uint64_t submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(voi
     // This thread waits for the group, and takes its items: it is free to take one until it does.
     ++waiting.idle;
     progress();
-    unlock(&state.queue_mutex);
+    unlock_queue();
     for (;;) {
         check_failed();
         if (atomic_load_explicit(&group.remaining, memory_order_acquire) == 0) break;
-        if (run_one(&group, 1)) continue;
-        // Nothing to run: the thread waits for the join, which cannot change a channel.
-        lock(&state.queue_mutex);
-        if (atomic_load_explicit(&group.remaining, memory_order_acquire) == 0 || has_unstarted()) {
-            unlock(&state.queue_mutex);
-            continue;
-        }
-        unsigned epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
-        register_blocked(0);
-        unlock(&state.queue_mutex);
-        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, epoch, -1);
+        // With nothing to start, the thread waits for the join, which cannot change a channel.
+        unsigned epoch;
+        int ran = run_one(&group, 1, &epoch);
+        if (ran < 0) break;
+        if (!ran) sleep_until_progress(epoch);
     }
     lock(&state.queue_mutex);
     --waiting.idle;
     Group **link = &groups;
     while (*link != &group) link = &(*link)->previous;
     *link = group.previous;
-    unlock(&state.queue_mutex);
+    unlock_queue();
     return group.failure;
 }
 
@@ -267,7 +302,7 @@ void tsuzuri_mutex_unlock(void *cell) {
     if (atomic_exchange_explicit(word, 0, memory_order_release) == 2) {
         lock(&state.queue_mutex);
         progress();
-        unlock(&state.queue_mutex);
+        unlock_queue();
     }
 }
 
@@ -315,8 +350,8 @@ enum { HELP_DEPTH = 16 };
 static int help_one(void) {
     if (waiting.idle != 0 || help_depth >= HELP_DEPTH || !has_unstarted()) return 0;
     ++help_depth;
-    unlock(&state.queue_mutex);
-    (void)run_one(0, 0);
+    unlock_queue();
+    (void)run_one(0, 0, 0);
     lock(&state.queue_mutex);
     --help_depth;
     return 1;
@@ -329,8 +364,8 @@ static int channel_wait(void) {
     unsigned verdicts = waiting.verdicts;
     register_blocked(1);
     if (waiting.verdicts != verdicts) return 2;
-    unlock(&state.queue_mutex);
-    __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, epoch, -1);
+    unlock_queue();
+    sleep_until_progress(epoch);
     lock(&state.queue_mutex);
     return waiting.verdicts != verdicts ? 2 : 0;
 }
@@ -350,7 +385,7 @@ int32_t tsuzuri_channel_send(void *block, const void *item) {
         }
         if (channel_wait()) { status = 2; break; }
     }
-    unlock(&state.queue_mutex);
+    unlock_queue();
     return status;
 }
 
@@ -370,7 +405,7 @@ int32_t tsuzuri_channel_recv(void *block, void *item) {
         if (channel->senders == 0) { status = 1; break; }
         if (channel_wait()) { status = 2; break; }
     }
-    unlock(&state.queue_mutex);
+    unlock_queue();
     return status;
 }
 
@@ -379,7 +414,7 @@ void tsuzuri_channel_clone_sender(void *block) {
     lock(&state.queue_mutex);
     ++channel->senders;
     ++channel->owners;
-    unlock(&state.queue_mutex);
+    unlock_queue();
 }
 
 /* Releases a sender (kind 0) or a receiver (kind 1). The result is 1 for the owner of the last
@@ -393,7 +428,7 @@ int32_t tsuzuri_channel_close(void *block, int32_t kind) {
         channel_changed();
     }
     int32_t last = --channel->owners == 0;
-    unlock(&state.queue_mutex);
+    unlock_queue();
     return last;
 }
 
@@ -404,16 +439,8 @@ void tsuzuri_thread_entry(uint32_t worker_id) {
     worker_ready((int32_t)worker_id);
     for (;;) {
         check_failed();
-        if (run_one(0, 1)) continue;
-        lock(&state.queue_mutex);
-        if (has_unstarted()) {
-            unlock(&state.queue_mutex);
-            continue;
-        }
-        unsigned epoch = atomic_load_explicit(&state.epoch, memory_order_acquire);
-        register_blocked(0);
-        unlock(&state.queue_mutex);
-        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, epoch, -1);
+        unsigned epoch;
+        if (!run_one(0, 1, &epoch)) sleep_until_progress(epoch);
     }
 }
 
