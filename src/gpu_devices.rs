@@ -66,8 +66,9 @@ pub struct GpuKernelBlob {
     /// A SPIR-V module for Vulkan (little-endian words), when the program constructs `Gpu.Vulkan`
     /// or `Gpu.Auto` and the kernel can be expressed in SPIR-V.
     pub spirv: Option<Vec<u8>>,
-    /// The operations one lane of the SPIR-V kernel executes, which `Gpu.Auto` prices the CPU run
-    /// with; 0 without SPIR-V.
+    /// A lower bound of the operations one lane of the SPIR-V kernel executes (the cheaper arm of a
+    /// conditional, the left operand of `&&` and `||`; see `SpirvKernel::weight`), which `Gpu.Auto`
+    /// prices the CPU run with; 0 without SPIR-V.
     pub weight: u32,
 }
 

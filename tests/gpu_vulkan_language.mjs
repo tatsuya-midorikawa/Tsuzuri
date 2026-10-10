@@ -25,6 +25,8 @@ const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-gpu-vulkan-language-"));
 const skips = [];
+// TSUZURI_VULKAN_ONLY=<regular expression> runs only the checks whose name matches (while one is being worked on).
+const only = process.env.TSUZURI_VULKAN_ONLY ? new RegExp(process.env.TSUZURI_VULKAN_ONLY) : undefined;
 let passed = 0;
 let failed = 0;
 
@@ -38,6 +40,7 @@ function execute(program, args, { env = {}, success = true } = {}) {
 }
 const cli = (args, success) => execute(compiler, args, { success });
 function check(name, body) {
+  if (only && !only.test(name)) return;
   try {
     body();
     passed++;
@@ -409,6 +412,88 @@ for (const optimization of [0, 3]) {
   }
 }
 
+// ---- the weight of a kernel prices the path a lane takes (no timing: the descriptors' weights and the rule's decisions) ----
+// A kernel `if v < 0 then <1,280 operations> else v + 1` costs a lane two operations on the lanes that matter, and was priced
+// at 1,282: Gpu.Auto then served 29 of 30 calls of 1,000,000 lanes on the device, which was slower than the CPU reference. The
+// program calls Gpu.Auto with that kernel and with a branch-free kernel of 1,280 operations (the control: the same rule must
+// move that one to the device). The device is the mock, an integrated GPU, so the answer does not depend on the machine.
+{
+  const mockLibrary = join(directory, process.platform === "darwin" ? "libvk_mock_weight.dylib" : "libvk_mock_weight.so");
+  const mockBuilt = execute(clang, ["-std=gnu11", "-O1", "-ffp-contract=off", "-Wno-unused-function", "-Wno-unused-variable", "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", mockLibrary], { success: false });
+  if (mockBuilt.status !== 0) {
+    skip("weights through the language", `${clang} cannot build the mock Vulkan library: ${mockBuilt.stderr.split("\n")[0]}`);
+  } else {
+    const weightProject = join(directory, "weights");
+    mkdirSync(weightProject);
+    writeFileSync(join(weightProject, "Main.tz"), `def step :: i32 -> i32
+fn step value = ((value * 3 + 1) ^ 5) * 7 + 11
+
+def r4 :: i32 -> i32
+fn r4 value = step (step (step (step value)))
+
+def r16 :: i32 -> i32
+fn r16 value = r4 (r4 (r4 (r4 value)))
+
+def r64 :: i32 -> i32
+fn r64 value = r16 (r16 (r16 (r16 value)))
+
+def straight :: i32 -> i32
+fn straight value = r64 (r64 (r64 (r64 value)))
+
+def branchy :: i32 -> i32
+fn branchy value = if value < 0 then r64 (r64 (r64 (r64 value))) else value + 1
+
+def on_vulkan :: unit -> i32
+fn on_vulkan _unit = match Gpu.last_backend () with
+    | Gpu.Vulkan -> 1
+    | _ -> 0
+
+def straight_calls :: unit -> i32
+fn straight_calls _unit = {
+    let device = Result.get (Gpu.request Gpu.Auto);
+    let mut served = 0;
+    for call in 0 .. 29 do {
+        let _values = Gpu.to_array (Gpu.map (&device) straight (Gpu.init (&device) 1000000 (\\index -> index - 500000)));
+        served = served + on_vulkan ()
+    };
+    served
+}
+
+def branchy_calls :: unit -> i32
+fn branchy_calls _unit = {
+    let device = Result.get (Gpu.request Gpu.Auto);
+    let mut served = 0;
+    for call in 0 .. 29 do {
+        let _values = Gpu.to_array (Gpu.map (&device) branchy (Gpu.init (&device) 1000000 (\\index -> index - 500000)));
+        served = served + on_vulkan ()
+    };
+    served
+}
+
+def main :: unit -> i32 = \\() ->
+    let! a = IO.write_line ("branchy " + to_string (branchy_calls ()))
+    let! b = IO.write_line ("straight " + to_string (straight_calls ()))
+    0
+`);
+    check("weights: the compiler prices a branchy kernel by its cheaper path, and Gpu.Auto keeps 1,000,000 lanes of it on the CPU reference", () => {
+      const executable = join(weightProject, "weights");
+      cli(["build", weightProject, "-o", executable]);
+      const run = execute(executable, [], { env: { TSUZURI_VULKAN_LIBRARY: mockLibrary, TZ_VK_MOCK: "", TSUZURI_GPU_AUTO_MIN_WORK: undefined, TSUZURI_GPU_DEBUG: "1" } });
+      assert.match(run.stdout, /^branchy 0$/m, `no call of the branchy kernel pays for the transfer: all 30 stay on the CPU reference\n${run.stdout}`);
+      const straight = Number(/^straight (\d+)$/m.exec(run.stdout)?.[1]);
+      assert.ok(straight >= 25, `the same rule moves the kernel of 1,280 operations to the device (served ${straight} of 30)`);
+      const dispatches = [...run.stderr.matchAll(/^tsuzuri: Vulkan: map 1000000 lanes/gm)].length;
+      assert.equal(dispatches, straight, "every call of the straight kernel that the rule sent to the device was dispatched, and none of the branchy kernel");
+      const ir = join(weightProject, "weights.ll");
+      cli(["build", weightProject, "--emit", "llvm", "-o", ir]);
+      const weights = [...readFileSync(ir, "utf8").matchAll(/ptr @tz\.gpu\.kernel\.\d+\.spirv, i32 \d+, i32 (\d+) \}/g)].map(match => Number(match[1]));
+      assert.ok(weights.includes(2), `the branchy kernel weighs 2 (a comparison and the cheaper arm): ${weights}`);
+      assert.ok(weights.includes(1280), `the straight kernel weighs 1,280: ${weights}`);
+      assert.ok(!weights.some(weight => weight > 1280), `no weight counts both arms of the branchy kernel: ${weights}`);
+    });
+  }
+}
+
 // ---- WebAssembly: no Vulkan host, no new import ----
 for (const optimization of [0, 3]) {
   check(`wasm32 -O${optimization}: Gpu.Vulkan is Unavailable, Gpu.Auto runs the CPU reference, and the default module has no import`, () => {
@@ -436,5 +521,5 @@ check("wasm32 --wasm-feature webgpu: the imports are tsuzuri_gpu.open and tsuzur
   assert.deepEqual(imports, ["tsuzuri_gpu.open function", "tsuzuri_gpu.run function"]);
 });
 
-console.log(`GPU Vulkan language: ${passed} of ${passed + failed} checks passed, ${skips.length} skipped${skips.length ? ` (${skips.join("; ")})` : ""}; devices: ${devices.map(device => `${device.label}: ${device.caps.name}`).join(", ") || "none"}; sanitizers: ${sanitize.length ? "on" : "off"}`);
+console.log(`GPU Vulkan language: ${passed} of ${passed + failed} checks passed, ${skips.length} skipped${skips.length ? ` (${skips.join("; ")})` : ""}; devices: ${devices.map(device => `${device.label}: ${device.caps.name}`).join(", ") || "none"}; sanitizers: ${sanitize.length ? "on" : "off"}${only ? `; ONLY ${only} (a filtered run, not the suite)` : ""}`);
 process.exit(failed === 0 ? 0 : 1);

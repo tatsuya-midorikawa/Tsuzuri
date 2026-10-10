@@ -859,6 +859,66 @@ fn spirv_lanes_and_features_match_the_kernel_types() {
 }
 
 #[test]
+fn spirv_weight_is_a_lower_bound_that_prices_the_cheapest_path_of_a_lane() {
+    // step is 5 instructions, and each helper calls the one below it four times: 20, 80, 320.
+    const HELPERS: &str = "def step :: i32 -> i32\nfn step value = ((value * 3 + 1) ^ 5) * 7 + 11\ndef r4 :: i32 -> i32\nfn r4 value = step (step (step (step value)))\ndef r16 :: i32 -> i32\nfn r16 value = r4 (r4 (r4 (r4 value)))\ndef r64 :: i32 -> i32\nfn r64 value = r16 (r16 (r16 (r16 value)))\n";
+    let weight = |body: &str| {
+        let source = format!("{HELPERS}export def kernel :: i32 -> i32\nfn kernel value = {body}");
+        let first = emit_ok(&source, false);
+        assert_eq!(first, emit_ok(&source, false), "{body}: deterministic");
+        first.weight
+    };
+    // Without branches every emitted instruction runs, so the weight is the instruction count, as it was.
+    assert_eq!(weight("value * 3 + 1"), 2);
+    assert_eq!(weight("step value"), 5);
+    assert_eq!(weight("r64 (r64 (r64 (r64 value)))"), 1280);
+    assert_eq!(weight("value"), 1, "at least 1");
+    // A conditional costs its condition and the cheaper arm: a lane runs one arm. This kernel was priced at 1282 (both
+    // arms, 1280 + 1 + the comparison), and Gpu.Auto then ran it on the device although a lane of it takes two operations.
+    assert_eq!(
+        weight("if value < 0 then r64 (r64 (r64 (r64 value))) else value + 1"),
+        2
+    );
+    assert_eq!(
+        weight("if value < 0 then value + 1 else r64 (r64 (r64 (r64 value)))"),
+        2,
+        "the arms in the other order"
+    );
+    assert_eq!(weight("if value < 0 then r64 value else r16 value"), 1 + 80);
+    assert_eq!(
+        weight("if value < 0 then (if value < 5 then r64 value else value * 2) else r16 value"),
+        1 + 2,
+        "nested: the inner conditional is priced by the same rule, and then compared with the other arm"
+    );
+    assert_eq!(
+        weight("if value < 0 then r16 value else (if value > 5 then r64 value else r4 value)"),
+        1 + 21,
+        "an arm that is a conditional is the cheaper one when its own cheaper arm is"
+    );
+    // `&&` and `||` run their right operand only when the left one does not decide: the left operand is the bound.
+    assert_eq!(weight("if value < 0 && r64 value > 5 then 1 else 2"), 1);
+    assert_eq!(weight("if value < 0 || r64 value > 5 then 1 else 2"), 1);
+    assert_eq!(
+        weight("if value * 3 < 0 && value + 1 > 5 then 1 else 2"),
+        2,
+        "the left operand and nothing of the right one"
+    );
+    // A call counts its callee by the same rule, at every call.
+    let pick =
+        "def pick :: i32 -> i32\nfn pick value = if value < 0 then r64 value else value + 1\n";
+    let source = format!(
+        "{HELPERS}{pick}export def kernel :: i32 -> i32\nfn kernel value = pick (pick value)"
+    );
+    assert_eq!(emit_ok(&source, false).weight, 4);
+    // The relaxed emitter follows the same rule, for f32 too.
+    let relaxed = emit_ok(
+        "export def kernel :: f32 -> f32\nfn kernel value = if value < 0.0 then value * value * value else value + 1.0",
+        true,
+    );
+    assert_eq!(relaxed.weight, 1 + 1);
+}
+
+#[test]
 fn spirv_output_is_deterministic() {
     for case in cases() {
         let first = emit_ok(case.source, case.relaxed);
