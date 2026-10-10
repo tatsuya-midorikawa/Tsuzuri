@@ -258,10 +258,14 @@ fn run_waits _unit = IO {
 			do! say ("closed=" + to_string closed)
 }
 
+/// A failure that is no error number of any system (Linux has 99: EADDRNOTAVAIL), so that the classifier of the
+/// runtime answers Unclassified wherever this runs.
+const SyntheticCode: i32 = 2147418113i32
+
 def failing :: i64 -> Async<Result<i64, Os.Error>>
 fn failing delay = Async {
 	do! Async.sleep delay
-	return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
+	return Result.Error (Os.Error { kind: Os.Other, code: SyntheticCode })
 }
 
 def idle_read :: Net.TcpStream -> Async<Result<i64, Os.Error>>

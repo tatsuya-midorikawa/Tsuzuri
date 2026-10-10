@@ -196,46 +196,49 @@ jobs:
           } else {
             Write-Output '::notice::llvm-pdbutil.exe is not installed; checked the PDB bytes only'
           }
-      # E09: the sockets of the Net module, blocking and async (macOS, Linux, and Windows). These steps come last so that
-      # a failure here does not skip the packaging and VSIX steps above. Linux and Windows are checked by this job only:
-      # the author could run macOS, and compiled the Linux (glibc and musl) and Windows (MSVC) runtimes without running them.
-      - name: Net sockets and async operations
+      # E09: the sockets of the Net module, blocking and async, and on WebAssembly (macOS, Linux, and Windows). These steps come
+      # last so that a failure here does not skip the packaging and VSIX steps above, and each step runs all of its commands
+      # even when one fails, so that one failure does not hide the others. Linux and Windows are checked by this job only: the
+      # author could run macOS, and compiled the Linux (glibc and musl) and Windows (MinGW and MSVC) runtimes without running them.
+      # The scripts move to the repository themselves; the compiler path is relative to vsc/, where the job runs.
+      - name: Net sockets, async operations, and WebAssembly
         if: runner.os != 'Windows'
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          node ../tests/net.mjs toolchain/bin/tsuzuri
+          # Linux builds the allocation and runtime blocks with AddressSanitizer and UBSan (libclang-rt-21-dev above). The
+          # Homebrew LLVM 21 of the macOS runner is left out of that: a program that it builds with a sanitizer hung at start
+          # on the macOS that B08 used, so macOS runs those blocks without sanitizers.
+          if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
+          status=0
+          for block in address resolve sockets async runtime alloc; do
+            node ../tests/net.mjs toolchain/bin/tsuzuri "$block" || status=1
+          done
+          # JSPI needs the Node.js 24 of this job.
+          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri || status=1
+          exit $status
       # Windows (Winsock): the bundled MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
-      # Only the blocks that do not need POSIX descriptors, sanitizers, or the POSIX socket tests run here.
-      - name: Net async operations on Windows
+      # Only the blocks that do not need POSIX descriptors or sanitizers run here (address, resolve, and async, which includes
+      # the accept after a reset connection and the datagram sent to a closed port that the runtime handles for Windows).
+      - name: Net sockets and WebAssembly on Windows
         if: runner.os == 'Windows'
         run: |
           export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
           export TSUZURI_WASM64=0
-          node ../tests/net.mjs toolchain/bin/tsuzuri.exe address
-          node ../tests/net.mjs toolchain/bin/tsuzuri.exe resolve
-          node ../tests/net.mjs toolchain/bin/tsuzuri.exe async
-      - name: Net async operations with the LLVM MSVC toolchain
-        if: matrix.target == 'win32-x64'
+          status=0
+          for block in address resolve async; do
+            node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
+          done
+          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri.exe || status=1
+          exit $status
+      - name: Net sockets with the LLVM MSVC toolchain
+        if: ${{ !cancelled() && matrix.target == 'win32-x64' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
           export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
-          node ../tests/net.mjs toolchain/bin/tsuzuri.exe resolve
-          node ../tests/net.mjs toolchain/bin/tsuzuri.exe async
-      # E09 Phase 3: the sockets of Net on WebAssembly with --wasm-feature jspi --wasm-feature net, which the generated
-      # Node.js glue implements on node:net, node:dgram, and node:dns (JSPI needs the Node.js 24 of this job). Only macOS
-      # was run by the author; Linux and Windows are checked by this job.
-      - name: Net sockets on WebAssembly
-        if: runner.os != 'Windows'
-        run: |
-          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
-          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri
-      - name: Net sockets on WebAssembly on Windows
-        if: runner.os == 'Windows'
-        run: |
-          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
-          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
-          export TSUZURI_WASM64=0
-          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri.exe
+          status=0
+          for block in resolve async; do
+            node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
+          done
+          exit $status

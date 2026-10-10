@@ -4,7 +4,8 @@ import dgram from "node:dgram";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os, { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // E2E for the standard Net module (E09): address parsing and printing, blocking TCP and UDP sockets, name
 // resolution, the handle table, and the runtime's allocation. Peers are Node sockets on 127.0.0.1 with ephemeral
@@ -12,9 +13,21 @@ import { basename, join, resolve } from "node:path";
 // depends on how long something took. A child that runs for 60 seconds is killed as hung, which is not a limit
 // that a test measures. Expectations come from Node's own net, dgram, URL, and os modules.
 //   node tests/net.mjs target/release/tsuzuri [address|resolve|sockets|async|runtime|alloc]
-const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
+// It runs from the repository whatever the directory it is started in (the CI starts it in vsc/): the compiler and the
+// tools that the environment names by a path are made absolute first, then the working directory moves to the repository.
+// The blocks "alloc" and "runtime" also build with AddressSanitizer and UndefinedBehaviorSanitizer (and, with
+// TSUZURI_TSAN=1, ThreadSanitizer); TSUZURI_NO_SANITIZERS=1 leaves them out, for a clang whose sanitizer runtime does not
+// start (the Homebrew LLVM 21 of the macOS CI: an empty AddressSanitizer program hangs there).
+const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const compiler = resolve(process.argv[2] ?? join(repository, "target/release/tsuzuri"));
+for (const name of ["TSUZURI_CLANG", "TSUZURI_WASM_LD"]) {
+  if (/[\\/]/.test(process.env[name] ?? "")) process.env[name] = resolve(process.env[name]);
+}
+process.chdir(repository);
 const selected = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+const sanitized = process.env.TSUZURI_NO_SANITIZERS !== "1";
+const threadSanitized = sanitized && process.env.TSUZURI_TSAN === "1";
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-net-"));
 // The error numbers by name: errno values, or the numbers of Winsock on Windows, which no Node module reports.
 const errno = process.platform === "win32"
@@ -112,6 +125,9 @@ const ok = ["ok"];
 const failure = (kind, osKind, code) => `${kind} ${osKind} ${code}`;
 const invalid = failure("Unclassified", "InvalidInput", 0);
 const stale = failure("Unclassified", "InvalidInput", errno.EBADF);
+// The code of the failure that the async fixtures make up for themselves: no system has an error number like it (Linux has
+// 99, EADDRNOTAVAIL, and another system may have any small number), so it is Unclassified everywhere.
+const synthetic = 2147418113;
 
 // Address text that a system's resolver reads in its own way ("127.1", "0x7f000001", "fe80::1%lo0"): `Net.resolve` decides
 // such a host with the strict parser alone and never asks the system, so the answer does not depend on the system. A host
@@ -670,7 +686,7 @@ try {
       assert.deepEqual((await run(exe, "crowd")).lines, ["crowd: server=40 clients=40"]);
       assert.deepEqual((await run(exe, "waits")).lines, ["waits: sum=2016 sent=64", "closed=128"]);
       assert.deepEqual((await run(exe, "cancel")).lines, [
-        `cancel: error ${failure("Unclassified", "Other", 99)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
+        `cancel: error ${failure("Unclassified", "Other", synthetic)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
       ]);
       assert.deepEqual((await run(exe, "close_wait")).lines, [`read: error ${stale}`, `accept: error ${stale}`, "done"]);
 
@@ -886,9 +902,9 @@ void *tz_test_realloc(void *, size_t);
 void tz_test_free(void *);
 ${marker}`));
     const iterations = 12;
-    const looping = (optimization, ir, sanitizers = "address,undefined") => {
-      const executable = join(root, `tracked-${sanitizers.replace(",", "-")}-${basename(ir)}${optimization}`);
-      execute(clang, [optimization, `-fsanitize=${sanitizers}`, "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
+    const looping = (optimization, ir, sanitizers = sanitized ? "address,undefined" : "") => {
+      const executable = join(root, `tracked-${sanitizers.replace(",", "-") || "plain"}-${basename(ir)}${optimization}`);
+      execute(clang, [optimization, ...(sanitizers ? [`-fsanitize=${sanitizers}`] : []), "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
       return executable;
     };
     const irPath = trackedIr("net_sockets");
@@ -959,7 +975,7 @@ ${marker}`));
         await Promise.all([quiet, ending, big].map(stop));
       }
     }
-    console.log(`Net allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result and the handle table`);
+    console.log(`Net allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result and the handle table`);
 
     // The async cases add the poller thread and the mailbox: after every run the thread is gone, its memory is freed, and
     // the descriptors are those of the start. With TSUZURI_TSAN=1 the same cases run under ThreadSanitizer, whose runs
@@ -995,8 +1011,8 @@ ${marker}`));
     };
     const asyncIr = trackedIr("net_async");
     for (const optimization of optimizations) await asyncCases(looping(optimization, asyncIr), {});
-    console.log(`Net async allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
-    if (process.env.TSUZURI_TSAN === "1") {
+    console.log(`Net async allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
+    if (threadSanitized) {
       const instrumented = trackedIr("net_async", "thread");
       for (const optimization of optimizations) await asyncCases(looping(optimization, instrumented, "thread"), {});
       console.log("Net async threads: the same cases under ThreadSanitizer at -O0 and -O3 reported nothing");
@@ -1005,9 +1021,10 @@ ${marker}`));
 
   if (wanted("runtime")) {
     // The poller thread, the connect that a wait owns, closing and cancelling, without the compiler (tests/net_runtime.c):
-    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer.
-    const configurations = [["", []], ["address-undefined", ["-fsanitize=address,undefined"]]];
-    if (process.env.TSUZURI_TSAN === "1") configurations.push(["thread", ["-fsanitize=thread"]]);
+    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer (none of them with TSUZURI_NO_SANITIZERS=1).
+    const configurations = [["", []]];
+    if (sanitized) configurations.push(["address-undefined", ["-fsanitize=address,undefined"]]);
+    if (threadSanitized) configurations.push(["thread", ["-fsanitize=thread"]]);
     for (const [name, flags] of configurations) {
       for (const optimization of ["-O1", "-O3"]) {
         const executable = join(root, `net-runtime-${name}${optimization}`);

@@ -5,15 +5,22 @@ import dns from "node:dns";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os, { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // E2E for the sockets of Net on WebAssembly (E09 Phase 3): a module built with --wasm-feature jspi --wasm-feature net imports
 // `tsuzuri_net`, and the generated JavaScript glue implements those imports on node:net, node:dgram, and node:dns, so the
 // blocking API and the async operations both work, end to end, on loopback, against Node peers on ephemeral ports. It needs
 // JSPI (Node.js 24 or newer) and is skipped without it. No result depends on how long something took.
 //   node tests/net_wasm.mjs target/release/tsuzuri
-const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
+// It runs from the repository whatever the directory it is started in (the CI starts it in vsc/): the compiler and the
+// tools that the environment names by a path are made absolute first, then the working directory moves to the repository.
+const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const compiler = resolve(process.argv[2] ?? join(repository, "target/release/tsuzuri"));
+for (const name of ["TSUZURI_CLANG", "TSUZURI_WASM_LD"]) {
+  if (/[\\/]/.test(process.env[name] ?? "")) process.env[name] = resolve(process.env[name]);
+}
+process.chdir(repository);
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-net-wasm-"));
 const errno = os.constants.errno;
 
