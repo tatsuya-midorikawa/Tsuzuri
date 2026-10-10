@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -57,6 +57,18 @@ if (!isMainThread) {
     worker.once("error", reject);
     worker.once("message", (message) => worker.once("exit", code => code === 0 ? resolveWorker(message) : reject(new Error(`worker exit ${code}`))));
   });
+  // Threads that spin until stopped, so that the threads of a pool compete for the CPUs.
+  const startBurners = (count) => {
+    const stop = new Int32Array(new SharedArrayBuffer(4));
+    const burners = Array.from({ length: count }, () => new Worker(
+      "const { workerData } = require('node:worker_threads'); const flag = new Int32Array(workerData); while (Atomics.load(flag, 0) === 0) {}",
+      { eval: true, workerData: stop.buffer },
+    ));
+    return async () => {
+      Atomics.store(stop, 0, 1);
+      await Promise.all(burners.map((burner) => new Promise((resolveBurner) => burner.once("exit", resolveBurner))));
+    };
+  };
   try {
     mkdirSync(join(directory, "frame"));
     const source = join(directory, "frame", "Main.tz");
@@ -280,6 +292,14 @@ fn bulk = {
           for (let position = 0n; position < count; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
           assert.equal(sharedPool.call("tz_scope_results_order", count), checksum);
         }
+        // What sleeps on the epoch waits for new work, the end of a group, a channel or a lock, so an
+        // item that is done while others of its group still run wakes nobody: the epoch moves a few
+        // times for a group of any size, not once for each of its items.
+        const epochAddress = sharedPool.instance.exports.tsuzuri_threads_control() >>> 0;
+        const epoch = () => Atomics.load(new Int32Array(sharedPool.memory.buffer, epochAddress, 7), 1);
+        const startedAt = epoch();
+        assert.equal(sharedPool.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
+        assert.ok(epoch() - startedAt <= 8, `the epoch moved ${epoch() - startedAt} times for the 5,000 children of one scope`);
         assert.equal(sharedPool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
       } finally {
         await sharedPool.close();
@@ -321,6 +341,27 @@ fn bulk = {
           await pool.close();
         }
       }
+      // The least that a pipeline needs is a thread for each stage. A thread that waits on a channel
+      // helps with an item that nobody has started only when no thread is free to take it, and a
+      // thread that waits for its group is free. With every CPU busy, the thread that started the
+      // group can be late to its first item, which a fresh pool makes likely; the third stage must
+      // not be stacked on the second then, because it would wait for the stage below it.
+      const stopBurners = startBurners(availableParallelism());
+      try {
+        for (let round = 0; round < 8; round++) {
+          const crowded = await createThreadPool(pipedBytes, { workers: 2 });
+          try {
+            for (let call = 0; call < 4; call++) {
+              assert.equal(crowded.call("tz_three_stages", 500n), 250500n, `three_stages on 3 threads on a busy machine, round ${round}`);
+            }
+          } finally {
+            await crowded.close();
+          }
+        }
+      } finally {
+        await stopBurners();
+      }
+      console.log(`WASM threads O${optimization}: three stages on the 3 threads that they need complete on a busy machine`);
       // With every thread waiting on a channel, no thread can ever send: a trap instead of a hang,
       // however many threads there are. The pipelines that need more threads than there are trap too.
       for (const [name, args, workers] of [["leaked_sender", [], 0], ["leaked_sender", [], 1], ["leaked_sender", [], 3],

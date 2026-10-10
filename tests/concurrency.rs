@@ -387,6 +387,15 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
     let message = rejects(&fill("Holder"), "E1013");
     assert!(message.contains(send), "{message}");
     emits(&fill("i64"));
+    // A `dyn (C, Send)` that a generic function builds takes the value's Send from its caller.
+    let pack = |value: &str| {
+        format!(
+            "{SHAPE}record Holder {{ counted: Rc<i64> }}\ninstance Shape<Holder> {{\n    fn area h = deref (Rc.get (ref h.counted))\n}}\ndef pack :: Shape<'a> => 'a -> dyn (Shape, Send)\nfn pack value = Dyn.of value\nlet _boxed: dyn (Shape, Send) = pack ({value})\n0"
+        )
+    };
+    let message = rejects(&pack("Holder { counted: Rc.new 5i64 }"), "E1013");
+    assert!(message.contains(send), "{message}");
+    emits(&pack("Square { side: 3 }"));
 }
 
 #[test]
