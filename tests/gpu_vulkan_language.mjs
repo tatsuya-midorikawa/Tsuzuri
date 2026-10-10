@@ -494,6 +494,56 @@ def main :: unit -> i32 = \\() ->
   }
 }
 
+// ---- the lane-kind guard of Gpu.__run covers the Vulkan arm and 64-bit lanes ----
+// The host sizes its copies of the arrays by the lane kinds of the descriptor, so a descriptor whose kinds are not those of the
+// call's element types would make it read and write past the arrays. The compiler numbers every call itself (the std functions
+// that carry the number are private), so the descriptor is patched here: the 64-bit output of the kernel becomes a 32-bit one.
+{
+  const mockLibrary = join(directory, process.platform === "darwin" ? "libvk_mock_guard.dylib" : "libvk_mock_guard.so");
+  const mockBuilt = execute(clang, ["-std=gnu11", "-O1", "-ffp-contract=off", "-Wno-unused-function", "-Wno-unused-variable", "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", mockLibrary], { success: false });
+  if (mockBuilt.status !== 0) {
+    skip("lane-kind guard through the language", `${clang} cannot build the mock Vulkan library: ${mockBuilt.stderr.split("\n")[0]}`);
+  } else {
+    const guardProject = join(directory, "guard");
+    mkdirSync(guardProject);
+    writeFileSync(join(guardProject, "Main.tz"), `def widen :: i64 -> i64
+fn widen value = value * 3l + 1l
+
+export def widen_length :: i32
+fn widen_length = {
+    let device = Result.get (Gpu.request Gpu.Vulkan);
+    let values: [i64] = [1l, 2l, 3l, 4l];
+    let mapped = Gpu.to_array (Gpu.map (&device) widen (Gpu.from_array (&device) (&values)));
+    mapped.length as i32
+}
+`);
+    check("lane guard: a Vulkan kernel whose descriptor lanes are not the call's element types is never run, and the intact call is", () => {
+      const ir = join(guardProject, "intact.ll");
+      cli(["build", guardProject, "--emit", "llvm", "-o", ir]);
+      const text = readFileSync(ir, "utf8");
+      const descriptor = /(\{ i32 \d+, i32 )1028(, i32 \d+, ptr null, i32 0, ptr @tz\.gpu\.kernel\.0\.spirv, i32 \d+, i32 \d+ \})/;
+      assert.match(text, descriptor, "the descriptor has eight fields: the 64-bit kernel is lanes 0x0404");
+      writeFileSync(join(guardProject, "patched.ll"), text.replace(descriptor, "$1260$2"));
+      const hostPath = join(guardProject, "host.c");
+      writeFileSync(hostPath, "#undef NDEBUG\n#include <stdint.h>\n#include <stdio.h>\nextern int32_t tz_widen_length(void);\nint main(void) { printf(\"%d\\n\", (int)tz_widen_length()); return 0; }\n");
+      const run = name => {
+        const executable = join(guardProject, name);
+        execute(clang, [join(guardProject, `${name}.ll`), hostPath, runtimeSource, "-O0", "-ffp-contract=off", "-Wno-override-module", ...sanitize, "-o", executable, "-lm", "-pthread", ...(process.platform === "linux" ? ["-ldl"] : [])]);
+        return execute(executable, [], { env: { TSUZURI_VULKAN_LIBRARY: mockLibrary, TZ_VK_MOCK: "", TSUZURI_GPU_DEBUG: "1" }, success: false });
+      };
+      const intact = run("intact");
+      assert.equal(intact.status, 0, intact.stderr);
+      assert.equal(intact.stdout.trim(), "4");
+      assert.match(intact.stderr, /^tsuzuri: Vulkan: map 4 lanes, kinds 0x0404$/m, "the call ran on the device");
+      const patched = run("patched");
+      assert.notEqual(patched.status, 0, "the call with a kernel of other lanes trapped");
+      assert.equal(patched.stdout, "");
+      assert.match(patched.stderr, /the kernel has no SPIR-V module for Vulkan/);
+      assert.doesNotMatch(patched.stderr, /Vulkan: map/, "no kernel was dispatched");
+    });
+  }
+}
+
 // ---- WebAssembly: no Vulkan host, no new import ----
 for (const optimization of [0, 3]) {
   check(`wasm32 -O${optimization}: Gpu.Vulkan is Unavailable, Gpu.Auto runs the CPU reference, and the default module has no import`, () => {

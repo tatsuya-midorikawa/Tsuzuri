@@ -457,7 +457,9 @@ try {
     const lanes = project("lanes", "def half_index :: i32 -> f16\nfn half_index value = value as f16\nexport def half_length :: i32\nfn half_length = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let values = Gpu.to_array (Gpu.init_relaxed (&device) 4 half_index);\n    values.length as i32\n}\n");
     cli(["build", lanes, "--emit", "llvm", "-o", join(lanes, "intact.ll")]);
     const text = readFileSync(join(lanes, "intact.ll"), "utf8");
-    const descriptor = /(\{ i32 \d+, i32 )769(, i32 \d+, ptr @tz\.gpu\.kernel\.0\.wgsl)/;
+    // The descriptor is `{ flags, lanes, features, wgsl, wgsl_length, spirv, spirv_length, weight }` (F09 Phase 3 added the last
+    // three); a program that names WebGPU only has no SPIR-V and no weight (null, 0, 0).
+    const descriptor = /(\{ i32 \d+, i32 )769(, i32 \d+, ptr @tz\.gpu\.kernel\.0\.wgsl, i32 \d+, ptr null, i32 0, i32 0 \})/;
     assert.match(text, descriptor);
     writeFileSync(join(lanes, "patched.ll"), text.replace(descriptor, "$1257$2"));
     writeFileSync(join(lanes, "host.c"), "#include <stdint.h>\n#include <stdio.h>\nextern int32_t tz_half_length(void);\nint main(void) { printf(\"%d\\n\", (int)tz_half_length()); return 0; }\n");

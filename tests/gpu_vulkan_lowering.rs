@@ -253,6 +253,99 @@ fn the_runtime_primitives_stay_private_to_the_standard_module() {
     }
 }
 
+/// A user call, or a first-class use, of anything that takes a number that only the compiler writes (a kernel index, a
+/// backend tag) is E1022 in a program that names Vulkan or Auto too, so no user code can aim a kernel of another
+/// shape at the arrays of a call.
+#[test]
+fn nothing_that_takes_a_compiler_written_index_is_callable_from_user_code() {
+    for backend in ["Vulkan", "Auto"] {
+        let prefix = format!(
+            "{KERNELS}let device = Result.get (Gpu.request Gpu.{backend})\nlet values = [1, 2, 3]\n"
+        );
+        for body in [
+            "let escaped = Gpu.__select\n0",
+            "let escaped = Gpu.__last\n0",
+            "let escaped = Gpu.__run\n0",
+            "let escaped = Gpu.__open\n0",
+            "let escaped = Gpu.__features\n0",
+            "let escaped = Gpu.map_on\n0",
+            "let escaped = Gpu.init_on\n0",
+            "let escaped = Gpu.request_on\n0",
+            "let escaped = Gpu.backend_code\n0",
+            "let status = Gpu.__run 2 0 0 (ref values) 3\nstatus",
+            "Gpu.to_array (Gpu.map_on (&device) mix (Gpu.from_array (&device) (&values)) 0)",
+            "Gpu.to_array (Gpu.init_on (&device) 3 (\\index -> index) 0)",
+        ] {
+            let error = analyze(&format!("{prefix}{body}")).unwrap_err();
+            assert_eq!(error.code, "E1022", "{backend}: {body}: {error:?}");
+        }
+    }
+    // The compiler's own retargeting still reaches them, and the public observer needs no index.
+    let module = analyze(&program(
+        &["Auto"],
+        "let a = Gpu.to_array (Gpu.map (&device0) mix (Gpu.init (&device0) 4 (\\index -> index)))\nlet seen = Gpu.last_backend ()\n0",
+    ))
+    .unwrap();
+    assert_eq!(module.gpu.kernels.len(), 2);
+}
+
+/// `Gpu.__run` passes a kernel's source only when the lane kinds of its descriptor are those of the element types of the
+/// call, because the host sizes its copies of the arrays by the descriptor. That holds for the Vulkan and Auto arms and
+/// for 64-bit lanes (kind 4) as for the WebGPU ones, and the kernel numbers of `__run` and `__select` are compared as
+/// unsigned values (a number that is out of the table, including -1, is a call without a kernel).
+#[test]
+fn the_lane_kind_guard_covers_the_vulkan_and_auto_arms_and_64_bit_lanes() {
+    for backend in ["Vulkan", "Auto"] {
+        let module = analyze(&program(&[backend], VULKAN_CALLS)).unwrap();
+        let tables = module.gpu.kernels.len();
+        for wasm in [false, true] {
+            let ir = emit_target(&module, Entry::Console, wasm).unwrap();
+            let instances: Vec<&str> = ir
+                .split("define internal %tz.array @tz.builtin.Gpu.__run.")
+                .skip(1)
+                .map(|text| text.split("\n}\n").next().unwrap())
+                .collect();
+            assert_eq!(instances.len(), 3, "{backend} {wasm}");
+            for (suffix, kind) in [
+                ("i32$Ci32", LANE_32),
+                ("i64$Ci64", LANE_64),
+                ("f32$Cf32", LANE_F32),
+            ] {
+                let body = instances
+                    .iter()
+                    .find(|body| body.starts_with(&format!("{suffix}(")))
+                    .unwrap_or_else(|| panic!("{backend}: {suffix}"));
+                for name in ["input", "output"] {
+                    assert!(
+                        body.contains(&format!(
+                            "%{name}_matches = icmp eq i32 %found_{name}_kind, {kind}\n"
+                        )),
+                        "{backend} {suffix} {name}"
+                    );
+                }
+                assert!(body.contains("%matches = and i1 %input_matches, %output_matches\n"));
+                assert!(
+                    body.contains("%kept_spirv = select i1 %matches, ptr %found_spirv, ptr null\n"),
+                    "{backend} {suffix}: a kernel of other lanes keeps no SPIR-V"
+                );
+                assert!(
+                    body.contains(&format!("%known = icmp ult i64 %kernel, {tables}\n")),
+                    "{backend} {suffix}: the index is compared unsigned"
+                );
+            }
+            let select = ir
+                .split("define internal i32 @tz.builtin.Gpu.__select")
+                .nth(1)
+                .and_then(|text| text.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("{backend}: Gpu.__select"));
+            assert!(
+                select.contains(&format!("%known = icmp ult i64 %kernel, {tables}\n")),
+                "{backend}: Gpu.__select compares the index unsigned"
+            );
+        }
+    }
+}
+
 #[test]
 fn strict_kernels_that_the_emitter_rejects_have_no_module_and_relaxed_ones_must_still_parse() {
     // A strict f32 division and a strict integer division: the CPU reference runs them (the integer one traps on
