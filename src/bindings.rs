@@ -367,21 +367,30 @@ pub fn javascript_with_net(module: &CheckedModule) -> String {
         ],
     );
     format!(
-        "{}const TABLE = {};\n{RUNTIME_NET_HOST}{core}{RUNTIME_SINGLE}",
+        "{}const TABLE = {};\n{}{core}{}",
         banner("//"),
-        table
+        table,
+        lf(RUNTIME_NET_HOST),
+        lf(RUNTIME_SINGLE),
     )
+}
+
+/// The runtime files are text in the repository. A Windows checkout may give them CRLF line ends (`core.autocrlf`), but
+/// the anchors of `splice` and the generated glue use LF.
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 /// Inserts text before (or, with `after`, behind) each anchor of `source`, which must each occur once.
 fn splice(source: &str, edits: &[(&str, &str, bool)]) -> String {
-    let mut output = source.to_owned();
+    let mut output = lf(source);
     for (anchor, text, after) in edits {
         assert_eq!(
             output.matches(anchor).count(),
             1,
             "the bindings runtime has changed: anchor {anchor:?} is not unique"
         );
+        let text = lf(text);
         let replacement = if *after {
             format!("{anchor}{text}")
         } else {
@@ -573,4 +582,41 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
         "export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly.Module, {options}): Promise<{bindings}>;"
     );
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lf, splice};
+
+    // The Windows CI checks the repository out with CRLF line ends, so the runtime files that `include_str!` embeds have them.
+    #[test]
+    fn splice_finds_its_anchors_in_a_runtime_with_crlf_line_ends() {
+        let source = "first\r\n    if (x) {\r\nlast\r\n";
+        let before = splice(source, &[("    if (x) {\n", "inserted\r\n", false)]);
+        assert_eq!(before, "first\ninserted\n    if (x) {\nlast\n");
+        let after = splice(source, &[("    if (x) {\n", "inserted\r\n", true)]);
+        assert_eq!(after, "first\n    if (x) {\ninserted\nlast\n");
+        assert_eq!(lf("a\r\nb\nc\r\n"), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn the_net_glue_has_the_same_text_with_either_line_ends() {
+        // The runtime files of the repository, with LF and with CRLF, splice into the same glue.
+        let crlf = super::RUNTIME_CORE
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n");
+        let edits = [
+            (
+                "    if (namespace === \"tsuzuri_async\") {\n",
+                "// net\n",
+                false,
+            ),
+            (
+                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
+                "// bind\n",
+                true,
+            ),
+        ];
+        assert_eq!(splice(super::RUNTIME_CORE, &edits), splice(&crlf, &edits));
+    }
 }

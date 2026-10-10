@@ -40,7 +40,8 @@ const optimizations = ["-O0", "-O3"];
 const wanted = name => selected === undefined || selected === name;
 
 function execute(program, args, options = {}, success = true) {
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024, ...options });
+  // The corpus of the address block is a 3,200-element literal: one wasm32 -O3 build of it took longer than 180 s on a macOS runner.
+  const result = spawnSync(program, args, { encoding: "utf8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024, ...options });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
