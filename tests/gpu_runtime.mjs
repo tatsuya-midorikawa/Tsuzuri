@@ -311,6 +311,11 @@ try {
   assert.equal(missing.stdout.trim(), "-1");
   assert.match(missing.stderr, /no WebGPU library \(wgpu-native\) could be loaded/);
   assert.equal(execute(sweep, [], { env: { TSUZURI_WEBGPU_LIBRARY: join(directory, "no-such-library") } }).stderr, "", "a failed open is silent without TSUZURI_GPU_DEBUG");
+  // Any non-empty value turns the diagnostics on ("0" too), and an empty one does not: the Vulkan runtime reads it the same way.
+  for (const value of ["0", "false"]) {
+    assert.match(execute(sweep, [], { env: { TSUZURI_WEBGPU_LIBRARY: join(directory, "no-such-library"), TSUZURI_GPU_DEBUG: value } }).stderr, /no WebGPU library \(wgpu-native\) could be loaded/, `TSUZURI_GPU_DEBUG=${value}`);
+  }
+  assert.equal(execute(sweep, [], { env: { TSUZURI_WEBGPU_LIBRARY: join(directory, "no-such-library"), TSUZURI_GPU_DEBUG: "" } }).stderr, "", "an empty TSUZURI_GPU_DEBUG is off");
   assert.equal(execute(builds["half-0"], [], { env: { TSUZURI_WEBGPU_LIBRARY: "" } }).stdout.trim(), "-1");
   assert.equal(execute(builds["shapes-0"], [], { env: { TSUZURI_WEBGPU_LIBRARY: "" } }).stdout.trim(), "-1");
   // The embedded kernels of the shapes: a mutable parameter is a variable of the body, the 62-arm chain is embedded, and

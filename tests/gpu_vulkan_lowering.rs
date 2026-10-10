@@ -141,6 +141,67 @@ fn the_descriptor_carries_the_weight_and_the_vulkan_marker_selects_the_runtime()
     }
 }
 
+/// The weights written in the kernel table of the IR (the last field of every descriptor), as the runtime reads them: an `i32`.
+fn descriptor_weights(ir: &str) -> Vec<i32> {
+    let table = ir
+        .lines()
+        .find(|line| line.starts_with("@tz.gpu.kernels = "))
+        .expect("the kernel table");
+    table
+        .split("{ i32 ")
+        .skip(1)
+        .map(|entry| {
+            // The fields of the value end at the first closing brace; what follows is the type of the next element.
+            let fields = entry.split(" }").next().unwrap();
+            let weight = fields.rsplit("i32 ").next().unwrap();
+            weight
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("a weight in {entry:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn the_weight_of_a_very_heavy_kernel_is_the_largest_number_of_the_descriptor_field() {
+    // Each of these 41 functions calls the next one twice: the sum of the instructions that a lane runs is far above 2^32,
+    // and the descriptor field is an i32, in which 4294967295 is -1, which the runtime prices as the weight 1.
+    let depth = 40;
+    let mut source = format!("def f{depth} :: i32 -> i32\nfn f{depth} value = value + 1\n");
+    for level in (0..depth).rev() {
+        let next = level + 1;
+        source.push_str(&format!(
+            "def f{level} :: i32 -> i32\nfn f{level} value = f{next} (f{next} value)\n"
+        ));
+    }
+    source.push_str("let device = Result.get (Gpu.request Gpu.Auto)\nlet a = Gpu.to_array (Gpu.init (&device) 8 f0)\nArray.sum (&a)");
+    let module = analyze(&source).unwrap();
+    let kernel = module
+        .gpu
+        .kernels
+        .iter()
+        .find(|kernel| callback_name(&module, kernel.callback) == "Main.f0")
+        .unwrap();
+    assert_eq!(kernel.weight, i32::MAX as u32);
+    for wasm in [false, true] {
+        let ir = emit_target(&module, Entry::Console, wasm).unwrap();
+        assert_eq!(descriptor_weights(&ir), [i32::MAX], "wasm: {wasm}");
+        assert!(!ir.contains(", i32 4294967295 }"), "wasm: {wasm}");
+    }
+    // The ordinary kernels of the other programs keep their exact (small, positive) weights in the same field.
+    let ordinary = analyze(&program(&["Vulkan"], VULKAN_CALLS)).unwrap();
+    let ir = emit_target(&ordinary, Entry::Console, false).unwrap();
+    let written = descriptor_weights(&ir);
+    let expected: Vec<i32> = ordinary
+        .gpu
+        .kernels
+        .iter()
+        .map(|kernel| i32::try_from(kernel.weight).unwrap())
+        .collect();
+    assert_eq!(written, expected);
+    assert!(written.iter().all(|weight| *weight >= 1));
+}
+
 #[test]
 fn only_the_backends_that_a_program_names_get_their_source() {
     let calls = "let a = Gpu.to_array (Gpu.map (&device0) mix (Gpu.init (&device0) 8 (\\index -> index * 2)))\nArray.sum (&a)";

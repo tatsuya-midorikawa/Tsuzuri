@@ -5,7 +5,7 @@ use super::*;
 /// `gpu::lower_kernels` wrote into the call. A descriptor is `{ flags, lanes, features, wgsl,
 /// wgsl_length, spirv, spirv_length, weight }`, where the weight (F09 Phase 3) is a lower bound of
 /// the operations one lane of the SPIR-V kernel executes, which `Gpu.Auto` prices the CPU run with
-/// (`SpirvKernel::weight`); the type has no name, because LLVM
+/// (`SpirvKernel::weight`, at most `i32::MAX` because the field is an `i32`); the type has no name, because LLVM
 /// needs a named type to be defined before the functions that use it.
 const KERNEL: &str = "{ i32, i32, i32, ptr, i32, ptr, i32, i32 }";
 const TABLE: &str = "@tz.gpu.kernels = private constant";

@@ -705,6 +705,188 @@ static int blocked_job(const struct job *job) {
     return entered && decided && still_running && state.status == 0 ? 0 : HARNESS_ERROR;
 }
 
+/* The strict float32 probe: what a running kernel does to the callers that need it. The mock blocks the wait for the fence of
+   the kernel that thread A runs (--spirv, a plain integer kernel), so A holds the execution lock, and the backend was opened
+   for integer kernels only, so no thread has run the probe yet. Then:
+   blockedprobe: another thread asks Gpu.Auto (--then-repeat questions) about a strict float32 kernel (--then-spirv, with
+     --features 4, --then-count and --then-weight) that the cost rule sends to the device. The probe needs the execution
+     lock, so the question must not wait for the kernel: it is answered 0 while the kernel runs, no probe is dispatched, no
+     verdict exists, and the credit that the compile (which did not happen) took out is back. After the kernel is done the
+     next question runs the probe once, records the verdict, and is answered 1.
+   blockedopen: another thread asks for the backend with --features (an explicit request that needs the probe). A request
+     may wait: it stays inside (holding the state lock) until the kernel is done, and then it runs the probe once and records
+     the verdict, so a device that fails the probe refuses the request. Meanwhile Gpu.Auto, asked about a call of the plain
+     kernel (--then-count, --then-weight), finds the state lock taken and answers 0 without waiting. */
+#define BLOCKED_WAIT_MS 30000
+
+struct probe_wait_state {
+    const struct job *job;
+    const void *spirv;
+    size_t spirv_size;
+    const void *input;
+    unsigned char *output;
+    const void *strict_module;
+    size_t strict_size;
+    int32_t status;
+    int32_t open_status;
+    int answers[8];
+    int answer_count;
+    atomic_int run_done;
+    atomic_int decisions_done;
+    atomic_int open_done;
+};
+
+static int strict_probe_state(void) {
+    TZ_VK_LOCK();
+    int state = tz_vk.caps.strict_probe;
+    TZ_VK_UNLOCK();
+    return state;
+}
+
+static double auto_credit(void) {
+    TZ_VK_LOCK();
+    double credit = tz_vk_auto_credit;
+    TZ_VK_UNLOCK();
+    return credit;
+}
+
+static void *probe_wait_run_main(void *argument) {
+    struct probe_wait_state *state = (struct probe_wait_state *)argument;
+    state->status = tz_vulkan_run(state->job->mode, 0, state->job->lanes, NULL, 0, state->spirv, (int32_t)state->spirv_size,
+        state->input, state->job->count, state->output);
+    atomic_store(&state->run_done, 1);
+    return NULL;
+}
+
+static void *probe_wait_decide_main(void *argument) {
+    struct probe_wait_state *state = (struct probe_wait_state *)argument;
+    const struct job *job = state->job;
+    int questions = job->then_repeat > 0 && job->then_repeat <= 8 ? job->then_repeat : 1;
+    for (int index = 0; index < questions; index++) {
+        state->answers[index] = tz_vulkan_auto(job->mode, job->lanes, job->features, state->strict_module,
+            (int32_t)state->strict_size, job->then_weight, job->then_count);
+    }
+    state->answer_count = questions;
+    atomic_store(&state->decisions_done, 1);
+    return NULL;
+}
+
+static void *probe_wait_open_main(void *argument) {
+    struct probe_wait_state *state = (struct probe_wait_state *)argument;
+    state->open_status = tz_vulkan_open(state->job->features);
+    atomic_store(&state->open_done, 1);
+    return NULL;
+}
+
+/* The files and the first open that both modes share; returns 0 when the state is ready. */
+static int probe_wait_setup(const struct job *job, struct probe_wait_state *state, struct mock_api *mock) {
+    memset(mock, 0, sizeof *mock);
+    if (!load_mock(mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    size_t input_size = 0;
+    state->job = job;
+    state->spirv = read_file(job->spirv_path, &state->spirv_size);
+    state->strict_module = job->then_spirv_path != NULL ? read_file(job->then_spirv_path, &state->strict_size) : NULL;
+    state->input = read_file(job->input_path, &input_size);
+    state->output = (unsigned char *)malloc(output_bytes_for(job));
+    if (state->spirv == NULL || state->input == NULL || state->output == NULL) return HARNESS_ERROR;
+    return 0;
+}
+
+static void probe_wait_release(struct probe_wait_state *state) {
+    free(state->output);
+    free((void *)state->spirv);
+    free((void *)state->strict_module);
+    free((void *)state->input);
+}
+
+static int blockedprobe_job(const struct job *job) {
+    static struct probe_wait_state state;
+    struct mock_api mock;
+    if (probe_wait_setup(job, &state, &mock) != 0 || state.strict_module == NULL) return HARNESS_ERROR;
+    int32_t open_status = tz_vulkan_open(0);
+    if (open_status != 0) {
+        printf("blockedprobe open=%d\n", (int)open_status);
+        return HARNESS_ERROR;
+    }
+    pthread_t runner, decider;
+    pthread_create(&runner, NULL, probe_wait_run_main, &state);
+    int entered = 0;
+    for (int wait = 0; wait < BLOCKED_WAIT_MS && !(entered = mock.waits_entered() > 0); wait++) sleep_ms(1);
+    int decided = 0;
+    if (entered) {
+        pthread_create(&decider, NULL, probe_wait_decide_main, &state);
+        for (int wait = 0; wait < BLOCKED_WAIT_MS && !(decided = atomic_load(&state.decisions_done)); wait++) sleep_ms(1);
+    }
+    int still_running = !atomic_load(&state.run_done);
+    int dispatches_during = mock.probe_dispatches();
+    int probe_during = strict_probe_state();
+    double credit_during = auto_credit();
+    mock.release_wait();
+    if (entered) pthread_join(decider, NULL);
+    pthread_join(runner, NULL);
+    int after[2];
+    for (int index = 0; index < 2; index++) {
+        after[index] = tz_vulkan_auto(job->mode, job->lanes, job->features, state.strict_module, (int32_t)state.strict_size,
+            job->then_weight, job->then_count);
+    }
+    printf("blockedprobe entered=%d during=", entered);
+    for (int index = 0; index < state.answer_count; index++) printf("%s%d", index == 0 ? "" : ",", state.answers[index]);
+    printf(" decided_while_running=%d still_running=%d run=%d dispatches_during=%d probe_during=%d credit_during=%.0f after=%d,%d "
+           "dispatches_after=%d probe_after=%d credit_after=%.0f\n",
+        decided, still_running, (int)state.status, dispatches_during, probe_during, credit_during, after[0], after[1],
+        mock.probe_dispatches(), strict_probe_state(), auto_credit());
+    probe_wait_release(&state);
+    return entered && decided && still_running && state.status == 0 ? 0 : HARNESS_ERROR;
+}
+
+static int blockedopen_job(const struct job *job) {
+    static struct probe_wait_state state;
+    struct mock_api mock;
+    if (probe_wait_setup(job, &state, &mock) != 0) return HARNESS_ERROR;
+    int32_t open_status = tz_vulkan_open(0);
+    if (open_status != 0) {
+        printf("blockedopen open=%d\n", (int)open_status);
+        return HARNESS_ERROR;
+    }
+    pthread_t runner, requester;
+    pthread_create(&runner, NULL, probe_wait_run_main, &state);
+    int entered = 0;
+    for (int wait = 0; wait < BLOCKED_WAIT_MS && !(entered = mock.waits_entered() > 0); wait++) sleep_ms(1);
+    int inside = 0, returned_early = 0, auto_while_waiting = -1;
+    if (entered) {
+        pthread_create(&requester, NULL, probe_wait_open_main, &state);
+        /* The request is inside when it holds the state lock (it keeps it while it waits for the kernel), or it is done. */
+        for (int wait = 0; wait < BLOCKED_WAIT_MS && !inside && !atomic_load(&state.open_done); wait++) {
+            if (TZ_VK_TRY_LOCK()) {
+                TZ_VK_UNLOCK();
+                sleep_ms(1);
+            } else {
+                inside = 1;
+            }
+        }
+        /* A request that wrongly gives up the wait returns within this time, which only makes the failure visible: the
+           runtime that waits is not timing-sensitive, it simply does not return before the kernel is done. */
+        for (int grace = 0; grace < 20 && !atomic_load(&state.open_done); grace++) sleep_ms(10);
+        returned_early = atomic_load(&state.open_done);
+        auto_while_waiting = tz_vulkan_auto(job->mode, job->lanes, 0, state.spirv, (int32_t)state.spirv_size, job->then_weight,
+            job->then_count);
+    }
+    int still_running = !atomic_load(&state.run_done);
+    int dispatches_during = mock.probe_dispatches();
+    mock.release_wait();
+    if (entered) pthread_join(requester, NULL);
+    pthread_join(runner, NULL);
+    printf("blockedopen entered=%d inside=%d returned_early=%d auto_while_waiting=%d still_running=%d run=%d open=%d "
+           "dispatches_during=%d dispatches=%d probe=%d\n",
+        entered, inside, returned_early, auto_while_waiting, still_running, (int)state.status, (int)state.open_status,
+        dispatches_during, mock.probe_dispatches(), strict_probe_state());
+    probe_wait_release(&state);
+    return entered && inside && still_running && state.status == 0 ? 0 : HARNESS_ERROR;
+}
+
 /* The device is lost during the first wait for a fence (the mock's lose=wait). That run fails, and nothing after it touches
    the device: another run, another open, and a Gpu.Auto question are all answered without one more Vulkan call. */
 static int lost_job(const struct job *job) {
@@ -776,7 +958,7 @@ static int programs_job(const struct job *job) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: harness probe|conform|run|bench|sweep|auto|autosweep|blocked|lost|programs [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
+        fprintf(stderr, "usage: harness probe|conform|run|bench|sweep|auto|autosweep|blocked|blockedprobe|blockedopen|lost|programs [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
         return HARNESS_ERROR;
     }
     struct job job;
@@ -808,6 +990,10 @@ int main(int argc, char **argv) {
         code = auto_job(&job);
     } else if (strcmp(argv[1], "blocked") == 0) {
         code = blocked_job(&job);
+    } else if (strcmp(argv[1], "blockedprobe") == 0) {
+        code = blockedprobe_job(&job);
+    } else if (strcmp(argv[1], "blockedopen") == 0) {
+        code = blockedopen_job(&job);
     } else if (strcmp(argv[1], "lost") == 0) {
         code = lost_job(&job);
     } else if (strcmp(argv[1], "programs") == 0) {

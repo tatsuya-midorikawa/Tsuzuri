@@ -41,6 +41,11 @@ use crate::{
 pub const FEATURE_INT64: u32 = 1 << 1;
 pub const FEATURE_STRICT_FLOAT: u32 = 1 << 2;
 
+/// The largest weight a kernel gets. The runtime reads the weight from an `i32` field of the descriptor, where a larger
+/// number would be a negative one, which the runtime prices as the weight 1: the heaviest kernels would then never be
+/// offloaded. A kernel above it is priced as this, which is far above any measured crossover.
+const MAX_WEIGHT: u32 = i32::MAX as u32;
+
 /// The storage lane of one side of a kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
@@ -75,7 +80,8 @@ pub struct SpirvKernel {
     /// Whether the module has the `init_main` entry point (a 32-bit integer input).
     pub init: bool,
     /// A lower bound of the arithmetic, logic, comparison, conversion, and select instructions that one lane executes
-    /// (at least 1): the cost estimate that `Gpu.Auto` uses. Straight-line code counts every instruction. A conditional
+    /// (at least 1 and at most `i32::MAX`, the largest number of the descriptor's `i32` field): the cost estimate that
+    /// `Gpu.Auto` uses. Straight-line code counts every instruction. A conditional
     /// counts its condition and its cheaper arm (a lane runs one arm), `&&` and `||` count their left operand (the right
     /// one runs only when the left does not decide), and a call counts what its callee counts by the same rule. So the
     /// weight never prices a lane above the cheapest path it can take, and a call is moved to the device only when even
@@ -859,7 +865,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
         init: bool,
     ) -> Result<SpirvKernel, Diagnostic> {
         let strict_float = !self.relaxed && self.module.uses_float;
-        let weight = self.weights[&self.kernel.function].max(1);
+        let weight = self.weights[&self.kernel.function].clamp(1, MAX_WEIGHT);
         let module = &mut self.module;
         module.capabilities.insert(CAPABILITY_SHADER);
         if strict_float {

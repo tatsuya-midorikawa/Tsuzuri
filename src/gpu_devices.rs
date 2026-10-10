@@ -68,7 +68,8 @@ pub struct GpuKernelBlob {
     pub spirv: Option<Vec<u8>>,
     /// A lower bound of the operations one lane of the SPIR-V kernel executes (the cheaper arm of a
     /// conditional, the left operand of `&&` and `||`; see `SpirvKernel::weight`), which `Gpu.Auto`
-    /// prices the CPU run with; 0 without SPIR-V.
+    /// prices the CPU run with; 0 without SPIR-V, otherwise from 1 to `i32::MAX` (the descriptor
+    /// holds it in an `i32`).
     pub weight: u32,
 }
 
