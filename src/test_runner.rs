@@ -530,7 +530,7 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
     }
     if text.contains("declare i32 @tsuzuri_gpu_") {
-        sources.push(("gpu.c", include_str!("runtime/gpu.c").to_owned()));
+        sources.push(("gpu.c", llvm::gpu_runtime_source(text)));
     }
     if llvm::uses_reactor(text) {
         if !crate::driver::ASYNC_NATIVE_SUPPORTED {
@@ -753,6 +753,11 @@ fn compile_native_runner(
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
     let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
+    let gpu_source = if gpu_runtime {
+        llvm::gpu_runtime_source(&text)
+    } else {
+        String::new()
+    };
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
     }
@@ -802,7 +807,7 @@ fn compile_native_runner(
         (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (async_runtime, "async.c", include_str!("runtime/async.c")),
-        (gpu_runtime, "gpu.c", include_str!("runtime/gpu.c")),
+        (gpu_runtime, "gpu.c", gpu_source.as_str()),
     ] {
         if needed {
             let runtime = directory.join(name);

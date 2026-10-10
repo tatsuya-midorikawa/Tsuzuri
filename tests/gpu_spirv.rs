@@ -227,6 +227,24 @@ fn bits_of(value: f32) -> u64 {
     u64::from(value.to_bits())
 }
 
+/// Unsigned 32-bit values whose conversion to `f32` must round to nearest even: the spacing of `f32` is 256 above 2^31,
+/// so the values just below 2^32 and around 2^31, and the ties above 2^24, are where a device that rounds the
+/// conversion wrongly differs (a driver rounded 4294967167 up to 4294967296 while the CPU gives 4294967040).
+fn large_u32s() -> Vec<u64> {
+    let mut values: Vec<u32> = (0xFFFF_FF00..=0xFFFF_FFFF).collect();
+    values.extend(0x7FFF_FF80..=0x8000_0080);
+    values.extend([
+        0x0100_0001,
+        0x0100_0003,
+        0x0200_0001,
+        0x0200_0002,
+        0x0200_0003,
+    ]);
+    let mut seed = 0x0BAD_5EED;
+    values.extend((0..300).map(|_| lcg(&mut seed) | 0x8000_0000));
+    values.into_iter().map(u64::from).collect()
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -289,6 +307,22 @@ fn cases() -> Vec<Case> {
             reference: |x| {
                 let v = x as u32;
                 u64::from((v.wrapping_mul(2654435761) >> 7) ^ v)
+            },
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "mutable_parameters",
+            source: "def bump :: i32 -> i32\nfn bump mut x = { x = x + 1; x * 2 }\ndef toggle :: bool -> bool\nfn toggle mut flag = { flag = !flag; flag }\ndef wrap :: i32u -> i32u\nfn wrap mut x = { x = x * 3i32u; x ^ 7i32u }\nexport def kernel :: i32 -> i32\nfn kernel value = if toggle (value > 0) then bump value else (wrap (value as i32u)) as i32",
+            relaxed: false,
+            inputs: ints32,
+            reference: |x| {
+                let v = x as u32 as i32;
+                if v <= 0 {
+                    u64::from(v.wrapping_add(1).wrapping_mul(2) as u32)
+                } else {
+                    u64::from((v as u32).wrapping_mul(3) ^ 7)
+                }
             },
             compare: Compare::Exact,
             init: true,
@@ -422,6 +456,33 @@ fn cases() -> Vec<Case> {
             relaxed: false,
             inputs: ints64,
             reference: |x| bits_of(x as i64 as f32),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "from_u32_strict",
+            source: "export def kernel :: i32u -> f32\nfn kernel value = value as f32",
+            relaxed: false,
+            inputs: large_u32s,
+            reference: |x| bits_of(x as u32 as f32),
+            compare: Compare::Exact,
+            init: true,
+        },
+        Case {
+            name: "negated_zero_product_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel value = -(value * 0.0)",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| bits_of(-(f(x) * 0.0)),
+            compare: Compare::Exact,
+            init: false,
+        },
+        Case {
+            name: "mutable_float_parameter_strict",
+            source: "export def kernel :: f32 -> f32\nfn kernel mut x = { x = x * 2.0f32; x + 1.0f32 }",
+            relaxed: false,
+            inputs: special_floats,
+            reference: |x| bits_of(f(x) * 2.0 + 1.0),
             compare: Compare::Exact,
             init: false,
         },
@@ -798,6 +859,66 @@ fn spirv_lanes_and_features_match_the_kernel_types() {
 }
 
 #[test]
+fn spirv_weight_is_a_lower_bound_that_prices_the_cheapest_path_of_a_lane() {
+    // step is 5 instructions, and each helper calls the one below it four times: 20, 80, 320.
+    const HELPERS: &str = "def step :: i32 -> i32\nfn step value = ((value * 3 + 1) ^ 5) * 7 + 11\ndef r4 :: i32 -> i32\nfn r4 value = step (step (step (step value)))\ndef r16 :: i32 -> i32\nfn r16 value = r4 (r4 (r4 (r4 value)))\ndef r64 :: i32 -> i32\nfn r64 value = r16 (r16 (r16 (r16 value)))\n";
+    let weight = |body: &str| {
+        let source = format!("{HELPERS}export def kernel :: i32 -> i32\nfn kernel value = {body}");
+        let first = emit_ok(&source, false);
+        assert_eq!(first, emit_ok(&source, false), "{body}: deterministic");
+        first.weight
+    };
+    // Without branches every emitted instruction runs, so the weight is the instruction count, as it was.
+    assert_eq!(weight("value * 3 + 1"), 2);
+    assert_eq!(weight("step value"), 5);
+    assert_eq!(weight("r64 (r64 (r64 (r64 value)))"), 1280);
+    assert_eq!(weight("value"), 1, "at least 1");
+    // A conditional costs its condition and the cheaper arm: a lane runs one arm. This kernel was priced at 1282 (both
+    // arms, 1280 + 1 + the comparison), and Gpu.Auto then ran it on the device although a lane of it takes two operations.
+    assert_eq!(
+        weight("if value < 0 then r64 (r64 (r64 (r64 value))) else value + 1"),
+        2
+    );
+    assert_eq!(
+        weight("if value < 0 then value + 1 else r64 (r64 (r64 (r64 value)))"),
+        2,
+        "the arms in the other order"
+    );
+    assert_eq!(weight("if value < 0 then r64 value else r16 value"), 1 + 80);
+    assert_eq!(
+        weight("if value < 0 then (if value < 5 then r64 value else value * 2) else r16 value"),
+        1 + 2,
+        "nested: the inner conditional is priced by the same rule, and then compared with the other arm"
+    );
+    assert_eq!(
+        weight("if value < 0 then r16 value else (if value > 5 then r64 value else r4 value)"),
+        1 + 21,
+        "an arm that is a conditional is the cheaper one when its own cheaper arm is"
+    );
+    // `&&` and `||` run their right operand only when the left one does not decide: the left operand is the bound.
+    assert_eq!(weight("if value < 0 && r64 value > 5 then 1 else 2"), 1);
+    assert_eq!(weight("if value < 0 || r64 value > 5 then 1 else 2"), 1);
+    assert_eq!(
+        weight("if value * 3 < 0 && value + 1 > 5 then 1 else 2"),
+        2,
+        "the left operand and nothing of the right one"
+    );
+    // A call counts its callee by the same rule, at every call.
+    let pick =
+        "def pick :: i32 -> i32\nfn pick value = if value < 0 then r64 value else value + 1\n";
+    let source = format!(
+        "{HELPERS}{pick}export def kernel :: i32 -> i32\nfn kernel value = pick (pick value)"
+    );
+    assert_eq!(emit_ok(&source, false).weight, 4);
+    // The relaxed emitter follows the same rule, for f32 too.
+    let relaxed = emit_ok(
+        "export def kernel :: f32 -> f32\nfn kernel value = if value < 0.0 then value * value * value else value + 1.0",
+        true,
+    );
+    assert_eq!(relaxed.weight, 1 + 1);
+}
+
+#[test]
 fn spirv_output_is_deterministic() {
     for case in cases() {
         let first = emit_ok(case.source, case.relaxed);
@@ -940,8 +1061,15 @@ fn find_tool(variable: &str, candidates: &[&str], name: &str) -> Option<PathBuf>
         .map(|_| PathBuf::from(name))
 }
 
+/// A skipped test is announced on stderr through the handle itself: `eprintln!` is captured by the test harness and
+/// shown only for a failing test, so a skip written with it would leave a plain `cargo test` printing `ok` and nothing
+/// else. The requirement variable (`TSUZURI_REQUIRE_SPIRV_TOOLS` or `TSUZURI_REQUIRE_VULKAN`) turns the skip into a
+/// failure.
 fn skip(requirement: &str, reason: &str) {
-    eprintln!("\n*** SKIPPED (tests/gpu_spirv.rs): {reason} ***\n");
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(
+        format!("\n*** SKIPPED (tests/gpu_spirv.rs, {requirement}): {reason} ***\n\n").as_bytes(),
+    );
     assert!(
         std::env::var_os(requirement).is_none(),
         "{requirement} is set but the test would be skipped: {reason}"
@@ -1004,6 +1132,285 @@ fn spirv_modules_validate_for_vulkan() {
     eprintln!("spirv-val accepted {validated} module/environment pairs");
 }
 
+// ---- the conformance probe of the strict float32 controls ----
+
+/// The words of a table of `src/runtime/gpu-vulkan.c` (`static const uint32_t name[...] = { ... };`).
+fn runtime_table(name: &str) -> Vec<u32> {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/gpu-vulkan.c"))
+            .unwrap();
+    let start = source
+        .find(&format!("static const uint32_t {name}["))
+        .unwrap_or_else(|| panic!("{name} is not declared in the runtime"));
+    let open = start + source[start..].find('{').unwrap();
+    let close = open + source[open..].find('}').unwrap();
+    source[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let digits = word
+                .strip_prefix("0x")
+                .and_then(|word| word.strip_suffix('U'))
+                .unwrap_or_else(|| panic!("{name}: {word} is not a hexadecimal word"));
+            u32::from_str_radix(digits, 16).unwrap()
+        })
+        .collect()
+}
+
+fn runtime_constant(name: &str) -> usize {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/gpu-vulkan.c"))
+            .unwrap();
+    let prefix = format!("#define {name} ");
+    source
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("{name} is not defined in the runtime"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// What the probe expects of a device is what the CPU reference computes, and each group of lanes can tell a wrong
+/// behaviour from the right one (a fused multiply-add, a flush of subnormals, a truncation).
+#[test]
+fn the_probe_tables_hold_what_the_cpu_reference_computes() {
+    let lanes = runtime_constant("TZ_VK_PROBE_LANES");
+    let input = runtime_table("tz_vk_probe_input");
+    let expected = runtime_table("tz_vk_probe_expected");
+    assert_eq!((lanes, input.len(), expected.len()), (27, 54, 27));
+    let c0 = f32::from_bits(0xBF80_1000);
+    for lane in 0..lanes {
+        let (a_bits, b_bits) = (input[2 * lane], input[2 * lane + 1]);
+        let (a, b) = (f32::from_bits(a_bits), f32::from_bits(b_bits));
+        let result = match lane / 3 {
+            0 => std::hint::black_box(a * b) + c0,
+            1 => -(a * b),
+            2 => a + b,
+            3 | 4 => a * b,
+            5 => a - b,
+            6 | 8 => a_bits as f32,
+            _ => a_bits as i32 as f32,
+        };
+        let bits = if lane / 3 == 5 && result.is_nan() {
+            0x7FC0_0000
+        } else {
+            result.to_bits()
+        };
+        assert_eq!(expected[lane], bits, "lane {lane} (operation {})", lane / 3);
+    }
+    for lane in 0..3 {
+        let (a, b) = (
+            f32::from_bits(input[2 * lane]),
+            f32::from_bits(input[2 * lane + 1]),
+        );
+        assert_ne!(
+            a.mul_add(b, c0).to_bits(),
+            expected[lane],
+            "lane {lane} must tell a fused multiply-add"
+        );
+    }
+    for (lane, bits) in expected.iter().enumerate().take(11).skip(6) {
+        assert_ne!(
+            bits & 0x7FFF_FFFF,
+            0,
+            "lane {lane} must tell a flush of subnormals"
+        );
+    }
+    for lane in 12..15 {
+        let exact = f64::from(f32::from_bits(input[2 * lane]))
+            * f64::from(f32::from_bits(input[2 * lane + 1]));
+        let nearest = exact as f32;
+        let truncated = if f64::from(nearest).abs() > exact.abs() {
+            f32::from_bits(nearest.to_bits() - 1)
+        } else {
+            nearest
+        };
+        assert_ne!(
+            truncated.to_bits(),
+            expected[lane],
+            "lane {lane} must tell a truncation from rounding to nearest even"
+        );
+    }
+    assert_eq!(expected[3], 0, "-(-1 * 0) is +0");
+    assert_eq!(expected[4], 0x8000_0000, "-(1 * 0) is -0");
+    // The conversions from integers must tell the rounding that a device really does. `as f32` rounds to nearest even.
+    // A conversion that truncates (round toward zero) or rounds ties away from zero must give other bits on some lane of
+    // each kind, which is checked here against those two roundings computed from the exact value. The unsigned lanes of
+    // operation 6 alone did not tell a truncation: 0xFFFFFF7F and 0x80000001 are less than half an ulp above a
+    // representable value, so they round down either way, and 0x01000001 is a tie whose even neighbor is the lower one.
+    // Operation 8 adds the lanes that do.
+    let truncated = |value: u32| {
+        let nearest = value as f32;
+        if f64::from(nearest) > f64::from(value) {
+            f32::from_bits(nearest.to_bits() - 1)
+        } else {
+            nearest
+        }
+    };
+    let half_up = |value: u32| {
+        let lower = truncated(value);
+        if f64::from(lower) == f64::from(value) {
+            return lower;
+        }
+        let upper = f32::from_bits(lower.to_bits() + 1);
+        let (low, high, exact) = (f64::from(lower), f64::from(upper), f64::from(value));
+        if exact - low >= high - exact {
+            upper
+        } else {
+            lower
+        }
+    };
+    let unsigned_lane = |lane: usize| input[2 * lane];
+    let tells_truncation = |lane: usize| truncated(unsigned_lane(lane)).to_bits() != expected[lane];
+    let tells_half_up = |lane: usize| half_up(unsigned_lane(lane)).to_bits() != expected[lane];
+    assert!(
+        !(18..21).any(tells_truncation),
+        "this is why operation 6 cannot tell a truncating unsigned conversion"
+    );
+    for (lane, value, nearest_even, other) in [
+        (24, 0x8000_0081u32, 0x4F00_0001u32, 0x4F00_0000u32),
+        (26, 0x8000_0180, 0x4F00_0002, 0x4F00_0001),
+    ] {
+        assert_eq!(unsigned_lane(lane), value, "lane {lane}");
+        assert_eq!(
+            expected[lane], nearest_even,
+            "lane {lane}: rounds to nearest even"
+        );
+        assert_eq!(truncated(value).to_bits(), other, "lane {lane}: truncation");
+        assert!(
+            tells_truncation(lane),
+            "lane {lane} must tell a truncating conversion"
+        );
+    }
+    assert_eq!(
+        unsigned_lane(25),
+        0x8000_0080,
+        "a tie whose even neighbor is the lower one"
+    );
+    assert_eq!(expected[25], 0x4F00_0000);
+    assert_eq!(half_up(0x8000_0080).to_bits(), 0x4F00_0001);
+    assert!(
+        tells_half_up(25),
+        "lane 25 must tell rounding ties away from zero"
+    );
+    assert!(
+        !tells_half_up(26) && !tells_half_up(24),
+        "the other two lanes are above a half or on a tie that goes up: they say nothing about the tie rule"
+    );
+    // The signed conversion tells both on its own lanes (the magnitude is rounded the same way).
+    let signed_truncated = |value: i32| {
+        let magnitude = truncated(value.unsigned_abs());
+        if value < 0 { -magnitude } else { magnitude }
+    };
+    for lane in [21usize, 22] {
+        let value = input[2 * lane] as i32;
+        assert_ne!(
+            signed_truncated(value).to_bits(),
+            expected[lane],
+            "lane {lane}: the signed lanes tell a truncation"
+        );
+    }
+}
+
+#[test]
+fn the_probe_module_is_the_assembly_of_its_source_and_validates() {
+    let Some(assembler) = find_tool(
+        "SPIRV_AS",
+        &[
+            "/opt/homebrew/opt/spirv-tools/bin/spirv-as",
+            "/usr/local/bin/spirv-as",
+            "/usr/bin/spirv-as",
+        ],
+        "spirv-as",
+    ) else {
+        skip(
+            "TSUZURI_REQUIRE_SPIRV_TOOLS",
+            "spirv-as was not found; the words of the conformance probe were not compared with their source",
+        );
+        return;
+    };
+    let directory = scratch("probe");
+    let module = directory.join("probe.spv");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_probe.spvasm");
+    let output = Command::new(&assembler)
+        .args(["--target-env", "vulkan1.1"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&module)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let assembled: Vec<u32> = fs::read(&module)
+        .unwrap()
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    let embedded = runtime_table("tz_vk_probe_module");
+    assert_eq!(
+        embedded.len(),
+        runtime_constant("TZ_VK_PROBE_WORDS"),
+        "the declared size is the size of the table"
+    );
+    assert_eq!(
+        embedded, assembled,
+        "src/runtime/gpu-vulkan.c must hold the words of tests/gpu_vulkan_probe.spvasm: assemble it again"
+    );
+
+    // The module declares the strict controls, and every floating-point result carries NoContraction.
+    let mut declared = BTreeSet::new();
+    let (mut arithmetic, mut no_contraction, mut position) = (0, 0, 5);
+    while position < embedded.len() {
+        let size = (embedded[position] >> 16) as usize;
+        match (embedded[position] & 0xFFFF) as u16 {
+            OP_CAPABILITY => {
+                declared.insert(embedded[position + 1]);
+            }
+            OP_F_ADD | OP_F_SUB | OP_F_MUL | OP_F_NEGATE | OP_CONVERT_S_TO_F
+            | OP_CONVERT_U_TO_F => arithmetic += 1,
+            OP_DECORATE if embedded[position + 2] == 42 => no_contraction += 1,
+            _ => {}
+        }
+        position += size;
+    }
+    assert!(declared.is_superset(&BTreeSet::from([4464, 4466, 4467])));
+    assert_eq!(arithmetic, no_contraction);
+
+    let Some(validator) = find_tool(
+        "SPIRV_VAL",
+        &[
+            "/opt/homebrew/opt/spirv-tools/bin/spirv-val",
+            "/usr/local/bin/spirv-val",
+            "/usr/bin/spirv-val",
+        ],
+        "spirv-val",
+    ) else {
+        skip(
+            "TSUZURI_REQUIRE_SPIRV_TOOLS",
+            "spirv-val was not found; the conformance probe module was not validated",
+        );
+        return;
+    };
+    for environment in ["vulkan1.1", "vulkan1.2"] {
+        let output = Command::new(&validator)
+            .args(["--target-env", environment])
+            .arg(&module)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "spirv-val --target-env {environment} rejects the probe:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 // ---- execution on a device ----
 
 /// The runtime harness together with the environment of one Vulkan implementation: the default one of the machine, and
@@ -1016,31 +1423,82 @@ struct Harness {
     environment: Vec<(String, String)>,
 }
 
-static HARNESS: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+/// Why the runtime harness is not there. A compiler that cannot be run is a missing tool, and a test may skip for it. A
+/// compiler that runs and rejects the harness is a defect of the runtime or the harness, which no skip may hide.
+enum HarnessError {
+    Missing(String),
+    Build(String),
+}
 
-fn harness_binary() -> &'static Result<PathBuf, String> {
+static HARNESS: OnceLock<Result<PathBuf, HarnessError>> = OnceLock::new();
+
+fn compile_harness(clang: &Path, source: &Path, path: &Path) -> Result<(), HarnessError> {
+    let output = Command::new(clang)
+        .args(["-std=c11", "-O1", "-g"])
+        .arg(source)
+        .arg("-o")
+        .arg(path)
+        .output()
+        .map_err(|error| {
+            HarnessError::Missing(format!("{} cannot run: {error}", clang.display()))
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(HarnessError::Build(format!(
+            "{} does not compile {}:\n{}",
+            clang.display(),
+            source.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+}
+
+fn harness_binary() -> &'static Result<PathBuf, HarnessError> {
     HARNESS.get_or_init(|| {
+        if cfg!(windows) {
+            return Err(HarnessError::Missing(
+                "the runtime harness uses dlopen and pthreads; the Windows loader path is checked by type checks only"
+                    .to_owned(),
+            ));
+        }
         let clang = std::env::var_os("TSUZURI_CLANG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("clang"));
-        let directory = scratch("harness");
-        let path = directory.join("gpu_vulkan_harness");
+        let path = scratch("harness").join("gpu_vulkan_harness");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_runtime.c");
-        let output = Command::new(&clang)
-            .args(["-std=c11", "-O1", "-g"])
-            .arg(&source)
-            .arg("-o")
-            .arg(&path)
-            .output()
-            .map_err(|error| format!("{} cannot run: {error}", clang.display()))?;
-        if !output.status.success() {
-            return Err(format!(
-                "the runtime harness does not compile:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        compile_harness(&clang, &source, &path)?;
         Ok(path)
     })
+}
+
+/// What the device tests do with the harness: run with it, or skip for a reason. A build failure is neither: it fails.
+enum Verdict<'a> {
+    Run(&'a PathBuf),
+    Skip(String),
+}
+
+fn classify(result: &Result<PathBuf, HarnessError>) -> Verdict<'_> {
+    match result {
+        Ok(path) => Verdict::Run(path),
+        Err(HarnessError::Missing(reason)) => {
+            Verdict::Skip(format!("no Vulkan runtime harness: {reason}"))
+        }
+        Err(HarnessError::Build(reason)) => {
+            panic!("the runtime harness does not compile although the C compiler runs: {reason}")
+        }
+    }
+}
+
+/// The harness of the device tests: a missing tool is a loud skip (`None`), and a build failure is a failure of the test.
+fn harness_or_skip(result: &Result<PathBuf, HarnessError>) -> Option<&PathBuf> {
+    match classify(result) {
+        Verdict::Run(path) => Some(path),
+        Verdict::Skip(reason) => {
+            skip("TSUZURI_REQUIRE_VULKAN", &reason);
+            None
+        }
+    }
 }
 
 struct Outcome {
@@ -1106,15 +1564,8 @@ impl Harness {
 
 /// The harness of every usable Vulkan implementation; a loud skip when there is none.
 fn devices() -> Vec<Harness> {
-    let binary = match harness_binary() {
-        Err(reason) => {
-            skip(
-                "TSUZURI_REQUIRE_VULKAN",
-                &format!("no Vulkan runtime harness: {reason}"),
-            );
-            return Vec::new();
-        }
-        Ok(binary) => binary,
+    let Some(binary) = harness_or_skip(harness_binary()) else {
+        return Vec::new();
     };
     let mut candidates = vec![Harness {
         path: binary.clone(),
@@ -1164,6 +1615,61 @@ fn devices() -> Vec<Harness> {
 
 fn lane_bytes(lane: Lane) -> usize {
     if lane == Lane::Int64 { 8 } else { 4 }
+}
+
+/// The reviewer's defect, kept as a regression: a C compiler that runs but rejects the runtime (an `#error` appended to
+/// `src/runtime/gpu-vulkan.c`) once made `devices()` skip, so the three device tests passed without running anything.
+#[test]
+fn a_harness_that_does_not_compile_fails_and_a_missing_compiler_skips() {
+    let clang = std::env::var_os("TSUZURI_CLANG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("clang"));
+    if Command::new(&clang).arg("--version").output().is_err() {
+        skip(
+            "TSUZURI_REQUIRE_VULKAN",
+            "no C compiler to break a harness with",
+        );
+        return;
+    }
+    let directory = scratch("broken_harness");
+    let source = directory.join("broken.c");
+    fs::write(
+        &source,
+        "#error the runtime does not compile\nint main(void) { return 0; }\n",
+    )
+    .unwrap();
+    match compile_harness(&clang, &source, &directory.join("broken")) {
+        Err(HarnessError::Build(reason)) => {
+            assert!(reason.contains("the runtime does not compile"), "{reason}")
+        }
+        Err(HarnessError::Missing(reason)) => {
+            panic!("a compile error is not a missing tool: {reason}")
+        }
+        Ok(()) => panic!("the broken harness compiled"),
+    }
+    match compile_harness(
+        Path::new("/nonexistent/tsuzuri-clang"),
+        &source,
+        &directory.join("missing"),
+    ) {
+        Err(HarnessError::Missing(_)) => {}
+        _ => panic!("a compiler that cannot run is a missing tool"),
+    }
+    // The policy of the device tests: a build failure is a failure, never a skip; a missing tool is a skip.
+    let outcome = std::panic::catch_unwind(|| {
+        matches!(
+            classify(&Err(HarnessError::Build("broken".to_owned()))),
+            Verdict::Skip(_)
+        )
+    });
+    assert!(
+        outcome.is_err(),
+        "a harness that does not compile must fail the device tests"
+    );
+    assert!(matches!(
+        classify(&Err(HarnessError::Missing("none".to_owned()))),
+        Verdict::Skip(_)
+    ));
 }
 
 fn encode(values: &[u64], lane: Lane) -> Vec<u8> {
@@ -1373,10 +1879,10 @@ fn integer_kernels(harness: &Harness) {
         }
         executed += 1;
     }
-    // four 32-bit kernels, and four that need shaderInt64
+    // five 32-bit kernels, and four that need shaderInt64
     assert_eq!(
         executed,
-        if int64.status == 0 { 8 } else { 4 },
+        if int64.status == 0 { 9 } else { 5 },
         "{}",
         harness.label
     );
@@ -1477,7 +1983,8 @@ fn strict_float_kernels(harness: &Harness) {
                 })
                 .count();
             eprintln!(
-                "UNCERTIFIED {}: with the capability check bypassed, {} of {} lanes equal the CPU reference",
+                "UNCERTIFIED [{}] {}: with the capability check bypassed, {} of {} lanes equal the CPU reference",
+                harness.label,
                 case.name,
                 inputs.len() - differing,
                 inputs.len()
@@ -1490,7 +1997,8 @@ fn strict_float_kernels(harness: &Harness) {
         );
     } else {
         eprintln!(
-            "Vulkan: this device does not report the strict float32 controls ({}); strict f32 kernels are Unavailable here",
+            "Vulkan [{}]: strict f32 kernels are Unavailable here (the device must report the float controls and pass the conformance probe): {}",
+            harness.label,
             probe
                 .log
                 .lines()
@@ -1499,4 +2007,117 @@ fn strict_float_kernels(harness: &Harness) {
                 .trim()
         );
     }
+}
+
+// ---- the defects of the WGSL emitter that the SPIR-V emitter must not share ----
+
+/// The arms of the `else if` chain: Tint's limit of 127 nested statements stops WGSL at 62.
+const CHAIN_ARMS: usize = 100;
+
+fn chain_source() -> &'static str {
+    static SOURCE: OnceLock<String> = OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let mut source = String::from("export def kernel :: i32 -> i32\nfn kernel value = ");
+        for arm in 0..CHAIN_ARMS {
+            source.push_str(&format!("if value == {arm} then {} else ", 1000 + arm * 3));
+        }
+        source.push('7');
+        source
+    })
+}
+
+fn chain_inputs() -> Vec<u64> {
+    let mut values: Vec<u64> = (0..CHAIN_ARMS as u64 + 20).collect();
+    values.extend([u64::from(u32::MAX), u64::from(i32::MIN as u32), 5000]);
+    values
+}
+
+/// The checker of a debug build recurses once per arm and needs a large stack; the compiler's limits are not involved.
+fn on_large_stack(test: impl FnOnce() + Send + 'static) {
+    let worker = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(test)
+        .unwrap();
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A WGSL function parameter cannot be assigned, so the WGSL emitter copies the ones that a body assigns; and an `else if`
+/// chain of 63 arms exceeds the statement nesting of Tint, which the WGSL emitter rejects with E1017. A SPIR-V function
+/// has neither limit: the long chain emits deterministically, validates, and runs like the CPU reference (the mutable
+/// parameters are in the kernels `mutable_parameters` and `mutable_float_parameter_strict` of the shared list).
+#[test]
+fn a_long_else_if_chain_emits_valid_spirv_where_wgsl_has_a_nesting_limit() {
+    on_large_stack(|| {
+        let module = analyze(chain_source()).unwrap();
+        let kernel = gpu::extract_kernel(&module, kernel_id(&module)).unwrap();
+        let wgsl = kernel
+            .wgsl()
+            .expect_err("WGSL cannot nest this many statements");
+        assert_eq!(wgsl.code, "E1017", "{}", wgsl.message);
+        let first = kernel.spirv().unwrap();
+        assert_eq!(
+            first.bytes(),
+            kernel.spirv().unwrap().bytes(),
+            "the module is deterministic"
+        );
+        assert!(!first.relaxed);
+
+        let case = Case {
+            name: "else_if_chain",
+            source: chain_source(),
+            relaxed: false,
+            inputs: chain_inputs,
+            reference: |x| {
+                let value = x as u32 as i32;
+                if (0..CHAIN_ARMS as i32).contains(&value) {
+                    1000 + 3 * value as u64
+                } else {
+                    7
+                }
+            },
+            compare: Compare::Exact,
+            init: true,
+        };
+        if let Some(validator) = find_tool(
+            "SPIRV_VAL",
+            &[
+                "/opt/homebrew/opt/spirv-tools/bin/spirv-val",
+                "/usr/local/bin/spirv-val",
+                "/usr/bin/spirv-val",
+            ],
+            "spirv-val",
+        ) {
+            let directory = scratch("else_if_chain");
+            let path = write_module(&directory, case.name, &first);
+            for environment in ["vulkan1.1", "vulkan1.2"] {
+                let output = Command::new(&validator)
+                    .args(["--target-env", environment])
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "spirv-val --target-env {environment} rejects the chain:\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        } else {
+            skip(
+                "TSUZURI_REQUIRE_SPIRV_TOOLS",
+                "spirv-val was not found; the long else-if chain was not validated",
+            );
+        }
+        let mut lanes = 0;
+        for harness in devices() {
+            for staged in [false, true] {
+                lanes += execute(&case, &harness, staged);
+            }
+        }
+        eprintln!(
+            "Vulkan: the {CHAIN_ARMS}-arm else-if chain matched the reference on {lanes} lanes"
+        );
+    });
 }

@@ -230,6 +230,12 @@ pub enum Emit {
     /// `--emit wgsl-relaxed` (F09): the WGSL of a kernel whose floating-point operations follow
     /// WGSL's freedoms. Its first line names the contract; `Emit::Wgsl` stays strict.
     WgslRelaxed,
+    /// `--emit spirv` (F09 Phase 3): the Vulkan compute module, a SPIR-V binary, of the one exported
+    /// kernel with the CPU reference's strict semantics. `Gpu.map` on a Vulkan device runs this module.
+    Spirv,
+    /// `--emit spirv-relaxed` (F09 Phase 3): the module of a `Gpu.map_relaxed` kernel, whose
+    /// floating-point operations follow the device's own rules.
+    SpirvRelaxed,
     /// `--emit bindings-js` (E13): a JavaScript module with TypeScript declarations for a wasm32
     /// module of the same sources.
     BindingsJs,
@@ -247,6 +253,17 @@ impl Emit {
     /// WGSL output, strict or relaxed (F09).
     pub fn is_wgsl(self) -> bool {
         matches!(self, Self::Wgsl | Self::WgslRelaxed)
+    }
+
+    /// SPIR-V output, strict or relaxed (F09 Phase 3).
+    pub fn is_spirv(self) -> bool {
+        matches!(self, Self::Spirv | Self::SpirvRelaxed)
+    }
+
+    /// The kernel of the one exported function as WGSL or SPIR-V, which needs no target, CPU, or
+    /// tool options.
+    pub fn is_kernel(self) -> bool {
+        self.is_wgsl() || self.is_spirv()
     }
 
     /// The host bindings that come from the sources alone, without LLVM (E13).
@@ -338,7 +355,7 @@ impl Default for BuildOptions {
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
-        if self.emit.is_wgsl()
+        if self.emit.is_kernel()
             && (self.target != Target::Native
                 || self.cpu != Cpu::Generic
                 || self.debug_info
@@ -352,7 +369,11 @@ impl BuildOptions {
         {
             return Err(driver_error(
                 "E2000",
-                "WGSL output does not use target, CPU, debug, or WASM feature options",
+                if self.emit.is_spirv() {
+                    "SPIR-V output does not use target, CPU, debug, or WASM feature options"
+                } else {
+                    "WGSL output does not use target, CPU, debug, or WASM feature options"
+                },
             ));
         }
         if self.emit.is_bindings() {
@@ -617,7 +638,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Host
-            && (self.emit.is_wgsl() || self.emit == Emit::Executable)
+            && (self.emit.is_kernel() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -625,7 +646,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Counting
-            && (self.emit.is_wgsl() || self.emit == Emit::Executable)
+            && (self.emit.is_kernel() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -689,6 +710,7 @@ impl BuildOptions {
             Emit::Header => "h",
             Emit::Wasm => "wasm",
             Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
+            Emit::Spirv | Emit::SpirvRelaxed => "spv",
             Emit::Shared if cfg!(windows) => "dll",
             Emit::Shared if cfg!(target_os = "macos") => "dylib",
             Emit::Shared => "so",
@@ -2397,13 +2419,15 @@ fn build_complete(
     let mut trap_sites = Vec::new();
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
+    let mut spirv = None;
     let mut text = if options.emit == Emit::Header {
         if options.trap_return {
             llvm::header_with(module, true)
         } else {
             llvm::header_with_allocator(module, options.allocator)
         }
-    } else if options.emit.is_wgsl() {
+    } else if options.emit.is_kernel() {
         let exports: Vec<_> = module
             .functions
             .iter()
@@ -2414,14 +2438,25 @@ fn build_complete(
         if exports.len() != 1 {
             return Err(driver_error(
                 "E2004",
-                "WGSL output requires exactly one exported scalar kernel; use a dedicated source project",
+                if options.emit.is_spirv() {
+                    "SPIR-V output requires exactly one exported scalar kernel; use a dedicated source project"
+                } else {
+                    "WGSL output requires exactly one exported scalar kernel; use a dedicated source project"
+                },
             ));
         }
         let kernel = crate::gpu::extract_kernel(module, exports[0])?;
-        if options.emit == Emit::WgslRelaxed {
-            kernel.wgsl_relaxed()?
-        } else {
-            kernel.wgsl()?
+        match options.emit {
+            Emit::WgslRelaxed => kernel.wgsl_relaxed()?,
+            Emit::Spirv => {
+                spirv = Some(kernel.spirv()?.bytes());
+                String::new()
+            }
+            Emit::SpirvRelaxed => {
+                spirv = Some(kernel.spirv_relaxed()?.bytes());
+                String::new()
+            }
+            _ => kernel.wgsl()?,
         }
     } else {
         let emission = llvm::EmitOptions {
@@ -2507,7 +2542,7 @@ fn build_complete(
     };
     if cfg!(windows)
         && options.target == Target::Native
-        && !(options.emit == Emit::Header || options.emit.is_wgsl())
+        && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
         text = llvm::windows_abi(text, module);
         if options.debug_info && msvc_linker() {
@@ -2544,9 +2579,15 @@ fn build_complete(
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     // The sockets of the standard Net module are src/runtime/net.c (E09).
     let net_runtime = llvm::uses_net(&text);
-    // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c (F09 Phase 2).
+    // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c, and `Gpu.Vulkan` and
+    // `Gpu.Auto` add the Vulkan backend of src/runtime/gpu-vulkan.c to it (F09 Phases 2 and 3).
     let gpu_runtime =
         options.target == Target::Native && text.contains("declare i32 @tsuzuri_gpu_");
+    let gpu_source = if gpu_runtime {
+        llvm::gpu_runtime_source(&text)
+    } else {
+        String::new()
+    };
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
     let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
@@ -2737,8 +2778,13 @@ fn build_complete(
     if pdb.is_some() {
         cache_paths.insert("pdb".into(), staged_pdb.clone());
     }
-    // The cache key does not cover the contents of link inputs, so a build with them is never cached.
-    let cache = if options.cache && options.emit != Emit::Header && links.is_empty() {
+    // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
+    // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    let cache = if options.cache
+        && options.emit != Emit::Header
+        && !options.emit.is_spirv()
+        && links.is_empty()
+    {
         let prepared = (|| -> io::Result<_> {
             let root = crate::cache::default_root()
                 .ok_or_else(|| io::Error::other("no cache directory is configured"))?;
@@ -2789,6 +2835,8 @@ fn build_complete(
         }
     } else if matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_wgsl() {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
+    } else if let Some(module) = spirv {
+        fs::write(&artifact, module).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
         // The C names that a shared library exports, read from the IR before it is written.
         let shared_symbols = (options.emit == Emit::Shared)
@@ -2821,11 +2869,7 @@ fn build_complete(
                 } else {
                     ""
                 },
-                if gpu_runtime {
-                    include_str!("runtime/gpu.c")
-                } else {
-                    ""
-                },
+                gpu_source,
                 if trap_runtime {
                     include_str!("runtime/trap.c")
                 } else {
@@ -4755,6 +4799,8 @@ mod tests {
             (Target::Native, Emit::Llvm, memory, None, limit),
             (Target::Native, Emit::Wgsl, memory, None, limit),
             (Target::Native, Emit::WgslRelaxed, memory, None, limit),
+            (Target::Native, Emit::Spirv, memory, None, limit),
+            (Target::Native, Emit::SpirvRelaxed, memory, None, limit),
             (Target::Wasm32, Emit::Header, memory, None, limit),
             (Target::Wasm64, Emit::Header, memory, None, limit),
             (Target::Native, Emit::Executable, None, stack, size),
@@ -4823,6 +4869,8 @@ mod tests {
             (Target::Native, Emit::Executable),
             (Target::Native, Emit::Wgsl),
             (Target::Native, Emit::WgslRelaxed),
+            (Target::Native, Emit::Spirv),
+            (Target::Native, Emit::SpirvRelaxed),
             (Target::Wasm32, Emit::Object),
             (Target::Wasm32, Emit::Llvm),
             (Target::Wasm32, Emit::Wasm),
@@ -4831,7 +4879,7 @@ mod tests {
             let error = options(target, emit).validate().unwrap_err();
             assert_eq!(error.code, "E2000", "{target:?} {emit:?}");
             assert!(
-                error.message == message || emit.is_wgsl(),
+                error.message == message || emit.is_kernel(),
                 "{target:?} {emit:?}: {}",
                 error.message
             );

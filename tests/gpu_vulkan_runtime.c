@@ -78,11 +78,19 @@ struct job {
     int mode;
     int32_t lanes;
     int32_t features;
+    int32_t weight;
     int64_t count;
     int repeat;
     int threads;
     int staged;
     int assume_strict;
+    const char *then_spirv_path; /* auto: a second kernel that is asked about after the first one's rounds */
+    int64_t then_count;
+    int32_t then_weight;
+    int then_repeat;
+    int programs; /* programs: how many distinct kernels to run */
+    int open_first; /* auto: open the backend with these features (an explicit request) before the questions; -1 for no */
+    int open_after; /* auto: and after them; -1 for no */
 };
 
 static int parse_lanes(const char *text, int32_t *lanes) {
@@ -96,6 +104,8 @@ static int parse_job(int argc, char **argv, struct job *job) {
     memset(job, 0, sizeof *job);
     job->repeat = 1;
     job->threads = 1;
+    job->weight = 1;
+    job->open_first = job->open_after = -1;
     for (int index = 2; index < argc; index++) {
         const char *flag = argv[index];
         const char *value = index + 1 < argc ? argv[index + 1] : NULL;
@@ -125,6 +135,9 @@ static int parse_job(int argc, char **argv, struct job *job) {
         } else if (strcmp(flag, "--features") == 0) {
             job->features = atoi(value);
             index++;
+        } else if (strcmp(flag, "--weight") == 0) {
+            job->weight = atoi(value);
+            index++;
         } else if (strcmp(flag, "--count") == 0) {
             job->count = atoll(value);
             index++;
@@ -133,6 +146,27 @@ static int parse_job(int argc, char **argv, struct job *job) {
             index++;
         } else if (strcmp(flag, "--threads") == 0) {
             job->threads = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--then-spirv") == 0) {
+            job->then_spirv_path = value;
+            index++;
+        } else if (strcmp(flag, "--then-count") == 0) {
+            job->then_count = atoll(value);
+            index++;
+        } else if (strcmp(flag, "--then-weight") == 0) {
+            job->then_weight = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--then-repeat") == 0) {
+            job->then_repeat = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--programs") == 0) {
+            job->programs = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--open-first") == 0) {
+            job->open_first = atoi(value);
+            index++;
+        } else if (strcmp(flag, "--open-after") == 0) {
+            job->open_after = atoi(value);
             index++;
         } else {
             fprintf(stderr, "unknown flag %s\n", flag);
@@ -190,7 +224,10 @@ static int run_job(const struct job *job) {
         return (int)status;
     }
     if (job->staged) tz_vk.caps.direct_transfer = 0;
-    if (job->assume_strict) tz_vk.caps.strict_f32 = 1;
+    if (job->assume_strict) {
+        tz_vk.caps.strict_f32 = 1;
+        tz_vk.caps.strict_probe = 1; /* as if the device had passed the conformance probe */
+    }
     size_t output_size = output_bytes_for(job);
     int threads = job->threads < 1 ? 1 : job->threads;
     struct worker *workers = (struct worker *)calloc((size_t)threads, sizeof *workers);
@@ -286,6 +323,7 @@ static int bench_job(const struct job *job) {
 
 typedef int (*mock_configure_function)(const char *);
 typedef int (*mock_query_function)(void);
+typedef void (*mock_action_function)(void);
 typedef const char *(*mock_text_function)(void);
 
 struct mock_api {
@@ -293,6 +331,13 @@ struct mock_api {
     mock_configure_function configure;
     mock_query_function injected;
     mock_query_function leaked;
+    mock_query_function probe_dispatches;
+    mock_query_function calls;
+    mock_query_function created;
+    mock_query_function opened;
+    mock_query_function waits_entered;
+    mock_query_function live_pipelines;
+    mock_action_function release_wait;
     mock_text_function leak_report;
 };
 
@@ -304,8 +349,17 @@ static int load_mock(struct mock_api *mock) {
     mock->configure = (mock_configure_function)dlsym(mock->handle, "tz_vk_mock_configure");
     mock->injected = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_injected");
     mock->leaked = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_leaked");
+    mock->probe_dispatches = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_probe_dispatches");
+    mock->calls = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_calls");
+    mock->created = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_created");
+    mock->opened = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_opened");
+    mock->waits_entered = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_waits_entered");
+    mock->live_pipelines = (mock_query_function)dlsym(mock->handle, "tz_vk_mock_live_pipelines");
+    mock->release_wait = (mock_action_function)dlsym(mock->handle, "tz_vk_mock_release_wait");
     mock->leak_report = (mock_text_function)dlsym(mock->handle, "tz_vk_mock_leak_report");
-    return mock->configure != NULL && mock->injected != NULL && mock->leaked != NULL && mock->leak_report != NULL;
+    return mock->configure != NULL && mock->injected != NULL && mock->leaked != NULL && mock->probe_dispatches != NULL
+        && mock->calls != NULL && mock->created != NULL && mock->opened != NULL && mock->waits_entered != NULL
+        && mock->live_pipelines != NULL && mock->release_wait != NULL && mock->leak_report != NULL;
 }
 
 /* Runs open + run once per injected failure: the Nth fallible Vulkan call fails, for N = 1, 2, ... until a pass meets no
@@ -398,24 +452,338 @@ static int sweep_job(const struct job *job, const char *base_config) {
     return failures == 0 ? 0 : HARNESS_ERROR;
 }
 
-/* Opens the backend with `features` once and prints the status and the capability line. */
+/* Opens the backend with `features` (`repeat` times) and prints the status and the capability line. With --spirv it then
+   runs that kernel in the same process (a refused feature does not stop the kernels that do not need it) and prints
+   `run=<status>`; on the mock it prints how many times the conformance probe was dispatched. */
 static int probe_job(const struct job *job) {
-    int32_t status = tz_vulkan_open(job->features);
+    int32_t status = 0;
+    for (int round = 0; round < (job->repeat < 1 ? 1 : job->repeat); round++) status = tz_vulkan_open(job->features);
+    int32_t run_status = -1;
+    if (job->spirv_path != NULL) {
+        size_t spirv_size = 0, input_size = 0;
+        void *spirv = read_file(job->spirv_path, &spirv_size);
+        void *input = job->input_path != NULL ? read_file(job->input_path, &input_size) : NULL;
+        size_t output_size = output_bytes_for(job);
+        unsigned char *output = (unsigned char *)malloc(output_size > 0 ? output_size : 1);
+        run_status = spirv != NULL && output != NULL
+            ? tz_vulkan_run(job->mode, 0, job->lanes, NULL, 0, spirv, (int32_t)spirv_size, input, job->count, output)
+            : HARNESS_ERROR;
+        free(output);
+        free(input);
+        free(spirv);
+    }
+    char text[1024];
+    tz_vulkan_describe(text, sizeof text);
+    printf("status=%d %s", (int)status, text);
+    if (run_status >= 0) printf(" run=%d", (int)run_status);
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (getenv("TZ_VK_MOCK") != NULL && load_mock(&mock)) {
+        printf(" probe_dispatches=%d created=%d opened=%d", mock.probe_dispatches(), mock.created(), mock.opened());
+    }
+    printf("\n");
+    return (int)status;
+}
+
+/* Opens the backend and runs the module of the conformance probe whatever the device reports (the runtime itself runs
+   it only where the properties report the controls and a strict kernel is wanted), then prints every lane against the
+   bits that the CPU reference computes. The exit code is the status of the run; the last line counts the lanes that differ. */
+static int conform_job(const struct job *job) {
+    int32_t status = tz_vulkan_open(job->features & ~TZ_VK_FEATURE_STRICT_F32);
     char text[1024];
     tz_vulkan_describe(text, sizeof text);
     printf("status=%d %s\n", (int)status, text);
-    return (int)status;
+    if (status != 0) return (int)status;
+    uint32_t results[TZ_VK_PROBE_LANES];
+    memset(results, 0, sizeof results);
+    status = tz_vk_test_conform(results);
+    if (status != 0) {
+        printf("conform status=%d\n", (int)status);
+        return (int)status;
+    }
+    int different = 0;
+    for (uint32_t lane = 0; lane < TZ_VK_PROBE_LANES; lane++) {
+        int same = results[lane] == tz_vk_probe_expected[lane];
+        different += !same;
+        printf("lane %2u %-40s a=0x%08X b=0x%08X reference=0x%08X device=0x%08X %s\n", (unsigned)lane,
+            tz_vk_probe_operations[lane / 3], (unsigned)tz_vk_probe_input[2 * lane], (unsigned)tz_vk_probe_input[2 * lane + 1],
+            (unsigned)tz_vk_probe_expected[lane], (unsigned)results[lane], same ? "ok" : "DIFFERENT");
+    }
+    printf("conform lanes=%d different=%d\n", TZ_VK_PROBE_LANES, different);
+    return 0;
+}
+
+/* Asks Gpu.Auto `repeat` times whether it would run the kernel on this backend, and prints the answers (1: here, 0: the
+   CPU reference) after the capability line of the device that the first question opened, if it did. With --then-spirv the
+   rounds of a second kernel follow (its own count, weight, and --then-repeat rounds), in the same process: the credit that
+   the first kernel's calls built up and spent is what the second one finds. `credit` is the credit left at the end. */
+static int ask_rounds(const struct job *job, const void *module, size_t size, int64_t count, int32_t weight, int rounds,
+    char *answers, size_t capacity) {
+    size_t used = 0;
+    answers[0] = '\0';
+    for (int round = 0; round < rounds && used + 3 < capacity; round++) {
+        int chosen = tz_vulkan_auto(job->mode, job->lanes, job->features, module, (int32_t)size, weight, count);
+        used += (size_t)snprintf(answers + used, capacity - used, "%s%d", round == 0 ? "" : ",", chosen);
+    }
+    return 0;
+}
+
+static int auto_job(const struct job *job) {
+    size_t size = 0;
+    void *module = job->spirv_path != NULL ? read_file(job->spirv_path, &size) : NULL;
+    if (module == NULL) {
+        fprintf(stderr, "cannot read the module %s\n", job->spirv_path != NULL ? job->spirv_path : "(none)");
+        return HARNESS_ERROR;
+    }
+    char answers[2048], then_answers[2048];
+    int first_status = job->open_first >= 0 ? (int)tz_vulkan_open(job->open_first) : -1;
+    ask_rounds(job, module, size, job->count, job->weight, job->repeat, answers, sizeof answers);
+    then_answers[0] = '\0';
+    if (job->then_spirv_path != NULL) {
+        size_t then_size = 0;
+        void *then_module = read_file(job->then_spirv_path, &then_size);
+        if (then_module == NULL) {
+            fprintf(stderr, "cannot read the module %s\n", job->then_spirv_path);
+            free(module);
+            return HARNESS_ERROR;
+        }
+        ask_rounds(job, then_module, then_size, job->then_count, job->then_weight, job->then_repeat, then_answers, sizeof then_answers);
+        free(then_module);
+    }
+    int after_status = job->open_after >= 0 ? (int)tz_vulkan_open(job->open_after) : -1;
+    char text[1024];
+    tz_vulkan_describe(text, sizeof text);
+    printf("status=0 chosen=%s opened=%d", answers, text[0] != '\0');
+    if (job->then_spirv_path != NULL) printf(" then=%s", then_answers);
+    if (first_status >= 0) printf(" first=%d", first_status);
+    if (after_status >= 0) printf(" after=%d", after_status);
+    printf(" credit=%.0f", tz_vk_auto_credit);
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (getenv("TZ_VK_MOCK") != NULL && load_mock(&mock)) printf(" created=%d mask=%d", mock.created(), mock.opened());
+    const char *name = strstr(text, "device=\"");
+    if (name != NULL) {
+        char device[256];
+        if (sscanf(name, "device=\"%255[^\"]\"", device) == 1) printf(" device=%s", device);
+    }
+    printf("\n");
+    free(module);
+    return 0;
+}
+
+/* The fault sweep of the Auto question: the Nth fallible Vulkan call fails, for N = 1, 2, ... until a pass meets no fault.
+   A fault never makes the answer 1 (the CPU reference runs the call), and no Vulkan object or runtime allocation is left. */
+static int autosweep_job(const struct job *job, const char *base_config) {
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (!load_mock(&mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    size_t size = 0;
+    void *module = job->spirv_path != NULL ? read_file(job->spirv_path, &size) : NULL;
+    if (module == NULL) return HARNESS_ERROR;
+    int failures = 0, passes = 0, chosen_passes = 0;
+    for (int fault = 1; fault < 4096; fault++) {
+        char config[512];
+        snprintf(config, sizeof config, "%s,fail=%d", base_config, fault);
+        tz_vk_test_reset();
+        if (!mock.configure(config)) {
+            fprintf(stderr, "the mock rejects %s\n", config);
+            failures++;
+            break;
+        }
+        int chosen = tz_vulkan_auto(job->mode, job->lanes, job->features, module, (int32_t)size, job->weight, job->count);
+        int injected = mock.injected();
+        tz_vk_test_reset();
+        passes++;
+        if (mock.leaked() != 0) {
+            fprintf(stderr, "fault %d: the runtime leaked Vulkan objects:\n%s\n", fault, mock.leak_report());
+            failures++;
+        }
+        if (tz_live_allocations != 0) {
+            fprintf(stderr, "fault %d: %ld runtime allocations are still live\n", fault, tz_live_allocations);
+            failures++;
+            tz_live_allocations = 0;
+        }
+        if (injected != 0 && chosen != 0) {
+            fprintf(stderr, "fault %d was injected and Gpu.Auto still chose Vulkan\n", fault);
+            failures++;
+        }
+        if (injected == 0) {
+            chosen_passes += chosen;
+            break;
+        }
+    }
+    printf("autosweep passes=%d chosen=%d failures=%d\n", passes, chosen_passes, failures);
+    free(module);
+    return failures == 0 ? 0 : HARNESS_ERROR;
+}
+
+/* A kernel is running (the mock blocks its wait for the fence) while another thread asks Gpu.Auto about three calls: one
+   the cost rule keeps on the CPU reference (10 lanes), one above the rule whose kernel (--then-spirv) has no pipeline yet
+   and whose saving does not pay the first use, and a big call of the running kernel, which the rule sends to the device.
+   None of them may wait for the kernel, so all three are answered while the kernel is still running, and the last one,
+   which needs the state of the backend, is answered 1: only a state that is free while a kernel runs can say so. */
+struct blocked_state {
+    const struct job *job;
+    const void *spirv;
+    size_t spirv_size;
+    const void *input;
+    unsigned char *output;
+    const void *then_module;
+    size_t then_size;
+    int32_t status;
+    int answers[3];
+    atomic_int run_done;
+    atomic_int decisions_done;
+};
+
+static void sleep_ms(long milliseconds) {
+    struct timespec pause = {milliseconds / 1000, (milliseconds % 1000) * 1000000L};
+    nanosleep(&pause, NULL);
+}
+
+static void *blocked_run_main(void *argument) {
+    struct blocked_state *state = (struct blocked_state *)argument;
+    state->status = tz_vulkan_run(state->job->mode, 0, state->job->lanes, NULL, 0, state->spirv, (int32_t)state->spirv_size,
+        state->input, state->job->count, state->output);
+    atomic_store(&state->run_done, 1);
+    return NULL;
+}
+
+static void *blocked_decide_main(void *argument) {
+    struct blocked_state *state = (struct blocked_state *)argument;
+    const struct job *job = state->job;
+    state->answers[0] = tz_vulkan_auto(job->mode, job->lanes, job->features, state->spirv, (int32_t)state->spirv_size, 1, 10);
+    state->answers[1] = tz_vulkan_auto(job->mode, job->lanes, job->features, state->then_module, (int32_t)state->then_size,
+        job->then_weight, job->then_count);
+    state->answers[2] = tz_vulkan_auto(job->mode, job->lanes, job->features, state->spirv, (int32_t)state->spirv_size, 1280, 4000000);
+    atomic_store(&state->decisions_done, 1);
+    return NULL;
+}
+
+static int blocked_job(const struct job *job) {
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (!load_mock(&mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    static struct blocked_state state;
+    size_t input_size = 0;
+    state.job = job;
+    state.spirv = read_file(job->spirv_path, &state.spirv_size);
+    state.then_module = read_file(job->then_spirv_path, &state.then_size);
+    state.input = read_file(job->input_path, &input_size);
+    state.output = (unsigned char *)malloc(output_bytes_for(job));
+    if (state.spirv == NULL || state.then_module == NULL || state.input == NULL || state.output == NULL) return HARNESS_ERROR;
+    int32_t open_status = tz_vulkan_open(job->features);
+    if (open_status != 0) {
+        printf("blocked open=%d\n", (int)open_status);
+        return HARNESS_ERROR;
+    }
+    pthread_t runner, decider;
+    pthread_create(&runner, NULL, blocked_run_main, &state);
+    int entered = 0;
+    for (int wait = 0; wait < 30000 && !(entered = mock.waits_entered() > 0); wait++) sleep_ms(1);
+    int decided = 0;
+    if (entered) {
+        pthread_create(&decider, NULL, blocked_decide_main, &state);
+        for (int wait = 0; wait < 30000 && !(decided = atomic_load(&state.decisions_done)); wait++) sleep_ms(1);
+    }
+    int still_running = !atomic_load(&state.run_done);
+    mock.release_wait();
+    if (entered) pthread_join(decider, NULL);
+    pthread_join(runner, NULL);
+    printf("blocked entered=%d decisions=%d,%d,%d decided_while_running=%d still_running=%d run=%d\n", entered,
+        state.answers[0], state.answers[1], state.answers[2], decided, still_running, (int)state.status);
+    free(state.output);
+    free((void *)state.spirv);
+    free((void *)state.then_module);
+    free((void *)state.input);
+    return entered && decided && still_running && state.status == 0 ? 0 : HARNESS_ERROR;
+}
+
+/* The device is lost during the first wait for a fence (the mock's lose=wait). That run fails, and nothing after it touches
+   the device: another run, another open, and a Gpu.Auto question are all answered without one more Vulkan call. */
+static int lost_job(const struct job *job) {
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (!load_mock(&mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    size_t spirv_size = 0, input_size = 0;
+    void *spirv = read_file(job->spirv_path, &spirv_size);
+    void *input = read_file(job->input_path, &input_size);
+    unsigned char *output = (unsigned char *)malloc(output_bytes_for(job));
+    if (spirv == NULL || input == NULL || output == NULL) return HARNESS_ERROR;
+    int32_t open_status = tz_vulkan_open(job->features);
+    int32_t first = tz_vulkan_run(job->mode, 0, job->lanes, NULL, 0, spirv, (int32_t)spirv_size, input, job->count, output);
+    int poisoned = atomic_load(&tz_vk.poisoned);
+    int calls_before = mock.calls();
+    int32_t second = tz_vulkan_run(job->mode, 0, job->lanes, NULL, 0, spirv, (int32_t)spirv_size, input, job->count, output);
+    int32_t reopen = tz_vulkan_open(job->features);
+    int chosen = tz_vulkan_auto(job->mode, job->lanes, job->features, spirv, (int32_t)spirv_size, job->weight, job->count);
+    int calls_after = mock.calls();
+    tz_vk_test_reset();
+    printf("lost open=%d first=%d poisoned=%d second=%d reopen=%d auto=%d calls_before=%d calls_after=%d leaked=%d\n",
+        (int)open_status, (int)first, poisoned, (int)second, (int)reopen, chosen, calls_before, calls_after, mock.leaked());
+    free(output);
+    free(input);
+    free(spirv);
+    return 0;
+}
+
+/* More distinct kernels than the program cache holds (the id bound of the base module is changed, so each is a module of
+   its own): every run succeeds with the right output, the kernels beyond the cache get a pipeline of their own that is
+   released after the run, and the cache keeps exactly its 256 pipelines. */
+static int programs_job(const struct job *job) {
+    struct mock_api mock;
+    memset(&mock, 0, sizeof mock);
+    if (!load_mock(&mock)) {
+        fprintf(stderr, "TSUZURI_VULKAN_LIBRARY must name the mock library\n");
+        return HARNESS_ERROR;
+    }
+    size_t size = 0, input_size = 0;
+    void *base = read_file(job->spirv_path, &size);
+    uint32_t *input = (uint32_t *)read_file(job->input_path, &input_size);
+    uint32_t *output = (uint32_t *)malloc((size_t)job->count * 4);
+    if (base == NULL || input == NULL || output == NULL || tz_vulkan_open(job->features) != 0) return HARNESS_ERROR;
+    int ok = 0, wrong = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int index = 0; index < job->programs; index++) {
+            uint32_t *module = (uint32_t *)malloc(size);
+            memcpy(module, base, size);
+            module[3] = 64 + (uint32_t)index;
+            memset(output, 0xA5, (size_t)job->count * 4);
+            int32_t status = tz_vulkan_run(0, 0, job->lanes, NULL, 0, module, (int32_t)size, input, job->count, output);
+            free(module);
+            if (status != 0) continue;
+            ok++;
+            for (int64_t lane = 0; lane < job->count; lane++) {
+                if (output[lane] != input[lane] * 3U + 7U) wrong++;
+            }
+        }
+    }
+    printf("programs runs=%d ok=%d wrong=%d pipelines=%d\n", 2 * job->programs, ok, wrong, mock.live_pipelines());
+    free(output);
+    free(input);
+    free(base);
+    return 0;
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: harness probe|run|bench|sweep [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
+        fprintf(stderr, "usage: harness probe|conform|run|bench|sweep|auto|autosweep|blocked|lost|programs [--spirv F --mode map|init --lanes IN,OUT --count N ...]\n");
         return HARNESS_ERROR;
     }
     struct job job;
     if (!parse_job(argc, argv, &job)) return HARNESS_ERROR;
     const char *mock_config = getenv("TZ_VK_MOCK");
-    if (mock_config != NULL && strcmp(argv[1], "sweep") != 0) {
+    int sweeping = strcmp(argv[1], "sweep") == 0 || strcmp(argv[1], "autosweep") == 0;
+    if (mock_config != NULL && !sweeping) {
         struct mock_api mock;
         memset(&mock, 0, sizeof mock);
         if (!load_mock(&mock) || !mock.configure(mock_config)) {
@@ -426,12 +794,24 @@ int main(int argc, char **argv) {
     int code;
     if (strcmp(argv[1], "probe") == 0) {
         code = probe_job(&job);
+    } else if (strcmp(argv[1], "conform") == 0) {
+        code = conform_job(&job);
     } else if (strcmp(argv[1], "run") == 0) {
         code = run_job(&job);
     } else if (strcmp(argv[1], "bench") == 0) {
         code = bench_job(&job);
     } else if (strcmp(argv[1], "sweep") == 0) {
         code = sweep_job(&job, mock_config != NULL ? mock_config : "");
+    } else if (strcmp(argv[1], "autosweep") == 0) {
+        code = autosweep_job(&job, mock_config != NULL ? mock_config : "");
+    } else if (strcmp(argv[1], "auto") == 0) {
+        code = auto_job(&job);
+    } else if (strcmp(argv[1], "blocked") == 0) {
+        code = blocked_job(&job);
+    } else if (strcmp(argv[1], "lost") == 0) {
+        code = lost_job(&job);
+    } else if (strcmp(argv[1], "programs") == 0) {
+        code = programs_job(&job);
     } else {
         fprintf(stderr, "unknown mode %s\n", argv[1]);
         return HARNESS_ERROR;

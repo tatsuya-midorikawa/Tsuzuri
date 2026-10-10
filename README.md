@@ -81,7 +81,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 **Tsuzuri は性能を最優先の設計要件の一つとしており、CPU 命令・SIMD・並列 CPU・GPU のうち、プログラムの意味を保ちつつ実処理が最も速くなる経路をコンパイラ内部で選択することを目指しています。**
 この方針はコンパイラ本体だけでなく、組み込み関数や標準ライブラリの設計にも一貫して適用されます。
 
-現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作に対応しています（厳密な浮動小数点と 64 bit 整数の GPU 実行、Vulkan、自動オフロードは未実装です）。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作、SPIR-V の生成（`--emit spirv`。厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto` に対応しています（WebGPU での厳密な浮動小数点と 64 bit 整数、GPU 常駐バッファ、自動オフロードは未実装です。確かめたのは Apple M1 Max だけです）。
 
 ### 設計と実装済みの範囲
 
@@ -574,7 +574,9 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 単一の `export` された `i32 -> i32` または `i32u -> i32u` カーネルを含むプロジェクトから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` により WebGPU 向けの WGSL シェーダーを生成できます。
 これは厳密な整数演算に基づく出力で、自動オフロードや速度優位を保証するものではありません。`f32` と `f16` は GPU では厳密にできないため、名前で緩い意味を選びます。`--emit wgsl-relaxed`（`f32`・`i32`・`i32u` のカーネルで、内部で `f16` も使えます）と、`Gpu.init_relaxed`・`Gpu.map_relaxed` です。CPU 上の評価は厳密なままで、GPU 上の結果だけが WGSL の浮動小数点規則に従います。
 
-言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しし、`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が GPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。確かめたのは Apple M1 Max だけです。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
+言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しするか、システムの場所の絶対パスにあるものだけで、作業ディレクトリは探しません。`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が WebGPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。
+
+Vulkan では、`tsuzuri build Kernel.tz --emit spirv -o kernel.spv` が SPIR-V（厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`。除算は出せません）を、`--emit spirv-relaxed` が緩い `f32` のモジュールを書きます。`Gpu.request Gpu.Vulkan` は、native のランタイムが Vulkan のデバイスを開けて、プログラムのカーネルが要る機能（`i64` は `shaderInt64`、厳密な `f32` は float controls）をそのデバイスが持つときだけ `Result.Ok` です（ローダーは `TSUZURI_VULKAN_LIBRARY` で名指しするか、macOS はシステムの場所の絶対パス、Windows は System32 だけで、作業ディレクトリは探しません。WebAssembly では常に `Unavailable`）。**デバイスが報告する float controls は申告で、厳密さの証明ではありません。** ランタイムは、組み込みの適合プローブを通ったデバイスにだけ、厳密な `f32` を許します（MoltenVK は `-(x * 0.0)` の符号と非正規化数、SwiftShader は 2^31 以上の `i32u` から `f32` への変換で、報告と違う結果を出しました）。`Gpu.request Gpu.Auto` は常に成功し、呼び出しごとに、転送・同期・初回の費用を含めて測ったコストの規則で CPU 参照か Vulkan を選びます（`Gpu.last_backend ()` で見られます）。規則の定数は 1 台のマシンの経験則です。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけで、float controls をすべて報告して適合プローブを通る実機、離散 GPU、離散 GPU と統合 GPU が両方ある機械（デバイスの選び方はモックだけで確認）、Linux、Windows、NVIDIA・AMD・Intel の GPU では確かめていません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
 
 ---
 
@@ -779,7 +781,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL で、どちらも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
@@ -851,7 +853,9 @@ node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
 node tests/gpu.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_MODULE で実アダプタ（Dawn）も
-node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降
+node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降。TSUZURI_SANITIZE=1 で C 側に ASan と UBSan
+node tests/gpu_vulkan.mjs   # Vulkan のランタイム（合成ライブラリ、ASan・UBSan・TSan、実デバイス）。clang が要り、spirv-as が無ければ実デバイスの検査を飛ばす。TSUZURI_VULKAN_TEST_ICDS で他のドライバも
+node tests/gpu_vulkan_language.mjs target/release/tsuzuri   # 言語としての Vulkan と Gpu.Auto（CPU 参照との照合、WebAssembly の確認）
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs
@@ -872,6 +876,7 @@ node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
+node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

@@ -27,36 +27,60 @@ fn init_relaxed device count initializer = init device count initializer
 def map_relaxed :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
 fn map_relaxed device transform buffer = map device transform buffer
 
-// The device-aware forms (F09 Phase 2). A program that builds a non-CPU backend calls them instead of
-// request, init, map, init_relaxed, and map_relaxed; the compiler adds the number of the call's kernel
-// (-1: the call has no kernel for a device) as the last argument. A device of the WebGpu backend can only
-// exist where the runtime opened one, and it runs the kernel of the call site: there is no run on the CPU,
-// and a call without a kernel (a strict call whose lanes are not 32-bit integers) traps there after the
-// runtime says why.
-def request_on :: Backend -> Result<Device, Error>
+// The device-aware forms (F09 Phases 2 and 3), private to this module. A program that builds a non-CPU
+// backend calls them instead of request, init, map, init_relaxed, and map_relaxed; the compiler adds the
+// number of the call's kernel (-1: the call has no kernel for a device) as the last argument. A device of
+// the WebGpu or Vulkan backend can only exist where the runtime opened one, and it runs the kernel of the
+// call site: there is no run on the CPU, and a call without a kernel for that backend (a strict call whose
+// lanes or operations the backend cannot reproduce) traps there after the runtime says why. A device of the
+// Auto backend needs no open: each call asks the runtime for the CPU reference or Vulkan by its measured
+// cost rule, so it always exists, and the CPU reference serves a call whenever no device is available or
+// worth its cost.
+private def request_on :: Backend -> Result<Device, Error>
 fn request_on backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | WebGpu -> if Gpu.__open 1 (Gpu.__features()) == 0 then Result.Ok (Device { backend: backend }) else Result.Error Unavailable
+    | Vulkan -> if Gpu.__open 2 (Gpu.__features()) == 0 then Result.Ok (Device { backend: backend }) else Result.Error Unavailable
+    | Auto -> Result.Ok (Device { backend: backend })
     | _ -> Result.Error Unavailable
 
-def init_on :: ref Device -> i64 -> (i32 -> 'a) -> i64 -> Buffer<'a>
+// The number of a backend in the runtime: its case index.
+private def backend_code :: Backend -> i32
+fn backend_code backend = match backend with
+    | CpuReference -> 0
+    | WebGpu -> 1
+    | Vulkan -> 2
+    | Cuda -> 3
+    | Metal -> 4
+    | Auto -> 5
+
+private def init_on :: ref Device -> i64 -> (i32 -> 'a) -> i64 -> Buffer<'a>
 fn init_on device count initializer kernel =
     assert (count >= 0 && count <= 2147483647)
-    match device.backend with
-    | CpuReference -> Buffer { values: Array.init count (\index -> initializer (index as i32)) }
-    | WebGpu -> {
+    let backend = Gpu.__select (backend_code device.backend) kernel 1 count
+    match backend with
+    | 0 -> Buffer { values: Array.init count (\index -> initializer (index as i32)) }
+    | _ -> {
         let none: [i32] = [];
-        Buffer { values: Gpu.__run 1 kernel 1 (ref none) count }
+        Buffer { values: Gpu.__run backend kernel 1 (ref none) count }
     }
-    | _ -> unreachable ()
 
-def map_on :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> i64 -> Buffer<'b>
+private def map_on :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> i64 -> Buffer<'b>
 fn map_on device transform buffer kernel =
     let values = buffer.values
-    match device.backend with
-    | CpuReference -> Buffer { values: Array.map transform (ref values) }
-    | WebGpu -> Buffer { values: Gpu.__run 1 kernel 0 (ref values) values.length }
-    | _ -> unreachable ()
+    let backend = Gpu.__select (backend_code device.backend) kernel 0 values.length
+    match backend with
+    | 0 -> Buffer { values: Array.map transform (ref values) }
+    | _ -> Buffer { values: Gpu.__run backend kernel 0 (ref values) values.length }
+
+/// The backend that served the most recent `Gpu.init` or `Gpu.map` call (relaxed or not) of a program
+/// that names a non-CPU backend: `CpuReference` before any such call, and the backend that actually ran
+/// the call when the device was a `Gpu.Auto` one. Calls of other threads can come in any order.
+def last_backend :: unit -> Backend
+fn last_backend _unit = match Gpu.__last() with
+    | 1 -> WebGpu
+    | 2 -> Vulkan
+    | _ -> CpuReference
 
 def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
 fn from_array _device values = Buffer { values: deref values }

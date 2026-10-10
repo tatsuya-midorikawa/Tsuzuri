@@ -2855,7 +2855,11 @@ impl Checker<'_> {
         }
         if matches!(
             builtin,
-            Builtin::GpuOpen | Builtin::GpuFeatures | Builtin::GpuRun
+            Builtin::GpuOpen
+                | Builtin::GpuFeatures
+                | Builtin::GpuRun
+                | Builtin::GpuSelect
+                | Builtin::GpuLast
         ) && !(self.module == "Gpu" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::new(

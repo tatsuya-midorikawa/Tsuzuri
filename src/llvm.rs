@@ -323,7 +323,7 @@ mod simd;
 mod sync;
 #[path = "llvm_task.rs"]
 mod task;
-pub(crate) use gpu_host::with_wasm_gpu_host;
+pub(crate) use gpu_host::{runtime_source as gpu_runtime_source, with_wasm_gpu_host};
 pub(crate) use host_abi::uses_host_abi;
 
 pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> {
@@ -6190,9 +6190,11 @@ fn emit_builtin(
         builtin if builtin.name().starts_with("Math.") => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        Builtin::GpuOpen | Builtin::GpuFeatures | Builtin::GpuRun => {
-            gpu_host::emit(instance, module, intrinsics, globals, &symbol)
-        }
+        Builtin::GpuOpen
+        | Builtin::GpuFeatures
+        | Builtin::GpuRun
+        | Builtin::GpuSelect
+        | Builtin::GpuLast => gpu_host::emit(instance, module, intrinsics, globals, &symbol),
         Builtin::Hash
         | Builtin::HashMix
         | Builtin::DisplayQuoted

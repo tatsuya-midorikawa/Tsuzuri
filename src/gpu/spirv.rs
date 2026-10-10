@@ -74,8 +74,12 @@ pub struct SpirvKernel {
     pub relaxed: bool,
     /// Whether the module has the `init_main` entry point (a 32-bit integer input).
     pub init: bool,
-    /// The arithmetic, logic, comparison, conversion, and select instructions one lane executes, with a call counted
-    /// as its callee: the cost estimate that `Gpu.Auto` uses (at least 1).
+    /// A lower bound of the arithmetic, logic, comparison, conversion, and select instructions that one lane executes
+    /// (at least 1): the cost estimate that `Gpu.Auto` uses. Straight-line code counts every instruction. A conditional
+    /// counts its condition and its cheaper arm (a lane runs one arm), `&&` and `||` count their left operand (the right
+    /// one runs only when the left does not decide), and a call counts what its callee counts by the same rule. So the
+    /// weight never prices a lane above the cheapest path it can take, and a call is moved to the device only when even
+    /// that path pays for the transfer. A kernel without branches has exactly the number of instructions it emits.
     pub weight: u32,
 }
 
@@ -503,7 +507,8 @@ impl<'a, 'k> Emitter<'a, 'k> {
     }
 
     /// An instruction with a result: returns the new id. Arithmetic, logic, comparison, conversion, and select
-    /// instructions make up the weight of the kernel.
+    /// instructions add to the running weight of the function; `branch` and `short_circuit` take back the part that a lane
+    /// does not execute (the dearer arm, the right operand).
     fn result(&mut self, opcode: u16, ty: u32, operands: &[u32]) -> u32 {
         if (op::CONVERT_F_TO_U..=op::F_DIV).contains(&opcode)
             || (op::IS_NAN..=op::NOT).contains(&opcode)
@@ -1231,6 +1236,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
     ) -> Result<Val, Diagnostic> {
         let lhs = self.value(left)?;
         let left_end = self.block;
+        let left_weight = self.weight;
         let evaluate = self.fresh();
         let merge = self.fresh();
         self.emit(instruction(op::SELECTION_MERGE, &[merge, 0]));
@@ -1247,6 +1253,8 @@ impl<'a, 'k> Emitter<'a, 'k> {
         self.label(evaluate);
         let rhs = self.value(right)?;
         let right_end = self.block;
+        // The right operand runs only when the left one does not decide, so the weight is a lower bound: the left operand.
+        self.weight = left_weight;
         self.emit(instruction(op::BRANCH, &[merge]));
         self.label(merge);
         let bool_type = self.type_of(Kind::Bool);
@@ -1276,12 +1284,17 @@ impl<'a, 'k> Emitter<'a, 'k> {
             &[condition.id, then_label, else_label],
         ));
         self.label(then_label);
+        let arm_start = self.weight;
         let then_value = self.expression(then_branch)?;
         let then_end = self.block;
+        let then_weight = self.weight;
         self.emit(instruction(op::BRANCH, &[merge]));
         self.label(else_label);
+        self.weight = arm_start;
         let else_value = self.expression(else_branch)?;
         let else_end = self.block;
+        // A lane runs one arm, so the weight is a lower bound: the condition, which every lane evaluates, and the cheaper arm.
+        self.weight = self.weight.min(then_weight);
         self.emit(instruction(op::BRANCH, &[merge]));
         self.label(merge);
         if *ty == Type::Unit {

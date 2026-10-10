@@ -753,3 +753,109 @@ fn the_nesting_limit_reaches_relaxed_calls_and_embedded_kernels() {
         }
     });
 }
+
+#[test]
+fn the_device_aware_std_functions_are_private_to_the_gpu_module() {
+    // `request_on`, `init_on`, and `map_on` carry a kernel number that only the compiler may write: a call with a
+    // number of the user's own would reach the host with a kernel that is not the callback's (E1022 now).
+    for backend in ["WebGpu", "CpuReference"] {
+        let prefix = format!(
+            "let device = Result.get (Gpu.request Gpu.{backend})\nlet values: [i32] = [10, 20, 30]\n"
+        );
+        for (body, name) in [
+            (
+                "let mapped = Gpu.map_on (&device) (\\item -> item + 1) (Gpu.from_array (&device) (&values)) 0\nGpu.to_array mapped",
+                "Gpu.map_on",
+            ),
+            (
+                "Gpu.to_array (Gpu.init_on (&device) 3 (\\index -> index) 0)",
+                "Gpu.init_on",
+            ),
+            (
+                "let outcome = Gpu.request_on Gpu.WebGpu\nResult.is_ok (&outcome)",
+                "Gpu.request_on",
+            ),
+            ("let escaped = Gpu.map_on\n0", "Gpu.map_on"),
+            ("let escaped = Gpu.init_on\n0", "Gpu.init_on"),
+            ("let escaped = Gpu.request_on\n0", "Gpu.request_on"),
+        ] {
+            let error = analyze(&format!("{prefix}{body}")).unwrap_err();
+            assert_eq!(error.code, "E1022", "{backend}: {body}: {error:?}");
+            assert!(
+                error.message.contains(&format!(
+                    "private name '{name}' is only visible inside module 'Gpu'"
+                )),
+                "{backend}: {body}: {}",
+                error.message
+            );
+        }
+    }
+    // The compiler's own retargeting still reaches them: a program that calls the public names is device aware.
+    let module = analyze(DEVICE_PROGRAM).unwrap();
+    assert_eq!(module.gpu.kernels.len(), 2);
+    let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, false).unwrap();
+    assert!(ir.contains("@tz.fn.Gpu.request_on(") && !ir.contains("@tz.fn.Gpu.request("));
+}
+
+#[test]
+fn gpu_run_passes_no_source_for_a_kernel_with_other_lanes_than_its_element_types() {
+    use tsuzuri::gpu_devices::{LANE_32, LANE_64, LANE_F16, LANE_F32};
+    // One `Gpu.__run` instance per element-type pair: i32 -> i32 (a strict init and map), i32 -> f16 (a relaxed
+    // init), f32 -> f32 (a relaxed map), i64 -> i64 (a Vulkan lane kind, F09 Phase 3), and f64 -> f64, which no
+    // kernel descriptor has.
+    let module = analyze(
+        "def mix :: i32 -> i32\nfn mix value = value * 3 + 1\ndef poly :: f32 -> f32\nfn poly value = value * value + value\ndef half_index :: i32 -> f16\nfn half_index value = value as f16\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet a = Gpu.to_array (Gpu.map (&device) mix (Gpu.init (&device) 8 mix))\nlet floats: [f32] = [1.0, 2.0]\nlet b = Gpu.to_array (Gpu.map_relaxed (&device) poly (Gpu.from_array (&device) (&floats)))\nlet c = Gpu.to_array (Gpu.init_relaxed (&device) 4 half_index)\nlet wide: [i64] = [1i64]\nlet d = Gpu.to_array (Gpu.map (&device) (\\item -> item + 1i64) (Gpu.from_array (&device) (&wide)))\nlet doubles: [f64] = [1.0f64]\nlet e = Gpu.to_array (Gpu.map (&device) (\\item -> item + 1.0f64) (Gpu.from_array (&device) (&doubles)))\nArray.sum (&a)",
+    )
+    .unwrap();
+    let expected = [
+        ("i32$Ci32", i64::from(LANE_32), i64::from(LANE_32)),
+        ("i32$Cf16", i64::from(LANE_32), i64::from(LANE_F16)),
+        ("f32$Cf32", i64::from(LANE_F32), i64::from(LANE_F32)),
+        ("i64$Ci64", i64::from(LANE_64), i64::from(LANE_64)),
+        ("f64$Cf64", -1, -1),
+    ];
+    for wasm in [false, true] {
+        let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
+        let instances: Vec<&str> = ir
+            .split("define internal %tz.array @tz.builtin.Gpu.__run.")
+            .skip(1)
+            .map(|text| text.split("\n}\n").next().unwrap())
+            .collect();
+        assert_eq!(instances.len(), expected.len(), "{wasm}");
+        for (suffix, input, output) in expected {
+            let body = instances
+                .iter()
+                .find(|body| body.starts_with(&format!("{suffix}(")))
+                .unwrap_or_else(|| panic!("{suffix}"));
+            // The descriptor's kinds are compared with those of the element types, and only a match keeps the
+            // sources: the host sizes its copies of the arrays by the kinds.
+            for (name, kind) in [("input", input), ("output", output)] {
+                assert!(
+                    body.contains(&format!(
+                        "%{name}_matches = icmp eq i32 %found_{name}_kind, {kind}\n"
+                    )),
+                    "{suffix} {name}"
+                );
+            }
+            assert!(body.contains("%matches = and i1 %input_matches, %output_matches\n"));
+            for field in [
+                "flags",
+                "lanes",
+                "wgsl",
+                "wgsl_length",
+                "spirv",
+                "spirv_length",
+            ] {
+                assert!(
+                    body.contains(&format!("%{field} = phi "))
+                        && body.contains(&format!("[ %kept_{field}, %lookup ]")),
+                    "{suffix} {field}"
+                );
+            }
+            assert!(body.contains("%kept_wgsl = select i1 %matches, ptr %found_wgsl, ptr null\n"));
+            assert!(
+                body.contains("%kept_spirv = select i1 %matches, ptr %found_spirv, ptr null\n")
+            );
+        }
+    }
+}

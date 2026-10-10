@@ -409,21 +409,27 @@ export def unavailable :: bool
 fn unavailable = {
   let explicit = Gpu.request Gpu.WebGpu;
   let automatic = Gpu.request Gpu.Auto;
-  Result.is_error (&explicit) && Result.is_error (&automatic)
+  Result.is_error (&explicit) && Result.is_ok (&automatic)
 }
 `);
   const ir = join(api, "api.ll");
   cli(["build", source, "--emit", "llvm", "-o", ir]);
   writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@malloc(", "@tracked_alloc(").replaceAll("@free(", "@tracked_free("));
   const host = join(api, "host.c");
-  writeFileSync(host, `#include <stdint.h>\n#include <stdlib.h>\n#include <assert.h>\n#include <math.h>\n#include <string.h>\nstatic uint64_t live;\nvoid *tracked_alloc(uint64_t size) { uint64_t *header = malloc(size + 16); assert(header); header[0] = size; live += size; return header + 2; }\nvoid tracked_free(void *pointer) { if (pointer) { uint64_t *header = (uint64_t *)pointer - 2; live -= header[0]; free(header); } }\nextern int64_t tz_pipeline(void);\nextern float tz_float_reference(float);\nextern float tz_relaxed_reference(float);\nextern float tz_relaxed_init_sum(void);\nextern uint8_t tz_unavailable(void);\nint main(void) { uint32_t patterns[] = {0, 0x80000000u, 1, 0x80000001u, 0x00800000u, 0x3f800000u, 0xbf800000u, 0x7f800000u, 0xff800000u, 0x7fc00000u}; for (unsigned repeat = 0; repeat < 500; repeat++) { assert(tz_pipeline() == 148); assert(tz_unavailable()); assert(tz_relaxed_init_sum() == 16.0f); for (unsigned index = 0; index < 10; index++) { float value; memcpy(&value, &patterns[index], 4); volatile float product = value * value; float expected = product + value; float actual = tz_float_reference(value); float relaxed = tz_relaxed_reference(value); if (isnan(expected)) { assert(isnan(actual)); assert(isnan(relaxed)); } else { assert(memcmp(&actual, &expected, 4) == 0); assert(memcmp(&relaxed, &expected, 4) == 0); } } assert(live == 0); } return 0; }\n`);
+  // The checks are assertions that also call the code under test, and the bundled Windows `zig cc` defines NDEBUG from -O1
+  // up, which would skip the calls (the hermetic `unavailable` check among them). So the host undefines NDEBUG, and the
+  // build below defines it on the command line to show that the checks stay: `selftest` makes the first assert fail.
+  writeFileSync(host, `#undef NDEBUG\n#include <stdint.h>\n#include <stdlib.h>\n#include <assert.h>\n#include <math.h>\n#include <string.h>\nstatic uint64_t live;\nvoid *tracked_alloc(uint64_t size) { uint64_t *header = malloc(size + 16); assert(header); header[0] = size; live += size; return header + 2; }\nvoid tracked_free(void *pointer) { if (pointer) { uint64_t *header = (uint64_t *)pointer - 2; live -= header[0]; free(header); } }\nextern int64_t tz_pipeline(void);\nextern float tz_float_reference(float);\nextern float tz_relaxed_reference(float);\nextern float tz_relaxed_init_sum(void);\nextern uint8_t tz_unavailable(void);\nint main(int argc, char **argv) { (void)argv; if (argc > 1) assert(!"the asserts of this host are compiled in"); uint32_t patterns[] = {0, 0x80000000u, 1, 0x80000001u, 0x00800000u, 0x3f800000u, 0xbf800000u, 0x7f800000u, 0xff800000u, 0x7fc00000u}; for (unsigned repeat = 0; repeat < 500; repeat++) { assert(tz_pipeline() == 148); assert(tz_unavailable()); assert(tz_relaxed_init_sum() == 16.0f); for (unsigned index = 0; index < 10; index++) { float value; memcpy(&value, &patterns[index], 4); volatile float product = value * value; float expected = product + value; float actual = tz_float_reference(value); float relaxed = tz_relaxed_reference(value); if (isnan(expected)) { assert(isnan(actual)); assert(isnan(relaxed)); } else { assert(memcmp(&actual, &expected, 4) == 0); assert(memcmp(&relaxed, &expected, 4) == 0); } } assert(live == 0); } return 0; }\n`);
   for (const optimization of [0, 3]) {
     const native = join(api, `host-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
     // `unavailable` names Gpu.WebGpu, so the program calls the GPU runtime of src/runtime/gpu.c. The run has
     // no WebGPU library (an empty TSUZURI_WEBGPU_LIBRARY disables the backend), so the result does not depend on
-    // the machine: Gpu.request Gpu.WebGpu is Unavailable and no CPU run is substituted.
-    execute(clang, [ir, host, resolve("src/runtime/gpu.c"), `-O${optimization}`, "-ffp-contract=off", "-Wno-override-module", "-o", native, ...(process.platform === "win32" ? [] : ["-lm", "-pthread"]), ...(process.platform === "linux" ? ["-ldl"] : [])]);
+    // the machine: Gpu.request Gpu.WebGpu is Unavailable and no CPU run is substituted, while Gpu.request Gpu.Auto
+    // always succeeds (F09 Phase 3: it needs no device, and the CPU reference serves its calls). This clang line
+    // has no Vulkan backend, which only a program that names Gpu.Vulkan or Gpu.Auto gets from the driver.
+    execute(clang, [ir, host, resolve("src/runtime/gpu.c"), `-O${optimization}`, "-DNDEBUG", "-ffp-contract=off", "-Wno-override-module", "-o", native, ...(process.platform === "win32" ? [] : ["-lm", "-pthread"]), ...(process.platform === "linux" ? ["-ldl"] : [])]);
     execute(native, [], true, { ...process.env, TSUZURI_WEBGPU_LIBRARY: "" });
+    assert.notEqual(execute(native, ["selftest"], false, { ...process.env, TSUZURI_WEBGPU_LIBRARY: "" }).status, 0, `the asserts of the C host are compiled in at -O${optimization} with NDEBUG defined`);
     const wasm = join(api, `api-${optimization}.wasm`);
     cli(["build", source, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));

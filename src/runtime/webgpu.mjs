@@ -1,3 +1,7 @@
+// A RangeError that stands for a kernel or device limit (status 3 of the language runtime). Any other RangeError, such as
+// a pointer outside the module's memory or a failed allocation, is a failure (status 4).
+const limitError = message => new RangeError(message, { cause: "limit" });
+
 // `options.features` lists the device features to require, such as "shader-f16" (F09 Phase 2).
 export async function createWebGpu(gpu = globalThis.navigator?.gpu, options = {}) {
   if (!gpu?.requestAdapter) throw new Error("WebGPU is unavailable; no CPU fallback was selected");
@@ -38,7 +42,7 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu, options = {}
   function bytesFor(count, kind) {
     const bytes = count * (kind === "f16" ? 2 : 4);
     if (!Number.isSafeInteger(count) || count < 0 || count > 2147483647 || bytes > device.limits.maxStorageBufferBindingSize || bytes > device.limits.maxBufferSize) {
-      throw new RangeError("GPU buffer length exceeds the kernel or device limit");
+      throw limitError("GPU buffer length exceeds the kernel or device limit");
     }
     return Math.max(Math.ceil(bytes / 4) * 4, 4);
   }
@@ -75,7 +79,7 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu, options = {}
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bindings);
         const groups = Math.ceil(count / 256);
-        if (groups > device.limits.maxComputeWorkgroupsPerDimension) throw new RangeError("GPU dispatch exceeds the device workgroup limit");
+        if (groups > device.limits.maxComputeWorkgroupsPerDimension) throw limitError("GPU dispatch exceeds the device workgroup limit");
         if (groups > 0) pass.dispatchWorkgroups(groups);
         pass.end();
         device.queue.submit([encoder.finish()]);
@@ -165,7 +169,7 @@ export async function createWebGpu(gpu = globalThis.navigator?.gpu, options = {}
       const outputSize = Math.max(Math.ceil(outputBytes / 4) * 4, 4);
       const groups = Math.ceil(count / 256);
       if (!Number.isSafeInteger(count) || count < 0 || count > 2147483647 || Math.max(inputSize, outputSize) > Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) || groups > device.limits.maxComputeWorkgroupsPerDimension) {
-        return Promise.reject(new RangeError("GPU buffer length exceeds the kernel or device limit"));
+        return Promise.reject(limitError("GPU buffer length exceeds the kernel or device limit"));
       }
       if (count === 0) return Promise.resolve(new Uint8Array());
       return checked(async () => {
@@ -238,6 +242,10 @@ export function createGpuImports(gpu, getMemory, options = {}) {
     return status === 0 && needed & ~features ? 2 : status;
   };
   const run = async (backend, mode, flags, lanes, wgsl, wgslLength, spirv, spirvLength, input, count, output) => {
+    // The guest pointers are i32, so an address from 2 GiB up (a module with a large --wasm-max-memory) arrives negative.
+    wgsl >>>= 0;
+    input >>>= 0;
+    output >>>= 0;
     if (backend !== 1 || !runtime) {
       report("webgpu: no device is open; a WebGPU device comes from Gpu.request Gpu.WebGpu");
       return 1;
@@ -249,25 +257,32 @@ export function createGpuImports(gpu, getMemory, options = {}) {
     count = Number(count);
     if (options.debug && count > 0) report(`webgpu: ${mode ? "init" : "map"} ${count} lanes, kinds 0x${lanes.toString(16).padStart(4, "0")}`);
     try {
+      const lane = kind => (kind === 3 ? 2 : 4);
+      const inputBytes = mode === 0 ? count * lane(lanes & 255) : 0;
+      const outputBytes = count * lane((lanes >> 8) & 255);
+      const size = getMemory().buffer.byteLength;
+      if (wgsl + wgslLength > size || input + inputBytes > size || output + outputBytes > size) throw new Error("a buffer of the call lies outside the memory of the module");
       const key = `${wgsl}:${wgslLength}`;
       if (!programs.has(key)) {
         const source = new TextDecoder().decode(new Uint8Array(getMemory().buffer, wgsl, wgslLength));
         programs.set(key, runtime.prepare(source, flags & 1 ? { float: "relaxed" } : {}));
       }
       const program = await programs.get(key);
-      const lane = kind => (kind === 3 ? 2 : 4);
       const memory = getMemory();
-      const bytes = mode === 0 ? new Uint8Array(memory.buffer.slice(input, input + count * lane(lanes & 255))) : undefined;
-      const result = await runtime.run(program, mode, count, bytes, count * lane((lanes >> 8) & 255));
+      const bytes = mode === 0 ? new Uint8Array(memory.buffer.slice(input, input + inputBytes)) : undefined;
+      const result = await runtime.run(program, mode, count, bytes, outputBytes);
       new Uint8Array(getMemory().buffer, output, result.byteLength).set(result);
       return 0;
     } catch (error) {
       report(`webgpu: ${error.message}`);
-      return error instanceof RangeError ? 3 : 4;
+      return error?.cause === "limit" ? 3 : 4;
     }
   };
   return {
     imports: { open: new WebAssembly.Suspending(open), run: new WebAssembly.Suspending(run) },
+    // The functions behind the imports, for a host that drives them without a module (the tests call them with the
+    // signed i32 pointers that a module passes).
+    functions: { open, run },
     async close() { await runtime?.close(); runtime = undefined; },
   };
 }
