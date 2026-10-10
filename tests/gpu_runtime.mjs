@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createGpuImports } from "../src/runtime/webgpu.mjs";
+import { fakeProvider } from "./gpu_runtime_provider.mjs";
 
 // F09 Phase 2: `Gpu.request Gpu.WebGpu` in the language runtime. The loader paths (no library, a wrong version, a
-// library that lacks functions) and the opt-in WASM imports run everywhere; the dispatch checks need a real WebGPU
-// implementation and run with TSUZURI_WEBGPU=1:
+// library that lacks functions, a library in the working directory), the failures of the native runtime (a C host,
+// tests/gpu_runtime_host.c, drives it against a fake wgpu-native, tests/gpu_runtime_fake.c, that is dangerous in the way
+// that the real one is: it hands out invalid objects and aborts when one is submitted), the pointers of the WASM host,
+// and the opt-in WASM imports run everywhere; the dispatch checks need a real WebGPU implementation and run with
+// TSUZURI_WEBGPU=1. TSUZURI_SANITIZE=1 builds the C side with AddressSanitizer and UBSan.
 //   native: wgpu-native 29 (TSUZURI_WEBGPU_LIBRARY names it when it is not on the default search path)
 //   WASM:   the `webgpu` binding of TSUZURI_WEBGPU_MODULE under Node.js 24 or newer (JavaScript Promise Integration)
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
@@ -19,10 +23,10 @@ const windows = process.platform === "win32";
 const executable = windows ? ".exe" : "";
 const notes = [];
 
-function execute(program, args, { env = {}, success = true } = {}) {
+function execute(program, args, { env = {}, success = true, timeout = 300000, cwd } = {}) {
   const merged = { ...process.env, ...env };
   for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 300000, maxBuffer: 8 * 1024 * 1024, env: merged });
+  const result = spawnSync(program, args, { encoding: "utf8", timeout, cwd, maxBuffer: 8 * 1024 * 1024, env: merged });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
@@ -273,6 +277,10 @@ fn wasm_deep63 = deep63()
 `;
 nativeSources.shapes = `${shapes}\nif shapes_available() then shapes_sweep() else -1\n`;
 nativeSources.deep = `${shapes}\ndeep63()\n`;
+// The largest call that a device with the default limits takes (65,535 workgroups of 256 invocations), and one lane more,
+// which the runtime refuses with status 3 before it makes a buffer.
+nativeSources.edge = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (&device) 16776960 (\\index -> index * 2))\nvalues[16776959]\n";
+nativeSources.over = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (&device) 16776961 (\\index -> index * 2))\nvalues[16776960]\n";
 
 try {
   // ---- Native: the runtime of src/runtime/gpu.c loads wgpu-native at run time --------------------------------------
@@ -339,16 +347,141 @@ try {
     refused(mock("newer", ["-DMOCK_VERSION=0x1E000000u"]), /wgpu-native 30\.0\.0\.0 is not supported/);
     refused(mock("other", ["-DMOCK_NO_VERSION"]), /the library has no wgpuGetVersion; only wgpu-native 29 is supported/);
     refused(mock("incomplete", ["-DMOCK_VERSION=0x1D000101u"]), /the library lacks wgpu/);
-    // A build from source (Homebrew's wgpu-native) reports version 0: the user vouches for it by naming it, and a
-    // library found on the search path is not trusted that way.
+    // A build from source (Homebrew's wgpu-native) reports version 0: the user vouches for it by naming it. The
+    // libraries that the runtime finds by itself are not trusted that way (see the host builds below).
     const unversioned = mock("unversioned", ["-DMOCK_VERSION=0u"]);
     refused(unversioned, /the library lacks wgpu/);
-    const search = join(directory, "search");
-    mkdirSync(search);
-    copyFileSync(unversioned, join(search, `libwgpu_native.${extension}`));
-    const found = execute(sweep, [], { env: { TSUZURI_WEBGPU_LIBRARY: undefined, TSUZURI_GPU_DEBUG: "1", [process.platform === "darwin" ? "DYLD_LIBRARY_PATH" : "LD_LIBRARY_PATH"]: search } });
-    assert.equal(found.stdout.trim(), "-1");
+
+    // ---- The runtime driven directly: a C host (tests/gpu_runtime_host.c) built with src/runtime/gpu.c ---------------
+    // The failures that a language program only sees as a trap show up here as statuses, and a process that wgpu-native
+    // aborts shows as a failed run. TSUZURI_SANITIZE=1 builds the runtime, the host, and the fake with AddressSanitizer
+    // and UBSan. NDEBUG is defined on every command line, as the bundled zig cc does from -O1 up: the C files undefine
+    // it for their own assertions.
+    const runtimeSource = resolve("src/runtime/gpu.c");
+    const hostSource = resolve("tests/gpu_runtime_host.c");
+    const sanitize = process.env.TSUZURI_SANITIZE === "1";
+    const sanitizerEnv = sanitize ? { ASAN_OPTIONS: "detect_stack_use_after_return=1", UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1" } : {};
+    const compile = (output, sources, flags = []) => {
+      execute(clang, [...sources, "-o", output, "-std=gnu11", "-Wall", "-DNDEBUG", ...(sanitize ? ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"] : []), ...flags, "-lm", "-pthread", ...(process.platform === "linux" ? ["-ldl"] : [])]);
+      return output;
+    };
+    const fake = compile(join(directory, `fake.${extension}`), [resolve("tests/gpu_runtime_fake.c")], ["-shared", "-fPIC", "-Wno-unused-function", "-Wno-unused-variable"]);
+    // The runtime gives up on a device after a minute, which a test cannot wait for: this host builds it with 400 ms.
+    const host = compile(join(directory, "host"), [hostSource, runtimeSource], ["-DTZ_WGPU_TIMEOUT_MS=400"]);
+    const quiet = { TSUZURI_GPU_DEBUG: "", ...sanitizerEnv };
+    const withFake = (injection = "") => ({ ...quiet, TSUZURI_WEBGPU_LIBRARY: fake, FAKE_WGPU: injection, FAKE_WGPU_REPORT: "1" });
+    const alive = text => /^fake wgpu: alive (.*)$/m.exec(text)?.[1];
+    const released = "instances=0 adapters=0 devices=0 queues=0 buffers=0 modules=0 pipelines=0 layouts=0 groups=0 encoders=0 passes=0 commands=0";
+    for (const scenario of ["basic", "half", "failures", "limits"]) {
+      const result = execute(host, [scenario], { env: withFake(), timeout: 60000 });
+      assert.match(result.stdout, new RegExp(`^${scenario}: ok$`, "m"));
+      assert.equal(alive(result.stderr), released, `${scenario}: everything that the runtime made was released`);
+    }
+    // Faults, each in a process of its own. A call that fails ends with a status (4, or 3 over a limit), never with a
+    // submit of an object that the library marked invalid (which aborts the process), and the next call fails or works
+    // as the device allows. `recover` fails once and then works; `refuse` fails every time.
+    const recover = ["run", "map", "300", "4", "map", "300", "0", "init", "300", "0"];
+    const refuse = ["run", "map", "300", "4", "init", "300", "4", "map", "300", "4"];
+    for (const [injection, args, reason] of [
+      ["fail-buffer=1", recover, /the buffer could not be created/],
+      ["fail-buffer=2", recover, /the buffer could not be created/],
+      ["fail-buffer=3", recover, /the buffer could not be created/],
+      ["fail-buffer=4", recover, /the buffer could not be created/],
+      ["fail-bindgroup", refuse, /the bind group is invalid/],
+      ["fail-pipeline", refuse, /the pipeline failed/],
+      ["fail-finish", refuse, /the command buffer is invalid/],
+      // The device is lost during the first call; the second never reaches the queue (a submit on a lost device panics).
+      ["lose-device", ["run", "map", "300", "4", "map", "300", "4", "init", "10", "4"], /the device was lost/],
+      // The device's limits, which are small here, and not the adapter's, which are large: the largest call is accepted.
+      ["max-groups=40", ["run", "map", "10240", "0", "init", "10240", "0", "map", "10241", "3", "init", "10241", "3", "map", "300", "0"], /exceeds the device limit/],
+      ["max-buffer=4096", ["run", "map", "1024", "0", "init", "1025", "3", "map", "1025", "3", "map", "300", "0"], /exceeds the device limit/],
+    ]) {
+      const result = execute(host, args, { env: withFake(injection), timeout: 60000 });
+      assert.match(result.stdout, /^sequence: ok$/m, injection);
+      assert.match(result.stderr, reason, injection);
+      assert.equal(alive(result.stderr), released, `${injection}: everything that the runtime made was released`);
+    }
+    // A device that does not answer. A blocking poll cannot be given up on, so the runtime never makes one: the call
+    // ends with status 4 after the timeout, the device is not asked again, and the process ends (the release of a stuck
+    // device would wait for it).
+    const stalled = execute(host, ["stall"], { env: withFake("stall-map"), timeout: 20000 });
+    assert.match(stalled.stdout, /^stall: ok$/m);
+    assert.match(stalled.stderr, /the device did not finish the kernel in time/);
+    assert.match(stalled.stderr, /the device did not answer in time; it is not used again/);
+    const unanswered = execute(host, ["open"], { env: withFake("stall-adapter"), success: false, timeout: 20000 });
+    assert.equal(unanswered.status, 1, "an adapter that never answers is Unavailable");
+    // The instance is released, which completes the request that was given up on: its callback finds no wait that it belongs to.
+    assert.equal(alive(unanswered.stderr), released);
+
+    // A library in the working directory is never loaded by default: dlopen of a bare name searches it on macOS, and the
+    // initializers of a planted library would run in every program that asks for a device. Loading is seen by a file
+    // that the library creates when it is loaded.
+    const planted = join(directory, "planted");
+    mkdirSync(planted);
+    const marker = join(planted, "loaded");
+    const bare = `libwgpu_native.${extension}`;
+    execute(clang, ["-shared", "-fPIC", "-DMOCK_VERSION=0x1D000101u", "-DMOCK_MARKER", resolve("tests/gpu_runtime_mock.c"), "-o", join(planted, bare)]);
+    const production = compile(join(directory, "host-production"), [hostSource, runtimeSource]);
+    const searching = { ...quiet, TSUZURI_WEBGPU_LIBRARY: undefined, TSUZURI_GPU_DEBUG: "1", MOCK_LOAD_MARKER: marker };
+    const ignored = execute(production, ["open"], { env: searching, cwd: planted, success: false });
+    assert.ok(!existsSync(marker), `a library in the working directory was loaded: ${ignored.stderr}`);
+    assert.ok([1, 2].includes(ignored.status), "the open ends as Unavailable or unsupported, whatever the machine has installed");
+    // The same library, named explicitly, is loaded (the marker works), and an incomplete one is refused with a reason.
+    const named = execute(production, ["open"], { env: { ...searching, TSUZURI_WEBGPU_LIBRARY: join(planted, bare) }, cwd: planted, success: false });
+    assert.ok(existsSync(marker) && named.status === 2 && /the library lacks wgpu/.test(named.stderr), named.stderr);
+    rmSync(marker);
+    // A default candidate is an absolute path: a name without a directory is never handed to dlopen, also when a build
+    // lists one (TZ_GPU_WGPU_DEFAULTS replaces the list).
+    const relative = compile(join(directory, "host-relative"), [hostSource, runtimeSource], [`-DTZ_GPU_WGPU_DEFAULTS="${bare}"`]);
+    const refusedName = execute(relative, ["open"], { env: searching, cwd: planted, success: false });
+    assert.ok(!existsSync(marker), "a candidate without a directory was loaded");
+    assert.equal(refusedName.status, 1);
+    assert.match(refusedName.stderr, /no WebGPU library \(wgpu-native\) could be loaded/);
+    // A library found by the search is not trusted to be wgpu-native 29 when it reports no version.
+    const searched = compile(join(directory, "host-searched"), [hostSource, runtimeSource], [`-DTZ_GPU_WGPU_DEFAULTS="${unversioned}"`]);
+    const found = execute(searched, ["open"], { env: { ...quiet, TSUZURI_WEBGPU_LIBRARY: undefined, TSUZURI_GPU_DEBUG: "1" }, success: false });
+    assert.equal(found.status, 2);
     assert.match(found.stderr, /the library reports no version; set TSUZURI_WEBGPU_LIBRARY to use a build of wgpu-native 29/);
+    notes.push("a C host drove the runtime against a fake wgpu-native: 10 injected faults end in statuses (no submit of an invalid object), a stalled device is given up on and not asked again, the limits come from the device, no library is loaded from the working directory");
+
+    // A user call of the device-aware std functions would name a kernel of its own: they are private to the Gpu module.
+    const forged = project("forged", "def negate :: i32 -> i32\nfn negate value = 0 - value\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = [10, 20, 30]\nlet mapped = Gpu.map_on (&device) negate (Gpu.from_array (&device) (&values)) 0\n(Gpu.to_array mapped)[0]\n");
+    const refusal = JSON.parse(cli(["build", forged, "--json", "-o", join(forged, "never")], false).stderr);
+    assert.equal(refusal.code, "E1022");
+    assert.match(refusal.message, /private name 'Gpu\.map_on' is only visible inside module 'Gpu'/);
+
+    // The lowering of Gpu.__run compares the lane kinds of the kernel that it was numbered with against the element types of
+    // the call, and a kernel with other lanes is a call without a kernel: the host sizes its copies of the arrays by the
+    // kinds, so a mismatch would read and write past them. The compiler numbers every call itself, so the descriptor is
+    // patched here: the f16 output of the kernel becomes a 32-bit output, which is twice the size of what the call allocates.
+    const lanes = project("lanes", "def half_index :: i32 -> f16\nfn half_index value = value as f16\nexport def half_length :: i32\nfn half_length = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let values = Gpu.to_array (Gpu.init_relaxed (&device) 4 half_index);\n    values.length as i32\n}\n");
+    cli(["build", lanes, "--emit", "llvm", "-o", join(lanes, "intact.ll")]);
+    const text = readFileSync(join(lanes, "intact.ll"), "utf8");
+    const descriptor = /(\{ i32 \d+, i32 )769(, i32 \d+, ptr @tz\.gpu\.kernel\.0\.wgsl)/;
+    assert.match(text, descriptor);
+    writeFileSync(join(lanes, "patched.ll"), text.replace(descriptor, "$1257$2"));
+    writeFileSync(join(lanes, "host.c"), "#include <stdint.h>\n#include <stdio.h>\nextern int32_t tz_half_length(void);\nint main(void) { printf(\"%d\\n\", (int)tz_half_length()); return 0; }\n");
+    const runLanes = name => execute(compile(join(lanes, name), [join(lanes, `${name}.ll`), join(lanes, "host.c"), runtimeSource], ["-O0", "-Wno-override-module"]), [], { env: withFake(), success: false });
+    const intact = runLanes("intact");
+    assert.equal(intact.status, 0, intact.stderr);
+    assert.equal(intact.stdout.trim(), "4");
+    const patched = runLanes("patched");
+    assert.notEqual(patched.status, 0, "the call with a kernel of other lanes trapped");
+    assert.equal(patched.stdout, "");
+    assert.match(patched.stderr, /this call has no WGSL kernel/);
+    notes.push("a kernel whose lanes do not match the call's element types is never run, and Gpu.map_on and Gpu.init_on cannot be written by a user (E1022)");
+
+    if (useGpu) {
+      // The real wgpu-native (TSUZURI_WEBGPU_LIBRARY names it): the same scenarios, with a broken shader, a missing entry
+      // point and a bind group that does not fit its layout, which wgpu-native only reports as errors, and the largest
+      // call that a device with the default limits takes (65,535 workgroups of 256 invocations).
+      const real = compile(join(directory, "host-real"), [hostSource, runtimeSource]);
+      for (const scenario of ["basic", "half", "failures", "limits", "maximum"]) {
+        const result = execute(real, [scenario], { env: quiet, timeout: 120000 });
+        assert.match(result.stdout, new RegExp(`^${scenario}: (ok|skipped.*)$`, "m"), result.stderr);
+      }
+      notes.push("the C host ran against the real wgpu-native: a broken shader, a missing entry point and a bad bind group end in status 4 (twice each), 16,776,961 lanes end in status 3, and 16,776,960 lanes run");
+    }
   }
 
   if (useGpu) {
@@ -387,6 +520,15 @@ try {
     assert.equal(deep.stdout, "");
     assert.match(deep.stderr, /this call has no WGSL kernel/);
     notes.push("native kernels with a mutable parameter and 62 else-if arms matched the CPU reference bit for bit, and a strict call with 63 arms trapped");
+    // The limits are the device's: the largest call runs, and one lane more is refused before any buffer is made (status 3,
+    // which the program sees as a trap that says why).
+    const edge = execute(builds["edge-0"], []);
+    assert.equal(edge.stdout.trim(), String(16776959 * 2));
+    const over = execute(builds["over-0"], [], { success: false });
+    assert.ok(trapped(over));
+    assert.equal(over.stdout, "");
+    assert.match(over.stderr, /the number of lanes exceeds the device limit/);
+    notes.push("native Gpu.init of 16,776,960 lanes ran on the device and 16,776,961 lanes trapped on the device limit");
   } else {
     notes.push("native WebGPU dispatch not requested");
   }
@@ -450,6 +592,56 @@ try {
       const shaped = instantiate(modules[optimization].shaped, none);
       assert.equal(await shaped.call("tz_wasm_shapes_sweep")(), -1);
       await shaped.host.close();
+    }
+    // ---- Pointers above 2 GiB: a module with a large --wasm-max-memory passes them as negative i32 values ------------------
+    {
+      let memory;
+      try { memory = new WebAssembly.Memory({ initial: 36000 }); } catch { /* the engine has no room for 2.2 GiB */ }
+      if (!memory) {
+        notes.push("the high-pointer checks were skipped (no room for 2.2 GiB of WebAssembly memory)");
+      } else {
+        const signed = address => address | 0;
+        const text = new TextEncoder().encode("fn map_main() {}\nfn init_main() {}\n");
+        const wgsl = 2 ** 31 + 4096;
+        const output = 2 ** 31 + 65536;
+        new Uint8Array(memory.buffer, wgsl, text.length).set(text);
+        const host = createGpuImports(fakeProvider(), () => memory);
+        assert.equal(await host.functions.open(1, 0), 0);
+        const run = (count, address = output) => capture(() => host.functions.run(1, 1, 0, 0x0101, signed(wgsl), text.length, 0, 0, 0, BigInt(count), signed(address)));
+        // The kernel text and the result lie above the signed range: the lanes arrive in the output.
+        const high = await run(1000);
+        assert.equal(high.value, 0, high.lines.join("\n"));
+        assert.deepEqual(Array.from(new Int32Array(memory.buffer, output, 1000)), Array.from({ length: 1000 }, (_, index) => index));
+        // A buffer that does not fit in the memory of the module is a failure (4), and a genuine limit is 3.
+        const outside = await run(1000, memory.buffer.byteLength - 100);
+        assert.equal(outside.value, 4);
+        assert.match(outside.lines.join("\n"), /lies outside the memory of the module/);
+        const limit = await run(100000000, 65536);
+        assert.equal(limit.value, 3);
+        assert.match(limit.lines.join("\n"), /exceeds the kernel or device limit/);
+        await host.close();
+        // A RangeError of another kind (here a failed allocation) is a failure, not a limit.
+        const failing = createGpuImports(fakeProvider({ failOnBuffer: true }), () => memory);
+        assert.equal(await failing.functions.open(1, 0), 0);
+        const allocation = await capture(() => failing.functions.run(1, 1, 0, 0x0101, signed(wgsl), text.length, 0, 0, 0, 1000n, signed(output)));
+        assert.equal(allocation.value, 4);
+        assert.match(allocation.lines.join("\n"), /Array buffer allocation failed/);
+        await failing.close();
+        notes.push("the WASM host reads pointers above 2 GiB as unsigned, reports a buffer outside the memory as a failure (4), and only a real limit as status 3");
+      }
+      // The same in a real module: a 2.4 GB array moves the heap above 2 GiB, so the result of Gpu.init lies there.
+      if (totalmem() >= 12 * 2 ** 30) {
+        const highProject = project("wasm-high", "export def wasm_high :: i32\nfn wasm_high = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let filler = Array.init 600000000 (\\index -> (index as i32) * 7);\n    let values = Gpu.to_array (Gpu.init (&device) 1000 (\\index -> index));\n    values[999] + filler[(values[1] as i64)]\n}\n");
+        const highModule = join(highProject, "high.wasm");
+        cli(["build", highProject, "--target", "wasm32", "--wasm-feature", "webgpu", "--wasm-max-memory", "3500MiB", "-O3", "-o", highModule]);
+        const { host, call } = instantiate(highModule, fakeProvider());
+        const result = await capture(() => call("tz_wasm_high")());
+        assert.equal(result.value, 999 + 7, `${result.error ?? ""}\n${result.lines.join("\n")}`);
+        await host.close();
+        notes.push("a WASM module with a 2.4 GB array ran Gpu.init above 2 GiB");
+      } else {
+        notes.push("the 2.4 GB array test was skipped (less than 12 GiB of memory)");
+      }
     }
     if (useGpu) {
       const binding = await import(process.env.TSUZURI_WEBGPU_MODULE ?? pathToFileURL(resolve("target/webgpu-runtime/node_modules/webgpu/index.js")).href);

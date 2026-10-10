@@ -54,10 +54,16 @@ fn run(
         globals.definitions.push(kernel_table(module));
     }
     let output = llvm_type(&instance.types[1], module);
+    let input_kind = lane_kind(&instance.types[0]);
+    let output_kind = lane_kind(&instance.types[1]);
     let kernels = module.gpu.kernels.len();
     // The runtime reads the descriptor's fields as scalars, so no struct layout crosses to the host.
     // A call without a kernel (number -1: a strict call whose lanes are not 32-bit integers) passes
-    // no source, and the runtime says so before this traps.
+    // no source, and the runtime says so before this traps. A kernel whose lane kinds are not those of
+    // this instance's element types passes no source either: the host sizes its copies of the input and
+    // the output by the kinds, so any other kernel would read or write past the arrays. The compiler
+    // numbers every call's kernel itself (the std functions that carry the number are private), so this
+    // is only a second guard: it keeps the arrays safe but cannot tell kernels with equal lanes apart.
     format!(
         "define internal %tz.array {symbol}(i32 %backend, i64 %kernel, i32 %mode, %tz.array %input, i64 %count) nounwind {{\n\
          entry:\n  \
@@ -80,14 +86,26 @@ fn run(
          %found_spirv = load ptr, ptr %spirv_slot\n  \
          %spirv_length_slot = getelementptr inbounds {KERNEL}, ptr %descriptor, i32 0, i32 6\n  \
          %found_spirv_length = load i32, ptr %spirv_length_slot, align 4\n  \
+         %found_input_kind = and i32 %found_lanes, 255\n  \
+         %found_shifted = lshr i32 %found_lanes, 8\n  \
+         %found_output_kind = and i32 %found_shifted, 255\n  \
+         %input_matches = icmp eq i32 %found_input_kind, {input_kind}\n  \
+         %output_matches = icmp eq i32 %found_output_kind, {output_kind}\n  \
+         %matches = and i1 %input_matches, %output_matches\n  \
+         %kept_flags = select i1 %matches, i32 %found_flags, i32 0\n  \
+         %kept_lanes = select i1 %matches, i32 %found_lanes, i32 0\n  \
+         %kept_wgsl = select i1 %matches, ptr %found_wgsl, ptr null\n  \
+         %kept_wgsl_length = select i1 %matches, i32 %found_wgsl_length, i32 0\n  \
+         %kept_spirv = select i1 %matches, ptr %found_spirv, ptr null\n  \
+         %kept_spirv_length = select i1 %matches, i32 %found_spirv_length, i32 0\n  \
          br label %call\n\
          call:\n  \
-         %flags = phi i32 [ %found_flags, %lookup ], [ 0, %prepare ]\n  \
-         %lanes = phi i32 [ %found_lanes, %lookup ], [ 0, %prepare ]\n  \
-         %wgsl = phi ptr [ %found_wgsl, %lookup ], [ null, %prepare ]\n  \
-         %wgsl_length = phi i32 [ %found_wgsl_length, %lookup ], [ 0, %prepare ]\n  \
-         %spirv = phi ptr [ %found_spirv, %lookup ], [ null, %prepare ]\n  \
-         %spirv_length = phi i32 [ %found_spirv_length, %lookup ], [ 0, %prepare ]\n  \
+         %flags = phi i32 [ %kept_flags, %lookup ], [ 0, %prepare ]\n  \
+         %lanes = phi i32 [ %kept_lanes, %lookup ], [ 0, %prepare ]\n  \
+         %wgsl = phi ptr [ %kept_wgsl, %lookup ], [ null, %prepare ]\n  \
+         %wgsl_length = phi i32 [ %kept_wgsl_length, %lookup ], [ 0, %prepare ]\n  \
+         %spirv = phi ptr [ %kept_spirv, %lookup ], [ null, %prepare ]\n  \
+         %spirv_length = phi i32 [ %kept_spirv_length, %lookup ], [ 0, %prepare ]\n  \
          %size_end = getelementptr {output}, ptr null, i32 1\n  \
          %size = ptrtoint ptr %size_end to i64\n  \
          %total = mul i64 %count, %size\n  \
@@ -110,6 +128,11 @@ fn run(
          call void @llvm.trap()\n  \
          unreachable\n}}\n\n"
     )
+}
+
+/// The lane kind that a kernel descriptor needs for buffers of `ty`; -1, which no descriptor has, for any other type.
+fn lane_kind(ty: &Type) -> i64 {
+    crate::gpu_devices::lane(ty).map_or(-1, i64::from)
 }
 
 /// The descriptors `{ flags, lanes, features, wgsl, wgsl_length, spirv, spirv_length }` of the

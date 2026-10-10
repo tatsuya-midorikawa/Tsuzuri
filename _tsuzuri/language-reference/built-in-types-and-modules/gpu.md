@@ -110,8 +110,8 @@ match Gpu.request Gpu.WebGpu with
 
 デバイスは呼び出しごとに、配列を複製してアップロードし、カーネルを実行し、完了を待ち、結果を読み戻します。バッファは、CPU 参照と同じホストの配列のままです（`Gpu.to_array` は転送をしません）。呼び出しのあとデバイスに残るものはありません。`Gpu.map` を重ねた分だけ、アップロードと読み戻しも重なります。
 
-- 1 回の呼び出しの lane 数は 2,147,483,647 以下です。デバイスの上限（`maxStorageBufferBindingSize`、`maxBufferSize`、1 次元あたりのワークグループ数 × 256）を超えると、理由を標準エラーに出してトラップします。Apple M1 Max の上限は 65,535 × 256 = 16,776,960 lane でした。
-- `Gpu.request` が成功したあとの実行時エラー（シェーダーのコンパイル失敗、デバイスの喪失、上限超過）も、理由を標準エラーに 1 行出してトラップします。`Result` では返りません。
+- 1 回の呼び出しの lane 数は 2,147,483,647 以下です。さらに、開いたデバイスの上限（`maxStorageBufferBindingSize`、`maxBufferSize`、1 次元あたりのワークグループ数 × 256）を超えると、何も作らず何も送らずに、理由を標準エラーに出してトラップします。ランタイムは上限を求めずにデバイスを開くので、上限はアダプタが報告する値（Apple M1 Max は 4 GiB 近く）ではなく、デバイスの既定の値（128 MiB、256 MiB、65,535 × 256 = 16,776,960 lane）で、開いたあとに `wgpuDeviceGetLimits` で読みます。これを超えるバインドやディスパッチは、wgpu-native が検証エラーにしたあとの送信で、プロセスごと異常終了するためです。16,776,960 lane の呼び出しは、Apple M1 Max の実機で通ることを確かめました。
+- `Gpu.request` が成功したあとの実行時エラー（シェーダーのコンパイル失敗、パイプラインやバインドグループの作成失敗、メモリ不足、デバイスの喪失、上限超過）も、理由を標準エラーに 1 行出してトラップします。`Result` では返りません。wgpu-native はエラーのあとも無効なオブジェクトを返し、それを使う送信は panic（プロセスの異常終了）になるので、ランタイムはオブジェクトを作るたびにエラーの有無を確かめ、無効なものを使わず、プログラムのキャッシュにも残しません。デバイスを失ったあと、また読み戻しが 60 秒以内に終わらなかったあとは、そのデバイスを二度と使わず、以後の呼び出しは待たずに失敗します。
 - ランタイムは、プロセスに 1 つのデバイスを、最初の `Gpu.request Gpu.WebGpu` で開き、終了時に閉じます。複数のスレッドから呼ぶと、1 回ずつ順に動きます。
 - 同じ WGSL のパイプラインは作り直しません。最初の呼び出しにだけ、パイプラインの作成が入ります。
 
@@ -124,7 +124,7 @@ native のランタイムは、リンク時の依存を持ちません。`Gpu.re
 | `TSUZURI_WEBGPU_LIBRARY` | 読み込むライブラリのパス。設定すると、これだけを試します。空文字は WebGPU を無効にし、`request` は `Unavailable` です |
 | `TSUZURI_GPU_DEBUG` | 空でなければ、`request` が `Unavailable` になった理由と、デバイスで動かした呼び出しごとの `map|init <lane 数> lanes, kinds 0x<出力><入力>`（lane の種類は 1 が 32 bit 整数、2 が `f32`、3 が `f16`）を標準エラーに出します |
 
-`TSUZURI_WEBGPU_LIBRARY` がなければ、macOS は `libwgpu_native.dylib`（と `/opt/homebrew/lib`、`/usr/local/lib`）、Linux は `libwgpu_native.so`、Windows は `wgpu_native.dll` を探します。この版が対応するのは wgpu-native 29 です。`wgpuGetVersion` の主バージョンが 29 でない、またはこの API の関数が足りないライブラリは、`Unavailable` です。ソースからビルドした wgpu-native（Homebrew の `wgpu-native` など）は、バージョンとして 0 を返します。それは、`TSUZURI_WEBGPU_LIBRARY` で名指ししたときだけ、29 だと利用者が保証したものとして受け入れます。アダプタは高性能のものを求め、256 invocation のワークグループが使えなければ `Unavailable` です。
+`TSUZURI_WEBGPU_LIBRARY` がなければ、次の絶対パスだけを探します。macOS は `/opt/homebrew/lib/libwgpu_native.dylib` と `/usr/local/lib/libwgpu_native.dylib`、Linux は `/usr/local/lib`・`/usr/lib`・`/usr/lib64`・`/usr/lib/x86_64-linux-gnu`・`/usr/lib/aarch64-linux-gnu` の `libwgpu_native.so`、Windows はシステムディレクトリの `wgpu_native.dll` です。ディレクトリのない名前では探しません。macOS の `dlopen` は作業ディレクトリも探すので、そこに置かれたライブラリの初期化処理が、WebGPU を要求するすべてのプログラムで動いてしまうためです（Windows の既定の検索順序にも、アプリケーションと作業ディレクトリが入ります）。別の場所にあるライブラリは、`TSUZURI_WEBGPU_LIBRARY` に、書いたとおりに読み込まれるパスで名指しします。この版が対応するのは wgpu-native 29 です。`wgpuGetVersion` の主バージョンが 29 でない、またはこの API の関数が足りないライブラリは、`Unavailable` です。ソースからビルドした wgpu-native（Homebrew の `wgpu-native` など）は、バージョンとして 0 を返します。それは、`TSUZURI_WEBGPU_LIBRARY` で名指ししたときだけ、29 だと利用者が保証したものとして受け入れます。アダプタは高性能のものを求め、256 invocation のワークグループが使えなければ `Unavailable` です。
 
 ```sh
 tsuzuri build Main.tz -o app
@@ -151,12 +151,12 @@ console.log(await WebAssembly.promising(instance.exports.tz_total)());
 await host.close();
 ```
 
-`--wasm-feature webgpu` は `wasm32` の object、LLVM IR、WASM だけで、`--wasm-feature threads`、`--wasm-host`、JavaScript バインディング（`--emit bindings-js`）とは組み合わせられず、`E2000` です。`jspi` とは独立です。WebAssembly の線形メモリの既定の上限は 16 MiB なので、大きなバッファには `--wasm-max-memory` を付けます。
+`--wasm-feature webgpu` は `wasm32` の object、LLVM IR、WASM だけで、`--wasm-feature threads`、`--wasm-host`、JavaScript バインディング（`--emit bindings-js`）とは組み合わせられず、`E2000` です。`jspi` とは独立です。WebAssembly の線形メモリの既定の上限は 16 MiB なので、大きなバッファには `--wasm-max-memory` を付けます。メモリが 2 GiB を超えるモジュールでも使えます。ホストは `i32` のアドレスを符号なしとして読み、モジュールのメモリの外にあるバッファは、上限超過ではなく失敗（状態 4）として報告します。
 
 
 ## 型と関数
 
-`std/Gpu.tz` の公開面は次のとおりです。レコードのフィールドは不透明なので、`device.backend` や `buffer.values` は `E1022` です。
+`std/Gpu.tz` の公開面は次のとおりです。レコードのフィールドは不透明なので、`device.backend` や `buffer.values` は `E1022` です。WebGPU デバイスのカーネルの番号を受け取る `request_on`・`init_on`・`map_on` は標準ライブラリの内部用の `private` 関数で、利用者のコードが呼ぶと `E1022` です（コンパイラが `Gpu.request`・`Gpu.init`・`Gpu.map` などの呼び出し箇所を付け替えます）。
 
 | 名前 | シグネチャ | 説明 |
 | --- | --- | --- |

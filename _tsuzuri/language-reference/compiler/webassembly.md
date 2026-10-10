@@ -434,6 +434,7 @@ tsuzuri build app --target wasm32 --wasm-feature webgpu -o app.wasm
 - 2 つの import は、アダプタの応答と読み戻しを待つために JSPI でモジュールを中断します。`src/runtime/webgpu.mjs` の `createGpuImports(gpu, getMemory)` が、`WebAssembly.Suspending` で包んだ import（`host.imports`）と `host.close()` を返します。`gpu` は `navigator.gpu` か Node.js の `webgpu` バインディングで、`getMemory()` はインスタンスの `memory` を返します。export は `WebAssembly.promising` で包んで呼びます。
 - `wasm32` の `object`、`llvm`、`wasm` だけで使えます。`--wasm-feature threads`、`--wasm-host`、`--emit bindings-js` とは同時に指定できません（`E2000`）。`jspi` とは独立で、同時に付けられます。
 - `Gpu.request Gpu.WebGpu` が `Unavailable` になるのは、`navigator.gpu` や `webgpu` バインディングがない、アダプタがない、256 invocation のワークグループが使えない、`f16` のカーネルがあるのにアダプタが `shader-f16` を持たない、のどれかです。`createGpuImports` の `options.debug` が、理由と、デバイスで動かした呼び出しごとの 1 行を `console.error` に出します。
+- import の `wgsl`・`input`・`output` は `i32` なので、メモリが 2 GiB を超えるモジュール（`--wasm-max-memory` の大きなもの）では、JavaScript に負の数として届きます。`createGpuImports` は符号なしとして読みます。モジュールのメモリの外にあるバッファは失敗（状態 4）で、状態 3 はデバイスの上限超過だけです。`host.functions.open`・`host.functions.run` は、import の中身の関数そのもので、モジュールなしに呼べます（テストが使います）。
 - 線形メモリの既定の上限は 16 MiB のままです。ホスト配列の複製と結果の配列が同時にあるので、大きなバッファを GPU に渡すときは `--wasm-max-memory` を増やします。
 - JSPI を持つエンジンが要ります。リポジトリの `tests/gpu_runtime.mjs` で、Node.js 24 と Dawn（Apple M1 Max の Metal）で動くことを確かめました。Node.js 20 には JSPI がないので、そのテストは import の検査だけをします。
 

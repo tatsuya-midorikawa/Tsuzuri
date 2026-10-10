@@ -33,13 +33,13 @@ fn map_relaxed device transform buffer = map device transform buffer
 // exist where the runtime opened one, and it runs the kernel of the call site: there is no run on the CPU,
 // and a call without a kernel (a strict call whose lanes are not 32-bit integers) traps there after the
 // runtime says why.
-def request_on :: Backend -> Result<Device, Error>
+private def request_on :: Backend -> Result<Device, Error>
 fn request_on backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | WebGpu -> if Gpu.__open 1 (Gpu.__features()) == 0 then Result.Ok (Device { backend: backend }) else Result.Error Unavailable
     | _ -> Result.Error Unavailable
 
-def init_on :: ref Device -> i64 -> (i32 -> 'a) -> i64 -> Buffer<'a>
+private def init_on :: ref Device -> i64 -> (i32 -> 'a) -> i64 -> Buffer<'a>
 fn init_on device count initializer kernel =
     assert (count >= 0 && count <= 2147483647)
     match device.backend with
@@ -50,7 +50,7 @@ fn init_on device count initializer kernel =
     }
     | _ -> unreachable ()
 
-def map_on :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> i64 -> Buffer<'b>
+private def map_on :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> i64 -> Buffer<'b>
 fn map_on device transform buffer kernel =
     let values = buffer.values
     match device.backend with

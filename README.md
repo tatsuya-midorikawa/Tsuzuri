@@ -564,7 +564,7 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 単一の `export` された `i32 -> i32` または `i32u -> i32u` カーネルを含むプロジェクトから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` により WebGPU 向けの WGSL シェーダーを生成できます。
 これは厳密な整数演算に基づく出力で、自動オフロードや速度優位を保証するものではありません。`f32` と `f16` は GPU では厳密にできないため、名前で緩い意味を選びます。`--emit wgsl-relaxed`（`f32`・`i32`・`i32u` のカーネルで、内部で `f16` も使えます）と、`Gpu.init_relaxed`・`Gpu.map_relaxed` です。CPU 上の評価は厳密なままで、GPU 上の結果だけが WGSL の浮動小数点規則に従います。
 
-言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しし、`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が GPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。確かめたのは Apple M1 Max だけです。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
+言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しするか、システムの場所の絶対パスにあるものだけで、作業ディレクトリは探しません。`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が GPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。確かめたのは Apple M1 Max だけです。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
 
 ---
 
@@ -839,7 +839,7 @@ node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
 node tests/gpu.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_MODULE で実アダプタ（Dawn）も
-node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降
+node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降。TSUZURI_SANITIZE=1 で C 側に ASan と UBSan
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs

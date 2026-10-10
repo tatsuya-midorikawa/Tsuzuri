@@ -731,3 +731,30 @@ const ulp = x => { f32[0] = Math.abs(x); const low = f32[0]; u32[0] += 1; return
   （`GPU kernel exceeds 127 levels of WGSL statement nesting; …`、上限の数を含む）を出す。関数ごとに数え直す。厳密な呼び出しは、CPU 参照では制限を受けず、WebGpu デバイスでは GPU のカーネルがない（実行時の文面は
   lane の型だけを挙げる）。緩い呼び出しは `validate_calls` でコンパイル時に `E1017` になる。
 - テスト: `tests/gpu.rs` の 3 本（修正前は失敗）、`tests/gpu.mjs` の 9 形状（CPU と実 Dawn でビット一致）と拒否 5 件、`tests/gpu_runtime.mjs` の native（wgpu-native）と WASM（Dawn、JSPI）の `shapes`・`deep63`。
+
+### Phase 2 のレビュー後の修正（7 件）
+
+独立したコードレビューが、Phase 2 の実装（`3d60e5c`）の欠陥を 7 件見つけた（wgpu-native の ABI の宣言そのものは、実際のヘッダーと 23 の構造体・enum・40 の関数で一致を確認済み）。
+
+1. **利用者が `Gpu.map_on` を呼べた（高）**: `request_on`・`init_on`・`map_on` は公開の std 関数で、利用者が書いたカーネル番号が `Gpu.__run` に届き、別のカーネルの lane 幅でホストが配列の外を読み書きした。
+   3 つを `private` にした（利用者の呼び出しは `E1022`。コンパイラの付け替えは影響を受けない）。さらに `Gpu.__run` の lowering が、番号のカーネルの lane の種類（入力・出力）を呼び出しの要素型の種類と比べ、合わなければソースを渡さない
+   （「カーネルなし」。ランタイムが理由を出してトラップする）。
+2. **上限がアダプタのもので、失敗したオブジェクトを送信していた（中）**: デバイスは上限を求めずに作るのに、`max_buffer`・`max_groups` はアダプタから読んでいた。作成の失敗（uncaptured-error コールバック）は、map の待ちのあと（送信のあと）に初めて見ていたので、
+   wgpu-native が送信で panic し、プロセスが SIGABRT で落ちた。上限を `wgpuDeviceGetLimits` で読み（超える呼び出しは何も作らずに状態 3）、バッファ・レイアウト・バインドグループ・エンコーダー・パス・コマンドバッファを作るたびに、
+   エラーの有無を確かめ、失敗は送信せずに状態 4 にする。
+3. **失敗したシェーダー・パイプラインがキャッシュに残った（中）**: 代入のあとにエラーを見ていたので、次の呼び出しが無効なハンドルを見つけて送信し、abort した。失敗したオブジェクトは解放し、キャッシュに入れない。
+4. **WASM のホストが `i32` のアドレスを符号付きで読んだ（中）**: 2 GiB 以上のアドレスは負の数で届き、`Uint8Array` が RangeError を出し（状態 3 と報告）、`slice` は末尾から読んだ。`>>> 0` で符号なしにし、メモリの外のバッファは状態 4、状態 3 は本物の上限超過
+   （`cause: "limit"` の RangeError）だけにした。
+5. **既定のライブラリ探索が作業ディレクトリを探した（中、セキュリティ）**: macOS の `dlopen("libwgpu_native.dylib")` は作業ディレクトリを探し、置かれたライブラリの初期化処理が `wgpuGetVersion` の前に動いた。既定の候補を、システムの場所の絶対パスだけにした
+   （macOS は `/opt/homebrew/lib`・`/usr/local/lib`、Linux は `/usr/local/lib`・`/usr/lib`・`/usr/lib64`・multiarch、Windows は `LoadLibraryExA` の `LOAD_LIBRARY_SEARCH_SYSTEM32`）。`TSUZURI_WEBGPU_LIBRARY` は書いたとおり。
+6. **打ち切った待ちの状態がスタックに残った（中）**: タイムアウト後も `userdata1 = &wait` のコールバックが登録されたままで、後から動くと死んだフレームに書いた。ブロックする `wgpuDevicePoll` は 60 秒の打ち切りが効かなかった。
+   待ちの状態を静的な 1 つにして世代番号を持たせ（古い世代のコールバックは何も書かず、遅れて来たアダプタ・デバイスは解放する）、poll は常にブロックせず、5 ms 続けて回したあとは sleep を挟む。読み戻しが終わらなかったデバイスは使わず、終了時に解放もしない。
+7. **C のホストの `assert` が NDEBUG で消えた（中、テストの正しさ）**: Windows の `zig cc` は -O1 から NDEBUG を定義し、`assert(...)` の中の呼び出しが消える（hermetic な `unavailable` の検査も）。C のホストは `#undef NDEBUG` で始め、
+   NDEBUG を定義してビルドし、`selftest` 引数で assert が効いていることを確かめる。
+
+- テスト: `tests/gpu_runtime_host.c`（ランタイムを直接呼ぶ C のホスト）と `tests/gpu_runtime_fake.c`（偽の wgpu-native。無効なオブジェクトを返し、それを送信すると abort、ブロックする poll は応答しないデバイスで戻らない）で、
+  バッファ 4 か所・バインドグループ・パイプライン・`finish` の失敗、デバイスの喪失、応答しない map とアダプタ、デバイスの上限を注入し、どれも状態で終わる（修正前は SIGABRT・SIGSEGV・hang）。実機の wgpu-native でも、壊れたシェーダー・
+  入口のないパイプライン・レイアウトに合わないバインドグループ・上限の境界を同じホストで動かす。`tests/gpu_runtime_mock.c` の `-DMOCK_MARKER` で、作業ディレクトリに置いたライブラリが読み込まれないことを確かめる。WASM のホストは
+  `tests/gpu_runtime_provider.mjs` の偽のプロバイダで、2 GiB 以上のアドレス、メモリ外、本物の上限、RangeError の別種を確かめ、メモリが十分あれば 2.4 GB の配列を持つモジュールでも動かす。`tests/gpu.rs` は、`_on` の `private`（E1022）と、
+  `Gpu.__run` の lane の種類の比較を確かめる。`tests/gpu_runtime.mjs` は、descriptor の lane を書き換えた IR が「カーネルなし」でトラップすることを確かめる（修正前はそのまま動いて 4 を出力した）。`TSUZURI_SANITIZE=1` で C 側を ASan と UBSan で動かす。
+- 確認していないこと: Windows の LoadLibraryExA と Sleep の分岐（スタブの `windows.h` での構文検査だけ）。触っていないこと: `impl/f09-vulkan` の `gpu-vulkan.c`。読んだだけだが、`libvulkan.1.dylib`・`libMoltenVK.dylib`・`vulkan-1.dll` のように、ディレクトリのない名前を `dlopen`／`LoadLibraryA` へ渡す候補が先頭にあり、macOS と Windows で上の 5 と同じ作業ディレクトリ・アプリケーションディレクトリの探索になる（統合時に直す対象）。
