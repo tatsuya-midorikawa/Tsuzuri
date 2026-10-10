@@ -320,18 +320,28 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// The async operations of `Net` (E09 Phase 2): a call that starts, or takes back, an operation of
-    /// `Async.host`, and returns unit. The runtime completes the operation with the `tsuzuri_async_post`
+    /// `Async.host`, and returns unit. Natively the runtime completes the operation with the `tsuzuri_async_post`
     /// that is passed in, so `net.c` itself needs no reactor; the driver rejects a program that starts one
-    /// without `Async.block_on`.
+    /// without `Async.block_on`. On WebAssembly (`--wasm-feature net`) the host completes it with
+    /// `tsuzuri_async_complete`, so no function is passed.
     fn net_async_builtin(&mut self, builtin: Builtin) -> String {
-        let (declaration, call) = match builtin {
-            Builtin::NetWatch => (
+        let wasm = self.globals.wasm;
+        let (declaration, call) = match (builtin, wasm) {
+            (Builtin::NetWatch, false) => (
                 "declare void @tsuzuri_net_watch(ptr, i64, i64, i32, i64)",
                 "call void @tsuzuri_net_watch(ptr @tsuzuri_async_post, i64 %arg0, i64 %arg1, i32 %arg2, i64 %arg3)",
             ),
-            Builtin::NetConnect => (
+            (Builtin::NetWatch, true) => (
+                "declare void @tsuzuri_net_watch(i64, i64, i32, i64)",
+                "call void @tsuzuri_net_watch(i64 %arg0, i64 %arg1, i32 %arg2, i64 %arg3)",
+            ),
+            (Builtin::NetConnect, false) => (
                 "declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)",
                 "call void @tsuzuri_net_connect(ptr @tsuzuri_async_post, i64 %arg0, i64 %arg1, i64 %arg2, i64 %arg3, i64 %arg4)",
+            ),
+            (Builtin::NetConnect, true) => (
+                "declare void @tsuzuri_net_connect(i64, i64, i64, i64, i64)",
+                "call void @tsuzuri_net_connect(i64 %arg0, i64 %arg1, i64 %arg2, i64 %arg3, i64 %arg4)",
             ),
             _ => (
                 "declare void @tsuzuri_net_unwatch(i64)",
@@ -339,7 +349,7 @@ impl FunctionEmitter<'_, '_> {
             ),
         };
         self.intrinsics.insert(declaration.to_owned());
-        if builtin != Builtin::NetUnwatch {
+        if builtin != Builtin::NetUnwatch && !wasm {
             self.intrinsics
                 .insert("declare i32 @tsuzuri_async_post(i64, i64)".to_owned());
         }

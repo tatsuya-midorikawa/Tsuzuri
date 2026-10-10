@@ -194,7 +194,7 @@ pub(crate) const ASYNC_NATIVE_SUPPORTED: bool =
 pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
     "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
 /// Why wasm output cannot reach the sockets of the standard Net module (E09).
-pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, or keep to Net address parsing, which needs no host";
+pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, build with --wasm-feature jspi --wasm-feature net and load the module with the generated JavaScript bindings on Node.js, or keep to Net address parsing, which needs no host";
 /// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on: POSIX sockets on macOS
 /// and Linux, Winsock on Windows.
 pub(crate) const NET_NATIVE_SUPPORTED: bool =
@@ -281,6 +281,9 @@ pub struct BuildOptions {
     pub wasm_threads: bool,
     /// `--wasm-feature jspi`: `Async.block_on` waits through JavaScript Promise Integration (B08).
     pub wasm_jspi: bool,
+    /// `--wasm-feature net`: the Net sockets are imports of `tsuzuri_net`, which the generated
+    /// JavaScript bindings implement on Node.js (E09 Phase 3).
+    pub wasm_net: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -309,6 +312,7 @@ impl Default for BuildOptions {
             wasm_simd: false,
             wasm_threads: false,
             wasm_jspi: false,
+            wasm_net: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -330,7 +334,8 @@ impl BuildOptions {
                 || self.trap_info
                 || self.wasm_simd
                 || self.wasm_threads
-                || self.wasm_jspi)
+                || self.wasm_jspi
+                || self.wasm_net)
         {
             return Err(driver_error(
                 "E2000",
@@ -368,6 +373,30 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ));
+        }
+        if self.wasm_net
+            && (self.target != Target::Wasm32
+                || !matches!(
+                    self.emit,
+                    Emit::Wasm | Emit::Object | Emit::Llvm | Emit::BindingsJs
+                ))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net requires wasm32 object, LLVM IR, WASM, or JavaScript bindings output",
+            ));
+        }
+        if self.wasm_net && !self.wasm_jspi {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net requires --wasm-feature jspi: a blocking socket call suspends the WebAssembly stack with JavaScript Promise Integration while the host works",
+            ));
+        }
+        if self.wasm_net && (self.wasm_threads || self.wasm_host.is_some()) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net cannot be combined with --wasm-feature threads or --wasm-host",
             ));
         }
         if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
@@ -2457,6 +2486,9 @@ fn build_complete(
         if options.wasm_host == Some(WasmHost::Wasi) {
             text = llvm::with_wasi_host(&text);
         }
+        if options.wasm_net {
+            text = llvm::with_net_imports(&text);
+        }
         if options.wasm_simd {
             text.insert_str(
                 0,
@@ -2563,11 +2595,16 @@ fn build_complete(
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
     }
-    if net_runtime && options.target.is_wasm() {
+    if net_runtime && options.target.is_wasm() && !options.wasm_net {
         return Err(driver_error("E2000", NET_WASM_MESSAGE));
     }
     // The poller completes an async operation through the reactor's mailbox, which exists only in `Async.block_on`.
-    if net_runtime && llvm::uses_net_async(&text) && !async_reactor {
+    // On WebAssembly the host completes it with `tsuzuri_async_complete`.
+    if net_runtime
+        && options.target == Target::Native
+        && llvm::uses_net_async(&text)
+        && !async_reactor
+    {
         return Err(driver_error("E2000", NET_ASYNC_MESSAGE));
     }
     if net_runtime
@@ -3137,6 +3174,7 @@ fn build_complete(
             if llvm::uses_host_abi(module)
                 || io_runtime
                 || os_runtime
+                || (options.wasm_net && net_runtime)
                 || options.allocator == llvm::Allocator::Counting
             {
                 linker.args([
@@ -3361,6 +3399,7 @@ fn build_bindings(
         Emit::BindingsCs => crate::bindings::csharp(module, stem, options.trap_return),
         Emit::BindingsPy => crate::bindings::python(module, stem, options.trap_return),
         Emit::BindingsCpp => crate::bindings::cpp(module, stem, options.trap_return),
+        _ if options.wasm_net => crate::bindings::javascript_with_net(module),
         _ => crate::bindings::javascript_for(module, flavor),
     };
     fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;

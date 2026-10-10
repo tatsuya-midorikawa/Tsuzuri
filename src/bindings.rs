@@ -28,6 +28,10 @@ const RUNTIME_CORE: &str = include_str!("runtime/bindings-core.mjs");
 const RUNTIME_SINGLE: &str = include_str!("runtime/bindings.mjs");
 /// The `load` of a thread pool on Web Workers (`--wasm-feature threads`).
 const RUNTIME_THREADS: &str = include_str!("runtime/bindings-threads.mjs");
+/// The Node modules behind the sockets of `--wasm-feature net`, before the runtime (E09 Phase 3).
+const RUNTIME_NET_HOST: &str = include_str!("runtime/bindings-net-host.mjs");
+/// The `tsuzuri_net` imports of `--wasm-feature net`, inside the runtime's `bind`.
+const RUNTIME_NET: &str = include_str!("runtime/bindings-net.mjs");
 
 /// Which JavaScript glue `--emit bindings-js` writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,6 +335,60 @@ pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
         banner("//"),
         table_for(module, flavor)
     )
+}
+
+/// The sockets of a module of `--wasm-feature net` (E09 Phase 3), which the glue implements on Node.js: the table says
+/// so, the Node modules are loaded when the glue loads, `inspect` accepts the `tsuzuri_net` imports, and the instance
+/// gets them beside the clock and the wait of Async.block_on. The text of a program without Net is not touched.
+pub fn javascript_with_net(module: &CheckedModule) -> String {
+    let mut table = table_for(module, JsFlavor::Jspi);
+    table["net"] = json!(true);
+    // The sockets deliver their bytes into the module's memory, through its allocator.
+    table["hostAbi"] = json!(true);
+    let core = splice(
+        RUNTIME_CORE,
+        &[
+            (
+                "    if (namespace === \"tsuzuri_async\") {\n",
+                "    if (namespace === \"tsuzuri_net\" && kind === \"function\" && TABLE.net === true) continue;\n",
+                false,
+            ),
+            (
+                "  // The clock of Async.block_on in milliseconds, and its wait: a promise that settles at the\n",
+                RUNTIME_NET,
+                false,
+            ),
+            (
+                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
+                "    if (TABLE.net === true) object.tsuzuri_net = netImports(owner);\n",
+                true,
+            ),
+        ],
+    );
+    format!(
+        "{}const TABLE = {};\n{RUNTIME_NET_HOST}{core}{RUNTIME_SINGLE}",
+        banner("//"),
+        table
+    )
+}
+
+/// Inserts text before (or, with `after`, behind) each anchor of `source`, which must each occur once.
+fn splice(source: &str, edits: &[(&str, &str, bool)]) -> String {
+    let mut output = source.to_owned();
+    for (anchor, text, after) in edits {
+        assert_eq!(
+            output.matches(anchor).count(),
+            1,
+            "the bindings runtime has changed: anchor {anchor:?} is not unique"
+        );
+        let replacement = if *after {
+            format!("{anchor}{text}")
+        } else {
+            format!("{text}{anchor}")
+        };
+        output = output.replacen(anchor, &replacement, 1);
+    }
+    output
 }
 
 /// The TypeScript type of `ty`. `input` is the direction from JavaScript into the module: export
