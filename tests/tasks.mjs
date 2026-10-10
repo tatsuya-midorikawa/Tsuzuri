@@ -195,10 +195,7 @@ ${channelTraps.map((name, index) => `        case ${channelCases.length + index}
 }
 `);
     const deadlock = /Tsuzuri runtime: deadlock: every task is waiting on a channel/;
-    for (const threads of [1, 2, 3, 4]) {
-      const program = join(temporary, `channel-threads-${optimization}-${threads}`);
-      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
-        channelHost, channelIr, "src/runtime/task.c", "-pthread", "-lm", "-o", program]);
+    const exercise = (program, threads) => {
       for (const [index, [name, , expected, needed]] of channelCases.entries()) {
         if (threads >= needed) {
           for (let repeat = 0; repeat < 3; repeat++) {
@@ -214,6 +211,23 @@ ${channelTraps.map((name, index) => `        case ${channelCases.length + index}
         const trapped = execute(program, [String(channelCases.length + offset)], false);
         assert.notEqual(trapped.status, 0, `${name} on ${threads} threads traps`);
         assert.match(trapped.stderr, deadlock, `${name} on ${threads} threads`);
+      }
+    };
+    for (const threads of [1, 2, 3, 4]) {
+      const program = join(temporary, `channel-threads-${optimization}-${threads}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+        channelHost, channelIr, "src/runtime/task.c", "-pthread", "-lm", "-o", program]);
+      exercise(program, threads);
+    }
+    // The runtime of the pool is the part that the sanitizers instrument here; the generated code only
+    // calls it, so a race in the waiting protocol of a real Tsuzuri pipeline would be reported.
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      for (const threads of [2, 4]) {
+        const checked = join(temporary, `channel-threads-${sanitizer}-${optimization}-${threads}`);
+        execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-Wno-override-module", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+          channelHost, channelIr, "src/runtime/task.c", "-pthread", "-lm", "-o", checked]);
+        exercise(checked, threads);
       }
     }
     console.log(`Tasks -O${optimization}: channel pipelines on 1 to 4 threads complete or trap with the deadlock message`);
