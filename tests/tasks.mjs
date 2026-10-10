@@ -173,6 +173,11 @@ int main(int argc, char **argv) {
       ["pipeline", [3, 1000], "500500", 2], ["pipeline", [1, 257], String(257 * 258 / 2), 2],
       ["ping_pong", [2000], "2000002000", 2], ["tokens_across", [200], "200200001", 2],
       ["three_stages", [500], "250500", 3], ["fan_in", [2, 50, 3], "5050100", 3], ["job_queue", [100, 4], "338350100", 3],
+      // A task that starts a group of its own and then sends what it computed to a task of the outer
+      // group: it completes on every pool size, the one-thread pool included, because the thread that
+      // waits for its group runs that group's items and nothing else (the WASM threads pool follows
+      // the same rule, which tests/wasm_threads.mjs checks with real threads).
+      ["nested_then_send", [2, 2000000], "11999990", 1], ["nested_then_send", [4, 1000000], "11999988", 1],
     ];
     const channelTraps = ["leaked_sender", "deadlock_pair"];
     const channelHost = join(temporary, `channel-host-${optimization}.c`);
