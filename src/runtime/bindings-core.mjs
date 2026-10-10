@@ -303,7 +303,11 @@ function memory64(bytes) {
     } while (byte & 128 && position < data.length);
     return value;
   };
-  const skipName = () => { position += leb(); };
+  // `position += leb()` would read `position` before `leb` advances it and drop the bytes of the length.
+  const skipName = () => {
+    const length = leb();
+    position += length;
+  };
   const limits = () => {
     const flags = data[position++];
     leb();
