@@ -37,6 +37,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+// The request that turns off the WSAECONNRESET of a UDP socket (mstcpip.h of one SDK, nowhere in another).
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 // The MSVC target reads this request for the import library; a MinGW target takes it from the link line (-lws2_32).
 #if defined(_MSC_VER)
 #pragma comment(lib, "ws2_32.lib")
@@ -566,6 +570,17 @@ static tz_net_fd tz_net_create(int family, int type) {
         int enable = 1;
         ready = setsockopt(descriptor, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&enable, sizeof enable);
     }
+#if defined(_WIN32)
+    if (ready == 0 && type == SOCK_DGRAM) {
+        // Windows reports the ICMP "port unreachable" that follows a send to a closed port as WSAECONNRESET from the next
+        // receive on the same socket, even when it is not connected, which no other system does: a server that answered a
+        // client that has gone would read a ConnectionReset that belongs to nothing it asked. The request turns that off;
+        // if it fails, the receive below still skips such an error, so the failure is not worth refusing the socket for.
+        BOOL report = FALSE;
+        DWORD returned = 0;
+        (void)WSAIoctl(descriptor, SIO_UDP_CONNRESET, &report, sizeof report, NULL, 0, &returned, NULL, NULL);
+    }
+#endif
     if (ready != 0) {
         int error = tz_net_errno();
         tz_net_close_fd(descriptor);
@@ -997,6 +1012,15 @@ TZ_NET_API int64_t tsuzuri_net_open(struct tz_net_buffer *output, int32_t operat
     return tz_net_publish(output, descriptor, operation == 0 ? TZ_NET_STREAM : operation == 1 ? TZ_NET_LISTENER : TZ_NET_DATAGRAM, family, operation == 0 ? (const struct sockaddr *)&target : NULL);
 }
 
+// An error of accept that belongs to a connection that is gone, not to the listener: the peer gave it up before this call
+// took it, and the next connection is the answer. That is ECONNABORTED everywhere; Windows says WSAECONNRESET for a
+// connection that the peer has reset (a client that connects and resets at once would end every accept loop otherwise).
+#if defined(_WIN32)
+#define TZ_NET_GONE_BEFORE_ACCEPT(error) ((error) == TZ_NET_E_CONNABORTED || (error) == TZ_NET_E_CONNRESET)
+#else
+#define TZ_NET_GONE_BEFORE_ACCEPT(error) ((error) == TZ_NET_E_CONNABORTED)
+#endif
+
 // Takes a connection from a listener, waiting at most `timeout` milliseconds (-1: for one; 0: not at all, and
 // -TZ_NET_PENDING when none is waiting). A handle and the local and peer address records, or the negated status.
 TZ_NET_API int64_t tsuzuri_net_accept(struct tz_net_buffer *output, int64_t handle, int64_t timeout) {
@@ -1019,13 +1043,13 @@ TZ_NET_API int64_t tsuzuri_net_accept(struct tz_net_buffer *output, int64_t hand
             int error = tz_net_errno();
             tz_net_close_fd(descriptor);
             // macOS refuses a socket option (EINVAL) on a connection that the peer has already reset: like
-            // ECONNABORTED, that is a connection that is gone, and the next one is the answer.
-            if (error != TZ_NET_E_INVAL && error != TZ_NET_E_CONNABORTED) return -tz_net_error(error);
+            // ECONNABORTED (and WSAECONNRESET on Windows), that is a connection that is gone, and the next one is the answer.
+            if (error != TZ_NET_E_INVAL && !TZ_NET_GONE_BEFORE_ACCEPT(error)) return -tz_net_error(error);
             continue;
         }
         int error = tz_net_errno();
         // A connection that the peer gave up before this call is not an error for the next one.
-        if (error == TZ_NET_E_INTR || error == TZ_NET_E_CONNABORTED) continue;
+        if (error == TZ_NET_E_INTR || TZ_NET_GONE_BEFORE_ACCEPT(error)) continue;
         if (!TZ_NET_WOULD_BLOCK(error)) return -tz_net_error(error);
         error = tz_net_wait(listener.descriptor, TZ_NET_POLL_READ, deadline);
         if (error != 0) return -tz_net_error(error);
@@ -1101,6 +1125,11 @@ static int64_t tz_net_receive_datagram(struct tz_net_buffer *output, tz_net_fd d
         }
         int error = tz_net_errno();
         if (error == TZ_NET_E_INTR) continue;
+#if defined(_WIN32)
+        // The report of an earlier send to a closed port (see tz_net_create): it says nothing about this receive, so it is
+        // skipped, and the datagram that is there, or the wait, comes next.
+        if (error == TZ_NET_E_CONNRESET) continue;
+#endif
         if (!TZ_NET_WOULD_BLOCK(error)) return tz_net_error(error);
         error = tz_net_wait(descriptor, TZ_NET_POLL_READ, deadline);
         if (error != 0) return tz_net_error(error);

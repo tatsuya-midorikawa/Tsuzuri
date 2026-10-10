@@ -458,6 +458,8 @@ timeout: TimedOut
 - 相手が先に切れたソケットへ書いても、SIGPIPE でプロセスが終わることはありません（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）。`ConnectionReset` の `Error` になります。
 - `bind` は、macOS と Linux では `SO_REUSEADDR` を付けます（Windows では、同じ port を生きたソケットと共有できてしまうので、代わりに `SO_EXCLUSIVEADDRUSE` を付けます）。IPv6 は `IPV6_V6ONLY` を有効にします。`"::"` と `"0.0.0.0"` は別のソケットで、どの OS でも同じです。`0.0.0.0` や `::` で待つと、ネットワークの全体へ公開されます。ふつうは `127.0.0.1` か `::1` を使ってください。
 - ソケットはすべて、子プロセスへ継承されません（POSIX は `FD_CLOEXEC`、Windows は継承しないハンドル）。`Process.run` の子へ漏れません。
+- Windows は、送ったデータグラムの宛先のポートが閉じていると、同じソケットの次の受信を `ConnectionReset`（`WSAECONNRESET`）で失敗させます（ICMP の「ポート到達不能」の報告）。ほかの OS は、接続していない UDP ソケットにそうしません。`bind_udp` は Windows の `SIO_UDP_CONNRESET` でその報告を切り、それでも報告された受信は飛ばして次を待つので、いなくなった相手へ返信した UDP サーバーの `recv_from` が、見知らぬ `ConnectionReset` で終わることはありません。
+- 接続してすぐ RST した相手の接続は、`accept` をエラーにしません（OS が `ECONNABORTED` や、Windows の `WSAECONNRESET` で知らせる接続は、`accept` が飛ばして次の接続を返します）。OS によっては、その接続がそのまま返ってきて、最初の `read` が `ConnectionReset` になります。どちらでも、健全な listener の `accept` ループはその接続のために終わりません。Windows の実行は CI だけで確かめます。
 - 平文の TCP で秘密を送らないでください。
 - 非同期の操作が使う監視のスレッドは、プロセスに 1 本だけです（最初の待ちで始まり、待ちが無くなると終わります）。待ちの数に上限はなく、OS のディスクリプタの数に従います。
 

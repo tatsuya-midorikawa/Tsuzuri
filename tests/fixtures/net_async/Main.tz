@@ -517,6 +517,20 @@ fn run_udp _unit = IO {
 			return udp_text result
 		})
 		do! say ("quiet: " + quiet)
+		// A datagram to a port that nobody listens on (Windows reports the ICMP "port unreachable" as WSAECONNRESET from the
+		// next receive of the same socket unless that is turned off) is no failure of the receive that follows.
+		let! spare = Net.bind_udp loopback
+		match spare with
+		| Result.Error error -> do! say ("vanished: " + failure_text error)
+		| Result.Ok gone ->
+			let vanished_target = Net.udp_local_addr gone
+			let! _closed_spare = Net.close_udp gone
+			let! vanished = Async.block_on (Async {
+				let! _sent = Net.send_to_async receiver (bytes_of (ref "x")) vanished_target
+				let! result = Net.recv_from_async receiver 64 (Maybe.Some 40)
+				return udp_text result
+			})
+			do! say ("vanished: " + vanished)
 		let! truncated = Async.block_on (Async {
 			let! _sent = Net.send_to_async sender (pattern 100) target
 			let! result = Net.recv_from_async receiver 10 (Maybe.Some 5000)
@@ -534,6 +548,46 @@ fn run_udp _unit = IO {
 			return unit_text a + " " + unit_text b + " " + unit_text c
 		})
 		do! say ("closed: " + closed)
+	| _ -> do! say "no sockets"
+}
+
+/// Accepts until a connection says something, at most `rounds` of them: the connection that its peer reset before the accept
+/// took it may come first (Linux hands it over, and its read fails or ends at once), or never (macOS drops it, Windows reports
+/// it as WSAECONNRESET from accept, which the runtime skips). A failure of the accept itself is what the case is about.
+def rec accept_greeted :: Net.TcpListener -> i64 -> Async<string>
+fn rec accept_greeted listener rounds = Async {
+	if rounds == 0 then return "no connection said anything"
+	else
+		match! Net.accept_async listener (Maybe.Some 10000) with
+		| Result.Error error -> return "accept: " + failure_text error
+		| Result.Ok stream ->
+			match! Net.read_async stream 16 (Maybe.Some 10000) with
+			| Result.Ok bytes ->
+				let! _closed = Net.close_async stream
+				if bytes.length == 0 then return! accept_greeted listener (rounds - 1)
+				else return "accept: ok read:" + to_string bytes.length
+			| Result.Error _ ->
+				let! _closed = Net.close_async stream
+				return! accept_greeted listener (rounds - 1)
+}
+
+/// The accept after a connection that its peer reset. The peer makes that connection and resets it, makes a good one, and then
+/// sends a datagram to the gate socket, which the program waits for before it accepts: the program says the ports of its
+/// listener and its gate first.
+def run_accept_reset :: unit -> IO<unit>
+fn run_accept_reset _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let! bound = Net.bind loopback
+	let! opened = Net.bind_udp loopback
+	match (bound, opened) with
+	| (Result.Ok listener, Result.Ok gate) ->
+		do! say ("ports=" + to_string (Net.port (Net.local_addr listener)) + " " + to_string (Net.port (Net.udp_local_addr gate)))
+		let! signal = Async.block_on (Net.recv_from_async gate 16 (Maybe.Some 30000))
+		do! say ("gate: " + udp_text signal)
+		let! outcome = Async.block_on (accept_greeted listener 4)
+		do! say outcome
+		let! _closed_listener = Net.close_listener listener
+		let! _closed_gate = Net.close_udp gate
 	| _ -> do! say "no sockets"
 }
 
@@ -603,6 +657,7 @@ fn run_case name address =
 	| "bigwrite" -> run_bigwrite address
 	| "bigread" -> run_bigread address
 	| "udp" -> run_udp ()
+	| "accept_reset" -> run_accept_reset ()
 	| "shutdown" -> run_shutdown ()
 	| "stale" -> run_stale address
 	| _ -> say "unknown case"

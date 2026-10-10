@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -53,6 +54,8 @@ void tsuzuri_free(void *pointer) {
 }
 
 #define LOOPBACK INT64_C(0x7f000001)
+// The address record that a received datagram starts with.
+#define RECORD_BYTES 20
 #define OTHER INT64_C(7)
 #define INVALID_INPUT INT64_C(4)
 // The status of a call that was told not to wait and would have had to: kind Other, code 0.
@@ -536,6 +539,89 @@ static void *consume(void *argument) {
     return NULL;
 }
 
+// A client that connects to the loopback port and resets the connection at once (an RST: close with SO_LINGER and a zero
+// timeout), before anything accepts it.
+static void connect_and_reset(int port) {
+    int raw = socket(AF_INET, SOCK_STREAM, 0);
+    assert(raw >= 0);
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_port = htons((uint16_t)port);
+    address.sin_addr.s_addr = htonl(0x7f000001u);
+    assert(connect(raw, (struct sockaddr *)&address, sizeof address) == 0);
+    struct linger abort_close = {1, 0};
+    assert(setsockopt(raw, SOL_SOCKET, SO_LINGER, &abort_close, sizeof abort_close) == 0);
+    assert(close(raw) == 0);
+}
+
+// A connection that its peer reset before accept took it is not an error of accept, which waits for, and returns, the next
+// connection: Windows reports such a connection as WSAECONNRESET from accept (net.c skips it there), macOS drops it or
+// refuses an option on it, and Linux hands it over and fails its first read. So what comes back is the connection that was
+// reset (and its read fails) or the good one, never an error, and the good one follows. The Windows runtime is checked by its
+// CI only; this pins the contract on the systems that run here, and the E2E "accept_reset" of tests/net.mjs runs it on Windows.
+static void test_accept_reset(void) {
+    int baseline = open_descriptors();
+    int port;
+    int64_t listener = listen_on_loopback(&port);
+    connect_and_reset(port);
+    int64_t good = connect_to(port);
+    send_byte(good, 'g');
+    int found = 0;
+    for (int attempt = 0; attempt < 2 && !found; attempt++) {
+        struct tz_net_buffer names;
+        int64_t accepted = tsuzuri_net_accept(&names, listener, 5000);
+        assert(accepted > 0 && "accept returns a connection and never reports the reset of another");
+        tsuzuri_free(names.data);
+        struct tz_net_buffer bytes;
+        int64_t status = tsuzuri_net_read(&bytes, 0, accepted, 1, 5000);
+        if (status == 0) {
+            found = bytes.length == 1 && bytes.data[0] == 'g';
+            tsuzuri_free(bytes.data);
+        }
+        assert(tsuzuri_net_close(0, accepted) == 0);
+    }
+    assert(found && "the connection that was not reset is accepted next");
+    assert(tsuzuri_net_close(0, good) == 0);
+    assert(tsuzuri_net_close(0, listener) == 0);
+    expect_descriptors(baseline);
+}
+
+// A datagram that goes to a port that nobody listens on must not make the next receive of the same socket fail: Windows
+// reports the ICMP "port unreachable" as WSAECONNRESET from the next receive unless SIO_UDP_CONNRESET is turned off (net.c does
+// that, and skips the error if it is still reported), and no other system reports it for a socket that is not connected. As for
+// test_accept_reset, this pins the contract here, and the E2E "udp_gone" of tests/net.mjs runs it on Windows.
+static void test_datagram_after_closed_port(void) {
+    int baseline = open_descriptors();
+    struct tz_net_buffer names;
+    int64_t server = tsuzuri_net_open(&names, 2, 0, 0, LOOPBACK, -1);
+    assert(server > 0 && names.length == 40);
+    int server_port = port_of(names.data);
+    tsuzuri_free(names.data);
+    int64_t spare = tsuzuri_net_open(&names, 2, 0, 0, LOOPBACK, -1);
+    assert(spare > 0 && names.length == 40);
+    int gone_port = port_of(names.data);
+    tsuzuri_free(names.data);
+    assert(tsuzuri_net_close(0, spare) == 0);
+    const unsigned char hello[] = {'x'};
+    assert(tsuzuri_net_write(1, server, hello, 1, gone_port, 0, LOOPBACK, -1) == 0);
+    // Nothing has arrived, so the receive that follows times out; it reports nothing about the datagram that was sent.
+    struct tz_net_buffer bytes;
+    int64_t status = tsuzuri_net_read(&bytes, 1, server, 64, 100);
+    assert(status == TIMED_OUT && "the receive after a send to a closed port waits, and times out");
+    // And the socket still takes the datagram that does come, from another socket.
+    int64_t sender = tsuzuri_net_open(&names, 2, 0, 0, LOOPBACK, -1);
+    assert(sender > 0);
+    tsuzuri_free(names.data);
+    assert(tsuzuri_net_write(1, sender, hello, 1, server_port, 0, LOOPBACK, -1) == 0);
+    status = tsuzuri_net_read(&bytes, 1, server, 64, 5000);
+    assert(status == 0 && bytes.length == RECORD_BYTES + 1 && bytes.data[RECORD_BYTES] == 'x');
+    tsuzuri_free(bytes.data);
+    assert(tsuzuri_net_close(0, sender) == 0);
+    assert(tsuzuri_net_close(0, server) == 0);
+    expect_descriptors(baseline);
+}
+
 // Producers and consumers share one poller, and close, cancel, and watch each other's sockets. The results are not what is
 // tested, but a crash, a hang, a post of one operation twice, and a leaked socket are.
 static void test_stress(void) {
@@ -666,11 +752,13 @@ int main(void) {
     test_many();
     test_connect();
     test_connect_cancel();
+    test_accept_reset();
+    test_datagram_after_closed_port();
     test_stress();
     expect_descriptors(start);
     // The system's resolver may keep a descriptor of its own (a connection to a resolver service), which is not a leak.
     test_resolve();
     assert(atomic_load(&live) == 0 && "every buffer was freed");
-    printf("net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed (%lld completions of the churn); a host that the system reads as an address is refused\n", (long long)atomic_load(&stress_completions));
+    printf("net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed (%lld completions of the churn); a connection reset before accept and a datagram sent to a closed port report nothing; a host that the system reads as an address is refused\n", (long long)atomic_load(&stress_completions));
     return 0;
 }
