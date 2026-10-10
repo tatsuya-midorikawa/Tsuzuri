@@ -13,7 +13,8 @@ import { createGpuImports } from "../src/runtime/webgpu.mjs";
 // names it); WASM needs Node.js 24 or newer (JSPI) and the `webgpu` binding (TSUZURI_WEBGPU_MODULE). The numbers are
 // those of this machine on this day; they are not thresholds, and the CPU reference is one scalar thread.
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
-const runs = Number(process.argv[process.argv.indexOf("--runs") + 1] || 9);
+const runsAt = process.argv.indexOf("--runs");
+const runs = runsAt < 0 ? 9 : Number(process.argv[runsAt + 1] || 9);
 const json = process.argv.includes("--json");
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-gpu-device-bench-"));
 // Calls per measurement: the CPU reference takes microseconds at the small sizes, so it gets more calls.

@@ -3770,7 +3770,7 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 
 `tsuzuri build` の `--allocator system|host|counting` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
 `system`（既定）はネイティブで C ライブラリの `malloc`／`realloc`／`free`、WASM でモジュール内のフリーリストで、指定しない場合と出力が一致します。
-`host` と `counting` は、ホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）だけで使え、`--emit exe`・`wgsl`・`wgsl-relaxed` と `--trap-mode return` との併用は `E2000` です。`build` 以外のコマンドは既定の allocator だけを使います。
+`host` と `counting` は、ホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）だけで使え、`--emit exe`・`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed` と `--trap-mode return` との併用は `E2000` です。`build` 以外のコマンドは既定の allocator だけを使います。
 
 `--allocator host` の出力は、ホストがリンク時に定義する次の 3 関数を呼びます（`--emit header --allocator host` のヘッダーの `extern "C"` 区間に入ります）。
 

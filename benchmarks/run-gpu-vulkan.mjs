@@ -22,7 +22,10 @@ import { spawnSync } from "node:child_process";
 // reference's (a checksum is compared). The numbers are those of this machine, under the load printed with them, on that day:
 // they set heuristics for one kind of device, they are not thresholds, and nothing here passes or fails on speed.
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
-const option = (name, fallback) => Number(process.argv[process.argv.indexOf(name) + 1] || fallback);
+const option = (name, fallback) => {
+  const at = process.argv.indexOf(name);
+  return at < 0 ? fallback : Number(process.argv[at + 1] || fallback);
+};
 const runs = option("--runs", 3);
 const json = process.argv.includes("--json");
 const rounds = [1, 4, 16, 64, 256];
