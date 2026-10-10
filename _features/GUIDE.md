@@ -1424,20 +1424,24 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     並列の開始・`Channel` の操作は trap（`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok`）。`--trap-mode return` の境界は弱い hook `tsuzuri_sync_hooks.abandon` でロックを解放する。
   - 組み込み `Task.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`（共有借用を子へ渡す fork／join。子 1 つにつき結果 1 つ）と組み込みクラス `Sync`／`AtomicValue`
     （`BUILTIN_CLASSES`。利用者の instance は E1016）。`Function` は型の上では `Sync` で、安全は「共有する関数の環境は所有したものだけ」（E1013）で保つ。`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send`
-    （D-40 の「`T` が `Send`」を改めた）。**型変数は `Send` でも `Sync` でもない**: `Send<'a>`・`Sync<'a>`（`Channel.bounded`・`Mutex.create`・`Parallel.*`・`Task.scope`・`Dyn.of` の `dyn (C, Send)`・利用者の制約）は
+    （D-40 の「`T` が `Send`」を改めた）。**型変数は `Send` でも `Sync` でもない**（型変数に引数を適用した高カインドの型 `'f<i64>` と部分適用も「まだ分からない」として同じに扱う）: `Send<'a>`・`Sync<'a>`（`Channel.bounded`・`Mutex.create`・`Parallel.*`・`Task.scope`・`Dyn.of` の `dyn (C, Send)`・利用者の制約）は
     ジェネリック関数の制約として残り、使う型ごとに検査する（既定メソッドと instance メソッドが要るときは宣言する。E1027）。F10 以前から `Rc` を運ぶ `Parallel.init` などが通っていた穴も塞いだ。
+    `can_send`・`sync_here` は `Type` の全種類を網羅する match で、新しい型の種類を足すときはここで分類しないとコンパイルが通らない。
   - `Mutex.with_lock` の結果が借用を持ち得る型なら、callback の結果が借用した環境を持たないことを証明する（E1013）。`Channel.send` は、要素の型が借用を持ち得る（関数など）とき、要素が loan を持たない
     （E1013）。直接の 2 引数の呼び出しだけで、部分適用・関数値・pipe は拒否する。`Channel.recv` の結果は loan を持たない。関数型の引数を `Channel.send` へ渡すジェネリック関数は、使う型で拒否する
     （関数は送る場所で作る）。
   - `Channel`（有界・多対多）: `bounded`・`send :: ... -> Result<unit,'a>`（受信側がいないとき要素を失わない）・`recv`・`clone_sender`。`Sender`・`Receiver` は `{ block: i64 }` の不透明 record で、std の `Drop` の instance が閉じる
     （std のモジュールは自分で宣言した型に `Drop` を書ける。利用者が std の型に書くのは従来どおり E1016）。`Channel.__close_sender`／`__close_receiver` は std 専用（E1022）。閉じ忘れた `Sender` は待ちの規則が見つける。
-  - 待ち: 待つ thread は、空いた thread（idle な worker と、自分が起こした group を待つ thread）がないときだけ未開始の item を自分のスタックで手伝い（深さ 16）、そうでなければ止まる。最後に止まる thread が
-    `Tsuzuri runtime: deadlock: every task is waiting on a channel`（Assert の trap）の判定をし、全員を起こす。逐次の WASM と 1 CPU の native は、満たされない待ちで trap する。完了は thread 数に依る（受け入れ済み）。
-    1 つの pool lock が全 channel を守る（限界）。
+  - 待ち: channel を待つ thread は、idle な worker がなく未開始の item があるときだけ、最も古い group の item を自分のスタックで手伝い（深さ 16）、そうでなければ止まる。join を待つ thread（`Task.scope`・`Task.parallel` の終わり）は
+    自分の group の item だけを動かす。最後に止まる thread が `Tsuzuri runtime: deadlock: every task is waiting on a channel`（Assert の trap）の判定をし、全員を起こす。逐次の WASM と 1 CPU の native は、満たされない待ちで trap する。
+    完了は thread 数に依る（受け入れ済み）。1 つの pool lock が全 channel を守る（限界）。WASM threads の pool も native と同じ規則で、group は末尾に足して古いものから取り、`submit` は group の最初の item を公開する lock の中で取る。
   - WASM threads でも `Mutex`・`Channel` が動く。worker ごとに module instance があるので wasm の global が thread-local になり（`__wasm_init_tls` なし、`ThreadState` も変えない）、共有の epoch word で待つ。
-    epoch が動くのは新しい仕事・group の最後の item・誰かが待つ channel の変化・競合したロックの解放だけで、起こすのは lock を放してから。sleeper は登録した epoch が動くまで眠る。`--freestanding` は両方とも E2000。
+    epoch が動くのは新しい仕事・group の最後の item・誰かが待つ channel の変化・競合したロックの解放だけで、起こすのは lock を放してから。sleeper は登録した epoch が動くまで眠り、眠る前に失敗の印（host の `fail()`）を確かめる。
+    `--freestanding` は両方とも E2000。
   - review で直したこと: `Mutex.with_lock` の結果が借用を運ぶ、`Task.scope`／`Parallel.*` の一時の関数が借用した環境を共有する、再帰型の `can_capture` が `Arc` の中を見る、`Channel.send` が借用する関数を渡せる、
-    `Send` がジェネリックを通ると検査されない、WASM threads の pool が Channel を使わないプログラムまで遅くなる（100 万 child・7 worker で 360 ms → 2,216 ms → 233 ms）、3 stage の pipeline が CPU 負荷で偽の deadlock 判定になる。
+    `Send` がジェネリックを通ると検査されない（型変数に引数を適用した高カインドの型 `'f<i64>` も。`Rc` を運ぶ holder で 2 つの task が非原子的に数える競合になった）、WASM threads の pool が Channel を使わないプログラムまで遅くなる
+    （100 万 child・7 worker で 360 ms → 2,216 ms → 233 ms）、3 stage の pipeline と、入れ子の `Task.parallel` の後に送る 2 task のプログラムが偽の deadlock 判定になる（join を待つ thread が別の group の item を取っていた）、
+    host の失敗と眠りの競合。
   - 限界: lock は 1 つの pool lock、`Arc` の循環（`Mutex` を通す）は回収しない、`with_lock` を包むジェネリック関数は借用を持ち得る結果を拒否する、native の Windows・Linux は実行確認なし（CI）。
 - C11（`Matrix`・`MatrixView`・`Tensor`）: Phase 1・2 を実装した。std のソースだけで書かれ、`Builtin`・`Type` の variant・ランタイム関数・WASM の import はない。`opaque_record` は `Matrix.Matrix`・
   `MatrixView.MatrixView`・`MatrixView.Mut`・`Tensor.Tensor`・`Tensor.View`、`Type::is_noncopy_record` は `Matrix.Matrix`・`Tensor.Tensor`・`Tensor.View`。
