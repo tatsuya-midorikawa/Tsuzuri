@@ -3460,7 +3460,11 @@ fn build_bindings(
         Emit::BindingsCs => crate::bindings::csharp(module, stem, options.trap_return),
         Emit::BindingsPy => crate::bindings::python(module, stem, options.trap_return),
         Emit::BindingsCpp => crate::bindings::cpp(module, stem, options.trap_return),
-        _ if options.wasm_net => crate::bindings::javascript_with_net(module),
+        // A module that reaches no socket has no `tsuzuri_net` import and exports no allocator for one, so it gets the glue
+        // of `--wasm-feature jspi` alone, which needs no Node.js modules.
+        _ if options.wasm_net && crate::llvm::reaches_net(module) => {
+            crate::bindings::javascript_with_net(module)
+        }
         _ => crate::bindings::javascript_for(module, flavor),
     };
     fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;

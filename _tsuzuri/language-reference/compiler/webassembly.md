@@ -457,18 +457,23 @@ tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit 
 tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o app.wasm
 ```
 
-- モジュールは、到達した操作だけを、モジュール `tsuzuri_net` の import として宣言します（`resolve`・`open`・`accept`・`read`・`write`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`）。同期の待ちを含む `resolve`・`open`・`accept`・`read`・`write` は、グルーが `WebAssembly.Suspending` で包んだ関数で、Node.js が仕事をする間、WebAssembly のスタックを中断します。ほかは、すぐ戻ります。
-- 実装は生成したグルーの中にあります。`node:net`・`node:dgram`・`node:dns` で動かし、ネイティブの `net.c` と同じ約束を守ります（世代付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 は「1 回だけ試す」、閉じたハンドルは `InvalidInput`）。非同期の操作は `tsuzuri_async_complete` で完了します。`code` は Node.js の `os.constants.errno` の値です。
-- グルーは `node:` のモジュールを、読み込むときに `import()` します。ブラウザには生の TCP も UDP もないので、`load` は `Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP` で失敗します。ソケットを使わないモジュールのグルーは、これまでと同じ文字列で、`node:` の import を持ちません。
+- モジュールは、到達した操作だけを、モジュール `tsuzuri_net` の import として宣言します（`resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`）。待つ `resolve`・`open`・`accept`・`read`・`write` は、グルーが `WebAssembly.Suspending` で包んだ関数で、Node.js が仕事をする間、WebAssembly のスタックを中断します。`try_accept`・`try_read` は、時間制限 0 の `accept`・`read`（`_async` の操作が最初に試す呼び出し）の入口で、待たずにすぐ戻る普通の関数です。`Async.start` の実行器はホストが JSPI の外から `tsuzuri_async_poll` を呼んで進めるので、中断する import を呼ぶと `SuspendError` でインスタンスが捨てられます。時間制限が 0 かどうかは、`.wasm` の中で実行時に選びます。ほかの import は、すぐ戻ります。
+- 実装は生成したグルーの中にあります。`node:net`・`node:dgram`・`node:dns` で動かし、ネイティブの `net.c` と同じ約束を守ります（世代付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 は「1 回だけ試す」、閉じたハンドルは `InvalidInput`）。非同期の操作は `tsuzuri_async_complete` で完了します。`code` は Node.js の `os.constants.errno` の値です。グルーの import は、Node.js の呼び出しが投げた例外（たとえばポート 0 宛ての `dgram` の送信）を、その呼び出しの状態（`code` は `EINVAL` など）にして返します。例外がモジュールへ届いてインスタンスが捨てられることはありません。
+- グルーは `node:` のモジュールを、読み込むときに `import()` します。ブラウザには生の TCP も UDP もないので、`load` は `Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP` で失敗します。ソケットに到達しないモジュールは、`--wasm-feature net` を付けても、`--wasm-feature jspi` だけのグルーと同じ文字列（`node:` の import も `tsuzuri_net` の import もない）になり、`.wasm` も `tsuzuri_alloc` を export しません。到達するかどうかは、`.wasm` の IR に `@tsuzuri_net_` の宣言が出るかどうかと同じ基準（公開関数が呼ぶ分も含みます）で決めます。`Net.error_kind` も、ホストの `classify` を使うので、到達に数えます。
 - `--wasm-feature net` は、wasm32 の `object`、`llvm`、`wasm` と `bindings-js` で使えます。`--wasm-feature jspi` が必要です。`--wasm-feature threads`・`--wasm-host wasi`・wasm64・native とは同時に指定できません（`E2000`）。
-- JSPI を持つエンジンが要ります。リポジトリの `tests/net_wasm.mjs` で、macOS の Node.js 24 に対して、ブロッキングの API も `_async` の操作（`Async.block_on` から）も、`127.0.0.1` と `::1` の loopback で通ることを確かめました。`Async.start` から `_async` の操作を使う形、Linux と Windows の Node.js、ブラウザは検証していません。
+- JSPI を持つエンジンが要ります。リポジトリの `tests/net_wasm.mjs` で、macOS の Node.js 24 に対して、ブロッキングの API も `_async` の操作（`Async.block_on` から）も、`127.0.0.1` と `::1` の loopback で通ることを確かめました。`Async.start` の実行器からは、`connect_async`・`read_async`・`accept_async`・`recv_from_async` を確かめました（`bind_async` と `bind_udp_async` は後述のとおり使えません）。Linux と Windows の Node.js、ブラウザは検証していません。
 
 ネイティブとの違いは次のとおりです。
 
 - listener の `SO_REUSEADDR` は、Node.js の `listen` が選べないので、Node.js の既定に従います。
 - `shutdown` の `Read` は、以後の `read` を 0 バイト（EOF）にして、届くデータを捨てます。OS の `SHUT_RD` は呼びません。
 - 送信は Node.js の内部バッファに積みます。`write` の期限は、積んだデータが Node.js の書き込みの完了に届くまでの時間で、期限が先に来て `TimedOut` になっても、積んだデータは取り消せず、あとで送られます。`write_async` の下の送信は、1 回に 64 KiB までを受け取り、残りはバッファが空くのを待ちます（Node.js が積んだだけのデータを、送れたと数えないためです。`send_to_async` の datagram は、64 KiB を超えると `InvalidInput`（`EMSGSIZE`）です）。
-- `close` は、受け取ったデータを送り終えてから閉じます（ネイティブの `close` で、カーネルが送り続けるのと同じです）。相手が読まないと、そのソケットは残り、`Net` の呼び出しからは見えなくなります。
+- `close` は、受け取ったデータを送り終えてから閉じます（ネイティブの `close` で、カーネルが送り続けるのと同じです）。相手が読まないと、そのソケットは残り、`Net` の呼び出しからは見えなくなります。送り終えるまで、Node.js のプロセスも終わりません（積んだデータの書き込みが済むのを待ちます）。
+- ソケットを閉じ忘れたプログラムは、ネイティブではプロセスの終了で閉じられます。Node.js では、ソケットは、モジュールがそれを待っているあいだ（待つ呼び出し、`watch`、`connect`）だけプロセスを生かします。待っていないソケットは `unref` されるので、閉じていないソケットが残っていても、ほかにすることがなければ Node.js は終わります（`leak` のテストで確かめました）。モジュールが例外で止まってインスタンスが捨てられたときは、そのインスタンスのソケット（listener、UDP、接続、作りかけのもの）をすべて、その場で閉じます。ポートはすぐ空き、接続は相手に閉じて見え、listener への接続は拒否されます。
+- 読み取られないまま届くものは、上限までしか保ちません。UDP のソケットは、まだ `recv_from` されていないデータグラムを 1 MiB と 4096 個まで保ち、あふれた分は、受信バッファが満杯のカーネルと同じに捨てます（カーネル自身の上限は、これとは別にかかります）。listener は、まだ `accept` されていない接続を 128 個まで保ち、あふれた接続は、RST で切ります。`accept` の途中で OS の資源が尽きるなどの listener の失敗は、次の `accept` が 1 回だけ返します。
+- UDP のデータグラムをポート 0 へ送ると、`send_to`・`send_to_async` とも `InvalidInput`（`EINVAL`）になります。ネイティブは OS で違い、Linux は `EINVAL`、Windows は `EADDRNOTAVAIL`、macOS は送って捨てます。Node.js の `dgram` は、ポート 0 を例外で断ります。
+- `Async.start` の実行器から使えない操作があります。`bind_async` と `bind_udp_async` は、Node.js の bind が終わるのを JSPI で待つので、`Async.block_on` の中でだけ使えます。`Async.start` の中で呼ぶと、`SuspendError`（`trying to suspend without WebAssembly.promising`）でインスタンスが捨てられます。`Async.start` の前に、`export` の中で `Net.bind`・`Net.bind_udp` で作って、ハンドルを起動する計算へ渡してください。ほかの `_async` の操作は、どちらの実行器からも使えます。
+- `resolve` の host に ASCII 以外のバイトを含むものは、すべてのターゲットで `InvalidInput` です。Node.js の `dns.lookup` は、host を IDNA で変換してから OS に渡すので、全角の `１２７．０．０．１` や `127。0。0。1` が 127.0.0.1 になってしまうためです。国際化ドメイン名は、`xn--` の形で書きます（[Net の名前解決](../built-in-types-and-modules/net.md#名前解決)）。グルーも、数値のアドレスに読める host を自分で断ります。
 
 ## WASI
 

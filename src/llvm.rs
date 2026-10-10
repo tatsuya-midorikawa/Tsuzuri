@@ -2825,6 +2825,36 @@ pub fn uses_net_async(ir: &str) -> bool {
         .any(|symbol| ir.contains(symbol))
 }
 
+/// Whether the program can reach a socket primitive of the standard Net module: the functions that become `@tsuzuri_net_`
+/// declarations in its IR, and imports of `tsuzuri_net` under `--wasm-feature net` (E09 Phase 3). It looks where the
+/// IR does, so that the bindings, which are made without IR, agree with the `.wasm` on whether the module has them.
+pub fn reaches_net(module: &CheckedModule) -> bool {
+    fn mentions(expression: &TypedExpr) -> bool {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if matches!(
+                    instance.builtin,
+                    Builtin::NetResolve
+                        | Builtin::NetOpen
+                        | Builtin::NetAccept
+                        | Builtin::NetRead
+                        | Builtin::NetWrite
+                        | Builtin::NetClose
+                        | Builtin::NetClassify
+                        | Builtin::NetWatch
+                        | Builtin::NetUnwatch
+                        | Builtin::NetConnect
+                        | Builtin::NetNames
+                        | Builtin::NetSend
+                )
+        ) || expression.children().into_iter().any(mentions)
+    }
+    reachable_functions(module, None, false)
+        .into_iter()
+        .any(|id| mentions(&module.functions[id].body))
+}
+
 /// Whether the program can reach `Async.block_on`, whose native runtime defines
 /// `tsuzuri_async_post`.
 pub fn reaches_reactor(module: &CheckedModule) -> bool {
