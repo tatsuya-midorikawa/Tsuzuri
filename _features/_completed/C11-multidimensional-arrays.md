@@ -29,7 +29,7 @@
 ### モジュールと登録
 
 - `Matrix`・`MatrixView`・`Tensor` は別々の opt-in std モジュール（D-40）。名前を書いたプログラムだけが読み込み、`MatrixView` は `Matrix`、`Tensor` は `Matrix` と `MatrixView` も連れてくる（`stdlib::OPT_IN` の `uses`）。名前を書かないプログラムの IR は追加前とバイト一致（fixture・例・ベンチマーク 342 ファイル、native と wasm32、`-O0` と `-O3`）。
-- 登録は `src/stdlib.rs` の `SOURCES`（末尾）・`RESERVED_MODULES`（46 → 49。`reserves_the_d07_table`）・`opaque_record`（`Matrix.Matrix`・`MatrixView.MatrixView`・`MatrixView.Mut`・`Tensor.Tensor`・`Tensor.View`）・`OPT_IN` と、`src/check.rs` の `Type::is_noncopy_record`（`Matrix.Matrix`・`Tensor.Tensor`・`Tensor.View`）、`vsc/src/core.ts` の `libraryModules`（予約名と一致する検査がある）。`vsc/resources/completions.json` は追跡されず、std の `def` 行から生成される。
+- 登録は `src/stdlib.rs` の `SOURCES`（末尾）・`RESERVED_MODULES`（46 → 49。4 つのチケットを統合した後は 53。`reserves_the_d07_table`）・`opaque_record`（`Matrix.Matrix`・`MatrixView.MatrixView`・`MatrixView.Mut`・`Tensor.Tensor`・`Tensor.View`）・`OPT_IN` と、`src/check.rs` の `Type::is_noncopy_record`（`Matrix.Matrix`・`Tensor.Tensor`・`Tensor.View`）、`vsc/src/core.ts` の `libraryModules`（予約名と一致する検査がある）。`vsc/resources/completions.json` は追跡されず、std の `def` 行から生成される。
 - 内部は不透明（`E1022`）、公開 C ABI への export は `E1008`、`Matrix.tz`・`MatrixView.tz`・`Tensor.tz` の名前のファイルは `E1011`。
 
 ### Matrix

@@ -41,7 +41,7 @@ Channel.clone_sender :: ref Channel.Sender<'a> -> Channel.Sender<'a>
 - `Mutex.with_lock` の中は、入れ子の `with_lock`、並列の開始、`Channel` の操作がトラップ（デッドロックのかわり）。結果は `Send` で、ロック中の値への借用を持てない（`E1013`）。ポイズンはない。
 - `Channel`: 容量は 1 以上（以下はトラップ）。`send` は満杯なら待ち、受け手がいなければ要素を `Error` で返す。`recv` は空なら待ち、すべての `Sender` が drop され空なら `None`。最後の端が drop されるとき、残った要素を 1 回ずつ drop してブロックを解放する。
 - 待ちの規則: 待つスレッドは、空いているワーカー（仕事を取っていないワーカー）がいなければ、最も古いグループの未着手の仕事を自分のスタックの上で走らせ（深さ 16 まで）、なければ眠る。グループを始めたスレッドは、公開する lock の中で最初の子どもを取り、結合を待つあいだは自分のグループの子どもだけを走らせる（native と `--wasm-feature threads` で同じ）。全スレッドが待ち、動かせる仕事もなければ、待ちを全員起こして `Tsuzuri runtime: deadlock: every task is waiting on a channel` を出し、assert のトラップにする。既定の wasm32 と CPU が 1 つの native は、子どもを `index` の順に 1 スレッドで走らせ、満たされない待ちはその場でトラップする。完了するかどうかはスレッド数に左右される（D10）。
-- opt-in: 予約モジュール `Atomic`・`Mutex`・`Channel`（`RESERVED_MODULES` は 49 個）は、ソースに名前が現れたプログラムだけに読み込まれる。`Sync`・`AtomicValue` の組み込みクラスは `BUILTIN_CLASSES`（33 個）。使わないプログラムの IR はバイト単位で変わらない。
+- opt-in: 予約モジュール `Atomic`・`Mutex`・`Channel`（`RESERVED_MODULES` は 49 個。4 つのチケットを統合した後は 53 個）は、ソースに名前が現れたプログラムだけに読み込まれる。`Sync`・`AtomicValue` の組み込みクラスは `BUILTIN_CLASSES`（33 個）。使わないプログラムの IR はバイト単位で変わらない。
 - 診断: `E1022`（両端の構築・フィールド参照・内部の close 関数）、`E1016`（利用者の std 型への `Drop`・`Sync` などへの instance）、`E1005`（両端と `Atomic`・`Mutex` の捕捉）、`E1013`（`Sync` でない共有、`Send` でない要素、借用を持つ結果や一時値）、`E2000`（`--freestanding` の `Mutex`・`Channel`）、`E1008`・`E1026`（export・extern・`const` の境界）。
 
 ## 決定事項の結果

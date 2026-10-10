@@ -82,7 +82,7 @@ max=70
 
 ## 型の規則
 
-- `Atomic<T>` は `Send` で、`Sync` です。共有借用から更新できるのは、この型（と [Mutex](./mutex.md)）だけです。`Atomic` を持つレコードや共用体も、非 Copy で、関数値に捕捉できません。
+- `Atomic<T>` は `Send` で、`Sync` です。共有借用から更新できるのは、この型と [Mutex](./mutex.md)、そして [Channel](./channel.md) の端（`Sender`・`Receiver`。ランタイムのロックで守られます）だけです。`Atomic` を持つレコードや共用体も、非 Copy で、関数値に捕捉できません。
 - 関数値は複製されることがあり、複製した `Atomic` は別のセルになるので、捕捉は `E1005` です。メッセージは `cannot capture Atomic<i64> in a function value; a function value may be copied, and a copy of an Atomic or Mutex would be a separate cell; capture a borrow of it, share it through an Arc, or pass it as an argument` です。借用 `ref cell` を捕捉するか、`Arc` に入れるか、引数で渡します。
 - `task { ... }` は、`Atomic` を持ち込めます。所有値のムーブなので、その 1 つのタスクだけが所有します。
 - `Atomic<T>` は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はなく、比較や表示は `Atomic.load` で取り出した値に対して行います。

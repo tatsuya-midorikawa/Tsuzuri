@@ -432,6 +432,7 @@ pub fn build_debug_runner(
     link.args(["-g", &optimization])
         .args(native_compile_args(cfg!(windows), env::consts::ARCH));
     let has_net = sources.iter().any(|(name, _)| *name == "net.c");
+    let has_gpu = sources.iter().any(|(name, _)| *name == "gpu.c");
     for (name, source) in sources {
         let path = temporary.path.join(name);
         let runtime = path.with_extension("o");
@@ -456,6 +457,10 @@ pub fn build_debug_runner(
     link.arg(&object).arg("-o").arg(&artifact);
     if !cfg!(windows) {
         link.args(["-lm", "-pthread"]);
+        // gpu.c loads a WebGPU or Vulkan library with dlopen, which older glibc keeps in libdl.
+        if has_gpu && cfg!(target_os = "linux") {
+            link.arg("-ldl");
+        }
     } else if has_net {
         link.arg("-lws2_32");
     }

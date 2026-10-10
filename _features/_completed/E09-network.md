@@ -31,7 +31,7 @@ Rust の `std::net`、.NET の `TcpClient`／`TcpListener`／`UdpClient` に相�
   `Drop` 値は `let!` をまたげない（E1005）ためである（GUIDE D-32、[E08](E08-os-api.md) の D12）。旧計画の「操作が handle を返し直す `Drop` 型」は作れない。
 - E08 は WASI（`--wasm-host wasi`）と Windows の E2002 を出荷し、test／bench の runtime は別に連結する。`net.c` も同じ配線にした。
 - `Os.ErrorKind` は 7 case（`Interrupted` を含む）で、`Os.error_of_status` が `(kind << 32) | code` を読む。case は足さない。
-- 新しい std は opt-in（D-40、`stdlib::OPT_IN`）。`Net` は予約（`RESERVED_MODULES` は 47 名）して opt-in にした。
+- 新しい std は opt-in（D-40、`stdlib::OPT_IN`）。`Net` は予約（`RESERVED_MODULES` は 47 名。4 つのチケットを統合した後は 53 名）して opt-in にした。
 - B08 の native reactor はタイマーと外部の完了（mailbox と `tsuzuri_async_post`）だけで、kqueue／epoll／IOCP を持たない（D-42・D-43）。
 - G10 は blocked のままだが、B08 の reactor は Windows の実装を持ち、CI だけで検証されている（D-43）。
 
