@@ -206,9 +206,11 @@ match Gpu.request Gpu.Vulkan with
 | `Gpu.init`・`Gpu.map` | `f16`、`f64`、`bool` | GPU のカーネルがない。理由を標準エラーに 1 行出してトラップ |
 | `Gpu.init`・`Gpu.map` | カーネルが `f32` の `/`、整数の `/` と `%`、`**`、`f64` を含む | GPU のカーネルがない。同上 |
 | `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f32`、`i32`、`i32u` | GPU で動く。浮動小数点の結果は緩い。`f32` の `/` も使える |
-| `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f16` | GPU のカーネルがない（WebGPU でだけ動く）。トラップ |
+| `Gpu.init_relaxed`・`Gpu.map_relaxed` | `f16`、`i64`、`i64u`、または `f32` から整数へのキャストを含むカーネル | GPU のカーネルがない（`f16` は WebGPU でだけ動く）。トラップ |
 
 「GPU のカーネルがない」呼び出しは、`tsuzuri: Vulkan: the kernel has no SPIR-V module for Vulkan` のような理由を標準エラーに 1 行出してトラップします。コンパイル時のエラーにしないのは、デバイスが実行時の値で、同じ呼び出しが `CpuReference` のデバイスでは正しく動くからです。コンパイルでその理由を見るには、カーネルを `export` した専用のソースを `--emit spirv` に渡します。
+
+WGSL にある、文の入れ子が 127 段を超えるカーネルの制限（`E1017`）は、SPIR-V にはありません。`else if` が 63 本以上続くカーネルや、`mut` の引数を持つ関数は、Vulkan でそのまま動きます（100 本の連鎖を `tests/gpu_spirv.rs` が CPU 参照と比べています）。
 
 ### 厳密な f32 と float controls
 
@@ -550,6 +552,6 @@ node examples/gpu/run.mjs kernel.wgsl
 - [コンパイラ オプション](../compiler/option.md)
 - [WebAssembly](../compiler/webassembly.md)
 - [言語仕様の GPU Kernel](../../../docs/language.md#gpu-kernel実験的)
-- [F09 の計画](../../../_features/F09-gpu-float-runtime.md)
+- [F09 の記録](../../../_features/_completed/F09-gpu-float-runtime.md)
 - [性能測定](../../../docs/benchmarks.md)
 - [言語リファレンスの目次](../index.md)

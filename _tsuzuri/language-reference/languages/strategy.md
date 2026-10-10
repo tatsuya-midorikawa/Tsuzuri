@@ -143,7 +143,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | ネットワーク | 計画中 | E09 |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
-| Vulkan の厳密な `f32` の実機での一致、離散 GPU、Linux・Windows・Apple 以外の GPU での Vulkan 実行 | 検証未完了 | F09 の Phase 3。float controls をすべて報告して適合プローブを通る実機がなく、確かめていない |
+| Vulkan の厳密な `f32` の実機での一致、離散 GPU、Linux・Windows・Apple 以外の GPU での Vulkan 実行 | 検証未完了 | [F09](../../../_features/_completed/F09-gpu-float-runtime.md) の Phase 3。float controls をすべて報告して適合プローブを通る実機がなく、確かめていない |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。内部可変性はない |
 | Atomic / Mutex / Channel、多次元配列 | 計画中 | F10、C11 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |

@@ -1319,6 +1319,12 @@ fn compile_harness(clang: &Path, source: &Path, path: &Path) -> Result<(), Harne
 
 fn harness_binary() -> &'static Result<PathBuf, HarnessError> {
     HARNESS.get_or_init(|| {
+        if cfg!(windows) {
+            return Err(HarnessError::Missing(
+                "the runtime harness uses dlopen and pthreads; the Windows loader path is checked by type checks only"
+                    .to_owned(),
+            ));
+        }
         let clang = std::env::var_os("TSUZURI_CLANG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("clang"));
