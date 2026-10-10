@@ -131,12 +131,12 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 
 - GUI、Web、データベース、ネットワークが本体のアプリケーション。
 - npm、NuGet、crates.io のライブラリを、そのまま依存にしたい開発。
-- 汎用の非同期 I/O、成熟した GPU カーネル開発。
+- ファイルを含む汎用の非同期 I/O、成熟した GPU カーネル開発。非同期にできる I/O は、`Net` のソケットだけです。
 - GC に任せた共有グラフや、循環するオブジェクトをそのまま写すモデル。循環は [Arena](../built-in-types-and-modules/arena.md) のハンドルで表し直します。
 - Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 
 > [!WARNING]
-> 標準のネットワーク API、公開の registry、汎用 GPU 実行、非同期 I/O は、0.1.0 にはありません（GPU は、WebGPU と Vulkan 上のカーネル実行が実験的にあるだけです）。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
+> 公開の registry、TLS や HTTP などソケットより上のネットワーク API、汎用 GPU 実行、ファイルの非同期 I/O は、0.1.0 にはありません（標準の [Net](../built-in-types-and-modules/net.md) は TCP・UDP・名前解決を持ちます。GPU は、WebGPU と Vulkan 上のカーネル実行が実験的にあるだけです）。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
 
 ## プラットフォームの読み方
 
@@ -172,7 +172,7 @@ flowchart TD
 - 関数型の書き方と、GC のない所有権を、計算カーネルに使いたいときに候補になります。
 - C/C++ より契約を検査でき、Rust より関数の合成を中心に書けます。エコシステムの広さでは、どちらにも及びません。
 - C#、F#、TypeScript のライブラリや実行基盤の置き換えには、まだ向きません。
-- GPU は実験的、非同期は計画中、公開の registry は運営されていません。Windows の OS API は検証未了で拒否されます。
+- GPU は実験的、非同期 I/O はソケットだけ、公開の registry は運営されていません。Windows の OS API は検証未了で拒否されます。
 - 採用するなら、期待値が明確な計算を一つ照合してから範囲を決めます。
 
 ## 関連項目

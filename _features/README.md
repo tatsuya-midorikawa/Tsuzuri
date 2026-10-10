@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 8 件、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 2 件（B09・D12）があります。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 4 件（D10・D11・G15・G19）、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 2 件（B09・D12）があります。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -51,7 +51,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か（起票時の版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。現在の比較は [なぜ Tsuzuri なのか](../_tsuzuri/language-reference/languages/why-tsuzuri.md) にあります。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、B08 は `done`（Phase 1・2・3）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、C08・A16・A14 は `done`（Phase 1・2）、F13・F08 は `done`（Phase 1・2・3）、C10・D08・D09・E11・E13・E10 は `done`（Phase 1・2）、G16・G18 は `done`（Phase 1・2・3）、G17 は `done`（Phase 1・3。Phase 2 は実測で見送り）、G13 は `done`（Phase 1・2。Phase 3 の JIT は再検討して採用しない）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、B08 は `done`（Phase 1・2・3）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、C08・A16・A14 は `done`（Phase 1・2）、F13・F08 は `done`（Phase 1・2・3）、C10・D08・D09・E11・E13・E10 は `done`（Phase 1・2）、G16・G18 は `done`（Phase 1・2・3）、G17 は `done`（Phase 1・3。Phase 2 は実測で見送り）、G13 は `done`（Phase 1・2。Phase 3 の JIT は再検討して採用しない）、E09・F09 は `done`（Phase 1・2・3）、F10・C11 は `done`（Phase 1・2）、ほかは `todo` です。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
@@ -262,7 +262,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 5. 長期 | 研究開発を伴う大型機能 | E04、F06、F07、A10、B06、G10、G11 |
 | 6. 第2期・導入障壁 | 既存アプリへの組み込みと日常の開発を妨げる劣位を除く | G20 → G12、G14、F11、E12、E14、B07 → E08、C09、D07 |
 | 7. 第2期・表現力と性能 | 所有権モデルの表現力・性能・エコシステムの差を縮める | A15、A12 → A13 → C08、A14、A16、F12、F13、F08、C10、D08、D09、E11、E13、E10、G16、G18、G17、G13 |
-| 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11、D10、D11、G15、G19 |
+| 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11（完了）、D10、D11、G15、G19 |
 | 9. 追加（2026-10-07） | 言語リファレンスの執筆で見つけた不具合を直し、ローカルな再帰を書けるようにする | D12、B09 |
 
 ## 依存関係図
@@ -424,8 +424,9 @@ graph LR
 | [B07](_completed/B07-user-drop.md) | D1（`Drop`）、D2（`drop` の引数を `ref mut`）、D4（Drop 型からの move の禁止）、Phase 2（`use`・`use!`、`Owned` の早期解放と関数値）。すべて承認済みで実装済み（2026-10-02） |
 | [B08](_completed/B08-async.md) | D1（`Async`）、D10（Phase 2）、Phase 3 と旧計画の再検討。すべて承認済みで実装済み（2026-10-09、D-42） |
 | [C08](_completed/C08-mutable-slices.md) | D1（D-13 の変更。チケット全体）、D11（Phase 2）。承認済みで実装済み（2026-10-06。D-39） |
-| C09・C11 | Phase 2 以降だけ（C09 D11、C11 D9） |
+| C09 | Phase 2 以降だけ（C09 D11） |
 | [C10](_completed/C10-shared-ownership.md) | D13（参照カウントの導入）、D14（`Rc`／`Arc`）。承認済みで実装済み（2026-10-07。Phase 1 も実装。D-40） |
+| [C11](_completed/C11-multidimensional-arrays.md) | D9（Phase 2 の GPU との連携）。承認済みで実装済み（2026-10-10。Phase 1・2、D-44。行列積の GPU kernel は作らず、`Matrix.as_array`／`of_array` と `Gpu` の組み合わせだけ） |
 | [D07](_completed/D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
 | [D08](_completed/D08-json-serialization.md) | D1（`Json`・`Encode`／`Decode`）。承認済みで実装済み（2026-10-07。Phase 2 も実装。D-40） |
 | [D09](_completed/D09-regex-unicode.md) | D1（`Regex`・`Unicode` の予約）、D11（Phase 2）。承認済みで実装済み（2026-10-07。D-40） |

@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2・3） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。旧計画の基準は `f8dc655` |
 | 実装の基準 | main `96d7cbf` の上のブランチ `impl/e09-net`、2026-10-10。Phase 1 `de2766c`、Phase 2 `5ab4da9`、`resolve` のレビュー対応 `9efbf87`、Phase 3 `9ab610d`。Phase 2 のレビュー対応（CI の手順、Windows の UDP と `accept`）は、同ブランチのそのあとの 2 コミット |
-| 承認 | 全フェーズと D1・D11 を含む判断への包括承認（依頼者の不在中に実装）。GUIDE の D 番号は統合時に付く |
+| 承認 | 全フェーズと D1・D11 を含む判断への包括承認（依頼者の不在中に実装）。GUIDE の [D-44](../GUIDE.md#d-44-第2期の-4-チケットe09f09f10c11の確定) に記録した |
 | 改善する劣位 | C#/F# 比: ネットワーク API がない |
 | 利用者向け仕様 | [Net](../../_tsuzuri/language-reference/built-in-types-and-modules/net.md)、[WebAssembly への出力](../../_tsuzuri/language-reference/compiler/webassembly.md#net-のソケットnodejs)、[言語仕様](../../docs/language.md#ネットワークnet) |
 

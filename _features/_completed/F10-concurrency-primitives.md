@@ -10,7 +10,7 @@
 | 状態 | done（Phase 1・2） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。旧計画の基準は `f8dc655` |
 | 実装の基準 | `96d7cbf`（main）。ブランチ `impl/f10-concurrency`、2026-10-10 |
-| 承認 | 全フェーズと必要な判断への包括承認（D1、D10 を含む）。GUIDE の台帳へは統合時に D-44 として記録する |
+| 承認 | 全フェーズと必要な判断への包括承認（D1、D10 を含む）。GUIDE の [D-44](../GUIDE.md#d-44-第2期の-4-チケットe09f09f10c11の確定) に記録した |
 | 利用者向け仕様 | [Atomic](../../_tsuzuri/language-reference/built-in-types-and-modules/atomic.md)、[Mutex](../../_tsuzuri/language-reference/built-in-types-and-modules/mutex.md)、[Channel](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md)、[Task 式](../../_tsuzuri/language-reference/async-tasks-and-lazy/task.md#共有状態と-taskscope)、[言語仕様](../../docs/language.md#atomic--mutex) |
 
 ## 目的と実装範囲

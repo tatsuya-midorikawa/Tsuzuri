@@ -1344,6 +1344,108 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     golden を更新した）、`tsuzuri doc`（`Builder alias:` の行）、VS Code の文法。
     LSP はビルダー名のトークンを索引しないので、別名専用の処理は足さない。
 
+### D-44 第2期の 4 チケット（E09・F09・F10・C11）の確定
+
+- 2026-10-10、利用者の「E09、F09、F10、C11 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。
+  複数フェーズある場合には、すべてのフェーズを完了させること。…何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、
+  4 チケットの `要承認` の決定事項すべての承認として扱った。着手時点は `96d7cbf`。旧 HEAD `f8dc655` の計画は、D-34〜D-43 の整数既定 `i32`、opt-in std（D-40）、
+  `_tsuzuri/language-reference/` への文書の移動、`File.Handle`（世代検査付きの表を指す Copy の添字）、B08 の reactor がタイマーと mailbox だけであること（D-42・D-43）、
+  E14 の `--trap-mode return`、C10 の `Rc`・`Arc` と照合して見直した。詳細は各チケットの「実装と検証」にある。
+- 共通: 新しい std モジュール 7 個（`Net`・`Atomic`・`Mutex`・`Channel`・`Matrix`・`MatrixView`・`Tensor`）はすべて opt-in（`stdlib::OPT_IN`。D-40）で、
+  予約名は 46 個から 53 個、組み込みクラスは 31 個から 33 個（`Sync`・`AtomicValue`）。`MatrixView` は `Matrix`、`Tensor` は `Matrix` と `MatrixView`、`Net` は `Async` を
+  `uses` で連れてくる。`opaque_record` と `vsc/src/core.ts` の `libraryModules`（予約名と一致させる）も同じ名前で更新した。名前を書かないプログラムの IR はバイト単位で変わらない
+  （チケットごとに基準のコンパイラと 274〜342 組を比較した）。例外は F09 で、std の `Gpu.tz` に関数が増えたため、単相化の `$intrinsic.N`／`$instance.N` の番号が
+  基準 144 組のうち 24 組で振り直される（番号を正規化すると差は 0）。新しい診断コード、crate、unsafe Rust、fast-math、既定の host import はない。
+  すべてのフェーズの diff を独立した code review にかけ、指摘を再現してからテスト付きで直した。各項の「review で直したこと」にその一覧がある。
+- E09（`Net`）: ticket の D4（`Drop` で閉じる非 Copy の handle）は std の型が `Drop` を持てず（E1016）、`Drop` が `let!` をまたげない（E1005）ので実現できない。
+  代わりに `File.Handle` と同じ `Copy` の不透明 record にし、`(generation << 32) | (slot + 1)` で世代検査付きの表を指す（閉じた・古い・種類違いの handle は
+  `InvalidInput`／`EBADF`）。`Net.Address`・`Net.TcpStream`・`Net.TcpListener`・`Net.UdpSocket` は `Copy`、閉じ忘れは終了時まで漏れる（括弧の `with_connection`・`with_accepted`・
+  `with_listener`・`with_udp` を用意した）。API は `IO<Result<T, Os.Error>>`: `resolve`・`connect`・`read`・`write`・`shutdown`・`close`・`bind`・`accept`・`close_listener`・
+  `bind_udp`・`send_to`・`recv_from`・`close_udp`・`error_kind`（`Net.ErrorKind` 7 case）と、純粋なアドレスの `parse_address`・`parse_ip`・`address_text`・`ip_text`・`port`・`is_ipv6`。
+  アドレスの解析は厳密（`inet_aton` の形・ゾーン・先頭 0・空白は `None`）で、表示は RFC 5952。時間制限は `Maybe<i64>` の呼び出し全体の期限、受信は 1〜16 MiB、UDP は切り詰めずに `EMSGSIZE`。
+  socket は `FD_CLOEXEC`・SIGPIPE 抑止・`IPV6_V6ONLY`・listener の `SO_REUSEADDR`（Windows は `SO_EXCLUSIVEADDRUSE`）。
+  - `resolve` は、アドレスに読める host（`:`／`%`、空白か制御文字、ASCII 以外のバイト、最後のラベルが数字だけか `0x`）を OS に渡さず `parse_ip` だけで決め（一致すれば OS を呼ばない 1 件、
+    そうでなければ `InvalidInput`／code 0）、ランタイムは `getaddrinfo(AI_NUMERICHOST)` が数値と読む host を断る。システムの `inet_aton` 系が `0x7f.1` や全角の数字を数値と読み、
+    利用者の SSRF の検査をすり抜けるため。国際化ドメインは `xn--` で書く（native でも `éxample.com` は `InvalidInput`）。wasm32 は `dns.lookup` に `AI_NUMERICHOST` を渡せないので分類だけが守る。
+  - 非同期は `_async` の双子 12 個（`Async.host` の上。`IO` は `Async` の中で動かせないため）。B08 の reactor には登録せず、1 本の分離した監視スレッド（`poll`／`WSAPoll` と起床用 pipe）が
+    `tsuzuri_async_post` へ完了を入れる。`resolve_async` はない（`getaddrinfo` は取り消せない）。`Async.block_on` のない native で非同期の操作に到達すると E2000。時間制限 0 は「1 回だけ試す」。
+  - runtime は `src/runtime/net.c`（IR が `@tsuzuri_net_` を宣言したときだけ連結。`-pthread`、Windows は `-lws2_32`）。macOS・Linux・Windows 以外は E2002。Windows は Winsock で、UDP は `SIO_UDP_CONNRESET` を切り、
+    `accept` は接続前に RST された `WSAECONNRESET` を飛ばす（POSIX に揃える）。builtin は std 専用の `Net.__*`（`E1022`）。既定の wasm32 と `--wasm-host wasi` は import を足さず E2000。
+  - `--wasm-feature net`（`jspi` が必要。wasm32 の `object`・`llvm`・`wasm`・`bindings-js` だけで、threads・WASI・wasm64・native とは排他。違反は E2000）は、`tsuzuri_net` の import 14 個（JSPI で中断する
+    ものと、時間制限 0 の `try_read`／`try_accept`）を足し、生成グルーが Node.js 24 の `node:net`・`node:dgram`・`node:dns` で実装する。ブラウザーは生の TCP／UDP がないので `load` で失敗する。
+    グルーは `reaches_net`（ソケットに到達するモジュールだけ）で選ぶ。ホストの例外は呼び出しの status に直し（モジュール自身の trap だけが通る）、破棄したインスタンスの socket は閉じ、
+    UDP の受信は 1 MiB・4096 件、listener は 128 接続で頭打ちにし、TCP は `allowHalfOpen`、ポインタは `>>> 0`。`bind_async`・`bind_udp_async` は `Async.block_on` が要る（Node の listen/bind に同期の道がない）。
+  - review で直したこと: Phase 1 の `resolve` の数値 host の差（上記）、Phase 2 の CI（`vsc/` から動かないテスト、errno 99 の仮定、macOS の Homebrew LLVM の ASan が起動で止まる件は
+    `TSUZURI_NO_SANITIZERS=1`）と Windows の UDP／accept、Phase 3 の 11 件（Unicode の host、破棄したインスタンスの socket、JS 例外が「stack exhausted」になる件、半閉じ、UDP の送信失敗が受信を汚す件、
+    アイドル中の reset、無制限の queue、ソケットのないモジュールのグルー、`Async.start` の `SuspendError`、2 GiB 以上のポインタ、`memory64` の import 名の走査）。
+  - 限界: Linux は実行未確認（glibc・musl の x86_64・aarch64 はコンパイルのみ）、Windows の実行は CI だけ、wasm32 は macOS の Node.js 24 だけ、TLS・HTTP はない（E10）。
+- F09（`Gpu`）: Phase 1・2・3 を実装した。厳密な `Gpu.init`／`Gpu.map` は厳密のまま、浮動小数点の GPU 実行は名前で選ぶ（D-14）。
+  - Phase 1: `Gpu.init_relaxed`／`Gpu.map_relaxed`（`f16`・`f32`・`i32`・`i32u`。CPU の参照は厳密に評価する）と `--emit wgsl-relaxed`（1 行目 `// tsuzuri-gpu float=relaxed input=<t> output=<t>`、
+    `f16` を使うときは `enable f16;`、f32／f16 のリテラルはビットパターン。浮動小数点から整数への変換・f64・`**`・bool・64 bit は E1018）。
+  - Phase 2: `Gpu.request Gpu.WebGpu` は、runtime が WebGPU の device を開き、プログラムの kernel が要る機能（`shader-f16`）をすべて持つときだけ `Ok`、そうでなければ `Error Gpu.Unavailable`（CPU への黙った代替はない）。
+    WebGPU の device を作る関数を利用者が書いたプログラムだけが kernel を埋め込み（`CheckedModule.gpu`、`@tz.gpu.kernels`）、`Gpu.request`／`init`／`map` を `request_on`／`init_on`／`map_on` へ付け替える
+    （`src/gpu_devices.rs`）。ほかのプログラムは GPU runtime も import も持たない。device の関数を指す `Gpu.__open`／`__features`／`__run`（と `request_on` など）は std 専用（`E1022`）。
+    native は `src/runtime/gpu.c` が wgpu-native 29 を `dlopen`／`LoadLibrary` する（`TSUZURI_WEBGPU_LIBRARY` で指名、空なら無効。リンク時の依存なし。`wgpuGetVersion` が 0 のビルドは指名したときだけ受理）。
+    WASM は `--wasm-feature webgpu`（wasm32 の object・llvm・wasm。threads・`--wasm-host`・`bindings-js` とは排他）が `tsuzuri_gpu.open`／`run` の import を足し、`createGpuImports`（JSPI）が実装する。
+    厳密な呼び出しの device kernel は `i32`／`i32u` の lane と厳密な WGSL の callback だけ（CPU 参照とビットが一致）。ほかの厳密な呼び出しは理由を stderr に書いて trap する。
+    1 呼び出しごとに host 配列をコピー・upload・dispatch・待ち・read back し、GPU 常駐の buffer はない。1 device／1 プロセス、呼び出しは直列。
+  - Phase 3: 自前の SPIR-V emitter（`src/gpu/spirv.rs`。LLVM の SPIR-V target は `NoContraction` を出さず、Vulkan は付けないと乗加算の融合を許すため使わない）、`Gpu.request Gpu.Vulkan`（native。
+    ローダーを `dlopen`／`LoadLibrary`、`TSUZURI_VULKAN_LIBRARY`、portability 列挙、`shaderInt64`、float control。WASM は常に `Unavailable`）、`Gpu.Auto`（常に `Ok`。呼び出しごとに CPU 参照か Vulkan を選ぶ）、
+    公開の `Gpu.last_backend`、`--emit spirv|spirv-relaxed`（`.spv`。ビルド cache には入れない）、64 bit 整数の kernel（`shaderInt64`）。厳密な `f32` は `+ - *`・単項 `-`・比較・整数との変換だけで、
+    `/` は E1018（`OpFDiv` は 2.5 ULP）。f32 から整数への変換は範囲比較と `OpIsNan` で Tsuzuri の飽和・NaN を再現する。整数の `/ % **`・`f64`・`f16`・`bool` は厳密では E1018。
+    **厳密な `f32` は device の float control の性質に加えて 27 lane・9 演算の conformance probe に通ったときだけ使う**（性質は申告であって証明ではない。MoltenVK は SignedZeroInfNanPreserve を申告しながら
+    `-(x*0.0)` が `-0.0` にならず、SwiftShader は 2^31 以上の u32 から f32 への丸めが違った）。probe は 1 回だけ、厳密な `f32` を要する最初の要求で走り、失敗するとそのプロセスでは厳密な `f32` を断る。
+    probe は標本であって証明ではない。`Gpu.request Gpu.Vulkan` は全 kernel の機能の OR を、`Gpu.Auto` は kernel ごとの機能を確かめる。明示した backend は CPU へ落ちない。
+  - `Gpu.Auto` の規則: 候補は CPU と Vulkan だけ（WebGPU には測った規則がない）。Vulkan は統合 GPU でメモリを CPU と共有するときだけ。使える判定（module・lane 数・機能と probe・limit・pipeline）は device が報告する内容で
+    **device を作る前**に行い、合う device がなければ論理 device を作らない → 費用の見積もり（CPU `n·w·0.03 ns`、Vulkan `270 µs + n·b·0.13 ns + n·w·0.001 ns`。`w` は 1 lane が実行する演算数の**下限**で、`if` は条件と安い腕、
+    `&&`／`||` は左の項だけを数え、呼ぶ関数は同じ規則で数える。`b` は 1 lane の入出力のバイト数）→ 最初の使用の費用（device を開く 30 ms、pipeline の 7 ms）をスキーレンタルの credit で払う。準備の失敗は CPU、
+    実行中の失敗は明示した device と同じ trap。判定が CPU になる呼び出しは実行中の GPU を待たない（runtime の state lock と run lock を分け、棄却する判定は lock を取らない）。プロセスの論理 device は 1 つで、
+    最初の要求が決める（離散と統合の両方がある機械で、`Auto` が先なら統合 GPU を開いてあとの明示的な `Gpu.Vulkan` も使い、明示的な要求が先なら離散 GPU を開いて `Auto` は以後 CPU。device を 2 つ持つには device ごとの状態と
+    呼び出しの種別の区別が要るので、まだない）。`TSUZURI_GPU_AUTO_MIN_WORK=<n>` は規則を `lanes×weight >= n` に置き換えるが、機能・class・limit の検査は緩めない。ticket の「閾値」は、1 回の閾値では
+    少しずつ得する呼び出しの繰り返しで device を開かないため、費用の規則に改めた。定数は 1 台の機械（M1 Max）の経験値で、CI に速度の閾値は入れない。
+  - 環境変数: `TSUZURI_WEBGPU_LIBRARY`・`TSUZURI_VULKAN_LIBRARY`（名指しのパス）、`TSUZURI_GPU_DEBUG`（理由と dispatch の経過）、`TSUZURI_GPU_AUTO_MIN_WORK`。ライブラリの既定の探索は system の場所だけ
+    （macOS は絶対パスだけ。dyld がカレントディレクトリの同名ファイルを先に読むため。Windows は `LOAD_LIBRARY_SEARCH_SYSTEM32`。Linux は動的リンカーが作業ディレクトリを探さないので名前のまま）。
+    Vulkan のローダーが読み込めても `vkGetInstanceProcAddr` を持たなければ読み飛ばして探索を続ける。runtime は `VK_*` の変数を読み書きしない。
+  - 記述子は `{flags, lanes, features, wgsl, wgsl_len, spirv, spirv_len, weight}`（features の bit1 が i64、bit2 が厳密な f32、lane の種別 4 が 64 bit 整数）。境界は `tsuzuri_gpu_open`／`run`／`select`。IR の印
+    `; tsuzuri-gpu: vulkan` が `src/runtime/gpu-vulkan.c` を連結する。runtime の `#undef NDEBUG`（`zig cc` の `-O1` 以上で `assert` が消える件。D-43）。
+  - review で直したこと: WGSL の `mut` 引数と文の入れ子（else-if 63 個以上は E1017）、利用者が呼べた `request_on`／`init_on`／`map_on`（kernel の添字を偽造できた。非公開にし、記述子の lane 種別を `Gpu.__run` が確かめる）、
+    device の limit を adapter でなく開いた device から、失敗した object の cache、2 GiB 以上のポインタ、カレントディレクトリからのライブラリ読み込み（WebGPU・Vulkan とも）、スタックに置いた待ち状態、
+    SPIR-V の probe の抜け（符号なしの変換が切り捨てと最近接偶数丸めを区別できなかった）、`Gpu.Auto` の判定が実行中の GPU を待つ件、分岐の両腕を足していた weight、統合 GPU と離散 GPU の両方がある機械、テストの変異生存。
+  - 限界: 確かめたのは Apple M1 Max 1 台（Metal 上の wgpu-native と Dawn、MoltenVK）とソフトウェア実装の SwiftShader だけ。厳密な `f32` を通す device は未確認（MoltenVK は probe で断る）、Linux・Windows・x86・CUDA・Metal 直接は未実行、
+    `Gpu.Auto` は WebGPU を選ばず、WASM の `Auto` は常に CPU。速度の優位は主張しない（測定と限界は docs/benchmarks.md）。
+- F10（`Atomic`・`Mutex`・`Channel`・`Task.scope`・`Sync`）: Phase 1・2 を実装した。
+  - `Atomic<'a>`（`i8`〜`i64u` と `bool`。組み込みクラス `AtomicValue`）: `create`・`load`・`store`・`swap`・`compare_exchange`・`fetch_add`／`sub`／`and`／`or`／`xor`（整数だけ）・`into_inner`。seq_cst。
+    `new` と `with` は予約語なので、構築は `create`、ロックは `Mutex.with_lock`（`Bench.with_input` と同じ）。`Mutex<'a>`: `create`・`with_lock`・`into_inner`。poison はなく、ロック中の入れ子・
+    並列の開始・`Channel` の操作は trap（`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok`）。`--trap-mode return` の境界は弱い hook `tsuzuri_sync_hooks.abandon` でロックを解放する。
+  - 組み込み `Task.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`（共有借用を子へ渡す fork／join。子 1 つにつき結果 1 つ）と組み込みクラス `Sync`／`AtomicValue`
+    （`BUILTIN_CLASSES`。利用者の instance は E1016）。`Function` は型の上では `Sync` で、安全は「共有する関数の環境は所有したものだけ」（E1013）で保つ。`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send`
+    （D-40 の「`T` が `Send`」を改めた）。**型変数は `Send` でも `Sync` でもない**: `Send<'a>`・`Sync<'a>`（`Channel.bounded`・`Mutex.create`・`Parallel.*`・`Task.scope`・`Dyn.of` の `dyn (C, Send)`・利用者の制約）は
+    ジェネリック関数の制約として残り、使う型ごとに検査する（既定メソッドと instance メソッドが要るときは宣言する。E1027）。F10 以前から `Rc` を運ぶ `Parallel.init` などが通っていた穴も塞いだ。
+  - `Mutex.with_lock` の結果が借用を持ち得る型なら、callback の結果が借用した環境を持たないことを証明する（E1013）。`Channel.send` は、要素の型が借用を持ち得る（関数など）とき、要素が loan を持たない
+    （E1013）。直接の 2 引数の呼び出しだけで、部分適用・関数値・pipe は拒否する。`Channel.recv` の結果は loan を持たない。関数型の引数を `Channel.send` へ渡すジェネリック関数は、使う型で拒否する
+    （関数は送る場所で作る）。
+  - `Channel`（有界・多対多）: `bounded`・`send :: ... -> Result<unit,'a>`（受信側がいないとき要素を失わない）・`recv`・`clone_sender`。`Sender`・`Receiver` は `{ block: i64 }` の不透明 record で、std の `Drop` の instance が閉じる
+    （std のモジュールは自分で宣言した型に `Drop` を書ける。利用者が std の型に書くのは従来どおり E1016）。`Channel.__close_sender`／`__close_receiver` は std 専用（E1022）。閉じ忘れた `Sender` は待ちの規則が見つける。
+  - 待ち: 待つ thread は、空いた thread（idle な worker と、自分が起こした group を待つ thread）がないときだけ未開始の item を自分のスタックで手伝い（深さ 16）、そうでなければ止まる。最後に止まる thread が
+    `Tsuzuri runtime: deadlock: every task is waiting on a channel`（Assert の trap）の判定をし、全員を起こす。逐次の WASM と 1 CPU の native は、満たされない待ちで trap する。完了は thread 数に依る（受け入れ済み）。
+    1 つの pool lock が全 channel を守る（限界）。
+  - WASM threads でも `Mutex`・`Channel` が動く。worker ごとに module instance があるので wasm の global が thread-local になり（`__wasm_init_tls` なし、`ThreadState` も変えない）、共有の epoch word で待つ。
+    epoch が動くのは新しい仕事・group の最後の item・誰かが待つ channel の変化・競合したロックの解放だけで、起こすのは lock を放してから。sleeper は登録した epoch が動くまで眠る。`--freestanding` は両方とも E2000。
+  - review で直したこと: `Mutex.with_lock` の結果が借用を運ぶ、`Task.scope`／`Parallel.*` の一時の関数が借用した環境を共有する、再帰型の `can_capture` が `Arc` の中を見る、`Channel.send` が借用する関数を渡せる、
+    `Send` がジェネリックを通ると検査されない、WASM threads の pool が Channel を使わないプログラムまで遅くなる（100 万 child・7 worker で 360 ms → 2,216 ms → 233 ms）、3 stage の pipeline が CPU 負荷で偽の deadlock 判定になる。
+  - 限界: lock は 1 つの pool lock、`Arc` の循環（`Mutex` を通す）は回収しない、`with_lock` を包むジェネリック関数は借用を持ち得る結果を拒否する、native の Windows・Linux は実行確認なし（CI）。
+- C11（`Matrix`・`MatrixView`・`Tensor`）: Phase 1・2 を実装した。std のソースだけで書かれ、`Builtin`・`Type` の variant・ランタイム関数・WASM の import はない。`opaque_record` は `Matrix.Matrix`・
+  `MatrixView.MatrixView`・`MatrixView.Mut`・`Tensor.Tensor`・`Tensor.View`、`Type::is_noncopy_record` は `Matrix.Matrix`・`Tensor.Tensor`・`Tensor.View`。
+  - `Matrix.mul` の各出力要素は `+0` から `k` の昇順に別々に丸めた和（D-14）。実装は出力の行ごとの更新（i-k-j。`left` の行を先にスライスしないと out-of-line で約半分の速さ）だが、ビットは変わらない。順序の違う積は別名にした:
+    `mul_fma`（`Math.fma` の順）、チャンクが形だけで決まる `mul_parallel`・`mul_fma_parallel`（約 2^20 回の積和ごと）。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、
+    それ以外の native と wasm32 では `tz_soft_fma`（1 積和あたり約 1.6 µs。128³ の `mul_fma` が約 3.4 s で `mul` の約 4,000 倍。ビットは同じ）。
+  - 窓は region 付きの借用 record: 局所の所有者の窓は返せない（E1013）、所有者の move・置換と `Mut` が生きている間の元の配列の使用は E1014、フィールド参照などは E1022。`MatrixView.Mut` は行優先かその転置の配置だけで、
+    同じ slot を指す要素がない。`Tensor` は軸 16 本まで、長さ 0 の軸を除いた積が `i64` に収まる。窓の不変条件（`stride >= 0`、全要素が `data` の中）は `strided` が桁あふれなしで確かめる。
+  - GPU との連携は `Matrix.as_array`／`of_array` と `Gpu.from_array`／`map`／`to_array` の組み合わせだけで、行列積の GPU kernel はない（kernel の部分集合に 2 次元の添字も総和もない）。SIMD・`@cpu`・builtin は足していない。
+    benchmark は `benchmarks/run-matrix.mjs`（C の i-j-k・i-k-j・`fma` と、チェックサムをビット単位で比べてから測る）。
+  - review で直したこと: FMA のテストが host の CPU に依っていた件、FMA の文書の言い過ぎ、`extent` の `+ 1` の桁あふれ、`MatrixView.mul` の順序、空の窓のループ。
+  - 限界: x86-64・SVE／AVX-512・実機 GPU・ブラウザの WASM threads は未検証、速度は M1 Max 1 台の測定。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
