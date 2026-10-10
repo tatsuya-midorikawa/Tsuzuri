@@ -211,8 +211,8 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
   - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`、`git diff --check`、GUIDE §3.1 の 4 つの回帰テスト、`node scripts/check-docs.mjs`（変更したページ）、
     Windows の型検査（`cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`）が成功。
 - 確認していないこと: float controls をすべて報告して適合プローブも通るデバイスでの、strict な `f32` の CPU 参照との一致（そのデバイスがなく、モックと、報告しない実機での `Unavailable` までを確かめた）、
-  Linux と Windows での実行（Windows の `gpu-vulkan.c` は、レビュー後の修正のあとに、`zig cc`（Zig 0.16.0 の mingw-w64 ヘッダー）で x86-64・aarch64 の windows-gnu 向けと、Linux の x86-64・aarch64 向けに、`gpu.c` と一緒にした 1 つの翻訳単位を -O0 と -O2 -DNDEBUG でコンパイルできるところまで。
-  MSVC の SDK のヘッダーでの検査は、この回はできなかった（手元の xwin のキャッシュにヘッダーがなかった）。Rust は msvc 2 ターゲットの型検査まで）、NVIDIA・AMD・Intel の GPU と離散 GPU の転送
+  Linux と Windows での実行（Windows の `gpu-vulkan.c` は、レビュー後の修正のあとに、`gpu.c` と一緒にした 1 つの翻訳単位を、clang の MSVC ターゲット（x86-64・aarch64）で SDK のヘッダーに対して `-fsyntax-only`（-O0 と -O2 -DNDEBUG、警告なし）、
+  `zig cc`（Zig 0.16.0 の mingw-w64 ヘッダー）で windows-gnu と Linux の x86-64・aarch64 向けにコンパイルできるところまで。Rust は msvc 2 ターゲットの型検査まで）、NVIDIA・AMD・Intel の GPU と離散 GPU の転送
   （staged の経路は、MoltenVK の private なメモリ型で動かした）、Node.js 24 がない環境での WebAssembly の JSPI の実行（Phase 2 と同じ。Vulkan は WebAssembly で使えない）、適合プローブの費用、
   `Gpu.Auto` の定数の他のマシンでの当たり。MoltenVK は Metal の変換層で、その結果は Vulkan のドライバ一般のものではない。
 
