@@ -29,8 +29,10 @@
  * Two locks guard the state, always taken in this order. The state lock covers the device, its capabilities, the program
  * cache, and the Gpu.Auto credit, and is never held while a kernel runs. The execution lock covers the one descriptor
  * set, command buffer, fence, and queue, and is held for a whole run, including the wait for the fence. So Gpu.Auto,
- * which takes the state lock with a try, never waits for a kernel; the only wait for the device under the state lock is
- * the strict float32 probe, once. */
+ * which takes the state lock with a try, never waits for a kernel. The only wait for the device under the state lock is
+ * the strict float32 probe, once: its dispatch of 27 lanes, and, for an explicit request, the wait for the execution lock
+ * while a kernel of another thread runs. A Gpu.Auto decision that needs the probe tries the execution lock too, and when
+ * a kernel is running it leaves the probe, with no verdict, for a later decision and runs the call on the CPU reference. */
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
@@ -68,6 +70,9 @@ enum {
     TZ_VK_UNSUPPORTED = 2,
     TZ_VK_LIMIT = 3,
     TZ_VK_FAILED = 4,
+    /* Internal, never returned by an entry point: a Gpu.Auto decision needs the strict float32 probe, which needs the
+       execution lock, and a kernel of another thread holds it. The decision does not wait for that kernel. */
+    TZ_VK_BUSY = 5,
 };
 
 enum {
@@ -857,6 +862,7 @@ static SRWLOCK tz_vk_exec_mutex = SRWLOCK_INIT;
 #define TZ_VK_TRY_LOCK() (TryAcquireSRWLockExclusive(&tz_vk_mutex) != 0)
 #define TZ_VK_UNLOCK() ReleaseSRWLockExclusive(&tz_vk_mutex)
 #define TZ_VK_EXEC_LOCK() AcquireSRWLockExclusive(&tz_vk_exec_mutex)
+#define TZ_VK_EXEC_TRY_LOCK() (TryAcquireSRWLockExclusive(&tz_vk_exec_mutex) != 0)
 #define TZ_VK_EXEC_UNLOCK() ReleaseSRWLockExclusive(&tz_vk_exec_mutex)
 #else
 static pthread_mutex_t tz_vk_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -865,12 +871,15 @@ static pthread_mutex_t tz_vk_exec_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define TZ_VK_TRY_LOCK() (pthread_mutex_trylock(&tz_vk_mutex) == 0)
 #define TZ_VK_UNLOCK() pthread_mutex_unlock(&tz_vk_mutex)
 #define TZ_VK_EXEC_LOCK() pthread_mutex_lock(&tz_vk_exec_mutex)
+#define TZ_VK_EXEC_TRY_LOCK() (pthread_mutex_trylock(&tz_vk_exec_mutex) == 0)
 #define TZ_VK_EXEC_UNLOCK() pthread_mutex_unlock(&tz_vk_exec_mutex)
 #endif
 
+/* TSUZURI_GPU_DEBUG turns the diagnostics on when it is set to any non-empty value, as in the WebGPU runtime (gpu.c):
+   "0" does not turn them off, and an empty value does. */
 static int tz_vk_debug_enabled(void) {
     const char *value = getenv("TSUZURI_GPU_DEBUG");
-    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    return value != NULL && value[0] != '\0';
 }
 
 static void tz_vk_debug(const char *format, ...) {
@@ -883,9 +892,10 @@ static void tz_vk_debug(const char *format, ...) {
     va_end(arguments);
 }
 
-/* Set while Gpu.Auto prepares a kernel: a failure there is not an error, because the call then runs on the CPU
-   reference, so it is reported only when TSUZURI_GPU_DEBUG is set. Per thread, because a run on another thread
-   reports its own failures. */
+/* Set while Gpu.Auto decides. A failure there is not an error, because the call then runs on the CPU reference, so it is
+   reported only when TSUZURI_GPU_DEBUG is set; and the decision never waits for a kernel of another thread, so the strict
+   float32 probe only tries the execution lock (tz_vk_probe_strict). Per thread, because a run on another thread reports
+   its own failures and may wait. */
 static _Thread_local int tz_vk_quiet;
 
 /* Reports why a run failed; the status is returned by the caller. */
@@ -1569,10 +1579,18 @@ static int32_t tz_vk_create_device(uint32_t index) {
 /* Whether kernels with the strict float32 modes may run: defined with the probe, after the code that runs a module. */
 static int tz_vk_strict_ok(void);
 
+/* The device reports the strict float32 controls and the probe has not given its verdict yet. After tz_vk_strict_ok
+   answers no, this tells a probe that was put off (a Gpu.Auto decision found a kernel running) from a verdict of no. */
+static int tz_vk_probe_pending(void) {
+    return tz_vk.caps.strict_f32 && tz_vk.caps.strict_probe == 0;
+}
+
 /* Opens the device if that has not happened yet, then checks the features; the state lock is held by the caller. The
    first caller decides which device it is: an explicit request (this function) opens the best-ranked device that has
    the features it needs, and Gpu.Auto (tz_vk_auto_decide) opens a device of the measured kind. The process has one
-   device, so whichever asks first fixes it for the others. */
+   device, so whichever asks first fixes it for the others. A request that needs the strict float32 controls gets the
+   verdict of the probe, which it runs if it is the first to need it (an explicit request waits for a running kernel to
+   do that); a Gpu.Auto decision that finds a kernel running gets TZ_VK_BUSY, with no verdict recorded. */
 static int32_t tz_vk_ensure(int32_t features) {
     if (tz_vk.state == 0) {
         if (!tz_vk.enumerated) {
@@ -1593,6 +1611,7 @@ static int32_t tz_vk_ensure(int32_t features) {
         return TZ_VK_UNSUPPORTED;
     }
     if ((features & TZ_VK_FEATURE_STRICT_F32) != 0 && !tz_vk_strict_ok()) {
+        if (tz_vk_probe_pending()) return TZ_VK_BUSY;
         if (tz_vk.caps.strict_probe == 0) {
             tz_vk_debug("the device lacks the strict float32 controls (signed zero/inf/nan preserve, denorm preserve, "
                         "round to nearest even, independent 32-bit modes)");
@@ -1796,6 +1815,7 @@ static int32_t tz_vk_check_module(const uint32_t *words, uint32_t length) {
                 return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel uses Int64 and the device lacks shaderInt64");
             }
             if ((capability == 4464 || capability == 4466 || capability == 4467) && !tz_vk_strict_ok()) {
+                if (tz_vk_probe_pending()) return TZ_VK_BUSY;
                 return tz_vk_report(TZ_VK_UNSUPPORTED, "the kernel needs the strict float32 controls and the device cannot run them");
             }
             if (capability != 1 && capability != 11 && capability != 4464 && capability != 4466 && capability != 4467) {
@@ -2195,29 +2215,43 @@ static const char *const tz_vk_probe_operations[9] = {"(a * b) + c without a fus
     "float of a 32-bit unsigned integer", "float of a 32-bit signed integer",
     "float of a 32-bit unsigned integer at the rounding boundaries above 2^31"};
 
-/* Runs a module for a caller that holds the state lock: the run itself takes the execution lock, in the order of the locks. */
-static int32_t tz_vk_run_nested(int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words, const void *input,
-    int64_t count, void *output) {
+/* Runs a module for a caller that holds the state lock: the run itself takes the execution lock, in the order of the locks.
+   While a kernel of another thread is running that lock is taken for as long as the kernel takes. `wait` says whether to
+   wait for it: a caller that must not (a Gpu.Auto decision) gets TZ_VK_BUSY and nothing is built or run. */
+static int32_t tz_vk_run_nested(int wait, int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words,
+    const void *input, int64_t count, void *output) {
+    if (wait) {
+        TZ_VK_EXEC_LOCK();
+    } else if (!TZ_VK_EXEC_TRY_LOCK()) {
+        return TZ_VK_BUSY;
+    }
     struct tz_vk_plan plan;
     int32_t status = tz_vk_prepare(mode, lanes, words, length_words, count, &plan);
-    if (status != TZ_VK_OK) return status;
-    TZ_VK_EXEC_LOCK();
-    status = tz_vk_execute(&plan, mode, lanes, input, count, output);
+    if (status == TZ_VK_OK) status = tz_vk_execute(&plan, mode, lanes, input, count, output);
     TZ_VK_EXEC_UNLOCK();
     return status;
 }
 
 /* Runs the probe and records the verdict; the state lock is held and the device is open. This is the one place where a
-   thread waits for the device while it holds the state lock: it is once per process, a dispatch of 27 lanes, and a
-   Gpu.Auto decision does not wait for it either (it gives up the lock instead, see tz_vulkan_auto). Whatever goes wrong,
-   the answer is no. */
+   thread waits for the device while it holds the state lock: once per process, for a dispatch of 27 lanes and, for an
+   explicit request, for a kernel of another thread that is running (it holds the execution lock for as long as it runs).
+   A Gpu.Auto decision (tz_vk_quiet) never waits for a kernel: it tries the execution lock, and when a kernel is running
+   it records no verdict at all (the probe stays "not run", the strict float32 controls stay as the device reported them)
+   and the decision answers the CPU reference, so that a later decision asks again. A probe that runs gives its verdict
+   once, whoever ran it. Whatever goes wrong while it runs, the answer is no. */
 static void tz_vk_probe_strict(void) {
     struct tz_vk_caps *caps = &tz_vk.caps;
     uint32_t results[TZ_VK_PROBE_LANES];
     memset(results, 0, sizeof results);
     caps->strict_probe = 2;
-    int32_t status = tz_vk_run_nested(2, 4 | (1 << 8), tz_vk_probe_module, TZ_VK_PROBE_WORDS, tz_vk_probe_input,
+    int32_t status = tz_vk_run_nested(!tz_vk_quiet, 2, 4 | (1 << 8), tz_vk_probe_module, TZ_VK_PROBE_WORDS, tz_vk_probe_input,
         TZ_VK_PROBE_LANES, results);
+    if (status == TZ_VK_BUSY) {
+        caps->strict_probe = 0;
+        tz_vk_debug("Gpu.Auto: the strict float32 probe has not run, because a kernel of another thread is using the device; "
+                    "the call runs on the CPU reference, and a later decision asks again");
+        return;
+    }
     int wrong = 0;
     if (status == TZ_VK_OK) {
         for (uint32_t lane = 0; lane < TZ_VK_PROBE_LANES; lane++) {
@@ -2244,10 +2278,12 @@ static void tz_vk_probe_strict(void) {
 }
 
 /* Whether kernels with the strict float32 modes may run: the device reports the controls and passes the probe, which
-   runs here on the first need. The lock is held and the device is open. */
+   runs here on the first need. The lock is held and the device is open. A probe that a Gpu.Auto decision put off (a
+   kernel is running, see tz_vk_probe_strict) is no verdict: the answer is no for this decision, and
+   tz_vk_probe_pending tells it from a refusal. */
 static int tz_vk_strict_ok(void) {
-    if (tz_vk.caps.strict_f32 && tz_vk.caps.strict_probe == 0) tz_vk_probe_strict();
-    return tz_vk.caps.strict_f32;
+    if (tz_vk_probe_pending()) tz_vk_probe_strict();
+    return tz_vk.caps.strict_f32 && tz_vk.caps.strict_probe == 1;
 }
 
 /* ---- Gpu.Auto: is a call worth running here? ---- */
@@ -2299,7 +2335,10 @@ static int tz_vk_cached(const uint32_t *words, uint32_t length, int mode) {
 
 /* The decision itself, for a call that the cost rule has not already kept on the CPU reference. The state lock is held and
    tz_vk_quiet is set. Returns 1 when the call is to run on the device. Nothing is created for a call that no device can
-   serve: the devices are described before any is opened, and what they report answers the eligibility questions first. */
+   serve: the devices are described before any is opened, and what they report answers the eligibility questions first.
+   The decision never waits for a kernel of another thread: when the strict float32 probe is needed and a kernel is
+   running, the call stays on the CPU reference without a verdict (the probe is left for a later decision), and the
+   compile part of the first use, which was taken out of the credit but not carried out, is put back. */
 static int tz_vk_auto_decide(int32_t mode, int32_t features, const uint32_t *words, uint32_t length_words, int64_t count,
     int input_size, int output_size, long long minimum, double saving) {
     if (tz_vk.state == 2 || atomic_load(&tz_vk.poisoned)) return 0;
@@ -2310,9 +2349,10 @@ static int tz_vk_auto_decide(int32_t mode, int32_t features, const uint32_t *wor
     } else if (tz_vk.enumerated && tz_vk_pick_auto(features, mode, count, input_size, output_size, 1) < 0) {
         return 0;
     }
+    double compile_cost = 0.0;
     if (minimum < 0) {
-        double first_use = (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
-            + (ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS);
+        compile_cost = ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS;
+        double first_use = (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS) + compile_cost;
         if (first_use > 0.0) {
             tz_vk_auto_credit += saving;
             if (tz_vk_auto_credit < first_use) return 0;
@@ -2325,9 +2365,14 @@ static int tz_vk_auto_decide(int32_t mode, int32_t features, const uint32_t *wor
         if (index < 0) return 0;
         if (tz_vk_create_device((uint32_t)index) != TZ_VK_OK) return 0;
     }
-    if (tz_vk_ensure(features & TZ_VK_FEATURE_MASK) != TZ_VK_OK) return 0;
+    int32_t status = tz_vk_ensure(features & TZ_VK_FEATURE_MASK);
+    if (status == TZ_VK_OK) status = tz_vk_check_module(words, length_words);
+    if (status == TZ_VK_BUSY) {
+        tz_vk_auto_credit += compile_cost;
+        return 0;
+    }
+    if (status != TZ_VK_OK) return 0;
     VkPipeline pipeline = 0;
-    if (tz_vk_check_module(words, length_words) != TZ_VK_OK) return 0;
     if (tz_vk_pipeline(words, length_words, mode, &pipeline, NULL) != TZ_VK_OK) return 0;
     return 1;
 }
@@ -2342,7 +2387,9 @@ static int tz_vk_auto_decide(int32_t mode, int32_t features, const uint32_t *wor
    The question never waits for a kernel. The cost rule is arithmetic on the call alone, so a call that it keeps on the CPU
    reference takes no lock; the rest takes the state lock only with a try, and a call that finds it taken (another thread is
    opening the device, building a pipeline, or running the strict float32 probe) runs on the CPU reference. The state
-   lock is never held across a wait for the device, except by that probe. */
+   lock is never held across a wait for a kernel by a decision: the strict float32 probe that a decision is the first to
+   need takes the execution lock with a try as well, and when a kernel of another thread is running the decision leaves
+   the probe, with no verdict, for a later decision. */
 static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const void *spirv, int32_t spirv_length,
     int32_t weight, int64_t count) {
     int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
@@ -2400,7 +2447,7 @@ static void tz_vulkan_describe(char *text, size_t size) {
    be open. The probe of the runtime itself runs only where the properties report the controls. */
 static int32_t tz_vk_test_conform(uint32_t *results) {
     TZ_VK_LOCK();
-    int32_t status = tz_vk.state == 1 && !atomic_load(&tz_vk.poisoned) ? tz_vk_run_nested(2, 4 | (1 << 8), tz_vk_probe_module,
+    int32_t status = tz_vk.state == 1 && !atomic_load(&tz_vk.poisoned) ? tz_vk_run_nested(1, 2, 4 | (1 << 8), tz_vk_probe_module,
         TZ_VK_PROBE_WORDS, tz_vk_probe_input, TZ_VK_PROBE_LANES, results) : TZ_VK_UNAVAILABLE;
     TZ_VK_UNLOCK();
     return status;

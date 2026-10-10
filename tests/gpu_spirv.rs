@@ -918,6 +918,38 @@ fn spirv_weight_is_a_lower_bound_that_prices_the_cheapest_path_of_a_lane() {
     assert_eq!(relaxed.weight, 1 + 1);
 }
 
+/// `depth + 1` functions, each calling the next one twice, so that the weight doubles at every level.
+fn doubling_chain(depth: usize) -> String {
+    let mut source = format!("def f{depth} :: i32 -> i32\nfn f{depth} value = value + 1\n");
+    for level in (0..depth).rev() {
+        let next = level + 1;
+        source.push_str(&format!(
+            "def f{level} :: i32 -> i32\nfn f{level} value = f{next} (f{next} value)\n"
+        ));
+    }
+    source.push_str("export def kernel :: i32 -> i32\nfn kernel value = f0 value\n");
+    source
+}
+
+#[test]
+fn spirv_weight_stays_within_the_i32_that_the_descriptor_holds() {
+    let limit = i32::MAX as u32;
+    let weight = |depth: usize| emit_ok(&doubling_chain(depth), false).weight;
+    // Below the limit the weight is exact: the one instruction of the last function, doubled at every level (a call is not
+    // an instruction that counts, its callee is).
+    assert_eq!(weight(1), 2);
+    assert_eq!(weight(2), 4);
+    assert_eq!(weight(30), 1 << 30);
+    assert!(weight(30) < limit);
+    // Above it the weight is the limit, not a number that the i32 field of the descriptor wraps to a negative one: 31 levels
+    // are 2,147,483,648 (the first that wrapped), 32 and more saturate the u32 sum (4,294,967,295, which is -1 as an i32),
+    // and the chain of 33 functions of the review (32 levels) passes every limit of the extraction (call depth, number of
+    // functions, number of nodes).
+    for depth in [31, 32, 33, 40] {
+        assert_eq!(weight(depth), limit, "{depth} levels");
+    }
+}
+
 #[test]
 fn spirv_output_is_deterministic() {
     for case in cases() {

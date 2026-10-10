@@ -540,6 +540,7 @@ check("auto: only the measured kind of device is chosen, and only when the buffe
 
 check("auto: a kernel that cannot be prepared is not chosen, and says why only under TSUZURI_GPU_DEBUG", () => {
   const garbage = join(directory, "auto-garbage.spv");
+  writeFileSync(garbage, Buffer.alloc(64, 0xAB));
   const quiet = ask("", { count: 1000, module: garbage, env: always });
   assert.deepEqual(quiet.chosen, [0]);
   assert.equal(quiet.stderr, "", "the CPU reference serves the call without a message");
@@ -548,6 +549,36 @@ check("auto: a kernel that cannot be prepared is not chosen, and says why only u
   const strict = ask("", { count: 1000, features: 4, env: { ...always, TSUZURI_GPU_DEBUG: "1" } });
   assert.deepEqual(strict.chosen, [0]);
   assert.match(strict.stderr, /strict float32 controls/);
+});
+
+// The WebGPU runtime (gpu.c) and the documentation say that any non-empty value turns the diagnostics on; the Vulkan runtime
+// used to read "0" as off.
+check("diagnostics: TSUZURI_GPU_DEBUG turns them on for any non-empty value, \"0\" included, and an empty or unset one keeps the runtime silent", () => {
+  const missing = join(directory, "no-such-library");
+  const garbage = join(directory, "auto-garbage.spv");
+  writeFileSync(garbage, Buffer.alloc(64, 0xAB));
+  for (const value of ["1", "0", "false", "off"]) {
+    const loader = harness(["probe", "--features", "0"], { TSUZURI_VULKAN_LIBRARY: missing, TSUZURI_GPU_DEBUG: value });
+    assert.match(loader.stderr, /cannot be loaded/, `TSUZURI_GPU_DEBUG=${value}: the loader says why it is unavailable`);
+    const decision = ask("", { count: 1000, module: garbage, env: { ...always, TSUZURI_GPU_DEBUG: value } });
+    assert.match(decision.stderr, /not a SPIR-V module/, `TSUZURI_GPU_DEBUG=${value}: a Gpu.Auto decision says why it stays on the CPU reference`);
+  }
+  for (const value of ["", undefined]) {
+    const loader = harness(["probe", "--features", "0"], { TSUZURI_VULKAN_LIBRARY: missing, TSUZURI_GPU_DEBUG: value });
+    assert.equal(loader.stderr, "", `TSUZURI_GPU_DEBUG=${JSON.stringify(value)}: silent`);
+    const decision = ask("", { count: 1000, module: garbage, env: { ...always, TSUZURI_GPU_DEBUG: value } });
+    assert.equal(decision.stderr, "", `TSUZURI_GPU_DEBUG=${JSON.stringify(value)}: silent`);
+  }
+});
+
+// The descriptor holds the weight in an i32, and the compiler writes at most 2147483647 (a heavier kernel wrapped to a
+// negative number, which the runtime prices as the weight 1, and was never offloaded). The runtime prices that maximum as
+// what it is.
+check("auto: the heaviest weight that a descriptor holds is priced as very heavy; a weight below 1 is priced as 1", () => {
+  const heaviest = ask("", { count: 1000, weight: 2147483647, repeat: 3 });
+  assert.deepEqual(heaviest.chosen, [1, 1, 1], "a kernel of 2^31 operations is worth the device at 1,000 lanes");
+  const wrapped = ask("", { count: 1000, weight: -1, repeat: 3 });
+  assert.deepEqual(wrapped.chosen, [0, 0, 0], "what a negative weight (which the compiler no longer writes) was priced as");
 });
 
 // ---- Gpu.Auto on machines with several devices: eligibility is decided on what the devices report, before one is created ----
@@ -661,6 +692,82 @@ check("auto: a decision never waits for a kernel that is running (the wait for t
   assert.equal(result.status, 0, result.stderr);
 });
 
+// The strict float32 probe needs the execution lock, which a running kernel holds for as long as it runs. The backend is
+// opened for integer kernels only (so no thread has run the probe yet), the mock blocks the wait for the fence of the kernel
+// that one thread runs, and another thread then needs the probe. A Gpu.Auto decision must not wait for that kernel, so
+// the first decision that needs the probe leaves it for a later one; an explicit request is allowed to wait.
+const blockedStrictInput = join(directory, "blocked-strict-in.bin");
+writeFileSync(blockedStrictInput, u32(sample(1000)));
+const blockedStrictArgs = (mode, extra) => [mode, "--spirv", mockModule, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--input", blockedStrictInput, ...extra];
+const blockedProbeFlags = (count, weight, repeat) => ["--then-spirv", strictModule, "--features", "4", "--then-count", String(count), "--then-weight", String(weight), "--then-repeat", String(repeat)];
+const blockedProbe = (config, count, weight, repeat = 2, runHarness = mock, env = {}) => {
+  const result = runHarness(config, blockedStrictArgs("blockedprobe", blockedProbeFlags(count, weight, repeat)), { ...measured, ...env });
+  const found = /blockedprobe entered=(\d) during=(\S+) decided_while_running=(\d) still_running=(\d) run=(\d+) dispatches_during=(\d+) probe_during=(\d+) credit_during=(\d+) after=(\S+) dispatches_after=(\d+) probe_after=(\d+) credit_after=(\d+)/.exec(result.stdout);
+  assert.ok(found, `${result.stdout}${result.stderr}`);
+  const [entered, during, decided, running, run, dispatchesDuring, probeDuring, creditDuring, after, dispatchesAfter, probeAfter, creditAfter] = found.slice(1);
+  return { entered: Number(entered), during, decided: Number(decided), running: Number(running), run: Number(run), dispatchesDuring: Number(dispatchesDuring), probeDuring: Number(probeDuring), creditDuring: Number(creditDuring), after, dispatchesAfter: Number(dispatchesAfter), probeAfter: Number(probeAfter), creditAfter: Number(creditAfter), result };
+};
+const blockedOpen = (config, runHarness = mock) => {
+  const result = runHarness(config, blockedStrictArgs("blockedopen", ["--features", "4", "--then-count", "4000000", "--then-weight", "1280"]), measured);
+  const found = /blockedopen entered=(\d) inside=(\d) returned_early=(\d) auto_while_waiting=(-?\d) still_running=(\d) run=(\d+) open=(\d+) dispatches_during=(\d+) dispatches=(\d+) probe=(\d+)/.exec(result.stdout);
+  assert.ok(found, `${result.stdout}${result.stderr}`);
+  const [entered, inside, returnedEarly, autoWhileWaiting, running, run, open, dispatchesDuring, dispatches, probe] = found.slice(1).map(Number);
+  return { entered, inside, returnedEarly, autoWhileWaiting, running, run, open, dispatchesDuring, dispatches, probe, result };
+};
+
+check("auto: the first decision that needs the strict float32 probe does not wait for a kernel that is running; the probe is left for a later decision, which runs it once", () => {
+  const answer = blockedProbe("strict=1,block_wait=1", 4000000, 1280);
+  assert.deepEqual([answer.entered, answer.decided, answer.running, answer.run], [1, 1, 1, 0], `both questions were answered while the kernel was blocked in its wait\n${answer.result.stdout}${answer.result.stderr}`);
+  assert.equal(answer.during, "0,0", "the calls run on the CPU reference");
+  assert.equal(answer.result.stderr, "", "and say nothing without TSUZURI_GPU_DEBUG");
+  assert.deepEqual([answer.dispatchesDuring, answer.probeDuring], [0, 0], "the probe was not dispatched, and no verdict was recorded (not run, not failed)");
+  assert.equal(answer.after, "1,1", "once the kernel is done the next decision runs the probe, which passes, and chooses the device");
+  assert.deepEqual([answer.dispatchesAfter, answer.probeAfter], [1, 1], "the probe ran once and passed");
+  // A device that fails the probe: it is refused once the probe has run, and the verdict is recorded once.
+  const failing = blockedProbe("strict=1,probe=3,block_wait=1", 4000000, 1280);
+  assert.deepEqual([failing.during, failing.dispatchesDuring, failing.probeDuring], ["0,0", 0, 0], "nothing is decided while the kernel runs");
+  assert.deepEqual([failing.after, failing.dispatchesAfter, failing.probeAfter], ["0,0", 1, 2], "the probe runs once, fails, and the strict kernel stays on the CPU reference");
+  // The device that does not report the controls never gets the probe: nothing to put off.
+  const without = blockedProbe("block_wait=1", 4000000, 1280);
+  assert.deepEqual([without.during, without.after, without.dispatchesAfter, without.probeAfter], ["0,0", "0,0", 0, 0]);
+  // Under TSUZURI_GPU_DEBUG the put-off says so, and the probe that runs afterwards says that it passed.
+  const verbose = blockedProbe("strict=1,block_wait=1", 4000000, 1280, 2, mock, { TSUZURI_GPU_DEBUG: "1" });
+  assert.match(verbose.result.stderr, /Gpu\.Auto: the strict float32 probe has not run, because a kernel of another thread is using the device/);
+  assert.match(verbose.result.stderr, /the strict float32 probe passed \(27 lanes\)/);
+});
+
+check("auto: a decision that the running kernel put off gives back the credit it took out for the compile, so the next one gets to the probe at once", () => {
+  const c = autoConstants;
+  // A strict map of i32 lanes at weight 320: the saving of a call on a warm device is a little more than half of a compile,
+  // so the second question pays the compile out of the credit of two savings, and that credit is what the put-off returns.
+  const weight = 320;
+  const count = Math.round((0.6 * c.COMPILE_NS + c.CALL_NS) / (weight * (c.CPU_NS_PER_OP - c.GPU_NS_PER_OP) - 8 * c.BYTE_NS));
+  const work = count * weight;
+  const saving = work * c.CPU_NS_PER_OP - c.MARGIN * (c.CALL_NS + count * 8 * c.BYTE_NS + work * c.GPU_NS_PER_OP);
+  assert.ok(saving > 0.5 * c.COMPILE_NS && saving < c.COMPILE_NS, `one saving is between half a compile and a compile: ${saving} of ${c.COMPILE_NS}`);
+  const answer = blockedProbe("strict=1,block_wait=1", count, weight);
+  assert.deepEqual([answer.decided, answer.running, answer.during], [1, 1, "0,0"], answer.result.stdout);
+  assert.deepEqual([answer.dispatchesDuring, answer.probeDuring], [0, 0]);
+  // Question 1 adds a saving that falls short of a compile. Question 2 reaches it, takes the compile out, finds the kernel
+  // running, and puts it back: the credit is two savings, not two savings less a compile.
+  assert.ok(Math.abs(answer.creditDuring - 2 * saving) <= 2, `credit ${answer.creditDuring} against two savings ${2 * saving}`);
+  // The next decision therefore pays and runs the probe at once: the answers are 1 and 1, and what was paid is one compile.
+  assert.equal(answer.after, "1,1", "without the credit back the first of them would stay on the CPU reference");
+  assert.deepEqual([answer.dispatchesAfter, answer.probeAfter], [1, 1]);
+  assert.ok(Math.abs(answer.creditAfter - (3 * saving - c.COMPILE_NS)) <= 2, `credit ${answer.creditAfter} against ${3 * saving - c.COMPILE_NS}`);
+});
+
+check("run: an explicit request that needs the strict float32 probe waits for the kernel that is running, then runs the probe once and records the verdict", () => {
+  for (const [config, open, probe, what] of [["strict=1,block_wait=1", 0, 1, "passes"], ["strict=1,probe=3,block_wait=1", 2, 2, "fails"]]) {
+    const answer = blockedOpen(config);
+    assert.deepEqual([answer.entered, answer.inside, answer.running, answer.run], [1, 1, 1, 0], `${what}: the request is inside while the kernel runs\n${answer.result.stdout}${answer.result.stderr}`);
+    assert.equal(answer.returnedEarly, 0, `${what}: the request is still waiting for the kernel, which is still running`);
+    assert.equal(answer.autoWhileWaiting, 0, `${what}: Gpu.Auto finds the backend busy and answers the CPU reference without waiting`);
+    assert.equal(answer.dispatchesDuring, 0, `${what}: no probe ran before the kernel was done`);
+    assert.deepEqual([answer.open, answer.dispatches, answer.probe], [open, 1, probe], `${what}: the probe ran once and its verdict is recorded`);
+  }
+});
+
 check("run: once the device is lost nothing touches it again (another run, an open, and a Gpu.Auto question make no Vulkan call)", () => {
   const input = join(directory, "lost-in.bin");
   writeFileSync(input, u32(sample(1000)));
@@ -763,6 +870,15 @@ check("threads: concurrent runs and the lazy initialization are serialized (mock
       const result = run(tsanHarness, ["blocked", "--spirv", mockModule, "--then-spirv", otherKernel, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--input", input, "--then-count", "100000", "--then-weight", "320"], { env: { ...process.env, TSUZURI_VULKAN_LIBRARY: tsanMock, TZ_VK_MOCK: "block_wait=1", TSAN_OPTIONS: "halt_on_error=1" } });
       assert.match(result.stdout, /blocked entered=1 decisions=0,0,1 decided_while_running=1 still_running=1 run=0/, `${result.stdout}${result.stderr}`);
       assert.doesNotMatch(result.stderr, /ThreadSanitizer/);
+    });
+    check("threads: the strict float32 probe next to a running kernel races with nothing (ThreadSanitizer, mock)", () => {
+      const tsan = (config, args, extra = {}) => run(tsanHarness, args, { env: { ...process.env, ...extra, TSUZURI_VULKAN_LIBRARY: tsanMock, TZ_VK_MOCK: config, TSAN_OPTIONS: "halt_on_error=1" } });
+      const probing = blockedProbe("strict=1,block_wait=1", 4000000, 1280, 2, tsan);
+      assert.deepEqual([probing.during, probing.after, probing.dispatchesAfter, probing.probeAfter], ["0,0", "1,1", 1, 1], `${probing.result.stdout}${probing.result.stderr}`);
+      assert.doesNotMatch(probing.result.stderr, /ThreadSanitizer/);
+      const opening = blockedOpen("strict=1,block_wait=1", tsan);
+      assert.deepEqual([opening.returnedEarly, opening.open, opening.dispatches, opening.probe], [0, 0, 1, 1], `${opening.result.stdout}${opening.result.stderr}`);
+      assert.doesNotMatch(opening.result.stderr, /ThreadSanitizer/);
     });
   }
 }
