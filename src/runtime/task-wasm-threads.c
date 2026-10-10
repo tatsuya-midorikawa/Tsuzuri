@@ -92,12 +92,16 @@ static void unlock_queue(void) {
 }
 
 /* Sleeps on the epoch that the thread registered as blocked at, until it moves. A notify that comes
-   for another reason, or late, finds the thread still registered and sends it back to sleep. */
+   for another reason, or late, finds the thread still registered and sends it back to sleep. The
+   host's `fail` stores `failed` before it moves the epoch, so a thread that read the epoch after
+   that move finds the flag at the check before the wait, and one that read an older epoch is not
+   put to sleep by the wait: without the check, the first would wait on a word that never moves again. */
 static void sleep_until_progress(unsigned epoch) {
     do {
-        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, (int)epoch, -1);
         check_failed();
+        __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, (int)epoch, -1);
     } while (atomic_load_explicit(&state.epoch, memory_order_acquire) == epoch);
+    check_failed();
 }
 
 /* The threads that can change a channel: all of them once the pool runs, the one before. */
