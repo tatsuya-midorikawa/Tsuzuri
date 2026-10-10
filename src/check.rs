@@ -771,13 +771,17 @@ impl Type {
     pub(crate) fn can_send(&self, types: &TypeContext<'_>) -> bool {
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
-                !matches!(ty, Type::Reference(..))
+                !matches!(ty, Type::Reference(..) | Type::Variable(_) | Type::Infer(_))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
         }
         match self {
-            Self::Reference(..) => false,
+            // A type variable has no known value yet. `false` keeps `Send<'a>` as a constraint on
+            // a generic function, which is checked again for every type that it is used at (as
+            // `Sync<'a>` is); `true` would discharge it where the function is written and let an
+            // `Rc` through a wrapper of `Channel.bounded`, `Mutex.create` or `Parallel.init`.
+            Self::Variable(_) | Self::Infer(_) | Self::Reference(..) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it

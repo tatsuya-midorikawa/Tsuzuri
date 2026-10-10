@@ -1598,6 +1598,10 @@ const suites = {
       ["record_ends", [], 10n],
       // The item that is left in the outer channel is a Sender: dropping it closes the inner channel.
       ["nested", [], 0n],
+      // A function is an item: it carries copies, and a received one goes on to another channel.
+      ["functions", [], 4112n],
+      ["forwarded", [], 42n * 10n + 1n],
+      ["function_drop", [], 31n],
     ],
     traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []],
       ["send_inside_lock", []], ["recv_inside_lock", []]],
