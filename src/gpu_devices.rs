@@ -7,6 +7,8 @@
 //!    `Gpu.map`, `Gpu.init_relaxed`, and `Gpu.map_relaxed` name the std functions `request_on`,
 //!    `init_on`, and `map_on` instead. The `_on` functions take one more argument, the kernel
 //!    number, which a retargeted call fills with a marker that says whether the call was relaxed.
+//!    They are private to `std/Gpu.tz`, so user code cannot call them with a number of its own
+//!    (E1022); `Gpu.__run` also compares the lane kinds of the numbered kernel with its element types.
 //! 2. `lower_kernels`, after specialization, when every callback is a known function: it builds the
 //!    kernels, stores them in `CheckedModule::gpu`, and replaces each marker with the number of
 //!    the call's kernel (-1 when a strict call has no kernel for a device, which traps there).
@@ -260,7 +262,8 @@ pub(crate) fn marked(marker: &TypedExpr) -> Option<bool> {
     }
 }
 
-fn lane(ty: &Type) -> Option<u32> {
+/// The lane kind of a buffer element type, or `None` for a type that no kernel descriptor has.
+pub(crate) fn lane(ty: &Type) -> Option<u32> {
     match ty {
         Type::Integer(32, _) => Some(LANE_32),
         Type::Binary(32) => Some(LANE_F32),

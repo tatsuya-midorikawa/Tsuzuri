@@ -4,7 +4,23 @@
 //   -DMOCK_VERSION=0x1C000000u   a wgpu-native 28 (a different C API)
 //   -DMOCK_NO_VERSION            a library without wgpuGetVersion (another WebGPU implementation)
 //   -DMOCK_VERSION=0x1D000101u   the right version, but none of the other functions
+//   -DMOCK_MARKER                creates the file that MOCK_LOAD_MARKER names when the library is loaded: its initializer
+//                                runs inside dlopen, before the runtime reads a single symbol, which is how the tests see
+//                                that a library was loaded at all
 #include <stdint.h>
+
+#if defined(MOCK_MARKER) && !defined(_WIN32)
+#include <stdio.h>
+#include <stdlib.h>
+__attribute__((constructor)) static void mock_loaded(void) {
+    const char *path = getenv("MOCK_LOAD_MARKER");
+    FILE *file = path ? fopen(path, "w") : NULL;
+    if (file) {
+        fputs("loaded\n", file);
+        fclose(file);
+    }
+}
+#endif
 
 #ifndef MOCK_VERSION
 #define MOCK_VERSION 0x1C000000u

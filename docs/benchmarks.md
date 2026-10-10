@@ -69,6 +69,8 @@ GPU 実行の測定試作は `node benchmarks/run-gpu.mjs target/release/tsuzuri
 | WebAssembly | heavy | 262,144 | 12,607 | 1,200（1,058〜16,005） | 8.9 | 1.2 |
 | WebAssembly | heavy | 4,194,304 | 205,161 | 12,709（12,330〜13,154） | 76.9 | 1.2 |
 
+完了待ちを、ブロックする poll から、ブロックしない poll と sleep に替えたあと（Phase 2 のレビューの修正。ブロックする poll は 60 秒の打ち切りが効かないため）、native の行を測り直しました（同じ機械、9 回の中央値、同じ手順）。light は 1,024 lane が 437 µs（前 462）、16,384 lane が 521 µs（前 556）、262,144 lane が 966 µs（前 983）、4,194,304 lane が 7,565 µs（前 7,866）、heavy の 4,194,304 lane が 7,463 µs（前 7,882）で、遅くなっていません（共有の機械なので、差は雑音の範囲と見ます）。WebAssembly の行は、ホストの JavaScript の待ち方が変わっていないので、測り直していません。
+
 読み方は次のとおりです。
 
 - 呼び出しごとの転送と同期があるので、GPU の側には、lane 数によらない固定の時間があります。native は約 0.45 ms、WebAssembly（Dawn）は約 0.4 ms で、`light` のように 1 lane あたりの計算が小さいカーネルでは、測った全部の lane 数で CPU 参照より遅く、4,194,304 lane でも native は 5.6 倍、WebAssembly は 4.0 倍遅いままでした。
