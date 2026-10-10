@@ -24,6 +24,8 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-gpu-vulkan-"));
 const library = process.platform === "darwin" ? "dylib" : "so";
 const skips = [];
+// TSUZURI_VULKAN_ONLY=<regular expression> runs only the checks whose name matches (while one is being worked on).
+const only = process.env.TSUZURI_VULKAN_ONLY ? new RegExp(process.env.TSUZURI_VULKAN_ONLY) : undefined;
 let passed = 0;
 let failed = 0;
 
@@ -48,6 +50,7 @@ function skip(name, reason, requirement) {
 }
 
 function check(name, body) {
+  if (only && !only.test(name)) return;
   try {
     body();
     passed++;
@@ -171,10 +174,52 @@ check("capabilities: statuses of open for devices with and without the features"
   assert.equal(probeStatus("", 9), 0);
 });
 
-check("capabilities: a device that satisfies the features is chosen among several, by type", () => {
-  const result = mock("devices=3", ["probe", "--features", "0"]);
-  assert.equal(statusOf(result), 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /Mock Vulkan device/);
+// ---- which physical device is opened ----
+// The mock gives every device its own type, name, and features (`d<N>.<key>`), and says which physical devices the runtime
+// created a logical device on, so the choice is observable.
+const opened = (config, features = 0, extra = {}) => {
+  const result = mock(config, ["probe", "--features", String(features)], extra);
+  const field = name => new RegExp(` ${name}=(\\S+)`).exec(result.stdout)?.[1];
+  return { status: statusOf(result), device: /device="([^"]*)"/.exec(result.stdout)?.[1], created: Number(field("created")), mask: Number(field("opened")), stderr: result.stderr };
+};
+
+check("capabilities: an explicit request opens the best kind of device (discrete, integrated, virtual, other, cpu), the first of equals", () => {
+  const devices = types => `devices=${types.length},${types.map((type, index) => `d${index}.type=${type},d${index}.name=${type}${index}`).join(",")}`;
+  for (const [types, expected] of [
+    [["cpu", "other", "virtual", "integrated", "discrete"], 4],
+    [["discrete", "integrated", "virtual", "other", "cpu"], 0],
+    [["cpu", "virtual", "other", "integrated"], 3],
+    [["cpu", "other", "virtual"], 2],
+    [["cpu", "other"], 1],
+    [["cpu"], 0],
+    [["integrated", "discrete", "discrete"], 1],
+    [["other", "cpu", "virtual", "other"], 2],
+    [["integrated", "integrated"], 0],
+  ]) {
+    const answer = opened(devices(types));
+    assert.equal(answer.status, 0, `${types}: ${answer.stderr}`);
+    assert.equal(answer.device, `${types[expected]}${expected}`, `${types}`);
+    assert.equal(answer.created, 1, "one logical device");
+    assert.equal(answer.mask, 1 << expected, `${types}: the device that was opened`);
+  }
+});
+
+check("capabilities: a device with the features the program needs is opened before a better-ranked one without them, and one that runs the workgroups before one that cannot", () => {
+  const pair = "devices=2,d0.type=discrete,d0.name=Big,d1.type=integrated,d1.name=Small";
+  assert.equal(opened(`${pair},d0.int64=0`, 0).device, "Big", "nothing is asked for: the kind decides");
+  assert.equal(opened(`${pair},d0.int64=0`, 2).device, "Small", "64-bit kernels go to the device with shaderInt64");
+  assert.equal(opened(`${pair},d1.int64=0`, 2).device, "Big");
+  assert.equal(opened(`${pair},d1.strict=1`, 4).device, "Small", "strict float32 goes to the device that reports the controls");
+  assert.equal(opened(`${pair},d1.strict=1`, 4).status, 0);
+  assert.equal(opened(`${pair},d1.strict=1`, 0).device, "Big");
+  // No device has both: the best kind is opened, and open says what it lacks.
+  const neither = opened(`${pair},d1.int64=0,d1.strict=1`, 6);
+  assert.deepEqual([neither.status, neither.device], [2, "Big"]);
+  // Workgroups of 256 invocations are a precondition: a device that cannot hold them is not opened while another can.
+  assert.equal(opened(`${pair},d0.invocations=64`).device, "Small");
+  assert.equal(opened(`${pair},d0.group_size=128`).device, "Small");
+  const none = opened(`${pair},invocations=64`);
+  assert.deepEqual([none.status, none.created], [2, 0], "no device can run the kernels: unsupported, and no device is created");
 });
 
 // ---- the conformance probe of the strict float32 contract ----
@@ -374,12 +419,28 @@ check("run: a module that needs what the device lacks is refused even when the f
 // ---- Gpu.Auto: is a call worth running on this backend? (the mock is an integrated GPU with unified memory by default) ----
 const measured = { TSUZURI_GPU_AUTO_MIN_WORK: undefined };
 const always = { TSUZURI_GPU_AUTO_MIN_WORK: "0" };
-const ask = (config, { mode = "map", lanes = "1,1", count = 1, features = 0, weight = 1, repeat = 1, module = mockModule, env = measured } = {}) => {
-  const result = mock(config, ["auto", "--spirv", module, "--mode", mode, "--lanes", lanes, "--count", String(count), "--features", String(features), "--weight", String(weight), "--repeat", String(repeat)], env);
+const ask = (config, { mode = "map", lanes = "1,1", count = 1, features = 0, weight = 1, repeat = 1, module = mockModule, env = measured, then, openFirst, openAfter } = {}) => {
+  const args = ["auto", "--spirv", module, "--mode", mode, "--lanes", lanes, "--count", String(count), "--features", String(features), "--weight", String(weight), "--repeat", String(repeat)];
+  if (then) args.push("--then-spirv", then.module, "--then-count", String(then.count), "--then-weight", String(then.weight), "--then-repeat", String(then.repeat));
+  if (openFirst !== undefined) args.push("--open-first", String(openFirst));
+  if (openAfter !== undefined) args.push("--open-after", String(openAfter));
+  const result = mock(config, args, env);
   const parsed = /status=0 chosen=([01](?:,[01])*) opened=([01])/.exec(result.stdout);
   assert.ok(parsed, `${result.stdout}${result.stderr}`);
   assert.equal(result.status, 0, result.stderr);
-  return { chosen: parsed[1].split(",").map(Number), opened: parsed[2] === "1", stderr: result.stderr };
+  const field = name => new RegExp(` ${name}=(\\S*)`).exec(result.stdout)?.[1];
+  return {
+    chosen: parsed[1].split(",").map(Number),
+    opened: parsed[2] === "1",
+    then: field("then")?.split(",").map(Number),
+    credit: Number(field("credit")),
+    created: Number(field("created")),
+    mask: Number(field("mask")),
+    first: field("first") === undefined ? undefined : Number(field("first")),
+    after: field("after") === undefined ? undefined : Number(field("after")),
+    device: /device=(.*)$/m.exec(result.stdout)?.[1],
+    stderr: result.stderr,
+  };
 };
 
 check("auto: the measured cost rule keeps cheap work on the CPU reference and never opens the device for it", () => {
@@ -474,6 +535,139 @@ check("auto: a kernel that cannot be prepared is not chosen, and says why only u
   assert.match(strict.stderr, /strict float32 controls/);
 });
 
+// ---- Gpu.Auto on machines with several devices: eligibility is decided on what the devices report, before one is created ----
+check("auto: on a discrete plus an integrated GPU Gpu.Auto opens the integrated one; the process has one device, so whoever asks first fixes it", () => {
+  const hybrid = "devices=2,d0.type=discrete,d0.name=Discrete,d1.type=integrated,d1.name=Integrated";
+  const big = { count: 4000000, weight: 1280 };
+  // Auto first: the device is chosen among the eligible ones, whatever an explicit request would rank first.
+  const auto = ask(hybrid, { ...big, repeat: 3 });
+  assert.deepEqual(auto.chosen, [1, 1, 1]);
+  assert.deepEqual([auto.device, auto.created, auto.mask], ["Integrated", 1, 2], "one logical device, on the integrated GPU");
+  // An explicit request that follows finds that device open (one device per process): it is the one that serves it.
+  const after = ask(hybrid, { ...big, openAfter: 0 });
+  assert.deepEqual([after.after, after.device, after.created], [0, "Integrated", 1]);
+  // An explicit request first opens the discrete GPU, and Gpu.Auto then declines every call: that is not the measured
+  // kind of device, and no second device is created for it.
+  const explicit = ask(hybrid, { ...big, repeat: 3, openFirst: 0 });
+  assert.deepEqual([explicit.first, explicit.chosen, explicit.device, explicit.created, explicit.mask], [0, [0, 0, 0], "Discrete", 1, 1]);
+  // The same with the integrated GPU listed first, and with two integrated ones, the first of which cannot take the call.
+  assert.equal(ask("devices=2,d0.type=integrated,d0.name=Integrated,d1.type=discrete,d1.name=Discrete", { ...big }).device, "Integrated");
+  const roomy = ask("devices=2,d0.type=integrated,d0.max_range=1024,d0.name=Tiny,d1.type=integrated,d1.name=Roomy", { ...big });
+  assert.deepEqual([roomy.chosen, roomy.device, roomy.mask], [[1], "Roomy", 2], "the buffers fit the second one only");
+  // The features of the kernel pick the eligible device.
+  const wide = ask("devices=2,d0.type=integrated,d0.int64=0,d0.name=Narrow,d1.type=integrated,d1.name=Wide", { ...big, features: 2 });
+  assert.deepEqual([wide.chosen, wide.device, wide.mask], [[1], "Wide", 2]);
+  const strict = ask("devices=2,d0.type=integrated,d0.name=Plain,d1.type=integrated,d1.strict=1,d1.name=Strict", { ...big, features: 4 });
+  assert.deepEqual([strict.chosen, strict.device, strict.mask], [[1], "Strict", 2]);
+});
+
+check("auto: a device that Gpu.Auto would decline is never created", () => {
+  const big = { count: 4000000, weight: 1280, repeat: 3, env: always };
+  for (const [config, options, why] of [
+    ["type=discrete", {}, "a discrete GPU is not the measured kind"],
+    ["type=cpu", {}, "a software device is not"],
+    ["devices=2,d0.type=discrete,d1.type=virtual", {}, "neither of two devices is"],
+    ["devices=2,d0.type=cpu,d1.type=other", {}, "nor are these"],
+    ["unified=0", {}, "an integrated GPU without a memory type that the host reaches without a copy is not"],
+    ["devices=2,d0.type=discrete,d0.int64=1,d1.type=integrated,d1.int64=0", { features: 2 }, "the only eligible device lacks shaderInt64 and the one that has it is discrete"],
+    ["devices=2,d0.type=discrete,d0.strict=1,d1.type=integrated", { features: 4 }, "the only eligible device lacks the strict float32 controls"],
+    ["devices=2,d0.type=integrated,d0.invocations=64,d1.type=integrated,d1.group_size=128", {}, "neither can run workgroups of 256 invocations"],
+    ["max_range=1024", { count: 100000 }, "the buffers do not fit"],
+    ["queue=0", {}, "no device has a compute queue"],
+  ]) {
+    const answer = ask(config, { ...big, ...options });
+    assert.deepEqual(answer.chosen, [0, 0, 0], `${config}: ${why}`);
+    assert.equal(answer.created, 0, `${config}: no logical device is created for a call that nothing can serve (${why})`);
+    assert.equal(answer.opened, false);
+  }
+  // What was declined opened nothing, so an explicit request that follows still opens the best device.
+  const later = ask("devices=2,d0.type=discrete,d0.name=Discrete,d1.type=cpu,d1.name=Software", { count: 4000000, weight: 1280, repeat: 2, openAfter: 0, env: always });
+  assert.deepEqual([later.chosen, later.after, later.created, later.device], [[0, 0], 0, 1, "Discrete"]);
+});
+
+// The cost rule, as a model, for the checks below: constants are read from the runtime, so a re-measurement changes them in one place.
+const autoConstants = Object.fromEntries([...readFileSync(join(root, "src/runtime/gpu-vulkan.c")).toString("utf8").matchAll(/^#define TZ_VK_AUTO_(\w+) ([0-9.eE+-]+)/gm)].map(([, name, value]) => [name, Number(value)]));
+const autoModel = calls => {
+  const c = autoConstants;
+  let credit = 0;
+  let ready = false;
+  const built = new Set();
+  const answers = [];
+  for (const call of calls) {
+    const work = call.count * call.weight;
+    const cpu = work * c.CPU_NS_PER_OP;
+    const warm = c.CALL_NS + call.count * 8 * c.BYTE_NS + work * c.GPU_NS_PER_OP;
+    const saving = cpu - warm * c.MARGIN;
+    if (saving <= 0) { answers.push(0); continue; }
+    const first = (ready ? 0 : c.OPEN_NS) + (ready && built.has(call.module) ? 0 : c.COMPILE_NS);
+    if (first > 0) {
+      credit += saving;
+      if (credit < first) { answers.push(0); continue; }
+      credit -= first;
+    }
+    ready = true;
+    built.add(call.module);
+    answers.push(1);
+  }
+  return { answers, credit };
+};
+
+check("auto: the savings of declined calls pay each first use once (the device, then each kernel), and the credit never outlives what it paid", () => {
+  for (const key of ["CPU_NS_PER_OP", "CALL_NS", "BYTE_NS", "GPU_NS_PER_OP", "OPEN_NS", "COMPILE_NS", "MARGIN"]) assert.ok(Number.isFinite(autoConstants[key]), `the constant ${key} is read from the runtime`);
+  const other = join(directory, "second-kernel.spv");
+  writeFileSync(other, fakeModule([1, 11]));
+  // 100,000 lanes of weight 320: a warm device saves a little on each call, much less than a cold start costs.
+  const call = { count: 100000, weight: 320 };
+  const answer = ask("", { ...call, repeat: 100, then: { module: other, ...call, repeat: 40 } });
+  const expected = autoModel([...Array(100).fill({ ...call, module: "first" }), ...Array(40).fill({ ...call, module: "second" })]);
+  assert.deepEqual([...answer.chosen, ...answer.then], expected.answers, "the answers follow the rule");
+  assert.ok(Math.abs(answer.credit - expected.credit) <= 1, `credit ${answer.credit} against ${expected.credit}`);
+  // The first kernel pays for the device and its own compile. What is left of the credit is less than one saving, so the
+  // second kernel, whose pipeline is not built, has to earn its compile again: its first calls stay on the CPU reference.
+  assert.ok(answer.chosen.indexOf(1) > 0, `the first kernel's first calls are declined: ${answer.chosen.join("")} then ${answer.then.join("")} credit ${answer.credit}`);
+  assert.equal(answer.then[0], 0, "the credit that paid for the first kernel is spent: the second kernel starts again");
+  assert.ok(answer.then.indexOf(1) > 0, "and it pays its compile after a few calls");
+  assert.ok(answer.then.slice(answer.then.indexOf(1)).every(chosen => chosen === 1), "then it stays on the device");
+  // The bound: a process spends on first uses no more than the savings that it passed up, so it never pays a cold start
+  // that the calls so far have not earned (the credit is never negative and, once paid, is less than one saving).
+  assert.ok(answer.credit >= 0 && answer.credit < expected.credit + 1);
+  // Calls that save nothing neither build credit nor spend any.
+  const idle = ask("", { count: 100, weight: 5, repeat: 40, then: { module: other, count: 100, weight: 5, repeat: 40 } });
+  assert.deepEqual([idle.chosen.every(chosen => chosen === 0), idle.then.every(chosen => chosen === 0), idle.credit, idle.opened], [true, true, 0, false]);
+});
+
+const otherKernel = join(directory, "other-kernel.spv");
+writeFileSync(otherKernel, fakeModule([1, 11]));
+check("auto: a decision never waits for a kernel that is running (the wait for the fence blocks, another thread asks)", () => {
+  const input = join(directory, "blocked-in.bin");
+  writeFileSync(input, u32(sample(1000)));
+  const result = mock("block_wait=1", ["blocked", "--spirv", mockModule, "--then-spirv", otherKernel, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--input", input, "--then-count", "100000", "--then-weight", "320"], measured);
+  assert.match(result.stdout, /blocked entered=1 decisions=0,0,1 decided_while_running=1 still_running=1 run=0/, `${result.stdout}${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+check("run: once the device is lost nothing touches it again (another run, an open, and a Gpu.Auto question make no Vulkan call)", () => {
+  const input = join(directory, "lost-in.bin");
+  writeFileSync(input, u32(sample(1000)));
+  const result = mock("lose=wait", ["lost", "--spirv", mockModule, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--input", input, "--weight", "1280"], always);
+  const found = /lost open=(\d+) first=(\d+) poisoned=(\d+) second=(\d+) reopen=(\d+) auto=(\d+) calls_before=(\d+) calls_after=(\d+) leaked=(\d+)/.exec(result.stdout);
+  assert.ok(found, `${result.stdout}${result.stderr}`);
+  const [open, first, poisoned, second, reopen, auto, before, after, leaked] = found.slice(1).map(Number);
+  assert.deepEqual([open, first, poisoned], [0, 4, 1], "the run that met the loss fails, and the device is marked lost");
+  assert.deepEqual([second, reopen, auto], [4, 4, 0], "later runs and opens are failures, and Gpu.Auto keeps the call on the CPU reference");
+  assert.equal(after, before, "no Vulkan call was made for any of them");
+  assert.equal(leaked, 0, "everything of the lost run was released");
+  assert.match(result.stderr, /the device was lost earlier/);
+});
+
+check("run: more distinct kernels than the program cache holds still run, with a pipeline of their own, and the cache keeps its limit", () => {
+  const input = join(directory, "programs-in.bin");
+  writeFileSync(input, u32(sample(64)));
+  const result = mock("", ["programs", "--spirv", mockModule, "--lanes", "1,1", "--count", "64", "--programs", "300", "--input", input]);
+  assert.match(result.stdout, /programs runs=600 ok=600 wrong=0 pipelines=256/, `${result.stdout}${result.stderr}`);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 check("auto: the Nth Vulkan call fails for every N: the answer is never Vulkan, and no object or allocation is left", () => {
   let passes = 0;
   for (const config of ["", "type=integrated,max_groups=1", "int64=0", "strict=1"]) {
@@ -546,6 +740,13 @@ check("threads: concurrent runs and the lazy initialization are serialized (mock
     check("threads: no data race in the runtime (ThreadSanitizer, mock)", () => {
       const result = run(tsanHarness, ["run", "--spirv", mockModule, "--mode", "map", "--lanes", "1,1", "--count", "4000", "--input", join(directory, "threads-in.bin"), "--output", join(directory, "threads-tsan.bin"), "--threads", "8", "--repeat", "20"], { env: { ...process.env, TSUZURI_VULKAN_LIBRARY: tsanMock, TZ_VK_MOCK: "max_groups=4", TSAN_OPTIONS: "halt_on_error=1" } });
       assert.equal(statusOf(result), 0, result.stdout + result.stderr);
+      assert.doesNotMatch(result.stderr, /ThreadSanitizer/);
+    });
+    check("threads: decisions made while a kernel runs race with nothing (ThreadSanitizer, mock)", () => {
+      const input = join(directory, "tsan-blocked-in.bin");
+      writeFileSync(input, u32(sample(1000)));
+      const result = run(tsanHarness, ["blocked", "--spirv", mockModule, "--then-spirv", otherKernel, "--mode", "map", "--lanes", "1,1", "--count", "1000", "--input", input, "--then-count", "100000", "--then-weight", "320"], { env: { ...process.env, TSUZURI_VULKAN_LIBRARY: tsanMock, TZ_VK_MOCK: "block_wait=1", TSAN_OPTIONS: "halt_on_error=1" } });
+      assert.match(result.stdout, /blocked entered=1 decisions=0,0,1 decided_while_running=1 still_running=1 run=0/, `${result.stdout}${result.stderr}`);
       assert.doesNotMatch(result.stderr, /ThreadSanitizer/);
     });
   }
@@ -771,5 +972,5 @@ device("device: an unloadable library, an unknown ICD, and a bad module are refu
 rmSync(directory, { recursive: true, force: true });
 if (strictNotes.length) console.log(`strict float32 on the real devices (the drivers' own verdicts, informational): ${strictNotes.join("; ")}`);
 const total = passed + failed;
-console.log(`GPU Vulkan runtime: ${passed} of ${total} checks passed${failed ? `, ${failed} FAILED` : ""}, ${skips.length} skipped${skips.length ? ` (${skips.map(entry => entry.split(":")[0]).join("; ")})` : ""}; real devices: ${usedImplementations.size ? [...usedImplementations].join(", ") : "none available"}; sanitizers: ${flags === sanitize ? "on" : "off"}`);
+console.log(`GPU Vulkan runtime: ${passed} of ${total} checks passed${failed ? `, ${failed} FAILED` : ""}, ${skips.length} skipped${skips.length ? ` (${skips.map(entry => entry.split(":")[0]).join("; ")})` : ""}; real devices: ${usedImplementations.size ? [...usedImplementations].join(", ") : "none available"}; sanitizers: ${flags === sanitize ? "on" : "off"}${only ? `; ONLY ${only} (a filtered run, not the suite)` : ""}`);
 process.exit(failed ? 1 : 0);

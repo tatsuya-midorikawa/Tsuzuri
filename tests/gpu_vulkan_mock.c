@@ -68,22 +68,41 @@ struct object {
     uint64_t hit_count;
 };
 
+#define MOCK_MAX_DEVICES 16
+
+/* The properties of one physical device. Keys without a prefix set them on every device, `d<N>.<key>` on device N only. */
+struct device_config {
+    int device_type, int64, szinp, denorm, rte, denorm_independence, rounding_independence, float_controls_extension;
+    int queue, portability, unified;
+    uint32_t api, max_range, invocations, group_size;
+    char name[64];
+};
+
 struct configuration {
-    int devices, device_type, int64, szinp, denorm, rte, denorm_independence, rounding_independence, float_controls_extension;
-    int queue, portability, unified, no_version, features_chained;
-    uint32_t api, instance_api, max_range, max_groups, invocations, group_size;
+    int devices;
+    struct device_config dev[MOCK_MAX_DEVICES];
+    int no_version, portability_any;
+    uint32_t instance_api, max_groups;
     uint64_t max_allocation;
     int fail, fail_code;
     int probe_fault; /* the lane of the conformance probe whose result is corrupted, plus one; 0 for none */
+    int lose_wait; /* the first wait for a fence reports VK_ERROR_DEVICE_LOST */
+    int block_wait; /* every wait for a fence blocks until tz_vk_mock_release_wait, and says that it entered */
     char missing[64];
 };
 
 static pthread_mutex_t mock_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct configuration config;
 static int live_objects[O_TYPE_COUNT];
-static int misuse_count, injected_faults, fallible_calls, total_submits, probe_dispatches;
+static int misuse_count, injected_faults, fallible_calls, total_submits, probe_dispatches, created_devices, lost_waits;
+static unsigned opened_mask;
 static char report[4096];
 static int instance_flags_seen;
+
+/* The wait of a blocked fence: separate from mock_lock, which the waiting thread must not hold. */
+static pthread_mutex_t wait_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t wait_cond = PTHREAD_COND_INITIALIZER;
+static int waits_entered, wait_released;
 
 static void note(const char *format, ...) {
     va_list arguments;
@@ -118,35 +137,75 @@ static int parse_device_type(const char *text) {
     return VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 }
 
-/* Keys: devices, type=integrated|discrete|cpu|virtual|other, api=1.x (device), instance=1.x, int64, szinp, denorm, rte,
+/* The keys of one device; returns 0 for a key that is not one of them. */
+static int set_device_key(struct device_config *device, int *api_set, const char *key, const char *value) {
+    if (strcmp(key, "type") == 0) device->device_type = parse_device_type(value);
+    else if (strcmp(key, "name") == 0) snprintf(device->name, sizeof device->name, "%s", value);
+    else if (strcmp(key, "api") == 0) { device->api = parse_version(value); *api_set = 1; }
+    else if (strcmp(key, "int64") == 0) device->int64 = atoi(value);
+    else if (strcmp(key, "szinp") == 0) device->szinp = atoi(value);
+    else if (strcmp(key, "denorm") == 0) device->denorm = atoi(value);
+    else if (strcmp(key, "rte") == 0) device->rte = atoi(value);
+    else if (strcmp(key, "denorm_independence") == 0) device->denorm_independence = parse_independence(value);
+    else if (strcmp(key, "rounding_independence") == 0) device->rounding_independence = parse_independence(value);
+    else if (strcmp(key, "strict") == 0) {
+        if (atoi(value)) {
+            device->szinp = device->denorm = device->rte = 1;
+            device->denorm_independence = device->rounding_independence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+        }
+    }
+    else if (strcmp(key, "fc_ext") == 0) device->float_controls_extension = atoi(value);
+    else if (strcmp(key, "queue") == 0) device->queue = atoi(value);
+    else if (strcmp(key, "portability") == 0) device->portability = atoi(value);
+    else if (strcmp(key, "unified") == 0) device->unified = atoi(value);
+    else if (strcmp(key, "max_range") == 0) device->max_range = (uint32_t)strtoul(value, NULL, 10);
+    else if (strcmp(key, "invocations") == 0) device->invocations = (uint32_t)strtoul(value, NULL, 10);
+    else if (strcmp(key, "group_size") == 0) device->group_size = (uint32_t)strtoul(value, NULL, 10);
+    else return 0;
+    return 1;
+}
+
+/* Keys: devices=<count>; the keys of a device (they apply to every device, or to device N with the prefix `d<N>.`):
+   type=integrated|discrete|cpu|virtual|other, name=<text>, api=1.x, int64, szinp, denorm, rte,
    denorm_independence=none|32|all, rounding_independence, strict=1 (all float controls with independence all), fc_ext,
-   queue, portability, unified, max_range, max_groups, invocations, group_size, max_allocation, no_version, missing=<fn>,
-   fail=N (the Nth fallible call fails), code=<VkResult> (default -1). Returns 0 for an unknown key. */
+   queue, portability, unified, max_range, invocations, group_size; instance=1.x, max_groups, max_allocation, no_version,
+   missing=<fn>, fail=N (the Nth fallible call fails), code=<VkResult> (default -1), probe=<lane> (corrupts a lane of the
+   conformance probe), lose=wait (the first wait for a fence reports VK_ERROR_DEVICE_LOST), block_wait=1 (a wait for a
+   fence blocks until tz_vk_mock_release_wait). Returns 0 for an unknown key. */
 int tz_vk_mock_configure(const char *text) {
     pthread_mutex_lock(&mock_lock);
     memset(&config, 0, sizeof config);
     config.devices = 1;
-    config.device_type = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     instance_flags_seen = 0;
-    config.api = VK_MAKE_API_VERSION(0, 1, 3, 0);
     config.instance_api = VK_MAKE_API_VERSION(0, 1, 3, 0);
-    config.int64 = 1;
-    config.queue = 1;
-    config.unified = 1;
-    config.max_range = 0xFFFFFFFFU;
     config.max_groups = 65535;
-    config.invocations = 1024;
-    config.group_size = 1024;
     config.max_allocation = (uint64_t)1 << 32;
-    config.denorm_independence = config.rounding_independence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
     config.fail_code = VK_ERROR_OUT_OF_HOST_MEMORY;
+    int api_set[MOCK_MAX_DEVICES];
+    memset(api_set, 0, sizeof api_set);
+    for (int index = 0; index < MOCK_MAX_DEVICES; index++) {
+        struct device_config *device = &config.dev[index];
+        device->device_type = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        device->api = VK_MAKE_API_VERSION(0, 1, 3, 0);
+        device->int64 = 1;
+        device->queue = 1;
+        device->unified = 1;
+        device->max_range = 0xFFFFFFFFU;
+        device->invocations = 1024;
+        device->group_size = 1024;
+        device->denorm_independence = device->rounding_independence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+        snprintf(device->name, sizeof device->name, "Mock Vulkan device");
+    }
     memset(live_objects, 0, sizeof live_objects);
-    misuse_count = injected_faults = fallible_calls = total_submits = probe_dispatches = 0;
+    misuse_count = injected_faults = fallible_calls = total_submits = probe_dispatches = created_devices = lost_waits = 0;
+    opened_mask = 0;
     report[0] = '\0';
+    pthread_mutex_lock(&wait_lock);
+    waits_entered = wait_released = 0;
+    pthread_mutex_unlock(&wait_lock);
     int ok = 1;
-    char buffer[512];
+    char buffer[1024];
     snprintf(buffer, sizeof buffer, "%s", text != NULL ? text : "");
-    int api_set = 0;
     for (char *token = strtok(buffer, ","); token != NULL; token = strtok(NULL, ",")) {
         char *equals = strchr(token, '=');
         if (equals == NULL) {
@@ -155,37 +214,39 @@ int tz_vk_mock_configure(const char *text) {
         }
         *equals = '\0';
         const char *key = token, *value = equals + 1;
-        if (strcmp(key, "devices") == 0) config.devices = atoi(value);
-        else if (strcmp(key, "type") == 0) config.device_type = parse_device_type(value);
-        else if (strcmp(key, "api") == 0) { config.api = parse_version(value); api_set = 1; }
-        else if (strcmp(key, "instance") == 0) config.instance_api = parse_version(value);
-        else if (strcmp(key, "int64") == 0) config.int64 = atoi(value);
-        else if (strcmp(key, "szinp") == 0) config.szinp = atoi(value);
-        else if (strcmp(key, "denorm") == 0) config.denorm = atoi(value);
-        else if (strcmp(key, "rte") == 0) config.rte = atoi(value);
-        else if (strcmp(key, "denorm_independence") == 0) config.denorm_independence = parse_independence(value);
-        else if (strcmp(key, "rounding_independence") == 0) config.rounding_independence = parse_independence(value);
-        else if (strcmp(key, "strict") == 0 && atoi(value)) {
-            config.szinp = config.denorm = config.rte = 1;
-            config.denorm_independence = config.rounding_independence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+        int first = 0, last = MOCK_MAX_DEVICES;
+        if (key[0] == 'd' && key[1] >= '0' && key[1] <= '9') {
+            char *dot = NULL;
+            long index = strtol(key + 1, &dot, 10);
+            if (dot != NULL && *dot == '.' && index >= 0 && index < MOCK_MAX_DEVICES) {
+                first = (int)index;
+                last = first + 1;
+                key = dot + 1;
+            }
         }
-        else if (strcmp(key, "fc_ext") == 0) config.float_controls_extension = atoi(value);
-        else if (strcmp(key, "queue") == 0) config.queue = atoi(value);
-        else if (strcmp(key, "portability") == 0) config.portability = atoi(value);
-        else if (strcmp(key, "unified") == 0) config.unified = atoi(value);
-        else if (strcmp(key, "max_range") == 0) config.max_range = (uint32_t)strtoul(value, NULL, 10);
+        int handled = 0;
+        for (int index = first; index < last; index++) {
+            handled = set_device_key(&config.dev[index], &api_set[index], key, value);
+            if (!handled) break;
+        }
+        if (handled) continue;
+        if (strcmp(key, "devices") == 0) config.devices = atoi(value);
+        else if (strcmp(key, "instance") == 0) config.instance_api = parse_version(value);
         else if (strcmp(key, "max_groups") == 0) config.max_groups = (uint32_t)strtoul(value, NULL, 10);
-        else if (strcmp(key, "invocations") == 0) config.invocations = (uint32_t)strtoul(value, NULL, 10);
-        else if (strcmp(key, "group_size") == 0) config.group_size = (uint32_t)strtoul(value, NULL, 10);
         else if (strcmp(key, "max_allocation") == 0) config.max_allocation = strtoull(value, NULL, 10);
         else if (strcmp(key, "no_version") == 0) config.no_version = atoi(value);
         else if (strcmp(key, "missing") == 0) snprintf(config.missing, sizeof config.missing, "%s", value);
         else if (strcmp(key, "fail") == 0) config.fail = atoi(value);
         else if (strcmp(key, "probe") == 0) config.probe_fault = atoi(value) + 1;
         else if (strcmp(key, "code") == 0) config.fail_code = atoi(value);
+        else if (strcmp(key, "lose") == 0 && strcmp(value, "wait") == 0) config.lose_wait = 1;
+        else if (strcmp(key, "block_wait") == 0) config.block_wait = atoi(value);
         else ok = 0;
     }
-    if (!api_set) config.api = config.instance_api;
+    for (int index = 0; index < MOCK_MAX_DEVICES; index++) {
+        if (!api_set[index]) config.dev[index].api = config.instance_api;
+        if (index < config.devices && config.dev[index].portability) config.portability_any = 1;
+    }
     pthread_mutex_unlock(&mock_lock);
     return ok;
 }
@@ -194,6 +255,23 @@ int tz_vk_mock_injected(void) { return injected_faults; }
 int tz_vk_mock_calls(void) { return fallible_calls; }
 int tz_vk_mock_submits(void) { return total_submits; }
 int tz_vk_mock_probe_dispatches(void) { return probe_dispatches; }
+/* How many logical devices the runtime created, and on which physical devices (a bit mask of their indices). */
+int tz_vk_mock_created(void) { return created_devices; }
+int tz_vk_mock_opened(void) { return (int)opened_mask; }
+int tz_vk_mock_live_pipelines(void) { return live_objects[O_PIPELINE]; }
+/* The waits for a fence that blocked, and the release of them (the later waits do not block). */
+int tz_vk_mock_waits_entered(void) {
+    pthread_mutex_lock(&wait_lock);
+    int count = waits_entered;
+    pthread_mutex_unlock(&wait_lock);
+    return count;
+}
+void tz_vk_mock_release_wait(void) {
+    pthread_mutex_lock(&wait_lock);
+    wait_released = 1;
+    pthread_cond_broadcast(&wait_cond);
+    pthread_mutex_unlock(&wait_lock);
+}
 
 /* A program that is not the harness (a compiled Tsuzuri program) configures the mock through the environment;
    TZ_VK_MOCK_SELF configures a copy that the runtime found by itself, which the harness does not know about. */
@@ -339,7 +417,7 @@ VkResult TZ_VKAPI vkEnumerateInstanceVersion(uint32_t *pApiVersion) {
 VkResult TZ_VKAPI vkEnumerateInstanceExtensionProperties(const char *pLayerName, uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
     (void)pLayerName;
     ENTER("vkEnumerateInstanceExtensionProperties");
-    uint32_t count = config.portability ? 1 : 0;
+    uint32_t count = config.portability_any ? 1 : 0;
     if (pProperties == NULL) {
         *pPropertyCount = count;
     } else {
@@ -358,7 +436,7 @@ VkResult TZ_VKAPI vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo, cons
     ENTER("vkCreateInstance");
     if (pAllocator != NULL) misuse("vkCreateInstance: allocation callbacks");
     instance_flags_seen = (int)pCreateInfo->flags;
-    if (config.portability && (pCreateInfo->flags & VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) == 0) {
+    if (config.portability_any && (pCreateInfo->flags & VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) == 0) {
         /* A portability driver stays hidden without the flag; the runtime must set it. */
     }
     if (pCreateInfo->pApplicationInfo == NULL || pCreateInfo->pApplicationInfo->apiVersion > config.instance_api) {
@@ -380,13 +458,19 @@ void TZ_VKAPI vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks
     pthread_mutex_unlock(&mock_lock);
 }
 
-static struct object *physical_devices[16];
+static struct object *physical_devices[MOCK_MAX_DEVICES];
+
+/* The configuration of the device that a (checked) physical or logical device object stands for. */
+static const struct device_config *device_config_of(const struct object *object) {
+    int index = object != NULL ? object->type_index : 0;
+    return &config.dev[index >= 0 && index < MOCK_MAX_DEVICES ? index : 0];
+}
 
 VkResult TZ_VKAPI vkEnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhysicalDeviceCount, VkPhysicalDevice *pPhysicalDevices) {
     ENTER("vkEnumeratePhysicalDevices");
     struct object *owner = check(instance, O_INSTANCE, "vkEnumeratePhysicalDevices");
     uint32_t count = (uint32_t)config.devices;
-    if (config.portability && (instance_flags_seen & VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) == 0) count = 0;
+    if (config.portability_any && (instance_flags_seen & VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) == 0) count = 0;
     if (owner == NULL) {
         LEAVE();
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -395,7 +479,7 @@ VkResult TZ_VKAPI vkEnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhy
         *pPhysicalDeviceCount = count;
     } else {
         if (*pPhysicalDeviceCount > count) *pPhysicalDeviceCount = count;
-        for (uint32_t index = 0; index < *pPhysicalDeviceCount && index < 16; index++) {
+        for (uint32_t index = 0; index < *pPhysicalDeviceCount && index < MOCK_MAX_DEVICES; index++) {
             if (physical_devices[index] == NULL || physical_devices[index]->magic != MOCK_LIVE) {
                 physical_devices[index] = create(O_PHYSICAL, owner);
                 physical_devices[index]->type_index = (int)index;
@@ -409,26 +493,26 @@ VkResult TZ_VKAPI vkEnumeratePhysicalDevices(VkInstance instance, uint32_t *pPhy
 
 void TZ_VKAPI vkGetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures *pFeatures) {
     pthread_mutex_lock(&mock_lock);
-    check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceFeatures");
+    const struct device_config *device = device_config_of(check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceFeatures"));
     memset(pFeatures, 0, sizeof *pFeatures);
-    pFeatures->shaderInt64 = (VkBool32)config.int64;
+    pFeatures->shaderInt64 = (VkBool32)device->int64;
     pthread_mutex_unlock(&mock_lock);
 }
 
 void TZ_VKAPI vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2 *pProperties) {
     pthread_mutex_lock(&mock_lock);
-    check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceProperties2");
+    const struct device_config *device = device_config_of(check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceProperties2"));
     VkPhysicalDeviceProperties *p = &pProperties->properties;
     memset(p, 0, sizeof *p);
-    p->apiVersion = config.api;
-    p->deviceType = config.device_type;
-    snprintf(p->deviceName, sizeof p->deviceName, "Mock Vulkan device");
-    p->limits.maxStorageBufferRange = config.max_range;
+    p->apiVersion = device->api;
+    p->deviceType = device->device_type;
+    snprintf(p->deviceName, sizeof p->deviceName, "%s", device->name);
+    p->limits.maxStorageBufferRange = device->max_range;
     p->limits.maxComputeWorkGroupCount[0] = config.max_groups;
-    p->limits.maxComputeWorkGroupInvocations = config.invocations;
-    p->limits.maxComputeWorkGroupSize[0] = config.group_size;
+    p->limits.maxComputeWorkGroupInvocations = device->invocations;
+    p->limits.maxComputeWorkGroupSize[0] = device->group_size;
     p->limits.maxPushConstantsSize = 128;
-    int controls_allowed = config.api >= VK_MAKE_API_VERSION(0, 1, 2, 0) || config.float_controls_extension;
+    int controls_allowed = device->api >= VK_MAKE_API_VERSION(0, 1, 2, 0) || device->float_controls_extension;
     for (VkStructureType *chain = (VkStructureType *)pProperties->pNext; chain != NULL;) {
         struct header { VkStructureType type; void *next; } *header = (struct header *)chain;
         if (header->type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES) {
@@ -437,11 +521,11 @@ void TZ_VKAPI vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, Vk
         } else if (header->type == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES) {
             VkPhysicalDeviceFloatControlsProperties *c = (VkPhysicalDeviceFloatControlsProperties *)header;
             if (!controls_allowed) misuse("the float controls were chained for a device that does not implement them");
-            c->denormBehaviorIndependence = config.denorm_independence;
-            c->roundingModeIndependence = config.rounding_independence;
-            c->shaderSignedZeroInfNanPreserveFloat32 = (VkBool32)config.szinp;
-            c->shaderDenormPreserveFloat32 = (VkBool32)config.denorm;
-            c->shaderRoundingModeRTEFloat32 = (VkBool32)config.rte;
+            c->denormBehaviorIndependence = device->denorm_independence;
+            c->roundingModeIndependence = device->rounding_independence;
+            c->shaderSignedZeroInfNanPreserveFloat32 = (VkBool32)device->szinp;
+            c->shaderDenormPreserveFloat32 = (VkBool32)device->denorm;
+            c->shaderRoundingModeRTEFloat32 = (VkBool32)device->rte;
         } else {
             misuse("an unexpected structure was chained to the properties");
         }
@@ -452,9 +536,9 @@ void TZ_VKAPI vkGetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice, Vk
 
 void TZ_VKAPI vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice physicalDevice, uint32_t *pQueueFamilyPropertyCount, VkQueueFamilyProperties *pQueueFamilyProperties) {
     pthread_mutex_lock(&mock_lock);
-    check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceQueueFamilyProperties");
+    const struct device_config *device = device_config_of(check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceQueueFamilyProperties"));
     /* family 0: transfer only; family 1: compute (when configured) */
-    uint32_t count = config.queue ? 2 : 1;
+    uint32_t count = device->queue ? 2 : 1;
     if (pQueueFamilyProperties == NULL) {
         *pQueueFamilyPropertyCount = count;
     } else {
@@ -470,7 +554,7 @@ void TZ_VKAPI vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice physical
 
 void TZ_VKAPI vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties *pMemoryProperties) {
     pthread_mutex_lock(&mock_lock);
-    check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceMemoryProperties");
+    const struct device_config *device = device_config_of(check(physicalDevice, O_PHYSICAL, "vkGetPhysicalDeviceMemoryProperties"));
     memset(pMemoryProperties, 0, sizeof *pMemoryProperties);
     const VkFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     const VkFlags local = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -481,7 +565,7 @@ void TZ_VKAPI vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevic
     pMemoryProperties->memoryTypes[1].propertyFlags = host;
     pMemoryProperties->memoryTypes[1].heapIndex = 1;
     pMemoryProperties->memoryTypeCount = 2;
-    if (config.unified) {
+    if (device->unified) {
         pMemoryProperties->memoryTypes[2].propertyFlags = local | host;
         pMemoryProperties->memoryTypeCount = 3;
     }
@@ -491,11 +575,11 @@ void TZ_VKAPI vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevic
 VkResult TZ_VKAPI vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char *pLayerName, uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
     (void)pLayerName;
     ENTER("vkEnumerateDeviceExtensionProperties");
-    check(physicalDevice, O_PHYSICAL, "vkEnumerateDeviceExtensionProperties");
+    const struct device_config *device = device_config_of(check(physicalDevice, O_PHYSICAL, "vkEnumerateDeviceExtensionProperties"));
     const char *names[2];
     uint32_t count = 0;
-    if (config.portability) names[count++] = "VK_KHR_portability_subset";
-    if (config.float_controls_extension) names[count++] = "VK_KHR_shader_float_controls";
+    if (device->portability) names[count++] = "VK_KHR_portability_subset";
+    if (device->float_controls_extension) names[count++] = "VK_KHR_shader_float_controls";
     if (pProperties == NULL) {
         *pPropertyCount = count;
     } else {
@@ -522,21 +606,26 @@ static int mock_extension_enabled(const VkDeviceCreateInfo *info, const char *na
 VkResult TZ_VKAPI vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkDevice *pDevice) {
     (void)pAllocator;
     ENTER("vkCreateDevice");
-    check(physicalDevice, O_PHYSICAL, "vkCreateDevice");
-    if (config.portability && !mock_extension_enabled(pCreateInfo, "VK_KHR_portability_subset")) {
+    struct object *physical = check(physicalDevice, O_PHYSICAL, "vkCreateDevice");
+    const struct device_config *device = device_config_of(physical);
+    if (device->portability && !mock_extension_enabled(pCreateInfo, "VK_KHR_portability_subset")) {
         misuse("vkCreateDevice: VK_KHR_portability_subset must be enabled on a portability device");
     }
-    if (config.api < VK_MAKE_API_VERSION(0, 1, 2, 0) && config.float_controls_extension
+    if (device->api < VK_MAKE_API_VERSION(0, 1, 2, 0) && device->float_controls_extension
         && !mock_extension_enabled(pCreateInfo, "VK_KHR_shader_float_controls")) {
         misuse("vkCreateDevice: VK_KHR_shader_float_controls must be enabled below Vulkan 1.2");
     }
-    if (pCreateInfo->pEnabledFeatures != NULL && pCreateInfo->pEnabledFeatures->shaderInt64 && !config.int64) {
+    if (pCreateInfo->pEnabledFeatures != NULL && pCreateInfo->pEnabledFeatures->shaderInt64 && !device->int64) {
         misuse("vkCreateDevice: shaderInt64 enabled on a device without it");
     }
     if (pCreateInfo->queueCreateInfoCount != 1 || pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex != 1) {
         misuse("vkCreateDevice: the compute queue family was not requested");
     }
-    *pDevice = (VkDevice)create(O_DEVICE, NULL);
+    struct object *created = create(O_DEVICE, NULL);
+    created->type_index = physical != NULL ? physical->type_index : 0;
+    created_devices++;
+    opened_mask |= 1U << created->type_index;
+    *pDevice = (VkDevice)created;
     LEAVE();
     return VK_SUCCESS;
 }
@@ -601,13 +690,13 @@ void TZ_VKAPI vkDestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocati
 
 void TZ_VKAPI vkGetBufferMemoryRequirements(VkDevice device, VkBuffer buffer, VkMemoryRequirements *pMemoryRequirements) {
     pthread_mutex_lock(&mock_lock);
-    check(device, O_DEVICE, "vkGetBufferMemoryRequirements");
+    const struct device_config *device_properties = device_config_of(check(device, O_DEVICE, "vkGetBufferMemoryRequirements"));
     struct object *object = check(buffer, O_BUFFER, "vkGetBufferMemoryRequirements");
     memset(pMemoryRequirements, 0, sizeof *pMemoryRequirements);
     if (object != NULL) {
         pMemoryRequirements->size = (object->size + 15) & ~(uint64_t)15;
         pMemoryRequirements->alignment = 16;
-        pMemoryRequirements->memoryTypeBits = config.unified ? 7 : 3;
+        pMemoryRequirements->memoryTypeBits = device_properties->unified ? 7 : 3;
     }
     pthread_mutex_unlock(&mock_lock);
 }
@@ -1145,7 +1234,34 @@ VkResult TZ_VKAPI vkWaitForFences(VkDevice device, uint32_t fenceCount, const Vk
         struct object *fence = check(pFences[index], O_FENCE, "vkWaitForFences");
         if (fence != NULL && fence->state != 1) misuse("vkWaitForFences: waiting for a fence that was not submitted");
     }
+    /* The device is lost during its first wait (lose=wait): the work is gone and the call says so. */
+    if (config.lose_wait && lost_waits == 0) {
+        lost_waits++;
+        LEAVE();
+        return VK_ERROR_DEVICE_LOST;
+    }
+    int block = config.block_wait;
     LEAVE();
+    if (block) {
+        /* A kernel that takes as long as the test wants: this thread waits without mock_lock, so that every other call
+           of the runtime (from other threads) goes on, until tz_vk_mock_release_wait. A wait that is never released gives up
+           after a minute and is reported, so that a test that fails does not hang. */
+        pthread_mutex_lock(&wait_lock);
+        waits_entered++;
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 60;
+        while (!wait_released) {
+            if (pthread_cond_timedwait(&wait_cond, &wait_lock, &deadline) != 0) break;
+        }
+        int released = wait_released;
+        pthread_mutex_unlock(&wait_lock);
+        if (!released) {
+            pthread_mutex_lock(&mock_lock);
+            misuse("vkWaitForFences: the blocked wait was never released");
+            pthread_mutex_unlock(&mock_lock);
+        }
+    }
     return VK_SUCCESS;
 }
 

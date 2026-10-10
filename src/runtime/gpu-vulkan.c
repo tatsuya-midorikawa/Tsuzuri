@@ -11,9 +11,26 @@
  *   tz_vulkan_run(...)        0 ok, 1 unavailable, 2 unsupported, 3 limit exceeded, 4 failed
  *   tz_vulkan_auto(...)       1 when Gpu.Auto should run a call here, 0 for the CPU reference; never a status
  * `features` carries the device features the program's kernels need (bit 1 = shaderInt64, bit 2 = the strict
- * float32 controls); the bits of other backends are ignored. Initialization is lazy, serialized by one mutex, and
- * idempotent: the outcome of the first attempt is kept for the life of the process. Every run submits one command
- * buffer, waits for its fence, and releases its buffers before it returns. */
+ * float32 controls); the bits of other backends are ignored. Initialization is lazy and idempotent: the outcome of the
+ * first attempt is kept for the life of the process. Every run submits one command buffer, waits for its fence, and
+ * releases its buffers before it returns.
+ *
+ * The process has one Vulkan device, and the first caller decides which. The loader, the instance, and a description of
+ * every physical device come first (no logical device yet). An explicit request (open, or a run) then opens the best of
+ * them: one that can run the kernels' workgroups, then one that has the features it needs, then the best kind (discrete,
+ * integrated, virtual, other, cpu). Gpu.Auto opens a device only if it is of the kind its cost rule was measured on (an
+ * integrated GPU with unified memory) and has what the call needs, which it decides from what the devices report
+ * before anything is created; when none is, it creates nothing and the call stays on the CPU reference. Whichever opened
+ * the device first, the other then uses it: an explicit request after Gpu.Auto gets the integrated GPU Auto opened, and
+ * Gpu.Auto after an explicit request declines every call when the device it opened is not of the measured kind. Two
+ * devices (an explicit one and Auto's) would need a state per device and a way to tell the two kinds of call apart at the
+ * run boundary; they are not implemented.
+ *
+ * Two locks guard the state, always taken in this order. The state lock covers the device, its capabilities, the program
+ * cache, and the Gpu.Auto credit, and is never held while a kernel runs. The execution lock covers the one descriptor
+ * set, command buffer, fence, and queue, and is held for a whole run, including the wait for the fence. So Gpu.Auto,
+ * which takes the state lock with a try, never waits for a kernel; the only wait for the device under the state lock is
+ * the strict float32 probe, once. */
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
@@ -34,6 +51,7 @@
 #include <pthread.h>
 #endif
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -784,14 +802,35 @@ struct tz_vk_program {
     VkPipeline pipelines[TZ_VK_MODES];
 };
 
+/* A physical device as described at enumeration, before any logical device exists. */
+struct tz_vk_candidate {
+    VkPhysicalDevice device;
+    struct tz_vk_caps caps;
+    VkPhysicalDeviceMemoryProperties memory;
+    uint32_t queue_family;
+    int has_queue;
+    int portability_subset;
+    int float_controls_extension;
+    int rank;
+};
+
+/* Two locks guard the backend, and a thread takes them in this order when it needs both (state, then execution):
+ *   tz_vk_mutex       the state: initialization, the candidates, the capabilities, the program cache, the Gpu.Auto credit.
+ *                     It is never held across a wait for the device, so a Gpu.Auto decision never waits for a kernel.
+ *   tz_vk_exec_mutex  the execution: the one descriptor set, command buffer, fence, and queue of the device. It is held
+ *                     from the first buffer of a run to the release of the last, which includes the wait for the fence. */
 struct tz_vk_state {
-    int state; /* 0 not tried, 1 ready, 2 failed */
+    int state; /* the device: 0 not created, 1 ready, 2 failed for good */
     int32_t status;
-    int poisoned;
+    _Atomic int poisoned; /* the device was lost: it is not touched again. Set without the state lock. */
     int exit_registered;
+    int enumerated; /* the loader, the instance, and the candidates are there (no logical device needs to be) */
     void *library;
     struct tz_vk_functions fn;
     VkInstance instance;
+    struct tz_vk_candidate candidates[TZ_VK_MAX_DEVICES];
+    uint32_t candidate_count;
+    uint32_t chosen; /* the candidate that the device was created on */
     VkPhysicalDevice physical;
     VkDevice device;
     VkQueue queue;
@@ -813,12 +852,20 @@ static struct tz_vk_state tz_vk;
 
 #if defined(_WIN32)
 static SRWLOCK tz_vk_mutex = SRWLOCK_INIT;
+static SRWLOCK tz_vk_exec_mutex = SRWLOCK_INIT;
 #define TZ_VK_LOCK() AcquireSRWLockExclusive(&tz_vk_mutex)
+#define TZ_VK_TRY_LOCK() (TryAcquireSRWLockExclusive(&tz_vk_mutex) != 0)
 #define TZ_VK_UNLOCK() ReleaseSRWLockExclusive(&tz_vk_mutex)
+#define TZ_VK_EXEC_LOCK() AcquireSRWLockExclusive(&tz_vk_exec_mutex)
+#define TZ_VK_EXEC_UNLOCK() ReleaseSRWLockExclusive(&tz_vk_exec_mutex)
 #else
 static pthread_mutex_t tz_vk_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tz_vk_exec_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define TZ_VK_LOCK() pthread_mutex_lock(&tz_vk_mutex)
+#define TZ_VK_TRY_LOCK() (pthread_mutex_trylock(&tz_vk_mutex) == 0)
 #define TZ_VK_UNLOCK() pthread_mutex_unlock(&tz_vk_mutex)
+#define TZ_VK_EXEC_LOCK() pthread_mutex_lock(&tz_vk_exec_mutex)
+#define TZ_VK_EXEC_UNLOCK() pthread_mutex_unlock(&tz_vk_exec_mutex)
 #endif
 
 static int tz_vk_debug_enabled(void) {
@@ -966,17 +1013,6 @@ static int tz_vk_has_extension(const VkExtensionProperties *extensions, uint32_t
 
 /* ---- device selection and capabilities ---- */
 
-struct tz_vk_candidate {
-    VkPhysicalDevice device;
-    struct tz_vk_caps caps;
-    VkPhysicalDeviceMemoryProperties memory;
-    uint32_t queue_family;
-    int has_queue;
-    int portability_subset;
-    int float_controls_extension;
-    int rank;
-};
-
 static int tz_vk_type_rank(int32_t type) {
     switch (type) {
     case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 4;
@@ -1099,6 +1135,87 @@ static int tz_vk_satisfies(const struct tz_vk_caps *caps, int32_t features) {
     return 1;
 }
 
+/* The kernels have a local size of 256, so a device runs them only if its workgroups hold that many invocations. */
+static int tz_vk_runnable(const struct tz_vk_caps *caps) {
+    return caps->max_workgroup_invocations >= TZ_VK_GROUP_SIZE && caps->max_workgroup_size_x >= TZ_VK_GROUP_SIZE;
+}
+
+/* The cost rule of Gpu.Auto was measured on an integrated GPU that the host reaches without a copy (the memory of the
+   machine is shared). A discrete GPU, whose transfers cross a bus, and a software device are never chosen by Gpu.Auto:
+   no measured rule covers them, and an explicit Gpu.Vulkan still runs there. */
+static int tz_vk_auto_device_measured(const struct tz_vk_caps *caps) {
+    return caps->device_type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && caps->direct_transfer;
+}
+
+static int tz_vk_usable_candidate(const struct tz_vk_candidate *candidate) {
+    return candidate->has_queue && candidate->caps.api_version >= VK_MAKE_API_VERSION(0, 1, 1, 0);
+}
+
+/* The candidate that an explicit request opens, among those with a compute queue and Vulkan 1.1: a device whose
+   workgroups hold the kernels first, then one that has the features the first caller needs, then the best kind
+   (discrete, integrated, virtual, other, cpu), and the first of equals. When no device has all the features the best
+   remaining one is opened, and open reports what it lacks. -1 when no device is usable. */
+static int tz_vk_pick_explicit(int32_t features) {
+    int best = -1, best_score = -1;
+    for (uint32_t index = 0; index < tz_vk.candidate_count; index++) {
+        const struct tz_vk_candidate *candidate = &tz_vk.candidates[index];
+        if (!tz_vk_usable_candidate(candidate)) continue;
+        int score = (tz_vk_runnable(&candidate->caps) ? 1000 : 0) + (tz_vk_satisfies(&candidate->caps, features) ? 100 : 0)
+            + candidate->rank;
+        if (score > best_score) {
+            best = (int)index;
+            best_score = score;
+        }
+    }
+    return best;
+}
+
+/* Whether a device with these capabilities can serve one Gpu.Auto call, from what it reports: the measured kind of device,
+   workgroups for the kernels, the features of the kernel, and buffers that fit its limits. The strict float32 controls
+   count as reported until the conformance probe, which needs the device, says otherwise. */
+static int tz_vk_auto_fits(const struct tz_vk_caps *caps, int32_t features, int32_t mode, int64_t count, int input_size,
+    int output_size, int explain) {
+    if (!tz_vk_auto_device_measured(caps)) {
+        if (explain) tz_vk_debug("Gpu.Auto does not use %s: the cost rule is measured for integrated GPUs with unified memory", caps->name);
+        return 0;
+    }
+    if (!tz_vk_runnable(caps)) {
+        if (explain) tz_vk_debug("Gpu.Auto does not use %s: its workgroups hold fewer than %d invocations", caps->name, TZ_VK_GROUP_SIZE);
+        return 0;
+    }
+    if ((features & TZ_VK_FEATURE_INT64) != 0 && !caps->int64) {
+        if (explain) tz_vk_debug("Gpu.Auto does not use %s: the kernel needs 64-bit integers (shaderInt64)", caps->name);
+        return 0;
+    }
+    if ((features & TZ_VK_FEATURE_STRICT_F32) != 0 && !caps->strict_f32) {
+        if (explain) tz_vk_debug("Gpu.Auto does not use %s: the kernel needs the strict float32 controls and the device lacks them or failed the probe", caps->name);
+        return 0;
+    }
+    VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
+    VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
+    if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
+        || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
+        if (explain) tz_vk_debug("Gpu.Auto: %lld lanes do not fit the buffer limits of %s", (long long)count, caps->name);
+        return 0;
+    }
+    return 1;
+}
+
+/* The candidate that Gpu.Auto opens for a call: the first integrated GPU with unified memory that fits the call (see
+   tz_vk_auto_fits). -1 when there is none, and then no device is created. `explain` says why each device was refused (under
+   TSUZURI_GPU_DEBUG). */
+static int tz_vk_pick_auto(int32_t features, int32_t mode, int64_t count, int input_size, int output_size, int explain) {
+    int usable = 0;
+    for (uint32_t index = 0; index < tz_vk.candidate_count; index++) {
+        const struct tz_vk_candidate *candidate = &tz_vk.candidates[index];
+        if (!tz_vk_usable_candidate(candidate)) continue;
+        usable++;
+        if (tz_vk_auto_fits(&candidate->caps, features, mode, count, input_size, output_size, explain)) return (int)index;
+    }
+    if (explain && usable == 0) tz_vk_debug("Gpu.Auto: no Vulkan device with a compute queue and Vulkan 1.1");
+    return -1;
+}
+
 static const char *tz_vk_independence(int value) {
     switch (value) {
     case VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY: return "32-bit-only";
@@ -1137,20 +1254,25 @@ static void tz_vk_format_caps(const struct tz_vk_caps *caps, char *text, size_t 
 
 /* ---- teardown (also the cleanup of a failed initialization) ---- */
 
+static void tz_vk_release_program(struct tz_vk_program *program) {
+    struct tz_vk_state *state = &tz_vk;
+    for (int entry = 0; entry < TZ_VK_MODES; entry++) {
+        if (program->pipelines[entry] != 0) state->fn.vkDestroyPipeline(state->device, program->pipelines[entry], NULL);
+    }
+    if (program->module != 0) state->fn.vkDestroyShaderModule(state->device, program->module, NULL);
+    TZ_VK_FREE(program->words);
+    memset(program, 0, sizeof *program);
+}
+
+/* Only at teardown: a pipeline that a run may be using is never destroyed while the process runs (a kernel that does
+   not fit the program cache gets a pipeline of its own for the run, see tz_vk_pipeline). */
 static void tz_vk_release_programs(void) {
     struct tz_vk_state *state = &tz_vk;
-    for (uint32_t index = 0; index < state->program_count; index++) {
-        struct tz_vk_program *program = &state->programs[index];
-        for (int entry = 0; entry < TZ_VK_MODES; entry++) {
-            if (program->pipelines[entry] != 0) state->fn.vkDestroyPipeline(state->device, program->pipelines[entry], NULL);
-        }
-        if (program->module != 0) state->fn.vkDestroyShaderModule(state->device, program->module, NULL);
-        TZ_VK_FREE(program->words);
-        memset(program, 0, sizeof *program);
-    }
+    for (uint32_t index = 0; index < state->program_count; index++) tz_vk_release_program(&state->programs[index]);
     state->program_count = 0;
 }
 
+/* Both locks are held (or no other thread can be here). */
 static void tz_vk_teardown(void) {
     struct tz_vk_state *state = &tz_vk;
     if (state->device != NULL && state->fn.vkDestroyDevice != NULL) {
@@ -1175,14 +1297,20 @@ static void tz_vk_teardown(void) {
     state->descriptors = 0;
     state->set = 0;
     state->physical = NULL;
+    state->enumerated = 0;
+    state->candidate_count = 0;
     /* The library stays mapped: unloading a Vulkan loader while driver threads may still run is unsafe. */
 }
 
+/* A run that is under way holds the execution lock, so the exit waits for it, and a run that prepared before the exit
+   finds the device gone when it gets the execution lock (it checks the state there). */
 static void tz_vk_at_exit(void) {
     TZ_VK_LOCK();
-    if (tz_vk.state == 1) tz_vk_teardown();
+    TZ_VK_EXEC_LOCK();
+    if (tz_vk.state == 1 || tz_vk.enumerated) tz_vk_teardown();
     tz_vk.state = 2;
     tz_vk.status = TZ_VK_UNAVAILABLE;
+    TZ_VK_EXEC_UNLOCK();
     TZ_VK_UNLOCK();
 }
 
@@ -1197,7 +1325,9 @@ static int32_t tz_vk_fail_init(int32_t status, const char *what, VkResult result
     return status;
 }
 
-static int32_t tz_vk_init(int32_t features) {
+/* The loader, the instance, and a description of every physical device, but no logical device: what Gpu.Auto needs in
+   order to know whether a device is worth opening, and which. The state lock is held. A failure is final for the process. */
+static int32_t tz_vk_enumerate(void) {
     struct tz_vk_state *state = &tz_vk;
     memset(&state->fn, 0, sizeof state->fn);
     state->library = tz_vk_find_library();
@@ -1270,42 +1400,44 @@ static int32_t tz_vk_init(int32_t features) {
     if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
         return tz_vk_fail_init(TZ_VK_UNAVAILABLE, "vkEnumeratePhysicalDevices", result);
     }
-    /* The best device that has a compute queue, Vulkan 1.1, and every feature the first caller needs; when no
-       device has all the features, the best usable device is kept and open reports the missing feature. */
-    struct tz_vk_candidate chosen;
-    int have_chosen = 0, chosen_satisfies = 0;
+    state->candidate_count = 0;
     for (uint32_t index = 0; index < device_count; index++) {
-        struct tz_vk_candidate candidate;
-        int32_t status = tz_vk_describe_candidate(devices[index], &candidate);
+        struct tz_vk_candidate *candidate = &state->candidates[state->candidate_count];
+        int32_t status = tz_vk_describe_candidate(devices[index], candidate);
         if (status != TZ_VK_OK) {
             if (status == TZ_VK_FAILED) return tz_vk_fail_init(TZ_VK_FAILED, "out of host memory", VK_SUCCESS);
             continue;
         }
-        tz_vk_debug("device %u: %s", index, candidate.caps.name);
-        if (!candidate.has_queue || candidate.caps.api_version < VK_MAKE_API_VERSION(0, 1, 1, 0)) continue;
-        int satisfies = tz_vk_satisfies(&candidate.caps, features);
-        if (!have_chosen || (satisfies && !chosen_satisfies)
-            || (satisfies == chosen_satisfies && candidate.rank > chosen.rank)) {
-            chosen = candidate;
-            have_chosen = 1;
-            chosen_satisfies = satisfies;
-        }
+        tz_vk_debug("device %u: %s", index, candidate->caps.name);
+        state->candidate_count++;
     }
-    if (!have_chosen) {
-        return tz_vk_fail_init(TZ_VK_UNAVAILABLE, "no Vulkan device with a compute queue and Vulkan 1.1", VK_SUCCESS);
+    state->enumerated = 1;
+    if (!state->exit_registered) {
+        state->exit_registered = 1;
+        atexit(tz_vk_at_exit);
     }
-    state->physical = chosen.device;
-    state->caps = chosen.caps;
-    state->memory = chosen.memory;
-    state->queue_family = chosen.queue_family;
-    if (state->caps.max_workgroup_invocations < TZ_VK_GROUP_SIZE || state->caps.max_workgroup_size_x < TZ_VK_GROUP_SIZE) {
+    return TZ_VK_OK;
+}
+
+/* A logical device on candidate `index`, and the objects that every run shares. The state lock is held and the
+   instance is there. A failure is final for the process. */
+static int32_t tz_vk_create_device(uint32_t index) {
+    struct tz_vk_state *state = &tz_vk;
+    const struct tz_vk_candidate *chosen = &state->candidates[index];
+    state->chosen = index;
+    state->physical = chosen->device;
+    state->caps = chosen->caps;
+    state->memory = chosen->memory;
+    state->queue_family = chosen->queue_family;
+    if (!tz_vk_runnable(&state->caps)) {
         return tz_vk_fail_init(TZ_VK_UNSUPPORTED, "the device cannot run workgroups of 256 invocations", VK_SUCCESS);
     }
+    VkResult result = VK_SUCCESS;
 
     const char *device_extensions[2];
     uint32_t device_extension_count = 0;
-    if (chosen.portability_subset) device_extensions[device_extension_count++] = "VK_KHR_portability_subset";
-    if (chosen.float_controls_extension && state->caps.api_version < VK_MAKE_API_VERSION(0, 1, 2, 0)) {
+    if (chosen->portability_subset) device_extensions[device_extension_count++] = "VK_KHR_portability_subset";
+    if (chosen->float_controls_extension && state->caps.api_version < VK_MAKE_API_VERSION(0, 1, 2, 0)) {
         device_extensions[device_extension_count++] = "VK_KHR_shader_float_controls";
     }
     float priority = 1.0f;
@@ -1426,10 +1558,6 @@ static int32_t tz_vk_init(int32_t features) {
     }
     state->state = 1;
     state->status = TZ_VK_OK;
-    if (!state->exit_registered) {
-        state->exit_registered = 1;
-        atexit(tz_vk_at_exit);
-    }
     if (tz_vk_debug_enabled()) {
         char text[1024];
         tz_vk_format_caps(&state->caps, text, sizeof text);
@@ -1441,14 +1569,25 @@ static int32_t tz_vk_init(int32_t features) {
 /* Whether kernels with the strict float32 modes may run: defined with the probe, after the code that runs a module. */
 static int tz_vk_strict_ok(void);
 
-/* Initializes once, then checks the features; the lock is held by the caller. */
+/* Opens the device if that has not happened yet, then checks the features; the state lock is held by the caller. The
+   first caller decides which device it is: an explicit request (this function) opens the best-ranked device that has
+   the features it needs, and Gpu.Auto (tz_vk_auto_decide) opens a device of the measured kind. The process has one
+   device, so whichever asks first fixes it for the others. */
 static int32_t tz_vk_ensure(int32_t features) {
     if (tz_vk.state == 0) {
-        int32_t status = tz_vk_init(features);
+        if (!tz_vk.enumerated) {
+            int32_t status = tz_vk_enumerate();
+            if (status != TZ_VK_OK) return status;
+        }
+        int index = tz_vk_pick_explicit(features);
+        if (index < 0) {
+            return tz_vk_fail_init(TZ_VK_UNAVAILABLE, "no Vulkan device with a compute queue and Vulkan 1.1", VK_SUCCESS);
+        }
+        int32_t status = tz_vk_create_device((uint32_t)index);
         if (status != TZ_VK_OK) return status;
     }
     if (tz_vk.state != 1) return tz_vk.status != TZ_VK_OK ? tz_vk.status : TZ_VK_UNAVAILABLE;
-    if (tz_vk.poisoned) return TZ_VK_FAILED;
+    if (atomic_load(&tz_vk.poisoned)) return TZ_VK_FAILED;
     if ((features & TZ_VK_FEATURE_INT64) != 0 && !tz_vk.caps.int64) {
         tz_vk_debug("the device does not support 64-bit integers in shaders (shaderInt64)");
         return TZ_VK_UNSUPPORTED;
@@ -1552,8 +1691,54 @@ static VkResult tz_vk_create_buffer(struct tz_vk_buffer *buffer, VkDeviceSize si
     return VK_SUCCESS;
 }
 
-/* The pipeline of a SPIR-V module, found by content or created; the lock is held. */
-static int32_t tz_vk_pipeline(const uint32_t *words, uint32_t length, int mode, VkPipeline *pipeline) {
+/* Builds the shader module of `words` into `program`; a failure leaves `program` empty. */
+static int32_t tz_vk_build_module(struct tz_vk_program *program, const uint32_t *words, uint32_t length) {
+    struct tz_vk_state *state = &tz_vk;
+    memset(program, 0, sizeof *program);
+    program->words = (uint32_t *)TZ_VK_ALLOC((size_t)length * 4);
+    if (program->words == NULL) return tz_vk_report(TZ_VK_FAILED, "out of host memory");
+    memcpy(program->words, words, (size_t)length * 4);
+    program->length = length;
+    VkShaderModuleCreateInfo info;
+    memset(&info, 0, sizeof info);
+    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.codeSize = (size_t)length * 4;
+    info.pCode = program->words;
+    VkResult result = state->fn.vkCreateShaderModule(state->device, &info, NULL, &program->module);
+    if (result != VK_SUCCESS) {
+        TZ_VK_FREE(program->words);
+        memset(program, 0, sizeof *program);
+        return tz_vk_report(TZ_VK_FAILED, "vkCreateShaderModule failed (VkResult %d)", (int)result);
+    }
+    return TZ_VK_OK;
+}
+
+/* Creates the pipeline of entry `mode` of a program that has its module; a failure leaves no pipeline. */
+static int32_t tz_vk_build_pipeline(struct tz_vk_program *program, int mode) {
+    struct tz_vk_state *state = &tz_vk;
+    VkComputePipelineCreateInfo info;
+    memset(&info, 0, sizeof info);
+    info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = program->module;
+    static const char *const entries[TZ_VK_MODES] = {"map_main", "init_main", "probe_main"};
+    info.stage.pName = entries[mode];
+    info.layout = state->pipeline_layout;
+    VkResult result = state->fn.vkCreateComputePipelines(state->device, 0, 1, &info, NULL, &program->pipelines[mode]);
+    if (result != VK_SUCCESS) {
+        program->pipelines[mode] = 0;
+        return tz_vk_report(TZ_VK_FAILED, "vkCreateComputePipelines failed (VkResult %d)", (int)result);
+    }
+    return TZ_VK_OK;
+}
+
+/* The pipeline of a SPIR-V module, found by content or created; the state lock is held. The program cache never evicts:
+   a pipeline that a run may be using is not destroyed while the process runs. A module that does not fit the full cache
+   is built into `transient`, which the caller owns and releases after its run; with no `transient` (Gpu.Auto) it is not
+   prepared at all, and the call stays on the CPU reference. */
+static int32_t tz_vk_pipeline(const uint32_t *words, uint32_t length, int mode, VkPipeline *pipeline,
+    struct tz_vk_program *transient) {
     struct tz_vk_state *state = &tz_vk;
     struct tz_vk_program *program = NULL;
     for (uint32_t index = 0; index < state->program_count; index++) {
@@ -1564,42 +1749,25 @@ static int32_t tz_vk_pipeline(const uint32_t *words, uint32_t length, int mode, 
         }
     }
     if (program == NULL) {
-        if (state->program_count == TZ_VK_PROGRAMS) {
-            tz_vk_release_programs();
+        int32_t status;
+        if (state->program_count < TZ_VK_PROGRAMS) {
+            program = &state->programs[state->program_count];
+            status = tz_vk_build_module(program, words, length);
+            if (status != TZ_VK_OK) return status;
+            state->program_count++;
+        } else if (transient != NULL) {
+            program = transient;
+            status = tz_vk_build_module(program, words, length);
+            if (status != TZ_VK_OK) return status;
+        } else {
+            return tz_vk_report(TZ_VK_LIMIT, "the cache of %d kernels is full", TZ_VK_PROGRAMS);
         }
-        program = &state->programs[state->program_count];
-        memset(program, 0, sizeof *program);
-        program->words = (uint32_t *)TZ_VK_ALLOC((size_t)length * 4);
-        if (program->words == NULL) return tz_vk_report(TZ_VK_FAILED, "out of host memory");
-        memcpy(program->words, words, (size_t)length * 4);
-        program->length = length;
-        VkShaderModuleCreateInfo info;
-        memset(&info, 0, sizeof info);
-        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        info.codeSize = (size_t)length * 4;
-        info.pCode = program->words;
-        VkResult result = state->fn.vkCreateShaderModule(state->device, &info, NULL, &program->module);
-        if (result != VK_SUCCESS) {
-            TZ_VK_FREE(program->words);
-            memset(program, 0, sizeof *program);
-            return tz_vk_report(TZ_VK_FAILED, "vkCreateShaderModule failed (VkResult %d)", (int)result);
-        }
-        state->program_count++;
     }
     if (program->pipelines[mode] == 0) {
-        VkComputePipelineCreateInfo info;
-        memset(&info, 0, sizeof info);
-        info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        info.stage.module = program->module;
-        static const char *const entries[TZ_VK_MODES] = {"map_main", "init_main", "probe_main"};
-        info.stage.pName = entries[mode];
-        info.layout = state->pipeline_layout;
-        VkResult result = state->fn.vkCreateComputePipelines(state->device, 0, 1, &info, NULL, &program->pipelines[mode]);
-        if (result != VK_SUCCESS) {
-            program->pipelines[mode] = 0;
-            return tz_vk_report(TZ_VK_FAILED, "vkCreateComputePipelines failed (VkResult %d)", (int)result);
+        int32_t status = tz_vk_build_pipeline(program, mode);
+        if (status != TZ_VK_OK) {
+            if (program == transient) tz_vk_release_program(transient);
+            return status;
         }
     }
     *pipeline = program->pipelines[mode];
@@ -1657,12 +1825,50 @@ static void tz_vk_barrier(VkCommandBuffer commands, VkFlags source_stage, VkFlag
     tz_vk.fn.vkCmdPipelineBarrier(commands, source_stage, destination_stage, 0, 1, &barrier, 0, NULL, 0, NULL);
 }
 
-/* mode 0 = map over `count` input lanes, 1 = init (no input), 2 = the conformance probe (a map over its own module). The
-   lock is held, the device is ready, the lane kinds and the count are checked, and the buffers belong to the caller. */
-static int32_t tz_vk_run_locked(int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words,
-    const void *input, int64_t count, void *output) {
+/* What a run takes from the state of the backend while it holds the state lock, so that the run itself, which holds the
+   execution lock only, needs the state lock for nothing. */
+struct tz_vk_plan {
+    VkPipeline pipeline;
+    struct tz_vk_caps caps;
+    struct tz_vk_program transient; /* a module and pipeline for this run alone (the program cache was full) */
+};
+
+/* The part of a run that reads or changes the shared state: the module and the limits are checked and the pipeline is
+   found or built. mode 0 = map over `count` input lanes, 1 = init (no input), 2 = the conformance probe (a map over its
+   own module, which is trusted). The state lock is held, the device is ready, and the lane kinds and the count are
+   checked. On a failure nothing is left in `plan`. */
+static int32_t tz_vk_prepare(int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words, int64_t count,
+    struct tz_vk_plan *plan) {
     struct tz_vk_state *state = &tz_vk;
     const struct tz_vk_caps *caps = &state->caps;
+    int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
+    VkDeviceSize input_bytes = mode != 1 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
+    VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
+    memset(plan, 0, sizeof *plan);
+    if (mode != 2) {
+        int32_t status = tz_vk_check_module(words, length_words);
+        if (status != TZ_VK_OK) return status;
+    }
+    if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
+        || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
+        return tz_vk_report(TZ_VK_LIMIT, "%lld lanes need %llu bytes; the device allows %u bytes per storage buffer and %llu per allocation",
+            (long long)count, (unsigned long long)(input_bytes > output_bytes ? input_bytes : output_bytes),
+            caps->max_storage_range, (unsigned long long)caps->max_allocation);
+    }
+    int32_t status = tz_vk_pipeline(words, length_words, mode, &plan->pipeline, &plan->transient);
+    if (status != TZ_VK_OK) return status;
+    plan->caps = *caps;
+    return TZ_VK_OK;
+}
+
+/* One run on the device: its buffers, the descriptor set, the command buffer, the submission, the wait for the fence, and
+   the readback. The execution lock is held (and not the state lock), and the buffers belong to the caller. The device may
+   have been torn down or lost between prepare and here, which is checked first. A pipeline of the plan's own is released
+   at the end. */
+static int32_t tz_vk_execute(struct tz_vk_plan *plan, int32_t mode, int32_t lanes, const void *input, int64_t count,
+    void *output) {
+    struct tz_vk_state *state = &tz_vk;
+    const struct tz_vk_caps *caps = &plan->caps;
     const int has_input = mode != 1;
     int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
     VkDeviceSize input_bytes = has_input ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
@@ -1674,24 +1880,18 @@ static int32_t tz_vk_run_locked(int32_t mode, int32_t lanes, const uint32_t *wor
     memset(&host_out, 0, sizeof host_out);
     int recording = 0, submitted = 0, no_memory_type = 0;
     int32_t status = TZ_VK_OK;
-    VkPipeline pipeline = 0;
+    const VkPipeline pipeline = plan->pipeline;
     VkResult result = VK_SUCCESS;
     const char *what = "";
 
-    if (mode != 2) {
-        status = tz_vk_check_module(words, length_words);
-        if (status != TZ_VK_OK) goto done;
+    if (state->state != 1) {
+        TZ_VK_FREE(plan->transient.words);
+        return tz_vk_report(TZ_VK_UNAVAILABLE, "the device was released");
     }
-    if ((VkDeviceSize)input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
-        || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
-        status = tz_vk_report(TZ_VK_LIMIT, "%lld lanes need %llu bytes; the device allows %u bytes per storage buffer and %llu per allocation",
-            (long long)count, (unsigned long long)(input_bytes > output_bytes ? input_bytes : output_bytes),
-            caps->max_storage_range, (unsigned long long)caps->max_allocation);
-        goto done;
+    if (atomic_load(&state->poisoned)) {
+        tz_vk_release_program(&plan->transient);
+        return tz_vk_report(TZ_VK_FAILED, "the device was lost earlier");
     }
-    status = tz_vk_pipeline(words, length_words, mode, &pipeline);
-    if (status != TZ_VK_OK) goto done;
-
     {
         const VkFlags host_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         const VkFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -1808,6 +2008,10 @@ static int32_t tz_vk_run_locked(int32_t mode, int32_t lanes, const uint32_t *wor
         if (result != VK_SUCCESS) goto failed;
         submitted = 1;
         what = "vkWaitForFences";
+        /* There is deliberately no timeout. The kernel writes to buffers that this function frees, so giving up on a
+           wait that is still pending would leave the device writing to freed memory; a kernel that hangs the device is
+           reported by the driver's own watchdog as a lost device (VK_ERROR_DEVICE_LOST), which ends the wait. There is no
+           callback and no state of this call that outlives it. */
         result = state->fn.vkWaitForFences(state->device, 1, &state->fence, 1, UINT64_MAX);
         if (result != VK_SUCCESS) goto failed;
         submitted = 0;
@@ -1817,7 +2021,7 @@ static int32_t tz_vk_run_locked(int32_t mode, int32_t lanes, const uint32_t *wor
     goto done;
 
 failed:
-    if (result == VK_ERROR_DEVICE_LOST) state->poisoned = 1;
+    if (result == VK_ERROR_DEVICE_LOST) atomic_store(&state->poisoned, 1);
     status = no_memory_type ? tz_vk_report(TZ_VK_FAILED, "%s failed: the device has no suitable memory type", what)
                             : tz_vk_report(TZ_VK_FAILED, "%s failed (VkResult %d)", what, (int)result);
     if (recording) state->fn.vkResetCommandBuffer(state->commands, 0);
@@ -1827,6 +2031,7 @@ done:
     tz_vk_destroy_buffer(&host_in);
     tz_vk_destroy_buffer(&device_out);
     tz_vk_destroy_buffer(&device_in);
+    tz_vk_release_program(&plan->transient);
     return status;
 }
 
@@ -1857,15 +2062,23 @@ static int32_t tz_vulkan_run(int32_t mode, int32_t flags, int32_t lanes, const v
         memcpy(aligned, spirv, (size_t)spirv_length);
         words = aligned;
     }
+    /* The state lock covers what is shared (the device, the checks, the pipeline) and is released before the run, so a
+       thread that only decides (Gpu.Auto) never waits for a kernel: the run holds the execution lock alone. */
     TZ_VK_LOCK();
+    struct tz_vk_plan plan;
+    memset(&plan, 0, sizeof plan);
     int32_t status = tz_vk_ensure(0);
     if (status == TZ_VK_OK) {
-        status = tz_vk_run_locked(mode, lanes, words, (uint32_t)spirv_length / 4, input, count, output);
-    } else if (status == TZ_VK_FAILED && tz_vk.poisoned) {
+        status = tz_vk_prepare(mode, lanes, words, (uint32_t)spirv_length / 4, count, &plan);
+    } else if (status == TZ_VK_FAILED && atomic_load(&tz_vk.poisoned)) {
         status = tz_vk_report(status, "the device was lost earlier");
     }
     TZ_VK_UNLOCK();
     TZ_VK_FREE(aligned);
+    if (status != TZ_VK_OK) return status;
+    TZ_VK_EXEC_LOCK();
+    status = tz_vk_execute(&plan, mode, lanes, input, count, output);
+    TZ_VK_EXEC_UNLOCK();
     return status;
 }
 
@@ -1976,13 +2189,28 @@ static const char *const tz_vk_probe_operations[8] = {"(a * b) + c without a fus
     "a + b with subnormals", "a * b with subnormals", "a * b rounded to nearest even", "a - b with infinities and NaN",
     "float of a 32-bit unsigned integer", "float of a 32-bit signed integer"};
 
-/* Runs the probe and records the verdict; the lock is held and the device is open. Whatever goes wrong, the answer is no. */
+/* Runs a module for a caller that holds the state lock: the run itself takes the execution lock, in the order of the locks. */
+static int32_t tz_vk_run_nested(int32_t mode, int32_t lanes, const uint32_t *words, uint32_t length_words, const void *input,
+    int64_t count, void *output) {
+    struct tz_vk_plan plan;
+    int32_t status = tz_vk_prepare(mode, lanes, words, length_words, count, &plan);
+    if (status != TZ_VK_OK) return status;
+    TZ_VK_EXEC_LOCK();
+    status = tz_vk_execute(&plan, mode, lanes, input, count, output);
+    TZ_VK_EXEC_UNLOCK();
+    return status;
+}
+
+/* Runs the probe and records the verdict; the state lock is held and the device is open. This is the one place where a
+   thread waits for the device while it holds the state lock: it is once per process, a dispatch of 24 lanes, and a
+   Gpu.Auto decision does not wait for it either (it gives up the lock instead, see tz_vulkan_auto). Whatever goes wrong,
+   the answer is no. */
 static void tz_vk_probe_strict(void) {
     struct tz_vk_caps *caps = &tz_vk.caps;
     uint32_t results[TZ_VK_PROBE_LANES];
     memset(results, 0, sizeof results);
     caps->strict_probe = 2;
-    int32_t status = tz_vk_run_locked(2, 4 | (1 << 8), tz_vk_probe_module, TZ_VK_PROBE_WORDS, tz_vk_probe_input,
+    int32_t status = tz_vk_run_nested(2, 4 | (1 << 8), tz_vk_probe_module, TZ_VK_PROBE_WORDS, tz_vk_probe_input,
         TZ_VK_PROBE_LANES, results);
     int wrong = 0;
     if (status == TZ_VK_OK) {
@@ -2038,13 +2266,6 @@ static int tz_vk_strict_ok(void) {
    depends only on the calls made, not on a clock. Guarded by the lock. */
 static double tz_vk_auto_credit;
 
-/* The measurements are of an integrated GPU that the host reaches without a copy (the memory of the machine is
-   shared). A discrete GPU, whose transfers cross a bus, and a software device are never chosen by Gpu.Auto: no
-   measured rule covers them, and an explicit Gpu.Vulkan still runs there. */
-static int tz_vk_auto_device_measured(const struct tz_vk_caps *caps) {
-    return caps->device_type == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && caps->direct_transfer;
-}
-
 /* TSUZURI_GPU_AUTO_MIN_WORK=<n> replaces the cost rule by "lanes times kernel weight reaches n" (0: always, when the
    device is eligible); it never relaxes the capability, limit, or device checks. -1 when unset or not a count. */
 static long long tz_vk_auto_minimum(void) {
@@ -2070,32 +2291,52 @@ static int tz_vk_cached(const uint32_t *words, uint32_t length, int mode) {
     return 0;
 }
 
-/* What the device must have for one call, once it is known: the features of the kernel, the measured kind, and buffers
-   that fit its limits. Opens the device if that has not happened yet; the lock is held. */
-static int tz_vk_auto_usable(int32_t features, int32_t mode, int64_t count, int input_size, int output_size) {
+/* The decision itself, for a call that the cost rule has not already kept on the CPU reference. The state lock is held and
+   tz_vk_quiet is set. Returns 1 when the call is to run on the device. Nothing is created for a call that no device can
+   serve: the devices are described before any is opened, and what they report answers the eligibility questions first. */
+static int tz_vk_auto_decide(int32_t mode, int32_t features, const uint32_t *words, uint32_t length_words, int64_t count,
+    int input_size, int output_size, long long minimum, double saving) {
+    if (tz_vk.state == 2 || atomic_load(&tz_vk.poisoned)) return 0;
+    const int ready = tz_vk.state == 1;
+    /* The cheap questions come first, so that no credit is built for a call that no device can run. */
+    if (ready) {
+        if (!tz_vk_auto_fits(&tz_vk.caps, features, mode, count, input_size, output_size, 1)) return 0;
+    } else if (tz_vk.enumerated && tz_vk_pick_auto(features, mode, count, input_size, output_size, 1) < 0) {
+        return 0;
+    }
+    if (minimum < 0) {
+        double first_use = (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
+            + (ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS);
+        if (first_use > 0.0) {
+            tz_vk_auto_credit += saving;
+            if (tz_vk_auto_credit < first_use) return 0;
+            tz_vk_auto_credit -= first_use;
+        }
+    }
+    if (!ready) {
+        if (!tz_vk.enumerated && tz_vk_enumerate() != TZ_VK_OK) return 0;
+        int index = tz_vk_pick_auto(features, mode, count, input_size, output_size, 1);
+        if (index < 0) return 0;
+        if (tz_vk_create_device((uint32_t)index) != TZ_VK_OK) return 0;
+    }
     if (tz_vk_ensure(features & TZ_VK_FEATURE_MASK) != TZ_VK_OK) return 0;
-    const struct tz_vk_caps *caps = &tz_vk.caps;
-    if (!tz_vk_auto_device_measured(caps)) {
-        tz_vk_debug("Gpu.Auto does not use %s: the cost rule is measured for integrated GPUs with unified memory", caps->name);
-        return 0;
-    }
-    VkDeviceSize input_bytes = mode == 0 ? (VkDeviceSize)count * (VkDeviceSize)input_size : 0;
-    VkDeviceSize output_bytes = (VkDeviceSize)count * (VkDeviceSize)output_size;
-    if (input_bytes > caps->max_storage_range || output_bytes > caps->max_storage_range
-        || input_bytes > caps->max_allocation || output_bytes > caps->max_allocation) {
-        tz_vk_debug("Gpu.Auto: %lld lanes do not fit the buffer limits of the device", (long long)count);
-        return 0;
-    }
+    VkPipeline pipeline = 0;
+    if (tz_vk_check_module(words, length_words) != TZ_VK_OK) return 0;
+    if (tz_vk_pipeline(words, length_words, mode, &pipeline, NULL) != TZ_VK_OK) return 0;
     return 1;
 }
 
 /* Gpu.Auto asks, for one call of a kernel, whether to run it here (1) or on the CPU reference (0). It chooses this
-   backend only when everything that can be checked before the run holds: the kernel has a module, its lanes are
-   ones Vulkan has, the device is open with the features of the kernel, the device is of the measured kind, the
-   buffers fit, and the pipeline builds; and the estimated cost on a warm device is below the estimated cost of the CPU
-   reference, with the first use (the open, the compile) paid out of the credit that earlier declined calls built up.
-   A device that is unavailable is not asked again. A failure while the run itself is under way (a lost device, no
-   memory) traps like an explicit device does. */
+   backend only when everything that can be checked before the run holds: the kernel has a module, its lanes are ones
+   Vulkan has, a device of the measured kind with the features of the kernel and buffers that fit exists (checked on what
+   the devices report, before one is created), the pipeline builds, and the estimated cost on a warm device is below the
+   estimated cost of the CPU reference, with the first use (the open, the compile) paid out of the credit that earlier
+   declined calls built up. A device that is unavailable is not asked again. A failure while the run itself is under way
+   (a lost device, no memory) traps like an explicit device does.
+   The question never waits for a kernel. The cost rule is arithmetic on the call alone, so a call that it keeps on the CPU
+   reference takes no lock; the rest takes the state lock only with a try, and a call that finds it taken (another thread is
+   opening the device, building a pipeline, or running the strict float32 probe) runs on the CPU reference. The state
+   lock is never held across a wait for the device, except by that probe. */
 static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const void *spirv, int32_t spirv_length,
     int32_t weight, int64_t count) {
     int input_size = tz_vk_lane_size(lanes & 0xFF), output_size = tz_vk_lane_size((lanes >> 8) & 0xFF);
@@ -2106,7 +2347,15 @@ static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const v
     double lane_bytes = (double)(mode == 0 ? input_size : 0) + (double)output_size;
     double work = (double)count * (double)(weight > 0 ? weight : 1);
     long long minimum = tz_vk_auto_minimum();
-    int chosen = 0;
+    double saving = 0.0;
+    if (minimum >= 0) {
+        if (work < (double)minimum) return 0;
+    } else {
+        double cpu = work * TZ_VK_AUTO_CPU_NS_PER_OP;
+        double warm = TZ_VK_AUTO_CALL_NS + (double)count * lane_bytes * TZ_VK_AUTO_BYTE_NS + work * TZ_VK_AUTO_GPU_NS_PER_OP;
+        saving = cpu - warm * TZ_VK_AUTO_MARGIN;
+        if (saving <= 0.0) return 0;
+    }
     uint32_t *aligned = NULL;
     const uint32_t *words = (const uint32_t *)spirv;
     uint32_t length_words = (uint32_t)spirv_length / 4;
@@ -2116,39 +2365,15 @@ static int tz_vulkan_auto(int32_t mode, int32_t lanes, int32_t features, const v
         memcpy(aligned, spirv, (size_t)spirv_length);
         words = aligned;
     }
-    TZ_VK_LOCK();
-    tz_vk_quiet = 1;
-    if (tz_vk.state == 2 || tz_vk.poisoned) goto done;
-    /* A device that is already open answers the cheap questions first, so that no credit is built for a call it cannot run. */
-    if (tz_vk.state == 1 && !tz_vk_auto_usable(features, mode, count, input_size, output_size)) goto done;
-    {
-        int ready = tz_vk.state == 1;
-        if (minimum >= 0) {
-            if (work < (double)minimum) goto done;
-        } else {
-            double cpu = work * TZ_VK_AUTO_CPU_NS_PER_OP;
-            double warm = TZ_VK_AUTO_CALL_NS + (double)count * lane_bytes * TZ_VK_AUTO_BYTE_NS + work * TZ_VK_AUTO_GPU_NS_PER_OP;
-            double saving = cpu - warm * TZ_VK_AUTO_MARGIN;
-            if (saving <= 0.0) goto done;
-            double first_use = (ready ? 0.0 : TZ_VK_AUTO_OPEN_NS)
-                + (ready && tz_vk_cached(words, length_words, mode) ? 0.0 : TZ_VK_AUTO_COMPILE_NS);
-            if (first_use > 0.0) {
-                tz_vk_auto_credit += saving;
-                if (tz_vk_auto_credit < first_use) goto done;
-                tz_vk_auto_credit -= first_use;
-            }
-        }
+    int chosen = 0;
+    if (TZ_VK_TRY_LOCK()) {
+        tz_vk_quiet = 1;
+        chosen = tz_vk_auto_decide(mode, features, words, length_words, count, input_size, output_size, minimum, saving);
+        tz_vk_quiet = 0;
+        TZ_VK_UNLOCK();
+    } else {
+        tz_vk_debug("Gpu.Auto: the backend is busy (another thread is opening the device, building a pipeline, or probing); the call runs on the CPU reference");
     }
-    if (!tz_vk_auto_usable(features, mode, count, input_size, output_size)) goto done;
-    {
-        VkPipeline pipeline = 0;
-        if (tz_vk_check_module(words, length_words) != TZ_VK_OK) goto done;
-        if (tz_vk_pipeline(words, length_words, mode, &pipeline) != TZ_VK_OK) goto done;
-    }
-    chosen = 1;
-done:
-    tz_vk_quiet = 0;
-    TZ_VK_UNLOCK();
     TZ_VK_FREE(aligned);
     return chosen;
 }
@@ -2169,7 +2394,7 @@ static void tz_vulkan_describe(char *text, size_t size) {
    be open. The probe of the runtime itself runs only where the properties report the controls. */
 static int32_t tz_vk_test_conform(uint32_t *results) {
     TZ_VK_LOCK();
-    int32_t status = tz_vk.state == 1 && !tz_vk.poisoned ? tz_vk_run_locked(2, 4 | (1 << 8), tz_vk_probe_module,
+    int32_t status = tz_vk.state == 1 && !atomic_load(&tz_vk.poisoned) ? tz_vk_run_nested(2, 4 | (1 << 8), tz_vk_probe_module,
         TZ_VK_PROBE_WORDS, tz_vk_probe_input, TZ_VK_PROBE_LANES, results) : TZ_VK_UNAVAILABLE;
     TZ_VK_UNLOCK();
     return status;
@@ -2177,11 +2402,13 @@ static int32_t tz_vk_test_conform(uint32_t *results) {
 
 static void tz_vk_test_reset(void) {
     TZ_VK_LOCK();
-    if (tz_vk.state == 1) tz_vk_teardown();
+    TZ_VK_EXEC_LOCK();
+    if (tz_vk.state == 1 || tz_vk.enumerated) tz_vk_teardown();
     tz_vk.state = 0;
     tz_vk.status = 0;
-    tz_vk.poisoned = 0;
+    atomic_store(&tz_vk.poisoned, 0);
     tz_vk_auto_credit = 0.0;
+    TZ_VK_EXEC_UNLOCK();
     TZ_VK_UNLOCK();
 }
 #endif
