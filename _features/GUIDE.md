@@ -207,8 +207,10 @@ cargo test --locked honors_the_exact_specialization_limit
 | 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
 | 数値・数学 | `tests/integers.rs`、`tests/math.rs` | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24） |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
-| Task・並列・WASM threads | `tests/tasks.rs`、`tests/parallel.rs` | `tasks.mjs`、`wasm_threads.mjs`、`TSUZURI_TSAN=1` の実行 |
-| SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs` |
+| Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
+| SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
+| 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
+| ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
 | driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs` | `cache.mjs`、`examples.mjs` |
 | 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs` | — |
@@ -300,7 +302,11 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
 | `src/formatter.rs` | `tsuzuri fmt`（`format_source`、`SourceKind`） |
-| `src/gpu.rs` | GPU kernel の抽出と WGSL 生成（F07） |
+| `src/gpu.rs` | GPU kernel の抽出と WGSL 生成（F07）。`--emit wgsl-relaxed` と `f16`・`f32` の relaxed kernel（F09） |
+| `src/gpu/spirv.rs` | Vulkan 向けの SPIR-V の emitter。依存なしで決定的（F09 Phase 3） |
+| `src/gpu_devices.rs` | 非 CPU の `Gpu.Backend` を作るプログラムの kernel の表（`CheckedModule.gpu`）と呼び出しの付け替え（F09 Phase 2） |
+| `src/llvm_gpu.rs` | kernel の記述子の表と GPU runtime の境界（`tsuzuri_gpu_open`・`tsuzuri_gpu_run`・`tsuzuri_gpu_select`）の IR（F09） |
+| `src/llvm_sync.rs` | `Atomic`・`Mutex`・`Channel` の IR（F10） |
 | `src/higher_kinds.rs` | 高カインド型の正規化（A10） |
 | `src/llvm_bulk.rs` | 配列の一括 API（C04） |
 | `src/llvm_compare.rs`、`src/llvm_hash.rs`、`src/llvm_display.rs` | 構造比較・構造 Hash・表示（A06・A07・A11・D01） |
@@ -325,7 +331,10 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 
 実行時ランタイムも増えています（`character.ll`、`display.ll`、`debug.ll`、`recursive.ll`、`utf8string.ll`、`math.ll`、
 `heap-wasm-threads.ll`、`task-wasm-threads.c`、`task-windows.h`、`cpu.c`、`io.c`、`test-runner.c`、`unicode.ll`（D09、`scripts/generate-unicode.mjs` の生成物）、
-`bindings.mjs`・`bindings-core.mjs`・`bindings-threads.mjs`（E13 の glue。コンパイラは連結せず生成物へ埋め込む））。連結条件は `src/llvm.rs` と
+`bindings.mjs`・`bindings-core.mjs`・`bindings-threads.mjs`（E13 の glue。コンパイラは連結せず生成物へ埋め込む）、
+`net.c`（E09。`Net` の socket と名前解決。IR が `@tsuzuri_net_` を宣言したときだけ連結）、`bindings-net.mjs`・`bindings-net-host.mjs`（E09 Phase 3 の `--wasm-feature net` の glue）、
+`gpu.c`・`gpu-vulkan.c`（F09。WebGPU と Vulkan のローダーを実行時に読み込む runtime。IR が `tsuzuri_gpu_`・`; tsuzuri-gpu: vulkan` を宣言したときだけ連結）、
+`sync.ll`・`sync-wasm.ll`・`channel-wasm.ll`（F10））。連結条件は `src/llvm.rs` と
 `src/driver.rs` の `include_str!` の周辺を読んで確認します（§2.2）。
 
 ---
@@ -707,7 +716,7 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   | `Map`／`Set` | 順序付きの連想コンテナ | C06 |
   | `Seq` | 明示的な一回消費の遅延反復 | C07 |
   | `Test` | テスト用の比較・報告 | G06 |
-  | `Gpu` | GPU 実行 API | F07 |
+  | `Gpu` | GPU 実行 API（`Gpu.Auto` と Vulkan・WebGPU の実行時接続を含む） | F07、F09 |
   | `Owned` | 早期解放（`Owned.drop`）と Drop 型を捕捉できる関数値（`Owned.Function`） | B07 |
   | `HashMap`／`HashSet` | 不透明なハッシュ表と集合（挿入順の反復、seed 付きハッシュ、借用キーの検索） | C09 |
   | `File`／`Dir`／`Path`／`Env`／`Time`／`Random`／`Os`／`Process` | OS API（`IO` の遅延アクション。`Path`・`Os` の純粋な部分と `Random.Pcg` は wasm32 でも使える） | E08 |
@@ -721,6 +730,9 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   | `Bench` | `bench` 宣言の本体を作る `Bench.of`・`Bench.with_input` と組み込み `Bench.now`（`tsuzuri bench` の実行器の中だけ）・`Bench.consume`。opt-in std モジュール（D-41） | G18 |
   | `Gen` | プロパティテストの生成器・組み合わせ・縮小と `Gen.for_all`。std 専用の組み込み `Gen.__seed`。opt-in std モジュール（D-41） | G18 |
   | `Async`（`Async.tc`） | 協調的な非同期計算・仮想時計・ホストの再開・native reactor・WASM JSPI。opt-in std モジュール（D-42） | B08 |
+  | `Atomic`／`Mutex`／`Channel` | 整数・bool の不可分操作、排他制御（`Mutex.with_lock`）、有界の多対多チャネル。opt-in std モジュール（D-44） | F10 |
+  | `Matrix`／`MatrixView`／`Tensor` | 行優先の行列と順序を固定した積、借用する窓（`MatrixView`・`MatrixView.Mut`）、N 次元の `Tensor`。opt-in std モジュール（D-44） | C11 |
+  | `Net` | アドレスの解析と表示、名前解決、TCP・UDP（`IO<Result<_, Os.Error>>` と `_async` の双子）。opt-in std モジュール（D-44） | E09 |
 
   組み込みクラス（`Display`、`Parse`、`Hash`、`Default`、`Elementary` など）は std モジュールに属さない組み込み名として予約する。
   `Elementary` は超越関数（`Math.sin` など）用のメソッドなしマーカークラスで、D03 では f32／f64 だけが満たす。
@@ -728,6 +740,8 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   `Drop`（B07）は利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-31）。
   `Format`（D07）も利用者が宣言した record・union だけが instance を持つ組み込みクラスとして予約する（D-32）。
   `Encode`／`Decode`（D08）は組み込みクラスで、組み込みの instance を持たず、std の `Json` の instance と利用者の instance・導出を使う（D-40）。
+  `Sync`／`AtomicValue`（F10）はメソッドのない組み込みのマーカークラスで、`Sync` は複数の task が共有借用で同時に使ってよい型の印（`Task.scope` が共有する値と
+  `Arc<T>` の `Send` の判定に使う）、`AtomicValue` は `Atomic` に入れられる整数 8 種と `bool` が満たす。利用者の instance は `E1016`（D-44）。
 
 ### D-08 Maybe と Result
 - `std/Maybe.tc`: `union Maybe<'a> = None | Some of 'a`、関数（`map`、`bind`、`default_value`、`is_some`、`is_none` など）、
@@ -976,10 +990,6 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 種別 | 仮割り当て | チケット |
 |---|---|---|
 | 警告 | `W1005` 非推奨の宣言の使用 | G19 |
-| 組み込みクラス | `Sync`（仮称） | F10 |
-| std | `Matrix` | C11 |
-| std | `Net` | E09 |
-| std | `Atomic`／`Mutex`／`Channel` | F10 |
 
 2026-09-29 の詳細化で、各チケットが次の名前を仮に決めた（衝突を避けるための台帳。確定は各チケットの決定事項と承認に従う）。
 `要承認` の欄は、そのチケットで承認が必要な名前であることを示す。
@@ -989,8 +999,6 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | いいえ（承認済み・実装済み） |
 | 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
 | 構文 | `const def` | D11 | いいえ（Phase 1） |
-| 組み込みクラス・builtin | `AtomicValue`、`Task.scope`、構築関数 `create`（`new` は予約語） | F10 | はい |
-| std | `Gpu.map_relaxed`・`Gpu.init_relaxed` | F09 | はい |
 | std | `Bench.now`・`Bench.consume`・`Bench.with_input`・`Bench.of`（`with` は予約語なので `Bench.with` は `Bench.with_input`） | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
 | サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
@@ -1000,7 +1008,6 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--emit bitcode` | PR08 | いいえ |
-| CLI | `--emit wgsl-relaxed`・`--wasm-feature webgpu` | F09 | はい |
 | CLI | `--wasm-feature tail-call` | PM09 | はい |
 | CLI | `--trap-mode return` | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--link`・`-l`・`-L`、manifest の `[native]` | E12 | いいえ（承認済み・実装済み） |
@@ -1024,7 +1031,7 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`）、`@cpu` 関数の stub が呼ぶ `tsuzuri_cpu_pick` | F08・PR05 | いいえ（F08 は実装済み） |
 | 公開記号 | `tsuzuri_try_<name>`・`tsuzuri_trap_info`（`tsuzuri_boundary_run`・`tsuzuri_trap_raise`・`tsuzuri_tracked_*` は runtime の内部） | E14 | いいえ（Phase 2 承認済み・実装済み） |
 | 公開記号 | wasm global `tsuzuri_stack_base`・`tsuzuri_stack_top`（threads の worker の stack の範囲） | F11 | いいえ（Phase 2 実装済み） |
-| ランタイム | `string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`・`heap-counting.ll`（F13、実装済み）、`net.c`（E09）、`heap-wasm64.ll`（F11、実装済み）。`format.ll`（D07）・`os.c`・`os-wasi.c`（E08）は D-32 で確定 | 各チケット | 各チケットの承認に従う |
+| ランタイム | `string_scalar.ll`・`string_v128.ll`（PR05）、`string_latin1.ll`（PM03）、`integer.ll`（PM08）、`heap-host.ll`・`heap-counting.ll`（F13、実装済み）、`net.c`（E09、実装済み）、`heap-wasm64.ll`（F11、実装済み）。`format.ll`（D07）・`os.c`・`os-wasi.c`（E08）は D-32 で確定 | 各チケット | 各チケットの承認に従う |
 
 新しい `.ll` を足すときは §2.2 の `.gitignore` の例外行と `scripts/check-runtime-includes.sh` を忘れない。
 Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の `Trap`・`TrapInfo` など）は、承認のときに割り当てる。

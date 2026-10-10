@@ -632,7 +632,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
-    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net) && action != Action::Build {
+    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net)
+        && action != Action::Build
+    {
         return Err("--wasm-feature is only valid with build".into());
     }
     if wasm_host.is_some() && action != Action::Build {
