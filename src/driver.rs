@@ -193,6 +193,17 @@ pub(crate) const ASYNC_NATIVE_SUPPORTED: bool =
     cfg!(any(target_os = "macos", target_os = "linux", windows));
 pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
     "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
+/// Why wasm output cannot reach the sockets of the standard Net module (E09).
+pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, build with --wasm-feature jspi --wasm-feature net and load the module with the generated JavaScript bindings on Node.js, or keep to Net address parsing, which needs no host";
+/// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on: POSIX sockets on macOS
+/// and Linux, Winsock on Windows.
+pub(crate) const NET_NATIVE_SUPPORTED: bool =
+    cfg!(any(target_os = "macos", target_os = "linux", windows));
+/// Why a build for another host cannot reach the Net sockets.
+pub(crate) const NET_NATIVE_MESSAGE: &str =
+    "the Net socket API is only available on macOS, Linux, and Windows; build on one of them";
+/// Why a program that starts a Net async operation needs the reactor of `Async.block_on` natively.
+pub(crate) const NET_ASYNC_MESSAGE: &str = "the Net async operations (connect_async, accept_async, read_async, ...) complete through the reactor of Async.block_on; run the computation with Async.block_on";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -216,6 +227,15 @@ pub enum Emit {
     Header,
     Wasm,
     Wgsl,
+    /// `--emit wgsl-relaxed` (F09): the WGSL of a kernel whose floating-point operations follow
+    /// WGSL's freedoms. Its first line names the contract; `Emit::Wgsl` stays strict.
+    WgslRelaxed,
+    /// `--emit spirv` (F09 Phase 3): the Vulkan compute module, a SPIR-V binary, of the one exported
+    /// kernel with the CPU reference's strict semantics. `Gpu.map` on a Vulkan device runs this module.
+    Spirv,
+    /// `--emit spirv-relaxed` (F09 Phase 3): the module of a `Gpu.map_relaxed` kernel, whose
+    /// floating-point operations follow the device's own rules.
+    SpirvRelaxed,
     /// `--emit bindings-js` (E13): a JavaScript module with TypeScript declarations for a wasm32
     /// module of the same sources.
     BindingsJs,
@@ -230,6 +250,22 @@ pub enum Emit {
 }
 
 impl Emit {
+    /// WGSL output, strict or relaxed (F09).
+    pub fn is_wgsl(self) -> bool {
+        matches!(self, Self::Wgsl | Self::WgslRelaxed)
+    }
+
+    /// SPIR-V output, strict or relaxed (F09 Phase 3).
+    pub fn is_spirv(self) -> bool {
+        matches!(self, Self::Spirv | Self::SpirvRelaxed)
+    }
+
+    /// The kernel of the one exported function as WGSL or SPIR-V, which needs no target, CPU, or
+    /// tool options.
+    pub fn is_kernel(self) -> bool {
+        self.is_wgsl() || self.is_spirv()
+    }
+
     /// The host bindings that come from the sources alone, without LLVM (E13).
     pub fn is_bindings(self) -> bool {
         matches!(
@@ -270,6 +306,12 @@ pub struct BuildOptions {
     pub wasm_threads: bool,
     /// `--wasm-feature jspi`: `Async.block_on` waits through JavaScript Promise Integration (B08).
     pub wasm_jspi: bool,
+    /// `--wasm-feature webgpu`: `Gpu.request Gpu.WebGpu` and the kernels on that device call the
+    /// JSPI imports `tsuzuri_gpu.open` and `tsuzuri_gpu.run` (F09 Phase 2).
+    pub wasm_webgpu: bool,
+    /// `--wasm-feature net`: the Net sockets are imports of `tsuzuri_net`, which the generated
+    /// JavaScript bindings implement on Node.js (E09 Phase 3).
+    pub wasm_net: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -298,6 +340,8 @@ impl Default for BuildOptions {
             wasm_simd: false,
             wasm_threads: false,
             wasm_jspi: false,
+            wasm_webgpu: false,
+            wasm_net: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -311,7 +355,7 @@ impl Default for BuildOptions {
 
 impl BuildOptions {
     pub fn validate(self) -> Result<(), Diagnostic> {
-        if self.emit == Emit::Wgsl
+        if self.emit.is_kernel()
             && (self.target != Target::Native
                 || self.cpu != Cpu::Generic
                 || self.debug_info
@@ -319,11 +363,17 @@ impl BuildOptions {
                 || self.trap_info
                 || self.wasm_simd
                 || self.wasm_threads
-                || self.wasm_jspi)
+                || self.wasm_jspi
+                || self.wasm_webgpu
+                || self.wasm_net)
         {
             return Err(driver_error(
                 "E2000",
-                "WGSL output does not use target, CPU, debug, or WASM feature options",
+                if self.emit.is_spirv() {
+                    "SPIR-V output does not use target, CPU, debug, or WASM feature options"
+                } else {
+                    "WGSL output does not use target, CPU, debug, or WASM feature options"
+                },
             ));
         }
         if self.emit.is_bindings() {
@@ -357,6 +407,45 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ));
+        }
+        if self.wasm_webgpu
+            && (self.target != Target::Wasm32
+                || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs",
+            ));
+        }
+        if self.wasm_webgpu && (self.wasm_threads || self.wasm_host.is_some()) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration",
+            ));
+        }
+        if self.wasm_net
+            && (self.target != Target::Wasm32
+                || !matches!(
+                    self.emit,
+                    Emit::Wasm | Emit::Object | Emit::Llvm | Emit::BindingsJs
+                ))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net requires wasm32 object, LLVM IR, WASM, or JavaScript bindings output",
+            ));
+        }
+        if self.wasm_net && !self.wasm_jspi {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net requires --wasm-feature jspi: a blocking socket call suspends the WebAssembly stack with JavaScript Promise Integration while the host works",
+            ));
+        }
+        if self.wasm_net && (self.wasm_threads || self.wasm_host.is_some()) {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature net cannot be combined with --wasm-feature threads or --wasm-host",
             ));
         }
         if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
@@ -549,7 +638,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Host
-            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+            && (self.emit.is_kernel() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -557,7 +646,7 @@ impl BuildOptions {
             ));
         }
         if self.allocator == llvm::Allocator::Counting
-            && matches!(self.emit, Emit::Executable | Emit::Wgsl)
+            && (self.emit.is_kernel() || self.emit == Emit::Executable)
         {
             return Err(driver_error(
                 "E2000",
@@ -620,7 +709,8 @@ impl BuildOptions {
             Emit::Llvm => "ll",
             Emit::Header => "h",
             Emit::Wasm => "wasm",
-            Emit::Wgsl => "wgsl",
+            Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
+            Emit::Spirv | Emit::SpirvRelaxed => "spv",
             Emit::Shared if cfg!(windows) => "dll",
             Emit::Shared if cfg!(target_os = "macos") => "dylib",
             Emit::Shared => "so",
@@ -2329,13 +2419,15 @@ fn build_complete(
     let mut trap_sites = Vec::new();
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
+    let mut spirv = None;
     let mut text = if options.emit == Emit::Header {
         if options.trap_return {
             llvm::header_with(module, true)
         } else {
             llvm::header_with_allocator(module, options.allocator)
         }
-    } else if options.emit == Emit::Wgsl {
+    } else if options.emit.is_kernel() {
         let exports: Vec<_> = module
             .functions
             .iter()
@@ -2346,10 +2438,26 @@ fn build_complete(
         if exports.len() != 1 {
             return Err(driver_error(
                 "E2004",
-                "WGSL output requires exactly one exported scalar kernel; use a dedicated source project",
+                if options.emit.is_spirv() {
+                    "SPIR-V output requires exactly one exported scalar kernel; use a dedicated source project"
+                } else {
+                    "WGSL output requires exactly one exported scalar kernel; use a dedicated source project"
+                },
             ));
         }
-        crate::gpu::extract_kernel(module, exports[0])?.wgsl()?
+        let kernel = crate::gpu::extract_kernel(module, exports[0])?;
+        match options.emit {
+            Emit::WgslRelaxed => kernel.wgsl_relaxed()?,
+            Emit::Spirv => {
+                spirv = Some(kernel.spirv()?.bytes());
+                String::new()
+            }
+            Emit::SpirvRelaxed => {
+                spirv = Some(kernel.spirv_relaxed()?.bytes());
+                String::new()
+            }
+            _ => kernel.wgsl()?,
+        }
     } else {
         let emission = llvm::EmitOptions {
             entry: if options.emit == Emit::Executable {
@@ -2434,7 +2542,7 @@ fn build_complete(
     };
     if cfg!(windows)
         && options.target == Target::Native
-        && !matches!(options.emit, Emit::Header | Emit::Wgsl)
+        && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
         text = llvm::windows_abi(text, module);
         if options.debug_info && msvc_linker() {
@@ -2446,12 +2554,18 @@ fn build_complete(
         if options.wasm_host == Some(WasmHost::Wasi) {
             text = llvm::with_wasi_host(&text);
         }
+        if options.wasm_net {
+            text = llvm::with_net_imports(&text);
+        }
         if options.wasm_simd {
             text.insert_str(
                 0,
                 "; wasm-feature: simd128; compile this IR with -msimd128\n",
             );
         }
+        // The GPU runtime functions are JSPI imports under `--wasm-feature webgpu` and report
+        // "unavailable" without it, so the default module has no import (F09 Phase 2).
+        text = llvm::with_wasm_gpu_host(text, options.wasm_webgpu);
         text.push_str(include_str!("runtime/wasm.ll"));
     }
     let task_runtime =
@@ -2463,6 +2577,17 @@ fn build_complete(
             .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    // The sockets of the standard Net module are src/runtime/net.c (E09).
+    let net_runtime = llvm::uses_net(&text);
+    // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c, and `Gpu.Vulkan` and
+    // `Gpu.Auto` add the Vulkan backend of src/runtime/gpu-vulkan.c to it (F09 Phases 2 and 3).
+    let gpu_runtime =
+        options.target == Target::Native && text.contains("declare i32 @tsuzuri_gpu_");
+    let gpu_source = if gpu_runtime {
+        llvm::gpu_runtime_source(&text)
+    } else {
+        String::new()
+    };
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
     let async_reactor = llvm::uses_reactor(&text);
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
@@ -2485,9 +2610,13 @@ fn build_complete(
             text.as_str()
         };
         if let Some((_, feature)) = [
+            ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
+            ("declare i32 @tsuzuri_channel_send(", "Channel"),
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
+            ("@tsuzuri_net_", "the Net socket API"),
+            ("declare i32 @tsuzuri_gpu_", "GPU devices"),
             ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
@@ -2524,8 +2653,9 @@ fn build_complete(
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
+        || gpu_runtime
         || (options.target == Target::Native
-            && (io_runtime || os_runtime || arguments_runtime || async_reactor));
+            && (io_runtime || os_runtime || net_runtime || arguments_runtime || async_reactor));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
@@ -2548,6 +2678,25 @@ fn build_complete(
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
         return Err(driver_error("E2000", OS_WASM_MESSAGE));
+    }
+    if net_runtime && options.target.is_wasm() && !options.wasm_net {
+        return Err(driver_error("E2000", NET_WASM_MESSAGE));
+    }
+    // The poller completes an async operation through the reactor's mailbox, which exists only in `Async.block_on`.
+    // On WebAssembly the host completes it with `tsuzuri_async_complete`.
+    if net_runtime
+        && options.target == Target::Native
+        && llvm::uses_net_async(&text)
+        && !async_reactor
+    {
+        return Err(driver_error("E2000", NET_ASYNC_MESSAGE));
+    }
+    if net_runtime
+        && !NET_NATIVE_SUPPORTED
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
+    {
+        return Err(driver_error("E2002", NET_NATIVE_MESSAGE));
     }
     if async_reactor
         && !ASYNC_NATIVE_SUPPORTED
@@ -2629,8 +2778,13 @@ fn build_complete(
     if pdb.is_some() {
         cache_paths.insert("pdb".into(), staged_pdb.clone());
     }
-    // The cache key does not cover the contents of link inputs, so a build with them is never cached.
-    let cache = if options.cache && options.emit != Emit::Header && links.is_empty() {
+    // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
+    // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    let cache = if options.cache
+        && options.emit != Emit::Header
+        && !options.emit.is_spirv()
+        && links.is_empty()
+    {
         let prepared = (|| -> io::Result<_> {
             let root = crate::cache::default_root()
                 .ok_or_else(|| io::Error::other("no cache directory is configured"))?;
@@ -2679,8 +2833,10 @@ fn build_complete(
         {
             messages.push(format!("build cache cleanup failed: {error}"));
         }
-    } else if matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
+    } else if matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_wgsl() {
         fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
+    } else if let Some(module) = spirv {
+        fs::write(&artifact, module).map_err(|error| io_error("write output", &artifact, error))?;
     } else {
         // The C names that a shared library exports, read from the IR before it is written.
         let shared_symbols = (options.emit == Emit::Shared)
@@ -2695,10 +2851,16 @@ fn build_complete(
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
-                "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-                // The feature macros of os.c must precede every include, so it comes first.
+                "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                // The feature macros of os.c and net.c are the same and must precede every include, so
+                // they come first.
                 if os_runtime && options.target == Target::Native {
                     include_str!("runtime/os.c")
+                } else {
+                    ""
+                },
+                if net_runtime && options.target == Target::Native {
+                    include_str!("runtime/net.c")
                 } else {
                     ""
                 },
@@ -2707,6 +2869,7 @@ fn build_complete(
                 } else {
                     ""
                 },
+                gpu_source,
                 if trap_runtime {
                     include_str!("runtime/trap.c")
                 } else {
@@ -2740,7 +2903,9 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(native_compile_args(cfg!(windows), env::consts::ARCH))
                 .arg(format!("-O{}", options.optimization));
-            if (task_runtime || trap_runtime || async_reactor) && !cfg!(windows) {
+            if (task_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
+                && !cfg!(windows)
+            {
                 runtime.arg("-pthread");
             }
             if trap_runtime {
@@ -2930,8 +3095,16 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if task_runtime && !cfg!(windows) {
+            if (task_runtime || net_runtime) && !cfg!(windows) {
                 clang.arg("-pthread");
+            }
+            // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
+            if gpu_runtime && cfg!(target_os = "linux") {
+                clang.args(["-pthread", "-ldl"]);
+            }
+            // The runtime also asks for it with a default-library request, which not every linker honors.
+            if net_runtime && cfg!(windows) {
+                clang.arg("-lws2_32");
             }
         }
         if stack_runtime && dwarf_sidecar.is_none() {
@@ -2986,8 +3159,11 @@ fn build_complete(
             linker.arg(&object).args(["-g", "-lm"]);
             if native_runtime {
                 linker.arg(&runtime_object);
-                if task_runtime {
+                if task_runtime || net_runtime {
                     linker.arg("-pthread");
+                }
+                if gpu_runtime && cfg!(target_os = "linux") {
+                    linker.args(["-pthread", "-ldl"]);
                 }
             }
             if stack_runtime {
@@ -3099,6 +3275,7 @@ fn build_complete(
             if llvm::uses_host_abi(module)
                 || io_runtime
                 || os_runtime
+                || (options.wasm_net && net_runtime)
                 || options.allocator == llvm::Allocator::Counting
             {
                 linker.args([
@@ -3262,6 +3439,10 @@ fn link_shared(
     linker.args(["-x", "none"]).arg(object);
     if let Some(runtime) = runtime {
         linker.arg(runtime).arg("-pthread");
+        // The runtime may load a WebGPU library with dlopen, which older glibc keeps in libdl.
+        if cfg!(target_os = "linux") {
+            linker.arg("-ldl");
+        }
     }
     linker.arg("-lm");
     links.add_to(&mut linker);
@@ -3323,6 +3504,11 @@ fn build_bindings(
         Emit::BindingsCs => crate::bindings::csharp(module, stem, options.trap_return),
         Emit::BindingsPy => crate::bindings::python(module, stem, options.trap_return),
         Emit::BindingsCpp => crate::bindings::cpp(module, stem, options.trap_return),
+        // A module that reaches no socket has no `tsuzuri_net` import and exports no allocator for one, so it gets the glue
+        // of `--wasm-feature jspi` alone, which needs no Node.js modules.
+        _ if options.wasm_net && crate::llvm::reaches_net(module) => {
+            crate::bindings::javascript_with_net(module)
+        }
         _ => crate::bindings::javascript_for(module, flavor),
     };
     fs::write(&artifact, text).map_err(|error| io_error("write output", &artifact, error))?;
@@ -4612,6 +4798,9 @@ mod tests {
             (Target::Native, Emit::Object, memory, None, limit),
             (Target::Native, Emit::Llvm, memory, None, limit),
             (Target::Native, Emit::Wgsl, memory, None, limit),
+            (Target::Native, Emit::WgslRelaxed, memory, None, limit),
+            (Target::Native, Emit::Spirv, memory, None, limit),
+            (Target::Native, Emit::SpirvRelaxed, memory, None, limit),
             (Target::Wasm32, Emit::Header, memory, None, limit),
             (Target::Wasm64, Emit::Header, memory, None, limit),
             (Target::Native, Emit::Executable, None, stack, size),
@@ -4679,6 +4868,9 @@ mod tests {
         for (target, emit) in [
             (Target::Native, Emit::Executable),
             (Target::Native, Emit::Wgsl),
+            (Target::Native, Emit::WgslRelaxed),
+            (Target::Native, Emit::Spirv),
+            (Target::Native, Emit::SpirvRelaxed),
             (Target::Wasm32, Emit::Object),
             (Target::Wasm32, Emit::Llvm),
             (Target::Wasm32, Emit::Wasm),
@@ -4687,7 +4879,7 @@ mod tests {
             let error = options(target, emit).validate().unwrap_err();
             assert_eq!(error.code, "E2000", "{target:?} {emit:?}");
             assert!(
-                error.message == message || emit == Emit::Wgsl,
+                error.message == message || emit.is_kernel(),
                 "{target:?} {emit:?}: {}",
                 error.message
             );

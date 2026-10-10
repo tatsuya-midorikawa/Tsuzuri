@@ -1,0 +1,180 @@
+/// A row-major matrix in one contiguous buffer: element (row, col) is data[row * cols + col].
+/// Invariants: rows >= 0, cols >= 0, rows * cols <= i64::MAX, data.length == rows * cols.
+record Matrix<'a> { rows: i64, cols: i64, data: ['a] }
+
+private def checked_count :: i64 -> i64 -> i64
+fn checked_count rows cols =
+    assert (rows >= 0 && cols >= 0 && (cols == 0 || rows <= 9223372036854775807 / cols))
+    rows * cols
+
+/// Takes a row-major array without copying; traps unless its length is rows * cols.
+def of_array :: i64 -> i64 -> ['a] -> Matrix<'a>
+fn of_array rows cols values =
+    assert (values.length == checked_count rows cols)
+    Matrix { rows: rows, cols: cols, data: values }
+
+/// Calls `initializer row col` once per element in row-major order.
+def init :: i64 -> i64 -> (i64 -> i64 -> 'a) -> Matrix<'a>
+fn init rows cols initializer =
+    let count = checked_count rows cols
+    Matrix { rows: rows, cols: cols, data: new ['a](count, index -> initializer (index / cols) (index % cols)) }
+
+/// The number of rows.
+def rows :: ref Matrix<'a> -> i64
+fn rows matrix = matrix.rows
+
+/// The number of columns.
+def cols :: ref Matrix<'a> -> i64
+fn cols matrix = matrix.cols
+
+/// Borrows one element; traps when the row or the column is out of range.
+def at :: ref Matrix<'a> -> i64 -> i64 -> ref 'a
+fn at matrix row col =
+    assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
+    ref matrix.data[row * matrix.cols + col]
+
+/// Copies one element, or `None` when the row or the column is out of range.
+def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>
+fn get matrix row col =
+    if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
+    else Maybe.Some matrix.data[row * matrix.cols + col]
+
+/// Borrows one row as a slice without copying; traps when the row is out of range.
+def row :: ref Matrix<'a> -> i64 -> ref ['a]
+fn row matrix index =
+    assert (index >= 0 && index < matrix.rows)
+    let start = index * matrix.cols
+    ref matrix.data[start .. start + matrix.cols]
+
+/// Borrows all elements in row-major order.
+def as_array :: ref Matrix<'a> -> ref ['a]
+fn as_array matrix = ref matrix.data
+
+/// Consumes the matrix and returns its row-major buffer without copying.
+def to_array :: Matrix<'a> -> ['a]
+fn to_array matrix = matrix.data
+
+/// Consumes the matrix and replaces one element in place; traps when the row or the column is out of range.
+def set :: Matrix<'a> -> i64 -> i64 -> 'a -> Matrix<'a>
+fn set matrix row col value =
+    assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
+    let index = row * matrix.cols + col
+    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.set matrix.data index value }
+
+/// Applies `transform` to every element in row-major order.
+def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
+fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map transform (ref matrix.data) }
+
+/// Folds the elements left to right in row-major order.
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state
+fn fold folder initial matrix = Array.fold folder initial (ref matrix.data)
+
+/// Returns a new cols x rows matrix whose element (j, i) is the input element (i, j).
+def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
+fn transpose matrix =
+    let out_rows = matrix.cols
+    let out_cols = matrix.rows
+    Matrix { rows: out_rows, cols: out_cols, data: new ['a](matrix.data.length, index -> matrix.data[(index % out_cols) * out_rows + index / out_cols]) }
+
+/// Element-wise sum; traps unless both shapes are equal.
+def add :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn add left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, index -> left.data[index] + right.data[index]) }
+
+// Adds the product rows `first ..` into `out`, which holds whole output rows of `cols` elements and
+// starts at +0. Every element of `out` is updated only by `out + (a * b)` with k ascending, so its
+// sequence of roundings equals the textbook sum from +0 over k; only the order in which different
+// output elements are visited changes. Each inner loop runs over one row of `right`, so its lanes are
+// independent and the optimizer can vectorize it without reordering any sum. The row of `left` is
+// sliced first: with `left[base + k]` the optimizer guarded the vector loop with an overlap test
+// built from the array lengths, and the out-of-line kernel ran at half speed whenever it failed.
+private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> ref mut ['a..] -> unit
+fn multiply_rows left right inner cols first out =
+    for r in 0i64 .. (out.length / cols - 1) do
+        let row = ref mut out[r * cols .. r * cols + cols]
+        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        for k in 0i64 .. (line.length - 1) do
+            let a = line[k]
+            let source = ref right[k * cols .. k * cols + cols]
+            for j in 0i64 .. (row.length - 1) do
+                let value = row[j] + a * source[j]
+                Array.write row j value
+
+// The same loops with one explicit fused multiply-add per step: out = fma(a, b, out).
+private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> ref mut ['a..] -> unit
+fn fma_rows left right inner cols first out =
+    for r in 0i64 .. (out.length / cols - 1) do
+        let row = ref mut out[r * cols .. r * cols + cols]
+        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        for k in 0i64 .. (line.length - 1) do
+            let a = line[k]
+            let source = ref right[k * cols .. k * cols + cols]
+            for j in 0i64 .. (row.length - 1) do
+                let value = Math.fma a source[j] row[j]
+                Array.write row j value
+
+// A parallel chunk is a run of whole output rows that performs about 2^20 multiply-adds, and at
+// least one row. It depends only on the shape (inner and cols), never on the number of CPUs. A
+// product of at most that many multiply-adds is a single chunk and runs on the calling thread.
+private def rows_per_chunk :: i64 -> i64 -> i64
+fn rows_per_chunk inner cols =
+    let rows = 1048576 / (inner * cols)
+    if rows < 1 then 1 else rows
+
+/// Row-major product. Each element sums k = 0, 1, ... left to right from +0,
+/// rounding every multiply and add separately (no FMA contraction).
+/// Traps unless left.cols == right.rows.
+def mul :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn mul left right =
+    assert (left.cols == right.rows)
+    let count = checked_count left.rows right.cols
+    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    if count > 0 then multiply_rows (ref left.data) (ref right.data) left.cols right.cols 0 (ref mut out)
+    Matrix { rows: left.rows, cols: right.cols, data: out }
+
+/// Product with one explicit fused multiply-add per step: each element is fma(a, b, total) with k
+/// ascending from +0 (the order of `Array.dot_fma`). The bits differ from `mul`.
+/// Traps unless left.cols == right.rows.
+def mul_fma :: Float<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn mul_fma left right =
+    assert (left.cols == right.rows)
+    let count = checked_count left.rows right.cols
+    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    if count > 0 then fma_rows (ref left.data) (ref right.data) left.cols right.cols 0 (ref mut out)
+    Matrix { rows: left.rows, cols: right.cols, data: out }
+
+/// `mul` computed by several threads. The rows are split into chunks that depend only on the shape,
+/// and every element is computed exactly as in `mul`, so the result has the same bits for any number
+/// of threads. A product of more than one chunk copies both operands once so that the threads can
+/// share them; a single chunk runs on the calling thread without copying.
+def mul_parallel :: (Numeric<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn mul_parallel left right =
+    assert (left.cols == right.rows)
+    let count = checked_count left.rows right.cols
+    let inner = left.cols
+    let cols = right.cols
+    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    if count > 0 && inner > 0 then
+        if left.rows <= rows_per_chunk inner cols then multiply_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
+        else
+            let shared_left = Arc.new (Array.copy (ref left.data))
+            let shared_right = Arc.new (Array.copy (ref right.data))
+            Parallel.for_each_chunk (rows_per_chunk inner cols * cols) (\start chunk -> multiply_rows (Arc.get (ref shared_left)) (Arc.get (ref shared_right)) inner cols (start / cols) chunk) (ref mut out)
+    Matrix { rows: left.rows, cols: cols, data: out }
+
+/// `mul_fma` computed by several threads, with the chunking and the sharing of `mul_parallel`.
+def mul_fma_parallel :: (Float<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn mul_fma_parallel left right =
+    assert (left.cols == right.rows)
+    let count = checked_count left.rows right.cols
+    let inner = left.cols
+    let cols = right.cols
+    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    if count > 0 && inner > 0 then
+        if left.rows <= rows_per_chunk inner cols then fma_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
+        else
+            let shared_left = Arc.new (Array.copy (ref left.data))
+            let shared_right = Arc.new (Array.copy (ref right.data))
+            Parallel.for_each_chunk (rows_per_chunk inner cols * cols) (\start chunk -> fma_rows (Arc.get (ref shared_left)) (Arc.get (ref shared_right)) inner cols (start / cols) chunk) (ref mut out)
+    Matrix { rows: left.rows, cols: cols, data: out }

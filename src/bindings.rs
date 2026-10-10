@@ -28,6 +28,10 @@ const RUNTIME_CORE: &str = include_str!("runtime/bindings-core.mjs");
 const RUNTIME_SINGLE: &str = include_str!("runtime/bindings.mjs");
 /// The `load` of a thread pool on Web Workers (`--wasm-feature threads`).
 const RUNTIME_THREADS: &str = include_str!("runtime/bindings-threads.mjs");
+/// The Node modules behind the sockets of `--wasm-feature net`, before the runtime (E09 Phase 3).
+const RUNTIME_NET_HOST: &str = include_str!("runtime/bindings-net-host.mjs");
+/// The `tsuzuri_net` imports of `--wasm-feature net`, inside the runtime's `bind`.
+const RUNTIME_NET: &str = include_str!("runtime/bindings-net.mjs");
 
 /// Which JavaScript glue `--emit bindings-js` writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,6 +337,70 @@ pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
     )
 }
 
+/// The sockets of a module of `--wasm-feature net` (E09 Phase 3), which the glue implements on Node.js: the table says
+/// so, the Node modules are loaded when the glue loads, `inspect` accepts the `tsuzuri_net` imports, and the instance
+/// gets them beside the clock and the wait of Async.block_on. Only a module that reaches a socket (`llvm::reaches_net`)
+/// has these imports, and the driver gives any other module the glue of its flavor, without the Node modules.
+pub fn javascript_with_net(module: &CheckedModule) -> String {
+    let mut table = table_for(module, JsFlavor::Jspi);
+    table["net"] = json!(true);
+    // The sockets deliver their bytes into the module's memory, through its allocator.
+    table["hostAbi"] = json!(true);
+    let core = splice(
+        RUNTIME_CORE,
+        &[
+            (
+                "    if (namespace === \"tsuzuri_async\") {\n",
+                "    if (namespace === \"tsuzuri_net\" && kind === \"function\" && TABLE.net === true) continue;\n",
+                false,
+            ),
+            (
+                "  // The clock of Async.block_on in milliseconds, and its wait: a promise that settles at the\n",
+                RUNTIME_NET,
+                false,
+            ),
+            (
+                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
+                "    if (TABLE.net === true) object.tsuzuri_net = netImports(owner);\n",
+                true,
+            ),
+        ],
+    );
+    format!(
+        "{}const TABLE = {};\n{}{core}{}",
+        banner("//"),
+        table,
+        lf(RUNTIME_NET_HOST),
+        lf(RUNTIME_SINGLE),
+    )
+}
+
+/// The runtime files are text in the repository. A Windows checkout may give them CRLF line ends (`core.autocrlf`), but
+/// the anchors of `splice` and the generated glue use LF.
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Inserts text before (or, with `after`, behind) each anchor of `source`, which must each occur once.
+fn splice(source: &str, edits: &[(&str, &str, bool)]) -> String {
+    let mut output = lf(source);
+    for (anchor, text, after) in edits {
+        assert_eq!(
+            output.matches(anchor).count(),
+            1,
+            "the bindings runtime has changed: anchor {anchor:?} is not unique"
+        );
+        let text = lf(text);
+        let replacement = if *after {
+            format!("{anchor}{text}")
+        } else {
+            format!("{text}{anchor}")
+        };
+        output = output.replacen(anchor, &replacement, 1);
+    }
+    output
+}
+
 /// The TypeScript type of `ty`. `input` is the direction from JavaScript into the module: export
 /// arguments, import results and callback arguments; `borrow` admits `Borrowed` buffers for slices.
 fn typescript_type(ty: &Type, module: &CheckedModule, input: bool) -> String {
@@ -514,4 +582,41 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
         "export declare function load(source: ArrayBuffer | ArrayBufferView | WebAssembly.Module, {options}): Promise<{bindings}>;"
     );
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lf, splice};
+
+    // The Windows CI checks the repository out with CRLF line ends, so the runtime files that `include_str!` embeds have them.
+    #[test]
+    fn splice_finds_its_anchors_in_a_runtime_with_crlf_line_ends() {
+        let source = "first\r\n    if (x) {\r\nlast\r\n";
+        let before = splice(source, &[("    if (x) {\n", "inserted\r\n", false)]);
+        assert_eq!(before, "first\ninserted\n    if (x) {\nlast\n");
+        let after = splice(source, &[("    if (x) {\n", "inserted\r\n", true)]);
+        assert_eq!(after, "first\n    if (x) {\ninserted\nlast\n");
+        assert_eq!(lf("a\r\nb\nc\r\n"), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn the_net_glue_has_the_same_text_with_either_line_ends() {
+        // The runtime files of the repository, with LF and with CRLF, splice into the same glue.
+        let crlf = super::RUNTIME_CORE
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n");
+        let edits = [
+            (
+                "    if (namespace === \"tsuzuri_async\") {\n",
+                "// net\n",
+                false,
+            ),
+            (
+                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
+                "// bind\n",
+                true,
+            ),
+        ];
+        assert_eq!(splice(super::RUNTIME_CORE, &edits), splice(&crlf, &edits));
+    }
 }

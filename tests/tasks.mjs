@@ -135,6 +135,108 @@ int main(int argc, char **argv) {
       assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: ${operation === "atexit" ? "atexit" : `pthread_${operation}`} failed`));
     }
 
+    // F10: the lock of Mutex.with_lock (exclusion, parking, refusals and the abandonment that a trap
+    // boundary makes), also under the sanitizer that the environment asks for.
+    const locks = join(temporary, `sync-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`, "-pthread", "tests/sync_runtime.c", "-o", locks]);
+    assert.match(execute(locks, []).stdout, /^sync_runtime: .* passed/);
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      const checked = join(temporary, `sync-${sanitizer}-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/sync_runtime.c", "-o", checked]);
+      assert.match(execute(checked, []).stdout, /^sync_runtime: .* passed/);
+    }
+
+    // F10 Phase 2: the channel runtime (waiting, waking, the deadlock verdict, helping) on a pool of
+    // one to four threads, which the test sets because the pool reads the CPU count once.
+    const channels = join(temporary, `channel-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`, "-pthread", "tests/channel_runtime.c", "-o", channels]);
+    for (const threads of ["1", "2", "3", "4"]) {
+      assert.match(execute(channels, [threads]).stdout, /^channel_runtime: \d+ threads passed/);
+    }
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      const checked = join(temporary, `channel-${sanitizer}-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/channel_runtime.c", "-o", checked]);
+      for (const threads of ["1", "2", "4"]) {
+        assert.match(execute(checked, [threads]).stdout, /^channel_runtime: \d+ threads passed/);
+      }
+    }
+
+    // F10 Phase 2: Tsuzuri pipelines between tasks that run at the same time, on pools of one to four
+    // threads. Each size is its own build because the pool reads the CPU count once. A result never
+    // depends on the schedule; an export that needs more threads than there are traps with the
+    // deadlock message instead of hanging, which the one-thread pool shows for every export.
+    const channelIr = join(temporary, `channel-threads-${optimization}.ll`);
+    cli(["build", join(root, "tests/fixtures/channel_threads"), "--emit", "llvm", `-O${optimization}`, "-o", channelIr]);
+    const channelCases = [
+      ["pipeline", [3, 1000], "500500", 2], ["pipeline", [1, 257], String(257 * 258 / 2), 2],
+      ["ping_pong", [2000], "2000002000", 2], ["tokens_across", [200], "200200001", 2],
+      ["three_stages", [500], "250500", 3], ["fan_in", [2, 50, 3], "5050100", 3], ["job_queue", [100, 4], "338350100", 3],
+      // A task that starts a group of its own and then sends what it computed to a task of the outer
+      // group: it completes on every pool size, the one-thread pool included, because the thread that
+      // waits for its group runs that group's items and nothing else (the WASM threads pool follows
+      // the same rule, which tests/wasm_threads.mjs checks with real threads).
+      ["nested_then_send", [2, 2000000], "11999990", 1], ["nested_then_send", [4, 1000000], "11999988", 1],
+    ];
+    const channelTraps = ["leaked_sender", "deadlock_pair"];
+    const channelHost = join(temporary, `channel-host-${optimization}.c`);
+    const prototype = (name, count) => `extern int64_t tz_${name}(${Array(count).fill("int64_t").join(", ") || "void"});`;
+    writeFileSync(channelHost, `
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+${[...new Set(channelCases.map(([name, args]) => prototype(name, args.length))), ...channelTraps.map((name) => prototype(name, 0))].join("\n")}
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    int64_t result = -1;
+    switch (atoi(argv[1])) {
+${channelCases.map(([name, args], index) => `        case ${index}: result = tz_${name}(${args.map((value) => `${value}LL`).join(", ")}); break;`).join("\n")}
+${channelTraps.map((name, index) => `        case ${channelCases.length + index}: result = tz_${name}(); break;`).join("\n")}
+        default: return 2;
+    }
+    printf("%lld\\n", (long long)result);
+    return 0;
+}
+`);
+    const deadlock = /Tsuzuri runtime: deadlock: every task is waiting on a channel/;
+    const exercise = (program, threads) => {
+      for (const [index, [name, , expected, needed]] of channelCases.entries()) {
+        if (threads >= needed) {
+          for (let repeat = 0; repeat < 3; repeat++) {
+            assert.equal(execute(program, [String(index)]).stdout.trim(), expected, `${name} on ${threads} threads`);
+          }
+        } else if (threads === 1 || (name === "three_stages" && threads === 2)) {
+          const trapped = execute(program, [String(index)], false);
+          assert.notEqual(trapped.status, 0, `${name} on ${threads} threads traps`);
+          assert.match(trapped.stderr, deadlock, `${name} on ${threads} threads`);
+        }
+      }
+      for (const [offset, name] of channelTraps.entries()) {
+        const trapped = execute(program, [String(channelCases.length + offset)], false);
+        assert.notEqual(trapped.status, 0, `${name} on ${threads} threads traps`);
+        assert.match(trapped.stderr, deadlock, `${name} on ${threads} threads`);
+      }
+    };
+    for (const threads of [1, 2, 3, 4]) {
+      const program = join(temporary, `channel-threads-${optimization}-${threads}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+        channelHost, channelIr, "src/runtime/task.c", "-pthread", "-lm", "-o", program]);
+      exercise(program, threads);
+    }
+    // The runtime of the pool is the part that the sanitizers instrument here; the generated code only
+    // calls it, so a race in the waiting protocol of a real Tsuzuri pipeline would be reported.
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      for (const threads of [2, 4]) {
+        const checked = join(temporary, `channel-threads-${sanitizer}-${optimization}-${threads}`);
+        execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-Wno-override-module", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+          channelHost, channelIr, "src/runtime/task.c", "-pthread", "-lm", "-o", checked]);
+        exercise(checked, threads);
+      }
+    }
+    console.log(`Tasks -O${optimization}: channel pipelines on 1 to 4 threads complete or trap with the deadlock message`);
+
     const native = join(temporary, `native-${optimization}`);
     execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", "-DTRACKING",
       host, ir, "src/runtime/task.c", "-pthread", "-lm", "-o", native]);

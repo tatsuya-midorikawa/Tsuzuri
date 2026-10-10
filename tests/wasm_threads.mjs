@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
@@ -57,6 +57,18 @@ if (!isMainThread) {
     worker.once("error", reject);
     worker.once("message", (message) => worker.once("exit", code => code === 0 ? resolveWorker(message) : reject(new Error(`worker exit ${code}`))));
   });
+  // Threads that spin until stopped, so that the threads of a pool compete for the CPUs.
+  const startBurners = (count) => {
+    const stop = new Int32Array(new SharedArrayBuffer(4));
+    const burners = Array.from({ length: count }, () => new Worker(
+      "const { workerData } = require('node:worker_threads'); const flag = new Int32Array(workerData); while (Atomics.load(flag, 0) === 0) {}",
+      { eval: true, workerData: stop.buffer },
+    ));
+    return async () => {
+      Atomics.store(stop, 0, 1);
+      await Promise.all(burners.map((burner) => new Promise((resolveBurner) => burner.once("exit", resolveBurner))));
+    };
+  };
   try {
     mkdirSync(join(directory, "frame"));
     const source = join(directory, "frame", "Main.tz");
@@ -254,6 +266,184 @@ fn bulk = {
         await barrierPool.close();
       }
       console.log(`WASM threads O${optimization}: atomic barrier proves 3 participants; bulk callbacks, worker failure, unavailable host and SIMD/debug options passed`);
+      // F10: atomics and the children of a scope on real workers. A lost update or a child that runs
+      // twice or never would change a total, whatever the schedule.
+      const shared = join(directory, `concurrency-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", shared]);
+      const sharedPool = await createThreadPool(readFileSync(shared), { workers: 2 });
+      try {
+        for (const count of [0n, 1n, 4n, 64n, 257n]) {
+          const total = count * (count + 1n) / 2n;
+          assert.equal(sharedPool.call("tz_atomic_counter", count), total);
+          assert.equal(sharedPool.call("tz_atomic_compare_exchange_loop", count), total);
+          assert.equal(sharedPool.call("tz_arc_atomic_tasks", count), total * 1001n);
+        }
+        for (const count of [0n, 1n, 3n, 64n]) assert.equal(sharedPool.call("tz_atomic_contended", count), count * 1000n);
+        // Mutex: a read-modify-write under the lock loses no update between workers, whatever the schedule.
+        for (const count of [0n, 1n, 2n, 3n, 64n]) assert.equal(sharedPool.call("tz_mutex_contended", count), count * 1000n);
+        for (const count of [0n, 1n, 4n, 64n, 257n]) {
+          assert.equal(sharedPool.call("tz_mutex_total", count), count * count);
+          assert.equal(sharedPool.call("tz_mutex_owned_array", count), count * count);
+          assert.equal(sharedPool.call("tz_arc_mutex_tasks", count), count * (count + 1n) / 2n * 1000n + 1n);
+          assert.equal(sharedPool.call("tz_mutex_twice", count), count * 20n);
+        }
+        for (const count of [0n, 1n, 2n, 1000n]) {
+          let checksum = 0n;
+          for (let position = 0n; position < count; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
+          assert.equal(sharedPool.call("tz_scope_results_order", count), checksum);
+        }
+        // What sleeps on the epoch waits for new work, the end of a group, a channel or a lock, so an
+        // item that is done while others of its group still run wakes nobody: the epoch moves a few
+        // times for a group of any size, not once for each of its items.
+        const epochAddress = sharedPool.instance.exports.tsuzuri_threads_control() >>> 0;
+        const epoch = () => Atomics.load(new Int32Array(sharedPool.memory.buffer, epochAddress, 7), 1);
+        const startedAt = epoch();
+        assert.equal(sharedPool.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
+        assert.ok(epoch() - startedAt <= 8, `the epoch moved ${epoch() - startedAt} times for the 5,000 children of one scope`);
+        assert.equal(sharedPool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
+      } finally {
+        await sharedPool.close();
+      }
+      console.log(`WASM threads O${optimization}: Atomic, Mutex and Task.scope on 2 workers lose no update and run every child once`);
+      // A critical section never waits, so a nested lock and parallel work inside one are refused on
+      // the workers too. A trap stops the whole pool, so each case has a pool of its own.
+      for (const name of ["mutex_nested", "mutex_parallel_inside"]) {
+        const refused = await createThreadPool(readFileSync(shared), { workers: 2 });
+        try {
+          assert.throws(() => refused.call(`tz_${name}`), WebAssembly.RuntimeError, name);
+        } finally {
+          await refused.close();
+        }
+      }
+      console.log(`WASM threads O${optimization}: a nested Mutex.with_lock and parallel work inside one trap`);
+      // F10 Phase 2: channels between tasks that run at the same time, on 2 to 4 threads. The tasks
+      // that wait on each other need a thread each, so the exports that need 3 are run from 3 up.
+      const piped = join(directory, `channel-threads-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/channel_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", piped]);
+      const pipedBytes = readFileSync(piped);
+      // What nested_then_send returns: `parts` sums of index % 7 over the n indexes below n.
+      const nestedSum = (parts, n) => parts * (n / 7n * 21n + (n % 7n) * ((n % 7n) - 1n) / 2n);
+      const pipelines = [
+        ["pipeline", [3n, 1000n], 500500n, 2], ["pipeline", [1n, 257n], 257n * 258n / 2n, 2],
+        ["ping_pong", [2000n], 2000002000n, 2], ["tokens_across", [200n], 200200001n, 2],
+        ["three_stages", [500n], 250500n, 3], ["fan_in", [2n, 50n, 3n], 5050100n, 3],
+        ["job_queue", [100n, 4n], 338350100n, 3],
+        ["nested_then_send", [2n, 100000n], nestedSum(2n, 100000n), 1], ["nested_then_send", [4n, 100000n], nestedSum(4n, 100000n), 1],
+      ];
+      for (const workers of [1, 2, 3]) {
+        const pool = await createThreadPool(pipedBytes, { workers });
+        try {
+          for (let iteration = 0; iteration < 5; iteration++) {
+            for (const [name, args, expected, needed] of pipelines) {
+              if (workers + 1 >= needed) assert.equal(pool.call(`tz_${name}`, ...args), expected, `${name} on ${workers + 1} threads`);
+            }
+          }
+          // Every channel block, token and Arc was freed: only the stacks of the workers are live.
+          assert.equal(pool.call("tsuzuri_thread_heap_live_bytes"), BigInt(workers) * (262144n + 16n));
+        } finally {
+          await pool.close();
+        }
+      }
+      // The least that a pipeline needs is a thread for each stage. A thread that waits on a channel
+      // helps with an item that nobody has started only when no worker is free to take it, and the
+      // thread that started the group has taken its first item under the lock that publishes it.
+      // With every CPU busy, a worker can be late to its first item, which a fresh pool makes likely;
+      // the third stage must not be stacked on the second then, because it would wait for the stage
+      // below it.
+      const stopBurners = startBurners(availableParallelism());
+      try {
+        for (let round = 0; round < 8; round++) {
+          const crowded = await createThreadPool(pipedBytes, { workers: 2 });
+          try {
+            for (let call = 0; call < 4; call++) {
+              assert.equal(crowded.call("tz_three_stages", 500n), 250500n, `three_stages on 3 threads on a busy machine, round ${round}`);
+            }
+          } finally {
+            await crowded.close();
+          }
+        }
+      } finally {
+        await stopBurners();
+      }
+      console.log(`WASM threads O${optimization}: three stages on the 3 threads that they need complete on a busy machine`);
+      // A task that starts a group of its own and then sends what the group computed to a task of the
+      // outer group (nested_then_send). The thread that waits for the end of the nested group runs
+      // that group's items and no others, as in the native pool, and the group's first item is taken
+      // under the lock that publishes it. A thread that waits for the nested group and takes the
+      // consumer of the outer group instead puts the consumer on top of the producer that must feed
+      // it, and the pool reports a deadlock that the native pool does not have. Which thread is late
+      // depends on the schedule, so the interleaving cannot be forced: the test runs fresh pools of 2
+      // to 4 threads, and 2 threads again with a busy thread on every CPU, and is written to pass on
+      // any schedule. A runtime that let the waiting thread take an item of any group trapped in some
+      // pools of every size here.
+      const nestedPools = async (workers, parts, pools, label) => {
+        for (let round = 0; round < pools; round++) {
+          const fresh = await createThreadPool(pipedBytes, { workers });
+          try {
+            for (let call = 0; call < 4; call++) {
+              assert.equal(fresh.call("tz_nested_then_send", parts, 5000000n), nestedSum(parts, 5000000n), `${label}, pool ${round}, call ${call}`);
+            }
+          } finally {
+            await fresh.close();
+          }
+        }
+      };
+      for (const [workers, parts] of [[1, 2n], [2, 3n], [3, 4n]]) await nestedPools(workers, parts, 10, `nested_then_send on ${workers + 1} threads`);
+      const stopNestedBurners = startBurners(availableParallelism());
+      try {
+        await nestedPools(1, 2n, 12, "nested_then_send on 2 threads on a busy machine");
+      } finally {
+        await stopNestedBurners();
+      }
+      // One thread runs the items of a group in index order, so the producer is done before the consumer starts.
+      const single = await createThreadPool(pipedBytes, { workers: 0 });
+      try {
+        assert.equal(single.call("tz_nested_then_send", 2n, 100000n), nestedSum(2n, 100000n));
+      } finally {
+        await single.close();
+      }
+      console.log(`WASM threads O${optimization}: a task that starts a group and then feeds a task of the outer group completes on 1 to 4 threads`);
+      // With every thread waiting on a channel, no thread can ever send: a trap instead of a hang,
+      // however many threads there are. The pipelines that need more threads than there are trap too.
+      for (const [name, args, workers] of [["leaked_sender", [], 0], ["leaked_sender", [], 1], ["leaked_sender", [], 3],
+        ["deadlock_pair", [], 0], ["deadlock_pair", [], 1], ["deadlock_pair", [], 2], ["deadlock_pair", [], 3],
+        ["pipeline", [3n, 1000n], 0], ["ping_pong", [100n], 0], ["three_stages", [500n], 1]]) {
+        const stuck = await createThreadPool(pipedBytes, { workers });
+        try {
+          assert.throws(() => stuck.call(`tz_${name}`, ...args), WebAssembly.RuntimeError, `${name} on ${workers + 1} threads`);
+          assert.throws(() => stuck.call("tz_pipeline", 3n, 10n), /failed/);
+        } finally {
+          await stuck.close();
+        }
+      }
+      console.log(`WASM threads O${optimization}: pipelines, fan-in, job queue and ping-pong on 2 to 4 threads, drops once, and deadlocks trap`);
+      // The single-task exports of the channel suite on a pool, and the refusals inside a lock.
+      const sequential = join(directory, `channel-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/channel/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", sequential]);
+      const sequentialBytes = readFileSync(sequential);
+      const channelPool = await createThreadPool(sequentialBytes, { workers: 2 });
+      try {
+        for (const n of [1n, 10n, 257n]) assert.equal(channelPool.call("tz_roundtrip", n), n * (n + 1n) / 2n);
+        assert.equal(channelPool.call("tz_fifo"), 123456n);
+        assert.equal(channelPool.call("tz_closed"), 123000n);
+        assert.equal(channelPool.call("tz_cloned"), 50n);
+        assert.equal(channelPool.call("tz_text"), 54n);
+        assert.equal(channelPool.call("tz_tokens", 7n), 7011n);
+        assert.equal(channelPool.call("tz_nested"), 0n);
+        // No group ran, so the pool never started: nothing at all is live (no leak, no worker stack).
+        assert.equal(channelPool.call("tsuzuri_thread_heap_live_bytes"), 0n);
+      } finally {
+        await channelPool.close();
+      }
+      for (const name of ["bounded_zero", "bounded_negative", "full_deadlock", "empty_deadlock", "send_inside_lock", "recv_inside_lock"]) {
+        const trapped = await createThreadPool(sequentialBytes, { workers: 2 });
+        try {
+          assert.throws(() => trapped.call(`tz_${name}`), WebAssembly.RuntimeError, name);
+        } finally {
+          await trapped.close();
+        }
+      }
+      console.log(`WASM threads O${optimization}: the Channel exports of one task and the refusals inside a lock`);
       const object = join(directory, `threads-${optimization}.o`);
       const linked = join(directory, `linked-${optimization}.wasm`);
       cli(["build", source, "--target", "wasm32", "--emit", "object", "--wasm-feature", "threads", `-O${optimization}`, "-o", object]);

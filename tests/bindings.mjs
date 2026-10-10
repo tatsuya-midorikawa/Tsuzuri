@@ -419,6 +419,15 @@ try {
   const wide = join(root, "wide.wasm");
   run(["build", fixture, "--target", "wasm64", "-o", wide]);
   await assert.rejects(load(readFileSync(wide), { imports: hostImports }), { message: "bindings support wasm32 modules only; build the .wasm with --target wasm32" });
+  // The scan for a 64-bit memory skips every import name by its length byte and its characters. It once dropped the length
+  // byte, so a valid wasm32 module with these nine imports read as a wide one (a program with connect_async, read_async,
+  // and Net.error_kind failed to load) and a rename of an extern made it load. The module is not the fixture's, so the
+  // glue refuses it for its imports, and for nothing else.
+  const looked = [["em7", ".8"], ["hj4", "_"], ["_q", "ec."], ["v65", "apf"], ["1", "h"], ["y.q", "hp"], ["p7", "p"], ["75", "82q"], ["p", ".td"]];
+  const importSection = [looked.length, ...looked.flatMap(([namespace, name]) => [namespace.length, ...Buffer.from(namespace), name.length, ...Buffer.from(name), 0, 0])];
+  const looking = Uint8Array.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, importSection.length, ...importSection]);
+  assert.ok(WebAssembly.validate(looking));
+  await assert.rejects(load(looking, { imports: hostImports }), { name: "Error", message: "module does not match bindings: unexpected import 'em7..8'; regenerate the bindings from the same sources" });
   await assert.rejects(load("not a module"), TypeError);
 
   const point = join(root, "point");
@@ -454,7 +463,7 @@ try {
 
   // The command line: invalid configurations exit with 2, build errors with 1, and nothing is written.
   const out = join(root, "rejected.mjs");
-  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp");
+  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp");
   rejected(["build", fixture, "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   rejected(["build", fixture, "--target", "wasm64", "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   for (const option of ["--trap-info", "--debug-info", "--debug-output"]) {

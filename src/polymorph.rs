@@ -619,7 +619,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 31] = [
+pub(super) const BUILTIN_CLASSES: [&str; 33] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -651,6 +651,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 31] = [
     "Err",
     "Encode",
     "Decode",
+    "Sync",
+    "AtomicValue",
 ];
 
 impl Classes {
@@ -1605,6 +1607,8 @@ impl Classes {
                             &ty,
                             !instance.constraints.is_empty(),
                             types,
+                            module,
+                            names.origin(module),
                             instance.class.span,
                         )?;
                     }
@@ -2246,7 +2250,7 @@ impl Classes {
         if let Type::Simd(vector) = ty {
             use crate::simd::SimdKind;
             return match self.declarations[class].name.as_str() {
-                "SimdVector" | "Copy" | "Capture" | "Send" => true,
+                "SimdVector" | "Copy" | "Capture" | "Send" | "Sync" => true,
                 "SimdNumeric" | "Add" | "Sub" | "Mul" => vector.kind != SimdKind::Mask,
                 "SimdMask" => vector.kind == SimdKind::Mask,
                 "Div" => vector.kind == SimdKind::Float,
@@ -2270,6 +2274,8 @@ impl Classes {
             "Copy" => ty.is_copy(types),
             "Capture" => ty.can_capture(types),
             "Send" => ty.can_send(types),
+            "Sync" => ty.can_sync(types),
+            "AtomicValue" => matches!(ty, Type::Integer(8 | 16 | 32 | 64, _) | Type::Bool),
             "Display" => {
                 ty.is_numeric()
                     || ty.is_string()
@@ -2332,11 +2338,17 @@ impl Classes {
                     )
                 });
             }
-            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unshareable_arc(types) {
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_unsync_arc(types) {
                 let ty = constraint.ty.display(types);
-                let reason = format!(
-                    "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
-                );
+                let reason = if constraint.ty.holds_host_state(types) {
+                    format!(
+                        "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
+                    )
+                } else {
+                    format!(
+                        "{ty} shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc, and several tasks could then use it at once"
+                    )
+                };
                 return Err(if class == "Capture" {
                     Diagnostic::new(
                         "E1005",
@@ -2354,6 +2366,36 @@ impl Classes {
                         constraint.span,
                     )
                 });
+            }
+            if class == "Capture" && constraint.ty.holds_cell(types) {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "cannot capture {} in a function value; a function value may be copied, and a copy of an Atomic or Mutex would be a separate cell; capture a borrow of it, share it through an Arc, or pass it as an argument",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
+            }
+            if class == "Sync" {
+                return Err(Diagnostic::new(
+                    "E1013",
+                    format!(
+                        "tasks can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between tasks); move the value into one task, or share an Arc of a Sync value",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
+            }
+            if class == "AtomicValue" {
+                return Err(Diagnostic::new(
+                    "E1005",
+                    format!(
+                        "atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for {}",
+                        constraint.ty.display(types)
+                    ),
+                    constraint.span,
+                ));
             }
             if self.declarations[constraint.class].name == "Capture" {
                 return Err(Diagnostic::new(
@@ -2437,19 +2479,34 @@ fn head_constructor(ty: &Type) -> Option<HeadKey> {
 }
 
 /// A `Drop` instance covers every instantiation of a record or union declared in user code, so
-/// whether a type runs a user drop never depends on its type arguments (B07 D1).
+/// whether a type runs a user drop never depends on its type arguments (B07 D1). A std module may
+/// also implement `Drop` for the records and unions that it declares itself, which is how
+/// `Channel.Sender` closes its channel (F10); a program cannot add one to a std type.
 fn validate_drop_instance(
     head: &Type,
     constrained: bool,
     types: &TypeContext<'_>,
+    instance_module: &str,
+    instance_origin: ModuleOrigin,
     span: Span,
 ) -> Result<(), Diagnostic> {
-    let (origin, arguments) = match head {
-        Type::Record(id, arguments) => (types.records[*id].origin, arguments.as_ref()),
-        Type::Union(id, arguments) => (types.unions[*id].origin, arguments.as_ref()),
-        _ => (ModuleOrigin::Std, [].as_slice()),
+    let (origin, name, arguments) = match head {
+        Type::Record(id, arguments) => {
+            let record = &types.records[*id];
+            (record.origin, record.name.as_str(), arguments.as_ref())
+        }
+        Type::Union(id, arguments) => {
+            let union = &types.unions[*id];
+            (union.origin, union.name.as_str(), arguments.as_ref())
+        }
+        _ => (ModuleOrigin::Std, "", [].as_slice()),
     };
-    if origin != ModuleOrigin::User {
+    let own_std_type = instance_origin == ModuleOrigin::Std
+        && origin == ModuleOrigin::Std
+        && name
+            .strip_prefix(instance_module)
+            .is_some_and(|rest| rest.starts_with('.'));
+    if origin != ModuleOrigin::User && !own_std_type {
         return Err(Diagnostic::new(
             "E1016",
             "only records and unions declared in this program can implement Drop",
@@ -2756,6 +2813,28 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::NetResolve
+                | Builtin::NetOpen
+                | Builtin::NetAccept
+                | Builtin::NetRead
+                | Builtin::NetWrite
+                | Builtin::NetClose
+                | Builtin::NetClassify
+                | Builtin::NetWatch
+                | Builtin::NetUnwatch
+                | Builtin::NetConnect
+                | Builtin::NetNames
+                | Builtin::NetSend
+        ) && !(self.module == "Net" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "network primitives are private to the standard Net module; use the Net API instead",
+                span,
+            ));
+        }
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
@@ -2771,6 +2850,21 @@ impl Checker<'_> {
             return Err(Diagnostic::new(
                 "E1022",
                 "the property seed is private to the standard Gen module; set it with tsuzuri test --seed",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
+            Builtin::GpuOpen
+                | Builtin::GpuFeatures
+                | Builtin::GpuRun
+                | Builtin::GpuSelect
+                | Builtin::GpuLast
+        ) && !(self.module == "Gpu" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the GPU runtime primitives are private to the standard Gpu module; request a device with Gpu.request",
                 span,
             ));
         }
@@ -2798,6 +2892,17 @@ impl Checker<'_> {
             return Err(Diagnostic::new(
                 "E1022",
                 "the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
+            Builtin::ChannelCloseSender | Builtin::ChannelCloseReceiver
+        ) && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the channel close primitive is private to the standard Channel module; a Sender or Receiver closes when it is dropped",
                 span,
             ));
         }
@@ -4048,6 +4153,7 @@ pub(super) fn specialize(
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,
+        gpu: module.gpu,
     })
 }
 

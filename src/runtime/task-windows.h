@@ -41,6 +41,12 @@ static inline int pthread_mutex_lock(pthread_mutex_t *mutex) { AcquireSRWLockExc
 static inline int pthread_mutex_unlock(pthread_mutex_t *mutex) { ReleaseSRWLockExclusive(mutex); return 0; }
 static inline int pthread_mutex_destroy(pthread_mutex_t *mutex) { (void)mutex; return 0; }
 static inline int pthread_cond_broadcast(pthread_cond_t *condition) { WakeAllConditionVariable(condition); return 0; }
+static inline int pthread_cond_signal(pthread_cond_t *condition) { WakeConditionVariable(condition); return 0; }
+static inline int pthread_cond_init(pthread_cond_t *condition, const void *attributes) {
+    (void)attributes;
+    InitializeConditionVariable(condition);
+    return 0;
+}
 static inline int pthread_cond_destroy(pthread_cond_t *condition) { (void)condition; return 0; }
 static inline int pthread_cond_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
     if (!SleepConditionVariableSRW(condition, mutex, INFINITE, 0)) tz_windows_fail("SleepConditionVariableSRW");

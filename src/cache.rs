@@ -182,7 +182,7 @@ pub(crate) fn build_key(
         );
     }
     let mut tools = Vec::new();
-    if !matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Wgsl) {
+    if !(matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_kernel()) {
         tools.push(("TSUZURI_CLANG", "clang"));
         if options.emit == Emit::Wasm || options.wasm_threads || options.wasm_host.is_some() {
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));

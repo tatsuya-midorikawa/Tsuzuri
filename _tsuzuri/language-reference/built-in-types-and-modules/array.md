@@ -441,6 +441,9 @@ total=11
 
 - [List](./list.md) — 不変な連結リスト
 - [Vec](./vec.md) — 伸縮可能な所有バッファ
+- [Matrix](./matrix.md) — 行優先の連続バッファの行列。`Matrix.as_array` と `Matrix.of_array` で平らな配列と行き来できます
+- [MatrixView](./matrix-view.md) — 行列や平らな配列を、転置・部分行列・行・列として借りる窓と、排他スライスで書き込める窓
+- [Tensor](./tensor.md) — 形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする借用の窓
 - [Seq](./seq.md) — 遅延シーケンスと明示的な反復
 - [スタックとヒープ](../ownership-and-memory/stack-and-heap.md)
 - [借用と参照](../ownership-and-memory/borrowing.md)

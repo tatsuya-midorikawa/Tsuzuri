@@ -269,7 +269,7 @@ flowchart TD
 | --- | --- |
 | `tsuzuri check` | コード生成の前に、型と所有権を検査します。 |
 | `tsuzuri run` | `Main.tz` をネイティブで実行します。既定は `-O3` です。 |
-| `tsuzuri build` | ネイティブ、WebAssembly、オブジェクト、C ヘッダー、LLVM IR、実験的な WGSL を出します。 |
+| `tsuzuri build` | ネイティブ、WebAssembly、オブジェクト、C ヘッダー、LLVM IR、実験的な WGSL と SPIR-V を出します。 |
 | `tsuzuri test` | ソース内の `test` 宣言を実行します。 |
 | `tsuzuri fmt` | 意味を変えずに、空白とインデントを整えます。 |
 | `tsuzuri doc` | 公開宣言とドキュメントコメントから Markdown を生成します。 |
@@ -280,7 +280,7 @@ flowchart TD
 
 ## 今の範囲
 
-Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。Windows 上で OS API に到達するネイティブビルドは `E2002` エラーとなります。また、非同期 I/O とネットワーク API は現時点で未実装です。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
+Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。Windows 上で OS API に到達するネイティブビルドは `E2002` エラーとなります。また、非同期 I/O は `Net` のソケット（`_async` の関数）だけで、TLS と HTTP はありません。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
 
 ## まとめ
 

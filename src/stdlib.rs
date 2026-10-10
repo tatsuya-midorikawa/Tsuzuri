@@ -6,9 +6,11 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/Async.tc", include_str!("../std/Async.tc")),
+    ("std/Atomic.tz", include_str!("../std/Atomic.tz")),
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
+    ("std/Channel.tz", include_str!("../std/Channel.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -26,6 +28,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Maybe.tc", include_str!("../std/Maybe.tc")),
+    ("std/Mutex.tz", include_str!("../std/Mutex.tz")),
+    ("std/Net.tz", include_str!("../std/Net.tz")),
     ("std/Os.tz", include_str!("../std/Os.tz")),
     ("std/Owned.tz", include_str!("../std/Owned.tz")),
     ("std/Parallel.tz", include_str!("../std/Parallel.tz")),
@@ -43,6 +47,9 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
+    ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
+    ("std/MatrixView.tz", include_str!("../std/MatrixView.tz")),
+    ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -79,6 +86,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Random",
     "Os",
     "Process",
+    "Net",
     "Format",
     "Exception",
     "BigInt",
@@ -94,6 +102,12 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Bench",
     "Gen",
     "Async",
+    "Matrix",
+    "Atomic",
+    "Mutex",
+    "MatrixView",
+    "Tensor",
+    "Channel",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -130,6 +144,19 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Gen.Gen"
             | "Async.Async"
             | "Async.Next"
+            | "Matrix.Matrix"
+            | "Net.Address"
+            | "Net.TcpStream"
+            | "Net.TcpListener"
+            | "Net.UdpSocket"
+            | "Atomic.Atomic"
+            | "Mutex.Mutex"
+            | "MatrixView.MatrixView"
+            | "MatrixView.Mut"
+            | "Tensor.Tensor"
+            | "Tensor.View"
+            | "Channel.Sender"
+            | "Channel.Receiver"
     )
 }
 
@@ -207,6 +234,48 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Async",
         names: &["Async"],
         aliases: &["async"],
+        uses: &[],
+    },
+    OptIn {
+        module: "Matrix",
+        names: &["Matrix"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Net",
+        names: &["Net"],
+        aliases: &[],
+        uses: &["Async"],
+    },
+    OptIn {
+        module: "Atomic",
+        names: &["Atomic"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Mutex",
+        names: &["Mutex"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "MatrixView",
+        names: &["MatrixView"],
+        aliases: &[],
+        uses: &["Matrix"],
+    },
+    OptIn {
+        module: "Tensor",
+        names: &["Tensor"],
+        aliases: &[],
+        uses: &["Matrix", "MatrixView"],
+    },
+    OptIn {
+        module: "Channel",
+        names: &["Channel"],
+        aliases: &[],
         uses: &[],
     },
 ];
@@ -514,6 +583,16 @@ mod tests {
         assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
         assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
         assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
+        // F10: each shared-state type loads only its own module; `Task.scope` needs none.
+        assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
+        assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
+        assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
+        assert_eq!(loaded("let (s, r) = Channel.bounded 4"), ["Channel"]);
+        assert_eq!(loaded("let s: Channel.Sender<i64> = x"), ["Channel"]);
+        assert_eq!(
+            loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
+            Vec::<&str>::new()
+        );
         // Bare names of opt-in declarations never resolve to them, so they load nothing.
         assert_eq!(
             loaded("match c with | Lu -> 1 | Null -> 0 | _ -> 2"),
@@ -534,8 +613,11 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 46);
+        assert_eq!(RESERVED_MODULES.len(), 53);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
+        assert!(is_reserved_module("Matrix"));
+        assert!(is_reserved_module("MatrixView"));
+        assert!(is_reserved_module("Tensor"));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));

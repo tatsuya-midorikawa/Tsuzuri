@@ -81,13 +81,13 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 **Tsuzuri は性能を最優先の設計要件の一つとしており、CPU 命令・SIMD・並列 CPU・GPU のうち、プログラムの意味を保ちつつ実処理が最も速くなる経路をコンパイラ内部で選択することを目指しています。**
 この方針はコンパイラ本体だけでなく、組み込み関数や標準ライブラリの設計にも一貫して適用されます。
 
-現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成と WebGPU ホスト試作に対応しています（通常ランタイムへの実 GPU 接続や自動オフロードは未実装です）。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作、SPIR-V の生成（`--emit spirv`。厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto` に対応しています（WebGPU での厳密な浮動小数点と 64 bit 整数、GPU 常駐バッファ、自動オフロードは未実装です。確かめたのは Apple M1 Max だけです）。
 
 ### 設計と実装済みの範囲
 
 | 項目 | 初版の実装状況 |
 | --- | --- |
-| 状態管理 | 変数は既定で不変（`let`）。ローカル変数の再代入・置換は `let mut` と排他借用 `ref mut T` で行います。標準入出力と OS API は `IO`、外部連携は `extern` で分離し、共有可変状態は持ちません。 |
+| 状態管理 | 変数は既定で不変（`let`）。ローカル変数の再代入・置換は `let mut` と排他借用 `ref mut T` で行います。標準入出力と OS API は `IO`、外部連携は `extern` で分離します。タスクの間で状態を共有して書き換えるときは、共有借用から更新できる `Atomic` と `Mutex` に入れます。 |
 | 型システム | 基本数値型（`bool`, `unit`, `i8`〜`i128`, `i8u`〜`i128u`, `f16`〜`f128`, `d32`〜`d128`, `byte`/`ubyte`/`sbyte`）、任意精度整数 `bigint`、ECMA-262 準拠の UTF-16 `string`、UTF-8 バイト列 `utf8string`、文字型 `char`/`utf8char`、タプル、不変レコード、共用体（`union`）、配列、連結リスト、環境を捕捉する関数値に対応。 |
 | 構文と表現 | `def ... = ラムダ式`、カリー化と部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード式、`for…in`、`for…to`／`downto`、`while…do`、`break`／`continue`、レコード更新、インデント構文、パイプライン `\|>`、関数合成 `>>`／`<<`、組み込み関数 `not`／`ignore`、累乗演算子 `**`、ビット演算（`&&&`／`\|\|\|`／`^^^`／`~~~`／`<<<`／`>>>`）、数値接尾辞、高階関数、明示的再帰（`rec`／`and`）。 |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型エイリアス（`type`）、型クラスおよび具体型インスタンスによるアドホック多相。制約推論と静的単相化。ランク1高階型（HKT）。`dyn C` と `Dyn.of` による vtable を使った動的ディスパッチ。 |
@@ -162,8 +162,9 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
 - **JSON (`Json`)**: RFC 8259 に厳密な `Json.parse`、決定的な `Json.to_utf8string`、字句を保つ数値 `Json.Numeral`、組み込み型クラス `Encode` / `Decode` と `Json.serialize` / `Json.deserialize` を提供します。入力 64 MiB・入れ子 128 段の上限を超える入力も `Result` のエラーで返します。`@json "名前"` による名前の変更、字下げした出力、木を作らないプル型の解析器と逐次の出力器、同じ値の CBOR（[Cbor](_tsuzuri/language-reference/built-in-types-and-modules/cbor.md)）も提供します。詳細は [Json](_tsuzuri/language-reference/built-in-types-and-modules/json.md) を参照してください。
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
-- **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で複数のタスクから読めます。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md) を参照してください。
+- **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で、`Send` かつ `Sync` な値を複数のタスクで共有できます。共有した値を書き換えるときは `Atomic` か `Mutex` を入れます（`Arc` と `Mutex` では循環を作れるので、一方は `Arc.Weak` で持ちます）。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md)、[Atomic](_tsuzuri/language-reference/built-in-types-and-modules/atomic.md)、[Mutex](_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) を参照してください。
 - **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
+- **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、それ以外の native と wasm32 では積和ごとにソフトウェアのルーチンを呼ぶので、`mul_fma` は大幅に遅くなります（ビットは同じです）。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](_tsuzuri/language-reference/built-in-types-and-modules/matrix.md)・[MatrixView](_tsuzuri/language-reference/built-in-types-and-modules/matrix-view.md)・[Tensor](_tsuzuri/language-reference/built-in-types-and-modules/tensor.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -338,7 +339,8 @@ Task.run computation
 ```
 
 - **遅延・一回実行のタスク**: `task { ... }` は `Task<T>` 型の値を生成します。定義時点では実行されず、`Task.run` を呼び出した時点で初めて実行が開始されます。二重実行はコンパイルエラーとして検出されます。また、未実行のままスコープを抜けたタスクは本体を実行せずに捕捉リソースを安全に解放します。
-- **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照と `Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。読み取り専用のデータは、atomic な計数を持つ `Arc` でタスク間に共有できます。
+- **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照と `Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。共有して書き換える状態は、`Atomic`（整数と `bool`）と `Mutex`（ほかの値）に限られ、`Arc<Atomic<T>>`、`Arc<Mutex<T>>`、または次の `Task.scope` の共有借用でタスク間に渡します。値の受け渡しは、容量付きの `Channel`（最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ）です。`Channel` の要素は借用を持てず（関数値は、環境が借用を持たないものだけ）、`Send` の検査は、ジェネリック関数を通しても、使う型ごとに行われます。`Sync` でない値（`Rc`、ホストのハンドルなど）は共有できません。
+- **借用を共有する並列区間 (`Task.scope`)**: `Task.scope (ref shared) count callback` は、`Sync` な値の共有借用を `count` 個の子どもに貸し、`callback shared index` の結果を添字順に返します。すべての子どもが終わってから戻るので、外の値を持ち込まずに共有できます。
 - **並列実行とスレッドプール**: `Task.parallel` はタスクの配列を受け取り、入力順と同一の結果配列を返します。ネイティブ環境では POSIX threads を基盤とした常駐スレッドプール（最大 32 スレッド）をオンデマンドで起動し、効率よくタスクを分散します。
 - **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
 - **エラー短絡 (`Task.parallel_results`)**: 複数の `Task<Result<T, E>>` を並列実行し、いずれかが失敗した時点で未開始のタスクを即座にキャンセルして最小インデックスのエラーを返します。
@@ -395,6 +397,11 @@ def main :: unit -> i32 = \() ->
 
 ファイルシステム、プロセス、環境変数、時刻などの OS 機能は、標準モジュール `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Process`、`Os` で提供されます（macOS および Linux 対応）。
 すべての OS 操作は `IO<Result<T, Os.Error>>` などの一貫した遅延アクションとして抽象化されています（`Path` および擬似乱数 `Random.Pcg` は純粋関数です）。WASM 環境では `--wasm-host wasi` を指定することで WASI preview1 に接続可能です。
+
+#### ネットワーク API
+
+TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` を付けた Node.js 向けの wasm32。アドレスの解析と表示はどの target でも import なしで動きます）。
+操作は `IO<Result<T, Os.Error>>` で、`Async.block_on` の中では `_async` の双子（`connect_async` など）を使えます。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
 
 #### エントリーポイント (`Main.tz`)
 
@@ -467,8 +474,10 @@ def main :: unit -> i32 = \() ->
 | 予約名 | 用途 |
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
-| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena` | 各種コレクションおよびデータ構造 |
+| `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
+| `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Task.scope`、`Arc` と組み合わせる） |
+| `Channel` | 容量付きの MPMC キュー。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
@@ -477,6 +486,7 @@ def main :: unit -> i32 = \() ->
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
+| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の Node.js 向け wasm32。`Async.block_on` の中では `_async` の双子） |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
 | `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
 | `Cbor` | `Json.Value` の CBOR（RFC 8949）の読み書き |
@@ -557,12 +567,16 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
   ```
 - **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します（生成したグルーは `boolean` に直します）。
 - **メモリとスタックのカスタマイズ**: `--wasm-max-memory SIZE`（既定 16MiB、最大 4GiB-64KiB / wasm64 は 16GiB）や `--wasm-stack-size SIZE`（既定 1MiB）で線形メモリの上限やメインスタックサイズを調整できます。これらは `Tsuzuri.toml` の `[wasm]` セクションでも設定可能です。
-- **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
+- **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。`Atomic`、`Mutex`、`Channel`、`Task.scope` も Worker で動きます（ロックとチャンネルの待ちは共有メモリの `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとのグローバルです）。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
 
 ### GPU カーネル連携（実験的）
 
 単一の `export` された `i32 -> i32` または `i32u -> i32u` カーネルを含むプロジェクトから、`tsuzuri build Kernel.tz --emit wgsl -o kernel.wgsl` により WebGPU 向けの WGSL シェーダーを生成できます。
-厳密な整数演算に基づく Phase 1 実装であり、自動オフロードや速度優位を保証するものではありません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的-phase-1) を参照してください。
+これは厳密な整数演算に基づく出力で、自動オフロードや速度優位を保証するものではありません。`f32` と `f16` は GPU では厳密にできないため、名前で緩い意味を選びます。`--emit wgsl-relaxed`（`f32`・`i32`・`i32u` のカーネルで、内部で `f16` も使えます）と、`Gpu.init_relaxed`・`Gpu.map_relaxed` です。CPU 上の評価は厳密なままで、GPU 上の結果だけが WGSL の浮動小数点規則に従います。
+
+言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しするか、システムの場所の絶対パスにあるものだけで、作業ディレクトリは探しません。`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が WebGPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。
+
+Vulkan では、`tsuzuri build Kernel.tz --emit spirv -o kernel.spv` が SPIR-V（厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`。除算は出せません）を、`--emit spirv-relaxed` が緩い `f32` のモジュールを書きます。`Gpu.request Gpu.Vulkan` は、native のランタイムが Vulkan のデバイスを開けて、プログラムのカーネルが要る機能（`i64` は `shaderInt64`、厳密な `f32` は float controls）をそのデバイスが持つときだけ `Result.Ok` です（ローダーは `TSUZURI_VULKAN_LIBRARY` で名指しするか、macOS はシステムの場所の絶対パス、Windows は System32 だけで、作業ディレクトリは探しません。WebAssembly では常に `Unavailable`）。**デバイスが報告する float controls は申告で、厳密さの証明ではありません。** ランタイムは、組み込みの適合プローブを通ったデバイスにだけ、厳密な `f32` を許します（MoltenVK は `-(x * 0.0)` の符号と非正規化数、SwiftShader は 2^31 以上の `i32u` から `f32` への変換で、報告と違う結果を出しました）。`Gpu.request Gpu.Auto` は常に成功し、呼び出しごとに、転送・同期・初回の費用を含めて測ったコストの規則で CPU 参照か Vulkan を選びます（`Gpu.last_backend ()` で見られます）。規則の定数は 1 台のマシンの経験則です。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけで、float controls をすべて報告して適合プローブを通る実機、離散 GPU、離散 GPU と統合 GPU が両方ある機械（デバイスの選び方はモックだけで確認）、Linux、Windows、NVIDIA・AMD・Intel の GPU では確かめていません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
 
 ---
 
@@ -767,7 +781,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
@@ -779,7 +793,7 @@ tsuzuri lsp
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
-| `--wasm-feature simd128\|threads\|jspi` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration）を有効化します。 |
+| `--wasm-feature simd128\|threads\|jspi\|webgpu\|net` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
@@ -823,6 +837,8 @@ node tests/io.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
 node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
+node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
+node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
@@ -836,7 +852,10 @@ node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
-node tests/gpu.mjs target/release/tsuzuri
+node tests/gpu.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_MODULE で実アダプタ（Dawn）も
+node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降。TSUZURI_SANITIZE=1 で C 側に ASan と UBSan
+node tests/gpu_vulkan.mjs   # Vulkan のランタイム（合成ライブラリ、ASan・UBSan・TSan、実デバイス）。clang が要り、spirv-as が無ければ実デバイスの検査を飛ばす。TSUZURI_VULKAN_TEST_ICDS で他のドライバも
+node tests/gpu_vulkan_language.mjs target/release/tsuzuri   # 言語としての Vulkan と Gpu.Auto（CPU 参照との照合、WebAssembly の確認）
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs
@@ -856,6 +875,8 @@ node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
+node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
+node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

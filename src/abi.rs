@@ -362,6 +362,7 @@ mod tests {
                 .all(|pair| pair[0] < pair[1])
         );
         let runtime = [
+            include_str!("runtime/channel-wasm.ll"),
             include_str!("runtime/character.ll"),
             include_str!("runtime/closure.ll"),
             include_str!("runtime/console.ll"),
@@ -375,6 +376,8 @@ mod tests {
             include_str!("runtime/numeric.ll"),
             include_str!("runtime/recursive.ll"),
             include_str!("runtime/string.ll"),
+            include_str!("runtime/sync-wasm.ll"),
+            include_str!("runtime/sync.ll"),
             include_str!("runtime/task-wasm.ll"),
             include_str!("runtime/unicode.ll"),
             include_str!("runtime/utf8string.ll"),

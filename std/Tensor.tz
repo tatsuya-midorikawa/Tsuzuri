@@ -1,0 +1,240 @@
+/// An owned tensor: `shape` lists the extent of every axis and `data` holds the elements in
+/// row-major (C) order. Invariants: at most 16 axes, no negative extent, the product of the
+/// extents is data.length. The product of the non-zero extents must not overflow; a shape with a
+/// 0 extent has no elements. A tensor with no axes holds one element.
+record Tensor<'a> { shape: [i64], data: ['a] }
+
+/// A borrowed strided window onto a row-major buffer: element (i0, i1, ...) is
+/// data[offset + i0 * strides[0] + i1 * strides[1] + ...]. The strides are never negative and every
+/// element lies inside `data`; every constructor checks this and every operation keeps it.
+record View<'a> { r } { data: ref { r } ['a], offset: i64, shape: [i64], strides: [i64] }
+
+// The number of elements of a shape. Traps on more than 16 axes, a negative extent, or when the
+// product of the non-zero extents overflows.
+private def volume :: ref [i64] -> i64
+fn volume shape =
+    assert (shape.length <= 16)
+    let mut empty = false
+    let mut count = 1
+    for axis in 0i64 .. (shape.length - 1) do
+        assert (shape[axis] >= 0)
+        if shape[axis] == 0 then empty = true
+        else
+            assert (count <= 9223372036854775807 / shape[axis])
+            count = count * shape[axis]
+    if empty then 0 else count
+
+private def stride_of :: ref [i64] -> i64 -> i64
+fn stride_of shape axis =
+    let mut stride = 1
+    for later in (axis + 1) .. (shape.length - 1) do stride = stride * shape[later]
+    stride
+
+private def dense_strides :: ref [i64] -> [i64]
+fn dense_strides shape = new [i64](shape.length, axis -> stride_of shape axis)
+
+/// Takes a row-major array without copying; traps unless its length is the product of the shape.
+def of_array :: [i64] -> ['a] -> Tensor<'a>
+fn of_array shape values =
+    assert (values.length == volume (ref shape))
+    Tensor { shape: shape, data: values }
+
+/// Calls `initializer index` once per element in row-major order, with the flat row-major index.
+def init :: [i64] -> (i64 -> 'a) -> Tensor<'a>
+fn init shape initializer =
+    let count = volume (ref shape)
+    Tensor { shape: shape, data: new ['a](count, initializer) }
+
+/// Turns a matrix into a rank 2 tensor without copying.
+def of_matrix :: Matrix<'a> -> Tensor<'a>
+fn of_matrix matrix =
+    let shape = [Matrix.rows (ref matrix), Matrix.cols (ref matrix)]
+    Tensor { shape: shape, data: Matrix.to_array matrix }
+
+/// Turns a rank 2 tensor into a matrix without copying; traps unless the rank is 2.
+def to_matrix :: Tensor<'a> -> Matrix<'a>
+fn to_matrix tensor =
+    assert (tensor.shape.length == 2)
+    Matrix.of_array tensor.shape[0] tensor.shape[1] tensor.data
+
+/// Borrows all elements in row-major order.
+def as_array :: ref Tensor<'a> -> ref ['a]
+fn as_array tensor = ref tensor.data
+
+/// Consumes the tensor and returns its row-major buffer without copying.
+def to_array :: Tensor<'a> -> ['a]
+fn to_array tensor = tensor.data
+
+/// Gives the elements a new shape without copying; traps unless the product of the shape is unchanged.
+def reshape :: [i64] -> Tensor<'a> -> Tensor<'a>
+fn reshape shape tensor =
+    assert (volume (ref shape) == tensor.data.length)
+    Tensor { shape: shape, data: tensor.data }
+
+/// Borrows a tensor as a window.
+def view { r } :: ref { r } Tensor<'a> -> View<'a> { r }
+fn view tensor = View { data: ref tensor.data, offset: 0, shape: Array.copy (ref tensor.shape), strides: dense_strides (ref tensor.shape) }
+
+/// Borrows a row-major array as a window of the given shape; traps unless its length is the product of the shape.
+def borrow { r } :: [i64] -> ref { r } ['a] -> View<'a> { r }
+fn borrow shape data =
+    assert (data.length == volume (ref shape))
+    let strides = dense_strides (ref shape)
+    View { data: data, offset: 0, shape: shape, strides: strides }
+
+/// The number of axes.
+def rank :: ref View<'a> -> i64
+fn rank view = view.shape.length
+
+/// The extent of every axis.
+def shape :: ref View<'a> -> ref [i64]
+fn shape view = ref view.shape
+
+/// The number of elements.
+def count :: ref View<'a> -> i64
+fn count view = volume (ref view.shape)
+
+/// The distance in `data` between two consecutive positions of every axis.
+def strides :: ref View<'a> -> ref [i64]
+fn strides view = ref view.strides
+
+/// The index of the first element in `data`.
+def offset :: ref View<'a> -> i64
+fn offset view = view.offset
+
+/// The whole backing slice, including elements outside the window.
+def data { r } :: ref View<'a> { r } -> ref { r } ['a]
+fn data view = view.data
+
+private def offset_of :: ref View<'a> -> ref [i64] -> i64
+fn offset_of view index =
+    assert (index.length == view.shape.length)
+    let mut offset = view.offset
+    for axis in 0i64 .. (index.length - 1) do
+        assert (index[axis] >= 0 && index[axis] < view.shape[axis])
+        offset = offset + index[axis] * view.strides[axis]
+    offset
+
+/// Borrows one element; traps unless the index has one entry per axis, each inside its extent.
+def at { r } :: ref View<'a> { r } -> [i64] -> ref { r } 'a
+fn at view index = ref view.data[offset_of view (ref index)]
+
+/// Copies one element, or `None` unless the index has one entry per axis, each inside its extent.
+def get :: Copy<'a> => ref View<'a> -> [i64] -> Maybe<'a>
+fn get view index =
+    let mut inside = index.length == view.shape.length
+    if inside then
+        for axis in 0i64 .. (index.length - 1) do
+            if index[axis] < 0 || index[axis] >= view.shape[axis] then inside = false
+    if inside then Maybe.Some view.data[offset_of view (ref index)] else Maybe.None
+
+/// Reorders the axes without touching the data: axis i of the result is axis axes[i] of the view.
+/// Traps unless `axes` is a permutation of 0 .. rank - 1.
+def permute { r } :: ref View<'a> { r } -> [i64] -> View<'a> { r }
+fn permute view axes =
+    let rank = view.shape.length
+    assert (axes.length == rank)
+    for axis in 0i64 .. (rank - 1) do
+        assert (axes[axis] >= 0 && axes[axis] < rank)
+        for earlier in 0i64 .. (axis - 1) do assert (axes[earlier] != axes[axis])
+    View { data: view.data, offset: view.offset, shape: new [i64](rank, axis -> view.shape[axes[axis]]), strides: new [i64](rank, axis -> view.strides[axes[axis]]) }
+
+/// Fixes one axis at a position, which removes that axis; traps unless the position is inside its extent.
+def index_axis { r } :: ref View<'a> { r } -> i64 -> i64 -> View<'a> { r }
+fn index_axis view axis position =
+    let rank = view.shape.length
+    assert (axis >= 0 && axis < rank && position >= 0 && position < view.shape[axis])
+    View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
+
+/// Keeps `length` positions of one axis starting at `start`; traps unless they lie inside the extent.
+def narrow { r } :: ref View<'a> { r } -> i64 -> i64 -> i64 -> View<'a> { r }
+fn narrow view axis start length =
+    let rank = view.shape.length
+    assert (axis >= 0 && axis < rank && start >= 0 && length >= 0 && start <= view.shape[axis] && length <= view.shape[axis] - start)
+    View { data: view.data, offset: view.offset + start * view.strides[axis], shape: new [i64](rank, d -> if d == axis then length else view.shape[d]), strides: Array.copy (ref view.strides) }
+
+/// Whether the elements are one run of `data` in row-major order (a window without elements is contiguous).
+def is_contiguous :: ref View<'a> -> bool
+fn is_contiguous view =
+    let mut expected = 1
+    let mut dense = true
+    let mut axis = view.shape.length
+    while axis > 0 do
+        axis = axis - 1
+        if view.shape[axis] != 1 && view.strides[axis] != expected then dense = false
+        expected = expected * view.shape[axis]
+    dense || volume (ref view.shape) == 0
+
+/// Gives a contiguous window a new shape without copying; traps unless the window is contiguous and
+/// the product of the shape is unchanged.
+def reshape_view { r } :: ref View<'a> { r } -> [i64] -> View<'a> { r }
+fn reshape_view view shape =
+    assert (is_contiguous view && volume (ref shape) == volume (ref view.shape))
+    let strides = dense_strides (ref shape)
+    View { data: view.data, offset: view.offset, shape: shape, strides: strides }
+
+private def rec fold_axis :: Copy<'a> => ('state -> 'a -> 'state) -> ref ['a] -> ref [i64] -> ref [i64] -> i64 -> i64 -> 'state -> 'state
+fn rec fold_axis folder data shape strides axis offset state =
+    let mut result = state
+    if axis == shape.length - 1 then
+        for position in 0i64 .. (shape[axis] - 1) do
+            result = folder result data[offset + position * strides[axis]]
+    else
+        for position in 0i64 .. (shape[axis] - 1) do
+            result = fold_axis folder data shape strides (axis + 1) (offset + position * strides[axis]) result
+    result
+
+/// Folds the elements left to right in row-major order of the window.
+def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref View<'a> -> 'state
+fn fold folder initial view =
+    if volume (ref view.shape) == 0 then initial
+    elif view.shape.length == 0 then folder initial view.data[view.offset]
+    else fold_axis folder view.data (ref view.shape) (ref view.strides) 0 view.offset initial
+
+// Writes the elements of one axis and below into `out` from `position`; returns the next position.
+private def rec gather :: Copy<'a> => ref ['a] -> ref [i64] -> ref [i64] -> i64 -> i64 -> ref mut ['a..] -> i64 -> i64
+fn rec gather data shape strides axis offset out position =
+    let mut next = position
+    if axis == shape.length - 1 then
+        for step in 0i64 .. (shape[axis] - 1) do
+            Array.write out next data[offset + step * strides[axis]]
+            next = next + 1
+    else
+        for step in 0i64 .. (shape[axis] - 1) do
+            next = gather data shape strides (axis + 1) (offset + step * strides[axis]) out next
+    next
+
+/// Copies the elements into a new contiguous tensor.
+def to_tensor :: Copy<'a> => ref View<'a> -> Tensor<'a>
+fn to_tensor view =
+    let total = volume (ref view.shape)
+    if total == 0 then Tensor { shape: Array.copy (ref view.shape), data: Array.init 0 (\_ -> view.data[0]) }
+    elif is_contiguous view then Tensor { shape: Array.copy (ref view.shape), data: Array.sub view.data view.offset total }
+    else
+        let mut out = new ['a](total, _ -> view.data[view.offset])
+        let written = gather view.data (ref view.shape) (ref view.strides) 0 view.offset (ref mut out) 0
+        assert (written == total)
+        Tensor { shape: Array.copy (ref view.shape), data: out }
+
+/// Applies `transform` to every element in row-major order of the window.
+def map :: Copy<'a> => ('a -> 'b) -> ref View<'a> -> Tensor<'b>
+fn map transform view =
+    let total = volume (ref view.shape)
+    if total > 0 && is_contiguous view then
+        Tensor { shape: Array.copy (ref view.shape), data: Array.map transform (ref view.data[view.offset .. view.offset + total]) }
+    else
+        let packed = to_tensor view
+        Tensor { shape: Array.copy (ref packed.shape), data: Array.map transform (ref packed.data) }
+
+/// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2.
+def as_matrix_view { r } :: ref View<'a> { r } -> MatrixView<'a> { r }
+fn as_matrix_view view =
+    assert (view.shape.length == 2)
+    MatrixView.strided view.offset view.shape[0] view.shape[1] view.strides[0] view.strides[1] view.data
+
+/// Views a matrix window as a rank 2 window without copying.
+def of_matrix_view { r } :: MatrixView<'a> { r } -> View<'a> { r }
+fn of_matrix_view window =
+    let shape = [MatrixView.rows window, MatrixView.cols window]
+    let strides = [MatrixView.row_stride window, MatrixView.col_stride window]
+    View { data: MatrixView.data window, offset: MatrixView.offset window, shape: shape, strides: strides }

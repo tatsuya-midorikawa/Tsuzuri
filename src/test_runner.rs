@@ -431,6 +431,8 @@ pub fn build_debug_runner(
     let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));
     link.args(["-g", &optimization])
         .args(native_compile_args(cfg!(windows), env::consts::ARCH));
+    let has_net = sources.iter().any(|(name, _)| *name == "net.c");
+    let has_gpu = sources.iter().any(|(name, _)| *name == "gpu.c");
     for (name, source) in sources {
         let path = temporary.path.join(name);
         let runtime = path.with_extension("o");
@@ -455,6 +457,12 @@ pub fn build_debug_runner(
     link.arg(&object).arg("-o").arg(&artifact);
     if !cfg!(windows) {
         link.args(["-lm", "-pthread"]);
+        // gpu.c loads a WebGPU or Vulkan library with dlopen, which older glibc keeps in libdl.
+        if has_gpu && cfg!(target_os = "linux") {
+            link.arg("-ldl");
+        }
+    } else if has_net {
+        link.arg("-lws2_32");
     }
     links.add_to(&mut link);
     let staged_pdb = temporary.path.join("tests.pdb");
@@ -514,8 +522,20 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         }
         sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
     }
+    if llvm::uses_net(text) {
+        if !crate::driver::NET_NATIVE_SUPPORTED {
+            return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
+        }
+        if llvm::uses_net_async(text) && !llvm::uses_reactor(text) {
+            return Err(driver_error("E2000", crate::driver::NET_ASYNC_MESSAGE));
+        }
+        sources.push(("net.c", include_str!("runtime/net.c").to_owned()));
+    }
     if text.contains("declare i32 @tsuzuri_io_") {
         sources.push(("io.c", include_str!("runtime/io.c").to_owned()));
+    }
+    if text.contains("declare i32 @tsuzuri_gpu_") {
+        sources.push(("gpu.c", llvm::gpu_runtime_source(text)));
     }
     if llvm::uses_reactor(text) {
         if !crate::driver::ASYNC_NATIVE_SUPPORTED {
@@ -625,9 +645,13 @@ fn build_runner(
     if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
         text = llvm::with_stack_checks(text, false);
     }
+    text = llvm::with_wasm_gpu_host(text, false);
     text.push_str(include_str!("runtime/wasm.ll"));
     if text.contains("declare i64 @tsuzuri_os_") {
         return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
+    }
+    if llvm::uses_net(&text) {
+        return Err(driver_error("E2000", crate::driver::NET_WASM_MESSAGE));
     }
     if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
         return Err(driver_error(
@@ -730,10 +754,20 @@ fn compile_native_runner(
     }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    let net_runtime = llvm::uses_net(&text);
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
+    let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
+    let gpu_source = if gpu_runtime {
+        llvm::gpu_runtime_source(&text)
+    } else {
+        String::new()
+    };
     if os_runtime && cfg!(windows) {
         return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+    }
+    if net_runtime && !crate::driver::NET_NATIVE_SUPPORTED {
+        return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
     }
     if async_runtime && !crate::driver::ASYNC_NATIVE_SUPPORTED {
         return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
@@ -775,8 +809,10 @@ fn compile_native_runner(
     }
     for (needed, name, source) in [
         (os_runtime, "os.c", include_str!("runtime/os.c")),
+        (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (async_runtime, "async.c", include_str!("runtime/async.c")),
+        (gpu_runtime, "gpu.c", gpu_source.as_str()),
     ] {
         if needed {
             let runtime = directory.join(name);
@@ -785,8 +821,15 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if async_runtime && !task_runtime && !cfg!(windows) {
+    if (async_runtime || net_runtime || gpu_runtime) && !task_runtime && !cfg!(windows) {
         clang.arg("-pthread");
+    }
+    // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
+    if gpu_runtime && cfg!(target_os = "linux") {
+        clang.arg("-ldl");
+    }
+    if net_runtime && cfg!(windows) {
+        clang.arg("-lws2_32");
     }
     links.add_to(&mut clang);
     collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);

@@ -145,6 +145,32 @@ pub(crate) fn with_wasi_host(ir: &str) -> String {
     output
 }
 
+/// Makes the declarations of the Net primitives imports of `tsuzuri_net` (`--wasm-feature net`, E09 Phase 3): only the
+/// functions that the program reaches are declared, so only those are imported. The generated JavaScript bindings
+/// implement them.
+pub(crate) fn with_net_imports(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + 256);
+    for line in ir.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        match body
+            .strip_prefix("declare ")
+            .and_then(|declaration| declaration.split_once(" @tsuzuri_net_"))
+            .filter(|_| body.ends_with(')'))
+        {
+            Some((_, rest)) => {
+                let name = rest.split('(').next().unwrap_or(rest);
+                output.push_str(body);
+                output.push_str(&format!(
+                    " \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"{name}\"{}",
+                    &line[body.len()..]
+                ));
+            }
+            None => output.push_str(line),
+        }
+    }
+    output
+}
+
 /// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
@@ -273,6 +299,8 @@ mod cpu;
 mod display;
 #[path = "llvm_exception.rs"]
 mod exception;
+#[path = "llvm_gpu.rs"]
+mod gpu_host;
 #[path = "llvm_hash.rs"]
 mod hash;
 #[path = "llvm_abi.rs"]
@@ -291,8 +319,11 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_sync.rs"]
+mod sync;
 #[path = "llvm_task.rs"]
 mod task;
+pub(crate) use gpu_host::{runtime_source as gpu_runtime_source, with_wasm_gpu_host};
 pub(crate) use host_abi::uses_host_abi;
 
 pub fn emit(module: &CheckedModule, entry: Entry) -> Result<String, Diagnostic> {
@@ -1206,6 +1237,7 @@ fn emit_program(
         || (!wasm && uses_reactor(&output))
         || output.contains("@tsuzuri_io_")
         || output.contains("@tsuzuri_os_")
+        || output.contains("@tsuzuri_net_")
         || output.contains("@tsuzuri_arguments(")
         || instrumentation.allocator == Allocator::Counting
     {
@@ -1225,14 +1257,60 @@ fn emit_program(
             let _ = writeln!(output, "declare {result} @{symbol}(ptr, i64)");
         }
     }
-    if output.contains("@tsuzuri_task_parallel(")
-        || output.contains("@tsuzuri_task_parallel_results(")
-    {
-        output.push_str(if wasm && !instrumentation.wasm_threads {
-            include_str!("runtime/task-wasm.ll")
-        } else {
-            "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n"
-        });
+    // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
+    // that no lock is held, so the renaming happens before the runtime text is appended (F10).
+    let mutex = output.contains("@tsuzuri_mutex_lock(");
+    let channel = output.contains("@tsuzuri_channel_");
+    let parallel = output.contains("@tsuzuri_task_parallel(")
+        || output.contains("@tsuzuri_task_parallel_results(");
+    if mutex && parallel {
+        output = output
+            .replace(
+                "call void @tsuzuri_task_parallel(",
+                "call void @tz.mutex.parallel(",
+            )
+            .replace(
+                "call i64 @tsuzuri_task_parallel_results(",
+                "call i64 @tz.mutex.parallel_results(",
+            );
+    }
+    if parallel || mutex || channel {
+        // The runtime text above may end without a newline.
+        if (mutex || channel) && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        // The native runtime, and the declarations that the driver and the test runner link it
+        // for, are the same for a program that only locks or only uses a channel.
+        let sequential = wasm && !instrumentation.wasm_threads;
+        if parallel && sequential {
+            output.push_str(include_str!("runtime/task-wasm.ll"));
+        } else if !sequential {
+            output.push_str(
+                "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
+            );
+        }
+        if mutex || channel {
+            if sequential {
+                output.push_str(include_str!("runtime/sync-wasm.ll"));
+                if channel {
+                    output.push_str(include_str!("runtime/channel-wasm.ll"));
+                }
+            } else {
+                if mutex {
+                    output.push_str(
+                        "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+                    );
+                }
+                if channel {
+                    output.push_str(
+                        "declare i32 @tsuzuri_mutex_wait_ok()\ndeclare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
+                    );
+                }
+            }
+            if mutex && parallel {
+                output.push_str(include_str!("runtime/sync.ll"));
+            }
+        }
     }
     if output.contains("@tz.debug.write") {
         output.push_str(include_str!("runtime/debug.ll"));
@@ -2732,6 +2810,49 @@ pub fn io_entry(module: &CheckedModule) -> bool {
 /// Whether IR waits in the reactor of `Async.block_on` (B08 Phase 3).
 pub fn uses_reactor(ir: &str) -> bool {
     ir.contains("declare void @tsuzuri_async_wait(")
+}
+
+/// Whether IR calls the socket runtime of the standard Net module, `src/runtime/net.c` (E09).
+pub fn uses_net(ir: &str) -> bool {
+    ir.contains("@tsuzuri_net_")
+}
+
+/// Whether IR starts an async Net operation, whose completion the runtime posts to the reactor with
+/// `tsuzuri_async_post` (E09 Phase 2).
+pub fn uses_net_async(ir: &str) -> bool {
+    ["@tsuzuri_net_watch(", "@tsuzuri_net_connect("]
+        .iter()
+        .any(|symbol| ir.contains(symbol))
+}
+
+/// Whether the program can reach a socket primitive of the standard Net module: the functions that become `@tsuzuri_net_`
+/// declarations in its IR, and imports of `tsuzuri_net` under `--wasm-feature net` (E09 Phase 3). It looks where the
+/// IR does, so that the bindings, which are made without IR, agree with the `.wasm` on whether the module has them.
+pub fn reaches_net(module: &CheckedModule) -> bool {
+    fn mentions(expression: &TypedExpr) -> bool {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if matches!(
+                    instance.builtin,
+                    Builtin::NetResolve
+                        | Builtin::NetOpen
+                        | Builtin::NetAccept
+                        | Builtin::NetRead
+                        | Builtin::NetWrite
+                        | Builtin::NetClose
+                        | Builtin::NetClassify
+                        | Builtin::NetWatch
+                        | Builtin::NetUnwatch
+                        | Builtin::NetConnect
+                        | Builtin::NetNames
+                        | Builtin::NetSend
+                )
+        ) || expression.children().into_iter().any(mentions)
+    }
+    reachable_functions(module, None, false)
+        .into_iter()
+        .any(|id| mentions(&module.functions[id].body))
 }
 
 /// Whether the program can reach `Async.block_on`, whose native runtime defines
@@ -6069,6 +6190,11 @@ fn emit_builtin(
         builtin if builtin.name().starts_with("Math.") => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
+        Builtin::GpuOpen
+        | Builtin::GpuFeatures
+        | Builtin::GpuRun
+        | Builtin::GpuSelect
+        | Builtin::GpuLast => gpu_host::emit(instance, module, intrinsics, globals, &symbol),
         Builtin::Hash
         | Builtin::HashMix
         | Builtin::DisplayQuoted
@@ -6091,7 +6217,19 @@ fn emit_builtin(
         | Builtin::OsOpen
         | Builtin::OsHandle
         | Builtin::OsClose
-        | Builtin::OsSpawn => emit_typed_builtin(instance, ty, module, intrinsics, globals),
+        | Builtin::OsSpawn
+        | Builtin::NetResolve
+        | Builtin::NetOpen
+        | Builtin::NetAccept
+        | Builtin::NetRead
+        | Builtin::NetWrite
+        | Builtin::NetClose
+        | Builtin::NetClassify
+        | Builtin::NetWatch
+        | Builtin::NetUnwatch
+        | Builtin::NetConnect
+        | Builtin::NetNames
+        | Builtin::NetSend => emit_typed_builtin(instance, ty, module, intrinsics, globals),
         Builtin::Default => format!(
             "define internal {result} {symbol}() nounwind {{\nentry:\n  ret {result} zeroinitializer\n}}\n"
         ),
@@ -6289,6 +6427,16 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
+        builtin
+            if builtin.is_atomic()
+                || builtin.is_channel()
+                || matches!(
+                    builtin,
+                    Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
+                ) =>
+        {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
         Builtin::Parse => emit_parse(instance, ty, module),
         Builtin::ToFloat => format!(
@@ -6456,6 +6604,22 @@ fn emit_typed_builtin(
             | Builtin::OsSpawn
     ) {
         emitter.os_builtin(instance.builtin, ty)
+    } else if matches!(
+        instance.builtin,
+        Builtin::NetResolve
+            | Builtin::NetOpen
+            | Builtin::NetAccept
+            | Builtin::NetRead
+            | Builtin::NetWrite
+            | Builtin::NetClose
+            | Builtin::NetClassify
+            | Builtin::NetWatch
+            | Builtin::NetUnwatch
+            | Builtin::NetConnect
+            | Builtin::NetNames
+            | Builtin::NetSend
+    ) {
+        emitter.net_builtin(instance.builtin, ty)
     } else if instance.builtin.name().starts_with("Math.") {
         emitter.math_builtin(instance)
     } else if instance.builtin == Builtin::DisplayQuoted {
@@ -6481,6 +6645,14 @@ fn emit_typed_builtin(
         emitter.vector_builtin(instance, ty)
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
+    } else if instance.builtin.is_atomic()
+        || instance.builtin.is_channel()
+        || matches!(
+            instance.builtin,
+            Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
+        )
+    {
+        emitter.sync_builtin(instance, ty)
     } else if instance.builtin == Builtin::FixedArrayInit {
         // A function value of `FixedArray.init`; its instance types include the array (A16).
         let Type::Function(parameters, _) = ty else {
@@ -7621,6 +7793,28 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
 mod tests {
     use super::*;
     use crate::analyze;
+
+    #[test]
+    fn net_imports_name_only_the_declared_primitives() {
+        let ir = "declare i64 @tsuzuri_net_open(ptr, i32, i64, i64, i64, i64)\n\
+                  declare void @tsuzuri_net_unwatch(i64)\n\
+                  declare i64 @other(i64)\n\
+                  define i64 @tsuzuri_net_open_like() {\n  call i64 @tsuzuri_net_open(ptr null, i32 0, i64 0, i64 0, i64 0, i64 0)\n}\n";
+        let lowered = with_net_imports(ir);
+        assert!(lowered.contains(
+            "declare i64 @tsuzuri_net_open(ptr, i32, i64, i64, i64, i64) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"open\"\n"
+        ));
+        assert!(lowered.contains(
+            "declare void @tsuzuri_net_unwatch(i64) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"unwatch\"\n"
+        ));
+        // Calls, definitions, and other declarations stay as they are.
+        assert!(lowered.contains("declare i64 @other(i64)\n"));
+        assert!(lowered.contains(
+            "define i64 @tsuzuri_net_open_like() {\n  call i64 @tsuzuri_net_open(ptr null"
+        ));
+        assert_eq!(lowered.matches("wasm-import-module").count(), 2);
+        assert_eq!(with_net_imports("no declarations\n"), "no declarations\n");
+    }
 
     #[test]
     fn emits_explicit_tail_loop_and_checked_arithmetic() {

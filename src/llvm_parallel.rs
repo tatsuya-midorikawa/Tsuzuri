@@ -121,7 +121,15 @@ impl FunctionEmitter<'_, '_> {
         let mut fields = vec![
             ("i64".to_owned(), data.length.to_owned()),
             ("i64".into(), data.chunks.into()),
-            ("ptr".into(), data.input.into()),
+            (
+                // The shared borrow of `Task.scope` is a `%tz.array` when it borrows a slice.
+                if kernel.operation == Builtin::TaskScope {
+                    self.ty(kernel.input)
+                } else {
+                    "ptr".into()
+                },
+                data.input.into(),
+            ),
             ("ptr".into(), data.output.into()),
             (identity_type, data.identity.into()),
             (
@@ -206,6 +214,8 @@ impl FunctionEmitter<'_, '_> {
         };
         if kernel.operation == Builtin::ParallelForEachChunk {
             emitter.parallel_chunk_body(&kernel, &loaded, &callback, direct.as_ref());
+        } else if kernel.operation == Builtin::TaskScope {
+            emitter.parallel_scope_child(&kernel, &loaded, &callback, direct.as_ref());
         } else {
             emitter.parallel_items(&kernel, &loaded, &callback, direct.as_ref());
         }
@@ -266,6 +276,32 @@ impl FunctionEmitter<'_, '_> {
                 &[(Type::I64, first), (view_type, view)],
             );
         });
+    }
+
+    /// The `Task.scope` child of group item `%chunk`: the callback gets the shared borrow and the
+    /// item's index, and its result goes to the same index of the output (F10).
+    fn parallel_scope_child(
+        &mut self,
+        kernel: &Kernel<'_>,
+        loaded: &[String],
+        callback: &str,
+        direct: Option<&BorrowedCall>,
+    ) {
+        let (shared, output) = (&loaded[2], &loaded[3]);
+        let value = self.parallel_apply(
+            callback,
+            kernel.callback,
+            direct,
+            &[
+                (kernel.input.clone(), shared.clone()),
+                (Type::I64, "%chunk".to_owned()),
+            ],
+        );
+        let pointer = self.element_pointer(kernel.element, output, "%chunk");
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}",
+            self.ty(kernel.element)
+        ));
     }
 
     /// `ceil(length / size)`: the chunks of `Parallel.for_each_chunk`, for a positive `size`.
@@ -375,6 +411,9 @@ impl FunctionEmitter<'_, '_> {
     ) -> String {
         if operation == Builtin::ParallelForEachChunk {
             return self.parallel_chunks(arguments);
+        }
+        if operation == Builtin::TaskScope {
+            return self.parallel_scope(arguments, result_type);
         }
         let reduce = operation == Builtin::ParallelReduce;
         let initialize = operation == Builtin::ParallelInit;
@@ -530,6 +569,74 @@ impl FunctionEmitter<'_, '_> {
         if !callback.is_empty() {
             self.drop_value(callback_type, callback);
         }
+        result
+    }
+
+    /// `Task.scope shared count callback`: one group item per index below `count`, so that every
+    /// child is a unit the pool may run on its own thread, each calling the callback with the
+    /// shared borrow and its index, and the results in index order (F10). A negative count traps
+    /// where the result array is allocated.
+    fn parallel_scope(&mut self, arguments: &[TypedExpr], result_type: &Type) -> String {
+        let callback_type = &arguments[2].ty;
+        let shared_type = &arguments[0].ty;
+        // A borrowed temporary (`Task.scope (ref 5) ...`) lives in a slot until the children finish.
+        let mut operands = Vec::new();
+        let shared = if let TypedExprKind::BorrowOperand(operand) = &arguments[0].kind {
+            self.operand_borrow(&arguments[0], operand, &mut operands)
+        } else {
+            self.expression(&arguments[0])
+        };
+        let count = self.expression(&arguments[1]);
+        let target = call_specialization::target(&arguments[2], &self.known_closures, self.module)
+            .filter(|target| {
+                target.bound + 2 == self.module.functions[target.function].parameters.len()
+            });
+        let mut direct = None;
+        let mut materialized = None;
+        if target.is_some_and(|target| target.bound == 0) {
+            direct = self.prepare_known_call(&arguments[2], 2);
+        } else {
+            materialized = target;
+        }
+        let callback = if direct.is_some() {
+            String::new()
+        } else {
+            self.expression(&arguments[2])
+        };
+        if let Some(target) = materialized {
+            direct = self.parallel_materialized_call(target, &callback);
+        }
+        for value in [&shared, &count, &callback] {
+            self.forget_temporary(value);
+        }
+        let Type::Array(element) = result_type else {
+            unreachable!("Task.scope returns an array")
+        };
+        let (result, output) = self.allocate_array(element, &count);
+        self.parallel_launch(
+            Kernel {
+                operation: Builtin::TaskScope,
+                input: shared_type,
+                element,
+                callback: callback_type,
+                direct: direct.as_ref(),
+            },
+            Data {
+                length: &count,
+                chunks: &count,
+                input: &shared,
+                output: &output,
+                identity: "0",
+                callback: &callback,
+            },
+        );
+        if let Some(call) = &direct {
+            self.finish_borrowed_call(call);
+        }
+        if !callback.is_empty() {
+            self.drop_value(callback_type, &callback);
+        }
+        self.release_operands(operands);
         result
     }
 

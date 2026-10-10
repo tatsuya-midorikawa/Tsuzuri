@@ -303,7 +303,11 @@ function memory64(bytes) {
     } while (byte & 128 && position < data.length);
     return value;
   };
-  const skipName = () => { position += leb(); };
+  // `position += leb()` would read `position` before `leb` advances it and drop the bytes of the length.
+  const skipName = () => {
+    const length = leb();
+    position += length;
+  };
   const limits = () => {
     const flags = data[position++];
     leb();
@@ -500,6 +504,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       failed.alive = false;
       failed.failure = thrown;
       failed.wake?.();
+      // What the instance holds outside it (the sockets of --wasm-feature net) cannot be used or closed any more.
+      failed.dispose?.();
       if (state === failed) {
         state = undefined;
         asyncHost?.discard(thrown);

@@ -1,0 +1,45 @@
+def show :: ref string -> string
+fn show input =
+	match Net.parse_address input with
+	| Maybe.Some address -> Net.address_text address
+	| Maybe.None -> "none"
+
+/// One line for each input: the text of the parsed address, or "none".
+def render :: unit -> string
+fn render _unit =
+	let inputs = Corpus.inputs ()
+	let mut lines: Vec<string> = Vec.with_capacity inputs.length
+	let mut index = 0
+	while index < inputs.length do
+		lines = Vec.push lines (show (ref inputs[index]))
+		index = index + 1
+	let separator = "\n"
+	String.join (ref separator) (ref (Vec.to_array lines)) + "\n"
+
+/// `parse_ip` and the accessors, which the corpus does not reach.
+def facts :: unit -> string
+fn facts _unit =
+	let none = "none"
+	let v4 = Net.parse_ip (ref "192.0.2.7") 8080
+	let v6 = Net.parse_ip (ref "2001:db8::7") 0
+	let described = \found ->
+		match found with
+		| Maybe.Some address -> Net.ip_text address + "|" + to_string (Net.port address) + "|" + to_string (Net.is_ipv6 address) + "|" + to_string address
+		| Maybe.None -> none
+	let bad_port = Net.parse_ip (ref "::1") 70000
+	let negative = Net.parse_ip (ref "::1") (-1)
+	let bracketed = Net.parse_ip (ref "[::1]") 1
+	let with_port = Net.parse_ip (ref "1.2.3.4:5") 1
+	let top = Net.parse_ip (ref "255.255.255.255") 65535
+	let same = match (v4, Net.parse_address (ref "192.0.2.7:8080")) with
+		| (Maybe.Some left, Maybe.Some right) -> left == right
+		| _ -> false
+	let differs = match (v4, Net.parse_address (ref "192.0.2.7:8081")) with
+		| (Maybe.Some left, Maybe.Some right) -> left == right
+		| _ -> true
+	described v4 + "\n" + described v6 + "\n" + described bad_port + "\n" + described negative + "\n" + described bracketed + "\n" + described with_port + "\n" + described top + "\n" + to_string same + " " + to_string differs + "\n"
+
+def main :: unit -> i32 = \() ->
+	do! IO.write (render ())
+	do! IO.write (facts ())
+	0

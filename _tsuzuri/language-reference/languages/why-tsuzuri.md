@@ -37,7 +37,7 @@ C/C++ は、既存のネイティブ資産、低水準の制御、長い運用�
 - ポインタ、値ごとのアロケータ、任意のメモリ配置を細かく制御することはできません。プログラム全体のヒープをホストの関数へ差し替える `--allocator host` はあります。
 - 既存の C/C++ ソースを、そのまま言語へ取り込む機能はありません。C ヘッダーからは `tsuzuri bindgen` が、ABI の一致を確かめられる関数・定数・struct の宣言を生成します（64-bit の Linux と macOS）。それ以外の C の関数は、対応する型で `extern` を書き、`--link` でリンクします。C++ のヘッダーは対象外です。
 - デバイス、ネットワーク、既存ライブラリとの接続には、ホスト側の実装が要ることが多いです。ファイルなどの OS API は、POSIX ネイティブと `--wasm-host wasi` にあります。
-- 最適化済みライブラリ、デバッガー、長期運用の実績は C/C++ の方が豊富です。GPU は実験段階で、成熟した GPU 開発基盤の代わりにはなりません。
+- 最適化済みライブラリ、デバッガー、長期運用の実績は C/C++ の方が豊富です。数値計算には `Matrix`・`MatrixView`・`Tensor`（行優先の行列と N 次元の配列、演算順序を固定した行列積）がありますが、BLAS のような最適化済みライブラリの代わりにはなりません。GPU は実験段階で、成熟した GPU 開発基盤の代わりにはなりません。
 - 安全検査、所有値の複製、境界の変換にはコストがあります。LLVM を使うことだけでは、速度の優位は決まりません。
 
 既存の C/C++ ホストを残し、入出力が明確な計算へ型と所有権の検査を足したいときに、切り出して試せます。
@@ -89,7 +89,7 @@ C# と F# は、静的な型と .NET のライブラリでアプリケーショ�
 
 - .NET の標準ライブラリ、NuGet、GUI、Web、データベース、ネットワーク API を、そのままは使えません。標準の OS API は、ファイル、ディレクトリ、環境、時刻、乱数、プロセスに限られます。
 - 直列化は JSON（[Json](../built-in-types-and-modules/json.md)）と CBOR（[Cbor](../built-in-types-and-modules/cbor.md)）を `deriving (Encode, Decode)` で扱えますが、.NET の `System.Text.Json` のような多くの形式・属性・変換器の生態系はありません。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
-- GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換える内部可変性はまだありません（F10）。
+- GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。
 - C# の `async` / `await` と同じ構文ではありませんが、標準の [Async 式](../async-tasks-and-lazy/async.md) で協調的な中断、仮想時刻、ホストによる再開を扱えます。CPU の並列は `Task` と分担します。
 - 対話環境の [`tsuzuri repl`](../compiler/usage.md#repl) は、`dotnet fsi` と違って JIT を持たず、入力ごとにプログラムを作り直して Clang でコンパイルし、別プロセスで実行します。1 回の評価に Clang の起動を含む時間がかかり、値は持ち越さず、受け付けた `let` を毎回実行し直します。`;;` ではなく空行で複数行の入力を終え、`#r` のような外部参照の読み込みはありません。
 - 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`Task` は非同期ではなく、一回実行の計算です。
@@ -131,12 +131,12 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 
 - GUI、Web、データベース、ネットワークが本体のアプリケーション。
 - npm、NuGet、crates.io のライブラリを、そのまま依存にしたい開発。
-- 汎用の非同期 I/O、成熟した GPU カーネル開発。
+- ファイルを含む汎用の非同期 I/O、成熟した GPU カーネル開発。非同期にできる I/O は、`Net` のソケットだけです。
 - GC に任せた共有グラフや、循環するオブジェクトをそのまま写すモデル。循環は [Arena](../built-in-types-and-modules/arena.md) のハンドルで表し直します。
 - Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 
 > [!WARNING]
-> 標準のネットワーク API、公開の registry、汎用 GPU 実行、非同期 I/O は、0.1.0 にはありません。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
+> 公開の registry、TLS や HTTP などソケットより上のネットワーク API、汎用 GPU 実行、ファイルの非同期 I/O は、0.1.0 にはありません（標準の [Net](../built-in-types-and-modules/net.md) は TCP・UDP・名前解決を持ちます。GPU は、WebGPU と Vulkan 上のカーネル実行が実験的にあるだけです）。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
 
 ## プラットフォームの読み方
 
@@ -172,7 +172,7 @@ flowchart TD
 - 関数型の書き方と、GC のない所有権を、計算カーネルに使いたいときに候補になります。
 - C/C++ より契約を検査でき、Rust より関数の合成を中心に書けます。エコシステムの広さでは、どちらにも及びません。
 - C#、F#、TypeScript のライブラリや実行基盤の置き換えには、まだ向きません。
-- GPU は実験的、非同期は計画中、公開の registry は運営されていません。Windows の OS API は検証未了で拒否されます。
+- GPU は実験的、非同期 I/O はソケットだけ、公開の registry は運営されていません。Windows の OS API は検証未了で拒否されます。
 - 採用するなら、期待値が明確な計算を一つ照合してから範囲を決めます。
 
 ## 関連項目

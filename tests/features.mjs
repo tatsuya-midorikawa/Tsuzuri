@@ -7,6 +7,10 @@ import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
 import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
+import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
+import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
+import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
+import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -33,6 +37,22 @@ function execute(program, args, success = true) {
   return result;
 }
 const cli = (args) => execute(compiler, args);
+// Runs a program that must finish quickly. The program itself is the child and is killed with SIGKILL after
+// `seconds`, so a loop that never ends cannot outlive the test (a SIGTERM aimed at a wrapper such as
+// `tsuzuri run` would leave the program running at full speed).
+function executeBounded(program, args, seconds = 10) {
+  const result = spawnSync(program, args, {
+    cwd: root, encoding: "utf8", timeout: seconds * 1000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+  });
+  assert.ok(!result.error, `${program} ${args.join(" ")} did not finish within ${seconds} s (${result.error?.code})`);
+  return result;
+}
+// Calls one export of a WebAssembly module with i64 arguments in a child Node process and prints the result,
+// so that `executeBounded` can kill a call that never returns.
+const boundedWasmCall = `const { readFileSync } = require("node:fs");
+const [file, name, ...args] = process.argv.slice(1);
+const exports = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(file))).exports;
+console.log(String(exports[name](...args.map(BigInt))));`;
 const cValue = (n) => typeof n !== "bigint"
   ? (Object.is(n, -0) ? "-0.0" : Number.isNaN(n) ? "NAN" : n === Infinity ? "INFINITY" : n === -Infinity ? "(-INFINITY)" : String(n))
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`
@@ -363,6 +383,26 @@ const interpolationIntegers = [min, -255n, -1n, 0n, 1n, 42n, max];
 // Each suite is a fixture directory whose exports are called with the listed
 // arguments. Native hosts track every allocation, so each call must leave no
 // live heap bytes; WASM modules must stay import-free.
+// F10: the fixture's `sequence` of atomic operations, written from the instructions' definitions. Every
+// operation wraps to `bits`, signed or not; the compare-exchanges see the value before they write.
+function atomicSequence(bits, signed, start, delta, mask) {
+  const wrap = (value) => signed ? BigInt.asIntN(bits, value) : BigInt.asUintN(bits, value);
+  let cell = wrap(start);
+  const seen = [];
+  const update = (operate) => { seen.push(cell); cell = wrap(operate(cell)); };
+  update((value) => value + delta);
+  update((value) => value + delta);
+  update((value) => value - mask);
+  update((value) => value ^ mask);
+  update((value) => value | delta);
+  update((value) => value & mask);
+  update(() => start);
+  update((value) => value === wrap(start) ? delta : value);
+  update((value) => value === wrap(start) ? mask : value);
+  seen.push(cell);
+  return BigInt.asIntN(64, seen.reduce((total, value) => total + BigInt.asIntN(64, value), 0n));
+}
+
 const suites = {
   higher_kinds: {
     cases: [
@@ -1436,6 +1476,150 @@ const suites = {
     traps: [["replaced", [2n]], ["other", [1n]], ["past_end", [0n]], ["past_end", [3n]], ["literal_past", [0n]]],
     inspect(ir) { assert.doesNotMatch(ir, /llvm\.assume|!range| nsw | nuw /); },
   },
+  // C11: every expected value is computed by tests/matrix-cases.mjs from JavaScript numbers and BigInt.
+  matrix: {
+    cases: matrixCases,
+    traps: matrixTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Matrix\./);
+      assert.doesNotMatch(ir, /fmuladd|\bfast\b|\bcontract\b|\breassoc\b/);
+      assert.doesNotMatch(ir, /%tz\.matrix/);
+      // Only the explicit fused kernels may call Math.fma; the separately rounded product never does.
+      for (const chunk of ir.split("\ndefine ")) {
+        if (/^[^\n]*@tz\.fn\.Matrix\.multiply_rows\./.test(chunk)) assert.doesNotMatch(chunk.split("\n}\n")[0], /llvm\.fma|tz_soft_fma|Math\.fma/);
+      }
+      // Math.fma is llvm.fma only in native code of a compiler built for AArch64 (src/llvm_math.rs); elsewhere it is the soft routine.
+      assert.match(ir, /@llvm\.fma\.f64|@tz_soft_fma/);
+    },
+  },
+  // C11 Phase 2: windows are modelled in tests/matrix-view-cases.mjs as index mappings, not as strides.
+  matrix_view: {
+    cases: matrixViewCases,
+    bounded: matrixViewBounded,
+    traps: matrixViewTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.MatrixView\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // C11 Phase 2: tensor windows are modelled in tests/tensor-cases.mjs as index mappings, not as strides.
+  tensor: {
+    cases: tensorCases,
+    bounded: tensorBounded,
+    traps: tensorTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Tensor\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // F10: Atomic, Mutex and Task.scope. Every case is a closed expression that does not depend on the
+  // schedule: sums of commutative updates and results in index order.
+  concurrency: {
+    cases: [
+      ["atomic_i8", [], atomicSequence(8, true, 100n, 100n, 90n)],
+      ["atomic_i16", [], atomicSequence(16, true, 30000n, 20000n, 12345n)],
+      ["atomic_i32", [], atomicSequence(32, true, 2000000000n, 1500000000n, 123456789n)],
+      ["atomic_i64", [], atomicSequence(64, true, 9000000000000000000n, 4000000000000000000n, 1234567890123456789n)],
+      ["atomic_u8", [], atomicSequence(8, false, 100n, 100n, 90n)],
+      ["atomic_u16", [], atomicSequence(16, false, 60000n, 20000n, 12345n)],
+      ["atomic_u32", [], atomicSequence(32, false, 4000000000n, 1500000000n, 123456789n)],
+      ["atomic_u64", [], atomicSequence(64, false, 18000000000000000000n, 4000000000000000000n, 1234567890123456789n)],
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["atomic_counter", [n], n * (n + 1n) / 2n]),
+      ["atomic_compare_exchange", [], 5n * 10000n + 9n * 100n + 9n],
+      ["atomic_wrapping_i32", [], -2147483648n],
+      ["atomic_bool_flag", [], 1n],
+      ["atomic_into_inner", [], 42n],
+      ...[0n, 1n, 10n, 100n, 1000n].map((n) => {
+        const misses = (n + 2n) / 3n;
+        return ["counters_record", [n], 2n * (n - misses) * 1000000n + misses];
+      }),
+      ...[0n, 1n, 2n, 1000n].map((n) => {
+        let checksum = 0n;
+        for (let position = 0n; position < n; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
+        return ["scope_results_order", [n], checksum];
+      }),
+      ...[0n, 1n, 4n, 4097n].map((n) => ["scope_shared_array", [n], n * (n + 1n)]),
+      ...[0n, 1n, 9n, 300n].map((n) => ["scope_shared_function", [n], n * (n - 1n) / 2n + 7n * n]),
+      ["scope_nested_parallel", [], 4n * 4096n * 4097n / 2n],
+      ["scope_empty", [], 0n],
+      // Four children each see the array 0, 2, ... 2(n-1) of sum n(n-1), then two see "<n>ab".
+      ...[0n, 1n, 5n, 100n, 1000n].map((n) => ["scope_temporary", [n], (4n * n * (n - 1n) + 6n) * 1000n + 2n * BigInt(String(n).length + 2) + 1n]),
+      // The total n(n+1)/2 of the locked additions, and the indices n(n-1)/2 that the children return.
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["mutex_total", [n], n * n]),
+      ...[0n, 1n, 4n, 257n].map((n) => ["mutex_owned_array", [n], n * n]),
+      ...[0n, 1n, 257n].map((n) => ["mutex_record", [n], n * 1000000n + n * (n - 1n) / 2n]),
+      ["mutex_text", [], 6n * 100n + 6n],
+      // The tasks drop their Arcs before the call returns, so one owner is left.
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_mutex_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_atomic_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["scope_arc_mutex", [n], n * (n + 1n) / 2n]),
+      // The task takes `head` with it, and dropping it releases the Arc that it holds of `tail`.
+      ["linked_mutex", [], 2n * 10n + 1n],
+      // The builtins are asked for Send and Sync of `'f<i64>`, and a holder of plain values passes.
+      ["hkt_parallel", [], 6n],
+      ["hkt_mutex", [], 42n],
+      ["hkt_scope", [], 6n],
+    ],
+    traps: [["mutex_nested", []], ["mutex_parallel_inside", []], ["scope_negative", []]],
+    inspect(ir) {
+      // One sequentially consistent instruction per operation, and no runtime call for it.
+      assert.match(ir, /atomicrmw add ptr %[\w.]+, i64 %[\w.]+ seq_cst, align 8/);
+      assert.match(ir, /atomicrmw xchg ptr/);
+      assert.match(ir, /cmpxchg ptr %[\w.]+, i8 %[\w.]+, i8 %[\w.]+ seq_cst seq_cst, align 1/);
+      assert.match(ir, /load atomic i8, ptr %[\w.]+ seq_cst, align 1/);
+      assert.match(ir, /load atomic i64, ptr %[\w.]+ seq_cst, align 8/);
+      assert.doesNotMatch(ir, /call [^\n]*@tsuzuri_atomic/);
+      // The lock and the parallel entries come from the runtime that the driver links.
+      for (const declaration of ["declare i32 @tsuzuri_mutex_lock(ptr)", "declare void @tsuzuri_mutex_unlock(ptr)", "declare i32 @tsuzuri_mutex_parallel_ok()",
+        "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+      // Parallel work starts through the wrappers that refuse to start inside a lock.
+      assert.match(ir, /^define internal void @tz\.mutex\.parallel\(ptr %run, ptr %context, i64 %length\)/m);
+      assert.doesNotMatch(ir, /call void @tsuzuri_task_parallel\(ptr @tz\.parallel/);
+      assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
+    },
+  },
+  // F10 Phase 2: Channel. The exports need no second thread: up to the capacity a channel is a ring,
+  // and everything that can wait traps the same way on every target.
+  channel: {
+    cases: [
+      ...[1n, 2n, 3n, 10n, 257n, 4096n].map((n) => ["roundtrip", [n], n * (n + 1n) / 2n]),
+      ["fifo", [], 123456n],
+      ["closed", [], 123000n],
+      ["refused", [], 41n],
+      ["cloned", [], 50n],
+      ["text", [], 54n],
+      ["returned", [], 8n],
+      // n tokens are dropped once each: one when it is received, the others with the channel. The
+      // counter then has no other owner.
+      ...[1n, 2n, 7n, 100n].map((n) => ["tokens", [n], n * 1000n + 10n + 1n]),
+      ["scope_end", [], 4n * 100n + 3n * 10n + 1n],
+      ["signals", [], 110n],
+      ["record_ends", [], 10n],
+      // The item that is left in the outer channel is a Sender: dropping it closes the inner channel.
+      ["nested", [], 0n],
+      // A function is an item: it carries copies, and a received one goes on to another channel.
+      ["functions", [], 4112n],
+      ["forwarded", [], 42n * 10n + 1n],
+      ["function_drop", [], 31n],
+      // The channel is made through a constructor variable, and its items are plain values.
+      ["hkt_channel", [], 42n],
+    ],
+    traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []],
+      ["send_inside_lock", []], ["recv_inside_lock", []]],
+    inspect(ir) {
+      // The channel runtime comes from the runtime that the driver links; the lowering only calls it.
+      for (const declaration of ["declare i32 @tsuzuri_channel_send(ptr, ptr)", "declare i32 @tsuzuri_channel_recv(ptr, ptr)",
+        "declare void @tsuzuri_channel_clone_sender(ptr)", "declare i32 @tsuzuri_channel_close(ptr, i32)",
+        "declare i32 @tsuzuri_mutex_wait_ok()", "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
 };
 
 const stringSamples = ["", "hello hello", "l", "a\0b", "\u{1f600}", "\ue000", " \tAbC\r\n", "\ud800", "\ude00", "aa"];
@@ -1613,6 +1797,9 @@ function run(name, suite) {
     if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
+    // Entries that must finish at once (a loop over an empty window). They are not in `cases`: native, each one runs in
+    // its own process and WASM in a child Node process, both under a SIGKILL timer, never in this process.
+    const bounded = suite.bounded ?? [];
     const host = join(temporary, "host.c");
     writeFileSync(host, `
 #include <assert.h>
@@ -1668,6 +1855,7 @@ int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
             ${traps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
+            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && live == 0 ? 0 : 1;`).join("\n")}
         }
         return 0;
     }
@@ -1681,7 +1869,11 @@ int main(int argc, char **argv) {
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
         `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), "-lm", "-o", native]);
       execute(native, []);
-      if (name === "parallel" && optimization === "3") {
+      for (const [index, [exported]] of bounded.entries()) {
+        const result = executeBounded(native, [String(traps.length + index)]);
+        assert.equal(result.status, 0, `${name} native O${optimization}: ${exported} returned a wrong value or leaked`);
+      }
+      if ((name === "parallel" || name === "matrix") && optimization === "3") {
         for (const processors of [1, 4]) {
           const runtime = join(temporary, `runtime-${processors}.c`);
           const binary = join(temporary, `parallel-cpus-${processors}`);
@@ -1704,9 +1896,27 @@ int main(int argc, char **argv) {
         assert.equal(exports[`tz_${exported}`](...args), expected, `${name} WASM O${optimization}: ${exported}(${args})`);
         assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024, `${name}: WASM stays within 16 MiB`);
       }
+      for (const [exported, args, expected] of bounded) {
+        const result = executeBounded(process.execPath, ["-e", boundedWasmCall, wasm, `tz_${exported}`, ...args.map(String)]);
+        assert.equal(result.status, 0, `${name} WASM O${optimization}: ${exported}\n${result.stderr}`);
+        assert.equal(result.stdout.trim(), String(expected), `${name} WASM O${optimization}: ${exported}`);
+      }
       for (const [trap, args] of [...traps, ...suite.wasmTraps ?? []]) {
         const fresh = new WebAssembly.Instance(module).exports;
         assert.throws(() => fresh[`tz_${trap}`](...args), WebAssembly.RuntimeError, trap);
+      }
+      if (suite.trapKind && wasmTarget === "wasm32") {
+        // The kind of each trap: a violated precondition must trap as an assertion, before any allocation,
+        // element access or callback. An entry may name its own kind as a third element.
+        const traced = join(temporary, `${name}-trap-kinds-O${optimization}.wasm`);
+        cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", traced]);
+        const { sites } = JSON.parse(readFileSync(`${traced}.trap.json`, "utf8"));
+        const boundary = createBoundary(new WebAssembly.Module(readFileSync(traced)), { sites });
+        for (const [trap, args, kind = suite.trapKind] of traps) {
+          const result = boundary.call(`tz_${trap}`, ...args);
+          assert.equal(result.ok, false, `${name} O${optimization}: ${trap}(${args}) must trap`);
+          assert.equal(result.trap.kind, kind, `${name} O${optimization}: ${trap}(${args}) trapped with the wrong kind`);
+        }
       }
       if (name === "recursive_types") {
         const measured = join(temporary, `recursive-traps-${optimization}.wasm`);
@@ -1718,7 +1928,7 @@ int main(int argc, char **argv) {
         assert.ok(checked.tsuzuri_trap_site() > 0);
       }
     }
-    return suite.cases.length;
+    return suite.cases.length + bounded.length;
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -1885,11 +2095,40 @@ async function rcWasmThreadsChecks() {
   console.log("rc: Arc on WASM threads at O0/O3 passed");
 }
 
+// Matrix.mul_parallel on WASM threads: the workers share the copied operands and write disjoint row
+// chunks, and every result equals the sequential product bit for bit (the fixture counts mismatches).
+async function matrixWasmThreadsChecks() {
+  if (wasmTarget !== "wasm32") return;
+  const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-matrix-threads-"));
+  try {
+    for (const optimization of [0, 3]) {
+      const wasm = join(directory, `matrix-threads-${optimization}.wasm`);
+      cli(["build", join(root, "tests/fixtures/matrix"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", wasm]);
+      const pool = await createThreadPool(readFileSync(wasm), { workers: 3 });
+      try {
+        for (const [rows, inner, cols] of [[129n, 128n, 64n], [3n, 500n, 1500n], [64n, 64n, 64n]]) {
+          assert.equal(pool.call("tz_parallel_mismatches64", rows, inner, cols, 1n, 10n), 0n);
+          assert.equal(pool.call("tz_parallel_mismatches32", rows, inner, cols, 1n, 13n), 0n);
+          assert.equal(pool.call("tz_integer_parallel", rows, inner, cols, 5n), 0n);
+        }
+        assert.equal(pool.call("tz_kernel_entry64", 129n, 128n, 64n, 0n, 1n, 128n * 64n), productEntry(128, 0, 64, false, 128, 0));
+        assert.equal(pool.call("tz_kernel_entry64", 129n, 128n, 64n, 0n, 3n, 128n * 64n), productEntry(128, 0, 64, true, 128, 0));
+        assert.equal(pool.workerCount, 3);
+      } finally {
+        await pool.close();
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  console.log("matrix: mul_parallel on WASM threads at O0/O3 passed");
+}
+
 let total = 0;
 for (const [name, suite] of Object.entries(suites)) {
   if (only && only !== name) continue;
   total += run(name, suite);
   if (name === "rc") await rcWasmThreadsChecks();
+  if (name === "matrix") await matrixWasmThreadsChecks();
   if (name === "vec") wasmReallocationChecks();
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();

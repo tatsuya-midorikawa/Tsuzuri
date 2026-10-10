@@ -639,6 +639,79 @@ impl Checker<'_> {
         closed(body, self.module, self.closed, &locals)
     }
 
+    /// The builtin that `callee` is, or that the generated function it names calls on its own
+    /// parameters after lowering (every builtin is called through one).
+    fn builtin_called(&self, callee: &TypedExpr) -> Option<crate::check::Builtin> {
+        let E::Function(function) = &callee.kind else {
+            return None;
+        };
+        match function {
+            crate::check::FunctionRef::Builtin(instance) => Some(instance.builtin),
+            crate::check::FunctionRef::User(id) => {
+                let wrapper = &self.module.functions[*id];
+                match &wrapper.body.kind {
+                    E::Call(inner, _) if wrapper.module == "$builtin" => match &inner.kind {
+                        E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                            Some(instance.builtin)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
+    /// that calls it after lowering: the type after its lock and callback, which is a function
+    /// when the callback's result is one (F10).
+    fn locked_result(&self, callee: &TypedExpr) -> Option<Type> {
+        match &callee.ty {
+            Type::Function(parameters, _)
+                if self.builtin_called(callee) == Some(crate::check::Builtin::MutexWith)
+                    && parameters.len() >= 2 =>
+            {
+                Some(callee.ty.after_arguments(2))
+            }
+            _ => None,
+        }
+    }
+
+    /// The type of the item that `callee` puts in a channel when it is `Channel.send`, or the
+    /// generated function that calls it (F10). The item stays in the channel after the call.
+    fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
+        match &callee.ty {
+            Type::Function(parameters, _)
+                if self.builtin_called(callee) == Some(crate::check::Builtin::ChannelSend)
+                    && parameters.len() >= 2 =>
+            {
+                Some(parameters[1].clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `argument` is a parameter of a generated function, which passes on what its
+    /// callers gave it.
+    fn is_generated_parameter(&self, argument: &TypedExpr) -> bool {
+        matches!(&argument.kind, E::Local(id)
+            if self.state.locals.get(id).is_some_and(|(local, _)| local.provenance == crate::syntax::Provenance::Generated))
+    }
+
+    /// Whether the tasks of a parallel operation that share the borrow `argument`, which evaluated
+    /// to `value`, could reach a borrowed environment through it (F10). The loans of a place that
+    /// is borrowed have the loans of the place as parents, and a loan of an external place says
+    /// nothing about what the place holds. A temporary is borrowed where it is made, so the loans
+    /// in `value` are the loans that the temporary holds itself: a loan with no parents on a plain
+    /// local does not prove the environment owned, because the closure, not the local, is shared.
+    fn shares_borrowed_environment(&self, argument: &TypedExpr, value: &Value) -> bool {
+        (matches!(argument.kind, E::BorrowOperand(_)) && !value.loans.is_empty())
+            || value.loans.iter().any(|id| {
+                !self.loans[*id].parents.is_empty()
+                    || self.external.contains(&self.loans[*id].place.root)
+            })
+    }
+
     fn is_copy(&self, ty: &Type) -> bool {
         if self.module.types().recursive(ty) || ty.is_noncopy_record(&self.module.types()) {
             return false;
@@ -1904,7 +1977,17 @@ impl Checker<'_> {
         uses(expression, &mut during);
         let mut result = Value::default();
         let start = self.held.len();
-        let value = self.eval(callee, Use::Consume, &during)?;
+        // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below,
+        // and one of `Channel.send` checks its item; any other use of either builtin as a value is
+        // checked where it is evaluated.
+        let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
+        let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
+        let received = self.builtin_called(callee) == Some(crate::check::Builtin::ChannelRecv);
+        let value = if locked.is_some() || sent.is_some() {
+            Value::default()
+        } else {
+            self.eval(callee, Use::Consume, &during)?
+        };
         let (known, region_sources, callback) = self.call_contract(callee, arguments)?;
         let module = self.module;
         let slots = known
@@ -1923,10 +2006,44 @@ impl Checker<'_> {
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
             let value = self.eval(argument, Use::Consume, &during)?;
+            // The callback runs under the lock, so a result that holds a borrow of the locked value
+            // would use it after the lock is released: the value may be replaced and freed, or be
+            // written by another task, by then. Only a result that is proven free of borrows made
+            // inside the callback may hold borrows at all (F10). The generated function that
+            // applies the builtin to its own parameters proves nothing: its callers are checked.
+            if index == 1
+                && let Some(returned) = &locked
+                && returned.carries_loans(&self.module.types())
+                && !value.closed_result[0]
+                && !self.is_generated_parameter(argument)
+            {
+                return Err(error(
+                    "E1013",
+                    "Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy",
+                    argument.span,
+                ));
+            }
             if !value.loans.is_empty() && owned_dyn_of(callee) {
                 return Err(error(
                     "E1013",
                     "a dyn value without a region cannot hold borrowed data; pass an owned value to Dyn.of, or name a region, as in 'dyn Shapes.Shape {r}'",
+                    argument.span,
+                ));
+            }
+            // The item stays in the channel and is received later, perhaps on another thread and
+            // after the data it borrows is gone. The type of the channel's end does not show the
+            // item type (`Sender<T>` stores one integer), so no later check can see the borrow; a
+            // parameter of a generated function passes on what its callers gave it, and they are
+            // checked (F10).
+            if index == 1
+                && let Some(item) = &sent
+                && item.carries_loans(&self.module.types())
+                && !value.loans.is_empty()
+                && !self.is_generated_parameter(argument)
+            {
+                return Err(error(
+                    "E1013",
+                    "a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent",
                     argument.span,
                 ));
             }
@@ -1953,7 +2070,9 @@ impl Checker<'_> {
             }
         }
         if expression.ty.carries_loans(&self.module.types()) {
-            result = current;
+            // An item that a receiver takes out of a channel was checked when it went in: it holds
+            // no borrow, and it was moved out of the channel, so it does not borrow the receiver.
+            result = if received { Value::default() } else { current };
             result.closed_result =
                 std::array::from_fn(|index| self.callback_returns_closed(expression, index + 1));
         }
@@ -2038,6 +2157,31 @@ impl Checker<'_> {
                 return Err(error(
                     "E1013",
                     "parallel operations must be fully applied directly; their ownership boundary cannot be erased into an ordinary function value",
+                    expression.span,
+                ));
+            }
+            // A result that may hold a borrow is checked at the direct call, so the builtin
+            // cannot be applied in stages or kept as a function value then.
+            E::Function(_)
+                if self
+                    .locked_result(expression)
+                    .is_some_and(|returned| returned.carries_loans(&self.module.types())) =>
+            {
+                return Err(error(
+                    "E1013",
+                    "Mutex.with_lock must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together",
+                    expression.span,
+                ));
+            }
+            // The same for the item of `Channel.send`.
+            E::Function(_)
+                if self
+                    .sent_item(expression)
+                    .is_some_and(|item| item.carries_loans(&self.module.types())) =>
+            {
+                return Err(error(
+                    "E1013",
+                    "Channel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
                     expression.span,
                 ));
             }
@@ -2188,24 +2332,47 @@ impl Checker<'_> {
             }
             E::Parallel(operation, arguments) => {
                 let callback = operation.parallel_callback();
-                let input = if *operation == crate::check::Builtin::ParallelInit {
+                let scope = *operation == crate::check::Builtin::TaskScope;
+                let input = if matches!(
+                    operation,
+                    crate::check::Builtin::ParallelInit | crate::check::Builtin::TaskScope
+                ) {
                     None
                 } else {
                     Some(arguments.len() - 1)
                 };
+                // The callbacks of `reduce` and `Task.scope` take two arguments.
+                let result_arity = usize::from(matches!(
+                    operation,
+                    crate::check::Builtin::ParallelReduce | crate::check::Builtin::TaskScope
+                ));
                 let base = self.held.len();
                 for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;
-                    if Some(index) == input {
+                    if scope && index == 0 {
+                        // Every child reads the shared borrow, which lasts for the call. A value
+                        // that may hold function values needs an environment proven to hold no
+                        // loans, as the elements of `Parallel.map_ref` do.
+                        let referent = argument
+                            .ty
+                            .dereferenced()
+                            .expect("a task scope shares a borrow");
+                        if referent.carries_loans(&self.module.types())
+                            && self.shares_borrowed_environment(argument, &value)
+                        {
+                            return Err(error(
+                                "E1013",
+                                "task scopes can share only values with proven owned environments",
+                                argument.span,
+                            ));
+                        }
+                    } else if Some(index) == input {
                         let element = argument
                             .ty
                             .slice_element()
                             .expect("parallel input is a slice");
                         if element.carries_loans(&self.module.types())
-                            && value.loans.iter().any(|id| {
-                                !self.loans[*id].parents.is_empty()
-                                    || self.external.contains(&self.loans[*id].place.root)
-                            })
+                            && self.shares_borrowed_environment(argument, &value)
                         {
                             return Err(error(
                                 "E1013",
@@ -2222,8 +2389,7 @@ impl Checker<'_> {
                     }
                     if index == callback
                         && expression.ty.carries_loans(&self.module.types())
-                        && !value.closed_result
-                            [usize::from(*operation == crate::check::Builtin::ParallelReduce)]
+                        && !value.closed_result[result_arity]
                     {
                         return Err(error(
                             "E1013",

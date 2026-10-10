@@ -128,6 +128,7 @@ flowchart TD
 | `SignedInteger` `UnsignedInteger` | 符号付き、符号なし整数の印 |
 | `Float` `Numeric` `Elementary` | 浮動小数点、数値、`f32` / `f64` の印。`Elementary` は `sin` などの対象 |
 | `Copy` `Capture` `Send` | 複製、関数環境への保存、タスクへの送信。印 |
+| `Sync` `AtomicValue` | タスク間の共有借用、`Atomic` に入れられる型。印 |
 | `Display` | `display :: ref 'a -> string` |
 | `Parse` | `parse :: ref string -> Maybe<'a>` |
 | `Hash` | `hash :: ref 'a -> i64u` |

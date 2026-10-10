@@ -1,0 +1,317 @@
+private def mix :: i64 -> i64 -> i64
+fn mix total x = total * 31 + x
+
+private def flag :: bool -> i64
+fn flag value = if value then 1 else 0
+
+// The rank, the shape, the layout, whether the window is one run of the buffer, the fold of its elements, and
+// the fold of the copy `to_tensor` makes.
+private def digest :: ref Tensor.View<i64> -> i64
+fn digest view =
+    let copy = Tensor.to_tensor view
+    let packed = Tensor.view (ref copy)
+    let shape = Tensor.shape view
+    let strides = Tensor.strides view
+    let mut total = 7
+    total = mix total (Tensor.rank view)
+    total = mix total (Tensor.count view)
+    total = mix total (Tensor.offset view)
+    total = mix total (flag (Tensor.is_contiguous view))
+    for axis in 0i64 .. (shape.length - 1) do
+        total = mix total shape[axis]
+        total = mix total strides[axis]
+    total = mix total (Tensor.fold mix 0 view)
+    total = mix total (Tensor.fold mix 0 (ref packed))
+    mix total (Tensor.rank (ref packed) * 1000 + Tensor.count (ref packed))
+
+private def once { r } :: Tensor.View<i64> { r } -> i64
+fn once view = digest (ref view)
+
+private def rank_of { r } :: Tensor.View<i64> { r } -> i64
+fn rank_of view = Tensor.rank (ref view)
+
+private def element :: i64 -> i64
+fn element i = i * 7 + 1
+
+// Needs every extent >= 1.
+export def ops :: i64 -> i64 -> i64 -> i64
+fn ops a b c =
+    let t = Tensor.init [a, b, c] element
+    let v = Tensor.view (ref t)
+    let rotated = Tensor.permute (ref v) [2, 0, 1]
+    let spun = Tensor.permute (ref v) [1, 2, 0]
+    let reversed = Tensor.permute (ref v) [2, 1, 0]
+    let swapped = Tensor.permute (ref v) [0, 2, 1]
+    let back = Tensor.permute (ref rotated) [1, 2, 0]
+    let first = Tensor.narrow (ref v) 0 1 (a - 1)
+    let mut total = 0
+    total = mix total (digest (ref v))
+    total = mix total (digest (ref rotated))
+    total = mix total (digest (ref spun))
+    total = mix total (digest (ref reversed))
+    total = mix total (digest (ref swapped))
+    total = mix total (digest (ref back))
+    total = mix total (once (Tensor.index_axis (ref v) 0 (a - 1)))
+    total = mix total (once (Tensor.index_axis (ref v) 1 (b - 1)))
+    total = mix total (once (Tensor.index_axis (ref v) 2 (c - 1)))
+    total = mix total (once (Tensor.index_axis (ref rotated) 1 (a - 1)))
+    total = mix total (once (Tensor.narrow (ref v) 1 1 (b - 1)))
+    total = mix total (once (Tensor.narrow (ref v) 2 1 (c - 1)))
+    total = mix total (once (Tensor.narrow (ref reversed) 0 1 (c - 1)))
+    total = mix total (digest (ref first))
+    total = mix total (once (Tensor.reshape_view (ref v) [a * b, c]))
+    total = mix total (once (Tensor.reshape_view (ref v) [a, b * c]))
+    total = mix total (once (Tensor.reshape_view (ref v) [a * b * c]))
+    total = mix total (once (Tensor.reshape_view (ref v) [1, a * b * c, 1]))
+    total = mix total (once (Tensor.reshape_view (ref first) [(a - 1) * b, c]))
+    let column = Tensor.narrow (ref v) 2 0 1
+    total = mix total (once (Tensor.index_axis (ref column) 2 0))
+    total
+
+// map and to_tensor produce contiguous tensors whatever the layout of the window.
+export def maps :: i64 -> i64 -> i64 -> i64
+fn maps a b c =
+    let t = Tensor.init [a, b, c] element
+    let v = Tensor.view (ref t)
+    let rotated = Tensor.permute (ref v) [2, 0, 1]
+    let doubled = Tensor.map (\x -> x * 2 + 1) (ref v)
+    let packed = Tensor.to_tensor (ref rotated)
+    let tail = Tensor.narrow (ref v) 2 1 (c - 1)
+    let slice = Tensor.map (\x -> x + 5) (ref tail)
+    let doubled_view = Tensor.view (ref doubled)
+    let packed_view = Tensor.view (ref packed)
+    let slice_view = Tensor.view (ref slice)
+    let mut total = 0
+    total = mix total (digest (ref doubled_view))
+    total = mix total (digest (ref packed_view))
+    total = mix total (digest (ref slice_view))
+    let flat = Tensor.as_array (ref packed)
+    total = mix total (Array.sum flat)
+    let mut index = 0
+    while index < flat.length do
+        total = mix total flat[index]
+        index = index + 1
+    total
+
+// Shapes with an extent of 0 and tensors with no axes.
+export def empties :: i64
+fn empties =
+    let empty = Tensor.init [0, 3] element
+    let wide = Tensor.init [3, 0] element
+    let flat = Tensor.init [0] element
+    let scalar = Tensor.init [] element
+    let nothing = Tensor.init [2, 0, 4] element
+    let ev = Tensor.view (ref empty)
+    let wv = Tensor.view (ref wide)
+    let fv = Tensor.view (ref flat)
+    let sv = Tensor.view (ref scalar)
+    let nv = Tensor.view (ref nothing)
+    let mut total = 0
+    total = mix total (digest (ref ev))
+    total = mix total (digest (ref wv))
+    total = mix total (digest (ref fv))
+    total = mix total (digest (ref sv))
+    total = mix total (digest (ref nv))
+    total = mix total (once (Tensor.permute (ref nv) [2, 0, 1]))
+    total = mix total (once (Tensor.index_axis (ref nv) 0 1))
+    total = mix total (once (Tensor.index_axis (ref nv) 2 3))
+    total = mix total (once (Tensor.narrow (ref ev) 1 1 2))
+    total = mix total (once (Tensor.reshape_view (ref nv) [8, 0]))
+    total = mix total (once (Tensor.reshape_view (ref sv) [1, 1, 1]))
+    total = mix total (once (Tensor.reshape_view (ref fv) [0, 5]))
+    let mapped = Tensor.map (\x -> x + 1) (ref nv)
+    total = mix total (Array.length (Tensor.as_array (ref mapped)))
+    let moved = Tensor.reshape [0, 3, 3] (Tensor.of_array [3, 0] (new [i64](0, _ -> 0)))
+    mix total (Array.length (Tensor.as_array (ref moved)))
+
+// Tensors with n axes of extent 1; at most 16 axes are allowed.
+export def rank_limit :: i64 -> i64
+fn rank_limit n =
+    let t = Tensor.init (new [i64](n, _ -> 1)) element
+    let v = Tensor.view (ref t)
+    digest (ref v)
+
+export def matrices :: i64 -> i64 -> i64
+fn matrices rows cols =
+    let m = Matrix.init rows cols (\i j -> i * 10 + j)
+    let t = Tensor.of_matrix m
+    let v = Tensor.view (ref t)
+    let windowed = Tensor.as_matrix_view (ref v)
+    let flipped = Tensor.permute (ref v) [1, 0]
+    let flipped_window = Tensor.as_matrix_view (ref flipped)
+    let inner = MatrixView.sub windowed 1 1 (rows - 1) (cols - 1)
+    let back = Tensor.of_matrix_view inner
+    let mut total = 0
+    total = mix total (digest (ref v))
+    total = mix total (MatrixView.rows windowed * 1000 + MatrixView.cols windowed)
+    total = mix total (MatrixView.offset windowed)
+    total = mix total (MatrixView.row_stride windowed * 1000 + MatrixView.col_stride windowed)
+    total = mix total (MatrixView.fold mix 0 windowed)
+    total = mix total (MatrixView.rows flipped_window * 1000 + MatrixView.cols flipped_window)
+    total = mix total (MatrixView.row_stride flipped_window * 1000 + MatrixView.col_stride flipped_window)
+    total = mix total (MatrixView.fold mix 0 flipped_window)
+    total = mix total (digest (ref back))
+    let reshaped = Tensor.reshape [cols, rows] t
+    let m2 = Tensor.to_matrix reshaped
+    total = mix total (Matrix.rows (ref m2) * 1000 + Matrix.cols (ref m2))
+    mix total (Matrix.fold mix 0 (ref m2))
+
+// Owner conversions: of_array and to_array move the buffer, as_array borrows it, borrow wraps a borrowed array.
+export def owners :: i64 -> i64
+fn owners n =
+    let t = Tensor.of_array [n, 2] (new [i64](n * 2, k -> k * 3))
+    let sum = Array.sum (Tensor.as_array (ref t))
+    let raw = new [i64](n * 2, k -> k + 100)
+    let window = Tensor.borrow [2, n] (ref raw)
+    let total = mix sum (digest (ref window))
+    let kept = Tensor.to_array t
+    mix total (Array.length (ref kept))
+
+// Windows and owners over elements that own memory (strings) borrow them; nothing is copied or leaked.
+export def owned_tensor :: i64 -> i64
+fn owned_tensor n =
+    let words = Tensor.init [n, 2] (\i -> $"s{i}")
+    let flat = Tensor.reshape [2, n] words
+    let v = Tensor.view (ref flat)
+    let p = Tensor.permute (ref v) [1, 0]
+    let mut total = 0
+    for i in 0i64 .. (n - 1) do
+        for j in 0i64 .. 1 do
+            let word = Tensor.at (ref p) [i, j]
+            total = mix total word.length
+    let rest = Tensor.index_axis (ref p) 1 1
+    mix total (Tensor.count (ref rest) * 100 + Tensor.rank (ref rest))
+
+// get returns None outside the extents and for an index of the wrong length.
+export def lookups :: i64
+fn lookups =
+    let t = Tensor.init [2, 3] element
+    let v = Tensor.view (ref t)
+    let mut total = 0
+    for i in (-1) .. 2 do
+        for j in (-1) .. 3 do
+            total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [i, j]))
+    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [1]))
+    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [1, 1, 1]))
+    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) []))
+    let scalar = Tensor.init [] element
+    let sv = Tensor.view (ref scalar)
+    mix total (Maybe.default_value (-1) (Tensor.get (ref sv) []))
+
+// Windows with no elements next to an axis of 2^62 or 2^31 + 2^31 positions: fold, map and to_tensor return at once.
+// fold used to walk the empty axis (forever).
+export def huge_empty :: i64
+fn huge_empty =
+    let tall = Tensor.init [4611686018427387904, 0] element
+    let cube = Tensor.init [2147483648, 2147483648, 0] element
+    let tv = Tensor.view (ref tall)
+    let cv = Tensor.view (ref cube)
+    let flipped = Tensor.permute (ref tv) [1, 0]
+    let reshaped = Tensor.reshape_view (ref tv) [0, 4611686018427387904]
+    let mapped = Tensor.map (\x -> x + 1) (ref tv)
+    let packed = Tensor.to_tensor (ref cv)
+    let mapped_view = Tensor.view (ref mapped)
+    let packed_view = Tensor.view (ref packed)
+    let mut total = 0
+    total = mix total (Tensor.fold mix 7 (ref tv))
+    total = mix total (Tensor.fold mix 8 (ref cv))
+    total = mix total (Tensor.fold mix 9 (ref flipped))
+    total = mix total (Tensor.fold mix 10 (ref reshaped))
+    mix total (Tensor.count (ref mapped_view) + Tensor.count (ref packed_view) + flag (Tensor.is_contiguous (ref tv)))
+
+// A MatrixView window enters a tensor only through the checks of MatrixView.strided.
+export def matrix_window_trap :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn matrix_window_trap offset rows cols row_stride col_stride =
+    let data = new [i64](10, k -> k)
+    rank_of (Tensor.of_matrix_view (MatrixView.strided offset rows cols row_stride col_stride (ref data)))
+
+export def init_trap :: i64 -> i64 -> i64
+fn init_trap a b =
+    let t = Tensor.init [a, b] element
+    Array.length (Tensor.as_array (ref t))
+
+export def overflow_trap :: i64 -> i64
+fn overflow_trap tail =
+    let t = Tensor.init [4294967296, 4294967296, tail] element
+    Array.length (Tensor.as_array (ref t))
+
+export def of_array_trap :: i64
+fn of_array_trap =
+    let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5]
+    Array.length (Tensor.as_array (ref t))
+
+export def reshape_trap :: i64
+fn reshape_trap =
+    let t = Tensor.reshape [5, 5] (Tensor.init [2, 3] element)
+    Array.length (Tensor.as_array (ref t))
+
+export def borrow_trap :: i64
+fn borrow_trap =
+    let raw = [1, 2, 3]
+    rank_of (Tensor.borrow [2, 2] (ref raw))
+
+export def at_trap :: i64 -> i64 -> i64 -> i64
+fn at_trap i j k =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    deref (Tensor.at (ref v) [i, j, k])
+
+export def at_rank_trap :: i64
+fn at_rank_trap =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    deref (Tensor.at (ref v) [1, 1])
+
+export def permute_trap :: i64 -> i64 -> i64 -> i64
+fn permute_trap x y z =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.permute (ref v) [x, y, z])
+
+export def permute_rank_trap :: i64
+fn permute_rank_trap =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.permute (ref v) [0, 1])
+
+export def index_axis_trap :: i64 -> i64 -> i64
+fn index_axis_trap axis position =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.index_axis (ref v) axis position)
+
+export def index_axis_scalar_trap :: i64
+fn index_axis_scalar_trap =
+    let t = Tensor.init [] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.index_axis (ref v) 0 0)
+
+export def narrow_trap :: i64 -> i64 -> i64 -> i64
+fn narrow_trap axis start length =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.narrow (ref v) axis start length)
+
+export def reshape_view_trap :: i64 -> i64 -> i64
+fn reshape_view_trap rows cols =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    rank_of (Tensor.reshape_view (ref v) [rows, cols])
+
+export def reshape_view_strided_trap :: i64
+fn reshape_view_strided_trap =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    let flipped = Tensor.permute (ref v) [2, 1, 0]
+    rank_of (Tensor.reshape_view (ref flipped) [24])
+
+export def to_matrix_trap :: i64
+fn to_matrix_trap =
+    let m = Tensor.to_matrix (Tensor.init [2, 3, 4] element)
+    Matrix.rows (ref m)
+
+export def as_matrix_view_trap :: i64
+fn as_matrix_view_trap =
+    let t = Tensor.init [2, 3, 4] element
+    let v = Tensor.view (ref t)
+    MatrixView.rows (Tensor.as_matrix_view (ref v))

@@ -1,0 +1,72 @@
+private def left_value :: i64 -> i64 -> f64
+fn left_value i j = ((i * 7 + j * 3) % 13) as f64 * 0.25 - 1.5
+
+private def right_value :: i64 -> i64 -> f64
+fn right_value i j = ((i * 5 + j * 11) % 17) as f64 * 0.125 - 1.0
+
+private def checksum :: ref Matrix<f64> -> f64
+fn checksum matrix = Matrix.fold (\total x -> total * 0.999 + x) 0.0 matrix
+
+private def checksum32 :: ref Matrix<f32> -> f64
+fn checksum32 matrix = Matrix.fold (\total x -> total * 0.999 + (x as f64)) 0.0 matrix
+
+private def checksum_int :: ref Matrix<i64> -> i64
+fn checksum_int matrix = Matrix.fold (\total x -> total * 31 + x) 7 matrix
+
+// The algorithm Phase 1's Matrix.mul used: i-j-k, one separately rounded sum per output element,
+// written with the public API only.
+private def textbook_element :: ref [f64] -> ref [f64] -> i64 -> i64 -> i64 -> f64
+fn textbook_element a b n i j =
+    let mut total = 0.0
+    let mut k = 0
+    while k < n do
+        total = total + a[i * n + k] * b[k * n + j]
+        k = k + 1
+    total
+
+private def textbook :: ref Matrix<f64> -> ref Matrix<f64> -> Matrix<f64>
+fn textbook left right =
+    let n = Matrix.rows left
+    let a = Matrix.as_array left
+    let b = Matrix.as_array right
+    Matrix.of_array n n (new [f64](n * n, index -> textbook_element a b n (index / n) (index % n)))
+
+// Modes: 0 mul, 1 mul_parallel, 2 mul_fma, 3 mul_fma_parallel, otherwise the i-j-k loop above. The C comparators
+// compute the same inputs and the same per-element order, so the checksums must be bit-equal.
+export def matmul_checksum :: i64 -> i64 -> i64 -> f64
+fn matmul_checksum n repeats mode =
+    let left = Matrix.init n n left_value
+    let right = Matrix.init n n right_value
+    let mut sum = 0.0
+    for _ in 0i64 .. (repeats - 1) do
+        let product =
+            match mode with
+            | 0 -> Matrix.mul (ref left) (ref right)
+            | 1 -> Matrix.mul_parallel (ref left) (ref right)
+            | 2 -> Matrix.mul_fma (ref left) (ref right)
+            | 3 -> Matrix.mul_fma_parallel (ref left) (ref right)
+            | _ -> textbook (ref left) (ref right)
+        sum = sum + checksum (ref product)
+    sum
+
+// Modes: 0 mul, 1 mul_parallel.
+export def matmul_checksum32 :: i64 -> i64 -> i64 -> f64
+fn matmul_checksum32 n repeats mode =
+    let left = Matrix.init n n (\i j -> left_value i j as f32)
+    let right = Matrix.init n n (\i j -> right_value i j as f32)
+    let mut sum = 0.0
+    for _ in 0i64 .. (repeats - 1) do
+        let product = if mode == 0 then Matrix.mul (ref left) (ref right) else Matrix.mul_parallel (ref left) (ref right)
+        sum = sum + checksum32 (ref product)
+    sum
+
+// Modes: 0 mul, 1 mul_parallel. The checksum wraps like i64.
+export def matmul_checksum_int :: i64 -> i64 -> i64 -> i64
+fn matmul_checksum_int n repeats mode =
+    let left = Matrix.init n n (\i j -> (i * 7 + j * 3) % 13 - 6)
+    let right = Matrix.init n n (\i j -> (i * 5 + j * 11) % 17 - 8)
+    let mut sum = 0
+    for _ in 0i64 .. (repeats - 1) do
+        let product = if mode == 0 then Matrix.mul (ref left) (ref right) else Matrix.mul_parallel (ref left) (ref right)
+        sum = sum + checksum_int (ref product)
+    sum

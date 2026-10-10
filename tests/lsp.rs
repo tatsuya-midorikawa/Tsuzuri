@@ -1316,3 +1316,124 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
         "{roots:?}"
     );
 }
+
+#[test]
+fn opt_in_matrix_module_completes_and_hovers_when_named() {
+    use serde_json::json;
+    let valid = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.rows (ref m)\n";
+    let incomplete = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.";
+    let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+        let main = uri("Main.tz");
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(valid, "rows", "utf-16")}}),
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": 2}, "contentChanges": [{"text": incomplete}]}}),
+            json!({"id": 2, "method": "textDocument/completion", "params": {"textDocument": {"uri": main}, "position": {"line": 1, "character": 15}}}),
+        ]
+    });
+    assert_eq!(
+        responses[0]["result"]["contents"]["value"],
+        json!("```tsuzuri\nref Matrix<i64> -> i64\n```\n\nThe number of rows."),
+        "{}",
+        responses[0]
+    );
+    let labels: Vec<&str> = responses[1]["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", responses[1]))
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect();
+    for member in [
+        "of_array",
+        "init",
+        "rows",
+        "cols",
+        "at",
+        "get",
+        "row",
+        "as_array",
+        "to_array",
+        "map",
+        "fold",
+        "transpose",
+        "add",
+        "mul",
+        "set",
+        "mul_fma",
+        "mul_parallel",
+        "mul_fma_parallel",
+    ] {
+        assert!(labels.contains(&member), "{member}: {labels:?}");
+    }
+}
+
+#[test]
+fn opt_in_view_and_tensor_modules_complete_when_named() {
+    use serde_json::json;
+    let cases: [(&str, &str, &str, &[&str]); 2] = [
+        (
+            "let a = Matrix.init 2 2 (\\i j -> i)\nlet v = MatrixView.of_matrix (ref a)\nlet n = MatrixView.rows v\n",
+            "let a = Matrix.init 2 2 (\\i j -> i)\nlet v = MatrixView.of_matrix (ref a)\nlet n = MatrixView.",
+            "let n = MatrixView.",
+            &[
+                "of_matrix",
+                "of_array",
+                "strided",
+                "transpose",
+                "sub",
+                "row",
+                "col",
+                "to_matrix",
+                "mul",
+                "of_array_mut",
+                "write",
+                "row_mut",
+                "sub_mut",
+                "transpose_mut",
+                "fill",
+                "copy_from",
+                "map_in_place",
+                "freeze",
+            ],
+        ),
+        (
+            "let t = Tensor.init [2, 2] (\\i -> i)\nlet v = Tensor.view (ref t)\nlet n = Tensor.rank (ref v)\n",
+            "let t = Tensor.init [2, 2] (\\i -> i)\nlet v = Tensor.view (ref t)\nlet n = Tensor.",
+            "let n = Tensor.",
+            &[
+                "of_array",
+                "init",
+                "of_matrix",
+                "to_matrix",
+                "reshape",
+                "view",
+                "borrow",
+                "permute",
+                "index_axis",
+                "narrow",
+                "reshape_view",
+                "to_tensor",
+                "as_matrix_view",
+                "of_matrix_view",
+            ],
+        ),
+    ];
+    for (valid, incomplete, last_line, members) in cases {
+        let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+            let main = uri("Main.tz");
+            vec![
+                json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 0, "character": 4}}}),
+                json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": 2}, "contentChanges": [{"text": incomplete}]}}),
+                json!({"id": 2, "method": "textDocument/completion", "params": {"textDocument": {"uri": main}, "position": {"line": 2, "character": last_line.len()}}}),
+            ]
+        });
+        let labels: Vec<&str> = responses[1]["result"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}", responses[1]))
+            .iter()
+            .map(|item| item["label"].as_str().unwrap())
+            .collect();
+        for member in members {
+            assert!(labels.contains(member), "{member}: {labels:?}");
+        }
+    }
+}
