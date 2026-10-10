@@ -1375,10 +1375,13 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     ものと、時間制限 0 の `try_read`／`try_accept`）を足し、生成グルーが Node.js 24 の `node:net`・`node:dgram`・`node:dns` で実装する。ブラウザーは生の TCP／UDP がないので `load` で失敗する。
     グルーは `reaches_net`（ソケットに到達するモジュールだけ）で選ぶ。ホストの例外は呼び出しの status に直し（モジュール自身の trap だけが通る）、破棄したインスタンスの socket は閉じ、
     UDP の受信は 1 MiB・4096 件、listener は 128 接続で頭打ちにし、TCP は `allowHalfOpen`、ポインタは `>>> 0`。`bind_async`・`bind_udp_async` は `Async.block_on` が要る（Node の listen/bind に同期の道がない）。
+    UDP の送信は datagram を 1 回だけ Node に渡し、その送信自身の結果を token で返す（`Net.__send` が `ACCEPTED` と token を返し、std の `send_loop` が `Net.__watch` で待つ。再試行はなく、native の status は変わらない）。
+    `close_udp` は送信中の datagram を待ってから Node の socket を閉じる。接続の相手の名前は接続が届いたときに記録する。errno の表は `os.constants.errno` に libuv の名前（`EHOSTDOWN` など）を足す。
   - review で直したこと: Phase 1 の `resolve` の数値 host の差（上記）、Phase 2 の CI（`vsc/` から動かないテスト、errno 99 の仮定、macOS の Homebrew LLVM の ASan が起動で止まる件は
     `TSUZURI_NO_SANITIZERS=1`）と Windows の UDP／accept、Phase 3 の 11 件（Unicode の host、破棄したインスタンスの socket、JS 例外が「stack exhausted」になる件、半閉じ、UDP の送信失敗が受信を汚す件、
-    アイドル中の reset、無制限の queue、ソケットのないモジュールのグルー、`Async.start` の `SuspendError`、2 GiB 以上のポインタ、`memory64` の import 名の走査）。
-  - 限界: Linux は実行未確認（glibc・musl の x86_64・aarch64 はコンパイルのみ）、Windows の実行は CI だけ、wasm32 は macOS の Node.js 24 だけ、TLS・HTTP はない（E10）。
+    アイドル中の reset、無制限の queue、ソケットのないモジュールのグルー、`Async.start` の `SuspendError`、2 GiB 以上のポインタ、`memory64` の import 名の走査）、その修正の review で見つかった UDP の再試行が datagram を重複・欠落させる件。
+  - 限界: Linux は実行未確認（glibc・musl の x86_64・aarch64 はコンパイルのみ）、Windows の実行は CI だけ、wasm32 は macOS の Node.js 24 だけ、TLS・HTTP はない（E10）。wasm32 で同時のホスト操作が数千になると、
+    allocator の空き領域の走査で 1 操作あたりの時間が伸びる（4000 件で 1 件 3.1 ms。`-O3`）。
 - F09（`Gpu`）: Phase 1・2・3 を実装した。厳密な `Gpu.init`／`Gpu.map` は厳密のまま、浮動小数点の GPU 実行は名前で選ぶ（D-14）。
   - Phase 1: `Gpu.init_relaxed`／`Gpu.map_relaxed`（`f16`・`f32`・`i32`・`i32u`。CPU の参照は厳密に評価する）と `--emit wgsl-relaxed`（1 行目 `// tsuzuri-gpu float=relaxed input=<t> output=<t>`、
     `f16` を使うときは `enable f16;`、f32／f16 のリテラルはビットパターン。浮動小数点から整数への変換・f64・`**`・bool・64 bit は E1018）。
