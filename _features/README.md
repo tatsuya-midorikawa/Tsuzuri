@@ -198,7 +198,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E06 | [ホスト関数のインポート](_completed/E06-host-imports.md) | P2 | L | E02 | done |
 | E07 | [デバッグ出力（Debug.print／trace）](_completed/E07-debug-output.md) | P1 | S | D01, E02 | done |
 | E08 | [標準 OS API（ファイル・環境・時刻・乱数・プロセス）](_completed/E08-os-api.md) | P1 | XL | B07, E06 | done |
-| E09 | [ネットワーク API](E09-network.md) | P3 | XL | E08, B08 | todo |
+| E09 | [ネットワーク API](_completed/E09-network.md) | P3 | XL | E08, B08 | done |
 | E10 | [git／registry 依存・lockfile・版解決](_completed/E10-package-registry.md) | P2 | XL | E04, G11 | done |
 | E11 | [C ヘッダーからの extern 生成](_completed/E11-c-bindgen.md) | P2 | L | E12 | done |
 | E12 | [FFI の拡張（リンク名・ホストのリンク指定・不透明ハンドル・コールバック）](_completed/E12-ffi-extensions.md) | P1 | L | E05, E06, (B07) | done |
@@ -431,7 +431,7 @@ graph LR
 | [D09](_completed/D09-regex-unicode.md) | D1（`Regex`・`Unicode` の予約）、D11（Phase 2）。承認済みで実装済み（2026-10-07。D-40） |
 | [D11](D11-const-evaluation.md) | D10（Phase 2 の static データ） |
 | [E08](_completed/E08-os-api.md) | D1（7 つの std 名）、D9（`IO<i32>` の終了コード）、D10（`--wasm-host wasi`）、D12（段 B の `File.Handle` と B07 D5） |
-| [E09](E09-network.md) | D1（`Net`）、D11（wasm32 の将来の opt-in） |
+| [E09](_completed/E09-network.md) | D1（`Net`）、D11（wasm32 の opt-in `--wasm-feature net`）、全フェーズ。すべて承認済みで実装済み（2026-10-10） |
 | [E10](_completed/E10-package-registry.md) | D1（`tsuzuri fetch` と `git`、`E2007`、D-29 の E04 記録の更新）、D10（Phase 2）。承認済みで実装済み（2026-10-07。D-40） |
 | [E11](_completed/E11-c-bindgen.md) | D1（`bindgen` と `W2002`）。承認済みで実装済み（2026-10-07。Phase 2 も実装。D-40） |
 | [E12](_completed/E12-ffi-extensions.md) | D1（`extern "symbol" def`）、D3（`extern type` の意味）、D6（`--link`・`-l`・`-L`）、D8（コールバックを Phase 1 に含める）。すべて承認済みで実装済み |

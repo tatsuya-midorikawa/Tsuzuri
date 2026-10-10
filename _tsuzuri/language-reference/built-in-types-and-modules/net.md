@@ -2,15 +2,15 @@
 
 `Net` は、TCP と UDP のソケット、IP アドレスの解析と表示、名前解決を扱うモジュールです。ソケットの操作はすべて `IO<Result<T, Os.Error>>` で、実行するまでシステムコールは出ません。失敗は例外やトラップではなく、[Os](./os.md) の `Os.Error` です。
 
-通信は暗号化しません。受け取ったデータも送り元のアドレスも、認証されていません。TLS は std に入れず、パッケージとして提供する方針です（[E09](../../../_features/E09-network.md) の D13）。
+通信は暗号化しません。受け取ったデータも送り元のアドレスも、認証されていません。TLS は std に入れず、パッケージとして提供する方針です（[E09](../../../_features/_completed/E09-network.md) の D13）。
 
 `Net` は opt-in の標準モジュールです。ソースに `Net` という名前を書いたときだけ読み込まれ、書かないプログラムの型検査と生成コードは変わりません。
 
 ## この記事のポイント
 
 - アドレスの解析と表示（`parse_address`・`address_text` など）は純粋な計算です。どの target でも、import なしで動きます。
-- ソケット（`connect`・`read`・`write`・`bind`・`accept`・`bind_udp`・`send_to`・`recv_from`）は、macOS・Linux・Windows の native で動きます。
-- `Async.block_on` の中では、`_async` を付けた双子（`connect_async`・`read_async` など）を使います。実行器のスレッドは待たず、1 本の監視スレッドがソケットの準備を見て、待っている計算を再開します。
+- ソケット（`connect`・`read`・`write`・`bind`・`accept`・`bind_udp`・`send_to`・`recv_from`）は、macOS・Linux・Windows の native で動きます。wasm32 は、`--wasm-feature jspi --wasm-feature net` を付けた Node.js 向けのビルドだけです。付けないと、ソケットに到達するビルドは `E2000` です。
+- `Async.block_on` の中では、`_async` を付けた双子（`connect_async`・`read_async` など）を使います。実行器のスレッドは待たず、native では 1 本の監視スレッドがソケットの準備を見て、待っている計算を再開します（wasm32 では、グルーが Node.js の `node:net` のイベントで完了します）。
 - ハンドル（`TcpStream`・`TcpListener`・`UdpSocket`）は `Copy` の不透明な値です。自動では閉じません。`close` か `with_connection` などを使います。
 - 閉じたハンドルを使うと `InvalidInput` です。別のソケットに当たることはありません。
 - 時間制限は、呼び出し全体の期限（ミリ秒）です。`None` は無期限です。
@@ -360,7 +360,9 @@ done
 
 サーバーとクライアントは、1 つのスレッドの 1 つの実行器で並行に動きます。`bind` は待たないので、`block_on` の前に同期版を使っています。
 
-**しくみ。**実行器のスレッドは、ソケットで待ちません。操作はまず待たずに試し（時間制限 0 の「1 回だけ試す」呼び出しで、待つ必要があれば「待つ」という状態が返ります）、待つ必要があれば、準備の監視を頼んで計算を中断します。監視は、最初の待ちで始まり、待ちが無くなると終わる 1 本のスレッドが、すべての待ちをまとめて `poll`（Windows は `WSAPoll`）で行います。準備ができた（またはエラーや切断が見えた）ら、スレッドが完了を実行器の mailbox（`tsuzuri_async_post`）へ入れます。再開した計算が、もう一度システムコールを試します。したがって、完了は何も所有しません。バイト列もディスクリプタも、監視のスレッドを通りません。準備の知らせは目安で、もう一度試して `EAGAIN` なら、また待ちます。
+**しくみ（native）。**実行器のスレッドは、ソケットで待ちません。操作はまず待たずに試し（時間制限 0 の「1 回だけ試す」呼び出しで、待つ必要があれば「待つ」という状態が返ります）、待つ必要があれば、準備の監視を頼んで計算を中断します。監視は、最初の待ちで始まり、待ちが無くなると終わる 1 本のスレッドが、すべての待ちをまとめて `poll`（Windows は `WSAPoll`）で行います。準備ができた（またはエラーや切断が見えた）ら、スレッドが完了を実行器の mailbox（`tsuzuri_async_post`）へ入れます。再開した計算が、もう一度システムコールを試します。したがって、完了は何も所有しません。バイト列もディスクリプタも、監視のスレッドを通りません。準備の知らせは目安で、もう一度試して `EAGAIN` なら、また待ちます。
+
+**しくみ（wasm32）。**監視スレッドも `net.c` もありません。`--wasm-feature net` のグルーが、`watch` と `connect` の完了を、呼び出しが戻ったあとに `tsuzuri_async_complete` で渡します（[wasm32（Node.js）](#wasm32nodejs)）。
 
 - 時間制限は同期版と同じ範囲の `Maybe<i64>` で、**操作全体の期限**です。`Async.now ()`（実行器の単調時計）で測ります。期限が来ると `TimedOut` で、ソケットは壊れません。
 - 待っている操作は、**取り消せます**。`Async.all_results` で兄弟の計算が失敗すると、待っていた操作は取り消され、監視から外れます。接続の途中の `connect_async` は、そのソケットも閉じます。取り消しても、ソケットのデータは減りません。同じストリームで、あとから読めます。
@@ -470,8 +472,22 @@ timeout: TimedOut
 | Windows の native | 対応（Winsock、`WSAPoll`）。MSVC と MinGW のツールチェーンで、x86_64 と aarch64 がコンパイルでき、x86_64 はリンクできることを確かめています。実行は CI だけで検証します |
 | 既定の wasm32 | ソケットに到達するビルドは `E2000`。アドレスの解析と表示は、import なしで動きます |
 | `--wasm-host wasi` | `E2000`。WASI preview1 には、`connect`・`bind`・`listen` がありません |
+| `--wasm-feature jspi --wasm-feature net`（wasm32） | 対応。生成したグルーが `node:net`・`node:dgram`・`node:dns` で実装します。macOS の Node.js 24 の loopback で検証しました |
 
-`tsuzuri check` は IR を作らないので、上の診断は出ません。ブラウザーは、生の TCP と UDP を使えません。wasm32 の opt-in は Phase 3 として計画中です（[E09](../../../_features/E09-network.md)）。
+`tsuzuri check` は IR を作らないので、上の診断は出ません。
+
+### wasm32（Node.js）
+
+wasm32 の既定の出力は、import を 1 つも持ちません。ソケットを使うときは、`.wasm` と `--emit bindings-js` の両方に `--wasm-feature jspi --wasm-feature net` を付けます。モジュールは、到達したソケット操作だけを、モジュール `tsuzuri_net` の import として宣言し、グルーが Node.js の `net`・`dgram`・`dns` で実装します。待つ操作は JSPI で WebAssembly のスタックを中断するので、同期版の API も `_async` の双子も、ソースを変えずに使えます。
+
+```sh
+tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit bindings-js -o app.mjs
+tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o app.wasm
+```
+
+`resolve` では、名前だけが Node.js の `dns.lookup` に渡ります。アドレスに読める host の分類（[名前解決](#名前解決)）は std のコードにあるので、wasm32 でも同じです。`AI_NUMERICHOST` による断りは native のランタイムだけです（`dns.lookup` はそのフラグを受け取れません）。`tests/net_wasm.mjs` は、`127.1` や `fe80::1%lo0` などが `dns.lookup` に届かないことを確かめています。
+
+ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 
 macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
 
@@ -519,7 +535,7 @@ macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAP
 ## まとめ
 
 - アドレスの解析と表示は純粋で、どの target でも使えます。解析は厳密で、`127.1` のような書き方は受けません。
-- ソケットは macOS・Linux・Windows の native で、`IO<Result<T, Os.Error>>` として動きます。`Async.block_on` の中では `_async` の双子を使い、1 本の監視スレッドが準備を見ます。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
+- ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）で、`IO<Result<T, Os.Error>>` として動きます。`Async.block_on` の中では `_async` の双子を使い、native では 1 本の監視スレッドが準備を見ます。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
 - 時間制限は呼び出し全体の期限で、受信は最大長が必須、`write` は全部を送ります。
 - 通信は平文です。`bind` で `0.0.0.0` を使うとネットワークへ公開されます。
 

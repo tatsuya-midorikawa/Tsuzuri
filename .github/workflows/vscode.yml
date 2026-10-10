@@ -214,10 +214,28 @@ jobs:
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
           export TSUZURI_WASM64=0
           node ../tests/net.mjs toolchain/bin/tsuzuri.exe address
+          node ../tests/net.mjs toolchain/bin/tsuzuri.exe resolve
           node ../tests/net.mjs toolchain/bin/tsuzuri.exe async
       - name: Net async operations with the LLVM MSVC toolchain
         if: matrix.target == 'win32-x64'
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
           export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
+          node ../tests/net.mjs toolchain/bin/tsuzuri.exe resolve
           node ../tests/net.mjs toolchain/bin/tsuzuri.exe async
+      # E09 Phase 3: the sockets of Net on WebAssembly with --wasm-feature jspi --wasm-feature net, which the generated
+      # Node.js glue implements on node:net, node:dgram, and node:dns (JSPI needs the Node.js 24 of this job). Only macOS
+      # was run by the author; Linux and Windows are checked by this job.
+      - name: Net sockets on WebAssembly
+        if: runner.os != 'Windows'
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri
+      - name: Net sockets on WebAssembly on Windows
+        if: runner.os == 'Windows'
+        run: |
+          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
+          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          export TSUZURI_WASM64=0
+          node ../tests/net_wasm.mjs toolchain/bin/tsuzuri.exe

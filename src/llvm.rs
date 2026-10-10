@@ -145,6 +145,32 @@ pub(crate) fn with_wasi_host(ir: &str) -> String {
     output
 }
 
+/// Makes the declarations of the Net primitives imports of `tsuzuri_net` (`--wasm-feature net`, E09 Phase 3): only the
+/// functions that the program reaches are declared, so only those are imported. The generated JavaScript bindings
+/// implement them.
+pub(crate) fn with_net_imports(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + 256);
+    for line in ir.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        match body
+            .strip_prefix("declare ")
+            .and_then(|declaration| declaration.split_once(" @tsuzuri_net_"))
+            .filter(|_| body.ends_with(')'))
+        {
+            Some((_, rest)) => {
+                let name = rest.split('(').next().unwrap_or(rest);
+                output.push_str(body);
+                output.push_str(&format!(
+                    " \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"{name}\"{}",
+                    &line[body.len()..]
+                ));
+            }
+            None => output.push_str(line),
+        }
+    }
+    output
+}
+
 /// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
@@ -7722,6 +7748,28 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
 mod tests {
     use super::*;
     use crate::analyze;
+
+    #[test]
+    fn net_imports_name_only_the_declared_primitives() {
+        let ir = "declare i64 @tsuzuri_net_open(ptr, i32, i64, i64, i64, i64)\n\
+                  declare void @tsuzuri_net_unwatch(i64)\n\
+                  declare i64 @other(i64)\n\
+                  define i64 @tsuzuri_net_open_like() {\n  call i64 @tsuzuri_net_open(ptr null, i32 0, i64 0, i64 0, i64 0, i64 0)\n}\n";
+        let lowered = with_net_imports(ir);
+        assert!(lowered.contains(
+            "declare i64 @tsuzuri_net_open(ptr, i32, i64, i64, i64, i64) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"open\"\n"
+        ));
+        assert!(lowered.contains(
+            "declare void @tsuzuri_net_unwatch(i64) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"unwatch\"\n"
+        ));
+        // Calls, definitions, and other declarations stay as they are.
+        assert!(lowered.contains("declare i64 @other(i64)\n"));
+        assert!(lowered.contains(
+            "define i64 @tsuzuri_net_open_like() {\n  call i64 @tsuzuri_net_open(ptr null"
+        ));
+        assert_eq!(lowered.matches("wasm-import-module").count(), 2);
+        assert_eq!(with_net_imports("no declarations\n"), "no declarations\n");
+    }
 
     #[test]
     fn emits_explicit_tail_loop_and_checked_arithmetic() {

@@ -11,7 +11,7 @@ import { basename, join, resolve } from "node:path";
 // ports ("::1" when the machine has it); nothing leaves the machine, no port is fixed, and no pass or fail
 // depends on how long something took. A child that runs for 60 seconds is killed as hung, which is not a limit
 // that a test measures. Expectations come from Node's own net, dgram, URL, and os modules.
-//   node tests/net.mjs target/release/tsuzuri [address|sockets|async|runtime|alloc]
+//   node tests/net.mjs target/release/tsuzuri [address|resolve|sockets|async|runtime|alloc]
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const selected = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
@@ -307,9 +307,20 @@ try {
     console.log(`Net addresses: ${corpus.length} inputs agree with Node on native and wasm32 at -O0 and -O3`);
   }
 
+  if (wanted("resolve")) {
+    // T9b: a host that a system's resolver would read as an address in its own way is decided by the strict parser alone
+    // ("127.1" is not 127.0.0.1): the same answer on every system, and none of these asks a resolver. Nothing here needs
+    // a socket, so this block runs on every platform of the CI.
+    const { literals, literalLines } = resolveLiterals();
+    for (const optimization of optimizations) {
+      const outcome = execute(build(literals, optimization), []);
+      assert.equal(outcome.stdout, `${literalLines.join("\n")}\n`, `net_resolve ${optimization}`);
+    }
+    console.log(`Net resolve: ${literalLines.length} address texts that a system's resolver reads in its own ways are decided by the strict parser alone at -O0 and -O3`);
+  }
+
   if (wanted("sockets")) {
     const project = fixture("net_sockets");
-    const { literals, literalLines } = resolveLiterals();
     const v6Server = await listen(() => {}, "::1").then(server => server, () => undefined);
     if (v6Server) await stop(v6Server);
     else console.log("Net: skip: ::1 (this machine has no IPv6 loopback)");
@@ -488,12 +499,7 @@ try {
         assert.equal(result.lines[9], "1: 127.0.0.1:0");
       }
 
-      // T9b: a host that the system would read as an address in its own way is decided by the strict parser alone
-      // ("127.1" is not 127.0.0.1): the same answer on every system, and none of these asks a resolver.
-      {
-        const outcome = execute(build(literals, optimization), []);
-        assert.equal(outcome.stdout, `${literalLines.join("\n")}\n`, `net_resolve ${optimization}`);
-      }
+      // T9b is the block "resolve" above: the address texts that a system's resolver reads in its own ways.
 
       // T12: an address that is taken, and one that no interface has.
       {
@@ -543,15 +549,17 @@ try {
       {
         let total = 0;
         let sum = 0;
+        let finished;
+        const everything = new Promise(resolveAll => { finished = resolveAll; });
         const server = await listen(socket => {
           socket.pause();
-          socket.on("data", chunk => { total += chunk.length; for (const byte of chunk) sum += byte; });
+          socket.on("data", chunk => { total += chunk.length; for (const byte of chunk) sum += byte; if (total === 8388608) finished(); });
           socket.on("error", () => {});
           setTimeout(() => socket.resume(), 200);
         });
         const result = await run(exe, "bigwrite", server.address().port);
         assert.deepEqual(result.lines, ["ok", "ok", "ok"]);
-        await new Promise(resolveWait => setTimeout(resolveWait, 100));
+        await everything;
         assert.equal(total, 8388608);
         assert.equal(sum, patternSum(8388608));
         await stop(server);
@@ -692,15 +700,17 @@ try {
       {
         let total = 0;
         let sum = 0;
+        let finished;
+        const everything = new Promise(resolveAll => { finished = resolveAll; });
         const server = await listen(socket => {
           socket.pause();
-          socket.on("data", chunk => { total += chunk.length; for (const byte of chunk) sum += byte; });
+          socket.on("data", chunk => { total += chunk.length; for (const byte of chunk) sum += byte; if (total === 8388608) finished(); });
           socket.on("error", () => {});
           setTimeout(() => socket.resume(), 200);
         });
         const result = await run(exe, "bigwrite", server.address().port);
         assert.deepEqual(result.lines, ["write: ok ok"]);
-        await new Promise(resolveWait => setTimeout(resolveWait, 100));
+        await everything;
         assert.equal(total, 8388608);
         assert.equal(sum, patternSum(8388608));
         await stop(server);

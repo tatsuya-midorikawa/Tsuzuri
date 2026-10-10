@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use tsuzuri::check::CheckedModule;
-use tsuzuri::{analyze, analyze_modules, llvm};
+use tsuzuri::{analyze, analyze_modules, bindings, llvm};
 
 fn module(source: &str) -> CheckedModule {
     analyze_modules(&[("Main.tz", source)])
@@ -326,6 +326,72 @@ fn async_operations_declare_what_they_reach_and_need_the_reactor() {
         assert!(!text.contains("tsuzuri_async"), "{text}");
         assert!(!text.contains("tsuzuri_net_watch"), "{text}");
     }
+}
+
+#[test]
+fn net_glue_adds_the_sockets_and_leaves_other_glue_alone() {
+    let plain = module("export def answer :: i64\nfn answer = 42\n");
+    for flavor in [bindings::JsFlavor::Single, bindings::JsFlavor::Jspi] {
+        let glue = bindings::javascript_for(&plain, flavor);
+        assert!(!glue.contains("netImports"), "{flavor:?}");
+        assert!(!glue.contains("tsuzuri_net"), "{flavor:?}");
+        assert!(!glue.contains("NODE_NET"), "{flavor:?}");
+    }
+    // The glue of --wasm-feature net: the Node modules, the table flags, the import check, and the imports.
+    let glue = bindings::javascript_with_net(&plain);
+    for part in [
+        "const NODE_NET = TABLE.net === true",
+        "\"net\":true",
+        "\"hostAbi\":true",
+        "function netImports(owner) {",
+        "if (namespace === \"tsuzuri_net\" && kind === \"function\" && TABLE.net === true) continue;",
+        "if (TABLE.net === true) object.tsuzuri_net = netImports(owner);",
+        "a browser has no raw TCP or UDP",
+    ] {
+        assert!(glue.contains(part), "{part}");
+    }
+    assert_eq!(glue, bindings::javascript_with_net(&plain));
+    // The sockets sit inside the runtime's `bind`, before its JSPI imports.
+    assert!(
+        glue.find("function netImports(owner)").unwrap()
+            < glue.find("function asyncImports(owner)").unwrap()
+    );
+}
+
+#[test]
+fn net_declarations_are_not_imports_by_default() {
+    // Only `--wasm-feature net` makes the declarations imports (the driver); the emitted IR has none.
+    let program = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! opened = Net.connect address Maybe.None
+    do! IO.write_line (Result.is_ok (ref opened))
+    0
+",
+    );
+    let wasm = ir(&program, llvm::Entry::Library, true);
+    assert!(wasm.contains("declare i64 @tsuzuri_net_open("), "{wasm}");
+    assert!(!wasm.contains("tsuzuri_net\""), "{wasm}");
+    // On WebAssembly the async primitives take no completion function: the host completes the operation.
+    let reading = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! outcome = Async.block_on (Net.connect_async address Maybe.None)
+    do! IO.write_line (Result.is_ok (ref outcome))
+    0
+",
+    );
+    let wasm = ir(&reading, llvm::Entry::Library, true);
+    assert!(
+        wasm.contains("declare void @tsuzuri_net_connect(i64, i64, i64, i64, i64)\n"),
+        "{wasm}"
+    );
+    assert!(!wasm.contains("tsuzuri_async_post"), "{wasm}");
+    let native = ir(&reading, llvm::Entry::Library, false);
+    assert!(
+        native.contains("declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)\n"),
+        "{native}"
+    );
 }
 
 #[test]

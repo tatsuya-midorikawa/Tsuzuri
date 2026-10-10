@@ -439,6 +439,28 @@ tsuzuri build app --target wasm32 --wasm-feature webgpu -o app.wasm
 - 線形メモリの既定の上限は 16 MiB のままです。ホスト配列の複製と結果の配列が同時にあるので、大きなバッファを GPU に渡すときは `--wasm-max-memory` を増やします。
 - JSPI を持つエンジンが要ります。リポジトリの `tests/gpu_runtime.mjs` で、Node.js 24 と Dawn（Apple M1 Max の Metal）で動くことを確かめました。Node.js 20 には JSPI がないので、そのテストは import の検査だけをします。
 
+## Net のソケット（Node.js）
+
+`--wasm-feature net` を `--wasm-feature jspi` と一緒に付けると、[Net](../built-in-types-and-modules/net.md) のソケットが使えます。付けないと、ソケットに到達するビルドは `E2000` です（既定の wasm32 には import がなく、WASI preview1 には `connect`・`bind`・`listen` がありません）。`.wasm` と `--emit bindings-js` の両方に同じオプションを付けます。
+
+```sh
+tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit bindings-js -o app.mjs
+tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o app.wasm
+```
+
+- モジュールは、到達した操作だけを、モジュール `tsuzuri_net` の import として宣言します（`resolve`・`open`・`accept`・`read`・`write`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`）。同期の待ちを含む `resolve`・`open`・`accept`・`read`・`write` は、グルーが `WebAssembly.Suspending` で包んだ関数で、Node.js が仕事をする間、WebAssembly のスタックを中断します。ほかは、すぐ戻ります。
+- 実装は生成したグルーの中にあります。`node:net`・`node:dgram`・`node:dns` で動かし、ネイティブの `net.c` と同じ約束を守ります（世代付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 は「1 回だけ試す」、閉じたハンドルは `InvalidInput`）。非同期の操作は `tsuzuri_async_complete` で完了します。`code` は Node.js の `os.constants.errno` の値です。
+- グルーは `node:` のモジュールを、読み込むときに `import()` します。ブラウザには生の TCP も UDP もないので、`load` は `Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP` で失敗します。ソケットを使わないモジュールのグルーは、これまでと同じ文字列で、`node:` の import を持ちません。
+- `--wasm-feature net` は、wasm32 の `object`、`llvm`、`wasm` と `bindings-js` で使えます。`--wasm-feature jspi` が必要です。`--wasm-feature threads`・`--wasm-host wasi`・wasm64・native とは同時に指定できません（`E2000`）。
+- JSPI を持つエンジンが要ります。リポジトリの `tests/net_wasm.mjs` で、macOS の Node.js 24 に対して、ブロッキングの API も `_async` の操作（`Async.block_on` から）も、`127.0.0.1` と `::1` の loopback で通ることを確かめました。`Async.start` から `_async` の操作を使う形、Linux と Windows の Node.js、ブラウザは検証していません。
+
+ネイティブとの違いは次のとおりです。
+
+- listener の `SO_REUSEADDR` は、Node.js の `listen` が選べないので、Node.js の既定に従います。
+- `shutdown` の `Read` は、以後の `read` を 0 バイト（EOF）にして、届くデータを捨てます。OS の `SHUT_RD` は呼びません。
+- 送信は Node.js の内部バッファに積みます。`write` の期限は、積んだデータが Node.js の書き込みの完了に届くまでの時間で、期限が先に来て `TimedOut` になっても、積んだデータは取り消せず、あとで送られます。`write_async` の下の送信は、1 回に 64 KiB までを受け取り、残りはバッファが空くのを待ちます（Node.js が積んだだけのデータを、送れたと数えないためです。`send_to_async` の datagram は、64 KiB を超えると `InvalidInput`（`EMSGSIZE`）です）。
+- `close` は、受け取ったデータを送り終えてから閉じます（ネイティブの `close` で、カーネルが送り続けるのと同じです）。相手が読まないと、そのソケットは残り、`Net` の呼び出しからは見えなくなります。
+
 ## WASI
 
 `--wasm-host wasi` は、標準入出力と `File`、`Dir`、`Env`、`Time`、`Random`、`Process` を WASI preview 1 の import へ下げます。wasm32 の object か WASM だけです。既定の wasm32 は、これらの API に到達した時点でビルドを拒否します。`Net` のソケットは下げません。WASI preview 1 には `connect`・`bind`・`listen` が無く（開いてある socket を受け取る `sock_accept` などだけです）、`--wasm-host wasi` でもソケットに到達するビルドは `E2000` です。

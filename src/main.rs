@@ -88,9 +88,11 @@ Build options:
   --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
     --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), jspi
                             (WASM build; Async.block_on waits through JavaScript Promise
-                            Integration), or webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
+                            Integration), webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
                             the kernels on that device call the JSPI imports tsuzuri_gpu.open
-                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements)
+                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements), or
+                            net (wasm32 build with jspi; the Net sockets become imports that
+                            the generated JavaScript bindings implement on Node.js)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
                             Process APIs to WASI preview1 (wasm32 object or WASM output;
                             the default wasm32 output rejects those APIs)
@@ -154,7 +156,7 @@ results do not print anything. 'def main :: unit -> i32' and
 'def main :: Array<string> -> i32' print nothing and return the exit code; the
 Array<string> form receives the command-line arguments.
 Standard input and output and the File, Dir, Env, Time, Random, and Process APIs are
-built in on native, and so are the Net sockets on macOS and Linux; a GUI belongs to the
+built in on native, and so are the Net sockets on macOS, Linux, and Windows; a GUI belongs to the
 host, not the language.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +274,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_threads = false;
     let mut wasm_jspi = false;
     let mut wasm_webgpu = false;
+    let mut wasm_net = false;
     let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
@@ -495,7 +498,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         Some("threads") => &mut wasm_threads,
                         Some("jspi") => &mut wasm_jspi,
                         Some("webgpu") => &mut wasm_webgpu,
-                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported".into()),
+                        Some("net") => &mut wasm_net,
+                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', and 'net'; relaxed SIMD is not supported".into()),
                     };
                     if *feature {
                         return Err("WASM feature specified more than once".into());
@@ -628,7 +632,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     {
         return Err("WGSL output does not use target, optimization, or CPU options".into());
     }
-    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu) && action != Action::Build {
+    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net) && action != Action::Build {
         return Err("--wasm-feature is only valid with build".into());
     }
     if wasm_host.is_some() && action != Action::Build {
@@ -764,6 +768,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_threads,
         wasm_jspi,
         wasm_webgpu,
+        wasm_net,
         wasm_host,
         wasm_max_memory,
         wasm_stack_size,
@@ -2443,6 +2448,22 @@ mod tests {
         ] {
             assert!(parse(&values).unwrap().options.wasm_jspi, "{values:?}");
         }
+        let net = parse(&[
+            "build",
+            "Main.tz",
+            "--target",
+            "wasm32",
+            "--wasm-feature",
+            "jspi",
+            "--wasm-feature",
+            "net",
+            "--emit",
+            "bindings-js",
+        ])
+        .unwrap()
+        .options;
+        assert!(net.wasm_net && net.wasm_jspi);
+        assert!(!parse(&["build", "Main.tz"]).unwrap().options.wasm_net);
         for (values, message) in [
             (
                 vec!["run", "Main.tz", "--wasm-feature", "jspi"],
@@ -2513,7 +2534,7 @@ mod tests {
                     "--wasm-feature",
                     "asyncify",
                 ],
-                "supported WASM features are 'simd128', 'threads', 'jspi', and 'webgpu'; relaxed SIMD is not supported",
+                "supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', and 'net'; relaxed SIMD is not supported",
             ),
             (
                 vec![
@@ -2543,12 +2564,57 @@ mod tests {
                 vec![
                     "build",
                     "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "net",
+                ],
+                "--wasm-feature net requires --wasm-feature jspi: a blocking socket call suspends the WebAssembly stack with JavaScript Promise Integration while the host works",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
                     "--emit",
                     "wgsl",
                     "--wasm-feature",
                     "webgpu",
                 ],
                 "WGSL output does not use target, CPU, debug, or WASM feature options",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--emit",
+                    "llvm",
+                    "--wasm-feature",
+                    "jspi",
+                    "--wasm-feature",
+                    "net",
+                ],
+                "--wasm-feature net requires wasm32 object, LLVM IR, WASM, or JavaScript bindings output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "jspi",
+                    "--wasm-feature",
+                    "net",
+                    "--wasm-feature",
+                    "threads",
+                ],
+                "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
+            ),
+            (
+                vec!["run", "Main.tz", "--wasm-feature", "net"],
+                "--wasm-feature is only valid with build",
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
