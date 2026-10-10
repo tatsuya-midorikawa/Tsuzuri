@@ -327,7 +327,7 @@ int main() {
 4
 ```
 
-`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がそのスレッドの持つロックを解放してから状態を返します。同じ呼び出しの別の子どもがそのロックを待っていても、グループは完了し、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。
+`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がそのスレッドの持つロックを解放してから状態を返します。同じ呼び出しの別の子どもがそのロックを待っていても、グループは完了し、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。`Channel` で待つタスクが互いを待つデッドロックも、呼び出しのトラップとして返り、境界がチャンネルのブロックを解放します。次の呼び出しは通常どおり動きます（[Channel](../built-in-types-and-modules/channel.md#トラップ)）。
 
 ```sh
 tsuzuri build quote --emit shared --trap-mode return -o libquote_trap.dylib
@@ -368,7 +368,7 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 
 `--allocator counting` は system allocator を同じ 16 バイトヘッダーで包み、確保回数、解放回数、現在の要求バイト、その最大を数えます。`tsuzuri_alloc_stats` で読みます。
 
-`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
+`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`Channel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
 
 契約の詳細は [言語仕様のホスト提供の allocator](../../../docs/language.md#ホスト提供の-allocator) を見てください。
 

@@ -669,3 +669,163 @@ fn task_scope_is_one_group_of_children() {
         );
     }
 }
+
+// F10 Phase 2: Channel.
+
+const CHANNEL_ROUNDTRIP: &str = "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 7i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0";
+
+#[test]
+fn channel_programs_type_check_and_emit() {
+    for source in [
+        CHANNEL_ROUNDTRIP,
+        // A sender that is cloned, and a send that is refused hands the item back.
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let clone = Channel.clone_sender (ref sender)\n    let _sent = Channel.send (ref clone) 7i64\n    match Channel.send (ref sender) 8i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error item -> item",
+        // Items that own memory, are unit, or are tuples.
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) \"text\"\n    match Channel.recv (ref receiver) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) ()\n    match Channel.recv (ref receiver) with\n    | Maybe.Some _signal -> 1\n    | Maybe.None -> 0",
+        "match Channel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (1i64, \"text\")\n    match Channel.recv (ref receiver) with\n    | Maybe.Some _pair -> 1\n    | Maybe.None -> 0",
+        // The ends in a record, and a task that owns an end.
+        "record Ends { sender: Channel.Sender<i64>, receiver: Channel.Receiver<i64> }\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let ends = Ends { sender: sender, receiver: receiver }\n    let _sent = Channel.send (ref ends.sender) 3i64\n    match Channel.recv (ref ends.receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        "def produce :: Channel.Sender<i64> -> Task<i64>\nfn produce sender = task {\n    let _sent = Channel.send (ref sender) 5i64\n    return 1\n}\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let results = Task.run (Task.parallel [produce sender])\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value + results[0]\n    | Maybe.None -> 0",
+        // Both ends are Sync: a scope borrows them, and an Arc of an end goes to tasks.
+        "match Channel.bounded 4 with\n| (sender, receiver) ->\n    let seen = Task.scope (ref sender) 2 (\\shared index -> match Channel.send shared index with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    let _first = Channel.recv (ref receiver)\n    Array.sum (ref seen)",
+        "def count :: Arc<Channel.Receiver<i64>> -> Task<i64>\nfn count receiver = task {\n    match Channel.recv (Arc.get (ref receiver)) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\n}\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let shared = Arc.new receiver\n    let _sent = Channel.send (ref sender) 4i64\n    let results = Task.run (Task.parallel [count (Arc.share (ref shared))])\n    results[0]",
+        // A channel operation inside a lock type-checks, and traps when it runs: a critical section never waits.
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let lock = Mutex.create 0i64\n    let borrowed = ref sender\n    let _seen = Mutex.with_lock (ref lock) (\\_value -> match Channel.send borrowed 1i64 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+    ] {
+        emits(source);
+    }
+}
+
+#[test]
+fn channel_ends_are_opaque_owned_and_sync() {
+    // The representation is not the program's: a handle cannot be made, read or updated, and the
+    // primitive that closes a channel is the Channel module's alone.
+    for source in [
+        "let sender = Channel.Sender { block: 1 }\n0",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    sender.block",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let other = { sender with block: 3 }\n    0",
+    ] {
+        let message = rejects(source, "E1022");
+        assert!(
+            message.contains("is opaque; use its module API"),
+            "{message}"
+        );
+    }
+    let message = rejects(
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let _closed = Channel.__close_sender (ref sender)\n    0",
+        "E1022",
+    );
+    assert!(
+        message.contains("the channel close primitive is private to the standard Channel module")
+            && message.contains("closes when it is dropped"),
+        "{message}"
+    );
+    // A user Drop instance for a type of the standard library stays refused: the Channel module
+    // alone closes the ends it declares.
+    let message = rejects(
+        "instance Drop<Channel.Sender<i64>> {\n    fn drop sender = ()\n}\n0",
+        "E1016",
+    );
+    assert!(
+        message.contains("only records and unions declared in this program can implement Drop"),
+        "{message}"
+    );
+    // An end is owned: a copy would close the channel twice, so it moves, and a function value
+    // (which may be copied) holds a borrow of it, never the end.
+    rejects(
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let other = sender\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    0",
+        "E1012",
+    );
+    for end in ["sender", "receiver"] {
+        let source = format!(
+            "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let use = \\_x -> {end}\n    0"
+        );
+        let message = rejects(&source, "E1005");
+        assert!(
+            message.contains("cannot capture Channel."),
+            "{end}: {message}"
+        );
+    }
+    emits(
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let borrowed = ref sender\n    let send = \\x -> Channel.send borrowed x\n    let _taken = Channel.recv (ref receiver)\n    match send 1i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error _item -> 0",
+    );
+    // Only what may move between tasks goes in: an Rc has no atomic count.
+    let message = rejects(
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (Rc.new 1i64)\n    0",
+        "E1013",
+    );
+    assert!(message.contains("tasks require Send values"), "{message}");
+    // Sync: both ends may be shared by tasks.
+    emits(&format!(
+        "{SYNC_PARAMETER}match Channel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    share (ref sender) + share (ref receiver)"
+    ));
+    // The name is taken only by the module: a program may declare its own Channel record.
+    emits("record Channel { x: i64 }\nlet channel = Channel { x: 1 }\nchannel.x");
+}
+
+#[test]
+fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
+    let [native, wasm] = emits(CHANNEL_ROUNDTRIP);
+    // Native links the runtime of task.c, so the IR only declares it.
+    for declaration in [
+        "declare i32 @tsuzuri_channel_send(ptr, ptr)",
+        "declare i32 @tsuzuri_channel_recv(ptr, ptr)",
+        "declare void @tsuzuri_channel_clone_sender(ptr)",
+        "declare i32 @tsuzuri_channel_close(ptr, i32)",
+        "declare i32 @tsuzuri_mutex_wait_ok()",
+    ] {
+        assert_eq!(
+            native.lines().filter(|line| *line == declaration).count(),
+            1,
+            "{declaration}\n{native}"
+        );
+    }
+    // Standalone WASM has one thread: the operations are IR in the module, and a wait that cannot
+    // end is a trap.
+    for definition in [
+        "define internal i32 @tsuzuri_channel_send(",
+        "define internal i32 @tsuzuri_channel_recv(",
+        "define internal void @tsuzuri_channel_clone_sender(",
+        "define internal i32 @tsuzuri_channel_close(",
+        "define internal i32 @tsuzuri_mutex_wait_ok(",
+    ] {
+        assert!(wasm.contains(definition), "{definition}\n{wasm}");
+    }
+    assert!(!wasm.contains("declare i32 @tsuzuri_channel"), "{wasm}");
+    // A sender and a receiver that go out of scope are released with the kind of each, and a send
+    // or a receive asks first whether a channel operation may wait here.
+    for ir in [&native, &wasm] {
+        assert!(
+            ir.contains("call i32 @tsuzuri_channel_close(ptr %v2, i32 0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("call i32 @tsuzuri_channel_close(ptr %v2, i32 1)"),
+            "{ir}"
+        );
+        assert!(ir.contains("call i32 @tsuzuri_mutex_wait_ok()"), "{ir}");
+        assert!(ir.contains("call i32 @tsuzuri_channel_send("), "{ir}");
+        assert!(ir.contains("call i32 @tsuzuri_channel_recv("), "{ir}");
+    }
+    let [native, _] = emits(
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let clone = Channel.clone_sender (ref sender)\n    let _sent = Channel.send (ref clone) 7i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+    );
+    assert!(
+        native.contains("call void @tsuzuri_channel_clone_sender("),
+        "{native}"
+    );
+    // Without a mention of Channel, no runtime and no lowering is added, whatever else is used.
+    for source in [
+        "let values = Task.run (Task.parallel [task { return 1 }, task { return 2 }])\nArray.sum (ref values)",
+        "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)",
+        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 2 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
+    ] {
+        for ir in emits(source) {
+            assert!(
+                !ir.contains("tsuzuri_channel") && !ir.contains("tz.channel"),
+                "no Channel, no channel runtime\n{ir}"
+            );
+        }
+    }
+}

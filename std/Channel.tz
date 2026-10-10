@@ -1,0 +1,15 @@
+/// The sending end of a bounded channel. `Channel.send` borrows it, so several tasks may share one
+/// through a `Task.scope` or an `Arc`, and `Channel.clone_sender` makes an owner of its own. The
+/// channel closes for its receivers when the last `Sender` is dropped; the drop glue below is what
+/// closes it, so a `Sender` that is never dropped keeps the channel open.
+record Sender<'a> { block: i64 }
+/// The receiving end of a bounded channel. `Channel.recv` borrows it, so several tasks may take
+/// items from one receiver (an item reaches exactly one of them). Dropping it makes every later
+/// `Channel.send` return its item in an `Error`.
+record Receiver<'a> { block: i64 }
+instance Drop<Sender<'a>> {
+    fn drop sender = Channel.__close_sender sender
+}
+instance Drop<Receiver<'a>> {
+    fn drop receiver = Channel.__close_receiver receiver
+}

@@ -84,10 +84,43 @@ static void groups(int rounds) {
     }
 }
 
+/* A deadlock and a trap in a channel program are traps of the call: each frees what the call allocated
+   (the channels, whose blocks the boundary tracks) and leaves the pool and the thread usable. The
+   deadlock verdict writes a line to stderr each time, so these rounds are fewer. */
+static void channels(int rounds) {
+    tsuzuri_trap_info deadlock = { 0, 0 }, divided = { 0, 0 }, trap = { 0, 0 };
+    int64_t result = -1;
+    for (int round = 0; round < rounds; ++round) {
+        int64_t count = 1 + round % 40;
+        int64_t sum = count * (count + 1) / 2;
+        assert(tsuzuri_try_channel_ok(&trap, &result, count) == 0 && result == sum);
+        LIVE_IS(0);
+        /* Every thread waits and nothing can change a channel: the verdict traps the waiter... */
+        assert(tsuzuri_try_channel_deadlock(&deadlock, &result) == 1 && deadlock.site != 0);
+        LIVE_IS(0);
+        /* ...and a call after it finds the pool, the wait list and the thread clean. */
+        assert(tsuzuri_try_channel_ok(&trap, &result, count) == 0 && result == sum);
+        /* A producer that traps before its sender is dropped leaves the consumer waiting; the call's
+           trap is the producer's, which has the lower index, not the consumer's verdict. */
+        assert(tsuzuri_try_channel_producer_trap(&divided, &result, count, 0) == 1 && divided.site != 0);
+        assert(divided.site != deadlock.site || divided.kind != deadlock.kind);
+        LIVE_IS(0);
+        assert(tsuzuri_try_channel_producer_trap(&trap, &result, count, 1) == 0 && result == sum);
+        assert(tsuzuri_try_channel_ok(&trap, &result, count) == 0 && result == sum);
+        /* A refused channel operation inside a lock releases the lock like any other trap. */
+        assert(tsuzuri_try_channel_in_lock(&trap, &result) == 1 && trap.site != 0);
+        LIVE_IS(0);
+        assert(tsuzuri_try_lock_again(&trap, &result) == 0 && result == 42);
+        assert(tsuzuri_try_channel_ok(&trap, &result, count) == 0 && result == sum);
+        LIVE_IS(0);
+    }
+}
+
 int main(int argc, char **argv) {
     int rounds = argc > 1 ? atoi(argv[1]) : 300;
     single_thread(rounds);
     groups(rounds);
+    channels(rounds < 24 ? rounds : 24);
     printf("ok %d\n", rounds);
     return 0;
 }

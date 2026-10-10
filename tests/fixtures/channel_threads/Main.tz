@@ -1,0 +1,227 @@
+// F10 Phase 2: channels between tasks that run at the same time. tests/tasks.mjs (native, with the pool
+// size set by the test), tests/wasm_threads.mjs and tests/bindings_threads.mjs (real workers) run it.
+// A result never depends on the schedule. Whether an export completes depends on how many threads
+// there are, because a task that waits on a channel keeps its thread: each comment says how many an
+// export needs, and with fewer the program traps with "deadlock" instead of hanging.
+
+// An item that counts its drops, to see that what crosses threads is dropped exactly once.
+record Token { counter: Arc<Atomic<i64>> }
+
+def count_drop :: ref Token -> unit
+fn count_drop token =
+    let _before = Atomic.fetch_add (Arc.get (ref token.counter)) 1
+    ()
+
+instance Drop<Token> {
+    fn drop token = count_drop token
+}
+
+// The task owns its sender: the end of the task drops it, and the drop of the last sender closes
+// the channel for the receivers.
+def produce :: Channel.Sender<i64> -> i64 -> i64 -> Task<i64>
+fn produce sender first count = task {
+    let mut index = 0
+    while index < count do
+        let _sent = Channel.send (ref sender) (first + index)
+        index = index + 1
+    return count
+}
+
+def drain :: ref Channel.Receiver<i64> -> i64
+fn drain receiver =
+    let mut sum = 0
+    let mut open = true
+    while open do
+        match Channel.recv receiver with
+        | Maybe.Some value -> sum = sum + value
+        | Maybe.None -> open = false
+    sum
+
+def consume :: Channel.Receiver<i64> -> Task<i64>
+fn consume receiver = task { return drain (ref receiver) }
+
+// One producer and one consumer, with room for fewer items than there are: the producer waits for
+// room while the consumer waits for items (2 threads or more).
+export def pipeline :: i64 -> i64 -> i64
+fn pipeline capacity count =
+    match Channel.bounded capacity with
+    | (sender, receiver) ->
+        let results = Task.run (Task.parallel [produce sender 1 count, consume receiver])
+        results[1]
+
+def double_all :: Channel.Receiver<i64> -> Channel.Sender<i64> -> Task<i64>
+fn double_all input output = task {
+    let mut taken = 0
+    let mut open = true
+    while open do
+        match Channel.recv (ref input) with
+        | Maybe.Some value ->
+            let _sent = Channel.send (ref output) (value * 2)
+            taken = taken + 1
+        | Maybe.None -> open = false
+    return taken
+}
+
+// Producer, doubler and summer each wait on a neighbor, so each needs a thread of its own (3 or more).
+export def three_stages :: i64 -> i64
+fn three_stages count =
+    match Channel.bounded 2 with
+    | (first_sender, first_receiver) ->
+        match Channel.bounded 2 with
+        | (second_sender, second_receiver) ->
+            let results = Task.run (Task.parallel [produce first_sender 1 count, double_all first_receiver second_sender, consume second_receiver])
+            results[2]
+
+def producers :: ref Channel.Sender<i64> -> i64 -> i64 -> [Task<i64>]
+fn producers sender count items =
+    new [Task<i64>](count, \index -> produce (Channel.clone_sender sender) (index * items + 1) items)
+
+def joined :: [Task<i64>] -> Task<i64>
+fn joined tasks = task {
+    let! results = Task.parallel tasks
+    return Array.sum (ref results)
+}
+
+// Producers that each own a clone of the sender, in a group inside the task that runs next to the
+// consumer: the original sender is dropped first, so the clones decide when the channel closes
+// (3 threads or more).
+export def fan_in :: i64 -> i64 -> i64 -> i64
+fn fan_in count items capacity =
+    match Channel.bounded capacity with
+    | (sender, receiver) ->
+        let producing = producers (ref sender) count items
+        Owned.drop sender
+        let results = Task.run (Task.parallel [consume receiver, joined producing])
+        results[0] * 1000 + results[1]
+
+// Workers share one receiver through an Arc and add their results under a shared lock: every job
+// is received by exactly one worker (3 threads or more).
+def work :: Arc<Channel.Receiver<i64>> -> Arc<Mutex<i64>> -> Task<i64>
+fn work receiver total = task {
+    let mut done = 0
+    let mut open = true
+    while open do
+        match Channel.recv (Arc.get (ref receiver)) with
+        | Maybe.Some job ->
+            let _seen = Mutex.with_lock (Arc.get (ref total)) (value -> {
+                deref value = deref value + job * job;
+                0
+            })
+            done = done + 1
+        | Maybe.None -> open = false
+    return done
+}
+
+export def job_queue :: i64 -> i64 -> i64
+fn job_queue count capacity =
+    match Channel.bounded capacity with
+    | (sender, receiver) ->
+        let shared = Arc.new receiver
+        let total = Arc.new (Mutex.create 0i64)
+        let results = Task.run (Task.parallel [produce sender 1 count, work (Arc.share (ref shared)) (Arc.share (ref total)), work (Arc.share (ref shared)) (Arc.share (ref total))])
+        let squares = Mutex.with_lock (Arc.get (ref total)) (value -> deref value)
+        squares * 1000 + results[1] + results[2]
+
+record Link {
+    forward_sender: Channel.Sender<i64>,
+    forward_receiver: Channel.Receiver<i64>,
+    back_sender: Channel.Sender<i64>,
+    back_receiver: Channel.Receiver<i64>
+}
+
+def ping :: ref Link -> i64 -> i64
+fn ping link rounds =
+    let mut correct = 0
+    let mut round = 0
+    while round < rounds do
+        let _sent = Channel.send (ref link.forward_sender) round
+        match Channel.recv (ref link.back_receiver) with
+        | Maybe.Some answer -> correct = correct + (if answer == round + 1 then 1 else 0)
+        | Maybe.None -> correct = correct
+        round = round + 1
+    correct
+
+def pong :: ref Link -> i64 -> i64
+fn pong link rounds =
+    let mut served = 0
+    while served < rounds do
+        match Channel.recv (ref link.forward_receiver) with
+        | Maybe.Some value ->
+            let _sent = Channel.send (ref link.back_sender) (value + 1)
+            served = served + 1
+        | Maybe.None -> served = rounds
+    served
+
+// The children of a scope borrow the four ends and hand a counter back and forth through two
+// channels of one slot, so each round needs both of them to run at the same time (2 threads or more).
+export def ping_pong :: i64 -> i64
+fn ping_pong rounds =
+    match Channel.bounded 1 with
+    | (forward_sender, forward_receiver) ->
+        match Channel.bounded 1 with
+        | (back_sender, back_receiver) ->
+            let link = Link { forward_sender: forward_sender, forward_receiver: forward_receiver, back_sender: back_sender, back_receiver: back_receiver }
+            let results = Task.scope (ref link) 2 (shared -> index -> if index == 0 then ping shared rounds else pong shared rounds)
+            results[0] * 1000000 + results[1]
+
+def send_tokens :: Channel.Sender<Token> -> Arc<Atomic<i64>> -> i64 -> Task<i64>
+fn send_tokens sender counter count = task {
+    let mut index = 0
+    while index < count do
+        let _sent = Channel.send (ref sender) (Token { counter: Arc.share (ref counter) })
+        index = index + 1
+    return count
+}
+
+def take_tokens :: Channel.Receiver<Token> -> Task<i64>
+fn take_tokens receiver = task {
+    let mut taken = 0
+    let mut open = true
+    while open do
+        match Channel.recv (ref receiver) with
+        | Maybe.Some _token -> taken = taken + 1
+        | Maybe.None -> open = false
+    return taken
+}
+
+// Tokens move from one thread to another and are dropped there: n received, n drops, and the
+// counter is shared by nobody afterwards (2 threads or more).
+export def tokens_across :: i64 -> i64
+fn tokens_across n =
+    let counter = Arc.new (Atomic.create 0i64)
+    match Channel.bounded 3 with
+    | (sender, receiver) ->
+        let results = Task.run (Task.parallel [send_tokens sender (Arc.share (ref counter)) n, take_tokens receiver])
+        results[1] * 1000000 + Atomic.load (Arc.get (ref counter)) * 1000 + Arc.strong_count (ref counter)
+
+def quick :: i64 -> Task<i64>
+fn quick value = task { return value }
+
+// Nobody can ever close the channel: the sender stays with the code that waits for the tasks, so
+// the consumer waits for ever, and every thread is waiting (any number of threads: a trap).
+export def leaked_sender :: i64
+fn leaked_sender =
+    match Channel.bounded 2 with
+    | (sender, receiver) ->
+        let results = Task.run (Task.parallel [consume receiver, quick 7])
+        Owned.drop sender
+        results[0] + results[1]
+
+def relay :: Channel.Receiver<i64> -> Channel.Sender<i64> -> Task<i64>
+fn relay input output = task {
+    match Channel.recv (ref input) with
+    | Maybe.Some value ->
+        let _sent = Channel.send (ref output) value
+        value
+    | Maybe.None -> 0 - 1
+}
+
+// Each task waits for the other to send first (any number of threads: a trap).
+export def deadlock_pair :: i64
+fn deadlock_pair =
+    match Channel.bounded 1 with
+    | (first_sender, first_receiver) ->
+        match Channel.bounded 1 with
+        | (second_sender, second_receiver) ->
+            let results = Task.run (Task.parallel [relay first_receiver second_sender, relay second_receiver first_sender])
+            results[0] + results[1]

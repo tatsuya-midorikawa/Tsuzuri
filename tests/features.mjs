@@ -1556,6 +1556,37 @@ const suites = {
       assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
     },
   },
+  // F10 Phase 2: Channel. The exports need no second thread: up to the capacity a channel is a ring,
+  // and everything that can wait traps the same way on every target.
+  channel: {
+    cases: [
+      ...[1n, 2n, 3n, 10n, 257n, 4096n].map((n) => ["roundtrip", [n], n * (n + 1n) / 2n]),
+      ["fifo", [], 123456n],
+      ["closed", [], 123000n],
+      ["refused", [], 41n],
+      ["cloned", [], 50n],
+      ["text", [], 54n],
+      ["returned", [], 8n],
+      // n tokens are dropped once each: one when it is received, the others with the channel. The
+      // counter then has no other owner.
+      ...[1n, 2n, 7n, 100n].map((n) => ["tokens", [n], n * 1000n + 10n + 1n]),
+      ["scope_end", [], 4n * 100n + 3n * 10n + 1n],
+      ["signals", [], 110n],
+      ["record_ends", [], 10n],
+      // The item that is left in the outer channel is a Sender: dropping it closes the inner channel.
+      ["nested", [], 0n],
+    ],
+    traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []],
+      ["send_inside_lock", []], ["recv_inside_lock", []]],
+    inspect(ir) {
+      // The channel runtime comes from the runtime that the driver links; the lowering only calls it.
+      for (const declaration of ["declare i32 @tsuzuri_channel_send(ptr, ptr)", "declare i32 @tsuzuri_channel_recv(ptr, ptr)",
+        "declare void @tsuzuri_channel_clone_sender(ptr)", "declare i32 @tsuzuri_channel_close(ptr, i32)",
+        "declare i32 @tsuzuri_mutex_wait_ok()", "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
 };
 
 const stringSamples = ["", "hello hello", "l", "a\0b", "\u{1f600}", "\ue000", " \tAbC\r\n", "\ud800", "\ude00", "aa"];

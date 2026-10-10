@@ -1,7 +1,8 @@
-// F10: Mutex.with_lock under `--trap-mode return`. A trap inside the lock is caught by the boundary of
+// F10: Mutex.with_lock and channels under `--trap-mode return`. A trap inside the lock is caught by the boundary of
 // the call, which releases the lock and clears the thread's state (src/runtime/trap.c calls the
 // hook that src/runtime/task.c installs), so the next call locks again and the children of a group that
-// wait for the lock are not left waiting. Native objects embed the runtime; hosts that link the LLVM
+// wait for the lock are not left waiting. A deadlock between tasks that wait on channels is a trap of the
+// call as well: the verdict wakes the waiters, the group completes, and the pool is clean afterwards. Native objects embed the runtime; hosts that link the LLVM
 // output provide trap.c themselves, here at several pool sizes. Usage: node tests/trap_return_sync.mjs [path/to/tsuzuri]
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -61,7 +62,7 @@ try {
       assert.match(execute(linked, [String(rounds)]).stdout, new RegExp(`^ok ${rounds}\\n$`), `linked ${optimization} with ${processors} processors`);
     }
   }
-  console.log("trap_return_sync: a trap inside Mutex.with_lock releases the lock (object and linked IR, 1, 2 and 8 threads, -O0 and -O3)");
+  console.log("trap_return_sync: a trap inside Mutex.with_lock releases the lock, and a deadlock or a trap in a channel program is a trap of the call (object and linked IR, 1, 2 and 8 threads, -O0 and -O3)");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

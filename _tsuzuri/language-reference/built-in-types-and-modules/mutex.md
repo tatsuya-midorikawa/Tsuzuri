@@ -127,6 +127,7 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 | --- | --- |
 | ロックを持ったまま、同じスレッドで別の（または同じ）`Mutex` に `with_lock` する | トラップ（assert） |
 | `with_lock` の中で `Task.parallel`・`Task.parallel_results`・`Task.scope`・`Parallel.*` を始める | トラップ（assert） |
+| `with_lock` の中で `Channel.send`・`Channel.recv` を呼ぶ | トラップ（assert）。待つことになるかどうかにかかわらず |
 | `with_lock` の中で `Task.run` する | できる。そのタスクはこのスレッドで逐次に実行します |
 | 別のスレッドがロックを持っている間に `with_lock` する | 待つ。持ち主が終えたら取れる |
 
@@ -141,6 +142,7 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 - 既定（`--trap-mode abort`）では、トラップはプロセスを終わらせるので、ロックの状態は残りません。
 - `--trap-mode return` では、トラップは、そのスレッドの最も外側の `tsuzuri_try_*` の境界で止まります。境界は、トラップしたスレッドが持っているロックを解放し、スレッドの状態を消してから、ステータスを返します。同じ呼び出しの別の子どもがそのロックを待っていても、待ちは終わり、グループは完了してトラップが境界へ伝わります。次の呼び出しは、通常どおりロックを取れます。
 - ロックの中の値は、トラップした呼び出しが確保したほかのものと同じく、境界が解放します。`Mutex` は export の境界を越えられず（`E1008`）、1 回の呼び出しの外へは残らないので、壊れかけの値を後から読む経路がありません。ポイズンを持たないのは、そのためです。
+- WASM（native の境界は持たない）では、トラップしたインスタンスを続けて使いません。`with_lock` が開いているかのフラグは、インスタンスごとの WebAssembly のグローバルで、トラップした `with_lock` の分が残るからです。グルーは、トラップしたインスタンスを捨て、次の呼び出しで作り直します（[WebAssembly への出力](../compiler/webassembly.md)）。生の WASM を呼ぶホストも、トラップしたインスタンスは捨てます。`--wasm-feature threads` では、トラップがプール全体を止めます。
 
 ## 型の規則
 
@@ -155,7 +157,7 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 - セルは、ロックの語（32 ビット）と値を持つ 1 要素の配列です。レコードをムーブしてもセルは動きません。確保は `Mutex.create` で 1 回です。
 - ネイティブでは、ロックの語を compare-exchange（acquire）で取り、解放は exchange（release）です。競合がなければ、ほかの同期は使いません。待つスレッドは、全 `Mutex` で共有する 1 組の pthread の mutex と条件変数で眠ります。
 - 既定の wasm32 は 1 スレッドなので、ロックは `with_lock` が開いているかを示す 1 つのフラグです。入れ子の検査は同じです。
-- `--wasm-feature threads` と `Mutex` の組み合わせは、まだ使えません（`E2000`）。`Atomic` と `Task.scope` は使えます（[WebAssembly への出力](../compiler/webassembly.md)）。
+- `--wasm-feature threads` でも `Mutex` は使えます。ロックの語は共有メモリにあり、待つスレッドは `memory.atomic.wait32` で眠ります。スレッドごとの「ロックを持っているか」の状態は、Worker ごとのインスタンスの WebAssembly のグローバルで、TLS の初期化は要りません（[WebAssembly への出力](../compiler/webassembly.md)）。トラップは、プール全体を止めるので、ロックの後始末は要りません。
 - `Mutex` は、ソースに名前が現れたプログラムだけに読み込まれます。`Mutex` を書かないプログラムの出力は変わりません。
 
 ## API リファレンス

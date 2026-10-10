@@ -1339,6 +1339,21 @@ pub enum Builtin {
     MutexWith,
     /// `Mutex.into_inner :: Mutex<'a> -> 'a`.
     MutexIntoInner,
+    /// `Channel.bounded :: Send<'a> => i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)`
+    /// makes a channel that holds up to the given number of items (F10 Phase 2).
+    ChannelBounded,
+    /// `Channel.send :: ref Channel.Sender<'a> -> 'a -> Result<unit, 'a>`: waits while the channel
+    /// is full; `Error item` when no receiver is left.
+    ChannelSend,
+    /// `Channel.recv :: ref Channel.Receiver<'a> -> Maybe<'a>`: waits while the channel is empty
+    /// and a sender is left; `None` when it is empty and closed.
+    ChannelRecv,
+    /// `Channel.clone_sender :: ref Channel.Sender<'a> -> Channel.Sender<'a>`.
+    ChannelCloneSender,
+    /// `Channel.__close_sender` and `__close_receiver`, the bodies of the `Drop` instances in
+    /// `std/Channel.tz`: private to that module.
+    ChannelCloseSender,
+    ChannelCloseReceiver,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1645,6 +1660,12 @@ impl Builtin {
         Self::MutexCreate,
         Self::MutexWith,
         Self::MutexIntoInner,
+        Self::ChannelBounded,
+        Self::ChannelSend,
+        Self::ChannelRecv,
+        Self::ChannelCloneSender,
+        Self::ChannelCloseSender,
+        Self::ChannelCloseReceiver,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -1868,6 +1889,12 @@ impl Builtin {
             Self::MutexCreate => "Mutex.create",
             Self::MutexWith => "Mutex.with_lock",
             Self::MutexIntoInner => "Mutex.into_inner",
+            Self::ChannelBounded => "Channel.bounded",
+            Self::ChannelSend => "Channel.send",
+            Self::ChannelRecv => "Channel.recv",
+            Self::ChannelCloneSender => "Channel.clone_sender",
+            Self::ChannelCloseSender => "Channel.__close_sender",
+            Self::ChannelCloseReceiver => "Channel.__close_receiver",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::GenSeed => "Gen.__seed",
@@ -2902,7 +2929,13 @@ impl Builtin {
             | Self::AtomicIntoInner
             | Self::MutexCreate
             | Self::MutexWith
-            | Self::MutexIntoInner => self.sync_scheme(),
+            | Self::MutexIntoInner
+            | Self::ChannelBounded
+            | Self::ChannelSend
+            | Self::ChannelRecv
+            | Self::ChannelCloneSender
+            | Self::ChannelCloseSender
+            | Self::ChannelCloseReceiver => self.sync_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3032,6 +3065,12 @@ impl Builtin {
         self.name().starts_with("Atomic.")
     }
 
+    /// Whether this builtin is a `Channel` operation, lowered to calls of the channel runtime
+    /// (F10 Phase 2).
+    pub(crate) fn is_channel(self) -> bool {
+        self.name().starts_with("Channel.")
+    }
+
     /// The schemes of `Task.scope`, `Atomic.*`, and `Mutex.*` (F10), kept out of `scheme` so
     /// that its frame stays small.
     #[inline(never)]
@@ -3047,6 +3086,16 @@ impl Builtin {
         let mutex = || BuiltinType::Std {
             module: "Mutex",
             name: "Mutex",
+            args: vec![a()],
+        };
+        let sender = || BuiltinType::Std {
+            module: "Channel",
+            name: "Sender",
+            args: vec![a()],
+        };
+        let receiver = || BuiltinType::Std {
+            module: "Channel",
+            name: "Receiver",
             args: vec![a()],
         };
         let atomic_value = || vec![constraint("AtomicValue", a())];
@@ -3101,6 +3150,36 @@ impl Builtin {
                 vec![constraint("Send", Var("b"))],
             ),
             Self::MutexIntoInner => (vec![mutex()], a(), Vec::new()),
+            Self::ChannelBounded => (
+                vec![Concrete(Type::I64)],
+                BuiltinType::Tuple(vec![sender(), receiver()]),
+                vec![constraint("Send", a())],
+            ),
+            Self::ChannelSend => (
+                vec![borrowed(sender()), a()],
+                BuiltinType::Std {
+                    module: "Result",
+                    name: "Result",
+                    args: vec![Concrete(Type::Unit), a()],
+                },
+                Vec::new(),
+            ),
+            Self::ChannelRecv => (
+                vec![borrowed(receiver())],
+                BuiltinType::Std {
+                    module: "Maybe",
+                    name: "Maybe",
+                    args: vec![a()],
+                },
+                Vec::new(),
+            ),
+            Self::ChannelCloneSender => (vec![borrowed(sender())], sender(), Vec::new()),
+            Self::ChannelCloseSender => {
+                (vec![borrowed(sender())], Concrete(Type::Unit), Vec::new())
+            }
+            Self::ChannelCloseReceiver => {
+                (vec![borrowed(receiver())], Concrete(Type::Unit), Vec::new())
+            }
             _ => unreachable!("not a concurrency builtin"),
         }
     }

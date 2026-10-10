@@ -52,13 +52,25 @@ fn cross_links_with_microsoft_sdk_when_requested() {
     let Some(sdk) = std::env::var_os("TSUZURI_WINDOWS_SDK") else {
         return;
     };
+    let sdk = std::path::PathBuf::from(sdk);
+    // The task runtime, and the Mutex and Channel runtime that task.c holds too (F10).
+    for source in [
+        "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); let jobs: [Task<Result<i64, string>>] = [task { Result.Ok value }]; let values = Result.get (Task.run (Task.parallel_results jobs)); values[0] }",
+        "export def answer :: i64\nfn answer =\n    let lock = Mutex.create 40i64\n    let seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + 1; index }))\n    Mutex.into_inner lock + Array.length (ref seen) - 2",
+        "export def answer :: i64\nfn answer =\n    match Channel.bounded 2 with\n    | (sender, receiver) ->\n        let _sent = Channel.send (ref sender) 42\n        match Channel.recv (ref receiver) with\n        | Maybe.Some item -> item\n        | Maybe.None -> 0",
+    ] {
+        cross_link(&sdk, source);
+    }
+}
+
+/// Builds `source`, whose `answer` returns 42, with the Microsoft SDK and links it with `task.c`.
+fn cross_link(sdk: &std::path::Path, source: &str) {
     use std::{
         fs,
         path::PathBuf,
         process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
-    let sdk = PathBuf::from(sdk);
     let root = std::env::temp_dir().join(format!(
         "tsuzuri-coff-{}-{}",
         std::process::id(),
@@ -68,7 +80,6 @@ fn cross_links_with_microsoft_sdk_when_requested() {
             .as_nanos()
     ));
     fs::create_dir(&root).unwrap();
-    let source = "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); let jobs: [Task<Result<i64, string>>] = [task { Result.Ok value }]; let values = Result.get (Task.run (Task.parallel_results jobs)); values[0] }";
     let module = analyze(source).unwrap();
     let ir = llvm::emit_with_export_style(
         &module,

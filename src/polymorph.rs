@@ -1607,6 +1607,8 @@ impl Classes {
                             &ty,
                             !instance.constraints.is_empty(),
                             types,
+                            module,
+                            names.origin(module),
                             instance.class.span,
                         )?;
                     }
@@ -2477,19 +2479,34 @@ fn head_constructor(ty: &Type) -> Option<HeadKey> {
 }
 
 /// A `Drop` instance covers every instantiation of a record or union declared in user code, so
-/// whether a type runs a user drop never depends on its type arguments (B07 D1).
+/// whether a type runs a user drop never depends on its type arguments (B07 D1). A std module may
+/// also implement `Drop` for the records and unions that it declares itself, which is how
+/// `Channel.Sender` closes its channel (F10); a program cannot add one to a std type.
 fn validate_drop_instance(
     head: &Type,
     constrained: bool,
     types: &TypeContext<'_>,
+    instance_module: &str,
+    instance_origin: ModuleOrigin,
     span: Span,
 ) -> Result<(), Diagnostic> {
-    let (origin, arguments) = match head {
-        Type::Record(id, arguments) => (types.records[*id].origin, arguments.as_ref()),
-        Type::Union(id, arguments) => (types.unions[*id].origin, arguments.as_ref()),
-        _ => (ModuleOrigin::Std, [].as_slice()),
+    let (origin, name, arguments) = match head {
+        Type::Record(id, arguments) => {
+            let record = &types.records[*id];
+            (record.origin, record.name.as_str(), arguments.as_ref())
+        }
+        Type::Union(id, arguments) => {
+            let union = &types.unions[*id];
+            (union.origin, union.name.as_str(), arguments.as_ref())
+        }
+        _ => (ModuleOrigin::Std, "", [].as_slice()),
     };
-    if origin != ModuleOrigin::User {
+    let own_std_type = instance_origin == ModuleOrigin::Std
+        && origin == ModuleOrigin::Std
+        && name
+            .strip_prefix(instance_module)
+            .is_some_and(|rest| rest.starts_with('.'));
+    if origin != ModuleOrigin::User && !own_std_type {
         return Err(Diagnostic::new(
             "E1016",
             "only records and unions declared in this program can implement Drop",
@@ -2871,6 +2888,17 @@ impl Checker<'_> {
             return Err(Diagnostic::new(
                 "E1022",
                 "the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
+            Builtin::ChannelCloseSender | Builtin::ChannelCloseReceiver
+        ) && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the channel close primitive is private to the standard Channel module; a Sender or Receiver closes when it is dropped",
                 span,
             ));
         }
