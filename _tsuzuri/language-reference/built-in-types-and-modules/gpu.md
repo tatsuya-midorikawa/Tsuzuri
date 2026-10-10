@@ -298,7 +298,7 @@ native のランタイムは、Vulkan のローダーにリンク時の依存を
 
 `w` が 36 より小さいカーネルは、lane 数がいくつでも、CPU 参照が動かします。重みは下限なので、分岐のあるカーネルで、高い道を通る lane が多いときは、実際の命令数は重みより多くなります。その場合に規則が傾くのは CPU 参照の側で（Vulkan へ出すのが遅れるだけで、結果は変わりません）、安い道で済む lane の多いカーネルを、デバイスへ出しすぎることはありません。実際に 1 台のマシンで測った時間と、この規則の当たり外れは、[Vulkan と Gpu.Auto](../../../docs/benchmarks.md#vulkan-と-gpuautof09-phase-3) にあります。
 
-規則の定数は、Apple M1 Max（MoltenVK 1.4.2）で、転送・同期・初回のコンパイルを含めて測った 1 台のマシンの経験則です。**他のマシンの保証ではありません**。別の GPU やドライバには、別の定数が合います。測定は他のプロセスが動いている負荷の高いマシンで行ったので、静かなマシンでの測り直しで、定数が変わることがあります。規則は、実行時の測定で調整しません。定数は `src/runtime/gpu-vulkan.c` の `TZ_VK_AUTO_*` にあり、測り方は `benchmarks/run-gpu-vulkan.mjs` です。
+規則の定数は、Apple M1 Max（MoltenVK 1.4.2）で、転送・同期・初回のコンパイルを含めて測った 1 台のマシンの経験則です。**他のマシンの保証ではありません**。別の GPU やドライバには、別の定数が合います。測定は、他のプロセスが動いている負荷の高いマシンと、ロードアベレージが約 4.4 の静かなマシンで行い、定数は同じ範囲に入りました（[Vulkan と Gpu.Auto](../../../docs/benchmarks.md#vulkan-と-gpuautof09-phase-3)）。規則は、実行時の測定で調整しません。定数は `src/runtime/gpu-vulkan.c` の `TZ_VK_AUTO_*` にあり、測り方は `benchmarks/run-gpu-vulkan.mjs` です。
 
 - 環境変数 `TSUZURI_GPU_AUTO_MIN_WORK=<n>` は、規則を「`n × w` が `<n>` 以上」に置き換えます（`0` は、使えるなら常に Vulkan）。「使えるか」の段は、そのまま効きます。能力の足りないデバイス、測った種類でないデバイス、収まらないバッファを、この変数で使わせることはできません。
 - 準備の失敗（能力の不足、上限、パイプラインの作成）は、呼び出しを CPU 参照で動かします。呼び出しの途中の失敗（デバイスの喪失、メモリ不足）は、明示的なデバイスと同じように、理由を出してトラップします。
@@ -519,7 +519,7 @@ node examples/gpu/run.mjs kernel.wgsl
 | 厳密な `f32` が実機で CPU 参照とビット単位で一致することの確認 | していない。float controls をすべて報告して適合プローブも通るデバイスが、確かめた環境にありません。確かめたのは、モックのデバイスでの許可と拒否、報告しない実機（MoltenVK、SwiftShader）での `Unavailable` までです |
 | Vulkan の離散 GPU の経路、Linux と Windows での実行、NVIDIA・AMD・Intel の GPU | していない。確かめたのは、Apple M1 Max の MoltenVK と、Chrome 同梱の SwiftShader だけです。ローダーの探索も macOS でしか動かしていません（Linux の soname の探索と、Windows の `LoadLibraryExA` は動かしていません。Windows は型検査までです）。離散 GPU と統合 GPU が両方ある機械での、`Auto` と明示的な要求のデバイスの選び方は、デバイスごとに種類と機能を変えられるモックでしか確かめていません |
 | `Gpu.Auto` が WebGPU を選ぶこと | しない。測った規則がありません。`Auto` の候補は CPU 参照と、統合 GPU の Vulkan です |
-| `Gpu.Auto` の規則を、静かなマシンや他のマシンで測り直すこと | していない。定数は 1 台の、負荷の高いマシンでの値です |
+| `Gpu.Auto` の規則を、他のマシンで測り直すこと | していない。定数は 1 台のマシンでの値です（負荷の高いときと静かなときの 2 回で、同じ範囲に入りました） |
 | GPU メモリに常駐するバッファ | 未実装。呼び出しごとに転送する |
 | JavaScript バインディング（`--emit bindings-js`）の WebGPU | 未実装。`--wasm-feature webgpu` との組み合わせは `E2000` |
 | WebAssembly の Vulkan | ない。ホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable`。`Auto` は CPU 参照 |

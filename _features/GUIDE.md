@@ -1406,7 +1406,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     取れなければ verdict を記録せず CPU に回して次の判定でやり直す。明示的な要求は待ってよい）。プロセスの論理 device は 1 つで、
     最初の要求が決める（離散と統合の両方がある機械で、`Auto` が先なら統合 GPU を開いてあとの明示的な `Gpu.Vulkan` も使い、明示的な要求が先なら離散 GPU を開いて `Auto` は以後 CPU。device を 2 つ持つには device ごとの状態と
     呼び出しの種別の区別が要るので、まだない）。`TSUZURI_GPU_AUTO_MIN_WORK=<n>` は規則を `lanes×weight >= n` に置き換えるが、機能・class・limit の検査は緩めない。ticket の「閾値」は、1 回の閾値では
-    少しずつ得する呼び出しの繰り返しで device を開かないため、費用の規則に改めた。定数は 1 台の機械（M1 Max）の経験値で、CI に速度の閾値は入れない。
+    少しずつ得する呼び出しの繰り返しで device を開かないため、費用の規則に改めた。定数は 1 台の機械（M1 Max）の経験値で（負荷の高いときと静かなときの 2 回の測定で同じ範囲に入った）、CI に速度の閾値は入れない。
   - 環境変数: `TSUZURI_WEBGPU_LIBRARY`・`TSUZURI_VULKAN_LIBRARY`（名指しのパス）、`TSUZURI_GPU_DEBUG`（空でなければ有効。理由と dispatch の経過）、`TSUZURI_GPU_AUTO_MIN_WORK`。ライブラリの既定の探索は system の場所だけ
     （macOS は絶対パスだけ。dyld がカレントディレクトリの同名ファイルを先に読むため。Windows は `LOAD_LIBRARY_SEARCH_SYSTEM32`。Linux は動的リンカーが作業ディレクトリを探さないので名前のまま）。
     Vulkan のローダーが読み込めても `vkGetInstanceProcAddr` を持たなければ読み飛ばして探索を続ける。runtime は `VK_*` の変数を読み書きしない。
