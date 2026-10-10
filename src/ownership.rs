@@ -639,33 +639,53 @@ impl Checker<'_> {
         closed(body, self.module, self.closed, &locals)
     }
 
-    /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
-    /// that calls it after lowering (every builtin is called through one): the type after its lock
-    /// and callback, which is a function when the callback's result is one (F10).
-    fn locked_result(&self, callee: &TypedExpr) -> Option<Type> {
+    /// The builtin that `callee` is, or that the generated function it names calls on its own
+    /// parameters after lowering (every builtin is called through one).
+    fn builtin_called(&self, callee: &TypedExpr) -> Option<crate::check::Builtin> {
         let E::Function(function) = &callee.kind else {
             return None;
         };
-        let builtin = match function {
-            crate::check::FunctionRef::Builtin(instance) => instance.builtin,
+        match function {
+            crate::check::FunctionRef::Builtin(instance) => Some(instance.builtin),
             crate::check::FunctionRef::User(id) => {
                 let wrapper = &self.module.functions[*id];
                 match &wrapper.body.kind {
                     E::Call(inner, _) if wrapper.module == "$builtin" => match &inner.kind {
                         E::Function(crate::check::FunctionRef::Builtin(instance)) => {
-                            instance.builtin
+                            Some(instance.builtin)
                         }
-                        _ => return None,
+                        _ => None,
                     },
-                    _ => return None,
+                    _ => None,
                 }
             }
-        };
+        }
+    }
+
+    /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
+    /// that calls it after lowering: the type after its lock and callback, which is a function
+    /// when the callback's result is one (F10).
+    fn locked_result(&self, callee: &TypedExpr) -> Option<Type> {
         match &callee.ty {
             Type::Function(parameters, _)
-                if builtin == crate::check::Builtin::MutexWith && parameters.len() >= 2 =>
+                if self.builtin_called(callee) == Some(crate::check::Builtin::MutexWith)
+                    && parameters.len() >= 2 =>
             {
                 Some(callee.ty.after_arguments(2))
+            }
+            _ => None,
+        }
+    }
+
+    /// The type of the item that `callee` puts in a channel when it is `Channel.send`, or the
+    /// generated function that calls it (F10). The item stays in the channel after the call.
+    fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
+        match &callee.ty {
+            Type::Function(parameters, _)
+                if self.builtin_called(callee) == Some(crate::check::Builtin::ChannelSend)
+                    && parameters.len() >= 2 =>
+            {
+                Some(parameters[1].clone())
             }
             _ => None,
         }
@@ -1957,10 +1977,13 @@ impl Checker<'_> {
         uses(expression, &mut during);
         let mut result = Value::default();
         let start = self.held.len();
-        // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below;
-        // any other use of the builtin as a value is checked where it is evaluated.
+        // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below,
+        // and one of `Channel.send` checks its item; any other use of either builtin as a value is
+        // checked where it is evaluated.
         let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
-        let value = if locked.is_some() {
+        let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
+        let received = self.builtin_called(callee) == Some(crate::check::Builtin::ChannelRecv);
+        let value = if locked.is_some() || sent.is_some() {
             Value::default()
         } else {
             self.eval(callee, Use::Consume, &during)?
@@ -2007,6 +2030,23 @@ impl Checker<'_> {
                     argument.span,
                 ));
             }
+            // The item stays in the channel and is received later, perhaps on another thread and
+            // after the data it borrows is gone. The type of the channel's end does not show the
+            // item type (`Sender<T>` stores one integer), so no later check can see the borrow; a
+            // parameter of a generated function passes on what its callers gave it, and they are
+            // checked (F10).
+            if index == 1
+                && let Some(item) = &sent
+                && item.carries_loans(&self.module.types())
+                && !value.loans.is_empty()
+                && !self.is_generated_parameter(argument)
+            {
+                return Err(error(
+                    "E1013",
+                    "a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent",
+                    argument.span,
+                ));
+            }
             match region_sources {
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
@@ -2030,7 +2070,9 @@ impl Checker<'_> {
             }
         }
         if expression.ty.carries_loans(&self.module.types()) {
-            result = current;
+            // An item that a receiver takes out of a channel was checked when it went in: it holds
+            // no borrow, and it was moved out of the channel, so it does not borrow the receiver.
+            result = if received { Value::default() } else { current };
             result.closed_result =
                 std::array::from_fn(|index| self.callback_returns_closed(expression, index + 1));
         }
@@ -2128,6 +2170,18 @@ impl Checker<'_> {
                 return Err(error(
                     "E1013",
                     "Mutex.with_lock must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together",
+                    expression.span,
+                ));
+            }
+            // The same for the item of `Channel.send`.
+            E::Function(_)
+                if self
+                    .sent_item(expression)
+                    .is_some_and(|item| item.carries_loans(&self.module.types())) =>
+            {
+                return Err(error(
+                    "E1013",
+                    "Channel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
                     expression.span,
                 ));
             }

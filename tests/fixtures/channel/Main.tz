@@ -288,3 +288,67 @@ export def recv_inside_lock :: i64
 fn recv_inside_lock =
     match Channel.bounded 2 with
     | (sender, receiver) -> locked_recv sender receiver
+
+// A function is an item too. The sender returns before the receiver calls the function, so the
+// function holds copies, never a borrow (E1013), and the ring carries its environment.
+def offer :: ref Channel.Sender<i64 -> i64> -> i64 -> unit
+fn offer sender k =
+    let _sent = Channel.send sender (x -> x + k)
+    ()
+
+def run_functions :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> i64
+fn run_functions sender receiver =
+    offer (ref sender) 40
+    offer (ref sender) 2
+    let first = match Channel.recv (ref receiver) with
+        | Maybe.Some f -> f 1
+        | Maybe.None -> 0
+    let second = match Channel.recv (ref receiver) with
+        | Maybe.Some f -> f 10
+        | Maybe.None -> 0
+    first * 100 + second
+
+export def functions :: i64
+fn functions =
+    match Channel.bounded 2 with
+    | (sender, receiver) -> run_functions sender receiver
+
+// What a received function holds is its own: it goes to another channel, and comes out of that one.
+def run_forwarded :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> i64
+fn run_forwarded first_sender first_receiver second_sender second_receiver =
+    offer (ref first_sender) 41
+    let moved = match Channel.recv (ref first_receiver) with
+        | Maybe.Some f -> match Channel.send (ref second_sender) f with | Result.Ok _unit -> 1 | Result.Error _item -> 0
+        | Maybe.None -> 0
+    match Channel.recv (ref second_receiver) with
+    | Maybe.Some g -> g 1 * 10 + moved
+    | Maybe.None -> 0
+
+export def forwarded :: i64
+fn forwarded =
+    match Channel.bounded 1 with
+    | (first_sender, first_receiver) ->
+        match Channel.bounded 1 with
+        | (second_sender, second_receiver) -> run_forwarded first_sender first_receiver second_sender second_receiver
+
+// The environment of a function that is left in the channel is dropped once with the channel: the
+// two functions in the ring own the Arc, and nobody does afterwards.
+def offer_counting :: ref Channel.Sender<i64 -> i64> -> Arc<Atomic<i64>> -> unit
+fn offer_counting sender counter =
+    let _sent = Channel.send sender (x -> x + Atomic.fetch_add (Arc.get (ref counter)) 1)
+    ()
+
+def run_function_drop :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> Arc<Atomic<i64>> -> i64
+fn run_function_drop sender receiver counter =
+    offer_counting (ref sender) (Arc.share (ref counter))
+    offer_counting (ref sender) (Arc.share (ref counter))
+    let before = Arc.strong_count (ref counter)
+    Owned.drop sender
+    Owned.drop receiver
+    before * 10 + Arc.strong_count (ref counter)
+
+export def function_drop :: i64
+fn function_drop =
+    let counter = Arc.new (Atomic.create 0i64)
+    match Channel.bounded 2 with
+    | (sender, receiver) -> run_function_drop sender receiver counter

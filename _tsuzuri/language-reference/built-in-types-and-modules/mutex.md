@@ -147,6 +147,7 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 ## 型の規則
 
 - `Mutex.create` は `Send<'a>` を要求します。`Mutex<Rc<T>>` は作れません（`E1013`、`tasks require Send values`）。`Mutex.create` を包んだジェネリック関数も、関数を使う型ごとに検査されるので、`Rc` で使うと `E1013` です（型変数は `Send` かどうか分からないためです）。
+- `Mutex.create` に、借用を捕捉した関数を入れることもできます。ロックは値を持ち続けるので、借用はロックの値に残ります。そのロックは、借用元より長く生きる場所（関数の戻り値、`Task.scope` の `shared`、タスク）へ出せません（`E1013`）。`Channel.send` の要素と違い、ロックの型が関数型を含むので、借用は型から見えます。
 - `Mutex<T>` は、`T` の中を見ずに `Sync` です。ロックの外から `T` に触れる道がなく、`T` はタスクの間を移れるものに限られるからです。
 - `Mutex<T>` は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
 - 関数値は複製されることがあり、複製した `Mutex` は別のロックになるので、捕捉は `E1005` です。借用 `ref mutex` を捕捉するか、`Arc` に入れるか、引数で渡します。

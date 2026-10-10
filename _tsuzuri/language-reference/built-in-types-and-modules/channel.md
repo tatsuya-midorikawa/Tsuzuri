@@ -10,6 +10,7 @@
 - `Channel.clone_sender (ref sender)` は、独立した所有者の `Sender` を作ります。**最後の `Sender` が drop されると、チャンネルは閉じます**。最後の `Receiver` が drop されると、以後の `send` は `Error` を返します。
 - 要素は FIFO で、1 つの要素は 1 つの受け手だけに届きます。どちらの端も `Sync` で、`ref` を共有してもよく、`Arc` に入れてもかまいません。複数の送り手と複数の受け手（MPMC）が使えます。
 - 両端は所有値です。関数値には捕捉できません（`E1005`）。借用 `ref sender` なら捕捉できます。
+- 要素は借用を持てません。関数値は、環境が借用を持たないときだけ送れます（`E1013`、[要素と借用](#要素と借用)）。
 - 待つスレッドは、先にプールの未着手の仕事を手伝い、それでも進めなければ眠ります。**どのスレッドも待っていて、動かせる仕事もないとき**は、無限に待たず、`deadlock: every task is waiting on a channel` というトラップになります。完了するかどうかは、スレッド数に左右されます（[待ちの規則](#待ちの規則)）。
 - チャンネルに残った要素は、最後の端が drop されるとき、ちょうど 1 回ずつ drop されます。
 
@@ -264,6 +265,48 @@ Tsuzuri runtime: deadlock: every task is waiting on a channel
 
 - 既定（`--trap-mode abort`）では、判定はプロセスを終わらせます。
 - `--trap-mode return` では、判定は、呼び出しの境界へ返るトラップになります。待っていたスレッドは全員起き、グループは終わり、境界は、その呼び出しが確保したもの（チャンネルのブロックを含む）を解放します。次の呼び出しは、普通に動きます。端を持つタスクがトラップしたときは、その端の drop が走らないので、待っている受け手は、判定で終わります。呼び出しに返るのは、`index` が最小のトラップです。
+
+## 要素と借用
+
+要素は、`Channel.send` が戻ったあともチャンネルに残り、あとで、別のスレッドで、借用元のデータがなくなったあとに受け取られることがあります。そのため、要素は借用を持てません。コンパイラーは、`Channel.send` の呼び出しで、要素が借用を持たないことを調べます。整数、文字列、配列などの所有値は、いつも通ります。関数値（と、それを含む `Maybe`・タプル・配列・レコード・`Seq`）は、環境が借用を持たないときだけ通ります。`Sender<T>` は整数 1 つの不透明な値で、型からは要素の型が見えないので、この呼び出しが唯一の検査です。
+
+- 通るもの: 値のコピーを捕捉した関数、何も捕捉しない関数、名前を付けた関数、その場で作った `Owned.function`。
+- `E1013` になるもの: `ref` で借りた値（引数で受け取った `ref` も含む）を捕捉した関数と、それを含む値。
+
+```tsuzuri run=42
+match Channel.bounded 2 with
+| (sender, receiver) ->
+    let k = 41i64
+    let _sent = Channel.send (ref sender) (x -> x + k)
+    match Channel.recv (ref receiver) with
+    | Maybe.Some f -> f 1
+    | Maybe.None -> 0
+```
+
+実行結果:
+
+```text
+42
+```
+
+次のように、引数で借りたデータを捕捉した関数を送ると、`E1013` です。この関数は、`work` が戻ったあとの `data` を読むことになります。
+
+```text
+def work :: ref Channel.Sender<i64 -> i64> -> ref [i64] -> i64
+fn work sender data =
+    match Channel.send sender (x -> x + data[0]) with
+    | Result.Ok _unit -> 0
+    | Result.Error _item -> 1
+```
+
+```text
+error[E1013]: a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent
+```
+
+- 呼び出しは、送り手と要素を一度に渡す直接の形で行います。要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send (ref sender)` のように引数を一部だけ渡すことも、`Channel.send` 自体を関数値にすることも、`item |> Channel.send (ref sender)` も、`E1013`（`Channel.send must be fully applied directly when its item may hold a borrow`）です。要素が整数や文字列などなら、どの形でも書けます。
+- 関数値を引数で受け取って送る関数（`def push :: ref Channel.Sender<'a> -> 'a -> bool`）は、`'a` が関数型のとき、呼び出し側の関数が借用を持つかどうかを本体からは知れないので、`E1013` です。引数の関数値を `task` に持ち込むのと同じ扱いです。関数は、送る場所で作ります。`'a` が整数や文字列などなら、`push` は書けます。
+- 受け手が取り出した要素は、借用を持たず、受け手を借りてもいません。取り出した関数を別のチャンネルへ送ることも、関数から返すこともできます。
+- `Mutex.create` に借用を捕捉した関数を入れると、借用はロックの値に残り、そのロックは借用元より長く生きる場所へ出せません（[Mutex](./mutex.md)）。
 
 ## 型の規則
 

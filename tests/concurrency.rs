@@ -591,6 +591,110 @@ fn mutex_programs_type_check_and_the_closure_result_is_owned() {
     assert!(message.contains("tasks require Send values"), "{message}");
 }
 
+// An item stays in a channel after the call that sent it, and it is received later, perhaps on
+// another thread, perhaps after the data that it borrows is gone. `Sender<T>` stores one integer,
+// so the loan analysis cannot see the item type through it: the call that stores the item is what
+// is checked, as the result of `Mutex.with_lock` is.
+#[test]
+fn a_channel_item_never_holds_a_borrow() {
+    let held = "a channel item cannot hold a borrow";
+    let staged = "Channel.send must be fully applied directly";
+    let borrowing = "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let table = [40i64, 41i64]\n    let view = ref table\n";
+    let received = "    match Channel.recv (ref receiver) with\n    | Maybe.Some _item -> 1\n    | Maybe.None -> 0";
+    let sends = |item: &str| {
+        format!(
+            "record Reader {{ read: i64 -> i64 }}\n{borrowing}    let _sent = Channel.send (ref sender) ({item})\n{received}"
+        )
+    };
+    // A function, alone or in a container, that reads borrowed data after the data is gone.
+    for item in [
+        "\\x -> x + view[0]",
+        "Maybe.Some (\\x -> x + view[0])",
+        "(1i64, \\x -> x + view[0])",
+        "[\\x -> x + view[0]]",
+        "Reader { read: \\x -> x + view[0] }",
+        "Seq.unfold (\\n -> if n < 3 then Some (view[0] + n, n + 1) else None) 0",
+    ] {
+        let message = rejects(&sends(item), "E1013");
+        assert!(message.contains(held), "{item}: {message}");
+    }
+    // The function bound to a name first, and a borrow of a parameter, which a caller lent.
+    let message = rejects(
+        &format!(
+            "{borrowing}    let f = \\x -> x + view[0]\n    let _sent = Channel.send (ref sender) f\n{received}"
+        ),
+        "E1013",
+    );
+    assert!(message.contains(held), "{message}");
+    let reaching = "def work :: ref Channel.Sender<i64 -> i64> -> ref [i64] -> i64\nfn work sender data =\n    match Channel.send sender (\\x -> x + data[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\n\ndef producer :: ref Channel.Sender<i64 -> i64> -> i64\nfn producer sender =\n    let local = [40, 41]\n    work sender (ref local)\n\ndef clobber :: i64 -> i64\nfn clobber n =\n    let a = [n, n, n, n]\n    let b = [n + 1, n + 1, n + 1, n + 1]\n    a[0] + b[1]\n\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _produced = producer (ref sender)\n    let _clobbered = clobber 1000\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> -1";
+    let message = rejects(reaching, "E1013");
+    assert!(message.contains(held), "{message}");
+    // The function is a child's own, and the record that holds the end looks loan-free.
+    let message = rejects(
+        "record Pipe { sender: Channel.Sender<i64 -> i64>, receiver: Channel.Receiver<i64 -> i64> }\ndef child :: ref Pipe -> i64 -> i64\nfn child shared index =\n    let local = [index, 1]\n    let view = ref local\n    match Channel.send (ref shared.sender) (\\x -> x + view[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let pipe = Pipe { sender: sender, receiver: receiver }\n    let seen = Task.scope (ref pipe) 2 child\n    Array.sum (ref seen)",
+        "E1013",
+    );
+    assert!(message.contains(held), "{message}");
+    // The call has to be direct, with both arguments, for its item to be checked when the item may
+    // hold a borrow.
+    let delayed = |statement: &str| format!("{borrowing}{statement}\n    0");
+    for source in [
+        delayed(
+            "    let send = Channel.send (ref sender)\n    let _sent = send (\\x -> x + view[0])",
+        ),
+        delayed(
+            "    let send = Channel.send\n    let _sent = send (ref sender) (\\x -> x + view[0])",
+        ),
+        delayed("    let _sent = (\\x -> x + view[0]) |> Channel.send (ref sender)"),
+    ] {
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(staged), "{source}\n{message}");
+    }
+    // A function that forwards the item of its parameter may be given a borrow.
+    let push = "def push :: ref Channel.Sender<'a> -> 'a -> bool\nfn push sender item =\n    match Channel.send sender item with\n    | Result.Ok _unit -> true\n    | Result.Error _item -> false\n";
+    let message = rejects(
+        &format!("{push}{borrowing}    if push (ref sender) (\\x -> x + view[0]) then 1 else 0"),
+        "E1013",
+    );
+    assert!(message.contains(held), "{message}");
+    // What holds no borrow still goes through: data, a function that captured copies, one that
+    // captures nothing or is named, and one that an Owned.Function owns, however the call is made.
+    for source in [
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (\\x -> x + k)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (\\x -> x + 1)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "def add_one :: i64 -> i64\nfn add_one x = x + 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) add_one\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "def offer :: ref Channel.Sender<i64 -> i64> -> i64 -> i64\nfn offer sender k =\n    match Channel.send sender (\\x -> x + k) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _offered = offer (ref sender) 41\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (Owned.function (\\x -> x + k))\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> Owned.call (ref f) 1\n    | Maybe.None -> 0",
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (Maybe.Some \"text\")\n    match Channel.recv (ref receiver) with\n    | Maybe.Some (Maybe.Some text) -> text.length\n    | _ -> 0",
+        // A generic function that forwards an item that is not a function.
+        &format!(
+            "{push}match Channel.bounded 2 with\n| (sender, _receiver) ->\n    if push (ref sender) 5i64 then 1 else 0"
+        ),
+        // The item of a call through a function value, when it cannot hold a borrow.
+        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let send = Channel.send (ref sender)\n    let _sent = send 3i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+    ] {
+        emits(source);
+    }
+    // What a channel returns holds no borrow either, so it may be sent on or returned.
+    emits(
+        "match Channel.bounded 2 with\n| (first, middle) ->\n    match Channel.bounded 2 with\n    | (second, last) ->\n        let k = 41i64\n        let _sent = Channel.send (ref first) (\\x -> x + k)\n        let _moved = match Channel.recv (ref middle) with\n            | Maybe.Some f -> Channel.send (ref second) f\n            | Maybe.None -> Result.Ok ()\n        match Channel.recv (ref last) with\n        | Maybe.Some f -> f 1\n        | Maybe.None -> 0",
+    );
+    emits(
+        "def next :: ref Channel.Receiver<i64 -> i64> -> Maybe<i64 -> i64>\nfn next receiver = Channel.recv receiver\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (\\x -> x + k)\n    match next (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+    );
+    // A lock keeps its value as long as it lives, so a borrow in it stays on the lock, which
+    // cannot be returned or shared by a scope, as with any other value that holds a function.
+    for source in [
+        "def make :: ref [i64] -> Mutex<i64 -> i64>\nfn make data = Mutex.create (\\x -> x + data[0])\ndef leak :: i64 -> Mutex<i64 -> i64>\nfn leak n =\n    let local = [n, n]\n    make (ref local)\nlet _kept = leak 5i64\n0",
+        "def keep :: ref [i64] -> i64\nfn keep data =\n    let lock = Mutex.create (\\x -> x + data[0])\n    let seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\f -> (deref f) index))\n    Array.sum (ref seen)\nlet local = [40i64, 41i64]\nkeep (ref local)",
+    ] {
+        rejects(source, "E1013");
+    }
+    emits(
+        "def keep :: ref [i64] -> i64\nfn keep data =\n    let lock = Mutex.create (\\x -> x + data[0])\n    Mutex.with_lock (ref lock) (\\f -> (deref f) 1)\nlet local = [40i64, 41i64]\nkeep (ref local)",
+    );
+}
+
 #[test]
 fn atomics_lower_to_sequentially_consistent_instructions() {
     for ir in emits(OPERATIONS) {
