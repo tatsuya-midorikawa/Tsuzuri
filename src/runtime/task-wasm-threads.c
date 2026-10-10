@@ -18,7 +18,9 @@ _Static_assert(sizeof(ThreadState) == 28, "host control layout");
    `queue_mutex`, and the host never reads it. `blocked` counts the threads that found nothing to do
    since the last progress event, `channel_waiters` those of them that wait on a channel. When all
    threads are blocked and one of them waits on a channel, no thread can ever change a channel
-   again, and the waiters are told (`verdicts`). `idle` counts the workers that run no item. */
+   again, and the waiters are told (`verdicts`). `idle` counts the threads that run no item and are
+   free to take one: the workers that run none, and the threads that wait for the end of a group
+   they started (they take its items, and any other, themselves). */
 typedef struct {
     unsigned blocked;
     unsigned channel_waiters;
@@ -147,8 +149,9 @@ static int has_unstarted(void) {
     return 0;
 }
 
-/* Runs one unstarted item, of `preferred` if it has one. A worker that runs an item is not idle. */
-static int run_one(Group *preferred, int worker) {
+/* Runs one unstarted item, of `preferred` if it has one. A `counted` thread (a worker, or a thread
+   that waits for a group it started) that runs an item is not idle meanwhile. */
+static int run_one(Group *preferred, int counted) {
     lock(&state.queue_mutex);
     Group *group = preferred;
     if (!group || atomic_load_explicit(&group->next, memory_order_relaxed) >= group->length) {
@@ -161,7 +164,7 @@ static int run_one(Group *preferred, int worker) {
         return 0;
     }
     uint64_t index = atomic_fetch_add_explicit(&group->next, 1, memory_order_relaxed);
-    if (worker) --waiting.idle;
+    if (counted) --waiting.idle;
     void (*run)(void *, uint64_t) = group->run;
     void *context = group->context;
     uint32_t (*run_result)(void *, uint64_t) = group->run_result;
@@ -178,7 +181,7 @@ static int run_one(Group *preferred, int worker) {
         atomic_fetch_sub_explicit(&group->remaining, skipped, memory_order_relaxed);
     }
     atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_release);
-    if (worker) ++waiting.idle;
+    if (counted) ++waiting.idle;
     progress();
     unlock(&state.queue_mutex);
     return 1;
@@ -199,12 +202,14 @@ static uint64_t submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(voi
     lock(&state.queue_mutex);
     group.previous = groups;
     groups = &group;
+    // This thread waits for the group, and takes its items: it is free to take one until it does.
+    ++waiting.idle;
     progress();
     unlock(&state.queue_mutex);
     for (;;) {
         check_failed();
         if (atomic_load_explicit(&group.remaining, memory_order_acquire) == 0) break;
-        if (run_one(&group, 0)) continue;
+        if (run_one(&group, 1)) continue;
         // Nothing to run: the thread waits for the join, which cannot change a channel.
         lock(&state.queue_mutex);
         if (atomic_load_explicit(&group.remaining, memory_order_acquire) == 0 || has_unstarted()) {
@@ -217,6 +222,7 @@ static uint64_t submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(voi
         __builtin_wasm_memory_atomic_wait32((int *)&state.epoch, epoch, -1);
     }
     lock(&state.queue_mutex);
+    --waiting.idle;
     Group **link = &groups;
     while (*link != &group) link = &(*link)->previous;
     *link = group.previous;
@@ -301,9 +307,11 @@ static void channel_changed(void) {
 enum { HELP_DEPTH = 16 };
 
 /* With `queue_mutex` held: runs an unstarted item on top of this thread's work, as a thread that
-   waits for a join does, unless a worker is free to take it (an item that runs on top of a waiting
-   one can never end before the waiting one goes on). Returns 1 when the lock was released, so the
-   caller has to look at its channel again. */
+   waits for a join does, unless a thread is free to take it: an idle worker, or a thread that waits
+   for a group (an item that runs on top of a waiting one can never end before the waiting one goes
+   on, so a pipeline that needs every stage to run at once would stall if the third stage were
+   stacked on the second while a thread was free to run it). Returns 1 when the lock was released,
+   so the caller has to look at its channel again. */
 static int help_one(void) {
     if (waiting.idle != 0 || help_depth >= HELP_DEPTH || !has_unstarted()) return 0;
     ++help_depth;

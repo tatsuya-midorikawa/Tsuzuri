@@ -40,7 +40,7 @@ Channel.clone_sender :: ref Channel.Sender<'a> -> Channel.Sender<'a>
 - `Sync` と `Arc`: `Sync` は `Atomic`・`Mutex<T: Send>`・`Channel` の両端・整数・文字列・配列・レコード・関数値・`Sync` な値の `Arc`。`Rc`、extern ハンドル、`Task`、排他参照、Copy でない `dyn`、`Owned.Function`、`Seq`、`Async`、GPU のハンドルは `Sync` でない。`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send` で、`Arc<Atomic<T>>`・`Arc<Mutex<T>>`・`Arc<Channel.Receiver<T>>` が、タスクの間で状態を共有する標準の形になった。
 - `Mutex.with_lock` の中は、入れ子の `with_lock`、並列の開始、`Channel` の操作がトラップ（デッドロックのかわり）。結果は `Send` で、ロック中の値への借用を持てない（`E1013`）。ポイズンはない。
 - `Channel`: 容量は 1 以上（以下はトラップ）。`send` は満杯なら待ち、受け手がいなければ要素を `Error` で返す。`recv` は空なら待ち、すべての `Sender` が drop され空なら `None`。最後の端が drop されるとき、残った要素を 1 回ずつ drop してブロックを解放する。
-- 待ちの規則: 待つスレッドは、空きワーカーがいなければ未着手の仕事を自分のスタックの上で走らせ（深さ 16 まで）、なければ眠る。全スレッドが待ち、動かせる仕事もなければ、待ちを全員起こして `Tsuzuri runtime: deadlock: every task is waiting on a channel` を出し、assert のトラップにする。既定の wasm32 と CPU が 1 つの native は、子どもを `index` の順に 1 スレッドで走らせ、満たされない待ちはその場でトラップする。完了するかどうかはスレッド数に左右される（D10）。
+- 待ちの規則: 待つスレッドは、空いているスレッド（仕事を取っていないワーカーと、自分が始めたグループの終わりを待つスレッド）がいなければ未着手の仕事を自分のスタックの上で走らせ（深さ 16 まで）、なければ眠る。全スレッドが待ち、動かせる仕事もなければ、待ちを全員起こして `Tsuzuri runtime: deadlock: every task is waiting on a channel` を出し、assert のトラップにする。既定の wasm32 と CPU が 1 つの native は、子どもを `index` の順に 1 スレッドで走らせ、満たされない待ちはその場でトラップする。完了するかどうかはスレッド数に左右される（D10）。
 - opt-in: 予約モジュール `Atomic`・`Mutex`・`Channel`（`RESERVED_MODULES` は 49 個）は、ソースに名前が現れたプログラムだけに読み込まれる。`Sync`・`AtomicValue` の組み込みクラスは `BUILTIN_CLASSES`（33 個）。使わないプログラムの IR はバイト単位で変わらない。
 - 診断: `E1022`（両端の構築・フィールド参照・内部の close 関数）、`E1016`（利用者の std 型への `Drop`・`Sync` などへの instance）、`E1005`（両端と `Atomic`・`Mutex` の捕捉）、`E1013`（`Sync` でない共有、`Send` でない要素、借用を持つ結果や一時値）、`E2000`（`--freestanding` の `Mutex`・`Channel`）、`E1008`・`E1026`（export・extern・`const` の境界）。
 
@@ -81,6 +81,7 @@ Phase 2 のレビューは、さらに次の欠陥を見つけ、それぞれ別
 
 1. `Channel.send` が、借用を持つ関数値を受け取れた。`Sender<T>` は整数 1 つの record で、`carries_loans` に要素の型が見えず、`can_send(Function)` は真だったので、`producer` が戻ったあとの `data` を、受け手が読めた（解放後の読み出し）。`Channel.send` の直接呼びで、要素の loan が 1 つでもあれば `E1013`（引数の借用も、`ref` した局所値の借用も）。部分適用・関数値化・`|>` は、要素の型が借用を持ちうるとき `E1013`。`recv` が返す要素は、入れるときに検査済みなので loan を持たない（取り出した関数を別のチャンネルへ送れる）。
 2. `Send<'a>` が型変数に対して真で、ジェネリック関数の中で満たされたと見なされ、使う型で再検査されなかった（`Channel.bounded`・`Mutex.create`・`Parallel.init` を包む関数、利用者が書いた `Send<'a>`）。`Rc` を運ぶチャンネルが作れ、非 atomic の計数が競合した。`can_send` は型変数と推論変数に偽を返し、制約が関数に残って、使う型ごとに検査される（`Sync` と同じ）。
+3. `--wasm-feature threads` で、3 段のパイプラインが最少の 3 スレッドで、CPU が混んでいるときに、誤ってデッドロックのトラップになった。手伝いは「空きのスレッドがいないとき」だけだが、グループの終わりを待つスレッドを空きに数えておらず、`submit` が lock を放してから最初のアイテムを取るまでの間に、ワーカーがアイテムをすべて取ると、待ち始めたワーカーが最後の段を自分の下の段の上に積んで詰まった。結合を待つスレッドを `idle` に数える。
 
 ## 検証
 
