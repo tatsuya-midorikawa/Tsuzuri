@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import dgram from "node:dgram";
 import dns from "node:dns";
+import { once } from "node:events";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os, { tmpdir } from "node:os";
@@ -33,11 +34,35 @@ function execute(args, success = true) {
 const pattern = count => Buffer.from(Array.from({ length: count }, (_, index) => index % 256));
 const listen = handler => new Promise((resolveListen, reject) => {
   const server = net.createServer(handler);
+  server.open = new Set();
+  server.on("connection", socket => { server.open.add(socket); socket.once("close", () => server.open.delete(socket)); });
   server.once("error", reject);
   server.listen(0, "127.0.0.1", () => resolveListen(server));
 });
-const stop = server => new Promise(resolveStop => server.close(() => resolveStop()));
+// Stops a peer's listener and ends what is still open to it, so that a connection that the program never closed (a failure of
+// the host, or a case that ends first) does not keep `close` waiting.
+const stop = server => new Promise(resolveStop => {
+  server.close(() => resolveStop());
+  for (const socket of server.open ?? []) socket.destroy();
+});
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
+// A wait for what a peer should see is bounded, so that a host that never does it fails the case instead of hanging the run.
+function within(promise, what, milliseconds = 20_000) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), milliseconds); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+// A case of the host's own behavior: its failure is noted and the next case still runs, so that one run shows every failure.
+const failures = [];
+let level = "";
+async function check(name, body) {
+  try {
+    await body();
+  } catch (error) {
+    failures.push(`${name} ${level}`);
+    console.error(`Net wasm: FAIL ${name} ${level}\n${error?.stack ?? error}`);
+  }
+}
 
 try {
   const fixture = join(root, "fixture");
@@ -49,6 +74,21 @@ try {
   dns.promises.lookup = function (host, ...rest) {
     lookups.push(host);
     return lookup.call(this, host, ...rest);
+  };
+  // The datagram sockets and the listeners that the glue makes (a listener has `pauseOnConnect`, which the peers' own do not),
+  // in the order they were made, so that a test can reach the program's own sockets.
+  const made = { sockets: [], servers: [] };
+  const createSocket = dgram.createSocket;
+  dgram.createSocket = function (...rest) {
+    const socket = createSocket.apply(this, rest);
+    made.sockets.push(socket);
+    return socket;
+  };
+  const createServer = net.createServer;
+  net.createServer = function (...rest) {
+    const server = createServer.apply(this, rest);
+    if (rest[0]?.pauseOnConnect) made.servers.push(server);
+    return server;
   };
 
   // The opt-in is explicit: without it a build that reaches a socket stays E2000 and the default module has no import.
@@ -82,7 +122,29 @@ fn probe port =
   if (typeof WebAssembly.Suspending !== "function") {
     console.log("Net wasm: JSPI checks skipped (WebAssembly.Suspending needs Node.js 24 or newer)");
   } else {
+    // A module that reaches no socket gets the glue of JSPI alone: no Node.js modules, no `tsuzuri_net` import, and no export
+    // of an allocator that only the sockets need, so the module and its glue load together.
+    {
+      const pure = join(root, "pure");
+      mkdirSync(pure, { recursive: true });
+      writeFileSync(join(pure, "Main.tz"), `export def probe :: i64 -> i64
+fn probe port =
+    match Net.parse_ip (ref "127.0.0.1") port with
+    | Maybe.Some address -> Net.port address
+    | Maybe.None -> 0 - 1
+`);
+      const wasm = join(root, "pure.wasm");
+      const glue = join(root, "pure.mjs");
+      execute(["build", pure, "--target", "wasm32", ...features, "-o", wasm]);
+      execute(["build", pure, "--target", "wasm32", ...features, "--emit", "bindings-js", "-o", glue]);
+      assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(wasm))), []);
+      const text = readFileSync(glue, "utf8");
+      for (const part of ["netImports", "NODE_NET", "node:net", "tsuzuri_net"]) assert.ok(!text.includes(part), part);
+      const loaded = await (await import(pathToFileURL(glue).href)).load(readFileSync(wasm));
+      assert.equal(await loaded.exports.probe(8080n), 8080n, "probe");
+    }
     for (const optimization of ["-O0", "-O3"]) {
+      level = optimization;
       const wasm = join(root, `net${optimization}.wasm`);
       const glue = join(root, `net${optimization}.mjs`);
       execute(["build", fixture, "--target", "wasm32", ...features, optimization, "-o", wasm]);
@@ -94,7 +156,7 @@ fn probe port =
       assert.deepEqual(imports, [
         "tsuzuri.Main.report", "tsuzuri_async.clock", "tsuzuri_async.wait", "tsuzuri_net.accept", "tsuzuri_net.classify", "tsuzuri_net.close",
         "tsuzuri_net.connect", "tsuzuri_net.names", "tsuzuri_net.open", "tsuzuri_net.read", "tsuzuri_net.resolve", "tsuzuri_net.send",
-        "tsuzuri_net.unwatch", "tsuzuri_net.watch", "tsuzuri_net.write",
+        "tsuzuri_net.try_accept", "tsuzuri_net.try_read", "tsuzuri_net.unwatch", "tsuzuri_net.watch", "tsuzuri_net.write",
       ]);
 
       const reported = [];
@@ -145,7 +207,7 @@ fn probe port =
       // Name resolution: a name goes to the host's resolver, and address text (even what a system would read as an address
       // in its own way) is decided by the strict parser in the module and never reaches it.
       lookups.length = 0;
-      assert.equal(await call("literals"), 1202n, "literals");
+      assert.equal(await call("literals"), 2002n, "literals");
       assert.deepEqual(lookups, [], "no address text reached dns.lookup");
       assert.ok((await call("lookup")) >= 1n, "localhost resolves");
       assert.deepEqual(lookups, ["localhost"], "a name reached dns.lookup");
@@ -202,8 +264,216 @@ fn probe port =
         assert.equal(sum, (4194304 / 256) * 32640);
         await stop(slow);
       }
+
+      // ---- What the host's sockets do that a program cannot see, and what must not break it ----
+
+      // A discarded instance leaves no socket behind. A trap with a listener, a datagram socket, and a connection open: the
+      // listener refuses, both ports can be bound again at once, the peer sees its connection end, and the next call (on a new
+      // instance) works.
+      await check("trap_with_sockets", async () => {
+        const ended = Promise.withResolvers();
+        const server = await listen(socket => { socket.on("error", () => {}); socket.on("close", () => ended.resolve()); socket.resume(); });
+        const ports = [];
+        onReport = port => ports.push(port);
+        await assert.rejects(call("trap_with_sockets", server.address().port), error => error.name === "TsuzuriTrap");
+        await within(ended.promise, "the peer's connection to the discarded instance to end");
+        assert.equal(ports.length, 2, "trap_with_sockets reported its ports");
+        await stop(server);
+        const refusal = net.connect({ host: "127.0.0.1", port: ports[0] });
+        const [refused] = await once(refusal, "error");
+        assert.equal(refused.code, "ECONNREFUSED", "the listener of the discarded instance");
+        const rebound = net.createServer(() => {});
+        await new Promise((resolveListen, reject) => { rebound.once("error", reject); rebound.listen(ports[0], "127.0.0.1", resolveListen); });
+        await stop(rebound);
+        const datagram = dgram.createSocket("udp4");
+        await new Promise((resolveBind, reject) => { datagram.once("error", reject); datagram.bind(ports[1], "127.0.0.1", resolveBind); });
+        datagram.close();
+        assert.equal(await call("refused", ports[0]), 2n, "a new instance after the trap");
+      });
+
+      // A program that ends with sockets that it never closed lets Node end by itself, as the process end closes them natively.
+      await check("leak", async () => {
+        const script = join(root, "leak.mjs");
+        writeFileSync(script, `import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [glue, wasm] = process.argv.slice(2);
+const loaded = await (await import(pathToFileURL(glue).href)).load(readFileSync(wasm), { imports: { "Main.report": () => {} } });
+console.log("leaked " + await loaded.exports.leak(0n));
+`);
+        const child = spawnSync(process.execPath, [script, glue, wasm], { encoding: "utf8", timeout: 60_000 });
+        assert.ifError(child.error);
+        assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+        assert.equal(child.stdout, "leaked 7\n");
+      });
+
+      // A datagram to port 0 (which Node refuses by throwing) is a failure of that call, through both sends.
+      await check("zero_port", async () => {
+        assert.equal(await call("zero_port"), BigInt(errno.EINVAL) * 1000n + BigInt(errno.EINVAL), "zero_port");
+      });
+
+      // The peer's half-close does not end the program's writing: a request, a half-close, and then the answer.
+      await check("half_close", async () => {
+        let reply = "";
+        const answered = Promise.withResolvers();
+        onReport = port => {
+          const client = net.connect({ host: "127.0.0.1", port }, () => client.end("request"));
+          client.on("data", data => { reply += data; });
+          client.on("end", () => answered.resolve());
+          client.on("error", () => answered.resolve());
+        };
+        assert.equal(await call("half_close"), 71n, "half_close");
+        await within(answered.promise, "the answer after the half-close");
+        assert.equal(reply, "ANSWER", "the answer after the peer's half-close");
+      });
+
+      // A datagram that the system refuses (one byte over the largest) fails that send only, and the same socket still receives.
+      await check("datagram_failure", async () => {
+        assert.equal(await call("datagram_failure"), BigInt(errno.EMSGSIZE) * 10000n + 100n + 2n, "datagram_failure");
+      });
+
+      // A reset that comes while the program is not reading is a reset, then the end: the peer resets the first connection
+      // (after the program's side has seen it) and connects a second one, which ends the program's wait.
+      await check("reset_idle", async () => {
+        const second = [];
+        let flow;
+        onReport = port => {
+          flow = (async () => {
+            const server = made.servers.at(-1);
+            const arrived = once(server, "connection");
+            const first = net.connect({ host: "127.0.0.1", port });
+            first.on("error", () => {});
+            const connected = once(first, "connect");
+            const [theirs] = await within(arrived, "the program's listener to see a connection");
+            await within(connected, "the connection to be made");
+            const gone = new Promise(resolveGone => theirs.once("close", resolveGone));
+            first.resetAndDestroy();
+            await within(gone, "the program's side of the reset connection to close");
+            const next = net.connect({ host: "127.0.0.1", port });
+            next.on("error", () => {});
+            second.push(next);
+          })();
+          flow.catch(() => {});
+        };
+        try {
+          assert.equal(await call("reset_idle"), 301n, "reset_idle");
+          await flow;
+        } finally {
+          for (const socket of second) socket.destroy();
+        }
+      });
+
+      // What a program does not read is bounded: a datagram socket keeps 1 MiB and 4096 datagrams (a full buffer drops
+      // the rest, as a kernel's does), a listener keeps 128 connections and resets the rest. Datagrams are handed to the
+      // glue's own handler, so the count does not depend on what a system's buffers hold.
+      for (const [size, count, kept] of [[1400, 5000, Math.floor(1048576 / 1400)], [1, 6000, 4096]]) {
+        await check(`udp_flood of ${size} bytes`, async () => {
+          made.sockets.length = 0;
+          onReport = () => {
+            const socket = made.sockets.at(-1);
+            for (let index = 0; index < count; index++) socket.emit("message", Buffer.alloc(size, index % 256), { address: "127.0.0.1", port: 9, family: "IPv4", size });
+          };
+          assert.equal(await call("udp_flood"), BigInt(kept), `udp_flood of ${count} datagrams of ${size} bytes`);
+        });
+      }
+      await check("accept_flood", async () => {
+        made.servers.length = 0;
+        const ports = [];
+        const clients = [];
+        const queued = [];
+        let flow;
+        onReport = port => {
+          ports.push(port);
+          if (ports.length < 2) return;
+          flow = (async () => {
+            const flooded = made.servers.at(-2);
+            const everyone = Promise.withResolvers();
+            flooded.on("connection", socket => { queued.push(socket); if (queued.length === 200) everyone.resolve(); });
+            for (let batch = 0; batch < 5; batch++) {
+              // Forty at a time, each batch connected before the next, so that the system's own queue never overflows (its
+              // dropped connection requests would only be retried a second later).
+              const connecting = [];
+              for (let index = 0; index < 40; index++) {
+                const client = net.connect({ host: "127.0.0.1", port: ports[0] });
+                client.on("error", () => {});
+                clients.push(client);
+                connecting.push(new Promise(resolveConnect => { client.once("connect", resolveConnect); client.once("error", resolveConnect); }));
+              }
+              await within(Promise.all(connecting), "a batch of clients to connect");
+            }
+            await within(everyone.promise, "the listener to see 200 connections");
+            // A failure of the listener (a descriptor that ran out) and of a connection that waits: no unhandled event.
+            queued[0].emit("error", new Error("reset while it waits"));
+            flooded.emit("error", Object.assign(new Error("too many open files"), { code: "EMFILE" }));
+            const gate = net.connect({ host: "127.0.0.1", port: ports[1] });
+            gate.on("error", () => {});
+            clients.push(gate);
+          })();
+          flow.catch(() => {});
+        };
+        try {
+          assert.equal(await call("accept_flood"), 128n * 1000n + BigInt(errno.EMFILE), "accept_flood");
+          await flow;
+        } finally {
+          for (const client of clients) client.destroy();
+        }
+      });
+
+      // Under Async.start the host polls the executor outside JSPI, where a call that suspends the stack is an error, so the
+      // operations that try once (a read, an accept, a receive) must not use one.
+      await check("Async.start", async () => {
+        assert.ok(loaded.async, "the executor of Async.start is the host's");
+        const results = [];
+        const peers = [];
+        const sender = dgram.createSocket("udp4");
+        const started = async (name, argument, expected, what) => {
+          await call(name, argument);
+          await within(loaded.async.settled(), `${what} to finish`);
+          assert.deepEqual(results.splice(0), expected, `${what} under Async.start`);
+        };
+        let greeter;
+        try {
+          onReport = value => {
+            if (value >= 1000000) results.push(value - 1000000);
+            else {
+              const peer = net.connect({ host: "127.0.0.1", port: value });
+              peer.on("error", () => {});
+              peers.push(peer);
+            }
+          };
+          greeter = await listen(socket => { socket.on("error", () => {}); socket.write("hello"); });
+          await started("started_read", greeter.address().port, [5], "read_async");
+          await started("started_accept", 0, [1], "accept_async");
+          onReport = value => {
+            if (value >= 1000000) results.push(value - 1000000);
+            else sender.send("ping", value, "127.0.0.1");
+          };
+          await started("started_recv", 0, [4], "recv_from_async");
+        } finally {
+          for (const peer of peers) peer.destroy();
+          sender.close();
+          if (greeter) await stop(greeter);
+        }
+      });
+
+      // An address at or above 2 GiB reaches the host as a negative number: with two gibibytes of capacity held, the buffers of
+      // the calls are up there. Built once, at -O3, with a heap that can hold them, where the machine has the memory.
+      if (optimization === "-O3" && (process.env.TSUZURI_NET_WASM_HIGH === "0" || os.totalmem() < 8 * 2 ** 30)) {
+        console.log("Net wasm: skip: high_echo (needs 8 GiB of memory, and TSUZURI_NET_WASM_HIGH not 0)");
+      } else if (optimization === "-O3") {
+        await check("high_echo", async () => {
+          const high = join(root, "net-high.wasm");
+          execute(["build", fixture, "--target", "wasm32", ...features, optimization, "--wasm-max-memory", "3GiB", "-o", high]);
+          const heavy = await (await import(`${pathToFileURL(glue).href}?${optimization}`)).load(readFileSync(high), {
+            imports: { "Main.report": () => {} },
+          });
+          const server = await listen(socket => { socket.on("data", data => socket.write(data)); socket.on("end", () => socket.end()); socket.on("error", () => {}); });
+          assert.equal(await heavy.exports.high_echo(BigInt(server.address().port)), 130562n, "high_echo");
+          await stop(server);
+        });
+      }
       await pause(20);
     }
+    assert.deepEqual(failures, [], `Net wasm cases that failed: ${failures.join(", ")}`);
     console.log("Net wasm: blocking and async sockets on Node.js through JSPI passed at -O0 and -O3");
   }
 } finally {

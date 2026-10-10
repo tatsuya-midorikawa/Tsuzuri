@@ -15,7 +15,7 @@
 - 閉じたハンドルを使うと `InvalidInput` です。別のソケットに当たることはありません。
 - 時間制限は、呼び出し全体の期限（ミリ秒）です。`None` は無期限です。
 - 受信は必ず最大長を取ります。「最後まで読む」関数はありません。
-- アドレスの文字列を読むのは、厳密な解析器だけです。`resolve` も、アドレスに読める host（`127.1`、`0x7f000001`、`fe80::1%en0` など）を OS に渡さず、`parse_ip` が読めなければ `InvalidInput` にします。
+- アドレスの文字列を読むのは、厳密な解析器だけです。`resolve` も、アドレスに読める host（`127.1`、`0x7f000001`、`fe80::1%en0`、全角の `１２７．０．０．１` など）を OS に渡さず、`parse_ip` が読めなければ `InvalidInput` にします。
 
 ## アドレスを読む
 
@@ -229,15 +229,16 @@ hello from 127.0.0.1 true
 
 `resolve host port` は、host の名前をシステムのリゾルバーに問い合わせて、アドレスの配列を返します。`/etc/hosts` やネットワークを見ます。結果は OS の順で、重複は除かれ、先頭の 64 件までです。リゾルバーの呼び出しは待つあいだ止められません。結果は信頼できる情報ではありません。
 
-アドレスに読める host は、リゾルバーに渡りません。OS の `getaddrinfo` は、`parse_ip` が拒む書き方も数値のアドレスとして読み、読み方も OS で違います（`127.1`・`0x7f000001`・`2130706433` は 127.0.0.1 です。`0177.0.0.1` は、macOS では 10 進数として 177.0.0.1 ですが、`inet_aton` の規則どおりに先頭の 0 を 8 進数と読む OS では 127.0.0.1 です。`fe80::1%lo0` はゾーンを黙って捨てます）。`parse_ip` で「名前ではない」と分けてから `resolve` を呼ぶ使い方が、これで抜けられることはありません。次のどれかに当たる host を、アドレスの書き方とみなします。
+アドレスに読める host は、リゾルバーに渡りません。OS の `getaddrinfo` は、`parse_ip` が拒む書き方も数値のアドレスとして読み、読み方も OS で違います（`127.1`・`0x7f000001`・`2130706433` は 127.0.0.1 です。`0177.0.0.1` は、macOS では 10 進数として 177.0.0.1 ですが、`inet_aton` の規則どおりに先頭の 0 を 8 進数と読む OS では 127.0.0.1 です。`fe80::1%lo0` はゾーンを黙って捨てます）。Node.js の `dns.lookup` は、host を IDNA で ASCII に直してから OS に渡すので、全角の `１２７．０．０．１` や `127。0。0。1`、後ろに soft hyphen（U+00AD）やゼロ幅スペース（U+200B）が付いた `127.0.0.1` も、127.0.0.1 に引けてしまいます（wasm32 のホストで確かめました）。ネイティブでも、OS によっては国際化ドメイン名を変換してからネットワークへ問い合わせます。`parse_ip` で「名前ではない」と分けてから `resolve` を呼ぶ使い方が、これで抜けられることはありません。次のどれかに当たる host を、アドレスの書き方とみなします。
 
 - `:` か `%` を含む（IPv6 と、ゾーン付きの `fe80::1%en0`）。
 - 空白か制御文字（0x20 以下と 0x7f）を含む。
+- ASCII 以外のバイトを含む（`１２７．０．０．１`、`127。0。0。1`、`127｡0｡0｡1`、`２１３０７０６４３３`、`127.0.0.1` の後ろの U+00AD や U+200B、`例え.jp`）。
 - 最後のラベル（末尾の `.` が 1 つあれば除く）が数字だけ、または `0x`・`0X` で始まる（`127.1`、`0x7f000001`、`2130706433`、`010.0.0.1`、`1.2.3`、`0`、`1.2.3.4.`）。
 
-そのような host は `parse_ip host port` だけで決めます。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` は 0）です。ゾーン付きのアドレスを返す方法はありません（`Address` にゾーンを持たせないためです）。それ以外の host、つまり名前だけがリゾルバーに渡ります。さらにネイティブのランタイムは、システムが数値のアドレスと読む host（`getaddrinfo` の `AI_NUMERICHOST` が受けるもの）を、名前の問い合わせの前に `InvalidInput` で断ります。上の分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
+そのような host は `parse_ip host port` だけで決めます。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` は 0）です。ゾーン付きのアドレスを返す方法はありません（`Address` にゾーンを持たせないためです）。それ以外の host、つまり ASCII の名前だけがリゾルバーに渡ります。国際化ドメイン名は、`xn--` で始まる ASCII の形（Punycode）で書いてください。ASCII 以外のバイトを含む host はどのターゲットでも `InvalidInput` で、リゾルバーが国際化ドメイン名を変換するかどうかで、結果が OS やホストによって変わることはありません。さらにネイティブのランタイムは、システムが数値のアドレスと読む host（`getaddrinfo` の `AI_NUMERICHOST` が受けるもの）を、名前の問い合わせの前に `InvalidInput` で断ります。上の分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
 
-```tsuzuri run=127.0.0.1%3A8080%0A%5B%3A%3A1%5D%3A80%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input
+```tsuzuri run=127.0.0.1%3A8080%0A%5B%3A%3A1%5D%3A80%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input
 def show :: Result<[Net.Address], Os.Error> -> string
 fn show result =
     match result with
@@ -258,12 +259,14 @@ def main :: unit -> i32 = \() ->
     let! bad_port = Net.resolve "127.0.0.1" 70000
     let! short = Net.resolve "127.1" 80
     let! zone = Net.resolve "fe80::1%en0" 80
+    let! wide = Net.resolve "１２７．０．０．１" 80
     do! IO.write_line (show numeric)
     do! IO.write_line (show v6)
     do! IO.write_line (show empty)
     do! IO.write_line (show bad_port)
     do! IO.write_line (show short)
     do! IO.write_line (show zone)
+    do! IO.write_line (show wide)
     0
 ```
 
@@ -276,9 +279,10 @@ invalid input
 invalid input
 invalid input
 invalid input
+invalid input
 ```
 
-host が空、NUL を含む、253 バイトを超える、または port が 0 から 65535 の外のときは、システムを呼ばずに `InvalidInput`（`code` は 0）です。アドレスに読める host（上の分類）で `parse_ip` が読めないものも `InvalidInput` で、上の例の `127.1` と `fe80::1%en0` がそれです。孤立サロゲートは `InvalidEncoding` です。名前が存在しなければ `NotFound`（`code` は 0）です。
+host が空、NUL を含む、253 バイトを超える、または port が 0 から 65535 の外のときは、システムを呼ばずに `InvalidInput`（`code` は 0）です。アドレスに読める host（上の分類）で `parse_ip` が読めないものも `InvalidInput` で、上の例の `127.1`・`fe80::1%en0`・`１２７．０．０．１` がそれです。孤立サロゲートは `InvalidEncoding` です。名前が存在しなければ `NotFound`（`code` は 0）です。
 
 ## 非同期のソケット（Async）
 
@@ -296,7 +300,7 @@ host が空、NUL を含む、253 バイトを超える、または port が 0 �
 | `Net.close_async`・`Net.close_listener_async`・`Net.close_udp_async` | 閉じるハンドルを取り、`Async<Result<unit, Os.Error>>` |
 | `Net.shutdown_async` | `TcpStream -> Shutdown -> Async<Result<unit, Os.Error>>` |
 
-次の 6 つは待ちません。同期版と同じシステムコールを、計算が動いたときに 1 回出します（`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）。残りの 6 つは、待つ必要があるときに、ソケットの準備ができるまで計算を中断します。`Async.block_on` で実行します。`Async.run` や `Async.start` に渡すと `E2000` です（完了を受け取る反応器が無いためです）。
+次の 6 つは待ちません。同期版と同じシステムコールを、計算が動いたときに 1 回出します（`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）。残りの 6 つは、待つ必要があるときに、ソケットの準備ができるまで計算を中断します。`Async.block_on` で実行します。`Async.run` や `Async.start` に渡すと `E2000` です（完了を受け取る反応器が無いためです。native の場合で、wasm32 のホストが進める `Async.start` は使えます。[wasm32（Node.js）](#wasm32nodejs)）。
 
 ```tsuzuri run=server%205%20client%205%0Adone
 def bytes_of :: ref string -> [ubyte]
@@ -453,7 +457,7 @@ timeout: TimedOut
 
 - `read`・`recv_from` の最大長は 16 MiB です。相手がメモリを使い切らせることを防ぐため、最後まで読む関数はありません。
 - `resolve` の結果は先頭の 64 件、host は 253 バイトまでです。
-- `resolve` は、アドレスに読める host（`127.1`・`0x7f000001`・`010.0.0.1`・`fe80::1%en0` など）を OS のリゾルバーに渡しません。`parse_ip` と同じ解析器だけがアドレスを決めるので、`parse_ip` で名前と分けてから `resolve` を呼ぶ検査を、OS ごとに違う読み方で抜けることはできません（[名前解決](#名前解決)）。
+- `resolve` は、アドレスに読める host（`127.1`・`0x7f000001`・`010.0.0.1`・`fe80::1%en0`・全角の `１２７．０．０．１` など。ASCII 以外のバイトを含む host はすべて）を OS のリゾルバーに渡しません。`parse_ip` と同じ解析器だけがアドレスを決めるので、`parse_ip` で名前と分けてから `resolve` を呼ぶ検査を、OS ごと・ホストごとに違う読み方（`inet_aton` の各種の書き方や、IDNA の変換）で抜けることはできません（[名前解決](#名前解決)）。
 - `listen` の backlog は `SOMAXCONN` で、ソケットの数は OS の上限に従います（上限で失敗すると `Other`）。
 - 相手が先に切れたソケットへ書いても、SIGPIPE でプロセスが終わることはありません（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）。`ConnectionReset` の `Error` になります。
 - `bind` は、macOS と Linux では `SO_REUSEADDR` を付けます（Windows では、同じ port を生きたソケットと共有できてしまうので、代わりに `SO_EXCLUSIVEADDRUSE` を付けます）。IPv6 は `IPV6_V6ONLY` を有効にします。`"::"` と `"0.0.0.0"` は別のソケットで、どの OS でも同じです。`0.0.0.0` や `::` で待つと、ネットワークの全体へ公開されます。ふつうは `127.0.0.1` か `::1` を使ってください。
@@ -487,7 +491,9 @@ tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit 
 tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o app.wasm
 ```
 
-`resolve` では、名前だけが Node.js の `dns.lookup` に渡ります。アドレスに読める host の分類（[名前解決](#名前解決)）は std のコードにあるので、wasm32 でも同じです。`AI_NUMERICHOST` による断りは native のランタイムだけです（`dns.lookup` はそのフラグを受け取れません）。`tests/net_wasm.mjs` は、`127.1` や `fe80::1%lo0` などが `dns.lookup` に届かないことを確かめています。
+`resolve` では、名前だけが Node.js の `dns.lookup` に渡ります。アドレスに読める host の分類（[名前解決](#名前解決)）は std のコードにあるので、wasm32 でも同じです。Node.js は、host を IDNA で変換してから OS に渡すので、全角の `１２７．０．０．１` なども 127.0.0.1 に引けてしまいます。そこで ASCII 以外のバイトを含む host は、分類で `InvalidInput` にします（ネイティブも同じです）。グルーは、この分類と同じ規則を自分でも持っていて、`dns.lookup` の前に数値のアドレスに読める host と ASCII 以外を断ります。`AI_NUMERICHOST` による断りは native のランタイムだけです（`dns.lookup` はそのフラグを受け取れません）。`tests/net_wasm.mjs` は、`127.1`・`fe80::1%lo0`・`１２７．０．０．１`・`127。0。0。1`・`127｡0｡0｡1`・U+00AD や U+200B が付いた `127.0.0.1`・`２１３０７０６４３３`・`０x7f000001`・`127.0.0.１` などが `dns.lookup` に届かないことを確かめています。
+
+wasm32 のソケットの寿命と上限は、ネイティブと違います。待っていないソケットは Node.js のプロセスを生かさず、モジュールが例外で止まると、そのインスタンスのソケットはすべて閉じます。UDP は 1 MiB と 4096 個、listener は 128 接続までを、読まれないまま保ちます（[WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs)）。`bind_async` と `bind_udp_async` は `Async.start` の実行器からは使えません。
 
 ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 

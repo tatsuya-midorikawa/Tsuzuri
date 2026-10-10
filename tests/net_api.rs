@@ -59,6 +59,15 @@ fn resolve_leaves_address_text_to_the_strict_parser() {
         "\"0x0\"",
         "\"4294967296\"",
         "\"fe80::1%lo0\"",
+        // The spellings that a resolver which maps international names to ASCII (Node.js's does) reads as 127.0.0.1.
+        "\"\\uff11\\uff12\\uff17\\uff0e\\uff10\\uff0e\\uff10\\uff0e\\uff11\"",
+        "\"127\\u30020\\u30020\\u30021\"",
+        "\"127\\uff610\\uff610\\uff611\"",
+        "\"127.0.0.1\\u00ad\"",
+        "\"127.0.0.1\\u200b\"",
+        "\"\\uff10x7f000001\"",
+        "\"127.0.0.\\uff11\"",
+        "\"\\u00e9xample.com\"",
     ] {
         assert!(corpus.contains(needed), "the corpus has {needed}");
     }
@@ -331,14 +340,18 @@ fn async_operations_declare_what_they_reach_and_need_the_reactor() {
 #[test]
 fn net_glue_adds_the_sockets_and_leaves_other_glue_alone() {
     let plain = module("export def answer :: i64\nfn answer = 42\n");
+    assert!(!llvm::reaches_net(&plain));
     for flavor in [bindings::JsFlavor::Single, bindings::JsFlavor::Jspi] {
         let glue = bindings::javascript_for(&plain, flavor);
         assert!(!glue.contains("netImports"), "{flavor:?}");
         assert!(!glue.contains("tsuzuri_net"), "{flavor:?}");
         assert!(!glue.contains("NODE_NET"), "{flavor:?}");
     }
-    // The glue of --wasm-feature net: the Node modules, the table flags, the import check, and the imports.
-    let glue = bindings::javascript_with_net(&plain);
+    // The glue of --wasm-feature net, for a module that reaches a socket: the Node modules, the table flags, the import
+    // check, and the imports.
+    let sockets = module(SOCKET_EXPORT);
+    assert!(llvm::reaches_net(&sockets));
+    let glue = bindings::javascript_with_net(&sockets);
     for part in [
         "const NODE_NET = TABLE.net === true",
         "\"net\":true",
@@ -350,12 +363,169 @@ fn net_glue_adds_the_sockets_and_leaves_other_glue_alone() {
     ] {
         assert!(glue.contains(part), "{part}");
     }
-    assert_eq!(glue, bindings::javascript_with_net(&plain));
+    assert_eq!(glue, bindings::javascript_with_net(&sockets));
     // The sockets sit inside the runtime's `bind`, before its JSPI imports.
     assert!(
         glue.find("function netImports(owner)").unwrap()
             < glue.find("function asyncImports(owner)").unwrap()
     );
+}
+
+/// An export that opens a socket.
+const SOCKET_EXPORT: &str = "export def probe :: i64 -> i64
+fn probe port =
+    let address = Maybe.get (Net.parse_ip (ref \"127.0.0.1\") port)
+    let! connected = Net.connect address Maybe.None
+    if Result.is_ok (ref connected) then 1 else 0
+";
+
+#[test]
+fn reaching_a_socket_is_decided_on_the_module_as_the_ir_does() {
+    // The bindings are made without IR and the `.wasm` from IR; both ask whether the module has `tsuzuri_net` imports (and so
+    // the allocator exports that deliver their bytes), and they must agree: a module whose glue wants exports that the
+    // `.wasm` lacks does not load.
+    let programs = [
+        ("export def answer :: i64\nfn answer = 42\n", false),
+        (
+            "export def probe :: i64 -> i64
+fn probe port = match Net.parse_ip (ref \"127.0.0.1\") port with
+    | Maybe.Some address -> Net.port address
+    | Maybe.None -> 0 - 1
+",
+            false,
+        ),
+        (SOCKET_EXPORT, true),
+        // A public function that no export calls is still compiled into the library, and so is what it reaches.
+        (
+            "export def answer :: i64
+fn answer = 42
+def helper :: Net.Address -> IO<bool>
+fn helper address = IO.map (\\opened -> Result.is_ok (ref opened)) (Net.connect address Maybe.None)
+",
+            true,
+        ),
+        // A private one that nothing calls is not.
+        (
+            "export def answer :: i64
+fn answer = 42
+private def helper :: Net.Address -> IO<bool>
+fn helper address = IO.map (\\opened -> Result.is_ok (ref opened)) (Net.connect address Maybe.None)
+",
+            false,
+        ),
+        // The classifier of an error is a primitive of the host too.
+        (
+            "export def kind :: i64 -> i64
+fn kind code = match Net.error_kind (Os.Error { kind: Os.Other, code: code as i32 }) with
+    | Net.TimedOut -> 1
+    | _ -> 0
+",
+            true,
+        ),
+        (
+            "export def lookup :: i64 -> i64
+fn lookup port =
+    let! found = Net.resolve \"localhost\" port
+    match found with
+    | Result.Ok addresses -> addresses.length
+    | Result.Error _ -> 0
+",
+            true,
+        ),
+        (
+            "export def echo :: i64 -> i64
+fn echo port =
+    let address = Maybe.get (Net.parse_ip (ref \"127.0.0.1\") port)
+    let! opened = Async.block_on (Net.connect_async address Maybe.None)
+    if Result.is_ok (ref opened) then 1 else 0
+",
+            true,
+        ),
+    ];
+    for (source, expected) in programs {
+        let checked = module(source);
+        let text = ir(&checked, llvm::Entry::Library, true);
+        assert_eq!(llvm::reaches_net(&checked), expected, "{source}");
+        assert_eq!(llvm::uses_net(&text), expected, "{source}\n{text}");
+    }
+}
+
+#[test]
+fn net_bindings_follow_the_sockets_that_a_module_reaches() {
+    use std::process::Command;
+    // `--wasm-feature net` on a module without sockets gives the glue of `--wasm-feature jspi` alone, byte for byte, and
+    // a module with sockets the glue that implements them.
+    let root = std::env::temp_dir().join(format!("tsuzuri-net-bindings-{}", std::process::id()));
+    let build = |directory: &std::path::Path, features: &[&str]| {
+        let output = directory.join("glue.mjs");
+        let built = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["build", "--target", "wasm32"])
+            .arg(directory)
+            .args(features)
+            .args(["--emit", "bindings-js", "--no-cache", "-o"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        std::fs::read_to_string(output).unwrap()
+    };
+    let plain = root.join("plain");
+    let sockets = root.join("sockets");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::create_dir_all(&sockets).unwrap();
+    std::fs::write(
+        plain.join("Main.tz"),
+        "export def answer :: i64\nfn answer = Net.port (Maybe.get (Net.parse_ip (ref \"127.0.0.1\") 7))\n",
+    )
+    .unwrap();
+    std::fs::write(sockets.join("Main.tz"), SOCKET_EXPORT).unwrap();
+    let jspi = ["--wasm-feature", "jspi"];
+    let both = ["--wasm-feature", "jspi", "--wasm-feature", "net"];
+    let without = build(&plain, &both);
+    assert_eq!(without, build(&plain, &jspi));
+    assert!(!without.contains("netImports") && !without.contains("NODE_NET"));
+    let with = build(&sockets, &both);
+    assert_ne!(with, build(&sockets, &jspi));
+    assert!(with.contains("function netImports(owner) {") && with.contains("\"net\":true"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn wasm_tries_once_through_plain_imports_and_native_does_not() {
+    // The waiting import of WebAssembly is a JSPI import, which cannot run in a poll of the executor of Async.start. A read or
+    // an accept with a timeout of 0, which the async operations make, goes to a plain `try_` import on WebAssembly, chosen at
+    // run time by the timeout; natively one function does both, and the IR has no `try_`.
+    let program = module(
+        "def main :: unit -> i32 = \\() ->
+    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
+    let! bound = Net.bind address
+    match bound with
+    | Result.Error _ -> 1
+    | Result.Ok listener ->
+        let! outcome = Async.block_on (Net.accept_async listener Maybe.None)
+        let! blocking = Net.accept listener (Maybe.Some 5)
+        do! IO.write_line (Result.is_ok (ref outcome) && Result.is_ok (ref blocking))
+        0
+",
+    );
+    let wasm = ir(&program, llvm::Entry::Library, true);
+    for part in [
+        "declare i64 @tsuzuri_net_accept(ptr, i64, i64)\n",
+        "declare i64 @tsuzuri_net_try_accept(ptr, i64)\n",
+        "call i64 @tsuzuri_net_try_accept(ptr ",
+        "call i64 @tsuzuri_net_accept(ptr ",
+        "icmp eq i64 %arg1, 0",
+        "phi i64 [ ",
+    ] {
+        assert!(wasm.contains(part), "{part}\n{wasm}");
+    }
+    let native = ir(&program, llvm::Entry::Library, false);
+    assert!(native.contains("declare i64 @tsuzuri_net_accept(ptr, i64, i64)\n"));
+    assert!(!native.contains("try_accept"), "{native}");
 }
 
 #[test]
@@ -537,7 +707,8 @@ fn net_declarations_are_effectful() {
             .lines()
             .filter(|line| line.contains("@tsuzuri_net_") && line.starts_with("declare "))
             .collect();
-        assert_eq!(declared.len(), 7, "{declared:?}");
+        // WebAssembly adds the plain `try_accept` and `try_read` beside the waiting ones.
+        assert_eq!(declared.len(), if wasm { 9 } else { 7 }, "{declared:?}");
         for line in declared {
             for attribute in ["readnone", "readonly", "memory(", "wasm-import"] {
                 assert!(!line.contains(attribute), "{line}");

@@ -149,10 +149,11 @@ const synthetic = 2147418113;
 
 // Address text that a system's resolver reads in its own way ("127.1", "0x7f000001", "fe80::1%lo0"): `Net.resolve` decides
 // such a host with the strict parser alone and never asks the system, so the answer does not depend on the system. A host
-// is address text when it holds ':' or '%', a space or control character, or its last label (a final dot aside) is all
-// digits or starts with "0x" (the same rule as `numeric_looking` in std/Net.tz).
+// is address text when it holds ':' or '%', a space or control character, or a character outside ASCII (a resolver that
+// maps international names to ASCII reads fullwidth digits and other dots as an address), or its last label (a final dot
+// aside) is all digits or starts with "0x" (the same rule as `numeric_looking` in std/Net.tz).
 const looksNumeric = host => {
-  if (/[:%\u0000-\u0020\u007f]/.test(host)) return true;
+  if (/[:%\u0000-\u0020\u007f-\uffff]/.test(host)) return true;
   const label = host.replace(/\.$/, "").split(".").pop();
   return /^[0-9]+$/.test(label) || /^0[xX]/.test(label);
 };
@@ -205,9 +206,18 @@ function resolveCorpus() {
     const edge = pick(["", " ", "\t", "\n", "\r", "\u0001", "\u007f", "\u000b", " x", " 80", "\r\n"]);
     return random(3) === 0 ? `${edge}${base}` : `${base}${edge}`;
   };
+  // A dotted quad or a number, with fullwidth digits, the dots of other scripts, and characters that map to nothing.
+  const wide = () => {
+    const base = random(3) === 0 ? String(random(2 ** 32)) : `${octet()}.${octet()}.${octet()}.${octet()}`;
+    const dots = pick([".", "\u3002", "\uff0e", "\uff61"]);
+    return [...base].map(symbol => {
+      if (symbol === ".") return random(2) === 0 ? dots : symbol;
+      return random(3) === 0 ? String.fromCharCode(0xff10 + Number(symbol)) : symbol;
+    }).join("") + pick(["", "", "\u00ad", "\u200b", "\ufeff", "\u00e9", "\u3002"]) + (random(4) === 0 ? "\u200b" : "");
+  };
   const generated = new Set(classic);
   while (generated.size < classic.length + 800) {
-    const host = pick([dotted, dotted, dotted, colons, colons, spaced])();
+    const host = pick([dotted, dotted, dotted, colons, colons, spaced, wide, wide])();
     if (host.length > 0 && host.length <= 253 && looksNumeric(host)) generated.add(host);
   }
   return [...generated];

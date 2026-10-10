@@ -69,11 +69,13 @@ bind_async, bind_udp_async, close_async, close_listener_async, close_udp_async, 
   IPv6 は `IPV6_V6ONLY`、listener は `SO_REUSEADDR`（Windows は `SO_EXCLUSIVEADDRUSE`）と `SOMAXCONN`。
 - **`resolve` は、アドレスに読める host を OS に渡さない**（Phase 1 のレビューでの指摘）。`getaddrinfo` は `parse_ip` が拒む書き方（`127.1`・`0x7f000001`・
   `2130706433`・`010.0.0.1`・`1.2.3`・`0`・`fe80::1%lo0`）を数値のアドレスとして読み、読み方も OS で違う（`0177.0.0.1` は macOS が 177.0.0.1）ので、
-  `parse_ip` で「名前」と分けてから `resolve` を呼ぶ許可リストの検査を抜けられた。host が `:` か `%`、空白か制御文字（0x20 以下と 0x7f）を含む、
+  `parse_ip` で「名前」と分けてから `resolve` を呼ぶ許可リストの検査を抜けられた。host が `:` か `%`、空白か制御文字（0x20 以下と 0x7f）、ASCII 以外のバイトを含む、
   または最後のラベル（末尾の `.` が 1 つあれば除く）が数字だけか `0x`・`0X` で始まるときは、`parse_ip host port` だけで決める。厳密に読めればシステムを呼ばずに
   そのアドレス 1 つを返し、読めなければ `InvalidInput`（`code` 0）。名前だけが `getaddrinfo`（`AF_UNSPEC`、`SOCK_STREAM`、`AI_ADDRCONFIG` なし）へ進み、
   OS の順で、重複を除き 64 件まで。native の runtime は、さらに `AI_NUMERICHOST` の `getaddrinfo` を先に呼び、システムが数値と読む host を `InvalidInput` にする。
-  分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めない。wasm32 の `dns.lookup` はこのフラグを受け取れないので、分類だけが守る。
+  分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めない。wasm32 の `dns.lookup` はこのフラグを受け取れないので、分類（と、グルーが持つ同じ規則）だけが守る。
+  ASCII 以外を断るのは、Node.js の `dns.lookup` が host を IDNA で変換してから OS に渡し、全角の `１２７．０．０．１`・`127。0。0。1`・`127｡0｡0｡1`・後ろに U+00AD や U+200B が付いた
+  `127.0.0.1` を 127.0.0.1 に引くため（2 回目のレビュー）。国際化ドメイン名は `xn--` の形で書く。
   `resolve` の非同期版は作らない（`resolve` は同期で、`block_on` の前に済ませる）。
 
 ### 非同期（Phase 2）
@@ -105,13 +107,20 @@ Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは�
 - `--wasm-feature net` は wasm32 の `object`・`llvm`・`wasm`・`bindings-js` で使え、`--wasm-feature jspi` が必要（待つ呼び出しが WebAssembly のスタックを中断するため）。
   threads・`--wasm-host`・wasm64・native との併用は `E2000`。
 - IR は native と同じ `tsuzuri_net_*` の宣言のままで、`llvm::with_net_imports` が、到達した宣言だけにモジュール `tsuzuri_net` の import の属性を付ける（`net.c` は連結しない）。
-  12 個の import は `resolve`・`open`・`accept`・`read`・`write`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`。
+  14 個の import は `resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`。
+  `try_accept`・`try_read` は、時間制限 0 の `accept`・`read` の入口で、中断しない普通の import（`llvm_io.rs` の `waiting_call`。wasm のときだけ、時間制限を実行時に見て分ける）。
+  待つ import は JSPI の `WebAssembly.Suspending` なので、`Async.start` の実行器（ホストが `promising` の外から進める）から呼ぶと、同期の値を返しても V8 が `SuspendError` にする。
 - `--emit bindings-js` のグルーが `bindings-net.mjs` で実装する。`net.c` と同じ約束（世代検査付きの表、`(kind << 32) | code`、呼び出し全体の期限、時間制限 0 の「1 回だけ試す」）で、
   待つ 5 個は `WebAssembly.Suspending`、`watch`・`connect` は `tsuzuri_async_complete` で完了する。`src/bindings.rs` の `javascript_with_net` が `bindings-core.mjs` の 3 か所へ
-  差し込み、一意性を assert する。`--wasm-feature net` なしのグルーは変わらない。
+  差し込み、一意性を assert する。ドライバーは、ソケットに到達するモジュール（`llvm::reaches_net`）にだけこのグルーを使い、到達しないモジュールは `--wasm-feature net` を付けても
+  `jspi` だけのグルーになる（`.wasm` もその場合は alloc を export しない）。
 - ブラウザーには生の TCP も UDP もないので、`node:` のモジュールを読めない環境では `load` が `Net sockets need Node.js ...` で失敗する。文書に書いた。
+- import は Node.js の例外を呼び出しの状態にして返す（`guard`）。ソケットは、モジュールが待っているあいだだけプロセスを生かし、インスタンスが捨てられるとすべて閉じる。
+  読まれないまま届く分は、UDP が 1 MiB・4096 個、listener が 128 接続まで。TCP は `allowHalfOpen`。非同期の UDP の送信は、結果を Node.js が次のターンに返すので、最初の呼び出しが
+  `PENDING`、書き込み可能に戻ったあとの呼び出しがその送信自身の結果を返す。`resolve` は ASCII 以外の host を全ターゲットで `InvalidInput`（Node.js の IDNA の変換のため）。
 - ネイティブとの違い: listener の `SO_REUSEADDR` は Node.js の既定、`shutdown` の `Read` は `SHUT_RD` を呼ばず以後の `read` を EOF にする、`write` の期限は積んだデータの送信を取り消さない、
-  `write_async` の下の送信は 1 回に 64 KiB まで、`close` は受け取ったデータを送り終えてから閉じる。
+  `write_async` の下の送信は 1 回に 64 KiB まで、`close` は受け取ったデータを送り終えてから閉じ（それまで Node.js は終わらない）、UDP のポート 0 宛ては `EINVAL`、
+  `bind_async`・`bind_udp_async` は `Async.start` の実行器では使えない。
 
 ## 診断
 
@@ -210,6 +219,15 @@ Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは�
 - CI の手順の見直しで、もう 1 件見つかった。macOS の CI は Homebrew の LLVM 21 で `net.mjs` の全 block を実行するが、B08 は、その LLVM でサニタイザー付きの実行ファイルが macOS で起動で止まることを
   確かめている（この環境の macOS でも、空の C プログラムで再現した）。`TSUZURI_NO_SANITIZERS=1` を足し、macOS の CI だけがこれを付ける（Linux は `libclang-rt-21-dev` で ASan／UBSan を使う）。
   1 つの手順の中の各コマンドは、1 つが失敗しても残りを実行する。
+- 統合担当のレビュー（Phase 3 のコミット）で見つかった 11 件を直した（このあとのコミット）。(1) Node.js の `dns.lookup` は host を IDNA で変換するので、全角の `１２７．０．０．１` などが
+  127.0.0.1 に引けた（`numeric_looking` に ASCII 以外のバイトを足し、グルーも同じ規則を持つ。全ターゲットで `InvalidInput`）。(2) 捨てられたインスタンスのソケットが残り、
+  listener が bind されたままで、閉じ忘れたプログラムの後に Node.js が終わらなかった（`owner.dispose` と、待っているあいだだけ `ref`）。(3) Node.js の例外（ポート 0 の `dgram.send`）が
+  「stack exhausted」でインスタンスを捨てた（すべての import を `guard` で包む）。(4) 相手の半クローズでこちらの書き込みが失敗した（`allowHalfOpen`）。(5) 失敗した非同期の UDP の送信が
+  成功と報告され、以後の `recv_from` が古い失敗を返し続けた（送信の結果をその送信の呼び出しで返す）。(6) 読まれないうちの RST が EOF に見えた（エラーを 1 回返してから EOF）。
+  (7) UDP と accept の待ち行列が無制限で、`error` の event が処理されなかった。(8) ソケットに到達しないモジュールに `--wasm-feature net` を付けると、読み込めないグルーになった
+  （`llvm::reaches_net`）。(9) `Async.start` の実行器から `read_async`・`accept_async`・`recv_from_async` を呼ぶと `SuspendError`（時間制限 0 は中断しない `try_read`・`try_accept`）。
+  (10) 2 GiB 以上のポインタが負の数でグルーに届いた（`>>> 0`）。(11) `bindings-core.mjs` の `memory64` の走査が import の名前を 1 バイト短く飛ばし、有効な wasm32 のモジュールを
+  64 ビットと読んで読み込みに失敗した（既存の不具合。`tests/bindings.mjs` に回帰テスト）。それぞれ、修正前のコンパイラで失敗することを確かめたテストを `tests/net_wasm.mjs` などに足した。
 
 ### 確かめていないこと
 
@@ -217,7 +235,8 @@ Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは�
 - **Windows の実行は CI だけで検証される。** MSVC は x86_64 でリンク、aarch64 でコンパイル、MinGW は x86_64・aarch64 でコンパイルできることまで。Windows だけの分岐（`SIO_UDP_CONNRESET`、
   `accept` で飛ばす `WSAECONNRESET`）も、コンパイルと、POSIX の契約の検査（`tests/net_runtime.c`）までで、実際に Windows が上のように報告するかは CI の async の block が確かめる。
   macOS の CI がサニタイザーなしで動くことは、Homebrew の LLVM 21 とこの環境の macOS で確かめたが、GitHub のランナーそのものは試していない。
-- wasm32 の Node.js ホストは macOS の Node.js 24 だけで実行した。Linux・Windows の Node.js、ブラウザー、`Async.start` からの `_async` は未検証。
+- wasm32 の Node.js ホストは macOS の Node.js 24 だけで実行した。Linux・Windows の Node.js、ブラウザーは未検証。`Async.start` の実行器からは `connect_async`・`read_async`・`accept_async`・
+  `recv_from_async` を確かめた（`bind_async`・`bind_udp_async` は使えない）。
 - 速さの合否の閾値は置かず、SIMD・並列・GPU の主張もしていない（ソケットの I/O は 1 回の `poll`／システムコールの往復で、配列の一括演算ではない）。
 
 ### 後続

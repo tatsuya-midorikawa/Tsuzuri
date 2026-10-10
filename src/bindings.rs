@@ -339,7 +339,8 @@ pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
 
 /// The sockets of a module of `--wasm-feature net` (E09 Phase 3), which the glue implements on Node.js: the table says
 /// so, the Node modules are loaded when the glue loads, `inspect` accepts the `tsuzuri_net` imports, and the instance
-/// gets them beside the clock and the wait of Async.block_on. The text of a program without Net is not touched.
+/// gets them beside the clock and the wait of Async.block_on. Only a module that reaches a socket (`llvm::reaches_net`)
+/// has these imports, and the driver gives any other module the glue of its flavor, without the Node modules.
 pub fn javascript_with_net(module: &CheckedModule) -> String {
     let mut table = table_for(module, JsFlavor::Jspi);
     table["net"] = json!(true);

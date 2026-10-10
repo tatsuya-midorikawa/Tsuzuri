@@ -254,13 +254,19 @@ impl FunctionEmitter<'_, '_> {
                 "call i64 @tsuzuri_net_open(ptr {}, i32 %arg0, i64 %arg1, i64 %arg2, i64 %arg3, i64 %arg4)",
                 slot.as_ref().unwrap()
             ),
-            Builtin::NetAccept => format!(
-                "call i64 @tsuzuri_net_accept(ptr {}, i64 %arg0, i64 %arg1)",
-                slot.as_ref().unwrap()
+            Builtin::NetAccept => self.waiting_call(
+                "accept",
+                slot.as_ref().unwrap(),
+                "i64 %arg0",
+                "ptr, i64",
+                "%arg1",
             ),
-            Builtin::NetRead => format!(
-                "call i64 @tsuzuri_net_read(ptr {}, i32 %arg0, i64 %arg1, i64 %arg2, i64 %arg3)",
-                slot.as_ref().unwrap()
+            Builtin::NetRead => self.waiting_call(
+                "read",
+                slot.as_ref().unwrap(),
+                "i32 %arg0, i64 %arg1, i64 %arg2",
+                "ptr, i32, i64, i64",
+                "%arg3",
             ),
             Builtin::NetNames => format!(
                 "call i64 @tsuzuri_net_names(ptr {}, i64 %arg0)",
@@ -317,6 +323,45 @@ impl FunctionEmitter<'_, '_> {
         self.value(format!(
             "insertvalue {result_type} {tuple}, %tz.array {value}, 1"
         ))
+    }
+
+    /// The call of a primitive that may wait, with its timeout as the last argument (`%arg` of the builtin). Natively one
+    /// function does both, and a timeout of 0 means "try once". On WebAssembly (`--wasm-feature net`) the waiting import is a
+    /// JSPI import, which suspends the stack, and the executor of `Async.start` is polled by the host outside JSPI, so a
+    /// call with a timeout of 0 (what the async operations make) goes to a plain `try_<name>` import that never waits.
+    /// Returns the instruction that gives the status.
+    fn waiting_call(
+        &mut self,
+        name: &str,
+        slot: &str,
+        arguments: &str,
+        types: &str,
+        timeout: &str,
+    ) -> String {
+        let waiting =
+            format!("call i64 @tsuzuri_net_{name}(ptr {slot}, {arguments}, i64 {timeout})");
+        if !self.globals.wasm {
+            return waiting;
+        }
+        self.intrinsics
+            .insert(format!("declare i64 @tsuzuri_net_try_{name}({types})"));
+        let immediately = self.value(format!("icmp eq i64 {timeout}, 0"));
+        let plain = self.label();
+        let suspending = self.label();
+        let joined = self.label();
+        self.branch(&immediately, &plain, &suspending);
+        self.begin(&plain);
+        let quick = self.value(format!(
+            "call i64 @tsuzuri_net_try_{name}(ptr {slot}, {arguments})"
+        ));
+        let quick_end = self.block.clone();
+        self.instruction(format!("br label %{joined}"));
+        self.begin(&suspending);
+        let slow = self.value(waiting);
+        let slow_end = self.block.clone();
+        self.instruction(format!("br label %{joined}"));
+        self.begin(&joined);
+        format!("phi i64 [ {quick}, %{quick_end} ], [ {slow}, %{slow_end} ]")
     }
 
     /// The async operations of `Net` (E09 Phase 2): a call that starts, or takes back, an operation of

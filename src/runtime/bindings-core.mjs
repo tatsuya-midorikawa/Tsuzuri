@@ -504,6 +504,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       failed.alive = false;
       failed.failure = thrown;
       failed.wake?.();
+      // What the instance holds outside it (the sockets of --wasm-feature net) cannot be used or closed any more.
+      failed.dispose?.();
       if (state === failed) {
         state = undefined;
         asyncHost?.discard(thrown);
