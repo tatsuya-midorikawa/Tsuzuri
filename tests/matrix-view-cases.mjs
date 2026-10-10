@@ -128,6 +128,13 @@ const strided = [
   [10, 1, 5, 99, 2], [10, 5, 1, 2, 77], [10, 5, 1, 1, 77], [0, 1, 1, 0, 0], [1, 4, 5, 5, 1],
 ];
 const productShapes = [[2, 3, 4], [1, 1, 1], [3, 5, 2], [4, 1, 6], [0, 3, 2], [3, 0, 2], [5, 5, 5]];
+const maxIndex = 9223372036854775807n;
+
+// Windows with no elements and an axis of 2^62 rows: every operation finishes at once instead of walking the empty axis.
+function hugeEmpty() {
+  const rows = 2n ** 62n;
+  return [7n, rows, rows, rows, rows].reduce(mix, 0n);
+}
 
 export const cases = [
   ...[[2, 2], [2, 3], [3, 2], [3, 5], [5, 3], [6, 4], [4, 4]].map(([rows, cols]) => ["layouts", [BigInt(rows), BigInt(cols)], layouts(rows, cols)]),
@@ -145,11 +152,18 @@ export const cases = [
   ...[0, 1, 2, 5, 12].map((n) => ["owned_elements", [BigInt(n)], ownedElements(n)]),
 ];
 
+// Run one per process with a kill timer: before the fix they never returned.
+export const bounded = [["huge_empty", [], hugeEmpty()]];
+
 export const traps = [
   // A window past the 10 elements, with a negative argument, with a huge count or with an overflowing index.
+  // The last element's index may itself be i64::MAX (`[MAX, 1, 1, 0, 0]`, `[0, 1, 2, 0, MAX]`): it is outside the data too.
   ...[[0, 3, 4, 4, 1], [-1, 1, 1, 1, 1], [0, -1, 1, 1, 1], [0, 1, -1, 1, 1], [0, 2, 2, -1, 1], [0, 2, 2, 1, -1], [10, 1, 1, 0, 0],
-    [9223372036854775807n, 2, 1, 1, 0], [0, 2, 2, 9223372036854775807n, 1]].map((layout) => ["strided_trap", layout.map(BigInt)]),
+    [9, 1, 2, 0, 1], [0, 1, 11, 0, 1], [9223372036854775807n, 2, 1, 1, 0], [0, 2, 2, 9223372036854775807n, 1],
+    [maxIndex, 1, 1, 0, 0], [0, 1, 2, 0, maxIndex], [maxIndex - 1n, 1, 2, 0, 1], [0, 2, 1, maxIndex, 0]].map((layout) => ["strided_trap", layout.map(BigInt)]),
   ["of_array_trap", []], ["count_overflow", []], ["extent_overflow", []], ["mul_trap", []],
+  // The shapes are compared before either operand is copied: a huge left window is a mismatch, not an allocation failure.
+  ["mul_shape_before_copy_trap", []],
   ...[[5, 0, 0, 0], [0, 6, 0, 0], [-1, 0, 1, 1], [0, -1, 1, 1], [0, 0, -1, 1], [0, 0, 1, -1], [0, 0, 5, 1], [0, 0, 1, 6], [1, 1, 4, 1], [1, 1, 1, 5]].map((window) => ["sub_trap", window.map(BigInt)]),
   ...[-1n, 4n].map((index) => ["row_trap", [index]]),
   ...[-1n, 5n].map((index) => ["col_trap", [index]]),

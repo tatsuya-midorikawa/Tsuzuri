@@ -8,8 +8,9 @@ import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedC
 import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
-import { cases as matrixViewCases, traps as matrixViewTraps } from "./matrix-view-cases.mjs";
-import { cases as tensorCases, traps as tensorTraps } from "./tensor-cases.mjs";
+import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
+import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
+import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -36,6 +37,22 @@ function execute(program, args, success = true) {
   return result;
 }
 const cli = (args) => execute(compiler, args);
+// Runs a program that must finish quickly. The program itself is the child and is killed with SIGKILL after
+// `seconds`, so a loop that never ends cannot outlive the test (a SIGTERM aimed at a wrapper such as
+// `tsuzuri run` would leave the program running at full speed).
+function executeBounded(program, args, seconds = 10) {
+  const result = spawnSync(program, args, {
+    cwd: root, encoding: "utf8", timeout: seconds * 1000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+  });
+  assert.ok(!result.error, `${program} ${args.join(" ")} did not finish within ${seconds} s (${result.error?.code})`);
+  return result;
+}
+// Calls one export of a WebAssembly module with i64 arguments in a child Node process and prints the result,
+// so that `executeBounded` can kill a call that never returns.
+const boundedWasmCall = `const { readFileSync } = require("node:fs");
+const [file, name, ...args] = process.argv.slice(1);
+const exports = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(file))).exports;
+console.log(String(exports[name](...args.map(BigInt))));`;
 const cValue = (n) => typeof n !== "bigint"
   ? (Object.is(n, -0) ? "-0.0" : Number.isNaN(n) ? "NAN" : n === Infinity ? "INFINITY" : n === -Infinity ? "(-INFINITY)" : String(n))
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`
@@ -1443,21 +1460,25 @@ const suites = {
   matrix: {
     cases: matrixCases,
     traps: matrixTraps,
+    trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Matrix\./);
       assert.doesNotMatch(ir, /fmuladd|\bfast\b|\bcontract\b|\breassoc\b/);
       assert.doesNotMatch(ir, /%tz\.matrix/);
-      // Only the explicit fused kernels may call llvm.fma; the separately rounded product never does.
+      // Only the explicit fused kernels may call Math.fma; the separately rounded product never does.
       for (const chunk of ir.split("\ndefine ")) {
-        if (/^[^\n]*@tz\.fn\.Matrix\.multiply_rows\./.test(chunk)) assert.doesNotMatch(chunk.split("\n}\n")[0], /llvm\.fma/);
+        if (/^[^\n]*@tz\.fn\.Matrix\.multiply_rows\./.test(chunk)) assert.doesNotMatch(chunk.split("\n}\n")[0], /llvm\.fma|tz_soft_fma|Math\.fma/);
       }
-      assert.match(ir, /@llvm\.fma\.f64/);
+      // Math.fma is llvm.fma only in native code of a compiler built for AArch64 (src/llvm_math.rs); elsewhere it is the soft routine.
+      assert.match(ir, /@llvm\.fma\.f64|@tz_soft_fma/);
     },
   },
   // C11 Phase 2: windows are modelled in tests/matrix-view-cases.mjs as index mappings, not as strides.
   matrix_view: {
     cases: matrixViewCases,
+    bounded: matrixViewBounded,
     traps: matrixViewTraps,
+    trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.MatrixView\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
@@ -1466,7 +1487,9 @@ const suites = {
   // C11 Phase 2: tensor windows are modelled in tests/tensor-cases.mjs as index mappings, not as strides.
   tensor: {
     cases: tensorCases,
+    bounded: tensorBounded,
     traps: tensorTraps,
+    trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Tensor\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
@@ -1649,6 +1672,9 @@ function run(name, suite) {
     if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
+    // Entries that must finish at once (a loop over an empty window). They are not in `cases`: native, each one runs in
+    // its own process and WASM in a child Node process, both under a SIGKILL timer, never in this process.
+    const bounded = suite.bounded ?? [];
     const host = join(temporary, "host.c");
     writeFileSync(host, `
 #include <assert.h>
@@ -1704,6 +1730,7 @@ int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
             ${traps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
+            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && live == 0 ? 0 : 1;`).join("\n")}
         }
         return 0;
     }
@@ -1717,6 +1744,10 @@ int main(int argc, char **argv) {
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
         `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), "-lm", "-o", native]);
       execute(native, []);
+      for (const [index, [exported]] of bounded.entries()) {
+        const result = executeBounded(native, [String(traps.length + index)]);
+        assert.equal(result.status, 0, `${name} native O${optimization}: ${exported} returned a wrong value or leaked`);
+      }
       if ((name === "parallel" || name === "matrix") && optimization === "3") {
         for (const processors of [1, 4]) {
           const runtime = join(temporary, `runtime-${processors}.c`);
@@ -1740,9 +1771,27 @@ int main(int argc, char **argv) {
         assert.equal(exports[`tz_${exported}`](...args), expected, `${name} WASM O${optimization}: ${exported}(${args})`);
         assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024, `${name}: WASM stays within 16 MiB`);
       }
+      for (const [exported, args, expected] of bounded) {
+        const result = executeBounded(process.execPath, ["-e", boundedWasmCall, wasm, `tz_${exported}`, ...args.map(String)]);
+        assert.equal(result.status, 0, `${name} WASM O${optimization}: ${exported}\n${result.stderr}`);
+        assert.equal(result.stdout.trim(), String(expected), `${name} WASM O${optimization}: ${exported}`);
+      }
       for (const [trap, args] of [...traps, ...suite.wasmTraps ?? []]) {
         const fresh = new WebAssembly.Instance(module).exports;
         assert.throws(() => fresh[`tz_${trap}`](...args), WebAssembly.RuntimeError, trap);
+      }
+      if (suite.trapKind && wasmTarget === "wasm32") {
+        // The kind of each trap: a violated precondition must trap as an assertion, before any allocation,
+        // element access or callback. An entry may name its own kind as a third element.
+        const traced = join(temporary, `${name}-trap-kinds-O${optimization}.wasm`);
+        cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", traced]);
+        const { sites } = JSON.parse(readFileSync(`${traced}.trap.json`, "utf8"));
+        const boundary = createBoundary(new WebAssembly.Module(readFileSync(traced)), { sites });
+        for (const [trap, args, kind = suite.trapKind] of traps) {
+          const result = boundary.call(`tz_${trap}`, ...args);
+          assert.equal(result.ok, false, `${name} O${optimization}: ${trap}(${args}) must trap`);
+          assert.equal(result.trap.kind, kind, `${name} O${optimization}: ${trap}(${args}) trapped with the wrong kind`);
+        }
       }
       if (name === "recursive_types") {
         const measured = join(temporary, `recursive-traps-${optimization}.wasm`);
@@ -1754,7 +1803,7 @@ int main(int argc, char **argv) {
         assert.ok(checked.tsuzuri_trap_site() > 0);
       }
     }
-    return suite.cases.length;
+    return suite.cases.length + bounded.length;
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

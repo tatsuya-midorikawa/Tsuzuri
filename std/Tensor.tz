@@ -187,7 +187,8 @@ fn rec fold_axis folder data shape strides axis offset state =
 /// Folds the elements left to right in row-major order of the window.
 def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref View<'a> -> 'state
 fn fold folder initial view =
-    if view.shape.length == 0 then folder initial view.data[view.offset]
+    if volume (ref view.shape) == 0 then initial
+    elif view.shape.length == 0 then folder initial view.data[view.offset]
     else fold_axis folder view.data (ref view.shape) (ref view.strides) 0 view.offset initial
 
 // Writes the elements of one axis and below into `out` from `position`; returns the next position.

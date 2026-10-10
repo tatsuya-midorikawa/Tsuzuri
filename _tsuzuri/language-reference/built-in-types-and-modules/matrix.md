@@ -12,7 +12,7 @@
 - 内部は不透明です。構築・フィールド参照・パターン分解・`{ m with ... }` は `E1022` です。公開 C ABI への export は `E1008` です。
 - `of_array` と `to_array` は所有権を移すだけで、要素を複製しません。`at`・`row`・`as_array` は確保なしの共有借用です。`set` は行列を消費して 1 要素をその場で置き換えます。
 - `mul` の出力要素は `+0` から `k = 0, 1, …` の順に `total = total + (left * right)` を行った値です。積と和を別々に丸め、FMA にまとめません。実装は出力の行ごとに更新する形で、ベクトル化できますが、各要素の演算の列は変わりません。
-- `mul_fma` は、1 ステップごとに `Math.fma` を使う別名の積です。ビットは `mul` と違うことがあります。wasm32 には 1 命令のスカラー fma がなく、ソフトウェアで計算するので遅くなります。
+- `mul_fma` は、1 ステップごとに `Math.fma` を使う別名の積です。ビットは `mul` と違うことがあります。`Math.fma` がハードウェアの FMA 命令になるのは、AArch64 向けにビルドした `tsuzuri` が native の `f32`・`f64` を生成するときだけです。それ以外（x86-64 向けなどにビルドした `tsuzuri` の native と、wasm32）では、ソフトウェアのルーチンを積和ごとに呼ぶので、`mul` よりはるかに遅くなります。結果のビットは、どちらでも同じです。
 - `mul_parallel`・`mul_fma_parallel` は、行をチャンクに分けて並列に計算します。チャンクの境界は形だけで決まるので、結果は CPU の数によらず `mul`・`mul_fma` と同じビットです。
 - 添字・形・次元の誤りは、確保や callback の前に `assert` でトラップします。
 - `Matrix` という名前を書いたプログラムだけが、このモジュールを読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Matrix.tz` は予約名で `E1011` です。
@@ -183,7 +183,16 @@ $"{deref (Matrix.at (ref separate) 0 0)} {deref (Matrix.at (ref fused) 0 0)}"
 
 1 つ目の積は誤差なく `1 + 2^-29` で、2 つ目の積 `-(1 + 2^-29 + 2^-60)` は `-(1 + 2^-29)` に丸められます。別々に丸める `mul` の和は `0` ですが、`mul_fma` は 2 つ目の積の丸め誤差 `-2^-60` を残します。
 
-native では、`Math.fma` はハードウェアの FMA 命令になります（arm64 の `fmadd`・`fmla.2d` を確かめました）。wasm32 には 1 命令のスカラー fma がなく、`Math.fma` は正しく丸めるソフトウェアのルーチンを呼びます。Node での測定では、64 × 64 × 64 の積が約 460 ms で、`mul` の約 0.1 ms の約 4,000 倍です。wasm32 では、FMA の結果そのものが必要なときだけ `mul_fma` を使ってください。
+`Math.fma` がハードウェアの FMA 命令（`llvm.fma`）になるのは、AArch64 向けにビルドした `tsuzuri` が native の `f32`・`f64` を生成するときだけです（arm64 の `fmadd`・`fmla.2d` を確かめました）。それ以外では、正しく丸めるソフトウェアのルーチン `tz_soft_fma` を積和ごとに呼びます。x86-64 向けなどにビルドした `tsuzuri` の native と、1 命令のスカラー fma を持たない wasm32 がこれに当たります。結果のビットはどちらでも同じですが、速さは大きく違います。
+
+| 条件（Apple M1 Max） | 積の大きさ | 1 回の積 | 1 積和あたり |
+| --- | --- | --- | --- |
+| native、ハードウェアの FMA | 128 × 128 × 128 | 約 0.34 ms | 約 0.16 ns |
+| native、ソフトウェアのルーチン | 64 × 64 × 64 | 約 0.40 s | 約 1.5 µs |
+| native、ソフトウェアのルーチン | 128 × 128 × 128 | 約 3.4 s | 約 1.6 µs |
+| wasm32（Node） | 64 × 64 × 64 | 約 0.46 s | 約 1.8 µs |
+
+ソフトウェアのルーチンの native の行は、AArch64 向けの `tsuzuri` の判定をテストのために外し、`tz_soft_fma` を使わせて測った値です（x86-64 の機械では測っていません）。`mul` は 128 × 128 × 128 で約 0.35 ms なので、ソフトウェアのルーチンの `mul_fma` は `mul` の約 1 万倍です。1 積和あたりの費用が変わらないとすると、`512 × 512 × 512` の積は約 3.5 分かかります。`mul_fma_parallel` も同じルーチンを呼びます。AArch64 向けの native 以外では、FMA の結果そのものが必要なときだけ、小さい行列に `mul_fma`・`mul_fma_parallel` を使ってください。
 
 ### 並列: mul_parallel
 
@@ -321,13 +330,13 @@ Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_ar
 | `mul`・`mul_fma` | $O(\text{rows} \times \text{inner} \times \text{cols})$ |
 | `mul_parallel`・`mul_fma_parallel` | 同じ仕事を複数のスレッドで分ける。2 チャンク以上のときは入力の複製 $O(\text{rows} \times \text{inner} + \text{inner} \times \text{cols})$ を足す |
 
-`mul` は再帰しないループです。stack の深さは大きさに依存しません。性能は計測した事実だけを [ベンチマーク](../../../docs/benchmarks.md) に書いています。速度は API の約束ではありません。ブロッキングや pairwise の積、手書きの SIMD、BLAS のような最適化済みの積は提供しません。
+`mul` は再帰しないループです。stack の深さは大きさに依存しません。`mul_fma`・`mul_fma_parallel` の 1 積和あたりの費用は、`Math.fma` がハードウェアの命令かソフトウェアのルーチンかで約 1 万倍違います（[順序の違う積: mul_fma](#順序の違う積-mul_fma)）。性能は計測した事実だけを [ベンチマーク](../../../docs/benchmarks.md) に書いています。速度は API の約束ではありません。ブロッキングや pairwise の積、手書きの SIMD、BLAS のような最適化済みの積は提供しません。
 
 ## まとめ
 
 - `Matrix` は行優先の連続バッファで、常に非 Copy です。
 - `mul` の各出力要素は `+0` から `k` の昇順で、積と和を別々に丸めます。実装は行ごとの更新ですが、ビットは変わりません。
-- 順序の違う積は別名です。FMA は `mul_fma`、並列は `mul_parallel`・`mul_fma_parallel` で、後者はチャンクの境界が形だけで決まります。
+- 順序の違う積は別名です。FMA は `mul_fma`（AArch64 向けの native 以外ではソフトウェアの fma で遅い）、並列は `mul_parallel`・`mul_fma_parallel` で、後者はチャンクの境界が形だけで決まります。
 - 窓は [MatrixView](./matrix-view.md)、N 次元は [Tensor](./tensor.md) です。GPU の行列積カーネルはありません。
 - 前提条件の誤りは、確保や callback の前にトラップします。
 

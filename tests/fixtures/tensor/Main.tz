@@ -198,6 +198,33 @@ fn lookups =
     let sv = Tensor.view (ref scalar)
     mix total (Maybe.default_value (-1) (Tensor.get (ref sv) []))
 
+// Windows with no elements next to an axis of 2^62 or 2^31 + 2^31 positions: fold, map and to_tensor return at once.
+// fold used to walk the empty axis (forever).
+export def huge_empty :: i64
+fn huge_empty =
+    let tall = Tensor.init [4611686018427387904, 0] element
+    let cube = Tensor.init [2147483648, 2147483648, 0] element
+    let tv = Tensor.view (ref tall)
+    let cv = Tensor.view (ref cube)
+    let flipped = Tensor.permute (ref tv) [1, 0]
+    let reshaped = Tensor.reshape_view (ref tv) [0, 4611686018427387904]
+    let mapped = Tensor.map (\x -> x + 1) (ref tv)
+    let packed = Tensor.to_tensor (ref cv)
+    let mapped_view = Tensor.view (ref mapped)
+    let packed_view = Tensor.view (ref packed)
+    let mut total = 0
+    total = mix total (Tensor.fold mix 7 (ref tv))
+    total = mix total (Tensor.fold mix 8 (ref cv))
+    total = mix total (Tensor.fold mix 9 (ref flipped))
+    total = mix total (Tensor.fold mix 10 (ref reshaped))
+    mix total (Tensor.count (ref mapped_view) + Tensor.count (ref packed_view) + flag (Tensor.is_contiguous (ref tv)))
+
+// A MatrixView window enters a tensor only through the checks of MatrixView.strided.
+export def matrix_window_trap :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn matrix_window_trap offset rows cols row_stride col_stride =
+    let data = new [i64](10, k -> k)
+    rank_of (Tensor.of_matrix_view (MatrixView.strided offset rows cols row_stride col_stride (ref data)))
+
 export def init_trap :: i64 -> i64 -> i64
 fn init_trap a b =
     let t = Tensor.init [a, b] element

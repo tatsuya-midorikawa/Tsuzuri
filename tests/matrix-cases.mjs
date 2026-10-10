@@ -227,6 +227,6 @@ export const traps = [
   ["of_array_length", []], ["add_shape", []], ["mul_shape", []],
   ["at_col", [3n]], ["at_col", [-1n]], ["at_row", [2n]], ["at_row", [-1n]],
   ["row_index", [2n]], ["row_index", [-1n]],
-  ["negative_dims", []], ["count_overflow", []], ["mul_count_overflow", []], ["alloc_size", []],
+  ["negative_dims", []], ["count_overflow", []], ["mul_count_overflow", []], ["alloc_size", [], "allocation size overflow"],
   ["set_row", [2n]], ["set_row", [-1n]], ["set_col", [3n]], ["set_col", [-1n]],
 ];

@@ -92,7 +92,7 @@ $"{window_sum} {column_sum} {MatrixView.is_contiguous window} {MatrixView.is_con
 
 ## 積
 
-`MatrixView.mul left right` は、2 つの窓の行列積を新しい `Matrix` で返します。形の条件は `Matrix.mul` と同じで、`left.cols != right.rows` はトラップです。
+`MatrixView.mul left right` は、2 つの窓の行列積を新しい `Matrix` で返します。形の条件は `Matrix.mul` と同じで、`left.cols != right.rows` はトラップです。この検査は窓を複製する前に済ませるので、窓がどれだけ大きくても、形が合わなければ確保に進まず `trap: assertion failed` です。
 
 各窓を `MatrixView.to_matrix` で行優先に複製してから `Matrix.mul` を呼びます。複製は $O(\text{rows} \times \text{cols})$ で、積の $O(\text{rows} \times \text{inner} \times \text{cols})$ に比べて小さいので、転置した窓を渡しても内側のループは連続した行を読みます。出力の各要素は `Matrix.mul` と同じく、`+0` から `k` の昇順に、積と和を別々に丸めた値です。FMA は使いません。
 
@@ -207,7 +207,7 @@ MatrixView.rows view
 | 条件 | API | 表示 |
 | --- | --- | --- |
 | `values.length != rows * cols`、次元が負、`rows * cols` の溢れ | `of_array`・`of_array_mut`・`strided` | `trap: assertion failed` |
-| オフセットやストライドが負、窓の要素が `data` の外、添字の計算の溢れ | `strided` | 同上 |
+| オフセットやストライドが負、窓の要素が `data` の外（最後の要素の添字が `i64` の最大値になる窓を含む）、添字の計算の溢れ | `strided` | 同上 |
 | 添字が範囲外 | `at`・`write`・`row`・`col`・`row_mut` | 同上 |
 | 部分行列が窓の外 | `sub`・`sub_mut` | 同上 |
 | `col_stride` が 1 でない窓に `row_mut` | `row_mut` | 同上 |
@@ -253,6 +253,8 @@ MatrixView.rows view
 | `of_array_mut`・`sub_mut`・`transpose_mut`・`row_mut`・`freeze`・`write` | $O(1)$、確保なし |
 | `to_matrix`・`fold`・`map`・`fill`・`copy_from`・`map_in_place` | $O(\text{rows} \times \text{cols})$ |
 | `mul` | $O(\text{rows} \times \text{inner} \times \text{cols})$。窓の複製を含む |
+
+要素のない窓（`rows` か `cols` が 0）では、`fold`・`fill`・`copy_from`・`map_in_place` は、もう一方の軸がどれだけ長くても（`strided` は `rows = 4611686018427387904`、`cols = 0` のような窓を作れます）何も走査せずに戻ります。最適化水準による違いもありません。
 
 `to_matrix` は、窓が連続していれば 1 回のコピーで、そうでなければ行ごとに要素を読みます。
 

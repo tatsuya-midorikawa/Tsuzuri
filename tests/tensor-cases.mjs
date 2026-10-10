@@ -168,6 +168,12 @@ function lookups() {
   return mix(total, 1n);
 }
 
+// Windows with no elements and an axis of 2^62 positions: fold, map and to_tensor return at once.
+function hugeEmpty() {
+  // The folds keep their initial values 7, 8, 9 and 10; the counts are 0 and the empty window counts as contiguous.
+  return [7n, 8n, 9n, 10n, 1n].reduce(mix, 0n);
+}
+
 export const cases = [
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [2, 2, 2], [1, 5, 1], [4, 3, 2], [2, 1, 6]].map((shape) => ["ops", shape.map(BigInt), ops(...shape)]),
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [4, 3, 2], [1, 5, 2]].map((shape) => ["maps", shape.map(BigInt), maps(...shape)]),
@@ -178,6 +184,11 @@ export const cases = [
   ...[0, 1, 2, 5, 12].map((n) => ["owned_tensor", [BigInt(n)], ownedTensor(n)]),
   ["lookups", [], lookups()],
 ];
+
+// Run one per process with a kill timer: before the fix they never returned.
+export const bounded = [["huge_empty", [], hugeEmpty()]];
+
+const maxIndex = 9223372036854775807n;
 
 export const traps = [
   ...[[2, -1], [-1, 2], [4294967296, 4294967296], [9223372036854775807n, 2]].map((shape) => ["init_trap", shape.map(BigInt)]),
@@ -193,4 +204,7 @@ export const traps = [
   ...[[3, 0, 1], [-1, 0, 1], [0, -1, 1], [0, 0, -1], [0, 3, 0], [0, 1, 2], [2, 0, 5], [1, 2, 2]].map((triple) => ["narrow_trap", triple.map(BigInt)]),
   ...[[5, 5], [2, 13], [-1, -24]].map((shape) => ["reshape_view_trap", shape.map(BigInt)]),
   ["reshape_view_strided_trap", []], ["to_matrix_trap", []], ["as_matrix_view_trap", []],
+  // A matrix window with an element outside its 10 elements never becomes a tensor window, even when the index of its
+  // last element is i64::MAX (the sum of the strides must not wrap).
+  ...[[0, 3, 4, 4, 1], [10, 1, 1, 0, 0], [maxIndex, 1, 1, 0, 0], [0, 1, 2, 0, maxIndex], [maxIndex - 1n, 1, 2, 0, 1], [0, 2, 1, maxIndex, 0]].map((layout) => ["matrix_window_trap", layout.map(BigInt)]),
 ];

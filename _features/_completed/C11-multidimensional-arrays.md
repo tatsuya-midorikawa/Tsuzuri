@@ -89,9 +89,20 @@
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`、`git diff --check` が成功。GUIDE §3.1 の 4 つの回帰テストは各 1 件で成功。最終の `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は 89 バイナリで **999 件成功**（Phase 1 の後は 984 件）。
 - `cargo test --locked --test matrix`（8 件）、`--test matrix_views`（7 件）、`--test tensor`（4 件）、`--lib stdlib`（9 件）、`--test lsp opt_in`（2 件）が成功。
-- suite `matrix`（529 ケース）、`matrix_view`（302）、`tensor`（33）が native と WASM の `-O0`・`-O3` で成功。`live == 0`、WASM の import は空。`TSUZURI_ASAN=1`、`TSUZURI_TSAN=1`、`TSUZURI_TEST_WASM_SIMD=1`、`TSUZURI_TEST_CPU=native`、`TSUZURI_TEST_WASM_TARGET=wasm64`、`TSUZURI_TEST_ALLOCATOR=host` でも成功。
+- suite `matrix`（529 ケース）、`matrix_view`（303）、`tensor`（34）が native と WASM の `-O0`・`-O3` で成功。`live == 0`、WASM の import は空。`TSUZURI_ASAN=1`、`TSUZURI_TSAN=1`、`TSUZURI_TEST_WASM_SIMD=1`、`TSUZURI_TEST_CPU=native`、`TSUZURI_TEST_WASM_TARGET=wasm64`、`TSUZURI_TEST_ALLOCATOR=host` でも成功。
 - 窓と N 次元の suite は、`strides` を取り違えた変異（`narrow` が stride を無視、`transpose` が stride を入れ替えない、`copy_from` が stride を取り違える）で失敗することを確認した。
 - `node scripts/check-docs.mjs` は変更した 11 ページで 44 例・86 回の native 実行が成功。`tsuzuri doc std` が 3 モジュールの API 文書を出す。
+
+### レビュー後の修正
+
+独立したコードレビューの Medium 以下 5 件と、テストの指摘 1 件を、1 つのコミットで直した。コードの修正（文書と指摘のテストの書き直しを除く）は、修正の前に、新しいテストが失敗することを確かめた。
+
+- テストが AArch64 のコンパイラを仮定していた。`Math.fma` が `llvm.fma` になるのは AArch64 向けにビルドしたコンパイラだけで、ほかは `@tz_soft_fma`（`src/llvm_math.rs`）。`tests/matrix.rs` と suite `matrix` の `inspect` は、native の IR にどちらか一方があることを受け付ける（wasm32 の IR は常に `@tz_soft_fma`）。`multiply_rows` と `mul` に `llvm.fma`・`tz_soft_fma`・`fmuladd`・`fast`・`contract`・`reassoc` がないことの検査は変えない。`cfg!(target_arch = "aarch64")` を一時的に `x86_64` に変えたコンパイラ（別の target ディレクトリ。変更は戻した）で、修正前は `cargo test --test matrix` が 7 件成功・1 件失敗、suite `inspect` が失敗し、修正後は 8 件と suite `matrix`（529 ケース）が成功した。`Math.fma` の lowering の方針は変えていない。
+- 文書が FMA の速さを言い過ぎていた。`matrix.md`・`language.md`・`benchmarks.md`・`architecture.md`・`README.md` を、ハードウェアの FMA は AArch64 向けのコンパイラの native だけ、ほかはソフトウェアのルーチン（wasm32 と同じ警告）と直した。測定: 128 × 128 × 128 の `mul_fma` は、ソフトウェアのルーチンを使わせた native で 3.36 s（1 積和約 1.6 µs）、ハードウェアで 0.34 ms。`benchmarks/run-matrix.mjs` は、`--emit llvm` の IR に `tz_soft_fma` の呼び出しがあるとき、`mul_fma`・`mul_fma_parallel` を `n = 64` までの 1 サンプル 1 積にして注意書きを出す（`--fused-all` で全サイズ）。
+- `MatrixView.strided` の窓の検査が、最後の添字が `i64` の最大値のときに `+ 1` で折り返して通っていた（`strided 0 1 2 0 9223372036854775807` と `strided 9223372036854775807 1 1 0 0`）。最後の添字（`last_index`）を `data.length` と `<` で比べるように直した。`Tensor` に同じ計算はない（窓は、密なストライドの `view`・`borrow` と、検査済みの `MatrixView` から作る）。トラップのテストに `MatrixView` 側の 6 件と `Tensor.of_matrix_view` 側の 6 件を足し、suite `matrix`・`matrix_view`・`tensor` は、wasm32 を `--trap-info` 付きでビルドして、各トラップの種類が `assertion failed` であることも検査する。
+- `MatrixView.mul` が、形の検査（`left.cols == right.rows`）の前に 2 つの窓を複製していて、巨大な窓の形違いが `allocation failed` になっていた。検査を複製の前に移した（`mul_shape_before_copy_trap`）。
+- 要素のない窓が、他の軸を走査していた。長さ 2^62 の軸と長さ 0 の軸を持つ窓は有効なので、`Tensor.fold` が戻らず、`MatrixView.fold` は `-O0` で戻らなかった（`-O3` は空のループを消す）。`Tensor.fold`、`MatrixView.fold`・`fill`・`copy_from`・`map_in_place` が、要素のない窓では何も走査せずに戻る。suite の `bounded`（`huge_empty`）が、native は 1 件ずつ別のプロセス、WASM は子の Node プロセスで、10 秒の SIGKILL のタイマー付きで実行する。
+- テストの指摘: `tests/matrix.rs` の `fn bad() -> &i64 { ... }` は構文が誤りで、ブロックの外へ出る `E1013` しか確かめていなかった。局所の行列を借りて返す関数の形（`at`・`row`・`as_array`）に書き直した（どれも `E1013`）。
 
 ### 文書と計測
 
@@ -99,7 +110,7 @@
 
 ## 既知の限界
 
-- x86-64、AVX・SVE のような広いベクトル、wasm32 の threads の速度、`n = 1024` 以上、ブロッキングする BLAS との比較は未測定。測定は 1 台の arm64 で、負荷の揺れが大きい（2 回目の並列の値が落ちた原因は特定していない）。
-- wasm32 には 1 命令のスカラー fma がなく、`Math.fma`（`mul_fma`）は `tz_soft_fma` を呼ぶので、`n = 64` の積が約 460 ms（`mul` の約 4,000 倍）。
+- x86-64 の機械（ソフトウェアの `tz_soft_fma` の 1 積和の費用を含む）、AVX・SVE のような広いベクトル、wasm32 の threads の速度、`n = 1024` 以上、ブロッキングする BLAS との比較は未測定。測定は 1 台の arm64 で、負荷の揺れが大きい（2 回目の並列の値が落ちた原因は特定していない）。
+- `Math.fma` がハードウェアの命令（`llvm.fma`）になるのは、AArch64 向けにビルドしたコンパイラの native の `f32`・`f64` だけ（`src/llvm_math.rs`）。それ以外の native と wasm32 では、`mul_fma`・`mul_fma_parallel` が `tz_soft_fma` を積和ごとに呼ぶ。結果のビットは同じだが、Apple M1 Max で 1 積和あたり約 1.6 µs（native でソフトウェアのルーチンを使わせた測定。128 × 128 × 128 の積が約 3.4 s、ハードウェアは約 0.34 ms）、wasm32 の `n = 64` の積が約 460 ms（`mul` の約 4,000 倍）。`n = 512` は約 3.5 分と見積もる。ベンチマークは、ソフトウェアのルーチンのとき `mul_fma` を `n = 64` までしか測らない（`--fused-all` で全サイズ）。
 - 窓は負のストライドを持てない。書き込める窓は行優先とその転置だけ。N 次元の書き込める窓、ブロードキャスト、軸に沿った集計はない。
 - 行列積の GPU カーネルはない。GPU の実機での実行は F09。
