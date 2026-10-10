@@ -495,6 +495,8 @@ tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o 
 
 wasm32 のソケットの寿命と上限は、ネイティブと違います。待っていないソケットは Node.js のプロセスを生かさず、モジュールが例外で止まると、そのインスタンスのソケットはすべて閉じます。UDP は 1 MiB と 4096 個、listener は 128 接続までを、読まれないまま保ちます（[WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs)）。`bind_async` と `bind_udp_async` は `Async.start` の実行器からは使えません。
 
+wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、結果もその送信自身のものです。`send_to_async` は、Node.js へ渡した送信が終わるのを待ち、その結果を返します（始めた送信は、操作を取り消しても取り戻せません）。UDP のソケットは、Node.js がまだ終えていない送信があれば、それが終わってから閉じるので、送信の直後に `close_udp` しても、データグラムは出ます。`accept` した接続の `peer_addr` は、接続が届いた時点のアドレスで、相手が `accept` の前に RST で切っても残ります。エラーの分類は、ネイティブと同じ表です（libuv だけが名前を付ける `EHOSTDOWN` も `Unreachable` です）。
+
 ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 
 macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。

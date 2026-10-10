@@ -52,6 +52,27 @@ function within(promise, what, milliseconds = 20_000) {
   const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), milliseconds); });
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
+// How long a call of the program may take in the cases that depend on a datagram or connection peer.
+const callWait = 60_000;
+// A Node datagram peer that collects what a program sends it, up to a fence: a datagram that the peer sends to itself once the
+// program's call has returned. A loopback socket receives datagrams in the order in which they were sent, so when the fence is
+// read everything that the program sent has been, however many datagrams a send made, and no case waits for time to pass.
+async function collector() {
+  const socket = dgram.createSocket("udp4");
+  const messages = [];
+  const fenced = Promise.withResolvers();
+  socket.on("message", message => { if (message.toString() === "fence") fenced.resolve(); else messages.push(Buffer.from(message)); });
+  await new Promise((resolveBind, reject) => { socket.once("error", reject); socket.bind(0, "127.0.0.1", resolveBind); });
+  const port = socket.address().port;
+  return {
+    socket, port, messages,
+    texts: () => messages.map(message => message.toString()).sort(),
+    fence: async () => {
+      socket.send("fence", port, "127.0.0.1");
+      await within(fenced.promise, "the fence behind the program's datagrams");
+    },
+  };
+}
 // A case of the host's own behavior: its failure is noted and the next case still runs, so that one run shows every failure.
 const failures = [];
 let level = "";
@@ -161,10 +182,14 @@ fn probe port =
 
       const reported = [];
       let onReport = () => {};
-      const loaded = await (await import(`${pathToFileURL(glue).href}?${optimization}`)).load(readFileSync(wasm), {
+      const instantiate = async () => (await import(`${pathToFileURL(glue).href}?${optimization}`)).load(readFileSync(wasm), {
         imports: { "Main.report": port => { reported.push(port); onReport(Number(port)); } },
       });
+      const loaded = await instantiate();
       const call = (name, argument = 0n) => loaded.exports[name](BigInt(argument));
+      // A case that a broken glue could leave stuck inside a call runs on an instance of its own, so that it cannot hold the
+      // cases after it, and is bounded.
+      const alone = (name, argument = 0n) => within((async () => (await instantiate()).exports[name](BigInt(argument)))(), `${name} to finish`, callWait);
 
       // The echo of 1024 bytes, through the blocking API and through the async operations.
       {
@@ -452,6 +477,122 @@ console.log("leaked " + await loaded.exports.leak(0n));
           for (const peer of peers) peer.destroy();
           sender.close();
           if (greeter) await stop(greeter);
+        }
+      });
+
+      // A datagram send hands exactly one datagram to the system and has a result of its own, however it waits. A peer counts what
+      // arrives for one async send, one blocking send, twelve async sends of the same bytes in a row, fifty at once from one
+      // executor (a hundred distinct bytes each), and an end marker: 65 sends that said Ok, and 65 datagrams.
+      await check("udp_counts", async () => {
+        const peer = await collector();
+        try {
+          assert.equal(await alone("udp_counts", peer.port), 65n, "udp_counts: the sends that said Ok");
+          await peer.fence();
+        } finally {
+          peer.socket.close();
+        }
+        const texts = peer.texts();
+        const times = word => texts.filter(item => item === word).length;
+        assert.deepEqual([times("one"), times("blocking"), times("same"), times("end")], [1, 1, 12, 1], `datagrams per send: ${texts.filter(item => item.length < 100).join(" ")}`);
+        const burst = peer.messages.filter(message => message.length === 100);
+        assert.deepEqual(burst.map(message => message[0]).sort((a, b) => a - b), Array.from({ length: 50 }, (_, index) => index), "the fifty datagrams of the burst, each once");
+        assert.ok(burst.every(message => message.subarray(1).every(byte => byte === 85)), "the burst's datagrams arrived whole");
+        assert.equal(peer.messages.length, 65, "a datagram for each send and no other");
+      });
+
+      // An echo server of recv_from_async and send_to_async: fifty requests, and each answered once.
+      await check("udp_echo", async () => {
+        const peer = await collector();
+        onReport = port => { for (let index = 0; index < 50; index++) peer.socket.send(`request ${index}`, port, "127.0.0.1"); };
+        try {
+          assert.equal(await alone("udp_echo", 50), 50n, "udp_echo: the answers that were sent");
+          await peer.fence();
+        } finally {
+          peer.socket.close();
+        }
+        assert.deepEqual(peer.texts(), Array.from({ length: 50 }, (_, index) => `request ${index}`).sort(), "each request answered once");
+      });
+
+      // A close right after a send does not cancel it, and the send still says how it went: after a send that has ended (async,
+      // blocking), and with the close racing the async send in one executor.
+      await check("udp_close_race", async () => {
+        const peer = await collector();
+        try {
+          assert.equal(await alone("udp_close_race", peer.port), 6n, "udp_close_race: the calls that said Ok");
+          await peer.fence();
+        } finally {
+          peer.socket.close();
+        }
+        assert.deepEqual(peer.texts(), ["after-async", "after-blocking", "racing-close"], "each datagram arrived, once");
+      });
+
+      // The `udp` case of the native async fixture (tests/fixtures/net_async, run_udp) through the glue: the same lines that the
+      // native program prints, which are the numbers of this system.
+      await check("udp_lines", async () => {
+        const timedOut = `TimedOut Other ${errno.ETIMEDOUT}`;
+        assert.deepEqual((await alone("udp_lines")).split("\n"), [
+          "exchange: 31 1", `quiet: ${timedOut}`, `vanished: ${timedOut}`,
+          `truncated: Unclassified InvalidInput ${errno.EMSGSIZE} then datagram:2 then datagram:0`, `closed: ok ok Unclassified InvalidInput ${errno.EBADF}`,
+        ]);
+      });
+
+      // A connection that its peer reset before the program accepted it still names the peer: the glue keeps the addresses that the
+      // connection had when it arrived (a reset connection has no peer name to ask for later), as the address that `accept` gives
+      // natively.
+      await check("peer_after_reset", async () => {
+        made.servers.length = 0;
+        const ports = [];
+        const open = [];
+        let clientPort = 0;
+        let flow;
+        onReport = port => {
+          ports.push(port);
+          if (ports.length < 2) return;
+          flow = (async () => {
+            const queued = made.servers.at(-2);
+            const arrived = new Promise(resolveArrived => queued.once("connection", resolveArrived));
+            const client = net.connect({ host: "127.0.0.1", port: ports[0] });
+            client.on("error", () => {});
+            open.push(client);
+            await within(new Promise(resolveConnect => client.once("connect", resolveConnect)), "the client to connect");
+            await within(arrived, "the program's listener to see the connection");
+            clientPort = client.localPort;
+            const gone = new Promise(resolveGone => client.once("close", resolveGone));
+            client.resetAndDestroy();
+            await within(gone, "the reset client to close");
+            const gate = net.connect({ host: "127.0.0.1", port: ports[1] });
+            gate.on("error", () => {});
+            open.push(gate);
+          })();
+          flow.catch(() => {});
+        };
+        try {
+          const outcome = await alone("peer_after_reset");
+          await flow;
+          assert.ok(clientPort > 0, "the client had a port");
+          assert.equal(outcome, BigInt(clientPort) * 10n + 1n, "the accepted connection's peer is the client that reset it");
+        } finally {
+          for (const socket of open) socket.destroy();
+        }
+      });
+
+      // The glue's table of error names is the system's and libuv's: libuv names errors that the system's constants lack
+      // (EHOSTDOWN). A connect that fails with each name is classified as natively (`refused` answers the index of the kind).
+      await check("error_names", async () => {
+        const connect = net.Socket.prototype.connect;
+        try {
+          for (const [code, expected] of [
+            ["ETIMEDOUT", 1n], ["ECONNREFUSED", 2n], ["ECONNRESET", 3n], ["ECONNABORTED", 3n], ["EPIPE", 3n], ["EADDRINUSE", 4n], ["EADDRNOTAVAIL", 5n],
+            ["ENETUNREACH", 6n], ["EHOSTUNREACH", 6n], ["ENETDOWN", 6n], ["EHOSTDOWN", 6n], ["EACCES", 7n], ["EWHATEVER", 7n],
+          ]) {
+            net.Socket.prototype.connect = function () {
+              process.nextTick(() => this.destroy(Object.assign(new Error(`connect ${code}`), { code })));
+              return this;
+            };
+            assert.equal(await call("refused", 1), expected, `a connect that fails with ${code}`);
+          }
+        } finally {
+          net.Socket.prototype.connect = connect;
         }
       });
 

@@ -605,8 +605,15 @@ fn with_udp address body =
 private def pending :: unit -> i64
 fn pending _unit = 30064771072
 
+/// What a datagram send answers, negated, when the host took the datagram and says later how it went (the WebAssembly host,
+/// where the system's own answer is not known when the call returns): this plus the token of the send. A native send
+/// is over when the call returns and never answers it.
+private def accepted :: unit -> i64
+fn accepted _unit = 30081548288
+
 /// Waits until the socket of `handle` can read (`events` 1) or write (2): 0 when it can (an error counts, the retry
 /// reports it) or was closed meanwhile, otherwise the status of why not (`remaining` milliseconds passed: -1 is no limit).
+/// `events` 2 + 4 * token waits for the end of the datagram send that was accepted with that token, and gives its status.
 private def watch :: i64 -> i32 -> i64 -> Async<i64>
 fn watch handle events remaining =
 	Async.host (Async.Operation {
@@ -731,11 +738,15 @@ fn recv_from_async socket count timeout =
 	if wait == -2 || count < 1 || count > 16777216 then Async.Return (Result.Error (invalid ()))
 	else Async.Bind (deadline_of wait) (\deadline -> recv_loop socket count deadline)
 
+/// One datagram, sent once: natively the call sends it (or says it would have to wait for room, and the send is tried again
+/// after the wait). On WebAssembly the host takes the datagram in that call and the wait is for the end of that send, which
+/// gives its own status; the datagram is never handed over a second time.
 private def rec send_loop :: UdpSocket -> [ubyte] -> Address -> Async<Result<unit, Os.Error>>
 fn rec send_loop socket data target =
 	Async.Delay (\() ->
 		let sent = Net.__send 1i32 socket.id (ref data) 0 (meta_of target) (high_of target) (low_of target)
 		if sent >= 0 then Async.Return (Result.Ok ())
+		elif 0 - sent > accepted () then ready socket.id (2i32 + 4i32 * ((0 - sent - accepted ()) as i32)) (-1)
 		elif 0 - sent == pending () then
 			Async.Bind (ready socket.id 2i32 (-1)) (\outcome ->
 				match outcome with

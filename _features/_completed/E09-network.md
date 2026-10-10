@@ -116,8 +116,9 @@ Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは�
   `jspi` だけのグルーになる（`.wasm` もその場合は alloc を export しない）。
 - ブラウザーには生の TCP も UDP もないので、`node:` のモジュールを読めない環境では `load` が `Net sockets need Node.js ...` で失敗する。文書に書いた。
 - import は Node.js の例外を呼び出しの状態にして返す（`guard`）。ソケットは、モジュールが待っているあいだだけプロセスを生かし、インスタンスが捨てられるとすべて閉じる。
-  読まれないまま届く分は、UDP が 1 MiB・4096 個、listener が 128 接続まで。TCP は `allowHalfOpen`。非同期の UDP の送信は、結果を Node.js が次のターンに返すので、最初の呼び出しが
-  `PENDING`、書き込み可能に戻ったあとの呼び出しがその送信自身の結果を返す。`resolve` は ASCII 以外の host を全ターゲットで `InvalidInput`（Node.js の IDNA の変換のため）。
+  読まれないまま届く分は、UDP が 1 MiB・4096 個、listener が 128 接続まで。TCP は `allowHalfOpen`。非同期の UDP の送信は、結果を Node.js が次のターンに返すので、呼び出しが送信を 1 回だけ行って
+  「受け取った」状態（`ACCEPTED` + 送信の番号）を返し、std の待ち（`__watch` の `events = 2 + 4 * 番号`）がその送信自身の結果で完了する（呼び出しをやり直さず、データグラムは送信の数だけ出る）。
+  `resolve` は ASCII 以外の host を全ターゲットで `InvalidInput`（Node.js の IDNA の変換のため）。
 - ネイティブとの違い: listener の `SO_REUSEADDR` は Node.js の既定、`shutdown` の `Read` は `SHUT_RD` を呼ばず以後の `read` を EOF にする、`write` の期限は積んだデータの送信を取り消さない、
   `write_async` の下の送信は 1 回に 64 KiB まで、`close` は受け取ったデータを送り終えてから閉じ（それまで Node.js は終わらない）、UDP のポート 0 宛ては `EINVAL`、
   `bind_async`・`bind_udp_async` は `Async.start` の実行器では使えない。
@@ -228,6 +229,16 @@ Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは�
   （`llvm::reaches_net`）。(9) `Async.start` の実行器から `read_async`・`accept_async`・`recv_from_async` を呼ぶと `SuspendError`（時間制限 0 は中断しない `try_read`・`try_accept`）。
   (10) 2 GiB 以上のポインタが負の数でグルーに届いた（`>>> 0`）。(11) `bindings-core.mjs` の `memory64` の走査が import の名前を 1 バイト短く飛ばし、有効な wasm32 のモジュールを
   64 ビットと読んで読み込みに失敗した（既存の不具合。`tests/bindings.mjs` に回帰テスト）。それぞれ、修正前のコンパイラで失敗することを確かめたテストを `tests/net_wasm.mjs` などに足した。
+- 統合担当のレビュー（上の修正のコミット）で、その修正に不具合が 1 件（高）と軽微なものが 2 件見つかった（このあとのコミット）。(1) 非同期の UDP の送信（上の (5) の直し）が、やり直しの
+  呼び出しを「同じ配列のポインタ」で見分けていたが、std はやり直しのたびに配列を複製するのでポインタは毎回違い、1 回の送信でデータグラムが 3〜6 個出たり、何も出ずに成功したり、
+  `Async.all` で数百〜数千個になって終わらなかったりした。呼び出しが 1 回だけ `socket.send` を呼んで「受け取った」状態（`ACCEPTED` + 送信の番号）を返し、std の待ち
+  （`__watch` の `events = 2 + 4 * 番号`）がその送信自身の結果で完了する形に直した（結果は呼び出しごとで、データグラムは送信の数だけ出る。ソケットの `close` は終えていない送信を
+  終えてから閉じる）。(2) 相手が `accept` の前に RST で切った接続の `peer_addr` が `0.0.0.0:0` だった（接続が届いた時点でアドレスを記録する）。(3) `EHOSTDOWN` が `Unreachable` に
+  ならなかった（`os.constants.errno` に無い libuv の名前を、libuv の表から補う）。`tests/net_wasm.mjs` に足したテストは、修正前のコンパイラで、`udp_counts`（1 回、blocking、12 回連続、
+  `Async.all` の 50 通、終端）、`udp_echo`（50 の要求に 50 の返事）、`udp_close_race`（送信の直後と、送信と重なった `close`）、`udp_lines`（native の `udp` のケースと行ごとに一致）、
+  `peer_after_reset`、`error_names` のすべてが、-O0 と -O3 の両方で失敗することを確かめた。1 つの instance が詰まっても次の case が巻き込まれないよう、これらは instance を別にしている。
+  `Async.all` の同時の送信の数が増えると、1 件あたりの時間が増える（-O3 で 250〜500 件は 1 件 0.1 ms、1000 件は 0.3 ms、4000 件は 3 ms。結果の数は常に送信の数と同じ）。CPU プロファイルでは
+  時間のほとんどが wasm のアロケーター（first-fit の空きリストの探索）にあり、グルーの JavaScript ではない。待っている操作の数に比例して実行器が確保と解放を繰り返すためで、E09 の外にある。
 
 ### 確かめていないこと
 

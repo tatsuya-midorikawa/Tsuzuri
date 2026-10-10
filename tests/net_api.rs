@@ -380,6 +380,34 @@ fn probe port =
 ";
 
 #[test]
+fn std_and_glue_agree_on_the_status_of_an_accepted_datagram_send() {
+    use std::path::Path;
+    // The wasm32 host answers a datagram send that Node has taken with ACCEPTED plus a token, and `send_loop` in std/Net.tz
+    // tells it by the same number: a disagreement would make every async UDP send on wasm32 a failure, or send it twice.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let std_source = std::fs::read_to_string(root.join("std/Net.tz")).unwrap();
+    let glue = std::fs::read_to_string(root.join("src/runtime/bindings-net.mjs")).unwrap();
+    let accepted = (7u64 << 32) + 16_777_216;
+    assert!(
+        std_source.contains(&format!("fn accepted _unit = {accepted}\n")),
+        "accepted () in std/Net.tz"
+    );
+    assert!(
+        glue.contains("const ACCEPTED = status(7, 16777216);"),
+        "ACCEPTED in the glue"
+    );
+    // The token travels in `events` as 2 + 4 * token (an i32) and in the code of a status (below 2^32, and not an errno).
+    let maximum: u64 = glue
+        .split("const MAX_TOKEN = ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|number| number.trim().parse().ok())
+        .expect("MAX_TOKEN in the glue");
+    assert!(2 + 4 * maximum <= i32::MAX as u64);
+    assert!(16_777_216 + maximum < 1 << 32);
+}
+
+#[test]
 fn reaching_a_socket_is_decided_on_the_module_as_the_ir_does() {
     // The bindings are made without IR and the `.wasm` from IR; both ask whether the module has `tsuzuri_net` imports (and so
     // the allocator exports that deliver their bytes), and they must agree: a module whose glue wants exports that the
