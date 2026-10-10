@@ -855,21 +855,43 @@ static int32_t tz_vk_report(int32_t status, const char *format, ...) {
 
 /* ---- loading ---- */
 
-static void *tz_vk_open_library(const char *name) {
+/* A library that TSUZURI_VULKAN_LIBRARY names is loaded exactly as named. The libraries that the runtime tries by
+   itself are never looked up by a bare name where the system searches the working directory: on macOS dlopen of a leaf
+   name searches it, and the Windows search order has the application and the current directory, so a library planted
+   there would run its initializers (before any check) in every program that asks for a Vulkan device, and could mask the
+   real loader. A default is therefore an absolute path in a system location; on Windows it is a name that is looked up
+   in the system directory only. On Linux and the BSDs a bare soname is fine: the dynamic linker searches
+   LD_LIBRARY_PATH, its cache and the system directories, and never the working directory. */
 #if defined(_WIN32)
-    return (void *)LoadLibraryA(name);
-#else
-    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
 #endif
-}
+static void *tz_vk_open_library(const char *name) { return (void *)LoadLibraryA(name); }
+static void *tz_vk_open_default(const char *name) { return (void *)LoadLibraryExA(name, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32); }
+static void tz_vk_close_library(void *library) { FreeLibrary((HMODULE)library); }
+static void *tz_vk_symbol(void *library, const char *name) { return (void *)GetProcAddress((HMODULE)library, name); }
+#define TZ_VK_DEFAULT_LIBRARIES_LIST "vulkan-1.dll"
+#else
+static void *tz_vk_open_library(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
+static void tz_vk_close_library(void *library) { dlclose(library); }
+static void *tz_vk_symbol(void *library, const char *name) { return dlsym(library, name); }
+#if defined(__APPLE__)
+static void *tz_vk_open_default(const char *name) { return name[0] == '/' ? tz_vk_open_library(name) : NULL; }
+#define TZ_VK_DEFAULT_LIBRARIES_LIST \
+    "/opt/homebrew/lib/libvulkan.1.dylib", "/usr/local/lib/libvulkan.1.dylib", "/opt/homebrew/lib/libvulkan.dylib", \
+    "/usr/local/lib/libvulkan.dylib", "/opt/homebrew/lib/libMoltenVK.dylib", "/usr/local/lib/libMoltenVK.dylib"
+#else
+static void *tz_vk_open_default(const char *name) { return tz_vk_open_library(name); }
+#define TZ_VK_DEFAULT_LIBRARIES_LIST "libvulkan.so.1", "libvulkan.so"
+#endif
+#endif
 
-static void *tz_vk_symbol(void *library, const char *name) {
-#if defined(_WIN32)
-    return (void *)GetProcAddress((HMODULE)library, name);
+/* A build can name its own candidates with TZ_VK_LIBRARY_DEFAULTS, a list of string literals (the tests do). */
+#ifdef TZ_VK_LIBRARY_DEFAULTS
+static const char *const tz_vk_default_libraries[] = {TZ_VK_LIBRARY_DEFAULTS, NULL};
 #else
-    return dlsym(library, name);
+static const char *const tz_vk_default_libraries[] = {TZ_VK_DEFAULT_LIBRARIES_LIST, NULL};
 #endif
-}
 
 static void *tz_vk_find_library(void) {
     const char *override = getenv("TSUZURI_VULKAN_LIBRARY");
@@ -883,20 +905,14 @@ static void *tz_vk_find_library(void) {
         if (library == NULL) tz_vk_debug("TSUZURI_VULKAN_LIBRARY=%s cannot be loaded", override);
         return library;
     }
-    static const char *const names[] = {
-#if defined(_WIN32)
-        "vulkan-1.dll",
-#elif defined(__APPLE__)
-        "libvulkan.1.dylib", "libvulkan.dylib", "/opt/homebrew/lib/libvulkan.1.dylib",
-        "/usr/local/lib/libvulkan.1.dylib", "libMoltenVK.dylib", "/opt/homebrew/lib/libMoltenVK.dylib",
-        "/usr/local/lib/libMoltenVK.dylib",
-#else
-        "libvulkan.so.1", "libvulkan.so",
-#endif
-        NULL};
-    for (size_t index = 0; names[index] != NULL; index++) {
-        void *library = tz_vk_open_library(names[index]);
-        if (library != NULL) return library;
+    for (const char *const *name = tz_vk_default_libraries; *name != NULL; name++) {
+        void *library = tz_vk_open_default(*name);
+        if (library == NULL) continue;
+        /* A library that loads but is no Vulkan loader (a stub, or an unrelated library of that name) is skipped, and
+           the search goes on: it must not stand in for the real one. */
+        if (tz_vk_symbol(library, "vkGetInstanceProcAddr") != NULL) return library;
+        tz_vk_debug("%s has no vkGetInstanceProcAddr and is skipped", *name);
+        tz_vk_close_library(library);
     }
     tz_vk_debug("no Vulkan loader library was found");
     return NULL;

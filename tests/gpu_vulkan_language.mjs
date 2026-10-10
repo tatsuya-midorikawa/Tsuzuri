@@ -203,7 +203,8 @@ function host(project) {
       body.push(`  ${guard}{ for (unsigned index = 0; index < sizeof counts / sizeof counts[0]; index++) { int32_t wrong = tz_wrong_${kind}_${backend}(counts[index]); if (wrong != 0) { printf("MISMATCH ${kind} ${backend} %d lanes: %d\\n", counts[index], wrong); return 1; } if (live != 0) { printf("LEAK ${kind} ${backend} %d lanes: %lld bytes\\n", counts[index], (long long)live); return 1; } } printf("served ${kind} ${backend} %d\\n", tz_served_${kind}_${backend}()); }`);
     }
   }
-  return `#include <stdint.h>
+  return `#undef NDEBUG
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 static int64_t live;
@@ -306,7 +307,7 @@ check("vulkan: an empty or wrong TSUZURI_VULKAN_LIBRARY makes Gpu.Vulkan Unavail
       const ir = join(project.path, "availability.ll");
       cli(["build", project.path, "--emit", "llvm", "-o", ir]);
       const hostPath = join(project.path, "availability.c");
-      writeFileSync(hostPath, `#include <stdint.h>\n#include <stdio.h>\nextern uint8_t tz_available_vulkan(void);\nint main(void) { printf("available %d\\n", tz_available_vulkan()); return 0; }\n`);
+      writeFileSync(hostPath, `#undef NDEBUG\n#include <stdint.h>\n#include <stdio.h>\nextern uint8_t tz_available_vulkan(void);\nint main(void) { printf("available %d\\n", tz_available_vulkan()); return 0; }\n`);
       const executable = join(project.path, "availability");
       execute(clang, [ir, hostPath, runtimeSource, "-O1", "-ffp-contract=off", "-Wno-override-module", ...sanitize, "-o", executable, "-lm", "-pthread", ...(process.platform === "linux" ? ["-ldl"] : [])]);
       return executable;

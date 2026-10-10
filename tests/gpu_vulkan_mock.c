@@ -195,11 +195,25 @@ int tz_vk_mock_calls(void) { return fallible_calls; }
 int tz_vk_mock_submits(void) { return total_submits; }
 int tz_vk_mock_probe_dispatches(void) { return probe_dispatches; }
 
-/* A program that is not the harness (a compiled Tsuzuri program) configures the mock through the environment. */
+/* A program that is not the harness (a compiled Tsuzuri program) configures the mock through the environment;
+   TZ_VK_MOCK_SELF configures a copy that the runtime found by itself, which the harness does not know about. */
 __attribute__((constructor)) static void configure_from_environment(void) {
     const char *text = getenv("TZ_VK_MOCK");
+    if (text == NULL) text = getenv("TZ_VK_MOCK_SELF");
     if (text != NULL) tz_vk_mock_configure(text);
 }
+
+#ifdef TZ_VK_MOCK_MARKER
+/* A planted copy of the mock: loading it leaves a trace in the named file, so that a test can tell that a library of the
+   working directory (or any other the runtime must not pick) was loaded and its initializers ran. */
+__attribute__((constructor)) static void leave_marker(void) {
+    FILE *file = fopen(TZ_VK_MOCK_MARKER, "a");
+    if (file != NULL) {
+        fputs("loaded\n", file);
+        fclose(file);
+    }
+}
+#endif
 
 int tz_vk_mock_leaked(void) {
     int total = misuse_count;

@@ -7,7 +7,7 @@
 // has none, and says so). A check that cannot run prints `SKIPPED` with the reason and is counted in the summary line;
 // TSUZURI_REQUIRE_VULKAN=1 turns a skipped device check into a failure, TSUZURI_REQUIRE_SPIRV_TOOLS=1 a missing spirv-as.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync as readRaw, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync as readRaw, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -249,6 +249,51 @@ check("loader: a library without the Vulkan entry points is unavailable (the wro
   const other = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6";
   const result = harness(["probe", "--features", "0"], { TSUZURI_VULKAN_LIBRARY: other, TSUZURI_GPU_DEBUG: "1" });
   assert.equal(statusOf(result), 1, result.stdout + result.stderr);
+});
+
+// The libraries the runtime tries by itself are never looked up by a bare name: on macOS dlopen of a leaf name searches the
+// working directory, so a planted library would run its initializers before any check and mask the real loader.
+check("loader: a Vulkan library planted in the working directory is never loaded", () => {
+  const planted = join(directory, "planted");
+  mkdirSync(planted, { recursive: true });
+  const marker = join(planted, "marker.txt");
+  const plantedLibrary = join(planted, `planted.${library}`);
+  const built = run(clang, ["-std=gnu11", "-Wno-unused-function", "-Wno-unused-variable", "-ffp-contract=off", `-DTZ_VK_MOCK_MARKER="${marker}"`, "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", plantedLibrary]);
+  assert.equal(built.status, 0, built.stderr);
+  const names = ["libvulkan.1.dylib", "libvulkan.dylib", "libMoltenVK.dylib", "libvulkan.so.1", "libvulkan.so", "vulkan-1.dll"];
+  for (const name of names) copyFileSync(plantedLibrary, join(planted, name));
+  // No TSUZURI_VULKAN_LIBRARY: the default search runs, in a working directory that holds every name it knows. The planted
+  // library, if it were loaded, would be a working device of its own ("Mock Vulkan device").
+  const result = run(harnessPath, ["probe", "--features", "0"], { cwd: planted, env: environment({ ...current.env, TSUZURI_VULKAN_LIBRARY: undefined, TZ_VK_MOCK_SELF: "devices=1", TSUZURI_GPU_DEBUG: "1" }) });
+  assert.equal(existsSync(marker), false, `a library of the working directory was loaded and its initializers ran\n${result.stdout}${result.stderr}`);
+  assert.doesNotMatch(result.stdout, /Mock Vulkan device/);
+  assert.ok([0, 1].includes(statusOf(result)), `${result.stdout}${result.stderr}`);
+});
+
+// A library that loads but lacks vkGetInstanceProcAddr is skipped and the search goes on, and a bare name is refused where
+// the system would search the working directory. TZ_VK_LIBRARY_DEFAULTS replaces the list of candidates in a build.
+check("loader: the search skips a library that is no Vulkan loader and finds the next candidate", () => {
+  const dir = join(directory, "candidates");
+  mkdirSync(dir, { recursive: true });
+  const marker = join(dir, "marker.txt");
+  const stub = join(dir, `stub.${library}`);
+  writeFileSync(join(dir, "stub.c"), "int tz_stub_is_not_a_vulkan_loader(void) { return 1; }\n");
+  assert.equal(run(clang, ["-shared", "-fPIC", join(dir, "stub.c"), "-o", stub]).status, 0);
+  const bare = `bare-candidate.${library}`;
+  const barePlanted = join(dir, bare);
+  const plantedBuild = run(clang, ["-std=gnu11", "-Wno-unused-function", "-Wno-unused-variable", `-DTZ_VK_MOCK_MARKER="${marker}"`, "-shared", "-fPIC", join(root, "tests/gpu_vulkan_mock.c"), "-o", barePlanted]);
+  assert.equal(plantedBuild.status, 0, plantedBuild.stderr);
+  const candidates = [`"${bare}"`, `"${join(dir, "missing")}"`, `"${stub}"`, `"${mockPath}"`].join(",");
+  const search = join(directory, "harness_search");
+  const searchBuild = run(clang, ["-std=c11", ...flags, `-DTZ_VK_LIBRARY_DEFAULTS=${candidates}`, join(root, "tests/gpu_vulkan_runtime.c"), "-o", search]);
+  assert.equal(searchBuild.status, 0, searchBuild.stderr);
+  const environmentFor = extra => environment({ ...current.env, ...extra });
+  const found = run(search, ["probe", "--features", "0"], { cwd: dir, env: environmentFor({ TSUZURI_VULKAN_LIBRARY: undefined, TZ_VK_MOCK_SELF: "devices=1", TSUZURI_GPU_DEBUG: "1" }) });
+  // No TSUZURI_VULKAN_LIBRARY: the default list is searched, and the mock that it finds configures itself.
+  assert.equal(existsSync(marker), false, "the bare candidate in the working directory was loaded");
+  assert.equal(statusOf(found), 0, `${found.stdout}${found.stderr}`);
+  assert.match(found.stdout, /Mock Vulkan device/);
+  assert.match(found.stderr, /stub\.\w+ has no vkGetInstanceProcAddr and is skipped/);
 });
 
 // ---- running through the mock ----
