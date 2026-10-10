@@ -82,6 +82,19 @@ def total_of :: 'value -> 'result
 
 `Send` は、タスクへ渡す値が所有値であることを要求します。参照を含む値は `E1013` です。`dyn (C, Send)` のように印を並べた dyn 値だけが `Send` です。region 付きの `dyn C {r}` は借用を保持できる代わりに `Send` ではありません。
 
+型変数は `Send` かどうか分かりません。そのため、`Send` を求める操作（`Parallel.*`、`Task.scope` の結果、`Mutex.create`、`Channel.bounded`）を本体に持つジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査します。`Sync` と同じ扱いで、関数に `Send` と書いていなくても同じです。ラッパー関数を通しても、`Rc` を運ぶチャンネルや `Mutex` は作れません。
+
+```text
+def make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>) = \capacity -> Channel.bounded capacity
+
+match make 2 with
+| (sender, _receiver) ->
+    let _sent = Channel.send (ref sender) (Rc.new 1i64)
+    0
+```
+
+この `make` は `Rc<i64>` で使われるので、`E1013`（`tasks require Send values; Rc<i64> holds an Rc or Rc.Weak, ...`）です。`i64` で使えば通ります。利用者が書いた `Send<'a>` 制約（`def need :: Send<'a> => 'a -> i64`）も、使う型ごとに同じ検査を受けます。
+
 `Sync` は、複数のタスクが同じ値の共有借用を同時に使ってよいことを要求します。`Task.scope` が共有する値と、`Arc` の中の値がそうです。整数、`string`、配列、レコード、関数値は `Sync` で、`Atomic<T>`、`Mutex<T>`、`Channel.Sender<T>`・`Channel.Receiver<T>` も `Sync` です（共有借用から更新できるのは、`Atomic` と `Mutex` と、ランタイムのロックで守られる `Channel` の端です）。`Rc`、extern ハンドル、`Task`、排他参照、`Seq`、`Async`、GPU のハンドル、Copy でない `dyn` 値、`Owned.Function` は `Sync` ではなく、`E1013`（`tasks can share only Sync values; ... is not Sync`）です。`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`dyn (C, Sync)` のように `Sync` を印として並べることはできません（`E1028`）。
 
 `AtomicValue` は、`Atomic<T>` の `T` が `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` のどれかであることを要求します。ほかの型は `E1005`（`atomic values must be ...; use Mutex for ...`）です（[Atomic](../built-in-types-and-modules/atomic.md)）。

@@ -310,6 +310,85 @@ fn arc_shares_only_sync_values_between_tasks() {
     );
 }
 
+// A type variable is not known to be Send, so `Send<'a>` is no answer for the function that is
+// generic over it: the constraint stays on the function and is checked at every type that the
+// function is used at, as `Sync<'a>` is. A wrapper of `Channel.bounded`, `Mutex.create` or a
+// parallel operation, and a constraint that a program writes, must not let an `Rc` through.
+#[test]
+fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
+    let send = "tasks require Send values";
+    let programs = |item: &str| {
+        [
+            // The channel is made by a wrapper, and the item is sent where the type is known.
+            format!(
+                "def make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)\nfn make capacity = Channel.bounded capacity\nmatch make 2 with\n| (sender, _receiver) ->\n    let _sent = Channel.send (ref sender) ({item})\n    0"
+            ),
+            // The wrapper of a wrapper, with the ends kept in a record that tasks may share.
+            format!(
+                "record Pipe<'a> {{ sender: Channel.Sender<'a>, receiver: Channel.Receiver<'a> }}\ndef make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)\nfn make capacity = Channel.bounded capacity\ndef open :: i64 -> Pipe<'a>\nfn open capacity =\n    match make capacity with\n    | (sender, receiver) -> Pipe {{ sender: sender, receiver: receiver }}\nlet pipe = open 4\nlet _sent = Channel.send (ref pipe.sender) ({item})\n0"
+            ),
+            format!(
+                "def wrap :: 'a -> Mutex<'a>\nfn wrap value = Mutex.create value\nlet _lock = wrap ({item})\n0"
+            ),
+            // A constraint that the program writes.
+            format!("def need :: Send<'a> => 'a -> i64\nfn need _value = 1\nneed ({item})"),
+            // The same through a recursive type, which is judged by what it stores.
+            format!(
+                "union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>\ndef need :: Send<'a> => 'a -> i64\nfn need _value = 1\ndef need_tree :: Tree<'a> -> i64\nfn need_tree tree = need tree\nneed_tree (Node (Leaf, {item}, Leaf))"
+            ),
+        ]
+    };
+    for source in programs("Rc.new 1i64") {
+        let message = rejects(&source, "E1013");
+        assert!(message.contains(send), "{source}\n{message}");
+    }
+    for source in programs("1i64") {
+        emits(&source);
+    }
+    // What a constraint that stays generic still lets through, and what it still refuses.
+    let need = "def need :: Send<'a> => 'a -> i64\nfn need _value = 1\n";
+    for item in [
+        "\"text\"",
+        "[1i64, 2i64]",
+        "(1i64, \"text\")",
+        "Maybe.Some 1i64",
+        "Arc.new (Atomic.create 0i64)",
+        "Arc.new (Mutex.create [1i64])",
+        "\\x -> x + 1i64",
+        "task { return 1 }",
+    ] {
+        emits(&format!("{need}need ({item})"));
+    }
+    for item in [
+        "Maybe.Some (Rc.new 1i64)",
+        "(1i64, Rc.new 1i64)",
+        "[Rc.new 1i64]",
+        "Arc.new (Rc.new 1i64)",
+    ] {
+        let message = rejects(&format!("{need}need ({item})"), "E1013");
+        assert!(message.contains(send), "{item}: {message}");
+    }
+    let message = rejects(
+        &format!("{need}need (Arc.new (task {{ return 1 }}))"),
+        "E1013",
+    );
+    assert!(message.contains(send), "{message}");
+    let message = rejects(
+        &format!("{need}let mut number = 1i64\nneed (ref number)"),
+        "E1013",
+    );
+    assert!(message.contains("tasks require owned values"), "{message}");
+    // A parallel operation whose result type the function takes from a class.
+    let fill = |ty: &str| {
+        format!(
+            "class Make<'a> {{\n    def make :: i64 -> 'a\n}}\nrecord Holder {{ counted: Rc<i64> }}\ninstance Make<Holder> {{\n    fn make n = Holder {{ counted: Rc.new n }}\n}}\ninstance Make<i64> {{\n    fn make n = n\n}}\ndef fill :: Make<'a> => i64 -> ['a]\nfn fill count = Parallel.init count (\\index -> Make.make index)\nlet _built: [{ty}] = fill 2\n0"
+        )
+    };
+    let message = rejects(&fill("Holder"), "E1013");
+    assert!(message.contains(send), "{message}");
+    emits(&fill("i64"));
+}
+
 #[test]
 fn task_scope_shares_a_sync_borrow() {
     for source in [
