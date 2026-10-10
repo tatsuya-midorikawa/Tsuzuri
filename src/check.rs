@@ -768,20 +768,37 @@ impl Type {
         )
     }
 
+    /// Whether this type stands for a type that is not known yet: a type variable, an inference
+    /// variable, or a constructor variable applied to arguments (`'f<i64>`) or applied in part.
+    /// What it stands for is judged where it is substituted, not where it is written.
+    fn is_unresolved(&self) -> bool {
+        matches!(
+            self,
+            Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..)
+        )
+    }
+
     pub(crate) fn can_send(&self, types: &TypeContext<'_>) -> bool {
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
-                !matches!(ty, Type::Reference(..) | Type::Variable(_) | Type::Infer(_))
+                !ty.is_unresolved()
+                    && !matches!(ty, Type::Reference(..))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
         }
         match self {
-            // A type variable has no known value yet. `false` keeps `Send<'a>` as a constraint on
-            // a generic function, which is checked again for every type that it is used at (as
-            // `Sync<'a>` is); `true` would discharge it where the function is written and let an
-            // `Rc` through a wrapper of `Channel.bounded`, `Mutex.create` or `Parallel.init`.
-            Self::Variable(_) | Self::Infer(_) | Self::Reference(..) => false,
+            // A type variable has no known value yet, nor has a constructor variable applied to
+            // arguments (`'f<i64>`). `false` keeps `Send<'a>` as a constraint on a generic
+            // function, which is checked again for every type that it is used at (as `Sync<'a>`
+            // is); `true` would discharge it where the function is written and let an `Rc` through
+            // a wrapper of `Channel.bounded`, `Mutex.create` or `Parallel.init`. Every kind of type
+            // is named here and below, so that a new one has to be judged.
+            Self::Variable(_)
+            | Self::Infer(_)
+            | Self::Partial(_)
+            | Self::Application(..)
+            | Self::Reference(..) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it
@@ -796,8 +813,24 @@ impl Type {
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
-            // Function environments are checked by ownership, not by their call signatures.
-            _ => true,
+            // Plain data, a task (its result was judged where the task was made) and a function
+            // value, whose environment is checked by ownership, not by its call signature.
+            Self::Error
+            | Self::Integer(..)
+            | Self::Binary(_)
+            | Self::Decimal(_)
+            | Self::Simd(_)
+            | Self::Bool
+            | Self::Unit
+            | Self::Char
+            | Self::Utf8Char
+            | Self::String
+            | Self::Utf8String
+            | Self::ArrayView(_)
+            | Self::Length(_)
+            | Self::Task(_)
+            | Self::Handle(_)
+            | Self::Function(..) => true,
         }
     }
 
@@ -833,16 +866,38 @@ impl Type {
 
     fn sync_here(&self, types: &TypeContext<'_>) -> bool {
         match self {
-            // A type variable has no known value yet. `false` keeps `Sync<'a>` as a constraint on a
-            // generic function, which is checked again for every type that it is used at.
-            Self::Variable(_) | Self::Infer(_) => false,
+            // A type variable has no known value yet, nor has a constructor variable applied to
+            // arguments (`'f<i64>`). `false` keeps `Sync<'a>` as a constraint on a generic
+            // function, which is checked again for every type that it is used at. Every kind of
+            // type is named here, so that a new one has to be judged.
+            Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
             Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
             Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
             Self::Shared(_, kind) => kind.atomic(),
             Self::Record(..) => !self.is_unsync_record(types),
-            _ => true,
+            // Plain data, and the types whose parts the walk of `can_sync` judges in turn.
+            Self::Error
+            | Self::Integer(..)
+            | Self::Binary(_)
+            | Self::Decimal(_)
+            | Self::Simd(_)
+            | Self::Bool
+            | Self::Unit
+            | Self::Char
+            | Self::Utf8Char
+            | Self::String
+            | Self::Utf8String
+            | Self::Union(..)
+            | Self::Array(_)
+            | Self::ArrayView(_)
+            | Self::FixedArray(..)
+            | Self::Length(_)
+            | Self::List(_)
+            | Self::Vec(_)
+            | Self::Tuple(_)
+            | Self::Function(..) => true,
         }
     }
 

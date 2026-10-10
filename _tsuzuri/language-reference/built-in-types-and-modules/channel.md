@@ -310,7 +310,7 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 
 ## 型の規則
 
-- `Channel.bounded` は `Send<'a>` を要求します。`Rc` を運ぶチャンネルは作れません（`E1013`、`tasks require Send values`）。型変数は `Send` かどうか分からないので、`Channel.bounded` を包んだジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査されます。`make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)` を `Rc<i64>` で使うのも `E1013` です。
+- `Channel.bounded` は `Send<'a>` を要求します。`Rc` を運ぶチャンネルは作れません（`E1013`、`tasks require Send values`）。型変数は `Send` かどうか分からないので、`Channel.bounded` を包んだジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査されます。`make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)` を `Rc<i64>` で使うのも `E1013` です。型変数に型引数を適用した型（高カインドの型変数の `'f<i64>`）が要素のときも同じで、`'f` に `Rc` を持つ型が決まった使用箇所で `E1013` です（[制約](../types-and-type-inference/constraints.md)）。
 - `Sender<T>` と `Receiver<T>` は、どちらも `Sync` で、`Send` です（`T` が `Send` の間だけ作れるので）。共有借用から使う操作は、ランタイムのロックで守られます。
 - 両端は非 Copy の所有値です。複製できず、代入や引数渡しはムーブです（`E1012`）。関数値は複製されることがあるので、端そのものの捕捉は `E1005` です。借用 `ref sender` を捕捉するか、`Arc` に入れるか、引数で渡します。
 - 両端は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。

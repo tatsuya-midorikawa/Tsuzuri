@@ -352,3 +352,24 @@ fn function_drop =
     let counter = Arc.new (Atomic.create 0i64)
     match Channel.bounded 2 with
     | (sender, receiver) -> run_function_drop sender receiver counter
+
+// A channel made by a function that is generic over a constructor (`'f<i64>`): what the channel
+// asks of its items (Send) is asked where the constructor is known, and a holder of plain values
+// passes.
+record Cased<'a> { value: 'a }
+instance Cell.Cell<Cased> {
+    fn wrap x = Cased { value: x }
+}
+
+def open :: Cell.Cell<'f> => i64 -> (Channel.Sender<'f<i64>> * Channel.Receiver<'f<i64>>)
+fn open n = Channel.bounded n
+
+export def hkt_channel :: i64
+fn hkt_channel =
+    let pair: (Channel.Sender<Cased<i64>> * Channel.Receiver<Cased<i64>>) = open 2
+    match pair with
+    | (sender, receiver) ->
+        let _sent = Channel.send (ref sender) (Cell.wrap 41i64)
+        match Channel.recv (ref receiver) with
+        | Maybe.Some held -> held.value + 1
+        | Maybe.None -> 0

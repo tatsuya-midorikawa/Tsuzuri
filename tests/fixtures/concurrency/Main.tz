@@ -244,3 +244,35 @@ fn scope_negative =
     let unit_value = 0i64
     let results = Task.scope (ref unit_value) (0 - 1) (_shared -> index -> index)
     results.length
+
+// A constructor variable applied to arguments (`'f<i64>`): what Parallel.init, Mutex.create and a
+// scope ask of it (Send, Sync) is asked where the constructor is known, and a holder of plain
+// values passes.
+record Cased<'a> { value: 'a }
+instance Cell.Cell<Cased> {
+    fn wrap x = Cased { value: x }
+}
+
+def build :: Cell.Cell<'f> => i64 -> ['f<i64>]
+fn build count = Parallel.init count (index -> Cell.wrap index)
+
+export def hkt_parallel :: i64
+fn hkt_parallel =
+    let built: [Cased<i64>] = build 4
+    Array.sum (ref (Array.map (held -> held.value) (ref built)))
+
+def keep :: Cell.Cell<'f> => i64 -> Mutex<'f<i64>>
+fn keep n = Mutex.create (Cell.wrap n)
+
+export def hkt_mutex :: i64
+fn hkt_mutex =
+    let lock: Mutex<Cased<i64>> = keep 40
+    Mutex.with_lock (ref lock) (held -> (deref held).value + 2)
+
+def spread :: Cell.Cell<'f> => ref 'f<i64> -> i64
+fn spread held = Array.sum (ref (Task.scope held 3 (_shared -> index -> index + 1)))
+
+export def hkt_scope :: i64
+fn hkt_scope =
+    let held: Cased<i64> = Cell.wrap 5
+    spread (ref held)
