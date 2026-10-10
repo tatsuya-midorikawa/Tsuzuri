@@ -11,16 +11,24 @@ import { join, resolve } from "node:path";
 // Times are medians of 9 samples (min and max are printed too). There are no pass/fail speed thresholds.
 // The same program is then built for wasm32 (default and simd128) and run in Node, after its checksums are
 // compared with the C references.
+//
+// Math.fma is the hardware instruction only when the compiler itself is built for AArch64 (src/llvm_math.rs);
+// elsewhere, and for wasm32 always, it is the software routine tz_soft_fma, about a microsecond per multiply-add,
+// so one 512 x 512 product of mul_fma takes minutes. The results are bit-identical either way. When the emitted
+// IR calls tz_soft_fma, the Tsuzuri fused kernels are timed only up to n = 64 with one product per sample;
+// `--fused-all` times every size (hours in total for the native sizes).
 const root = resolve(import.meta.dirname, "..");
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const quick = process.argv.includes("--quick");
+const fusedAll = process.argv.includes("--fused-all");
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const sizes = quick ? [16] : [64, 128, 256, 512];
 const samples = 9;
+const softFusedLimit = 64;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-matrix-benchmark-"));
 
-function execute(program, args) {
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 900_000 });
+function execute(program, args, timeout = 900_000) {
+  const result = spawnSync(program, args, { encoding: "utf8", timeout });
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
@@ -67,11 +75,20 @@ static uint64_t c_ikj${suffix}(int64_t n, int64_t repeats) {
   free(a); free(b); free(c); return ${finish};
 }`;
 
-const functions = families.flatMap(({ name, members }) => members.map(([label, symbol]) => ({ family: name, label, symbol })));
+// The kernels that call Math.fma.
+const fusedKernels = new Set(["tz_mul_fma", "tz_mul_fma_parallel"]);
+const functions = families.flatMap(({ name, members }) => members.map(([label, symbol]) => ({ family: name, label, symbol, fused: fusedKernels.has(symbol) })));
 
 try {
   const object = join(temporary, "matrix.o");
   execute(compiler, ["build", join(root, "benchmarks/matrix"), "--emit", "object", "-O3", "-o", object]);
+  // The generated code decides: native IR calls tz_soft_fma wherever this compiler does not lower Math.fma to llvm.fma.
+  const ir = join(temporary, "matrix.ll");
+  execute(compiler, ["build", join(root, "benchmarks/matrix"), "--emit", "llvm", "-O3", "-o", ir]);
+  const softFma = readFileSync(ir, "utf8").includes("call void @tz_soft_fma(");
+  // Per function: 1 when it is timed with one product per sample, and the largest size at which it is timed.
+  const slow = functions.map(({ fused }) => (fused && softFma ? 1 : 0));
+  const limits = functions.map(({ fused }) => (fused && softFma && !fusedAll ? softFusedLimit : "INT64_MAX"));
   const host = join(temporary, "host.c");
   writeFileSync(host, `#define _GNU_SOURCE
 #define _DARWIN_C_SOURCE 1
@@ -137,23 +154,30 @@ int main(void) {
   function_t functions[] = {${functions.map(({ symbol }) => symbol).join(", ")}};
   const int references[] = {${functions.map(({ family }) => functions.findIndex((candidate) => candidate.family === family && candidate.symbol === families.find(({ name }) => name === family).reference)).join(", ")}};
   const int count = ${functions.length}, samples = ${samples};
+  const int slow[] = {${slow.join(", ")}};
+  const int64_t limits[] = {${limits.join(", ")}};
   for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
     const int64_t n = sizes[s];
     const int64_t repeats = ${quick ? "3" : "n <= 64 ? 200 : n <= 128 ? 40 : n <= 256 ? 6 : 2"};
     for (int f = 0; f < count; ++f) {
+      if (n > limits[f]) continue;
       uint64_t got = functions[f](n, 1), want = functions[references[f]](n, 1);
       if (got != want) { printf("checksum mismatch: %s %s n=%lld %016llx vs %016llx\\n", family_names[f], labels[f], (long long)n, (unsigned long long)got, (unsigned long long)want); return 1; }
     }
     printf("reference n=%lld f64=%016llx fused=%016llx\\n", (long long)n, (unsigned long long)c_ijk(n, 1), (unsigned long long)c_fma_ikj(n, 1));
     double times[${functions.length}][${samples}];
     for (int sample = 0; sample < samples; ++sample) for (int offset = 0; offset < count; ++offset) {
-      int f = (sample + offset) % count; double start = now(); volatile uint64_t sink = functions[f](n, repeats); (void)sink;
-      times[f][sample] = (now() - start) * 1000.0 / (double)repeats;
+      int f = (sample + offset) % count;
+      if (n > limits[f]) continue;
+      const int64_t each = slow[f] ? 1 : repeats;
+      double start = now(); volatile uint64_t sink = functions[f](n, each); (void)sink;
+      times[f][sample] = (now() - start) * 1000.0 / (double)each;
     }
     for (int f = 0; f < count; ++f) {
+      if (n > limits[f]) { printf("n=%-4lld %-10s %-36s not timed: software fma (--fused-all times it)\\n", (long long)n, family_names[f], labels[f]); continue; }
       qsort(times[f], (size_t)samples, sizeof(double), compare);
       double flops = 2.0 * (double)n * (double)n * (double)n;
-      printf("n=%-4lld %-10s %-36s median %10.4f ms  min %10.4f  max %10.4f  %7.3f GFLOP/s (median)  repeats=%lld checksum=%016llx\\n", (long long)n, family_names[f], labels[f], times[f][samples / 2], times[f][0], times[f][samples - 1], flops / (times[f][samples / 2] * 1e-3) / 1e9, (long long)repeats, (unsigned long long)functions[references[f]](n, 1));
+      printf("n=%-4lld %-10s %-36s median %10.4f ms  min %10.4f  max %10.4f  %7.3f GFLOP/s (median)  repeats=%lld checksum=%016llx\\n", (long long)n, family_names[f], labels[f], times[f][samples / 2], times[f][0], times[f][samples - 1], flops / (times[f][samples / 2] * 1e-3) / 1e9, (long long)(slow[f] ? 1 : repeats), (unsigned long long)functions[references[f]](n, 1));
     }
   }
   return 0;
@@ -163,8 +187,11 @@ int main(void) {
   execute(clang, ["-O3", "-std=c11", "-ffp-contract=off", "-fno-lto", "-Wno-override-module", host, object, join(root, "src/runtime/task.c"), "-pthread", "-lm", "-o", executable]);
   const load = () => loadavg().map((value) => value.toFixed(2)).join(" ");
   console.log(`environment: ${platform()} ${arch()} ${cpus()[0]?.model ?? "unknown cpu"} x${cpus().length}, node ${process.version}, ${execute(clang, ["--version"]).split("\n")[0]}`);
+  console.log(softFma
+    ? `note: this compiler lowers Math.fma to the software routine tz_soft_fma (the hardware instruction is used only when the compiler is built for AArch64, and never for wasm32): the results are bit-identical, but each multiply-add takes about a microsecond or more. Tsuzuri mul_fma and mul_fma_parallel are timed with one product per sample${fusedAll ? " at every size (--fused-all): expect minutes per product at n=512" : `, and only up to n=${softFusedLimit} (--fused-all times every size)`}.`
+    : "note: this compiler lowers Math.fma to llvm.fma for native code (hardware fma on this host); wasm32 below always uses the software routine.");
   console.log(`load average before: ${load()}`);
-  const lines = execute(executable, []).trim().split("\n");
+  const lines = execute(executable, [], fusedAll && softFma ? 6 * 3600_000 : 900_000).trim().split("\n");
   const references = new Map(lines.filter((line) => line.startsWith("reference ")).map((line) => {
     const [, size, f64, fused] = /^reference n=(\d+) f64=([0-9a-f]+) fused=([0-9a-f]+)$/.exec(line);
     return [Number(size), { f64, fused }];
@@ -182,13 +209,14 @@ int main(void) {
   const median = (values) => [...values].sort((a, b) => a - b)[values.length >> 1];
   const wasmModes = [["Tsuzuri Matrix.mul", 0n, "f64"], ["Tsuzuri i-j-k loop (Phase 1 order)", 4n, "f64"], ["Tsuzuri Matrix.mul_parallel", 1n, "f64"],
     ["Tsuzuri Matrix.mul_fma", 2n, "fused"], ["Tsuzuri Matrix.mul_fma_parallel", 3n, "fused"]];
+  console.log(`note: wasm32 always uses the software fma, so Tsuzuri mul_fma and mul_fma_parallel are timed there with one product per sample, ${quick ? "9" : "3"} samples${quick ? " at n=16" : fusedAll ? " at n=64, 128 and 256" : " at n=64 only (--fused-all adds 128 and 256)"}.`);
   for (const [label, extra] of [["wasm32", []], ["wasm32 --wasm-feature simd128", ["--wasm-feature", "simd128"]]]) {
     const file = join(temporary, `matrix-${extra.length ? "simd128" : "default"}.wasm`);
     execute(compiler, ["build", join(root, "benchmarks/matrix"), "--target", "wasm32", ...extra, "-O3", "-o", file]);
     const module = new WebAssembly.Module(readFileSync(file));
     assert.deepEqual(WebAssembly.Module.imports(module), [], "the default WASM build has no imports");
     const run = new WebAssembly.Instance(module).exports.tz_matmul_checksum;
-    for (const [n, fusedToo] of quick ? [[16, true]] : [[64, true], [128, false], [256, false]]) {
+    for (const [n, fusedToo] of quick ? [[16, true]] : [[64, true], [128, fusedAll], [256, fusedAll]]) {
       for (const [mode, product, family] of wasmModes) {
         if (family === "fused" && !fusedToo) continue;
         assert.equal(bitsOf(run(BigInt(n), 1n, product)), references.get(n)[family], `${label} ${mode} n=${n}: checksum equals the C reference`);

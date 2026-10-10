@@ -101,9 +101,23 @@ fn matrix_borrows_follow_array_rules() {
         message.starts_with("use of moved or partially moved value 'm'"),
         "{message}"
     );
-    rejects(
-        "fn bad() -> &i64 { let m = Matrix.init 1 1 (\\i j -> 1); Matrix.at (&m) 0 0 }",
-        "E1013",
+    // The borrows a function returns must outlive the function: a borrow of its own local matrix is rejected.
+    for (result, call) in [
+        ("ref { r } i64", "Matrix.at (ref m) 0 0"),
+        ("ref { r } [i64]", "Matrix.row (ref m) 0"),
+        ("ref { r } [i64]", "Matrix.as_array (ref m)"),
+    ] {
+        let source = format!(
+            "def leak {{ r }} :: ref {{ r }} Matrix<i64> -> {result}\nfn leak outer =\n    let m = Matrix.init 1 1 (\\i j -> 1)\n    {call}\n0"
+        );
+        let message = rejects(&source, "E1013");
+        assert!(
+            message.contains("does not live long enough"),
+            "{source}\n{message}"
+        );
+    }
+    emits(
+        "def keep :: i64 -> i64\nfn keep n =\n    let m = Matrix.init 1 1 (\\i j -> n)\n    deref (Matrix.at (ref m) 0 0)\n0",
     );
 }
 
@@ -140,7 +154,15 @@ fn matrix_constraints_match_array_apis() {
 
 #[test]
 fn matrix_ir_keeps_multiply_and_add_separate() {
-    let forbidden = ["fmuladd", "llvm.fma", " fast ", "contract", "reassoc"];
+    let forbidden = [
+        "fmuladd",
+        "llvm.fma",
+        "tz_soft_fma",
+        "Math.fma",
+        " fast ",
+        "contract",
+        "reassoc",
+    ];
     for element in ["f32", "f64", "i64"] {
         let literal = match element {
             "f32" => "1.5f32",
@@ -221,9 +243,21 @@ fn explicit_fma_and_parallel_products_are_separate_apis() {
                 "{element}: {}",
                 bodies[0]
             );
-            // Native code uses the hardware instruction; wasm32 has no scalar fma and uses the soft routine.
-            let lowered = if index == 0 { fma } else { "@tz_soft_fma" };
-            assert!(ir.contains(lowered), "{element}: {lowered}\n{ir}");
+            // `Math.fma` is the intrinsic only in native code of a compiler built for AArch64
+            // (`src/llvm_math.rs`); every other host, and every wasm32 build, calls the soft routine.
+            let hardware = ir.contains(fma);
+            let software = ir.contains("@tz_soft_fma");
+            if index == 0 {
+                assert!(
+                    hardware != software,
+                    "{element}: {fma} xor @tz_soft_fma\n{ir}"
+                );
+            } else {
+                assert!(
+                    software && !hardware,
+                    "{element}: wasm32 uses @tz_soft_fma\n{ir}"
+                );
+            }
             for word in [
                 "fmuladd",
                 " fast ",

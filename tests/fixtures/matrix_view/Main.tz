@@ -248,6 +248,28 @@ fn owned_elements n =
             total = mix total word.length
     mix total (MatrixView.rows part * 100 + MatrixView.cols part)
 
+// Windows with no elements next to an axis of 2^62 rows: fold, to_matrix, map, mul, fill, copy_from and map_in_place
+// return at once. They used to walk the empty axis (forever at -O0).
+export def huge_empty :: i64
+fn huge_empty =
+    let data = [1, 2, 3]
+    let tall = MatrixView.strided 0 4611686018427387904 0 0 0 (ref data)
+    let none = MatrixView.strided 0 0 0 0 0 (ref data)
+    let folded = MatrixView.fold mix 7 tall
+    let copy = MatrixView.to_matrix tall
+    let mapped = MatrixView.map (\x -> x + 1) tall
+    let product = MatrixView.mul tall none
+    let mut buffer: [i64] = []
+    let mut window = MatrixView.of_array_mut 4611686018427387904 0 (ref mut buffer)
+    MatrixView.fill (ref mut window) 9
+    MatrixView.map_in_place (\x -> x * 2) (ref mut window)
+    MatrixView.copy_from (ref mut window) tall
+    let mut total = mix 0 folded
+    total = mix total (Matrix.rows (ref copy))
+    total = mix total (Matrix.rows (ref mapped))
+    total = mix total (Matrix.rows (ref product) + Matrix.cols (ref product))
+    mix total (MatrixView.rows (MatrixView.freeze (ref window)))
+
 export def strided_trap :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
 fn strided_trap offset rows cols row_stride col_stride =
     let data = new [i64](10, k -> k)
@@ -283,6 +305,15 @@ fn mul_trap =
     let m = Matrix.init 2 3 (\i j -> i + j)
     let view = MatrixView.of_matrix (ref m)
     Matrix.rows (ref (MatrixView.mul view view))
+
+// The left window has 10^16 elements that are not one run of the buffer: copying it first would fail to allocate.
+export def mul_shape_before_copy_trap :: i64
+fn mul_shape_before_copy_trap =
+    let data = [1.0]
+    let left = MatrixView.strided 0 100000000 100000000 0 0 (ref data)
+    let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+    let right = MatrixView.of_array 3 3 (ref values)
+    Matrix.rows (ref (MatrixView.mul left right))
 
 export def count_overflow :: i64
 fn count_overflow =

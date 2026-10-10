@@ -164,7 +164,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
 - **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で、`Send` かつ `Sync` な値を複数のタスクで共有できます。共有した値を書き換えるときは `Atomic` か `Mutex` を入れます（`Arc` と `Mutex` では循環を作れるので、一方は `Arc.Weak` で持ちます）。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md)、[Atomic](_tsuzuri/language-reference/built-in-types-and-modules/atomic.md)、[Mutex](_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) を参照してください。
 - **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
-- **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](_tsuzuri/language-reference/built-in-types-and-modules/matrix.md)・[MatrixView](_tsuzuri/language-reference/built-in-types-and-modules/matrix-view.md)・[Tensor](_tsuzuri/language-reference/built-in-types-and-modules/tensor.md) を参照してください。
+- **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、それ以外の native と wasm32 では積和ごとにソフトウェアのルーチンを呼ぶので、`mul_fma` は大幅に遅くなります（ビットは同じです）。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](_tsuzuri/language-reference/built-in-types-and-modules/matrix.md)・[MatrixView](_tsuzuri/language-reference/built-in-types-and-modules/matrix-view.md)・[Tensor](_tsuzuri/language-reference/built-in-types-and-modules/tensor.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -871,7 +871,7 @@ node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
-node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ）
+node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。

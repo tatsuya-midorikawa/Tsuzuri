@@ -12,18 +12,19 @@ fn checked_count rows cols =
     assert (rows >= 0 && cols >= 0 && (cols == 0 || rows <= 9223372036854775807 / cols))
     rows * cols
 
-// The index one past the last element of a window, or 0 for an empty window. Traps on negative
-// arguments and on overflow.
-private def extent :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
-fn extent offset rows cols row_stride col_stride =
+// The index of the last element of a window, or -1 for an empty window. Traps on negative
+// arguments and on overflow. The index itself can be i64::MAX, so it is compared with the length
+// of the data as `last < length` and never as `last + 1 <= length`, which would wrap.
+private def last_index :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+fn last_index offset rows cols row_stride col_stride =
     assert (offset >= 0 && rows >= 0 && cols >= 0 && row_stride >= 0 && col_stride >= 0)
-    if rows == 0 || cols == 0 then 0 else
+    if rows == 0 || cols == 0 then (- 1) else
         let last_row = rows - 1
         let last_col = cols - 1
         assert (row_stride == 0 || last_row <= (9223372036854775807 - offset) / row_stride)
         let after_rows = offset + last_row * row_stride
         assert (col_stride == 0 || last_col <= (9223372036854775807 - after_rows) / col_stride)
-        after_rows + last_col * col_stride + 1
+        after_rows + last_col * col_stride
 
 /// Borrows a whole matrix as a window.
 def of_matrix { r } :: ref { r } Matrix<'a> -> MatrixView<'a> { r }
@@ -42,7 +43,7 @@ fn of_array rows cols data =
 /// Strides of 0 repeat a row or a column.
 def strided { r } :: i64 -> i64 -> i64 -> i64 -> i64 -> ref { r } ['a] -> MatrixView<'a> { r }
 fn strided offset rows cols row_stride col_stride data =
-    assert (checked_count rows cols >= 0 && extent offset rows cols row_stride col_stride <= data.length)
+    assert (checked_count rows cols >= 0 && last_index offset rows cols row_stride col_stride < data.length)
     MatrixView { data: data, offset: offset, rows: rows, cols: cols, row_stride: row_stride, col_stride: col_stride }
 
 /// The number of rows.
@@ -122,12 +123,13 @@ fn to_matrix view =
 /// Folds the elements left to right in row-major order of the window.
 def fold { r } :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> MatrixView<'a> { r } -> 'state
 fn fold folder initial view =
-    let mut state = initial
-    for i in 0i64 .. (view.rows - 1) do
-        let base = view.offset + i * view.row_stride
-        for j in 0i64 .. (view.cols - 1) do
-            state = folder state view.data[base + j * view.col_stride]
-    state
+    if view.rows == 0 || view.cols == 0 then initial else
+        let mut state = initial
+        for i in 0i64 .. (view.rows - 1) do
+            let base = view.offset + i * view.row_stride
+            for j in 0i64 .. (view.cols - 1) do
+                state = folder state view.data[base + j * view.col_stride]
+        state
 
 /// Applies `transform` to every element in row-major order of the window.
 def map { r } :: Copy<'a> => ('a -> 'b) -> MatrixView<'a> { r } -> Matrix<'b>
@@ -137,8 +139,10 @@ fn map transform view =
 
 /// The product of two windows. Operands that are not contiguous are first copied into row-major
 /// buffers, then `Matrix.mul` runs, so the bits equal `Matrix.mul` of the copied operands.
+/// Traps unless left.cols == right.rows; the shapes are compared before anything is copied.
 def mul { r s } :: Numeric<'a> => MatrixView<'a> { r } -> MatrixView<'a> { s } -> Matrix<'a>
 fn mul left right =
+    assert (left.cols == right.rows)
     let packed_left = to_matrix left
     let packed_right = to_matrix right
     Matrix.mul (ref packed_left) (ref packed_right)
@@ -183,30 +187,33 @@ fn transpose_mut view = Mut { data: view.data, offset: view.offset, rows: view.c
 /// Writes `value` to every element in row-major order of the window.
 def fill { r } :: Copy<'a> => ref mut Mut<'a> { r } -> 'a -> unit
 fn fill view value =
-    for i in 0i64 .. (view.rows - 1) do
-        let base = view.offset + i * view.row_stride
-        for j in 0i64 .. (view.cols - 1) do
-            let index = base + j * view.col_stride
-            Array.write view.data index value
+    if view.rows > 0 && view.cols > 0 then
+        for i in 0i64 .. (view.rows - 1) do
+            let base = view.offset + i * view.row_stride
+            for j in 0i64 .. (view.cols - 1) do
+                let index = base + j * view.col_stride
+                Array.write view.data index value
 
 /// Copies the elements of a window of the same shape; traps when the shapes differ.
 def copy_from { r s } :: Copy<'a> => ref mut Mut<'a> { r } -> MatrixView<'a> { s } -> unit
 fn copy_from target source =
     assert (target.rows == source.rows && target.cols == source.cols)
-    for i in 0i64 .. (target.rows - 1) do
-        let source_base = source.offset + i * source.row_stride
-        let target_base = target.offset + i * target.row_stride
-        for j in 0i64 .. (target.cols - 1) do
-            let value = source.data[source_base + j * source.col_stride]
-            let index = target_base + j * target.col_stride
-            Array.write target.data index value
+    if target.rows > 0 && target.cols > 0 then
+        for i in 0i64 .. (target.rows - 1) do
+            let source_base = source.offset + i * source.row_stride
+            let target_base = target.offset + i * target.row_stride
+            for j in 0i64 .. (target.cols - 1) do
+                let value = source.data[source_base + j * source.col_stride]
+                let index = target_base + j * target.col_stride
+                Array.write target.data index value
 
 /// Replaces every element by `transform` of it, in row-major order of the window.
 def map_in_place { r } :: Copy<'a> => ('a -> 'a) -> ref mut Mut<'a> { r } -> unit
 fn map_in_place transform view =
-    for i in 0i64 .. (view.rows - 1) do
-        let base = view.offset + i * view.row_stride
-        for j in 0i64 .. (view.cols - 1) do
-            let index = base + j * view.col_stride
-            let value = transform view.data[index]
-            Array.write view.data index value
+    if view.rows > 0 && view.cols > 0 then
+        for i in 0i64 .. (view.rows - 1) do
+            let base = view.offset + i * view.row_stride
+            for j in 0i64 .. (view.cols - 1) do
+                let index = base + j * view.col_stride
+                let value = transform view.data[index]
+                Array.write view.data index value
