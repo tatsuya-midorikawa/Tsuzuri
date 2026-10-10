@@ -1398,19 +1398,21 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     probe は標本であって証明ではない。`Gpu.request Gpu.Vulkan` は全 kernel の機能の OR を、`Gpu.Auto` は kernel ごとの機能を確かめる。明示した backend は CPU へ落ちない。
   - `Gpu.Auto` の規則: 候補は CPU と Vulkan だけ（WebGPU には測った規則がない）。Vulkan は統合 GPU でメモリを CPU と共有するときだけ。使える判定（module・lane 数・機能と probe・limit・pipeline）は device が報告する内容で
     **device を作る前**に行い、合う device がなければ論理 device を作らない → 費用の見積もり（CPU `n·w·0.03 ns`、Vulkan `270 µs + n·b·0.13 ns + n·w·0.001 ns`。`w` は 1 lane が実行する演算数の**下限**で、`if` は条件と安い腕、
-    `&&`／`||` は左の項だけを数え、呼ぶ関数は同じ規則で数える。`b` は 1 lane の入出力のバイト数）→ 最初の使用の費用（device を開く 30 ms、pipeline の 7 ms）をスキーレンタルの credit で払う。準備の失敗は CPU、
-    実行中の失敗は明示した device と同じ trap。判定が CPU になる呼び出しは実行中の GPU を待たない（runtime の state lock と run lock を分け、棄却する判定は lock を取らない）。プロセスの論理 device は 1 つで、
+    `&&`／`||` は左の項だけを数え、呼ぶ関数は同じ規則で数える。上限は `i32::MAX`（記述子の欄の幅）。`b` は 1 lane の入出力のバイト数）→ 最初の使用の費用（device を開く 30 ms、pipeline の 7 ms）をスキーレンタルの credit で払う。準備の失敗は CPU、
+    実行中の失敗は明示した device と同じ trap。判定が CPU になる呼び出しは実行中の GPU を待たない（runtime の state lock と run lock を分け、棄却する判定は lock を取らず、厳密な `f32` の probe が要る判定も run lock を try-lock して、
+    取れなければ verdict を記録せず CPU に回して次の判定でやり直す。明示的な要求は待ってよい）。プロセスの論理 device は 1 つで、
     最初の要求が決める（離散と統合の両方がある機械で、`Auto` が先なら統合 GPU を開いてあとの明示的な `Gpu.Vulkan` も使い、明示的な要求が先なら離散 GPU を開いて `Auto` は以後 CPU。device を 2 つ持つには device ごとの状態と
     呼び出しの種別の区別が要るので、まだない）。`TSUZURI_GPU_AUTO_MIN_WORK=<n>` は規則を `lanes×weight >= n` に置き換えるが、機能・class・limit の検査は緩めない。ticket の「閾値」は、1 回の閾値では
     少しずつ得する呼び出しの繰り返しで device を開かないため、費用の規則に改めた。定数は 1 台の機械（M1 Max）の経験値で、CI に速度の閾値は入れない。
-  - 環境変数: `TSUZURI_WEBGPU_LIBRARY`・`TSUZURI_VULKAN_LIBRARY`（名指しのパス）、`TSUZURI_GPU_DEBUG`（理由と dispatch の経過）、`TSUZURI_GPU_AUTO_MIN_WORK`。ライブラリの既定の探索は system の場所だけ
+  - 環境変数: `TSUZURI_WEBGPU_LIBRARY`・`TSUZURI_VULKAN_LIBRARY`（名指しのパス）、`TSUZURI_GPU_DEBUG`（空でなければ有効。理由と dispatch の経過）、`TSUZURI_GPU_AUTO_MIN_WORK`。ライブラリの既定の探索は system の場所だけ
     （macOS は絶対パスだけ。dyld がカレントディレクトリの同名ファイルを先に読むため。Windows は `LOAD_LIBRARY_SEARCH_SYSTEM32`。Linux は動的リンカーが作業ディレクトリを探さないので名前のまま）。
     Vulkan のローダーが読み込めても `vkGetInstanceProcAddr` を持たなければ読み飛ばして探索を続ける。runtime は `VK_*` の変数を読み書きしない。
   - 記述子は `{flags, lanes, features, wgsl, wgsl_len, spirv, spirv_len, weight}`（features の bit1 が i64、bit2 が厳密な f32、lane の種別 4 が 64 bit 整数）。境界は `tsuzuri_gpu_open`／`run`／`select`。IR の印
     `; tsuzuri-gpu: vulkan` が `src/runtime/gpu-vulkan.c` を連結する。runtime の `#undef NDEBUG`（`zig cc` の `-O1` 以上で `assert` が消える件。D-43）。
   - review で直したこと: WGSL の `mut` 引数と文の入れ子（else-if 63 個以上は E1017）、利用者が呼べた `request_on`／`init_on`／`map_on`（kernel の添字を偽造できた。非公開にし、記述子の lane 種別を `Gpu.__run` が確かめる）、
     device の limit を adapter でなく開いた device から、失敗した object の cache、2 GiB 以上のポインタ、カレントディレクトリからのライブラリ読み込み（WebGPU・Vulkan とも）、スタックに置いた待ち状態、
-    SPIR-V の probe の抜け（符号なしの変換が切り捨てと最近接偶数丸めを区別できなかった）、`Gpu.Auto` の判定が実行中の GPU を待つ件、分岐の両腕を足していた weight、統合 GPU と離散 GPU の両方がある機械、テストの変異生存。
+    SPIR-V の probe の抜け（符号なしの変換が切り捨てと最近接偶数丸めを区別できなかった）、`Gpu.Auto` の判定が実行中の GPU を待つ件（厳密な `f32` の probe の経路も）、分岐の両腕を足していた weight と `i32` を超える weight、
+    統合 GPU と離散 GPU の両方がある機械、テストの変異生存。
   - 限界: 確かめたのは Apple M1 Max 1 台（Metal 上の wgpu-native と Dawn、MoltenVK）とソフトウェア実装の SwiftShader だけ。厳密な `f32` を通す device は未確認（MoltenVK は probe で断る）、Linux・Windows・x86・CUDA・Metal 直接は未実行、
     `Gpu.Auto` は WebGPU を選ばず、WASM の `Auto` は常に CPU。速度の優位は主張しない（測定と限界は docs/benchmarks.md）。
 - F10（`Atomic`・`Mutex`・`Channel`・`Task.scope`・`Sync`）: Phase 1・2 を実装した。
