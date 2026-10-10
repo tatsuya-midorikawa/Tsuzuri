@@ -4,7 +4,8 @@ import dgram from "node:dgram";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os, { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // E2E for the standard Net module (E09): address parsing and printing, blocking TCP and UDP sockets, name
 // resolution, the handle table, and the runtime's allocation. Peers are Node sockets on 127.0.0.1 with ephemeral
@@ -12,9 +13,21 @@ import { basename, join, resolve } from "node:path";
 // depends on how long something took. A child that runs for 60 seconds is killed as hung, which is not a limit
 // that a test measures. Expectations come from Node's own net, dgram, URL, and os modules.
 //   node tests/net.mjs target/release/tsuzuri [address|resolve|sockets|async|runtime|alloc]
-const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
+// It runs from the repository whatever the directory it is started in (the CI starts it in vsc/): the compiler and the
+// tools that the environment names by a path are made absolute first, then the working directory moves to the repository.
+// The blocks "alloc" and "runtime" also build with AddressSanitizer and UndefinedBehaviorSanitizer (and, with
+// TSUZURI_TSAN=1, ThreadSanitizer); TSUZURI_NO_SANITIZERS=1 leaves them out, for a clang whose sanitizer runtime does not
+// start (the Homebrew LLVM 21 of the macOS CI: an empty AddressSanitizer program hangs there).
+const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const compiler = resolve(process.argv[2] ?? join(repository, "target/release/tsuzuri"));
+for (const name of ["TSUZURI_CLANG", "TSUZURI_WASM_LD"]) {
+  if (/[\\/]/.test(process.env[name] ?? "")) process.env[name] = resolve(process.env[name]);
+}
+process.chdir(repository);
 const selected = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+const sanitized = process.env.TSUZURI_NO_SANITIZERS !== "1";
+const threadSanitized = sanitized && process.env.TSUZURI_TSAN === "1";
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-net-"));
 // The error numbers by name: errno values, or the numbers of Winsock on Windows, which no Node module reports.
 const errno = process.platform === "win32"
@@ -103,6 +116,24 @@ const bindDatagram = (type = "udp4", host = "127.0.0.1") => new Promise((resolve
   socket.bind(0, host, () => resolveBind(socket));
 });
 const closed = socket => new Promise(resolveClosed => (socket.closed ? resolveClosed() : socket.once("close", resolveClosed)));
+// The peer of the case "accept_reset": a connection that it resets at once, then a good one that says "good", then a datagram to
+// the gate socket of the program, which accepts only after that: the connection is reset before the accept in every run.
+async function resetThenGood(listenerPort, gatePort) {
+  const doomed = net.connect({ host: "127.0.0.1", port: listenerPort });
+  doomed.on("error", () => {});
+  await new Promise(resolveConnect => doomed.once("connect", resolveConnect));
+  const reset = closed(doomed);
+  doomed.resetAndDestroy();
+  await reset;
+  const good = net.connect({ host: "127.0.0.1", port: listenerPort });
+  good.on("error", () => {});
+  await new Promise(resolveConnect => good.once("connect", resolveConnect));
+  good.write("good");
+  const gate = dgram.createSocket("udp4");
+  await new Promise(resolveSend => gate.send("go", gatePort, "127.0.0.1", resolveSend));
+  gate.close();
+  return good;
+}
 const socketText = (host, port) => (host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`);
 const pattern = count => Buffer.from(Array.from({ length: count }, (_, index) => index % 256));
 const patternSum = count => (count / 256) * 32640;
@@ -112,6 +143,9 @@ const ok = ["ok"];
 const failure = (kind, osKind, code) => `${kind} ${osKind} ${code}`;
 const invalid = failure("Unclassified", "InvalidInput", 0);
 const stale = failure("Unclassified", "InvalidInput", errno.EBADF);
+// The code of the failure that the async fixtures make up for themselves: no system has an error number like it (Linux has
+// 99, EADDRNOTAVAIL, and another system may have any small number), so it is Unclassified everywhere.
+const synthetic = 2147418113;
 
 // Address text that a system's resolver reads in its own way ("127.1", "0x7f000001", "fe80::1%lo0"): `Net.resolve` decides
 // such a host with the strict parser alone and never asks the system, so the answer does not depend on the system. A host
@@ -665,12 +699,29 @@ try {
         assert.deepEqual(result.lines, [`port=${port}`, "got=6 542", "ok ok", "rest=0 0", "ok ok"]);
       }
 
+      // A connection that its peer resets before the accept takes it is no failure of the accept (Windows reports it from accept as
+      // WSAECONNRESET, macOS drops it, Linux hands it over and fails its first read): the next connection is accepted. The peer makes
+      // a connection and resets it, makes a good one, and only then sends a datagram to the gate socket that the program waits on
+      // before it accepts, so the connection is reset before the accept in every run.
+      {
+        let peer;
+        const result = await run(exe, "accept_reset", 0, "127.0.0.1", line => {
+          const found = /^ports=(\d+) (\d+)$/.exec(line);
+          if (found) peer = resetThenGood(Number(found[1]), Number(found[2]));
+        });
+        const good = await peer;
+        good.destroy();
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.lines[0], /^ports=\d+ \d+$/);
+        assert.deepEqual(result.lines.slice(1), ["gate: datagram:2", "accept: ok read:4"]);
+      }
+
       // Forty clients connect at once to a server in the same executor; sixty-four reads wait together; reads that
       // nothing satisfies are cancelled again and again; closing a socket ends the waits on it.
       assert.deepEqual((await run(exe, "crowd")).lines, ["crowd: server=40 clients=40"]);
       assert.deepEqual((await run(exe, "waits")).lines, ["waits: sum=2016 sent=64", "closed=128"]);
       assert.deepEqual((await run(exe, "cancel")).lines, [
-        `cancel: error ${failure("Unclassified", "Other", 99)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
+        `cancel: error ${failure("Unclassified", "Other", synthetic)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
       ]);
       assert.deepEqual((await run(exe, "close_wait")).lines, [`read: error ${stale}`, `accept: error ${stale}`, "done"]);
 
@@ -726,7 +777,7 @@ try {
 
       // Datagrams, a half-close, and every operation on a closed handle: no peer is needed.
       assert.deepEqual((await run(exe, "udp")).lines, [
-        "exchange: 31 1", `quiet: ${timedOut}`, `truncated: ${failure("Unclassified", "InvalidInput", errno.EMSGSIZE)} then datagram:2 then datagram:0`, `closed: ok ok ${stale}`,
+        "exchange: 31 1", `quiet: ${timedOut}`, `vanished: ${timedOut}`, `truncated: ${failure("Unclassified", "InvalidInput", errno.EMSGSIZE)} then datagram:2 then datagram:0`, `closed: ok ok ${stale}`,
       ]);
       assert.deepEqual((await run(exe, "shutdown")).lines, [`ok read:0 ok read:3 ${failure("ConnectionReset", "Other", errno.EPIPE)}`, "closed"]);
       assert.deepEqual((await run(exe, "stale")).lines, Array(9).fill(stale));
@@ -886,9 +937,9 @@ void *tz_test_realloc(void *, size_t);
 void tz_test_free(void *);
 ${marker}`));
     const iterations = 12;
-    const looping = (optimization, ir, sanitizers = "address,undefined") => {
-      const executable = join(root, `tracked-${sanitizers.replace(",", "-")}-${basename(ir)}${optimization}`);
-      execute(clang, [optimization, `-fsanitize=${sanitizers}`, "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
+    const looping = (optimization, ir, sanitizers = sanitized ? "address,undefined" : "") => {
+      const executable = join(root, `tracked-${sanitizers.replace(",", "-") || "plain"}-${basename(ir)}${optimization}`);
+      execute(clang, [optimization, ...(sanitizers ? [`-fsanitize=${sanitizers}`] : []), "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
       return executable;
     };
     const irPath = trackedIr("net_sockets");
@@ -959,7 +1010,7 @@ ${marker}`));
         await Promise.all([quiet, ending, big].map(stop));
       }
     }
-    console.log(`Net allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result and the handle table`);
+    console.log(`Net allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result and the handle table`);
 
     // The async cases add the poller thread and the mailbox: after every run the thread is gone, its memory is freed, and
     // the descriptors are those of the start. With TSUZURI_TSAN=1 the same cases run under ThreadSanitizer, whose runs
@@ -980,7 +1031,14 @@ ${marker}`));
       });
       await Promise.all(clients.map(closed));
       assert.equal(clients.length, iterations);
-      for (const [name, lines] of [["crowd", 1], ["waits", 2], ["cancel", 6], ["close_wait", 3], ["timeouts", 4], ["validate", 10], ["udp", 4], ["shutdown", 2], ["stale", 9]]) {
+      const peers = [];
+      await tracked("accept_reset", 0, 3, line => {
+        const found = /^ports=(\d+) (\d+)$/.exec(line);
+        if (found) peers.push(resetThenGood(Number(found[1]), Number(found[2])));
+      });
+      for (const good of await Promise.all(peers)) good.destroy();
+      assert.equal(peers.length, iterations);
+      for (const [name, lines] of [["crowd", 1], ["waits", 2], ["cancel", 6], ["close_wait", 3], ["timeouts", 4], ["validate", 10], ["udp", 5], ["shutdown", 2], ["stale", 9]]) {
         await tracked(name, 0, lines);
       }
       const ending = await listen(socket => { socket.on("error", () => {}); socket.end("abc"); });
@@ -995,8 +1053,8 @@ ${marker}`));
     };
     const asyncIr = trackedIr("net_async");
     for (const optimization of optimizations) await asyncCases(looping(optimization, asyncIr), {});
-    console.log(`Net async allocation: ${iterations} runs of each case with ASan and UBSan at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
-    if (process.env.TSUZURI_TSAN === "1") {
+    console.log(`Net async allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
+    if (threadSanitized) {
       const instrumented = trackedIr("net_async", "thread");
       for (const optimization of optimizations) await asyncCases(looping(optimization, instrumented, "thread"), {});
       console.log("Net async threads: the same cases under ThreadSanitizer at -O0 and -O3 reported nothing");
@@ -1005,9 +1063,10 @@ ${marker}`));
 
   if (wanted("runtime")) {
     // The poller thread, the connect that a wait owns, closing and cancelling, without the compiler (tests/net_runtime.c):
-    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer.
-    const configurations = [["", []], ["address-undefined", ["-fsanitize=address,undefined"]]];
-    if (process.env.TSUZURI_TSAN === "1") configurations.push(["thread", ["-fsanitize=thread"]]);
+    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer (none of them with TSUZURI_NO_SANITIZERS=1).
+    const configurations = [["", []]];
+    if (sanitized) configurations.push(["address-undefined", ["-fsanitize=address,undefined"]]);
+    if (threadSanitized) configurations.push(["thread", ["-fsanitize=thread"]]);
     for (const [name, flags] of configurations) {
       for (const optimization of ["-O1", "-O3"]) {
         const executable = join(root, `net-runtime-${name}${optimization}`);

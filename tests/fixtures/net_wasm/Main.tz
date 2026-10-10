@@ -247,13 +247,17 @@ fn idle_read stream = Async {
 	| Result.Ok bytes -> return Result.Ok bytes.length
 }
 
+/// A failure that is no error number of any system (Linux has 99: EADDRNOTAVAIL).
+const SyntheticCode: i32 = 2147418113i32
+
 def failing :: i64 -> Async<Result<i64, Os.Error>>
 fn failing delay = Async {
 	do! Async.sleep delay
-	return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
+	return Result.Error (Os.Error { kind: Os.Other, code: SyntheticCode })
 }
 
-/// A read that nothing satisfies is cancelled when a sibling fails, and the stream still works afterwards.
+/// A read that nothing satisfies is cancelled when a sibling fails, and the stream still works afterwards: 9900 for the
+/// failure of the sibling (its own code, not a cancelled read's) and the length of what the stream still reads.
 export def cancel :: i64 -> i64
 fn cancel port =
 	let! connected = Net.connect (loopback port) (Maybe.Some 5000)
@@ -264,7 +268,7 @@ fn cancel port =
 		let! after = Net.read stream 16 (Maybe.Some 20000)
 		let! _closed = Net.close stream
 		match (outcome, after) with
-		| (Result.Error error, Result.Ok bytes) -> error.code as i64 * 100 + bytes.length
+		| (Result.Error error, Result.Ok bytes) -> (if error.code == SyntheticCode then 9900 else 0) + bytes.length
 		| _ -> 0 - 3000
 
 def crowd_client :: Net.Address -> i64 -> Async<i64>

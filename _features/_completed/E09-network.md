@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | done（Phase 1・2・3） |
 | 起票 | 2026-09-29（第2期・比較劣位の改善）。旧計画の基準は `f8dc655` |
-| 実装の基準 | main `96d7cbf` の上のブランチ `impl/e09-net`、2026-10-10。Phase 1 `de2766c`、Phase 2 `5ab4da9`、`resolve` のレビュー対応 `9efbf87`、Phase 3 は同ブランチの最後のコミット |
+| 実装の基準 | main `96d7cbf` の上のブランチ `impl/e09-net`、2026-10-10。Phase 1 `de2766c`、Phase 2 `5ab4da9`、`resolve` のレビュー対応 `9efbf87`、Phase 3 `9ab610d`。Phase 2 のレビュー対応（CI の手順、Windows の UDP と `accept`）は、同ブランチのそのあとの 2 コミット |
 | 承認 | 全フェーズと D1・D11 を含む判断への包括承認（依頼者の不在中に実装）。GUIDE の D 番号は統合時に付く |
 | 改善する劣位 | C#/F# 比: ネットワーク API がない |
 | 利用者向け仕様 | [Net](../../_tsuzuri/language-reference/built-in-types-and-modules/net.md)、[WebAssembly への出力](../../_tsuzuri/language-reference/compiler/webassembly.md#net-のソケットnodejs)、[言語仕様](../../docs/language.md#ネットワークnet) |
@@ -92,6 +92,9 @@ bind_async, bind_udp_async, close_async, close_listener_async, close_udp_async, 
 Winsock の実装を `net.c` に持つ。`WSAStartup` は `InitOnceExecuteOnce` で一度、`closesocket`・`WSAPoll`・`ioctlsocket`・`WSAGetLastError` を同じ分類へ写し、
 `SOCKET` を `i64` の表に入れる。共有の翻訳単位の errno の macro とぶつからないよう、内部の名前は `TZ_NET_E_*`。`ws2_32` はドライバーが `-lws2_32` で、MSVC は
 `#pragma comment` でもリンクする。`WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にする。
+Windows だけの 2 つの既定は POSIX に揃える。UDP のソケットは、閉じたポートへの送信の ICMP を次の受信の `WSAECONNRESET` で報告する既定（`SIO_UDP_CONNRESET`）を
+`tz_net_create` が切り（切れなかったときのために受信も飛ばす）、`accept` は、相手が `accept` の前に RST した接続の `WSAECONNRESET` を `ECONNABORTED` と同じく飛ばして次の接続を返す
+（同期版と `accept_async` は同じ `tsuzuri_net_accept`）。
 **Windows の実行は CI だけで検証され、手元では実行していない。**
 
 ### wasm32（Phase 3）
@@ -197,11 +200,23 @@ Winsock の実装を `net.c` に持つ。`WSAStartup` は `InitOnceExecuteOnce` 
 - レビューで見つかった 2 件を直した。(1) `resolve` が `inet_aton` の形をシステムに読ませた（上の `resolve` の規則、`9efbf87`）。(2) Phase 3 のホストが、Node.js の内部で積んだだけの
   データを「送れた」と数え、直後の `close` が捨てた（`write_async` の送信を 1 回 64 KiB に絞り、`close` を送り終えてからにした。Phase 3 のコミット）。
   どちらも負荷の下で再検証して見つかった。テストは sleep の後に検査する形をやめ、イベントを待つ形にした（`d83f458` と Phase 3 のコミット）。
+- 統合担当のレビュー（Phase 2 のコミット）で見つかった 4 件を直した（このあとの 2 コミット）。(1) CI の手順は `vsc/` から `node ../tests/net.mjs` を呼ぶが、スクリプトは
+  リポジトリの根からの相対パスを開いていた。`net.mjs` と `net_wasm.mjs` は、スクリプトの位置から根を求め、コンパイラとツールのパスを絶対にしてから根へ移る。手順は `vsc/` から実際に実行した
+  （`vsc/toolchain/bin/tsuzuri` を介して、Homebrew の LLVM 21 と Node.js 24 で。macOS の分岐とサニタイザー付きの Linux の分岐）。(2) async の取消のテストは、Linux で
+  `EADDRNOTAVAIL` になる 99 を「分類されない」コードに使っていた。どの OS にも無い 2147418113 に替えた（wasm の fixture も）。(3) Windows の UDP は、`SIO_UDP_CONNRESET` の既定のために、
+  閉じたポートへ送った後の受信が `ConnectionReset` になる。(4) Windows の `accept` は、`accept` の前に RST した接続を `WSAECONNRESET` のエラーにして、サーバーのループを終わらせる。
+  (3)(4) は上の Windows の節のとおりに直し、POSIX の契約を `tests/net_runtime.c`（`test_accept_reset`・`test_datagram_after_closed_port`）で固定し、同じ手順を
+  Windows の CI でも実行する E2E（async の `accept_reset` と `udp` の `vanished`）を足した。
+- CI の手順の見直しで、もう 1 件見つかった。macOS の CI は Homebrew の LLVM 21 で `net.mjs` の全 block を実行するが、B08 は、その LLVM でサニタイザー付きの実行ファイルが macOS で起動で止まることを
+  確かめている（この環境の macOS でも、空の C プログラムで再現した）。`TSUZURI_NO_SANITIZERS=1` を足し、macOS の CI だけがこれを付ける（Linux は `libclang-rt-21-dev` で ASan／UBSan を使う）。
+  1 つの手順の中の各コマンドは、1 つが失敗しても残りを実行する。
 
 ### 確かめていないこと
 
 - **Linux の実行は確かめていない。** glibc と musl の x86_64・aarch64 に `-std=c11 -Wall -Wextra -Werror` で警告なしにコンパイルできることだけを `zig cc` で確かめた。Docker は起動できなかった。
-- **Windows の実行は CI だけで検証される。** MSVC は x86_64 でリンク、aarch64 でコンパイル、MinGW は x86_64・aarch64 でコンパイルできることまで。
+- **Windows の実行は CI だけで検証される。** MSVC は x86_64 でリンク、aarch64 でコンパイル、MinGW は x86_64・aarch64 でコンパイルできることまで。Windows だけの分岐（`SIO_UDP_CONNRESET`、
+  `accept` で飛ばす `WSAECONNRESET`）も、コンパイルと、POSIX の契約の検査（`tests/net_runtime.c`）までで、実際に Windows が上のように報告するかは CI の async の block が確かめる。
+  macOS の CI がサニタイザーなしで動くことは、Homebrew の LLVM 21 とこの環境の macOS で確かめたが、GitHub のランナーそのものは試していない。
 - wasm32 の Node.js ホストは macOS の Node.js 24 だけで実行した。Linux・Windows の Node.js、ブラウザー、`Async.start` からの `_async` は未検証。
 - 速さの合否の閾値は置かず、SIMD・並列・GPU の主張もしていない（ソケットの I/O は 1 回の `poll`／システムコールの往復で、配列の一括演算ではない）。
 
