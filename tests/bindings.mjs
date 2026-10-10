@@ -463,7 +463,7 @@ try {
 
   // The command line: invalid configurations exit with 2, build errors with 1, and nothing is written.
   const out = join(root, "rejected.mjs");
-  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp");
+  rejected(["build", fixture, "--emit", "bindings-ts", "-o", out], "E2000", 2, "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp");
   rejected(["build", fixture, "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   rejected(["build", fixture, "--target", "wasm64", "--emit", "bindings-js", "-o", out], "E2000", 2, "'--emit bindings-js' requires '--target wasm32'");
   for (const option of ["--trap-info", "--debug-info", "--debug-output"]) {
