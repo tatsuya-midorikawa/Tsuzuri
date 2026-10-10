@@ -172,7 +172,7 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
     緩い（`spirv_relaxed`）は lane が `f32`・`i32`・`i32u`、float の装飾なし、`/` は使える。`spirv-val --target-env vulkan1.1`・`vulkan1.2` を通る。
   - CLI: `--emit spirv`・`--emit spirv-relaxed`（`Emit::Spirv`・`Emit::SpirvRelaxed`。拡張子 `.spv`。`BuildOptions` に field なし。`wgsl` と同じ検査で E2000・E2004・E1018。ビルドのキャッシュは使わない）。
   - デバイス対応: `Gpu.Vulkan` か `Gpu.Auto` を構築するプログラムだけが SPIR-V を埋め込み、`Gpu.WebGpu` を構築するプログラムだけが WGSL を埋め込む（`Sources::of`）。記述子は
-    `{flags, lanes, features, wgsl, wgsl_len, spirv, spirv_len, weight}`（`features` は bit 0 が `shader-f16`、bit 1 が `i64`、bit 2 が strict な `f32`。lane の種類 4 は 64 bit 整数。`weight` は 1 lane が実行する命令の数）。
+    `{flags, lanes, features, wgsl, wgsl_len, spirv, spirv_len, weight}`（`features` は bit 0 が `shader-f16`、bit 1 が `i64`、bit 2 が strict な `f32`。lane の種類 4 は 64 bit 整数。`weight` は 1 lane が実行する命令の数の下限で、`if` は条件と安いほうの枝、`&&`・`||` は左の項だけ、呼ぶ関数はその重みを同じ規則で数える。分岐のないカーネルでは命令の総数）。
     `std/Gpu.tz` は `request_on` に `Vulkan` と `Auto` の arm、内部の組み込み関数 `Gpu.__select`・`Gpu.__last`（std 専用。E1022）、公開の `Gpu.last_backend`。`Gpu.request Gpu.Vulkan` はプログラム全体の機能の和で確かめ、`Gpu.Auto` はカーネルごとに確かめる。
   - ランタイム: `src/runtime/gpu-vulkan.c`（Vulkan の C API を必要な分だけ自前で宣言し、`dlopen`／`LoadLibrary`、`TSUZURI_VULKAN_LIBRARY`、portability 列挙、能力の明示的な確認、遅延でスレッド安全な初期化、全エラー経路の解放）。
     `gpu.c` は `backend == 2` をここへ回し、3 つ目の境界の関数 `tsuzuri_gpu_select(mode, lanes, features, spirv, spirv_len, weight, count)` を持つ（native だけ。WebAssembly では 0 を返し、import を足さない）。
@@ -181,7 +181,7 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
     ランタイムは、プロパティを報告するデバイスに、strict な `f32` が要る最初の要求で、27 lane の SPIR-V（9 つの演算 × 3 組の入力。`tests/gpu_vulkan_probe.spvasm` を組み立てた語を `gpu-vulkan.c` に埋め込む。9 つ目は 2^31 を超える `i32u` から `f32` への丸めの境目で、切り捨てと、同点を上へ丸める変換を、最近接偶数と区別する）を 1 回動かし、
     CPU 参照のビット列と比べる。1 lane でも違うか、動かせなければ、そのプロセスでは strict な `f32` を許さず（`Unavailable`。`Gpu.Auto` はそのカーネルを CPU 参照で動かす）、理由は `TSUZURI_GPU_DEBUG` に出る。
     他のカーネルには影響しない。プローブは標本で、通ることは一致の証明ではない。
-  - `Gpu.Auto`: `tz_vulkan_auto` が、呼び出しごとに「使えるか」（SPIR-V、能力、測った種類のデバイス = メモリを共有する統合 GPU、上限、パイプライン）、「割に合うか」（CPU 参照の見積り `n × w × 0.03 ns` と、Vulkan の見積り
+  - `Gpu.Auto`: `tz_vulkan_auto` が、呼び出しごとに「使えるか」（SPIR-V、能力、測った種類のデバイス = メモリを共有する統合 GPU、上限、パイプライン。デバイスが報告する内容だけで、論理デバイスを作る前に判断し、合うデバイスがなければ何も作らない）、「割に合うか」（CPU 参照の見積り `n × w × 0.03 ns` と、Vulkan の見積り
     `270 µs + n × b × 0.13 ns + n × w × 0.001 ns` の比較）、「初回の費用（デバイスを開く 30 ms、パイプライン 7 ms）を、候補が CPU で動いたときの節約の貯金で払えるか」を判断する。候補は Vulkan だけで、WebGPU には測った規則がないので選ばない。
     準備の失敗は CPU 参照で動かし、呼び出しの途中の失敗は明示的なデバイスと同じようにトラップする。`TSUZURI_GPU_AUTO_MIN_WORK=<n>` は規則を「lane 数 × 重みが n 以上」に置き換えるが、能力・上限・種類の確認は省かない。
     定数は `benchmarks/run-gpu-vulkan.mjs` の測定から作った、1 台のマシンの経験則（[性能測定](../../docs/benchmarks.md#vulkan-と-gpuautof09-phase-3)）。
@@ -199,10 +199,11 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
   ④ `scripts/check-runtime-includes.sh` は、`gpu-vulkan.c` を `include_str!` する `src/llvm_gpu.rs` も走査する（37 ファイルを数える）。⑤ `tests/gpu.mjs` の `unavailable` は、`Auto` が `Ok` であることを期待する。
   ⑥ 公開の `Gpu.last_backend` を足した（ticket の「選択を観測可能にする」の実現）。
 - 検証（Apple M1 Max、macOS、MoltenVK 1.4.2（Homebrew の Vulkan ローダー）と、Chrome 同梱の SwiftShader（LLVM 10、`i64` なし）の 2 つの実デバイス、Apple clang 21、SPIRV-Tools v2026.4）:
-  - `cargo test --locked`: 全体 1,009 件が成功（85 の実行ファイル。デバイスのテストも実行）。Vulkan の `tests/gpu_spirv.rs` 14 件（構造、決定性、`spirv-val` の 54 組、拒否、2 つの実デバイスでの CPU 参照との照合、
-    プローブの語と表、`mut` の引数と 100 本の `else if` の連鎖）、`tests/gpu_vulkan_lowering.rs` 7 件、`tests/gpu.rs` 14 件。
-  - `node tests/gpu_vulkan.mjs` 34 件（宣言した ABI と実際のヘッダーの照合、能力と機能の表、ローダーの失敗、上限、`Gpu.Auto` の規則、N 番目の Vulkan 呼び出しを失敗させる掃引と、オブジェクト・割り当ての漏れの有無、
-    ASan・UBSan・TSan、プローブの判定。合成した Vulkan ライブラリとハーネス）、`node tests/gpu_vulkan_language.mjs` 46 件（言語としての実行を CPU 参照と照合、トラッキングしたヒープで漏れ 0、ドライバのビルド、WebAssembly の import なし）。
+  - `cargo test --locked`: 全体 1,014 件が成功（86 の実行ファイル。デバイスのテストも実行）。`tests/gpu_spirv.rs` 15 件（構造、決定性、`spirv-val` の 54 組、拒否、2 つの実デバイスでの CPU 参照との照合、
+    プローブの語と表、`mut` の引数と 100 本の `else if` の連鎖、重みの下限）、`tests/gpu_vulkan_lowering.rs` 9 件（lane の種類の検査が Vulkan と `Auto` の腕に効くこと、`__*`・`_on` の `E1022` を含む）、`tests/gpu.rs` 16 件。
+  - `node tests/gpu_vulkan.mjs` 45 件（宣言した ABI と実際のヘッダーの照合、能力と機能の表、デバイスの順位と機能の優先、ローダーの失敗と探索（作業ディレクトリのライブラリを読み込まない）、上限、`Gpu.Auto` の規則と貯金、ハイブリッド構成、デバイスを作らない `Auto`、
+    N 番目の Vulkan 呼び出しを失敗させる掃引と、オブジェクト・割り当ての漏れの有無、デバイスの喪失、パイプラインの表の溢れ、実行中の待ちと `Auto` の判断、ASan・UBSan・TSan、プローブの判定。合成した Vulkan ライブラリとハーネス）、
+    `node tests/gpu_vulkan_language.mjs` 48 件（言語としての実行を CPU 参照と照合、トラッキングしたヒープで漏れ 0、ドライバのビルド、重みの下限、lane の種類の検査、WebAssembly の import なし。2 つの実デバイスで）。
   - 厳密な整数（`i64` を含む）の Vulkan 実行は、MoltenVK で CPU 参照とビット単位で一致した（direct と staged の転送の両方、lane 数は 1 から 100,003）。緩い `f32` は許容誤差の範囲。
   - strict な `f32`: MoltenVK は `DenormPreserve` と独立性を報告せず、SwiftShader は `RoundingModeRTE` を報告しないので、どちらも `Unavailable`（実際の結果）。プローブを強制すると、MoltenVK は 27 lane 中 7（`-(x * 0.0)` の符号 2、非正規化数 5）、
     SwiftShader は 1（`i32u` から `f32`）が違った。
@@ -210,6 +211,43 @@ tsuzuri build Kernel.tz --emit wgsl | wgsl-relaxed | spirv | spirv-relaxed
   - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`、`git diff --check`、GUIDE §3.1 の 4 つの回帰テスト、`node scripts/check-docs.mjs`（変更したページ）、
     Windows の型検査（`cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`）が成功。
 - 確認していないこと: float controls をすべて報告して適合プローブも通るデバイスでの、strict な `f32` の CPU 参照との一致（そのデバイスがなく、モックと、報告しない実機での `Unavailable` までを確かめた）、
-  Linux と Windows での実行（Windows の `gpu-vulkan.c` は、clang の MSVC ターゲット（x86-64・aarch64）の構文検査まで。Rust は型検査まで）、NVIDIA・AMD・Intel の GPU と離散 GPU の転送
+  Linux と Windows での実行（Windows の `gpu-vulkan.c` は、レビュー後の修正のあとに、`zig cc`（Zig 0.16.0 の mingw-w64 ヘッダー）で x86-64・aarch64 の windows-gnu 向けと、Linux の x86-64・aarch64 向けに、`gpu.c` と一緒にした 1 つの翻訳単位を -O0 と -O2 -DNDEBUG でコンパイルできるところまで。
+  MSVC の SDK のヘッダーでの検査は、この回はできなかった（手元の xwin のキャッシュにヘッダーがなかった）。Rust は msvc 2 ターゲットの型検査まで）、NVIDIA・AMD・Intel の GPU と離散 GPU の転送
   （staged の経路は、MoltenVK の private なメモリ型で動かした）、Node.js 24 がない環境での WebAssembly の JSPI の実行（Phase 2 と同じ。Vulkan は WebAssembly で使えない）、適合プローブの費用、
   `Gpu.Auto` の定数の他のマシンでの当たり。MoltenVK は Metal の変換層で、その結果は Vulkan のドライバ一般のものではない。
+
+### Phase 3 のレビュー後の修正（6 件）
+
+独立したコードレビュー（`f0a0d1f` を起点）が、Phase 3 の Stage 2 の実装の欠陥を 6 件見つけた。2 つの emitter の数値（約 100 本の乱数プログラムを `spirv-val` と MoltenVK・SwiftShader で CPU 参照と照合）と、`f32` から整数への境界、C のランタイムの数値の経路に欠陥は見つからなかった。
+`Gpu.__select`・`Gpu.__last` が利用者のコードから `E1022` になること、カーネル番号の範囲検査が符号なし比較であることも確認された。
+
+1. **Vulkan のローダーを名前だけで読み込んだ（高、セキュリティ）**: `libvulkan.1.dylib`・`libMoltenVK.dylib`・`vulkan-1.dll` を、ディレクトリのない名前で `dlopen`／`LoadLibraryA` に渡していた。macOS の `dlopen` は作業ディレクトリを先に探すので、置かれたライブラリの初期化処理が、どの確認よりも前に動き、
+   本物のローダーの代わりになった（レビューが再現。その後の init は、そのプロセスの間、状態 2 で失敗した）。既定の候補を、macOS は `/opt/homebrew/lib`・`/usr/local/lib` の絶対パスだけ、Windows は `LoadLibraryExA` の `LOAD_LIBRARY_SEARCH_SYSTEM32`、
+   Linux は動的リンカーが作業ディレクトリを探さない soname（理由はコメントに書いた）にした。`vkGetInstanceProcAddr` を持たないライブラリは、`dlclose` して次の候補へ進む。`TSUZURI_VULKAN_LIBRARY` は書いたとおりに読み込む。C のホストは `#undef NDEBUG` で始める。
+   テスト: 作業ディレクトリに置いた合成ライブラリ（コンストラクターがマーカーのファイルを作る）が読み込まれないこと（修正前のランタイムでは、マーカーができて、デバイス名が合成ライブラリのものになった）、裸の名前・存在しないファイル・エントリーのないライブラリ・本物の順の探索。
+2. **`Gpu.Auto` の判断が実行中のカーネルの完了を待った（中）**: `tz_vulkan_run` が状態のロックを `vkWaitForFences` の間も持ち、CPU 参照と答える呼び出しの `tz_vulkan_auto` も同じロックを取った（レビューの測定: GPU の実行の間が 200 µs だと CPU の判断が 37 倍（最悪 13.7 ms）、間がないと 1 回の判断が 2.5 s）。
+   ロックを 2 つに分けた（状態のロック `tz_vk_mutex` はフェンスの完了待ちのあいだ持たず、実行のロック `tz_vk_exec_mutex` は 1 回の実行のあいだ持つ。順は状態、実行）。`tz_vulkan_run` は `tz_vk_prepare`（状態）と `tz_vk_execute`（実行）に分かれ、`tz_vulkan_auto` は、式だけで決まる見積りで CPU と答える呼び出しにはロックを取らず、
+   それ以外は状態のロックを待たずに試し、取れなければ CPU 参照にする（例外は、厳密な `f32` のプローブを最初に動かすスレッドの 1 回の入れ子の待ち）。`poisoned` は atomic にし、`tz_vk_execute` が状態とデバイスの喪失を取り直して確かめる。貯金の更新は状態のロックの内側にあり、整合は変わらない。
+   テスト: `vkWaitForFences` が応答しない合成ライブラリ（`block_wait=1`）で、あるスレッドの実行がフェンスの待ちに入ったことを確かめてから、別のスレッドが 3 つの `Gpu.Auto` の判断（10 lane の呼び出し、初回の費用を払えない呼び出し、ランタイムの状態が要る大きな呼び出し）を出し、
+   3 つとも、実行が終わらないうちに答えること（最後は、状態のロックが空いているときだけ出せる「Vulkan」）を、握手（待ちに入ったスレッドの数、解放の合図）で確かめる。時間の閾値は使わない。TSan でも同じ。状態のロックを実行のあいだ持たせる変更では失敗する。
+3. **カーネルの重みが両方の枝の和だった（中）**: `result()` が、出した命令ごとに 1 を足すので、`if` が then と else の合計になった（レビューの例 `if v < 0 then r64 (r64 (r64 (r64 v))) else v + 1` は重み 1,282 で、1 lane が実行するのは 2 個の演算。`Gpu.Auto` は 30 回中 29 回を Vulkan に出し、レビューの測定では、1,000,000 lane で CPU 参照の 3.5 倍、4,000,000 lane で 2.4 倍遅かった。
+   遅さは再現しておらず、判断（30 回中 29 回）だけを、合成ライブラリで再現した）。重みを、実行する道の下限にした（`if` は条件と、安いほうの枝、`&&`・`||` は左の項だけ、呼ぶ関数はその重みを同じ規則で）。分岐のない（直線の）カーネルの重みは変わらない。決定的。
+   テスト: 重み 2 になること（`tests/gpu_spirv.rs`）、1,280 個の演算を持つ直線のカーネルと並べて、1,000,000 lane の呼び出し 30 回が、分岐のカーネルは 0 回（すべて CPU 参照）、直線のカーネルは規則が出した回数だけ dispatch されること（`tests/gpu_vulkan_language.mjs`。時間は測らない）。
+4. **ハイブリッド構成で `Gpu.Auto` が統合 GPU を使えなかった（中、設計）**: 1 つのデバイスを順位（離散が先）と最初の呼び出しの機能で選び、そのあとで `Auto` が統合 GPU かを確かめたので、離散と統合のある機械では、`Auto` が離散 GPU の論理デバイスを作ってから、すべての呼び出しを断った。
+   列挙と論理デバイスの作成を分け（`tz_vk_enumerate`・`tz_vk_create_device`）、`Gpu.Auto` の適格（統合 GPU、共有メモリ、動かせる、機能、バッファが上限に収まる）を、`vkCreateDevice` の前に、デバイスが報告する内容だけで判断する（`tz_vk_pick_auto`・`tz_vk_auto_fits`）。合うデバイスがなければ何も作らない。
+   明示的な要求は、動かせる、機能を持つ、種類の順で選び、同順位なら先に列挙されたもの（`tz_vk_pick_explicit`）。**デバイスは 1 つのままにし、最初に来た要求が決める**（明示的な要求のデバイスと `Auto` のデバイスの 2 つを開くには、デバイスごとの状態と、実行の境界で 2 種類の呼び出しを区別する印が要り、小さな変更ではないと判断した）。
+   統合 GPU を `Auto` が先に開けば、あとの明示的な要求もそれを使い、明示的な要求が先に離散 GPU を開けば、`Auto` は測った種類でないので、すべての呼び出しを CPU 参照で動かす。この規則を `gpu.md`・`docs/language.md`・`gpu-vulkan.c` の冒頭に書いた。
+   合成ライブラリは、デバイスごとに種類・名前・機能・制限を設定でき（`d<N>.<key>`）、開いたデバイスと作ったデバイスの数を返す。テスト: 離散 #0 + 統合 #1（`Auto` は #1 を開き、離散は作らない）、統合のみ、離散のみ（`Auto` はデバイスを作らない）、明示的な要求が先なら #0。
+5. **適合プローブが、切り捨ての符号なし変換を見逃した（中）**: `OpConvertUToF` の 3 つの lane（`0xFFFFFF7F`・`0x80000001`・`0x01000001`）は、0 への丸めでも最近接偶数でも同じビット列で、符号なしの変換が切り捨てのデバイスでも、符号ありの変換が正しければ通った。
+   9 つ目の演算（3 lane）を足した: `0x80000081`（切り捨てと最近接偶数が違う）、`0x80000080`（ちょうど半分で、偶数側）、`0x80000180`（ちょうど半分で、奇数側。最近接偶数は上、切り捨ては下）。期待値は、同じオペランドの Rust の `as f32` と C の変換から求め、識別する組が違うことを検査する。
+   プローブは 27 lane × 9 演算（557 語。以前は 24 lane × 8 演算、538 語）。合成ライブラリの `u32=trunc`・`u32=half_up` で、新しいプローブは lane 24・26 と 20・25 で違いを見つけ、古いプローブは切り捨てを通していた（`different=0`）。2 つの実デバイスの違う lane は変わらない（MoltenVK は 3・5・6・7・8・9・10、SwiftShader は 18）。
+6. **4 つの実行時の振る舞いに、それを確かめるテストがなかった（中、テスト）**: デバイスの順位の反転、機能の優先の無視、貯金の消費（`tz_vk_auto_credit -= first_use`）の削除、`VK_ERROR_DEVICE_LOST` での `poisoned` の削除は、どれも 29 件が成功した。デバイスごとの合成ライブラリで、
+   順位（開いたデバイスの報告）、機能の優先（`shaderInt64` を持つデバイスを、`i64` のカーネルが要るときだけ選ぶ）、2 つのカーネルの貯金（1 つ目のカーネルがデバイスと自分のパイプラインの費用を払うと貯金はその分減り、2 つ目は、自分のパイプラインの費用を自分の節約で払うまで CPU 参照のまま。
+   答えは、C のソースから読んだ定数のモデルと一致し、貯金は負にならない）、デバイスの喪失（あとの呼び出しが、喪失したデバイスに Vulkan の呼び出しを 1 回もせずに失敗し、`Auto` は CPU 参照）、パイプラインの表の溢れ（300 個のカーネルを動かしても、表は 256 個のまま、すべて正しく動く）を確かめる。
+   **テストを元に戻す変更で失敗することを、1 件ずつ確かめた**: 順位の反転、機能の優先の無視、動かせるかの優先の無視、同順位で最後を選ぶ（`>=`）、
+   貯金を消費しない、`poisoned` を立てない、状態のロックを実行のあいだ持つ、`Auto` が順位でデバイスを開く、一時のパイプラインを解放しない。
+- `Gpu.__run` の lane の種類の検査: Phase 2 の修正で入ったガードを、Vulkan と `Auto` の腕、`Gpu.__select`、64 bit の lane（`LANE_64`）まで試験した（`tests/gpu_vulkan_lowering.rs` の 2 件。記述子の lane を書き換えた IR が「カーネルなし」でトラップする言語のテスト）。
+  `Gpu.__select` は総称でないので lane の種類を比べられず、メモリを守るのは `Gpu.__run` の検査。`__select`・`__run` は、番号を符号なしで比べる。利用者が `__*` の関数と `_on` の関数を呼ぶと、すべて `E1022`。
+- 確認していないこと: Linux と Windows のローダーの探索（macOS の絶対パスと、作業ディレクトリのライブラリを読み込まないことだけを動かした。`LoadLibraryExA` は型検査まで）、実際の離散 GPU・ハイブリッドの機械（デバイスの選び方は合成ライブラリだけ）、
+  レビューが測った 3.5 倍・2.4 倍の遅さの再測定（判断だけ再現）、`Gpu.Auto` の定数の静かなマシンでの測り直し（定数は負荷の高いマシンでの値）。ランタイムは `VK_*`・ICD の変数を読みも書きもしない（試験だけが設定する）。Phase 2 のレビューの 4 つの種類の欠陥
+  （上限をアダプタから読む、失敗したオブジェクトのキャッシュ、スタックの待ちの状態、符号付きのポインタ）は、Vulkan のランタイムでは該当しなかった（上限は開いたデバイスから、失敗した作成は何もキャッシュしない、待ちの状態は呼び出しの間に残らない、ポインタは `uint64_t`・`size_t`）。
