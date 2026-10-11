@@ -31,6 +31,7 @@ Usage:
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
+  tsuzuri api-diff old new [--json]
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
   tsuzuri toolchain info
@@ -65,6 +66,13 @@ at -O3 by default. It has no pass or fail threshold.
 build cache) and records them in Tsuzuri.lock. Other commands never run git or
 use the network; they read Tsuzuri.lock and the store. `tsuzuri publish` checks a
 package and prints the registry index entry of its commit; it changes no registry.
+`tsuzuri api-diff old new` lists, one line per change, how the public API of the package or
+project in `new` differs from `old` (each a directory, or a file in the root directory): a
+removed or changed declaration, a record field or union case that was added, and a class method
+added without a default are `breaking`; an added declaration, a documentation change and a new
+`@deprecated` tag are `non-breaking`. It reads the declarations as `tsuzuri doc` shows them,
+runs no type check, and loads no git or registry dependency. Exit status 1 means that a change
+is breaking; with --json each change and the final summary is one JSON object per line.
 `tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
 records, opaque extern types, and type aliases for the C header's own declarations
 whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
@@ -1686,6 +1694,79 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// `tsuzuri api-diff old new [--json]`: how the public API of the package or project `new`
+/// differs from `old`, one line per change on standard output. The exit status is 1 when a
+/// change is breaking, and 2 for a usage error.
+fn api_diff_command(arguments: &[OsString]) -> ExitCode {
+    let mut json = false;
+    let mut paths = Vec::new();
+    let mut paths_only = false;
+    let mut valid = true;
+    for argument in arguments {
+        match argument.to_str() {
+            Some("--") if !paths_only => paths_only = true,
+            Some("--json") if !paths_only => {
+                valid &= !json;
+                json = true;
+            }
+            _ if !paths_only && argument.to_string_lossy().starts_with('-') => valid = false,
+            _ => paths.push(PathBuf::from(argument)),
+        }
+    }
+    let [old, new] = paths.as_slice() else {
+        return api_diff_usage(json);
+    };
+    if !valid {
+        return api_diff_usage(json);
+    }
+    let mut apis = Vec::new();
+    for input in [old, new] {
+        let project = match Project::load_for_api(input) {
+            Ok(project) => project,
+            Err(error) => {
+                print_diagnostic(&error.diagnostic, &error.path, "", json);
+                return ExitCode::FAILURE;
+            }
+        };
+        match tsuzuri::api_diff::api(&project) {
+            Ok(api) => apis.push(api),
+            Err(error) => {
+                let source = project.source_for(&error);
+                print_diagnostic(&error, &source.path, &source.text, json);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let report = tsuzuri::api_diff::compare(&apis[0], &apis[1]);
+    print!(
+        "{}",
+        if json {
+            report.render_json()
+        } else {
+            report.render_text()
+        }
+    );
+    if report.breaking() > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn api_diff_usage(json: bool) -> ExitCode {
+    print_diagnostic(
+        &Diagnostic::new(
+            "E2000",
+            "usage: tsuzuri api-diff old new [--json]; old and new are two directories or files",
+            Span::default(),
+        ),
+        Path::new("<command line>"),
+        "",
+        json,
+    );
+    ExitCode::from(2)
+}
+
 /// `tsuzuri bindgen header.h -o Module.tz`: writes the module and reports each
 /// skipped declaration as a W2002 warning at the header.
 fn bindgen_command(arguments: &[OsString]) -> ExitCode {
@@ -1937,6 +2018,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "publish") {
         return publish_package(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "api-diff") {
+        return api_diff_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);

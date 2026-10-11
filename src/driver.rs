@@ -866,6 +866,8 @@ pub struct Project {
     pub sources: Vec<SourceFile>,
     pub manifests: Vec<SourceFile>,
     pub root: usize,
+    /// The package whose manifest is in the root directory, `None` for a project without one.
+    pub root_package: Option<crate::package::PackageId>,
     /// The root package's `[wasm]` section.
     pub wasm: crate::package::WasmSettings,
     /// The `[native]` link inputs of the root package and of the dependencies it marks `native = true`,
@@ -1545,20 +1547,31 @@ impl Project {
             }
         }
         // The editor offers every std module, so it loads the opt-in ones too (D-40).
-        Self::load_from_root(&directory, None, &normalized, true)
+        Self::load_from_root(&directory, None, &normalized, true, true)
     }
 
     /// Loads the package graph at `directory`. With `all_std` false, it loads only the
-    /// opt-in std modules that the user sources name (`stdlib::sources_for`).
+    /// opt-in std modules that the user sources name (`stdlib::sources_for`). With
+    /// `dependencies` false, git and registry dependencies and `Tsuzuri.lock` are not read, so
+    /// the graph lacks those packages: `tsuzuri api-diff` needs only the package's own sources.
     fn load_from_root(
         directory: &Path,
         selected: Option<&Path>,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
         all_std: bool,
+        dependencies: bool,
     ) -> Result<Self, SourceError> {
-        let lock = read_lockfile(directory)?;
+        let lock = if dependencies {
+            read_lockfile(directory)?
+        } else {
+            None
+        };
         let packages = load_packages(directory, &mut |request| {
-            offline_package(lock.as_ref(), request)
+            if dependencies {
+                offline_package(lock.as_ref(), request)
+            } else {
+                Ok(None)
+            }
         })?;
         let canonical;
         let directory = if packages.is_empty() {
@@ -1838,7 +1851,7 @@ impl Project {
                 name: "Tsuzuri.lock".to_owned(),
                 text: lock.text,
                 origin: ModuleOrigin::User,
-                package: root_id,
+                package: root_id.clone(),
                 namespace: String::new(),
                 edition: root_edition,
             });
@@ -1847,17 +1860,18 @@ impl Project {
             sources,
             manifests,
             root,
+            root_package: root_id,
             wasm,
             native,
         })
     }
 
     pub fn load_for_tests(input: &Path) -> Result<Self, SourceError> {
-        Self::load_without_entry(input)
+        Self::load_without_entry(input, true)
     }
 
     pub fn load_for_docs(input: &Path) -> Result<Self, SourceError> {
-        let mut project = Self::load_without_entry(input)?;
+        let mut project = Self::load_without_entry(input, true)?;
         let directory = if input.is_dir() {
             input
         } else {
@@ -1890,13 +1904,19 @@ impl Project {
         Ok(project)
     }
 
-    fn load_without_entry(input: &Path) -> Result<Self, SourceError> {
+    fn load_without_entry(input: &Path, dependencies: bool) -> Result<Self, SourceError> {
         let metadata = fs::symlink_metadata(input)
             .map_err(|error| SourceError::new(input, io_error("inspect input", input, error)))?;
         if !metadata.is_dir() {
-            return Self::load(input);
+            return Self::load_with(input, dependencies);
         }
-        let project = Self::load_from_root(input, None, &std::collections::BTreeMap::new(), false)?;
+        let project = Self::load_from_root(
+            input,
+            None,
+            &std::collections::BTreeMap::new(),
+            false,
+            dependencies,
+        )?;
         if !project
             .sources
             .iter()
@@ -1910,7 +1930,18 @@ impl Project {
         Ok(project)
     }
 
+    /// Loads `input` for `tsuzuri api-diff`: its sources as for documentation, but without
+    /// reading git and registry dependencies or `Tsuzuri.lock`, which a package's own API does
+    /// not depend on (G19). The root package is `Project::root_package`.
+    pub fn load_for_api(input: &Path) -> Result<Self, SourceError> {
+        Self::load_without_entry(input, false)
+    }
+
     pub fn load(input: &Path) -> Result<Self, SourceError> {
+        Self::load_with(input, true)
+    }
+
+    fn load_with(input: &Path, dependencies: bool) -> Result<Self, SourceError> {
         let metadata = fs::symlink_metadata(input)
             .map_err(|error| SourceError::new(input, io_error("inspect source", input, error)))?;
         if metadata.is_symlink() {
@@ -1934,6 +1965,7 @@ impl Project {
             input.file_name().map(Path::new),
             &std::collections::BTreeMap::new(),
             false,
+            dependencies,
         )
     }
 
@@ -1991,6 +2023,7 @@ impl Project {
             sources,
             manifests: Vec::new(),
             root: 0,
+            root_package: None,
             wasm: Default::default(),
             native: LinkInputs::default(),
         }

@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod api_diff;
 pub mod bindgen;
 pub mod bindings;
 pub mod cache;

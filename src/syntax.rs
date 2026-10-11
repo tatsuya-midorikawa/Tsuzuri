@@ -368,6 +368,20 @@ pub struct Documentation {
     pub span: Span,
 }
 
+impl Documentation {
+    /// The note of the `@deprecated` tag (G19): the rest of the first line that starts with the
+    /// tag, which may be empty. `@deprecatedX` is not the tag.
+    pub fn deprecation(&self) -> Option<&str> {
+        if !self.text.contains("@deprecated") {
+            return None;
+        }
+        self.text.lines().find_map(|line| {
+            let rest = line.trim_start().strip_prefix("@deprecated")?;
+            (rest.is_empty() || rest.starts_with([' ', '\t'])).then(|| rest.trim())
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TypeAliasDecl {
     pub doc: Option<Documentation>,

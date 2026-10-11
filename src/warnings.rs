@@ -655,18 +655,6 @@ impl TypeReferences<'_> {
 /// The longest deprecation note that a warning shows, in characters; a longer note is cut.
 const MAX_NOTE_CHARACTERS: usize = 200;
 
-/// The note of the `@deprecated` tag in a documentation comment (G19): the rest of the first
-/// line that starts with the tag, which may be empty. `@deprecatedX` is not the tag.
-pub(super) fn deprecation_note(doc: &Documentation) -> Option<&str> {
-    if !doc.text.contains("@deprecated") {
-        return None;
-    }
-    doc.text.lines().find_map(|line| {
-        let rest = line.trim_start().strip_prefix("@deprecated")?;
-        (rest.is_empty() || rest.starts_with([' ', '\t'])).then(|| rest.trim())
-    })
-}
-
 /// A public `def`, `record` or `union` whose documentation has the `@deprecated` tag.
 pub(super) struct Deprecation {
     /// The index in `modules` of the module that declares it.
@@ -708,7 +696,7 @@ pub(super) fn deprecations(modules: &[ModuleInput<'_>]) -> BTreeMap<(usize, usiz
             let (Some(doc), Some(source)) = (doc, name.span.source) else {
                 continue;
             };
-            if let Some(note) = deprecation_note(doc) {
+            if let Some(note) = doc.deprecation() {
                 found.insert(
                     (source, name.span.start),
                     Deprecation {
@@ -859,10 +847,11 @@ mod tests {
     #[test]
     fn deprecation_note_reads_the_first_tag_line() {
         let documented = |text: &str| {
-            deprecation_note(&Documentation {
+            Documentation {
                 text: text.to_owned(),
                 span: Span::default(),
-            })
+            }
+            .deprecation()
             .map(str::to_owned)
         };
         for (text, expected) in [
