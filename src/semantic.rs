@@ -644,7 +644,8 @@ pub(super) fn collect(
                     12,
                     declaration.body.span,
                     format!(
-                        "def {shown}.{} :: {}",
+                        "{}def {shown}.{} :: {}",
+                        if declaration.constant { "const " } else { "" },
                         function.name,
                         function.signature.as_type().display(&types)
                     ),

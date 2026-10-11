@@ -152,7 +152,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |
 | 型検査とコード生成の増分コンパイル、edition、追加ターゲット | 計画中 | G15、G19、[PB06](../../../_perfs/PB06-build-server.md)、[PB07](../../../_perfs/PB07-incremental-codegen.md) |
-| `f16` のハードウェア演算、const 評価の拡張 | 計画中 | D10、D11 |
+| `f16` のハードウェア演算 | 計画中 | D10 |
+| コンパイル時評価 `const def`（ループ・再帰・`match` を含む関数を、定数の初期化式から評価する） | 実装済み | D11 の Phase 1 |
 
 ## 採らないもの
 

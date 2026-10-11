@@ -46,6 +46,7 @@ Tsuzuri の全 43 個の予約語を用途別に分けて示します。
 | `fn` | 関数シグネチャに対応する関数の実装 | `fn add x y = x + y` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `let` | ローカル変数の不変束縛、または関数の実装 | `let count = 42` | [値](./values.md) |
 | `const` | コンパイル時定数の宣言 | `const MaxSize: i64 = 1024` | [値](./values.md) |
+| `const def` | コンパイル時に評価できる関数の宣言（`def` の前に `const`） | `const def square :: i64 -> i64` | [値](./values.md#コンパイル時に評価する関数-const-def) |
 | `rec` | 再帰関数の明示 | `def rec fib :: i64 -> i64` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `and` | 相互再帰の結合。`and!` はコンピュテーション式の束縛グループ | `def f :: ... and g :: ...` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `type` | 型エイリアス（型別名）の宣言 | `type UserId = i64` | [型エイリアス](../types-and-type-inference/alias.md) |

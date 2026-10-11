@@ -21,6 +21,7 @@ private record 型名 { フィールド: 型 }
 private union 型名 = ケース ...
 private type 別名 = 既存型
 private const 定数名: 型 = 式
+private const def 関数名 :: 型
 ```
 
 非公開にしたい要素の直前に `private` キーワードを記述します。`private` を付与した要素は、宣言されたモジュール（ファイル）の内部からのみ参照可能になります。
@@ -63,6 +64,7 @@ id
 | `private union` | ○ | モジュール内限定の共用体型（配下の case もすべて private） |
 | `private type` | ○ | モジュール内限定の型エイリアス |
 | `private const` | ○ | モジュール内限定の定数 |
+| `private const def` | ○ | モジュール内限定の、コンパイル時に評価できる関数 |
 | `private extern def` | ○ | モジュール内限定の外部ホスト関数 |
 | `private fn` / `private let` | ✗ | エラー `E1022`。`def` の可視性を自動継承するため、実装側に重ねて書きません |
 | `private class` | ✗ | エラー `E1022`。型クラスは常に public です |

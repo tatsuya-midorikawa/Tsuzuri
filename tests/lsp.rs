@@ -998,6 +998,34 @@ const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x
 const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
 
 #[test]
+fn const_def_hovers_show_the_qualifier() {
+    use serde_json::json;
+    let main = "const def twice :: i64 -> i64\nfn twice x = x * 2\ndef plain :: i64 -> i64\nfn plain x = x\nconst Answer: i64 = twice 21\nAnswer\n";
+    let hovers = [
+        ("twice x", "const def Main.twice :: i64 -> i64"),
+        ("plain x", "def Main.plain :: i64 -> i64"),
+    ];
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        hovers
+            .iter()
+            .enumerate()
+            .map(|(id, (needle, _))| {
+                json!({"id": id + 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(main, needle, "utf-16")}})
+            })
+            .collect()
+    });
+    for (response, (needle, detail)) in responses.iter().zip(&hovers) {
+        let hover = response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{needle}: {response}"));
+        assert!(
+            hover.starts_with(&format!("```tsuzuri\n{detail}\n```")),
+            "{needle}: {hover}"
+        );
+    }
+}
+
+#[test]
 fn declaration_hovers_name_modules_with_double_colons() {
     use serde_json::json;
     let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\ndef keep :: Handle -> Handle = \\h -> h\n";

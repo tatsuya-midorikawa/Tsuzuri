@@ -263,10 +263,19 @@ impl Parser<'_> {
             | TokenKind::Class
             | TokenKind::And => true,
             TokenKind::At => self.literal_attribute_ahead(),
-            TokenKind::Export => self
-                .tokens
-                .get(self.position + 1)
-                .is_some_and(|token| token.kind == TokenKind::Def),
+            TokenKind::Export => {
+                self.tokens
+                    .get(self.position + 1)
+                    .is_some_and(|token| token.kind == TokenKind::Def)
+                    || (self
+                        .tokens
+                        .get(self.position + 1)
+                        .is_some_and(|token| token.kind == TokenKind::Const)
+                        && self
+                            .tokens
+                            .get(self.position + 2)
+                            .is_some_and(|token| token.kind == TokenKind::Def))
+            }
             _ => false,
         }
     }
@@ -355,6 +364,18 @@ impl Parser<'_> {
                             documentation.span,
                         ));
                     }
+                }
+                if cpu.is_some()
+                    && (self.constant_function_ahead()
+                        || (self.at(&TokenKind::Export)
+                            && self
+                                .tokens
+                                .get(self.position + 1)
+                                .is_some_and(|token| token.kind == TokenKind::Const)))
+                {
+                    return Err(self.error(
+                        "'@cpu' cannot apply to a 'const def'; the compiler evaluates it once, for no CPU level",
+                    ));
                 }
                 if cpu.is_some()
                     && !self.at(&TokenKind::Def)

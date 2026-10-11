@@ -290,6 +290,18 @@ fn parses_const_def_signatures_and_formatting() {
             "put 'const' on the 'def' signature",
         ),
         ("const def f x = x", "'::'"),
+        (
+            "@cpu [\"avx2\"]\nconst def f :: i64 -> i64\nfn f x = x",
+            "'@cpu' cannot apply to a 'const def'",
+        ),
+        (
+            "@cpu [\"avx2\"]\nexport const def f :: i64 -> i64\nfn f x = x",
+            "'@cpu' cannot apply to a 'const def'",
+        ),
+        (
+            "@literal\nconst def f :: i64 -> i64\nfn f x = x",
+            "expected 'def' after '@literal'",
+        ),
     ] {
         let error = parser::parse(source).unwrap_err();
         assert_eq!(error.code, "E0002", "{source}");

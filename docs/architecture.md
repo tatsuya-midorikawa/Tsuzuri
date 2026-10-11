@@ -40,6 +40,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉解析、lambda lifting、公開 ABI 向けの完全適用ラッパー生成 |
 | `src/numeric.rs` | プリミティブ型名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/constants.rs` | 定数の依存順評価、型ごとの演算とリソース上限、既存リテラルへの展開、定数・一時値の借用引数管理（`temporary_borrows`） |
+| `src/const_rules.rs` / `src/const_machine.rs` | `const def` のコンパイル時評価（`constants` の子モジュール）。`const_rules` は署名の値型の検査と、本体の式（`TypedExprKind`）ごとの受理・拒否の網羅的な振り分け、`const_machine` は明示的なスタックを持つ評価器（`Machine`）で、呼び出しも反復も Rust の再帰を使いません |
 | `src/exceptions.rs` / `src/llvm_exception.rs` / `std/Exception.tz` | `try ... with ... finally`・`@checked`・単項 `+` の型検査（check の子モジュール）と lowering、`**` の lowering、std の `Exception`／`ExceptionKind` と `Err` の instance 実装 |
 | `std/BigInt.tz` | `bigint` 実装。符号と、下位から並べた $10^9$ 進の桁（`[i64]`）による標準ライブラリ（std）ソースのみの多倍長整数（不透明 record）。コンパイラは型名 `bigint` を `BigInt` に、`I` 接尾辞のリテラルを桁配列を渡す `BigInt.make` 呼び出しへ展開するのみ |
 | `src/ownership.rs` | 部分 move、借用の競合、最後の使用位置の特定、分岐の合流、参照の生存期間（lifetime）検証 |
@@ -381,7 +382,10 @@ POSIX 環境では argv[1..] の UTF-8 文字列をデコードして格納し�
 型検査時には条件分岐の双方が通常の静的型検査を受け、定数評価器のみが短絡評価を行います。2進（binary）浮動小数点は `rustc_apfloat`（APFloat）を用いてビット幅ごとに正確に計算され、decimal 演算のコンパイル時評価は拒否されます。
 定数の内部宣言は非公開とされ、出力コードの到達性ルートからは除外されます。コンパイラコアに独立した定数ランタイムや共有所有メモリ領域を新設することはせず、既存の文字列リテラル用グローバル領域、集約値の生成機構、およびフレーム管理／ヒープ移送／デストラクタ（frame/relocate/drop）の仕組みをそのまま共有します。
 定数や式の一時値（関数呼び出しやパイプライン演算の結果など）を共有借用（`ref`）の引数へ渡す際は、`constants::temporary_borrows` がそれらを `BorrowOperand` に変換して一時値を生成・呼び出し後に安全に解放し、型検査によって「単一段階の完全適用であること」および「戻り値に借用が漏洩しないこと」を保証します。
-動作は `cargo test --locked --test constants` および `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri constants` で検証されています。
+**`const def`:** `def` 署名の `const` は構文木の `FunctionDecl::constant`／`SignatureDecl::constant` に保持され（フロントエンドキャッシュの形式は 3）、`Names::const_functions` に集められます。`constants::fold` は、まず全 `const def` の署名と本体を `const_rules` で検査します。署名は値型だけを許し、本体は `TypedExprKind` の全 variant を網羅した `match`（`_ =>` を持たない）で、評価するか `E1026` で拒否するかを決めます。評価は `const_machine::Machine` が行い、`const` の初期化式に現れる `const def` の呼び出し（引数は評価済みの値）もこの評価器へ渡します。
+`Machine` は Rust の再帰を使いません。未処理の仕事（`Task`）、中間値（`Value`）、呼び出し（`Frame`、ローカルの束縛）が別々の明示的なスタックにあり、`while`・`for`・再帰呼び出しの深さがコンパイラの stack を消費しません。予算は定数の評価と共有する 1 つの `remaining`（1,048,576）で、式 1 個ごとと値の複製ごと（その値のノード数）に引きます。呼び出しの深さと値の入れ子（`aggregate`）は `MAX_NESTING`（128）までです。整数の幅・丸め・飽和・短絡は定数の初期化式と同じ `unary`／`binary`／`cast` を使い、`match` の arm の選び方と範囲 `for` の終わり方は `llvm_control.rs` の実装（`range_loop`）と同じです。評価前の IR には `GenericInteger`／`GenericFloat` が残るので、`Checker::integer_literal` と `numeric::float_literal` で型に合わせてから使います。
+`const def` は実行時にも呼べる通常の関数で、型検査・所有権検査・コード生成は `const` のない関数と同じです。評価結果の値は、他の定数と同じく、各参照箇所へ型付きリテラルとして展開されます。
+動作は `cargo test --locked --test constants` および `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri constants`・`node tests/features.mjs target/release/tsuzuri const_functions` で検証されています。
 
 **デバッグ情報:** `llvm::emit_with_debug_info` は既存の `TrapSource` ソースマップを明示的に受け取り、DWARF デバッグ情報を付与したコードを生成します（通常の API 呼び出しではデバッグ情報は生成されません）。
 `DIFile`、`DICompileUnit`、`DISubprogram`、`DILocation`、ならびに変数や型のメタデータノードは `Globals.next_metadata` によって一元的に採番され、ループメタデータ、トラップマーカー、および同梱ランタイムと同一の ID 空間を共有します。
