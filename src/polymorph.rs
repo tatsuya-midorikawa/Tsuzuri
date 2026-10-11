@@ -4155,6 +4155,7 @@ pub(super) fn specialize(
         dyn_layouts,
         uses_dyn: module.uses_dyn,
         gpu: module.gpu,
+        statics: module.statics,
     })
 }
 

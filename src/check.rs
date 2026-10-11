@@ -3371,6 +3371,16 @@ pub struct CheckedModule {
     /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
     /// program builds a non-CPU `Gpu.Backend`.
     pub gpu: crate::gpu_devices::GpuProgram,
+    /// D11 Phase 2: the plain constants that the program reads in place or borrows, by the id
+    /// of the constant's declaration. `TypedExprKind::Static(id)` names one.
+    pub statics: BTreeMap<usize, StaticData>,
+}
+
+/// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
+#[derive(Clone, Debug)]
+pub struct StaticData {
+    /// The literal tree that the constant evaluates to; its type is the constant's.
+    pub value: TypedExpr,
 }
 
 /// The slot functions of each vtable in slot order, by vtable key and stored type (A14).
@@ -3617,6 +3627,10 @@ pub enum TypedExprKind {
     Break,
     Continue,
     Local(usize),
+    /// The read-only static data `CheckedModule::statics[id]` (D11 Phase 2). It is only the
+    /// operand of a shared `Borrow`, which `constants::fold` builds for a constant of plain data
+    /// that the program reads in place or borrows. The value is never moved, written, or dropped.
+    Static(usize),
     Function(FunctionRef),
     GenericFunction(usize, Vec<Type>),
     Method(usize, usize, Type),
@@ -7086,7 +7100,7 @@ fn check_modules_collect(
     if let Some(index) = semantic {
         *index = semantic::collect(modules, &functions, &name_uses, &names, types);
     }
-    constants::fold(
+    let statics = constants::fold(
         &mut functions,
         &names.constants,
         &names.const_functions,
@@ -7121,6 +7135,7 @@ fn check_modules_collect(
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
         gpu: Default::default(),
+        statics,
     };
     validate_callbacks(&module)?;
     regions::validate_contract_calls(&module)?;
@@ -7417,6 +7432,7 @@ fn recovery_module(
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
         gpu: Default::default(),
+        statics: BTreeMap::new(),
     }
 }
 
@@ -10586,7 +10602,7 @@ impl<'a> Checker<'a> {
             Type::Array(element) => element.clone(),
             // A16: the shared slice of a fixed-length array borrows its storage in place.
             Type::FixedArray(element, _) if !mutable => {
-                Self::fixed_slice_source(&source)?;
+                self.fixed_slice_source(&source)?;
                 element.clone()
             }
             Type::FixedArray(..) => {
@@ -10643,9 +10659,9 @@ impl<'a> Checker<'a> {
     }
 
     /// A slice of a fixed-length array borrows a named value, so the borrow cannot outlive the
-    /// slot of a temporary (A16 D7).
-    fn fixed_slice_source(source: &TypedExpr) -> Result<(), Diagnostic> {
-        if source.is_place() {
+    /// slot of a temporary (A16 D7). A constant of plain data is named static data (D11 Phase 2).
+    fn fixed_slice_source(&self, source: &TypedExpr) -> Result<(), Diagnostic> {
+        if source.is_place() || self.plain_constant(source) {
             Ok(())
         } else {
             Err(Diagnostic::new(
@@ -10816,7 +10832,7 @@ impl<'a> Checker<'a> {
         let mut value = value;
         value.ty = actual;
         let source = Self::autoderef(value);
-        Self::fixed_slice_source(&source)?;
+        self.fixed_slice_source(&source)?;
         let Type::FixedArray(actual_element, _) = &source.ty else {
             unreachable!("autoderef reaches the fixed-length array")
         };

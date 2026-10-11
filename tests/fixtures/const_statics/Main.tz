@@ -1,0 +1,185 @@
+// D11 Phase 2: a constant of plain data that a use reads in place or borrows is one read-only
+// object in the binary. Each export returns a number that the test computes on its own.
+
+const def crc_entry :: i32u -> i32u
+fn crc_entry index =
+    let mut value = index
+    for _ in 1 .. 8 do
+        value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
+    value
+
+const def crc_table :: [i32u]
+fn crc_table = new [i32u](256, \i -> crc_entry (i as i32u))
+
+const CrcTable: [i32u] = crc_table()
+
+const def squares :: [i64]
+fn squares = new [i64](4096, \i -> i * i)
+
+const Squares: [i64] = squares()
+const Primes: [i64] = [2, 3, 5, 7, 11, 13]
+const Grid: [i64; 4] = [10, 20, 30, 40]
+const Bytes: [ubyte] = [1, 2, 255, 0]
+const Wide: [i128u] = [1, 340282366920938463463374607431768211455]
+const Halves: [f16] = [1.5, -2.5, 0.0]
+const Singles: [f32] = [1.5, -0.0, 0.1]
+const Doubles: [f64] = [0.1, -0.0, 1.0 / 3.0]
+const NotNumbers: [f32] = [0.0 / 0.0]
+const Flags: [bool] = [true, false, true]
+const Letters: [char] = ['a', 'z']
+const Empty: [i64] = []
+const Single: [i64] = [42]
+const Answer: i64 = 42
+const Text: string = "hello"
+const Names: [string] = ["ab", "cde"]
+
+record Point { x: i32, y: i64 }
+const Points: [Point] = [Point { x: 1, y: 2 }, Point { x: -3, y: 4 }]
+const Corner: Point = Point { x: 7, y: 9 }
+
+union Reading = Missing | Value of i64 | Backup of i64
+const Readings: [Reading] = [Missing, Value 7, Backup 9]
+const Favorite: Reading = Backup 5
+
+record View { data: ref [i64] }
+
+def sum_of :: ref [i64] -> i64
+fn sum_of xs =
+    let mut total = 0
+    for x in xs do
+        total = total + x
+    total
+
+def table_of :: unit -> ref [i64]
+fn table_of _ = ref Primes
+
+def window_of :: i64 -> ref [i64]
+fn window_of count = ref Squares[0..count]
+
+def view_of :: unit -> View
+fn view_of _ = View { data: ref Primes }
+
+def first_of :: ref [i64] -> i64
+fn first_of xs = xs[0]
+
+export def crc_buffer :: i64 -> i64
+fn crc_buffer count =
+    let mut crc = ~(0 as i32u)
+    for i in 0 .. count - 1 do
+        let byte = ((i * 7 + 3) & 255) as i32u
+        crc = CrcTable[((crc ^ byte) & 0xFF) as i64] ^ (crc >>> 8)
+    (~crc) as i64
+
+export def squares_at :: i64 -> i64
+fn squares_at index = Squares[index]
+
+export def squares_sum :: i64 -> i64
+fn squares_sum count = sum_of (ref Squares[0..count])
+
+export def squares_window :: i64 -> i64
+fn squares_window count = sum_of (window_of count)
+
+export def squares_length :: i64
+fn squares_length = Squares.length + Array.length (ref Squares) + Array.length Squares
+
+export def primes_total :: i64
+fn primes_total =
+    let mut loop_total = 0
+    for p in Primes do
+        loop_total = loop_total + p
+    loop_total + Array.sum Primes + sum_of (ref Primes) + first_of (table_of ())
+
+export def grid_at :: i64 -> i64
+fn grid_at index = Grid[index] + Grid.length
+
+export def bytes_at :: i64 -> i64
+fn bytes_at index = Bytes[index] as i64
+
+export def wide_at :: i64 -> i64
+fn wide_at index = ((Wide[index] >>> 100) as i64) + (Wide[index] as i64)
+
+export def float_total :: f64
+fn float_total = Doubles[0] + Doubles[2] + (Singles[0] as f64) + (Singles[2] as f64) + (Halves[1] as f64) + (Halves[0] as f64)
+
+export def float_signs :: i64
+fn float_signs =
+    let double = if 1.0 / Doubles[1] < 0.0 then 1 else 0
+    let single = if 1.0f32 / Singles[1] < 0.0f32 then 10 else 0
+    let half = if Halves[2] == 0.0f16 then 100 else 0
+    let nan = if NotNumbers[0] != NotNumbers[0] then 1000 else 0
+    double + single + half + nan
+
+export def flags_letters :: i64 -> i64
+fn flags_letters index =
+    let letter = Letters[index % 2]
+    (if Flags[index] then 1 else 0) + (if letter == 'a' then 10 else 0) + (if Char.is_ascii_lower Letters[index % 2] then 100 else 0)
+
+export def empty_single :: i64
+fn empty_single = Empty.length * 1000 + Single.length * 100 + Single[0]
+
+export def points_at :: i64 -> i64
+fn points_at index = (Points[index].x as i64) + Points[index].y
+
+export def corner_total :: i64
+fn corner_total = (Corner.x as i64) + Corner.y
+
+export def readings_at :: i64 -> i64
+fn readings_at index = match Readings[index] with
+    | Missing -> 0
+    | Value value -> value
+    | Backup value -> value * 10
+
+export def favorite_value :: i64
+fn favorite_value = match Favorite with
+    | Missing -> 0
+    | Value value -> value
+    | Backup value -> value * 10
+
+export def escaped_references :: i64
+fn escaped_references =
+    let stored = ref Primes
+    let view = view_of ()
+    stored[5] + (table_of ())[2] + view.data[3] + (window_of 4).length + sum_of (window_of 3)
+
+export def closures_and_tasks :: i64
+fn closures_and_tasks =
+    let read = \i -> Primes[i] + Squares[i]
+    let scaled = Parallel.map (value -> value * Primes[1]) (ref Primes)
+    let task_total = Task.run task {
+        let! a = task { Primes[1] }
+        let! b = task { Squares[10] }
+        return a + b
+    }
+    read 2 + Array.sum (ref scaled) + Parallel.sum (ref Primes) + task_total
+
+export def owned_copies :: i64
+fn owned_copies =
+    let copied = Array.copy (ref Squares)
+    let reversed = Array.reverse (ref Primes)
+    let sorted = Array.sort (ref reversed)
+    let doubled = Array.map (value -> value * 2) (ref Primes)
+    let joined = Array.append (ref Primes) (ref Primes)
+    let kept = Primes
+    Array.sum (ref copied) + reversed[0] + sorted[0] + doubled[5] + joined.length + kept[1] + Squares[3] + Primes[4]
+
+export def values_stay_values :: i64
+fn values_stay_values =
+    let first = Primes
+    let second = Primes
+    let first_sum = Array.sum (ref first)
+    Array.sum (ref second) + first_sum + Primes[0]
+
+export def strings_stay_values :: i64
+fn strings_stay_values =
+    let text = Text
+    String.length (&Text) + text.length + Names.length + String.length ref Text
+
+export def scalar_borrow :: i64
+fn scalar_borrow = String.length $"{Answer}" + (Answer + 1)
+
+export def hot_loop :: i64 -> i64
+fn hot_loop count =
+    let mut total = 0
+    for i in 0 .. count - 1 do
+        total = total + Primes[i % 6] + Squares[i & 4095] + (Bytes[i & 3] as i64)
+    total

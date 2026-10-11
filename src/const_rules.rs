@@ -345,7 +345,8 @@ pub(super) fn validate_function(
             | K::Try(_)
             | K::RaisedException
             | K::Reraise
-            | K::DynDispatch { .. } => return Err(rejected(span)),
+            | K::DynDispatch { .. }
+            | K::Static(_) => return Err(rejected(span)),
         }
         // What every accepted expression yields is plain data. A borrow of a place is read
         // through, so its reference type is not a value.

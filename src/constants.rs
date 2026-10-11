@@ -6,6 +6,8 @@ use rustc_apfloat::{Float, FloatConvert};
 mod machine;
 #[path = "const_rules.rs"]
 mod rules;
+#[path = "const_static.rs"]
+mod statics;
 
 use machine::{Machine, Value};
 pub(super) use rules::check_signature;
@@ -87,13 +89,14 @@ pub(super) fn validate(
 
 /// Evaluates every constant, calls of `const def`s included (D11), and expands the references to
 /// them with their values. The bodies of the `const def`s are checked first, so that one that no
-/// constant calls is judged too.
+/// constant calls is judged too. A constant of plain data that a use reads in place or borrows is
+/// not expanded there; the use names its static data, which the result holds (D11 Phase 2).
 pub(super) fn fold(
     functions: &mut [CheckedFunction],
     constants: &BTreeSet<usize>,
     const_functions: &BTreeSet<usize>,
     types: &TypeContext<'_>,
-) -> Result<(), Diagnostic> {
+) -> Result<BTreeMap<usize, StaticData>, Diagnostic> {
     for &id in const_functions {
         rules::validate_function(id, functions, constants, const_functions, types)?;
     }
@@ -109,15 +112,24 @@ pub(super) fn fold(
     };
     evaluator.run()?;
     let values = evaluator.values;
+    let eligible: BTreeSet<usize> = constants
+        .iter()
+        .copied()
+        .filter(|&id| statics::eligible(&functions[id].signature.result, types))
+        .collect();
+    let mut used = BTreeSet::new();
     for (id, function) in functions.iter_mut().enumerate() {
         let mut remaining = 1 << 20;
-        inline(&mut function.body, &values, &mut remaining, 0)?;
         if constants.contains(&id) {
+            inline(&mut function.body, &values, &mut remaining, 0)?;
             function.body = values[&id].expr.clone();
             function.visibility = Visibility::Private;
+        } else {
+            statics::mark_uses(&mut function.body, &eligible, &mut used);
+            inline(&mut function.body, &values, &mut remaining, 0)?;
         }
     }
-    Ok(())
+    statics::collect(&used, &values, types).map_err(|id| statics::too_big(functions[id].span))
 }
 
 fn constant_id(expression: &TypedExpr) -> Option<usize> {
@@ -157,6 +169,19 @@ impl Checker<'_> {
                 }
             })
             .collect();
+        // A constant of plain data is borrowed as static data, which `fold` rewrites, wherever
+        // the call is applied and whatever it returns (D11 Phase 2).
+        let (plain, borrowed): (Vec<_>, Vec<_>) = borrowed.into_iter().partition(|index| {
+            matches!(&arguments[*index].kind, TypedExprKind::Borrow(value, _)
+                if self.plain_constant(value))
+        });
+        for index in plain {
+            if let TypedExprKind::Borrow(value, _) =
+                std::mem::replace(&mut arguments[index].kind, TypedExprKind::Error)
+            {
+                arguments[index].kind = TypedExprKind::BorrowOperand(value);
+            }
+        }
         if borrowed.is_empty() {
             return Ok(());
         }
@@ -192,6 +217,13 @@ impl Checker<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether `value` names a constant of plain data, which a borrow takes as static data.
+    pub(super) fn plain_constant(&self, value: &TypedExpr) -> bool {
+        constant_id(value)
+            .filter(|id| self.names.constants.contains(id))
+            .is_some_and(|id| statics::eligible(&self.signatures[id].signature.result, &self.types))
     }
 
     /// Whether a value of type `ty` surely holds no loan. A part that is still

@@ -466,7 +466,8 @@ impl<'a> Run<'a, '_> {
             | K::Try(_)
             | K::RaisedException
             | K::Reraise
-            | K::DynDispatch { .. } => return Err(unsupported(span)),
+            | K::DynDispatch { .. }
+            | K::Static(_) => return Err(unsupported(span)),
         }
         Ok(())
     }

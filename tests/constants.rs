@@ -853,3 +853,269 @@ fn bounds_const_def_calls_steps_and_values() {
         50_005_000
     );
 }
+
+const PLAIN: &str = "const Table: [i64] = [10, 20, 30, 40]\n\
+    const Grid: [i64; 4] = [1, 2, 3, 4]\n\
+    const Answer: i64 = 42\n\
+    record Point { x: i32, y: i64 }\n\
+    const Corner: Point = Point { x: 7, y: 9 }\n\
+    union Reading = Missing | Value of i64 | Backup of i64\n\
+    const Favorite: Reading = Backup 5\n\
+    const Text: string = \"hello\"\n\
+    const Names: [string] = [\"a\", \"b\"]\n";
+
+/// A program that defines the constants of `PLAIN`, then the function `value`, whose body is
+/// `body` (lines separated by a newline and indented), and calls it.
+fn plain_program(body: &str) -> String {
+    format!(
+        "{PLAIN}\ndef value :: unit -> i64\nfn value _ =\n    {}\nvalue ()",
+        body.replace('\n', "\n    ")
+    )
+}
+
+/// The `@tz.static.` lines of the IR of `source` for native and WASM, which must agree.
+fn static_data(source: &str) -> Vec<String> {
+    let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    let mut data = Vec::new();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let lines: Vec<String> = ir
+            .lines()
+            .filter(|line| line.starts_with("@tz.static."))
+            .map(str::to_owned)
+            .collect();
+        for line in &lines {
+            assert!(
+                line.contains(" = private unnamed_addr constant "),
+                "{source}\n{line}"
+            );
+        }
+        data.push(lines);
+    }
+    assert_eq!(data[0], data[1], "{source}");
+    data.swap_remove(0)
+}
+
+#[test]
+fn plain_constants_read_in_place_are_static_data() {
+    for body in [
+        "Table[1]",
+        "Table.length",
+        "Array.length Table",
+        "Array.length (ref Table)",
+        "Array.length &Table",
+        "Array.sum Table",
+        "Array.sum (ref Table[1..3])",
+        "Grid[2]",
+        "Grid.length",
+        "Array.sum Grid",
+        "Array.sum (ref Grid[1..3])",
+        "(Corner.x as i64) + Corner.y",
+        "(ref Corner).y",
+        "String.length $\"{Answer}\"",
+        "let mut total = 0\nfor x in Table do\n    total = total + x\ntotal",
+    ] {
+        let data = static_data(&plain_program(body));
+        assert!(!data.is_empty(), "{body}");
+        assert!(
+            data.iter().all(|line| !line.contains("hello")),
+            "strings are not static data: {body}"
+        );
+    }
+}
+
+#[test]
+fn static_data_is_defined_once_per_constant_and_only_when_used() {
+    let data = static_data(&plain_program(
+        "Table[0] + Table[1] + Array.length (ref Table) + Grid[0] + Table.length",
+    ));
+    assert_eq!(data.len(), 2, "{data:?}");
+    assert!(data[0].starts_with("@tz.static."), "{data:?}");
+    assert!(
+        data.iter()
+            .any(|line| line.contains("[4 x i64] [i64 10, i64 20, i64 30, i64 40]"))
+    );
+    assert!(
+        data.iter()
+            .any(|line| line.contains("[4 x i64] [i64 1, i64 2, i64 3, i64 4]"))
+    );
+    assert!(static_data(&plain_program("Answer + 1")).is_empty());
+}
+
+#[test]
+fn values_and_unused_constants_are_not_static_data() {
+    for body in [
+        "let t = Table\nt[0] + Array.sum (ref t)",
+        "let t = Table\nt.length",
+        "let g = Grid\ng[1]",
+        "Answer + 1",
+        "match Favorite with\n| Missing -> 0\n| Value value -> value\n| Backup value -> value * 10",
+        "String.length (&Text) + String.length ref Text + Names.length",
+        "let names = Names\nnames.length",
+    ] {
+        let data = static_data(&plain_program(body));
+        assert!(data.is_empty(), "{body}\n{data:?}");
+    }
+    assert_eq!(
+        static_data("const Table: [i64] = [1]\nTable.length + 1").len(),
+        1
+    );
+    assert!(static_data("const Table: [i64] = [1]\nlet t = Table\nt.length").is_empty());
+}
+
+#[test]
+fn plain_constant_borrows_escape_without_a_copy() {
+    for source in [
+        "const Table: [i64] = [10, 20]\ndef table :: unit -> ref [i64]\nfn table _ = ref Table\n(table ())[1]",
+        "const Table: [i64] = [10, 20, 30]\ndef window :: unit -> ref [i64]\nfn window _ = ref Table[1..3]\n(window ()).length",
+        "const Table: [i64] = [10, 20]\nrecord View { data: ref [i64] }\ndef view :: unit -> View\nfn view _ = View { data: ref Table }\n(view ()).data[1]",
+        "const Table: [i64] = [10, 20]\ndef pass :: ref [i64] -> ref [i64]\nfn pass xs = xs\n(pass (ref Table))[0]",
+        "const Table: [i64] = [10, 20]\nlet r = ref Table\nlet read = \\i -> r[i]\nread 1",
+        "const Table: [i64] = [10, 20]\nlet read = \\i -> Table[i]\nread 1",
+        "const Answer: i64 = 42\ndef answer :: unit -> ref i64\nfn answer _ = ref Answer\nderef (answer ())",
+        "record Point { x: i32, y: i64 }\nconst Corner: Point = Point { x: 7, y: 9 }\ndef corner :: unit -> ref Point\nfn corner _ = ref Corner\n(corner ()).y",
+        "const Grid: [i64; 4] = [1, 2, 3, 4]\ndef grid :: unit -> ref [i64; 4]\nfn grid _ = ref Grid\n(grid ())[3]",
+        "union Shade = Dark | Light\nconst Chosen: Shade = Light\ndef shade :: unit -> ref Shade\nfn shade _ = ref Chosen\nmatch deref (shade ()) with\n| Dark -> 0\n| Light -> 1",
+        "const Table: [i64] = [10, 20]\ndef first :: ref [i64] -> i64\nfn first xs = xs[0]\nfirst (ref Table) + first (ref Table[1..2])",
+    ] {
+        let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            assert!(ir.contains("@tz.static."), "{source}");
+            assert!(
+                !ir.contains("call void @tz.free(ptr @tz.static."),
+                "a reference never frees static data: {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn string_constants_keep_their_borrow_rules() {
+    for source in [
+        "const Text: string = \"x\"\ndef bad :: unit -> &string\nfn bad _ = &Text",
+        "const Names: [string] = [\"x\"]\ndef bad :: unit -> ref [string]\nfn bad _ = ref Names\nbad ()",
+        "record Data { name: string }\nconst Stored: Data = Data { name: \"x\" }\ndef bad :: unit -> ref Data\nfn bad _ = ref Stored\nbad ()",
+        "const Text: string = \"x\"\nlet value = &Text\nvalue.length",
+    ] {
+        assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
+    }
+}
+
+#[test]
+fn static_data_is_never_written_moved_or_exclusively_borrowed() {
+    for source in [
+        "const Table: [i64] = [1, 2]\ndef replace :: ref mut [i64] -> unit\nfn replace xs = *xs = [1]\nreplace (ref mut Table)",
+        "const Table: [i64] = [1, 2]\nlet r = ref mut Table\nr.length",
+        "const Table: [i64] = [1, 2]\ndef sort :: unit -> unit\nfn sort _ = Array.sort_in_place (ref mut Table[0..2])\nsort ()",
+        "const Table: [i64] = [1, 2]\nTable[0] = 5\nTable[0]",
+    ] {
+        let error = analyze(source).unwrap_err();
+        assert!(
+            matches!(error.code, "E1012" | "E1013" | "E1014"),
+            "{source}\n{error:?}"
+        );
+    }
+}
+
+#[test]
+fn static_borrows_do_not_hide_a_dangling_reference() {
+    for source in [
+        "def make :: unit -> i64\nfn make _ =\n    let local = 5\n    let f = \\_ -> ref local\n    let r = f ()\n    deref r\nmake ()",
+        "def pass :: i64 -> ref i64\nfn pass x = ref x\ndef make :: unit -> i64\nfn make _ =\n    let r = pass 5\n    deref r\nmake ()",
+        "def make :: unit -> ref i64\nfn make _ =\n    let local = 5\n    ref local\nmake ()",
+        "const Table: [i64] = [1, 2]\ndef make :: unit -> ref i64\nfn make _ =\n    let local = Table[0]\n    ref local\nmake ()",
+    ] {
+        assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
+    }
+}
+
+#[test]
+fn tasks_keep_their_rules_for_static_borrows() {
+    for source in [
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = ref Table\n    Task.run task {\n        r[0]\n    }\nrun ()",
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = Task.run task {\n        ref Table\n    }\n    r[0]\nrun ()",
+    ] {
+        assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
+    }
+    // A task reads the constant by name, without a capture.
+    analyze(
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    Task.run task {\n        let! a = task { Table[0] }\n        return a + Table[1]\n    }\nrun ()",
+    )
+    .unwrap();
+}
+
+#[test]
+fn large_static_data_is_one_global() {
+    // The evaluation budget (1,048,576 steps) bounds one constant to about 200,000 elements, below
+    // the 4 MiB of static data (the unit test of `const_static` checks that bound itself).
+    let source = "const def big :: [i128u]\nfn big = new [i128u](50000, \\i -> i as i128u)\nconst Big: [i128u] = big()\ndef value :: unit -> i128u\nfn value _ = Big[49999]\nvalue ()";
+    let data = static_data(source);
+    assert_eq!(data.len(), 1, "{}", data.len());
+    assert!(data[0].starts_with("@tz.static."), "{}", &data[0][..40]);
+    assert!(data[0].contains("[50000 x i128]"));
+    assert!(data[0].ends_with(", align 16"));
+    // Read by value, the same constant is a copy of 800,000 bytes and no static data.
+    let copied = "const def big :: [i128u]\nfn big = new [i128u](50000, \\i -> i as i128u)\nconst Big: [i128u] = big()\ndef value :: unit -> i64\nfn value _ =\n    let copy = Big\n    copy.length\nvalue ()";
+    assert!(static_data(copied).is_empty());
+}
+
+#[test]
+fn static_data_has_the_bits_of_its_constants() {
+    let source = "const Halves: [f16] = [1.5, -2.5]\n\
+        const Singles: [f32] = [-0.0, 0.0 / 0.0]\n\
+        const Flags: [bool] = [true, false]\n\
+        const Bytes: [ubyte] = [1, 255]\n\
+        const Letters: [char] = ['a', 'z']\n\
+        const Wide: [i128u] = [340282366920938463463374607431768211455]\n\
+        const Signed: [i8] = [-1, 127]\n\
+        record Point { x: i32, y: i64 }\n\
+        const Points: [Point] = [Point { x: -3, y: 4 }]\n\
+        union Reading = Missing | Value of i64 | Backup of i64\n\
+        const Readings: [Reading] = [Missing, Value 7]\n\
+        union Shade = Dark | Light\n\
+        const Shades: [Shade] = [Light, Dark]\n\
+        const Pairs: [i64 * bool] = [(5, true)]\n\
+        const Empty: [i64] = []\n\
+        def total :: unit -> i64\n\
+        fn total _ = Halves.length + Singles.length + Flags.length + Bytes.length + Letters.length + Wide.length + Signed.length + Points.length + Readings.length + Shades.length + Pairs.length + Empty.length\n\
+        total ()";
+    let data = static_data(source).join("\n");
+    for expected in [
+        "[2 x i16] [i16 15872, i16 49408]",
+        "[2 x float] [float 0x8000000000000000, float 0x7FF8000000000000]",
+        "[2 x i1] [i1 1, i1 0]",
+        "[2 x i8] c\"\\01\\FF\"",
+        "[2 x i16] [i16 97, i16 122]",
+        "[1 x i128] [i128 340282366920938463463374607431768211455]",
+        "[2 x i8] c\"\\FF\\7F\"",
+        "[1 x %tz.record.Main.Point] [%tz.record.Main.Point { i32 4294967293, i64 4 }]",
+        "{ i32 0, i64 zeroinitializer }, %\"tz.union.Main.Reading\" { i32 1, i64 7 }",
+        "[%\"tz.union.Main.Shade\" 1, %\"tz.union.Main.Shade\" 0]",
+        "[1 x { i64, i1 }] [{ i64, i1 } { i64 5, i1 1 }]",
+    ] {
+        assert!(data.contains(expected), "{expected}\n{data}");
+    }
+    // An empty array has a null header and no data.
+    assert!(!data.contains("[0 x"), "{data}");
+}
+
+#[test]
+fn static_data_ir_is_deterministic() {
+    let source = plain_program(
+        "Table[0] + Grid[1] + Array.sum (ref Table) + (Corner.x as i64) + String.length $\"{Answer}\"",
+    );
+    let module = analyze(&source).unwrap();
+    for wasm in [false, true] {
+        let first = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let second = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(first, second);
+        let names: Vec<_> = first
+            .lines()
+            .filter_map(|line| line.split_once(" = ").map(|(name, _)| name))
+            .filter(|name| name.starts_with("@tz.static."))
+            .collect();
+        let unique: std::collections::BTreeSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len(), "each static is defined once");
+    }
+}

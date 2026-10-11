@@ -26,6 +26,16 @@ const ELEMENT: usize = usize::MAX;
 const PAYLOAD: usize = usize::MAX - 1;
 /// A12: the first field of a parameter's external loan for one region slot, `REGION_SLOT - slot`.
 const REGION_SLOT: usize = usize::MAX - 2;
+/// D11 Phase 2: the static data `id` is the place `STATIC_ROOT + 1 + id`, far from the local ids
+/// and from the parameters' roots, `usize::MAX - id`. Nobody writes, moves, or drops it. The root
+/// `STATIC_ROOT` itself stands for any static data, as the loan of a call's result that holds
+/// only borrows of static data.
+const STATIC_ROOT: usize = usize::MAX / 2;
+const STATIC_ROOTS: usize = 1 << 24;
+
+fn is_static_root(root: usize) -> bool {
+    root.wrapping_sub(STATIC_ROOT) < STATIC_ROOTS
+}
 
 fn region_field(slot: usize) -> usize {
     REGION_SLOT - slot
@@ -912,6 +922,11 @@ impl Checker<'_> {
             if self.reported.contains(&place.root) {
                 continue;
             }
+            // Static data lives for the whole run, so a result may borrow it (D11 Phase 2); a
+            // task's result still holds no borrow.
+            if is_static_root(place.root) && !task {
+                continue;
+            }
             if task || !self.external.contains(&place.root) {
                 return Err(error(
                     "E1013",
@@ -1332,6 +1347,14 @@ impl Checker<'_> {
                 },
                 BTreeSet::new(),
             )]),
+            E::Static(id) => Ok(vec![(
+                Place {
+                    root: STATIC_ROOT + 1 + *id,
+                    fields: Vec::new(),
+                    through_drop: false,
+                },
+                BTreeSet::new(),
+            )]),
             E::Field(value, field) => {
                 let through_drop = value.ty.has_user_drop(&self.module.types());
                 let mut places = self.place(value, live)?;
@@ -1530,6 +1553,10 @@ impl Checker<'_> {
             };
             for id in &value.loans {
                 let place = &self.loans[*id].place;
+                // Static data outlives the caller's data, so storing a borrow of it is fine.
+                if is_static_root(place.root) {
+                    continue;
+                }
                 if !self.external.contains(&place.root) {
                     return Err(error(
                         "E1013",
@@ -2073,6 +2100,28 @@ impl Checker<'_> {
             // An item that a receiver takes out of a channel was checked when it went in: it holds
             // no borrow, and it was moved out of the channel, so it does not borrow the receiver.
             result = if received { Value::default() } else { current };
+            // A reference that no argument lent can only point at static data, which no call
+            // result outlives (D11 Phase 2); a callee returns only borrows of its inputs.
+            if !received
+                && result.loans.is_empty()
+                && expression
+                    .ty
+                    .contains_stored_reference(&self.module.types())
+            {
+                let loan = self.loan(
+                    Place {
+                        root: STATIC_ROOT,
+                        fields: Vec::new(),
+                        through_drop: false,
+                    },
+                    false,
+                    BTreeSet::new(),
+                );
+                result.loans.insert(loan);
+                for slot in result.regions.iter_mut().flat_map(|slots| slots.iter_mut()) {
+                    slot.insert(loan);
+                }
+            }
             result.closed_result =
                 std::array::from_fn(|index| self.callback_returns_closed(expression, index + 1));
         }
@@ -2521,6 +2570,8 @@ impl Checker<'_> {
             | E::Bool(_)
             | E::Unit
             | E::Error
+            // Static data is a value that no one moves; its borrows are made by `place`.
+            | E::Static(_)
             | E::CaseConstructor { .. }
             | E::GenericInteger(..)
             | E::GenericFloat(_)
