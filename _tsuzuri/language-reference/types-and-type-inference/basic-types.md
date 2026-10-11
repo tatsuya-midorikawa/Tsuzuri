@@ -160,9 +160,9 @@ assert (total == 0.3m)
 どの経路でも同じになるもの:
 
 - 丸めは最近接偶数で、非正規化数と符号付きゼロを保ちます。`a * b + c` は積と和を別々に丸めます（融合しません。融合するのは `Math.fma` だけで、`f16` では同梱のソフトウェア実装です）。
-- `nan` の結果のビットも同じです。`nan` は quiet NaN にそろえ、ペイロードは捨てます。符号は、`+`・`-` では左辺、`*`・`/` では両辺の符号の排他的論理和です。`Math.sqrt` は `nan` の入力をそのまま返し、負の入力には正の `nan` を返します。`as` は入力の符号を保った `nan` を返します。符号は `Math.copysign` で調べられます。
+- `nan` の結果のビットも同じです。四則演算の結果が `nan` のときは、ペイロードを捨てた quiet NaN で、符号は `+`・`-` では左辺、`*`・`/` では両辺の符号の排他的論理和です。`Math.sqrt` は、`nan` の入力をそのまま返し、負の入力には正の `nan` を返します。`as` は、入力の符号を保った、目的の型の quiet NaN を返します。符号は `Math.copysign` で調べられます。
 
-次の操作は、どのビルドでもソフトウェア実装です。`Math.fma`、`Math.min`・`max`・`clamp`、`Math.floor`・`ceil`・`trunc`・`round`・`round_even`、整数との `as`、`f128` や decimal との `as`、定数の評価、表示と解析、`Hash` です。
+次の操作は、どのビルドでも `half` 命令になりません。`Math.fma`、`Math.min`・`max`・`clamp`、`Math.floor`・`ceil`・`trunc`・`round`・`round_even`、整数との `as`、`f128` や decimal との `as`、表示と解析は、同梱のソフトウェア実装です。定数の評価はコンパイラの中で行います。単項 `-`、`Math.abs`・`copysign`・`is_nan`・`is_infinite`・`is_finite`、`Hash` は、もとから整数のビット演算です。
 
 ```tsuzuri run=3.75:1.5:65504:nan
 let x = 1.5f16
