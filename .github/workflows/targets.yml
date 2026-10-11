@@ -36,12 +36,16 @@ jobs:
         include:
           - os: macos-15
             host: darwin-arm64
+            f16: hardware
           - os: macos-15-intel
             host: darwin-x64
+            f16: generic=soft,native=conversions
           - os: ubuntu-24.04
             host: linux-x64
+            f16: generic=soft,native=conversions
           - os: ubuntu-24.04-arm
             host: linux-arm64
+            f16: hardware
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -121,5 +125,19 @@ jobs:
           cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion || status=1
           RUST_MIN_STACK=16777216 cargo test --locked --test computations -- bounds_computation_syntax_and_expansion || status=1
           exit $status
+      # D10: tests/f16_hardware.mjs prints the f16 path each build exercised (hardware, conversions or soft)
+      # and compares the results with an independent reference. matrix.f16 is the path this runner must
+      # take: a CPU that lacks the capability falls back to soft, and TSUZURI_F16_EXPECT turns that
+      # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) compute
+      # half with instructions; the x86-64 runners have F16C but no AVX512-FP16, so `--cpu native` converts
+      # with F16C and the rest stays soft. AVX512-FP16 arithmetic has no runner and is checked only as machine code.
+      - name: f16 paths
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        env:
+          TSUZURI_F16_EXPECT: ${{ matrix.f16 }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/f16_hardware.mjs target/release/tsuzuri
       # Other tickets' end-to-end steps for these four hosts go here. Start each with
       # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
