@@ -982,10 +982,38 @@ fn plain_constant_borrows_escape_without_a_copy() {
         for wasm in [false, true] {
             let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
             assert!(ir.contains("@tz.static."), "{source}");
+            assert_static_data_is_only_read(&ir, source);
+        }
+    }
+}
+
+/// The data of a static array is named only by the headers that lend it, and no instruction
+/// writes through the address of any static: so a borrow never stores into, frees, or reallocates it.
+fn assert_static_data_is_only_read(ir: &str, source: &str) {
+    let uses: String = ir
+        .lines()
+        .filter(|line| !line.starts_with("@tz.static."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (index, _) in uses.match_indices("@tz.static.") {
+        let rest = &uses[index..];
+        let end = rest.find([',', ')', ' ']).unwrap_or(rest.len());
+        if rest[..end].ends_with(".data") {
             assert!(
-                !ir.contains("call void @tz.free(ptr @tz.static."),
-                "a reference never frees static data: {source}"
+                uses[..index].ends_with("{ ptr "),
+                "{source}\n{}",
+                &uses[index.saturating_sub(40)..(index + 40).min(uses.len())]
             );
+        }
+    }
+    for line in uses.lines() {
+        for pointer in ["store ", "atomicrmw ", "cmpxchg "] {
+            if line.trim_start().starts_with(pointer) {
+                assert!(
+                    !line.contains(", ptr @tz.static."),
+                    "a static is never written: {source}\n{line}"
+                );
+            }
         }
     }
 }
@@ -1118,4 +1146,90 @@ fn static_data_ir_is_deterministic() {
         let unique: std::collections::BTreeSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len(), "each static is defined once");
     }
+}
+
+/// The integers of the first array below the entry of `source`, which shows its last value.
+fn integers_of(source: &str) -> Vec<u128> {
+    let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    let mut pending = vec![&module.functions[module.entry.unwrap()].body];
+    while let Some(expression) = pending.pop() {
+        if let TypedExprKind::Array(items) = &expression.kind {
+            return items
+                .iter()
+                .map(|item| match item.kind {
+                    TypedExprKind::Int(value) => value,
+                    _ => panic!("{source}\n{item:?}"),
+                })
+                .collect();
+        }
+        pending.extend(expression.children());
+    }
+    panic!("{source}");
+}
+
+#[test]
+fn const_defs_passed_by_name_bring_their_constants_before_use() {
+    // `add_k` reads `K`, which is declared after the constant that evaluates `table`.
+    let source = "const T: [i64] = table ()\nconst K: i64 = 7\n\
+        const def add_k :: i64 -> i64\nfn add_k i = i + K\n\
+        const def table :: unit -> [i64]\nfn table _ = new [i64](4, add_k)\nT";
+    assert_eq!(integers_of(source), [7, 8, 9, 10]);
+    // The same through a lambda, and with the constant first.
+    assert_eq!(
+        integers_of(&source.replace("new [i64](4, add_k)", "new [i64](4, \\i -> add_k i)")),
+        [7, 8, 9, 10]
+    );
+    let cyclic = "const T: [i64] = table ()\n\
+        const def add_k :: i64 -> i64\nfn add_k i = i + (T[0])\n\
+        const def table :: unit -> [i64]\nfn table _ = new [i64](4, add_k)\nT";
+    assert_eq!(rejected(cyclic).code, "E1026");
+}
+
+#[test]
+fn const_defs_index_and_measure_fixed_length_arrays() {
+    assert_eq!(
+        integer_of(
+            "const def total :: [i64; 3] -> i64\nfn total xs = xs[0] + xs[2] + xs.length\nconst Value: i64 = total [10, 20, 30]\nValue"
+        ),
+        43
+    );
+    assert_eq!(
+        integer_of(
+            "const Grid: [i64; 4] = [1, 2, 3, 4]\nconst def pick :: i64 -> i64\nfn pick i = Grid[i] + Grid.length\nconst Value: i64 = pick 2\nValue"
+        ),
+        7
+    );
+    let error = rejected(
+        "const Grid: [i64; 4] = [1, 2, 3, 4]\nconst def pick :: i64 -> i64\nfn pick i = Grid[i]\nconst Value: i64 = pick 4\nValue",
+    );
+    assert_eq!(error.code, "E1026");
+    assert!(error.message.contains("index out of bounds"), "{error:?}");
+}
+
+#[test]
+fn a_private_const_def_that_a_constant_calls_is_used() {
+    for source in [
+        "private const def twice :: i64 -> i64\nfn twice x = x * 2\nconst Value: i64 = twice 4\nValue",
+        "private const def twice :: i64 -> i64\nfn twice x = x * 2\nprivate const def four :: i64\nfn four = twice 2\nconst Value: i64 = four()\nValue",
+        "private const def add :: i64 -> i64\nfn add i = i + 1\nprivate const def table :: [i64]\nfn table = new [i64](2, add)\nconst Values: [i64] = table()\nValues.length",
+    ] {
+        let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        assert!(
+            module
+                .warnings
+                .iter()
+                .all(|warning| warning.code != "W1002"),
+            "{source}\n{:?}",
+            module.warnings
+        );
+    }
+    let module = analyze("private const def unused :: i64 -> i64\nfn unused x = x\n1").unwrap();
+    assert!(
+        module
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "W1002"),
+        "{:?}",
+        module.warnings
+    );
 }

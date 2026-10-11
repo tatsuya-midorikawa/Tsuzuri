@@ -87,6 +87,32 @@ pub(super) fn validate(
     }
 }
 
+/// The `const def`s that each constant's initializer reaches, directly or through other `const
+/// def`s, as (constant, `const def`) pairs. `fold` replaces the initializers by their values, so
+/// the unused-private-function warning takes these edges from here.
+pub(super) fn const_def_uses(
+    functions: &[CheckedFunction],
+    constants: &BTreeSet<usize>,
+    const_functions: &BTreeSet<usize>,
+) -> Vec<(usize, usize)> {
+    let mut uses = Vec::new();
+    for &constant in constants {
+        let mut scanned = BTreeSet::new();
+        let mut expressions = vec![&functions[constant].body];
+        while let Some(expression) = expressions.pop() {
+            if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
+                && const_functions.contains(&callee)
+                && scanned.insert(callee)
+            {
+                uses.push((constant, callee));
+                expressions.push(&functions[callee].body);
+            }
+            expressions.extend(expression.children());
+        }
+    }
+    uses
+}
+
 /// Evaluates every constant, calls of `const def`s included (D11), and expands the references to
 /// them with their values. The bodies of the `const def`s are checked first, so that one that no
 /// constant calls is judged too. A constant of plain data that a use reads in place or borrows is
@@ -344,7 +370,7 @@ impl Evaluator<'_> {
                 }
                 pending.push((id, true, depth, span));
                 // The constants that the initializer names, and those that the `const def`s it
-                // calls name in turn.
+                // calls, or passes by name as in `new [T](n, f)`, name in turn.
                 let mut expressions = vec![&self.functions[id].body];
                 let mut scanned = BTreeSet::new();
                 while let Some(expression) = expressions.pop() {
@@ -354,8 +380,7 @@ impl Evaluator<'_> {
                         pending.push((dependency, false, depth + 1, expression.span));
                         continue;
                     }
-                    if let TypedExprKind::Call(callee, _) = &expression.kind
-                        && let TypedExprKind::Function(FunctionRef::User(callee)) = callee.kind
+                    if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
                         && self.const_functions.contains(&callee)
                         && scanned.insert(callee)
                     {

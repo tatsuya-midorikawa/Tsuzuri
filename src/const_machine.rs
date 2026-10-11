@@ -1155,7 +1155,8 @@ impl<'a> Run<'a, '_> {
                         return Err(unsupported(span));
                     };
                     match kind {
-                        TypedExprKind::Array(items) => {
+                        // A fixed-length array literal is a tuple-like node of the array type.
+                        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
                             let Some(item) = usize::try_from(index)
                                 .ok()
                                 .and_then(|index| items.get(index))
@@ -1190,7 +1191,7 @@ impl<'a> Run<'a, '_> {
                     };
                     (value.relabel(expression), size)
                 }
-                (Read::Length, TypedExprKind::Array(items)) => (
+                (Read::Length, TypedExprKind::Array(items) | TypedExprKind::Tuple(items)) => (
                     Value::leaf(TypedExprKind::Int(items.len() as u128), expression),
                     0,
                 ),
@@ -1223,7 +1224,7 @@ impl<'a> Run<'a, '_> {
                     return Err(unsupported(span));
                 };
                 match base.expr.kind {
-                    K::Array(items) => {
+                    K::Array(items) | K::Tuple(items) => {
                         let Some(item) = usize::try_from(index)
                             .ok()
                             .and_then(|index| items.into_iter().nth(index))
@@ -1266,7 +1267,7 @@ impl<'a> Run<'a, '_> {
             }
             K::Length(_) => {
                 let base = self.pop(span)?;
-                let K::Array(items) = base.expr.kind else {
+                let (K::Array(items) | K::Tuple(items)) = base.expr.kind else {
                     return Err(unsupported(span));
                 };
                 Value::leaf(K::Int(items.len() as u128), expression)

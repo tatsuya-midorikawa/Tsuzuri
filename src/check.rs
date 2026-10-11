@@ -7100,14 +7100,20 @@ fn check_modules_collect(
     if let Some(index) = semantic {
         *index = semantic::collect(modules, &functions, &name_uses, &names, types);
     }
+    let const_uses =
+        constants::const_def_uses(&functions, &names.constants, &names.const_functions);
     let statics = constants::fold(
         &mut functions,
         &names.constants,
         &names.const_functions,
         &types,
     )?;
-    let references =
+    let mut references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
+    // A `const def` that a constant calls is used, although `fold` replaced the call by a value.
+    for (constant, callee) in const_uses {
+        references[constant].push(callee);
+    }
     warnings.extend(warnings::unused_private(
         &functions,
         &function_declarations,

@@ -864,10 +864,13 @@ const suites = {
       for (const [, name, rest] of definitions) assert.match(rest, /^private unnamed_addr constant /, `${name} is private and constant`);
       assert.match(ir, /^@tz\.static\.\d+\.data = private unnamed_addr constant \[4096 x i64\] \[i64 0, i64 1, i64 4, i64 9,/m);
       assert.match(ir, /^@tz\.static\.\d+\.data = private unnamed_addr constant \[256 x i32\] \[i32 0, i32 1996959894,/m);
-      // A reference never stores into, frees, or reallocates the data.
-      assert.doesNotMatch(ir, /^\s*store [^\n]*, ptr @tz\.static\./m);
-      assert.doesNotMatch(ir, /@tz\.(?:free|realloc)\([^\n)]*@tz\.static\./);
-      assert.doesNotMatch(ir, /^\s*call [^\n]*@(?:free|realloc)\([^\n)]*@tz\.static\./m);
+      // A reference never stores into the data, and the data of an array is named only by the headers
+      // that lend it, so no allocator call can receive it (the harness's tracked_free also rejects a
+      // pointer that it did not allocate, and the ASan variant runs this suite too).
+      assert.doesNotMatch(ir, /^\s*(?:store|atomicrmw|cmpxchg) [^\n]*, ptr @tz\.static\./m);
+      const uses = ir.split("\n").filter((line) => !line.startsWith("@tz.static.")).join("\n");
+      assert.equal((uses.match(/@tz\.static\.\d+\.data/g) ?? []).length,
+        (uses.match(/\{ ptr @tz\.static\.\d+\.data, i64 \d+ \}/g) ?? []).length, "a static array is named only by its header");
       // A table read in a loop is not rebuilt: the loop of the export holds no allocation.
       const hot = ir.match(/^define internal i64 @tz\.fn\.Main\.hot_loop\([^\n]*\{([\s\S]*?)^\}/m);
       assert.ok(hot, "hot_loop is emitted");
