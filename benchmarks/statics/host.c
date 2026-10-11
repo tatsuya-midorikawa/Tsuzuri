@@ -1,6 +1,7 @@
 // Times the CRC-32 variants of benchmarks/statics/Main.tz, built by the current compiler and, with
 // -DBASELINE, by an earlier one whose exports are renamed `before_tz_*`. Every variant checksums the same
 // generated buffer, so a wrong value stops the run. Prints one JSON object of raw times.
+#define _POSIX_C_SOURCE 200809L
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
