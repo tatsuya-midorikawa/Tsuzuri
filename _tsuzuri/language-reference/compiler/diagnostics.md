@@ -157,9 +157,9 @@ flowchart TD
 | `E1026` | コンパイル時定数のトラップ、循環、ステップ上限 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
-| `E2000` | 引数、拡張子、組み合わせ、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ |
-| `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです |
-| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows で OS API に到達した場合、macOS・Linux・Windows 以外で `Net` のソケットや Async の native reactor に到達した場合を含む |
+| `E2000` | 引数、拡張子、組み合わせ、`--target` の名前が一覧にないこと（32-bit を含む）、ビルド機で動かせない target の `run`・`test` に `TSUZURI_RUNNER` がないこと、その target の `test --coverage`・`test -g`・`bench`、bare-metal の target が `--freestanding --allocator host` の object・llvm・header でないこと（[対応プラットフォーム](platforms.md#診断)）、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ |
+| `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです。`TSUZURI_RUNNER` のプログラムを起動できないときもこれで、メッセージにその名前が入ります |
+| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows・iOS・Android で OS API に到達した場合、macOS・Linux・Windows 以外（FreeBSD、Android、iOS を含む）で `Net` のソケットや Async の native reactor に到達した場合、同梱ツールチェーンが持たない target（MSVC、sysroot、Android・iOS・bare-metal の C ライブラリ）を含む |
 | `E2003` | 出力ファイルの保護。既存の成果物を壊さないための失敗 |
 | `E2004` | 入口の要件。`Main.tz` が無い実行ファイル、export も `main` も無い WASM、`export def` の無いバインディングと共有ライブラリ、`export` が 1 つでない WGSL・SPIR-V の出力、`main` のシグネチャ違反、`def main` とトップレベル実行の併用、`Main.tz` 以外のモジュールでのトップレベル実行 |
 | `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む |
@@ -217,6 +217,7 @@ VS Code 拡張は、これを波線と問題パネルに出します。未使用
 - [コンパイラの使い方](usage.md)
 - [コンパイラ オプション](option.md)
 - [コンパイラ ディレクティブ](directives.md)
+- [対応プラットフォームとクロスコンパイル](platforms.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語仕様の診断](../../../docs/language.md#診断)
 - [言語リファレンスの目次](../index.md)

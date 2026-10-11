@@ -1161,7 +1161,7 @@ match Random.pcg_next_u32 generator with
 - `Os.Error.code` には WASI 仕様の errno 番号が格納されます。ファイルパスは、preopen されたディレクトリのうちスラッシュ `/` 境界で最長一致するプレフィックスを起点として解決され、いずれにも一致しないパスは最初の preopen ディレクトリからの相対パスとして扱われます。`Env.current_dir ()` は最初の preopen ディレクトリ名（例: `/work`）を返し、`Process.run` は `Other` エラーとなります。
 - 動作は Node.js の `node:wasi` 実装を用いて検証されており、システム固有のエラーコード番号の差異を除いてネイティブ環境の実行結果と完全に一致します（なお、WASI preview2 および WebAssembly コンポーネントモデルは現時点で未対応です）。
 
-Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API を使用しない純粋計算プログラムには影響しません。`Net` のソケットは Winsock で対応し、実行は CI だけで検証します）。
+Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境における実行検証が完了していないためであり、未対応のプラットフォームに対して安易に対応を主張しないための設計です（OS API を使用しない純粋計算プログラムには影響しません。`Net` のソケットは Winsock で対応し、実行は CI だけで検証します）。`--target` で名指しした Windows、iOS、Android の target も、ビルド機に関係なく同じ `E2002` です。
 
 ### ネットワーク（Net）
 
@@ -1188,7 +1188,7 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 
 すべてのソケットは `FD_CLOEXEC` 付きで（Linux は作成と同時、macOS は直後）、内部では非ブロッキングです。送信は SIGPIPE を起こさず（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）、相手が切れたソケットへの書き込みは `ConnectionReset` の `Error` です。IPv6 のソケットは `IPV6_V6ONLY` を有効にし、listener は `SO_REUSEADDR` と `SOMAXCONN` の backlog を付けます（`SO_REUSEPORT`・`TCP_NODELAY` は使いません）。ソケットの数の上限は OS に従います。Windows は、送ったデータグラムの宛先のポートが閉じていると、同じソケットの次の受信を `WSAECONNRESET` で失敗させるので、`bind_udp` が `SIO_UDP_CONNRESET` でそれを切り、受信はそれでも報告された `WSAECONNRESET` を飛ばして次を待ちます。`accept` は、相手が `accept` の前に切った接続（`ECONNABORTED`。Windows は `WSAECONNRESET`）をエラーにせず、次の接続を返します。Windows の実行は CI だけで確かめます。`0.0.0.0` や `::` で待つとネットワークへ公開されるので、例と文書は `127.0.0.1` を使います。ソケットの操作は入口のスレッドで順に実行され、待っている間はプログラム全体が止まります。
 
-実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`・`__watch`・`__unwatch`・`__connect`・`__names`・`__send`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `@tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`（`--wasm-feature net` の例外は下記）、macOS・Linux・Windows 以外の native は `E2002`、`--freestanding` は `E2000` です。macOS・Linux は POSIX のソケット、Windows は Winsock（`WSAStartup` は最初の呼び出しで一度だけ、`closesocket`・`WSAPoll`・`ioctlsocket`、`ws2_32` をリンク）で動かします。
+実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`・`__watch`・`__unwatch`・`__connect`・`__names`・`__send`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `@tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`（`--wasm-feature net` の例外は下記）、macOS・Linux・Windows 以外の native（ホストと、`--target` で名指しした FreeBSD・Android・iOS）は `E2002`、`--freestanding` は `E2000` です。macOS・Linux は POSIX のソケット、Windows は Winsock（`WSAStartup` は最初の呼び出しで一度だけ、`closesocket`・`WSAPoll`・`ioctlsocket`、`ws2_32` をリンク）で動かします。
 
 **非同期の操作（`_async`）。**`Async` の計算は `IO` を実行できないので、`connect_async :: Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async` と、待たない `bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` を `Async.host` の上に足します（同期版は変わりません。`Net` は `Async` を使うので、`OPT_IN` の `uses` に `Async` があります）。実行器のスレッドは待ちません。操作は時間制限 0 で一度だけ試し（待つ必要があれば、`kind` が `Other` で `code` が 0 の状態が返ります）、必要ならソケットの準備の監視を `Net.__watch`（接続は `Net.__connect`、取り消しは `Net.__unwatch`）で頼み、準備ができたら再試行します。監視は、最初の待ちで始まり待ちが無くなると終わる 1 本の分離スレッドで、`poll`（Windows は `WSAPoll`）と起床用の pipe（Windows は自分宛ての UDP ソケット）で待ち、完了（0 か状態）を、IR が渡す `tsuzuri_async_post` へ入れます。完了は何も所有せず、接続の途中のソケットだけが待ちの所有物です（取り消しで閉じ、post が拒否されたら新しいソケットを閉じます）。ソケットを閉じるときは、記述子を閉じる前にそのソケットの待ちを外して起こします。時間制限は操作全体の期限で、`Async.now ()` で測ります。`Async.block_on` のない native のプログラムが非同期の操作に到達すると、完了を受け取る反応器が無いので `E2000` です。`resolve` の非同期版はありません。
 
@@ -1269,9 +1269,9 @@ test "compares strings" =
 アサーション関数として、`Test.equal` および `Test.not_equal`（シグネチャ: `Eq<'a> => ref 'a -> ref 'a -> unit`）、ならびに `Test.is_true`（シグネチャ: `bool -> unit`）が提供されています。
 これらは被比較対象の値を消費せず借用で比較を行い、アサーション不一致時は通常の `assert` と同様に安全にトラップします（詳細な差分表示やカスタムアサーションメッセージの機能は現時点で未実装です）。
 
-テストの実行には、`tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32|wasm64]` コマンドを使用します。
+テストの実行には、`tsuzuri test <file|directory> [--filter TEXT] [--json] [-O0..-O3] [--target native|wasm32|wasm64|TRIPLE]` コマンドを使用します。
 ディレクトリを入力として指定した場合はその直下のソースファイル群が読み込まれ、`Main.tz` の存在は必須としません。`--filter` オプションには `Module.テスト名`（階層モジュールでは `Geometry::Point.テスト名`）に対する部分一致文字列を指定します（一覧表示や実行結果のモジュール名表記もこの形式に統一されています）。
-デフォルト設定はネイティブターゲット、`-O0` 最適化です（なお `--cpu`、`--emit`、`--output` オプションはテスト実行では使用できません）。WASM ターゲットでのテスト実行には Node.js 環境が必要であり（wasm64 では memory64 に対応した Node.js 24 以降が必須、未対応環境では `E2002` エラー）、生成されるテスト用 WASM モジュールの外部インポートは空となります。
+デフォルト設定はネイティブターゲット、`-O0` 最適化です（なお `--cpu`、`--emit`、`--output` オプションはテスト実行では使用できません）。ビルド機で動かせない native の `TRIPLE` のテストは、`TSUZURI_RUNNER`（空白で区切った前置コマンド。qemu-user や Rosetta の `arch -x86_64` など）を指定したときだけ、各テストの実行ファイルをその実行器の下で起動します（指定がなければビルドの前に `E2000`、起動できなければ実行器の名前を添えた `E2001`）。WASM ターゲットでのテスト実行には Node.js 環境が必要であり（wasm64 では memory64 に対応した Node.js 24 以降が必須、未対応環境では `E2002` エラー）、生成されるテスト用 WASM モジュールの外部インポートは空となります。
 各テストケースはそれぞれ独立したサブプロセスとして隔離実行され、マシンの CPU コア数、上限 32、および実行対象テスト件数のうちの最小値の並列度で高速に並行実行されます（結果の報告はソースコード上の宣言順序に整列されて出力されます）。
 実行中のトラップ発生、非ゼロの終了ステータス、および 30 秒のタイムアウト超過はテスト失敗と判定され、他のテストケースの実行はそのまま継続されます（タイムアウト時間を手動変更するオプションは現在用意されていません）。
 テストランナーは子プロセスの標準出力を破棄し、標準エラーを読み取ります。失敗したテストが標準エラーに書いた内容（末尾の 64 KiB）は失敗理由の下に字下げして表示され、`--json` では失敗行の `output` フィールドに入ります（成功したテストの出力は表示しません）。
@@ -1285,7 +1285,7 @@ test "compares strings" =
 
 `--coverage PATH`（ネイティブのみ）は、成功したテストが実行した利用者コードの行と関数のカバレッジを lcov 形式で `PATH` へ書き出し、テストの要約行の後に `coverage: 3/4 lines (75.0%), 1/2 functions` 形式の 1 行（`--json` では最終行の `{"type":"coverage",...}`）を出力します。
 計数の単位（region）は関数本体（ラムダと `task` を含む）、`if` の両枝、`match` の各節の本体、`while`／`for` の本体、`try ... with` のハンドラー、`&&`／`||` の右辺（左辺で結果が決まらずに評価したときだけ数える）で、行の回数はその行で始まる式が属する region の回数の最大値です。標準ライブラリ、テスト本体、およびトラップ・時間切れで失敗したテストの実行は数えません（除外件数は要約に表示されます）。
-`--target wasm32`／`wasm64` や `--list` との併用は `E2000`、出力先がプロジェクトのソースである場合は `E2003` です。
+`--target wasm32`／`wasm64`、ビルド機で動かせない `--target TRIPLE`、`--list` との併用は `E2000`、出力先がプロジェクトのソースである場合は `E2003` です。
 
 ### プロパティテスト
 
@@ -1302,7 +1302,7 @@ seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri 
 標準モジュール `Bench`（名前を書いたプログラムだけが読み込む opt-in モジュール）は `Bench.with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64`（標本ごとに準備を 1 回呼び、その値を借用で `n` 回 `run` に渡す。準備と値の解放は計測しない）と `Bench.of :: (unit -> 'b) -> i64 -> i64` を提供し、`run` の結果は毎回 `Bench.consume` に渡されます。
 組み込みの `Bench.now()`（`fn() -> i64`、単調時計のナノ秒）は `tsuzuri bench` の実行器だけが定義します。ほかの出力では、`Bench.now` に（直接または他の関数を通して）到達する `export` していない関数は、公開でもほかの部分が使わない限り出力に入りません。トップレベルのコード、`export def`、実行するテスト、`Drop` の実装から到達すると、到達の起点と途中の最後の利用者の関数を示し、その関数の中で時計へ向かう式の位置で `E1018` です。`Bench.consume :: 'a -> unit` は値を move で受け取り、スタックに置いた値のアドレスをメモリを読み書きしうる空のインライン asm（`asm sideeffect "", "r,~{memory}"`）に渡してから通常どおり解放します（Rust の `black_box` と同じ障壁で、返り値・副作用・評価順序は変えません。どの出力でも使えます）。
 `tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
-速さの合否の閾値はなく、トラップ・時間切れ・負の時間を返したベンチだけが失敗（`E2005`、終了コード 1）です。ネイティブのみで、`--target wasm32`／`wasm64` や不正な `--samples` は `E2000` です。
+速さの合否の閾値はなく、トラップ・時間切れ・負の時間を返したベンチだけが失敗（`E2005`、終了コード 1）です。ネイティブのみで、`--target wasm32`／`wasm64`、ビルド機で動かせない `--target TRIPLE`、不正な `--samples` は `E2000` です。
 
 ## 型とメモリ
 
@@ -2938,7 +2938,7 @@ Simd.sum_lanes shifted
 
 ### CPU ごとの関数の版（`@cpu`）
 
-トップレベル関数の `def` シグネチャの直前（`private` や `export` より前）に `@cpu ["avx2", "sve"]` のように CPU の命令セット名の文字列を並べると、native の exe と object はその関数を命令セットごとにもう一度 compile し、実行時に CPU が対応する最新の版を選びます。名前は `"sse4.2"`、`"avx2"`、`"avx512"`（x86-64、Windows を除く）、`"sve"`、`"sve2"`（AArch64 Linux）で、build 先で選べない名前は無視します。未知の名前、重複、空の並び、`def` 以外への指定は `E0002` です。`cpu` は予約語ではありません。
+トップレベル関数の `def` シグネチャの直前（`private` や `export` より前）に `@cpu ["avx2", "sve"]` のように CPU の命令セット名の文字列を並べると、native の exe と object はその関数を命令セットごとにもう一度 compile し、実行時に CPU が対応する最新の版を選びます。名前は `"sse4.2"`、`"avx2"`、`"avx512"`（x86-64、Windows を除く）、`"sve"`、`"sve2"`（AArch64 の Linux と Android）で、build 先（`--target`。既定はビルド機）で選べない名前は無視します。未知の名前、重複、空の並び、`def` 以外への指定は `E0002` です。`cpu` は予約語ではありません。
 どの版も同じ型付き IR から作るため、整数の折り返し、浮動小数点の演算順序、NaN、符号付きゼロ、トラップは変わりません。版ごとに 256-bit ベクトルを渡すレジスタが異なるため、引数と結果は 256-bit ベクトルを（レコード、union、タプル、固定長配列の中を含め）持てず、本体は 256-bit ベクトルを渡す関数値を呼べません（いずれも `E1005`。ジェネリック関数は具体化した型で検査します）。256-bit ベクトルを渡して直接呼ぶ関数は同じ命令セットで compile し、それ以外の呼び出し先は portable 版のままです。
 選択は関数ごとに最初の呼び出しで一度だけ行い、テスト用の `TSUZURI_CPU_FORCE` があればその水準以下の同じ系統の版に限ります。WASM、`--emit llvm`、`--freestanding`、および対応する命令セットのない build 先（macOS の AArch64 など）では portable 版だけを作ります。
 
@@ -3754,6 +3754,12 @@ tsuzuri build Kernel.tz --target wasm32 -o kernel.wasm
 LLD リンカーによって到達不能な不要コードは完全にストリップ（除去）されます。
 128-bit 整数の乗算・除算・剰余、および可変ビットシフト演算には同梱の最適化された補助関数がリンクされるため、ホスト環境依存の `compiler-rt` ランタイムを別途用意する必要はありません。
 
+### ネイティブのターゲットとクロスコンパイル
+
+`--target` は、`native`（ビルド機。Clang へ `--target` を渡さない）、`wasm32`、`wasm64`、および 64-bit のリトルエンディアンの native の名前を受けます。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です。native の名前は、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`、`aarch64-pc-windows-msvc`、`x86_64-pc-windows-msvc`、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`、`riscv64gc-unknown-linux-gnu`、`riscv64gc-unknown-linux-musl`、`aarch64-pc-windows-gnu`、`x86_64-pc-windows-gnu`、`aarch64-unknown-freebsd`、`x86_64-unknown-freebsd`、`aarch64-linux-android`、`x86_64-linux-android`、`aarch64-apple-ios`、`aarch64-apple-ios-sim`、`x86_64-apple-ios`、`aarch64-unknown-none`、`x86_64-unknown-none`、`riscv64gc-unknown-none-elf` の 22 個で、大文字小文字を区別し、別名は受け付けません。32-bit の native の target は、native の IR が 64-bit のポインターを前提にするため、`E2000`（`32-bit native targets are not supported because native code generation assumes 64-bit pointers`）です。
+言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`async.c`・Win32 のタスク）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、bare-metal の x86-64 の `noredzone`、出力の拡張子です。`--target native` の出力は、名前を付ける機能を足す前と同じです。
+名前を付けた target の実行ファイルは、同梱ツールチェーン（Zig）か、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。Apple の target は SDK）でリンクします。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。bare-metal の target（`*-unknown-none*`）は、`--freestanding --allocator host` の `object`・`llvm`・`header` だけを受けます。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) にあります。
+
 ### 生成バインディング
 
 `tsuzuri build <path> --target wasm32 --emit bindings-js [-o <name>.mjs]` は、上の ABI を型付きで呼ぶ JavaScript の ES module `<name>.mjs` と、TypeScript 宣言 `<name>.d.mts` を出します（E13）。グルーは `CheckedModule` の公開 ABI だけから作り、LLVM を通さず、`-O` を無視します。`.wasm` は同じソースから別にビルドします。`--target wasm32` 以外、`-o` が `.mjs` で終わらない場合、`.wasm` のためのオプション（`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator`）を付けた場合は `E2000`、`export def` がなければ `E2004` です。生成物は、export と import の名前のバイト順と `record_name` の順に並べた記述子の表と、同梱の固定ランタイム（`src/runtime/bindings-core.mjs` と、1 スレッドの `bindings.mjs` かスレッドプールの `bindings-threads.mjs`）からなり、同じ入力からバイト単位で同じものができます。生成 IR、WASM、`--emit header` の出力は変わりません。
@@ -3876,7 +3882,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
-| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows ネイティブビルドで OS API に到達した場合の `E2002` エラー |
+| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows・iOS・Android の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
 | `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

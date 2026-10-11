@@ -476,6 +476,7 @@ timeout: TimedOut
 | macOS の native | 対応（開発者が実行して検証） |
 | Linux の native | 対応。glibc と musl の x86_64・aarch64 で、警告なしにコンパイルできることを確かめています。実行は CI だけで検証します |
 | Windows の native | 対応（Winsock、`WSAPoll`）。MSVC と MinGW のツールチェーンで、x86_64 と aarch64 がコンパイルでき、x86_64 はリンクできることを確かめています。実行は CI だけで検証します |
+| `--target` で名指しした FreeBSD・Android・iOS | `E2002`。`src/runtime/net.c` は macOS、Linux、Windows の向けだけで、ほかの実装を推測してリンクしません |
 | 既定の wasm32 | ソケットに到達するビルドは `E2000`。アドレスの解析と表示は、import なしで動きます |
 | `--wasm-host wasi` | `E2000`。WASI preview1 には、`connect`・`bind`・`listen` がありません |
 | `--wasm-feature jspi --wasm-feature net`（wasm32） | 対応。生成したグルーが `node:net`・`node:dgram`・`node:dns` で実装します。macOS の Node.js 24 の loopback で検証しました |
@@ -499,7 +500,7 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 
 ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 
-macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
+macOS・Linux・Windows 以外のホストと、`--target` で名指しした FreeBSD・Android・iOS は `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
 
 ## 公開 API
 
