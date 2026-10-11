@@ -28,6 +28,7 @@ fn options(entry: llvm::Entry) -> llvm::EmitOptions {
         wasm: false,
         debug_output: false,
         allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
     }
 }
 

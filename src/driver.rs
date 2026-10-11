@@ -815,6 +815,126 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
     }
 }
 
+/// The CPU features that the f16 lowering reads (D10). A `--cpu native` build runs on the machine
+/// that runs the compiler, so only such a build may use [`CpuFeatures::detect`]; a build for
+/// another machine passes `CpuFeatures::default()`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CpuFeatures {
+    /// x86-64 F16C: `vcvtph2ps` and `vcvtps2ph` convert between binary16 and binary32.
+    pub f16c: bool,
+    /// x86-64 AVX512-FP16: binary16 arithmetic and conversions in single instructions.
+    pub avx512fp16: bool,
+    /// AArch64 FEAT_FP16: binary16 arithmetic in single instructions.
+    pub fp16: bool,
+}
+
+impl CpuFeatures {
+    /// What the CPU that runs the compiler reports.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn detect() -> Self {
+        Self {
+            f16c: std::arch::is_x86_feature_detected!("f16c"),
+            avx512fp16: std::arch::is_x86_feature_detected!("avx512fp16"),
+            fp16: false,
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn detect() -> Self {
+        Self {
+            fp16: std::arch::is_aarch64_feature_detected!("fp16"),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    pub(crate) fn detect() -> Self {
+        Self::default()
+    }
+}
+
+/// Whether an AArch64 target without a guaranteed FEAT_FP16 computes f16 as `half` too (D10).
+/// There LLVM lowers each `half` operation to conversions to binary32, one binary32 operation,
+/// and a conversion back, which are base Armv8-A instructions and round once. `false` keeps the
+/// `half` path to macOS, whose CPUs all have FEAT_FP16, and to a `--cpu native` build on a host
+/// that reports it.
+const AARCH64_HALF_WITHOUT_FP16: bool = true;
+
+/// How a native build computes f16 (D10), from the machine its code runs on: the operating system
+/// and architecture in the spelling of `std::env::consts`, and the CPU features, which count only
+/// for `--cpu native` (the machine running the compiler). Without a capability the build falls
+/// back to `Soft`, the bundled integer runtime, which every target has:
+///
+/// | Target | `--cpu generic` | `--cpu native` |
+/// | --- | --- | --- |
+/// | WASM | `Soft` | n/a |
+/// | AArch64 | `Hardware` (see [`AARCH64_HALF_WITHOUT_FP16`]) | `Hardware` |
+/// | x86-64 | `Soft` (F16C is not in the baseline) | `Hardware` with AVX512-FP16, `Conversions` with F16C, else `Soft` |
+/// | other | `Soft` | `Soft` |
+pub(crate) fn f16_path(
+    wasm: bool,
+    os: &str,
+    arch: &str,
+    cpu: Cpu,
+    host: CpuFeatures,
+) -> llvm::F16Path {
+    f16_path_with(AARCH64_HALF_WITHOUT_FP16, wasm, os, arch, cpu, host)
+}
+
+/// [`f16_path`] with the setting of [`AARCH64_HALF_WITHOUT_FP16`] as a parameter, so that a test
+/// covers both.
+fn f16_path_with(
+    aarch64_without_fp16: bool,
+    wasm: bool,
+    os: &str,
+    arch: &str,
+    cpu: Cpu,
+    host: CpuFeatures,
+) -> llvm::F16Path {
+    use llvm::F16Path::{Conversions, Hardware, Soft};
+    if wasm {
+        return Soft;
+    }
+    let native = cpu == Cpu::Native;
+    match arch {
+        "aarch64" if aarch64_without_fp16 || os == "macos" || (native && host.fp16) => Hardware,
+        "x86_64" if native && host.avx512fp16 => Hardware,
+        "x86_64" if native && host.f16c => Conversions,
+        _ => Soft,
+    }
+}
+
+/// [`f16_path`] for a build whose target is the machine that runs the compiler.
+pub(crate) fn host_f16_path(target: Target, cpu: Cpu) -> llvm::F16Path {
+    f16_path(
+        target.is_wasm(),
+        env::consts::OS,
+        env::consts::ARCH,
+        cpu,
+        CpuFeatures::detect(),
+    )
+}
+
+/// The Clang options that give `path` its instructions in a `--cpu native` build. `-march=native`
+/// lets Clang detect the CPU itself, and these make it use the instructions that the compiler
+/// detected, so a `half` operation never becomes a libcall (`__extendhfsf2`, `__truncsfhf2`,
+/// `__truncdfhf2`) because the two detections differ. AArch64 needs none: `half` lowers to base
+/// instructions there.
+fn f16_cpu_flags(arch: &str, path: llvm::F16Path) -> &'static [&'static str] {
+    match (arch, path) {
+        ("x86_64", llvm::F16Path::Hardware) => &["-mavx512fp16", "-mf16c"],
+        ("x86_64", llvm::F16Path::Conversions) => &["-mf16c"],
+        _ => &[],
+    }
+}
+
+/// The Clang options of the IR of a `--cpu native` build: the CPU, and what its f16 path needs.
+fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str>, Diagnostic> {
+    let mut args = vec![native_cpu_flag(arch)?];
+    args.extend_from_slice(f16_cpu_flags(arch, f16));
+    Ok(args)
+}
+
 /// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
 /// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim.
 pub(crate) fn task_runtime_source() -> String {
@@ -2521,6 +2641,8 @@ fn build_complete(
     let mut trap_sites = Vec::new();
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
+    let f16 = host_f16_path(options.target, options.cpu);
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
     let mut text = if options.emit == Emit::Header {
@@ -2570,6 +2692,7 @@ fn build_complete(
             wasm: options.target.is_wasm(),
             debug_output: options.debug_output,
             allocator: options.allocator,
+            f16,
         };
         if options.trap_return {
             let output = project.with_trap_sources(|sources| {
@@ -2705,6 +2828,7 @@ fn build_complete(
                     wasm: false,
                     debug_output: options.debug_output,
                     allocator: options.allocator,
+                    f16,
                 },
             )?;
             library.as_str()
@@ -3174,7 +3298,7 @@ fn build_complete(
         } else {
             clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
             if options.cpu == Cpu::Native {
-                clang.arg(native_cpu_flag(env::consts::ARCH)?);
+                clang.args(native_ir_cpu_args(env::consts::ARCH, f16)?);
             }
         }
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
@@ -5098,6 +5222,169 @@ mod tests {
                 .validate()
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn f16_path_follows_target_cpu_and_host_features() {
+        use llvm::F16Path::{Conversions, Hardware, Soft};
+        let none = CpuFeatures::default();
+        let f16c = CpuFeatures { f16c: true, ..none };
+        let sapphire = CpuFeatures {
+            f16c: true,
+            avx512fp16: true,
+            ..none
+        };
+        let fp16 = CpuFeatures { fp16: true, ..none };
+        let every_host = [none, f16c, sapphire, fp16];
+        let path = |wasm, os, arch, cpu, host| f16_path_with(true, wasm, os, arch, cpu, host);
+        // WASM computes f16 in the runtime whatever the CPU features say: there are no `half`
+        // instructions, and LLVM would call `__extendhfsf2` and `__truncsfhf2`.
+        for host in every_host {
+            for cpu in [Cpu::Generic, Cpu::Native] {
+                for arch in ["aarch64", "x86_64", "riscv64"] {
+                    assert_eq!(path(true, "linux", arch, cpu, host), Soft, "{arch}");
+                }
+            }
+        }
+        // AArch64 lowers `half` with base instructions where it has no FEAT_FP16 arithmetic.
+        for os in ["macos", "linux", "windows", "freebsd"] {
+            for host in every_host {
+                for cpu in [Cpu::Generic, Cpu::Native] {
+                    assert_eq!(path(false, os, "aarch64", cpu, host), Hardware, "{os}");
+                }
+            }
+        }
+        // Narrowed, an AArch64 build needs a guarantee: macOS, or a native build that reports it.
+        let narrowed = |os, cpu, host| f16_path_with(false, false, os, "aarch64", cpu, host);
+        assert_eq!(narrowed("macos", Cpu::Generic, none), Hardware);
+        assert_eq!(narrowed("macos", Cpu::Native, none), Hardware);
+        assert_eq!(narrowed("linux", Cpu::Generic, fp16), Soft);
+        assert_eq!(narrowed("windows", Cpu::Generic, none), Soft);
+        assert_eq!(narrowed("linux", Cpu::Native, none), Soft);
+        assert_eq!(narrowed("linux", Cpu::Native, fp16), Hardware);
+        assert_eq!(narrowed("windows", Cpu::Native, fp16), Hardware);
+        // x86-64: F16C is not in the baseline, so only a native build, whose CPU the host
+        // detected, can use it; and a CPU with AVX512-FP16 has the arithmetic too.
+        for os in ["macos", "linux", "windows"] {
+            for host in every_host {
+                assert_eq!(path(false, os, "x86_64", Cpu::Generic, host), Soft, "{os}");
+            }
+            assert_eq!(path(false, os, "x86_64", Cpu::Native, none), Soft, "{os}");
+            assert_eq!(path(false, os, "x86_64", Cpu::Native, fp16), Soft, "{os}");
+            assert_eq!(
+                path(false, os, "x86_64", Cpu::Native, f16c),
+                Conversions,
+                "{os}"
+            );
+            assert_eq!(
+                path(false, os, "x86_64", Cpu::Native, sapphire),
+                Hardware,
+                "{os}"
+            );
+        }
+        // Other targets have no lowering that was inspected: the runtime, always.
+        for arch in ["x86", "arm", "riscv64", "powerpc64", "s390x", "loongarch64"] {
+            for host in every_host {
+                for cpu in [Cpu::Generic, Cpu::Native] {
+                    assert_eq!(path(false, "linux", arch, cpu, host), Soft, "{arch}");
+                }
+            }
+        }
+        // The entry point applies the setting of `AARCH64_HALF_WITHOUT_FP16`, and the entry
+        // point for the host reads the host.
+        assert_eq!(
+            f16_path(false, "linux", "aarch64", Cpu::Generic, none),
+            f16_path_with(
+                AARCH64_HALF_WITHOUT_FP16,
+                false,
+                "linux",
+                "aarch64",
+                Cpu::Generic,
+                none
+            )
+        );
+        for target in [Target::Wasm32, Target::Wasm64] {
+            for cpu in [Cpu::Generic, Cpu::Native] {
+                assert_eq!(host_f16_path(target, cpu), Soft);
+            }
+        }
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(host_f16_path(Target::Native, Cpu::Generic), Soft);
+        }
+        if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            for cpu in [Cpu::Generic, Cpu::Native] {
+                assert_eq!(host_f16_path(Target::Native, cpu), Hardware);
+            }
+        }
+    }
+
+    #[test]
+    fn detected_cpu_features_are_consistent() {
+        let features = CpuFeatures::detect();
+        // AVX512-FP16 CPUs have F16C, and only the host's own architecture reports anything.
+        assert!(!features.avx512fp16 || features.f16c);
+        if cfg!(not(target_arch = "x86_64")) {
+            assert!(!features.f16c && !features.avx512fp16);
+        }
+        if cfg!(not(target_arch = "aarch64")) {
+            assert!(!features.fp16);
+        }
+        // Every Apple Silicon CPU has FEAT_FP16, and every AArch64 Windows and Linux CPU that
+        // has it says so.
+        if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+            assert!(features.fp16);
+        }
+    }
+
+    #[test]
+    fn f16_cpu_flags_name_the_instructions_of_the_path() {
+        use llvm::F16Path::{Conversions, Hardware, Soft};
+        assert_eq!(f16_cpu_flags("x86_64", Soft), &[] as &[&str]);
+        assert_eq!(f16_cpu_flags("x86_64", Conversions), ["-mf16c"]);
+        assert_eq!(
+            f16_cpu_flags("x86_64", Hardware),
+            ["-mavx512fp16", "-mf16c"]
+        );
+        // AArch64 needs no flag: `half` lowers to base instructions without FEAT_FP16.
+        for path in [Soft, Conversions, Hardware] {
+            assert_eq!(f16_cpu_flags("aarch64", path), &[] as &[&str]);
+        }
+        // The Clang options of the IR of a native build: the CPU first, then the instructions.
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Conversions).unwrap(),
+            ["-march=native", "-mf16c"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Hardware).unwrap(),
+            ["-march=native", "-mavx512fp16", "-mf16c"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Soft).unwrap(),
+            ["-march=native"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("aarch64", Hardware).unwrap(),
+            ["-mcpu=native"]
+        );
+        assert!(native_ir_cpu_args("riscv64", Soft).is_err());
+        // Every path that a `--cpu native` build can pick on x86-64 has the flags it needs.
+        for host in [
+            CpuFeatures::default(),
+            CpuFeatures {
+                f16c: true,
+                ..CpuFeatures::default()
+            },
+            CpuFeatures {
+                f16c: true,
+                avx512fp16: true,
+                ..CpuFeatures::default()
+            },
+        ] {
+            let path = f16_path(false, "linux", "x86_64", Cpu::Native, host);
+            let flags = f16_cpu_flags("x86_64", path);
+            assert_eq!(flags.contains(&"-mf16c"), path != Soft);
+            assert_eq!(flags.contains(&"-mavx512fp16"), path == Hardware);
         }
     }
 

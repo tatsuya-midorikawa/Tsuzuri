@@ -61,18 +61,18 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `std/Cbor.tz` | `Json.Value` の CBOR（RFC 8949）。決定的な符号化と、JSON のデータモデルに限った厳密な復号。浮動小数点のビット列は 2 のべきの厳密な拡大・縮小で求め、専用の builtin を使わない |
 | `std/Format.tz` / `src/runtime/format.ll` | 文字列補間の書式指定。`Format.parse`／`Format.pad` と、パディング処理のランタイム補助（文字列結合は `src/llvm_display.rs`） |
 | `src/simd.rs` / `src/llvm_simd.rs` | 128-bit・256-bit の vector/mask 型、lane 型族、境界検査、LLVM vector への lowering、256-bit の load／store の `align 16` |
-| `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3） |
+| `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3）。x86-64 の版の `target-features` には、f16 の経路が要る `+f16c`・`+avx512fp16` も足す（D10） |
 | `src/llvm_control.rs` | 直接反復・switch・定数テーブル生成、パターンマッチ手順の分岐展開と全経路での解放処理 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定なマージソート（merge sort）の型付き builtin lowering |
 | `src/llvm_compare.rs` | 配列・リスト・タプルの借用構造比較、短絡評価と段階的な比較メソッド適用 |
 | `src/derive.rs` / `src/llvm_hash.rs` / `src/llvm_display.rs` | 導出（derive）instance の AST 合成、canonical Hash、引用符・コレクション表示、文字列補間（`Interpolated`）の一括結合 |
-| `src/llvm_math.rs` / `src/runtime/math.c` / `src/runtime/musl/` | Float 基本数学演算と型別 Elementary 関数、固定バージョンの移植可能な数学関数実装 |
+| `src/llvm_math.rs` / `src/runtime/math.c` / `src/runtime/musl/` | Float 基本数学演算と型別 Elementary 関数、固定バージョンの移植可能な数学関数実装。f16 を LLVM の `half` 命令で計算する経路の生成（`half_binary`・`half_sqrt`・`half_cast`、D10） |
 | `src/recursive.rs` / `src/llvm_recursive.rs` / `src/runtime/recursive.ll` | 具体型ごとの再帰成分、所有ノード、追加確保を伴わないスタックレス解放と反復複製 |
 | `src/llvm_frame.rs` | `new` を伴わないリテラル向けのスタックフレーム領域確保、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理 |
 | `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略 |
-| `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、最短往復文字列表現・解析、書式指定付き数値表示（`tz_soft_format_spec`） |
+| `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、最短往復文字列表現・解析、書式指定付き数値表示（`tz_soft_format_spec`）。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
 | `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な文字符号化変換、ネイティブメモリ確保、WASM の再利用・結合可能なヒープ管理 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
 | `src/runtime/cpu.c` | 整数 8 型の配列の和・最小・最大の level ごとの kernel、CPUID/OSXSAVE/XCR0 と `getauxval` による機能検出、アトミックな level キャッシュ、`@cpu` 関数の版を選ぶ `tsuzuri_cpu_pick` |
@@ -80,7 +80,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/runtime/task.c` / `task-wasm.ll` / `task-wasm-threads.c` | ネイティブ常駐スレッドプール（と F10 の `Mutex` のロック、`Channel` の待ち・起こし・デッドロックの判定）、WASM デフォルトの逐次実行、opt-in の共有メモリ Worker プール（と、その `Mutex` と `Channel`） |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
-| `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用） |
+| `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用）。f16 の経路は純関数 `f16_path`（WASM、ターゲットの OS・アーキテクチャ、`--cpu`、`CpuFeatures`）が選び、`--cpu native` の x86-64 では clang へ `-mf16c`・`-mavx512fp16` も渡す（D10） |
 | `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す） |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML（`[package]` の `edition` を含む）、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
@@ -105,6 +105,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | 項目 | 現在の実装／今後の要件 |
 |---|---|
 | スカラー CPU | i8〜i64／i8u〜i64u および f32／f64 間の型変換には、LLVM の直接命令および飽和（saturating）intrinsic を使用。キャスト演算子 `as` と組み込み変換関数の意味論および性能経路を完全に一致させる |
+| f16 | AArch64 は LLVM の `half` 命令（FEAT_FP16 のない CPU でも基本命令で、演算ごとに 1 回だけ丸める）。x86-64 は `--cpu native` のときだけ、F16C で変換、AVX512-FP16 で演算と変換。WASM とそれ以外はソフトウェア。結果のビットは全経路で同一（D10）。実測は macOS arm64 だけで、x86-64 と、Linux・Windows の AArch64 は機械語の確認までで実行は未確認 |
 | SIMD | `-O3` におけるループおよび SLP 自動ベクトル化。メモリ上で連続した配列配置、型の特殊化、不要なコピーの徹底排除により、LLVM が最適化しやすい IR を生成。`--cpu native` 指定時にはビルドホスト固有の命令セットを有効化 |
 | 移植性 | デフォルトの `--cpu generic` ではターゲットアーキテクチャのベースライン命令セットを採用。同梱の i64 配列和のみ実行時 ISA 選択を実施。`native` 指定時は配布バイナリの前提条件にビルド機の ISA が含まれる |
 | 複数 CPU コア | `Task.parallel` 向けに遅延起動する常駐スレッドプールを実装。ハードウェアの CPU コア数に応じて追加スレッド数を適切に制限し、呼び出し元スレッド自身も自グループの処理を推進。WASM は逐次フォールバック。自動並列化は未実装 |
@@ -1111,7 +1112,7 @@ clone、drop、および添字走査は反復ループによってスタック�
 `@checked` ブロック内部に記述された整数の `+`、`-`、`*`、`**`、および単項 `-` のみは、`Int.checked_*` と同一の `checked_integer_arithmetic` によってオーバーフローが検査され、オーバーフロー時には `OverflowException` を送出します。整数のべき乗 `**` は `Int.wrapping_pow` と同様に二乗法と乗算の反復（符号付きの負の指数は `NumericRuntime` のトラップ）で計算され、`f32`／`f64` の `**` は `Math.pow` と同一の `tz_math_pow_f*` を呼び出します。
 例外は 32-bit 整数のエラーコードとして表現され、同一関数本体内の最も内側に位置する `try` のハンドラへと、途中のスコープの一時値を安全に解放しながら分岐します（`try_targets`）。
 例外が関数やラムダ式の境界を越えて自動伝播することはありません。外側を囲む `try` ブロックが存在しない場合は `TrapKind::Overflow` として安全にトラップします。`finally` ブロックは、ハンドラ内部から送出された例外を含むすべての実行経路で確実に 1 回実行されます。
-i8〜i64／i8u〜i64u から f32／f64 への変換には LLVM の `sitofp`／`uitofp` を用い、f32 と f64 の相互変換には `fpext`／`fptrunc` を使用します。i128、f16、f128、および decimal 型を含む変換は正確なソフトウェア演算経路を維持し、f64 を経由することで二重丸め誤差を生じさせることはありません。
+i8〜i64／i8u〜i64u から f32／f64 への変換には LLVM の `sitofp`／`uitofp` を用い、f32 と f64 の相互変換には `fpext`／`fptrunc` を使用します。i128、f128、および decimal 型を含む変換と、整数と f16 の間の変換は正確なソフトウェア演算経路を維持し、f64 を経由することで二重丸め誤差を生じさせることはありません。f16 と f32／f64 の間の変換は、f16 の経路が `Conversions` か `Hardware` のとき（後述）だけ、`half` への `fpext`／`fptrunc` になります。
 intrinsic の外部宣言は組み込み関数と通常の式で共通化され、重複なく決定論的な順序で出力されます。
 負の添字アクセスを含め、配列やリストの境界検査は要素の GEP／load やリンク走査よりも前に先行して実行されます。
 浮動小数点演算に対して fast-math フラグを安易に付与することはありません。
@@ -1245,7 +1246,7 @@ math 生成スクリプトは、必要な musl 1.2.5 のソースコードを個
 保存処理に先立って同一の Clang で IR のコンパイル検証を行い、未解決の外部関数参照、FMA 命令の暗黙生成、fast-math フラグ、および意図しない拡張精度の混入を厳格に拒否します。
 通常の Cargo ビルドにおいて Clang や llvm-link への依存関係を追加することはありません。アップストリームのライセンス条項およびソース取得元のハッシュ情報は `runtime/musl` に同梱されています。
 
-浮動小数点数の平方根（sqrt）および丸め処理は、f32／f64 では型付き intrinsic および明示命令を用い、その他の広幅形式では既存の整数数値ランタイムを使用します。
+浮動小数点数の平方根（sqrt）および丸め処理は、f32／f64 では型付き intrinsic および明示命令を用い、その他の広幅形式では既存の整数数値ランタイムを使用します。f16 の平方根は、経路が `Hardware` のときだけ `llvm.sqrt.f16` です（丸め処理は常にソフトウェア）。
 明示的な `Math.fma` のみが、AArch64 ネイティブ環境の f32／f64 において `llvm.fma` 命令へと lowering されます。ハードウェア命令を保証できないネイティブターゲット、WASM、およびその他の浮動小数点形式では、高精度なソフトウェア実装 `tz_soft_fma` が使用されます。
 通常の乗算や加算に対して `contract` や fast-math 属性を付与することはなく、libm の `fma` インポートを無用に生成することもありません。
 ソフトウェア FMA は、係数の積と加数を符号付き多倍長整数として正確に合成し、既存の `pack` 処理によって 1 回だけ丸め込みます。指数差が $3p + 8$ 桁を超える極小の非ゼロ項については、丸めの中点（tie）の判定方向のみを保存する sticky digit へと縮約します。
@@ -1256,6 +1257,13 @@ math 生成スクリプトは、必要な musl 1.2.5 のソースコードを個
 縮小後の変数値は 1/8 以下に収められ、多項式係数は 256-bit 精度から上位・下位に分割して保持されます（特殊値や極端な比率の処理はアップストリームの堅牢なロジックを維持しています）。
 速度向上の誇大な主張は行いません。`tests/math.mjs` では、FMA を含む `BigInt` 参照実装による基本演算 759,675 件、および 256-bit `mpmath` 参照による初等超越関数 26,376 件をネイティブおよび WASM の `-O0`／`-O3` で照合検証しています。
 f16 の単項基本演算は全 65,536 パターン、広幅形式は各 1,000 件の乱数パターンを含み、非 NaN におけるビット完全一致および実行時ヒープ非確保が確認されています。
+
+f16 を LLVM の `half` で計算する経路（D10）は、`F16Path`（`Soft`、`Conversions`、`Hardware`）が `EmitOptions`・`Instrumentation`・`TestRunnerOptions` から `Globals` へ渡り、`FunctionEmitter::binary`・`cast`・`math_builtin` の 3 か所が、経路が許すときだけ `src/llvm_math.rs` の `half_binary`・`half_cast`・`half_sqrt` を呼びます。f16 の値の保存、ABI、デバッグ情報は経路によらず `i16` のままで、演算の前後でだけ `bitcast` で `half` と行き来します。`F16Path` の既定は `Soft` で、WASM は `emit_program` が常に `Soft` にします。`f16` を使わないプログラムの IR は、導入前とバイト単位で同一です。
+経路は `driver::f16_path` が選ぶ純関数です。入力は、WASM か、ターゲットの OS とアーキテクチャ、`--cpu`、`CpuFeatures`（ホストの `f16c`・`avx512fp16`・`fp16`。`--cpu native` のときだけ見る）で、`std::env::consts` やホストの `cfg!` を関数の中で読みません。クロスコンパイルを持ち込む変更は、ターゲットの OS とアーキテクチャを渡し、ホストの機能は渡さない（`CpuFeatures::default()`）ようにします。AArch64 は、FEAT_FP16 の有無によらず `Hardware` です（定数 `AARCH64_HALF_WITHOUT_FP16`。`false` にすると、macOS と、`--cpu native` で `fp16` を検出したホストだけです）。x86-64 は `--cpu native` のときだけ、`avx512fp16` で `Hardware`、`f16c` で `Conversions` で、`--cpu generic` は `Soft` です。`Conversions` は、`f16`→`f32`／`f64` と `f32`→`f16` だけを `half` の `fpext`／`fptrunc` にし、演算と `f64`→`f16` は `Soft` のままです。F16C に `f64`→`f16` の命令がなく、LLVM が `__truncdfhf2` を呼ぶことと、`f32` を経由すると二重丸めになることが理由です。能力がなければ `Soft` に戻ります。利用者が経路を指定する手段はなく、`--cpu native` が使えないアーキテクチャの `E2000` は従来どおりです。経路は性能の選択で、結果のビットは変わりません。
+`--cpu native` の x86-64 は、`clang -x ir` に `-march=native` と、選んだ経路の `-mf16c`・`-mavx512fp16` を渡し、コンパイラの検出と clang の検出が食い違っても `half` がライブラリ関数（`__extendhfsf2`・`__truncsfhf2`・`__truncdfhf2`）に下がらないようにします。`@cpu` の版は `target-features` がビルドの特徴を置き換えるので、x86-64 の level 1〜3 の版に `+f16c`（`Conversions`）か `+avx512fp16,+f16c`（`Hardware`）を足します（`src/llvm_cpu.rs`）。
+`half` の命令は `fadd`・`fsub`・`fmul`・`fdiv`・`fcmp`・`llvm.sqrt.f16`・`fpext`・`fptrunc` で、fast-math フラグも融合もありません。`llvm.sqrt.f16` の宣言は intrinsic の集合で 1 度だけ出ます（`numeric.ll` と `math.ll` は宣言しません）。FEAT_FP16 のない AArch64 では、LLVM が演算ごとに `f32` へ広げて 1 回の `f32` 演算をし、`half` へ丸め直します。`+`・`-`・`*`・`/`・平方根は、`f32` の仮数 24 bit が `2 × 11 + 2` 以上なので二重丸めにならず、結果は 1 回丸めと同じです。生成した機械語がライブラリ関数を呼ばないことは、`tests/f16_hardware.rs` が AArch64（Linux の gnu と musl、Windows の msvc、macOS の各 `-O0`・`-O3`）と x86-64（`-mf16c`、`-mavx512fp16`）で確かめ、フラグなしの x86-64 が呼ぶことも負の対照として確かめます。
+結果が NaN のときは、ハードウェアの符号とペイロードに頼らず、`numeric.c` と同じビット（quiet NaN `0x7E00` に、`+`・`-` は左辺、`*`・`/` は両辺の符号の排他的論理和）へ整数の `select` で置き換えます。NaN の判定は `(bits & 0x7FFF) > 0x7C00` で、`fcmp uno half` は使いません。`Math.sqrt` は NaN の入力をそのまま返し、変換は入力の符号を保った目的の型の quiet NaN を返します。この置き換えを外した試作は macOS arm64 で C の `_Float16` と同じ時間でした。その費用と、ほかの形の試作は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります（1 回ずつの測定）。
+`tests/f16_hardware.rs` は、IR の形（既定は `Soft`、WASM は経路によらず同一で `half` と import がない、`f16` を使わない IR は不変、決定性、演算・比較・平方根・変換）、経路ごとの機械語、`@cpu` の版の特徴、`driver::build` の経路を検査します。`tests/f16_hardware.mjs` は、全 65,536 パターンの単項、二重丸めの罠を含む境界の値、中点、乱数の 2 項演算・比較・変換を、JavaScript の倍精度で厳密に求めた参照（コンパイラを使わない）と、NaN のビットまで照合します。native の `half` の IR（`-O0`・`-O3`、macOS arm64 では FEAT_FP16 なしの `-mcpu=generic` も。`-O3` でベクトル化される一括ループも）、WASM のソフトウェア経路（import なし）、`--cpu generic` と `--cpu native` のオブジェクトを調べます。実行した経路は、オブジェクトの `tz_soft_` の有無から分類して表示し、環境変数 `TSUZURI_F16_EXPECT`（テスト専用）で期待する経路を決めると、別の経路を通ったときに失敗します。`tsuzuri test` も `-O0`・`-O3`・wasm32 で確かめます。この実行が確かめるのは実行したホストの経路だけです。x86-64 の F16C と AVX512-FP16、Linux と Windows の AArch64 は、機械語の確認までで、その環境での実行は未確認です（その環境でこのコマンドを実行します）。`benchmarks/run-f16.mjs` は、ソフトウェア経路、`half` 命令、C の `_Float16` を同条件で測ります。
 機能テストの `fma_reductions` は長さ 0〜17 および 1025 までの境界値・奇数長において 872 ケースと 2 件のトラップを検証し、C 言語の `fma_runtime` テストはホスト環境の `fma`／`fmaf` と 20,513 組の演算結果を ASan／UBSan 有効環境で照合しています。
 
 生成時のみ Clang を使用し、通常の Cargo ビルド、型検査、および LLVM IR の出力においてローカル環境への LLVM インストールを要求することはありません。

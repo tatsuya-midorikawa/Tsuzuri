@@ -77,6 +77,7 @@ flowchart TD
 | 経路 | 0.1.0 の扱い |
 | --- | --- |
 | スカラー CPU | `i8` から `i64`、対応する符号なし、`f32` と `f64` の変換は、LLVM の直接命令と飽和 intrinsic を使います。`as` と組み込み変換は同じ経路です。 |
+| `f16` | AArch64 は LLVM の `half` 命令（FEAT_FP16 のない CPU でも基本命令で 1 回だけ丸めます）。x86-64 は `--cpu native` のときだけ、F16C で変換、AVX512-FP16 で演算も。WASM とそれ以外はソフトウェア実装です。結果のビットは同じです。[詳細](../types-and-type-inference/basic-types.md#f16-の計算の経路) |
 | SIMD | `-O3` の自動ベクトル化に加え、128-bit と 256-bit の明示的な SIMD 型があります。既定の `--cpu generic` は、そのアーキテクチャの基準命令です。 |
 | `--cpu native` | ビルド機の命令セットに合わせます。古い CPU へはそのバイナリを配布できません。 |
 | 実行時の命令選択 | 同梱の整数配列の和、最小、最大だけが、実行時に命令セットを選びます。選べない環境は基準実装です。利用者の関数が版を持つのが `@cpu` です。 |
@@ -153,7 +154,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |
 | 言語版（`Tsuzuri.toml` の `edition`）、`@deprecated` と警告 `W1005`、公開 API の差分（`tsuzuri api-diff`） | 実装済み | G19。edition は `2026` だけで、差はまだない。保つものと非推奨の手順は [安定性と互換性の方針](../../../docs/stability.md) |
 | 型検査とコード生成の増分コンパイル、追加ターゲット | 計画中 | G15、[PB06](../../../_perfs/PB06-build-server.md)、[PB07](../../../_perfs/PB07-incremental-codegen.md) |
-| `f16` のハードウェア演算、const 評価の拡張 | 計画中 | D10、D11 |
+| `f16` の演算と変換（AArch64 は `half` 命令、x86-64 の `--cpu native` は F16C と AVX512-FP16、WASM はソフトウェア） | 実装済み | D10。測ったのは macOS arm64 だけ。x86-64 と、Linux・Windows の AArch64 は機械語の確認までで、その環境での実行は未確認。確かめるには、その環境で `tests/f16_hardware.mjs` を実行する |
+| const 評価の拡張 | 計画中 | D11 |
 
 ## 採らないもの
 

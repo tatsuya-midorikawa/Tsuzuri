@@ -121,7 +121,7 @@ wrapped=-2147483648 msg=Arithmetic operation resulted in an overflow.
 
 ### 浮動小数点数
 
-2 進浮動小数点（`f16`、`f32`、`f64`、`f128`）は、IEEE 754 の `NaN`、無限大、符号付きゼロ、非正規化数を保持し、最近接偶数丸めです。`NaN` のペイロード、例外フラグ、丸めモードの変更は公開していません。`f16` と `f128` の演算はソフトウェア実装で、`**` は使えません。decimal（`d32`、`d64`、`d128`）は別の仕様です。
+2 進浮動小数点（`f16`、`f32`、`f64`、`f128`）は、IEEE 754 の `NaN`、無限大、符号付きゼロ、非正規化数を保持し、最近接偶数丸めです。`NaN` のペイロード、例外フラグ、丸めモードの変更は公開していません。`f128` の演算はソフトウェア実装です。`f16` の演算は、ビルドによって LLVM の `half` 命令かソフトウェア実装で、結果のビットは同じです（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。`f16` と `f128` に `**` は使えません。decimal（`d32`、`d64`、`d128`）は別の仕様です。
 
 ```tsuzuri run=nan_eq%3Dfalse%20nan_neq%3Dtrue%20inf_gt%3Dtrue%20ninf_lt%3Dtrue%20zero_eq%3Dtrue
 let nan = 0.0 / 0.0
