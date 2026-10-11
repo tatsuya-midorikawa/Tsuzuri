@@ -13,3 +13,10 @@ fn half_roundtrip values =
     let mut total = 0.0
     for value in values do total = total + ((value as f16) as f64)
     total
+
+// Independent elements: narrow, multiply, and widen each, summing in f64 (the sum keeps its order; the rest can be vectorized).
+export def half_scale :: ref [f64] -> f64
+fn half_scale values =
+    let mut total = 0.0
+    for value in values do total = total + (((value as f16) * 1.5f16) as f64)
+    total
