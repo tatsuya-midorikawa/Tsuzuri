@@ -975,6 +975,43 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
 
 #[cfg(unix)]
 #[test]
+fn a_sysroot_the_target_cannot_read_is_refused_before_any_tool_runs() {
+    use fake_toolchain::{setup, text};
+    let setup = setup("sysroot", "def main :: unit -> i32 = \\() -> 0\n");
+    // An MSVC target and a bare-metal target read no sysroot, whatever the output is.
+    for (triple, extra) in [
+        (Triple::X86_64WindowsMsvc, vec!["--emit", "object"]),
+        (
+            Triple::Riscv64BareMetal,
+            vec!["--emit", "object", "--freestanding", "--allocator", "host"],
+        ),
+    ] {
+        let mut arguments = vec!["build", "--no-cache", "--json", "--target", triple.name()];
+        arguments.extend(extra);
+        let output = setup
+            .command(&arguments)
+            .env("TSUZURI_CLANG", setup.root.join("missing-clang"))
+            .env("TSUZURI_SYSROOT", "/some/sysroot")
+            .output()
+            .unwrap();
+        let (_, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(2), "{}: {stderr}", triple.name());
+        assert!(
+            stderr.contains("\"code\":\"E2000\"")
+                && stderr.contains(&format!(
+                    "TSUZURI_SYSROOT does not apply to {}",
+                    triple.name()
+                )),
+            "{}: {stderr}",
+            triple.name()
+        );
+        assert!(!stderr.contains("cannot execute"), "{stderr}");
+    }
+    fs::remove_dir_all(setup.root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
     use fake_toolchain::{setup, text};
     let setup = setup("cache", "let total = 40 + 2\ntotal\n");

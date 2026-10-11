@@ -209,7 +209,13 @@ pub(crate) fn os_message(platform: Platform) -> String {
             "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
             triple.name()
         ),
-        _ => OS_WINDOWS_MESSAGE.to_owned(),
+        // A named Windows target may be built on any machine, so "build on macOS or Linux" would
+        // send someone who already is on one back to where they started.
+        Some(_) => OS_WINDOWS_MESSAGE.replace(
+            "build on macOS or Linux",
+            "build for macOS, Linux, or FreeBSD",
+        ),
+        None => OS_WINDOWS_MESSAGE.to_owned(),
     }
 }
 
@@ -701,6 +707,8 @@ impl BuildOptions {
                 ),
             ));
         }
+        // A sysroot that the target cannot read is refused when the build starts, not only at a link.
+        sdk_args(self.platform())?;
         // The debug information of these outputs comes from a tool that only its own kind of host has.
         let platform = self.platform();
         if self.debug_info {
@@ -1165,6 +1173,13 @@ fn cross_hint(platform: Platform, hint: &str) -> String {
         return hint.to_owned();
     };
     let name = triple.name();
+    // A freestanding object reads no C library, header, or linker: only the compile of IR can fail.
+    if triple.is_bare_metal() {
+        return format!(
+            "cross-compiling to {name} needs a Clang with the {} backend; {hint}",
+            triple.arch_name()
+        );
+    }
     let needs = if platform.mach_o() {
         format!("the SDK for {name}: set {SYSROOT_VARIABLE} to it")
     } else if triple.is_msvc() {
@@ -5786,6 +5801,17 @@ mod tests {
                 continue;
             }
             let hint = cross_hint(platform, "x");
+            if triple.is_bare_metal() {
+                assert_eq!(
+                    hint,
+                    format!(
+                        "cross-compiling to {} needs a Clang with the {} backend; x",
+                        triple.name(),
+                        triple.arch_name()
+                    )
+                );
+                continue;
+            }
             assert_eq!(
                 hint.contains("use the bundled toolchain"),
                 triple.has_bundled_c_library(),
