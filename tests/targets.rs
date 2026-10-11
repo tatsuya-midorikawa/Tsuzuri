@@ -770,6 +770,20 @@ fn a_foreign_target_tests_through_the_runner_and_reports_each_test() {
         "{stderr}"
     );
     assert_eq!(setup.log(), "");
+    // A runner that does not exist is named in the error, and no test is reported as failed.
+    let missing = setup
+        .command(&["test", "--target", triple.name()])
+        .env("TSUZURI_RUNNER", "/no/such/runner")
+        .output()
+        .unwrap();
+    let (_, stderr) = text(&missing);
+    assert_eq!(missing.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("cannot start the runner of TSUZURI_RUNNER '/no/such/runner': "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("not ok"), "{stderr}");
+    fs::remove_file(&setup.log).unwrap();
     let output = setup
         .command(&["test", "--target", triple.name(), "--json"])
         .env("TSUZURI_RUNNER", setup.runner_command())

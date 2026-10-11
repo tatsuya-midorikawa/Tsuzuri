@@ -223,6 +223,7 @@ fn run_with_timeout(
         arguments.append(&mut runner.arguments);
         runner.program = prefix.program;
         runner.arguments = arguments;
+        runner.foreign = true;
     }
     let cursor = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(selected.len()));
@@ -363,6 +364,8 @@ struct Runner {
     arguments: Vec<OsString>,
     /// The directory of the counter files of a covered native runner.
     coverage: Option<PathBuf>,
+    /// Whether `program` is the command of `TSUZURI_RUNNER`, which starts the test executable.
+    foreign: bool,
 }
 
 /// A native test runner with debug information that runs one test when a debugger starts
@@ -629,7 +632,7 @@ fn execute_test(
     if let Some(directory) = &runner.coverage {
         command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
     }
-    let finished = run_captured(&mut command, timeout, false, "test")?;
+    let finished = run_captured(&mut command, timeout, false, "test", runner.foreign)?;
     let failure = match finished.status {
         Some(status) => (!status.success()).then(|| termination_reason(&status)),
         None => Some(format!("timed out after {}ms", timeout.as_millis())),
@@ -713,6 +716,7 @@ fn build_runner(
             program: artifact.into_os_string(),
             arguments: Vec::new(),
             coverage: coverage.map(|_| directory.to_owned()),
+            foreign: false,
         });
     }
     text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -791,6 +795,7 @@ fn build_runner(
         program: "node".into(),
         arguments: vec![script.into_os_string(), artifact.into_os_string()],
         coverage: None,
+        foreign: false,
     })
 }
 
@@ -1152,7 +1157,7 @@ fn execute_bench(
         samples.to_string(),
         BENCH_SAMPLE_NS.to_string(),
     ]);
-    let finished = run_captured(&mut command, timeout, true, "bench")?;
+    let finished = run_captured(&mut command, timeout, true, "bench", false)?;
     let outcome = match finished.status {
         None => Err(format!("timed out after {}ms", timeout.as_millis())),
         Some(status) if status.code() == Some(3) => Err("returned a negative duration".into()),
@@ -1200,11 +1205,14 @@ const CAPTURED_STDERR: usize = 64 * 1024;
 /// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
 /// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`. `kind` is
 /// `test` or `bench`, for the messages.
+/// Starts `command` and collects the tail of its stderr. When `foreign`, the command is the
+/// runner of `TSUZURI_RUNNER`, so that a failure to start is that runner's.
 fn run_captured(
     command: &mut Command,
     timeout: Duration,
     stdout: bool,
     kind: &str,
+    foreign: bool,
 ) -> Result<Captured, Diagnostic> {
     command
         .stdin(Stdio::null())
@@ -1214,9 +1222,21 @@ fn run_captured(
             Stdio::null()
         })
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| driver_error("E2002", format!("cannot start {kind} runner: {error}")))?;
+    let program = command.get_program().to_owned();
+    let mut child = command.spawn().map_err(|error| {
+        if foreign {
+            driver_error(
+                "E2001",
+                format!(
+                    "cannot start the runner of {} '{}': {error}",
+                    crate::target::RUNNER_VARIABLE,
+                    Path::new(&program).display()
+                ),
+            )
+        } else {
+            driver_error("E2002", format!("cannot start {kind} runner: {error}"))
+        }
+    })?;
     let out = child.stdout.take().map(|pipe| {
         std::thread::spawn(move || {
             let mut text = Vec::new();
@@ -1484,6 +1504,7 @@ mod tests {
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(), script.into()],
                 coverage: None,
+                foreign: false,
             };
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))
