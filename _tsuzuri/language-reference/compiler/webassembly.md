@@ -44,6 +44,8 @@ add 20 22
 
 既定の wasm32 はホスト import を持ちません。`File`、`Dir`、`Env`、`Time`、`Random`（`Random.Pcg` を除く）、`Process` に到達するコードは `E2000` です。OS の API が要るなら native にするか、後述の `--wasm-host wasi` を使います。`Path` はホスト不要です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve` など）に到達するコードも `E2000` です。`Net` のアドレスの解析と表示（`parse_address`・`address_text` など）はホスト不要で、import は増えません（[Net](../built-in-types-and-modules/net.md)）。
 
+`f16` の演算と変換は、WASM では常にコンパイラ同梱のソフトウェア実装です。LLVM の `half` 命令も、`f16` のための import も使いません。native の経路との違いは速度だけで、結果のビットは同じです（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。
+
 ```mermaid
 flowchart TD
   src["Main.tz の export def"] --> build["tsuzuri build --target wasm32"]
