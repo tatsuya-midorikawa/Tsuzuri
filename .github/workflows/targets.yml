@@ -1,0 +1,125 @@
+name: Tsuzuri targets
+
+# G15: native targets named with `--target TRIPLE`, cross-linked with the bundled Zig toolchain, and
+# the compiler's tests on the four hosts that ship a toolchain bundle. The documentation's tier table
+# (_tsuzuri/language-reference/compiler/platforms.md) may claim only what a step of this file checks:
+#   - "executed on a matching runner":  the host's own triple, run by tests/targets.mjs on each job;
+#   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs;
+#   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;
+#   - "object only":                    the triples without a C library in the bundle.
+# Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/**
+      - std/**
+      - tests/**
+      - Cargo.*
+      - scripts/toolchain/**
+      - .github/workflows/targets.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: targets-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  targets:
+    name: targets (${{ matrix.host }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            host: darwin-arm64
+          - os: macos-15-intel
+            host: darwin-x64
+          - os: ubuntu-24.04
+            host: linux-x64
+          - os: ubuntu-24.04-arm
+            host: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      # The crates, and the Zig archive that scripts/toolchain/bundle.mjs downloads (it verifies the
+      # pinned SHA-256 whether or not the file came from here).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/vsc-downloads
+          key: targets-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs') }}
+          restore-keys: targets-${{ runner.os }}-${{ runner.arch }}-
+      - name: Check host architecture
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_HOST) process.exit(1)'
+      # LLVM 21 as in vscode.yml: the system Clang that builds the host's programs and every object, and
+      # what the bundle copies. The Linux jobs also install qemu-user, which runs the foreign static
+      # musl executables through TSUZURI_RUNNER; nothing is downloaded by the tests themselves.
+      - name: LLVM on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@21 lld
+          printf 'LLVM_PREFIX=%s\n' "$(brew --prefix llvm@21)" >> "$GITHUB_ENV"
+          printf 'TSUZURI_WASM_LD=%s/bin/wasm-ld\n' "$(brew --prefix lld)" >> "$GITHUB_ENV"
+      - name: LLVM and qemu-user on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y ca-certificates wget gnupg patchelf
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo -n tee /usr/share/keyrings/llvm.gpg >/dev/null
+          printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main\n' | sudo -n tee /etc/apt/sources.list.d/llvm21.list >/dev/null
+          sudo -n apt-get update
+          sudo -n apt-get install -y clang-21 lld-21 llvm-21 libclang-rt-21-dev qemu-user
+          printf 'LLVM_PREFIX=/usr/lib/llvm-21\n' >> "$GITHUB_ENV"
+      # target/release/tsuzuri (cargo build --release --locked) and target/toolchain: the compiler, the
+      # launcher tsuzuri-clang, LLVM's clang, and Zig, laid out as the VS Code extension ships them.
+      - name: Build the compiler and the bundled toolchain
+        id: bundle
+        run: node scripts/toolchain/bundle.mjs target/toolchain
+      # G15: each of the 22 triples reports "executed", "linked only" or "object only". The opt-in
+      # variables make a missing cross toolchain or emulator a failure here instead of a skip:
+      #   TSUZURI_CROSS_LINK=1     link every target the bundled Zig can link (needs TSUZURI_CROSS_CLANG);
+      #   TSUZURI_CROSS_EXECUTE=1  run the static musl targets of the other architectures under qemu-user.
+      - name: Targets
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_CROSS_LINK=1
+          export TSUZURI_CROSS_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
+          if [ "$RUNNER_OS" = Linux ]; then export TSUZURI_CROSS_EXECUTE=1; fi
+          node tests/targets.mjs target/release/tsuzuri
+      - name: End-to-end compiler tests
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/e2e.mjs target/release/tsuzuri
+      # computations::bounds_computation_syntax_and_expansion needs a little more than the 2 MiB stack of
+      # a test thread in the debug build, which aborts the whole `computations` test binary. It is
+      # skipped from the full run and run alone with a larger stack, so that it is still checked and
+      # that no other test of that binary is lost.
+      - name: Rust tests
+        if: ${{ !cancelled() }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          status=0
+          cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion || status=1
+          RUST_MIN_STACK=16777216 cargo test --locked --test computations -- bounds_computation_syntax_and_expansion || status=1
+          exit $status
+      # Other tickets' end-to-end steps for these four hosts go here. Start each with
+      # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
