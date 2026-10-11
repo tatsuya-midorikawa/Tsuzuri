@@ -762,6 +762,123 @@ const suites = {
       ["wide_values", [], 1], ["float_reference", [1.0009765625, 0.00048828125], 1],
     ],
   },
+  // D11 Phase 1: every expected value is computed here, not copied from the compiler.
+  const_functions: {
+    cases: (() => {
+      const crcTable = Array.from({ length: 256 }, (_, index) => {
+        let value = index;
+        for (let bit = 0; bit < 8; bit++) value = value & 1 ? (value >>> 1) ^ 0xEDB88320 : value >>> 1;
+        return value >>> 0;
+      });
+      let crc = 0xFFFFFFFF;
+      for (const byte of Buffer.from("123456789")) crc = crcTable[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
+      crc = ~crc >>> 0;
+      let previous = 0n, current = 1n;
+      for (let step = 1; step <= 90; step++) [previous, current] = [current, previous + current];
+      let collatz = 0, n = 27;
+      while (n !== 1) { n = n % 2 === 0 ? n / 2 : 3 * n + 1; collatz++; }
+      const classify = (value) => value === 0 ? 10 : value === 1 ? 20 : value * 2;
+      const classified = Array.from({ length: 10 }, (_, value) => classify(value)).reduce((a, b) => a + b, 0);
+      let hash = 14695981039346656037n;
+      for (const byte of Buffer.from("tsuzuri")) hash = ((hash ^ BigInt(byte)) * 1099511628211n) & ((1n << 64n) - 1n);
+      const units = Array.from("日本語ab", (character) => character.charCodeAt(0));
+      const unitSum = units.reduce((a, b) => a + b, 0) + units.length * 1000 + units[1];
+      let root = 1000000;
+      for (;;) { const next = Math.floor((root + Math.floor(1000000 / root)) / 2); if (next >= root) break; root = next; }
+      const triangular = (100 * 101) / 2;
+      let fibonacci20 = [0, 1];
+      for (let step = 2; step <= 20; step++) fibonacci20.push(fibonacci20[step - 1] + fibonacci20[step - 2]);
+      const behind = collatz * 2 + fibonacci20[20] + triangular + root;
+      return [
+        ["crc_first", [], BigInt(crcTable[1])], ["crc_last", [], BigInt(crcTable[255])], ["crc_whole_table", [], 1],
+        ["crc_check", [], BigInt(crc)], ["fib_rec", [], BigInt(fibonacci20[20])], ["fib_iter_90", [], previous],
+        ["collatz_27", [], BigInt(collatz)], ["wrapping", [], BigInt.asIntN(8, 127n + 1n)],
+        ["min_max", [], BigInt(Math.max(5, -3, 9, 0) * 100 + Math.min(5, -3, 9, 0))],
+        ["classify_sum", [], BigInt(classified)], ["poly_value", [], 1.7 * 1.7 * 0.1 + 1.7 / 3],
+        ["fnv_hash", [], BigInt.asIntN(64, hash)], ["unit_sum", [], BigInt(unitSum)],
+        ["moved_point", [], 3n * 100n + (4n + 10n)], ["areas_total", [], 0n * 10000n + 49n * 100n + 15n],
+        ["early_exits", [], 2n * 10000n + 9n * 100n + 25n], ["fixed_array", [], 30n],
+        ["logic", [], 1n * 100n + 0n * 10n + 3n + 0n], ["behind_const", [], BigInt(behind)],
+      ];
+    })(),
+    inspect(ir) {
+      // The constants are literals in the IR: the Fibonacci number is not computed at run time.
+      assert.match(ir, /\b6765\b/);
+      assert.match(ir, /\b1996959894\b/);
+    },
+  },
+  // D11 Phase 2: every expected value is computed here, not copied from the compiler.
+  const_statics: {
+    cases: (() => {
+      const crcTable = Array.from({ length: 256 }, (_, index) => {
+        let value = index;
+        for (let bit = 0; bit < 8; bit++) value = value & 1 ? (value >>> 1) ^ 0xEDB88320 : value >>> 1;
+        return value >>> 0;
+      });
+      const crc = (count) => {
+        let value = 0xFFFFFFFF;
+        for (let i = 0; i < count; i++) value = crcTable[(value ^ ((i * 7 + 3) & 255)) & 0xFF] ^ (value >>> 8);
+        return BigInt(~value >>> 0);
+      };
+      const primes = [2n, 3n, 5n, 7n, 11n, 13n];
+      const sum = (values) => values.reduce((a, b) => a + b, 0n);
+      const squaresSum = (count) => sum(Array.from({ length: count }, (_, i) => BigInt(i) * BigInt(i)));
+      const bytes = [1n, 2n, 255n, 0n];
+      const wide = [1n, (1n << 128n) - 1n];
+      const wideAt = (index) => BigInt.asIntN(64, (wide[index] >> 100n) + BigInt.asIntN(64, wide[index]));
+      const hot = (count) => {
+        let total = 0n;
+        for (let i = 0; i < count; i++) total += primes[i % 6] + BigInt((i & 4095) ** 2) + bytes[i & 3];
+        return total;
+      };
+      const floatTotal = ((((0.1 + 1 / 3) + 1.5) + Math.fround(0.1)) + -2.5) + 1.5;
+      return [
+        ...[0n, 1n, 9n, 255n, 1000n].map((count) => ["crc_buffer", [count], crc(Number(count))]),
+        ...[0n, 1n, 100n, 2047n, 4095n].map((index) => ["squares_at", [index], index * index]),
+        ...[0n, 1n, 10n, 4096n].map((count) => ["squares_sum", [count], squaresSum(Number(count))]),
+        ...[0n, 3n, 4096n].map((count) => ["squares_window", [count], squaresSum(Number(count))]),
+        ["squares_length", [], 3n * 4096n], ["primes_total", [], 41n * 3n + 2n],
+        ...[0n, 1n, 2n, 3n].map((index) => ["grid_at", [index], [10n, 20n, 30n, 40n][Number(index)] + 4n]),
+        ...[0n, 1n, 2n, 3n].map((index) => ["bytes_at", [index], bytes[Number(index)]]),
+        ...[0n, 1n].map((index) => ["wide_at", [index], wideAt(Number(index))]),
+        ["float_total", [], floatTotal], ["float_signs", [], 1111n],
+        ...[0n, 1n, 2n].map((index) => ["flags_letters", [index], [111n, 100n, 111n][Number(index)]]),
+        ["empty_single", [], 142n], ...[0n, 1n].map((index) => ["points_at", [index], [3n, 1n][Number(index)]]),
+        ["corner_total", [], 16n], ...[0n, 1n, 2n].map((index) => ["readings_at", [index], [0n, 7n, 90n][Number(index)]]),
+        ["favorite_value", [], 50n], ["escaped_references", [], 13n + 5n + 7n + 4n + 5n],
+        ["closures_and_tasks", [], 9n + 41n * 3n + 41n + 103n],
+        ["owned_copies", [], squaresSum(4096) + 13n + 2n + 26n + 12n + 3n + 9n + 11n],
+        ["values_stay_values", [], 84n], ["strings_stay_values", [], 17n], ["scalar_borrow", [], 45n],
+        ...[0n, 1n, 10n, 5000n].map((count) => ["hot_loop", [count], hot(Number(count))]),
+      ];
+    })(),
+    traps: [
+      ["squares_at", [4096n]], ["squares_at", [-1n]], ["squares_sum", [4097n]], ["grid_at", [4n]], ["grid_at", [-1n]],
+      ["bytes_at", [4n]], ["wide_at", [2n]], ["flags_letters", [3n]], ["points_at", [2n]], ["readings_at", [3n]],
+    ],
+    trapKind: "index out of bounds",
+    inspect(ir) {
+      const definitions = [...ir.matchAll(/^(@tz\.static\.\d+(?:\.data)?) = ([^\n]*)$/gm)];
+      assert.ok(definitions.length >= 12, "the plain constants read in place are static data");
+      assert.equal(new Set(definitions.map(([, name]) => name)).size, definitions.length, "each static is defined once");
+      for (const [, name, rest] of definitions) assert.match(rest, /^private unnamed_addr constant /, `${name} is private and constant`);
+      assert.match(ir, /^@tz\.static\.\d+\.data = private unnamed_addr constant \[4096 x i64\] \[i64 0, i64 1, i64 4, i64 9,/m);
+      assert.match(ir, /^@tz\.static\.\d+\.data = private unnamed_addr constant \[256 x i32\] \[i32 0, i32 1996959894,/m);
+      // A reference never stores into the data, and the data of an array is named only by the headers
+      // that lend it, so no allocator call can receive it (the harness's tracked_free also rejects a
+      // pointer that it did not allocate, and the ASan variant runs this suite too).
+      assert.doesNotMatch(ir, /^\s*(?:store|atomicrmw|cmpxchg) [^\n]*, ptr @tz\.static\./m);
+      const uses = ir.split("\n").filter((line) => !line.startsWith("@tz.static.")).join("\n");
+      assert.equal((uses.match(/@tz\.static\.\d+\.data/g) ?? []).length,
+        (uses.match(/\{ ptr @tz\.static\.\d+\.data, i64 \d+ \}/g) ?? []).length, "a static array is named only by its header");
+      // A table read in a loop is not rebuilt: the loop of the export holds no allocation.
+      const hot = ir.match(/^define internal i64 @tz\.fn\.Main\.hot_loop\([^\n]*\{([\s\S]*?)^\}/m);
+      assert.ok(hot, "hot_loop is emitted");
+      assert.doesNotMatch(hot[1], /@tz\.(?:alloc|realloc|free)\(|alloca \[/);
+      // The strings and arrays of strings are not plain data: they keep their copies.
+      assert.match(ir, /@tz\.literal\./);
+    },
+  },
   exceptions: {
     cases: (() => {
       const wrap = (value, bits = 64) => BigInt.asIntN(bits, value);
@@ -2069,6 +2186,31 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
   console.log("WASM realloc: split, absorb, fallback, null, zero and coalescing passed at O0/O3");
 }
 
+// Static data on WASM threads (D11 Phase 2): the workers read the one read-only table in the shared
+// memory, and a table read in a worker loop returns the same values as in the single-threaded build.
+async function constStaticsWasmThreadsChecks() {
+  if (wasmTarget !== "wasm32") return;
+  const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-statics-threads-"));
+  try {
+    for (const optimization of [0, 3]) {
+      const wasm = join(directory, `statics-threads-${optimization}.wasm`);
+      cli(["build", join(root, "tests/fixtures/const_statics"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", wasm]);
+      const pool = await createThreadPool(readFileSync(wasm), { workers: 3 });
+      try {
+        assert.equal(pool.call("tz_closures_and_tasks"), 9n + 41n * 3n + 41n + 103n);
+        assert.equal(pool.call("tz_squares_sum", 4096n), 4095n * 4096n * 8191n / 6n);
+        assert.equal(pool.call("tz_primes_total"), 41n * 3n + 2n);
+        assert.equal(pool.call("tz_bytes_at", 2n), 255n);
+        assert.equal(pool.workerCount, 3);
+      } finally {
+        await pool.close();
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  console.log("const_statics: static data on WASM threads at O0/O3 passed");
+}
+
 // Arc counts with atomic instructions on WASM threads: the tasks share and drop the counts on
 // worker threads, and the heap returns to the worker stacks alone.
 async function rcWasmThreadsChecks() {
@@ -2128,6 +2270,7 @@ for (const [name, suite] of Object.entries(suites)) {
   if (only && only !== name) continue;
   total += run(name, suite);
   if (name === "rc") await rcWasmThreadsChecks();
+  if (name === "const_statics") await constStaticsWasmThreadsChecks();
   if (name === "matrix") await matrixWasmThreadsChecks();
   if (name === "vec") wasmReallocationChecks();
   if (name === "chars") characterConsoleChecks();

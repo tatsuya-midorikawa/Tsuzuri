@@ -1704,6 +1704,9 @@ struct Globals {
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
+    /// The static data that a body already refers to, by constant (D11 Phase 2): each is defined
+    /// once, at its first use.
+    statics: BTreeSet<usize>,
 }
 
 impl Default for Globals {
@@ -1743,6 +1746,7 @@ impl Default for Globals {
             seed: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
+            statics: BTreeSet::new(),
         }
     }
 }
@@ -2084,6 +2088,111 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
+}
+
+/// The LLVM constant of a literal tree of plain data, spelled without its type (D11 Phase 2). The
+/// tree is a constant's value: numbers, characters, tuples, records, fixed-length arrays, and
+/// unions whose payloads share one type.
+fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
+    let typed = |element: &TypedExpr| {
+        format!(
+            "{} {}",
+            llvm_type(&element.ty, module),
+            static_constant(element, module)
+        )
+    };
+    match &value.kind {
+        TypedExprKind::Int(number) => number.to_string(),
+        TypedExprKind::Float(text) => text.clone(),
+        TypedExprKind::Bool(flag) => u8::from(*flag).to_string(),
+        TypedExprKind::Unit => "0".into(),
+        TypedExprKind::Tuple(elements) if elements.is_empty() => "zeroinitializer".into(),
+        // A fixed-length array literal is a tuple-like aggregate of the array type.
+        TypedExprKind::Tuple(elements) if matches!(value.ty, Type::FixedArray(..)) => {
+            format!(
+                "[{}]",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Tuple(elements) => {
+            format!(
+                "{{ {} }}",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Record(fields) if fields.is_empty() => "zeroinitializer".into(),
+        TypedExprKind::Record(fields) => {
+            let mut ordered: Vec<_> = fields.iter().collect();
+            ordered.sort_by_key(|(index, _)| *index);
+            format!(
+                "{{ {} }}",
+                ordered
+                    .into_iter()
+                    .map(|(_, field)| typed(field))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        TypedExprKind::Array(elements) if elements.is_empty() => "zeroinitializer".into(),
+        TypedExprKind::Array(elements) => {
+            format!(
+                "[{}]",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Construct {
+            case_id, payload, ..
+        } => {
+            let Type::Union(id, arguments) = &value.ty else {
+                unreachable!("a union case builds a union")
+            };
+            match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => case_id.to_string(),
+                UnionLayout::Common(common) => format!(
+                    "{{ i32 {case_id}, {} }}",
+                    match payload {
+                        Some(payload) => typed(payload),
+                        None => format!("{} zeroinitializer", llvm_type(&common, module)),
+                    }
+                ),
+                UnionLayout::General(_) => unreachable!("static unions share one payload type"),
+            }
+        }
+        _ => unreachable!("a static constant holds only plain data"),
+    }
+}
+
+/// The global that holds the static data of a constant (D11 Phase 2). A heap array keeps its
+/// elements in `@tz.static.N.data`, which its header points at, and has no global when it is
+/// empty; any other value is `@tz.static.N` itself. Both are private, unnamed, and constant.
+fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Option<String> {
+    let (Type::Array(element), TypedExprKind::Array(elements)) = (&value.ty, &value.kind) else {
+        return Some(format!(
+            "@tz.static.{id} = private unnamed_addr constant {} {}",
+            llvm_type(&value.ty, module),
+            static_constant(value, module)
+        ));
+    };
+    if elements.is_empty() {
+        return None;
+    }
+    let contents = if matches!(**element, Type::Integer(8, _)) {
+        let bytes: String = elements
+            .iter()
+            .map(|element| match element.kind {
+                TypedExprKind::Int(number) => format!("\\{:02X}", number as u8),
+                _ => unreachable!("a byte array holds integers"),
+            })
+            .collect();
+        format!("c\"{bytes}\"")
+    } else {
+        static_constant(value, module)
+    };
+    Some(format!(
+        "@tz.static.{id}.data = private unnamed_addr constant [{} x {}] {contents}, align 16",
+        elements.len(),
+        llvm_type(element, module)
+    ))
 }
 
 /// The spelling of a `dyn` type in LLVM names (A14): `dyn[Shapes.Shape]`, with `+copy`, `+send`,
@@ -3857,6 +3966,27 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         name
     }
 
+    /// The operand for the static data of a constant, which it defines at its first use (D11
+    /// Phase 2). A heap array's operand is its header, `{ ptr data, length }`, a constant that the
+    /// code reads in place; any other value's is the address of its global.
+    fn static_operand(&mut self, id: usize) -> String {
+        let value = &self.module.statics[&id].value;
+        if self.globals.statics.insert(id)
+            && let Some(definition) = static_definition(id, value, self.module)
+        {
+            self.globals.definitions.push(definition);
+        }
+        match (&value.ty, &value.kind) {
+            (Type::Array(_), TypedExprKind::Array(elements)) if elements.is_empty() => {
+                "zeroinitializer".into()
+            }
+            (Type::Array(_), TypedExprKind::Array(elements)) => {
+                format!("{{ ptr @tz.static.{id}.data, i64 {} }}", elements.len())
+            }
+            _ => format!("@tz.static.{id}"),
+        }
+    }
+
     fn remember_temporary(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
         if (!self.loop_targets.is_empty() || !self.try_targets.is_empty())
             && ty.needs_drop(&self.module.types())
@@ -3999,6 +4129,20 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::Dereference(_)
             | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
+            }
+            TypedExprKind::Static(id) => {
+                // Only a borrow names static data, so a heap array's header is lent, never taken;
+                // any other plain value is loaded from its global.
+                let operand = self.static_operand(*id);
+                if matches!(expression.ty, Type::Array(_)) {
+                    if take {
+                        self.clone_value(&expression.ty, &operand)
+                    } else {
+                        operand
+                    }
+                } else {
+                    self.value(format!("load {}, ptr {operand}", self.ty(&expression.ty)))
+                }
             }
             TypedExprKind::Borrow(value, mutable) => {
                 if !mutable && matches!(value.ty, Type::Array(_)) {
@@ -4450,6 +4594,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn emit_place(&mut self, expression: &TypedExpr) -> String {
         match &expression.kind {
             TypedExprKind::Local(id) => self.locals[id].clone(),
+            TypedExprKind::Static(id) => {
+                let operand = self.static_operand(*id);
+                if matches!(expression.ty, Type::Array(_)) {
+                    self.spill(&expression.ty, &operand)
+                } else {
+                    operand
+                }
+            }
             TypedExprKind::Dereference(value) if value.ty.slice_element().is_some() => {
                 let view = self.expression_mode(value, false);
                 self.spill(&expression.ty, &view)

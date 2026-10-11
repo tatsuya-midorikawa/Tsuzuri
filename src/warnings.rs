@@ -133,6 +133,7 @@ fn collect_locals<'a>(
         | StructuralHash(_)
         | StructuralDisplay(_)
         | Interpolated(_)
+        | Static(_)
         | DynDispatch { .. } => {}
     }
     for child in expression.children() {

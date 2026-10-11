@@ -52,7 +52,7 @@ Answer
 42
 ```
 
-同じものは `const Answer: i64 = 42` とも書けます。`@literal` は、その互換の形です。定数式から `extern` を呼ぶことはできません。ゼロ除算や循環は `E1026` です。
+同じものは `const Answer: i64 = 42` とも書けます。`@literal` は、その互換の形です。定数式から `extern` を呼ぶことはできません。ゼロ除算や循環は `E1026` です。ループや再帰が要る計算は、`@literal` ではなく `const def` に書きます（[値](../values-and-functions/values.md#コンパイル時に評価する関数-const-def)）。
 
 ### `@checked`
 

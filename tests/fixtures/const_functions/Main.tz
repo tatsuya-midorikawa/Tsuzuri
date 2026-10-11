@@ -1,0 +1,268 @@
+// Compile-time evaluation of `const def` calls. Each export compares what the compiler computed
+// for a constant with the same const def called at run time, and returns the constant.
+
+const def crc_entry :: i32u -> i32u
+fn crc_entry index =
+    let mut value = index
+    for _ in 1 .. 8 do
+        value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
+    value
+
+const def crc_table :: [i32u]
+fn crc_table = new [i32u](256, \i -> crc_entry (i as i32u))
+
+const CrcTable: [i32u] = crc_table()
+
+def crc_of :: [i32u] -> i32u
+fn crc_of table =
+    let text = "123456789"
+    let mut crc = ~(0 as i32u)
+    for unit in text do
+        let byte = (unit as i32u) & 0xFF
+        crc = table[((crc ^ byte) & 0xFF) as i64] ^ (crc >>> 8)
+    ~crc
+
+const def rec fib :: i64 -> i64
+fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+const Fib20: i64 = fib 20
+
+const def fib_iter :: i64 -> i64
+fn fib_iter n =
+    let mut previous = 0
+    let mut current = 1
+    for _ in 1 .. n do
+        let next = previous + current
+        previous = current
+        current = next
+    previous
+
+const Fib90: i64 = fib_iter 90
+
+const def collatz :: i64 -> i64
+fn collatz start =
+    let mut n = start
+    let mut steps = 0
+    while n != 1 do
+        n = if n % 2 == 0 then n / 2 else 3 * n + 1
+        steps = steps + 1
+    steps
+
+const Collatz27: i64 = collatz 27
+
+const def wrap_i8 :: i8 -> i8
+fn wrap_i8 x = x + 1
+
+const Wrapped: i8 = wrap_i8 127
+
+const def extremes :: [i64] -> i64 * i64
+fn extremes xs =
+    let mut low = xs[0]
+    let mut high = xs[0]
+    for x in xs do
+        low = if x < low then x else low
+        high = if x > high then x else high
+    (low, high)
+
+const MinMax: i64 * i64 = extremes [5, -3, 9, 0]
+
+const def classify :: i64 -> i64
+fn classify n = match n with
+    | 0 -> 10
+    | 1 -> 20
+    | _ -> n * 2
+
+const def classify_total :: i64 -> i64
+fn classify_total count =
+    let mut total = 0
+    for i in 0 .. count do
+        total = total + classify i
+    total
+
+const ClassifySum: i64 = classify_total 9
+
+const def poly :: f64 -> f64
+fn poly x = x * x * 0.1 + x / 3.0
+
+const PolyValue: f64 = poly 1.7
+
+// Strings, records, unions, tuples, fixed arrays, early exits, and constants behind const defs.
+const def fnv1a :: utf8string -> i64u
+fn fnv1a text =
+    let mut hash = 14695981039346656037
+    for byte in text do
+        hash = (hash ^ (byte as i64u)) * 1099511628211
+    hash
+
+const Fnv: i64u = fnv1a u8"tsuzuri"
+
+const def code_unit_sum :: string -> i64
+fn code_unit_sum text =
+    let mut total = 0
+    for unit in text do
+        total = total + (unit as i64)
+    total + (text.length * 1000) + (text[1] as i64)
+
+const UnitSum: i64 = code_unit_sum "日本語ab"
+
+record Point { x: i64, y: i64 }
+
+union Shape = Dot | Square of i64 | Rect of (i64 * i64)
+
+const def area :: Shape -> i64
+fn area shape = match shape with
+    | Dot -> 0
+    | Square side -> side * side
+    | Rect (width, height) -> width * height
+
+const def shifted :: Point -> i64 -> Point
+fn shifted point by = { point with y = point.y + by }
+
+const def parts :: Point -> i64
+fn parts point = point.x * 100 + point.y
+
+const Moved: Point = shifted (Point { x: 3, y: 4 }) 10
+const Areas: [i64] = [area Dot, area (Square 7), area (Rect (3, 5))]
+
+const def first_negative :: [i64] -> i64
+fn first_negative xs =
+    let mut found = -1
+    let mut index = 0
+    while index < xs.length do
+        if xs[index] < 0 then
+            found = index
+            break
+        index = index + 1
+    found
+
+const def sum_odd :: i64 -> i64
+fn sum_odd count =
+    let mut total = 0
+    for i in 1 .. count do
+        if i % 2 == 0 then continue
+        total = total + i
+    total
+
+const def grid :: [i64; 4]
+fn grid = [4, 3, 2, 1]
+
+const Square4: [i64; 4] = grid()
+
+const def dot :: [i64; 4] -> [i64; 4] -> i64
+fn dot left right = left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3]
+
+const def three_way :: i64 -> i64 -> bool -> i64
+fn three_way a b flag = if flag && a < b then a else if a == b || !flag then 0 else b
+
+const def rec triangular :: i64 -> i64
+fn rec triangular n = if n == 0 then 0 else n + triangular (n - 1)
+
+const def rec isqrt_step :: i64 -> i64 -> i64
+fn rec isqrt_step n guess =
+    let next = (guess + n / guess) / 2
+    if next >= guess then guess else isqrt_step n next
+
+const Root: i64 = isqrt_step 1000000 1000000
+const BehindConst: i64 = later_total () + Fib20
+const def later_total :: unit -> i64
+fn later_total _ = Collatz27 * 2
+const Tri100: i64 = triangular 100
+
+export def crc_first :: i64
+fn crc_first =
+    assert (crc_table()[1] == CrcTable[1])
+    CrcTable[1] as i64
+
+export def crc_last :: i64
+fn crc_last =
+    assert (crc_table()[255] == CrcTable[255])
+    CrcTable[255] as i64
+
+export def crc_whole_table :: bool
+fn crc_whole_table =
+    let runtime = crc_table()
+    let mut same = runtime.length == CrcTable.length
+    for i in 0i64 .. 255 do
+        same = same && runtime[i] == CrcTable[i]
+    same
+
+export def crc_check :: i64
+fn crc_check =
+    assert (crc_of (crc_table()) == crc_of CrcTable)
+    crc_of CrcTable as i64
+
+export def fib_rec :: i64
+fn fib_rec =
+    assert (fib 20 == Fib20)
+    Fib20
+
+export def fib_iter_90 :: i64
+fn fib_iter_90 =
+    assert (fib_iter 90 == Fib90)
+    Fib90
+
+export def collatz_27 :: i64
+fn collatz_27 =
+    assert (collatz 27 == Collatz27)
+    Collatz27
+
+export def wrapping :: i64
+fn wrapping =
+    assert (wrap_i8 127 == Wrapped)
+    Wrapped as i64
+
+export def min_max :: i64
+fn min_max =
+    let runtime = extremes [5, -3, 9, 0]
+    assert (runtime == MinMax)
+    match MinMax with
+    | (low, high) -> high * 100 + low
+
+export def classify_sum :: i64
+fn classify_sum =
+    assert (classify_total 9 == ClassifySum)
+    ClassifySum
+
+export def poly_value :: f64
+fn poly_value =
+    assert (poly 1.7 == PolyValue)
+    PolyValue
+
+export def fnv_hash :: i64
+fn fnv_hash =
+    assert (fnv1a u8"tsuzuri" == Fnv)
+    Fnv as i64
+
+export def unit_sum :: i64
+fn unit_sum =
+    assert (code_unit_sum "日本語ab" == UnitSum)
+    UnitSum
+
+export def moved_point :: i64
+fn moved_point =
+    assert (parts (shifted (Point { x: 3, y: 4 }) 10) == parts Moved)
+    parts Moved
+
+export def areas_total :: i64
+fn areas_total =
+    let runtime = [area Dot, area (Square 7), area (Rect (3, 5))]
+    assert (runtime == Areas)
+    Areas[0] * 10000 + Areas[1] * 100 + Areas[2]
+
+export def early_exits :: i64
+fn early_exits =
+    let a = first_negative [4, 8, -1, 5, -6]
+    let b = first_negative [1, 2]
+    let c = sum_odd 10
+    a * 10000 + (b + 10) * 100 + c
+
+export def fixed_array :: i64
+fn fixed_array =
+    assert (dot grid() Square4 == 30)
+    dot Square4 Square4
+
+export def logic :: i64
+fn logic = three_way 1 2 true * 100 + three_way 2 2 true * 10 + three_way 5 3 true + three_way 7 9 false
+
+export def behind_const :: i64
+fn behind_const = BehindConst + Tri100 + Root
