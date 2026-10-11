@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::llvm::{self, Entry};
-use crate::syntax::{MAX_SOURCE_BYTES, SourceKind};
+use crate::syntax::{Edition, MAX_SOURCE_BYTES, SourceKind};
 
 #[path = "test_runner.rs"]
 mod test_runner;
@@ -855,6 +855,10 @@ pub struct SourceFile {
     /// default namespace for its files, and empty for dependency files, whose
     /// relative paths start with their package namespace, and for std files.
     pub namespace: String,
+    /// The edition that the text is read with: its package manifest's `edition`, and the latest
+    /// for std and for sources without a manifest (G19). A manifest or lockfile entry carries
+    /// the edition of the package it belongs to.
+    pub edition: Edition,
 }
 
 #[derive(Debug)]
@@ -885,7 +889,7 @@ impl SourceError {
 }
 
 impl SourceFile {
-    fn read(path: &Path) -> Result<Self, SourceError> {
+    fn read(path: &Path, edition: Edition) -> Result<Self, SourceError> {
         let text = read_source(path).map_err(|error| SourceError::new(path, error))?;
         let name = path.file_stem().and_then(OsStr::to_str).ok_or_else(|| {
             SourceError::new(
@@ -901,6 +905,7 @@ impl SourceFile {
             origin: ModuleOrigin::User,
             package: None,
             namespace: String::new(),
+            edition,
         })
     }
 }
@@ -1032,16 +1037,18 @@ pub(crate) type PackageResolver<'a> =
 
 /// The default namespace of a root folder without a manifest: a kebab-case
 /// folder name in PascalCase as for package names, another valid namespace
-/// as written, and otherwise the global namespace.
+/// as written, and otherwise the global namespace. A project without a manifest
+/// is read with the latest edition.
 fn folder_namespace(directory: &Path) -> String {
     let name = fs::canonicalize(directory)
         .ok()
         .and_then(|path| path.file_name().and_then(OsStr::to_str).map(str::to_owned))
         .unwrap_or_default();
+    let valid = |namespace: &str| crate::package::valid_namespace(namespace, Edition::LATEST);
     crate::package::namespace(&name, Span::default())
         .ok()
-        .filter(|namespace| crate::package::valid_namespace(namespace))
-        .or_else(|| crate::package::valid_namespace(&name).then(|| name.replace("::", ".")))
+        .filter(|namespace| valid(namespace))
+        .or_else(|| valid(&name).then(|| name.replace("::", ".")))
         .unwrap_or_default()
 }
 
@@ -1058,6 +1065,29 @@ enum Origin {
         version: crate::package::Version,
         sha256: String,
     },
+}
+
+/// Reads and parses the `Tsuzuri.toml` at `path`, which must be a regular file and not a
+/// symbolic link. Returns its text and the manifest.
+pub(crate) fn read_manifest(
+    path: &Path,
+) -> Result<(String, crate::package::Manifest), SourceError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        SourceError::new(path, io_error("inspect package manifest", path, error))
+    })?;
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Err(SourceError::new(
+            path,
+            driver_error(
+                "E1011",
+                "package manifests must be regular files, not symbolic links",
+            ),
+        ));
+    }
+    let text = read_source_text(path).map_err(|error| SourceError::new(path, error))?;
+    let manifest =
+        crate::package::parse_manifest(&text, 0).map_err(|error| SourceError::new(path, error))?;
+    Ok((text, manifest))
 }
 
 /// Walks the package graph of the manifest in `directory`. `resolve` turns each
@@ -1120,21 +1150,7 @@ pub(crate) fn load_packages(
                     driver_error("E1017", "package graph exceeds 1024 packages or depth 128"),
                 ));
             }
-            let metadata = fs::symlink_metadata(&path).map_err(|error| {
-                SourceError::new(&path, io_error("inspect package manifest", &path, error))
-            })?;
-            if !metadata.is_file() || metadata.is_symlink() {
-                return Err(SourceError::new(
-                    &path,
-                    driver_error(
-                        "E1011",
-                        "package manifests must be regular files, not symbolic links",
-                    ),
-                ));
-            }
-            let text = read_source_text(&path).map_err(|error| SourceError::new(&path, error))?;
-            let manifest = crate::package::parse_manifest(&text, 0)
-                .map_err(|error| SourceError::new(&path, error))?;
+            let (text, manifest) = read_manifest(&path)?;
             if manifest.namespace.split('.').next().is_some_and(|first| {
                 first == crate::stdlib::NAMESPACE
                     || crate::stdlib::is_reserved_module(first)
@@ -1576,6 +1592,8 @@ impl Project {
             std::collections::BTreeMap::<&Path, std::collections::BTreeMap<String, usize>>::new();
         for root in &roots {
             let package = packages.iter().find(|package| package.id.root == *root);
+            // A source is read with its own package's edition; without a manifest, the latest.
+            let edition = package.map_or(Edition::LATEST, |package| package.manifest.edition);
             let mut paths: std::collections::BTreeMap<_, _> = collect_sources(root, &roots)?
                 .into_iter()
                 .map(|path| (path, None))
@@ -1650,9 +1668,10 @@ impl Project {
                         origin: ModuleOrigin::User,
                         package: None,
                         namespace: String::new(),
+                        edition,
                     }
                 } else {
-                    SourceFile::read(&path)?
+                    SourceFile::read(&path, edition)?
                 };
                 source.relative_path = relative_path;
                 source.name = name;
@@ -1730,6 +1749,7 @@ impl Project {
                 origin: ModuleOrigin::Std,
                 package: None,
                 namespace: String::new(),
+                edition: Edition::LATEST,
             }
         }));
         let wasm = packages
@@ -1791,10 +1811,12 @@ impl Project {
                 search: resolve(&inputs.search),
             });
         }
-        let root_id = packages
-            .iter()
-            .find(|package| package.id.root == directory)
-            .map(|package| package.id.clone());
+        let root_package = packages.iter().find(|package| package.id.root == directory);
+        let root_id = root_package.map(|package| package.id.clone());
+        // A lockfile belongs to the root manifest, which is there whenever the lockfile is.
+        let root_edition = root_package.map_or(Edition::MANIFEST_DEFAULT, |package| {
+            package.manifest.edition
+        });
         let mut manifests: Vec<_> = packages
             .into_iter()
             .map(|package| SourceFile {
@@ -1805,6 +1827,7 @@ impl Project {
                 origin: ModuleOrigin::User,
                 package: Some(package.id),
                 namespace: String::new(),
+                edition: package.manifest.edition,
             })
             .collect();
         // The lockfile, too, is protected from outputs and keys the build cache.
@@ -1817,6 +1840,7 @@ impl Project {
                 origin: ModuleOrigin::User,
                 package: root_id,
                 namespace: String::new(),
+                edition: root_edition,
             });
         }
         Ok(Self {
@@ -1947,6 +1971,7 @@ impl Project {
             origin: ModuleOrigin::User,
             package: None,
             namespace: String::new(),
+            edition: Edition::LATEST,
         }];
         sources.extend(std_sources.iter().map(|(path, text)| {
             SourceFile {
@@ -1959,6 +1984,7 @@ impl Project {
                 origin: ModuleOrigin::Std,
                 package: None,
                 namespace: String::new(),
+                edition: Edition::LATEST,
             }
         }));
         Self {
@@ -2039,6 +2065,8 @@ impl Project {
                 text: &source.text,
                 origin: source.origin,
                 namespace: &source.namespace,
+                edition: source.edition,
+                package: source.package.as_ref(),
             })
             .collect()
     }
@@ -2218,10 +2246,34 @@ pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     Ok(source)
 }
 
+/// The edition that `tsuzuri fmt` reads `input` with: the `edition` of the `Tsuzuri.toml` in
+/// the input directory, or in the parent directory of an input file, and the latest edition
+/// without one. It does not search upward, as the root of a file input is its parent.
+fn format_edition(input: &Path, directory_input: bool) -> Result<Edition, SourceError> {
+    let directory = if directory_input {
+        input
+    } else {
+        input
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    };
+    let manifest = directory.join("Tsuzuri.toml");
+    match fs::symlink_metadata(&manifest) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Edition::LATEST),
+        Err(error) => Err(SourceError::new(
+            &manifest,
+            io_error("inspect package manifest", &manifest, error),
+        )),
+        Ok(_) => read_manifest(&manifest).map(|(_, manifest)| manifest.edition),
+    }
+}
+
 pub fn format_sources(input: &Path, check_only: bool) -> Result<Vec<PathBuf>, SourceError> {
     let metadata = fs::symlink_metadata(input).map_err(|error| {
         SourceError::new(input, io_error("inspect formatting input", input, error))
     })?;
+    let edition = format_edition(input, metadata.is_dir())?;
     let mut paths = if metadata.is_dir() {
         fs::read_dir(input)
             .map_err(|error| {
@@ -2247,7 +2299,12 @@ pub fn format_sources(input: &Path, check_only: bool) -> Result<Vec<PathBuf>, So
             let kind = source_kind(&path)
                 .ok_or_else(|| driver_error("E2000", "fmt accepts .tz, .tt, or .tc files"))?;
             let source = read_source(&path)?;
-            let result = crate::formatter::format_source(&path.to_string_lossy(), &source, kind)?;
+            let result = crate::formatter::format_source_with_edition(
+                &path.to_string_lossy(),
+                &source,
+                kind,
+                edition,
+            )?;
             Ok::<_, Diagnostic>((source, result))
         })()
         .map_err(|error| SourceError::new(&path, error))?;
@@ -5224,6 +5281,7 @@ mod tests {
             origin: ModuleOrigin::Std,
             package: None,
             namespace: String::new(),
+            edition: Edition::LATEST,
         });
         let error = project.analyze().unwrap_err();
         assert_eq!(error.code, "E1003");

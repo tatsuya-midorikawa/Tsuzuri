@@ -1,16 +1,29 @@
 use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
 use crate::syntax::{
-    FormatAlign, FormatKind, FormatSpec, InterpolationPiece, MAX_FORMAT_FIELD, MAX_SOURCE_BYTES,
-    StringLiteral, Token, TokenKind,
+    Edition, FormatAlign, FormatKind, FormatSpec, InterpolationPiece, MAX_FORMAT_FIELD,
+    MAX_SOURCE_BYTES, StringLiteral, Token, TokenKind,
 };
 
-pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
-    let (tokens, diagnostics) = tokenize(source, false);
+/// Words that an edition after the first starts to reserve, with the first edition that
+/// reserves each (G19). A source of an earlier edition reads the word as an identifier. A
+/// word that a later change reserves is added to the `match` in `Lexer::identifier` and here.
+pub const EDITION_KEYWORDS: &[(&str, Edition)] = &[];
+
+/// Whether `word`, if it is a keyword, is reserved in `edition`: it is unless `gated` lists it
+/// with a later edition.
+fn reserved_in(word: &str, edition: Edition, gated: &[(&str, Edition)]) -> bool {
+    !gated
+        .iter()
+        .any(|(gated, since)| *gated == word && *since > edition)
+}
+
+pub fn lex(source: &str, edition: Edition) -> Result<Vec<Token>, Diagnostic> {
+    let (tokens, diagnostics) = tokenize(source, false, edition, EDITION_KEYWORDS);
     diagnostics.into_iter().next().map_or(Ok(tokens), Err)
 }
 
-pub fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
-    tokenize(source, true)
+pub fn lex_all(source: &str, edition: Edition) -> (Vec<Token>, Vec<Diagnostic>) {
+    tokenize(source, true, edition, EDITION_KEYWORDS)
 }
 
 /// The length of the interpreter line that starts with `#!` at byte 0, as in
@@ -59,12 +72,14 @@ pub struct TokenWithTrivia {
     pub leading: Vec<Trivia>,
 }
 
-pub fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
-    let tokens = lex(source)?;
+pub fn lex_with_trivia(source: &str, edition: Edition) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
+    let tokens = lex(source, edition)?;
     let mut scanner = Lexer {
         source,
         position: content_start(source),
         holes: Vec::new(),
+        edition,
+        gated: EDITION_KEYWORDS,
     };
     let mut result = Vec::with_capacity(tokens.len());
     for token in tokens {
@@ -111,7 +126,12 @@ pub fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic>
     Ok(result)
 }
 
-fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
+fn tokenize(
+    source: &str,
+    recovering: bool,
+    edition: Edition,
+    gated: &'static [(&'static str, Edition)],
+) -> (Vec<Token>, Vec<Diagnostic>) {
     if source.len() > MAX_SOURCE_BYTES {
         return (
             Vec::new(),
@@ -126,6 +146,8 @@ fn tokenize(source: &str, recovering: bool) -> (Vec<Token>, Vec<Diagnostic>) {
         source,
         position: content_start(source),
         holes: Vec::new(),
+        edition,
+        gated,
     }
     .tokens(recovering)
 }
@@ -180,6 +202,10 @@ struct Lexer<'a> {
     position: usize,
     /// Interpolation holes that are open, innermost last.
     holes: Vec<OpenHole>,
+    /// The edition whose reserved words the source is read with.
+    edition: Edition,
+    /// The words that a later edition reserves: `EDITION_KEYWORDS`, or a test's own table.
+    gated: &'static [(&'static str, Edition)],
 }
 
 /// An open `{` of an interpolated string whose `}` has not been read.
@@ -566,7 +592,11 @@ impl Lexer<'_> {
             }
             self.position += 1;
         }
-        match &self.source[start..self.position] {
+        let word = &self.source[start..self.position];
+        if !reserved_in(word, self.edition, self.gated) {
+            return TokenKind::Ident(word.to_owned());
+        }
+        match word {
             "fn" => TokenKind::Fn,
             "def" => TokenKind::Def,
             "rec" => TokenKind::Rec,
@@ -1163,6 +1193,81 @@ fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The unit tests read manifest-less sources, so they use the latest edition.
+    fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+        super::lex(source, Edition::LATEST)
+    }
+
+    fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+        super::lex_all(source, Edition::LATEST)
+    }
+
+    fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
+        super::lex_with_trivia(source, Edition::LATEST)
+    }
+
+    #[test]
+    fn editions_parse_and_gate_keywords() {
+        assert_eq!(Edition::parse("2026"), Some(Edition::E2026));
+        for text in ["2030", " 2026", "2026 ", "", "02026", "+2026", "E2026"] {
+            assert_eq!(Edition::parse(text), None, "{text:?}");
+        }
+        assert_eq!(Edition::E2026.to_string(), "2026");
+        assert_eq!(Edition::supported_names(), "2026");
+        assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
+        assert!(Edition::SUPPORTED.contains(&Edition::MANIFEST_DEFAULT));
+        let (older, newer, newest) = (Edition(2026), Edition(2027), Edition(2028));
+        let gated = [("then", newer)];
+        assert!(!reserved_in("then", older, &gated));
+        assert!(reserved_in("then", newer, &gated));
+        assert!(reserved_in("then", newest, &gated));
+        assert!(reserved_in("fn", older, &gated));
+        assert!(reserved_in("then", older, &[]));
+        // Every gated word is a keyword, and the edition that reserves it exists.
+        for (word, since) in EDITION_KEYWORDS {
+            assert!(Edition::SUPPORTED.contains(since), "{word}");
+            let tokens = super::lex(word, *since).unwrap();
+            assert!(!matches!(tokens[0].kind, TokenKind::Ident(_)), "{word}");
+        }
+    }
+
+    #[test]
+    fn an_older_edition_reads_a_later_keyword_as_an_identifier() {
+        let table: &'static [(&'static str, Edition)] =
+            &[("then", Edition(2027)), ("class", Edition(2028))];
+        let kinds = |edition: Edition| {
+            let (tokens, errors) = tokenize("then fn class", false, edition, table);
+            assert!(errors.is_empty());
+            tokens
+                .into_iter()
+                .map(|token| token.kind)
+                .collect::<Vec<_>>()
+        };
+        let ident = |name: &str| TokenKind::Ident(name.to_owned());
+        assert_eq!(
+            kinds(Edition(2026)),
+            [ident("then"), TokenKind::Fn, ident("class"), TokenKind::End]
+        );
+        assert_eq!(
+            kinds(Edition(2027)),
+            [
+                TokenKind::Then,
+                TokenKind::Fn,
+                ident("class"),
+                TokenKind::End
+            ]
+        );
+        assert_eq!(
+            kinds(Edition(2028)),
+            [
+                TokenKind::Then,
+                TokenKind::Fn,
+                TokenKind::Class,
+                TokenKind::End
+            ]
+        );
+    }
 
     #[test]
     fn skips_a_shebang_line_only_at_byte_zero() {

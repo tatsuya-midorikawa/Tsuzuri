@@ -489,7 +489,7 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
         .entry
         .as_ref()
         .map_or(text.len(), |entry| entry.span.start);
-    let tokens = crate::lexer::lex(&text).unwrap_or_default();
+    let tokens = crate::lexer::lex(&text, crate::syntax::Edition::LATEST).unwrap_or_default();
     let declarations = declarations(&text, &tokens, end, program);
     let (bindings, body) = match &program.entry {
         Some(entry) => statements(&text, &tokens, entry),
@@ -966,6 +966,8 @@ fn analyze(
                 text: &source.text,
                 origin: source.origin,
                 namespace: &source.namespace,
+                edition: source.edition,
+                package: source.package.as_ref(),
             })
             .collect();
         crate::analyze_inputs_indexed_all(&inputs, semantic.as_mut())

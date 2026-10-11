@@ -1,11 +1,21 @@
-use tsuzuri::diagnostic::Span;
+use tsuzuri::diagnostic::{Diagnostic, Span};
 use tsuzuri::formatter::format_source;
-use tsuzuri::lexer::{lex, lex_all};
+use tsuzuri::lexer;
 use tsuzuri::parser::parse;
 use tsuzuri::syntax::{
-    FormatAlign, FormatKind, FormatSpec, InterpolationPiece, SourceKind, StringLiteral, TokenKind,
+    Edition, FormatAlign, FormatKind, FormatSpec, InterpolationPiece, SourceKind, StringLiteral,
+    Token, TokenKind,
 };
 use tsuzuri::{analyze, llvm};
+
+// These tests read manifest-less sources, so they use the latest edition.
+fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lexer::lex(source, Edition::LATEST)
+}
+
+fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lexer::lex_all(source, Edition::LATEST)
+}
 
 fn accepts(source: &str) {
     let module = analyze(source).unwrap_or_else(|error| {

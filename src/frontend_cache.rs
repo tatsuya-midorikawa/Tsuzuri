@@ -25,11 +25,11 @@ use serde_json::{Value, json};
 use crate::cache::{BuildCache, Sha256, read_regular};
 use crate::check::ModuleOrigin;
 use crate::diagnostic::Diagnostic;
-use crate::syntax::{Program, SourceKind};
+use crate::syntax::{Edition, Program, SourceKind};
 use crate::syntax_codec::{self, Invalid, Mode};
 
 /// The version of the pack, entry, manifest, codec and hash rules. Bump it whenever any changes.
-pub(crate) const FRONTEND_FORMAT: u32 = 2;
+pub(crate) const FRONTEND_FORMAT: u32 = 3;
 const PACK_MAGIC: &[u8; 8] = b"TZPACK\0\0";
 const PACK_HEADER_BYTES: usize = 84;
 const ENTRY_MAGIC: &[u8; 8] = b"TZFRONT\0";
@@ -97,10 +97,12 @@ fn executable_identity(path: &Path) -> Option<[u8; 32]> {
     Some(hash.finalize())
 }
 
-/// The key of a parse entry: the compiler and the source text, not its path or index.
-pub(crate) fn parse_key(identity: &[u8; 32], text: &str) -> [u8; 32] {
+/// The key of a parse entry: the compiler, the edition and the source text, not its path or
+/// index. The edition is part of the key because it decides how identical text is lexed.
+pub(crate) fn parse_key(identity: &[u8; 32], edition: Edition, text: &str) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.field("identity", identity);
+    hash.field("edition", &edition.0.to_le_bytes());
     hash.field("source", text.as_bytes());
     hash.finalize()
 }
@@ -436,10 +438,15 @@ impl FrontendCache {
             .join(format!("m-{}.json", hex(&self.project.hash)))
     }
 
-    /// Parses `text` as source `source`, or decodes its entry from the project's pack. The
-    /// program and the diagnostics are those of `parser::parse_with_source_all`.
-    pub(crate) fn parse(&mut self, text: &str, source: usize) -> Result<Parsed, Vec<Diagnostic>> {
-        let key = parse_key(&self.identity, text);
+    /// Parses `text` as source `source` of `edition`, or decodes its entry from the project's
+    /// pack. The program and the diagnostics are those of `parser::parse_with_source_all`.
+    pub(crate) fn parse(
+        &mut self,
+        text: &str,
+        source: usize,
+        edition: Edition,
+    ) -> Result<Parsed, Vec<Diagnostic>> {
+        let key = parse_key(&self.identity, edition, text);
         if let Some(range) = self.packed.get(&key).cloned() {
             match load(&self.pack[range.clone()], &key, source) {
                 Some(parsed) => {
@@ -454,7 +461,7 @@ impl FrontendCache {
             }
         }
         self.stats.misses += 1;
-        let program = crate::parser::parse_with_source_all(text, source)?;
+        let program = crate::parser::parse_with_source_all(text, source, edition)?;
         let encoded = syntax_codec::encode(&program, source, Mode::Full)
             .and_then(|full| Ok((full, interface_hash(&self.identity, &program, source)?)));
         let Ok((full, interface)) = encoded else {
@@ -815,7 +822,7 @@ mod tests {
         let parsed: Vec<_> = sources
             .iter()
             .enumerate()
-            .map(|(index, text)| cache.parse(text, index).unwrap())
+            .map(|(index, text)| cache.parse(text, index, Edition::LATEST).unwrap())
             .collect();
         let names: Vec<_> = (0..sources.len())
             .map(|index| format!("M{index}"))
@@ -909,15 +916,15 @@ mod tests {
         assert_eq!(pack_entries(&cache), 2);
         // Another process, with the source at another index as after adding a file.
         let mut again = open(&root, IDENTITY);
-        let second = again.parse(SOURCE, 5).unwrap();
+        let second = again.parse(SOURCE, 5, Edition::LATEST).unwrap();
         assert_eq!(again.stats, stats(1, 0, 0));
-        let expected = parse_with_source_all(SOURCE, 5).unwrap();
+        let expected = parse_with_source_all(SOURCE, 5, Edition::LATEST).unwrap();
         assert_eq!(format!("{:?}", second.program), format!("{expected:?}"));
         assert_eq!(
             (first[0].key, first[0].interface),
             (second.key, second.interface)
         );
-        assert_eq!(first[0].key, parse_key(&IDENTITY, SOURCE));
+        assert_eq!(first[0].key, parse_key(&IDENTITY, Edition::LATEST, SOURCE));
         assert_eq!(
             first[0].interface,
             interface_hash(&IDENTITY, &expected, 5).unwrap()
@@ -933,8 +940,29 @@ mod tests {
         assert_eq!(modified(&cache.manifest_path()), UNIX_EPOCH);
         // Each kind of analysis has a pack of its own.
         let mut tests = FrontendCache::open_with(&root, project(&root, "tests"), IDENTITY).unwrap();
-        tests.parse(SOURCE, 0).unwrap();
+        tests.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(tests.stats, stats(0, 1, 0));
+    }
+
+    #[test]
+    fn the_same_text_under_another_edition_is_another_entry() {
+        let later = Edition(2027);
+        assert_ne!(
+            parse_key(&IDENTITY, Edition::LATEST, SOURCE),
+            parse_key(&IDENTITY, later, SOURCE)
+        );
+        let (_temporary, root) = root();
+        let mut first = open(&root, IDENTITY);
+        first.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        first.finish(&[]);
+        // The pack holds the text for the edition that parsed it, and no other reuses it.
+        let mut second = open(&root, IDENTITY);
+        second.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        assert_eq!(second.stats, stats(1, 0, 0));
+        second.parse(SOURCE, 1, later).unwrap();
+        assert_eq!(second.stats, stats(1, 1, 0));
+        second.finish(&[]);
+        assert_eq!(pack_entries(&second), 2);
     }
 
     #[test]
@@ -967,17 +995,17 @@ mod tests {
         let mut cache = open(&root, IDENTITY);
         let (parsed, _) = analyze(&mut cache, &[SOURCE]);
         assert_eq!(cache.stats, stats(0, 1, 1));
-        let expected = parse_with_source_all(SOURCE, 0).unwrap();
+        let expected = parse_with_source_all(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(format!("{:?}", parsed[0].program), format!("{expected:?}"));
         let mut repaired = open(&root, IDENTITY);
-        repaired.parse(SOURCE, 0).unwrap();
+        repaired.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(repaired.stats, stats(1, 0, 0));
         // A truncated or empty pack is rejected as a whole.
         let bytes = fs::read(&path).unwrap();
         for length in [bytes.len() - 1, bytes.len() / 2, 0] {
             fs::write(&path, &bytes[..length]).unwrap();
             let mut cache = open(&root, IDENTITY);
-            cache.parse(SOURCE, 0).unwrap();
+            cache.parse(SOURCE, 0, Edition::LATEST).unwrap();
             assert_eq!(
                 cache.stats,
                 stats(0, 1, usize::from(length != 0)),
@@ -991,10 +1019,13 @@ mod tests {
         let (_temporary, root) = root();
         let mut cache = open(&root, IDENTITY);
         let source = "def broken :: = \n\ndef also :: i64 -> = 1\n";
-        let Err(errors) = cache.parse(source, 4) else {
+        let Err(errors) = cache.parse(source, 4, Edition::LATEST) else {
             panic!("the source does not parse");
         };
-        assert_eq!(errors, parse_with_source_all(source, 4).unwrap_err());
+        assert_eq!(
+            errors,
+            parse_with_source_all(source, 4, Edition::LATEST).unwrap_err()
+        );
         assert!(cache.entries.is_empty());
         analyze(&mut cache, &[OTHER]);
         assert_eq!(pack_entries(&cache), 1);
@@ -1026,7 +1057,7 @@ mod tests {
         // An entry for another source text under the key of this one is rejected too.
         rewrite_entry(&root, |entry| entry[44] ^= 1);
         let mut cache = open(&root, IDENTITY);
-        cache.parse(SOURCE, 0).unwrap();
+        cache.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(cache.stats, stats(1, 0, 0), "the interface hash is data");
         rewrite_entry(&root, |entry| entry[12] ^= 1);
         let mut cache = open(&root, IDENTITY);
@@ -1038,7 +1069,7 @@ mod tests {
         bytes[8] = (FRONTEND_FORMAT + 1) as u8;
         fs::write(&path, &bytes).unwrap();
         let mut cache = open(&root, IDENTITY);
-        cache.parse(SOURCE, 0).unwrap();
+        cache.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(cache.stats, stats(0, 1, 1));
         bytes[8] = FRONTEND_FORMAT as u8;
         fs::write(&path, &bytes).unwrap();
@@ -1046,7 +1077,7 @@ mod tests {
         analyze(&mut other, &[SOURCE]);
         assert_eq!(other.stats, stats(0, 1, 0));
         let mut back = open(&root, IDENTITY);
-        back.parse(SOURCE, 0).unwrap();
+        back.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(back.stats, stats(0, 1, 0));
     }
 
@@ -1065,7 +1096,7 @@ mod tests {
         // The miss replaced the link with a regular pack.
         assert!(fs::symlink_metadata(&path).unwrap().is_file());
         let mut again = open(&root, IDENTITY);
-        again.parse(SOURCE, 0).unwrap();
+        again.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(again.stats, stats(1, 0, 0));
     }
 
@@ -1085,7 +1116,7 @@ mod tests {
         assert_eq!(files(&root.join("frontend"), "p-").len(), 1);
         BuildCache::open(&root).unwrap();
         let mut cache = open(&root, IDENTITY);
-        cache.parse(SOURCE, 0).unwrap();
+        cache.parse(SOURCE, 0, Edition::LATEST).unwrap();
         assert_eq!(cache.stats, stats(1, 0, 0));
         // A root that is not a cache is left alone.
         let (_other, unrelated) = self::root();
@@ -1222,7 +1253,7 @@ mod tests {
     fn finish_records_the_manifest() {
         let (_temporary, root) = root();
         let mut cache = open(&root, IDENTITY);
-        let parsed = cache.parse(SOURCE, 0).unwrap();
+        let parsed = cache.parse(SOURCE, 0, Edition::LATEST).unwrap();
         let record = |interface| ModuleRecord {
             name: "Main",
             path: "Main.tz",

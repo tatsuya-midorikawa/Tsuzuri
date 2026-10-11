@@ -717,7 +717,21 @@ impl Session {
                 let Some(text) = self.text(&directory, &path) else {
                     return Ok(Value::Null);
                 };
-                Ok(format_document(&path, text, self.encoding))
+                // The project's own reading of the file decides the edition; a file whose
+                // project did not load is formatted as a source that no package owns.
+                let edition = self
+                    .projects
+                    .get(&directory)
+                    .or_else(|| self.good.get(&directory))
+                    .and_then(|state| {
+                        state
+                            .project
+                            .sources
+                            .iter()
+                            .find(|source| source.path == path)
+                    })
+                    .map(|source| source.edition);
+                Ok(format_document(&path, text, self.encoding, edition))
             }
             _ => Err((-32601, format!("method not found: {method}"))),
         }
@@ -1143,6 +1157,8 @@ fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Di
             text: &source.text,
             origin: source.origin,
             namespace: &source.namespace,
+            edition: source.edition,
+            package: source.package.as_ref(),
         })
         .collect();
     let mut semantic = SemanticIndex::default();
@@ -1157,8 +1173,8 @@ fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Di
 }
 
 /// Names after top-level `def`, `fn`, `and` (skipping `rec`), and a column-0 `let`.
-fn function_heads(source: &str) -> Vec<(String, Span)> {
-    let (tokens, _) = crate::lexer::lex_all(source);
+fn function_heads(source: &str, edition: crate::syntax::Edition) -> Vec<(String, Span)> {
+    let (tokens, _) = crate::lexer::lex_all(source, edition);
     let mut heads = Vec::new();
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
@@ -1212,7 +1228,8 @@ fn add_function_heads(index: &mut SemanticIndex, project: &Project) {
         }
     }
     for (source, names) in &functions {
-        for (name, span) in function_heads(&project.sources[*source].text) {
+        let file = &project.sources[*source];
+        for (name, span) in function_heads(&file.text, file.edition) {
             if let Some(&definition) = names.get(name.as_str()) {
                 index.references.push(Reference {
                     span: span.in_source(*source),
@@ -1417,6 +1434,11 @@ impl View<'_> {
         self.state.modules.key(self.source).map(str::to_owned)
     }
 
+    /// The edition that the project reads the current document with.
+    fn edition(&self) -> crate::syntax::Edition {
+        self.state.project.sources[self.source].edition
+    }
+
     /// The key of the module that `path` names in the current source.
     fn module_path(&self, path: &str) -> Option<&str> {
         self.state.modules.resolve(self.source, path)
@@ -1453,7 +1475,7 @@ impl ModuleNames {
             .sources
             .iter()
             .map(|source| match source.origin {
-                ModuleOrigin::User => crate::declared_header(&source.text),
+                ModuleOrigin::User => crate::declared_header(&source.text, source.edition),
                 ModuleOrigin::Std => (None, Vec::new()),
             })
             .collect();
@@ -1712,9 +1734,9 @@ fn token_type(kind: SymbolKind) -> usize {
     }
 }
 
-/// Tokens of `text` without the end marker.
-fn tokens(text: &str) -> Vec<Token> {
-    let (mut tokens, _) = crate::lexer::lex_all(text);
+/// Tokens of `text`, read with `edition`, without the end marker.
+fn tokens(text: &str, edition: crate::syntax::Edition) -> Vec<Token> {
+    let (mut tokens, _) = crate::lexer::lex_all(text, edition);
     tokens.retain(|token| token.kind != TokenKind::End);
     tokens
 }
@@ -1794,7 +1816,10 @@ fn name_token(tokens: &[Token], at: usize) -> bool {
 
 fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     let empty = json!({"isIncomplete": false, "items": []});
-    let tokens = tokens(text);
+    let Some(view) = view else {
+        return empty;
+    };
+    let tokens = tokens(text, view.edition());
     if tokens.iter().any(|token| {
         matches!(
             token.kind,
@@ -1808,9 +1833,6 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     }) {
         return empty;
     }
-    let Some(view) = view else {
-        return empty;
-    };
     let index = view.index;
     let module = view.module().unwrap_or_default();
     let modules = &view.state.modules;
@@ -2176,7 +2198,7 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
     let Some(view) = view else {
         return Value::Null;
     };
-    let tokens = tokens(text);
+    let tokens = tokens(text, view.edition());
     let Some((head, active)) = call_context(&tokens, text, offset) else {
         return Value::Null;
     };
@@ -2254,7 +2276,7 @@ fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> V
             qualifiable,
         ));
     }
-    let lexed = tokens(text);
+    let lexed = tokens(text, view.edition());
     let positions: BTreeMap<usize, usize> = lexed
         .iter()
         .enumerate()
@@ -2357,13 +2379,23 @@ fn copy_hints(view: &View<'_>, text: &str, encoding: PositionEncoding, range: &V
     Ok(json!(hints))
 }
 
-fn format_document(path: &Path, text: &str, encoding: PositionEncoding) -> Value {
+fn format_document(
+    path: &Path,
+    text: &str,
+    encoding: PositionEncoding,
+    edition: Option<crate::syntax::Edition>,
+) -> Value {
     let kind = path
         .extension()
         .and_then(|extension| extension.to_str())
         .and_then(crate::syntax::SourceKind::from_extension)
         .unwrap_or(crate::syntax::SourceKind::Code);
-    match crate::formatter::format_source(&path.to_string_lossy(), text, kind) {
+    let path = path.to_string_lossy();
+    let formatted = match edition {
+        Some(edition) => crate::formatter::format_source_with_edition(&path, text, kind, edition),
+        None => crate::formatter::format_source(&path, text, kind),
+    };
+    match formatted {
         Ok(result) if result.changed => {
             let mapper = PositionMapper::new(text, encoding);
             json!([{"range": mapper.range(text, Span::new(0, text.len())), "newText": result.formatted}])
@@ -2591,7 +2623,7 @@ mod tests {
     #[test]
     fn function_heads_find_def_fn_and_and() {
         let source = "def rec even :: i64 -> bool\nand odd :: i64 -> bool = \\n -> n == 1\nfn even n = n == 0\nlet twice = \\x -> x\n  let inner = 1\nclass Twice<'a> {\n    def twice :: 'a -> 'a\n}\ninstance Twice<i64> {\n    fn twice n = n\n    and odd n = n\n}\nfn (";
-        let heads: Vec<_> = function_heads(source)
+        let heads: Vec<_> = function_heads(source, crate::syntax::Edition::LATEST)
             .into_iter()
             .map(|(name, span)| (name, span.start))
             .collect();
@@ -2610,7 +2642,8 @@ mod tests {
     #[test]
     fn keywords_match_the_lexer() {
         for keyword in KEYWORDS {
-            let (tokens, diagnostics) = crate::lexer::lex_all(keyword);
+            let (tokens, diagnostics) =
+                crate::lexer::lex_all(keyword, crate::syntax::Edition::LATEST);
             assert!(diagnostics.is_empty());
             assert_eq!(tokens.len(), 2, "{keyword}");
             assert!(!matches!(tokens[0].kind, TokenKind::Ident(_)), "{keyword}");

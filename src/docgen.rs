@@ -16,7 +16,7 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         if has_user && source.origin != ModuleOrigin::User {
             continue;
         }
-        let program = crate::parser::parse_with_source(&source.text, id)?;
+        let program = crate::parser::parse_with_source(&source.text, id, source.edition)?;
         let name = match (source.origin, &program.namespace) {
             (ModuleOrigin::User, Some(declared)) => {
                 crate::module_identity(

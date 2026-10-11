@@ -42,6 +42,12 @@ pub struct SourceInput<'a> {
     /// namespace for its files, and empty for dependency and std files, whose
     /// paths already start with their namespace.
     pub namespace: &'a str,
+    /// The edition that `text` is read with (G19): the edition of its package's manifest, and
+    /// `Edition::LATEST` for a source that no manifest governs.
+    pub edition: syntax::Edition,
+    /// The package that owns the source, `None` without a manifest and for std. W1005 reports
+    /// a use of a deprecated declaration only when it is in another package.
+    pub package: Option<&'a package::PackageId>,
 }
 
 pub fn analyze(source: &str) -> Result<check::CheckedModule, Diagnostic> {
@@ -74,6 +80,8 @@ pub fn analyze_modules_with_std(
     analyze_modules_with_std_all(sources, std_sources).map_err(first_error)
 }
 
+/// The entry points without a manifest (`analyze*`) read every source, user and std, with the
+/// latest edition, and no source belongs to a package.
 pub fn analyze_modules_with_std_all(
     sources: &[(&str, &str)],
     std_sources: &[(&str, &str)],
@@ -85,12 +93,16 @@ pub fn analyze_modules_with_std_all(
             text,
             origin: ModuleOrigin::User,
             namespace: "",
+            edition: syntax::Edition::LATEST,
+            package: None,
         })
         .chain(std_sources.iter().map(|(path, text)| SourceInput {
             path,
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
+            edition: syntax::Edition::LATEST,
+            package: None,
         }))
         .collect();
     analyze_inputs_all(&inputs)
@@ -164,11 +176,10 @@ pub(crate) fn analyze_inputs_with(
             };
             let parsed = match cache.as_mut() {
                 Some(cache) => cache
-                    .parse(input.text, id)
+                    .parse(input.text, id, input.edition)
                     .map(|parsed| (parsed.program, Some((parsed.key, parsed.interface)))),
-                None => {
-                    parser::parse_with_source_all(input.text, id).map(|program| (program, None))
-                }
+                None => parser::parse_with_source_all(input.text, id, input.edition)
+                    .map(|program| (program, None)),
             };
             parsed.and_then(|(mut program, hashes)| {
                 program.source_kind = extension.and_then(syntax::SourceKind::from_extension);
@@ -229,6 +240,8 @@ pub(crate) fn analyze_inputs_with(
                 origin: input.origin,
                 namespace,
                 entry: *entry,
+                edition: input.edition,
+                package: input.package,
             },
         )
         .collect();
@@ -256,12 +269,16 @@ pub fn analyze_modules_with_semantics(
             text,
             origin: ModuleOrigin::User,
             namespace: "",
+            edition: syntax::Edition::LATEST,
+            package: None,
         })
         .chain(stdlib::SOURCES.iter().map(|(path, text)| SourceInput {
             path,
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
+            edition: syntax::Edition::LATEST,
+            package: None,
         }))
         .collect();
     let mut index = check::semantic::SemanticIndex::default();
@@ -339,9 +356,12 @@ pub(crate) fn module_identity(
 
 /// The `namespace` and `using` paths at the top of `text`, read from its
 /// tokens so that later syntax errors do not hide them.
-pub(crate) fn declared_header(text: &str) -> (Option<syntax::Ident>, Vec<syntax::Ident>) {
+pub(crate) fn declared_header(
+    text: &str,
+    edition: syntax::Edition,
+) -> (Option<syntax::Ident>, Vec<syntax::Ident>) {
     use syntax::TokenKind;
-    let (tokens, _) = lexer::lex_all(text);
+    let (tokens, _) = lexer::lex_all(text, edition);
     let broken = |from: usize, to: usize| text[from..to].contains(['\n', '\r']);
     let mut rest = tokens.as_slice();
     let mut header = |keyword: &str| {

@@ -665,6 +665,8 @@ mod tests {
             origin: ModuleOrigin::User,
             namespace: "",
             entry: true,
+            edition: crate::syntax::Edition::LATEST,
+            package: None,
         }];
         for enabled in [false, true] {
             let module = check_modules_collect(

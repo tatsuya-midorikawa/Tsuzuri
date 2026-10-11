@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::diagnostic::{Diagnostic, Span};
+use crate::syntax::Edition;
 
 /// The largest `Tsuzuri.toml`, `Tsuzuri.lock` and registry index file. Sources have their own
 /// limit, `syntax::MAX_SOURCE_BYTES`.
@@ -20,6 +21,8 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub namespace: String,
+    /// The language edition that the package's sources are read with (G19).
+    pub edition: Edition,
     pub dependencies: BTreeMap<String, Dependency>,
     pub wasm: WasmSettings,
     /// The `[native]` link inputs, with paths still relative to the package root, and the span of its header.
@@ -513,33 +516,37 @@ pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
 
 /// Whether `text` can be a package's default namespace: identifiers joined by
 /// `::`, at most 16 segments and 255 bytes, whose first segment is neither
-/// the std namespace nor a standard library module name.
-pub fn valid_namespace(text: &str) -> bool {
+/// the std namespace nor a standard library module name. A segment that
+/// `edition` reserves is not an identifier.
+pub fn valid_namespace(text: &str, edition: Edition) -> bool {
     use crate::syntax::{Token, TokenKind};
     text.len() <= 255
         && text.split("::").count() <= 16
         && text.split("::").next().is_some_and(|first| {
             first != crate::stdlib::NAMESPACE && !crate::stdlib::is_reserved_module(first)
-        })
-        && text.split("::").all(|segment| {
-            segment != "_" && segment != "Task" && crate::lexer::lex(segment).is_ok_and(|tokens| {
+        }) && text.split("::").all(|segment| {
+        segment != "_"
+            && segment != "Task"
+            && crate::lexer::lex(segment, edition).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::End, .. }]
                         if name == segment
                 )
             })
-        })
+    })
 }
 
 /// Creates a package in `directory`, which must be missing or empty: a
-/// `Tsuzuri.toml` that names its default namespace, a `Main.tz` that declares
-/// it, and a `.gitignore`. Returns the created files.
+/// `Tsuzuri.toml` that names its default namespace and the latest language
+/// edition, a `Main.tz` that declares the namespace, and a `.gitignore`.
+/// Returns the created files.
 pub fn create_project(
     directory: &Path,
     namespace: Option<&str>,
 ) -> Result<Vec<PathBuf>, Diagnostic> {
     let error = |message: String| Diagnostic::new("E2000", message, Span::default());
+    let edition = Edition::LATEST;
     let resolved = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_owned());
     let folder = resolved
         .file_name()
@@ -547,7 +554,7 @@ pub fn create_project(
         .unwrap_or_default();
     let name = package_name(folder);
     let namespace = match namespace {
-        Some(namespace) if valid_namespace(namespace) => namespace.to_owned(),
+        Some(namespace) if valid_namespace(namespace, edition) => namespace.to_owned(),
         Some(namespace) => {
             return Err(error(format!(
                 "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name"
@@ -555,7 +562,7 @@ pub fn create_project(
         }
         None => self::namespace(&name, Span::default())
             .ok()
-            .filter(|namespace| valid_namespace(namespace))
+            .filter(|namespace| valid_namespace(namespace, edition))
             .ok_or_else(|| {
                 error(format!(
                     "cannot derive a namespace from the folder name '{folder}'; pass --namespace"
@@ -583,7 +590,7 @@ pub fn create_project(
         (
             "Tsuzuri.toml",
             format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nnamespace = \"{namespace}\"\n"
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\nnamespace = \"{namespace}\"\n"
             ),
         ),
         (
@@ -700,10 +707,10 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         cursor.expect("=")?;
         match section {
             "package" => {
-                if !matches!(key.as_str(), "name" | "version" | "namespace") {
-                    return Err(
-                        cursor.error("unknown package key; expected name, version, or namespace")
-                    );
+                if !matches!(key.as_str(), "name" | "version" | "namespace" | "edition") {
+                    return Err(cursor.error(
+                        "unknown package key; expected name, version, namespace, or edition",
+                    ));
                 }
                 let value = cursor.string()?;
                 if value.is_empty() || fields.insert(key, (value, span)).is_some() {
@@ -841,9 +848,22 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     };
     let (name, span) = fields.remove("name").ok_or_else(missing)?;
     let (version, _) = fields.remove("version").ok_or_else(missing)?;
+    let edition = match fields.remove("edition") {
+        None => Edition::MANIFEST_DEFAULT,
+        Some((value, span)) => Edition::parse(&value).ok_or_else(|| {
+            Diagnostic::new(
+                "E0002",
+                format!(
+                    "unsupported edition '{value}'; supported editions: {}",
+                    Edition::supported_names()
+                ),
+                span,
+            )
+        })?,
+    };
     let derived = namespace(&name, span)?;
     let namespace = match fields.remove("namespace") {
-        Some((namespace, span)) if !valid_namespace(&namespace) => {
+        Some((namespace, span)) if !valid_namespace(&namespace, edition) => {
             return Err(Diagnostic::new(
                 "E1011",
                 "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name",
@@ -856,6 +876,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     };
     Ok(Manifest {
         namespace,
+        edition,
         name,
         version,
         dependencies,
@@ -1284,8 +1305,63 @@ mod tests {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}\n"), 0).unwrap_err();
             assert_eq!(error.code, "E0002", "{suffix}");
         }
-        assert!(valid_namespace("lower::case_1"));
-        assert!(valid_namespace("Std") && valid_namespace("Acme::std"));
+        let latest = Edition::LATEST;
+        assert!(valid_namespace("lower::case_1", latest));
+        assert!(valid_namespace("Std", latest) && valid_namespace("Acme::std", latest));
+    }
+
+    #[test]
+    fn parses_edition_and_defaults_missing_edition() {
+        let edition =
+            |keys: &str| parse_manifest(&format!("{PACKAGE}{keys}"), 0).map(|m| m.edition);
+        assert_eq!(edition("edition = \"2026\"\n"), Ok(Edition::E2026));
+        assert_eq!(edition(""), Ok(Edition::MANIFEST_DEFAULT));
+        assert_eq!(
+            edition("# edition = \"2030\"\n"),
+            Ok(Edition::MANIFEST_DEFAULT)
+        );
+        // The key may stand anywhere in [package], before or after the others.
+        let before = "[package]\nedition = \"2026\"\nname = \"app\"\nversion = \"1\"\n";
+        assert_eq!(parse_manifest(before, 0).unwrap().edition, Edition::E2026);
+        // Each case: the keys after PACKAGE, the zero-based line of the error, its message.
+        for (keys, line, message) in [
+            (
+                "edition = \"2030\"\n",
+                0,
+                "unsupported edition '2030'; supported editions: 2026",
+            ),
+            (
+                "edition = \" 2026\"\n",
+                0,
+                "unsupported edition ' 2026'; supported editions: 2026",
+            ),
+            ("edition = 2026\n", 0, "expected '\"'"),
+            (
+                "edition = \"\"\n",
+                0,
+                "package fields must be nonempty and occur exactly once",
+            ),
+            (
+                "edition = \"2026\"\nedition = \"2026\"\n",
+                1,
+                "package fields must be nonempty and occur exactly once",
+            ),
+            (
+                "license = \"MIT\"\n",
+                0,
+                "unknown package key; expected name, version, namespace, or edition",
+            ),
+        ] {
+            let error = parse_manifest(&format!("{PACKAGE}{keys}"), 7).unwrap_err();
+            assert_eq!(error.code, "E0002", "{keys}");
+            assert_eq!(error.message, message, "{keys}");
+            assert_eq!(error.span.source, Some(7), "{keys}");
+            let start = PACKAGE.len() + keys.lines().take(line).map(|l| l.len() + 1).sum::<usize>();
+            assert_eq!(error.span.start, start, "{keys}");
+        }
+        // The edition also reads the namespace: a segment is an identifier of that edition.
+        let source = format!("{PACKAGE}edition = \"2026\"\nnamespace = \"Acme::Tools\"\n");
+        assert_eq!(parse_manifest(&source, 0).unwrap().namespace, "Acme.Tools");
     }
 
     #[test]
@@ -1313,6 +1389,12 @@ mod tests {
         assert_eq!(
             (manifest.name.as_str(), manifest.namespace.as_str()),
             ("hello-world", "HelloWorld")
+        );
+        assert_eq!(manifest.edition, Edition::LATEST);
+        assert!(
+            std::fs::read_to_string(&created[0])
+                .unwrap()
+                .contains("edition = \"2026\"\n")
         );
         let main = std::fs::read_to_string(&created[1]).unwrap();
         assert!(main.starts_with("namespace HelloWorld\n\n"), "{main}");

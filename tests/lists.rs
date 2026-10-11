@@ -14,7 +14,11 @@ fn rejects(source: &str, code: &str) {
 
 #[test]
 fn list_delimiters_do_not_conflict_with_operators() {
-    let tokens = lexer::lex("[||] [|1 | 2, true || false, 1 |> f|]").unwrap();
+    let tokens = lexer::lex(
+        "[||] [|1 | 2, true || false, 1 |> f|]",
+        tsuzuri::syntax::Edition::LATEST,
+    )
+    .unwrap();
     assert_eq!(tokens[0].kind, TokenKind::LeftList);
     assert_eq!(tokens[1].kind, TokenKind::RightList);
     for kind in [TokenKind::Pipe, TokenKind::OrOr, TokenKind::PipeForward] {

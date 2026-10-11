@@ -3343,6 +3343,10 @@ pub struct ModuleInput<'a> {
     pub namespace: &'a str,
     /// The root package's `Main.tz`, the only module that may hold the entry point.
     pub entry: bool,
+    /// The edition that the module's source was read with; its name is an identifier of it.
+    pub edition: crate::syntax::Edition,
+    /// The package that owns the module, `None` without a manifest and for std (W1005).
+    pub package: Option<&'a crate::package::PackageId>,
 }
 
 #[derive(Debug)]
@@ -4073,6 +4077,8 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
         origin: ModuleOrigin::User,
         namespace: &namespace,
         entry: true,
+        edition: crate::syntax::Edition::LATEST,
+        package: None,
     }])
 }
 
@@ -5656,7 +5662,7 @@ fn check_modules_collect(
             continue;
         }
         let valid = name.split('.').all(|name| {
-            crate::lexer::lex(name).is_ok_and(|tokens| {
+            crate::lexer::lex(name, module.edition).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
