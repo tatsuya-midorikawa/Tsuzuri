@@ -45,6 +45,61 @@ pub struct EmitOptions {
     pub debug_output: bool,
     /// Where the program's heap blocks come from (F13).
     pub allocator: Allocator,
+    /// How f16 values are computed in native code (D10). WASM output is always `Soft`.
+    pub f16: F16Path,
+}
+
+/// How the native code computes f16 values (D10). Every path gives the same bits, NaNs included;
+/// they differ in which operations are LLVM `half` instructions and which are the bundled integer
+/// runtime (`tz_soft_*` in `numeric.c`). The driver chooses with `driver::f16_path`; the library
+/// entry points without options (`emit`, `emit_target`) always use `Soft`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum F16Path {
+    /// Every f16 operation calls the bundled runtime. WASM, targets without the instructions
+    /// below, and the library entry points.
+    #[default]
+    Soft,
+    /// `f16 as f32`, `f16 as f64`, and `f32 as f16` are `fpext` and `fptrunc` of `half`, which
+    /// become hardware conversions (x86-64 with F16C). Arithmetic, comparisons, `Math.sqrt`, and
+    /// `f64 as f16` stay `Soft`: LLVM lowers `fptrunc double to half` to a libcall without a
+    /// direct instruction, and rounding through binary32 first would round twice.
+    Conversions,
+    /// Arithmetic, comparisons, `Math.sqrt`, and all four conversions are `half` instructions.
+    /// LLVM lowers them to FP16 instructions where the target has them (Armv8.2-A FEAT_FP16,
+    /// AVX512-FP16), and otherwise to one binary32 operation per `half` operation between exact
+    /// conversions, which rounds once because binary32 has at least 2 × 11 + 2 bits (AArch64).
+    Hardware,
+}
+
+impl F16Path {
+    /// The path's name in documentation and test reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+            Self::Conversions => "conversions",
+            Self::Hardware => "hardware",
+        }
+    }
+
+    /// `+ - * /`, the comparisons, and `Math.sqrt`.
+    fn arithmetic(self) -> bool {
+        self == Self::Hardware
+    }
+
+    /// `f16 as f32` and `f16 as f64`, which are exact.
+    fn widens(self) -> bool {
+        self != Self::Soft
+    }
+
+    /// `f32 as f16` and `f64 as f16`, each one rounding. A target without a direct instruction
+    /// from binary64 would round twice through binary32, so only `Hardware` narrows binary64.
+    fn narrows_from(self, bits: u16) -> bool {
+        match self {
+            Self::Soft => false,
+            Self::Conversions => bits == 32,
+            Self::Hardware => true,
+        }
+    }
 }
 
 /// The heap runtime behind `@tz.alloc`, `@tz.free`, and `@tz.realloc` (F13).
@@ -347,6 +402,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
             wasm,
             debug_output: false,
             allocator: Allocator::System,
+            f16: F16Path::Soft,
         },
     )
 }
@@ -364,6 +420,7 @@ pub fn emit_with_options(
         options.debug_output,
         Instrumentation {
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )
@@ -385,6 +442,7 @@ pub fn emit_with_trap_info(
         Instrumentation {
             traps: true,
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )?;
@@ -416,6 +474,7 @@ pub fn emit_with_debug_info(
             traps: trap_info,
             debug: Some((sources, optimized)),
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )?;
@@ -477,6 +536,7 @@ pub fn emit_native_build_for(
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
             allocator: options.allocator,
+            f16: options.f16,
             multiversion: true,
             ..Instrumentation::default()
         },
@@ -489,7 +549,7 @@ pub fn emit_native_build_for(
             trap_sites: Vec::new(),
         }
     };
-    output.ir = cpu::multiversion(output.ir, module, levels)?;
+    output.ir = cpu::multiversion(output.ir, module, levels, options.f16)?;
     Ok(output)
 }
 
@@ -525,12 +585,13 @@ pub fn emit_trap_return(
             cpu_dispatch: trusted_array,
             trap_return: true,
             allocator: options.allocator,
+            f16: options.f16,
             multiversion: cpu_dispatch,
             ..Instrumentation::default()
         },
     )?;
     let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
-    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels())?;
+    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels(), options.f16)?;
     let wrappers = host_abi::try_wrappers(&output.ir, module);
     output.ir.push_str(&wrappers);
     Ok(output)
@@ -664,6 +725,7 @@ pub(crate) fn emit_wasm_build(
             memory64,
             trap_return: false,
             allocator: options.allocator,
+            f16: F16Path::Soft,
             multiversion: false,
             coverage: None,
             seed: None,
@@ -749,6 +811,8 @@ pub struct TestRunnerOptions<'a> {
     /// The source map and whether the code is optimized when the runner carries debug
     /// information for a debugger (G16 Phase 2).
     pub debug: Option<(&'a [TrapSource<'a>], bool)>,
+    /// How a native runner computes f16 values (D10).
+    pub f16: F16Path,
 }
 
 pub fn emit_test_runner_with(
@@ -774,6 +838,7 @@ pub fn emit_test_runner_with(
             debug: options.debug,
             coverage: options.coverage.filter(|_| !options.wasm),
             seed: options.seed,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )
@@ -783,6 +848,15 @@ pub fn emit_test_runner_with(
 /// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
 /// calls bench `index` with an iteration count and returns its nanoseconds, or -1 for a bad index.
 pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<String, Diagnostic> {
+    emit_bench_runner_with(module, selected, F16Path::Soft)
+}
+
+/// `emit_bench_runner` with the f16 lowering of the machine that runs the benches (D10).
+pub fn emit_bench_runner_with(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.benches.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -796,7 +870,10 @@ pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<S
         false,
         Some(selected),
         false,
-        Instrumentation::default(),
+        Instrumentation {
+            f16,
+            ..Instrumentation::default()
+        },
     )
     .map(|(ir, _)| ir)
 }
@@ -811,6 +888,7 @@ struct Instrumentation<'a> {
     /// Native `--trap-mode return`: a tracked heap, so a trap can free everything a call allocated.
     trap_return: bool,
     allocator: Allocator,
+    f16: F16Path,
     /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
     multiversion: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -975,6 +1053,12 @@ fn emit_program(
             .enumerate()
             .any(|(id, function)| emitted[id] && async_reactor_function(function)),
         memory64: instrumentation.memory64,
+        // WASM has no `half` instructions: LLVM would call `__extendhfsf2` and `__truncsfhf2`.
+        f16: if wasm {
+            F16Path::Soft
+        } else {
+            instrumentation.f16
+        },
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
@@ -1579,6 +1663,7 @@ struct Globals {
     debug: Option<debug::DebugContext>,
     cpu_dispatch: bool,
     multiversion: bool,
+    f16: F16Path,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
     /// The values of the deferred shared blocks that the program drops, with whether they
@@ -1623,6 +1708,7 @@ impl Default for Globals {
             debug: None,
             cpu_dispatch: false,
             multiversion: false,
+            f16: F16Path::Soft,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
@@ -5797,6 +5883,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.ty(&expression.ty)
             ));
         }
+        if let Some(converted) = self.half_cast(&expression.ty, to, &value) {
+            return converted;
+        }
         let input = self.spill(&expression.ty, &value);
         let output = self.slot(to);
         self.instruction(format!(
@@ -5891,6 +5980,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.power(&left.ty, &lhs, &rhs, false);
         }
         let ty = self.ty(&left.ty);
+        if matches!(left.ty, Type::Binary(16)) && self.globals.f16.arithmetic() {
+            return self.half_binary(operator, &lhs, &rhs);
+        }
         if matches!(left.ty, Type::Decimal(_) | Type::Binary(16 | 128)) {
             let a = self.spill(&left.ty, &lhs);
             let b = self.spill(&right.ty, &rhs);
@@ -6499,6 +6591,7 @@ fn emit_typed_builtin(
     let mut builtins = Builtins::new();
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
+        f16: shared_globals.f16,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();

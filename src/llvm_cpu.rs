@@ -19,6 +19,21 @@ fn features(level: u8) -> &'static str {
     }
 }
 
+/// The features that `half` operations need in every version, after a comma. A `target-features`
+/// attribute replaces the features the build was given, so a version would lose the instructions
+/// that its `half` operations lower to, and LLVM would call `__extendhfsf2` and `__truncsfhf2`
+/// instead (D10). AArch64 lowers `half` with base instructions at every level.
+fn f16_features(f16: F16Path) -> &'static str {
+    if !cfg!(target_arch = "x86_64") {
+        return "";
+    }
+    match f16 {
+        F16Path::Soft => "",
+        F16Path::Conversions => ",+f16c",
+        F16Path::Hardware => ",+avx512fp16,+f16c",
+    }
+}
+
 fn level_name(level: u8) -> &'static str {
     CPU_TARGETS
         .iter()
@@ -63,6 +78,7 @@ pub(super) fn multiversion(
     ir: String,
     module: &CheckedModule,
     levels: u8,
+    f16: F16Path,
 ) -> Result<String, Diagnostic> {
     if !ir.contains(MARK) {
         return Ok(ir);
@@ -216,7 +232,7 @@ pub(super) fn multiversion(
             (callee == name).then(|| baseline.clone())
         }));
         for level in (1..8).filter(|level| chosen & (1 << level) != 0) {
-            output.push_str(&version_at(&text, name, level, &wide, &has_version));
+            output.push_str(&version_at(&text, name, level, f16, &wide, &has_version));
         }
     }
     // The runtime text at the end may lack a final newline; the driver finds `cpu.c`'s use by a
@@ -226,7 +242,14 @@ pub(super) fn multiversion(
     }
     for (&name, &chosen) in &members {
         for level in (1..8).filter(|level| chosen & (1 << level) != 0) {
-            output.push_str(&version_at(bodies[name], name, level, &wide, &has_version));
+            output.push_str(&version_at(
+                bodies[name],
+                name,
+                level,
+                f16,
+                &wide,
+                &has_version,
+            ));
         }
     }
     output.push_str(&choices);
@@ -243,6 +266,7 @@ fn version_at(
     text: &str,
     name: &str,
     level: u8,
+    f16: F16Path,
     wide: &BTreeSet<&str>,
     has_version: &dyn Fn(&str, u8) -> bool,
 ) -> String {
@@ -251,7 +275,7 @@ fn version_at(
         text,
         name,
         &versioned(name, &suffix),
-        Some(level),
+        Some(&format!("{}{}", features(level), f16_features(f16))),
         &|callee, line| {
             ((callee == name || simd::holds_wide_vector(line, wide)) && has_version(callee, level))
                 .then(|| versioned(callee, &suffix))
@@ -260,13 +284,13 @@ fn version_at(
 }
 
 /// `text`, the function `name`, renamed to `renamed` without the `@cpu` mark. A version for a
-/// level has that level's target features and no debug information, which belongs to the
+/// level has that level's target `features` and no debug information, which belongs to the
 /// portable version. `rename` maps a callee and its call line to the callee to call instead.
 fn version(
     text: &str,
     name: &str,
     renamed: &str,
-    level: Option<u8>,
+    features: Option<&str>,
     rename: &dyn Fn(&str, &str) -> Option<String>,
 ) -> String {
     let mut output = String::with_capacity(text.len());
@@ -280,23 +304,23 @@ fn version(
             .map_or("", |(_, tail)| tail);
         define = format!("{head}{tail}");
     }
-    if let Some(level) = level {
+    if let Some(features) = features {
         define = without_debug(&define, " !dbg !");
         let body = define
             .trim_end()
             .strip_suffix('{')
             .unwrap_or(&define)
             .trim_end();
-        define = format!("{body} \"target-features\"=\"{}\" {{\n", features(level));
+        define = format!("{body} \"target-features\"=\"{features}\" {{\n");
     }
     output.push_str(&define);
     for line in lines {
-        if level.is_some()
+        if features.is_some()
             && (line.contains("@llvm.dbg.declare(") || line.contains("@llvm.dbg.value("))
         {
             continue;
         }
-        let line = if level.is_some() {
+        let line = if features.is_some() {
             without_debug(line, ", !dbg !")
         } else {
             line.to_owned()

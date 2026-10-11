@@ -392,6 +392,7 @@ pub fn build_debug_runner(
             llvm::TestRunnerOptions {
                 seed: options.seed,
                 debug: Some((sources, options.optimization != 0)),
+                f16: host_f16_path(options.target, Cpu::Generic),
                 ..llvm::TestRunnerOptions::default()
             },
         )
@@ -613,6 +614,7 @@ fn build_runner(
             seed: options.seed,
             debug_output,
             debug: None,
+            f16: host_f16_path(options.target, Cpu::Generic),
         },
     )?;
     if !wasm {
@@ -978,9 +980,10 @@ pub fn run_benches_linked(
         });
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
-    let text = llvm::emit_bench_runner(
+    let text = llvm::emit_bench_runner_with(
         module,
         &selected.iter().map(|bench| bench.index).collect::<Vec<_>>(),
+        host_f16_path(Target::Native, Cpu::Generic),
     )?;
     let artifact = compile_native_runner(
         module,

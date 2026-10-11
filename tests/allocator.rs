@@ -21,6 +21,7 @@ fn options(wasm: bool, allocator: Allocator) -> EmitOptions {
         wasm,
         debug_output: false,
         allocator,
+        f16: llvm::F16Path::Soft,
     }
 }
 
