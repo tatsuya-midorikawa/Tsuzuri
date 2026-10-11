@@ -23,7 +23,7 @@ fn features(level: u8) -> &'static str {
 /// `target-features` attribute replaces the features the build was given, so a version would lose
 /// the instructions that its `half` operations lower to, and LLVM would call `__extendhfsf2` and
 /// `__truncsfhf2` instead (D10). The AArch64 levels (4 and 5) add none: `half` lowers to base
-/// instructions there.
+/// instructions there. A version without `half` keeps the level's features alone ([`uses_half`]).
 fn f16_features(level: u8, f16: F16Path) -> &'static str {
     if level > 3 {
         return "";
@@ -33,6 +33,15 @@ fn f16_features(level: u8, f16: F16Path) -> &'static str {
         F16Path::Conversions => ",+f16c",
         F16Path::Hardware => ",+avx512fp16,+f16c",
     }
+}
+
+/// Whether the function `text` has an instruction on `half`: the type is a word of its own there,
+/// unlike in the symbol of a function that the program calls `half_add`.
+fn uses_half(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.split(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '@' | '%')))
+            .any(|word| word == "half")
+    })
 }
 
 fn level_name(level: u8) -> &'static str {
@@ -272,6 +281,7 @@ fn version_at(
     has_version: &dyn Fn(&str, u8) -> bool,
 ) -> String {
     let suffix = format!(".{}", level_name(level));
+    let f16 = if uses_half(text) { f16 } else { F16Path::Soft };
     version(
         text,
         name,

@@ -503,12 +503,15 @@ fn cpu_versions_keep_the_features_of_their_half_operations() {
     // A `@cpu` version has a `target-features` attribute of its own, which replaces the build's
     // features: without `+f16c` in it, LLVM would call compiler-rt for the version's `half`.
     const SOURCE: &str = "@cpu [\"avx2\", \"sve\"]\nexport def scale :: f32 -> f32\nfn scale x = ((x as f16) as f32) * 2.0f32\n";
-    let module = tsuzuri::analyze(SOURCE).unwrap();
-    let sources = [tsuzuri::trap::TrapSource {
-        path: "Main.tz",
-        text: SOURCE,
-    }];
-    let build = |f16, levels| {
+    // No `half` operation, only a name with `half` in it: the level's features alone.
+    const PLAIN: &str =
+        "@cpu [\"avx2\"]\nexport def half_add :: f32 -> f32\nfn half_add x = x * 2.0f32\n";
+    let build = |source: &str, f16, levels| {
+        let module = tsuzuri::analyze(source).unwrap();
+        let sources = [tsuzuri::trap::TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
         llvm::emit_native_build_for(
             &module,
             EmitOptions {
@@ -545,13 +548,23 @@ fn cpu_versions_keep_the_features_of_their_half_operations() {
         (F16Path::Conversions, "+avx2,+f16c"),
         (F16Path::Hardware, "+avx2,+avx512fp16,+f16c"),
     ] {
-        let ir = build(path, X86);
+        let ir = build(SOURCE, path, X86);
         assert_eq!(attribute(&ir, "Main.scale.cpu.avx2"), expected, "{path:?}");
         // The AArch64 versions need nothing: `half` lowers to base instructions.
-        assert_eq!(attribute(&build(path, ARM), "Main.scale.cpu.sve"), "+sve");
+        assert_eq!(
+            attribute(&build(SOURCE, path, ARM), "Main.scale.cpu.sve"),
+            "+sve"
+        );
+        let plain = build(PLAIN, path, X86);
+        assert!(!has_half(&plain), "{path:?}");
+        assert_eq!(
+            attribute(&plain, "Main.half_add.cpu.avx2"),
+            "+avx2",
+            "{path:?}"
+        );
     }
     // Compiled for plain x86-64, the version still converts with F16C and calls no library.
-    let ir = build(F16Path::Conversions, X86);
+    let ir = build(SOURCE, F16Path::Conversions, X86);
     let text = assembly(&ir, "x86_64-unknown-linux-gnu", 3, &[]);
     let version = function_assembly(&text, "tz.fn.Main.scale.cpu.avx2");
     assert!(
