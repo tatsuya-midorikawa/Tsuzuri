@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 2 件（B09・D12）があります。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 1 件（B09）があります。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。追加した D12 は 2026-10-12 に `done` になりました。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -184,7 +184,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | D09 | [正規表現と Unicode テキスト処理](_completed/D09-regex-unicode.md) | P2 | L | D02, A08 | done |
 | D10 | [f16 のハードウェア演算経路](_completed/D10-f16-hardware.md) | P3 | M | D03 | done（Phase 1・2） |
 | D11 | [コンパイル時評価の拡張（const 関数・表の生成）](_completed/D11-const-evaluation.md) | P3 | L | D06, (A16) | done（Phase 1・2） |
-| D12 | [ランタイム IR と生成コードの intrinsic 宣言の重複の修正](D12-intrinsic-declaration-duplicates.md) | P1 | S | D04 | todo |
+| D12 | [ランタイム IR と生成コードの intrinsic 宣言の重複の修正](_completed/D12-intrinsic-declaration-duplicates.md) | P1 | S | D04 | done |
 
 ### E. モジュール・ホスト連携
 
@@ -459,5 +459,5 @@ Windows 専用の CI があるように書いているが、`.github/workflows/w
 
 | チケット | 種別 | 概要 | 承認 |
 | --- | --- | --- | --- |
-| [D12](D12-intrinsic-declaration-duplicates.md) | 不具合 | 数値の表示や文字列化と一緒に `i32` の `Int.min`・`Int.max`、`i32`／`i32u` の `Int.leading_zeros` を使うと、生成コードと `numeric.ll` が同じ intrinsic を宣言し、clang が `invalid redefinition of function` で失敗する。native と WASM の両方で起きる | 不要 |
+| [D12](_completed/D12-intrinsic-declaration-duplicates.md) | 不具合 | 数値の表示や文字列化と一緒に `i32` の `Int.min`・`Int.max`、`i32`／`i32u` の `Int.leading_zeros` を使うと、生成コードと `numeric.ll` が同じ intrinsic を宣言し、clang が `invalid redefinition of function` で失敗する。native と WASM の両方で起きる。**実装済み（2026-10-12）**: 連結後の IR の `declare` をシンボル名ごとに最初の 1 つだけ残し、テストの一意性検査もシンボル名で行う | 不要 |
 | [B09](B09-local-let-rec.md) | 機能 | 関数本体・ブロック・コンピュテーション式の中で `let rec go = \n -> ...` と書けるようにする。現在、再帰はモジュールの `def rec`（署名と実装を分ける形の `let rec`・`fn rec` を含む）でしか書けない | Phase 1 は不要。Phase 2（相互再帰、解放処理を持つ値の捕捉、ほかの `let rec` 関数の参照）は D9 の承認が必要 |

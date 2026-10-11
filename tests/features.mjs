@@ -1913,7 +1913,8 @@ function run(name, suite) {
     const sourceIr = readFileSync(ir, "utf8");
     assert.equal(sourceIr, readFileSync(again, "utf8"), `${name}: IR is deterministic`);
     const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
-    assert.equal(new Set(declarations).size, declarations.length, `${name}: declarations are deduplicated`);
+    const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+    assert.equal(new Set(declaredNames).size, declaredNames.length, `${name}: declarations are deduplicated`);
     suite.inspect?.(sourceIr, readFileSync(headerPath, "utf8"));
     // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
     if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);

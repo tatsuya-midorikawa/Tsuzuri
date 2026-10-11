@@ -1,7 +1,5 @@
 //! D09 Phase 2: the std `Unicode` module (categories, normalization, segmentation, case conversion).
 
-use std::collections::BTreeSet;
-
 use tsuzuri::check::{CheckedModule, TypedExpr, TypedExprKind};
 use tsuzuri::{analyze, llvm};
 
@@ -22,12 +20,7 @@ fn library(module: &CheckedModule) -> [String; 2] {
             ir,
             llvm::emit_target(module, llvm::Entry::Library, wasm).unwrap()
         );
-        let declarations: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("declare "))
-            .collect();
-        let unique: BTreeSet<_> = declarations.iter().collect();
-        assert_eq!(unique.len(), declarations.len(), "{ir}");
+        assert!(llvm::duplicate_declarations(&ir).is_empty(), "{ir}");
         ir
     })
 }

@@ -17,12 +17,10 @@ fn emits(source: &str) -> [String; 2] {
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap(),
             "{source}: IR is deterministic"
         );
-        let declarations: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("declare "))
-            .collect();
-        let unique: std::collections::BTreeSet<_> = declarations.iter().collect();
-        assert_eq!(unique.len(), declarations.len(), "{source}: declarations");
+        assert!(
+            llvm::duplicate_declarations(&ir).is_empty(),
+            "{source}: declarations"
+        );
         ir
     })
 }

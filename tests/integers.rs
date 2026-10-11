@@ -35,24 +35,27 @@ fn integer_builtin_signatures_and_constraints() {
     }
 }
 
+/// The bit and selection builtins, written over `left` and `right`.
+const SELECTION_EXPRESSIONS: [&str; 11] = [
+    "Int.min left right",
+    "Int.max left right",
+    "Int.clamp left right right",
+    "Int.count_ones left",
+    "Int.leading_zeros left",
+    "Int.trailing_zeros left",
+    "Int.rotate_left left (-1)",
+    "Int.rotate_right left 65",
+    "Int.swap_bytes left",
+    "Int.reverse_bits left",
+    "Int.abs_diff left right",
+];
+
 #[test]
 fn integer_bit_and_selection_intrinsics_are_typed_and_deterministic() {
     for bits in [8, 16, 32, 64, 128] {
         for suffix in ["", "u"] {
             let ty = format!("i{bits}{suffix}");
-            for expression in [
-                "Int.min left right",
-                "Int.max left right",
-                "Int.clamp left right right",
-                "Int.count_ones left",
-                "Int.leading_zeros left",
-                "Int.trailing_zeros left",
-                "Int.rotate_left left (-1)",
-                "Int.rotate_right left 65",
-                "Int.swap_bytes left",
-                "Int.reverse_bits left",
-                "Int.abs_diff left right",
-            ] {
+            for expression in SELECTION_EXPRESSIONS {
                 let module = analyze(&format!(
                     "def run :: {ty} -> {ty} -> i64\nfn run left right = ({expression}) as i64"
                 ))
@@ -66,6 +69,55 @@ fn integer_bit_and_selection_intrinsics_are_typed_and_deterministic() {
                     if expression.contains("zeros") {
                         assert!(ir.contains("i1 false)"));
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Number formatting links `numeric.ll`, which declares `llvm.smin.i32`, `llvm.smax.i32`, and
+/// `llvm.ctlz.i32` itself. The generated code declares the same intrinsics for `i32` and `i32u`;
+/// LLVM rejects the second `declare` even when only its attribute group differs (D12).
+#[test]
+fn integer_intrinsics_beside_number_formatting_declare_each_symbol_once() {
+    for bits in [8, 16, 32, 64, 128] {
+        for suffix in ["", "u"] {
+            let ty = format!("i{bits}{suffix}");
+            // One module per type holds every expression: its declarations are the union of the
+            // expressions' and meet the runtime's once, and the type checker runs once.
+            let library: String = SELECTION_EXPRESSIONS
+                .iter()
+                .enumerate()
+                .map(|(index, expression)| {
+                    format!(
+                        "def run{index} :: {ty} -> {ty} -> string\nfn run{index} left right = to_string (({expression}) as i64)\n"
+                    )
+                })
+                .collect();
+            // The top-level result is shown through `@tz_soft_format` in the console entry.
+            let total = SELECTION_EXPRESSIONS
+                .iter()
+                .map(|expression| format!("(({expression}) as i64)"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let console = format!("let left: {ty} = 5\nlet right: {ty} = 9\n{total}\n");
+            let programs = [
+                (llvm::Entry::Library, analyze(&library).unwrap()),
+                (llvm::Entry::Console, analyze(&console).unwrap()),
+            ];
+            for (entry, module) in &programs {
+                for wasm in [false, true] {
+                    let ir = llvm::emit_target(module, *entry, wasm).unwrap();
+                    assert_eq!(ir, llvm::emit_target(module, *entry, wasm).unwrap());
+                    assert!(
+                        ir.contains("define weak hidden i32 @tz_soft_format("),
+                        "{ty}: {entry:?}: numeric.ll is linked"
+                    );
+                    assert_eq!(
+                        llvm::duplicate_declarations(&ir),
+                        Vec::<String>::new(),
+                        "{ty}: {entry:?} wasm={wasm}"
+                    );
                 }
             }
         }

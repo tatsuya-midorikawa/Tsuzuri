@@ -81,7 +81,8 @@ fn grow count =
   const hostText = readFileSync(hostIr, "utf8");
   assert.equal(hostText, readFileSync(hostAgain, "utf8"));
   const declarations = hostText.match(/^declare .*$/gm);
-  assert.equal(new Set(declarations).size, declarations.length);
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length);
   for (const declaration of ["declare ptr @tsuzuri_host_alloc(i64, i64)", "declare void @tsuzuri_host_free(ptr, i64, i64)", "declare ptr @tsuzuri_host_realloc(ptr, i64, i64, i64)"]) {
     assert.ok(hostText.includes(declaration), declaration);
   }

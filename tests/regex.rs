@@ -1,7 +1,5 @@
 //! D09: the std `Regex` and `Unicode` modules.
 
-use std::collections::BTreeSet;
-
 use tsuzuri::check::CheckedModule;
 use tsuzuri::diagnostic::Diagnostic;
 use tsuzuri::{analyze, analyze_modules, analyze_modules_with_std, llvm};
@@ -24,12 +22,7 @@ fn library(module: &CheckedModule) -> [String; 2] {
             ir,
             llvm::emit_target(module, llvm::Entry::Library, wasm).unwrap()
         );
-        let declarations: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("declare "))
-            .collect();
-        let unique: BTreeSet<_> = declarations.iter().collect();
-        assert_eq!(unique.len(), declarations.len(), "{ir}");
+        assert!(llvm::duplicate_declarations(&ir).is_empty(), "{ir}");
         ir
     })
 }

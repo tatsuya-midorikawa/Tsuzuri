@@ -182,7 +182,8 @@ try {
   assert.match(sourceIr, /switch i64/);
   assert.match(sourceIr, /llvm\.sadd\.with\.overflow\.i64/);
   const declarations = sourceIr.match(/^declare .*$/gm);
-  assert.equal(new Set(declarations).size, declarations.length, "intrinsic declarations are deduplicated");
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length, "intrinsic declarations are deduplicated");
   let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free");
   if (sanitizer.length) trackedIr = trackedIr.replaceAll(" nounwind {", " nounwind sanitize_address {");
   writeFileSync(ir, trackedIr);

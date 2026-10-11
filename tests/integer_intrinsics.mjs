@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -132,7 +132,8 @@ try {
   assert.equal(text, readFileSync(again, "utf8"));
   assert.doesNotMatch(text, /mul\.with\.overflow\.i128|__muloti4/);
   const declarations = text.match(/^declare .*$/gm) ?? [];
-  assert.equal(new Set(declarations).size, declarations.length);
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length);
   cli(["build", input, "--emit", "header", "-o", join(temporary, "integers.h")]);
   const host = join(temporary, "host.c");
   writeFileSync(host, `#include <assert.h>
@@ -174,6 +175,64 @@ int main(int argc, char **argv) {
     }
     console.log(`integer intrinsics O${optimization}: ${cases.length} BigInt cases, all widths/signs, native/WASM, no imports`);
   }
+
+  // D12: the runtime of number formatting declares `llvm.smin.i32`, `llvm.smax.i32`, and
+  // `llvm.ctlz.i32` as well, so these builtins used to fail to build beside a displayed number.
+  const selection = [["min", "Int.min"], ["max", "Int.max"], ["leading_zeros", "Int.leading_zeros"]];
+  const typeRange = (bits, signed) => [signed ? -(1n << BigInt(bits - 1)) : 0n, signed ? (1n << BigInt(bits - 1)) - 1n : (1n << BigInt(bits)) - 1n];
+  let shownLines = 0;
+  for (const bits of [8, 16, 32, 64, 128]) for (const signed of [true, false]) {
+    const type = `i${bits}${signed ? "" : "u"}`, [minimum, maximum] = typeRange(bits, signed);
+    const boundary = [...new Set([minimum, minimum + 1n, 0n, 1n, 2n, 9n, maximum - 1n, maximum, ...(signed ? [-2n, -1n] : [])])];
+    const statements = [], expected = [];
+    for (const [index, left] of boundary.entries()) {
+      const right = boundary[(index * 3 + 1) % boundary.length];
+      statements.push(`    let l${index}: ${type} = ${left}`, `    let r${index}: ${type} = ${right}`);
+      for (const [operation, name] of selection) {
+        const call = operation === "leading_zeros" ? `${name} l${index}` : `${name} l${index} r${index}`;
+        const text = String(reference(operation, left, right, 0n, bits, signed));
+        statements.push(`    do! IO.write_line (${call})`, `    do! IO.write_line ($"{(${call}):>4}")`);
+        expected.push(text, text.padStart(4));
+      }
+    }
+    const project = join(temporary, `shown-${type}`);
+    mkdirSync(project);
+    writeFileSync(join(project, "Main.tz"), `def main :: unit -> i32 = \\() ->\n${statements.join("\n")}\n    0\n`);
+    for (const optimization of [0, 3]) {
+      const { stdout } = cli(["run", project, `-O${optimization}`]);
+      assert.deepEqual(stdout.replace(/\n$/, "").split("\n"), expected, `${type} shown at -O${optimization}`);
+      shownLines += expected.length;
+    }
+  }
+  console.log(`integer intrinsics beside number formatting: ${shownLines} printed lines (IO.write_line and ">4" interpolation), native -O0/-O3`);
+
+  let stringified = 0;
+  for (const signed of [true, false]) {
+    const type = signed ? "i32" : "i32u", [minimum, maximum] = typeRange(32, signed);
+    const values = new Set([minimum, minimum + 1n, 0n, 1n, 2n, 3n, 4n, 9n, 10n, 99n, 100n, 12345n, maximum - 1n, maximum, ...(signed ? [-3n, -2n, -1n, -10n, -100n] : [])]);
+    let state = 0x2545f4914f6cdd1dn;
+    for (let index = 0; index < 300; index++) {
+      state = bitsOf(state * 6364136223846793005n + 1442695040888963407n, 64);
+      const bitsValue = bitsOf(state >> 16n, 32);
+      values.add(signed ? BigInt.asIntN(32, bitsValue) : bitsValue);
+    }
+    const project = join(temporary, `stringified-${type}`);
+    mkdirSync(project);
+    writeFileSync(join(project, "Main.tz"), selection.map(([operation, name]) => `export def digits_${operation} :: ${type} -> i64 = \\x ->\n    (to_string (${operation === "leading_zeros" ? `${name} x` : `${name} x 3`})).length\n`).join("\n"));
+    for (const optimization of [0, 3]) {
+      const wasm = join(temporary, `stringified-${type}-${optimization}.wasm`);
+      cli(["build", project, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+      const module = new WebAssembly.Module(readFileSync(wasm));
+      assert.deepEqual(WebAssembly.Module.imports(module), []);
+      const api = new WebAssembly.Instance(module).exports;
+      for (const value of values) for (const [operation] of selection) {
+        const digits = BigInt(String(reference(operation, value, 3n, 0n, 32, signed)).length);
+        assert.equal(api[`tz_digits_${operation}`](Number(value)), digits, `${type} ${operation}(${value}) at -O${optimization}`);
+        stringified++;
+      }
+    }
+  }
+  console.log(`integer intrinsics beside to_string: ${stringified} WASM cases (i32, i32u), no imports`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

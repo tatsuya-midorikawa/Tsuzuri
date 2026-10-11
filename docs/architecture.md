@@ -710,6 +710,7 @@ LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から�
 ビット数カウント処理におけるゼロ入力時の未定義動作フラグは false に設定され、ビット回転数はビット幅に合わせて明示的にマスク処理されます。チェック付き演算（`checked_*`）は既存の `Maybe` union の構築処理を共有します。
 `i128` の checked および saturating 乗算は、64-bit limb の部分積とキャリーフラグを解析して上位 128-bit のオーバーフローを厳密に検出し、符号付き演算では絶対値の許容限界も正確に判定します。これにより、未同梱の外部ランタイムライブラリ（`__muloti4` など）に依存することなく、自己完結したコード生成を実現しています。
 整数のべき乗はバイナリ累乗法（二乗法）で実装され、最後の指数ビットの処理後に不要な二乗算を行わないように最適化されています。
+`i32` の `Int.min`・`Int.max`・`Int.leading_zeros` が使う `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` は、数値の表示や文字列化のために連結する `numeric.ll` も宣言します。同じプログラムでは生成コードの宣言だけが残ります（後述の `unique_declarations`）。`tests/integer_intrinsics.mjs` は、全幅の `Int.*` の参照値との照合に加え、これらを `IO.write_line`・文字列補間・`to_string` と組み合わせたプログラムを、ネイティブと WASM の `-O0`／`-O3` で参照値と照合します。
 
 **消費型コレクション更新:** `Array.set`、`update`、`swap`、ならびに `List.cons`、`tail` は、通常の多相 `BuiltinInstance` として提供されます。
 既存の組み込みラッパーおよび emitter の境界検査、drop、関数適用の仕組みを共有し、個別の専用フック関数は持ちません。
@@ -1127,7 +1128,7 @@ clone、drop、および添字走査は反復ループによってスタック�
 例外は 32-bit 整数のエラーコードとして表現され、同一関数本体内の最も内側に位置する `try` のハンドラへと、途中のスコープの一時値を安全に解放しながら分岐します（`try_targets`）。
 例外が関数やラムダ式の境界を越えて自動伝播することはありません。外側を囲む `try` ブロックが存在しない場合は `TrapKind::Overflow` として安全にトラップします。`finally` ブロックは、ハンドラ内部から送出された例外を含むすべての実行経路で確実に 1 回実行されます。
 i8〜i64／i8u〜i64u から f32／f64 への変換には LLVM の `sitofp`／`uitofp` を用い、f32 と f64 の相互変換には `fpext`／`fptrunc` を使用します。i128、f128、および decimal 型を含む変換と、整数と f16 の間の変換は正確なソフトウェア演算経路を維持し、f64 を経由することで二重丸め誤差を生じさせることはありません。f16 と f32／f64 の間の変換は、f16 の経路が `Conversions` か `Hardware` のとき（後述）だけ、`half` への `fpext`／`fptrunc` になります。
-intrinsic の外部宣言は組み込み関数と通常の式で共通化され、重複なく決定論的な順序で出力されます。
+intrinsic の外部宣言は組み込み関数と通常の式で共通化され、重複なく決定論的な順序で出力されます。連結したランタイム IR（`numeric.ll`・`math.ll` など）が同じ関数を宣言するときも、`emit_program` の最後の `unique_declarations` が、シンボル名ごとに最初の `declare` だけを残します。LLVM は属性グループだけが違う 2 つ目の `declare` も `invalid redefinition of function` として拒否するので、行全体ではなくシンボル名（`@` から `(` まで）で比べます。生成コードの宣言はランタイム IR の本文より前に書かれるため生成コードの宣言が残り、重複の無い IR は入力のまま（byte 単位で同一）です。`numeric.ll` の宣言と重なる `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` がその例です。`llvm::duplicate_declarations` は 2 回以上宣言されたシンボルを返し、テストの IR 補助関数と、debug build の driver が書き出す前に行う `debug_assert!` が、重複の無いことを確かめます。
 負の添字アクセスを含め、配列やリストの境界検査は要素の GEP／load やリンク走査よりも前に先行して実行されます。
 浮動小数点演算に対して fast-math フラグを安易に付与することはありません。
 借用可能な値のメモリ領域は関数のエントリーブロックに集約して配置されます。所有値を move すると移動元のメモリ領域は即座にゼロクリアされ、スコープ終了時に残存する文字列、配列、リスト、およびクロージャ環境が確実に解放されます（レコードの部分 move も同一の機構に従います）。
@@ -1254,7 +1255,7 @@ Node.js による E2E テストスイートは、本物の Clang／LLD ツール
 
 数値ランタイムを変更する際は、`src/runtime/numeric.c` を編集した後に `python3 src/runtime/generate.py` を実行して `numeric.ll` を再生成します。
 続けて `python3 src/runtime/generate_math.py` を実行して `math.ll` も再生成し、メタデータおよび attribute ID が `numeric.ll` の最大値より後方へ割り振られるようにします。
-`Math` モジュールを使用する場合にのみ `numeric.ll` の後に `math.ll` が結合され、重複する LLVM intrinsic 宣言が安全に除去されます。
+`Math` モジュールを使用する場合にのみ `numeric.ll` の後に `math.ll` が結合されます。`numeric.ll`・`math.ll`・生成コードが重複して宣言する LLVM intrinsic は、`math.ll` の有無によらず、`emit_program` の最後にシンボル名ごとに最初の宣言だけが残ります（`math.ll` の結合直後の `declare` の整理は従来のまま残しています）。
 トラップおよびループ用の生成メタデータ ID は、両ランタイムの最大 ID より後方の範囲に予約されます。
 math 生成スクリプトは、必要な musl 1.2.5 のソースコードを個別にコンパイルしたうえで `llvm-link` を用いて結合します。
 検証済みのビルド環境は Apple Clang 21 および llvm-link 21 であり、環境変数 `TSUZURI_CLANG` および `TSUZURI_LLVM_LINK` によってツールパスを指定可能です。

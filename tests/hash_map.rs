@@ -8,12 +8,7 @@ fn accepts(source: &str) {
             ir,
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
         );
-        let declarations: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("declare "))
-            .collect();
-        let unique: std::collections::BTreeSet<_> = declarations.iter().collect();
-        assert_eq!(unique.len(), declarations.len(), "{source}");
+        assert!(llvm::duplicate_declarations(&ir).is_empty(), "{source}");
     }
 }
 

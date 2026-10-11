@@ -7,8 +7,9 @@
 | 規模 | S |
 | 依存 | D04 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-10-07（言語リファレンス `_tsuzuri/language-reference/` の執筆中に発見。HEAD `5b896b7` で確認） |
+| 実装の基準 | `aecdf75e`、2026-10-12 |
 | 承認 | 不要（言語の意味は変えない。生成 IR を正しくする修正） |
 | 改善する劣位 | 不具合: 数値を表示・書式化・解析するプログラムで、`i32` の `Int.min`・`Int.max` と、`i32`／`i32u` の `Int.leading_zeros` を使うとビルドが失敗する |
 | 手本にする既存実装 | `src/llvm.rs` の `emit_program` で `math.ll` を連結した直後の、`declare` 行を名前で一度だけ残す filter（`BTreeSet`）。後段で宣言を足す前に存在を確かめる `src/llvm_traps.rs` の `declare i64 @write(` と `src/llvm_cpu.rs` の `declare i32 @tsuzuri_cpu_pick(i64)`。テスト: `tests/integers.rs` の `integer_bit_and_selection_intrinsics_are_typed_and_deterministic`、`tests/stdlib.rs` の `library`、`tests/integer_intrinsics.mjs` |
@@ -295,12 +296,12 @@ GUIDE §8 の手順で、同じ PR で更新する。
 
 ## 受け入れ条件
 
-- [ ] 「再現」の 2 つと、組み合わせの表で `E2002` だった行が、native・wasm32・wasm64・`--emit object` で成功する。
-- [ ] 全幅の `Int.*` を数値の表示・文字列化と組み合わせても、`llvm::duplicate_declarations` が空である（Rust テスト）。
-- [ ] 一意性の検査がシンボル名で行われる（手順 4 の 12 か所）。
-- [ ] 重複の無いプログラムの IR が byte 単位で変わらない（手順 6）。
-- [ ] `int.md` の既知の不具合の注記を削除し、`node scripts/check-docs.mjs` が成功する。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 「再現」の 2 つと、組み合わせの表で `E2002` だった行が、native・wasm32・wasm64・`--emit object` で成功する。
+- [x] 全幅の `Int.*` を数値の表示・文字列化と組み合わせても、`llvm::duplicate_declarations` が空である（Rust テスト）。
+- [x] 一意性の検査がシンボル名で行われる（手順 4 の 12 か所。実装時は 20 か所。「実装と検証」の「現状との差」）。
+- [x] 重複の無いプログラムの IR が byte 単位で変わらない（手順 6）。
+- [x] `int.md` の既知の不具合の注記を削除し、`node scripts/check-docs.mjs` が成功する。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -345,4 +346,48 @@ GUIDE §8 の手順で、同じ PR で更新する。
 
 - 決定: 重複はコンパイラの不具合として扱い、利用者向けの診断コードは足さない。debug build だけ `debug_assert!` で検出する。
 - 理由: 利用者のプログラムでは避けられない誤りで、報告されても利用者は直せない。release build の動作と性能を変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案（実装者はこの案に従う）。実装済み。
+
+D1〜D3 も既定案のとおり実装した（2026-10-12）。
+
+## 実装と検証（2026-10-12）
+
+実装の基準は `aecdf75e`（起票時の `5b896b7` から 242 コミット後）。手順 1〜8 をすべて行い、停止条件には当たらなかった。実装しなかったものは、対象外に書いたものだけである。
+
+### 現状との差（GUIDE §0 手順 2）
+
+- 一意性を行全体で比べる検査は、起票時の 12 か所から **20 か所**（Rust 13、JavaScript 7）に増えていた。増えたのは `tests/matrix.rs`・`tensor.rs`・`matrix_views.rs`（C11）、`net_api.rs`（E09）、`unicode.rs`・`regex.rs`（D09）、`f16_hardware.rs`・`f16_hardware.mjs`（D10）。意図（行全体でなくシンボル名で比べる）は変わらないので、20 か所すべてを改めた。`grep -rn 'new Set(declarations)' tests` は 0 行になり、`starts_with("declare ")` で残る 3 行（`net_api.rs` の `@tsuzuri_net_` の数え上げ、`unicode.rs`・`regex.rs` の「宣言が `llvm.` か C ライブラリの 3 つだけ」）は一意性の検査ではないので変えていない。
+- `emit_program` は起票時より多くのランタイム（task・sync・channel・debug・display・format・unicode・各 heap・recursive など）を連結し、`emit_native_build`・`emit_wasm_build`・`traps::instrument`、driver の `windows_abi`・`with_wasm_heap_limit`・`with_wasi_host`・`with_net_imports`・`with_wasm_gpu_host` が、その後で IR を作り直す。`unique_declarations` は設計どおり `emit_program` の最後に置き、後段が足す宣言は driver の `debug_assert!` が debug build で検出する。この変更のテストと E2E に、後段が重複を足す例は無かった。
+- `numeric.ll` が宣言する `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` の 3 つだけが、生成コードの宣言と重なる（起票時と同じ）。落とした宣言と残した宣言は、属性グループと引数属性が違うだけで型は同じである（`llvm.ctlz.i32` は生成コードが `(i32, i1)`、ランタイムが `(i32, i1 immarg) #13`）。
+
+### 実装したファイル
+
+- `src/llvm.rs`: `declared_symbol`・`repeats_a_declaration`・`unique_declarations`（private）、`duplicate_declarations`（`pub`）、`emit_program` の最後の呼び出し、単体テスト 2 件。
+- `src/driver.rs`: IR を後段の変換まで済ませた直後の `debug_assert!`（`--emit header` と GPU kernel の出力は IR でないので除く）。
+- Rust テスト: `tests/integers.rs`（新規 1 件と、11 の式を `SELECTION_EXPRESSIONS` に切り出し）、`stdlib.rs`・`strings.rs`・`display_parse.rs`・`hash_map.rs`・`os_api.rs`・`string_interpolation.rs`・`matrix.rs`・`tensor.rs`・`matrix_views.rs`・`net_api.rs`・`unicode.rs`・`regex.rs`・`f16_hardware.rs`（シンボル名の検査へ。不要になった `BTreeSet` の import も削除）。
+- JavaScript: `tests/integer_intrinsics.mjs`（E2E の 2 ブロック）、`features.mjs`・`control.mjs`・`strings.mjs`・`allocator.mjs`・`math.mjs`・`f16_hardware.mjs`（シンボル名の検査へ。変数名は、`allocator.mjs`・`f16_hardware.mjs` に同名の `symbols` が既にあるので `declaredNames`）。
+- 文書: `docs/architecture.md`（2 か所と整数 intrinsic の段落）、`_tsuzuri/language-reference/built-in-types-and-modules/int.md`、`_features/README.md`、このチケット（`_completed/` へ移動）。
+
+### 検証結果
+
+- 基準（変更前）: `cargo build --release --locked` と `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` が 97 バイナリ・1,196 件成功。`RUST_MIN_STACK` を付けない既定の 2 MiB では、既存の問題で `tests/computations.rs::bounds_computation_syntax_and_expansion` が stack overflow で止まる（G17・G18 の記録と同じ。この変更とは無関係）。「再現」の 2 つ（トップレベルの `Int.min a b` と `digits` のライブラリ）は記載どおり `E2002`・重複 2 行になった。
+- 手順 2（修正前）: 新しい Rust テストは `["llvm.ctlz.i32", "llvm.smax.i32", "llvm.smin.i32"]` を報告して失敗した（予想した 3 シンボルと一致）。手順 3 の後は `--test integers` が 4 件成功、`--lib unique_declarations` が 1 件成功。
+- 最終: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（43 ファイル）が成功。`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は 97 バイナリで **1,199 件成功**（基準の 1,196 件 + 新しい 3 件）、失敗 0、無視 0。GUIDE §3.1 の 4 つの回帰テストは各 1 件（`running 1 test`）で成功。
+- 手順 4・5: 変更した Rust の 13 ファイルは全件成功（`display_parse` 6、`f16_hardware` 15、`hash_map` 5、`matrix` 8、`matrix_views` 7、`net_api` 18、`os_api` 10、`regex` 6、`stdlib` 7、`string_interpolation` 11、`strings` 13、`tensor` 4、`unicode` 4）。debug build の driver の `debug_assert!` は、全テストが通る間に一度も発火しなかった。
+- E2E（release を `cargo build --release --locked` した直後）: `control`（270 ケース）、`strings`（O0・O3 各 3,973 ケース）、`allocator`、`math`（786,051 参照）、`f16_hardware`（2,707,485 ケース）、`features`（**13,719 ケース**）、`integer_intrinsics` が成功（native と WASM の `-O0`・`-O3`、`live == 0`、WASM の import なし）。
+- `tests/integer_intrinsics.mjs` の新しい 2 ブロック: 全幅 10 型の `Int.min`・`Int.max`・`Int.leading_zeros` を `IO.write_line` と `$"{…:>4}"` で表示するプログラムを `tsuzuri run` の `-O0`・`-O3` で実行し、BigInt の参照値と **960 行**が一致した。`i32`・`i32u` の `export def` が `(to_string (Int.min x 3)).length` などを返す WASM ライブラリを `-O0`・`-O3` で作り、import なしでインスタンス化して、BigInt の参照値と **3,786 ケース**が一致した。変更前のコンパイラでは、`shown-i32` が `invalid redefinition of function 'llvm.ctlz.i32'` で失敗する。
+- 「組み合わせごとの結果」の表（14 のプログラムと `digits` のライブラリ）を、native の実行ファイル・`--emit object`・`--emit llvm`・wasm32・wasm64 の object と、`def main` を持つ 2 つの `--target wasm32`・`wasm64` で作り直した。変更前は表のとおり 8 つのプログラムとライブラリが失敗し（`Int.max a 7u`、`i16`・`i64`、`Int.abs`、`Int.unsigned_abs`、`Int.clamp` は成功）、変更後はすべて成功した。
+- IR の一致（ベースラインは `aecdf75e` の release を別の worktree でビルドしたもの）: 「手順 6」の 2 fixture × native・wasm32 の 4 つは `cmp` が差分なし。`examples/` と `tests/fixtures/` の 104 ディレクトリ × native・wasm32 × `-O0`・`-O3` の 416 構成は、**366 構成の IR が byte 単位で一致**し、50 構成（トップレベルに `Main.tz` を持たない 10 ディレクトリの 40 構成と、WASM で使えない API を使う 4 つの fixture の wasm32 の 10 構成）は両者が同じ診断で失敗し、差は 0。
+- 文書: `node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/int.md` が成功（12 リンク、5 例、native 10 回）。新しい例（`Int.min`・`Int.max`・`Int.leading_zeros` を文字列補間で表示して `3:9:28`）は、変更前のコンパイラでは `E2002` になる。
+- 性能: 主張しない。追加の走査は 1 モジュールにつき 1 回（重複があるときだけ 2 回）の行走査で、参考として debug build の `duplicate_declarations` は約 56 万 byte の IR で約 1.5 ms だった。
+
+### チケットから外れた判断
+
+- 新しい Rust テストは、式ごとに 1 モジュールではなく、**型ごとに 11 式を 1 モジュールにまとめた**。型検査（`analyze` が 1 回約 220 ms）が支配的で、式ごとの版は debug build で 93 秒かかったため（まとめた版は約 25 秒）。モジュールの宣言は 11 式の宣言の和集合なので、重複の検出力は変わらず、失敗時は 3 シンボルをまとめて報告する（修正前の失敗は上のとおり）。Console の入口は `run` を呼ぶ形ではなく、トップレベルの結果式を数値のまま表示する形（`console_main` の `@tz_soft_format`）で検査した。
+- `int.md` は、注記の削除に加えて、`Int.min`・`Int.max`・`Int.leading_zeros` を文字列補間で表示する実行例を足した（AGENTS.md の「既知の不具合の警告を実際の振る舞いの説明に置き換える」）。
+- 一意性の検査を改める対象は 12 か所でなく 20 か所とした（上記）。
+
+### 見つけた問題・残作業
+
+- 既定の 2 MiB の stack で `bounds_computation_syntax_and_expansion` が止まる既存の問題は、この変更の範囲外のまま（全体の実行には `RUST_MIN_STACK=4194304` を付ける）。
+- 属性が違うだけでなく**型が違う**同名の `declare` は、今の生成コードとランタイム IR には無い。将来それが現れると `unique_declarations` は先の宣言を残して後の宣言を黙って落とすので、`debug_assert!` では検出できない。型の比較までは、このチケットの対象外とした（停止条件は、手順 6 の IR の比較と今回の確認で見つからなかった）。
