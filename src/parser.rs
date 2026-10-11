@@ -75,16 +75,26 @@ fn unit_lambda_body(expression: Expr) -> Expr {
     arms.pop().expect("one arm").body
 }
 
+/// Parses a source that no package owns (a snippet, the REPL, a test) with the latest edition.
+/// A package's source goes through `parse_with_source` with its own edition.
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
-    parse_source(source, None)
+    parse_source(source, None, Edition::LATEST)
 }
 
-pub fn parse_with_source(source: &str, source_id: usize) -> Result<Program, Diagnostic> {
-    parse_source(source, Some(source_id))
+pub fn parse_with_source(
+    source: &str,
+    source_id: usize,
+    edition: Edition,
+) -> Result<Program, Diagnostic> {
+    parse_source(source, Some(source_id), edition)
 }
 
-pub fn parse_with_source_all(source: &str, source_id: usize) -> Result<Program, Vec<Diagnostic>> {
-    let (mut tokens, mut diagnostics) = lex_all(source);
+pub fn parse_with_source_all(
+    source: &str,
+    source_id: usize,
+    edition: Edition,
+) -> Result<Program, Vec<Diagnostic>> {
+    let (mut tokens, mut diagnostics) = lex_all(source, edition);
     for error in &mut diagnostics {
         error.span.source = Some(source_id);
     }
@@ -97,8 +107,12 @@ pub fn parse_with_source_all(source: &str, source_id: usize) -> Result<Program, 
     Parser::new(source, tokens).program_all(true)
 }
 
-fn parse_source(source: &str, source_id: Option<usize>) -> Result<Program, Diagnostic> {
-    let mut tokens = lex(source).map_err(|mut error| {
+fn parse_source(
+    source: &str,
+    source_id: Option<usize>,
+    edition: Edition,
+) -> Result<Program, Diagnostic> {
+    let mut tokens = lex(source, edition).map_err(|mut error| {
         error.span.source = source_id;
         error
     })?;

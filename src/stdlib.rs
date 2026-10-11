@@ -426,7 +426,8 @@ mod tests {
     /// count), anywhere or only where it is not a member after `.` or `::`.
     fn mentions_as(source: &str, word: &str, unqualified: bool) -> bool {
         use crate::syntax::TokenKind;
-        let tokens = crate::lexer::lex(source).expect("std sources lex");
+        let tokens =
+            crate::lexer::lex(source, crate::syntax::Edition::LATEST).expect("std sources lex");
         tokens.iter().enumerate().any(|(index, token)| {
             matches!(&token.kind, TokenKind::Ident(name) if name == word)
                 && !(unqualified
@@ -675,8 +676,9 @@ mod tests {
     fn std_definitions_never_shadow_builtin_functions() {
         for (id, (path, text)) in SOURCES.iter().enumerate() {
             let module = module_name(path).unwrap();
-            let program = crate::parser::parse_with_source(text, id)
-                .unwrap_or_else(|error| panic!("{path}: {}", error.message));
+            let program =
+                crate::parser::parse_with_source(text, id, crate::syntax::Edition::LATEST)
+                    .unwrap_or_else(|error| panic!("{path}: {}", error.message));
             for function in &program.functions {
                 let qualified = format!("{module}.{}", function.name.text);
                 assert!(

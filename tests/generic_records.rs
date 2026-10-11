@@ -546,7 +546,7 @@ fn rejects_legacy_and_malformed_generic_syntax() {
 #[test]
 fn retains_exact_source_spans_when_splitting_generic_closers() {
     let source = "def f :: &Box<Box<Box<i64>>> -> i64\nfn f x = 0";
-    let program = parser::parse_with_source(source, 7).unwrap();
+    let program = parser::parse_with_source(source, 7, tsuzuri::syntax::Edition::LATEST).unwrap();
     let parameter = &program.functions[0].parameters[0].ty;
     assert_eq!(
         &source[parameter.span.start..parameter.span.end],

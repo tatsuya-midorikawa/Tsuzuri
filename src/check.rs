@@ -3343,6 +3343,11 @@ pub struct ModuleInput<'a> {
     pub namespace: &'a str,
     /// The root package's `Main.tz`, the only module that may hold the entry point.
     pub entry: bool,
+    /// The edition that the module's source was read with; its name is an identifier of it.
+    pub edition: crate::syntax::Edition,
+    /// The dependency package that owns the module, `None` for the root package, for sources
+    /// without a manifest, and for std (W1005).
+    pub package: Option<&'a crate::package::PackageId>,
 }
 
 #[derive(Debug)]
@@ -4073,6 +4078,8 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
         origin: ModuleOrigin::User,
         namespace: &namespace,
         entry: true,
+        edition: crate::syntax::Edition::LATEST,
+        package: None,
     }])
 }
 
@@ -5614,7 +5621,10 @@ fn check_modules_collect(
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
-    let indexing = semantic.is_some();
+    // A `@deprecated` declaration needs the references that the semantic index records (W1005),
+    // so a project without one never collects them unless the caller asked for the index.
+    let deprecations = warnings::deprecations(modules);
+    let indexing = semantic.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
         ..Names::default()
@@ -5656,7 +5666,7 @@ fn check_modules_collect(
             continue;
         }
         let valid = name.split('.').all(|name| {
-            crate::lexer::lex(name).is_ok_and(|tokens| {
+            crate::lexer::lex(name, module.edition).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
@@ -7051,8 +7061,19 @@ fn check_modules_collect(
         (0..declaration_count).collect::<Vec<_>>()
     );
     diagnostics.check()?;
-    if let Some(index) = semantic {
-        *index = semantic::collect(modules, &functions, &name_uses, &names, types);
+    if indexing {
+        let index = semantic::collect(modules, &functions, &name_uses, &names, types);
+        if !deprecations.is_empty() {
+            warnings.extend(warnings::deprecated_uses(
+                modules,
+                &index,
+                &names,
+                &deprecations,
+            ));
+        }
+        if let Some(requested) = semantic {
+            *requested = index;
+        }
     }
     constants::fold(&mut functions, &names.constants)?;
     let references =

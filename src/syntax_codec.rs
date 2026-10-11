@@ -2183,8 +2183,14 @@ impl Wire for ComputationMatchArm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_with_source_all;
+    use crate::diagnostic::Diagnostic;
+    use crate::syntax::Edition;
     use std::path::Path;
+
+    // The round-trip tests parse manifest-less text, so they use the latest edition.
+    fn parse_with_source_all(text: &str, source: usize) -> Result<Program, Vec<Diagnostic>> {
+        crate::parser::parse_with_source_all(text, source, Edition::LATEST)
+    }
 
     fn round_trip<T: Wire>(value: &T, source: usize, into: usize) -> Result<T, Invalid> {
         let mut out = Writer::new(Mode::Full, source, MAX_DEPTH);

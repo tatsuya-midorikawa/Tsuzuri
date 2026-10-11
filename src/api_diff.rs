@@ -1,0 +1,1085 @@
+//! `tsuzuri api-diff OLD NEW` (G19 Phase 2): the differences between the public API of two
+//! versions of a package or project, each marked as breaking or not.
+//!
+//! An API is read from the parsed declarations of the root package, the way `tsuzuri doc`
+//! renders them: a signature is the text of its declared types, so neither version is type
+//! checked, git and registry dependencies are not loaded, and a type alias is not resolved
+//! (replacing an alias by its target is reported as a change). The names of type variables
+//! and regions do not matter, nor does the number of parameters that a definition's lambda
+//! takes. A declaration is identified by its module's full name and its own name, so a package
+//! whose namespace changes loses every declaration and gains them under the new name.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use crate::check::ModuleOrigin;
+use crate::diagnostic::{Diagnostic, Span, json_string};
+use crate::docgen::{
+    constraints_text, json_text, parameters_text, region_text, signature, type_text,
+};
+use crate::driver::{Project, SourceFile};
+use crate::package::Version;
+use crate::syntax::*;
+
+/// The most changes that a report lists, breaking ones first. The counts include every change.
+pub const MAX_LISTED_CHANGES: usize = 1000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Action {
+    Removed,
+    Added,
+    Changed,
+    Deprecated,
+    Undeprecated,
+    Documented,
+}
+
+impl Action {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::Added => "added",
+            Self::Changed => "changed",
+            Self::Deprecated => "deprecated",
+            Self::Undeprecated => "undeprecated",
+            Self::Documented => "documented",
+        }
+    }
+}
+
+/// One difference. `kind` names what changed (`def`, `record`, `field`, `case`, ...) and `name`
+/// is its qualified name, as `Acme::Shapes.Circle.radius`. `old` and `new` are the declarations
+/// or members before and after, in the form that `tsuzuri doc` shows them; `note` says why a
+/// change is breaking when that is not obvious.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub breaking: bool,
+    pub action: Action,
+    pub kind: &'static str,
+    pub name: String,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub note: &'static str,
+}
+
+impl Change {
+    pub fn severity(&self) -> &'static str {
+        if self.breaking {
+            "breaking"
+        } else {
+            "non-breaking"
+        }
+    }
+
+    /// The change as one line of text, without its severity.
+    pub fn message(&self) -> String {
+        let mut text = format!("{} {} {}", self.action.name(), self.kind, self.name);
+        match (self.action, &self.old, &self.new) {
+            // The note of a deprecation is the only detail.
+            (Action::Deprecated, _, Some(note)) | (Action::Undeprecated, Some(note), _) => {
+                if !note.is_empty() {
+                    text.push_str(&format!(": {note}"));
+                }
+            }
+            (_, Some(old), Some(new)) => text.push_str(&format!(": `{old}` => `{new}`")),
+            (_, Some(shown), None) | (_, None, Some(shown)) => {
+                text.push_str(&format!(": `{shown}`"));
+            }
+            (_, None, None) => {}
+        }
+        if !self.note.is_empty() {
+            text.push_str(&format!(" ({})", self.note));
+        }
+        text
+    }
+
+    fn json(&self) -> String {
+        let optional = |value: &Option<String>| value.as_deref().map_or("null".into(), json_string);
+        let note = if self.note.is_empty() {
+            "null".into()
+        } else {
+            json_string(self.note)
+        };
+        format!(
+            "{{\"type\":\"change\",\"severity\":{},\"action\":{},\"kind\":{},\"name\":{},\"old\":{},\"new\":{},\"note\":{note}}}",
+            json_string(self.severity()),
+            json_string(self.action.name()),
+            json_string(self.kind),
+            json_string(&self.name),
+            optional(&self.old),
+            optional(&self.new),
+        )
+    }
+}
+
+/// What the comparison found: the changes, breaking ones first and each group by name, and the
+/// versions of the two manifests when both have one.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub changes: Vec<Change>,
+    pub old_version: Option<Version>,
+    pub new_version: Option<Version>,
+}
+
+impl Report {
+    pub fn breaking(&self) -> usize {
+        self.changes.iter().filter(|change| change.breaking).count()
+    }
+
+    pub fn non_breaking(&self) -> usize {
+        self.changes.len() - self.breaking()
+    }
+
+    /// Whether registry dependents that accept the old version also take the new one: the new
+    /// version is compatible with the old one and not older. `None` unless both are known.
+    pub fn compatible_versions(&self) -> Option<bool> {
+        Some(self.new_version?.satisfies(self.old_version?))
+    }
+
+    fn compatibility_note(&self) -> Option<String> {
+        let (old, new) = (self.old_version?, self.new_version?);
+        (self.breaking() > 0 && new.satisfies(old)).then(|| {
+            format!(
+                "version {new} is compatible with {old}, so registry dependents that accept {old} would take it; raise the major version (the minor version before 1.0.0) for a breaking change"
+            )
+        })
+    }
+
+    fn listed(&self) -> &[Change] {
+        &self.changes[..self.changes.len().min(MAX_LISTED_CHANGES)]
+    }
+
+    fn omitted(&self) -> usize {
+        self.changes.len() - self.listed().len()
+    }
+
+    /// One line per change, then a summary and `note:` lines for a cut list and for versions
+    /// that make dependents take a breaking release.
+    pub fn render_text(&self) -> String {
+        let mut text = String::new();
+        for change in self.listed() {
+            text.push_str(&format!("{}: {}\n", change.severity(), change.message()));
+        }
+        if self.omitted() != 0 {
+            text.push_str(&format!(
+                "note: {} more changes not shown\n",
+                self.omitted()
+            ));
+        }
+        text.push_str(&format!(
+            "summary: {} breaking, {} non-breaking\n",
+            self.breaking(),
+            self.non_breaking()
+        ));
+        if let Some(note) = self.compatibility_note() {
+            text.push_str(&format!("note: {note}\n"));
+        }
+        text
+    }
+
+    /// One JSON object per line: each change, then the summary.
+    pub fn render_json(&self) -> String {
+        let mut text = String::new();
+        for change in self.listed() {
+            text.push_str(&change.json());
+            text.push('\n');
+        }
+        let version = |version: Option<Version>| {
+            version.map_or("null".into(), |version| json_string(&version.to_string()))
+        };
+        let compatible = match self.compatible_versions() {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "null",
+        };
+        text.push_str(&format!(
+            "{{\"type\":\"summary\",\"breaking\":{},\"non_breaking\":{},\"omitted\":{},\"old_version\":{},\"new_version\":{},\"compatible_versions\":{compatible}}}\n",
+            self.breaking(),
+            self.non_breaking(),
+            self.omitted(),
+            version(self.old_version),
+            version(self.new_version),
+        ));
+        text
+    }
+}
+
+/// A public declaration and what its users can see of it. Its `header` and members' `text` have
+/// canonical type variables and decide what changed; `shown` is the form that `tsuzuri doc`
+/// shows, which the report quotes.
+struct Item {
+    kind: &'static str,
+    name: String,
+    /// The declaration without its members and its `export` marker.
+    header: String,
+    shown: String,
+    exported: bool,
+    /// Fields, cases or methods, in declaration order.
+    members: Vec<Member>,
+    derives: BTreeSet<&'static str>,
+    doc: Option<String>,
+    deprecated: Option<String>,
+}
+
+struct Member {
+    kind: &'static str,
+    name: String,
+    text: String,
+    shown: String,
+    /// A class method that has a default.
+    default: bool,
+}
+
+impl Item {
+    fn new(kind: &'static str, name: String, header: String) -> Self {
+        Self {
+            kind,
+            name,
+            shown: header.clone(),
+            header,
+            exported: false,
+            members: Vec::new(),
+            derives: BTreeSet::new(),
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn documented(mut self, doc: Option<&Documentation>) -> Self {
+        self.deprecated = doc.and_then(Documentation::deprecation).map(str::to_owned);
+        self.doc = doc.map(|doc| doc.text.clone());
+        self
+    }
+
+    /// The declaration as `tsuzuri doc` shows it, with `export` in front for an export.
+    fn text(&self) -> String {
+        if self.exported {
+            format!("export {}", self.shown)
+        } else {
+            self.shown.clone()
+        }
+    }
+}
+
+impl Member {
+    fn new(kind: &'static str, name: String, text: String) -> Self {
+        Self {
+            kind,
+            name,
+            shown: text.clone(),
+            text,
+            default: false,
+        }
+    }
+}
+
+type Items = BTreeMap<(String, &'static str), Item>;
+
+/// The API of one version: its public declarations by qualified name and kind.
+pub struct Api {
+    items: Items,
+    /// The root package's default namespace as written, `None` without a manifest.
+    namespace: Option<String>,
+    package: Option<String>,
+    version: Option<Version>,
+}
+
+/// Renames type variables and regions by their first appearance, so that two declarations that
+/// differ only in those names print the same; a renaming that is not `canonical` leaves every
+/// name as written. A length parameter (`#N`) keeps its name: a name in a length position may
+/// be a constant.
+#[derive(Clone)]
+struct Renaming {
+    canonical: bool,
+    variables: BTreeMap<String, String>,
+    regions: BTreeMap<String, String>,
+}
+
+impl Renaming {
+    fn new(canonical: bool) -> Self {
+        Self {
+            canonical,
+            variables: BTreeMap::new(),
+            regions: BTreeMap::new(),
+        }
+    }
+
+    fn variable(&mut self, name: &str) -> String {
+        if !self.canonical {
+            return name.to_owned();
+        }
+        let next = self.variables.len();
+        self.variables
+            .entry(name.to_owned())
+            .or_insert_with(|| format!("t{next}"))
+            .clone()
+    }
+
+    fn region(&mut self, name: &str) -> String {
+        if !self.canonical {
+            return name.to_owned();
+        }
+        let next = self.regions.len();
+        self.regions
+            .entry(name.to_owned())
+            .or_insert_with(|| format!("r{next}"))
+            .clone()
+    }
+
+    /// A declared type parameter.
+    fn parameter(&mut self, parameter: &Ident) -> Ident {
+        let text = if parameter.text.starts_with('#') {
+            parameter.text.clone()
+        } else {
+            self.variable(&parameter.text)
+        };
+        Ident {
+            text,
+            ..parameter.clone()
+        }
+    }
+
+    fn regions(&mut self, regions: &[Ident]) -> Vec<Ident> {
+        regions
+            .iter()
+            .map(|region| Ident {
+                text: self.region(&region.text),
+                ..region.clone()
+            })
+            .collect()
+    }
+
+    fn ty(&mut self, ty: &TypeExpr) -> TypeExpr {
+        use TypeExprKind::*;
+        let kind = match &ty.kind {
+            Named(name) => Named(name.clone()),
+            Variable(name) => Variable(self.variable(name)),
+            Apply(head, arguments) => {
+                let head = match head.text.strip_prefix('\'') {
+                    Some(name) => Ident {
+                        text: format!("'{}", self.variable(name)),
+                        ..(**head).clone()
+                    },
+                    None => (**head).clone(),
+                };
+                let arguments = arguments.iter().map(|argument| self.ty(argument)).collect();
+                Apply(Box::new(head), arguments)
+            }
+            Regions(inner, names) => {
+                let names = self.regions(names).into_boxed_slice();
+                Regions(Box::new(self.ty(inner)), names)
+            }
+            Quantified(names, inner) => {
+                let names = self.regions(names).into_boxed_slice();
+                Quantified(names, Box::new(self.ty(inner)))
+            }
+            Array(inner) => Array(Box::new(self.ty(inner))),
+            ArrayView(inner) => ArrayView(Box::new(self.ty(inner))),
+            FixedArray(element, length) => {
+                FixedArray(Box::new(self.ty(element)), Box::new((**length).clone()))
+            }
+            Length(length) => Length(*length),
+            List(inner) => List(Box::new(self.ty(inner))),
+            Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
+            Task(result) => Task(Box::new(self.ty(result))),
+            Function(parameters, result) => Function(
+                parameters
+                    .iter()
+                    .map(|parameter| self.ty(parameter))
+                    .collect(),
+                Box::new(self.ty(result)),
+            ),
+            Reference(inner, mutable) => Reference(Box::new(self.ty(inner)), *mutable),
+            Dyn(dyn_type) => Dyn(dyn_type.clone()),
+        };
+        TypeExpr {
+            kind,
+            span: ty.span,
+        }
+    }
+
+    fn constraint(&mut self, constraint: &ConstraintExpr) -> ConstraintExpr {
+        let ty = self.ty(&constraint.ty);
+        let name = match &constraint.name {
+            ConstraintName::Class(class) => ConstraintName::Class(class.clone()),
+            ConstraintName::Function(name, annotation) => ConstraintName::Function(
+                name.clone(),
+                annotation
+                    .as_ref()
+                    .map(|annotation| Box::new(self.ty(annotation))),
+            ),
+        };
+        ConstraintExpr { name, ty }
+    }
+
+    /// The constraints with their names renamed. They are a set, so a canonical renaming puts
+    /// them in a fixed order.
+    fn constraints(&mut self, constraints: &[ConstraintExpr]) -> Vec<ConstraintExpr> {
+        let mut constraints: Vec<_> = constraints
+            .iter()
+            .map(|constraint| self.constraint(constraint))
+            .collect();
+        if self.canonical {
+            constraints.sort_by_cached_key(|constraint| {
+                let head = match &constraint.name {
+                    ConstraintName::Class(class) => class.text.clone(),
+                    ConstraintName::Function(name, annotation) => format!(
+                        "#{}{}",
+                        name.text,
+                        annotation.as_deref().map(type_text).unwrap_or_default()
+                    ),
+                };
+                format!("{head}<{}>", type_text(&constraint.ty))
+            });
+        }
+        constraints
+    }
+}
+
+/// The parameter types and the result as one chain of arrows: a result that is itself a
+/// function type is spliced in, because `A -> B -> C` is the type of a definition whether its
+/// lambda takes both arguments or returns a function. The rule is the parser's: a function
+/// type without parameters (`fn() -> T`) is a thunk, and a definition that takes no parameters
+/// keeps its function result, so neither is spliced.
+fn flatten(mut parameters: Vec<TypeExpr>, mut result: TypeExpr) -> (Vec<TypeExpr>, TypeExpr) {
+    while !parameters.is_empty()
+        && matches!(&result.kind, TypeExprKind::Function(inner, _) if !inner.is_empty())
+    {
+        let TypeExprKind::Function(more, inner) = result.kind else {
+            unreachable!("the loop condition matched a function type")
+        };
+        parameters.extend(more);
+        result = *inner;
+    }
+    (parameters, result)
+}
+
+/// A function's signature in one line. `renaming` holds the names that the enclosing
+/// declaration has already given, such as a class's variable. A canonical renaming also
+/// flattens the arrows; the other form is the signature as `tsuzuri doc` shows it.
+fn function_text(
+    prefix: &str,
+    name: &str,
+    regions: &[Ident],
+    constraints: &[ConstraintExpr],
+    parameters: &[&TypeExpr],
+    result: &TypeExpr,
+    mut renaming: Renaming,
+) -> String {
+    let regions = renaming.regions(regions);
+    let parameters = parameters
+        .iter()
+        .map(|parameter| renaming.ty(parameter))
+        .collect();
+    let result = renaming.ty(result);
+    let (parameters, result) = if renaming.canonical {
+        flatten(parameters, result)
+    } else {
+        (parameters, result)
+    };
+    let constraints = renaming.constraints(constraints);
+    signature(
+        prefix,
+        name,
+        &regions,
+        &constraints,
+        parameters.iter(),
+        &result,
+    )
+    .replace("\n    ", " ")
+}
+
+fn derives(derives: &[(DeriveClass, Span)]) -> BTreeSet<&'static str> {
+    derives.iter().map(|(class, _)| class.name()).collect()
+}
+
+/// The names of a declaration's type parameters, renamed by `renaming`.
+fn parameters(parameters: &[Ident], renaming: &mut Renaming) -> Vec<Ident> {
+    parameters
+        .iter()
+        .map(|parameter| renaming.parameter(parameter))
+        .collect()
+}
+
+/// The items that one module declares, under `module`, its full name, in the canonical form
+/// that decides what changed or in the form that `tsuzuri doc` shows.
+fn add_items(module: &str, program: &Program, items: &mut Items, canonical: bool) {
+    let fresh = || Renaming::new(canonical);
+    // Every field is named so that a new kind of declaration cannot be left out silently.
+    let Program {
+        source_kind: _,
+        namespace: _,
+        usings: _,
+        type_aliases,
+        constants,
+        externs,
+        extern_types,
+        records,
+        unions,
+        functions,
+        classes,
+        instances,
+        active_patterns,
+        tests: _,
+        benches: _,
+        entry: _,
+        dyn_types: _,
+        cpu_attributes: _,
+        aliases,
+        declaration_starts: _,
+    } = program;
+    let mut add = |item: Item| {
+        items.entry((item.name.clone(), item.kind)).or_insert(item);
+    };
+    let qualified = |name: &str| format!("{module}.{name}");
+    for declaration in functions {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let pattern = active_patterns
+            .iter()
+            .find(|pattern| pattern.function == declaration.name.text);
+        let name = pattern.map_or_else(
+            || declaration.name.text.clone(),
+            |pattern| {
+                let mut cases: Vec<_> = pattern
+                    .cases
+                    .iter()
+                    .map(|case| case.text.as_str())
+                    .collect();
+                if pattern.partial {
+                    cases.push("_");
+                }
+                format!("(|{}|)", cases.join("|"))
+            },
+        );
+        // A multi-case active pattern has the implicit result type `'T`, as in the docs.
+        let implicit = pattern
+            .filter(|pattern| pattern.cases.len() > 1)
+            .map(|_| TypeExpr {
+                kind: TypeExprKind::Variable("T".into()),
+                span: declaration.result.span,
+            });
+        let types: Vec<_> = declaration
+            .parameters
+            .iter()
+            .map(|parameter| &parameter.ty)
+            .collect();
+        let header = function_text(
+            "def",
+            &name,
+            &declaration.regions,
+            &declaration.constraints,
+            &types,
+            implicit.as_ref().unwrap_or(&declaration.result),
+            fresh(),
+        );
+        let mut item =
+            Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
+        item.exported = declaration.exported;
+        add(item);
+    }
+    for declaration in externs {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let types: Vec<_> = declaration.parameters.iter().collect();
+        let header = function_text(
+            "extern def",
+            &declaration.name.text,
+            &declaration.regions,
+            &declaration.constraints,
+            &types,
+            &declaration.result,
+            fresh(),
+        );
+        let mut item = Item::new("extern def", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
+        item.exported = declaration.exported;
+        add(item);
+    }
+    for declaration in extern_types {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let header = format!("extern type {}", declaration.name.text);
+        add(
+            Item::new("extern type", qualified(&declaration.name.text), header)
+                .documented(declaration.doc.as_ref()),
+        );
+    }
+    for declaration in records {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let mut renaming = fresh();
+        let names = parameters(&declaration.parameters, &mut renaming);
+        let regions = renaming.regions(&declaration.regions);
+        let header = format!(
+            "record {}{}{}",
+            declaration.name.text,
+            parameters_text(&names),
+            region_text(&regions)
+        );
+        let mut item = Item::new("record", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
+        for field in &declaration.fields {
+            item.members.push(Member::new(
+                "field",
+                field.name.text.clone(),
+                format!(
+                    "{}{}{}: {}",
+                    json_text(field.json.as_ref()),
+                    if field.mutable { "mut " } else { "" },
+                    field.name.text,
+                    type_text(&renaming.ty(&field.ty))
+                ),
+            ));
+        }
+        item.derives = derives(&declaration.derives);
+        add(item);
+    }
+    for declaration in unions {
+        if declaration.visibility == Visibility::Private
+            || declaration.name.provenance == Provenance::Generated
+        {
+            continue;
+        }
+        let mut renaming = fresh();
+        let names = parameters(&declaration.parameters, &mut renaming);
+        let header = format!("union {}{}", declaration.name.text, parameters_text(&names));
+        let mut item = Item::new("union", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
+        for case in &declaration.cases {
+            let payload = case.payload.as_ref().map_or(String::new(), |ty| {
+                format!(" of {}", type_text(&renaming.ty(ty)))
+            });
+            item.members.push(Member::new(
+                "case",
+                case.name.text.clone(),
+                format!(
+                    "{}{}{payload}",
+                    json_text(case.json.as_ref()),
+                    case.name.text
+                ),
+            ));
+        }
+        item.derives = derives(&declaration.derives);
+        add(item);
+    }
+    for declaration in type_aliases {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let mut renaming = fresh();
+        let names = parameters(&declaration.parameters, &mut renaming);
+        let header = format!(
+            "type {}{} = {}",
+            declaration.name.text,
+            parameters_text(&names),
+            type_text(&renaming.ty(&declaration.target))
+        );
+        add(Item::new("type", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref()));
+    }
+    for declaration in constants {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let header = format!(
+            "const {}: {}",
+            declaration.name.text,
+            type_text(&fresh().ty(&declaration.ty))
+        );
+        add(
+            Item::new("const", qualified(&declaration.name.text), header)
+                .documented(declaration.doc.as_ref()),
+        );
+    }
+    for declaration in classes {
+        let mut renaming = fresh();
+        let variable = renaming.variable(&declaration.variable.text);
+        let superclasses = renaming.constraints(&declaration.superclasses);
+        let kind = if declaration.kind == Kind::Type {
+            String::new()
+        } else {
+            format!(": {}", declaration.kind.display())
+        };
+        let header = format!(
+            "class {}{}<'{variable}{kind}>",
+            constraints_text(&superclasses),
+            declaration.name.text
+        );
+        let mut item = Item::new("class", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
+        for method in &declaration.methods {
+            if method.visibility == Visibility::Private {
+                continue;
+            }
+            let types: Vec<_> = method.parameters.iter().collect();
+            let mut member = Member::new(
+                "method",
+                method.name.text.clone(),
+                function_text(
+                    "def",
+                    &method.name.text,
+                    &method.regions,
+                    &method.constraints,
+                    &types,
+                    &method.result,
+                    renaming.clone(),
+                ),
+            );
+            member.default = declaration
+                .defaults
+                .iter()
+                .any(|default| default.name.text == method.name.text);
+            item.members.push(member);
+        }
+        add(item);
+    }
+    for declaration in instances {
+        let mut renaming = fresh();
+        let ty = renaming.ty(&declaration.ty);
+        let constraints = renaming.constraints(&declaration.constraints);
+        let name = format!("{}<{}>", declaration.class.text, type_text(&ty));
+        let header = format!("instance {}{name}", constraints_text(&constraints));
+        add(Item::new("instance", name, header));
+    }
+    for alias in aliases {
+        add(Item::new(
+            "alias",
+            qualified(&alias.text),
+            format!("@alias {}", alias.text),
+        ));
+    }
+}
+
+/// The full name of a module as source code spells it: its namespace and its file name joined
+/// by `::`. A project without a manifest has no namespace of its own, so `root_namespace` is
+/// empty for it.
+fn module_name(
+    source: &SourceFile,
+    program: &Program,
+    root_namespace: &str,
+    id: usize,
+) -> Result<String, Diagnostic> {
+    let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
+    let (key, namespace) = crate::module_identity(
+        &source.relative_path.to_string_lossy(),
+        declared,
+        root_namespace,
+    )
+    .map_err(|mut error| {
+        error.span.source = Some(id);
+        error
+    })?;
+    let stem = key.rsplit('.').next().unwrap_or(&key);
+    let full = if namespace.is_empty() {
+        stem.to_owned()
+    } else {
+        format!("{namespace}.{stem}")
+    };
+    Ok(full.replace('.', "::"))
+}
+
+/// The public API of the root package of `project`, or of all its sources when it has no
+/// manifest. A source that does not parse is an error at that source.
+pub fn api(project: &Project) -> Result<Api, Diagnostic> {
+    let root = project.root_package.as_ref();
+    let manifest = root
+        .and_then(|root| {
+            project.manifests.iter().find(|manifest| {
+                manifest.package.as_ref() == Some(root)
+                    && manifest.relative_path == Path::new("Tsuzuri.toml")
+            })
+        })
+        .and_then(|manifest| crate::package::parse_manifest(&manifest.text, 0).ok());
+    let mut items = Items::new();
+    let mut shown = Items::new();
+    for (id, source) in project.sources.iter().enumerate() {
+        if source.origin != ModuleOrigin::User || source.package.as_ref() != root {
+            continue;
+        }
+        let program = crate::parser::parse_with_source(&source.text, id, source.edition)?;
+        let namespace = if root.is_some() {
+            source.namespace.as_str()
+        } else {
+            ""
+        };
+        let module = module_name(source, &program, namespace, id)?;
+        add_items(&module, &program, &mut items, true);
+        add_items(&module, &program, &mut shown, false);
+    }
+    // Both forms hold the same items and members in the same order.
+    for (key, item) in &mut items {
+        let Some(written) = shown.get(key) else {
+            continue;
+        };
+        item.shown = written.header.clone();
+        for (member, written) in item.members.iter_mut().zip(&written.members) {
+            member.shown = written.text.clone();
+        }
+    }
+    Ok(Api {
+        items,
+        namespace: manifest
+            .as_ref()
+            .map(|manifest| manifest.namespace.replace('.', "::")),
+        package: root.map(|root| root.name.clone()),
+        version: manifest
+            .as_ref()
+            .and_then(|manifest| Version::parse(&manifest.version)),
+    })
+}
+
+fn removed(item: &Item) -> Change {
+    Change {
+        breaking: true,
+        action: Action::Removed,
+        kind: item.kind,
+        name: item.name.clone(),
+        old: Some(item.text()),
+        new: None,
+        note: "",
+    }
+}
+
+fn added(item: &Item) -> Change {
+    Change {
+        breaking: false,
+        action: Action::Added,
+        kind: item.kind,
+        name: item.name.clone(),
+        old: None,
+        new: Some(item.text()),
+        note: "",
+    }
+}
+
+/// A change of a member of `item`.
+fn member_change(
+    item: &Item,
+    member: &Member,
+    action: Action,
+    breaking: bool,
+    note: &'static str,
+) -> Change {
+    Change {
+        breaking,
+        action,
+        kind: member.kind,
+        name: format!("{}.{}", item.name, member.name),
+        old: (action == Action::Removed).then(|| member.shown.clone()),
+        new: (action == Action::Added).then(|| member.shown.clone()),
+        note,
+    }
+}
+
+/// A method's declaration with a mark for a default, for a change of the mark alone.
+fn with_default(member: &Member) -> String {
+    if member.default {
+        format!("{} (with a default)", member.shown)
+    } else {
+        member.shown.clone()
+    }
+}
+
+/// The changes between the members of two versions of an item.
+fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
+    let by_name = |item: &'_ Item| -> BTreeMap<String, usize> {
+        item.members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| (member.name.clone(), index))
+            .collect()
+    };
+    let (before, after) = (by_name(old), by_name(new));
+    for member in &old.members {
+        if !after.contains_key(&member.name) {
+            let note = match member.kind {
+                "field" => "uses of the field stop compiling",
+                "case" => "uses of the case stop compiling",
+                _ => "calls and instances of the method stop compiling",
+            };
+            changes.push(member_change(old, member, Action::Removed, true, note));
+        }
+    }
+    for member in &new.members {
+        if before.contains_key(&member.name) {
+            continue;
+        }
+        let (breaking, note) = match member.kind {
+            "field" => (
+                true,
+                "constructions of the record without it stop compiling",
+            ),
+            "case" => (true, "exhaustive matches over the union stop compiling"),
+            _ if member.default => (false, ""),
+            _ => (true, "existing instances do not define the method"),
+        };
+        changes.push(member_change(new, member, Action::Added, breaking, note));
+    }
+    for (name, &index) in &before {
+        let Some(&other) = after.get(name) else {
+            continue;
+        };
+        let (was, now) = (&old.members[index], &new.members[other]);
+        let (shown_was, shown_now) = if was.text != now.text {
+            (was.shown.clone(), now.shown.clone())
+        } else if was.default != now.default {
+            (with_default(was), with_default(now))
+        } else {
+            continue;
+        };
+        // A default that goes away leaves the instances that relied on it unfinished; one
+        // that comes is a convenience.
+        let lost_default = was.default && !now.default;
+        changes.push(Change {
+            breaking: was.text != now.text || lost_default,
+            action: Action::Changed,
+            kind: was.kind,
+            name: format!("{}.{name}", new.name),
+            old: Some(shown_was),
+            new: Some(shown_now),
+            note: if lost_default && was.text == now.text {
+                "instances that relied on the default must define the method"
+            } else {
+                ""
+            },
+        });
+    }
+    // The order of fields and cases is part of the layout and of derived comparisons.
+    if new.members.iter().all(|member| member.kind != "method") {
+        let common = |item: &Item, other: &BTreeMap<String, usize>| -> Vec<String> {
+            item.members
+                .iter()
+                .filter(|member| other.contains_key(&member.name))
+                .map(|member| member.name.clone())
+                .collect()
+        };
+        let (was, now) = (common(old, &after), common(new, &before));
+        if was != now {
+            changes.push(Change {
+                breaking: true,
+                action: Action::Changed,
+                kind: "order",
+                name: new.name.clone(),
+                old: Some(was.join(", ")),
+                new: Some(now.join(", ")),
+                note: "the order of fields and cases is part of the layout and of derived comparisons",
+            });
+        }
+    }
+}
+
+/// The changes between two versions of an item with the same name and kind.
+fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
+    if old.header != new.header || old.exported != new.exported {
+        // Exporting what was not exported adds a symbol and changes nothing else.
+        let widened = old.header == new.header && !old.exported && new.exported;
+        changes.push(Change {
+            breaking: !widened,
+            action: Action::Changed,
+            kind: new.kind,
+            name: new.name.clone(),
+            old: Some(old.text()),
+            new: Some(new.text()),
+            note: "",
+        });
+    }
+    compare_members(old, new, changes);
+    let derive = |class: &str, action, breaking| Change {
+        breaking,
+        action,
+        kind: "derive",
+        name: format!("{}.{class}", new.name),
+        old: None,
+        new: None,
+        note: "",
+    };
+    for class in old.derives.difference(&new.derives) {
+        changes.push(derive(class, Action::Removed, true));
+    }
+    for class in new.derives.difference(&old.derives) {
+        changes.push(derive(class, Action::Added, false));
+    }
+    match (&old.deprecated, &new.deprecated) {
+        (None, Some(note)) => changes.push(Change {
+            breaking: false,
+            action: Action::Deprecated,
+            kind: new.kind,
+            name: new.name.clone(),
+            old: None,
+            new: Some(note.clone()),
+            note: "",
+        }),
+        (Some(note), None) => changes.push(Change {
+            breaking: false,
+            action: Action::Undeprecated,
+            kind: new.kind,
+            name: new.name.clone(),
+            old: Some(note.clone()),
+            new: None,
+            note: "",
+        }),
+        // Another note, like any other edit of the text, is a change of the documentation.
+        _ if old.doc != new.doc => changes.push(Change {
+            breaking: false,
+            action: Action::Documented,
+            kind: new.kind,
+            name: new.name.clone(),
+            old: None,
+            new: None,
+            note: "",
+        }),
+        _ => {}
+    }
+}
+
+/// The differences between the APIs of two versions.
+pub fn compare(old: &Api, new: &Api) -> Report {
+    let mut changes = Vec::new();
+    if let (Some(was), Some(now)) = (&old.namespace, &new.namespace)
+        && was != now
+    {
+        changes.push(Change {
+            breaking: true,
+            action: Action::Changed,
+            kind: "namespace",
+            name: new
+                .package
+                .clone()
+                .or(old.package.clone())
+                .unwrap_or_default(),
+            old: Some(was.clone()),
+            new: Some(now.clone()),
+            note: "every declaration of the package is under the new name",
+        });
+    }
+    for (key, item) in &old.items {
+        match new.items.get(key) {
+            None => changes.push(removed(item)),
+            Some(next) => compare_items(item, next, &mut changes),
+        }
+    }
+    for (key, item) in &new.items {
+        if !old.items.contains_key(key) {
+            changes.push(added(item));
+        }
+    }
+    changes.sort_by(|left, right| {
+        right
+            .breaking
+            .cmp(&left.breaking)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.kind.cmp(right.kind))
+            .then_with(|| left.action.cmp(&right.action))
+            .then_with(|| (&left.old, &left.new).cmp(&(&right.old, &right.new)))
+    });
+    Report {
+        changes,
+        old_version: old.version,
+        new_version: new.version,
+    }
+}

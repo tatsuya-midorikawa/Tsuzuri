@@ -13,11 +13,12 @@
 - `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
+- `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
 
-`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
 
 ```mermaid
 flowchart TD
@@ -27,6 +28,7 @@ flowchart TD
   kind -->|new| scaffold["空のディレクトリに雛形"]
   kind -->|fetch| deps["依存を取得し Tsuzuri.lock を書く"]
   kind -->|publish| entry["検査して index の項目を出力"]
+  kind -->|api-diff| apidiff["2 つの版の公開 API を比べる"]
   kind -->|toolchain info| tools["解決したツールを表示"]
   kind -->|bindgen| bind["C ヘッダーから extern を生成"]
   kind -->|lsp| server["stdio の言語サーバー"]
@@ -170,12 +172,13 @@ Created demo/Main.tz
 Created demo/.gitignore
 ```
 
-`Tsuzuri.toml` は名前、版、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
+`Tsuzuri.toml` は名前、版、言語版（`edition`）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
 
 ```toml
 [package]
 name = "demo"
 version = "0.1.0"
+edition = "2026"
 namespace = "Acme::Demo"
 ```
 
@@ -219,7 +222,7 @@ registry に公開するパッケージを検査し、index の `index/<name>.js
 tsuzuri publish geometry-core --git https://example.org/geometry-core.git --rev 0123456789abcdef0123456789abcdef01234567
 ```
 
-`check` と同じ検査、公開できるマニフェスト（`MAJOR.MINOR.PATCH` の版、版の要求だけの依存、`[native]` なし）の確認、`--git` と `--rev` の commit の取得、その内容とディレクトリの内容の一致の確認を行います。引数はディレクトリ 1 つ、`--git URL`、`--rev COMMIT`、任意の `--json` で、形の誤りは `E2000`、終了コード 2 です。詳細は [registry の運用と tsuzuri publish](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish) にあります。
+`check` と同じ検査、公開できるマニフェスト（`MAJOR.MINOR.PATCH` の版、版の要求だけの依存、`[native]` なし）の確認、`--git` と `--rev` の commit の取得、その内容とディレクトリの内容の一致の確認を行います。引数はディレクトリ 1 つ、`--git URL`、`--rev COMMIT`、任意の `--json` で、形の誤りは `E2000`、終了コード 2 です。前の版との API の互換性は検査しません。公開の前に [api-diff](#api-diff) で確かめます。詳細は [registry の運用と tsuzuri publish](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish) にあります。
 
 ### check
 
@@ -426,7 +429,7 @@ bench 0 Speed.total 1e6: median 312.408 us (min 305.917 us, max 330.142 us; 11 s
 
 ### fmt
 
-`.tz`、`.tt`、`.tc` をその場で整形します。意味は変えません。`--check` は書き戻さず、差分があるファイルを `パス: not formatted` と出して終了コード 1 にします。CI 向きです。最適化や警告のフラグは受け付けません。
+`.tz`、`.tt`、`.tc` をその場で整形します。意味は変えません。`--check` は書き戻さず、差分があるファイルを `パス: not formatted` と出して終了コード 1 にします。CI 向きです。最適化や警告のフラグは受け付けません。入力のディレクトリ（ファイルなら親）に `Tsuzuri.toml` があれば、その `edition` の予約語でソースを読みます。上位のディレクトリは探さず、マニフェストがなければ最新の edition です。`edition` が対応する値でなければ `E0002` で、ファイルは書き換えません。
 
 ### doc
 
@@ -437,6 +440,120 @@ tsuzuri doc demo -o demo-docs
 ```
 
 `demo-docs/index.md` がモジュール一覧、`demo-docs/Main.md` が各宣言です。印の `.tsuzuri-docs` も置きます。`Main.tz` がないライブラリディレクトリでも生成できます。
+
+### api-diff
+
+パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で標準出力へ出します。版を上げる前や公開の前に、互換性のない変更を見つけるためのコマンドです。
+
+```sh
+tsuzuri api-diff geometry-1.2.0 geometry
+```
+
+引数は、古い版の入力、新しい版の入力、任意の `--json` です。入力はそれぞれディレクトリか、そのルートの中のファイルで、[入力の解決](#入力の解決) と同じに決まります。`Main.tz` は要りません。引数が 2 つでないとき、`--json` を 2 回書いたとき、ほかのオプションを渡したときは `E2000` で、終了コード 2 です。
+
+比べる版の例です。2 つの版は、同じパッケージの 1.2.0 と 1.3.0 で、`Shapes.tz` だけが違います。
+
+```toml
+[package]
+name = "geometry"
+version = "1.2.0"
+edition = "2026"
+```
+
+```tsuzuri project=api-v1 file=Shapes.tz
+/// The area of a circle of the given radius.
+def area :: f64 -> f64 = \r -> 3.14159 * r * r
+
+record Point { x: f64, y: f64 }
+
+union Light = Red | Green
+
+def twice :: i64 -> i64 = \n -> n * 2
+
+def scale :: Ord<'a> => 'a -> 'a -> 'a = \a b -> if a < b then b else a
+```
+
+1.3.0 の `Tsuzuri.toml` は `version = "1.3.0"` だけが違います。
+
+```tsuzuri project=api-v2 file=Shapes.tz
+/// The area of a circle of the given radius.
+def area :: f64 -> f32 = \r -> (3.14159 * r * r) as f32
+
+record Point { x: f64, y: f64, z: f64 }
+
+union Light = Red | Green | Blue
+
+/// @deprecated use double
+def twice :: i64 -> i64 = \n -> n * 2
+
+def double :: i64 -> i64 = \n -> n * 2
+
+def scale :: Ord<'t> => 't -> 't -> 't = \a b -> if a < b then b else a
+```
+
+2 つのディレクトリを比べると、次のように出ます。互換性のない変更があるので、終了コードは 1 です。
+
+```text
+breaking: added case Geometry::Shapes.Light.Blue: `Blue` (exhaustive matches over the union stop compiling)
+breaking: added field Geometry::Shapes.Point.z: `z: f64` (constructions of the record without it stop compiling)
+breaking: changed def Geometry::Shapes.area: `def area :: f64 -> f64` => `def area :: f64 -> f32`
+non-breaking: added def Geometry::Shapes.double: `def double :: i64 -> i64`
+non-breaking: deprecated def Geometry::Shapes.twice: use double
+summary: 3 breaking, 2 non-breaking
+note: version 1.3.0 is compatible with 1.2.0, so registry dependents that accept 1.2.0 would take it; raise the major version (the minor version before 1.0.0) for a breaking change
+```
+
+`scale` は、型変数の名前が `'a` から `'t` に変わっただけなので、出ません。
+
+#### 何を比べるか
+
+- **公開宣言**: ルートのパッケージの、`private` でない `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、すべての `class`、`instance`、ビルダーの別名（`@alias`）です。マニフェストのない入力では、すべてのソースが 1 つのパッケージです。`test`、`bench`、`private` の宣言、本体、トップレベルの式は見ません。依存パッケージの宣言も、API には入れません。
+- **構文解析だけ**: 型検査はしません。本体に型エラーがあっても、構文が正しければ比べられます。構文エラーは、その場所への診断で終了コード 1 です。git と registry の依存は取得せず、`Tsuzuri.lock` も読みません。
+- **名前**: `名前空間::モジュール.宣言` です（`Geometry::Shapes.area`）。record の field、union の case、class のメソッドは、宣言の名前の後ろに `.名前` を付けます（`Geometry::Shapes.Point.z`）。`instance` は名前空間を持たず、`Show<Box<i64>>` のようにクラスと型で見分けます。アクティブパターンは `(|Even|Odd|)` のように case の並びが名前です。
+- **署名**: `tsuzuri doc` が出す形を、型変数と region の名前を、最初に出てきた順の連番に置き換えて比べます。`'a` と `'t` の違いは変更ではありません。制約の順序と、定義のラムダが受け取る引数の個数（`\x y ->` と `\x -> \y ->`）も違いにしません。メッセージには、それぞれの版で書かれたとおりの署名を出します。
+- **名前空間や名前の変更**: モジュールの名前空間とパッケージの `namespace` は宣言の名前の一部です。変えるとすべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。モジュールの改名も削除と追加で、改名は検出しません。マニフェストのない入力は、ディレクトリ名で決まる名前空間を持たないものとして比べます。
+
+#### 変更の分類
+
+| 変更 | 分類 |
+| --- | --- |
+| 公開宣言の削除（`private` にした場合を含む） | breaking |
+| 署名の変更（型、制約、region、型パラメーター、`export` の取り消し） | breaking |
+| record の field の追加、削除、型・`mut`・`@json` の変更、並べ替え | breaking |
+| union の case の追加、削除、ペイロードや `@json` の変更、並べ替え | breaking |
+| class のメソッドの追加（既定の実装なし）、削除、署名の変更、既定の実装の削除、superclass の変更 | breaking |
+| `deriving` の削除、`instance` の削除と変更 | breaking |
+| 宣言の追加、`export` の追加、`instance` の追加、`deriving` の追加 | non-breaking |
+| class のメソッドの追加（既定の実装あり）、既定の実装の追加 | non-breaking |
+| 説明（`///`）の変更、`@deprecated` の追加と削除 | non-breaking |
+
+record の field の追加は、構築式を壊すので breaking です。union の case の追加は、網羅的な `match` を壊します。既定の実装のないメソッドの追加は、既存の `instance` にその実装がないので breaking です。
+
+#### 出力
+
+- **テキスト**: 1 行が `breaking: ` か `non-breaking: ` で始まり、`<action> <kind> <name>` が続きます。`: ` の後ろに、宣言（変更は `旧 => 新`、`deprecated` と `undeprecated` は `@deprecated` の案内）が付きます。理由が自明でない breaking には、行末に `(理由)` が付きます。最後に `summary: N breaking, M non-breaking` が出ます。`note:` の行は、省略した件数と、版の注記です。
+- **並び**: breaking が先で、それぞれ名前順です。同じ入力からは同じ出力が出ます。
+- **件数の上限**: 出す行は 1000 行までで、breaking を先に出します。超えた分は `note: 400 more changes not shown` のように数え、JSON の `omitted` にも入ります。`summary` の件数は、省略した分も含みます。
+- **版の注記**: 両方のマニフェストの `version` が `MAJOR.MINOR.PATCH` の形で、新しい版が古い版の互換の範囲（1.0.0 以降は同じ `MAJOR`、それより前は同じ `0.MINOR`）に入っているのに breaking な変更があるときは、`note: version ... is compatible with ...` を出します。`compatible_versions` はその判定（`true`、`false`、または `null`）です。
+- **`--json`**: 1 行 1 JSON オブジェクト（JSON Lines）を標準出力へ出します。変更ごとに 1 行、最後に集計の 1 行です。
+
+```json
+{"type":"change","severity":"breaking","action":"changed","kind":"def","name":"Geometry::Shapes.area","old":"def area :: f64 -> f64","new":"def area :: f64 -> f32","note":null}
+{"type":"summary","breaking":3,"non_breaking":2,"omitted":0,"old_version":"1.2.0","new_version":"1.3.0","compatible_versions":true}
+```
+
+`severity` は `breaking` か `non-breaking`、`action` は `added`、`removed`、`changed`、`deprecated`、`undeprecated`、`documented` のどれかです。`kind` は `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、`class`、`instance`、`alias`、`field`、`case`、`method`、`derive`、`order`、`namespace` です。`deprecated` では `new` に、`undeprecated` では `old` に、`@deprecated` の案内が入ります。値のない項目は `null` です。キーは、増えることはあっても、消えたり名前が変わったりしません。
+
+終了コードは、互換性のない変更がなければ 0、あれば 1 です。入力が読めない、構文エラーがある、シンボリックリンクの入力（`E1011`）、ソースが大きすぎる（`E0003`）、ソースの数が上限を超える（`E1017`）といった失敗も、診断を標準エラー出力へ出して 1 で、標準出力には何も出しません。
+
+#### 限界
+
+`api-diff` が読むのは宣言の署名だけです。次の変更は見つけられません。
+
+- 関数の本体の挙動、性能、`const` の値の変更
+- 型エイリアスの展開（エイリアスを、同じ型を指す別のエイリアスや型に置き換えると、変更として出ます）
+
+`tsuzuri publish` は `api-diff` を実行しません。公開の前に、前の版のチェックアウトと比べてください（[公開前の互換性の確認](../organizing-tsuzuri/packages.md#公開前の互換性の確認)）。保証の考え方は [安定性と互換性の方針](../../../docs/stability.md) にあります。
 
 ### bindgen
 
@@ -473,6 +590,8 @@ C の ABI が Tsuzuri のホスト ABI と一致すると確かめられた宣�
 | `.tc` | コンピュテーション式のビルダー 1 つ |
 
 ファイル名は大文字の ASCII で始まります。モジュール名はファイル名です。同じディレクトリに `Checked.tz` と `Checked.tc` のように、拡張子だけが違う同名は置けません。
+
+ソースは、そのパッケージの言語版（edition）の予約語で読みます。`Tsuzuri.toml` の `edition` を省略した値は `2026` で、マニフェストのないプロジェクトと標準ライブラリは最新の edition です（[言語版](../organizing-tsuzuri/packages.md#言語版edition)）。
 
 `namespace Sample::Shapes` をファイルの最初に書くと、そのファイルの名前空間になります。書かなければ、`Tsuzuri.toml` の `namespace`、それもなければパッケージ名かフォルダー名に、サブディレクトリを足したものです。`Geometry/Point.tz` は `App::Geometry::Point` のようになります。
 
@@ -512,7 +631,7 @@ Price.price()
 
 ### 構文解析の結果
 
-`check`、`build`、`run`、`script`、`test`、`bench`、`doc` は、ソースを構文解析した結果を同じ保存先の `frontend/` に保存し、次の実行では内容が同じソースを構文解析し直さずに使います。保存するのはプロジェクトのルートとコマンドの種類（`check`・`build`・`run`・`script`、`test`・`bench`、`doc` の 3 つ）ごとに、結果の束 `p-<64 桁の 16 進>.tzp` とモジュールの一覧 `m-<64 桁の 16 進>.json` の 2 ファイルです。標準ライブラリのソースも含みます。照合のキーはソースの byte 列とコンパイラ（版と実行ファイルの同一性。Unix では大きさ、更新時刻、device、inode、状態変更時刻、Windows ではパス、大きさ、作成時刻、更新時刻）で、ソースのパスや拡張子は含みません。コンパイラを入れ替えると、最初の実行ですべてを構文解析し直します。
+`check`、`build`、`run`、`script`、`test`、`bench`、`doc` は、ソースを構文解析した結果を同じ保存先の `frontend/` に保存し、次の実行では内容が同じソースを構文解析し直さずに使います。保存するのはプロジェクトのルートとコマンドの種類（`check`・`build`・`run`・`script`、`test`・`bench`、`doc` の 3 つ）ごとに、結果の束 `p-<64 桁の 16 進>.tzp` とモジュールの一覧 `m-<64 桁の 16 進>.json` の 2 ファイルです。標準ライブラリのソースも含みます。照合のキーはソースの byte 列、そのソースを読む言語版（edition）、コンパイラ（版と実行ファイルの同一性。Unix では大きさ、更新時刻、device、inode、状態変更時刻、Windows ではパス、大きさ、作成時刻、更新時刻）で、ソースのパスや拡張子は含みません。`Tsuzuri.toml` の `edition` だけを変えると、同じ byte 列のソースも構文解析し直します。コンパイラを入れ替えると、最初の実行ですべてを構文解析し直します。
 
 型検査、特殊化、IR の生成は毎回すべて行うので、出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。保存した結果が壊れている、読めない、別のコンパイラのもの、というときは黙って構文解析し直し、次に構文解析がすべて成功した実行で書き直します。構文エラーのあるソースは保存しません。`frontend/` は合計 1 GiB まで、更新から 30 日で消します。
 
@@ -523,7 +642,7 @@ Price.price()
 | コード | いつ |
 | --- | --- |
 | 0 | 成功。警告だけでも、`--deny-warnings` が無ければ 0 |
-| 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings` |
+| 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更 |
 | 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2 |
 
 `def main` が 0 以外を返した場合は、コンパイラから見ると実行の失敗 `E2005` になり、`tsuzuri run` 自体の終了コードは 1 になります。プログラム自身の戻り値がそのまま `tsuzuri run` の終了コードになるわけではありません（`tsuzuri build` で生成したバイナリを直接実行した場合は、`def main` の戻り値がプロセスの終了コードになります）。
@@ -534,7 +653,7 @@ Price.price()
 ## まとめ
 
 - 配布物では `tsuzuri` だけを PATH に足し、`toolchain info` で同梱ツールが見えているか確認します。
-- 日常の流れは `new`、`check`、`run`、必要なときだけ `build` です。git や registry の依存があれば、最初と依存を変えたときに `fetch` します。
+- 日常の流れは `new`、`check`、`run`、必要なときだけ `build` です。git や registry の依存があれば、最初と依存を変えたときに `fetch` します。公開の前には `api-diff` で、前の版との互換性を確かめます。
 - ディレクトリは `Main.tz`、ファイルはその親以下の全ソース、が入力の基本です。
 - キャッシュは既定で有効です。消したいビルドだけ `--no-cache` を付けます。`check` などでは `TSUZURI_CACHE_DIR=` にします。
 - 終了コード 2 は引き方、1 は中身か実行、0 は成功です。
@@ -547,5 +666,6 @@ Price.price()
 - [WebAssembly への出力](webassembly.md)
 - [ネイティブ連携 (C ABI)](native-interop.md)
 - [パッケージ](../organizing-tsuzuri/packages.md)
+- [安定性と互換性の方針](../../../docs/stability.md)
 - [言語仕様のエントリーポイント](../../../docs/language.md#アプリケーションのエントリーポイント)
 - [言語リファレンスの目次](../index.md)

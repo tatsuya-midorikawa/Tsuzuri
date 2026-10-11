@@ -1,9 +1,20 @@
-use tsuzuri::lexer::{TriviaKind, lex, lex_with_trivia};
+use tsuzuri::diagnostic::Diagnostic;
+use tsuzuri::lexer::{self, TokenWithTrivia, TriviaKind};
+use tsuzuri::syntax::{Edition, Token};
 use tsuzuri::{
     formatter::{ast_fingerprint, format_source},
     parser,
     syntax::SourceKind,
 };
+
+// These tests read manifest-less sources, so they use the latest edition.
+fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    lexer::lex(source, Edition::LATEST)
+}
+
+fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
+    lexer::lex_with_trivia(source, Edition::LATEST)
+}
 
 #[test]
 fn documentation_text_survives_formatting_and_span_changes() {
