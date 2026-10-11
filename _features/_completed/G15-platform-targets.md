@@ -102,7 +102,7 @@ tier の記録は [対応プラットフォームとクロスコンパイル](..
 ### 検証結果
 
 - `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`、`git diff --check` が成功。
-- `cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion` は 94 バイナリで 1102 件が成功（失敗 0）。`bounds_computation_syntax_and_expansion` は `RUST_MIN_STACK=2200000` で成功（既知の基準の失敗で、この変更とは無関係）。GUIDE §3.1 の 4 つの回帰テストは各 1 件で成功。最後のレビュー後の修正のあと、`cargo test --locked --lib`（185 件）と `--test targets`（11 件）を再実行して成功。
+- `cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion` は 94 バイナリで 1104 件が成功（失敗 0。最後の修正の後に全体を実行し直した）。`bounds_computation_syntax_and_expansion` は `RUST_MIN_STACK=2200000` で成功（既知の基準の失敗で、この変更とは無関係）。GUIDE §3.1 の 4 つの回帰テストは各 1 件で成功。
 - `PATH=$HOME/.cargo/bin:$PATH cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd` が成功。Windows の実行は確かめていない（型検査だけ）。
 - `tests/e2e.mjs`・`cache.mjs`・`examples.mjs`・`primitives.mjs`・`tasks.mjs`・`os.mjs`・`control.mjs`・`cpu_dispatch.mjs` が成功。`node tests/targets.mjs` は、既定（Apple の Clang は RISC-V のコード生成を持たず 3 件が未確認）、`CI=true` と LLVM 21（実行 1・リンク 4・オブジェクト 17）、`TSUZURI_CROSS_LINK=1` と `node scripts/toolchain/bundle.mjs` が作った同梱ツールチェーン（実行 1・リンク 14・オブジェクト 7、約 6 分。`targets.yml` の macOS の job と同じ構成）で成功。
 - 基準（`053bced8`）のバイナリとの比較: 14 個のプログラム（`examples` の 4 つと `tests/fixtures` の 10 個）× 22 の設定（native と wasm32・wasm64 の `-O0`・`-O3`、`--emit` の llvm・object・header・exe・shared、`-g`、`--trap-info`、`--cpu native`、freestanding）を、Clang・wasm-ld・llvm-link・dsymutil の呼び出しの引数列まで比べて 308 回、差分 0（`-g` の実行ファイルと共有ライブラリは基準でも実行ごとに違い、比較から外した 20 件）。
@@ -115,6 +115,11 @@ tier の記録は [対応プラットフォームとクロスコンパイル](..
 
 - 1 回目: Android が OS API を受けていた（API 21 では `getentropy`・`posix_spawn` がない）。壊れた `TSUZURI_RUNNER` が「実行ファイルを起動できない」と報告され、実行器の名前が出なかった（`run` と `test`）。launcher の ARM64 Windows の判定が広すぎた。
 - 2 回目: 高い確度の問題はなし。中程度の指摘のうち、MSVC の target の `-g` の CodeView がビルド機の Windows かどうかで決まっていた（target で決めるよう直し、`codeview_for`）、MSVC のオブジェクトが実行ごとに違った（COFF の時刻。`-mno-incremental-linker-compatible` を MSVC の target の Clang 引数に足した。Windows のホストの `--target native` は変えない）、`cross_hint` が同梱ツールチェーンのない target にそれを勧めていた、を直した。wasm64 の launcher の挙動の変更は意図どおり。ランタイムを含む Mach-O のオブジェクトを同梱ツールチェーンで作れないのは基準でも同じ（既知の限界）。
+
+### 文書と計測
+
+- 文書: `_tsuzuri/language-reference/` は、新ページ `compiler/platforms.md`（tier の定義と表、リンク、実行器、bare-metal、診断、制限、確かめた範囲）と、`index.md`・`compiler/option.md`・`usage.md`・`diagnostics.md`・`directives.md`・`native-interop.md`・`webassembly.md`・`built-in-types-and-modules/os.md`・`net.md`・`matrix.md`（`Math.fma` は AArch64 の target）・`test.md`・`bench.md`・`async-tasks-and-lazy/async.md`。`README.md`（CLI の表、クロスコンパイルの節、検証コマンド）、`docs/language.md`（新しい小節）、`docs/architecture.md`（`src/target.rs`、`Platform`、キャッシュ、検証）。tier の数字は `platforms.md` の表だけに書き、README と architecture は表を指す。旧計画の `_docs/tools/*` と `_docs/feature-status.md` は存在しない。
+- 計測: 速さの主張はない。生成コードと実行時間は変えていない（ホストの IR は基準と一致）。コンパイル時間は計測していない（増えたのは Clang の引数の組み立てだけ）。ビルドキャッシュのキーは、このコミット以降の最初のビルドで一度だけ全部変わる（triple が `BuildOptions` に入り、`TSUZURI_SYSROOT` が環境変数の一覧に入るため）。
 
 ## 既知の限界
 

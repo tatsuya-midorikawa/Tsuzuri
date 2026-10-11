@@ -18,7 +18,7 @@
 - **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
-- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク。CI で実行まで確かめているのは一部で、[対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) に範囲を書いています）。
+- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク）。CI（`.github/workflows/targets.yml`）が実行まで確かめる target は一部で、範囲は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
 - **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
