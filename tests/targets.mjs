@@ -237,6 +237,13 @@ try {
     cli(["build", answer, "--emit", "object", "--no-cache", "--target", name, ...flags, "-o", object], { env: { TSUZURI_CLANG: systemClang } });
     check(name, object, "object");
     record(name, "object", `${target.format} ${target.arch} object`);
+    if (target.libc === "msvc") {
+      // Clang stamps a COFF object with the time unless told not to, which would make a second build differ.
+      await new Promise((done) => setTimeout(done, 1100));
+      const again = join(work, `${name}-again.o`);
+      cli(["build", answer, "--emit", "object", "--no-cache", "--target", name, "-o", again], { env: { TSUZURI_CLANG: systemClang } });
+      assert.ok(readFileSync(object).equals(readFileSync(again)), `${name}: the object differs between two builds`);
+    }
   }
 
   // The other Apple architecture links with the Apple tools that are already here.

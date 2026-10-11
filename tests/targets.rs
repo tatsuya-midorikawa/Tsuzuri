@@ -225,6 +225,44 @@ fn windows_targets_rewrite_exports_on_any_host() {
 }
 
 #[test]
+fn msvc_targets_carry_codeview_on_any_host() {
+    // The bundled launcher links MinGW and keeps DWARF only, so a run through it says nothing.
+    if std::env::var("TSUZURI_CLANG").is_ok_and(|clang| clang.contains("tsuzuri-clang")) {
+        return;
+    }
+    let directory = scratch("codeview");
+    let (project, module) = load(&directory, ANSWER);
+    for triple in Triple::ALL
+        .into_iter()
+        .filter(|triple| !triple.is_bare_metal())
+    {
+        let output = directory.join(format!("{}.ll", triple.name()));
+        driver::build(
+            &module,
+            &project,
+            &output,
+            BuildOptions {
+                emit: Emit::Llvm,
+                debug_info: true,
+                triple: Some(triple),
+                cache: false,
+                ..BuildOptions::default()
+            },
+        )
+        .unwrap();
+        let ir = fs::read_to_string(&output).unwrap();
+        assert!(ir.contains("!llvm.dbg.cu"), "{}", triple.name());
+        assert_eq!(
+            ir.contains("!\"CodeView\""),
+            triple.is_msvc(),
+            "{}",
+            triple.name()
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn bare_metal_x86_64_objects_have_no_red_zone() {
     let directory = scratch("redzone");
     let (project, module) = load(&directory, ANSWER);
@@ -450,6 +488,13 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
         let clang = triple.clang_target();
         let linux_host = shim::resolve(Some(clang), "linux", "x86_64");
         let windows_host = shim::resolve(Some(clang), "windows", "x86_64");
+        // The compiler's hints advise the bundled toolchain exactly for the targets it links.
+        assert_eq!(
+            windows_host.as_ref().unwrap().zig.is_some(),
+            triple.has_bundled_c_library(),
+            "{}",
+            triple.name()
+        );
         match triple.os() {
             // Zig has no C library for these, but their IR still compiles to objects.
             Os::Android | Os::Ios | Os::BareMetal => {

@@ -1044,11 +1044,22 @@ fn cross_hint(platform: Platform, hint: &str) -> String {
         format!("the SDK for {name}: set {SYSROOT_VARIABLE} to it")
     } else if triple.is_msvc() {
         "the Windows SDK and CRT: set the INCLUDE and LIB environment variables to them, or build the MinGW target with the bundled toolchain".to_owned()
-    } else {
+    } else if triple.has_bundled_c_library() {
         format!("a sysroot for {name}: use the bundled toolchain, or set {SYSROOT_VARIABLE} to one")
+    } else {
+        // The bundled toolchain has no C library for it, and refuses a sysroot.
+        format!(
+            "a sysroot for {name} (the bundled toolchain has none): set {SYSROOT_VARIABLE} to one, with a Clang other than the bundled one"
+        )
+    };
+    // LLD, only where `link_args` asks for it: Apple's own linker writes Mach-O on a Mac.
+    let linker = if link_args(platform).is_empty() {
+        " and"
+    } else {
+        ", LLD, and"
     };
     format!(
-        "cross-compiling to {name} needs a Clang with the {} backend, LLD, and {needs}; {hint}",
+        "cross-compiling to {name} needs a Clang with the {} backend{linker} {needs}; {hint}",
         triple.arch_name()
     )
 }
@@ -2759,7 +2770,7 @@ fn build_complete(
         && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
         text = llvm::windows_abi(text, module);
-        if options.debug_info && msvc_linker_for(platform) {
+        if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
     }
@@ -3833,17 +3844,27 @@ fn publish_outputs(
     Ok(())
 }
 
-/// Whether native executables on this host link with the MSVC linker (`link.exe`, or `lld-link`
-/// with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links with MinGW's
-/// `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get a PDB.
-/// The file name is enough: every other Clang, a MinGW distribution's included, gets
+/// Whether the native executables of this machine link with the MSVC linker (`link.exe`, or
+/// `lld-link` with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links
+/// with MinGW's `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get
+/// a PDB. The file name is enough: every other Clang, a MinGW distribution's included, gets
 /// `--target=<arch>-pc-windows-msvc` from `native_compile_args`, and Clang's MSVC driver links
 /// only with `link.exe` or `lld-link`; the launcher alone drops that target for `windows-gnu`.
 pub(crate) fn msvc_linker() -> bool {
-    cfg!(windows)
-        && Path::new(&tool("TSUZURI_CLANG", "clang"))
-            .file_stem()
-            .is_none_or(|stem| stem != "tsuzuri-clang")
+    cfg!(windows) && !bundled_launcher(&tool("TSUZURI_CLANG", "clang"))
+}
+
+/// Whether `clang` is the bundled launcher, which links MinGW and so never an MSVC target.
+fn bundled_launcher(clang: &OsStr) -> bool {
+    Path::new(clang)
+        .file_stem()
+        .is_some_and(|stem| stem == "tsuzuri-clang")
+}
+
+/// Whether the `-g` output for `platform` also carries CodeView: for an MSVC target on whichever
+/// machine builds it, unless the Clang is the launcher, whose targets keep DWARF only.
+fn codeview_for(platform: Platform, clang: &OsStr) -> bool {
+    platform.msvc() && !bundled_launcher(clang)
 }
 
 /// [`msvc_linker`] for a build for `platform`: a MinGW target never links with the MSVC linker.
@@ -5357,7 +5378,13 @@ mod tests {
             args(X86_64FreeBsd),
             ["--target=x86_64-unknown-freebsd14", "-fPIC"]
         );
-        assert_eq!(args(X86_64WindowsMsvc), ["--target=x86_64-pc-windows-msvc"]);
+        assert_eq!(
+            args(X86_64WindowsMsvc),
+            [
+                "--target=x86_64-pc-windows-msvc",
+                "-mno-incremental-linker-compatible"
+            ]
+        );
         assert_eq!(
             args(Aarch64WindowsGnu),
             ["--target=aarch64-w64-windows-gnu"]
@@ -5497,11 +5524,19 @@ mod tests {
         assert_eq!(host, "install Clang");
         let foreign = Platform::new(Some(foreign_triple()));
         let hint = cross_hint(foreign, "install Clang");
-        assert!(hint.starts_with(&format!(
-            "cross-compiling to {} needs a Clang with the {} backend, LLD, and ",
-            foreign.triple().unwrap().name(),
-            foreign.triple().unwrap().arch_name()
-        )));
+        let linker = if link_args(foreign).is_empty() {
+            " and"
+        } else {
+            ", LLD, and"
+        };
+        assert!(
+            hint.starts_with(&format!(
+                "cross-compiling to {} needs a Clang with the {} backend{linker} ",
+                foreign.triple().unwrap().name(),
+                foreign.triple().unwrap().arch_name()
+            )),
+            "{hint}"
+        );
         assert!(hint.ends_with("; install Clang"));
         // An iOS target asks for its SDK, and an MSVC one for INCLUDE and LIB, unless it is the host's own.
         assert!(
@@ -5511,6 +5546,53 @@ mod tests {
         assert!(
             cross_hint(Platform::new(Some(Triple::Aarch64WindowsMsvc)), "x").contains("INCLUDE")
                 || Triple::host() == Some(Triple::Aarch64WindowsMsvc)
+        );
+        // The bundled toolchain is advised only for the targets it has a C library for, and LLD only
+        // where Clang is told to link with it (Apple's linker writes Mach-O on a Mac).
+        for triple in Triple::ALL {
+            let platform = Platform::new(Some(triple));
+            if !platform.cross() || triple.is_msvc() || platform.mach_o() {
+                continue;
+            }
+            let hint = cross_hint(platform, "x");
+            assert_eq!(
+                hint.contains("use the bundled toolchain"),
+                triple.has_bundled_c_library(),
+                "{hint}"
+            );
+            assert_eq!(
+                hint.contains("the bundled toolchain has none"),
+                !triple.has_bundled_c_library(),
+                "{hint}"
+            );
+            assert!(hint.contains(", LLD, and"), "{hint}");
+        }
+        let apple = Platform::new(Some(Triple::Aarch64AppleIos));
+        assert_eq!(
+            cross_hint(apple, "x").contains("LLD"),
+            !cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn codeview_follows_the_target_not_the_machine() {
+        let msvc = Platform::new(Some(Triple::X86_64WindowsMsvc));
+        for clang in ["clang", "/usr/bin/clang-21", "C:\\llvm\\bin\\clang.exe"] {
+            assert!(codeview_for(msvc, OsStr::new(clang)), "{clang}");
+        }
+        for launcher in ["/opt/tsuzuri/bin/tsuzuri-clang", "tsuzuri-clang.exe"] {
+            assert!(!codeview_for(msvc, OsStr::new(launcher)), "{launcher}");
+        }
+        for triple in [Triple::X86_64WindowsGnu, Triple::X86_64LinuxGnu] {
+            assert!(!codeview_for(
+                Platform::new(Some(triple)),
+                OsStr::new("clang")
+            ));
+        }
+        // Without a named target the machine decides, as the MSVC linker check did.
+        assert_eq!(
+            codeview_for(Platform::HOST, OsStr::new("clang")),
+            cfg!(windows)
         );
     }
 

@@ -97,7 +97,8 @@ const fn msvc(name: &'static str, clang: &'static str, arch: Arch) -> Spec {
     Spec {
         name,
         clang,
-        arguments: &[],
+        // Clang stamps a COFF object with the time it was made unless it is told not to.
+        arguments: &["-mno-incremental-linker-compatible"],
         os: Os::Windows,
         arch,
         msvc: true,
@@ -343,6 +344,12 @@ impl Triple {
     /// A target without an operating system, which only freestanding output serves.
     pub const fn is_bare_metal(self) -> bool {
         matches!(self.spec().os, Os::BareMetal)
+    }
+
+    /// Whether the bundled toolchain (Zig) has a C library for the target: every one but Android,
+    /// iOS, and bare metal. For an MSVC target it is MinGW's, which only a Windows launcher links.
+    pub const fn has_bundled_c_library(self) -> bool {
+        !matches!(self.spec().os, Os::Android | Os::Ios | Os::BareMetal)
     }
 
     /// The target of the machine the compiler runs on, if it is one of these.
@@ -703,6 +710,13 @@ mod tests {
             Triple::Riscv64BareMetal.clang_arguments(),
             ["-march=rv64gc", "-mabi=lp64d"]
         );
+        // A COFF object made for MSVC would otherwise differ by its time stamp from run to run.
+        for triple in [Triple::Aarch64WindowsMsvc, Triple::X86_64WindowsMsvc] {
+            assert_eq!(
+                triple.clang_arguments(),
+                ["-mno-incremental-linker-compatible"]
+            );
+        }
     }
 
     #[test]
