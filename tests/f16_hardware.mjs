@@ -429,7 +429,8 @@ try {
     }
     for (const needle of ["fadd half", "fsub half", "fmul half", "fdiv half", "@llvm.sqrt.f16", "fpext half", "fptrunc double"]) assert.ok(ir.includes(needle), needle);
   }
-  if (process.platform === "darwin" && process.arch === "arm64") assert.ok(irHasHalf, "Apple Silicon has FEAT_FP16: the IR of --cpu generic uses half");
+  // `TSUZURI_F16_EXPECT=soft` is how this test runs against a compiler from before D10, whose f16 is all software.
+  if (process.platform === "darwin" && process.arch === "arm64" && expectation.generic !== "soft") assert.ok(irHasHalf, "Apple Silicon has FEAT_FP16: the IR of --cpu generic uses half");
   const generatedPath = irHasHalf ? "hardware" : "soft";
   report.push(`IR of --emit llvm: ${generatedPath}, WASM IR: soft (no half, no import)`);
 
