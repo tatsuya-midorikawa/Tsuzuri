@@ -26,16 +26,11 @@ fn level_name(level: u8) -> &'static str {
         .map_or("baseline", |(name, _)| name)
 }
 
-/// The levels `src/runtime/cpu.c` detects where this compiler runs: x86-64 outside Windows,
-/// and AArch64 Linux. Elsewhere a `@cpu` function keeps only its portable version.
+/// The levels `src/runtime/cpu.c` detects on the target of the IR being emitted: x86-64 outside
+/// Windows, and AArch64 on a Linux kernel. Elsewhere a `@cpu` function keeps only its portable
+/// version.
 pub(super) fn host_levels() -> u8 {
-    if cfg!(all(target_arch = "x86_64", not(windows))) {
-        0b1110
-    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-        0b11_0000
-    } else {
-        0
-    }
+    crate::target::current_platform().cpu_levels()
 }
 
 /// `@name` or `@"name"` as the quoted name of its version `suffix`.
