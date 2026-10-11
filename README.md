@@ -840,7 +840,7 @@ node tests/os.mjs target/release/tsuzuri
 node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
 node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
 node tests/cpu_kernels.mjs target/release/tsuzuri
-node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…）を付けると、期待した経路が実行されなかったときに失敗する。x86-64 と Linux・Windows は CI の runner で実行する。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
+node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…）を付けると、期待した経路が実行されなかったときに失敗する。x86-64 と Linux・Windows の経路は、その環境でこのコマンドを実行して確かめる（macOS arm64 以外での実行は未確認）。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
