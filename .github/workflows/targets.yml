@@ -47,7 +47,8 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # macos-15-intel takes about 85 minutes (the Rust tests alone 62), the other hosts 35 to 55.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -112,6 +113,24 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/e2e.mjs target/release/tsuzuri
+      # D10: tests/f16_hardware.mjs prints the f16 path each build exercised (hardware, conversions or soft)
+      # and compares the results with an independent reference. matrix.f16 is the path this runner must
+      # take: a CPU that lacks the capability falls back to soft, and TSUZURI_F16_EXPECT turns that
+      # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) compute
+      # half with instructions; the x86-64 runners have F16C but no AVX512-FP16, so `--cpu native` converts
+      # with F16C and the rest stays soft. AVX512-FP16 arithmetic has no runner and is checked only as machine code.
+      - name: f16 paths
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        env:
+          TSUZURI_F16_EXPECT: ${{ matrix.f16 }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/f16_hardware.mjs target/release/tsuzuri
+      # Other tickets' end-to-end steps for these four hosts go here, before the Rust tests: that step takes
+      # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with
+      # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
+      #
       # The depth-limit tests (parser::tests::bounds_recursive_and_flat_expression_depth,
       # computations::bounds_computation_syntax_and_expansion, ...) feed 200 nested levels to a debug build
       # whose recursive-descent frames take 2.03-2.13 MB, against the 2 MiB (2,097,152 bytes) of a test
@@ -127,19 +146,3 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           cargo test --locked --no-fail-fast
-      # D10: tests/f16_hardware.mjs prints the f16 path each build exercised (hardware, conversions or soft)
-      # and compares the results with an independent reference. matrix.f16 is the path this runner must
-      # take: a CPU that lacks the capability falls back to soft, and TSUZURI_F16_EXPECT turns that
-      # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) compute
-      # half with instructions; the x86-64 runners have F16C but no AVX512-FP16, so `--cpu native` converts
-      # with F16C and the rest stays soft. AVX512-FP16 arithmetic has no runner and is checked only as machine code.
-      - name: f16 paths
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
-        env:
-          TSUZURI_F16_EXPECT: ${{ matrix.f16 }}
-        run: |
-          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
-          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          node tests/f16_hardware.mjs target/release/tsuzuri
-      # Other tickets' end-to-end steps for these four hosts go here. Start each with
-      # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
