@@ -9,6 +9,7 @@ fn only_native_i64_standard_sum_requests_cpu_dispatch() {
         wasm: false,
         debug_output: false,
         allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
     };
     let sources: Vec<_> = std::iter::once(TrapSource {
         path: "Main.tz",
@@ -71,6 +72,7 @@ fn options() -> llvm::EmitOptions {
         wasm: false,
         debug_output: false,
         allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
     }
 }
 

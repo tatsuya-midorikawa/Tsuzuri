@@ -7,11 +7,11 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 ## この記事のポイント
 
 - マニフェスト `Tsuzuri.toml` は、決まったセクションだけを受け付ける TOML です。
-- `[package]` には `name`、`version`、省略できる `namespace` を書きます。
+- `[package]` には `name`、`version`、省略できる `namespace` と `edition` を書きます。
 - `[dependencies]` は、ローカルの相対パス（`path = "..."`）、commit を固定した git リポジトリ（`git = "..."`, `rev = "..."`）、registry の版の要求（`version = "1.2.3"`）です。
 - 版の要求は、`[registry]` に書いた index（git リポジトリ）から最小版選択で解決します。Tsuzuri は公開の registry を運営しておらず、index は利用者や組織が置きます。
 - `tsuzuri fetch` が依存を取得し、内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。ほかのコマンドは `git` もネットワークも使いません。
-- `tsuzuri publish` は、パッケージを検査し、公開する commit の index の項目を出力します。
+- `tsuzuri publish` は、パッケージを検査し、公開する commit の index の項目を出力します。公開の前に、`tsuzuri api-diff` で前の版との互換性を確かめられます。
 - `[wasm]` と `[native]` で、WebAssembly のメモリとネイティブのリンク入力を指定できます。
 - `tsuzuri new <dir>` で、マニフェスト付きの雛形を作れます。
 
@@ -35,6 +35,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 [package]
 name = "geometry-tools"
 version = "0.1.0"
+edition = "2026"
 namespace = "GeometryTools"
 ```
 
@@ -44,12 +45,32 @@ namespace = "GeometryTools"
 | --- | --- | --- | --- |
 | `name` | 必須 | 文字列 | 小文字の ASCII kebab-case。各要素は英小文字で始まり、続きは英小文字か数字。全体で最大 255 バイト。`app2` は可、`Demo` は `E1011`。 |
 | `version` | 必須 | 文字列 | 空でない版の文字列（例: `"0.1.0"`）。registry に公開するパッケージは `MAJOR.MINOR.PATCH`（先頭の 0 なし）でなければなりません。パス依存と git 依存では版の選択に使いません。 |
+| `edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` だけです。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026`）です。 |
 | `namespace` | 任意 | 文字列 | 既定名前空間。`::` でつないだ ASCII 識別子（最大 16 階層、255 バイト）。 |
 
 `namespace` を省略すると、`name` を PascalCase にした名前が既定になります。`geometry-tools` なら `GeometryTools` です。PascalCase は自動変換の形であり、書いた名前が小文字でも、識別子なら受理されます。
 
 > [!WARNING]
 > `Acme.Tools` のようにドットで区切ると `E1011` です。先頭要素に `std`、`Task`、予約モジュール名（`Maybe`、`Array` など）も `E1011` です。どの要素も `_` 単独、`Task`、予約語にはできません。
+
+### 言語版（edition）
+
+`edition` は、そのパッケージのソースを読むときの予約語の版です。年の名前で、今あるのは `2026` だけなので、`2026` と書いても省略しても読み方は同じです。値を省略したマニフェストの意味は、新しい edition ができても `2026` のままです。
+
+```toml
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2030"
+```
+
+対応していない値は `E0002` です。ソースは読みません。メッセージが、対応する値を示します。
+
+```text
+Tsuzuri.toml:1:1: error[E0002]: unsupported edition '2030'; supported editions: 2026
+```
+
+edition はパッケージごとに決まります。依存パッケージ（path、git、registry）は、自分の `Tsuzuri.toml` の `edition` で読まれるので、edition の違うパッケージを 1 つのプログラムにまとめられます。edition が変えるのは予約語と警告の既定だけで、両方の edition が受理するプログラムの意味と生成されるコードは同じです。`Tsuzuri.toml` のないプロジェクトと標準ライブラリは、最新の edition で読みます。`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の `Tsuzuri.toml` の `edition` で整形します。上位のディレクトリは探しません。何を保証するか、edition をどう足すかは [安定性と互換性の方針](../../../docs/stability.md#edition) にあります。
 
 ## [dependencies] セクション（ローカルパス依存）
 
@@ -244,8 +265,16 @@ tsuzuri publish geometry-core --git https://example.org/geometry-core.git --rev 
 
 引数の誤り（`--git` や `--rev` の欠落、URL や commit ID の形、`Tsuzuri.toml` がない）は `E2000` で、終了コード 2 です。
 
-> [!NOTE]
-> 版の間で公開 API が互換かどうかの検査（[G19](../../../_features/G19-editions-compatibility.md)）はまだありません。`publish` は、`1.2.0` から `1.3.0` で関数を消したような互換性のない変更を検出しないので、版を上げる側が確認してください。
+### 公開前の互換性の確認
+
+`publish` は、前の版との API の互換性を検査しません。公開の前に、前の版のチェックアウトと今のパッケージを `tsuzuri api-diff` で比べてください。互換性のない変更があると、終了コードは 1 です。新しい版が前の版の互換の範囲（1.0.0 以降は同じ `MAJOR`、それより前は同じ `0.MINOR`）に入ったままだと、そのことも注記します。互換の範囲の版は、前の版を要求している依存元が受け取ります。
+
+```sh
+git worktree add ../geometry-core-1.2.0 v1.2.0
+tsuzuri api-diff ../geometry-core-1.2.0 geometry-core
+```
+
+`publish` は index を読まず、前の版のソースを取得する経路も持ちません。`api-diff` が読むのは宣言の署名だけで、関数の本体の挙動は比べられないので、公開を止める条件にはせず、版を上げる側の確認として使います。出力と判定の規則は [api-diff](../compiler/usage.md#api-diff) と [安定性と互換性の方針](../../../docs/stability.md#公開-api-の差分) にあります。
 
 ## その他のセクション（[wasm] と [native]）
 
@@ -303,6 +332,7 @@ my-app/
 [package]
 name = "my-app"
 version = "0.1.0"
+edition = "2026"
 namespace = "MyApp"
 ```
 
@@ -356,7 +386,7 @@ let p = Point.make 3.0 4.0
 Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 
 - 公開の中央 registry（Tsuzuri の運営する index）。index は自分で置きます
-- 公開 API の互換性の検査（[G19](../../../_features/G19-editions-compatibility.md)）、版の取り下げ（yank）、範囲の演算子と pre-release の版
+- 版の取り下げ（yank）、範囲の演算子と pre-release の版
 - ブランチやタグの追跡、`ssh://` や資格情報が必要なリポジトリ、リポジトリの下位ディレクトリにあるパッケージ
 - ビルドスクリプト（ビルド時に任意のコードを実行する仕組み）
 
@@ -376,10 +406,11 @@ Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 
 - `Tsuzuri.toml` はパッケージの定義ファイルです。`[package]` を最初に置きます。
 - パッケージ名は小文字の kebab-case です。`namespace` を省略すると PascalCase の既定名前空間になります。
+- `edition` は予約語の版で、対応する値は `"2026"` だけです。省略した値の意味は、新しい edition ができても変わりません。
 - 依存はローカルの相対パス、commit を固定した git リポジトリ、registry の版の要求です。循環と、同じ名前空間の別ルートは拒否されます。
 - 版の要求は、自分で置いた index から最小版選択で解決します。1 つのパッケージ名には 1 つの版です。
 - `tsuzuri fetch` が `git` で依存を取得し、`Tsuzuri.lock` に内容の SHA-256 と選んだ版を記録します。ビルドは lockfile とストアだけを読み、内容の一致を確かめます。
-- `tsuzuri publish` は、検査した内容と同じ commit の index の項目を出力します。index への反映は index リポジトリへの commit です。
+- `tsuzuri publish` は、検査した内容と同じ commit の index の項目を出力します。index への反映は index リポジトリへの commit です。公開の前に `tsuzuri api-diff` で前の版との互換性を確かめます。
 - `native = true` を付けない依存の `[native]` は、無視ではなく `E2000` です。
 - `tsuzuri new` で、マニフェストと入口を含む初期構成を作れます。
 
@@ -390,5 +421,6 @@ Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 - [using 宣言](using-declarations.md)
 - [コンパイラの使い方](../compiler/usage.md)
 - [ネイティブ連携 (C ABI)](../compiler/native-interop.md)
+- [安定性と互換性の方針](../../../docs/stability.md)
 - [言語リファレンスの目次](../index.md)
 

@@ -1,8 +1,15 @@
-use tsuzuri::{analyze, lexer, llvm, parser, syntax::TokenKind};
+use tsuzuri::{
+    analyze, lexer, llvm, parser,
+    syntax::{Edition, TokenKind},
+};
 
 #[test]
 fn character_literals_are_distinct_from_type_variables_and_encodings() {
-    let tokens = lexer::lex("'a 'abc 'a' '\\n' '\\uD800' u8'\\u{1F600}'").unwrap();
+    let tokens = lexer::lex(
+        "'a 'abc 'a' '\\n' '\\uD800' u8'\\u{1F600}'",
+        Edition::LATEST,
+    )
+    .unwrap();
     assert!(matches!(&tokens[0].kind, TokenKind::TypeVariable(name) if name == "a"));
     assert!(matches!(&tokens[1].kind, TokenKind::TypeVariable(name) if name == "abc"));
     assert!(matches!(tokens[2].kind, TokenKind::Char(97)));
@@ -22,7 +29,11 @@ fn character_literals_are_distinct_from_type_variables_and_encodings() {
         "'\\q'",
         "'\n'",
     ] {
-        assert_eq!(lexer::lex(source).unwrap_err().code, "E0001", "{source}");
+        assert_eq!(
+            lexer::lex(source, Edition::LATEST).unwrap_err().code,
+            "E0001",
+            "{source}"
+        );
     }
     for source in [
         "identity 'a'",

@@ -1,0 +1,22 @@
+// f16 kernels over an f64 array (D10). `ref [f32]` cannot be exported, so the input is f64.
+
+// A dependent chain of binary16 operations: a narrowing from f64, a product, and a sum for each element.
+export def half_chain :: ref [f64] -> f64
+fn half_chain values =
+    let mut total = 0.0f16
+    for value in values do total = total * 0.9990234375f16 + (value as f16)
+    total as f64
+
+// Conversions only: narrow each element to f16 and widen it back, summing in f64.
+export def half_roundtrip :: ref [f64] -> f64
+fn half_roundtrip values =
+    let mut total = 0.0
+    for value in values do total = total + ((value as f16) as f64)
+    total
+
+// Independent elements: narrow, multiply, and widen each, summing in f64 (the sum keeps its order; the rest can be vectorized).
+export def half_scale :: ref [f64] -> f64
+fn half_scale values =
+    let mut total = 0.0
+    for value in values do total = total + (((value as f16) * 1.5f16) as f64)
+    total

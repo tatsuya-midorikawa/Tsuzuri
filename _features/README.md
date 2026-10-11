@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[第2期](#第2期-他言語比較で見える劣位の改善計画) の `todo` チケット 4 件（D10・D11・G15・G19）、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 2 件（B09・D12）があります。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[2026-10-07 に追加](#追加チケット2026-10-07) した `todo` チケット 2 件（B09・D12）があります。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -51,11 +51,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 [なぜ Tsuzuri か（起票時の版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/learn/why-tsuzuri.md) が挙げる C/C++・Rust・C#/F# に対する劣位点と、同ページに記載のない劣位点を調べ、改善を機能ごとのチケット 38 件にまとめました（2026-09-29 起票）。現在の比較は [なぜ Tsuzuri なのか](../_tsuzuri/language-reference/languages/why-tsuzuri.md) にあります。
 
-- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、B08 は `done`（Phase 1・2・3）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、C08・A16・A14 は `done`（Phase 1・2）、F13・F08 は `done`（Phase 1・2・3）、C10・D08・D09・E11・E13・E10 は `done`（Phase 1・2）、G16・G18 は `done`（Phase 1・2・3）、G17 は `done`（Phase 1・3。Phase 2 は実測で見送り）、G13 は `done`（Phase 1・2。Phase 3 の JIT は再検討して採用しない）、E09・F09 は `done`（Phase 1・2・3）、F10・C11 は `done`（Phase 1・2）、ほかは `todo` です。
+- 対象: A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20。G12・G14・G20 は `done`（Phase 1）、A12 は `done`（Phase 1・2）、A13 は `done`（Phase 1・2）、A15 は `done`（Phase 1・2）、B07 は `done`（Phase 1・2）、B08 は `done`（Phase 1・2・3）、C09 は `done`（Phase 1・2）、D07 は `done`（Phase 1・2）、E08 は `done`（Phase 1 の段 A–C と Phase 2。Windows を除く）、E12 は `done`（Phase 1 の段 A–D）、E14 は `done`（Phase 1・2・3）、F11 は `done`（Phase 1・2）、F12 は `done`（Phase 0・1。Phase 2 は実測で不要と判断）、C08・A16・A14 は `done`（Phase 1・2）、F13・F08 は `done`（Phase 1・2・3）、C10・D08・D09・E11・E13・E10 は `done`（Phase 1・2）、G16・G18 は `done`（Phase 1・2・3）、G17 は `done`（Phase 1・3。Phase 2 は実測で見送り）、G13 は `done`（Phase 1・2。Phase 3 の JIT は再検討して採用しない）、E09・F09 は `done`（Phase 1・2・3）、F10・C11 は `done`（Phase 1・2）、D10・D11・G15・G19 は `done`（Phase 1・2。2026-10-11、D-45）、ほかは `todo` です。第2期の 38 件はすべて `done` になりました。
 - 調査時点はコミット `9012e92`。各チケットの「現状」は同時点のコード・文書・生成コードで確認しています。
 - 第2期のチケットは設計の方向性と第 1 段階を示す計画です。独立レビューは未実施で、着手前に GUIDE §0 の手順 2 に従ってレビューします。
 - 予約語・診断コード・std モジュールの割り当ては [GUIDE の D-30](GUIDE.md#d-30-第2期計画の仮割り当て未承認) に仮登録しています（未承認）。
-- 言語の意味や既存の設計決定を変える提案（C08 の D-13 変更、A16 の `[T; N]` 再導入、C10 Phase 2 の参照カウント、D11 Phase 2 の static データ）は、着手前に人間の承認が必要です。C08・A16 は D-39、C10 は D-40 で承認済みです。
+- 言語の意味や既存の設計決定を変える提案（C08 の D-13 変更、A16 の `[T; N]` 再導入、C10 Phase 2 の参照カウント、D11 Phase 2 の static データ）は、着手前に人間の承認が必要です。C08・A16 は D-39、C10 は D-40、D11 Phase 2 は D-45 で承認済みです。
 
 ### 改善の方針
 
@@ -72,7 +72,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C/C++ | ポインター・メモリ配置・allocator・任意の外部 ABI の制御の自由度 | E12, F13, A16, E11 |
 | C/C++ | OS・デバイス・既存ライブラリとの接続にホスト実装が必要 | E08, E09, E11, E12 |
 | C/C++ | 既存の C/C++ コードをそのまま取り込めない | E11, E12 |
-| C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（G10 の完了が前提）, C11, F08, G16, G19 |
+| C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（実装済み。Windows 上の実行は G10 の完了が前提）, C11, F08, G16, G19 |
 | C/C++ | GPU が実験段階 | F09 |
 | C/C++ | 安全検査・所有値の複製・ホスト境界の変換のコスト | F12, A15, A16, E13 |
 | Rust | 排他スライス（C08）、排他借用フィールド（A13）、レコード内の独立した複数 region（A12）は実装済み。要素単位の排他借用と region 間の outlives はない | C08, A13, A12 |
@@ -182,8 +182,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | D07 | [文字列補間と書式指定](_completed/D07-string-interpolation.md) | P1 | M | D01 | done |
 | D08 | [構造化データの直列化（JSON）と Encode／Decode の導出](_completed/D08-json-serialization.md) | P2 | L | A07, D02, (C09) | done |
 | D09 | [正規表現と Unicode テキスト処理](_completed/D09-regex-unicode.md) | P2 | L | D02, A08 | done |
-| D10 | [f16 のハードウェア演算経路](D10-f16-hardware.md) | P3 | M | D03 | todo |
-| D11 | [コンパイル時評価の拡張（const 関数・表の生成）](D11-const-evaluation.md) | P3 | L | D06, (A16) | todo |
+| D10 | [f16 のハードウェア演算経路](_completed/D10-f16-hardware.md) | P3 | M | D03 | done（Phase 1・2） |
+| D11 | [コンパイル時評価の拡張（const 関数・表の生成）](_completed/D11-const-evaluation.md) | P3 | L | D06, (A16) | done（Phase 1・2） |
 | D12 | [ランタイム IR と生成コードの intrinsic 宣言の重複の修正](D12-intrinsic-declaration-duplicates.md) | P1 | S | D04 | todo |
 
 ### E. モジュール・ホスト連携
@@ -241,11 +241,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G12 | [LSP の拡張（補完・rename・参照・整形・inlay hints）](_completed/G12-lsp-extensions.md) | P1 | L | G07, G20 | done |
 | G13 | [REPL とスクリプト実行](_completed/G13-repl.md) | P2 | L | G11, (G20), (G17) | done |
 | G14 | [自己完結ツールチェーンの配布](_completed/G14-toolchain-distribution.md) | P1 | M | (G10) | done |
-| G15 | [対応ターゲットの拡張とクロスコンパイル](G15-platform-targets.md) | P3 | XL | G10, G14, (F13) | todo |
+| G15 | [対応ターゲットの拡張とクロスコンパイル](_completed/G15-platform-targets.md) | P3 | XL | G10, G14, (F13) | done（Phase 1・2） |
 | G16 | [デバッガー体験（型の表示・PDB）](_completed/G16-debugger-experience.md) | P2 | M | G08, (G10), (G14) | done |
 | G17 | [モジュール単位の増分コンパイルと規模上限の見直し](_completed/G17-incremental-compilation.md) | P2 | XL | G11, E03, (G20) | done |
 | G18 | [ベンチマーク・カバレッジ・プロパティテスト](_completed/G18-bench-coverage.md) | P2 | M | G06, (D07), (E08) | done |
-| G19 | [言語版（edition）と互換性・非推奨の管理](G19-editions-compatibility.md) | P3 | M | E04, G09, (E10) | todo |
+| G19 | [言語版（edition）と互換性・非推奨の管理](_completed/G19-editions-compatibility.md) | P3 | M | E04, G09, (E10) | done（Phase 1・2） |
 | G20 | [関数内の型・所有権エラーからの回復](_completed/G20-error-recovery.md) | P1 | L | G02 | done |
 
 ## 推奨フェーズ
@@ -262,7 +262,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 5. 長期 | 研究開発を伴う大型機能 | E04、F06、F07、A10、B06、G10、G11 |
 | 6. 第2期・導入障壁 | 既存アプリへの組み込みと日常の開発を妨げる劣位を除く | G20 → G12、G14、F11、E12、E14、B07 → E08、C09、D07 |
 | 7. 第2期・表現力と性能 | 所有権モデルの表現力・性能・エコシステムの差を縮める | A15、A12 → A13 → C08、A14、A16、F12、F13、F08、C10、D08、D09、E11、E13、E10、G16、G18、G17、G13 |
-| 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11（完了）、D10、D11、G15、G19 |
+| 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11、D10、D11、G15、G19（すべて完了） |
 | 9. 追加（2026-10-07） | 言語リファレンスの執筆で見つけた不具合を直し、ローカルな再帰を書けるようにする | D12、B09 |
 
 ## 依存関係図
@@ -430,7 +430,7 @@ graph LR
 | [D07](_completed/D07-string-interpolation.md) | D1（`$"..."`・`u8$"..."`）、D9（`numeric.ll` の増分） |
 | [D08](_completed/D08-json-serialization.md) | D1（`Json`・`Encode`／`Decode`）。承認済みで実装済み（2026-10-07。Phase 2 も実装。D-40） |
 | [D09](_completed/D09-regex-unicode.md) | D1（`Regex`・`Unicode` の予約）、D11（Phase 2）。承認済みで実装済み（2026-10-07。D-40） |
-| [D11](D11-const-evaluation.md) | D10（Phase 2 の static データ） |
+| [D11](_completed/D11-const-evaluation.md) | D10（Phase 2 の static データ）。承認済みで実装済み（2026-10-11。D-45。平たいデータの定数だけを静的データにし、D-28 の「static lifetime を導入しない」を改めた） |
 | [E08](_completed/E08-os-api.md) | D1（7 つの std 名）、D9（`IO<i32>` の終了コード）、D10（`--wasm-host wasi`）、D12（段 B の `File.Handle` と B07 D5） |
 | [E09](_completed/E09-network.md) | D1（`Net`）、D11（wasm32 の opt-in `--wasm-feature net`）、全フェーズ。すべて承認済みで実装済み（2026-10-10） |
 | [E10](_completed/E10-package-registry.md) | D1（`tsuzuri fetch` と `git`、`E2007`、D-29 の E04 記録の更新）、D10（Phase 2）。承認済みで実装済み（2026-10-07。D-40） |
@@ -443,10 +443,10 @@ graph LR
 | [F13](_completed/F13-custom-allocators.md) | D9（Phase 2・Phase 3）。承認済みで実装済み（2026-10-06。D-39） |
 | [F09](_completed/F09-gpu-float-runtime.md) | D1（relaxed f32 の契約と名前）、D9・D10（Phase 2・3）。承認済みで実装済み（2026-10-10、統合時に D-44。D10 は SPIR-V を独自の emitter で作り、strict の `f32` に適合プローブを足した） |
 | [F10](_completed/F10-concurrency-primitives.md) | D1（`Atomic`・`Mutex`・`Sync`・`AtomicValue`・`Task.scope`）、D10（Phase 2 の `Channel`）。すべて承認済みで実装済み（2026-10-10、統合時に D-44） |
-| [G15](G15-platform-targets.md) | D8（CI の `targets.yml`） |
+| [G15](_completed/G15-platform-targets.md) | D8（CI の `targets.yml`）と Phase 2 の全体。承認済みで実装済み（2026-10-11。D-45。native の triple は 6 個から 22 個へ、実行器 `TSUZURI_RUNNER` を足した） |
 | [G17](_completed/G17-incremental-compilation.md) | D5（`check`・`test`・`doc` の既定の cache）、D10・D11（Phase 2・3）。承認済み（2026-10-08、D-41）。D5・D11 は実装済み、D10 は実測で見送り |
 | [G18](_completed/G18-bench-coverage.md) | D1（予約語 `bench`）。承認済みで実装済み（2026-10-08、D-41。Phase 2・3 も実装） |
-| [G19](G19-editions-compatibility.md) | D1（manifest の `edition`）、D4（`@deprecated` と `W1005`）、D9（Phase 2） |
+| [G19](_completed/G19-editions-compatibility.md) | D1（manifest の `edition`）、D4（`@deprecated` と `W1005`）、D9（Phase 2）。すべて承認済みで実装済み（2026-10-11。D-45） |
 
 詳細化の過程で見つけた、チケット外の食い違い: G10 の記録と `README.md`・`_features/README.md`・`docs/architecture.md`・`_docs/tools/build-and-cache.md` は
 Windows 専用の CI があるように書いているが、`.github/workflows/windows.yml` は `16d4fa9` で削除されている（G10 の手順で復元する）。

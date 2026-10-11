@@ -18,7 +18,7 @@
 - **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
-- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。
+- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク）。CI（`.github/workflows/targets.yml`）が実行まで確かめる target は一部で、範囲は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
 - **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
@@ -93,7 +93,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型エイリアス（`type`）、型クラスおよび具体型インスタンスによるアドホック多相。制約推論と静的単相化。ランク1高階型（HKT）。`dyn C` と `Dyn.of` による vtable を使った動的ディスパッチ。 |
 | コンピュテーション式 | `.tc` によるユーザー定義ビルダー（`@alias` による小文字の別名を含む）。明示的ブロックと型推論による暗黙本体。束縛・短絡・分岐・反復を標準の関数呼び出しへ展開。 |
 | タスクと並列処理 | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して安全に並列実行。 |
-| モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。 |
+| モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。言語版（`Tsuzuri.toml` の `edition`）、非推奨の印（`@deprecated`、警告 `W1005`）、公開 API の差分（`tsuzuri api-diff`）と互換性の方針（[docs/stability.md](docs/stability.md)）。 |
 | メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
@@ -140,7 +140,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 #### 数値型とリテラル
 
 - **整数型**: `i8`〜`i128`、符号なしの `i8u`〜`i128u`。別名として `byte`／`ubyte`（`i8u`）、`sbyte`（`i8`）が利用可能です。
-- **浮動小数点型**: `f16`、`f32`、`f64`、`f128`。十進浮動小数点型として `d32`、`d64`、`d128` もサポートしています。
+- **浮動小数点型**: `f16`、`f32`、`f64`、`f128`。十進浮動小数点型として `d32`、`d64`、`d128` もサポートしています。`f16` の演算と変換は、AArch64 では LLVM の `half` 命令、x86-64 の `--cpu native` では F16C と AVX512-FP16 の命令、それ以外（WASM を含む）では同梱のソフトウェア実装で計算し、結果のビット（NaN を含む）はどれも同じです。詳細は [`f16` の計算の経路](_tsuzuri/language-reference/types-and-type-inference/basic-types.md#f16-の計算の経路) を参照してください。
 - **任意精度整数 (`bigint`)**: `123I` のように `I` 接尾辞で記述し、加減乗除（`+`, `-`, `*`, `/`, `%`）、累乗（`**`）、比較演算、文字列変換に対応します。詳細は [BigInt](_tsuzuri/language-reference/built-in-types-and-modules/bigint.md) を参照してください。
 - **リテラルの接尾辞**: `1i32` や `0.1d128` などの標準的な接尾辞に加え、F# 互換の短い接尾辞（`1y`, `1uy`, `1s`, `1us`, `1u`, `1l`, `1ul`, `1L`, `1UL`, `1.5hf`, `1.5f`, `1.5F`, `0.1hm`, `0.1m`, `0.1M`）が利用できます。バイトリテラルは `'a'B`（`byte`）、`"text"B`（`[byte]`）です。接尾辞のない整数は文脈から推論され、未確定時は `i32`、小数は `f64` に決定されます。
 
@@ -413,6 +413,15 @@ TCP と UDP のソケット、IP アドレスの解析と表示、名前解決�
 
 `const Answer: i64 = 40 + 2` のように、型注釈付きのコンパイル時定数を宣言できます。
 整数および浮動小数点の演算、文字列、配列、タプル、レコードリテラルを扱うことができ、モジュールを超えた修飾参照や前方参照にも対応しています。
+`const def` を付けた関数は、`const` の初期化式から呼べます。ループや再帰を含む計算（表の生成やチェックサムなど）をコンパイル時に評価し、評価した値は他の定数と同じく値として使う箇所へ展開されます。`const def` は通常の関数でもあり、実行時にも呼べます。
+値が平たいデータ（数値、タプル、レコード、固定長配列、配列など）だけの定数は、`Table[i]`・`ref Table` のような読み出しと借用で、バイナリに置いた読み取り専用の 1 つの表を直接指します（ループのたびに作り直しません）。その借用は関数から返したり、レコードへ格納したりできます。
+
+```text
+const def square :: i64 -> i64
+fn square x = x * x
+
+const Area: i64 = square 12
+```
 
 #### デバッグ出力と例外処理
 
@@ -493,12 +502,13 @@ def main :: unit -> i32 = \() ->
 
 #### パッケージ管理 (`Tsuzuri.toml`)
 
-プロジェクトルートに `Tsuzuri.toml` を配置することで、パッケージ名、既定の名前空間、およびローカルや git リポジトリの依存パッケージを定義できます。
+プロジェクトルートに `Tsuzuri.toml` を配置することで、パッケージ名、言語版、既定の名前空間、およびローカルや git リポジトリの依存パッケージを定義できます。
 
 ```toml
 [package]
 name = "app"
 version = "0.1.0"
+edition = "2026"
 namespace = "Acme::App"
 
 [dependencies]
@@ -511,6 +521,8 @@ index = "https://example.org/tsuzuri-index.git"
 ```
 
 依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](_tsuzuri/language-reference/organizing-tsuzuri/packages.md) を参照してください。
+
+`edition` は、そのパッケージのソースを読むときの予約語の版です。対応する値は `"2026"` だけで、省略しても `2026` です。依存パッケージは自分の `Tsuzuri.toml` の `edition` で読まれ、edition の違うパッケージを 1 つのプログラムにまとめられます。edition が変えるのは予約語と警告の既定だけで、生成されるコードは変わりません。何を保証するか、非推奨にした宣言をどう取り除くかは [安定性と互換性の方針](docs/stability.md) にあります。
 
 ---
 
@@ -694,6 +706,29 @@ tsuzuri bench benches/ --samples 21 --json
 tsuzuri doc src/ -o docs/api
 ```
 
+宣言の説明を `@deprecated` で始めると（`/// @deprecated use next instead`）、その宣言は非推奨になります。別のパッケージや標準ライブラリがそれを使うと、警告 `W1005` が出ます。同じパッケージの中の使用には出ません。
+
+### 公開 API の差分 (`tsuzuri api-diff`)
+
+パッケージやプロジェクトの 2 つの版の公開 API を比べ、互換性のない変更（公開宣言の削除、署名の変更、record の field や union の case の追加など）と、互換性を保つ変更（宣言の追加、説明の変更、`@deprecated` の追加）を 1 行ずつ出します。互換性のない変更があると終了コードは 1 です。型検査はせず、宣言の署名だけを比べます。
+
+```sh
+# 前の版のチェックアウトと、今のパッケージを比べる
+tsuzuri api-diff ../geometry-1.2.0 .
+tsuzuri api-diff ../geometry-1.2.0 . --json
+```
+
+次は、`Shapes.tz` だけを持つ 2 つのディレクトリを比べたときの出力です（`Tsuzuri.toml` のない入力は、名前空間のない名前で出ます）。
+
+```text
+breaking: added field Shapes.Point.z: `z: f64` (constructions of the record without it stop compiling)
+breaking: changed def Shapes.area: `def area :: f64 -> f64` => `def area :: f64 -> f32`
+non-breaking: added def Shapes.double: `def double :: i64 -> i64`
+summary: 2 breaking, 1 non-breaking
+```
+
+`tsuzuri publish` は `api-diff` を呼びません。公開の前に実行してください。出力とその制限は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
+
 ### C ヘッダーからの extern 生成 (`tsuzuri bindgen`)
 
 C のヘッダーを Clang で解析し、ヘッダー自身の関数・enum の定数・整数の `#define`・struct・typedef から、リンク名付きの `extern "symbol" def`・`const`・`record`・`extern type`・`type` を持つモジュールを生成します。不透明な struct のポインターはハンドル、関数ポインターの引数は静的コールバックになり、`--buffer 関数:ポインター:長さ` で指定した組は `ref [T]`、`--consume 関数:引数` で指定したハンドルはムーブになります。ABI の一致を確かめられない宣言（可変長引数、注釈のないポインター、値渡しの struct、大域変数など）は、理由付きの `// skipped` 行と警告 `W2002` になります。出力は決定的で、`// Generated by tsuzuri bindgen. Do not edit.` で始まるファイルだけを上書きします。
@@ -752,6 +787,17 @@ cargo build --release
 
 `clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。
 
+#### クロスコンパイル
+
+`--target TRIPLE` でビルド機とは別の OS や CPU 向けのオブジェクト・実行ファイルを作れます。実行ファイルのリンクには、その target の C ヘッダー・C ライブラリ・リンカーが要ります。配布パッケージの同梱ツールチェーン（Zig）は Linux（glibc・musl）・RISC-V Linux・MinGW の Windows・FreeBSD・macOS の 12 個をリンクでき、ほかは環境変数 `TSUZURI_SYSROOT` に SDK か sysroot を渡します。ビルド機で動かせない target の `run`・`test` は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ動きます。何かを取得したり導入したりはしません。
+
+```sh
+tsuzuri build app --target aarch64-unknown-linux-musl -o app-linux-arm64
+TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
+```
+
+target の一覧、CI が確かめている範囲（tier）、制限は [対応プラットフォームとクロスコンパイル](_tsuzuri/language-reference/compiler/platforms.md) にあります。32-bit の native target は受け付けません。
+
 ---
 
 ## CLI リファレンス
@@ -761,7 +807,7 @@ cargo build --release
 ```text
 tsuzuri check source.tz|source.tt|source.tc|directory [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--target native|TRIPLE] [--json]
 tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
 tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
@@ -771,6 +817,7 @@ tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
+tsuzuri api-diff old new [--json]
 tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]
 tsuzuri lsp
 ```
@@ -780,7 +827,7 @@ tsuzuri lsp
 | オプション | 説明 |
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
-| `--target native\|wasm32\|wasm64` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ）。 |
+| `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は `aarch64-apple-darwin` や `x86_64-unknown-linux-musl` など 22 個の native の名前で、`tsuzuri --help` に一覧が出ます。32-bit は対象外）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
@@ -839,7 +886,9 @@ node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
 node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
+node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 22 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml
 node tests/cpu_kernels.mjs target/release/tsuzuri
+node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で `TSUZURI_F16_EXPECT` を付けてこのコマンドを実行する。Windows と AVX512-FP16 の CPU は runner がなく、その環境でこのコマンドを実行して確かめる（未確認）。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
@@ -877,6 +926,7 @@ node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
 node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）
+node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 のソフトウェア経路・half 命令・C の _Float16 の同条件比較（D10。BASELINE_COMPILER は D10 より前のコンパイラ。--quick は動作確認だけ。測ったのは macOS arm64 だけ）
 ```
 
 測定条件の詳細、対応範囲、比較対象の言語との差異、再現手順については [docs/benchmarks.md](docs/benchmarks.md) を参照してください。
@@ -887,4 +937,5 @@ node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則
 
 - [言語仕様と ABI](docs/language.md) — 言語の完全な構文仕様、メモリモデル、ホスト連携規約
 - [コンパイラ構成と開発指針](docs/architecture.md) — パイプライン設計、IR 生成、コントリビューション基準
+- [安定性と互換性の方針](docs/stability.md) — 保証すること・しないこと、言語版（edition）、非推奨の手順
 - [ベンチマークの条件と読み方](docs/benchmarks.md) — 各種目における測定環境と性能データ

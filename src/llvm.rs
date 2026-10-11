@@ -45,6 +45,61 @@ pub struct EmitOptions {
     pub debug_output: bool,
     /// Where the program's heap blocks come from (F13).
     pub allocator: Allocator,
+    /// How f16 values are computed in native code (D10). WASM output is always `Soft`.
+    pub f16: F16Path,
+}
+
+/// How the native code computes f16 values (D10). Every path gives the same bits, NaNs included;
+/// they differ in which operations are LLVM `half` instructions and which are the bundled integer
+/// runtime (`tz_soft_*` in `numeric.c`). The driver chooses with `driver::f16_path`; the library
+/// entry points without options (`emit`, `emit_target`) always use `Soft`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum F16Path {
+    /// Every f16 operation calls the bundled runtime. WASM, targets without the instructions
+    /// below, and the library entry points.
+    #[default]
+    Soft,
+    /// `f16 as f32`, `f16 as f64`, and `f32 as f16` are `fpext` and `fptrunc` of `half`, which
+    /// become hardware conversions (x86-64 with F16C). Arithmetic, comparisons, `Math.sqrt`, and
+    /// `f64 as f16` stay `Soft`: LLVM lowers `fptrunc double to half` to a libcall without a
+    /// direct instruction, and rounding through binary32 first would round twice.
+    Conversions,
+    /// Arithmetic, comparisons, `Math.sqrt`, and all four conversions are `half` instructions.
+    /// LLVM lowers them to FP16 instructions where the target has them (Armv8.2-A FEAT_FP16,
+    /// AVX512-FP16), and otherwise to one binary32 operation per `half` operation between exact
+    /// conversions, which rounds once because binary32 has at least 2 × 11 + 2 bits (AArch64).
+    Hardware,
+}
+
+impl F16Path {
+    /// The path's name in documentation and test reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+            Self::Conversions => "conversions",
+            Self::Hardware => "hardware",
+        }
+    }
+
+    /// `+ - * /`, the comparisons, and `Math.sqrt`.
+    fn arithmetic(self) -> bool {
+        self == Self::Hardware
+    }
+
+    /// `f16 as f32` and `f16 as f64`, which are exact.
+    fn widens(self) -> bool {
+        self != Self::Soft
+    }
+
+    /// `f32 as f16` and `f64 as f16`, each one rounding. A target without a direct instruction
+    /// from binary64 would round twice through binary32, so only `Hardware` narrows binary64.
+    fn narrows_from(self, bits: u16) -> bool {
+        match self {
+            Self::Soft => false,
+            Self::Conversions => bits == 32,
+            Self::Hardware => true,
+        }
+    }
 }
 
 /// The heap runtime behind `@tz.alloc`, `@tz.free`, and `@tz.realloc` (F13).
@@ -84,6 +139,32 @@ pub fn emit_with_export_style(
     } else {
         ir
     })
+}
+
+/// Marks every function `noredzone`, so that the compiled code never stores below its stack
+/// pointer: for x86-64 targets without an operating system, where an interrupt may use the stack of
+/// the code it interrupts. Clang takes this from the IR, not from `-mno-red-zone`.
+pub(crate) fn with_no_red_zone(ir: String) -> String {
+    let mut output = String::with_capacity(ir.len() + ir.len() / 64);
+    for line in ir.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        match body
+            .strip_suffix(" {")
+            .filter(|_| body.starts_with("define "))
+        {
+            // The attributes come before the metadata attachments, such as `!dbg !12`.
+            Some(header) => {
+                let at = header.find(" !dbg ").unwrap_or(header.len());
+                output.push_str(&header[..at]);
+                output.push_str(" noredzone");
+                output.push_str(&header[at..]);
+                output.push_str(" {");
+                output.push_str(&line[body.len()..]);
+            }
+            None => output.push_str(line),
+        }
+    }
+    output
 }
 
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
@@ -347,6 +428,7 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
             wasm,
             debug_output: false,
             allocator: Allocator::System,
+            f16: F16Path::Soft,
         },
     )
 }
@@ -364,6 +446,7 @@ pub fn emit_with_options(
         options.debug_output,
         Instrumentation {
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )
@@ -385,6 +468,7 @@ pub fn emit_with_trap_info(
         Instrumentation {
             traps: true,
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )?;
@@ -416,6 +500,7 @@ pub fn emit_with_debug_info(
             traps: trap_info,
             debug: Some((sources, optimized)),
             allocator: options.allocator,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )?;
@@ -477,6 +562,7 @@ pub fn emit_native_build_for(
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
             allocator: options.allocator,
+            f16: options.f16,
             multiversion: true,
             ..Instrumentation::default()
         },
@@ -489,7 +575,7 @@ pub fn emit_native_build_for(
             trap_sites: Vec::new(),
         }
     };
-    output.ir = cpu::multiversion(output.ir, module, levels)?;
+    output.ir = cpu::multiversion(output.ir, module, levels, options.f16)?;
     Ok(output)
 }
 
@@ -525,12 +611,13 @@ pub fn emit_trap_return(
             cpu_dispatch: trusted_array,
             trap_return: true,
             allocator: options.allocator,
+            f16: options.f16,
             multiversion: cpu_dispatch,
             ..Instrumentation::default()
         },
     )?;
     let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
-    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels())?;
+    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels(), options.f16)?;
     let wrappers = host_abi::try_wrappers(&output.ir, module);
     output.ir.push_str(&wrappers);
     Ok(output)
@@ -664,6 +751,7 @@ pub(crate) fn emit_wasm_build(
             memory64,
             trap_return: false,
             allocator: options.allocator,
+            f16: F16Path::Soft,
             multiversion: false,
             coverage: None,
             seed: None,
@@ -749,6 +837,8 @@ pub struct TestRunnerOptions<'a> {
     /// The source map and whether the code is optimized when the runner carries debug
     /// information for a debugger (G16 Phase 2).
     pub debug: Option<(&'a [TrapSource<'a>], bool)>,
+    /// How a native runner computes f16 values (D10).
+    pub f16: F16Path,
 }
 
 pub fn emit_test_runner_with(
@@ -774,6 +864,7 @@ pub fn emit_test_runner_with(
             debug: options.debug,
             coverage: options.coverage.filter(|_| !options.wasm),
             seed: options.seed,
+            f16: options.f16,
             ..Instrumentation::default()
         },
     )
@@ -783,6 +874,15 @@ pub fn emit_test_runner_with(
 /// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
 /// calls bench `index` with an iteration count and returns its nanoseconds, or -1 for a bad index.
 pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<String, Diagnostic> {
+    emit_bench_runner_with(module, selected, F16Path::Soft)
+}
+
+/// `emit_bench_runner` with the f16 lowering of the machine that runs the benches (D10).
+pub fn emit_bench_runner_with(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.benches.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -796,7 +896,10 @@ pub fn emit_bench_runner(module: &CheckedModule, selected: &[usize]) -> Result<S
         false,
         Some(selected),
         false,
-        Instrumentation::default(),
+        Instrumentation {
+            f16,
+            ..Instrumentation::default()
+        },
     )
     .map(|(ir, _)| ir)
 }
@@ -811,6 +914,7 @@ struct Instrumentation<'a> {
     /// Native `--trap-mode return`: a tracked heap, so a trap can free everything a call allocated.
     trap_return: bool,
     allocator: Allocator,
+    f16: F16Path,
     /// A native build that compiles `@cpu` functions for further CPU levels (F08 Phase 3).
     multiversion: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -975,6 +1079,12 @@ fn emit_program(
             .enumerate()
             .any(|(id, function)| emitted[id] && async_reactor_function(function)),
         memory64: instrumentation.memory64,
+        // WASM has no `half` instructions: LLVM would call `__extendhfsf2` and `__truncsfhf2`.
+        f16: if wasm {
+            F16Path::Soft
+        } else {
+            instrumentation.f16
+        },
         traps: instrumentation.traps.then(traps::Marks::default),
         cpu_dispatch: instrumentation.cpu_dispatch && !wasm,
         multiversion: instrumentation.multiversion && !wasm,
@@ -1241,7 +1351,7 @@ fn emit_program(
         || output.contains("@tsuzuri_arguments(")
         || instrumentation.allocator == Allocator::Counting
     {
-        if wasm || cfg!(windows) || instrumentation.trap_return {
+        if wasm || crate::target::current_platform().windows() || instrumentation.trap_return {
             output.push_str(host_abi::allocator());
         } else {
             output.push_str(&host_abi::native_allocator());
@@ -1579,6 +1689,7 @@ struct Globals {
     debug: Option<debug::DebugContext>,
     cpu_dispatch: bool,
     multiversion: bool,
+    f16: F16Path,
     parallel_kernels: usize,
     recursive_types: BTreeSet<Type>,
     /// The values of the deferred shared blocks that the program drops, with whether they
@@ -1593,6 +1704,9 @@ struct Globals {
     /// The implicit copies emitted in function bodies, as (function, source, start, end) (A15).
     #[cfg(debug_assertions)]
     emitted_copies: BTreeSet<(usize, Option<usize>, usize, usize)>,
+    /// The static data that a body already refers to, by constant (D11 Phase 2): each is defined
+    /// once, at its first use.
+    statics: BTreeSet<usize>,
 }
 
 impl Default for Globals {
@@ -1623,6 +1737,7 @@ impl Default for Globals {
             debug: None,
             cpu_dispatch: false,
             multiversion: false,
+            f16: F16Path::Soft,
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
@@ -1631,6 +1746,7 @@ impl Default for Globals {
             seed: None,
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
+            statics: BTreeSet::new(),
         }
     }
 }
@@ -1972,6 +2088,111 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
     }
+}
+
+/// The LLVM constant of a literal tree of plain data, spelled without its type (D11 Phase 2). The
+/// tree is a constant's value: numbers, characters, tuples, records, fixed-length arrays, and
+/// unions whose payloads share one type.
+fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
+    let typed = |element: &TypedExpr| {
+        format!(
+            "{} {}",
+            llvm_type(&element.ty, module),
+            static_constant(element, module)
+        )
+    };
+    match &value.kind {
+        TypedExprKind::Int(number) => number.to_string(),
+        TypedExprKind::Float(text) => text.clone(),
+        TypedExprKind::Bool(flag) => u8::from(*flag).to_string(),
+        TypedExprKind::Unit => "0".into(),
+        TypedExprKind::Tuple(elements) if elements.is_empty() => "zeroinitializer".into(),
+        // A fixed-length array literal is a tuple-like aggregate of the array type.
+        TypedExprKind::Tuple(elements) if matches!(value.ty, Type::FixedArray(..)) => {
+            format!(
+                "[{}]",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Tuple(elements) => {
+            format!(
+                "{{ {} }}",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Record(fields) if fields.is_empty() => "zeroinitializer".into(),
+        TypedExprKind::Record(fields) => {
+            let mut ordered: Vec<_> = fields.iter().collect();
+            ordered.sort_by_key(|(index, _)| *index);
+            format!(
+                "{{ {} }}",
+                ordered
+                    .into_iter()
+                    .map(|(_, field)| typed(field))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        TypedExprKind::Array(elements) if elements.is_empty() => "zeroinitializer".into(),
+        TypedExprKind::Array(elements) => {
+            format!(
+                "[{}]",
+                elements.iter().map(typed).collect::<Vec<_>>().join(", ")
+            )
+        }
+        TypedExprKind::Construct {
+            case_id, payload, ..
+        } => {
+            let Type::Union(id, arguments) = &value.ty else {
+                unreachable!("a union case builds a union")
+            };
+            match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => case_id.to_string(),
+                UnionLayout::Common(common) => format!(
+                    "{{ i32 {case_id}, {} }}",
+                    match payload {
+                        Some(payload) => typed(payload),
+                        None => format!("{} zeroinitializer", llvm_type(&common, module)),
+                    }
+                ),
+                UnionLayout::General(_) => unreachable!("static unions share one payload type"),
+            }
+        }
+        _ => unreachable!("a static constant holds only plain data"),
+    }
+}
+
+/// The global that holds the static data of a constant (D11 Phase 2). A heap array keeps its
+/// elements in `@tz.static.N.data`, which its header points at, and has no global when it is
+/// empty; any other value is `@tz.static.N` itself. Both are private, unnamed, and constant.
+fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Option<String> {
+    let (Type::Array(element), TypedExprKind::Array(elements)) = (&value.ty, &value.kind) else {
+        return Some(format!(
+            "@tz.static.{id} = private unnamed_addr constant {} {}",
+            llvm_type(&value.ty, module),
+            static_constant(value, module)
+        ));
+    };
+    if elements.is_empty() {
+        return None;
+    }
+    let contents = if matches!(**element, Type::Integer(8, _)) {
+        let bytes: String = elements
+            .iter()
+            .map(|element| match element.kind {
+                TypedExprKind::Int(number) => format!("\\{:02X}", number as u8),
+                _ => unreachable!("a byte array holds integers"),
+            })
+            .collect();
+        format!("c\"{bytes}\"")
+    } else {
+        static_constant(value, module)
+    };
+    Some(format!(
+        "@tz.static.{id}.data = private unnamed_addr constant [{} x {}] {contents}, align 16",
+        elements.len(),
+        llvm_type(element, module)
+    ))
 }
 
 /// The spelling of a `dyn` type in LLVM names (A14): `dyn[Shapes.Shape]`, with `+copy`, `+send`,
@@ -3745,6 +3966,27 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         name
     }
 
+    /// The operand for the static data of a constant, which it defines at its first use (D11
+    /// Phase 2). A heap array's operand is its header, `{ ptr data, length }`, a constant that the
+    /// code reads in place; any other value's is the address of its global.
+    fn static_operand(&mut self, id: usize) -> String {
+        let value = &self.module.statics[&id].value;
+        if self.globals.statics.insert(id)
+            && let Some(definition) = static_definition(id, value, self.module)
+        {
+            self.globals.definitions.push(definition);
+        }
+        match (&value.ty, &value.kind) {
+            (Type::Array(_), TypedExprKind::Array(elements)) if elements.is_empty() => {
+                "zeroinitializer".into()
+            }
+            (Type::Array(_), TypedExprKind::Array(elements)) => {
+                format!("{{ ptr @tz.static.{id}.data, i64 {} }}", elements.len())
+            }
+            _ => format!("@tz.static.{id}"),
+        }
+    }
+
     fn remember_temporary(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
         if (!self.loop_targets.is_empty() || !self.try_targets.is_empty())
             && ty.needs_drop(&self.module.types())
@@ -3887,6 +4129,20 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             | TypedExprKind::Dereference(_)
             | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
+            }
+            TypedExprKind::Static(id) => {
+                // Only a borrow names static data, so a heap array's header is lent, never taken;
+                // any other plain value is loaded from its global.
+                let operand = self.static_operand(*id);
+                if matches!(expression.ty, Type::Array(_)) {
+                    if take {
+                        self.clone_value(&expression.ty, &operand)
+                    } else {
+                        operand
+                    }
+                } else {
+                    self.value(format!("load {}, ptr {operand}", self.ty(&expression.ty)))
+                }
             }
             TypedExprKind::Borrow(value, mutable) => {
                 if !mutable && matches!(value.ty, Type::Array(_)) {
@@ -4338,6 +4594,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn emit_place(&mut self, expression: &TypedExpr) -> String {
         match &expression.kind {
             TypedExprKind::Local(id) => self.locals[id].clone(),
+            TypedExprKind::Static(id) => {
+                let operand = self.static_operand(*id);
+                if matches!(expression.ty, Type::Array(_)) {
+                    self.spill(&expression.ty, &operand)
+                } else {
+                    operand
+                }
+            }
             TypedExprKind::Dereference(value) if value.ty.slice_element().is_some() => {
                 let view = self.expression_mode(value, false);
                 self.spill(&expression.ty, &view)
@@ -5797,6 +6061,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.ty(&expression.ty)
             ));
         }
+        if let Some(converted) = self.half_cast(&expression.ty, to, &value) {
+            return converted;
+        }
         let input = self.spill(&expression.ty, &value);
         let output = self.slot(to);
         self.instruction(format!(
@@ -5891,6 +6158,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.power(&left.ty, &lhs, &rhs, false);
         }
         let ty = self.ty(&left.ty);
+        if matches!(left.ty, Type::Binary(16)) && self.globals.f16.arithmetic() {
+            return self.half_binary(operator, &lhs, &rhs);
+        }
         if matches!(left.ty, Type::Decimal(_) | Type::Binary(16 | 128)) {
             let a = self.spill(&left.ty, &lhs);
             let b = self.spill(&right.ty, &rhs);
@@ -6499,6 +6769,7 @@ fn emit_typed_builtin(
     let mut builtins = Builtins::new();
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
+        f16: shared_globals.f16,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();

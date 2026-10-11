@@ -1,8 +1,19 @@
 use super::*;
 use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use rustc_apfloat::{Float, FloatConvert};
+use std::rc::Rc;
 
-pub(super) fn failure(span: Span, message: &str) -> Diagnostic {
+#[path = "const_machine.rs"]
+mod machine;
+#[path = "const_rules.rs"]
+mod rules;
+#[path = "const_static.rs"]
+mod statics;
+
+use machine::{Machine, Value};
+pub(super) use rules::check_signature;
+
+pub(super) fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new("E1026", message, span)
 }
 
@@ -13,7 +24,23 @@ fn limit(span: Span) -> Diagnostic {
     )
 }
 
-pub(super) fn validate(expression: &Expr) -> Result<(), Diagnostic> {
+/// The name that a call's callee spells: the function itself, or the member of a module path.
+fn callee_name(callee: &Expr) -> Option<&str> {
+    match &callee.kind {
+        ExprKind::Name(name) | ExprKind::QualifiedFunction(name) => {
+            Some(name.text.rsplit(['.', ':']).next().unwrap_or(&name.text))
+        }
+        ExprKind::Field(_, name) => Some(&name.text),
+        _ => None,
+    }
+}
+
+/// Checks the initializer of a constant as written: a call is allowed only when it names a
+/// `const def` (D11); whether the name resolves to one is decided after type checking.
+pub(super) fn validate(
+    expression: &Expr,
+    const_names: &BTreeSet<String>,
+) -> Result<(), Diagnostic> {
     use ExprKind as Expr;
     match &expression.kind {
         Expr::Integer(..)
@@ -24,23 +51,36 @@ pub(super) fn validate(expression: &Expr) -> Result<(), Diagnostic> {
         | Expr::Bool(_)
         | Expr::Unit
         | Expr::Name(_) => Ok(()),
-        Expr::Unary(_, value) | Expr::Cast(value, _) | Expr::Field(value, _) => validate(value),
+        Expr::Unary(_, value) | Expr::Cast(value, _) | Expr::Field(value, _) => {
+            validate(value, const_names)
+        }
         Expr::Binary(operator, left, right) if *operator != BinaryOp::Pipe => {
-            validate(left)?;
-            validate(right)
+            validate(left, const_names)?;
+            validate(right, const_names)
         }
         Expr::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            validate(condition)?;
-            validate(then_branch)?;
-            validate(else_branch)
+            validate(condition, const_names)?;
+            validate(then_branch, const_names)?;
+            validate(else_branch, const_names)
         }
-        Expr::Array(values) | Expr::Tuple(values) => values.iter().try_for_each(validate),
-        Expr::Record { fields, .. } => fields.iter().try_for_each(|(_, value)| validate(value)),
-        Expr::Block { bindings, result } if bindings.is_empty() => validate(result),
+        Expr::Array(values) | Expr::Tuple(values) => values
+            .iter()
+            .try_for_each(|value| validate(value, const_names)),
+        Expr::Record { fields, .. } => fields
+            .iter()
+            .try_for_each(|(_, value)| validate(value, const_names)),
+        Expr::Block { bindings, result } if bindings.is_empty() => validate(result, const_names),
+        Expr::Call(callee, arguments)
+            if callee_name(callee).is_some_and(|name| const_names.contains(name)) =>
+        {
+            arguments
+                .iter()
+                .try_for_each(|argument| validate(argument, const_names))
+        }
         _ => Err(failure(
             expression.span,
             "this expression is not allowed in a phase-1 const; precompute it or use a runtime let",
@@ -48,13 +88,142 @@ pub(super) fn validate(expression: &Expr) -> Result<(), Diagnostic> {
     }
 }
 
+/// What the body of a function names, in the order a walk of it meets the names: a constant, with
+/// the span of its use, or a `const def`.
+#[derive(Clone, Copy)]
+enum Named {
+    Constant(usize, Span),
+    ConstDef(usize),
+}
+
+/// The names in the body of `function`, not following the `const def`s it names: a constant that
+/// the body calls is not walked into (its own initializer is a node of the dependency graph), and a
+/// `const def` is a name of the body, expanded where it is first met by [`ConstDefWalk`].
+fn named_in(
+    functions: &[CheckedFunction],
+    constants: &BTreeSet<usize>,
+    const_functions: &BTreeSet<usize>,
+    function: usize,
+) -> Vec<Named> {
+    let mut names = Vec::new();
+    let mut expressions = vec![&functions[function].body];
+    while let Some(expression) = expressions.pop() {
+        if let Some(dependency) = constant_id(expression).filter(|id| constants.contains(id)) {
+            names.push(Named::Constant(dependency, expression.span));
+            continue;
+        }
+        if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
+            && const_functions.contains(&callee)
+        {
+            names.push(Named::ConstDef(callee));
+        }
+        expressions.extend(expression.children());
+    }
+    names
+}
+
+/// The names that the initializer of one constant reaches, directly and through the `const def`s
+/// it names, with each `const def` expanded once, where it is first met: the order in which a walk
+/// of the initializer that goes into each `const def` as it meets it would find them. The names of
+/// one function are walked once, however many constants reach it, and the walk keeps no Rust stack
+/// of its own depth.
+struct ConstDefWalk<'a> {
+    functions: &'a [CheckedFunction],
+    constants: &'a BTreeSet<usize>,
+    const_functions: &'a BTreeSet<usize>,
+    names: BTreeMap<usize, Rc<Vec<Named>>>,
+}
+
+impl<'a> ConstDefWalk<'a> {
+    fn new(
+        functions: &'a [CheckedFunction],
+        constants: &'a BTreeSet<usize>,
+        const_functions: &'a BTreeSet<usize>,
+    ) -> Self {
+        Self {
+            functions,
+            constants,
+            const_functions,
+            names: BTreeMap::new(),
+        }
+    }
+
+    fn names_of(&mut self, function: usize) -> Rc<Vec<Named>> {
+        if let Some(names) = self.names.get(&function) {
+            return Rc::clone(names);
+        }
+        let names = Rc::new(named_in(
+            self.functions,
+            self.constants,
+            self.const_functions,
+            function,
+        ));
+        self.names.insert(function, Rc::clone(&names));
+        names
+    }
+
+    /// Calls `visit` with each name that the body of `root` reaches, in order; `visit` gets the
+    /// `const def` that was expanded to find a name too, so that it can see the edge.
+    fn walk(&mut self, root: usize, mut visit: impl FnMut(Named)) {
+        let mut scanned = BTreeSet::new();
+        let mut frames = vec![(self.names_of(root), 0)];
+        while let Some((names, index)) = frames.pop() {
+            let Some(&named) = names.get(index) else {
+                continue;
+            };
+            frames.push((names, index + 1));
+            match named {
+                Named::Constant(..) => visit(named),
+                Named::ConstDef(callee) => {
+                    if scanned.insert(callee) {
+                        visit(named);
+                        frames.push((self.names_of(callee), 0));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The `const def`s that each constant's initializer reaches, directly or through other `const
+/// def`s, as (constant, `const def`) pairs. `fold` replaces the initializers by their values, so
+/// the unused-private-function warning takes these edges from here.
+pub(super) fn const_def_uses(
+    functions: &[CheckedFunction],
+    constants: &BTreeSet<usize>,
+    const_functions: &BTreeSet<usize>,
+) -> Vec<(usize, usize)> {
+    let mut uses = Vec::new();
+    let mut walk = ConstDefWalk::new(functions, constants, const_functions);
+    for &constant in constants {
+        walk.walk(constant, |named| {
+            if let Named::ConstDef(callee) = named {
+                uses.push((constant, callee));
+            }
+        });
+    }
+    uses
+}
+
+/// Evaluates every constant, calls of `const def`s included (D11), and expands the references to
+/// them with their values. The bodies of the `const def`s are checked first, so that one that no
+/// constant calls is judged too. A constant of plain data that a use reads in place or borrows is
+/// not expanded there; the use names its static data, which the result holds (D11 Phase 2).
 pub(super) fn fold(
     functions: &mut [CheckedFunction],
     constants: &BTreeSet<usize>,
-) -> Result<(), Diagnostic> {
+    const_functions: &BTreeSet<usize>,
+    types: &TypeContext<'_>,
+) -> Result<BTreeMap<usize, StaticData>, Diagnostic> {
+    for &id in const_functions {
+        rules::validate_function(id, functions, constants, const_functions, types)?;
+    }
     let mut evaluator = Evaluator {
         functions,
         constants,
+        const_functions,
+        types: *types,
+        walk: ConstDefWalk::new(functions, constants, const_functions),
         values: BTreeMap::new(),
         active: BTreeSet::new(),
         references: 0,
@@ -62,15 +231,24 @@ pub(super) fn fold(
     };
     evaluator.run()?;
     let values = evaluator.values;
+    let eligible: BTreeSet<usize> = constants
+        .iter()
+        .copied()
+        .filter(|&id| statics::eligible(&functions[id].signature.result, types))
+        .collect();
+    let mut used = BTreeSet::new();
     for (id, function) in functions.iter_mut().enumerate() {
         let mut remaining = 1 << 20;
-        inline(&mut function.body, &values, &mut remaining, 0)?;
         if constants.contains(&id) {
-            function.body = values[&id].clone();
+            inline(&mut function.body, &values, &mut remaining, 0)?;
+            function.body = values[&id].expr.clone();
             function.visibility = Visibility::Private;
+        } else {
+            statics::mark_uses(&mut function.body, &eligible, &mut used);
+            inline(&mut function.body, &values, &mut remaining, 0)?;
         }
     }
-    Ok(())
+    statics::collect(&used, &values, types).map_err(|id| statics::too_big(functions[id].span))
 }
 
 fn constant_id(expression: &TypedExpr) -> Option<usize> {
@@ -110,6 +288,19 @@ impl Checker<'_> {
                 }
             })
             .collect();
+        // A constant of plain data is borrowed as static data, which `fold` rewrites, wherever
+        // the call is applied and whatever it returns (D11 Phase 2).
+        let (plain, borrowed): (Vec<_>, Vec<_>) = borrowed.into_iter().partition(|index| {
+            matches!(&arguments[*index].kind, TypedExprKind::Borrow(value, _)
+                if self.plain_constant(value))
+        });
+        for index in plain {
+            if let TypedExprKind::Borrow(value, _) =
+                std::mem::replace(&mut arguments[index].kind, TypedExprKind::Error)
+            {
+                arguments[index].kind = TypedExprKind::BorrowOperand(value);
+            }
+        }
         if borrowed.is_empty() {
             return Ok(());
         }
@@ -145,6 +336,13 @@ impl Checker<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Whether `value` names a constant of plain data, which a borrow takes as static data.
+    pub(super) fn plain_constant(&self, value: &TypedExpr) -> bool {
+        constant_id(value)
+            .filter(|id| self.names.constants.contains(id))
+            .is_some_and(|id| statics::eligible(&self.signatures[id].signature.result, &self.types))
     }
 
     /// Whether a value of type `ty` surely holds no loan. A part that is still
@@ -194,26 +392,30 @@ fn is_place(expression: &TypedExpr) -> bool {
     }
 }
 
-fn charge(value: &TypedExpr, remaining: &mut usize, depth: usize) -> Result<(), Diagnostic> {
-    if depth > MAX_NESTING || *remaining == 0 {
-        return Err(limit(value.span));
+/// Pays for one more copy of `value` whose root sits at `depth` of a body: its nodes come out of
+/// the budget, and its tree may not nest deeper than the compiler allows.
+fn charge(
+    value: &Value,
+    remaining: &mut usize,
+    depth: usize,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    if depth + value.depth - 1 > MAX_NESTING || *remaining < value.size {
+        return Err(limit(span));
     }
-    *remaining -= 1;
-    for child in value.children() {
-        charge(child, remaining, depth + 1)?;
-    }
+    *remaining -= value.size;
     Ok(())
 }
 
 fn inline(
     expression: &mut TypedExpr,
-    values: &BTreeMap<usize, TypedExpr>,
+    values: &BTreeMap<usize, Value>,
     remaining: &mut usize,
     depth: usize,
 ) -> Result<(), Diagnostic> {
     if let Some(value) = constant_id(expression).and_then(|id| values.get(&id)) {
-        charge(value, remaining, depth)?;
-        expression.kind = value.kind.clone();
+        charge(value, remaining, depth, expression.span)?;
+        expression.kind = value.expr.kind.clone();
     } else {
         for child in expression.children_mut() {
             inline(child, values, remaining, depth + 1)?;
@@ -225,7 +427,10 @@ fn inline(
 struct Evaluator<'a> {
     functions: &'a [CheckedFunction],
     constants: &'a BTreeSet<usize>,
-    values: BTreeMap<usize, TypedExpr>,
+    const_functions: &'a BTreeSet<usize>,
+    types: TypeContext<'a>,
+    walk: ConstDefWalk<'a>,
+    values: BTreeMap<usize, Value>,
     active: BTreeSet<usize>,
     references: usize,
     remaining: usize,
@@ -241,8 +446,8 @@ impl Evaluator<'_> {
                     continue;
                 }
                 if finishing {
-                    let value = self.evaluate(&self.functions[id].body, 0)?;
-                    charge(&value, &mut self.remaining, 0)?;
+                    let value = self.evaluate(id)?;
+                    charge(&value, &mut self.remaining, 0, value.expr.span)?;
                     self.active.remove(&id);
                     self.values.insert(id, value);
                     continue;
@@ -258,110 +463,28 @@ impl Evaluator<'_> {
                     ));
                 }
                 pending.push((id, true, depth, span));
-                let mut expressions = vec![&self.functions[id].body];
-                while let Some(expression) = expressions.pop() {
-                    if let Some(dependency) =
-                        constant_id(expression).filter(|id| self.constants.contains(id))
-                    {
-                        pending.push((dependency, false, depth + 1, expression.span));
-                    } else {
-                        expressions.extend(expression.children());
+                // The constants that the initializer names, and those that the `const def`s it
+                // calls, or passes by name as in `new [T](n, f)`, name in turn.
+                self.walk.walk(id, |name| {
+                    if let Named::Constant(dependency, span) = name {
+                        pending.push((dependency, false, depth + 1, span));
                     }
-                }
+                });
             }
         }
         Ok(())
     }
 
-    fn constant(&mut self, id: usize, span: Span, depth: usize) -> Result<TypedExpr, Diagnostic> {
-        if let Some(value) = self.values.get(&id) {
-            charge(value, &mut self.remaining, depth)?;
-            return Ok(value.clone());
-        }
-        Err(failure(
-            span,
-            "cyclic const definition; break the cycle or make one value a function",
-        ))
-    }
-
-    fn evaluate(&mut self, expression: &TypedExpr, depth: usize) -> Result<TypedExpr, Diagnostic> {
-        use TypedExprKind as Expr;
-        let span = expression.span;
-        if depth > MAX_NESTING || self.remaining == 0 {
-            return Err(limit(span));
-        }
-        self.remaining -= 1;
-        if let Some(id) = constant_id(expression).filter(|id| self.constants.contains(id)) {
-            return self.constant(id, span, depth);
-        }
-        let kind = match &expression.kind {
-            Expr::Int(_) | Expr::Float(_) | Expr::String(_) | Expr::Bool(_) | Expr::Unit => {
-                expression.kind.clone()
-            }
-            Expr::Array(values) | Expr::Tuple(values) => {
-                let values = values
-                    .iter()
-                    .map(|value| self.evaluate(value, depth + 1))
-                    .collect::<Result<_, _>>()?;
-                if matches!(expression.kind, Expr::Array(_)) {
-                    Expr::Array(values)
-                } else {
-                    Expr::Tuple(values)
-                }
-            }
-            Expr::Record(fields) => Expr::Record(
-                fields
-                    .iter()
-                    .map(|(index, value)| Ok((*index, self.evaluate(value, depth + 1)?)))
-                    .collect::<Result<_, Diagnostic>>()?,
-            ),
-            Expr::Unary(operator, value) => {
-                let value = self.evaluate(value, depth + 1)?;
-                unary(*operator, &value, span)?
-            }
-            Expr::Binary(operator, left, right) => {
-                let left = self.evaluate(left, depth + 1)?;
-                if matches!(
-                    (operator, &left.kind),
-                    (BinaryOp::And, Expr::Bool(false)) | (BinaryOp::Or, Expr::Bool(true))
-                ) {
-                    left.kind
-                } else {
-                    let right = self.evaluate(right, depth + 1)?;
-                    binary(*operator, &left, &right, span)?
-                }
-            }
-            Expr::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                let condition = self.evaluate(condition, depth + 1)?;
-                let Expr::Bool(condition) = condition.kind else {
-                    return Err(failure(span, "a const condition must be bool"));
-                };
-                self.evaluate(if condition { then_branch } else { else_branch }, depth + 1)?
-                    .kind
-            }
-            Expr::Block { bindings, result } if bindings.is_empty() => {
-                self.evaluate(result, depth + 1)?.kind
-            }
-            Expr::Cast(value) => {
-                let value = self.evaluate(value, depth + 1)?;
-                cast(&value, &expression.ty, span)?
-            }
-            _ => {
-                return Err(failure(
-                    span,
-                    "this operation is not allowed in a phase-1 const; use a runtime let",
-                ));
-            }
+    fn evaluate(&mut self, id: usize) -> Result<Value, Diagnostic> {
+        let mut machine = Machine {
+            functions: self.functions,
+            constants: self.constants,
+            const_functions: self.const_functions,
+            values: &self.values,
+            types: self.types,
+            remaining: &mut self.remaining,
         };
-        Ok(TypedExpr {
-            kind,
-            ty: expression.ty.clone(),
-            span,
-        })
+        machine.run(&self.functions[id].body)
     }
 }
 
@@ -377,6 +500,9 @@ fn unary(operator: UnaryOp, value: &TypedExpr, span: Span) -> Result<TypedExprKi
     use TypedExprKind as Expr;
     Ok(match (operator, &value.kind, &value.ty) {
         (UnaryOp::Not, Expr::Bool(value), _) => Expr::Bool(!value),
+        (UnaryOp::Plus, Expr::Int(_) | Expr::Float(_), Type::Integer(..) | Type::Binary(_)) => {
+            value.kind.clone()
+        }
         (UnaryOp::Negate, Expr::Int(value), Type::Integer(bits, _)) => {
             Expr::Int(value.wrapping_neg() & mask(*bits))
         }
@@ -572,6 +698,25 @@ fn float_binary<Binary: Float>(
                 "unsupported const floating-point operation; use a runtime let",
             ));
         }
+    };
+    // The 16- and 128-bit arithmetic of the program (`tz_soft_op` in numeric.c) answers an invalid
+    // operation or a NaN operand with the canonical quiet NaN, signed by the left operand for `+` and
+    // `-` and by the product of the signs for `*` and `/`. APFloat keeps the operand's own NaN or
+    // makes a positive one, which `Math.copysign` could tell apart, so a constant takes the rule of
+    // the program. `f32` and `f64` use the machine's instructions, whose NaN signs differ between
+    // machines, so a constant of those types is only specified up to NaN.
+    let value = if matches!(Binary::BITS, 16 | 128) && value.is_nan() {
+        let negative = match operator {
+            BinaryOp::Add | BinaryOp::Subtract => left.is_negative(),
+            _ => left.is_negative() != right.is_negative(),
+        };
+        if negative {
+            -Binary::qnan(None)
+        } else {
+            Binary::qnan(None)
+        }
+    } else {
+        value
     };
     Ok(TypedExprKind::Float(float_text(
         value.to_bits(),

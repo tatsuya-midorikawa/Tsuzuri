@@ -102,6 +102,8 @@ add 20 22
 
 `--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。
 
+AArch64 向けに出した IR は、`f16` の演算に LLVM の `half` 命令を含みます（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。AArch64 では、`half` はライブラリ関数を呼ばずに機械語へ下がります。その IR のターゲットを x86-64 などに変えて `llc` や `clang` に渡すと、`half` は `__extendhfsf2` のようなライブラリ関数の呼び出しになり、リンクが解決できないことがあります。IR のターゲットは変えないでください。
+
 ## ホスト関数を import する
 
 `extern def double_cents :: i64 -> i64` のネイティブシンボルは `tsuzuri_host_Main_double_cents` です。モジュール名の `.` は `_` になります。変換後に衝突すると `E1001` です。未使用の `extern` は、オブジェクトにもヘッダーの要求にも出ません。
@@ -233,7 +235,7 @@ ABC
 
 ## 共有ライブラリと各言語のバインディング
 
-`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。Windows では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
+`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。`--target` に `aarch64-unknown-linux-gnu` のような名前を渡すと、その target の共有ライブラリを作ります（Mach-O の target は `.dylib`、ほかは `.so`。[対応プラットフォーム](platforms.md)）。Windows の target では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
 
 ```sh
 tsuzuri build quote --emit shared -o libquote.dylib

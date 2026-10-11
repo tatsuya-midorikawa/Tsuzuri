@@ -6,7 +6,7 @@ Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Re
 
 ## この記事のポイント
 
-- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。
+- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。
 - `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。
 - 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。
 - `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。
@@ -15,6 +15,8 @@ Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Re
 ## 予約語と文脈キーワードの違い
 
 予約語は字句解析の段階で、いつもキーワードとして読まれます。文脈キーワードは、特定の位置に来たときだけキーワードになり、それ以外は普通の名前です。
+
+予約語の集合は、ソースを読む言語版（edition）で決まります。`Tsuzuri.toml` の `edition` がパッケージごとに選び、今ある `2026` では、このページの一覧がすべてです。新しい edition が予約語を足しても、前の edition のパッケージは、その語を識別子として使い続けられます（[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)、[安定性と互換性の方針](../../../docs/stability.md#edition)）。
 
 ```mermaid
 flowchart TD
@@ -46,6 +48,7 @@ Tsuzuri の全 43 個の予約語を用途別に分けて示します。
 | `fn` | 関数シグネチャに対応する関数の実装 | `fn add x y = x + y` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `let` | ローカル変数の不変束縛、または関数の実装 | `let count = 42` | [値](./values.md) |
 | `const` | コンパイル時定数の宣言 | `const MaxSize: i64 = 1024` | [値](./values.md) |
+| `const def` | コンパイル時に評価できる関数の宣言（`def` の前に `const`） | `const def square :: i64 -> i64` | [値](./values.md#コンパイル時に評価する関数-const-def) |
 | `rec` | 再帰関数の明示 | `def rec fib :: i64 -> i64` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `and` | 相互再帰の結合。`and!` はコンピュテーション式の束縛グループ | `def f :: ... and g :: ...` | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `type` | 型エイリアス（型別名）の宣言 | `type UserId = i64` | [型エイリアス](../types-and-type-inference/alias.md) |

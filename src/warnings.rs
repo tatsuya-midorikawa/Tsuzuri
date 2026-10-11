@@ -133,6 +133,7 @@ fn collect_locals<'a>(
         | StructuralHash(_)
         | StructuralDisplay(_)
         | Interpolated(_)
+        | Static(_)
         | DynDispatch { .. } => {}
     }
     for child in expression.children() {
@@ -652,9 +653,253 @@ impl TypeReferences<'_> {
     }
 }
 
+/// The longest deprecation note that a warning shows, in characters; a longer note is cut.
+const MAX_NOTE_CHARACTERS: usize = 200;
+
+/// A public `def`, `record` or `union` whose documentation has the `@deprecated` tag.
+pub(super) struct Deprecation {
+    /// The index in `modules` of the module that declares it.
+    pub module: usize,
+    pub note: String,
+}
+
+/// The deprecated declarations of `modules` that a use can warn about, by the source and start
+/// of their name, the position that the semantic index gives a declaration. A declaration of
+/// std is always one. A declaration of a user module is one only in a dependency package: no
+/// package depends on the root package, and W1005 never reports a use within a package.
+pub(super) fn deprecations(modules: &[ModuleInput<'_>]) -> BTreeMap<(usize, usize), Deprecation> {
+    let mut found = BTreeMap::new();
+    for (module, input) in modules.iter().enumerate() {
+        if input.origin == ModuleOrigin::User && input.package.is_none() {
+            continue;
+        }
+        let program = input.program;
+        let declared =
+            program
+                .functions
+                .iter()
+                .map(|declaration| (&declaration.name, declaration.visibility, &declaration.doc))
+                .chain(program.records.iter().map(|declaration| {
+                    (&declaration.name, declaration.visibility, &declaration.doc)
+                }))
+                .chain(program.unions.iter().map(|declaration| {
+                    (&declaration.name, declaration.visibility, &declaration.doc)
+                }));
+        for (name, visibility, doc) in declared {
+            if visibility == Visibility::Private || name.provenance == Provenance::Generated {
+                continue;
+            }
+            let (Some(doc), Some(source)) = (doc, name.span.source) else {
+                continue;
+            };
+            if let Some(note) = doc.deprecation() {
+                found.insert(
+                    (source, name.span.start),
+                    Deprecation {
+                        module,
+                        note: note.to_owned(),
+                    },
+                );
+            }
+        }
+    }
+    found
+}
+
+/// A reference to a deprecated declaration that W1005 can report.
+struct DeprecatedUse {
+    source: usize,
+    span: Span,
+    /// The definition of the deprecated declaration: the union for a case.
+    owner: usize,
+    case: bool,
+    message: String,
+}
+
+/// W1005 at each reference, in a user module, to a deprecated declaration of another package
+/// or of std (G19). A union stands for its cases and a record for its construction, patterns
+/// and type annotations, as the semantic index records them.
+pub(super) fn deprecated_uses(
+    modules: &[ModuleInput<'_>],
+    index: &semantic::SemanticIndex,
+    names: &Names,
+    deprecations: &BTreeMap<(usize, usize), Deprecation>,
+) -> Vec<Diagnostic> {
+    let mut reported = BTreeSet::new();
+    let mut uses = Vec::new();
+    for reference in &index.references {
+        let Some(source) = reference.span.source else {
+            continue;
+        };
+        let Some(user) = modules
+            .get(source)
+            .filter(|module| module.origin == ModuleOrigin::User)
+        else {
+            continue;
+        };
+        let definition = &index.definitions[reference.definition];
+        let (owner_id, case) = match (definition.kind, definition.container) {
+            (
+                semantic::SymbolKind::Function
+                | semantic::SymbolKind::Record
+                | semantic::SymbolKind::Union,
+                _,
+            ) => (reference.definition, false),
+            (semantic::SymbolKind::Case, Some(union)) => (union, true),
+            _ => continue,
+        };
+        let owner = &index.definitions[owner_id];
+        let Some(deprecation) = owner
+            .span
+            .source
+            .and_then(|source| deprecations.get(&(source, owner.span.start)))
+        else {
+            continue;
+        };
+        let declaring = &modules[deprecation.module];
+        if declaring.origin == ModuleOrigin::User && declaring.package == user.package {
+            continue;
+        }
+        let key = (source, reference.span.start, reference.span.end);
+        if !reported.insert(key) {
+            continue;
+        }
+        let qualified = format!("{}.{}", owner.module, owner.name);
+        let spelled = if owner.kind == semantic::SymbolKind::Function {
+            names.spelling(&qualified)
+        } else {
+            names.type_spelling(&qualified)
+        };
+        let mut note = deprecation.note.chars();
+        let shown: String = note.by_ref().take(MAX_NOTE_CHARACTERS).collect();
+        let message = match (shown.is_empty(), note.next().is_some()) {
+            (true, _) => {
+                format!("'{spelled}' is deprecated; see its documentation for a replacement")
+            }
+            (false, false) => format!("'{spelled}' is deprecated: {shown}"),
+            (false, true) => format!("'{spelled}' is deprecated: {shown}..."),
+        };
+        uses.push(DeprecatedUse {
+            source,
+            span: reference.span,
+            owner: owner_id,
+            case,
+            message,
+        });
+    }
+    // `Union.Case` names the union and the case, which is one use: it warns at the case.
+    let cases: BTreeSet<_> = uses
+        .iter()
+        .filter(|used| used.case)
+        .map(|used| (used.source, used.owner, used.span.start))
+        .collect();
+    uses.into_iter()
+        .filter(|used| used.case || !cases.contains(&(used.source, used.owner, used.span.end + 1)))
+        .map(|used| Diagnostic::warning("W1005", used.message, used.span))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_usable_deprecation_makes_the_check_collect_references() {
+        use crate::SourceInput;
+        use crate::package::PackageId;
+        use crate::syntax::Edition;
+        let collections = || semantic::COLLECTIONS.with(std::cell::Cell::get);
+        let tagged = "/// @deprecated\ndef old :: i64 = 1\n";
+        let std = [("std/Legacy.tz", tagged)];
+        let input = |path, text, origin, package| SourceInput {
+            path,
+            text,
+            origin,
+            namespace: "",
+            edition: Edition::LATEST,
+            package,
+        };
+        let user = ModuleOrigin::User;
+        // No tag: the check runs no collection.
+        let before = collections();
+        crate::analyze("let x = 1\nx").unwrap();
+        assert_eq!(collections(), before);
+        // A tag in the only user package can never warn.
+        crate::analyze_modules(&[("Main.tz", "Old.old"), ("Old.tz", tagged)]).unwrap();
+        assert_eq!(collections(), before);
+        // A tagged std declaration does, once, whether or not the index is requested.
+        let module =
+            crate::analyze_modules_with_std_all(&[("Main.tz", "Legacy.old")], &std).unwrap();
+        assert_eq!(module.warnings.len(), 1);
+        assert_eq!(collections(), before + 1);
+        let inputs = [
+            input("Main.tz", "Legacy.old", user, None),
+            input("std/Legacy.tz", tagged, ModuleOrigin::Std, None),
+        ];
+        let mut index = semantic::SemanticIndex::default();
+        let module = crate::analyze_inputs_semantic(&inputs, &mut index).unwrap();
+        assert_eq!(module.warnings.len(), 1);
+        assert!(!index.definitions.is_empty());
+        assert_eq!(collections(), before + 2);
+        // Without a tag, a requested index is still collected once.
+        let plain = [input("Main.tz", "1", user, None)];
+        let mut index = semantic::SemanticIndex::default();
+        crate::analyze_inputs_semantic(&plain, &mut index).unwrap();
+        assert_eq!(collections(), before + 3);
+        // A tag in the root package never collects, even when a dependency exists: nothing
+        // depends on the root package.
+        let library = PackageId {
+            name: "library".into(),
+            root: "/library".into(),
+        };
+        let inputs = [
+            input("Main.tz", "Old.old", user, None),
+            input("Old.tz", tagged, user, None),
+            input(
+                "Library/Plain.tz",
+                "def plain :: i64 = 1\n",
+                user,
+                Some(&library),
+            ),
+        ];
+        let module = crate::analyze_inputs_all(&inputs).unwrap();
+        assert!(module.warnings.is_empty(), "{:?}", module.warnings);
+        assert_eq!(collections(), before + 3);
+        // A tag in a dependency does, once.
+        let inputs = [
+            input("Main.tz", "Library::Old.old", user, None),
+            input("Library/Old.tz", tagged, user, Some(&library)),
+        ];
+        let module = crate::analyze_inputs_all(&inputs).unwrap();
+        assert_eq!(module.warnings.len(), 1, "{:?}", module.warnings);
+        assert_eq!(collections(), before + 4);
+    }
+
+    #[test]
+    fn deprecation_note_reads_the_first_tag_line() {
+        let documented = |text: &str| {
+            Documentation {
+                text: text.to_owned(),
+                span: Span::default(),
+            }
+            .deprecation()
+            .map(str::to_owned)
+        };
+        for (text, expected) in [
+            ("Old.\n@deprecated use new", Some("use new")),
+            ("@deprecated", Some("")),
+            ("  @deprecated  spaced  ", Some("spaced")),
+            ("@deprecated\ttabbed", Some("tabbed")),
+            ("@deprecated a\n@deprecated b", Some("a")),
+            ("@deprecatedX", None),
+            ("@deprecatedX\n@deprecated real", Some("real")),
+            ("text", None),
+            ("see @deprecated here", None),
+            ("", None),
+        ] {
+            assert_eq!(documented(text).as_deref(), expected, "{text:?}");
+        }
+    }
 
     #[test]
     fn shadowing_is_opt_in_and_lexically_scoped() {
@@ -665,6 +910,8 @@ mod tests {
             origin: ModuleOrigin::User,
             namespace: "",
             entry: true,
+            edition: crate::syntax::Edition::LATEST,
+            package: None,
         }];
         for enabled in [false, true] {
             let module = check_modules_collect(

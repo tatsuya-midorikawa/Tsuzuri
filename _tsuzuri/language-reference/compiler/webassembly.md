@@ -23,7 +23,7 @@ tsuzuri build Main.tz --target wasm32 -o shop.wasm
 tsuzuri build Main.tz --target wasm64 -o shop64.wasm
 ```
 
-既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。
+既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 
 次の関数は、ネイティブでも WASM でも同じ計算です。ネイティブの `run` は 42 を出します。
 
@@ -43,6 +43,8 @@ add 20 22
 同じソースを `wasm32` と `wasm64` に出し、Node.js から `tz_add(20n, 22n)` を呼ぶと、どちらも `42n` でした。`tsuzuri test --target wasm64` は、Node.js 24 以降で空の memory64 モジュールを検査してからテストを始めます。コンパイラ本体が wasm64 を拒否するわけではありません。
 
 既定の wasm32 はホスト import を持ちません。`File`、`Dir`、`Env`、`Time`、`Random`（`Random.Pcg` を除く）、`Process` に到達するコードは `E2000` です。OS の API が要るなら native にするか、後述の `--wasm-host wasi` を使います。`Path` はホスト不要です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve` など）に到達するコードも `E2000` です。`Net` のアドレスの解析と表示（`parse_address`・`address_text` など）はホスト不要で、import は増えません（[Net](../built-in-types-and-modules/net.md)）。
+
+`f16` の演算と変換は、WASM では常にコンパイラ同梱のソフトウェア実装です。LLVM の `half` 命令も、`f16` のための import も使いません。native の経路との違いは速度だけで、結果のビットは同じです（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。
 
 ```mermaid
 flowchart TD

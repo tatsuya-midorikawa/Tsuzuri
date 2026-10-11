@@ -851,6 +851,7 @@ impl Wire for FunctionDecl {
             recursion,
             visibility,
             exported,
+            constant,
             parameters,
             result,
             constraints,
@@ -862,6 +863,7 @@ impl Wire for FunctionDecl {
         recursion.put(out)?;
         visibility.put(out)?;
         exported.put(out)?;
+        constant.put(out)?;
         parameters.put(out)?;
         result.put(out)?;
         constraints.put(out)?;
@@ -879,6 +881,7 @@ impl Wire for FunctionDecl {
             recursion: Option::get(input)?,
             visibility: Visibility::get(input)?,
             exported: bool::get(input)?,
+            constant: bool::get(input)?,
             parameters: Vec::get(input)?,
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
@@ -896,6 +899,7 @@ impl Wire for SignatureDecl {
             recursion,
             visibility,
             exported,
+            constant,
             parameters,
             result,
             constraints,
@@ -907,6 +911,7 @@ impl Wire for SignatureDecl {
         recursion.put(out)?;
         visibility.put(out)?;
         exported.put(out)?;
+        constant.put(out)?;
         parameters.put(out)?;
         result.put(out)?;
         constraints.put(out)?;
@@ -921,6 +926,7 @@ impl Wire for SignatureDecl {
             recursion: Option::get(input)?,
             visibility: Visibility::get(input)?,
             exported: bool::get(input)?,
+            constant: bool::get(input)?,
             parameters: Vec::get(input)?,
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
@@ -2183,8 +2189,14 @@ impl Wire for ComputationMatchArm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_with_source_all;
+    use crate::diagnostic::Diagnostic;
+    use crate::syntax::Edition;
     use std::path::Path;
+
+    // The round-trip tests parse manifest-less text, so they use the latest edition.
+    fn parse_with_source_all(text: &str, source: usize) -> Result<Program, Vec<Diagnostic>> {
+        crate::parser::parse_with_source_all(text, source, Edition::LATEST)
+    }
 
     fn round_trip<T: Wire>(value: &T, source: usize, into: usize) -> Result<T, Invalid> {
         let mut out = Writer::new(Mode::Full, source, MAX_DEPTH);
@@ -2601,6 +2613,7 @@ add_one 41
             edited("def add_one :: i64 -> i64", "def add_one :: i32 -> i64"),
             edited("def add_one :: i64 -> i64", "def add_one :: i64 -> i32"),
             edited("def add_one", "private def add_one"),
+            edited("def add_one", "const def add_one"),
             edited(
                 "record Point { x: i64, y: i64 }",
                 "record Point { x: i64, z: i64 }",
@@ -2632,9 +2645,9 @@ add_one 41
 
     const GOLDEN: &str = concat!(
         "000000000000000101084120706f696e742e000c0100015014150100000001017818190100000369",
-        "36341b1e0100000000010001662627010000000000010178393a010000036936342b2e0100000003",
-        "693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d01",
-        "0e050f0a016650510100505101010100010052530101505301020002005758010150580103455801",
-        "00011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000003002245",
+        "36341b1e010000000001000166262701000000000000010178393a010000036936342b2e01000000",
+        "03693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d",
+        "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000003002245",
     );
 }

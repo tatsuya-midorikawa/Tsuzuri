@@ -9,16 +9,27 @@ pub struct FormatResult {
     pub formatted: String,
 }
 
+/// Formats `source`, which no package owns, with the latest edition. The formatter of a
+/// package's file goes through `format_source_with_edition`.
 pub fn format_source(
-    _path: &str,
+    path: &str,
     source: &str,
     kind: SourceKind,
 ) -> Result<FormatResult, Diagnostic> {
-    let mut before = crate::parser::parse_with_source(source, 0)?;
+    format_source_with_edition(path, source, kind, Edition::LATEST)
+}
+
+pub fn format_source_with_edition(
+    _path: &str,
+    source: &str,
+    kind: SourceKind,
+    edition: Edition,
+) -> Result<FormatResult, Diagnostic> {
+    let mut before = crate::parser::parse_with_source(source, 0, edition)?;
     before.source_kind = Some(kind);
     let (before, mut hints) = canonicalize(before);
-    let formatted = print_tokens(source, &mut hints)?;
-    let mut after = crate::parser::parse_with_source(&formatted, 0).map_err(|error| {
+    let formatted = print_tokens(source, &mut hints, edition)?;
+    let mut after = crate::parser::parse_with_source(&formatted, 0, edition).map_err(|error| {
         Diagnostic::new(
             "E2000",
             format!(
@@ -42,9 +53,9 @@ pub fn format_source(
     })
 }
 
-fn print_tokens(source: &str, hints: &mut Hints) -> Result<String, Diagnostic> {
+fn print_tokens(source: &str, hints: &mut Hints, edition: Edition) -> Result<String, Diagnostic> {
     use crate::lexer::TriviaKind;
-    let tokens = crate::lexer::lex_with_trivia(source)?;
+    let tokens = crate::lexer::lex_with_trivia(source, edition)?;
     let generic = generic_tokens(&tokens, hints);
     let mut layout = Layout::new(&tokens);
     let crlf = source

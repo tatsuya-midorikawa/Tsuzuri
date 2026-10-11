@@ -3343,6 +3343,11 @@ pub struct ModuleInput<'a> {
     pub namespace: &'a str,
     /// The root package's `Main.tz`, the only module that may hold the entry point.
     pub entry: bool,
+    /// The edition that the module's source was read with; its name is an identifier of it.
+    pub edition: crate::syntax::Edition,
+    /// The dependency package that owns the module, `None` for the root package, for sources
+    /// without a manifest, and for std (W1005).
+    pub package: Option<&'a crate::package::PackageId>,
 }
 
 #[derive(Debug)]
@@ -3371,6 +3376,16 @@ pub struct CheckedModule {
     /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
     /// program builds a non-CPU `Gpu.Backend`.
     pub gpu: crate::gpu_devices::GpuProgram,
+    /// D11 Phase 2: the plain constants that the program reads in place or borrows, by the id
+    /// of the constant's declaration. `TypedExprKind::Static(id)` names one.
+    pub statics: BTreeMap<usize, StaticData>,
+}
+
+/// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
+#[derive(Clone, Debug)]
+pub struct StaticData {
+    /// The literal tree that the constant evaluates to; its type is the constant's.
+    pub value: TypedExpr,
 }
 
 /// The slot functions of each vtable in slot order, by vtable key and stored type (A14).
@@ -3617,6 +3632,10 @@ pub enum TypedExprKind {
     Break,
     Continue,
     Local(usize),
+    /// The read-only static data `CheckedModule::statics[id]` (D11 Phase 2). It is only the
+    /// operand of a shared `Borrow`, which `constants::fold` builds for a constant of plain data
+    /// that the program reads in place or borrows. The value is never moved, written, or dropped.
+    Static(usize),
     Function(FunctionRef),
     GenericFunction(usize, Vec<Type>),
     Method(usize, usize, Type),
@@ -4073,6 +4092,8 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
         origin: ModuleOrigin::User,
         namespace: &namespace,
         entry: true,
+        edition: crate::syntax::Edition::LATEST,
+        package: None,
     }])
 }
 
@@ -4150,6 +4171,8 @@ struct Names {
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
     constants: BTreeSet<usize>,
+    /// The functions declared `const def` (D11), by function id.
+    const_functions: BTreeSet<usize>,
     /// The values of the `i64` constants with an integer literal value, which can be lengths (A16).
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
@@ -4291,6 +4314,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
         recursion: None,
         visibility: Visibility::Private,
         exported: false,
+        constant: false,
         parameters: vec![Parameter {
             name: named("$iterations"),
             ty: i64_type(),
@@ -5614,7 +5638,10 @@ fn check_modules_collect(
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
-    let indexing = semantic.is_some();
+    // A `@deprecated` declaration needs the references that the semantic index records (W1005),
+    // so a project without one never collects them unless the caller asked for the index.
+    let deprecations = warnings::deprecations(modules);
+    let indexing = semantic.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
         ..Names::default()
@@ -5656,7 +5683,7 @@ fn check_modules_collect(
             continue;
         }
         let valid = name.split('.').all(|name| {
-            crate::lexer::lex(name).is_ok_and(|tokens| {
+            crate::lexer::lex(name, module.edition).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
@@ -5818,9 +5845,29 @@ fn check_modules_collect(
             }
         }
     }
+    // The names that a const initializer may apply: `const def`s, and union cases to build the
+    // arguments of a call (D11).
+    let const_names: BTreeSet<String> = modules
+        .iter()
+        .flat_map(|module| {
+            let functions = module
+                .program
+                .functions
+                .iter()
+                .filter(|function| function.constant)
+                .map(|function| function.name.text.clone());
+            let cases = module
+                .program
+                .unions
+                .iter()
+                .flat_map(|union| &union.cases)
+                .map(|case| case.name.text.clone());
+            functions.chain(cases)
+        })
+        .collect();
     for module in modules {
         for constant in &module.program.constants {
-            constants::validate(&constant.value)?;
+            constants::validate(&constant.value, &const_names)?;
             // An `i64` constant with an integer literal value can name a length (A16 Phase 2).
             if let (TypeExprKind::Named(ty), ExprKind::Integer(value, suffix)) =
                 (&constant.ty.kind, &constant.value.kind)
@@ -5844,6 +5891,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: constant.visibility,
                     exported: false,
+                    constant: false,
                     parameters: Vec::new(),
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
@@ -5907,6 +5955,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: external.visibility,
                     exported: false,
+                    constant: false,
                     parameters: external
                         .parameters
                         .iter()
@@ -5968,6 +6017,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: Visibility::Private,
                     exported: false,
+                    constant: false,
                     parameters: Vec::new(),
                     result: TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
@@ -6436,6 +6486,9 @@ fn check_modules_collect(
             module: module.clone(),
             visibility: function.visibility,
         };
+        if function.constant {
+            names.const_functions.insert(id);
+        }
         if function.name.text == "_"
             || Builtin::ALL
                 .iter()
@@ -6607,6 +6660,9 @@ fn check_modules_collect(
                     function.result.span,
                     "constant types must be concrete; remove type variables",
                 ));
+            }
+            if names.const_functions.contains(&id) {
+                constants::check_signature(function, &signature, &variables, &types)?;
             }
             let mut constraints = Vec::new();
             let mut members = Vec::new();
@@ -7051,12 +7107,34 @@ fn check_modules_collect(
         (0..declaration_count).collect::<Vec<_>>()
     );
     diagnostics.check()?;
-    if let Some(index) = semantic {
-        *index = semantic::collect(modules, &functions, &name_uses, &names, types);
+    if indexing {
+        let index = semantic::collect(modules, &functions, &name_uses, &names, types);
+        if !deprecations.is_empty() {
+            warnings.extend(warnings::deprecated_uses(
+                modules,
+                &index,
+                &names,
+                &deprecations,
+            ));
+        }
+        if let Some(requested) = semantic {
+            *requested = index;
+        }
     }
-    constants::fold(&mut functions, &names.constants)?;
-    let references =
+    let const_uses =
+        constants::const_def_uses(&functions, &names.constants, &names.const_functions);
+    let statics = constants::fold(
+        &mut functions,
+        &names.constants,
+        &names.const_functions,
+        &types,
+    )?;
+    let mut references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
+    // A `const def` that a constant calls is used, although `fold` replaced the call by a value.
+    for (constant, callee) in const_uses {
+        references[constant].push(callee);
+    }
     warnings.extend(warnings::unused_private(
         &functions,
         &function_declarations,
@@ -7084,6 +7162,7 @@ fn check_modules_collect(
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
         gpu: Default::default(),
+        statics,
     };
     validate_callbacks(&module)?;
     regions::validate_contract_calls(&module)?;
@@ -7380,6 +7459,7 @@ fn recovery_module(
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
         gpu: Default::default(),
+        statics: BTreeMap::new(),
     }
 }
 
@@ -10549,7 +10629,7 @@ impl<'a> Checker<'a> {
             Type::Array(element) => element.clone(),
             // A16: the shared slice of a fixed-length array borrows its storage in place.
             Type::FixedArray(element, _) if !mutable => {
-                Self::fixed_slice_source(&source)?;
+                self.fixed_slice_source(&source)?;
                 element.clone()
             }
             Type::FixedArray(..) => {
@@ -10606,9 +10686,9 @@ impl<'a> Checker<'a> {
     }
 
     /// A slice of a fixed-length array borrows a named value, so the borrow cannot outlive the
-    /// slot of a temporary (A16 D7).
-    fn fixed_slice_source(source: &TypedExpr) -> Result<(), Diagnostic> {
-        if source.is_place() {
+    /// slot of a temporary (A16 D7). A constant of plain data is named static data (D11 Phase 2).
+    fn fixed_slice_source(&self, source: &TypedExpr) -> Result<(), Diagnostic> {
+        if source.is_place() || self.plain_constant(source) {
             Ok(())
         } else {
             Err(Diagnostic::new(
@@ -10779,7 +10859,7 @@ impl<'a> Checker<'a> {
         let mut value = value;
         value.ty = actual;
         let source = Self::autoderef(value);
-        Self::fixed_slice_source(&source)?;
+        self.fixed_slice_source(&source)?;
         let Type::FixedArray(actual_element, _) = &source.ty else {
             unreachable!("autoderef reaches the fixed-length array")
         };

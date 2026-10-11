@@ -136,7 +136,7 @@ flowchart TD
 | コード | 何を報告するか |
 | --- | --- |
 | `E0001` | 字句解析 |
-| `E0002` | 構文、AST の深さの上限、不正なビルダーの別名宣言（`@alias`）。行頭の `#if` もここに落ちます |
+| `E0002` | 構文、AST の深さの上限、不正なビルダーの別名宣言（`@alias`）、`const` の置き場所の誤り（`const fn`・`const let`・`const and`・`const export def`、`@cpu` との併用）、マニフェストの `edition` が対応する値でないこと（`unsupported edition '2030'; supported editions: 2026`）。行頭の `#if` もここに落ちます |
 | `E0003` | ソースファイルの大きさの上限（4 MiB） |
 | `E1001`–`E1010` | 識別子名、型シグネチャ、型の不一致、演算子・関数呼び出し、レコードフィールド、公開 ABI、リテラル、型レイアウト |
 | `E1011` | モジュール名、予約名、`std`、パッケージのパスと名前（同じ名前の別の取得元、git・registry のパッケージの許されない依存、互換の範囲が違う版の要求を含む）、シンボリックリンクの入力 |
@@ -154,12 +154,12 @@ flowchart TD
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス |
 | `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前 |
-| `E1026` | コンパイル時定数のトラップ、循環、ステップ上限 |
+| `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
-| `E2000` | 引数、拡張子、組み合わせ、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ |
-| `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです |
-| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows で OS API に到達した場合、macOS・Linux・Windows 以外で `Net` のソケットや Async の native reactor に到達した場合を含む |
+| `E2000` | 引数（`tsuzuri api-diff` の入力が 2 つでない場合を含む）、拡張子、組み合わせ、`--target` の名前が一覧にないこと（32-bit を含む）、ビルド機で動かせない target の `run`・`test` に `TSUZURI_RUNNER` がないこと、その target の `test --coverage`・`test -g`・`bench`、bare-metal の target が `--freestanding --allocator host` の object・llvm・header でないこと（[対応プラットフォーム](platforms.md#診断)）、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ |
+| `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです。`TSUZURI_RUNNER` のプログラムを起動できないときもこれで、メッセージにその名前が入ります |
+| `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows・iOS・Android で OS API に到達した場合、macOS・Linux・Windows 以外（FreeBSD、Android、iOS を含む）で `Net` のソケットや Async の native reactor に到達した場合、同梱ツールチェーンが持たない target（MSVC、sysroot、Android・iOS・bare-metal の C ライブラリ）を含む |
 | `E2003` | 出力ファイルの保護。既存の成果物を壊さないための失敗 |
 | `E2004` | 入口の要件。`Main.tz` が無い実行ファイル、export も `main` も無い WASM、`export def` の無いバインディングと共有ライブラリ、`export` が 1 つでない WGSL・SPIR-V の出力、`main` のシグネチャ違反、`def main` とトップレベル実行の併用、`Main.tz` 以外のモジュールでのトップレベル実行 |
 | `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む |
@@ -176,11 +176,14 @@ flowchart TD
 | `W1002` | 公開 API から到達しない private な関数、レコード、共用体、型エイリアス | 削除するか、公開する |
 | `W1003` | 前のガード無しの節が覆っている、到達しない `match` の節 | 節を削除するか、前のパターンを狭くする |
 | `W1004` | 同じ字句スコープでのシャドーイング | コマンドラインからは出せません。内部検査のときだけです |
+| `W1005` | 別のパッケージや標準ライブラリが `@deprecated` にした `def`・`record`・`union` の使用 | 案内に従って別の宣言へ移ります。同じパッケージの中の使用には出ません（[ドキュメント コメント](../organizing-tsuzuri/documentation-comment.md#警告-w1005)） |
 | `W1006` | 配列やリストの暗黙のディープコピー | `--warn implicit-copy` のときだけ。`ref` で借りるか、`Array.copy` / `List.copy` で明示する |
 | `W2001` | キャッシュを使えなかった、などのツール警告 | ソースの警告ではありません。`--json` のときこのコードになります |
 | `W2002` | `tsuzuri bindgen` が C ヘッダーの宣言や整数のマクロを変換せずに省いた。理由はメッセージと、出力の `// skipped` 行にあります | 手で宣言するか、対応する型だけの C 関数で包みます。ポインターと長さの組は `--buffer` で変換できることがあります。位置はヘッダーの宣言やマクロの名前です |
 
 `W1006` は、同じ位置がジェネリックの複数の具体化でコピーされても 1 件です。生成コードは、フラグの有無で変わりません。標準ライブラリの内部名と、コンパイラが作った束縛には `W1001` を出しません。
+
+`W1005` は既定で有効で、フラグは要りません。メッセージは `'LegacyLib::Old.old' is deprecated: use LegacyLib::Old.next instead` の形で、案内が空なら `is deprecated; see its documentation for a replacement` です。`--deny-warnings` を付けると終了コードが 1 になるので、依存パッケージが宣言を非推奨にすると、その依存を使う側のビルドが失敗することがあります。警告の有無は互換性の保証の対象外です（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
 
 次の再使用は、`--warn implicit-copy` を付けた `check` で `W1006` になりました。フラグが無いと同じソースは警告ゼロで、終了コードはどちらも 0 です。
 
@@ -217,6 +220,7 @@ VS Code 拡張は、これを波線と問題パネルに出します。未使用
 - [コンパイラの使い方](usage.md)
 - [コンパイラ オプション](option.md)
 - [コンパイラ ディレクティブ](directives.md)
+- [対応プラットフォームとクロスコンパイル](platforms.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語仕様の診断](../../../docs/language.md#診断)
 - [言語リファレンスの目次](../index.md)

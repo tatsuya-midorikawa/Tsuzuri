@@ -435,6 +435,7 @@ fn define_declarations(
                     SymbolKind::Function,
                     declaration.visibility,
                     declaration.exported,
+                    declaration.constant,
                 )
             })
             .chain(program.externs.iter().map(|external| {
@@ -444,9 +445,10 @@ fn define_declarations(
                     SymbolKind::Extern,
                     external.visibility,
                     external.exported,
+                    false,
                 )
             }));
-        for (declared, labels, kind, visibility, exported) in callables {
+        for (declared, labels, kind, visibility, exported, constant) in callables {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -476,7 +478,8 @@ fn define_declarations(
                 format!("extern def {shown}.{}", declared.text)
             } else {
                 format!(
-                    "def {shown}.{} :: {}",
+                    "{}def {shown}.{} :: {}",
+                    if constant { "const " } else { "" },
                     declared.text,
                     function.signature.as_type().display(types)
                 )
@@ -514,6 +517,12 @@ fn define_declarations(
     links
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times `collect` ran on this thread, which the W1005 tests count (G19).
+    pub(crate) static COLLECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn collect(
     modules: &[ModuleInput<'_>],
     functions: &[CheckedFunction],
@@ -521,6 +530,8 @@ pub(super) fn collect(
     names: &Names,
     types: TypeContext<'_>,
 ) -> SemanticIndex {
+    #[cfg(test)]
+    COLLECTIONS.with(|count| count.set(count.get() + 1));
     let mut index = SemanticIndex::default();
     let links = define_declarations(&mut index, modules, functions, names, &types);
     let links = &links;
@@ -641,7 +652,8 @@ pub(super) fn collect(
                     12,
                     declaration.body.span,
                     format!(
-                        "def {shown}.{} :: {}",
+                        "{}def {shown}.{} :: {}",
+                        if declaration.constant { "const " } else { "" },
                         function.name,
                         function.signature.as_type().display(&types)
                     ),

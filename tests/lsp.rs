@@ -52,6 +52,25 @@ fn scripted(
     encoding: &str,
     steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
+    let (responses, ids) = session(files, encoding, steps);
+    ids.iter()
+        .map(|id| {
+            responses
+                .iter()
+                .find(|response| response.get("id") == Some(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("no response {id}"))
+        })
+        .collect()
+}
+
+/// Runs one server session as `scripted` does and returns every message the server wrote,
+/// notifications included, with the ids of the requests that `steps` sent.
+fn session(
+    files: &[(&str, &str)],
+    encoding: &str,
+    steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     use serde_json::json;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,15 +126,7 @@ fn scripted(
         responses.push(message.unwrap());
     }
     std::fs::remove_dir_all(&root).unwrap();
-    ids.iter()
-        .map(|id| {
-            responses
-                .iter()
-                .find(|response| response.get("id") == Some(id))
-                .cloned()
-                .unwrap_or_else(|| panic!("no response {id}"))
-        })
-        .collect()
+    (responses, ids)
 }
 
 const P1: [(&str, &str); 3] = [
@@ -998,6 +1009,34 @@ const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x
 const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
 
 #[test]
+fn const_def_hovers_show_the_qualifier() {
+    use serde_json::json;
+    let main = "const def twice :: i64 -> i64\nfn twice x = x * 2\ndef plain :: i64 -> i64\nfn plain x = x\nconst Answer: i64 = twice 21\nAnswer\n";
+    let hovers = [
+        ("twice x", "const def Main.twice :: i64 -> i64"),
+        ("plain x", "def Main.plain :: i64 -> i64"),
+    ];
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        hovers
+            .iter()
+            .enumerate()
+            .map(|(id, (needle, _))| {
+                json!({"id": id + 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(main, needle, "utf-16")}})
+            })
+            .collect()
+    });
+    for (response, (needle, detail)) in responses.iter().zip(&hovers) {
+        let hover = response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{needle}: {response}"));
+        assert!(
+            hover.starts_with(&format!("```tsuzuri\n{detail}\n```")),
+            "{needle}: {hover}"
+        );
+    }
+}
+
+#[test]
 fn declaration_hovers_name_modules_with_double_colons() {
     use serde_json::json;
     let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\ndef keep :: Handle -> Handle = \\h -> h\n";
@@ -1436,4 +1475,55 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
             assert!(labels.contains(member), "{member}: {labels:?}");
         }
     }
+}
+
+#[test]
+fn deprecated_uses_from_other_packages_are_published_as_warnings() {
+    use serde_json::json;
+    let manifest = |name: &str, dependencies: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n{dependencies}")
+    };
+    let app = "let _light = LegacyLib::Old.Red\nLegacyLib::Old.old 1\n";
+    let old = "/// @deprecated use next\ndef old :: i64 -> i64 = \\x -> x\n\n/// @deprecated\nunion Light = Red | Green\n\ndef inside :: i64 -> i64 = \\x -> old x\n";
+    let (messages, _) = session(
+        &[
+            (
+                "Tsuzuri.toml",
+                &manifest(
+                    "app",
+                    "[dependencies]\nlegacy-lib = { path = \"legacy-lib\" }\n",
+                ),
+            ),
+            ("Main.tz", app),
+            ("legacy-lib/Tsuzuri.toml", &manifest("legacy-lib", "")),
+            ("legacy-lib/Old.tz", old),
+        ],
+        "utf-16",
+        |uri| {
+            // A request makes the server analyze the project and publish its diagnostics.
+            vec![
+                json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": {"line": 0, "character": 4}}}),
+            ]
+        },
+    );
+    // The last notification of a file is the state after the whole project was analyzed.
+    let published = |file: &str| {
+        messages
+            .iter()
+            .filter(|message| message["method"] == "textDocument/publishDiagnostics")
+            .rfind(|message| message["params"]["uri"].as_str().unwrap().ends_with(file))
+            .map(|message| message["params"]["diagnostics"].clone())
+            .unwrap_or_else(|| panic!("nothing published for {file}"))
+    };
+    assert_eq!(
+        published("/Main.tz"),
+        json!([
+            {"range": range(0, 28, 31), "severity": 2, "code": "W1005", "source": "tsuzuri",
+             "message": "'LegacyLib::Old.Light' is deprecated; see its documentation for a replacement"},
+            {"range": range(1, 15, 18), "severity": 2, "code": "W1005", "source": "tsuzuri",
+             "message": "'LegacyLib::Old.old' is deprecated: use next"},
+        ])
+    );
+    // A use inside the package that declares it is not reported.
+    assert_eq!(published("/Old.tz"), json!([]));
 }

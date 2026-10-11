@@ -30,7 +30,7 @@ OS と CPU に合ったパッケージが自動で選ばれます。対応して
 | ファイル | 内容 |
 | --- | --- |
 | Main.tz | 名前空間の宣言、プログラムの入口、テストの例 |
-| Tsuzuri.toml | パッケージ名、バージョン、既定の名前空間（`namespace`） |
+| Tsuzuri.toml | パッケージ名、バージョン、言語版（`edition`）、既定の名前空間（`namespace`） |
 | .gitignore | ビルド結果を置く `.tsuzuri/` を Git の管理から除外 |
 
 ファイルは同梱のコンパイラの `tsuzuri new` が作ります。

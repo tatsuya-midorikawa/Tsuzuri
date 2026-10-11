@@ -16,7 +16,7 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         if has_user && source.origin != ModuleOrigin::User {
             continue;
         }
-        let program = crate::parser::parse_with_source(&source.text, id)?;
+        let program = crate::parser::parse_with_source(&source.text, id, source.edition)?;
         let name = match (source.origin, &program.namespace) {
             (ModuleOrigin::User, Some(declared)) => {
                 crate::module_identity(
@@ -65,7 +65,7 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
     Ok(pages)
 }
 
-fn type_text(ty: &TypeExpr) -> String {
+pub(crate) fn type_text(ty: &TypeExpr) -> String {
     match &ty.kind {
         TypeExprKind::Named(name) => name.clone(),
         TypeExprKind::Variable(name) => format!("'{name}"),
@@ -141,7 +141,7 @@ fn type_text(ty: &TypeExpr) -> String {
     }
 }
 
-fn region_text(regions: &[Ident]) -> String {
+pub(crate) fn region_text(regions: &[Ident]) -> String {
     if regions.is_empty() {
         String::new()
     } else {
@@ -169,7 +169,7 @@ pub(crate) fn dyn_text(dyn_type: &DynTypeExpr) -> String {
     }
 }
 
-fn parameters_text(parameters: &[Ident]) -> String {
+pub(crate) fn parameters_text(parameters: &[Ident]) -> String {
     if parameters.is_empty() {
         String::new()
     } else {
@@ -184,7 +184,7 @@ fn parameters_text(parameters: &[Ident]) -> String {
     }
 }
 
-fn constraints_text(constraints: &[ConstraintExpr]) -> String {
+pub(crate) fn constraints_text(constraints: &[ConstraintExpr]) -> String {
     let constraints = constraints
         .iter()
         .filter_map(|constraint| {
@@ -202,7 +202,7 @@ fn constraints_text(constraints: &[ConstraintExpr]) -> String {
     }
 }
 
-fn signature<'a>(
+pub(crate) fn signature<'a>(
     prefix: &str,
     name: &str,
     regions: &[Ident],
@@ -247,7 +247,7 @@ fn section(name: &str, code: &str, doc: Option<&Documentation>, level: usize) ->
 }
 
 /// `@json "name" ` before a field or case, with the name escaped as a string literal.
-fn json_text(json: Option<&JsonName>) -> String {
+pub(crate) fn json_text(json: Option<&JsonName>) -> String {
     let Some(json) = json else {
         return String::new();
     };
@@ -323,8 +323,9 @@ fn render_declarations(program: &Program) -> String {
             continue;
         }
         let prefix = format!(
-            "{}def{}",
+            "{}{}def{}",
             if declaration.exported { "export " } else { "" },
+            if declaration.constant { "const " } else { "" },
             if declaration.recursion.is_some() {
                 " rec"
             } else {

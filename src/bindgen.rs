@@ -1645,9 +1645,11 @@ fn pascal_case(name: &str) -> String {
     result
 }
 
-/// Whether the lexer reads `name` as a plain identifier rather than a keyword.
+/// Whether the lexer reads `name` as a plain identifier rather than a keyword. A later edition
+/// only adds reserved words, so the latest edition's answer holds for every edition that the
+/// package using the generated module may have.
 fn plain_identifier(name: &str) -> bool {
-    crate::lexer::lex(name).is_ok_and(|tokens| {
+    crate::lexer::lex(name, crate::syntax::Edition::LATEST).is_ok_and(|tokens| {
         matches!(
             tokens.as_slice(),
             [first, ..] if first.kind == crate::syntax::TokenKind::Ident(name.to_owned())

@@ -147,8 +147,10 @@
 
 - [コンパイラの使い方](./compiler/usage.md)
 - [コンパイラ オプション](./compiler/option.md)
+- [対応プラットフォームとクロスコンパイル](./compiler/platforms.md)
 - [コンパイラ ディレクティブ](./compiler/directives.md)
 - [診断メッセージとエラーコード](./compiler/diagnostics.md)
 - [WebAssembly への出力](./compiler/webassembly.md)
 - [ネイティブ連携 (C ABI)](./compiler/native-interop.md)
 - [デバッグ](./compiler/debugging.md)
+- [安定性と互換性の方針](../../docs/stability.md)

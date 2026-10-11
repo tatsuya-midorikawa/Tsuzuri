@@ -437,7 +437,7 @@ timeout: TimedOut
 
 ## エラーの読み方
 
-`Os.ErrorKind` に case を足すのは major edition だけなので、`Net` の失敗の多くは `Os.ErrorKind.Other` で、システムの `errno` が `code` に入ります。`Net.error_kind` は、その `code` から、よく使う分類を返します。
+`Os.ErrorKind` に case を足すのは互換性のない変更なので、`Net` の失敗の多くは `Os.ErrorKind.Other` で、システムの `errno` が `code` に入ります（[安定性と互換性の方針](../../../docs/stability.md#既知の例外)）。`Net.error_kind` は、その `code` から、よく使う分類を返します。
 
 | 失敗 | `Os.ErrorKind` | `Net.error_kind` |
 | --- | --- | --- |
@@ -451,7 +451,7 @@ timeout: TimedOut
 | 名前が見つからない | `NotFound`（`code` は 0） | `Unclassified` |
 | 上記以外、`code` が 0 | 状況による | `Unclassified` |
 
-`Net.ErrorKind` の case を足すと網羅的な `match` が壊れるので、足すのは major edition だけです。`code` の番号は OS で違います（`ECONNREFUSED` は macOS で 61、Linux で 111）が、`Net.error_kind` は同じ結果になります。`Interrupted`（`EINTR`）はランタイムが再試行するので、呼び出し側には出ません。
+`Net.ErrorKind` の case を足すと網羅的な `match` が壊れるので、足すのは互換性のない変更として扱うときだけです。`code` の番号は OS で違います（`ECONNREFUSED` は macOS で 61、Linux で 111）が、`Net.error_kind` は同じ結果になります。`Interrupted`（`EINTR`）はランタイムが再試行するので、呼び出し側には出ません。
 
 ## 資源上限と安全性
 
@@ -476,6 +476,7 @@ timeout: TimedOut
 | macOS の native | 対応（開発者が実行して検証） |
 | Linux の native | 対応。glibc と musl の x86_64・aarch64 で、警告なしにコンパイルできることを確かめています。実行は CI だけで検証します |
 | Windows の native | 対応（Winsock、`WSAPoll`）。MSVC と MinGW のツールチェーンで、x86_64 と aarch64 がコンパイルでき、x86_64 はリンクできることを確かめています。実行は CI だけで検証します |
+| `--target` で名指しした FreeBSD・Android・iOS | `E2002`。`src/runtime/net.c` は macOS、Linux、Windows の向けだけで、ほかの実装を推測してリンクしません |
 | 既定の wasm32 | ソケットに到達するビルドは `E2000`。アドレスの解析と表示は、import なしで動きます |
 | `--wasm-host wasi` | `E2000`。WASI preview1 には、`connect`・`bind`・`listen` がありません |
 | `--wasm-feature jspi --wasm-feature net`（wasm32） | 対応。生成したグルーが `node:net`・`node:dgram`・`node:dns` で実装します。macOS の Node.js 24 の loopback で検証しました |
@@ -499,7 +500,7 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 
 ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 
-macOS・Linux・Windows 以外のホストは `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
+macOS・Linux・Windows 以外のホストと、`--target` で名指しした FreeBSD・Android・iOS は `E2002` です。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
 
 ## 公開 API
 

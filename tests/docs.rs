@@ -109,6 +109,32 @@ fn renders_declared_constraints_regions_and_class_method_docs() {
 }
 
 #[test]
+fn renders_const_defs_with_their_qualifiers() {
+    let source = "/// Doubles.\nconst def twice :: i64 -> i64\nfn twice x = x * 2\n\
+        /// Exported.\nexport const def shown :: i64 -> i64\nfn shown x = x\n\
+        /// Even.\nconst def rec even :: i64 -> bool\nfn rec even n = if n == 0 then true else odd (n - 1)\n\
+        /// Odd.\nand odd :: i64 -> bool = \\n -> if n == 0 then false else even (n - 1)\n\
+        private const def hidden :: i64\nfn hidden = 0\n\
+        def plain :: i64\nfn plain = 1\n";
+    let rendered = docgen::render_module(
+        "Main",
+        &parser::parse(source).unwrap_or_else(|error| panic!("{error:?}")),
+    );
+    for expected in [
+        "const def twice :: i64 -> i64",
+        "export const def shown :: i64 -> i64",
+        "const def rec even :: i64 -> bool",
+        "const def rec odd :: i64 -> bool",
+        "def plain :: i64",
+    ] {
+        assert!(rendered.contains(expected), "{expected}\n{rendered}");
+    }
+    assert!(!rendered.contains("hidden"));
+    assert!(!rendered.contains("const def plain"));
+    assert!(rendered.contains("Doubles."));
+}
+
+#[test]
 fn renders_active_pattern_names_and_module_function_constraints() {
     let source = "/// Extract.\ndef (|Whole|) :: i64 -> i64\nfn (|Whole|) value = value\n\
         def use :: 'a -> 'a\n    @'a: #identity\nfn use value = value\n\

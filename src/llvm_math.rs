@@ -104,7 +104,7 @@ impl FunctionEmitter<'_, '_> {
             }, ty, Span::default()).unwrap();
         }
         if operation == MathFma {
-            if cfg!(target_arch = "aarch64")
+            if crate::target::current_platform().hardware_fma()
                 && !self.globals.wasm
                 && matches!(ty, Type::Binary(32 | 64))
             {
@@ -232,6 +232,10 @@ impl FunctionEmitter<'_, '_> {
                 "select i1 {increment}, {lowered} {rounded}, {lowered} {truncated}"
             ));
         }
+        if operation == MathSqrt && matches!(ty, Type::Binary(16)) && self.globals.f16.arithmetic()
+        {
+            return self.half_sqrt("%arg0");
+        }
         let opcode = match operation {
             MathSqrt => 0,
             MathFloor => 1,
@@ -248,5 +252,128 @@ impl FunctionEmitter<'_, '_> {
             numeric_kind(ty)
         ));
         self.value(format!("load {lowered}, ptr {output}"))
+    }
+}
+
+/// f16 as LLVM `half` (D10).
+///
+/// An f16 stays an `i16` between operations, so the storage, the ABI, and the debug information
+/// are those of the software path. An operation bitcasts to `half`, computes, and bitcasts back.
+/// Each is one IEEE 754 operation on `half` with the default rounding, and no instruction carries
+/// a fast-math flag, so no result is fused or reassociated. A target without half arithmetic gets
+/// one binary32 operation between exact conversions for each, which rounds once for `+ - * /` and
+/// `sqrt`: binary32 has 24 bits, at least 2 × 11 + 2.
+///
+/// The software runtime (`numeric.c`) returns a canonical NaN and LLVM leaves the sign and the
+/// payload of a NaN result open, so every NaN result is replaced by the bits the runtime returns,
+/// taken from the operands' bits and never from the result's. A result that is not a NaN is the
+/// IEEE result in both paths.
+impl FunctionEmitter<'_, '_> {
+    /// Whether the f16 bits `bits` are a NaN: a magnitude above that of infinity, `0x7C00`.
+    fn half_is_nan(&mut self, bits: &str) -> String {
+        let magnitude = self.value(format!("and i16 {bits}, 32767"));
+        self.value(format!("icmp ugt i16 {magnitude}, 31744"))
+    }
+
+    /// The quiet NaN `0x7E00` with the sign bit of the f16 bits `sign_bits`.
+    fn half_canonical_nan(&mut self, sign_bits: &str) -> String {
+        let sign = self.value(format!("and i16 {sign_bits}, -32768"));
+        self.value(format!("or i16 {sign}, 32256"))
+    }
+
+    /// `left op right` for f16 bits: the result bits, or an `i1` for a comparison. A NaN result
+    /// is `0x7E00` with the sign of `left` for `+ -` and of `left xor right` for `* /`.
+    pub(super) fn half_binary(&mut self, operator: BinaryOp, left: &str, right: &str) -> String {
+        use BinaryOp::*;
+        let a = self.value(format!("bitcast i16 {left} to half"));
+        let b = self.value(format!("bitcast i16 {right} to half"));
+        let (instruction, product) = match operator {
+            Add => ("fadd", false),
+            Subtract => ("fsub", false),
+            Multiply => ("fmul", true),
+            Divide => ("fdiv", true),
+            Equal => return self.value(format!("fcmp oeq half {a}, {b}")),
+            NotEqual => return self.value(format!("fcmp une half {a}, {b}")),
+            Less => return self.value(format!("fcmp olt half {a}, {b}")),
+            LessEqual => return self.value(format!("fcmp ole half {a}, {b}")),
+            Greater => return self.value(format!("fcmp ogt half {a}, {b}")),
+            GreaterEqual => return self.value(format!("fcmp oge half {a}, {b}")),
+            _ => unreachable!("half operator checked"),
+        };
+        let result = self.value(format!("{instruction} half {a}, {b}"));
+        let bits = self.value(format!("bitcast half {result} to i16"));
+        let nan = self.half_is_nan(&bits);
+        let signs = if product {
+            self.value(format!("xor i16 {left}, {right}"))
+        } else {
+            left.to_owned()
+        };
+        let canonical = self.half_canonical_nan(&signs);
+        self.value(format!("select i1 {nan}, i16 {canonical}, i16 {bits}"))
+    }
+
+    /// `Math.sqrt` of f16 bits. A NaN operand comes back as it is, a signaling NaN included, and
+    /// the NaN of a negative operand is the positive `0x7E00`.
+    pub(super) fn half_sqrt(&mut self, input: &str) -> String {
+        self.intrinsics
+            .insert("declare half @llvm.sqrt.f16(half)".into());
+        let value = self.value(format!("bitcast i16 {input} to half"));
+        let root = self.value(format!("call half @llvm.sqrt.f16(half {value})"));
+        let bits = self.value(format!("bitcast half {root} to i16"));
+        let nan = self.half_is_nan(&bits);
+        let result = self.value(format!("select i1 {nan}, i16 32256, i16 {bits}"));
+        let input_nan = self.half_is_nan(input);
+        self.value(format!("select i1 {input_nan}, i16 {input}, i16 {result}"))
+    }
+
+    /// `value as to` between f16 and f32 or f64 when the path computes it in `half`, otherwise
+    /// `None`. A NaN input gives the canonical quiet NaN of the target with the input's sign, and
+    /// the payload is dropped.
+    pub(super) fn half_cast(&mut self, from: &Type, to: &Type, value: &str) -> Option<String> {
+        let path = self.globals.f16;
+        match (from, to) {
+            (Type::Binary(16), Type::Binary(bits @ (32 | 64))) if path.widens() => {
+                Some(self.half_widen(value, *bits))
+            }
+            (Type::Binary(bits @ (32 | 64)), Type::Binary(16)) if path.narrows_from(*bits) => {
+                Some(self.half_narrow(value, *bits))
+            }
+            _ => None,
+        }
+    }
+
+    fn half_widen(&mut self, value: &str, bits: u16) -> String {
+        let (float, integer, shift, quiet_nan) = if bits == 32 {
+            ("float", "i32", 16, 0x7FC0_0000_u64)
+        } else {
+            ("double", "i64", 48, 0x7FF8_0000_0000_0000)
+        };
+        let half = self.value(format!("bitcast i16 {value} to half"));
+        let wide = self.value(format!("fpext half {half} to {float}"));
+        let nan = self.half_is_nan(value);
+        let sign = self.value(format!("and i16 {value}, -32768"));
+        let sign = self.value(format!("zext i16 {sign} to {integer}"));
+        let sign = self.value(format!("shl {integer} {sign}, {shift}"));
+        let canonical = self.value(format!("or {integer} {sign}, {quiet_nan}"));
+        let canonical = self.value(format!("bitcast {integer} {canonical} to {float}"));
+        self.value(format!(
+            "select i1 {nan}, {float} {canonical}, {float} {wide}"
+        ))
+    }
+
+    fn half_narrow(&mut self, value: &str, bits: u16) -> String {
+        let (float, integer) = if bits == 32 {
+            ("float", "i32")
+        } else {
+            ("double", "i64")
+        };
+        let half = self.value(format!("fptrunc {float} {value} to half"));
+        let narrow = self.value(format!("bitcast half {half} to i16"));
+        let nan = self.value(format!("fcmp uno {float} {value}, {value}"));
+        let raw = self.value(format!("bitcast {float} {value} to {integer}"));
+        let top = self.value(format!("lshr {integer} {raw}, {}", bits - 16));
+        let top = self.value(format!("trunc {integer} {top} to i16"));
+        let canonical = self.half_canonical_nan(&top);
+        self.value(format!("select i1 {nan}, i16 {canonical}, i16 {narrow}"))
     }
 }

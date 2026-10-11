@@ -1904,6 +1904,96 @@ native でも、AArch64 向けにビルドしたコンパイラでなければ�
 
 この測定は 1 台の arm64 での値です。x86-64 の機械（ソフトウェアの `tz_soft_fma` の 1 積和の費用を含む）、AVX・SVE のような広いベクトル、wasm32 の threads の速度、`n = 1024` 以上、BLAS とのブロッキングを含む比較は未測定で、行列積の GPU カーネルはありません。
 
+## f16 のハードウェア経路（D10）
+
+`node benchmarks/run-f16.mjs BASELINE [COMPILER] [--quick] [--samples N] [--out DIR]` は、`f16`（binary16）のカーネル（`benchmarks/f16/Main.tz`）を、同じ演算を同じ順序で行う C の `_Float16`（`benchmarks/f16/f16.c`）と同じ条件で比べます。`BASELINE` は D10 より前のコンパイラ（`f16` が同梱のソフトウェア経路のもの）、`COMPILER` は測るコンパイラです（省略すると `BASELINE` と同じです）。入力は 100 万要素の `f64` 配列（1/64 の倍数で、およそ −16〜16）です。
+
+| カーネル | 内容 |
+| --- | --- |
+| `half_chain` | 要素ごとに `f64` から `f16` へ縮め、`total * 0.9990234375 + 要素` を `f16` で畳み込む。前の結果に依存する積と和の連鎖 |
+| `half_roundtrip` | 要素を `f16` へ縮めて `f64` へ戻し、`f64` で足す。変換だけ |
+| `half_scale` | 要素を `f16` へ縮め、`1.5` を掛け、`f64` へ戻して `f64` で足す。要素どうしは独立で、和の順序は保つので、残りはベクトル化できる |
+
+比べる実装は次のとおりです。
+
+| 実装 | 内容 |
+| --- | --- |
+| soft | `BASELINE` の `--emit object -O3`。`f16` の演算ごとに `tz_soft_*` を呼ぶ |
+| hardware | `COMPILER` の `--emit object -O3`（既定の `--cpu generic`）。macOS arm64 では `half` 命令（FEAT_FP16） |
+| promoted | hardware と同じ IR（`--emit llvm -O3`）を `clang -mcpu=generic` で object にしたもの。macOS arm64 の `-mcpu=generic` は FEAT_FP16 の演算を持たないので、LLVM は `half` の演算ごとに `f32` へ広げて 1 回の `f32` 演算をし、丸め直す。FEAT_FP16 のない AArch64 の `--cpu generic`（Linux・Windows）で `half` が下がる形を、この M1 で実行したもの。その CPU の速度ではない |
+| C `_Float16` | `clang -O3 -std=c11 -ffp-contract=off -fno-lto`。積と和を融合しない |
+
+どの実装も同じ `f16` の演算を同じ順序で行うので、チェックサム（結果の `f64` のビット）は 4 つとも同じで、runner は計時の前に違いを検査し、違えば失敗します。C と Tsuzuri は、各 build で実行順を回しながら（warm-up のあと）9 回ずつ測り、1 回の通過あたりの中央値・最小・最大（ms）を出します。1 サンプルの通過回数は、Tsuzuri の 1 回の通過が 60 ms 以上かかるときは 1 回、そうでなければ約 60 ms になる回数（最大 2,000 回）です。速度の合否の閾値はなく、`--quick`（4,097 要素、3 サンプル）は動作確認だけで、性能の証拠ではありません。
+
+2026-10-11 に Apple M1 Max（10 コア）、macOS（darwin 27.0.0）、Apple clang 21.0.0、Node v20.19.6、release ビルドのコンパイラ（`e100d5f1` のソース）で 3 回実行した結果です（生データは `target/perf/D10/run-1`〜`run-3` の `results.jsonl`、git の管理外）。ほかの作業のビルドとテストが同時に動き、1 分間の load average は各回の終わりで 8.8、15.5、8.3 でした。表は 1 回の通過（100 万要素）の中央値（ms）の、3 回分（1 回目 / 2 回目 / 3 回目）です。C は、各回の 3 つの build で一緒に測った 3 つの C の中央値です。
+
+| カーネル | soft | hardware | promoted | C `_Float16` |
+| --- | --- | --- | --- | --- |
+| `half_chain` | 3336 / 3524 / 3311 | 10.22 / 9.98 / 10.18 | 13.90 / 14.03 / 13.75 | 2.257 / 2.274 / 2.251 |
+| `half_roundtrip` | 1934 / 1901 / 1922 | 1.388 / 1.379 / 1.400 | 1.815 / 1.799 / 1.789 | 0.986 / 0.972 / 0.970 |
+| `half_scale` | 3247 / 3214 / 3232 | 2.179 / 2.221 / 2.186 | 3.435 / 3.435 / 3.419 | 0.970 / 0.967 / 0.968 |
+
+3 回の中央値で、hardware は soft の約 330 倍（`half_chain`）、約 1,380 倍（`half_roundtrip`）、約 1,480 倍（`half_scale`）の速さです。promoted は hardware の約 1.4 倍、1.3 倍、1.6 倍の時間で、soft の約 240 倍、1,070 倍、940 倍の速さです。hardware が C の `_Float16` より遅いのは、それぞれ約 4.5 倍、1.4 倍、2.3 倍です。
+
+生成コードの確認（`--emit llvm -O3` の IR を Apple clang 21 で object にして `otool -tV`）:
+
+- hardware の `half_chain` は、`fmul h`・`fadd h`・`fcvt h, d`（`f64` から `f16` へ 1 命令）のスカラーのループと、NaN の置き換え（`and`・`orr`・`cmp`・`csel`・`fcmp d, d`・`fcsel`）です。promoted は、`half` の演算ごとに `fcvt s, h`・`fmul s`（`fadd s`）・`fcvt h, s` で、ライブラリ関数の呼び出しはありません。
+- `half_roundtrip` と `half_scale` は、どちらの build でもベクトル化されます。`f64` から `f16` への縮小は `fcvtxn`（round-to-odd）と `fcvtn` の組、`half_scale` の積は hardware が `fmul.4h`、promoted が `fmul.4s` で、NaN の置き換えは `fcmeq.2d`・`cmhi.2s`・`bif`・`bsl` のベクトル命令です。縮小の 2 段階は、中間の round-to-odd が最終の丸めの結果を変えないので、1 回丸めと同じです。`tests/f16_hardware.mjs` が、二重丸めの罠の値を含む境界の値を、ベクトル化されたループでも照合します。
+- soft は `tz_soft_op`・`tz_soft_cast` の呼び出しです。
+
+hardware の `half_chain` のループの中心（`otool -tV` の出力から、NaN の置き換えを省いたもの）:
+
+```text
+fmul    h1, h1, h0     ; total * 0.9990234375
+fcvt    h2, d1         ; value as f16（1 命令、1 回の丸め）
+fadd    h1, h2, h1     ; 積と要素の和
+```
+
+**NaN の符号をそろえる費用。** 結果が NaN のとき、`half` 命令の経路は、ハードウェアが返す符号とペイロードを使わず、ソフトウェア経路と同じビットに置き換えます（旧 D3。[D10 の記録](../_features/_completed/D10-f16-hardware.md)、[言語仕様](language.md#f16-の計算経路)）。この置き換え（整数の比較と `select`）が、hardware と C の差の主な原因と見ています。確認のために、`half_binary`・`half_sqrt`・`half_widen`・`half_narrow` の NaN の `select` を取り除いて（結果の NaN のビットはハードウェアのまま）使い捨てのコンパイラをビルドして測ると、`half_chain` は 2.263 ms（C は 2.270）、`half_roundtrip` は 0.968 ms（C は 0.968）、`half_scale` は 0.975 ms（C は 0.975）で、C と同じ時間でした。この試作はコミットしておらず、生データも保存していません（1 回ずつの測定）。置き換えの形を変えた試作の値は次のとおりで、これも 1 回ずつの測定で、同じ load average 8〜24 の下の参考値です。採用したのは、いちばん単純で、E2E で検証した最初の形で、ほかは採用していません。
+
+| 形 | `half_chain`（ms） | `half_scale`（ms） | 結果 |
+| --- | --- | --- | --- |
+| 整数で判定し、整数の `select`（採用） | 10.0 | 2.19 | 採用 |
+| `fcmp uno half` と `half` の `select` | 8.0 | 2.38 | 連鎖は速いが、ベクトル化したループは遅く、不採用 |
+| NaN で分岐（`!prof` つき） | 9.5 | — | LLVM が、スカラーの連鎖では `select` に戻す。`half_roundtrip` で速く見えたのは、ベクトル化されなかっただけ |
+| `select` に `!prof` | 変化なし | — | 不採用 |
+| `copysign`・`fcmp uno`・`select` を浮動小数点の領域で行う | 4.79 | 2.47（+13%） | 連鎖は 2 倍以上速いが、ベクトル化したループが遅くなり、promoted では連鎖 10.8（−22%）、`half_scale` 4.45（+29%）で、一貫しない。不採用 |
+| 整数で判定し、`copysign` | 9.96 | — | 変化なし |
+
+NaN のビット（符号とペイロード）を言語の仕様から外せば、置き換えは要らなくなり、上の試作のとおり `f16` は C と同じ時間になる見込みです（この実装では測っていません）。ただし、`f16` の NaN のビットが、経路（WASM のソフトウェア経路と native の `half` 命令）で違うことになります。この費用に値するかは、仕様の判断として残してあり、この実装では変えていません（既存の `f32` と `f64` の NaN のビットは、すでにハードウェア依存です）。
+
+測っていないもの: x86-64（F16C と AVX512-FP16 のどちらも）、Linux と Windows の AArch64、FEAT_FP16 のない CPU の実機（promoted は、その形の命令列を M1 で実行しただけです）、M1 以外の Apple Silicon、ほかの `-O` と `--cpu native`、wasm32（常にソフトウェア経路で、この変更の対象外）。runner は `clock_gettime` のある POSIX の環境なら x86-64 などでも動くはずですが（macOS arm64 以外では実行していません）、hardware は既定の `--cpu generic` の経路（x86-64 ではソフトウェア）で、`--cpu native` の x86-64 の経路は測れません。この節の数値を、それらの機械の性能として扱わないでください。CI の runner（Intel Mac・Linux x86-64・Linux arm64）は `tests/f16_hardware.mjs` で結果のビットを照合するだけで、速度は測りません（共有の runner に速度の合否の閾値は置きません）。
+
+## 静的データ（D11 Phase 2）
+
+`node benchmarks/run-statics.mjs target/release/tsuzuri [--baseline 以前のコンパイラ] [--size バイト数] [--runs 回数] [--quick] [--artifacts ディレクトリ]` は、256 要素の表を引く CRC-32 のループ（`benchmarks/statics/Main.tz`）を、表の読み方の違いで比べます。入力は `(i * 7 + 3) & 255` のバイト列をループの中で作るので、表のほかにメモリは読みません。表は定数 `CrcTable`（256 個の `i32u`。`tests/fixtures/const_functions` の `crc_table()` が計算する値のリテラルで、`const def` のない以前のコンパイラも同じソースを読めます）です。
+
+| 形 | 内容 |
+| --- | --- |
+| `in_place` | ループで `CrcTable[...]` を直接読む。平たいデータの定数なので、バイナリの静的データを読む |
+| `bound` | ループの前に `let table = CrcTable` と束縛し、その複製を読む |
+| `copied` | ループの中で毎回 `let table = CrcTable` と束縛し、その複製を読む |
+
+現在のコンパイラの 3 つの形、`--baseline` に渡した静的データのない以前のコンパイラ（`053bced8`）の同じ 3 つ（`before_*`）、同じ表を `static const` に書いた C（`c_static_table`、`-O3 -ffp-contract=off`）を測ります。全変種の checksum が JavaScript の CRC-32 と一致しないと失敗します。1 回の呼び出しの thread CPU 時間と wall-clock 時間を、変種の順を回しながら測り、中央値を出します。速度の合否の閾値はなく、`--quick` は動作確認だけで性能の証拠ではありません。
+
+測定（2026-10-11、M1 Max、macOS、Apple clang 21.0.0、`--size 4194304 --runs 15`、runner を 3 回実行した thread CPU 時間の中央値の範囲）です。
+
+| 変種 | ns/バイト |
+| --- | --- |
+| `c_static_table`（C） | 2.633〜2.641 |
+| `in_place`（現在） | 2.626〜2.630 |
+| `bound`（現在） | 2.626〜2.636 |
+| `copied`（現在） | 13.269〜13.299 |
+| `before_in_place`（以前） | 13.220〜13.277 |
+| `before_bound`（以前） | 2.619〜2.639 |
+| `before_copied`（以前） | 13.217〜13.292 |
+
+同じソースの `in_place` は、以前のコンパイラの `before_in_place` の 5.03〜5.06 倍の速さで、C の `static const` の表と同じ速さです。wall-clock の中央値も同じ値の ±0.5% でした（測定中のロードアベレージは 27〜34 で、ほかのプロセスが動いていました）。
+
+生成コードを `--artifacts` で保存して確かめました。現在の `crc_in_place` の `-O3` のループは 7 命令で、`l_tz.static.N.data` を `ldr w11, [x10, w11, uxtw #2]` で読みます。添字 `& 0xFF` が長さ 256 に収まることを LLVM が証明するので、境界検査もありません。以前のコンパイラの同じ関数は、反復ごとに 1 KiB の表を作り直します（ループ本体 106 命令のうち、16 バイトのベクトル store が 64 個）。このため `copied`（反復ごとの束縛）も同じ遅さです。ループの前に束縛する `bound` は、どちらのコンパイラでも C と同じ速さです（LLVM が 1 回の複製を定数の表として保つため）。
+
+つまり静的データの利点は、定数を名前で直接読む形で表を作り直さなくなること、`let` で束縛するための書き換えが要らないことです。束縛していた形（`bound`）の速さは変わりません。測ったのは M1 Max の 1 つの負荷（表 256 要素、`i32u`）だけで、x86-64 と Linux、ほかの表の大きさ、wasm32 の実行時間は測っていません。s の速度、`n = 1024` 以上、BLAS とのブロッキングを含む比較は未測定で、行列積の GPU カーネルはありません。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

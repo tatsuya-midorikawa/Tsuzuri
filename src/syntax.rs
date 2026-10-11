@@ -23,6 +23,43 @@ impl SourceKind {
     }
 }
 
+/// A language edition (G19): the year whose reserved words a source file is read with. An
+/// edition decides only what a file may spell; a program that two editions both accept means
+/// the same in both, so packages of different editions link into one program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Edition(pub(crate) u16);
+
+impl Edition {
+    pub const E2026: Self = Self(2026);
+    /// What a project without a manifest, the standard library, and every entry point that
+    /// knows no package are read with.
+    pub const LATEST: Self = Self::E2026;
+    /// What a manifest without `edition` means. It never changes, or a compiler update would
+    /// give the manifests that already exist new reserved words.
+    pub const MANIFEST_DEFAULT: Self = Self::E2026;
+    pub const SUPPORTED: &'static [Self] = &[Self::E2026];
+
+    /// The supported edition that `text` names, such as `2026`.
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::SUPPORTED
+            .iter()
+            .copied()
+            .find(|edition| edition.to_string() == text)
+    }
+
+    /// The supported editions' names, comma separated.
+    pub fn supported_names() -> String {
+        let names: Vec<_> = Self::SUPPORTED.iter().map(ToString::to_string).collect();
+        names.join(", ")
+    }
+}
+
+impl std::fmt::Display for Edition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident(String),
@@ -331,6 +368,20 @@ pub struct Documentation {
     pub span: Span,
 }
 
+impl Documentation {
+    /// The note of the `@deprecated` tag (G19): the rest of the first line that starts with the
+    /// tag, which may be empty. `@deprecatedX` is not the tag.
+    pub fn deprecation(&self) -> Option<&str> {
+        if !self.text.contains("@deprecated") {
+            return None;
+        }
+        self.text.lines().find_map(|line| {
+            let rest = line.trim_start().strip_prefix("@deprecated")?;
+            (rest.is_empty() || rest.starts_with([' ', '\t'])).then(|| rest.trim())
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TypeAliasDecl {
     pub doc: Option<Documentation>,
@@ -411,6 +462,9 @@ pub struct FunctionDecl {
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
+    /// Declared `const def`: a const initializer may call it, and the compiler evaluates the call
+    /// (D11). It is an ordinary function at run time.
+    pub constant: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
@@ -425,6 +479,8 @@ pub struct SignatureDecl {
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
+    /// Written `const def`, or an `and` signature that continues a `const def rec` group (D11).
+    pub constant: bool,
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,

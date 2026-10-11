@@ -198,22 +198,23 @@ cargo test --locked honors_the_exact_specialization_limit
 
 | 変更の種類 | Rust テスト（手本のファイル） | E2E（`node tests/<名前>.mjs target/release/tsuzuri`） |
 | --- | --- | --- |
-| 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs` | `examples.mjs`、`features.mjs`（関係する suite） |
+| 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
 | 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
 | 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
-| 数値・数学 | `tests/integers.rs`、`tests/math.rs` | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24） |
+| 数値・数学 | `tests/integers.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
+| コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
 | Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
-| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs` | `cache.mjs`、`examples.mjs` |
-| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs` | — |
+| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
+| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む） | — |
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
@@ -297,7 +298,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | --- | --- |
 | `src/abi.rs`、`src/llvm_abi.rs` | host ABI の型の対応、公開 wrapper と C header（E05） |
 | `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
-| `src/constants.rs` | 定数の評価と型付きリテラルへの展開（D06） |
+| `src/constants.rs`、`src/const_machine.rs`、`src/const_rules.rs`、`src/const_static.rs` | 定数の評価と型付きリテラルへの展開（D06）。`const def` の明示スタックの評価器（`Machine`）、署名と本体の規則（`Type`／`TypedExprKind` を `_ =>` なしで振り分ける）、平たいデータの定数の静的データ（D11） |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
@@ -313,17 +314,19 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/llvm_debug.rs` | DWARF（G08） |
 | `src/llvm_imports.rs` | host import（E06） |
 | `src/llvm_io.rs` | IO の入口（`std/IO.tc`） |
-| `src/llvm_math.rs` | 数学関数と FMA（D03・D05） |
+| `src/llvm_math.rs` | 数学関数と FMA（D03・D05）。f16 の `half` 命令の経路 `half_binary`・`half_cast`・`half_sqrt`（D10） |
 | `src/llvm_parallel.rs`、`src/llvm_task.rs` | データ並列と `Task.parallel_results`（F02・B06） |
 | `src/llvm_recursive.rs`、`src/recursive.rs` | 再帰型の判定・ノード・反復的な drop／clone（A04） |
 | `src/llvm_simd.rs`、`src/simd.rs` | SIMD 型（F03・F04） |
 | `src/llvm_traps.rs`、`src/trap.rs` | trap の種類・位置・計装（G04） |
 | `src/lsp.rs`、`src/semantic.rs` | LSP サーバーと `SemanticIndex`（G07） |
-| `src/package.rs` | manifest と package graph（E04） |
+| `src/package.rs` | manifest と package graph（E04）。`[package]` の `edition`（G19） |
+| `src/target.rs` | `--target TRIPLE` が名指しできる 22 個の native の triple の表、ビルド先の性質を答える `Platform`（`cfg!` の代わり）、実行器 `TSUZURI_RUNNER`（G15） |
+| `src/api_diff.rs` | `tsuzuri api-diff`。2 つの版の公開 API を構文解析だけで比べる（G19） |
 | `src/regions.rs` | 名前付き region の検査（A09。複数 region の record と region で量化した引数は A12） |
 | `src/stdlib.rs` | std ソースの埋め込み（`SOURCES`）、予約モジュール、opaque record |
 | `src/test_runner.rs` | `tsuzuri test`（G06） |
-| `src/warnings.rs` | 警告 W1001–W1004（G03） |
+| `src/warnings.rs` | 警告 W1001–W1005（G03・G19。W1005 は `SemanticIndex::references` から出す） |
 | `src/copies.rs` | 暗黙の複製の一覧と W1006（A15） |
 | `src/bindgen.rs`、`src/bindgen_driver.rs` | `tsuzuri bindgen`。Clang の JSON AST と `-E -dD`／`-dM` から extern を生成（E11） |
 | `src/bindings.rs`、`src/bindings_native.rs`、`src/llvm_shared.rs` | `--emit bindings-js`／`bindings-cs`／`bindings-py`／`bindings-cpp` と `--emit shared`（E13） |
@@ -383,6 +386,10 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
   `tests/lists.rs` の `list_delimiters_do_not_conflict_with_operators` を参考にテストする。
 - モジュール名・レコード名の検査（`check_modules` 冒頭の字句チェック、`E1011`）はキーワードを拒否するので、
   キーワード追加で既存モジュール名が不正になることがある。
+- **G19 以後（D-45）は、予約語をソースの edition で決める。** 新しい予約語は `Lexer::identifier` の `match` に足したうえで、予約を始める edition と一緒に
+  `EDITION_KEYWORDS`（`src/lexer.rs`）へ登録する。それより古い edition のソースでは識別子として読める。新しい edition は人間の承認を得て一つの変更で作る
+  （`Edition` の定数・`SUPPORTED`・`LATEST`・`EDITION_KEYWORDS`・`docs/stability.md` の表・`tests/editions.rs` を同時に更新し、`MANIFEST_DEFAULT` は変えない）。
+  lexer と parser の入口は edition を必須の引数にし、既定値を持つ入口を足さない。
 
 ### 6.2 新しい式（`ExprKind` → `TypedExprKind`）
 
@@ -813,6 +820,8 @@ D-35 の文脈キーワード `namespace`／`using`（ファイル先頭の宣�
 D-39 の固定長配列の型 `[T; N]` と長さパラメーター `const N: i64`（A16。既存の予約語 `const` の組み合わせで、新しい予約語はない）、排他スライスの型 `ref mut [T..]`（C08）、
 dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属性 `@cpu ["avx2", ...]`（F08。`def` シグネチャの前だけ。`cpu` は予約語にしない）。
 D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソースでも先頭（byte 0）の `#!` 行を行コメントとして読む shebang の規則（G13 Phase 2）。
+D-45 の関数の修飾 `const def`（D11。既存の予約語 `const` と `def` の組み合わせで、新しい予約語はない）、manifest の `[package]` のキー `edition`、文書コメントの行 `@deprecated`（G19。字句と構文は変えない）。
+G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に足すほかに、予約を始める edition と一緒に `EDITION_KEYWORDS`（`src/lexer.rs`）へ登録する（§6.1。D-45）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
   取り込まれた後に着手するチケットは、借用・参照外しを扱う箇所（C03 の `&xs[a..b]` に対する `ref xs[a..b]`、A11 の比較用の
@@ -836,6 +845,7 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | `W1002` | 未使用の非公開関数・型 | G03 |
 | `W1003` | 到達しない `match` 節 | A03／G03 |
 | `W1004` | 同じスコープ内での紛らわしいシャドーイング（既定は無効） | G03 |
+| `W1005` | 別のパッケージ・std の `@deprecated` な `def`・`record`・`union`（と case）の使用（既定で有効。同じパッケージの中では出さない。D-45） | G19 |
 | `W1006` | 長さに比例する配列・リストの暗黙の複製（既定は無効。`--warn implicit-copy` で有効。D-33） | A15 |
 | `W2002` | `tsuzuri bindgen` が ABI の一致を確かめられない C の宣言を省いた（D-40） | E11 |
 
@@ -940,7 +950,7 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 - 2026-09-27、P2全件と必要な判断を利用者が承認。安全性・数値意味・既存契約を優先して判断し、実装内容を各チケットに記録する。
 - D06は独立した型検査器を作らず、内部宣言で通常の型検査を行ってから型付きリテラルへ評価・展開する。参照依存は明示スタック、binary演算はAPFloat。decimal演算は拒否する。
 - aggregateは既存literal/frame/relocateを再利用し、専用global templateやConst型付き命令を増やさない。`private const`も通常の可視性に揃える。
-- 定数の直接借用は単一段階の完全適用・loanを持たない結果だけ。保存・返却・段階適用では明示let束縛を要求し、static lifetimeを導入しない。
+- 定数の直接借用は単一段階の完全適用・loanを持たない結果だけ。保存・返却・段階適用では明示let束縛を要求し、static lifetimeを導入しない。**D-45 で、平たいデータの定数に限り改めた**（D11 Phase 2。その借用は返す・格納する・渡すことができ、バイナリの読み取り専用の静的データ `@tz.static.N` を指す。`string` など平たくない定数は従来どおり）。
 - 定数の依存深さ128・探索1024件・評価／展開1048576ノードの上限超過はD06の専用診断E1026を使う。
 - G07のJSONにはチケットで検討可能としたserde_jsonを採用する。独自JSONパーサーを作らず、深さ128とメッセージ16 MiBの上限を保つ。
 - G08は既存Span/TrapSourceとmetadata採番を共有する。decimalはBID保存ビットをunsignedとして表示。macOSのdebug task objectは対応版llvm-linkでIR結合し、executableはフラットなoutput.dwarfを保存する。O3の公開wrapperにもscopeを保持する。
@@ -983,13 +993,11 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 - 2026-09-29、C/C++・Rust・C#/F# との比較で見える劣位を改善する第2期のチケット（A12–A16、B07–B08、C08–C11、D07–D11、E08–E14、F08–F13、G12–G20）を起票した。
   調査時点はコミット `9012e92`。一覧と対応表は [README の第2期](README.md#第2期-他言語比較で見える劣位の改善計画) にある。
 - 以下は計画上の仮割り当てで、人間の承認と各チケットの着手前レビューを経て確定する。確定したら該当行を D-07（std）・D-15（予約語）・D-16（診断コード）へ移し、この表から削除する。
-- 既存の予約語の組み合わせで表せる構文（`extern type`、`extern "symbol" def`、`const def`、`const N: i64`）を優先し、新しい予約語を増やさない。G19 の edition を導入した後は、新しい予約語を新しい edition でだけ予約する。
-- 言語の意味や既存の決定を変える提案は承認まで着手しない: D11 Phase 2（static データ。D-28 の変更）。C08（D-13 の変更）と A16（`[T; N]` の再導入）は D-39、C10 Phase 2（参照カウントの導入）は D-40 で承認済み。
+- 既存の予約語の組み合わせで表せる構文（`extern type`、`extern "symbol" def`、`const def`、`const N: i64`）を優先し、新しい予約語を増やさない。G19 の edition を導入したので（D-45）、新しい予約語は新しい edition でだけ予約する（`EDITION_KEYWORDS`。新しい edition を作るのは人間の承認を得た一つの変更）。
+- 言語の意味や既存の決定を変える提案は承認まで着手しない。C08（D-13 の変更）と A16（`[T; N]` の再導入）は D-39、C10 Phase 2（参照カウントの導入）は D-40、D11 Phase 2（static データ。D-28 の変更）は D-45 で承認済み。
 - 新しいホスト機能（WASI、乱数 seed の設定、非同期の再開、GPU runtime）は D-18 に従い明示的な opt-in とし、既定の WASM に import を追加しない。
 
-| 種別 | 仮割り当て | チケット |
-|---|---|---|
-| 警告 | `W1005` 非推奨の宣言の使用 | G19 |
+診断コードの仮割り当て（`W1005`、G19）は D-16 へ移して表が空になった。
 
 2026-09-29 の詳細化で、各チケットが次の名前を仮に決めた（衝突を避けるための台帳。確定は各チケットの決定事項と承認に従う）。
 `要承認` の欄は、そのチケットで承認が必要な名前であることを示す。
@@ -997,8 +1005,10 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 種別 | 仮の名前 | チケット | 要承認 |
 | --- | --- | --- | --- |
 | 構文 | `extern "symbol" def`・`extern "module" "symbol" def` | E12 | いいえ（承認済み・実装済み） |
-| 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | はい |
-| 構文 | `const def` | D11 | いいえ（Phase 1） |
+| 構文 | 文書コメントの `@deprecated` タグ、manifest の `edition` キー | G19 | いいえ（承認済み・実装済み。D-45） |
+| 構文 | `const def` | D11 | いいえ（承認済み・実装済み。D-45） |
+| サブコマンド | `tsuzuri api-diff <old> <new> [--json]` | G19 | いいえ（承認済み・実装済み。D-45） |
+| CLI | `--target TRIPLE`（22 個の native の triple。`run --target` は実行器が要る） | G15 | いいえ（承認済み・実装済み。D-45） |
 | std | `Bench.now`・`Bench.consume`・`Bench.with_input`・`Bench.of`（`with` は予約語なので `Bench.with` は `Bench.with_input`） | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
 | サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
@@ -1019,7 +1029,8 @@ D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソ�
 | 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
 | 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
 | 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | はい（Phase 2） |
-| 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_CROSS_LINK`（テスト用） | G15 | いいえ |
+| 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_RUNNER`、`TSUZURI_CROSS_LINK`・`TSUZURI_CROSS_CLANG`・`TSUZURI_CROSS_EXECUTE`（テスト用） | G15 | いいえ（承認済み・実装済み。D-45） |
+| 環境変数 | `TSUZURI_F16_EXPECT`（テスト用。`tests/f16_hardware.mjs` だけが読み、コンパイラは読まない） | D10 | いいえ（実装済み。D-45） |
 | 環境変数 | `TSUZURI_LLVM_PROFDATA` | PR07 | いいえ |
 | 環境変数 | `TSUZURI_TIME_PASSES` | PX01 | いいえ |
 | 環境変数 | `TSUZURI_ZIG`・`TSUZURI_GO` | PX02 | 計測機への導入だけ |
@@ -1315,7 +1326,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   IOCP は足さない（D-42 と同じく、B08 に必要なタイマーと外部完了だけ）。待ち時間は 1 日で頭打ちにし、起きるたびに単調時計を読み直すので、
   Windows の約 15.6 ms の粒度は遅れとしてだけ現れ、早く起きない。`timeBeginPeriod` はプロセス全体の電源設定を変えるので使わない。
   runtime を埋め込む Windows の COFF `--emit object` は task・CPU・IO と同じく非対応のまま（LLVM を出して runtime を 1 回リンクするか、実行ファイルを作る）。
-  対応の判定は driver と test_runner が共有する `ASYNC_NATIVE_SUPPORTED`（macOS・Linux・Windows）で、それ以外の host は E2002。
+  対応の判定は driver と test_runner が共有する `Platform::reactor`（macOS・Linux・Windows。G15 で `ASYNC_NATIVE_SUPPORTED` から移した）で、それ以外の host は E2002。
 - Windows の実行は CI だけで確かめる（ローカルに Windows の実行環境がない）。同梱の MinGW toolchain（x64 は Zig、ARM64 は llvm-mingw）と
   x64 の LLVM MSVC で `tests/async.mjs` を実行し、toolchain の smoke にも `Async.block_on` の実行ファイルとテストを足した。同梱 toolchain は
   `wasm32-unknown-unknown` だけを受けるので、その手順は `TSUZURI_WASM64=0` で wasm64 の JSPI を除く（既存の制限で、Async の制限ではない）。
@@ -1446,7 +1457,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - C11（`Matrix`・`MatrixView`・`Tensor`）: Phase 1・2 を実装した。std のソースだけで書かれ、`Builtin`・`Type` の variant・ランタイム関数・WASM の import はない。`opaque_record` は `Matrix.Matrix`・
   `MatrixView.MatrixView`・`MatrixView.Mut`・`Tensor.Tensor`・`Tensor.View`、`Type::is_noncopy_record` は `Matrix.Matrix`・`Tensor.Tensor`・`Tensor.View`。
   - `Matrix.mul` の各出力要素は `+0` から `k` の昇順に別々に丸めた和（D-14）。実装は出力の行ごとの更新（i-k-j。`left` の行を先にスライスしないと out-of-line で約半分の速さ）だが、ビットは変わらない。順序の違う積は別名にした:
-    `mul_fma`（`Math.fma` の順）、チャンクが形だけで決まる `mul_parallel`・`mul_fma_parallel`（約 2^20 回の積和ごと）。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、
+    `mul_fma`（`Math.fma` の順）、チャンクが形だけで決まる `mul_parallel`・`mul_fma_parallel`（約 2^20 回の積和ごと）。`Math.fma` がハードウェアの命令になるのは AArch64 の native（ビルド機が AArch64 のときの `--target native`、または AArch64 の triple。G15 で、コンパイラ自身の arch から target に改めた）だけで、
     それ以外の native と wasm32 では `tz_soft_fma`（1 積和あたり約 1.6 µs。128³ の `mul_fma` が約 3.4 s で `mul` の約 4,000 倍。ビットは同じ）。
   - 窓は region 付きの借用 record: 局所の所有者の窓は返せない（E1013）、所有者の move・置換と `Mut` が生きている間の元の配列の使用は E1014、フィールド参照などは E1022。`MatrixView.Mut` は行優先かその転置の配置だけで、
     同じ slot を指す要素がない。`Tensor` は軸 16 本まで、長さ 0 の軸を除いた積が `i64` に収まる。窓の不変条件（`stride >= 0`、全要素が `data` の中）は `strided` が桁あふれなしで確かめる。
@@ -1454,6 +1465,75 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     benchmark は `benchmarks/run-matrix.mjs`（C の i-j-k・i-k-j・`fma` と、チェックサムをビット単位で比べてから測る）。
   - review で直したこと: FMA のテストが host の CPU に依っていた件、FMA の文書の言い過ぎ、`extent` の `+ 1` の桁あふれ、`MatrixView.mul` の順序、空の窓のループ。
   - 限界: x86-64・SVE／AVX-512・実機 GPU・ブラウザの WASM threads は未検証、速度は M1 Max 1 台の測定。
+
+### D-45 第2期の最後の 4 チケット（D10・D11・G15・G19）の確定
+
+- 2026-10-11、利用者の「D10、D11、G15、G19 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。
+  複数フェーズある場合には、すべてのフェーズを完了させること。…何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、
+  4 チケットの `要承認` の決定事項すべての承認として扱った（D11 の旧 D10＝Phase 2 の静的データ、G15 の旧 D8＝CI の `targets.yml`、G19 の旧 D1・D4・D9）。
+  着手時点は `053bced8`（PR #21 のマージ）。旧 HEAD `f8dc655` の計画は、D-34〜D-44 の整数既定 `i32`、`def name :: type`、名前空間 `A::B::Module`、opt-in std、
+  文書の移動（`_docs/` → `_tsuzuri/language-reference/`）、frontend cache と syntax codec（G17）、`--warn`・`W1006`（A15）、E10 の manifest と git／registry 依存、
+  B08・E09・F09・E13・E14 などが足した host 依存の経路（reactor、`Net`、GPU の `dlopen`、`--emit shared`、trap return、bench runner）と照合して見直した。
+  詳細は各チケットの「実装と検証」（`_features/_completed/`）にある。実装は 4 つの worktree で並行し、統合のあとに独立した code review をかけた。
+- 共通: 新しい予約語・crate・`unsafe`・既定の WASM の import・std モジュールはない。新しい診断コードは `W1005` だけ（D-16 へ移した）。新しい CLI は `tsuzuri api-diff` と
+  `--target TRIPLE`（22 個）、新しい環境変数は `TSUZURI_SYSROOT`・`TSUZURI_RUNNER`（コンパイラが読む）と、テスト用の `TSUZURI_CROSS_LINK`・`TSUZURI_CROSS_CLANG`・
+  `TSUZURI_CROSS_EXECUTE`・`TSUZURI_F16_EXPECT`。`FRONTEND_FORMAT` は D11（`const` の印）と G19（edition を parse の key に入れる）で 2 から 3 になった。
+  新しい機能を使わないプログラムの IR・object・`.wasm` は、各チケットが基準のコンパイラ（`053bced8`）とバイト単位で比べて同じだった。例外は意図したもので、D10 は
+  `f16` の演算を使う native の IR と object（`half` 命令になる）、D11 は定数を `Array.length (&Values)` のように借用して読む形（静的データを指す）。
+- D10（`f16` の `half` 命令）: 経路は `llvm::F16Path`（`Soft`・`Conversions`・`Hardware`）で、`driver::f16_path(wasm, os, arch, cpu, CpuFeatures)` が target とその CPU から 1 回だけ選ぶ
+  純関数。実行時の dispatch はなく、`llvm::emit`・`emit_target` と WASM は常に `Soft`。AArch64 は OS によらず `Hardware`（FEAT_FP16 がなければ LLVM が演算ごとに `f32` を 1 回挟む。
+  この形は libcall がなく 1 回の丸めと同じ結果で、機械語を AArch64 の Linux・musl・Windows・macOS で確かめた。広げすぎなら `AARCH64_HALF_WITHOUT_FP16` の 1 行で狭められる）。
+  x86-64 は `--cpu native` のときだけ、AVX512-FP16 があれば `Hardware`、F16C があれば `Conversions`（f16 から f32／f64、f32 から f16 だけ。f64 から f16 は直接の命令がなく、f32 を経由すると
+  2 回丸めになるのでソフトウェアのまま）。`--cpu native` の x86-64 は clang へ `-mf16c`・`-mavx512fp16` も渡す。`@cpu` の版は、その版が `half` を使うときだけ target feature を足す。
+  結果が NaN のときは、符号とペイロードをソフトウェア実装（`numeric.c`）と同じビットに置き換える。費用は C の `_Float16` 比 1.4〜4.5 倍で、NaN のビットを仕様から外せば消える見込みだが、
+  WASM と native で NaN のビットが変わるので旧 D3 を残した。M1 Max の測定は、hardware が soft の約 330〜1,480 倍速く、C の `_Float16` の 1.4〜4.5 倍遅い（docs/benchmarks.md）。
+  `tests/f16_hardware.mjs` は 2,707,485 件（f16 の単項は全 65,536 パターン）を JavaScript の厳密な参照と NaN のビットまで比べ、`TSUZURI_F16_EXPECT` でホストが通る経路を固定できる
+  （`.github/workflows/targets.yml` が runner ごとに設定する）。G15 と統合したとき、経路を **target** の OS・arch から選ぶように `platform_f16_path(platform, target, cpu)` と
+  `Platform::os_name` を足した（cross では host の CPU 機能を使わない）。確かめた範囲: 結果のビットは `targets.yml` の `f16 paths` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で
+  参照と照合した（2,707,485 件。PR #22 の CI で、AArch64 は `hardware`、x86-64 は `generic=soft,native=conversions`）。限界: AVX512-FP16 の算術は標準の runner に CPU がなく、Windows は job がなく、
+  どちらも機械語の確認のまま。速度の主張は macOS arm64 だけ。
+- D11（`const def` と静的データ）: `const` は `def` の署名だけに付け、`fn`・`and`・`let` は継承する。評価器は Rust の再帰を使わない明示スタックの `Machine`
+  （`src/const_machine.rs`・`const_rules.rs`・`const_static.rs`）で、D06 の予算（`remaining` 1<<20）と `MAX_NESTING`（128）を共有し、どの上限も上げていない。`Type` と `TypedExprKind` は
+  `_ =>` を使わずに全 variant を振り分け、固定長配列 `[T; N]`・`string`・`utf8string` の走査を足した。`@checked`・`|>`・集成体への演算子・`@cpu`・`@literal` は拒否する。
+  **Phase 2（D-28 の変更）**: 平たいデータ（整数・浮動小数点・decimal・`bool`・`char`・`unit`・それらだけのタプル／record／固定長配列・payload が同じ型の union・それらの `[T]`）の定数 `C` は、
+  読み出しと借用（`ref C`、`C[i]`、`C.length`、`C.field`、`ref C[a..b]`、`for x in C`、`ref` 引数）でバイナリの読み取り専用の静的データ `@tz.static.N` を 1 つだけ指し、
+  借用は返す・格納する・渡すことができる（所有権検査は静的な根を持つ）。静的データは書き換え・move・排他借用ができず（`E1012`・`E1013`・`E1014`）、drop・free・realloc は到達しない
+  （借用から所有値を作る経路はすべて確保する）。値としての使い方は従来どおり複製で、`string` などは従来のまま。合計 4 MiB を超えると `E1026`。WASM ではデータがヒープの下に入り、
+  ヒープの上限（絶対 16 MiB）を狭める。CRC-32 の表を 4 MiB に回す測定で、静的データは以前の 5.0 倍速く C の `static const` と同じ（docs/benchmarks.md。1 つの workload・M1 Max 1 台）。
+  限界: 値として使う展開の予算（1,048,576 ノード）は従来どおり関数ごとに数える（大きな表を多くの関数で値として使うと `check` のメモリが膨らむので、静的データの読み出しと借用を使う）。
+- G15（対応ターゲットとクロスコンパイル）: `--target native|wasm32|wasm64|TRIPLE`。native の triple は 6 個の計画から 22 個に広げた（`src/target.rs` の閉じた表。aarch64・x86-64 の apple-darwin、linux-gnu・musl、
+  pc-windows-msvc・gnu（MinGW）、freebsd、android、riscv64 の linux-gnu・musl、iOS（端末とシミュレーター）、bare-metal の `*-unknown-none`・`riscv64gc-unknown-none-elf`）。32-bit の native は
+  IR が 64-bit のポインターを前提にするので表に入れない。ビルド先の性質は `cfg!` でなく `Platform`（ビルド機の `--target native` は従来どおり）が答え、IR にも target に依る所が 3 か所あった
+  （COFF の allocator、`@cpu` の level、`Math.fma`）ので、スレッドローカルの `PlatformScope` でそれらを target に従わせた（旧 D5「IR は target に依存しない」は偽だった。`EmitOptions` に field を足すと
+  24 のテストが壊れるため）。リンクは同梱ツールチェーン（`scripts/toolchain/clang.rs` が Clang の target を Zig の target に写す）か、`TSUZURI_SYSROOT`（Apple は `-isysroot`。Apple の Clang は
+  `--sysroot` を黙って無視するため）。ビルド機で動かせない target の実行は、利用者が与える実行器 `TSUZURI_RUNNER`（qemu-user・Wine・エミュレーターの前置コマンド）だけで、何も取得せず、
+  ないときは `E2000`。`run --target` はこのときだけ使える。OS API は Android（Bionic は API 28 から）・iOS・Windows で、`Net` と `Async.block_on` は FreeBSD・Android・iOS で、`E2002` で拒否する。
+  bare-metal は `--freestanding --allocator host` の object・llvm・header だけ（x86-64 は全関数に `noredzone`）。tier の記録は `_tsuzuri/language-reference/compiler/platforms.md` の表 1 か所で、
+  `.github/workflows/targets.yml` の job が確かめるものだけを書く（tier 1 はホストの 4 triple、ほかは tier 2 以下）。CI の最初の実行の結果（PR #22）: 4 つの job が自分の triple を実行し、Linux の 2 つの job が
+  静的な musl の 3 つを（直接と qemu-user で）、macOS arm64 の job が `x86_64-apple-darwin` を Rosetta で実行した。ほかの target は link か object まで（x86-64 の Mach-O・ELF・COFF の別の CPU、
+  Windows・FreeBSD・Android・iOS・RISC-V。Wine と、Windows のホストでの名前付きの Windows target の実行は未確認）。`TSUZURI_RUNNER` は偽の実行器・qemu-user・Rosetta で確かめた。
+- G19（edition・互換性・非推奨）: `Edition(u16)` は lexer と parser の入口の必須の引数で、manifest の `[package] edition`（省略は将来も `2026`）→ `SourceFile` → `SourceInput` → `ModuleInput` と運ばれ、
+  manifest のない入力と std は `Edition::LATEST`。`EDITION_KEYWORDS` は空（差はまだない）。edition は字句と警告だけに作用し、IR は edition の値によらずバイト単位で同じ。frontend cache の parse key に edition を入れた。
+  文書コメントの `@deprecated [note]`（最初の該当行だけが有効）を、別のパッケージ・std の `def`・`record`・`union`（と case）の使用の警告 `W1005`（既定で有効、同じパッケージの中では出さない）にした。
+  チケットの `Construct` の target 追加ではなく `SemanticIndex::references` から出すので、構築式だけでなく pattern の case の参照にも出る（チケットの例は 3 件、実装は 5 件）。
+  `tsuzuri api-diff <old> <new> [--json]` は 2 つの版の公開 API を型検査なしの構文解析だけで比べる（git・registry の依存を取得せず、`Tsuzuri.lock` も読まない）。型変数と region の改名は変更に数えず、
+  breaking があれば終了コード 1。`tsuzuri publish` は `api-diff` を実行しない（index の項目を出すだけで、前の版を取得しないため。手順は文書に書いた）。`docs/stability.md` に保つものと非推奨の手順を書いた。
+  限界: pattern の中の型注釈の使用と、型別名の解決・改名の検出は `api-diff`・W1005 の対象外。
+- 統合後の独立した code review（2 回）で直したこと: G15 は、bare-metal の失敗時の案内が LLD と sysroot を求めていた件と、MSVC・bare-metal の `TSUZURI_SYSROOT` の拒否が freestanding の object のビルドで
+  起きなかった件（`validate` の段で `E2000`）。G19 × D11 は、`api-diff` が `const def` を見ず `const` の取り消しを報告しなかった件（breaking にした）。D11 は、`f16`・`f128` の定数の NaN の符号が
+  実行時（`tz_soft_op`）と違った件（実行時と同じ規則に揃えた。`f32`・`f64` は機械が決めるので NaN であることだけを決める）と、定数ごとに `const def` の本体を歩き直して 2 乗に遅くなった依存の走査
+  （関数ごとに 1 度だけ求める）。値として使う展開の予算が関数ごとなので、大きな非 plain の定数を多数の関数が値として使うとメモリが関数の数に比例する点は、従来の設計のまま文書に書いた。
+- `targets.yml` の最初の実行で見つかったこと（PR #22）。macOS の 2 つの job の iOS のリンクが、Xcode 16.4 の `/usr/bin/clang`（生成した IR の `icmp samesign` を読めない）で失敗した。
+  `tests/targets.mjs` は、システムの Clang が IR を読めるときだけそれを iOS に使い、読めなければ与えられた Clang（CI は Homebrew の LLVM 21）でリンクする。README などの「LLVM 17+」は、この IR には
+  足りない（既存の記述で、この変更では触れていない）。Intel Mac の job は約 80 分（Rust のテストだけで 62 分、Linux は 21〜40 分、macOS arm64 は 25〜28 分）かかったので、制限時間を 150 分にし、
+  Rust のテストを最後の step にして、ほかの step の結果が長い step に隠れないようにした。`pull_request` の `paths` は、最後の push でなく PR 全体の差分で判定するので、文書だけの push も `targets.yml` を
+  やり直す。
+- 既知の事前の不具合（このブランチの変更ではない）: debug build の深さの上限のテストは、テストスレッドの 2 MiB（2,097,152 bytes）の stack にほとんど余裕がない。arm64 macOS（rustc 1.98.1）で必要な stack は
+  `parser::tests::bounds_recursive_and_flat_expression_depth` が 2,081,456 bytes、`computations::bounds_nested_builder_expansion_not_just_source_syntax` が 2,032,274、
+  `computations::bounds_computation_syntax_and_expansion` が 2,130,638 で、最後のテストは溢れて binary ごと abort する。基準（`053bced8`）と 4 チケットの変更後で、3 つとも 1 KiB の刻みで同じ値だった。
+  linux-arm64 の runner（rustc 1.99.0）では、基準の `main` でも 1 つ目と 3 つ目が既定の stack で溢れ、2.2 MB で通る（linux-x64 では 5 つとも既定で通る）。
+  全体は `RUST_MIN_STACK=4194304` を付けて流す（これまでの PR と同じ値。`targets.yml` もこれ）。§3.1 の 4 つの単独の実行は既定の stack のままで、linux-arm64 では 1 つ目が通らない。
+  上限や stack の大きさのコードは変えていない。フレームを小さくするか、テストが stack を決める修正は別の変更にする。
 
 ## 10. 完了の定義（全チケット共通）
 

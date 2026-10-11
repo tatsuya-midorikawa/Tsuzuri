@@ -154,6 +154,7 @@ fn emitted(source: &str, wasm: bool) -> EmitOutput {
         wasm,
         debug_output: false,
         allocator: tsuzuri::llvm::Allocator::System,
+        f16: tsuzuri::llvm::F16Path::Soft,
     };
     let first = emit_with_trap_info(&module, options, &sources).unwrap();
     let second = emit_with_trap_info(&module, options, &sources).unwrap();
@@ -237,6 +238,7 @@ fn range_proofs_add_no_llvm_facts() {
             wasm: false,
             debug_output: false,
             allocator: tsuzuri::llvm::Allocator::System,
+            f16: tsuzuri::llvm::F16Path::Soft,
         };
         let ir = emit_with_options(&module, options).unwrap();
         for fact in ["llvm.assume", "!range", " nsw ", " nuw "] {
@@ -268,6 +270,7 @@ fn shape count =
             wasm: false,
             debug_output: false,
             allocator: tsuzuri::llvm::Allocator::System,
+            f16: tsuzuri::llvm::F16Path::Soft,
         };
         emit_with_options(&module, options).unwrap()
     };
