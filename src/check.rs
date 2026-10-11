@@ -4150,6 +4150,8 @@ struct Names {
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
     constants: BTreeSet<usize>,
+    /// The functions declared `const def` (D11), by function id.
+    const_functions: BTreeSet<usize>,
     /// The values of the `i64` constants with an integer literal value, which can be lengths (A16).
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
@@ -4291,6 +4293,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
         recursion: None,
         visibility: Visibility::Private,
         exported: false,
+        constant: false,
         parameters: vec![Parameter {
             name: named("$iterations"),
             ty: i64_type(),
@@ -5818,9 +5821,29 @@ fn check_modules_collect(
             }
         }
     }
+    // The names that a const initializer may apply: `const def`s, and union cases to build the
+    // arguments of a call (D11).
+    let const_names: BTreeSet<String> = modules
+        .iter()
+        .flat_map(|module| {
+            let functions = module
+                .program
+                .functions
+                .iter()
+                .filter(|function| function.constant)
+                .map(|function| function.name.text.clone());
+            let cases = module
+                .program
+                .unions
+                .iter()
+                .flat_map(|union| &union.cases)
+                .map(|case| case.name.text.clone());
+            functions.chain(cases)
+        })
+        .collect();
     for module in modules {
         for constant in &module.program.constants {
-            constants::validate(&constant.value)?;
+            constants::validate(&constant.value, &const_names)?;
             // An `i64` constant with an integer literal value can name a length (A16 Phase 2).
             if let (TypeExprKind::Named(ty), ExprKind::Integer(value, suffix)) =
                 (&constant.ty.kind, &constant.value.kind)
@@ -5844,6 +5867,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: constant.visibility,
                     exported: false,
+                    constant: false,
                     parameters: Vec::new(),
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
@@ -5907,6 +5931,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: external.visibility,
                     exported: false,
+                    constant: false,
                     parameters: external
                         .parameters
                         .iter()
@@ -5968,6 +5993,7 @@ fn check_modules_collect(
                     recursion: None,
                     visibility: Visibility::Private,
                     exported: false,
+                    constant: false,
                     parameters: Vec::new(),
                     result: TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
@@ -6436,6 +6462,9 @@ fn check_modules_collect(
             module: module.clone(),
             visibility: function.visibility,
         };
+        if function.constant {
+            names.const_functions.insert(id);
+        }
         if function.name.text == "_"
             || Builtin::ALL
                 .iter()
@@ -6607,6 +6636,9 @@ fn check_modules_collect(
                     function.result.span,
                     "constant types must be concrete; remove type variables",
                 ));
+            }
+            if names.const_functions.contains(&id) {
+                constants::check_signature(function, &signature, &variables, &types)?;
             }
             let mut constraints = Vec::new();
             let mut members = Vec::new();
@@ -7054,7 +7086,12 @@ fn check_modules_collect(
     if let Some(index) = semantic {
         *index = semantic::collect(modules, &functions, &name_uses, &names, types);
     }
-    constants::fold(&mut functions, &names.constants)?;
+    constants::fold(
+        &mut functions,
+        &names.constants,
+        &names.const_functions,
+        &types,
+    )?;
     let references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
     warnings.extend(warnings::unused_private(

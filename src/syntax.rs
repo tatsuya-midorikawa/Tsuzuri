@@ -411,6 +411,9 @@ pub struct FunctionDecl {
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
+    /// Declared `const def`: a const initializer may call it, and the compiler evaluates the call
+    /// (D11). It is an ordinary function at run time.
+    pub constant: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
@@ -425,6 +428,8 @@ pub struct SignatureDecl {
     pub recursion: Option<String>,
     pub visibility: Visibility,
     pub exported: bool,
+    /// Written `const def`, or an `and` signature that continues a `const def rec` group (D11).
+    pub constant: bool,
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,

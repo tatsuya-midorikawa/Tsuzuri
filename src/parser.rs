@@ -299,6 +299,8 @@ impl Parser<'_> {
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
+        // Whether the group of the last `def rec` signature is a `const def rec` (D11).
+        let mut constant_group = false;
         let mut diagnostics = Vec::new();
         let header = |parser: &mut Self, keyword: &str, diagnostics: &mut Vec<Diagnostic>| {
             if !parser.header_ahead(keyword) {
@@ -387,7 +389,8 @@ impl Parser<'_> {
                 let mut declaration = self.type_alias(visibility, column)?;
                 declaration.doc = doc;
                 program.type_aliases.push(declaration);
-            } else if self.eat(&TokenKind::Const) {
+            } else if self.at(&TokenKind::Const) && !self.constant_function_ahead() {
+                self.take();
                 let mut declaration = self.const_declaration(visibility)?;
                 declaration.doc = doc;
                 program.constants.push(declaration);
@@ -487,12 +490,17 @@ impl Parser<'_> {
                 defined_names.insert(name.text.clone());
                 definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
-            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) {
+            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() {
                 let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
                 if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", export)); }
                 if exported && self.at(&TokenKind::Private) {
                     return Err(Self::private_export(export.through(self.current().span)));
+                }
+                let constant_span = self.current().span;
+                let constant = self.eat(&TokenKind::Const);
+                if constant && !self.at(&TokenKind::Def) {
+                    return Err(Self::misplaced_const(constant_span));
                 }
                 let declaration = self.eat(&TokenKind::Def);
                 let continuation = self.eat(&TokenKind::And);
@@ -527,6 +535,8 @@ impl Parser<'_> {
                     signature.regions = regions;
                     signature.recursion = recursion.clone();
                     signature.visibility = visibility;
+                    signature.constant = if continuation { constant_group } else { constant };
+                    constant_group = signature.constant;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
                             "E1001",
@@ -594,6 +604,7 @@ impl Parser<'_> {
                     recursion,
                     visibility: Visibility::Public,
                     exported,
+                    constant: false,
                     parameters,
                     result,
                     constraints: Vec::new(),
@@ -633,6 +644,7 @@ impl Parser<'_> {
                 self.recover_top_level_boundary(start, resume);
                 signature_group = None;
                 definition_group = None;
+                constant_group = false;
             } else if program.entry.is_some() {
                 break;
             } else {
@@ -766,7 +778,38 @@ impl Parser<'_> {
         Err(Diagnostic::new("E1022", message, private))
     }
 
+    /// `const` directly before `def`: a const function, not a constant (D11).
+    fn constant_function_ahead(&self) -> bool {
+        self.at(&TokenKind::Const)
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::Def)
+    }
+
+    fn misplaced_const(span: Span) -> Diagnostic {
+        Diagnostic::new(
+            "E0002",
+            "put 'const' on the 'def' signature; its 'fn', 'and', or 'let' implementation inherits it",
+            span,
+        )
+    }
+
     fn const_declaration(&mut self, visibility: Visibility) -> Result<ConstDecl, Diagnostic> {
+        let keyword = self.tokens[self.position - 1].span;
+        match self.current().kind {
+            TokenKind::Fn | TokenKind::Let | TokenKind::And => {
+                return Err(Self::misplaced_const(keyword));
+            }
+            TokenKind::Export => {
+                return Err(Diagnostic::new(
+                    "E0002",
+                    "write 'export const def' to export a const function",
+                    keyword.through(self.current().span),
+                ));
+            }
+            _ => {}
+        }
         let name = self.ident()?;
         self.expect(&TokenKind::Colon, "':' and an explicit constant type")?;
         let ty = self.type_expr()?;
@@ -1540,6 +1583,7 @@ impl Parser<'_> {
             recursion: None,
             visibility: Visibility::Public,
             exported,
+            constant: false,
             parameters,
             result,
             constraints,
@@ -1641,6 +1685,7 @@ impl Parser<'_> {
             recursion: definition.recursion,
             visibility: signature.visibility,
             exported: signature.exported,
+            constant: signature.constant,
             parameters: definition
                 .parameters
                 .into_iter()

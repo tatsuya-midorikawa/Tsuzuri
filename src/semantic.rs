@@ -435,6 +435,7 @@ fn define_declarations(
                     SymbolKind::Function,
                     declaration.visibility,
                     declaration.exported,
+                    declaration.constant,
                 )
             })
             .chain(program.externs.iter().map(|external| {
@@ -444,9 +445,10 @@ fn define_declarations(
                     SymbolKind::Extern,
                     external.visibility,
                     external.exported,
+                    false,
                 )
             }));
-        for (declared, labels, kind, visibility, exported) in callables {
+        for (declared, labels, kind, visibility, exported, constant) in callables {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -476,7 +478,8 @@ fn define_declarations(
                 format!("extern def {shown}.{}", declared.text)
             } else {
                 format!(
-                    "def {shown}.{} :: {}",
+                    "{}def {shown}.{} :: {}",
+                    if constant { "const " } else { "" },
                     declared.text,
                     function.signature.as_type().display(types)
                 )
