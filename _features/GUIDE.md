@@ -1521,9 +1521,12 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   起きなかった件（`validate` の段で `E2000`）。G19 × D11 は、`api-diff` が `const def` を見ず `const` の取り消しを報告しなかった件（breaking にした）。D11 は、`f16`・`f128` の定数の NaN の符号が
   実行時（`tz_soft_op`）と違った件（実行時と同じ規則に揃えた。`f32`・`f64` は機械が決めるので NaN であることだけを決める）と、定数ごとに `const def` の本体を歩き直して 2 乗に遅くなった依存の走査
   （関数ごとに 1 度だけ求める）。値として使う展開の予算が関数ごとなので、大きな非 plain の定数を多数の関数が値として使うとメモリが関数の数に比例する点は、従来の設計のまま文書に書いた。
-- 既知の事前の不具合（このブランチの変更ではない）: この機械の debug build では `computations::bounds_computation_syntax_and_expansion` がテストスレッドの 2 MiB の stack に収まらず（約 2.13 MB 要る）、
-  `cargo test --locked` はその binary で abort する。`-- --skip bounds_computation_syntax_and_expansion` で流し、そのテストだけ `RUST_MIN_STACK=2200000` で流す（`targets.yml` も同じ）。
-  必要な stack の下限は 4 チケットの変更の前後で同じ（2,129,687 で溢れ、2,130,000 で通る）。
+- 既知の事前の不具合（このブランチの変更ではない）: debug build の深さの上限のテストは、テストスレッドの 2 MiB（2,097,152 bytes）の stack にほとんど余裕がない。arm64 macOS（rustc 1.98.1）で必要な stack は
+  `parser::tests::bounds_recursive_and_flat_expression_depth` が 2,081,456 bytes、`computations::bounds_nested_builder_expansion_not_just_source_syntax` が 2,032,274、
+  `computations::bounds_computation_syntax_and_expansion` が 2,130,638 で、最後のテストは溢れて binary ごと abort する。基準（`053bced8`）と 4 チケットの変更後で、3 つとも 1 KiB の刻みで同じ値だった。
+  linux-arm64 の runner（rustc 1.99.0）では、基準の `main` でも 1 つ目と 3 つ目が既定の stack で溢れ、2.2 MB で通る（linux-x64 では 5 つとも既定で通る）。
+  全体は `RUST_MIN_STACK=4194304` を付けて流す（これまでの PR と同じ値。`targets.yml` もこれ）。§3.1 の 4 つの単独の実行は既定の stack のままで、linux-arm64 では 1 つ目が通らない。
+  上限や stack の大きさのコードは変えていない。フレームを小さくするか、テストが stack を決める修正は別の変更にする。
 
 ## 10. 完了の定義（全チケット共通）
 

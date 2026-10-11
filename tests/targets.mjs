@@ -260,7 +260,11 @@ try {
       assert.equal(run.stdout, expected.tasks);
       record(other, "executed", "through Rosetta (TSUZURI_RUNNER='arch -x86_64')");
     }
-    // The iOS targets link against an SDK, and they are never run here.
+    // The iOS targets link against an SDK, and they are never run here. Apple's own Clang finds the macOS SDK by itself
+    // and says so when the SDK is wrong (`incompatible-sysroot`), but an older Xcode cannot read the `samesign` of the
+    // IR, so it is used only when it can; otherwise the Clang that was given links, and a missing SDK shows as missing headers.
+    const readsIr = spawnSync("/usr/bin/clang", ["-x", "ir", "-c", "-o", "/dev/null", "-"], { input: "define i1 @f(i64 %a) {\n  %c = icmp samesign ult i64 %a, 4\n  ret i1 %c\n}\n", encoding: "utf8" }).status === 0;
+    const appleClang = readsIr ? "/usr/bin/clang" : systemClang;
     const sdks = new Map();
     const developer = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
     const find = (sdk) => {
@@ -280,13 +284,13 @@ try {
         continue;
       }
       const exe = join(work, `tasks-${name}`);
-      cli(["build", "examples/tasks", "--no-cache", "--target", name, "-o", exe], { env: { TSUZURI_CLANG: "/usr/bin/clang", TSUZURI_SYSROOT: sdk } });
+      cli(["build", "examples/tasks", "--no-cache", "--target", name, "-o", exe], { env: { TSUZURI_CLANG: appleClang, TSUZURI_SYSROOT: sdk } });
       check(name, exe, "executable");
       record(name, "linked", `Mach-O linked against ${sdk.split("/").pop()}`);
       // Without the SDK the build says so instead of linking the macOS libraries.
-      const missing = failure(["build", "examples/tasks", "--no-cache", "--target", name, "-o", join(work, "no-sdk")], { TSUZURI_CLANG: "/usr/bin/clang" });
+      const missing = failure(["build", "examples/tasks", "--no-cache", "--target", name, "-o", join(work, "no-sdk")], { TSUZURI_CLANG: appleClang });
       assert.equal(missing.code, "E2002", name);
-      assert.match(missing.message, /incompatible-sysroot/);
+      if (readsIr) assert.match(missing.message, /incompatible-sysroot/);
       assert.match(missing.message, /set TSUZURI_SYSROOT to it/);
     }
   }
