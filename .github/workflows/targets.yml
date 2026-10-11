@@ -4,7 +4,8 @@ name: Tsuzuri targets
 # the compiler's tests on the four hosts that ship a toolchain bundle. The documentation's tier table
 # (_tsuzuri/language-reference/compiler/platforms.md) may claim only what a step of this file checks:
 #   - "executed on a matching runner":  the host's own triple, run by tests/targets.mjs on each job;
-#   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs;
+#   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs, and
+#                                       x86_64-apple-darwin, run by Rosetta on the macos-15 job;
 #   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;
 #   - "object only":                    the triples without a C library in the bundle.
 # Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.

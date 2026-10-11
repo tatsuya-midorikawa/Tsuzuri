@@ -153,7 +153,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |
 | 言語版（`Tsuzuri.toml` の `edition`）、`@deprecated` と警告 `W1005`、公開 API の差分（`tsuzuri api-diff`） | 実装済み | G19。edition は `2026` だけで、差はまだない。保つものと非推奨の手順は [安定性と互換性の方針](../../../docs/stability.md) |
-| 追加の native ターゲットとクロスコンパイル（`--target` が 22 個の triple を名指しできる。`TSUZURI_SYSROOT`、ビルド機で動かせない target の実行器 `TSUZURI_RUNNER`） | 実装済み | G15。実行で確かめたのは arm64 macOS のビルド機の native だけで、ほかの target は link か object までの確認。対応の程度は CI が確かめるものだけを書いた表（[対応プラットフォーム](../compiler/platforms.md)） |
+| 追加の native ターゲットとクロスコンパイル（`--target` が 22 個の triple を名指しできる。`TSUZURI_SYSROOT`、ビルド機で動かせない target の実行器 `TSUZURI_RUNNER`） | 実装済み | G15。CI の 4 つの job が自分の triple を実行し、Linux の job が静的な musl の 3 つを、macOS arm64 の job が x86-64 の macOS（Rosetta）を実行して確かめた。ほかの target は link か object までの確認。対応の程度は CI が確かめるものだけを書いた表（[対応プラットフォーム](../compiler/platforms.md)） |
 | 型検査とコード生成の増分コンパイル | 計画中 | [PB06](../../../_perfs/PB06-build-server.md)、[PB07](../../../_perfs/PB07-incremental-codegen.md) |
 | `f16` の演算と変換（AArch64 は `half` 命令、x86-64 の `--cpu native` は F16C と AVX512-FP16、WASM はソフトウェア） | 実装済み | D10。速度を測ったのは macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64・Linux arm64）で実行している。AVX512-FP16 と Windows は機械語の確認までで、その環境での実行は未確認。確かめるには、その環境で `tests/f16_hardware.mjs` を実行する |
 | コンパイル時評価 `const def`（ループ・再帰・`match` を含む関数を、定数の初期化式から評価する）と、平たいデータの定数の読み取り専用の静的データ | 実装済み | [D11](../../../_features/_completed/D11-const-evaluation.md)（Phase 1・2） |

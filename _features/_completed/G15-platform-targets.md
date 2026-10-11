@@ -108,6 +108,7 @@ tier の記録は [対応プラットフォームとクロスコンパイル](..
 - 基準（`053bced8`）のバイナリとの比較: 14 個のプログラム（`examples` の 4 つと `tests/fixtures` の 10 個）× 22 の設定（native と wasm32・wasm64 の `-O0`・`-O3`、`--emit` の llvm・object・header・exe・shared、`-g`、`--trap-info`、`--cpu native`、freestanding）を、Clang・wasm-ld・llvm-link・dsymutil の呼び出しの引数列まで比べて 308 回、差分 0（`-g` の実行ファイルと共有ライブラリは基準でも実行ごとに違い、比較から外した 20 件）。
 - 手元（arm64 macOS、Apple の Clang 21 と LLVM 21、同梱の Zig 0.16.0）で、22 個すべてのオブジェクトの形式（Mach-O の platform と最低 OS 版、ELF の machine・OSABI・RISC-V の浮動小数点 ABI、COFF の machine）を検査し、12 個を同梱の launcher でリンクして ELF のインタプリタと COFF のヘッダーを検査した。共有ライブラリ、IO・OS・Net のプログラムも 12 個で作り、iOS の 3 target は Xcode の SDK でリンクした。
 - `node scripts/check-docs.mjs` は変更した 14 ページで 340 件のリンク、49 個の例、68 回の native の実行が成功。
+- PR #22 の CI（`targets.yml`）。`tests/targets.mjs` は、Linux x86-64 と Linux arm64 が 4 実行（自分の triple と、静的な musl の 3 つ。同じ CPU の 1 つは直接、ほかの 2 つは qemu-user）・8 リンク・10 オブジェクト、macOS arm64 が 2 実行（自分の triple と、Rosetta の `x86_64-apple-darwin`）・13 リンク（iOS の 3 target は iPhoneOS と iPhoneSimulator の 18.5 の SDK）・7 オブジェクトで成功し、Intel Mac の `Targets` も成功した。`tests/e2e.mjs`、`f16 paths`、`cargo test --locked --no-fail-fast`（`RUST_MIN_STACK=4194304`、95 バイナリ・1,196 件）は 4 つの job で成功した。
 
 ### レビュー後の修正
 
@@ -124,8 +125,8 @@ tier の記録は [対応プラットフォームとクロスコンパイル](..
 
 ## 既知の限界
 
-- 実行して確かめたのは、手元の arm64 macOS の `aarch64-apple-darwin` だけ。外国の実行ファイル（qemu-user・Rosetta・Wine）は、この機械にないので動かしていない。`TSUZURI_RUNNER` は偽の実行器で確かめ、qemu-user による実行は `targets.yml` の Linux の job が行う。
-- `targets.yml` は、まだ GitHub Actions で実行していない。tier の表は、初回の実行の結果で見直す。Linux のホストと Intel Mac の動作は、そこで初めて確かめる。
+- 実行して確かめたのは、PR #22 の CI の 4 つの job（各 job が自分の triple を `-O0` と `-O3` で）、Linux の 2 つの job の静的な musl の 3 つ（直接と qemu-user）、macOS arm64 の job の `x86_64-apple-darwin`（Rosetta）。名前を付けた Windows の target の Windows のホストでの実行、Wine での実行、FreeBSD・Android・iOS の実行は確かめていない。`TSUZURI_RUNNER` は、偽の実行器と、この qemu-user と Rosetta で確かめた。
+- `targets.yml` の最初の実行で見つかり、直したこと。(1) macOS の 2 つの job で、iOS のリンクが失敗した。Xcode 16.4 の `/usr/bin/clang` が、生成した IR の `icmp samesign` を読めない（`expected icmp predicate`）。`tests/targets.mjs` は、システムの Clang が IR を読めるときだけそれを iOS に使い、読めないときは与えられた Clang（CI は Homebrew の LLVM 21）でリンクする（`platforms.md` の既知の制限）。(2) linux-arm64 の job で、深さの上限のテストがテストスレッドの 2 MiB の stack で溢れた。基準の `main` でも同じで、必要な stack は 4 チケットの前後で同じ（GUIDE D-45）。`targets.yml` は全体を `RUST_MIN_STACK=4194304` で流す。(3) Intel Mac の job が約 80 分（Rust のテストだけで 62 分）かかり、制限時間 90 分に近かったので 150 分にし、Rust のテストを最後の step にした。
 - Windows のホストの経路は型検査だけ。名前を付けた Windows の target を Windows のホストで実行した結果、MSVC の実行ファイルを Windows 以外のホストでリンクした結果はない。Windows の `--emit shared` と OS API は G10 のまま。
 - Android は、オブジェクトと LLVM IR までで、NDK の sysroot で実行ファイルをリンクできるかは確かめていない。iOS は実機でもシミュレーターでも動かしていない。FreeBSD は、ランタイムの C のコンパイルと同梱ツールチェーンでのリンクまで。
 - 同梱ツールチェーンは、Mach-O のランタイムを含む `--emit object` を作れない（Zig が `-keep_private_externs` を受け付けない）。Windows の COFF のランタイムを含む `--emit object` は `E2002` のまま。

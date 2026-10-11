@@ -48,11 +48,12 @@ tier の意味は次のとおりです。
 - リンク: 同梱ツールチェーンか Apple のツールで実行ファイルをリンクし、ヘッダー（形式、CPU、OS の版、ELF のインタプリタ）を読み戻して検査する。
 - オブジェクト: オブジェクトを作り、同じ検査をする。
 - qemu-user: Linux の 2 つの job が、静的な musl の実行ファイルをエミュレーターで実行する。
+- Rosetta: `macos-15` の job が、`x86_64-apple-darwin` の `examples/tasks` を `TSUZURI_RUNNER='arch -x86_64'` で実行する（runner に Rosetta があるときだけで、なければこの実行を省く）。
 
 | CLI 名 | Clang の `--target` | tier | 確認 |
 | --- | --- | --- | --- |
 | `aarch64-apple-darwin` | `arm64-apple-macosx12.0.0` | 1 | 実行（`macos-15`）、リンク（ほかの 3 job） |
-| `x86_64-apple-darwin` | `x86_64-apple-macosx12.0.0` | 1 | 実行（`macos-15-intel`）、リンク（ほかの 3 job） |
+| `x86_64-apple-darwin` | `x86_64-apple-macosx12.0.0` | 1 | 実行（`macos-15-intel`）、Rosetta での実行（`macos-15`）、リンク（Linux の 2 job） |
 | `aarch64-unknown-linux-gnu` | `aarch64-unknown-linux-gnu` | 1 | 実行（`ubuntu-24.04-arm`）、リンク（ほかの 3 job） |
 | `x86_64-unknown-linux-gnu` | `x86_64-unknown-linux-gnu` | 1 | 実行（`ubuntu-24.04`）、リンク（ほかの 3 job） |
 | `aarch64-unknown-linux-musl` | `aarch64-unknown-linux-musl` | 2 | リンク（4 job）。静的な実行ファイルを `ubuntu-24.04-arm` はそのまま、`ubuntu-24.04` は qemu-user で実行 |
@@ -117,6 +118,7 @@ Windows の target は、この表の job では実行しません。Windows の
 
 - その Clang は、target の CPU のコード生成（RISC-V は Apple の Clang にありません）と、target の形式のリンカーを持つ必要があります。ビルド機と違う target には `-fuse-ld=lld` を付けるので、`ld.lld` が PATH に要ります。例外は、macOS のホストで Mach-O の target を作るときで、Apple のリンカーを使います。
 - 別の CPU の macOS 向けは、macOS の SDK がそのまま使えるので、sysroot は要りません。iOS は SDK を渡さないと、Apple の Clang が macOS の SDK で黙ってリンクするので、`-Werror=incompatible-sysroot` で止めて `E2002` にします。
+- その Clang は、コンパイラが出す IR を読めなければなりません。IR に `icmp samesign` があると、Xcode 16.4 の Apple Clang は `expected icmp predicate` で読めず、`E2002` になります。LLVM 21 の Clang は読めるので、`TSUZURI_CLANG` に渡します。CI の macOS の job は、Xcode 16.4 の SDK を、Homebrew の LLVM 21 の Clang に渡しています。
 - MSVC と bare-metal の target に `TSUZURI_SYSROOT` を付けると `E2000` です。MSVC のリンカーは、Windows SDK と CRT を `INCLUDE` と `LIB` から読みます。
 
 ```sh
@@ -205,12 +207,15 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 
 ## 確かめた範囲
 
-実行まで確かめたのは、開発に使った arm64 の macOS の `aarch64-apple-darwin` だけです（`-O0` と `-O3` の `build`、`run`、`test`、`--target native` との出力の一致）。ほかは次のとおりです。
+[targets.yml](../../../.github/workflows/targets.yml) の 4 つの job が確かめた範囲は、次のとおりです。
 
-- この機械でリンクして、ヘッダーを検査した: `x86_64-apple-darwin`（Rosetta がなく実行できない）、Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows（同梱の Zig）、iOS の 3 target（Xcode の SDK）。
-- この機械でオブジェクトまで作った: MSVC の Windows、Android、bare-metal。
-- 実行器のフックは、偽の実行器のスクリプトで確かめた。qemu-user、Rosetta、Wine を使った実行は、この機械では確かめていない。CI の Linux の job が、静的な musl の実行ファイルを qemu-user で動かす。
-- Linux と Intel Mac は、CI の job が最初に確かめる。
+- 実行: 各 job が自分の triple（`aarch64-apple-darwin`、`x86_64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`）を `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` と出力が一致することを確かめました。
+- 別の CPU の実行ファイルの実行: Linux の 2 つの job が、静的な musl の 3 つ（aarch64、x86-64、riscv64gc）を、同じ CPU のものは直接、ほかは qemu-user で実行しました。`macos-15` の job は、Rosetta で `x86_64-apple-darwin` を実行しました。
+- リンクして、ヘッダーを検査した（実行はしていない）: 同梱ツールチェーンで Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows。macOS の job では、もう一方の Apple の CPU と、iOS の 3 target（Xcode の SDK を `TSUZURI_SYSROOT` に渡します）。
+- オブジェクトまで作った: MSVC の Windows、Android、bare-metal（4 つの job）、iOS（Linux の 2 つの job）。
+- 実行器のフック（`TSUZURI_RUNNER`）は、偽の実行器のスクリプト、qemu-user、Rosetta で確かめました。Wine を使った実行は確かめていません。
+
+確かめていないのは、名前を付けた Windows の target を Windows のホストで実行すること、MSVC の実行ファイルを Windows 以外のホストでリンクすること、FreeBSD・Android・iOS の実行（実機とシミュレーター）です。
 
 ## まとめ
 

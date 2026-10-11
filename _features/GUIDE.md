@@ -1509,8 +1509,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `--sysroot` を黙って無視するため）。ビルド機で動かせない target の実行は、利用者が与える実行器 `TSUZURI_RUNNER`（qemu-user・Wine・エミュレーターの前置コマンド）だけで、何も取得せず、
   ないときは `E2000`。`run --target` はこのときだけ使える。OS API は Android（Bionic は API 28 から）・iOS・Windows で、`Net` と `Async.block_on` は FreeBSD・Android・iOS で、`E2002` で拒否する。
   bare-metal は `--freestanding --allocator host` の object・llvm・header だけ（x86-64 は全関数に `noredzone`）。tier の記録は `_tsuzuri/language-reference/compiler/platforms.md` の表 1 か所で、
-  `.github/workflows/targets.yml` の job が確かめるものだけを書く（tier 1 はホストの 4 triple、ほかは tier 2 以下。表は CI の最初の実行の結果で見直す）。ビルド機で実行して確かめたのは arm64 macOS の
-  native だけで、x86-64 の Mach-O・Linux・Windows・FreeBSD・Android・iOS・RISC-V は link か object までの確認、`TSUZURI_RUNNER` は偽の実行器スクリプトだけで確かめた。
+  `.github/workflows/targets.yml` の job が確かめるものだけを書く（tier 1 はホストの 4 triple、ほかは tier 2 以下）。CI の最初の実行の結果（PR #22）: 4 つの job が自分の triple を実行し、Linux の 2 つの job が
+  静的な musl の 3 つを（直接と qemu-user で）、macOS arm64 の job が `x86_64-apple-darwin` を Rosetta で実行した。ほかの target は link か object まで（x86-64 の Mach-O・ELF・COFF の別の CPU、
+  Windows・FreeBSD・Android・iOS・RISC-V。Wine と、Windows のホストでの名前付きの Windows target の実行は未確認）。`TSUZURI_RUNNER` は偽の実行器・qemu-user・Rosetta で確かめた。
 - G19（edition・互換性・非推奨）: `Edition(u16)` は lexer と parser の入口の必須の引数で、manifest の `[package] edition`（省略は将来も `2026`）→ `SourceFile` → `SourceInput` → `ModuleInput` と運ばれ、
   manifest のない入力と std は `Edition::LATEST`。`EDITION_KEYWORDS` は空（差はまだない）。edition は字句と警告だけに作用し、IR は edition の値によらずバイト単位で同じ。frontend cache の parse key に edition を入れた。
   文書コメントの `@deprecated [note]`（最初の該当行だけが有効）を、別のパッケージ・std の `def`・`record`・`union`（と case）の使用の警告 `W1005`（既定で有効、同じパッケージの中では出さない）にした。
@@ -1522,6 +1523,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   起きなかった件（`validate` の段で `E2000`）。G19 × D11 は、`api-diff` が `const def` を見ず `const` の取り消しを報告しなかった件（breaking にした）。D11 は、`f16`・`f128` の定数の NaN の符号が
   実行時（`tz_soft_op`）と違った件（実行時と同じ規則に揃えた。`f32`・`f64` は機械が決めるので NaN であることだけを決める）と、定数ごとに `const def` の本体を歩き直して 2 乗に遅くなった依存の走査
   （関数ごとに 1 度だけ求める）。値として使う展開の予算が関数ごとなので、大きな非 plain の定数を多数の関数が値として使うとメモリが関数の数に比例する点は、従来の設計のまま文書に書いた。
+- `targets.yml` の最初の実行で見つかったこと（PR #22）。macOS の 2 つの job の iOS のリンクが、Xcode 16.4 の `/usr/bin/clang`（生成した IR の `icmp samesign` を読めない）で失敗した。
+  `tests/targets.mjs` は、システムの Clang が IR を読めるときだけそれを iOS に使い、読めなければ与えられた Clang（CI は Homebrew の LLVM 21）でリンクする。README などの「LLVM 17+」は、この IR には
+  足りない（既存の記述で、この変更では触れていない）。Intel Mac の job は約 80 分（Rust のテストだけで 62 分、Linux は 21〜40 分、macOS arm64 は 25〜28 分）かかったので、制限時間を 150 分にし、
+  Rust のテストを最後の step にして、ほかの step の結果が長い step に隠れないようにした。`pull_request` の `paths` は、最後の push でなく PR 全体の差分で判定するので、文書だけの push も `targets.yml` を
+  やり直す。
 - 既知の事前の不具合（このブランチの変更ではない）: debug build の深さの上限のテストは、テストスレッドの 2 MiB（2,097,152 bytes）の stack にほとんど余裕がない。arm64 macOS（rustc 1.98.1）で必要な stack は
   `parser::tests::bounds_recursive_and_flat_expression_depth` が 2,081,456 bytes、`computations::bounds_nested_builder_expansion_not_just_source_syntax` が 2,032,274、
   `computations::bounds_computation_syntax_and_expansion` が 2,130,638 で、最後のテストは溢れて binary ごと abort する。基準（`053bced8`）と 4 チケットの変更後で、3 つとも 1 KiB の刻みで同じ値だった。
