@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, WasmHost};
+use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
 
 const HELP: &str = "\
@@ -17,15 +17,15 @@ Usage:
     tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
-                             [--target native|wasm32|wasm64] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
+                             [--target native|wasm32|wasm64|TRIPLE] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
                              [--coverage PATH] [--seed N]
     tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
                              Build test N alone with debug information as PATH without running it;
                              a debugger starts PATH with the printed argument 0
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
-                              [-O0|-O1|-O2|-O3] [--target native]
+                              [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--target native|TRIPLE] [--cpu generic|native] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -93,7 +93,10 @@ Other source inputs can be checked or built as libraries.
 
 Build options:
   -o, --output PATH       Output path (defaults to the input with a new extension)
-  --target native|wasm32|wasm64  Target (default: native; wasm64 uses 64-bit memory)
+  --target native|wasm32|wasm64|TRIPLE
+                         Target (default: native; wasm64 uses 64-bit memory). A TRIPLE, listed at the
+                         end of this help, builds native code for that machine; its C headers, C
+                         library, and linker come from the bundled toolchain or TSUZURI_SYSROOT
     --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), jspi
                             (WASM build; Async.block_on waits through JavaScript Promise
                             Integration), webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
@@ -162,6 +165,12 @@ Toolchain:
   TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   Each tool comes from its variable, then a distribution's bin/, then PATH.
+  TSUZURI_SYSROOT        Sysroot of a TRIPLE target (its C headers and libraries): Clang gets
+                         --sysroot, or -isysroot for Apple targets. A build for the machine
+                         itself or for WebAssembly does not read it.
+  TSUZURI_RUNNER         Command that runs the executables of a TRIPLE target this machine
+                         cannot run, for run and test, such as 'qemu-aarch64 -L /usr/aarch64-linux-gnu'.
+                         It is split at white space; nothing is downloaded or installed.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit
@@ -264,6 +273,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut input = None;
     let mut output = None;
     let mut target = None;
+    let mut triple = None;
     let mut emit = None;
     let mut optimization = None;
     let mut cpu = None;
@@ -493,16 +503,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     if target.is_some() {
                         return Err("target specified more than once".into());
                     }
-                    target = Some(
-                        match next_value(arguments, &mut position, "--target")?.to_str() {
-                            Some("native") => Target::Native,
-                            Some("wasm32") => Target::Wasm32,
-                            Some("wasm64") => Target::Wasm64,
-                            _ => {
-                                return Err("target must be 'native', 'wasm32', or 'wasm64'".into());
-                            }
-                        },
-                    );
+                    let value = next_value(arguments, &mut position, "--target")?;
+                    let (named, named_triple) =
+                        tsuzuri::target::parse_target(value.to_str().ok_or(
+                            "target names are UTF-8; use native, wasm32, wasm64, or a TRIPLE",
+                        )?)?;
+                    target = Some(named);
+                    triple = named_triple;
                     continue;
                 }
                 Some("--wasm-feature") => {
@@ -750,9 +757,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             return Err("coverage cannot be combined with -g; a debug runner only builds".into());
         }
     }
+    if action == Action::Run && target.is_some_and(Target::is_wasm) {
+        return Err("run supports only a native target; build WebAssembly with 'tsuzuri build --target wasm32' and load the module in a host".into());
+    }
     if output.is_some() && !matches!(action, Action::Build | Action::Doc | Action::Test)
         || emit.is_some() && action != Action::Build
-        || target.is_some() && !matches!(action, Action::Build | Action::Test | Action::Bench)
+        || target.is_some()
+            && !matches!(
+                action,
+                Action::Build | Action::Test | Action::Bench | Action::Run
+            )
     {
         return Err("--output requires build or doc; --target and --emit require a supported build/test action".into());
     }
@@ -798,6 +812,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         trap_return,
         allocator: allocator.unwrap_or_default(),
         freestanding,
+        triple,
     };
     options.validate().map_err(|error| error.message)?;
     if let Some(error) = output
@@ -1003,6 +1018,7 @@ fn run_test_action(
         wasm_stack_size: arguments.options.wasm_stack_size,
         coverage: arguments.coverage.is_some(),
         seed: arguments.test_seed,
+        triple: arguments.options.triple,
     };
     if options
         .indices
@@ -1231,6 +1247,7 @@ fn run_bench_action(
         samples: arguments
             .bench_samples
             .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
+        triple: arguments.options.triple,
     };
     if options
         .indices
@@ -1968,10 +1985,18 @@ fn script_json(arguments: &[OsString]) -> bool {
     false
 }
 
+/// The help text, ending with the targets of `--target TRIPLE` as the compiler's table has them.
+fn help() -> String {
+    format!(
+        "{HELP}\n\nTRIPLE (64-bit native targets only; 32-bit ones are not supported):\n  {}",
+        Triple::names().replace(", ", "\n  ")
+    )
+}
+
 fn main() -> ExitCode {
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
-        eprintln!("{HELP}");
+        eprintln!("{}", help());
         return ExitCode::from(2);
     }
     // `tsuzuri script` is `tsuzuri run` of one file; the program's arguments are set aside first.
@@ -1999,7 +2024,7 @@ fn main() -> ExitCode {
         .iter()
         .any(|argument| *argument == "--help" || *argument == "-h")
     {
-        println!("{HELP}");
+        println!("{}", help());
         return ExitCode::SUCCESS;
     }
     if raw.len() == 1 && raw[0] == "--version" {
@@ -3096,6 +3121,185 @@ mod tests {
     }
 
     #[test]
+    fn accepts_named_targets_and_rejects_unknown_ones() {
+        // The names are spelled out here, not read from the table that parses them.
+        let names = [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+            "riscv64gc-unknown-linux-gnu",
+            "riscv64gc-unknown-linux-musl",
+            "aarch64-pc-windows-gnu",
+            "x86_64-pc-windows-gnu",
+            "aarch64-unknown-freebsd",
+            "x86_64-unknown-freebsd",
+            "aarch64-linux-android",
+            "x86_64-linux-android",
+            "aarch64-apple-ios",
+            "aarch64-apple-ios-sim",
+            "x86_64-apple-ios",
+        ];
+        assert_eq!(Triple::names().split(", ").count(), names.len() + 3);
+        for name in names {
+            let build = parse(&["build", "app", "--target", name]).unwrap();
+            assert_eq!(build.options.target, Target::Native, "{name}");
+            assert_eq!(build.options.triple.map(Triple::name), Some(name));
+            assert_eq!(build.options.emit, Emit::Executable);
+            let test = parse(&["test", "app", "--target", name]).unwrap();
+            assert_eq!(test.options.triple.map(Triple::name), Some(name));
+            let run = parse(&["run", "app", "--target", name]).unwrap();
+            assert_eq!(run.options.triple.map(Triple::name), Some(name));
+            assert!(run.options.trap_info);
+            let bench = parse(&["bench", "app", "--target", name]).unwrap();
+            assert_eq!(bench.options.triple.map(Triple::name), Some(name));
+        }
+        // Bare metal has no executable, so only freestanding output names it.
+        for name in [
+            "aarch64-unknown-none",
+            "x86_64-unknown-none",
+            "riscv64gc-unknown-none-elf",
+        ] {
+            assert!(
+                parse(&["build", "app", "--target", name]).is_err(),
+                "{name}"
+            );
+            let object = parse(&[
+                "build",
+                "app",
+                "--target",
+                name,
+                "--emit",
+                "object",
+                "--freestanding",
+                "--allocator",
+                "host",
+            ])
+            .unwrap();
+            assert_eq!(object.options.triple.map(Triple::name), Some(name));
+        }
+        // The aliases of WebAssembly select the same code generators, and no triple.
+        for (text, target) in [
+            ("wasm32-unknown-unknown", Target::Wasm32),
+            ("wasm64-unknown-unknown", Target::Wasm64),
+        ] {
+            let build = parse(&["build", "app", "--target", text]).unwrap();
+            assert_eq!((build.options.target, build.options.triple), (target, None));
+            assert_eq!(build.options.emit, Emit::Wasm);
+        }
+        let native = parse(&["build", "app", "--target", "native"]).unwrap();
+        assert_eq!(native.options.triple, None);
+        // Unknown names, aliases, and 32-bit targets get one message that lists the closed set.
+        let list = Triple::names();
+        for value in [
+            "x86_64-unknown-haiku",
+            "arm64-apple-darwin",
+            "x86_64-linux-gnu",
+            "AARCH64-apple-darwin",
+            "",
+        ] {
+            assert_eq!(
+                parse(&["build", "app", "--target", value]).unwrap_err(),
+                format!("unknown target '{value}'; use native, wasm32, wasm64, or one of {list}")
+            );
+        }
+        for value in [
+            "i686-unknown-linux-gnu",
+            "armv7-unknown-linux-gnueabihf",
+            "riscv32imac-unknown-none-elf",
+        ] {
+            assert_eq!(
+                parse(&["test", "app", "--target", value]).unwrap_err(),
+                format!(
+                    "unknown target '{value}'; 32-bit native targets are not supported because native code generation assumes 64-bit pointers; use native, wasm32, wasm64, or one of {list}"
+                )
+            );
+        }
+        // `run` takes a native target; `script` and `repl` take none, and a repeated one is an error.
+        assert!(parse(&["run", "app", "--target", "native"]).is_ok());
+        assert!(parse(&["run", "app", "--target", "wasm32"]).is_err());
+        assert!(parse(&["check", "app", "--target", "x86_64-unknown-linux-gnu"]).is_err());
+        assert!(
+            parse(&[
+                "build",
+                "app",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--target",
+                "native"
+            ])
+            .is_err()
+        );
+        assert!(
+            script_arguments(&[
+                OsString::from("--target"),
+                OsString::from("x86_64-unknown-linux-gnu"),
+                OsString::from("a.tz")
+            ])
+            .is_err()
+        );
+        assert!(parse_repl(&["--target", "x86_64-unknown-linux-gnu"]).is_err());
+        // WGSL, SPIR-V, and WebAssembly output name no native target.
+        for emit in ["wgsl", "spirv"] {
+            assert!(
+                parse(&[
+                    "build",
+                    "app",
+                    "--emit",
+                    emit,
+                    "--target",
+                    "x86_64-unknown-linux-gnu"
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            parse(&[
+                "build",
+                "app",
+                "--emit",
+                "wasm",
+                "--target",
+                "x86_64-unknown-linux-gnu"
+            ])
+            .is_err()
+        );
+        // A named target is rejected with `--cpu native` only when it is not this machine's own.
+        let host = Triple::host().map(Triple::name);
+        for name in names {
+            let parsed = parse(&["build", "app", "--target", name, "--cpu", "native"]);
+            if Some(name) == host {
+                assert!(parsed.is_ok() || parsed.unwrap_err().contains("is not supported on"));
+            } else {
+                assert_eq!(
+                    parsed.unwrap_err(),
+                    format!(
+                        "'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to {name}"
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_help_lists_every_target_of_the_table() {
+        let text = help();
+        for triple in Triple::ALL {
+            assert!(
+                text.contains(&format!("\n  {}", triple.name())),
+                "{}",
+                triple.name()
+            );
+        }
+        assert!(text.contains("TSUZURI_SYSROOT"));
+        assert!(text.contains("TSUZURI_RUNNER"));
+    }
+
+    #[test]
     fn rejects_ambiguous_or_unused_arguments() {
         for values in [
             vec!["build", "Main.tz", "--wasm-feature", "simd128"],
@@ -3205,6 +3409,10 @@ mod tests {
             assert!(parse(&values).is_err(), "{values:?}");
         }
         let unused = "--wasm-max-memory and --wasm-stack-size are only valid with build or test";
+        let unknown_target = format!(
+            "unknown target 'wasm128'; use native, wasm32, wasm64, or one of {}",
+            Triple::names()
+        );
         let untargeted =
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64";
         let output = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
@@ -3351,7 +3559,7 @@ mod tests {
             ),
             (
                 vec!["build", "app", "--target", "wasm128"],
-                "target must be 'native', 'wasm32', or 'wasm64'",
+                unknown_target.as_str(),
             ),
             (
                 vec![

@@ -92,7 +92,7 @@ tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 | `--list` | 型検査して一覧だけ出す。実行しない |
 | `--json` | 結果を 1 行 1 JSON で標準出力へ出す。診断は標準エラー |
 | `-O0` から `-O3` | 最適化。既定は `-O0` |
-| `--target native\|wasm32\|wasm64` | 既定は `native`。WASM には Node.js が必要 |
+| `--target native\|wasm32\|wasm64\|TRIPLE` | 既定は `native`。WASM には Node.js が必要。ビルド機で動かせない native の `TRIPLE` は、`TSUZURI_RUNNER` に指定した実行器がないと `E2000`（[対応プラットフォーム](../compiler/platforms.md#ほかの-target-の実行ファイルを動かす)） |
 | `--wasm-max-memory SIZE` | WASM の線形メモリ上限。既定 16 MiB |
 | `--wasm-stack-size SIZE` | WASM のメインスタック。既定 1 MiB |
 | `-g -o PATH` | `--index` の 1 件をデバッグ情報付きでビルドし、実行しない（[テストをデバッグする](#テストをデバッグする)） |
@@ -271,7 +271,7 @@ end_of_record
 - トラップや時間切れで失敗したテストは、カウンターを書く前に終わるので、数に入りません。除いた件数が 1 以上なら要約の末尾に `; excluded N failed test(s)` が付きます。
 - `--json` では、テストの summary の後の最後の行が `{"type":"coverage","lines":{"hit":3,"total":4},"functions":{"hit":1,"total":2},"excluded_failed":1,"files":[...]}` です。`files` の各要素は `path`、`lines`、`functions` を持ちます。
 
-`--coverage` は `--target wasm32`／`wasm64` と組み合わせられず、`--list` や `-g`（[テストをデバッグする](#テストをデバッグする)）とも組み合わせられません（終了コード 2 の `E2000`）。出力先がプロジェクトのソースなら `E2003` で、ファイルは書き換えません。書けなければ `E2001` です。テストが失敗しても lcov は書き、終了コードは 1 です。
+`--coverage` は `--target wasm32`／`wasm64` とも、ビルド機で動かせない `--target TRIPLE` とも組み合わせられず、`--list` や `-g`（[テストをデバッグする](#テストをデバッグする)）とも組み合わせられません（終了コード 2 の `E2000`。ビルド機で動かせない `TRIPLE` はビルド中に見つかるので終了コード 1）。出力先がプロジェクトのソースなら `E2003` で、ファイルは書き換えません。書けなければ `E2001` です。テストが失敗しても lcov は書き、終了コードは 1 です。
 
 ## 終了コード
 

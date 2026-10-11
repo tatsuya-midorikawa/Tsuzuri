@@ -104,7 +104,7 @@ impl FunctionEmitter<'_, '_> {
             }, ty, Span::default()).unwrap();
         }
         if operation == MathFma {
-            if cfg!(target_arch = "aarch64")
+            if crate::target::current_platform().hardware_fma()
                 && !self.globals.wasm
                 && matches!(ty, Type::Binary(32 | 64))
             {

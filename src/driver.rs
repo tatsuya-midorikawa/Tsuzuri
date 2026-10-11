@@ -11,6 +11,8 @@ use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::llvm::{self, Entry};
 use crate::syntax::{Edition, MAX_SOURCE_BYTES, SourceKind};
+use crate::target::{ForeignRunner, PlatformScope};
+pub use crate::target::{Platform, Triple};
 
 #[path = "test_runner.rs"]
 mod test_runner;
@@ -187,23 +189,51 @@ impl Target {
 pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
 /// Why a Windows build cannot reach them yet.
 pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
-/// Whether the native reactor of `Async.block_on` (`src/runtime/async.c`) has an implementation
-/// for the host this compiler runs on: POSIX threads on macOS and Linux, Win32 on Windows.
-pub(crate) const ASYNC_NATIVE_SUPPORTED: bool =
-    cfg!(any(target_os = "macos", target_os = "linux", windows));
+/// Why the native reactor of `Async.block_on` (`src/runtime/async.c`, which `Platform::reactor` says
+/// has an implementation) is missing on the machine the compiler runs on.
 pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
     "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
 /// Why wasm output cannot reach the sockets of the standard Net module (E09).
 pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, build with --wasm-feature jspi --wasm-feature net and load the module with the generated JavaScript bindings on Node.js, or keep to Net address parsing, which needs no host";
-/// Whether `src/runtime/net.c` has an implementation for the host this compiler runs on: POSIX sockets on macOS
-/// and Linux, Winsock on Windows.
-pub(crate) const NET_NATIVE_SUPPORTED: bool =
-    cfg!(any(target_os = "macos", target_os = "linux", windows));
-/// Why a build for another host cannot reach the Net sockets.
+/// Why a build for another host cannot reach the Net sockets (`src/runtime/net.c`, which
+/// `Platform::net` says has an implementation: POSIX sockets on macOS and Linux, Winsock on Windows).
 pub(crate) const NET_NATIVE_MESSAGE: &str =
     "the Net socket API is only available on macOS, Linux, and Windows; build on one of them";
 /// Why a program that starts a Net async operation needs the reactor of `Async.block_on` natively.
 pub(crate) const NET_ASYNC_MESSAGE: &str = "the Net async operations (connect_async, accept_async, read_async, ...) complete through the reactor of Async.block_on; run the computation with Async.block_on";
+
+/// Why the operating-system APIs are missing: the Windows message, or the one that names a target.
+pub(crate) fn os_message(platform: Platform) -> String {
+    match platform.triple() {
+        Some(triple) if !platform.windows() => format!(
+            "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
+            triple.name()
+        ),
+        _ => OS_WINDOWS_MESSAGE.to_owned(),
+    }
+}
+
+/// Why the Net sockets are missing: the host message, or the one that names a target.
+pub(crate) fn net_message(platform: Platform) -> String {
+    match platform.triple() {
+        None => NET_NATIVE_MESSAGE.to_owned(),
+        Some(triple) => format!(
+            "the Net socket API is only available for macOS, Linux, and Windows targets; {} has no implementation of it",
+            triple.name()
+        ),
+    }
+}
+
+/// Why `Async.block_on` is missing: the host message, or the one that names a target.
+pub(crate) fn async_message(platform: Platform) -> String {
+    match platform.triple() {
+        None => ASYNC_NATIVE_MESSAGE.to_owned(),
+        Some(triple) => format!(
+            "Async.block_on is only available for macOS, Linux, and Windows targets; use Async.run for {}",
+            triple.name()
+        ),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cpu {
@@ -325,6 +355,9 @@ pub struct BuildOptions {
     pub allocator: llvm::Allocator,
     /// `--freestanding`: a native object that needs no C library (F13 Phase 3).
     pub freestanding: bool,
+    /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
+    /// every non-native target.
+    pub triple: Option<Triple>,
 }
 
 impl Default for BuildOptions {
@@ -349,14 +382,21 @@ impl Default for BuildOptions {
             trap_return: false,
             allocator: llvm::Allocator::System,
             freestanding: false,
+            triple: None,
         }
     }
 }
 
 impl BuildOptions {
+    /// Where the output runs: the named target, or the machine the compiler runs on.
+    pub fn platform(self) -> Platform {
+        Platform::new(self.triple)
+    }
+
     pub fn validate(self) -> Result<(), Diagnostic> {
         if self.emit.is_kernel()
             && (self.target != Target::Native
+                || self.triple.is_some()
                 || self.cpu != Cpu::Generic
                 || self.debug_info
                 || self.debug_output
@@ -378,6 +418,9 @@ impl BuildOptions {
         }
         if self.emit.is_bindings() {
             self.validate_bindings()?;
+        }
+        if let Some(triple) = self.triple {
+            self.validate_triple(triple)?;
         }
         if self.emit == Emit::Shared {
             self.validate_shared()?;
@@ -529,7 +572,16 @@ impl BuildOptions {
                     "'--cpu native' requires native executable or object output",
                 ));
             }
-            native_cpu_flag(env::consts::ARCH)?;
+            if let Some(triple) = self.triple.filter(|_| self.platform().cross()) {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to {}",
+                        triple.name()
+                    ),
+                ));
+            }
+            native_cpu_flag(self.platform().arch_name())?;
         }
         if self.wasm_max_memory.is_some()
             && (!self.target.is_wasm()
@@ -614,7 +666,7 @@ impl BuildOptions {
                 "'--emit shared' requires '--target native'",
             ));
         }
-        if cfg!(windows) {
+        if self.platform().windows() {
             return Err(driver_error(
                 "E2000",
                 "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL",
@@ -624,6 +676,47 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The options of a named native target (`--target TRIPLE`): what its operating system, or the
+    /// lack of one, and the tools of the machine the compiler runs on can produce.
+    fn validate_triple(self, triple: Triple) -> Result<(), Diagnostic> {
+        let name = triple.name();
+        if self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                format!("--target {name} names a native target, not WebAssembly"),
+            ));
+        }
+        if triple.is_bare_metal()
+            && !(self.freestanding && matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header))
+        {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "{name} has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header"
+                ),
+            ));
+        }
+        // The debug information of these outputs comes from a tool that only its own kind of host has.
+        let platform = self.platform();
+        if self.debug_info {
+            let (needed, tool) = if platform.mach_o()
+                && !cfg!(target_os = "macos")
+                && matches!(self.emit, Emit::Executable | Emit::Shared)
+            {
+                ("macOS", "its dSYM comes from dsymutil")
+            } else if platform.msvc() && !cfg!(windows) && self.emit == Emit::Executable {
+                ("Windows", "its PDB comes from the MSVC linker")
+            } else {
+                return Ok(());
+            };
+            return Err(driver_error(
+                "E2000",
+                format!("--debug-info for {name} needs a {needed} host: {tool}"),
             ));
         }
         Ok(())
@@ -701,19 +794,16 @@ impl BuildOptions {
     }
 
     pub fn output_path(self, input: &Path) -> PathBuf {
+        let platform = self.platform();
         input.with_extension(match self.emit {
-            Emit::Executable if cfg!(windows) => "exe",
-            Emit::Executable => "",
-            Emit::Object if cfg!(windows) => "obj",
-            Emit::Object => "o",
+            Emit::Executable => platform.executable_extension(),
+            Emit::Object => platform.object_extension(),
             Emit::Llvm => "ll",
             Emit::Header => "h",
             Emit::Wasm => "wasm",
             Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
             Emit::Spirv | Emit::SpirvRelaxed => "spv",
-            Emit::Shared if cfg!(windows) => "dll",
-            Emit::Shared if cfg!(target_os = "macos") => "dylib",
-            Emit::Shared => "so",
+            Emit::Shared => platform.shared_extension(),
             Emit::BindingsJs => "mjs",
             Emit::BindingsCs => "cs",
             Emit::BindingsPy => "py",
@@ -904,14 +994,19 @@ fn f16_path_with(
     }
 }
 
-/// [`f16_path`] for a build whose target is the machine that runs the compiler.
-pub(crate) fn host_f16_path(target: Target, cpu: Cpu) -> llvm::F16Path {
+/// [`f16_path`] for a build for `platform`. The CPU features are the ones of the machine that runs
+/// the compiler, which a build for another machine cannot use.
+pub(crate) fn platform_f16_path(platform: Platform, target: Target, cpu: Cpu) -> llvm::F16Path {
     f16_path(
         target.is_wasm(),
-        env::consts::OS,
-        env::consts::ARCH,
+        platform.os_name(),
+        platform.arch_name(),
         cpu,
-        CpuFeatures::detect(),
+        if platform.cross() {
+            CpuFeatures::default()
+        } else {
+            CpuFeatures::detect()
+        },
     )
 }
 
@@ -936,10 +1031,11 @@ fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str
 }
 
 /// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
-/// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim.
-pub(crate) fn task_runtime_source() -> String {
+/// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim. A Windows target
+/// needs it on any host: the temporary directory has no `task-windows.h` for a quoted include.
+pub(crate) fn task_runtime_source_for(platform: Platform) -> String {
     let source = include_str!("runtime/task.c");
-    if cfg!(windows) {
+    if platform.windows() {
         source.replacen(
             "#include \"task-windows.h\"",
             include_str!("runtime/task-windows.h"),
@@ -960,6 +1056,137 @@ fn native_compile_args(windows: bool, architecture: &str) -> &'static [&'static 
     } else {
         &["-fPIC"]
     }
+}
+
+/// The Clang arguments of every run that is for `platform`, and of the IR compile in them.
+/// Without a named target they are the arguments of the machine the compiler runs on; a named
+/// target also passes its Clang target, even when it is the host's own, so that the output does not
+/// depend on the defaults of the Clang that is found (the deployment target of an Apple SDK).
+fn compile_args(platform: Platform) -> Vec<OsString> {
+    let Some(triple) = platform.triple() else {
+        return native_compile_args(platform.windows(), platform.arch_name())
+            .iter()
+            .map(OsString::from)
+            .collect();
+    };
+    let mut arguments = target_args(platform);
+    arguments.extend(triple.clang_arguments().iter().map(OsString::from));
+    // Clang rejects position-independent code for the Windows targets.
+    if !platform.windows() {
+        arguments.push("-fPIC".into());
+    }
+    arguments
+}
+
+/// Only the Clang target of a named platform: a link that is not a compile names its target too.
+fn target_args(platform: Platform) -> Vec<OsString> {
+    platform
+        .triple()
+        .map(|triple| format!("--target={}", triple.clang_target()).into())
+        .into_iter()
+        .collect()
+}
+
+/// The environment variable that names the sysroot of a named target: its C headers and libraries.
+pub const SYSROOT_VARIABLE: &str = "TSUZURI_SYSROOT";
+
+/// The Clang arguments of the runs that read the headers and libraries of a named target: the
+/// runtime's C compile and the link. A build for the machine the compiler runs on does not use
+/// `TSUZURI_SYSROOT`.
+fn sdk_args(platform: Platform) -> Result<Vec<OsString>, Diagnostic> {
+    sdk_args_for(
+        platform,
+        env::var_os(SYSROOT_VARIABLE).filter(|value| !value.is_empty()),
+    )
+}
+
+/// [`sdk_args`] with the value of `TSUZURI_SYSROOT`, if it is set to something.
+fn sdk_args_for(
+    platform: Platform,
+    sysroot: Option<OsString>,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let Some(triple) = platform.triple() else {
+        return Ok(Vec::new());
+    };
+    let mut arguments = Vec::new();
+    if platform.mach_o() {
+        // Without an SDK for the target, Apple's Clang falls back to the macOS one with a warning
+        // and links the wrong system library.
+        arguments.push("-Werror=incompatible-sysroot".into());
+        if let Some(sysroot) = sysroot {
+            arguments.extend(["-isysroot".into(), sysroot]);
+        }
+    } else if let Some(sysroot) = sysroot {
+        if triple.is_msvc() || triple.is_bare_metal() {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "{SYSROOT_VARIABLE} does not apply to {}{}",
+                    triple.name(),
+                    if triple.is_msvc() {
+                        ": the MSVC linker reads the Windows SDK and CRT from the INCLUDE and LIB environment variables"
+                    } else {
+                        ": a freestanding object reads no C headers or libraries"
+                    }
+                ),
+            ));
+        }
+        let mut argument = OsString::from("--sysroot=");
+        argument.push(sysroot);
+        arguments.push(argument);
+    }
+    Ok(arguments)
+}
+
+/// Makes Clang link with LLD where the linker of the machine that the compiler runs on cannot write
+/// the target's format: ld64 links only Apple targets, and the others need an ELF or COFF linker.
+fn link_args(platform: Platform) -> Vec<OsString> {
+    if platform.cross() && !(platform.mach_o() && cfg!(target_os = "macos")) {
+        vec!["-fuse-ld=lld".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The Clang arguments of the runs that read no SDK: the compile of IR to an object, and the
+/// relocatable link of objects. Apple's Clang would still look for an SDK and warn that the one it
+/// found, the macOS one, is not the target's; there is nothing for that SDK to get wrong.
+fn no_sdk_args(platform: Platform) -> Vec<OsString> {
+    if platform.triple().is_some() && platform.mach_o() {
+        vec!["-Wno-incompatible-sysroot".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Why a Clang run for a named target failed, where it could be missing the target's tools.
+fn cross_hint(platform: Platform, hint: &str) -> String {
+    let Some(triple) = platform.triple().filter(|_| platform.cross()) else {
+        return hint.to_owned();
+    };
+    let name = triple.name();
+    let needs = if platform.mach_o() {
+        format!("the SDK for {name}: set {SYSROOT_VARIABLE} to it")
+    } else if triple.is_msvc() {
+        "the Windows SDK and CRT: set the INCLUDE and LIB environment variables to them, or build the MinGW target with the bundled toolchain".to_owned()
+    } else if triple.has_bundled_c_library() {
+        format!("a sysroot for {name}: use the bundled toolchain, or set {SYSROOT_VARIABLE} to one")
+    } else {
+        // The bundled toolchain has no C library for it, and refuses a sysroot.
+        format!(
+            "a sysroot for {name} (the bundled toolchain has none): set {SYSROOT_VARIABLE} to one, with a Clang other than the bundled one"
+        )
+    };
+    // LLD, only where `link_args` asks for it: Apple's own linker writes Mach-O on a Mac.
+    let linker = if link_args(platform).is_empty() {
+        " and"
+    } else {
+        ", LLD, and"
+    };
+    format!(
+        "cross-compiling to {name} needs a Clang with the {} backend{linker} {needs}; {hint}",
+        triple.arch_name()
+    )
 }
 
 #[derive(Debug)]
@@ -2571,6 +2798,9 @@ fn build_complete(
     action: &str,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    let platform = options.platform();
+    // The IR of a native build follows the target, not the machine the compiler runs on.
+    let _platform_scope = PlatformScope::enter(platform);
     if !links.is_empty() {
         if options.target != Target::Native
             || !matches!(options.emit, Emit::Executable | Emit::Shared)
@@ -2642,7 +2872,7 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
-    let f16 = host_f16_path(options.target, options.cpu);
+    let f16 = platform_f16_path(platform, options.target, options.cpu);
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
     let mut text = if options.emit == Emit::Header {
@@ -2765,14 +2995,20 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
-    if cfg!(windows)
+    if platform.windows()
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
         text = llvm::windows_abi(text, module);
-        if options.debug_info && msvc_linker() {
+        if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
+    }
+    if platform.no_red_zone()
+        && options.target == Target::Native
+        && !(options.emit == Emit::Header || options.emit.is_kernel())
+    {
+        text = llvm::with_no_red_zone(text);
     }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -2886,15 +3122,12 @@ fn build_complete(
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     let stack_runtime = options.target == Target::Native
         && options.emit == Emit::Executable
-        && cfg!(unix)
+        && platform.unix()
         && llvm::has_recursion(&text);
     let debug_import = options.target.is_wasm() && text.contains("@tsuzuri_debug_write(");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && text.contains("@tz.callback.");
-    if task_runtime
-        && !cfg!(any(unix, windows))
-        && !matches!(options.emit, Emit::Llvm | Emit::Header)
-    {
+    if task_runtime && !platform.threads() && !matches!(options.emit, Emit::Llvm | Emit::Header) {
         return Err(driver_error(
             "E2002",
             "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
@@ -2918,24 +3151,27 @@ fn build_complete(
         return Err(driver_error("E2000", NET_ASYNC_MESSAGE));
     }
     if net_runtime
-        && !NET_NATIVE_SUPPORTED
+        && !platform.net()
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", NET_NATIVE_MESSAGE));
+        return Err(driver_error("E2002", net_message(platform)));
     }
     if async_reactor
-        && !ASYNC_NATIVE_SUPPORTED
+        && !platform.reactor()
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", ASYNC_NATIVE_MESSAGE));
+        return Err(driver_error("E2002", async_message(platform)));
     }
-    if os_runtime && cfg!(windows) && options.target == Target::Native && options.emit != Emit::Llvm
+    if os_runtime
+        && !platform.os_apis()
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", OS_WINDOWS_MESSAGE));
+        return Err(driver_error("E2002", os_message(platform)));
     }
-    if cfg!(windows) && native_runtime && options.emit == Emit::Object {
+    if platform.windows() && native_runtime && options.emit == Emit::Object {
         return Err(driver_error(
             "E2002",
             "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
@@ -2944,7 +3180,7 @@ fn build_complete(
     protect_sources(project, output)?;
     protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
-    let dwarf_sidecar = (cfg!(target_os = "macos")
+    let dwarf_sidecar = (platform.mach_o()
         && options.debug_info
         && matches!(options.emit, Emit::Executable | Emit::Shared))
     .then(|| {
@@ -2963,7 +3199,7 @@ fn build_complete(
     let pdb = (options.debug_info
         && options.target == Target::Native
         && options.emit == Emit::Executable
-        && msvc_linker())
+        && msvc_linker_for(platform))
     .then(|| pdb_path(output));
     if let Some(pdb) = &pdb {
         protect_sources(project, pdb)?;
@@ -2978,7 +3214,7 @@ fn build_complete(
     let mut temporary = TemporaryDirectory::new(parent)?;
     let artifact = temporary
         .path
-        .join(if options.emit == Emit::Executable && cfg!(windows) {
+        .join(if options.emit == Emit::Executable && platform.windows() {
             "artifact.exe"
         } else {
             "artifact"
@@ -3070,7 +3306,7 @@ fn build_complete(
         let mut ir = temporary.path.join("module.ll");
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
-        let merge_debug_ir = cfg!(target_os = "macos")
+        let merge_debug_ir = platform.mach_o()
             && options.debug_info
             && native_runtime
             && options.emit == Emit::Object;
@@ -3102,7 +3338,7 @@ fn build_complete(
                     ""
                 },
                 if task_runtime {
-                    task_runtime_source()
+                    task_runtime_source_for(platform)
                 } else {
                     String::new()
                 },
@@ -3127,10 +3363,11 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c"])
-                .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+                .args(compile_args(platform))
+                .args(sdk_args(platform)?)
                 .arg(format!("-O{}", options.optimization));
             if (task_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
-                && !cfg!(windows)
+                && !platform.windows()
             {
                 runtime.arg("-pthread");
             }
@@ -3147,14 +3384,17 @@ fn build_complete(
                 runtime.args(["-S", "-emit-llvm"]);
             }
             if options.cpu == Cpu::Native {
-                runtime.arg(native_cpu_flag(env::consts::ARCH)?);
+                runtime.arg(native_cpu_flag(platform.arch_name())?);
             }
             runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
             collect_message(
                 &mut messages,
                 run_tool(
                     &mut runtime,
-                    "native runtime requires Clang and the platform C/OS SDK headers",
+                    &cross_hint(
+                        platform,
+                        "native runtime requires Clang and the platform C/OS SDK headers",
+                    ),
                 )?,
             );
             if merge_debug_ir {
@@ -3187,7 +3427,8 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c", "-O1"])
-                .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+                .args(compile_args(platform))
+                .args(sdk_args(platform)?)
                 .arg(&stack_source)
                 .arg("-o")
                 .arg(&stack_object);
@@ -3195,7 +3436,10 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut runtime,
-                    "native runtime requires Clang and the platform C/OS SDK headers",
+                    &cross_hint(
+                        platform,
+                        "native runtime requires Clang and the platform C/OS SDK headers",
+                    ),
                 )?,
             );
         }
@@ -3296,9 +3540,15 @@ fn build_complete(
                 "-mno-simd128"
             });
         } else {
-            clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
+            clang.args(compile_args(platform));
             if options.cpu == Cpu::Native {
-                clang.args(native_ir_cpu_args(env::consts::ARCH, f16)?);
+                clang.args(native_ir_cpu_args(platform.arch_name(), f16)?);
+            }
+            // The run that links reads the target's libraries; a compile of IR alone reads none.
+            if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
+                clang.args(sdk_args(platform)?).args(link_args(platform));
+            } else {
+                clang.args(no_sdk_args(platform));
             }
         }
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
@@ -3316,20 +3566,20 @@ fn build_complete(
                 &artifact
             },
         );
-        if options.emit == Emit::Executable && !cfg!(windows) && dwarf_sidecar.is_none() {
+        if options.emit == Emit::Executable && !platform.windows() && dwarf_sidecar.is_none() {
             clang.arg("-lm");
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if (task_runtime || net_runtime) && !cfg!(windows) {
+            if (task_runtime || net_runtime) && !platform.windows() {
                 clang.arg("-pthread");
             }
             // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
-            if gpu_runtime && cfg!(target_os = "linux") {
+            if gpu_runtime && platform.linux() {
                 clang.args(["-pthread", "-ldl"]);
             }
             // The runtime also asks for it with a default-library request, which not every linker honors.
-            if net_runtime && cfg!(windows) {
+            if net_runtime && platform.windows() {
                 clang.arg("-lws2_32");
             }
         }
@@ -3352,7 +3602,10 @@ fn build_complete(
             &mut messages,
             run_tool(
                 &mut clang,
-                "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+                &cross_hint(
+                    platform,
+                    "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+                ),
             )?,
         );
         if let Some(symbols) = &shared_symbols {
@@ -3382,13 +3635,17 @@ fn build_complete(
             );
         } else if dwarf_sidecar.is_some() {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
-            linker.arg(&object).args(["-g", "-lm"]);
+            linker
+                .args(target_args(platform))
+                .args(sdk_args(platform)?)
+                .arg(&object)
+                .args(["-g", "-lm"]);
             if native_runtime {
                 linker.arg(&runtime_object);
                 if task_runtime || net_runtime {
                     linker.arg("-pthread");
                 }
-                if gpu_runtime && cfg!(target_os = "linux") {
+                if gpu_runtime && platform.linux() {
                     linker.args(["-pthread", "-ldl"]);
                 }
             }
@@ -3401,7 +3658,10 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "native debug executables require the Clang linker",
+                    &cross_hint(
+                        platform,
+                        "native debug executables require the Clang linker",
+                    ),
                 )?,
             );
             let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
@@ -3420,11 +3680,15 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Object && !merge_debug_ir {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
-            linker.args(["-r", "-nostdlib"]);
-            if cfg!(target_os = "macos") {
+            linker
+                .args(target_args(platform))
+                .args(no_sdk_args(platform))
+                .args(link_args(platform))
+                .args(["-r", "-nostdlib"]);
+            if platform.mach_o() {
                 linker.arg("-Wl,-keep_private_externs");
             }
-            if cfg!(target_os = "linux") {
+            if platform.linux_kernel() {
                 linker.arg("-no-pie");
             }
             linker
@@ -3436,7 +3700,10 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "the native linker must support relocatable object linking for parallel tasks",
+                    &cross_hint(
+                        platform,
+                        "the native linker must support relocatable object linking for parallel tasks",
+                    ),
                 )?,
             );
         }
@@ -3629,8 +3896,13 @@ fn link_shared(
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or("library");
+    let platform = options.platform();
     let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
-    if cfg!(target_os = "macos") {
+    linker
+        .args(target_args(platform))
+        .args(sdk_args(platform)?)
+        .args(link_args(platform));
+    if platform.mach_o() {
         let text: String = symbols
             .iter()
             .map(|symbol| format!("_{symbol}\n"))
@@ -3666,7 +3938,7 @@ fn link_shared(
     if let Some(runtime) = runtime {
         linker.arg(runtime).arg("-pthread");
         // The runtime may load a WebGPU library with dlopen, which older glibc keeps in libdl.
-        if cfg!(target_os = "linux") {
+        if platform.linux() {
             linker.arg("-ldl");
         }
     }
@@ -3677,7 +3949,10 @@ fn link_shared(
         messages,
         run_tool(
             &mut linker,
-            "shared libraries require the Clang linker; unresolved extern symbols need --link, -l or -L",
+            &cross_hint(
+                platform,
+                "shared libraries require the Clang linker; unresolved extern symbols need --link, -l or -L",
+            ),
         )?,
     );
     Ok(())
@@ -3800,17 +4075,32 @@ fn publish_outputs(
     Ok(())
 }
 
-/// Whether native executables on this host link with the MSVC linker (`link.exe`, or `lld-link`
-/// with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links with MinGW's
-/// `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get a PDB.
-/// The file name is enough: every other Clang, a MinGW distribution's included, gets
+/// Whether the native executables of this machine link with the MSVC linker (`link.exe`, or
+/// `lld-link` with `-fuse-ld=lld`): Windows with any Clang but the bundled launcher, which links
+/// with MinGW's `ld.lld` and keeps DWARF only (G14). Their `-g` builds also carry CodeView and get
+/// a PDB. The file name is enough: every other Clang, a MinGW distribution's included, gets
 /// `--target=<arch>-pc-windows-msvc` from `native_compile_args`, and Clang's MSVC driver links
 /// only with `link.exe` or `lld-link`; the launcher alone drops that target for `windows-gnu`.
 pub(crate) fn msvc_linker() -> bool {
-    cfg!(windows)
-        && Path::new(&tool("TSUZURI_CLANG", "clang"))
-            .file_stem()
-            .is_none_or(|stem| stem != "tsuzuri-clang")
+    cfg!(windows) && !bundled_launcher(&tool("TSUZURI_CLANG", "clang"))
+}
+
+/// Whether `clang` is the bundled launcher, which links MinGW and so never an MSVC target.
+fn bundled_launcher(clang: &OsStr) -> bool {
+    Path::new(clang)
+        .file_stem()
+        .is_some_and(|stem| stem == "tsuzuri-clang")
+}
+
+/// Whether the `-g` output for `platform` also carries CodeView: for an MSVC target on whichever
+/// machine builds it, unless the Clang is the launcher, whose targets keep DWARF only.
+fn codeview_for(platform: Platform, clang: &OsStr) -> bool {
+    platform.msvc() && !bundled_launcher(clang)
+}
+
+/// [`msvc_linker`] for a build for `platform`: a MinGW target never links with the MSVC linker.
+pub(crate) fn msvc_linker_for(platform: Platform) -> bool {
+    platform.msvc() && msvc_linker()
 }
 
 /// The PDB of the `-g` executable `output` on Windows: `<output>` with the extension `.pdb`.
@@ -3983,8 +4273,12 @@ fn run_process(
             "run requires native executable output",
         ));
     }
+    let platform = options.platform();
+    // A target this machine cannot run needs the user's runner, and a missing one is no reason to build first.
+    options.validate()?;
+    let runner = foreign_runner(platform, "programs", "the program")?;
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
-    let output = temporary.path.join(if cfg!(windows) {
+    let output = temporary.path.join(if platform.windows() {
         "program.exe"
     } else {
         "program"
@@ -4003,13 +4297,13 @@ fn run_process(
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
         RunStdio::Inherit { json, arguments } => {
-            let mut child = Command::new(&output)
+            let mut child = program_command(runner.as_ref(), &output)
                 .args(arguments)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| io_error("run executable", &output, error))?;
+                .map_err(|error| spawn_error(runner.as_ref(), &output, error))?;
             let mut stderr = Vec::new();
             let stream = child.stderr.take().expect("stderr is piped");
             if let Err(error) = relay(stream, &mut stderr, !json) {
@@ -4022,7 +4316,7 @@ fn run_process(
                 .map_err(|error| io_error("wait for executable", &output, error))?;
             (status, stderr, Vec::new())
         }
-        RunStdio::Capture { timeout, limit } => capture(&output, timeout, limit)?,
+        RunStdio::Capture { timeout, limit } => capture(runner.as_ref(), &output, timeout, limit)?,
     };
     temporary.close()?;
     // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
@@ -4102,21 +4396,22 @@ enum StreamEnd {
     Failed(io::Error),
 }
 
-/// Runs `output` for [`run_captured`]. The streams are read on their own threads, so neither
-/// pipe can fill up while the other is read.
+/// Runs `output` for [`run_captured`], through the runner of a foreign target. The streams are
+/// read on their own threads, so neither pipe can fill up while the other is read.
 fn capture(
+    runner: Option<&ForeignRunner>,
     output: &Path,
     timeout: Option<std::time::Duration>,
     limit: usize,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Diagnostic> {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
-    let mut child = Command::new(output)
+    let mut child = program_command(runner, output)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| io_error("run executable", output, error))?;
+        .map_err(|error| spawn_error(runner, output, error))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let (sender, receiver) = channel();
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -4233,6 +4528,54 @@ fn capture(
         stderr,
         stdout,
     ))
+}
+
+/// The runner of the executables of `platform`: none for a target this machine can run, the
+/// command of `TSUZURI_RUNNER` for another one, and an error when that is not set. `what` names
+/// the executables in the error and `them` what the user could run elsewhere.
+pub(crate) fn foreign_runner(
+    platform: Platform,
+    what: &str,
+    them: &str,
+) -> Result<Option<ForeignRunner>, Diagnostic> {
+    let Some(triple) = platform.triple().filter(|_| platform.cross()) else {
+        return Ok(None);
+    };
+    let name = triple.name();
+    ForeignRunner::from_environment().map(Some).ok_or_else(|| {
+        driver_error(
+            "E2000",
+            format!(
+                "cannot run {name} {what} on this machine; run {them} on a {name} machine, set {} to a command that runs {name} executables (such as qemu-user, Wine, or an emulator wrapper), or use 'tsuzuri build --target {name}'",
+                crate::target::RUNNER_VARIABLE
+            ),
+        )
+    })
+}
+
+/// The command that starts `executable`: itself, or through the runner of a foreign target.
+pub(crate) fn program_command(runner: Option<&ForeignRunner>, executable: &Path) -> Command {
+    match runner {
+        Some(runner) => {
+            let mut command = Command::new(&runner.program);
+            command.args(&runner.arguments).arg(executable);
+            command
+        }
+        None => Command::new(executable),
+    }
+}
+
+/// The error for a [`program_command`] that did not start: the runner, if there is one, is the
+/// program that could not be found or run.
+fn spawn_error(runner: Option<&ForeignRunner>, executable: &Path, error: io::Error) -> Diagnostic {
+    match runner {
+        Some(runner) => io_error(
+            &format!("start the runner of {}", crate::target::RUNNER_VARIABLE),
+            Path::new(&runner.program),
+            error,
+        ),
+        None => io_error("run executable", executable, error),
+    }
 }
 
 /// Where a compiler tool was found.
@@ -5180,9 +5523,21 @@ mod tests {
     fn task_runtime_source_inlines_the_win32_adapter() {
         let include = "#include \"task-windows.h\"";
         assert!(include_str!("runtime/task.c").contains(include));
-        let source = task_runtime_source();
+        let source = task_runtime_source_for(Platform::HOST);
         assert_eq!(source.contains(include), !cfg!(windows));
         assert_eq!(source.contains("TZ_TASK_WINDOWS_H"), cfg!(windows));
+        // A Windows target inlines it on every host, and no other target does.
+        for triple in Triple::ALL {
+            let source = task_runtime_source_for(Platform::new(Some(triple)));
+            assert_eq!(
+                source.contains(include),
+                !Platform::new(Some(triple)).windows()
+            );
+            assert_eq!(
+                source.contains("TZ_TASK_WINDOWS_H"),
+                Platform::new(Some(triple)).windows()
+            );
+        }
     }
 
     #[test]
@@ -5222,6 +5577,372 @@ mod tests {
                 .validate()
                 .is_err()
             );
+        }
+    }
+
+    /// A target that is not the machine the compiler runs on, which never depends on the host.
+    fn foreign_triple() -> Triple {
+        Triple::ALL
+            .into_iter()
+            .find(|triple| Some(*triple) != Triple::host() && !triple.is_bare_metal())
+            .unwrap()
+    }
+
+    #[test]
+    fn named_targets_choose_clang_arguments_and_output_names() {
+        use Triple::*;
+        let args = |triple| {
+            compile_args(Platform::new(Some(triple)))
+                .iter()
+                .map(|argument| argument.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            args(Aarch64AppleDarwin),
+            ["--target=arm64-apple-macosx12.0.0", "-fPIC"]
+        );
+        assert_eq!(
+            args(X86_64LinuxMusl),
+            ["--target=x86_64-unknown-linux-musl", "-fPIC"]
+        );
+        assert_eq!(
+            args(X86_64FreeBsd),
+            ["--target=x86_64-unknown-freebsd14", "-fPIC"]
+        );
+        assert_eq!(
+            args(X86_64WindowsMsvc),
+            [
+                "--target=x86_64-pc-windows-msvc",
+                "-mno-incremental-linker-compatible"
+            ]
+        );
+        assert_eq!(
+            args(Aarch64WindowsGnu),
+            ["--target=aarch64-w64-windows-gnu"]
+        );
+        assert_eq!(
+            args(Riscv64BareMetal),
+            [
+                "--target=riscv64-unknown-none-elf",
+                "-march=rv64gc",
+                "-mabi=lp64d",
+                "-fPIC"
+            ]
+        );
+        assert_eq!(
+            args(X86_64BareMetal),
+            ["--target=x86_64-unknown-none-elf", "-fPIC"]
+        );
+        // Without a target the arguments are the machine's own, as they always were.
+        assert_eq!(
+            compile_args(Platform::HOST),
+            native_compile_args(cfg!(windows), env::consts::ARCH)
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>()
+        );
+        assert!(target_args(Platform::HOST).is_empty());
+        assert!(link_args(Platform::HOST).is_empty());
+        for triple in Triple::ALL {
+            let platform = Platform::new(Some(triple));
+            // Every named run starts with its Clang target, and only a Windows target has no -fPIC.
+            assert_eq!(
+                target_args(platform),
+                [OsString::from(format!(
+                    "--target={}",
+                    triple.clang_target()
+                ))]
+            );
+            assert_eq!(args(triple)[0], target_args(platform)[0].to_str().unwrap());
+            assert_eq!(
+                args(triple).contains(&"-fPIC".to_owned()),
+                !platform.windows()
+            );
+            // LLD links what the machine's own linker cannot: everything but Apple targets from macOS.
+            let expected = platform.cross() && !(platform.mach_o() && cfg!(target_os = "macos"));
+            assert_eq!(
+                link_args(platform).is_empty(),
+                !expected,
+                "{}",
+                triple.name()
+            );
+        }
+        for (triple, executable, object, shared) in [
+            (Aarch64AppleDarwin, "app", "app.o", "app.dylib"),
+            (X86_64LinuxGnu, "app", "app.o", "app.so"),
+            (Aarch64LinuxAndroid, "app", "app.o", "app.so"),
+            (X86_64FreeBsd, "app", "app.o", "app.so"),
+            (X86_64WindowsMsvc, "app.exe", "app.obj", "app.dll"),
+            (Aarch64WindowsGnu, "app.exe", "app.obj", "app.dll"),
+            (Aarch64AppleIosSim, "app", "app.o", "app.dylib"),
+        ] {
+            let path = |emit| {
+                BuildOptions {
+                    emit,
+                    triple: Some(triple),
+                    ..BuildOptions::default()
+                }
+                .output_path(Path::new("app.tz"))
+                .to_str()
+                .unwrap()
+                .to_owned()
+            };
+            assert_eq!(path(Emit::Executable), executable, "{}", triple.name());
+            assert_eq!(path(Emit::Object), object, "{}", triple.name());
+            assert_eq!(path(Emit::Shared), shared, "{}", triple.name());
+            assert_eq!(path(Emit::Llvm), "app.ll");
+        }
+    }
+
+    #[test]
+    fn the_sysroot_reaches_the_runs_that_read_the_targets_libraries() {
+        use Triple::*;
+        let sysroot = || Some(OsString::from("/sdk"));
+        let args = |triple: Triple, sysroot: Option<OsString>| {
+            sdk_args_for(Platform::new(Some(triple)), sysroot)
+                .map(|arguments| {
+                    arguments
+                        .iter()
+                        .map(|argument| argument.to_str().unwrap().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|error| error.message)
+        };
+        assert_eq!(args(X86_64LinuxGnu, None), Ok(vec![]));
+        assert_eq!(
+            args(X86_64LinuxGnu, sysroot()),
+            Ok(vec!["--sysroot=/sdk".to_owned()])
+        );
+        assert_eq!(
+            args(Aarch64WindowsGnu, sysroot()),
+            Ok(vec!["--sysroot=/sdk".to_owned()])
+        );
+        // Apple's Clang takes the SDK as -isysroot, and goes on with the macOS one if it is missing.
+        assert_eq!(
+            args(Aarch64AppleIos, None),
+            Ok(vec!["-Werror=incompatible-sysroot".to_owned()])
+        );
+        assert_eq!(
+            args(Aarch64AppleIos, sysroot()),
+            Ok(vec![
+                "-Werror=incompatible-sysroot".to_owned(),
+                "-isysroot".to_owned(),
+                "/sdk".to_owned()
+            ])
+        );
+        // The targets that read no sysroot say so instead of ignoring it.
+        for triple in [X86_64WindowsMsvc, Riscv64BareMetal] {
+            let error = args(triple, sysroot()).unwrap_err();
+            assert!(
+                error.starts_with(&format!(
+                    "TSUZURI_SYSROOT does not apply to {}",
+                    triple.name()
+                )),
+                "{error}"
+            );
+            assert_eq!(args(triple, None), Ok(vec![]));
+        }
+        // The machine's own target, and WebAssembly, never read it.
+        assert_eq!(
+            sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.message),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn cross_hints_name_what_the_target_needs() {
+        let host = cross_hint(Platform::HOST, "install Clang");
+        assert_eq!(host, "install Clang");
+        let foreign = Platform::new(Some(foreign_triple()));
+        let hint = cross_hint(foreign, "install Clang");
+        let linker = if link_args(foreign).is_empty() {
+            " and"
+        } else {
+            ", LLD, and"
+        };
+        assert!(
+            hint.starts_with(&format!(
+                "cross-compiling to {} needs a Clang with the {} backend{linker} ",
+                foreign.triple().unwrap().name(),
+                foreign.triple().unwrap().arch_name()
+            )),
+            "{hint}"
+        );
+        assert!(hint.ends_with("; install Clang"));
+        // An iOS target asks for its SDK, and an MSVC one for INCLUDE and LIB, unless it is the host's own.
+        assert!(
+            cross_hint(Platform::new(Some(Triple::Aarch64AppleIos)), "x")
+                .contains("set TSUZURI_SYSROOT to it")
+        );
+        assert!(
+            cross_hint(Platform::new(Some(Triple::Aarch64WindowsMsvc)), "x").contains("INCLUDE")
+                || Triple::host() == Some(Triple::Aarch64WindowsMsvc)
+        );
+        // The bundled toolchain is advised only for the targets it has a C library for, and LLD only
+        // where Clang is told to link with it (Apple's linker writes Mach-O on a Mac).
+        for triple in Triple::ALL {
+            let platform = Platform::new(Some(triple));
+            if !platform.cross() || triple.is_msvc() || platform.mach_o() {
+                continue;
+            }
+            let hint = cross_hint(platform, "x");
+            assert_eq!(
+                hint.contains("use the bundled toolchain"),
+                triple.has_bundled_c_library(),
+                "{hint}"
+            );
+            assert_eq!(
+                hint.contains("the bundled toolchain has none"),
+                !triple.has_bundled_c_library(),
+                "{hint}"
+            );
+            assert!(hint.contains(", LLD, and"), "{hint}");
+        }
+        let apple = Platform::new(Some(Triple::Aarch64AppleIos));
+        assert_eq!(
+            cross_hint(apple, "x").contains("LLD"),
+            !cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn codeview_follows_the_target_not_the_machine() {
+        let msvc = Platform::new(Some(Triple::X86_64WindowsMsvc));
+        for clang in ["clang", "/usr/bin/clang-21", "C:\\llvm\\bin\\clang.exe"] {
+            assert!(codeview_for(msvc, OsStr::new(clang)), "{clang}");
+        }
+        for launcher in ["/opt/tsuzuri/bin/tsuzuri-clang", "tsuzuri-clang.exe"] {
+            assert!(!codeview_for(msvc, OsStr::new(launcher)), "{launcher}");
+        }
+        for triple in [Triple::X86_64WindowsGnu, Triple::X86_64LinuxGnu] {
+            assert!(!codeview_for(
+                Platform::new(Some(triple)),
+                OsStr::new("clang")
+            ));
+        }
+        // Without a named target the machine decides, as the MSVC linker check did.
+        assert_eq!(
+            codeview_for(Platform::HOST, OsStr::new("clang")),
+            cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn cross_rejects_cpu_native_wgsl_and_unreachable_combinations() {
+        let foreign = foreign_triple();
+        let options = |emit, triple| BuildOptions {
+            emit,
+            triple: Some(triple),
+            ..BuildOptions::default()
+        };
+        let error = BuildOptions {
+            cpu: Cpu::Native,
+            ..options(Emit::Executable, foreign)
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(
+            (error.code, error.message),
+            (
+                "E2000",
+                format!(
+                    "'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to {}",
+                    foreign.name()
+                )
+            )
+        );
+        // The named machine itself may tune for its own CPU.
+        if let Some(host) = Triple::host() {
+            BuildOptions {
+                cpu: Cpu::Native,
+                ..options(Emit::Object, host)
+            }
+            .validate()
+            .unwrap_or_else(|error| {
+                // Only an architecture without a tuning flag may refuse, and then for that reason.
+                assert!(
+                    error.message.contains("is not supported on"),
+                    "{}",
+                    error.message
+                );
+            });
+        }
+        for emit in [Emit::Wgsl, Emit::Spirv] {
+            assert_eq!(options(emit, foreign).validate().unwrap_err().code, "E2000");
+        }
+        // WebAssembly output has no named native target.
+        let error = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            triple: Some(foreign),
+            ..BuildOptions::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.message.contains("names a native target"),
+            "{}",
+            error.message
+        );
+        assert!(options(Emit::Wasm, foreign).validate().is_err());
+        // Debug information needs the tool of its own kind of host: dsymutil, or the MSVC linker.
+        let debug = |triple| BuildOptions {
+            debug_info: true,
+            ..options(Emit::Executable, triple)
+        };
+        assert_eq!(
+            debug(Triple::Aarch64AppleIos).validate().is_err(),
+            !cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            debug(Triple::Aarch64WindowsMsvc).validate().is_err(),
+            !cfg!(windows)
+        );
+        for triple in [
+            Triple::X86_64LinuxMusl,
+            Triple::X86_64FreeBsd,
+            Triple::X86_64WindowsGnu,
+        ] {
+            debug(triple).validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn bare_metal_targets_build_only_freestanding_objects() {
+        for triple in Triple::ALL
+            .into_iter()
+            .filter(|triple| triple.is_bare_metal())
+        {
+            let options = |emit, freestanding| BuildOptions {
+                emit,
+                freestanding,
+                allocator: llvm::Allocator::Host,
+                triple: Some(triple),
+                ..BuildOptions::default()
+            };
+            for emit in [Emit::Object, Emit::Llvm, Emit::Header] {
+                options(emit, true).validate().unwrap();
+                let error = options(emit, false).validate().unwrap_err();
+                assert_eq!(
+                    error.message,
+                    format!(
+                        "{} has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header",
+                        triple.name()
+                    )
+                );
+            }
+            // An executable or a shared library needs an operating system, with or without the option.
+            for emit in [Emit::Executable, Emit::Shared] {
+                for freestanding in [false, true] {
+                    assert!(
+                        options(emit, freestanding)
+                            .validate()
+                            .unwrap_err()
+                            .message
+                            .contains("has no operating system")
+                    );
+                }
+            }
         }
     }
 
@@ -5306,15 +6027,21 @@ mod tests {
         );
         for target in [Target::Wasm32, Target::Wasm64] {
             for cpu in [Cpu::Generic, Cpu::Native] {
-                assert_eq!(host_f16_path(target, cpu), Soft);
+                assert_eq!(platform_f16_path(Platform::HOST, target, cpu), Soft);
             }
         }
         if cfg!(target_arch = "x86_64") {
-            assert_eq!(host_f16_path(Target::Native, Cpu::Generic), Soft);
+            assert_eq!(
+                platform_f16_path(Platform::HOST, Target::Native, Cpu::Generic),
+                Soft
+            );
         }
         if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
             for cpu in [Cpu::Generic, Cpu::Native] {
-                assert_eq!(host_f16_path(Target::Native, cpu), Hardware);
+                assert_eq!(
+                    platform_f16_path(Platform::HOST, Target::Native, cpu),
+                    Hardware
+                );
             }
         }
     }

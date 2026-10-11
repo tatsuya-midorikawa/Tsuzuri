@@ -113,7 +113,7 @@ tsuzuri bench ファイルまたはディレクトリ [--list] [--filter TEXT] [
 | `--json` | 結果を 1 行 1 JSON で標準出力へ出す |
 | `--samples N` | 標本の数。1〜1000、既定 11。範囲外は `E2000` |
 | `-O0` から `-O3` | 最適化。既定は `-O3` |
-| `--target native` | `native` だけ。`wasm32`／`wasm64` は `E2000` |
+| `--target native` | ビルド機の target（`native` か、ビルド機と同じ triple）だけ。`wasm32`／`wasm64` と、ほかの `TRIPLE` は `E2000` |
 
 リンク入力（`--link`、`-l`、`-L`、`Tsuzuri.toml` の `[native]`）は `tsuzuri test` と同じく実行器に渡ります。`--cpu`、`--coverage`、`--emit`、`--output` は使えません。
 

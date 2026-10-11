@@ -8,7 +8,7 @@
 
 - 配布物を使うときは、`bin/` 全体ではなく `tsuzuri` だけを PATH に足します。
 - ディレクトリを渡すと `Main.tz` が入口になります。ファイルを渡すと、その親がプロジェクトルートです。
-- `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。
+- `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。`build` は `--target` で、ビルド機とは別の OS や CPU 向けの成果物も作れます（[対応プラットフォーム](platforms.md)）。
 - `repl` は、宣言と式を 1 つずつ受け取り、入力ごとにプログラムを作り直して検査し、実行します。
 - `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
@@ -81,7 +81,7 @@ tsuzuri toolchain info
 
 ブラウザーで保存した macOS のファイルには隔離属性が付くことがあります。チェックサムの確認後に、展開したディレクトリへ `xattr -dr com.apple.quarantine` を実行してください。`curl` で取ったファイルには、通常この属性は付きません。
 
-Linux の同梱 LLVM は、配布を作った Ubuntu 24.04 以上の glibc を要求します。コンパイラが出すネイティブ実行ファイルは musl で静的にリンクされます。
+Linux の同梱 LLVM は、配布を作った Ubuntu 24.04 以上の glibc を要求します。コンパイラが出すネイティブ実行ファイルは musl で静的にリンクされます（`--target` に `*-unknown-linux-gnu` を渡すと glibc の動的リンクです。[対応プラットフォーム](platforms.md#実行ファイルをリンクする)）。
 
 Windows は `.zip` です。`Get-FileHash -Algorithm SHA256` の値を `.sha256` と比べ、`%LOCALAPPDATA%\Tsuzuri\` へ展開し、その `bin` を利用者の PATH に足します。symlink は権限が要るため、macOS のような `tsuzuri` だけのリンクは使いません。`bin` を PATH に足すと、同梱ツールがシステムの `clang` を隠す点は同じです。この展開手順は配布物の契約で、Windows 上での実行確認は CI が担当します。
 
@@ -242,6 +242,8 @@ tsuzuri check demo
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
 
+`run` は `--target TRIPLE` も受け付けます（native の target だけで、WebAssembly は `E2000`）。ビルド機で動かせない target は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ、その実行器を通して実行します。指定がなければ、ビルドの前に `E2000` です（[ほかの target の実行ファイルを動かす](platforms.md#ほかの-target-の実行ファイルを動かす)）。
+
 ### repl
 
 宣言、トップレベルの `let`、式を 1 つずつ入力して、型と値をすぐ確かめます。F# の `dotnet fsi` に近い使い方ですが、JIT はありません。入力ごとに、それまでに受け付けた宣言と `let` の後ろへ入力を足した `Main.tz` を作り、`run` と同じ経路（解析、LLVM IR、Clang、実行）で検査して実行します。数値の意味やトラップは `run` と同じで、最適化レベルは時間だけを変えます。
@@ -382,7 +384,7 @@ def main :: Array<string> -> i32 = \args ->
 tsuzuri build demo/Main.tz -o demo/hello
 ```
 
-既定のターゲットは `native`、既定の `--emit` は `exe` です。WASM では既定が `wasm` になります。ライブラリであれば `Main.tz` がなくても、`--emit object` や `--emit header` で生成できます。実行ファイルにしたいのに入口がないときは `E2004` です。`--target wasm32 --emit bindings-js` は、`.wasm` を型付きで呼ぶ JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。`--wasm-feature threads` を足すと、ブラウザの Web Worker でスレッドプールを作るグルーになります。`--emit shared` は native の共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出し、`--emit bindings-cs`、`bindings-py`、`bindings-cpp` はそれを呼ぶ C#、Python、C++ のバインディングを出します（[ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング)）。共有ライブラリとバインディングも、`export def` が無いと `E2004` です。
+既定のターゲットは `native`、既定の `--emit` は `exe` です。WASM では既定が `wasm` になります。`--target` には、`aarch64-unknown-linux-musl` のような名前も渡せ、ビルド機とは別の OS や CPU 向けのオブジェクトと実行ファイルを作れます（[対応プラットフォームとクロスコンパイル](platforms.md)）。ライブラリであれば `Main.tz` がなくても、`--emit object` や `--emit header` で生成できます。実行ファイルにしたいのに入口がないときは `E2004` です。`--target wasm32 --emit bindings-js` は、`.wasm` を型付きで呼ぶ JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（[WebAssembly への出力](webassembly.md#型付きのバインディングを生成する)）。`--wasm-feature threads` を足すと、ブラウザの Web Worker でスレッドプールを作るグルーになります。`--emit shared` は native の共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出し、`--emit bindings-cs`、`bindings-py`、`bindings-cpp` はそれを呼ぶ C#、Python、C++ のバインディングを出します（[ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング)）。共有ライブラリとバインディングも、`export def` が無いと `E2004` です。
 
 ```text
 scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library
@@ -407,7 +409,7 @@ not ok 1 - Main two plus two
 0 passed; 1 failed; 0 ignored
 ```
 
-WASM のテストは PATH の `node` を使います。配布物の `bin/` からは探しません。
+WASM のテストは PATH の `node` を使います。配布物の `bin/` からは探しません。ビルド機で動かせない native の target（`--target TRIPLE`）のテストは、`TSUZURI_RUNNER` を通して各テストを起動します。指定がなければ `E2000` です。
 
 `--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。`-O1` から `-O3` を付けると最適化したランナーになり、テストの行とブレークポイントは残ります（変数は消えることがあります）。
 
@@ -425,7 +427,7 @@ bench 0 Speed.total 1e6: median 312.408 us (min 305.917 us, max 330.142 us; 11 s
 1 benchmark; 0 failed; 0 ignored
 ```
 
-`--list`、`--filter`、`--index`、`--json` は `test` と同じ使い方です。ネイティブだけで、`--target wasm32` は `E2000` です。トラップ・300 秒の時間切れ・負の時間は失敗で、`E2005` と終了コード 1 になります。書き方と出力の詳細は [Bench](../built-in-types-and-modules/bench.md) にあります。
+`--list`、`--filter`、`--index`、`--json` は `test` と同じ使い方です。ネイティブだけで、`--target wasm32` は `E2000` です。`--target` に別の機械の target を渡しても、ビルド機を測れないので `E2000` です。トラップ・300 秒の時間切れ・負の時間は失敗で、`E2005` と終了コード 1 になります。書き方と出力の詳細は [Bench](../built-in-types-and-modules/bench.md) にあります。
 
 ### fmt
 
@@ -617,7 +619,7 @@ Price.price()
 
 ## ビルドキャッシュ
 
-`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション、ツールのパスと `--version`、リンクに効く環境変数をまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。
+`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）をまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。
 
 保存先は `TSUZURI_CACHE_DIR` です。空でなければそのパスを使います。未設定のときは次です。
 
@@ -664,6 +666,7 @@ Price.price()
 - [コンパイラ ディレクティブ](directives.md)
 - [診断メッセージとエラーコード](diagnostics.md)
 - [WebAssembly への出力](webassembly.md)
+- [対応プラットフォームとクロスコンパイル](platforms.md)
 - [ネイティブ連携 (C ABI)](native-interop.md)
 - [パッケージ](../organizing-tsuzuri/packages.md)
 - [安定性と互換性の方針](../../../docs/stability.md)

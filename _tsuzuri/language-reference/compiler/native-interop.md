@@ -235,7 +235,7 @@ ABC
 
 ## 共有ライブラリと各言語のバインディング
 
-`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。Windows では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
+`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。`--target` に `aarch64-unknown-linux-gnu` のような名前を渡すと、その target の共有ライブラリを作ります（Mach-O の target は `.dylib`、ほかは `.so`。[対応プラットフォーム](platforms.md)）。Windows の target では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
 
 ```sh
 tsuzuri build quote --emit shared -o libquote.dylib

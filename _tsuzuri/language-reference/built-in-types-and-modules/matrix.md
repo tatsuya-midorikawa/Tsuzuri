@@ -12,7 +12,7 @@
 - 内部は不透明です。構築・フィールド参照・パターン分解・`{ m with ... }` は `E1022` です。公開 C ABI への export は `E1008` です。
 - `of_array` と `to_array` は所有権を移すだけで、要素を複製しません。`at`・`row`・`as_array` は確保なしの共有借用です。`set` は行列を消費して 1 要素をその場で置き換えます。
 - `mul` の出力要素は `+0` から `k = 0, 1, …` の順に `total = total + (left * right)` を行った値です。積と和を別々に丸め、FMA にまとめません。実装は出力の行ごとに更新する形で、ベクトル化できますが、各要素の演算の列は変わりません。
-- `mul_fma` は、1 ステップごとに `Math.fma` を使う別名の積です。ビットは `mul` と違うことがあります。`Math.fma` がハードウェアの FMA 命令になるのは、AArch64 向けにビルドした `tsuzuri` が native の `f32`・`f64` を生成するときだけです。それ以外（x86-64 向けなどにビルドした `tsuzuri` の native と、wasm32）では、ソフトウェアのルーチンを積和ごとに呼ぶので、`mul` よりはるかに遅くなります。結果のビットは、どちらでも同じです。
+- `mul_fma` は、1 ステップごとに `Math.fma` を使う別名の積です。ビットは `mul` と違うことがあります。`Math.fma` がハードウェアの FMA 命令になるのは、AArch64 の native（ビルド機が AArch64 のときの `--target native`、または AArch64 の triple を名指しした `--target`）が `f32`・`f64` を生成するときだけです。それ以外（x86-64 や RISC-V の native と、wasm32）では、ソフトウェアのルーチンを積和ごとに呼ぶので、`mul` よりはるかに遅くなります。結果のビットは、どちらでも同じです。
 - `mul_parallel`・`mul_fma_parallel` は、行をチャンクに分けて並列に計算します。チャンクの境界は形だけで決まるので、結果は CPU の数によらず `mul`・`mul_fma` と同じビットです。
 - 添字・形・次元の誤りは、確保や callback の前に `assert` でトラップします。
 - `Matrix` という名前を書いたプログラムだけが、このモジュールを読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Matrix.tz` は予約名で `E1011` です。
@@ -183,7 +183,7 @@ $"{deref (Matrix.at (ref separate) 0 0)} {deref (Matrix.at (ref fused) 0 0)}"
 
 1 つ目の積は誤差なく `1 + 2^-29` で、2 つ目の積 `-(1 + 2^-29 + 2^-60)` は `-(1 + 2^-29)` に丸められます。別々に丸める `mul` の和は `0` ですが、`mul_fma` は 2 つ目の積の丸め誤差 `-2^-60` を残します。
 
-`Math.fma` がハードウェアの FMA 命令（`llvm.fma`）になるのは、AArch64 向けにビルドした `tsuzuri` が native の `f32`・`f64` を生成するときだけです（arm64 の `fmadd`・`fmla.2d` を確かめました）。それ以外では、正しく丸めるソフトウェアのルーチン `tz_soft_fma` を積和ごとに呼びます。x86-64 向けなどにビルドした `tsuzuri` の native と、1 命令のスカラー fma を持たない wasm32 がこれに当たります。結果のビットはどちらでも同じですが、速さは大きく違います。
+`Math.fma` がハードウェアの FMA 命令（`llvm.fma`）になるのは、AArch64 の native（ビルド機が AArch64 のときの `--target native`、または AArch64 の triple を名指しした `--target`）が `f32`・`f64` を生成するときだけです（arm64 の `fmadd`・`fmla.2d` を確かめました）。それ以外では、正しく丸めるソフトウェアのルーチン `tz_soft_fma` を積和ごとに呼びます。x86-64 や RISC-V の native と、1 命令のスカラー fma を持たない wasm32 がこれに当たります。結果のビットはどちらでも同じですが、速さは大きく違います。
 
 | 条件（Apple M1 Max） | 積の大きさ | 1 回の積 | 1 積和あたり |
 | --- | --- | --- | --- |
@@ -336,7 +336,7 @@ Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_ar
 
 - `Matrix` は行優先の連続バッファで、常に非 Copy です。
 - `mul` の各出力要素は `+0` から `k` の昇順で、積と和を別々に丸めます。実装は行ごとの更新ですが、ビットは変わりません。
-- 順序の違う積は別名です。FMA は `mul_fma`（AArch64 向けの native 以外ではソフトウェアの fma で遅い）、並列は `mul_parallel`・`mul_fma_parallel` で、後者はチャンクの境界が形だけで決まります。
+- 順序の違う積は別名です。FMA は `mul_fma`（AArch64 以外の native ではソフトウェアの fma で遅い）、並列は `mul_parallel`・`mul_fma_parallel` で、後者はチャンクの境界が形だけで決まります。
 - 窓は [MatrixView](./matrix-view.md)、N 次元は [Tensor](./tensor.md) です。GPU の行列積カーネルはありません。
 - 前提条件の誤りは、確保や callback の前にトラップします。
 

@@ -23,7 +23,7 @@ tsuzuri build Main.tz --target wasm32 -o shop.wasm
 tsuzuri build Main.tz --target wasm64 -o shop64.wasm
 ```
 
-既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。
+既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 
 次の関数は、ネイティブでも WASM でも同じ計算です。ネイティブの `run` は 42 を出します。
 

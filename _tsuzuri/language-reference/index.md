@@ -147,6 +147,7 @@
 
 - [コンパイラの使い方](./compiler/usage.md)
 - [コンパイラ オプション](./compiler/option.md)
+- [対応プラットフォームとクロスコンパイル](./compiler/platforms.md)
 - [コンパイラ ディレクティブ](./compiler/directives.md)
 - [診断メッセージとエラーコード](./compiler/diagnostics.md)
 - [WebAssembly への出力](./compiler/webassembly.md)

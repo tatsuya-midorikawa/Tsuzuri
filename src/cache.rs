@@ -105,7 +105,7 @@ fn hash_output_path(
 ) -> io::Result<()> {
     use crate::driver::Emit;
     // The DWARF of a macOS debug executable or library depends on its path.
-    if cfg!(target_os = "macos")
+    if options.platform().mach_o()
         && options.debug_info
         && matches!(options.emit, Emit::Executable | Emit::Shared)
     {
@@ -118,7 +118,7 @@ fn hash_output_path(
         hash.field("shared-library-name", name.as_encoded_bytes());
     }
     // A Windows debug executable names its PDB, `<output>.pdb`, without a directory (G16).
-    if cfg!(windows) && options.debug_info && options.emit == Emit::Executable {
+    if options.platform().windows() && options.debug_info && options.emit == Emit::Executable {
         let pdb = crate::driver::pdb_path(output);
         let name = pdb.file_name().unwrap_or_default();
         hash.field("pdb-name", name.as_encoded_bytes());
@@ -161,6 +161,7 @@ pub(crate) fn build_key(
         "TSUZURI_WASM_LD",
         "TSUZURI_LLVM_LINK",
         "TSUZURI_DSYMUTIL",
+        crate::driver::SYSROOT_VARIABLE,
         "PATH",
         "PATHEXT",
         "SDKROOT",
@@ -187,7 +188,7 @@ pub(crate) fn build_key(
         if options.emit == Emit::Wasm || options.wasm_threads || options.wasm_host.is_some() {
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
         }
-        if cfg!(target_os = "macos") && options.debug_info && options.target == Target::Native {
+        if options.platform().mach_o() && options.debug_info && options.target == Target::Native {
             if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
             }

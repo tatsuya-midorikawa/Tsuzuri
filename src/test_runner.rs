@@ -17,6 +17,9 @@ pub struct TestOptions {
     pub coverage: bool,
     /// The property-test seed (`--seed`) instead of `llvm::DEFAULT_PROPERTY_SEED`.
     pub seed: Option<u64>,
+    /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
+    /// every non-native target. A target this machine cannot run needs `TSUZURI_RUNNER`.
+    pub triple: Option<Triple>,
 }
 
 impl Default for TestOptions {
@@ -30,6 +33,7 @@ impl Default for TestOptions {
             wasm_stack_size: None,
             coverage: false,
             seed: None,
+            triple: None,
         }
     }
 }
@@ -41,6 +45,11 @@ impl TestOptions {
                 .filter
                 .as_ref()
                 .is_none_or(|filter| format!("{}.{}", test.module, test.name).contains(filter))
+    }
+
+    /// Where the tests run: the named target, or the machine the compiler runs on.
+    pub fn platform(&self) -> Platform {
+        Platform::new(self.triple)
     }
 }
 
@@ -121,6 +130,39 @@ fn run_with_timeout(
             "test coverage supports only the native target",
         ));
     }
+    let platform = options.platform();
+    if let Some(triple) = options.triple {
+        if options.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--target {} names a native target, not WebAssembly",
+                    triple.name()
+                ),
+            ));
+        }
+        if triple.is_bare_metal() {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "{} has no operating system: a test needs an executable, which only a target with one can build",
+                    triple.name()
+                ),
+            ));
+        }
+        if options.coverage && platform.cross() {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "test coverage needs a target this machine runs; run 'tsuzuri test --coverage' on a {} machine",
+                    triple.name()
+                ),
+            ));
+        }
+    }
+    // The tests of a target this machine cannot run go through the user's runner, and a missing
+    // one is no reason to build first.
+    let prefix = foreign_runner(platform, "tests", "'tsuzuri test'")?;
     wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -166,7 +208,7 @@ fn run_with_timeout(
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
     let mut messages = Vec::new();
-    let runner = build_runner(
+    let mut runner = build_runner(
         module,
         &selected.iter().map(|test| test.index).collect::<Vec<_>>(),
         options,
@@ -175,6 +217,14 @@ fn run_with_timeout(
         &temporary.path,
         &mut messages,
     )?;
+    if let Some(prefix) = prefix {
+        let mut arguments = prefix.arguments;
+        arguments.push(std::mem::take(&mut runner.program));
+        arguments.append(&mut runner.arguments);
+        runner.program = prefix.program;
+        runner.arguments = arguments;
+        runner.foreign = true;
+    }
     let cursor = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(selected.len()));
     let workers = std::thread::available_parallelism()
@@ -314,6 +364,8 @@ struct Runner {
     arguments: Vec<OsString>,
     /// The directory of the counter files of a covered native runner.
     coverage: Option<PathBuf>,
+    /// Whether `program` is the command of `TSUZURI_RUNNER`, which starts the test executable.
+    foreign: bool,
 }
 
 /// A native test runner with debug information that runs one test when a debugger starts
@@ -355,6 +407,13 @@ pub fn build_debug_runner(
             "debugging a test requires the native target",
         ));
     }
+    let platform = options.platform();
+    if platform.cross() {
+        return Err(driver_error(
+            "E2000",
+            "debugging a test needs a target this machine runs; use 'tsuzuri test --index N -g -o PATH' on a machine of that target",
+        ));
+    }
     if options.optimization > 3 {
         return Err(driver_error(
             "E2000",
@@ -365,12 +424,12 @@ pub fn build_debug_runner(
         links.check_shape()?;
         links.check_readable()?;
     }
-    let dwarf = cfg!(target_os = "macos").then(|| {
+    let dwarf = platform.mach_o().then(|| {
         let mut path = output.as_os_str().to_owned();
         path.push(".dwarf");
         PathBuf::from(path)
     });
-    let pdb = msvc_linker().then(|| pdb_path(output));
+    let pdb = msvc_linker_for(platform).then(|| pdb_path(output));
     for path in std::iter::once(output)
         .chain(dwarf.as_deref())
         .chain(pdb.as_deref())
@@ -385,6 +444,7 @@ pub fn build_debug_runner(
     fs::create_dir_all(parent)
         .map_err(|error| io_error("create output directory", parent, error))?;
     let mut temporary = TemporaryDirectory::new(parent)?;
+    let _platform_scope = PlatformScope::enter(platform);
     let mut text = project.with_trap_sources(|sources| {
         llvm::emit_test_runner_with(
             module,
@@ -392,23 +452,25 @@ pub fn build_debug_runner(
             llvm::TestRunnerOptions {
                 seed: options.seed,
                 debug: Some((sources, options.optimization != 0)),
-                f16: host_f16_path(options.target, Cpu::Generic),
+                f16: platform_f16_path(platform, options.target, Cpu::Generic),
                 ..llvm::TestRunnerOptions::default()
             },
         )
     })?;
-    if cfg!(windows) {
+    if platform.windows() {
         text = llvm::windows_abi(text, module);
     }
     if pdb.is_some() {
         text = llvm::with_codeview(text);
     }
-    let sources = native_runtime_sources(&text)?;
+    let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
     let object = temporary.path.join("tests.o");
-    let artifact = temporary
-        .path
-        .join(if cfg!(windows) { "tests.exe" } else { "tests" });
+    let artifact = temporary.path.join(if platform.windows() {
+        "tests.exe"
+    } else {
+        "tests"
+    });
     fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
     let mut messages = Vec::new();
     let optimization = format!("-O{}", options.optimization);
@@ -416,7 +478,8 @@ pub fn build_debug_runner(
     compile
         .args(["-x", "ir", "-Wno-override-module", "-g", "-c"])
         .arg(&optimization)
-        .args(native_compile_args(cfg!(windows), env::consts::ARCH))
+        .args(compile_args(platform))
+        .args(no_sdk_args(platform))
         .arg(&ir)
         .arg("-o")
         .arg(&object);
@@ -424,14 +487,16 @@ pub fn build_debug_runner(
         &mut messages,
         run_tool(
             &mut compile,
-            "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+            &cross_hint(platform, "tests require LLVM/Clang 17+ or TSUZURI_CLANG"),
         )?,
     );
     // The entry and the runtime have no debug information; `-g` only makes the link keep the
     // program's (and on Windows write the PDB).
     let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));
     link.args(["-g", &optimization])
-        .args(native_compile_args(cfg!(windows), env::consts::ARCH));
+        .args(compile_args(platform))
+        .args(sdk_args(platform)?)
+        .args(link_args(platform));
     let has_net = sources.iter().any(|(name, _)| *name == "net.c");
     let has_gpu = sources.iter().any(|(name, _)| *name == "gpu.c");
     for (name, source) in sources {
@@ -441,8 +506,9 @@ pub fn build_debug_runner(
         let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
         compile
             .args(["-x", "c", "-std=c11", "-c", &optimization])
-            .args(native_compile_args(cfg!(windows), env::consts::ARCH));
-        if !cfg!(windows) {
+            .args(compile_args(platform))
+            .args(sdk_args(platform)?);
+        if !platform.windows() {
             compile.arg("-pthread");
         }
         compile.arg(&path).arg("-o").arg(&runtime);
@@ -450,16 +516,16 @@ pub fn build_debug_runner(
             &mut messages,
             run_tool(
                 &mut compile,
-                "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+                &cross_hint(platform, "tests require LLVM/Clang 17+ or TSUZURI_CLANG"),
             )?,
         );
         link.arg(runtime);
     }
     link.arg(&object).arg("-o").arg(&artifact);
-    if !cfg!(windows) {
+    if !platform.windows() {
         link.args(["-lm", "-pthread"]);
         // gpu.c loads a WebGPU or Vulkan library with dlopen, which older glibc keeps in libdl.
-        if has_gpu && cfg!(target_os = "linux") {
+        if has_gpu && platform.linux() {
             link.arg("-ldl");
         }
     } else if has_net {
@@ -472,7 +538,10 @@ pub fn build_debug_runner(
     }
     collect_message(
         &mut messages,
-        run_tool(&mut link, "tests require LLVM/Clang 17+ or TSUZURI_CLANG")?,
+        run_tool(
+            &mut link,
+            &cross_hint(platform, "tests require LLVM/Clang 17+ or TSUZURI_CLANG"),
+        )?,
     );
     let staged = temporary.path.join("tests.dwarf");
     if dwarf.is_some() {
@@ -506,26 +575,29 @@ pub fn build_debug_runner(
 /// The C sources of a native test runner for its IR `text`: the entry and the runtimes that the
 /// IR declares. A test may build IO actions without running them; their primitives still need
 /// the runtime.
-fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Diagnostic> {
+fn native_runtime_sources(
+    text: &str,
+    platform: Platform,
+) -> Result<Vec<(&'static str, String)>, Diagnostic> {
     let mut sources = vec![("main.c", include_str!("runtime/test-runner.c").to_owned())];
     if text.contains("declare void @tsuzuri_task_parallel(") {
-        if !cfg!(any(unix, windows)) {
+        if !platform.threads() {
             return Err(driver_error(
                 "E2002",
                 "native parallel tasks require POSIX or Windows threads",
             ));
         }
-        sources.push(("task.c", crate::driver::task_runtime_source()));
+        sources.push(("task.c", crate::driver::task_runtime_source_for(platform)));
     }
     if text.contains("declare i64 @tsuzuri_os_") {
-        if cfg!(windows) {
-            return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+        if !platform.os_apis() {
+            return Err(driver_error("E2002", crate::driver::os_message(platform)));
         }
         sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
     }
     if llvm::uses_net(text) {
-        if !crate::driver::NET_NATIVE_SUPPORTED {
-            return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
+        if !platform.net() {
+            return Err(driver_error("E2002", crate::driver::net_message(platform)));
         }
         if llvm::uses_net_async(text) && !llvm::uses_reactor(text) {
             return Err(driver_error("E2000", crate::driver::NET_ASYNC_MESSAGE));
@@ -539,8 +611,11 @@ fn native_runtime_sources(text: &str) -> Result<Vec<(&'static str, String)>, Dia
         sources.push(("gpu.c", llvm::gpu_runtime_source(text)));
     }
     if llvm::uses_reactor(text) {
-        if !crate::driver::ASYNC_NATIVE_SUPPORTED {
-            return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
+        if !platform.reactor() {
+            return Err(driver_error(
+                "E2002",
+                crate::driver::async_message(platform),
+            ));
         }
         sources.push(("async.c", include_str!("runtime/async.c").to_owned()));
     }
@@ -558,7 +633,7 @@ fn execute_test(
     if let Some(directory) = &runner.coverage {
         command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
     }
-    let finished = run_captured(&mut command, timeout, false, "test")?;
+    let finished = run_captured(&mut command, timeout, false, "test", runner.foreign)?;
     let failure = match finished.status {
         Some(status) => (!status.success()).then(|| termination_reason(&status)),
         None => Some(format!("timed out after {}ms", timeout.as_millis())),
@@ -593,6 +668,7 @@ fn build_runner(
 ) -> Result<Runner, Diagnostic> {
     let wasm = options.target.is_wasm();
     let memory64 = options.target == Target::Wasm64;
+    let _platform_scope = PlatformScope::enter(options.platform());
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -614,7 +690,7 @@ fn build_runner(
             seed: options.seed,
             debug_output,
             debug: None,
-            f16: host_f16_path(options.target, Cpu::Generic),
+            f16: platform_f16_path(options.platform(), options.target, Cpu::Generic),
         },
     )?;
     if !wasm {
@@ -632,6 +708,7 @@ fn build_runner(
                     &[]
                 },
                 optimization: options.optimization,
+                platform: options.platform(),
             },
             links,
             directory,
@@ -641,6 +718,7 @@ fn build_runner(
             program: artifact.into_os_string(),
             arguments: Vec::new(),
             coverage: coverage.map(|_| directory.to_owned()),
+            foreign: false,
         });
     }
     text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -719,6 +797,7 @@ fn build_runner(
         program: "node".into(),
         arguments: vec![script.into_os_string(), artifact.into_os_string()],
         coverage: None,
+        foreign: false,
     })
 }
 
@@ -732,6 +811,8 @@ struct NativeRunner<'a> {
     entry: &'a str,
     defines: &'a [&'a str],
     optimization: u8,
+    /// Where the runner executable runs.
+    platform: Platform,
 }
 
 /// Compiles the runner IR `text` with its C entry, the runtimes the IR declares, and the host
@@ -744,11 +825,12 @@ fn compile_native_runner(
     directory: &Path,
     messages: &mut Vec<String>,
 ) -> Result<PathBuf, Diagnostic> {
-    if cfg!(windows) {
+    let platform = runner.platform;
+    if platform.windows() {
         text = llvm::windows_abi(text, module);
     }
     let task_runtime = text.contains("declare void @tsuzuri_task_parallel(");
-    if task_runtime && !cfg!(any(unix, windows)) {
+    if task_runtime && !platform.threads() {
         return Err(driver_error(
             "E2002",
             "native parallel tasks require POSIX or Windows threads",
@@ -765,18 +847,21 @@ fn compile_native_runner(
     } else {
         String::new()
     };
-    if os_runtime && cfg!(windows) {
-        return Err(driver_error("E2002", crate::driver::OS_WINDOWS_MESSAGE));
+    if os_runtime && !platform.os_apis() {
+        return Err(driver_error("E2002", crate::driver::os_message(platform)));
     }
-    if net_runtime && !crate::driver::NET_NATIVE_SUPPORTED {
-        return Err(driver_error("E2002", crate::driver::NET_NATIVE_MESSAGE));
+    if net_runtime && !platform.net() {
+        return Err(driver_error("E2002", crate::driver::net_message(platform)));
     }
-    if async_runtime && !crate::driver::ASYNC_NATIVE_SUPPORTED {
-        return Err(driver_error("E2002", crate::driver::ASYNC_NATIVE_MESSAGE));
+    if async_runtime && !platform.reactor() {
+        return Err(driver_error(
+            "E2002",
+            crate::driver::async_message(platform),
+        ));
     }
     let kind = runner.kind;
     let ir = directory.join(format!("{}.ll", runner.stem));
-    let artifact = directory.join(if cfg!(windows) {
+    let artifact = directory.join(if platform.windows() {
         format!("{}.exe", runner.stem)
     } else {
         runner.stem.to_owned()
@@ -788,7 +873,10 @@ fn compile_native_runner(
         .arg(format!("-O{}", runner.optimization))
         .arg(&ir);
     let main = directory.join("main.c");
-    clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
+    clang
+        .args(compile_args(platform))
+        .args(sdk_args(platform)?)
+        .args(link_args(platform));
     fs::write(&main, runner.entry)
         .map_err(|error| io_error(&format!("write {kind} entry"), &main, error))?;
     clang
@@ -797,15 +885,15 @@ fn compile_native_runner(
         .arg(&main)
         .arg("-o")
         .arg(&artifact);
-    if !cfg!(windows) {
+    if !platform.windows() {
         clang.arg("-lm");
     }
     if task_runtime {
         let runtime = directory.join("task.c");
-        fs::write(&runtime, crate::driver::task_runtime_source())
+        fs::write(&runtime, crate::driver::task_runtime_source_for(platform))
             .map_err(|error| io_error("write task runtime", &runtime, error))?;
         clang.arg(&runtime);
-        if !cfg!(windows) {
+        if !platform.windows() {
             clang.arg("-pthread");
         }
     }
@@ -823,18 +911,21 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if (async_runtime || net_runtime || gpu_runtime) && !task_runtime && !cfg!(windows) {
+    if (async_runtime || net_runtime || gpu_runtime) && !task_runtime && !platform.windows() {
         clang.arg("-pthread");
     }
     // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
-    if gpu_runtime && cfg!(target_os = "linux") {
+    if gpu_runtime && platform.linux() {
         clang.arg("-ldl");
     }
-    if net_runtime && cfg!(windows) {
+    if net_runtime && platform.windows() {
         clang.arg("-lws2_32");
     }
     links.add_to(&mut clang);
-    collect_message(messages, run_tool(&mut clang, runner.tools_hint)?);
+    collect_message(
+        messages,
+        run_tool(&mut clang, &cross_hint(platform, runner.tools_hint))?,
+    );
     Ok(artifact)
 }
 
@@ -856,6 +947,9 @@ pub struct BenchOptions {
     pub indices: Vec<usize>,
     /// Between 1 and 1000.
     pub samples: usize,
+    /// A named native target (`--target TRIPLE`) that this machine runs; a benchmark measures the
+    /// machine it runs on, so no runner serves a foreign one.
+    pub triple: Option<Triple>,
 }
 
 impl Default for BenchOptions {
@@ -866,6 +960,7 @@ impl Default for BenchOptions {
             filter: None,
             indices: Vec::new(),
             samples: DEFAULT_BENCH_SAMPLES,
+            triple: None,
         }
     }
 }
@@ -938,6 +1033,22 @@ pub fn run_benches_linked(
             "tsuzuri bench supports only the native target",
         ));
     }
+    let platform = Platform::new(options.triple);
+    if let Some(triple) = options.triple.filter(|_| platform.cross()) {
+        return Err(driver_error(
+            "E2000",
+            format!(
+                "tsuzuri bench measures the machine it runs on and cannot run {0} benchmarks here; run 'tsuzuri bench' on a {0} machine",
+                triple.name()
+            ),
+        ));
+    }
+    if options.triple.is_some_and(Triple::is_bare_metal) {
+        return Err(driver_error(
+            "E2000",
+            "a bare-metal target has no operating system to run a benchmark",
+        ));
+    }
     if options.optimization > 3 {
         return Err(driver_error(
             "E2000",
@@ -980,10 +1091,11 @@ pub fn run_benches_linked(
         });
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
+    let _platform_scope = PlatformScope::enter(platform);
     let text = llvm::emit_bench_runner_with(
         module,
         &selected.iter().map(|bench| bench.index).collect::<Vec<_>>(),
-        host_f16_path(Target::Native, Cpu::Generic),
+        platform_f16_path(platform, Target::Native, Cpu::Generic),
     )?;
     let artifact = compile_native_runner(
         module,
@@ -995,6 +1107,7 @@ pub fn run_benches_linked(
             entry: include_str!("runtime/bench-runner.c"),
             defines: &[],
             optimization: options.optimization,
+            platform,
         },
         links,
         &temporary.path,
@@ -1047,7 +1160,7 @@ fn execute_bench(
         samples.to_string(),
         BENCH_SAMPLE_NS.to_string(),
     ]);
-    let finished = run_captured(&mut command, timeout, true, "bench")?;
+    let finished = run_captured(&mut command, timeout, true, "bench", false)?;
     let outcome = match finished.status {
         None => Err(format!("timed out after {}ms", timeout.as_millis())),
         Some(status) if status.code() == Some(3) => Err("returned a negative duration".into()),
@@ -1095,11 +1208,14 @@ const CAPTURED_STDERR: usize = 64 * 1024;
 /// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
 /// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`. `kind` is
 /// `test` or `bench`, for the messages.
+/// Starts `command` and collects the tail of its stderr. When `foreign`, the command is the
+/// runner of `TSUZURI_RUNNER`, so that a failure to start is that runner's.
 fn run_captured(
     command: &mut Command,
     timeout: Duration,
     stdout: bool,
     kind: &str,
+    foreign: bool,
 ) -> Result<Captured, Diagnostic> {
     command
         .stdin(Stdio::null())
@@ -1109,9 +1225,21 @@ fn run_captured(
             Stdio::null()
         })
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| driver_error("E2002", format!("cannot start {kind} runner: {error}")))?;
+    let program = command.get_program().to_owned();
+    let mut child = command.spawn().map_err(|error| {
+        if foreign {
+            driver_error(
+                "E2001",
+                format!(
+                    "cannot start the runner of {} '{}': {error}",
+                    crate::target::RUNNER_VARIABLE,
+                    Path::new(&program).display()
+                ),
+            )
+        } else {
+            driver_error("E2002", format!("cannot start {kind} runner: {error}"))
+        }
+    })?;
     let out = child.stdout.take().map(|pipe| {
         std::thread::spawn(move || {
             let mut text = Vec::new();
@@ -1321,6 +1449,7 @@ mod tests {
                 entry: include_str!("runtime/bench-runner.c"),
                 defines: &[],
                 optimization: 0,
+                platform: Platform::HOST,
             },
             &LinkInputs::default(),
             &temporary.path,
@@ -1378,6 +1507,7 @@ mod tests {
                 program: "/bin/sh".into(),
                 arguments: vec!["-c".into(), script.into()],
                 coverage: None,
+                foreign: false,
             };
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))

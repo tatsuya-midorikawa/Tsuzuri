@@ -27,6 +27,7 @@ pub mod simd;
 pub mod stdlib;
 pub mod syntax;
 pub(crate) mod syntax_codec;
+pub mod target;
 pub mod trap;
 
 use check::{ModuleInput, ModuleOrigin};
