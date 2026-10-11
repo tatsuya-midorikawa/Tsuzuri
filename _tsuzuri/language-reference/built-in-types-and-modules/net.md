@@ -437,7 +437,7 @@ timeout: TimedOut
 
 ## エラーの読み方
 
-`Os.ErrorKind` に case を足すのは major edition だけなので、`Net` の失敗の多くは `Os.ErrorKind.Other` で、システムの `errno` が `code` に入ります。`Net.error_kind` は、その `code` から、よく使う分類を返します。
+`Os.ErrorKind` に case を足すのは互換性のない変更なので、`Net` の失敗の多くは `Os.ErrorKind.Other` で、システムの `errno` が `code` に入ります（[安定性と互換性の方針](../../../docs/stability.md#既知の例外)）。`Net.error_kind` は、その `code` から、よく使う分類を返します。
 
 | 失敗 | `Os.ErrorKind` | `Net.error_kind` |
 | --- | --- | --- |
@@ -451,7 +451,7 @@ timeout: TimedOut
 | 名前が見つからない | `NotFound`（`code` は 0） | `Unclassified` |
 | 上記以外、`code` が 0 | 状況による | `Unclassified` |
 
-`Net.ErrorKind` の case を足すと網羅的な `match` が壊れるので、足すのは major edition だけです。`code` の番号は OS で違います（`ECONNREFUSED` は macOS で 61、Linux で 111）が、`Net.error_kind` は同じ結果になります。`Interrupted`（`EINTR`）はランタイムが再試行するので、呼び出し側には出ません。
+`Net.ErrorKind` の case を足すと網羅的な `match` が壊れるので、足すのは互換性のない変更として扱うときだけです。`code` の番号は OS で違います（`ECONNREFUSED` は macOS で 61、Linux で 111）が、`Net.error_kind` は同じ結果になります。`Interrupted`（`EINTR`）はランタイムが再試行するので、呼び出し側には出ません。
 
 ## 資源上限と安全性
 

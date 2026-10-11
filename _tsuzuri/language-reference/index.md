@@ -152,3 +152,4 @@
 - [WebAssembly への出力](./compiler/webassembly.md)
 - [ネイティブ連携 (C ABI)](./compiler/native-interop.md)
 - [デバッグ](./compiler/debugging.md)
+- [安定性と互換性の方針](../../docs/stability.md)

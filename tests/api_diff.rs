@@ -854,6 +854,30 @@ fn the_command_rejects_bad_usage_inputs_and_sources() {
     }
 }
 
+#[test]
+fn the_command_applies_the_limits_of_the_other_commands() {
+    let good = root("limits-good", &[("Main.tz", "def f :: i64 = 1\n")]);
+    let large = root("limits-large", &[]);
+    std::fs::write(large.join("Main.tz"), "/".repeat(4 * 1024 * 1024 + 1)).unwrap();
+    let (status, stdout, stderr) =
+        tsuzuri(&["api-diff".as_ref(), good.as_os_str(), large.as_os_str()]);
+    assert_eq!(status, Some(1), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("error[E0003]"), "{stderr}");
+    let many = root("limits-many", &[]);
+    for index in 0..=4096 {
+        std::fs::write(many.join(format!("M{index:04}.tz")), "def f :: i64 = 1\n").unwrap();
+    }
+    let (status, stdout, stderr) =
+        tsuzuri(&["api-diff".as_ref(), many.as_os_str(), good.as_os_str()]);
+    assert_eq!(status, Some(1), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("error[E1017]"), "{stderr}");
+    for path in [good, large, many] {
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn the_command_refuses_symbolic_links() {
