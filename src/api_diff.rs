@@ -291,15 +291,17 @@ pub struct Api {
     version: Option<Version>,
 }
 
-/// Renames type variables and regions by their first appearance, so that two declarations that
-/// differ only in those names print the same; a renaming that is not `canonical` leaves every
-/// name as written. A length parameter (`#N`) keeps its name: a name in a length position may
-/// be a constant.
+/// Renames type variables, regions and declared length parameters by their first appearance, so
+/// that two declarations that differ only in those names print the same; a renaming that is not
+/// `canonical` leaves every name as written. A name in a length position that no declaration
+/// has declared as a length parameter (`const N: i64`) is a constant, and keeps its name.
 #[derive(Clone)]
 struct Renaming {
     canonical: bool,
     variables: BTreeMap<String, String>,
     regions: BTreeMap<String, String>,
+    /// The declared length parameters, by the name without its `#`.
+    lengths: BTreeMap<String, String>,
 }
 
 impl Renaming {
@@ -308,6 +310,7 @@ impl Renaming {
             canonical,
             variables: BTreeMap::new(),
             regions: BTreeMap::new(),
+            lengths: BTreeMap::new(),
         }
     }
 
@@ -333,16 +336,40 @@ impl Renaming {
             .clone()
     }
 
-    /// A declared type parameter.
+    /// A declared type parameter, or a length parameter written `#N`.
     fn parameter(&mut self, parameter: &Ident) -> Ident {
-        let text = if parameter.text.starts_with('#') {
-            parameter.text.clone()
-        } else {
-            self.variable(&parameter.text)
+        let text = match parameter.text.strip_prefix('#') {
+            Some(name) => format!("#{}", self.length(name)),
+            None => self.variable(&parameter.text),
         };
         Ident {
             text,
             ..parameter.clone()
+        }
+    }
+
+    /// The name of a declared length parameter, given by its position among the declared ones.
+    fn length(&mut self, name: &str) -> String {
+        if !self.canonical {
+            return name.to_owned();
+        }
+        let next = self.lengths.len();
+        self.lengths
+            .entry(name.to_owned())
+            .or_insert_with(|| format!("n{next}"))
+            .clone()
+    }
+
+    /// A length, or a type argument that may be one: the name of a declared length parameter is
+    /// renamed, and anything else (a number, a constant, a type) is as written.
+    fn length_argument(&mut self, argument: &TypeExpr) -> TypeExpr {
+        match &argument.kind {
+            TypeExprKind::Named(name) if self.lengths.contains_key(name) => TypeExpr {
+                kind: TypeExprKind::Named(self.lengths[name].clone()),
+                span: argument.span,
+            },
+            TypeExprKind::Length(_) | TypeExprKind::Named(_) => argument.clone(),
+            _ => self.ty(argument),
         }
     }
 
@@ -369,7 +396,10 @@ impl Renaming {
                     },
                     None => (**head).clone(),
                 };
-                let arguments = arguments.iter().map(|argument| self.ty(argument)).collect();
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| self.length_argument(argument))
+                    .collect();
                 Apply(Box::new(head), arguments)
             }
             Regions(inner, names) => {
@@ -382,9 +412,10 @@ impl Renaming {
             }
             Array(inner) => Array(Box::new(self.ty(inner))),
             ArrayView(inner) => ArrayView(Box::new(self.ty(inner))),
-            FixedArray(element, length) => {
-                FixedArray(Box::new(self.ty(element)), Box::new((**length).clone()))
-            }
+            FixedArray(element, length) => FixedArray(
+                Box::new(self.ty(element)),
+                Box::new(self.length_argument(length)),
+            ),
             Length(length) => Length(*length),
             List(inner) => List(Box::new(self.ty(inner))),
             Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
@@ -752,7 +783,8 @@ fn add_items(module: &str, program: &Program, items: &mut Items, canonical: bool
         let constraints = renaming.constraints(&declaration.constraints);
         let name = format!("{}<{}>", declaration.class.text, type_text(&ty));
         let header = format!("instance {}{name}", constraints_text(&constraints));
-        add(Item::new("instance", name, header));
+        // Two modules can spell the same instance for their own types, so the module is part of it.
+        add(Item::new("instance", qualified(&name), header));
     }
     for alias in aliases {
         add(Item::new(

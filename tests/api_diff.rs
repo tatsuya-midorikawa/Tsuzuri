@@ -456,18 +456,58 @@ fn documentation_and_deprecation_are_not_breaking() {
 }
 
 #[test]
+fn declared_length_parameters_are_renamed_but_constants_are_not() {
+    // The name of a declared length parameter (`const N: i64`) is not part of the API.
+    check(
+        "record Grid<const N: i64> { cells: [i64; N] }\ntype Row<const N: i64> = [i64; N]\nunion Cell<const N: i64> = Full of [i64; N] | Empty\n",
+        "record Grid<const M: i64> { cells: [i64; M] }\ntype Row<const M: i64> = [i64; M]\nunion Cell<const K: i64> = Full of [i64; K] | Empty\n",
+        &[],
+    );
+    // Which parameter a field uses is.
+    check(
+        "record Pair<const N: i64, const M: i64> { first: [i64; N], second: [i64; M] }\n",
+        "record Pair<const N: i64, const M: i64> { first: [i64; M], second: [i64; N] }\n",
+        &[
+            "breaking changed field Main.Pair.first",
+            "breaking changed field Main.Pair.second",
+        ],
+    );
+    // A name that no declaration declared is a constant, and another constant is another length.
+    check(
+        "const Small: i64 = 2\nconst Large: i64 = 4\nrecord Row { cells: [i64; Small] }\n",
+        "const Small: i64 = 2\nconst Large: i64 = 4\nrecord Row { cells: [i64; Large] }\n",
+        &["breaking changed field Main.Row.cells"],
+    );
+}
+
+#[test]
+fn instances_of_the_same_spelling_in_two_modules_are_two_instances() {
+    let with = "record Point { x: i64 }\ninstance Show<Point> {\n    fn show p = \"\"\n}\n";
+    let without = "record Point { x: i64 }\n";
+    // Each module's instance is its own, so dropping one of two is not hidden by the other.
+    assert_eq!(
+        compare(with, with, &[("Other.tz", with, without)]),
+        ["breaking removed instance Other.Show<Point>"]
+    );
+    assert_eq!(
+        compare(without, with, &[("Other.tz", with, with)]),
+        ["non-breaking added instance Main.Show<Point>"]
+    );
+}
+
+#[test]
 fn instances_active_patterns_and_builder_aliases() {
     check(
         "instance Show<Box<i64>> {\n    fn show b = \"\"\n}\n",
         "0",
-        &["breaking removed instance Show<Box<i64>>"],
+        &["breaking removed instance Main.Show<Box<i64>>"],
     );
     check(
         "0",
         "instance Show<Box<i64>> {\n    fn show b = \"\"\n}\ninstance Eq<'a> => Show<Box<'a>> {\n    fn show b = \"\"\n}\n",
         &[
-            "non-breaking added instance Show<Box<'t0>>",
-            "non-breaking added instance Show<Box<i64>>",
+            "non-breaking added instance Main.Show<Box<'t0>>",
+            "non-breaking added instance Main.Show<Box<i64>>",
         ],
     );
     // The constraints of an instance and the names of its variables.
@@ -480,7 +520,7 @@ fn instances_active_patterns_and_builder_aliases() {
     check(
         &conditional("a", "Eq"),
         &conditional("a", "Ord"),
-        &["breaking changed instance Show<Box<'t0>>"],
+        &["breaking changed instance Main.Show<Box<'t0>>"],
     );
     // An active pattern is named by its cases.
     check(

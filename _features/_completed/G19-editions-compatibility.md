@@ -44,7 +44,7 @@
 ### `tsuzuri api-diff`
 
 - `Project::load_for_api`（`src/driver.rs`）で 2 つの入力を読む。git・registry の依存を取得せず、`Tsuzuri.lock` も読まず、`Project::root_package` のソースだけを `parse_with_source` で構文解析する。型検査はしない。
-- 公開宣言は、`private` でない `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、すべての `class`、`instance`、ビルダーの別名（`@alias`）、とそのメンバー（field、case、メソッド）、`deriving`、`export`。名前は `名前空間::モジュール.宣言[.メンバー]`（`instance` は `Class<Type>`）。
+- 公開宣言は、`private` でない `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、すべての `class`、`instance`、ビルダーの別名（`@alias`）、とそのメンバー（field、case、メソッド）、`deriving`、`export`。名前は `名前空間::モジュール.宣言[.メンバー]`（`instance` も宣言したモジュールで修飾した `Module.Class<Type>`。同じ綴りの instance が別のモジュールにあっても区別する）。署名の比較は、型変数・region・宣言した長さパラメーター（`const N: i64`）の名前を連番に置き換える（宣言していない長さの名前は定数なので、そのまま比べる）。
 - 署名は `src/docgen.rs` の描画を共有する。比較には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、定義の結果型の矢印を平らにした正規形を使う（`fn() -> T` の thunk と、引数のない定義の関数の結果は、parser と同じく平らにしない）。メッセージには各版で書かれたままの署名を出す。
 - breaking: 公開宣言の削除（`private` 化を含む）、署名の変更（型・制約・region・型パラメーター・`export` の取り消し）、record の field の追加・削除・変更・並べ替え、union の case の追加・削除・変更・並べ替え、既定のない class メソッドの追加、メソッドの削除・署名の変更・既定の削除、superclass の変更、`deriving`・`instance` の削除と変更。non-breaking: 宣言・`export`・`instance`・`deriving` の追加、既定のあるメソッドの追加、説明の変更、`@deprecated` の追加と削除。
 - 出力: テキストは `breaking: ` か `non-breaking: ` で始まる 1 変更 1 行、`summary: N breaking, M non-breaking`、`note:` の行（省略した件数、版の注記）。`--json` は 1 行 1 オブジェクトの JSON Lines（`type` が `change` の行と最後の `summary`）。breaking が先で、それぞれ名前順（決定的）。1000 行まで、超えた分は `omitted` に数える。
@@ -111,6 +111,7 @@
 - 使えない印（root パッケージの `@deprecated`）が `semantic::collect` を走らせていた（停止条件の趣旨）。`SourceInput::package` を依存パッケージの `PackageId` に改め、root の印は集めない（単体テストの計数と `a_tag_in_the_root_package_never_warns`）。
 - pattern の中の型注釈が警告にならない指摘は、索引が記録しない種類として文書に書いた（旧 D5 の「pattern の中は対象外」の範囲）。
 - 4 チケットを統合したあとの review: `api-diff` が D11 の `const def` を見ず、`const` を外す変更（下流の `const` の初期化式が壊れる）を「変更なし」と報告していた。`Item` に `constant` を足し、`const` の取り消しを breaking、`def` を `const def` にすることを non-breaking にした（`const_def_is_part_of_the_signature`。`docs/stability.md` と `usage.md` の表に書いた）。
+- Copilot の review（PR #22）: 宣言した長さパラメーター（`record Grid<const N: i64>` の `N`）の名前を `Renaming` が連番に直さず、`N` を `M` に改名すると breaking と報告していた。宣言した長さパラメーターだけを連番にし、宣言していない長さの名前（定数）はそのまま比べる（`declared_length_parameters_are_renamed_but_constants_are_not`）。`instance` の名前が宣言したモジュールで修飾されず、同じ綴りの instance を別のモジュールが持つと 2 つ目が `or_insert` で黙って捨てられ、その削除や変更が報告されなかった。モジュールで修飾した（`instances_of_the_same_spelling_in_two_modules_are_two_instances`。instance を別のモジュールへ移すと削除と追加として報告する）。
 
 ### 文書と計測
 
