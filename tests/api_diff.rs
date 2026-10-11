@@ -149,6 +149,40 @@ type Pair<'q> = ('q * 'q)
 }
 
 #[test]
+fn a_thunk_is_not_an_extra_parameter() {
+    // `fn() -> T` takes no argument, so a result of that type is not spliced into the
+    // parameters, and a definition without parameters keeps its function result.
+    check(
+        "def make :: i64 -> i64 = \\n -> n\n",
+        "def make :: i64 -> fn() -> i64 = \\n -> answer\n",
+        &["breaking changed def Main.make"],
+    );
+    check(
+        "def build :: i64 -> i64 = \\n -> n\n",
+        "def build :: fn() -> (i64 -> i64)\nfn build = { let k = 1; n -> n + k }\n",
+        &["breaking changed def Main.build"],
+    );
+    let class =
+        |result: &str| format!("class Shape<'a> {{\n  def make :: ref 'a -> {result}\n}}\n");
+    let lines = compare(
+        "0",
+        "0",
+        &[(
+            "Shape.tt",
+            class("i64").as_str(),
+            class("fn() -> i64").as_str(),
+        )],
+    );
+    assert_eq!(lines, ["breaking changed method Shape.Shape.make"]);
+    // A chain of arrows is one type however many of them the lambda takes.
+    check(
+        "def c :: i64 -> i64 -> i64 = \\x -> \\y -> x + y\n",
+        "def c :: i64 -> i64 -> i64 = \\x -> add x\n",
+        &[],
+    );
+}
+
+#[test]
 fn record_fields() {
     let old = "record P { x: i64, y: i64 }\n";
     for (new, expected) in [

@@ -309,6 +309,72 @@ fn warns_on_deprecated_uses_from_other_packages_only() {
 }
 
 #[test]
+fn a_union_named_before_its_case_warns_once_at_the_case() {
+    let app = "\
+let light = LegacyLib::Old.Light.Red
+let bonus = match light with
+    | LegacyLib::Old.Light.Red -> 0
+    | LegacyLib::Old.Light.Green -> 1
+bonus
+";
+    let root = package_root(
+        "qualified",
+        &[
+            ("legacy-lib/Tsuzuri.toml", LEGACY_MANIFEST),
+            ("legacy-lib/Old.tz", LEGACY_OLD),
+            ("app/Tsuzuri.toml", APP_MANIFEST),
+            ("app/Main.tz", app),
+        ],
+    );
+    let project = tsuzuri::driver::Project::load(&root.join("app")).unwrap();
+    let module = project.analyze().unwrap();
+    let warning = |line, column| {
+        (
+            "Main.tz".to_owned(),
+            line,
+            column,
+            "W1005: 'LegacyLib::Old.Light' is deprecated: use bool".to_owned(),
+        )
+    };
+    assert_eq!(
+        located(&project, &module.warnings),
+        [warning(1, 34), warning(3, 28), warning(4, 28)]
+    );
+    // The union named alone, as a type, is one use at the union.
+    std::fs::write(
+        root.join("app/Main.tz"),
+        "def read :: LegacyLib::Old.Light -> i64 = \\_light -> 1\n",
+    )
+    .unwrap();
+    let project = tsuzuri::driver::Project::load(&root.join("app")).unwrap();
+    let module = project.analyze().unwrap();
+    assert_eq!(located(&project, &module.warnings), [warning(1, 28)]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_tag_in_the_root_package_never_warns() {
+    let app = "\
+/// @deprecated use fresh
+def stale :: i64 -> i64 = \\x -> x
+
+def fresh :: i64 -> i64 = \\x -> stale x + LegacyLib::Old.next x
+";
+    let root = package_root(
+        "root-tag",
+        &[
+            ("legacy-lib/Tsuzuri.toml", LEGACY_MANIFEST),
+            ("legacy-lib/Old.tz", LEGACY_OLD),
+            ("app/Tsuzuri.toml", APP_MANIFEST),
+            ("app/Util.tz", app),
+        ],
+    );
+    let project = tsuzuri::driver::Project::load(&root.join("app/Util.tz")).unwrap();
+    assert!(project.analyze().unwrap().warnings.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn deprecation_covers_types_signatures_payload_cases_and_other_dependencies() {
     let library = "\
 /// @deprecated

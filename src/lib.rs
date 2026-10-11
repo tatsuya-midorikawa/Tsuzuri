@@ -46,8 +46,10 @@ pub struct SourceInput<'a> {
     /// The edition that `text` is read with (G19): the edition of its package's manifest, and
     /// `Edition::LATEST` for a source that no manifest governs.
     pub edition: syntax::Edition,
-    /// The package that owns the source, `None` without a manifest and for std. W1005 reports
-    /// a use of a deprecated declaration only when it is in another package.
+    /// The dependency package that owns the source. `None` for the root package, which no
+    /// package depends on, for sources without a manifest, and for std. W1005 reports a use of
+    /// a deprecated declaration only when it is in another package, and only a declaration of
+    /// a dependency can be used by another package.
     pub package: Option<&'a package::PackageId>,
 }
 

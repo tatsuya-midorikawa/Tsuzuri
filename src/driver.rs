@@ -2099,9 +2099,21 @@ impl Project {
                 origin: source.origin,
                 namespace: &source.namespace,
                 edition: source.edition,
-                package: source.package.as_ref(),
+                package: self.dependency_package(source),
             })
             .collect()
+    }
+
+    /// The dependency package that owns `source`: `None` for a source of the root package,
+    /// which nothing depends on, and for one that no manifest governs.
+    pub fn dependency_package<'a>(
+        &self,
+        source: &'a SourceFile,
+    ) -> Option<&'a crate::package::PackageId> {
+        source
+            .package
+            .as_ref()
+            .filter(|package| self.root_package.as_ref() != Some(*package))
     }
 
     /// The directory that the root source's relative path starts from.

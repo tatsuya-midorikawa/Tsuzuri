@@ -3345,7 +3345,8 @@ pub struct ModuleInput<'a> {
     pub entry: bool,
     /// The edition that the module's source was read with; its name is an identifier of it.
     pub edition: crate::syntax::Edition,
-    /// The package that owns the module, `None` without a manifest and for std (W1005).
+    /// The dependency package that owns the module, `None` for the root package, for sources
+    /// without a manifest, and for std (W1005).
     pub package: Option<&'a crate::package::PackageId>,
 }
 

@@ -1158,7 +1158,7 @@ fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Di
             origin: source.origin,
             namespace: &source.namespace,
             edition: source.edition,
-            package: source.package.as_ref(),
+            package: project.dependency_package(source),
         })
         .collect();
     let mut semantic = SemanticIndex::default();

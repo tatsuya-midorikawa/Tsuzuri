@@ -51,7 +51,7 @@ def answer :: i64 = 42
 ドキュメントコメントは型検査や通常の IR 生成には一切影響を与えません。フォーマッタはコメント本文をそのまま保持し、LSP のホバー表示は定義位置を参照してこの説明文を提示します。
 説明の行を `@deprecated` で始めると、その宣言は非推奨になります（新しい構文ではありません）。説明の各行の先頭の空白を除いて `@deprecated` で始まり、直後が行末か空白（スペースかタブ）である最初の 1 行が印で、その行の残りから前後の空白を除いたものが案内（空でもよい）です。`@deprecatedX` は印ではなく、2 つ目以降の `@deprecated` の行は通常の説明です。`tsuzuri doc` と LSP のホバーは、この行も説明として表示します。
 警告の対象は `def`（`extern def` を除く）、`record`、`union` で、`const`、`type`、`class`、メソッド、`extern def` の印は表示されるだけです。別のパッケージ（標準ライブラリを含む）が非推奨の宣言の名前を書くと、警告 `W1005`（`'LegacyLib::Old.old' is deprecated: use LegacyLib::Old.next instead`。案内が空なら `'...' is deprecated; see its documentation for a replacement`）が出ます。
-参照の種類は、関数、record の構築と型の注釈、union の case の構築とパターンで、case は union の印を使います。案内は 200 文字までで、超えると `...` で切ります。同じパッケージの中の使用（`Tsuzuri.toml` のないプロジェクトは全体で 1 つのパッケージ）には出ません。W1005 は既定で有効で、`--deny-warnings` で終了コード 1 になり、警告の有無は互換性の保証の対象外です（[安定性と互換性の方針](stability.md#非推奨の手順)）。`@deprecated` の有無で、生成される IR は変わりません。
+参照の種類は、関数、record の構築と型の注釈（パターンの中の型注釈を除く）、union の case の構築とパターンで、case は union の印を使います（`Light.Red` は case の位置に 1 件です）。案内は 200 文字までで、超えると `...` で切ります。同じパッケージの中の使用（`Tsuzuri.toml` のないプロジェクトは全体で 1 つのパッケージ）には出ません。W1005 は既定で有効で、`--deny-warnings` で終了コード 1 になり、警告の有無は互換性の保証の対象外です（[安定性と互換性の方針](stability.md#非推奨の手順)）。`@deprecated` の有無で、生成される IR は変わりません。
 
 `tsuzuri doc <file|directory> -o <outdir> [--json]` コマンドは、プロジェクト全体の型検査を完了した後に、公開宣言のみを抽出して Markdown 形式のドキュメントを生成します。
 ライブラリのドキュメント生成に対応するため、ディレクトリ入力であっても `Main.tz` の存在は必須としません。階層化されたモジュールのページは `Geometry.Point.md`（見出しおよび一覧での表示表記は `Geometry::Point`）、モジュール一覧ページは `index.md` として出力されます。

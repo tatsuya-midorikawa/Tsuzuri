@@ -664,17 +664,12 @@ pub(super) struct Deprecation {
 
 /// The deprecated declarations of `modules` that a use can warn about, by the source and start
 /// of their name, the position that the semantic index gives a declaration. A declaration of
-/// std is always one; a declaration of a user module is one only when the user modules belong
-/// to more than one package, because W1005 never reports a use within a package.
+/// std is always one. A declaration of a user module is one only in a dependency package: no
+/// package depends on the root package, and W1005 never reports a use within a package.
 pub(super) fn deprecations(modules: &[ModuleInput<'_>]) -> BTreeMap<(usize, usize), Deprecation> {
-    let packages: BTreeSet<_> = modules
-        .iter()
-        .filter(|module| module.origin == ModuleOrigin::User)
-        .map(|module| module.package)
-        .collect();
     let mut found = BTreeMap::new();
     for (module, input) in modules.iter().enumerate() {
-        if input.origin == ModuleOrigin::User && packages.len() < 2 {
+        if input.origin == ModuleOrigin::User && input.package.is_none() {
             continue;
         }
         let program = input.program;
@@ -710,6 +705,16 @@ pub(super) fn deprecations(modules: &[ModuleInput<'_>]) -> BTreeMap<(usize, usiz
     found
 }
 
+/// A reference to a deprecated declaration that W1005 can report.
+struct DeprecatedUse {
+    source: usize,
+    span: Span,
+    /// The definition of the deprecated declaration: the union for a case.
+    owner: usize,
+    case: bool,
+    message: String,
+}
+
 /// W1005 at each reference, in a user module, to a deprecated declaration of another package
 /// or of std (G19). A union stands for its cases and a record for its construction, patterns
 /// and type annotations, as the semantic index records them.
@@ -720,7 +725,7 @@ pub(super) fn deprecated_uses(
     deprecations: &BTreeMap<(usize, usize), Deprecation>,
 ) -> Vec<Diagnostic> {
     let mut reported = BTreeSet::new();
-    let mut warnings = Vec::new();
+    let mut uses = Vec::new();
     for reference in &index.references {
         let Some(source) = reference.span.source else {
             continue;
@@ -732,16 +737,17 @@ pub(super) fn deprecated_uses(
             continue;
         };
         let definition = &index.definitions[reference.definition];
-        let owner = match (definition.kind, definition.container) {
+        let (owner_id, case) = match (definition.kind, definition.container) {
             (
                 semantic::SymbolKind::Function
                 | semantic::SymbolKind::Record
                 | semantic::SymbolKind::Union,
                 _,
-            ) => definition,
-            (semantic::SymbolKind::Case, Some(union)) => &index.definitions[union],
+            ) => (reference.definition, false),
+            (semantic::SymbolKind::Case, Some(union)) => (union, true),
             _ => continue,
         };
+        let owner = &index.definitions[owner_id];
         let Some(deprecation) = owner
             .span
             .source
@@ -772,9 +778,24 @@ pub(super) fn deprecated_uses(
             (false, false) => format!("'{spelled}' is deprecated: {shown}"),
             (false, true) => format!("'{spelled}' is deprecated: {shown}..."),
         };
-        warnings.push(Diagnostic::warning("W1005", message, reference.span));
+        uses.push(DeprecatedUse {
+            source,
+            span: reference.span,
+            owner: owner_id,
+            case,
+            message,
+        });
     }
-    warnings
+    // `Union.Case` names the union and the case, which is one use: it warns at the case.
+    let cases: BTreeSet<_> = uses
+        .iter()
+        .filter(|used| used.case)
+        .map(|used| (used.source, used.owner, used.span.start))
+        .collect();
+    uses.into_iter()
+        .filter(|used| used.case || !cases.contains(&(used.source, used.owner, used.span.end + 1)))
+        .map(|used| Diagnostic::warning("W1005", used.message, used.span))
+        .collect()
 }
 
 #[cfg(test)]
@@ -824,19 +845,28 @@ mod tests {
         let mut index = semantic::SemanticIndex::default();
         crate::analyze_inputs_semantic(&plain, &mut index).unwrap();
         assert_eq!(collections(), before + 3);
-        // A tag in a package that another package uses does too.
-        let (app, library) = (
-            PackageId {
-                name: "app".into(),
-                root: "/app".into(),
-            },
-            PackageId {
-                name: "library".into(),
-                root: "/library".into(),
-            },
-        );
+        // A tag in the root package never collects, even when a dependency exists: nothing
+        // depends on the root package.
+        let library = PackageId {
+            name: "library".into(),
+            root: "/library".into(),
+        };
         let inputs = [
-            input("Main.tz", "Library::Old.old", user, Some(&app)),
+            input("Main.tz", "Old.old", user, None),
+            input("Old.tz", tagged, user, None),
+            input(
+                "Library/Plain.tz",
+                "def plain :: i64 = 1\n",
+                user,
+                Some(&library),
+            ),
+        ];
+        let module = crate::analyze_inputs_all(&inputs).unwrap();
+        assert!(module.warnings.is_empty(), "{:?}", module.warnings);
+        assert_eq!(collections(), before + 3);
+        // A tag in a dependency does, once.
+        let inputs = [
+            input("Main.tz", "Library::Old.old", user, None),
             input("Library/Old.tz", tagged, user, Some(&library)),
         ];
         let module = crate::analyze_inputs_all(&inputs).unwrap();

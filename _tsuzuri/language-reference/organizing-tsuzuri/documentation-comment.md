@@ -149,7 +149,7 @@ app/Main.tz:6:16: warning[W1005]: 'LegacyLib::Old.old' is deprecated: use Legacy
 
 `legacy-lib` の `inside` が `old` を呼ぶ行は、同じパッケージなので警告しません。
 
-- **警告する場所**: 宣言の名前を書いた場所です。関数の参照、`record` の構築、型の注釈、`union` の case の構築とパターンです。`union` の case を使うと、`union` の印が使われます。型エイリアスを経由した使用は、エイリアスの定義の 1 件だけです。
+- **警告する場所**: 宣言の名前を書いた場所です。関数の参照、`record` の構築、型の注釈（`let` の束縛、キャスト、`def` のシグネチャ、フィールドの型、型エイリアスの定義）、`union` の case の構築とパターンです。`union` の case を使うと、`union` の印が使われ、`Light.Red` のように型名を付けた書き方は case の位置に 1 件です。型エイリアスを経由した使用は、エイリアスの定義の 1 件だけです。パターンの中の型注釈（`| q: LegacyLib::Old.Pair ->`、`\(p: LegacyLib::Old.Pair) ->`、`for` のパターン）は警告しません。
 - **メッセージ**: `'<完全修飾名>' is deprecated: <案内>` です。案内が空なら `'<完全修飾名>' is deprecated; see its documentation for a replacement` です。案内は 200 文字までで、超えると `...` で切ります。
 - **位置**: 参照の最後の名前（上の例の `Pair`、`old`）です。同じ位置は 1 回だけです。
 - **コマンド**: `check`、`build`、`run`、`test`、`bench`、`doc`、言語サーバーが、ほかの警告と同じ形で出します。既定で有効で、`--deny-warnings` を付けると終了コード 1 です。この例の `run app --deny-warnings` は何も実行しません。

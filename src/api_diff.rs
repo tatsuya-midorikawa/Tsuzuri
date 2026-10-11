@@ -438,9 +438,16 @@ impl Renaming {
 
 /// The parameter types and the result as one chain of arrows: a result that is itself a
 /// function type is spliced in, because `A -> B -> C` is the type of a definition whether its
-/// lambda takes both arguments or returns a function.
+/// lambda takes both arguments or returns a function. The rule is the parser's: a function
+/// type without parameters (`fn() -> T`) is a thunk, and a definition that takes no parameters
+/// keeps its function result, so neither is spliced.
 fn flatten(mut parameters: Vec<TypeExpr>, mut result: TypeExpr) -> (Vec<TypeExpr>, TypeExpr) {
-    while let TypeExprKind::Function(more, inner) = result.kind {
+    while !parameters.is_empty()
+        && matches!(&result.kind, TypeExprKind::Function(inner, _) if !inner.is_empty())
+    {
+        let TypeExprKind::Function(more, inner) = result.kind else {
+            unreachable!("the loop condition matched a function type")
+        };
         parameters.extend(more);
         result = *inner;
     }
