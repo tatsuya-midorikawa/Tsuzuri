@@ -524,8 +524,9 @@ pub fn valid_namespace(text: &str, edition: Edition) -> bool {
         && text.split("::").count() <= 16
         && text.split("::").next().is_some_and(|first| {
             first != crate::stdlib::NAMESPACE && !crate::stdlib::is_reserved_module(first)
-        }) && text.split("::").all(|segment| {
-        segment != "_"
+        })
+        && text.split("::").all(|segment| {
+            segment != "_"
             && segment != "Task"
             && crate::lexer::lex(segment, edition).is_ok_and(|tokens| {
                 matches!(
@@ -534,7 +535,7 @@ pub fn valid_namespace(text: &str, edition: Edition) -> bool {
                         if name == segment
                 )
             })
-    })
+        })
 }
 
 /// Creates a package in `directory`, which must be missing or empty: a

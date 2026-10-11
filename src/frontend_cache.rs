@@ -208,7 +208,9 @@ pub(crate) struct FrontendDelta {
 impl FrontendDelta {
     /// Whether the checking results of `module` may differ from the previous analysis. Any
     /// module can name any other qualified and instances are global, so every module depends
-    /// on every interface; narrowing that by recorded uses is left to Phase 2 (D10).
+    /// on every interface; narrowing that by recorded uses is left to Phase 2 (D10). A reuse
+    /// must also treat a changed `@deprecated` tag as a change, since W1005 (G19) reads the
+    /// documentation of another package's declaration, which the interface hash leaves out.
     #[cfg_attr(
         not(test),
         expect(

@@ -5620,7 +5620,10 @@ fn check_modules_collect(
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
-    let indexing = semantic.is_some();
+    // A `@deprecated` declaration needs the references that the semantic index records (W1005),
+    // so a project without one never collects them unless the caller asked for the index.
+    let deprecations = warnings::deprecations(modules);
+    let indexing = semantic.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
         ..Names::default()
@@ -7057,8 +7060,19 @@ fn check_modules_collect(
         (0..declaration_count).collect::<Vec<_>>()
     );
     diagnostics.check()?;
-    if let Some(index) = semantic {
-        *index = semantic::collect(modules, &functions, &name_uses, &names, types);
+    if indexing {
+        let index = semantic::collect(modules, &functions, &name_uses, &names, types);
+        if !deprecations.is_empty() {
+            warnings.extend(warnings::deprecated_uses(
+                modules,
+                &index,
+                &names,
+                &deprecations,
+            ));
+        }
+        if let Some(requested) = semantic {
+            *requested = index;
+        }
     }
     constants::fold(&mut functions, &names.constants)?;
     let references =

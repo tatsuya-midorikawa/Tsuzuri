@@ -514,6 +514,12 @@ fn define_declarations(
     links
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times `collect` ran on this thread, which the W1005 tests count (G19).
+    pub(crate) static COLLECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn collect(
     modules: &[ModuleInput<'_>],
     functions: &[CheckedFunction],
@@ -521,6 +527,8 @@ pub(super) fn collect(
     names: &Names,
     types: TypeContext<'_>,
 ) -> SemanticIndex {
+    #[cfg(test)]
+    COLLECTIONS.with(|count| count.set(count.get() + 1));
     let mut index = SemanticIndex::default();
     let links = define_declarations(&mut index, modules, functions, names, &types);
     let links = &links;

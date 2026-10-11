@@ -52,6 +52,25 @@ fn scripted(
     encoding: &str,
     steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
+    let (responses, ids) = session(files, encoding, steps);
+    ids.iter()
+        .map(|id| {
+            responses
+                .iter()
+                .find(|response| response.get("id") == Some(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("no response {id}"))
+        })
+        .collect()
+}
+
+/// Runs one server session as `scripted` does and returns every message the server wrote,
+/// notifications included, with the ids of the requests that `steps` sent.
+fn session(
+    files: &[(&str, &str)],
+    encoding: &str,
+    steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     use serde_json::json;
     use std::io::Cursor;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,15 +126,7 @@ fn scripted(
         responses.push(message.unwrap());
     }
     std::fs::remove_dir_all(&root).unwrap();
-    ids.iter()
-        .map(|id| {
-            responses
-                .iter()
-                .find(|response| response.get("id") == Some(id))
-                .cloned()
-                .unwrap_or_else(|| panic!("no response {id}"))
-        })
-        .collect()
+    (responses, ids)
 }
 
 const P1: [(&str, &str); 3] = [
@@ -1436,4 +1447,55 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
             assert!(labels.contains(member), "{member}: {labels:?}");
         }
     }
+}
+
+#[test]
+fn deprecated_uses_from_other_packages_are_published_as_warnings() {
+    use serde_json::json;
+    let manifest = |name: &str, dependencies: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n{dependencies}")
+    };
+    let app = "let _light = LegacyLib::Old.Red\nLegacyLib::Old.old 1\n";
+    let old = "/// @deprecated use next\ndef old :: i64 -> i64 = \\x -> x\n\n/// @deprecated\nunion Light = Red | Green\n\ndef inside :: i64 -> i64 = \\x -> old x\n";
+    let (messages, _) = session(
+        &[
+            (
+                "Tsuzuri.toml",
+                &manifest(
+                    "app",
+                    "[dependencies]\nlegacy-lib = { path = \"legacy-lib\" }\n",
+                ),
+            ),
+            ("Main.tz", app),
+            ("legacy-lib/Tsuzuri.toml", &manifest("legacy-lib", "")),
+            ("legacy-lib/Old.tz", old),
+        ],
+        "utf-16",
+        |uri| {
+            // A request makes the server analyze the project and publish its diagnostics.
+            vec![
+                json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": {"line": 0, "character": 4}}}),
+            ]
+        },
+    );
+    // The last notification of a file is the state after the whole project was analyzed.
+    let published = |file: &str| {
+        messages
+            .iter()
+            .filter(|message| message["method"] == "textDocument/publishDiagnostics")
+            .rfind(|message| message["params"]["uri"].as_str().unwrap().ends_with(file))
+            .map(|message| message["params"]["diagnostics"].clone())
+            .unwrap_or_else(|| panic!("nothing published for {file}"))
+    };
+    assert_eq!(
+        published("/Main.tz"),
+        json!([
+            {"range": range(0, 28, 31), "severity": 2, "code": "W1005", "source": "tsuzuri",
+             "message": "'LegacyLib::Old.Light' is deprecated; see its documentation for a replacement"},
+            {"range": range(1, 15, 18), "severity": 2, "code": "W1005", "source": "tsuzuri",
+             "message": "'LegacyLib::Old.old' is deprecated: use next"},
+        ])
+    );
+    // A use inside the package that declares it is not reported.
+    assert_eq!(published("/Old.tz"), json!([]));
 }
