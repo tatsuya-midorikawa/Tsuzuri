@@ -645,6 +645,27 @@ assert (((1.0f32 + 0.000488f32) as f16) as f32 == 1.0f32 && 0.1f64 as f16 as f64
 `);
   for (const optimization of [0, 3]) assert.equal(cli(["run", runDirectory, `-O${optimization}`]).stdout, "42\n");
 
+  // `tsuzuri test` chooses the path for `--cpu generic`, and wasm32 is always soft.
+  const testDirectory = join(temporary, "tests");
+  mkdirSync(testDirectory, { recursive: true });
+  writeFileSync(join(testDirectory, "Checks.tz"), `test "half arithmetic" =
+    let x = 1.5f16
+    let y = 2.25f16
+    assert (x + y == 3.75f16 && y - x == 0.75f16 && x * y == 3.375f16 && y / x == 1.5f16)
+
+test "half square root and comparison" =
+    assert (Math.sqrt 2.25f16 == 1.5f16)
+    assert (1.5f16 < 2.25f16 && !(2.25f16 < 1.5f16))
+
+test "half conversions" =
+    assert (65519.0f32 as f16 as f32 == 65504.0f32)
+    assert (0.1f64 as f16 as f64 == 0.0999755859375)
+    let nan = 0.0f16 / 0.0f16
+    assert (nan != nan)
+`);
+  for (const options of [["-O0"], ["-O3"], ["--target", "wasm32"]]) assert.match(cli(["test", testDirectory, ...options]).stdout, /3 passed; 0 failed/, `tsuzuri test ${options.join(" ")}`);
+  report.push("tsuzuri test at -O0, -O3, and wasm32");
+
   const total = cases.length;
   console.log(`f16_hardware: host ${process.platform}/${process.arch}; ${report.join("; ")}`);
   console.log(`f16_hardware: ${total} cases${quick ? " (quick)" : ""}, native ${generatedPath}${classified.native ? ` (--cpu native: ${classified.native})` : ""} and WASM soft, O0/O3, bit identity including NaN`);
