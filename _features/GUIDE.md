@@ -1489,8 +1489,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   WASM と native で NaN のビットが変わるので旧 D3 を残した。M1 Max の測定は、hardware が soft の約 330〜1,480 倍速く、C の `_Float16` の 1.4〜4.5 倍遅い（docs/benchmarks.md）。
   `tests/f16_hardware.mjs` は 2,707,485 件（f16 の単項は全 65,536 パターン）を JavaScript の厳密な参照と NaN のビットまで比べ、`TSUZURI_F16_EXPECT` でホストが通る経路を固定できる
   （`.github/workflows/targets.yml` が runner ごとに設定する）。G15 と統合したとき、経路を **target** の OS・arch から選ぶように `platform_f16_path(platform, target, cpu)` と
-  `Platform::os_name` を足した（cross では host の CPU 機能を使わない）。限界: x86-64 の `Conversions`・`Hardware` と、Linux・Windows の AArch64 は機械語の確認までで、実行は未確認
-  （AVX512-FP16 の算術は標準の runner に CPU がなく、機械語の確認のまま）。速度の主張は macOS arm64 だけ。
+  `Platform::os_name` を足した（cross では host の CPU 機能を使わない）。確かめた範囲: 結果のビットは `targets.yml` の `f16 paths` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で
+  参照と照合した（2,707,485 件。PR #22 の CI で、AArch64 は `hardware`、x86-64 は `generic=soft,native=conversions`）。限界: AVX512-FP16 の算術は標準の runner に CPU がなく、Windows は job がなく、
+  どちらも機械語の確認のまま。速度の主張は macOS arm64 だけ。
 - D11（`const def` と静的データ）: `const` は `def` の署名だけに付け、`fn`・`and`・`let` は継承する。評価器は Rust の再帰を使わない明示スタックの `Machine`
   （`src/const_machine.rs`・`const_rules.rs`・`const_static.rs`）で、D06 の予算（`remaining` 1<<20）と `MAX_NESTING`（128）を共有し、どの上限も上げていない。`Type` と `TypedExprKind` は
   `_ =>` を使わずに全 variant を振り分け、固定長配列 `[T; N]`・`string`・`utf8string` の走査を足した。`@checked`・`|>`・集成体への演算子・`@cpu`・`@literal` は拒否する。

@@ -181,7 +181,7 @@ $"{sum}:{root}:{clipped}:{shown}"
 3.75:1.5:65504:nan
 ```
 
-速度は Apple M1 Max（macOS arm64）でだけ測りました。ソフトウェア実装に比べて約 330〜1,480 倍速く、C の `_Float16` と比べると 1.4〜4.5 倍かかります（`nan` のビットをそろえる補正が主な費用です）。条件と数値は[性能測定](../../../docs/benchmarks.md#f16-のハードウェア経路d10)にあります。x86-64 の `--cpu native` と、Linux・Windows の AArch64 は、生成した機械語の確認と、同じ命令列を macOS で実行した照合までで、その CPU では実行していません。AVX512-FP16 の命令は実機で実行していません。
+速度は Apple M1 Max（macOS arm64）でだけ測りました。ソフトウェア実装に比べて約 330〜1,480 倍速く、C の `_Float16` と比べると 1.4〜4.5 倍かかります（`nan` のビットをそろえる補正が主な費用です）。条件と数値は[性能測定](../../../docs/benchmarks.md#f16-のハードウェア経路d10)にあります。x86-64 の `--cpu native`（F16C）と Linux の AArch64 は、CI の runner（Linux x86-64、Intel Mac、Linux arm64）で結果のビットを参照と照合しましたが、速度は測っていません。Windows と AVX512-FP16 の命令は、生成した機械語の確認までで、その環境では実行していません。
 
 `Math.sin` や `Math.exp` などの超越関数は、`f32` と `f64` だけです（`Elementary<'a>`）。`f16`、`f128`、`d*` に渡すと `E1005`（`no instance for Elementary<f16>` など）です。これらの超越関数は、ホストの libm ではなく同梱の musl を使います。`f16` の四則演算が musl なわけではありません。
 

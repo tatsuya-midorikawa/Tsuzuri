@@ -109,7 +109,7 @@ ticket の停止条件はどれも起きなかった。hardware の結果は sof
 独立したコードレビューの指摘のうち、Medium 2 件と Low 3 件を、3 つのコミットで直した。コードの修正は、先にテストが失敗することを確かめた。
 
 - `--cpu native` で F16C の host の x86-64 は、f16 を使わないプログラムの `@cpu` の版にも `+f16c`（`Hardware` では `+avx512fp16`）を足していた。f16 を使わないプログラムが旧コンパイラと同じでなくなり、SSE4.2 の版が AVX の命令を持ちうる。版の本体に `half` の命令があるときだけ足すようにし（`uses_half`）、`half_add` という名前だけの関数と、f16 を使わない版が「その水準の特徴だけ」であることを `tests/f16_hardware.rs` で検査した。`uses_half` を外すと、このテストは `+avx2,+f16c` で失敗する。
-- 文書が、実在しない CI がこの検査を実行するかのように書いていた。CI の workflow は `tests/f16_hardware.mjs` を実行しない。README・`docs/architecture.md`・`languages/strategy.md` を、その環境で実行して確かめる、に直した。
+- 文書が、実在しない CI がこの検査を実行するかのように書いていた。この時点の CI の workflow は `tests/f16_hardware.mjs` を実行しなかった。README・`docs/architecture.md`・`languages/strategy.md` を、その環境で実行して確かめる、に直した（4 チケットの統合で `targets.yml` の `f16 paths` が 4 つの runner で実行するようになり、文書はその結果に直した）。
 - `basic-types.md` に「`f16` のハードウェア経路は計画中です」が残っていた。`f16` の計算の経路への参照に直した。
 - ベンチマークの C の host が、`assert` の中で `clock_gettime` と C の kernel を呼んでいた（`NDEBUG` で消える）。C の行に Tsuzuri の checksum を出してもいた。検査を `assert` でないものにし、各実装が自分の checksum を出す。
 - 速度の比（C に対して 1.4〜4.4 倍）を、生データに合わせて 1.4〜4.5 倍に直した。NaN の置き換えを外した試作の測定は、コミットも生データの保存もしていないので、1 回ずつの測定と書いた。
@@ -128,8 +128,8 @@ hardware は soft の約 330〜1,480 倍速く、C の `_Float16` の 1.4〜4.5 
 
 ## 既知の限界
 
-- 実行して確かめたのは macOS arm64 だけ。x86-64 の F16C と AVX512-FP16、Linux と Windows の AArch64 は、機械語の確認までで、その CPU での実行はしていない。FEAT_FP16 のない AArch64 の lowering は、同じ命令列を M1 の `-mcpu=generic` で実行して照合した。AVX512-FP16 の演算はどの host でも実行していない。
-- F16C だけの x86-64 の演算は `Soft`。`half` の演算を F16C だけで下げると、演算ごとに `f32` を挟んだライブラリ関数なしの機械語になり、理論上は正確だが、x86-64 で実行して確かめていないので有効にしていない。`f16_path_with` の x86-64 の規則の 1 行で有効にできる。
+- 実行して確かめたのは、手元の macOS arm64 と、PR #22 の CI の 4 つの runner（macOS arm64、Intel Mac の F16C、Linux x86-64 の F16C、Linux arm64 の Neoverse）。runner は `tests/f16_hardware.mjs` の 2,707,485 件を、期待した経路（`TSUZURI_F16_EXPECT`。AArch64 は `hardware`、x86-64 は `generic=soft,native=conversions`）で参照とビットまで照合した。速度は手元の macOS arm64 だけで測った。AVX512-FP16 の算術と Windows は機械語の確認までで、その CPU での実行はしていない。FEAT_FP16 のない AArch64 の lowering は、同じ命令列を M1 の `-mcpu=generic` で実行して照合した。
+- F16C だけの x86-64 の演算は `Soft`（3 段階の設計の `Conversions` は変換だけ）。`half` の演算を F16C だけで下げると、演算ごとに `f32` を挟んだライブラリ関数なしの機械語になり、理論上は正確だが、速度を測っておらず有効にしていない。有効にするなら `f16_path_with` の x86-64 の規則 1 行と、CI の `matrix.f16`（x86-64 の runner）の期待を変える。
 - NaN のビットをソフトウェア実装とそろえる費用（C の `_Float16` の 1.4〜4.5 倍）は、NaN の符号とペイロードを仕様から外せば消える見込みだが、経路ごとに NaN のビットが変わる。この判断は仕様の側に残してある（旧 D3 のまま）。
 - `Math.fma`、`min`・`max`・`clamp`、丸め系、整数・f128・decimal との変換、定数評価は、どの経路でもソフトウェア実装。f16 の SIMD 型はない。
 - `Cargo.toml` の `rust-version = "1.85"` は、let 連鎖（1.88）を使う既存のコードですでに実態とずれている。`is_x86_feature_detected!("avx512fp16")` は rustup の stable 1.96.1 で x86-64 向けに型検査できることを確かめたが、それより古い Rust では確かめていない。

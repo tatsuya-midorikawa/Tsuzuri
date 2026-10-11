@@ -1962,7 +1962,7 @@ fadd    h1, h2, h1     ; 積と要素の和
 
 NaN のビット（符号とペイロード）を言語の仕様から外せば、置き換えは要らなくなり、上の試作のとおり `f16` は C と同じ時間になる見込みです（この実装では測っていません）。ただし、`f16` の NaN のビットが、経路（WASM のソフトウェア経路と native の `half` 命令）で違うことになります。この費用に値するかは、仕様の判断として残してあり、この実装では変えていません（既存の `f32` と `f64` の NaN のビットは、すでにハードウェア依存です）。
 
-測っていないもの: x86-64（F16C と AVX512-FP16 のどちらも）、Linux と Windows の AArch64、FEAT_FP16 のない CPU の実機（promoted は、その形の命令列を M1 で実行しただけです）、M1 以外の Apple Silicon、ほかの `-O` と `--cpu native`、wasm32（常にソフトウェア経路で、この変更の対象外）。runner は `clock_gettime` のある POSIX の環境なら x86-64 などでも動くはずですが（macOS arm64 以外では実行していません）、hardware は既定の `--cpu generic` の経路（x86-64 ではソフトウェア）で、`--cpu native` の x86-64 の経路は測れません。この節の数値を、それらの機械の性能として扱わないでください。
+測っていないもの: x86-64（F16C と AVX512-FP16 のどちらも）、Linux と Windows の AArch64、FEAT_FP16 のない CPU の実機（promoted は、その形の命令列を M1 で実行しただけです）、M1 以外の Apple Silicon、ほかの `-O` と `--cpu native`、wasm32（常にソフトウェア経路で、この変更の対象外）。runner は `clock_gettime` のある POSIX の環境なら x86-64 などでも動くはずですが（macOS arm64 以外では実行していません）、hardware は既定の `--cpu generic` の経路（x86-64 ではソフトウェア）で、`--cpu native` の x86-64 の経路は測れません。この節の数値を、それらの機械の性能として扱わないでください。CI の runner（Intel Mac・Linux x86-64・Linux arm64）は `tests/f16_hardware.mjs` で結果のビットを照合するだけで、速度は測りません（共有の runner に速度の合否の閾値は置きません）。
 
 ## 静的データ（D11 Phase 2）
 
