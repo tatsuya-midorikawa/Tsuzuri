@@ -206,7 +206,7 @@ pub(crate) const NET_ASYNC_MESSAGE: &str = "the Net async operations (connect_as
 pub(crate) fn os_message(platform: Platform) -> String {
     match platform.triple() {
         Some(triple) if !platform.windows() => format!(
-            "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS and Linux",
+            "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
             triple.name()
         ),
         _ => OS_WINDOWS_MESSAGE.to_owned(),
@@ -4051,7 +4051,7 @@ fn run_process(
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|error| io_error("run executable", &output, error))?;
+                .map_err(|error| spawn_error(runner.as_ref(), &output, error))?;
             let mut stderr = Vec::new();
             let stream = child.stderr.take().expect("stderr is piped");
             if let Err(error) = relay(stream, &mut stderr, !json) {
@@ -4159,7 +4159,7 @@ fn capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| io_error("run executable", output, error))?;
+        .map_err(|error| spawn_error(runner, output, error))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let (sender, receiver) = channel();
     let stdout = child.stdout.take().expect("stdout is piped");
@@ -4310,6 +4310,19 @@ pub(crate) fn program_command(runner: Option<&ForeignRunner>, executable: &Path)
             command
         }
         None => Command::new(executable),
+    }
+}
+
+/// The error for a [`program_command`] that did not start: the runner, if there is one, is the
+/// program that could not be found or run.
+fn spawn_error(runner: Option<&ForeignRunner>, executable: &Path, error: io::Error) -> Diagnostic {
+    match runner {
+        Some(runner) => io_error(
+            &format!("start the runner of {}", crate::target::RUNNER_VARIABLE),
+            Path::new(&runner.program),
+            error,
+        ),
+        None => io_error("run executable", executable, error),
     }
 }
 

@@ -221,7 +221,7 @@ fn main() -> ExitCode {
     };
     // Zig 0.16.0 crashes while linking on ARM64 Windows hosts, so that bundle ships llvm-mingw.
     let mut command = if cfg!(all(windows, target_arch = "aarch64")) && !request.wasm {
-        if !request.llvm.starts_with("aarch64-") {
+        if !(request.llvm.starts_with("aarch64-") && request.llvm.ends_with("-windows-gnu")) {
             if let Some(directory) = temporary {
                 let _ = fs::remove_dir_all(directory);
             }

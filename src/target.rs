@@ -532,10 +532,15 @@ impl Platform {
     }
 
     /// Whether `src/runtime/os.c` has an implementation for the target: POSIX with the headers of
-    /// macOS and Linux. Windows waits for G10, and the iOS SDK has no `sys/random.h`.
+    /// macOS, Linux, and FreeBSD. Windows waits for G10, the iOS SDK has no `sys/random.h`, and
+    /// Bionic has `getentropy` and `posix_spawn` only from API 28, above the API level of the
+    /// Android targets.
     pub const fn os_apis(self) -> bool {
         match self.0 {
-            Some(triple) => !matches!(triple.os(), Os::Windows | Os::Ios | Os::BareMetal),
+            Some(triple) => !matches!(
+                triple.os(),
+                Os::Windows | Os::Ios | Os::Android | Os::BareMetal
+            ),
             None => !cfg!(windows),
         }
     }
@@ -826,7 +831,7 @@ mod tests {
             );
         }
         // The socket and reactor runtimes are written for macOS, Linux, and Windows, and the
-        // operating-system runtime for everything POSIX except iOS.
+        // operating-system runtime for everything POSIX except iOS and Android.
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             assert_eq!(
@@ -838,7 +843,10 @@ mod tests {
             assert_eq!(platform.reactor(), platform.net());
             assert_eq!(
                 platform.os_apis(),
-                !matches!(triple.os(), Os::Windows | Os::Ios | Os::BareMetal),
+                !matches!(
+                    triple.os(),
+                    Os::Windows | Os::Ios | Os::Android | Os::BareMetal
+                ),
                 "{}",
                 triple.name()
             );

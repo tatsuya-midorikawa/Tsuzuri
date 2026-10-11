@@ -383,7 +383,10 @@ try {
   writeFileSync(join(os, "Main.tz"), 'def main :: unit -> i32 = \\() ->\n    let! home = Env.var "HOME"\n    0\n');
   error = failure(["build", os, "--target", "aarch64-apple-ios", "--no-cache", "-o", join(work, "os-ios")]);
   assert.deepEqual([error.status, error.code], [1, "E2002"]);
-  assert.match(error.message, /not available for aarch64-apple-ios: src\/runtime\/os\.c is written for the headers of macOS and Linux/);
+  assert.match(error.message, /not available for aarch64-apple-ios: src\/runtime\/os\.c is written for the headers of macOS, Linux, and FreeBSD/);
+  error = failure(["build", os, "--target", "aarch64-linux-android", "--no-cache", "-o", join(work, "os-android")]);
+  assert.deepEqual([error.status, error.code], [1, "E2002"]);
+  assert.match(error.message, /not available for aarch64-linux-android/);
   error = failure(["build", os, "--target", "x86_64-pc-windows-gnu", "--no-cache", "-o", join(work, "os-windows")]);
   assert.match(error.message, /not supported on Windows yet \(G10\)/);
   // A freestanding object of a bare-metal target links no C library.

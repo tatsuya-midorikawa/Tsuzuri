@@ -686,6 +686,22 @@ fn a_foreign_target_runs_through_the_runner_and_only_then() {
         .unwrap();
     assert_eq!(blank.status.code(), Some(1));
     assert_eq!(setup.log(), "");
+    // A runner that does not exist is named in the error, not the program it was to start.
+    let missing = setup
+        .command(&["run", "--no-cache", "--target", triple.name()])
+        .env("TSUZURI_RUNNER", "/no/such/runner --flag")
+        .output()
+        .unwrap();
+    let (_, stderr) = text(&missing);
+    assert_eq!(missing.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("cannot start the runner of TSUZURI_RUNNER '/no/such/runner': "),
+        "{stderr}"
+    );
+    // The program was built, and nothing was started.
+    assert!(setup.log().starts_with("clang "), "{}", setup.log());
+    assert!(!setup.log().contains("runner "), "{}", setup.log());
+    fs::remove_file(&setup.log).unwrap();
     // With one, the program is built for the target, cross-linked, and started through the runner.
     let output = setup
         .command(&["run", "--no-cache", "--target", triple.name()])
@@ -879,9 +895,12 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
             text(&output).1
         };
         if name == "os" {
-            assert!(message(Triple::Aarch64AppleIos).contains(
-                "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for aarch64-apple-ios: src/runtime/os.c is written for the headers of macOS and Linux"
-            ));
+            for triple in [Triple::Aarch64AppleIos, Triple::X86_64LinuxAndroid] {
+                assert!(message(triple).contains(&format!(
+                    "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
+                    triple.name()
+                )));
+            }
             assert!(message(Triple::X86_64WindowsGnu).contains(
                 "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10)"
             ));
