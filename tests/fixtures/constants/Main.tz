@@ -59,3 +59,32 @@ fn captured_values =
     let answer = match Pair with | (left, right) -> left + right
     assert (read () == answer)
     answer
+
+const NanSumHalf: f16 = (-1.0f16 / 0.0f16) + (1.0f16 / 0.0f16)
+const NanProductHalf: f16 = -0.0f16 * (1.0f16 / 0.0f16)
+const NanQuotientHalf: f16 = -0.0f16 / 0.0f16
+const NanFlippedHalf: f16 = NanSumHalf * -1.0f16
+const NanSumWide: f128 = (-1.0f128 / 0.0f128) + (1.0f128 / 0.0f128)
+const NanFlippedWide: f128 = NanSumWide * -1.0f128
+
+def half_sign :: f16 -> i64
+fn half_sign value = if Math.copysign 1.0f16 value < 0.0f16 then 1 else 0
+
+def wide_sign :: f128 -> i64
+fn wide_sign value = if Math.copysign 1.0f128 value < 0.0f128 then 1 else 0
+
+def half_zero :: unit -> f16
+fn half_zero _ = 0.0f16
+
+def wide_zero :: unit -> f128
+fn wide_zero _ = 0.0f128
+
+export def nan_signs :: i64
+fn nan_signs =
+    let compile_time = half_sign NanSumHalf + 2 * half_sign NanProductHalf + 4 * half_sign NanQuotientHalf + 8 * half_sign NanFlippedHalf + 16 * wide_sign NanSumWide + 32 * wide_sign NanFlippedWide
+    let sum = (-1.0f16 / half_zero ()) + (1.0f16 / half_zero ())
+    let product = -half_zero () * (1.0f16 / half_zero ())
+    let quotient = -half_zero () / half_zero ()
+    let wide_sum = (-1.0f128 / wide_zero ()) + (1.0f128 / wide_zero ())
+    let run_time = half_sign sum + 2 * half_sign product + 4 * half_sign quotient + 8 * half_sign (sum * -1.0f16) + 16 * wide_sign wide_sum + 32 * wide_sign (wide_sum * -1.0f128)
+    compile_time * 100 + run_time

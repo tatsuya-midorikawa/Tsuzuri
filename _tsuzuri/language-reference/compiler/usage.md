@@ -520,12 +520,12 @@ note: version 1.3.0 is compatible with 1.2.0, so registry dependents that accept
 | 変更 | 分類 |
 | --- | --- |
 | 公開宣言の削除（`private` にした場合を含む） | breaking |
-| 署名の変更（型、制約、region、型パラメーター、`export` の取り消し） | breaking |
+| 署名の変更（型、制約、region、型パラメーター、`export` と `const`（`const def`）の取り消し） | breaking |
 | record の field の追加、削除、型・`mut`・`@json` の変更、並べ替え | breaking |
 | union の case の追加、削除、ペイロードや `@json` の変更、並べ替え | breaking |
 | class のメソッドの追加（既定の実装なし）、削除、署名の変更、既定の実装の削除、superclass の変更 | breaking |
 | `deriving` の削除、`instance` の削除と変更 | breaking |
-| 宣言の追加、`export` の追加、`instance` の追加、`deriving` の追加 | non-breaking |
+| 宣言の追加、`export` の追加、`def` を `const def` にすること、`instance` の追加、`deriving` の追加 | non-breaking |
 | class のメソッドの追加（既定の実装あり）、既定の実装の追加 | non-breaking |
 | 説明（`///`）の変更、`@deprecated` の追加と削除 | non-breaking |
 

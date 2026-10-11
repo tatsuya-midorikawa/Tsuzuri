@@ -1,6 +1,7 @@
 use super::*;
 use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use rustc_apfloat::{Float, FloatConvert};
+use std::rc::Rc;
 
 #[path = "const_machine.rs"]
 mod machine;
@@ -87,6 +88,103 @@ pub(super) fn validate(
     }
 }
 
+/// What the body of a function names, in the order a walk of it meets the names: a constant, with
+/// the span of its use, or a `const def`.
+#[derive(Clone, Copy)]
+enum Named {
+    Constant(usize, Span),
+    ConstDef(usize),
+}
+
+/// The names in the body of `function`, not following the `const def`s it names: a constant that
+/// the body calls is not walked into (its own initializer is a node of the dependency graph), and a
+/// `const def` is a name of the body, expanded where it is first met by [`ConstDefWalk`].
+fn named_in(
+    functions: &[CheckedFunction],
+    constants: &BTreeSet<usize>,
+    const_functions: &BTreeSet<usize>,
+    function: usize,
+) -> Vec<Named> {
+    let mut names = Vec::new();
+    let mut expressions = vec![&functions[function].body];
+    while let Some(expression) = expressions.pop() {
+        if let Some(dependency) = constant_id(expression).filter(|id| constants.contains(id)) {
+            names.push(Named::Constant(dependency, expression.span));
+            continue;
+        }
+        if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
+            && const_functions.contains(&callee)
+        {
+            names.push(Named::ConstDef(callee));
+        }
+        expressions.extend(expression.children());
+    }
+    names
+}
+
+/// The names that the initializer of one constant reaches, directly and through the `const def`s
+/// it names, with each `const def` expanded once, where it is first met: the order in which a walk
+/// of the initializer that goes into each `const def` as it meets it would find them. The names of
+/// one function are walked once, however many constants reach it, and the walk keeps no Rust stack
+/// of its own depth.
+struct ConstDefWalk<'a> {
+    functions: &'a [CheckedFunction],
+    constants: &'a BTreeSet<usize>,
+    const_functions: &'a BTreeSet<usize>,
+    names: BTreeMap<usize, Rc<Vec<Named>>>,
+}
+
+impl<'a> ConstDefWalk<'a> {
+    fn new(
+        functions: &'a [CheckedFunction],
+        constants: &'a BTreeSet<usize>,
+        const_functions: &'a BTreeSet<usize>,
+    ) -> Self {
+        Self {
+            functions,
+            constants,
+            const_functions,
+            names: BTreeMap::new(),
+        }
+    }
+
+    fn names_of(&mut self, function: usize) -> Rc<Vec<Named>> {
+        if let Some(names) = self.names.get(&function) {
+            return Rc::clone(names);
+        }
+        let names = Rc::new(named_in(
+            self.functions,
+            self.constants,
+            self.const_functions,
+            function,
+        ));
+        self.names.insert(function, Rc::clone(&names));
+        names
+    }
+
+    /// Calls `visit` with each name that the body of `root` reaches, in order; `visit` gets the
+    /// `const def` that was expanded to find a name too, so that it can see the edge.
+    fn walk(&mut self, root: usize, mut visit: impl FnMut(Named)) {
+        let mut scanned = BTreeSet::new();
+        let mut frames = vec![(self.names_of(root), 0)];
+        while let Some((names, index)) = frames.pop() {
+            let Some(&named) = names.get(index) else {
+                continue;
+            };
+            frames.push((names, index + 1));
+            match named {
+                Named::Constant(..) => visit(named),
+                Named::ConstDef(callee) => {
+                    if scanned.insert(callee) {
+                        visit(named);
+                        frames.push((self.names_of(callee), 0));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The `const def`s that each constant's initializer reaches, directly or through other `const
 /// def`s, as (constant, `const def`) pairs. `fold` replaces the initializers by their values, so
 /// the unused-private-function warning takes these edges from here.
@@ -96,19 +194,13 @@ pub(super) fn const_def_uses(
     const_functions: &BTreeSet<usize>,
 ) -> Vec<(usize, usize)> {
     let mut uses = Vec::new();
+    let mut walk = ConstDefWalk::new(functions, constants, const_functions);
     for &constant in constants {
-        let mut scanned = BTreeSet::new();
-        let mut expressions = vec![&functions[constant].body];
-        while let Some(expression) = expressions.pop() {
-            if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
-                && const_functions.contains(&callee)
-                && scanned.insert(callee)
-            {
+        walk.walk(constant, |named| {
+            if let Named::ConstDef(callee) = named {
                 uses.push((constant, callee));
-                expressions.push(&functions[callee].body);
             }
-            expressions.extend(expression.children());
-        }
+        });
     }
     uses
 }
@@ -131,6 +223,7 @@ pub(super) fn fold(
         constants,
         const_functions,
         types: *types,
+        walk: ConstDefWalk::new(functions, constants, const_functions),
         values: BTreeMap::new(),
         active: BTreeSet::new(),
         references: 0,
@@ -336,6 +429,7 @@ struct Evaluator<'a> {
     constants: &'a BTreeSet<usize>,
     const_functions: &'a BTreeSet<usize>,
     types: TypeContext<'a>,
+    walk: ConstDefWalk<'a>,
     values: BTreeMap<usize, Value>,
     active: BTreeSet<usize>,
     references: usize,
@@ -371,23 +465,11 @@ impl Evaluator<'_> {
                 pending.push((id, true, depth, span));
                 // The constants that the initializer names, and those that the `const def`s it
                 // calls, or passes by name as in `new [T](n, f)`, name in turn.
-                let mut expressions = vec![&self.functions[id].body];
-                let mut scanned = BTreeSet::new();
-                while let Some(expression) = expressions.pop() {
-                    if let Some(dependency) =
-                        constant_id(expression).filter(|id| self.constants.contains(id))
-                    {
-                        pending.push((dependency, false, depth + 1, expression.span));
-                        continue;
+                self.walk.walk(id, |name| {
+                    if let Named::Constant(dependency, span) = name {
+                        pending.push((dependency, false, depth + 1, span));
                     }
-                    if let TypedExprKind::Function(FunctionRef::User(callee)) = expression.kind
-                        && self.const_functions.contains(&callee)
-                        && scanned.insert(callee)
-                    {
-                        expressions.push(&self.functions[callee].body);
-                    }
-                    expressions.extend(expression.children());
-                }
+                });
             }
         }
         Ok(())
@@ -616,6 +698,25 @@ fn float_binary<Binary: Float>(
                 "unsupported const floating-point operation; use a runtime let",
             ));
         }
+    };
+    // The 16- and 128-bit arithmetic of the program (`tz_soft_op` in numeric.c) answers an invalid
+    // operation or a NaN operand with the canonical quiet NaN, signed by the left operand for `+` and
+    // `-` and by the product of the signs for `*` and `/`. APFloat keeps the operand's own NaN or
+    // makes a positive one, which `Math.copysign` could tell apart, so a constant takes the rule of
+    // the program. `f32` and `f64` use the machine's instructions, whose NaN signs differ between
+    // machines, so a constant of those types is only specified up to NaN.
+    let value = if matches!(Binary::BITS, 16 | 128) && value.is_nan() {
+        let negative = match operator {
+            BinaryOp::Add | BinaryOp::Subtract => left.is_negative(),
+            _ => left.is_negative() != right.is_negative(),
+        };
+        if negative {
+            -Binary::qnan(None)
+        } else {
+            Binary::qnan(None)
+        }
+    } else {
+        value
     };
     Ok(TypedExprKind::Float(float_text(
         value.to_bits(),

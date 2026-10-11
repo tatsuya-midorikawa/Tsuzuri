@@ -214,6 +214,8 @@ struct Item {
     header: String,
     shown: String,
     exported: bool,
+    /// A `const def`, which a `const` initializer of another module may call.
+    constant: bool,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -238,6 +240,7 @@ impl Item {
             shown: header.clone(),
             header,
             exported: false,
+            constant: false,
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -251,13 +254,17 @@ impl Item {
         self
     }
 
-    /// The declaration as `tsuzuri doc` shows it, with `export` in front for an export.
+    /// The declaration as `tsuzuri doc` shows it, with `export` and `const` in front where it has them.
     fn text(&self) -> String {
+        let mut text = String::new();
         if self.exported {
-            format!("export {}", self.shown)
-        } else {
-            self.shown.clone()
+            text.push_str("export ");
         }
+        if self.constant {
+            text.push_str("const ");
+        }
+        text.push_str(&self.shown);
+        text
     }
 }
 
@@ -577,6 +584,7 @@ fn add_items(module: &str, program: &Program, items: &mut Items, canonical: bool
         let mut item =
             Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
+        item.constant = declaration.constant;
         add(item);
     }
     for declaration in externs {
@@ -975,9 +983,12 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
 
 /// The changes between two versions of an item with the same name and kind.
 fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
-    if old.header != new.header || old.exported != new.exported {
-        // Exporting what was not exported adds a symbol and changes nothing else.
-        let widened = old.header == new.header && !old.exported && new.exported;
+    if old.header != new.header || old.exported != new.exported || old.constant != new.constant {
+        // Exporting what was not exported, or making a def a const def, adds a symbol or a use
+        // and changes nothing else; revoking either breaks the code that relied on it.
+        let widened = old.header == new.header
+            && old.exported <= new.exported
+            && old.constant <= new.constant;
         changes.push(Change {
             breaking: !widened,
             action: Action::Changed,

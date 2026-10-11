@@ -93,7 +93,7 @@ edition ごとに std を複製することはしません。型と instance が
 
 `tsuzuri api-diff OLD NEW [--json]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると、終了コードは 1 です。使い方と出力は [コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
 
-- 互換性のない変更: 公開宣言の削除、署名の変更（型、制約、region、`export` の取り消し）、record への field の追加（構築式が壊れます）、union への case の追加（網羅的な `match` が壊れます）、既定のない class メソッドの追加、`deriving` の削除。
+- 互換性のない変更: 公開宣言の削除、署名の変更（型、制約、region、`export` と `const`（`const def`）の取り消し。別のモジュールの `const` の初期化式が `const def` を呼べるので、`const` を外すとそれが壊れます）、record への field の追加（構築式が壊れます）、union への case の追加（網羅的な `match` が壊れます）、既定のない class メソッドの追加、`deriving` の削除。
 - 互換性を保つ変更: 宣言の追加、説明の変更、`@deprecated` の追加、`export` の追加。
 
 比べるのは宣言の署名の文字列です。関数の本体の挙動、性能、型エイリアスの展開結果、所有権の意味の変更は見つけられません。`tsuzuri publish` は `api-diff` を呼びません。公開の前に、前の版のチェックアウトと比べてください。

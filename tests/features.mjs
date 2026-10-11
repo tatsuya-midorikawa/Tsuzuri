@@ -760,6 +760,13 @@ const suites = {
       ["borrowed_values", [], 8n], ["float_values", [], 1],
       ["repeat_values", [100000n], 600000n], ["captured_values", [], 42n],
       ["wide_values", [], 1], ["float_reference", [1.0009765625, 0.00048828125], 1],
+      // The runtime rule for a NaN result of f16 and f128 arithmetic (tz_soft_op in numeric.c): `+` takes the
+      // sign of the left operand, `*` and `/` the xor of both signs. A constant must agree with the program.
+      ["nan_signs", [], (() => {
+        const sum = 1, product = 1 ^ 0, quotient = 1 ^ 0, flipped = sum ^ 1;
+        const signs = sum + 2 * product + 4 * quotient + 8 * flipped + 16 * sum + 32 * flipped;
+        return BigInt(signs * 100 + signs);
+      })()],
     ],
   },
   // D11 Phase 1: every expected value is computed here, not copied from the compiler.

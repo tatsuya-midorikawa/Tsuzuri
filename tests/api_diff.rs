@@ -110,6 +110,27 @@ fn defs_are_removed_added_or_changed() {
 }
 
 #[test]
+fn const_def_is_part_of_the_signature() {
+    // A `const` initializer of another module may call a const def, so dropping `const` breaks it,
+    // while making a def a const def only adds a use. The body is not part of the API.
+    let constant = "const def f :: i64 -> i64\nfn f x = x * 2\n";
+    let plain = "def f :: i64 -> i64\nfn f x = x * 2\n";
+    check(constant, plain, &["breaking changed def Main.f"]);
+    check(plain, constant, &["non-breaking changed def Main.f"]);
+    check(constant, "const def f :: i64 -> i64\nfn f x = x + x\n", &[]);
+    check(
+        "export const def f :: i64 -> i64\nfn f x = x\n",
+        "export def f :: i64 -> i64\nfn f x = x\n",
+        &["breaking changed def Main.f"],
+    );
+    check(
+        "def f :: i64 -> i64\nfn f x = x\n",
+        "export const def f :: i64 -> i64\nfn f x = x\n",
+        &["non-breaking changed def Main.f"],
+    );
+}
+
+#[test]
 fn names_of_variables_and_regions_and_the_shape_of_the_lambda_do_not_matter() {
     let old = "\
 def a :: 'x -> 'y -> 'x = \\p q -> p
