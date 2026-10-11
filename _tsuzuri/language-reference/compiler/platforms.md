@@ -16,7 +16,7 @@
 ```sh
 # 同梱ツールチェーンで、arm64 Linux 向けの静的な実行ファイルを作る
 tsuzuri build app --target aarch64-unknown-linux-musl -o app-linux-arm64
-# Intel Mac 向けのオブジェクトを作る
+# Intel Mac 向けのオブジェクトを作る（同梱ツールチェーンでは、ランタイムを要しないプログラムだけ）
 tsuzuri build lib --target x86_64-apple-darwin --emit object -o lib.o
 ```
 
@@ -100,7 +100,7 @@ Windows の target は、この表の job では実行しません。Windows の
 
 メッセージは [診断](#診断) にあります。
 
-`-g` のデバッグ情報は、Mach-O の実行ファイルと共有ライブラリの dSYM を `dsymutil` が、MSVC の実行ファイルの PDB を MSVC のリンカーが作るので、それぞれ macOS と Windows のホストだけです。ほかのホストで付けると `E2000` です。オブジェクトと LLVM IR の DWARF は、どのホストでも出ます。
+`-g` のデバッグ情報は、Mach-O の実行ファイルと共有ライブラリの dSYM を `dsymutil` が、MSVC の実行ファイルの PDB を MSVC のリンカーが作るので、それぞれ macOS と Windows のホストだけです。ほかのホストで付けると `E2000` です。オブジェクトと LLVM IR の DWARF は、どのホストでも出ます。MSVC の target は、それに CodeView も付けます（同梱の `tsuzuri-clang` は MinGW でリンクするので DWARF だけです）。
 
 ## 実行ファイルをリンクする
 
@@ -169,6 +169,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - `Math.fma` は、AArch64 の target ではハードウェアの命令、それ以外では正しく丸めるソフトウェアのルーチンです。結果のビットは同じです。
 - `--cpu native` は、ビルド機の命令セットで最適化します。別の target には使えず、`'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to <triple>` の `E2000` です。
 - WGSL と SPIR-V の出力は、`--target` と併用できません。
+- MSVC の target は、COFF のオブジェクトに作った時刻が入らないよう、Clang に `-mno-incremental-linker-compatible` を渡します。同じ入力から同じオブジェクトができます（Windows のホストの `--target native` は、これまでどおり渡しません）。
 
 ## 診断
 

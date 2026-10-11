@@ -261,7 +261,7 @@ flowchart TD
 
 `node` は PATH だけです。WASM テスト用の環境変数はありません。
 
-`--target TRIPLE` には、ツールの名前ではない変数が 2 つあります。どちらも `--target native` では読みません。
+`--target TRIPLE` には、ツールの名前ではない変数が 2 つあります。どちらも `--target native` の出力には効きません（`TSUZURI_SYSROOT` は、値が違えば別のキャッシュエントリになるだけです）。
 
 | 変数 | 意味 |
 | --- | --- |
