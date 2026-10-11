@@ -928,6 +928,13 @@ fn f16_cpu_flags(arch: &str, path: llvm::F16Path) -> &'static [&'static str] {
     }
 }
 
+/// The Clang options of the IR of a `--cpu native` build: the CPU, and what its f16 path needs.
+fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str>, Diagnostic> {
+    let mut args = vec![native_cpu_flag(arch)?];
+    args.extend_from_slice(f16_cpu_flags(arch, f16));
+    Ok(args)
+}
+
 /// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
 /// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim.
 pub(crate) fn task_runtime_source() -> String {
@@ -3189,8 +3196,7 @@ fn build_complete(
         } else {
             clang.args(native_compile_args(cfg!(windows), env::consts::ARCH));
             if options.cpu == Cpu::Native {
-                clang.arg(native_cpu_flag(env::consts::ARCH)?);
-                clang.args(f16_cpu_flags(env::consts::ARCH, f16));
+                clang.args(native_ir_cpu_args(env::consts::ARCH, f16)?);
             }
         }
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
@@ -5242,6 +5248,24 @@ mod tests {
         for path in [Soft, Conversions, Hardware] {
             assert_eq!(f16_cpu_flags("aarch64", path), &[] as &[&str]);
         }
+        // The Clang options of the IR of a native build: the CPU first, then the instructions.
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Conversions).unwrap(),
+            ["-march=native", "-mf16c"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Hardware).unwrap(),
+            ["-march=native", "-mavx512fp16", "-mf16c"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("x86_64", Soft).unwrap(),
+            ["-march=native"]
+        );
+        assert_eq!(
+            native_ir_cpu_args("aarch64", Hardware).unwrap(),
+            ["-mcpu=native"]
+        );
+        assert!(native_ir_cpu_args("riscv64", Soft).is_err());
         // Every path that a `--cpu native` build can pick on x86-64 has the flags it needs.
         for host in [
             CpuFeatures::default(),

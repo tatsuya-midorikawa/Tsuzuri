@@ -19,12 +19,13 @@ fn features(level: u8) -> &'static str {
     }
 }
 
-/// The features that `half` operations need in every version, after a comma. A `target-features`
-/// attribute replaces the features the build was given, so a version would lose the instructions
-/// that its `half` operations lower to, and LLVM would call `__extendhfsf2` and `__truncsfhf2`
-/// instead (D10). AArch64 lowers `half` with base instructions at every level.
-fn f16_features(f16: F16Path) -> &'static str {
-    if !cfg!(target_arch = "x86_64") {
+/// The features that `half` operations need in a version for `level`, after a comma. A
+/// `target-features` attribute replaces the features the build was given, so a version would lose
+/// the instructions that its `half` operations lower to, and LLVM would call `__extendhfsf2` and
+/// `__truncsfhf2` instead (D10). The AArch64 levels (4 and 5) add none: `half` lowers to base
+/// instructions there.
+fn f16_features(level: u8, f16: F16Path) -> &'static str {
+    if level > 3 {
         return "";
     }
     match f16 {
@@ -275,7 +276,7 @@ fn version_at(
         text,
         name,
         &versioned(name, &suffix),
-        Some(&format!("{}{}", features(level), f16_features(f16))),
+        Some(&format!("{}{}", features(level), f16_features(level, f16))),
         &|callee, line| {
             ((callee == name || simd::holds_wide_vector(line, wide)) && has_version(callee, level))
                 .then(|| versioned(callee, &suffix))

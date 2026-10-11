@@ -231,24 +231,61 @@ const definitions = operations.map((entry) => {
   return `def op_${entry.name} :: ${[...entry.arguments, entry.result].join(" -> ")}\nfn op_${entry.name} ${parameters.join(" ")} = ${entry.source}`;
 }).join("\n");
 const irType = { f16: "i16", f32: "float", f64: "double", bool: "i1" };
+// The IR lines that call the operation on the raw 64-bit values `rawA` and `rawB` and widen its result to i64 (`%w<tag>`).
+function callLines(entry, rawA, rawB, tag) {
+  const lines = [];
+  const arguments_ = entry.arguments.map((type, index) => {
+    const raw = index === 0 ? rawA : rawB, name = `%x${tag}_${index}`;
+    if (type === "f16") lines.push(`${name} = trunc i64 ${raw} to i16`);
+    else if (type === "f32") lines.push(`${name}_bits = trunc i64 ${raw} to i32`, `${name} = bitcast i32 ${name}_bits to float`);
+    else lines.push(`${name} = bitcast i64 ${raw} to double`);
+    return `${irType[type]} ${name}`;
+  });
+  lines.push(`%r${tag} = call ${irType[entry.result]} @tz.fn.Main.op_${entry.name}(${arguments_.join(", ")})`);
+  if (entry.result === "f16") lines.push(`%w${tag} = zext i16 %r${tag} to i64`);
+  else if (entry.result === "bool") lines.push(`%w${tag} = zext i1 %r${tag} to i64`);
+  else if (entry.result === "f32") lines.push(`%b${tag} = bitcast float %r${tag} to i32`, `%w${tag} = zext i32 %b${tag} to i64`);
+  else lines.push(`%w${tag} = bitcast double %r${tag} to i64`);
+  return lines;
+}
+// `f16_run` takes triples of (operation, a, b) and switches on the operation for each; `f16_bulk` takes one operation and
+// arrays of a and b, whose loop has no switch, so that LLVM can vectorize it at -O3 (the vector lowerings of `half` are
+// the other thing to check).
 function wrapperIr() {
   const blocks = operations.map((entry) => {
-    const lines = [];
-    const arguments_ = entry.arguments.map((type, index) => {
-      const raw = index === 0 ? "%a" : "%b", name = `%x${entry.id}_${index}`;
-      if (type === "f16") lines.push(`${name} = trunc i64 ${raw} to i16`);
-      else if (type === "f32") lines.push(`${name}_bits = trunc i64 ${raw} to i32`, `${name} = bitcast i32 ${name}_bits to float`);
-      else lines.push(`${name} = bitcast i64 ${raw} to double`);
-      return `${irType[type]} ${name}`;
-    });
-    lines.push(`%r${entry.id} = call ${irType[entry.result]} @tz.fn.Main.op_${entry.name}(${arguments_.join(", ")})`);
-    if (entry.result === "f16") lines.push(`%w${entry.id} = zext i16 %r${entry.id} to i64`);
-    else if (entry.result === "bool") lines.push(`%w${entry.id} = zext i1 %r${entry.id} to i64`);
-    else if (entry.result === "f32") lines.push(`%b${entry.id} = bitcast float %r${entry.id} to i32`, `%w${entry.id} = zext i32 %b${entry.id} to i64`);
-    else lines.push(`%w${entry.id} = bitcast double %r${entry.id} to i64`);
+    const lines = callLines(entry, "%a", "%b", entry.id);
     return `case${entry.id}:\n${lines.map((line) => `  ${line}`).join("\n")}\n  br label %store`;
   });
+  const loops = operations.map((entry) => `define internal void @f16_bulk_${entry.id}(ptr %a, ptr %b, ptr %out, i64 %n) {
+entry:
+  br label %head
+head:
+  %i = phi i64 [ 0, %entry ], [ %next, %body ]
+  %done = icmp eq i64 %i, %n
+  br i1 %done, label %exit, label %body
+body:
+  %pa = getelementptr i64, ptr %a, i64 %i
+  %pb = getelementptr i64, ptr %b, i64 %i
+  %rawa = load i64, ptr %pa
+  %rawb = load i64, ptr %pb
+${callLines(entry, "%rawa", "%rawb", entry.id).map((line) => `  ${line}`).join("\n")}
+  %po = getelementptr i64, ptr %out, i64 %i
+  store i64 %w${entry.id}, ptr %po
+  %next = add i64 %i, 1
+  br label %head
+exit:
+  ret void
+}`);
   return `
+define void @f16_bulk(i32 %id, ptr %a, ptr %b, ptr %out, i64 %n) {
+entry:
+  switch i32 %id, label %bad [${operations.map((entry) => ` i32 ${entry.id}, label %bulk${entry.id}`).join("")} ]
+${operations.map((entry) => `bulk${entry.id}:\n  call void @f16_bulk_${entry.id}(ptr %a, ptr %b, ptr %out, i64 %n)\n  ret void`).join("\n")}
+bad:
+  call void @llvm.trap()
+  unreachable
+}
+${loops.join("\n")}
 define void @f16_run(ptr %input, ptr %output, i64 %count) {
 entry:
   br label %head
@@ -286,41 +323,81 @@ const host = `#include <stdint.h>
 #include <stdlib.h>
 void *f16_test_malloc(uint64_t size) { (void)size; abort(); }
 extern void f16_run(const uint64_t *input, uint64_t *output, uint64_t count);
-int main(int argc, char **argv) {
-  if (argc != 3) return 2;
-  FILE *in = fopen(argv[1], "rb");
-  if (!in || fseek(in, 0, SEEK_END)) return 3;
+extern void f16_bulk(int32_t id, const uint64_t *a, const uint64_t *b, uint64_t *out, uint64_t count);
+static uint64_t *load(const char *path, uint64_t *words) {
+  FILE *in = fopen(path, "rb");
+  if (!in || fseek(in, 0, SEEK_END)) exit(3);
   long size = ftell(in);
   rewind(in);
-  uint64_t count = (uint64_t)size / 24;
-  uint64_t *input = malloc((size_t)size + 8), *output = malloc(count * 8 + 8);
-  if (!input || !output || fread(input, 1, (size_t)size, in) != (size_t)size) return 4;
+  uint64_t *data = malloc((size_t)size + 8);
+  if (!data || fread(data, 1, (size_t)size, in) != (size_t)size) exit(4);
   fclose(in);
-  f16_run(input, output, count);
+  *words = (uint64_t)size / 8;
+  return data;
+}
+// argv: input output [bulk]. The default input is triples of (operation, a, b); a bulk input is the number of
+// operations, one count for each, the arrays of a for all operations, and the arrays of b.
+int main(int argc, char **argv) {
+  if (argc < 3) return 2;
+  uint64_t words, *input = load(argv[1], &words), *output, total;
+  if (argc == 3) {
+    total = words / 3;
+    output = malloc(total * 8 + 8);
+    f16_run(input, output, total);
+  } else {
+    uint64_t operations = input[0], *counts = input + 1;
+    total = (words - 1 - operations) / 2;
+    uint64_t *a = counts + operations, *b = a + total;
+    output = malloc(total * 8 + 8);
+    uint64_t offset = 0;
+    for (uint64_t id = 0; id < operations; id++) {
+      f16_bulk((int32_t)id, a + offset, b + offset, output + offset, counts[id]);
+      offset += counts[id];
+    }
+  }
   FILE *out = fopen(argv[2], "wb");
-  if (!out || fwrite(output, 8, count, out) != count) return 5;
+  if (!out || fwrite(output, 8, total, out) != total) return 5;
   return fclose(out) ? 6 : 0;
 }
 `;
 
 const cases = buildCases();
-const samples = new Map(operations.map((entry) => [entry.name, 0]));
-for (let index = 0; index < cases.length; index++) samples.set(operations[Number(cases.input[index * 3])].name, samples.get(operations[Number(cases.input[index * 3])].name) + 1);
-
-function check(actual, label) {
-  assert.equal(actual.length, cases.length, `${label}: ${actual.length} results for ${cases.length} cases`);
+// The same cases grouped by operation, for the bulk loops: a file of the number of operations, a count for each, the
+// arrays of a for all operations, and the arrays of b.
+const grouped = (() => {
+  const counts = new Array(operations.length).fill(0);
+  for (let index = 0; index < cases.length; index++) counts[Number(cases.input[index * 3])]++;
+  const next = counts.map((_, id) => counts.slice(0, id).reduce((sum, count) => sum + count, 0));
+  const input = new BigUint64Array(cases.length * 3), expected = new BigUint64Array(cases.length);
+  const file = new BigUint64Array(1 + operations.length + cases.length * 2);
+  file[0] = BigInt(operations.length);
+  counts.forEach((count, id) => { file[1 + id] = BigInt(count); });
   for (let index = 0; index < cases.length; index++) {
-    if (actual[index] === cases.expected[index]) continue;
-    const entry = operations[Number(cases.input[index * 3])];
-    assert.fail(`${label}: ${entry.name}(${cases.input[index * 3 + 1].toString(16)}, ${cases.input[index * 3 + 2].toString(16)}) = ${actual[index].toString(16)}, expected ${cases.expected[index].toString(16)}`);
+    const target = next[Number(cases.input[index * 3])]++;
+    input.set(cases.input.subarray(index * 3, index * 3 + 3), target * 3);
+    expected[target] = cases.expected[index];
+    file[1 + operations.length + target] = cases.input[index * 3 + 1];
+    file[1 + operations.length + cases.length + target] = cases.input[index * 3 + 2];
+  }
+  return { input, expected, length: cases.length, file };
+})();
+
+function check(actual, label, source = cases) {
+  assert.equal(actual.length, source.length, `${label}: ${actual.length} results for ${source.length} cases`);
+  for (let index = 0; index < source.length; index++) {
+    if (actual[index] === source.expected[index]) continue;
+    const entry = operations[Number(source.input[index * 3])];
+    assert.fail(`${label}: ${entry.name}(${source.input[index * 3 + 1].toString(16)}, ${source.input[index * 3 + 2].toString(16)}) = ${actual[index].toString(16)}, expected ${source.expected[index].toString(16)}`);
   }
 }
+const readWords = (path) => { const bytes = readFileSync(path); return new BigUint64Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); };
+const caseFiles = { switch: join(temporary, "cases.bin"), bulk: join(temporary, "bulk.bin"), output: join(temporary, "results.bin") };
+// Runs a native executable over the cases twice: the switch loop (scalar code) and the bulk loops (code that LLVM may vectorize).
 const runNative = (executable, label) => {
-  const input = join(temporary, "cases.bin"), output = join(temporary, "results.bin");
-  writeFileSync(input, new Uint8Array(cases.input.buffer, 0, cases.length * 24));
-  execute(executable, [input, output]);
-  const bytes = readFileSync(output);
-  check(new BigUint64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8), label);
+  for (const [mode, source, args] of [["switch", cases, [caseFiles.switch]], ["bulk", grouped, [caseFiles.bulk, caseFiles.output, "bulk"]]]) {
+    execute(executable, mode === "switch" ? [caseFiles.switch, caseFiles.output] : args);
+    check(readWords(caseFiles.output), `${label}, ${mode} loop`, source);
+  }
 };
 
 const report = [];
@@ -328,6 +405,8 @@ try {
   const source = join(temporary, "Main.tz"), directory = temporary;
   writeFileSync(source, definitions);
   writeFileSync(join(temporary, "host.c"), host);
+  writeFileSync(caseFiles.switch, new Uint8Array(cases.input.buffer, 0, cases.length * 24));
+  writeFileSync(caseFiles.bulk, new Uint8Array(grouped.file.buffer));
 
   // ----- native IR of `--emit llvm` (`--cpu generic`) and WASM IR ------------------------------------------------
   const irPath = join(temporary, "f16.ll"), again = join(temporary, "again.ll"), wasmPath = join(temporary, "f16-wasm.ll");
@@ -373,6 +452,7 @@ try {
     assert.ok(!/__extendhfsf2|__truncsfhf2|__truncdfhf2/.test(promoted), "no libcall");
   }
   const executed = [];
+  let vectorized;
   for (const optimization of [0, 3]) {
     for (const variant of variants) {
       const executable = join(temporary, `native-${optimization}-${variant.name}${windows ? ".exe" : ""}`);
@@ -383,10 +463,13 @@ try {
     if (irHasHalf) {
       const objectCode = join(temporary, `native-${optimization}.s`);
       execute(clang, [`-O${optimization}`, "-S", "-Wno-override-module", irPath, "-o", objectCode]);
-      assert.ok(!/__extendhfsf2|__truncsfhf2|__truncdfhf2/.test(readFileSync(objectCode, "utf8")), "no half libcall in the native code");
+      const assembly = readFileSync(objectCode, "utf8");
+      assert.ok(!/__extendhfsf2|__truncsfhf2|__truncdfhf2/.test(assembly), "no half libcall in the native code");
+      // The bulk loops, which have no switch, are what LLVM vectorizes at -O3: the vector lowerings are run too.
+      if (optimization === 3 && process.arch === "arm64") vectorized = /\bfcvt[nl]2?\s+v\d+\.\d+[hs]/.test(assembly);
     }
   }
-  report.push(`${generatedPath} IR run at O0/O3 with ${executed.join(" and ")}`);
+  report.push(`${generatedPath} IR run at O0/O3 with ${executed.join(" and ")}, switch loop and bulk loops${vectorized === undefined ? "" : vectorized ? " (the bulk loops are vectorized at O3)" : " (the bulk loops are not vectorized at O3)"}`);
 
   // ----- WASM: the software path, run by V8 ----------------------------------------------------------------------
   for (const optimization of [0, 3]) {
@@ -539,7 +622,7 @@ ${exportedNames.map((name, id) => {
       execute(clang, [`-O${optimization}`, join(temporary, `exported-${build}.c`), object, ...(windows ? [] : ["-lm"]), "-o", executable]);
       const results = join(temporary, `exported-${build}-results.bin`);
       execute(executable, [join(temporary, `exported-${build}.bin`), results]);
-      const bytes = readFileSync(results), actual = new BigUint64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8);
+      const actual = readWords(results);
       assert.equal(actual.length, exportedCases.length);
       for (let index = 0; index < actual.length; index++) {
         if (actual[index] !== exportedExpected[index]) assert.fail(`--cpu ${build} O${optimization}: ${exportedNames[Number(exportedInput[index * 3])]}(${exportedInput[index * 3 + 1].toString(16)}, ${exportedInput[index * 3 + 2].toString(16)}) = ${actual[index].toString(16)}, expected ${exportedExpected[index].toString(16)}`);

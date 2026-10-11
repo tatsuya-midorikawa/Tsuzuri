@@ -485,6 +485,82 @@ fn half_without_the_instructions_calls_the_runtime_library() {
     );
 }
 
+/// The assembly of the function labelled `name`, through its `.size` line.
+fn function_assembly<'a>(assembly: &'a str, name: &str) -> &'a str {
+    let begin = assembly
+        .match_indices(&format!("\n{name}:"))
+        .map(|(at, _)| at + 1)
+        .next()
+        .unwrap_or_else(|| panic!("{name} has no label"));
+    let end = assembly[begin..]
+        .find(&format!(".size\t{name},"))
+        .map_or(assembly.len(), |end| begin + end);
+    &assembly[begin..end]
+}
+
+#[test]
+fn cpu_versions_keep_the_features_of_their_half_operations() {
+    // A `@cpu` version has a `target-features` attribute of its own, which replaces the build's
+    // features: without `+f16c` in it, LLVM would call compiler-rt for the version's `half`.
+    const SOURCE: &str = "@cpu [\"avx2\", \"sve\"]\nexport def scale :: f32 -> f32\nfn scale x = ((x as f16) as f32) * 2.0f32\n";
+    let module = tsuzuri::analyze(SOURCE).unwrap();
+    let sources = [tsuzuri::trap::TrapSource {
+        path: "Main.tz",
+        text: SOURCE,
+    }];
+    let build = |f16, levels| {
+        llvm::emit_native_build_for(
+            &module,
+            EmitOptions {
+                entry: Entry::Library,
+                wasm: false,
+                debug_output: false,
+                allocator: Allocator::System,
+                f16,
+            },
+            &sources,
+            None,
+            false,
+            levels,
+        )
+        .unwrap()
+        .ir
+    };
+    let attribute = |ir: &str, suffix: &str| {
+        let define = ir
+            .lines()
+            .find(|line| line.starts_with("define ") && line.contains(suffix))
+            .unwrap_or_else(|| panic!("no version {suffix}"))
+            .to_owned();
+        define
+            .split_once("\"target-features\"=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(features, _)| features.to_owned())
+            .unwrap_or_default()
+    };
+    const X86: u8 = 0b1110;
+    const ARM: u8 = 0b11_0000;
+    for (path, expected) in [
+        (F16Path::Soft, "+avx2"),
+        (F16Path::Conversions, "+avx2,+f16c"),
+        (F16Path::Hardware, "+avx2,+avx512fp16,+f16c"),
+    ] {
+        let ir = build(path, X86);
+        assert_eq!(attribute(&ir, "Main.scale.cpu.avx2"), expected, "{path:?}");
+        // The AArch64 versions need nothing: `half` lowers to base instructions.
+        assert_eq!(attribute(&build(path, ARM), "Main.scale.cpu.sve"), "+sve");
+    }
+    // Compiled for plain x86-64, the version still converts with F16C and calls no library.
+    let ir = build(F16Path::Conversions, X86);
+    let text = assembly(&ir, "x86_64-unknown-linux-gnu", 3, &[]);
+    let version = function_assembly(&text, "tz.fn.Main.scale.cpu.avx2");
+    assert!(
+        version.contains("vcvtph2ps") && version.contains("vcvtps2ph"),
+        "{version}"
+    );
+    assert!(half_libcalls(version).is_empty(), "{version}");
+}
+
 #[test]
 fn driver_builds_follow_the_hosts_path() {
     // The driver's choice reaches the IR of a build: AArch64 hosts emit `half`, and WASM never
