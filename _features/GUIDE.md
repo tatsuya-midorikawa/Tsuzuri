@@ -1517,6 +1517,10 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `tsuzuri api-diff <old> <new> [--json]` は 2 つの版の公開 API を型検査なしの構文解析だけで比べる（git・registry の依存を取得せず、`Tsuzuri.lock` も読まない）。型変数と region の改名は変更に数えず、
   breaking があれば終了コード 1。`tsuzuri publish` は `api-diff` を実行しない（index の項目を出すだけで、前の版を取得しないため。手順は文書に書いた）。`docs/stability.md` に保つものと非推奨の手順を書いた。
   限界: pattern の中の型注釈の使用と、型別名の解決・改名の検出は `api-diff`・W1005 の対象外。
+- 統合後の独立した code review（2 回）で直したこと: G15 は、bare-metal の失敗時の案内が LLD と sysroot を求めていた件と、MSVC・bare-metal の `TSUZURI_SYSROOT` の拒否が freestanding の object のビルドで
+  起きなかった件（`validate` の段で `E2000`）。G19 × D11 は、`api-diff` が `const def` を見ず `const` の取り消しを報告しなかった件（breaking にした）。D11 は、`f16`・`f128` の定数の NaN の符号が
+  実行時（`tz_soft_op`）と違った件（実行時と同じ規則に揃えた。`f32`・`f64` は機械が決めるので NaN であることだけを決める）と、定数ごとに `const def` の本体を歩き直して 2 乗に遅くなった依存の走査
+  （関数ごとに 1 度だけ求める）。値として使う展開の予算が関数ごとなので、大きな非 plain の定数を多数の関数が値として使うとメモリが関数の数に比例する点は、従来の設計のまま文書に書いた。
 - 既知の事前の不具合（このブランチの変更ではない）: この機械の debug build では `computations::bounds_computation_syntax_and_expansion` がテストスレッドの 2 MiB の stack に収まらず（約 2.13 MB 要る）、
   `cargo test --locked` はその binary で abort する。`-- --skip bounds_computation_syntax_and_expansion` で流し、そのテストだけ `RUST_MIN_STACK=2200000` で流す（`targets.yml` も同じ）。
   必要な stack の下限は 4 チケットの変更の前後で同じ（2,129,687 で溢れ、2,130,000 で通る）。

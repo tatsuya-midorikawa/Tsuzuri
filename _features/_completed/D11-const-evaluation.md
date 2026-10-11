@@ -126,6 +126,8 @@ lookup table・CRC 表・係数表などを、実行時の初期化なしに関�
 | 固定長配列（`Tuple` の節点）を `const def` の本体で添字・`.length` できない | 評価器の 4 か所で `Tuple` を受ける（`const_defs_index_and_measure_fixed_length_arrays`） |
 | `private const def` が定数からしか呼ばれないと、偽の警告 `W1002` | `fold` の前に定数から `const def` への辺を集め、警告の参照へ足す（`a_private_const_def_that_a_constant_calls_is_used`） |
 | `@tz.static.` の `free` を調べる検査が空振り（`free` の被演算子は SSA 値） | 配列のデータは `{ ptr data, i64 }` のヘッダーでしか名指されないこと、store・atomicrmw・cmpxchg の番地が静的でないことを検査（`assert_static_data_is_only_read`、suite の `inspect`）。実行時は `tracked_free` と ASan が検査する |
+| （4 チケットを統合したあとの review）`f16`・`f128` の定数の `+ - * /` が NaN を返すと、APFloat の符号（正、またはオペランドの符号）になり、実行時（`tz_soft_op`）と `Math.copysign` の結果が違った | `float_binary` が、`f16`・`f128` の NaN の結果を、実行時と同じ規則の NaN（`+`・`-` は左辺の符号、`*`・`/` は両辺の符号の排他的論理和、ペイロードなし）に置き換える。定数と実行時の符号が一致することを suite `constants` の `nan_signs` が確かめる（旧コンパイラでは失敗する）。`f32`・`f64` の NaN の符号は実行時に機械が決めるので、定数は NaN であることだけを決める（文書に書いた） |
+| （同上）依存の走査が、定数ごとに到達する `const def` の本体を歩き直し、1 つの大きな `const def` を多数の定数が呼ぶソースで 2 乗に遅くなった（12,800 定数で 2.7 秒） | `const def` の本体が名指すものを関数ごとに 1 度だけ求め（`ConstDefWalk`）、定数ごとの走査は名前の列を、見つけた順のまま展開する（12,800 定数で 0.22 秒。診断の順序と結果は変わらない）。値として使う展開の予算が関数ごとであることは従来どおり（既知の限界の 1 つめ） |
 
 ### 文書と計測
 

@@ -115,6 +115,7 @@ tier の記録は [対応プラットフォームとクロスコンパイル](..
 
 - 1 回目: Android が OS API を受けていた（API 21 では `getentropy`・`posix_spawn` がない）。壊れた `TSUZURI_RUNNER` が「実行ファイルを起動できない」と報告され、実行器の名前が出なかった（`run` と `test`）。launcher の ARM64 Windows の判定が広すぎた。
 - 2 回目: 高い確度の問題はなし。中程度の指摘のうち、MSVC の target の `-g` の CodeView がビルド機の Windows かどうかで決まっていた（target で決めるよう直し、`codeview_for`）、MSVC のオブジェクトが実行ごとに違った（COFF の時刻。`-mno-incremental-linker-compatible` を MSVC の target の Clang 引数に足した。Windows のホストの `--target native` は変えない）、`cross_hint` が同梱ツールチェーンのない target にそれを勧めていた、を直した。wasm64 の launcher の挙動の変更は意図どおり。ランタイムを含む Mach-O のオブジェクトを同梱ツールチェーンで作れないのは基準でも同じ（既知の限界）。
+- 4 チケットを統合したあとの review: bare-metal の target の失敗時の案内が LLD と sysroot を求め（`TSUZURI_SYSROOT` を勧める）、その変数は freestanding の object のビルドが `sdk_args` を通らないため黙って無視されていた（文書の `E2000` が起きなかった）。案内を Clang の backend だけにし、MSVC・bare-metal の target の `TSUZURI_SYSROOT` を `BuildOptions::validate` の段で `E2000` にした（`a_sysroot_the_target_cannot_read_is_refused_before_any_tool_runs`）。Windows の target の OS API の案内も「macOS か Linux でビルドする」から「macOS・Linux・FreeBSD 向けにビルドする」に直した。
 
 ### 文書と計測
 

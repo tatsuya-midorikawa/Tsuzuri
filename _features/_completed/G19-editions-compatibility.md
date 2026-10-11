@@ -110,6 +110,7 @@
 - `Union.Case` が型名と case の 2 参照として 2 件の W1005 になっていた。case の位置の 1 件にした（`a_union_named_before_its_case_warns_once_at_the_case`）。
 - 使えない印（root パッケージの `@deprecated`）が `semantic::collect` を走らせていた（停止条件の趣旨）。`SourceInput::package` を依存パッケージの `PackageId` に改め、root の印は集めない（単体テストの計数と `a_tag_in_the_root_package_never_warns`）。
 - pattern の中の型注釈が警告にならない指摘は、索引が記録しない種類として文書に書いた（旧 D5 の「pattern の中は対象外」の範囲）。
+- 4 チケットを統合したあとの review: `api-diff` が D11 の `const def` を見ず、`const` を外す変更（下流の `const` の初期化式が壊れる）を「変更なし」と報告していた。`Item` に `constant` を足し、`const` の取り消しを breaking、`def` を `const def` にすることを non-breaking にした（`const_def_is_part_of_the_signature`。`docs/stability.md` と `usage.md` の表に書いた）。
 
 ### 文書と計測
 
