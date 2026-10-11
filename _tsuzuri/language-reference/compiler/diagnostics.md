@@ -154,7 +154,7 @@ flowchart TD
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス |
 | `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前 |
-| `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反 |
+| `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
 | `E2000` | 引数、拡張子、組み合わせ、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ |
