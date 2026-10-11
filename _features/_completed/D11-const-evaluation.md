@@ -105,8 +105,8 @@ lookup table・CRC 表・係数表などを、実行時の初期化なしに関�
 | 検査 | 結果 |
 | --- | --- |
 | `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` | 問題なし |
-| `cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion` | 全件成功（件数は最終報告に記録） |
-| `RUST_MIN_STACK=2200000 cargo test --locked --test computations bounds_computation_syntax_and_expansion` | 成功（ベースラインの下限 2,129,687〜2,130,000 は変わらない） |
+| `cargo test --locked --no-fail-fast -- --skip bounds_computation_syntax_and_expansion` | 93 個のテストバイナリで 1,106 件が成功、失敗 0（Phase 1 の後は 1,090 件、Phase 2 の後は 1,103 件、レビューの修正の後は 1,106 件） |
+| `RUST_MIN_STACK=2200000 cargo test --locked --test computations bounds_computation_syntax_and_expansion` | 成功。`RUST_MIN_STACK=2130000` で成功、`2129687` で stack overflow（ベースラインの下限 2,129,687〜2,130,000 と同じ） |
 | `node tests/features.mjs target/release/tsuzuri constants`・`const_functions`・`const_statics` | native と WASM の `-O0`/`-O3` で成功（8・19・52 件、`live == 0`、WASM の import なし、trap の種類、IR の決定性） |
 | `const_statics` の変種 | `TSUZURI_ASAN=1`、`TSUZURI_TEST_ALLOCATOR=host`、`TSUZURI_TEST_WASM_SIMD=1`、`TSUZURI_TEST_CPU=native`、WASM threads（3 ワーカー）、`TSUZURI_CLANG` が clang 21.1.8・22.1.8・23.1.1 のそれぞれ（wasm32 `-O0` を含む）で成功 |
 | IR の比較（fixture と examples、native と wasm32、`-O0` と `-O3`） | ベースラインの 358 ファイルのうち 354 が同一。変わった 4 ファイルは `constants` fixture（静的データの借用）。新しい fixture の IR は 8 ファイル増えた |
