@@ -3722,10 +3722,13 @@ fn captures(
                 let task = matches!(expression.ty, Type::Task(_));
                 let class = if task || *owned { "Send" } else { "Capture" };
                 // A `let rec` function is lifted to take its captures by value or by reference
-                // (B09), which a type variable cannot decide: the type is known after specialization.
+                // (B09), which a type variable cannot decide: the type is known after
+                // specialization. A function value is always passed by reference, so its type
+                // decides nothing, and the name of another `let rec` function is one.
                 if let Some(capture) = captures
                     .iter()
                     .filter(|_| !recursive.is_empty())
+                    .filter(|capture| !matches!(capture.ty, Type::Function(..)))
                     .find(|capture| !variables(&capture.ty).is_empty())
                 {
                     return Err(Diagnostic::new(

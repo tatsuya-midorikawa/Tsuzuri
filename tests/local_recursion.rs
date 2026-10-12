@@ -404,6 +404,123 @@ fn local_let_rec_functions_call_earlier_and_enclosing_ones_directly() {
     );
 }
 
+/// The captures of a `let rec` function are locals where its group is bound and parameters in the
+/// bodies of the group, so a call that passes them on is right only there. The programs below
+/// were found by a review: each one printed a wrong value, crashed, or made the compiler panic.
+#[test]
+fn local_let_rec_functions_are_called_directly_only_where_their_captures_exist() {
+    // A group nested in the body of another one: the body calls it through its closure. Its
+    // capture `s` is a parameter of the lifted outer function, not a borrowed capture of it, so
+    // passing `s` on as a reference parameter passed the string where a reference was expected.
+    // The same holds for a record, and for a function that is a local of the outer body.
+    for source in [
+        "def f :: i64 -> i64 = \\n ->\n    let rec outer = \\s ->\n        let rec inner = \\j -> if j == 0 then String.length (ref s) else inner (j - 1)\n        inner 3\n    outer (to_string n)\nlet five = f 12345\n",
+        "record Labeled { value: i64, label: string }\ndef f :: i64 -> i64 = \\n ->\n    let rec outer = \\(item: Labeled) ->\n        let rec inner = \\j -> if j == 0 then item.value + String.length (ref item.label) else inner (j - 1)\n        inner 3\n    outer (Labeled { value: n, label: to_string n })\nlet shown = f 5\n",
+        "def f :: i64 -> i64 = \\n ->\n    let rec outer = \\k ->\n        let held = \\x -> x + n\n        let rec inner = \\j -> held j\n        inner k\n    outer 1\nlet shown = f 5\n",
+    ] {
+        let ir = accepts(source);
+        let functions = lifted(&ir);
+        let (outer, inner) = (&functions[0], functions.last().unwrap());
+        assert!(
+            !outer.1.contains(&format!("call i64 {}(", inner.0)),
+            "the outer function calls the inner one through its closure:\n{}",
+            outer.1
+        );
+    }
+    let ir = accepts(
+        "def f :: i64 -> i64 = \\n ->\n    let rec outer = \\s ->\n        let rec inner = \\j -> if j == 0 then String.length (ref s) else inner (j - 1)\n        inner 3\n    outer (to_string n)\nlet five = f 12345\n",
+    );
+    let functions = lifted(&ir);
+    assert_eq!(functions.len(), 2, "{ir}");
+    assert!(loops(&functions[1].1), "{}", functions[1].1);
+    // A group in a closure or a continuation that mentions an earlier `let rec` function with
+    // captures holds it as a function value: the lifted function has no such captures. The emitter
+    // used to panic at a capture that its function does not have.
+    for source in [
+        "def f :: i64 -> i64 = \\n ->\n    let base = n * 2\n    let rec early = \\k -> k + base\n    let g = \\x ->\n        let rec inner = \\j -> if j == 0 then early x else inner (j - 1)\n        inner 2\n    g 3\nlet shown = f 12345\n",
+        "def compute :: i64 -> Maybe<i64> = \\n ->\n    let scale = n * 2\n    let rec f1 = \\k -> if k == 0 then scale else f1 (k - 1)\n    let! start = Maybe.Some n\n    let rec f2 = \\k -> f1 k + 1\n    return f2 start\nlet shown = compute 45\nshown\n",
+    ] {
+        let functions = lifted(&accepts(source));
+        assert!(
+            !functions[1]
+                .1
+                .contains(&format!("call i64 {}(", functions[0].0)),
+            "the later function calls the earlier one through its closure:\n{}",
+            functions[1].1
+        );
+    }
+    // The body of a loop is part of the function body, so a group there calls the earlier one directly.
+    let ir = accepts(
+        "def f :: i64 -> i64 = \\n ->\n    let text = to_string n\n    let rec early = \\k -> k + String.length (ref text)\n    let mut total = 0i64\n    for i in 0i64 .. 2i64 do\n        let rec later = \\k -> early k + i\n        total = total + later 1\n    total\nlet shown = f 12345\n",
+    );
+    let functions = lifted(&ir);
+    assert_eq!(functions.len(), 2, "{ir}");
+    assert!(
+        functions[1]
+            .1
+            .contains(&format!("call i64 {}(", functions[0].0)),
+        "{}",
+        functions[1].1
+    );
+    // A closure holds the value that a local had when the function was made. A later function
+    // that took over the captures of an earlier one would pass the value that the local has now.
+    let ir = accepts(
+        "def f :: i64 -> i64 = \\n ->\n    let mut x = 1\n    let rec early = \\k -> k + x\n    x = 100\n    let rec later = \\k -> early k\n    later n\nlet shown = f 0\n",
+    );
+    let functions = lifted(&ir);
+    assert_eq!(functions.len(), 2, "{ir}");
+    assert!(
+        !functions[1]
+            .1
+            .contains(&format!("call i64 {}(", functions[0].0)),
+        "{}",
+        functions[1].1
+    );
+    // Without the assignment it is a direct call.
+    let ir = accepts(
+        "def f :: i64 -> i64 = \\n ->\n    let x = 1\n    let rec early = \\k -> k + x\n    let rec later = \\k -> early k\n    later n\nlet shown = f 0\n",
+    );
+    let functions = lifted(&ir);
+    assert!(
+        functions[1]
+            .1
+            .contains(&format!("call i64 {}(", functions[0].0)),
+        "{}",
+        functions[1].1
+    );
+    // The name of an earlier `let rec` function is a function value, which says nothing about a
+    // type variable: only a capture whose type has one decides by-value or by-reference.
+    accepts(
+        "def pick_after :: 'a -> 'a -> i64 -> 'a = \\x y n ->\n    let rec pick = \\(a: 'a) (b: 'a) (k: i64) -> if k == 0 then a else pick b a (k - 1)\n    let rec twice = \\(a: 'a) (b: 'a) -> pick a b 2\n    twice x y\nlet shown = pick_after 1 2 3\n",
+    );
+}
+
+/// A `match` reads the place that it matches; only a binding that takes a non-Copy value out of it
+/// moves it. A move out of a captured value is `E1012`, and the error is at the closure that moves.
+#[test]
+fn local_let_rec_borrows_what_a_match_only_reads() {
+    for source in [
+        "def f :: i64 -> i64 = \\n ->\n    let text = to_string n\n    let rec go = \\k ->\n        if k == 0 then\n            match text with\n            | \"12345\" -> 1\n            | _ -> 2\n        else go (k - 1)\n    go 3\nlet shown = f 12345\n",
+        "def f :: i64 -> i64 = \\n ->\n    let found: Maybe<string> = Maybe.Some (to_string n)\n    let rec go = \\k ->\n        if k == 0 then\n            match found with\n            | Maybe.Some _ -> 1\n            | Maybe.None -> 2\n        else go (k - 1)\n    go 2\nlet shown = f 5\n",
+        "def f :: i64 -> i64 = \\n ->\n    let found: Maybe<string> = Maybe.Some (to_string n)\n    let rec go = \\k ->\n        if k == 0 then\n            match ref found with\n            | Maybe.Some s -> String.length s\n            | Maybe.None -> 0\n        else go (k - 1)\n    go 2\nlet shown = f 5\n",
+    ] {
+        accepts(source);
+    }
+    let error = rejects(
+        "def f :: i64 -> i64 = \\n ->\n    let found: Maybe<string> = Maybe.Some (to_string n)\n    let rec go = \\k ->\n        if k == 0 then\n            match found with\n            | Maybe.Some s -> String.length (ref s)\n            | Maybe.None -> 0\n        else go (k - 1)\n    go 2\nlet shown = f 5\n",
+        "E1012",
+    );
+    assert_eq!(
+        error.message,
+        "cannot move 'found' out of a 'let rec' function, which borrows it; borrow it with 'ref' instead"
+    );
+    // A nested closure that moves a borrowed value is reported where the closure is written, not
+    // at the declaration of the value.
+    let source = "def f :: i64 -> i64 = \\n ->\n    let text = to_string n\n    let rec go = \\k ->\n        let g = \\x -> x + String.length (ref text)\n        if k == 0 then g 1 else go (k - 1)\n    go 3\nlet shown = f 12345\n";
+    let error = rejects(source, "E1012");
+    assert_eq!(error.span.start, source.find("\\x ->").unwrap());
+}
+
 #[test]
 fn local_let_rec_in_computation_expressions() {
     for source in [

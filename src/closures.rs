@@ -186,9 +186,8 @@ fn free_locals(expression: &TypedExpr, used: &mut BTreeSet<usize>) {
 struct Generated {
     builtins: BTreeMap<(BuiltinInstance, Type), usize>,
     cases: BTreeMap<(usize, usize, Box<[Type]>), usize>,
-    /// The `let rec` functions of the function being lowered, by their local, with their lifted
-    /// functions (B09). Local ids belong to one function, so each function starts afresh.
-    recursive: BTreeMap<usize, letrec::RecursiveFunction>,
+    /// The `let rec` functions of the function being lowered (B09).
+    recursive: letrec::State,
 }
 
 pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnostic> {
@@ -201,7 +200,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             records: &module.records,
             unions: &module.unions,
         };
-        generated.recursive.clear();
+        generated.recursive.start(&body);
         lower_expression(
             &mut body,
             &mut module.functions,
@@ -301,7 +300,7 @@ fn lower_expression(
             owned,
             ..
         } => {
-            lower_expression(body, functions, types, generated, origin)?;
+            letrec::lower_body(body, functions, types, generated, origin)?;
             if *owned {
                 // The environment outlives each call, so the body must not move captures.
                 for capture in captures.iter() {

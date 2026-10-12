@@ -14,9 +14,13 @@
 //! `let r = ref x` and `deref r` would have written, so a recursive call passes the reference
 //! on, and nothing is copied or moved.
 //!
-//! A name of an earlier `let rec` function, or of an enclosing one, that a function mentions is
-//! not captured as a function value either: its captures are added to the captures of the
-//! function and its uses become direct calls too.
+//! A group that mentions an earlier `let rec` function, or an enclosing one, calls it directly as
+//! well: it takes over the function's captures, and its uses become direct calls. That works where
+//! the captures exist as locals or parameters: in the function body that binds both functions, and
+//! in the bodies of a group that calls the function directly. In any other function body, such as
+//! the body of a lambda or of a continuation, the function is a local like any other and is
+//! captured as a function value. So is a function that captures a number which the body assigns:
+//! a closure holds the number that the local had when it was made.
 
 use super::*;
 
@@ -77,6 +81,109 @@ impl Captured {
 pub(super) struct RecursiveFunction {
     function: usize,
     captures: Vec<Captured>,
+    /// The frame where the group of the function is bound.
+    bound_in: usize,
+}
+
+/// One lifted function whose body is being lowered. The locals that a `let rec` function captures
+/// exist only where its group is bound and in the bodies of the group, so any other function that
+/// mentions the `let rec` function holds it as a function value, like any other local.
+#[derive(Default)]
+pub(super) struct Frame {
+    id: usize,
+    /// The `let rec` functions that this frame calls directly: the group that the frame is a body
+    /// of, and the earlier and enclosing functions that the group takes over. Their captures are
+    /// parameters of the lifted function.
+    direct: BTreeSet<usize>,
+}
+
+/// What lowering knows about the `let rec` functions of the function it is lowering. Local ids
+/// belong to one function, so each function starts afresh.
+#[derive(Default)]
+pub(super) struct State {
+    functions: BTreeMap<usize, RecursiveFunction>,
+    frame: Frame,
+    frames: usize,
+    /// The locals that the function assigns or borrows mutably.
+    mutated: BTreeSet<usize>,
+}
+
+impl State {
+    /// Starts lowering the function with `body`.
+    pub(super) fn start(&mut self, body: &TypedExpr) {
+        self.functions.clear();
+        self.frames = 0;
+        self.frame = self.new_frame(BTreeSet::new());
+        self.mutated = mutated(body);
+    }
+
+    fn new_frame(&mut self, direct: BTreeSet<usize>) -> Frame {
+        self.frames += 1;
+        Frame {
+            id: self.frames,
+            direct,
+        }
+    }
+
+    /// The `let rec` function `id` when a group bound in the current frame can call it directly,
+    /// taking over its captures. That is so in a body that calls it directly, and where it was bound,
+    /// as long as no capture that is passed by value can have changed since: a closure holds the
+    /// value that the local had when the function was bound.
+    fn callable(&self, id: usize) -> Option<&RecursiveFunction> {
+        let function = self.functions.get(&id)?;
+        let unchanged = function
+            .captures
+            .iter()
+            .all(|capture| capture.borrowed || !self.mutated.contains(&capture.local.id));
+        (self.frame.direct.contains(&id) || (function.bound_in == self.frame.id && unchanged))
+            .then_some(function)
+    }
+}
+
+/// The locals that `body` assigns or borrows mutably, when it binds a `let rec` group: a closure
+/// takes the value of a local that is passed by value when the closure is made, so the functions of
+/// a group that calls an earlier one cannot take over its captures if one of them changes.
+fn mutated(body: &TypedExpr) -> BTreeSet<usize> {
+    let mut mutated = BTreeSet::new();
+    let mut recursive = false;
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        let target = match &expression.kind {
+            TypedExprKind::Assign(target, _) | TypedExprKind::Borrow(target, true) => Some(target),
+            TypedExprKind::BorrowOperand(target)
+                if matches!(expression.ty, Type::Reference(_, true)) =>
+            {
+                Some(target)
+            }
+            TypedExprKind::Lambda {
+                recursive: group, ..
+            } => {
+                recursive |= !group.is_empty();
+                None
+            }
+            _ => None,
+        };
+        if let Some(mut place) = target.map(|target| &**target) {
+            loop {
+                match &place.kind {
+                    TypedExprKind::Local(id) => {
+                        mutated.insert(*id);
+                        break;
+                    }
+                    TypedExprKind::Field(inner, _)
+                    | TypedExprKind::Index(inner, _)
+                    | TypedExprKind::Dereference(inner)
+                    | TypedExprKind::ListTail(inner, _)
+                    | TypedExprKind::Borrow(inner, _)
+                    | TypedExprKind::BorrowOperand(inner)
+                    | TypedExprKind::UnionPayload { value: inner, .. } => place = inner,
+                    _ => break,
+                }
+            }
+        }
+        pending.extend(expression.children());
+    }
+    if recursive { mutated } else { BTreeSet::new() }
 }
 
 /// The number of bindings of the group that starts at `bindings[0]`, or 0 when it is no `let rec`.
@@ -179,6 +286,22 @@ pub(super) fn lower_block(
     lower_expression(result, functions, types, generated, origin)
 }
 
+/// Lowers the body of a function that is lifted from a lambda: a frame of its own, in which no
+/// `let rec` function is called directly.
+pub(super) fn lower_body(
+    body: &mut TypedExpr,
+    functions: &mut Vec<CheckedFunction>,
+    types: &TypeContext<'_>,
+    generated: &mut Generated,
+    origin: FunctionOrigin,
+) -> Result<(), Diagnostic> {
+    let frame = generated.recursive.new_frame(BTreeSet::new());
+    let outer = std::mem::replace(&mut generated.recursive.frame, frame);
+    let lowered = lower_expression(body, functions, types, generated, origin);
+    generated.recursive.frame = outer;
+    lowered
+}
+
 fn lower_group(
     members: &mut [(Local, TypedExpr)],
     functions: &mut Vec<CheckedFunction>,
@@ -187,26 +310,33 @@ fn lower_group(
     origin: FunctionOrigin,
 ) -> Result<(), Diagnostic> {
     let group: BTreeSet<usize> = members.iter().map(|(local, _)| local.id).collect();
-    // The captures of the group: each member's own, and the captures of every earlier `let rec`
-    // function that a member mentions, since the member now calls it directly.
+    let bound_in = generated.recursive.frame.id;
+    // The captures of the group: each member's own, and the captures of every earlier or
+    // enclosing `let rec` function that a member mentions and that the group can call directly,
+    // since the member then calls it directly. Any other function that a member mentions is a
+    // function value, captured like any other local.
     let mut shared: BTreeMap<usize, Local> = BTreeMap::new();
+    let mut direct = group.clone();
     for (_, value) in members.iter() {
         let TypedExprKind::Lambda { captures, .. } = &value.kind else {
             continue;
         };
         for capture in captures {
-            match generated.recursive.get(&capture.id) {
+            if group.contains(&capture.id) {
+                continue;
+            }
+            match generated.recursive.callable(capture.id) {
                 Some(function) => {
+                    direct.insert(capture.id);
                     for captured in &function.captures {
                         shared
                             .entry(captured.local.id)
                             .or_insert_with(|| captured.local.clone());
                     }
                 }
-                None if !group.contains(&capture.id) => {
+                None => {
                     shared.entry(capture.id).or_insert_with(|| capture.clone());
                 }
-                None => {}
             }
         }
     }
@@ -253,11 +383,12 @@ fn lower_group(
             is_task: false,
             owned_captures: false,
         });
-        generated.recursive.insert(
+        generated.recursive.functions.insert(
             members[position].0.id,
             RecursiveFunction {
                 function: id,
                 captures: captured.clone(),
+                bound_in,
             },
         );
     }
@@ -273,12 +404,16 @@ fn lower_group(
             continue;
         };
         let mut body = std::mem::replace(&mut **body, TypedExpr::error(span));
-        lower_expression(&mut body, functions, types, generated, origin)?;
+        let frame = generated.recursive.new_frame(direct.clone());
+        let outer = std::mem::replace(&mut generated.recursive.frame, frame);
+        let lowered = lower_expression(&mut body, functions, types, generated, origin);
+        generated.recursive.frame = outer;
+        lowered?;
         for capture in captured.iter().filter(|capture| capture.borrowed) {
             if capture.local.ty.is_copy(types) {
                 continue;
             }
-            if let Some(span) = body.consuming_use(capture.local.id, types) {
+            if let Some(span) = body.moving_use(capture.local.id, types) {
                 return Err(Diagnostic::new(
                     "E1012",
                     format!(
@@ -289,7 +424,13 @@ fn lower_group(
                 ));
             }
         }
-        rewrite(&mut body, &generated.recursive, &borrowed, functions);
+        rewrite(
+            &mut body,
+            &generated.recursive.functions,
+            &direct,
+            &borrowed,
+            functions,
+        );
         functions[first + position].body = body;
     }
     // The group's names now stand for closures of the lifted functions.
@@ -306,13 +447,14 @@ fn lower_group(
     Ok(())
 }
 
-/// The function that `callee` names when it is a `let rec` function.
+/// The function that `callee` names when it is a `let rec` function that the frame calls directly.
 fn target<'a>(
     callee: &TypedExpr,
     recursive: &'a BTreeMap<usize, RecursiveFunction>,
+    direct: &BTreeSet<usize>,
 ) -> Option<&'a RecursiveFunction> {
     match callee.kind {
-        TypedExprKind::Local(id) => recursive.get(&id),
+        TypedExprKind::Local(id) if direct.contains(&id) => recursive.get(&id),
         _ => None,
     }
 }
@@ -338,12 +480,14 @@ fn direct_call(
     TypedExprKind::Call(Box::new(callee), all)
 }
 
-/// Rewrites a lifted body: the names of `let rec` functions become direct calls, or closures
-/// where they are used as values, and the locals that the function borrows are read through
-/// their references. An explicit stack walks the body, which can be deep.
+/// Rewrites a lifted body: the names of the `let rec` functions that the frame calls directly
+/// (`direct`) become direct calls, or closures where they are used as values, and the locals that
+/// the function borrows are read through their references. Any other `let rec` function is a
+/// function value here and stays as it is. An explicit stack walks the body, which can be deep.
 fn rewrite(
     body: &mut TypedExpr,
     recursive: &BTreeMap<usize, RecursiveFunction>,
+    direct: &BTreeSet<usize>,
     borrowed: &BTreeMap<usize, Type>,
     functions: &[CheckedFunction],
 ) {
@@ -351,35 +495,40 @@ fn rewrite(
     while let Some(expression) = pending.pop() {
         let span = expression.span;
         let replacement = match &mut expression.kind {
-            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => target(callee, recursive)
-                .map(|function| {
+            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => {
+                target(callee, recursive, direct).map(|function| {
                     let argument = std::mem::replace(&mut **argument, TypedExpr::error(span));
                     direct_call(function, vec![argument], span, functions)
-                }),
-            TypedExprKind::Call(callee, arguments) => target(callee, recursive).map(|function| {
-                let arguments = std::mem::take(arguments);
-                direct_call(function, arguments, span, functions)
-            }),
-            TypedExprKind::Local(id) => match recursive.get(id) {
-                Some(function) => Some(TypedExprKind::Closure(
-                    function.function,
-                    function
-                        .captures
-                        .iter()
-                        .map(|capture| capture.in_body(span))
-                        .collect(),
-                )),
-                None => borrowed
-                    .get(id)
-                    .filter(|ty| **ty == expression.ty)
-                    .map(|ty| {
-                        TypedExprKind::Dereference(Box::new(TypedExpr {
-                            kind: TypedExprKind::Local(*id),
-                            ty: Type::Reference(Box::new(ty.clone()), false),
-                            span,
-                        }))
-                    }),
-            },
+                })
+            }
+            TypedExprKind::Call(callee, arguments) => {
+                target(callee, recursive, direct).map(|function| {
+                    let arguments = std::mem::take(arguments);
+                    direct_call(function, arguments, span, functions)
+                })
+            }
+            TypedExprKind::Local(id) => {
+                match direct.contains(id).then(|| recursive.get(id)).flatten() {
+                    Some(function) => Some(TypedExprKind::Closure(
+                        function.function,
+                        function
+                            .captures
+                            .iter()
+                            .map(|capture| capture.in_body(span))
+                            .collect(),
+                    )),
+                    None => borrowed
+                        .get(id)
+                        .filter(|ty| **ty == expression.ty)
+                        .map(|ty| {
+                            TypedExprKind::Dereference(Box::new(TypedExpr {
+                                kind: TypedExprKind::Local(*id),
+                                ty: Type::Reference(Box::new(ty.clone()), false),
+                                span,
+                            }))
+                        }),
+                }
+            }
             _ => None,
         };
         if let Some(kind) = replacement {

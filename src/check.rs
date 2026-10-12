@@ -3809,7 +3809,14 @@ impl TypedExpr {
 
     /// The first use that consumes or mutates `local`; without one the local can stay borrowed.
     pub(crate) fn consuming_use(&self, local: usize, types: &TypeContext<'_>) -> Option<Span> {
-        self.local_use(local, LocalAccess::Consume, types)
+        self.local_use(local, LocalAccess::Consume, types, false)
+    }
+
+    /// `consuming_use` for a `let rec` function that borrows `local` (B09): a `match` only reads
+    /// the place that it matches, and a binding that takes a non-Copy value out of it moves it. A
+    /// closure that takes the local is the use, not the declaration of the local.
+    pub(crate) fn moving_use(&self, local: usize, types: &TypeContext<'_>) -> Option<Span> {
+        self.local_use(local, LocalAccess::Consume, types, true)
     }
 
     fn local_use(
@@ -3817,10 +3824,11 @@ impl TypedExpr {
         local: usize,
         access: LocalAccess,
         types: &TypeContext<'_>,
+        exact: bool,
     ) -> Option<Span> {
         use TypedExprKind::*;
-        let read = |value: &Self| value.local_use(local, LocalAccess::Read, types);
-        let consume = |value: &Self| value.local_use(local, LocalAccess::Consume, types);
+        let read = |value: &Self| value.local_use(local, LocalAccess::Read, types, exact);
+        let consume = |value: &Self| value.local_use(local, LocalAccess::Consume, types, exact);
         match &self.kind {
             Local(id) if *id == local => match access {
                 LocalAccess::Consume if self.ty.is_copy(types) => None,
@@ -3835,6 +3843,7 @@ impl TypedExpr {
                     LocalAccess::Read
                 },
                 types,
+                exact,
             ),
             BorrowOperand(value) => read(value),
             Slice { value, start, end } => value
@@ -3846,10 +3855,11 @@ impl TypedExpr {
                         LocalAccess::Read
                     },
                     types,
+                    exact,
                 )
                 .or_else(|| start.iter().chain(end).find_map(|bound| consume(bound))),
             Assign(place, value) => place
-                .local_use(local, LocalAccess::Write, types)
+                .local_use(local, LocalAccess::Write, types, exact)
                 .or_else(|| consume(value)),
             Field(value, _) | Index(value, _) | UnionPayload { value, .. } if self.is_place() => {
                 let access = match access {
@@ -3857,13 +3867,15 @@ impl TypedExpr {
                     other => other,
                 };
                 value
-                    .local_use(local, access, types)
+                    .local_use(local, access, types, exact)
                     .or_else(|| match &self.kind {
                         Index(_, index) => consume(index),
                         _ => None,
                     })
             }
             Length(value) | StringLength(value) | UnionTag(value) => read(value),
+            Closure(_, values) if exact => values.iter().find_map(consume).map(|_| self.span),
+            Match { value, arms, .. } if exact => self.match_use(value, arms, local, access, types),
             Binary(
                 BinaryOp::Equal
                 | BinaryOp::NotEqual
@@ -3876,6 +3888,31 @@ impl TypedExpr {
             ) => read(left).or_else(|| read(right)),
             _ => self.children().into_iter().find_map(consume),
         }
+    }
+
+    /// `local_use` of the `match` `self` for `moving_use`: the matched place is read, and only a
+    /// binding that takes a non-Copy value out of it moves it. The guards and bodies consume.
+    fn match_use(
+        &self,
+        value: &Self,
+        arms: &[TypedMatchArm],
+        local: usize,
+        access: LocalAccess,
+        types: &TypeContext<'_>,
+    ) -> Option<Span> {
+        let moves = arms.iter().any(|arm| {
+            arm.alternatives.iter().any(|alternative| {
+                alternative
+                    .bindings
+                    .iter()
+                    .any(|(binding, _)| !binding.ty.is_copy(types) && !arm.views(binding, types))
+            })
+        });
+        let access = if moves { access } else { LocalAccess::Read };
+        value.local_use(local, access, types, true).or_else(|| {
+            let consume = |child: &Self| child.local_use(local, LocalAccess::Consume, types, true);
+            self.children().into_iter().skip(1).find_map(consume)
+        })
     }
 
     /// The direct subexpressions of this expression.

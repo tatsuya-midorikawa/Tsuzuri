@@ -130,3 +130,125 @@ fn mapped count =
     let rec sum = \n -> if n <= 0 then 0 else n + sum (n - 1)
     let values = Array.map sum [count, count + 1, count + 2]
     values[0] + values[1] + values[2]
+
+// A group is called directly, with its captures passed on, only where they exist: in a group that
+// is bound in the same function body or encloses it. Anywhere else, a group is a function value.
+
+// The captures of `inner` are parameters of `outer`, so `outer` calls `inner` through its closure.
+export def nested_string :: i64 -> i64
+fn nested_string count =
+    let rec outer = \s ->
+        let rec inner = \j -> if j == 0 then String.length (ref s) else inner (j - 1)
+        inner 3
+    outer (to_string count)
+
+record Labeled { value: i64, label: string }
+
+export def nested_record :: i64 -> i64
+fn nested_record count =
+    let rec outer = \(item: Labeled) ->
+        let rec inner = \j -> if j == 0 then item.value + String.length (ref item.label) else inner (j - 1)
+        inner 3
+    outer (Labeled { value: count, label: to_string count })
+
+export def nested_closure :: i64 -> i64
+fn nested_closure count =
+    let rec go = \k ->
+        let held = \x -> x + count
+        let rec inner = \j -> held j
+        inner k
+    go 1
+
+// A group in a closure, a continuation, or a loop body holds an earlier `let rec` function, which has
+// captures of its own, as a function value.
+export def group_in_closure :: i64 -> i64
+fn group_in_closure count =
+    let base = count * 2
+    let rec early = \k -> k + base
+    let make = \x ->
+        let rec inner = \j -> if j == 0 then early x else inner (j - 1)
+        inner 2
+    make 3
+
+def continued :: i64 -> Maybe<i64>
+fn continued count =
+    let scale = count * 2
+    let rec first = \k -> if k == 0 then scale else first (k - 1)
+    let! start = Maybe.Some count
+    let rec second = \k -> first k + 1
+    return second start
+
+export def builder_continuation :: i64 -> i64
+fn builder_continuation count =
+    match continued count with
+    | Maybe.Some value -> value
+    | Maybe.None -> -1
+
+export def group_in_loop :: i64 -> i64
+fn group_in_loop count =
+    let text = to_string count
+    let rec early = \k -> k + String.length (ref text)
+    let mut total = 0i64
+    for i in 0i64 .. 2i64 do
+        let rec later = \k -> early k + i
+        total = total + later 1
+    total
+
+export def group_in_branch :: i64 -> i64
+fn group_in_branch count =
+    let text = to_string count
+    let rec early = \k -> k + String.length (ref text)
+    if count > 0 then
+        let rec later = \k -> early k * 2
+        later 1
+    else 0
+
+// A function holds the numbers that its captures had when it was made.
+export def reassigned_direct :: i64 -> i64
+fn reassigned_direct count =
+    let mut x = 1
+    let rec early = \k -> k + x
+    x = 100
+    early count
+
+export def reassigned_group :: i64 -> i64
+fn reassigned_group count =
+    let mut x = 1
+    let rec early = \k -> k + x
+    x = 100
+    let rec later = \k -> early k
+    later count
+
+// A `match` reads the value that it matches; only a binding that takes a string out of it moves it.
+export def match_borrowed :: i64 -> i64
+fn match_borrowed count =
+    let text = to_string count
+    let rec go = \k ->
+        if k == 0 then
+            match text with
+            | "12345" -> 1
+            | _ -> 2
+        else go (k - 1)
+    go 3
+
+export def match_maybe :: i64 -> i64
+fn match_maybe count =
+    let found: Maybe<string> = if count > 0 then Maybe.Some (to_string count) else Maybe.None
+    let rec go = \k ->
+        if k == 0 then
+            match found with
+            | Maybe.Some _ -> 1
+            | Maybe.None -> 2
+        else go (k - 1)
+    go 2
+
+// An earlier function is a function value, which has no type variable of its own to capture.
+def pick_after :: 'a -> 'a -> 'a
+fn pick_after x y =
+    let rec pick = \(a: 'a) (b: 'a) (k: i64) -> if k == 0 then a else pick b a (k - 1)
+    let rec twice = \(a: 'a) (b: 'a) -> pick a b 2
+    twice x y
+
+export def generic_earlier :: i64 -> i64
+fn generic_earlier count =
+    pick_after count 7

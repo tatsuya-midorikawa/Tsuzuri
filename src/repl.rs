@@ -289,8 +289,9 @@ struct Item {
     text: String,
     /// `(offset in text, offset in the input)` at the start of each run copied from the input.
     pieces: Vec<(usize, usize)>,
-    /// A `let`'s name and the name's offset in `text`.
-    binding: Option<(String, usize)>,
+    /// The names of the `let`s in `text`, each with the offset of its name in `text`: one for a
+    /// `let`, one for every function of a `let rec ... and` group, in order.
+    bindings: Vec<(String, usize)>,
 }
 
 /// Maps an offset in an item's text to the input through the item's pieces.
@@ -643,7 +644,7 @@ fn declarations(text: &str, tokens: &[Token], end: usize, program: &Program) -> 
                 keys,
                 text: String::new(),
                 pieces: Vec::new(),
-                binding: None,
+                bindings: Vec::new(),
             };
             for member in members {
                 let (start, end) = chunks[member];
@@ -729,13 +730,19 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
         // `let _ = ...` discards its value like a statement, so it replaces nothing.
         let named = binding.name.provenance == Provenance::User && binding.name.text != "_";
         // An `and` member is part of the item of its `let rec`: the functions of a group are
-        // defined, and replaced, together (B09).
+        // defined, and replaced, together (B09). Every member keeps its own name and offset, so
+        // that each one shows its type.
         if binding.recursion == Recursion::And
             && let Some(group) = items.last_mut()
         {
-            group.text = text[group.pieces[0].1..end].to_owned();
+            let group_start = group.pieces[0].1;
+            group.text = text[group_start..end].to_owned();
             if named {
                 group.keys.push(Key::Binding(binding.name.text.clone()));
+                group.bindings.push((
+                    binding.name.text.clone(),
+                    binding.name.span.start - group_start,
+                ));
             }
             boundary = end;
             continue;
@@ -748,7 +755,11 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
             },
             text: text[start..end].to_owned(),
             pieces: vec![(0, start)],
-            binding: named.then(|| (binding.name.text.clone(), binding.name.span.start - start)),
+            bindings: if named {
+                vec![(binding.name.text.clone(), binding.name.span.start - start)]
+            } else {
+                Vec::new()
+            },
         });
         boundary = end;
     }
@@ -917,7 +928,7 @@ fn generate(session: &Session, input: &Input, tail: Tail<'_>) -> Generated {
                 Placed::Session(index) => (&items[index].text, Origin::Session(offsets[index])),
                 Placed::Input(index) => {
                     let item = &inputs[index];
-                    if let Some((name, at)) = &item.binding {
+                    for (name, at) in &item.bindings {
                         names.push((index, name.clone(), generated.text.len() + at));
                     }
                     (&item.text, Origin::Input(item.pieces.clone()))
@@ -1437,7 +1448,7 @@ mod tests {
         assert_eq!(input.declarations[0].keys, [Key::Value("square".into())]);
         assert_eq!(texts(&input.bindings), ["let base = 6"]);
         assert_eq!(input.bindings[0].keys, [Key::Binding("base".into())]);
-        assert_eq!(input.bindings[0].binding, Some(("base".into(), 4)));
+        assert_eq!(input.bindings[0].bindings, [("base".to_owned(), 4)]);
         assert_eq!(input.body, Body::Expression("square base".into(), 52));
     }
 
@@ -1450,7 +1461,7 @@ mod tests {
             ["let a = 1", "let b = a", "c = c + 1;"]
         );
         assert_eq!(input.bindings[2].keys, []);
-        assert_eq!(input.bindings[2].binding, None);
+        assert!(input.bindings[2].bindings.is_empty());
         assert_eq!(input.body, Body::None);
         let commented = classify_text("let x = 1 // note\n");
         assert_eq!(texts(&commented.bindings), ["let x = 1"]);
@@ -1576,10 +1587,31 @@ mod tests {
             group.bindings[0].keys,
             [Key::Binding("even".into()), Key::Binding("odd".into())]
         );
+        // Each function keeps its own name and offset, so each one shows its type.
+        let text = &group.bindings[0].text;
+        assert_eq!(
+            group.bindings[0].bindings,
+            [
+                ("even".to_owned(), text.find("even").unwrap()),
+                ("odd".to_owned(), text.find("odd =").unwrap()),
+            ]
+        );
         let current = Session::default().merged(&group);
         let next = classify_text("even 4");
         let show = generate(&current, &next, Tail::Show("even 4", 0));
         assert!(analyze(&show.text, false).1.is_ok(), "{}", show.text);
+        let declared = generate(&Session::default(), &group, Tail::None);
+        assert_eq!(
+            declared
+                .bindings
+                .iter()
+                .map(|(name, offset)| (
+                    name.as_str(),
+                    &declared.text[*offset..*offset + name.len()]
+                ))
+                .collect::<Vec<_>>(),
+            [("even", "even"), ("odd", "odd")]
+        );
         // Redefining one name replaces the group, so the other name is gone with it.
         let again = classify_text("let rec odd = \\n -> n == 1\n");
         let replaced = current.merged(&again);

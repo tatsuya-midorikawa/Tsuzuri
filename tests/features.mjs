@@ -1010,15 +1010,32 @@ const suites = {
       ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_even", [n], n % 2n === 0n ? 1n : 0n]),
       ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_odd", [n], n % 2n === 1n ? 1n : 0n]),
       ...[[0n, 4n], [3n, 31n], [-1n, 1n]].map(([n, expected]) => ["mapped", [n], expected]),
+      // Where a group is called directly, and where it is a function value that a call goes through.
+      ...[0n, 5n, 12345n, -12n].map((n) => ["nested_string", [n], BigInt(n.toString().length)]),
+      ...[0n, 5n, 12345n, -12n].map((n) => ["nested_record", [n], n + BigInt(n.toString().length)]),
+      ...[0n, 5n, -3n].map((n) => ["nested_closure", [n], 1n + n]),
+      ...[0n, 12345n, -7n].map((n) => ["group_in_closure", [n], 3n + 2n * n]),
+      ...[0n, 1n, 45n, 1000n].map((n) => ["builder_continuation", [n], 2n * n + 1n]),
+      ...[0n, 5n, 12345n].map((n) => ["group_in_loop", [n], 3n * BigInt(n.toString().length) + 6n]),
+      ...[-5n, 0n, 5n, 12345n].map((n) => ["group_in_branch", [n], n > 0n ? 2n * (1n + BigInt(n.toString().length)) : 0n]),
+      // A closure keeps the number that its capture had when it was made.
+      ...[0n, 4n, -9n].map((n) => ["reassigned_direct", [n], n + 1n]),
+      ...[0n, 4n, -9n].map((n) => ["reassigned_group", [n], n + 1n]),
+      ...[0n, 12345n, 54321n].map((n) => ["match_borrowed", [n], n === 12345n ? 1n : 2n]),
+      ...[-1n, 0n, 1n, 12345n].map((n) => ["match_maybe", [n], n > 0n ? 1n : 2n]),
+      ...[0n, 7n, -3n].map((n) => ["generic_earlier", [n], n]),
     ],
     inspect(ir) {
       const lifted = ir.split("\ndefine ").filter((body) => /^internal \S+ @tz\.fn\.\$lambda\.\d+\(/.test(body));
-      assert.ok(lifted.length >= 20, `the let rec functions are lifted: ${lifted.length}`);
+      assert.ok(lifted.length >= 30, `the let rec functions are lifted: ${lifted.length}`);
       // A tail call jumps back: a parameter's phi has an incoming value from the back edge.
       const loops = lifted.filter((body) => /= phi [^\n]*\], \[/.test(body));
-      assert.ok(loops.length >= 8, `tail calls of lifted functions are loops: ${loops.length}`);
-      // A `let rec` function is called directly: no closure is built for the calls in its body.
-      assert.ok(loops.every((body) => !body.includes("%tz.closure")), "a loop of a lifted function builds no closure");
+      assert.ok(loops.length >= 15, `tail calls of lifted functions are loops: ${loops.length}`);
+      // A `let rec` function is called directly: no closure is built for the calls in its body. The
+      // one loop that holds a closure is the group in `group_in_closure`, which calls an earlier
+      // function through its function value.
+      const closing = loops.filter((body) => body.includes("%tz.closure"));
+      assert.ok(closing.length <= 1, `only a loop that calls a function value uses a closure: ${closing.length}`);
     },
   },
   parallel: {

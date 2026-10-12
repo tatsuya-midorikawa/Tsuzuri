@@ -499,6 +499,8 @@ GUIDE §8 の手順で、同じ PR で更新する。関連ページは `grep -r
 - 理由: 相互再帰は互いの閉包を作るために全員の捕捉が要る。所有値の捕捉を値で渡し直すと、呼び出しごとの深いコピーかムーブが起きる。
   関数値の捕捉は環境の複製で確保が起きるので、D4 のままでは許せない。
 - 状態: 承認済み（2026-10-12。人間の包括許可）。実装済み。D9 の設計（共通の先頭引数・予約した id・借用の捕捉引数）のとおりで、借用の詳細は「実装と検証」に書いた。
+  ただし、ほかの `let rec` 関数の捕捉を引き継げるのは、その捕捉が引数かローカルとして存在する本体（同じ関数本体と、その関数を直接呼ぶグループの本体）だけである。
+  ラムダ式・継続の中のグループや、値渡しの捕捉が代入されている場合は、関数値として捕捉する（「実装と検証」の「レビューでの指摘と修正」）。
 
 D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は D9 の承認で置き換えた（上のとおり）。
 
@@ -523,7 +525,8 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   `src/ownership.rs`（`capture_loans`）、`src/llvm.rs`（`is_self` が引数を見る）。
 - 警告・エディタ・整形・REPL: `src/warnings.rs`（`Uses`、`collect_block`）、`src/semantic.rs`（束縛の範囲の始まり）、`src/formatter.rs`（`and` の字下げ）、`src/repl.rs`。
 - `Binding` を構築するだけの変更: `src/derive.rs`・`src/control.rs`。
-- テスト: `tests/local_recursion.rs`（新規 11 件）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（79 ケース）。
+- テスト: `tests/local_recursion.rs`（新規 13 件。うち 2 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（120 ケース）、
+  `tests/local_recursion_fuzz.mjs`（新規。乱数の差分テスト）。
 - 文書: `docs/language.md`（「匿名関数と捕捉」「再帰とスタック」と新しい「ローカルな `let rec`」）、`docs/architecture.md`（モジュール表・閉包の節・末尾再帰・テスト）、`README.md`、`_tsuzuri/language-reference/values-and-functions/`
   の `functions.md`（新しい節と実行例 3 つ、図）・`lambda-expressions.md`・`values.md`・`keywords.md`、`computation-expressions/computation-expressions.md`、`compiler/diagnostics.md`、`_features/README.md`・`GUIDE.md`（D-46）、このチケット（`_completed/` へ移動）。
   `_tsuzuri/language-reference/index.md` は、ページの題名「関数 / 高階関数 / 再帰関数」が変わらないので更新が要らない。
@@ -531,14 +534,15 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 ### 検証結果
 
 - 基準（変更前。D12 の実装の直後）: `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` が 1,199 件成功。「再現」の `let rec` は、`E0002`（`expected an identifier`）だった。
-- Rust テスト: `cargo test --locked --test local_recursion` が `running 11 tests`・11 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行）。
-  `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、95 の test binary と doc test で **1,214 件成功**（基準の 1,199 件 + 新しい 15 件）、失敗 0、無視 0 だった。
+- Rust テスト: `cargo test --locked --test local_recursion` が `running 13 tests`・13 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行と、レビューで足した 2 件）。
+  `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、すべての test binary と doc test（98 の結果行）で **1,216 件成功**（基準の 1,199 件 + 新しい 17 件）、失敗 0、無視 0 だった。
   `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（43 ファイル）が成功。GUIDE §3.1 の 4 つの回帰テストは、既定の stack で各 1 件（`running 1 test`）成功した。
-- E2E（release を `cargo build --release --locked` した直後）: `features`（**13,798 ケース**。基準の 13,719 + 新しい 79）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
+- E2E（release を `cargo build --release --locked` した直後）: `features`（**13,839 ケース**。基準の 13,719 + 新しい 120）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
   `e2e`、`io`、`user_drop`、`display_parse`、`integer_intrinsics`、`strings`、`allocator`、`math`、`f16_hardware` がすべて成功した（native と WASM の `-O0`・`-O3`、`live == 0`、WASM の import なし）。
-- suite `local_recursion`: 79 ケース（`triangle`・`factorial`・`gcd`・`fib`・`count_above`・`binary_search`・`walk`・`digits`・`escaped`・`partial`・`piped`・`nested`・`parity`・`group_captures`・`sibling`・`pair_even`・`pair_odd`・`mapped`）。期待値は suite の BigInt の式
-  （三角数・階乗・ユークリッドの互除法・桁数・偶奇）から作り、コンパイラの出力から写していない。`triangle(1,000,000)` と `piped(1,000,000)` と、借用した配列を読む `walk(500,000)` は、native と WASM（既定の 1 MiB の stack）の `-O0` でもスタックを使い切らない。
-  `inspect` は、リフトした関数が 20 個以上（実際は 24 個）あり、ループ（`phi` の後方辺）が 8 個以上（実際は 9 個）で、ループの中で閉包を作らないことを確かめる。
+- suite `local_recursion`: 120 ケース（最初の 79 ケースの `triangle`・`factorial`・`gcd`・`fib`・`count_above`・`binary_search`・`walk`・`digits`・`escaped`・`partial`・`piped`・`nested`・`parity`・`group_captures`・`sibling`・`pair_even`・`pair_odd`・`mapped` と、
+  レビュー後の 41 ケースの `nested_string`・`nested_record`・`nested_closure`・`group_in_closure`・`builder_continuation`・`group_in_loop`・`group_in_branch`・`reassigned_direct`・`reassigned_group`・`match_borrowed`・`match_maybe`・`generic_earlier`）。期待値は suite の BigInt の式
+  （三角数・階乗・ユークリッドの互除法・桁数・偶奇・閉じた式）から作り、コンパイラの出力から写していない。`triangle(1,000,000)` と `piped(1,000,000)` と、借用した配列を読む `walk(500,000)` は、native と WASM（既定の 1 MiB の stack）の `-O0` でもスタックを使い切らない。
+  `inspect` は、リフトした関数が 30 個以上（実際は 49 個）あり、ループ（`phi` の後方辺）が 15 個以上（実際は 16 個）で、閉包を使うループは、前の関数を関数値として呼ぶ 1 個（`group_in_closure`）以下であることを確かめる。
 - 深い再帰: `deep_local_tail_recursion_does_not_grow_the_stack` が、`triangle 1000000`（捕捉が数値）と `walk 1000000`（捕捉が借用した配列）を `tsuzuri run -O0` で実行し、`500000500000` と `499999500000` を出す。
 - IR の一致（ベースラインは D12 の実装 `14d164a6` の release を別の worktree でビルドしたもの）: `examples/` と `tests/fixtures/` の 105 ディレクトリ × native・wasm32 × `-O0`・`-O3` の 420 構成のうち **366 構成の IR が byte 単位で一致**し、50 構成は両者が同じ診断で失敗し、差は 0。
   残る 4 構成は新しい fixture を基準のコンパイラが読めない（`E0002`）構成である。
@@ -546,7 +550,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   新しい実行例（`triangle 100` が `5050`、`count_above 4` が `3`、`parity 10` が `true`）は、変更前のコンパイラでは `E0002` になる。
 - 追加で確かめたこと（scratch。コミットしない）: 引数が `()`・タプル・`mut` の `let rec`、`for` の本体・`match` の腕・ラムダの本体・同名の再束縛の中の `let rec`、`task` ブロックの中の `let rec` と数値だけを捕捉する `let rec` 関数の `task` への受け渡し
   （借用して捕捉した関数を `task` に持ち込むと `E1013`）、2 つの関数が同じ所有値（文字列）を捕捉する場合、`const def` の中（`E1026`）。
-- debug build の stack: 「チケットから外れた判断」の最後の項目のとおり。`bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack は、基準が 2,033,203 bytes、最終が 1,802,734 bytes（`RUST_MIN_STACK` の二分探索。macOS arm64 は 16 KiB 刻み）。
+- debug build の stack: 「チケットから外れた判断」の最後の項目のとおり。`bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack は、基準が 2,033,203 bytes、最初の実装が 1,802,734 bytes、レビューの修正のあとが 1,816,000 bytes で溢れ 1,824,000 bytes で通る値（`RUST_MIN_STACK` の二分探索。macOS arm64 は 16 KiB 刻み）。
 - 性能: 速度の主張はしない。リフトした関数の自己末尾呼び出しが、`def rec` と同じループになることを IR（後方辺の `phi`）と、深さ 1,000,000 の実行で確かめた。
 
 ### チケットから外れた判断
@@ -569,7 +573,39 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   `bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack が 2,033,203 から約 2,097,700 bytes になり、既定の 2 MiB で溢れた（上限を上げて通してはいけない）。debug build ではフレームが全 arm の局所変数と一時値の和で、`?` 1 つに `Diagnostic` を持つ `Result` の一時値が 3 つ付く。
   新しい処理を専用の関数へ出し、再帰する関数からは `return helper(..)` で返し、診断は `rec_error<T>` が作るようにした。`composed_expression` の Block の束縛ループを `block_bindings` に出し、`lambda` は引数に `recursive` を足すだけで
   `checked_lambda` は元の引数のまま `group_lambda` に委ねる形にした。
-  結果は 1,802,734 bytes で、基準より小さい。`bounds_computation_syntax_and_expansion` は、基準と同じく既定の stack で溢れる（基準との差は 1 刻み 16 KiB 以内）。
+  結果は 1,802,734 bytes で、基準より小さい（レビューの修正のあとは 1,824,000 bytes 以下で、それでも基準より小さい）。`bounds_computation_syntax_and_expansion` は、基準と同じく既定の stack で溢れる（最終は 2,130,000 bytes で溢れ、2,150,000 bytes で通る。基準は 2,130,638 bytes）。
+
+### レビューでの指摘と修正（PR #23）
+
+独立したコードレビューが 6 件、Copilot が 1 件を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
+
+1. **入れ子のグループを外側の本体から直接呼んでいた**（値が違う、またはクラッシュ）: `let rec outer = \s -> (let rec inner = ... s ...; inner 3)` で、`inner` の捕捉 `s` は外側のリフトした関数の引数で、借用した捕捉ではない。
+   外側が `s` を `ref String` の引数として `inner` に渡し直すと、文字列を参照の位置に渡すことになった（レコード、外側の本体のローカルの関数値でも同じ）。
+2. **ラムダ式・継続・ループの本体の中のグループが、前の `let rec` 関数の捕捉を持たないリフト先から直接呼んでいた**（emitter が、その関数に無い捕捉で panic）: `let rec early = ...; let g = \x -> (let rec inner = ... early x ...; inner 2)`、
+   および `let! start = ...` の後の `let rec`。
+3. **代入された値渡しの捕捉を引き継いでいた**（値が違う）: `let mut x = 1; let rec early = \k -> k + x; x = 100; let rec later = \k -> early k` で、`later` が今の `x`（100）を渡した。閉包は作った時点の値（1）を持つ。
+4. **`match` の対象をいつも消費として扱っていた**: 借用した `string` の `match text with | "12345" -> ...` が `E1012` になった。
+5. **関数値の捕捉が多相な関数の中で `E1005` になっていた**: 前の `let rec` 関数の名前は関数値で、型変数について何も言わない。
+6. **`E1012` の位置が、捕捉した値の宣言を指していた**（入れ子のクロージャが借用した捕捉を消費するとき）。
+7. （Copilot）**REPL が `let rec ... and ...` の 2 つ目以降のメンバーの名前を項目に登録しなかった**: 1 行で書いた `let rec even = ...; and odd = ...` が、`even` しか表示せず、`:list` にも `even` だけが載った。
+
+修正:
+
+- 1〜3: `src/closures_rec.rs` に本体ごとの `Frame` を導入した。リフトしたメンバーの本体と、通常のラムダ式の本体（`lower_body`）が 1 つずつ持ち、`Frame.direct` に、その本体が直接呼ぶ関数（グループ自身と、捕捉を引き継いだ前の・外側の関数）を持つ。
+  書き換え（`rewrite`）は、自分のフレームの `direct` にある名前だけを直接呼び出しにする。グループが前の関数の捕捉を引き継げるのは、その関数が `direct` にあるか、同じフレームで束縛されていて値渡しの捕捉が代入・可変借用されていないとき（`State.mutated`）だけである。
+  それ以外は、関数値として捕捉して閉包を通して呼ぶ（結果は同じ）。ループの本体はフレームを作らないので、そこでは従来どおり直接呼ぶ。
+- 4・6: `src/check.rs` に `TypedExpr::moving_use` を足した。`consuming_use` と同じ走査で、`match` の対象は、非 Copy の値を取り出す束縛があるときだけ消費とし、`Closure` の捕捉の消費は、クロージャの位置を指す。
+  `let rec` の借用した捕捉の検査（`closures_rec::lower_group`）だけが使う。`consuming_use` は、呼び出しの特殊化（`call_specialization::can_borrow`。閉包の環境を複製せずに読めるか）と所有する関数の検査も使うので、変えない。
+  最初の修正は `consuming_use` の `match` の規則を直接変えたところ、`let rec` を書かない `tests/fixtures/maybe_result` の IR が 4 構成すべてで変わった（環境の複製が減る別の最適化が有効になった）。IR の比較で気づき、`moving_use` に分けて基準と byte 単位で一致させた。
+- 5: `src/polymorph.rs` の型変数の捕捉の検査が、関数型の捕捉を飛ばす。
+- 7: `src/repl.rs` の `Item.binding` を `bindings` にし、グループの全メンバーの名前と位置を登録する。
+
+回帰テスト: `tests/local_recursion.rs` に 2 件（`local_let_rec_functions_are_called_directly_only_where_their_captures_exist`、`local_let_rec_borrows_what_a_match_only_reads`）を足し、`..._call_earlier_and_enclosing_ones_directly` はそのまま通る。どちらも、修正前（`3cd1e66f`）では失敗する
+（1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 12 の export と 41 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと
+`tests/repl.mjs` の R22 が 7 を固定する。
+
+差分テスト `tests/local_recursion_fuzz.mjs`（コミットする）は、乱数で作ったプログラム（入れ子のグループ、通常のラムダ式、代入される捕捉、借用した文字列と配列、部分適用、`for`、数値と文字列の `match`）を、仕様から書いた独立した JS の評価器と照合する。
+期待値はコンパイラの出力から作らない。修正前のコンパイラは 150 件中 8 件で値が違い、最終のコンパイラは 1,399 件（release。深さ 5 の 400 件と、深さ 6 の 999 件で 1 件は大きさで除外。native `-O0`、3 件に 1 件は `-O3` も）がすべて一致した。
 
 ### 見つけた問題・残作業
 
