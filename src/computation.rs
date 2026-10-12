@@ -945,6 +945,29 @@ fn block(bindings: Vec<Binding>, result: Expr, span: Span) -> Result<Expr, Diagn
     )
 }
 
+/// The bindings of the `let rec` group at the start of `statements`: the `let rec` statement and
+/// the `and` members after it, which are bound together as in a block (B09). Empty when the first
+/// statement is not a `let rec`.
+fn recursive_group(statements: &[ComputationStatement]) -> Vec<Binding> {
+    match statements.first().map(|statement| &statement.kind) {
+        Some(ComputationStatementKind::Let(first, false)) if first.recursion != Recursion::None => {
+        }
+        _ => return Vec::new(),
+    }
+    statements
+        .iter()
+        .enumerate()
+        .map_while(|(index, statement)| match &statement.kind {
+            ComputationStatementKind::Let(binding, false)
+                if index == 0 || binding.recursion == Recursion::And =>
+            {
+                Some(binding.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn make(kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
     bounded_depth(depth, span)?;
     Ok(Expr { kind, span, depth })
@@ -1334,21 +1357,8 @@ impl Checker<'_> {
     ) -> Result<usize, Diagnostic> {
         let mut count = 0;
         while let Some(statement) = body.statements.get(count) {
-            if let ComputationStatementKind::Let(first, false) = &statement.kind
-                && first.recursion != Recursion::None
-            {
-                let group: Vec<Binding> = body.statements[count..]
-                    .iter()
-                    .enumerate()
-                    .map_while(|(index, statement)| match &statement.kind {
-                        ComputationStatementKind::Let(binding, false)
-                            if index == 0 || binding.recursion == Recursion::And =>
-                        {
-                            Some(binding.clone())
-                        }
-                        _ => None,
-                    })
-                    .collect();
+            let group = recursive_group(&body.statements[count..]);
+            if !group.is_empty() {
                 prefix.extend(self.let_rec_group(&group)?);
                 count += group.len();
                 continue;
@@ -1958,12 +1968,20 @@ impl Checker<'_> {
         let Some(first) = body.statements.first() else {
             return Ok((Vec::new(), make(ExprKind::Unit, body.span, 1)?));
         };
+        // The members of a `let rec` group are bound together (B09), so the continuation starts
+        // after all of them.
+        let group = recursive_group(&body.statements);
         let mut tail = body.clone();
-        tail.statements.remove(0);
+        tail.statements.drain(..group.len().max(1));
         let continuation = implicit_body("task", tail)?;
         let result = match &first.kind {
             ComputationStatementKind::Let(binding, false) => {
-                block(vec![binding.clone()], continuation, body.span)?
+                let bindings = if group.is_empty() {
+                    vec![binding.clone()]
+                } else {
+                    group
+                };
+                block(bindings, continuation, body.span)?
             }
             ComputationStatementKind::Let(_, true) | ComputationStatementKind::Do(_) => {
                 let mut binding = match &first.kind {

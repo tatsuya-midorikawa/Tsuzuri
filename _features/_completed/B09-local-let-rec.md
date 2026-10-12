@@ -525,7 +525,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   `src/ownership.rs`（`capture_loans`）、`src/llvm.rs`（`is_self` が引数を見る）。
 - 警告・エディタ・整形・REPL: `src/warnings.rs`（`Uses`、`collect_block`）、`src/semantic.rs`（束縛の範囲の始まり）、`src/formatter.rs`（`and` の字下げ）、`src/repl.rs`。
 - `Binding` を構築するだけの変更: `src/derive.rs`・`src/control.rs`。
-- テスト: `tests/local_recursion.rs`（新規 14 件。うち 3 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（120 ケース）、
+- テスト: `tests/local_recursion.rs`（新規 14 件。うち 3 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（130 ケース）、
   `tests/local_recursion_fuzz.mjs`（新規。乱数の差分テスト）。
 - 文書: `docs/language.md`（「匿名関数と捕捉」「再帰とスタック」と新しい「ローカルな `let rec`」）、`docs/architecture.md`（モジュール表・閉包の節・末尾再帰・テスト）、`README.md`、`_tsuzuri/language-reference/values-and-functions/`
   の `functions.md`（新しい節と実行例 3 つ、図）・`lambda-expressions.md`・`values.md`・`keywords.md`、`computation-expressions/computation-expressions.md`、`compiler/diagnostics.md`、`_features/README.md`・`GUIDE.md`（D-46）、このチケット（`_completed/` へ移動）。
@@ -537,10 +537,10 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 - Rust テスト: `cargo test --locked --test local_recursion` が `running 14 tests`・14 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行と、レビューで足した 3 件）。
   `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、すべての test binary と doc test（98 の結果行）で **1,217 件成功**（基準の 1,199 件 + 新しい 18 件）、失敗 0、無視 0 だった。
   `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（43 ファイル）が成功。GUIDE §3.1 の 4 つの回帰テストは、既定の stack で各 1 件（`running 1 test`）成功した。
-- E2E（release を `cargo build --release --locked` した直後）: `features`（**13,839 ケース**。基準の 13,719 + 新しい 120）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
+- E2E（release を `cargo build --release --locked` した直後）: `features`（**13,849 ケース**。基準の 13,719 + 新しい 130）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
   `e2e`、`io`、`user_drop`、`display_parse`、`integer_intrinsics`、`strings`、`allocator`、`math`、`f16_hardware` がすべて成功した（native と WASM の `-O0`・`-O3`、`live == 0`、WASM の import なし）。
-- suite `local_recursion`: 120 ケース（最初の 79 ケースの `triangle`・`factorial`・`gcd`・`fib`・`count_above`・`binary_search`・`walk`・`digits`・`escaped`・`partial`・`piped`・`nested`・`parity`・`group_captures`・`sibling`・`pair_even`・`pair_odd`・`mapped` と、
-  レビュー後の 41 ケースの `nested_string`・`nested_record`・`nested_closure`・`group_in_closure`・`builder_continuation`・`group_in_loop`・`group_in_branch`・`reassigned_direct`・`reassigned_group`・`match_borrowed`・`match_maybe`・`generic_earlier`）。期待値は suite の BigInt の式
+- suite `local_recursion`: 130 ケース（最初の 79 ケースの `triangle`・`factorial`・`gcd`・`fib`・`count_above`・`binary_search`・`walk`・`digits`・`escaped`・`partial`・`piped`・`nested`・`parity`・`group_captures`・`sibling`・`pair_even`・`pair_odd`・`mapped` と、
+  レビュー後の 51 ケースの `nested_string`・`nested_record`・`nested_closure`・`group_in_closure`・`builder_continuation`・`group_in_loop`・`group_in_branch`・`reassigned_direct`・`reassigned_group`・`match_borrowed`・`match_maybe`・`generic_earlier`・`task_group`・`task_group_after_bind`）。期待値は suite の BigInt の式
   （三角数・階乗・ユークリッドの互除法・桁数・偶奇・閉じた式）から作り、コンパイラの出力から写していない。`triangle(1,000,000)` と `piped(1,000,000)` と、借用した配列を読む `walk(500,000)` は、native と WASM（既定の 1 MiB の stack）の `-O0` でもスタックを使い切らない。
   `inspect` は、リフトした関数が 30 個以上（実際は 49 個）あり、ループ（`phi` の後方辺）が 15 個以上（実際は 16 個）で、閉包を使うループは、前の関数を関数値として呼ぶ 1 個（`group_in_closure`）以下であることを確かめる。
 - 深い再帰: `deep_local_tail_recursion_does_not_grow_the_stack` が、`triangle 1000000`（捕捉が数値）と `walk 1000000`（捕捉が借用した配列）を `tsuzuri run -O0` で実行し、`500000500000` と `499999500000` を出す。
@@ -577,7 +577,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 
 ### レビューでの指摘と修正（PR #23）
 
-独立したコードレビューが 6 件、Copilot が 1 件を見つけ、修正への再レビューで Copilot がさらに 1 件を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
+独立したコードレビューが 6 件、Copilot が 1 件を見つけ、修正への再レビューで Copilot がさらに 2 件（1 件は誤り、もう 1 件はテストの不足）を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
 
 1. **入れ子のグループを外側の本体から直接呼んでいた**（値が違う、またはクラッシュ）: `let rec outer = \s -> (let rec inner = ... s ...; inner 3)` で、`inner` の捕捉 `s` は外側のリフトした関数の引数で、借用した捕捉ではない。
    外側が `s` を `ref String` の引数として `inner` に渡し直すと、文字列を参照の位置に渡すことになった（レコード、外側の本体のローカルの関数値でも同じ）。
@@ -590,6 +590,8 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 7. （Copilot）**REPL が `let rec ... and ...` の 2 つ目以降のメンバーの名前を項目に登録しなかった**: 1 行で書いた `let rec even = ...; and odd = ...` が、`even` しか表示せず、`:list` にも `even` だけが載った。
 8. （Copilot の再レビュー）**コンピュテーション式の `@checked` を付けた文が、前の文を見ずに `and` をグループのメンバーとして読んだ**: `let a = 1` の後の単独の `@checked and g = ...` が、専用の診断（`'and' continues a 'let rec' group; ...`）でなく
    `@checked cannot apply to a 'let rec' binding` になった。`checked_computation_statement` が `computation_statement(true)` と、`after_rec` を固定して呼んでいた。
+9. （Copilot の再レビュー。「見落とし」として）**結果型が `Task<T>` の関数の本体（暗黙の task）で、`let rec ... and ...` のグループが 1 文ずつに分かれた**: `lower_implicit_task_sequence` は先頭の 1 文だけを外して継続を作るので、
+   グループが 1 メンバーずつの入れ子のブロックになり、`even` の本体の `odd` が `E1002`（`unknown value`）になった。`let!` の後でも同じ。明示した `task { }` はパーサーが通常のブロックにするので誤りがなく、ビルダーを決めるときの `implicit_prefix` はグループをまとめていた。
 
 修正:
 
@@ -602,9 +604,11 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 - 5: `src/polymorph.rs` の型変数の捕捉の検査が、関数型の捕捉を飛ばす。
 - 7: `src/repl.rs` の `Item.binding` を `bindings` にし、グループの全メンバーの名前と位置を登録する。
 - 8: `src/parser.rs` の `checked_computation_statement` が `after_rec` を受け取って渡す。`tests/local_recursion.rs` の `rejects_invalid_let_rec_syntax` に、`let rec` の後の `@checked and`（`@checked` の診断）、単独の `and`、単独の `@checked and`（どちらも stray-`and` の診断）を足した。
+- 9: `src/computation.rs` に `recursive_group` を足し、`implicit_prefix` と `lower_implicit_task_sequence` が使う。後者は、先頭のグループの全メンバーを 1 つのブロックに束縛してから、その後ろを継続にする。
+  `local_let_rec_in_computation_expressions` に、本体の先頭・`let!` の後・ほかの文の間のグループと、明示した `task { }` の 4 ケースを足した。E2E の `task_group`・`task_group_after_bind` が値を確かめる。1 文ずつ展開する経路は、複数の文で 1 つになる構文（`let rec ... and ...`）を分けやすい。ほかの経路（`implicit_prefix`、`implicit_builder_sequence` の前置き、`direct_block`、`Lowering::block`）は、連続する束縛をまとめて扱うことを確かめた。
 
 回帰テスト: `tests/local_recursion.rs` に 2 件（`local_let_rec_functions_are_called_directly_only_where_their_captures_exist`、`local_let_rec_borrows_what_a_match_only_reads`）を足し、`..._call_earlier_and_enclosing_ones_directly` はそのまま通る。どちらも、修正前（`3cd1e66f`）では失敗する
-（1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 12 の export と 41 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと
+（1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 14 の export と 51 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export と 9 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと
 `tests/repl.mjs` の R22 が 7 を固定する。`rejects_invalid_let_rec_syntax` が 8 を固定する。
 Copilot の 2 回目の再レビューは、指摘ではなくテストの不足を挙げた: 前の `let rec` 関数を直接呼べないグループ（代入された捕捉、ラムダ式、継続）の閉包が、関数値を借用して関数から返る経路である。事前の所有権検査（`capture_loans`）は、`let rec` の関数型の捕捉に借用を付けず、
 安全は、リフトの後の所有権検査が `Borrow(Local)` を持つ環境の返却を `E1013` で拒否することに掛かっている。`local_let_rec_cannot_return_a_closure_that_borrows_an_earlier_function` が、3 つの経路すべてが `E1013` になること（前の関数が数値だけを捕捉していても）と、直接呼べるグループは返せることを固定する。

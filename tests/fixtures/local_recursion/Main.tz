@@ -252,3 +252,25 @@ fn pick_after x y =
 export def generic_earlier :: i64 -> i64
 fn generic_earlier count =
     pick_after count 7
+
+// A group in the body of a task: its members are bound together, also after a `let!`.
+def parity_job :: i64 -> Task<bool>
+fn parity_job count =
+    let rec even = \n -> if n == 0 then true else odd (n - 1)
+    and odd = \n -> if n == 0 then false else even (n - 1)
+    return even count
+
+export def task_group :: i64 -> i64
+fn task_group count =
+    if Task.run (parity_job count) then 1 else 0
+
+def bound_parity_job :: Task<i64> -> Task<bool>
+fn bound_parity_job source =
+    let! count = source
+    let rec even = \n -> if n == 0 then true else odd (n - 1)
+    and odd = \n -> if n == 0 then false else even (n - 1)
+    return even count
+
+export def task_group_after_bind :: i64 -> i64
+fn task_group_after_bind count =
+    if Task.run (bound_parity_job (task { return count })) then 1 else 0

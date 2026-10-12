@@ -1024,6 +1024,9 @@ const suites = {
       ...[0n, 12345n, 54321n].map((n) => ["match_borrowed", [n], n === 12345n ? 1n : 2n]),
       ...[-1n, 0n, 1n, 12345n].map((n) => ["match_maybe", [n], n > 0n ? 1n : 2n]),
       ...[0n, 7n, -3n].map((n) => ["generic_earlier", [n], n]),
+      // The members of a group in the body of a task are bound together.
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group_after_bind", [n], n % 2n === 0n ? 1n : 0n]),
     ],
     inspect(ir) {
       const lifted = ir.split("\ndefine ").filter((body) => /^internal \S+ @tz\.fn\.\$lambda\.\d+\(/.test(body));
