@@ -14,8 +14,9 @@ pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
         .iter()
         .map(|local| (local.id, local))
         .collect();
-    let mut used = BTreeSet::new();
-    collect_locals(&function.body, &mut locals, &mut used);
+    let mut uses = Uses::default();
+    collect_locals(&function.body, &mut locals, &mut uses);
+    let used = uses.finish();
     locals
         .into_values()
         .filter(|local| {
@@ -36,26 +37,98 @@ pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// The locals that a body mentions. A `let rec` function that only its own group's bodies mention
+/// is unused unless a used function of the group calls it (B09), so those mentions are kept as
+/// calls between the functions.
+#[derive(Default)]
+struct Uses {
+    used: BTreeSet<usize>,
+    /// The `let rec` functions whose bodies are being walked, each with its group.
+    bodies: Vec<(usize, Vec<usize>)>,
+    /// The functions of a group that the body of each function mentions.
+    calls: BTreeMap<usize, BTreeSet<usize>>,
+}
+
+impl Uses {
+    fn mention(&mut self, id: usize) {
+        match self
+            .bodies
+            .iter()
+            .rev()
+            .find(|(_, group)| group.contains(&id))
+        {
+            Some((owner, _)) => {
+                self.calls.entry(*owner).or_default().insert(id);
+            }
+            None => {
+                self.used.insert(id);
+            }
+        }
+    }
+
+    /// The used locals: what a used function calls is used too.
+    fn finish(mut self) -> BTreeSet<usize> {
+        loop {
+            let mut changed = false;
+            for (owner, callees) in &self.calls {
+                if self.used.contains(owner) {
+                    for callee in callees {
+                        changed |= self.used.insert(*callee);
+                    }
+                }
+            }
+            if !changed {
+                return self.used;
+            }
+        }
+    }
+}
+
+/// The locals a block declares, and what its values and its result mention. The body of a `let rec`
+/// function is walked as the body of that function. A function of its own, so that the frame of
+/// `collect_locals`, which every level of an expression pays for, stays small.
+fn collect_block<'a>(
+    bindings: &'a [(Local, TypedExpr)],
+    result: &'a TypedExpr,
+    locals: &mut BTreeMap<usize, &'a Local>,
+    uses: &mut Uses,
+) {
+    locals.extend(bindings.iter().map(|(local, _)| (local.id, local)));
+    for (local, value) in bindings {
+        match &value.kind {
+            TypedExprKind::Lambda { recursive, .. } if !recursive.is_empty() => {
+                let group = recursive.iter().map(|member| member.id).collect();
+                uses.bodies.push((local.id, group));
+                collect_locals(value, locals, uses);
+                uses.bodies.pop();
+            }
+            _ => collect_locals(value, locals, uses),
+        }
+    }
+    collect_locals(result, locals, uses);
+}
+
 fn collect_locals<'a>(
     expression: &'a TypedExpr,
     locals: &mut BTreeMap<usize, &'a Local>,
-    used: &mut BTreeSet<usize>,
+    uses: &mut Uses,
 ) {
     use TypedExprKind::*;
     match &expression.kind {
-        Local(id) => {
-            used.insert(*id);
-        }
+        Local(id) => uses.mention(*id),
         Lambda {
             parameters,
             captures,
             ..
         } => {
             locals.extend(parameters.iter().map(|local| (local.id, local)));
-            used.extend(captures.iter().map(|local| local.id));
+            for capture in captures {
+                uses.mention(capture.id);
+            }
         }
-        Block { bindings, .. } => {
-            locals.extend(bindings.iter().map(|(local, _)| (local.id, local)))
+        Block { bindings, result } => {
+            collect_block(bindings, result, locals, uses);
+            return;
         }
         ForRange { local, .. } | ForEach { local, .. } => {
             locals.insert(local.id, local);
@@ -137,7 +210,7 @@ fn collect_locals<'a>(
         | DynDispatch { .. } => {}
     }
     for child in expression.children() {
-        collect_locals(child, locals, used);
+        collect_locals(child, locals, uses);
     }
 }
 

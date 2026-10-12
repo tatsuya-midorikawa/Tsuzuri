@@ -313,6 +313,9 @@ struct Hints {
     else_owners: BTreeMap<usize, (usize, usize)>,
     arm_owners: BTreeMap<usize, usize>,
     body_owners: BTreeMap<usize, usize>,
+    /// The names that follow the `and` of a local `let rec` group (B09): that `and` is a statement
+    /// of its block, not a top-level declaration.
+    group_names: BTreeSet<usize>,
 }
 
 fn column(source: &str, offset: usize) -> usize {
@@ -429,8 +432,11 @@ impl Layout {
             self.type_index += 1;
         }
         let in_type = token.span.start < self.type_end;
+        let group_member = token.kind == TokenKind::And
+            && next.is_some_and(|next| hints.group_names.contains(&next.span.start));
         if self.delimiters.is_empty()
             && !in_type
+            && !group_member
             && matches!(
                 token.kind,
                 TokenKind::Def
@@ -1071,6 +1077,9 @@ impl Canonical {
     }
 
     fn binding(&mut self, binding: &mut Binding) {
+        if binding.recursion == Recursion::And {
+            self.hints.group_names.insert(binding.name.span.start);
+        }
         self.ident(&mut binding.name);
         if let Some(ty) = &mut binding.annotation {
             // A statement's implicit `unit` annotation spans the statement, which is no type text.

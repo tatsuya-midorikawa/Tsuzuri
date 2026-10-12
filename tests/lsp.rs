@@ -861,6 +861,65 @@ fn index_follows_lambda_captures() {
     );
 }
 
+const LET_REC: &str = "def f :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n";
+
+/// B09: a `let rec` name is a local that its own function and the other functions of its group
+/// refer to, from the end of the group's first name.
+#[test]
+fn index_links_local_let_rec_functions() {
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", LET_REC)]).unwrap();
+    let even = definition(&index, 0, "even", SymbolKind::Local);
+    assert_eq!(
+        starts(&index, even),
+        [
+            (0, at(LET_REC, "even =")),
+            (0, at(LET_REC, "even (m")),
+            (0, at(LET_REC, "even n"))
+        ]
+    );
+    let odd = definition(&index, 0, "odd", SymbolKind::Local);
+    // The call in the body of `even` comes before the declaration of `odd`, which is the later
+    // name of the group.
+    assert_eq!(
+        starts(&index, odd),
+        [(0, at(LET_REC, "odd (m")), (0, at(LET_REC, "odd ="))]
+    );
+    assert_eq!(index.occurrences(even)[0].role, Role::Declaration);
+    for definition in [even, odd] {
+        let scope = index
+            .scopes
+            .iter()
+            .find(|scope| scope.definition == definition)
+            .unwrap();
+        assert_eq!(scope.visible.start, at(LET_REC, "even =") + "even".len());
+        assert_eq!(scope.visible.end, LET_REC.len() - 1);
+    }
+}
+
+/// B09: renaming a `let rec` function rewrites its own calls, the calls of its group, and the uses
+/// after it, and nothing else.
+#[test]
+fn rename_covers_every_use_of_a_local_let_rec_function() {
+    let mut main_uri = String::new();
+    let responses = scripted(&[("Main.tz", LET_REC)], "utf-16", |uri| {
+        main_uri = uri("Main.tz");
+        let main = main_uri.as_str();
+        vec![
+            rename_request(1, main, LET_REC, "even =", "evens"),
+            rename_request(2, main, LET_REC, "odd (m", "odds"),
+            serde_json::json!({"id": 3, "method": "textDocument/references", "params": {"textDocument": {"uri": main}, "position": position(LET_REC, "even n", "utf-16"), "context": {"includeDeclaration": false}}}),
+        ]
+    });
+    for (response, (name, count)) in responses.iter().zip([("evens", 3), ("odds", 2)]) {
+        let edits = response["result"]["changes"][main_uri.as_str()]
+            .as_array()
+            .unwrap_or_else(|| panic!("{response}"));
+        assert_eq!(edits.len(), count, "{response}");
+        assert!(edits.iter().all(|edit| edit["newText"] == name));
+    }
+    assert_eq!(responses[2]["result"].as_array().unwrap().len(), 2);
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_file_uris_round_trip_drive_letters_and_canonical_paths() {

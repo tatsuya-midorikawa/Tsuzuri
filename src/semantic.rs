@@ -840,7 +840,15 @@ fn index_function(
             TypedExprKind::Block { bindings, .. } => {
                 for (local, value) in bindings {
                     locals.insert(local.id, local);
-                    scopes.push((local.id, value.span.end, end));
+                    // A `let rec` name is in scope in its own function, and every member of a group
+                    // in all of them (B09): its scope starts where the group's first name ends.
+                    let start = match &value.kind {
+                        TypedExprKind::Lambda { recursive, .. } if !recursive.is_empty() => {
+                            recursive[0].span.end
+                        }
+                        _ => value.span.end,
+                    };
+                    scopes.push((local.id, start, end));
                 }
             }
             TypedExprKind::Lambda {

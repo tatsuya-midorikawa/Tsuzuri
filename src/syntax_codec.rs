@@ -278,6 +278,7 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
+unit_enum!(Recursion { None, Rec, And });
 unit_enum!(DeriveClass {
     Eq,
     Ord,
@@ -1880,12 +1881,14 @@ impl Wire for Binding {
             name,
             mutable,
             using,
+            recursion,
             annotation,
             value,
         } = self;
         name.put(out)?;
         mutable.put(out)?;
         using.put(out)?;
+        recursion.put(out)?;
         annotation.put(out)?;
         value.put(out)
     }
@@ -1895,6 +1898,7 @@ impl Wire for Binding {
             name: Ident::get(input)?,
             mutable: bool::get(input)?,
             using: bool::get(input)?,
+            recursion: Recursion::get(input)?,
             annotation: Option::get(input)?,
             value: Expr::get(input)?,
         })
@@ -2379,10 +2383,12 @@ mod tests {
                 seen.extend(round_trips(&text, 0).unwrap_or_default());
             }
         }
-        // Array patterns, active pattern arguments and unary plus appear only in the Rust tests.
+        // Array patterns, active pattern arguments, unary plus and local `let rec` groups appear
+        // only in the Rust tests.
         let patterns = "def (|Above|_|) :: &i64 -> i64 -> bool\nfn (|Above|_|) limit n = n > *limit\n\
             def f :: i64 -> i64\nfn f n = { let limit = 3; match n with | Above (&limit) -> 1 | _ -> 0 }\n\
-            def g :: [i64] -> i64 = \\xs ->\n    match xs with\n    | [x; y] -> +x + y\n    | _ -> 0\n";
+            def g :: [i64] -> i64 = \\xs ->\n    match xs with\n    | [x; y] -> +x + y\n    | _ -> 0\n\
+            def h :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n";
         seen.extend(round_trips(patterns, 0).expect("the pattern sample parses"));
         // Only the checker, the computation expansion and `Bits.ushr` make these variants.
         let mut program = parse_with_source_all("def f :: i64 = 1\n", 0).unwrap();
@@ -2428,6 +2434,7 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
+            ("Recursion", 3),
             ("DeriveClass", 7),
             ("UnaryOp", 4),
             ("BinaryOp", 21),

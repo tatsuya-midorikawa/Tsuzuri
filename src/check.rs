@@ -3656,6 +3656,10 @@ pub enum TypedExprKind {
         body: Box<TypedExpr>,
         /// Passed directly to `Owned.function` (B07); the body borrows the captures.
         owned: bool,
+        /// The functions of the `let rec` group that binds this lambda, in binding order and this
+        /// one included; empty for any other lambda (B09). Their names are in scope in the body
+        /// without being captured: `closures::lower` turns the uses into direct calls.
+        recursive: Vec<Local>,
     },
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
@@ -3805,7 +3809,14 @@ impl TypedExpr {
 
     /// The first use that consumes or mutates `local`; without one the local can stay borrowed.
     pub(crate) fn consuming_use(&self, local: usize, types: &TypeContext<'_>) -> Option<Span> {
-        self.local_use(local, LocalAccess::Consume, types)
+        self.local_use(local, LocalAccess::Consume, types, false)
+    }
+
+    /// `consuming_use` for a `let rec` function that borrows `local` (B09): a `match` only reads
+    /// the place that it matches, and a binding that takes a non-Copy value out of it moves it. A
+    /// closure that takes the local is the use, not the declaration of the local.
+    pub(crate) fn moving_use(&self, local: usize, types: &TypeContext<'_>) -> Option<Span> {
+        self.local_use(local, LocalAccess::Consume, types, true)
     }
 
     fn local_use(
@@ -3813,10 +3824,11 @@ impl TypedExpr {
         local: usize,
         access: LocalAccess,
         types: &TypeContext<'_>,
+        exact: bool,
     ) -> Option<Span> {
         use TypedExprKind::*;
-        let read = |value: &Self| value.local_use(local, LocalAccess::Read, types);
-        let consume = |value: &Self| value.local_use(local, LocalAccess::Consume, types);
+        let read = |value: &Self| value.local_use(local, LocalAccess::Read, types, exact);
+        let consume = |value: &Self| value.local_use(local, LocalAccess::Consume, types, exact);
         match &self.kind {
             Local(id) if *id == local => match access {
                 LocalAccess::Consume if self.ty.is_copy(types) => None,
@@ -3831,6 +3843,7 @@ impl TypedExpr {
                     LocalAccess::Read
                 },
                 types,
+                exact,
             ),
             BorrowOperand(value) => read(value),
             Slice { value, start, end } => value
@@ -3842,10 +3855,11 @@ impl TypedExpr {
                         LocalAccess::Read
                     },
                     types,
+                    exact,
                 )
                 .or_else(|| start.iter().chain(end).find_map(|bound| consume(bound))),
             Assign(place, value) => place
-                .local_use(local, LocalAccess::Write, types)
+                .local_use(local, LocalAccess::Write, types, exact)
                 .or_else(|| consume(value)),
             Field(value, _) | Index(value, _) | UnionPayload { value, .. } if self.is_place() => {
                 let access = match access {
@@ -3853,13 +3867,15 @@ impl TypedExpr {
                     other => other,
                 };
                 value
-                    .local_use(local, access, types)
+                    .local_use(local, access, types, exact)
                     .or_else(|| match &self.kind {
                         Index(_, index) => consume(index),
                         _ => None,
                     })
             }
             Length(value) | StringLength(value) | UnionTag(value) => read(value),
+            Closure(_, values) if exact => values.iter().find_map(consume).map(|_| self.span),
+            Match { value, arms, .. } if exact => self.match_use(value, arms, local, access, types),
             Binary(
                 BinaryOp::Equal
                 | BinaryOp::NotEqual
@@ -3872,6 +3888,31 @@ impl TypedExpr {
             ) => read(left).or_else(|| read(right)),
             _ => self.children().into_iter().find_map(consume),
         }
+    }
+
+    /// `local_use` of the `match` `self` for `moving_use`: the matched place is read, and only a
+    /// binding that takes a non-Copy value out of it moves it. The guards and bodies consume.
+    fn match_use(
+        &self,
+        value: &Self,
+        arms: &[TypedMatchArm],
+        local: usize,
+        access: LocalAccess,
+        types: &TypeContext<'_>,
+    ) -> Option<Span> {
+        let moves = arms.iter().any(|arm| {
+            arm.alternatives.iter().any(|alternative| {
+                alternative
+                    .bindings
+                    .iter()
+                    .any(|(binding, _)| !binding.ty.is_copy(types) && !arm.views(binding, types))
+            })
+        });
+        let access = if moves { access } else { LocalAccess::Read };
+        value.local_use(local, access, types, true).or_else(|| {
+            let consume = |child: &Self| child.local_use(local, LocalAccess::Consume, types, true);
+            self.children().into_iter().skip(1).find_map(consume)
+        })
     }
 
     /// The direct subexpressions of this expression.
@@ -4329,6 +4370,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
                     name: named("$case"),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: Some(TypeExpr {
                         kind: TypeExprKind::Function(vec![i64_type()], Box::new(i64_type())),
                         span,
@@ -7519,6 +7561,15 @@ fn duplicate(name: &Ident) -> Diagnostic {
     )
 }
 
+/// How many bindings the `let rec` group at the start of `bindings` has: the `let rec` binding and
+/// the `and` bindings that follow it (B09).
+pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
+    1 + bindings[1..]
+        .iter()
+        .take_while(|binding| binding.recursion == Recursion::And)
+        .count()
+}
+
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
 /// primitive and SIMD type names, `_`, the built-in `Array`, `Task`, and `Vec`,
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
@@ -9344,27 +9395,16 @@ impl<'a> Checker<'a> {
                     expected,
                     expression.span,
                     LambdaKind::Function,
+                    &[],
                 );
             }
             ExprKind::Task(body) => {
-                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task);
+                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task, &[]);
             }
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
-                let mut checked = Vec::new();
-                for binding in bindings {
-                    let annotation = self.binding_annotation(binding)?;
-                    let value = self.expression(&binding.value, annotation.as_ref())?;
-                    let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
-                        Type::Error
-                    } else {
-                        value.ty.clone()
-                    };
-                    self.require_use(binding, &ty)?;
-                    let local = self.bind(&binding.name, ty, binding.mutable);
-                    checked.push((local, value));
-                }
+                let checked = self.block_bindings(bindings)?;
                 let result = self.expression(result, expected)?;
                 self.scopes.pop();
                 let ty = result.ty.clone();
@@ -9379,6 +9419,80 @@ impl<'a> Checker<'a> {
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    /// Checks the bindings of a block in order, a `let rec` group (B09) as one. It is a function
+    /// of its own so that its locals are not in the frame of `composed_expression`, which every
+    /// level of an expression pays for.
+    fn block_bindings(
+        &mut self,
+        bindings: &[Binding],
+    ) -> Result<Vec<(Local, TypedExpr)>, Diagnostic> {
+        let mut checked = Vec::new();
+        let mut index = 0;
+        while index < bindings.len() {
+            let binding = &bindings[index];
+            if binding.recursion != Recursion::None {
+                let count = recursive_group_len(&bindings[index..]);
+                checked.extend(self.let_rec_group(&bindings[index..index + count])?);
+                index += count;
+                continue;
+            }
+            index += 1;
+            let annotation = self.binding_annotation(binding)?;
+            let value = self.expression(&binding.value, annotation.as_ref())?;
+            let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
+                Type::Error
+            } else {
+                value.ty.clone()
+            };
+            self.require_use(binding, &ty)?;
+            let local = self.bind(&binding.name, ty, binding.mutable);
+            checked.push((local, value));
+        }
+        Ok(checked)
+    }
+
+    /// A `let rec` group (B09). Every name is bound before any function is checked, so each body
+    /// can call itself and the other members, and the lambdas capture none of them: their uses
+    /// become direct calls when `closures::lower` lifts the group.
+    pub(super) fn let_rec_group(
+        &mut self,
+        group: &[Binding],
+    ) -> Result<Vec<(Local, TypedExpr)>, Diagnostic> {
+        let mut locals: Vec<Local> = Vec::with_capacity(group.len());
+        for binding in group {
+            if binding.name.text != "_"
+                && locals.iter().any(|local| local.name == binding.name.text)
+            {
+                return Err(duplicate(&binding.name));
+            }
+            let ty = match self.binding_annotation(binding)? {
+                Some(ty) => ty,
+                None => self.inference.fresh(),
+            };
+            locals.push(self.bind(&binding.name, ty, false));
+        }
+        let mut checked = Vec::with_capacity(group.len());
+        for (binding, local) in group.iter().zip(&locals) {
+            let ExprKind::Lambda(names, body) = &binding.value.kind else {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "internal compiler error: a 'let rec' binding is not a lambda",
+                    binding.value.span,
+                ));
+            };
+            let value = self.lambda(
+                names,
+                body,
+                Some(&local.ty),
+                binding.value.span,
+                LambdaKind::Function,
+                &locals,
+            )?;
+            checked.push((local.clone(), value));
+        }
+        Ok(checked)
     }
 
     /// A `use` binding is a `let` whose value type must implement `Drop` (B07).
@@ -10111,7 +10225,7 @@ impl<'a> Checker<'a> {
             normal_loop_depth: self.normal_loop_depth,
             computation_depth: self.computation_depth,
         };
-        let result = self.lambda(names, body, Some(expected), span, LambdaKind::Owned);
+        let result = self.lambda(names, body, Some(expected), span, LambdaKind::Owned, &[]);
         self.finish_recovery(result, mark, span)
     }
 

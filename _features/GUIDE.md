@@ -236,6 +236,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
        polymorph.rs             Inference（単一化）、Classes（型クラス）、specialize（単相化）
        recursion.rs             rec 指定の検査（参照グラフの SCC）
        closures.rs              lambda の型検査、捕捉、lambda lifting（closures::lower）
+       closures_rec.rs          ローカルな let rec（グループ）のリフト（B09）
   -> ownership (src/ownership.rs, src/ownership_control.rs)   move/loan/寿命の検査（単相化の前後で実行）
   -> llvm (src/llvm.rs)        FunctionEmitter による決定的な LLVM IR
        llvm_control.rs          ループ・match・switch・定数表
@@ -262,6 +263,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/polymorph.rs` | `Constraint`、`Scheme`、`Inference`（`fresh`、`resolve`、`unify`、`default_numeric`）、`Classes`（`collect`、`resolve`、`inline_constraints`、`instances`、`method`、`intrinsic`、`validate`）、`map_type`、`substitute`、`bounded_type`、`require_concrete`、`type_expression`、`Checker::{builtin, function, method, require, annotation, call_signature, finish}`、`specialize`、`Specializer::{request, instantiate, lower, operator_call, intrinsic_function}` | 型推論・型クラス・単相化 |
 | `src/control.rs` | `Checker::control_expression`、`match_value`、`pattern_alternatives`、`active_pattern`、`length_test`、`combine` | 制御構文とパターンの型付け。パターンは `PatternStep::Test`（bool 式）と `Bind` の列へ展開 |
 | `src/closures.rs` | `Checker::lambda`、`free_locals`、`lower`、`lower_expression` | 匿名関数と lambda lifting |
+| `src/closures_rec.rs` | `lower_block`、`lower_group`、`lower_body`、`rewrite`、`Captured`、`Frame`、`State` | ローカルな `let rec`（`and` のグループ）のリフト。捕捉の値渡しと借用の分類、本体ごとのフレーム（どの `let rec` 関数を直接呼べるか）、直接呼び出しへの書き換え（B09、D-46） |
 | `src/computation.rs` | `OPERATIONS`、`collect_all`（`@alias` の収集を含む）、`expand`、`resolved_builder`、`Lowering::{block, continuation, delay, call}` | ビルダー式の展開と、別名のビルダーへの書き換え（D-43） |
 | `src/recursion.rs` | `check`、`references` | `rec` 検査 |
 | `src/ownership.rs` | `check`、`infer_copy`、`check_body`、`closed_returns`、`Checker::{access, place, read_place(s), eval, eval_composed, eval_value, merge}`、`count_uses`、`uses` | 所有権と借用 |
@@ -1535,6 +1537,41 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   全体は `RUST_MIN_STACK=4194304` を付けて流す（これまでの PR と同じ値。`targets.yml` もこれ）。§3.1 の 4 つの単独の実行は既定の stack のままで、linux-arm64 では 1 つ目が通らない。
   上限や stack の大きさのコードは変えていない。フレームを小さくするか、テストが stack を決める修正は別の変更にする。
 
+### D-46 追加チケット（D12・B09）の確定
+
+- 2026-10-12、利用者の「D12, B09 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。複数フェーズある場合には、すべてのフェーズを完了させること。…
+  何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、B09 の D9（Phase 2 の相互再帰・解放処理を持つ値の捕捉・ほかの `let rec` 関数の参照）の承認として扱った。
+  着手時点は `aecdf75e`（PR #22 のマージ）。詳細は各チケットの「実装と検証」（`_features/_completed/`）にある。
+- 共通: 新しい予約語（`rec`・`and` は既存）・診断コード・crate・`unsafe`・CLI・環境変数・std モジュール・既定の WASM の import はない。`FRONTEND_FORMAT` は B09（`Binding.recursion`）で 3 から 4 になった。
+  `let rec` を書かないプログラムの IR は、D12 を実装した基準のコンパイラとバイト単位で比べて同じだった（`examples/` と `tests/fixtures/` の 105 ディレクトリ × native・wasm32 × `-O0`・`-O3` の 420 構成のうち
+  366 が一致、50 は両者が同じ診断で失敗、差は 0。残りの 4 は新しい fixture を基準が読めない構成）。D12 自身の IR の差は、重複した `declare` を落とすことだけである。
+- D12（intrinsic 宣言の重複）: 連結後のランタイム IR の `declare` を、シンボル名ごとに最初の 1 つだけ残す（`llvm::unique_declarations`、`emit_program` の最後。重複が無ければ入力をそのまま返す）。
+  テストの一意性の検査は行全体の比較をやめ、`llvm::duplicate_declarations`（JavaScript は `@` から `(` までの名前）で行う。driver の `debug_assert!` は、後段の変換が足す重複を debug build で検出する。
+- B09（ローカルな `let rec`）: `Binding.recursion`（`None`・`Rec`・`And`）、`TypedExprKind::Lambda.recursive`（group の members）。型検査は group の名前を先に束縛する（`Checker::let_rec_group`）。リフトは `src/closures_rec.rs` で、
+  group の捕捉を各メンバーの捕捉と、本体が参照する前の・外側の `let rec` 関数のうち直接呼べるものの捕捉の和にし、リフト先の id を本体を下ろす前に予約して、そのメンバーの本体が直接呼ぶ名前の使用を直接呼び出しに書き換える。
+  直接呼べるかは本体ごとの `Frame` で決める（リフトしたメンバーの本体と通常のラムダ式の本体が 1 つずつ）。捕捉は、グループを束縛した本体のローカルと、グループのメンバーの引数としてしか存在しないので、
+  前の関数の捕捉を引き継げるのは、その関数が `Frame.direct` にあるか、同じフレームで束縛されていて値渡しの捕捉が代入・可変借用されていない（`State.mutated`）ときだけである。それ以外は関数値として捕捉し、閉包を通して呼ぶ。
+  **D4 の置き換え**: 値で渡せない捕捉（`!(is_copy && !needs_drop)`）は、特殊化の後の具象型で分類して共有借用にする（閉包は `Borrow(Local)`、リフトした関数は `ref T`）。
+  借用した捕捉の移動は `E1012`、借用を持つ閉包を持ち主から返すのは `E1013`、型変数を含む型の捕捉は `E1005`（チケットの対象外のまま）。通常のラムダが捕捉できない値（`Drop`・`Rc`）は従来どおり `E1005`。
+  末尾呼び出しは、借用した捕捉をそのまま渡し直すときもループにする（`llvm::FunctionEmitter::is_self` が引数を見る。`capture_count` が 0 の関数、つまり `def rec` は従来どおり借用を持つ引数でループにならない）。
+  相互再帰の末尾呼び出しと関数値を介した再帰はループにならない。
+- **教訓（debug build の stack）**: 再帰する関数のフレームは、debug build では全 arm の局所変数と一時値の和になり、`?` 1 つにつき `Diagnostic` を持つ `Result` の一時値が 3 つ付く。B09 の最初の版は
+  `composed_expression`・`lower_expression`・`eval_lambda`・`collect_locals` と parser の再帰する関数へ分岐を足したので、§3.1 の `bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack が
+  2,033,203 から約 2,098,000 bytes になり、既定の 2 MiB（2,097,152）で溢れた。新しい処理は専用の関数（`block_bindings`・`implicit_prefix`・`capture_loans`・`collect_block`・`closures_rec::lower` など）へ出し、
+  再帰する関数からは `return helper(..)` でそのまま返し、診断は `rec_error<T>` のような関数が作る。結果は 1,802,734 bytes（Block の束縛ループを出した `composed_expression` が 6,368 から 3,680 bytes になったため、
+  基準より小さい）。レビューの修正（ラムダ式の本体ごとの `lower_body` が再帰の経路に 1 つ増える）のあとは、1,816,000 bytes で溢れ、1,824,000 bytes で通る（それでも基準より小さい）。測り方は `RUST_MIN_STACK` の二分探索で、macOS arm64 は 16 KiB 刻みになる。`bounds_computation_syntax_and_expansion` は基準と同じく既定の stack で溢れる（最終は 2,130,000 bytes で溢れ、2,150,000 bytes で通る。基準は 2,130,638 bytes）。
+  再帰する関数へ分岐を足したあとは、§3.1 の 4 つのテストを既定の stack で必ず実行する。
+- **教訓（レビューで見つかった B09 の誤り）**: PR のレビュー（独立したコードレビューと Copilot）が 9 件を見つけ、テストの不足も 1 件挙げた。うち 3 件は、リフトした関数が「捕捉を引数として持つ」前提で、前の・外側の `let rec` 関数を
+  どこからでも直接呼んでいたことによる（入れ子のグループが外側の本体から呼ばれる、ラムダ式・継続の中のグループが前の関数の捕捉を持つ、代入された値渡しの捕捉を引き継ぐ）。誤りは値の違いか、emitter の panic として出た。
+  残りは `match` の対象を常にムーブとして扱っていたこと、E1012 の位置が捕捉した値の宣言を指していたこと、`let rec` の関数型の捕捉が `E1005` になっていたこと、REPL が `and` のメンバーの 2 つ目以降の名前を登録しなかったこと、
+  コンピュテーション式の `@checked` を付けた文が、前の文を見ずに `and` をグループのメンバーとして読んでいたこと、暗黙の task の本体が `let rec ... and ...` のグループを 1 文ずつに分けていたことである。
+  構文の新しい 1 つの形（ここではグループ）は、文を 1 つずつ展開する経路（`lower_implicit_task_sequence`）と、状態を引数で渡す経路（`after_rec`）を、すべて洗い出してから入れる。
+  手書きのテストは書いた本人の想定に沿うので、同じ盲点を共有する。`tests/local_recursion_fuzz.mjs`（乱数で作った入れ子のグループ・クロージャ・代入される捕捉・借用した文字列と配列のプログラムを、
+  仕様から書いた独立した JS の評価器と照合する差分テスト）は、修正前のコンパイラで 150 件中 8 件の差を見つけ、最終のコンパイラは 1,399 件（深さ 5 の 400 件と、深さ 6 の 999 件。1 件は大きさで除外）がすべて一致した。リフトや捕捉の分類を変えたときは、これを回す。
+  **共有の解析を直すと、機能を使わないプログラムの IR が変わる**: `match` の誤りを `TypedExpr::consuming_use` の中で直したところ、`let rec` を書かない `tests/fixtures/maybe_result` の IR が 4 構成すべてで変わった
+  （`call_specialization::can_borrow` が同じ関数を使い、環境を複製せずに読める閉包が増えた）。テストはすべて通っていたので、気づいたのは基準との IR の比較だけである。直しは `let rec` 専用の `moving_use` に分けた。
+  修正のあとも、手順 9 の IR の比較（基準との byte 一致）をやり直す。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
@@ -1642,6 +1679,7 @@ describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + sh
 要点:
 
 - 定義は `def name :: Type = \args -> body`。再帰は `def rec` と `and name :: Type = ...`。引数のない定義は `def name :: Type = expression`。
+- 関数やブロックの中の再帰は `let rec go = \n acc -> ...`（相互再帰は `and`）。右辺はラムダ式に限る。捕捉は値か共有借用で、末尾呼び出しはループになる（B09、D-46）。
 - 制約付きの generic は制約を型の位置に書く（`Add<'a> -> 'a`）。
 - 値の型注釈は `let name: Type = value`。可変な局所変数は `let mut` と `=` の代入。
 - `for x in a .. b` は **両端を含む**。長さ `n` の配列の添字は `0i64 .. (n - 1)`。`for name = a to b` は i32 だけ。

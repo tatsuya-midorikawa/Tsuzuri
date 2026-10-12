@@ -3044,6 +3044,14 @@ fn build_complete(
         text = llvm::with_wasm_gpu_host(text, options.wasm_webgpu);
         text.push_str(include_str!("runtime/wasm.ll"));
     }
+    // `llvm::emit_*` keeps one `declare` per symbol, so a repeat here comes from a pass above (D12).
+    debug_assert!(
+        options.emit == Emit::Header
+            || options.emit.is_kernel()
+            || llvm::duplicate_declarations(&text).is_empty(),
+        "the IR declares {:?} more than once",
+        llvm::duplicate_declarations(&text)
+    );
     let task_runtime =
         options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
     // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).

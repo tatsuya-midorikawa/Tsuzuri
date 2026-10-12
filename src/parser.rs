@@ -12,6 +12,25 @@ enum ExternDeclaration {
     Function(SignatureDecl),
 }
 
+const LET_BANG_REC: &str = "a 'let!' binding cannot be recursive; define the function with 'let rec' and bind its result with 'let!'";
+const CHECKED_LET_REC: &str =
+    "@checked cannot apply to a 'let rec' binding; put it on the statements inside the function";
+const REC_MUTABLE: &str =
+    "a 'let rec' function cannot be mutable; rebind the function or use 'let mut' for data";
+const REC_NEEDS_LAMBDA: &str =
+    "a 'let rec' binding needs a lambda such as '\\n -> ...'; bind other values with 'let'";
+const STRAY_MEMBER: &str =
+    "'and' continues a 'let rec' group; start it with 'let rec' before the 'and'";
+
+/// Whether the last of `statements` is a `let rec` binding or a member of its group, which an
+/// `and` continues.
+fn ends_recursive_group(statements: &[ComputationStatement]) -> bool {
+    matches!(
+        statements.last().map(|statement| &statement.kind),
+        Some(ComputationStatementKind::Let(binding, false)) if binding.recursion != Recursion::None
+    )
+}
+
 fn duplicate_active_case(case: &Ident) -> Diagnostic {
     Diagnostic::new(
         "E1020",
@@ -2174,8 +2193,9 @@ impl Parser<'_> {
         let mut depth = 0;
         let result = loop {
             let checked = first.is_none() && self.checked_attribute();
-            if first.is_none() && self.eat(&TokenKind::Let) {
-                let mut binding = self.binding(self.in_task, false)?;
+            let member = first.is_none() && self.continues_group(bindings.last());
+            if first.is_none() && (member || self.eat(&TokenKind::Let)) {
+                let mut binding = self.binding(self.in_task, false, member, checked)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2183,7 +2203,7 @@ impl Parser<'_> {
                 bindings.push(binding);
             } else if first.is_none() && self.use_binding_ahead() {
                 self.take();
-                let mut binding = self.binding(self.in_task, true)?;
+                let mut binding = self.binding(self.in_task, true, false, false)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2224,6 +2244,7 @@ impl Parser<'_> {
                     },
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: None,
                     value,
                 });
@@ -2317,6 +2338,7 @@ impl Parser<'_> {
             },
             mutable: false,
             using: false,
+            recursion: Recursion::None,
             annotation: Some(TypeExpr {
                 kind: TypeExprKind::Named("unit".into()),
                 span,
@@ -2325,7 +2347,28 @@ impl Parser<'_> {
         })
     }
 
-    fn binding(&mut self, top_level: bool, using: bool) -> Result<Binding, Diagnostic> {
+    /// A syntax error of `let rec` (B09) at the current token, or at `span`. The parser functions
+    /// that recurse per expression return it as it is (`return self.rec_error(..)`), so that their
+    /// frames, which every level of an expression pays for, hold no error value.
+    fn rec_error<T>(&self, message: &str, span: Option<Span>) -> Result<T, Diagnostic> {
+        Err(match span {
+            Some(span) => Diagnostic::new("E0002", message, span),
+            None => self.error(message),
+        })
+    }
+
+    /// `checked` is whether `@checked` precedes the statement, which a `let rec` function and the
+    /// members of its group refuse (B09).
+    fn binding(
+        &mut self,
+        top_level: bool,
+        using: bool,
+        member: bool,
+        checked: bool,
+    ) -> Result<Binding, Diagnostic> {
+        if member {
+            return self.recursive_member(top_level, checked);
+        }
         let run = self.eat(&TokenKind::Bang);
         if run && !self.in_task {
             return Err(self.error(if using {
@@ -2334,11 +2377,17 @@ impl Parser<'_> {
                 "'let!' is only allowed inside a task block"
             }));
         }
+        if run && self.at(&TokenKind::Rec) {
+            return self.rec_error(LET_BANG_REC, None);
+        }
         let mut binding = if using {
             self.use_binding_value(top_level)?
         } else {
             self.binding_value(top_level)?
         };
+        if checked && binding.recursion != Recursion::None {
+            return self.rec_error(CHECKED_LET_REC, Some(binding.name.span));
+        }
         if run {
             let span = binding.value.span;
             let depth = binding.value.depth + 1;
@@ -2348,7 +2397,25 @@ impl Parser<'_> {
         Ok(binding)
     }
 
+    /// `[rec] [mut] name [: type] = value` after `let`.
     fn binding_value(&mut self, stop_at_newline: bool) -> Result<Binding, Diagnostic> {
+        let recursion = if self.eat(&TokenKind::Rec) {
+            Recursion::Rec
+        } else {
+            Recursion::None
+        };
+        self.binding_rest(stop_at_newline, recursion)
+    }
+
+    /// The rest of a binding after `let [rec]` or `and`; a recursive one is a lambda (B09).
+    fn binding_rest(
+        &mut self,
+        stop_at_newline: bool,
+        recursion: Recursion,
+    ) -> Result<Binding, Diagnostic> {
+        if recursion != Recursion::None && self.at(&TokenKind::Mut) {
+            return self.rec_error(REC_MUTABLE, None);
+        }
         let mutable = self.eat(&TokenKind::Mut);
         let name = self.ident()?;
         let annotation = if self.eat(&TokenKind::Colon) {
@@ -2358,13 +2425,43 @@ impl Parser<'_> {
         };
         self.expect(&TokenKind::Equal, "'=' in the binding")?;
         let value = self.expression_inner(0, true, stop_at_newline)?;
+        if recursion != Recursion::None && !matches!(value.kind, ExprKind::Lambda(..)) {
+            return self.rec_error(REC_NEEDS_LAMBDA, Some(value.span));
+        }
         Ok(Binding {
             name,
             mutable,
             using: false,
+            recursion,
             annotation,
             value,
         })
+    }
+
+    /// `and name = \x -> ...`, a member of the `let rec` group before it (B09).
+    fn recursive_member(&mut self, top_level: bool, checked: bool) -> Result<Binding, Diagnostic> {
+        if checked {
+            return self.rec_error(CHECKED_LET_REC, None);
+        }
+        self.expect(&TokenKind::And, "'and'")?;
+        let binding = self.binding_rest(top_level, Recursion::And)?;
+        self.binding_end(top_level)?;
+        Ok(binding)
+    }
+
+    /// Whether the `and` at the position continues the `let rec` group that `last` ends.
+    fn continues_group(&self, last: Option<&Binding>) -> bool {
+        self.continues_group_statement()
+            && last.is_some_and(|binding| binding.recursion != Recursion::None)
+    }
+
+    /// Whether the position holds `and` without `!`, which `let!` groups use.
+    fn continues_group_statement(&self) -> bool {
+        self.at(&TokenKind::And)
+            && !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Bang)
+            )
     }
 
     /// A `let` binding after `use`, which cannot be mutable.
@@ -2625,7 +2722,7 @@ impl Parser<'_> {
         let mut statements = Vec::new();
         let mut depth = 0;
         while !self.computation_end(indent) {
-            let statement = self.computation_statement()?;
+            let statement = self.computation_statement(ends_recursive_group(&statements))?;
             let pending = self.pending_statement.take();
             if !single && !self.computation_end(indent) {
                 self.binding_end(true)?;
@@ -2661,8 +2758,11 @@ impl Parser<'_> {
     /// `@checked` before a statement checks the arithmetic it evaluates; kept out of
     /// the recursive `computation_statement` frame.
     #[inline(never)]
-    fn checked_computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
-        let mut statement = self.computation_statement()?;
+    fn checked_computation_statement(
+        &mut self,
+        after_rec: bool,
+    ) -> Result<ComputationStatement, Diagnostic> {
+        let mut statement = self.computation_statement(after_rec)?;
         self.checked_statement(&mut statement)?;
         if let Some(mut pending) = self.pending_statement.take() {
             self.checked_statement(&mut pending)?;
@@ -2694,6 +2794,10 @@ impl Parser<'_> {
     /// Applies `@checked` to the expressions that a computation statement evaluates.
     #[inline(never)]
     fn checked_statement(&self, statement: &mut ComputationStatement) -> Result<(), Diagnostic> {
+        if matches!(&statement.kind, ComputationStatementKind::Let(binding, _) if binding.recursion != Recursion::None)
+        {
+            return self.rec_error(CHECKED_LET_REC, Some(statement.span));
+        }
         let mut values: Vec<&mut Expr> = match &mut statement.kind {
             ComputationStatementKind::Let(binding, _) => vec![&mut binding.value],
             ComputationStatementKind::LetAnd(bindings) => bindings
@@ -2759,6 +2863,7 @@ impl Parser<'_> {
                 name,
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: None,
                 value,
             },
@@ -2766,9 +2871,33 @@ impl Parser<'_> {
         ))
     }
 
-    fn computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
+    /// `and name = \x -> ...` in a computation block: a member of the `let rec` group before it
+    /// (`after_rec`). It is a function of its own so that `computation_statement`, which
+    /// recurses, stays small.
+    fn recursive_statement(
+        &mut self,
+        start: Span,
+        after_rec: bool,
+    ) -> Result<ComputationStatement, Diagnostic> {
+        if !after_rec {
+            return self.rec_error(STRAY_MEMBER, None);
+        }
+        self.take();
+        let binding = self.binding_rest(true, Recursion::And)?;
+        Ok(ComputationStatement {
+            kind: ComputationStatementKind::Let(binding, false),
+            span: start.through(self.tokens[self.position - 1].span),
+        })
+    }
+
+    /// `after_rec` is whether the statement before this one is a `let rec` binding or a member of
+    /// its group, which an `and` continues.
+    fn computation_statement(
+        &mut self,
+        after_rec: bool,
+    ) -> Result<ComputationStatement, Diagnostic> {
         if self.checked_attribute() {
-            return self.checked_computation_statement();
+            return self.checked_computation_statement(after_rec);
         }
         let start = self.current().span;
         if self.use_binding_ahead() {
@@ -2787,6 +2916,9 @@ impl Parser<'_> {
         }
         if self.at(&TokenKind::If) {
             return self.computation_if();
+        }
+        if self.continues_group_statement() {
+            return self.recursive_statement(start, after_rec);
         }
         if self.at(&TokenKind::Match)
             && self
@@ -2843,6 +2975,9 @@ impl Parser<'_> {
 
     fn computation_binding(&mut self) -> Result<ComputationStatementKind, Diagnostic> {
         let bind = self.eat(&TokenKind::Bang);
+        if bind && self.at(&TokenKind::Rec) {
+            return self.rec_error(LET_BANG_REC, None);
+        }
         let binding = self.binding_value(true)?;
         if !bind || !self.at(&TokenKind::And) {
             return Ok(ComputationStatementKind::Let(binding, bind));
@@ -2851,6 +2986,9 @@ impl Parser<'_> {
         let mut names = BTreeSet::from([bindings[0].name.text.clone()]);
         while self.eat(&TokenKind::And) {
             self.expect(&TokenKind::Bang, "'!' after and in a binding group")?;
+            if self.at(&TokenKind::Rec) {
+                return self.rec_error(LET_BANG_REC, None);
+            }
             let binding = self.binding_value(true)?;
             if binding.name.text != "_" && !names.insert(binding.name.text.clone()) {
                 return Err(Diagnostic::new(
@@ -3164,6 +3302,7 @@ impl Parser<'_> {
             name,
             mutable: false,
             using: false,
+            recursion: Recursion::None,
             annotation: None,
             value,
         };
@@ -3868,6 +4007,7 @@ impl Parser<'_> {
             name: name.clone(),
             mutable: false,
             using: false,
+            recursion: Recursion::None,
             annotation: Some(annotation),
             value: self.make(ExprKind::Array(Vec::new()), span, 1)?,
         };

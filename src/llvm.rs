@@ -1520,7 +1520,61 @@ fn emit_program(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    Ok((simd::with_vector_alignment(output), globals.traps))
+    Ok((
+        simd::with_vector_alignment(unique_declarations(output)),
+        globals.traps,
+    ))
+}
+
+/// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
+/// quoted names (`@"..."`), which neither the runtime IR nor the generated code uses, have none.
+fn declared_symbol(line: &str) -> Option<&str> {
+    let name = line.strip_prefix("declare ")?.split_once('@')?.1;
+    if name.starts_with('"') {
+        return None;
+    }
+    Some(&name[..name.find('(')?])
+}
+
+/// The symbols that `ir` declares more than once, in the order of their first declaration.
+/// LLVM rejects a second `declare` of a name whatever its attributes are, so the generated code
+/// and the runtime IR must not both declare an intrinsic such as `llvm.smin.i32` (D12).
+pub fn duplicate_declarations(ir: &str) -> Vec<String> {
+    let mut counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for (position, symbol) in ir.lines().filter_map(declared_symbol).enumerate() {
+        counts.entry(symbol).or_insert((position, 0)).1 += 1;
+    }
+    let mut repeated: Vec<_> = counts
+        .into_iter()
+        .filter(|(_, (_, count))| *count > 1)
+        .collect();
+    repeated.sort_by_key(|(_, (position, _))| *position);
+    repeated
+        .into_iter()
+        .map(|(symbol, _)| symbol.to_owned())
+        .collect()
+}
+
+fn repeats_a_declaration(ir: &str) -> bool {
+    let mut declared = BTreeSet::new();
+    !ir.lines()
+        .filter_map(declared_symbol)
+        .all(|symbol| declared.insert(symbol))
+}
+
+/// Keeps the first `declare` of each symbol. The generated code writes its declarations before
+/// the runtime IR is appended, so an intrinsic that both declare, such as `llvm.smin.i32`, stays
+/// as the generated code declared it and the runtime's copy, which only adds an attribute group
+/// that LLVM gives the intrinsic by name anyway, is dropped (D12). IR without a repeated
+/// declaration is returned as it is, byte for byte.
+fn unique_declarations(ir: String) -> String {
+    if !repeats_a_declaration(&ir) {
+        return ir;
+    }
+    let mut declared = BTreeSet::new();
+    ir.split_inclusive('\n')
+        .filter(|line| declared_symbol(line).is_none_or(|symbol| declared.insert(symbol)))
+        .collect()
 }
 
 /// Every implicit copy that the code makes is in `copies::sites`, which W1006 and PM07 rely on.
@@ -3746,15 +3800,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
-    fn is_self(&self, callee: &TypedExpr) -> bool {
+    /// Whether a call of `callee` with `arguments` jumps back to the start of this function. A
+    /// parameter that carries a borrow rules that out, because the borrow may point into the frame
+    /// that the jump reuses; a `let rec` function (B09) passes on the borrowed captures that it was
+    /// given, which point outside of it.
+    fn is_self(&self, callee: &TypedExpr, arguments: &[TypedExpr]) -> bool {
         matches!(callee.kind, TypedExprKind::Function(FunctionRef::User(id)) if id == self.function_id)
             && !self.borrowed_worker
-            && !self
+            && self
                 .function
                 .signature
                 .parameters
                 .iter()
-                .any(|ty| ty.carries_loans(&self.module.types()))
+                .enumerate()
+                .all(|(index, ty)| {
+                    !ty.carries_loans(&self.module.types())
+                        || (index < self.function.capture_count
+                            && matches!(arguments.get(index), Some(argument)
+                                if matches!(argument.kind, TypedExprKind::Local(id)
+                                    if id == self.function.parameters[index].id)))
+                })
     }
 
     fn tail_arguments(&mut self, arguments: &[TypedExpr]) -> Vec<String> {
@@ -3841,7 +3906,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.tail(else_branch);
             }
             TypedExprKind::Call(callee, arguments)
-                if self.is_self(callee) && arguments.len() == self.function.parameters.len() =>
+                if self.is_self(callee, arguments)
+                    && arguments.len() == self.function.parameters.len() =>
             {
                 let values = self.tail_arguments(arguments);
                 self.drop_all();
@@ -3850,7 +3916,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.hint_loop(&self.function.body, 0);
             }
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
-                if self.is_self(callee) && self.function.parameters.len() == 1 =>
+                if self.is_self(callee, std::slice::from_ref(argument.as_ref()))
+                    && self.function.parameters.len() == 1 =>
             {
                 let values = self.tail_arguments(std::slice::from_ref(argument.as_ref()));
                 self.drop_all();
@@ -8361,6 +8428,57 @@ mod tests {
         "  %within = icmp ule i32 %end, 16777216",
         "  %fits = icmp ule i64 %new_size, 16777184",
     ];
+
+    #[test]
+    fn unique_declarations_keep_the_first_and_leave_clean_ir_unchanged() {
+        // IR without a repeated symbol is returned byte for byte, with or without a final newline.
+        for clean in [
+            "",
+            "declare i32 @f(i32)\ndeclare void @g()\n",
+            "declare i32 @f(i32)\ndeclare void @g()",
+            "; comment\n\n  declare i32 @indented(i32)\ndefine i32 @f(i32 %x) {\n  ret i32 %x\n}\r\n",
+            "declare i32 @\"quoted\"(i32)\ndeclare i32 @\"quoted\"(i32)\n",
+        ] {
+            assert!(duplicate_declarations(clean).is_empty(), "{clean:?}");
+            assert_eq!(unique_declarations(clean.to_owned()), clean);
+        }
+        // The first declaration stays whatever its attributes are; the other lines keep their order.
+        let repeated = "; head\ndeclare i32 @f(i32)\n\ndefine i32 @h(i32 %x) {\n  ret i32 %x\n}\n\
+                        declare void @g()\ndeclare i32 @f(i32) #3\n; tail\ndeclare void @g() #4\ndeclare i32 @k(i32) #3";
+        assert_eq!(duplicate_declarations(repeated), ["f", "g"]);
+        assert_eq!(
+            unique_declarations(repeated.to_owned()),
+            "; head\ndeclare i32 @f(i32)\n\ndefine i32 @h(i32 %x) {\n  ret i32 %x\n}\n\
+             declare void @g()\n; tail\ndeclare i32 @k(i32) #3"
+        );
+        // A repeat with a different attribute group, or Windows line endings, is still a repeat.
+        let windows = "declare i32 @f(i32) #1\r\ndeclare i32 @f(i32)\r\nret\r\n";
+        assert_eq!(duplicate_declarations(windows), ["f"]);
+        assert_eq!(
+            unique_declarations(windows.to_owned()),
+            "declare i32 @f(i32) #1\r\nret\r\n"
+        );
+        // A `declare` and a `define` of one name are not this function's business.
+        let mixed = "declare i32 @f(i32)\ndefine i32 @f(i32 %x) {\n  ret i32 %x\n}\n";
+        assert!(duplicate_declarations(mixed).is_empty());
+        assert_eq!(unique_declarations(mixed.to_owned()), mixed);
+    }
+
+    #[test]
+    fn number_formatting_keeps_the_generated_intrinsic_declarations() {
+        let ir = library(
+            "def run :: i32 -> i32 -> string\nfn run left right = to_string (Int.min left right)",
+        );
+        // The runtime of the number formatting is linked, and it declares `llvm.smin.i32` too.
+        assert!(ir.contains("define weak hidden i32 @tz_soft_format("));
+        assert!(duplicate_declarations(&ir).is_empty());
+        // The generated code's declaration wins; the runtime's carried an attribute group.
+        assert_eq!(
+            ir.matches("declare i32 @llvm.smin.i32(i32, i32)\n").count(),
+            1
+        );
+        assert!(!ir.contains("declare i32 @llvm.smin.i32(i32, i32) #"));
+    }
 
     #[test]
     fn wasm_heap_limit_lines_are_unique() {

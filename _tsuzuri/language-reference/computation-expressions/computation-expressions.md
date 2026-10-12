@@ -37,6 +37,7 @@ error[E1018]: unknown computation builder 'Identity'; define its operations in I
 | 構文 | 展開 | 補足 |
 | --- | --- | --- |
 | `let x = value; C` | 通常の束縛のあと `C` | ビルダー操作にはしない |
+| `let rec f = \x -> body; C` | 再帰する関数の束縛のあと `C` | ビルダー操作にはしない。`and` でグループにできる。`let! rec` と `and! rec` は `E0002` |
 | `let! x = value; C` | `B.Bind value (\x -> C)` | 型注釈は取り出した値に付く |
 | `do! value; C` | `B.Bind value (\() -> C)` | 成功値は `unit` |
 | `return value` | `B.Return value` | ブロック末尾だけ。早期 return ではない |

@@ -10,12 +10,7 @@ fn accepts(source: &str) -> String {
             ir,
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
         );
-        let declarations: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("declare "))
-            .collect();
-        let unique: std::collections::BTreeSet<_> = declarations.iter().collect();
-        assert_eq!(declarations.len(), unique.len());
+        assert!(llvm::duplicate_declarations(&ir).is_empty(), "{ir}");
         if !wasm {
             native = ir;
         }

@@ -7,9 +7,10 @@
 | 規模 | L（Phase 1 は M） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-10-07（人間の依頼「`let rec` も許容されるような機能追加」。HEAD `5b896b7` で確認） |
-| 承認 | Phase 1 は不要（構文の追加は 2026-10-07 の依頼による）。要承認: D9（Phase 2 の相互再帰 `let rec ... and ...`、解放処理を持つ値の捕捉、ほかの `let rec` 関数の参照） |
+| 実装の基準 | `aecdf75e`（D12 の実装 `14d164a6` の直後）、2026-10-12 |
+| 承認 | Phase 1 は不要（構文の追加は 2026-10-07 の依頼による）。D9（Phase 2 の相互再帰 `let rec ... and ...`、解放処理を持つ値の捕捉、ほかの `let rec` 関数の参照）は、人間の依頼（2026-10-12。「すべてのフェーズを完了させること」「あなたが考える最高の選択肢で実装することを常に許可します」）で承認済み。両フェーズを実装した |
 | 改善する劣位 | F# の局所 `let rec` や Rust の局所 `fn` のように、関数の中に再帰する補助関数を書けない。今は `def rec` でモジュールへ出し、外側のローカル値を引数で渡し直す必要がある |
 | 手本にする既存実装 | 分離形式のトップレベル `let rec`（`src/parser.rs` の `program_all` で `self.at(&TokenKind::Let)` と既存の署名を照合する分岐）。ラムダの型検査と捕捉の収集（`src/closures.rs` の `Checker::lambda`・`checked_lambda`・`free_locals`）。ラムダのリフト（同ファイルの `lower_expression` の `Lambda` 分岐が `$lambda` 関数を作り `Closure(id, 捕捉)` に置き換える）。末尾ループ（`src/llvm.rs` の `emit_tail`・`is_self`）。未使用警告（`src/warnings.rs` の `unused_locals`）。テスト: `tests/tail_recursion.rs`（`function_ir`）、`tests/currying.rs`、`tests/features.mjs` の suite（GUIDE §7.4） |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/computation.rs`, `src/check.rs`, `src/closures.rs`, `src/polymorph.rs`, `src/ownership.rs`, `src/semantic.rs`, `src/warnings.rs`, `src/formatter.rs`, `src/llvm.rs`（`Lambda` の照合だけ）, `tests/local_recursion.rs`（新規）, `tests/fixtures/local_recursion/Main.tz`（新規）, `tests/features.mjs`, `tests/lsp.rs`, `docs/language.md`, `README.md`, `_tsuzuri/language-reference/values-and-functions/functions.md`・`values.md`・`keywords.md`・`lambda-expressions.md`・`computation-expressions/computation-expressions.md`・`compiler/diagnostics.md`, `_features/README.md` |
@@ -397,14 +398,14 @@ GUIDE §8 の手順で、同じ PR で更新する。関連ページは `grep -r
 
 ## 受け入れ条件
 
-- [ ] 「再現」のプログラムが `5050` を出し、「仕様」の位置（波括弧・インデント・`Main.tz` のトップレベル・コンピュテーション式。ビルダー名を省略した本体で最初の `let!` より前に置く場合を含む）で `let rec` を書ける。
-- [ ] 「診断」の表のとおりに拒否・警告する（Rust テスト）。注釈の無い整数リテラルで作った値の捕捉は受理する。
-- [ ] 捕捉が D4 を満たし、捕捉と引数のどれも借用を持たない（`carries_loans` が偽。`ref T` の捕捉や参照の引数は借用を持つ）とき、直接の末尾呼び出しがループになり、深さ 1,000,000 でもスタックを使い切らない。
-- [ ] suite `local_recursion` が native・WASM × `-O0`・`-O3` で成功し、`live == 0`、WASM import なし。
-- [ ] 分離形式のトップレベル `let rec` と、`let rec` を書かないプログラムの IR が変わらない。
-- [ ] LSP の定義・参照・名前の変更が、自己呼び出しを含めて束縛を指す。`tsuzuri fmt` が意味を変えない。
-- [ ] Phase 2 に着手していない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 「再現」のプログラムが `5050` を出し、「仕様」の位置（波括弧・インデント・`Main.tz` のトップレベル・コンピュテーション式。ビルダー名を省略した本体で最初の `let!` より前に置く場合を含む）で `let rec` を書ける。
+- [x] 「診断」の表のとおりに拒否・警告する（Rust テスト）。注釈の無い整数リテラルで作った値の捕捉は受理する。Phase 2 の実装で診断の一部が変わった（「実装と検証」の「チケットから外れた判断」）。
+- [x] 捕捉が D4 を満たし、捕捉と引数のどれも借用を持たない（`carries_loans` が偽。`ref T` の捕捉や参照の引数は借用を持つ）とき、直接の末尾呼び出しがループになり、深さ 1,000,000 でもスタックを使い切らない。借用して捕捉した値をそのまま渡し直す呼び出しもループにした（同上）。
+- [x] suite `local_recursion` が native・WASM × `-O0`・`-O3` で成功し、`live == 0`、WASM import なし。
+- [x] 分離形式のトップレベル `let rec` と、`let rec` を書かないプログラムの IR が変わらない。
+- [x] LSP の定義・参照・名前の変更が、自己呼び出しを含めて束縛を指す。`tsuzuri fmt` が意味を変えない。
+- [x] Phase 2 は D9 の承認（2026-10-12）のあとで実装した。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -463,7 +464,7 @@ GUIDE §8 の手順で、同じ PR で更新する。関連ページは `grep -r
   （`finish` の `captures`）に行う。型変数の値と関数値（ほかの `let rec` 関数を含む）は満たさない。
 - 理由: 自己呼び出しのたびに捕捉を引数として渡し直すため、複製が値のコピーで済む型に限れば、隠れた確保・深いコピー・ムーブ後の使用が起きない。
   配列は共有参照を捕捉すれば読める。型の解決前に検査すると、注釈の無い整数リテラルの値（既定の `i32`）を誤って拒否する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案。**D9 の承認（Phase 2）で置き換えた**: 値で渡せない捕捉を `E1005` にせず、共有借用で渡す（実装は「実装と検証」の「チケットから外れた判断」）。
 
 ### D5: 自己参照の表現
 
@@ -497,4 +498,127 @@ GUIDE §8 の手順で、同じ PR で更新する。関連ページは `grep -r
   参照は、その関数値を捕捉する代わりに相手の捕捉を自分の捕捉に加え、相手のリフト関数への直接呼び出しに書き換える（相手の id はリフトの前に予約する）。
 - 理由: 相互再帰は互いの閉包を作るために全員の捕捉が要る。所有値の捕捉を値で渡し直すと、呼び出しごとの深いコピーかムーブが起きる。
   関数値の捕捉は環境の複製で確保が起きるので、D4 のままでは許せない。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み（2026-10-12。人間の包括許可）。実装済み。D9 の設計（共通の先頭引数・予約した id・借用の捕捉引数）のとおりで、借用の詳細は「実装と検証」に書いた。
+  ただし、ほかの `let rec` 関数の捕捉を引き継げるのは、その捕捉が引数かローカルとして存在する本体（同じ関数本体と、その関数を直接呼ぶグループの本体）だけである。
+  ラムダ式・継続の中のグループや、値渡しの捕捉が代入されている場合は、関数値として捕捉する（「実装と検証」の「レビューでの指摘と修正」）。
+
+D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は D9 の承認で置き換えた（上のとおり）。
+
+## 実装と検証（2026-10-12）
+
+実装の基準は `aecdf75e`（起票時の `5b896b7` から 242 コミット後。同じブランチで先に実装した D12 の `14d164a6` の上）。手順 1〜10 と、承認された Phase 2（D9）をすべて行った。停止条件には当たらなかった:
+コンピュテーション式の中の `let rec` は `recursive` を引き継ぐだけで展開でき、`let rec` を書かないプログラムの IR は変わらず、分離形式のトップレベル `let rec` の受理・拒否も変わらなかった。
+
+### 現状との差（GUIDE §0 手順 2）
+
+- `Binding {` の構築箇所（定義とパターンを含む）は、起票時の 37 行から **44 行**に増えていた（`src/derive.rs`・`src/control.rs`・`src/check.rs` の bench 関数・`src/parse_control.rs`・`src/parser.rs`・`src/computation.rs`）。すべてに `recursion` を明示した。
+  `TypedExprKind::Lambda` を照合する箇所も 20 行から **24 行**に増えていた。
+- G17: frontend cache の syntax codec（`src/syntax_codec.rs`）が `Binding` を符号化するので `recursion` を足し、`FRONTEND_FORMAT` を 3 から **4** に上げた。`pins_encoding_format` の golden は、SMALL に束縛が無いので変わらない。
+  syntax codec のテスト corpus に `let rec` と `and` の例を足し、型の被覆の表に `Recursion` を足した。
+- G13（REPL）: `src/repl.rs` の `statements()` が `Binding` を項目に分ける。`let rec` の `and` のメンバーを前の項目に併合し、グループを複数の key を持つ 1 つの項目にした（グループの名前の 1 つを再定義するとグループ全体が置き換わる。`def rec ... and` の項目と同じ）。
+- 手順 3 の `closures::lower` の書き換えは、チケットの案（自己参照だけ）から、グループ・前の関数・外側の関数を扱う `src/closures_rec.rs` へ広げた（Phase 2）。
+
+### 実装したファイル
+
+- 構文: `src/syntax.rs`（`Recursion`、`Binding.recursion`）、`src/parser.rs`・`src/parse_control.rs`（`let rec`・`and`・各診断。`binding_rest`・`recursive_member`・`recursive_statement`）、`src/syntax_codec.rs`・`src/frontend_cache.rs`。
+- 型検査とリフト: `src/check.rs`（`Lambda.recursive`、`let_rec_group`、`block_bindings`）、`src/closures.rs`、**`src/closures_rec.rs`（新規）**、`src/computation.rs`（`implicit_prefix`）、`src/polymorph.rs`（型変数の捕捉の `E1005`、`recursive` の局所の型の解決）、
+  `src/ownership.rs`（`capture_loans`）、`src/llvm.rs`（`is_self` が引数を見る）。
+- 警告・エディタ・整形・REPL: `src/warnings.rs`（`Uses`、`collect_block`）、`src/semantic.rs`（束縛の範囲の始まり）、`src/formatter.rs`（`and` の字下げ）、`src/repl.rs`。
+- `Binding` を構築するだけの変更: `src/derive.rs`・`src/control.rs`。
+- テスト: `tests/local_recursion.rs`（新規 14 件。うち 3 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（130 ケース）、
+  `tests/local_recursion_fuzz.mjs`（新規。乱数の差分テスト）。
+- 文書: `docs/language.md`（「匿名関数と捕捉」「再帰とスタック」と新しい「ローカルな `let rec`」）、`docs/architecture.md`（モジュール表・閉包の節・末尾再帰・テスト）、`README.md`、`_tsuzuri/language-reference/values-and-functions/`
+  の `functions.md`（新しい節と実行例 3 つ、図）・`lambda-expressions.md`・`values.md`・`keywords.md`、`computation-expressions/computation-expressions.md`、`compiler/diagnostics.md`、`_features/README.md`・`GUIDE.md`（D-46）、このチケット（`_completed/` へ移動）。
+  `_tsuzuri/language-reference/index.md` は、ページの題名「関数 / 高階関数 / 再帰関数」が変わらないので更新が要らない。
+
+### 検証結果
+
+- 基準（変更前。D12 の実装の直後）: `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` が 1,199 件成功。「再現」の `let rec` は、`E0002`（`expected an identifier`）だった。
+- Rust テスト: `cargo test --locked --test local_recursion` が `running 14 tests`・14 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行と、レビューで足した 3 件）。
+  `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、すべての test binary と doc test（98 の結果行）で **1,217 件成功**（基準の 1,199 件 + 新しい 18 件）、失敗 0、無視 0 だった。
+  `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（43 ファイル）が成功。GUIDE §3.1 の 4 つの回帰テストは、既定の stack で各 1 件（`running 1 test`）成功した。
+- E2E（release を `cargo build --release --locked` した直後）: `features`（**13,849 ケース**。基準の 13,719 + 新しい 130）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
+  `e2e`、`io`、`user_drop`、`display_parse`、`integer_intrinsics`、`strings`、`allocator`、`math`、`f16_hardware` がすべて成功した（native と WASM の `-O0`・`-O3`、`live == 0`、WASM の import なし）。
+- suite `local_recursion`: 130 ケース（最初の 79 ケースの `triangle`・`factorial`・`gcd`・`fib`・`count_above`・`binary_search`・`walk`・`digits`・`escaped`・`partial`・`piped`・`nested`・`parity`・`group_captures`・`sibling`・`pair_even`・`pair_odd`・`mapped` と、
+  レビュー後の 51 ケースの `nested_string`・`nested_record`・`nested_closure`・`group_in_closure`・`builder_continuation`・`group_in_loop`・`group_in_branch`・`reassigned_direct`・`reassigned_group`・`match_borrowed`・`match_maybe`・`generic_earlier`・`task_group`・`task_group_after_bind`）。期待値は suite の BigInt の式
+  （三角数・階乗・ユークリッドの互除法・桁数・偶奇・閉じた式）から作り、コンパイラの出力から写していない。`triangle(1,000,000)` と `piped(1,000,000)` と、借用した配列を読む `walk(500,000)` は、native と WASM（既定の 1 MiB の stack）の `-O0` でもスタックを使い切らない。
+  `inspect` は、リフトした関数が 30 個以上（実際は 49 個）あり、ループ（`phi` の後方辺）が 15 個以上（実際は 16 個）で、閉包を使うループは、前の関数を関数値として呼ぶ 1 個（`group_in_closure`）以下であることを確かめる。
+- 深い再帰: `deep_local_tail_recursion_does_not_grow_the_stack` が、`triangle 1000000`（捕捉が数値）と `walk 1000000`（捕捉が借用した配列）を `tsuzuri run -O0` で実行し、`500000500000` と `499999500000` を出す。
+- IR の一致（ベースラインは D12 の実装 `14d164a6` の release を別の worktree でビルドしたもの）: `examples/` と `tests/fixtures/` の 105 ディレクトリ × native・wasm32 × `-O0`・`-O3` の 420 構成のうち **366 構成の IR が byte 単位で一致**し、50 構成は両者が同じ診断で失敗し、差は 0。
+  残る 4 構成は新しい fixture を基準のコンパイラが読めない（`E0002`）構成である。
+- 文書: `node scripts/check-docs.mjs` を、変更した 6 ページ（`functions.md`・`lambda-expressions.md`・`values.md`・`keywords.md`・`computation-expressions.md`・`diagnostics.md`）に実行し、成功した（146 リンク、52 例、native の実行 104 回）。
+  新しい実行例（`triangle 100` が `5050`、`count_above 4` が `3`、`parity 10` が `true`）は、変更前のコンパイラでは `E0002` になる。
+- 追加で確かめたこと（scratch。コミットしない）: 引数が `()`・タプル・`mut` の `let rec`、`for` の本体・`match` の腕・ラムダの本体・同名の再束縛の中の `let rec`、`task` ブロックの中の `let rec` と数値だけを捕捉する `let rec` 関数の `task` への受け渡し
+  （借用して捕捉した関数を `task` に持ち込むと `E1013`）、2 つの関数が同じ所有値（文字列）を捕捉する場合、`const def` の中（`E1026`）。
+- debug build の stack: 「チケットから外れた判断」の最後の項目のとおり。`bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack は、基準が 2,033,203 bytes、最初の実装が 1,802,734 bytes、レビューの修正のあとが 1,816,000 bytes で溢れ 1,824,000 bytes で通る値（`RUST_MIN_STACK` の二分探索。macOS arm64 は 16 KiB 刻み）。
+- 性能: 速度の主張はしない。リフトした関数の自己末尾呼び出しが、`def rec` と同じループになることを IR（後方辺の `phi`）と、深さ 1,000,000 の実行で確かめた。
+
+### チケットから外れた判断
+
+- **Phase 2 を実装した**（D9 の承認）: 相互再帰（`let rec ... and ...`。グループの全員が捕捉の和を先頭引数に持つ）、解放処理を持つ値の捕捉、ほかの `let rec` 関数（前の兄弟、外側）の参照（捕捉の和に加え、直接呼び出し。リフト先の id は本体を下ろす前に予約する）。
+  予約は `let rec` のラムダにだけ行うので、`let rec` を書かないプログラムの id と IR は変わらない。
+- **D4 を置き換えた**: 値で渡せない捕捉を `E1005` にせず、共有借用で渡す。分類は特殊化の後の具象型で `!(is_copy && !needs_drop)` とする。閉包は `Borrow(Local)` を環境に持ち、リフトした関数は `ref T` で受け取って本体の中で読み出す（`let r = ref x` と `deref r` を書いたのと同じ）。
+  これで、再帰呼び出しは参照を渡し直すだけになり、複製もムーブもしない。診断は、チケットの「診断」の表の `E1005` の 2 行（関数値、そのほかの型）を出さない。代わりに:
+  借用した捕捉を本体の中でムーブすると `E1012`（`cannot move '{x}' out of a 'let rec' function, which borrows it; borrow it with 'ref' instead`。入れ子のクロージャの捕捉も同じ）、借用を持つ閉包を持ち主から返すと `E1013`（`cannot return a reference to a local value`）、
+  `task` に持ち込むと `E1013`（`task captures cannot retain borrowed values, ...`）。型変数（`'a`）を含む型の捕捉は、チケットの「対象外」のとおり `E1005`（`a 'let rec' function cannot capture '{x}', whose type {ty} has a type variable; pass it as an argument`）のまま。
+  `Drop`・`Rc` など通常のラムダが捕捉できない値は、既存の `E1005`。事前の所有権検査（`ownership::eval_lambda`）は、`let rec` のラムダの値で渡せない捕捉を共有借用として評価する。これが無いと、同じ文字列を捕捉する 2 つの関数が `E1012` になる。
+- **`E0002` の表の変更**: `let rec ... and ...` の行（Phase 2 で書ける）は無い。`and` が前の `let rec` に続かないときは、`'and' continues a 'let rec' group; start it with 'let rec' before the 'and'`（コンピュテーション式の中）、トップレベルでは従来の `E1019`。`use rec` は、`use` が識別子なので `expected an expression`（`E0002`）で、
+  テストで現在のメッセージを固定した。`@checked` の `let rec` の位置は、`let` でなく束縛の名前にした（メッセージは同じ）。
+- **データ構造**: `Binding.recursion` は `bool` でなく `Recursion`（`None`・`Rec`・`And`）、`Lambda.recursive` は `Option<usize>` でなくグループのメンバーの `Vec<Local>`（空なら通常のラムダ）にした（グループを表すため）。
+- **末尾呼び出し**: チケットの落とし穴は「捕捉に `ref T` があるとループにならない（`def rec` と同じ既存の制約）」とした。借用して捕捉する Phase 2 では、配列や文字列を読む `let rec`（最もよくある使い方）が要素数に比例したスタックを使うことになるので、
+  `llvm::FunctionEmitter::is_self` が引数を見て、借用して捕捉した値の引数に、関数自身の同じ引数をそのまま渡す自己呼び出しだけをループにした（その参照は関数自身のフレームの外を指す）。対象は `capture_count` が 0 でない関数だけなので、
+  `def rec` の規則と `tests/tail_recursion.rs` は変わらない。関数自身の引数が `ref` のとき（`let rec go = \view i -> ... go view (i - 1)`）は従来どおりループにならない（テストで固定した）。
+- **テスト**: LSP は、チケットの 1 件 `local_let_rec_names_resolve_in_the_editor` でなく、索引（束縛の範囲を含む）と名前の変更・参照の 2 件にした。E2E の case は、チケットの表の名前（`factorial_scaled`・`nested` の `901n` など）でなく、Phase 2 を含む 18 の export に作り直した。
+- **debug build の stack（GUIDE §3.1 の回帰テストで見つけた）**: 最初の版は、再帰する関数（`composed_expression`・`lower_expression`・`eval_lambda`・`collect_locals` と parser の `block_after_open`・`layout_block`・`computation_statement`）へ分岐を足したので、
+  `bounds_nested_builder_expansion_not_just_source_syntax` の必要 stack が 2,033,203 から約 2,097,700 bytes になり、既定の 2 MiB で溢れた（上限を上げて通してはいけない）。debug build ではフレームが全 arm の局所変数と一時値の和で、`?` 1 つに `Diagnostic` を持つ `Result` の一時値が 3 つ付く。
+  新しい処理を専用の関数へ出し、再帰する関数からは `return helper(..)` で返し、診断は `rec_error<T>` が作るようにした。`composed_expression` の Block の束縛ループを `block_bindings` に出し、`lambda` は引数に `recursive` を足すだけで
+  `checked_lambda` は元の引数のまま `group_lambda` に委ねる形にした。
+  結果は 1,802,734 bytes で、基準より小さい（レビューの修正のあとは 1,824,000 bytes 以下で、それでも基準より小さい）。`bounds_computation_syntax_and_expansion` は、基準と同じく既定の stack で溢れる（最終は 2,130,000 bytes で溢れ、2,150,000 bytes で通る。基準は 2,130,638 bytes）。
+
+### レビューでの指摘と修正（PR #23）
+
+独立したコードレビューが 6 件、Copilot が 1 件を見つけ、修正への再レビューで Copilot がさらに 2 件（1 件は誤り、もう 1 件はテストの不足）を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
+
+1. **入れ子のグループを外側の本体から直接呼んでいた**（値が違う、またはクラッシュ）: `let rec outer = \s -> (let rec inner = ... s ...; inner 3)` で、`inner` の捕捉 `s` は外側のリフトした関数の引数で、借用した捕捉ではない。
+   外側が `s` を `ref String` の引数として `inner` に渡し直すと、文字列を参照の位置に渡すことになった（レコード、外側の本体のローカルの関数値でも同じ）。
+2. **ラムダ式・継続・ループの本体の中のグループが、前の `let rec` 関数の捕捉を持たないリフト先から直接呼んでいた**（emitter が、その関数に無い捕捉で panic）: `let rec early = ...; let g = \x -> (let rec inner = ... early x ...; inner 2)`、
+   および `let! start = ...` の後の `let rec`。
+3. **代入された値渡しの捕捉を引き継いでいた**（値が違う）: `let mut x = 1; let rec early = \k -> k + x; x = 100; let rec later = \k -> early k` で、`later` が今の `x`（100）を渡した。閉包は作った時点の値（1）を持つ。
+4. **`match` の対象をいつも消費として扱っていた**: 借用した `string` の `match text with | "12345" -> ...` が `E1012` になった。
+5. **関数値の捕捉が多相な関数の中で `E1005` になっていた**: 前の `let rec` 関数の名前は関数値で、型変数について何も言わない。
+6. **`E1012` の位置が、捕捉した値の宣言を指していた**（入れ子のクロージャが借用した捕捉を消費するとき）。
+7. （Copilot）**REPL が `let rec ... and ...` の 2 つ目以降のメンバーの名前を項目に登録しなかった**: 1 行で書いた `let rec even = ...; and odd = ...` が、`even` しか表示せず、`:list` にも `even` だけが載った。
+8. （Copilot の再レビュー）**コンピュテーション式の `@checked` を付けた文が、前の文を見ずに `and` をグループのメンバーとして読んだ**: `let a = 1` の後の単独の `@checked and g = ...` が、専用の診断（`'and' continues a 'let rec' group; ...`）でなく
+   `@checked cannot apply to a 'let rec' binding` になった。`checked_computation_statement` が `computation_statement(true)` と、`after_rec` を固定して呼んでいた。
+9. （Copilot の再レビュー。「見落とし」として）**結果型が `Task<T>` の関数の本体（暗黙の task）で、`let rec ... and ...` のグループが 1 文ずつに分かれた**: `lower_implicit_task_sequence` は先頭の 1 文だけを外して継続を作るので、
+   グループが 1 メンバーずつの入れ子のブロックになり、`even` の本体の `odd` が `E1002`（`unknown value`）になった。`let!` の後でも同じ。明示した `task { }` はパーサーが通常のブロックにするので誤りがなく、ビルダーを決めるときの `implicit_prefix` はグループをまとめていた。
+
+修正:
+
+- 1〜3: `src/closures_rec.rs` に本体ごとの `Frame` を導入した。リフトしたメンバーの本体と、通常のラムダ式の本体（`lower_body`）が 1 つずつ持ち、`Frame.direct` に、その本体が直接呼ぶ関数（グループ自身と、捕捉を引き継いだ前の・外側の関数）を持つ。
+  書き換え（`rewrite`）は、自分のフレームの `direct` にある名前だけを直接呼び出しにする。グループが前の関数の捕捉を引き継げるのは、その関数が `direct` にあるか、同じフレームで束縛されていて値渡しの捕捉が代入・可変借用されていないとき（`State.mutated`）だけである。
+  それ以外は、関数値として捕捉して閉包を通して呼ぶ（結果は同じ）。ループの本体はフレームを作らないので、そこでは従来どおり直接呼ぶ。
+- 4・6: `src/check.rs` に `TypedExpr::moving_use` を足した。`consuming_use` と同じ走査で、`match` の対象は、非 Copy の値を取り出す束縛があるときだけ消費とし、`Closure` の捕捉の消費は、クロージャの位置を指す。
+  `let rec` の借用した捕捉の検査（`closures_rec::lower_group`）だけが使う。`consuming_use` は、呼び出しの特殊化（`call_specialization::can_borrow`。閉包の環境を複製せずに読めるか）と所有する関数の検査も使うので、変えない。
+  最初の修正は `consuming_use` の `match` の規則を直接変えたところ、`let rec` を書かない `tests/fixtures/maybe_result` の IR が 4 構成すべてで変わった（環境の複製が減る別の最適化が有効になった）。IR の比較で気づき、`moving_use` に分けて基準と byte 単位で一致させた。
+- 5: `src/polymorph.rs` の型変数の捕捉の検査が、関数型の捕捉を飛ばす。
+- 7: `src/repl.rs` の `Item.binding` を `bindings` にし、グループの全メンバーの名前と位置を登録する。
+- 8: `src/parser.rs` の `checked_computation_statement` が `after_rec` を受け取って渡す。`tests/local_recursion.rs` の `rejects_invalid_let_rec_syntax` に、`let rec` の後の `@checked and`（`@checked` の診断）、単独の `and`、単独の `@checked and`（どちらも stray-`and` の診断）を足した。
+- 9: `src/computation.rs` に `recursive_group` を足し、`implicit_prefix` と `lower_implicit_task_sequence` が使う。後者は、先頭のグループの全メンバーを 1 つのブロックに束縛してから、その後ろを継続にする。
+  `local_let_rec_in_computation_expressions` に、本体の先頭・`let!` の後・ほかの文の間のグループと、明示した `task { }` の 4 ケースを足した。E2E の `task_group`・`task_group_after_bind` が値を確かめる。1 文ずつ展開する経路は、複数の文で 1 つになる構文（`let rec ... and ...`）を分けやすい。ほかの経路（`implicit_prefix`、`implicit_builder_sequence` の前置き、`direct_block`、`Lowering::block`）は、連続する束縛をまとめて扱うことを確かめた。
+
+回帰テスト: `tests/local_recursion.rs` に 2 件（`local_let_rec_functions_are_called_directly_only_where_their_captures_exist`、`local_let_rec_borrows_what_a_match_only_reads`）を足し、`..._call_earlier_and_enclosing_ones_directly` はそのまま通る。どちらも、修正前（`3cd1e66f`）では失敗する
+（1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 14 の export と 51 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export と 9 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと
+`tests/repl.mjs` の R22 が 7 を固定する。`rejects_invalid_let_rec_syntax` が 8 を固定する。
+Copilot の 2 回目の再レビューは、指摘ではなくテストの不足を挙げた: 前の `let rec` 関数を直接呼べないグループ（代入された捕捉、ラムダ式、継続）の閉包が、関数値を借用して関数から返る経路である。事前の所有権検査（`capture_loans`）は、`let rec` の関数型の捕捉に借用を付けず、
+安全は、リフトの後の所有権検査が `Borrow(Local)` を持つ環境の返却を `E1013` で拒否することに掛かっている。`local_let_rec_cannot_return_a_closure_that_borrows_an_earlier_function` が、3 つの経路すべてが `E1013` になること（前の関数が数値だけを捕捉していても）と、直接呼べるグループは返せることを固定する。
+
+差分テスト `tests/local_recursion_fuzz.mjs`（コミットする）は、乱数で作ったプログラム（入れ子のグループ、通常のラムダ式、代入される捕捉、借用した文字列と配列、部分適用、`for`、数値と文字列の `match`）を、仕様から書いた独立した JS の評価器と照合する。
+期待値はコンパイラの出力から作らない。修正前のコンパイラは 150 件中 8 件で値が違い、最終のコンパイラは 1,399 件（release。深さ 5 の 400 件と、深さ 6 の 999 件で 1 件は大きさで除外。native `-O0`、3 件に 1 件は `-O3` も）がすべて一致した。
+
+### 見つけた問題・残作業
+
+- グループのほかのメンバーへの末尾呼び出し（相互再帰）と、関数値を介した再帰は、ループにならずスタックを使う（`def rec ... and` と同じ）。
+- 型変数（`'a`）を含む型の値は捕捉できない。リフトは特殊化の後で具象型を知るので、将来は多相な関数の中でも許せるが、事前の所有権検査が型変数の捕捉を借用と値のどちらとして扱うかを決める設計が要る（チケットの「対象外」のまま）。
+- 借用して捕捉した非 Copy の値を、入れ子のクロージャが捕捉してムーブすることはできない（`E1012`）。借用を持つ `let rec` の関数は、持ち主のブロックを出られず、`task` にも渡せない。
+- 既定の 2 MiB の stack で `bounds_computation_syntax_and_expansion` が止まる既存の問題は、この変更の範囲外のまま（全体の実行には `RUST_MIN_STACK=4194304` を付ける）。

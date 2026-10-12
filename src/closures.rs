@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "closures_rec.rs"]
+mod letrec;
+
 /// The value a lambda expression becomes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum LambdaKind {
@@ -12,6 +15,9 @@ pub(super) enum LambdaKind {
 }
 
 impl Checker<'_> {
+    /// `recursive` holds the `let rec` group that the lambda is a member of (B09; empty for any
+    /// other lambda): the group's names are in scope in the body, and the lambda does not capture
+    /// them.
     pub(super) fn lambda(
         &mut self,
         names: &[(Ident, bool)],
@@ -19,6 +25,7 @@ impl Checker<'_> {
         expected: Option<&Type>,
         span: Span,
         kind: LambdaKind,
+        recursive: &[Local],
     ) -> Result<TypedExpr, Diagnostic> {
         if kind == LambdaKind::Owned && names.len() != 1 {
             return Err(Diagnostic::new(
@@ -42,12 +49,13 @@ impl Checker<'_> {
                 ),
             }
         };
-        let outer: BTreeMap<_, _> = self
+        let mut outer: BTreeMap<_, _> = self
             .scopes
             .iter()
             .flat_map(|scope| scope.values())
             .map(|local| (local.id, local.clone()))
             .collect();
+        letrec::leave_out(&mut outer, recursive);
         self.scopes.push(BTreeMap::new());
         let mut seen = BTreeSet::new();
         let mut parameters = Vec::new();
@@ -62,7 +70,7 @@ impl Checker<'_> {
         self.normal_loop_depth = outer_loop_depth;
         let body = body?;
         self.scopes.pop();
-        self.checked_lambda(parameters, body, &outer, expected, span, kind)
+        self.group_lambda(parameters, body, &outer, expected, span, kind, recursive)
     }
 
     pub(super) fn checked_lambda(
@@ -73,6 +81,22 @@ impl Checker<'_> {
         expected: Option<&Type>,
         span: Span,
         kind: LambdaKind,
+    ) -> Result<TypedExpr, Diagnostic> {
+        self.group_lambda(parameters, body, outer, expected, span, kind, &[])
+    }
+
+    /// The lambda of the function `parameters -> body`, with the captures it takes from `outer`;
+    /// `recursive` is the `let rec` group that it is a member of, if any (B09).
+    #[allow(clippy::too_many_arguments)]
+    fn group_lambda(
+        &mut self,
+        parameters: Vec<Local>,
+        body: TypedExpr,
+        outer: &BTreeMap<usize, Local>,
+        expected: Option<&Type>,
+        span: Span,
+        kind: LambdaKind,
+        recursive: &[Local],
     ) -> Result<TypedExpr, Diagnostic> {
         let task = kind == LambdaKind::Task;
         let mut used = BTreeSet::new();
@@ -132,6 +156,7 @@ impl Checker<'_> {
                 captures,
                 body: Box::new(body),
                 owned: kind == LambdaKind::Owned,
+                recursive: recursive.to_vec(),
             },
             span,
         })
@@ -161,6 +186,8 @@ fn free_locals(expression: &TypedExpr, used: &mut BTreeSet<usize>) {
 struct Generated {
     builtins: BTreeMap<(BuiltinInstance, Type), usize>,
     cases: BTreeMap<(usize, usize, Box<[Type]>), usize>,
+    /// The `let rec` functions of the function being lowered (B09).
+    recursive: letrec::State,
 }
 
 pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnostic> {
@@ -173,6 +200,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             records: &module.records,
             unions: &module.unions,
         };
+        generated.recursive.start(&body);
         lower_expression(
             &mut body,
             &mut module.functions,
@@ -258,14 +286,21 @@ fn lower_expression(
     origin: FunctionOrigin,
 ) -> Result<(), Diagnostic> {
     use TypedExprKind::*;
+    // A block that binds a `let rec` group lifts it as a group (B09). This is checked before the
+    // match, and returned as it is, which keeps this frame, on the stack for every level of an
+    // expression, as small as it was.
+    if letrec::involves(expression) {
+        return letrec::lower(expression, functions, types, generated, origin);
+    }
     match &mut expression.kind {
         Lambda {
             parameters,
             captures,
             body,
             owned,
+            ..
         } => {
-            lower_expression(body, functions, types, generated, origin)?;
+            letrec::lower_body(body, functions, types, generated, origin)?;
             if *owned {
                 // The environment outlives each call, so the body must not move captures.
                 for capture in captures.iter() {
@@ -378,6 +413,7 @@ fn lower_expression(
                                 span: expression.span,
                             }),
                             owned: false,
+                            recursive: Vec::new(),
                         }
                     }
                     _ => Call(

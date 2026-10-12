@@ -271,7 +271,8 @@ try {
   cli(["build", source, "--target", "wasm32", "--emit", "llvm", "-o", wasmIrPath]);
   const wasmIr = readFileSync(wasmIrPath, "utf8");
   const declarations = ir.match(/^declare .*$/gm) ?? [];
-  assert.equal(new Set(declarations).size, declarations.length);
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length);
   assert.ok(!/\b(fast|reassoc|contract|afn|nnan|ninf)\b|llvm\.fmuladd/.test(ir));
   for (const match of ir.matchAll(/^define [^\n]*@tz\.builtin\.Math\.[^\n]*\{([\s\S]*?)^\}/gm)) {
     assert.ok(!/@(?:malloc|calloc|realloc|tz\.alloc)\(/.test(match[1]), "math bodies do not allocate heap storage");

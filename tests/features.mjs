@@ -987,6 +987,60 @@ const suites = {
     wasmTraps: [["deep_drop", [1000000n]]],
     traps: [],
   },
+  // B09: the values follow from the closed forms: triangle numbers, factorials, Euclid's algorithm,
+  // the length of a printed number, and the parity of a count. A call of the lifted function from its
+  // own tail is a loop, so the depth of 1,000,000 needs no stack in the native or the WASM build.
+  local_recursion: {
+    cases: [
+      ...[0n, 1n, 100n, 1000000n].map((n) => ["triangle", [n], n * (n + 1n) / 2n]),
+      ...[0n, 1n, 5n, 20n].map((n) => ["factorial", [n], n < 2n ? 1n : Array.from({ length: Number(n) }, (_, i) => BigInt(i + 1)).reduce((a, b) => a * b)]),
+      ...[[48n, 18n, 6n], [1071n, 462n, 21n], [17n, 0n, 17n], [0n, 5n, 5n]].map(([a, b, expected]) => ["gcd", [a, b], expected]),
+      ...[[0n, 0n], [1n, 1n], [10n, 55n], [25n, 75025n]].map(([n, expected]) => ["fib", [n], expected]),
+      ...[[-1n, 5n], [0n, 5n], [4n, 3n], [5n, 2n], [9n, 0n]].map(([limit, expected]) => ["count_above", [limit], expected]),
+      ...[[1n, 0n], [3n, 1n], [5n, 2n], [7n, 3n], [9n, 4n], [11n, 5n], [0n, -1n], [4n, -1n], [12n, -1n]].map(([target, expected]) => ["binary_search", [target], expected]),
+      ...[0n, 1n, 1000n, 500000n].map((n) => ["walk", [n], n * (n - 1n) / 2n]),
+      ...[[0n, 1n], [7n, 1n], [12345n, 5n], [-12n, 3n], [min, 20n]].map(([n, expected]) => ["digits", [n], expected]),
+      ...[0n, 1n, 10n, -4n].map((n) => ["escaped", [n], n > 0n ? 3n * n : 0n]),
+      ...[0n, 10n, -6n].map((n) => ["partial", [n], n + 6n]),
+      ...[-1n, 0n, 5n, 1000000n].map((n) => ["piped", [n], 7n]),
+      ...[0n, 1n, 10n, 100n].map((n) => ["nested", [n], n * (n + 1n) * (n + 2n) / 6n]),
+      ...[0n, 1n, 10n, 7n, 1000n, 1001n].map((n) => ["parity", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[[0n, 4n], [12345n, 8n], [-7n, 5n]].map(([n, expected]) => ["group_captures", [n], expected]),
+      ...[[0n, 2n], [12345n, 10n], [-7n, 4n]].map(([n, expected]) => ["sibling", [n], expected]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_even", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_odd", [n], n % 2n === 1n ? 1n : 0n]),
+      ...[[0n, 4n], [3n, 31n], [-1n, 1n]].map(([n, expected]) => ["mapped", [n], expected]),
+      // Where a group is called directly, and where it is a function value that a call goes through.
+      ...[0n, 5n, 12345n, -12n].map((n) => ["nested_string", [n], BigInt(n.toString().length)]),
+      ...[0n, 5n, 12345n, -12n].map((n) => ["nested_record", [n], n + BigInt(n.toString().length)]),
+      ...[0n, 5n, -3n].map((n) => ["nested_closure", [n], 1n + n]),
+      ...[0n, 12345n, -7n].map((n) => ["group_in_closure", [n], 3n + 2n * n]),
+      ...[0n, 1n, 45n, 1000n].map((n) => ["builder_continuation", [n], 2n * n + 1n]),
+      ...[0n, 5n, 12345n].map((n) => ["group_in_loop", [n], 3n * BigInt(n.toString().length) + 6n]),
+      ...[-5n, 0n, 5n, 12345n].map((n) => ["group_in_branch", [n], n > 0n ? 2n * (1n + BigInt(n.toString().length)) : 0n]),
+      // A closure keeps the number that its capture had when it was made.
+      ...[0n, 4n, -9n].map((n) => ["reassigned_direct", [n], n + 1n]),
+      ...[0n, 4n, -9n].map((n) => ["reassigned_group", [n], n + 1n]),
+      ...[0n, 12345n, 54321n].map((n) => ["match_borrowed", [n], n === 12345n ? 1n : 2n]),
+      ...[-1n, 0n, 1n, 12345n].map((n) => ["match_maybe", [n], n > 0n ? 1n : 2n]),
+      ...[0n, 7n, -3n].map((n) => ["generic_earlier", [n], n]),
+      // The members of a group in the body of a task are bound together.
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group_after_bind", [n], n % 2n === 0n ? 1n : 0n]),
+    ],
+    inspect(ir) {
+      const lifted = ir.split("\ndefine ").filter((body) => /^internal \S+ @tz\.fn\.\$lambda\.\d+\(/.test(body));
+      assert.ok(lifted.length >= 30, `the let rec functions are lifted: ${lifted.length}`);
+      // A tail call jumps back: a parameter's phi has an incoming value from the back edge.
+      const loops = lifted.filter((body) => /= phi [^\n]*\], \[/.test(body));
+      assert.ok(loops.length >= 15, `tail calls of lifted functions are loops: ${loops.length}`);
+      // A `let rec` function is called directly: no closure is built for the calls in its body. The
+      // one loop that holds a closure is the group in `group_in_closure`, which calls an earlier
+      // function through its function value.
+      const closing = loops.filter((body) => body.includes("%tz.closure"));
+      assert.ok(closing.length <= 1, `only a loop that calls a function value uses a closure: ${closing.length}`);
+    },
+  },
   parallel: {
     cases: [
       ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((count) => ["parallel_init_sum", [count], count * (count + 1n) / 2n]),
@@ -1913,7 +1967,8 @@ function run(name, suite) {
     const sourceIr = readFileSync(ir, "utf8");
     assert.equal(sourceIr, readFileSync(again, "utf8"), `${name}: IR is deterministic`);
     const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
-    assert.equal(new Set(declarations).size, declarations.length, `${name}: declarations are deduplicated`);
+    const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+    assert.equal(new Set(declaredNames).size, declaredNames.length, `${name}: declarations are deduplicated`);
     suite.inspect?.(sourceIr, readFileSync(headerPath, "utf8"));
     // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
     if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);

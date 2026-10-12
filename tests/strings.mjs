@@ -112,7 +112,8 @@ try {
   const sourceIr = readFileSync(ir, "utf8");
   assert.equal(sourceIr, readFileSync(again, "utf8"), "string IR is deterministic");
   const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
-  assert.equal(new Set(declarations).size, declarations.length, "runtime declarations are deduplicated");
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length, "runtime declarations are deduplicated");
   writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
 
   const runtimeBridges = [

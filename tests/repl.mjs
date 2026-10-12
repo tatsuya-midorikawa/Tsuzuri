@@ -231,5 +231,20 @@ check("R21", [":load Consts.tz", "def f :: i32 -> i32 = \\x -> x + A + 1", "f 1"
   "def f :: i32 -> i32 = \\x -> x + A + 1",
 ], { files: { "Consts.tz": constants }, quiet: true });
 
+// A `let rec ... and` group is one item that shows the type of every function in it (B09). The
+// values are hand-computed: 10 is even, and 7 is odd.
+check("R22", [
+  "let rec even = \\n -> if n == 0 then true else odd (n - 1); and odd = \\n -> if n == 0 then false else even (n - 1)",
+  "even 10",
+  "odd 7",
+  ":list",
+], [
+  "even: i32 -> bool",
+  "odd: i32 -> bool",
+  "it: bool = true",
+  "it: bool = true",
+  "let rec even = \\n -> if n == 0 then true else odd (n - 1); and odd = \\n -> if n == 0 then false else even (n - 1)",
+], { quiet: true });
+
 rmSync(root, { recursive: true, force: true });
 console.log("REPL: scripted sessions, redefinition, session state, commands, limits, diagnostics, and -O0/-O3 passed");

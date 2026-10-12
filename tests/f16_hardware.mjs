@@ -419,7 +419,8 @@ try {
   assert.ok(!/\bhalf\b/.test(wasmIr), "WASM IR has no half");
   assert.ok(!/__extendhfsf2|__truncsfhf2|__truncdfhf2/.test(wasmIr));
   const declarations = ir.match(/^declare .*$/gm) ?? [];
-  assert.equal(new Set(declarations).size, declarations.length, "intrinsics are declared once");
+  const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
+  assert.equal(new Set(declaredNames).size, declaredNames.length, "intrinsics are declared once");
   assert.ok(!/\b(fast|reassoc|contract|afn|nnan|ninf|nsz|arcp)\b|llvm\.fmuladd|llvm\.fma\.f16/.test(ir), "no fast-math flags and no FMA");
   const irHasHalf = /\bhalf\b/.test(ir);
   if (irHasHalf) {

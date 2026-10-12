@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use tsuzuri::check::CheckedModule;
 use tsuzuri::{analyze, analyze_modules, bindings, llvm};
 
@@ -12,12 +10,7 @@ fn module(source: &str) -> CheckedModule {
 fn ir(module: &CheckedModule, entry: llvm::Entry, wasm: bool) -> String {
     let ir = llvm::emit_target(module, entry, wasm).unwrap();
     assert_eq!(ir, llvm::emit_target(module, entry, wasm).unwrap());
-    let declarations: Vec<_> = ir
-        .lines()
-        .filter(|line| line.starts_with("declare "))
-        .collect();
-    let unique: BTreeSet<_> = declarations.iter().collect();
-    assert_eq!(unique.len(), declarations.len(), "{ir}");
+    assert!(llvm::duplicate_declarations(&ir).is_empty(), "{ir}");
     ir
 }
 

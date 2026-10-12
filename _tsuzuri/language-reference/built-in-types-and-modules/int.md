@@ -62,9 +62,22 @@ flowchart TD
 
 `Int.abs (-128i8)` は `-128i8` です。同じ幅の符号付きでは `128` を表せないため、勝手に型を拡張しません。符号なしの正の大きさとして取得したいときは `Int.unsigned_abs` を使います。結果は `128i8u` になります。
 
-> [!WARNING]
-> **既知の不具合（LLVM の intrinsic 宣言の重複）**
-> 現在の実装では、符号付き `i32`（接尾辞のない整数リテラルの既定の型）の `Int.min` / `Int.max` と、`i32` / `i32u` の `Int.leading_zeros` を、数値の表示や文字列化（`IO.write_line`、`to_string`、文字列補間、`Main.tz` の結果の表示など）と同じプログラムで使うと、ビルドが `invalid redefinition of function` で失敗します。native と WASM のどちらでも起きます。他のビット幅（`i8`、`i16`、`i64`、`i128` など）や `Int.clamp`、`Int.abs` では発生しません。修正は [D12](../../../_features/D12-intrinsic-declaration-duplicates.md) で計画されています。それまでは、`i32` の大小比較に `if left < right then left else right` などの比較式を使ってください。
+`Int.min`・`Int.max`・`Int.leading_zeros` の結果は、数値の表示、`to_string`、文字列補間と同じプログラムで使えます。次の例は、接尾辞のない整数リテラルの既定の型 `i32` で、3 つを文字列補間に渡します。
+
+```tsuzuri run=3:9:28
+let low = Int.min 3 5
+let high = Int.max 9 7
+let zeros = Int.leading_zeros 8
+$"{low}:{high}:{zeros}"
+```
+
+実行結果:
+
+```text
+3:9:28
+```
+
+`8` は 32 bit の `0b1000` なので、上位から数えた 0 の個数は 28 です。`Int.leading_zeros` の結果の型は、引数の幅によらず `i64` です。
 
 ### ビット操作
 

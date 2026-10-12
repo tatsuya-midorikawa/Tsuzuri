@@ -331,6 +331,8 @@ impl Parser<'_> {
         let mut bindings = Vec::new();
         let mut result: Option<Expr> = None;
         loop {
+            // An `and` that follows a `let rec` binding is its next member, not a top-level `and`.
+            let member = result.is_none() && self.continues_group(bindings.last());
             if matches!(
                 self.current().kind,
                 TokenKind::End
@@ -344,7 +346,6 @@ impl Parser<'_> {
                     | TokenKind::Pipe
                     | TokenKind::Def
                     | TokenKind::Fn
-                    | TokenKind::And
                     | TokenKind::Export
                     | TokenKind::Private
                     | TokenKind::Record
@@ -354,7 +355,8 @@ impl Parser<'_> {
                     | TokenKind::Class
                     | TokenKind::Instance
                     | TokenKind::With
-            ) || self.column(self.current().span) < indent
+            ) || (self.at(&TokenKind::And) && !member)
+                || self.column(self.current().span) < indent
                 || (self.in_handler
                     && matches!(&self.current().kind, TokenKind::Ident(name) if name == "finally"))
             {
@@ -369,6 +371,7 @@ impl Parser<'_> {
                     },
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: Some(TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
                         span: value.span,
@@ -377,15 +380,16 @@ impl Parser<'_> {
                 });
             }
             let checked = self.checked_attribute();
-            if self.eat(&TokenKind::Let) {
-                let mut binding = self.binding(true, false)?;
+            let member = member || (checked && self.continues_group(bindings.last()));
+            if member || self.eat(&TokenKind::Let) {
+                let mut binding = self.binding(true, false, member, checked)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
                 bindings.push(binding);
             } else if self.use_binding_ahead() {
                 self.take();
-                let mut binding = self.binding(true, true)?;
+                let mut binding = self.binding(true, true, false, false)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -404,6 +408,7 @@ impl Parser<'_> {
                         },
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: None,
                         value,
                     });
@@ -824,6 +829,11 @@ impl Parser<'_> {
         }
         let mut bindings = Vec::new();
         loop {
+            if self.at(&TokenKind::Rec) {
+                return Err(self.error(
+                    "'where' bindings cannot be recursive; define the function with 'let rec' in the body",
+                ));
+            }
             bindings.push(self.binding_value(true)?);
             if self.at(&TokenKind::End)
                 || !self.newline_before_current()

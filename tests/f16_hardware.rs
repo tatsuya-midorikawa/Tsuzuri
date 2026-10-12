@@ -174,12 +174,10 @@ fn emits_half_sqrt_and_declares_intrinsic_once() {
                   def d :: f16 -> f16\nfn d x = Math.floor x";
     let ir = emit_f16(source, F16Path::Hardware, false);
     assert_eq!(lines_equal(&ir, "declare half @llvm.sqrt.f16(half)"), 1);
-    let declarations: Vec<_> = ir
-        .lines()
-        .filter(|line| line.starts_with("declare "))
-        .collect();
-    let unique: std::collections::BTreeSet<_> = declarations.iter().collect();
-    assert_eq!(declarations.len(), unique.len(), "no duplicate declaration");
+    assert!(
+        llvm::duplicate_declarations(&ir).is_empty(),
+        "no duplicate declaration"
+    );
     for name in ["Math.sqrt.f16", "tz.fn.$builtin.Math.sqrt"] {
         let defines: Vec<_> = ir
             .lines()

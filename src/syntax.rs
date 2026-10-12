@@ -1018,12 +1018,26 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+/// How a binding takes part in a recursive group (B09).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recursion {
+    /// An ordinary binding.
+    #[default]
+    None,
+    /// `let rec name = \x -> ...`: the function's body can call `name`, and so can the bodies of
+    /// the `and` members that follow it.
+    Rec,
+    /// `and name = \x -> ...`: a member of the group that the binding before it starts.
+    And,
+}
+
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub name: Ident,
     pub mutable: bool,
     /// A `use` binding: a `let` whose value type must implement `Drop` (B07).
     pub using: bool,
+    pub recursion: Recursion,
     pub annotation: Option<TypeExpr>,
     pub value: Expr,
 }
