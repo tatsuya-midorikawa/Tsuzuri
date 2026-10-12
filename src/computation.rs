@@ -532,6 +532,7 @@ impl Lowering<'_> {
                         name: ident("_", span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", span)),
                         value: value.clone(),
                     });
@@ -558,6 +559,7 @@ impl Lowering<'_> {
                         name: ident("_", span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", span)),
                         value: value.clone(),
                     };
@@ -629,6 +631,7 @@ impl Lowering<'_> {
                             name: name.clone(),
                             mutable: false,
                             using: false,
+                            recursion: Recursion::None,
                             annotation: Some(annotation("bool", condition.span)),
                             value: condition.clone(),
                         }],
@@ -727,6 +730,7 @@ impl Lowering<'_> {
                 name: name.clone(),
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: None,
                 value: binding.value.clone(),
             });
@@ -846,6 +850,7 @@ impl Lowering<'_> {
                 name: binding.name.clone(),
                 mutable: binding.mutable,
                 using: binding.using,
+                recursion: binding.recursion,
                 annotation: binding.annotation.clone(),
                 value,
             }],
@@ -866,6 +871,7 @@ impl Lowering<'_> {
                 name: ident("_", span),
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: Some(annotation("unit", span)),
                 value: make(ExprKind::Unit, span, 1)?,
             },
@@ -1047,6 +1053,7 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
                         name: ident("_", span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", span)),
                         value,
                     });
@@ -1127,6 +1134,7 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
                 name: ident("_", span),
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: Some(annotation("unit", span)),
                 value,
             });
@@ -1314,6 +1322,63 @@ impl Checker<'_> {
         Ok(typed_block(prefix, result, body.span))
     }
 
+    /// Checks and binds what a computation body does before the statement that needs the builder:
+    /// ordinary `let`s, expression statements, and `let rec` groups, whose names are bound
+    /// together as in a block (B09). Returns how many statements it took; kept out of
+    /// `implicit_root`'s frame.
+    #[inline(never)]
+    fn implicit_prefix(
+        &mut self,
+        body: &ComputationBlock,
+        prefix: &mut Vec<(Local, TypedExpr)>,
+    ) -> Result<usize, Diagnostic> {
+        let mut count = 0;
+        while let Some(statement) = body.statements.get(count) {
+            if let ComputationStatementKind::Let(first, false) = &statement.kind
+                && first.recursion != Recursion::None
+            {
+                let group: Vec<Binding> = body.statements[count..]
+                    .iter()
+                    .enumerate()
+                    .map_while(|(index, statement)| match &statement.kind {
+                        ComputationStatementKind::Let(binding, false)
+                            if index == 0 || binding.recursion == Recursion::And =>
+                        {
+                            Some(binding.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                prefix.extend(self.let_rec_group(&group)?);
+                count += group.len();
+                continue;
+            }
+            let binding = match &statement.kind {
+                ComputationStatementKind::Let(binding, false) => binding.clone(),
+                ComputationStatementKind::Expression(value) => Binding {
+                    name: ident("_", statement.span),
+                    mutable: false,
+                    using: false,
+                    recursion: Recursion::None,
+                    annotation: Some(annotation("unit", statement.span)),
+                    value: value.clone(),
+                },
+                _ => break,
+            };
+            let expected = binding
+                .annotation
+                .as_ref()
+                .map(|ty| self.annotation(ty))
+                .transpose()?;
+            let value = self.expression(&binding.value, expected.as_ref())?;
+            self.require_use(&binding, &value.ty)?;
+            let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
+            prefix.push((local, value));
+            count += 1;
+        }
+        Ok(count)
+    }
+
     fn implicit_root(
         &mut self,
         forced: Option<&str>,
@@ -1333,30 +1398,7 @@ impl Checker<'_> {
         let mut prefix = Vec::new();
         let mut remaining = body.clone();
         if builder.is_none() {
-            let mut count = 0;
-            for statement in &body.statements {
-                let binding = match &statement.kind {
-                    ComputationStatementKind::Let(binding, false) => binding.clone(),
-                    ComputationStatementKind::Expression(value) => Binding {
-                        name: ident("_", statement.span),
-                        mutable: false,
-                        using: false,
-                        annotation: Some(annotation("unit", statement.span)),
-                        value: value.clone(),
-                    },
-                    _ => break,
-                };
-                let expected = binding
-                    .annotation
-                    .as_ref()
-                    .map(|ty| self.annotation(ty))
-                    .transpose()?;
-                let value = self.expression(&binding.value, expected.as_ref())?;
-                self.require_use(&binding, &value.ty)?;
-                let local = self.bind(&binding.name, value.ty.clone(), binding.mutable);
-                prefix.push((local, value));
-                count += 1;
-            }
+            let count = self.implicit_prefix(body, &mut prefix)?;
             remaining.statements.drain(..count);
             if let Some(statement) = remaining.statements.first_mut() {
                 let source = match &mut statement.kind {
@@ -1513,6 +1555,7 @@ impl Checker<'_> {
                     name: ident("_", statement.span),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: Some(annotation("unit", statement.span)),
                     value: value.clone(),
                 },
@@ -1598,6 +1641,7 @@ impl Checker<'_> {
                 name: ident("_", first.span),
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: Some(annotation("unit", first.span)),
                 value: value.clone(),
             },
@@ -1605,6 +1649,7 @@ impl Checker<'_> {
                 name: ident("$computation_match", first.span),
                 mutable: false,
                 using: false,
+                recursion: Recursion::None,
                 annotation: None,
                 value: (**value).clone(),
             },
@@ -1671,6 +1716,7 @@ impl Checker<'_> {
                                 name: payload,
                                 mutable: false,
                                 using: false,
+                                recursion: Recursion::None,
                                 annotation: None,
                                 value: binding.value.clone(),
                             },
@@ -1809,6 +1855,7 @@ impl Checker<'_> {
                     name,
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: None,
                     value: binding.value.clone(),
                 });
@@ -1925,6 +1972,7 @@ impl Checker<'_> {
                         name: ident("_", first.span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", first.span)),
                         value: value.clone(),
                     },
@@ -1968,6 +2016,7 @@ impl Checker<'_> {
                     name: ident("_", first.span),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: Some(annotation("unit", first.span)),
                     value: value.clone(),
                 }],
@@ -1989,6 +2038,7 @@ impl Checker<'_> {
                         name: ident("_", first.span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", first.span)),
                         value,
                     }],
@@ -2010,6 +2060,7 @@ impl Checker<'_> {
                         name: ident("_", first.span),
                         mutable: false,
                         using: false,
+                        recursion: Recursion::None,
                         annotation: Some(annotation("unit", first.span)),
                         value,
                     }],
@@ -2038,6 +2089,7 @@ impl Checker<'_> {
                             name: ident("_", first.span),
                             mutable: false,
                             using: false,
+                            recursion: Recursion::None,
                             annotation: Some(annotation("unit", first.span)),
                             value: branch,
                         }],

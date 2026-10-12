@@ -282,6 +282,7 @@ impl Checker<'_> {
                     name: ident("advance"),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: None,
                     value: advance.clone(),
                 }],

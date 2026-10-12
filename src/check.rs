@@ -3656,6 +3656,10 @@ pub enum TypedExprKind {
         body: Box<TypedExpr>,
         /// Passed directly to `Owned.function` (B07); the body borrows the captures.
         owned: bool,
+        /// The functions of the `let rec` group that binds this lambda, in binding order and this
+        /// one included; empty for any other lambda (B09). Their names are in scope in the body
+        /// without being captured: `closures::lower` turns the uses into direct calls.
+        recursive: Vec<Local>,
     },
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
@@ -4329,6 +4333,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
                     name: named("$case"),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: Some(TypeExpr {
                         kind: TypeExprKind::Function(vec![i64_type()], Box::new(i64_type())),
                         span,
@@ -7519,6 +7524,15 @@ fn duplicate(name: &Ident) -> Diagnostic {
     )
 }
 
+/// How many bindings the `let rec` group at the start of `bindings` has: the `let rec` binding and
+/// the `and` bindings that follow it (B09).
+pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
+    1 + bindings[1..]
+        .iter()
+        .take_while(|binding| binding.recursion == Recursion::And)
+        .count()
+}
+
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
 /// primitive and SIMD type names, `_`, the built-in `Array`, `Task`, and `Vec`,
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
@@ -9344,27 +9358,16 @@ impl<'a> Checker<'a> {
                     expected,
                     expression.span,
                     LambdaKind::Function,
+                    &[],
                 );
             }
             ExprKind::Task(body) => {
-                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task);
+                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task, &[]);
             }
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
-                let mut checked = Vec::new();
-                for binding in bindings {
-                    let annotation = self.binding_annotation(binding)?;
-                    let value = self.expression(&binding.value, annotation.as_ref())?;
-                    let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
-                        Type::Error
-                    } else {
-                        value.ty.clone()
-                    };
-                    self.require_use(binding, &ty)?;
-                    let local = self.bind(&binding.name, ty, binding.mutable);
-                    checked.push((local, value));
-                }
+                let checked = self.block_bindings(bindings)?;
                 let result = self.expression(result, expected)?;
                 self.scopes.pop();
                 let ty = result.ty.clone();
@@ -9379,6 +9382,80 @@ impl<'a> Checker<'a> {
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    /// Checks the bindings of a block in order, a `let rec` group (B09) as one. It is a function
+    /// of its own so that its locals are not in the frame of `composed_expression`, which every
+    /// level of an expression pays for.
+    fn block_bindings(
+        &mut self,
+        bindings: &[Binding],
+    ) -> Result<Vec<(Local, TypedExpr)>, Diagnostic> {
+        let mut checked = Vec::new();
+        let mut index = 0;
+        while index < bindings.len() {
+            let binding = &bindings[index];
+            if binding.recursion != Recursion::None {
+                let count = recursive_group_len(&bindings[index..]);
+                checked.extend(self.let_rec_group(&bindings[index..index + count])?);
+                index += count;
+                continue;
+            }
+            index += 1;
+            let annotation = self.binding_annotation(binding)?;
+            let value = self.expression(&binding.value, annotation.as_ref())?;
+            let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
+                Type::Error
+            } else {
+                value.ty.clone()
+            };
+            self.require_use(binding, &ty)?;
+            let local = self.bind(&binding.name, ty, binding.mutable);
+            checked.push((local, value));
+        }
+        Ok(checked)
+    }
+
+    /// A `let rec` group (B09). Every name is bound before any function is checked, so each body
+    /// can call itself and the other members, and the lambdas capture none of them: their uses
+    /// become direct calls when `closures::lower` lifts the group.
+    pub(super) fn let_rec_group(
+        &mut self,
+        group: &[Binding],
+    ) -> Result<Vec<(Local, TypedExpr)>, Diagnostic> {
+        let mut locals: Vec<Local> = Vec::with_capacity(group.len());
+        for binding in group {
+            if binding.name.text != "_"
+                && locals.iter().any(|local| local.name == binding.name.text)
+            {
+                return Err(duplicate(&binding.name));
+            }
+            let ty = match self.binding_annotation(binding)? {
+                Some(ty) => ty,
+                None => self.inference.fresh(),
+            };
+            locals.push(self.bind(&binding.name, ty, false));
+        }
+        let mut checked = Vec::with_capacity(group.len());
+        for (binding, local) in group.iter().zip(&locals) {
+            let ExprKind::Lambda(names, body) = &binding.value.kind else {
+                return Err(Diagnostic::new(
+                    "E1015",
+                    "internal compiler error: a 'let rec' binding is not a lambda",
+                    binding.value.span,
+                ));
+            };
+            let value = self.lambda(
+                names,
+                body,
+                Some(&local.ty),
+                binding.value.span,
+                LambdaKind::Function,
+                &locals,
+            )?;
+            checked.push((local.clone(), value));
+        }
+        Ok(checked)
     }
 
     /// A `use` binding is a `let` whose value type must implement `Drop` (B07).
@@ -10111,7 +10188,7 @@ impl<'a> Checker<'a> {
             normal_loop_depth: self.normal_loop_depth,
             computation_depth: self.computation_depth,
         };
-        let result = self.lambda(names, body, Some(expected), span, LambdaKind::Owned);
+        let result = self.lambda(names, body, Some(expected), span, LambdaKind::Owned, &[]);
         self.finish_recovery(result, mark, span)
     }
 

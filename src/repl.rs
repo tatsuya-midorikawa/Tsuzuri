@@ -13,7 +13,7 @@ use crate::check::semantic::SemanticIndex;
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Severity, Span};
 use crate::driver::{self, BuildOptions, Project};
 use crate::syntax::{
-    Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, Token, TokenKind,
+    Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, Recursion, Token, TokenKind,
 };
 
 /// The REPL's command-line settings.
@@ -712,7 +712,7 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
             ),
         };
     };
-    let mut items = Vec::new();
+    let mut items: Vec<Item> = Vec::new();
     let mut boundary = entry.span.start;
     for binding in bindings {
         let mut end = binding.value.span.end;
@@ -728,6 +728,18 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
         let start = skip_separators(text, boundary, end);
         // `let _ = ...` discards its value like a statement, so it replaces nothing.
         let named = binding.name.provenance == Provenance::User && binding.name.text != "_";
+        // An `and` member is part of the item of its `let rec`: the functions of a group are
+        // defined, and replaced, together (B09).
+        if binding.recursion == Recursion::And
+            && let Some(group) = items.last_mut()
+        {
+            group.text = text[group.pieces[0].1..end].to_owned();
+            if named {
+                group.keys.push(Key::Binding(binding.name.text.clone()));
+            }
+            boundary = end;
+            continue;
+        }
         items.push(Item {
             keys: if named {
                 vec![Key::Binding(binding.name.text.clone())]
@@ -1545,6 +1557,39 @@ mod tests {
             input_offset(&input.declarations[1].pieces, 20),
             input.text.find("fn f").unwrap()
         );
+    }
+
+    #[test]
+    fn keeps_a_let_rec_group_of_statements_as_one_item() {
+        // The `and` members belong to the item of the `let rec`: they are defined, and replaced,
+        // together, as the members of a `def rec` group are.
+        let group = classify_text(
+            "let rec even = \\n -> if n == 0 then true else odd (n - 1)\nand odd = \\n -> if n == 0 then false else even (n - 1)\n",
+        );
+        assert_eq!(
+            texts(&group.bindings),
+            [
+                "let rec even = \\n -> if n == 0 then true else odd (n - 1)\nand odd = \\n -> if n == 0 then false else even (n - 1)"
+            ]
+        );
+        assert_eq!(
+            group.bindings[0].keys,
+            [Key::Binding("even".into()), Key::Binding("odd".into())]
+        );
+        let current = Session::default().merged(&group);
+        let next = classify_text("even 4");
+        let show = generate(&current, &next, Tail::Show("even 4", 0));
+        assert!(analyze(&show.text, false).1.is_ok(), "{}", show.text);
+        // Redefining one name replaces the group, so the other name is gone with it.
+        let again = classify_text("let rec odd = \\n -> n == 1\n");
+        let replaced = current.merged(&again);
+        assert_eq!(replaced.listing(), "let rec odd = \\n -> n == 1\n");
+        // A local group inside a function is part of that function, not of the session.
+        let function = classify_text(
+            "def parity :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n",
+        );
+        assert_eq!(function.declarations.len(), 1);
+        assert!(function.bindings.is_empty());
     }
 
     #[test]

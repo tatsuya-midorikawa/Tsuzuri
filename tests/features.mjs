@@ -987,6 +987,40 @@ const suites = {
     wasmTraps: [["deep_drop", [1000000n]]],
     traps: [],
   },
+  // B09: the values follow from the closed forms: triangle numbers, factorials, Euclid's algorithm,
+  // the length of a printed number, and the parity of a count. A call of the lifted function from its
+  // own tail is a loop, so the depth of 1,000,000 needs no stack in the native or the WASM build.
+  local_recursion: {
+    cases: [
+      ...[0n, 1n, 100n, 1000000n].map((n) => ["triangle", [n], n * (n + 1n) / 2n]),
+      ...[0n, 1n, 5n, 20n].map((n) => ["factorial", [n], n < 2n ? 1n : Array.from({ length: Number(n) }, (_, i) => BigInt(i + 1)).reduce((a, b) => a * b)]),
+      ...[[48n, 18n, 6n], [1071n, 462n, 21n], [17n, 0n, 17n], [0n, 5n, 5n]].map(([a, b, expected]) => ["gcd", [a, b], expected]),
+      ...[[0n, 0n], [1n, 1n], [10n, 55n], [25n, 75025n]].map(([n, expected]) => ["fib", [n], expected]),
+      ...[[-1n, 5n], [0n, 5n], [4n, 3n], [5n, 2n], [9n, 0n]].map(([limit, expected]) => ["count_above", [limit], expected]),
+      ...[[1n, 0n], [3n, 1n], [5n, 2n], [7n, 3n], [9n, 4n], [11n, 5n], [0n, -1n], [4n, -1n], [12n, -1n]].map(([target, expected]) => ["binary_search", [target], expected]),
+      ...[0n, 1n, 1000n, 500000n].map((n) => ["walk", [n], n * (n - 1n) / 2n]),
+      ...[[0n, 1n], [7n, 1n], [12345n, 5n], [-12n, 3n], [min, 20n]].map(([n, expected]) => ["digits", [n], expected]),
+      ...[0n, 1n, 10n, -4n].map((n) => ["escaped", [n], n > 0n ? 3n * n : 0n]),
+      ...[0n, 10n, -6n].map((n) => ["partial", [n], n + 6n]),
+      ...[-1n, 0n, 5n, 1000000n].map((n) => ["piped", [n], 7n]),
+      ...[0n, 1n, 10n, 100n].map((n) => ["nested", [n], n * (n + 1n) * (n + 2n) / 6n]),
+      ...[0n, 1n, 10n, 7n, 1000n, 1001n].map((n) => ["parity", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[[0n, 4n], [12345n, 8n], [-7n, 5n]].map(([n, expected]) => ["group_captures", [n], expected]),
+      ...[[0n, 2n], [12345n, 10n], [-7n, 4n]].map(([n, expected]) => ["sibling", [n], expected]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_even", [n], n % 2n === 0n ? 1n : 0n]),
+      ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["pair_odd", [n], n % 2n === 1n ? 1n : 0n]),
+      ...[[0n, 4n], [3n, 31n], [-1n, 1n]].map(([n, expected]) => ["mapped", [n], expected]),
+    ],
+    inspect(ir) {
+      const lifted = ir.split("\ndefine ").filter((body) => /^internal \S+ @tz\.fn\.\$lambda\.\d+\(/.test(body));
+      assert.ok(lifted.length >= 20, `the let rec functions are lifted: ${lifted.length}`);
+      // A tail call jumps back: a parameter's phi has an incoming value from the back edge.
+      const loops = lifted.filter((body) => /= phi [^\n]*\], \[/.test(body));
+      assert.ok(loops.length >= 8, `tail calls of lifted functions are loops: ${loops.length}`);
+      // A `let rec` function is called directly: no closure is built for the calls in its body.
+      assert.ok(loops.every((body) => !body.includes("%tz.closure")), "a loop of a lifted function builds no closure");
+    },
+  },
   parallel: {
     cases: [
       ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((count) => ["parallel_init_sum", [count], count * (count + 1n) / 2n]),

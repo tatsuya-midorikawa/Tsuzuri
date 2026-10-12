@@ -2138,6 +2138,7 @@ impl Checker<'_> {
             parameters,
             captures,
             body,
+            recursive,
             ..
         } = &expression.kind
         else {
@@ -2151,7 +2152,9 @@ impl Checker<'_> {
             }),
             ..Value::default()
         };
+        // The functions of a `let rec` group are in scope in the body like captured function values.
         let mut locals = captures.clone();
+        locals.extend(recursive.iter().cloned());
         locals.extend(parameters.iter().cloned());
         self.copy_variables.extend(check_body(
             self.module,
@@ -2165,13 +2168,50 @@ impl Checker<'_> {
             self.recovered,
             None,
         )?);
+        self.capture_loans(expression, &during, &mut result)?;
+        Ok(result)
+    }
+
+    /// Evaluates the captures of the lambda `expression` into the loans of its function value. It
+    /// is a function of its own so that a lambda in a lambda does not pay for its locals on the
+    /// stack while the body is checked.
+    fn capture_loans(
+        &mut self,
+        expression: &TypedExpr,
+        during: &BTreeSet<usize>,
+        result: &mut Value,
+    ) -> Result<(), Diagnostic> {
+        let E::Lambda {
+            captures,
+            recursive,
+            ..
+        } = &expression.kind
+        else {
+            unreachable!("eval dispatches lambdas here")
+        };
+        let types = self.module.types();
         for capture in captures {
             let value = TypedExpr {
                 kind: E::Local(capture.id),
                 ty: capture.ty.clone(),
                 span: expression.span,
             };
-            let value = self.eval(&value, Use::Consume, &during)?;
+            // A `let rec` function holds a shared borrow of what it captures, unless the capture
+            // copies for free or is a function value, which the lowering expands (B09). So the
+            // functions of a group can capture one value, and none of them moves it.
+            let value = if recursive.is_empty()
+                || matches!(capture.ty, Type::Function(..))
+                || (capture.ty.is_copy(&types) && !capture.ty.needs_drop(&types))
+            {
+                value
+            } else {
+                TypedExpr {
+                    ty: Type::Reference(Box::new(capture.ty.clone()), false),
+                    kind: E::Borrow(Box::new(value), false),
+                    span: expression.span,
+                }
+            };
+            let value = self.eval(&value, Use::Consume, during)?;
             if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
                 return Err(error(
                     "E1013",
@@ -2181,7 +2221,7 @@ impl Checker<'_> {
             }
             result.loans.extend(value.loans);
         }
-        Ok(result)
+        Ok(())
     }
 
     fn eval_value(

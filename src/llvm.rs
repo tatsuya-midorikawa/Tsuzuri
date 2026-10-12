@@ -3800,15 +3800,26 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
-    fn is_self(&self, callee: &TypedExpr) -> bool {
+    /// Whether a call of `callee` with `arguments` jumps back to the start of this function. A
+    /// parameter that carries a borrow rules that out, because the borrow may point into the frame
+    /// that the jump reuses; a `let rec` function (B09) passes on the borrowed captures that it was
+    /// given, which point outside of it.
+    fn is_self(&self, callee: &TypedExpr, arguments: &[TypedExpr]) -> bool {
         matches!(callee.kind, TypedExprKind::Function(FunctionRef::User(id)) if id == self.function_id)
             && !self.borrowed_worker
-            && !self
+            && self
                 .function
                 .signature
                 .parameters
                 .iter()
-                .any(|ty| ty.carries_loans(&self.module.types()))
+                .enumerate()
+                .all(|(index, ty)| {
+                    !ty.carries_loans(&self.module.types())
+                        || (index < self.function.capture_count
+                            && matches!(arguments.get(index), Some(argument)
+                                if matches!(argument.kind, TypedExprKind::Local(id)
+                                    if id == self.function.parameters[index].id)))
+                })
     }
 
     fn tail_arguments(&mut self, arguments: &[TypedExpr]) -> Vec<String> {
@@ -3895,7 +3906,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.tail(else_branch);
             }
             TypedExprKind::Call(callee, arguments)
-                if self.is_self(callee) && arguments.len() == self.function.parameters.len() =>
+                if self.is_self(callee, arguments)
+                    && arguments.len() == self.function.parameters.len() =>
             {
                 let values = self.tail_arguments(arguments);
                 self.drop_all();
@@ -3904,7 +3916,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.hint_loop(&self.function.body, 0);
             }
             TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
-                if self.is_self(callee) && self.function.parameters.len() == 1 =>
+                if self.is_self(callee, std::slice::from_ref(argument.as_ref()))
+                    && self.function.parameters.len() == 1 =>
             {
                 let values = self.tail_arguments(std::slice::from_ref(argument.as_ref()));
                 self.drop_all();

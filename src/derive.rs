@@ -340,6 +340,7 @@ impl Build<'_> {
             name: self.ident(name),
             mutable: false,
             using: false,
+            recursion: Recursion::None,
             annotation: None,
             value,
         }
@@ -559,6 +560,7 @@ impl Build<'_> {
                     name: self.ident(&name),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: None,
                     value,
                 });
@@ -588,6 +590,7 @@ impl Build<'_> {
                     name: self.ident(&name),
                     mutable: false,
                     using: false,
+                    recursion: Recursion::None,
                     annotation: None,
                     value,
                 });
@@ -902,6 +905,7 @@ impl Build<'_> {
                                 name: self.ident(format!("{name}_tag")),
                                 mutable: false,
                                 using: false,
+                                recursion: Recursion::None,
                                 annotation: None,
                                 value: self.tag(union, name)?,
                             })

@@ -226,6 +226,60 @@ fn lambda_guards_and_where_preserve_layout() {
     }
 }
 
+/// B09: `let rec` and the `and` members of a local group keep their keywords and their indentation,
+/// and a different grouping is a different program.
+#[test]
+fn formats_local_let_rec_without_changing_meaning() {
+    let group = "def f::i64->bool=\\n->\n  let rec even=\\m->if m==0 then true else odd(m-1)\n  and odd=\\m->if m==0 then false else even(m-1)\n  even n\n";
+    for (source, formatted) in [
+        (
+            "def f::i64->i64=\\n->\n  let rec go=\\k->if k==0 then 0 else go(k-1)\n  go n\n",
+            "def f :: i64 -> i64 = \\n ->\n    let rec go = \\k -> if k == 0 then 0 else go(k - 1)\n    go n\n",
+        ),
+        (
+            group,
+            "def f :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd(m - 1)\n    and odd = \\m -> if m == 0 then false else even(m - 1)\n    even n\n",
+        ),
+        (
+            "def g::i64->i64\nfn g n={let rec go=\\k->if k==0 then 0 else go(k-1);go n}\n",
+            "def g :: i64 -> i64\nfn g n = { let rec go = \\k -> if k == 0 then 0 else go(k - 1); go n }\n",
+        ),
+        (
+            "def g::i64->bool\nfn g n={let rec a=\\m->b m;and b=\\m->m==0;a n}\n",
+            "def g :: i64 -> bool\nfn g n = { let rec a = \\m -> b m; and b = \\m -> m == 0; a n }\n",
+        ),
+        // The statements of an entry file.
+        (
+            "let rec go=\\n->if n==0 then 0 else go(n-1)\nand other=\\n->go n\ngo 3\n",
+            "let rec go = \\n -> if n == 0 then 0 else go(n - 1)\nand other = \\n -> go n\ngo 3\n",
+        ),
+    ] {
+        let first = format_source("Main.tz", source, SourceKind::Code)
+            .unwrap_or_else(|error| panic!("{source}: {}", error.message));
+        assert_eq!(first.formatted, formatted, "{source}");
+        let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+        assert_eq!(first.formatted, second.formatted);
+        assert_eq!(
+            ast_fingerprint(parser::parse(source).unwrap()),
+            ast_fingerprint(parser::parse(&first.formatted).unwrap())
+        );
+        tsuzuri::analyze(&first.formatted).unwrap();
+    }
+    // `rec` and `and` are part of the program: the fingerprint tells them apart.
+    let plain = "def f :: i64 -> i64 = \\n ->\n    let go = \\k -> k\n    go n\n";
+    let recursive = "def f :: i64 -> i64 = \\n ->\n    let rec go = \\k -> k\n    go n\n";
+    assert_ne!(
+        ast_fingerprint(parser::parse(plain).unwrap()),
+        ast_fingerprint(parser::parse(recursive).unwrap())
+    );
+    let separate = "def f :: i64 -> i64 = \\n ->\n    let rec a = \\k -> k\n    let rec b = \\k -> a k\n    b n\n";
+    let together = separate.replace("let rec b", "and b");
+    assert_ne!(
+        ast_fingerprint(parser::parse(separate).unwrap()),
+        ast_fingerprint(parser::parse(&together).unwrap())
+    );
+}
+
 #[test]
 fn namespace_and_using_headers_keep_their_lines() {
     let source = "namespace   Sample::Features\nusing  Sample   // shared\nusing Other::Tools\n\ndef main::unit->i32=\\()->Tools::Math.add 40 2\n";
