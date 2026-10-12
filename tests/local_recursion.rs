@@ -366,6 +366,28 @@ fn local_let_rec_values_escape_as_closures() {
     }
 }
 
+/// A group that cannot call an earlier `let rec` function directly holds it as a function value,
+/// which is borrowed like every function value that a `let rec` function captures. The closure of the
+/// group then cannot leave the function that owns the earlier one, even if the earlier function
+/// captures only numbers; the ownership pass after lowering rejects it (`E1013`).
+#[test]
+fn local_let_rec_cannot_return_a_closure_that_borrows_an_earlier_function() {
+    for source in [
+        // A number that the earlier function captures is assigned, so the group captures it as a value.
+        "def make :: i64 -> (i64 -> i64) = \\n ->\n    let mut x = 1\n    let rec early = \\k -> k + x\n    x = n\n    let rec later = \\k -> early k\n    later\n",
+        // The group is in a lambda, which has no captures of the earlier function.
+        "def make :: i64 -> (i64 -> i64) = \\n ->\n    let rec early = \\k -> k + n\n    let wrap = \\x ->\n        let rec inner = \\j -> early (x + j)\n        inner\n    wrap 1\n",
+        // The group follows a `let!`, which starts a continuation.
+        "def make :: i64 -> Maybe<(i64 -> i64)> = \\n ->\n    let rec early = \\k -> k + n\n    let! start = Maybe.Some n\n    let rec later = \\k -> early (k + start)\n    return later\n",
+    ] {
+        rejects(source, "E1013");
+    }
+    // Calling the earlier function directly borrows nothing, so the group can be returned.
+    accepts(
+        "def make :: i64 -> (i64 -> i64) = \\n ->\n    let rec early = \\k -> k + n\n    let rec later = \\k -> early k * 2\n    later\n",
+    );
+}
+
 #[test]
 fn local_let_rec_groups_share_captures_and_call_each_other_directly() {
     let ir = accepts(

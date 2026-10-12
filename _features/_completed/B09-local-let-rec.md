@@ -525,7 +525,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   `src/ownership.rs`（`capture_loans`）、`src/llvm.rs`（`is_self` が引数を見る）。
 - 警告・エディタ・整形・REPL: `src/warnings.rs`（`Uses`、`collect_block`）、`src/semantic.rs`（束縛の範囲の始まり）、`src/formatter.rs`（`and` の字下げ）、`src/repl.rs`。
 - `Binding` を構築するだけの変更: `src/derive.rs`・`src/control.rs`。
-- テスト: `tests/local_recursion.rs`（新規 13 件。うち 2 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（120 ケース）、
+- テスト: `tests/local_recursion.rs`（新規 14 件。うち 3 件はレビュー後）、`tests/lsp.rs`（2 件）、`tests/formatter.rs`（1 件）、`src/repl.rs` の単体テスト（1 件）と `tests/repl.mjs` の R22、`tests/fixtures/local_recursion/Main.tz`（新規）と `tests/features.mjs` の suite `local_recursion`（120 ケース）、
   `tests/local_recursion_fuzz.mjs`（新規。乱数の差分テスト）。
 - 文書: `docs/language.md`（「匿名関数と捕捉」「再帰とスタック」と新しい「ローカルな `let rec`」）、`docs/architecture.md`（モジュール表・閉包の節・末尾再帰・テスト）、`README.md`、`_tsuzuri/language-reference/values-and-functions/`
   の `functions.md`（新しい節と実行例 3 つ、図）・`lambda-expressions.md`・`values.md`・`keywords.md`、`computation-expressions/computation-expressions.md`、`compiler/diagnostics.md`、`_features/README.md`・`GUIDE.md`（D-46）、このチケット（`_completed/` へ移動）。
@@ -534,8 +534,8 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 ### 検証結果
 
 - 基準（変更前。D12 の実装の直後）: `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` が 1,199 件成功。「再現」の `let rec` は、`E0002`（`expected an identifier`）だった。
-- Rust テスト: `cargo test --locked --test local_recursion` が `running 13 tests`・13 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行と、レビューで足した 2 件）。
-  `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、すべての test binary と doc test（98 の結果行）で **1,216 件成功**（基準の 1,199 件 + 新しい 17 件）、失敗 0、無視 0 だった。
+- Rust テスト: `cargo test --locked --test local_recursion` が `running 14 tests`・14 件成功（構文・診断・捕捉の分類・直接呼び出しとループ・グループ・前や外側の関数・コンピュテーション式・未使用の警告・深さ 1,000,000 の実行と、レビューで足した 3 件）。
+  `--test lsp let_rec` が 2 件、`--test formatter let_rec` が 1 件、`--lib repl::tests::keeps_a_let_rec` が 1 件成功。最終の全体 `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` は、すべての test binary と doc test（98 の結果行）で **1,217 件成功**（基準の 1,199 件 + 新しい 18 件）、失敗 0、無視 0 だった。
   `cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（43 ファイル）が成功。GUIDE §3.1 の 4 つの回帰テストは、既定の stack で各 1 件（`running 1 test`）成功した。
 - E2E（release を `cargo build --release --locked` した直後）: `features`（**13,839 ケース**。基準の 13,719 + 新しい 120）、`control`（270）、`computations`、`repl`、`frontend_cache`、`cache`、`lsp_sessions`、`docgen`、`examples`、`stack_overflow`、`primitives`、
   `e2e`、`io`、`user_drop`、`display_parse`、`integer_intrinsics`、`strings`、`allocator`、`math`、`f16_hardware` がすべて成功した（native と WASM の `-O0`・`-O3`、`live == 0`、WASM の import なし）。
@@ -605,7 +605,9 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 
 回帰テスト: `tests/local_recursion.rs` に 2 件（`local_let_rec_functions_are_called_directly_only_where_their_captures_exist`、`local_let_rec_borrows_what_a_match_only_reads`）を足し、`..._call_earlier_and_enclosing_ones_directly` はそのまま通る。どちらも、修正前（`3cd1e66f`）では失敗する
 （1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 12 の export と 41 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと
-`tests/repl.mjs` の R22 が 7 を固定する。
+`tests/repl.mjs` の R22 が 7 を固定する。`rejects_invalid_let_rec_syntax` が 8 を固定する。
+Copilot の 2 回目の再レビューは、指摘ではなくテストの不足を挙げた: 前の `let rec` 関数を直接呼べないグループ（代入された捕捉、ラムダ式、継続）の閉包が、関数値を借用して関数から返る経路である。事前の所有権検査（`capture_loans`）は、`let rec` の関数型の捕捉に借用を付けず、
+安全は、リフトの後の所有権検査が `Borrow(Local)` を持つ環境の返却を `E1013` で拒否することに掛かっている。`local_let_rec_cannot_return_a_closure_that_borrows_an_earlier_function` が、3 つの経路すべてが `E1013` になること（前の関数が数値だけを捕捉していても）と、直接呼べるグループは返せることを固定する。
 
 差分テスト `tests/local_recursion_fuzz.mjs`（コミットする）は、乱数で作ったプログラム（入れ子のグループ、通常のラムダ式、代入される捕捉、借用した文字列と配列、部分適用、`for`、数値と文字列の `match`）を、仕様から書いた独立した JS の評価器と照合する。
 期待値はコンパイラの出力から作らない。修正前のコンパイラは 150 件中 8 件で値が違い、最終のコンパイラは 1,399 件（release。深さ 5 の 400 件と、深さ 6 の 999 件で 1 件は大きさで除外。native `-O0`、3 件に 1 件は `-O3` も）がすべて一致した。
