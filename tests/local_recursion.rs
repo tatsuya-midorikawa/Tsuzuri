@@ -142,6 +142,20 @@ fn rejects_invalid_let_rec_syntax() {
             "def f :: i64 -> i64\nfn f n = { let rec a = \\m -> m; @checked and b = \\m -> m; a n }\n",
             "@checked cannot apply to a 'let rec' binding; put it on the statements inside the function",
         ),
+        // In a computation block, an `and` continues a group only after a `let rec` binding; the
+        // diagnostic is the same with `@checked` before it as without.
+        (
+            "def f :: unit -> Maybe<i64> = \\() ->\n    let rec a = \\x -> x\n    @checked and g = \\x -> x\n    return 1\n",
+            "@checked cannot apply to a 'let rec' binding; put it on the statements inside the function",
+        ),
+        (
+            "def f :: unit -> Maybe<i64> = \\() ->\n    let a = 1\n    and g = \\x -> x\n    return a\n",
+            "'and' continues a 'let rec' group; start it with 'let rec' before the 'and'",
+        ),
+        (
+            "def f :: unit -> Maybe<i64> = \\() ->\n    let a = 1\n    @checked and g = \\x -> x\n    return a\n",
+            "'and' continues a 'let rec' group; start it with 'let rec' before the 'and'",
+        ),
         (
             "def choose :: i64 -> i64\nfn choose value\n    | go value > 10 -> 1\n    | otherwise -> 0\n    where\n        rec go = \\m -> m\n",
             "'where' bindings cannot be recursive; define the function with 'let rec' in the body",

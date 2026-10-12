@@ -577,7 +577,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 
 ### レビューでの指摘と修正（PR #23）
 
-独立したコードレビューが 6 件、Copilot が 1 件を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
+独立したコードレビューが 6 件、Copilot が 1 件を見つけ、修正への再レビューで Copilot がさらに 1 件を見つけた。最初の実装のテストはどれも見つけられなかった。修正の前は、誤った値・コンパイラの panic・誤った診断になった。
 
 1. **入れ子のグループを外側の本体から直接呼んでいた**（値が違う、またはクラッシュ）: `let rec outer = \s -> (let rec inner = ... s ...; inner 3)` で、`inner` の捕捉 `s` は外側のリフトした関数の引数で、借用した捕捉ではない。
    外側が `s` を `ref String` の引数として `inner` に渡し直すと、文字列を参照の位置に渡すことになった（レコード、外側の本体のローカルの関数値でも同じ）。
@@ -588,6 +588,8 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
 5. **関数値の捕捉が多相な関数の中で `E1005` になっていた**: 前の `let rec` 関数の名前は関数値で、型変数について何も言わない。
 6. **`E1012` の位置が、捕捉した値の宣言を指していた**（入れ子のクロージャが借用した捕捉を消費するとき）。
 7. （Copilot）**REPL が `let rec ... and ...` の 2 つ目以降のメンバーの名前を項目に登録しなかった**: 1 行で書いた `let rec even = ...; and odd = ...` が、`even` しか表示せず、`:list` にも `even` だけが載った。
+8. （Copilot の再レビュー）**コンピュテーション式の `@checked` を付けた文が、前の文を見ずに `and` をグループのメンバーとして読んだ**: `let a = 1` の後の単独の `@checked and g = ...` が、専用の診断（`'and' continues a 'let rec' group; ...`）でなく
+   `@checked cannot apply to a 'let rec' binding` になった。`checked_computation_statement` が `computation_statement(true)` と、`after_rec` を固定して呼んでいた。
 
 修正:
 
@@ -599,6 +601,7 @@ D1〜D3・D5〜D8 は既定案のとおり実装した（2026-10-12）。D4 は 
   最初の修正は `consuming_use` の `match` の規則を直接変えたところ、`let rec` を書かない `tests/fixtures/maybe_result` の IR が 4 構成すべてで変わった（環境の複製が減る別の最適化が有効になった）。IR の比較で気づき、`moving_use` に分けて基準と byte 単位で一致させた。
 - 5: `src/polymorph.rs` の型変数の捕捉の検査が、関数型の捕捉を飛ばす。
 - 7: `src/repl.rs` の `Item.binding` を `bindings` にし、グループの全メンバーの名前と位置を登録する。
+- 8: `src/parser.rs` の `checked_computation_statement` が `after_rec` を受け取って渡す。`tests/local_recursion.rs` の `rejects_invalid_let_rec_syntax` に、`let rec` の後の `@checked and`（`@checked` の診断）、単独の `and`、単独の `@checked and`（どちらも stray-`and` の診断）を足した。
 
 回帰テスト: `tests/local_recursion.rs` に 2 件（`local_let_rec_functions_are_called_directly_only_where_their_captures_exist`、`local_let_rec_borrows_what_a_match_only_reads`）を足し、`..._call_earlier_and_enclosing_ones_directly` はそのまま通る。どちらも、修正前（`3cd1e66f`）では失敗する
 （1〜3 は IR の呼び出しの構造、4〜6 は受理・拒否と診断の位置）。E2E の suite `local_recursion` に 12 の export と 41 ケースを足した（値は閉じた式から作る。修正前は 1 の 3 つの export が誤った値を返し、2 の 2 つの export はコンパイルできない）。`src/repl.rs` の単体テストと

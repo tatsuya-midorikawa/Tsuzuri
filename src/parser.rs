@@ -2758,8 +2758,11 @@ impl Parser<'_> {
     /// `@checked` before a statement checks the arithmetic it evaluates; kept out of
     /// the recursive `computation_statement` frame.
     #[inline(never)]
-    fn checked_computation_statement(&mut self) -> Result<ComputationStatement, Diagnostic> {
-        let mut statement = self.computation_statement(true)?;
+    fn checked_computation_statement(
+        &mut self,
+        after_rec: bool,
+    ) -> Result<ComputationStatement, Diagnostic> {
+        let mut statement = self.computation_statement(after_rec)?;
         self.checked_statement(&mut statement)?;
         if let Some(mut pending) = self.pending_statement.take() {
             self.checked_statement(&mut pending)?;
@@ -2894,7 +2897,7 @@ impl Parser<'_> {
         after_rec: bool,
     ) -> Result<ComputationStatement, Diagnostic> {
         if self.checked_attribute() {
-            return self.checked_computation_statement();
+            return self.checked_computation_statement(after_rec);
         }
         let start = self.current().span;
         if self.use_binding_ahead() {
