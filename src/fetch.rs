@@ -846,10 +846,13 @@ impl Repository {
     /// The paths of a repository for `url` in a temporary directory, with its empty
     /// hooks directory and global configuration.
     fn create(temporary: &TemporaryDirectory, url: &str) -> Result<Self, SourceError> {
+        // Git for Windows cannot read a configuration file that a verbatim path (`\\?\`) names.
+        let root =
+            crate::cache::real_path(&temporary.path).unwrap_or_else(|_| temporary.path.clone());
         let repository = Self {
-            hooks: temporary.path.join("hooks"),
-            config: temporary.path.join("gitconfig"),
-            git_dir: temporary.path.join("repo.git"),
+            hooks: root.join("hooks"),
+            config: root.join("gitconfig"),
+            git_dir: root.join("repo.git"),
             file_protocol: url.starts_with("file:///"),
         };
         fs::create_dir(&repository.hooks)
