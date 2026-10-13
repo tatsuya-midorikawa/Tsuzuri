@@ -16,6 +16,8 @@ function execute(program, args, success = true, env = {}) {
   return result;
 }
 const cli = (args, success, env) => execute(compiler, args, success, env);
+// Warnings come first on stderr as JSON lines; the error that --json reports is the last one.
+const diagnostic = (result) => JSON.parse(result.stderr.trim().split("\n").filter((line) => line.startsWith("{")).pop());
 try {
   const project = join(directory, "console");
   mkdirSync(project);
@@ -31,7 +33,7 @@ try {
     cli(["build", input, "-o", executable, ...flags]);
     const previous = readFileSync(executable);
     const failed = cli(["build", input, "-o", executable, ...flags, "--json"], false, { TSUZURI_CLANG: join(directory, "missing-clang.exe") });
-    assert.equal(JSON.parse(failed.stderr).code, "E2002");
+    assert.equal(diagnostic(failed).code, "E2002");
     assert.deepEqual(readFileSync(executable), previous);
     assert.equal(cli(["run", "examples/tasks", ...flags]).stdout, "21325334000\n");
     assert.equal(cli(["run", "examples/control", ...flags]).stdout, "42\n");
@@ -55,12 +57,12 @@ try {
     execute(clang, [...nativeFlags, ...flags, host, ir, "src/runtime/task.c", "-o", tasks]);
     execute(tasks, []);
     const rejected = cli(["build", "tests/fixtures/tasks/Main.tz", "--emit", "object", "-o", join(directory, "rejected.obj"), "--json"], false);
-    assert.equal(JSON.parse(rejected.stderr).code, "E2002");
+    assert.equal(diagnostic(rejected).code, "E2002");
   }
   const alias = join(directory, "source-alias.ll");
   linkSync(input, alias);
   const protectedResult = cli(["build", input, "--emit", "llvm", "-o", alias, "--json"], false);
-  assert.equal(JSON.parse(protectedResult.stderr).code, "E2003");
+  assert.equal(diagnostic(protectedResult).code, "E2003");
   const library = join(directory, "library");
   mkdirSync(library);
   writeFileSync(join(library, "Main.tz"), "export def answer :: i64\nfn answer = 42\n");
@@ -97,7 +99,7 @@ try {
   mkdirSync(trapping);
   writeFileSync(join(trapping, "Main.tz"), "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n");
   for (const optimization of ["-O0", "-O3"]) {
-    const trapped = JSON.parse(cli(["run", trapping, optimization, "--json"], false).stderr);
+    const trapped = diagnostic(cli(["run", trapping, optimization, "--json"], false));
     assert.equal(trapped.code, "E2005");
     assert.match(trapped.message, /exit code: 0xc000001d/);
     assert.match(trapped.message, /trap: integer division by zero at /);
