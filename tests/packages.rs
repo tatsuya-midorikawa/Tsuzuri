@@ -231,6 +231,11 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// A relative path as a diagnostic spells it on this platform.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 #[track_caller]
 fn assert_success(output: &Output) {
     assert!(
@@ -656,7 +661,7 @@ fn offline_build_reads_store_and_detects_tampering() {
         "Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them",
     );
     assert!(
-        stderr(&missing).contains("app/Tsuzuri.toml"),
+        stderr(&missing).contains(&native("app/Tsuzuri.toml")),
         "{}",
         stderr(&missing)
     );
@@ -808,7 +813,7 @@ fn git_packages_reject_path_dependencies() {
         "git packages cannot have path dependencies; use a git dependency",
     );
     assert!(
-        stderr(&output).contains(&format!("{sha256}/Tsuzuri.toml")),
+        stderr(&output).contains(&native(&format!("{sha256}/Tsuzuri.toml"))),
         "{}",
         stderr(&output)
     );
@@ -1108,7 +1113,7 @@ fn fetch_rejects_unsafe_trees() {
         let output = scratch.tsuzuri(&["fetch", app]);
         assert_error(&output, code, &message);
         assert!(
-            stderr(&output).contains("app/Tsuzuri.toml"),
+            stderr(&output).contains(&native("app/Tsuzuri.toml")),
             "{}",
             stderr(&output)
         );
@@ -1992,7 +1997,7 @@ fn registry_rejects_incompatible_and_missing_versions() {
         let output = scratch.tsuzuri(&["fetch", app]);
         assert_error(&output, code, message);
         assert!(
-            stderr(&output).contains("app/Tsuzuri.toml"),
+            stderr(&output).contains(&native("app/Tsuzuri.toml")),
             "{}",
             stderr(&output)
         );

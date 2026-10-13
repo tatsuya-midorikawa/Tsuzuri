@@ -5,6 +5,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// How a trapped program is reported: `llvm.trap` raises a signal on Unix, and on Windows it ends the process
+/// with STATUS_ILLEGAL_INSTRUCTION (0xC000001D, or -1073741795 as the signed exit code).
+const TRAPPED: &str = if cfg!(windows) {
+    "trapped or exited with code -1073741795"
+} else {
+    "trapped or terminated by signal"
+};
+
 const TOTAL: &str = "def total :: ref [i64] -> i64\nfn total values =\n    let mut sum = 0\n    let mut index = 0\n    while index < values.length do\n        sum = sum + values[index]\n        index = index + 1\n    sum\n";
 
 fn project(test: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -542,7 +550,7 @@ fn cli_runs_lists_filters_and_reports_failures() {
     assert_eq!(lines[0]["name"], "total");
     assert_eq!(lines[1]["name"], "fixed cost");
     assert_eq!(lines[2]["status"], "failed");
-    assert_eq!(lines[2]["failure"], "trapped or terminated by signal");
+    assert_eq!(lines[2]["failure"], TRAPPED);
     assert_eq!(
         lines[3],
         serde_json::json!({"type": "summary", "benchmarks": 3, "failed": 1, "ignored": 0})
@@ -550,7 +558,7 @@ fn cli_runs_lists_filters_and_reports_failures() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("\"code\":\"E2005\"")
-            && stderr.contains("benchmark 'Speed.traps' trapped or terminated by signal"),
+            && stderr.contains(&format!("benchmark 'Speed.traps' {TRAPPED}")),
         "{stderr}"
     );
     let listing = tsuzuri(&["bench", path, "--list"], &root);

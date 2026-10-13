@@ -476,12 +476,19 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     let script = root.join("check.mjs");
     fs::write(&script, "import assert from 'node:assert/strict'; import {readFileSync} from 'node:fs';\nconst module = new WebAssembly.Module(readFileSync(process.argv[2])); assert.deepEqual(WebAssembly.Module.imports(module), []); const sites=JSON.parse(readFileSync(process.argv[3])).sites; const fresh=()=>new WebAssembly.Instance(module).exports; const api=fresh(); assert.equal(api.tz_divide(84n,2n),42n); assert.equal(api.tz_soft(42n),42n); assert.equal(api.tz_closure(20n),41n); api.tz_indirect(1); for(const [name,args,kind] of [['verify',[0],'assertion failed'],['divide',[1n,0n],'integer division by zero'],['divide',[-9223372036854775808n,-1n],'integer division overflow'],['divide',[-9223372036854775808n,0n],'integer division by zero'],['bound',[2n],'index out of bounds'],['allocate',[-1n],'allocation size overflow'],['allocate',[3000000n],'allocation failed'],['indirect',[0],'assertion failed']]) { const api=fresh(); assert.throws(()=>api['tz_'+name](...args),WebAssembly.RuntimeError,name); const site=sites.find(site=>site.id===api.tsuzuri_trap_site()); assert.ok(site,name); assert.equal(site.kind,kind,name); assert.equal(site.path,'Main.tz'); }\n").unwrap();
     for optimization in ["-O0", "-O3"] {
-        let native = root.join(format!("native{optimization}"));
+        let native = root.join(format!(
+            "native{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         run(Command::new(&clang)
             .args([optimization, "-Wno-override-module"])
             .arg(&native_ir)
             .arg(&host)
-            .args(["-lm", "-o"])
+            .args(if cfg!(windows) {
+                &["-o"][..]
+            } else {
+                &["-lm", "-o"][..]
+            })
             .arg(&native));
         run(&mut Command::new(&native));
         for (index, kind) in [

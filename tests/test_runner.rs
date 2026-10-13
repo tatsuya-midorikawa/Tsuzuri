@@ -1,5 +1,13 @@
 use tsuzuri::{parser, syntax::SourceKind};
 
+/// How a trapped program is reported: `llvm.trap` raises a signal on Unix, and on Windows it ends the process
+/// with STATUS_ILLEGAL_INSTRUCTION (0xC000001D, or -1073741795 as the signed exit code).
+const TRAPPED: &str = if cfg!(windows) {
+    "trapped or exited with code -1073741795"
+} else {
+    "trapped or terminated by signal"
+};
+
 #[test]
 fn native_and_wasm_tests_are_isolated_filtered_and_ordered() {
     let module = tsuzuri::analyze("test \"passes\" = assert true\ntest \"traps\" = assert false\ntest \"passes after trap\" = assert (2 + 2 == 4)").unwrap();
@@ -481,9 +489,9 @@ fn failed_tests_show_the_end_of_their_stderr() {
     assert_eq!(text.status.code(), Some(1));
     let stdout = String::from_utf8(text.stdout).unwrap();
     assert!(
-        stdout.contains(
-            "ok 1 - Specs quiet pass\nnot ok 2 - Specs loud failure\n  failure: trapped or terminated by signal\n  shown\n"
-        ),
+        stdout.contains(&format!(
+            "ok 1 - Specs quiet pass\nnot ok 2 - Specs loud failure\n  failure: {TRAPPED}\n  shown\n"
+        )),
         "{stdout}"
     );
     assert!(!stdout.contains("hidden"), "{stdout}");

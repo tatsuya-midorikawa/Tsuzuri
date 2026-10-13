@@ -6,6 +6,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// How a trapped program is reported: `llvm.trap` raises a signal on Unix, and on Windows it ends the process
+/// with STATUS_ILLEGAL_INSTRUCTION (0xC000001D, or -1073741795 as the signed exit code).
+const TRAPPED: &str = if cfg!(windows) {
+    "trapped or exited with code -1073741795"
+} else {
+    "trapped or terminated by signal"
+};
+
 const PROPS: &str = include_str!("fixtures/property/Props.tz");
 const BOUNDS: &str = include_str!("fixtures/property/Bounds.tz");
 const DEFAULT_SEED: &str = "11400714819323198485";
@@ -105,10 +113,7 @@ fn properties_shrink_to_the_simplest_counterexample() {
             .find(|result| result["name"] == name)
             .unwrap_or_else(|| panic!("{name}"));
         assert_eq!(result["status"], "failed", "{result}");
-        assert_eq!(
-            result["failure"], "trapped or terminated by signal",
-            "{result}"
-        );
+        assert_eq!(result["failure"], TRAPPED, "{result}");
         let lines = report(result);
         assert_eq!(lines.len(), 3, "{name}: {lines:?}");
         let cases = if name == "seven cases" { 7 } else { 100 };
@@ -129,9 +134,9 @@ fn properties_shrink_to_the_simplest_counterexample() {
     let text = tsuzuri(&root, &["--filter", "Props.i64 below 100"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
     assert!(
-        stdout.contains(
-            "not ok 3 - Props i64 below 100\n  failure: trapped or terminated by signal\n  property failed at case "
-        ) && stdout.contains("\n  counterexample: 100\n  shrunk "),
+        stdout.contains(&format!(
+            "not ok 3 - Props i64 below 100\n  failure: {TRAPPED}\n  property failed at case "
+        )) && stdout.contains("\n  counterexample: 100\n  shrunk "),
         "{stdout}"
     );
     clean(&root);
