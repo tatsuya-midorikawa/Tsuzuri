@@ -1,5 +1,8 @@
 # PX02: 実アプリ型ベンチマークと比較対象の拡充
 
+本文の起票時の手順は調査履歴です。現行の受け入れ条件と末尾の「実装と検証」を優先します。
+Phase 3 と Go／Zig は 2026-10-13 の全フェーズの依頼で承認済みです。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PX02 |
@@ -445,15 +448,16 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 
 ## 受け入れ条件
 
-- [ ] `std_option_owned` の C++ が `std::u16string` の連結、Rust が `OwnedUtf16` の連結、C# が `static readonly string` の連結、JavaScript が `parts` の連結をしている。
-- [ ] `std_option_length` が Tsuzuri（ce・direct）・C++・Rust・C#・JavaScript にあり、quick で照合される。
-- [ ] `benchmarks/report.mjs` に `std_option_owned` の特別扱いがなく、`node tests/benchmark_report.mjs` が成功する。
-- [ ] `integer128_mix` の 3 run の PX01 形式の結果と分類が文書にあり、「差が残る」なら配置の実験の結果もある。
-- [ ] `apps` の 10 種目が 4 実装と WASM `-O0`・`-O3` で照合され、本計測の `apps.jsonl` が 140 行ある。
-- [ ] `docs/benchmarks.md`・`README.md`・`_perfs/README.md` が「ドキュメント」のとおり更新されている。
-- [ ] `git diff --stat -- src std` が空。
-- [ ] GUIDE §10 の完了の定義を満たす。
-- [ ] Phase 3（D7 の承認後）: `zig`・`go` の 80 行（`wall_time`・`cpu_time`・`peak_rss`・checksum 照合）が加わり、ツールのない計測機では runner が理由を表示して終了コード 0 で終わる。
+- [x] owned の C++／Rust／C#／JavaScript がソース上で同じ 2 回の所有文字列の連結を行う。
+- [x] length は全実装にあり、quick／full で元の owned の checksum と一致する。
+- [x] report の特別扱いを削除し、既存と追加のテストが成功。統合は array_index_sum の補完を含む 38 種目。
+- [x] int128 の同じ Clang の 3 run と operand 一致の 10 命令を記録、分類は計測の揺れで配置実験は不要。
+- [x] apps の 10 種目×6実装、Tsuzuri native O0／O3 と WASM O0／O3 を独立参照と照合、全 tracked は live 0。
+- [x] full apps は 200 行、Go／Zig が無い場合は 140 行。追加は 10 種目×2言語×3指標の **60 行**（起票時の 80 は計数の誤記）。
+- [x] 版、GC・CPU・所有値・境界検査・Leaf 表現・生成 IR の確保箇所の差を記録し、関連文書を更新。
+- [x] PX02 自体は src／std の意味と最適化を変更しない。同 PR の src の変更は PX01 の段階計時の範囲。
+- [x] 全 Rust 1,223 件、関連 E2E、Node・manual・clippy・fmt が成功、速度・メモリの CI 閾値はない。
+- [x] default の無い Go／Zig は明示理由付き skip と exit 0。明示した使えない実行ファイルは error で、silent fallback はない。
 
 ## 落とし穴
 

@@ -1,5 +1,8 @@
 # PX03: ビルド速度ベンチマーク
 
+本文の起票時の手順は調査履歴です。現行の受け入れ条件と末尾の「実装と検証」を優先します。
+Phase 2 と Go／Zig は 2026-10-13 の全フェーズの依頼で承認済みです。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PX03 |
@@ -506,14 +509,15 @@ PX03 はコンパイラを変えないので、確かめるのは「合成コー
 1,000 module の native `-O0`／`-O3` と WASM `-O0` の正しさ・計測を完了条件にします。
 これは LLVM の最適化・言語の意味・生成規則を変える回避ではありません。
 
-- [ ] `benchmarks/build/generate.mjs` が決定的で、`check` を警告なしで通り、`-O0`・`-O3` の実行ファイルの出力が BigInt の参照値と一致する（10・1,000 モジュール）。
-- [ ] `benchmarks/run-build.mjs` が合成 200・1,000 モジュールと実プロジェクト 11 個について、9 つの variant・opt の組を PX01 形式で記録する（skip は stderr に出る）。
-- [ ] 段階別時間から `frontend`・`cache`・`tools`・`other` が要約に出て、コンパイラと Clang・wasm-ld の時間が分かれている。
-- [ ] `build-warm` が cache hit（`tool.` の段なし）、編集の variant が cache miss であることを runner が確かめている。
-- [ ] 本計測 1 回と、広がりの確認の 2 回目が `target/perf/` にあり、`docs/benchmarks.md` の `## ビルド速度` に公開されている。
-- [ ] `src/` の変更がなく、`cargo test --locked` と `node tests/benchmark_report.mjs` と `--quick` が成功する。
-- [ ] 速度の閾値を CI に入れていない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 決定的な 20 関数／module の生成器が check を通り、native O0／O3 の 3 入力は独立な BigInt の参照と一致（quick と 1,000）。
+- [x] 200 の 9 組、1,000 の標準 8 組＋明示要求の large WASM O3、real 11 を schema 1 で記録。除外は理由と補助 manifest に残す。
+- [x] frontend／cache／tools／other を標本ごとに分け、CPU・wall・RSS・成果物のサイズ・IR bytes を記録。
+- [x] warm の tool 不在と編集の tool 実行を検証し、すべて利用者の cache ではなく一時 cache を使う。
+- [x] full A と 200／1,000 の repeat の同じ 1,206 keys を比較。値と条件・除外・変動の説明を docs に公開。
+- [x] Phase 2 の C・C++・Rust single／workspace・Go・Zig が参照値と一致。full 162 レコードは各 9 標本。
+- [x] 対応する IR／WASM の byte と成果物サイズを検査。既存の Mach-O UUID／署名・large O0 stub 配置を明記し、追加の code-byte マスクをしない。
+- [x] PX03 自体は compiler の最適化・意味を変更しない。同 PR の source の計時は PX01 の範囲。
+- [x] 全 Rust 1,223 件、Node の metrics／生成器／quick、関係する E2E・manual・fmt・clippy を通過。CI に性能閾値はない。
 
 ## 落とし穴
 

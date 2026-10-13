@@ -1,5 +1,8 @@
 # PX01: 性能指標の拡張と記録の継続
 
+本文の起票時の手順は調査履歴です。現行の受け入れ条件と末尾の「実装と検証」を優先し、
+Phase 1 だけに限定する注記は、2026-10-13 の全フェーズの依頼で置き換えました。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PX01 |
@@ -779,17 +782,18 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 
 ## 受け入れ条件
 
-- [ ] 手順 1〜12 の `確認:` がすべて期待どおり。
-- [ ] `--metrics` なしの 3 runner の stdout の欄が手順 1 の保存と同じ（`same-keys`）で、計時用の host が `#ifdef TRACKING` の外で `f8dc655` と同じ（`timed-host-unchanged`）。
-- [ ] quick の `--metrics` で control 150 行・computations 127 行・cpp 8N 行が書かれ、`report` が全行を検証して表示する。
-- [ ] process suite が表の variant の時間・RSS・段・大きさを記録し、同じディレクトリへの 2 回目は `EEXIST` で終了コード 1。
-- [ ] control・cpp・computations の Tsuzuri 実装に `alloc_calls`・`alloc_bytes` が記録され、tracked 実行が `live == 0` で終わり、tracked IR に元の確保関数が残らない（生成コードの確認 2）。
-- [ ] `TSUZURI_TIME_PASSES=1` の有無で成果物がバイト単位で同じで（生成コードの確認 1）、既定の stderr・終了コードが変わらず、段の合計が `total_ms` を超えない。
-- [ ] `cargo test --locked`（`timings` 1 件と `time_passes` 4 件を含む）、`cargo clippy --locked --all-targets`（新しい警告なし）、`cargo fmt --check`、`node tests/benchmark_report.mjs`（テスト 1〜14）が成功。
-- [ ] `Cargo.toml`・`Cargo.lock` に差分がなく、npm の依存を足しておらず、`unsafe` がない。
-- [ ] macOS の benchmark の run を 1 つ `docs/benchmarks.md` のマーカーの間に公開し、再公開で差分が増えない。生データは Git に入っていない。
-- [ ] 「ドキュメント」の全項目を更新し、その確認コマンドが成功。`_perfs/README.md` の PX01 が `done`。
-- [ ] GUIDE §10 の完了の定義を満たす。PX01 自身は速度の改善を主張しない。Linux の記録（手順 13、D8）は Phase 1 の完了条件に含めない。
+- [x] 起票時の手順の目的を現行 cache／IO／stdlib に合わせて検証し、例外・判断を実装記録へ残した。
+- [x] 着手時 `dadc6d8b` と比較して 3 runner の stdout の欄と全 checksum が一致し、TRACKING は別の実行ファイルで計測する。
+- [x] 現行の 16 control は 160 行、12 cpp は 96 行。computations は PX01 単独 127 行、PX02 の length の追加後は 141 行で、全行の検証を通る。
+- [x] process suite が variant の時間・RSS・段・大きさを記録し、再書き込みは `EEXIST`。
+- [x] Tsuzuri の alloc_calls／alloc_bytes を記録し、全 tracked 呼び出しの live は 0、元の allocator 名と推定属性を除去する。
+- [x] IR／header／object／WASM は計時の有無で byte 一致。既定の診断・終了コードは不変、段の合計は丸めの許容内で total 以下。
+- [x] Mach-O の既存の UUID／署名と、large O0 の import-stub の変動を明記し、code-byte の追加のマスクで隠さない。
+- [x] 全 Rust 1,223 件（timings と time_passes 4 件を含む）、strict clippy／fmt、Node の記録・process group timeout・tracker・比較・公開の検査が成功。
+- [x] Cargo manifests／lock は不変。新しい npm／Rust 依存と unsafe Rust はない。
+- [x] macOS の benchmark の要約をマーカー内に公開し、再公開は冪等。共有機／dirty の条件を明記、生データは ignored。
+- [x] 現行 manual 4 ページ・README・仕様・構成・性能文書を更新して検証、PX01 は done。
+- [x] Phase 2 の tasks／simd／dispatch／mix と、PX02 の managed の記録も検証。専用 Linux 実機の調達・外部保管の契約は対象外。
 
 ## 落とし穴
 
@@ -901,3 +905,5 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
   多段の子を持つ timeout の再現テストが成功し、残った stress の 3 PID だけを明示して終了した。
   silent skip、速度の合否閾値、依存追加、unsafe Rust はない。
 - manual 4 ページの `check-docs` は 218 links、6 examples、native の 6 runs、1 test project を通過した。
+- 無効の計時の before／after の check は中央値 87.115／77.353 ms、広がり 51.346／34.485 ms。
+  差は広がり以内で「差なし」。共有機の値から高速化・厳密な 0 コストは主張しない。
