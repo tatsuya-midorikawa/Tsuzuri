@@ -1209,6 +1209,25 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 
 ## 開発と検証
 
+### コンパイルの段階別時間
+
+`src/timings.rs` は `TSUZURI_TIME_PASSES=1` のときだけ時計と段の記録を使い、CLI の終了時に stderr の最後へ
+`{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行を出します。
+値は ms、小数 3 桁です。同じ段は最初に現れた位置に合算し、入れ子にはしません。
+`Phase` の RAII で診断による早期 return でも段を閉じ、`Report` が成功・失敗・LSP 終了のどの経路でも出力します。
+
+- `load`: CLI のプロジェクト読み込み。`parse`: ソースの構文解析と frontend cache からの復号。
+- `check`: 展開、名前・型の検査、抽象の所有権と Copy の推論。`specialize`・`closures`・`ownership`: 単相化、
+  閉包の lowering、具体化後の所有権検査。
+- `emit`: LLVM IR、header、GPU カーネルの生成。`cache`: frontend cache の準備・保存と whole-build cache の鍵・読み込み・復元・保存・掃除。
+- `tool.<実行ファイルの stem>`: `run_tool` が待ち合わせる Clang・リンカーなど。cache の内部での版の照会は `cache` に含みます。
+- 引数解析、生成後の GPU 検査、成果物の書き出し、`run` の子プロセスは `total_ms` にだけ含みます。
+
+成果物、診断、終了コードは変えません。`1` 以外は無効で、無効時は時計・記録用の文字列・mutex を使いません。
+PX01 の記録と PX03 のビルド比較は、この同じ JSON を使います（[性能指標の記録](benchmarks.md#性能指標の記録)）。
+
+### 検証コマンド
+
 コンパイラの健全性を検証するための標準的なコマンドライン手順は以下のとおりです。
 
 ```sh

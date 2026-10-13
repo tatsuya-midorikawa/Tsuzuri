@@ -918,7 +918,18 @@ node scripts/check-docs.mjs
 
 ### ベンチマーク測定
 
-C/C++、Rust、C#、JavaScript との 36 種目にわたる詳細な性能比較スクリプトを提供しています。
+C/C++、Rust、C#、JavaScript との 38 種目にわたる詳細な性能比較スクリプトを提供しています。
+
+PX01 → PX03 → PX02 の計測基盤を全実装フェーズまで実装しました。現行の frontend cache と成果物 cache を区別し、
+従来の stdout を保った JSON Lines の記録、決定的なビルド入力、同じ仕事を行う実アプリ型の比較を提供します。
+Go・Zig の比較を含む全実装フェーズの方針は [_perfs/README.md](_perfs/README.md#px01px03px02-の実装方針2026-10-13) にあります。
+共有 CI に性能の合否閾値は置かず、未実測のホストでの性能は主張しません。
+macOS の実行ファイルの決定性は、既存のリンカーが毎回変える UUID と署名だけを除いて検査します。
+コンパイラの既定の出力は変更しません。
+大規模な合成 WASM `-O3` には LLVM 21 の最適化時間の制限があるため、標準のビルド比較は 200 module まで、
+1,000 module のその組は `--large-wasm` で明示します。native と WASM `-O0` の 1,000 module は標準で検査します。
+大規模 native `-O0` の既存の Mach-O import-stub 順序の変動は warning と補助 manifest に残し、
+ソースの参照値・IR・サイズの検査と区別します。
 
 ```sh
 # 基本ベンチマークの実行
@@ -926,6 +937,12 @@ node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
+node benchmarks/run-control.mjs target/release/tsuzuri --metrics target/perf/PX01-example
+node benchmarks/metrics.mjs process target/release/tsuzuri --out target/perf/PX01-example
+node benchmarks/metrics.mjs report target/perf/PX01-after --baseline target/perf/PX01-before
+node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-example
+node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
+node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）

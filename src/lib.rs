@@ -28,6 +28,7 @@ pub mod stdlib;
 pub mod syntax;
 pub(crate) mod syntax_codec;
 pub mod target;
+pub mod timings;
 pub mod trap;
 
 use check::{ModuleInput, ModuleOrigin};
@@ -141,6 +142,7 @@ pub(crate) fn analyze_inputs_with(
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
+    let parse_time = timings::Phase::start("parse");
     for (id, input) in inputs.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -211,10 +213,12 @@ pub(crate) fn analyze_inputs_with(
             Err(errors) => diagnostics.extend(errors),
         }
     }
+    drop(parse_time);
     if !diagnostics.is_empty() {
         return Err(diagnostics.finish());
     }
     if let Some(cache) = cache {
+        let _cache_time = timings::Phase::start("cache");
         let records: Vec<_> = programs
             .iter()
             .zip(inputs)

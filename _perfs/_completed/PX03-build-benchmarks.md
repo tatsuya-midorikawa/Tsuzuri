@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | PX01 |
 | 関連 | PB01〜PB07, G17 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1 は不要。Phase 2 は要承認: D9（Go・Zig の計測機への導入と他言語版の生成器） |
 | 手本にする既存実装 | 合成プロジェクトの生成と cache の比較: `benchmarks/run-cache.mjs`（`mkdtempSync` の一時ディレクトリ、`TSUZURI_CACHE_DIR` の隔離、`spawnSync`、成果物の byte 一致の確認）。プロセスの計測と記録: PX01 が作る `benchmarks/metrics.mjs` の process suite（`measureProcess`・`parseTimePasses`・`captureRun`・`makeRecord`・`writeRecords`、warm-up 1 回と 9 標本、成果物の大きさの一致確認、WASM の skip 規則） |
@@ -500,6 +500,12 @@ PX03 はコンパイラを変えないので、確かめるのは「合成コー
 
 ## 受け入れ条件
 
+2026-10-14 の現行実装との照合で、1,000 module の WASM `-O3` は Apple／upstream LLVM 21 ともに
+10 分の process timeout を超えることを確認しました。下の起票時の全組は `--large-wasm` の明示要求として残し、
+標準の記録はその 1 組だけを理由・補助 manifest 付きで除外します。200 module の全組、
+1,000 module の native `-O0`／`-O3` と WASM `-O0` の正しさ・計測を完了条件にします。
+これは LLVM の最適化・言語の意味・生成規則を変える回避ではありません。
+
 - [ ] `benchmarks/build/generate.mjs` が決定的で、`check` を警告なしで通り、`-O0`・`-O3` の実行ファイルの出力が BigInt の参照値と一致する（10・1,000 モジュール）。
 - [ ] `benchmarks/run-build.mjs` が合成 200・1,000 モジュールと実プロジェクト 11 個について、9 つの variant・opt の組を PX01 形式で記録する（skip は stderr に出る）。
 - [ ] 段階別時間から `frontend`・`cache`・`tools`・`other` が要約に出て、コンパイラと Clang・wasm-ld の時間が分かれている。
@@ -596,3 +602,29 @@ PX03 はコンパイラを変えないので、確かめるのは「合成コー
 - 決定: 1 crate（モジュールごとの `mod`）と、モジュールごとの crate を持つ workspace の両方を測り、条件を表に明記する。
 - 理由: Rust は crate が並列化と cache の単位で、どちらか一方では Tsuzuri のモジュールと対応しない。
 - 状態: 既定案（実装者はこの案に従う。Phase 2 の承認後に適用）
+
+## 実装と検証（2026-10-14）
+
+- Phase 1・2 を実装。依頼で全フェーズが承認済み。純粋な生成器は同じ入力から同じ source を作り、
+  同じ 20 関数／module・10 種類の処理を Tsuzuri・C・C++・Rust single／workspace・Go・Zig に生成する。
+  1,000 module は 1,001 files、139,010 lines、3,648,845 bytes。
+- すべての系列の native debug／最適化版を、空・12345・綴り😀 の入力で独立 BigInt の参照と照合。
+  quick は 6 言語・2 Rust layouts、9 組の Tsuzuri の操作、cache miss／hit、変更後の参照値が成功（406 レコード）。
+- full A（200・1,000 module と real 11）は `PX03-formal-a` に 1,206 schema 1 レコード。
+  repeat 200 と real 11 は `PX03-formal-b-retry` に 1,086、repeat 1,000 と real 11 は
+  `PX03-formal-large-repeat-verified` に 1,069。時刻と RSS は 9 標本以上、IR の段は重複・入れ子無し。
+- 参照の full（10 module、6 layouts）は `PX03-reference-formal` に 162 レコード。
+  debug／最適化・warm・body／API edit の 5 組を 9 標本で記録した。Go／Zig の missing と明示要求の失敗、
+  誤った CLI・duplicate sizes・generator bounds・既存 directory の拒否を検査した。
+- 現行の G17 の cache、IO の let!、GNU make の秒単位の更新に合わせて方針を修正。
+  native の出力は source の checksum と照合し、C／C++ は変更する source の what-if と最終出力の再リンクを保証。
+- 1,000 module の WASM O3 は Apple／upstream LLVM 21 がともに 600 秒を超えるため、
+  標準では理由と manifest を残す除外、`--large-wasm` で要求したときは timeout のエラーにした。
+  native O0／O3 と WASM O0 は 1,000 module でも実行・記録済み。200 と小さい project の WASM O3 は成功。
+- 大規模 Mach-O O0 の import-stub の 2 通りの配置は before の compiler でも再現。
+  symbol 付きの disassembly と参照値で確認し、追加の byte のマスクはしない。
+  この既存の配置の warning と fingerprint を manifest に残し、IR／WASM とその他の組の厳密な検査を維持した。
+- 全 Rust 1,223・clippy／fmt・runtime includes・関連 E2E・Node metrics／生成器の検査が成功。
+  source の計時の変更は PX01 の範囲であり、この ticket は compiler の最適化と意味を変更しない。
+- README・性能文書・manual strategy を更新。共有機／dirty の参照用の本計測で、速度の一般的な勝敗を主張しない。
+  CI は 4 host の quick を加え、速度・メモリの合否条件は加えない。

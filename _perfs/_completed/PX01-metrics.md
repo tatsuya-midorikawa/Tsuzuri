@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | – |
 | 関連 | PX02, PX03, G17 Phase 0。PX01 形式と確保の計数を使う: PM01〜PM09, PR01〜PR07, PB01〜PB07 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D3（生データのリポジトリ外での長期保管）, D8（x86_64 Linux・AArch64 Linux の計測機の確保）。どちらも Phase 1 の手順 1〜12 には不要 |
 | 手本にする既存実装 | 確保の計数: `benchmarks/run-computations.mjs` の tracked 経路（clang `-O3` 後の IR の `@malloc`→`@tracked_alloc` 置換、属性の除去、`-O0` での再コンパイル、`-DTRACKING` の host）と `benchmarks/computations/native.cpp` の `#ifdef TRACKING` 節。`realloc` の扱いは `tests/features.mjs` の `tracked_realloc`。要約: `benchmarks/report.mjs` の `renderTable`・`publishSummary`（一時ファイル＋`renameSync`）と CLI の判定（`process.argv[1]` と `import.meta.url` の比較）。テスト: `tests/benchmark_report.mjs` |
@@ -868,3 +868,36 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 - 決定: PX01 形式を書くのは run-control・run-cpp・run-computations と process suite だけ。他の runner は設計の「Phase 2」、run-cache は PX03、run-managed の C#・JavaScript は PX02 が扱う。
 - 理由: run-managed が読む 3 runner と、ビルド時間・RSS・成果物サイズの基準（hello）で、後続チケットの before／after に足りる。起票時の「既存のベンチマークすべて」は Phase 2 と PX02・PX03 に分けて満たす。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-13）
+
+- Phase 1・2 を実装。control・cpp・computations・process・tasks・simd・dispatch・mix が schema 1 を記録する。
+  C#／JavaScript の記録は依存する PX02 で追加する。専用 Linux 実機の調達と外部保管サービスは実装対象ではない。
+- G17 に合わせ、`analyze_inputs_with` の構文解析／復号を `parse`、frontend cache の準備・保存を `cache` に計上した。
+  エラーで早く戻る経路も RAII で段を閉じる。既定では時計・記録用の文字列・mutex を使わない。
+- 起票時と違い control は 16 種目（160 レコード）。cpp は 12 種目（96）、computations は 9 種目（127）。
+  共有の tracker を computations にも使い、calloc・realloc・overflow と並列 worker の計数を同じ規則にした。
+- `cargo test --locked --test time_passes`: 4 件成功。`node tests/benchmark_report.mjs`: 既存の検査と metrics 15 項目成功。
+  全 8 runner の quick が成功し、`target/perf/PX01-quick-v2` の全 489 レコードが検証を通った。
+  3 つの既存 runner の stdout の欄と全 checksum は保存した before と一致した。tracked 実行は live 0。
+- IR・header・object・WASM は native／WASM の `-O0`・`-O3` で計時の有無による byte 一致を確認した。
+  Mach-O 実行ファイルは before でも UUID と署名が変わるため、その 2 領域だけを除いた fingerprint を使う。
+  変更前／変更後それぞれの plain 2 回と timed の比較を記録し、コードの fingerprint が一致した。
+- デバッグ版の深い構文のテストの既存の stack overflow は GUIDE D-45 に従って扱う。
+  言語・コンパイラの資源上限は変更していない。本計測と全体検証の結果は同 PR の最終確認で追記する。
+- 利用者向けの更新先: `compiler/option.md`・`compiler/usage.md`・`languages/strategy.md`・`index.md`。
+  旧 `_docs/` のページは作らない。
+
+### 最終確認（2026-10-14）
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 98 binaries、1,223 件成功。
+  strict clippy・fmt・runtime includes の検査も成功。既存の stack の手順だけを使い、資源上限は変えていない。
+- `e2e`・`examples`・`cache`・`frontend_cache`・`control`・`computations`・`tasks` の E2E が成功。
+  生成コードの意味、診断、native／WASM `-O0`／`-O3`、確保の解放、cache の有無の一致を確認した。
+- full の `PX02-formal-managed` は primary 3 suite、managed、process の 561 レコード。
+  `PX02-formal-apps` は 200 レコード。すべて benchmark、時刻・RSS は 9 標本以上で、要約を公開した。
+  開始時は共有機の load average 4.92、dirty tree の記録であり、速度の勝敗・改善は主張しない。
+- process timeout が `/usr/bin/time` の子を残す問題を、所有する process group の終了で修正。
+  多段の子を持つ timeout の再現テストが成功し、残った stress の 3 PID だけを明示して終了した。
+  silent skip、速度の合否閾値、依存追加、unsafe Rust はない。
+- manual 4 ページの `check-docs` は 218 links、6 examples、native の 6 runs、1 test project を通過した。

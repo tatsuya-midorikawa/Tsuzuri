@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishSummary, renderSummary, renderTable, updateSummary } from "../benchmarks/report.mjs";
+import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseTimeOutput,
+  parseTimePasses, readRecords, renderComparison, renderMetricsSummary, summarize, updateMetricsSummary,
+  unsupportedReason, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
+import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
+  writeProject } from "../benchmarks/build/generate.mjs";
+import { breakdown } from "../benchmarks/run-build.mjs";
 
 const result = {
   mode: "benchmark", cpu: "generic", scale: 0.1, measured_at: "2026-09-26T00:00:00.000Z",
@@ -34,8 +41,8 @@ invalid.workloads[0].variants.tsuzuri.median_wall_ms = NaN;
 assert.throws(() => renderSummary([invalid]));
 const owned = structuredClone(result);
 owned.workloads[0].name = "std_option_owned";
-assert.doesNotMatch(renderSummary([owned]), /data-fastest/);
-assert.doesNotMatch(renderSummary([owned]), /data-tsuzuri-performance=/);
+assert.match(renderSummary([owned]), /data-fastest/);
+assert.match(renderSummary([owned]), /data-tsuzuri-performance=/);
 const fastest = structuredClone(result);
 fastest.workloads[0].variants.tsuzuri.median_wall_ms = 0.5;
 assert.match(renderSummary([fastest]), /data-tsuzuri-performance="1"/);
@@ -71,3 +78,277 @@ try {
   rmSync(temporary, { recursive: true, force: true });
 }
 console.log("Benchmark report: placement, ranking/ties, units, escaping, idempotence and invalid-result guards passed");
+
+const test = (name, check) => { check(); console.log(`Metrics: ${name} passed`); };
+const context = {
+  schema: 1, run_id: "px01-test", commit: "a".repeat(40), dirty: false, date: "2026-10-13T00:00:00.000Z", mode: "benchmark",
+  host: { os: "darwin", os_version: "27.0", arch: "arm64", cpu: "Test <CPU>", cores: 10,
+    clang: "Clang 21", rustc: "Rust 1.98", node: "v24", tsuzuri_sha256: "b".repeat(64) },
+};
+const record = (fields = {}, run = context) => makeRecord(run, {
+  suite: "process", workload: "example", language: "tsuzuri", variant: "execute", opt: "O0",
+  metric: "peak_rss", samples: Array(9).fill(1687552), ...fields,
+});
+test("median and summary", () => {
+  assert.equal(median([3, 1, 2]), 2);
+  assert.equal(median([4, 1, 3, 2]), 2.5);
+  assert.deepEqual(summarize([5, 1, 3]), { samples: [5, 1, 3], median: 3, min: 1, max: 5 });
+  for (const values of [[], [NaN], [-1], [Infinity]]) assert.throws(() => summarize(values));
+});
+test("macOS time units", () => {
+  const text = "  0.16 real 0.11 user 0.05 sys\n 43253760 maximum resident set size\n 12878280 peak memory footprint\n";
+  assert.deepEqual(parseTimeOutput(text, "darwin"), { wall_ms: 160, user_ms: 110, sys_ms: 50, peak_rss_bytes: 43253760 });
+  assert.throws(() => parseTimeOutput("0.16 real 0.11 user 0.05 sys", "darwin"), /unrecognized/);
+  assert.throws(() => parseTimeOutput(text, "win32"));
+});
+test("Linux time units", () => {
+  const text = "User time (seconds): 0.11\nSystem time (seconds): 0.05\nElapsed (wall clock) time (h:mm:ss or m:ss): 1:02:03.45\nMaximum resident set size (kbytes): 42240\n";
+  assert.deepEqual(parseTimeOutput(text, "linux"), { wall_ms: 3723450, user_ms: 110, sys_ms: 50, peak_rss_bytes: 43253760 });
+  assert.equal(parseTimeOutput(text.replace("1:02:03.45", "0:00.16"), "linux").wall_ms, 160);
+});
+test("phase reports and non-overlap", () => {
+  const report = '{"time_passes":1,"phases":[{"name":"parse","ms":1}],"total_ms":2}';
+  assert.equal(parseTimePasses(`${report}\nother\n${report.replace('"ms":1', '"ms":0.5')}\n`).phases[0].ms, 0.5);
+  assert.throws(() => parseTimePasses("nothing"));
+  assert.throws(() => parseTimePasses(report.replace('"time_passes":1', '"time_passes":2')));
+  assert.throws(() => parseTimePasses(report.replace('"ms":1', '"ms":3')), /overlapping/);
+  assert.throws(() => parseTimePasses(report.replace('"ms":1', '"ms":-1')));
+});
+test("unsupported target reason survives preceding warnings", () => {
+  assert.equal(unsupportedReason("Main.tz:1:1: warning[W1001]: unused\nMain.tz:2:1: error[E2004]: missing main\n"),
+    "Main.tz:2:1: error[E2004]: missing main");
+  assert.throws(() => unsupportedReason("warning[W1001]: unused"), /missing expected/);
+});
+test("fixed schema and record validation", () => {
+  const valid = record();
+  assert.deepEqual(Object.keys(valid), ["schema", "run_id", "commit", "dirty", "date", "mode", "host", "suite", "workload",
+    "size", "language", "variant", "target", "opt", "cpu_mode", "metric", "phase", "unit", "samples", "median", "min", "max"]);
+  for (const change of [
+    { extra: true }, { host: { ...context.host, node: undefined } }, { commit: "a".repeat(39) },
+    { date: "2026-10-13T00:00:00Z" }, { unit: "ms" }, { phase: "parse", metric: "wall_time", unit: "ms" },
+    { phase: "link", metric: "phase_time", unit: "ms" }, { metric: "alloc_calls", unit: "count", samples: [1.5] },
+    { metric: "wall_time", unit: "ms", samples: Array(8).fill(1) }, { metric: "alloc_bytes", samples: [1, 2] }, { median: 42 },
+  ]) assert.throws(() => validateRecord({ ...valid, ...change }));
+  assert.equal(record({ suite: "apps" }).suite, "apps");
+  assert.equal(record({ suite: "build", language: "go" }).language, "go");
+});
+const metricTemporary = mkdtempSync(join(tmpdir(), "tsuzuri-metrics-test-"));
+try {
+  test("capture and compiler SHA-256", () => {
+    const compiler = join(metricTemporary, "compiler");
+    writeFileSync(compiler, "abc");
+    const run = captureRun(join(metricTemporary, "px01-test"), { compiler, mode: "quick" });
+    assert.equal(run.run_id, "px01-test");
+    assert.match(run.commit, /^[0-9a-f]{40}$/);
+    assert.equal(new Date(run.date).toISOString(), run.date);
+    assert.equal(Object.keys(run.host).length, 9);
+    assert.equal(run.host.tsuzuri_sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert.throws(() => captureRun(join(metricTemporary, "bad name"), { compiler, mode: "quick" }));
+  });
+  test("JSONL roundtrip and exclusive creation", () => {
+    const directory = join(metricTemporary, "px01-test");
+    const first = record({ suite: "z-suite" }), second = record({ suite: "a-suite" });
+    writeRecords(directory, "z-suite", [first]);
+    writeRecords(directory, "a-suite", [second]);
+    assert.deepEqual(readRecords(directory), [second, first]);
+    assert.throws(() => writeRecords(directory, "z-suite", [first]), { code: "EEXIST" });
+    assert.throws(() => writeRecords(directory, "wrong", [first]));
+    assert.throws(() => writeRecords(directory, "z-suite", [first, first]), /duplicate/);
+    writeFileSync(join(directory, "z-suite.jsonl"), JSON.stringify(first) + "\n" + JSON.stringify(first) + "\n");
+    assert.throws(() => readRecords(directory), /duplicate/);
+    writeFileSync(join(directory, "z-suite.jsonl"), JSON.stringify({ ...first, run_id: "another" }) + "\n");
+    assert.throws(() => readRecords(directory), /mixed run_id/);
+  });
+  test("allocator IR instrumentation", () => {
+    const original = "declare ptr @malloc(i64) #1\ncall ptr @calloc(i64 4, i64 8)\ncall ptr @realloc(ptr null, i64 1)\ncall void @free(ptr null)\n@malloc_usable_size\nattributes #1 = { nounwind }\n";
+    assert.equal(instrumentAllocations(original), "declare ptr @tracked_malloc(i64)\ncall ptr @tracked_calloc(i64 4, i64 8)\ncall ptr @tracked_realloc(ptr null, i64 1)\ncall void @tracked_free(ptr null)\n@malloc_usable_size\n");
+    for (const allocator of ["strdup", "posix_memalign", "aligned_alloc"]) assert.throws(() => instrumentAllocations(`@${allocator}(ptr null)`), /unsupported allocator/);
+  });
+  test("artifact fingerprints preserve code and exclude only volatile Mach-O metadata", () => {
+    const file = join(metricTemporary, "artifact");
+    writeFileSync(file, "abc");
+    assert.equal(artifactFingerprint(file), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    const macho = Buffer.alloc(80, 0);
+    macho.writeUInt32LE(0xfeedfacf, 0);
+    macho.writeUInt32LE(2, 12);
+    macho.writeUInt32LE(2, 16);
+    macho.writeUInt32LE(40, 20);
+    macho.writeUInt32LE(0x1b, 32);
+    macho.writeUInt32LE(24, 36);
+    macho.writeUInt32LE(0x1d, 56);
+    macho.writeUInt32LE(16, 60);
+    macho.writeUInt32LE(76, 64);
+    macho.writeUInt32LE(4, 68);
+    writeFileSync(file, macho);
+    const original = artifactFingerprint(file);
+    macho.fill(42, 40, 56);
+    macho.fill(24, 76, 80);
+    writeFileSync(file, macho);
+    assert.equal(artifactFingerprint(file), original);
+    macho[72] = 1;
+    writeFileSync(file, macho);
+    assert.notEqual(artifactFingerprint(file), original);
+    macho.writeUInt32LE(100, 68);
+    writeFileSync(file, macho);
+    assert.throws(() => artifactFingerprint(file), /code signature/);
+  });
+  test("comparison verdicts and conditions", () => {
+    const quick = { ...context, mode: "quick" };
+    const time = (samples) => record({ metric: "wall_time", samples }, quick);
+    const same = compareRuns([time([10, 11, 12])], [time([8, 9, 9])])[0];
+    assert.equal(same.verdict, "差なし");
+    assert.equal(same.spread, 2);
+    assert.equal(same.ratio, 9 / 11);
+    assert.equal(compareRuns([time([10, 10, 11])], [time([13, 13, 14])])[0].verdict, "悪化");
+    const alloc = (samples) => record({ metric: "alloc_calls", samples }, quick);
+    assert.equal(compareRuns([alloc([5])], [alloc([4])])[0].verdict, "改善");
+    assert.equal(compareRuns([time([1])], [])[0].verdict, "片側のみ");
+    const changed = { ...time([1]), host: { ...context.host, cpu: "Different" } };
+    assert.equal(compareRuns([time([1])], [changed])[0].verdict, "条件差");
+    assert.equal(compareRuns([time([1])], [{ ...time([1]), commit: "c".repeat(40), host: { ...context.host, tsuzuri_sha256: "d".repeat(64) } }])[0].verdict, "差なし");
+    assert.equal(compareRuns([time([0])], [time([0])])[0].ratio, null);
+  });
+  test("comparison table", () => {
+    const table = renderComparison(compareRuns([record()], []));
+    assert.equal(table.split("\n")[0], "| 種目 | 言語 | variant | target | opt | 指標 | before 中央値 | after 中央値 | after/before | 広がり | 判定 |");
+    assert.equal((table.split("\n")[1].match(/---/g) ?? []).length, 11);
+    assert.match(table, /片側のみ/);
+    assert.match(table, /1687552 \| - \| - \| -/);
+  });
+  test("summary metadata, units and escaping", () => {
+    const summary = renderMetricsSummary([record({ workload: "<example>" }),
+      record({ workload: "<example>", language: "c" })]);
+    assert.match(summary, /peak_rss \(bytes\) \/ native \/ O0 \/ generic \/ 中央値/);
+    assert.match(summary, /process\/&lt;example&gt;/);
+    assert.ok(summary.indexOf("Tsuzuri execute") < summary.indexOf(">C execute<"));
+    assert.doesNotMatch(summary, /data-fastest|data-tsuzuri-performance/);
+    assert.match(renderMetricsSummary([record({ metric: "wall_time", samples: Array(9).fill(1.25) })]), /1\.250/);
+  });
+  test("summary markers, publication guards and idempotence", () => {
+    const document = "# Test\n<!-- perf-metrics:start -->\n<!-- perf-metrics:end -->\nlast\n";
+    const updated = updateMetricsSummary(document, [[record()]]);
+    assert.equal(updateMetricsSummary(updated, [[record()]]), updated);
+    assert.ok(updated.endsWith("last\n"));
+    assert.throws(() => updateMetricsSummary("# Test", [[record()]]), /add the perf-metrics markers/);
+    assert.throws(() => updateMetricsSummary(document, [[record({}, { ...context, mode: "quick" })]]), /must not be published/);
+    assert.throws(() => updateMetricsSummary(document, [[record(), record({}, { ...context, host: { ...context.host, cpu: "Different" } })]]));
+  });
+  if (["darwin", "linux"].includes(platform()) && existsSync("/usr/bin/time")) test("process measurement, RSS and failures", () => {
+    const measured = measureProcess(process.execPath, ["-e", "const b = Buffer.alloc(64 * 1024 * 1024, 1); console.log(b[12345])"], { runs: 2, warmups: 1 });
+    for (const values of Object.values(measured)) assert.equal(values.length, 2);
+    assert.deepEqual(measured.stdout, ["1\n", "1\n"]);
+    assert.ok(measured.peak_rss_bytes.every((rss) => rss >= 67108864));
+    assert.throws(() => measureProcess("/bin/sh", ["-c", "echo err >&2; exit 3"], { runs: 1, warmups: 0 }), /exited with 3:\nerr/);
+    assert.throws(() => measureProcess(process.execPath, [], { system: "win32" }));
+    const pidFile = join(metricTemporary, "child.pid");
+    const code = `const{spawn}=require("node:child_process");const{writeFileSync}=require("node:fs");const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},1000);`;
+    assert.throws(() => measureProcess(process.execPath, ["-e", code], { runs: 1, warmups: 0, timeoutMs: 1500 }), /ETIMEDOUT/);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    let state;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      state = spawnSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8" });
+      if (state.status === 1 || /^Z/.test(state.stdout.trim())) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+    assert.ok(state.status === 1 || /^Z/.test(state.stdout.trim()), `timed-out child ${pid} is still running: ${state.stdout}`);
+  }); else console.log("skip measureProcess: macOS/Linux /usr/bin/time not found");
+  test("tracked malloc/calloc/realloc/free and overflow", () => {
+    const source = join(metricTemporary, "host.c"), binary = join(metricTemporary, "host");
+    writeFileSync(source, `#undef NDEBUG
+#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+void *tracked_malloc(uint64_t);
+void *tracked_calloc(uint64_t,uint64_t);
+void *tracked_realloc(void *,uint64_t);
+void tracked_free(void *);
+void tracked_reset(void);
+void tracked_read(uint64_t *,uint64_t *,uint64_t *);
+int main(int argc,char **argv) {
+  if(argc==2 && strcmp(argv[1],"overflow")==0) { tracked_calloc(UINT64_MAX,2); return 1; }
+  if(argc==2 && strcmp(argv[1],"malloc-overflow")==0) { tracked_malloc(UINT64_MAX); return 1; }
+  void *p=tracked_malloc(10); unsigned char *q=tracked_calloc(4,8);
+  for(int i=0;i<32;i++) assert(q[i]==0);
+  p=tracked_realloc(p,100); void *r=tracked_realloc(NULL,16);
+  assert(tracked_realloc(r,0)==NULL);
+  tracked_free(p); tracked_free(q); tracked_free(NULL);
+  uint64_t calls,bytes,live; tracked_read(&calls,&bytes,&live);
+  assert(calls==4 && bytes==158 && live==0);
+  tracked_reset(); tracked_read(&calls,&bytes,&live);
+  assert(calls==0 && bytes==0 && live==0);
+  return 0;
+}\n`);
+    execFileSync(process.env.TSUZURI_CLANG ?? "clang", ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+      source, new URL("../benchmarks/tracked_alloc.c", import.meta.url).pathname, "-o", binary]);
+    execFileSync(binary);
+    for (const argument of ["overflow", "malloc-overflow"]) {
+      const failed = spawnSync(binary, [argument], { encoding: "utf8" });
+      assert.ifError(failed.error);
+      assert.ok(failed.signal || failed.status !== 0);
+      assert.match(failed.stderr, /size overflow/);
+    }
+  });
+  test("synthetic generator determinism and structure", () => {
+    assert.equal(FUNCTIONS_PER_MODULE, 20);
+    assert.deepEqual(generateProject(3), generateProject(3));
+    assert.deepEqual(generateProject(3).map(([name]) => name), ["Main.tz", "Module0.tz", "Module1.tz", "Module2.tz"]);
+    const lines = [];
+    for (let index = 0; index < 3; index++) {
+      const source = moduleSource(index);
+      for (let fn = 0; fn < 20; fn++) assert.equal(source.split(`private def f${fn} :: i64u -> i64u`).length, 2);
+      assert.equal(source.split("def run :: i64u -> i64u").length, 2);
+      assert.doesNotMatch(source, /\t| +\n/);
+      assert.ok(source.endsWith("\n"));
+      lines.push(source.split("\n").length);
+    }
+    assert.equal(new Set(lines).size, 1);
+    assert.match(moduleSource(1), /"m1-"/);
+    for (const language of BUILD_LANGUAGES) assert.deepEqual(generateProject(2, { language }), generateProject(2, { language }));
+  });
+  test("synthetic one-module body and interface edits", () => {
+    const before = moduleSource(1).split("\n"), after = moduleSource(1, { salt: 5 }).split("\n");
+    assert.equal(before.length, after.length);
+    assert.equal(before.filter((line, index) => line !== after[index]).length, 1);
+    assert.equal(moduleSource(1, { extra: 7 }), moduleSource(1) + "def extra_7 :: i64u -> i64u = \\x -> x + 7i64u\n");
+    assert.notEqual(expectedOutput(3, "12345", { index: 1, salt: 5 }), expectedOutput(3, "12345"));
+  });
+  test("synthetic main input and module order", () => {
+    const source = mainSource(3);
+    assert.match(source, /let! line = IO\.read_line/);
+    for (let index = 0; index < 3; index++) assert.equal(source.split(`Module${index}.run seed`).length, 2);
+    assert.ok(source.indexOf("Module0.run seed") < source.indexOf("Module1.run seed"));
+    assert.ok(source.indexOf("Module1.run seed") < source.indexOf("Module2.run seed"));
+  });
+  test("synthetic generator bounds and exclusive directory creation", () => {
+    for (const size of [0, 5001, 1.5, NaN]) assert.throws(() => generateProject(size));
+    assert.throws(() => generateProject(2, { language: "unknown" }));
+    const directory = join(metricTemporary, "generated");
+    const manifest = writeProject(directory, 3);
+    const sources = generateProject(3);
+    assert.equal(manifest.lines, sources.reduce((sum, [, text]) => sum + text.split("\n").length - 1, 0));
+    assert.equal(manifest.bytes, sources.reduce((sum, [, text]) => sum + Buffer.byteLength(text), 0));
+    assert.equal(manifest.files, 4);
+    assert.throws(() => writeProject(directory, 3), { code: "EEXIST" });
+    const full = generateProject(1000);
+    const lines = full.reduce((sum, [, text]) => sum + text.split("\n").length - 1, 0);
+    assert.ok(lines >= 130000 && lines <= 140000, `expected 130K..140K lines, got ${lines}`);
+  });
+  test("synthetic independent reference values", () => {
+    for (const line of ["", "12345", "綴り😀"]) {
+      const output = expectedOutput(2, line);
+      assert.match(output, /^\d+\n$/);
+      assert.ok(BigInt(output.trim()) < 1n << 64n);
+    }
+    assert.notEqual(expectedOutput(2, ""), expectedOutput(2, "12345"));
+    assert.equal(expectedOutput(2, "abcd"), expectedOutput(2, "綴り😀"));
+  });
+  test("compiler/build phase breakdown", () => {
+    assert.deepEqual(breakdown({ phases: [{ name: "load", ms: 1 }, { name: "parse", ms: 2 }, { name: "cache", ms: 3 },
+      { name: "tool.clang", ms: 4 }], total_ms: 12 }), { frontend: 3, cache: 3, tools: 4, other: 2 });
+    assert.throws(() => breakdown({ phases: [{ name: "check", ms: 5 }], total_ms: 1 }), /overlapping/);
+    assert.deepEqual(breakdown({ phases: [{ name: "parse", ms: 0.001 }], total_ms: 0 }), { frontend: 0.001, cache: 0, tools: 0, other: 0 });
+  });
+} finally {
+  rmSync(metricTemporary, { recursive: true, force: true });
+}

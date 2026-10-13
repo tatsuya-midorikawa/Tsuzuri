@@ -8,6 +8,11 @@
 #include <time.h>
 #include "control.h"
 
+#ifdef TRACKING
+void tracked_reset(void);
+void tracked_read(uint64_t *, uint64_t *, uint64_t *);
+#endif
+
 #ifdef BASELINE
 #include "before.h"
 #define VARIANTS 5
@@ -109,6 +114,26 @@ int main(int argc, char **argv) {
 #endif
     };
     int samples = quick ? VARIANTS : VARIANTS * 3;
+#ifdef TRACKING
+    fputs("{\"tracking\":1,\"workloads\":[", stdout);
+    for (size_t w = 0; w < sizeof(workloads) / sizeof(workloads[0]); ++w) {
+        struct Workload work = workloads[w];
+        if (!quick) work.size = (int64_t)fmax(1.0, ceil((double)work.size * scale));
+        uint64_t expected = work.kernels[0](work.size, 42);
+        tracked_reset();
+        uint64_t actual = work.kernels[3](work.size, 42);
+        uint64_t calls, bytes, live;
+        tracked_read(&calls, &bytes, &live);
+        if (actual != expected || live != 0) {
+            fprintf(stderr, "%s: tracked checksum mismatch or retained %" PRIu64 " bytes\n", work.name, live);
+            return 1;
+        }
+        printf("%s{\"name\":\"%s\",\"size\":%" PRId64 ",\"calls\":%" PRIu64 ",\"bytes\":%" PRIu64 "}",
+               w ? "," : "", work.name, work.size, calls, bytes);
+    }
+    fputs("]}\n", stdout);
+    return 0;
+#endif
     printf("{\"samples\":%d,\"clock_ticks_per_second\":%ld,\"workloads\":[", samples, (long)CLOCKS_PER_SEC);
     for (size_t w = 0; w < sizeof(workloads) / sizeof(workloads[0]); ++w) {
         struct Workload scaled = workloads[w];

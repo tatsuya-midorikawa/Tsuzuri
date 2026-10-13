@@ -8,7 +8,7 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PM06, PR03, C09, C11, D08 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D7（Zig・Go の計測機への導入と Phase 3）。Phase 1・2 は承認不要 |
 | 手本にする既存実装 | runner: `benchmarks/run-control.mjs`（`take` による旗の解析、`reference` の BigInt 参照、25 組の `checks` の照合、`--artifacts`）。host: `benchmarks/control/host.c`（`WORKLOAD`・`measure`・25 組の相互照合・JSON 出力）。参照実装: `benchmarks/control/reference.c`（`KERNEL`・`check_count`）、`benchmarks/computations/reference.rs`（`#[no_mangle] pub extern "C" fn`）。確保の計数: `benchmarks/run-computations.mjs` の tracked 実行ファイル。記録: PX01 の `captureRun`・`makeRecord`・`writeRecords`・`measureProcess` |
@@ -535,3 +535,25 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 - 決定: PX01 形式（schema 1）。suite `apps`、language は `tsuzuri`・`c`・`cpp`・`rust`（Phase 3 で `zig`・`go`）、variant `default`、target `native`、opt `O3`。`peak_rss` は host の `--only` と `measureProcess`、確保は Tsuzuri だけ（PX01 D5）。残る確保の呼び出し数は文書の表だけに書く。
 - 理由: PX01 の schema を変えずに記録できる。IR の静的な数は実行時の metric と意味が異なる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-14）
+
+- Phase 1・2・3 を実装。依頼で全フェーズが承認済み。C++／Rust／C#／JavaScript の owned は 2 回の連結、
+  元の定数長は `std_option_length`。control の新しい array_index_sum の managed 参照も補い、統合は 38 種目。
+  既存 checksum を変えず、quick と full が成功。managed の schema 1 は 76 レコード。
+- apps は定義通りの 10 種目を 6 言語で独立に実装。native O3 は 1,500 境界比較、
+  Tsuzuri native O0 は 250、WASM O0／O3 はそれぞれ 250。独立な BigInt／順序付き Number との照合、
+  全 timed の種・サイズ、import 0、tracked の 10 種目の live 0 を検査した。
+- quick と full の apps は 200 schema 1 レコード。full の時刻と RSS は 9 標本以上。
+  計測 host は言語ごとに分離し、RSS の seed 42 の checksum も確認する。
+  `PX02-formal-apps` と `PX02-formal-managed` の要約を docs に公開した（共有機・dirty の参照記録）。
+- default の Go／Zig が無い場合は理由付き skip、140 レコード、終了コード 0。
+  明示した使えないツールはエラー。Node 24.21.0、Zig 0.16.0、Go 1.27.2 で検証した。
+- integer128_mix は同じ Apple Clang 21 で 3 run。operand も含め内側の 10 命令が一致し、
+  3 run すべてで Tsuzuri の最小 > C の最大とはならず、分類は「計測の揺れ」。不要な配置の実験はしない。
+- owned／length の最適化後 IR の静的な確保箇所を docs に記録。Rust owned は最適化で確保が消えた。
+  Tsuzuri Leaf の null 表現と参照の確保する leaf の差、GC・SSO・rope・境界検査の差を明示した。
+- `tests/benchmark_apps.mjs`、既存 report と新 metrics／生成器のテスト、全 Rust 1,223 件、
+  関係する E2E・clippy・fmt・runtime includes が成功。src／std の最適化・意味の変更はない
+  （同 PR の src の計時の変更は PX01 の範囲）。
+- manual の strategy に記録・比較条件を追記。実行済みの範囲だけを記述し、Linux の挙動は PR の CI で検証する。

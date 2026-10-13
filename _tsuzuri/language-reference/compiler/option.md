@@ -258,6 +258,26 @@ flowchart TD
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
 | `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
+| `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
+
+### コンパイルの段階別時間
+
+`TSUZURI_TIME_PASSES=1 tsuzuri check Main.tz` のように指定します。CLI のフラグではありません。
+`1` 以外（未設定、`0`、`true`）は無効です。`--json` の診断とは別に、最後の行として次の形の JSON が増えます。
+
+```json
+{"time_passes":1,"phases":[{"name":"load","ms":0.412},{"name":"parse","ms":1.903}],"total_ms":7.702}
+```
+
+値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
+外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
+同じ段は合算し、入れ子の二重計上はしません。`parse` は frontend cache からの復号も、
+`cache` は frontend cache の準備・保存と成果物 cache の操作も含みます。
+`total_ms` は引数解析、成果物の書き出し、`run` の実行先など、個別の段に入れない時間も含みます。
+
+失敗したコマンドでも、元の診断と終了コードを保ったまま最後に出します。LSP ではサーバーの終了時です。
+IR・header・object・WASM の生成には作用しません。macOS の実行ファイルで毎回変わる UUID と署名は、
+計測を付ける前からあるリンカーの性質です。再現の手順は [性能測定](../../../docs/benchmarks.md#性能指標の記録) にあります。
 
 `node` は PATH だけです。WASM テスト用の環境変数はありません。
 

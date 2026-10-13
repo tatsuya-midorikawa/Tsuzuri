@@ -60,6 +60,7 @@ function array(count, seed, copy = false, computation = false) {
   return total;
 }
 
+const parts = ["hello", " world", "!"];
 function computation(name, count, seed) {
   if (name.startsWith("array_")) return array(count, seed, false, true);
   const values = name === "owned_capture" ? new BigUint64Array(256) : null;
@@ -76,7 +77,12 @@ function computation(name, count, seed) {
       }
       case "delayed": state = wrap(mix(state, salt) + mix(state ^ 71n, salt) + mix(state ^ 113n, salt)); break;
       case "std_option": state = (state & 7n) === 0n ? state ^ salt : mix(state ^ salt, salt); break;
-      case "std_option_owned": state = mix(state, salt) ^ ((state & 7n) === 0n ? 0n : 12n); break;
+      case "std_option_owned": {
+        const text = (state & 7n) === 0n ? null : parts[0] + parts[1];
+        state = mix(state, salt) ^ (text === null ? 0n : BigInt((text + parts[2]).length));
+        break;
+      }
+      case "std_option_length": state = mix(state, salt) ^ ((state & 7n) === 0n ? 0n : 12n); break;
       case "owned_capture": state = mix(values[Number(state & 255n)], state); break;
       default: throw new Error(`Unknown computation: ${name}`);
     }
@@ -177,7 +183,7 @@ function kernel(family, name, count, seed) {
       for (let index = 0; index < count; ++index) total = wrap(total + factors[Number((seed + BigInt(index)) & 15n)] * (BigInt(index) + 1n));
       return total;
     }
-    case "array_sum": return array(count, seed);
+    case "array_sum": case "array_index_sum": return array(count, seed);
     case "array_copy": return array(count, seed, true);
     case "list_sum": {
       let head = null, tail = null;

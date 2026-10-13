@@ -5,10 +5,11 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory] [--metrics directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -20,6 +21,7 @@ const take = (flag, fallback) => {
 const cpu = take("--cpu", "generic");
 const scale = Number(take("--scale", "1"));
 const artifacts = take("--artifacts", null);
+const metrics = take("--metrics", null);
 const baselineArgument = take("--baseline", null);
 const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
@@ -34,6 +36,7 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
   cwd: root, encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
+  env: metrics ? { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") } : process.env,
 });
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -91,6 +94,7 @@ if (cpu === "native") {
   rustFlags.push("-C", "target-cpu=native");
 }
 const tsuzuriFlags = ["-O3", "--cpu", cpu];
+const context = metrics ? captureRun(metrics, { compiler, clang, rustc, mode: quick ? "quick" : "benchmark" }) : null;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-control-benchmark-"));
 
 try {
@@ -162,6 +166,27 @@ try {
     optimized_vector_instructions: (optimized.match(/(?:add|mul|load|store|xor) <\d+ x i\d+>/g) ?? []).length,
     array_allocator_calls: (optimized.match(/call .*@malloc\(/g) ?? []).length,
   };
+  if (metrics) {
+    const trackedIr = join(temporary, "control.tracked.ll");
+    writeFileSync(trackedIr, instrumentAllocations(optimized));
+    run(clang, ["-O0", "-fPIC", "-Wno-override-module", "-c", trackedIr, "-o", join(temporary, "control.tracked.o")]);
+    run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", "benchmarks/tracked_alloc.c", "-o", join(temporary, "tracked_alloc.o")]);
+    const tracked = join(temporary, "tracked");
+    run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", "-DTRACKING",
+      `${fixture}/host.c`, "-I", temporary,
+      ...["control.tracked.o", "tracked_alloc.o", "c.o", "cpp.o", "control_reference.o"].map((name) => join(temporary, name)),
+      ...(optimized.includes("declare void @tsuzuri_task_parallel(") ? ["src/runtime/task.c", "-pthread"] : []), "-lm", "-o", tracked]);
+    const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
+    assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));
+    const records = inProcessRecords(context, "control", result.workloads,
+      [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name]), ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
+    for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
+      records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
+        opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+    }
+    writeRecords(metrics, "control", records);
+    generated.push("control.tracked.ll", "control.tracked.o", "tracked_alloc.o");
+  }
   if (artifacts) {
     mkdirSync(resolve(artifacts), { recursive: true });
     for (const name of generated) copyFileSync(join(temporary, name), join(resolve(artifacts), name));

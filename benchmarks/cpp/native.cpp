@@ -20,6 +20,11 @@
 #include "mix.h"
 #include "kernels.h"
 
+#ifdef TRACKING
+extern "C" void tracked_reset(void);
+extern "C" void tracked_read(std::uint64_t *, std::uint64_t *, std::uint64_t *);
+#endif
+
 #define NOINLINE __attribute__((noinline))
 
 extern "C" std::int64_t rust_mix(std::int64_t, std::int64_t);
@@ -271,6 +276,29 @@ int main(int argc, char **argv) {
         {"task_sequential", cpp_task_sequential, tz_task_sequential, rust_task_sequential, quick ? 128 : 500000},
         {"task_parallel", cpp_task_parallel, tz_task_parallel, rust_task_parallel, quick ? 128 : 500000},
     };
+#ifdef TRACKING
+    std::fputs("{\"tracking\":1,\"workloads\":[", stdout);
+    bool first = true;
+    for (const auto &definition : workloads) {
+        auto work = definition;
+        if (!quick) work.size = static_cast<std::int64_t>(std::fmax(1.0, std::ceil(work.size *
+            (std::strcmp(work.name, "mandelbrot") == 0 ? std::sqrt(scale) : scale))));
+        const auto expected = work.cpp(work.size, 42);
+        tracked_reset();
+        const auto actual = work.tsuzuri(work.size, 42);
+        std::uint64_t calls, bytes, live;
+        tracked_read(&calls, &bytes, &live);
+        if (actual != expected || live != 0) {
+            std::fprintf(stderr, "%s: tracked checksum mismatch or retained %" PRIu64 " bytes\n", work.name, live);
+            return 1;
+        }
+        std::printf("%s{\"name\":\"%s\",\"size\":%" PRId64 ",\"calls\":%" PRIu64 ",\"bytes\":%" PRIu64 "}",
+                    first ? "" : ",", work.name, work.size, calls, bytes);
+        first = false;
+    }
+    std::puts("]}");
+    return 0;
+#endif
     constexpr std::int64_t sizes[] = {0, 1, 2, 7, 16};
     constexpr std::int64_t seeds[] = {
         -3, 0, 42, std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::max(),

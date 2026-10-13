@@ -1,3 +1,6 @@
+#ifdef METRICS
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -15,6 +18,18 @@
 typedef int64_t (*Mixer)(int64_t, int64_t);
 static volatile int64_t sink;
 
+#ifdef METRICS
+static double measured_wall_ms;
+static double wall_now(void) {
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) {
+        fputs("wall clock is unavailable\n", stderr);
+        exit(1);
+    }
+    return (double)value.tv_sec * 1000.0 + (double)value.tv_nsec / 1000000.0;
+}
+#endif
+
 NOINLINE int64_t c_mix(int64_t iterations, int64_t seed) {
     if (iterations < 0) abort();
     uint64_t state = (uint64_t)seed;
@@ -29,10 +44,16 @@ NOINLINE int64_t c_mix(int64_t iterations, int64_t seed) {
 
 static NOINLINE double measure(Mixer function, int64_t iterations, int64_t seed, int64_t *result) {
     volatile int64_t input = seed;
+#ifdef METRICS
+    const double wall_start = wall_now();
+#endif
     const clock_t start = clock();
     const int64_t value = function(iterations, input);
     sink = value;
     const clock_t end = clock();
+#ifdef METRICS
+    measured_wall_ms = wall_now() - wall_start;
+#endif
     if (start == (clock_t)-1 || end == (clock_t)-1 || end < start) {
         fputs("CPU clock is unavailable\n", stderr);
         exit(1);
@@ -58,16 +79,35 @@ int main(int argc, char **argv) {
     for (int sample = 0; sample < 9; ++sample) {
         int64_t c_result, tz_result;
         double c_ms, tz_ms;
+#ifdef METRICS
+        double c_wall_ms, tsuzuri_wall_ms;
+#endif
         if (sample % 2) {
             c_ms = measure(c_mix, iterations, 42 + sample, &c_result);
+#ifdef METRICS
+            c_wall_ms = measured_wall_ms;
+#endif
             tz_ms = measure(tz_mix, iterations, 42 + sample, &tz_result);
+#ifdef METRICS
+            tsuzuri_wall_ms = measured_wall_ms;
+#endif
         } else {
             tz_ms = measure(tz_mix, iterations, 42 + sample, &tz_result);
+#ifdef METRICS
+            tsuzuri_wall_ms = measured_wall_ms;
+#endif
             c_ms = measure(c_mix, iterations, 42 + sample, &c_result);
+#ifdef METRICS
+            c_wall_ms = measured_wall_ms;
+#endif
         }
         if (c_result != tz_result) { fputs("checksum mismatch\n", stderr); return 1; }
-        printf("%s{\"c_ms\":%.6f,\"tsuzuri_ms\":%.6f,\"checksum\":\"%016" PRIx64 "\"}",
+        printf("%s{\"c_ms\":%.6f,\"tsuzuri_ms\":%.6f,\"checksum\":\"%016" PRIx64 "\"",
                sample ? "," : "", c_ms, tz_ms, (uint64_t)tz_result);
+#ifdef METRICS
+        printf(",\"c_wall_ms\":%.9f,\"tsuzuri_wall_ms\":%.9f", c_wall_ms, tsuzuri_wall_ms);
+#endif
+        fputs("}", stdout);
     }
     puts("]}");
     return 0;

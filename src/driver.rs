@@ -2439,6 +2439,7 @@ impl Project {
         kind: AnalysisKind,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         let inputs = self.inputs();
+        let cache_time = crate::timings::Phase::start("cache");
         let frontend = cache
             .then(|| {
                 let project =
@@ -2446,6 +2447,7 @@ impl Project {
                 crate::frontend_cache::FrontendCache::open(&crate::cache::default_root()?, project)
             })
             .flatten();
+        drop(cache_time);
         match frontend {
             Some(mut cache) => crate::analyze_inputs_with(&inputs, None, Some(&mut cache)),
             None => crate::analyze_inputs_all(&inputs),
@@ -2890,6 +2892,7 @@ fn build_complete(
     let f16 = platform_f16_path(platform, options.target, options.cpu);
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
+    let emit_time = crate::timings::Phase::start("emit");
     let mut text = if options.emit == Emit::Header {
         if options.trap_return {
             llvm::header_with(module, true)
@@ -3010,6 +3013,7 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
+    drop(emit_time);
     if platform.windows()
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
@@ -3265,6 +3269,7 @@ fn build_complete(
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
     // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    let cache_time = crate::timings::Phase::start("cache");
     let cache = if options.cache
         && options.emit != Emit::Header
         && !options.emit.is_spirv()
@@ -3298,7 +3303,9 @@ fn build_complete(
         }
     }
     let cache_hit = cached.is_some();
+    drop(cache_time);
     if let Some(cached) = cached {
+        let _cache_time = crate::timings::Phase::start("cache");
         for (name, file) in cached.files {
             let path = &cache_paths[&name];
             fs::write(path, file.bytes)
@@ -3849,11 +3856,11 @@ fn build_complete(
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
         .collect();
-    if !cache_hit
-        && let Some((cache, key)) = &cache
-        && let Err(error) = cache.store(key, &cache_paths, &messages)
-    {
-        messages.push(format!("build cache write failed: {error}"));
+    if !cache_hit && let Some((cache, key)) = &cache {
+        let _cache_time = crate::timings::Phase::start("cache");
+        if let Err(error) = cache.store(key, &cache_paths, &messages) {
+            messages.push(format!("build cache write failed: {error}"));
+        }
     }
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
     temporary.close()?;
@@ -4645,7 +4652,16 @@ fn tool(variable: &str, fallback: &str) -> OsString {
 
 fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
     let name = command.get_program().to_string_lossy().into_owned();
-    let output = command.output().map_err(|error| {
+    let started = crate::timings::start();
+    let output = command.output();
+    if started.is_some() {
+        let tool = Path::new(&name)
+            .file_stem()
+            .unwrap_or_else(|| command.get_program())
+            .to_string_lossy();
+        crate::timings::finish(&format!("tool.{tool}"), started);
+    }
+    let output = output.map_err(|error| {
         driver_error("E2002", format!("cannot execute '{name}': {error}; {hint}"))
     })?;
     let text = format!(

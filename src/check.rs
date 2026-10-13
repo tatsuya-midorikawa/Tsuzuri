@@ -5680,6 +5680,7 @@ fn check_modules_collect(
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
 ) -> Result<CheckedModule, Diagnostic> {
+    let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
     // so a project without one never collects them unless the caller asked for the index.
     let deprecations = warnings::deprecations(modules);
@@ -7220,15 +7221,24 @@ fn check_modules_collect(
         .enumerate()
         .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
         .collect();
+    drop(check_time);
+    let specialize_time = crate::timings::Phase::start("specialize");
     let module = polymorph::specialize(
         module,
         &classes,
         &names,
         copy_constraints,
         &recursive_functions,
-    )?;
-    let mut module = closures::lower(module)?;
+    );
+    drop(specialize_time);
+    let module = module?;
+    let closures_time = crate::timings::Phase::start("closures");
+    let module = closures::lower(module);
+    drop(closures_time);
+    let mut module = module?;
+    let ownership_time = crate::timings::Phase::start("ownership");
     diagnostics.extend(crate::ownership::check_all(&module));
+    drop(ownership_time);
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
     }

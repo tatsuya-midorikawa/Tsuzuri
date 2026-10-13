@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishSummary } from "./report.mjs";
+import { captureRun, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (Number(process.versions.node.split(".")[0]) < 24) {
   throw new Error("This benchmark requires Node.js 24+; run with a current LTS runtime without disabling JIT optimization.");
 }
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-managed.mjs [compiler] [--quick] [--no-report] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-managed.mjs [compiler] [--quick] [--no-report] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory] [--metrics directory]";
 const take = (name, fallback) => {
   const index = args.indexOf(name);
   if (index < 0) return fallback;
@@ -24,6 +25,7 @@ const cpu = take("--cpu", "generic");
 const scaleArgument = take("--scale", null);
 const baseline = take("--baseline", null);
 const artifacts = take("--artifacts", null);
+const metrics = take("--metrics", null);
 const quick = args.includes("--quick");
 const noReport = args.includes("--no-report");
 const positional = args.filter((value) => !["--quick", "--no-report"].includes(value));
@@ -44,11 +46,13 @@ const median = (values) => {
 };
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-managed-benchmark-"));
 try {
+  const context = metrics ? captureRun(metrics, { compiler, mode: quick ? "quick" : "benchmark" }) : null;
   const native = {};
   for (const family of ["control", "cpp", "computations"]) {
     native[family] = JSON.parse(run(process.execPath, [`benchmarks/run-${family}.mjs`, compiler,
       "--cpu", cpu, ...(quick ? ["--quick"] : ["--scale", String(scale)]),
       ...(baseline && family !== "cpp" ? ["--baseline", resolve(baseline)] : []),
+      ...(metrics ? ["--metrics", resolve(metrics)] : []),
       ...(artifacts ? ["--artifacts", join(resolve(artifacts), family)] : [])]));
   }
   const jobs = Object.entries(native).flatMap(([family, result]) => result.workloads.map((work) => ({
@@ -108,6 +112,13 @@ try {
     writeFileSync(join(resolve(artifacts), "plan.json"), readFileSync(plan));
     writeFileSync(join(resolve(artifacts), "native.json"), JSON.stringify(native, null, 2));
     writeFileSync(join(resolve(artifacts), "result.json"), JSON.stringify(result, null, 2));
+  }
+  if (metrics) {
+    const records = workloads.flatMap((work) => ["csharp", "javascript"].map((language) => makeRecord(context, {
+      suite: "managed", workload: `${work.family}-${work.name}`, size: work.size, language, opt: "O3", cpu_mode: cpu,
+      metric: "wall_time", samples: work.variants[language].raw.map((sample) => sample.wall_ms),
+    })));
+    writeRecords(metrics, "managed", records);
   }
   if (!quick && !noReport) publishSummary([result]);
   console.log(JSON.stringify(result, null, 2));

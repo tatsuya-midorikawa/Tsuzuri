@@ -203,6 +203,20 @@ fn direct_option_owned_step state salt =
     let result = match value with | Some text -> (text + "!").length | None -> 0
     mix state salt ^ result
 
+def option_length_step :: i64 -> i64 -> i64
+fn option_length_step state salt =
+    let result = Maybe {
+        let! length = if (state & 7) == 0 then None else Some 12
+        return length
+    }
+    mix state salt ^ Maybe.default_value 0 result
+
+def direct_option_length_step :: i64 -> i64 -> i64
+fn direct_option_length_step state salt =
+    let value = if (state & 7) == 0 then None else Some 12
+    let length = match value with | Some length -> length | None -> 0
+    mix state salt ^ length
+
 export def ce_std_option :: i64 -> i64 -> i64
 fn ce_std_option count seed = { assert (count >= 0); standard_loop count option_step seed }
 export def direct_std_option :: i64 -> i64 -> i64
@@ -215,3 +229,8 @@ export def ce_std_option_owned :: i64 -> i64 -> i64
 fn ce_std_option_owned count seed = { assert (count >= 0); standard_loop count option_owned_step seed }
 export def direct_std_option_owned :: i64 -> i64 -> i64
 fn direct_std_option_owned count seed = { assert (count >= 0); standard_loop count direct_option_owned_step seed }
+
+export def ce_std_option_length :: i64 -> i64 -> i64
+fn ce_std_option_length count seed = { assert (count >= 0); standard_loop count option_length_step seed }
+export def direct_std_option_length :: i64 -> i64 -> i64
+fn direct_std_option_length count seed = { assert (count >= 0); standard_loop count direct_option_length_step seed }
