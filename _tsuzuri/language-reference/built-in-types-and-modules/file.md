@@ -259,7 +259,7 @@ record Metadata { kind: EntryKind, size: i64, modified_ns: i64 }
 - テキストは UTF-8 です。BOM は残り、不正なバイト列は呼び出し全体が失敗します。
 - 上書きは原子的ではありません。ハンドルは `with_open` か `close` で閉じます。
 - 同じパスを再利用するときは `string` を複製します。ハンドルのフィールドは触れません。
-- 既定の WASM と、未検証の Windows ネイティブビルドでは、これらの API に到達できません。
+- 既定の WASM と、Windows ネイティブビルドでは、これらの API に到達できません。Windows は、`src/runtime/os.c` に Windows 向けの実装がないためです。
 
 ## 関連項目
 

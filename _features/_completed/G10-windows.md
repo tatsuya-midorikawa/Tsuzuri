@@ -135,7 +135,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 ### Windows 実行記録（2026-10-13）
 
 - 環境: GitHub の `windows-2022`（Windows Server 2022、`10.0.20348`）。AMD EPYC 9V74 80-Core Processor、論理 4 コア。
-- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `57334e0`（push の run の時点の SHA。その後、先頭の commit の CRLF の修正を畳み、main の A17・A18 のチケットの commit へ rebase したので、同じ変更が付け替わった。main の差分は Windows に関わらない）。PR #24 の run（`pull_request`）は、PR の checks と PR の説明にある。この commit に記録を足したので、run の URL は記録の commit の後ろにしか書けない。
+- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `57334e0`（push の run が検査した commit。その後、先頭の commit の CRLF の修正を畳み、main の A17・A18 のチケットの commit へ rebase したので、同じ変更が付け替わった）。この run の後の変更は、workflow の整形（trigger・timeout・action の固定・`numeric_casts.mjs` の step）、`src/fetch.rs` の `cfg!(windows)` の分岐、`src/cache.rs` の `real_path`（共有のパス。Copilot の指摘）、文書で、その検査は PR #24 の run（`pull_request`）が受け持つ。run の URL は PR の checks と PR の説明にある（記録の commit が検査される run の URL は、その commit には書けない）。
 - run: https://github.com/tatsuya-midorikawa/Tsuzuri/actions/runs/38341607512（全体で 50 分）
 - W1〜W8:
 
