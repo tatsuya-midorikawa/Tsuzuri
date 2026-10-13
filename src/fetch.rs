@@ -847,8 +847,11 @@ impl Repository {
     /// hooks directory and global configuration.
     fn create(temporary: &TemporaryDirectory, url: &str) -> Result<Self, SourceError> {
         // Git for Windows cannot read a configuration file that a verbatim path (`\\?\`) names.
-        let root =
-            crate::cache::real_path(&temporary.path).unwrap_or_else(|_| temporary.path.clone());
+        let root = if cfg!(windows) {
+            crate::cache::real_path(&temporary.path).unwrap_or_else(|_| temporary.path.clone())
+        } else {
+            temporary.path.clone()
+        };
         let repository = Self {
             hooks: root.join("hooks"),
             config: root.join("gitconfig"),
