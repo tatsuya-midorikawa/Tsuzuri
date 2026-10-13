@@ -555,9 +555,9 @@ impl Platform {
     }
 
     /// Whether `src/runtime/os.c` has an implementation for the target: POSIX with the headers of
-    /// macOS, Linux, and FreeBSD. Windows waits for G10, the iOS SDK has no `sys/random.h`, and
-    /// Bionic has `getentropy` and `posix_spawn` only from API 28, above the API level of the
-    /// Android targets.
+    /// macOS, Linux, and FreeBSD. Windows has no implementation (G10 is the execution gate and does
+    /// not include one), the iOS SDK has no `sys/random.h`, and Bionic has `getentropy` and
+    /// `posix_spawn` only from API 28, above the API level of the Android targets.
     pub const fn os_apis(self) -> bool {
         match self.0 {
             Some(triple) => !matches!(
