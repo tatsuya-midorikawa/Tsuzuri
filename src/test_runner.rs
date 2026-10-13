@@ -1485,8 +1485,11 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success());
+        // The C runtime writes text-mode newlines (CRLF) on Windows, and `parse_bench_output` reads lines.
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .replace("\r\n", "\n"),
             "iterations 1\nsample 2\nsample 2\n"
         );
         temporary.close().unwrap();

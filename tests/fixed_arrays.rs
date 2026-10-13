@@ -463,7 +463,10 @@ fn exported_records_hold_scalar_fixed_arrays() {
     .unwrap();
     let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
     for optimization in [0, 3] {
-        let executable = root.join(format!("native-{optimization}"));
+        let executable = root.join(format!(
+            "native-{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         let output = Command::new(&clang)
             .args([
                 "-std=c11",
@@ -475,7 +478,11 @@ fn exported_records_hold_scalar_fixed_arrays() {
             .arg(format!("-O{optimization}"))
             .arg(&host)
             .arg(&native)
-            .args(["-lm", "-o"])
+            .args(if cfg!(windows) {
+                &["-o"][..]
+            } else {
+                &["-lm", "-o"][..]
+            })
             .arg(&executable)
             .output()
             .unwrap();

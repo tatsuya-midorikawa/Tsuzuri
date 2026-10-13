@@ -433,23 +433,27 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     let host = root.join("host.c");
     fs::write(&host, "#include <assert.h>\n#include <stdint.h>\n#include <stdbool.h>\nextern int64_t tz_divide(int64_t,int64_t), tz_bound(int64_t), tz_allocate(int64_t), tz_soft(int64_t), tz_closure(int64_t);\nextern void tz_verify(bool), tz_indirect(bool);\nint main(int argc,char **argv) { if(argc==1) { assert(tz_divide(84,2)==42); assert(tz_bound(1)==2); tz_verify(true); tz_indirect(true); assert(tz_allocate(2)==2); assert(tz_soft(42)==42); assert(tz_closure(20)==41); return 0; } switch(argv[1][0]) { case '0': tz_verify(false); break; case '1': tz_divide(1,0); break; case '2': tz_divide(INT64_MIN,-1); break; case '3': tz_bound(2); break; case '4': tz_allocate(-1); break; case '5': tz_indirect(false); break; } return 9; }").unwrap();
     let native_ir = root.join("native.ll");
-    fs::write(
-        &native_ir,
-        tsuzuri::llvm::emit_with_trap_info(
-            &module,
-            tsuzuri::llvm::EmitOptions {
-                entry: tsuzuri::llvm::Entry::Library,
-                wasm: false,
-                debug_output: false,
-                allocator: tsuzuri::llvm::Allocator::System,
-                f16: tsuzuri::llvm::F16Path::Soft,
-            },
-            &sources,
-        )
-        .unwrap()
-        .ir,
+    let native = tsuzuri::llvm::emit_with_trap_info(
+        &module,
+        tsuzuri::llvm::EmitOptions {
+            entry: tsuzuri::llvm::Entry::Library,
+            wasm: false,
+            debug_output: false,
+            allocator: tsuzuri::llvm::Allocator::System,
+            f16: tsuzuri::llvm::F16Path::Soft,
+        },
+        &sources,
     )
-    .unwrap();
+    .unwrap()
+    .ir;
+    // MSVC has no compiler-rt for the 128-bit division that `d128` needs (`__udivti3`, `__umodti3`), so a
+    // Windows build appends the helpers of wasm.ll, as `windows_abi` does.
+    let native = if cfg!(windows) {
+        format!("{native}\n{}", include_str!("../src/runtime/wasm.ll"))
+    } else {
+        native
+    };
+    fs::write(&native_ir, native).unwrap();
     let wasm_ir = root.join("wasm.ll");
     let emitted = tsuzuri::llvm::emit_with_trap_info(
         &module,
@@ -476,12 +480,19 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     let script = root.join("check.mjs");
     fs::write(&script, "import assert from 'node:assert/strict'; import {readFileSync} from 'node:fs';\nconst module = new WebAssembly.Module(readFileSync(process.argv[2])); assert.deepEqual(WebAssembly.Module.imports(module), []); const sites=JSON.parse(readFileSync(process.argv[3])).sites; const fresh=()=>new WebAssembly.Instance(module).exports; const api=fresh(); assert.equal(api.tz_divide(84n,2n),42n); assert.equal(api.tz_soft(42n),42n); assert.equal(api.tz_closure(20n),41n); api.tz_indirect(1); for(const [name,args,kind] of [['verify',[0],'assertion failed'],['divide',[1n,0n],'integer division by zero'],['divide',[-9223372036854775808n,-1n],'integer division overflow'],['divide',[-9223372036854775808n,0n],'integer division by zero'],['bound',[2n],'index out of bounds'],['allocate',[-1n],'allocation size overflow'],['allocate',[3000000n],'allocation failed'],['indirect',[0],'assertion failed']]) { const api=fresh(); assert.throws(()=>api['tz_'+name](...args),WebAssembly.RuntimeError,name); const site=sites.find(site=>site.id===api.tsuzuri_trap_site()); assert.ok(site,name); assert.equal(site.kind,kind,name); assert.equal(site.path,'Main.tz'); }\n").unwrap();
     for optimization in ["-O0", "-O3"] {
-        let native = root.join(format!("native{optimization}"));
+        let native = root.join(format!(
+            "native{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         run(Command::new(&clang)
             .args([optimization, "-Wno-override-module"])
             .arg(&native_ir)
             .arg(&host)
-            .args(["-lm", "-o"])
+            .args(if cfg!(windows) {
+                &["-o"][..]
+            } else {
+                &["-lm", "-o"][..]
+            })
             .arg(&native));
         run(&mut Command::new(&native));
         for (index, kind) in [

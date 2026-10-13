@@ -16,6 +16,8 @@ function execute(program, args, success = true, env = {}) {
   return result;
 }
 const cli = (args, success, env) => execute(compiler, args, success, env);
+// Warnings come first on stderr as JSON lines; the error that --json reports is the last one.
+const diagnostic = (result) => JSON.parse(result.stderr.trim().split("\n").filter((line) => line.startsWith("{")).pop());
 try {
   const project = join(directory, "console");
   mkdirSync(project);
@@ -31,7 +33,7 @@ try {
     cli(["build", input, "-o", executable, ...flags]);
     const previous = readFileSync(executable);
     const failed = cli(["build", input, "-o", executable, ...flags, "--json"], false, { TSUZURI_CLANG: join(directory, "missing-clang.exe") });
-    assert.equal(JSON.parse(failed.stderr).code, "E2002");
+    assert.equal(diagnostic(failed).code, "E2002");
     assert.deepEqual(readFileSync(executable), previous);
     assert.equal(cli(["run", "examples/tasks", ...flags]).stdout, "21325334000\n");
     assert.equal(cli(["run", "examples/control", ...flags]).stdout, "42\n");
@@ -55,12 +57,12 @@ try {
     execute(clang, [...nativeFlags, ...flags, host, ir, "src/runtime/task.c", "-o", tasks]);
     execute(tasks, []);
     const rejected = cli(["build", "tests/fixtures/tasks/Main.tz", "--emit", "object", "-o", join(directory, "rejected.obj"), "--json"], false);
-    assert.equal(JSON.parse(rejected.stderr).code, "E2002");
+    assert.equal(diagnostic(rejected).code, "E2002");
   }
   const alias = join(directory, "source-alias.ll");
   linkSync(input, alias);
   const protectedResult = cli(["build", input, "--emit", "llvm", "-o", alias, "--json"], false);
-  assert.equal(JSON.parse(protectedResult.stderr).code, "E2003");
+  assert.equal(diagnostic(protectedResult).code, "E2003");
   const library = join(directory, "library");
   mkdirSync(library);
   writeFileSync(join(library, "Main.tz"), "export def answer :: i64\nfn answer = 42\n");
@@ -76,6 +78,34 @@ try {
   const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   assert.equal(instance.exports.tz_answer(), 42n);
+  // G15: the machine's own target, named, builds, runs and tests like `--target native` (the tier of x86_64-pc-windows-msvc).
+  const named = "x86_64-pc-windows-msvc";
+  const suite = join(directory, "suite");
+  mkdirSync(suite);
+  writeFileSync(join(suite, "Main.tz"), 'test "passes" = assert true\ntest "adds" = assert (40 + 2 == 42)\n');
+  const unused = { TSUZURI_RUNNER: "tsuzuri-runner-that-does-not-exist" };
+  for (const optimization of ["-O0", "-O3"]) {
+    for (const [example, output] of [["tasks", "21325334000\n"], ["control", "42\n"]]) {
+      const executable = join(directory, `${example}-named${optimization}.exe`);
+      cli(["build", `examples/${example}`, "--no-cache", optimization, "--target", named, "-o", executable]);
+      assert.equal(execute(executable, []).stdout, output, `${example} ${optimization}`);
+    }
+    assert.equal(cli(["run", "examples/control", optimization, "--no-cache", "--target", named], true, unused).stdout, "42\n");
+    assert.match(cli(["test", suite, optimization, "--target", named, "--json"], true, unused).stdout, /"passed":2,"failed":0/);
+  }
+  console.log(`Windows MSVC: the named target ${named} built, ran and tested at -O0 and -O3`);
+  // A trap reports where it happened and ends the process with STATUS_ILLEGAL_INSTRUCTION (`llvm.trap`).
+  const trapping = join(directory, "trap");
+  mkdirSync(trapping);
+  writeFileSync(join(trapping, "Main.tz"), "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n");
+  for (const optimization of ["-O0", "-O3"]) {
+    const trapped = diagnostic(cli(["run", trapping, optimization, "--json"], false));
+    assert.equal(trapped.code, "E2005");
+    assert.match(trapped.message, /exit code: 0xc000001d/);
+    assert.match(trapped.message, /trap: integer division by zero at /);
+    assert.equal(trapped.span.line, 2);
+  }
+  console.log("Windows MSVC: a trap reports its position and ends the process with 0xC000001D at -O0 and -O3");
   console.log("Windows MSVC: native O0/O3, Win32 tasks/results/failure injection, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });

@@ -188,7 +188,10 @@ assert.ok(api.memory.buffer.byteLength <= 16 * 1024 * 1024);
         String::from_utf8_lossy(&checked_header.stderr)
     );
     for optimization in [0, 3] {
-        let executable = root.join(format!("native-{optimization}"));
+        let executable = root.join(format!(
+            "native-{optimization}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         let output = Command::new(&clang)
             .args([
                 "-std=c11",
@@ -200,7 +203,11 @@ assert.ok(api.memory.buffer.byteLength <= 16 * 1024 * 1024);
             ])
             .arg(&host)
             .arg(&native_ir)
-            .args(["-lm", "-o"])
+            .args(if cfg!(windows) {
+                &["-o"][..]
+            } else {
+                &["-lm", "-o"][..]
+            })
             .arg(&executable)
             .output()
             .unwrap();

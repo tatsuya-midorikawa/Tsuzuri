@@ -136,7 +136,7 @@ not ok 2 - Main stock is positive
   failure: trapped or terminated by signal
 ```
 
-終了コードが 0 以外のときは `trapped or exited with code N` です。また、Unix 環境でスタック枯渇により終了したと推定される場合は `terminated by signal 11; the stack was probably exhausted by deep recursion`、30 秒を超過した場合は `timed out after 30000ms` と報告されます。
+終了コードが 0 以外のときは `trapped or exited with code N` です。Windows ではトラップがシグナルでなく、`STATUS_ILLEGAL_INSTRUCTION`（0xC000001D）でプロセスを終わらせるので、`assert false` も `trapped or exited with code -1073741795` と報告されます。また、Unix 環境でスタック枯渇により終了したと推定される場合は `terminated by signal 11; the stack was probably exhausted by deep recursion`、30 秒を超過した場合は `timed out after 30000ms` と報告されます。
 
 ```mermaid
 flowchart TD

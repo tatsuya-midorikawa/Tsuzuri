@@ -202,7 +202,7 @@ node ../scripts/toolchain/smoke.mjs ../target/dist/tsuzuri-0.1.0-darwin-arm64.ta
 2. GitHub の **Actions > Tsuzuri IDE > Run workflow** で、そのコミットを含むブランチを選択して実行します。
 3. 6 target のジョブが成功し、特に `Installed VSIX integration` が通ったことを確認します。
 4. 各ジョブの `tsuzuri-<target>` artifact をダウンロードし、VSIX とチェックサムを保存します。
-5. CLI 配布物は `tsuzuri-cli-<target>` artifact です。各ジョブは archive を展開し、配布物だけの環境で `Standalone archive smoke` を通します。Windows の archive は作成しますが、Windows 対応（G10）が完了するまで未検証として扱います。
+5. CLI 配布物は `tsuzuri-cli-<target>` artifact です。各ジョブは archive を展開し、配布物だけの環境で `Standalone archive smoke` を通します。Windows の archive も、同じ smoke を `windows-2022`（x64）と `windows-11-arm`（ARM64）の CI で通します。x64 のコンパイラ本体の Windows での実行（G10）は、[Windows MSVC](../.github/workflows/windows.yml) のワークフローが確かめます。ARM64 は、この `vscode.yml` が確かめる範囲だけが検証済みです。
 
 ワークフローは PR と `vsc-v*` タグの push でも起動します。
 **現在の CI は成果物を保存するだけで、Marketplace には公開しません。** 公開用の認証情報も要求しません。

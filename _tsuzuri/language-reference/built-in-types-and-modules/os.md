@@ -137,7 +137,7 @@ match failed with
 - `Env.current_dir ()` は最初の preopen の名前です。`Process.run` は `Other` です。
 - WASI preview2 とコンポーネントモデルには対応していません。
 
-Windows 環境でコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。これは Windows ネイティブ環境での実行検証が完了していないためです（OS API を使用しない純粋な計算プログラムには影響しません）。そのため、Windows ネイティブ環境での動作を保証するものではありません。
+Windows 環境でコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。`src/runtime/os.c` は macOS、Linux、FreeBSD のヘッダーで書いてあり、Windows 向けの実装がないためです（OS API を使用しない純粋な計算プログラムには影響しません。x64 の MSVC の実行は、CI の `windows-2022` が確かめています。[G10](../../../_features/_completed/G10-windows.md)）。そのため、Windows ネイティブ環境で OS API を使うことはできません。
 
 `--target` で名指しした target も、ビルド機ではなく target で決まります。Windows、iOS、Android の target は、同じく `E2002` です（iOS の SDK には `src/runtime/os.c` が使う `sys/random.h` がなく、Android の target は、Bionic が `getentropy` と `posix_spawn` を持つ API 28 より古い API 21 だからです）。FreeBSD は `os.c` がコンパイルできることまでを確かめていて、実行は確かめていません。macOS と Linux の target は受け付けます（[対応プラットフォームとクロスコンパイル](../compiler/platforms.md#os-ごとの違い)）。
 
@@ -162,7 +162,7 @@ Windows 環境でコンパイラがネイティブバイナリをビルドする
 - 分岐は `kind`、表示は `Os.message` です。エラーコードの番号は環境によって異なります。
 - 文字は UTF-8 で厳密に変換されます。暗黙の置換や部分的な成功はありません。
 - `Interrupted` は現状のランタイムでは返却されませんが、`match` 式でパターン網羅性を満たすためにハンドラが必要です。
-- 既定の WASM と、未検証の Windows ネイティブ（`--target` で名指しした Windows、iOS、Android の target を含む）では、OS API に到達するビルドは失敗します。
+- 既定の WASM と、Windows ネイティブ（`--target` で名指しした Windows、iOS、Android の target を含む）では、OS API に到達するビルドは失敗します。Windows は、実装がないためです。
 
 ## 関連項目
 

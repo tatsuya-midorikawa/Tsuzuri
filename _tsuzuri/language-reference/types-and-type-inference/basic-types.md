@@ -93,7 +93,7 @@ flowchart TD
 1. **ゼロ除算**: `x / 0` または `x % 0`。診断は `trap: integer division by zero` です。
 2. **符号付き最小値を `-1` で割る・剰余を取る**: たとえば `i32` の `-2147483648 / -1` です。結果の `2147483648` は `i32` の最大値 2,147,483,647 を超えるので、`trap: integer division overflow` になります。`i8` の `-128 / -1` や `i128` の最小値でも同じです。
 
-`tsuzuri run` はこの異常終了を `E2005` として報告します。macOS では signal 5（SIGTRAP）です。WASM では `WebAssembly.RuntimeError` です。トラップしたあとに例外として捕まえることはできません。`Maybe` で受けたいときは [`Int.checked_div`](../built-in-types-and-modules/int.md) を使います。
+`tsuzuri run` はこの異常終了を `E2005` として報告します。macOS では signal 5（SIGTRAP）、Windows では終了コード `0xC000001D`（`STATUS_ILLEGAL_INSTRUCTION`）です。WASM では `WebAssembly.RuntimeError` です。トラップしたあとに例外として捕まえることはできません。`Maybe` で受けたいときは [`Int.checked_div`](../built-in-types-and-modules/int.md) を使います。
 
 ## 浮動小数点型と十進浮動小数点型
 
