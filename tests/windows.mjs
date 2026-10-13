@@ -92,6 +92,18 @@ try {
     assert.match(cli(["test", suite, optimization, "--target", named, "--json"], true, unused).stdout, /"passed":2,"failed":0/);
   }
   console.log(`Windows MSVC: the named target ${named} built, ran and tested at -O0 and -O3`);
+  // A trap reports where it happened and ends the process with STATUS_ILLEGAL_INSTRUCTION (`llvm.trap`).
+  const trapping = join(directory, "trap");
+  mkdirSync(trapping);
+  writeFileSync(join(trapping, "Main.tz"), "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n");
+  for (const optimization of ["-O0", "-O3"]) {
+    const trapped = JSON.parse(cli(["run", trapping, optimization, "--json"], false).stderr);
+    assert.equal(trapped.code, "E2005");
+    assert.match(trapped.message, /exit code: 0xc000001d/);
+    assert.match(trapped.message, /trap: integer division by zero at /);
+    assert.equal(trapped.span.line, 2);
+  }
+  console.log("Windows MSVC: a trap reports its position and ends the process with 0xC000001D at -O0 and -O3");
   console.log("Windows MSVC: native O0/O3, Win32 tasks/results/failure injection, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });
