@@ -1,7 +1,12 @@
 #ifndef TZ_TASK_WINDOWS_H
 #define TZ_TASK_WINDOWS_H
+// A project may already define these on the command line, as MSVC projects often do.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
