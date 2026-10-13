@@ -10,7 +10,7 @@
 | 状態 | done |
 | 起票 | P3 計画。2026-09-28 に Phase 1 を実装（実行ゲートだけ未確認で `blocked`）。2026-09-29 に残作業（Windows の実行ゲート）を実装者向けに詳細化（HEAD `f8dc655`） |
 | 実装の基準 | `2282fd9`（PR #23 のマージ）、2026-10-13。ブランチ `features/g10-windows`、PR #24 |
-| 承認 | 不要。D3 の「push と workflow の実行は人間が行う」は、利用者の依頼（コミット・push・プルリクエストの作成までを求め、判断を包括的に任せた）に従って実装者が行った。GUIDE の [D-48](../GUIDE.md#d-48-g10windows-ネイティブ対応の確定) に記録した |
+| 承認 | 不要。D3 の「push と workflow の実行は人間が行う」は、利用者の依頼（コミット・push・プルリクエストの作成までを求め、判断を包括的に任せた）に従って実装者が行った。GUIDE の [D-49](../GUIDE.md#d-49-g10windows-ネイティブ対応の確定) に記録した |
 | 改善する劣位 | C/C++ 比: 対応プラットフォームの幅（Windows の実行の確認） |
 | 利用者向け仕様 | [対応プラットフォームとクロスコンパイル](../../_tsuzuri/language-reference/compiler/platforms.md)、[コンパイラの使い方](../../_tsuzuri/language-reference/compiler/usage.md#windows)、[言語仕様](../../docs/language.md)、[コンパイラ構成](../../docs/architecture.md) |
 
@@ -130,7 +130,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 - `.github/workflows/windows.yml`（復元）。
 - `src/runtime/task-windows.h`（`WIN32_LEAN_AND_MEAN`・`_CRT_SECURE_NO_WARNINGS` を、未定義のときだけ定義）、`src/fetch.rs`（`Repository::create` が `cfg!(windows)` で `cache::real_path` を使う）、`src/cache.rs`（`real_path` が `\\?\UNC\server\share` を `\\server\share` にする。`plain_path` の単体テストと、管理共有 `\\localhost\C$` の Windows 限定のテスト）。`src/target.rs` は `Platform::os_apis` のコメントだけで、Windows に OS API の実装がない理由を「G10 を待つ」から「実装がない。G10 は実行ゲートで、実装を含まない」へ改めた（コードは変えていない）。
 - テスト: `tests/windows.mjs`（stderr の最後の JSON 行を読む、名前を付けた target、トラップ）、`src/test_runner.rs`（test module の CRLF）、`tests/bench.rs`・`fixed_arrays.rs`・`host_abi.rs`・`packages.rs`・`property.rs`・`test_runner.rs`・`trap_locations.rs`。
-- 文書: `README.md`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/` の `compiler/platforms.md`・`usage.md`・`native-interop.md`、`languages/strategy.md`・`why-tsuzuri.md`、`built-in-types-and-modules/test.md`・`os.md`・`file.md`（Windows の OS API と file API は、未検証でなく、Windows 向けの実装がないために使えない）、`types-and-type-inference/basic-types.md`、`vsc/Publishing.md`（Windows の archive の項）、`_features/README.md`、GUIDE の D-48、`AGENTS.md`。
+- 文書: `README.md`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/` の `compiler/platforms.md`・`usage.md`・`native-interop.md`、`languages/strategy.md`・`why-tsuzuri.md`、`built-in-types-and-modules/test.md`・`os.md`・`file.md`（Windows の OS API と file API は、未検証でなく、Windows 向けの実装がないために使えない）、`types-and-type-inference/basic-types.md`、`vsc/Publishing.md`（Windows の archive の項）、`_features/README.md`、GUIDE の D-49、`AGENTS.md`。
 
 ### Windows 実行記録（2026-10-13）
 

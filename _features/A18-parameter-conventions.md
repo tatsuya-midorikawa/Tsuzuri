@@ -5,14 +5,14 @@
 | ID | A18 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1 は L） |
-| 依存 | A15（done）、G19（done。edition）、(A17)。A17 は弱い依存: A17 を先に入れると、`own` を付けた Copy コレクションの引数と更新の複製が減る。着手の順は A17 → A18 を推奨する |
+| 依存 | A15（done）、G19（done。edition）、(A17)。A17 は弱い依存: A17 を先に入れると、`own` を付けた Copy コレクションの引数と更新の複製が減る。着手の順は A17 → A18 を推奨する。[A19](A19-pure-functions.md) とは、`own` の構文（`TypeExprKind::Own`）を共有する。A19 は `pure def` の引数だけで先に導入し（A19 の D16）、本チケットは受理する位置を通常の `def` の引数へ広げる。どちらが先でも、後のほうは再実装せず、受理する位置の規則だけを足す（D11） |
 | 後続 | Phase 2（移行ツールと std・fixture の移行、`LATEST` の更新）、Phase 3（ジェネリックな裸の型変数と関数型の引数）、Phase 4（`mut` の引数規約と要素・フィールドの代入） |
 | 状態 | todo |
 | 起票 | 2026-10-13（人間の依頼「『次の一手』を進めて、開発チケットを作成して」。推奨案 A（引数規約）の実装チケット。HEAD `2282fd96` で確認） |
 | 承認 | **要承認: D1**（無印の引数を読み取りにする。言語の意味の変更で、edition の方針の改訂を伴う）、**D2**（`own` を導入する）、**D3**（edition `2027` を新設し、`LATEST` は `2026` のままにする）、**D4**（std は `2026` のまま、書き換えない）。承認が記録されるまで、手順 2 以降に着手しない |
 | 改善する劣位 | Rust 比・Mojo 比: 読むだけの関数の引数すべてに `ref` を書かされる。引数の既定が「移動」なので、読むだけの関数を呼ぶと呼び出し側の値が使えなくなり（`E1012`）、Copy の配列は黙って複製される（A15、`W1006`）。Mojo は既定が読み取り専用の参照で呼び出し側に印が要らず、Hylo は `let`、Swift は借用が既定（出典は付録） |
 | 手本にする既存実装 | edition の追加: `src/syntax.rs` の `Edition`（`E2026`・`LATEST`・`MANIFEST_DEFAULT`・`SUPPORTED`）、`docs/stability.md`「edition を追加するとき」、`tests/editions.rs`。型の前置き構文: `src/parser.rs` の `Parser::type_primary`・`reference_type`（`ref`・`ref mut`）、`src/syntax.rs` の `TypeExprKind::Reference`。引数の型の解決: `src/check.rs` の `check_modules` の関数宣言のループ（`for parameter in &function.parameters` の中の `resolve_type_with_kinds`）。呼び出しの暗黙の借用: `src/check.rs` の `Checker::coerce_argument`。参照の外への move: `src/ownership.rs` の `E1012`「cannot move a non-Copy value out of a reference」。位置の誤りの診断: `src/check.rs` の `resolve_type_with_kinds` の `TypeExprKind::ArrayView` の `E1005` |
-| 主な影響ファイル | `src/syntax.rs`（`Edition`、`TypeExprKind::Own`）, `src/parser.rs`（`type_primary`）, `src/check.rs`（`resolve_type_with_kinds`、関数宣言のループ、`CheckedFunction`）, `src/polymorph.rs`（`type_expression`）, `src/ownership.rs`（`E1012` の文言）, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/regions.rs`・`src/warnings.rs`（`TypeExprKind` を辿る match）, `src/package.rs`（対応する edition の一覧の文言）, `tests/editions.rs`, `tests/parameter_conventions.rs`（新規）, `tests/fixtures/conventions/`（新規）, `tests/features.mjs`, `docs/stability.md`, `docs/language.md`, `docs/architecture.md`, `README.md`, `_tsuzuri/language-reference/` の複数ページ |
+| 主な影響ファイル | `src/syntax.rs`（`Edition`、`TypeExprKind::Own`）, `src/parser.rs`（`type_primary`）, `src/syntax_codec.rs`（`TypeExprKind` の tag）, `src/frontend_cache.rs`（`FRONTEND_FORMAT`）, `src/check.rs`（`resolve_type_with_kinds`、関数宣言のループ、`CheckedFunction`）, `src/polymorph.rs`（`type_expression`）, `src/ownership.rs`（`E1012` の文言）, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/regions.rs`・`src/warnings.rs`（`TypeExprKind` を辿る match）, `src/package.rs`（対応する edition の一覧の文言）, `tests/editions.rs`, `tests/parameter_conventions.rs`（新規）, `tests/fixtures/conventions/`（新規）, `tests/features.mjs`, `docs/stability.md`, `docs/language.md`, `docs/architecture.md`, `README.md`, `_tsuzuri/language-reference/` の複数ページ |
 
 ## 目的
 
@@ -31,11 +31,14 @@ HEAD での実測（正規表現による概算。詳細は「現状」）:
 意味が変わる（無印の引数の読み方が変わる）ので、edition `2027` を新設し、その edition のパッケージだけに適用する。`2026` のパッケージと std は変わらない（D3・D4）。
 Phase 1 は、構文 `own`、edition `2027`、引数の補完、診断、文書、テストまでである。実装者は Phase 1 だけを実装し、Phase 2 以降は人間が求めた場合だけ着手する。
 
+**`pure def`（[A19](A19-pure-functions.md)）との関係。** 人間の指示（2026-10-13）で、`pure def` は引数が共有借用（`ref` を省略でき、既定）か `own` の関数として別チケットになった。`pure def` の引数は、edition に依らず A19 の規則で補完されるので、純粋な関数の `ref` の負担は edition を割らずに解消される。`own` の構文は A19 が `pure def` の引数だけで先に導入できる（A19 の D16）ので、本チケットの D2 は、受理する位置を通常の `def` の引数へ広げる決定になる。
+本チケットは、`IO` を使う関数や引数を消費する関数を含む `def` 全般の既定を変える別の決定で、D1 の動機のうち純粋な関数に当たる部分は A19 が先に解消する。優先度の見直しは人間が決める（D11）。
+
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- **D1〜D4 の承認が記録されていること。** `_features/README.md` の「要承認」の表と本チケットの「決定事項」に承認の日付がなければ、着手しない。
+- **D1〜D4 の承認が記録されていること。** `_features/README.md` の「追加チケット（2026-10-13）」の表の承認欄と本チケットの「決定事項」に承認の日付がなければ、着手しない。
 - GUIDE §2.3 の基準コマンドが成功する状態から始める。`docs/stability.md` の「edition」の節と `tests/editions.rs`、本チケットの「現状」を読む。
 - 手順 1 のとおり、変更前のコンパイラと、std・fixture・文書の例が `2026` で受理されることの記録を残す。
 
@@ -130,7 +133,7 @@ parameter_type = ["own"] type            // def の署名の引数の位置だ�
 
 ### edition 2027 の引数の補完
 
-`Tsuzuri.toml` の `[package]` に `edition = "2027"` と書いたパッケージの `def`（`export def` と `private def` を含む。`extern` 宣言と型クラスのメソッドの署名を除く）の引数について、
+`Tsuzuri.toml` の `[package]` に `edition = "2027"` と書いたパッケージの `def`（`export def` と `private def` を含む。`extern` 宣言、型クラスのメソッドの署名、`const def`、エントリーポイント `def main`、`pure def`（A19 が補完する。D11）を除く）の引数について、
 署名の型を解決したあとで、次の規則で型を補う。
 
 | 引数の型の書き方 | 補完 |
@@ -140,6 +143,17 @@ parameter_type = ["own"] type            // def の署名の引数の位置だ�
 | 無印の `T` で、`R(T)` が真 | `ref T`（共有借用）にする |
 | 無印の `T` で、`R(T)` が偽 | そのまま（値渡し） |
 | 引数が `mutable`（`Parameter.mutable`。引数を変更する束縛） | そのまま（値渡し。変更は所有が前提） |
+
+**契約が固定された署名は補完しない（D10）。** 次の 3 つは、解決後の署名を別の検査が見るので、補完すると 2027 のパッケージの正しいプログラムが拒否される（HEAD で確認済み）。
+
+| 署名 | 検査 | HEAD の挙動 | 2027 でも |
+| --- | --- | --- | --- |
+| `const def` | `constants::check_signature`（`E1026`。値型だけ。定数評価器は参照を持たない） | `const def f :: ref string -> i64` は `E1026`、`const def f :: string -> i64` は受理され `const` の初期化式からも呼べる | 値渡しのまま |
+| エントリーポイント `def main`（エントリーのモジュール） | `entry_signature`（`E2004`。`[Unit]` か `[Array<string>]` だけ） | `def main :: ref [string] -> i32` は `E2004` | `Array<string>` の値渡しのまま |
+| `extern` 宣言 | `abi::parameter`（`E1008`。バッファは `ref` だけ。ホストの ABI の契約） | `extern def f :: string -> i64` は `E1008` | 補完せず、従来どおり `E1008` |
+
+`extern` 宣言は `function_declarations` に `FunctionDecl` として積まれ（`external_functions` が id で引く）、補完の対象のループを**通る**。除外は明示的に書く。
+同じ edition の中で、`def` の無印の `string` は読み取り、`const def`・`main` の無印の `string` は値渡し、という差が残る。
 
 `R(T)`（読み取りが既定になる型）:
 
@@ -198,10 +212,11 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 | --- | --- | --- | --- |
 | edition | `src/syntax.rs` | `Edition` | `E2027`、`SUPPORTED`。`LATEST`・`MANIFEST_DEFAULT` は変えない |
 | edition | `src/package.rs` | 対応する edition の文言 | `supported_names()` を使っていれば変更なし。直書きがあれば直す |
-| 構文 | `src/syntax.rs` | `TypeExprKind` | `Own(Box<TypeExpr>)` を足す。`TypeExpr` を辿る全 match（`children`・`has_regions`・`type_expression` の逆変換・formatter・docgen・semantic・warnings・regions）に足す（GUIDE §6.9。`_ =>` で黙って無視されないよう grep する: `grep -rn "TypeExprKind::Reference" src/`） |
+| 構文 | `src/syntax.rs` | `TypeExprKind` | `Own(Box<TypeExpr>)` を足す（A19 が先に入っていれば再利用する）。`TypeExpr` を辿る全 match（`children`・`has_regions`・`type_expression` の逆変換・formatter・docgen・semantic・warnings・regions）に足す（GUIDE §6.9。`_ =>` で黙って無視されないよう grep する: `grep -rn "TypeExprKind::Reference" src/`） |
+| 符号化 | `src/syntax_codec.rs`・`src/frontend_cache.rs` | `impl Wire for TypeExprKind`、`FRONTEND_FORMAT` | `Own` に新しい tag（15。A19 が先なら実装済み）を割り当て、単体テストの `("TypeExprKind", 15)` を 16 にし、`own` を使うソースをテストの `Program` に足す。AST の符号化が変わるので `FRONTEND_FORMAT` を上げる（古いキャッシュの AST が `Own` を持たないまま読まれないように） |
 | 構文 | `src/parser.rs` | `Parser::type_primary` | 識別子 `own` の直後が型の先頭なら `Own` を読む。入れ子の数を増減する（GUIDE §11.1） |
-| 型検査 | `src/check.rs` | `resolve_type_with_kinds` | `TypeExprKind::Own` を、引数の位置以外では `E1005` で拒否する |
-| 型検査 | `src/check.rs` | `check_modules` の関数宣言のループ | 引数の型を解決する前に `Own` を剥がし（印を覚える）、解決のあとで、モジュールの edition が `2027` なら補完する。`extern` は `FunctionDecl` ではないので通らない。型クラスのメソッド・instance のメソッドの署名は補完しない |
+| 型検査 | `src/check.rs` | `resolve_type_with_kinds` | `TypeExprKind::Own` を、引数の位置以外では `E1005` で拒否する（A19 が先に入っていれば、`pure def` の引数だけの受理を、すべての `def` の引数へ広げる） |
+| 型検査 | `src/check.rs` | `check_modules` の関数宣言のループ | 引数の型を解決する前に `Own` を剥がし（印を覚える）、解決のあとで、モジュールの edition が `2027` なら補完する。`extern` 宣言（`function_declarations` に `FunctionDecl` として積まれ、`external_functions` が id で引く。このループを**通る**）、型クラスのメソッド・instance のメソッドの署名、`names.const_functions` の `const def`、エントリーのモジュールの `main`（`entry_module` と名前で判定。定数でないもの）は補完しない（D10）。`function.pure` の関数も補完しない（A19 の規則で補完済み。D11）。除外の判定は関数の種類だけで決まり、型には依らない（`entry_signature`・`constants::check_signature`・`abi::parameter` は補完後の署名を見るので、補完してから除くのでは遅い）。 |
 | 型検査 | `src/check.rs` | `CheckedFunction` | 引数ごとの `read_by_default: Vec<bool>`（`pub(crate)`）を足す。単相化・特殊化・`closures::lower` が作る関数は、元の関数から引き継ぐか `false` |
 | 診断 | `src/check.rs`・`src/ownership.rs` | `E1003`（`expected .., found ref ..`）の生成箇所、`E1012`「cannot move a non-Copy value out of a reference」 | 根の局所が `read_by_default` の引数なら、末尾に文言を足す |
 | 整形・文書 | `src/formatter.rs`・`src/docgen.rs`・`src/semantic.rs` | 型の描画 | `own T` を書かれたとおりに出す。補完した `ref` は出さない（書かれた形を表示する。D7） |
@@ -235,11 +250,13 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 ### 手順 3: `own` の構文
 
-- 変更: `src/syntax.rs`、`src/parser.rs`、`src/check.rs`、`src/polymorph.rs`、`src/formatter.rs`、`src/docgen.rs`、`src/semantic.rs`、`src/regions.rs`、`src/warnings.rs`、`tests/parameter_conventions.rs`（新規）。
+- 変更: `src/syntax.rs`、`src/parser.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/check.rs`、`src/polymorph.rs`、`src/formatter.rs`、`src/docgen.rs`、`src/semantic.rs`、`src/regions.rs`、`src/warnings.rs`、`tests/parameter_conventions.rs`（新規）。
 - 内容: `TypeExprKind::Own` と、`type_primary` の読み方、`resolve_type_with_kinds` の `E1005`、関数宣言のループで `Own` を剥がす処理を足す（この段では印を捨てるだけ）。
   GUIDE §6.9 の手順で、`TypeExprKind` を辿る全出現を grep し、`Own` を足す。整形（`tsuzuri fmt`）で `own T` が往復する。
+  符号化を足す: `src/syntax_codec.rs` の `impl Wire for TypeExprKind` に `Own` の tag（15）、同ファイルの単体テストの数 `("TypeExprKind", 15)` を 16 に、`own` を使うソースをテストの `Program` に足す（数だけ上げて例を足さないと `no example writes TypeExprKind tags [15]` で落ち、数を上げ忘れると新しい tag が検査されない）。`FRONTEND_FORMAT`（`src/frontend_cache.rs`）を 1 上げる（上げ忘れると、古いキャッシュの AST が `Own` を持たないまま読まれる）。
+  [A19](A19-pure-functions.md) の手順 3 が先に実装済みなら、`TypeExprKind::Own`・読み方・符号化・走査箇所は実装済みなので再実装しない。足すのは、受理する位置を `pure def` の引数だけから、すべての `def` の引数へ広げる規則だけである（`pure def` の `own` の制限は A19 の D15 のまま）。逆に本チケットが先なら、A19 の手順 3 が、受理する位置の規則だけを足す。
 - 確認: すべての edition で次が通る。`def f :: own string -> i64` が受理され、`own` を外した版と IR が同じ。`let x: own string = ..`・`def f :: i64 -> own string`・`(own string -> i64)` が `E1005`。
-  識別子 `own` を変数名に使うコードが従来どおり通る。`tsuzuri fmt --check`・`tsuzuri doc` が `own` を壊さない。手順 1 の 2026 の IR が 1 byte も変わらない。
+  識別子 `own` を変数名に使うコードが従来どおり通る。`tsuzuri fmt --check`・`tsuzuri doc` が `own` を壊さない。`syntax_codec` の tag の網羅の単体テストと `node tests/frontend_cache.mjs target/release/tsuzuri` が通る。手順 1 の 2026 の IR が 1 byte も変わらない。
 
 ### 手順 4: 引数の補完（edition 2027）
 
@@ -253,6 +270,10 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   - 2027: `def id :: 'a -> 'a`、`def apply :: ('a -> 'b) -> 'a -> 'b` は補完されない（従来どおり値渡し）。`def head :: ['a] -> i64` は補完される。
   - 2027: `def wrap :: string -> (string * i64) = \s -> (s, s.length)` は `E1012`（診断の強化は手順 5）。`own string` と書いた版は受理される。
   - 2027: `mutable` の引数は補完されない。明示の `ref mut`・`ref {r}` は変わらない。`export def f :: string -> i64` は `ref string` として受理され、公開 ABI の検査（`E1008`）を通る。
+  - 2027: `const def name_length :: string -> i64`（`fn name_length s = s.length`）は補完されず、`const Eight: i64 = name_length "abcdefgh"` が 8 になり、実行時の呼び出しも値を返す（`E1026` にならない。2026 と同じ）。
+    明示の `ref string` の `const def` は 2027 でも `E1026` のまま。`def` の無印の `string` は読み取りで、`const def` の無印の `string` は値渡し、という差を 1 つのテストに並べる。
+  - 2027: `def main :: Array<string> -> i32 = \args -> args.length as i32` は補完されず、`E2004` にならない。`tsuzuri build` で作った実行ファイルに引数を 2 つ渡すと終了コードが 2（`tsuzuri run` は追加引数を渡さず、`main` は空配列を受け取るので 0。HEAD の 2026 で確認済み）。別モジュールの `main` という名前の関数は、通常どおり補完される。
+  - 2027: `extern def host_len :: string -> i64` は補完されず、2026 と同じ `E1008`。`extern def host_len :: ref string -> i64` は受理される（HEAD で確認済み）。
   - 2026・manifest なしのファイルでは、上のどれも補完されない（無印の意味が変わらない）。
   - 依存: 2027 のパッケージが 2026 のパッケージの関数（無印の `string` を消費する）を呼ぶと、呼び出しは移動で、後の使用が `E1012`。
 
@@ -296,6 +317,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - [ ] `2026`（manifest なしを含む）と std の IR が 1 byte も変わらない。2027 の `def f :: string -> i64` と `def f :: ref string -> i64` の IR が一致する。
 - [ ] `own T` が すべての edition で受理され、引数の位置以外では `E1005`。`own` を識別子に使うコードが変わらない。
 - [ ] 診断の強化が補完した引数にだけ付く。
+- [ ] 2027 のパッケージの `const def`・エントリーの `main`・`extern` が補完されない。`const def f :: string -> i64` が `E1026` にならず `const` の初期化式から呼べる。`def main :: Array<string> -> i32` が `E2004` にならない。`extern` の無印の `string` は従来どおり `E1008`。
 - [ ] native/WASM × `-O0`/`-O3`、`live == 0`、WASM の import が空（suite `conventions`）。
 - [ ] `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`、§3.1 の回帰テスト、`sh scripts/check-runtime-includes.sh` が通る。
 - [ ] ドキュメントを更新し、`node scripts/check-docs.mjs` が通る。`_features/README.md` の状態を `done（Phase 1）` にし、チケットを `_completed/` へ移す。
@@ -307,6 +329,10 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - **二重の借用。** 明示の `ref T` を、さらに `ref ref T` にしない。補完は無印の引数だけ。
 - **型変数と関数型。** `'a`・`('a -> 'b)` を補完すると、型クラスの制約・コールバックの契約・`let rec` の捕捉の規則と衝突する。補完しない（D5）。補完しない型が `Type::Variable` を含むとき（`['a]` は補完、`Maybe<'a>` は補完しない）の判定は、`needs_drop` の結果に従う。
 - **ABI。** `export def` の引数の型は公開 ABI の検査（`E1008`）にかかる。補完した `ref string`・`ref [ubyte]` は、明示の `ref` と同じに通るはずである。`extern` は補完しない。
+- **契約が固定された署名（`E1026`・`E2004`・`E1008`）。** 関数宣言のループは、補完の候補地（引数の型の解決の直後）のすぐ後で、解決後の署名を 3 つの検査にかける。
+  `constants::check_signature` は `Type::Reference` を `E1026`、`entry_signature` は `[Unit]`・`[Array<string>]` 以外を `E2004`、`abi::parameter` はバッファの値渡しを `E1008` にする。
+  補完をこれらに掛けると、2027 の `string`・配列の引数を持つ `const def` と、引数を読む `main` がすべて壊れる。`extern` は「`FunctionDecl` ではない」のではなく、同じループを通るので、除外を明示する。
+  除外の対象を増やす変更（新しい署名の検査が補完後の署名を見る機能）は、このリストを見直す責任を負う（`grep -n "signature" src/check.rs` の関数宣言のループ）。edition 内の差（D10）は文書に書く。
 - **`mutable` の引数。** 引数の変更は所有が前提。補完しない。
 - **moved の診断の根。** 診断の強化は、根の局所が補完した引数のときだけ。`p.field` のような射影、`{ p with .. }` の基底も根をたどって判定する。
 - **cache。** edition が違うと同じソースの型検査が変わる。cache の鍵に edition が入っていることを確かめる（G11・G17）。
@@ -320,6 +346,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - `mut` の引数規約、要素・フィールドへの代入構文（`xs[i] = v`、`s.f = v`）、`Vec.push` を `mut` にすること（Phase 4。D-13 の再検討が要る）。
 - パターン束縛の既定を読み取りにすること（A17 の Phase 2 が、所有する scrutinee の束縛を移動にする）。
 - 戻り値の借用（`ref {r} T`）の省略規則、region の構文の変更。
+- `const def` の引数の読み取り（定数評価器が参照を持てるようにして、`const def` も補完の対象にすること。チケット D11 の拡張で、別チケット）。
 - `tsuzuri api-diff` が edition の違いによる意味の変更を検出すること（署名だけを読むので検出できない。既知の限界として文書に書く）。
 
 ## 決定事項
@@ -334,6 +361,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 - 決定: 型の前置き `own T`（引数の位置だけ）。予約語にしない。すべての edition で受理する。
 - 理由: 所有権を受け取る引数を明示する印が要る。追加のみで、2026 の意味を変えない。
+- 注: [A19](A19-pure-functions.md) の D1・D16 は、人間の許可（2026-10-13「`own` でも純粋性が保たれることが保証されるのであれば、`ref` に加えて `own` も許容する」）に基づいて、`pure def` の引数だけで `own` を先に受理する。この決定（通常の `def` の引数へ受理を広げること）は、その許可に含まれないので、要承認のまま。A19 が先に入ると、`own` の構文は実装済みで、本チケットは受理する位置を広げるだけになる。
 - 状態: **要承認**
 
 ### D3: edition 2027 を新設し、`LATEST` は 2026 のままにする
@@ -376,6 +404,19 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 - 決定: `f (mut x)` や `f (move x)` のような呼び出し側の印は、Phase 1 では作らない。
 - 理由: 読み取りの呼び出しは今も印なしで、`ref mut` の自動借用も今の規則のまま。変更の可視化は Phase 4 で、`mut` と一緒に決める。
+- 状態: 既定案（実装者はこの案に従う）
+
+### D10: 契約が固定された署名（`const def`・エントリーの `main`・`extern`）は補完しない
+
+- 決定: 2027 でも、`const def`、エントリーのモジュールの `def main`、`extern` 宣言の引数は補完せず、従来どおりに解釈する（`names.const_functions`・`entry_module` と名前・`external_functions` の id を、補完の対象から外す）。
+- 理由: 3 つとも、解決後の署名を別の検査が見る（`E1026` は値型だけ、`E2004` は `Array<string>` の値渡しだけ、`E1008` はバッファの `ref` だけ）。補完すると、正しいプログラムが拒否される（HEAD の診断で確認済み）。
+  定数評価器に参照を教えるのは、チケット D11（`const def`）の設計の変更で、ランタイムの入口と ABI は A18 の範囲外。edition 内の差（`def` の無印は読み取り、これらの無印は値渡し）は、文書の例で明示して許す。
+- 状態: 既定案（実装者はこの案に従う。起票後の `pure def` の検討で見つかった抜けの補正）
+
+### D11: `pure def`（A19）との関係
+
+- 決定: 関数宣言のループは `function.pure` を先に判定し、`pure def` にはこのチケットの補完をしない（A19 の `pure_parameter` が edition に依らず補完する。二重に補完しない）。`pure def` の引数の `own T` は、A19 の規則（D1・D15・D16）で受理され、`E1029` の制限（`own` の型は平たいデータ。`mut`・`ref mut` の引数は不可）がかかる。通常の `def` の `own T` は本チケットの規則（D2）に従う。D10 の「補完しない署名」に `pure def` は含まない（`pure def` は A19 が自分で補完する）。
+- 理由: `pure def` は新しい構文なので、edition の改訂なしに無印の引数を読み取りにできる。A18 の対象は、`IO` を使う関数や消費する関数を含む `def` 全般で、人間の承認（D1〜D4）が要る別の決定である。`own` の構文は両チケットで共有するので、先に入るほうが実装し、後のほうは受理する位置の規則だけを足す（手順 3）。
 - 状態: 既定案（実装者はこの案に従う）
 
 ## 付録
