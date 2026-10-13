@@ -102,7 +102,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
 | PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | todo |
 | PM06 | [確保の除去とスタック化](PM06-allocation-elimination.md) | P1 | L | PX01 | todo |
-| PM07 | [複製の除去とバッファ再利用の一般化](PM07-copy-elision.md) | P1 | M | PX01, (A15) | todo |
+| PM07 | [複製の除去とバッファ再利用の一般化](PM07-copy-elision.md)（Phase 2 は [A17](../_features/A17-last-use-move.md)） | P1 | M | PX01, (A15) | todo |
 | PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | todo |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 

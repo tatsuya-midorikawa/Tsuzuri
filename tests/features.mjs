@@ -1172,6 +1172,56 @@ const suites = {
       ...[0n, 1n, 100n].map((count) => ["nested_copy", [count], count * (count - 1n) / 2n + count]),
     ],
   },
+  last_use: {
+    // Independent JavaScript references for tests/fixtures/last_use/Main.tz (A17). A result does not
+    // depend on whether a read copies or moves; A17 changes the allocation counts, which
+    // primitives.mjs checks, and these cases keep the results fixed.
+    cases: (() => {
+      const checksum = (xs) => xs[0] + xs[1] * 10n + xs[2] * 100n + xs[3] * 1000n;
+      const range = (n) => Array.from({ length: Number(n) }, (_, i) => BigInt(i));
+      const selfUpdate = (n) => {
+        const xs = [1n, 1n, 1n, 1n];
+        for (const i of range(n)) xs[Number(i % 4n)] = i * 3n;
+        return checksum(xs);
+      };
+      const recursive = (n) => {
+        const xs = [2n, 2n, 2n, 2n];
+        for (const i of range(n)) xs[Number(i % 4n)] = i * 5n;
+        return checksum(xs);
+      };
+      const later = (n) => {
+        const xs = [1n, 2n, 3n, 4n];
+        for (const i of range(n)) xs[Number(i % 4n)] = xs[Number((i + 1n) % 4n)] + i;
+        return checksum(xs);
+      };
+      const consed = (n) => range(n).reverse().reduce((acc, x) => acc * 3n + x, 0n);
+      const loops = [1n, 3n, 4n, 7n, 10n, 25n];
+      const values = [0n, 1n, 4n, 5n, 150n, -1n];
+      return [
+        ...loops.flatMap((n) => [
+          ["self_update_loop", [n], selfUpdate(n)],
+          ["recursive_accumulate", [n], recursive(n)],
+          ["loop_invariant", [n], n * (n - 1n) / 2n + 2n * n],
+          ["later_argument_reads_it", [n], later(n)],
+          ["break_keeps_live", [n], 2n + range(n < 3n ? n : 3n).reduce((acc, i) => acc + i + 10n, 0n)],
+          ["list_cons_loop", [n], consed(n)],
+        ]),
+        ...values.flatMap((n) => [
+          ["branch_last_reads", [n], n % 2n === 0n ? 700n + (n + 1n) * 10n + n + 2n : n * 100n + 90n + n + 2n],
+          ["build_from_locals", [n], n + (n + 1n) * 10n + n * 1000n + 40000n],
+          ["read_after_read", [n], n * 1000n + 99n],
+          ["borrow_alias", [n], n * 100n + 9n],
+          ["closure_then_use", [n], n + 1000n],
+          ["scrutinee_temp", [n], n >= 0n ? 321n * n : 8n],
+          ["scrutinee_local_last", [n], n >= 0n ? 5n * n + 2n : 0n],
+          ["scrutinee_local_used_after", [n], n >= 0n ? (2n * n + 1n) * 100n + 3n * n + 1n : 0n],
+          ["guard_falls_through", [n], n < 0n ? 8n : n > 100n ? 1000n + n : 321n * n],
+          ["as_pattern_overlap", [n], n >= 0n ? 31n * n : 8n],
+          ["tuple_scrutinee", [n], n >= 0n ? 22n * n + 20n : 0n],
+        ]),
+      ];
+    })(),
+  },
   slices: {
     cases: [
       ["slice_sum", [0n, 0n, 0n], 0n],

@@ -7,7 +7,7 @@
 | 優先度 | P1 |
 | 規模 | M |
 | 依存 | PX01, (A15) |
-| 関連 | A15, C01, PM06 |
+| 関連 | A15, A17（Phase 2 を置き換える）, C01, PM06 |
 | 状態 | todo |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 不要（Phase 1 の D1〜D9 はすべて既定案。Phase 2 は人間が依頼した場合だけ着手する） |
@@ -317,11 +317,10 @@ grow:
 ### Phase 分割
 
 - Phase 1（本チケットの実装範囲）: R2、S1、E2E の確保回数の行、`tracked_realloc`、A15 の除外規則（A15 が done の場合）、計測、文書。
-- Phase 2（設計方針。人間が依頼した場合だけ）: 所有権検査の `live` 集合を使う「最後の使用」（根が 2 回以上現れる場合）。
-  `Checker::read_places` で `Use::Consume && is_copy && needs_drop` かつ根が後続で生きていない read の span を関数ごとに記録し、
-  同じ span に生きている read もあれば移動しない（生成の builder 展開で span が重なる場合の保守的な扱い）。ループの中では、根がその反復の
-  本体で束縛された場合だけ対象にする。あわせて `Index`（Copy の要素）・`ListTail`・`UnionPayload` の place、根が Copy でない record の
-  Copy の field（B07 の `Type::has_user_drop` が経路のどこにもない場合）、文字列の容量（PM03 と合わせる）を検討する。
+- Phase 2: **[A17](../_features/A17-last-use-move.md) が置き換える**（2026-10-13、人間の依頼で起票。match の束縛の移動は A17 の Phase 2 で、Phase 1 の後に人間が求めたときだけ着手する）。元の案は、所有権検査の `live` 集合を使う「最後の使用」だった。
+  A17 は、生成が持つ型付き IR の逆向きの生存解析で判定する（所有権の結果を生成へ渡さない。D2 と同じ方針）。元の案の「ループの中では、根がその反復の本体で束縛された場合だけ」では、
+  ループの外で束縛して反復の中で再束縛する局所（`xs = Array.set xs ..`。100 万要素の `[i64]` で 1 回 0.2 ms の全複製）と、match の Copy の束縛が扱えないため、A17 が扱う。
+  `Index`（Copy の要素）・`ListTail`・`UnionPayload` の place、根が Copy でない record の Copy の field は A17 の Phase 3、文字列の容量は PM03 と合わせて検討する。
 
 ## 実装手順
 
@@ -557,7 +556,7 @@ awk '/^define internal %tz.string @tz.string.append/,/^}/' /tmp/tz-PM07/cases.ll
 ## 対象外
 
 - 参照カウントによる共有（C10 Phase 2）、Copy の意味の変更。
-- 所有権検査の `live` 集合による最後の使用、`Index`・`ListTail`・`UnionPayload` の place、根が Copy でない record の field（Phase 2）。
+- 所有権検査の `live` 集合による最後の使用（[A17](../_features/A17-last-use-move.md) が型付き IR の生存解析で実装する）、`Index`・`ListTail`・`UnionPayload` の place、根が Copy でない record の field（Phase 2）。
 - 文字列の容量（PM03 と合わせて検討）、Vec の伸長方針の変更（D6）。
 - 明示的な複製（`clone_string`、`Vec.clone`、A15 の `Array.copy`）、並列 kernel（`src/llvm_parallel.rs`）と再帰型（`src/llvm_recursive.rs`）の複製。
 

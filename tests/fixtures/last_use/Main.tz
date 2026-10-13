@@ -1,0 +1,115 @@
+record Pair { left: [i64], right: [i64] }
+
+def make :: i64 -> Result<[i64], string> = \n ->
+    if n >= 0 then Result.Ok (new [i64](3, \i -> (i + 1) * n)) else Result.Error "negative"
+
+def maybe_of :: i64 -> Maybe<[i64]> = \n ->
+    if n >= 0 then Maybe.Some (new [i64](3, \i -> (i + 1) * n + 1)) else Maybe.None
+
+def classify :: Result<[i64], string> -> i64 = \r ->
+    match r with
+    | Result.Ok xs when xs[0] > 100 -> 1000 + xs[0]
+    | Result.Ok xs -> xs[0] + xs[1] * 10 + xs[2] * 100
+    | Result.Error e -> e.length
+
+export def self_update_loop :: i64 -> i64 = \n ->
+    let mut xs = new [i64](4, \_i -> 1)
+    for i in 0 .. (n - 1) do
+        xs = Array.set xs (i % 4) (i * 3)
+    xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
+
+export def recursive_accumulate :: i64 -> i64 = \n ->
+    let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.set xs (i % 4) (i * 5))
+    let out = go 0 (new [i64](4, \_i -> 2))
+    out[0] + out[1] * 10 + out[2] * 100 + out[3] * 1000
+
+export def branch_last_reads :: i64 -> i64 = \n ->
+    let xs = new [i64](3, \i -> i + n)
+    let ys = if n % 2 == 0 then Array.set xs 0 7 else Array.set xs 1 9
+    ys[0] * 100 + ys[1] * 10 + ys[2]
+
+export def build_from_locals :: i64 -> i64 = \n ->
+    let a = new [i64](2, \i -> i + n)
+    let b = new [i64](2, \i -> i * n)
+    let size = a.length + b.length
+    let p = Pair { left: a, right: b }
+    p.left[0] + p.left[1] * 10 + p.right[0] * 100 + p.right[1] * 1000 + size * 10000
+
+export def read_after_read :: i64 -> i64 = \n ->
+    let xs = new [i64](4, \i -> i + n)
+    let ys = Array.set xs 0 99
+    xs[0] * 1000 + ys[0]
+
+export def loop_invariant :: i64 -> i64 = \n ->
+    let xs = new [i64](3, \i -> i + 1)
+    let mut total = 0
+    for i in 0 .. (n - 1) do
+        let ys = Array.set xs 0 i
+        total = total + ys[0] + xs[1]
+    total
+
+export def later_argument_reads_it :: i64 -> i64 = \n ->
+    let mut xs = new [i64](4, \i -> i + 1)
+    for i in 0 .. (n - 1) do
+        xs = Array.set xs (i % 4) (xs[(i + 1) % 4] + i)
+    xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
+
+export def borrow_alias :: i64 -> i64 = \n ->
+    let xs = new [i64](4, \i -> i + n)
+    let r = ref xs
+    let ys = Array.set xs 0 9
+    r[0] * 100 + ys[0]
+
+export def closure_then_use :: i64 -> i64 = \n ->
+    let xs = new [i64](3, \i -> i + n)
+    let f = \k -> xs[k]
+    let ys = Array.set xs 0 100
+    f 0 + ys[0] * 10
+
+export def break_keeps_live :: i64 -> i64 = \n ->
+    let xs = new [i64](3, \i -> i + 1)
+    let mut acc = 0
+    for i in 0 .. (n - 1) do
+        let ys = Array.set xs 1 (i + 10)
+        acc = acc + ys[1]
+        if i == 2 then break else ()
+    acc + xs[1]
+
+export def scrutinee_temp :: i64 -> i64 = \n ->
+    match make n with
+    | Result.Ok xs -> xs[0] + xs[1] * 10 + xs[2] * 100
+    | Result.Error e -> e.length
+
+export def scrutinee_local_last :: i64 -> i64 = \n ->
+    let m = maybe_of n
+    match m with
+    | Maybe.Some xs -> xs[1] + xs[2]
+    | Maybe.None -> 0
+
+export def scrutinee_local_used_after :: i64 -> i64 = \n ->
+    let m = maybe_of n
+    let first = match m with
+        | Maybe.Some xs -> xs[1]
+        | Maybe.None -> 0
+    let second = match m with
+        | Maybe.Some ys -> ys[2]
+        | Maybe.None -> 0
+    first * 100 + second
+
+export def guard_falls_through :: i64 -> i64 = \n -> classify (make n)
+
+export def as_pattern_overlap :: i64 -> i64 = \n ->
+    match make n with
+    | Result.Ok xs as whole -> xs[0] + (match whole with | Result.Ok ys -> ys[2] * 10 | Result.Error _ -> 0)
+    | Result.Error e -> e.length
+
+export def tuple_scrutinee :: i64 -> i64 = \n ->
+    match (make n, make (n + 1)) with
+    | (Result.Ok a, Result.Ok b) -> a[1] + b[1] * 10
+    | _ -> 0
+
+export def list_cons_loop :: i64 -> i64 = \n ->
+    let mut items: [|i64|] = [||]
+    for i in 0 .. (n - 1) do
+        items = List.cons i items
+    List.fold (\acc x -> acc * 3 + x) 0 (ref items)
