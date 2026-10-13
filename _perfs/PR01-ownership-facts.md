@@ -326,7 +326,7 @@ define i64 @tz_probe(i64 %arg0) nounwind {
 - Phase 1（実装対象）: P0〜N1、`layout_bound`、`is_frozen`、テスト、文書、計測。
 - Phase 2（設計方針のみ）: (a) 配列の記述子から取り出した buffer のポインターへの `!alias.scope`／`!noalias`（異なる所有者の配列は別の buffer であることを
   使う。`ref [T]` の値渡しの記述子と `ref mut [T]` の buffer の別名を消す）、(b) 値の引数・結果への `noundef`（`undef`・`poison` を作る箇所の監査が先）、
-  (c) 関数の `memory(...)`（確保・解放・IO・Task・extern を副作用として扱う）、(d) 所有 buffer の `!nonnull`。`!range` は PR02 の D4、
+  (c) 関数の `memory(...)`（確保・解放・IO・Task・extern を副作用として扱う。[A19](../_features/A19-pure-functions.md) の `src/pure_rules.rs` が、同じ副作用の分類と到達可能性の解析を先に持つので、再利用を検討する）、(d) 所有 buffer の `!nonnull`。`!range` は PR02 の D4、
   `llvm.lifetime.*` は PM09 が扱う。
 - Phase 3（設計方針のみ）: 型の異なる要素の読み書きへの TBAA。ランタイムの byte 単位のアクセスは「すべてと別名になり得る」型にする。
 
