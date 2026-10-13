@@ -63,7 +63,7 @@ Windows の GitHub Actions runner と開発者環境で、既存の native の�
 | W7 | `node tests/examples.mjs target/release/tsuzuri.exe` | 最後の行が `Examples: console, higher-order functions, native C host, desktop ABI, HTTP/WASM loading, 32,600 game steps`（Windows では desktop の Python の部分を harness が飛ばす） |
 | W8 | `node tests/wasm_threads.mjs target/release/tsuzuri.exe` | 終了コード 0。`WASM threads O0:`・`WASM tasks O0:`・`WASM threads O3:`・`WASM tasks O3:` で始まる行が出る |
 
-参考の記録（ゲートに含めない。D4）: `tests/e2e.mjs`、`tests/numeric_casts.mjs`。
+参考の記録（W1〜W8 に含めない。D4）: `tests/e2e.mjs`、`tests/numeric_casts.mjs`。`numeric_casts.mjs` は workflow の step として走らせる（下の「旧計画から外れた判断」）。`e2e.mjs` は走らせない。
 
 ### 診断
 
@@ -89,7 +89,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | HEAD の `.github/workflows/` は `vscode.yml` だけ | `targets.yml`（G15）も足されていて、「Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them」と書いてある。`vscode.yml` の Windows の job は、すでに `windows-2022` と LLVM 21.1.8 で MSVC の `Async.block_on`・`Net`・PDB を実行していて、runner の環境の実績だった。`windows.yml` は `targets.yml` が除いた Windows の実行を受け持つ |
 | workflow の YAML: `actions/checkout@v4`・`setup-node@v4`、trigger は `push`・`pull_request`・`workflow_dispatch`、`timeout-minutes: 90`、step は上から順に、`cargo test --locked` | 現行の workflow に合わせた。`actions/checkout@v7`・`setup-node@v7`。trigger は `workflow_dispatch`、`pull_request`（`src/**`・`std/**`・`tests/**`・`examples/**`・`Cargo.*`・workflow 自身）、`push`（`main`）で、branch への `push` は二重に走るので外した。concurrency は PR だけ cancel（`targets.yml` と同じ）。`timeout-minutes: 120`（W3 だけで 40〜50 分、全体で約 50 分）。`ilammy/msvc-dev-cmd` は、actions/ と dtolnay/ の外で唯一の action なので commit に固定した（v1.13.0）。`tests/numeric_casts.mjs` は 13 秒で成功するので、step として残した（参考の記録から昇格）。`e2e.mjs` は入れない。step は `!cancelled()` で前の失敗に左右されず、`cargo test` が最後（`targets.yml` と同じ）。LLVM の取得は 3 回まで再試行する。`Show tools` が LLVM 21.1.8・MSVC の `link.exe`・LF の checkout を検査する。`cargo test` は `RUST_MIN_STACK=4194304` と `--no-fail-fast`（GUIDE D-45） |
 | W3: `tests/windows.rs` は `3 passed` | 4 件。E09 が Net の cross-link のテストを足した |
-| D4: 参考の suite（`e2e.mjs`・`numeric_casts.mjs`）を手順 7 で実行して記録する | 診断のために run で 1 回実行して結果を記録した（下）。ゲートにも、最終の workflow にも入れない |
+| D4: 参考の suite（`e2e.mjs`・`numeric_casts.mjs`）を手順 7 で実行して記録する | 診断のために run で 1 回ずつ実行して結果を記録した（下）。`e2e.mjs` は、ゲートにも最終の workflow にも入れない。`numeric_casts.mjs` は 13 秒で成功したので、W1〜W8 には数えず、workflow の step として残した |
 | 対象外: PDB／CodeView | G16 Phase 3 が実装済みで、`vscode.yml` の Windows x64 の job が MSVC の PDB と natvis を検査している。G10 のゲートは PDB を検査しない |
 | G15 は「G10 の job」で Windows の tier を上げる | `tests/windows.mjs` に、名前を付けた `x86_64-pc-windows-msvc` を `-O0`・`-O3` で `build`・`run`・`test` する検査（`tests/targets.mjs` と同じ内容）を足し、`platforms.md` の tier を 2 から 1 にした。`aarch64-pc-windows-msvc` と MinGW は Windows のホストで実行していないので 2 のまま |
 | トラップは W5 の対象でない | 「数値・トラップ・native と WASM の差」を言い切れるよう、W5 に、`llvm.trap` が 0xC000001D で終わり、`E2005` と位置が出ることを足した |
@@ -103,7 +103,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | D1 | 環境: x64 Windows、LLVM 21.1.8（`LLVM-21.1.8-win64.exe`、SHA-256 `7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113`）、Visual Studio 2022 の VCTools と Windows SDK、Rust stable の MSVC toolchain、Node.js 24。`vscode.yml` と同じ版で、runner の image の LLVM の版の揺れを除く。Node 20 は重い BigInt の suite で V8 が異常終了した記録がある |
 | D2 | 既存の出力の置換は `publish_outputs` の `fs::rename` だけ。runner で置換と旧出力の保持は成功した。古い出力を消してから rename する fallback は入れていない |
 | D3 | `.github/workflows/windows.yml` を復元する。workflow 名 `Windows MSVC`、job id `windows`、`windows-2022`（G15 がこの名前を前提にする）。trigger は上の表のとおり現行の convention に合わせた。push と PR は、利用者の依頼に従って実装者が行った |
-| D4 | ゲートは W1〜W8。`tests/e2e.mjs`・`tests/numeric_casts.mjs` は参考。POSIX 専用の harness（`tests/tasks.mjs` など。`-pthread` を無条件に渡す）は実行しない |
+| D4 | ゲートは W1〜W8。`tests/e2e.mjs`・`tests/numeric_casts.mjs` は参考（`numeric_casts.mjs` は参考のまま、workflow の step として走らせる）。POSIX 専用の harness（`tests/tasks.mjs` など。`-pthread` を無条件に渡す）は実行しない |
 | D5 | ARM64 Windows はゲートに含めない。`tests/windows.mjs` は `--target=x86_64-pc-windows-msvc` を固定で渡す |
 | D6 | 失敗時に直してよい範囲。実際に使った範囲は、`task-windows.h`、`src/fetch.rs` の `cfg!(windows)` の分岐、harness と Rust のテスト |
 | D7 | CI と clone で `core.autocrlf=false`。`.gitattributes` は足さない（全 host の checkout に効く repository 全体の変更）。`Show tools` が `src/runtime/string.ll` の LF を検査する |
@@ -150,7 +150,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | W8 | 成功 | 49 秒 |
 | W3 | 成功（96 の `test result` で 1,204 件が成功、失敗 0、`tests/windows.rs` は 4 件） | 41 分 59 秒 |
 
-- 参考: `tests/numeric_casts.mjs` は成功（1585 件、13 秒）。`tests/e2e.mjs` は、最初の native のトラップの検査（`tests/e2e.mjs:759`）で止まる。host の C の `signal(SIGILL, ...)` の handler が呼ばれず、終了コードが期待の 86 でなく 0xC000001D になる。それより前の native と WASM の結果の照合は一致した。`llvm.trap` の終わり方は上の契約のとおりで、harness の期待が POSIX の前提であり、D4 のとおりゲートにも workflow にも入れていない。
+- 参考: `tests/numeric_casts.mjs` は成功（1585 件、13 秒）。`tests/e2e.mjs` は、最初の native のトラップの検査（`tests/e2e.mjs:759`）で止まる。host の C の `signal(SIGILL, ...)` の handler が呼ばれず、終了コードが期待の 86 でなく 0xC000001D になる。それより前の native と WASM の結果の照合は一致した。`llvm.trap` の終わり方は上の契約のとおりで、harness の期待が POSIX の前提である。`e2e.mjs` は D4 のとおりゲートにも workflow にも入れていない。`numeric_casts.mjs` は workflow の step として走らせる（W1〜W8 には数えない）。
 - 修正: 下の表。
 
 ### 実行で見つかったもの
