@@ -560,4 +560,7 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 - `tests/benchmark_apps.mjs`、既存 report と新 metrics／生成器のテスト、全 Rust 1,223 件、
   関係する E2E・clippy・fmt・runtime includes が成功。src／std の最適化・意味の変更はない
   （同 PR の src の計時の変更は PX01 の範囲）。
+- CI の Rust 1.99／LLVM 23 が安全な `1.0 / (u64 as f64)` に推論する `nnan` の誤検出を修正。
+  関数内の SSA の証明だけを狭く許可し、ほかの flags を拒否する 28 negative 検査を追加した。
+  Apple Clang 21 と upstream Clang 21.1.8 の両方で 6 言語・native／WASM O0／O3・live 0 を再検証した。
 - manual の strategy に記録・比較条件を追記。実行済みの範囲だけを記述し、Linux の挙動は PR の CI で検証する。

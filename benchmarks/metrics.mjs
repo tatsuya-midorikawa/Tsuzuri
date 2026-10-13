@@ -230,6 +230,12 @@ export function parseTimePasses(stderr) {
   return { phases: report.phases, total_ms: report.total_ms };
 }
 
+export function validateGnuTimeVersion(text) {
+  const match = text.match(/\bGNU time\)?[ \t]+(?:(\d+)\.(\d+)(?:\.\d+)?|UNKNOWN)(?=\s|$)/i);
+  assert.ok(match && (match[1] === undefined || Number(match[1]) > 1 || Number(match[1]) === 1 && Number(match[2]) >= 8),
+    `install GNU time 1.8+ at /usr/bin/time; unrecognized or unsupported version:\n${text}`);
+}
+
 let gnuTimeChecked = false;
 export function measureProcess(command, args, { cwd = root, env = process.env, runs = 9, warmups = 1,
   timeoutMs = 600_000, system = platform() } = {}) {
@@ -238,11 +244,10 @@ export function measureProcess(command, args, { cwd = root, env = process.env, r
   assert.ok(Number.isSafeInteger(runs) && runs > 0 && Number.isSafeInteger(warmups) && warmups >= 0);
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0);
   if (system === "linux" && !gnuTimeChecked) {
-    const version = spawnSync("/usr/bin/time", ["--version"], { encoding: "utf8", timeout: 10_000 });
+    const version = spawnSync("/usr/bin/time", ["--version"], { env: { ...env, LC_ALL: "C" }, encoding: "utf8", timeout: 10_000 });
     if (version.error) throw new Error(`cannot execute /usr/bin/time; install GNU time 1.8+: ${version.error.message}`);
-    const match = `${version.stdout}\n${version.stderr}`.match(/GNU time[^0-9]*(\d+)\.(\d+)/i);
-    assert.ok(version.status === 0 && match && (Number(match[1]) > 1 || Number(match[1]) === 1 && Number(match[2]) >= 8),
-      "install GNU time 1.8+ at /usr/bin/time");
+    assert.equal(version.status, 0, `cannot query /usr/bin/time:\n${version.stdout}${version.stderr}`);
+    validateGnuTimeVersion(`${version.stdout}\n${version.stderr}`);
     gnuTimeChecked = true;
   }
   const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-metrics-"));
@@ -252,14 +257,15 @@ export function measureProcess(command, args, { cwd = root, env = process.env, r
       const report = join(temporary, `time-${index}.txt`);
       const start = process.hrtime.bigint();
       const child = spawnSync("/usr/bin/time", [flag, "-o", report, command, ...args], {
-        cwd, env: { ...env, LC_ALL: "C" }, encoding: "utf8", timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, detached: true,
+        cwd, env: { ...env, LC_ALL: "C" }, encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL",
+        maxBuffer: 256 * 1024 * 1024, detached: true,
       });
       const wall = Number(process.hrtime.bigint() - start) / 1e6;
       if (child.error) {
         // time waits for a child, so killing only time on timeout would orphan the compiler/tools.
         if (child.pid) {
           try {
-            process.kill(-child.pid, "SIGTERM");
+            process.kill(-child.pid, "SIGKILL");
           } catch (error) {
             if (error.code !== "ESRCH") throw new AggregateError([child.error, error], `cannot terminate measured process group ${child.pid}`);
           }
@@ -295,6 +301,20 @@ export function unsupportedReason(stderr) {
   const line = stderr.split(/\r?\n/).find((line) => /error\[E2004\]/.test(line));
   assert.ok(line, "missing expected E2004 diagnostic");
   return line;
+}
+
+export function parseCompilerDiagnostics(stderr) {
+  const diagnostics = [];
+  for (const line of stderr.split(/\r?\n/).filter((line) => line.trim())) {
+    const value = JSON.parse(line);
+    if (Object.hasOwn(value, "time_passes")) {
+      parseTimePasses(line);
+    } else {
+      assert.ok(typeof value.code === "string" && typeof value.message === "string", "unrecognized compiler JSON");
+      diagnostics.push(value);
+    }
+  }
+  return diagnostics;
 }
 
 export function inProcessRecords(context, suite, workloads, variants, { cpu = "generic", opt = "O3" } = {}) {

@@ -145,12 +145,19 @@ fn build_reports_backend_phases_and_tools() {
 #[test]
 fn time_passes_does_not_change_artifacts() {
     let temporary = Temporary::new("artifacts");
+    let object_source = temporary.path().join("Object.tz");
+    fs::write(&object_source, "export def answer :: i64\nfn answer = 42\n").unwrap();
     for emit in ["llvm", "header", "object", "wasm"] {
         for opt in ["-O0", "-O3"] {
             let output = temporary.path().join(format!("{emit}-{opt}"));
+            let source = if emit == "object" {
+                object_source.to_str().unwrap()
+            } else {
+                hello()
+            };
             let args = [
                 "build",
-                hello(),
+                source,
                 "--emit",
                 emit,
                 opt,

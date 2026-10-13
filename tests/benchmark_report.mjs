@@ -4,9 +4,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishSummary, renderSummary, renderTable, updateSummary } from "../benchmarks/report.mjs";
-import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseTimeOutput,
+import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseCompilerDiagnostics, parseTimeOutput,
   parseTimePasses, readRecords, renderComparison, renderMetricsSummary, summarize, updateMetricsSummary,
-  unsupportedReason, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
+  unsupportedReason, validateGnuTimeVersion, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
 import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
   writeProject } from "../benchmarks/build/generate.mjs";
 import { breakdown } from "../benchmarks/run-build.mjs";
@@ -105,6 +105,15 @@ test("Linux time units", () => {
   const text = "User time (seconds): 0.11\nSystem time (seconds): 0.05\nElapsed (wall clock) time (h:mm:ss or m:ss): 1:02:03.45\nMaximum resident set size (kbytes): 42240\n";
   assert.deepEqual(parseTimeOutput(text, "linux"), { wall_ms: 3723450, user_ms: 110, sys_ms: 50, peak_rss_bytes: 43253760 });
   assert.equal(parseTimeOutput(text.replace("1:02:03.45", "0:00.16"), "linux").wall_ms, 160);
+  assert.throws(() => parseTimeOutput(text.replace("Maximum resident set size (kbytes): 42240\n", ""), "linux"), /unrecognized/);
+});
+test("GNU time versions and distro UNKNOWN banner", () => {
+  for (const text of ["GNU time 1.8\n", "time (GNU Time) 1.9\n", "GNU time 2.0.1\n",
+    "time (GNU Time) UNKNOWN\nCopyright (C) 2018 Free Software Foundation, Inc.\n"]) validateGnuTimeVersion(text);
+  for (const text of ["GNU time 1.7\n", "GNU time 0.9\n", "BusyBox time 1.9\n",
+    "time (GNU Time)\nCopyright (C) 2018 Free Software Foundation, Inc.\n"]) {
+    assert.throws(() => validateGnuTimeVersion(text), /unrecognized or unsupported version/);
+  }
 });
 test("phase reports and non-overlap", () => {
   const report = '{"time_passes":1,"phases":[{"name":"parse","ms":1}],"total_ms":2}';
@@ -118,6 +127,15 @@ test("unsupported target reason survives preceding warnings", () => {
   assert.equal(unsupportedReason("Main.tz:1:1: warning[W1001]: unused\nMain.tz:2:1: error[E2004]: missing main\n"),
     "Main.tz:2:1: error[E2004]: missing main");
   assert.throws(() => unsupportedReason("warning[W1001]: unused"), /missing expected/);
+});
+test("JSON diagnostics coexist with opt-in timing metadata", () => {
+  const diagnostic = { severity: "error", code: "E0002", message: "expected expression", path: "Main.tz", span: { start: 1, end: 2 } };
+  const timing = '{"time_passes":1,"phases":[],"total_ms":1}';
+  assert.deepEqual(parseCompilerDiagnostics(`${JSON.stringify(diagnostic)}\n${timing}\n`), [diagnostic]);
+  assert.deepEqual(parseCompilerDiagnostics(JSON.stringify(diagnostic)), [diagnostic]);
+  assert.throws(() => parseCompilerDiagnostics(timing.replace('"time_passes":1', '"time_passes":2')));
+  assert.throws(() => parseCompilerDiagnostics('{"unexpected":1}'));
+  assert.throws(() => parseCompilerDiagnostics("not JSON"));
 });
 test("fixed schema and record validation", () => {
   const valid = record();
@@ -241,7 +259,7 @@ try {
     assert.throws(() => measureProcess("/bin/sh", ["-c", "echo err >&2; exit 3"], { runs: 1, warmups: 0 }), /exited with 3:\nerr/);
     assert.throws(() => measureProcess(process.execPath, [], { system: "win32" }));
     const pidFile = join(metricTemporary, "child.pid");
-    const code = `const{spawn}=require("node:child_process");const{writeFileSync}=require("node:fs");const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});writeFileSync(${JSON.stringify(pidFile)},String(child.pid));setInterval(()=>{},1000);`;
+    const code = `const{spawn}=require("node:child_process");const{writeFileSync}=require("node:fs");const child=spawn(process.execPath,["-e","process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:"ignore"});writeFileSync(${JSON.stringify(pidFile)},String(child.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`;
     assert.throws(() => measureProcess(process.execPath, ["-e", code], { runs: 1, warmups: 0, timeoutMs: 1500 }), /ETIMEDOUT/);
     const pid = Number(readFileSync(pidFile, "utf8"));
     let state;

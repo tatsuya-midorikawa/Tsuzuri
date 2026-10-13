@@ -901,9 +901,13 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 - full の `PX02-formal-managed` は primary 3 suite、managed、process の 561 レコード。
   `PX02-formal-apps` は 200 レコード。すべて benchmark、時刻・RSS は 9 標本以上で、要約を公開した。
   開始時は共有機の load average 4.92、dirty tree の記録であり、速度の勝敗・改善は主張しない。
-- process timeout が `/usr/bin/time` の子を残す問題を、所有する process group の終了で修正。
-  多段の子を持つ timeout の再現テストが成功し、残った stress の 3 PID だけを明示して終了した。
+- process timeout が `/usr/bin/time` の子を残す問題を、所有する process group の `SIGKILL` で修正。
+  `SIGTERM` を無視する多段の子を持つ timeout の再現テストも成功した。
   silent skip、速度の合否閾値、依存追加、unsafe Rust はない。
+- `--json` の診断と計時 metadata が並ぶ JSONL を厳密に読む共通 helper を使い、
+  computations の旧 compiler の機能確認を修正した。不正な JSON・metadata はエラーになる。
+- GNU time の版が `UNKNOWN` の distribution build も識別でき、各標本の `-v`・`-o` と
+  時間・RSS の欄の検査を維持する。版 1.7 以前や別の time は引き続き拒否する。
 - manual 4 ページの `check-docs` は 218 links、6 examples、native の 6 runs、1 test project を通過した。
 - 無効の計時の before／after の check は中央値 87.115／77.353 ms、広がり 51.346／34.485 ms。
   差は広がり以内で「差なし」。共有機の値から高速化・厳密な 0 コストは主張しない。

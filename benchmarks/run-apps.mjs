@@ -67,6 +67,24 @@ export function optionalTool(language, env = process.env) {
   return { program, version, skipped: null };
 }
 
+export function assertStrictFloatIR(ir, name) {
+  const flagged = /\b(?:fadd|fsub|fmul|fdiv)\s+(?:fast|reassoc|nnan|ninf|nsz|arcp|contract|afn)\b/;
+  const unsignedDoubles = new Set(), instructions = [];
+  let scope = 0;
+  for (const line of ir.split(/\r?\n/)) {
+    if (/^define\b/.test(line)) ++scope;
+    const conversion = line.match(/^\s*(%[^\s=]+)\s*=\s*uitofp\s+i64\s+(?:%[^\s,]+|\d+)\s+to\s+double(?=\s*(?:,|;|$))/);
+    if (conversion) unsignedDoubles.add(`${scope}/${conversion[1]}`);
+    if (flagged.test(line)) instructions.push([scope, line]);
+  }
+  for (const [scope, line] of instructions) {
+    // LLVM 23 infers nnan here: u64 -> f64 is finite/nonnegative, and 1/+0 is infinity, not NaN.
+    // This does not permit reassociation, contraction, or ignoring infinities/signed zero.
+    const reciprocal = line.match(/^\s*%[^\s=]+\s*=\s*fdiv\s+nnan\s+double\s+1\.000000e\+00,\s+(%[^\s,]+)(?:\s*,\s*!.*)?\s*(?:;.*)?$/);
+    assert.ok(reciprocal && unsignedDoubles.has(`${scope}/${reciprocal[1]}`), `${name}/strict f64: ${line.trim()}`);
+  }
+}
+
 export async function runApps(options) {
   if (Number(process.versions.node.split(".")[0]) < 24) throw new Error("Apps benchmarks require Node.js 24+; use npx --yes --package=node@24 node benchmarks/run-apps.mjs");
   checkReference();
@@ -253,10 +271,9 @@ export async function runApps(options) {
       assert.equal(work.live, 0, `${work.name}/retained bytes`);
       for (const field of ["calls", "bytes"]) assert.ok(Number.isSafeInteger(work[field]) && work[field] >= 0);
     }
-    const strict = /\b(?:fadd|fsub|fmul|fdiv)\s+(?:fast|reassoc|nnan|ninf|nsz|arcp|contract|afn)\b/;
     assert.doesNotMatch(readFileSync(join(fixture, "reference.rs"), "utf8"), /\b(?:unsafe|get_unchecked)\b/);
     for (const name of ["apps.optimized.ll", "c.optimized.ll", "cpp.optimized.ll", "apps_reference.ll", ...(zig.program ? ["zig.optimized.ll"] : [])]) {
-      assert.doesNotMatch(readFileSync(path(name), "utf8"), strict, `${name}/strict f64`);
+      assertStrictFloatIR(readFileSync(path(name), "utf8"), name);
     }
     if (go.program) assert.doesNotMatch(readFileSync(path("go.s"), "utf8"), /\b(?:V?FMADD|V?FMSUB)[A-Z0-9_.]*\b/i, "Go's explicit rounding prevents fused multiply-add");
     let metricCount = 0;

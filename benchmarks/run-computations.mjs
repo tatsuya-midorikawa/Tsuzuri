@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
+import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, parseCompilerDiagnostics, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -100,7 +100,8 @@ try {
     });
     if (supported.error) throw supported.error;
     if (supported.status !== 0) {
-      if (supported.status !== 1 || JSON.parse(supported.stderr).code !== "E0002") {
+      const diagnostics = parseCompilerDiagnostics(supported.stderr);
+      if (supported.status !== 1 || diagnostics.length !== 1 || diagnostics[0].code !== "E0002") {
         throw new Error(`Baseline capability check failed:\n${supported.stderr}`);
       }
       const legacy = join(temporary, "before-source");

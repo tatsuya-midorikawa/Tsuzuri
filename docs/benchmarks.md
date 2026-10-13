@@ -2075,6 +2075,8 @@ node benchmarks/metrics.mjs report target/perf/PX01-after --baseline target/perf
 本計測は AC 電源で、ほかの重い処理を動かさずに行います。in-process の時計は起動とコンパイルを含まず、
 process の時計は `/usr/bin/time` の起動から終了までを含みます。両者を直接比べません。
 macOS は `/usr/bin/time -l`、Linux は GNU time 1.8 以上の `/usr/bin/time -v` が必要です。
+ディストリビューションの GNU time が版を `UNKNOWN` と表示する場合も、GNU の識別を確認し、
+各標本で `-v`・`-o` と必要な時間・RSS の欄を検査します。未知の形式や欠けた欄はエラーです。
 
 | 指標 | 単位 | 読み方 |
 | --- | --- | --- |
@@ -5582,7 +5584,8 @@ sample では LLVM の InstCombine／known-bits の計算などに時間があ�
 標準の run は 200 を超える合成 module の WASM `-O3` だけを理由付きで除外し、`projects.json` の
 `skipped_variants` に残します。`--large-wasm` を付けた明示要求は試行し、timeout をエラーとして返します。
 WASM `-O0`、native と 200 module の全組は除外しません。LLVM の flags や生成する処理を変えて隠しません。
-タイムアウトでは `/usr/bin/time` だけでなく、所有する process group のコンパイラ・子ツールも終了させます。
+タイムアウトでは `/usr/bin/time` だけでなく、所有する process group のコンパイラ・子ツールも
+`SIGKILL` で終了させます。`SIGTERM` を無視する子がいても残しません。
 
 **大規模 Mach-O `-O0` の既存のリンクの変動:** 1,000 module では、計時を足す前の compiler も、
 Apple の linker の import-stub の順序によって 2 つの fingerprint になります。
@@ -5685,6 +5688,10 @@ binary_trees の quick（size 4、seed 42）は抽象の節が 1,916、Tsuzuri �
 generic の native `-O3` は 25 境界ケース × 10 種目 × 6 言語（1,500）、
 Tsuzuri native `-O0` は 250、WASM `-O0`／`-O3` は各 250 を照合し、WASM の import は空です。
 測定する seed と仕事量も独立な参照と照合します。tracked は種目ごとに実際の大きさで 1 回呼び、すべて live 0 を検査します。
+f64 の IR 検査は再結合・縮約などの意味を緩める flags を拒否します。Rust 1.99／LLVM 23 が
+`1.0 / (u64 as f64)` に推論する `nnan` だけは、同じ関数の SSA の変換元を確かめて許可します。
+この式は分母が 0 でも infinity となり、NaN は生じません。ほかの `nnan` や flags は引き続き拒否し、
+fast-math を有効にしたわけではありません。
 peak RSS は言語ごとの host を `--only` で 1 種目だけ起動し、その checksum も確認します。
 全 6 言語なら schema 1 が 200 レコード（wall・CPU・RSS 各 60、確保各 10）、
 Go・Zig がないときは理由付きで 140 レコードです。明示した使えないツールはエラーです。

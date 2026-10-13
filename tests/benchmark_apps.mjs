@@ -4,9 +4,30 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hex, reference, checkReference, workloads } from "../benchmarks/apps/reference.mjs";
-import { optionalTool, parseArguments } from "../benchmarks/run-apps.mjs";
+import { assertStrictFloatIR, optionalTool, parseArguments } from "../benchmarks/run-apps.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const coefficientIR = (operation, conversion = "%den = uitofp i64 %n to double") =>
+  `define double @coefficient(i64 %n, double %input) {\n  ${conversion}\n  %value = ${operation}\n  ret double %value\n}\n`;
+assertStrictFloatIR(coefficientIR("fdiv double 1.000000e+00, %den"), "strict division");
+assertStrictFloatIR(coefficientIR("fdiv nnan double 1.000000e+00, %den"), "LLVM23 inferred nnan");
+assertStrictFloatIR(coefficientIR("fdiv nnan double 1.000000e+00, %den, !dbg !7"), "inferred nnan with metadata");
+assertStrictFloatIR(coefficientIR("fdiv nnan double 1.000000e+00, %den", "%den = uitofp i64 0 to double"), "infinity is not NaN");
+for (const flag of ["fast", "reassoc", "ninf", "nsz", "arcp", "contract", "afn"]) {
+  for (const flags of [flag, `nnan ${flag}`, `${flag} nnan`]) {
+    assert.throws(() => assertStrictFloatIR(coefficientIR(`fdiv ${flags} double 1.000000e+00, %den`), "unsafe flags"), /strict f64/);
+  }
+}
+for (const operation of ["fadd", "fsub", "fmul"]) {
+  assert.throws(() => assertStrictFloatIR(coefficientIR(`${operation} nnan double 1.000000e+00, %den`), "reduction flags"), /strict f64/);
+}
+assert.throws(() => assertStrictFloatIR(coefficientIR("fdiv nnan double 0.000000e+00, %den"), "zero over zero"), /strict f64/);
+assert.throws(() => assertStrictFloatIR(coefficientIR("fdiv nnan double 1.000000e+00, %den", "%den = fadd double %input, 0.000000e+00"), "NaN-capable divisor"), /strict f64/);
+assert.throws(() => assertStrictFloatIR(coefficientIR("fdiv nnan double 1.000000e+00, %den", "%den = sitofp i64 %n to double"), "unproved conversion"), /strict f64/);
+assert.throws(() => assertStrictFloatIR(
+  coefficientIR("fdiv nnan double 1.000000e+00, %den")
+    + "define double @unproved(double %den) {\n  %value = fdiv nnan double 1.000000e+00, %den\n  ret double %value\n}\n",
+  "function-local SSA proof"), /strict f64/);
 checkReference();
 assert.equal(workloads.length, 10);
 assert.equal(hex(-1n), "ffffffffffffffff");
@@ -97,4 +118,4 @@ try {
   console.error = oldError;
   rmSync(temporary, { recursive: true, force: true });
 }
-console.log("benchmark apps reference, strict CLI and optional tool tests passed");
+console.log("benchmark apps strict FP, reference, CLI and optional tool tests passed");
