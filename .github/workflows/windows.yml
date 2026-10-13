@@ -27,6 +27,7 @@ on:
       - tests/**
       - examples/**
       - Cargo.*
+      - scripts/toolchain/**
       - .github/workflows/windows.yml
 
 permissions:
