@@ -236,10 +236,20 @@ pub(crate) fn real_path(path: &Path) -> io::Result<PathBuf> {
     let real = fs::canonicalize(path)?;
     let plain = real
         .to_str()
-        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .and_then(plain_path)
         .filter(|plain| fs::canonicalize(plain).is_ok_and(|again| again == real))
         .map(PathBuf::from);
     Ok(plain.unwrap_or(real))
+}
+
+/// The path that a verbatim path stands for: `\\?\C:\dir` is `C:\dir`, and `\\?\UNC\server\share\dir`
+/// is `\\server\share\dir`. Any other path has no verbatim prefix to remove.
+fn plain_path(verbatim: &str) -> Option<String> {
+    let rest = verbatim.strip_prefix(r"\\?\")?;
+    Some(match rest.strip_prefix(r"UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => rest.to_owned(),
+    })
 }
 
 pub fn executable_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
@@ -690,6 +700,47 @@ pub fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_path_removes_the_verbatim_prefix_of_drive_and_share_paths() {
+        assert_eq!(
+            plain_path(r"\\?\C:\work\tmp").as_deref(),
+            Some(r"C:\work\tmp")
+        );
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\tmp").as_deref(),
+            Some(r"\\server\share\tmp")
+        );
+        assert_eq!(plain_path(r"C:\work\tmp"), None);
+        assert_eq!(plain_path(r"\\server\share\tmp"), None);
+        assert_eq!(plain_path("/work/tmp"), None);
+    }
+
+    /// The administrative share of the system drive is a UNC path that every Windows machine can reach;
+    /// a machine that does not offer it skips the check.
+    #[cfg(windows)]
+    #[test]
+    fn real_path_names_a_share_without_the_verbatim_prefix() {
+        let Some(system) = std::env::var_os("SystemRoot") else {
+            return;
+        };
+        let system = system.to_string_lossy().into_owned();
+        let Some((drive, rest)) = system.split_once(":\\") else {
+            return;
+        };
+        let share = format!(r"\\localhost\{drive}$\{rest}");
+        let Ok(canonical) = fs::canonicalize(&share) else {
+            return;
+        };
+        assert!(
+            canonical.to_string_lossy().starts_with(r"\\?\UNC\"),
+            "{canonical:?}"
+        );
+        assert_eq!(
+            real_path(Path::new(&share)).unwrap().to_string_lossy(),
+            share
+        );
+    }
 
     #[test]
     fn cache_checks_content_partial_entries_races_and_eviction() {
