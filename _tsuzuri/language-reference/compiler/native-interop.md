@@ -2,7 +2,7 @@
 
 `export def` は、C から呼べる関数を出します。シンボルは WebAssembly と同じ `tz_` 接頭辞で、`main` や C 標準の名前とぶつかりません。逆に、Tsuzuri から C の関数を呼ぶときは `extern def` です。どちらも、公開してよい型は限られています。
 
-このページの C 言語連携の例は、macOS 環境の `clang` でオブジェクトファイルとヘッダーをリンクして実行検証しています（Windows 環境でのリンク動作は未検証です）。
+このページの C 言語連携の例は、macOS 環境の `clang` でオブジェクトファイルとヘッダーをリンクして実行検証しています。Windows の x64（MSVC）では、CI の `windows-2022` が `--emit object` のオブジェクトと `dllexport` を付けた LLVM IR を C のホストへリンクして実行します（`tests/windows.mjs`）。ほかの Windows 環境のリンク動作は未検証です。
 
 ## この記事のポイント
 
@@ -235,7 +235,7 @@ ABC
 
 ## 共有ライブラリと各言語のバインディング
 
-`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。`--target` に `aarch64-unknown-linux-gnu` のような名前を渡すと、その target の共有ライブラリを作ります（Mach-O の target は `.dylib`、ほかは `.so`。[対応プラットフォーム](platforms.md)）。Windows の target では `E2000` で、DLL の出力は [G10](../../../_features/G10-windows.md) の後です（`--emit object` をホストの DLL にリンクしてください）。
+`--emit shared` は、公開 C ABI だけを export する共有ライブラリを出します。macOS では `.dylib`、Linux では `.so` です。`--target` に `aarch64-unknown-linux-gnu` のような名前を渡すと、その target の共有ライブラリを作ります（Mach-O の target は `.dylib`、ほかは `.so`。[対応プラットフォーム](platforms.md)）。Windows の target では `E2000` です。DLL の出力は未対応で、[G10](../../../_features/_completed/G10-windows.md) の後続の作業です（`--emit object` をホストの DLL にリンクしてください）。
 
 ```sh
 tsuzuri build quote --emit shared -o libquote.dylib

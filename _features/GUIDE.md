@@ -1585,6 +1585,26 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - A18（引数規約。`own T` と edition `2027`）: **要承認 D1〜D4**（承認が記録されるまで手順 2 以降に着手しない）。`own` は文脈キーワード（予約語にしない）。edition `2027` を新設するが、`LATEST`・`MANIFEST_DEFAULT` は `2026` のままで、std も `2026` のまま。
   `docs/stability.md` の「edition は型検査に影響しない」を改める必要がある（承認の対象に含む）。診断は強めるだけ（`E1003`・`E1012` の注記）で、新しいコードは作らない。
 
+### D-48 G10（Windows ネイティブ対応）の確定
+
+- 2026-10-13、利用者の「G10 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。複数フェーズある場合には、すべてのフェーズを完了させること。…
+  何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します。すべての実装・検証が完了したら、コミット・プッシュをしたあとに、GitHub 上でプルリクを作成して。Copilot のレビューをさせたあと、何か指摘事項があれば、それにも対応をすること」を、
+  G10 の D3（push と workflow の実行は人間が行う）の例外承認として扱った。着手時点は `2282fd9`（PR #23 のマージ）。旧 HEAD `f8dc655` の計画は、文書の移動（`_docs/` → `_tsuzuri/language-reference/`）、
+  `targets.yml`（G15）と `RUST_MIN_STACK=4194304`（D-45）、`tests/windows.rs` が 4 件になったこと、action の版（`checkout@v7`・`setup-node@v7`）、G16 の PDB（対象外の一覧から外れた）、
+  E08・E09・E13・E14・E11・E10 が「G10 の後」とした Windows の作業と照合して見直した。詳細は [G10](_completed/G10-windows.md) の「旧計画から外れた判断」にある。
+- 共通: 新しい予約語・診断コード・crate・`unsafe`・CLI・環境変数・std モジュール・既定の WASM の import はない。IR と ABI は変えていない。コードの変更は `src/runtime/task-windows.h`（マクロの guard）と
+  `src/fetch.rs` の `cfg!(windows)` の分岐だけで、Unix と WASM の挙動は変わらない。
+- 実行ゲート: `.github/workflows/windows.yml`（workflow `Windows MSVC`、job `windows`、`windows-2022`）を復元した。W1〜W8 が緑になったのは、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100、
+  rustc 1.99.0、Node.js 24.21.0 の組。W3（`cargo test --locked --no-fail-fast`）は `RUST_MIN_STACK=4194304` を付けて 40〜50 分かかるので最後に置き、どの step も前の失敗に左右されず走らせる。
+  最初の run は W5 が 8 秒で止まり、W3 が 17 件失敗した。runner の log は run が終わるまで読めず、W3 を含む run は 40 分以上かかるので、速い step だけの throwaway branch（約 10 分）で直して戻した（AGENTS.md の CI の項）。
+- 見つけた不具合（8 種）: 製品の側は 2 件。`git` へ verbatim パス（`\\?\`）を渡していたため、Windows の git／registry の取得がすべて `E2007` だった（E10 が「Windows での git は未検証」と記していたもの。`src/fetch.rs` の `cfg!(windows)` の分岐で直した）。
+  `task-windows.h` は、`-D_CRT_SECURE_NO_WARNINGS` と `-Werror` の組で再定義になった（未定義のときだけ定義する形にした）。残りは harness と Rust のテストの POSIX の前提で、Unix の期待値は変えずに Windows の側を足した
+  （`-lm`、compiler-rt のない 128-bit の除算、トラップが signal でなく 0xC000001D で終わること、パスの区切り、CRLF、stderr の先頭の警告の JSON 行）。
+- tier: windows.yml の job が、名前を付けた `x86_64-pc-windows-msvc` を `-O0`・`-O3` で `build`・`run`・`test` する検査を足し（`tests/windows.mjs`）、`platforms.md` の tier を 2 から 1 にした。tier 1 は 5 つになった。
+  `aarch64-pc-windows-msvc` と MinGW は Windows のホストで実行していないので 2 のまま。
+- 後続の作業は G10 のチケットの末尾に一覧した（Windows の OS API、DLL、トラップの報告の改善、LLP64 の bindgen、COFF の object のランタイム、ARM64 の実行）。診断のメッセージにある `(G10)` は、その作業を指す印として残し、
+  メッセージと既存のテストは変えていない。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。

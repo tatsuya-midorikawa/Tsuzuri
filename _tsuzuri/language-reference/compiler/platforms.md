@@ -9,7 +9,7 @@
 - 言語の意味は target で変わりません。target で変わるのは、Clang に渡す target、OS ごとのランタイム、Windows の ABI の書き換え、`@cpu` の版、`Math.fma` の実装、出力の拡張子です。
 - 実行ファイルのリンクには、その target の C ヘッダー、ライブラリ、リンカーが要ります。配布物の同梱ツールチェーンは 12 個の target をリンクでき、ほかは `TSUZURI_SYSROOT` で SDK か sysroot を渡します。
 - ビルド機で動かせない target の `run` と `test` は、`TSUZURI_RUNNER` に実行器（qemu-user、Wine、Rosetta の `arch -x86_64` など）を指定したときだけ動きます。コンパイラは何も取得せず、導入もしません。
-- tier は、CI の job が確かめる範囲で決めています。CI が同じ target の機械で実行しているのは、4 つの target だけです。
+- tier は、CI の job が確かめる範囲で決めています。CI が同じ target の機械で実行しているのは、5 つの target だけです（macOS と Linux の 4 つと、Windows の `x86_64-pc-windows-msvc`）。
 
 ## target の指定
 
@@ -42,9 +42,9 @@ tier の意味は次のとおりです。
 | 2 | CI がビルドし、出力のヘッダーを読み戻して検査する。実行は、表に書いたエミュレーターのものだけ |
 | 3 | `--target` は受け付けるが、CI がない |
 
-次の表が、tier の唯一の記録です。CI は [targets.yml](../../../.github/workflows/targets.yml) の 4 つの job（`macos-15`、`macos-15-intel`、`ubuntu-24.04`、`ubuntu-24.04-arm`）で、表の「確認」は次のことです。
+次の表が、tier の唯一の記録です。CI は [targets.yml](../../../.github/workflows/targets.yml) の 4 つの job（`macos-15`、`macos-15-intel`、`ubuntu-24.04`、`ubuntu-24.04-arm`）と、[windows.yml](../../../.github/workflows/windows.yml) の 1 つの job（`windows-2022`）で、表の「確認」は次のことです。
 
-- 実行: `-O0` と `-O3` で `examples/tasks` と `examples/control` をビルドして実行し、`run` と `test` も実行する（`tests/targets.mjs`）。
+- 実行: `-O0` と `-O3` で `examples/tasks` と `examples/control` をビルドして実行し、`run` と `test` も実行する（macOS と Linux は `tests/targets.mjs`、Windows は `tests/windows.mjs`）。
 - リンク: 同梱ツールチェーンか Apple のツールで実行ファイルをリンクし、ヘッダー（形式、CPU、OS の版、ELF のインタプリタ）を読み戻して検査する。
 - オブジェクト: オブジェクトを作り、同じ検査をする。
 - qemu-user: Linux の 2 つの job が、静的な musl の実行ファイルをエミュレーターで実行する。
@@ -68,14 +68,14 @@ tier の意味は次のとおりです。
 | `aarch64-apple-ios-sim` | `arm64-apple-ios14.0-simulator` | 2 | 同上 |
 | `x86_64-apple-ios` | `x86_64-apple-ios13.0-simulator` | 2 | 同上 |
 | `aarch64-pc-windows-msvc` | `aarch64-pc-windows-msvc` | 2 | オブジェクト（4 job） |
-| `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc` | 2 | オブジェクト（4 job） |
+| `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc` | 1 | 実行（`windows-2022`）、オブジェクト（macOS と Linux の 4 job） |
 | `aarch64-linux-android` | `aarch64-linux-android21` | 2 | オブジェクト（4 job） |
 | `x86_64-linux-android` | `x86_64-linux-android21` | 2 | オブジェクト（4 job） |
 | `aarch64-unknown-none` | `aarch64-unknown-none-elf` | 2 | `--freestanding` のオブジェクト（4 job） |
 | `x86_64-unknown-none` | `x86_64-unknown-none-elf` | 2 | `--freestanding` のオブジェクト（4 job）。全関数が `noredzone` |
 | `riscv64gc-unknown-none-elf` | `riscv64-unknown-none-elf` | 2 | `--freestanding` のオブジェクト（4 job）。`-march=rv64gc -mabi=lp64d` |
 
-Windows の target は、この表の job では実行しません。Windows のホストで実行するのは、[vscode.yml](../../../.github/workflows/vscode.yml) の Windows の job と `tests/windows.mjs` で、`--target native` を使います。名前を付けた Windows の target を Windows のホストで実行した結果は、まだありません。MSVC の target は、Windows のホスト以外でリンクした結果もありません。
+Windows のホストで target を実行するのは、[windows.yml](../../../.github/workflows/windows.yml) の job だけで、x86-64 の MSVC（`--target native` と、名前を付けた `x86_64-pc-windows-msvc`）です。`aarch64-pc-windows-msvc` と MinGW の 2 つは、Windows のホストで実行していません。[vscode.yml](../../../.github/workflows/vscode.yml) の Windows の job は、同梱ツールチェーン（MinGW）と LLVM の MSVC で `Async.block_on` と `Net` を実行し、MSVC の `-g` の PDB を確かめますが、tier には数えません。MSVC の target は、Windows のホスト以外でリンクした結果もありません。
 
 > [!NOTE]
 > tier は CI の job の定義から決めた表で、job が失敗した target は tier を下げます。実際に実行して確かめた範囲は、[確かめた範囲](#確かめた範囲) にあります。
@@ -94,7 +94,7 @@ Windows の target は、この表の job では実行しません。Windows の
 
 「OS API」は `File`、`Dir`、`Env`、`Time`、`Random`、`Process` です。「受け付ける」はコンパイラが拒否しないという意味で、動くことは tier が示す範囲でしか確かめていません。`E2002` は、そのコードに到達したビルドが、ランタイムの C をコンパイルする前に出すエラーです。理由は次のとおりです。
 
-- Windows の OS API は、G10 の実行確認が済むまで受け付けません。
+- Windows の OS API は、Windows 向けの実装がないので受け付けません。`src/runtime/os.c` は macOS、Linux、FreeBSD のヘッダーで書いてあり、[G10](../../../_features/_completed/G10-windows.md) は Windows の実行の確認で、この実装を含みません。
 - iOS の SDK には、`src/runtime/os.c` が使う `sys/random.h` がありません。
 - Android の target は API 21 ですが、Bionic が `getentropy` と `posix_spawn` を持つのは API 28 からです。
 - FreeBSD、Android、iOS の `Net` と `Async.block_on` は、ランタイムの C を書いたのが macOS、Linux、Windows の向けだけです。FreeBSD は、C がコンパイルできることまでしか確かめていません。
@@ -200,22 +200,22 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - 32-bit のネイティブ target は、受け付けません。native の IR は 64-bit のポインターを前提にします。
 - Android は、オブジェクトと LLVM IR までです。NDK の sysroot を `TSUZURI_SYSROOT` に渡して実行ファイルをリンクできるかは、確かめていません。Android の OS API、`Net`、`Async.block_on` は受け付けません。
 - iOS の実行ファイルは、SDK を `TSUZURI_SYSROOT` に渡し、macOS のホストでリンクします。実機とシミュレーターでは動かしていません。
-- MSVC の target の実行ファイルは、Windows のホストの MSVC のリンカーが作ります。ほかのホストで `INCLUDE` と `LIB` に Windows SDK を用意してリンクする方法は、確かめていません。Windows の `--emit shared`、OS API は、G10 が終わるまで受け付けません。
+- MSVC の target の実行ファイルは、Windows のホストの MSVC のリンカーが作ります。ほかのホストで `INCLUDE` と `LIB` に Windows SDK を用意してリンクする方法は、確かめていません。Windows の `--emit shared` と OS API は、実装がないので受け付けません（[G10](../../../_features/_completed/G10-windows.md) の対象外です）。
 - 同梱ツールチェーンは、Mach-O の `--emit object` でランタイムを含むものを作れません。リンカーが `-keep_private_externs` を受け付けないからです（ランタイムを要しないプログラムのオブジェクトと、LLVM IR は作れます）。Windows の COFF の `--emit object` でランタイムを含むものは、ホストを問わず `E2002` です。
 - bare-metal の x86-64 は、`noredzone` を IR の関数に付けるだけで、`-mcmodel` や割り込みの規約までは扱いません。RISC-V の bare-metal は `rv64gc`、`lp64d` に固定です。
 - クロスコンパイルで C ライブラリや sysroot を自動で取得することはありません。同梱ツールチェーンか、`TSUZURI_SYSROOT` だけです。
 
 ## 確かめた範囲
 
-[targets.yml](../../../.github/workflows/targets.yml) の 4 つの job が確かめた範囲は、次のとおりです。
+[targets.yml](../../../.github/workflows/targets.yml) の 4 つの job と、[windows.yml](../../../.github/workflows/windows.yml) の job が確かめた範囲は、次のとおりです。
 
 - 実行: 各 job が自分の triple（`aarch64-apple-darwin`、`x86_64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`）を `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` と出力が一致することを確かめました。
-- 別の CPU の実行ファイルの実行: Linux の 2 つの job が、静的な musl の 3 つ（aarch64、x86-64、riscv64gc）を、同じ CPU のものは直接、ほかは qemu-user で実行しました。`macos-15` の job は、Rosetta で `x86_64-apple-darwin` を実行しました。
+- Windows の実行: `windows-2022` の job（LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100）が、`x86_64-pc-windows-msvc` を名指しして `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` の実行ファイルと同じ出力になることを確かめました。同じ job が、Win32 スレッドの `Task.parallel`、UTF-8 の出力、source への出力の拒否と既存の出力の置換、トラップの報告（終了コード 0xC000001D）、WASM の import なし、`cargo test` の全体を確かめます。`aarch64-pc-windows-msvc` はオブジェクトまでで、実行していません。静的な musl の 3 つ（aarch64、x86-64、riscv64gc）を、同じ CPU のものは直接、ほかは qemu-user で実行しました。`macos-15` の job は、Rosetta で `x86_64-apple-darwin` を実行しました。
 - リンクして、ヘッダーを検査した（実行はしていない）: 同梱ツールチェーンで Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows。macOS の job では、もう一方の Apple の CPU と、iOS の 3 target（Xcode の SDK を `TSUZURI_SYSROOT` に渡します）。
 - オブジェクトまで作った: MSVC の Windows、Android、bare-metal（4 つの job）、iOS（Linux の 2 つの job）。
 - 実行器のフック（`TSUZURI_RUNNER`）は、偽の実行器のスクリプト、qemu-user、Rosetta で確かめました。Wine を使った実行は確かめていません。
 
-確かめていないのは、名前を付けた Windows の target を Windows のホストで実行すること、MSVC の実行ファイルを Windows 以外のホストでリンクすること、FreeBSD・Android・iOS の実行（実機とシミュレーター）です。
+確かめていないのは、`aarch64-pc-windows-msvc` と MinGW の target を Windows のホストで実行すること、MSVC の実行ファイルを Windows 以外のホストでリンクすること、FreeBSD・Android・iOS の実行（実機とシミュレーター）です。
 
 ## まとめ
 

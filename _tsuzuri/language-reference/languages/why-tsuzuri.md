@@ -145,9 +145,9 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 | 対象 | 確認できたこと |
 | --- | --- |
 | VS Code 拡張の案内 | Windows x64 は、編集、実行、テスト、デバッグを対応環境として案内しています。Windows ARM64 のデバッグは未対応です。根拠は [vsc/README.md](../../../vsc/README.md) です。 |
-| 処理系の Windows チケット | [G10](../../../_features/G10-windows.md) は `blocked` です。実 Windows SDK での COFF/PE リンクと、Rust ターゲットのクロスチェックは成功しています。Windows 上の `cargo test`、ネイティブ実行、ファイル置換は未確認です。 |
+| 処理系の Windows の実行 | x64 の MSVC は、[G10](../../../_features/_completed/G10-windows.md) の CI（`windows-2022`）が `cargo test`、native の `-O0`・`-O3`、ファイルの置換、WASM を実行して確かめています。Windows ARM64 と MinGW のホストの実行は未確認です。 |
 | OS API | Windows 上のコンパイラが、OS API に到達するネイティブバイナリを出すと `E2002` です。純粋な計算には影響しません。仕様は[WASM と Windows](../../../docs/language.md#wasm-と-windows)にあります。 |
-| CI | 現在の `.github/workflows/` にあるのは `vscode.yml` だけです。専用の Windows ワークフローは、この作業ツリーにはありません。 |
+| CI | `.github/workflows/` には、拡張機能と配布物の `vscode.yml`（Windows の x64 と ARM64 を含む）、macOS と Linux の 4 つのホストの `targets.yml`、Windows x64 の `windows.yml` があります。 |
 
 macOS では、`IO` を使うプログラムのブレークポイントが止まらない既知の問題が、拡張機能の文書にあります。`IO` を使わないプログラムでは停止します。
 

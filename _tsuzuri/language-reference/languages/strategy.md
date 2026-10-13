@@ -118,9 +118,9 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 - 既定の WebAssembly は、SIMD も threads も OS API も要求しません。
 - 整数配列の実行時ディスパッチは、基準実装へ戻れます。
 - WASM の線形メモリは既定 16 MiB です。`--wasm-max-memory` で上限を上げられます。
-- Windows 上で OS API に到達するネイティブビルドは、実行検証が終わるまで `E2002` で止めます。純粋な計算には影響しません。
+- Windows 上で OS API に到達するネイティブビルドは、Windows 向けの実装がないので `E2002` で止めます。純粋な計算には影響しません。
 
-未検証の環境を、対応済みとは呼びません。Windows のチケット [G10](../../../_features/G10-windows.md) は `blocked` です。
+未検証の環境を、対応済みとは呼びません。Windows の x64（MSVC）は、CI の `windows-2022` が実行して確かめた範囲（[G10](../../../_features/_completed/G10-windows.md)）だけを、対応済みと呼びます。
 
 ## 実装の状態
 
@@ -136,10 +136,10 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | ローカル path、commit 固定の git、自前の index による registry のパッケージ（最小版選択、`tsuzuri fetch`・`publish`、`Tsuzuri.lock`）、ビルドキャッシュ、構文解析の結果のキャッシュ、JSON 診断、fmt、test、doc、lsp | 実装済み | E04、E10、G11、G12、G14、G17、G20。公開の registry は運営しない |
 | `HashMap`、文字列補間、OS API、C 連携の `extern` と `--link` | 実装済み | C09、D07、E08、E12。Windows の OS API は除く |
 | C ヘッダーからの `extern` 生成（`tsuzuri bindgen`） | 実装済み | E11。64-bit の Linux と macOS、ABI の一致を確かめられる宣言だけ |
-| WASM の型付きグルー、共有ライブラリ、C#・Python・C++ のバインディング | 実装済み | E13。Windows の共有ライブラリは G10 の後 |
+| WASM の型付きグルー、共有ライブラリ、C#・Python・C++ のバインディング | 実装済み | E13。Windows の共有ライブラリは未対応 |
 | 整数 WGSL、緩い `f32`・`f16` の WGSL（名前で選ぶ）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行と WebGPU ホスト試作、SPIR-V 生成と `Gpu.request Gpu.Vulkan` による Vulkan 上の実行（厳密な整数と、報告と適合プローブを通るデバイスの厳密な `f32`、緩い `f32`）、測って選ぶ `Gpu.Auto` | 実験的 | F07、F09 の Phase 1〜3。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけ |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
-| Windows ネイティブの実行検証 | 検証未完了 | G10 は `blocked`。OS API 到達時は `E2002`。`Net` は Windows でも動くが、実行は CI だけで確かめる |
+| Windows x64（MSVC）の実行検証 | 検証済み | [G10](../../../_features/_completed/G10-windows.md)。CI の `windows-2022` が `cargo test`、native の `-O0`・`-O3`、WASM を実行する。ARM64 と MinGW のホストは未確認。OS API は `E2002`、共有ライブラリは `E2000` |
 | 非同期計算 | 実装済み（純粋な仮想時刻、native reactor、ホスト駆動、WASM JSPI は opt-in） | [Async 式](../async-tasks-and-lazy/async.md)、B08 |
 | ネットワーク | 実装済み | [Net](../built-in-types-and-modules/net.md)、E09。TCP・UDP・アドレス・名前解決。native（Linux と Windows の実行は CI だけで検証）と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）。TLS は含まない |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |

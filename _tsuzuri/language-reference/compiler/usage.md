@@ -140,7 +140,11 @@ cargo build --release
 
 Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、それに LLVM の `clang` を用意します。Developer PowerShell で `cargo build --release` します。
 
-コンパイラがネイティブコードを出すとき、ホストが ARM64 なら `--target=aarch64-pc-windows-msvc`、それ以外なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。Windows 上でその Clang が通るかは、Windows の CI が確認します。
+コンパイラがネイティブコードを出すとき、ホストが ARM64 なら `--target=aarch64-pc-windows-msvc`、それ以外なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。x64 の Windows は、CI の [Windows MSVC](../../../.github/workflows/windows.yml)（`windows-2022`）が、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で `cargo test` と、native の `-O0`・`-O3` の実行、ビルドキャッシュ、例、WASM threads を確かめます。ARM64 の Windows は、この確認の対象外です。
+
+- PowerShell を使ってください。Git Bash では、Git 付属の `link` が MSVC の `link.exe` より先に見つかり、リンクが失敗することがあります。
+- リポジトリは `git clone -c core.autocrlf=false` で取得してください。既定の `core.autocrlf=true` は、テストの入力とランタイムの IR を CRLF にします（CI は無効にしています）。
+- `TSUZURI_CLANG` には、LLVM の `clang.exe` の絶対パスを指定します。Visual Studio や runner には別の版の Clang があります。
 
 ## VS Code 拡張
 

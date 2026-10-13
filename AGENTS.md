@@ -89,3 +89,14 @@ Lessons from the PR #3 and #4 VS Code workflow failures:
   print what the failing program does (progress lines, an unhandled-exception
   filter that prints the code and address), and delete the branch, its runs, and
   its cache afterwards.
+- `windows.yml` is the Windows gate (G10). Its `cargo test --locked --no-fail-fast`
+  takes 40 to 50 minutes on `windows-2022` and comes last, so a failure of the
+  other steps can be read at once. The log of a running job cannot be read, and
+  the first Windows run of a step is rarely the last, so loop on a throwaway
+  branch that runs only the fast steps (about 10 minutes) and merge the fixes back.
+- A Rust test that runs clang or git must also pass with the MSVC toolchain: there
+  is no `-lm` (LNK1181) and no compiler-rt (`__udivti3`; append `src/runtime/wasm.ll`
+  as `windows_abi` does), `link.exe` writes its errors to stdout, a trap ends the
+  process with `0xC000001D` instead of a signal, a C stdout is in text mode (CRLF),
+  diagnostics spell paths with backslashes, and Git for Windows cannot read a
+  configuration file that a verbatim path (`\\?\`) names.

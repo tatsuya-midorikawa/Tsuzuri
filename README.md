@@ -18,7 +18,7 @@
 - **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
-- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク）。CI（`.github/workflows/targets.yml`）が実行まで確かめる target は一部で、範囲は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
+- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク）。CI（`.github/workflows/targets.yml` と `windows.yml`）が実行まで確かめる target は一部で、範囲は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
 - **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
@@ -546,7 +546,7 @@ clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -l
 - **C ヘッダーからの生成 (`tsuzuri bindgen`)**: `tsuzuri bindgen zlib.h -o Zlib.tz` は、C ヘッダー自身の宣言と整数の `#define` のうち ABI が一致すると確かめられるものを、リンク名付きの `extern`・`const`・`record`・`extern type`（不透明な struct）・型エイリアスとして書き出します（64-bit の Linux と macOS）。関数ポインターの引数はコールバックに、`--buffer` で指定したポインターと長さの組は `ref [T]` になります。変換できない宣言は推測せず、理由付きの `// skipped` 行と警告 `W2002` にします。
 - **不透明ハンドルとコールバック**: `extern type Counter` でホスト側のポインタを安全な不透明ハンドルとして扱えます。また、環境キャプチャを持たないトップレベル関数は関数ポインタとしてホストへ渡せます。
 - **ホストライブラリのリンク**: ネイティブ実行ファイルのビルド時には、`--link PATH`、`-l NAME`、`-L DIR` や `Tsuzuri.toml` の `[native]` セクションを通じて、外部の C/C++ ライブラリやオブジェクトを直接リンクできます。
-- **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は G10 待ちで `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
+- **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は未対応で `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
 - **デスクトップ GUI 連携の例**: Python/Tkinter などのデスクトップ GUI から Tsuzuri のネイティブ共有ライブラリを呼び出すことも可能です（詳細は `examples/desktop` を参照してください）。
 
 ### WebAssembly (ブラウザ / Node.js)
@@ -778,7 +778,7 @@ cargo build --release
 
 #### Windows (MSVC)
 
-LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C++ ツールセット）を用意し、Developer PowerShell 上でビルドを行います。
+LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C++ ツールセット）を用意し、Developer PowerShell 上でビルドを行います。Git Bash では、Git 付属の `link` が MSVC の `link.exe` より先に見つかってリンクが失敗することがあるので、PowerShell を使います。リポジトリは `git clone -c core.autocrlf=false` で取得してください（既定の `core.autocrlf=true` は、fixture とランタイムの IR を CRLF にします）。
 コンパイラは `--target=x86_64-pc-windows-msvc` を指定してネイティブ実行ファイルを生成します。
 
 ```powershell
@@ -786,6 +786,8 @@ cargo build --release
 ```
 
 `clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。
+
+x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
 #### クロスコンパイル
 
@@ -888,6 +890,7 @@ node tests/os.mjs target/release/tsuzuri
 node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
 node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
 node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 22 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml
+node tests/windows.mjs target/release/tsuzuri.exe   # Windows x64（MSVC）だけ。PowerShell で。native の -O0／-O3、名前を付けた x86_64-pc-windows-msvc の build・run・test、Win32 の task と失敗の注入、トラップの報告、UTF-8、hard link の拒否、既存出力の置換、object の ABI、WASM を確かめる。CI は .github/workflows/windows.yml（cache.mjs・examples.mjs・wasm_threads.mjs・cargo test も）
 node tests/cpu_kernels.mjs target/release/tsuzuri
 node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で `TSUZURI_F16_EXPECT` を付けてこのコマンドを実行する。Windows と AVX512-FP16 の CPU は runner がなく、その環境でこのコマンドを実行して確かめる（未確認）。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
 node tests/packages.mjs target/release/tsuzuri

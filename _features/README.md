@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には G10（`blocked`）と、[2026-10-13 に追加](#追加チケット2026-10-13) した A17・A18（`todo`）があります。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。[2026-10-07 に追加](#追加チケット2026-10-07) した D12 と B09 は 2026-10-12 に `done` になりました。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には、[2026-10-13 に追加](#追加チケット2026-10-13) した A17・A18（`todo`）があります。G10 は 2026-10-13 に `done` になりました。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。[2026-10-07 に追加](#追加チケット2026-10-07) した D12 と B09 は 2026-10-12 に `done` になりました。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -35,7 +35,7 @@ P2の14件を各チケットの実装範囲で完了し、すべて`done`へ更�
 
 ## P3 実装・総合検証
 
-P3の全7件に実装を追加しました。各チケットの初期段階の範囲で6件を`done`とし、G10だけはWindows実行ゲート未確認のため`blocked`です。
+P3の全7件に実装を追加しました。各チケットの初期段階の範囲で6件を`done`とし、G10だけはWindows実行ゲート未確認のため`blocked`でした。G10は2026-10-13にWindows x64の実行ゲートを通して`done`になりました（[G10](_completed/G10-windows.md)）。
 
 - E04: strict manifestとローカルpath依存、namespace/循環/出力保護。git/registry/lockfile解決は対象外。
 - F06: Node Workerの共有メモリ・独立stack・atomic queue・thread-safe heap。既定WASMはimportなし。Browser本番glueは対象外。
@@ -43,7 +43,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 - A10: 明示kind付きrank-1 HKT、部分適用、default/generic methodと通常単相化。HKT aliases/標準Functor導入は対象外。
 - B06: Task.parallel_results、最小indexのerror、未開始停止・全開始済みjoin・所有値回収。ASan/UBSan/TSanも成功。
 - G11: SHA-256のwhole-build cache、no-cache、破損/同時保存/eviction、tool/source/依存/sidecar検証。parse/check/IR cacheは対象外。
-- G10: MSVC ABI・Win32 runtime・safe hardlink保護・専用CIを実装。実Windows SDKでO0/O3 COFF/PE linkとRust全targetのcross checkは成功。Windows上のcargo test・native実行・file置換は未確認。
+- G10: MSVC ABI・Win32 runtime・safe hardlink保護・専用CIを実装。実Windows SDKでO0/O3 COFF/PE linkとRust全targetのcross checkは成功。Windows上のcargo test・native実行・file置換は、2026-10-13にGitHubの`windows-2022`で確認した（[G10](_completed/G10-windows.md)）。
 - runtime19ファイル、fmt/clippy、全Rustテスト、READMEの全ローカルE2Eが成功。feature4928、Task41結果/4trap、整数intrinsic263182、型変換1585、Math786051参照を検証。
 - 36種目の多言語quick、Task/Parallel、CE/SIMD/dispatch、cache/GPU参照quickが成功。短縮時間は性能優位の根拠にしません。比較harnessのMix入力は独立したrootへ修正しました。
 
@@ -72,7 +72,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | C/C++ | ポインター・メモリ配置・allocator・任意の外部 ABI の制御の自由度 | E12, F13, A16, E11 |
 | C/C++ | OS・デバイス・既存ライブラリとの接続にホスト実装が必要 | E08, E09, E11, E12 |
 | C/C++ | 既存の C/C++ コードをそのまま取り込めない | E11, E12 |
-| C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（実装済み。Windows 上の実行は G10 の完了が前提）, C11, F08, G16, G19 |
+| C/C++ | 対応プラットフォーム・最適化済みライブラリ・デバッガー・長期運用の実績 | G15（実装済み。Windows の x64 は G10 の job が実行して確かめた）, C11, F08, G16, G19 |
 | C/C++ | GPU が実験段階 | F09 |
 | C/C++ | 安全検査・所有値の複製・ホスト境界の変換のコスト | F12, A15, A16, E13 |
 | Rust | 排他スライス（C08）、排他借用フィールド（A13）、レコード内の独立した複数 region（A12）は実装済み。要素単位の排他借用と region 間の outlives はない | C08, A13, A12 |
@@ -238,7 +238,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G07 | [LSP（言語サーバー）](_completed/G07-lsp.md) | P2 | L | G02 | done |
 | G08 | [デバッグ情報（DWARF／WASM）](_completed/G08-debug-info.md) | P2 | M | – | done |
 | G09 | [ドキュメントコメントと API 文書生成](_completed/G09-doc-comments.md) | P2 | S | E01 | done |
-| G10 | [Windows ネイティブ対応](G10-windows.md) | P3 | M | – | blocked |
+| G10 | [Windows ネイティブ対応](_completed/G10-windows.md) | P3 | M | – | done |
 | G11 | [増分ビルド・キャッシュ](_completed/G11-incremental-build.md) | P3 | L | (E03) | done |
 | G12 | [LSP の拡張（補完・rename・参照・整形・inlay hints）](_completed/G12-lsp-extensions.md) | P1 | L | G07, G20 | done |
 | G13 | [REPL とスクリプト実行](_completed/G13-repl.md) | P2 | L | G11, (G20), (G17) | done |
@@ -323,7 +323,7 @@ graph LR
   A06 --> A10
 ```
 
-第2期のチケットの主な依存です。第1期のチケットは G10 を除いて完了しています。点線は弱い依存です。
+第2期のチケットの主な依存です。第1期のチケットはすべて完了しています。点線は弱い依存です。
 
 ```mermaid
 graph LR
@@ -456,7 +456,7 @@ graph LR
 | [G19](_completed/G19-editions-compatibility.md) | D1（manifest の `edition`）、D4（`@deprecated` と `W1005`）、D9（Phase 2）。すべて承認済みで実装済み（2026-10-11。D-45） |
 
 詳細化の過程で見つけた、チケット外の食い違い: G10 の記録と `README.md`・`_features/README.md`・`docs/architecture.md`・`_docs/tools/build-and-cache.md` は
-Windows 専用の CI があるように書いているが、`.github/workflows/windows.yml` は `16d4fa9` で削除されている（G10 の手順で復元する）。
+Windows 専用の CI があるように書いているが、`.github/workflows/windows.yml` は `16d4fa9` で削除されている（G10 の手順で復元する。2026-10-13 に復元した）。
 
 ## 追加チケット（2026-10-07）
 
