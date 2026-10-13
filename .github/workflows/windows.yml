@@ -1,0 +1,133 @@
+name: Windows MSVC
+
+# G10: the execution gate of the Windows x86-64 (MSVC ABI) native target, on a GitHub-hosted windows-2022
+# runner with the Visual Studio 2022 toolset and the pinned LLVM 21.1.8. W1-W8 are the gate of
+# _features/_completed/G10-windows.md; the tier of x86_64-pc-windows-msvc in
+# _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
+#   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
+#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it is the
+#   slowest step: every other step reports first, and a step that fails does not hide the ones after it.
+# tests/lsp_sessions.mjs, tests/async.mjs, tests/net.mjs and the PDB and natvis checks run on Windows in
+# vscode.yml. The Linux and macOS hosts, and the targets that they cross-compile, are in targets.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - features/g10-windows
+  pull_request:
+    paths:
+      - src/**
+      - std/**
+      - tests/**
+      - examples/**
+      - Cargo.*
+      - .github/workflows/windows.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      # The runner checks out with core.autocrlf=true, which turns the fixtures and src/runtime/*.ll into CRLF.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      # The same installer and SHA-256 as vscode.yml. The runner's own LLVM (C:\Program Files\LLVM) changes with the image.
+      - name: LLVM 21.1.8
+        shell: pwsh
+        run: |
+          $asset = 'LLVM-21.1.8-win64.exe'
+          $expected = '7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113'
+          $installer = Join-Path $env:RUNNER_TEMP $asset
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$asset" -OutFile $installer -TimeoutSec 300
+              if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'LLVM checksum mismatch' }
+              break
+            } catch {
+              if ($attempt -eq 3) { throw }
+              Write-Warning "LLVM download attempt $attempt failed: $_"
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+          $prefix = Join-Path $env:RUNNER_TEMP 'llvm21'
+          $process = Start-Process $installer -ArgumentList '/S', "/D=$prefix" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
+          "$prefix\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "TSUZURI_CLANG=$prefix\bin\clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TSUZURI_WASM_LD=$prefix\bin\wasm-ld.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+      # The environment of the gate: it fails here, not later with a link error, when the runner image drifts.
+      - name: Show tools
+        shell: pwsh
+        run: |
+          $clang = (& $env:TSUZURI_CLANG --version | Select-Object -First 1)
+          $clang
+          & $env:TSUZURI_WASM_LD --version
+          node --version
+          rustc -vV
+          cargo --version
+          $link = (Get-Command link.exe).Source
+          "link.exe: $link"
+          "VCToolsVersion=$env:VCToolsVersion WindowsSDKVersion=$env:WindowsSDKVersion"
+          "OS: $([Environment]::OSVersion.VersionString)"
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors | Format-List
+          $eol = (git ls-files --eol src/runtime/string.ll)
+          $eol
+          if ($clang -notmatch 'clang version 21\.1\.8') { throw "expected LLVM 21.1.8, got: $clang" }
+          if ($link -notmatch '\\VC\\Tools\\MSVC\\') { throw "link.exe is not the MSVC linker: $link" }
+          if ($eol -notmatch 'w/lf') { throw "src/runtime/string.ll is not checked out with LF: $eol" }
+      - name: W1 cargo fmt
+        run: cargo fmt --all -- --check
+      - name: W2 cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: W4 release build
+        id: build
+        if: ${{ !cancelled() }}
+        run: cargo build --release --locked
+      - name: W5 Windows MSVC end-to-end
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/windows.mjs target/release/tsuzuri.exe
+      - name: W6 build cache
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/cache.mjs target/release/tsuzuri.exe
+      - name: W7 examples
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/examples.mjs target/release/tsuzuri.exe
+      - name: W8 WASM threads
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/wasm_threads.mjs target/release/tsuzuri.exe
+      # D4: reference records. A failure here is read, not gated.
+      - name: Reference e2e.mjs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: node tests/e2e.mjs target/release/tsuzuri.exe
+      - name: Reference numeric_casts.mjs
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: node tests/numeric_casts.mjs target/release/tsuzuri.exe
+      # The depth-limit tests feed 200 nested levels to a debug build whose frames are near the 2 MiB of a test
+      # thread (GUIDE D-45), so the whole run takes 4 MiB per test thread, as targets.yml does.
+      - name: W3 cargo test
+        if: ${{ !cancelled() }}
+        env:
+          RUST_MIN_STACK: "4194304"
+        run: cargo test --locked --no-fail-fast

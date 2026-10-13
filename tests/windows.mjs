@@ -76,6 +76,22 @@ try {
   const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   assert.equal(instance.exports.tz_answer(), 42n);
+  // G15: the machine's own target, named, builds, runs and tests like `--target native` (the tier of x86_64-pc-windows-msvc).
+  const named = "x86_64-pc-windows-msvc";
+  const suite = join(directory, "suite");
+  mkdirSync(suite);
+  writeFileSync(join(suite, "Main.tz"), 'test "passes" = assert true\ntest "adds" = assert (40 + 2 == 42)\n');
+  const unused = { TSUZURI_RUNNER: "tsuzuri-runner-that-does-not-exist" };
+  for (const optimization of ["-O0", "-O3"]) {
+    for (const [example, output] of [["tasks", "21325334000\n"], ["control", "42\n"]]) {
+      const executable = join(directory, `${example}-named${optimization}.exe`);
+      cli(["build", `examples/${example}`, "--no-cache", optimization, "--target", named, "-o", executable]);
+      assert.equal(execute(executable, []).stdout, output, `${example} ${optimization}`);
+    }
+    assert.equal(cli(["run", "examples/control", optimization, "--no-cache", "--target", named], true, unused).stdout, "42\n");
+    assert.match(cli(["test", suite, optimization, "--target", named, "--json"], true, unused).stdout, /"passed":2,"failed":0/);
+  }
+  console.log(`Windows MSVC: the named target ${named} built, ran and tested at -O0 and -O3`);
   console.log("Windows MSVC: native O0/O3, Win32 tasks/results/failure injection, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });
