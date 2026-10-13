@@ -433,23 +433,27 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     let host = root.join("host.c");
     fs::write(&host, "#include <assert.h>\n#include <stdint.h>\n#include <stdbool.h>\nextern int64_t tz_divide(int64_t,int64_t), tz_bound(int64_t), tz_allocate(int64_t), tz_soft(int64_t), tz_closure(int64_t);\nextern void tz_verify(bool), tz_indirect(bool);\nint main(int argc,char **argv) { if(argc==1) { assert(tz_divide(84,2)==42); assert(tz_bound(1)==2); tz_verify(true); tz_indirect(true); assert(tz_allocate(2)==2); assert(tz_soft(42)==42); assert(tz_closure(20)==41); return 0; } switch(argv[1][0]) { case '0': tz_verify(false); break; case '1': tz_divide(1,0); break; case '2': tz_divide(INT64_MIN,-1); break; case '3': tz_bound(2); break; case '4': tz_allocate(-1); break; case '5': tz_indirect(false); break; } return 9; }").unwrap();
     let native_ir = root.join("native.ll");
-    fs::write(
-        &native_ir,
-        tsuzuri::llvm::emit_with_trap_info(
-            &module,
-            tsuzuri::llvm::EmitOptions {
-                entry: tsuzuri::llvm::Entry::Library,
-                wasm: false,
-                debug_output: false,
-                allocator: tsuzuri::llvm::Allocator::System,
-                f16: tsuzuri::llvm::F16Path::Soft,
-            },
-            &sources,
-        )
-        .unwrap()
-        .ir,
+    let native = tsuzuri::llvm::emit_with_trap_info(
+        &module,
+        tsuzuri::llvm::EmitOptions {
+            entry: tsuzuri::llvm::Entry::Library,
+            wasm: false,
+            debug_output: false,
+            allocator: tsuzuri::llvm::Allocator::System,
+            f16: tsuzuri::llvm::F16Path::Soft,
+        },
+        &sources,
     )
-    .unwrap();
+    .unwrap()
+    .ir;
+    // MSVC has no compiler-rt for the 128-bit division that `d128` needs (`__udivti3`, `__umodti3`), so a
+    // Windows build appends the helpers of wasm.ll, as `windows_abi` does.
+    let native = if cfg!(windows) {
+        format!("{native}\n{}", include_str!("../src/runtime/wasm.ll"))
+    } else {
+        native
+    };
+    fs::write(&native_ir, native).unwrap();
     let wasm_ir = root.join("wasm.ll");
     let emitted = tsuzuri::llvm::emit_with_trap_info(
         &module,
