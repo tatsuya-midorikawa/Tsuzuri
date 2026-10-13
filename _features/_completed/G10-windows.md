@@ -9,7 +9,7 @@
 | 後続 | G08（Windows debug 形式の拡張）、F01（ワーカープールの Windows 実装）。G14・G15・G16 が弱く依存した |
 | 状態 | done |
 | 起票 | P3 計画。2026-09-28 に Phase 1 を実装（実行ゲートだけ未確認で `blocked`）。2026-09-29 に残作業（Windows の実行ゲート）を実装者向けに詳細化（HEAD `f8dc655`） |
-| 実装の基準 | `2282fd9`（PR #23 のマージ）、2026-10-13。ブランチ `features/g10-windows` |
+| 実装の基準 | `2282fd9`（PR #23 のマージ）、2026-10-13。ブランチ `features/g10-windows`、PR #24 |
 | 承認 | 不要。D3 の「push と workflow の実行は人間が行う」は、利用者の依頼（コミット・push・プルリクエストの作成までを求め、判断を包括的に任せた）に従って実装者が行った。GUIDE の [D-48](../GUIDE.md#d-48-g10windows-ネイティブ対応の確定) に記録した |
 | 改善する劣位 | C/C++ 比: 対応プラットフォームの幅（Windows の実行の確認） |
 | 利用者向け仕様 | [対応プラットフォームとクロスコンパイル](../../_tsuzuri/language-reference/compiler/platforms.md)、[コンパイラの使い方](../../_tsuzuri/language-reference/compiler/usage.md#windows)、[言語仕様](../../docs/language.md)、[コンパイラ構成](../../docs/architecture.md) |
@@ -135,7 +135,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 ### Windows 実行記録（2026-10-13）
 
 - 環境: GitHub の `windows-2022`（Windows Server 2022、`10.0.20348`）。AMD EPYC 9V74 80-Core Processor、論理 4 コア。
-- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `d5f5336`（push の run。run の時点の SHA は `57334e0` で、先頭の commit の CRLF の修正を畳んだので付け替わったが、木は同じ）。PR の run は下の「PR の run」。
+- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `57334e0`（push の run の時点の SHA。その後、先頭の commit の CRLF の修正を畳み、main の A17・A18 のチケットの commit へ rebase したので、同じ変更が付け替わった。main の差分は Windows に関わらない）。PR #24 の run（`pull_request`）は、PR の checks と PR の説明にある。この commit に記録を足したので、run の URL は記録の commit の後ろにしか書けない。
 - run: https://github.com/tatsuya-midorikawa/Tsuzuri/actions/runs/38341607512（全体で 50 分）
 - W1〜W8:
 
