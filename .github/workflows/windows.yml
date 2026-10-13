@@ -6,7 +6,8 @@ name: Windows MSVC
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it takes
-#   40 to 50 minutes: every other step reports first, and a step that fails does not hide the ones after it.
+#   40 to 50 minutes: every other step reports first. A step that fails does not hide the ones after it,
+#   except that W5-W8 and the numeric casts run the tsuzuri.exe of W4, so a failed W4 skips them.
 #   tests/numeric_casts.mjs, a reference record of G10 that passed on the first run, stays as a step.
 # The MSVC toolset and the Windows SDK are selected below and checked by Show tools, so the documents that
 # name them (README.md, docs/architecture.md, compiler/platforms.md, compiler/usage.md) describe every run:
@@ -42,6 +43,9 @@ jobs:
     env:
       GATE_MSVC_TOOLSET: '14.44'
       GATE_WINDOWS_SDK: '10.0.26100.0'
+      # The same installer and SHA-256 as vscode.yml.
+      LLVM_INSTALLER: LLVM-21.1.8-win64.exe
+      LLVM_INSTALLER_SHA256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
     steps:
       # The runner checks out with core.autocrlf=true, which turns the fixtures and src/runtime/*.ll into CRLF.
       - name: Keep LF line endings
@@ -59,24 +63,22 @@ jobs:
           arch: x64
           toolset: ${{ env.GATE_MSVC_TOOLSET }}
           sdk: ${{ env.GATE_WINDOWS_SDK }}
-      # The same installer and SHA-256 as vscode.yml. The runner's own LLVM (C:\Program Files\LLVM) changes with the image.
+      # The runner's own LLVM (C:\Program Files\LLVM) changes with the image, so the gate installs its own. The
+      # installer comes from download() of scripts/toolchain/bundle.mjs (AGENTS.md): it verifies the pinned SHA-256
+      # whether or not the file came from this cache, skips a source that is silent for 30 seconds, and makes three
+      # passes. No public mirror carries this release (TUNA keeps only the newest), so the cache is the second source.
+      - uses: actions/cache@v6
+        with:
+          path: target/llvm-installer
+          key: windows-llvm-installer-${{ env.LLVM_INSTALLER_SHA256 }}
       - name: LLVM 21.1.8
         shell: pwsh
         run: |
-          $asset = 'LLVM-21.1.8-win64.exe'
-          $expected = '7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113'
-          $installer = Join-Path $env:RUNNER_TEMP $asset
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            try {
-              Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$asset" -OutFile $installer -TimeoutSec 300
-              if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'LLVM checksum mismatch' }
-              break
-            } catch {
-              if ($attempt -eq 3) { throw }
-              Write-Warning "LLVM download attempt $attempt failed: $_"
-              Start-Sleep -Seconds (10 * $attempt)
-            }
-          }
+          $installer = Join-Path $PWD "target\llvm-installer\$env:LLVM_INSTALLER"
+          New-Item -ItemType Directory -Force (Split-Path $installer) | Out-Null
+          $env:LLVM_INSTALLER_PATH = $installer
+          node --input-type=module -e "import { download } from './scripts/toolchain/bundle.mjs'; await download(['https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/' + process.env.LLVM_INSTALLER], process.env.LLVM_INSTALLER_PATH, process.env.LLVM_INSTALLER_SHA256)"
+          if ($LASTEXITCODE -ne 0) { throw "LLVM installer download failed: $LASTEXITCODE" }
           $prefix = Join-Path $env:RUNNER_TEMP 'llvm21'
           $process = Start-Process $installer -ArgumentList '/S', "/D=$prefix" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
