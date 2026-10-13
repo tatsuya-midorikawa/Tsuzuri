@@ -1593,7 +1593,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `targets.yml`（G15）と `RUST_MIN_STACK=4194304`（D-45）、`tests/windows.rs` が 4 件になったこと、action の版（`checkout@v7`・`setup-node@v7`）、G16 の PDB（対象外の一覧から外れた）、
   E08・E09・E13・E14・E11・E10 が「G10 の後」とした Windows の作業と照合して見直した。詳細は [G10](_completed/G10-windows.md) の「旧計画から外れた判断」にある。
 - 共通: 新しい予約語・診断コード・crate・`unsafe`・CLI・環境変数・std モジュール・既定の WASM の import はない。IR と ABI は変えていない。コードの変更は `src/runtime/task-windows.h`（マクロの guard）と
-  `src/fetch.rs` の `cfg!(windows)` の分岐だけで、Unix と WASM の挙動は変わらない。
+  `src/fetch.rs` の `cfg!(windows)` の分岐と、`\\?\` で始まる path にだけ効く `cache::real_path`（共有の `\\?\UNC\...` も外す）だけで、Unix と WASM の挙動は変わらない。
 - 実行ゲート: `.github/workflows/windows.yml`（workflow `Windows MSVC`、job `windows`、`windows-2022`）を復元した。W1〜W8 が緑になったのは、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100、
   rustc 1.99.0、Node.js 24.21.0 の組。W3（`cargo test --locked --no-fail-fast`）は `RUST_MIN_STACK=4194304` を付けて 40〜50 分かかるので最後に置き、どの step も前の失敗に左右されず走らせる。
   最初の run は W5 が 8 秒で止まり、W3 が 17 件失敗した。runner の log は run が終わるまで読めず、W3 を含む run は 40 分以上かかるので、速い step だけの throwaway branch（約 10 分）で直して戻した（AGENTS.md の CI の項）。

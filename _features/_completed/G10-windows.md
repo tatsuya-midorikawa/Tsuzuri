@@ -45,7 +45,7 @@ Windows の GitHub Actions runner と開発者環境で、既存の native の�
 - source と同じファイル（hard link を含む）への出力は `E2003`。symlink・directory・特殊ファイルへの出力も `E2003`。
 - 既存の出力の置換は、一時ファイルからの `fs::rename` だけで行う。置換に失敗したら出力を消して再試行する fallback は使わない（D2）。
 - Win32 の task runtime の失敗（`CreateThread`・`WaitForSingleObject`・`CloseHandle`・`InitOnceExecuteOnce` など）は、`Tsuzuri task runtime: <operation> failed (<code>)` を stderr に出して abort する。worker の上限 `TZ_TASK_MAX_THREADS = 32`、呼び出し元も work を実行すること、入れ子の逐次 fallback は、POSIX と共通の `src/runtime/task.c` による。
-- 子プロセスへ渡すパスは、`fs::canonicalize` が返す `\\?\` 付きのものでなく、`cache::real_path` で外した形にする。Clang は verbatim パスの隣の引用 include を解決できず（`task_runtime_source_for` が `task-windows.h` を埋め込む理由）、Git for Windows は `GIT_CONFIG_GLOBAL` に verbatim パスを渡されると設定を読めない（`src/fetch.rs` の `Repository::create`）。
+- 子プロセスへ渡すパスは、`fs::canonicalize` が返す `\\?\` 付きのものでなく、`cache::real_path` で外した形にする（共有の `\\?\UNC\server\share` は `\\server\share`）。Clang は verbatim パスの隣の引用 include を解決できず（`task_runtime_source_for` が `task-windows.h` を埋め込む理由）、Git for Windows は `GIT_CONFIG_GLOBAL` に verbatim パスを渡されると設定を読めない（`src/fetch.rs` の `Repository::create`）。
 - native のトラップは、`llvm.trap` が `STATUS_ILLEGAL_INSTRUCTION`（0xC000001D）でプロセスを終わらせる。シグナルは使わない。プログラムが位置を標準エラーへ先に書き、`tsuzuri run` は `E2005`（`exit code: 0xc000001d`）、`tsuzuri test` と `bench` は `trapped or exited with code -1073741795` と報告する。
 
 ### 実行ゲート
@@ -93,7 +93,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | 対象外: PDB／CodeView | G16 Phase 3 が実装済みで、`vscode.yml` の Windows x64 の job が MSVC の PDB と natvis を検査している。G10 のゲートは PDB を検査しない |
 | G15 は「G10 の job」で Windows の tier を上げる | `tests/windows.mjs` に、名前を付けた `x86_64-pc-windows-msvc` を `-O0`・`-O3` で `build`・`run`・`test` する検査（`tests/targets.mjs` と同じ内容）を足し、`platforms.md` の tier を 2 から 1 にした。`aarch64-pc-windows-msvc` と MinGW は Windows のホストで実行していないので 2 のまま |
 | トラップは W5 の対象でない | 「数値・トラップ・native と WASM の差」を言い切れるよう、W5 に、`llvm.trap` が 0xC000001D で終わり、`E2005` と位置が出ることを足した |
-| D6: 直してよいのは、期待値を変えない harness、`cfg(windows)` の分岐、`task-windows.h`、`windows_abi` | `src/fetch.rs` の 1 か所を `cfg!(windows)` の分岐で直した。Rust のテスト 7 件と `packages.rs` の 4 か所は、Unix の期待値を変えずに、Windows の側の定義を足した（`-lm` を渡さない、実行ファイルの拡張子、トラップの終了の文言、パス区切り、CRLF、128-bit の helper）。トラップの文言は、`0xC000001D` を符号付きの終了コードにした `-1073741795` を期待値にした。実行結果からは写していない |
+| D6: 直してよいのは、期待値を変えない harness、`cfg(windows)` の分岐、`task-windows.h`、`windows_abi` | `src/fetch.rs` の 1 か所を `cfg!(windows)` の分岐で直し、`cache::real_path` が共有の verbatim パス（`\\?\UNC\...`）も外すようにした（Copilot の指摘。`\\?\` で始まる path にだけ効くので、Unix では何もしない）。Rust のテスト 7 件と `packages.rs` の 4 か所は、Unix の期待値を変えずに、Windows の側の定義を足した（`-lm` を渡さない、実行ファイルの拡張子、トラップの終了の文言、パス区切り、CRLF、128-bit の helper）。トラップの文言は、`0xC000001D` を符号付きの終了コードにした `-1073741795` を期待値にした。実行結果からは写していない |
 | E10・E08・E13・E14・E11 は Windows の作業を「G10 の後」としていた | G10 は実行の確認までで、OS API・DLL・トラップの報告の改善・LLP64 の bindgen・パスの予約名は含まない。後続の作業として、下に一覧した |
 
 ## 決定事項（確定）
@@ -105,7 +105,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | D3 | `.github/workflows/windows.yml` を復元する。workflow 名 `Windows MSVC`、job id `windows`、`windows-2022`（G15 がこの名前を前提にする）。trigger は上の表のとおり現行の convention に合わせた。push と PR は、利用者の依頼に従って実装者が行った |
 | D4 | ゲートは W1〜W8。`tests/e2e.mjs`・`tests/numeric_casts.mjs` は参考（`numeric_casts.mjs` は参考のまま、workflow の step として走らせる）。POSIX 専用の harness（`tests/tasks.mjs` など。`-pthread` を無条件に渡す）は実行しない |
 | D5 | ARM64 Windows はゲートに含めない。`tests/windows.mjs` は `--target=x86_64-pc-windows-msvc` を固定で渡す |
-| D6 | 失敗時に直してよい範囲。実際に使った範囲は、`task-windows.h`、`src/fetch.rs` の `cfg!(windows)` の分岐、harness と Rust のテスト |
+| D6 | 失敗時に直してよい範囲。実際に使った範囲は、`task-windows.h`、`src/fetch.rs` の `cfg!(windows)` の分岐、`\\?\` で始まる path にだけ効く `cache::real_path`、harness と Rust のテスト |
 | D7 | CI と clone で `core.autocrlf=false`。`.gitattributes` は足さない（全 host の checkout に効く repository 全体の変更）。`Show tools` が `src/runtime/string.ll` の LF を検査する |
 | D8 | ランタイムを含む COFF の object は `E2002` のまま。exe と、LLVM IR とランタイムを一度だけリンクする経路を提供する。複数 object の weak 統合は対象外 |
 | D9 | hard link の同一性は、Windows 限定の `same-file` 1.0.6 の `is_same_file`（GUIDE D-29）。runner で `E2003` が出ることを確かめた |
@@ -120,7 +120,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 - [x] `Task.parallel` が Windows native で動き、failure injection の 3 つの mode が明示診断で abort する（W5）。
 - [x] Windows で source の hard link への出力が `E2003` になり、既存の出力の置換が成功する（W3・W5）。
 - [x] 公開 wrapper が `dllexport` を持つ（W3・W5）。
-- [x] コードは `src/runtime/task-windows.h` と `src/fetch.rs` の `cfg!(windows)` の分岐だけを変えた。Unix・WASM の挙動と生成 IR は変わらない。
+- [x] コードは `src/runtime/task-windows.h`、`src/fetch.rs` の `cfg!(windows)` の分岐、`\\?\` で始まる path にだけ効く `cache::real_path` だけを変えた。Unix・WASM の挙動と生成 IR は変わらない。
 - [x] 文書と状態を更新し、`node scripts/check-docs.mjs` が成功する。
 
 ## 実装と検証（2026-10-13）
@@ -128,7 +128,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 ### 実装したファイル
 
 - `.github/workflows/windows.yml`（復元）。
-- `src/runtime/task-windows.h`（`WIN32_LEAN_AND_MEAN`・`_CRT_SECURE_NO_WARNINGS` を、未定義のときだけ定義）、`src/fetch.rs`（`Repository::create` が `cfg!(windows)` で `cache::real_path` を使う）。
+- `src/runtime/task-windows.h`（`WIN32_LEAN_AND_MEAN`・`_CRT_SECURE_NO_WARNINGS` を、未定義のときだけ定義）、`src/fetch.rs`（`Repository::create` が `cfg!(windows)` で `cache::real_path` を使う）、`src/cache.rs`（`real_path` が `\\?\UNC\server\share` を `\\server\share` にする。`plain_path` の単体テストと、管理共有 `\\localhost\C$` の Windows 限定のテスト）。
 - テスト: `tests/windows.mjs`（stderr の最後の JSON 行を読む、名前を付けた target、トラップ）、`src/test_runner.rs`（test module の CRLF）、`tests/bench.rs`・`fixed_arrays.rs`・`host_abi.rs`・`packages.rs`・`property.rs`・`test_runner.rs`・`trap_locations.rs`。
 - 文書: `README.md`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/` の `compiler/platforms.md`・`usage.md`・`native-interop.md`、`languages/strategy.md`・`why-tsuzuri.md`、`built-in-types-and-modules/test.md`、`types-and-type-inference/basic-types.md`、`_features/README.md`、GUIDE の D-48、`AGENTS.md`。
 
@@ -171,7 +171,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 ### 確かめたこと
 
 - 上の run で、W1〜W8 が緑になった。W5 は、O0・O3 の UTF-8 の出力、既存の実行ファイルの再ビルドと置換、`TSUZURI_CLANG` がないときの `E2002` と旧出力の保持、`examples/tasks`（`21325334000`）・`examples/control`（`42`）、`tests/task_runtime.c` の topology 4 つ、`tests/windows_runtime.c` の `create`・`wait`・`close` の注入、`dllexport` の IR と C host、runtime 入りの object の `E2002`、source への hard link の `E2003`、`tz_answer` の object と C host、wasm32 の import なし、名前を付けた `x86_64-pc-windows-msvc` の build・run・test、トラップを確かめた。
-- 変更が Unix・WASM に影響しないこと: `task-windows.h` は Windows の target でだけ埋め込まれ、`src/fetch.rs` は `cfg!(windows)` の分岐の中だけを変えた。`cargo fmt --all -- --check` は成功。
+- 変更が Unix・WASM に影響しないこと: `task-windows.h` は Windows の target でだけ埋め込まれ、`src/fetch.rs` は `cfg!(windows)` の分岐の中だけを、`real_path` は `\\?\` で始まる path だけを変えた。`cargo fmt --all -- --check` は成功。
 - 手元（Windows 11 x64、Rust の GNU toolchain、同梱の MinGW）では、`tests/packages.rs` の 21 件、`tests/trap_locations.rs` の 7 件、`--lib` の 193 件と、新しい harness の検査（`--target native`）を確かめた。MSVC の link は手元になく、runner の結果だけを根拠にする。
 
 ### 確かめていないこと
