@@ -31,7 +31,7 @@ Windows の GitHub Actions runner と開発者環境で、既存の native の�
 | --- | --- |
 | host | x64 Windows。CI は GitHub Actions の `windows-2022` |
 | target | `x86_64-pc-windows-msvc`（`native_compile_args` が `--target=` で渡す。`--target x86_64-pc-windows-msvc` と名前を付けても同じ） |
-| toolchain | LLVM 21.1.8 の `clang`（driver の形式。`clang-cl` の引数の形式は対象外）、Visual Studio 2022 の MSVC と CRT、Windows SDK |
+| toolchain | LLVM 21.1.8 の `clang`（driver の形式。`clang-cl` の引数の形式は対象外）、Visual Studio 2022 の MSVC（toolset 14.44）と CRT、Windows SDK 10.0.26100.0（CI はこの組を指定して検査する） |
 | link | 実行ファイルは clang driver の既定のリンカー（MSVC の `link.exe`）。`tests/windows.mjs` の C host は `-fuse-ld=lld` |
 | emit | `exe`（`.exe`）、`object`（`.obj`。ランタイムを含むものは `E2002`）、`llvm`、`header`。`--target wasm32` は host の OS に依存しない |
 | `Task.parallel` | Win32 threads（`src/runtime/task.c` に `task-windows.h` を当てる）。WASM の backend は変わらない |
@@ -87,7 +87,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 | --- | --- |
 | 更新する文書は `_docs/tools/build-and-cache.md`、`_docs/get-started.md`、`_docs/README.md`、`_docs/feature-status.md`。確認は `check-docs.mjs _docs README.md` | `_docs/` は `_tsuzuri/language-reference/` へ移り（GUIDE §8.1）、`feature-status.md` はなくなった。「未確認」と書いていたのは、`compiler/platforms.md`・`usage.md`・`native-interop.md`・`languages/strategy.md`・`why-tsuzuri.md`、`docs/architecture.md`・`docs/language.md`、`README.md`、`_features/README.md`。計画が挙げた `README.md`・`docs/architecture.md` の「Windows runnerでの実行ゲートは未確認です」の文は、すでに別の書き方に変わっていた |
 | HEAD の `.github/workflows/` は `vscode.yml` だけ | `targets.yml`（G15）も足されていて、「Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them」と書いてある。`vscode.yml` の Windows の job は、すでに `windows-2022` と LLVM 21.1.8 で MSVC の `Async.block_on`・`Net`・PDB を実行していて、runner の環境の実績だった。`windows.yml` は `targets.yml` が除いた Windows の実行を受け持つ |
-| workflow の YAML: `actions/checkout@v4`・`setup-node@v4`、trigger は `push`・`pull_request`・`workflow_dispatch`、`timeout-minutes: 90`、step は上から順に、`cargo test --locked` | 現行の workflow に合わせた。`actions/checkout@v7`・`setup-node@v7`。trigger は `workflow_dispatch`、`pull_request`（`src/**`・`std/**`・`tests/**`・`examples/**`・`Cargo.*`・workflow 自身）、`push`（`main`）で、branch への `push` は二重に走るので外した。concurrency は PR だけ cancel（`targets.yml` と同じ）。`timeout-minutes: 120`（W3 だけで 40〜50 分、全体で約 50 分）。`ilammy/msvc-dev-cmd` は、actions/ と dtolnay/ の外で唯一の action なので commit に固定した（v1.13.0）。`tests/numeric_casts.mjs` は 13 秒で成功するので、step として残した（参考の記録から昇格）。`e2e.mjs` は入れない。step は `!cancelled()` で前の失敗に左右されず、`cargo test` が最後（`targets.yml` と同じ）。LLVM の取得は 3 回まで再試行する。`Show tools` が LLVM 21.1.8・MSVC の `link.exe`・LF の checkout を検査する。`cargo test` は `RUST_MIN_STACK=4194304` と `--no-fail-fast`（GUIDE D-45） |
+| workflow の YAML: `actions/checkout@v4`・`setup-node@v4`、trigger は `push`・`pull_request`・`workflow_dispatch`、`timeout-minutes: 90`、step は上から順に、`cargo test --locked` | 現行の workflow に合わせた。`actions/checkout@v7`・`setup-node@v7`。trigger は `workflow_dispatch`、`pull_request`（`src/**`・`std/**`・`tests/**`・`examples/**`・`Cargo.*`・workflow 自身）、`push`（`main`）で、branch への `push` は二重に走るので外した。concurrency は PR だけ cancel（`targets.yml` と同じ）。`timeout-minutes: 120`（W3 だけで 40〜50 分、全体で約 50 分）。`ilammy/msvc-dev-cmd` は、actions/ と dtolnay/ の外で唯一の action なので commit に固定した（v1.13.0）。`tests/numeric_casts.mjs` は 13 秒で成功するので、step として残した（参考の記録から昇格）。`e2e.mjs` は入れない。step は `!cancelled()` で前の失敗に左右されず、`cargo test` が最後（`targets.yml` と同じ）。LLVM の取得は 3 回まで再試行する。`ilammy/msvc-dev-cmd` には MSVC の toolset 14.44 と SDK 10.0.26100.0 を指定し（文書に書いた版が、image の更新で黙って変わらないようにする）、`Show tools` が LLVM 21.1.8・MSVC の toolset と SDK の版・VS 2022 の `link.exe` の場所・LF の checkout を検査する。`cargo test` は `RUST_MIN_STACK=4194304` と `--no-fail-fast`（GUIDE D-45） |
 | W3: `tests/windows.rs` は `3 passed` | 4 件。E09 が Net の cross-link のテストを足した |
 | D4: 参考の suite（`e2e.mjs`・`numeric_casts.mjs`）を手順 7 で実行して記録する | 診断のために run で 1 回ずつ実行して結果を記録した（下）。`e2e.mjs` は、ゲートにも最終の workflow にも入れない。`numeric_casts.mjs` は 13 秒で成功したので、W1〜W8 には数えず、workflow の step として残した |
 | 対象外: PDB／CodeView | G16 Phase 3 が実装済みで、`vscode.yml` の Windows x64 の job が MSVC の PDB と natvis を検査している。G10 のゲートは PDB を検査しない |
@@ -100,7 +100,7 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 
 | ID | 決定 |
 | --- | --- |
-| D1 | 環境: x64 Windows、LLVM 21.1.8（`LLVM-21.1.8-win64.exe`、SHA-256 `7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113`）、Visual Studio 2022 の VCTools と Windows SDK、Rust stable の MSVC toolchain、Node.js 24。`vscode.yml` と同じ版で、runner の image の LLVM の版の揺れを除く。Node 20 は重い BigInt の suite で V8 が異常終了した記録がある |
+| D1 | 環境: x64 Windows、LLVM 21.1.8（`LLVM-21.1.8-win64.exe`、SHA-256 `7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113`）、Visual Studio 2022 の MSVC toolset 14.44 と Windows SDK 10.0.26100.0（`ilammy/msvc-dev-cmd` の `toolset`・`sdk` で選び、`Show tools` が `VCToolsVersion`・`WindowsSDKVersion`・`link.exe` の場所を検査する。image の更新でこの組が変わると job が失敗するので、文書に書いた版は、すべての run の性質になる）、Rust stable の MSVC toolchain、Node.js 24。`vscode.yml` と同じ版で、runner の image の LLVM の版の揺れを除く。Node 20 は重い BigInt の suite で V8 が異常終了した記録がある |
 | D2 | 既存の出力の置換は `publish_outputs` の `fs::rename` だけ。runner で置換と旧出力の保持は成功した。古い出力を消してから rename する fallback は入れていない |
 | D3 | `.github/workflows/windows.yml` を復元する。workflow 名 `Windows MSVC`、job id `windows`、`windows-2022`（G15 がこの名前を前提にする）。trigger は上の表のとおり現行の convention に合わせた。push と PR は、利用者の依頼に従って実装者が行った |
 | D4 | ゲートは W1〜W8。`tests/e2e.mjs`・`tests/numeric_casts.mjs` は参考（`numeric_casts.mjs` は参考のまま、workflow の step として走らせる）。POSIX 専用の harness（`tests/tasks.mjs` など。`-pthread` を無条件に渡す）は実行しない |
@@ -128,14 +128,14 @@ HEAD `f8dc655` で書いた計画を、着手時の `2282fd9` と照らして見
 ### 実装したファイル
 
 - `.github/workflows/windows.yml`（復元）。
-- `src/runtime/task-windows.h`（`WIN32_LEAN_AND_MEAN`・`_CRT_SECURE_NO_WARNINGS` を、未定義のときだけ定義）、`src/fetch.rs`（`Repository::create` が `cfg!(windows)` で `cache::real_path` を使う）、`src/cache.rs`（`real_path` が `\\?\UNC\server\share` を `\\server\share` にする。`plain_path` の単体テストと、管理共有 `\\localhost\C$` の Windows 限定のテスト）。
+- `src/runtime/task-windows.h`（`WIN32_LEAN_AND_MEAN`・`_CRT_SECURE_NO_WARNINGS` を、未定義のときだけ定義）、`src/fetch.rs`（`Repository::create` が `cfg!(windows)` で `cache::real_path` を使う）、`src/cache.rs`（`real_path` が `\\?\UNC\server\share` を `\\server\share` にする。`plain_path` の単体テストと、管理共有 `\\localhost\C$` の Windows 限定のテスト）。`src/target.rs` は `Platform::os_apis` のコメントだけで、Windows に OS API の実装がない理由を「G10 を待つ」から「実装がない。G10 は実行ゲートで、実装を含まない」へ改めた（コードは変えていない）。
 - テスト: `tests/windows.mjs`（stderr の最後の JSON 行を読む、名前を付けた target、トラップ）、`src/test_runner.rs`（test module の CRLF）、`tests/bench.rs`・`fixed_arrays.rs`・`host_abi.rs`・`packages.rs`・`property.rs`・`test_runner.rs`・`trap_locations.rs`。
-- 文書: `README.md`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/` の `compiler/platforms.md`・`usage.md`・`native-interop.md`、`languages/strategy.md`・`why-tsuzuri.md`、`built-in-types-and-modules/test.md`、`types-and-type-inference/basic-types.md`、`_features/README.md`、GUIDE の D-48、`AGENTS.md`。
+- 文書: `README.md`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/` の `compiler/platforms.md`・`usage.md`・`native-interop.md`、`languages/strategy.md`・`why-tsuzuri.md`、`built-in-types-and-modules/test.md`・`os.md`・`file.md`（Windows の OS API と file API は、未検証でなく、Windows 向けの実装がないために使えない）、`types-and-type-inference/basic-types.md`、`vsc/Publishing.md`（Windows の archive の項）、`_features/README.md`、GUIDE の D-48、`AGENTS.md`。
 
 ### Windows 実行記録（2026-10-13）
 
 - 環境: GitHub の `windows-2022`（Windows Server 2022、`10.0.20348`）。AMD EPYC 9V74 80-Core Processor、論理 4 コア。
-- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `57334e0`（push の run が検査した commit。その後、先頭の commit の CRLF の修正を畳み、main の A17・A18 のチケットの commit へ rebase したので、同じ変更が付け替わった）。この run の後の変更は、workflow の整形（trigger・timeout・action の固定・`numeric_casts.mjs` の step）、`src/fetch.rs` の `cfg!(windows)` の分岐、`src/cache.rs` の `real_path`（共有のパス。Copilot の指摘）、文書で、その検査は PR #24 の run（`pull_request`）が受け持つ。run の URL は PR の checks と PR の説明にある（記録の commit が検査される run の URL は、その commit には書けない）。
+- 版: rustc 1.99.0（b940084d7 2026-09-28）、clang 21.1.8、LLD 21.1.8、node v24.21.0、MSVC 14.44.35207（`...\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`）、Windows SDK 10.0.26100.0、Visual Studio 2022 Enterprise。commit `57334e0`（push の run が検査した commit。その後、先頭の commit の CRLF の修正を畳み、main の A17・A18 のチケットの commit へ rebase したので、同じ変更が付け替わった）。この run の後の変更は、workflow の整形（trigger・timeout・action の固定・`numeric_casts.mjs` の step）、MSVC toolset と Windows SDK の指定と検査（run が使った 14.44.35207 と 10.0.26100.0 は、image の既定だった。それを D1 の組として固定した）、`src/fetch.rs` の `cfg!(windows)` の分岐、`src/cache.rs` の `real_path`（共有のパス。Copilot の指摘）、文書で、その検査は PR #24 の run（`pull_request`）が受け持つ。run の URL は PR の checks と PR の説明にある（記録の commit が検査される run の URL は、その commit には書けない）。
 - run: https://github.com/tatsuya-midorikawa/Tsuzuri/actions/runs/38341607512（全体で 50 分）
 - W1〜W8:
 

@@ -1595,7 +1595,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - 共通: 新しい予約語・診断コード・crate・`unsafe`・CLI・環境変数・std モジュール・既定の WASM の import はない。IR と ABI は変えていない。コードの変更は `src/runtime/task-windows.h`（マクロの guard）と
   `src/fetch.rs` の `cfg!(windows)` の分岐と、`\\?\` で始まる path にだけ効く `cache::real_path`（共有の `\\?\UNC\...` も外す）だけで、Unix と WASM の挙動は変わらない。
 - 実行ゲート: `.github/workflows/windows.yml`（workflow `Windows MSVC`、job `windows`、`windows-2022`）を復元した。W1〜W8 が緑になったのは、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100、
-  rustc 1.99.0、Node.js 24.21.0 の組。W3（`cargo test --locked --no-fail-fast`）は `RUST_MIN_STACK=4194304` を付けて 40〜50 分かかるので最後に置き、どの step も前の失敗に左右されず走らせる。
+  rustc 1.99.0、Node.js 24.21.0 の組。MSVC の toolset と SDK は `ilammy/msvc-dev-cmd` の `toolset`・`sdk` で指定し、`Show tools` が版と `link.exe` の場所を検査する（image の更新でこの組が変わると job が失敗するので、文書の版はすべての run の性質になる）。W3（`cargo test --locked --no-fail-fast`）は `RUST_MIN_STACK=4194304` を付けて 40〜50 分かかるので最後に置き、どの step も前の失敗に左右されず走らせる。
   最初の run は W5 が 8 秒で止まり、W3 が 17 件失敗した。runner の log は run が終わるまで読めず、W3 を含む run は 40 分以上かかるので、速い step だけの throwaway branch（約 10 分）で直して戻した（AGENTS.md の CI の項）。
 - 見つけた不具合（8 種）: 製品の側は 2 件。`git` へ verbatim パス（`\\?\`）を渡していたため、Windows の git／registry の取得がすべて `E2007` だった（E10 が「Windows での git は未検証」と記していたもの。`src/fetch.rs` の `cfg!(windows)` の分岐で直した）。
   `task-windows.h` は、`-D_CRT_SECURE_NO_WARNINGS` と `-Werror` の組で再定義になった（未定義のときだけ定義する形にした）。残りは harness と Rust のテストの POSIX の前提で、Unix の期待値は変えずに Windows の側を足した

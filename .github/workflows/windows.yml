@@ -8,6 +8,9 @@ name: Windows MSVC
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it takes
 #   40 to 50 minutes: every other step reports first, and a step that fails does not hide the ones after it.
 #   tests/numeric_casts.mjs, a reference record of G10 that passed on the first run, stays as a step.
+# The MSVC toolset and the Windows SDK are selected below and checked by Show tools, so the documents that
+# name them (README.md, docs/architecture.md, compiler/platforms.md, compiler/usage.md) describe every run:
+# an image refresh that drops either of them fails the job instead of changing what the gate checks.
 # tests/lsp_sessions.mjs, tests/async.mjs, tests/net.mjs and the PDB and natvis checks run on Windows in
 # vscode.yml. The Linux and macOS hosts, and the targets that they cross-compile, are in targets.yml.
 
@@ -36,6 +39,9 @@ jobs:
   windows:
     runs-on: windows-2022
     timeout-minutes: 120
+    env:
+      GATE_MSVC_TOOLSET: '14.44'
+      GATE_WINDOWS_SDK: '10.0.26100.0'
     steps:
       # The runner checks out with core.autocrlf=true, which turns the fixtures and src/runtime/*.ll into CRLF.
       - name: Keep LF line endings
@@ -51,6 +57,8 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         with:
           arch: x64
+          toolset: ${{ env.GATE_MSVC_TOOLSET }}
+          sdk: ${{ env.GATE_WINDOWS_SDK }}
       # The same installer and SHA-256 as vscode.yml. The runner's own LLVM (C:\Program Files\LLVM) changes with the image.
       - name: LLVM 21.1.8
         shell: pwsh
@@ -93,7 +101,9 @@ jobs:
           $eol = (git ls-files --eol src/runtime/string.ll)
           $eol
           if ($clang -notmatch 'clang version 21\.1\.8') { throw "expected LLVM 21.1.8, got: $clang" }
-          if ($link -notmatch '\\VC\\Tools\\MSVC\\') { throw "link.exe is not the MSVC linker: $link" }
+          if ($env:VCToolsVersion -notlike "$($env:GATE_MSVC_TOOLSET).*") { throw "expected MSVC toolset $env:GATE_MSVC_TOOLSET, got: $env:VCToolsVersion" }
+          if ($env:WindowsSDKVersion.TrimEnd('\') -ne $env:GATE_WINDOWS_SDK) { throw "expected Windows SDK $env:GATE_WINDOWS_SDK, got: $env:WindowsSDKVersion" }
+          if ($link -notlike "*\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio 2022 MSVC $env:VCToolsVersion: $link" }
           if ($eol -notmatch 'w/lf') { throw "src/runtime/string.ll is not checked out with LF: $eol" }
       - name: W1 cargo fmt
         run: cargo fmt --all -- --check

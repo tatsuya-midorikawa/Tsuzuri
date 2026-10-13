@@ -210,7 +210,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 [targets.yml](../../../.github/workflows/targets.yml) の 4 つの job と、[windows.yml](../../../.github/workflows/windows.yml) の job が確かめた範囲は、次のとおりです。
 
 - 実行: 各 job が自分の triple（`aarch64-apple-darwin`、`x86_64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`）を `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` と出力が一致することを確かめました。
-- Windows の実行: `windows-2022` の job（LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100）が、`x86_64-pc-windows-msvc` を名指しして `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` の実行ファイルと同じ出力になることを確かめました。同じ job が、Win32 スレッドの `Task.parallel`、UTF-8 の出力、source への出力の拒否と既存の出力の置換、トラップの報告（終了コード 0xC000001D）、WASM の import なし、`cargo test` の全体を確かめます。`aarch64-pc-windows-msvc` はオブジェクトまでで、実行していません。
+- Windows の実行: `windows-2022` の job（LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100。workflow が版を指定して検査するので、image が変わると job は失敗します）が、`x86_64-pc-windows-msvc` を名指しして `-O0` と `-O3` で `build`、`run`、`test` し、`--target native` の実行ファイルと同じ出力になることを確かめました。同じ job が、Win32 スレッドの `Task.parallel`、UTF-8 の出力、source への出力の拒否と既存の出力の置換、トラップの報告（終了コード 0xC000001D）、WASM の import なし、`cargo test` の全体を確かめます。`aarch64-pc-windows-msvc` はオブジェクトまでで、実行していません。
 - 別の CPU の実行ファイルの実行: Linux の 2 つの job が、静的な musl の 3 つ（aarch64、x86-64、riscv64gc）を、同じ CPU のものは直接、ほかは qemu-user で実行しました。`macos-15` の job は、Rosetta で `x86_64-apple-darwin` を実行しました。
 - リンクして、ヘッダーを検査した（実行はしていない）: 同梱ツールチェーンで Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows。macOS の job では、もう一方の Apple の CPU と、iOS の 3 target（Xcode の SDK を `TSUZURI_SYSROOT` に渡します）。
 - オブジェクトまで作った: MSVC の Windows、Android、bare-metal（4 つの job）、iOS（Linux の 2 つの job）。
