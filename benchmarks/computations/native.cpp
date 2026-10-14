@@ -9,6 +9,8 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <optional>
+#include <string>
 #include "kernels.h"
 
 #define NOINLINE __attribute__((noinline))
@@ -25,6 +27,11 @@ DECLARE_RUST(owned_capture)
 DECLARE_RUST(std_option)
 DECLARE_RUST(std_result)
 DECLARE_RUST(std_option_owned)
+DECLARE_RUST(std_option_length)
+
+static const char16_t hello[] = u"hello";
+static const char16_t world[] = u" world";
+static const char16_t bang[] = u"!";
 
 static std::uint64_t mix(std::uint64_t value, std::uint64_t salt) {
     return (value ^ (value >> 13)) * UINT64_C(6364136223846793005) + salt;
@@ -50,6 +57,11 @@ static NOINLINE std::int64_t cpp_loop(std::int64_t count, std::int64_t seed) {
             state = mix(state, salt) + (mix(state ^ 71, salt) + mix(state ^ 113, salt));
         } else if constexpr (kind == 3) {
             state = (state & 7) == 0 ? state ^ salt : mix(state ^ salt, salt);
+        } else if constexpr (kind == 5) {
+            std::optional<std::u16string> text;
+            if ((state & 7) != 0) text = std::u16string(hello) + world;
+            const auto length = text ? (*text + bang).size() : 0;
+            state = mix(state, salt) ^ length;
         } else {
             const auto length = (state & 7) == 0 ? 0 : 12;
             state = mix(state, salt) ^ length;
@@ -91,25 +103,8 @@ static NOINLINE std::int64_t cpp_owned(std::int64_t count, std::int64_t seed) {
 #endif
 
 #ifdef TRACKING
-static std::uint64_t allocations, bytes, live;
-extern "C" void *tracked_alloc(std::uint64_t size) {
-    auto *pointer = static_cast<std::uint64_t *>(std::malloc(size + 16));
-    if (!pointer) std::abort();
-    pointer[0] = size;
-    pointer[1] = UINT64_C(0x51a110ca7e);
-    ++allocations;
-    bytes += size;
-    live += size;
-    return pointer + 2;
-}
-extern "C" void tracked_free(void *value) {
-    if (!value) return;
-    auto *pointer = static_cast<std::uint64_t *>(value) - 2;
-    if (pointer[1] != UINT64_C(0x51a110ca7e) || live < pointer[0]) std::abort();
-    pointer[1] = 0;
-    live -= pointer[0];
-    std::free(pointer);
-}
+extern "C" void tracked_reset(void);
+extern "C" void tracked_read(std::uint64_t *, std::uint64_t *, std::uint64_t *);
 #endif
 
 struct Workload {
@@ -167,7 +162,8 @@ int main(int argc, char **argv) {
         WORKLOAD(owned_capture, cpp_owned, quick ? 128 : 8192),
         WORKLOAD(std_option, cpp_loop<3>, quick ? 1024 : 2000000),
         WORKLOAD(std_result, cpp_loop<1>, quick ? 1024 : 2000000),
-        WORKLOAD(std_option_owned, cpp_loop<4>, quick ? 128 : 8192),
+        WORKLOAD(std_option_owned, cpp_loop<5>, quick ? 128 : 8192),
+        WORKLOAD(std_option_length, cpp_loop<4>, quick ? 1024 : 2000000),
     };
         const int samples = (quick ? 1 : 3) *
     #ifdef BASELINE
@@ -217,8 +213,10 @@ int main(int argc, char **argv) {
         std::fputs("\"allocations\":{", stdout);
         for (std::size_t variant = 1; variant < variants; ++variant) {
             if (variant == 3) continue;
-            allocations = bytes = 0;
+            tracked_reset();
             sink = kernels[variant](64, 42);
+            std::uint64_t allocations, bytes, live;
+            tracked_read(&allocations, &bytes, &live);
             if (live != 0) {
                 std::fprintf(stderr, "%s %s: retained %" PRIu64 " bytes\n", work.name, names[variant], live);
                 return 1;

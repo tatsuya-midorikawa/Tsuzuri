@@ -7,7 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const startMarker = "<!-- benchmark-summary:start -->";
 const endMarker = "<!-- benchmark-summary:end -->";
 const languages = [["tsuzuri", "Tsuzuri"], ["c", "C"], ["cpp", "C++"], ["rust", "Rust"], ["csharp", "C#"], ["javascript", "JavaScript"]];
-const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+export const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 const median = (values) => {
   const sorted = [...values].sort((left, right) => left - right);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
@@ -15,7 +15,7 @@ const median = (values) => {
 const numberStyle = "font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0";
 const cellStyle = "padding:8px 12px;border:1px solid #94a3b8";
 
-export function renderTable(headers, rows, { caption, timingColumns = [], unrankedRows = new Set() } = {}) {
+export function renderTable(headers, rows, { caption, timingColumns = [] } = {}) {
   const width = Math.max(1, ...rows.flatMap((row) => timingColumns.map((index) => String(row[index]).length)));
   const tsuzuriColumn = timingColumns.find((index) => headers[index].startsWith("Tsuzuri"));
   const table = [
@@ -29,9 +29,9 @@ export function renderTable(headers, rows, { caption, timingColumns = [], unrank
     "</tr></thead>",
     "<tbody>",
   ];
-  for (const [rowIndex, row] of rows.entries()) {
+  for (const row of rows) {
     assert.equal(row.length, headers.length, "Table column count mismatch");
-    const candidates = unrankedRows.has(rowIndex) ? [] : timingColumns.filter((index) => row[index] !== "-" && Number.isFinite(Number(row[index])));
+    const candidates = timingColumns.filter((index) => row[index] !== "-" && Number.isFinite(Number(row[index])));
     const minimum = Math.min(...candidates.map((index) => Number(row[index])));
     const winners = candidates.filter((index) => Number(row[index]) === minimum);
     table.push("<tr>");
@@ -92,7 +92,6 @@ export function renderSummary(results) {
   const table = renderTable(["種目", "仕事量", ...languages.map(([, label]) => `${label} (ms)`)], rows, {
     caption: `${first.workloads.length}種目 / ${first.cpu} / scale ${first.scale} / ${results.length}回の中央値`,
     timingColumns: languages.map((_, index) => index + 2),
-    unrankedRows: new Set(first.workloads.flatMap((work, index) => work.name === "std_option_owned" ? [index] : [])),
   });
   return [
     "## ベンチマーク サマリー", "", startMarker,
@@ -100,7 +99,7 @@ export function renderSummary(results) {
     "<p><strong>Tsuzuri 相対性能は大きいほど良好です。</strong> 最速を <code>1.00000</code> とし、最速の処理時間を Tsuzuri の処理時間で割ります。<code>0.50000</code> は最速の半分の性能（処理時間は2倍）、<code>0.80000</code> は最速の80%の性能です。小数第5位に丸めるため、ごく僅かな差は <code>1.00000</code> になります。比較できない行は <code>-</code> です。</p>",
     `<p>最終測定: <code>${escape(recorded)}</code><br>CPU: ${escape(native.cpu)} / ${escape(native.architecture)} / ${escape(first.cpu)}<br>Tsuzuri: <code style="overflow-wrap:anywhere">${escape(native.compiler_sha256)}</code><br>C#: ${escape(first.environment.csharp.runtime)} / JavaScript: ${escape(first.environment.javascript.node)}</p>`,
     table,
-    "<p><code>-</code> は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。<code>std_option_owned</code> は確保条件が異なるため順位を付けません。詳細な比較条件は後述します。</p>",
+    "<p><code>-</code> は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。詳細な比較条件は後述します。</p>",
     endMarker, "",
   ].join("\n");
 }
@@ -129,10 +128,14 @@ export function updateSummary(document, results) {
 
 export function publishSummary(results, path = join(root, "docs/benchmarks.md")) {
   const updated = updateSummary(readFileSync(path, "utf8"), results);
+  writeAtomically(path, updated);
+}
+
+export function writeAtomically(path, text) {
   const temporary = `${path}.${process.pid}.tmp`;
   let created = false;
   try {
-    writeFileSync(temporary, updated, { flag: "wx" });
+    writeFileSync(temporary, text, { flag: "wx" });
     created = true;
     renameSync(temporary, path);
   } finally {

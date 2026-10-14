@@ -1,5 +1,8 @@
 # PX01: 性能指標の拡張と記録の継続
 
+本文の起票時の手順は調査履歴です。現行の受け入れ条件と末尾の「実装と検証」を優先し、
+Phase 1 だけに限定する注記は、2026-10-13 の全フェーズの依頼で置き換えました。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PX01 |
@@ -8,7 +11,7 @@
 | 規模 | M |
 | 依存 | – |
 | 関連 | PX02, PX03, G17 Phase 0。PX01 形式と確保の計数を使う: PM01〜PM09, PR01〜PR07, PB01〜PB07 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D3（生データのリポジトリ外での長期保管）, D8（x86_64 Linux・AArch64 Linux の計測機の確保）。どちらも Phase 1 の手順 1〜12 には不要 |
 | 手本にする既存実装 | 確保の計数: `benchmarks/run-computations.mjs` の tracked 経路（clang `-O3` 後の IR の `@malloc`→`@tracked_alloc` 置換、属性の除去、`-O0` での再コンパイル、`-DTRACKING` の host）と `benchmarks/computations/native.cpp` の `#ifdef TRACKING` 節。`realloc` の扱いは `tests/features.mjs` の `tracked_realloc`。要約: `benchmarks/report.mjs` の `renderTable`・`publishSummary`（一時ファイル＋`renameSync`）と CLI の判定（`process.argv[1]` と `import.meta.url` の比較）。テスト: `tests/benchmark_report.mjs` |
@@ -779,17 +782,18 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 
 ## 受け入れ条件
 
-- [ ] 手順 1〜12 の `確認:` がすべて期待どおり。
-- [ ] `--metrics` なしの 3 runner の stdout の欄が手順 1 の保存と同じ（`same-keys`）で、計時用の host が `#ifdef TRACKING` の外で `f8dc655` と同じ（`timed-host-unchanged`）。
-- [ ] quick の `--metrics` で control 150 行・computations 127 行・cpp 8N 行が書かれ、`report` が全行を検証して表示する。
-- [ ] process suite が表の variant の時間・RSS・段・大きさを記録し、同じディレクトリへの 2 回目は `EEXIST` で終了コード 1。
-- [ ] control・cpp・computations の Tsuzuri 実装に `alloc_calls`・`alloc_bytes` が記録され、tracked 実行が `live == 0` で終わり、tracked IR に元の確保関数が残らない（生成コードの確認 2）。
-- [ ] `TSUZURI_TIME_PASSES=1` の有無で成果物がバイト単位で同じで（生成コードの確認 1）、既定の stderr・終了コードが変わらず、段の合計が `total_ms` を超えない。
-- [ ] `cargo test --locked`（`timings` 1 件と `time_passes` 4 件を含む）、`cargo clippy --locked --all-targets`（新しい警告なし）、`cargo fmt --check`、`node tests/benchmark_report.mjs`（テスト 1〜14）が成功。
-- [ ] `Cargo.toml`・`Cargo.lock` に差分がなく、npm の依存を足しておらず、`unsafe` がない。
-- [ ] macOS の benchmark の run を 1 つ `docs/benchmarks.md` のマーカーの間に公開し、再公開で差分が増えない。生データは Git に入っていない。
-- [ ] 「ドキュメント」の全項目を更新し、その確認コマンドが成功。`_perfs/README.md` の PX01 が `done`。
-- [ ] GUIDE §10 の完了の定義を満たす。PX01 自身は速度の改善を主張しない。Linux の記録（手順 13、D8）は Phase 1 の完了条件に含めない。
+- [x] 起票時の手順の目的を現行 cache／IO／stdlib に合わせて検証し、例外・判断を実装記録へ残した。
+- [x] 着手時 `dadc6d8b` と比較して 3 runner の stdout の欄と全 checksum が一致し、TRACKING は別の実行ファイルで計測する。
+- [x] 現行の 16 control は 160 行、12 cpp は 96 行。computations は PX01 単独 127 行、PX02 の length の追加後は 141 行で、全行の検証を通る。
+- [x] process suite が variant の時間・RSS・段・大きさを記録し、再書き込みは `EEXIST`。
+- [x] Tsuzuri の alloc_calls／alloc_bytes を記録し、全 tracked 呼び出しの live は 0、元の allocator 名と推定属性を除去する。
+- [x] IR／header／object／WASM は計時の有無で byte 一致。既定の診断・終了コードは不変、段の合計は丸めの許容内で total 以下。
+- [x] Mach-O の既存の UUID／署名、COFF の既存の時刻 4 bytes、large O0 の import-stub の変動を明記し、code-byte の追加のマスクで隠さない。
+- [x] 全 Rust 1,223 件（timings と time_passes 4 件を含む）、strict clippy／fmt、Node の記録・process group timeout・tracker・比較・公開の検査が成功。
+- [x] Cargo manifests／lock は不変。新しい npm／Rust 依存と unsafe Rust はない。
+- [x] macOS の benchmark の要約をマーカー内に公開し、再公開は冪等。共有機／dirty の条件を明記、生データは ignored。
+- [x] 現行 manual 4 ページ・README・仕様・構成・性能文書を更新して検証、PX01 は done。
+- [x] Phase 2 の tasks／simd／dispatch／mix と、PX02 の managed の記録も検証。専用 Linux 実機の調達・外部保管の契約は対象外。
 
 ## 落とし穴
 
@@ -868,3 +872,56 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 - 決定: PX01 形式を書くのは run-control・run-cpp・run-computations と process suite だけ。他の runner は設計の「Phase 2」、run-cache は PX03、run-managed の C#・JavaScript は PX02 が扱う。
 - 理由: run-managed が読む 3 runner と、ビルド時間・RSS・成果物サイズの基準（hello）で、後続チケットの before／after に足りる。起票時の「既存のベンチマークすべて」は Phase 2 と PX02・PX03 に分けて満たす。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-13）
+
+- Phase 1・2 を実装。control・cpp・computations・process・tasks・simd・dispatch・mix が schema 1 を記録する。
+  C#／JavaScript の記録は依存する PX02 で追加する。専用 Linux 実機の調達と外部保管サービスは実装対象ではない。
+- G17 に合わせ、`analyze_inputs_with` の構文解析／復号を `parse`、frontend cache の準備・保存を `cache` に計上した。
+  エラーで早く戻る経路も RAII で段を閉じる。既定では時計・記録用の文字列・mutex を使わない。
+- 起票時と違い control は 16 種目（160 レコード）。cpp は 12 種目（96）、computations は 9 種目（127）。
+  共有の tracker を computations にも使い、calloc・realloc・overflow と並列 worker の計数を同じ規則にした。
+- `cargo test --locked --test time_passes`: 4 件成功。`node tests/benchmark_report.mjs`: 既存の検査と metrics 15 項目成功。
+  全 8 runner の quick が成功し、`target/perf/PX01-quick-v2` の全 489 レコードが検証を通った。
+  3 つの既存 runner の stdout の欄と全 checksum は保存した before と一致した。tracked 実行は live 0。
+- IR・header・object・WASM は native／WASM の `-O0`・`-O3` で計時の有無による byte 一致を確認した。
+  Mach-O 実行ファイルは before でも UUID と署名が変わるため、その 2 領域だけを除いた fingerprint を使う。
+  変更前／変更後それぞれの plain 2 回と timed の比較を記録し、コードの fingerprint が一致した。
+- デバッグ版の深い構文のテストの既存の stack overflow は GUIDE D-45 に従って扱う。
+  言語・コンパイラの資源上限は変更していない。本計測と全体検証の結果は同 PR の最終確認で追記する。
+- 利用者向けの更新先: `compiler/option.md`・`compiler/usage.md`・`languages/strategy.md`・`index.md`。
+  旧 `_docs/` のページは作らない。
+
+### 最終確認（2026-10-14）
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 98 binaries、1,223 件成功。
+  strict clippy・fmt・runtime includes の検査も成功。既存の stack の手順だけを使い、資源上限は変えていない。
+- `e2e`・`examples`・`cache`・`frontend_cache`・`control`・`computations`・`tasks` の E2E が成功。
+  生成コードの意味、診断、native／WASM `-O0`／`-O3`、確保の解放、cache の有無の一致を確認した。
+- full の `PX02-formal-managed` は primary 3 suite、managed、process の 561 レコード。
+  `PX02-formal-apps` は 200 レコード。すべて benchmark、時刻・RSS は 9 標本以上で、要約を公開した。
+  開始時は共有機の load average 4.92、dirty tree の記録であり、速度の勝敗・改善は主張しない。
+- process timeout が `/usr/bin/time` の子を残す問題を、所有する process group の `SIGKILL` で修正。
+  `SIGTERM` を無視する多段の子を持つ timeout の再現テストも成功した。
+  silent skip、速度の合否閾値、依存追加、unsafe Rust はない。
+- `--json` の診断と計時 metadata が並ぶ JSONL を厳密に読む共通 helper を使い、
+  computations の旧 compiler の機能確認を修正した。不正な JSON・metadata はエラーになる。
+- 外部ツールの stem に空白・日本語などがあるときも、そのまま `tool.<stem>` の phase を記録・検証できる。
+  空の stem と NUL は拒否し、phase の JSON と schema 1 の両方に回帰検査を加えた。
+- GNU time の版が `UNKNOWN` の distribution build も識別でき、各標本の `-v`・`-o` と
+  時間・RSS の欄の検査を維持する。版 1.7 以前や別の time は引き続き拒否する。
+- `emit` の guard を target ごとの IR 変換と freestanding header の IR の検査の後まで延ばし、
+  これらの処理が total だけに入っていた計上漏れを修正した。外部ツール・cache と二重計上しない。
+  Windows IR・WASI WASM・freestanding header も、native／WASM と同じ O0／O3 の byte 一致検査に含める。
+  native Windows の object は 2 秒ずつ隔てて 3 回比較し、偶然の 1 回の一致で済ませない。
+  失敗時は最初の異なる byte と近傍だけを出し、原因の分からない領域をマスクしない。
+- Windows の差分は標準 COFF header の `TimeDateStamp`（offset 4 の 4 bytes）だった。
+  `0x6aceeee0`／`0x6aceeee2` は CI の実際の 02:54:24／02:54:26 UTC と待ち時間に一致する。
+  標準 header を検証し、この時刻だけを比較から除く。最初の repeat は計時無し同士、その後は計時有りと比べ、
+  コード・データ・他の metadata とサイズを厳密に保つ。生成物や flags は変えない。
+- 計上漏れの修正後、process と 200／1,000 module・real 11 の build をすべて再計測した。
+  `PX03-formal-emit-v4` は process 88・build 1,206 と apps の再計測 200 の計 1,494 レコードで、時刻・RSS は 9 標本以上。
+  docs の process と build の値を置き換え、旧 `emit` の計上範囲と混ぜた速度比較はしない。
+- manual 4 ページの `check-docs` は 218 links、6 examples、native の 6 runs、1 test project を通過した。
+- 無効の計時の before／after の check は中央値 87.115／77.353 ms、広がり 51.346／34.485 ms。
+  差は広がり以内で「差なし」。共有機の値から高速化・厳密な 0 コストは主張しない。

@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureRun, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const usage = "Usage: node benchmarks/run-tasks.mjs [compiler] [--quick] [--data-parallel] [--baseline-runtime object] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-tasks.mjs [compiler] [--quick] [--data-parallel] [--baseline-runtime object] [--artifacts directory] [--metrics directory]";
 const options = {}, positional = [];
 let quick = false;
 let dataParallel = false;
@@ -16,7 +17,7 @@ for (let index = 0; index < args.length; index++) {
   const argument = args[index];
   if (argument === "--quick" && !quick) quick = true;
   else if (argument === "--data-parallel" && !dataParallel) dataParallel = true;
-  else if (["--baseline-runtime", "--artifacts"].includes(argument) && options[argument] === undefined) {
+  else if (["--baseline-runtime", "--artifacts", "--metrics"].includes(argument) && options[argument] === undefined) {
     const value = args[++index];
     if (value === undefined || value.startsWith("--")) throw new Error(usage);
     options[argument] = resolve(value);
@@ -29,6 +30,7 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const run = (program, arguments_) => execFileSync(program, arguments_, { cwd: root, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"] });
 const median = (values) => { const sorted = [...values].sort((left, right) => left - right); return sorted[Math.floor(sorted.length / 2)]; };
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+const context = options["--metrics"] ? captureRun(options["--metrics"], { compiler, clang, mode: quick ? "quick" : "benchmark" }) : null;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-task-benchmark-"));
 const artifacts = options["--artifacts"];
 const workloads = dataParallel ? [
@@ -65,7 +67,7 @@ try {
   const results = [];
   for (const workload of workloads) {
     const samples = Object.fromEntries(backends.map(([name]) => [name, []]));
-    for (let sample = 0; sample < (quick ? 3 : 7); sample++) {
+    for (let sample = 0; sample < (quick ? 3 : options["--metrics"] ? 9 : 7); sample++) {
       const order = sample % 2 ? [...backends].reverse() : backends;
       for (const [name, , kind = 0] of order) {
         const result = JSON.parse(run(binaries.get(name), [workload.count, workload.rounds, workload.repetitions, kind].map(String)));
@@ -103,6 +105,14 @@ try {
     notes: dataParallel ? "Array/Parallel pairs use the same input and arithmetic; timings include input/output allocation, captures, work, synchronization and cleanup. Reduction is integer addition, so both orders have the same result. Cold includes lazy pool startup, but the common sequential reference is computed first. WASM is correctness-only sequential fallback. No SIMD claims or speed thresholds." : "Same LLVM and allocations across runtime variants. Cold includes lazy pool startup; warm includes allocation, dispatch, join and cleanup. Compilation, process startup and process-exit shutdown are outside the timing. No speed thresholds.", results,
     wasm_sequential_checks: wasmChecks,
   };
+  if (options["--metrics"]) {
+    const records = results.flatMap((work) => Object.entries(work.backends).flatMap(([backend, data]) =>
+      [["cold", "cold_ms"], ["warm", "warm_ms_per_call"]].map(([kind, column]) => makeRecord(context, {
+        suite: "tasks", workload: `${dataParallel ? "data-" : ""}${work.name}`, size: work.count, language: "tsuzuri",
+        variant: `${backend}-${kind}`, opt: "O3", metric: "wall_time", samples: data.samples.map((sample) => sample[column]),
+      }))));
+    writeRecords(options["--metrics"], "tasks", records);
+  }
   if (artifacts) {
     mkdirSync(artifacts, { recursive: true });
     writeFileSync(join(artifacts, "result.json"), JSON.stringify(report, null, 2) + "\n");

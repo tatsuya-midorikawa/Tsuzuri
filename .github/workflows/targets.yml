@@ -17,6 +17,7 @@ on:
       - src/**
       - std/**
       - tests/**
+      - benchmarks/**
       - Cargo.*
       - scripts/toolchain/**
       - .github/workflows/targets.yml
@@ -128,6 +129,38 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/f16_hardware.mjs target/release/tsuzuri
+      - uses: actions/setup-go@v7
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        with:
+          go-version: "1.27.2"
+          cache: false
+      - name: Benchmark correctness and metric records
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_GO="$(command -v go)"
+          export TSUZURI_ZIG="$PWD/target/toolchain/zig/zig"
+          if [ "$RUNNER_OS" = Linux ]; then /usr/bin/time --version; fi
+          node tests/benchmark_report.mjs
+          node tests/benchmark_apps.mjs
+          node benchmarks/run-control.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-cpp.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-computations.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/metrics.mjs process target/release/tsuzuri --quick --out target/perf/ci-core
+          node benchmarks/run-tasks.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-simd.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-dispatch.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-build.mjs target/release/tsuzuri --quick --out target/perf/ci-build
+          node benchmarks/run-apps.mjs target/release/tsuzuri --quick --metrics target/perf/ci-apps
+          node benchmarks/metrics.mjs report target/perf/ci-core target/perf/ci-build target/perf/ci-apps
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        with:
+          name: benchmark-correctness-${{ matrix.host }}
+          path: target/perf/ci-*
+          if-no-files-found: error
       # Other tickets' end-to-end steps for these four hosts go here, before the Rust tests: that step takes
       # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with
       # `if: ${{ !cancelled() }}` so that a failure above does not hide it.

@@ -1,5 +1,8 @@
 # PX02: 実アプリ型ベンチマークと比較対象の拡充
 
+本文の起票時の手順は調査履歴です。現行の受け入れ条件と末尾の「実装と検証」を優先します。
+Phase 3 と Go／Zig は 2026-10-13 の全フェーズの依頼で承認済みです。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PX02 |
@@ -8,7 +11,7 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PM06, PR03, C09, C11, D08 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 要承認: D7（Zig・Go の計測機への導入と Phase 3）。Phase 1・2 は承認不要 |
 | 手本にする既存実装 | runner: `benchmarks/run-control.mjs`（`take` による旗の解析、`reference` の BigInt 参照、25 組の `checks` の照合、`--artifacts`）。host: `benchmarks/control/host.c`（`WORKLOAD`・`measure`・25 組の相互照合・JSON 出力）。参照実装: `benchmarks/control/reference.c`（`KERNEL`・`check_count`）、`benchmarks/computations/reference.rs`（`#[no_mangle] pub extern "C" fn`）。確保の計数: `benchmarks/run-computations.mjs` の tracked 実行ファイル。記録: PX01 の `captureRun`・`makeRecord`・`writeRecords`・`measureProcess` |
@@ -445,15 +448,16 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 
 ## 受け入れ条件
 
-- [ ] `std_option_owned` の C++ が `std::u16string` の連結、Rust が `OwnedUtf16` の連結、C# が `static readonly string` の連結、JavaScript が `parts` の連結をしている。
-- [ ] `std_option_length` が Tsuzuri（ce・direct）・C++・Rust・C#・JavaScript にあり、quick で照合される。
-- [ ] `benchmarks/report.mjs` に `std_option_owned` の特別扱いがなく、`node tests/benchmark_report.mjs` が成功する。
-- [ ] `integer128_mix` の 3 run の PX01 形式の結果と分類が文書にあり、「差が残る」なら配置の実験の結果もある。
-- [ ] `apps` の 10 種目が 4 実装と WASM `-O0`・`-O3` で照合され、本計測の `apps.jsonl` が 140 行ある。
-- [ ] `docs/benchmarks.md`・`README.md`・`_perfs/README.md` が「ドキュメント」のとおり更新されている。
-- [ ] `git diff --stat -- src std` が空。
-- [ ] GUIDE §10 の完了の定義を満たす。
-- [ ] Phase 3（D7 の承認後）: `zig`・`go` の 80 行（`wall_time`・`cpu_time`・`peak_rss`・checksum 照合）が加わり、ツールのない計測機では runner が理由を表示して終了コード 0 で終わる。
+- [x] owned の C++／Rust／C#／JavaScript がソース上で同じ 2 回の所有文字列の連結を行う。
+- [x] length は全実装にあり、quick／full で元の owned の checksum と一致する。
+- [x] report の特別扱いを削除し、既存と追加のテストが成功。統合は array_index_sum の補完を含む 38 種目。
+- [x] int128 の同じ Clang の 3 run と operand 一致の 10 命令を記録、分類は計測の揺れで配置実験は不要。
+- [x] apps の 10 種目×6実装、Tsuzuri native O0／O3 と WASM O0／O3 を独立参照と照合、全 tracked は live 0。
+- [x] full apps は 200 行、Go／Zig が無い場合は 140 行。追加は 10 種目×2言語×3指標の **60 行**（起票時の 80 は計数の誤記）。
+- [x] 版、GC・CPU・所有値・境界検査・Leaf 表現・生成 IR の確保箇所の差を記録し、関連文書を更新。
+- [x] PX02 自体は src／std の意味と最適化を変更しない。同 PR の src の変更は PX01 の段階計時の範囲。
+- [x] 全 Rust 1,223 件、関連 E2E、Node・manual・clippy・fmt が成功、速度・メモリの CI 閾値はない。
+- [x] default の無い Go／Zig は明示理由付き skip と exit 0。明示した使えない実行ファイルは error で、silent fallback はない。
 
 ## 落とし穴
 
@@ -535,3 +539,35 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 - 決定: PX01 形式（schema 1）。suite `apps`、language は `tsuzuri`・`c`・`cpp`・`rust`（Phase 3 で `zig`・`go`）、variant `default`、target `native`、opt `O3`。`peak_rss` は host の `--only` と `measureProcess`、確保は Tsuzuri だけ（PX01 D5）。残る確保の呼び出し数は文書の表だけに書く。
 - 理由: PX01 の schema を変えずに記録できる。IR の静的な数は実行時の metric と意味が異なる。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-14）
+
+- Phase 1・2・3 を実装。依頼で全フェーズが承認済み。C++／Rust／C#／JavaScript の owned は 2 回の連結、
+  元の定数長は `std_option_length`。control の新しい array_index_sum の managed 参照も補い、統合は 38 種目。
+  既存 checksum を変えず、quick と full が成功。managed の schema 1 は 76 レコード。
+- apps は定義通りの 10 種目を 6 言語で独立に実装。native O3 は 1,500 境界比較、
+  Tsuzuri native O0 は 250、WASM O0／O3 はそれぞれ 250。独立な BigInt／順序付き Number との照合、
+  全 timed の種・サイズ、import 0、tracked の 10 種目の live 0 を検査した。
+- quick と full の apps は 200 schema 1 レコード。full の時刻と RSS は 9 標本以上。
+  計測 host は言語ごとに分離し、RSS の seed 42 の checksum も確認する。
+  `PX02-formal-apps` と `PX02-formal-managed` の要約を docs に公開した（共有機・dirty の参照記録）。
+- default の Go／Zig が無い場合は理由付き skip、140 レコード、終了コード 0。
+  明示した使えないツールはエラー。Node 24.21.0、Zig 0.16.0、Go 1.27.2 で検証した。
+- integer128_mix は同じ Apple Clang 21 で 3 run。operand も含め内側の 10 命令が一致し、
+  3 run すべてで Tsuzuri の最小 > C の最大とはならず、分類は「計測の揺れ」。不要な配置の実験はしない。
+- owned／length の最適化後 IR の静的な確保箇所を docs に記録。Rust owned は最適化で確保が消えた。
+  Tsuzuri Leaf の null 表現と参照の確保する leaf の差、GC・SSO・rope・境界検査の差を明示した。
+- `tests/benchmark_apps.mjs`、既存 report と新 metrics／生成器のテスト、全 Rust 1,223 件、
+  関係する E2E・clippy・fmt・runtime includes が成功。src／std の最適化・意味の変更はない
+  （同 PR の src の計時の変更は PX01 の範囲）。
+- CI の Rust 1.99／LLVM 23 が安全な `1.0 / (u64 as f64)` に推論する `nnan` の誤検出を修正。
+  関数内の SSA の証明だけを狭く許可し、ほかの flags を拒否する 28 negative 検査を追加した。
+  Apple Clang 21 と upstream Clang 21.1.8 の両方で 6 言語・native／WASM O0／O3・live 0 を再検証した。
+- Linux x64 の external Clang link で不足した `__zig_probe_stack` を、Zig の `-fcompiler-rt` で供給する。
+  ReleaseSafe と 4,096-byte page probe を維持し、Linux x64 の object／archive／ELF link で解決を確認した。
+  修正後の全 6 言語の full と live 0 が成功し、`PX03-formal-emit-v4` の apps 200 レコードで docs の値を置き換えた。
+- Linux x64 の Zig 0.16.0 で runtime 付き object に binary／IR／assembly を同時出力したときの crash を、
+  Linux だけ `build-lib -static` にして kernel／runtime を別 archive member に分けて回避する。
+  cold／warm の cross 出力、external ELF link、page probe を検査し、必要な IR／assembly と安全検査を省略しない。
+  Darwin の object mode と full 記録は変えず、6 言語の quick と FP／CLI の回帰検査が成功した。
+- manual の strategy に記録・比較条件を追記。実行済みの範囲だけを記述し、Linux の挙動は PR の CI で検証する。

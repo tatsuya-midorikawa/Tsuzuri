@@ -1994,6 +1994,7 @@ fn help() -> String {
 }
 
 fn main() -> ExitCode {
+    let _time_passes = tsuzuri::timings::Report::start();
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{}", help());
@@ -2076,6 +2077,7 @@ fn main() -> ExitCode {
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
     }
+    let load_time = tsuzuri::timings::Phase::start("load");
     let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
         Project::load_for_tests(&arguments.input)
     } else if arguments.action == Action::Doc {
@@ -2085,6 +2087,7 @@ fn main() -> ExitCode {
     } else {
         Project::load(&arguments.input)
     };
+    drop(load_time);
     let project = match loaded {
         Ok(project) => project,
         Err(error) => {

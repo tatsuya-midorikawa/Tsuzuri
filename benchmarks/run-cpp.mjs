@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (Number(process.versions.node.split(".")[0]) < 24) {
   throw new Error("This benchmark requires Node.js 24+; older V8 versions can crash while optimizing BigInt reference checks.");
 }
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-cpp.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-cpp.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--artifacts directory] [--metrics directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -22,6 +23,7 @@ const take = (flag, fallback) => {
 const cpu = take("--cpu", "generic");
 const scale = Number(take("--scale", "1"));
 const artifacts = take("--artifacts", null);
+const metrics = take("--metrics", null);
 if (!["generic", "native"].includes(cpu)) throw new Error(usage);
 const quick = args.includes("--quick");
 const positional = args.filter((arg) => arg !== "--quick");
@@ -35,6 +37,7 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? process.env.RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
   cwd: root, encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
+  env: metrics ? { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") } : process.env,
 });
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -136,10 +139,12 @@ const tsuzuriFlags = ["-O3", "--cpu", cpu];
 const rustFlags = ["--edition=2021", "--crate-type=staticlib", "-C", "opt-level=3",
   "-C", "panic=abort", "-C", "codegen-units=1", "-C", "lto=off"];
 if (cpu === "native") rustFlags.push("-C", "target-cpu=native");
+const context = metrics ? captureRun(metrics, { compiler, clang, rustc, mode: quick ? "quick" : "benchmark" }) : null;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-cpp-benchmark-"));
 
 try {
-  const objects = [];
+  const objects = [], trackedObjects = [];
+  let trackedTaskRuntime = false;
   for (const [source, name] of [["benchmarks/Mix.tz", "mix"], ["benchmarks/cpp/Kernels.tz", "kernels"]]) {
     const object = join(temporary, `${name}.o`);
     const inputDirectory = join(temporary, name);
@@ -148,6 +153,17 @@ try {
     copyFileSync(source, input);
     run(compiler, ["build", input, "--emit", "object", ...tsuzuriFlags, "-o", object]);
     run(compiler, ["build", input, "--emit", "header", "-o", join(temporary, `${name}.h`)]);
+    if (metrics) {
+      const ir = join(temporary, `${name}.ll`), optimized = join(temporary, `${name}.optimized.ll`);
+      run(compiler, ["build", input, "--emit", "llvm", ...tsuzuriFlags, "-o", ir]);
+      run(clang, [...flags.filter((flag) => !flag.startsWith("-std=")), "-Wno-override-module", "-S", "-emit-llvm", ir, "-o", optimized]);
+      const text = readFileSync(optimized, "utf8");
+      trackedTaskRuntime ||= text.includes("declare void @tsuzuri_task_parallel(");
+      const tracked = join(temporary, `${name}.tracked.ll`), trackedObject = join(temporary, `${name}.tracked.o`);
+      writeFileSync(tracked, instrumentAllocations(text));
+      run(clang, ["-O0", "-fPIC", "-Wno-override-module", "-c", tracked, "-o", trackedObject]);
+      trackedObjects.push(trackedObject);
+    }
     objects.push(object);
   }
   const native = join(temporary, platform() === "win32" ? "benchmark.exe" : "benchmark");
@@ -185,6 +201,24 @@ try {
       ? workload.tsuzuri_median_ms / workload.rust_median_ms : null;
     for (const name of ["cpp", "rust"]) workload[`tsuzuri_wall_over_${name}`] = workload[`${name}_wall_median_ms`] > 0
       ? workload.tsuzuri_wall_median_ms / workload[`${name}_wall_median_ms`] : null;
+  }
+  if (metrics) {
+    const allocator = join(temporary, "tracked_alloc.o");
+    run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", "benchmarks/tracked_alloc.c", "-o", allocator]);
+    const runtime = join(temporary, "tracked_task.o");
+    if (trackedTaskRuntime) run(clang, ["-x", "c", "-std=c11", "-O3", "-fPIC", "-pthread", "-c", "src/runtime/task.c", "-o", runtime]);
+    const tracked = join(temporary, "tracked");
+    run(clang, ["--driver-mode=g++", ...flags, "-DTRACKING", "benchmarks/cpp/native.cpp", "-I", temporary,
+      ...trackedObjects, allocator, rustLibrary, ...(trackedTaskRuntime ? [runtime] : []), "-lm", "-pthread",
+      ...(platform() === "linux" ? ["-ldl"] : []), "-o", tracked]);
+    const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
+    assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));
+    const records = inProcessRecords(context, "cpp", result.workloads, ["cpp", "rust", "tsuzuri"].map((name) => [name, name]), { cpu });
+    for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
+      records.push(makeRecord(context, { suite: "cpp", workload: work.name, size: work.size, language: "tsuzuri",
+        opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+    }
+    writeRecords(metrics, "cpp", records);
   }
   if (artifacts) {
     mkdirSync(resolve(artifacts), { recursive: true });

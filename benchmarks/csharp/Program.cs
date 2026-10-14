@@ -86,6 +86,7 @@ static class Program
 static unsafe class Kernels
 {
     const ulong Multiplier = 6364136223846793005, Increment = 1442695040888963407;
+    static readonly string Hello = "hello", World = " world", Bang = "!";
     struct Node { public ulong Value; public Node* Next; }
     readonly record struct State<T>(T Value, long Remaining);
 
@@ -122,7 +123,7 @@ static unsafe class Kernels
                     total = unchecked(total + factor * ((ulong)index + 1));
                 }
                 return total;
-            case "array_sum": return Array(count, seed, false, false);
+            case "array_sum": case "array_index_sum": return Array(count, seed, false, false);
             case "array_copy": return Array(count, seed, true, false);
             case "list_sum": return List(count, seed);
             case "closure_capture": return ClosureCapture(count, seed);
@@ -380,7 +381,11 @@ static unsafe class Kernels
                     ulong? option = (state & 7) == 0 ? null : state ^ salt;
                     state = option.HasValue ? Mix(option.Value, salt) : state ^ salt;
                     break;
-                case "std_option_owned": state = Mix(state, salt) ^ ((state & 7) == 0 ? 0UL : 12UL); break;
+                case "std_option_owned":
+                    string? text = (state & 7) == 0 ? null : Hello + World;
+                    state = Mix(state, salt) ^ (text is null ? 0UL : (ulong)(text + Bang).Length);
+                    break;
+                case "std_option_length": state = Mix(state, salt) ^ ((state & 7) == 0 ? 0UL : 12UL); break;
                 case "owned_capture": state = Mix(values[(int)(state & 255)], state); break;
                 default: throw new ArgumentException($"Unknown computation: {name}");
             }

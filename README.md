@@ -854,6 +854,7 @@ tsuzuri lsp
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
+- **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 
 ---
 
@@ -918,7 +919,20 @@ node scripts/check-docs.mjs
 
 ### ベンチマーク測定
 
-C/C++、Rust、C#、JavaScript との 36 種目にわたる詳細な性能比較スクリプトを提供しています。
+C/C++、Rust、C#、JavaScript との 38 種目にわたる詳細な性能比較スクリプトを提供しています。
+
+PX01 → PX03 → PX02 の計測基盤を全実装フェーズまで実装しました。現行の frontend cache と成果物 cache を区別し、
+従来の stdout を保った JSON Lines の記録、決定的なビルド入力、同じ仕事を行う実アプリ型の比較を提供します。
+Go・Zig の比較を含む全実装フェーズの方針は [_perfs/README.md](_perfs/README.md#px01px03px02-の実装方針2026-10-13) にあります。
+共有 CI に性能の合否閾値は置かず、未実測のホストでの性能は主張しません。
+macOS の実行ファイルの決定性は、既存のリンカーが毎回変える UUID と署名だけを除いて検査します。
+native Windows の標準 COFF object は Clang が書く `TimeDateStamp`（header の offset 4、4 bytes）だけを除き、
+コード・データ・ほかの header とファイルサイズを厳密に比較します。
+コンパイラの既定の出力は変更しません。
+大規模な合成 WASM `-O3` には LLVM 21 の最適化時間の制限があるため、標準のビルド比較は 200 module まで、
+1,000 module のその組は `--large-wasm` で明示します。native と WASM `-O0` の 1,000 module は標準で検査します。
+大規模 native `-O0` の既存の Mach-O import-stub 順序の変動は warning と補助 manifest に残し、
+ソースの参照値・IR・サイズの検査と区別します。
 
 ```sh
 # 基本ベンチマークの実行
@@ -926,6 +940,12 @@ node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
 node benchmarks/run-computations.mjs target/release/tsuzuri
+node benchmarks/run-control.mjs target/release/tsuzuri --metrics target/perf/PX01-example
+node benchmarks/metrics.mjs process target/release/tsuzuri --out target/perf/PX01-example
+node benchmarks/metrics.mjs report target/perf/PX01-after --baseline target/perf/PX01-before
+node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-example
+node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
+node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）

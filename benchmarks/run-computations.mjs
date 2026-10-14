@@ -5,17 +5,18 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, parseCompilerDiagnostics, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-computations.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory]";
+const usage = "Usage: node benchmarks/run-computations.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory] [--metrics directory]";
 const options = {};
 const positional = [];
 let quick = false;
 for (let index = 0; index < args.length; ++index) {
   const arg = args[index];
   if (arg === "--quick" && !quick) quick = true;
-  else if (["--cpu", "--baseline", "--artifacts", "--scale"].includes(arg) && options[arg] === undefined) {
+  else if (["--cpu", "--baseline", "--artifacts", "--scale", "--metrics"].includes(arg) && options[arg] === undefined) {
     const value = args[++index];
     if (value === undefined || value.startsWith("--")) throw new Error(usage);
     options[arg] = value;
@@ -32,6 +33,7 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? process.env.RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
   cwd: root, encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"],
+  env: options["--metrics"] ? { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") } : process.env,
 });
 const wrap = (value) => BigInt.asUintN(64, value);
 const hex = (value) => wrap(value).toString(16).padStart(16, "0");
@@ -59,7 +61,7 @@ function reference(name, count, seed) {
         : (first & 3n) === 0n ? mix(first, salt) : mix(first, salt) ^ salt;
     } else if (name === "std_option") {
       state = (state & 7n) === 0n ? state ^ salt : mix(state ^ salt, salt);
-    } else if (name === "std_option_owned") {
+    } else if (name === "std_option_owned" || name === "std_option_length") {
       state = mix(state, salt) ^ ((state & 7n) === 0n ? 0n : 12n);
     } else if (name === "owned_capture") state = mix(values[Number(state & 255n)], state);
     else throw new Error(`Unknown workload ${name}`);
@@ -81,8 +83,9 @@ if (cpu === "native") {
   else throw new Error(`Unsupported architecture for --cpu native: ${arch()}`);
   rustFlags.push("-C", "target-cpu=native");
 }
-const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-computation-benchmark-"));
 const source = join(root, "benchmarks/computations/Main.tz");
+const context = options["--metrics"] ? captureRun(options["--metrics"], { compiler, clang, rustc, mode: quick ? "quick" : "benchmark" }) : null;
+const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-computation-benchmark-"));
 
 try {
   let baselineSource = source;
@@ -97,7 +100,8 @@ try {
     });
     if (supported.error) throw supported.error;
     if (supported.status !== 0) {
-      if (supported.status !== 1 || JSON.parse(supported.stderr).code !== "E0002") {
+      const diagnostics = parseCompilerDiagnostics(supported.stderr);
+      if (supported.status !== 1 || diagnostics.length !== 1 || diagnostics[0].code !== "E0002") {
         throw new Error(`Baseline capability check failed:\n${supported.stderr}`);
       }
       const legacy = join(temporary, "before-source");
@@ -129,9 +133,7 @@ try {
     const tracked = join(temporary, `${label}.tracked.ll`);
     // Count surviving allocations, not allocations LLVM already removed. Drop inferred effects
     // before adding instrumentation, and do not optimize the instrumented IR a second time.
-    writeFileSync(tracked, readFileSync(join(temporary, `${label}.opt.ll`), "utf8")
-      .replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free")
-      .replace(/^attributes #\d+ = .*\n/gm, "").replace(/ #\d+\b/g, ""));
+    writeFileSync(tracked, instrumentAllocations(readFileSync(join(temporary, `${label}.opt.ll`), "utf8")));
     const trackedObject = join(temporary, `${label}.tracked.o`);
     run(clang, ["-O0", "-fPIC", "-Wno-override-module", "-c", tracked, "-o", trackedObject]);
     trackedObjects.push(trackedObject);
@@ -152,7 +154,9 @@ try {
   run(clang, [...hostFlags, "-S", "-emit-llvm", host, "-o", join(temporary, "cpp.opt.ll")]);
   const result = JSON.parse(run(native, quick ? ["--quick"] : ["--scale", String(scale)]));
   const tracked = join(temporary, "tracked");
-  run(clang, [...hostFlags, "-DTRACKING", host, ...trackedObjects, rustObject, "-lm", "-o", tracked]);
+  const allocator = join(temporary, "tracked_alloc.o");
+  run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", "benchmarks/tracked_alloc.c", "-o", allocator]);
+  run(clang, [...hostFlags, "-DTRACKING", host, ...trackedObjects, allocator, rustObject, "-lm", "-o", tracked]);
   const allocations = JSON.parse(run(tracked, ["--quick"]));
   for (const [index, workload] of result.workloads.entries()) {
     assert.equal(workload.checks.length, 25);
@@ -263,6 +267,28 @@ try {
     }
   }
   result.extensions = { target: "wasm32", count: Number(extensionCount), repeats: extensionRepeats, raw_ms: extensionSamples, times: Object.fromEntries(Object.entries(extensionSamples).map(([name, samples]) => [name, stats(samples)])) };
+  if (options["--metrics"]) {
+    const variants = [["cpp", "cpp"], ["rust", "rust"], ["direct", "tsuzuri", "direct"], ["computation", "tsuzuri", "computation"],
+      ...(baseline ? [["before", "tsuzuri", "before"]] : [])];
+    const records = inProcessRecords(context, "computations", result.workloads, variants, { cpu });
+    for (const work of result.workloads) {
+      for (const [variant, values] of Object.entries(work.allocations_at_size_64)) {
+        for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
+          records.push(makeRecord(context, { suite: "computations", workload: work.name, size: 64, language: "tsuzuri", variant,
+            opt: "O3", cpu_mode: cpu, metric, samples: [values[field]] }));
+        }
+      }
+      for (const [label, samples] of Object.entries(work.wasm.raw_ms)) {
+        records.push(makeRecord(context, { suite: "computations", workload: work.name, size: work.wasm.size, language: "tsuzuri",
+          variant: label === "current" ? "computation" : label, target: "wasm32", opt: "O3", cpu_mode: cpu, metric: "wall_time", samples }));
+      }
+    }
+    for (const [label, , bytes] of wasmModules) records.push(makeRecord(context, {
+      suite: "computations", workload: "module", language: "tsuzuri", variant: label === "current" ? "computation" : "before",
+      target: "wasm32", opt: "O3", cpu_mode: cpu, metric: "wasm_bytes", samples: [bytes],
+    }));
+    writeRecords(options["--metrics"], "computations", records);
+  }
   if (options["--artifacts"]) {
     const destination = resolve(options["--artifacts"]);
     mkdirSync(destination, { recursive: true });

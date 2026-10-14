@@ -43,8 +43,10 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 - 0.95 以上 0.99 未満: 4 種目（`computations/checked`、`array_for`、`array_bind`、`std_result`）。
 - 0.95 未満: 7 種目。`utf16_compare` 0.497（最速は JavaScript）、`utf8_roundtrip` 0.658（C++）、`format_parse` 0.751（C#）、`task_parallel` 0.768（C#）、
   `std_option` 0.873（Rust）、`integer128_mix` 0.891（C）、`std_option_owned` 約 0.09（C++）。
-- `integer128_mix` の内側のループは、2026-09-29 の確認で C の参照実装と命令単位で同一でした。差は配置や計測条件による可能性があり、PX02 で再計測します。
-- `std_option_owned` の C++／Rust の参照実装は文字列を確保せず定数の長さを使うため、確保の条件がそろっていません（PX02、PM06）。
+- `integer128_mix` の内側のループは、2026-09-29 の確認で C の参照実装と命令単位で同一でした。
+  2026-10-14 の同じ Clang の 3 run でも operand を含む 10 命令が一致し、差の分類は「計測の揺れ」でした。
+- 2026-09-26 の `std_option_owned` は参照が定数長で、確保の条件がそろっていません。
+  2026-10-14 の PX02 で全実装の連結をそろえ、元の式は std_option_length に分けました。履歴の値は直接比べません。
 
 僅差は一般的な優位性を示しません。C より明確に速い種目はまだありません。
 
@@ -57,7 +59,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 ### ビルド速度
 
-`--no-cache`、各 1 回の参考値です（PX03 で正式に計測します）。合成プロジェクトは各モジュールに 20 個の関数を持つ生成コードです。
+`--no-cache`、各 1 回の 2026-09-29 の参考値です。PX03 の現行の正式な記録は
+[ビルド速度](../docs/benchmarks.md#ビルド速度) にあり、生成規則の違うこの表とは直接比較しません。合成プロジェクトは各モジュールに 20 個の関数を持つ生成コードです。
 
 | 対象 | 行数 | check | IR 出力 | 実行ファイル `-O0` | 実行ファイル `-O3` | コンパイラの最大 RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -75,9 +78,9 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PX01 | [性能指標の拡張と記録の継続](PX01-metrics.md) | P0 | M | – | todo |
-| PX02 | [実アプリ型ベンチマークと比較対象の拡充](PX02-workloads.md) | P0 | L | PX01 | todo |
-| PX03 | [ビルド速度ベンチマーク](PX03-build-benchmarks.md) | P0 | M | PX01 | todo |
+| PX01 | [性能指標の拡張と記録の継続](_completed/PX01-metrics.md) | P0 | M | – | done |
+| PX02 | [実アプリ型ベンチマークと比較対象の拡充](_completed/PX02-workloads.md) | P0 | L | PX01 | done |
+| PX03 | [ビルド速度ベンチマーク](_completed/PX03-build-benchmarks.md) | P0 | M | PX01 | done |
 
 ### PR. 実行速度
 
@@ -140,6 +143,47 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 ## 推奨フェーズ
 
+### PX01・PX03・PX02 の実装方針（2026-10-13）
+
+今回の実装は PX01 → PX03 → PX02 の順に、各チケットの全実装フェーズを対象にします。
+Phase 1 だけに限定する起票時の注記より、全フェーズの実装と判断を許可した依頼を優先します。
+Go・Zig は計測用のローカルなツールとして扱い、既定の名前が見つからない場合は理由付きで skip、
+`TSUZURI_GO`・`TSUZURI_ZIG` に明示した実行ファイルが使えない場合はエラーにします。
+
+着手時の `dadc6d8b` と起票時の仕様の差は、次のように扱います。
+
+- G17 の frontend cache は実装済みです。初回の `check` は `TSUZURI_CACHE_DIR=` で両方の cache を無効にし、
+  再ビルド・編集後の計測だけ専用の一時 cache を使います。`parse` は cache からの構文木の復号も含み、
+  `cache` は frontend cache の準備・保存と whole-build cache の操作を合算します。段は入れ子にしません。
+- Apple のリンカーは、変更前のコンパイラでも Mach-O 実行ファイルの `LC_UUID` と、それに依存する署名を
+  毎回変えます。既定の成果物を変えないため、この 2 領域だけを除いた SHA-256 で実行ファイルの決定性を検査します。
+  コード・データ・その他のメタデータと成果物サイズは照合対象のままです。IR・header・object・WASM は byte 単位で照合します。
+- control は `array_index_sum` を含む 16 種目です。既存種目を消さず、件数の検査は現行の種目表に合わせます。
+  C#・JavaScript に欠けていた同種目の参照も補い、定数長の追加後は統合 runner が 38 種目になります。
+- 合成プロジェクトの `main :: unit -> i32` は現行の IO の記法で `let! line = IO.read_line ()` とします。
+  通常の `let` は IO の値を実行しないため、起票時の略記をそのまま生成コードには使いません。
+- PX03 Phase 2 は C++ と Rust の single／workspace も含めます。Zig の最適化版は安全検査を保つ
+  ReleaseSafe とし、実際のコマンド・ツールの版・Go の環境は補助 manifest に記録します。
+  C／C++ の高速な連続編集には GNU make の `--what-if=<変更ファイル>` を使い、最終実行ファイルだけを
+  計測前に削除して必ず再リンクします。秒単位の mtime による誤った変更なしビルド・再リンクの省略を防ぎ、
+  変更していないソースと object は保持します。
+- 現行の LLVM 21（Apple 21.0.0 と upstream 21.1.8 の両方）では、合成 1,000 module の WASM `-O3` が
+  10 分の単一プロセス予算を超えます。最適化 pass の sampling と before の出力を残し、これを高速化とは扱いません。
+  標準の本計測はその 1 組だけ理由付きで除外し、WASM `-O3` は 200 module と実プロジェクトで測ります。
+  `--large-wasm` を明示すれば元の全組を要求でき、timeout はエラーです。native 1,000 module と WASM `-O0` は
+  標準の検査・計測に残します。意味や LLVM の最適化指定を変えて通すことはしません。
+- 1,000 module の native `-O0` では、変更前から Apple のリンカーが memcpy／bzero などの import stub の
+  順序を変え、呼び出しのアドレスと実行ファイルの fingerprint が 2 通りになります。同じ symbol への呼び出し、
+  参照値、サイズは一致します。コードの byte を追加で正規化して隠さず、この既存の変動を理由付きの warning と
+  補助 manifest の fingerprint 列に残します。IR／WASM と、それ以外の組の厳密な比較は維持します。
+- C09・C10・C11・D08 は実装済みですが、PX02 の比較条件は変えません。Map／Set は整列配列、
+  spectral norm は規定の逐次加算を用い、追加の HashMap・Arena・JSON 種目は今回の対象外です。
+- 旧 `_docs/tools/command-line.md` の更新先は、現在の
+  [_tsuzuri/language-reference/compiler/option.md](../_tsuzuri/language-reference/compiler/option.md) と
+  [usage.md](../_tsuzuri/language-reference/compiler/usage.md) です。
+- データの外部保管先や専用 Linux 実機を新たに契約・調達しません。実装の移植性検査と、実際に利用できる
+  macOS 実機の測定を分け、未実測のホストの性能を主張しません。生データは引き続き `target/perf/` に保存します。
+
 | フェーズ | 目的 | チケット（推奨順） |
 | --- | --- | --- |
 | 1. 計測 | 同じ条件で差を測れる状態にする | PX01 → PX03、PX02 |
@@ -190,6 +234,9 @@ graph LR
 - 利用者から見える振る舞いや、言語リファレンスに書いた性能特性（計算量、SIMD・並列・GPU の対応、ビルドの速さなど）を変えたら、同じ PR で
   `_tsuzuri/language-reference/` の関連ページを最新にする（[GUIDE §8](../_features/GUIDE.md#8-ドキュメント更新規約)）。
 - 計測結果は、日付・計測機・コミット・コンパイラの版・生データの保存先とともに [docs/benchmarks.md](../docs/benchmarks.md) に記録する。
+- before／after は PX01 形式で `target/perf/<ID>-before`・`<ID>-after` に保存し、
+  `node benchmarks/metrics.mjs report <after> --baseline <before>` の表を完了報告に添える。
+  quick の測定は公開せず、比較の判定を CI の合否に使わない。
 - 高速化の効果が計測で確認できない場合は、既定の経路にせず、チケットに結果を記録して判断を仰ぐ。
 - 言語仕様・内部表現・既定の出力を変える施策は、チケットの「決定事項」で `要承認` とし、承認を得てから実装する。
 
@@ -204,9 +251,7 @@ graph LR
 
 | チケット | 要承認の決定 |
 | --- | --- |
-| PX02 | D7（Zig・Go の計測機への導入と Phase 3） |
-| PX03 | D9（Phase 2: Go・Zig との比較） |
-| PX01 | D3（生データの長期保管）、D8（Linux 計測機） |
+| PX01 | D3（生データの長期保管）、D8（専用 Linux 計測機）。ソフトウェアの全フェーズとは別の運用・調達 |
 | PR03 | D3（Phase 3 の型付き IR での展開） |
 | PR04 | D4（表の追加による約 20 KB の増加） |
 | PR05 | D7（Phase 2） |

@@ -12,6 +12,41 @@ fn mix(value: u64, salt: u64) -> u64 {
         .wrapping_add(salt)
 }
 
+struct OwnedUtf16 {
+    pointer: *mut u16,
+    length: usize,
+}
+
+impl OwnedUtf16 {
+    fn as_slice(&self) -> &[u16] {
+        unsafe { core::slice::from_raw_parts(self.pointer, self.length) }
+    }
+}
+
+impl Drop for OwnedUtf16 {
+    fn drop(&mut self) {
+        unsafe { free(self.pointer.cast()) }
+    }
+}
+
+fn concat(left: &[u16], right: &[u16]) -> OwnedUtf16 {
+    let Some(length) = left.len().checked_add(right.len()) else {
+        unsafe { abort() }
+    };
+    let Some(bytes) = length.checked_mul(core::mem::size_of::<u16>()) else {
+        unsafe { abort() }
+    };
+    unsafe {
+        let pointer = malloc(bytes.max(1)).cast::<u16>();
+        if pointer.is_null() {
+            abort();
+        }
+        core::ptr::copy_nonoverlapping(left.as_ptr(), pointer, left.len());
+        core::ptr::copy_nonoverlapping(right.as_ptr(), pointer.add(left.len()), right.len());
+        OwnedUtf16 { pointer, length }
+    }
+}
+
 fn run_loop<const KIND: u8>(count: i64, seed: i64) -> i64 {
     if count < 0 {
         unsafe { abort() }
@@ -50,6 +85,14 @@ fn run_loop<const KIND: u8>(count: i64, seed: i64) -> i64 {
                 };
                 value.map(|value| mix(value, salt)).unwrap_or(state ^ salt)
             }
+            5 => {
+                const HELLO: [u16; 5] = [104, 101, 108, 108, 111];
+                const WORLD: [u16; 6] = [32, 119, 111, 114, 108, 100];
+                const BANG: [u16; 1] = [33];
+                let text = if state & 7 == 0 { None } else { Some(concat(&HELLO, &WORLD)) };
+                let length = text.map(|text| concat(text.as_slice(), &BANG).length as u64).unwrap_or(0);
+                mix(state, salt) ^ length
+            }
             _ => mix(state, salt) ^ if state & 7 == 0 { 0 } else { 12 },
         };
     }
@@ -71,7 +114,8 @@ loop_kernel!(rust_checked, 1);
 loop_kernel!(rust_delayed, 2);
 loop_kernel!(rust_std_option, 3);
 loop_kernel!(rust_std_result, 1);
-loop_kernel!(rust_std_option_owned, 4);
+loop_kernel!(rust_std_option_owned, 5);
+loop_kernel!(rust_std_option_length, 4);
 
 #[no_mangle]
 #[inline(never)]
