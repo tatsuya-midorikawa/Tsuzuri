@@ -273,6 +273,9 @@ flowchart TD
 外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
 同じ段は合算し、入れ子の二重計上はしません。`parse` は frontend cache からの復号も、
 `cache` は frontend cache の準備・保存と成果物 cache の操作も含みます。
+`emit` は LLVM IR・header・GPU カーネルの生成に加え、Windows ABI・CodeView・no-red-zone、
+WASM の heap／host／runtime の IR 変換と、freestanding header の IR の検査も含みます。
+Clang・リンカーの実行は `emit` に含めず、それぞれの `tool.*` に分けます。
 `total_ms` は引数解析、成果物の書き出し、`run` の実行先など、個別の段に入れない時間も含みます。
 
 失敗したコマンドでも、元の診断と終了コードを保ったまま最後に出します。LSP ではサーバーの終了時です。

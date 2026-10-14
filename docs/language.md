@@ -18,6 +18,7 @@ WebAssembly における SIMD128 機能は、`build --target wasm32 --wasm-featu
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
 `1` 以外では無効です。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
+`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、外部ツールの時間とは分けます。
 
 - ソースファイル拡張子は `.tz`（通常のプログラムコード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）です。
   ファイルエンコーディングは UTF-8（先頭 BOM の有無を許容）、改行コードは LF または CRLF に対応します。識別子は ASCII 英字またはアンダースコア `_` で始まり、英数字または `_` が後続します。

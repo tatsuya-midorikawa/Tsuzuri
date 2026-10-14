@@ -2086,7 +2086,7 @@ macOS は `/usr/bin/time -l`、Linux は GNU time 1.8 以上の `/usr/bin/time -
 | `peak_rss` | bytes | 子プロセスのうち最大の 1 つを含む RSS。合計ではない。コンパイラ単体は check／IR 出力で読む |
 | `alloc_calls`・`alloc_bytes` | count・bytes | 最適化後の Tsuzuri IR の確保回数・要求バイト数の累計。別の tracked 実行で測る。allocator 自身の計数用ヘッダーは含まない |
 | `executable_bytes`・`object_bytes`・`wasm_bytes` | bytes | 成果物のファイルサイズ。標本間で一致することを検査 |
-| `phase_time` | ms | `TSUZURI_TIME_PASSES=1` の段と total。段は入れ子にしない |
+| `phase_time` | ms | `TSUZURI_TIME_PASSES=1` の段と total。`emit` は target ごとの IR 処理も含み、外部ツールとは分ける。段は入れ子にしない |
 
 通常は warm-up の後で 9 標本以上を記録します。確保と大きさは決定的な値 1 標本です。
 中央値は偶数個なら中央の 2 値の平均です。比較は中央値の差が両 run の大きい方の最小〜最大の広がり以内なら
@@ -2115,479 +2115,13 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 未コミットの実装を含みます。**共有機で開始時の load average が 4.92 あり、専用の無負荷の計測ではありません。**
 これは 9 標本以上を持つ記録経路の検証と参照用の値で、一般的な速度の勝敗や改善を主張しません。
 実行時の条件は `target/perf/PX02-formal-apps/env.txt`、生データと stdout は各 run のディレクトリです。
+下の managed／core 473 レコードは初回を保ち、apps 200・process 88 は `PX03-formal-emit-v4` の再計測に置き換えました。
+process は `emit` の target IR の計上漏れ、apps は Zig の必要な compiler runtime のリンクを修正後の値です。
+この run は `59a4f1de` の未コミットの修正を含み、同じ toolchain・共有機で開始時の load average は
+process／build が 8.85、apps が 7.09 です。条件は `target/perf/px03-formal-emit-v4{,-apps}-env.txt` に残します。
+旧 run の `emit` の値とは計上範囲が違うため、速度の比較に使いません。
 
 <!-- perf-metrics:start -->
-<p>run: <code>PX02-formal-apps</code> / 2026-10-13T16:14:35.241Z / commit: <code>dadc6d8b0a78</code>（未コミットの変更を含む）<br>CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1<br>Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0<br>Tsuzuri SHA-256: <code>659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc</code></p>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.156</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.213</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.793</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.389</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.979</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.964</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.739</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.544</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.400</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.457</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.569</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.116</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.797</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">34.281</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.672</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20.680</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.408</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.313</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.770</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.751</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.508</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.707</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.387</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.330</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.727</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.503</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.350</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.343</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.836</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.937</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.689</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.834</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.715</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.976</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.517</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.333</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.313</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55.050</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">42.515</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.704</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">21.366</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.848</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.356</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.061</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.367</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.987</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.765</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.608</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.373</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.359</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.411</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.596</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.438</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.251</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.895</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.875</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.959</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.729</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.232</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.099</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.183</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.773</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.326</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.903</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.699</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.648</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.508</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.371</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.395</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.494</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.097</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.707</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">34.192</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.641</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20.598</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.303</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.023</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.740</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.077</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.737</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.497</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.679</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.430</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.298</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.715</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.488</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.333</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.329</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.120</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.870</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.651</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.780</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.662</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.928</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.729</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.231</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.204</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">54.892</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">42.388</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.611</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24.388</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.839</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.348</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.057</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.358</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.980</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.980</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.598</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.358</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.346</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.402</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.588</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.792</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.223</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.865</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.850</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.915</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.689</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.254</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17055744</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12582912</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12517376</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20774912</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15876096</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14123008</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18776064</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11845632</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8617984</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16924672</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">29736960</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13565952</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9977856</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7471104</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7438336</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12500992</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9191424</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14237696</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1818624</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4423680</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11403264</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11468800</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11436032</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14548992</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1966080</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1916928</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10698752</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1802240</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1835008</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11223040</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17760256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17858560</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17809408</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20987904</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15368192</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15433728</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15417344</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18939904</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1769472</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1818624</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1769472</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4489216</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_calls (count) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800005</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">792564</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1018000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_bytes (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12500022</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15038726</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13880746</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36768</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9600000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">38043072</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">48864000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16000192</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13600008</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">164000</code></td>
-</tr>
-</tbody></table>
-</div>
 <p>run: <code>PX02-formal-managed</code> / 2026-10-13T16:16:29.786Z / commit: <code>dadc6d8b0a78</code>（未コミットの変更を含む）<br>CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1<br>Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0<br>Tsuzuri SHA-256: <code>659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc</code></p>
 <div style="overflow-x:auto;max-width:100%">
 <table style="border-collapse:collapse;width:100%;font-size:13px">
@@ -2598,9 +2132,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
@@ -2615,9 +2146,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.323</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.325</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.388</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -2628,9 +2156,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.512</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.524</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
@@ -2645,9 +2170,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.131</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.131</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.149</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -2658,9 +2180,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
@@ -2675,9 +2194,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -2688,9 +2204,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
@@ -2705,9 +2218,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.446</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.445</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -2718,9 +2228,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.518</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.507</code></td>
@@ -2735,9 +2242,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.018</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.033</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -2748,9 +2252,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.391</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.391</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.385</code></td>
@@ -2764,9 +2265,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.304</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.297</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.302</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.300</code></td>
@@ -2779,9 +2277,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.297</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.066</code></td>
@@ -2794,9 +2289,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.301</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
@@ -2809,9 +2301,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.290</code></td>
@@ -2824,9 +2313,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.282</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.281</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
@@ -2839,9 +2325,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.255</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.414</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.413</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.255</code></td>
@@ -2854,9 +2337,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
@@ -2869,9 +2349,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.169</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
@@ -2884,9 +2361,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
@@ -2899,9 +2373,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.177</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.182</code></td>
@@ -2914,9 +2385,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
@@ -2929,9 +2397,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.630</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.635</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.907</code></td>
@@ -2944,9 +2409,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.273</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.270</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.274</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.275</code></td>
@@ -2959,9 +2421,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.511</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.530</code></td>
@@ -2974,9 +2433,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.885</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.885</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.892</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
@@ -2989,9 +2445,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.886</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.891</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
@@ -3005,9 +2458,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.236</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.209</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.240</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3019,9 +2469,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.317</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.362</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.389</code></td>
@@ -3035,9 +2482,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.343</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.347</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.345</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3049,9 +2493,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
@@ -3065,9 +2506,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.041</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.020</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3079,9 +2517,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.111</code></td>
@@ -3095,9 +2530,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.164</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.089</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.106</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3109,9 +2541,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.374</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.326</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.182</code></td>
@@ -3125,9 +2554,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.509</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.508</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3139,9 +2565,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
@@ -3155,9 +2578,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.273</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.271</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.272</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3170,9 +2590,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.241</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.293</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.300</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3181,9 +2598,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-while_mix</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3202,18 +2616,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.521</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.481</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-tail_mix</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3232,18 +2640,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.532</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.089</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-tail_builtin_mix</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3262,18 +2664,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.498</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">46.160</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-array_sum</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3292,18 +2688,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.586</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.758</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-array_copy</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3322,18 +2712,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.239</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.546</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-closure_capture</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3352,18 +2736,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.342</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.750</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-record_pipeline</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3382,18 +2760,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.705</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.214</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-float32_mix</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3412,18 +2784,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.888</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.821</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-integer_mix</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3442,18 +2808,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.518</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.198</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-array_sum</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3472,18 +2832,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.030</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.068</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf16_compare</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3502,18 +2856,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.078</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.351</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf8_roundtrip</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3532,18 +2880,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.272</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.706</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-math_intrinsics</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3562,18 +2904,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.633</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.836</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-task_sequential</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3592,18 +2928,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.226</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41.393</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-bind</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3622,18 +2952,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.817</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.403</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-delayed</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3652,18 +2976,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.077</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-array_bind</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3682,18 +3000,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.064</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_option</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3712,18 +3024,12 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.753</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.561</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_option_owned</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
@@ -3742,26 +3048,8 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.574</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.124</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">641.033</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">651.108</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">38.527</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 </tbody></table>
 </div>
@@ -3774,9 +3062,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
@@ -3789,9 +3074,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.322</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.323</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.387</code></td>
 </tr>
@@ -3800,9 +3082,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.510</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.521</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
@@ -3815,9 +3094,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.130</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.130</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.148</code></td>
 </tr>
@@ -3826,9 +3102,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
@@ -3841,9 +3114,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 </tr>
@@ -3852,9 +3122,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
@@ -3867,9 +3134,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.445</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.444</code></td>
 </tr>
@@ -3878,9 +3142,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.505</code></td>
@@ -3893,9 +3154,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.018</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.033</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 </tr>
@@ -3904,9 +3162,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.390</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.390</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.384</code></td>
@@ -3918,9 +3173,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
@@ -3931,9 +3183,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.055</code></td>
@@ -3944,9 +3193,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.292</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.291</code></td>
@@ -3957,9 +3203,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.287</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.283</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.284</code></td>
@@ -3970,9 +3213,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.279</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.282</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.278</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
@@ -3983,9 +3223,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.254</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.413</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.411</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.254</code></td>
@@ -3996,9 +3233,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
@@ -4009,9 +3243,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
@@ -4022,9 +3253,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
@@ -4035,9 +3263,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.177</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
@@ -4048,9 +3273,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
@@ -4061,9 +3283,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.638</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.628</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.634</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.904</code></td>
@@ -4074,9 +3293,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.268</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.266</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.269</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.270</code></td>
@@ -4087,9 +3303,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.511</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.514</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.509</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.527</code></td>
@@ -4100,9 +3313,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.882</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.883</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.884</code></td>
@@ -4113,9 +3323,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.886</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.884</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
@@ -4127,9 +3334,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.221</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.199</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.230</code></td>
 </tr>
@@ -4139,9 +3343,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.270</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.274</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.307</code></td>
@@ -4153,9 +3354,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.342</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.345</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.343</code></td>
 </tr>
@@ -4165,9 +3363,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
@@ -4179,9 +3374,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.041</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.019</code></td>
 </tr>
@@ -4191,9 +3383,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.053</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.110</code></td>
@@ -4205,9 +3394,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.164</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.089</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.106</code></td>
 </tr>
@@ -4217,9 +3403,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.373</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.325</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.180</code></td>
@@ -4231,9 +3414,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.507</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.506</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.512</code></td>
 </tr>
@@ -4243,9 +3423,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
@@ -4257,9 +3434,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.269</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.261</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.268</code></td>
 </tr>
@@ -4270,24 +3444,8 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.475</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.609</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.645</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">640.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">590.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 </tbody></table>
 </div>
@@ -4857,7 +4015,6 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
 </tr></thead>
 <tbody>
 <tr>
@@ -4865,77 +4022,60 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.011</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.012</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">716.760</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -4946,20 +4086,621 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
 </tr></thead>
 <tbody>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/module</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10908</code></td>
+</tr>
+</tbody></table>
+</div>
+<p>run: <code>PX03-formal-emit-v4</code> / 2026-10-13T23:18:32.615Z / commit: <code>59a4f1de6bb6</code>（未コミットの変更を含む）<br>CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1<br>Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0<br>Tsuzuri SHA-256: <code>ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc</code></p>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.890</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.057</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.837</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.447</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.489</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.142</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.398</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17.141</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.288</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.465</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">22.365</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.212</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.367</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.764</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.683</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.734</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.635</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.623</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.870</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.980</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.845</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.551</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.829</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.322</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.548</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.820</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.573</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.449</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.426</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.957</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.796</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.236</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.811</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.846</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.742</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.528</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.869</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.754</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">56.138</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">43.025</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.466</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">21.047</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.880</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.409</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.113</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.399</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.033</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.888</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.065</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.741</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.803</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.823</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.221</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.690</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.388</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.983</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.992</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.093</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.924</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.592</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24864</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">714.640</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">735.382</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">59.858</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.779</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.995</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.794</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.344</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.326</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.988</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.262</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17.018</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.243</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.412</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">22.229</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.353</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.155</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.575</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.631</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.608</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.444</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.447</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.827</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.970</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.819</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.532</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.779</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.346</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.508</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.814</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.559</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.418</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.380</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.203</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.700</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.124</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.646</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.768</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.637</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.798</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.776</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.657</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55.823</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">42.794</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.311</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24.192</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.866</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.393</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.094</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.389</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.995</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.132</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.047</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.745</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.786</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.802</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.168</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.027</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.328</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.943</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.939</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.053</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.886</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.617</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">670.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17055744</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12582912</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12517376</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20774912</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15908864</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14352384</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18776064</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11845632</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8617984</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16924672</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">29753344</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13451264</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9994240</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7487488</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7438336</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12517376</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9224192</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14204928</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4407296</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11403264</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11468800</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11452416</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14614528</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1949696</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1933312</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10780672</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1802240</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1835008</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1867776</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11157504</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17760256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17858560</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17809408</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">21020672</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15368192</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15433728</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15450112</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19021824</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1769472</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1835008</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1785856</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4521984</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53215232</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53313536</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1720320</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_calls (count) / native / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400003</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200003</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800005</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">792564</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1018000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41</code></td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_bytes (bytes) / native / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12500022</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15038726</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13880746</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36768</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9600000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">38043072</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">48864000</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16000192</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13600008</code></td>
+</tr>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">164000</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -4975,7 +4716,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55.587</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">91.201</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5039,7 +4780,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26345472</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26296320</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5055,42 +4796,42 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.306</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.297</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.038</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.037</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.944</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.889</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.476</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.490</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.328</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.459</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.042</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.045</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.111</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.108</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">42.075</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">44.210</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5107,8 +4848,8 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">214.816</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.937</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">265.296</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">58.704</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5125,7 +4866,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">210.000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
 </tr>
 </tbody></table>
@@ -5161,7 +4902,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50.000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
 </tr>
 </tbody></table>
@@ -5179,7 +4920,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">43810816</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">43728896</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1703936</code></td>
 </tr>
 </tbody></table>
@@ -5196,7 +4937,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.303</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.309</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
@@ -5206,22 +4947,22 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.929</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.878</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.473</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.167</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.132</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.598</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.043</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.042</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
@@ -5231,17 +4972,17 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.794</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.631</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">135.208</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">172.526</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">183.557</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">223.443</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5275,8 +5016,8 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">590.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">550.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">570.000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
 </tr>
 </tbody></table>
@@ -5295,29 +5036,9 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">60.000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.000</code></td>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53641216</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53559296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1720320</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5334,8 +5055,8 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.306</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.296</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.300</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.312</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
@@ -5346,50 +5067,50 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.752</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.765</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.015</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.988</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.697</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.524</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.003</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.306</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.877</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.200</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.916</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.765</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.041</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.045</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.044</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.043</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.101</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.106</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.116</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.120</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.789</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.771</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.654</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.671</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">581.103</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">582.778</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">633.582</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">643.894</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">628.534</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">629.523</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">684.001</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">699.796</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5427,6 +5148,22 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 </div>
 <div style="overflow-x:auto;max-width:100%">
 <table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / wasm32 / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">796.216</code></td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
 <caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / wasm32 / O3 / generic / 中央値</caption>
 <thead><tr>
 <th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
@@ -5437,7 +5174,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">640.000</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5453,7 +5190,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">590.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5469,7 +5206,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20.000</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.000</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5485,7 +5222,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">62242816</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">62095360</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5501,7 +5238,7 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.295</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.312</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
@@ -5511,47 +5248,63 @@ run は `PX02-formal-apps`・`PX02-formal-managed`、commit は `dadc6d8b0a7836a
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.894</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.972</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.089</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.717</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.312</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.643</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.039</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.045</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.097</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.119</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.688</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.497</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">608.367</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">635.124</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.wasm-ld]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.744</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">49.870</code></td>
 </tr>
 <tr>
 <th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
 <td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">700.631</code></td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">760.190</code></td>
+</tr>
+</tbody></table>
+</div>
+<div style="overflow-x:auto;max-width:100%">
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+<caption style="text-align:left;padding:8px 0;font-weight:600">wasm_bytes (bytes) / wasm32 / O3 / generic / 中央値</caption>
+<thead><tr>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
+<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
+</tr></thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
+<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24864</code></td>
 </tr>
 </tbody></table>
 </div>
@@ -5619,17 +5372,20 @@ cache は cache の和、tools は外部ツールの和、other は total との
 最大 RSS は子プロセスの最大の 1 つも含むので、コンパイラ単体の値は check と LLVM IR 出力で読みます。
 CI は macOS／Linux の x64／ARM64 で quick の checksum・記録を検査し、速度を判定しません。
 
-### 初回のビルド記録（2026-10-14）
+### ビルド記録（2026-10-14、計上範囲の修正後）
 
-build の本記録は `PX03-formal-a`（1,206 レコード）です。200 の繰り返しは `PX03-formal-b-retry`、
-1,000 の繰り返しは `PX03-formal-large-repeat-verified` にあり、real 11 の組も照合しました。
-同じキーの比較は `target/perf/PX03-formal-comparison.txt` です。環境は上の初回 runtime 記録と同じ共有機・dirty tree です。
+`emit` の target IR の計上漏れを修正して、200・1,000 module と real 11 の全組を再計測しました。
+現在の build の本記録は `PX03-formal-emit-v4`（build 1,206、process 88、apps 200、計 1,494 レコード）です。
+環境は上の process の再計測と同じ共有機・dirty tree です。開始時の load average は 8.85 でした。
+初回の `PX03-formal-a`、repeat 200 の `PX03-formal-b-retry`、repeat 1,000 の
+`PX03-formal-large-repeat-verified` と同じキーの比較 `target/perf/PX03-formal-comparison.txt` は履歴として残します。
+旧 run 同士の比較は同じ計上範囲ですが、修正後の `emit` と混ぜた速度比較はしません。
 括弧なしの値は wall ms の中央値で、9 標本です。元の最小・最大・全標本は JSON Lines に残します。
 
 | module | check | LLVM IR | native O0 | native O3 | WASM O0 | WASM O3 | warm O0 | body edit O0 | API edit O0 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 200 | 414.335 | 568.546 | 1522.084 | 7129.905 | 1758.742 | 59710.761 | 737.527 | 1738.995 | 1748.025 |
-| 1,000 | 2092.241 | 2840.832 | 7074.753 | 69471.026 | 8143.597 | 予算超過・明示要求のみ | 3166.716 | 7345.885 | 7356.468 |
+| 200 | 450.602 | 610.417 | 1620.294 | 7392.654 | 1831.955 | 65423.082 | 736.460 | 1828.140 | 1880.992 |
+| 1,000 | 2242.939 | 2942.584 | 7231.361 | 72748.937 | 8511.871 | 予算超過・明示要求のみ | 3302.139 | 7942.103 | 7789.017 |
 
 200 の user source は 27,810 行・726,844 bytes、native IR は 7,951,476 bytes、
 1,000 は 139,010 行・3,648,845 bytes、native IR は 36,851,308 bytes です。std の source の処理は時間には含まれます。
@@ -5696,7 +5452,9 @@ peak RSS は言語ごとの host を `--only` で 1 種目だけ起動し、そ�
 全 6 言語なら schema 1 が 200 レコード（wall・CPU・RSS 各 60、確保各 10）、
 Go・Zig がないときは理由付きで 140 レコードです。明示した使えないツールはエラーです。
 
-Zig は 0.16.0 の ReleaseSafe、Go は 1.27.2 の通常の GC と自動 GOMAXPROCS で確認しました。
+Zig は 0.16.0 の ReleaseSafe と `-fcompiler-rt`、Go は 1.27.2 の通常の GC と自動 GOMAXPROCS で確認しました。
+Zig の object を Clang でリンクするため、x64 の `__zig_probe_stack` などの必要な compiler runtime を含めます。
+stack の page probe と安全検査は無効にしません。
 Go の cgo の境界と background GC の CPU は計時に含みます。
 `--cpu native` は C／C++・Rust・Tsuzuri・Zig の指定を変えますが、Go の指定は変わらず、その差を JSON に出します。
 `--cpu native` の比較は別の条件です。ここで確認したのは generic です。

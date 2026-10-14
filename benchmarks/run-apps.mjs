@@ -126,7 +126,8 @@ export async function runApps(options) {
   const rustFlags = ["--edition=2021", "--crate-type=staticlib", "--crate-name=apps_reference",
     "-C", "opt-level=3", "-C", "panic=abort", "-C", "force-unwind-tables=no",
     "-C", "relocation-model=pic", "-C", "codegen-units=1", "-D", "warnings"];
-  const zigFlags = ["-O", "ReleaseSafe", "-fPIC", "-fllvm", "-lc", `-mcpu=${cpu === "native" ? "native" : "baseline"}`];
+  // Clang links these objects, so include Zig's runtime (notably x64 stack probes).
+  const zigFlags = ["-O", "ReleaseSafe", "-fPIC", "-fllvm", "-fcompiler-rt", "-lc", `-mcpu=${cpu === "native" ? "native" : "baseline"}`];
   const goFlags = ["build", "-buildmode=c-archive", "-gcflags=-S"];
   const tsuzuriFlags = ["-O3", "--cpu", cpu];
   try {

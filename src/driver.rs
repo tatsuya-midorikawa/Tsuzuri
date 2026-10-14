@@ -3013,7 +3013,6 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
-    drop(emit_time);
     if platform.windows()
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
@@ -3122,6 +3121,7 @@ fn build_complete(
             ));
         }
     }
+    drop(emit_time);
     // Only a WASM module of a `def main` or an IO entry is a WASI command; objects leave `_start` to the embedder.
     let wasi_command =
         options.emit == Emit::Wasm && (llvm::io_entry(module) || llvm::main_entry(module));

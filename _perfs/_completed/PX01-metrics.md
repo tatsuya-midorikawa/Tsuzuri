@@ -908,6 +908,12 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
   computations の旧 compiler の機能確認を修正した。不正な JSON・metadata はエラーになる。
 - GNU time の版が `UNKNOWN` の distribution build も識別でき、各標本の `-v`・`-o` と
   時間・RSS の欄の検査を維持する。版 1.7 以前や別の time は引き続き拒否する。
+- `emit` の guard を target ごとの IR 変換と freestanding header の IR の検査の後まで延ばし、
+  これらの処理が total だけに入っていた計上漏れを修正した。外部ツール・cache と二重計上しない。
+  Windows IR・WASI WASM・freestanding header も、native／WASM と同じ O0／O3 の byte 一致検査に含める。
+- 計上漏れの修正後、process と 200／1,000 module・real 11 の build をすべて再計測した。
+  `PX03-formal-emit-v4` は process 88・build 1,206 と apps の再計測 200 の計 1,494 レコードで、時刻・RSS は 9 標本以上。
+  docs の process と build の値を置き換え、旧 `emit` の計上範囲と混ぜた速度比較はしない。
 - manual 4 ページの `check-docs` は 218 links、6 examples、native の 6 runs、1 test project を通過した。
 - 無効の計時の before／after の check は中央値 87.115／77.353 ms、広がり 51.346／34.485 ms。
   差は広がり以内で「差なし」。共有機の値から高速化・厳密な 0 コストは主張しない。

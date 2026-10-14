@@ -147,10 +147,20 @@ fn time_passes_does_not_change_artifacts() {
     let temporary = Temporary::new("artifacts");
     let object_source = temporary.path().join("Object.tz");
     fs::write(&object_source, "export def answer :: i64\nfn answer = 42\n").unwrap();
-    for emit in ["llvm", "header", "object", "wasm"] {
+    for (emit, target, wasi) in [
+        ("llvm", "native", false),
+        ("header", "native", false),
+        ("object", "native", false),
+        ("wasm", "wasm32", false),
+        ("llvm", "x86_64-pc-windows-msvc", false),
+        ("wasm", "wasm32", true),
+        ("header", "x86_64-unknown-none", false),
+    ] {
         for opt in ["-O0", "-O3"] {
-            let output = temporary.path().join(format!("{emit}-{opt}"));
-            let source = if emit == "object" {
+            let output = temporary
+                .path()
+                .join(format!("{emit}-{target}-wasi-{wasi}-{opt}"));
+            let source = if emit == "object" || target == "x86_64-unknown-none" {
                 object_source.to_str().unwrap()
             } else {
                 hello()
@@ -162,20 +172,40 @@ fn time_passes_does_not_change_artifacts() {
                 emit,
                 opt,
                 "--no-cache",
+                "--target",
+                target,
                 "-o",
                 output.to_str().unwrap(),
             ];
             let mut args = args.to_vec();
-            if emit == "wasm" {
-                args.extend(["--target", "wasm32"]);
+            if wasi {
+                args.extend(["--wasm-host", "wasi"]);
+            }
+            if target == "x86_64-unknown-none" {
+                args.extend(["--freestanding", "--allocator", "host"]);
             }
             let plain = compiler(&args, None);
             assert!(plain.status.success(), "{:?}", plain);
             let bytes = fs::read(&output).unwrap();
             let timed = compiler(&args, Some("1"));
-            phases(&timed);
+            assert!(phases(&timed).iter().any(|name| name == "emit"));
             assert_eq!(plain.stdout, timed.stdout);
-            assert!(bytes == fs::read(&output).unwrap(), "{emit} {opt}");
+            let timed_bytes = fs::read(&output).unwrap();
+            if bytes != timed_bytes {
+                let offset = bytes
+                    .iter()
+                    .zip(&timed_bytes)
+                    .position(|(plain, timed)| plain != timed)
+                    .unwrap_or(bytes.len().min(timed_bytes.len()));
+                let start = offset.saturating_sub(8);
+                panic!(
+                    "{emit} {target} {opt}: byte {offset}, lengths {} / {}; plain {:02x?}; timed {:02x?}",
+                    bytes.len(),
+                    timed_bytes.len(),
+                    &bytes[start..bytes.len().min(offset + 24)],
+                    &timed_bytes[start..timed_bytes.len().min(offset + 24)],
+                );
+            }
         }
     }
 }

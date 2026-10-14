@@ -563,4 +563,7 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 - CI の Rust 1.99／LLVM 23 が安全な `1.0 / (u64 as f64)` に推論する `nnan` の誤検出を修正。
   関数内の SSA の証明だけを狭く許可し、ほかの flags を拒否する 28 negative 検査を追加した。
   Apple Clang 21 と upstream Clang 21.1.8 の両方で 6 言語・native／WASM O0／O3・live 0 を再検証した。
+- Linux x64 の external Clang link で不足した `__zig_probe_stack` を、Zig の `-fcompiler-rt` で供給する。
+  ReleaseSafe と 4,096-byte page probe を維持し、Linux x64 の object／archive／ELF link で解決を確認した。
+  修正後の全 6 言語の full と live 0 が成功し、`PX03-formal-emit-v4` の apps 200 レコードで docs の値を置き換えた。
 - manual の strategy に記録・比較条件を追記。実行済みの範囲だけを記述し、Linux の挙動は PR の CI で検証する。

@@ -617,6 +617,9 @@ PX03 はコンパイラを変えないので、確かめるのは「合成コー
 - full A（200・1,000 module と real 11）は `PX03-formal-a` に 1,206 schema 1 レコード。
   repeat 200 と real 11 は `PX03-formal-b-retry` に 1,086、repeat 1,000 と real 11 は
   `PX03-formal-large-repeat-verified` に 1,069。時刻と RSS は 9 標本以上、IR の段は重複・入れ子無し。
+- PX01 の target IR の計上漏れの修正後、同じ full 200／1,000・real 11 をすべて再計測した。
+  `PX03-formal-emit-v4` の build 1,206・process 88 を現行の記録とし、docs の値も置き換えた。
+  開始時の load average は 8.85。旧 run と修正後の `emit` を混ぜた速度比較はしない。
 - 参照の full（10 module、6 layouts）は `PX03-reference-formal` に 162 レコード。
   debug／最適化・warm・body／API edit の 5 組を 9 標本で記録した。Go／Zig の missing と明示要求の失敗、
   誤った CLI・duplicate sizes・generator bounds・既存 directory の拒否を検査した。

@@ -1219,7 +1219,9 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 - `load`: CLI のプロジェクト読み込み。`parse`: ソースの構文解析と frontend cache からの復号。
 - `check`: 展開、名前・型の検査、抽象の所有権と Copy の推論。`specialize`・`closures`・`ownership`: 単相化、
   閉包の lowering、具体化後の所有権検査。
-- `emit`: LLVM IR、header、GPU カーネルの生成。`cache`: frontend cache の準備・保存と whole-build cache の鍵・読み込み・復元・保存・掃除。
+- `emit`: LLVM IR、header、GPU カーネルの生成と target ごとの IR 変換。Windows ABI・CodeView・no-red-zone、
+  WASM の heap／host／runtime の処理と freestanding header の IR の検査までを含み、外部ツールの前に閉じる。
+  `cache`: frontend cache の準備・保存と whole-build cache の鍵・読み込み・復元・保存・掃除。
 - `tool.<実行ファイルの stem>`: `run_tool` が待ち合わせる Clang・リンカーなど。cache の内部での版の照会は `cache` に含みます。
 - 引数解析、生成後の GPU 検査、成果物の書き出し、`run` の子プロセスは `total_ms` にだけ含みます。
 
