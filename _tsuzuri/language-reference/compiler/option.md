@@ -271,6 +271,7 @@ flowchart TD
 
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
 外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
+tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。
 同じ段は合算し、入れ子の二重計上はしません。`parse` は frontend cache からの復号も、
 `cache` は frontend cache の準備・保存と成果物 cache の操作も含みます。
 `emit` は LLVM IR・header・GPU カーネルの生成に加え、Windows ABI・CodeView・no-red-zone、

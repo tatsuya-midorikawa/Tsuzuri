@@ -906,6 +906,8 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
   silent skip、速度の合否閾値、依存追加、unsafe Rust はない。
 - `--json` の診断と計時 metadata が並ぶ JSONL を厳密に読む共通 helper を使い、
   computations の旧 compiler の機能確認を修正した。不正な JSON・metadata はエラーになる。
+- 外部ツールの stem に空白・日本語などがあるときも、そのまま `tool.<stem>` の phase を記録・検証できる。
+  空の stem と NUL は拒否し、phase の JSON と schema 1 の両方に回帰検査を加えた。
 - GNU time の版が `UNKNOWN` の distribution build も識別でき、各標本の `-v`・`-o` と
   時間・RSS の欄の検査を維持する。版 1.7 以前や別の time は引き続き拒否する。
 - `emit` の guard を target ごとの IR 変換と freestanding header の IR の検査の後まで延ばし、

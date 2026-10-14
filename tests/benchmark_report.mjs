@@ -123,6 +123,18 @@ test("phase reports and non-overlap", () => {
   assert.throws(() => parseTimePasses(report.replace('"ms":1', '"ms":3')), /overlapping/);
   assert.throws(() => parseTimePasses(report.replace('"ms":1', '"ms":-1')));
 });
+test("tool phases preserve valid external executable names", () => {
+  const names = ["tool.Compiler wrapper", "tool.コンパイラ", "tool.clang@21", "tool.compiler\nwrapper"];
+  const report = (name) => JSON.stringify({ time_passes: 1, phases: [{ name, ms: 1 }], total_ms: 1 });
+  for (const name of names) {
+    assert.equal(parseTimePasses(report(name)).phases[0].name, name);
+    assert.equal(record({ metric: "phase_time", phase: name, samples: Array(9).fill(1) }).phase, name);
+  }
+  for (const name of ["tool.", "tool.\u0000compiler"]) {
+    assert.throws(() => parseTimePasses(report(name)));
+    assert.throws(() => record({ metric: "phase_time", phase: name, samples: Array(9).fill(1) }));
+  }
+});
 test("unsupported target reason survives preceding warnings", () => {
   assert.equal(unsupportedReason("Main.tz:1:1: warning[W1001]: unused\nMain.tz:2:1: error[E2004]: missing main\n"),
     "Main.tz:2:1: error[E2004]: missing main");

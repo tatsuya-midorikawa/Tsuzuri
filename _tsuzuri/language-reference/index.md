@@ -147,7 +147,7 @@
 
 - [コンパイラの使い方](./compiler/usage.md)
 - [コンパイラ オプション](./compiler/option.md)
-- [コンパイルの段階別時間](./compiler/option.md#コンパイルの段階別時間)（target ごとの IR 処理も計上）
+- [コンパイルの段階別時間](./compiler/option.md#コンパイルの段階別時間)（target ごとの IR 処理・tool 名）
 - [対応プラットフォームとクロスコンパイル](./compiler/platforms.md)
 - [コンパイラ ディレクティブ](./compiler/directives.md)
 - [診断メッセージとエラーコード](./compiler/diagnostics.md)

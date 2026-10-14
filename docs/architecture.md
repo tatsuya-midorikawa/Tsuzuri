@@ -1222,7 +1222,8 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 - `emit`: LLVM IR、header、GPU カーネルの生成と target ごとの IR 変換。Windows ABI・CodeView・no-red-zone、
   WASM の heap／host／runtime の処理と freestanding header の IR の検査までを含み、外部ツールの前に閉じる。
   `cache`: frontend cache の準備・保存と whole-build cache の鍵・読み込み・復元・保存・掃除。
-- `tool.<実行ファイルの stem>`: `run_tool` が待ち合わせる Clang・リンカーなど。cache の内部での版の照会は `cache` に含みます。
+- `tool.<実行ファイルの stem>`: `run_tool` が待ち合わせる Clang・リンカーなど。stem の空白・日本語も保持し、
+  性能レコードで同じ名前を使います。cache の内部での版の照会は `cache` に含みます。
 - 引数解析、生成後の GPU 検査、成果物の書き出し、`run` の子プロセスは `total_ms` にだけ含みます。
 
 成果物、診断、終了コードは変えません。`1` 以外は無効で、無効時は時計・記録用の文字列・mutex を使いません。
