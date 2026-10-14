@@ -5453,8 +5453,11 @@ peak RSS は言語ごとの host を `--only` で 1 種目だけ起動し、そ�
 Go・Zig がないときは理由付きで 140 レコードです。明示した使えないツールはエラーです。
 
 Zig は 0.16.0 の ReleaseSafe と `-fcompiler-rt`、Go は 1.27.2 の通常の GC と自動 GOMAXPROCS で確認しました。
-Zig の object を Clang でリンクするため、x64 の `__zig_probe_stack` などの必要な compiler runtime を含めます。
-stack の page probe と安全検査は無効にしません。
+Zig の出力を Clang でリンクするため、x64 の `__zig_probe_stack` などの必要な compiler runtime を含めます。
+Linux は `zig build-lib -static` で kernel と compiler runtime を別 member の archive にします。
+Zig 0.16.0 の Linux x64 で、runtime を含む単一 object に binary・IR・assembly を同時に出すと compiler が crash するためです。
+Darwin／Windows は object のままです。どちらも最適化後の IR と assembly を出し、
+ReleaseSafe・baseline CPU・stack の page probe と安全検査を維持します。
 Go の cgo の境界と background GC の CPU は計時に含みます。
 `--cpu native` は C／C++・Rust・Tsuzuri・Zig の指定を変えますが、Go の指定は変わらず、その差を JSON に出します。
 `--cpu native` の比較は別の条件です。ここで確認したのは generic です。

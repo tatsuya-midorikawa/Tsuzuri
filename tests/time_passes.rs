@@ -187,24 +187,34 @@ fn time_passes_does_not_change_artifacts() {
             let plain = compiler(&args, None);
             assert!(plain.status.success(), "{:?}", plain);
             let bytes = fs::read(&output).unwrap();
-            let timed = compiler(&args, Some("1"));
-            assert!(phases(&timed).iter().any(|name| name == "emit"));
-            assert_eq!(plain.stdout, timed.stdout);
-            let timed_bytes = fs::read(&output).unwrap();
-            if bytes != timed_bytes {
-                let offset = bytes
-                    .iter()
-                    .zip(&timed_bytes)
-                    .position(|(plain, timed)| plain != timed)
-                    .unwrap_or(bytes.len().min(timed_bytes.len()));
-                let start = offset.saturating_sub(8);
-                panic!(
-                    "{emit} {target} {opt}: byte {offset}, lengths {} / {}; plain {:02x?}; timed {:02x?}",
-                    bytes.len(),
-                    timed_bytes.len(),
-                    &bytes[start..bytes.len().min(offset + 24)],
-                    &timed_bytes[start..timed_bytes.len().min(offset + 24)],
-                );
+            let runs = if cfg!(windows) && emit == "object" && target == "native" {
+                3
+            } else {
+                1
+            };
+            for _ in 0..runs {
+                if runs > 1 {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+                let timed = compiler(&args, Some("1"));
+                assert!(phases(&timed).iter().any(|name| name == "emit"));
+                assert_eq!(plain.stdout, timed.stdout);
+                let timed_bytes = fs::read(&output).unwrap();
+                if bytes != timed_bytes {
+                    let offset = bytes
+                        .iter()
+                        .zip(&timed_bytes)
+                        .position(|(plain, timed)| plain != timed)
+                        .unwrap_or(bytes.len().min(timed_bytes.len()));
+                    let start = offset.saturating_sub(8);
+                    panic!(
+                        "{emit} {target} {opt}: byte {offset}, lengths {} / {}; plain {:02x?}; timed {:02x?}",
+                        bytes.len(),
+                        timed_bytes.len(),
+                        &bytes[start..bytes.len().min(offset + 24)],
+                        &timed_bytes[start..timed_bytes.len().min(offset + 24)],
+                    );
+                }
             }
         }
     }

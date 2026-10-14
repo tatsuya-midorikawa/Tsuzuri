@@ -85,6 +85,18 @@ export function assertStrictFloatIR(ir, name) {
   }
 }
 
+export function zigReferenceBuild(source, directory, cpu = "generic", system = platform()) {
+  const archive = system === "linux";
+  const binary = archive ? "libapps_zig.a" : "zig.o";
+  const flags = [...(archive ? ["-static"] : []), "-O", "ReleaseSafe", "-fPIC", "-fllvm", "-fcompiler-rt", "-lc",
+    `-mcpu=${cpu === "native" ? "native" : "baseline"}`];
+  return {
+    binary, flags,
+    args: [archive ? "build-lib" : "build-obj", source, ...flags, `-femit-bin=${join(directory, binary)}`,
+      `-femit-asm=${join(directory, "zig.s")}`, `-femit-llvm-ir=${join(directory, "zig.optimized.ll")}`],
+  };
+}
+
 export async function runApps(options) {
   if (Number(process.versions.node.split(".")[0]) < 24) throw new Error("Apps benchmarks require Node.js 24+; use npx --yes --package=node@24 node benchmarks/run-apps.mjs");
   checkReference();
@@ -126,8 +138,7 @@ export async function runApps(options) {
   const rustFlags = ["--edition=2021", "--crate-type=staticlib", "--crate-name=apps_reference",
     "-C", "opt-level=3", "-C", "panic=abort", "-C", "force-unwind-tables=no",
     "-C", "relocation-model=pic", "-C", "codegen-units=1", "-D", "warnings"];
-  // Clang links these objects, so include Zig's runtime (notably x64 stack probes).
-  const zigFlags = ["-O", "ReleaseSafe", "-fPIC", "-fllvm", "-fcompiler-rt", "-lc", `-mcpu=${cpu === "native" ? "native" : "baseline"}`];
+  const zigBuild = zigReferenceBuild(join(fixture, "reference.zig"), temporary, cpu);
   const goFlags = ["build", "-buildmode=c-archive", "-gcflags=-S"];
   const tsuzuriFlags = ["-O3", "--cpu", cpu];
   try {
@@ -165,9 +176,9 @@ export async function runApps(options) {
     assert.ok(nativeLibs.every((argument) => /^[-A-Za-z0-9_./+:=]+$/.test(argument)), "unsupported rustc native-static-libs argument");
     generated.push("libapps_reference.a", "apps_reference.o", "apps_reference.s", "apps_reference.ll");
     if (zig.program) {
-      run(zig.program, ["build-obj", join(fixture, "reference.zig"), ...zigFlags,
-        `-femit-bin=${path("zig.o")}`, `-femit-asm=${path("zig.s")}`, `-femit-llvm-ir=${path("zig.optimized.ll")}`]);
-      generated.push("zig.o", "zig.s", "zig.optimized.ll");
+      // ELF's combined runtime object can crash; archive its members without changing codegen.
+      run(zig.program, zigBuild.args);
+      generated.push(zigBuild.binary, "zig.s", "zig.optimized.ll");
     }
     if (go.program) {
       const build = run(go.program, [...goFlags, "-o", path("libapps_go.a"), join(fixture, "reference.go")]);
@@ -176,7 +187,7 @@ export async function runApps(options) {
     }
     const objects = {
       c: "c.o", cpp: "cpp.o", rust: "libapps_reference.a", tsuzuri: "apps.o",
-      ...(zig.program ? { zig: "zig.o" } : {}), ...(go.program ? { go: "libapps_go.a" } : {}),
+      ...(zig.program ? { zig: zigBuild.binary } : {}), ...(go.program ? { go: "libapps_go.a" } : {}),
     };
     const hostDefines = [...(zig.program ? ["-DHAVE_ZIG"] : []), ...(go.program ? ["-DHAVE_GO"] : [])];
     const compileHost = (name, defines, selected, libraries = []) => {
@@ -326,7 +337,7 @@ export async function runApps(options) {
       },
       mode: quick ? "correctness-smoke" : "benchmark", cpu, scale, skipped,
       wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags,
-      rust_native_static_libs: nativeLibs, zig_flags: zig.program ? zigFlags : null,
+      rust_native_static_libs: nativeLibs, zig_flags: zig.program ? zigBuild.flags : null,
       go_flags: go.program ? goFlags : null, tsuzuri_flags: tsuzuriFlags,
       correctness: { native_O0: { checks: 250, language: "tsuzuri" }, native_O3: { checks_per_language: 250, languages },
         wasm: wasmChecks, independent_reference: "BigInt wrapping u64 and strictly ordered Number f64" },

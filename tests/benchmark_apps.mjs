@@ -4,9 +4,25 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hex, reference, checkReference, workloads } from "../benchmarks/apps/reference.mjs";
-import { assertStrictFloatIR, optionalTool, parseArguments } from "../benchmarks/run-apps.mjs";
+import { assertStrictFloatIR, optionalTool, parseArguments, zigReferenceBuild } from "../benchmarks/run-apps.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+for (const cpu of ["generic", "native"]) for (const system of ["linux", "darwin", "win32"]) {
+  const build = zigReferenceBuild("reference.zig", "artifacts", cpu, system);
+  const archive = system === "linux";
+  assert.deepEqual(build.args.slice(0, 2), [archive ? "build-lib" : "build-obj", "reference.zig"]);
+  assert.equal(build.binary, archive ? "libapps_zig.a" : "zig.o");
+  assert.equal(build.flags.includes("-static"), archive);
+  assert.ok(build.flags.includes("-fcompiler-rt"));
+  assert.ok(build.flags.includes("ReleaseSafe") && build.flags.includes("-fPIC") && build.flags.includes("-fllvm"));
+  assert.ok(build.flags.includes(`-mcpu=${cpu === "native" ? "native" : "baseline"}`));
+  assert.ok(!build.flags.some((flag) => flag === "-fno-stack-check" || flag === "-fno-stack-protector"));
+  assert.deepEqual(build.args.slice(-3), [
+    `-femit-bin=${join("artifacts", build.binary)}`,
+    `-femit-asm=${join("artifacts", "zig.s")}`,
+    `-femit-llvm-ir=${join("artifacts", "zig.optimized.ll")}`,
+  ]);
+}
 const coefficientIR = (operation, conversion = "%den = uitofp i64 %n to double") =>
   `define double @coefficient(i64 %n, double %input) {\n  ${conversion}\n  %value = ${operation}\n  ret double %value\n}\n`;
 assertStrictFloatIR(coefficientIR("fdiv double 1.000000e+00, %den"), "strict division");

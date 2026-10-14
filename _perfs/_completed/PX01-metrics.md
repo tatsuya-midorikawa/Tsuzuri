@@ -911,6 +911,8 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 - `emit` の guard を target ごとの IR 変換と freestanding header の IR の検査の後まで延ばし、
   これらの処理が total だけに入っていた計上漏れを修正した。外部ツール・cache と二重計上しない。
   Windows IR・WASI WASM・freestanding header も、native／WASM と同じ O0／O3 の byte 一致検査に含める。
+  native Windows の object は 2 秒ずつ隔てて 3 回比較し、偶然の 1 回の一致で済ませない。
+  失敗時は最初の異なる byte と近傍だけを出し、原因の分からない領域をマスクしない。
 - 計上漏れの修正後、process と 200／1,000 module・real 11 の build をすべて再計測した。
   `PX03-formal-emit-v4` は process 88・build 1,206 と apps の再計測 200 の計 1,494 レコードで、時刻・RSS は 9 標本以上。
   docs の process と build の値を置き換え、旧 `emit` の計上範囲と混ぜた速度比較はしない。

@@ -566,4 +566,8 @@ test -s /tmp/tz-px02/tz-loop.txt && diff /tmp/tz-px02/tz-loop.txt /tmp/tz-px02/c
 - Linux x64 の external Clang link で不足した `__zig_probe_stack` を、Zig の `-fcompiler-rt` で供給する。
   ReleaseSafe と 4,096-byte page probe を維持し、Linux x64 の object／archive／ELF link で解決を確認した。
   修正後の全 6 言語の full と live 0 が成功し、`PX03-formal-emit-v4` の apps 200 レコードで docs の値を置き換えた。
+- Linux x64 の Zig 0.16.0 で runtime 付き object に binary／IR／assembly を同時出力したときの crash を、
+  Linux だけ `build-lib -static` にして kernel／runtime を別 archive member に分けて回避する。
+  cold／warm の cross 出力、external ELF link、page probe を検査し、必要な IR／assembly と安全検査を省略しない。
+  Darwin の object mode と full 記録は変えず、6 言語の quick と FP／CLI の回帰検査が成功した。
 - manual の strategy に記録・比較条件を追記。実行済みの範囲だけを記述し、Linux の挙動は PR の CI で検証する。
