@@ -281,7 +281,9 @@ Clang・リンカーの実行は `emit` に含めず、それぞれの `tool.*` 
 
 失敗したコマンドでも、元の診断と終了コードを保ったまま最後に出します。LSP ではサーバーの終了時です。
 IR・header・object・WASM の生成には作用しません。macOS の実行ファイルで毎回変わる UUID と署名は、
-計測を付ける前からあるリンカーの性質です。再現の手順は [性能測定](../../../docs/benchmarks.md#性能指標の記録) にあります。
+計測を付ける前からあるリンカーの性質です。native Windows の標準 COFF object には Clang が現在時刻を
+`TimeDateStamp` として書きます。成果物の比較は、この header の 4 bytes だけを除き、ほかの byte とサイズを厳密に照合します。
+生成物自体や compiler flags は変えません。再現の手順は [性能測定](../../../docs/benchmarks.md#性能指標の記録) にあります。
 
 `node` は PATH だけです。WASM テスト用の環境変数はありません。
 

@@ -926,6 +926,8 @@ PX01 → PX03 → PX02 の計測基盤を全実装フェーズまで実装しま
 Go・Zig の比較を含む全実装フェーズの方針は [_perfs/README.md](_perfs/README.md#px01px03px02-の実装方針2026-10-13) にあります。
 共有 CI に性能の合否閾値は置かず、未実測のホストでの性能は主張しません。
 macOS の実行ファイルの決定性は、既存のリンカーが毎回変える UUID と署名だけを除いて検査します。
+native Windows の標準 COFF object は Clang が書く `TimeDateStamp`（header の offset 4、4 bytes）だけを除き、
+コード・データ・ほかの header とファイルサイズを厳密に比較します。
 コンパイラの既定の出力は変更しません。
 大規模な合成 WASM `-O3` には LLVM 21 の最適化時間の制限があるため、標準のビルド比較は 200 module まで、
 1,000 module のその組は `--large-wasm` で明示します。native と WASM `-O0` の 1,000 module は標準で検査します。

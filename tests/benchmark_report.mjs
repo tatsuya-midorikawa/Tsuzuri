@@ -222,6 +222,31 @@ try {
     writeFileSync(file, macho);
     assert.throws(() => artifactFingerprint(file), /code signature/);
   });
+  test("COFF fingerprints exclude only the native compiler timestamp", () => {
+    const file = join(metricTemporary, "coff-artifact");
+    const coff = Buffer.alloc(80, 0);
+    coff.writeUInt16LE(0x8664, 0);
+    coff.writeUInt16LE(1, 2);
+    coff.writeUInt32LE(0x6aceeee0, 4);
+    coff.write(".text", 20, "ascii");
+    coff.writeUInt32LE(20, 36);
+    coff.writeUInt32LE(60, 40);
+    writeFileSync(file, coff);
+    const original = artifactFingerprint(file);
+    coff.writeUInt32LE(0x6aceeee2, 4);
+    writeFileSync(file, coff);
+    assert.equal(artifactFingerprint(file), original);
+    coff[60] = 1;
+    writeFileSync(file, coff);
+    assert.notEqual(artifactFingerprint(file), original);
+    coff[60] = 0;
+    coff.writeUInt16LE(0xaa64, 0);
+    writeFileSync(file, coff);
+    assert.notEqual(artifactFingerprint(file), original);
+    coff.writeUInt16LE(2, 2);
+    writeFileSync(file, coff);
+    assert.throws(() => artifactFingerprint(file), /COFF section headers/);
+  });
   test("comparison verdicts and conditions", () => {
     const quick = { ...context, mode: "quick" };
     const time = (samples) => record({ metric: "wall_time", samples }, quick);

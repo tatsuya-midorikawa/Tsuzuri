@@ -2099,7 +2099,11 @@ cache は使いません。project に対応しない object／WASM の `E2004` 
 ツールの不足、実行失敗、標本間の不一致はエラーです。
 macOS の実行ファイルは、変更前からリンカーの UUID と署名が毎回変わります。
 その 2 領域だけを除いた SHA-256 を照合し、コード・データ・その他のメタデータとファイルサイズは検査します。
-IR・header・object・WASM は byte 単位で同じであることを検査します。
+IR・header・WASM とその他の object は byte 単位で同じであることを検査します。
+native Windows Clang の標準 COFF object は `TimeDateStamp`（offset 4 の 4 bytes）だけを除きます。
+2026-10-14 の CI の差分は `0x6aceeee0`／`0x6aceeee2` で、実際の 02:54:24／02:54:26 UTC と
+2 秒の待ち時間に一致しました。machine／section header を確認してから比較し、残りの byte とサイズを厳密に保ちます。
+この時刻を生成後に書き換えたり、compiler flags やコードの byte を変更したりはしません。
 
 Phase 2 の tasks・simd・dispatch・mix も `--metrics <dir>` を受け付けます。
 Task は cold と warm を別 variant にし、SIMD・dispatch の標本は反復回数で割った 1 呼び出しの wall time です。

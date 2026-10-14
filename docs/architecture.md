@@ -1227,6 +1227,8 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 - 引数解析、生成後の GPU 検査、成果物の書き出し、`run` の子プロセスは `total_ms` にだけ含みます。
 
 成果物、診断、終了コードは変えません。`1` 以外は無効で、無効時は時計・記録用の文字列・mutex を使いません。
+比較時だけ、Mach-O の既存の UUID／署名と、native Windows Clang の標準 COFF object の
+`TimeDateStamp`（offset 4 の 4 bytes）を除きます。残りの byte とサイズを検査し、生成物や compiler flags は書き換えません。
 PX01 の記録と PX03 のビルド比較は、この同じ JSON を使います（[性能指標の記録](benchmarks.md#性能指標の記録)）。
 
 ### 検証コマンド

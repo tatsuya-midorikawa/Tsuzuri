@@ -50,6 +50,12 @@ export function artifactFingerprint(file) {
       offset += size;
     }
     assert.equal(offset, end, "inconsistent Mach-O load commands");
+  } else if (bytes.length >= 20 && [0x14c, 0x8664, 0xaa64].includes(bytes.readUInt16LE(0))
+    && bytes.readUInt16LE(16) === 0) {
+    const sections = bytes.readUInt16LE(2);
+    assert.ok(sections > 0 && 20 + sections * 40 <= bytes.length, "invalid COFF section headers");
+    // Native Windows Clang records wall time in the standard COFF object's TimeDateStamp.
+    bytes.fill(0, 4, 8);
   }
   return createHash("sha256").update(bytes).digest("hex");
 }

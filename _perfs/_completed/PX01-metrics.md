@@ -788,7 +788,7 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
 - [x] process suite が variant の時間・RSS・段・大きさを記録し、再書き込みは `EEXIST`。
 - [x] Tsuzuri の alloc_calls／alloc_bytes を記録し、全 tracked 呼び出しの live は 0、元の allocator 名と推定属性を除去する。
 - [x] IR／header／object／WASM は計時の有無で byte 一致。既定の診断・終了コードは不変、段の合計は丸めの許容内で total 以下。
-- [x] Mach-O の既存の UUID／署名と、large O0 の import-stub の変動を明記し、code-byte の追加のマスクで隠さない。
+- [x] Mach-O の既存の UUID／署名、COFF の既存の時刻 4 bytes、large O0 の import-stub の変動を明記し、code-byte の追加のマスクで隠さない。
 - [x] 全 Rust 1,223 件（timings と time_passes 4 件を含む）、strict clippy／fmt、Node の記録・process group timeout・tracker・比較・公開の検査が成功。
 - [x] Cargo manifests／lock は不変。新しい npm／Rust 依存と unsafe Rust はない。
 - [x] macOS の benchmark の要約をマーカー内に公開し、再公開は冪等。共有機／dirty の条件を明記、生データは ignored。
@@ -915,6 +915,10 @@ for f in control.ll control.optimized.ll control.s; do cmp $A/$f $B/$f || echo "
   Windows IR・WASI WASM・freestanding header も、native／WASM と同じ O0／O3 の byte 一致検査に含める。
   native Windows の object は 2 秒ずつ隔てて 3 回比較し、偶然の 1 回の一致で済ませない。
   失敗時は最初の異なる byte と近傍だけを出し、原因の分からない領域をマスクしない。
+- Windows の差分は標準 COFF header の `TimeDateStamp`（offset 4 の 4 bytes）だった。
+  `0x6aceeee0`／`0x6aceeee2` は CI の実際の 02:54:24／02:54:26 UTC と待ち時間に一致する。
+  標準 header を検証し、この時刻だけを比較から除く。最初の repeat は計時無し同士、その後は計時有りと比べ、
+  コード・データ・他の metadata とサイズを厳密に保つ。生成物や flags は変えない。
 - 計上漏れの修正後、process と 200／1,000 module・real 11 の build をすべて再計測した。
   `PX03-formal-emit-v4` は process 88・build 1,206 と apps の再計測 200 の計 1,494 レコードで、時刻・RSS は 9 標本以上。
   docs の process と build の値を置き換え、旧 `emit` の計上範囲と混ぜた速度比較はしない。

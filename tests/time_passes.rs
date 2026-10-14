@@ -18,6 +18,23 @@ fn hello() -> &'static str {
     concat!(env!("CARGO_MANIFEST_DIR"), "/examples/hello")
 }
 
+fn artifact_bytes(path: &Path, coff: bool) -> Vec<u8> {
+    let mut bytes = fs::read(path).unwrap();
+    if coff {
+        assert!(bytes.len() >= 20);
+        assert!(matches!(
+            u16::from_le_bytes(bytes[..2].try_into().unwrap()),
+            0x14c | 0x8664 | 0xaa64
+        ));
+        assert_eq!(&bytes[16..18], &[0, 0]);
+        let sections = usize::from(u16::from_le_bytes(bytes[2..4].try_into().unwrap()));
+        assert!(sections > 0 && 20 + sections * 40 <= bytes.len());
+        // The CI byte delta is precisely the native Clang COFF wall-clock timestamp.
+        bytes[4..8].fill(0);
+    }
+    bytes
+}
+
 struct Temporary(PathBuf);
 
 impl Temporary {
@@ -186,20 +203,23 @@ fn time_passes_does_not_change_artifacts() {
             }
             let plain = compiler(&args, None);
             assert!(plain.status.success(), "{:?}", plain);
-            let bytes = fs::read(&output).unwrap();
-            let runs = if cfg!(windows) && emit == "object" && target == "native" {
-                3
-            } else {
-                1
-            };
-            for _ in 0..runs {
+            let coff = cfg!(windows) && emit == "object" && target == "native";
+            let bytes = artifact_bytes(&output, coff);
+            let runs = if coff { 3 } else { 1 };
+            for run in 0..runs {
                 if runs > 1 {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
-                let timed = compiler(&args, Some("1"));
-                assert!(phases(&timed).iter().any(|name| name == "emit"));
+                let enabled = if coff && run == 0 { None } else { Some("1") };
+                let timed = compiler(&args, enabled);
+                if enabled.is_some() {
+                    assert!(phases(&timed).iter().any(|name| name == "emit"));
+                } else {
+                    assert!(timed.status.success(), "{timed:?}");
+                    assert_eq!(plain.stderr, timed.stderr);
+                }
                 assert_eq!(plain.stdout, timed.stdout);
-                let timed_bytes = fs::read(&output).unwrap();
+                let timed_bytes = artifact_bytes(&output, coff);
                 if bytes != timed_bytes {
                     let offset = bytes
                         .iter()

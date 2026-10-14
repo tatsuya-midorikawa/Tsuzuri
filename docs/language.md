@@ -19,6 +19,8 @@ stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"tot
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
 `1` 以外では無効です。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
 `emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、外部ツールの時間とは分けます。
+成果物の検査は、既存の Mach-O UUID／署名と native Windows Clang の COFF object の時刻 4 bytes だけを
+比較対象から除きます。生成物や compiler flags を変える処理ではありません。
 
 - ソースファイル拡張子は `.tz`（通常のプログラムコード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）です。
   ファイルエンコーディングは UTF-8（先頭 BOM の有無を許容）、改行コードは LF または CRLF に対応します。識別子は ASCII 英字またはアンダースコア `_` で始まり、英数字または `_` が後続します。
