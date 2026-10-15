@@ -50,6 +50,30 @@ fn bundled_resources(bytes: &[u8]) -> io::Result<Vec<u8>> {
     Ok(serde_json::to_vec(&resources)?)
 }
 
+fn bundled_resource_fingerprint(bytes: &[u8]) -> Option<String> {
+    let resources: Value = serde_json::from_slice(bytes).ok()?;
+    let files = resources.as_array()?;
+    let mut inventory = Vec::with_capacity(files.len());
+    for file in files {
+        let path = file.get("path")?.as_str()?;
+        let hash = file.get("sha256")?.as_str()?;
+        if path.is_empty()
+            || hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return None;
+        }
+        if !path.starts_with("share/runtime/") {
+            inventory.push((path, hash));
+        }
+    }
+    let mut hash = Sha256::new();
+    hash.update(&serde_json::to_vec(&inventory).ok()?);
+    Some(hash.hex())
+}
+
 impl ToolIdentity {
     fn hash_into(&self, hash: &mut Sha256) {
         for (name, bytes) in &self.0 {
@@ -76,6 +100,15 @@ impl ToolIdentity {
                     .collect::<String>()
                     == expected
         })
+    }
+
+    pub(crate) fn matches_bundled_resources(&self, expected: &str) -> bool {
+        self.0
+            .iter()
+            .find(|(name, _)| *name == "bundled-resources")
+            .and_then(|(_, bytes)| bundled_resource_fingerprint(bytes))
+            .as_deref()
+            == Some(expected)
     }
 }
 
@@ -1069,24 +1102,43 @@ mod tests {
     #[test]
     fn bundled_runtime_identity_excludes_compiler_binary() {
         let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
-        let inventory = |compiler_hash, sdk_hash| {
+        let sdk_hash = "a".repeat(64);
+        let changed_sdk_hash = "b".repeat(64);
+        let runtime_hash = "c".repeat(64);
+        let changed_runtime_hash = "d".repeat(64);
+        let inventory = |compiler_hash, sdk_hash: &str, runtime_hash: &str| {
             serde_json::to_vec(&json!({
                 "compiler": compiler_hash,
                 "id": compiler_hash,
                 "files": [
                     {"path": compiler, "sha256": compiler_hash},
-                    {"path": "include/stdint.h", "sha256": sdk_hash}
+                    {"path": "include/stdint.h", "sha256": sdk_hash},
+                    {"path": "share/runtime/manifest.json", "sha256": runtime_hash}
                 ]
             }))
             .unwrap()
         };
+        let resources = bundled_resources(&inventory("before", &sdk_hash, &runtime_hash)).unwrap();
+        let fingerprint = bundled_resource_fingerprint(&resources).unwrap();
+        let identity = ToolIdentity(vec![
+            ("tool-binary", vec![1]),
+            ("bundled-resources", resources),
+        ]);
+        assert!(identity.matches_bundled_resources(&fingerprint));
         assert_eq!(
-            bundled_resources(&inventory("before", "sdk")).unwrap(),
-            bundled_resources(&inventory("after", "sdk")).unwrap()
+            fingerprint,
+            bundled_resource_fingerprint(
+                &bundled_resources(&inventory("after", &sdk_hash, &changed_runtime_hash)).unwrap()
+            )
+            .unwrap()
         );
-        assert_ne!(
-            bundled_resources(&inventory("before", "sdk")).unwrap(),
-            bundled_resources(&inventory("before", "new-sdk")).unwrap()
-        );
+        let changed_sdk = ToolIdentity(vec![
+            ("tool-binary", vec![1]),
+            (
+                "bundled-resources",
+                bundled_resources(&inventory("before", &changed_sdk_hash, &runtime_hash)).unwrap(),
+            ),
+        ]);
+        assert!(!changed_sdk.matches_bundled_resources(&fingerprint));
     }
 }

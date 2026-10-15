@@ -134,7 +134,7 @@ export async function verify(destination) {
     if (!await exists(path.join(destination, ...file.split('/')))) { throw new Error(`Missing debugger support file: ${file}`); }
   }
   const runtime = JSON.parse(await readFile(path.join(destination, 'share/runtime/manifest.json'), 'utf8'));
-  if (runtime.format !== 1 || runtime.objects.length !== 52) {
+  if (runtime.format !== 2 || !/^[0-9a-f]{64}$/.test(runtime.resource_fingerprint) || runtime.objects.length !== 52) {
     throw new Error('Incomplete prebuilt runtime inventory: expected numeric/math and seven C combinations at O0-O3.');
   }
   run(path.join(destination, 'bin', `tsuzuri${suffix}`), ['--version']);

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,23 @@ const environmentNames = ['SDKROOT', 'DEVELOPER_DIR', 'MACOSX_DEPLOYMENT_TARGET'
   'CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SOURCE_DATE_EPOCH',
   'TSUZURI_SYSROOT', 'TSUZURI_ZIG', 'TSUZURI_LLVM_CLANG'];
 const inlineMath = name => /^tz_math_(sqrt|fabs)_f(32|64)$/.test(name);
+async function resourceFingerprint(directory, compiler) {
+  const resources = [];
+  async function collect(current, prefix = '') {
+    for (const name of (await readdir(current)).sort()) {
+      const relative = prefix ? `${prefix}/${name}` : name;
+      if ((!prefix && name === 'manifest.json') || relative === compiler
+        || relative === 'share/runtime' || relative.startsWith('share/runtime/')) continue;
+      const file = path.join(current, name), info = await lstat(file);
+      if (info.isSymbolicLink()) throw new Error(`Toolchain must not contain symlinks: ${relative}`);
+      if (info.isDirectory()) await collect(file, relative);
+      else if (info.isFile()) resources.push([relative, hash(await readFile(file))]);
+      else throw new Error(`Unsupported toolchain entry: ${relative}`);
+    }
+  }
+  await collect(directory);
+  return hash(JSON.stringify(resources));
+}
 export const mathObjectSource = source => source.replace(/^define internal (.*?@(\w+)\()/gm,
   (line, signature, name) => /^tz_math_.*_f(32|64)$/.test(name) && !inlineMath(name)
     ? `define hidden ${signature}` : line);
@@ -64,8 +81,9 @@ export async function bundleRuntime(destination, { clang = null, native = true }
       try { tools[name] = hash(await readFile(path.join(destination, name))); }
       catch (error) { if (!clang || error.code !== 'ENOENT') throw error; }
     }
-    const manifest = { format: 1, os: { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform],
+    const manifest = { format: 2, os: { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform],
       arch: process.arch === 'arm64' ? 'aarch64' : 'x86_64',
+      resource_fingerprint: await resourceFingerprint(destination, `bin/tsuzuri${suffix}`),
       environment: Object.fromEntries(environmentNames.map(name => [name, process.env[name] ?? null])),
       tools, objects };
     await writeFile(path.join(directory, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

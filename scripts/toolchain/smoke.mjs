@@ -53,7 +53,8 @@ try {
   assert.match(await readFile(path.join(tools, 'share', 'lldb', 'tsuzuri_lldb.py'), 'utf8'), /^def __lldb_init_module\(/m);
   assert.match(await readFile(path.join(tools, 'share', 'natvis', 'tsuzuri.natvis'), 'utf8'), /<AutoVisualizer /);
   const runtime = JSON.parse(await readFile(path.join(tools, 'share/runtime/manifest.json'), 'utf8'));
-  assert.equal(runtime.format, 1);
+  assert.equal(runtime.format, 2);
+  assert.match(runtime.resource_fingerprint, /^[0-9a-f]{64}$/);
   assert.equal(runtime.objects.length, 52);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {

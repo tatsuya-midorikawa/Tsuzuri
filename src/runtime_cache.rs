@@ -237,10 +237,16 @@ fn load_prebuilt(
         Err(error) => return Err(error),
     };
     let value: serde_json::Value = serde_json::from_slice(&manifest)?;
-    if value["format"] != 1
+    if value["format"] != 2
         || value["os"] != std::env::consts::OS
         || value["arch"] != std::env::consts::ARCH
     {
+        return Ok(None);
+    }
+    let Some(resource_fingerprint) = value["resource_fingerprint"].as_str() else {
+        return Ok(None);
+    };
+    if !identity.matches_bundled_resources(resource_fingerprint) {
         return Ok(None);
     }
     let Some(environment) = value["environment"].as_object() else {
