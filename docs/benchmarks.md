@@ -5581,7 +5581,7 @@ NaN は既存の canonical NaN 規則で比較し、符号付きゼロ・非正�
 最終結果は `target/perf/phase2-formal/numeric-final2-{before,after,before2}`（各 78 レコード、wall-time は 9 標本）です。
 Apple M1 Max、Apple Clang 21.0.0、Node 24.21.0、native/WASM `-O3`、warmup 後に直列実行しました。
 raw runtime の比較であり、生成プログラム全体の速度や他 CPU の速度ではありません。
-以下は native の ns/回、中央値（最小–最大）です。全入力と採否の式は [PR04 の記録](../_perfs/PR04-number-formatting.md#正式計測と最終採否2026-10-14) にあります。
+以下は native の ns/回、中央値（最小–最大）です。全入力と採否の式は [PR04 の記録](../_perfs/_completed/PR04-number-formatting.md#正式計測と最終採否2026-10-14) にあります。
 
 | workload | before | after | before2 |
 | --- | ---: | ---: | ---: |
@@ -5694,29 +5694,29 @@ Apple M1 Max、Homebrew Clang 21.1.8、Node 24.21.0。baseline compiler SHA-256 
 | UTF-16 validate | 0.411 | 0.087 | 0.413 | −78.83% / −78.91% |
 | UTF-16 scan | 0.051 | 0.041 | 0.052 | −20.24% / −21.19% |
 
-M2 は 90 workload × 9 wall samples／pass（270 records、2,430 samples）で、各操作・入力・サイズを別々に判定しました。stable adverse は **0**。35 行は両 baseline に対して improved、34 行は両方と no difference、21 行は片方と improved・もう片方と no difference で、regressed 判定はありません。M2 は wall-time のみで CPU metric はありません。`to_well_formed` の計測 kernel は結果の長さしか観測せず、修復内容が dead-code elimination され得るため、処理速度の根拠にはしません。raw hashes と全90行の samples／判定は [`PR05-utf-simd.md`](../_perfs/PR05-utf-simd.md) に記録しました。
+M2 は 90 workload × 9 wall samples／pass（270 records、2,430 samples）で、各操作・入力・サイズを別々に判定しました。stable adverse は **0**。35 行は両 baseline に対して improved、34 行は両方と no difference、21 行は片方と improved・もう片方と no difference で、regressed 判定はありません。M2 は wall-time のみで CPU metric はありません。`to_well_formed` の計測 kernel は結果の長さしか観測せず、修復内容が dead-code elimination され得るため、処理速度の根拠にはしません。raw hashes と全90行の samples／判定は [`PR05-utf-simd.md`](../_perfs/_completed/PR05-utf-simd.md) に記録しました。
 
 M3 の確保数／bytes は before・after・before2 で完全一致（roundtrip 32／2,359,248、compare 33／3,145,684、validate 32／2,621,396、scan 30／1,572,816）。M4 `-O3` object sizes は native 79,424 → 134,368 bytes、WASM scalar 69,230 → 78,041 bytes、WASM simd128 71,070 → 87,571 bytes（before → after）で、SIMD runtime による成果物の増加も記録します。これらの比較は同じ機械・入力の結果で、他 CPU や共有 CI の速度保証ではありません。
 
-### Phase 2 統合ビルドの冷間コスト（2026-10-15）
+### 第2フェーズ統合の最終比較（2026-10-15）
 
-最終統合比較は Apple M1 Max、Homebrew Clang 21.1.8、baseline／after／before2 の順で実施しました。`build` variant は [`run-build.mjs`](../benchmarks/run-build.mjs) の仕様どおり `--no-cache` であり、PB01 の runtime-object cache／prebuilt object を使わない cold compile です。
+Apple M1 Max（arm64、AC 電源）、Node 24.21.0、Homebrew Clang 21.1.8 で、clean commit `9ecafb33ff0d666cf2ff9335c9dc0cbde8e917e5` から before／after／before2 を直列に実行しました。各 timed variant は 9 samples、全 run は clean。baseline compiler SHA-256 は `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`、after は `de42dba363e1fa877c0dab5bd51cbad17b60b774bed5b91399d9d996a99d9d08` です。以下は `benchmarks/metrics.mjs report` の spread 判定で、microbenchmark を言語全体の順位や他機種の保証とは解釈しません。
 
-| workload（native `-O3`） | 指標 | before | after | before2 |
-| --- | --- | ---: | ---: | ---: |
-| `examples/io` | wall ms | 455.959 | 818.965 | 511.409 |
-| `examples/io` | process CPU ms | 370 | 690 | 380 |
-| `examples/io` | `tool.clang` phase ms | 349.384 | 716.078 | 413.584 |
-| `examples/io` | executable bytes | 50,840 | 69,976 | 50,840 |
-| synthetic 10-module | process CPU ms | 1,320 | 1,590 | 1,320 |
-| synthetic 10-module | `tool.clang` phase ms | 1,273.536 | 1,553.486 | 1,277.331 |
-| synthetic 10-module | executable bytes | 101,128 | 153,528 | 101,128 |
+| suite | 比較行 | before→after: 改善 / 悪化 / 差なし | baseline 2 回との一貫した改善 / 悪化 |
+| --- | ---: | ---: | ---: |
+| allocation | 71 | 13 / 7 / 51 | 10 / 7 |
+| control | 160 | 0 / 0 / 160 | 0 / 0 |
+| computations | 141 | 3 / 1 / 137 | 3 / 0 |
+| C++/UTF | 96 | 1 / 0 / 95 | 0 / 0 |
+| build | 2,198 | 281 / 178 / 1,739 | 204 / 113 |
 
-Clang wrapper で同じ `examples/io` native runtime 入力を捕捉すると、C source は 2,520 bytes から 28,709 bytes へ増え、after では PR05 の CPU-dispatch symbol が `src/runtime/cpu.c` を native runtime に追加していました。したがって、この no-cache build の安定した遅延と成果物増分は測定ノイズとして捨てず、UTF CPU path を含む**未キャッシュの初回ネイティブビルド費用**として別に報告します。M1／M2 の runtime 測定はこの build cost を相殺する一般的な lifetime 損益を示すものではありません。
+Build suite の before／before2 では 2,198 行中 23 行に baseline drift がありました。従って build の改善・悪化は、after が両 baseline に対して同じ判定を得た行だけを「一貫」と数え、残りは確定的な変化と扱いません。allocation の悪化 7 行は主に no-cache build の emit 時間・生成物サイズで、実行 RSS の O3 は改善しました。control は全行が差なし。computations の単独悪化は対象外の `std_option` native O3 process CPU 行で、両 baseline に対して再現しませんでした。C++/UTF は gate 外の悪化 0 です。
 
-既定の配布ツールチェーンは PB01 の tool identity が一致する場合に選択済み `native-c` object を使い、通常の cache 有効ビルドはローカル runtime-object cache を使えます。`--no-cache` は両方を意図的に迂回します。配布 object が選ばれない環境では、この冷間コストが実際にかかります。cache/prebuilt 経路と no-cache の測定を混同しません。
+PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` native O3 process CPU median が 960 → 430 ms（before2 1,010 ms）、WASM O3 が 890 → 350 ms（before2 960 ms）でした。native は before と before2 の双方に対して改善、WASM は baseline の広がりを含むため CPU の結論を限定します。wall-time は両者とも spread 内で「差なし」であり、wall-time の改善を主張しません。cold build の初回費用と warm runtime object cache の再利用は別の variant です。
 
-`closure_churn` の scale 1 formal 比較には wall-only の判定差がありました（median 6.545 → 7.368 → 6.502 ms）。after の wall range は 6.725–32.526 ms、CPU range は 6.517–7.192 ms で baseline の CPU range と重なり、wall の大きな外れ値もありました。別の scale 4 matched rerun（Apple Clang 21.0.0、同一 process 内比較）では after／before の wall median が 26.028／25.949 ms、CPU median が 25.911／25.807 ms で、ともに範囲が重なりました。このため scale 1 の formal wall 行は残しつつ、再現可能な CPU regression とも修正済みとも結論しません。
+`--no-cache` の通常 build では統合後の cold codegen cost と executable size の増加が残ります。native O3 の `examples/io` は process CPU 380 → 760 ms（before2 430 ms）、executable 50,840 → 69,976 bytes（before2 50,840 bytes）。synthetic 10-module は 1,330 → 1,610 ms（before2 1,410 ms）、101,128 → 153,528 bytes（before2 101,128 bytes）でした。CPU とサイズは両 baseline より悪化しました。これは全 streams を統合した no-cache 初回ビルドの実測であり、PR05 単独への因果帰属はしません。prebuilt/runtime-cache 経路はこの費用を避けるためのもので、cold compiler cost や成果物サイズが無償になるわけではありません。
+
+正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
 ## 現実的な次の指標
 

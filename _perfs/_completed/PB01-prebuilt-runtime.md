@@ -8,12 +8,18 @@
 | 規模 | M |
 | 依存 | PX03 |
 | 関連 | G11, G14, PM08, PR07, PR08 |
-| 状態 | in progress |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 2026-10-14 の依頼で Phase 1〜3、D9（配布 object）・D10（未使用コード除去・math 分離）を承認済み |
 | 手本にする既存実装 | object の保存・検証・原子的な公開・掃除: `src/cache.rs` の `BuildCache::open`・`load`・`store`・`evict`。鍵とツールの同定: `src/cache.rs` の `build_key`（`tool-path`・`tool-binary`・`tool-version-stdout`・`native-cpu-features`）。ランタイム object を作ってリンクへ渡す経路: `src/driver.rs` の `build_complete` の `native_runtime` 分岐（`task.c` → `task.o` → `-x none`・`clang -r`）。`numeric.ll` を単独の module としてコンパイル・リンクする例: `tests/display_parse.mjs`（C harness と native・WASM × `-O0`・`-O3`） |
 | 主な影響ファイル | `src/llvm.rs`（`EmitOptions`・`Instrumentation`・`emit_program`・`numeric_declarations`（新規））、`src/driver.rs`（`build_complete`・`runtime_object`（新規））、`src/cache.rs`（`build_key`・`ToolIdentity`（新規）・`tool_identity`（新規）・`runtime_key`（新規）・`KEY_ENVIRONMENT`（新規））、`EmitOptions` を構築するテスト（`tests/cpu_dispatch.rs`・`tests/debug_info.rs`・`tests/debug_output.rs`・`tests/trap_locations.rs`・`tests/windows.rs`）、`tests/prebuilt_runtime.mjs`（新規）、`benchmarks/run-build.mjs`（PX03 で新規。variant の追加だけ）、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_perfs/README.md` |
 | 計測対象 | `examples/hello` の実行ファイル（native `-O0`・`-O3`）、数値の表示だけを使う WASM（`--target wasm32 -O0`・`-O3`）、`numeric.ll` と C ランタイムの両方を使う `examples/tasks`（native `-O0`・`-O3`）。状態は whole-build cache が miss でランタイム object が cache にある状態（variant `build-runtime-warm`（新規））と、`--no-cache`（変わらないことの確認） |
+
+## 統合完了（2026-10-15）
+
+最終 compiler SHA-256 `de42dba363e1fa877c0dab5bd51cbad17b60b774bed5b91399d9d996a99d9d08` から配布 bundle を作り直し、52 runtime objects の bundle/archive relocation smoke を実行した。配置後に native・WASM scalar/SIMD128 の O0/O3 で object 消費と実行を確認し、bundle と compiler の SHA が一致した。`tests/prebuilt_runtime.mjs` の cold/warm・no-cache・破損・atomic race・fallback も通過した。
+
+同じ final source の formal build triple では `examples/hello` native O3 `build-runtime-warm` の process CPU median が 960 → 430 ms（before2 1,010 ms）で、両 baseline に対して改善した。wall-time は sample spread 内で差なし。未キャッシュ `build` は、PR05 を含む統合 compiler の生成物増加・cold cost が残るため、warm runtime cache の利得と混同しない。全 build suite の判定と明示的な no-cache caveat は `docs/benchmarks.md` に記録した。
 
 ## 目的
 
@@ -610,12 +616,12 @@ M1〜M6。合否の閾値は置かない。
 
 ## 受け入れ条件
 
-- [ ] 同じ組のランタイムが 2 回目以降のビルドで再コンパイルされない（E2E 1・3、M3）。
-- [ ] `--no-cache`・`run`・`-g`・`--emit llvm`・`--emit object`・Windows の出力と経路が HEAD と同じ（E2E 4・5・9、「生成コードの確認」）。
-- [ ] 実行結果・トラップ・確保の追跡・WASM の import が変わらない（手順 9 の全 suite、E2E 2・3）。
-- [ ] 破損・使えない cache・同時ビルドでビルドが成功する（E2E 6〜8）。
-- [ ] hello の M1・M2 を before／after で実測し、`docs/benchmarks.md` に記録した。M4〜M6 が変わらない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 同じ組のランタイムが 2 回目以降のビルドで再コンパイルされない（E2E 1・3、M3）。
+- [x] `--no-cache`・`run`・`-g`・`--emit llvm`・`--emit object`・Windows の出力と経路が HEAD と同じ（E2E 4・5・9、「生成コードの確認」）。
+- [x] 実行結果・トラップ・確保の追跡・WASM の import が変わらない（手順 9 の全 suite、E2E 2・3）。
+- [x] 破損・使えない cache・同時ビルドでビルドが成功する（E2E 6〜8）。
+- [x] hello の M1・M2 を before／after で実測し、`docs/benchmarks.md` に記録した。M4〜M6 が変わらない。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 

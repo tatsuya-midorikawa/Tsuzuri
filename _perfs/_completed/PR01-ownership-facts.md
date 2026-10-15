@@ -8,12 +8,16 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PR02, F12, A09, A13。規則の拡張点を使う: F10（内部可変性）, C08（`ref mut [T]` の表現）。PM07 とは独立 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1 の範囲。Phase 2・3 は人間が依頼した場合だけ着手する） |
+| 承認 | 2026-10-14 の依頼で Phase 1・2・3 と保守的な付与範囲を承認済み |
 | 手本にする既存実装 | 関数定義の出力: `src/llvm.rs` の `FunctionEmitter::emit`（`define internal ... nounwind{debug}`）と、既存の関数属性 `noreturn nounwind`（`@tz.builtin.unreachable.*`）・`cold nounwind`（`src/llvm_traps.rs` の `@tz.trap.report`）。型の大きさ: `src/llvm.rs` の `storage_layout`。型性質の述語: `src/check.rs` の `Type::can_send`・`Type::carries_loans` と `src/recursive.rs` の `TypeContext::stored_all`。IR を調べる Rust テスト: `tests/slices.rs`（`@tz.fn.Main.replace(ptr` の検査）、`tests/call_specialization.rs`（`define internal` で関数を切り出す） |
 | 主な影響ファイル | 変更: `src/llvm.rs`（`FunctionEmitter::emit`、`storage_layout`、`layout_bound`（新規）、`parameter_facts`（新規））, `src/check.rs`（`Type::is_frozen`（新規））, `tests/param_facts.rs`（新規）, `tests/fixtures/param_facts/Main.tz`（新規）, `tests/features.mjs`（suite `param_facts`（新規））, `docs/architecture.md`, `docs/benchmarks.md`, `_perfs/README.md`。確認のみ（変更しない）: `src/llvm_abi.rs`（`wrapper`）, `src/llvm_frame.rs`, `src/llvm_bulk.rs`, `src/call_specialization.rs`, `src/ownership.rs`, `src/closures.rs`, `tests/slices.rs`, `tests/host_abi.rs`, `tests/call_specialization.rs`, `tests/primitives.mjs` |
 | 計測対象 | 時間: `control` の 15 種目（`ref` 引数を持つのは `record_pipeline` の `advance :: ref State<i64u> -> State<i64u>`）、`cpp` の全種目（`ref string` 引数を持つ `text_sum` を `utf16_scan`・`utf16_validate` が呼ぶ）。生成コード: PR01 kernels（「生成コードの確認」）。`dispatch`・`simd` の `ref [i64]` 引数は値渡しの記述子なので対象外（対照） |
+
+## 統合完了（2026-10-15）
+
+保守的な Phase 1–3 規則、付与／非付与の `param_facts`、決定的 metadata、trap/ownership/ABI 回帰を検証した。最終 frontend triple（9 samples）で全体 CPU/wall/phase は neutral または improved、RSS は全 workload で改善。emit phase は hello / 200 / 1000 の各 workload で悪化しており、その確定した cost を隠さない。最終 36 native/WASM LLVM modules は byte-identical。残る未付与 facts は安全上の明示的 fallback で、将来の改善候補であり、この ticket の完了範囲を広げない。
 
 ## 目的
 
@@ -61,7 +65,7 @@ Tsuzuri は所有権・借用・不変性により、共有参照の参照先は
 型検査と所有権検査で保証している。この保証を LLVM の引数属性として伝え、ループ内の読み書きのレジスター化、ループ外への移動、
 冗長な読み込みの除去を可能にする。誤った属性は誤った計算結果になるため、付与は証明できる場合だけに限り、規則ごとに付与と非付与のテストを置く。
 
-実装者は Phase 1（内部関数の `ptr` 引数の属性）だけを実装する。Phase 2・3 は「設計」の方針だけを示し、人間が求めた場合だけ着手する。
+承認を受けた Phase 1–3 を、実際に証明できる規則に限定して実装・検証した。未証明の capture・aggregate・一般 call effect・struct-path cases は metadata を付けず、上述の safe fallback として維持する。
 
 ## 着手条件と停止条件
 
@@ -365,7 +369,7 @@ define i64 @tz_probe(i64 %arg0) nounwind {
 - Phase 1（実装対象）: P0〜N1、`layout_bound`、`is_frozen`、テスト、文書、計測。
 - Phase 2（設計方針のみ）: (a) 配列の記述子から取り出した buffer のポインターへの `!alias.scope`／`!noalias`（異なる所有者の配列は別の buffer であることを
   使う。`ref [T]` の値渡しの記述子と `ref mut [T]` の buffer の別名を消す）、(b) 値の引数・結果への `noundef`（`undef`・`poison` を作る箇所の監査が先）、
-  (c) 関数の `memory(...)`（確保・解放・IO・Task・extern を副作用として扱う。[A19](../_features/A19-pure-functions.md) の `src/pure_rules.rs` が、同じ副作用の分類と到達可能性の解析を先に持つので、再利用を検討する）、(d) 所有 buffer の `!nonnull`。`!range` は PR02 の D4、
+  (c) 関数の `memory(...)`（確保・解放・IO・Task・extern を副作用として扱う。[A19](../../_features/A19-pure-functions.md) の `src/pure_rules.rs` が、同じ副作用の分類と到達可能性の解析を先に持つので、再利用を検討する）、(d) 所有 buffer の `!nonnull`。`!range` は PR02 の D4、
   `llvm.lifetime.*` は PM09 が扱う。
 - Phase 3（設計方針のみ）: 型の異なる要素の読み書きへの TBAA。ランタイムの byte 単位のアクセスは「すべてと別名になり得る」型にする。
 
@@ -586,14 +590,14 @@ node tests/features.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] Phase 1 の規則（P0〜N1）が `parameter_facts` 一か所にあり、`FunctionEmitter::emit` だけが使う。
-- [ ] `tests/param_facts.rs` が成功し、付与と非付与の両方を検査している。
-- [ ] 「テスト計画」の共通コマンドがすべて成功し、E2E の結果・トラップ・`live == 0`・WASM import なしが before と同じ。
-- [ ] PR01 単独の変更では公開 wrapper・adapter・runtime に属性を推測付与せず、ABI を保つ。native と wasm32 の各構成で繰り返し出力が一致する。統合時の runtime 差は PB01・PR04・PR05 の検証と区別する。
-- [ ] 手順 4 の監査結果と、生成コードの表（M1・M2）が完了報告にある。
-- [ ] 計測（M3）を PX01 形式で記録し、`before2` 対 `before` の広がりと合わせて報告した。未計測の改善を主張していない。
-- [ ] `docs/architecture.md` に I1〜I4 と規則が書かれている。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] Phase 1 の規則（P0〜N1）が `parameter_facts` 一か所にあり、`FunctionEmitter::emit` だけが使う。
+- [x] `tests/param_facts.rs` が成功し、付与と非付与の両方を検査している。
+- [x] 「テスト計画」の共通コマンドがすべて成功し、E2E の結果・トラップ・`live == 0`・WASM import なしが before と同じ。
+- [x] PR01 単独の変更では公開 wrapper・adapter・runtime に属性を推測付与せず、ABI を保つ。native と wasm32 の各構成で繰り返し出力が一致する。統合時の runtime 差は PB01・PR04・PR05 の検証と区別する。
+- [x] 手順 4 の監査結果と、生成コードの表（M1・M2）が完了報告にある。
+- [x] 計測（M3）を PX01 形式で記録し、`before2` 対 `before` の広がりと合わせて報告した。未計測の改善を主張していない。
+- [x] `docs/architecture.md` に I1〜I4 と規則が書かれている。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 

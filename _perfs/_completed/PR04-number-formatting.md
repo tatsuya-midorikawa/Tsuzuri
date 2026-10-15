@@ -8,12 +8,16 @@
 | 規模 | M |
 | 依存 | PX01 |
 | 関連 | D01, D07, D08 |
-| 状態 | in-progress（全段 A/B/C を実装・検証） |
+| 状態 | done（段 A/B 実装・検証済み、段 C は計測後に不採用） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 2026-10-14: 利用者が全設計判断・段 A/B/C・D4 の 20 KB 増分を承認 |
 | 手本にする既存実装 | 表を使わない桁の処理: `src/runtime/numeric.c` の `eight_decimal_digits`（SWAR）と `tz_soft_format` の整数経路（`% 100` で 2 桁ずつ）。表示の配置（指数表記の判定・末尾ゼロの除去）: `format_float`。raw runtime の検証: `tests/display_parse.mjs` の native／WASM × `-O0`／`-O3` のループと `tests/display_parse_runtime.c` の `f`／`p`／`F`／`P` プロトコル。独立参照: `tests/display_parse_reference.py` の `binary_text`・`round_binary`。再生成: `src/runtime/generate.py` と `src/runtime/generate_math.py`（`numeric.ll` の番号の最大値で math の `!N`・`#N` をずらす） |
 | 主な影響ファイル | 変更: `src/runtime/numeric.c`, `src/runtime/numeric_tables.h`（新規、`generate.py` が生成）, `src/runtime/generate.py`, `src/runtime/numeric.ll`（再生成）, `src/runtime/math.ll`（再生成。番号のずれだけ）, `tests/display_parse_reference.py`, `tests/display_parse.mjs`, `tests/display_parse_exhaustive.c`（新規）, `tests/display_parse_exhaustive.mjs`（新規、任意の長時間テスト）, `benchmarks/run-numeric.mjs`（新規）, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_perfs/README.md`。確認のみ（変えない）: `tests/display_parse_runtime.c`, `src/llvm.rs`（`numeric.ll` の連結と `FIRST_METADATA`）, `src/llvm_display.rs`, `src/runtime/wasm.ll`（`__multi3`） |
 | 計測対象 | F/P プロトコル（`tests/display_parse_runtime.c` と `src/runtime/numeric.ll` を直接リンク）の kind 1（f32）・2（f64）の表示・解析と kind 27（i64u）の表示・解析の 1 回あたりの時間（入力は「計測手順」の固定集合）。PX01 形式の `cpp` suite の `format_parse`。`numeric.ll` の object の大きさ（native・wasm32 × `-O0`・`-O3`） |
+
+## 統合完了（2026-10-15）
+
+最終 numeric/MATH source の M1–M7 triple、段 C 不採用、canonical / boundary / malformed-input reference、native/WASM O0/O3 の display/parse tests を記録した。`cpp/format_parse` を含む fresh CPP suite は 96 rows 中 1 improved / 95 no difference / 0 adverse。整数・長い入力の制御群を含め、性能改善の主張は明示した測定値に限定する。generated object size の増加も `docs/benchmarks.md` に掲載し、PB01 の linked-size効果と混同しない。
 
 ## 目的
 
@@ -463,11 +467,11 @@ awk '/^_format_binary_fast:/,/^; -- End function/' /tmp/tz-PR04/numeric.s | grep
 
 - [x] 段 A・B で、全 f32 の表示・解析と f64 の 1 億件の乱択が変更前と完全に一致する（手順 8・10 の出力を完了報告に貼る）。
 - [x] `tests/display_parse.mjs` が Apple Clang 21 と Homebrew Clang 23 の両方で、native・WASM × `-O0`・`-O3` を通る。
-- [ ] 手順 12 のコマンドがすべて通る。
+- [x] 手順 12 のコマンドがすべて通る。
 - [x] 表は `generate.py` の生成物で、合計 24,576 bytes 以下、再生成が決定的。`numeric.ll` の `declare` の集合が変わらない。
 - [x] 「生成コードの確認」の期待を満たす（annotation 件数については D11 の整合を適用）。
-- [ ] PX01 形式の before・after・before2 があり、M1〜M7 を報告している。段 C の採否と理由を記録している。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] PX01 形式の before・after・before2 があり、M1〜M7 を報告している。段 C の採否と理由を記録している。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -610,7 +614,7 @@ C 候補 IR と保存した基準 IR を同じ Clang でコンパイルしたサ
 ### 初回 freeze 時の残りの受け入れ条件（下記で更新）
 
 - 実装・参照・全数検証・生成の決定性は完了。正式な before/after/before2 の各 9 標本は他 stream との競合を避けるため未実行。
-- D7 の段 C 採否、M1–M7 と G1/G2/G5 の実測判定は未完了。`--quick` の試験値や上の静的サイズを速度改善の根拠にしない。
+- 最終判定: M1–M7 の正式測定は完了し、段 C は D7 の noise gate を満たさず不採用。G1/G2/G5 の結果は上記の統合完了記録と [正式ベンチマーク](../../docs/benchmarks.md) を参照。`--quick` の試験値や静的サイズを速度改善の根拠にはしない。
 - 全数 worker はすべて停止済み。統合担当が正式計測・中央文書・全体 gate・CI・公開を行うまで、この ticket を完了へ移動しない。
 
 ### 中央文書への統合用文言

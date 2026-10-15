@@ -8,12 +8,16 @@
 | 規模 | L |
 | 依存 | PX03 |
 | 関連 | PB04, PB06, G17, G07 |
-| 状態 | doing（全 Phase 実装・最終等価性検証済み、source freeze。D9 は型 graph arena と AST 移動へ設計変更。正式性能測定は統合担当） |
+| 状態 | done（全 Phase 実装・等価性検証・統合正式測定済み） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 利用者が全 Phase と設計判断を承認済み。下記の現行コードとの照合を優先する |
 | 手本にする既存実装 | 所有権を移して複製を避ける: `polymorph::specialize` の `std::mem::take(&mut function.constraints)`。生成済みの本体の差し替え: `closures::lower` の `module.functions[id].body = body`。借用で子を辿る: `TypedExpr::children`（`&Self` 版）。計測: PX03 の `benchmarks/run-build.mjs`・`benchmarks/build/generate.mjs`、PX01 の `TSUZURI_TIME_PASSES` と `node benchmarks/metrics.mjs report --baseline` |
 | 主な影響ファイル | `src/polymorph.rs`（`specialize`・`Specializer`・`Specializer::instantiate`・`walk`）, `src/closures.rs`（`lower` と `children_mut` の呼び出し）, `src/constants.rs`（`children_mut` の呼び出し）, `src/check.rs`（`TypedExpr::children_mut` の削除、`TypedExpr::try_for_each_child_mut`（新規））, `src/ownership.rs`（`State`・`Checker`・`check_body`）, `tests/polymorphism.rs`（テスト 1 件追加）, `docs/benchmarks.md`, `docs/architecture.md`, `_perfs/README.md`（状態欄） |
 | 計測対象 | PX03 の合成 1,000 モジュール（`check` と `build --emit llvm -O0`）の wall time・peak RSS・段階別時間。`sample` による top-of-stack の malloc／free／memmove の割合と、関数別の inclusive samples |
+
+## 統合完了（2026-10-15）
+
+全 phase と D9 の型 graph arena / AST ownership への再設計を実装し、121 project の frontend 構造・診断・成功 IR、484 CLI configurations の診断・終了コードを比較した。受け入れられる全 output が byte-identical で、stack depth・specialization 上限と Windows x64/ARM64 cross-check も維持した。formal frontend before/after/before2 の 9-sample 結果と profile は `docs/benchmarks.md` と既存の final2 記録に反映済み。統合 no-cache build が発見した生成物サイズ・cold build cost は、PB02 単独の効果と帰属せず同文書に全体結果として明記した。source freeze 済み。
 
 ## 目的
 
@@ -550,11 +554,11 @@ fn run n = apply true n + apply 2 n + helper n
 
 - [x] S1〜S5 が入り、「生成コードの確認」の grep がすべて空。
 - [x] baseline LLVM を使った 121 project の型付き構造・診断・native / WASM IR が一致。CLI 四構成の終了コード・診断 484 outputs、成功時の IR 386 outputs も一致。
-- [ ] `cargo test --locked` と手順 8 の E2E 6 suite が成功し、stack-depth の 4 テストと `honors_the_exact_specialization_limit` が変更なしで通る。
+- [x] `cargo test --locked` と手順 8 の E2E 6 suite が成功し、stack-depth の 4 テストと `honors_the_exact_specialization_limit` が変更なしで通る。
 - [x] `specializes_shared_non_generic_callee_once` が追加されている。
-- [ ] `target/perf/PB02-before`・`PB02-after`・`PB02-before2` と、profile の before／after 各 3 回が記録され、`docs/benchmarks.md` に要約がある。
+- [x] `target/perf/PB02-before`・`PB02-after`・`PB02-before2` と、profile の before／after 各 3 回が記録され、`docs/benchmarks.md` に要約がある。
 - [x] PB02 に `unsafe`・新しい crate・`Cargo.toml` の変更がない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -738,7 +742,7 @@ IR・終了コード・stdout / stderr を比較しました。484 configuration
 IR 期待値・診断期待値の更新はありません。統合 compiler が baseline と異なる backend IR を出すことは、
 この PB02 単独比較の失敗を意味しません。
 
-### 性能と引き継ぎ
+### 中間記録: 性能と引き継ぎ（統合正式測定前）
 
 `benchmarks/run-frontend.mjs` は cache を無効にし、hello / 合成 200 / 合成 1,000 の
 check と native LLVM emission の wall / CPU / RSS / 段別時間を記録します。

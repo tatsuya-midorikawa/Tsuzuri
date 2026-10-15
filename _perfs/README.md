@@ -86,11 +86,11 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PR01 | [所有権・借用から導く最適化情報の付与](PR01-ownership-facts.md) | P1 | L | PX01 | doing |
+| PR01 | [所有権・借用から導く最適化情報の付与](_completed/PR01-ownership-facts.md) | P1 | L | PX01 | done |
 | PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | todo |
 | PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
-| PR04 | [数値の表示・解析の高速化](PR04-number-formatting.md) | P1 | M | PX01 | doing |
-| PR05 | [UTF 変換・比較・検証の SIMD 化](PR05-utf-simd.md) | P1 | M | PX01, (F08) | doing |
+| PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
+| PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
 | PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | todo |
 | PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | todo |
 | PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | todo |
@@ -104,8 +104,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
 | PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | todo |
-| PM06 | [確保の除去とスタック化](PM06-allocation-elimination.md) | P1 | L | PX01 | doing |
-| PM07 | [複製の除去とバッファ再利用の一般化](PM07-copy-elision.md)（Phase 2 は [A17](../_features/A17-last-use-move.md)） | P1 | M | PX01, (A15) | doing |
+| PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
+| PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | todo |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 
@@ -113,8 +113,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](PB01-prebuilt-runtime.md) | P0 | M | PX03 | doing |
-| PB02 | [フロントエンドの確保削減と高速化](PB02-frontend-allocation.md) | P0 | L | PX03 | doing |
+| PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
+| PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | todo |
 | PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | todo |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |

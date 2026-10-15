@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | PX01, (F08) |
 | 関連 | PM03, F05, F08 |
-| 状態 | in-progress |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | Phase 1・2 とも利用者が全段の実装を明示承認。F08 は完了済み |
 | 手本にする既存実装 | 16-bit・8-bit 列の一括比較: `src/runtime/string.ll` の `@tz.string.equal`・`@tz.string.compare` の `wide`／`wide_advance` 節（64-bit 読み出し）。target ごとの runtime 文書の選択: `src/llvm.rs` で `heap-wasm.ll` と `heap-native.ll` を `if wasm` で選ぶ箇所。runtime の単体検査: `tests/strings.mjs` の runtime harness（`--emit llvm` の IR と `tests/strings_runtime.c` を native と wasm32 の `-O0`／`-O3` で結合し、`all_scalars`・`runtime_trap_case` を呼ぶ） |
@@ -456,12 +456,12 @@ $OBJDUMP -d --no-show-raw-insn --disassemble-symbols=_tz_utf_equal,_tz_utf_compa
 
 ## 受け入れ条件
 
-- [ ] T1〜T7 が全構成で成功し、`all_scalars` 4344 と trap 28 件が変わらない。
-- [ ] 既定の wasm32 に `v128` 系の命令がなく、simd128 と native にベクトル命令がある（生成コードの確認の表）。import は増えない。
-- [ ] `cargo test --locked`、`tests/strings.mjs`・`tests/simd.mjs`・`tests/cpu_dispatch.mjs`・`tests/features.mjs` が成功する。
-- [ ] M1〜M4 を 9 回の中央値・最小・最大で記録し、混在 Unicode と size 8 の退行がない（退行があれば停止条件で報告済み）。
-- [ ] runtime に intrinsic の `declare` と target 固有の intrinsic がなく、IR が決定的である。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] T1〜T7 が全構成で成功し、`all_scalars` 4344 と trap 28 件が変わらない。
+- [x] 既定の wasm32 に `v128` 系の命令がなく、simd128 と native にベクトル命令がある（生成コードの確認の表）。import は増えない。
+- [x] `cargo test --locked`、`tests/strings.mjs`・`tests/simd.mjs`・`tests/cpu_dispatch.mjs`・`tests/features.mjs` が成功する。
+- [x] M1〜M4 を 9 回の中央値・最小・最大で記録し、混在 Unicode と size 8 の退行がない（退行があれば停止条件で報告済み）。
+- [x] runtime に intrinsic の `declare` と target 固有の intrinsic がなく、IR が決定的である。
+- [x] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -1678,4 +1678,4 @@ production source は freeze のまま。PR05 acceptance は未完了で、過�
 
 M4 `-O3` object sizes（before → after）: native 79,424 → 134,368 bytes、WASM scalar 69,230 → 78,041 bytes、WASM simd128 71,070 → 87,571 bytes。runtime gains とともに成果物サイズ増も報告し、size-neutralとは扱わない。
 
-`node tests/strings.mjs target/release/tsuzuri` は native/WASM O0/O3 で3,973 ECMAScript/reference・ownership cases、75 traps、runtime 4,344 Unicode scalars と28 strict conversion/bounds trapsを通過。`PATH=/opt/homebrew/opt/llvm@21/bin:$PATH node tests/utf_simd.mjs --quick` は native CPU baseline/auto と WASM scalar/simd128 のO0/O3を通過した。全Rust suite と最終統合測定は親作業の validation record に記録する。
+`node tests/strings.mjs target/release/tsuzuri` は native/WASM O0/O3 で3,973 ECMAScript/reference・ownership cases、75 traps、runtime 4,344 Unicode scalars と28 strict conversion/bounds trapsを通過。`PATH=/opt/homebrew/opt/llvm@21/bin:$PATH node tests/utf_simd.mjs --quick` は native CPU baseline/auto と WASM scalar/simd128 のO0/O3を通過した。最終 pin では `tests/simd.mjs` 467 cases per CPU mode、`tests/cpu_dispatch.mjs`、`tests/features.mjs` 14,106 cases、full Rust suite・clippy も通過した。Final integrated CPP/build/allocation results は `docs/benchmarks.md` に記録した。UTF runtime gains は stable、object-size increase と no-cache build cost は未解消の tradeoff として保持し、性能結果を size-neutral や全環境での改善と誇張しない。
