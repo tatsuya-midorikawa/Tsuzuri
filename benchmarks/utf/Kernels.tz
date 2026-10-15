@@ -48,6 +48,8 @@ fn utf_compare kind size repeat =
     let right = Maybe.get (String.slice (ref text) 0 (text.length - 1)) + "\uFFFF"
     let mut total = 0
     for _ in 1 .. repeat do
+        // Keep the repeated comparison observable across iterations under -O3.
+        Bench.consume (ref text, ref right)
         if text < right then total = total + 1
     total
 

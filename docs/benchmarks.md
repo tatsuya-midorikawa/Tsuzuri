@@ -5486,7 +5486,8 @@ warm は frontend cache も保持するため、cold／warm 差を runtime objec
 
 UTF の入力別比較は `run-utf.mjs <compiler> --metrics <dir>` を使います。
 5 入力種 × 6 操作 × 8／64／65,536 UTF-16 単位、約 2^24 単位の反復、9 標本と独立した checksum の検査を
-PX01 suite `utf` に記録します。`--quick` の値は速度比較に使いません。
+PX01 suite `utf` に記録します。`utf_compare` は各反復でオペランドを `Bench.consume` のメモリ障壁に通し、
+比較が `-O3` でループ外へ移動しないことを最適化済み IR で確認します。`--quick` の値は速度比較に使いません。
 
 ### フロントエンドの正式比較（PB02・PR01）
 

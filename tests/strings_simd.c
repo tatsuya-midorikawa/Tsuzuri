@@ -536,6 +536,29 @@ int guard_pages(void) {
 #define TZ_SIMD_TEST
 #include "strings_runtime.c"
 
+#if defined(_WIN32) && !defined(__wasm__)
+static DWORD trap_exception_code;
+static void *trap_exception_address;
+
+static int capture_trap_exception(EXCEPTION_POINTERS *exception) {
+    trap_exception_code = exception->ExceptionRecord->ExceptionCode;
+    trap_exception_address = exception->ExceptionRecord->ExceptionAddress;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static int run_trap_case(unsigned index) {
+    __try {
+        runtime_trap_case(index);
+        return 0;
+    } __except(capture_trap_exception(GetExceptionInformation())) {
+        if (trap_exception_code != EXCEPTION_ILLEGAL_INSTRUCTION)
+            fprintf(stderr, "trap case %u raised exception 0x%08lx at %p\n", index,
+                (unsigned long)trap_exception_code, trap_exception_address);
+        return (int)trap_exception_code;
+    }
+}
+#endif
+
 #ifndef __wasm__
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1],"--features")) {
@@ -543,7 +566,13 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc > 1 && argv[1][0] == 's') { storage_trap_case((unsigned)atoi(argv[1]+1)); return 0; }
-    if (argc > 1 && argv[1][0] == 't') { runtime_trap_case((unsigned)atoi(argv[1]+1)); return 0; }
+    if (argc > 1 && argv[1][0] == 't') {
+#ifdef _WIN32
+        return run_trap_case((unsigned)atoi(argv[1]+1));
+#else
+        runtime_trap_case((unsigned)atoi(argv[1]+1)); return 0;
+#endif
+    }
     int guard_only = argc > 1 && !strcmp(argv[1],"--guard-only");
     int result = guard_only ? 0 : argc > 1 && !strcmp(argv[1],"--exhaustive") ? exhaustive() : differential();
     if (!result) result = guard_pages();
