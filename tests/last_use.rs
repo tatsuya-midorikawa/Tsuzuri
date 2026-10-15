@@ -14,8 +14,12 @@ fn body<'a>(ir: &'a str, name: &str) -> &'a str {
 }
 
 fn allocations(source: &str, name: &str, expected: usize) {
+    allocations_by_target(source, name, [expected; 2]);
+}
+
+fn allocations_by_target(source: &str, name: &str, expected: [usize; 2]) {
     let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
-    for wasm in [false, true] {
+    for (wasm, expected) in [false, true].into_iter().zip(expected) {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert_eq!(
             body(&ir, name)
@@ -107,11 +111,11 @@ fn copies_a_borrowed_local() {
 
 #[test]
 fn closure_capture_copies_and_the_later_read_moves() {
-    // PM06 keeps the closure environment in the frame; the snapshot of xs still copies.
-    allocations(
+    // Native Windows keeps the documented heap fallback for local binding initializers.
+    allocations_by_target(
         r"def f :: [i64] -> i64 = \xs -> { let g = \i -> xs[i]; let ys = Array.set xs 0 9; g 0 + ys[0] }",
         "f",
-        1,
+        [if cfg!(windows) { 2 } else { 1 }, 1],
     );
 }
 

@@ -126,7 +126,13 @@ fn main() {
     const output = join(directory, `cached.${emit}`), independent = join(directory, `independent.${emit}`);
     run(compiler, ['build', abi, '-O0', '--emit', emit, '-o', output]);
     run(compiler, ['build', abi, '-O0', '--emit', emit, '-o', independent, '--no-cache']);
-    assert.deepEqual(readFileSync(output), readFileSync(independent),
+    const actual = readFileSync(output), expected = readFileSync(independent);
+    if (emit === 'object' && process.platform === 'win32') {
+      // COFF embeds the current time in its file header.
+      actual.fill(0, 4, 8);
+      expected.fill(0, 4, 8);
+    }
+    assert.deepEqual(actual, expected,
       `${emit} output must stay independent of runtime object selection`);
   }
   for (const optimization of ['-O0', '-O3']) {

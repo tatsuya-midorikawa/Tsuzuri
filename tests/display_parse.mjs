@@ -17,7 +17,7 @@ function execute(program, args, input) {
     env: { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") },
   });
   if (result.error) throw result.error;
-  assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stderr}`);
+  assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
 const cli = (args) => execute(compiler, args);
