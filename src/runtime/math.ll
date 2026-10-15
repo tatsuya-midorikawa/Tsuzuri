@@ -359,7 +359,7 @@ define internal double @tz_math_atan2_f64(double noundef %0, double noundef %1) 
   %274 = fsub double %271, %273
   %275 = add nsw i64 %237, -1
   %276 = icmp eq i64 %237, 0
-  br i1 %276, label %199, label %236, !llvm.loop !225
+  br i1 %276, label %199, label %236, !llvm.loop !228
 
 277:                                              ; preds = %199
   %278 = fneg double %233
@@ -438,7 +438,7 @@ define internal double @tz_math_sin_f64(double noundef %0) local_unnamed_addr #2
   %14 = fadd double %0, 0x4770000000000000
   %15 = select i1 %12, double %13, double %14
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %2)
-  store volatile double %15, ptr %2, align 8, !tbaa !228
+  store volatile double %15, ptr %2, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %2)
   br label %39
 
@@ -457,9 +457,9 @@ define internal double @tz_math_sin_f64(double noundef %0) local_unnamed_addr #2
 22:                                               ; preds = %18
   %23 = call i32 @tz_math_rem_pio2(double noundef %0, ptr noundef nonnull %3) #27
   %24 = and i32 %23, 3
-  %25 = load double, ptr %3, align 16, !tbaa !228
+  %25 = load double, ptr %3, align 16, !tbaa !231
   %26 = getelementptr inbounds i8, ptr %3, i64 8
-  %27 = load double, ptr %26, align 8, !tbaa !228
+  %27 = load double, ptr %26, align 8, !tbaa !231
   switch i32 %24, label %35 [
     i32 0, label %28
     i32 1, label %30
@@ -521,7 +521,7 @@ define internal float @tz_math_sin_f32(float noundef %0) local_unnamed_addr #21 
   %13 = fadd float %0, 0x4770000000000000
   %14 = select i1 %11, float %12, float %13
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %14, ptr %2, align 4, !tbaa !232
+  store volatile float %14, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   br label %76
 
@@ -604,7 +604,7 @@ define internal float @tz_math_sin_f32(float noundef %0) local_unnamed_addr #21 
 61:                                               ; preds = %57
   %62 = call i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef nonnull %3) #27
   %63 = and i32 %62, 3
-  %64 = load double, ptr %3, align 8, !tbaa !228
+  %64 = load double, ptr %3, align 8, !tbaa !231
   switch i32 %63, label %72 [
     i32 0, label %65
     i32 1, label %67
@@ -658,7 +658,7 @@ define internal double @tz_math_cos_f64(double noundef %0) local_unnamed_addr #2
 11:                                               ; preds = %9
   %12 = fadd double %0, 0x4770000000000000
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %2)
-  store volatile double %12, ptr %2, align 8, !tbaa !228
+  store volatile double %12, ptr %2, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %2)
   br label %36
 
@@ -677,9 +677,9 @@ define internal double @tz_math_cos_f64(double noundef %0) local_unnamed_addr #2
 19:                                               ; preds = %15
   %20 = call i32 @tz_math_rem_pio2(double noundef %0, ptr noundef nonnull %3) #27
   %21 = and i32 %20, 3
-  %22 = load double, ptr %3, align 16, !tbaa !228
+  %22 = load double, ptr %3, align 16, !tbaa !231
   %23 = getelementptr inbounds i8, ptr %3, i64 8
-  %24 = load double, ptr %23, align 8, !tbaa !228
+  %24 = load double, ptr %23, align 8, !tbaa !231
   switch i32 %21, label %33 [
     i32 0, label %25
     i32 1, label %27
@@ -732,7 +732,7 @@ define internal float @tz_math_cos_f32(float noundef %0) local_unnamed_addr #21 
 10:                                               ; preds = %8
   %11 = fadd float %0, 0x4770000000000000
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %11, ptr %2, align 4, !tbaa !232
+  store volatile float %11, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   br label %75
 
@@ -817,7 +817,7 @@ define internal float @tz_math_cos_f32(float noundef %0) local_unnamed_addr #21 
 60:                                               ; preds = %56
   %61 = call i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef nonnull %3) #27
   %62 = and i32 %61, 3
-  %63 = load double, ptr %3, align 8, !tbaa !228
+  %63 = load double, ptr %3, align 8, !tbaa !231
   switch i32 %62, label %72 [
     i32 0, label %64
     i32 1, label %66
@@ -874,7 +874,7 @@ define internal double @tz_math_tan_f64(double noundef %0) local_unnamed_addr #2
   %14 = fadd double %0, 0x4770000000000000
   %15 = select i1 %12, double %13, double %14
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %2)
-  store volatile double %15, ptr %2, align 8, !tbaa !228
+  store volatile double %15, ptr %2, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %2)
   br label %29
 
@@ -892,9 +892,9 @@ define internal double @tz_math_tan_f64(double noundef %0) local_unnamed_addr #2
 
 22:                                               ; preds = %18
   %23 = call i32 @tz_math_rem_pio2(double noundef %0, ptr noundef nonnull %3) #27
-  %24 = load double, ptr %3, align 16, !tbaa !228
+  %24 = load double, ptr %3, align 16, !tbaa !231
   %25 = getelementptr inbounds i8, ptr %3, i64 8
-  %26 = load double, ptr %25, align 8, !tbaa !228
+  %26 = load double, ptr %25, align 8, !tbaa !231
   %27 = and i32 %23, 1
   %28 = call double @tz_math_tan(double noundef %24, double noundef %26, i32 noundef %27) #27
   br label %29
@@ -926,7 +926,7 @@ define internal float @tz_math_tan_f32(float noundef %0) local_unnamed_addr #21 
   %13 = fadd float %0, 0x4770000000000000
   %14 = select i1 %11, float %12, float %13
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %14, ptr %2, align 4, !tbaa !232
+  store volatile float %14, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   br label %55
 
@@ -989,7 +989,7 @@ define internal float @tz_math_tan_f32(float noundef %0) local_unnamed_addr #21 
 
 50:                                               ; preds = %46
   %51 = call i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef nonnull %3) #27
-  %52 = load double, ptr %3, align 8, !tbaa !228
+  %52 = load double, ptr %3, align 8, !tbaa !231
   %53 = and i32 %51, 1
   %54 = call float @tz_math_tandf(double noundef %52, i32 noundef %53) #27
   br label %55
@@ -1475,7 +1475,7 @@ define internal double @tz_math_atan_f64(double noundef %0) local_unnamed_addr #
 18:                                               ; preds = %16
   %19 = fptrunc double %0 to float
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %19, ptr %2, align 4, !tbaa !232
+  store volatile float %19, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   br label %85
 
@@ -1551,11 +1551,11 @@ define internal double @tz_math_atan_f64(double noundef %0) local_unnamed_addr #
 
 72:                                               ; preds = %43
   %73 = getelementptr inbounds [4 x double], ptr @atanhi, i64 0, i64 %45
-  %74 = load double, ptr %73, align 8, !tbaa !228
+  %74 = load double, ptr %73, align 8, !tbaa !231
   %75 = fadd double %67, %58
   %76 = fmul double %44, %75
   %77 = getelementptr inbounds [4 x double], ptr @atanlo, i64 0, i64 %45
-  %78 = load double, ptr %77, align 8, !tbaa !228
+  %78 = load double, ptr %77, align 8, !tbaa !231
   %79 = fsub double %76, %78
   %80 = fsub double %79, %44
   %81 = fsub double %74, %80
@@ -1604,7 +1604,7 @@ define internal float @tz_math_atan_f32(float noundef %0) local_unnamed_addr #21
 17:                                               ; preds = %15
   %18 = fmul float %0, %0
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %18, ptr %2, align 4, !tbaa !232
+  store volatile float %18, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   br label %72
 
@@ -1668,11 +1668,11 @@ define internal float @tz_math_atan_f32(float noundef %0) local_unnamed_addr #21
 
 59:                                               ; preds = %42
   %60 = getelementptr inbounds [4 x float], ptr @atanhi.1, i64 0, i64 %44
-  %61 = load float, ptr %60, align 4, !tbaa !232
+  %61 = load float, ptr %60, align 4, !tbaa !235
   %62 = fadd float %54, %51
   %63 = fmul float %43, %62
   %64 = getelementptr inbounds [4 x float], ptr @atanlo.2, i64 0, i64 %44
-  %65 = load float, ptr %64, align 4, !tbaa !232
+  %65 = load float, ptr %64, align 4, !tbaa !235
   %66 = fsub float %63, %65
   %67 = fsub float %66, %43
   %68 = fsub float %61, %67
@@ -1957,7 +1957,7 @@ define internal double @tz_math_exp_f64(double noundef %0) local_unnamed_addr #2
   %5 = and i32 %4, 2047
   %6 = add nsw i32 %5, -969
   %7 = icmp ult i32 %6, 63
-  br i1 %7, label %26, label %8, !prof !234
+  br i1 %7, label %26, label %8, !prof !237
 
 8:                                                ; preds = %1
   %9 = icmp samesign ult i32 %5, 969
@@ -1997,44 +1997,44 @@ define internal double @tz_math_exp_f64(double noundef %0) local_unnamed_addr #2
 
 26:                                               ; preds = %12, %1
   %27 = phi i32 [ %5, %1 ], [ 0, %12 ]
-  %28 = load double, ptr @tz_math_exp_data, align 8, !tbaa !235
+  %28 = load double, ptr @tz_math_exp_data, align 8, !tbaa !238
   %29 = fmul double %0, %28
-  %30 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 8), align 8, !tbaa !237
+  %30 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 8), align 8, !tbaa !240
   %31 = fadd double %29, %30
   %32 = bitcast double %31 to i64
   %33 = fsub double %31, %30
-  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 16), align 8, !tbaa !238
+  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 16), align 8, !tbaa !241
   %35 = fmul double %34, %33
   %36 = fadd double %0, %35
-  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 24), align 8, !tbaa !239
+  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 24), align 8, !tbaa !242
   %38 = fmul double %33, %37
   %39 = fadd double %38, %36
   %40 = shl i64 %32, 1
   %41 = and i64 %40, 254
   %42 = shl i64 %32, 45
   %43 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %41
-  %44 = load double, ptr %43, align 8, !tbaa !240
+  %44 = load double, ptr %43, align 8, !tbaa !243
   %45 = or i64 %41, 1
   %46 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %45
-  %47 = load i64, ptr %46, align 8, !tbaa !240
+  %47 = load i64, ptr %46, align 8, !tbaa !243
   %48 = add i64 %47, %42
   %49 = fmul double %39, %39
   %50 = fadd double %44, %39
-  %51 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 32), align 8, !tbaa !228
-  %52 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 40), align 8, !tbaa !228
+  %51 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 32), align 8, !tbaa !231
+  %52 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 40), align 8, !tbaa !231
   %53 = fmul double %39, %52
   %54 = fadd double %51, %53
   %55 = fmul double %49, %54
   %56 = fadd double %50, %55
   %57 = fmul double %49, %49
-  %58 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 48), align 8, !tbaa !228
-  %59 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 56), align 8, !tbaa !228
+  %58 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 48), align 8, !tbaa !231
+  %59 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 56), align 8, !tbaa !231
   %60 = fmul double %39, %59
   %61 = fadd double %58, %60
   %62 = fmul double %57, %61
   %63 = fadd double %56, %62
   %64 = icmp eq i32 %27, 0
-  br i1 %64, label %65, label %67, !prof !242
+  br i1 %64, label %65, label %67, !prof !245
 
 65:                                               ; preds = %26
   %66 = tail call fastcc double @specialcase(double noundef %63, i64 noundef %48, i64 noundef %32) #29
@@ -2087,12 +2087,12 @@ define internal fastcc double @specialcase(double noundef %0, i64 noundef %1, i6
   %29 = fcmp oeq double %28, 0.000000e+00
   %30 = select i1 %29, double 0.000000e+00, double %28
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %5)
-  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !228
-  %31 = load volatile double, ptr %5, align 8, !tbaa !228
+  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !231
+  %31 = load volatile double, ptr %5, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %5)
   %32 = fmul double %31, 0x10000000000000
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %4)
-  store volatile double %32, ptr %4, align 8, !tbaa !228
+  store volatile double %32, ptr %4, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %4)
   br label %33
 
@@ -2113,7 +2113,7 @@ define internal float @tz_math_exp_f32(float noundef %0) local_unnamed_addr #21 
   %4 = lshr i32 %3, 20
   %5 = and i32 %4, 2047
   %6 = icmp samesign ult i32 %5, 1067
-  br i1 %6, label %21, label %7, !prof !234
+  br i1 %6, label %21, label %7, !prof !237
 
 7:                                                ; preds = %1
   %8 = fcmp oeq float %0, 0xFFF0000000000000
@@ -2144,25 +2144,25 @@ define internal float @tz_math_exp_f32(float noundef %0) local_unnamed_addr #21 
   br label %47
 
 21:                                               ; preds = %17, %1
-  %22 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 296), align 8, !tbaa !243
+  %22 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 296), align 8, !tbaa !246
   %23 = fmul double %22, %2
-  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 288), align 8, !tbaa !245
+  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 288), align 8, !tbaa !248
   %25 = fadd double %23, %24
   %26 = bitcast double %25 to i64
   %27 = fsub double %25, %24
   %28 = fsub double %23, %27
   %29 = and i64 %26, 31
   %30 = getelementptr inbounds [32 x i64], ptr @tz_math_exp2f_data, i64 0, i64 %29
-  %31 = load i64, ptr %30, align 8, !tbaa !240
+  %31 = load i64, ptr %30, align 8, !tbaa !243
   %32 = shl i64 %26, 47
   %33 = add i64 %32, %31
   %34 = bitcast i64 %33 to double
-  %35 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 304), align 8, !tbaa !228
+  %35 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 304), align 8, !tbaa !231
   %36 = fmul double %35, %28
-  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 312), align 8, !tbaa !228
+  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 312), align 8, !tbaa !231
   %38 = fadd double %37, %36
   %39 = fmul double %28, %28
-  %40 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 320), align 8, !tbaa !228
+  %40 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 320), align 8, !tbaa !231
   %41 = fmul double %28, %40
   %42 = fadd double %41, 1.000000e+00
   %43 = fmul double %39, %38
@@ -2184,7 +2184,7 @@ define internal double @tz_math_exp2_f64(double noundef %0) local_unnamed_addr #
   %5 = and i32 %4, 2047
   %6 = add nsw i32 %5, -969
   %7 = icmp ult i32 %6, 63
-  br i1 %7, label %32, label %8, !prof !234
+  br i1 %7, label %32, label %8, !prof !237
 
 8:                                                ; preds = %1
   %9 = icmp samesign ult i32 %5, 969
@@ -2234,7 +2234,7 @@ define internal double @tz_math_exp2_f64(double noundef %0) local_unnamed_addr #
 
 32:                                               ; preds = %28, %1
   %33 = phi i32 [ %5, %1 ], [ %31, %28 ]
-  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 64), align 8, !tbaa !246
+  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 64), align 8, !tbaa !249
   %35 = fadd double %0, %34
   %36 = bitcast double %35 to i64
   %37 = fsub double %35, %34
@@ -2243,30 +2243,30 @@ define internal double @tz_math_exp2_f64(double noundef %0) local_unnamed_addr #
   %40 = and i64 %39, 254
   %41 = shl i64 %36, 45
   %42 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %40
-  %43 = load double, ptr %42, align 8, !tbaa !240
+  %43 = load double, ptr %42, align 8, !tbaa !243
   %44 = or i64 %40, 1
   %45 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %44
-  %46 = load i64, ptr %45, align 8, !tbaa !240
+  %46 = load i64, ptr %45, align 8, !tbaa !243
   %47 = add i64 %41, %46
   %48 = fmul double %38, %38
-  %49 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 72), align 8, !tbaa !228
+  %49 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 72), align 8, !tbaa !231
   %50 = fmul double %38, %49
   %51 = fadd double %43, %50
-  %52 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 80), align 8, !tbaa !228
-  %53 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 88), align 8, !tbaa !228
+  %52 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 80), align 8, !tbaa !231
+  %53 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 88), align 8, !tbaa !231
   %54 = fmul double %38, %53
   %55 = fadd double %52, %54
   %56 = fmul double %48, %55
   %57 = fadd double %51, %56
   %58 = fmul double %48, %48
-  %59 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 96), align 8, !tbaa !228
-  %60 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 104), align 8, !tbaa !228
+  %59 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 96), align 8, !tbaa !231
+  %60 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 104), align 8, !tbaa !231
   %61 = fmul double %38, %60
   %62 = fadd double %59, %61
   %63 = fmul double %58, %62
   %64 = fadd double %57, %63
   %65 = icmp eq i32 %33, 0
-  br i1 %65, label %66, label %68, !prof !242
+  br i1 %65, label %66, label %68, !prof !245
 
 66:                                               ; preds = %32
   %67 = tail call fastcc double @specialcase.5(double noundef %64, i64 noundef %47, i64 noundef %36) #29
@@ -2319,12 +2319,12 @@ define internal fastcc double @specialcase.5(double noundef %0, i64 noundef %1, 
   %29 = fcmp oeq double %28, 0.000000e+00
   %30 = select i1 %29, double 0.000000e+00, double %28
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %5)
-  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !228
-  %31 = load volatile double, ptr %5, align 8, !tbaa !228
+  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !231
+  %31 = load volatile double, ptr %5, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %5)
   %32 = fmul double %31, 0x10000000000000
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %4)
-  store volatile double %32, ptr %4, align 8, !tbaa !228
+  store volatile double %32, ptr %4, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %4)
   br label %33
 
@@ -2345,7 +2345,7 @@ define internal float @tz_math_exp2_f32(float noundef %0) local_unnamed_addr #21
   %4 = lshr i32 %3, 20
   %5 = and i32 %4, 2047
   %6 = icmp samesign ult i32 %5, 1072
-  br i1 %6, label %21, label %7, !prof !234
+  br i1 %6, label %21, label %7, !prof !237
 
 7:                                                ; preds = %1
   %8 = fcmp oeq float %0, 0xFFF0000000000000
@@ -2376,23 +2376,23 @@ define internal float @tz_math_exp2_f32(float noundef %0) local_unnamed_addr #21
   br label %45
 
 21:                                               ; preds = %17, %1
-  %22 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 256), align 8, !tbaa !247
+  %22 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 256), align 8, !tbaa !250
   %23 = fadd double %22, %2
   %24 = bitcast double %23 to i64
   %25 = fsub double %23, %22
   %26 = fsub double %2, %25
   %27 = and i64 %24, 31
   %28 = getelementptr inbounds [32 x i64], ptr @tz_math_exp2f_data, i64 0, i64 %27
-  %29 = load i64, ptr %28, align 8, !tbaa !240
+  %29 = load i64, ptr %28, align 8, !tbaa !243
   %30 = shl i64 %24, 47
   %31 = add i64 %30, %29
   %32 = bitcast i64 %31 to double
-  %33 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 264), align 8, !tbaa !228
+  %33 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 264), align 8, !tbaa !231
   %34 = fmul double %33, %26
-  %35 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 272), align 8, !tbaa !228
+  %35 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 272), align 8, !tbaa !231
   %36 = fadd double %35, %34
   %37 = fmul double %26, %26
-  %38 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 280), align 8, !tbaa !228
+  %38 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 280), align 8, !tbaa !231
   %39 = fmul double %26, %38
   %40 = fadd double %39, 1.000000e+00
   %41 = fmul double %37, %36
@@ -2413,38 +2413,38 @@ define internal double @tz_math_log_f64(double noundef %0) local_unnamed_addr #2
   %4 = trunc i64 %3 to i32
   %5 = add i64 %2, -4606619468846596096
   %6 = icmp ult i64 %5, 854320534781952
-  br i1 %6, label %7, label %58, !prof !242
+  br i1 %6, label %7, label %58, !prof !245
 
 7:                                                ; preds = %1
   %8 = icmp eq i64 %2, 4607182418800017408
-  br i1 %8, label %127, label %9, !prof !242
+  br i1 %8, label %127, label %9, !prof !245
 
 9:                                                ; preds = %7
   %10 = fadd double %0, -1.000000e+00
   %11 = fmul double %10, %10
   %12 = fmul double %10, %11
-  %13 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 64), align 8, !tbaa !228
-  %14 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 72), align 8, !tbaa !228
+  %13 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 64), align 8, !tbaa !231
+  %14 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 72), align 8, !tbaa !231
   %15 = fmul double %10, %14
   %16 = fadd double %13, %15
-  %17 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 80), align 8, !tbaa !228
+  %17 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 80), align 8, !tbaa !231
   %18 = fmul double %11, %17
   %19 = fadd double %16, %18
-  %20 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 88), align 8, !tbaa !228
-  %21 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 96), align 8, !tbaa !228
+  %20 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 88), align 8, !tbaa !231
+  %21 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 96), align 8, !tbaa !231
   %22 = fmul double %10, %21
   %23 = fadd double %20, %22
-  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 104), align 8, !tbaa !228
+  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 104), align 8, !tbaa !231
   %25 = fmul double %11, %24
   %26 = fadd double %23, %25
-  %27 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 112), align 8, !tbaa !228
-  %28 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 120), align 8, !tbaa !228
+  %27 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 112), align 8, !tbaa !231
+  %28 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 120), align 8, !tbaa !231
   %29 = fmul double %10, %28
   %30 = fadd double %27, %29
-  %31 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 128), align 8, !tbaa !228
+  %31 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 128), align 8, !tbaa !231
   %32 = fmul double %11, %31
   %33 = fadd double %30, %32
-  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 136), align 8, !tbaa !228
+  %34 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 136), align 8, !tbaa !231
   %35 = fmul double %12, %34
   %36 = fadd double %33, %35
   %37 = fmul double %12, %36
@@ -2457,7 +2457,7 @@ define internal double @tz_math_log_f64(double noundef %0) local_unnamed_addr #2
   %44 = fsub double %43, %42
   %45 = fsub double %10, %44
   %46 = fmul double %44, %44
-  %47 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 56), align 8, !tbaa !228
+  %47 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 56), align 8, !tbaa !231
   %48 = fmul double %46, %47
   %49 = fadd double %10, %48
   %50 = fsub double %10, %49
@@ -2473,7 +2473,7 @@ define internal double @tz_math_log_f64(double noundef %0) local_unnamed_addr #2
 58:                                               ; preds = %1
   %59 = add nsw i32 %4, -32752
   %60 = icmp ult i32 %59, -32736
-  br i1 %60, label %61, label %78, !prof !242
+  br i1 %60, label %61, label %78, !prof !245
 
 61:                                               ; preds = %58
   %62 = fcmp oeq double %0, 0.000000e+00
@@ -2514,38 +2514,38 @@ define internal double @tz_math_log_f64(double noundef %0) local_unnamed_addr #2
   %85 = and i64 %80, -4503599627370496
   %86 = sub i64 %79, %85
   %87 = getelementptr inbounds [128 x %struct.tz_math_dd], ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 144), i64 0, i64 %82
-  %88 = load double, ptr %87, align 8, !tbaa !248
+  %88 = load double, ptr %87, align 8, !tbaa !251
   %89 = getelementptr inbounds i8, ptr %87, i64 8
-  %90 = load double, ptr %89, align 8, !tbaa !250
+  %90 = load double, ptr %89, align 8, !tbaa !253
   %91 = bitcast i64 %86 to double
   %92 = getelementptr inbounds [128 x %struct.tz_math_dd], ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 2192), i64 0, i64 %82
-  %93 = load double, ptr %92, align 8, !tbaa !248
+  %93 = load double, ptr %92, align 8, !tbaa !251
   %94 = fsub double %91, %93
   %95 = getelementptr inbounds i8, ptr %92, i64 8
-  %96 = load double, ptr %95, align 8, !tbaa !250
+  %96 = load double, ptr %95, align 8, !tbaa !253
   %97 = fsub double %94, %96
   %98 = fmul double %88, %97
   %99 = sitofp i32 %84 to double
-  %100 = load double, ptr @tz_math_log_data, align 8, !tbaa !251
+  %100 = load double, ptr @tz_math_log_data, align 8, !tbaa !254
   %101 = fmul double %100, %99
   %102 = fadd double %90, %101
   %103 = fadd double %102, %98
   %104 = fsub double %102, %103
   %105 = fadd double %98, %104
-  %106 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 8), align 8, !tbaa !253
+  %106 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 8), align 8, !tbaa !256
   %107 = fmul double %106, %99
   %108 = fadd double %107, %105
   %109 = fmul double %98, %98
-  %110 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 16), align 8, !tbaa !228
+  %110 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 16), align 8, !tbaa !231
   %111 = fmul double %110, %109
   %112 = fadd double %111, %108
   %113 = fmul double %98, %109
-  %114 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 24), align 8, !tbaa !228
-  %115 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 32), align 8, !tbaa !228
+  %114 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 24), align 8, !tbaa !231
+  %115 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 32), align 8, !tbaa !231
   %116 = fmul double %98, %115
   %117 = fadd double %114, %116
-  %118 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 40), align 8, !tbaa !228
-  %119 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 48), align 8, !tbaa !228
+  %118 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 40), align 8, !tbaa !231
+  %119 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log_data, i64 48), align 8, !tbaa !231
   %120 = fmul double %98, %119
   %121 = fadd double %118, %120
   %122 = fmul double %109, %121
@@ -2564,12 +2564,12 @@ define internal double @tz_math_log_f64(double noundef %0) local_unnamed_addr #2
 define internal float @tz_math_log_f32(float noundef %0) local_unnamed_addr #24 {
   %2 = bitcast float %0 to i32
   %3 = icmp eq i32 %2, 1065353216
-  br i1 %3, label %57, label %4, !prof !242
+  br i1 %3, label %57, label %4, !prof !245
 
 4:                                                ; preds = %1
   %5 = add i32 %2, -2139095040
   %6 = icmp ult i32 %5, -2130706432
-  br i1 %6, label %7, label %24, !prof !242
+  br i1 %6, label %7, label %24, !prof !245
 
 7:                                                ; preds = %4
   %8 = shl i32 %2, 1
@@ -2610,23 +2610,23 @@ define internal float @tz_math_log_f32(float noundef %0) local_unnamed_addr #24 
   %31 = sub i32 %25, %30
   %32 = zext i32 %28 to i64
   %33 = getelementptr inbounds [16 x %struct.tz_math_dd], ptr @tz_math_logf_data, i64 0, i64 %32
-  %34 = load double, ptr %33, align 8, !tbaa !248
+  %34 = load double, ptr %33, align 8, !tbaa !251
   %35 = getelementptr inbounds i8, ptr %33, i64 8
-  %36 = load double, ptr %35, align 8, !tbaa !250
+  %36 = load double, ptr %35, align 8, !tbaa !253
   %37 = bitcast i32 %31 to float
   %38 = fpext float %37 to double
   %39 = fmul double %34, %38
   %40 = fadd double %39, -1.000000e+00
   %41 = sitofp i32 %29 to double
-  %42 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 256), align 8, !tbaa !254
+  %42 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 256), align 8, !tbaa !257
   %43 = fmul double %42, %41
   %44 = fadd double %36, %43
   %45 = fmul double %40, %40
-  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 272), align 8, !tbaa !228
+  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 272), align 8, !tbaa !231
   %47 = fmul double %46, %40
-  %48 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 280), align 8, !tbaa !228
+  %48 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 280), align 8, !tbaa !231
   %49 = fadd double %48, %47
-  %50 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 264), align 8, !tbaa !228
+  %50 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_logf_data, i64 264), align 8, !tbaa !231
   %51 = fmul double %50, %45
   %52 = fadd double %51, %49
   %53 = fmul double %45, %52
@@ -2647,11 +2647,11 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
   %4 = trunc i64 %3 to i32
   %5 = add i64 %2, -4606800540372828160
   %6 = icmp ult i64 %5, 581272283906048
-  br i1 %6, label %7, label %57, !prof !242
+  br i1 %6, label %7, label %57, !prof !245
 
 7:                                                ; preds = %1
   %8 = icmp eq i64 %2, 4607182418800017408
-  br i1 %8, label %135, label %9, !prof !242
+  br i1 %8, label %135, label %9, !prof !245
 
 9:                                                ; preds = %7
   %10 = fadd double %0, -1.000000e+00
@@ -2659,16 +2659,16 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
   %12 = and i64 %11, -4294967296
   %13 = bitcast i64 %12 to double
   %14 = fsub double %10, %13
-  %15 = load double, ptr @tz_math_log2_data, align 8, !tbaa !256
+  %15 = load double, ptr @tz_math_log2_data, align 8, !tbaa !259
   %16 = fmul double %15, %13
   %17 = fmul double %14, %15
-  %18 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 8), align 8, !tbaa !258
+  %18 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 8), align 8, !tbaa !261
   %19 = fmul double %10, %18
   %20 = fadd double %17, %19
   %21 = fmul double %10, %10
   %22 = fmul double %21, %21
-  %23 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 64), align 8, !tbaa !228
-  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 72), align 8, !tbaa !228
+  %23 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 64), align 8, !tbaa !231
+  %24 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 72), align 8, !tbaa !231
   %25 = fmul double %10, %24
   %26 = fadd double %23, %25
   %27 = fmul double %21, %26
@@ -2676,22 +2676,22 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
   %29 = fsub double %16, %28
   %30 = fadd double %27, %29
   %31 = fadd double %20, %30
-  %32 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 80), align 8, !tbaa !228
-  %33 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 88), align 8, !tbaa !228
+  %32 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 80), align 8, !tbaa !231
+  %33 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 88), align 8, !tbaa !231
   %34 = fmul double %10, %33
   %35 = fadd double %32, %34
-  %36 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 96), align 8, !tbaa !228
-  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 104), align 8, !tbaa !228
+  %36 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 96), align 8, !tbaa !231
+  %37 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 104), align 8, !tbaa !231
   %38 = fmul double %10, %37
   %39 = fadd double %36, %38
   %40 = fmul double %21, %39
   %41 = fadd double %35, %40
-  %42 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 112), align 8, !tbaa !228
-  %43 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 120), align 8, !tbaa !228
+  %42 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 112), align 8, !tbaa !231
+  %43 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 120), align 8, !tbaa !231
   %44 = fmul double %10, %43
   %45 = fadd double %42, %44
-  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 128), align 8, !tbaa !228
-  %47 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 136), align 8, !tbaa !228
+  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 128), align 8, !tbaa !231
+  %47 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 136), align 8, !tbaa !231
   %48 = fmul double %10, %47
   %49 = fadd double %46, %48
   %50 = fmul double %21, %49
@@ -2706,7 +2706,7 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
 57:                                               ; preds = %1
   %58 = add nsw i32 %4, -32752
   %59 = icmp ult i32 %58, -32736
-  br i1 %59, label %60, label %77, !prof !242
+  br i1 %59, label %60, label %77, !prof !245
 
 60:                                               ; preds = %57
   %61 = fcmp oeq double %0, 0.000000e+00
@@ -2747,26 +2747,26 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
   %84 = and i64 %79, -4503599627370496
   %85 = sub i64 %78, %84
   %86 = getelementptr inbounds [64 x %struct.tz_math_dd], ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 144), i64 0, i64 %81
-  %87 = load double, ptr %86, align 8, !tbaa !248
+  %87 = load double, ptr %86, align 8, !tbaa !251
   %88 = getelementptr inbounds i8, ptr %86, i64 8
-  %89 = load double, ptr %88, align 8, !tbaa !250
+  %89 = load double, ptr %88, align 8, !tbaa !253
   %90 = bitcast i64 %85 to double
   %91 = sitofp i32 %83 to double
   %92 = getelementptr inbounds [64 x %struct.tz_math_dd], ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 1168), i64 0, i64 %81
-  %93 = load double, ptr %92, align 8, !tbaa !248
+  %93 = load double, ptr %92, align 8, !tbaa !251
   %94 = fsub double %90, %93
   %95 = getelementptr inbounds i8, ptr %92, i64 8
-  %96 = load double, ptr %95, align 8, !tbaa !250
+  %96 = load double, ptr %95, align 8, !tbaa !253
   %97 = fsub double %94, %96
   %98 = fmul double %87, %97
   %99 = bitcast double %98 to i64
   %100 = and i64 %99, -4294967296
   %101 = bitcast i64 %100 to double
   %102 = fsub double %98, %101
-  %103 = load double, ptr @tz_math_log2_data, align 8, !tbaa !256
+  %103 = load double, ptr @tz_math_log2_data, align 8, !tbaa !259
   %104 = fmul double %103, %101
   %105 = fmul double %103, %102
-  %106 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 8), align 8, !tbaa !258
+  %106 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 8), align 8, !tbaa !261
   %107 = fmul double %106, %98
   %108 = fadd double %107, %105
   %109 = fadd double %89, %91
@@ -2776,18 +2776,18 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
   %113 = fadd double %108, %112
   %114 = fmul double %98, %98
   %115 = fmul double %114, %114
-  %116 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 16), align 8, !tbaa !228
-  %117 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 24), align 8, !tbaa !228
+  %116 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 16), align 8, !tbaa !231
+  %117 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 24), align 8, !tbaa !231
   %118 = fmul double %98, %117
   %119 = fadd double %116, %118
-  %120 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 32), align 8, !tbaa !228
-  %121 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 40), align 8, !tbaa !228
+  %120 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 32), align 8, !tbaa !231
+  %121 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 40), align 8, !tbaa !231
   %122 = fmul double %98, %121
   %123 = fadd double %120, %122
   %124 = fmul double %114, %123
   %125 = fadd double %119, %124
-  %126 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 48), align 8, !tbaa !228
-  %127 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 56), align 8, !tbaa !228
+  %126 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 48), align 8, !tbaa !231
+  %127 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2_data, i64 56), align 8, !tbaa !231
   %128 = fmul double %98, %127
   %129 = fadd double %126, %128
   %130 = fmul double %115, %129
@@ -2806,12 +2806,12 @@ define internal double @tz_math_log2_f64(double noundef %0) local_unnamed_addr #
 define internal float @tz_math_log2_f32(float noundef %0) local_unnamed_addr #24 {
   %2 = bitcast float %0 to i32
   %3 = icmp eq i32 %2, 1065353216
-  br i1 %3, label %57, label %4, !prof !242
+  br i1 %3, label %57, label %4, !prof !245
 
 4:                                                ; preds = %1
   %5 = add i32 %2, -2139095040
   %6 = icmp ult i32 %5, -2130706432
-  br i1 %6, label %7, label %24, !prof !242
+  br i1 %6, label %7, label %24, !prof !245
 
 7:                                                ; preds = %4
   %8 = shl i32 %2, 1
@@ -2852,9 +2852,9 @@ define internal float @tz_math_log2_f32(float noundef %0) local_unnamed_addr #24
   %31 = ashr i32 %26, 23
   %32 = zext i32 %28 to i64
   %33 = getelementptr inbounds [16 x %struct.tz_math_dd], ptr @tz_math_log2f_data, i64 0, i64 %32
-  %34 = load double, ptr %33, align 8, !tbaa !248
+  %34 = load double, ptr %33, align 8, !tbaa !251
   %35 = getelementptr inbounds i8, ptr %33, i64 8
-  %36 = load double, ptr %35, align 8, !tbaa !250
+  %36 = load double, ptr %35, align 8, !tbaa !253
   %37 = bitcast i32 %30 to float
   %38 = fpext float %37 to double
   %39 = fmul double %34, %38
@@ -2862,14 +2862,14 @@ define internal float @tz_math_log2_f32(float noundef %0) local_unnamed_addr #24
   %41 = sitofp i32 %31 to double
   %42 = fadd double %36, %41
   %43 = fmul double %40, %40
-  %44 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 264), align 8, !tbaa !228
+  %44 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 264), align 8, !tbaa !231
   %45 = fmul double %44, %40
-  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 272), align 8, !tbaa !228
+  %46 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 272), align 8, !tbaa !231
   %47 = fadd double %46, %45
-  %48 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 256), align 8, !tbaa !228
+  %48 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 256), align 8, !tbaa !231
   %49 = fmul double %48, %43
   %50 = fadd double %49, %47
-  %51 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 280), align 8, !tbaa !228
+  %51 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_log2f_data, i64 280), align 8, !tbaa !231
   %52 = fmul double %51, %40
   %53 = fadd double %42, %52
   %54 = fmul double %43, %50
@@ -3094,14 +3094,14 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %12 = and i32 %9, 2047
   %13 = add nsw i32 %12, -1086
   %14 = icmp ult i32 %13, -128
-  %15 = select i1 %11, i1 true, i1 %14, !prof !242
-  br i1 %15, label %16, label %127, !prof !242
+  %15 = select i1 %11, i1 true, i1 %14, !prof !245
+  br i1 %15, label %16, label %127, !prof !245
 
 16:                                               ; preds = %2
   %17 = shl i64 %5, 1
   %18 = add i64 %17, -1
   %19 = icmp ult i64 %18, -9007199254740993
-  br i1 %19, label %39, label %20, !prof !234
+  br i1 %19, label %39, label %20, !prof !237
 
 20:                                               ; preds = %16
   %21 = icmp eq i64 %17, 0
@@ -3138,7 +3138,7 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %40 = shl i64 %4, 1
   %41 = add i64 %40, -1
   %42 = icmp ult i64 %41, -9007199254740993
-  br i1 %42, label %67, label %43, !prof !234
+  br i1 %42, label %67, label %43, !prof !237
 
 43:                                               ; preds = %39
   %44 = fmul double %0, %0
@@ -3172,8 +3172,8 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
 64:                                               ; preds = %61
   %65 = fdiv double 1.000000e+00, %62
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %3)
-  store volatile double %65, ptr %3, align 8, !tbaa !228
-  %66 = load volatile double, ptr %3, align 8, !tbaa !228
+  store volatile double %65, ptr %3, align 8, !tbaa !231
+  %66 = load volatile double, ptr %3, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %3)
   br label %278
 
@@ -3286,11 +3286,11 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %137 = bitcast i64 %136 to double
   %138 = sitofp i32 %134 to double
   %139 = getelementptr inbounds [128 x %struct.anon], ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 72), i64 0, i64 %132
-  %140 = load double, ptr %139, align 8, !tbaa !259
+  %140 = load double, ptr %139, align 8, !tbaa !262
   %141 = getelementptr inbounds i8, ptr %139, i64 16
-  %142 = load double, ptr %141, align 8, !tbaa !261
+  %142 = load double, ptr %141, align 8, !tbaa !264
   %143 = getelementptr inbounds i8, ptr %139, i64 24
-  %144 = load double, ptr %143, align 8, !tbaa !262
+  %144 = load double, ptr %143, align 8, !tbaa !265
   %145 = add i64 %136, 2147483648
   %146 = and i64 %145, -4294967296
   %147 = bitcast i64 %146 to double
@@ -3299,16 +3299,16 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %150 = fadd double %149, -1.000000e+00
   %151 = fmul double %140, %148
   %152 = fadd double %151, %150
-  %153 = load double, ptr @tz_math_pow_log_data, align 8, !tbaa !263
+  %153 = load double, ptr @tz_math_pow_log_data, align 8, !tbaa !266
   %154 = fmul double %153, %138
   %155 = fadd double %142, %154
   %156 = fadd double %155, %152
-  %157 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 8), align 8, !tbaa !265
+  %157 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 8), align 8, !tbaa !268
   %158 = fmul double %157, %138
   %159 = fadd double %144, %158
   %160 = fsub double %155, %156
   %161 = fadd double %152, %160
-  %162 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 16), align 8, !tbaa !228
+  %162 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 16), align 8, !tbaa !231
   %163 = fmul double %162, %152
   %164 = fmul double %152, %163
   %165 = fmul double %152, %164
@@ -3319,16 +3319,16 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %170 = fmul double %151, %169
   %171 = fsub double %156, %168
   %172 = fadd double %167, %171
-  %173 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 24), align 8, !tbaa !228
-  %174 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 32), align 8, !tbaa !228
+  %173 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 24), align 8, !tbaa !231
+  %174 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 32), align 8, !tbaa !231
   %175 = fmul double %152, %174
   %176 = fadd double %173, %175
-  %177 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 40), align 8, !tbaa !228
-  %178 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 48), align 8, !tbaa !228
+  %177 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 40), align 8, !tbaa !231
+  %178 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 48), align 8, !tbaa !231
   %179 = fmul double %152, %178
   %180 = fadd double %177, %179
-  %181 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 56), align 8, !tbaa !228
-  %182 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 64), align 8, !tbaa !228
+  %181 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 56), align 8, !tbaa !231
+  %182 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_pow_log_data, i64 64), align 8, !tbaa !231
   %183 = fmul double %152, %182
   %184 = fadd double %181, %183
   %185 = fmul double %164, %184
@@ -3361,7 +3361,7 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %212 = and i32 %211, 2047
   %213 = add nsw i32 %212, -969
   %214 = icmp ult i32 %213, 63
-  br i1 %214, label %230, label %215, !prof !234
+  br i1 %214, label %230, label %215, !prof !237
 
 215:                                              ; preds = %127
   %216 = icmp samesign ult i32 %212, 969
@@ -3392,16 +3392,16 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
 
 230:                                              ; preds = %222, %127
   %231 = phi i32 [ %212, %127 ], [ 0, %222 ]
-  %232 = load double, ptr @tz_math_exp_data, align 8, !tbaa !235
+  %232 = load double, ptr @tz_math_exp_data, align 8, !tbaa !238
   %233 = fmul double %205, %232
-  %234 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 8), align 8, !tbaa !237
+  %234 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 8), align 8, !tbaa !240
   %235 = fadd double %233, %234
   %236 = bitcast double %235 to i64
   %237 = fsub double %235, %234
-  %238 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 16), align 8, !tbaa !238
+  %238 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 16), align 8, !tbaa !241
   %239 = fmul double %238, %237
   %240 = fadd double %205, %239
-  %241 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 24), align 8, !tbaa !239
+  %241 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 24), align 8, !tbaa !242
   %242 = fmul double %237, %241
   %243 = fadd double %242, %240
   %244 = fadd double %208, %243
@@ -3411,28 +3411,28 @@ define internal double @tz_math_pow_f64(double noundef %0, double noundef %1) lo
   %248 = add i64 %236, %247
   %249 = shl i64 %248, 45
   %250 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %246
-  %251 = load double, ptr %250, align 8, !tbaa !240
+  %251 = load double, ptr %250, align 8, !tbaa !243
   %252 = or i64 %246, 1
   %253 = getelementptr inbounds [256 x i64], ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 112), i64 0, i64 %252
-  %254 = load i64, ptr %253, align 8, !tbaa !240
+  %254 = load i64, ptr %253, align 8, !tbaa !243
   %255 = add i64 %254, %249
   %256 = fmul double %244, %244
   %257 = fadd double %251, %244
-  %258 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 32), align 8, !tbaa !228
-  %259 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 40), align 8, !tbaa !228
+  %258 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 32), align 8, !tbaa !231
+  %259 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 40), align 8, !tbaa !231
   %260 = fmul double %244, %259
   %261 = fadd double %258, %260
   %262 = fmul double %256, %261
   %263 = fadd double %257, %262
   %264 = fmul double %256, %256
-  %265 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 48), align 8, !tbaa !228
-  %266 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 56), align 8, !tbaa !228
+  %265 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 48), align 8, !tbaa !231
+  %266 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp_data, i64 56), align 8, !tbaa !231
   %267 = fmul double %244, %266
   %268 = fadd double %265, %267
   %269 = fmul double %264, %268
   %270 = fadd double %263, %269
   %271 = icmp eq i32 %231, 0
-  br i1 %271, label %272, label %274, !prof !242
+  br i1 %271, label %272, label %274, !prof !245
 
 272:                                              ; preds = %230
   %273 = tail call fastcc double @specialcase.6(double noundef %270, i64 noundef %255, i64 noundef %236) #29
@@ -3490,12 +3490,12 @@ define internal fastcc double @specialcase.6(double noundef %0, i64 noundef %1, 
   %34 = bitcast i64 %33 to double
   %35 = select i1 %32, double %34, double %31
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %5)
-  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !228
-  %36 = load volatile double, ptr %5, align 8, !tbaa !228
+  store volatile double 0x10000000000000, ptr %5, align 8, !tbaa !231
+  %36 = load volatile double, ptr %5, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %5)
   %37 = fmul double %36, 0x10000000000000
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %4)
-  store volatile double %37, ptr %4, align 8, !tbaa !228
+  store volatile double %37, ptr %4, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %4)
   br label %38
 
@@ -3516,19 +3516,19 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   %5 = bitcast float %1 to i32
   %6 = add i32 %4, -2139095040
   %7 = icmp ult i32 %6, -2130706432
-  br i1 %7, label %12, label %8, !prof !242
+  br i1 %7, label %12, label %8, !prof !245
 
 8:                                                ; preds = %2
   %9 = shl i32 %5, 1
   %10 = add i32 %9, 16777216
   %11 = icmp ult i32 %10, 16777217
-  br i1 %11, label %12, label %105, !prof !242
+  br i1 %11, label %12, label %105, !prof !245
 
 12:                                               ; preds = %2, %8
   %13 = shl i32 %5, 1
   %14 = add i32 %13, -1
   %15 = icmp ult i32 %14, -16777217
-  br i1 %15, label %35, label %16, !prof !234
+  br i1 %15, label %35, label %16, !prof !237
 
 16:                                               ; preds = %12
   %17 = icmp eq i32 %13, 0
@@ -3565,7 +3565,7 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   %36 = shl i32 %4, 1
   %37 = add i32 %36, -1
   %38 = icmp ult i32 %37, -16777217
-  br i1 %38, label %64, label %39, !prof !234
+  br i1 %38, label %64, label %39, !prof !237
 
 39:                                               ; preds = %35
   %40 = fmul float %0, %0
@@ -3602,8 +3602,8 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
 61:                                               ; preds = %58
   %62 = fdiv float 1.000000e+00, %59
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %3)
-  store volatile float %62, ptr %3, align 4, !tbaa !232
-  %63 = load volatile float, ptr %3, align 4, !tbaa !232
+  store volatile float %62, ptr %3, align 4, !tbaa !235
+  %63 = load volatile float, ptr %3, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %3)
   br label %181
 
@@ -3681,9 +3681,9 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   %113 = ashr i32 %108, 23
   %114 = zext i32 %110 to i64
   %115 = getelementptr inbounds [16 x %struct.tz_math_dd], ptr @tz_math_powf_log2_data, i64 0, i64 %114
-  %116 = load double, ptr %115, align 8, !tbaa !248
+  %116 = load double, ptr %115, align 8, !tbaa !251
   %117 = getelementptr inbounds i8, ptr %115, i64 8
-  %118 = load double, ptr %117, align 8, !tbaa !250
+  %118 = load double, ptr %117, align 8, !tbaa !253
   %119 = bitcast i32 %112 to float
   %120 = fpext float %119 to double
   %121 = fmul double %116, %120
@@ -3691,16 +3691,16 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   %123 = sitofp i32 %113 to double
   %124 = fadd double %118, %123
   %125 = fmul double %122, %122
-  %126 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 256), align 8, !tbaa !228
+  %126 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 256), align 8, !tbaa !231
   %127 = fmul double %126, %122
-  %128 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 264), align 8, !tbaa !228
+  %128 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 264), align 8, !tbaa !231
   %129 = fadd double %128, %127
-  %130 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 272), align 8, !tbaa !228
+  %130 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 272), align 8, !tbaa !231
   %131 = fmul double %130, %122
-  %132 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 280), align 8, !tbaa !228
+  %132 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 280), align 8, !tbaa !231
   %133 = fadd double %132, %131
   %134 = fmul double %125, %125
-  %135 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 288), align 8, !tbaa !228
+  %135 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_powf_log2_data, i64 288), align 8, !tbaa !231
   %136 = fmul double %122, %135
   %137 = fadd double %124, %136
   %138 = fmul double %125, %133
@@ -3712,7 +3712,7 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   %144 = bitcast double %143 to i64
   %145 = and i64 %144, 9223231299366420480
   %146 = icmp samesign ugt i64 %145, 4638426141214900224
-  br i1 %146, label %147, label %155, !prof !242
+  br i1 %146, label %147, label %155, !prof !245
 
 147:                                              ; preds = %105
   %148 = fcmp ogt double %143, 0x405FFFFFFFD1D571
@@ -3731,25 +3731,25 @@ define internal float @tz_math_pow_f32(float noundef %0, float noundef %1) local
   br label %181
 
 155:                                              ; preds = %151, %105
-  %156 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 256), align 8, !tbaa !247
+  %156 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 256), align 8, !tbaa !250
   %157 = fadd double %143, %156
   %158 = bitcast double %157 to i64
   %159 = fsub double %157, %156
   %160 = fsub double %143, %159
   %161 = and i64 %158, 31
   %162 = getelementptr inbounds [32 x i64], ptr @tz_math_exp2f_data, i64 0, i64 %161
-  %163 = load i64, ptr %162, align 8, !tbaa !240
+  %163 = load i64, ptr %162, align 8, !tbaa !243
   %164 = zext i32 %107 to i64
   %165 = add i64 %158, %164
   %166 = shl i64 %165, 47
   %167 = add i64 %166, %163
   %168 = bitcast i64 %167 to double
-  %169 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 264), align 8, !tbaa !228
+  %169 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 264), align 8, !tbaa !231
   %170 = fmul double %169, %160
-  %171 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 272), align 8, !tbaa !228
+  %171 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 272), align 8, !tbaa !231
   %172 = fadd double %171, %170
   %173 = fmul double %160, %160
-  %174 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 280), align 8, !tbaa !228
+  %174 = load double, ptr getelementptr inbounds (i8, ptr @tz_math_exp2f_data, i64 280), align 8, !tbaa !231
   %175 = fmul double %160, %174
   %176 = fadd double %175, 1.000000e+00
   %177 = fmul double %173, %172
@@ -4240,19 +4240,19 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 18:                                               ; preds = %17
   %19 = fadd double %0, 0xBFF921FB54400000
   %20 = fadd double %19, 0xBDD0B4611A626331
-  store double %20, ptr %1, align 8, !tbaa !228
+  store double %20, ptr %1, align 8, !tbaa !231
   %21 = fsub double %19, %20
   %22 = fadd double %21, 0xBDD0B4611A626331
-  store double %22, ptr %16, align 8, !tbaa !228
+  store double %22, ptr %16, align 8, !tbaa !231
   br label %187
 
 23:                                               ; preds = %17
   %24 = fadd double %0, 0x3FF921FB54400000
   %25 = fadd double %24, 0x3DD0B4611A626331
-  store double %25, ptr %1, align 8, !tbaa !228
+  store double %25, ptr %1, align 8, !tbaa !231
   %26 = fsub double %24, %25
   %27 = fadd double %26, 0x3DD0B4611A626331
-  store double %27, ptr %16, align 8, !tbaa !228
+  store double %27, ptr %16, align 8, !tbaa !231
   br label %187
 
 28:                                               ; preds = %13
@@ -4261,19 +4261,19 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 29:                                               ; preds = %28
   %30 = fadd double %0, 0xC00921FB54400000
   %31 = fadd double %30, 0xBDE0B4611A626331
-  store double %31, ptr %1, align 8, !tbaa !228
+  store double %31, ptr %1, align 8, !tbaa !231
   %32 = fsub double %30, %31
   %33 = fadd double %32, 0xBDE0B4611A626331
-  store double %33, ptr %16, align 8, !tbaa !228
+  store double %33, ptr %16, align 8, !tbaa !231
   br label %187
 
 34:                                               ; preds = %28
   %35 = fadd double %0, 0x400921FB54400000
   %36 = fadd double %35, 0x3DE0B4611A626331
-  store double %36, ptr %1, align 8, !tbaa !228
+  store double %36, ptr %1, align 8, !tbaa !231
   %37 = fsub double %35, %36
   %38 = fadd double %37, 0x3DE0B4611A626331
-  store double %38, ptr %16, align 8, !tbaa !228
+  store double %38, ptr %16, align 8, !tbaa !231
   br label %187
 
 39:                                               ; preds = %2
@@ -4296,19 +4296,19 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 48:                                               ; preds = %45
   %49 = fadd double %0, 0xC012D97C7F300000
   %50 = fadd double %49, 0xBDE90E91A79394CA
-  store double %50, ptr %1, align 8, !tbaa !228
+  store double %50, ptr %1, align 8, !tbaa !231
   %51 = fsub double %49, %50
   %52 = fadd double %51, 0xBDE90E91A79394CA
-  store double %52, ptr %47, align 8, !tbaa !228
+  store double %52, ptr %47, align 8, !tbaa !231
   br label %187
 
 53:                                               ; preds = %45
   %54 = fadd double %0, 0x4012D97C7F300000
   %55 = fadd double %54, 0x3DE90E91A79394CA
-  store double %55, ptr %1, align 8, !tbaa !228
+  store double %55, ptr %1, align 8, !tbaa !231
   %56 = fsub double %54, %55
   %57 = fadd double %56, 0x3DE90E91A79394CA
-  store double %57, ptr %47, align 8, !tbaa !228
+  store double %57, ptr %47, align 8, !tbaa !231
   br label %187
 
 58:                                               ; preds = %41
@@ -4323,19 +4323,19 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 63:                                               ; preds = %60
   %64 = fadd double %0, 0xC01921FB54400000
   %65 = fadd double %64, 0xBDF0B4611A626331
-  store double %65, ptr %1, align 8, !tbaa !228
+  store double %65, ptr %1, align 8, !tbaa !231
   %66 = fsub double %64, %65
   %67 = fadd double %66, 0xBDF0B4611A626331
-  store double %67, ptr %62, align 8, !tbaa !228
+  store double %67, ptr %62, align 8, !tbaa !231
   br label %187
 
 68:                                               ; preds = %60
   %69 = fadd double %0, 0x401921FB54400000
   %70 = fadd double %69, 0x3DF0B4611A626331
-  store double %70, ptr %1, align 8, !tbaa !228
+  store double %70, ptr %1, align 8, !tbaa !231
   %71 = fsub double %69, %70
   %72 = fadd double %71, 0x3DF0B4611A626331
-  store double %72, ptr %62, align 8, !tbaa !228
+  store double %72, ptr %62, align 8, !tbaa !231
   br label %187
 
 73:                                               ; preds = %39
@@ -4352,7 +4352,7 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %82 = fmul double %78, 0x3DD0B4611A626331
   %83 = fsub double %81, %82
   %84 = fcmp olt double %83, 0xBFE921FB54442D18
-  br i1 %84, label %85, label %91, !prof !242
+  br i1 %84, label %85, label %91, !prof !245
 
 85:                                               ; preds = %75
   %86 = add nsw i32 %79, -1
@@ -4364,7 +4364,7 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 
 91:                                               ; preds = %75
   %92 = fcmp ogt double %83, 0x3FE921FB54442D18
-  br i1 %92, label %93, label %99, !prof !242
+  br i1 %92, label %93, label %99, !prof !245
 
 93:                                               ; preds = %91
   %94 = add nsw i32 %79, 1
@@ -4380,7 +4380,7 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %102 = phi double [ %87, %85 ], [ %95, %93 ], [ %78, %91 ]
   %103 = phi i32 [ %86, %85 ], [ %94, %93 ], [ %79, %91 ]
   %104 = fsub double %101, %100
-  store double %104, ptr %1, align 8, !tbaa !228
+  store double %104, ptr %1, align 8, !tbaa !231
   %105 = bitcast double %104 to i64
   %106 = lshr i64 %105, 52
   %107 = trunc i64 %106 to i32
@@ -4398,7 +4398,7 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %117 = fsub double %116, %113
   %118 = fsub double %115, %117
   %119 = fsub double %114, %118
-  store double %119, ptr %1, align 8, !tbaa !228
+  store double %119, ptr %1, align 8, !tbaa !231
   %120 = bitcast double %119 to i64
   %121 = lshr i64 %120, 52
   %122 = trunc i64 %121 to i32
@@ -4415,17 +4415,17 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %131 = fsub double %130, %127
   %132 = fsub double %129, %131
   %133 = fsub double %128, %132
-  store double %133, ptr %1, align 8, !tbaa !228
+  store double %133, ptr %1, align 8, !tbaa !231
   br label %134
 
 134:                                              ; preds = %112, %126, %99
   %135 = phi double [ %132, %126 ], [ %118, %112 ], [ %100, %99 ]
   %136 = phi double [ %128, %126 ], [ %114, %112 ], [ %101, %99 ]
-  %137 = load double, ptr %1, align 8, !tbaa !228
+  %137 = load double, ptr %1, align 8, !tbaa !231
   %138 = fsub double %136, %137
   %139 = fsub double %138, %135
   %140 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %139, ptr %140, align 8, !tbaa !228
+  store double %139, ptr %140, align 8, !tbaa !231
   br label %187
 
 141:                                              ; preds = %73
@@ -4435,8 +4435,8 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
 143:                                              ; preds = %141
   %144 = fsub double %0, %0
   %145 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %144, ptr %145, align 8, !tbaa !228
-  store double %144, ptr %1, align 8, !tbaa !228
+  store double %144, ptr %145, align 8, !tbaa !231
+  store double %144, ptr %1, align 8, !tbaa !231
   br label %187
 
 146:                                              ; preds = %141
@@ -4451,25 +4451,25 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %153 = fptosi double %152 to i32
   %154 = sitofp i32 %153 to double
   %155 = getelementptr inbounds [3 x double], ptr %3, i64 0, i64 %151
-  store double %154, ptr %155, align 8, !tbaa !228
+  store double %154, ptr %155, align 8, !tbaa !231
   %156 = fsub double %152, %154
   %157 = fmul double %156, 0x4170000000000000
   %158 = add nuw nsw i64 %151, 1
   %159 = icmp eq i64 %151, 0
-  br i1 %159, label %150, label %160, !llvm.loop !266
+  br i1 %159, label %150, label %160, !llvm.loop !269
 
 160:                                              ; preds = %150
   %161 = getelementptr inbounds i8, ptr %3, i64 16
-  store double %157, ptr %161, align 16, !tbaa !228
+  store double %157, ptr %161, align 16, !tbaa !231
   br label %162
 
 162:                                              ; preds = %162, %160
   %163 = phi i64 [ %167, %162 ], [ 2, %160 ]
   %164 = getelementptr inbounds [3 x double], ptr %3, i64 0, i64 %163
-  %165 = load double, ptr %164, align 8, !tbaa !228
+  %165 = load double, ptr %164, align 8, !tbaa !231
   %166 = fcmp oeq double %165, 0.000000e+00
   %167 = add nsw i64 %163, -1
-  br i1 %166, label %162, label %168, !llvm.loop !267
+  br i1 %166, label %162, label %168, !llvm.loop !270
 
 168:                                              ; preds = %162
   %169 = trunc i64 %163 to i32
@@ -4478,26 +4478,26 @@ define internal i32 @tz_math_rem_pio2(double noundef %0, ptr noundef %1) local_u
   %172 = add nsw i32 %169, 1
   %173 = call i32 @tz_math_rem_pio2_large(ptr noundef nonnull %3, ptr noundef nonnull %4, i32 noundef %171, i32 noundef %172, i32 noundef 1) #27
   %174 = icmp sgt i64 %5, -1
-  %175 = load double, ptr %4, align 16, !tbaa !228
+  %175 = load double, ptr %4, align 16, !tbaa !231
   br i1 %174, label %183, label %176
 
 176:                                              ; preds = %168
   %177 = fneg double %175
-  store double %177, ptr %1, align 8, !tbaa !228
+  store double %177, ptr %1, align 8, !tbaa !231
   %178 = getelementptr inbounds i8, ptr %4, i64 8
-  %179 = load double, ptr %178, align 8, !tbaa !228
+  %179 = load double, ptr %178, align 8, !tbaa !231
   %180 = fneg double %179
   %181 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %180, ptr %181, align 8, !tbaa !228
+  store double %180, ptr %181, align 8, !tbaa !231
   %182 = sub nsw i32 0, %173
   br label %187
 
 183:                                              ; preds = %168
-  store double %175, ptr %1, align 8, !tbaa !228
+  store double %175, ptr %1, align 8, !tbaa !231
   %184 = getelementptr inbounds i8, ptr %4, i64 8
-  %185 = load double, ptr %184, align 8, !tbaa !228
+  %185 = load double, ptr %184, align 8, !tbaa !231
   %186 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %185, ptr %186, align 8, !tbaa !228
+  store double %185, ptr %186, align 8, !tbaa !231
   br label %187
 
 187:                                              ; preds = %183, %176, %143, %134, %68, %63, %53, %48, %34, %29, %23, %18
@@ -4519,7 +4519,7 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   call void @llvm.lifetime.start.p0(i64 160, ptr nonnull %9) #28
   %10 = sext i32 %4 to i64
   %11 = getelementptr inbounds [4 x i32], ptr @init_jk, i64 0, i64 %10
-  %12 = load i32, ptr %11, align 4, !tbaa !268
+  %12 = load i32, ptr %11, align 4, !tbaa !271
   %13 = add nsw i32 %3, -1
   %14 = add nsw i32 %2, -3
   %15 = sdiv i32 %14, 24
@@ -4554,18 +4554,18 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
 36:                                               ; preds = %32
   %37 = zext i32 %34 to i64
   %38 = getelementptr inbounds [690 x i32], ptr @ipio2, i64 0, i64 %37
-  %39 = load i32, ptr %38, align 4, !tbaa !268
+  %39 = load i32, ptr %38, align 4, !tbaa !271
   %40 = sitofp i32 %39 to double
   br label %41
 
 41:                                               ; preds = %32, %36
   %42 = phi double [ %40, %36 ], [ 0.000000e+00, %32 ]
   %43 = getelementptr inbounds [20 x double], ptr %7, i64 0, i64 %33
-  store double %42, ptr %43, align 8, !tbaa !228
+  store double %42, ptr %43, align 8, !tbaa !231
   %44 = add nuw nsw i64 %33, 1
   %45 = add nsw i32 %34, 1
   %46 = icmp eq i64 %44, %25
-  br i1 %46, label %26, label %32, !llvm.loop !270
+  br i1 %46, label %26, label %32, !llvm.loop !273
 
 47:                                               ; preds = %26, %74
   %48 = phi i64 [ 0, %26 ], [ %77, %74 ]
@@ -4590,34 +4590,34 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %61 = phi i64 [ 0, %49 ], [ %72, %60 ]
   %62 = phi double [ 0.000000e+00, %49 ], [ %71, %60 ]
   %63 = getelementptr inbounds double, ptr %0, i64 %61
-  %64 = load double, ptr %63, align 8, !tbaa !228
+  %64 = load double, ptr %63, align 8, !tbaa !231
   %65 = trunc i64 %61 to i32
   %66 = sub i32 %51, %65
   %67 = sext i32 %66 to i64
   %68 = getelementptr inbounds [20 x double], ptr %7, i64 0, i64 %67
-  %69 = load double, ptr %68, align 8, !tbaa !228
+  %69 = load double, ptr %68, align 8, !tbaa !231
   %70 = fmul double %64, %69
   %71 = fadd double %62, %70
   %72 = add nuw nsw i64 %61, 1
   %73 = icmp eq i64 %72, %31
-  br i1 %73, label %74, label %60, !llvm.loop !271
+  br i1 %73, label %74, label %60, !llvm.loop !274
 
 74:                                               ; preds = %60, %47
   %75 = phi double [ 0.000000e+00, %47 ], [ %71, %60 ]
   %76 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %48
-  store double %75, ptr %76, align 8, !tbaa !228
+  store double %75, ptr %76, align 8, !tbaa !231
   %77 = add nuw nsw i64 %48, 1
   %78 = icmp eq i64 %77, %30
-  br i1 %78, label %52, label %47, !llvm.loop !272
+  br i1 %78, label %52, label %47, !llvm.loop !275
 
 79:                                               ; preds = %228
-  br label %80, !llvm.loop !273
+  br label %80, !llvm.loop !276
 
 80:                                               ; preds = %79, %52
   %81 = phi i32 [ %12, %52 ], [ %203, %79 ]
   %82 = sext i32 %81 to i64
   %83 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %82
-  %84 = load double, ptr %83, align 8, !tbaa !228
+  %84 = load double, ptr %83, align 8, !tbaa !231
   %85 = icmp sgt i32 %81, 0
   br i1 %85, label %86, label %105
 
@@ -4636,14 +4636,14 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %96 = fsub double %91, %95
   %97 = fptosi double %96 to i32
   %98 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %89
-  store i32 %97, ptr %98, align 4, !tbaa !268
+  store i32 %97, ptr %98, align 4, !tbaa !271
   %99 = add nsw i64 %90, -1
   %100 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %99
-  %101 = load double, ptr %100, align 8, !tbaa !228
+  %101 = load double, ptr %100, align 8, !tbaa !231
   %102 = fadd double %101, %94
   %103 = add nuw nsw i64 %89, 1
   %104 = icmp eq i64 %103, %87
-  br i1 %104, label %105, label %88, !llvm.loop !274
+  br i1 %104, label %105, label %88, !llvm.loop !277
 
 105:                                              ; preds = %88, %80
   %106 = phi double [ %84, %80 ], [ %102, %88 ]
@@ -4661,12 +4661,12 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %116 = add nsw i32 %81, -1
   %117 = sext i32 %116 to i64
   %118 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %117
-  %119 = load i32, ptr %118, align 4, !tbaa !268
+  %119 = load i32, ptr %118, align 4, !tbaa !271
   %120 = ashr i32 %119, %55
   %121 = add nsw i32 %120, %112
   %122 = shl i32 %120, %55
   %123 = sub nsw i32 %119, %122
-  store i32 %123, ptr %118, align 4, !tbaa !268
+  store i32 %123, ptr %118, align 4, !tbaa !271
   %124 = ashr i32 %123, %56
   br label %135
 
@@ -4677,7 +4677,7 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %127 = add nsw i32 %81, -1
   %128 = sext i32 %127 to i64
   %129 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %128
-  %130 = load i32, ptr %129, align 4, !tbaa !268
+  %130 = load i32, ptr %129, align 4, !tbaa !271
   %131 = ashr i32 %130, 23
   br label %135
 
@@ -4706,7 +4706,7 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %144 = phi i64 [ 0, %141 ], [ %157, %154 ]
   %145 = phi i32 [ 0, %141 ], [ %156, %154 ]
   %146 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %144
-  %147 = load i32, ptr %146, align 4, !tbaa !268
+  %147 = load i32, ptr %146, align 4, !tbaa !271
   %148 = icmp eq i32 %145, 0
   br i1 %148, label %149, label %151
 
@@ -4717,7 +4717,7 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
 151:                                              ; preds = %143, %149
   %152 = phi i32 [ 16777216, %149 ], [ 16777215, %143 ]
   %153 = sub nsw i32 %152, %147
-  store i32 %153, ptr %146, align 4, !tbaa !268
+  store i32 %153, ptr %146, align 4, !tbaa !271
   br label %154
 
 154:                                              ; preds = %151, %149
@@ -4725,7 +4725,7 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %156 = phi i32 [ 0, %149 ], [ 1, %151 ]
   %157 = add nuw nsw i64 %144, 1
   %158 = icmp eq i64 %157, %142
-  br i1 %158, label %159, label %143, !llvm.loop !275
+  br i1 %158, label %159, label %143, !llvm.loop !278
 
 159:                                              ; preds = %154, %139
   %160 = phi i1 [ true, %139 ], [ %155, %154 ]
@@ -4745,9 +4745,9 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %165 = add nsw i32 %81, -1
   %166 = sext i32 %165 to i64
   %167 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %166
-  %168 = load i32, ptr %167, align 4, !tbaa !268
+  %168 = load i32, ptr %167, align 4, !tbaa !271
   %169 = and i32 %168, %164
-  store i32 %169, ptr %167, align 4, !tbaa !268
+  store i32 %169, ptr %167, align 4, !tbaa !271
   br label %170
 
 170:                                              ; preds = %163, %161, %159
@@ -4778,10 +4778,10 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %185 = phi i32 [ %189, %183 ], [ 0, %181 ]
   %186 = add nsw i64 %184, -1
   %187 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %186
-  %188 = load i32, ptr %187, align 4, !tbaa !268
+  %188 = load i32, ptr %187, align 4, !tbaa !271
   %189 = or i32 %188, %185
   %190 = icmp sgt i64 %186, %57
-  br i1 %190, label %183, label %191, !llvm.loop !276
+  br i1 %190, label %183, label %191, !llvm.loop !279
 
 191:                                              ; preds = %183
   %192 = icmp eq i32 %189, 0
@@ -4794,10 +4794,10 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %195 = phi i64 [ %200, %194 ], [ 1, %193 ]
   %196 = sub nsw i64 %57, %195
   %197 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %196
-  %198 = load i32, ptr %197, align 4, !tbaa !268
+  %198 = load i32, ptr %197, align 4, !tbaa !271
   %199 = icmp eq i32 %198, 0
   %200 = add nuw nsw i64 %195, 1
-  br i1 %199, label %194, label %201, !llvm.loop !277
+  br i1 %199, label %194, label %201, !llvm.loop !280
 
 201:                                              ; preds = %194
   %202 = trunc i64 %195 to i32
@@ -4810,35 +4810,35 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %207 = add nsw i64 %206, 1
   %208 = add nsw i64 %207, %58
   %209 = getelementptr inbounds [690 x i32], ptr @ipio2, i64 0, i64 %208
-  %210 = load i32, ptr %209, align 4, !tbaa !268
+  %210 = load i32, ptr %209, align 4, !tbaa !271
   %211 = sitofp i32 %210 to double
   %212 = trunc i64 %206 to i32
   %213 = add i32 %3, %212
   %214 = sext i32 %213 to i64
   %215 = getelementptr inbounds [20 x double], ptr %7, i64 0, i64 %214
-  store double %211, ptr %215, align 8, !tbaa !228
+  store double %211, ptr %215, align 8, !tbaa !231
   br i1 %27, label %216, label %228
 
 216:                                              ; preds = %205, %216
   %217 = phi i64 [ %226, %216 ], [ 0, %205 ]
   %218 = phi double [ %225, %216 ], [ 0.000000e+00, %205 ]
   %219 = getelementptr inbounds double, ptr %0, i64 %217
-  %220 = load double, ptr %219, align 8, !tbaa !228
+  %220 = load double, ptr %219, align 8, !tbaa !231
   %221 = sub nsw i64 %214, %217
   %222 = getelementptr inbounds [20 x double], ptr %7, i64 0, i64 %221
-  %223 = load double, ptr %222, align 8, !tbaa !228
+  %223 = load double, ptr %222, align 8, !tbaa !231
   %224 = fmul double %220, %223
   %225 = fadd double %218, %224
   %226 = add nuw nsw i64 %217, 1
   %227 = icmp eq i64 %226, %59
-  br i1 %227, label %228, label %216, !llvm.loop !278
+  br i1 %227, label %228, label %216, !llvm.loop !281
 
 228:                                              ; preds = %216, %205
   %229 = phi double [ 0.000000e+00, %205 ], [ %225, %216 ]
   %230 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %207
-  store double %229, ptr %230, align 8, !tbaa !228
+  store double %229, ptr %230, align 8, !tbaa !231
   %231 = icmp slt i64 %207, %204
-  br i1 %231, label %205, label %79, !llvm.loop !273
+  br i1 %231, label %205, label %79, !llvm.loop !276
 
 232:                                              ; preds = %191, %232
   %233 = phi i64 [ %236, %232 ], [ %82, %191 ]
@@ -4846,9 +4846,9 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %235 = add nsw i32 %234, -24
   %236 = add nsw i64 %233, -1
   %237 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %236
-  %238 = load i32, ptr %237, align 4, !tbaa !268
+  %238 = load i32, ptr %237, align 4, !tbaa !271
   %239 = icmp eq i32 %238, 0
-  br i1 %239, label %232, label %258, !llvm.loop !279
+  br i1 %239, label %232, label %258, !llvm.loop !282
 
 240:                                              ; preds = %177
   %241 = sub i32 24, %18
@@ -4864,17 +4864,17 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %249 = fsub double %242, %248
   %250 = fptosi double %249 to i32
   %251 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %82
-  store i32 %250, ptr %251, align 4, !tbaa !268
+  store i32 %250, ptr %251, align 4, !tbaa !271
   %252 = add nsw i32 %81, 1
   %253 = sext i32 %252 to i64
   %254 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %253
-  store i32 %246, ptr %254, align 4, !tbaa !268
+  store i32 %246, ptr %254, align 4, !tbaa !271
   br label %260
 
 255:                                              ; preds = %240
   %256 = fptosi double %242 to i32
   %257 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %82
-  store i32 %256, ptr %257, align 4, !tbaa !268
+  store i32 %256, ptr %257, align 4, !tbaa !271
   br label %260
 
 258:                                              ; preds = %232
@@ -4900,15 +4900,15 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %270 = phi i64 [ %266, %265 ], [ %278, %269 ]
   %271 = phi double [ %263, %265 ], [ %277, %269 ]
   %272 = getelementptr inbounds [20 x i32], ptr %6, i64 0, i64 %270
-  %273 = load i32, ptr %272, align 4, !tbaa !268
+  %273 = load i32, ptr %272, align 4, !tbaa !271
   %274 = sitofp i32 %273 to double
   %275 = fmul double %271, %274
   %276 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %270
-  store double %275, ptr %276, align 8, !tbaa !228
+  store double %275, ptr %276, align 8, !tbaa !231
   %277 = fmul double %271, 0x3E70000000000000
   %278 = add nsw i64 %270, -1
   %279 = icmp sgt i64 %270, 0
-  br i1 %279, label %269, label %267, !llvm.loop !280
+  br i1 %279, label %269, label %267, !llvm.loop !283
 
 280:                                              ; preds = %267, %302
   %281 = phi i64 [ %268, %267 ], [ %306, %302 ]
@@ -4928,24 +4928,24 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %291 = phi i64 [ 0, %287 ], [ %300, %290 ]
   %292 = phi double [ 0.000000e+00, %287 ], [ %299, %290 ]
   %293 = getelementptr inbounds [8 x double], ptr @PIo2, i64 0, i64 %291
-  %294 = load double, ptr %293, align 8, !tbaa !228
+  %294 = load double, ptr %293, align 8, !tbaa !231
   %295 = add nuw nsw i64 %291, %281
   %296 = getelementptr inbounds [20 x double], ptr %9, i64 0, i64 %295
-  %297 = load double, ptr %296, align 8, !tbaa !228
+  %297 = load double, ptr %296, align 8, !tbaa !231
   %298 = fmul double %294, %297
   %299 = fadd double %292, %298
   %300 = add nuw nsw i64 %291, 1
   %301 = icmp eq i64 %300, %289
-  br i1 %301, label %302, label %290, !llvm.loop !281
+  br i1 %301, label %302, label %290, !llvm.loop !284
 
 302:                                              ; preds = %290, %280
   %303 = phi double [ 0.000000e+00, %280 ], [ %299, %290 ]
   %304 = sext i32 %284 to i64
   %305 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %304
-  store double %303, ptr %305, align 8, !tbaa !228
+  store double %303, ptr %305, align 8, !tbaa !231
   %306 = add nsw i64 %281, -1
   %307 = icmp sgt i64 %281, 0
-  br i1 %307, label %280, label %308, !llvm.loop !282
+  br i1 %307, label %280, label %308, !llvm.loop !285
 
 308:                                              ; preds = %302, %260
   switch i32 %4, label %423 [
@@ -4977,18 +4977,18 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %320 = phi i64 [ %318, %317 ], [ %325, %319 ]
   %321 = phi double [ 0.000000e+00, %317 ], [ %324, %319 ]
   %322 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %320
-  %323 = load double, ptr %322, align 8, !tbaa !228
+  %323 = load double, ptr %322, align 8, !tbaa !231
   %324 = fadd double %321, %323
   %325 = add nsw i64 %320, -1
   %326 = icmp sgt i64 %320, 0
-  br i1 %326, label %319, label %327, !llvm.loop !283
+  br i1 %326, label %319, label %327, !llvm.loop !286
 
 327:                                              ; preds = %319, %316
   %328 = phi double [ 0.000000e+00, %316 ], [ %324, %319 ]
   %329 = icmp eq i32 %137, 0
   %330 = fneg double %328
   %331 = select i1 %329, double %328, double %330
-  store double %331, ptr %1, align 8, !tbaa !228
+  store double %331, ptr %1, align 8, !tbaa !231
   br label %423
 
 332:                                              ; preds = %308, %308
@@ -5002,19 +5002,19 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %336 = phi i64 [ %334, %333 ], [ %341, %335 ]
   %337 = phi double [ 0.000000e+00, %333 ], [ %340, %335 ]
   %338 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %336
-  %339 = load double, ptr %338, align 8, !tbaa !228
+  %339 = load double, ptr %338, align 8, !tbaa !231
   %340 = fadd double %337, %339
   %341 = add nsw i64 %336, -1
   %342 = icmp sgt i64 %336, 0
-  br i1 %342, label %335, label %343, !llvm.loop !284
+  br i1 %342, label %335, label %343, !llvm.loop !287
 
 343:                                              ; preds = %335, %332
   %344 = phi double [ 0.000000e+00, %332 ], [ %340, %335 ]
   %345 = icmp eq i32 %137, 0
   %346 = fneg double %344
   %347 = select i1 %345, double %344, double %346
-  store double %347, ptr %1, align 8, !tbaa !228
-  %348 = load double, ptr %8, align 16, !tbaa !228
+  store double %347, ptr %1, align 8, !tbaa !231
+  %348 = load double, ptr %8, align 16, !tbaa !231
   %349 = fsub double %348, %344
   %350 = icmp slt i32 %261, 1
   br i1 %350, label %362, label %351
@@ -5028,18 +5028,18 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %355 = phi i64 [ 1, %351 ], [ %360, %354 ]
   %356 = phi double [ %349, %351 ], [ %359, %354 ]
   %357 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %355
-  %358 = load double, ptr %357, align 8, !tbaa !228
+  %358 = load double, ptr %357, align 8, !tbaa !231
   %359 = fadd double %356, %358
   %360 = add nuw nsw i64 %355, 1
   %361 = icmp eq i64 %360, %353
-  br i1 %361, label %362, label %354, !llvm.loop !285
+  br i1 %361, label %362, label %354, !llvm.loop !288
 
 362:                                              ; preds = %354, %343
   %363 = phi double [ %349, %343 ], [ %359, %354 ]
   %364 = fneg double %363
   %365 = select i1 %345, double %363, double %364
   %366 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %365, ptr %366, align 8, !tbaa !228
+  store double %365, ptr %366, align 8, !tbaa !231
   br label %423
 
 367:                                              ; preds = %374, %309
@@ -5058,15 +5058,15 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %376 = phi i64 [ %312, %311 ], [ %377, %374 ]
   %377 = add nsw i64 %376, -1
   %378 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %377
-  %379 = load double, ptr %378, align 8, !tbaa !228
+  %379 = load double, ptr %378, align 8, !tbaa !231
   %380 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %376
   %381 = fadd double %379, %375
   %382 = fsub double %379, %381
   %383 = fadd double %375, %382
-  store double %383, ptr %380, align 8, !tbaa !228
-  store double %381, ptr %378, align 8, !tbaa !228
+  store double %383, ptr %380, align 8, !tbaa !231
+  store double %381, ptr %378, align 8, !tbaa !231
   %384 = icmp sgt i64 %376, 1
-  br i1 %384, label %374, label %367, !llvm.loop !286
+  br i1 %384, label %374, label %367, !llvm.loop !289
 
 385:                                              ; preds = %387
   %386 = zext i32 %261 to i64
@@ -5077,53 +5077,53 @@ define internal i32 @tz_math_rem_pio2_large(ptr noundef readonly %0, ptr noundef
   %389 = phi i64 [ %370, %369 ], [ %390, %387 ]
   %390 = add nsw i64 %389, -1
   %391 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %390
-  %392 = load double, ptr %391, align 8, !tbaa !228
+  %392 = load double, ptr %391, align 8, !tbaa !231
   %393 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %389
   %394 = fadd double %392, %388
   %395 = fsub double %392, %394
   %396 = fadd double %388, %395
-  store double %396, ptr %393, align 8, !tbaa !228
-  store double %394, ptr %391, align 8, !tbaa !228
+  store double %396, ptr %393, align 8, !tbaa !231
+  store double %394, ptr %391, align 8, !tbaa !231
   %397 = icmp sgt i64 %389, 2
-  br i1 %397, label %387, label %385, !llvm.loop !287
+  br i1 %397, label %387, label %385, !llvm.loop !290
 
 398:                                              ; preds = %385, %398
   %399 = phi i64 [ %386, %385 ], [ %404, %398 ]
   %400 = phi double [ 0.000000e+00, %385 ], [ %403, %398 ]
   %401 = getelementptr inbounds [20 x double], ptr %8, i64 0, i64 %399
-  %402 = load double, ptr %401, align 8, !tbaa !228
+  %402 = load double, ptr %401, align 8, !tbaa !231
   %403 = fadd double %400, %402
   %404 = add nsw i64 %399, -1
   %405 = icmp sgt i64 %399, 2
-  br i1 %405, label %398, label %406, !llvm.loop !288
+  br i1 %405, label %398, label %406, !llvm.loop !291
 
 406:                                              ; preds = %398, %367
   %407 = phi double [ 0.000000e+00, %367 ], [ %403, %398 ]
   %408 = icmp eq i32 %137, 0
-  %409 = load double, ptr %8, align 16, !tbaa !228
+  %409 = load double, ptr %8, align 16, !tbaa !231
   br i1 %408, label %410, label %415
 
 410:                                              ; preds = %406
-  store double %409, ptr %1, align 8, !tbaa !228
+  store double %409, ptr %1, align 8, !tbaa !231
   %411 = getelementptr inbounds i8, ptr %8, i64 8
-  %412 = load double, ptr %411, align 8, !tbaa !228
+  %412 = load double, ptr %411, align 8, !tbaa !231
   %413 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %412, ptr %413, align 8, !tbaa !228
+  store double %412, ptr %413, align 8, !tbaa !231
   %414 = getelementptr inbounds i8, ptr %1, i64 16
-  store double %407, ptr %414, align 8, !tbaa !228
+  store double %407, ptr %414, align 8, !tbaa !231
   br label %423
 
 415:                                              ; preds = %406
   %416 = fneg double %409
-  store double %416, ptr %1, align 8, !tbaa !228
+  store double %416, ptr %1, align 8, !tbaa !231
   %417 = getelementptr inbounds i8, ptr %8, i64 8
-  %418 = load double, ptr %417, align 8, !tbaa !228
+  %418 = load double, ptr %417, align 8, !tbaa !231
   %419 = fneg double %418
   %420 = getelementptr inbounds i8, ptr %1, i64 8
-  store double %419, ptr %420, align 8, !tbaa !228
+  store double %419, ptr %420, align 8, !tbaa !231
   %421 = fneg double %407
   %422 = getelementptr inbounds i8, ptr %1, i64 16
-  store double %421, ptr %422, align 8, !tbaa !228
+  store double %421, ptr %422, align 8, !tbaa !231
   br label %423
 
 423:                                              ; preds = %410, %415, %308, %362, %327
@@ -5223,9 +5223,9 @@ define internal i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef writeonly %
   %16 = fsub double %10, %15
   %17 = fmul double %13, 0x3E5110B4611A6263
   %18 = fsub double %16, %17
-  store double %18, ptr %1, align 8, !tbaa !228
+  store double %18, ptr %1, align 8, !tbaa !231
   %19 = fcmp olt double %18, 0xBFE921FB60000000
-  br i1 %19, label %20, label %27, !prof !242
+  br i1 %19, label %20, label %27, !prof !245
 
 20:                                               ; preds = %9
   %21 = add nsw i32 %14, -1
@@ -5234,12 +5234,12 @@ define internal i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef writeonly %
   %24 = fsub double %10, %23
   %25 = fmul double %22, 0x3E5110B4611A6263
   %26 = fsub double %24, %25
-  store double %26, ptr %1, align 8, !tbaa !228
+  store double %26, ptr %1, align 8, !tbaa !231
   br label %55
 
 27:                                               ; preds = %9
   %28 = fcmp ogt double %18, 0x3FE921FB60000000
-  br i1 %28, label %29, label %55, !prof !242
+  br i1 %28, label %29, label %55, !prof !245
 
 29:                                               ; preds = %27
   %30 = add nsw i32 %14, 1
@@ -5248,7 +5248,7 @@ define internal i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef writeonly %
   %33 = fsub double %10, %32
   %34 = fmul double %31, 0x3E5110B4611A6263
   %35 = fsub double %33, %34
-  store double %35, ptr %1, align 8, !tbaa !228
+  store double %35, ptr %1, align 8, !tbaa !231
   br label %55
 
 36:                                               ; preds = %2
@@ -5258,7 +5258,7 @@ define internal i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef writeonly %
 38:                                               ; preds = %36
   %39 = fsub float %0, %0
   %40 = fpext float %39 to double
-  store double %40, ptr %1, align 8, !tbaa !228
+  store double %40, ptr %1, align 8, !tbaa !231
   br label %55
 
 41:                                               ; preds = %36
@@ -5268,20 +5268,20 @@ define internal i32 @tz_math_rem_pio2f(float noundef %0, ptr noundef writeonly %
   %45 = sub nuw nsw i32 %7, %44
   %46 = bitcast i32 %45 to float
   %47 = fpext float %46 to double
-  store double %47, ptr %3, align 8, !tbaa !228
+  store double %47, ptr %3, align 8, !tbaa !231
   %48 = call i32 @tz_math_rem_pio2_large(ptr noundef nonnull %3, ptr noundef nonnull %4, i32 noundef %43, i32 noundef 1, i32 noundef 0) #27
   %49 = icmp sgt i32 %5, -1
-  %50 = load double, ptr %4, align 8, !tbaa !228
+  %50 = load double, ptr %4, align 8, !tbaa !231
   br i1 %49, label %54, label %51
 
 51:                                               ; preds = %41
   %52 = fneg double %50
-  store double %52, ptr %1, align 8, !tbaa !228
+  store double %52, ptr %1, align 8, !tbaa !231
   %53 = sub nsw i32 0, %48
   br label %55
 
 54:                                               ; preds = %41
-  store double %50, ptr %1, align 8, !tbaa !228
+  store double %50, ptr %1, align 8, !tbaa !231
   br label %55
 
 55:                                               ; preds = %20, %29, %27, %54, %51, %38
@@ -5360,7 +5360,7 @@ define internal double @tz_math_floor_f64(double noundef %0) local_unnamed_addr 
 
 19:                                               ; preds = %10
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %2)
-  store volatile double %17, ptr %2, align 8, !tbaa !228
+  store volatile double %17, ptr %2, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %2)
   %20 = ashr i64 %3, 63
   %21 = trunc i64 %20 to i32
@@ -5448,7 +5448,7 @@ define internal float @tz_math_floor_f32(float noundef %0) local_unnamed_addr #2
 15:                                               ; preds = %11
   %16 = fadd float %0, 0x4770000000000000
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %3)
-  store volatile float %16, ptr %3, align 4, !tbaa !232
+  store volatile float %16, ptr %3, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %3)
   %17 = icmp slt i32 %4, 0
   %18 = ashr i32 -8388608, %7
@@ -5461,7 +5461,7 @@ define internal float @tz_math_floor_f32(float noundef %0) local_unnamed_addr #2
 23:                                               ; preds = %9
   %24 = fadd float %0, 0x4770000000000000
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %24, ptr %2, align 4, !tbaa !232
+  store volatile float %24, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   %25 = icmp sgt i32 %4, -1
   br i1 %25, label %29, label %26
@@ -5485,8 +5485,8 @@ define internal double @tz_math_math_xflow(i32 noundef %0, double noundef %1) lo
   %5 = fneg double %1
   %6 = select i1 %4, double %1, double %5
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %3)
-  store volatile double %6, ptr %3, align 8, !tbaa !228
-  %7 = load volatile double, ptr %3, align 8, !tbaa !228
+  store volatile double %6, ptr %3, align 8, !tbaa !231
+  %7 = load volatile double, ptr %3, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %3)
   %8 = fmul double %1, %7
   ret double %8
@@ -5499,8 +5499,8 @@ define internal float @tz_math_math_xflowf(i32 noundef %0, float noundef %1) loc
   %5 = fneg float %1
   %6 = select i1 %4, float %1, float %5
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %3)
-  store volatile float %6, ptr %3, align 4, !tbaa !232
-  %7 = load volatile float, ptr %3, align 4, !tbaa !232
+  store volatile float %6, ptr %3, align 4, !tbaa !235
+  %7 = load volatile float, ptr %3, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %3)
   %8 = fmul float %1, %7
   ret float %8
@@ -5536,8 +5536,8 @@ define internal double @tz_math_math_divzero(i32 noundef %0) local_unnamed_addr 
   %3 = icmp eq i32 %0, 0
   %4 = select i1 %3, double 1.000000e+00, double -1.000000e+00
   call void @llvm.lifetime.start.p0(i64 8, ptr nonnull %2)
-  store volatile double %4, ptr %2, align 8, !tbaa !228
-  %5 = load volatile double, ptr %2, align 8, !tbaa !228
+  store volatile double %4, ptr %2, align 8, !tbaa !231
+  %5 = load volatile double, ptr %2, align 8, !tbaa !231
   call void @llvm.lifetime.end.p0(i64 8, ptr nonnull %2)
   %6 = fdiv double %5, 0.000000e+00
   ret double %6
@@ -5549,8 +5549,8 @@ define internal float @tz_math_math_divzerof(i32 noundef %0) local_unnamed_addr 
   %3 = icmp eq i32 %0, 0
   %4 = select i1 %3, float 1.000000e+00, float -1.000000e+00
   call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %2)
-  store volatile float %4, ptr %2, align 4, !tbaa !232
-  %5 = load volatile float, ptr %2, align 4, !tbaa !232
+  store volatile float %4, ptr %2, align 4, !tbaa !235
+  %5 = load volatile float, ptr %2, align 4, !tbaa !235
   call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %2)
   %6 = fdiv float %5, 0.000000e+00
   ret float %6
@@ -5583,71 +5583,71 @@ attributes #28 = { nounwind }
 attributes #29 = { nobuiltin "no-builtins" }
 
 
-!221 = !{!"Apple clang version 21.0.0 (clang-2100.3.34.2)"}
-!222 = !{i32 1, !"wchar_size", i32 4}
-!223 = !{i32 8, !"PIC Level", i32 2}
-!224 = !{i32 7, !"PIE Level", i32 2}
-!225 = distinct !{!225, !226, !227}
-!226 = !{!"llvm.loop.mustprogress"}
-!227 = !{!"llvm.loop.unroll.disable"}
-!228 = !{!229, !229, i64 0}
-!229 = !{!"double", !230, i64 0}
-!230 = !{!"omnipotent char", !231, i64 0}
-!231 = !{!"Simple C/C++ TBAA"}
-!232 = !{!233, !233, i64 0}
-!233 = !{!"float", !230, i64 0}
-!234 = !{!"branch_weights", !"expected", i32 2000, i32 1}
-!235 = !{!236, !229, i64 0}
-!236 = !{!"exp_data", !229, i64 0, !229, i64 8, !229, i64 16, !229, i64 24, !230, i64 32, !229, i64 64, !230, i64 72, !230, i64 112}
-!237 = !{!236, !229, i64 8}
-!238 = !{!236, !229, i64 16}
-!239 = !{!236, !229, i64 24}
-!240 = !{!241, !241, i64 0}
-!241 = !{!"long", !230, i64 0}
-!242 = !{!"branch_weights", !"expected", i32 1, i32 2000}
-!243 = !{!244, !229, i64 296}
-!244 = !{!"exp2f_data", !230, i64 0, !229, i64 256, !230, i64 264, !229, i64 288, !229, i64 296, !230, i64 304}
-!245 = !{!244, !229, i64 288}
-!246 = !{!236, !229, i64 64}
-!247 = !{!244, !229, i64 256}
-!248 = !{!249, !229, i64 0}
-!249 = !{!"", !229, i64 0, !229, i64 8}
-!250 = !{!249, !229, i64 8}
-!251 = !{!252, !229, i64 0}
-!252 = !{!"log_data", !229, i64 0, !229, i64 8, !230, i64 16, !230, i64 56, !230, i64 144, !230, i64 2192}
-!253 = !{!252, !229, i64 8}
-!254 = !{!255, !229, i64 256}
-!255 = !{!"logf_data", !230, i64 0, !229, i64 256, !230, i64 264}
-!256 = !{!257, !229, i64 0}
-!257 = !{!"log2_data", !229, i64 0, !229, i64 8, !230, i64 16, !230, i64 64, !230, i64 144, !230, i64 1168}
-!258 = !{!257, !229, i64 8}
-!259 = !{!260, !229, i64 0}
-!260 = !{!"", !229, i64 0, !229, i64 8, !229, i64 16, !229, i64 24}
-!261 = !{!260, !229, i64 16}
-!262 = !{!260, !229, i64 24}
-!263 = !{!264, !229, i64 0}
-!264 = !{!"pow_log_data", !229, i64 0, !229, i64 8, !230, i64 16, !230, i64 72}
-!265 = !{!264, !229, i64 8}
-!266 = distinct !{!266, !226, !227}
-!267 = distinct !{!267, !226, !227}
-!268 = !{!269, !269, i64 0}
-!269 = !{!"int", !230, i64 0}
-!270 = distinct !{!270, !226, !227}
-!271 = distinct !{!271, !226, !227}
-!272 = distinct !{!272, !226, !227}
-!273 = distinct !{!273, !226, !227}
-!274 = distinct !{!274, !226, !227}
-!275 = distinct !{!275, !226, !227}
-!276 = distinct !{!276, !226, !227}
-!277 = distinct !{!277, !226, !227}
-!278 = distinct !{!278, !226, !227}
-!279 = distinct !{!279, !226, !227}
-!280 = distinct !{!280, !226, !227}
-!281 = distinct !{!281, !226, !227}
-!282 = distinct !{!282, !226, !227}
-!283 = distinct !{!283, !226, !227}
-!284 = distinct !{!284, !226, !227}
-!285 = distinct !{!285, !226, !227}
-!286 = distinct !{!286, !226, !227}
-!287 = distinct !{!287, !226, !227}
-!288 = distinct !{!288, !226, !227}
+!224 = !{!"Apple clang version 21.0.0 (clang-2100.3.34.2)"}
+!225 = !{i32 1, !"wchar_size", i32 4}
+!226 = !{i32 8, !"PIC Level", i32 2}
+!227 = !{i32 7, !"PIE Level", i32 2}
+!228 = distinct !{!228, !229, !230}
+!229 = !{!"llvm.loop.mustprogress"}
+!230 = !{!"llvm.loop.unroll.disable"}
+!231 = !{!232, !232, i64 0}
+!232 = !{!"double", !233, i64 0}
+!233 = !{!"omnipotent char", !234, i64 0}
+!234 = !{!"Simple C/C++ TBAA"}
+!235 = !{!236, !236, i64 0}
+!236 = !{!"float", !233, i64 0}
+!237 = !{!"branch_weights", !"expected", i32 2000, i32 1}
+!238 = !{!239, !232, i64 0}
+!239 = !{!"exp_data", !232, i64 0, !232, i64 8, !232, i64 16, !232, i64 24, !233, i64 32, !232, i64 64, !233, i64 72, !233, i64 112}
+!240 = !{!239, !232, i64 8}
+!241 = !{!239, !232, i64 16}
+!242 = !{!239, !232, i64 24}
+!243 = !{!244, !244, i64 0}
+!244 = !{!"long", !233, i64 0}
+!245 = !{!"branch_weights", !"expected", i32 1, i32 2000}
+!246 = !{!247, !232, i64 296}
+!247 = !{!"exp2f_data", !233, i64 0, !232, i64 256, !233, i64 264, !232, i64 288, !232, i64 296, !233, i64 304}
+!248 = !{!247, !232, i64 288}
+!249 = !{!239, !232, i64 64}
+!250 = !{!247, !232, i64 256}
+!251 = !{!252, !232, i64 0}
+!252 = !{!"", !232, i64 0, !232, i64 8}
+!253 = !{!252, !232, i64 8}
+!254 = !{!255, !232, i64 0}
+!255 = !{!"log_data", !232, i64 0, !232, i64 8, !233, i64 16, !233, i64 56, !233, i64 144, !233, i64 2192}
+!256 = !{!255, !232, i64 8}
+!257 = !{!258, !232, i64 256}
+!258 = !{!"logf_data", !233, i64 0, !232, i64 256, !233, i64 264}
+!259 = !{!260, !232, i64 0}
+!260 = !{!"log2_data", !232, i64 0, !232, i64 8, !233, i64 16, !233, i64 64, !233, i64 144, !233, i64 1168}
+!261 = !{!260, !232, i64 8}
+!262 = !{!263, !232, i64 0}
+!263 = !{!"", !232, i64 0, !232, i64 8, !232, i64 16, !232, i64 24}
+!264 = !{!263, !232, i64 16}
+!265 = !{!263, !232, i64 24}
+!266 = !{!267, !232, i64 0}
+!267 = !{!"pow_log_data", !232, i64 0, !232, i64 8, !233, i64 16, !233, i64 72}
+!268 = !{!267, !232, i64 8}
+!269 = distinct !{!269, !229, !230}
+!270 = distinct !{!270, !229, !230}
+!271 = !{!272, !272, i64 0}
+!272 = !{!"int", !233, i64 0}
+!273 = distinct !{!273, !229, !230}
+!274 = distinct !{!274, !229, !230}
+!275 = distinct !{!275, !229, !230}
+!276 = distinct !{!276, !229, !230}
+!277 = distinct !{!277, !229, !230}
+!278 = distinct !{!278, !229, !230}
+!279 = distinct !{!279, !229, !230}
+!280 = distinct !{!280, !229, !230}
+!281 = distinct !{!281, !229, !230}
+!282 = distinct !{!282, !229, !230}
+!283 = distinct !{!283, !229, !230}
+!284 = distinct !{!284, !229, !230}
+!285 = distinct !{!285, !229, !230}
+!286 = distinct !{!286, !229, !230}
+!287 = distinct !{!287, !229, !230}
+!288 = distinct !{!288, !229, !230}
+!289 = distinct !{!289, !229, !230}
+!290 = distinct !{!290, !229, !230}
+!291 = distinct !{!291, !229, !230}
