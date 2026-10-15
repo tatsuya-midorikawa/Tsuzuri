@@ -354,6 +354,18 @@ fn moves_a_payload_out_of_a_temporary() {
 }
 
 #[test]
+fn copies_fields_nested_inside_a_union_payload() {
+    allocations(
+        r"def f :: Maybe<([i64] * i64)> -> [i64] = \value ->
+    match value with
+    | Maybe.Some (items, _) -> items
+    | Maybe.None -> []",
+        "f",
+        1,
+    );
+}
+
+#[test]
 fn moves_a_payload_out_of_a_last_use_local() {
     allocations(PROBE, "match_result", 0);
 }

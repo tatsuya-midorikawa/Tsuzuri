@@ -88,7 +88,7 @@ try {
   const runtime = join(root, "src/runtime/numeric.ll");
   const harness = join(root, "tests/display_parse_runtime.c");
   for (const optimization of [0, 3]) {
-    const native = join(temporary, `runtime-O${optimization}`);
+    const native = join(temporary, `runtime-O${optimization}${process.platform === "win32" ? ".exe" : ""}`);
     execute(clang, [`-O${optimization}`, "-Wno-override-module",
       ...(sanitize ? ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] : []),
       harness, sanitize ? join(root, "src/runtime/numeric.c") : runtime,

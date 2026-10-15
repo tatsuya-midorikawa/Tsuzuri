@@ -209,7 +209,7 @@ tsuzuri check --warn implicit-copy Main.tz
 
 このオプションを付けると、暗黙のディープコピーに警告 `W1006` が出ます。配列、リスト、それらを含むレコードで文言が違います。`dyn` 値の複製も同じ警告です。フラグが無いときの終了コードは 0 のままで、生成コードも変わりません。
 
-最後の使用や所有する `match` 束縛としてムーブする位置には `W1006` は出ません。警告と生成は同じ解析結果を使います。
+最後の使用や所有する `match` 束縛としてムーブする位置には `W1006` は出ません。union payload 内の field へさらに射影する束縛は部分ムーブの生成が未対応のためコピーを維持し、その場合は `W1006` の対象になります。警告と生成は同じ解析結果を使います。
 
 ```text
 warning[W1006]: implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit

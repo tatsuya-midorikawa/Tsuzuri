@@ -3709,7 +3709,7 @@ fn build_complete(
                 if platform.mach_o() {
                     clang.arg(format!("-Wl,-u,_tz_{}", function.name));
                 } else if !platform.windows() {
-                    clang.arg(format!("-Wl,--undefined=tz_{}", function.name));
+                    clang.arg(format!("-Wl,-u,tz_{}", function.name));
                 }
             }
             if !numeric_objects.is_empty() {

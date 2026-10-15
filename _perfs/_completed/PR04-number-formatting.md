@@ -312,7 +312,7 @@ TSUZURI_CLANG=/opt/homebrew/opt/llvm@23/bin/clang node24 tests/display_parse.mjs
 
 ### 手順 2: 計測の runner
 
-- 変更: `benchmarks/run-numeric.mjs`（新規）。PX01 の `validateRecord` が suite `numeric` を拒否する場合だけ、`benchmarks/metrics.mjs` の `METRICS` の `wall_time`・`object_bytes` の suite に `numeric` を足す。
+- 変更: `benchmarks/run-numeric.mjs`（新規）。PX01 の `validateRecord` が suite `numeric` を拒否する場合だけ、`benchmarks/metrics.mjs` の `METRICS` の `cpu_time`・`wall_time`・`object_bytes` の suite に `numeric` を足す。
 - 内容: 「計測手順」の仕様どおり。`--runtime <numeric.ll>`（既定 `src/runtime/numeric.ll`）、`--metrics <dir>`、`--quick`（repeats を 1/100 にして 1 標本）を受ける。
 - 確認: `node24 benchmarks/run-numeric.mjs --runtime /tmp/tz-PR04/numeric-before.ll --metrics target/perf/PR04-before` が `numeric.jsonl` を書き、`node24 benchmarks/metrics.mjs report target/perf/PR04-before` が throw しない。f64 の π の表示が 1〜5 µs 程度（現状の表と同じ桁）。
 
@@ -392,7 +392,7 @@ node24 tests/math.mjs target/release/tsuzuri --quick
 GUIDE §14 と PX01 の「before／after」に従う。環境の記録（`env.txt`）は PX01 の「環境と条件」のコマンドを使う。
 
 - `run-numeric.mjs` の仕様: `tests/display_parse_runtime.c` と `--runtime` の IR を `$TSUZURI_CLANG`（既定 `clang`）の `-O3` で native にリンクし、下の固定集合を 1 行ずつ `F`／`P` で流す。warm-up 1 プロセスの後に 9 プロセスを順に実行し、行ごとの 1 回あたりの ms を標本にする。WASM は `display_parse.mjs` と同じ方法で `-O3` の module を作り、Node で `format_value`／`parse_value` を repeats 回呼ぶ時間を `performance.now()` で 9 標本測る。大きさは `-c -x ir` の object を native・wasm32 × `-O0`・`-O3` で作り、`statSync().size` を 1 標本で記録する。
-- レコード: `suite: "numeric"`、`language: "tsuzuri"`、`workload` は下の名前、`size` は repeats、`variant: "default"`、`target` は `native`／`wasm32`、`opt: "O3"`（大きさは `O0`／`O3`）、`cpu_mode: "generic"`、`metric` は `wall_time`（ms）または `object_bytes`。
+- レコード: `suite: "numeric"`、`language: "tsuzuri"`、`workload` は下の名前、`size` は repeats、`variant: "default"`、`target` は `native`／`wasm32`、`opt: "O3"`（大きさは `O0`／`O3`）、`cpu_mode: "generic"`。F/P の native 計測は `clock()` の `cpu_time`、WASM は `performance.now()` の `wall_time`（ms）、object の大きさは `object_bytes`。
 - 固定集合（repeats は浮動小数点 200,000、整数 2,000,000）:
 
 | workload | 行 |
@@ -543,7 +543,7 @@ awk '/^_format_binary_fast:/,/^; -- End function/' /tmp/tz-PR04/numeric.s | grep
 
 ### D8: 計測の形式
 
-- 決定: `benchmarks/run-numeric.mjs` が suite `numeric` の PX01 形式（`wall_time`・`object_bytes`）で記録する。`cpp/format_parse` は既存の `run-cpp.mjs` で測る。
+- 決定: `benchmarks/run-numeric.mjs` が suite `numeric` の PX01 形式で記録する。native の `clock()` 標本は `cpu_time`、WASM の `performance.now()` は `wall_time`、大きさは `object_bytes`。`cpp/format_parse` は既存の `run-cpp.mjs` で測る。
 - 理由: F/P プロトコルは stdio と起動を測定区間の外に置き、型別の 1 回あたりの時間を直接測れる。
 - 状態: 既定案（実装者はこの案に従う）
 
@@ -677,7 +677,7 @@ if ($LASTEXITCODE -ne 0) { throw "Numeric differential gate failed: $LASTEXITCOD
 
 ### D7: C 候補を不採用
 
-統合担当が直列に取得した `target/perf/phase2-formal/numeric-{before,after,before2}` は各 78 レコード、wall-time は各 9 標本。Apple Clang 21.0.0 / Node 24.21.0 / Apple M1 Max の条件と native checksum は一致する。基準 runtime SHA-256 は `1a0599b3f5bae1b9927268e720f2fd14871bff53812dbb597d202df7af518c94`、C 候補は `be3c0efea152434c47b43d248a23b7f83042cc995f3e0184ca11ca9d9daa8b83`。C 候補の C/IR は `target/perf/phase2-formal/numeric-c-candidate/` に保存した。
+統合担当が直列に取得した `target/perf/phase2-formal/numeric-{before,after,before2}` は各 78 レコード、native CPU-time と WASM wall-time は各 9 標本。Apple Clang 21.0.0 / Node 24.21.0 / Apple M1 Max の条件と native checksum は一致する。基準 runtime SHA-256 は `1a0599b3f5bae1b9927268e720f2fd14871bff53812dbb597d202df7af518c94`、C 候補は `be3c0efea152434c47b43d248a23b7f83042cc995f3e0184ca11ca9d9daa8b83`。C 候補の C/IR は `target/perf/phase2-formal/numeric-c-candidate/` に保存した。
 
 `R = max - min` とし、基準の安定は `|median(before2) - median(before)| <= max(Rbefore, Rbefore2)`。採用は `gain = median(before) - median(after)` が `max(Rbefore, Rafter)` と `max(Rbefore, Rbefore2)` の**双方を厳密に越える**ことを要求する。max/small を平均しない。
 
@@ -700,7 +700,7 @@ C 棄却後の最初の再計測 `numeric-final-*` では native `f64-parse-long
 
 ### 最終 matched triple
 
-最終結果は **`target/perf/phase2-formal/numeric-final2-{before,after,before2}`**。3 本を同じ Clang/Node で直列に実行し、各 78 レコード、各 wall-time 9 標本、min/max/median の再計算、全キー・host 条件・runtime/compiler hash・native checksum 一致を検証した。解析の全行は `target/perf/phase2-formal/numeric-final2-analysis.json`。
+最終結果は **`target/perf/phase2-formal/numeric-final2-{before,after,before2}`**。3 本を同じ Clang/Node で直列に実行し、各 78 レコード、native CPU-time と WASM wall-time は各 9 標本、min/max/median の再計算、全キー・host 条件・runtime/compiler hash・native checksum 一致を検証した。native の clock() samples は process CPU time で、以前の metric label `wall_time` を `cpu_time` に訂正した（標本値と判定は不変）。解析の全行は `target/perf/phase2-formal/numeric-final2-analysis.json`。
 
 最終 release compiler SHA-256 は `4fd9a7e1a07776ccf152f193a868ce0a115b3e4995b803cf2a59fbe8dc78f3c3`、numeric は `f34c50951d1737cda8129797f375c4312f6422c8336b293c35326f3c39291a05`、math は `eaef7b69866a230dd238ebf1169bed9ca2b4231275370af788f5bec2cfbf455c`。table hash は変わらない。metadata 最大は numeric 220 / math 288。fast formatter/parser と layout の本体は C 候補と番号を正規化して同一、math 全文は保存した基準と番号だけを正規化して同一。
 
@@ -744,7 +744,7 @@ native 表示は 22.48–266.86 倍、解析は 43.60–130.65 倍（各入力�
 | wasm32 / i64u-format-small | 15.690 | 15.747 | 15.593 | 差なし |
 
 - f16/f128/decimal の F/P、i16u/i32u/i64u の F/P、long/underscore は **native/WASM とも全 control の baseline が安定、gate 外の悪化 0**。native f16/f128/d64 の 6 行はすべて差なし。整数解析本体は未変更で、観測した小さい改善を新しい解析アルゴリズムの成果とは主張しない。
-- 最終 37 wall-time 行は native が改善 20 / 差なし 17 / 悪化 0 / drift 不明 0、WASM が改善 13 / 差なし 19 / 悪化 0 / drift 不明 5。
+- 最終 37 時間計測行は native `cpu_time` が改善 20 / 差なし 17 / 悪化 0 / drift 不明 0、WASM `wall_time` が改善 13 / 差なし 19 / 悪化 0 / drift 不明 5。
 - WASM の 7 個の f32/f64 解析は全行で改善。表示は 5 行で改善、`f32-format-pi/max/min`・`f64-format-1e23/min` の 5 行は baseline drift が spread を越え、**判定できない**。この 5 行の見かけの比率を確かな改善として扱わない。M7 を全入力について確定できたとは主張しない。これは C の採否とは別で、C の max/small と全 control は安定している。
 - M5 の `cpp/format_parse` と全プログラムの frontend/allocation/runtime 計測は統合担当が最終 compiler で行う。複数 stream の変更を含むため、その差を PR04 に単独帰属させない。
 

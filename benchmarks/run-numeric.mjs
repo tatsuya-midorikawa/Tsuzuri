@@ -68,7 +68,7 @@ for (const item of work) {
 const records = [];
 const record = (item, target, samples) => records.push(makeRecord(context, {
   suite: "numeric", workload: item.name, size: item.repeats, language: "tsuzuri",
-  target, opt: "O3", metric: "wall_time", samples,
+  target, opt: "O3", metric: target === "native" ? "cpu_time" : "wall_time", samples,
 }));
 try {
   const harness = join(root, "tests/display_parse_runtime.c");

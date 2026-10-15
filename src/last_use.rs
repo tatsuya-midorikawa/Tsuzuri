@@ -469,11 +469,15 @@ impl Analysis<'_> {
                     .map(|(_, value)| projection(value, subject, self.module))
                     .collect();
                 let Some(paths) = paths else { return false };
-                paths.iter().enumerate().all(|(i, path)| {
-                    paths[..i]
-                        .iter()
-                        .all(|other| !path.starts_with(other) && !other.starts_with(path))
-                })
+                // Nested union-field bindings stay copied until the emitter supports partial-union moves.
+                paths
+                    .iter()
+                    .all(|path| !path.windows(2).any(|steps| steps[0].0))
+                    && paths.iter().enumerate().all(|(i, path)| {
+                        paths[..i]
+                            .iter()
+                            .all(|other| !path.starts_with(other) && !other.starts_with(path))
+                    })
             });
             for alternative in &arm.alternatives {
                 for (binding, _) in &alternative.bindings {

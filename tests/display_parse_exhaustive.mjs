@@ -30,7 +30,7 @@ const directory = join(root, "target/display-parse-exhaustive");
 mkdirSync(directory, { recursive: true });
 const scratch = mkdtempSync(join(directory, "run-"));
 try {
-  const before = join(scratch, "baseline.ll"), executable = join(scratch, "compare");
+  const before = join(scratch, "baseline.ll"), executable = join(scratch, `compare${process.platform === "win32" ? ".exe" : ""}`);
   writeFileSync(before, readFileSync(baseline, "utf8").replaceAll("@tz_soft_", "@tz_base_"));
   const build = spawnSync(process.env.TSUZURI_CLANG ?? "clang", [
     "-O3", "-Wno-override-module", join(root, "tests/display_parse_exhaustive.c"),

@@ -286,7 +286,7 @@ define i64 @test_bytes() {
         for (const [prefix, count] of [["t", 28], ["s", 6]]) for (let i = 0; i < count; ++i) {
           const trapped = spawnSync(output, [`${prefix}${i}`], { env, encoding: "utf8" });
           assert.ok(["SIGILL", "SIGTRAP"].includes(trapped.signal) || (trapped.status >>> 0) === 0xc000001d,
-            `${prefix}${i}: ${trapped.stderr}`);
+            `native simd=${simd} O${opt} ${prefix}${i}: status=${trapped.status} signal=${trapped.signal} ${trapped.stderr}`);
         }
         const forced = spawnSync(output, [], { env: { ...env, TSUZURI_CPU_FORCE: "baseline" }, encoding: "utf8", timeout: 600_000 });
         assert.equal(forced.status, 0, forced.stderr);

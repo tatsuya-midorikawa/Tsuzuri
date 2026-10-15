@@ -127,7 +127,9 @@ jobs:
           node tests/features.mjs target/release/tsuzuri param_facts
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
-        run: node tests/last_use_fuzz.mjs target/release/tsuzuri 40 1 4
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          node tests/last_use_fuzz.mjs target/release/tsuzuri 40 1 4
       - name: UTF SIMD and scalar fallbacks
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |

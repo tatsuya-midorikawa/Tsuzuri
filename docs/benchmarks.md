@@ -5578,10 +5578,11 @@ NaN は既存の canonical NaN 規則で比較し、符号付きゼロ・非正�
 
 ### 数値の正式比較と C の採否
 
-最終結果は `target/perf/phase2-formal/numeric-final2-{before,after,before2}`（各 78 レコード、wall-time は 9 標本）です。
+最終結果は `target/perf/phase2-formal/numeric-final2-{before,after,before2}`（各 78 レコード、native CPU-time と WASM wall-time は各 9 標本）です。
 Apple M1 Max、Apple Clang 21.0.0、Node 24.21.0、native/WASM `-O3`、warmup 後に直列実行しました。
 raw runtime の比較であり、生成プログラム全体の速度や他 CPU の速度ではありません。
-以下は native の ns/回、中央値（最小–最大）です。全入力と採否の式は [PR04 の記録](../_perfs/_completed/PR04-number-formatting.md#正式計測と最終採否2026-10-14) にあります。
+`tests/display_parse_runtime.c` の native `clock()` は process CPU time を測り、WASM は `performance.now()` による wall time です。以前の最終記録では native の `clock()` 標本を `wall_time` と誤ラベルしていました。保存済みの標本値と判定は変えず、native records の metric metadata を `cpu_time` に訂正しました。
+以下は native CPU time の ns/回、中央値（最小–最大）です。全入力と採否の式は [PR04 の記録](../_perfs/_completed/PR04-number-formatting.md#正式計測と最終採否2026-10-14) にあります。
 
 | workload | before | after | before2 |
 | --- | ---: | ---: | ---: |

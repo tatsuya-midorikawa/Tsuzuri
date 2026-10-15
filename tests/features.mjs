@@ -16,7 +16,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const only = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
-const nativeLibraries = process.platform === "win32" ? [join(root, "src/runtime/wasm.ll")] : ["-lm"];
+const nativeLibraries = process.platform === "win32" ? [] : ["-lm"];
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const sanitizerKind = process.env.TSUZURI_TSAN === "1" ? "thread" : process.env.TSUZURI_ASAN === "1" ? "address" : null;
 const sanitizer = sanitizerKind ? [`-fsanitize=${sanitizerKind}`] : [];
@@ -2088,6 +2088,7 @@ function run(name, suite) {
     // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
     if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);
     let trackedIr = hostAllocator ? sourceIr : sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
+    if (process.platform === "win32") trackedIr += `\n${readFileSync(join(root, "src/runtime/wasm.ll"), "utf8")}`;
     if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
