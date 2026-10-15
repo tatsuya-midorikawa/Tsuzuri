@@ -3606,7 +3606,7 @@ CPU の専用拡張命令や SIMD 命令の活用は純粋にコンパイラ内�
 - 結果が NaN のときは、ハードウェアが返す符号とペイロードを使いません。ソフトウェア経路と同じく、quiet NaN `0x7E00` に、`+`・`-` では左辺、`*`・`/` では両辺の符号の排他的論理和を付けた値にそろえます。`Math.sqrt` は NaN の入力をそのまま返し、負の入力には正の `0x7E00` を返します。`as` は、入力の符号を保った目的の型の quiet NaN を返します。
 - `Math.fma`、`Math.min`／`max`／`clamp`、`Math.floor`／`ceil`／`trunc`／`round`／`round_even`、整数・`f128`・decimal との `as`、表示と解析は、どのビルドでも同梱のソフトウェア経路です。定数評価はコンパイラの中で行います。単項 `-`、`Math.abs`／`copysign`／`is_nan`／`is_infinite`／`is_finite`、`Hash` は、もとから整数のビット演算で、どのビルドでも同じです。
 - `f16` を使わないプログラムの生成物は、この経路の導入前と同一です。WASM の生成物は、`f16` の有無にかかわらず変わらず、`half` 命令も追加の import も持ちません。
-- 速度の測定は macOS arm64（Apple M1 Max）だけです。x86-64 と、Linux・Windows の AArch64 は、生成した機械語の確認と、同じ命令列を macOS で実行した照合までで、その CPU での実行と速度は確認していません。条件と数値は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります。
+- 速度の測定は macOS arm64（Apple M1 Max）だけです。CI では Intel Mac の F16C 変換、Linux x86-64 の F16C 変換、Linux arm64 の `hardware` を各 runner 上で実行し、参照とビット一致を照合します。Linux x86-64 は runner の機能により `native=conversions|hardware` を許容しますが、AVX512-FP16 の `hardware` 実行は未確認です。Windows の実行も未確認です。条件と数値は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります。
 
 ### 組み込み関数
 

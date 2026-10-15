@@ -128,7 +128,7 @@ hardware は soft の約 330〜1,480 倍速く、C の `_Float16` の 1.4〜4.5 
 
 ## 既知の限界
 
-- 実行して確かめたのは、手元の macOS arm64 と、PR #22 の CI の 4 つの runner（macOS arm64、Intel Mac の F16C、Linux x86-64 の F16C、Linux arm64 の Neoverse）。runner は `tests/f16_hardware.mjs` の 2,707,485 件を、期待した経路（`TSUZURI_F16_EXPECT`。AArch64 は `hardware`、x86-64 は `generic=soft,native=conversions`）で参照とビットまで照合した。速度は手元の macOS arm64 だけで測った。AVX512-FP16 の算術と Windows は機械語の確認までで、その CPU での実行はしていない。FEAT_FP16 のない AArch64 の lowering は、同じ命令列を M1 の `-mcpu=generic` で実行して照合した。
+- 実行して確かめたのは、手元の macOS arm64 と、PR #22 の CI の 4 つの runner（macOS arm64、Intel Mac の F16C、Linux x86-64 の F16C、Linux arm64 の Neoverse）。runner は `tests/f16_hardware.mjs` の 2,707,485 件を参照とビットまで照合した。現在の CI は x86-64 の `native` に `conversions|hardware` を許容するが、実行を確認できているのは `conversions` である。速度は手元の macOS arm64 だけで測った。AVX512-FP16 の `hardware` と Windows は機械語の確認までで、その CPU での実行はしていない。FEAT_FP16 のない AArch64 の lowering は、同じ命令列を M1 の `-mcpu=generic` で実行して照合した。
 - F16C だけの x86-64 の演算は `Soft`（3 段階の設計の `Conversions` は変換だけ）。`half` の演算を F16C だけで下げると、演算ごとに `f32` を挟んだライブラリ関数なしの機械語になり、理論上は正確だが、速度を測っておらず有効にしていない。有効にするなら `f16_path_with` の x86-64 の規則 1 行と、CI の `matrix.f16`（x86-64 の runner）の期待を変える。
 - NaN のビットをソフトウェア実装とそろえる費用（C の `_Float16` の 1.4〜4.5 倍）は、NaN の符号とペイロードを仕様から外せば消える見込みだが、経路ごとに NaN のビットが変わる。この判断は仕様の側に残してある（旧 D3 のまま）。
 - `Math.fma`、`min`・`max`・`clamp`、丸め系、整数・f128・decimal との変換、定数評価は、どの経路でもソフトウェア実装。f16 の SIMD 型はない。

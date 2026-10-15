@@ -537,18 +537,7 @@ int guard_pages(void) {
 #include "strings_runtime.c"
 
 #ifndef __wasm__
-#ifdef _WIN32
-static LONG WINAPI report_exception(EXCEPTION_POINTERS *exception) {
-    fprintf(stderr, "Unhandled exception 0x%08lx at %p\n",
-        exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress);
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-#endif
-
 int main(int argc, char **argv) {
-#ifdef _WIN32
-    SetUnhandledExceptionFilter(report_exception);
-#endif
     if (argc > 1 && !strcmp(argv[1],"--features")) {
         printf("%llu\n",(unsigned long long)tsuzuri_cpu_features());
         return 0;
