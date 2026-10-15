@@ -202,7 +202,12 @@ pub(super) fn mark_uses(
             };
             base.kind = K::Dereference(Box::new(reference));
         }
-        pending.extend(expression.children_mut());
+        expression
+            .try_for_each_child_mut(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("rewriting children cannot fail");
     }
 }
 

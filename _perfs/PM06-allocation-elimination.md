@@ -8,14 +8,34 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PR03, PM07, PX02, D06 |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（確保失敗・スタック枯渇の文言と、記憶域の表の「演算の結果はヒープ」の変更。承認前は手順 3 以降に着手しない） |
+| 承認 | 2026-10-14 の全フェーズ実装依頼で D1 を承認済み。確保省略とスタック枯渇の文言・記憶域表を更新 |
 | 手本にする既存実装 | スタック上の値の追跡・実行時のアドレス判定・移動時のヒープ移送: `src/llvm_frame.rs` の `Frame`・`frame_value`・`frame_inner`・`bind_frames`・`frame_test`・`relocate`・`drop_framed` と `src/llvm.rs` の `remember_temporary`。入口ブロックの環境: `src/llvm.rs` の `stack_closure`。決定的な解析と予算超過時の fallback: `src/call_specialization.rs` の `Specializations`（`MAX_SPECIALIZATIONS`）。テストの形: `tests/storage.rs` の `temporary_operands_use_stack_storage`・`oversized_literals_keep_the_heap`、`tests/primitives.mjs` の `storage` 表 |
 | 主な影響ファイル | `src/llvm.rs`, `src/llvm_frame.rs`, `src/llvm_escape.rs`（新規）, `src/runtime/string.ll`, `src/runtime/utf8string.ll`, `tests/storage.rs`, `tests/fixtures/storage/Storage.tz`, `tests/primitives.mjs`, `tests/call_specialization.rs`, `benchmarks/allocation/Main.tz`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`。起票時の一覧の `src/ownership.rs`・`src/call_specialization.rs`・`src/constants.rs` は変更しない（D3・D4） |
 | 計測対象 | 確保の回数・bytes（PX01 の `alloc_calls`・`alloc_bytes`）、最大 RSS（`peak_rss`）、時間（`wall_time`）。種目は `benchmarks/computations` の `ce_std_option_owned`・`direct_std_option_owned` と `benchmarks/allocation/Main.tz`（新規）の 4 種目。`-O3` 後の IR に残る確保の呼び出し箇所の数 |
 
 ## 目的
+
+### 2026-10-14 の実装前見直し
+
+全フェーズと D1 の変更は今回の依頼で承認済みです。基準は `a621fada` とし、Phase 1・2 を
+現行の frame・B07 の所有する捕捉・C08 の slice・A16 の固定長配列へ接続します。
+PM07 と同じ変更に統合するため、frame のある左辺を `append` へ渡さない条件を共有します。
+資源に依存する確保失敗は最適化で除去され得ますが、長さの overflow と確保サイズの
+決定的なトラップ、評価順序、利用者 drop の順序は保ちます。
+「Phase 3 の案」は具体的な変換規則のない対象外の研究候補であり、union payload や
+Task の記憶域を推測で変更しません。
+
+### 実装結果（2026-10-14）
+
+Phase 1・2 を実装しました。定数連結の畳み込み、長さだけの連結の確保省略、
+最大 256 bytes の連結領域、最大 1 KiB の局所捕捉環境を扱います。
+関数ごとの追加領域は合計 4 KiB までで、再帰 SCC・Task・エスケープ・予算超過は
+既存のヒープ経路へ戻します。長さの overflow・サイズ制限とオペランド評価順序は保持します。
+`tests/storage.rs` の 21 件、storage feature の 24 件で native/WASM の `-O0`・`-O3` を検証し、
+native は ASan と fake stack でも成功しました。tracked allocator の確保要求・bytes と
+生成コードの実測は [測定記録](../docs/benchmarks.md) の「文字列と局所環境」にあります。
 
 外へ逃げない一時的な値のヒープ確保を、コンパイル時に除去するかスタックへ移す。
 所有権により値の寿命が正確に分かる Tsuzuri では、C++ や Rust より積極的に確保を減らせる。確保の削減はメモリ量と時間の両方に効く。
@@ -483,7 +503,7 @@ UTF-8 の行は既存の `utf8_join_allocation` と同じ書き方で UTF-8 文�
 
 - [ ] D1 が承認され、docs/language.md の文言が D1 のとおり。
 - [ ] Phase 1・2 の E2E の表の確保数が native `-O0`/`-O3` で期待どおり、`live == 0`。WASM の結果が一致し import がない。
-- [ ] 「生成コードの確認」の pattern をすべて満たし、`rec` 関数・Task 本体・外へ逃げる形の IR が HEAD と同じ。
+- [ ] 「生成コードの確認」の pattern を満たし、Phase 2 の領域配置は `rec` 関数・Task 本体・外へ逃げる形を heap から frame へ置き換えない。Phase 1 の純粋な定数畳み込みや、他ストリームの属性・runtime 差まで byte 同一とは要求しない。
 - [ ] `cargo test --locked`、全 `.mjs`、ASan（`detect_stack_use_after_return=1`）、stack-depth の 4 テストが成功。
 - [ ] `PM06-before`・`PM06-after` の PX01 形式の記録があり、`docs/benchmarks.md` に実測値だけを書いた。
 - [ ] GUIDE §10 の完了の定義を満たす。

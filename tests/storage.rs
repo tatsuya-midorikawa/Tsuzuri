@@ -96,7 +96,7 @@ fn bound_literals_use_stack_storage() {
         }
         assert!(!body.contains("@tz.string.new"), "{body}");
         // Only the explicit `new [6]` allocates.
-        assert_eq!(body.matches("call ptr @tz.alloc").count(), 1, "{body}");
+        assert_eq!(body.matches("ptr @tz.alloc(").count(), 1, "{body}");
     }
 }
 
@@ -133,9 +133,9 @@ fn escaping_stack_values_move_to_the_heap() {
     );
     let stack = function(&ir, "stack");
     assert!(entry(stack).contains("alloca [2 x i64]"), "{stack}");
-    assert!(stack.contains("call ptr @tz.alloc"), "{stack}");
+    assert!(stack.contains("ptr @tz.alloc("), "{stack}");
     let heap = function(&ir, "heap");
-    assert!(heap.contains("call ptr @tz.alloc"), "{heap}");
+    assert!(heap.contains("ptr @tz.alloc("), "{heap}");
     assert!(!heap.contains("alloca [2 x i64]"), "{heap}");
     let moved = function(&ir, "moved");
     assert!(moved.contains("@tz.string.new"), "{moved}");
@@ -154,7 +154,7 @@ fn mutable_borrows_move_stack_values_to_the_heap_first() {
     );
     let body = function(&ir, "f");
     let call = body.find("@tz.fn.Main.replace(").unwrap();
-    for relocation in ["call ptr @tz.alloc", "@tz.string.new"] {
+    for relocation in ["ptr @tz.alloc(", "@tz.string.new"] {
         let position = body.find(relocation).unwrap_or_else(|| panic!("{body}"));
         assert!(position < call, "{relocation}\n{body}");
     }
@@ -176,7 +176,7 @@ fn oversized_literals_keep_the_heap() {
     let ir = emit(&literal(8193), false);
     let body = function(&ir, "f");
     assert!(!body.contains("alloca [8193 x i64]"));
-    assert!(body.contains("call ptr @tz.alloc"));
+    assert!(body.contains("ptr @tz.alloc("));
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn builder_blocks_keep_the_storage_rules() {
     let body = function(&ir, "f");
     assert!(entry(body).contains("alloca [3 x i64]"), "{body}");
     // The explicit `new [4, 5]` is the only heap literal in the entry point.
-    assert_eq!(body.matches("call ptr @tz.alloc").count(), 1, "{body}");
+    assert_eq!(body.matches("ptr @tz.alloc(").count(), 1, "{body}");
 }
 
 #[test]
@@ -227,5 +227,267 @@ fn stack_literals_stay_in_the_entry_block_of_tail_loops() {
         assert!(!after.contains(" alloca "), "{body}");
         assert!(after.contains("br label %loop"), "{body}");
         assert!(!body.contains("@tz.alloc"), "{body}");
+    }
+}
+
+#[test]
+fn literal_concatenation_is_one_constant() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: i64
+                 fn f = { let a = \"ab\" + \"cd\" + \"ef\"; a.length + a[0] as i64 }
+                 def bytes :: i64
+                 fn bytes = { let a = u8\"ab\" + u8\"cd\"; a.length }",
+            wasm,
+        );
+        for name in ["f", "bytes"] {
+            let body = function(&ir, name);
+            assert!(!body.contains(".concat"), "{body}");
+            assert!(!body.contains("@tz.alloc"), "{body}");
+        }
+    }
+}
+
+#[test]
+fn string_identity_keeps_literal_and_length_only_optimizations() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def literal :: i64
+             fn literal = (to_string (\"a\" + to_string \"😀\")).length
+             def length :: string -> i64
+             fn length value = (to_string (to_string (value + \"xyz\"))).length
+             def local :: i64
+             fn local = { let text = to_string (\"a\" + \"😀\"); text.length + text[0] as i64 }
+             def moved :: string -> i64
+             fn moved text = (to_string text).length",
+            wasm,
+        );
+        for name in ["literal", "length", "local", "moved"] {
+            let body = function(&ir, name);
+            assert!(
+                !body.contains(".concat") && !body.contains(".append"),
+                "{body}"
+            );
+            assert!(
+                !body.contains(".new(") && !body.contains("ptr @tz.alloc("),
+                "{body}"
+            );
+            assert!(!body.contains("to_string"), "{body}");
+        }
+        let body = function(&ir, "length");
+        assert!(body.contains("icmp ult i64"), "{body}");
+        assert!(body.contains("9007199254740991"), "{body}");
+        let body = function(&ir, "moved");
+        assert!(body.contains("store %tz.string zeroinitializer"), "{body}");
+    }
+}
+
+#[test]
+fn length_only_concatenation_keeps_the_checks() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: string -> i64\nfn f a = (a + \"xyz\").length
+                 def bytes :: utf8string -> i64\nfn bytes a = (a + u8\"xyz\").length",
+            wasm,
+        );
+        for name in ["f", "bytes"] {
+            let body = function(&ir, name);
+            assert!(
+                !body.contains(".concat") && !body.contains(".append"),
+                "{body}"
+            );
+            assert!(body.contains("icmp ult i64"), "{body}");
+            assert_eq!(body.contains("9007199254740991"), name == "f", "{body}");
+        }
+    }
+}
+
+#[test]
+fn local_concatenation_uses_a_bounded_buffer() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: string -> i64
+                 fn f a = { let joined = a + \"xyz\"; joined.length + joined[0] as i64 }
+                 def bytes :: utf8string -> i64
+                 fn bytes a = { let joined = a + u8\"xyz\"; joined.length + joined[0] as i64 }",
+            wasm,
+        );
+        for (name, capacity) in [("f", 128), ("bytes", 256)] {
+            let body = function(&ir, name);
+            assert!(
+                entry(body).contains("alloca [256 x i8], align 16"),
+                "{body}"
+            );
+            assert!(body.contains(".concat_into(ptr"), "{body}");
+            assert!(body.contains(&format!("i64 {capacity},")), "{body}");
+            assert!(!body.contains(".append("), "{body}");
+        }
+    }
+}
+
+#[test]
+fn escaping_concatenation_keeps_the_heap() {
+    for source in [
+            "def f :: string -> string\nfn f a = { let joined = a + \"x\"; joined }",
+            "def use :: string -> i64\nfn use text = text.length
+             def f :: string -> i64\nfn f a = { let joined = a + \"x\"; use joined }",
+            "def f :: string -> (unit -> i64)\nfn f a = { let joined = a + \"x\"; \\() -> joined.length }",
+            "def replace :: ref mut string -> unit\nfn replace text = deref text = \"x\"
+             def f :: string -> i64\nfn f a = { let mut joined = a + \"x\"; replace (ref mut joined); joined.length }",
+        ] {
+            for wasm in [false, true] {
+                let ir = emit(source, wasm);
+                let body = function(&ir, "f");
+                assert!(!body.contains("alloca [256 x i8]"), "{body}");
+                assert!(body.contains(".append(") || body.contains(".concat("), "{body}");
+            }
+        }
+}
+
+#[test]
+fn buffer_budget_falls_back_to_the_heap() {
+    let mut source = String::from("def f :: i64 -> i64\nfn f n = {\n");
+    for i in 0..17 {
+        source.push_str(&format!(
+            "let s{i} = (if n > 0 then \"ab\" else \"abc\") + \"x\";\n"
+        ));
+    }
+    source.push_str(
+        &(0..17)
+            .map(|i| format!("s{i}.length"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    source.push_str("\n}");
+    for wasm in [false, true] {
+        let ir = emit(&source, wasm);
+        let body = function(&ir, "f");
+        assert_eq!(
+            entry(body).matches("alloca [256 x i8]").count(),
+            16,
+            "{body}"
+        );
+        assert_eq!(body.matches(".concat_into(").count(), 16, "{body}");
+        assert_eq!(body.matches(".concat(").count(), 1, "{body}");
+    }
+}
+
+#[test]
+fn recursive_functions_keep_heap_storage() {
+    let source = "def rec f :: i64 -> i64
+             fn rec f n = {
+                 let joined = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+                 let a = n + 1;
+                 let b = n + 2;
+                 let add = \\i -> i + a + b;
+                 let value = joined.length + joined[0] as i64 + add 0;
+                 if n == 0 then value else value + f (n - 1)
+             }";
+    for wasm in [false, true] {
+        let ir = emit(source, wasm);
+        let body = function(&ir, "f");
+        assert!(!body.contains(".concat_into"), "{body}");
+        assert!(!entry(body).contains("alloca { i64, i64 }"), "{body}");
+    }
+}
+
+#[test]
+fn task_bodies_keep_heap_storage() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: i64 -> i64
+             fn f n = Task.run task {
+                 let joined = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+                 joined.length + joined[0] as i64
+             }",
+            wasm,
+        );
+        assert!(ir.contains("@tz.fn.$task."));
+        assert!(!ir.contains("call %tz.string @tz.string.concat_into("));
+    }
+}
+
+#[test]
+fn local_closures_use_entry_block_environments() {
+    for wasm in [false, true] {
+        let ir = emit(
+                "def f :: i64 -> i64
+                 fn f n = { let a = n + 1; let b = n * 2; let add = \\i -> i + a + b; add 1 + add 2 }",
+                wasm,
+            );
+        let body = function(&ir, "f");
+        assert!(
+            entry(body).contains("alloca { i64, i64 }, align 16"),
+            "{body}"
+        );
+        assert!(!body.contains("@tz.alloc"), "{body}");
+    }
+}
+
+#[test]
+fn escaping_closures_keep_heap_environments() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: i64 -> (i64 -> i64)
+                 fn f n = { let a = n + 1; let b = n * 2; let add = \\i -> i + a + b; add }",
+            wasm,
+        );
+        let body = function(&ir, "f");
+        assert!(body.contains("ptr @tz.alloc("), "{body}");
+        assert!(!entry(body).contains("alloca { i64, i64 }"), "{body}");
+    }
+}
+
+#[test]
+fn oversized_environments_keep_the_heap() {
+    let mut source = String::from("def f :: i64 -> i64\nfn f n = {\n");
+    for i in 0..65 {
+        source.push_str(&format!("let a{i} = n + {i};\n"));
+    }
+    source.push_str("let add = \\i -> i + ");
+    source.push_str(
+        &(0..65)
+            .map(|i| format!("a{i}"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    source.push_str(";\nadd 1 + add 2\n}");
+    for wasm in [false, true] {
+        let ir = emit(&source, wasm);
+        assert!(function(&ir, "f").contains("ptr @tz.alloc("));
+    }
+}
+
+#[test]
+fn single_use_field_projections_transfer_their_buffer() {
+    for wasm in [false, true] {
+        let ir = emit(
+                "record Holder { values: [i64] }
+                 record Outer { holder: Holder }
+                 def f :: i64
+                 fn f = { let h = Outer { holder: Holder { values: new [1, 2] } }; let values = h.holder.values; values[0] }",
+                wasm,
+            );
+        let body = function(&ir, "f");
+        assert_eq!(body.matches("ptr @tz.alloc(").count(), 1, "{body}");
+    }
+}
+
+#[test]
+fn owned_heap_concatenation_reuses_only_unframed_left_operands() {
+    for wasm in [false, true] {
+        let ir = emit(
+            "def f :: string -> string -> string
+                 fn f left right = left + right
+                 def literal :: string -> string
+                 fn literal text = \"left\" + text
+                 def bytes :: utf8string -> utf8string -> utf8string
+                 fn bytes left right = left + right",
+            wasm,
+        );
+        assert!(function(&ir, "f").contains("@tz.string.append("));
+        assert!(function(&ir, "bytes").contains("@tz.utf8string.append("));
+        assert!(function(&ir, "literal").contains("@tz.string.concat("));
+        assert!(!function(&ir, "literal").contains("@tz.string.append("));
     }
 }

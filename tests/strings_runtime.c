@@ -7,6 +7,12 @@ extern int test_well_formed(const uint16_t *, uint64_t);
 extern void test_drop(void *);
 extern void test_allocate(uint64_t);
 extern void test_concat(uint64_t, uint64_t);
+extern uint64_t test_concat_into16(void *, uint64_t, const void *, uint64_t, const void *, uint64_t, void **);
+extern uint64_t test_concat_into8(void *, uint64_t, const void *, uint64_t, const void *, uint64_t, void **);
+extern uint64_t test_append16(void *, uint64_t, const void *, uint64_t, void **);
+extern uint64_t test_append8(void *, uint64_t, const void *, uint64_t, void **);
+extern uint64_t test_clone16(const void *, uint64_t, void **);
+extern uint64_t test_clone8(const void *, uint64_t, void **);
 
 static uint16_t units[512];
 static uint8_t bytes[1024];
@@ -69,6 +75,74 @@ int all_scalars(void) {
         }
     }
     return batches;
+}
+
+int storage_cases(void) {
+    uint16_t left16[129], right16[129], buffer16[130];
+    uint8_t left8[257], right8[257], buffer8[258];
+    for (unsigned i = 0; i < 129; ++i) { left16[i] = (uint16_t)(0xd800 + i); right16[i] = (uint16_t)(0xdc00 + i); }
+    for (unsigned i = 0; i < 257; ++i) { left8[i] = (uint8_t)i; right8[i] = (uint8_t)(255 - i); }
+    const unsigned caps16[] = {0, 128, 129}, caps8[] = {0, 256, 257};
+    for (unsigned c = 0; c < 3; ++c) {
+        for (unsigned length = 0; length <= 129; ++length) {
+#ifdef UTF_QUICK
+            if (length > 17 && length != 31 && length != 32 && length != 33 && length != 63 && length != 64 && length != 65 &&
+                length != 127 && length != 128 && length != 129) continue;
+#endif
+            unsigned a = length / 2, b = length - a;
+            void *out = (void *)1;
+            if (test_concat_into16(buffer16, caps16[c], left16, a, right16, b, &out) != length) return 1;
+            if (!length) { if (out) return 2; continue; }
+            if ((out == buffer16) != (length <= caps16[c])) return 3;
+            for (unsigned i = 0; i < length; ++i)
+                if (((uint16_t *)out)[i] != (i < a ? left16[i] : right16[i-a])) return 4;
+            if (out != buffer16) test_drop(out);
+        }
+        for (unsigned length = 0; length <= 257; ++length) {
+#ifdef UTF_QUICK
+            if (length > 17 && length != 31 && length != 32 && length != 33 && length != 63 && length != 64 && length != 65 &&
+                length != 127 && length != 128 && length != 129 && length != 255 && length != 256 && length != 257) continue;
+#endif
+            unsigned a = length / 2, b = length - a;
+            void *out = (void *)1;
+            if (test_concat_into8(buffer8, caps8[c], left8, a, right8, b, &out) != length) return 5;
+            if (!length) { if (out) return 6; continue; }
+            if ((out == buffer8) != (length <= caps8[c])) return 7;
+            for (unsigned i = 0; i < length; ++i)
+                if (((uint8_t *)out)[i] != (i < a ? left8[i] : right8[i-a])) return 8;
+            if (out != buffer8) test_drop(out);
+        }
+    }
+    for (unsigned a = 0; a < 3; ++a) for (unsigned b = 0; b < 3; ++b) {
+        void *owned, *out;
+        if (test_clone16(left16, a, &owned) != a) return 9;
+        if (test_append16(owned, a, right16, b, &out) != a+b) return 10;
+        for (unsigned i = 0; i < a+b; ++i)
+            if (((uint16_t *)out)[i] != (i < a ? left16[i] : right16[i-a])) return 11;
+        if (!a && !b && out) return 12;
+        test_drop(out);
+        if (test_clone8(left8, a, &owned) != a) return 13;
+        if (test_append8(owned, a, right8, b, &out) != a+b) return 14;
+        for (unsigned i = 0; i < a+b; ++i)
+            if (((uint8_t *)out)[i] != (i < a ? left8[i] : right8[i-a])) return 15;
+        if (!a && !b && out) return 16;
+        test_drop(out);
+    }
+    return 0;
+}
+
+void storage_trap_case(unsigned index) {
+    void *out;
+    const uint64_t max_length = UINT64_C(9007199254740991);
+    switch (index) {
+        case 0: test_append16(0, max_length, 0, 1, &out); break;
+        case 1: test_append16(0, UINT64_MAX, 0, 1, &out); break;
+        case 2: test_append8(0, UINT64_MAX, 0, 1, &out); break;
+        case 3: test_concat_into16(0, UINT64_MAX, 0, max_length, 0, 1, &out); break;
+        case 4: test_concat_into16(0, UINT64_MAX, 0, UINT64_MAX, 0, 1, &out); break;
+        case 5: test_concat_into8(0, UINT64_MAX, 0, UINT64_MAX, 0, 1, &out); break;
+        default: __builtin_trap();
+    }
 }
 
 static const struct {
@@ -161,16 +235,33 @@ void tracked_free(void *value) {
     free(p);
 }
 
+void *tracked_realloc(void *value, uint64_t size) {
+    if (!value) return tracked_alloc(size);
+    if (!size) { tracked_free(value); return 0; }
+    uint64_t *old = (uint64_t *)value - 2;
+    assert(old[1] == UINT64_C(0x51a110ca7e) && live >= old[0]);
+    uint64_t old_size = old[0];
+    uint64_t *next = realloc(old, (size_t)size + 16);
+    assert(next);
+    next[0] = size;
+    next[1] = UINT64_C(0x51a110ca7e);
+    live = live - old_size + size;
+    return next + 2;
+}
+
+#ifndef TZ_SIMD_TEST
 int main(int argc, char **argv) {
     if (argc == 2) {
+        if (argv[1][0] == 's') { storage_trap_case((unsigned)atoi(argv[1] + 1)); return 0; }
         runtime_trap_case((unsigned)atoi(argv[1]));
         return 0;
     }
     int batches = all_scalars();
-    if (batches != 4344 || live != 0 || runtime_trap_count() != 28) {
+    if (batches != 4344 || storage_cases() || live != 0 || runtime_trap_count() != 28) {
         fprintf(stderr, "Unicode batches: %d; live bytes: %llu\n", batches, (unsigned long long)live);
         return 1;
     }
     return 0;
 }
+#endif
 #endif

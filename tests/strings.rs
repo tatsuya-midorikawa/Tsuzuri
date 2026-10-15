@@ -24,6 +24,44 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn string_vectors_are_target_opt_in_and_deterministic() {
+    let module = analyze(
+        "export def decode :: ref utf8string -> string\nfn decode bytes = String.from_utf8 bytes",
+    )
+    .unwrap();
+    for (wasm, simd, vectors) in [
+        (false, false, true),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        let options = llvm::EmitOptions {
+            entry: llvm::Entry::Library,
+            wasm,
+            wasm_simd128: simd,
+            debug_output: false,
+            runtime_objects: false,
+            allocator: llvm::Allocator::System,
+            f16: llvm::F16Path::Soft,
+        };
+        let ir = llvm::emit_with_options(&module, options).unwrap();
+        assert_eq!(ir.contains("<16 x i8>"), vectors);
+        assert_eq!(ir.contains("<8 x i16>"), vectors);
+        if vectors {
+            assert!(
+                ir.contains("call %tz.string @tz.string.from_utf8.scalar_failure("),
+                "rejected vector counts retain the original encoding/size failure path"
+            );
+        }
+        assert!(llvm::duplicate_declarations(&ir).is_empty());
+        assert_eq!(ir, llvm::emit_with_options(&module, options).unwrap());
+        assert!(
+            !ir.contains("@tsuzuri_cpu_utf"),
+            "library IR stays self-contained"
+        );
+    }
+}
+
+#[test]
 fn module_length_functions_borrow_and_reuse_property_lowering() {
     accepts(
         r#"

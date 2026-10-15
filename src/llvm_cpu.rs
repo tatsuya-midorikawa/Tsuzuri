@@ -377,6 +377,7 @@ fn stub(
         .strip_prefix("define internal ")
         .unwrap_or(&define[..at])
         .trim();
+    let return_type = result.strip_prefix("noundef ").unwrap_or(result);
     let parameters = &define[callable.open + 1..callable.close];
     let (subprogram, location) = debug.map_or_else(
         || (String::new(), String::new()),
@@ -413,7 +414,7 @@ fn stub(
             versioned(name, &format!(".{}", level_name(level)))
         };
         let _ = writeln!(stub, "tz.level{level}:");
-        if result == "void" {
+        if return_type == "void" {
             let _ = writeln!(
                 stub,
                 "  tail call void {callee}({parameters}){location}\n  ret void"
@@ -421,7 +422,7 @@ fn stub(
         } else {
             let _ = writeln!(
                 stub,
-                "  %tz.result{level} = tail call {result} {callee}({parameters}){location}\n  ret {result} %tz.result{level}"
+                "  %tz.result{level} = tail call {result} {callee}({parameters}){location}\n  ret {return_type} %tz.result{level}"
             );
         }
     }

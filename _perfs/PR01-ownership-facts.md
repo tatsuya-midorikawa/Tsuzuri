@@ -17,6 +17,45 @@
 
 ## 目的
 
+### 現行契約との照合と承認済み実装方針（2026-10-14）
+
+利用者が Phase 1・2・3 全部の実装と保守的な設計判断を承認した。以下は旧 HEAD
+`f8dc655` 向けの本文に優先する。チケットの移動・共有の一覧の編集は調整担当が行う。
+
+- F10 は実装済み。`Atomic`／`Mutex` だけでなく、参照カウント、ホストハンドル、
+  型に環境を表さない関数・Task・dyn を介する到達先もある。`readonly`／共有
+  `noalias` は、閉じた格納グラフで不変性を証明できる場合だけにする。
+- C08 の `ref [T]` と `ref mut [T..]` は値渡しの記述子であり、
+  `slice_element()` で両方を除外する。`ref mut [T]` は記述子の slot を指す。
+  A13 の格納参照を含む pointee に独立性を推測しない。借用を返す関数、借用を
+  格納できる排他参照引数、未知の捕捉環境がある場合は `nocapture` を省く。
+- レイアウトの割当上界を変えず、引数の保証には wasm32 を含む下界を使う。
+  128-bit 値・SIMD の下界 alignment は 8 以下、ポインターは 4。
+  具象 field、Drop 生存フラグ、再帰 union、A16 の長さ 0 を反映する。
+- Phase 2 の scoped alias は、スカラー参照／スカラー要素の借用 slice の
+  SSA provenance が確定した load/store に限る。共有同士の独立性は主張しない。
+  排他 loan と他の loan の独立性だけを記述し、関数呼出しごとの scope 宣言を置く。
+  slot の書換え、未知の pointer 導出、callback、自己末尾ループ、解析予算超過は
+  根拠なしの metadata を出さずにフォールバックする。
+- 空・move 済み・frame の所有 buffer は null にできる。所有型だけから
+  `nonnull` を出さない。成功時に null を返さない `tz.alloc` と、その証明済み
+  pointer の private reload だけを扱う。
+- 値 `noundef` は初期化済みの scalar 引数に限り、aggregate／SIMD は除外する。
+  戻り値は poison を生む演算・未知の呼出しを含まない限定した IR のみ。
+  `memory(...)` は生成 IR の private stack／直接の pointer 引数へのアクセスと
+  memory-free intrinsic だけを分類する。alloc/free/IO/Task/extern/Drop/未知の
+  アクセスや呼出しには属性を出さない。分岐／反復／trap も totality の証明なしには
+  要約しない。`llvm.trap` は memory-free intrinsic ではない。記述子引数の buffer を安易に `argmem` としない。
+- Phase 3 の TBAA は、具象 scalar 要素の provenance とアクセス型が一致した
+  load/store のみ。符号違いと同じ LLVM 表現は同じ tag、byte は無印（すべてと alias）。
+  union の重なった payload、集約値／field 全体、runtime byte copy、atomic、
+  外部 ABI の pointer に型名だけで tag を付けない。
+- 属性・metadata は通常の内部関数のみ。public wrapper、adapter、Task と
+  捕捉付き worker は変えない。生成 IR は設定ごとに決定的であり、現在すでにある
+  native/WASM 固有 lowering の差を消すための変更は行わない。
+- baseline は `target/perf/phase2-baseline/tsuzuri-before`。検証出力は repository
+  配下に置く。測定は調整担当と排他に行い、未測定の速度向上を主張しない。
+
 C/C++ のコンパイラは、ポインターの別名関係が分からないため多くの最適化をあきらめる（`restrict` を書かない限り）。
 Tsuzuri は所有権・借用・不変性により、共有参照の参照先は借用中に変更されず、排他参照の参照先は借用中に他の経路から触れられないことを
 型検査と所有権検査で保証している。この保証を LLVM の引数属性として伝え、ループ内の読み書きのレジスター化、ループ外への移動、
@@ -550,7 +589,7 @@ node tests/features.mjs target/release/tsuzuri
 - [ ] Phase 1 の規則（P0〜N1）が `parameter_facts` 一か所にあり、`FunctionEmitter::emit` だけが使う。
 - [ ] `tests/param_facts.rs` が成功し、付与と非付与の両方を検査している。
 - [ ] 「テスト計画」の共通コマンドがすべて成功し、E2E の結果・トラップ・`live == 0`・WASM import なしが before と同じ。
-- [ ] 公開 wrapper・adapter・runtime の IR が before と同じ。native と wasm32 の IR 文字列が同じ。
+- [ ] PR01 単独の変更では公開 wrapper・adapter・runtime に属性を推測付与せず、ABI を保つ。native と wasm32 の各構成で繰り返し出力が一致する。統合時の runtime 差は PB01・PR04・PR05 の検証と区別する。
 - [ ] 手順 4 の監査結果と、生成コードの表（M1・M2）が完了報告にある。
 - [ ] 計測（M3）を PX01 形式で記録し、`before2` 対 `before` の広がりと合わせて報告した。未計測の改善を主張していない。
 - [ ] `docs/architecture.md` に I1〜I4 と規則が書かれている。
@@ -643,3 +682,177 @@ node tests/features.mjs target/release/tsuzuri
 - 決定: 既存の `control`・`cpp` の全種目で時間を測り、kernels は生成コードの確認にだけ使う。別名の種目の追加と C・Rust との比較は PX02 が行う。
 - 理由: runner は種目名の一覧と参照実装を持ち（`benchmarks/run-control.mjs` の `assert.deepEqual`）、種目の追加は PX02 の管理下にある（PR02 の D8 と同じ）。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-14）
+
+利用者が承認した全 3 phase を、証明できる範囲に限定して実装した。旧 Phase 1
+限定案・未実装 F10 の仮定は、冒頭の照合と以下の実装結果に置き換わる。
+チケットの移動・共有一覧・中央の文書・測定の排他調整は調整担当の範囲であり、
+ここでは commit／push／移動を行っていない。許可された最終 frontend 計測は以下に記録する。
+全体の完了・CI・公開の checkbox は調整担当が判断するまで変更しない。
+
+### 実装した事実と意図的な非付与
+
+| phase | 実装 | 非付与／フォールバック |
+| --- | --- | --- |
+| 1 | 通常の内部関数の `ptr` 参照に、正の portable layout 下界から `noundef nonnull align dereferenceable`。閉じた pointee の排他性／不変性から `noalias`、共有の `readonly`。借用の返却・格納・隠れた環境がなければ `nocapture` | zero-sized pointee、slice 記述子、Task、捕捉付き worker、public wrapper／adapter。格納参照・opaque std・Shared・callable／host state を unique とみなさない |
+| 2 | 初期化済み scalar 引数の `noundef`、限定した poison-free scalar result。分岐・反復・trap のない生成 IR の private stack／直接の pointer 引数と明示 whitelist intrinsic の memory effects。成功時の `tz.alloc` の `nonnull` と private reload の `!nonnull`。scalar 参照／scalar slice の確定した SSA 由来に scoped alias | 集約値／SIMD の value `noundef`、空／move 済み／frame buffer の blanket nonnull、記述子の `argmem` 推測、未知の呼出し、alloc/free/IO/Task/extern/Drop、分岐・反復・trap の totality 推測、書換え／露出した spill、未知の load／cast／phi 由来、callback |
+| 3 | scalar pointee／slice element と LLVM access 型が一致した load/store に TBAA。符号違い・同じ LLVM integer encoding は同じ node | byte・bool/unit は無印で全型と alias。aggregate／record field／union payload／runtime byte copy／atomic へ型名だけで付与しない |
+
+`src/llvm_facts.rs` に規則と bounded SSA grammar をまとめ、`Globals` の共有 metadata
+番号で決定的に発行・TBAA と nonnull node を重複除去する。任意の pointer load を、
+その load の address に由来する pointer と扱わない。private な single-store spill
+だけが既知の由来を中継し、slice の data projection／inbounds GEP／descriptor の
+再構築だけを追跡する。IR bytes と instruction 分の合計 200,000、引数 64、
+最大 8 pass の予算を超えた場合は任意の事実を省く。
+
+scoped alias は共有同士を独立としない。少なくとも片方が排他の loan にだけ
+`!noalias` を記述し、関数呼出しごとに `llvm.experimental.noalias.scope.decl` を置く。
+scalar-only `Array.write`／`Array.swap_in` の **実際の lifted builtin** だけは call の
+access scope も記述し、inline 後の buffer store に伝える。一般の同じ形の関数、
+要素 Drop／callback に外挿しない。更新された自己末尾 phi の pointer 由来を、
+初回 `%argN` の由来と混同しない。
+
+`Type::is_frozen` と `TypeContext::reaches` の可視性は PB02 と調整した。
+F10 cells だけでなく、`Channel` の `{block:i64}` のような隠れた状態を含むすべての
+opaque std record も保守的に frozen ではない。`storage_layout` の割当上界は維持し、
+`layout_bound` は具象 field／Drop live flag／recursive union／FixedArray を反映する。
+`dyn` 下界は `(8,4)`、closure は `(16,4)`、pointer は `(4,4)`、128-bit と SIMD
+alignment は 8 以下。CPU stub が scalar result の `noundef` を `ret` 命令の型へ
+誤ってコピーしないため、関連する `llvm_cpu.rs` の出力も修正した。
+
+### facts 解析の余分な仕事の削減
+
+統合後の frontend 計測で emit-LLVM CPU の悪化が見つかり、属性／metadata を
+減らさずに `llvm_facts.rs` の解析を改善した。
+
+- analysis 用に instruction を一度だけ分解し、provenance／memory／value proof で
+  借用した文字列を再利用する。metadata のない行・通常の SSA assignment では
+  不要な複数文字 substring search を避け、従来の grammar の結果を保つ。
+- 最大 8 pass の forwarding は、その grammar で由来を持ち得る candidate だけに
+  限定する。private slot の store／exposure 判定で同じ access を繰り返し分解せず、
+  最後に捨てる非 slot の store 記録も作らない。
+- capture proof は正サイズの pointer 参照属性が必要になったときだけ評価する。
+  scalar の hidden-state graph traversal、更新された自己末尾 phi の解析、
+  loan root／allocation／memory summary のいずれにも関係しない body の解析を省く。
+- access の型／address は借用し、文字列を毎回 clone しない。builtin call の scope
+  検査は scope があるときだけ行い、allocator の return attr は元の行へ挿入する。
+- fresh profile で残っていた annotation 段階の再分解も、loan root と allocator call が
+  ともにない body では省く。必要な memory／result facts を計算した **後** の省略で、
+  pointer の由来・nonnull・TBAA／scope の証明規則を弱めたものではない。
+
+`skipped_and_linear_bodies_keep_exact_ir_and_facts` は、直線的な memory-free body、
+summary 対象外の分岐 body、自己末尾 body の IR と parameter／result／memory facts、
+不要な metadata／intrinsic を発行しないことをまとめて検査する。
+最終 `00d5` には、調整担当による `llvm_simd.rs::wide_types` の同値な
+`starts_with('%')` 前置 filter も含まれる。この変更は PR01 agent の編集ではない。
+
+### 検証で発見して直した誤分類
+
+初回の intrinsic whitelist に `llvm.trap` を入れたのは誤りだった。
+`memory(none)` の unit-returning call が WASM `-O0` で削除され、
+既存 `control` の `trap_step` が trap しなくなった。trap を whitelist から除き、
+totality の別の証明がない分岐／反復／unreachable body も function effects の対象外に
+した。属性を外してテストだけを通したのではなく、規則を修正し、step 0・assert・
+unreachable・未使用 checked overflow・未使用 conditional failure・loop trap の
+6 つの native/WASM 回帰と、非終了 loop の非付与 IR test を追加した。
+
+### 正しさの結果
+
+- `cargo test --locked --test param_facts`: **9 passed**。
+  pointer attrs／layout、F10／opaque／Shared、returned/stored loans／callback、
+  descriptor ABI／scopes／TBAA、scalar/aggregate effects、public wrapper、
+  union／nonnull reload、captured workers／Task、trap／termination の付与と非付与。
+- `cargo test --locked --lib llvm::facts::tests`: **4 passed**。
+  allocator private reload、書換え／露出／任意 pointer load/cast の非追跡、予算超過、
+  上記 skipped／linear path の exact-IR 回帰。解析改善後にも再実行した。
+- CPU `scalar_return_facts_do_not_become_ret_instruction_attributes`: **1 passed**。
+- 関連する既存 Rust tests: `debug_info` **9**、`host_abi` **4**、
+  `maybe_result` **9**、`parallel` **2**、`slices` **3**、`stdlib` **7**、
+  `user_drop` **26** passed。既存の allocation 数を変えず、call return attr と
+  scalar result attr に依存しない形へ exact-IR assertion を直した。
+- GUIDE の 4 selector（growing polymorphism、recursive/flat expression depth、
+  nested builder expansion、exact specialization limit）は、それぞれ **1 passed**。
+  `RUST_MIN_STACK` は未設定の通常 stack。limit／stack の変更はしていない。
+- `features.mjs ... param_facts`: **113 cases + 6 traps**、
+  native／WASM × `-O0`／`-O3`、通常 allocator、ASan、host allocator の 3 実行で pass。
+  native は各 case で `live == 0`、WASM import なし、IR deterministic、
+  intrinsic declaration の重複なしを確認。
+- cache-free `control.mjs`: **270 cases** と既存 trap／loop boundary／cleanup、
+  native／WASM × `-O0`／`-O3` pass。上記 trap regression の修正後の結果。
+- `cargo clippy --locked --all-targets -- -D warnings`: 解析改善後にも pass。
+- manual は `borrowing.md` と `strategy.md` を更新。
+  `check-docs.mjs` は **2 pages、53 links、8 examples、16 native runs (O0/O3)** pass。
+
+共有 worktree の全 suite／全 target／Windows gate は調整担当が検証する。
+ここでの実行検証は macOS arm64、Apple Clang 21.0.0、Node 20.19.6 と WASM。
+Windows で実行したとは主張しない。
+
+### 生成コードの確認
+
+baseline は `target/perf/phase2-baseline/tsuzuri-before`。同じ fixture の IR と、
+inline を含まない `sroa,loop-simplify,lcssa,loop-mssa(licm),gvn,dse,simplifycfg`
+の結果を `target/perf/PR01-validation/{before,after}{,-opt}.ll` に保存した。
+`accumulate` は before で input load と output store が loop 内、after で input load が
+preheader、output store が exit へ移り、loop は phi と加算だけになる。
+
+LLVM/Clang 23.1.1 で、呼出し元の閉世界最適化を防ぐ **inspection 用** standalone
+kernel を出して確認した（実際の public ABI は変更していない）。
+before は alias check と scalar/vector loop を持つが、after は input load、`madd`、
+1 回の output store になった。`*-kernel.ll`／`*-kernel.s` も同じ directory にある。
+全 module の `-O3` では before も単一の既知 caller から独立性を推論できるので、
+その asm だけでは PR01 の差を示せないことも確認した。
+
+LLVM 23 の `opt` 出力を Apple Clang 21 に渡すと、新しい
+`nocreateundeforpoison` の attribute を 21 が拒否するため、inspection は同じ 23 の
+tool pair で行った。compiler が出す raw IR は Apple Clang 21 の上記 native tests
+で検証済みで、23 の syntax を compiler 出力へ足したわけではない。
+
+### 最終 frontend 計測・IR 同値性（final2）
+
+調整担当の排他的な許可を受け、`benchmarks/run-frontend.mjs` の正式な各 9 sample
+（別に warmup 1 回）を before／after／before2 の順で実行した。hello・200・1000 の
+check／emit-LLVM、generic CPU、cache 無効。最終 after は独立に pin した
+`00d5d6a434fe6a3830741adc9f86e614f065794aaa426de0152adea6160e07c9`、
+before／before2 は `target/perf/phase2-baseline/tsuzuri-before`
+（`ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`）。
+
+以下は **before／after／before2** の中央値。CPU／wall は ms、RSS は MiB。
+
+| workload | CPU | wall | peak RSS |
+| --- | --- | --- | --- |
+| hello/check | 40 / 30 / 40 | 97.572 / 85.348 / 88.304 | 25.19 / 20.83 / 25.20 |
+| hello/emit-LLVM | 40 / 40 / 40 | 89.508 / 87.156 / 93.979 | 26.67 / 23.55 / 26.69 |
+| 200/check | 390 / 330 / 400 | 421.530 / 352.182 / 430.808 | 214.48 / 141.09 / 214.34 |
+| 200/emit-LLVM | 550 / 550 / 550 | 584.110 / 583.162 / 590.072 | 223.73 / 154.11 / 223.06 |
+| 1000/check | 1890 / 1600 / 1890 | 2147.114 / 1872.570 / 2145.012 | 965.78 / 615.61 / 965.53 |
+| 1000/emit-LLVM | 2630 / 2640 / 2640 | 2897.476 / 2907.470 / 2910.752 | 1006.95 / 662.98 / 1002.02 |
+
+全体の CPU／wall／total phase の判定は「差なし」または「改善」、RSS はすべて
+「改善」、before2 drift の「悪化」は 0。**emit phase 単体のコスト増は残る**:
+hello は 2.486 → 4.742 ms、200 は 139.695 → 200.405 ms、1000 は
+679.220 → 969.691 ms（**+290.471 ms、約 +42.8%**）。3 種目とも phase gate は
+「悪化」であり、全体が neutral だからこのコストを隠す、または compiler 全体が
+高速化したと表現することはしない。最終の統合比較なので、増分全部を facts だけの
+因果効果ともみなさない。調整担当は必要な情報生成のコストを明記した全体 neutral の
+結果を受け入れた。
+
+`target/perf/PR01-frontend-final2/{before,after,before2}/frontend.jsonl` に全 sample・
+phase・host・hash、`comparison.txt`／`drift.txt`／`gates.json` に公式判定を保存した。
+中央の full triples／ranges と実行性能の計測は `docs/benchmarks.md` を調整担当が管理する。
+timing threshold を共有 CI の pass/fail 条件へ追加していない。
+
+最終 compiler の **36 native／WASM LLVM module** は、
+`target/perf/PR01-annotation-skip/{ir-before,ir-after}` の SHA380／SHA021 の両出力と
+**byte-identical**。測定した control／CPP／computations／allocation fixture、
+storage、param_facts、last_use、CPU dispatch、strings と 8 個の facts source を含む。
+最終出力は `target/perf/PR01-frontend-final2/ir-final/`。
+解析改善後の correctness は Rust **4 unit + 9 integration**、all-target clippy、
+param_facts **113 cases + 6 traps**、control **270 cases + traps／cleanup／loop boundary**、
+native／WASM × O0／O3 で pass。元の ASan／host allocator・CPU stub・depth・manual の
+結果は上記の通りで、今回の doc-only 更新のために再実行したものではない。
+
+Phase 2 の precise region-based capture、aggregate value facts、一般 call effects、
+全 owned-buffer provenance、Phase 3 の struct-path TBAA は未実装であり、上記の保守的な
+非付与が現在の実際の範囲である。全体の CI／Windows／LLVM17 と公開・完了の判断は
+調整担当に残す。source は freeze 済みで、この最終報告更新は文書のみ。

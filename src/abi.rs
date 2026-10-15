@@ -23,17 +23,20 @@ pub const RESERVED_HOST_SYMBOLS: &[&str] = &[
     "decode",
     "divide",
     "eight_decimal_digits",
+    "format_binary_fast",
     "format_exponent",
     "format_fixed",
     "format_float",
     "free",
     "init_jk",
     "ipio2",
+    "layout_decimal",
     "magnitude",
     "main",
     "malloc",
     "multiply_small",
     "pack",
+    "parse_binary_fast",
     "parse_float",
     "power",
     "putchar",
@@ -41,6 +44,8 @@ pub const RESERVED_HOST_SYMBOLS: &[&str] = &[
     "specialcase",
     "store",
     "subtract",
+    "tzrt_pow5",
+    "tzrt_schubfach_g",
     "write",
 ];
 
@@ -397,7 +402,7 @@ mod tests {
                 .unwrap_or(rest.len());
             let (name, after) = rest.split_at(end);
             let defined = after.starts_with('(') || after.starts_with(" =");
-            let own = ["tz", "tsuzuri", "__"]
+            let own = RESERVED_SYMBOL_PREFIXES
                 .iter()
                 .any(|prefix| name.starts_with(prefix));
             if defined && !own && !RESERVED_HOST_SYMBOLS.contains(&name) {

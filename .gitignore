@@ -32,6 +32,10 @@ target
 !src/runtime/sync-wasm.ll
 !src/runtime/channel-wasm.ll
 !src/runtime/string.ll
+!src/runtime/string_scalar.ll
+!src/runtime/string_v128.ll
+!src/runtime/string_cpu.ll
+!src/runtime/string_cpu_utf16.ll
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll
 !src/runtime/heap-host.ll

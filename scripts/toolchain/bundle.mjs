@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
+import { bundleRuntime } from './runtime.mjs';
 
 export const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const host = `${process.platform}-${process.arch}`;
@@ -129,8 +130,12 @@ export async function verify(destination) {
     if (!await exists(file)) { throw new Error(`Missing required tool: ${name}`); }
     if (process.platform !== 'win32' && !((await lstat(file)).mode & 0o111)) { throw new Error(`Tool is not executable: ${name}`); }
   }
-  for (const file of ['share/lldb/tsuzuri_lldb.py', 'share/natvis/tsuzuri.natvis']) {
+  for (const file of ['share/lldb/tsuzuri_lldb.py', 'share/natvis/tsuzuri.natvis', 'share/runtime/manifest.json']) {
     if (!await exists(path.join(destination, ...file.split('/')))) { throw new Error(`Missing debugger support file: ${file}`); }
+  }
+  const runtime = JSON.parse(await readFile(path.join(destination, 'share/runtime/manifest.json'), 'utf8'));
+  if (runtime.format !== 1 || runtime.objects.length !== 52) {
+    throw new Error('Incomplete prebuilt runtime inventory: expected numeric/math and seven C combinations at O0-O3.');
   }
   run(path.join(destination, 'bin', `tsuzuri${suffix}`), ['--version']);
   console.log(`Verified ${host}: ${files.length} files, ${manifest.id}`);
@@ -319,6 +324,7 @@ export async function bundle(destination) {
     await copyFile(path.join(repository, 'src', 'runtime', 'tsuzuri.natvis'), path.join(stage, 'share', 'natvis', 'tsuzuri.natvis'));
     await copyFile(path.join(repository, 'src', 'runtime', 'musl', 'COPYRIGHT'), path.join(stage, 'licenses', 'musl-COPYRIGHT.txt'));
     await crateLicenses(rustHost, path.join(stage, 'licenses'));
+    await bundleRuntime(stage);
     const toolVersions = Object.fromEntries(llvmTools.map(name => [name, versionLine(path.join(stage, 'bin', name + suffix))]));
     const files = await entries(stage);
     const manifest = {

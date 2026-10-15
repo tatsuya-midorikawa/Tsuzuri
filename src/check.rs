@@ -32,6 +32,8 @@ mod recursive;
 mod regions;
 #[path = "semantic.rs"]
 pub mod semantic;
+#[path = "type_arena.rs"]
+mod type_arena;
 #[path = "warnings.rs"]
 mod warnings;
 use polymorph::{Classes, Constraint, Inference, Scheme};
@@ -914,6 +916,29 @@ impl Type {
         types.reaches(self, |ty| ty.is_shared_cell(types))
     }
 
+    /// Whether reachable memory is proven immutable under a shared borrow.
+    /// Unknown types and callable/host environments cannot supply this proof.
+    pub(crate) fn is_frozen(&self, types: &TypeContext<'_>) -> bool {
+        !types.reaches(self, |ty| {
+            ty.is_shared_cell(types)
+                || matches!(ty, Self::Record(id, _) if types.records[*id].opaque())
+                || matches!(
+                    ty,
+                    Self::Error
+                        | Self::Variable(_)
+                        | Self::Infer(_)
+                        | Self::Partial(_)
+                        | Self::Application(..)
+                        | Self::Shared(..)
+                        | Self::Handle(_)
+                        | Self::Function(..)
+                        | Self::Task(_)
+                        | Self::Dyn(_)
+                        | Self::Reference(_, true)
+                )
+        })
+    }
+
     /// Whether a value of this type owns an `Atomic` or `Mutex` outright, not behind an `Arc`.
     pub(crate) fn holds_cell(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all_closed(
@@ -977,7 +1002,12 @@ impl TypeContext<'_> {
         substitute_type_parameters(ty, &type_parameter_substitutions(&record.parameters, args))
     }
 
-    fn record_fields_all(&self, id: usize, args: &[Type], test: impl Fn(&Type) -> bool) -> bool {
+    pub(crate) fn record_fields_all(
+        &self,
+        id: usize,
+        args: &[Type],
+        test: impl Fn(&Type) -> bool,
+    ) -> bool {
         let record = &self.records[id];
         if args.is_empty() {
             record.fields.iter().all(|(_, ty)| test(ty))
@@ -1016,7 +1046,12 @@ impl TypeContext<'_> {
         ))
     }
 
-    fn union_payloads_all(&self, id: usize, args: &[Type], test: impl Fn(&Type) -> bool) -> bool {
+    pub(crate) fn union_payloads_all(
+        &self,
+        id: usize,
+        args: &[Type],
+        test: impl Fn(&Type) -> bool,
+    ) -> bool {
         let union = &self.unions[id];
         if args.is_empty() {
             union
@@ -3600,8 +3635,8 @@ pub struct TypedMatchArm {
 
 impl TypedMatchArm {
     /// Whether the body sees `binding` as a view rather than an owned value.
-    /// Copy values are still copied, which keeps them independent of later
-    /// writes to the matched storage.
+    /// Copy values are independent owned values. Emission copies them unless
+    /// the scrutinee is owned and dead afterwards and the projections do not overlap.
     pub fn views(&self, binding: &Local, types: &TypeContext<'_>) -> bool {
         self.borrowed.contains(&binding.id)
             && !binding.ty.is_copy(types)
@@ -4013,7 +4048,164 @@ impl TypedExpr {
         }
     }
 
-    pub(crate) fn children_mut(&mut self) -> Vec<&mut Self> {
+    /// Visits children in `children` order without allocating a temporary vector.
+    pub fn try_for_each_child<'a>(
+        &'a self,
+        f: &mut dyn FnMut(&'a Self) -> Result<(), Diagnostic>,
+    ) -> Result<(), Diagnostic> {
+        use TypedExprKind::*;
+        match &self.kind {
+            Unary(_, value)
+            | Borrow(value, _)
+            | BorrowOperand(value)
+            | Dereference(value)
+            | Cast(value)
+            | Field(value, _)
+            | Length(value)
+            | StringLength(value)
+            | TaskRun(value)
+            | TaskParallel(value)
+            | TaskParallelResults(value)
+            | NewLiteral(value)
+            | UnionTag(value)
+            | Checked(value)
+            | UnionPayload { value, .. }
+            | Construct {
+                payload: Some(value),
+                ..
+            }
+            | ListTail(value, _) => f(value),
+            Try(handled) => {
+                f(&handled.body)?;
+                f(&handled.handler)?;
+                if let Some(finally) = &handled.finally {
+                    f(finally)?;
+                }
+                Ok(())
+            }
+            Binary(_, a, b)
+            | Assign(a, b)
+            | Index(a, b)
+            | NewArray(a, b)
+            | NewList(a, b)
+            | While {
+                condition: a,
+                body: b,
+            }
+            | ForEach {
+                source: a, body: b, ..
+            } => {
+                f(a)?;
+                f(b)
+            }
+            ForRange {
+                start,
+                step,
+                finish,
+                body,
+                ..
+            } => {
+                f(start)?;
+                f(step)?;
+                f(finish)?;
+                f(body)
+            }
+            Call(callee, arguments) => {
+                f(callee)?;
+                for argument in arguments {
+                    f(argument)?;
+                }
+                Ok(())
+            }
+            Lambda { body, .. } => f(body),
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                f(condition)?;
+                f(then_branch)?;
+                f(else_branch)
+            }
+            Match { value, arms, .. } => {
+                f(value)?;
+                for arm in arms {
+                    for alternative in &arm.alternatives {
+                        for step in &alternative.steps {
+                            f(step.expression())?;
+                        }
+                        for (_, value) in &alternative.bindings {
+                            f(value)?;
+                        }
+                    }
+                    if let Some(guard) = &arm.guard {
+                        f(guard)?;
+                    }
+                    f(&arm.body)?;
+                }
+                Ok(())
+            }
+            Block { bindings, result } => {
+                for (_, value) in bindings {
+                    f(value)?;
+                }
+                f(result)
+            }
+            Record(fields) => {
+                for (_, value) in fields {
+                    f(value)?;
+                }
+                Ok(())
+            }
+            Slice { value, start, end } => {
+                f(value)?;
+                if let Some(start) = start {
+                    f(start)?;
+                }
+                if let Some(end) = end {
+                    f(end)?;
+                }
+                Ok(())
+            }
+            RecordUpdate { base, fields } => {
+                f(base)?;
+                for (_, value) in fields {
+                    f(value)?;
+                }
+                Ok(())
+            }
+            Array(values)
+            | HostCall(_, values)
+            | List(values)
+            | Tuple(values)
+            | Closure(_, values)
+            | Parallel(_, values)
+            | StructuralCompare(_, values)
+            | StructuralHash(values)
+            | StructuralDisplay(values) => {
+                for value in values {
+                    f(value)?;
+                }
+                Ok(())
+            }
+            Interpolated(interpolation) => {
+                for hole in &interpolation.holes {
+                    f(&hole.operand)?;
+                    if let Some(method) = &hole.method {
+                        f(method)?;
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Visits children in `children` order without allocating a temporary vector.
+    pub(crate) fn try_for_each_child_mut<'a>(
+        &'a mut self,
+        f: &mut dyn FnMut(&'a mut Self) -> Result<(), Diagnostic>,
+    ) -> Result<(), Diagnostic> {
         use TypedExprKind::*;
         match &mut self.kind {
             Unary(_, value)
@@ -4035,7 +4227,7 @@ impl TypedExpr {
                 payload: Some(value),
                 ..
             }
-            | ListTail(value, _) => vec![value],
+            | ListTail(value, _) => f(value),
             Try(handled) => {
                 let TypedTry {
                     body,
@@ -4045,7 +4237,7 @@ impl TypedExpr {
                 std::iter::once(body)
                     .chain(std::iter::once(handler))
                     .chain(finally.iter_mut())
-                    .collect()
+                    .try_for_each(f)
             }
             Binary(_, a, b)
             | Assign(a, b)
@@ -4058,51 +4250,50 @@ impl TypedExpr {
             }
             | ForEach {
                 source: a, body: b, ..
-            } => vec![a, b],
+            } => [a.as_mut(), b.as_mut()].into_iter().try_for_each(f),
             ForRange {
                 start,
                 step,
                 finish,
                 body,
                 ..
-            } => vec![start, step, finish, body],
-            Call(callee, arguments) => std::iter::once(callee.as_mut()).chain(arguments).collect(),
-            Lambda { body, .. } => vec![body],
+            } => [
+                start.as_mut(),
+                step.as_mut(),
+                finish.as_mut(),
+                body.as_mut(),
+            ]
+            .into_iter()
+            .try_for_each(f),
+            Call(callee, arguments) => std::iter::once(callee.as_mut())
+                .chain(arguments.iter_mut())
+                .try_for_each(f),
+            Lambda { body, .. } => f(body),
             If {
                 condition,
                 then_branch,
                 else_branch,
-            } => vec![condition, then_branch, else_branch],
-            Match { value, arms, .. } => {
-                let mut children = vec![value.as_mut()];
-                for arm in arms {
-                    for alternative in &mut arm.alternatives {
-                        children.extend(
-                            alternative
-                                .steps
-                                .iter_mut()
-                                .map(PatternStep::expression_mut),
-                        );
-                        children.extend(alternative.bindings.iter_mut().map(|(_, value)| value));
-                    }
-                    children.extend(arm.guard.iter_mut());
-                    children.push(&mut arm.body);
-                }
-                children
-            }
+            } => [
+                condition.as_mut(),
+                then_branch.as_mut(),
+                else_branch.as_mut(),
+            ]
+            .into_iter()
+            .try_for_each(f),
+            Match { value, arms, .. } => visit_match_children_mut(value, arms, f),
             Block { bindings, result } => bindings
                 .iter_mut()
                 .map(|(_, value)| value)
                 .chain(std::iter::once(result.as_mut()))
-                .collect(),
-            Record(fields) => fields.iter_mut().map(|(_, value)| value).collect(),
+                .try_for_each(f),
+            Record(fields) => fields.iter_mut().map(|(_, value)| value).try_for_each(f),
             Slice { value, start, end } => std::iter::once(value.as_mut())
                 .chain(start.iter_mut().map(Box::as_mut))
                 .chain(end.iter_mut().map(Box::as_mut))
-                .collect(),
+                .try_for_each(f),
             RecordUpdate { base, fields } => std::iter::once(base.as_mut())
                 .chain(fields.iter_mut().map(|(_, value)| value))
-                .collect(),
+                .try_for_each(f),
             Array(values)
             | HostCall(_, values)
             | List(values)
@@ -4111,16 +4302,38 @@ impl TypedExpr {
             | Parallel(_, values)
             | StructuralCompare(_, values)
             | StructuralHash(values)
-            | StructuralDisplay(values) => values.iter_mut().collect(),
+            | StructuralDisplay(values) => values.iter_mut().try_for_each(f),
             Interpolated(interpolation) => interpolation
                 .holes
                 .iter_mut()
                 .flat_map(|hole| std::iter::once(&mut hole.operand).chain(hole.method.iter_mut()))
-                .collect(),
-            Break | Continue => Vec::new(),
-            _ => Vec::new(),
+                .try_for_each(f),
+            _ => Ok(()),
         }
     }
+}
+
+fn visit_match_children_mut<'a>(
+    value: &'a mut TypedExpr,
+    arms: &'a mut [TypedMatchArm],
+    f: &mut dyn FnMut(&'a mut TypedExpr) -> Result<(), Diagnostic>,
+) -> Result<(), Diagnostic> {
+    f(value)?;
+    for arm in arms {
+        for alternative in &mut arm.alternatives {
+            for step in &mut alternative.steps {
+                f(step.expression_mut())?;
+            }
+            for (_, value) in &mut alternative.bindings {
+                f(value)?;
+            }
+        }
+        if let Some(guard) = &mut arm.guard {
+            f(guard)?;
+        }
+        f(&mut arm.body)?;
+    }
+    Ok(())
 }
 
 /// Checks one `Main` module without a standard library.
@@ -4175,6 +4388,9 @@ impl NameInfo {
     }
 }
 
+#[path = "intern.rs"]
+mod intern;
+
 #[derive(Default)]
 struct Names {
     warning_options: warnings::WarningOptions,
@@ -4211,6 +4427,8 @@ struct Names {
     /// Qualified user class names by unqualified name.
     class_aliases: BTreeMap<String, Vec<String>>,
     functions: BTreeMap<String, NameInfo>,
+    symbols: intern::Interner,
+    function_ids: std::collections::HashMap<(intern::Symbol, intern::Symbol), usize>,
     constants: BTreeSet<usize>,
     /// The functions declared `const def` (D11), by function id.
     const_functions: BTreeSet<usize>,
@@ -4435,6 +4653,12 @@ fn entry_signature(signature: &Signature) -> bool {
 }
 
 impl Names {
+    fn local_function(&self, module: &str, name: &str) -> Option<usize> {
+        let module = self.symbols.lookup(module)?;
+        let name = self.symbols.lookup(name)?;
+        self.function_ids.get(&(module, name)).copied()
+    }
+
     fn origin(&self, module: &str) -> ModuleOrigin {
         self.modules
             .get(module)
@@ -6523,6 +6747,9 @@ fn check_modules_collect(
             continue;
         }
         let qualified = format!("{module}.{}", function.name.text);
+        let module_symbol = names.symbols.intern(module);
+        let name_symbol = names.symbols.intern(&function.name.text);
+        names.function_ids.insert((module_symbol, name_symbol), id);
         let info = NameInfo {
             id,
             name: qualified.clone(),
@@ -7012,8 +7239,7 @@ fn check_modules_collect(
                 && module.entry
                 && matches!(module.program.source_kind, None | Some(SourceKind::Code))
         })
-        .and_then(|module| names.functions.get(&format!("{}.main", module.name)))
-        .map(|info| info.id)
+        .and_then(|module| names.local_function(module.name, "main"))
         .filter(|id| !names.constants.contains(id));
     for &ModuleInput {
         name: module,
@@ -7291,7 +7517,10 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
                     expression.span,
                 ));
             }
-            pending.extend(expression.children());
+            expression.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
         }
     }
     Ok(())
@@ -7358,7 +7587,10 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             if let Some(id) = callback_extern(expression) {
                 return Err(direct_only(id, expression.span));
             }
-            pending.extend(expression.children());
+            expression.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
         }
     }
     Ok(())
@@ -7524,7 +7756,7 @@ fn infer_active_result(
     classes: &Classes,
     active: &crate::syntax::ActivePattern,
 ) -> Result<Option<Type>, Diagnostic> {
-    let id = names.functions[&format!("{module}.{}", function.name.text)].id;
+    let id = names.local_function(module, &function.name.text).unwrap();
     let scheme = &signatures[id];
     if scheme.variables.iter().any(|name| name == "T") {
         return Err(Diagnostic::new(
@@ -11329,11 +11561,7 @@ impl<'a> Checker<'a> {
                 return Ok(self.case_value(active.union_id, case_id));
             }
         }
-        if let Some(id) = self.names.function(
-            self.module,
-            &format!("{}.{}", self.module, name.text),
-            name.span,
-        )? {
+        if let Some(id) = self.names.local_function(self.module, &name.text) {
             return Ok(self.function(id));
         }
         if let Some(builtin) = Builtin::ALL
@@ -11754,5 +11982,98 @@ mod tests {
                 .code,
             "E1010"
         );
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+
+    fn child_signature(expression: &TypedExpr) -> (Span, String) {
+        (expression.span, format!("{:?}", expression.kind))
+    }
+
+    fn verify_children(expression: &mut TypedExpr) -> Result<(), Diagnostic> {
+        let expected: Vec<_> = expression
+            .children()
+            .into_iter()
+            .map(child_signature)
+            .collect();
+        let mut shared = Vec::new();
+        expression.try_for_each_child(&mut |child| {
+            shared.push(child_signature(child));
+            Ok(())
+        })?;
+        assert_eq!(shared, expected);
+        let mut mutable = Vec::new();
+        expression.try_for_each_child_mut(&mut |child| {
+            mutable.push(child_signature(child));
+            Ok(())
+        })?;
+        assert_eq!(mutable, expected);
+        if !expected.is_empty() {
+            let mut visited = 0;
+            let failure = expression.try_for_each_child_mut(&mut |child| {
+                visited += 1;
+                Err(Diagnostic::new("E1017", "visitor stopped", child.span))
+            });
+            assert_eq!(visited, 1);
+            assert_eq!(failure.unwrap_err().span, expected[0].0);
+        }
+        expression.try_for_each_child_mut(&mut verify_children)
+    }
+
+    #[test]
+    fn allocation_free_visitors_preserve_child_order_and_short_circuit() {
+        for fixture in [
+            "control",
+            "computations",
+            "exceptions",
+            "string_interpolation",
+            "local_recursion",
+            "const_functions",
+            "dyn_dispatch",
+            "fixed_arrays",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(fixture);
+            let mut module = crate::driver::Project::load(&path)
+                .unwrap()
+                .analyze_all()
+                .unwrap();
+            for function in &mut module.functions {
+                verify_children(&mut function.body).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn frozen_types_reject_nested_mutability_and_hidden_opaque_state() {
+        let module = crate::analyze(
+            "record Plain { values: [i64] }\n\
+             record Nested { cells: [Atomic<i64>] }\n\
+             def plain :: ref Plain -> unit = \\_value -> ()\n\
+             def atomic :: ref Atomic<i64> -> unit = \\_value -> ()\n\
+             def nested :: ref Nested -> unit = \\_value -> ()\n\
+             def mutex :: ref Mutex<i64> -> unit = \\_value -> ()\n\
+             def sender :: ref Channel.Sender<i64> -> unit = \\_value -> ()\n\
+             def receiver :: ref Channel.Receiver<i64> -> unit = \\_value -> ()",
+        )
+        .unwrap();
+        for function in &module.functions {
+            let frozen = function.parameters[0].ty.is_frozen(&module.types());
+            assert_eq!(frozen, function.name == "plain", "{}", function.name);
+        }
+        for ty in [
+            Type::Error,
+            Type::Variable("a".into()),
+            Type::Infer(0),
+            Type::Reference(Box::new(Type::Integer(64, true)), true),
+            Type::Shared(Box::new(Type::Integer(64, true)), SharedKind::Arc),
+            Type::Function(vec![], Box::new(Type::Unit)),
+        ] {
+            assert!(!ty.is_frozen(&module.types()), "{ty:?}");
+        }
     }
 }

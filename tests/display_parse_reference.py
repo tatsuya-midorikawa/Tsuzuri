@@ -246,6 +246,94 @@ for kind in list(range(7)) + list(range(16, 21)) + list(range(24, 29)):
         parses.append([kind, text, None if expected is None else format(expected, "x")])
 
 quad = "1.0000000000000000000000000000000002"
+
+# A separate stream leaves every pre-existing reference input unchanged.
+extra_rng = random.Random(20260930)
+for kind in (1, 2):
+    width, fraction, bias = BINARY[kind]
+    def add_format(raw):
+        text = binary_text(raw, kind)
+        formats.append([kind, format(raw, "x"), text])
+        parses.append([kind, text, format(raw, "x")])
+
+    for exponent in range(2 * bias + 1):
+        for mantissa in (0, 1, 2, (1 << fraction) - 2, (1 << fraction) - 1):
+            raw = (exponent << fraction) | mantissa
+            add_format(raw)
+    for raw in range(1, 65):
+        add_format(raw)
+    for text in (["16777215", "16777216", "16777218"] if kind == 1 else
+                 ["9007199254740991", "9007199254740992", "9007199254740994",
+                  "1e22", "1e23", "5e-324", "2.2250738585072014e-308"]):
+        raw = parse(text, kind)
+        add_format(raw)
+    added = ["9999999999999999999", "10000000000000000000",
+             "9_999999999999999999", "10_000000000000000000",
+             "1e-343", "1e-342", "1e308", "1e309",
+             "2.4703282292062327e-324", "2.4703282292062328e-324",
+             "7.006492321624085e-46", "3.4028235677973366e38",
+             "-0.0", "0e999999", ".5", "1.", "1e", "1_e5"]
+    # Decimal coefficients adjacent to 19-digit approximations of exact
+    # binary midpoints exercise both ordinary and subnormal rounding.
+    for _ in range(667):
+        raw = extra_rng.randrange(1, ((2 * bias + 1) << fraction) - 1)
+        midpoint = (binary_value(raw, kind) + binary_value(raw + 1, kind)) / 2
+        exponent = (midpoint.numerator.bit_length() - midpoint.denominator.bit_length()) * 30103 // 100000
+        while midpoint < ten(exponent):
+            exponent -= 1
+        while midpoint >= ten(exponent + 1):
+            exponent += 1
+        quantum = exponent - 18
+        coefficient = round(midpoint / ten(quantum))
+        added.extend(f"{coefficient + delta}e{quantum}" for delta in (-1, 0, 1))
+    for j in (range(-12, 40) if kind == 1 else range(-2, 12)):
+        for _ in range(20):
+            midpoint = (2 * extra_rng.randrange(1 << fraction, 1 << (fraction + 1)) + 1) * two(j)
+            with decimal.localcontext() as context:
+                context.prec = 100
+                added.append(str(decimal.Decimal(midpoint.numerator) / decimal.Decimal(midpoint.denominator)))
+    # Digits, leading zeros, signs and invalid bytes near the fast scanner.
+    for _ in range(1000):
+        added.append(f"{extra_rng.randrange(1, 10**19)}e{extra_rng.randrange(-350, 311)}")
+    for raw in range(1, 65):
+        midpoint = (binary_value(raw, kind) + binary_value(raw + 1, kind)) / 2
+        with decimal.localcontext() as context:
+            context.prec = 19
+            approx = decimal.Decimal(midpoint.numerator) / decimal.Decimal(midpoint.denominator)
+            quantum = approx.as_tuple().exponent
+            coefficient = int("".join(map(str, approx.as_tuple().digits)))
+            added.extend(f"{coefficient + delta}e{quantum}" for delta in (-1, 0, 1))
+    sample = "0123.456e+007"
+    for position in range(len(sample)):
+        for byte in range(256):
+            added.append(sample[:position] + chr(byte) + sample[position + 1:])
+    for length in (24, 25, 26):
+        for sign in ("", "+", "-"):
+            text = sign + "0" * (length - 3) + "0.1"
+            added.extend((text, text[:-1] + "x"))
+    for sign in ("", "+", "-"):
+        added.extend(sign + text for text in (
+            "1.234567890123456789e+010", "1.234567890123456789e+100",
+            "1.2345678901234567890e+010", "1.2345678901234567890e+100"))
+    for text in added:
+        expected = parse(text, kind)
+        parses.append([kind, text, None if expected is None else format(expected, "x")])
+
+for kind in list(range(16, 21)) + list(range(24, 29)):
+    width, signed = 8 << ((kind - 16) & 7), kind < 24
+    low = -(1 << (width - 1)) if signed else 0
+    high = (1 << (width - int(signed))) - 1
+    values = [extra_rng.randint(low, high) for _ in range(1000)]
+    for boundary in (10**8, 10**16, 1 << 64):
+        values.extend(boundary + offset for offset in (-2, -1, 0, 1, 2))
+        if signed:
+            values.extend(-boundary + offset for offset in (-2, -1, 0, 1, 2))
+    for value in values:
+        if low <= value <= high:
+            raw = format(value % (1 << width), "x")
+            formats.append([kind, raw, str(value)])
+            parses.append([kind, str(value), raw])
+
 console = [
     ["0.1", "0.1"], ["0.1f32", "0.1"], ["-0.0", "-0"],
     ["1.0 / 0.0", "inf"], ["-1.0 / 0.0", "-inf"], ["0.0 / 0.0", "nan"],

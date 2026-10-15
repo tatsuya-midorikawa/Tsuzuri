@@ -27,6 +27,8 @@ fn options(entry: llvm::Entry) -> llvm::EmitOptions {
         entry,
         wasm: false,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     }
@@ -147,6 +149,17 @@ fn cpu_functions_get_a_version_per_detected_level_and_a_stub() {
                 .contains("tz-cpu")
         );
     }
+}
+
+#[test]
+fn scalar_return_facts_do_not_become_ret_instruction_attributes() {
+    let source = "@cpu [\"avx2\"]\nexport def next :: i64 -> i64 = \\value -> value + 1";
+    let ir = build(source, None, false, X86);
+    let stub = definition(&ir, "@tz.fn.Main.next");
+    assert!(stub.starts_with("define internal noundef i64 "));
+    assert!(stub.contains("tail call noundef i64 "));
+    assert!(stub.contains("ret i64 %tz.result"));
+    assert!(!stub.contains("ret noundef "));
 }
 
 #[test]

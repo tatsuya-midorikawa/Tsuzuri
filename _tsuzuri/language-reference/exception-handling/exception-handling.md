@@ -124,6 +124,8 @@ show (payable 1000 10) + " / " + show (payable 1000 0)
 | どの `try` も捕捉しない `@checked` | `unhandled OverflowException: arithmetic operation resulted in an overflow` |
 
 コンパイラは、このほかに確保サイズの不正、確保失敗、文字列長の上限、数値ランタイム、Unicode、デバッグ出力の失敗、スタック枯渇も区別します。
+メモリ不足による確保失敗は環境に依存し、コンパイラが確保を省いた箇所では起きません。
+スタック枯渇に至る再帰の深さも固定ではなく、コンパイラの版と最適化によって変わります。
 
 `tsuzuri run` はトラップ位置を既定で有効にします。子プロセスは標準エラーへ、次の形で理由と位置を出します。
 

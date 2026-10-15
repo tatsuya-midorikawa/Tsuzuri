@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { storageBridges } from "./strings_bridges.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -114,7 +115,8 @@ try {
   const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
   const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
   assert.equal(new Set(declaredNames).size, declaredNames.length, "runtime declarations are deduplicated");
-  writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
+  writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free")
+    .replaceAll("@realloc", "@tracked_realloc"));
 
   const runtimeBridges = [
     ["decode", "string", "tz.string.from_utf8"],
@@ -148,10 +150,11 @@ define void @test_concat(i64 %left, i64 %right) {
   %value = call %tz.string @tz.string.concat(%tz.string %a, %tz.string %b)
   ret void
 }
-`;
+` + storageBridges();
   const nativeRuntimeIr = join(scratch, "runtime-native.ll");
   writeFileSync(nativeRuntimeIr, (sourceIr + runtimeBridges)
-    .replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
+    .replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free")
+    .replaceAll("@realloc", "@tracked_realloc"));
   const wasmRuntimeIr = join(scratch, "runtime-wasm.ll");
   cli(["build", fixture, "--target", "wasm32", "--emit", "llvm", "-o", wasmRuntimeIr]);
   writeFileSync(wasmRuntimeIr, readFileSync(wasmRuntimeIr, "utf8") + runtimeBridges);
@@ -256,6 +259,24 @@ void tracked_free(void *value) {
     assert(before >= p[0]);
     free(p);
 }
+void *tracked_realloc(void *value, uint64_t size) {
+    if (!value) return tracked_alloc(size);
+    if (!size) { tracked_free(value); return NULL; }
+    uint64_t *previous = (uint64_t *)value - 2;
+    assert(previous[1] == UINT64_C(0x51a110ca7e));
+    uint64_t old_size = previous[0];
+    uint64_t *next = realloc(previous, (size_t)size + 16);
+    assert(next);
+    next[0] = size;
+    next[1] = UINT64_C(0x51a110ca7e);
+    if (size >= old_size) atomic_fetch_add(&live, size - old_size);
+    else {
+        uint64_t before = atomic_fetch_sub(&live, old_size - size);
+        assert(before >= old_size - size);
+    }
+    atomic_fetch_add(&allocations, 1);
+    return next + 2;
+}
 int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
@@ -352,6 +373,10 @@ int main(void) { assert(tz_value() == 42); return 0; }
       join(root, "src/runtime/task.c"), "-pthread", "-lm", "-o", nativeRuntime,
     ]);
     execute(nativeRuntime, []);
+    for (let index = 0; index < 6; ++index) {
+      const result = execute(nativeRuntime, [`s${index}`], false);
+      assert.ok(["SIGILL", "SIGTRAP"].includes(result.signal), `append/concat_into overflow ${index}`);
+    }
     for (let index = 0; index < 28; ++index) {
       const result = execute(nativeRuntime, [String(index)], false);
       assert.ok(["SIGILL", "SIGTRAP"].includes(result.signal),
@@ -363,13 +388,19 @@ int main(void) { assert(tz_value() == 42); return 0; }
       "-ffreestanding", "-fno-builtin", "-Wno-override-module", "-mbulk-memory",
       "-nostdlib", runtimeHarness, wasmRuntimeIr, "-Wl,--no-entry", "-Wl,--export-memory",
       "-Wl,-z,stack-size=1048576", "-Wl,--max-memory=16777216",
-      ...["all_scalars", "runtime_trap_case", "runtime_trap_count"].map((name) => `-Wl,--export=${name}`),
+      ...["all_scalars", "runtime_trap_case", "runtime_trap_count", "storage_cases", "storage_trap_case"].map((name) => `-Wl,--export=${name}`),
       "-o", wasmRuntime,
     ]);
     const runtimeModule = new WebAssembly.Module(readFileSync(wasmRuntime));
     assert.deepEqual(WebAssembly.Module.imports(runtimeModule), []);
     const runtime = new WebAssembly.Instance(runtimeModule).exports;
     const initialMemory = runtime.memory.buffer.byteLength;
+    assert.equal(runtime.storage_cases(), 0, "concat_into capacity boundaries and append ownership/empty cases");
+    for (let index = 0; index < 6; ++index) {
+      const isolated = new WebAssembly.Instance(runtimeModule).exports;
+      assert.throws(() => isolated.storage_trap_case(index),
+        (error) => error instanceof WebAssembly.RuntimeError && /unreachable/.test(error.message));
+    }
     assert.equal(runtime.all_scalars(), 4344, "all 1,112,064 Unicode scalars round-trip in 256-scalar batches");
     assert.ok(runtime.memory.buffer.byteLength <= initialMemory + 65536, "scalar batches release their buffers");
     assert.equal(runtime.runtime_trap_count(), 28);

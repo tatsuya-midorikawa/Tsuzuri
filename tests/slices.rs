@@ -31,10 +31,16 @@ fn shared_views_use_descriptors_and_copy_only_on_value_dereference() {
         analyze("def length :: ref [i64] -> i64\nfn length values = values.length").unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
     assert!(ir.contains("@tz.fn.Main.length(%tz.array"));
-    assert!(!ir.contains("call ptr @tz.alloc"));
+    assert!(
+        !ir.lines()
+            .any(|line| line.contains("call ") && line.contains("ptr @tz.alloc("))
+    );
     let module = analyze("def copy :: ref [i64] -> [i64]\nfn copy values = deref values").unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
-    assert!(ir.contains("call ptr @tz.alloc"));
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call ") && line.contains("ptr @tz.alloc("))
+    );
     let module =
         analyze("def replace :: ref mut [i64] -> unit\nfn replace values = deref values = [42]")
             .unwrap();

@@ -8,14 +8,41 @@
 | 規模 | M |
 | 依存 | PX01, (A15) |
 | 関連 | A15, A17（Phase 2 を置き換える）, C01, PM06 |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1 の D1〜D9 はすべて既定案。Phase 2 は人間が依頼した場合だけ着手する） |
+| 承認 | 2026-10-14 の全フェーズ実装依頼で Phase 1 と後継 A17 Phase 1・2 を承認済み |
 | 手本にする既存実装 | 単一使用の移動: `src/llvm.rs` の `FunctionEmitter::clones_on_take`・`FunctionEmitter::read_place` と `src/call_specialization.rs` の `single_use_locals`。バッファの伸長: `src/llvm_bulk.rs` の Vec の伸長（`@tz.realloc` を呼んで `make_vector` で組み直す箇所）。文字列ランタイム: `src/runtime/string.ll` の `@tz.string.concat`・`@tz.string.allocate`。確保回数の E2E: `tests/primitives.mjs` の `storage` 表と `tests/fixtures/storage/Storage.tz` の `transferred_array_update`・`copied_array_update`。IR の確保の検査: `tests/consuming_update.rs` の `update_builtins_do_not_clone_their_input_buffers`、`tests/call_specialization.rs` の `only_unobserved_single_use_copies_are_transferred` |
 | 主な影響ファイル | `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_frame.rs`（`take_operand` の frame を読むだけ）, `src/runtime/string.ll`, `src/runtime/utf8string.ll`, `src/runtime/heap-native.ll`・`src/runtime/heap-wasm.ll`（`tz.realloc` の契約を読むだけ。変更しない）, `src/ownership.rs`・`src/copies.rs`（A15 が done の場合だけ。`CopyRead::local` と除外規則）, `tests/call_specialization.rs`, `tests/consuming_update.rs`, `tests/copy_cost.rs`（A15 が done の場合だけ）, `tests/primitives.mjs`, `tests/fixtures/storage/Storage.tz`, `docs/architecture.md`, `docs/language.md`, `docs/benchmarks.md` |
 | 計測対象 | 改善を見る種目: cpp suite の `utf16_scan`・`utf16_compare`・`utf16_validate`（`benchmarks/cpp/Kernels.tz` の `make_text` が `text = copy + text` で連結する）。退行を見る対照: control suite の `array_copy`（`let copied = values` の後も `values` を読むので複製が残る）・`record_pipeline`。PX01 の tracked 実行の `calls`・`bytes`。E2E の確保回数（`tests/primitives.mjs` の `storage` 表） |
 
 ## 目的
+
+### 2026-10-14 の実装前見直し
+
+今回の全フェーズの依頼には、旧 Phase 2 を置き換えた A17 の Phase 1・2 を含めます。
+R2 の単一使用の field 移動と、A17 の位置ごとの最終使用は別の証明として併用し、
+W1006 と生成は同じ解析結果を使います。A15・B07 は実装済みのため、複製一覧と
+所有する捕捉の借用を必ず整合させます。PM06 と統合し、静的・スタックの文字列へ
+`realloc` を渡しません。Vec の容量・文字列表現・要素の穴を作る移動は変更しません。
+
+### 実装結果（2026-10-14）
+
+Phase 1 の R2 と文字列 append、後継 A17 の Phase 1・2 を実装しました。
+Field の連鎖は Copy の根の単一使用を証明した場合だけ移動します。
+全体 Local の最後の使用と、所有する match の非重複束縛は別の解析で判定し、
+生成・複製一覧・W1006 が同じ結果を使います。ヒープ所有文字列だけが左辺の
+`realloc` 経路へ入り、静的／スタック領域は既存の連結・frame 移送を使います。
+A17 は 29 件の last-use・16 件の copy-cost・3 件の解析テスト、120 件の
+native/WASM `-O0`・`-O3` feature、300 プログラム／600 実行の差分テストで検証しました。
+確保要求と bytes の対照は [測定記録](../docs/benchmarks.md) の「文字列と局所環境」を参照してください。
+
+以下の計画時の `string_append_chain` は、PM06 と統合すると定数畳み込み・長さだけの計算で
+連結自体を省けるため、append の検査には使いません。現行の `string_append_owned`・
+`utf8_append_owned` は別関数を介して所有する左辺の伸長を検査します。各 4 回の新規 block
+確保と 3 回の既存 block への `realloc` があり、tracked allocator の要求は before／after
+とも 7 回です。右辺の所有文字列の確保も含むため、計画時の「全体で新規確保 1 回」を
+現行 fixture の合格条件とはしません。左辺の再利用と、要求回数・物理的な確保の削減は
+区別します。D8 の数え方はそのままです。
 
 Copy の配列・リスト・関数値の不要な複製と、所有値の更新でのバッファの作り直しを減らす。
 所有権の情報から「元の値はもう読まれない」と証明できる位置では、複製の代わりに移動し、バッファをその場で再利用する。
@@ -529,7 +556,7 @@ awk '/^define internal %tz.string @tz.string.append/,/^}/' /tmp/tz-PM07/cases.ll
 ## 受け入れ条件
 
 - [ ] R2: `field_take`・`field_take_nested`・`field_update_reuse` の確保が 1 回で、`field_take_shared`・`field_take_loop`・根が Copy でない形は複製のまま。
-- [ ] S1: `string_append_chain` が 1 回、`utf8_append_chain` が 1 回、左辺がリテラルの連結は `concat` のまま。
+- [ ] S1: 現行の `string_append_owned`・`utf8_append_owned` が各 4 回の新規 block 確保で、所有する左辺は `append`、静的／frame の左辺は `concat` または PM06 の除去経路のまま。既存 block の `realloc` を含む要求は各 7 回で、要求回数の削減とは主張しない（実装結果を参照）。
 - [ ] 全 E2E が native/WASM × `-O0`/`-O3` で成功し、`live == 0`、WASM の import がない。
 - [ ] 「生成コードの確認」の期待がすべて成り立つ。
 - [ ] PM07-before・after・before2 の 3 run と `report` の表があり、改善の主張は `verdict` によるものだけ。

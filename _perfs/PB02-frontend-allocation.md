@@ -8,9 +8,9 @@
 | 規模 | L |
 | 依存 | PX03 |
 | 関連 | PB04, PB06, G17, G07 |
-| 状態 | todo |
+| 状態 | doing（全 Phase 実装・最終等価性検証済み、source freeze。D9 は型 graph arena と AST 移動へ設計変更。正式性能測定は統合担当） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要。要承認: D9（Phase 2 の型の intern と arena。型検査全体の API を変える） |
+| 承認 | 利用者が全 Phase と設計判断を承認済み。下記の現行コードとの照合を優先する |
 | 手本にする既存実装 | 所有権を移して複製を避ける: `polymorph::specialize` の `std::mem::take(&mut function.constraints)`。生成済みの本体の差し替え: `closures::lower` の `module.functions[id].body = body`。借用で子を辿る: `TypedExpr::children`（`&Self` 版）。計測: PX03 の `benchmarks/run-build.mjs`・`benchmarks/build/generate.mjs`、PX01 の `TSUZURI_TIME_PASSES` と `node benchmarks/metrics.mjs report --baseline` |
 | 主な影響ファイル | `src/polymorph.rs`（`specialize`・`Specializer`・`Specializer::instantiate`・`walk`）, `src/closures.rs`（`lower` と `children_mut` の呼び出し）, `src/constants.rs`（`children_mut` の呼び出し）, `src/check.rs`（`TypedExpr::children_mut` の削除、`TypedExpr::try_for_each_child_mut`（新規））, `src/ownership.rs`（`State`・`Checker`・`check_body`）, `tests/polymorphism.rs`（テスト 1 件追加）, `docs/benchmarks.md`, `docs/architecture.md`, `_perfs/README.md`（状態欄） |
 | 計測対象 | PX03 の合成 1,000 モジュール（`check` と `build --emit llvm -O0`）の wall time・peak RSS・段階別時間。`sample` による top-of-stack の malloc／free／memmove の割合と、関数別の inclusive samples |
@@ -20,14 +20,55 @@
 コンパイラのフロントエンド（構文解析から型付き IR の完成まで）の確保と複製を減らし、単一スレッドでの `check` を速く、最大 RSS を小さくする。
 並列化（PB04）・常駐サーバー（PB06）・増分（G17）の前に、1 スレッドあたりの仕事を減らす。PB04 が並列にする各段も、この変更で軽くなる。
 
-実装者は Phase 1（S1〜S5）だけを実装する。Phase 2 は人間が依頼した場合だけ着手する（D1）。
+今回の依頼は Phase 1（S1〜S5）と Phase 2（P2-1〜P2-5）の全体です。
+
+## 着手時の現行コードとの照合（2026-10-14）
+
+- PX01・PX03 は実装済みです。合成入力は現行生成器の 139,010 行を基準とし、
+  旧 124,003 行との速度比較はしません。作業ファイルは `target/perf/` に置きます。
+- 特殊化上限は GUIDE D-41 の 65,536 です。既存上限・制約伝播順・関数番号を保ちます。
+  template は現在、名前・origin・署名・型引数も参照されますが、移動後の本体を読む経路はありません。
+  `requires_rec` の境界は移動前の関数数を保存します。
+- 子の種類は Try・Interpolated・ArrayView・local rec などが増えています。
+  現在の `children` / `children_mut` の全順序を基準にします。backend の並行作業が
+  `children()` に依存するため API を残し、確保しない訪問 API を追加します。
+- S4 は `ownership_control.rs` の状態・loop / try flow も対象です。
+  引数・束縛の宣言を本体ごとの registry に借用し、`State<'a>` が `&'a Local` を保持します。
+  evaluator の一時 capture / view 式には宣言の lifetime を要求せず、`Checker<'a, 'run>` が
+  宣言と出力先の lifetime を分けます。loan / moved / merge の意味は変えません。
+- P2-1: 抽象検査は Copy 制約を推論する検査であり、具体化後の loan・capture・region 契約の
+  証明とは等価ではありません。全関数の再検査を省く旧案は健全性の根拠がなく採用しません。
+  代替は `ownership_free` による構造上の証明です。すべての子が primitive scalar で、
+  literal / Local / Unary / Cast / Binary / If だけの式は移動・loan・capture を作れません。
+  release の具体検査だけを省き、debug は従来の検査の診断・制約が空と assert します。
+  call / borrow / 束縛 / 閉包 / aggregate は省略しません。抽象検査は全関数で維持します。
+- P2-2: `Names` に解析単位の `Interner` と検索専用の `(Symbol, Symbol) -> function id`
+  辞書を実装しました。own-module の名前解決・entry・結果推論は qualified String を作りません。
+  文字列は `Rc<str>` を名前列と検索辞書で共有します。既存の順序付き辞書・可視性・
+  cross-module 解決は維持し、Symbol に Ord は付けません。
+- P2-3: 読み取り専用の訪問も確保しない API を追加します。既存 `children()` は互換用です。
+- P2-4: local id は外部 loan の `usize::MAX - id` と共存します。全 BTreeSet を密な bitset に
+  変えると巨大確保になります。密な lambda free-local id だけを昇順 bitset にしました。
+  ownership の使用集合は中間の counting map を作らず直接収集します。
+- P2-5: `Type` は既に named arguments / Partial / Dyn を Box にして四 word を保ちます。
+  arena / TypeId 全移行は checker・所有権・LLVM の全 API を変更し、並行 backend と衝突します。
+  immutable 型述語の graph に private TypeId / hash-consed Vec arena を実装し、
+  AST の全移行は本体移動・allocation-free 訪問に置き換える設計変更として D9 を確定しました。
+  public Type / AST の全面移行を実装済みとは扱わず、測定と適用範囲を明記します。
+- baseline の `bounds_computation_syntax_and_expansion` は親の初回実行が既存 CI 設定を
+  省いたため既定 stack で溢れました。元 HEAD を独立に展開して
+  `RUST_MIN_STACK=4194304` で再実行し成功しました（GUIDE D-45 / D-46 の既存標準）。
+  current も同じ標準で成功し、source / expansion / specialization の上限は変えていません。
+- PR01 / PM06 / PM07 と numeric / UTF の並行変更は意図して LLVM IR を変えます。
+  PB02 の等価性は同じ baseline LLVM を使う比較、または型付き frontend 構造と診断の比較で
+  分離し、全 current compiler 対 baseline の IR 差を PB02 の差と混同しません。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
 - PX03 が `_perfs/README.md` の状態欄で done であること。`benchmarks/build/generate.mjs` と `benchmarks/run-build.mjs` が存在し、
-  PX01 の `TSUZURI_TIME_PASSES` が段の時間を出すこと。HEAD `f8dc655` ではどちらも未実装（`ls benchmarks/build` が失敗する）。
+  PX01 の `TSUZURI_TIME_PASSES` が段の時間を出すこと。実装着手時にはいずれも実装済みです。
   確認: `grep -n "PX01\|PX03\|PB02" _perfs/README.md`、`ls benchmarks/build/generate.mjs benchmarks/run-build.mjs`。
 - GUIDE §2.3 の基準コマンドが成功していること。
 - 実装手順 1 のベースライン（全 fixture の IR と診断の保存、stack-depth テスト、before の profile と PX03 の計測）を取り終えていること。
@@ -104,14 +145,14 @@ IR 文字列の検索と書式化は `check` では動かない（D10）。
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
-mkdir -p /tmp/tz-pb02
-CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir /tmp/tzperf/target
-node benchmarks/build/generate.mjs --modules 1000 --out /tmp/tz-pb02/s1000
-/usr/bin/time -l /tmp/tzperf/target/release/tsuzuri check /tmp/tz-pb02/s1000 2> /tmp/tz-pb02/before-check.time
-/tmp/tzperf/target/release/tsuzuri check /tmp/tz-pb02/s1000 & pid=$!
-sample $pid 10 1 -mayDie -file /tmp/tz-pb02/before-check.sample.txt; wait $pid
-/tmp/tzperf/target/release/tsuzuri build /tmp/tz-pb02/s1000 --emit llvm -O0 -o /tmp/tz-pb02/s1000.ll --no-cache & pid=$!
-sample $pid 10 1 -mayDie -file /tmp/tz-pb02/before-emit.sample.txt; wait $pid
+mkdir -p target/perf/tz-pb02
+CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir target/perf/tzperf/target
+node benchmarks/build/generate.mjs --modules 1000 --out target/perf/tz-pb02/s1000
+/usr/bin/time -l target/perf/tzperf/target/release/tsuzuri check target/perf/tz-pb02/s1000 2> target/perf/tz-pb02/before-check.time
+target/perf/tzperf/target/release/tsuzuri check target/perf/tz-pb02/s1000 & pid=$!
+sample $pid 10 1 -mayDie -file target/perf/tz-pb02/before-check.sample.txt; wait $pid
+target/perf/tzperf/target/release/tsuzuri build target/perf/tz-pb02/s1000 --emit llvm -O0 -o target/perf/tz-pb02/s1000.ll --no-cache & pid=$!
+sample $pid 10 1 -mayDie -file target/perf/tz-pb02/before-emit.sample.txt; wait $pid
 ```
 
 - `before-check.time` の `maximum resident set size` が最大 RSS（bytes）、`real` が wall time。
@@ -121,9 +162,9 @@ sample $pid 10 1 -mayDie -file /tmp/tz-pb02/before-emit.sample.txt; wait $pid
 
 ```sh
 awk '/^Sort by top of stack/{f=1;next} f&&NF==0{exit} f{n=$NF; t+=n; if ($0 ~ /libsystem_malloc|_platform_mem(move|cpy|set)/) m+=n}
-  END{printf "top %d, malloc/free/memmove %d (%.1f%%)\n", t, m, 100*m/t}' /tmp/tz-pb02/before-check.sample.txt
+  END{printf "top %d, malloc/free/memmove %d (%.1f%%)\n", t, m, 100*m/t}' target/perf/tz-pb02/before-check.sample.txt
 grep -E "polymorph::specialize|Specializer::instantiate|closures::lower|ownership::check_functions|children_mut|ownership::Checker" \
-  /tmp/tz-pb02/before-check.sample.txt | sort -t' ' -k1,1 | head -40
+  target/perf/tz-pb02/before-check.sample.txt | sort -t' ' -k1,1 | head -40
 ```
 
 - 関数名は `tsuzuri::polymorph::specialize::h<hash>` の形に demangle される。関数ごとの数は、`Call graph:` の各行で名前の直前の数
@@ -157,7 +198,7 @@ generic の template は具体化ごとに 1 回の複製が残る（型の置�
 - 子の訪問順: `try_for_each_child_mut`（新規）は、削除する `children_mut` が返していた順とまったく同じ順で子を訪ねる。
   `walk` の順は `specialize` の依存 `calls` の順、したがって継承する制約の順と `function.constraints` の順を決める。
 - 所有権検査の結果: move・借用・loan の判定と `State::merge` の意味を変えない。`State` の中身の型だけを変える（S4）。
-- 資源上限: `MAX_SPECIALIZATIONS`（1,024 + `base_count`）、`MAX_CONSTRAINTS`（128）、`syntax::MAX_NESTING`（128）、`constants::inline` の
+- 資源上限: `MAX_SPECIALIZATIONS`（65,536、GUIDE D-41）、`MAX_CONSTRAINTS`（128）、`syntax::MAX_NESTING`（128）、`constants::inline` の
   `remaining`・`depth` の課金（置き換えの前に `charge`）をそのまま保つ。stack-depth のテストは 2 MiB の stack のまま通す。
 - 決定性: 新しい `HashMap` を反復しない。順序を持つ集合は `BTreeMap`／`BTreeSet` のまま。
 - 実行時の意味（overflow・丸め・NaN・符号付きゼロ・評価順序・trap・所有権）は IR が同一なので変わらない。WASM の import も変わらない。
@@ -178,9 +219,9 @@ generic の template は具体化ごとに 1 回の複製が残る（型の置�
 | --- | --- | --- | --- |
 | S1 | `specialize` が `module.functions` を `templates` へ移し、`instantiate` が非 generic の template の本体を移す | `templates: module.functions.clone()`、`self.templates[id].clone()` | 本体の複製 2 回と drop 1 回がなくなる。最大 RSS が下がる |
 | S2 | `closures::lower` が本体を `std::mem::replace` で取り出す | `module.functions[id].body.clone()` | 本体の複製と drop が 1 回ずつなくなる |
-| S3 | `TypedExpr::children_mut` を `try_for_each_child_mut`（新規）に置き換え、3 か所の呼び出しを移して削除する | 節点ごとの `Vec` 確保 | `walk`・`lower_expression`・`constants::inline` の確保がなくなる |
+| S3 | `TypedExpr::children_mut` を `try_for_each_child_mut` に置き換え、現行のすべての利用を移して削除する | 節点ごとの `Vec` 確保 | frontend の mutable 子 Vec の確保がなくなる |
 | S4 | `ownership::State` の `locals` を `BTreeMap<usize, (&'a Local, Value)>` にする | 分岐ごとの `Local` の deep clone | `State` の複製が `Local` の `String`・`Type` を複製しない |
-| S5 | `Specializer::requests`・`Specializer::functions` を `Vec::with_capacity(base_count)` で作る | `Vec<CheckedFunction>` の伸長ごとの memmove | 非 generic のプログラムでは再確保がなくなる |
+| S5 | `Specializer::requests`・`Specializer::functions` を `Vec::with_capacity(base_count)` で作る | `Vec<CheckedFunction>` の伸長ごとの memmove | 既知の根の数までの vector 伸長による再確保を減らす |
 
 ### データ構造
 
@@ -233,14 +274,16 @@ struct State<'a> {
     // aliases・moved・generic_moves は変えない
 }
 
-struct Checker<'a> {
+struct Checker<'a, 'run> {
+    declarations: BTreeMap<usize, &'a Local>,
     state: State<'a>,
-    // 他の field は変えない
+    // module / callback 契約は 'a、診断 / CopyRead 出力は 'run
 }
 ```
 
-`impl Checker<'_>` は `impl<'a> Checker<'a>` にし、`State` へ `Local` を入れる経路の式の引数を `&'a TypedExpr` にする。
-`check_body` の `body: &TypedExpr` と `parameters: &[Local]` は `module: &'a CheckedModule` と同じ `'a` にする（どちらも `module.functions` の中）。
+`check_body` は借用した引数 iterator と `&'a TypedExpr` から宣言 registry を一度集めます。
+入れ子の lambda の宣言は別 checker が集めます。evaluator の式は一時合成式を扱うため短い借用のままです。
+`State` に挿入する Local は registry から取り、名前・型を branch snapshot ごとに複製しません。
 
 ### 段ごとの変更
 
@@ -258,16 +301,20 @@ struct Checker<'a> {
 | テスト | `tests/polymorphism.rs` | `specializes_shared_non_generic_callee_once`（新規） | テスト計画 |
 | 変更なし | `src/lexer.rs`・`src/parser.rs`・`src/computation.rs`・`src/derive.rs`・`src/llvm*.rs`・`src/call_specialization.rs` | — | D7・D8・D10 |
 
-### Phase 分割
+### 全 Phase の実装結果
 
-- Phase 1（この実装者の範囲）: S1〜S5。各施策を別々の手順で入れ、手順ごとに IR と診断の同一性を確かめる。
-- Phase 2（人間が依頼した場合だけ。設計方針）:
-  - P2-1: 所有権検査の 2 回目（`check_all`）を、単相化・閉包の変換で本体が変わった関数に限る。等価性の根拠がないので、
-    debug build で全関数版と限定版の結果を比べる `debug_assert_eq!` を全テストで通してから release の経路を切り替える。
-  - P2-2: 名前の intern（D6）。
-  - P2-3: `TypedExpr::children` の 22 か所のうち再帰で呼ぶものを `try_for_each_child`（新規）へ（D5）。
-  - P2-4: 関数 id・local id の `BTreeSet<usize>` を `Vec<u64>` の bit set（昇順の反復）へ。profile で挿入元を特定してから。
-  - P2-5: 型の intern と型付き IR の arena（D9、要承認）。
+| 施策 | 実装結果 |
+| --- | --- |
+| S1 | templates と非 generic 本体の所有権移動。根・bench・rec 境界を移動前に保存 |
+| S2 | 閉包変換へ本体を移動し、完了後に戻す |
+| S3 | mutable 子 Vec を廃止。現在増えている `closures_rec`・`const_static`・`gpu_devices` も移行 |
+| S4 | Local 宣言を借用した State、registry、loop / try flow の lifetime 伝播 |
+| S5 | `base_count` による requests / functions の事前確保 |
+| P2-1 | primitive scalar 式だけを構造で証明して具体検査を省略。debug で全検査と照合 |
+| P2-2 | 解析単位の名前 intern、own-module の検索時の qualified String 廃止 |
+| P2-3 | owned frontend の readonly 走査を allocation-free 訪問へ移行。公開 `children()` は互換用に残す |
+| P2-4 | lambda free-local id の昇順 bitset、ownership 使用集合の直接収集 |
+| P2-5 | immutable 型述語に TypeId / hash-consed Vec arena。root / 宣言は借用、generated type の子は ID 投影。AST arena は本体移動 / allocation-free 訪問へ設計変更（D9） |
 
 ## 実装手順
 
@@ -276,16 +323,16 @@ struct Checker<'a> {
 
 ### 手順 1: ベースラインを取る
 
-- 変更: なし（scratch は `/tmp/tz-pb02/` だけ）。
-- 内容: 変更前のコンパイラ 2 つ（stripped の `target/release/tsuzuri` と、シンボル付きの `/tmp/tzperf/target/release/tsuzuri`）を保存し、
-  IR と診断の基準、stack-depth テスト、profile 3 回、PX03 の before を取る。`ir.sh` は次の内容で `/tmp/tz-pb02/ir.sh` に置く（commit しない）。
+- 変更: なし（scratch は `target/perf/tz-pb02/` だけ）。
+- 内容: 変更前のコンパイラ 2 つ（stripped の `target/release/tsuzuri` と、シンボル付きの `target/perf/tzperf/target/release/tsuzuri`）を保存し、
+  IR と診断の基準、stack-depth テスト、profile 3 回、PX03 の before を取る。`ir.sh` は次の内容で `target/perf/tz-pb02/ir.sh` に置く（commit しない）。
 
 ```sh
-# usage: sh /tmp/tz-pb02/ir.sh <compiler> <out-dir>
+# usage: sh target/perf/tz-pb02/ir.sh <compiler> <out-dir>
 compiler=$1; out=$2
 mkdir -p "$out"
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
-for d in $(find examples tests/fixtures -mindepth 1 -maxdepth 1 -type d | sort) /tmp/tz-pb02/s1000; do
+for d in $(find examples tests/fixtures -mindepth 1 -maxdepth 1 -type d | sort) target/perf/tz-pb02/s1000; do
   n=$(echo "$d" | tr '/' '_')
   "$compiler" check "$d" > "$out/$n-check.txt" 2>&1; echo "exit=$?" >> "$out/$n-check.txt"
   for o in -O0 -O3; do
@@ -303,21 +350,21 @@ done
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
 cargo build --release --locked
-CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir /tmp/tzperf/target
-cp target/release/tsuzuri /tmp/tz-pb02/tsuzuri-before
-cp /tmp/tzperf/target/release/tsuzuri /tmp/tz-pb02/tsuzuri-before-sym
-node benchmarks/build/generate.mjs --modules 1000 --out /tmp/tz-pb02/s1000
-sh /tmp/tz-pb02/ir.sh /tmp/tz-pb02/tsuzuri-before /tmp/tz-pb02/ir-before
+CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir target/perf/tzperf/target
+cp target/release/tsuzuri target/perf/tz-pb02/tsuzuri-before
+cp target/perf/tzperf/target/release/tsuzuri target/perf/tz-pb02/tsuzuri-before-sym
+node benchmarks/build/generate.mjs --modules 1000 --out target/perf/tz-pb02/s1000
+sh target/perf/tz-pb02/ir.sh target/perf/tz-pb02/tsuzuri-before target/perf/tz-pb02/ir-before
 cargo test --locked --lib bounds_recursive_and_flat_expression_depth
 cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
 cargo test --locked --test polymorphism honors_the_exact_specialization_limit
 cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax
 cargo test --locked --test tasks bounds_nested_task_syntax_and_types
 for i in 1 2 3; do
-  /tmp/tz-pb02/tsuzuri-before-sym check /tmp/tz-pb02/s1000 & pid=$!
-  sample $pid 10 1 -mayDie -file /tmp/tz-pb02/before-check-$i.sample.txt; wait $pid
+  target/perf/tz-pb02/tsuzuri-before-sym check target/perf/tz-pb02/s1000 & pid=$!
+  sample $pid 10 1 -mayDie -file target/perf/tz-pb02/before-check-$i.sample.txt; wait $pid
 done
-npx --yes --package=node@24 node benchmarks/run-build.mjs /tmp/tz-pb02/tsuzuri-before --out target/perf/PB02-before --sizes 200,1000
+npx --yes --package=node@24 node benchmarks/run-build.mjs target/perf/tz-pb02/tsuzuri-before --out target/perf/PB02-before --sizes 200,1000
 ```
 
 ### 手順 2: `try_for_each_child_mut` と `polymorph::walk`（S3 前半）
@@ -326,7 +373,7 @@ npx --yes --package=node@24 node benchmarks/run-build.mjs /tmp/tz-pb02/tsuzuri-b
 - 内容: 「データ構造」の `try_for_each_child_mut`（新規）を足す。`children_mut` の各 arm を同じ順で写す。`walk` を書き換える。
   `children_mut` はまだ残す。
 - 確認: `cargo test --locked --test polymorphism` が成功（N > 0）。手順 1 の stack-depth 5 テストが成功。
-  `cargo build --release --locked && sh /tmp/tz-pb02/ir.sh target/release/tsuzuri /tmp/tz-pb02/ir-after && diff -r /tmp/tz-pb02/ir-before /tmp/tz-pb02/ir-after && echo same`
+  `cargo build --release --locked && sh target/perf/tz-pb02/ir.sh target/release/tsuzuri target/perf/tz-pb02/ir-after && diff -r target/perf/tz-pb02/ir-before target/perf/tz-pb02/ir-after && echo same`
   が `same`（IR 同一）。
 
 ### 手順 3: 残りの `children_mut` を移して削除する（S3 後半）
@@ -379,7 +426,7 @@ cargo build --release --locked
 for s in e2e features examples computations tasks control; do
   npx --yes --package=node@24 node tests/$s.mjs target/release/tsuzuri || echo "FAIL $s"
 done
-sh /tmp/tz-pb02/ir.sh target/release/tsuzuri /tmp/tz-pb02/ir-after && diff -r /tmp/tz-pb02/ir-before /tmp/tz-pb02/ir-after && echo same
+sh target/perf/tz-pb02/ir.sh target/release/tsuzuri target/perf/tz-pb02/ir-after && diff -r target/perf/tz-pb02/ir-before target/perf/tz-pb02/ir-after && echo same
 ```
 
 ### 手順 9: after の計測と profile
@@ -411,7 +458,7 @@ cd /Users/tmidorikawa/Documents/git/Tsuzuri
 cargo build --release --locked
 N24="npx --yes --package=node@24 node"
 $N24 benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PB02-after --sizes 200,1000
-$N24 benchmarks/run-build.mjs /tmp/tz-pb02/tsuzuri-before --out target/perf/PB02-before2 --sizes 200,1000
+$N24 benchmarks/run-build.mjs target/perf/tz-pb02/tsuzuri-before --out target/perf/PB02-before2 --sizes 200,1000
 $N24 benchmarks/metrics.mjs report target/perf/PB02-before2 --baseline target/perf/PB02-before
 $N24 benchmarks/metrics.mjs report target/perf/PB02-after --baseline target/perf/PB02-before
 ```
@@ -424,10 +471,10 @@ $N24 benchmarks/metrics.mjs report target/perf/PB02-after --baseline target/perf
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
-CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir /tmp/tzperf/target
+CARGO_PROFILE_RELEASE_STRIP=false cargo build --release --locked --target-dir target/perf/tzperf/target
 for i in 1 2 3; do
-  /tmp/tzperf/target/release/tsuzuri check /tmp/tz-pb02/s1000 & pid=$!
-  sample $pid 10 1 -mayDie -file /tmp/tz-pb02/after-check-$i.sample.txt; wait $pid
+  target/perf/tzperf/target/release/tsuzuri check target/perf/tz-pb02/s1000 & pid=$!
+  sample $pid 10 1 -mayDie -file target/perf/tz-pb02/after-check-$i.sample.txt; wait $pid
 done
 ```
 
@@ -438,7 +485,7 @@ done
 
 このチケットは生成コードを変えない。確認は「変わらないこと」と「複製の経路が消えたこと」。
 
-1. IR と診断: `diff -r /tmp/tz-pb02/ir-before /tmp/tz-pb02/ir-after` が空（native・wasm32 × `-O0`・`-O3`、`check` の出力と終了コード、
+1. IR と診断: 同じ baseline LLVM を使う `check-frontend-equivalence.mjs --cli-matrix` が一致（native・wasm32 × `-O0`・`-O3`、CLI の出力と終了コード、
    合成 1,000 モジュールを含む）。
 2. 複製の経路: 次の grep がすべて空。
 
@@ -446,7 +493,7 @@ done
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
 grep -n "module.functions.clone()" src/polymorph.rs
 grep -n "body.clone()" src/closures.rs
-grep -rn "children_mut" src
+grep -rn '\.children_mut(' src
 grep -n "(Local, Value)" src/ownership.rs
 ```
 
@@ -495,18 +542,18 @@ fn run n = apply true n + apply 2 n + helper n
 
 | ファイル | 節 | 内容 |
 | --- | --- | --- |
-| `docs/benchmarks.md` | `## ビルド速度`（PX03 が作る）の下に `### PB02 Phase 1 のフロントエンド確保削減`（新規） | 環境、run_id（`PB02-before`・`PB02-after`・`PB02-before2`）、`report --baseline` の表、profile の割合と関数別 samples の before／after（3 回の中央値）。改善を主張するのは `verdict` が `改善` の行だけ |
+| `docs/benchmarks.md` | `## ビルド速度` の PB02 節 | 全 Phase の実装範囲、private 型 graph arena と public AST 維持の設計変更を明記。環境、run_id、`report --baseline` の表。統合担当が正式測定し、改善を主張するのは `verdict` が `改善` の行だけ |
 | `docs/architecture.md` | `## 性能設計の原則` | 「フロントエンドの段は `CheckedModule` を値で受け渡し、以後使わない本体は複製せず移す。子の走査は `try_for_each_child_mut` で確保しない」の 1 項目 |
-| `_perfs/README.md` | 一覧の PB02 の状態欄 | Phase 1 の完了を記す（Phase 2 は未着手と書く） |
+| `_perfs/README.md` | 一覧の PB02 の状態欄 | 全 Phase の実装と D9 の代替、正式性能測定の状態を統合担当が記す |
 
 ## 受け入れ条件
 
-- [ ] S1〜S5 が入り、「生成コードの確認」の grep がすべて空。
-- [ ] `diff -r /tmp/tz-pb02/ir-before /tmp/tz-pb02/ir-after` が空（IR・診断・終了コード）。
+- [x] S1〜S5 が入り、「生成コードの確認」の grep がすべて空。
+- [x] baseline LLVM を使った 121 project の型付き構造・診断・native / WASM IR が一致。CLI 四構成の終了コード・診断 484 outputs、成功時の IR 386 outputs も一致。
 - [ ] `cargo test --locked` と手順 8 の E2E 6 suite が成功し、stack-depth の 4 テストと `honors_the_exact_specialization_limit` が変更なしで通る。
-- [ ] `specializes_shared_non_generic_callee_once` が追加されている。
+- [x] `specializes_shared_non_generic_callee_once` が追加されている。
 - [ ] `target/perf/PB02-before`・`PB02-after`・`PB02-before2` と、profile の before／after 各 3 回が記録され、`docs/benchmarks.md` に要約がある。
-- [ ] `unsafe`・新しい crate・`Cargo.toml` の変更がない。
+- [x] PB02 に `unsafe`・新しい crate・`Cargo.toml` の変更がない。
 - [ ] GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
@@ -525,7 +572,7 @@ fn run n = apply true n + apply 2 n + helper n
   `&'a TypedExpr` にする。一時的に作った式を検査している箇所があれば停止条件（clone や `Rc` で逃げない）。
 - 再帰の frame: `try_for_each_child_mut` は 1 段ごとに frame を 1 つ足す。`&mut dyn FnMut` にして instantiation を 1 つにし、
   `try_for_each_child_mut` に局所変数を置かない。stack-depth のテストが落ちたら停止条件。
-- profile の取り違え: `target/release/tsuzuri`（stripped）を `sample` するとシンボルが出ない。profile は `/tmp/tzperf/target` の binary、
+- profile の取り違え: `target/release/tsuzuri`（stripped）を `sample` するとシンボルが出ない。profile は `target/perf/tzperf/target` の binary、
   時間と RSS は stripped の `target/release/tsuzuri` で測る（PX03 の実行ファイルの大きさの metric を混ぜない）。
 - `check` の 200 モジュールは 0.4 s 程度で `sample` の標本が少ない。profile は 1,000 モジュールだけで取る。
 - `cargo test --locked <pattern>` は 0 件でも成功する。`running N tests` を確かめる。
@@ -535,15 +582,16 @@ fn run n = apply true n + apply 2 n + helper n
 - 並列化（PB04）、常駐（PB06）、関数単位の増分（PB07・G17）、LLVM 側の時間（PB03・PB05）。
 - IR 文字列の検索（`str::contains`）と書式化（`fmt::write`）（D10）。
 - `computation::expand`・`derive`・`constants` の構文木の複製（D8）、字句の token 列の再利用（D7）。
-- Phase 2 の P2-1〜P2-5（人間が依頼した場合だけ。P2-5 は D9 の承認も要る）。
+- public Type / AST / LLVM API の全面移行（D9 の設計変更）。private 型 graph arena を含む P2-1〜P2-5 は今回の範囲です。
 
 ## 決定事項
 
 ### D1: Phase 分割と範囲
 
-- 決定: Phase 1 は S1〜S5 だけ。Phase 2（P2-1〜P2-5）は人間が依頼した場合だけ着手する。
+- 決定: 利用者の承認により S1〜S5 と P2-1〜P2-5 をすべて評価・実装します。健全性を証明できない省略や
+  大規模な speculative API 移行は、上記の局所代替と明示した制約に置き換えます。
 - 理由: S1〜S5 は局所的な変更で、IR と診断の同一性を手順ごとに確かめられる。Phase 2 は API を広く変えるか、等価性の根拠が要る。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 全 Phase 承認済み・実装済み。D9 は private 型 arena と AST 移動への設計変更
 
 ### D2: 単相化での本体の移動
 
@@ -570,23 +618,23 @@ fn run n = apply true n + apply 2 n + helper n
 
 ### D5: 子の訪問の API
 
-- 決定: `TypedExpr::try_for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Self) -> Result<(), Diagnostic>) -> Result<(), Diagnostic>`（新規）。
-  `children_mut` の 3 か所を移して `children_mut` を削除する。`children` の 22 か所は Phase 1 では変えない（P2-3 では同じ形の
-  `try_for_each_child`（新規）を使う）。
-- 理由: profile に出たのは `children_mut`。3 か所の呼び出しはどれも `Diagnostic` を返す再帰なので 1 つの型で足りる。`dyn` は instantiation を
+- 決定: `TypedExpr::try_for_each_child_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut Self) -> Result<(), Diagnostic>) -> Result<(), Diagnostic>`。
+  すべての mutable 子 Vec の利用を移して `children_mut` を削除しました。readonly frontend には
+  `try_for_each_child` を追加しました。LLVM の並行利用と公開 API の互換のため `children()` は残します。
+- 理由: profile に出たのは `children_mut`。呼び出しは `Diagnostic` を返す再帰・worklist なので 1 つの型で足りる。`dyn` は instantiation を
   1 つにし、再帰 1 段あたりの frame を固定する（2 MiB の stack のテスト）。
 - 状態: 既定案（実装者はこの案に従う）
 
 ### D6: 名前の intern（Phase 2 の P2-2）
 
-- 決定: `src/intern.rs`（新規）に `#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub(crate) struct Symbol(u32);` と
-  `pub(crate) struct Interner { ids: std::collections::HashMap<Box<str>, Symbol>, names: Vec<Box<str>> }`（`intern(&mut self, &str) -> Symbol`、
-  `text(&self, Symbol) -> &str`）を置く。持ち主は `check::Names`（解析 1 回につき 1 つ）。最初の対象は `format!("{module}.{name}")` で
+- 決定: `check` の子 module `src/intern.rs` に `#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub(super) struct Symbol(u32);` と
+  `pub(super) struct Interner { ids: std::collections::HashMap<Rc<str>, Symbol>, names: Vec<Rc<str>> }`（`intern(&mut self, &str) -> Symbol`、
+  `lookup(&self, &str) -> Option<Symbol>`）を置く。持ち主は `check::Names`（解析 1 回につき 1 つ）。最初の対象は `format!("{module}.{name}")` で
   `String` を作って `names.functions` を引く箇所（`check.rs` の `names.functions[&format!(...)]`）。`syntax::Ident`・`TokenKind::Ident`・
   `check::Local` の `String` は変えない。
 - 理由: `Symbol` に `Ord` を付けないことで、`BTreeMap` の key にして反復順（診断と IR の順）を変える誤りを型で防ぐ。`HashMap` は引くだけで反復しない。
   番号は初出順で決定的。`u32` はソースの大きさの上限（`E0003`）で溢れない。構文木の `String` まで変えると parser・formatter・LSP・docgen の全体に及ぶ。
-- 状態: 既定案（Phase 2 は人間が依頼した場合だけ着手する）
+- 状態: 実装済み。`Rc<str>` は両 container で一つの文字列確保を共有するために使用
 
 ### D7: token 列の再利用と事前確保
 
@@ -604,9 +652,34 @@ fn run n = apply true n + apply 2 n + helper n
 
 ### D9: 型の intern と arena（Phase 2 の P2-5）
 
-- 決定: 型は `TypeId(u32)`（新規）で hash-consing し、構文木と型付き IR は標準ライブラリの `Vec` と添字で arena に置く。依存 crate は足さない。
-- 理由: `Type` の clone／drop と比較を id の操作にでき、個別の `Box` の確保をなくせる。ただし型検査・単相化・所有権検査・IR 生成の API を広く変える。
-- 状態: 要承認（承認前は P2-5 に着手しない）
+- 2026-10-14 の再開決定: 原案未達のまま停止せず、immutable 型述語の走査に private
+  `TypeId(u32)` / hash-consed Vec arena を実装しました。宣言と root は借用し、生成した generic
+  field 型だけを所有し、その子は arena ID から投影します。visited は ID に結び付けます。
+  public AST / Type / LLVM API は変えません。原案の AST 全移行は、本体の移動と allocation-free
+  訪問に置き換える設計変更として確定しました。意味比較と割当経路の regression、matched cost で検証します。
+- 原案の受け入れ条件: `TypeId(u32)` による型の hash-consing と、構文木 / 型付き IR の
+  Vec-backed arena への全面移行でした。単なるフィールド借用だけでは足りないため、型 graph の
+  hash-consing / ID visited / 子投影を実装し、残る AST の表現変更は S1〜S3 に統合しました。
+- 決定: `src/type_arena.rs` の TypeId / hash-consed Vec arena を `stored_all_closed` / `reaches`
+  が使用します。hash collision は Type の正確な比較で解決し、辞書は反復しません。
+  型の初出順、述語の呼出順、closed 境界、cycle で再訪した root の述語評価を維持します。
+  leaf / root reject / closed root は arena 自体を確保しません。
+- 理由: current `Type` はすでに四 word で、可変の型置換を多数の API が直接受けます。全面移行には
+  checker・所有権・LLVM と public IR の表現変更が必要で、今回親が所有する backend と衝突します。
+  public AST / IR を arena へ移すだけでは、generic 置換のための更新契約・公開 Box tree の互換を
+  自動では解決できません。一方、非 generic の本体複製 3 回は移動でゼロになり、typed child Vec も
+  消えています。IR の大規模 API 再設計を目的化せず、この実際の経路除去を新しい AST 条件とします。
+- 受け入れ条件: (1) private TypeId / hash-consed Vec arena と ID visited が実装される、
+  (2) nongeneric / root の Type を clone しない、(3) generated type は owner 一つと ID 子投影で走査する、
+  (4) 正確な述語順・closed / cycle・hash collision・frontend / IR / 診断の等価性を回帰で確認する、
+  (5) 非 generic typed 本体の deep clone と mutable child Vec がゼロ、
+  (6) matched before / after / before2 で追加 metadata の cost も評価する。
+- 検証済みの型格納量: depth 64 の reference walker は Box clone 経路 2,144 個、
+  borrowed arena は Type allocation 0 個・65 IDs。generated root は owner 一つ・64 子投影で、
+  子の Type を複製しません。これは Type payload の数で、HashMap / Vec metadata の割当を含む RSS ではありません。
+- 数値条件: G1 の 124K 行 0.5秒 / 250MB は長期目標で P2-5 の即時合否条件ではありません。
+  個別速度の改善率は正式測定まで主張しません。設計を変えた事実を「全 AST arena 実装」とは呼びません。
+- 状態: 再定義した実装条件と最終全 corpus 比較は完了。親の正式 after / before2 測定へ引き継ぎます。
 
 ### D10: IR 文字列の検索と書式化
 
@@ -619,6 +692,148 @@ fn run n = apply true n + apply 2 n + helper n
 ### D11: 所有権検査の `State` の借用
 
 - 決定: `State<'a>` の `locals` を `BTreeMap<usize, (&'a Local, Value)>` にする。`Rc<Local>` は使わない。
-- 理由: 検査する `Local` はすべて `module.functions` の引数か本体の束縛で、`Checker` の間ずっと生きる。借用なら分岐ごとの `State` の複製が
-  `Local` を複製せず、確保も増えない。`Rc` は挿入ごとの確保が残る。
-- 状態: 既定案（実装者はこの案に従う）
+- 理由: evaluator は一時 capture / view 式も合成しますが、Local の宣言は関数の引数か束縛に存在します。
+  宣言 registry を一度作り、状態は宣言を借用します。分岐 snapshot は Local の名前・型を複製しません。
+  registry の一回の走査・辞書確保は増えるため、net wall / RSS の利益は正式測定の結果に従います。
+- 状態: 実装済み。宣言と診断出力の lifetime は分離済み
+
+## 実装検証の記録（2026-10-14）
+
+### 正しさ
+
+- `cargo check --locked --lib` 成功。
+- frontend に絞った 8 suite（polymorphism / computations / types_ownership / borrow_syntax /
+  tasks / currying / borrowed_records / control）: 159 tests 成功。
+- scalar 再検査省略追加後に ownership / borrow / control を再実行: 52 tests 成功。
+- allocation-free の child 順序・mutable early error、freeze の opaque / Channel / Atomic / Mutex、
+  scalar 分類の借用・call・束縛除外: 3 unit tests 成功。interner の初出順・確保共有: 1 test 成功。
+- parser depth、type-growing recursion、nested builder、task depth、exact specialization limit は
+  既定 stack で成功。`bounds_computation_syntax_and_expansion` は既存 CI の
+  `RUST_MIN_STACK=4194304` で current / 元 HEAD とも成功しました。
+  元 HEAD の独立再実行は `target/perf/PB02-baseline-stack/`、実行結果は同所の `result.log` にあります。
+- 初期 mutable visitor による nested builder の既定 stack overflow は、dispatch を直接
+  iterator return にし Match helper を分けて解消しました。上限・stack の引き上げはしていません。
+
+### PB02 だけの厳密な等価性
+
+```sh
+node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-equivalence --baseline-ref=a621fada69bf27f425bfbb012cc7d0a699721db6
+node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-equivalence --reuse --cli-matrix
+```
+
+baseline HEAD の source / std / manifests を project 内に展開し、PB02 frontend だけを overlay します。
+両側の LLVM / runtime は baseline のままです。所有権の PM07 proof-root 拡張だけを
+staging の after で baseline の規則に戻し、別 stream の intentional IR 差を除外します。
+元の辞書・関数・capture・診断の Debug 構造と順序も byte 比較します。
+
+121 projects（examples / fixtures、所有権・名前解決・multi-error 順序・特殊化の診断 12 件、
+合成 200・1,000 モジュール）の構造・診断が完全一致し、
+成功した 99 projects の library IR は native / WASM の計 198 outputs が完全一致しました。
+CLI matrix は保存済みの before / after binary を再利用し、native / WASM × `-O0` / `-O3` の
+IR・終了コード・stdout / stderr を比較しました。484 configurations すべてで終了コード・診断が一致し、
+成功した 386 configurations の IR も完全一致しました。残る 98 configurations は baseline と同じ失敗です。
+指定した出力ファイル名だけを正規化し、診断コード・本文・入力の位置・順序は変えず比較します。
+`comparison.json` に tested source SHA-256 を保存しました。tested frontend source は current と同一で、
+その後の ownership unit test の追加だけは release binary に含まれません。
+IR 期待値・診断期待値の更新はありません。統合 compiler が baseline と異なる backend IR を出すことは、
+この PB02 単独比較の失敗を意味しません。
+
+### 性能と引き継ぎ
+
+`benchmarks/run-frontend.mjs` は cache を無効にし、hello / 合成 200 / 合成 1,000 の
+check と native LLVM emission の wall / CPU / RSS / 段別時間を記録します。
+warmup 1 回、測定 9 回、毎回の診断・IR 同一性を確認します。project 内の report file だけを使います。
+quick smoke の hello / 合成 10 × check / emission は成功しましたが、正式な速度の証拠とは扱いません。
+
+```sh
+node benchmarks/run-frontend.mjs target/perf/PB02-equivalence/tsuzuri-before --out target/perf/PB02-before --sizes 200,1000
+node benchmarks/run-frontend.mjs target/perf/PB02-equivalence/tsuzuri-after --out target/perf/PB02-after --sizes 200,1000
+node benchmarks/run-frontend.mjs target/perf/PB02-equivalence/tsuzuri-before --out target/perf/PB02-before2 --sizes 200,1000
+node benchmarks/metrics.mjs report --baseline target/perf/PB02-before target/perf/PB02-after
+node benchmarks/metrics.mjs report --baseline target/perf/PB02-before target/perf/PB02-before2
+```
+
+numeric 全数検査の 6 worker と並行検証が CPU を使用しているため、親の指示で正式測定は開始していません。
+統合担当が負荷解消後の中央 benchmark・full cargo / fmt / clippy / docs を所有します。
+本体 / Local の deep clone と child Vec の経路除去は実装と等価性で確認済みですが、
+P2-2 の辞書と S4 registry の追加 cost も含め、速度・RSS の改善値は結果が出るまで主張しません。
+
+PB02 自体は syntax / semantics / CLI / diagnostics / limit を変更しません。
+language-reference の利用者向け契約変更はありません。`languages/strategy.md` の性能設計には
+private TypeId / hash-consed Vec arena の実装と、public Type / AST 全移行ではないことを追記しました。
+この prose-only 変更の docs gate は baseline build 測定終了後に統合担当が実施します。
+PR01 の LLVM facts と PM07 の copy proof に関する
+利用者向け性能説明、および中央 architecture / README / benchmark 文書は統合担当に引き継ぎました。
+ticket は移動せず、commit / push はしていません。
+
+### P2-5 完了時の追加検証・source freeze
+
+最終 candidate の Type arena SHA-256:
+`1d91ddaea04da5163ecf0f3352acca758badc687f1e3eb784ace8d7e58ae74fd`。
+baseline の binary は再ビルドせず `--refresh-after --cli-matrix` で frontend 側だけを更新しました。
+最終 121 projects の frontend / diagnostics、584 IR、484 CLI diagnostic / exit comparisons は全一致です。
+typed source の SHA と current が一致することも確認しました。PM07 の隔離は前述のとおりです。
+
+追加 Type arena tests は 4 件成功（hash collision、borrowed / owned canonicalization、ID 子投影、
+reference walker との述語順 / cycle / closed 境界、Box clone 経路数を含む）。
+最終 ownership / borrow / control / param_facts は計 61 tests 成功、allocation / freeze / scalar は 3 tests 成功。
+parser / growing-type / nested-builder / task depth は既定 stack のまま各 1 test 成功です。
+exact specialization は integration のフィルタではなく
+`cargo test --locked --lib honors_the_exact_specialization_limit --quiet` で実際の 1 test の成功を確認しました。
+`cargo clippy --locked --all-targets -- -D warnings` と scoped rustfmt は成功しました。
+Windows x64 / ARM64 は arena 追加後の rustup stable `cargo check --locked --lib --target ...` が両方成功です。
+
+実装を source freeze しました。所有する release refresh / cargo / cross-check はすべて終了済みです。
+最終 candidate の optional quick 再実行は、親の build-before 計測開始の通知を受けて停止しました。
+全 corpus の証拠は完成しており、旧 quick の結果を final arena の証拠とは混同しません。
+正式 frontend before（9 samples）は親が
+`target/perf/phase2-formal/frontend-before/frontend.jsonl` に保存済みで、after / before2 は統合担当が実施します。
+Type payload の Box 経路削減は検証済みですが、arena metadata の追加 cost を含む wall / RSS の判定は
+この matched measurement の結果に従います。
+
+### CI 用の限定実行と Windows 型検査
+
+以下の限定実行を `targets.yml` の macOS/Linux に接続しました。Windows では cross 型検査と通常の Rust 回帰を用い、この isolation runner は実行しません。
+fresh quick の実コマンドはローカルで 397.74 秒、22 project・88 CLI 比較・60 IR 出力で差分 0、frontend smoke も成功しました。
+commit 後の HEAD 同士を比較して等価性が自明にならないよう、元の baseline commit を fetch し、
+`--baseline-ref=<SHA>` で指定します。`--reuse` は保存した baseline revision を保ちます。
+`--quick` は hello、子訪問の 8 fixtures、12 件の診断、合成 10 モジュールの 22 projects に限定します。
+CLI matrix の 88 configurations が一致することを既存の isolated binary で確認しました。
+quick の結果は `comparison-quick.json` とし、全 corpus の `comparison.json` は上書きしません。
+
+```sh
+git fetch --no-tags --depth=1 origin a621fada69bf27f425bfbb012cc7d0a699721db6
+RUST_MIN_STACK=4194304 LC_ALL=C node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-ci-equivalence --baseline-ref=a621fada69bf27f425bfbb012cc7d0a699721db6 --quick --cli-matrix
+RUST_MIN_STACK=4194304 LC_ALL=C node benchmarks/run-frontend.mjs target/release/tsuzuri --out target/perf/PB02-ci-benchmark --quick
+```
+
+fresh preparation は full corpus で、quick equivalence は `--reuse` で検証済みです。
+frontend quick smoke の既存記録は `target/perf/PB02-runner-smoke/projects.json` にあり、
+使用 compiler は `target/perf/phase2-baseline/tsuzuri-before` です。
+上記の fresh / pinned / quick の組合せと CI 上の所要時間は、まだ end-to-end では検証していません。
+smoke の 5 分予算は candidate `target/release/tsuzuri` の build を含まず、既存 release build step を前提とします。
+
+保存済みの同一 host 用 baseline / candidate CLI と snapshot helper がある場合は、
+次の実行がどちらの compiler もビルドせず quick 比較します。
+fresh CI の `target/` にはこれらの binary はないため、`--reuse` の前に適合する artifact の復元が必要です。
+baseline binary を配布しない CI では、既存 full cargo test に含まれる Type arena reference walker、
+allocation-free visitor、specialization の回帰を gate とし、archived compiler 間の byte 比較と同一だとは呼びません。
+
+```sh
+node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-equivalence --reuse --quick --cli-matrix --baseline-ref=a621fada69bf27f425bfbb012cc7d0a699721db6
+```
+
+中央 CI の equivalence step 上限は `timeout-minutes: 25`、benchmark smoke は
+`timeout-minutes: 5` です。workflow への接続と CI 実行の検証は統合担当が行います。
+equivalence の binary preparation は release build を各側一回だけ、各 subprocess の上限は 600 秒です。
+これは全体の上限ではなく、cold runner で 25 / 5 分以内に成功するという保証はありません。
+RSS benchmark とこの isolation runner は macOS / Linux 用です。CI smoke に速度の合否閾値は設けません。
+
+Windows x64 / ARM64 の `cargo check --locked --all-targets` はいずれも成功しました。
+Homebrew の rustc 1.98.1 に Windows std がないため、installed targets を持つ rustup stable
+1.96.1 の cargo / rustc を明示して確認しました。Windows での実行結果を保証するものではありません。
+
+```sh
+RUSTC="$(rustup which --toolchain stable rustc)" rustup run stable cargo check --locked --all-targets --target x86_64-pc-windows-msvc
+RUSTC="$(rustup which --toolchain stable rustc)" rustup run stable cargo check --locked --all-targets --target aarch64-pc-windows-msvc
+```

@@ -16,6 +16,8 @@ fn emitted_guards_record_source_sites_without_success_path_reports() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         };
@@ -44,6 +46,48 @@ fn emitted_guards_record_source_sites_without_success_path_reports() {
         assert!(!ordinary.contains("@tz.trap.report"));
         if wasm {
             assert!(first.ir.contains("@tsuzuri_trap_site"));
+        }
+
+        let text = "def observe :: string -> i64\nfn observe value = (to_string (\n  value + \"xyz\"\n)).length";
+        let module = tsuzuri::analyze(text).unwrap();
+        fn concatenation(expression: &tsuzuri::check::TypedExpr) -> Option<Span> {
+            if matches!(
+                expression.kind,
+                tsuzuri::check::TypedExprKind::Binary(tsuzuri::syntax::BinaryOp::Add, ..)
+            ) {
+                return Some(expression.span);
+            }
+            expression.children().into_iter().find_map(concatenation)
+        }
+        let span = concatenation(
+            &module
+                .functions
+                .iter()
+                .find(|function| function.name == "observe")
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        let emitted = tsuzuri::llvm::emit_with_trap_info(
+            &module,
+            options,
+            &[TrapSource {
+                path: "Main.tz",
+                text,
+            }],
+        )
+        .unwrap();
+        for kind in [TrapKind::StringConcatOverflow, TrapKind::AllocationSize] {
+            let sites: Vec<_> = emitted
+                .trap_sites
+                .iter()
+                .filter(|site| site.kind == kind)
+                .collect();
+            assert!(!sites.is_empty(), "{kind:?}");
+            assert!(
+                sites.iter().all(|site| site.span == span),
+                "{kind:?}: {sites:?}, expected {span:?}"
+            );
         }
     }
 }
@@ -141,6 +185,8 @@ fn typed_builtins_keep_guard_kinds_and_user_call_sites() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm: true,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         },
@@ -439,6 +485,8 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm: false,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         },
@@ -461,6 +509,8 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
             entry: tsuzuri::llvm::Entry::Library,
             wasm: true,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         },

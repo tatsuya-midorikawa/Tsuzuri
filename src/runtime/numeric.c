@@ -4,6 +4,8 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef unsigned __int128 u128;
 
+#include "numeric_tables.h"
+
 /* Enough for exact alignment of the most widely separated decimal128 values. */
 #define LIMBS 1400
 typedef struct { int n; u32 w[LIMBS]; } tzrt_big;
@@ -625,6 +627,8 @@ static void shortest(tzrt_number *value, tzrt_format f) {
 }
 
 static __attribute__((noinline)) int format_float(char *out, const unsigned char *input, tzrt_format f);
+static int layout_decimal(char *out, int length, const char *digits, int count, int quantum);
+static __attribute__((noinline)) int format_binary_fast(char *out, const unsigned char *input, int kind);
 
 /* The caller supplies 128 bytes. No locale, host FP, or allocation is used. */
 __attribute__((visibility("hidden")))
@@ -666,6 +670,7 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
             return length;
         }
     }
+    if (kind == 1 || kind == 2) return format_binary_fast(out, input, kind);
     return format_float(out, input, f);
 }
 
@@ -683,14 +688,16 @@ static __attribute__((noinline)) int format_float(char *out, const unsigned char
     char digits[48];
     int count = 0;
     do { digits[count++] = (char)('0' + divide_small(&value.coefficient, 10)); } while (value.coefficient.n);
+    return layout_decimal(out, length, digits, count, value.exponent);
+}
+
+static int layout_decimal(char *out, int length, const char *digits, int count, int quantum) {
     int first = 0;
-    if (!f.integer) {
-        while (first + 1 < count && digits[first] == '0') { ++first; ++value.exponent; }
-    }
+    while (first + 1 < count && digits[first] == '0') { ++first; ++quantum; }
     int significant = count - first;
-    int exponent = value.exponent + significant - 1;
-    if (f.integer || (exponent >= -6 && exponent < significant + 6)) {
-        int point = significant + value.exponent;
+    int exponent = quantum + significant - 1;
+    if (exponent >= -6 && exponent < significant + 6) {
+        int point = significant + quantum;
         if (point <= 0) {
             out[length++] = '0'; out[length++] = '.';
             for (int i = 0; i < -point; ++i) out[length++] = '0';
@@ -709,6 +716,97 @@ static __attribute__((noinline)) int format_float(char *out, const unsigned char
         length += unsigned_text(out + length, (u32)(exponent < 0 ? -exponent : exponent));
     }
     return length;
+}
+
+static inline int flog10pow2(int q) {
+    return (int)(((long long)q * 661971961083LL) >> 41);
+}
+static inline int flog10threequarterspow2(int q) {
+    return (int)(((long long)q * 661971961083LL - 274743187321LL) >> 41);
+}
+static inline int flog2pow10(int e) {
+    return (int)(((long long)e * 913124641741LL) >> 38);
+}
+static inline u64 rop64(u64 g1, u64 g0, u64 cp) {
+    u64 x1 = (u64)(((u128)g0 * cp) >> 64);
+    u128 y = (u128)g1 * cp;
+    u64 z = ((u64)y >> 1) + x1;
+    return ((u64)(y >> 64) + (z >> 63)) |
+        (((z & 0x7fffffffffffffffULL) + 0x7fffffffffffffffULL) >> 63);
+}
+static inline u64 rop32(u64 g, u64 cp) {
+    u64 x1 = (u64)(((u128)g * cp) >> 64);
+    return (x1 >> 31) | (((x1 & 0xffffffffULL) + 0xffffffffULL) >> 32);
+}
+
+static inline u64 schubfach(int q, u64 c, int precision, int *exponent) {
+    u64 excluded = c & 1;
+    u64 cb = 4 * c, cbl = cb - 2, cbr = cb + 2;
+    int minimum = precision == 53 ? -1074 : -149;
+    int k = flog10pow2(q);
+    if (c == (1ULL << (precision - 1)) && q != minimum) {
+        cbl = cb - 1;
+        k = flog10threequarterspow2(q);
+    }
+    int h = q + flog2pow10(-k) + (precision == 53 ? 2 : 33);
+    int index = 2 * (k + 324);
+    u64 g1 = tzrt_schubfach_g[index], g0 = tzrt_schubfach_g[index + 1];
+    u64 vb, vbl, vbr;
+    if (precision == 53) {
+        vb = rop64(g1, g0, cb << h);
+        vbl = rop64(g1, g0, cbl << h);
+        vbr = rop64(g1, g0, cbr << h);
+    } else {
+        vb = rop32(g1 + 1, cb << h);
+        vbl = rop32(g1 + 1, cbl << h);
+        vbr = rop32(g1 + 1, cbr << h);
+    }
+    *exponent = k;
+    u64 s = vb >> 2;
+    if (s >= 10) {
+        u64 sp = 10 * (s / 10), tp = sp + 10;
+        int upin = vbl + excluded <= 4 * sp;
+        int wpin = 4 * tp + excluded <= vbr;
+        if (upin != wpin) return upin ? sp : tp;
+    }
+    u64 u = s + 1;
+    int uin = vbl + excluded <= 4 * s;
+    int win = 4 * u + excluded <= vbr;
+    if (uin != win) return uin ? s : u;
+    u64 midpoint = 2 * (s + u);
+    return vb < midpoint || (vb == midpoint && !(s & 1)) ? s : u;
+}
+
+static __attribute__((noinline)) int format_binary_fast(char *out, const unsigned char *input, int kind) {
+    int width = kind == 1 ? 32 : 64, fraction = kind == 1 ? 23 : 52;
+    int bias = kind == 1 ? 127 : 1023;
+    u64 raw = (u64)load(input, width);
+    int negative = (int)(raw >> (width - 1));
+    raw &= (1ULL << (width - 1)) - 1;
+    u64 t = raw & ((1ULL << fraction) - 1);
+    int bq = (int)(raw >> fraction), length = 0;
+    if (bq == 2 * bias + 1 && t) {
+        out[0] = 'n'; out[1] = 'a'; out[2] = 'n';
+        return 3;
+    }
+    if (negative) out[length++] = '-';
+    if (bq == 2 * bias + 1) {
+        out[length++] = 'i'; out[length++] = 'n'; out[length++] = 'f';
+        return length;
+    }
+    int q = bq - bias - fraction;
+    /* The unsigned borrow supplies the subnormal exponent offset. */
+    q += (int)((raw - (1ULL << fraction)) >> 63);
+    u64 c = bq ? (1ULL << fraction) | t : t;
+    int exponent = 0;
+    u64 coefficient;
+    if (q < 0 && q > -(fraction + 1) && !(c & ((1ULL << -q) - 1)))
+        coefficient = c >> -q;
+    else coefficient = schubfach(q, c, fraction + 1, &exponent);
+    char digits[24];
+    int count = 0;
+    do { digits[count++] = (char)('0' + coefficient % 10); coefficient /= 10; } while (coefficient);
+    return layout_decimal(out, length, digits, count, exponent);
 }
 
 static int radix_digit(u32 digit, int upper) {
@@ -862,8 +960,12 @@ int tz_soft_format_spec(char *out, const unsigned char *input, int kind, int fla
         u128 raw = load(input, f.width);
         int negative = f.sign && (raw >> (f.width - 1));
         u128 value = negative ? -raw & mask(f.width) : raw;
-        int length = signed_prefix(out, negative, plus);
         int base = style == 3 || style == 4 ? 16 : style == 5 ? 8 : style == 6 ? 2 : 10;
+        if (base == 10) {
+            int length = negative ? 0 : signed_prefix(out, 0, plus);
+            return length + tz_soft_format(out + length, input, kind);
+        }
+        int length = signed_prefix(out, negative, plus);
         return length + radix_text(out + length, value, base, style == 4);
     }
     tzrt_number value = decode(input, f);
@@ -936,6 +1038,89 @@ static int decimal_digits(const char *input, u64 length, u64 *index, tzrt_big *c
 
 static __attribute__((noinline)) int parse_float(unsigned char *out, const char *input, u64 length, u64 index, int negative, tzrt_format f);
 
+static inline int eisel_lemire(u64 w, int q, int fraction, u64 *raw) {
+    if (q < -342) { *raw = 0; return 1; }
+    if (q > 308) return 0;
+    int lz = w >> 32 ? __builtin_clz((u32)(w >> 32)) : 32 + __builtin_clz((u32)w);
+    w <<= lz;
+    int index = 2 * (q + 342);
+    u128 product = (u128)w * tzrt_pow5[index];
+    u64 hi = (u64)(product >> 64), lo = (u64)product;
+    u64 precision_mask = (1ULL << (64 - fraction - 3)) - 1;
+    if ((hi & precision_mask) == precision_mask) {
+        u64 s = (u64)(((u128)w * tzrt_pow5[index + 1]) >> 64);
+        lo += s;
+        if (lo < s) ++hi;
+    }
+    if (lo == ~0ULL && (q < -27 || q > 55)) return 0;
+    int up = (int)(hi >> 63), shift = up + 64 - fraction - 3;
+    u64 m = hi >> shift;
+    int bias = fraction == 52 ? 1023 : 127;
+    int p2 = ((217706 * q) >> 16) + 63 + up - lz + bias;
+    if (p2 <= 0) {
+        if (1 - p2 >= 64) { *raw = 0; return 1; }
+        m >>= 1 - p2;
+        m += m & 1;
+        *raw = m >> 1;
+        return 1;
+    }
+    int tie_min = fraction == 52 ? -4 : -17;
+    int tie_max = fraction == 52 ? 23 : 10;
+    if (lo <= 1 && q >= tie_min && q <= tie_max && (m & 3) == 1 && (m << shift) == hi)
+        m &= ~1ULL;
+    m += m & 1;
+    m >>= 1;
+    if (m >= (1ULL << (fraction + 1))) {
+        m = 1ULL << fraction;
+        ++p2;
+    }
+    if (p2 >= 2 * bias + 1) return 0;
+    *raw = ((u64)p2 << fraction) | (m & ((1ULL << fraction) - 1));
+    return 1;
+}
+
+/* Only acceptance is decided here. Ambiguous rounding and grammar still use
+   the exact parser, including overflow, separators and long coefficients. */
+static __attribute__((noinline)) int parse_binary_fast(unsigned char *out, const char *input, u64 length,
+                                                       u64 index, int negative, int kind) {
+    u64 w = 0;
+    int digits = 0, fractional = 0, seen = 0, point = 0;
+    while (index < length) {
+        char c = input[index];
+        if (c == '.' && !point) { point = 1; ++index; continue; }
+        if (c < '0' || c > '9') break;
+        seen = 1;
+        if (point) ++fractional;
+        if (w || c != '0') {
+            if (digits == 19) return -1;
+            w = 10 * w + (u32)(c - '0');
+            ++digits;
+        }
+        ++index;
+    }
+    if (!seen) return -1;
+    int exponent = 0;
+    if (index < length && (input[index] == 'e' || input[index] == 'E')) {
+        ++index;
+        int sign = index < length && input[index] == '-';
+        if (index < length && (sign || input[index] == '+')) ++index;
+        int count = 0;
+        while (index < length && input[index] >= '0' && input[index] <= '9') {
+            if (exponent >= 100000) return -1;
+            exponent = exponent * 10 + input[index++] - '0';
+            ++count;
+        }
+        if (!count) return -1;
+        if (sign) exponent = -exponent;
+    }
+    if (index != length) return -1;
+    int width = kind == 1 ? 32 : 64;
+    u64 raw = 0;
+    if (w && !eisel_lemire(w, exponent - fractional, kind == 1 ? 23 : 52, &raw)) return -1;
+    store(out, ((u64)negative << (width - 1)) | raw, width);
+    return 1;
+}
+
 __attribute__((visibility("hidden")))
 int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
     if (!length || length > 4096) return 0;
@@ -992,6 +1177,11 @@ int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
             store(out, special(f, 2, 0), f.width);
             return 1;
         }
+    }
+    /* A normalized 19-digit scientific form fits 25 bytes after the sign. */
+    if ((kind == 1 || kind == 2) && length - index <= 25) {
+        int result = parse_binary_fast(out, input, length, index, negative, kind);
+        if (result > 0) return result;
     }
     return parse_float(out, input, length, index, negative, f);
 }

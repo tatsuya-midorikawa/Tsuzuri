@@ -624,7 +624,11 @@ impl FunctionEmitter<'_, '_> {
                     ty: binding.ty.clone(),
                     span: binding.span,
                 };
+                if self.last_uses.moves_binding(binding.span) {
+                    self.moving_bindings.insert(binding.id);
+                }
                 let value = self.expression(&expression);
+                self.moving_bindings.remove(&binding.id);
                 self.borrowed_locals.remove(&binding.id);
                 self.frame_locals.remove(&binding.id);
                 self.bind_local(binding, &value);

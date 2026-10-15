@@ -3,20 +3,20 @@ use crate::check::PatternStep;
 
 type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
 
-pub(super) struct LoopFlow {
+pub(super) struct LoopFlow<'a> {
     locals: BTreeSet<usize>,
-    breaks: Vec<State>,
-    continues: Vec<State>,
+    breaks: Vec<State<'a>>,
+    continues: Vec<State<'a>>,
 }
 
 /// The states at which control may leave a `try` body (or, with `finally`, its
 /// handler) for the handler that catches the exception.
-pub(super) struct TryFlow {
+pub(super) struct TryFlow<'a> {
     locals: BTreeSet<usize>,
-    raises: Vec<State>,
+    raises: Vec<State<'a>>,
 }
 
-impl Checker<'_> {
+impl<'a> Checker<'a, '_> {
     /// Records a possible raise to the innermost `try` of this body: a checked
     /// operation or a re-raise. Without one, an uncaught exception traps.
     pub(super) fn raise_edge(&mut self, span: Span) -> Result<(), Diagnostic> {
@@ -116,7 +116,7 @@ impl Checker<'_> {
         Ok(result)
     }
 
-    pub(super) fn merge_reachable(&mut self, other: &State, reachable: bool) {
+    pub(super) fn merge_reachable(&mut self, other: &State<'a>, reachable: bool) {
         if reachable {
             if self.reachable {
                 self.merge(other);
@@ -171,11 +171,15 @@ impl Checker<'_> {
         let temporary = !Self::is_place(source);
         if temporary {
             let value = self.eval(source, Use::Consume, live)?;
-            self.state.locals.insert(local.id, (local.clone(), value));
+            self.state
+                .locals
+                .insert(local.id, (self.declarations[&local.id], value));
         } else {
             let places = self.place(source, live)?;
             let value = self.read_places(source, Use::Read, places.clone())?;
-            self.state.locals.insert(local.id, (local.clone(), value));
+            self.state
+                .locals
+                .insert(local.id, (self.declarations[&local.id], value));
             self.state.aliases.insert(local.id, places);
         }
         Ok(temporary)
@@ -210,7 +214,9 @@ impl Checker<'_> {
         self.state
             .aliases
             .insert(local.id, vec![(root, value.loans.clone())]);
-        self.state.locals.insert(local.id, (local.clone(), value));
+        self.state
+            .locals
+            .insert(local.id, (self.declarations[&local.id], value));
         self.state.moved.retain(|place| place.root != local.id);
         self.state
             .generic_moves
@@ -364,7 +370,7 @@ impl Checker<'_> {
                 self.eval(finish, Use::Consume, &during)?;
                 self.state
                     .locals
-                    .insert(local.id, (local.clone(), Value::default()));
+                    .insert(local.id, (self.declarations[&local.id], Value::default()));
                 self.check_loop(None, body, &during)?;
                 self.finish_control_scope(
                     &BTreeSet::from([local.id]),
@@ -392,7 +398,9 @@ impl Checker<'_> {
                 }
                 self.state.aliases.insert(local.id, places);
                 let loans = self.state.locals[&owner.id].1.clone();
-                self.state.locals.insert(local.id, (local.clone(), loans));
+                self.state
+                    .locals
+                    .insert(local.id, (self.declarations[&local.id], loans));
                 self.check_loop(None, body, &during)?;
                 self.held.pop();
                 let mut ids = BTreeSet::from([local.id]);
@@ -423,7 +431,7 @@ impl Checker<'_> {
         let temporary = self.alias_source(subject, matched, during)?;
         let mut pending = self.state.clone();
         let mut pending_reachable = self.reachable;
-        let mut exits: Option<State> = None;
+        let mut exits: Option<State<'a>> = None;
         let mut result = Value::default();
         for arm in arms {
             let mut pattern_pending = pending.clone();
@@ -440,7 +448,9 @@ impl Checker<'_> {
                     match step {
                         PatternStep::Bind(local, expression) => {
                             let value = self.eval(expression, Use::Consume, during)?;
-                            self.state.locals.insert(local.id, (local.clone(), value));
+                            self.state
+                                .locals
+                                .insert(local.id, (self.declarations[&local.id], value));
                             self.state.moved.retain(|place| place.root != local.id);
                             self.state
                                 .generic_moves
@@ -505,7 +515,9 @@ impl Checker<'_> {
                     let value = self.eval(projection, Use::Consume, during);
                     self.copies = copies;
                     let value = value?;
-                    self.state.locals.insert(local.id, (local.clone(), value));
+                    self.state
+                        .locals
+                        .insert(local.id, (self.declarations[&local.id], value));
                     self.state.moved.retain(|place| place.root != local.id);
                     self.state
                         .generic_moves

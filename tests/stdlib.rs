@@ -58,11 +58,13 @@ fn loads_the_embedded_standard_library_everywhere() {
     // Only reachable std functions reach the IR, private helpers included.
     let ir = library(&analyze("export def answer :: f64\nfn answer = Math.zero()").unwrap());
     assert!(
-        ir.contains("define internal double @tz.fn.Math.zero("),
+        ir.lines().any(|line| line.starts_with("define internal ")
+            && line.contains("double @tz.fn.Math.zero(")),
         "{ir}"
     );
     assert!(
-        ir.contains("define internal double @tz.fn.Math.identity_f64("),
+        ir.lines().any(|line| line.starts_with("define internal ")
+            && line.contains("double @tz.fn.Math.identity_f64(")),
         "{ir}"
     );
     let ir = library(&analyze("42").unwrap());

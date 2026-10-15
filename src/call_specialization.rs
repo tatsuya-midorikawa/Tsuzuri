@@ -202,6 +202,16 @@ pub(super) fn binary_operation<'a>(
     }
 }
 
+pub(crate) fn field_root(mut expression: &TypedExpr) -> Option<(usize, &Type)> {
+    loop {
+        match &expression.kind {
+            TypedExprKind::Local(id) => return Some((*id, &expression.ty)),
+            TypedExprKind::Field(value, _) => expression = value,
+            _ => return None,
+        }
+    }
+}
+
 pub(crate) fn single_use_locals(expression: &TypedExpr) -> BTreeSet<usize> {
     fn count(expression: &TypedExpr, uses: &mut BTreeMap<usize, usize>) {
         if let TypedExprKind::Local(id) = expression.kind {

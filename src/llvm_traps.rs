@@ -169,7 +169,7 @@ fn runtime_kind(function: &str) -> TrapKind {
         "@tz.alloc" | "@tz.realloc" | "@tz.alloc.base" | "@tz.realloc.base"
     ) {
         TrapKind::AllocationFailure
-    } else if function.contains("concat") {
+    } else if function.contains("concat") || function.ends_with(".append") {
         TrapKind::StringConcatOverflow
     } else if function.contains("debug.write") {
         TrapKind::DebugOutput

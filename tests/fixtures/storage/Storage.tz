@@ -4,6 +4,95 @@ record Nothing {}
 record UpdateOrder { first: i64, second: i64 }
 record UpdateItem<'a> { item: 'a, stamp: i64 }
 record UpdateCallable { reader: i64 -> i64, count: i64 }
+record CopyHolder { values: [i64] }
+record CopyOuter { holder: CopyHolder }
+
+export def literal_concat_stack :: i64
+fn literal_concat_stack =
+    let text = "hello" + " world"
+    text.length + text[0] as i64
+
+export def length_only_concat :: i64 -> i64
+fn length_only_concat n =
+    let text = if n > 0 then "ab" else "abc"
+    (text + "xyz").length
+
+export def buffer_concat :: i64 -> i64
+fn buffer_concat n =
+    let text = if n > 0 then "ab" else "abc"
+    let joined = text + "xyz"
+    joined.length * 100 + joined[1] as i64
+
+export def utf8_buffer_concat :: i64 -> i64
+fn utf8_buffer_concat n =
+    let text = if n > 0 then u8"ab" else u8"abc"
+    let joined = text + u8"xyz"
+    joined.length * 100 + joined[1] as i64
+
+def keep_text :: string -> string
+fn keep_text text = text
+
+export def buffer_escape :: i64 -> i64
+fn buffer_escape n =
+    let text = if n > 0 then "ab" else "abc"
+    let joined = text + "xyz"
+    (keep_text joined).length
+
+export def boundary_concat :: i64 -> i64
+fn boundary_concat n =
+    let base = "x"
+    let text = String.repeat (ref base) (127 + n)
+    let joined = text + "y"
+    joined.length
+
+export def local_closure :: i64 -> i64
+fn local_closure n =
+    let a = n + 1
+    let b = n * 2
+    let add = \i -> i + a + b
+    add 1 + add 2
+
+export def field_take :: i64
+fn field_take =
+    let holder = CopyHolder { values: new [1, 2, 3] }
+    let values = holder.values
+    values[0] + values.length
+
+export def field_take_nested :: i64
+fn field_take_nested =
+    let outer = CopyOuter { holder: CopyHolder { values: new [1, 2, 3] } }
+    let values = outer.holder.values
+    values[0] + values.length
+
+export def field_take_shared :: i64
+fn field_take_shared =
+    let holder = CopyHolder { values: new [1, 2, 3] }
+    let values = holder.values
+    holder.values[0] + values[0]
+
+export def field_update_reuse :: i64
+fn field_update_reuse =
+    let holder = CopyHolder { values: new [1, 2, 3] }
+    let values = Array.set holder.values 0 42
+    values[0]
+
+def append_text :: string -> string -> string
+fn append_text left right = left + right
+
+def append_utf8 :: utf8string -> utf8string -> utf8string
+fn append_utf8 left right = left + right
+
+export def string_append_owned :: i64
+fn string_append_owned =
+    let text = append_text "ab" "cd"
+    let text = append_text text "ef"
+    (append_text text "gh").length
+
+export def utf8_append_owned :: i64
+fn utf8_append_owned =
+    let text = append_utf8 u8"ab" u8"cd"
+    let text = append_utf8 text u8"ef"
+    (append_utf8 text u8"gh").length
 
 export def debug_trace_transfer :: i64
 fn debug_trace_transfer =
@@ -362,3 +451,18 @@ fn lent_capture =
     let labels = ["wxyz"]
     let generated = new [i64](3, \i -> i + labels[0].length)
     apply_twice (\x -> x + names[1].length) 10 + generated[2] * 100
+
+export def identity_concat_length :: i64 -> i64
+fn identity_concat_length n =
+    (to_string (to_string ((if n == 0 then "ab" else "abcd") + "!"))).length
+
+export def identity_concat_local :: i64 -> i64
+fn identity_concat_local n =
+    let text = to_string ((if n == 0 then "ab" else "abcd") + "!")
+    text.length + text[0] as i64
+
+export def identity_concat_copy :: i64 -> i64
+fn identity_concat_copy n =
+    let original = (if n == 0 then "ab" else "abcd") + "!"
+    let copied = to_string (clone_string ref original)
+    original.length * 10 + copied.length

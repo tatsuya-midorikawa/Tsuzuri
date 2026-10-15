@@ -633,7 +633,30 @@ Price.price()
 | Linux | `$XDG_CACHE_HOME/tsuzuri/build-cache`。無ければ `~/.cache/tsuzuri/build-cache` |
 | Windows | `%LOCALAPPDATA%\Tsuzuri\Cache\build-cache` |
 
-全体の上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build`・`run`・`script`・`repl` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
+成果物キャッシュの上限は 2 GiB、未使用の期限は 30 日、1 エントリは 256 MiB までです。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが入り、上限と期限による削除の対象外です。`--no-cache` は読み書きの両方を止めます。`build`・`run`・`script`・`repl` 以外では `E2000` です。ツールの `--version` が失敗すると、ビルドは続けつつ `build cache disabled: ...` を標準エラーへ出します。`--json` では、この種のツール警告は `W2001` です。
+
+### ランタイム object
+
+通常の native 実行ファイルと wasm32 モジュールは、大きい数値・数学ランタイムを別の object として
+コンパイルし、同じ保存先の `runtime/` で再利用します。キーは実際のランタイムソース、target、
+最適化レベル、CPU／SIMD 機能、Clang の内容と版、SDK に関係する環境変数から作ります。
+利用者のソースを編集して成果物キャッシュが外れても、同じランタイムの再コンパイルは不要です。
+C ランタイムも、連結するソースとコンパイル引数が同じなら再利用します。
+`runtime/` は成果物・構文解析のキャッシュとは独立して掃除し、上限 2 GiB、未使用 30 日、
+1 エントリ 256 MiB の同じ方針を使います。部分的な保存や checksum の不一致は再コンパイルします。
+
+配布物には generic CPU の native と、scalar／SIMD128 の wasm32 の `-O0`〜`-O3` の object が
+`share/runtime/` に入ります。同梱 Clang を使い、ソース・引数・ツール・環境と SHA-256 が一致する
+組だけを選びます。`TSUZURI_CLANG`・`TSUZURI_LLVM_CLANG`・`TSUZURI_ZIG` を上書きした場合、
+未収録の組、破損した同梱物は
+埋め込みソースのコンパイルへ戻ります。配布物がなくてもビルドできます。
+
+`--no-cache` はランタイムキャッシュも同梱 object も使わず、従来どおり埋め込みソースから
+ビルドします。`--emit llvm`・header・object・shared の数値／数学 IR、debug、トラップ位置の計装、
+WASM threads、memory64、スタック検査のある数値／数学 IR は分離しません。
+外部 object を使う native 実行ファイルでは未使用部分をリンク時に除去します。
+数学の小さい sqrt／fabs wrapper は IR に残すので、LLVM の intrinsic へのインライン化を保ちます。
+数値の丸め・NaN・符号付きゼロ・トラップ・公開 ABI・WASM の import は変わりません。
 
 ### 構文解析の結果
 

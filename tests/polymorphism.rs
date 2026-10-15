@@ -15,6 +15,39 @@ fn rejects(source: &str, code: &str) {
 }
 
 #[test]
+fn specializes_shared_non_generic_callee_once() {
+    let source = "def helper :: i64 -> i64\nfn helper x = x + 1\n\
+                  def apply :: 'a -> i64 -> i64\nfn apply _value n = helper n\n\
+                  def run :: i64 -> i64\nfn run n = apply true n + apply 2 n + helper n";
+    let module = accepts(source);
+    let helpers: Vec<_> = module
+        .functions
+        .iter()
+        .filter(|function| function.name == "helper")
+        .collect();
+    assert_eq!(helpers.len(), 1);
+    assert!(!matches!(
+        helpers[0].body.kind,
+        tsuzuri::check::TypedExprKind::Error
+    ));
+    assert_eq!(
+        module
+            .functions
+            .iter()
+            .filter(|function| function.name.contains("apply.$mono."))
+            .count(),
+        2
+    );
+    for wasm in [false, true] {
+        let first = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            first,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
 fn parses_typeclass_contexts_and_default_methods() {
     let source = "class (Eq<'a>, Ord<'a>) => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\nrecord Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; let ne = left -> right -> !(Eq.eq left right) }";
     let program = tsuzuri::parser::parse(source).unwrap();

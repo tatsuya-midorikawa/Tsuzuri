@@ -46,7 +46,8 @@ pub(crate) struct CopyRead {
     pub span: Span,
     pub ty: Type,
     pub kind: CopyKind,
-    /// The local read as a whole and not through a match or loop alias. Its only use moves.
+    /// An unaliased whole local, or a Copy root reached only through fields.
+    /// The single-use proof accepts both; backward liveness accepts only `CopyKind::Local`.
     pub local: Option<usize>,
 }
 
@@ -56,6 +57,7 @@ pub fn sites(module: &CheckedModule) -> Vec<CopySite> {
     for (index, reads) in crate::ownership::copy_reads(module).into_iter().enumerate() {
         let function = &module.functions[index];
         let single = crate::llvm::call_specialization::single_use_locals(&function.body);
+        let last_uses = crate::llvm::last_use::LastUses::analyze(function, module);
         // The body of an owned function borrows its captures, so even their only use copies (B07).
         let lent: BTreeSet<_> = if function.owned_captures {
             function.parameters[..function.capture_count]
@@ -67,9 +69,19 @@ pub fn sites(module: &CheckedModule) -> Vec<CopySite> {
         };
         let mut seen = BTreeSet::new();
         for read in reads {
-            if read
-                .local
-                .is_some_and(|id| single.contains(&id) && !lent.contains(&id))
+            if read.local.is_some_and(|id| {
+                (single.contains(&id)
+                    || (read.kind == CopyKind::Local && last_uses.moves_read_at(read.span, id)))
+                    && !lent.contains(&id)
+            }) {
+                continue;
+            }
+            if read.local.is_none()
+                && matches!(
+                    read.kind,
+                    CopyKind::Local | CopyKind::Payload | CopyKind::Field
+                )
+                && last_uses.moves_binding(read.span)
             {
                 continue;
             }

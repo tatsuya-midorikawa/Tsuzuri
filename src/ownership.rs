@@ -118,8 +118,8 @@ struct Loan {
 }
 
 #[derive(Clone, Default)]
-struct State {
-    locals: BTreeMap<usize, (Local, Value)>,
+struct State<'a> {
+    locals: BTreeMap<usize, (&'a Local, Value)>,
     aliases: BTreeMap<usize, Vec<(Place, BTreeSet<usize>)>>,
     moved: BTreeSet<Place>,
     generic_moves: BTreeMap<Place, Type>,
@@ -155,7 +155,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
     for function in &module.functions {
         let _ = check_body(
             module,
-            &function.parameters,
+            function.parameters.iter(),
             &function.body,
             true,
             &closed,
@@ -177,7 +177,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
         let mut copies = Vec::new();
         let _ = check_body(
             module,
-            &function.parameters,
+            function.parameters.iter(),
             &function.body,
             false,
             &closed,
@@ -203,10 +203,15 @@ fn check_functions(
         if diagnostics.is_full() {
             break;
         }
+        let scalar = !infer && ownership_free(&function.body);
+        if scalar && !cfg!(debug_assertions) {
+            constraints.push(BTreeSet::new());
+            continue;
+        }
         let mut recovered = Vec::new();
         let checked = check_body(
             module,
-            &function.parameters,
+            function.parameters.iter(),
             &function.body,
             infer,
             &closed,
@@ -216,6 +221,10 @@ fn check_functions(
             &mut recovered,
             None,
         );
+        if scalar {
+            debug_assert!(recovered.is_empty());
+            debug_assert!(matches!(&checked, Ok(required) if required.is_empty()));
+        }
         diagnostics.extend(recovered);
         match checked {
             Ok(required) => constraints.push(required),
@@ -227,6 +236,45 @@ fn check_functions(
     } else {
         Err(diagnostics.into_vec())
     }
+}
+
+/// These expressions cannot move ownership, create a loan, or observe a borrowed
+/// environment. Type changes and generated call ids alone are not such a proof.
+fn ownership_free(body: &TypedExpr) -> bool {
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if !matches!(
+            expression.ty,
+            Type::Integer(..)
+                | Type::Binary(_)
+                | Type::Decimal(_)
+                | Type::Simd(_)
+                | Type::Bool
+                | Type::Unit
+                | Type::Char
+                | Type::Utf8Char
+        ) || !matches!(
+            expression.kind,
+            E::Int(_)
+                | E::Float(_)
+                | E::Bool(_)
+                | E::Unit
+                | E::Local(_)
+                | E::Unary(..)
+                | E::Cast(_)
+                | E::Binary(..)
+                | E::If { .. }
+        ) {
+            return false;
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("classifying scalar ownership cannot fail");
+    }
+    true
 }
 
 /// The region contracts that a checked body proves (its result) and relies on (its callbacks and
@@ -261,20 +309,24 @@ struct ExternalSlot {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn check_body(
-    module: &CheckedModule,
-    parameters: &[Local],
-    body: &TypedExpr,
+fn check_body<'a>(
+    module: &'a CheckedModule,
+    parameters: impl Clone + Iterator<Item = &'a Local>,
+    body: &'a TypedExpr,
     infer: bool,
     closed: &[bool],
     task: bool,
     user_drop: bool,
-    contract: Contract<'_>,
+    contract: Contract<'a>,
     recovered: &mut Vec<Diagnostic>,
     copies: Option<&mut Vec<CopyRead>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
+    let mut declarations: BTreeMap<_, _> =
+        parameters.clone().map(|local| (local.id, local)).collect();
+    collect_declarations(body, &mut declarations);
     let mut checker = Checker {
         module,
+        declarations,
         state: State::default(),
         loans: Vec::new(),
         held: Vec::new(),
@@ -292,13 +344,18 @@ fn check_body(
         callbacks: contract
             .callbacks
             .iter()
-            .map(|callback| (parameters[callback.parameter].id, callback))
+            .map(|callback| {
+                (
+                    parameters.clone().nth(callback.parameter).unwrap().id,
+                    callback,
+                )
+            })
             .collect(),
         // `Drop.drop` borrows the dropped value through its only parameter.
-        drop_root: user_drop.then(|| usize::MAX - parameters[0].id),
+        drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         placeholders: BTreeSet::new(),
     };
-    for (index, parameter) in parameters.iter().enumerate() {
+    for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
         if !task && parameter.ty.carries_loans(&module.types()) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
@@ -306,7 +363,7 @@ fn check_body(
         checker
             .state
             .locals
-            .insert(parameter.id, (parameter.clone(), value));
+            .insert(parameter.id, (parameter, value));
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
     checker.check_result(parameters, body, task, contract, result)?;
@@ -330,15 +387,10 @@ fn owned(ty: &Type, module: &CheckedModule) -> bool {
         Type::Tuple(elements) => elements.iter().all(|ty| owned(ty, module)),
         Type::Record(id, arguments) => module
             .types()
-            .record_fields(*id, arguments)
-            .iter()
-            .all(|ty| owned(ty, module)),
+            .record_fields_all(*id, arguments, |ty| owned(ty, module)),
         Type::Union(id, arguments) => module
             .types()
-            .union_payloads(*id, arguments)
-            .iter()
-            .flatten()
-            .all(|ty| owned(ty, module)),
+            .union_payloads_all(*id, arguments, |ty| owned(ty, module)),
         _ => true,
     }
 }
@@ -430,6 +482,52 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
     }
 }
 
+/// Source declarations outlive every branch snapshot. Evaluation also visits synthetic
+/// capture expressions, so its expression borrows must remain shorter than these borrows.
+fn collect_declarations<'a>(body: &'a TypedExpr, locals: &mut BTreeMap<usize, &'a Local>) {
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            E::Block { bindings, .. } => {
+                for (local, _) in bindings {
+                    locals.insert(local.id, local);
+                }
+            }
+            E::ForRange { local, .. } => {
+                locals.insert(local.id, local);
+            }
+            E::ForEach { owner, local, .. } => {
+                locals.insert(owner.id, owner);
+                locals.insert(local.id, local);
+            }
+            E::Match { local, arms, .. } => {
+                locals.insert(local.id, local);
+                for arm in arms {
+                    for alternative in &arm.alternatives {
+                        for step in &alternative.steps {
+                            if let crate::check::PatternStep::Bind(local, _) = step {
+                                locals.insert(local.id, local);
+                            }
+                        }
+                        for (local, _) in &alternative.bindings {
+                            locals.insert(local.id, local);
+                        }
+                    }
+                }
+            }
+            // A lambda starts another checker with its own declarations.
+            E::Lambda { .. } => continue,
+            _ => {}
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting declarations cannot fail");
+    }
+}
+
 fn error(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
     Diagnostic::new(code, message, span)
 }
@@ -441,23 +539,24 @@ fn owned_dyn_of(callee: &TypedExpr) -> bool {
             && matches!(instance.types.get(1), Some(Type::Dyn(dyn_type)) if !dyn_type.borrowed))
 }
 
-struct Checker<'a> {
+struct Checker<'a, 'run> {
     module: &'a CheckedModule,
-    state: State,
+    declarations: BTreeMap<usize, &'a Local>,
+    state: State<'a>,
     loans: Vec<Loan>,
     held: Vec<Value>,
-    loop_flows: Vec<control::LoopFlow>,
-    try_flows: Vec<control::TryFlow>,
+    loop_flows: Vec<control::LoopFlow<'a>>,
+    try_flows: Vec<control::TryFlow<'a>>,
     reachable: bool,
     external: BTreeSet<usize>,
     /// A13 Phase 2: the region slots of the parameters, by external root and slot.
     slots: BTreeMap<(usize, usize), ExternalSlot>,
     infer: bool,
     copy_variables: BTreeSet<String>,
-    closed: &'a [bool],
-    recovered: &'a mut Vec<Diagnostic>,
+    closed: &'run [bool],
+    recovered: &'run mut Vec<Diagnostic>,
     /// Collects the copied consuming reads for `copies::sites`; the checks stay the same.
-    copies: Option<&'a mut Vec<CopyRead>>,
+    copies: Option<&'run mut Vec<CopyRead>>,
     reported: BTreeSet<usize>,
     /// Parameters with region-quantified function types, by local id (A12 Phase 2).
     callbacks: BTreeMap<usize, &'a CallbackContract>,
@@ -492,7 +591,7 @@ fn named_satisfies(
         }
 }
 
-impl<'a> Checker<'a> {
+impl<'a> Checker<'a, '_> {
     /// A call's callee function, the region contract that selects the loans of its result, and
     /// whether the callee is a region-quantified parameter. Checks first that the call passes only
     /// functions that keep the contracts of its region-quantified parameters (A12 Phase 2).
@@ -577,7 +676,7 @@ impl<'a> Checker<'a> {
                 function.parameters.len() == captures.len() + callback.arity
                     && check_body(
                         module,
-                        &function.parameters,
+                        function.parameters.iter(),
                         &function.body,
                         false,
                         self.closed,
@@ -601,7 +700,7 @@ impl<'a> Checker<'a> {
     }
 }
 
-impl Checker<'_> {
+impl<'a> Checker<'a, '_> {
     fn callback_returns_closed(&self, expression: &TypedExpr, arity: usize) -> bool {
         if let E::Call(callee, arguments) = &expression.kind {
             return self.callback_returns_closed(callee, arity + arguments.len());
@@ -908,7 +1007,7 @@ impl Checker<'_> {
     #[inline(never)]
     fn check_result(
         &self,
-        parameters: &[Local],
+        parameters: impl Clone + Iterator<Item = &'a Local>,
         body: &TypedExpr,
         task: bool,
         contract: Contract<'_>,
@@ -942,7 +1041,7 @@ impl Checker<'_> {
                 continue;
             };
             let owner = parameters
-                .iter()
+                .clone()
                 .position(|parameter| usize::MAX - parameter.id == place.root);
             let slot = place_slot(place);
             for (index, allowed) in sources.iter().enumerate() {
@@ -1738,10 +1837,14 @@ impl Checker<'_> {
         {
             return;
         }
-        let local = match expression.kind {
-            E::Local(id) if whole && !self.state.aliases.contains_key(&id) => Some(id),
-            _ => None,
-        };
+        let local = whole
+            .then(|| crate::llvm::call_specialization::field_root(expression))
+            .flatten()
+            .filter(|(id, ty)| {
+                !self.state.aliases.contains_key(id)
+                    && (matches!(expression.kind, E::Local(_)) || ty.is_copy(&self.module.types()))
+            })
+            .map(|(id, _)| id);
         let ty = expression.ty.clone();
         if let Some(copies) = self.copies.as_mut() {
             copies.push(CopyRead {
@@ -1950,7 +2053,7 @@ impl Checker<'_> {
             }
             self.state
                 .locals
-                .insert(local.id, (local.clone(), value_result));
+                .insert(local.id, (self.declarations[&local.id], value_result));
             self.state.moved.retain(|place| place.root != local.id);
             self.state
                 .generic_moves
@@ -2153,12 +2256,10 @@ impl Checker<'_> {
             ..Value::default()
         };
         // The functions of a `let rec` group are in scope in the body like captured function values.
-        let mut locals = captures.clone();
-        locals.extend(recursive.iter().cloned());
-        locals.extend(parameters.iter().cloned());
+        let locals: Vec<_> = captures.iter().chain(recursive).chain(parameters).collect();
         self.copy_variables.extend(check_body(
             self.module,
-            &locals,
+            locals.into_iter(),
             body,
             self.infer,
             self.closed,
@@ -2630,7 +2731,7 @@ impl Checker<'_> {
         Ok(result)
     }
 
-    fn merge(&mut self, other: &State) {
+    fn merge(&mut self, other: &State<'a>) {
         self.state.moved.extend(other.moved.iter().cloned());
         self.state.generic_moves.extend(other.generic_moves.clone());
         for (id, (_, value)) in &mut self.state.locals {
@@ -2666,15 +2767,58 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
             }
         }
         _ => {
-            for child in expression.children() {
-                count_uses(child, counts);
-            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    count_uses(child, counts);
+                    Ok(())
+                })
+                .expect("counting uses cannot fail");
         }
     }
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
-    let mut counts = BTreeMap::new();
-    count_uses(expression, &mut counts);
-    ids.extend(counts.into_keys());
+    match &expression.kind {
+        E::Local(id) => {
+            ids.insert(*id);
+        }
+        E::Lambda { captures, .. } => ids.extend(captures.iter().map(|local| local.id)),
+        _ => expression
+            .try_for_each_child(&mut |child| {
+                uses(child, ids);
+                Ok(())
+            })
+            .expect("collecting uses cannot fail"),
+    }
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    #[test]
+    fn scalar_recheck_elision_excludes_borrowing_calls_and_bindings() {
+        let module = crate::analyze(
+            "def scalar :: i64 -> i64 = \\x -> x + 1\n\
+             def branch :: i64 -> i64 = \\x -> if x > 0 then x else -x\n\
+             def ignored :: ref i64 -> i64 = \\_x -> 1\n\
+             def call :: i64 -> i64 = \\x -> scalar x\n\
+             def read :: ref i64 -> i64 = \\x -> *x\n\
+             def binding :: i64 -> i64 = \\x -> { let y = x; y }",
+        )
+        .unwrap();
+        for (name, expected) in [
+            ("scalar", true),
+            ("branch", true),
+            ("ignored", true),
+            ("call", false),
+            ("read", false),
+            ("binding", false),
+        ] {
+            let function = module
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap();
+            assert_eq!(super::ownership_free(&function.body), expected, "{name}");
+        }
+    }
 }

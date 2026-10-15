@@ -1,4 +1,5 @@
 record Pair { left: [i64], right: [i64] }
+union Chain = End | Link of ([i64] * Chain)
 
 def make :: i64 -> Result<[i64], string> = \n ->
     if n >= 0 then Result.Ok (new [i64](3, \i -> (i + 1) * n)) else Result.Error "negative"
@@ -113,3 +114,23 @@ export def list_cons_loop :: i64 -> i64 = \n ->
     for i in 0 .. (n - 1) do
         items = List.cons i items
     List.fold (\acc x -> acc * 3 + x) 0 (ref items)
+
+export def stack_scrutinee :: i64 -> i64 = \n ->
+    match Maybe.Some [1i64, 2i64, 3i64] with
+    | Maybe.Some xs -> xs[0] + xs[2] + n
+    | Maybe.None -> n
+
+export def recursive_scrutinee :: i64 -> i64 = \n ->
+    match Link (new [i64](3, \i -> i + n), End) with
+    | Link (xs, rest) -> xs[0] + xs[2]
+    | End -> 0
+
+def accepts_subject :: Maybe<[i64]> -> bool = \m ->
+    match m with | Maybe.Some xs -> xs[0] >= 0 | Maybe.None -> false
+
+export def guard_reads_subject :: i64 -> i64 = \n ->
+    let m = maybe_of n
+    match m with
+    | Maybe.Some xs when accepts_subject m -> xs[0] + xs[2]
+    | Maybe.Some xs -> xs[1]
+    | Maybe.None -> 0

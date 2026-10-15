@@ -8,9 +8,9 @@
 | 規模 | M |
 | 依存 | PX03 |
 | 関連 | G11, G14, PM08, PR07, PR08 |
-| 状態 | todo |
+| 状態 | in progress |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1）。Phase 2 は要承認: D9（配布物への object の同梱。G14 の配布形式に依存）。Phase 3 は要承認: D10（リンカーの未使用コード除去と `math.ll` の分離。全実行ファイルのリンクを変える） |
+| 承認 | 2026-10-14 の依頼で Phase 1〜3、D9（配布 object）・D10（未使用コード除去・math 分離）を承認済み |
 | 手本にする既存実装 | object の保存・検証・原子的な公開・掃除: `src/cache.rs` の `BuildCache::open`・`load`・`store`・`evict`。鍵とツールの同定: `src/cache.rs` の `build_key`（`tool-path`・`tool-binary`・`tool-version-stdout`・`native-cpu-features`）。ランタイム object を作ってリンクへ渡す経路: `src/driver.rs` の `build_complete` の `native_runtime` 分岐（`task.c` → `task.o` → `-x none`・`clang -r`）。`numeric.ll` を単独の module としてコンパイル・リンクする例: `tests/display_parse.mjs`（C harness と native・WASM × `-O0`・`-O3`） |
 | 主な影響ファイル | `src/llvm.rs`（`EmitOptions`・`Instrumentation`・`emit_program`・`numeric_declarations`（新規））、`src/driver.rs`（`build_complete`・`runtime_object`（新規））、`src/cache.rs`（`build_key`・`ToolIdentity`（新規）・`tool_identity`（新規）・`runtime_key`（新規）・`KEY_ENVIRONMENT`（新規））、`EmitOptions` を構築するテスト（`tests/cpu_dispatch.rs`・`tests/debug_info.rs`・`tests/debug_output.rs`・`tests/trap_locations.rs`・`tests/windows.rs`）、`tests/prebuilt_runtime.mjs`（新規）、`benchmarks/run-build.mjs`（PX03 で新規。variant の追加だけ）、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_perfs/README.md` |
 | 計測対象 | `examples/hello` の実行ファイル（native `-O0`・`-O3`）、数値の表示だけを使う WASM（`--target wasm32 -O0`・`-O3`）、`numeric.ll` と C ランタイムの両方を使う `examples/tasks`（native `-O0`・`-O3`）。状態は whole-build cache が miss でランタイム object が cache にある状態（variant `build-runtime-warm`（新規））と、`--no-cache`（変わらないことの確認） |
@@ -26,8 +26,28 @@
 - 実行結果・トラップ・確保・生成コードの性能は変えない。`numeric.ll` の入口は今でも `weak hidden` で、LLVM は inline しないので、
   別 object にしても最適化の機会は減らない（「現状と計測」）。
 
-実装者は Phase 1 だけを実装する。Phase 2（配布物への同梱、G14）と Phase 3（必要な関数だけのリンク、PM08）は人間が求め、
-D9・D10 が承認された場合だけ着手する。
+2026-10-14 の依頼で Phase 1〜3 全体（D9・D10 を含む）が承認された。
+以下の旧 Phase 1 限定の条件より、現行 Windows 対応と次の実装判断を優先する。
+
+## 着手時の再検討（2026-10-14）
+
+- G14 の配布形式は `bin/` と `manifest.json` に確定済み。`share/runtime/` にソース由来の識別子、
+  target、最適化、機能、ツールの内容 digest と object の size/SHA-256 を持つ manifest を同梱する。
+  `TSUZURI_CLANG` の上書き、未知の target/オプション、破損した同梱物はソースコンパイルへ戻る。
+- `--no-cache` は全 cache の読み書きをしない独立した旧経路を維持し、同梱 object も使わない。
+  配布物がなくても埋め込みソースだけでビルドできる。
+- native exe と wasm module だけ numeric/math を分離する。LLVM/header/object/shared、
+  debug、trap、threads、memory64、stack-check 計装は埋め込みのまま。Windows exe は対象に含め、
+  COFF object の既存制限は変えない。
+- ソースは生成器の出力そのものから鍵を作る。PR04 が numeric/math を再生成するため手編集しない。
+  math の重い入口は独立コピーだけ hidden 化し、sqrt/fabs の小さい wrapper は IR に残す。
+  weak にせず同一 object 内の inline を維持する。数値ランタイムの既存 weak hidden ABI は変えない。
+- C runtime は既存の連結ソース・引数を保ち、runtime 専用 `BuildCache` を使う。
+  compiler 自体の digest は runtime の鍵に入れず、実際の source、引数、Clang と SDK 環境を入れる。
+- Phase 3 の section 分離は runtime object に限定する。native exe は Mach-O の
+  `-dead_strip`、ELF の `--gc-sections`、COFF の `/OPT:REF` または MinGW `--gc-sections` を使う。
+  object の公開 ABI と embedded/no-cache の生成は変更しない。WASM は既存の GC を保つ。
+- 性能測定は並行 agent の CPU 利用が終わってから行う。速度の CI 閾値は追加しない。
 
 ## 着手条件と停止条件
 
@@ -152,7 +172,7 @@ D9・D10 が承認された場合だけ着手する。
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
-W=/tmp/tz-pb01 && mkdir -p $W/spy $W/spyw $W/disp
+W="$PWD/target/pb01-work" && mkdir -p $W/spy $W/spyw $W/disp
 printf '#!/bin/sh\nfor a in "$@"; do case "$a" in *.ll|*.c) cp "$a" "$SPY_DIR/";; esac; done\nexec clang "$@"\n' > $W/clang-spy.sh
 chmod +x $W/clang-spy.sh
 /usr/bin/time -p target/release/tsuzuri build examples/hello -O3 --no-cache -o $W/ref3
@@ -379,21 +399,23 @@ return object
 
 ### Phase 分割
 
-- Phase 1（このチケット）: 上のすべて。macOS と Linux の native の実行ファイル・`--emit object`（`native-c` だけ）、WASM の `--emit wasm`。
-- Phase 2（D9 が承認された場合だけ。設計方針）: G14 の配布物に主要な組（native の `O0`・`O3` × `--cpu generic`、wasm32 の `O0`・`O3` × SIMD の有無）の
-  object を同梱する。探す順は配布物の読み取り専用ディレクトリ → ランタイムの cache → コンパイル。配布物の object の鍵は G14 が同梱する Clang
-  （`vsc/src/toolchain.ts` の `tsuzuri-clang`）の同定を使い、利用者の Clang が違えば使わない。`--no-cache` でも配布物の object は使う
-  （cache ではなく toolchain の一部）。
-- Phase 3（D10 が承認された場合だけ。設計方針）: ランタイム object を `-ffunction-sections -fdata-sections` で作り、実行ファイルのリンクに
-  `-Wl,-dead_strip`（macOS）・`-Wl,--gc-sections`（Linux）を足す（`wasm-ld` は既定で未使用の関数を除く）。PM08 の型ごとの表示の分割と合わせて、
-  整数の表示だけのプログラムから浮動小数点・decimal のコードを除く。`math.ll` は本体が大きい関数（`tz_math_pow_f64` など）だけを `hidden` にして
-  object へ移し、4 行の `sqrt`・`fabs` は IR に残す。使うランタイムの判断を IR の文字列の検索から IR 生成時の使用記号の集合へ移す（PB02 と共有）。
-  元の起票の Phase 2（関数単位のリンク）と Phase 3（検索の置き換え）はここにまとめた。
+- Phase 1: macOS・Linux・Windows の native 実行ファイルと wasm32 module の numeric/math、native C の内容鍵 cache。
+  `--emit object` の C runtime は既存の対応範囲だけ cache 化する。計装・LLVM/header/object/shared の numeric/math は埋め込む。
+- Phase 2: 実際の `scripts/toolchain/bundle.mjs` が `share/runtime/` に 52 object を生成する。
+  numeric/math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、task/cpu/io の 7 組 × O0〜O3 の 28 個。
+  探す順は配布物 → runtime cache → source compile。環境・ソース・引数・実際の launcher/Clang/Zig の digest を照合する。
+  `--no-cache` は同梱 object も使わず独立した埋め込み経路を維持する。
+- Phase 3: runtime object を function/data section に分け、native executable の Mach-O・ELF・COFF/MinGW と WASM の
+  リンカーで未使用 section を除く。native の公開 export を明示的な root として残す。
+  重い math は standalone コピーだけ `hidden` にし、sqrt/fabs は caller IR に残す。
+  module 組み立て時に記号を一度収集し、追加する runtime の参照を集合へ足して依存を解決する。
+  LLVM の文字列定数・コメントの中の名前は参照と数えない。数値の generic dispatch から到達する枝は残り、
+  型ごとの表示の分割（PM08）は本チケットでは行わない。
 
 ## 実装手順
 
 各手順の後で tree は compile でき、それまでのテストは成功する。`cargo test --locked <filter>` は 0 件でも成功するので、
-`running N tests` の N を必ず見る（GUIDE §3.1）。`W=/tmp/tz-pb01`。
+`running N tests` の N を必ず見る（GUIDE §3.1）。`W="$PWD/target/pb01-work"`。
 
 ### 手順 1: ベースライン
 
@@ -402,7 +424,7 @@ return object
 - 確認: 「再現」の期待どおり。次の 4 ファイルができる（`before-tasks.nm` は空でない）。
 
 ```sh
-cd /Users/tmidorikawa/Documents/git/Tsuzuri && W=/tmp/tz-pb01
+cd /Users/tmidorikawa/Documents/git/Tsuzuri && W="$PWD/target/pb01-work"
 cargo build --release --locked && cp target/release/tsuzuri $W/tsuzuri-before
 target/release/tsuzuri build $W/disp --emit llvm -O3 --no-cache -o $W/before-disp.ll
 target/release/tsuzuri build $W/disp --target wasm32 --emit llvm -O3 --no-cache -o $W/before-disp-wasm.ll
@@ -476,7 +498,7 @@ npx --yes --package=node@24 node tests/math.mjs target/release/tsuzuri
 ### 手順 10: 計測の variant
 
 - 変更: `benchmarks/run-build.mjs` の `VARIANTS`（D11）。
-- 確認: `node benchmarks/run-build.mjs target/release/tsuzuri --out /tmp/tz-pb01/quick --quick` が成功し、`build.jsonl` に
+- 確認: `node benchmarks/run-build.mjs target/release/tsuzuri --out target/pb01-work/quick --quick` が成功し、`build.jsonl` に
   `"variant":"build-runtime-warm"` の行がある。`node tests/benchmark_report.mjs` が成功。
 
 ### 手順 11: 計測・生成コードの確認・文書
@@ -491,14 +513,19 @@ npx --yes --package=node@24 node tests/math.mjs target/release/tsuzuri
 - variant `build-runtime-warm`（D11）: warm-up の前に `T/cache` を消し、warm-up 1 回で whole-build と `runtime/` を作る。各標本の前に
   `T/cache` の直下の 64 桁の 16 進の entry だけを消し（`runtime/` は残す）、`tsuzuri build P -O<n> --cpu generic -o T/app-rw` を測る。
   WASM は `--target wasm32 -O<n> -o T/app-rw.wasm`。before のコンパイラでは `runtime/` がないので、毎標本ランタイムをコンパイルする。
+- variant `build-runtime-cold`（D11）は各標本の前に cache root 全体を消す。cold/warm とも native・wasm32 の O0/O3 を読む。
+- 正式な matched scope は `--sizes 10 --languages tsuzuri`：10 module の合成 workload と既存の全 11 実 project。
+  200/1000 module の frontend と allocation は PB02 の別の 9 標本で検証し、PB01 の runtime 計測対象には含めない。
+  24 分で中断した 200-module run は未完了として保存し、正式比較から除外する。以下の output directory は新規のものを使う。
+  現行 runner は無関係な variant も実行するため、PB01 の報告では `build-runtime-cold`・`build-runtime-warm` の行を抽出する。
 - 標本は warm-up 1 回と 9 標本、統計は中央値・最小・最大（PX01）。生データは PX01 形式の JSON Lines で `target/perf/<run_id>/build.jsonl`。
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
 test -z "$(git status --porcelain)" && echo clean
-npx --yes --package=node@24 node benchmarks/run-build.mjs /tmp/tz-pb01/tsuzuri-before --out target/perf/PB01-before --sizes 200
-npx --yes --package=node@24 node benchmarks/run-build.mjs /tmp/tz-pb01/tsuzuri-before --out target/perf/PB01-before2 --sizes 200
-npx --yes --package=node@24 node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PB01-after --sizes 200
+npx --yes --package=node@24 node benchmarks/run-build.mjs target/perf/phase2-baseline/tsuzuri-before --out target/perf/PB01-before --sizes 10 --languages tsuzuri
+npx --yes --package=node@24 node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PB01-after --sizes 10 --languages tsuzuri
+npx --yes --package=node@24 node benchmarks/run-build.mjs target/perf/phase2-baseline/tsuzuri-before --out target/perf/PB01-before2 --sizes 10 --languages tsuzuri
 npx --yes --package=node@24 node benchmarks/metrics.mjs report target/perf/PB01-before2 --baseline target/perf/PB01-before
 npx --yes --package=node@24 node benchmarks/metrics.mjs report target/perf/PB01-after --baseline target/perf/PB01-before
 ```
@@ -507,11 +534,14 @@ npx --yes --package=node@24 node benchmarks/metrics.mjs report target/perf/PB01-
   `build-wasm`（`--no-cache`）の行で読む。M6 は PX01 の「before／after（他チケットの共通手順）」で native `-O3` の既存の種目を
   `--out target/perf/PB01-runtime-before`・`PB01-runtime-after` として測る。
 - 完了報告には M1〜M6 の中央値と広がり、`clang --version`・`wasm-ld --version`・`node --version`・commit を書く。
+- この scope から 200/1000 module の runtime 性能や同梱 object の速度を主張しない。
+  warm は frontend cache も保持し、cold はそれも消す。統合 compiler 間の end-to-end 値と cache 再利用の証拠を報告し、
+  cold/warm の差のすべてを PB01 の runtime object 再利用だけに帰属させない。
 
 ## 生成コードの確認
 
 ```sh
-cd /Users/tmidorikawa/Documents/git/Tsuzuri && W=/tmp/tz-pb01 && rm -rf $W/spy $W/c && mkdir -p $W/spy
+cd /Users/tmidorikawa/Documents/git/Tsuzuri && W="$PWD/target/pb01-work" && rm -rf $W/spy $W/c && mkdir -p $W/spy
 export TSUZURI_CACHE_DIR=$W/c
 SPY_DIR=$W/spy TSUZURI_CLANG=$W/clang-spy.sh target/release/tsuzuri build examples/hello -O3 -o $W/hello-new
 grep -c '^define weak hidden' $W/spy/module.ll; grep -c '^declare hidden .*@tz_soft_' $W/spy/module.ll; wc -c $W/spy/module.ll
@@ -608,8 +638,9 @@ M1〜M6。合否の閾値は置かない。
 
 ## 対象外
 
-- `math.ll`・手書きのランタイム IR の事前ビルド、`--wasm-feature threads`、Windows、`-g` のビルド、トラップ計装のある `numeric`（D5 の将来の候補）。
-- 配布物への同梱（Phase 2）、未使用コード除去と表示の分割（Phase 3、PM08）。
+- numeric/math 以外の手書きランタイム IR の事前ビルド、WASM threads・memory64・stack-check、
+  debug/trap 計装のある numeric/math。
+- 型ごとの表示の分割（PM08）。Phase 2 の配布 object と Phase 3 の未使用 section 除去・math 分離は実装範囲。
 - 鍵の計算の高速化（PB06）、利用者コードの関数単位のキャッシュ（PB07）、フロントエンドの高速化（PB02）。
 - 言語間 LTO（PR08）。事前ビルドの object は LTO に参加しないので、PR08 は使わない。
 
@@ -678,16 +709,105 @@ M1〜M6。合否の閾値は置かない。
 
 - 決定: 「Phase 分割」の Phase 2 の方針。着手は G14 の配布形式が決まってから。
 - 理由: 配布物の置き場所・同梱する組・Clang の同定の扱いが G14 に依存し、`--no-cache` での利用という CLI の意味の変更を含む。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 2026-10-14 承認済み。現行の配置・条件は「着手時の再検討」「Phase 分割」のとおり。
 
 ### D10: Phase 3（必要な関数だけのリンクと `math.ll`）
 
 - 決定: 「Phase 分割」の Phase 3 の方針。
 - 理由: すべての実行ファイルのリンク（`-dead_strip`・`--gc-sections`）を変え、`math.ll` の linkage を変える。実行時間と大きさの計測が要る。
-- 状態: 要承認（承認前は Phase 3 に着手しない）
+- 状態: 2026-10-14 承認済み。現行の配置・条件は「着手時の再検討」「Phase 分割」のとおり。
 
 ### D11: 計測の variant
 
-- 決定: PX03 の `benchmarks/run-build.mjs` の `VARIANTS` に `build-runtime-warm`（native と wasm32、`O0`・`O3`）を足す。手順は「計測手順」。
+- 決定: PX03 の `benchmarks/run-build.mjs` の `VARIANTS` に `build-runtime-cold`・`build-runtime-warm`（native と wasm32、`O0`・`O3`）を足す。
+  正式 scope は 10-module 合成と全 11 実 project、matched before/after/before2 の各 9 標本。手順は「計測手順」。
 - 理由: whole-build miss でランタイムが warm な状態は、編集して再ビルドする日常の状態で、PX03 の既存の variant では作れない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み。200 を超える合成 module の WASM O3 は両 variant でも既存の opt-in guard に従う。正式計測は親が実行する。
+
+## 実装・検証記録（2026-10-14）
+
+### Phase 1〜3 の実装
+
+- `src/runtime_cache.rs` を追加。生成 numeric の入口から宣言を抽出し、math の standalone コピーだけ
+  重い入口を hidden 化する。sqrt/fabs の小さい wrapper は caller に保持する。生成元の numeric/math は変更しない。
+- `src/cache.rs` の同じ検証・非待機 lock・原子的な directory publication を `runtime/` に再利用する。
+  source・unit・順序付き引数・host・CPU・tool・SDK 環境で鍵を作り、compiler binary には依存しない。
+  launcher だけでなく実際の Clang/Zig と配布 resource inventory も同定する。
+  inventory は compiler の file・version・outer id を除外する。backend override の実体も hash し、
+  同梱 object は `TSUZURI_CLANG`・`TSUZURI_LLVM_CLANG`・`TSUZURI_ZIG` override では使わない。
+  同梱 manifest は必要な環境・tool 欄を検証し、非 UTF-8 環境を lossily 同一視しない。
+- LLVM module の組み立てと driver の C/numeric/math 選択は正確な記号集合を使用する。
+  追加する runtime の参照も集合に足す。文字列定数・コメントの偽の runtime 名は無視する。
+- runtime object に function/data section、native executable に target 別 GC を付ける。
+  公開 export を root として保持する。WASM の既存 GC と embedded/no-cache 経路は保持する。
+- 実際の bundle builder に `scripts/toolchain/runtime.mjs` を接続し、52 object と検証 manifest を生成する。
+  outer manifest と archive にも含め、移設後に同梱 object を実際に消費する smoke を追加した。
+- build benchmark に `build-runtime-cold` と `build-runtime-warm` を追加。
+  warm は成果物 cache だけを sample ごとに除き、runtime/frontend は維持する。
+
+### 実行した検証
+
+scratch と cache は project の `target/` 配下に置いた。形式的な before/after 計測は親の統合検証に委ね、
+並行実行の時間を性能結果として使っていない。
+
+| コマンド／検査 | 結果 |
+| --- | --- |
+| `cargo test --locked --lib cache::` | 24 passed。SHA-256、source/flags/tool/CPU key、compiler を除外した同梱 resource identity、部分保存・破損・race・sidecar・eviction、frontend cache、runtime 宣言と記号 lexer |
+| `cargo test --locked --test prebuilt_runtime` | 3 passed。native/WASM の決定的宣言、intrinsic wrapper、trap 拒否、文字列中の runtime 名の無視 |
+| `node tests/cache.mjs target/release/tsuzuri` | 既存 regression 全項目 passed：同一 byte の hit、各種 invalidation、破損修復、並行書き込み、no-cache、出力保護、権限・sidecar |
+| `node tests/prebuilt_runtime.mjs target/debug/tsuzuri` | native/scalar WASM/SIMD WASM O0/O3 の 6 配置で cold/warm、数学 reference・NaN・符号付きゼロ、公開 export、object/header byte 同一、no-cache、C tasks、環境 invalidation、破損修復、4 並行 publication、利用不能 cache の fallback passed |
+| `cargo test --locked --test targets a_different_triple_or_sysroot_never_reuses_a_cached_build` | 1 passed。cold ごとの numeric object＋user module の 2 回を数え、sysroot/target が変わると両方再生成することを検査 |
+| baseline と current の native header/object 公開記号比較 | header byte と `_tz_number`・`_tz_sine` の公開記号集合が一致 |
+| Windows x64/ARM64 `cargo check --locked --all-targets --target …` | 両方 passed。matching rustup stable の `RUSTC` を明示。Windows 実行は Windows CI が必要 |
+| `node scripts/check-docs.mjs …/compiler/usage.md …/compiler/option.md` | 2 pages、66 links、6 checked examples、6 native runs（O0/O3）、1 test project passed |
+| `node --check` runtime/smoke/prebuilt-runtime/build-benchmark | passed |
+
+実配布の検証コマンド：
+
+```sh
+export TMPDIR="$PWD/target/pb01-scratch"
+LLVM_PREFIX="$PWD/target/pb01-llvm" node scripts/toolchain/bundle.mjs target/pb01-distribution
+node scripts/toolchain/archive.mjs target/pb01-distribution target/pb01-archive
+node scripts/toolchain/smoke.mjs target/pb01-archive/tsuzuri-0.1.0-darwin-arm64.tar.gz --discover
+```
+
+bundle は 52 object（合計 4,558,482 bytes）を生成し、runtime manifest を outer inventory に含めた。
+19,640 files の bundle と再展開 archive の同定が一致し、archive は 202,557,299 bytes。
+移設 archive の native/scalar WASM/SIMD WASM O0/O3 numeric/math、native C tasks の同梱消費（runtime cache の object が
+0 件であること）、破損 object の source fallback、no-cache の独立性が passed。
+既存 IO・arguments・DWARF・重複 test selection・parallel・Async・WASM・namespace・tool discovery の smoke も passed。
+使用したツールは Clang/llvm-link/dsymutil 21.1.8、wasm-ld 23.1.1、Zig 0.16.0。
+この機械の LLVM21 prefix に wasm-ld がなかったため、project 内の prefix に既存 LLD23 を組み合わせた。
+
+### 統合時の注意と未計測
+
+- 上の配布 snapshot は並行 agent の最終生成物より前に作ったもの。最終配布は必ず converged source から
+  builder を再実行する。source digest が違う object を compiler が再利用することはない。
+- Windows の型検査は成功したが実行・配布 smoke は Windows CI で検証する。
+  bounded gate は全 OS で `cargo test --locked --lib cache::`、`cargo test --locked --test prebuilt_runtime`、
+  `node tests/prebuilt_runtime.mjs <compiler>`。Rust・SIMD 対応 Node・Clang 21 以降・wasm-ld が必要。
+  Windows の spy は bundled launcher の MinGW link flag を保持し、CRLF を正規化する。
+  `nm` の検査だけ Windows で除き、object/header・6 配置の実行検査は除かない。
+- before/after/before2 の正式計測、build benchmark の実測、全体の fmt/clippy/CI wiring は親が統合して行う。
+  現時点では速度向上の倍率を主張しない。型別 numeric dispatch 分割（PM08）も主張しない。
+- default の大きい user cache で CLI が 180 秒を超える件は、既存 `BuildCache::evict` の最大
+  4,096 metadata scan と並行 filesystem 負荷。サンプルは `__open`、default cache directory を示し、
+  baseline も約 120 秒、`TSUZURI_CACHE_DIR=''` では直ちに完了した。runtime object は `--emit llvm`
+  で使わず、lock も待機しない。既存の掃除方針は変更せず、correctness は専用 cache で検証した。
+
+### build 計測の大規模 WASM 除外
+
+新設の runtime cold/warm が `build-wasm` 専用の guard を迂回していたため、判定を variant 名ではなく
+`modules > 200 && target === "wasm32" && opt === "O3" && !largeWasm` に統一した。
+`build-wasm`・`build-runtime-cold`・`build-runtime-warm` のすべてに既存の除外を適用し、
+理由と実際の variant 名を `skipped_variants` に残す。200 module（main を含む 201 `.tz`）は従来どおり対象で、
+`--large-wasm` の明示要求、native、WASM O0、実 project は除外しない。
+`tests/benchmark_report.mjs` に境界・opt-in・全 WASM O3 variant の回帰検査を追加した。
+親の正式計測中は compiler を起動せず、同じ exported guard の 20 assertion と両 JS の構文検査だけを実行して passed。
+起動済み runner は修正前のコードを保持するため、1000 module に進める前に再起動が必要。
+
+既存 CLI の選択肢は `--sizes`・`--languages` のみで、variant/project selector はない。
+`--sizes 10 --languages tsuzuri` は合成 workload を 10 module に限定するが、正式 mode の全 11 実 project と
+無関係な build/frontend variant も実行する。`--quick` は 1 sample と hello だけになり、正式比較の代わりにはしない。
+この限定で得た runtime rows は小規模合成・実 project の runtime reuse を示すもので、
+200/1000 module の runtime 性能や同梱 object の速度を測定したとは主張しない。

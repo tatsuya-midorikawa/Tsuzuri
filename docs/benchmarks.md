@@ -5468,6 +5468,256 @@ Go の cgo の境界と background GC の CPU は計時に含みます。
 LLVM IR／assembly と実コマンドは `--artifacts`、版・Go の環境は stdout JSON に残します。
 CI の quick は正しさと記録だけで、WASM の速度、GPU、並列による加速の主張ではありません。
 
+## 第2フェーズの生成コードと確保（2026-10-14）
+
+PB01・PB02・PR01・PM06・PM07（A17 を含む）・PR04・PR05 の比較の基準は `a621fada` です。
+同時に入る変更なので、全体の before／after を個別の最適化だけの速度差として扱いません。
+共有 CI には正しさ・境界条件・fallback の検査だけを置き、速度の合否閾値は置きません。
+
+フロントエンドは `run-frontend.mjs <compiler> --sizes 200,1000 --out <dir>` で
+hello と 200／1,000 モジュールの check・LLVM 出力、時間と RSS を各 9 標本で測ります。
+runtime の cold／warm は `run-build.mjs <compiler> --sizes 10 --languages tsuzuri --out <dir>` の
+10 モジュールと既存の実プロジェクト 11 件を使い、同じ条件で before／after／before2 を測ります。
+大規模 runtime ビルドの反復はフロントエンド・バックエンドの費用が支配するためこの比較から分離しました。
+中断した 200 モジュールの runtime 測定は結果に含めず、200／1,000 モジュールの runtime cache の改善率は主張しません。
+warm は frontend cache も保持するため、cold／warm 差を runtime object だけの効果とは扱いません。
+既知の大規模 WASM `-O3` 制限は、新しい `build-runtime-cold`／`build-runtime-warm` にも同じ除外規則を適用します。
+同梱 object の正しい消費・移設・破損 fallback は配布 smoke で検証し、この cache 比較とは区別します。
+
+UTF の入力別比較は `run-utf.mjs <compiler> --metrics <dir>` を使います。
+5 入力種 × 6 操作 × 8／64／65,536 UTF-16 単位、約 2^24 単位の反復、9 標本と独立した checksum の検査を
+PX01 suite `utf` に記録します。`--quick` の値は速度比較に使いません。
+
+### フロントエンドの正式比較（PB02・PR01）
+
+`target/perf/PR01-frontend-final2/{before,after,before2}`、各 9 標本です。
+Apple M1 Max、Apple Clang 21.0.0、Rust 1.98.1、Node 24.21.0、cache 無効で直列実行しました。
+after の compiler SHA-256 は `00d5d6a434fe6a3830741adc9f86e614f065794aaa426de0152adea6160e07c9`、
+before／before2 は `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc` です。
+以下は中央値（最小–最大）。統合版と基準の比較であり、PB02 単独の改善率ではありません。
+
+実時間、ms:
+
+| 対象 | before | after | before2 |
+| --- | ---: | ---: | ---: |
+| hello check | 97.572（58.661–161.132） | 85.348（47.740–122.899） | 88.304（59.337–99.481） |
+| hello LLVM 出力 | 89.508（67.863–121.940） | 87.156（57.425–146.910） | 93.979（69.580–121.752） |
+| 200 check | 421.530（414.065–469.922） | 352.182（347.980–427.887） | 430.808（417.607–510.015） |
+| 200 LLVM 出力 | 584.110（574.613–630.498） | 583.162（564.452–632.132） | 590.072（571.226–643.927） |
+| 1,000 check | 2147.114（2128.754–2188.450） | 1872.570（1832.719–1919.954） | 2145.012（2121.358–2189.393） |
+| 1,000 LLVM 出力 | 2897.476（2862.491–3790.169） | 2907.470（2870.968–3005.364） | 2910.752（2862.189–2954.357） |
+
+1,000 check は約 12.8% 短縮し、before2 の広がりも超えます。200 check は中央値こそ短縮しましたが
+before／after の広がり 79.907 ms 内なので実時間の判定は「差なし」です。hello と LLVM 出力全体も「差なし」です。
+CPU 時間は計数の粒度が 10 ms です。hello check は 40（40–40）→30（30–30）→40（40–40）、
+200 check は 390（390–400）→330（330–330）→400（390–400）、
+1,000 check は 1890（1880–1900）→1600（1590–1630）→1890（1880–1900）ms でした。
+LLVM 出力全体の CPU 時間は hello 40→40→40、200 は 550→550→550、1,000 は 2630→2640→2640 ms で、いずれも判定は「差なし」です。
+
+最大 RSS、MiB:
+
+| 対象 | before | after | before2 |
+| --- | ---: | ---: | ---: |
+| hello check | 25.188（24.891–25.375） | 20.828（20.641–20.891） | 25.203（24.828–25.391） |
+| hello LLVM 出力 | 26.672（26.312–26.875） | 23.547（23.125–23.938） | 26.688（26.219–26.922） |
+| 200 check | 214.484（212.453–215.172） | 141.094（139.516–142.188） | 214.344（213.391–215.531） |
+| 200 LLVM 出力 | 223.734（221.484–224.859） | 154.109（152.953–155.516） | 223.062（221.109–224.922） |
+| 1,000 check | 965.781（950.500–967.625） | 615.609（614.906–620.109） | 965.531（950.844–967.406） |
+| 1,000 LLVM 出力 | 1006.953（997.641–1008.812） | 662.984（662.453–667.328） | 1002.016（996.469–1008.453） |
+
+RSS は全 6 構成で改善しました。ただし長期目標の 1,000 モジュール 0.5 秒／250 MB は未達です。
+
+出力フェーズ単独、ms:
+
+| 対象 | before | after | before2 |
+| --- | ---: | ---: | ---: |
+| hello | 2.486（2.422–2.617） | 4.742（4.624–5.121） | 2.523（2.473–2.645） |
+| 200 | 139.695（138.153–142.804） | 200.405（198.719–201.981） | 139.540（138.372–142.565） |
+| 1,000 | 679.220（676.331–689.820） | 969.691（961.715–1021.099） | 683.645（679.327–698.057） |
+
+このフェーズは全構成で悪化しました。属性・metadata と拡張 runtime の処理費用を含み、前段の改善で全体は相殺されています。
+途中版の出力 CPU の約 17.5% の増加は、facts の parse-once／候補限定／遅延証明、metadata を生成しない場合の再走査省略、
+UTF の広幅 vector で有効になる名前付き型走査の早期除外で縮めました。最後の修正は 36 の native/WASM LLVM module で byte 同一、
+SIMD の 4 回帰テストでも確認しました。残る費用を「退行なし」「出力フェーズも高速化」とは表現しません。
+
+### フロントエンドのプロファイル（PB02）
+
+基準 `a621fada` と統合後を、release・thin LTO・CGU 1 のまま `strip=false` にした別のビルドで調べました。
+cache 無効、`LC_ALL=C`、`RUST_MIN_STACK=4194304`、合成 1,000 モジュールの `check` を各 3 回、
+`/usr/bin/sample PID 10 1 -mayDie` で採取しました。重い所有プロセスとは重ねていません。
+生データと top ten は `target/perf/PB02-profiles-final/{summary.json,summary.tsv,*-final-check-*.sample.txt}` です。
+起動直後の exec に sampler が失敗した試行と最初の cold profile は除外し、同じ準備手順で採り直した 6 本だけを使います。
+
+| 指標 | before 中央値（最小–最大） | after 中央値（最小–最大） |
+| --- | ---: | ---: |
+| allocator と memmove/memcpy/memset の top-stack 標本比率 | 48.406%（46.695–49.150） | 31.627%（30.071–45.385） |
+| 名前で malloc/free/memmove だけを数えた比率 | 46.057%（44.893–46.154） | 29.106%（28.714–42.308） |
+| `specialize` inclusive 標本数 | 120（120–120） | 62（62–63） |
+| `instantiate` inclusive 標本数 | 42（42–50） | 46（39–48） |
+| `closures::lower` inclusive 標本数 | 16（13–20） | 13（12–13） |
+| `ownership::check_functions` inclusive 標本数 | 156（156–160） | 126（125–127） |
+| `children_mut` inclusive 標本数 | 7（6–7） | 未観測 |
+
+比率の分母は profiler が掲載した top-stack 行（5 標本以上）の合計です。
+inclusive は最も浅い同名 frame の値で、再帰出現を足しません。未観測は処理がゼロである証明ではありません。
+`specialize` のコンパイラ frame 内の順位は 11/11/10 → 15/16/18 で、旧計画の「常に上位 10」は再現しませんでした。
+`instantiate` の減少目標も未達です。I/O と標本数の揺れがあり、この比率をそのまま速度の改善率にはしません。
+新設 CI の fresh quick equivalence は 22 project・88 CLI 比較・60 IR 出力で差分 0、397.74 秒でした。
+CI の 25 分上限と frontend smoke の 5 分上限は速度の合否閾値ではなく、処理全体のタイムアウトです。
+
+### 数値表示・解析の参照検証（PR04）
+
+生成テーブルは整数演算で再現し、追加テーブルは 20,288 bytes です。
+表示・解析の文字列とビットは保存した基準ランタイムおよび独立した参照と照合しました。
+native/WASM の `-O0`・`-O3` で各 109,803 件の表示と、25 文字境界を含む 147,480 件の解析・往復を検証し、
+native `-O3` では f32 の全 4,294,967,296 ビット列と f64 の 100,000,000 件を調べ、不一致は 0 件でした。
+NaN は既存の canonical NaN 規則で比較し、符号付きゼロ・非正規化数・境界丸めを含めます。
+これは正しさの証拠であって速度の優位性を示す値ではありません。
+共有 CI は `tests/display_parse.mjs` と、`display_parse_exhaustive.mjs` の各型 100,000 件の
+有界差分検査を行い、全 f32 列挙や 1 億件の f64 は通常の CI には入れません。
+
+### 数値の正式比較と C の採否
+
+最終結果は `target/perf/phase2-formal/numeric-final2-{before,after,before2}`（各 78 レコード、wall-time は 9 標本）です。
+Apple M1 Max、Apple Clang 21.0.0、Node 24.21.0、native/WASM `-O3`、warmup 後に直列実行しました。
+raw runtime の比較であり、生成プログラム全体の速度や他 CPU の速度ではありません。
+以下は native の ns/回、中央値（最小–最大）です。全入力と採否の式は [PR04 の記録](../_perfs/PR04-number-formatting.md#正式計測と最終採否2026-10-14) にあります。
+
+| workload | before | after | before2 |
+| --- | ---: | ---: | ---: |
+| `f32-format-pi` | 1463.755（1456.595–1469.570） | 24.735（24.530–25.070） | 1473.025（1465.415–1479.660） |
+| `f64-format-tenth` | 806.055（802.240–815.655） | 35.850（35.465–36.720） | 809.495（806.235–821.485） |
+| `f64-format-min` | 4824.900（4808.765–4863.460） | 18.080（17.940–18.490） | 4848.770（4816.740–4880.070） |
+| `f64-parse-pi` | 1243.265（1238.835–1247.440） | 28.515（27.795–28.995） | 1249.500（1244.020–1265.125） |
+| `f64-parse-min` | 1432.585（1425.755–1441.780） | 10.965（10.855–11.415） | 1435.860（1431.165–1450.010） |
+| `f64-parse-long`（対照） | 1367.795（1365.700–1373.915） | 1371.530（1347.705–1377.085） | 1374.530（1367.015–1432.200） |
+| `i64u-format-max`（対照） | 24.964（22.227–26.439） | 24.359（23.310–26.196） | 24.107（23.326–26.027） |
+
+固定 native 入力の表示は 22.48–266.86 倍、解析は 43.60–130.65 倍です。これは入力ごとの比率の範囲で、平均倍率ではありません。
+WASM は f32/f64 解析の 7 行と表示の 5 行で改善 gate を通過しましたが、`f32-format-pi/max/min` と
+`f64-format-1e23/min` は before／before2 の drift が標本の広がりを超え、改善を確定できませんでした。
+f16/f128/decimal・整数・long/underscore の対照は native/WASM とも安定し、gate 外の悪化は 0 でした。
+
+段 C の追加整数 formatter は**不採用**です。候補の native max は 25.450 → 23.286 ns（before2 26.203 ns）でしたが、
+2.164 ns の差は before/after の広がり 2.718 ns と baseline の広がり 3.796 ns の双方を超えません。
+small は差なし、WASM の max/small も採用 gate を超えず、平均して採用することはしませんでした。
+候補を除去して整数の本体を基準と同じ `% 100` に戻し、十進 format-spec と通常 formatter の共通経路だけを残しました。
+
+途中の比較では long input の投機的再走査が 20.024 ns の悪化（広がり 12.531 ns を超過）を起こしました。
+先頭符号を除き 25 ASCII 文字を超えた入力は scanner に入れず exact parser へ送り、
+24/25/26 文字、符号、19/20 有効桁、不正末尾の参照 60 件を追加して修正しました。
+中間の candidate と `numeric-final-*` は診断用の記録であり、上の最終表には混ぜていません。
+
+| standalone numeric object | before bytes | after bytes | 増分 bytes |
+| --- | ---: | ---: | ---: |
+| native O0 | 84,152 | 109,568 | 25,416 |
+| native O3 | 50,800 | 73,016 | 22,216 |
+| wasm32 O0 | 83,958 | 108,611 | 24,653 |
+| wasm32 O3 | 69,915 | 92,736 | 22,821 |
+
+表は runtime object 全体の増分で、不変表 20,288 bytes だけの値ではありません。
+PB01 による math の分離・section GC がリンク後のプログラムを小さくする場合とは区別します。
+最終 numeric/math の metadata 最大番号は 220/288、宣言と番号の重複がなく決定的であることも検査しました。
+
+### 文字列と局所環境（PM06・PM07）
+
+`tests/fixtures/storage/Storage.tz` を保存した基準コンパイラと変更後のコンパイラで LLVM IR にし、
+`benchmarks/tracked_alloc.c` によって `malloc`・`realloc`・`free` を追跡しました。
+Clang の最適化より前に追跡を入れ、native の `-O0` と `-O3` で次の回数・要求 bytes が一致し、
+全呼び出しの後で `live == 0` でした。これは**コンパイラが出した確保要求の比較**です。
+上のコンピュテーション式の「最適化後の IR に追跡を入れる」計数とは区別してください。
+
+| 呼び出し | before 要求回数 | after 要求回数 | before 要求 bytes | after 要求 bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `literal_concat_stack()` | 1 | 0 | 22 | 0 |
+| `length_only_concat(1)` | 1 | 0 | 10 | 0 |
+| `buffer_concat(1)` | 1 | 0 | 10 | 0 |
+| `utf8_buffer_concat(1)` | 1 | 0 | 5 | 0 |
+| `buffer_escape(1)`（対照） | 1 | 1 | 10 | 10 |
+| `boundary_concat(0)`（128 code unit） | 2 | 1 | 510 | 254 |
+| `boundary_concat(1)`（129 code unit） | 2 | 2 | 514 | 514 |
+| `local_closure(10)` | 1 | 0 | 16 | 0 |
+| `field_take()` / `field_take_nested()` / `field_update_reuse()` | 2 | 1 | 48 | 24 |
+| `field_take_shared()`（対照） | 2 | 2 | 48 | 48 |
+| `concat_stack()` | 2 | 0 | 22 | 0 |
+| `capture_stack()` | 4 | 3 | 70 | 38 |
+| `string_append_owned()` | 7 | 7 | 52 | 52 |
+| `utf8_append_owned()` | 7 | 7 | 26 | 26 |
+
+最後の 2 行は、左辺の再利用が確保 API の要求回数を減らすこととは同義でない例です。
+変更後は 4 回の新規確保要求と 3 回の既存バッファへの `realloc` です。
+`tests/primitives.mjs` の計数は後者を新規の `malloc` と別に扱いますが、
+`tracked_alloc.c` は `realloc` も要求 1 回として数えます。`realloc` は実際には移動することもあり、
+物理的な確保回数や繰り返し追記の償却定数時間を保証しません。
+
+Apple Clang 21、LLVM 21 の `opt -O3` と arm64 の逆アセンブルも確認しました。
+変更後の `tz_buffer_concat` には 256 bytes の局所領域が残り、`malloc` の呼び出しはありません。
+基準版には `malloc` と結果の null 検査があります。
+一方、`length_only_concat` と `local_closure` は基準版でも LLVM の `-O3` で確保が消えるため、
+それらについて通常の `-O3` 実行が新たに速くなったという主張はしません。
+`tests/features.mjs ... storage` は 24 件（`to_string<string>` の identity、局所連結、明示 clone を含む）を native/WASM の `-O0`・`-O3` で照合し、
+native では `ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1` でも確認します。
+再帰・Task・大きすぎる環境・4 KiB の予算超過時の経路は `tests/storage.rs` で別に検査します。
+
+`benchmarks/allocation/Main.tz` は、長さだけの連結、局所連結、局所環境、外へ逃がす対照を各 100 万回実行します。
+期待する出力は独立に計算した `667000000` です。プロセス起動込みの時間と RSS は次の共通 runner で再現できます。
+
+```sh
+node benchmarks/metrics.mjs process BEFORE_COMPILER --project benchmarks/allocation --out target/perf/PM06-before
+node benchmarks/metrics.mjs process target/release/tsuzuri --project benchmarks/allocation --out target/perf/PM06-after
+node benchmarks/metrics.mjs report target/perf/PM06-after --baseline target/perf/PM06-before
+```
+
+### 同一入力の複製一覧（PM07・A17）
+
+`target/perf/A17-completion/` の棚卸しは、同じ 122 プロジェクト・172 ソース・47 std ファイルを
+基準と統合版の両方で調べました。bindgen の既存の除外も同一で、成功した部分集合だけの比較ではありません。
+既存の `tests/copy_inventory.rs` と同じ `CopyCost::Length` の抽出で、次の結果でした。
+
+| 起源 | before | after | 差 |
+| --- | ---: | ---: | ---: |
+| user | 150 | 62 | −88 |
+| std | 138 | 60 | −78 |
+
+新たなソース行位置はありません。これは静的な複製位置の数であり、実行回数・確保回数・bytes・処理時間ではありません。
+起票時の user 120／std 138 は 116 プロジェクトの履歴値なので、この matched 比較とは混ぜません。
+ガードと Drop の保守的な除外を含む結果で、残る複製をすべて除去したという主張ではありません。
+
+### UTF runtime の最終比較（PR05、2026-10-15）
+
+Apple M1 Max、Homebrew Clang 21.1.8、Node 24.21.0。baseline compiler SHA-256 は `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`、最終 after compiler は `de42dba363e1fa877c0dab5bd51cbad17b60b774bed5b91399d9d996a99d9d08`。各比較は before／after／before2 を使い、M1 は既存4種目の native CPU 時間（ms／call、9 独立 run の中央値）です。
+
+| workload | before | after | before2 | after vs. before / before2 |
+| --- | ---: | ---: | ---: | ---: |
+| UTF-8 roundtrip | 0.786 | 0.118 | 0.771 | −84.94% / −84.65% |
+| UTF-16 compare | 0.139 | 0.084 | 0.135 | −39.74% / −38.23% |
+| UTF-16 validate | 0.411 | 0.087 | 0.413 | −78.83% / −78.91% |
+| UTF-16 scan | 0.051 | 0.041 | 0.052 | −20.24% / −21.19% |
+
+M2 は 90 workload × 9 wall samples／pass（270 records、2,430 samples）で、各操作・入力・サイズを別々に判定しました。stable adverse は **0**。35 行は両 baseline に対して improved、34 行は両方と no difference、21 行は片方と improved・もう片方と no difference で、regressed 判定はありません。M2 は wall-time のみで CPU metric はありません。`to_well_formed` の計測 kernel は結果の長さしか観測せず、修復内容が dead-code elimination され得るため、処理速度の根拠にはしません。raw hashes と全90行の samples／判定は [`PR05-utf-simd.md`](../_perfs/PR05-utf-simd.md) に記録しました。
+
+M3 の確保数／bytes は before・after・before2 で完全一致（roundtrip 32／2,359,248、compare 33／3,145,684、validate 32／2,621,396、scan 30／1,572,816）。M4 `-O3` object sizes は native 79,424 → 134,368 bytes、WASM scalar 69,230 → 78,041 bytes、WASM simd128 71,070 → 87,571 bytes（before → after）で、SIMD runtime による成果物の増加も記録します。これらの比較は同じ機械・入力の結果で、他 CPU や共有 CI の速度保証ではありません。
+
+### Phase 2 統合ビルドの冷間コスト（2026-10-15）
+
+最終統合比較は Apple M1 Max、Homebrew Clang 21.1.8、baseline／after／before2 の順で実施しました。`build` variant は [`run-build.mjs`](../benchmarks/run-build.mjs) の仕様どおり `--no-cache` であり、PB01 の runtime-object cache／prebuilt object を使わない cold compile です。
+
+| workload（native `-O3`） | 指標 | before | after | before2 |
+| --- | --- | ---: | ---: | ---: |
+| `examples/io` | wall ms | 455.959 | 818.965 | 511.409 |
+| `examples/io` | process CPU ms | 370 | 690 | 380 |
+| `examples/io` | `tool.clang` phase ms | 349.384 | 716.078 | 413.584 |
+| `examples/io` | executable bytes | 50,840 | 69,976 | 50,840 |
+| synthetic 10-module | process CPU ms | 1,320 | 1,590 | 1,320 |
+| synthetic 10-module | `tool.clang` phase ms | 1,273.536 | 1,553.486 | 1,277.331 |
+| synthetic 10-module | executable bytes | 101,128 | 153,528 | 101,128 |
+
+Clang wrapper で同じ `examples/io` native runtime 入力を捕捉すると、C source は 2,520 bytes から 28,709 bytes へ増え、after では PR05 の CPU-dispatch symbol が `src/runtime/cpu.c` を native runtime に追加していました。したがって、この no-cache build の安定した遅延と成果物増分は測定ノイズとして捨てず、UTF CPU path を含む**未キャッシュの初回ネイティブビルド費用**として別に報告します。M1／M2 の runtime 測定はこの build cost を相殺する一般的な lifetime 損益を示すものではありません。
+
+既定の配布ツールチェーンは PB01 の tool identity が一致する場合に選択済み `native-c` object を使い、通常の cache 有効ビルドはローカル runtime-object cache を使えます。`--no-cache` は両方を意図的に迂回します。配布 object が選ばれない環境では、この冷間コストが実際にかかります。cache/prebuilt 経路と no-cache の測定を混同しません。
+
+`closure_churn` の scale 1 formal 比較には wall-only の判定差がありました（median 6.545 → 7.368 → 6.502 ms）。after の wall range は 6.725–32.526 ms、CPU range は 6.517–7.192 ms で baseline の CPU range と重なり、wall の大きな外れ値もありました。別の scale 4 matched rerun（Apple Clang 21.0.0、同一 process 内比較）では after／before の wall median が 26.028／25.949 ms、CPU median が 25.911／25.807 ms で、ともに範囲が重なりました。このため scale 1 の formal wall 行は残しつつ、再現可能な CPU regression とも修正済みとも結論しません。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

@@ -3761,9 +3761,7 @@ fn walk(
     expression: &mut TypedExpr,
     f: &mut impl FnMut(&mut TypedExpr) -> Result<(), Diagnostic>,
 ) -> Result<(), Diagnostic> {
-    for child in expression.children_mut() {
-        walk(child, f)?;
-    }
+    expression.try_for_each_child_mut(&mut |child| walk(child, f))?;
     f(expression)
 }
 
@@ -4034,26 +4032,36 @@ pub(super) fn specialize(
             ));
         }
     }
+    let templates = std::mem::take(&mut module.functions);
+    let original_count = templates.len();
+    let base_count = templates
+        .iter()
+        .filter(|function| {
+            function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User
+        })
+        .count();
+    let roots: Vec<_> = templates
+        .iter()
+        .enumerate()
+        .filter(|(_, function)| {
+            function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User
+        })
+        .map(|(id, function)| (id, function.span, function.origin.bench.is_some()))
+        .collect();
     let mut specializer = Specializer {
-        templates: module.functions.clone(),
+        templates,
         classes,
         names,
         types: module.types(),
         keys: BTreeMap::new(),
-        requests: Vec::new(),
-        functions: Vec::new(),
+        requests: Vec::with_capacity(base_count),
+        functions: Vec::with_capacity(base_count),
         intrinsics: BTreeMap::new(),
         to_strings: BTreeMap::new(),
         vtables: BTreeMap::new(),
         upcasts: BTreeSet::new(),
         current: FunctionOrigin::source(ModuleOrigin::User),
-        base_count: module
-            .functions
-            .iter()
-            .filter(|function| {
-                function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User
-            })
-            .count(),
+        base_count,
         limits: specialization_limits(),
         lineage: Vec::new(),
         instantiating: None,
@@ -4061,13 +4069,11 @@ pub(super) fn specialize(
     // Benches start only after everything else is specialized, so that they never renumber the
     // instances that normal and test builds emit (G18).
     let mut deferred = Vec::new();
-    for (id, function) in module.functions.iter().enumerate() {
-        if function.type_parameters.is_empty() && function.origin.module == ModuleOrigin::User {
-            if function.origin.bench.is_some() {
-                deferred.push(id);
-            } else {
-                specializer.request(id, Vec::new(), function.span)?;
-            }
+    for (id, span, bench) in roots {
+        if bench {
+            deferred.push(id);
+        } else {
+            specializer.request(id, Vec::new(), span)?;
         }
     }
     let entry = module.entry.map(|id| specializer.keys[&(id, Vec::new())]);
@@ -4138,7 +4144,7 @@ pub(super) fn specialize(
         } else if !deferred.is_empty() {
             benches_started = true;
             for id in std::mem::take(&mut deferred) {
-                specializer.request(id, Vec::new(), module.functions[id].span)?;
+                specializer.request(id, Vec::new(), specializer.templates[id].span)?;
             }
         } else {
             break;
@@ -4156,9 +4162,7 @@ pub(super) fn specialize(
     let requires_rec: Vec<_> = specializer
         .requests
         .iter()
-        .map(|(template, _)| {
-            *template < module.functions.len() && !recursive_functions.contains(template)
-        })
+        .map(|(template, _)| *template < original_count && !recursive_functions.contains(template))
         .collect();
     recursion::check_specialized(&specializer.functions, &requires_rec)?;
     let (vtables, dyn_layouts) = dyn_layouts(classes, specializer.vtables, &specializer.upcasts);
@@ -4353,7 +4357,16 @@ impl Specializer<'_> {
         types: &[Type],
         instance: usize,
     ) -> Result<CheckedFunction, Diagnostic> {
-        let mut function = self.templates[id].clone();
+        let template = &mut self.templates[id];
+        let mut function = if template.type_parameters.is_empty() {
+            let body = std::mem::replace(&mut template.body, TypedExpr::error(template.span));
+            CheckedFunction {
+                body,
+                ..template.clone()
+            }
+        } else {
+            template.clone()
+        };
         let substitutions: BTreeMap<_, _> = function
             .type_parameters
             .iter()
@@ -4381,19 +4394,23 @@ impl Specializer<'_> {
             let member = member.substituted(&substitutions, member.span);
             self.member_target(&member)?;
         }
-        for parameter in &mut function.parameters {
-            parameter.ty = substitute(&parameter.ty, &substitutions);
+        if !substitutions.is_empty() {
+            for parameter in &mut function.parameters {
+                parameter.ty = substitute(&parameter.ty, &substitutions);
+            }
+            function.signature.parameters = function
+                .signature
+                .parameters
+                .iter()
+                .map(|ty| substitute(ty, &substitutions))
+                .collect();
+            function.signature.result = substitute(&function.signature.result, &substitutions);
         }
-        function.signature.parameters = function
-            .signature
-            .parameters
-            .iter()
-            .map(|ty| substitute(ty, &substitutions))
-            .collect();
-        function.signature.result = substitute(&function.signature.result, &substitutions);
         validate_size(&function.signature.as_type(), &self.types, function.span)?;
         expression_types(&mut function.body, &mut |ty, span| {
-            *ty = substitute(ty, &substitutions);
+            if !substitutions.is_empty() {
+                *ty = substitute(ty, &substitutions);
+            }
             require_concrete(ty, span)?;
             validate_size(ty, &self.types, span)?;
             Ok(())

@@ -330,6 +330,200 @@ TZ_CPU_ENTRY(max, i16u, uint16_t, int64_t)
 TZ_CPU_ENTRY(max, i32u, uint32_t, int64_t)
 TZ_CPU_ENTRY(max, i64u, uint64_t, int64_t)
 
+/* UTF conversions share one validating/counting pass and one writing pass.
+   output == NULL never writes; a conversion allocates only after validation.
+   A failed vector probe transfers once to the scalar remainder. */
+static int tz_utf8_scalar(const uint8_t *s, uint64_t n, uint64_t *index, uint32_t *value) {
+    uint64_t i = *index;
+    uint32_t first = s[i++];
+    if (first < 128) { *index = i; *value = first; return 1; }
+    unsigned width = first >= 194 && first <= 223 ? 2 :
+        first >= 224 && first <= 239 ? 3 : first >= 240 && first <= 244 ? 4 : 0;
+    if (!width || n - *index < width) return 0;
+    uint32_t scalar = first & (127u >> width);
+    for (unsigned j = 1; j < width; ++j) {
+        uint32_t b = s[i++];
+        if ((b & 192) != 128) return 0;
+        scalar = (scalar << 6) | (b & 63);
+    }
+    uint32_t minimum = width == 2 ? 128 : width == 3 ? 2048 : 65536;
+    if (scalar < minimum || scalar > 0x10ffff || scalar - 0xd800 < 2048) return 0;
+    *index = i; *value = scalar;
+    return 1;
+}
+
+#define TZ_CPU_UTF8(NAME, BYTES, ATTR) \
+    ATTR static int64_t NAME(const uint8_t *source, uint64_t length, uint16_t *output, int validate) { \
+        typedef uint8_t vector __attribute__((ext_vector_type(BYTES))); \
+        uint64_t i = 0, count = 0; \
+        if (!validate && length > UINT64_C(27021597764222973)) return -1; \
+        while (i < length) { \
+            if (length - i >= BYTES) { \
+                vector v; memcpy(&v, source + i, BYTES); \
+                if (!__builtin_reduce_or(v & (vector)128)) { \
+                    if (output) { \
+                        typedef uint16_t wide __attribute__((ext_vector_type(BYTES))); \
+                        wide units = __builtin_convertvector(v, wide); \
+                        memcpy(output + count, &units, 2 * BYTES); \
+                    } \
+                    i += BYTES; count += BYTES; \
+                    if (!validate && count > UINT64_C(9007199254740991)) return -1; \
+                    continue; \
+                } \
+                typedef uint16_t pairs __attribute__((ext_vector_type(BYTES / 2))); \
+                pairs lead, tail; \
+                for (unsigned j = 0; j < BYTES / 2; ++j) { lead[j] = v[2*j]; tail[j] = v[2*j+1]; } \
+                if (__builtin_reduce_and((lead >= (pairs)194) & (lead <= (pairs)223) \
+                    & ((tail & (pairs)192) == (pairs)128))) { \
+                    pairs units = ((lead & (pairs)31) << 6) | (tail & (pairs)63); \
+                    if (output) memcpy(output + count, &units, BYTES); \
+                    i += BYTES; count += BYTES / 2; \
+                    if (!validate && count > UINT64_C(9007199254740991)) return -1; \
+                    continue; \
+                } \
+                typedef uint32_t triples __attribute__((ext_vector_type(BYTES / 4))); \
+                triples a, b, c; \
+                for (unsigned j = 0; j < BYTES / 4; ++j) { a[j] = v[3*j]; b[j] = v[3*j+1]; c[j] = v[3*j+2]; } \
+                triples scalars = ((a & (triples)15) << 12) | ((b & (triples)63) << 6) | (c & (triples)63); \
+                if (__builtin_reduce_and((a >= (triples)224) & (a <= (triples)239) \
+                    & ((b & (triples)192) == (triples)128) & ((c & (triples)192) == (triples)128) \
+                    & (scalars >= (triples)2048) & ((scalars - (triples)0xd800) >= (triples)2048))) { \
+                    if (output) { \
+                        typedef uint16_t units __attribute__((ext_vector_type(BYTES / 4))); \
+                        units converted = __builtin_convertvector(scalars, units); \
+                        memcpy(output + count, &converted, BYTES / 2); \
+                    } \
+                    i += 3 * BYTES / 4; count += BYTES / 4; \
+                    if (!validate && count > UINT64_C(9007199254740991)) return -1; \
+                    continue; \
+                } \
+                if (!output) { \
+                    vector p1 = {0}, p2 = {0}, p3 = {0}; \
+                    for (unsigned j = 1; j < BYTES; ++j) p1[j] = v[j-1]; \
+                    for (unsigned j = 2; j < BYTES; ++j) p2[j] = v[j-2]; \
+                    for (unsigned j = 3; j < BYTES; ++j) p3[j] = v[j-3]; \
+                    vector expected = (vector)((p1 >= (vector)194) & (p1 <= (vector)244)) \
+                        | (vector)((p2 >= (vector)224) & (p2 <= (vector)244)) \
+                        | (vector)((p3 >= (vector)240) & (p3 <= (vector)244)); \
+                    vector actual = (vector)((v & (vector)192) == (vector)128); \
+                    vector bad = expected ^ actual; \
+                    bad |= (vector)((v == (vector)192) | (v == (vector)193) | (v >= (vector)245)); \
+                    bad |= (vector)((p1 == (vector)224) & (v < (vector)160)); \
+                    bad |= (vector)((p1 == (vector)237) & (v >= (vector)160)); \
+                    bad |= (vector)((p1 == (vector)240) & (v < (vector)144)); \
+                    bad |= (vector)((p1 == (vector)244) & (v >= (vector)144)); \
+                    int complete = v[BYTES-1] < 194 && v[BYTES-2] < 224 && v[BYTES-3] < 240; \
+                    if (complete && !__builtin_reduce_or(bad)) { \
+                        vector widths = ((vector)((v < (vector)128) | (v >= (vector)194)) & (vector)1) \
+                            + ((vector)(v >= (vector)240) & (vector)1); \
+                        count += __builtin_reduce_add(widths); i += BYTES; \
+                        if (!validate && count > UINT64_C(9007199254740991)) return -1; \
+                        continue; \
+                    } \
+                } \
+            } \
+            break; \
+        } \
+        while (i < length) { \
+                uint32_t scalar; \
+                if (!tz_utf8_scalar(source, length, &i, &scalar)) return -1; \
+                if (scalar < 65536) { \
+                    if (output) output[count] = (uint16_t)scalar; \
+                    ++count; \
+                } else { \
+                    scalar -= 65536; \
+                    if (output) { output[count] = (uint16_t)(0xd800 + (scalar >> 10)); \
+                        output[count + 1] = (uint16_t)(0xdc00 + (scalar & 1023)); } \
+                    count += 2; \
+                } \
+                if (!validate && count > UINT64_C(9007199254740991)) return -1; \
+        } \
+        return validate ? 0 : (int64_t)count; \
+    }
+
+#define TZ_CPU_UTF16(NAME, BYTES, ATTR) \
+    ATTR static int64_t NAME(const uint16_t *source, uint64_t length, uint8_t *output) { \
+        enum { lanes = BYTES / 2 }; \
+        typedef uint16_t vector __attribute__((ext_vector_type(lanes))); \
+        typedef uint8_t narrow __attribute__((ext_vector_type(lanes))); \
+        uint64_t i = 0, count = 0; \
+        if (length > UINT64_C(9007199254740991)) return -1; \
+        while (i < length) { \
+            if (length - i >= lanes) { \
+                vector v; memcpy(&v, source + i, BYTES); \
+                if (!__builtin_reduce_or(v & (vector)0xff80)) { \
+                    if (output) { narrow b = __builtin_convertvector(v, narrow); memcpy(output + count, &b, lanes); } \
+                    i += lanes; count += lanes; continue; \
+                } \
+                if (__builtin_reduce_and((v & (vector)0xf800) != (vector)0xd800)) { \
+                    vector widths = (vector)1 + (vector)((v >= (vector)128) & (vector)1) \
+                        + (vector)((v >= (vector)2048) & (vector)1); \
+                    if (!output) { count += __builtin_reduce_add(widths); i += lanes; continue; } \
+                    unsigned width = __builtin_reduce_and((v >= (vector)128) & (v < (vector)2048)) ? 2 \
+                        : __builtin_reduce_and(v >= (vector)2048) ? 3 : 0; \
+                    if (width) { \
+                        narrow first = __builtin_convertvector((v >> (width == 2 ? 6 : 12)) \
+                            | (vector)(width == 2 ? 192 : 224), narrow); \
+                        narrow middle = __builtin_convertvector(((v >> 6) & (vector)63) | (vector)128, narrow); \
+                        narrow last = __builtin_convertvector((v & (vector)63) | (vector)128, narrow); \
+                        uint8_t packed[3 * lanes]; \
+                        if (width == 2) { \
+                            for (unsigned j = 0; j < lanes; ++j) { \
+                                packed[2*j] = first[j]; packed[2*j+1] = last[j]; \
+                            } \
+                        } else { \
+                            for (unsigned j = 0; j < lanes; ++j) { \
+                                packed[3*j] = first[j]; packed[3*j+1] = middle[j]; packed[3*j+2] = last[j]; \
+                            } \
+                        } \
+                        memcpy(output + count, packed, width * lanes); \
+                        count += width * lanes; i += lanes; continue; \
+                    } \
+                } \
+            } \
+            break; \
+        } \
+        while (i < length) { \
+                uint32_t scalar = source[i++]; \
+                if (scalar - 0xd800 < 2048) { \
+                    if (scalar >= 0xdc00 || i == length || (uint32_t)source[i] - 0xdc00 >= 1024) return -1; \
+                    scalar = 65536 + ((scalar - 0xd800) << 10) + (source[i++] - 0xdc00); \
+                } \
+                unsigned width = scalar < 128 ? 1 : scalar < 2048 ? 2 : scalar < 65536 ? 3 : 4; \
+                if (output) { \
+                    uint32_t bits = scalar; \
+                    for (unsigned j = width - 1; j; --j) { output[count + j] = (uint8_t)(128 | (bits & 63)); bits >>= 6; } \
+                    output[count] = (uint8_t)(bits | (width == 1 ? 0 : width == 2 ? 192 : width == 3 ? 224 : 240)); \
+                } \
+                count += width; \
+        } \
+        return (int64_t)count; \
+    }
+
+#define TZ_CPU_UTF_LEVEL(LEVEL, BYTES, ATTR) \
+    TZ_CPU_UTF8(tz_cpu_utf8_to_utf16_##LEVEL, BYTES, ATTR) \
+    TZ_CPU_UTF16(tz_cpu_utf16_to_utf8_##LEVEL, BYTES, ATTR) \
+    ATTR static int tz_cpu_utf8_validate_##LEVEL(const uint8_t *source, uint64_t length) { \
+        return tz_cpu_utf8_to_utf16_##LEVEL(source, length, NULL, 1) >= 0; \
+    }
+
+TZ_CPU_UTF_LEVEL(baseline, 16, __attribute__((noinline, aligned(64))))
+#if TZ_CPU_X86
+TZ_CPU_UTF_LEVEL(sse42, 16, TZ_CPU_TARGET_SSE42)
+TZ_CPU_UTF_LEVEL(avx2, 32, TZ_CPU_TARGET_AVX2)
+TZ_CPU_UTF_LEVEL(avx512, 64, TZ_CPU_TARGET_AVX512)
+#endif
+
+TZ_CPU_API int64_t tsuzuri_cpu_utf8_to_utf16(const uint8_t *source, uint64_t length, uint16_t *output) {
+    TZ_CPU_PICK(tz_cpu_utf8_to_utf16, source, length, output, 0);
+}
+TZ_CPU_API int64_t tsuzuri_cpu_utf16_to_utf8(const uint16_t *source, uint64_t length, uint8_t *output) {
+    TZ_CPU_PICK(tz_cpu_utf16_to_utf8, source, length, output);
+}
+TZ_CPU_API int tsuzuri_cpu_utf8_validate(const uint8_t *source, uint64_t length) {
+    TZ_CPU_PICK(tz_cpu_utf8_validate, source, length);
+}
+
 /* The version of a multiversioned function to run (F08 Phase 3). Bit L of `clones` is set for
    each level L the function was compiled for; the result is the newest of them that the CPU
    supports, no newer than TSUZURI_CPU_FORCE, or 0 for the portable version. */

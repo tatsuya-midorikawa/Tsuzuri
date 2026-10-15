@@ -9,7 +9,7 @@ import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, ma
   unsupportedReason, validateGnuTimeVersion, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
 import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
   writeProject } from "../benchmarks/build/generate.mjs";
-import { breakdown } from "../benchmarks/run-build.mjs";
+import { breakdown, skipLargeWasm, VARIANTS } from "../benchmarks/run-build.mjs";
 
 const result = {
   mode: "benchmark", cpu: "generic", scale: 0.1, measured_at: "2026-09-26T00:00:00.000Z",
@@ -403,6 +403,15 @@ int main(int argc,char **argv) {
       { name: "tool.clang", ms: 4 }], total_ms: 12 }), { frontend: 3, cache: 3, tools: 4, other: 2 });
     assert.throws(() => breakdown({ phases: [{ name: "check", ms: 5 }], total_ms: 1 }), /overlapping/);
     assert.deepEqual(breakdown({ phases: [{ name: "parse", ms: 0.001 }], total_ms: 0 }), { frontend: 0.001, cache: 0, tools: 0, other: 0 });
+  });
+  test("large WASM guard includes runtime cache variants", () => {
+    for (const [, target, opt] of VARIANTS.filter(([, target, opt]) => target === "wasm32" && opt === "O3")) {
+      for (const modules of [201, 1000]) assert.equal(skipLargeWasm(modules, target, opt, false), true);
+      for (const modules of [null, 10, 200]) assert.equal(skipLargeWasm(modules, target, opt, false), false);
+      assert.equal(skipLargeWasm(1000, target, opt, true), false);
+    }
+    assert.equal(skipLargeWasm(1000, "native", "O3", false), false);
+    assert.equal(skipLargeWasm(1000, "wasm32", "O0", false), false);
   });
 } finally {
   rmSync(metricTemporary, { recursive: true, force: true });

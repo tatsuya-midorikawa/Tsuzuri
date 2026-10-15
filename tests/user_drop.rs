@@ -323,7 +323,7 @@ fn recursive_drop_calls_user_drop_before_enqueue() {
     // Every case owns a node, so the nullary first case is not null.
     let construct = function_body(&ir, "@tz.fn.Main.chain(");
     assert_eq!(
-        construct.matches("call ptr @tz.alloc(").count(),
+        construct.matches("ptr @tz.alloc(").count(),
         3,
         "{construct}"
     );

@@ -19,7 +19,13 @@ pub(crate) mod call_specialization;
 mod control;
 #[path = "llvm_debug.rs"]
 mod debug;
+#[path = "last_use.rs"]
+pub(crate) mod last_use;
 pub use debug::with_codeview;
+#[path = "llvm_escape.rs"]
+mod escape;
+#[path = "llvm_facts.rs"]
+mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
@@ -42,7 +48,10 @@ pub enum Entry {
 pub struct EmitOptions {
     pub entry: Entry,
     pub wasm: bool,
+    pub wasm_simd128: bool,
     pub debug_output: bool,
+    /// Declare the large numeric/math runtimes for separate objects (PB01).
+    pub runtime_objects: bool,
     /// Where the program's heap blocks come from (F13).
     pub allocator: Allocator,
     /// How f16 values are computed in native code (D10). WASM output is always `Soft`.
@@ -426,7 +435,9 @@ pub fn emit_target(module: &CheckedModule, entry: Entry, wasm: bool) -> Result<S
         EmitOptions {
             entry,
             wasm,
+            wasm_simd128: false,
             debug_output: false,
+            runtime_objects: false,
             allocator: Allocator::System,
             f16: F16Path::Soft,
         },
@@ -446,6 +457,8 @@ pub fn emit_with_options(
         options.debug_output,
         Instrumentation {
             allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
             f16: options.f16,
             ..Instrumentation::default()
         },
@@ -467,6 +480,8 @@ pub fn emit_with_trap_info(
         options.debug_output,
         Instrumentation {
             traps: true,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
             allocator: options.allocator,
             f16: options.f16,
             ..Instrumentation::default()
@@ -499,6 +514,8 @@ pub fn emit_with_debug_info(
         Instrumentation {
             traps: trap_info,
             debug: Some((sources, optimized)),
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
             allocator: options.allocator,
             f16: options.f16,
             ..Instrumentation::default()
@@ -564,6 +581,8 @@ pub fn emit_native_build_for(
             allocator: options.allocator,
             f16: options.f16,
             multiversion: true,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: false,
             ..Instrumentation::default()
         },
     )?;
@@ -610,6 +629,8 @@ pub fn emit_trap_return(
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: trusted_array,
             trap_return: true,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: false,
             allocator: options.allocator,
             f16: options.f16,
             multiversion: cpu_dispatch,
@@ -747,6 +768,8 @@ pub(crate) fn emit_wasm_build(
             traps: trap_info,
             debug: debug.map(|optimized| (sources, optimized)),
             cpu_dispatch: false,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
             wasm_threads: threads,
             memory64,
             trap_return: false,
@@ -906,6 +929,8 @@ pub fn emit_bench_runner_with(
 
 #[derive(Default)]
 struct Instrumentation<'a> {
+    runtime_objects: bool,
+    wasm_simd128: bool,
     traps: bool,
     debug: Option<(&'a [TrapSource<'a>], bool)>,
     cpu_dispatch: bool,
@@ -931,6 +956,19 @@ fn emit_program(
     debug_output: bool,
     instrumentation: Instrumentation<'_>,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
+    if instrumentation.runtime_objects
+        && (instrumentation.traps
+            || instrumentation.debug.is_some()
+            || instrumentation.wasm_threads
+            || instrumentation.memory64
+            || instrumentation.trap_return)
+    {
+        return Err(Diagnostic::new(
+            "E2000",
+            "external runtime objects cannot be combined with trap, debug, thread or memory64 instrumentation",
+            Span::default(),
+        ));
+    }
     validate_lowering(module)?;
     if entry == Entry::Console {
         validate_main(module)?;
@@ -1090,6 +1128,7 @@ fn emit_program(
         multiversion: instrumentation.multiversion && !wasm,
         coverage: instrumentation.coverage.cloned(),
         seed: instrumentation.seed,
+        recursive_functions: escape::recursive_functions(module),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1339,28 +1378,29 @@ fn emit_program(
         output.push_str(&global);
         output.push('\n');
     }
-    if output.contains("@tz.rec.") {
-        output.push_str(include_str!("runtime/recursive.ll"));
+    let mut runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&output);
+    if runtime_symbols.prefix("tz.rec.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/recursive.ll"));
     }
     // A counting build also lets a WASM host allocate the buffer that `tsuzuri_alloc_stats` fills.
     if uses_host_abi(module)
-        || (!wasm && uses_reactor(&output))
-        || output.contains("@tsuzuri_io_")
-        || output.contains("@tsuzuri_os_")
-        || output.contains("@tsuzuri_net_")
-        || output.contains("@tsuzuri_arguments(")
+        || (!wasm && runtime_symbols.contains("tsuzuri_async_wait"))
+        || runtime_symbols.prefix("tsuzuri_io_")
+        || runtime_symbols.prefix("tsuzuri_os_")
+        || runtime_symbols.prefix("tsuzuri_net_")
+        || runtime_symbols.contains("tsuzuri_arguments")
         || instrumentation.allocator == Allocator::Counting
     {
         if wasm || crate::target::current_platform().windows() || instrumentation.trap_return {
-            output.push_str(host_abi::allocator());
+            runtime_symbols.append(&mut output, host_abi::allocator());
         } else {
-            output.push_str(&host_abi::native_allocator());
+            runtime_symbols.append(&mut output, &host_abi::native_allocator());
         }
     }
     // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08), and the
     // runtime text above may end without a newline.
     for (symbol, result) in CPU_KERNELS {
-        if output.contains(&format!("@{symbol}(")) {
+        if runtime_symbols.contains(symbol) {
             if !output.ends_with('\n') {
                 output.push('\n');
             }
@@ -1369,10 +1409,10 @@ fn emit_program(
     }
     // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
     // that no lock is held, so the renaming happens before the runtime text is appended (F10).
-    let mutex = output.contains("@tsuzuri_mutex_lock(");
-    let channel = output.contains("@tsuzuri_channel_");
-    let parallel = output.contains("@tsuzuri_task_parallel(")
-        || output.contains("@tsuzuri_task_parallel_results(");
+    let mutex = runtime_symbols.contains("tsuzuri_mutex_lock");
+    let channel = runtime_symbols.prefix("tsuzuri_channel_");
+    let parallel = runtime_symbols.contains("tsuzuri_task_parallel")
+        || runtime_symbols.contains("tsuzuri_task_parallel_results");
     if mutex && parallel {
         output = output
             .replace(
@@ -1393,7 +1433,7 @@ fn emit_program(
         // for, are the same for a program that only locks or only uses a channel.
         let sequential = wasm && !instrumentation.wasm_threads;
         if parallel && sequential {
-            output.push_str(include_str!("runtime/task-wasm.ll"));
+            runtime_symbols.append(&mut output, include_str!("runtime/task-wasm.ll"));
         } else if !sequential {
             output.push_str(
                 "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
@@ -1401,9 +1441,9 @@ fn emit_program(
         }
         if mutex || channel {
             if sequential {
-                output.push_str(include_str!("runtime/sync-wasm.ll"));
+                runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
                 if channel {
-                    output.push_str(include_str!("runtime/channel-wasm.ll"));
+                    runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
                 }
             } else {
                 if mutex {
@@ -1418,26 +1458,37 @@ fn emit_program(
                 }
             }
             if mutex && parallel {
-                output.push_str(include_str!("runtime/sync.ll"));
+                runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));
             }
         }
     }
-    if output.contains("@tz.debug.write") {
-        output.push_str(include_str!("runtime/debug.ll"));
+    if runtime_symbols.prefix("tz.debug.write") {
+        runtime_symbols.append(&mut output, include_str!("runtime/debug.ll"));
     }
-    if output.contains("@tz.display.") {
-        output.push_str(include_str!("runtime/display.ll"));
+    if runtime_symbols.prefix("tz.display.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/display.ll"));
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
-    if output.contains("@tz.format.") {
-        output.push_str(include_str!("runtime/format.ll"));
+    if runtime_symbols.prefix("tz.format.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
     }
-    if output.contains("@tz_soft_") {
-        output = output.replace("declare void @llvm.trap()\n", "");
-        output.push_str(include_str!("runtime/numeric.ll"));
+    if runtime_symbols.prefix("tz_soft_") {
+        if instrumentation.runtime_objects {
+            runtime_symbols.append(&mut output, crate::runtime_cache::numeric_declarations());
+        } else {
+            output = output.replace("declare void @llvm.trap()\n", "");
+            runtime_symbols.append(&mut output, include_str!("runtime/numeric.ll"));
+        }
     }
-    if output.contains("@tz_math_") {
-        output.push_str(include_str!("runtime/math.ll"));
+    if runtime_symbols.prefix("tz_math_") {
+        runtime_symbols.append(
+            &mut output,
+            if instrumentation.runtime_objects {
+                crate::runtime_cache::math_declarations()
+            } else {
+                include_str!("runtime/math.ll")
+            },
+        );
         let mut declarations = BTreeSet::new();
         output = output
             .lines()
@@ -1457,37 +1508,71 @@ fn emit_program(
             .join("\n");
         output.push('\n');
     }
-    if output.contains("@tz.closure.") {
-        output.push_str(include_str!("runtime/closure.ll"));
+    if runtime_symbols.prefix("tz.closure.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/closure.ll"));
     }
-    if output.contains("@tz.dyn.drop(") {
-        output.push_str(DYN_DROP);
+    if runtime_symbols.contains("tz.dyn.drop") {
+        runtime_symbols.append(&mut output, DYN_DROP);
     }
-    if output.contains("@tz.dyn.clone(") {
-        output.push_str(DYN_CLONE);
+    if runtime_symbols.contains("tz.dyn.clone") {
+        runtime_symbols.append(&mut output, DYN_CLONE);
     }
-    if output.contains("@tz.character.") {
-        output.push_str(include_str!("runtime/character.ll"));
+    if runtime_symbols.prefix("tz.character.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/character.ll"));
     }
-    if output.contains("@tz.unicode.") {
-        output.push_str(include_str!("runtime/unicode.ll"));
+    if runtime_symbols.prefix("tz.unicode.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/unicode.ll"));
     }
     if instrumentation.wasm_threads {
         let threads = include_str!("runtime/heap-wasm-threads.ll");
         if allocator == Allocator::Counting {
-            output.push_str(&counted_base(threads));
+            runtime_symbols.append(&mut output, &counted_base(threads));
         } else {
-            output.push_str(threads);
+            runtime_symbols.append(&mut output, threads);
         }
     }
-    if output.contains("@tz.string.")
-        || output.contains("@tz.utf8string.")
-        || output.contains("@tz.free")
-        || output.contains("@tz.alloc")
-        || output.contains("@tz.realloc")
+    if runtime_symbols.prefix("tz.string.")
+        || runtime_symbols.prefix("tz.utf8string.")
+        || runtime_symbols.prefix("tz.free")
+        || runtime_symbols.prefix("tz.alloc")
+        || runtime_symbols.prefix("tz.realloc")
     {
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
+        let cpu_utf16 = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
+        if !wasm
+            && instrumentation.cpu_dispatch
+            && (runtime_symbols.contains("tz.string.from_utf8")
+                || (cpu_utf16 && runtime_symbols.contains("tz.utf8string.from_string"))
+                || runtime_symbols.contains("tz.string.validate_utf8"))
+        {
+            let mut utf_runtime = include_str!("runtime/string_v128.ll")
+                .replace(
+                    "@tz.string.validate_utf8(ptr",
+                    "@tz.string.validate_utf8.portable(ptr",
+                )
+                .replace(
+                    "@tz.string.from_utf8(ptr",
+                    "@tz.string.from_utf8.portable(ptr",
+                );
+            if cpu_utf16 {
+                utf_runtime = utf_runtime.replace(
+                    "@tz.utf8string.from_string(ptr",
+                    "@tz.utf8string.from_string.portable(ptr",
+                );
+            }
+            output.push_str(&utf_runtime);
+            output.push_str(include_str!("runtime/string_cpu.ll"));
+            if cpu_utf16 {
+                output.push_str(include_str!("runtime/string_cpu_utf16.ll"));
+            }
+        } else {
+            output.push_str(if !wasm || instrumentation.wasm_simd128 {
+                include_str!("runtime/string_v128.ll")
+            } else {
+                include_str!("runtime/string_scalar.ll")
+            });
+        }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
                 .replace("@tz.alloc(", "@tz.heap.alloc.unlocked(")
@@ -1736,6 +1821,7 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
 struct Globals {
     definitions: Vec<String>,
     next_metadata: usize,
+    facts: facts::Metadata,
     wasm: bool,
     async_reactor: bool,
     memory64: bool,
@@ -1761,6 +1847,7 @@ struct Globals {
     /// The static data that a body already refers to, by constant (D11 Phase 2): each is defined
     /// once, at its first use.
     statics: BTreeSet<usize>,
+    recursive_functions: Vec<bool>,
 }
 
 impl Default for Globals {
@@ -1784,6 +1871,7 @@ impl Default for Globals {
         Self {
             definitions: Vec::new(),
             next_metadata,
+            facts: facts::Metadata::default(),
             wasm: false,
             async_reactor: false,
             memory64: false,
@@ -1801,6 +1889,7 @@ impl Default for Globals {
             #[cfg(debug_assertions)]
             emitted_copies: BTreeSet::new(),
             statics: BTreeSet::new(),
+            recursive_functions: Vec::new(),
         }
     }
 }
@@ -2566,6 +2655,12 @@ enum UnionLayout {
 /// Size and alignment in bytes of a type's LLVM representation on 64-bit
 /// targets with 16-byte `i128`, which bound those of wasm32 and older layouts.
 fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+    layout_bound(ty, module, false)
+}
+
+/// Portable lower bounds for reference guarantees, or the existing allocation upper bounds.
+/// Explicit slots and heap blocks are aligned to 16, even for 256-bit SIMD values.
+fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (usize, usize) {
     let aggregate = |fields: &mut dyn Iterator<Item = (usize, usize)>| {
         let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
             (
@@ -2576,50 +2671,87 @@ fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
         (size.next_multiple_of(align), align)
     };
     match ty {
-        Type::Simd(vector) => (vector.bytes(), vector.bytes()),
+        Type::Simd(vector) => (
+            vector.bytes(),
+            if lower {
+                vector.bytes().min(8)
+            } else {
+                vector.bytes()
+            },
+        ),
         Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
             let bytes = usize::from(*bits).div_ceil(8);
-            (bytes, bytes)
+            (bytes, if lower { bytes.min(8) } else { bytes })
         }
         Type::Bool | Type::Unit => (1, 1),
         Type::Char => (2, 2),
         Type::Utf8Char => (4, 4),
         Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
-        Type::Function(..) | Type::Task(_) => (32, 8),
+        Type::Function(..) | Type::Task(_) => {
+            if lower {
+                (16, 4)
+            } else {
+                (32, 8)
+            }
+        }
         Type::Vec(_) => (24, 8),
-        Type::Dyn(_) => (16, 8),
+        Type::Dyn(_) => {
+            if lower {
+                (8, 4)
+            } else {
+                (16, 8)
+            }
+        }
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (8, 8),
+        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => {
+            if lower {
+                (4, 4)
+            } else {
+                (8, 8)
+            }
+        }
         Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
         Type::Length(_) => unreachable!("a length is not a value"),
         // The stride of `[N x T]` is the element's size, already a multiple of its alignment.
         Type::FixedArray(element, _) => {
-            let (size, align) = storage_layout(element, module);
+            let (size, align) = layout_bound(element, module, lower);
             (size * fixed_length(ty), align)
         }
         Type::Tuple(elements) => {
-            aggregate(&mut elements.iter().map(|ty| storage_layout(ty, module)))
+            aggregate(&mut elements.iter().map(|ty| layout_bound(ty, module, lower)))
         }
         Type::Record(id, arguments) => aggregate(
             &mut module
                 .types()
                 .record_fields(*id, arguments)
                 .iter()
-                .map(|ty| storage_layout(ty, module))
+                .map(|ty| layout_bound(ty, module, lower))
                 .chain(drop_flag(ty, module).map(|_| (1, 1))),
         ),
-        Type::Union(..) if module.types().recursive(ty) => (8, 8),
+        Type::Union(..) if module.types().recursive(ty) => {
+            if lower {
+                (4, 4)
+            } else {
+                (8, 8)
+            }
+        }
         Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
             UnionLayout::Enum => (4, 4),
             UnionLayout::Common(payload) => aggregate(
-                &mut [(4, 4), storage_layout(&payload, module)]
+                &mut [(4, 4), layout_bound(&payload, module, lower)]
                     .into_iter()
                     .chain(drop_flag(ty, module).map(|_| (1, 1))),
             ),
-            UnionLayout::General(count) if drop_flag(ty, module).is_some() => {
-                aggregate(&mut [(4, 4), (16 * count, 16), (1, 1)].into_iter())
+            UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
+                &mut [(4, 4), (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
+            ),
+            UnionLayout::General(count) => {
+                if lower {
+                    (8 + 16 * count, 8)
+                } else {
+                    (16 + 16 * count, 16)
+                }
             }
-            UnionLayout::General(count) => (16 + 16 * count, 16),
         },
         Type::Error
         | Type::Variable(_)
@@ -3256,6 +3388,11 @@ struct FunctionEmitter<'a, 'b> {
     known_closures: BTreeMap<usize, ClosureTarget>,
     borrowed_locals: BTreeSet<usize>,
     single_use: BTreeSet<usize>,
+    last_uses: last_use::LastUses,
+    moving_bindings: BTreeSet<usize>,
+    staying: BTreeSet<usize>,
+    buffer_bytes: usize,
+    heap_initializer: bool,
     ranges: crate::ranges::RangeFacts,
     /// Array reads emitted without a bounds check so far.
     proven_reads: usize,
@@ -3330,6 +3467,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 BTreeSet::new()
             },
             single_use: BTreeSet::new(),
+            last_uses: last_use::LastUses::default(),
+            moving_bindings: BTreeSet::new(),
+            staying: BTreeSet::new(),
+            buffer_bytes: 0,
+            heap_initializer: false,
             ranges: crate::ranges::RangeFacts::default(),
             proven_reads: 0,
             borrowed_worker: false,
@@ -3401,6 +3543,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             self.globals
                 .debug_subprogram(self.module, self.function, &self.symbol, false);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
+        self.last_uses = last_use::LastUses::analyze(self.function, self.module);
+        self.staying = escape::staying_locals(&self.function.body);
         self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
@@ -3413,12 +3557,27 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             self.cover(crate::coverage::RegionKind::Body, self.function.body.span);
             self.emit_body();
         }
+        let facts = facts::apply(
+            self.module,
+            self.function,
+            &self.allocas,
+            &mut self.lines,
+            self.back_edges.is_empty(),
+            self.globals,
+            self.intrinsics,
+        );
         let parameters = self
             .function
             .parameters
             .iter()
             .enumerate()
-            .map(|(index, parameter)| format!("{} %arg{index}", self.ty(&parameter.ty)))
+            .map(|(index, parameter)| {
+                format!(
+                    "{}{} %arg{index}",
+                    self.ty(&parameter.ty),
+                    facts.parameters[index]
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let debug = self
@@ -3448,9 +3607,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             ""
         };
         let mut output = format!(
-            "define internal {} {}({parameters}) nounwind{inline}{cpu}{debug} {{\nentry:\n",
+            "define internal {}{} {}({parameters}) nounwind{}{inline}{cpu}{debug} {{\nentry:\n",
+            facts.result,
             self.ty(&self.function.signature.result),
-            self.symbol
+            self.symbol,
+            facts.memory,
         );
         for alloca in self.allocas {
             let _ = writeln!(output, "  {alloca}");
@@ -3791,7 +3952,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let target = (!local.mutable)
                 .then(|| call_specialization::target(expression, &self.known_closures, self.module))
                 .flatten();
+            let previous = std::mem::replace(
+                &mut self.heap_initializer,
+                !self.staying.contains(&local.id),
+            );
             let (value, frames) = self.frame_value(expression);
+            self.heap_initializer = previous;
             self.bind_local(local, &value);
             self.bind_frames(local, frames);
             if let Some(target) = target {
@@ -3962,9 +4128,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     /// Taking a Copy place copies it, except at the only use of an owned local.
     fn clones_on_take(&self, expression: &TypedExpr) -> bool {
-        let last_use = matches!(expression.kind, TypedExprKind::Local(id)
-            if self.single_use.contains(&id) && !self.borrowed_locals.contains(&id));
-        expression.ty.is_copy(&self.module.types()) && !last_use
+        let types = self.module.types();
+        if matches!(expression.kind, TypedExprKind::Local(id) if self.moving_bindings.contains(&id))
+        {
+            return false;
+        }
+        let last_use = call_specialization::field_root(expression).is_some_and(|(id, root)| {
+            (self.single_use.contains(&id) || self.last_uses.moves_read(expression))
+                && !self.borrowed_locals.contains(&id)
+                && (matches!(expression.kind, TypedExprKind::Local(_)) || root.is_copy(&types))
+        });
+        expression.ty.is_copy(&types) && !last_use
     }
 
     #[cfg(debug_assertions)]
@@ -4239,13 +4413,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
             },
             TypedExprKind::Closure(id, captures) => {
-                // A capture's span is its local's declaration, but the closure reads it here.
-                let located = self.debug_span.replace(expression.span);
-                let values: Vec<_> = captures
-                    .iter()
-                    .map(|capture| self.expression(capture))
-                    .collect();
-                self.debug_span = located;
+                let values = self.owned_capture_values(captures, expression.span);
                 self.make_closure(*id, &values)
             }
             TypedExprKind::Unary(operator, operand) => {
@@ -4594,6 +4762,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 length
             }
             TypedExprKind::StringLength(string) => {
+                let mut source = string.as_ref();
+                while let Some(value) = frame::owned_string_identity(source, self.module) {
+                    source = value;
+                }
+                if let TypedExprKind::Binary(BinaryOp::Add, left, right) = &source.kind {
+                    let previous = std::mem::replace(&mut self.current_span, source.span);
+                    let length = self.concat_length(left, right);
+                    self.current_span = previous;
+                    return length;
+                }
                 let (value, frames) = self.read_operand(string);
                 let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
                 self.release_operand(string, &value, &frames);
@@ -5496,6 +5674,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
+    fn owned_capture_values(&mut self, captures: &[TypedExpr], span: Span) -> Vec<String> {
+        let located = self.debug_span.replace(span);
+        let values = captures
+            .iter()
+            .map(|capture| self.expression(capture))
+            .collect();
+        self.debug_span = located;
+        values
+    }
+
     fn make_closure(&mut self, id: usize, values: &[String]) -> String {
         let function = &self.module.functions[id];
         let count = values.len();
@@ -6167,6 +6355,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn binary(&mut self, operator: BinaryOp, left: &TypedExpr, right: &TypedExpr) -> String {
         use BinaryOp::*;
         if left.ty.is_string() {
+            if operator == Add {
+                if let (Some(mut a), Some(b)) = (
+                    frame::literal_concat(left, self.module),
+                    frame::literal_concat(right, self.module),
+                ) {
+                    frame::append_literal(&mut a, b);
+                    return self.expression(&TypedExpr {
+                        kind: TypedExprKind::String(a),
+                        ty: left.ty.clone(),
+                        span: self.current_span,
+                    });
+                }
+            }
             let take = operator == Add;
             // Concatenation reads both operands and then destroys them, so stack strings stay put.
             let (lhs, left_frames) = if take {
@@ -6182,9 +6383,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let ty = self.ty(&left.ty);
             let runtime = &ty[1..];
             let result = match operator {
-                Add => self.value(format!(
-                    "call {ty} @{runtime}.concat({ty} {lhs}, {ty} {rhs})"
-                )),
+                Add => {
+                    let operation = if left_frames.is_empty() {
+                        "append"
+                    } else {
+                        "concat"
+                    };
+                    self.value(format!(
+                        "call {ty} @{runtime}.{operation}({ty} {lhs}, {ty} {rhs})"
+                    ))
+                }
                 Equal | NotEqual => {
                     self.value(format!("call i1 @{runtime}.equal({ty} {lhs}, {ty} {rhs})"))
                 }
@@ -6204,7 +6412,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _ => unreachable!("string operator checked"),
             };
             if take {
-                self.drop_framed(&left.ty, &lhs, &left_frames);
+                if left_frames.is_empty() {
+                    self.forget_temporary(&lhs);
+                } else {
+                    self.drop_framed(&left.ty, &lhs, &left_frames);
+                }
                 self.drop_framed(&right.ty, &rhs, &right_frames);
             } else {
                 self.release_operand(left, &lhs, &left_frames);

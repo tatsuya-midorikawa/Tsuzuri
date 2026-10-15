@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus, platform, tmpdir } from "node:os";
+import { cpus, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactFingerprint, captureRun, makeRecord, measureProcess, parseTimePasses, processRecords, summarize, unsupportedReason, writeRecords } from "./metrics.mjs";
@@ -14,10 +14,16 @@ export const VARIANTS = Object.freeze([
   ["check", "native", "none"], ["emit-llvm", "native", "O0"], ["build", "native", "O0"], ["build", "native", "O3"],
   ["build-wasm", "wasm32", "O0"], ["build-wasm", "wasm32", "O3"], ["build-warm", "native", "O0"],
   ["build-edit-body", "native", "O0"], ["build-edit-signature", "native", "O0"],
+  ...["build-runtime-cold", "build-runtime-warm"].flatMap(variant =>
+    ["native", "wasm32"].flatMap(target => ["O0", "O3"].map(opt => [variant, target, opt]))),
 ]);
 const languages = ["tsuzuri", "c", "cpp", "rust", "rust-workspace", "go", "zig"];
 const execute = (program, args, options = {}) => execFileSync(program, args,
   { cwd: root, encoding: "utf8", timeout: 600_000, maxBuffer: 256 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"], ...options });
+
+export function skipLargeWasm(modules, target, opt, largeWasm) {
+  return modules > 200 && target === "wasm32" && opt === "O3" && !largeWasm;
+}
 
 export function breakdown(report) {
   let frontend = 0, cache = 0, tools = 0;
@@ -192,7 +198,9 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
   const available = selected.filter((language) => language === "tsuzuri" || ["c", "cpp"].includes(language) && tools.clang && tools.make
     || language.startsWith("rust") && tools.rustc && tools.cargo || language === "go" && tools.go || language === "zig" && tools.zig);
   assert.ok(available.length > 0, "no selected build compiler is available");
-  const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-build-bench-"));
+  const scratch = join(root, "target", "build-benchmark");
+  mkdirSync(scratch, { recursive: true });
+  const temporary = mkdtempSync(join(scratch, "run-"));
   const records = [], projects = [], summaries = [], jobs = cpus().length;
   try {
     const workloads = available.flatMap((language) => sizes.map((modules) => ({ language, modules, workload: "synthetic" })));
@@ -221,12 +229,13 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
           verifyOutput(command, env, project, modules);
         }
       }
-      const variants = language === "tsuzuri" ? VARIANTS : VARIANTS.filter(([name, target]) => target === "native" && name.startsWith("build"));
+      const variants = language === "tsuzuri" ? VARIANTS : VARIANTS.filter(([name, target]) =>
+        target === "native" && name.startsWith("build") && !name.startsWith("build-runtime"));
       for (const [variant, target, opt] of variants) {
         if (modules === null && variant.startsWith("build-edit")) continue;
-        if (modules > 200 && variant === "build-wasm" && opt === "O3" && !largeWasm) {
+        if (skipLargeWasm(modules, target, opt, largeWasm)) {
           const reason = "LLVM 21 exceeds the 600000ms process budget for large synthetic WASM -O3; use --large-wasm to require it";
-          console.error(`skip synthetic ${modules} build-wasm O3: ${reason}`);
+          console.error(`skip synthetic ${modules} ${variant} O3: ${reason}`);
           skippedVariants.push({ workload: "synthetic", size: modules, language: "tsuzuri", variant, target, opt, reason });
           continue;
         }
@@ -234,7 +243,7 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
           : referenceCommand(language, project, opt, tools, jobs);
         const fields = { suite: "build", workload: workload.workload, size: modules, language: options.language,
           variant: language.startsWith("rust") ? `${options.rustLayout}-${variant}` : variant, target, opt };
-        const cached = variant === "build-warm" || variant.startsWith("build-edit");
+        const cached = variant === "build-warm" || variant === "build-runtime-warm" || variant.startsWith("build-edit");
         if (cached) {
           if (language === "tsuzuri") rmSync(join(work, "cache"), { recursive: true, force: true });
           else resetReference(language, project, env);
@@ -257,13 +266,20 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
         commands.push(recordedCommand);
         try {
           const measured = measureVariant(context, fields, command, {
-            cwd: project, env: language === "tsuzuri" && !cached ? { ...env, TSUZURI_CACHE_DIR: "" } : env, quick,
+            cwd: project, env: language === "tsuzuri" && !cached && !variant.startsWith("build-runtime")
+              ? { ...env, TSUZURI_CACHE_DIR: "" } : env, quick,
             compilerPhases: language === "tsuzuri", allowSkip: modules === null,
             sizeMetric: variant === "build" || variant === "build-wasm" ? target === "wasm32" ? "wasm_bytes" : "executable_bytes" : null,
             deterministic: !variant.startsWith("build-edit"),
             knownLinkVariation: platform() === "darwin" && language === "tsuzuri" && modules === 1000
               && variant === "build" && target === "native" && opt === "O0",
             before: (sample) => {
+              if (variant === "build-runtime-cold") rmSync(env.TSUZURI_CACHE_DIR, { recursive: true, force: true });
+              if (variant === "build-runtime-warm") {
+                for (const name of readdirSync(env.TSUZURI_CACHE_DIR).filter(name => /^[a-f0-9]{64}$/.test(name))) {
+                  rmSync(join(env.TSUZURI_CACHE_DIR, name), { recursive: true, force: true });
+                }
+              }
               if (variant === "build" && language !== "tsuzuri") resetReference(language, project, env);
               if (variant.startsWith("build-edit")) {
                 const changed = editModule(project, modules, language, variant, sample + 2);
@@ -280,6 +296,7 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
                 const toolPhases = report.phases.filter((phase) => phase.name.startsWith("tool."));
                 if (variant === "emit-llvm" || variant === "check" || variant === "build-warm") assert.equal(toolPhases.length, 0, `${variant} unexpectedly ran a tool`);
                 if (variant.startsWith("build-edit")) assert.ok(toolPhases.length > 0, `${variant} unexpectedly hit artifact cache`);
+                if (variant.startsWith("build-runtime")) assert.ok(toolPhases.length > 0, `${variant} unexpectedly hit artifact cache`);
               }
               if (modules !== null && target === "native" && variant !== "check" && variant !== "emit-llvm") {
                 verifyOutput({ ...command, diagnostic: `; variant=${variant}, build stdout:\n${result.stdout[0]}` },

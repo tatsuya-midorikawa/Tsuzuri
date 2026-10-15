@@ -77,6 +77,8 @@ fn native_ir(source: &str, platform: Platform) -> String {
             entry: llvm::Entry::Library,
             wasm: false,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: llvm::Allocator::System,
             f16: llvm::F16Path::Soft,
         },
@@ -1033,13 +1035,14 @@ fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
             .filter(|line| line.starts_with("clang "))
             .count()
     };
-    assert_eq!(build(first, "/a"), 1);
+    // Each cold configuration compiles its numeric object, then the user module.
+    assert_eq!(build(first, "/a"), 2);
     // The same build again is a cache hit: the compiler runs no Clang.
-    assert_eq!(build(first, "/a"), 1);
+    assert_eq!(build(first, "/a"), 2);
     // Another sysroot, another target, or both make another artifact.
-    assert_eq!(build(first, "/b"), 2);
-    assert_eq!(build(second, "/b"), 3);
-    assert_eq!(build(second, "/b"), 3);
-    assert_eq!(build(first, "/a"), 3);
+    assert_eq!(build(first, "/b"), 4);
+    assert_eq!(build(second, "/b"), 6);
+    assert_eq!(build(second, "/b"), 6);
+    assert_eq!(build(first, "/a"), 6);
     fs::remove_dir_all(setup.root).unwrap();
 }

@@ -176,6 +176,8 @@ fn main() -> ExitCode {
                 || text.starts_with("-m")
                 || text == "-g"
                 || text == "-fPIC"
+                || text == "-ffunction-sections"
+                || text == "-fdata-sections"
             {
                 compilation.arg(argument);
             }

@@ -26,8 +26,7 @@ const EXPLICIT: &str =
     "let a = [1, 2, 3]\nlet b = Array.copy (ref a)\nArray.length (ref a) + Array.length (ref b)";
 const EXPLICIT_LIST: &str =
     "let a = [|1, 2, 3|]\nlet b = List.copy (ref a)\nList.length (ref a) + List.length (ref b)";
-const BINDING: &str =
-    "let pair = ([1, 2], 3)\nmatch pair with\n| (items, n) -> Array.length (ref items) + n";
+const BINDING: &str = "let pair = ([1, 2], 3)\nlet count = match pair with\n    | (items, n) -> Array.length (ref items) + n\nlet r = ref pair\ncount";
 const ELEMENT: &str = "let rows = [[1, 2], [3]]\nlet mut total = 0\nfor row in rows do\n    let kept = row\n    total = total + Array.length (ref kept)\ntotal";
 const DERIVED: &str = "record Bag { items: [i64], tags: [|i64|] } deriving (Eq, Ord, Default, Hash, Display)\nlet a = Bag { items: [1, 2], tags: [|3|] }\nlet b: Bag = Default.default()\nlet same = if a == b then 1 else 0\nlet order = if a < b then 1 else 0\nlet shown = Display.display a\nsame + order + shown.length + (Hash.hash (ref a) as i64)";
 const OWNED: &str = "let items = [1, 2, 3]\nlet count = Owned.function (\\extra -> { let kept = items; Array.length (ref kept) + extra })\nOwned.call (ref count) 1";
@@ -149,17 +148,16 @@ fn closure_copies_are_listed_but_not_reported() {
 #[test]
 fn specializations_report_one_warning_per_source_position() {
     let sites = user_sites(SPECIALIZED);
-    assert_eq!(sites.len(), 4, "{sites:?}");
+    // The first tuple element copies; its final read transfers into the second element.
+    assert_eq!(sites.len(), 2, "{sites:?}");
     assert!(
         sites
             .iter()
             .all(|site| text(SPECIALIZED, site.span) == "value")
     );
     let first = SPECIALIZED.find("(value").unwrap() + 1;
-    let second = SPECIALIZED.find(", value)").unwrap() + 2;
-    let warnings = assert_warnings(SPECIALIZED, &[("value", ARRAY), ("value", ARRAY)]);
+    let warnings = assert_warnings(SPECIALIZED, &[("value", ARRAY)]);
     assert_eq!(warnings[0].span.start, first);
-    assert_eq!(warnings[1].span.start, second);
 }
 
 #[test]
@@ -190,6 +188,23 @@ fn pattern_bindings_and_loop_elements_copy_at_their_names() {
     assert_eq!(sites.len(), 1, "{sites:?}");
     assert_eq!(sites[0].span.start, ELEMENT.find("= row").unwrap() + 2);
     assert_warnings(ELEMENT, &[("row", ARRAY)]);
+}
+
+#[test]
+fn last_uses_and_owned_pattern_bindings_do_not_warn() {
+    for source in [
+        "def f :: [i64] -> [i64] = \\xs -> if xs.length > 2 then Array.set xs 0 9 else xs\n0",
+        "def f :: [i64] -> [i64] = \\xs ->\n    let mut ys = xs\n    for i in 0 .. 3 do\n        ys = Array.set ys i i\n    ys\n0",
+        "let pair = ([1, 2], 3)\nmatch pair with\n| (items, n) -> items[0] + n",
+        "match Maybe.Some [1, 2] with | Maybe.Some items -> items[0] | Maybe.None -> 0",
+    ] {
+        assert_warnings(source, &[]);
+        llvm::emit(&module(source), llvm::Entry::Library).unwrap();
+    }
+    assert_warnings(
+        "let xs = [1, 2]\nlet ys = Array.set xs 0 9\nxs[0] + ys[0]",
+        &[("xs", ARRAY)],
+    );
 }
 
 #[test]
