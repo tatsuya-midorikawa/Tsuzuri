@@ -41,54 +41,55 @@ pub(crate) struct ToolIdentity {
     bundled_resource_fingerprint: std::sync::OnceLock<Option<String>>,
 }
 
-fn bundled_resources(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    let manifest: Value = serde_json::from_slice(bytes)?;
-    let files = manifest["files"]
-        .as_array()
-        .ok_or_else(|| invalid("missing bundled resource inventory"))?;
-    let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
-    let resources: Vec<_> = files
-        .iter()
-        .filter(|file| file["path"] != compiler)
-        .collect();
-    Ok(serde_json::to_vec(&resources)?)
-}
-
-fn bundled_resource_fingerprint(root: &Path, bytes: &[u8]) -> Option<String> {
-    let resources: Value = serde_json::from_slice(bytes).ok()?;
-    let files = resources.as_array()?;
-    let mut inventory = Vec::with_capacity(files.len());
-    for file in files {
-        let path = file.get("path")?.as_str()?;
-        let expected_hash = file.get("sha256")?.as_str()?;
-        let relative = Path::new(path);
-        if path.is_empty()
-            || path.contains('\\')
-            || !relative
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
-            || expected_hash.len() != 64
-            || !expected_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+fn collect_bundled_resources(
+    directory: &Path,
+    prefix: &str,
+    compiler: &str,
+    inventory: &mut Vec<(String, String)>,
+) -> Option<()> {
+    let mut entries: Vec<_> = fs::read_dir(directory)
+        .ok()?
+        .collect::<Result<_, _>>()
+        .ok()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().into_string().ok()?;
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path == compiler
+            || path == "share/runtime"
+            || path.starts_with("share/runtime/")
+            || (prefix.is_empty() && path == "manifest.json")
         {
-            return None;
-        }
-        if path.starts_with("share/runtime/") {
             continue;
         }
-        let file_path = root.join(relative);
+        let file_path = entry.path();
         let metadata = fs::symlink_metadata(&file_path).ok()?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if metadata.file_type().is_symlink() {
             return None;
         }
-        let actual_hash = file_digest(&file_path)
-            .ok()?
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        inventory.push((path, actual_hash));
+        if metadata.is_dir() {
+            collect_bundled_resources(&file_path, &path, compiler, inventory)?;
+        } else if metadata.is_file() {
+            let digest = file_digest(&file_path).ok()?;
+            inventory.push((
+                path,
+                digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            ));
+        } else {
+            return None;
+        }
     }
+    Some(())
+}
+
+fn bundled_resource_fingerprint(root: &Path) -> Option<String> {
+    let mut inventory = Vec::new();
+    let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
+    collect_bundled_resources(root, "", &compiler, &mut inventory)?;
     let mut hash = Sha256::new();
     hash.update(&serde_json::to_vec(&inventory).ok()?);
     Some(hash.hex())
@@ -111,7 +112,7 @@ impl ToolIdentity {
                 };
                 let fingerprint = self
                     .bundled_resource_fingerprint
-                    .get_or_init(|| bundled_resource_fingerprint(root, bytes));
+                    .get_or_init(|| bundled_resource_fingerprint(root));
                 let Some(fingerprint) = fingerprint else {
                     return false;
                 };
@@ -145,17 +146,18 @@ impl ToolIdentity {
     }
 
     pub(crate) fn matches_bundled_resources(&self, expected: &str) -> bool {
-        let (Some(root), Some(bytes)) = (
-            self.bundle_root.as_deref(),
-            self.fields
-                .iter()
-                .find(|(name, _)| *name == "bundled-resources")
-                .map(|(_, bytes)| bytes),
-        ) else {
+        let Some(root) = self.bundle_root.as_deref() else {
             return false;
         };
+        if !self
+            .fields
+            .iter()
+            .any(|(name, _)| *name == "bundled-resources")
+        {
+            return false;
+        }
         self.bundled_resource_fingerprint
-            .get_or_init(|| bundled_resource_fingerprint(root, bytes))
+            .get_or_init(|| bundled_resource_fingerprint(root))
             .as_deref()
             == Some(expected)
     }
@@ -188,13 +190,7 @@ pub(crate) fn tool_identity(
             .and_then(Path::parent)
             .ok_or_else(|| invalid("invalid bundled compiler path"))?;
         bundle_root = Some(root.to_path_buf());
-        fields.push((
-            "bundled-resources",
-            bundled_resources(&read_regular(
-                &root.join("manifest.json"),
-                16 * 1024 * 1024,
-            )?)?,
-        ));
+        fields.push(("bundled-resources", Vec::new()));
         let clang = std::env::var_os("TSUZURI_LLVM_CLANG").unwrap_or_else(|| {
             root.join("bin")
                 .join(format!("clang{}", std::env::consts::EXE_SUFFIX))
@@ -1177,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_runtime_identity_checks_resources_without_compiler_or_runtime_hash_changes() {
+    fn bundled_resource_identity_hashes_unlisted_files_and_excludes_generated_files() {
         let root = std::env::temp_dir().join(format!(
             "tsuzuri-resource-fingerprint-{}-{}",
             std::process::id(),
@@ -1187,53 +1183,60 @@ mod tests {
                 .as_nanos()
         ));
         let sdk_file = root.join("include/stdint.h");
+        let compiler = root
+            .join("bin")
+            .join(format!("tsuzuri{}", std::env::consts::EXE_SUFFIX));
+        let runtime_manifest = root.join("share/runtime/manifest.json");
         fs::create_dir_all(sdk_file.parent().unwrap()).unwrap();
+        fs::create_dir_all(compiler.parent().unwrap()).unwrap();
+        fs::create_dir_all(runtime_manifest.parent().unwrap()).unwrap();
         fs::write(&sdk_file, b"old sdk").unwrap();
-        let mut hash = Sha256::new();
-        hash.update(b"old sdk");
-        let sdk_hash = hash.hex();
-        let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
-        let inventory = |compiler_hash, runtime_hash: &str| {
+        fs::write(&compiler, b"old compiler").unwrap();
+        fs::write(&runtime_manifest, b"old runtime").unwrap();
+        fs::write(
+            root.join("manifest.json"),
             serde_json::to_vec(&json!({
-                "compiler": compiler_hash,
-                "id": compiler_hash,
                 "files": [
-                    {"path": compiler, "sha256": compiler_hash},
-                    {"path": "include/stdint.h", "size": 7, "sha256": sdk_hash},
-                    {"path": "share/runtime/manifest.json", "size": 0, "sha256": runtime_hash}
+                    {"path": format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX)},
+                    {"path": "include/stdint.h"},
+                    {"path": "share/runtime/manifest.json"}
                 ]
             }))
-            .unwrap()
-        };
-        let resources = bundled_resources(&inventory("before", &"c".repeat(64))).unwrap();
-        let fingerprint = bundled_resource_fingerprint(&root, &resources).unwrap();
-        let identity = ToolIdentity::new(
-            vec![
-                ("tool-binary", vec![1]),
-                ("bundled-resources", resources.clone()),
-            ],
-            Some(root.clone()),
-        );
-        assert!(identity.matches_bundled_resources(&fingerprint));
-        let args = ["-O0".into()];
-        let key = runtime_key("native-c", b"source", &args, &identity).unwrap();
-        assert_eq!(
-            fingerprint,
-            bundled_resource_fingerprint(
-                &root,
-                &bundled_resources(&inventory("after", &"d".repeat(64))).unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+        let identity = || {
+            ToolIdentity::new(
+                vec![("tool-binary", vec![1]), ("bundled-resources", Vec::new())],
+                Some(root.clone()),
             )
-            .unwrap()
-        );
-        fs::write(&sdk_file, b"new sdk").unwrap();
-        let changed_resources = ToolIdentity::new(
-            vec![("tool-binary", vec![1]), ("bundled-resources", resources)],
-            Some(root.clone()),
-        );
-        assert!(!changed_resources.matches_bundled_resources(&fingerprint));
+        };
+        let fingerprint = bundled_resource_fingerprint(&root).unwrap();
+        let initial = identity();
+        assert!(initial.matches_bundled_resources(&fingerprint));
+        let args = ["-O0".into()];
+        let key = runtime_key("native-c", b"source", &args, &initial).unwrap();
+
+        fs::write(&compiler, b"new compiler").unwrap();
+        fs::write(&runtime_manifest, b"new runtime").unwrap();
+        assert!(identity().matches_bundled_resources(&fingerprint));
+
+        let unlisted_file = root.join("include/extra.h");
+        fs::write(&unlisted_file, b"new sdk input").unwrap();
+        let added_resource = identity();
+        assert!(!added_resource.matches_bundled_resources(&fingerprint));
         assert_ne!(
             key,
-            runtime_key("native-c", b"source", &args, &changed_resources).unwrap()
+            runtime_key("native-c", b"source", &args, &added_resource).unwrap()
+        );
+        fs::remove_file(unlisted_file).unwrap();
+
+        fs::write(&sdk_file, b"new sdk").unwrap();
+        let changed_resource = identity();
+        assert!(!changed_resource.matches_bundled_resources(&fingerprint));
+        assert_ne!(
+            key,
+            runtime_key("native-c", b"source", &args, &changed_resource).unwrap()
         );
         fs::remove_dir_all(root).unwrap();
     }

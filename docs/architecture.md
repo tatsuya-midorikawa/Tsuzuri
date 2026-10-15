@@ -225,7 +225,7 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 数値ランタイムと大きな数学関数を別 object にして再利用します。`src/runtime_cache.rs` は numeric 宣言の抽出、
 math の standalone 化、正確な参照記号集合、同梱 object の照合を担い、sqrt／fabs は caller IR に残します。
 `src/cache.rs` が実際のツール・source・flags・CPU・environment を鍵に含め、検証した object を原子的に公開します。
-runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時に同梱リソースの内容を検証します。SDK／header などが変われば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。
+runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。
 選択順はリソースとツールが一致する配布 object、`<cache>/runtime/`、埋め込みソースからのコンパイルです。
 配布物には numeric／math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
