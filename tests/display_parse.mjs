@@ -160,7 +160,7 @@ try {
       const host = join(directory, "host.c");
       writeFileSync(host, `#undef NDEBUG\n#include <assert.h>\nextern long long tz_value(void);\nint main(void) { assert(tz_value() == ${expected}); }\n`);
       for (const optimization of [0, 3]) {
-        const native = join(directory, `host-O${optimization}`);
+        const native = join(directory, `host-O${optimization}${process.platform === "win32" ? ".exe" : ""}`);
         execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-o", native]);
         execute(native, []);
         const wasm = join(directory, `program-O${optimization}.wasm`);
