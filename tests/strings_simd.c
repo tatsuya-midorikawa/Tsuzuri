@@ -539,11 +539,11 @@ int guard_pages(void) {
 #if defined(_WIN32) && !defined(__wasm__)
 static unsigned trap_case_index;
 
-static LONG WINAPI report_unhandled_trap(EXCEPTION_POINTERS *exception) {
-    DWORD code = exception->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ILLEGAL_INSTRUCTION)
-        fprintf(stderr, "trap case %u raised exception 0x%08lx at %p (image base %p)\n", trap_case_index,
-            (unsigned long)code, exception->ExceptionRecord->ExceptionAddress, GetModuleHandleW(NULL));
+static LONG CALLBACK report_trap_exception(EXCEPTION_POINTERS *exception) {
+    fprintf(stderr, "trap case %u raised exception 0x%08lx at %p (image base %p)\n", trap_case_index,
+        (unsigned long)exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress,
+        GetModuleHandleW(NULL));
+    fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
@@ -559,7 +559,10 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
         trap_case_index = (unsigned)atoi(argv[1]+1);
         fprintf(stderr, "trap case %u started\n", trap_case_index);
-        SetUnhandledExceptionFilter(report_unhandled_trap);
+        if (!AddVectoredExceptionHandler(1, report_trap_exception)) {
+            fprintf(stderr, "failed to install trap exception diagnostic\n");
+            return 1;
+        }
 #endif
         runtime_trap_case((unsigned)atoi(argv[1]+1)); return 0;
     }
