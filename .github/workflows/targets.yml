@@ -44,7 +44,7 @@ jobs:
             f16: generic=soft,native=conversions
           - os: ubuntu-24.04
             host: linux-x64
-            f16: generic=soft,native=hardware
+            f16: generic=soft,native=conversions|hardware
           - os: ubuntu-24.04-arm
             host: linux-arm64
             f16: hardware
@@ -155,9 +155,9 @@ jobs:
       # D10: tests/f16_hardware.mjs prints the f16 path each build exercised (hardware, conversions or soft)
       # and compares the results with an independent reference. matrix.f16 is the path this runner must
       # take: a CPU that lacks the capability falls back to soft, and TSUZURI_F16_EXPECT turns that
-      # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) and
-      # ubuntu-24.04 x86-64 run the full hardware path; macos-15-intel has F16C but no AVX512-FP16, so
-      # `--cpu native` converts with F16C and leaves arithmetic soft.
+      # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) run
+      # the full hardware path. The ubuntu-24.04 x86-64 runner must expose F16C, but accepts full hardware
+      # when its VM also exposes AVX512-FP16; macos-15-intel converts with F16C and keeps arithmetic soft.
       - name: f16 paths
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         env:
