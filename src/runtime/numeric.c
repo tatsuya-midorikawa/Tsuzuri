@@ -141,6 +141,17 @@ static u32 divide_small(tzrt_big *a, u32 divisor) {
     normalize(a);
     return (u32)remainder;
 }
+static u32 divide_u128_small(u128 *value, u32 divisor) {
+    u32 words[4] = {(u32)*value, (u32)(*value >> 32), (u32)(*value >> 64), (u32)(*value >> 96)};
+    u64 remainder = 0;
+    for (int i = 3; i >= 0; --i) {
+        u64 current = (remainder << 32) | words[i];
+        words[i] = (u32)(current / divisor);
+        remainder = current % divisor;
+    }
+    *value = ((u128)words[3] << 96) | ((u128)words[2] << 64) | ((u128)words[1] << 32) | words[0];
+    return (u32)remainder;
+}
 static u128 narrow(const tzrt_big *a) {
     if (a->n > 4) __builtin_trap();
     u128 value = 0;
@@ -641,10 +652,9 @@ int tz_soft_format(char *out, const unsigned char *input, int kind) {
         char digits[40];
         int count = 0, length = 0;
         while (value >> 64) {
-            u32 pair = (u32)(value % 100);
+            u32 pair = divide_u128_small(&value, 100);
             digits[count++] = (char)('0' + pair % 10);
             digits[count++] = (char)('0' + pair / 10);
-            value /= 100;
         }
         u64 remaining = (u64)value;
         while (remaining >= 100) {
@@ -1138,14 +1148,28 @@ int tz_soft_parse(unsigned char *out, const char *input, u64 length, int kind) {
         }
         if (index == length) return 0;
         u128 limit = mask(f.width - f.sign) + (f.sign && negative);
-        u128 cutoff = f.width <= 64 ? (u64)limit / (u32)base : limit / (u32)base;
-        u32 last = f.width <= 64 ? (u32)((u64)limit % (u32)base) : (u32)(limit % (u32)base);
+        u128 cutoff;
+        u32 last;
+        if (f.width <= 64) {
+            cutoff = (u64)limit / (u32)base;
+            last = (u32)((u64)limit % (u32)base);
+        } else {
+            cutoff = limit;
+            last = divide_u128_small(&cutoff, (u32)base);
+        }
         u128 value = 0;
         int previous = 0;
         u32 group;
         if (base == 10 && length - index >= 8 && eight_decimal_digits(input + index, &group)) {
-            u128 group_cutoff = f.width <= 64 ? (u64)limit / 100000000 : limit / 100000000;
-            u32 group_last = f.width <= 64 ? (u32)((u64)limit % 100000000) : (u32)(limit % 100000000);
+            u128 group_cutoff;
+            u32 group_last;
+            if (f.width <= 64) {
+                group_cutoff = (u64)limit / 100000000;
+                group_last = (u32)((u64)limit % 100000000);
+            } else {
+                group_cutoff = limit;
+                group_last = divide_u128_small(&group_cutoff, 100000000);
+            }
             do {
                 if (value > group_cutoff || (value == group_cutoff && group > group_last)) return 0;
                 value = value * 100000000 + group;

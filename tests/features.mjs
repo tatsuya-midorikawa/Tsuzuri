@@ -2088,7 +2088,6 @@ function run(name, suite) {
     // The host allocator's IR calls only tsuzuri_host_*, so nothing is renamed.
     if (hostAllocator) assert.ok(!/@(malloc|free|realloc)\(/.test(sourceIr), `${name}: the host allocator replaces the C library`);
     let trackedIr = hostAllocator ? sourceIr : sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
-    if (process.platform === "win32") trackedIr += `\n${readFileSync(join(root, "src/runtime/wasm.ll"), "utf8")}`;
     if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];

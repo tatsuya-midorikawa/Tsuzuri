@@ -22,6 +22,7 @@ pub const RESERVED_HOST_SYMBOLS: &[&str] = &[
     "decimal_scaled",
     "decode",
     "divide",
+    "divide_u128_small",
     "eight_decimal_digits",
     "format_binary_fast",
     "format_exponent",

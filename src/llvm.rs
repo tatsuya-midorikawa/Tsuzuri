@@ -3383,6 +3383,7 @@ struct FunctionEmitter<'a, 'b> {
     module: &'a CheckedModule,
     function: &'a CheckedFunction,
     function_id: usize,
+    native_windows: bool,
     symbol: String,
     specializations: &'b mut Specializations,
     known_closures: BTreeMap<usize, ClosureTarget>,
@@ -3450,10 +3451,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         specializations: &'b mut Specializations,
     ) -> Self {
         let counted = globals.coverage.is_some() && crate::coverage::counted(function);
+        let native_windows = !globals.wasm && crate::target::current_platform().windows();
         Self {
             module,
             function,
             function_id,
+            native_windows,
             symbol: format!("@tz.fn.{}", function.qualified_name()),
             specializations,
             known_closures: BTreeMap::new(),
@@ -3544,7 +3547,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .debug_subprogram(self.module, self.function, &self.symbol, false);
         self.single_use = call_specialization::single_use_locals(&self.function.body);
         self.last_uses = last_use::LastUses::analyze(self.function, self.module);
-        self.staying = escape::staying_locals(&self.function.body);
+        self.staying = if self.native_windows {
+            BTreeSet::new()
+        } else {
+            escape::staying_locals(&self.function.body)
+        };
         self.ranges = crate::ranges::analyze(self.module, self.function);
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {

@@ -68,7 +68,7 @@ for (const item of work) {
 const records = [];
 const record = (item, target, samples) => records.push(makeRecord(context, {
   suite: "numeric", workload: item.name, size: item.repeats, language: "tsuzuri",
-  target, opt: "O3", metric: target === "native" ? "cpu_time" : "wall_time", samples,
+  target, opt: "O3", metric: target === "native" && process.platform !== "win32" ? "cpu_time" : "wall_time", samples,
 }));
 try {
   const harness = join(root, "tests/display_parse_runtime.c");
@@ -140,7 +140,7 @@ try {
   writeFileSync(join(metrics, "env.txt"), JSON.stringify({
     ...context, runtime, runtime_sha256: createHash("sha256").update(readFileSync(runtime)).digest("hex"),
     native_checksums: checksums,
-    timing: "native clock(), WASM performance.now(); ms per operation; stdio outside timed interval",
+    timing: "POSIX native clock() CPU time, Windows native clock() elapsed time, WASM performance.now() wall time; ms per operation; stdio outside timed interval",
   }, null, 2) + "\n");
   console.log(`numeric: ${records.length} records (${quick ? 1 : 9} samples), ${metrics}`);
 } finally {
