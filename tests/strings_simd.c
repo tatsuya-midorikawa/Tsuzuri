@@ -552,8 +552,8 @@ static int run_trap_case(unsigned index) {
         return 0;
     } __except(capture_trap_exception(GetExceptionInformation())) {
         if (trap_exception_code != EXCEPTION_ILLEGAL_INSTRUCTION)
-            fprintf(stderr, "trap case %u raised exception 0x%08lx at %p\n", index,
-                (unsigned long)trap_exception_code, trap_exception_address);
+            fprintf(stderr, "trap case %u raised exception 0x%08lx at %p (image base %p)\n", index,
+                (unsigned long)trap_exception_code, trap_exception_address, GetModuleHandleW(NULL));
         return (int)trap_exception_code;
     }
 }
