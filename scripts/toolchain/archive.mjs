@@ -15,7 +15,7 @@ const archive = path.join(output, `${name}${manifest.platform === 'win32' ? '.zi
 const staging = await mkdtemp(path.join(output, '.archive-'));
 const check = await mkdtemp(path.join(output, '.check-'));
 try {
-  await cp(toolchain, path.join(staging, name), { recursive: true });
+  await cp(toolchain, path.join(staging, name), { recursive: true, preserveTimestamps: true });
   await rm(archive, { force: true });
   if (manifest.platform === 'win32') {
     // Git for Windows puts a GNU tar first on PATH, which cannot write zip archives.
