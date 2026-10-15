@@ -161,8 +161,7 @@ try {
       writeFileSync(host, `#undef NDEBUG\n#include <assert.h>\nextern long long tz_value(void);\nint main(void) { assert(tz_value() == ${expected}); }\n`);
       for (const optimization of [0, 3]) {
         const native = join(directory, `host-O${optimization}`);
-        execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir,
-          ...(process.platform === "win32" ? [join(root, "src/runtime/wasm.ll")] : []), "-o", native]);
+        execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-o", native]);
         execute(native, []);
         const wasm = join(directory, `program-O${optimization}.wasm`);
         cli(["build", directory, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
