@@ -4779,7 +4779,7 @@ fn compile_runtime_object(
     }
     let cache = identity.and_then(|identity| {
         let root = crate::cache::default_root()?;
-        let key = crate::cache::runtime_key(unit, source.as_bytes(), args, identity);
+        let key = crate::cache::runtime_key(unit, source.as_bytes(), args, identity)?;
         match crate::cache::BuildCache::open(&root)
             .and_then(|_| crate::cache::BuildCache::open(&root.join("runtime")))
         {

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 const FORMAT: u64 = 1;
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 const MARKER: &[u8] = b"tsuzuri whole-build cache v1\n";
-const RUNTIME_FORMAT: u64 = 1;
+const RUNTIME_FORMAT: u64 = 2;
 
 pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
     "TSUZURI_CLANG",
@@ -37,6 +37,7 @@ pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
 
 pub(crate) struct ToolIdentity {
     fields: Vec<(&'static str, Vec<u8>)>,
+    bundle_root: Option<PathBuf>,
     bundled_resource_fingerprint: std::sync::OnceLock<Option<String>>,
 }
 
@@ -81,27 +82,11 @@ fn bundled_resource_fingerprint(root: &Path, bytes: &[u8]) -> Option<String> {
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return None;
         }
-        let size = file.get("size")?.as_u64()?;
-        let mtime_2s = file.get("mtime_2s")?.as_u64()?;
-        // ponytail: trust unchanged 2s metadata; hash changed files, or hash the whole tree if bundles become mutable.
-        let metadata_matches = metadata.len() == size
-            && metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .is_some_and(|time| time.as_secs() / 2 == mtime_2s);
-        let actual_hash = if metadata_matches {
-            expected_hash.to_owned()
-        } else {
-            file_digest(&file_path)
-                .ok()?
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
-        };
-        if actual_hash != expected_hash {
-            return None;
-        }
+        let actual_hash = file_digest(&file_path)
+            .ok()?
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         inventory.push((path, actual_hash));
     }
     let mut hash = Sha256::new();
@@ -110,17 +95,32 @@ fn bundled_resource_fingerprint(root: &Path, bytes: &[u8]) -> Option<String> {
 }
 
 impl ToolIdentity {
-    fn new(fields: Vec<(&'static str, Vec<u8>)>) -> Self {
+    fn new(fields: Vec<(&'static str, Vec<u8>)>, bundle_root: Option<PathBuf>) -> Self {
         Self {
             fields,
+            bundle_root,
             bundled_resource_fingerprint: std::sync::OnceLock::new(),
         }
     }
 
-    fn hash_into(&self, hash: &mut Sha256) {
+    fn hash_into(&self, hash: &mut Sha256) -> bool {
         for (name, bytes) in &self.fields {
-            hash.field(name, bytes);
+            if *name == "bundled-resources" {
+                let Some(root) = self.bundle_root.as_deref() else {
+                    return false;
+                };
+                let fingerprint = self
+                    .bundled_resource_fingerprint
+                    .get_or_init(|| bundled_resource_fingerprint(root, bytes));
+                let Some(fingerprint) = fingerprint else {
+                    return false;
+                };
+                hash.field(name, fingerprint.as_bytes());
+            } else {
+                hash.field(name, bytes);
+            }
         }
+        true
     }
 
     pub(crate) fn matches_bundled_tool(&self, name: &str, expected: &str) -> bool {
@@ -144,13 +144,14 @@ impl ToolIdentity {
         })
     }
 
-    pub(crate) fn matches_bundled_resources(&self, root: &Path, expected: &str) -> bool {
-        let Some(bytes) = self
-            .fields
-            .iter()
-            .find(|(name, _)| *name == "bundled-resources")
-            .map(|(_, bytes)| bytes)
-        else {
+    pub(crate) fn matches_bundled_resources(&self, expected: &str) -> bool {
+        let (Some(root), Some(bytes)) = (
+            self.bundle_root.as_deref(),
+            self.fields
+                .iter()
+                .find(|(name, _)| *name == "bundled-resources")
+                .map(|(_, bytes)| bytes),
+        ) else {
             return false;
         };
         self.bundled_resource_fingerprint
@@ -179,12 +180,14 @@ pub(crate) fn tool_identity(
         ("tool-version-stdout", output.stdout),
         ("tool-version-stderr", output.stderr),
     ];
+    let mut bundle_root = None;
     // The launcher alone does not identify the Clang or C SDK bundled beside it.
     if path.file_stem().is_some_and(|name| name == "tsuzuri-clang") {
         let root = path
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| invalid("invalid bundled compiler path"))?;
+        bundle_root = Some(root.to_path_buf());
         fields.push((
             "bundled-resources",
             bundled_resources(&read_regular(
@@ -229,7 +232,7 @@ pub(crate) fn tool_identity(
         fields.push(("native-cpu-features", output.stdout));
         fields.push(("native-cpu-diagnostics", output.stderr));
     }
-    Ok(ToolIdentity::new(fields))
+    Ok(ToolIdentity::new(fields, bundle_root))
 }
 
 pub(crate) fn runtime_key(
@@ -237,7 +240,7 @@ pub(crate) fn runtime_key(
     source: &[u8],
     args: &[std::ffi::OsString],
     clang: &ToolIdentity,
-) -> String {
+) -> Option<String> {
     let mut hash = Sha256::new();
     hash.field("format", &RUNTIME_FORMAT.to_le_bytes());
     hash.field("kind", b"runtime-object");
@@ -255,8 +258,10 @@ pub(crate) fn runtime_key(
             value.as_ref().map_or(&[], |value| value.as_encoded_bytes()),
         );
     }
-    clang.hash_into(&mut hash);
-    hash.hex()
+    if !clang.hash_into(&mut hash) {
+        return None;
+    }
+    Some(hash.hex())
 }
 
 pub(crate) struct CachedFile {
@@ -1115,15 +1120,27 @@ mod tests {
     }
     #[test]
     fn runtime_keys_follow_contents_flags_and_tool_identity() {
-        let identity = ToolIdentity::new(vec![
-            ("tool-binary", vec![1]),
-            ("native-cpu-features", b"cpu-a".to_vec()),
-        ]);
+        let identity = ToolIdentity::new(
+            vec![
+                ("tool-binary", vec![1]),
+                ("native-cpu-features", b"cpu-a".to_vec()),
+            ],
+            None,
+        );
         let args = vec!["-O0".into(), "-fPIC".into()];
-        let key = runtime_key("numeric", b"source", &args, &identity);
-        assert_eq!(key, runtime_key("numeric", b"source", &args, &identity));
-        assert_ne!(key, runtime_key("math", b"source", &args, &identity));
-        assert_ne!(key, runtime_key("numeric", b"changed", &args, &identity));
+        let key = runtime_key("numeric", b"source", &args, &identity).unwrap();
+        assert_eq!(
+            key,
+            runtime_key("numeric", b"source", &args, &identity).unwrap()
+        );
+        assert_ne!(
+            key,
+            runtime_key("math", b"source", &args, &identity).unwrap()
+        );
+        assert_ne!(
+            key,
+            runtime_key("numeric", b"changed", &args, &identity).unwrap()
+        );
         for changed in [
             vec!["-O3".into(), "-fPIC".into()],
             vec!["-O0".into(), "--target=wasm32-unknown-unknown".into()],
@@ -1131,19 +1148,31 @@ mod tests {
             vec!["-fPIC".into(), "-O0".into()],
             vec!["-O0".into(), "--sysroot=other".into()],
         ] {
-            assert_ne!(key, runtime_key("numeric", b"source", &changed, &identity));
+            assert_ne!(
+                key,
+                runtime_key("numeric", b"source", &changed, &identity).unwrap()
+            );
         }
         for identity in [
-            ToolIdentity::new(vec![
-                ("tool-binary", vec![2]),
-                ("native-cpu-features", b"cpu-a".to_vec()),
-            ]),
-            ToolIdentity::new(vec![
-                ("tool-binary", vec![1]),
-                ("native-cpu-features", b"cpu-b".to_vec()),
-            ]),
+            ToolIdentity::new(
+                vec![
+                    ("tool-binary", vec![2]),
+                    ("native-cpu-features", b"cpu-a".to_vec()),
+                ],
+                None,
+            ),
+            ToolIdentity::new(
+                vec![
+                    ("tool-binary", vec![1]),
+                    ("native-cpu-features", b"cpu-b".to_vec()),
+                ],
+                None,
+            ),
         ] {
-            assert_ne!(key, runtime_key("numeric", b"source", &args, &identity));
+            assert_ne!(
+                key,
+                runtime_key("numeric", b"source", &args, &identity).unwrap()
+            );
         }
     }
 
@@ -1160,11 +1189,6 @@ mod tests {
         let sdk_file = root.join("include/stdint.h");
         fs::create_dir_all(sdk_file.parent().unwrap()).unwrap();
         fs::write(&sdk_file, b"old sdk").unwrap();
-        let original_time = UNIX_EPOCH + std::time::Duration::from_secs(100);
-        fs::File::open(&sdk_file)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(original_time))
-            .unwrap();
         let mut hash = Sha256::new();
         hash.update(b"old sdk");
         let sdk_hash = hash.hex();
@@ -1175,19 +1199,24 @@ mod tests {
                 "id": compiler_hash,
                 "files": [
                     {"path": compiler, "sha256": compiler_hash},
-                    {"path": "include/stdint.h", "size": 7, "mtime_2s": 50, "sha256": sdk_hash},
-                    {"path": "share/runtime/manifest.json", "size": 0, "mtime_2s": 0, "sha256": runtime_hash}
+                    {"path": "include/stdint.h", "size": 7, "sha256": sdk_hash},
+                    {"path": "share/runtime/manifest.json", "size": 0, "sha256": runtime_hash}
                 ]
             }))
             .unwrap()
         };
         let resources = bundled_resources(&inventory("before", &"c".repeat(64))).unwrap();
         let fingerprint = bundled_resource_fingerprint(&root, &resources).unwrap();
-        let identity = ToolIdentity::new(vec![
-            ("tool-binary", vec![1]),
-            ("bundled-resources", resources.clone()),
-        ]);
-        assert!(identity.matches_bundled_resources(&root, &fingerprint));
+        let identity = ToolIdentity::new(
+            vec![
+                ("tool-binary", vec![1]),
+                ("bundled-resources", resources.clone()),
+            ],
+            Some(root.clone()),
+        );
+        assert!(identity.matches_bundled_resources(&fingerprint));
+        let args = ["-O0".into()];
+        let key = runtime_key("native-c", b"source", &args, &identity).unwrap();
         assert_eq!(
             fingerprint,
             bundled_resource_fingerprint(
@@ -1197,18 +1226,15 @@ mod tests {
             .unwrap()
         );
         fs::write(&sdk_file, b"new sdk").unwrap();
-        fs::File::open(&sdk_file)
-            .unwrap()
-            .set_times(
-                std::fs::FileTimes::new()
-                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(200)),
-            )
-            .unwrap();
-        let changed_resources = ToolIdentity::new(vec![
-            ("tool-binary", vec![1]),
-            ("bundled-resources", resources),
-        ]);
-        assert!(!changed_resources.matches_bundled_resources(&root, &fingerprint));
+        let changed_resources = ToolIdentity::new(
+            vec![("tool-binary", vec![1]), ("bundled-resources", resources)],
+            Some(root.clone()),
+        );
+        assert!(!changed_resources.matches_bundled_resources(&fingerprint));
+        assert_ne!(
+            key,
+            runtime_key("native-c", b"source", &args, &changed_resources).unwrap()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
