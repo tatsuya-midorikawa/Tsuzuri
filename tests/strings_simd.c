@@ -537,25 +537,14 @@ int guard_pages(void) {
 #include "strings_runtime.c"
 
 #if defined(_WIN32) && !defined(__wasm__)
-static DWORD trap_exception_code;
-static void *trap_exception_address;
+static unsigned trap_case_index;
 
-static int capture_trap_exception(EXCEPTION_POINTERS *exception) {
-    trap_exception_code = exception->ExceptionRecord->ExceptionCode;
-    trap_exception_address = exception->ExceptionRecord->ExceptionAddress;
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
-static int run_trap_case(unsigned index) {
-    fprintf(stderr, "trap case %u started\n", index);
-    __try {
-        runtime_trap_case(index);
-    } __except(capture_trap_exception(GetExceptionInformation())) {
-    }
-    if (trap_exception_code)
-        fprintf(stderr, "trap case %u caught exception 0x%08lx at %p (image base %p)\n", index,
-            (unsigned long)trap_exception_code, trap_exception_address, GetModuleHandleW(NULL));
-    return (int)trap_exception_code;
+static LONG WINAPI report_unhandled_trap(EXCEPTION_POINTERS *exception) {
+    DWORD code = exception->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ILLEGAL_INSTRUCTION)
+        fprintf(stderr, "trap case %u raised exception 0x%08lx at %p (image base %p)\n", trap_case_index,
+            (unsigned long)code, exception->ExceptionRecord->ExceptionAddress, GetModuleHandleW(NULL));
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
@@ -568,10 +557,11 @@ int main(int argc, char **argv) {
     if (argc > 1 && argv[1][0] == 's') { storage_trap_case((unsigned)atoi(argv[1]+1)); return 0; }
     if (argc > 1 && argv[1][0] == 't') {
 #ifdef _WIN32
-        return run_trap_case((unsigned)atoi(argv[1]+1));
-#else
-        runtime_trap_case((unsigned)atoi(argv[1]+1)); return 0;
+        trap_case_index = (unsigned)atoi(argv[1]+1);
+        fprintf(stderr, "trap case %u started\n", trap_case_index);
+        SetUnhandledExceptionFilter(report_unhandled_trap);
 #endif
+        runtime_trap_case((unsigned)atoi(argv[1]+1)); return 0;
     }
     int guard_only = argc > 1 && !strcmp(argv[1],"--guard-only");
     int result = guard_only ? 0 : argc > 1 && !strcmp(argv[1],"--exhaustive") ? exhaustive() : differential();
