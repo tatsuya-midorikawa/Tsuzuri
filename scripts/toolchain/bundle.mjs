@@ -97,10 +97,12 @@ export async function entries(directory, prefix = '') {
     if (!prefix && name === 'manifest.json') { continue; }
     const file = path.join(directory, name);
     const relative = prefix ? `${prefix}/${name}` : name;
-    const information = await lstat(file);
+    const information = await lstat(file, { bigint: true });
     if (information.isSymbolicLink()) { throw new Error(`Toolchain must not contain symlinks: ${relative}`); }
     if (information.isDirectory()) { result.push(...await entries(file, relative)); }
-    else if (information.isFile()) { result.push({ path: relative, size: information.size, sha256: await digest(file) }); }
+    else if (information.isFile()) {
+      result.push({ path: relative, size: Number(information.size), mtime_2s: Number(information.mtimeNs / 2_000_000_000n), sha256: await digest(file) });
+    }
     else { throw new Error(`Unsupported toolchain entry: ${relative}`); }
   }
   return result;
@@ -121,7 +123,7 @@ export function extractArchive(archive, directory) {
 
 export async function verify(destination) {
   const manifest = JSON.parse(await readFile(path.join(destination, 'manifest.json'), 'utf8'));
-  if (manifest.platform !== process.platform || manifest.arch !== process.arch) { throw new Error('Toolchain host mismatch.'); }
+  if (manifest.version !== 2 || manifest.platform !== process.platform || manifest.arch !== process.arch) { throw new Error('Toolchain host or format mismatch.'); }
   const files = await entries(destination);
   if (JSON.stringify(files) !== JSON.stringify(manifest.files)) { throw new Error('Toolchain contents differ from the verified manifest. Rebuild the bundle.'); }
   if (createHash('sha256').update(JSON.stringify(files)).digest('hex') !== manifest.id) { throw new Error('Invalid toolchain identity.'); }
@@ -328,7 +330,7 @@ export async function bundle(destination) {
     const toolVersions = Object.fromEntries(llvmTools.map(name => [name, versionLine(path.join(stage, 'bin', name + suffix))]));
     const files = await entries(stage);
     const manifest = {
-      version: 1, platform: process.platform, arch: process.arch,
+      version: 2, platform: process.platform, arch: process.arch,
       compiler: run(path.join(stage, 'bin', `tsuzuri${suffix}`), ['--version'], true).trim(),
       zig: platforms[host] ? zigVersion : null, mingw: mingwChecksums[host] ? mingwVersion : null,
       llvm: 21, toolVersions,

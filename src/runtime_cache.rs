@@ -246,7 +246,7 @@ fn load_prebuilt(
     let Some(resource_fingerprint) = value["resource_fingerprint"].as_str() else {
         return Ok(None);
     };
-    if !identity.matches_bundled_resources(resource_fingerprint) {
+    if !identity.matches_bundled_resources(root, resource_fingerprint) {
         return Ok(None);
     }
     let Some(environment) = value["environment"].as_object() else {
