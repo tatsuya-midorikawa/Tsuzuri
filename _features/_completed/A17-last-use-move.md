@@ -7,12 +7,12 @@
 | 規模 | L（Phase 1 は M、Phase 2 は M） |
 | 依存 | A15（done。暗黙の複製の一覧 `copies::sites` と警告 `W1006`）、B07（done。Drop 型は Copy でない） |
 | 後続 | A18（引数規約。A17 の Phase 1・2 の後に着手する）。PM07 の Phase 2「所有権検査の `live` 集合を使う最後の使用」を、本チケットが置き換える |
-| 状態 | todo |
+| 状態 | done（Phase 1・2 実装・検証済み） |
 | 起票 | 2026-10-13（人間の依頼「『次の一手』を進めて、開発チケットを作成して」。HEAD `2282fd96` で確認。棚卸しと試作は同じ日に行った） |
-| 承認 | 不要（言語の意味・構文・診断コードを変えない）。Phase 2 は PM07 の方針を引き継ぎ、Phase 1 の後に人間が求めたときだけ着手する（本文の「Phase 2」） |
-| 改善する劣位 | Rust 比: Copy のコストモデルの違い。Tsuzuri は全要素が Copy の配列・リストを Copy とみなし、暗黙の複製が長さに比例する確保とコピーを伴う（[なぜ Tsuzuri なのか](../_tsuzuri/language-reference/languages/why-tsuzuri.md)、A15） |
+| 承認 | Phase 1・2 とも人間が実装を指示済み。言語の意味・構文・診断コードは変えない |
+| 改善する劣位 | Rust 比: Copy のコストモデルの違い。Tsuzuri は全要素が Copy の配列・リストを Copy とみなし、暗黙の複製が長さに比例する確保とコピーを伴う（[なぜ Tsuzuri なのか](../../_tsuzuri/language-reference/languages/why-tsuzuri.md)、A15） |
 | 手本にする既存実装 | 最後の使用の判定: `src/call_specialization.rs` の `single_use_locals`。複製か移動かの分岐: `src/llvm.rs` の `FunctionEmitter::clones_on_take`・`read_place`（先頭の `emit` が `single_use` を作る）。複製の一覧: `src/copies.rs` の `sites`、`src/ownership.rs` の `Checker::note_copy`・`read_places`、`src/llvm.rs` の `check_copy_inventory`（debug build の照合）。match の束縛: `src/llvm_control.rs` の `match_expression`、`src/check.rs` の `TypedMatchArm::views`。IR の確保の検査: `tests/call_specialization.rs` の `only_unobserved_single_use_copies_are_transferred`（`body` ヘルパー）、`tests/copy_cost.rs`。確保回数の E2E: `tests/primitives.mjs` の `storage` 表。suite の書き方: `tests/features.mjs`（GUIDE §7.4） |
-| 主な影響ファイル | 新規: `src/last_use.rs`, `tests/last_use.rs`, `tests/last_use_fuzz.mjs`（差分テスト。手本 `tests/local_recursion_fuzz.mjs`）。変更: `src/llvm.rs`（`last_use` のモジュール宣言、`FunctionEmitter` の欄、`emit`、`clones_on_take`）, `src/llvm_control.rs`（`match_expression`）, `src/copies.rs`（`sites`）, `tests/copy_cost.rs`（Phase 2 の既存テスト 1 件）, `tests/features.mjs`・`tests/fixtures/last_use/Main.tz`（起票時に追加済み。`inspect` を足す）, `tests/primitives.mjs`・`tests/fixtures/storage/Storage.tz`（行の追加は任意）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`（検証コマンドの一覧に差分テストを足す）, `_tsuzuri/language-reference/ownership-and-memory/ownership.md`・`built-in-types-and-modules/array.md`、`_perfs/PM07-copy-elision.md`。測定の道具: `tests/copy_inventory.rs`（起票時に追加済み。変更しない） |
+| 主な影響ファイル | 新規: `src/last_use.rs`, `tests/last_use.rs`, `tests/last_use_fuzz.mjs`（差分テスト。手本 `tests/local_recursion_fuzz.mjs`）。変更: `src/llvm.rs`（`last_use` のモジュール宣言、`FunctionEmitter` の欄、`emit`、`clones_on_take`）, `src/llvm_control.rs`（`match_expression`）, `src/copies.rs`（`sites`）, `tests/copy_cost.rs`（Phase 2 の既存テスト 1 件）, `tests/features.mjs`・`tests/fixtures/last_use/Main.tz`（起票時に追加済み。`inspect` を足す）, `tests/primitives.mjs`・`tests/fixtures/storage/Storage.tz`（行の追加は任意）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`（検証コマンドの一覧に差分テストを足す）, `_tsuzuri/language-reference/ownership-and-memory/ownership.md`・`built-in-types-and-modules/array.md`、`_perfs/_completed/PM07-copy-elision.md`。測定の道具: `tests/copy_inventory.rs`（起票時に追加済み。変更しない） |
 | 計測対象 | 確保の回数（IR の `call ptr @tz.alloc` の数と、E2E の `allocations`）、`W1006` の位置の数（`copy_inventory`）、下の 3 つの再現プログラムの実行時間 |
 
 ## 目的
@@ -28,8 +28,7 @@ Copy の配列・リストと、それを含む値は、読むたびに長さに
 意味を変えずに、生成だけを正確にする。最後の使用は、所有権検査の結果ではなく、生成が持つ型付き IR の逆向きの生存解析（liveness）で判定する。
 複製が減る位置は `W1006` の報告からも外し、「警告が出る位置は、実際に複製する位置」という A15 の約束を保つ。
 
-Phase 1 は局所変数の全体の読みの最後の使用、Phase 2 は所有する scrutinee の match 束縛の move に限る。
-実装者は Phase 1 だけを実装し、Phase 2 は人間が求めた場合だけ着手する。Phase 3（`Field` の連鎖、Copy の要素、閉包の環境など）は設計の方針だけを書く。
+Phase 1 は局所変数の全体の読みの最後の使用、Phase 2 は所有する scrutinee の match 束縛の move に限る。両 phase は実装・検証済みで、意味・構文・診断コードは変えない。union payload 内の field へさらに射影する束縛は、部分 union move の生成が未対応のためコピーを維持する。Phase 3（`Field` の連鎖、Copy の要素、閉包の環境など）はこのチケットの対象外であり、実装しない。
 
 ## 着手条件と停止条件
 
@@ -449,7 +448,7 @@ arm の入口の和 `fall` は、arm の数に対する固定点で確定させ�
 
 「ドキュメント」の節のとおり。`node scripts/check-docs.mjs` を変えたページに対して実行する。
 
-### Phase 2（人間が求めた場合だけ）
+### Phase 2: 所有する scrutinee の match 束縛（実装・検証済み）
 
 手順 10〜13 は Phase 2 である。手順 1〜9 が完了し、人間が Phase 2 を求めたときだけ着手する。
 
@@ -472,7 +471,7 @@ arm の入口の和 `fall` は、arm の数に対する固定点で確定させ�
 - `tests/last_use.rs`（新規。手本 `tests/call_specialization.rs`）: `analyze`・`llvm::emit` で IR を出し、`body(&ir, "tz.fn.Main.<名前>")` の `call ptr @tz.alloc` の数を比べる。
   手順 3〜6 と 10 の名前付きテスト。拒否（診断）は増えないので、受理の確認と IR の確保の数が中心。決定性（同じ入力で IR が一致）を各テストで確かめる。
 - `tests/copy_cost.rs`: 手順 7 の `W1006` のテスト。`inventory_covers_every_emitted_clone` の入力に、移動する形の入力を足す（debug build の照合が働く）。
-- 既存テスト: 変更しない。例外は Phase 2 の 1 件（手順 12）。
+- 既存テスト: Phase 2 の 1 件（手順 12）に加え、`specializations_report_one_warning_per_source_position` は最後のタプル要素の move に伴い更新する（下記 D10）。その他の変更は親作業の PM06・PR01 と区別する。
 
 ### E2E
 
@@ -585,22 +584,22 @@ function run(n) {
 - `README.md` の検証コマンドの一覧（`tests/local_recursion_fuzz.mjs` の行の隣）と `docs/architecture.md` のテストの説明（同じく `tests/local_recursion_fuzz.mjs` を説明する段落の隣）に、
   `node tests/last_use_fuzz.mjs [compiler] [programs] [first seed] [depth]`（最後の使用の移動の差分テスト。解析・生成を変えたときに手で回す）を足す。
   場所は `grep -n "local_recursion_fuzz" README.md docs/architecture.md` で探す。GUIDE §3 の全体の一覧には B09 の差分テストがないので、足さない。
-- `docs/benchmarks.md`: 付録 A の測定。`_perfs/PM07-copy-elision.md`: Phase 2 の節を、本チケットへのリンクに置き換える（起票時に注記済み）。
+- `docs/benchmarks.md`: 付録 A の測定。`_perfs/_completed/PM07-copy-elision.md`: Phase 2 の節を、本チケットへのリンクに置き換える（起票時に注記済み）。
 - 「計画中」の注記・リンクのうち、PM07 の Phase 2 を指すものが `_tsuzuri/language-reference/` に残っていれば、実際の振る舞いの説明に置き換える（`grep -rn "PM07" _tsuzuri docs README.md`）。
 
 ## 受け入れ条件
 
-- [ ] 手順 1〜9 を実施し、各段の確認が通る。Phase 2 は人間が求めた場合だけ（求めなかったときは「未実施」と書く）。
-- [ ] `tests/last_use.rs` の名前付きテストがすべて通り、付録 B の IR の確保の数が Phase 1 の後の値になる（Phase 2 は Phase 2 の後の値）。
-- [ ] `node tests/features.mjs target/release/tsuzuri last_use` が全手順を通して 102 件通り、全 suite も通る（native/WASM × `-O0`/`-O3`、`live == 0`、WASM の import が空）。
-- [ ] `tests/last_use_fuzz.mjs` が、HEAD のコンパイラで 200 本以上、各手順の後と完了時に別の seed で 300 本以上、差分 0 で通る。文の形の計数に 0 がない。
-- [ ] 付録 A のプログラムの結果が HEAD と同じで、`loop`・`rec` の時間が before／after で記録されている。
-- [ ] debug build の全 Rust テストで A15 D5 の照合が通る。移動する位置に `W1006` が出ない。複製する位置には従来どおり出る。
-- [ ] 複製のないプログラムの IR が、手順 1 の IR と 1 byte も変わらない。同じ入力で IR が 2 回とも一致する。
-- [ ] 棚卸しの合計が増えず、対象の行が減っている（数を完了報告に書く）。
-- [ ] `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`、GUIDE §3.1 の回帰テスト、`sh scripts/check-runtime-includes.sh` が通る。
-- [ ] ドキュメントを更新し、`node scripts/check-docs.mjs` が通る。`_features/README.md` の状態を `done`（Phase 1 のみなら「done（Phase 1）」）にし、チケットを `_completed/` へ移す。
-- [ ] GUIDE §13.2 の書式の完了報告を、チケット末尾の `## 実装と検証（YYYY-MM-DD）` に書く。コミットは人間の指示があるまで作らない。
+- [x] 手順 1〜9 を実施し、各段の確認が通る。Phase 2 は実装依頼を受けて実施し、検証済み。
+- [x] `tests/last_use.rs` の名前付きテストがすべて通り、付録 B の IR の確保の数が Phase 1・2 の実装後の値になる。
+- [x] `node tests/features.mjs target/release/tsuzuri last_use` が全手順を通して 120 件通り、全 suite も通る（native/WASM × `-O0`/`-O3`、`live == 0`、WASM の import が空）。
+- [x] `tests/last_use_fuzz.mjs` が、HEAD のコンパイラで 200 本以上、各手順の後と完了時に別の seed で 300 本以上、差分 0 で通る。文の形の計数に 0 がない。
+- [x] 付録 A のプログラムの結果が HEAD と同じで、`loop`・`rec` の時間が before／after で記録されている。
+- [x] debug build の全 Rust テストで A15 D5 の照合が通る。移動する位置に `W1006` が出ない。複製する位置には従来どおり出る。
+- [x] 複製のないプログラムの IR が、手順 1 の IR と 1 byte も変わらない。同じ入力で IR が 2 回とも一致する。
+- [x] 棚卸しの合計が増えず、対象の行が減っている（数を完了報告に書く）。
+- [x] `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`、GUIDE §3.1 の回帰テスト、`sh scripts/check-runtime-includes.sh` が通る。
+- [x] ドキュメントを更新し、`node scripts/check-docs.mjs` が通る。`_features/README.md` の状態を `done` にし、チケットを `_completed/` へ移す。
+- [x] GUIDE §13.2 の書式の完了報告を、チケット末尾の `## 実装と検証（YYYY-MM-DD）` に書く。コミット・push は利用者の依頼を受けて実施する。
 
 ## 落とし穴
 
@@ -683,6 +682,41 @@ function run(n) {
 - 決定: M1 の `x` は Copy でなくてもよい。移動するのは Copy の束縛だけで、非 Copy の束縛の部分 move は従来どおり。
 - 理由: 棚卸しの局所の scrutinee（利用者 41、std 12）の多くは、エラー型が非 Copy の `Result` である。
 - 状態: 既定案（実装者はこの案に従う）
+
+### D10: 同時実装時の検証と期待値の整合
+
+- 人間の指示により、PM07 R2/S1・PM06・PB02・PR01 と共有ツリーで並行して実装する。変更前の実行コンパイラは `target/perf/phase2-baseline/tsuzuri-before`、解析・測定の記録は `target/perf/a17/` に置く。`/tmp` は使わない。空の解析だけの段階を全プロジェクトで byte 比較する手順 2 は、この統合変更では未実施である。
+- `CopyRead::local` は R2 のフィールド根も持つようになった。`single_use` は根を使い、`LastUses` は `CopyKind::Local` だけを使う。Field の根の `Local` を訪れた span を最後の全体読みと取り違えない。
+- 所有する match の全体束縛（射影が `Local(match.local)`、経路が空）も M3 に含まれる。束縛の一覧から除く種別は `Local`・`Field`・`Payload`、かつ `read.local == None` とする。部分の経路は `Field`・`UnionPayload` のみである。
+- `dup value = (value, value)` は最初の読みを複製し、最後の読みを移動する。2 特殊化ではサイトが 4 → 2、ソース位置で重複除去した警告が 2 → 1 になる。これは最後の使用の対象そのものなので、`tests/copy_cost.rs` の期待をこの証明に合わせる。
+- PR01 が `call nonnull ptr @tz.alloc` を付けるため、確保回数の検査は `nonnull` の有無を正規化する。確保が消えたと誤判定しない。
+- 要素・フィールドへ直接 `=` を書く probe は現行言語で `E1012` になるため、部分更新のテストは `Array.write (ref mut a[0..]) ...` を使う。後の引数の `break` は、両腕が同じ型になる `{ break; i }` で試す。
+- 元の feature suite 102 件は残し、スタックのリテラル・再帰 union と、scrutinee の明示的な guard 読みの 18 件を追加する。合計は 120 件である。
+- M1〜M4 だけでは、利用者 `Drop` 型の Copy フィールド／payload を零にしてデストラクタの観測を変えてしまう。そのため射影が `has_user_drop` の値を経由する arm は移動しない。record・union の両方を回帰テストする。
+- guard・パターン手順の間は subject の別名がまだ生きている。そこに明示的な subject 根の消費読みがあると、通常の局所の後方生存だけでは早すぎる move を許してしまう。guard・手順を不透明にして、その中の消費読みは複製する。ガード成功後の安全な束縛の move は引き続き行う。
+
+### 検証の中間記録（2026-10-14）
+
+Phase 1・2 の実装:
+
+- `src/last_use.rs`: 具体化 IR だけの後方生存解析。分岐の和、短絡、値が先の代入、ループの固定点、`break`/`continue` の行き先、match のガード・パターン失敗の固定点。訪問予算 100,000、深さ 128 を超えれば結果全体を空にする。借用・スライス、走査元、パターン・ループの別名、所有捕捉を除外する。位置と局所 id の鍵は AND、集合は順序付きである。
+- 所有する match 束縛はガード成功後にだけ move する。全 alternative の射影の経路と重なりを検査する。要素・tail・参照や `as` の重なりはコピーを残す。
+- 生成と警告は同じ `LastUses` を使う。R2 のフィールド根の単一使用と既存の借用 worker の扱いは保持する。未知の式と場所への読みは不透明に扱い、型・借用・drop の意味は変えない。
+- 新しい依存、unsafe、runtime 記号、WASM import は追加していない。
+
+実測済みの確認（統合検証の残りは完了前に追記する）:
+
+- 変更前: 元の `features.mjs last_use` 102 件が native/WASM × O0/O3 で通過。付録 B の確保回数は `2, 3, 1, 1, 4, 1, 2`。
+- 差分オラクル: AST の独立 JavaScript 評価器で、配列の値の読み・捕捉・match 束縛は複製、`ref` は別名として解釈する。変更前コンパイラで 200 本（seed 1、depth 4）、入れ子の生成追加後に別の 200 本（seed 2000、depth 3）が各 O0/O3 で差分 0。全 13 形の生成件数が正である。
+- `cargo test --locked --test last_use --test copy_cost`: 最終 29 + 16 件通過。付録 B の後の確保回数は `0, 0, 1, 1, 0, 0, 1`。native/WASM の生成と IR の決定性を毎回検査する。再帰 worker は呼び出し元から到達する経路だけを追い、借用用の未到達 worker を取り違えず、配列の複製がないことを検査する。
+- 解析の単体テスト 3 件（予算、深さ、同じ位置の読みの AND、決定性）通過。共有 `--lib` 検証は 211 件通過、PR04 の新 runtime 名の予約一覧 1 件が一時失敗した（PR04 担当が修正済み）。
+- 拡張途中の `features.mjs last_use` は release コンパイラで 114 件通過。最後の guard 根の読みを追加した 120 件は、最終の debug コンパイラで native/WASM × O0/O3 通過。値、`live == 0`、空の WASM import と 3 関数の確保回数を検査する。親作業の最終 release で全 suite を再検査する。
+- `copy_inventory` は 121 プロジェクトを解析（bindgen 1 件は元から `E1011` で除外）、利用者 59 / std 60。起票時の 120 / 138 より減った。共有作業でプロジェクト数が 116 → 121 に増えたため、行別の前後は完全には matched ではない。記録: `target/perf/a17/inventory-after.txt`。
+- 正式な時間比較、全 integrated Rust/E2E、全体 fmt/clippy/ドキュメント・CI wiring は親作業が担当する。並行する全 f32 bit-pattern 検査など CPU 負荷がある間は測定しない。速度の改善は未計測として扱う。
+
+更新ページ: `ownership-and-memory/ownership.md`、`built-in-types-and-modules/array.md`。中央の README・仕様・構成・benchmark 文書は親作業が更新する。`list.md` の tail コピーの制限は残るため変更しない。
+
+変更ファイル: `src/last_use.rs`、`src/llvm.rs` の narrow hook、`src/llvm_control.rs`、`src/copies.rs`、`src/check.rs` の views 注記、`tests/last_use.rs`、`tests/last_use_fuzz.mjs`、`tests/copy_cost.rs`、last_use fixture・suite、上記 2 ページ。本チケットの移動、コミット、push は行っていない。
 
 ## 付録
 
@@ -772,3 +806,75 @@ def match_temp :: i64 -> i64 = \n ->
 関数 `@tz.fn.Main.<名前>` の本体（`define` から次の空行まで）の `call ptr @tz.alloc` の数: HEAD は 2、3、1、1、4、1、2（`branch_reads`、`loop_update`、`read_twice`、`invariant_loop`、`build_pair`、`match_result`、`match_temp`）。
 `loop_update` の 3 は、`let mut ys = xs` の `xs`（関数に `for` があるので単一使用にならない）、ループの中の `ys`、最後の `ys` の複製である。
 `match_temp` の 2 は、`new` の 1 と束縛の複製の 1 である。
+
+## 親作業に渡す中央文書の追記
+
+`docs/language.md` の Ownership / Borrowing と W1006:
+
+> コンパイラが後続の読み取りがないと証明できる Copy の局所値は、複製せずムーブします。ループの再束縛と分岐の各腕も対象です。借用・スライス・走査元、後の引数の読み、未対応の式や解析上限ではコピーを残します。所有する一時値、または最後の局所 scrutinee の match 束縛も、重ならない Field/UnionPayload の射影ならガード成功後にムーブします。ただし union payload 内の field へさらに射影する束縛は部分 union move の生成が未対応のためコピーを残します。参照・要素・tail・利用者 Drop を経由する射影と重なる束縛もコピーを残します。ムーブする位置に W1006 は出ません。
+
+`docs/architecture.md` の生成・コピー一覧:
+
+> `llvm::last_use::LastUses` は具体化 IR の後方生存解析を行い、所有権チェッカーの State/loan は参照しません。ループと match の失敗先は固定点、訪問は 100,000 回・深さ 128 までで、超過時は最適化しません。生成と `copies::sites` が同じ結果を読みます。全体 Local は single-use または last-use、R2 の Field 根は single-use だけです。ガードとパターン手順は subject の別名が生きているため不透明です。束縛の move はガード成功後だけで、Drop を経由しない非重複の所有射影に限ります。union payload の後に field projection が続く束縛は部分 union move の生成が未対応のためコピーを維持します。
+
+README と構成の検証コマンド一覧:
+
+```sh
+node tests/last_use_fuzz.mjs [compiler] [programs] [first seed] [depth]
+# 既定: target/release/tsuzuri 40 1 4。独立した値セマンティクスの AST 評価器、
+# native O0/O3、入力 0/1/2/5/9、全 13 文形式の件数を照合する。
+```
+
+benchmark 文書: 時間比較は親作業が、保存済みの `target/perf/a17/{loop,rec,match}/Main.tz` と `target/perf/phase2-baseline/tsuzuri-before` を使って CPU 負荷停止後に行う。まだ速度の実測を主張しない。
+
+## 実装と検証（2026-10-14）
+
+- Phase 1・2 の実装は完了し、ソースを固定した。予算・除外・順序・分岐・固定点、所有する match 束縛、共有 Copy 一覧を実装した。Phase 3 の精密な借用期間、要素・tail の move は実装していない。PM07 R2 と PM06 は親作業の別の変更である。
+- 最終の `cargo test --locked --test last_use --test copy_cost`: **29 + 16 件**通過。`cargo test --locked --lib llvm::last_use`: **3 件**通過。IR 確保回数は before `2/3/1/1/4/1/2`、after `0/0/1/1/0/0/1`。生成は native/WASM で決定的。
+- 差分検査は before **200 + 200 本**、release after **300 本**（seed 1000、depth 4）、各 O0/O3 で差分 0。after は **600 実行**、各実行は入力 `0/1/2/5/9` の全 5 出力を独立 AST 評価器と照合する。全 13 形式の件数は正。最後の追加 hardening は guard・Drop の最適化を保守的にする変更で、追加の guard runtime suite と Drop の IR 回帰で検査した。
+- before feature **102 件**、release after **114 件**、最後の debug コンパイラによる拡張 suite **120 件**通過（native/WASM × O0/O3、`live == 0`、import 空）。最後の release 全 suite は親作業の統合ゲート。
+- `node scripts/check-docs.mjs` は上記 2 ページ、**23 links、20 examples、40 native O0/O3 runs** 通過。グローバル build cache の既存の巨大ディレクトリ走査で最初の CLI 検証が timeout したため、親作業で原因を確認後 `TSUZURI_CACHE_DIR=''` で再実行した。タイムアウト上限・テストの意味は変更していない。
+- 最終 fixture を含む inventory after は **user 62 / std 60**（122 プロジェクト、bindgen の既存エラー 1 件を除外）。before は起票時 user 120 / std 138、116 プロジェクトなので行別の完全な matched 比較ではない。記録: `target/perf/a17/inventory-final.txt`。途中の 59 / 60 は、scrutinee を明示的に読む guard の新しい 3 コピーを追加する前の記録である。
+- 同時実装による差分と追加の安全条件は D10 に記録した。空の解析だけの段階の全プロジェクト byte 比較・各細分段階の全 suite は未実施。全 integrated cargo/fmt/clippy/E2E/CI と正式な 9 回の性能比較は、人間の指示で親作業へ引き継いだ。速さの数値をまだ主張しない。
+- 更新ページ・ファイルは中間記録の一覧、中央文書の正確な追記は直前の節にある。コミット・push・チケット移動なし。scratch を清掃した。
+
+### 限定された追加検証（2026-10-14、matched inventory と release correctness）
+
+- 親作業の限定 GO により、棚卸しと release の last-use feature／差分検査だけを実施した。A17-off のソース、copy-free IR 比較、付録 A の実行ファイル・正式な時間測定には着手していない。
+- 起票時の baseline `a621fada69bf27f425bfbb012cc7d0a699721db6` を `target/perf/A17-completion/source-before/` に展開し、現在のプロジェクト入力だけを同じ snapshot に置き換えた。比較する入力は **123 ディレクトリ・172 ソース**で byte hash が一致し、stdlib **47 ファイル**と棚卸し harness も baseline と一致する。両側とも **122 プロジェクトを解析**し、同じ `tests/fixtures/bindgen` の既存 `E1011` だけを除外した。成功したプロジェクトの intersection に狭めていない。両側のビルドには専用の cargo target directory を使用した。
+- matched 棚卸しは **user 150 → 62、std 138 → 60**。origin・file/line・kind・source text のキーでは **user 88 件、std 79 件削除、std 1 件追加**である。追加された `std/Net.tz:449` の `Local / Closure` は、同じ行・同じソース・同じ型の削除された `Field / Match[scrutinee=Call]` と対応する。kind を外したソース行のキーでは新規位置は **0**。これは棚卸しの分類の差分であり、その行の物理確保回数の同一性を推測していない。残った `std/Tensor.tz:40` の位置には、代表 specialization の表示型 `[i32]` → `[i64]` の差も記録した。統合変更全体の比較なので、全削除を A17 単独の効果とは主張しない。
+- 入力・解析コード・harness の hash、両側の全 SITE、行別差分は `target/perf/A17-completion/{inputs.json,inventory-before.txt,inventory-after.txt,inventory-comparison.json,inventory-removed.tsv,inventory-added.tsv}` に保存した。検査終了時にも入力・stdlib・解析コードの hash 一致を確認した。
+- SHA-256 **`00d5d6a434fe6a3830741adc9f86e614f065794aaa426de0152adea6160e07c9`** の release は、`node tests/features.mjs target/perf/phase2-final/tsuzuri-after last_use` で **120 件通過**（native/WASM × O0/O3、結果・`live == 0`・import 空・決定性・確保回数の検査）。ログは `target/perf/A17-completion/features-release.log`、終了は **23:01:06 +09:00** で、後述の実行ファイルの置換より前である。
+- 同じパスを使った `node tests/last_use_fuzz.mjs ... 300 4000 4` は完了していない。seed **4000–4264** の 265 本では O0/O3 の出力比較が通り、seed **4265 の O3** で child status が `null` となり **23:10:58 +09:00** に停止した。この時刻に親作業が実行ファイルを SHA-256 `2ab8e9d944f4ac7be501e78b19ad954425cedc2a25d86a25b41e313555213a5c` に置き換えたため、この run は compiler identity が固定された完了検査として無効である。300 本・600 実行通過とは数えない。失敗 seed と出力は `target/perf/A17-completion/fuzz-release-300.log` に保存した。新しい content-addressed compiler での 300 本再実行は、親作業の次の GO を待つ。
+- 以上の全 worker は停止済み。production source の変更、timing、A17-off control の作成は行っていない。
+
+### content-addressed release の差分検査再実行（2026-10-14）
+
+- 親作業の次の限定 GO で、`node tests/last_use_fuzz.mjs target/perf/phase2-final/tsuzuri-2ab8e9d944f4ac7b 300 5000 4` だけを再実行した。SHA-256 **`2ab8e9d944f4ac7be501e78b19ad954425cedc2a25d86a25b41e313555213a5c`** と harness の SHA を実行前後に確認し、どちらも一致した。
+- seed **5000–5299**、depth **4** の **300 本・600 native O0/O3 実行**が差分 **0** で通過した。各実行は入力 `0/1/2/5/9` の 5 出力を独立 AST 評価器と照合した。全 13 形式の件数は正で、`update=1500`、`derived=1200`、`branch=1200`、`for/while/closure/borrow/match_temp/match_last/match_kept/match_tuple/match_guard/match_overlap=各300` だった。
+- 記録は `target/perf/A17-completion/fuzz-release-300-seed5000.log`、前後の identity は `fuzz5000-identity-before.json`／`fuzz5000-identity-after.json`、全体の結果は `bounded-results.json`。seed 4000 の identity が無効になった run は履歴として残し、今回の通過に置き換えて通過と数えていない。
+- 全 worker は停止した。production source の編集、feature・棚卸しの重複実行、A17-off IR control、付録 A の実行・時間測定は行っていない。IR control と付録 A は UTF ソースの最終 freeze と親作業の別の GO を待つ。
+
+### 付録 A の再現測定と A17-off IR control（2026-10-15）
+
+baseline compiler（SHA-256 `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`）で保存済みの `loop`／`rec`／`match` 実行ファイルを before／before2 に再利用し、最終 compiler pin `de42dba363e1fa877c0dab5bd51cbad17b60b774bed5b91399d9d996a99d9d08` で after を構築した。全て同じ凍結済み入力、`-O3 --cpu generic --no-cache`、native arm64、Apple clang 21.0.0 を使い、各 run の stdout と終了コードを検査した。
+
+**各9回の interleaved process wall time**（Python monotonic clock で `/usr/bin/time -p` の起動から終了まで測定。プロセス起動を含む）:
+
+| workload | before median | after median | before2 median | after vs. before / before2 |
+|---|---:|---:|---:|---:|
+| `loop` | 4081.345 ms | 23.059 ms | 4100.127 ms | −99.44% / −99.44% |
+| `rec` | 4102.315 ms | 16.425 ms | 4063.359 ms | −99.60% / −99.60% |
+| `match` | 182.430 ms | 89.654 ms | 175.515 ms | −50.86% / −48.92% |
+
+after の `loop`／`rec` は `/usr/bin/time -p` の分解能に近く、記載値はコンパイラ単体ではなくプロセス起動込みの下限寄りの end-to-end 時間である。before2 は独立してコンパイラを再ビルドした値ではなく、before と同じ SHA-256 の実行ファイルによる2回目の測定である。すべての実行で期待する `1\n`／`1\n`／`572808600\n` を確認した。raw 81-run log の SHA-256 は `8042ca8955698ef9deff57b11a26423ab13bfc34ff28ce38bb3a1e70bd75cfa1`。
+
+A17-off control は最終ソースの隔離コピーを release build し、`FunctionEmitter::emit` における `LastUses::analyze` だけを `LastUses::default()` に置き換えた。これにより A17 の last-use／match-binding move decisions を無効化し、既存の `single_use` 規則は維持した。production source は変更していない。on/off は同じ3入力を同じ条件で構築し、Console entry の raw LLVM IR を保存した。静的 `call @tz.alloc` site 数（off→on）は loop **8→8**、rec **14→10**、match **6→4** だった。これは生成 IR 上の呼び出し位置数であり、実行時の確保回数そのものではない。A17-on の全プログラム結果は off と同じだった。
+
+| workload | source SHA-256 | baseline executable SHA-256 | after executable SHA-256 |
+|---|---|---|---|
+| loop | `7648aca325500d2b8c5c806e63bcd8182241d33a73371e26be88f6f28a476d57` | `51dac044c3408c811c4827639fa645f2a8de440233625f31221a83eddebdca40` | `3468e102614d4dd38a6c85101f8a5078d0b819c6250ce1c7cbde30fff4c8582d` |
+| rec | `5773cfbe81e9130d632e6a55589bafa4f9da2c997a52916cfafab4959b68224e` | `3d4d91c6a929cb6b89a558c06bd4bab50714a267c6fd8793a085484ce5465da8` | `d56fe29ec248d6236c2e7ad359f82d2f31b5d750c2564161347d90d0403264eb` |
+| match | `290c76e65f29ed2cf4daa71eacb42622f4354322d9208b9e6a38c5af3079a887` | `7ad0a8750b5909338a6a478b43a61c1e436c4878f250c5f755ea18795b08d93d` | `eacf8d9dbf739ad0e51283214822c88d2d2219983c9085c5ff0003c84269d68b` |
+
+baseline compiler、A17-off compiler、after compiler の SHA-256 はそれぞれ `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`、`98841d07ed320eadcfa3a80b60fdf46662877c5ef761095f0987cde12751d5e9`、`de42dba363e1fa877c0dab5bd51cbad17b60b774bed5b91399d9d996a99d9d08`。final release の `last_use` feature **120 cases**（native/WASM × O0/O3）と fuzz **300 programs／600 native O0/O3 executions、seed 5000、depth 4、差分0** も通過した。詳細な raw measurements、control manifest、compiler/executable/IR hashes は ignored `target/perf/A17-completion/` の `a17-shortfix-control.json`、`appendix-shortfix-timings.jsonl`、`appendix-shortfix-timings.json` に保存した。

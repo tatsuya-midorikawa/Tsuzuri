@@ -54,5 +54,8 @@ fn parallel_codegen_uses_fixed_chunks_and_the_existing_runtime() {
     assert!(ir.contains("@tz.parallel.chunk."));
     assert!(ir.contains("@tz.specialized."));
     assert!(ir.contains(", 4096") && ir.contains(", 1024"));
-    assert!(!ir.contains("call ptr @tz.alloc(i64 32)"));
+    assert!(
+        !ir.lines()
+            .any(|line| line.contains("call ") && line.contains("ptr @tz.alloc(i64 32)"))
+    );
 }

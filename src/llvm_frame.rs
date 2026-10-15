@@ -1,7 +1,8 @@
-//! Stack storage for collection and string literals that are not created with `new`.
+//! Stack and static storage for literals and bounded nonescaping strings and closures.
 //!
 //! A literal bound in this function (or used as a temporary operand) keeps its elements in
-//! entry-block allocas; string literals keep their code units in the private constant. Every frame
+//! entry-block allocas; string literals keep their code units in the private constant. Bounded
+//! concatenations and closure environments can also use entry-block allocas. Every frame
 //! pointer lives only at its static position inside the value that received the literal, or in
 //! arguments lent to a borrowing worker during one call, so a run-time address test identifies it
 //! exactly even after moves, reassignment, or branch merges.
@@ -9,6 +10,10 @@
 
 use super::*;
 use crate::check::MAX_VALUE_BYTES;
+
+const STRING_BUFFER_BYTES: usize = 256;
+const MAX_ENVIRONMENT_BYTES: usize = 1024;
+const MAX_FUNCTION_BUFFER_BYTES: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub(super) enum Frame {
@@ -23,9 +28,82 @@ pub(super) enum Frame {
         elements: Vec<Vec<Frame>>,
     },
     /// String code units that stay in the literal constant `data`.
-    String { data: String, length: usize },
+    String {
+        data: String,
+        length: usize,
+    },
+    Buffer {
+        buffer: String,
+    },
+    Environment {
+        environment: String,
+        ty: String,
+        function: usize,
+        count: usize,
+    },
     /// Record or tuple fields with stack parts, by field index.
     Aggregate(BTreeMap<usize, Vec<Frame>>),
+}
+
+pub(super) fn append_literal(left: &mut StringLiteral, right: StringLiteral) {
+    match (left, right) {
+        (StringLiteral::Utf16(left), StringLiteral::Utf16(right)) => left.extend(right),
+        (StringLiteral::Utf8(left), StringLiteral::Utf8(right)) => left.push_str(&right),
+        _ => unreachable!("string concatenation has one encoding"),
+    }
+}
+
+pub(super) fn owned_string_identity<'a>(
+    expression: &'a TypedExpr,
+    module: &CheckedModule,
+) -> Option<&'a TypedExpr> {
+    let TypedExprKind::Call(callee, arguments) = &expression.kind else {
+        return None;
+    };
+    let callee = if let TypedExprKind::Function(FunctionRef::User(id)) = &callee.kind
+        && module.functions[*id].module == "$builtin"
+        && let TypedExprKind::Call(inner, _) = &module.functions[*id].body.kind
+    {
+        inner.as_ref()
+    } else {
+        callee.as_ref()
+    };
+    if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+        && instance.builtin == Builtin::ToString
+        && instance.types.as_slice() == [Type::String]
+        && let [value] = arguments.as_slice()
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub(super) fn literal_concat(
+    expression: &TypedExpr,
+    module: &CheckedModule,
+) -> Option<StringLiteral> {
+    let mut pending = vec![expression];
+    let mut text = match expression.ty {
+        Type::String => StringLiteral::Utf16(Vec::new()),
+        Type::Utf8String => StringLiteral::Utf8(String::new()),
+        _ => return None,
+    };
+    while let Some(expression) = pending.pop() {
+        if let Some(value) = owned_string_identity(expression, module) {
+            pending.push(value);
+            continue;
+        }
+        match &expression.kind {
+            TypedExprKind::String(value) => append_literal(&mut text, value.clone()),
+            TypedExprKind::Binary(BinaryOp::Add, left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
+            _ => return None,
+        }
+    }
+    Some(text)
 }
 
 /// Conservative stack bytes of one value, matching the documented value-layout rule.
@@ -136,6 +214,40 @@ impl FunctionEmitter<'_, '_> {
     }
 
     fn emit_frame_inner(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        if let Some(value) = owned_string_identity(expression, self.module) {
+            return self.take_operand(value);
+        }
+        if matches!(expression.kind, TypedExprKind::Binary(BinaryOp::Add, ..))
+            && expression.ty.is_string()
+        {
+            if let Some(text) = literal_concat(expression, self.module) {
+                return self.frame_inner(&TypedExpr {
+                    kind: TypedExprKind::String(text),
+                    ty: expression.ty.clone(),
+                    span: expression.span,
+                });
+            }
+            if self.reserve_buffer(STRING_BUFFER_BYTES) {
+                let TypedExprKind::Binary(_, left, right) = &expression.kind else {
+                    unreachable!()
+                };
+                return self.frame_concat(left, right);
+            }
+        }
+        if let TypedExprKind::Closure(id, captures) = &expression.kind {
+            if matches!(expression.ty, Type::Function(..))
+                && !captures.is_empty()
+                && !immediate_capture(&self.module.functions[*id], captures.len(), self.globals)
+            {
+                let bytes = self.module.functions[*id].signature.parameters[..captures.len()]
+                    .iter()
+                    .map(|ty| storage_layout(ty, self.module).0.next_multiple_of(16))
+                    .sum::<usize>();
+                if bytes <= MAX_ENVIRONMENT_BYTES && self.reserve_buffer(bytes) {
+                    return self.frame_closure(*id, captures, expression.span);
+                }
+            }
+        }
         match &expression.kind {
             TypedExprKind::Array(elements) if !elements.is_empty() => {
                 self.frame_array(expression, elements)
@@ -217,6 +329,97 @@ impl FunctionEmitter<'_, '_> {
             }
             _ => (self.expression(expression), Vec::new()),
         }
+    }
+
+    fn reserve_buffer(&mut self, bytes: usize) -> bool {
+        if self.heap_initializer
+            || self.function.is_task
+            || self
+                .globals
+                .recursive_functions
+                .get(self.function_id)
+                .copied()
+                .unwrap_or(true)
+            || self.buffer_bytes.saturating_add(bytes) > MAX_FUNCTION_BUFFER_BYTES
+        {
+            return false;
+        }
+        self.buffer_bytes += bytes;
+        true
+    }
+
+    fn frame_concat(&mut self, left: &TypedExpr, right: &TypedExpr) -> (String, Vec<Frame>) {
+        let buffer = self.fresh();
+        self.allocas.push(format!(
+            "{buffer} = alloca [{STRING_BUFFER_BYTES} x i8], align 16"
+        ));
+        let (lhs, left_frames) = self.take_operand(left);
+        let (rhs, right_frames) = self.take_operand(right);
+        let ty = self.ty(&left.ty);
+        let capacity = if left.ty == Type::String {
+            STRING_BUFFER_BYTES / 2
+        } else {
+            STRING_BUFFER_BYTES
+        };
+        let value = self.value(format!(
+            "call {ty} @{}.concat_into(ptr {buffer}, i64 {capacity}, {ty} {lhs}, {ty} {rhs})",
+            &ty[1..],
+        ));
+        self.drop_framed(&left.ty, &lhs, &left_frames);
+        self.drop_framed(&right.ty, &rhs, &right_frames);
+        (value, vec![Frame::Buffer { buffer }])
+    }
+
+    pub(super) fn concat_length(&mut self, left: &TypedExpr, right: &TypedExpr) -> String {
+        let (lhs, left_frames) = self.take_operand(left);
+        let (rhs, right_frames) = self.take_operand(right);
+        let ty = self.ty(&left.ty);
+        let a = self.value(format!("extractvalue {ty} {lhs}, 1"));
+        let b = self.value(format!("extractvalue {ty} {rhs}, 1"));
+        let length = self.value(format!("add i64 {a}, {b}"));
+        let overflow = self.value(format!("icmp ult i64 {length}, {a}"));
+        let valid = self.value(format!("xor i1 {overflow}, 1"));
+        self.guard(&valid, TrapKind::StringConcatOverflow);
+        if left.ty == Type::String {
+            let fits = self.value(format!("icmp ule i64 {length}, 9007199254740991"));
+            self.guard(&fits, TrapKind::AllocationSize);
+        }
+        self.drop_framed(&left.ty, &lhs, &left_frames);
+        self.drop_framed(&right.ty, &rhs, &right_frames);
+        length
+    }
+
+    fn frame_closure(
+        &mut self,
+        id: usize,
+        captures: &[TypedExpr],
+        span: Span,
+    ) -> (String, Vec<Frame>) {
+        let values = self.owned_capture_values(captures, span);
+        let count = captures.len();
+        let ty = environment_type(&self.module.functions[id], count, self.module);
+        let environment = self.fresh();
+        self.allocas
+            .push(format!("{environment} = alloca {ty}, align 16"));
+        for (index, value) in values.iter().enumerate() {
+            let pointer = self.value(format!(
+                "getelementptr inbounds {ty}, ptr {environment}, i32 0, i32 {index}"
+            ));
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}",
+                self.ty(&captures[index].ty)
+            ));
+        }
+        let value = self.closure_descriptor(id, count, &environment);
+        (
+            value,
+            vec![Frame::Environment {
+                environment,
+                ty,
+                function: id,
+                count,
+            }],
+        )
     }
 
     fn frame_array(
@@ -361,6 +564,13 @@ impl FunctionEmitter<'_, '_> {
 
     /// Reads an operand that is only inspected; temporaries may use stack storage.
     pub(super) fn read_operand(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        let previous = std::mem::replace(&mut self.heap_initializer, false);
+        let result = self.read_frame_operand(expression);
+        self.heap_initializer = previous;
+        result
+    }
+
+    fn read_frame_operand(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
         if let Some(reference) = Self::shared_array_deref(expression) {
             return (self.expression_mode(reference, false), Vec::new());
         }
@@ -373,6 +583,13 @@ impl FunctionEmitter<'_, '_> {
 
     /// Takes an operand that is destroyed, or only lent out, before this frame's storage is reused.
     pub(super) fn take_operand(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        let previous = std::mem::replace(&mut self.heap_initializer, false);
+        let result = self.take_frame_operand(expression);
+        self.heap_initializer = previous;
+        result
+    }
+
+    fn take_frame_operand(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
         if Self::is_place(expression) {
             let frames = if self.clones_on_take(expression) {
                 Vec::new()
@@ -428,11 +645,27 @@ impl FunctionEmitter<'_, '_> {
 
     /// True when `value` still holds exactly this frame's storage.
     fn frame_test(&mut self, ty: &Type, value: &str, frame: &Frame) -> String {
+        match frame {
+            Frame::Buffer { buffer } => {
+                let llvm = self.ty(ty);
+                let pointer = self.value(format!("extractvalue {llvm} {value}, 0"));
+                let same = self.value(format!("icmp eq ptr {pointer}, {buffer}"));
+                let length = self.value(format!("extractvalue {llvm} {value}, 1"));
+                let nonempty = self.value(format!("icmp ne i64 {length}, 0"));
+                return self.value(format!("and i1 {same}, {nonempty}"));
+            }
+            Frame::Environment { environment, .. } => {
+                let pointer = self.value(format!("extractvalue %tz.closure {value}, 1"));
+                return self.value(format!("icmp eq ptr {pointer}, {environment}"));
+            }
+            _ => {}
+        }
         let (address, length) = match frame {
             Frame::Array { buffer, elements } => (buffer.as_str(), elements.len()),
             Frame::List { nodes, elements } => (nodes.as_str(), elements.len()),
             Frame::String { data, length } => (data.as_str(), *length),
             Frame::Aggregate(_) => unreachable!("aggregates are tested field by field"),
+            Frame::Buffer { .. } | Frame::Environment { .. } => unreachable!(),
         };
         let llvm = self.ty(ty);
         let pointer = self.value(format!("extractvalue {llvm} {value}, 0"));
@@ -483,7 +716,7 @@ impl FunctionEmitter<'_, '_> {
             let next = self.label();
             self.branch(&test, &copy, &next);
             self.begin(&copy);
-            let moved = self.heap_copy(ty, frame);
+            let moved = self.heap_copy(ty, value, frame);
             incoming.push(format!("[ {moved}, %{} ]", self.block));
             self.jump(&done);
             self.begin(&next);
@@ -495,8 +728,27 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Moves a frame's elements into new heap storage; element ownership moves along bitwise.
-    fn heap_copy(&mut self, ty: &Type, frame: &Frame) -> String {
+    fn heap_copy(&mut self, ty: &Type, value: &str, frame: &Frame) -> String {
         match (ty, frame) {
+            (Type::String | Type::Utf8String, Frame::Buffer { buffer }) => {
+                let llvm = self.ty(ty);
+                let length = self.value(format!("extractvalue {llvm} {value}, 1"));
+                self.value(format!(
+                    "call {llvm} @{}.new(ptr {buffer}, i64 {length})",
+                    &llvm[1..]
+                ))
+            }
+            (
+                Type::Function(..),
+                Frame::Environment {
+                    environment, ty, ..
+                },
+            ) => {
+                let heap = self.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64))"));
+                let captures = self.value(format!("load {ty}, ptr {environment}"));
+                self.instruction(format!("store {ty} {captures}, ptr {heap}"));
+                self.value(format!("insertvalue %tz.closure {value}, ptr {heap}, 1"))
+            }
             (Type::String | Type::Utf8String, Frame::String { data, length }) => {
                 let ty = self.ty(ty);
                 self.value(format!(
@@ -592,7 +844,27 @@ impl FunctionEmitter<'_, '_> {
 
     fn drop_frame_contents(&mut self, ty: &Type, frame: &Frame) {
         match (ty, frame) {
-            (Type::String | Type::Utf8String, Frame::String { .. }) => {}
+            (Type::String | Type::Utf8String, Frame::String { .. } | Frame::Buffer { .. }) => {}
+            (
+                Type::Function(..),
+                Frame::Environment {
+                    environment,
+                    ty,
+                    function,
+                    count,
+                },
+            ) => {
+                for index in 0..*count {
+                    let capture = &self.module.functions[*function].signature.parameters[index];
+                    if capture.needs_drop(&self.module.types()) {
+                        let pointer = self.value(format!(
+                            "getelementptr inbounds {ty}, ptr {environment}, i32 0, i32 {index}"
+                        ));
+                        let value = self.value(format!("load {}, ptr {pointer}", self.ty(capture)));
+                        self.drop_value(capture, &value);
+                    }
+                }
+            }
             (Type::Array(element), Frame::Array { buffer, elements }) => {
                 if !element.needs_drop(&self.module.types()) {
                     return;

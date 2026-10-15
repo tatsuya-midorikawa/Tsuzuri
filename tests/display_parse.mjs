@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
-const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-display-parse-"));
+const sanitize = process.env.TSUZURI_ASAN === "1";
+const scratch = join(root, "target", "display-parse");
+mkdirSync(scratch, { recursive: true });
+const temporary = mkdtempSync(join(scratch, "run-"));
 function execute(program, args, input) {
   const result = spawnSync(program, args, {
     cwd: root, input, encoding: "utf8", timeout: 300_000, maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") },
   });
   if (result.error) throw result.error;
-  assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stderr}`);
+  assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
 const cli = (args) => execute(compiler, args);
@@ -85,16 +88,19 @@ try {
   const runtime = join(root, "src/runtime/numeric.ll");
   const harness = join(root, "tests/display_parse_runtime.c");
   for (const optimization of [0, 3]) {
-    const native = join(temporary, `runtime-O${optimization}`);
-    execute(clang, [`-O${optimization}`, "-Wno-override-module", harness, runtime, "-o", native]);
-    const timings = execute(native, [], "F 27 10 2a 0\nP 27 10 3432\n").trim().split("\n");
+    const native = join(temporary, `runtime-O${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+    execute(clang, [`-O${optimization}`, "-Wno-override-module",
+      ...(sanitize ? ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] : []),
+      harness, sanitize ? join(root, "src/runtime/numeric.c") : runtime,
+      ...(process.platform === "win32" ? [join(root, "src/runtime/wasm.ll")] : []), "-o", native]);
+    const timings = execute(native, [], "F 27 10 2a 0\nP 27 10 3432\n").replaceAll("\r\n", "\n").trim().split("\n");
     assert.equal(timings.length, 2);
     for (const [index, checksum] of ["1040", "430"].entries()) {
       const [milliseconds, actual] = timings[index].split(" ");
       assert.ok(Number.isFinite(Number(milliseconds)) && Number(milliseconds) >= 0);
       assert.equal(actual, checksum, "runtime timing protocol checksum");
     }
-    const lines = execute(native, [], protocol).trimEnd().split("\n");
+    const lines = execute(native, [], protocol).replaceAll("\r\n", "\n").trimEnd().split("\n");
     assert.equal(lines.length, reference.formats.length + reference.parses.length);
     let index = 0;
     for (const [kind, hex, expected] of reference.formats) {
@@ -139,46 +145,48 @@ try {
     console.log(`display/parse O${optimization}: ${reference.formats.length} exact displays, ${reference.parses.length} parse/round-trip cases on native/WASM`);
   }
 
-  execute(process.execPath, [join(root, "tests/features.mjs"), compiler, "display_parse"]);
-  for (const [name, source, expected, symbol] of [
-    ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "parse"],
-    ["display-only", "export def value :: i64\nfn value = (to_string 42).length", 2, "format"],
-  ]) {
-    const directory = join(temporary, name);
-    mkdirSync(directory);
-    writeFileSync(join(directory, "Main.tz"), source);
-    const ir = join(directory, "program.ll");
-    cli(["build", directory, "--emit", "llvm", "-o", ir]);
-    assert.ok(readFileSync(ir, "utf8").includes(`call i32 @tz_soft_${symbol}`));
-    const host = join(directory, "host.c");
-    writeFileSync(host, `#include <assert.h>\nextern long long tz_value(void);\nint main(void) { assert(tz_value() == ${expected}); }\n`);
-    for (const optimization of [0, 3]) {
-      const native = join(directory, `host-O${optimization}`);
-      execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-o", native]);
-      execute(native, []);
-      const wasm = join(directory, `program-O${optimization}.wasm`);
-      cli(["build", directory, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
-      const module = new WebAssembly.Module(readFileSync(wasm));
-      assert.deepEqual(WebAssembly.Module.imports(module), []);
-      assert.equal(new WebAssembly.Instance(module).exports.tz_value(), BigInt(expected));
-    }
-  }
-  const consoleDirectory = join(temporary, "console");
-  mkdirSync(consoleDirectory);
-  const source = join(consoleDirectory, "Main.tz");
-  for (const [expression, expected] of reference.console) {
-    for (const value of [expression, `to_string (${expression})`]) {
-      writeFileSync(source, value);
+  if (!process.argv.includes("--runtime-only")) {
+    execute(process.execPath, [join(root, "tests/features.mjs"), compiler, "display_parse"]);
+    for (const [name, source, expected, symbol] of [
+      ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "parse"],
+      ["display-only", "export def value :: i64\nfn value = (to_string 42).length", 2, "format"],
+    ]) {
+      const directory = join(temporary, name);
+      mkdirSync(directory);
+      writeFileSync(join(directory, "Main.tz"), source);
+      const ir = join(directory, "program.ll");
+      cli(["build", directory, "--emit", "llvm", "-o", ir]);
+      assert.ok(readFileSync(ir, "utf8").includes(`call i32 @tz_soft_${symbol}`));
+      const host = join(directory, "host.c");
+      writeFileSync(host, `#undef NDEBUG\n#include <assert.h>\nextern long long tz_value(void);\nint main(void) { assert(tz_value() == ${expected}); }\n`);
       for (const optimization of [0, 3]) {
-        assert.equal(cli(["run", source, `-O${optimization}`]), `${expected}\n`, value);
+        const native = join(directory, `host-O${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+        execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-o", native]);
+        execute(native, []);
+        const wasm = join(directory, `program-O${optimization}.wasm`);
+        cli(["build", directory, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+        const module = new WebAssembly.Module(readFileSync(wasm));
+        assert.deepEqual(WebAssembly.Module.imports(module), []);
+        assert.equal(new WebAssembly.Instance(module).exports.tz_value(), BigInt(expected));
       }
     }
+    const consoleDirectory = join(temporary, "console");
+    mkdirSync(consoleDirectory);
+    const source = join(consoleDirectory, "Main.tz");
+    for (const [expression, expected] of reference.console) {
+      for (const value of [expression, `to_string (${expression})`]) {
+        writeFileSync(source, value);
+        for (const optimization of [0, 3]) {
+          assert.equal(cli(["run", source, `-O${optimization}`]), `${expected}\n`, value);
+        }
+      }
+    }
+    for (const [expression, expected] of [["()", ""], ["to_string ()", "()\n"]]) {
+      writeFileSync(source, expression);
+      assert.equal(cli(["run", source]), expected);
+    }
+    console.log("Display/Parse: shared console format, custom instances, owned cleanup, and standalone links passed");
   }
-  for (const [expression, expected] of [["()", ""], ["to_string ()", "()\n"]]) {
-    writeFileSync(source, expression);
-    assert.equal(cli(["run", source]), expected);
-  }
-  console.log("Display/Parse: shared console format, custom instances, owned cleanup, and standalone links passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

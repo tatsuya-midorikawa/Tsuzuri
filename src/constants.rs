@@ -117,7 +117,12 @@ fn named_in(
         {
             names.push(Named::ConstDef(callee));
         }
-        expressions.extend(expression.children());
+        expression
+            .try_for_each_child(&mut |child| {
+                expressions.push(child);
+                Ok(())
+            })
+            .expect("collecting dependencies cannot fail");
     }
     names
 }
@@ -417,9 +422,8 @@ fn inline(
         charge(value, remaining, depth, expression.span)?;
         expression.kind = value.expr.kind.clone();
     } else {
-        for child in expression.children_mut() {
-            inline(child, values, remaining, depth + 1)?;
-        }
+        expression
+            .try_for_each_child_mut(&mut |child| inline(child, values, remaining, depth + 1))?;
     }
     Ok(())
 }

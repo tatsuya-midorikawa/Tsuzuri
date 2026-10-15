@@ -20,7 +20,7 @@ fn known_continuations_use_direct_workers_and_entry_block_storage() {
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
     let worker = body(&ir, "tz.fn.Main.run");
     assert!(worker.contains("@tz.specialized."));
-    assert!(!worker.contains("call ptr @tz.alloc"));
+    assert!(!worker.contains("@tz.alloc("));
     assert!(worker.rfind("alloca").unwrap() < worker.find("br label %loop").unwrap());
     assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
     llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
@@ -132,8 +132,8 @@ fn only_unobserved_single_use_copies_are_transferred() {
     )
     .unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
-    assert!(!body(&ir, "tz.fn.Main.once").contains("call ptr @tz.alloc"));
-    assert!(body(&ir, "tz.fn.Main.observed").contains("call ptr @tz.alloc"));
+    assert!(!body(&ir, "tz.fn.Main.once").contains("@tz.alloc("));
+    assert!(body(&ir, "tz.fn.Main.observed").contains("@tz.alloc("));
 }
 
 #[test]
@@ -152,11 +152,7 @@ fn stores_single_scalar_captures_without_an_environment_allocation() {
             };
             let fits = width <= if wasm { 32 } else { usize::BITS };
             assert_eq!(make.contains("inttoptr"), fits, "{scalar} wasm={wasm}");
-            assert_eq!(
-                make.contains("call ptr @tz.alloc"),
-                !fits,
-                "{scalar} wasm={wasm}"
-            );
+            assert_eq!(make.contains("@tz.alloc("), !fits, "{scalar} wasm={wasm}");
             assert_eq!(
                 ir,
                 llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()

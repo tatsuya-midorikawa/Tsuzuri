@@ -153,6 +153,8 @@ fn emitted(source: &str, wasm: bool) -> EmitOutput {
         entry: Entry::Library,
         wasm,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator: tsuzuri::llvm::Allocator::System,
         f16: tsuzuri::llvm::F16Path::Soft,
     };
@@ -237,6 +239,8 @@ fn range_proofs_add_no_llvm_facts() {
             entry: Entry::Library,
             wasm: false,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         };
@@ -269,6 +273,8 @@ fn shape count =
             entry: Entry::Library,
             wasm: false,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: tsuzuri::llvm::Allocator::System,
             f16: tsuzuri::llvm::F16Path::Soft,
         };

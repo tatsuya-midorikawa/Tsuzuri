@@ -132,6 +132,41 @@ jobs:
       - name: Numeric casts
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/numeric_casts.mjs target/release/tsuzuri.exe
+      - name: Memory and LLVM fact semantics
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          TSUZURI_CACHE_DIR: ${{ github.workspace }}/target/phase2-cache
+        run: |
+          node tests/features.mjs target/release/tsuzuri.exe storage
+          if ($LASTEXITCODE -ne 0) { throw "Storage failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe last_use
+          if ($LASTEXITCODE -ne 0) { throw "Last-use failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe param_facts
+          if ($LASTEXITCODE -ne 0) { throw "Ownership facts failed: $LASTEXITCODE" }
+      - name: Last-use differential fuzz smoke
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/last_use_fuzz.mjs target/release/tsuzuri.exe 40 1 4
+      - name: UTF SIMD and scalar fallbacks
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          TSUZURI_OBJDUMP: llvm-objdump.exe
+        run: node tests/utf_simd.mjs --quick
+      - name: Prebuilt runtime cache and fallback
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/prebuilt_runtime.mjs target/release/tsuzuri.exe
+      - name: Numeric display and parse references
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          git fetch --no-tags origin a621fada69bf27f425bfbb012cc7d0a699721db6
+          if ($LASTEXITCODE -ne 0) { throw "Numeric baseline fetch failed: $LASTEXITCODE" }
+          node -e "const fs=require('node:fs'); fs.mkdirSync('target/numeric-ci',{recursive:true}); fs.writeFileSync('target/numeric-ci/before.ll',require('node:child_process').execFileSync('git',['show','a621fada69bf27f425bfbb012cc7d0a699721db6:src/runtime/numeric.ll'],{maxBuffer:64*1024*1024}));"
+          if ($LASTEXITCODE -ne 0) { throw "Numeric baseline extraction failed: $LASTEXITCODE" }
+          $env:TEMP = Join-Path $PWD 'target\numeric-ci'
+          $env:TMP = $env:TEMP
+          node tests/display_parse.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "Display/Parse failed: $LASTEXITCODE" }
+          node tests/display_parse_exhaustive.mjs --f32-samples 100000 --f64 100000 --jobs 2 --baseline-runtime target/numeric-ci/before.ll
+          if ($LASTEXITCODE -ne 0) { throw "Numeric differential failed: $LASTEXITCODE" }
       # The depth-limit tests feed 200 nested levels to a debug build whose frames are near the 2 MiB of a test
       # thread (GUIDE D-45), so the whole run takes 4 MiB per test thread, as targets.yml does.
       - name: W3 cargo test

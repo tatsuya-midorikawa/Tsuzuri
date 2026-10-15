@@ -5,8 +5,8 @@
 | ID | A19 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1）。Phase 2 以降は設計方針だけ |
-| 依存 | [D11](_completed/D11-const-evaluation.md)（done。`const def` の修飾子・署名の検査・本体の検査の手本）、[A15](_completed/A15-copy-cost-visibility.md)（done。明示コピー `Array.copy`・`List.copy`、`W1006`）、[B07](_completed/B07-user-drop.md)（done。利用者の `Drop`）、[F10](_completed/F10-concurrency-primitives.md)（done。`Atomic`・`Mutex`・`Channel`）、[C10](_completed/C10-shared-ownership.md)（done。`Rc`・`Arc`）。弱い依存: [A17](A17-last-use-move.md)（ループの再束縛と、`own` の引数の最後の使用が複製でなくなると、`pure def` の書き方が実用の速さになる）。[A18](A18-parameter-conventions.md) とは、`own` の構文（A18 の D2）を共有する（D16）。先に着手したほうが `own` の構文を実装し、後のほうは受理する位置の規則だけを足す |
-| 後続 | Phase 2（ジェネリックな `pure def`、`Parallel.*` の許可、関数型の純粋性）、[PR01](../_perfs/PR01-ownership-facts.md) Phase 2(c)（関数の `memory(...)` に本チケットの解析を再利用）、std の関数への `pure` の付与 |
+| 依存 | [D11](_completed/D11-const-evaluation.md)（done。`const def` の修飾子・署名の検査・本体の検査の手本）、[A15](_completed/A15-copy-cost-visibility.md)（done。明示コピー `Array.copy`・`List.copy`、`W1006`）、[B07](_completed/B07-user-drop.md)（done。利用者の `Drop`）、[F10](_completed/F10-concurrency-primitives.md)（done。`Atomic`・`Mutex`・`Channel`）、[C10](_completed/C10-shared-ownership.md)（done。`Rc`・`Arc`）。弱い依存: [A17](_completed/A17-last-use-move.md)（ループの再束縛と、`own` の引数の最後の使用が複製でなくなると、`pure def` の書き方が実用の速さになる）。[A18](A18-parameter-conventions.md) とは、`own` の構文（A18 の D2）を共有する（D16）。先に着手したほうが `own` の構文を実装し、後のほうは受理する位置の規則だけを足す |
+| 後続 | Phase 2（ジェネリックな `pure def`、`Parallel.*` の許可、関数型の純粋性）、[PR01](../_perfs/_completed/PR01-ownership-facts.md) Phase 2(c)（関数の `memory(...)` に本チケットの解析を再利用）、std の関数への `pure` の付与 |
 | 状態 | todo |
 | 起票 | 2026-10-13（人間の指示「`pure` は純粋関数を維持するために `ref` のみを受け取るようにすること。なお、定義するときは `ref` を省略でき、引数はすべて `ref` 扱いにすること」。同日、「`own` でも純粋性が保たれることが保証されるのであれば、`ref` に加えて `own` も許容する」に改められた。HEAD `cef6c67f` で確認） |
 | 承認 | D1・D2・D4 は人間が承認済み（D1・D2: 2026-10-13 の指示。D4: 同日「構文を `pure def` にしてよいです」）。D1 は同日、「`own` でも純粋性が保たれることが保証されるのであれば、`ref` に加えて `own` も許容する」へ改められた。保証の根拠と、そのために要る型の制限（D15）は「`own` と純粋性」の節にある。承認待ちの決定はなく、手順 1 から着手できる。ほかの決定は既定案 |

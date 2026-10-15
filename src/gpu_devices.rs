@@ -191,9 +191,12 @@ fn retarget(
     request_on: usize,
     calls: &BTreeMap<usize, (usize, usize, bool)>,
 ) {
-    for child in expression.children_mut() {
-        retarget(child, request, request_on, calls);
-    }
+    expression
+        .try_for_each_child_mut(&mut |child| {
+            retarget(child, request, request_on, calls);
+            Ok(())
+        })
+        .expect("retargeting children cannot fail");
     match &mut expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if *id == request => *id = request_on,
         TypedExprKind::Call(callee, arguments) => {
@@ -373,9 +376,12 @@ fn number(
     instances: &BTreeMap<usize, bool>,
     numbers: &BTreeMap<(usize, bool), u128>,
 ) {
-    for child in expression.children_mut() {
-        number(child, instances, numbers);
-    }
+    expression
+        .try_for_each_child_mut(&mut |child| {
+            number(child, instances, numbers);
+            Ok(())
+        })
+        .expect("numbering children cannot fail");
     let Some((callback, marker)) = device_call(expression, instances) else {
         return;
     };

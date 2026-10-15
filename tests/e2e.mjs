@@ -461,8 +461,9 @@ async function typeAliasChecks() {
   assert.equal(text, readFileSync(repeated, "utf8"));
   assert.doesNotMatch(text, /Meters|Pair2|Borrowed/);
   writeFileSync(tracked, text.replaceAll("@malloc(", "@alias_tracked_alloc(")
-    .replaceAll("@free(", "@alias_tracked_free("));
+    .replaceAll("@free(", "@alias_tracked_free(").replaceAll("@realloc(", "@alias_tracked_realloc("));
   writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <stdlib.h>
 #include "aliases.h"
@@ -475,6 +476,13 @@ void *alias_tracked_alloc(uint64_t size) {
 }
 void alias_tracked_free(void *memory) {
   if (memory != NULL) { assert(live > 0); live--; free(memory); }
+}
+void *alias_tracked_realloc(void *memory, uint64_t size) {
+  if (!memory) return size ? alias_tracked_alloc(size) : NULL;
+  if (!size) { alias_tracked_free(memory); return NULL; }
+  void *next = realloc(memory, (size_t)size);
+  assert(next);
+  return next;
 }
 int main(void) {
   assert(tz_alias_add(20.5, 21.5) == 42.0);

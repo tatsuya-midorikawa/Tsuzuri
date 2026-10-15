@@ -114,11 +114,12 @@ try {
   for (const method of ["Bind", "Return", "Yield", "Combine", "Delay", "Run", "For", "While"]) {
     assert.match(sourceIr, new RegExp(`@tz\\.fn\\.Flow\\.${method}(?:[.(])`));
   }
-  let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free");
-  if (sanitizer.length) trackedIr = trackedIr.replaceAll(" nounwind {", " nounwind sanitize_address {");
+  let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
+  if (sanitizer.length) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, " nounwind sanitize_address");
   writeFileSync(ir, trackedIr);
   const host = join(temporary, "host.c");
   writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -142,6 +143,18 @@ void tracked_free(void *value) {
     assert(live >= pointer[0]);
     live -= pointer[0];
     free(pointer);
+}
+void *tracked_realloc(void *value, uint64_t size) {
+    if (!value) return size ? tracked_alloc(size) : NULL;
+    if (!size) { tracked_free(value); return NULL; }
+    uint64_t *pointer = (uint64_t *)value - 2;
+    assert(pointer[1] == UINT64_C(0x51a110ca7e));
+    uint64_t old_size = pointer[0];
+    pointer = realloc(pointer, (size_t)size + 16);
+    assert(pointer);
+    pointer[0] = size;
+    live = live - old_size + size;
+    return pointer + 2;
 }
 int main(int argc, char **argv) {
     if (argc == 2) {

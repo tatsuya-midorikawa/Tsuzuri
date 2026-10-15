@@ -49,10 +49,22 @@ AI が書いたコードも、人が書いたコードも、同じ検査を通�
 - fast-math、式の再結合、暗黙の FMA は有効にしません。`-O3` も同じです。
 - 境界検査を、利用者が無効にするオプションはありません。証明できた添字だけ、検査の分岐を省略します。
 
+借用から証明できた事実は、内部関数のポインター属性、限定した scalar の `noundef`、
+分岐・反復・trap のない限定した生成 IR の `memory(...)`、scoped alias 情報、
+scalar 要素の TBAA に反映します。
+共有参照同士、内部可変性、byte や重なる union payload、未知の捕捉環境などには
+独立性を推測せず、証明できないアクセスは従来の保守的な経路です。
+公開 ABI は変えません（[借用から導く最適化情報](../ownership-and-memory/borrowing.md#借用から導く最適化情報)）。
+これは最適化の材料であり、速度向上やベクトル化の実測結果ではありません。
+
 利用者のコードの速さは `bench "名前" = 本体` と `tsuzuri bench` で測れます（[Bench](../built-in-types-and-modules/bench.md)）。準備を除いた反復時間を、予熱と複数の標本の中央値・最小・最大で報告し、計算結果は `Bench.consume` の障壁を通るので最適化で消えません。速さの合否の閾値は持たず、比較は同じ機械・同じ条件の結果どうしで行います。
 
 コンパイラ自体の段階別時間は `TSUZURI_TIME_PASSES=1` で stderr に記録できます
 （[コンパイルの段階別時間](../compiler/option.md#コンパイルの段階別時間)）。
+フロントエンドは、不要になった本体の移動、Local 宣言の借用、確保しない子訪問で複製を減らします。
+コンパイラ内部の immutable 型述語は `TypeId` と hash-consed な Vec arena を使い、
+root と宣言の型を借用し、生成した型の子を ID で投影します。
+公開 Type と AST をすべて arena に移したわけではなく、利用者向けの構文・型・評価順・所有権規則は変えません。
 リポジトリの計測基盤は経過時間だけでなく CPU 時間・最大 RSS・確保・成果物サイズを同じ JSON Lines 形式で保存し、
 before／after の条件差と標本の広がりを明示します（[性能指標の記録](../../../docs/benchmarks.md#性能指標の記録)）。
 quick の測定は性能の証拠にせず、共有 CI には速度の合否の閾値を置きません。
@@ -139,6 +151,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | --- | --- | --- |
 | 式、カリー化、レコード、共用体、網羅的な `match` | 実装済み | A02、A03 を含む基礎言語 |
 | 所有権、借用、複数 region、排他借用フィールド、`Drop` | 実装済み | A09、A12、A13、B07。region 間の outlives はない |
+| 借用・型から導く LLVM の最適化情報 | 限定した証明済みの範囲で実装済み | 通常の内部関数の pointer 属性、scalar `noundef`、限定した memory effects、scoped alias、scalar TBAA。集約値全体や runtime の byte copy は対象外。速度は別途測る |
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
 | `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |
@@ -164,7 +177,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 言語版（`Tsuzuri.toml` の `edition`）、`@deprecated` と警告 `W1005`、公開 API の差分（`tsuzuri api-diff`） | 実装済み | G19。edition は `2026` だけで、差はまだない。保つものと非推奨の手順は [安定性と互換性の方針](../../../docs/stability.md) |
 | 追加の native ターゲットとクロスコンパイル（`--target` が 22 個の triple を名指しできる。`TSUZURI_SYSROOT`、ビルド機で動かせない target の実行器 `TSUZURI_RUNNER`） | 実装済み | G15。CI の 4 つの job が自分の triple を実行し、Linux の job が静的な musl の 3 つを、macOS arm64 の job が x86-64 の macOS（Rosetta）を実行して確かめた。ほかの target は link か object までの確認。対応の程度は CI が確かめるものだけを書いた表（[対応プラットフォーム](../compiler/platforms.md)） |
 | 型検査とコード生成の増分コンパイル | 計画中 | [PB06](../../../_perfs/PB06-build-server.md)、[PB07](../../../_perfs/PB07-incremental-codegen.md) |
-| `f16` の演算と変換（AArch64 は `half` 命令、x86-64 の `--cpu native` は F16C と AVX512-FP16、WASM はソフトウェア） | 実装済み | D10。速度を測ったのは macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64・Linux arm64）で実行している。AVX512-FP16 と Windows は機械語の確認までで、その環境での実行は未確認。確かめるには、その環境で `tests/f16_hardware.mjs` を実行する |
+| `f16` の演算と変換（AArch64 は `half` 命令、x86-64 の `--cpu native` は F16C と AVX512-FP16、WASM はソフトウェア） | 実装済み | D10。速度を測ったのは macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64・Linux arm64）で実行している。Linux x86-64 は runner の機能に応じ `native=conversions|hardware` を許容し、現時点で `conversions` を確認済み。AVX512-FP16 の `hardware` と Windows の実行は未確認。 |
 | コンパイル時評価 `const def`（ループ・再帰・`match` を含む関数を、定数の初期化式から評価する）と、平たいデータの定数の読み取り専用の静的データ | 実装済み | [D11](../../../_features/_completed/D11-const-evaluation.md)（Phase 1・2） |
 
 ## 採らないもの

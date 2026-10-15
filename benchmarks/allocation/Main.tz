@@ -1,0 +1,34 @@
+def keep_text :: string -> string
+fn keep_text text = text
+
+def length_only_concat :: i64 -> i64
+fn length_only_concat n =
+    let a = if n > 0 then "ab" else "abc"
+    (a + "xyz").length
+
+def buffer_concat :: i64 -> i64
+fn buffer_concat n =
+    let a = if n > 0 then "ab" else "abc"
+    let joined = a + "xyz"
+    joined.length * 100 + joined[1] as i64
+
+def buffer_escape :: i64 -> i64
+fn buffer_escape n =
+    let a = if n > 0 then "ab" else "abc"
+    let joined = a + "xyz"
+    (keep_text joined).length
+
+def local_closure :: i64 -> i64
+fn local_closure n =
+    let a = n + 1
+    let b = n * 2
+    let add = \i -> i + a + b
+    add 1 + add 2
+
+def run :: (i64 -> i64) -> i64 -> i64
+fn run step count =
+    let mut total = 0
+    for i in new [i64](count, i -> i) do total = total + step (i & 1)
+    total
+
+run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000

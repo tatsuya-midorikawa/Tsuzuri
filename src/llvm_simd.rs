@@ -37,10 +37,8 @@ pub(super) fn wide_types(ir: &str) -> BTreeSet<&str> {
     }
     let definitions: Vec<(&str, &str)> = ir
         .lines()
-        .filter_map(|line| {
-            let (name, body) = line.split_once(" = type ")?;
-            name.starts_with('%').then_some((name, body))
-        })
+        .filter(|line| line.starts_with('%'))
+        .filter_map(|line| line.split_once(" = type "))
         .collect();
     loop {
         let before = wide.len();

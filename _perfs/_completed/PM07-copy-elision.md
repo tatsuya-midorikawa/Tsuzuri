@@ -8,20 +8,51 @@
 | 規模 | M |
 | 依存 | PX01, (A15) |
 | 関連 | A15, A17（Phase 2 を置き換える）, C01, PM06 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1 の D1〜D9 はすべて既定案。Phase 2 は人間が依頼した場合だけ着手する） |
+| 承認 | 2026-10-14 の全フェーズ実装依頼で Phase 1 と後継 A17 Phase 1・2 を承認済み |
 | 手本にする既存実装 | 単一使用の移動: `src/llvm.rs` の `FunctionEmitter::clones_on_take`・`FunctionEmitter::read_place` と `src/call_specialization.rs` の `single_use_locals`。バッファの伸長: `src/llvm_bulk.rs` の Vec の伸長（`@tz.realloc` を呼んで `make_vector` で組み直す箇所）。文字列ランタイム: `src/runtime/string.ll` の `@tz.string.concat`・`@tz.string.allocate`。確保回数の E2E: `tests/primitives.mjs` の `storage` 表と `tests/fixtures/storage/Storage.tz` の `transferred_array_update`・`copied_array_update`。IR の確保の検査: `tests/consuming_update.rs` の `update_builtins_do_not_clone_their_input_buffers`、`tests/call_specialization.rs` の `only_unobserved_single_use_copies_are_transferred` |
 | 主な影響ファイル | `src/call_specialization.rs`, `src/llvm.rs`, `src/llvm_frame.rs`（`take_operand` の frame を読むだけ）, `src/runtime/string.ll`, `src/runtime/utf8string.ll`, `src/runtime/heap-native.ll`・`src/runtime/heap-wasm.ll`（`tz.realloc` の契約を読むだけ。変更しない）, `src/ownership.rs`・`src/copies.rs`（A15 が done の場合だけ。`CopyRead::local` と除外規則）, `tests/call_specialization.rs`, `tests/consuming_update.rs`, `tests/copy_cost.rs`（A15 が done の場合だけ）, `tests/primitives.mjs`, `tests/fixtures/storage/Storage.tz`, `docs/architecture.md`, `docs/language.md`, `docs/benchmarks.md` |
 | 計測対象 | 改善を見る種目: cpp suite の `utf16_scan`・`utf16_compare`・`utf16_validate`（`benchmarks/cpp/Kernels.tz` の `make_text` が `text = copy + text` で連結する）。退行を見る対照: control suite の `array_copy`（`let copied = values` の後も `values` を読むので複製が残る）・`record_pipeline`。PX01 の tracked 実行の `calls`・`bytes`。E2E の確保回数（`tests/primitives.mjs` の `storage` 表） |
 
+## 統合完了（2026-10-15）
+
+R2/S1 と A17 Phase 1・2 の E2E、allocation tracking、A15 copy-inventory consistency を検証した。matched inventory は user copy sites 150 → 62、stdlib 138 → 60、source position の新規増加 0（削除数は統合結果なので PM07 単独の寄与とは呼ばない）。Formal control 160 rows に悪化なし、CPP 96 rows は悪化なしで 1 improvement。A17 の loop/rec/match timing と no-change controls は [A17 の記録](../../_features/_completed/A17-last-use-move.md) にある。
+
 ## 目的
+
+### 2026-10-14 の実装前見直し
+
+今回の全フェーズの依頼には、旧 Phase 2 を置き換えた A17 の Phase 1・2 を含めます。
+R2 の単一使用の field 移動と、A17 の位置ごとの最終使用は別の証明として併用し、
+W1006 と生成は同じ解析結果を使います。A15・B07 は実装済みのため、複製一覧と
+所有する捕捉の借用を必ず整合させます。PM06 と統合し、静的・スタックの文字列へ
+`realloc` を渡しません。Vec の容量・文字列表現・要素の穴を作る移動は変更しません。
+
+### 実装結果（2026-10-14）
+
+Phase 1 の R2 と文字列 append、後継 A17 の Phase 1・2 を実装しました。
+Field の連鎖は Copy の根の単一使用を証明した場合だけ移動します。
+全体 Local の最後の使用と、所有する match の非重複束縛は別の解析で判定し、
+生成・複製一覧・W1006 が同じ結果を使います。union payload 内の field へさらに射影する束縛は、部分 union move が未対応のためコピーを維持します。ヒープ所有文字列だけが左辺の
+`realloc` 経路へ入り、静的／スタック領域は既存の連結・frame 移送を使います。
+A17 は 29 件の last-use・16 件の copy-cost・3 件の解析テスト、120 件の
+native/WASM `-O0`・`-O3` feature、300 プログラム／600 実行の差分テストで検証しました。
+確保要求と bytes の対照は [測定記録](../../docs/benchmarks.md) の「文字列と局所環境」を参照してください。
+
+以下の計画時の `string_append_chain` は、PM06 と統合すると定数畳み込み・長さだけの計算で
+連結自体を省けるため、append の検査には使いません。現行の `string_append_owned`・
+`utf8_append_owned` は別関数を介して所有する左辺の伸長を検査します。各 4 回の新規 block
+確保と 3 回の既存 block への `realloc` があり、tracked allocator の要求は before／after
+とも 7 回です。右辺の所有文字列の確保も含むため、計画時の「全体で新規確保 1 回」を
+現行 fixture の合格条件とはしません。左辺の再利用と、要求回数・物理的な確保の削減は
+区別します。D8 の数え方はそのままです。
 
 Copy の配列・リスト・関数値の不要な複製と、所有値の更新でのバッファの作り直しを減らす。
 所有権の情報から「元の値はもう読まれない」と証明できる位置では、複製の代わりに移動し、バッファをその場で再利用する。
 言語の意味（Copy の独立性、評価順序、別名、drop の時点と回数、トラップ）は一切変えない。
 
-Phase 1 は次の 2 点に限る。実装者は Phase 1 だけを実装し、Phase 2 は人間が求めた場合だけ着手する。
+PM07 の Phase 1（field move と owned-string append）は、A17 の Phase 1・2 による全体 liveness / match-binding move と合わせて実装・検証済み。A17 が旧 Phase 2 案を置き換える。その他の拡張は対象外とする。
 
 1. `clones_on_take` の移動を、単一使用のローカル全体から「単一使用のローカルを根とする `Field` の連鎖」へ広げる（証明規則 R2）。
    C01 の消費的な更新（`Array.set holder.values ..`）も同じ規則で field の入力バッファを再利用するようになる。
@@ -317,7 +348,7 @@ grow:
 ### Phase 分割
 
 - Phase 1（本チケットの実装範囲）: R2、S1、E2E の確保回数の行、`tracked_realloc`、A15 の除外規則（A15 が done の場合）、計測、文書。
-- Phase 2: **[A17](../_features/A17-last-use-move.md) が置き換える**（2026-10-13、人間の依頼で起票。match の束縛の移動は A17 の Phase 2 で、Phase 1 の後に人間が求めたときだけ着手する）。元の案は、所有権検査の `live` 集合を使う「最後の使用」だった。
+- Phase 2: **[A17](../../_features/_completed/A17-last-use-move.md) が置き換え、2026-10-15 に完了した**。match の束縛の移動を含め、型付き IR の生存解析で実装した。元の案は、所有権検査の `live` 集合を使う「最後の使用」だった。
   A17 は、生成が持つ型付き IR の逆向きの生存解析で判定する（所有権の結果を生成へ渡さない。D2 と同じ方針）。元の案の「ループの中では、根がその反復の本体で束縛された場合だけ」では、
   ループの外で束縛して反復の中で再束縛する局所（`xs = Array.set xs ..`。100 万要素の `[i64]` で 1 回 0.2 ms の全複製）と、match の Copy の束縛が扱えないため、A17 が扱う。
   `Index`（Copy の要素）・`ListTail`・`UnionPayload` の place、根が Copy でない record の Copy の field は A17 の Phase 3、文字列の容量は PM03 と合わせて検討する。
@@ -528,13 +559,13 @@ awk '/^define internal %tz.string @tz.string.append/,/^}/' /tmp/tz-PM07/cases.ll
 
 ## 受け入れ条件
 
-- [ ] R2: `field_take`・`field_take_nested`・`field_update_reuse` の確保が 1 回で、`field_take_shared`・`field_take_loop`・根が Copy でない形は複製のまま。
-- [ ] S1: `string_append_chain` が 1 回、`utf8_append_chain` が 1 回、左辺がリテラルの連結は `concat` のまま。
-- [ ] 全 E2E が native/WASM × `-O0`/`-O3` で成功し、`live == 0`、WASM の import がない。
-- [ ] 「生成コードの確認」の期待がすべて成り立つ。
-- [ ] PM07-before・after・before2 の 3 run と `report` の表があり、改善の主張は `verdict` によるものだけ。
-- [ ] A15 が done なら `copies::sites` の除外が R2 に従い、A15 D5 の照合が通る。
-- [ ] 「ドキュメント」の表を更新した。GUIDE §10 の完了の定義を満たす。
+- [x] R2: `field_take`・`field_take_nested`・`field_update_reuse` の確保が 1 回で、`field_take_shared`・`field_take_loop`・根が Copy でない形は複製のまま。
+- [x] S1: 現行の `string_append_owned`・`utf8_append_owned` が各 4 回の新規 block 確保で、所有する左辺は `append`、静的／frame の左辺は `concat` または PM06 の除去経路のまま。既存 block の `realloc` を含む要求は各 7 回で、要求回数の削減とは主張しない（実装結果を参照）。
+- [x] 全 E2E が native/WASM × `-O0`/`-O3` で成功し、`live == 0`、WASM の import がない。
+- [x] 「生成コードの確認」の期待がすべて成り立つ。
+- [x] PM07-before・after・before2 の 3 run と `report` の表があり、改善の主張は `verdict` によるものだけ。
+- [x] A15 が done なら `copies::sites` の除外が R2 に従い、A15 D5 の照合が通る。
+- [x] 「ドキュメント」の表を更新した。GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -556,7 +587,7 @@ awk '/^define internal %tz.string @tz.string.append/,/^}/' /tmp/tz-PM07/cases.ll
 ## 対象外
 
 - 参照カウントによる共有（C10 Phase 2）、Copy の意味の変更。
-- 所有権検査の `live` 集合による最後の使用（[A17](../_features/A17-last-use-move.md) が型付き IR の生存解析で実装する）、`Index`・`ListTail`・`UnionPayload` の place、根が Copy でない record の field（Phase 2）。
+- 所有権検査の `live` 集合による最後の使用は、型付き IR の生存解析を使う [A17](../../_features/_completed/A17-last-use-move.md) に置き換え済み。`Index`・`ListTail`・`UnionPayload` の place と、根が Copy でない record の field は保守的な fallback として対象外。
 - 文字列の容量（PM03 と合わせて検討）、Vec の伸長方針の変更（D6）。
 - 明示的な複製（`clone_string`、`Vec.clone`、A15 の `Array.copy`）、並列 kernel（`src/llvm_parallel.rs`）と再帰型（`src/llvm_recursive.rs`）の複製。
 

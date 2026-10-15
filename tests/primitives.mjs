@@ -113,6 +113,22 @@ fn ${name} =
 const storageLiterals = largeLiteral("large_stack", 8192) + largeLiteral("large_heap", 8193);
 // [call, native result, heap allocations, WASM call, WASM result]
 const storage = [
+  ["literal_concat_stack()", "115", 0, (api) => api.tz_literal_concat_stack(), 115n],
+  ["length_only_concat(1)", "5", 0, (api) => api.tz_length_only_concat(1n), 5n],
+  ["length_only_concat(0)", "6", 0, (api) => api.tz_length_only_concat(0n), 6n],
+  ["buffer_concat(1)", "598", 0, (api) => api.tz_buffer_concat(1n), 598n],
+  ["buffer_concat(0)", "698", 0, (api) => api.tz_buffer_concat(0n), 698n],
+  ["utf8_buffer_concat(1)", "598", 0, (api) => api.tz_utf8_buffer_concat(1n), 598n],
+  ["buffer_escape(1)", "5", 1, (api) => api.tz_buffer_escape(1n), 5n],
+  ["boundary_concat(0)", "128", 1, (api) => api.tz_boundary_concat(0n), 128n],
+  ["boundary_concat(1)", "129", 2, (api) => api.tz_boundary_concat(1n), 129n],
+  ["local_closure(10)", "65", 0, (api) => api.tz_local_closure(10n), 65n],
+  ["field_take()", "4", 1, (api) => api.tz_field_take(), 4n],
+  ["field_take_nested()", "4", 1, (api) => api.tz_field_take_nested(), 4n],
+  ["field_take_shared()", "2", 2, (api) => api.tz_field_take_shared(), 2n],
+  ["field_update_reuse()", "42", 1, (api) => api.tz_field_update_reuse(), 42n],
+  ["string_append_owned()", "8", 4, (api) => api.tz_string_append_owned(), 8n],
+  ["utf8_append_owned()", "8", 4, (api) => api.tz_utf8_append_owned(), 8n],
   ["debug_trace_transfer()", "5", 3, (api) => api.tz_debug_trace_transfer(), 5n],
   ["string_join_allocation()", "8", 1, (api) => api.tz_string_join_allocation(), 8n],
   ["utf8_join_allocation()", "8", 1, (api) => api.tz_utf8_join_allocation(), 8n],
@@ -150,8 +166,8 @@ const storage = [
   ["match_stack(1)", "6321", 1, (api) => api.tz_match_stack(1), 6321n],
   ["match_stack(0)", "7321", 2, (api) => api.tz_match_stack(0), 7321n],
   ["copy_stack()", "21", 1, (api) => api.tz_copy_stack(), 21n],
-  ["concat_stack()", "1206", 2, (api) => api.tz_concat_stack(), 1206n],
-  ["capture_stack()", "76", 4, (api) => api.tz_capture_stack(), 76n],
+  ["concat_stack()", "1206", 0, (api) => api.tz_concat_stack(), 1206n],
+  ["capture_stack()", "76", 3, (api) => api.tz_capture_stack(), 76n],
   ["function_stack()", "4015", 0, (api) => api.tz_function_stack(), 4015n],
   ["loop_copies(10)", "210110", 10, (api) => api.tz_loop_copies(10n), 210110n],
   ["loop_moves(10)", "22", 30, (api) => api.tz_loop_moves(10n), 22n],
@@ -182,6 +198,7 @@ try {
   cli(["build", input, "--emit", "header", "-o", header]);
   const host = join(temporary, "host.c");
   writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -202,6 +219,18 @@ void tracked_free(void *pointer) {
     uint64_t *p = (uint64_t *)pointer - 2;
     assert(p[1] == UINT64_C(0x51a110ca7e));
     p[1] = 0; assert(live >= p[0]); live -= p[0]; free(p);
+}
+void *tracked_realloc(void *pointer, uint64_t n) {
+    if (!pointer) return n ? tracked_alloc(n) : NULL;
+    if (!n) { tracked_free(pointer); return NULL; }
+    uint64_t *p = (uint64_t *)pointer - 2;
+    assert(p[1] == UINT64_C(0x51a110ca7e));
+    uint64_t old = p[0];
+    p = realloc(p, (size_t)n + 16);
+    assert(p);
+    p[0] = n;
+    live = live - old + n; if (live > peak) peak = live;
+    return p + 2;
 }
 int main(int argc, char **argv) {
     if (argc > 1) {
@@ -362,7 +391,7 @@ int main(int argc, char **argv) {
     const native = join(temporary, `primitives-${optimization}`);
     const wasm = join(temporary, `primitives-${optimization}.wasm`);
     cli(["build", input, "--emit", "llvm", "-o", ir]);
-    writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
+    writeFileSync(ir, readFileSync(ir, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@realloc", "@tracked_realloc").replaceAll("@free", "@tracked_free"));
     execute(clang, [`-O${optimization}`, "-Wno-override-module", host, ir, "-lm", "-o", native]);
     execute(native, []);
     for (let trap = 0; trap < 16; ++trap) {

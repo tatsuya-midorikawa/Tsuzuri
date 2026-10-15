@@ -148,16 +148,29 @@ assert (Simd.all mask && Simd.sum_lanes singles == 4.0f32 && Simd.sum_lanes halv
             });
             if accessed {
                 accesses += 1;
+                let alignment = line
+                    .rsplit_once(", align ")
+                    .and_then(|(_, suffix)| suffix.split(',').next()?.trim().parse::<u32>().ok());
                 assert!(
-                    line.ends_with(", align 16") || line.ends_with(", align 1"),
+                    alignment.is_some_and(|value| value.is_power_of_two() && value <= 16),
                     "{line}"
                 );
             }
         }
+
         assert!(accesses > 4, "{accesses}");
         assert_eq!(
             ir,
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
         );
     }
+}
+
+#[test]
+fn utf16_vector_copies_preserve_code_unit_alignment() {
+    let source = "export def widen :: ref utf8string -> string\nfn widen text = String.from_utf8 text\nexport def narrow :: ref string -> utf8string\nfn narrow text = Utf8String.from_string text";
+    let module = analyze(source).unwrap();
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    assert!(ir.contains("load <16 x i16>, ptr %vp, align 2"));
+    assert!(ir.contains("store <16 x i16> %converted, ptr %vq, align 2"));
 }

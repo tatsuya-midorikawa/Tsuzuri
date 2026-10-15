@@ -86,11 +86,11 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PR01 | [所有権・借用から導く最適化情報の付与](PR01-ownership-facts.md) | P1 | L | PX01 | todo |
+| PR01 | [所有権・借用から導く最適化情報の付与](_completed/PR01-ownership-facts.md) | P1 | L | PX01 | done |
 | PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | todo |
 | PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
-| PR04 | [数値の表示・解析の高速化](PR04-number-formatting.md) | P1 | M | PX01 | todo |
-| PR05 | [UTF 変換・比較・検証の SIMD 化](PR05-utf-simd.md) | P1 | M | PX01, (F08) | todo |
+| PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
+| PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
 | PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | todo |
 | PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | todo |
 | PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | todo |
@@ -104,8 +104,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
 | PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | todo |
-| PM06 | [確保の除去とスタック化](PM06-allocation-elimination.md) | P1 | L | PX01 | todo |
-| PM07 | [複製の除去とバッファ再利用の一般化](PM07-copy-elision.md)（Phase 2 は [A17](../_features/A17-last-use-move.md)） | P1 | M | PX01, (A15) | todo |
+| PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
+| PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | todo |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 
@@ -113,8 +113,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](PB01-prebuilt-runtime.md) | P0 | M | PX03 | todo |
-| PB02 | [フロントエンドの確保削減と高速化](PB02-frontend-allocation.md) | P0 | L | PX03 | todo |
+| PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
+| PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | todo |
 | PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | todo |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
@@ -142,6 +142,31 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第2フェーズ7件の実装方針（2026-10-14）
+
+PB01・PB02・PR01・PM06・PM07・PR04・PR05 は、全フェーズの実装と判断を許可した依頼に基づいて進めます。
+起票時の Phase 1 限定と承認待ちの注記は今回の依頼には適用せず、意味の保持と検証の条件は維持します。
+変更前の基準は `a621fada`、保存したコンパイラは `target/perf/phase2-baseline/tsuzuri-before` です。
+
+- PX01〜PX03、F08・F10、C08、A13・A15・A16、B07、G14・G17 は実装済みです。旧コードの行番号や
+  未実装を前提とする停止条件ではなく、現行の型・ABI・配布形式を基準にします。
+- PR01 は `Type::is_frozen` で凍結を証明し、opaque std・共有可変状態・隠れた環境を不変と推測しません。
+  値渡しの slice 記述子に pointer 属性を付けず、alias metadata と TBAA は確定した scalar の由来に限定します。
+  byte・aggregate／union payload・未知の pointer 由来に型名だけで metadata を付けず、trap・分岐・反復・未知呼出しの memory effects は推測しません。
+- PB02 は本体・Local の所有権移動と子列の確保省略を先に行い、型述語に private TypeId／hash-consed Vec arena を実装します。
+  公開 AST・Type・診断順と資源上限を保ち、全面 AST arena 移行や並列化へ範囲を広げません。
+- PM07 の旧 Phase 2 は A17 に置き換わっています。古い所有権検査の `live` 集合を渡す方式を復活させず、
+  型付き IR の最終使用解析と、所有する match 対象の束縛の移動を同じ実装・複製一覧へ接続します。
+- PM06 と PM07 は同じ連結・frame 経路を使うため、frame を持つ左辺には `realloc` を使いません。
+  小さな連結・局所環境をスタックへ置く場合も、移送・解放・再帰と Task の制限を保ちます。
+- PB01 は現在の Windows と cross target も壊さず、配布 object とローカル cache の鍵に実際の runtime 内容、
+  Clang／Zig・配布 resource、target、CPU、最適化・計装・environment を含めます。
+  runtime identity はコンパイラ実行ファイル自体に依存させず、`--no-cache` と自己完結した IR 出力は維持します。
+- PR04 は既存の数値表示・解析の文字列とビットを維持し、表は整数演算で生成します。PR05 は既定の WASM を
+  scalar のまま保ち、SIMD と CPU 多版化を能力確認・境界検査・移植可能な fallback と共に検証します。
+- 測定は同時のビルド・テストと分離し、利用できる実機の結果だけを報告します。長期の数値目標と、
+  完成した実装・確認できた効果は区別します。
 
 ### PX01・PX03・PX02 の実装方針（2026-10-13）
 

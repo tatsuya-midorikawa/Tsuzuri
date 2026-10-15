@@ -10,6 +10,255 @@ use serde_json::{Value, json};
 const FORMAT: u64 = 1;
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 const MARKER: &[u8] = b"tsuzuri whole-build cache v1\n";
+const RUNTIME_FORMAT: u64 = 2;
+
+pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
+    "TSUZURI_CLANG",
+    "TSUZURI_WASM_LD",
+    "TSUZURI_LLVM_LINK",
+    "TSUZURI_DSYMUTIL",
+    crate::driver::SYSROOT_VARIABLE,
+    "PATH",
+    "PATHEXT",
+    "SDKROOT",
+    "MACOSX_DEPLOYMENT_TARGET",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "LIBRARY_PATH",
+    "SOURCE_DATE_EPOCH",
+    "DEVELOPER_DIR",
+    "TSUZURI_ZIG",
+    "TSUZURI_LLVM_CLANG",
+];
+
+pub(crate) struct ToolIdentity {
+    fields: Vec<(&'static str, Vec<u8>)>,
+    bundle_root: Option<PathBuf>,
+    bundled_resource_fingerprint: std::sync::OnceLock<Option<String>>,
+}
+
+fn collect_bundled_resources(
+    directory: &Path,
+    prefix: &str,
+    compiler: &str,
+    inventory: &mut Vec<(String, String)>,
+) -> Option<()> {
+    let mut entries: Vec<_> = fs::read_dir(directory)
+        .ok()?
+        .collect::<Result<_, _>>()
+        .ok()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().into_string().ok()?;
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if path == compiler
+            || path == "share/runtime"
+            || path.starts_with("share/runtime/")
+            || (prefix.is_empty() && path == "manifest.json")
+        {
+            continue;
+        }
+        let file_path = entry.path();
+        let metadata = fs::symlink_metadata(&file_path).ok()?;
+        if metadata.file_type().is_symlink() {
+            return None;
+        }
+        if metadata.is_dir() {
+            collect_bundled_resources(&file_path, &path, compiler, inventory)?;
+        } else if metadata.is_file() {
+            let digest = file_digest(&file_path).ok()?;
+            inventory.push((
+                path,
+                digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+            ));
+        } else {
+            return None;
+        }
+    }
+    Some(())
+}
+
+fn bundled_resource_fingerprint(root: &Path) -> Option<String> {
+    let mut inventory = Vec::new();
+    let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
+    collect_bundled_resources(root, "", &compiler, &mut inventory)?;
+    let mut hash = Sha256::new();
+    hash.update(&serde_json::to_vec(&inventory).ok()?);
+    Some(hash.hex())
+}
+
+impl ToolIdentity {
+    fn new(fields: Vec<(&'static str, Vec<u8>)>, bundle_root: Option<PathBuf>) -> Self {
+        Self {
+            fields,
+            bundle_root,
+            bundled_resource_fingerprint: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn hash_into(&self, hash: &mut Sha256) -> bool {
+        for (name, bytes) in &self.fields {
+            if *name == "bundled-resources" {
+                let Some(root) = self.bundle_root.as_deref() else {
+                    return false;
+                };
+                let fingerprint = self
+                    .bundled_resource_fingerprint
+                    .get_or_init(|| bundled_resource_fingerprint(root));
+                let Some(fingerprint) = fingerprint else {
+                    return false;
+                };
+                hash.field(name, fingerprint.as_bytes());
+            } else {
+                hash.field(name, bytes);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn matches_bundled_tool(&self, name: &str, expected: &str) -> bool {
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let field = if name == format!("bin/tsuzuri-clang{suffix}") {
+            "tool-binary"
+        } else if name == format!("bin/clang{suffix}") {
+            "bundled-clang-binary"
+        } else if name == format!("zig/zig{suffix}") {
+            "bundled-zig-binary"
+        } else {
+            return false;
+        };
+        self.fields.iter().any(|(key, bytes)| {
+            *key == field
+                && bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+                    == expected
+        })
+    }
+
+    pub(crate) fn matches_bundled_resources(&self, expected: &str) -> bool {
+        let Some(root) = self.bundle_root.as_deref() else {
+            return false;
+        };
+        if !self
+            .fields
+            .iter()
+            .any(|(name, _)| *name == "bundled-resources")
+        {
+            return false;
+        }
+        self.bundled_resource_fingerprint
+            .get_or_init(|| bundled_resource_fingerprint(root))
+            .as_deref()
+            == Some(expected)
+    }
+}
+
+pub(crate) fn tool_identity(
+    variable: &str,
+    fallback: &str,
+    cpu: crate::driver::Cpu,
+) -> io::Result<ToolIdentity> {
+    let tool = crate::driver::resolve_tool(variable, fallback).1;
+    let path = executable_path(&tool)?;
+    let output = std::process::Command::new(&path)
+        .arg("--version")
+        .output()?;
+    if !output.status.success() {
+        return Err(invalid("tool version query failed"));
+    }
+    let mut fields = vec![
+        ("tool-path", path.as_os_str().as_encoded_bytes().to_vec()),
+        ("tool-binary", file_digest(&path)?.to_vec()),
+        ("tool-version-stdout", output.stdout),
+        ("tool-version-stderr", output.stderr),
+    ];
+    let mut bundle_root = None;
+    // The launcher alone does not identify the Clang or C SDK bundled beside it.
+    if path.file_stem().is_some_and(|name| name == "tsuzuri-clang") {
+        let root = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| invalid("invalid bundled compiler path"))?;
+        bundle_root = Some(root.to_path_buf());
+        fields.push(("bundled-resources", Vec::new()));
+        let clang = std::env::var_os("TSUZURI_LLVM_CLANG").unwrap_or_else(|| {
+            root.join("bin")
+                .join(format!("clang{}", std::env::consts::EXE_SUFFIX))
+                .into()
+        });
+        fields.push((
+            "bundled-clang-binary",
+            file_digest(&executable_path(&clang)?)?.to_vec(),
+        ));
+        let zig_override = std::env::var_os("TSUZURI_ZIG");
+        let zig = zig_override.clone().map(PathBuf::from).unwrap_or_else(|| {
+            root.join("zig")
+                .join(format!("zig{}", std::env::consts::EXE_SUFFIX))
+        });
+        if zig_override.is_some() || zig.is_file() {
+            fields.push((
+                "bundled-zig-binary",
+                file_digest(&executable_path(zig.as_os_str())?)?.to_vec(),
+            ));
+        }
+    }
+    if variable == "TSUZURI_CLANG" && cpu == crate::driver::Cpu::Native {
+        let output = std::process::Command::new(&path)
+            .args(["-dM", "-E", "-x", "c", "-"])
+            .arg(if matches!(std::env::consts::ARCH, "arm" | "aarch64") {
+                "-mcpu=native"
+            } else {
+                "-march=native"
+            })
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(invalid("native CPU feature query failed"));
+        }
+        fields.push(("native-cpu-features", output.stdout));
+        fields.push(("native-cpu-diagnostics", output.stderr));
+    }
+    Ok(ToolIdentity::new(fields, bundle_root))
+}
+
+pub(crate) fn runtime_key(
+    unit: &str,
+    source: &[u8],
+    args: &[std::ffi::OsString],
+    clang: &ToolIdentity,
+) -> Option<String> {
+    let mut hash = Sha256::new();
+    hash.field("format", &RUNTIME_FORMAT.to_le_bytes());
+    hash.field("kind", b"runtime-object");
+    hash.field("unit", unit.as_bytes());
+    hash.field("host-os", std::env::consts::OS.as_bytes());
+    hash.field("host-arch", std::env::consts::ARCH.as_bytes());
+    hash.field("source", source);
+    for arg in args {
+        hash.field("arg", arg.as_encoded_bytes());
+    }
+    for &variable in KEY_ENVIRONMENT {
+        let value = std::env::var_os(variable);
+        hash.field(
+            variable,
+            value.as_ref().map_or(&[], |value| value.as_encoded_bytes()),
+        );
+    }
+    if !clang.hash_into(&mut hash) {
+        return None;
+    }
+    Some(hash.hex())
+}
 
 pub(crate) struct CachedFile {
     pub bytes: Vec<u8>,
@@ -132,6 +381,7 @@ pub(crate) fn build_key(
     action: &str,
     ir: &str,
     output: &Path,
+    clang: Option<&ToolIdentity>,
 ) -> io::Result<String> {
     use crate::driver::{Emit, Target};
     let mut hash = Sha256::new();
@@ -156,26 +406,7 @@ pub(crate) fn build_key(
             format!("{:?}:{:?}", source.origin, source.package).as_bytes(),
         );
     }
-    for variable in [
-        "TSUZURI_CLANG",
-        "TSUZURI_WASM_LD",
-        "TSUZURI_LLVM_LINK",
-        "TSUZURI_DSYMUTIL",
-        crate::driver::SYSROOT_VARIABLE,
-        "PATH",
-        "PATHEXT",
-        "SDKROOT",
-        "MACOSX_DEPLOYMENT_TARGET",
-        "INCLUDE",
-        "LIB",
-        "LIBPATH",
-        "CPATH",
-        "C_INCLUDE_PATH",
-        "CPLUS_INCLUDE_PATH",
-        "LIBRARY_PATH",
-        "SOURCE_DATE_EPOCH",
-        "DEVELOPER_DIR",
-    ] {
+    for &variable in KEY_ENVIRONMENT {
         let value = std::env::var_os(variable);
         hash.field(
             variable,
@@ -198,33 +429,12 @@ pub(crate) fn build_key(
         }
     }
     for (variable, fallback) in tools {
-        let tool = crate::driver::resolve_tool(variable, fallback).1;
-        let path = executable_path(&tool)?;
-        hash.field("tool-path", path.as_os_str().as_encoded_bytes());
-        hash.field("tool-binary", &file_digest(&path)?);
-        let output = std::process::Command::new(&path)
-            .arg("--version")
-            .output()?;
-        if !output.status.success() {
-            return Err(invalid("tool version query failed"));
-        }
-        hash.field("tool-version-stdout", &output.stdout);
-        hash.field("tool-version-stderr", &output.stderr);
-        if variable == "TSUZURI_CLANG" && options.cpu == crate::driver::Cpu::Native {
-            let output = std::process::Command::new(&path)
-                .args(["-dM", "-E", "-x", "c", "-"])
-                .arg(if matches!(std::env::consts::ARCH, "arm" | "aarch64") {
-                    "-mcpu=native"
-                } else {
-                    "-march=native"
-                })
-                .stdin(std::process::Stdio::null())
-                .output()?;
-            if !output.status.success() {
-                return Err(invalid("native CPU feature query failed"));
-            }
-            hash.field("native-cpu-features", &output.stdout);
-            hash.field("native-cpu-diagnostics", &output.stderr);
+        if variable == "TSUZURI_CLANG"
+            && let Some(identity) = clang
+        {
+            identity.hash_into(&mut hash);
+        } else {
+            tool_identity(variable, fallback, options.cpu)?.hash_into(&mut hash);
         }
     }
     Ok(hash.hex())
@@ -903,5 +1113,131 @@ mod tests {
         second.field("source", b"a");
         second.field("source", b"bc");
         assert_ne!(first.finalize(), second.finalize());
+    }
+    #[test]
+    fn runtime_keys_follow_contents_flags_and_tool_identity() {
+        let identity = ToolIdentity::new(
+            vec![
+                ("tool-binary", vec![1]),
+                ("native-cpu-features", b"cpu-a".to_vec()),
+            ],
+            None,
+        );
+        let args = vec!["-O0".into(), "-fPIC".into()];
+        let key = runtime_key("numeric", b"source", &args, &identity).unwrap();
+        assert_eq!(
+            key,
+            runtime_key("numeric", b"source", &args, &identity).unwrap()
+        );
+        assert_ne!(
+            key,
+            runtime_key("math", b"source", &args, &identity).unwrap()
+        );
+        assert_ne!(
+            key,
+            runtime_key("numeric", b"changed", &args, &identity).unwrap()
+        );
+        for changed in [
+            vec!["-O3".into(), "-fPIC".into()],
+            vec!["-O0".into(), "--target=wasm32-unknown-unknown".into()],
+            vec!["-O0".into(), "-msimd128".into()],
+            vec!["-fPIC".into(), "-O0".into()],
+            vec!["-O0".into(), "--sysroot=other".into()],
+        ] {
+            assert_ne!(
+                key,
+                runtime_key("numeric", b"source", &changed, &identity).unwrap()
+            );
+        }
+        for identity in [
+            ToolIdentity::new(
+                vec![
+                    ("tool-binary", vec![2]),
+                    ("native-cpu-features", b"cpu-a".to_vec()),
+                ],
+                None,
+            ),
+            ToolIdentity::new(
+                vec![
+                    ("tool-binary", vec![1]),
+                    ("native-cpu-features", b"cpu-b".to_vec()),
+                ],
+                None,
+            ),
+        ] {
+            assert_ne!(
+                key,
+                runtime_key("numeric", b"source", &args, &identity).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_resource_identity_hashes_unlisted_files_and_excludes_generated_files() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-resource-fingerprint-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sdk_file = root.join("include/stdint.h");
+        let compiler = root
+            .join("bin")
+            .join(format!("tsuzuri{}", std::env::consts::EXE_SUFFIX));
+        let runtime_manifest = root.join("share/runtime/manifest.json");
+        fs::create_dir_all(sdk_file.parent().unwrap()).unwrap();
+        fs::create_dir_all(compiler.parent().unwrap()).unwrap();
+        fs::create_dir_all(runtime_manifest.parent().unwrap()).unwrap();
+        fs::write(&sdk_file, b"old sdk").unwrap();
+        fs::write(&compiler, b"old compiler").unwrap();
+        fs::write(&runtime_manifest, b"old runtime").unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "files": [
+                    {"path": format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX)},
+                    {"path": "include/stdint.h"},
+                    {"path": "share/runtime/manifest.json"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let identity = || {
+            ToolIdentity::new(
+                vec![("tool-binary", vec![1]), ("bundled-resources", Vec::new())],
+                Some(root.clone()),
+            )
+        };
+        let fingerprint = bundled_resource_fingerprint(&root).unwrap();
+        let initial = identity();
+        assert!(initial.matches_bundled_resources(&fingerprint));
+        let args = ["-O0".into()];
+        let key = runtime_key("native-c", b"source", &args, &initial).unwrap();
+
+        fs::write(&compiler, b"new compiler").unwrap();
+        fs::write(&runtime_manifest, b"new runtime").unwrap();
+        assert!(identity().matches_bundled_resources(&fingerprint));
+
+        let unlisted_file = root.join("include/extra.h");
+        fs::write(&unlisted_file, b"new sdk input").unwrap();
+        let added_resource = identity();
+        assert!(!added_resource.matches_bundled_resources(&fingerprint));
+        assert_ne!(
+            key,
+            runtime_key("native-c", b"source", &args, &added_resource).unwrap()
+        );
+        fs::remove_file(unlisted_file).unwrap();
+
+        fs::write(&sdk_file, b"new sdk").unwrap();
+        let changed_resource = identity();
+        assert!(!changed_resource.matches_bundled_resources(&fingerprint));
+        assert_ne!(
+            key,
+            runtime_key("native-c", b"source", &args, &changed_resource).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

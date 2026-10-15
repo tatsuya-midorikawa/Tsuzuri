@@ -99,10 +99,12 @@ impl Checker<'_> {
         recursive: &[Local],
     ) -> Result<TypedExpr, Diagnostic> {
         let task = kind == LambdaKind::Task;
-        let mut used = BTreeSet::new();
+        let mut used = Vec::new();
         free_locals(&body, &mut used);
         let mut captures = Vec::new();
-        for id in used {
+        for id in used.iter().enumerate().flat_map(|(word, &bits)| {
+            (0..64).filter_map(move |bit| (bits & (1u64 << bit) != 0).then_some(word * 64 + bit))
+        }) {
             if let Some(local) = outer.get(&id) {
                 let mut capture = local.clone();
                 capture.ty = self.inference.resolve(&capture.ty);
@@ -163,19 +165,32 @@ impl Checker<'_> {
     }
 }
 
-fn free_locals(expression: &TypedExpr, used: &mut BTreeSet<usize>) {
+fn note_local(used: &mut Vec<u64>, id: usize) {
+    let word = id / 64;
+    if word >= used.len() {
+        used.resize(word + 1, 0);
+    }
+    used[word] |= 1 << (id % 64);
+}
+
+fn free_locals(expression: &TypedExpr, used: &mut Vec<u64>) {
     use TypedExprKind::*;
     match &expression.kind {
         Local(id) => {
-            used.insert(*id);
+            note_local(used, *id);
         }
         Lambda { captures, .. } => {
-            used.extend(captures.iter().map(|local| local.id));
+            for local in captures {
+                note_local(used, local.id);
+            }
         }
         _ => {
-            for child in expression.children() {
-                free_locals(child, used);
-            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    free_locals(child, used);
+                    Ok(())
+                })
+                .expect("collecting free locals cannot fail");
         }
     }
 }
@@ -194,7 +209,8 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
     let mut generated = Generated::default();
     let original_count = module.functions.len();
     for id in 0..original_count {
-        let mut body = module.functions[id].body.clone();
+        let span = module.functions[id].body.span;
+        let mut body = std::mem::replace(&mut module.functions[id].body, TypedExpr::error(span));
         let origin = module.functions[id].origin.generated(id);
         let types = TypeContext {
             records: &module.records,
@@ -529,9 +545,9 @@ fn lower_expression(
             expression.kind = Function(FunctionRef::User(id));
         }
         _ => {
-            for child in expression.children_mut() {
-                lower_expression(child, functions, types, generated, origin)?;
-            }
+            expression.try_for_each_child_mut(&mut |child| {
+                lower_expression(child, functions, types, generated, origin)
+            })?;
         }
     }
     Ok(())

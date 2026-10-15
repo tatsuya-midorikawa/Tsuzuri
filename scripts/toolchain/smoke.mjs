@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { cp, mkdtemp, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [input, ...flags] = process.argv.slice(2);
 if (!input || flags.some(flag => flag !== '--discover')) {
@@ -11,10 +12,13 @@ if (!input || flags.some(flag => flag !== '--discover')) {
 const discover = flags.includes('--discover');
 const source = path.resolve(input);
 const archived = /\.(tar\.gz|zip)$/.test(source);
-const directory = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri IDE space-'));
+const scratch = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../target/toolchain-smoke');
+await mkdir(scratch, { recursive: true });
+const directory = await mkdtemp(path.join(scratch, 'tsuzuri IDE space-'));
 let tools = path.join(directory, 'relocated toolchain');
 const suffix = process.platform === 'win32' ? '.exe' : '';
-const environment = { ...process.env, SDKROOT: path.join(directory, 'missing-sdk'), DEVELOPER_DIR: path.join(directory, 'missing-developer-tools') };
+const environment = { ...process.env, TMPDIR: directory, TMP: directory, TEMP: directory,
+  SDKROOT: path.join(directory, 'missing-sdk'), DEVELOPER_DIR: path.join(directory, 'missing-developer-tools') };
 for (const key of Object.keys(environment)) {
   if (/^(PATH|TSUZURI_|ZIG_|DYLD_|LD_LIBRARY_PATH)/i.test(key)) { delete environment[key]; }
 }
@@ -48,6 +52,10 @@ try {
   // The LLDB formatters and the natvis views ship beside the tools (G16).
   assert.match(await readFile(path.join(tools, 'share', 'lldb', 'tsuzuri_lldb.py'), 'utf8'), /^def __lldb_init_module\(/m);
   assert.match(await readFile(path.join(tools, 'share', 'natvis', 'tsuzuri.natvis'), 'utf8'), /<AutoVisualizer /);
+  const runtime = JSON.parse(await readFile(path.join(tools, 'share/runtime/manifest.json'), 'utf8'));
+  assert.equal(runtime.format, 2);
+  assert.match(runtime.resource_fingerprint, /^[0-9a-f]{64}$/);
+  assert.equal(runtime.objects.length, 52);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {
     // Only the compiler is on PATH; it must find the bundled tools itself.
@@ -142,6 +150,74 @@ try {
   const kernel = path.join(directory, 'kernel');
   await mkdir(kernel);
   await writeFile(path.join(kernel, 'Main.tz'), 'export def answer :: i64 = 42\n');
+  if (discover) {
+    const numeric = path.join(directory, 'numeric');
+    await mkdir(numeric);
+    await writeFile(path.join(numeric, 'Main.tz'),
+      'export def answer :: i64 = (to_string 42).length\nexport def sine :: f64 -> f64 = \\x -> Math.sin x\n42\n');
+    const bundled = { ...environment, TSUZURI_TIME_PASSES: '1', TSUZURI_CACHE_DIR: path.join(directory, 'prebuilt-cache') };
+    // Preserve the environment used to build these objects; other smoke checks intentionally
+    // supply bogus SDK locations to prove the source fallback is also independent.
+    for (const [name, value] of Object.entries(runtime.environment)) {
+      if (value === null) delete bundled[name]; else bundled[name] = value;
+    }
+    for (const target of ['native', 'wasm32', 'wasm32-simd']) {
+      for (const optimization of ['-O0', '-O3']) {
+        const artifact = path.join(directory, `prebuilt-${target}${target === 'native' ? suffix : '.wasm'}`);
+        const result = run(compiler, ['build', numeric, '--target', target === 'native' ? 'native' : 'wasm32',
+          ...(target === 'wasm32-simd' ? ['--wasm-feature', 'simd128'] : []),
+          optimization, '-o', artifact], { env: bundled });
+        const report = JSON.parse(result.stderr.trim().split(/\r?\n/).at(-1));
+        assert.equal(report.phases.filter(phase => phase.name.startsWith('tool.')).length,
+          target === 'native' ? 1 : 2, 'bundled objects must avoid runtime compiler invocations');
+        const cachedObjects = await readdir(path.join(bundled.TSUZURI_CACHE_DIR, 'runtime')).catch(error => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+        assert.equal(cachedObjects.filter(name => /^[a-f0-9]{64}$/.test(name)).length, 0,
+          'the compiler must consume bundled objects rather than compile fallback objects');
+        if (target === 'native') assert.equal(run(artifact, []).stdout, '42\n');
+        else {
+          const module = new WebAssembly.Module(await readFile(artifact));
+          assert.deepEqual(WebAssembly.Module.imports(module), []);
+          assert.equal(new WebAssembly.Instance(module).exports.tz_answer(), 2n);
+        }
+      }
+    }
+    const taskProject = path.join(directory, 'prebuilt-tasks');
+    await mkdir(taskProject);
+    await writeFile(path.join(taskProject, 'Main.tz'),
+      'let computation = task {\n'
+      + '    let jobs = new [Task<i64>](2, \\index -> task { return index + 1 })\n'
+      + '    let! values = Task.parallel jobs\n    return values.length\n}\nTask.run computation\n');
+    const taskArtifact = path.join(directory, `prebuilt-tasks-app${suffix}`);
+    run(compiler, ['build', taskProject, '-O0', '-o', taskArtifact], { env: bundled });
+    assert.equal(run(taskArtifact, []).stdout, '2\n');
+    const runtimeCache = path.join(bundled.TSUZURI_CACHE_DIR, 'runtime');
+    const taskObjects = await readdir(runtimeCache).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.equal(taskObjects.filter(name => /^[a-f0-9]{64}$/.test(name)).length, 0,
+      'the native C runtime must also be consumed from the bundle');
+    const corrupt = runtime.objects.find(item => item.file === 'numeric-native-O0.o');
+    const corruptPath = path.join(tools, 'share/runtime', corrupt.file);
+    const originalObject = await readFile(corruptPath);
+    await writeFile(corruptPath, 'corrupt');
+    await writeFile(path.join(numeric, 'Main.tz'), '43\n');
+    const fallback = path.join(directory, `prebuilt-fallback${suffix}`);
+    run(compiler, ['build', numeric, '-O0', '-o', fallback], { env: bundled });
+    assert.equal(run(fallback, []).stdout, '43\n');
+    assert.ok((await readdir(runtimeCache)).some(name => /^[a-f0-9]{64}$/.test(name)),
+      'a corrupt object must trigger a source compile, not a link failure');
+    await writeFile(corruptPath, originalObject);
+    const disabledRoot = path.join(directory, 'prebuilt-no-cache');
+    run(compiler, ['build', numeric, '-O0', '--no-cache', '-o', fallback],
+      { env: { ...bundled, TSUZURI_CACHE_DIR: disabledRoot } });
+    assert.equal(run(fallback, []).stdout, '43\n');
+    await assert.rejects(readdir(disabledRoot), { code: 'ENOENT' });
+    console.log('Relocated prebuilt numeric/math objects: native/WASM O0/O3 consumed and executed.');
+  }
   for (const optimization of ['-O0', '-O3']) {
     const artifact = path.join(directory, 'kernel.wasm');
     run(compiler, ['build', kernel, '--target', 'wasm32', optimization, '--no-cache', '-o', artifact]);

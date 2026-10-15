@@ -184,11 +184,12 @@ try {
   const declarations = sourceIr.match(/^declare .*$/gm);
   const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
   assert.equal(new Set(declaredNames).size, declaredNames.length, "intrinsic declarations are deduplicated");
-  let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free");
-  if (sanitizer.length) trackedIr = trackedIr.replaceAll(" nounwind {", " nounwind sanitize_address {");
+  let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
+  if (sanitizer.length) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, " nounwind sanitize_address");
   writeFileSync(ir, trackedIr);
   const host = join(temporary, "host.c");
   writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -211,6 +212,18 @@ void tracked_free(void *value) {
     assert(live >= p[0]);
     live -= p[0];
     free(p);
+}
+void *tracked_realloc(void *value, uint64_t size) {
+    if (!value) return size ? tracked_alloc(size) : NULL;
+    if (!size) { tracked_free(value); return NULL; }
+    uint64_t *p = (uint64_t *)value - 2;
+    assert(p[1] == UINT64_C(0x51a110ca7e));
+    uint64_t old_size = p[0];
+    p = realloc(p, (size_t)size + 16);
+    assert(p);
+    p[0] = size;
+    live = live - old_size + size;
+    return p + 2;
 }
 int main(int argc, char **argv) {
     if (argc == 2) {

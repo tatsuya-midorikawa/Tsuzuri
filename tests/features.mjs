@@ -16,6 +16,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const only = process.argv[3];
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+const nativeLibraries = process.platform === "win32" ? [] : ["-lm"];
+const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const sanitizerKind = process.env.TSUZURI_TSAN === "1" ? "thread" : process.env.TSUZURI_ASAN === "1" ? "address" : null;
 const sanitizer = sanitizerKind ? [`-fsanitize=${sanitizerKind}`] : [];
 const nativeOptions = process.env.TSUZURI_TEST_CPU === "native" ? [process.arch === "arm64" ? "-mcpu=native" : "-march=native"] : [];
@@ -404,6 +406,59 @@ function atomicSequence(bits, signed, start, delta, mask) {
 }
 
 const suites = {
+  storage: {
+    input: "storage/Storage.tz",
+    cases: [
+      ["literal_concat_stack", [], 115n],
+      ["length_only_concat", [1n], 5n], ["length_only_concat", [0n], 6n],
+      ["buffer_concat", [1n], 598n], ["buffer_concat", [0n], 698n],
+      ["utf8_buffer_concat", [1n], 598n],
+      ["buffer_escape", [1n], 5n],
+      ["boundary_concat", [0n], 128n], ["boundary_concat", [1n], 129n],
+      ["local_closure", [10n], 65n], ["capture_stack", [], 76n],
+      ["field_take", [], 4n], ["field_take_nested", [], 4n],
+      ["field_take_shared", [], 2n], ["field_update_reuse", [], 42n],
+      ["string_append_owned", [], 8n], ["utf8_append_owned", [], 8n],
+      ["concat_stack", [], 1206n],
+      ["identity_concat_length", [0n], 3n], ["identity_concat_length", [1n], 5n],
+      ["identity_concat_local", [0n], 100n], ["identity_concat_local", [1n], 102n],
+      ["identity_concat_copy", [0n], 33n], ["identity_concat_copy", [1n], 55n],
+    ],
+  },
+  param_facts: {
+    traps: [["trap_step", []], ["trap_assert", []], ["trap_unreachable", []],
+      ["trap_checked", []], ["trap_discarded", []], ["trap_loop", []]],
+    cases: [
+      ...[0n, 1n, 2n, 17n, 1000n].flatMap(count => [min, -1n, 0n, 1n, max].flatMap(seed => [
+        ["scalar_loop", [count, seed], BigInt.asIntN(64, 7n + count * seed)],
+        ["interior_alias", [count, seed], BigInt.asIntN(64, seed + count)],
+        ["self_tail", [count, seed], BigInt.asIntN(64, seed + count * (count + 1n) / 2n)],
+      ])),
+      ...[min, -1n, 0n, 1n, max].flatMap(seed => [
+        ["shared_alias", [seed], BigInt.asIntN(64, seed * 2n)],
+        ["returned_reference", [seed], BigInt.asIntN(64, seed * 2n)],
+        ["callback_reference", [seed], seed],
+        ["stored_reference", [seed], seed],
+        ["mutex_alias", [seed], BigInt.asIntN(64, seed + 1n)],
+        ["union_overlap", [seed], BigInt.asIntN(64, seed + 3n)],
+      ]),
+      ...[0n, 1n, 2n, 17n, 1000n].map(count => ["buffer_loop", [count], count + 3n * count * (count - 1n) / 2n]),
+      ["overlapping_slices", [], 23n], ["disjoint_siblings", [], 4534n], ["byte_buffer", [], 255n],
+    ],
+    inspect(ir) {
+      assert.match(ir, /!alias\.scope !\d+/);
+      assert.match(ir, /!noalias !\d+/);
+      assert.match(ir, /!tbaa !\d+/);
+      assert.match(ir, /!nonnull !\d+/);
+      assert.match(ir, /@tz\.fn\.Main\.accumulate\(ptr noalias nocapture noundef nonnull/);
+      const body = name => ir.slice(ir.indexOf(`@tz.fn.Main.${name}(`)).split("\n}\n")[0];
+      assert.doesNotMatch(body("atomic_steps"), /!tbaa|!noalias|!alias\.scope/);
+      assert.doesNotMatch(body("mutex_steps"), /!tbaa|!noalias|!alias\.scope/);
+      assert.doesNotMatch(body("first_pair"), /!noalias|!alias\.scope/);
+      assert.doesNotMatch(body("copy_byte"), /!tbaa/);
+      assert.doesNotMatch(body("read_mixed"), /!tbaa/);
+    },
+  },
   higher_kinds: {
     cases: [
       ...[min, -1n, 0n, 41n, max].flatMap(seed => [["option_map", [seed], BigInt.asIntN(64, seed + 1n)], ["result_map", [seed], BigInt.asIntN(64, seed * 3n)]]),
@@ -514,7 +569,7 @@ const suites = {
       assert.doesNotMatch(ir, /(?:fadd|fmul) fast|add nsw <|add nuw </);
       // 256-bit vectors live in storage aligned to 16 bytes, so no access may assume 32.
       for (const [line] of ir.matchAll(/^\s*(?:store <(?:32 x i8|16 x i16|8 x i32|4 x i64|8 x float|4 x double)> |%\S+ = load <(?:32 x i8|16 x i16|8 x i32|4 x i64|8 x float|4 x double)>, ).*$/gm)) {
-        assert.match(line, /, align (?:1|16)(?:, !|$)/, line);
+        assert.match(line, /, align (?:1|2|4|8|16)(?:, !|$)/, line);
       }
     },
   },
@@ -1218,9 +1273,19 @@ const suites = {
           ["guard_falls_through", [n], n < 0n ? 8n : n > 100n ? 1000n + n : 321n * n],
           ["as_pattern_overlap", [n], n >= 0n ? 31n * n : 8n],
           ["tuple_scrutinee", [n], n >= 0n ? 22n * n + 20n : 0n],
+          ["stack_scrutinee", [n], n + 4n],
+          ["recursive_scrutinee", [n], 2n * n + 2n],
+          ["guard_reads_subject", [n], n >= 0n ? 4n * n + 2n : 0n],
         ]),
       ];
     })(),
+    inspect(ir) {
+      for (const name of ["self_update_loop", "recursive_accumulate", "branch_last_reads"]) {
+        const body = ir.split("\n\n").find(block => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
+        assert.ok(body, name);
+        assert.equal((body.match(/call (?:nonnull )?ptr @tz\.alloc/g) ?? []).length, 1, name);
+      }
+    },
   },
   slices: {
     cases: [
@@ -1490,12 +1555,12 @@ const suites = {
     inspect(ir, header) {
       assert.match(header, /tz_answer/);
       assert.doesNotMatch(header, /Math|zero|identity/);
-      for (const definition of [
-        "define internal double @tz.fn.Math.zero(",
-        "define internal double @tz.fn.Math.identity_f64(",
-        "define internal i64 @tz.builtin.unreachable.i64(i8 %unit) noreturn nounwind {",
+      for (const [pattern, definition] of [
+        [/^define internal (?:noundef )?double @tz\.fn\.Math\.zero\(/gm, "Math.zero"],
+        [/^define internal (?:noundef )?double @tz\.fn\.Math\.identity_f64\(/gm, "Math.identity_f64"],
+        [/^define internal i64 @tz\.builtin\.unreachable\.i64\(i8 %unit\) noreturn nounwind \{/gm, "unreachable"],
       ]) {
-        assert.equal(ir.split(definition).length, 2, `${definition} is defined once`);
+        assert.equal([...ir.matchAll(pattern)].length, 1, `${definition} is defined once`);
       }
     },
   },
@@ -2003,7 +2068,7 @@ for (const count of [0, 1, 10000]) {
 }
 
 function run(name, suite) {
-  const fixture = join(root, "tests/fixtures", name);
+  const fixture = join(root, "tests/fixtures", suite.input ?? name);
   const temporary = mkdtempSync(join(tmpdir(), `tsuzuri-${name}-`));
   try {
     cli(["check", fixture]);
@@ -2031,6 +2096,7 @@ function run(name, suite) {
     const bounded = suite.bounded ?? [];
     const host = join(temporary, "host.c");
     writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -2094,9 +2160,9 @@ int main(int argc, char **argv) {
 }
 `);
     for (const optimization of ["0", "3"]) {
-      const native = join(temporary, `${name}-O${optimization}`);
+      const native = join(temporary, `${name}-O${optimization}${executableSuffix}`);
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
-        `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), "-lm", "-o", native]);
+        `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), ...nativeLibraries, "-o", native]);
       execute(native, []);
       for (const [index, [exported]] of bounded.entries()) {
         const result = executeBounded(native, [String(traps.length + index)]);
@@ -2105,10 +2171,10 @@ int main(int argc, char **argv) {
       if ((name === "parallel" || name === "matrix") && optimization === "3") {
         for (const processors of [1, 4]) {
           const runtime = join(temporary, `runtime-${processors}.c`);
-          const binary = join(temporary, `parallel-cpus-${processors}`);
+          const binary = join(temporary, `parallel-cpus-${processors}${executableSuffix}`);
           writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include ${JSON.stringify(join(root, "src/runtime/task.c"))}\n`);
           execute(clang, ["-O3", "-Wno-override-module", "-ffp-contract=off", ...sanitizer,
-            `-I${temporary}`, ir, host, runtime, "-pthread", "-lm", "-o", binary]);
+            `-I${temporary}`, ir, host, runtime, "-pthread", ...nativeLibraries, "-o", binary]);
           execute(binary, []);
         }
       }

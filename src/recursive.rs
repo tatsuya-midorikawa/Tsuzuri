@@ -324,20 +324,86 @@ impl TypeContext<'_> {
         predicate: impl Fn(&Type) -> bool,
         closed: impl Fn(&Type) -> bool,
     ) -> bool {
-        let mut seen = BTreeSet::new();
-        let mut pending = vec![root.clone()];
-        while let Some(ty) = pending.pop() {
-            if !predicate(&ty) {
+        self.walk_types(root, predicate, closed, false)
+    }
+
+    /// Whether `found` holds for a type reachable from `root` through stored values and the
+    /// targets of references (A13). Function and task types describe calls, not stored values.
+    pub(crate) fn reaches(&self, root: &Type, found: impl Fn(&Type) -> bool) -> bool {
+        !self.walk_types(root, |ty| !found(ty), |_| false, true)
+    }
+
+    fn walk_types(
+        &self,
+        root: &Type,
+        predicate: impl Fn(&Type) -> bool,
+        closed: impl Fn(&Type) -> bool,
+        references: bool,
+    ) -> bool {
+        if !predicate(root) {
+            return false;
+        }
+        if closed(root)
+            || !matches!(
+                root,
+                Type::Record(..)
+                    | Type::Union(..)
+                    | Type::Array(_)
+                    | Type::List(_)
+                    | Type::Vec(_)
+                    | Type::FixedArray(..)
+                    | Type::Shared(..)
+                    | Type::Tuple(_)
+            ) && !(references && matches!(root, Type::Reference(..)))
+        {
+            return true;
+        }
+        let mut arena = type_arena::TypeArena::default();
+        let root_id = arena.borrowed(root);
+        arena.visit(root_id);
+        let mut pending = Vec::new();
+        arena.children(root_id, *self, references, &mut pending);
+        while let Some(id) = pending.pop() {
+            let ty = arena.ty(id);
+            if !predicate(ty) {
                 return false;
             }
-            if closed(&ty) || !seen.insert(ty.clone()) {
+            if closed(ty) || !arena.visit(id) {
+                continue;
+            }
+            arena.children(id, *self, references, &mut pending);
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reference_walk(
+        types: TypeContext<'_>,
+        root: &Type,
+        references: bool,
+        closed: bool,
+    ) -> (bool, Vec<Type>) {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![root.clone()];
+        let mut trace = Vec::new();
+        while let Some(ty) = pending.pop() {
+            trace.push(ty.clone());
+            if matches!(ty, Type::String) {
+                return (false, trace);
+            }
+            if closed && matches!(ty, Type::Array(_)) || !seen.insert(ty.clone()) {
                 continue;
             }
             match ty {
-                Type::Record(id, arguments) => pending.extend(self.record_fields(id, &arguments)),
+                Type::Record(id, arguments) => pending.extend(types.record_fields(id, &arguments)),
                 Type::Union(id, arguments) => {
-                    pending.extend(self.union_payloads(id, &arguments).into_iter().flatten())
+                    pending.extend(types.union_payloads(id, &arguments).into_iter().flatten())
                 }
+                Type::Reference(inner, _) if references => pending.push(*inner),
                 Type::Array(inner)
                 | Type::List(inner)
                 | Type::Vec(inner)
@@ -347,43 +413,43 @@ impl TypeContext<'_> {
                 _ => {}
             }
         }
-        true
+        (true, trace)
     }
 
-    /// Whether `found` holds for a type reachable from `root` through stored values and the
-    /// targets of references (A13). Function and task types describe calls, not stored values.
-    pub(super) fn reaches(&self, root: &Type, found: impl Fn(&Type) -> bool) -> bool {
-        let mut seen = BTreeSet::new();
-        let mut pending = vec![root.clone()];
-        while let Some(ty) = pending.pop() {
-            if found(&ty) {
-                return true;
-            }
-            if !seen.insert(ty.clone()) {
-                continue;
-            }
-            match ty {
-                Type::Record(id, arguments) => pending.extend(self.record_fields(id, &arguments)),
-                Type::Union(id, arguments) => {
-                    pending.extend(self.union_payloads(id, &arguments).into_iter().flatten())
+    #[test]
+    fn type_arena_preserves_predicate_order_cycles_and_closed_boundaries() {
+        let module = crate::analyze(
+            "record Plain { values: [[i64]], flag: bool }\n\
+             record Generic<'a> { values: [['a]] }\n\
+             union Tree = Empty | Branch of [Tree]\n\
+             def plain :: Plain -> unit = \\_x -> ()\n\
+             def generic :: Generic<i64> -> unit = \\_x -> ()\n\
+             def tree :: Tree -> unit = \\_x -> ()\n\
+             def reference :: ref Plain -> unit = \\_x -> ()\n\
+             def string :: (i64 * string) -> unit = \\_x -> ()",
+        )
+        .unwrap();
+        let types = module.types();
+        for function in &module.functions {
+            let root = &function.parameters[0].ty;
+            for references in [false, true] {
+                for closed in [false, true] {
+                    let expected = reference_walk(types, root, references, closed);
+                    let trace = std::cell::RefCell::new(Vec::new());
+                    let actual = types.walk_types(
+                        root,
+                        |ty| {
+                            trace.borrow_mut().push(ty.clone());
+                            !matches!(ty, Type::String)
+                        },
+                        |ty| closed && matches!(ty, Type::Array(_)),
+                        references,
+                    );
+                    assert_eq!((actual, trace.into_inner()), expected, "{}", function.name);
                 }
-                Type::Reference(inner, _)
-                | Type::Array(inner)
-                | Type::List(inner)
-                | Type::Vec(inner)
-                | Type::FixedArray(inner, _)
-                | Type::Shared(inner, _) => pending.push(*inner),
-                Type::Tuple(elements) => pending.extend(elements),
-                _ => {}
             }
         }
-        false
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn recursive_components_include_cross_edges() {

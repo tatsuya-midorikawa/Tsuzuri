@@ -213,6 +213,17 @@ function host(project) {
 static int64_t live;
 void *tracked_alloc(uint64_t size) { uint64_t *header = malloc(size + 16); if (!header) abort(); header[0] = size; live += (int64_t)size; return header + 2; }
 void tracked_free(void *pointer) { if (pointer) { uint64_t *header = (uint64_t *)pointer - 2; live -= (int64_t)header[0]; free(header); } }
+void *tracked_realloc(void *pointer, uint64_t size) {
+  if (!pointer) return size ? tracked_alloc(size) : NULL;
+  if (!size) { tracked_free(pointer); return NULL; }
+  uint64_t *header = (uint64_t *)pointer - 2;
+  uint64_t old_size = header[0];
+  header = realloc(header, size + 16);
+  if (!header) abort();
+  header[0] = size;
+  live += (int64_t)size - (int64_t)old_size;
+  return header + 2;
+}
 extern uint8_t tz_available_vulkan(void);
 extern int32_t tz_auto_device_backend(void);
 extern int32_t tz_before_any_call(void);
@@ -237,7 +248,7 @@ function build(name, optimization) {
   const ir = join(project.path, "module.ll");
   cli(["build", project.path, "--emit", "llvm", "-o", ir]);
   const tracked = join(project.path, "tracked.ll");
-  writeFileSync(tracked, readFileSync(ir, "utf8").replaceAll("@malloc(", "@tracked_alloc(").replaceAll("@free(", "@tracked_free("));
+  writeFileSync(tracked, readFileSync(ir, "utf8").replaceAll("@malloc(", "@tracked_alloc(").replaceAll("@free(", "@tracked_free(").replaceAll("@realloc(", "@tracked_realloc("));
   const hostPath = join(project.path, "host.c");
   writeFileSync(hostPath, host(project));
   const program = join(project.path, `host-${optimization}`);

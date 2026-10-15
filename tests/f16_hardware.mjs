@@ -7,7 +7,7 @@
 // Every host prints the path it exercised: `hardware`, `conversions`, or `soft` for the code of `--cpu generic` and of
 // `--cpu native`. The compiler picks the path from the target and the CPU, so a host that lacks a capability falls back
 // to `soft` and the run still passes; `TSUZURI_F16_EXPECT` (this test's own variable, the compiler does not read it)
-// turns a fallback into a failure: `hardware`, or `generic=soft,native=conversions` for one value per build.
+// turns an unexpected path into a failure: `hardware`, or `generic=soft,native=conversions|hardware` to accept either.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,8 +36,9 @@ function parseExpectation(text) {
   const expected = {};
   for (const part of (text ?? "").split(",").filter(Boolean)) {
     const [key, value] = part.includes("=") ? part.split("=") : ["both", part];
-    assert.ok(["both", "generic", "native"].includes(key) && PATHS.includes(value), `TSUZURI_F16_EXPECT: "${part}" is not [generic=|native=]${PATHS.join("|")}`);
-    for (const build of key === "both" ? ["generic", "native"] : [key]) expected[build] = value;
+    const paths = value.split("|");
+    assert.ok(["both", "generic", "native"].includes(key) && paths.every((path) => PATHS.includes(path)), `TSUZURI_F16_EXPECT: "${part}" is not [generic=|native=]${PATHS.join("|")}`);
+    for (const build of key === "both" ? ["generic", "native"] : [key]) expected[build] = paths;
   }
   return expected;
 }
@@ -611,7 +612,7 @@ ${exportedNames.map((name, id) => {
     classified[build] = path;
     const detail = `arithmetic ${arithmeticHardware ? "hardware" : "soft"}, f16 to f32/f64 ${!soft.widen ? "hardware" : "soft"}, f32 to f16 ${!soft.narrow32 ? "hardware" : "soft"}, f64 to f16 ${narrow64Hardware ? "hardware" : "soft"}`;
     report.push(`--cpu ${build} build: ${path} (${detail})`);
-    if (expectation[build]) assert.equal(path, expectation[build], `--cpu ${build} took the ${path} path (${detail}); TSUZURI_F16_EXPECT wants ${expectation[build]}`);
+    if (expectation[build]) assert.ok(expectation[build].includes(path), `--cpu ${build} took the ${path} path (${detail}); TSUZURI_F16_EXPECT wants ${expectation[build].join(" or ")}`);
 
     const exportDirectory = join(temporary, `exported-${build}`);
     mkdirSync(exportDirectory, { recursive: true });

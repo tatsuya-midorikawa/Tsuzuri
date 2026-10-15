@@ -186,6 +186,17 @@ first.length + second.length
 
 `second` へ代入したあとも `first` を使っているので、要素全体が新しいバッファへコピーされます。代入のあと `first` を使わなければムーブになり、このコピーは起きません。
 
+コンパイラが後続の読み取りがないと証明できる位置では、Copy 型でも複製せずにムーブします。分岐の各腕で最後に渡す値や、ループ内で `xs = Array.set xs i value` と再束縛する値も対象です。後の引数が `xs` を読む `Array.set xs 0 xs[1]` ではコピーが残ります。借用・スライスの元となる局所や、`for ... in` の走査元は、この最後の使用の最適化から除外されます。未対応の式や解析の資源上限でも、安全のためコピーを残します。
+
+```tsuzuri run=9
+let mut xs = new [i64](4, \_i -> 0)
+for i in 0 .. 3 do
+    xs = Array.set xs i (i * 3)
+xs[3]
+```
+
+`match` の照合対象が一時値、または以後使わない所有局所なら、配列などの Copy の束縛もムーブできます。ガードが成功してから取り出し、`as` パターンなどで束縛の記憶域が重なる場合や、参照・要素・リストの tail を経由する束縛ではコピーを残します。利用者が `Drop` を実装した値を経由する射影でも、デストラクタが元の記憶域を観測できるためコピーを残します。非 Copy 値の所有権検査の規則は変わりません。
+
 不要なコピーを避けるためには、所有権を渡す代わりに共有借用（`ref [T]`）を受け取るように関数を設計します。
 
 ## 暗黙のコピーの検出と明示コピー
@@ -197,6 +208,8 @@ tsuzuri check --warn implicit-copy Main.tz
 ```
 
 このオプションを付けると、暗黙のディープコピーに警告 `W1006` が出ます。配列、リスト、それらを含むレコードで文言が違います。`dyn` 値の複製も同じ警告です。フラグが無いときの終了コードは 0 のままで、生成コードも変わりません。
+
+最後の使用や所有する `match` 束縛としてムーブする位置には `W1006` は出ません。union payload 内の field へさらに射影する束縛は部分ムーブの生成が未対応のためコピーを維持し、その場合は `W1006` の対象になります。警告と生成は同じ解析結果を使います。
 
 ```text
 warning[W1006]: implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit
@@ -331,4 +344,3 @@ error[E1012]: cannot move a non-Copy element out of an array or list; borrow the
 - [Array](../built-in-types-and-modules/array.md)
 - [言語仕様: Ownership / Borrowing](../../../docs/language.md#ownership--borrowing)
 - [言語リファレンスの目次](../index.md)
-

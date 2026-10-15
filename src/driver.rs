@@ -2890,6 +2890,16 @@ fn build_complete(
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
     let f16 = platform_f16_path(platform, options.target, options.cpu);
+    let runtime_objects = options.cache
+        && !options.debug_info
+        && !options.trap_info
+        && !options.trap_return
+        && !options.wasm_threads
+        && !stack_checks
+        && matches!(
+            (options.target, options.emit),
+            (Target::Native, Emit::Executable) | (Target::Wasm32, Emit::Wasm)
+        );
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
     let emit_time = crate::timings::Phase::start("emit");
@@ -2932,6 +2942,8 @@ fn build_complete(
         }
     } else {
         let emission = llvm::EmitOptions {
+            runtime_objects,
+            wasm_simd128: options.wasm_simd,
             entry: if options.emit == Emit::Executable {
                 Entry::Console
             } else {
@@ -3055,30 +3067,27 @@ fn build_complete(
         "the IR declares {:?} more than once",
         llvm::duplicate_declarations(&text)
     );
+    let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
     let task_runtime =
-        options.target == Target::Native && text.contains("declare void @tsuzuri_task_parallel(");
+        options.target == Target::Native && runtime_symbols.contains("tsuzuri_task_parallel");
     // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).
-    let cpu_runtime = options.target == Target::Native
-        && text
-            .lines()
-            .any(|line| line.starts_with("declare ") && line.contains(" @tsuzuri_cpu_"));
-    let io_runtime = text.contains("declare i32 @tsuzuri_io_");
-    let os_runtime = text.contains("declare i64 @tsuzuri_os_");
+    let cpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_cpu_");
+    let io_runtime = runtime_symbols.prefix("tsuzuri_io_");
+    let os_runtime = runtime_symbols.prefix("tsuzuri_os_");
     // The sockets of the standard Net module are src/runtime/net.c (E09).
-    let net_runtime = llvm::uses_net(&text);
+    let net_runtime = runtime_symbols.prefix("tsuzuri_net_");
     // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c, and `Gpu.Vulkan` and
     // `Gpu.Auto` add the Vulkan backend of src/runtime/gpu-vulkan.c to it (F09 Phases 2 and 3).
-    let gpu_runtime =
-        options.target == Target::Native && text.contains("declare i32 @tsuzuri_gpu_");
+    let gpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_gpu_");
     let gpu_source = if gpu_runtime {
         llvm::gpu_runtime_source(&text)
     } else {
         String::new()
     };
     // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
-    let async_reactor = llvm::uses_reactor(&text);
+    let async_reactor = runtime_symbols.contains("tsuzuri_async_wait");
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
-    let arguments_runtime = text.contains("@tsuzuri_arguments(");
+    let arguments_runtime = runtime_symbols.contains("tsuzuri_arguments");
     if options.freestanding {
         // A header holds no IR, so it is checked against the IR the object of the same build holds.
         let library;
@@ -3086,6 +3095,8 @@ fn build_complete(
             library = llvm::emit_with_options(
                 module,
                 llvm::EmitOptions {
+                    runtime_objects: false,
+                    wasm_simd128: false,
                     entry: Entry::Library,
                     wasm: false,
                     debug_output: options.debug_output,
@@ -3133,12 +3144,12 @@ fn build_complete(
     let trap_runtime = options.trap_return
         && matches!(options.emit, Emit::Object | Emit::Shared)
         && [
-            "@tsuzuri_trap_raise(",
-            "@tsuzuri_boundary_run(",
-            "@tsuzuri_tracked_",
+            "tsuzuri_trap_raise",
+            "tsuzuri_boundary_run",
+            "tsuzuri_tracked_",
         ]
         .iter()
-        .any(|symbol| text.contains(symbol));
+        .any(|symbol| runtime_symbols.prefix(symbol));
     let native_runtime = task_runtime
         || cpu_runtime
         || trap_runtime
@@ -3151,9 +3162,9 @@ fn build_complete(
         && options.emit == Emit::Executable
         && platform.unix()
         && llvm::has_recursion(&text);
-    let debug_import = options.target.is_wasm() && text.contains("@tsuzuri_debug_write(");
+    let debug_import = options.target.is_wasm() && runtime_symbols.contains("tsuzuri_debug_write");
     // A callback's address is a table index the host resolves through the exported table.
-    let callback_table = options.target.is_wasm() && text.contains("@tz.callback.");
+    let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
     if task_runtime && !platform.threads() && !matches!(options.emit, Emit::Llvm | Emit::Header) {
         return Err(driver_error(
             "E2002",
@@ -3270,6 +3281,20 @@ fn build_complete(
     // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
     // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
     let cache_time = crate::timings::Phase::start("cache");
+    let clang_identity = if options.cache
+        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+        && !options.emit.is_kernel()
+    {
+        match crate::cache::tool_identity("TSUZURI_CLANG", "clang", options.cpu) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                messages.push(format!("runtime object cache disabled: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     let cache = if options.cache
         && options.emit != Emit::Header
         && !options.emit.is_spirv()
@@ -3278,7 +3303,14 @@ fn build_complete(
         let prepared = (|| -> io::Result<_> {
             let root = crate::cache::default_root()
                 .ok_or_else(|| io::Error::other("no cache directory is configured"))?;
-            let key = crate::cache::build_key(project, options, action, &text, output)?;
+            let key = crate::cache::build_key(
+                project,
+                options,
+                action,
+                &text,
+                output,
+                clang_identity.as_ref(),
+            )?;
             let cache = crate::cache::BuildCache::open(&root)?;
             Ok((cache, key))
         })();
@@ -3334,6 +3366,60 @@ fn build_complete(
         let shared_symbols = (options.emit == Emit::Shared)
             .then(|| shared_exports(&text, module, options.trap_return));
         let mut ir = temporary.path.join("module.ll");
+        let mut numeric_objects = Vec::new();
+        if runtime_objects {
+            let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
+                .into_iter()
+                .map(OsString::from)
+                .collect();
+            args.push(format!("-O{}", options.optimization).into());
+            if options.target.is_wasm() {
+                args.extend(
+                    [
+                        "--target=wasm32-unknown-unknown",
+                        "-mbulk-memory",
+                        if options.wasm_simd {
+                            "-msimd128"
+                        } else {
+                            "-mno-simd128"
+                        },
+                    ]
+                    .into_iter()
+                    .map(OsString::from),
+                );
+            } else {
+                args.extend(compile_args(platform));
+                args.extend(no_sdk_args(platform));
+                if options.cpu == Cpu::Native {
+                    args.extend(
+                        native_ir_cpu_args(platform.arch_name(), f16)?
+                            .into_iter()
+                            .map(OsString::from),
+                    );
+                }
+            }
+            args.extend(
+                ["-ffunction-sections", "-fdata-sections"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            for (unit, source, prefix) in [
+                ("numeric", include_str!("runtime/numeric.ll"), "tz_soft_"),
+                ("math", crate::runtime_cache::math_source(), "tz_math_"),
+            ] {
+                if runtime_symbols.prefix(prefix) {
+                    numeric_objects.push(compile_runtime_object(
+                        unit,
+                        source,
+                        &format!("{unit}.ll"),
+                        &args,
+                        &temporary.path,
+                        clang_identity.as_ref(),
+                        &mut messages,
+                    )?);
+                }
+            }
+        }
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
@@ -3388,7 +3474,7 @@ fn build_complete(
                     ""
                 }
             );
-            fs::write(&runtime_source, source)
+            fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
@@ -3416,17 +3502,35 @@ fn build_complete(
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(platform.arch_name())?);
             }
-            runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    &cross_hint(
-                        platform,
-                        "native runtime requires Clang and the platform C/OS SDK headers",
-                    ),
-                )?,
-            );
+            if runtime_objects {
+                runtime.args(["-ffunction-sections", "-fdata-sections"]);
+            }
+            if options.cache && !merge_debug_ir {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "native-c",
+                    &source,
+                    "task.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &mut messages,
+                )?;
+                fs::rename(&cached, &runtime_object)
+                    .map_err(|error| io_error("stage native runtime", &runtime_object, error))?;
+            } else {
+                runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
+                collect_message(
+                    &mut messages,
+                    run_tool(
+                        &mut runtime,
+                        &cross_hint(
+                            platform,
+                            "native runtime requires Clang and the platform C/OS SDK headers",
+                        ),
+                    )?,
+                );
+            }
             if merge_debug_ir {
                 let combined = temporary.path.join("combined.ll");
                 let mut linker = Command::new(tool("TSUZURI_LLVM_LINK", "llvm-link"));
@@ -3599,6 +3703,19 @@ fn build_complete(
         if options.emit == Emit::Executable && !platform.windows() && dwarf_sidecar.is_none() {
             clang.arg("-lm");
         }
+        if options.emit == Emit::Executable && runtime_objects {
+            clang.args(dead_strip_args(platform));
+            for function in module.functions.iter().filter(|function| function.exported) {
+                if platform.mach_o() {
+                    clang.arg(format!("-Wl,-u,_tz_{}", function.name));
+                } else if !platform.windows() {
+                    clang.arg(format!("-Wl,-u,tz_{}", function.name));
+                }
+            }
+            if !numeric_objects.is_empty() {
+                clang.args(["-x", "none"]).args(&numeric_objects);
+            }
+        }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
             if (task_runtime || net_runtime) && !platform.windows() {
@@ -3757,6 +3874,7 @@ fn build_complete(
         }
         if options.emit == Emit::Wasm {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
+            linker.args(&numeric_objects);
             linker
                 .arg("--no-entry")
                 .arg("--stack-first")
@@ -4623,6 +4741,101 @@ pub fn distribution_root() -> Option<PathBuf> {
     root.join("manifest.json")
         .is_file()
         .then(|| root.to_path_buf())
+}
+
+fn dead_strip_args(platform: Platform) -> Vec<OsString> {
+    if platform.mach_o() {
+        vec!["-Wl,-dead_strip".into()]
+    } else if platform.windows()
+        && !bundled_launcher(&tool("TSUZURI_CLANG", "clang"))
+        && platform.msvc()
+    {
+        vec!["-Wl,/OPT:REF".into()]
+    } else {
+        vec!["-Wl,--gc-sections".into()]
+    }
+}
+
+fn compile_runtime_object(
+    unit: &str,
+    source: &str,
+    input: &str,
+    args: &[OsString],
+    directory: &Path,
+    identity: Option<&crate::cache::ToolIdentity>,
+    messages: &mut Vec<String>,
+) -> Result<PathBuf, Diagnostic> {
+    let output = directory.join(format!("{unit}.o"));
+    match crate::runtime_cache::prebuilt(unit, source, args, identity) {
+        Ok(Some(bytes)) => {
+            fs::write(&output, bytes)
+                .map_err(|error| io_error("stage bundled runtime", &output, error))?;
+            return Ok(output);
+        }
+        Ok(None) => {}
+        Err(error) => messages.push(format!(
+            "bundled runtime object unavailable; rebuilding: {error}"
+        )),
+    }
+    let cache = identity.and_then(|identity| {
+        let root = crate::cache::default_root()?;
+        let key = crate::cache::runtime_key(unit, source.as_bytes(), args, identity)?;
+        match crate::cache::BuildCache::open(&root)
+            .and_then(|_| crate::cache::BuildCache::open(&root.join("runtime")))
+        {
+            Ok(cache) => Some((cache, key)),
+            Err(error) => {
+                messages.push(format!("runtime object cache disabled: {error}"));
+                None
+            }
+        }
+    });
+    if let Some((cache, key)) = &cache {
+        match cache.load(key) {
+            Ok(Some(mut artifact)) if artifact.files.len() == 1 => {
+                let bytes = artifact
+                    .files
+                    .remove("artifact")
+                    .expect("cache artifact")
+                    .bytes;
+                fs::write(&output, bytes)
+                    .map_err(|error| io_error("restore runtime object", &output, error))?;
+                messages.extend(artifact.messages);
+                return Ok(output);
+            }
+            Ok(_) => {}
+            Err(error) => messages.push(format!(
+                "runtime object cache read failed; rebuilding: {error}"
+            )),
+        }
+    }
+    let directory = crate::cache::real_path(directory)
+        .map_err(|error| io_error("resolve runtime directory", directory, error))?;
+    fs::write(directory.join(input), source)
+        .map_err(|error| io_error("write runtime source", &directory.join(input), error))?;
+    let mut command = Command::new(tool("TSUZURI_CLANG", "clang"));
+    command
+        .current_dir(&directory)
+        .args(args)
+        .args(["-c", input, "-o"])
+        .arg(format!("{unit}.o"));
+    let message = run_tool(
+        &mut command,
+        "runtime objects require Clang with support for the selected target",
+    )?;
+    collect_message(messages, message.clone());
+    if let Some((cache, key)) = cache {
+        let paths = std::collections::BTreeMap::from([("artifact".to_owned(), output.clone())]);
+        let diagnostics = if message.is_empty() {
+            Vec::new()
+        } else {
+            vec![message]
+        };
+        if let Err(error) = cache.store(&key, &paths, &diagnostics) {
+            messages.push(format!("runtime object cache write failed: {error}"));
+        }
+    }
+    Ok(output)
 }
 
 /// Resolves a tool from its variable (even when empty), the distribution, then `PATH`.

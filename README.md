@@ -94,8 +94,8 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | コンピュテーション式 | `.tc` によるユーザー定義ビルダー（`@alias` による小文字の別名を含む）。明示的ブロックと型推論による暗黙本体。束縛・短絡・分岐・反復を標準の関数呼び出しへ展開。 |
 | タスクと並列処理 | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して安全に並列実行。 |
 | モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。言語版（`Tsuzuri.toml` の `edition`）、非推奨の印（`@deprecated`、警告 `W1005`）、公開 API の差分（`tsuzuri api-diff`）と互換性の方針（[docs/stability.md](docs/stability.md)）。 |
-| メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
-| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
+| メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。最後の使用と非重複の match 束縛でのコピー省略。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
+| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、協調的な待ちは `Async`、UI やネットワークのイベントはホスト側に委譲。 |
 | 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
@@ -124,6 +124,15 @@ def main :: string = {
 - **借用と参照外し**: 共有借用は `ref x`、排他借用は `ref mut x`、参照先へのアクセスは `deref r` と記述します。Rust との互換性のため、`&x`／`&mut x`／`*r` や `&T`／`&mut T` という表記も同等に解釈されます。参照に対して再度 `ref` や `ref mut` を適用した場合は一段だけ再借用するため、所有値か参照かによって書き分ける必要はありません。
 - **Copy と Move**: 数値、真偽値（`bool`）、`unit`、共有参照、関数値は自動的に Copy となります（関数値のコピーには捕捉環境の複製が伴う場合があります）。レコードや配列も、全要素が Copy であれば Copy、非 Copy の要素を含む場合は所有権が移動（move）します。
 - **スタックとヒープの記憶域**: `new` を使って生成した値はヒープ、`new` なしで生成して束縛した値はスタック（関数のスタックフレーム）に配置されます。スタック上の値を戻り値やクロージャの捕捉などで関数外へ移動させる際は、その時点で自動的に要素がヒープへ昇格されるため、安全性や意味論が変わることはありません。関数外へ返すことが確定している値は、最初から `new` で生成することでこのコピーを省けます。
+  文字列リテラルの連結と長さだけを使う連結の確保は省き、外へ逃げない小さな連結・局所の捕捉環境は上限付きのスタック領域を使います。ただし native Windows では、束縛の初期化に使うこの追加領域を安全性のためヒープへ確保します。
+  ヒープの所有文字列は連結で左辺のバッファを再利用します。詳細と fallback は [スタックとヒープ](_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#確保の省略とバッファ再利用) を参照してください。
+- **フロントエンドの確保削減**: 不要な本体・Local の複製と子 Vec 確保を除き、型述語には private TypeId arena を使います。公開 AST・型・診断順・構文と資源上限は維持します。改善率は [性能測定](docs/benchmarks.md) の同条件の記録で確認してください。
+- **ランタイムの再利用**: 通常の native／wasm32 ビルドでは numeric／math と native C runtime の object を再利用します。同梱 object → 内容とツールが一致する runtime cache → 埋め込みソースからのコンパイルの順で選び、破損や未対応の組は source fallback になります。`--no-cache` は同梱 object と cache の両方を使わず、自己完結した LLVM／object 出力や debug／trap 計装の契約は維持します。
+- **数値表示・解析**: f32／f64 の最短表示は整数 Schubfach、通常の十進解析は Eisel–Lemire（符号を除き最大 25 ASCII 文字・19 有効桁）と正確な fallback を使い、最短往復・ties-to-even・NaN・符号付きゼロ・文法を維持します。詳細な検証と比較条件は [性能測定](docs/benchmarks.md) を参照してください。
+- **UTF 処理**: UTF 変換・検証・比較は scalar 参照と SIMD 経路を持ち、所有権・文字列表現・符号なしコード単位の比較順序・置換・trap の意味を維持します。
+  - native の CPU 経路は能力を検査して fallback し（Windows の CPU runtime は portable baseline）、WASM は `--wasm-feature simd128` の明示指定時だけ SIMD を要求します。UTF-8 復号は 16 bytes 未満なら inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路です。順序比較は UTF-16 の 16 単位未満／UTF-8 の 32 bytes 未満で従来の 64-bit/scalar 経路を使います。
+  - UTF-16 符号化は AArch64 など non-x86 では portable LLVM、native x86 の 32 単位以上では CPU による検証・計数と LLVM writer を組み合わせます。portable 符号化は 16 単位未満や初窓にサロゲートがある入力では元の scalar 変換を使い、長い一括経路は別の内部関数へ分離しています。計数は 1／2／3-byte 幅の BMP が混在する窓も扱いますが、writer は均一幅の prefix だけを一括処理します。
+  - SIMD 経路の UTF-16 の検証・修復はサロゲートを含まない prefix の後、残りを一度だけ scalar へ渡します。変換・計数・UTF-8 検証も一括経路が使えない窓からは scalar のまま進み、失敗した probe を繰り返しません。新しい import は不要です。詳細は [String の UTF 処理の実装](_tsuzuri/language-reference/built-in-types-and-modules/string.md#utf-処理の実装) を参照してください。
 
 ```text
 let local = [1, 2, 3]            // 要素はスタック（関数のフレーム）に配置
@@ -869,17 +878,22 @@ Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため
 sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo test --locked
+RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテストスレッド。PowerShell は先に $env:RUST_MIN_STACK='4194304'
 cargo build --release --locked
 
 # 統合 E2E テスト・言語機能テスト
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
+node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
+node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証
 node tests/tasks.mjs target/release/tsuzuri
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
+ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
 node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカルな let rec の差分テスト（B09）。乱数で作った入れ子のグループ・クロージャ・借用の捕捉のプログラムを、独立した JS の評価器と照合する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。リフト（src/closures_rec.rs）を変えたときに回す
+node tests/last_use_fuzz.mjs target/release/tsuzuri 300 1000 4   # 最後の使用の move（A17 Phase 1・2）を独立した AST 評価器と native O0/O3 で照合。引数は [コンパイラ] [件数] [最初の seed] [深さ]
 node tests/json.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
@@ -893,7 +907,7 @@ node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wa
 node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 22 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml
 node tests/windows.mjs target/release/tsuzuri.exe   # Windows x64（MSVC）だけ。PowerShell で。native の -O0／-O3、名前を付けた x86_64-pc-windows-msvc の build・run・test、Win32 の task と失敗の注入、トラップの報告、UTF-8、hard link の拒否、既存出力の置換、object の ABI、WASM を確かめる。CI は .github/workflows/windows.yml（cache.mjs・examples.mjs・wasm_threads.mjs・cargo test も）
 node tests/cpu_kernels.mjs target/release/tsuzuri
-node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で `TSUZURI_F16_EXPECT` を付けてこのコマンドを実行する。Windows と AVX512-FP16 の CPU は runner がなく、その環境でこのコマンドを実行して確かめる（未確認）。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
+node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…。各値は `|` で複数許可できる）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner でこのコマンドを実行し、Linux x86-64 の `native` は runner の機能に応じ `conversions` または `hardware` を許可し、現時点で `conversions` の実行を確認済み（AVX512-FP16 の `hardware` 実行は未確認）。実行した経路は参照と照合するが速度は測らない。Windows の実行も未確認。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）

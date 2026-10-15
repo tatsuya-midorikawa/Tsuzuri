@@ -35,6 +35,8 @@ fn debug_metadata_is_deterministic_and_keeps_source_types() {
             entry: llvm::Entry::Library,
             wasm,
             debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
             allocator: llvm::Allocator::System,
             f16: llvm::F16Path::Soft,
         };
@@ -81,6 +83,8 @@ fn debug_ir(source: &str, entry: tsuzuri::llvm::Entry, wasm: bool) -> String {
         entry,
         wasm,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     };
@@ -141,7 +145,7 @@ fn debug_binding_stores_use_declaration_lines() {
     for wasm in [false, true] {
         let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
         let body = ir
-            .split("define internal i64 @tz.fn.Main.answer(")
+            .split("@tz.fn.Main.answer(")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
             .unwrap();

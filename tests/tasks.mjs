@@ -71,9 +71,10 @@ try {
   const sourceIr = readFileSync(ir, "utf8");
   assert.equal(sourceIr.match(/declare void @tsuzuri_task_parallel\(/g)?.length, 1);
   assert.doesNotMatch(sourceIr, /@tz\.env\.clone\.\$task\./);
-  writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free"));
+  writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc"));
   const host = join(temporary, "host.c");
   writeFileSync(host, `
+#undef NDEBUG
 #include <assert.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -99,6 +100,19 @@ void tracked_free(void *value) {
     uint64_t before = atomic_fetch_sub(&live, pointer[0]);
     assert(before >= pointer[0]);
     free(pointer);
+}
+void *tracked_realloc(void *value, uint64_t size) {
+    if (!value) return size ? tracked_alloc(size) : NULL;
+    if (!size) { tracked_free(value); return NULL; }
+    uint64_t *pointer = (uint64_t *)value - 2;
+    assert(pointer[1] == UINT64_C(0x51a110ca7e));
+    uint64_t old_size = pointer[0];
+    pointer = realloc(pointer, (size_t)size + 16);
+    assert(pointer);
+    pointer[0] = size;
+    if (size >= old_size) atomic_fetch_add(&live, size - old_size);
+    else atomic_fetch_sub(&live, old_size - size);
+    return pointer + 2;
 }
 int main(int argc, char **argv) {
     if (argc == 2) {

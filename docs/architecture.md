@@ -35,6 +35,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR の構築、メモリレイアウト計算、公開 ABI |
 | `src/control.rs` / `recursion.rs` | 型付きループ、短絡評価を行うパターン手順と束縛、認識器呼び出し、参照グラフに基づく再帰検査 |
+| `src/type_arena.rs` | 型述語用の private TypeId／hash-consed Vec arena。型を借用・投影し、visited を ID で管理。公開 AST・Type・宣言順・診断順は維持 |
+| `src/intern.rs` | `check::Names` が解析ごとに所有する名前 interner。`Rc<str>` を共有し、初出順の `Symbol(u32)` で検索。番号に `Ord` を付けず、HashMap の反復で診断・IR の順を決めない。構文木の識別子表現は維持 |
 | `src/exhaustiveness.rs` | 型付きの被覆パターン、usefulness アルゴリズムによる match の網羅性検査・到達不能節の検出、不足パターンの提示（check の子モジュール） |
 | `src/computation.rs` | ソース種別の検査、`.tc` ビルダーと `@alias` の収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
@@ -70,14 +72,17 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/derive.rs` / `src/llvm_hash.rs` / `src/llvm_display.rs` | 導出（derive）instance の AST 合成、canonical Hash、引用符・コレクション表示、文字列補間（`Interpolated`）の一括結合 |
 | `src/llvm_math.rs` / `src/runtime/math.c` / `src/runtime/musl/` | Float 基本数学演算と型別 Elementary 関数、固定バージョンの移植可能な数学関数実装。f16 を LLVM の `half` 命令で計算する経路の生成（`half_binary`・`half_sqrt`・`half_cast`、D10） |
 | `src/recursive.rs` / `src/llvm_recursive.rs` / `src/runtime/recursive.ll` | 具体型ごとの再帰成分、所有ノード、追加確保を伴わないスタックレス解放と反復複製 |
-| `src/llvm_frame.rs` | `new` を伴わないリテラル向けのスタックフレーム領域確保、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
+| `src/llvm_frame.rs` | `new` を伴わないリテラル・小さな文字列連結・局所の捕捉環境のスタック配置、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
+| `src/llvm_escape.rs` | immutable な局所の使用位置による滞在判定と、関数・lift 済み閉包の参照グラフの循環判定。PM06 の領域選択だけに使い、正しさは frame の移送・解放で保証 |
+| `src/llvm_facts.rs` | 内部参照の属性、上限付き SSA provenance、scoped alias・限定した scalar TBAA、値と memory effects の証明。`llvm.rs` の portable layout 下界と共有 metadata 番号を使い、不変性は `Type::is_frozen` で判定。opaque std・共有可変状態・隠れた環境を不変と推測しない |
+| `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理 |
 | `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略 |
-| `src/runtime/numeric.c` / `numeric.ll` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、最短往復文字列表現・解析、書式指定付き数値表示（`tz_soft_format_spec`）。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
-| `src/runtime/string.ll` / `utf8string.ll` / `heap-*.ll` | UTF-16／UTF-8 バッファ操作・明示的な文字符号化変換、ネイティブメモリ確保、WASM の再利用・結合可能なヒープ管理 |
+| `src/runtime/numeric.c` / `numeric.ll` / `numeric_tables.h` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、書式指定付き数値表示（`tz_soft_format_spec`）。f32／f64 の最短表示は整数 Schubfach、通常の十進解析は符号を除き最大 25 ASCII 文字・19 有効桁の Eisel–Lemire と正確な fallback。長い入力を高速経路で再走査しない。生成する不変表は 20,288 bytes。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
+| `src/runtime/string.ll` / `utf8string.ll` / `string_scalar.ll` / `string_v128.ll` / `string_cpu.ll` / `string_cpu_utf16.ll` / `heap-*.ll` | UTF 共通処理、完全な scalar 参照、汎用 vector IR、native CPU wrapper。`generate_utf.py` の生成物とは別に `string_cpu_utf16.ll` は手書きの x86 専用 wrapper。変換は全入力の検証・計数後に一度だけ確保。native CPU 経路は F08 の能力・OS 状態検査と fallback、WASM は既定 scalar・simd128 指定時だけ vector IR。Windows の CPU runtime は portable baseline。UTF-8 復号の 16 bytes 未満は inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路。UTF-16 符号化は non-x86 では portable LLVM、native x86 の 32 単位以上は CPU count と検証済み入力を扱う LLVM writer。portable 符号化の 16 単位未満／初窓に surrogate がある入力は元の scalar 計数・Unicode write と 8 単位幅の ASCII copy を使う。長い bulk 経路は private noinline helper へ分離。計数は 1／2／3-byte 幅の混在 BMP も扱うが、writer は均一幅の prefix だけを一括処理する。順序比較の UTF-16 16 単位未満／UTF-8 32 bytes 未満は元の 64-bit/scalar 経路。SIMD 経路の UTF-16 の検証・修復は surrogate-free prefix の後、残りを scalar へ一度だけ渡す。変換・計数・UTF-8 検証 kernel も最初の failed bulk probe 後は scalar remainder へ一度だけ渡し、後続の ASCII 区間も再 probe しない。文字列表現・コード単位の符号なし比較・置換・trap・ABI・import は維持 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
-| `src/runtime/cpu.c` | 整数 8 型の配列の和・最小・最大の level ごとの kernel、CPUID/OSXSAVE/XCR0 と `getauxval` による機能検出、アトミックな level キャッシュ、`@cpu` 関数の版を選ぶ `tsuzuri_cpu_pick` |
+| `src/runtime/cpu.c` | 整数 8 型の配列の和・最小・最大、および UTF の level ごとの kernel。CPUID/OSXSAVE/XCR0 と `getauxval` による機能検出、アトミックな level キャッシュ、`@cpu` 関数の版を選ぶ `tsuzuri_cpu_pick`。UTF の public runtime から全操作を C へ渡すわけではなく、上記の長さ・ISA による選択を使う |
 | `src/runtime/heap-*.ll` の `tz.realloc` | ネイティブの realloc、および WASM における隣接空き領域の再利用と確保・コピーへのフォールバック |
 | `src/runtime/task.c` / `task-wasm.ll` / `task-wasm-threads.c` | ネイティブ常駐スレッドプール（と F10 の `Mutex` のロック、`Channel` の待ち・起こし・デッドロックの判定）、WASM デフォルトの逐次実行、opt-in の共有メモリ Worker プール（と、その `Mutex` と `Channel`） |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・剰余・ビットシフトの freestanding 補助関数群 |
@@ -87,7 +92,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す） |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML（`[package]` の `edition` を含む）、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
-| `src/copies.rs` | 具体化後の暗黙の複製箇所の列挙（`copies::sites`）、`--warn implicit-copy` による `W1006` 警告、インレイヒント（inlay hint）の基となる配列・リストの複製検出（`costly_sites`） |
+| `src/copies.rs` | 単一使用と `LastUses` の証明を生成と共有した暗黙の複製箇所の列挙（`copies::sites`）、`W1006` とインレイヒントの基となる配列・リストの複製検出（`costly_sites`） |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
 | `src/repl.rs` | `tsuzuri repl`（G13）。入力の読み取り（1 行目が末尾で未完なら空行まで継続）、宣言の塊（parser が各トップレベル宣言を始めた位置 `Program::declaration_starts` で区切る。列は問わず、文書コメントと属性はその宣言に入り、同じ行の前の空白とコメントも付く。`and` の再帰群と、別に書いたシグネチャと定義は一つの項目）とトップレベルの文（`;` で終わる文は `;` ごと残す）への分類、アクションの行をまとめて左へ寄せること、同じ名前の項目の置き換え、生成した `Main.tz` の解析と `SemanticIndex` からの型の取得、`driver::run_captured` による実行、診断の位置の `input`／`session` への写像 |
 
@@ -108,7 +113,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | 項目 | 現在の実装／今後の要件 |
 |---|---|
 | スカラー CPU | i8〜i64／i8u〜i64u および f32／f64 間の型変換には、LLVM の直接命令および飽和（saturating）intrinsic を使用。キャスト演算子 `as` と組み込み変換関数の意味論および性能経路を完全に一致させる |
-| f16 | AArch64 は LLVM の `half` 命令（FEAT_FP16 のない CPU でも基本命令で、演算ごとに 1 回だけ丸める）。x86-64 は `--cpu native` のときだけ、F16C で変換、AVX512-FP16 で演算と変換。WASM とそれ以外はソフトウェア。結果のビットは全経路で同一（D10）。速度の実測は macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64 の F16C・Linux arm64）で実行している。AVX512-FP16 と Windows は機械語の確認までで、実行は未確認 |
+| f16 | AArch64 は LLVM の `half` 命令（FEAT_FP16 のない CPU でも基本命令で、演算ごとに 1 回だけ丸める）。x86-64 は `--cpu native` のときだけ、F16C で変換、AVX512-FP16 で演算と変換。WASM とそれ以外はソフトウェア。結果のビットは全経路で同一（D10）。速度の実測は macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64・Linux arm64）で実行している。Linux x86-64 は runner の機能に応じ `conversions|hardware` を許容し、現在までに `conversions` を確認済み。AVX512-FP16 の `hardware` と Windows の実行は未確認 |
 | SIMD | `-O3` におけるループおよび SLP 自動ベクトル化。メモリ上で連続した配列配置、型の特殊化、不要なコピーの徹底排除により、LLVM が最適化しやすい IR を生成。`--cpu native` 指定時にはビルドホスト固有の命令セットを有効化 |
 | 移植性 | デフォルトの `--cpu generic` ではターゲットアーキテクチャのベースライン命令セットを採用。同梱の i64 配列和のみ実行時 ISA 選択を実施。`native` 指定時は配布バイナリの前提条件にビルド機の ISA が含まれる |
 | 複数 CPU コア | `Task.parallel` 向けに遅延起動する常駐スレッドプールを実装。ハードウェアの CPU コア数に応じて追加スレッド数を適切に制限し、呼び出し元スレッド自身も自グループの処理を推進。WASM は逐次フォールバック。自動並列化は未実装 |
@@ -119,6 +124,21 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 B08 の測定（Apple M1 Max、macOS、`-O3`、9 回）は、末尾の `return!` で 100 万回 `yield` する計算が中央値 0.18 秒、最大 RSS 約 1.7 MB でした。非末尾の `let!` と `yield` を 1000 / 2000 / 4000 段重ねた計算は、それぞれ中央値 0.03 / 0.11 / 0.40 秒でした。これらは合否の閾値ではなく、継続の確保と非末尾再開のコストを記録した値です。条件・raw samples・再現方法は [性能測定](benchmarks.md#async-の中断と継続のコストb08) にあります。IR の `bind_step` 特殊化では、代表的な `i64` 結果の本体に `@tz.alloc` が 4 箇所、継続環境の clone helper に 2 箇所あり、同じ継続を再利用する最適化はまだ行っていません。
 
 新しい組み込み関数や標準ライブラリを設計する際は、要素ごとの汎用的な関数呼び出しを基本実装とせず、要素型・メモリ連続性・データサイズを静的に把握できる一括操作（バルク操作）として設計してください。必ず厳密で正確な基準実装（リファレンス）を用意し、スカラー、SIMD、並列 CPU、GPU の各経路で同一の契約が満たされているかを検証します。既存の所有権・借用・不変性の情報から別名関係（エイリアス）の不在や独立性を論理的に証明できる場合にのみ最適化を適用し、根拠のない `noalias` 属性などを安易に付与してはなりません。
+
+文字列の連結では、リテラルだけの木を一つの定数に畳み、長さだけを使う場合は overflow とサイズの検査を残して結果の確保を省きます。
+PM06 の追加スタック領域は入口ブロックに置き、連結 1 箇所 256 bytes、環境 1 KiB 以下、関数あたり合計 4 KiB です。
+Task 本体と、関数・閉包の参照グラフの循環に入る関数では使いません。`Frame::Buffer` は結果の buffer と空でない長さ、
+`Frame::Environment` は記述子の環境 pointer をアドレス比較して識別し、移動時にはヒープへ移送します。
+環境のスタック解放は捕捉を宣言順で drop し、環境自体は free しません。
+PM07 の `append` は左辺の frame が空のときだけ使用します。静的・スタックの文字列を `realloc` へ渡さず、
+左辺の所有権を `append` へ渡した後は二重に drop しません。文字列の記述子と容量の保証は変更しません。
+
+`llvm::last_use::LastUses` は具体化 IR の後方生存解析で、所有権チェッカーの State／loan は参照しません。
+ループと match の失敗先は固定点で扱い、訪問 100,000 回・深さ 128 を超えると結果全体を空にします。
+生成と `copies::sites` は同じ解析を使います。全体の Local は単一使用または最後の使用、
+R2 の Field 根は単一使用だけを使います。ガードとパターン手順は subject の別名が生きているため不透明です。
+束縛の move はガード成功後だけで、利用者 Drop を経由しない非重複の所有射影に限ります。
+`tests/last_use_fuzz.mjs` は独立した値セマンティクスの AST 評価器と native の `-O0`／`-O3` を照合します。
 
 バックエンドの自動選択にあたっては、メモリ確保、コンパイル・初期化、ディスパッチ、データ転送、同期、および結果の回収に至るすべてのオーバーヘッドを含めた損益分岐点（閾値）を、実機上で計測して決定します。小規模な処理を漫然と GPU にオフロードしたり、スレッド数を増やせば無条件に高速化すると仮定したりしてはいけません。GPU 常駐データについてはホスト・デバイス間の往復転送を避ける設計を徹底します。また、GPU 等に対応していない環境でも言語契約を維持できる CPU フォールバック経路を提供し、実際に選択された実行経路を観測可能にします。GPU 実行を明示的に要求したにもかかわらず環境が未対応である場合や実行に失敗した場合は明確に診断エラーを報告し、暗黙のうちに成功扱いにしたり結果の精度を改変したりしてはなりません。`Gpu.Auto` がこの方針の実装で、規則の定数は実機の測定から作り（1 台のマシンの経験則）、選んだバックエンドは `Gpu.last_backend ()` と `TSUZURI_GPU_DEBUG` で観測できます（[性能測定](benchmarks.md#vulkan-と-gpuautof09-phase-3)）。
 
@@ -200,6 +220,20 @@ wasm32 ではラッパー関数のアドレスが関数テーブルのインデ�
 GC（ガベージコレクション）は最大 4096 エントリまで走査し、最終アクセス日時、合計 2 GiB の容量上限、30 日間の有効期限を基準に最大 128 件ずつ回収します。古い不完全エントリ、残存ロック、一時領域も回収対象であり、上限はソフトリミットです。
 macOS のデバッグ実行ファイルとデバッグ共有ライブラリにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。Windows のデバッグ実行ファイルは隣の PDB をファイル名で指すので、その名前もキーに含めます（G16）。`--emit shared` はファイル名を install name（macOS）か soname（Linux）として埋め込むので、出力のファイル名もキーに含めます（`hash_output_path`）。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
 動作は `tests/cache.mjs` により、実際の CLI を用いたキャッシュヒット（ツール起動回数の削減確認）、ミス、破損時の回復、並行書き込み、no-cache 指定、実行権限の保持、トラップ情報／DWARF の整合性、依存関係変更時の無効化が検証されています。
+
+**事前ビルドしたランタイム（PB01）:** 通常の native 実行ファイル（Windows を含む）と wasm32 モジュールは、
+数値ランタイムと大きな数学関数を別 object にして再利用します。`src/runtime_cache.rs` は numeric 宣言の抽出、
+math の standalone 化、正確な参照記号集合、同梱 object の照合を担い、sqrt／fabs は caller IR に残します。
+`src/cache.rs` が実際のツール・source・flags・CPU・environment を鍵に含め、検証した object を原子的に公開します。
+runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。
+選択順はリソースとツールが一致する配布 object、`<cache>/runtime/`、埋め込みソースからのコンパイルです。
+配布物には numeric／math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、
+task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
+ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。
+LLVM／header／object／shared、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
+外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。generic 数値 dispatch の到達する枝は残り、
+型別 format 分割（PM08）は未実装です。`runtime/` の掃除は成果物／frontend cache と独立します。
+`scripts/toolchain/runtime.mjs` と bundle／archive／smoke は生成・manifest・移設後の消費・破損 fallback を検証します。
 
 **Async の不変条件（B08）:** `Async<T>` の式は `Checker::eval` で loan を持たないことを検査します。これは `Async { ... }` の cold な開始、`let!` / `do!` の継続、`Async.start` の実行器表のいずれでも、字句スコープを越えて借用を保持しないための共通境界です。std の `Async.Async` は opaque かつ非 Copy で、`Async.Step` の継続は `Async.__resume` が一度だけ move して呼びます。
 
@@ -462,7 +496,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 識別子の由来情報 `Ident.provenance` は `Local` 変数へ引き継がれ、未使​​用変数の警告 `W1001` はローカル ID の使用履歴から、未使用プライベート関数の警告 `W1002` は再帰検査と共有されるコールグラフおよび型参照の到達性解析から判定されます。
 型別名の走査では、型消去前の注釈情報も走査対象に含まれます。標準ライブラリおよびコンパイラが自動生成した内部束縛に対する警告は抑制され、生成された識別子の文字列パターンから安易に由来を推測することはありません。
 網羅性の警告 `W1003` は後述のパターン網羅性解析から生成され、シャドーイング等の字句スコープ警告 `W1004` はデフォルト無効の検査として実装されています。非推奨の警告 `W1005` は、型検査の最後（`diagnostics.check()` の後）に、`semantic::collect` の参照と宣言の説明の `@deprecated` の対応から作ります（前述の「非推奨と W1005」）。`--deny-warnings` オプションを指定した場合は、コード生成へ進む前にビルドを失敗させます。
-暗黙コピーの警告 `W1006` は型検査の後段で生成されます。`copies::sites` が具体化およびクロージャ降格後のモジュールに対して所有権チェッカーを収集モードで再実行し、消費的な読み取りの中でデストラクタ呼び出しを要する Copy 値の複製箇所（単一使用のローカル変数の move を除く）を、位置・型・複製種別とともに抽出します。
+暗黙コピーの警告 `W1006` は型検査の後段で生成されます。`copies::sites` が具体化およびクロージャ降格後のモジュールに対して所有権チェッカーを収集モードで再実行し、消費的な読み取りの中でデストラクタ呼び出しを要する Copy 値の複製箇所を、位置・型・複製種別とともに抽出します。単一使用・最後の使用・非重複の match 束縛で生成が move する位置は列挙しません。union payload 内の field へさらに射影する match 束縛は、部分 union move の生成が未対応のためコピーを維持し、一覧にも残ります。
 `main.rs` は `--warn implicit-copy` が指定されている場合にのみ、配列やリストの暗黙複製を警告として報告し、LSP は同一の複製情報を `textDocument/inlayHint` のインレイヒントとしてエディタへ返却します。
 デバッグビルド時の LLVM emitter は、ユーザーコードの式から発生した暗黙の `clone_value` 呼び出しをすべて記録し、そのすべてが事前の一覧に含まれていることをコード生成の最終段階でアサートします。
 
@@ -1314,7 +1348,7 @@ f16 を LLVM の `half` で計算する経路（D10）は、`F16Path`（`Soft`�
 `--cpu native` の x86-64 は、`clang -x ir` に `-march=native` と、選んだ経路の `-mf16c`・`-mavx512fp16` を渡し、コンパイラの検出と clang の検出が食い違っても `half` がライブラリ関数（`__extendhfsf2`・`__truncsfhf2`・`__truncdfhf2`）に下がらないようにします。`@cpu` の版は `target-features` がビルドの特徴を置き換えるので、x86-64 の level 1〜3 の版に `+f16c`（`Conversions`）か `+avx512fp16,+f16c`（`Hardware`）を足します（`src/llvm_cpu.rs`）。
 `half` の命令は `fadd`・`fsub`・`fmul`・`fdiv`・`fcmp`・`llvm.sqrt.f16`・`fpext`・`fptrunc` で、fast-math フラグも融合もありません。`llvm.sqrt.f16` の宣言は intrinsic の集合で 1 度だけ出ます（`numeric.ll` と `math.ll` は宣言しません）。FEAT_FP16 のない AArch64 では、LLVM が演算ごとに `f32` へ広げて 1 回の `f32` 演算をし、`half` へ丸め直します。`+`・`-`・`*`・`/`・平方根は、`f32` の仮数 24 bit が `2 × 11 + 2` 以上なので二重丸めにならず、結果は 1 回丸めと同じです。生成した機械語がライブラリ関数を呼ばないことは、`tests/f16_hardware.rs` が AArch64（Linux の gnu と musl、Windows の msvc、macOS の各 `-O0`・`-O3`）と x86-64（`-mf16c`、`-mavx512fp16`）で確かめ、フラグなしの x86-64 が呼ぶことも負の対照として確かめます。
 結果が NaN のときは、ハードウェアの符号とペイロードに頼らず、`numeric.c` と同じビット（quiet NaN `0x7E00` に、`+`・`-` は左辺、`*`・`/` は両辺の符号の排他的論理和）へ整数の `select` で置き換えます。NaN の判定は `(bits & 0x7FFF) > 0x7C00` で、`fcmp uno half` は使いません。`Math.sqrt` は NaN の入力をそのまま返し、変換は入力の符号を保った目的の型の quiet NaN を返します。この置き換えを外した試作は macOS arm64 で C の `_Float16` と同じ時間でした。その費用と、ほかの形の試作は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります（1 回ずつの測定）。
-`tests/f16_hardware.rs` は、IR の形（既定は `Soft`、WASM は経路によらず同一で `half` と import がない、`f16` を使わない IR は不変、決定性、演算・比較・平方根・変換）、経路ごとの機械語、`@cpu` の版の特徴、`driver::build` の経路を検査します。`tests/f16_hardware.mjs` は、全 65,536 パターンの単項、二重丸めの罠を含む境界の値、中点、乱数の 2 項演算・比較・変換を、JavaScript の倍精度で厳密に求めた参照（コンパイラを使わない）と、NaN のビットまで照合します。native の `half` の IR（`-O0`・`-O3`、macOS arm64 では FEAT_FP16 なしの `-mcpu=generic` も。`-O3` でベクトル化される一括ループも）、WASM のソフトウェア経路（import なし）、`--cpu generic` と `--cpu native` のオブジェクトを調べます。実行した経路は、オブジェクトの `tz_soft_` の有無から分類して表示し、環境変数 `TSUZURI_F16_EXPECT`（テスト専用）で期待する経路を決めると、別の経路を通ったときに失敗します。`tsuzuri test` も `-O0`・`-O3`・wasm32 で確かめます。この実行が確かめるのは実行したホストの経路だけです。CI の `targets.yml` は、macOS arm64・Intel Mac・Linux x86-64（F16C）・Linux arm64 の runner で `TSUZURI_F16_EXPECT` を付けて実行し、期待した経路を固定します。AVX512-FP16 の CPU と Windows には runner がなく、機械語の確認までで、その環境での実行は未確認です（その環境でこのコマンドを実行します）。`benchmarks/run-f16.mjs` は、ソフトウェア経路、`half` 命令、C の `_Float16` を同条件で測ります。
+`tests/f16_hardware.rs` は、IR の形（既定は `Soft`、WASM は経路によらず同一で `half` と import がない、`f16` を使わない IR は不変、決定性、演算・比較・平方根・変換）、経路ごとの機械語、`@cpu` の版の特徴、`driver::build` の経路を検査します。`tests/f16_hardware.mjs` は、全 65,536 パターンの単項、二重丸めの罠を含む境界の値、中点、乱数の 2 項演算・比較・変換を、JavaScript の倍精度で厳密に求めた参照（コンパイラを使わない）と、NaN のビットまで照合します。native の `half` の IR（`-O0`・`-O3`、macOS arm64 では FEAT_FP16 なしの `-mcpu=generic` も。`-O3` でベクトル化される一括ループも）、WASM のソフトウェア経路（import なし）、`--cpu generic` と `--cpu native` のオブジェクトを調べます。実行した経路は、オブジェクトの `tz_soft_` の有無から分類して表示し、環境変数 `TSUZURI_F16_EXPECT`（テスト専用）で期待する経路を決めると、別の経路を通ったときに失敗します。`tsuzuri test` も `-O0`・`-O3`・wasm32 で確かめます。この実行が確かめるのは実行したホストの経路だけです。CI の `targets.yml` は、macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner で `TSUZURI_F16_EXPECT` を付けて実行します。Linux x86-64 は runner の機能に応じ `native=conversions|hardware` を許容し、現時点では `conversions` を参照と照合済みです。AVX512-FP16 の `hardware` と Windows の実行は未確認です。`benchmarks/run-f16.mjs` は、ソフトウェア経路、`half` 命令、C の `_Float16` を同条件で測ります。
 機能テストの `fma_reductions` は長さ 0〜17 および 1025 までの境界値・奇数長において 872 ケースと 2 件のトラップを検証し、C 言語の `fma_runtime` テストはホスト環境の `fma`／`fmaf` と 20,513 組の演算結果を ASan／UBSan 有効環境で照合しています。
 
 生成時のみ Clang を使用し、通常の Cargo ビルド、型検査、および LLVM IR の出力においてローカル環境への LLVM インストールを要求することはありません。

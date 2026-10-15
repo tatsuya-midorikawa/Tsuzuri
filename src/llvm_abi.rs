@@ -688,24 +688,10 @@ impl FunctionEmitter<'_, '_> {
     }
 
     pub(super) fn validate_host_utf8(&mut self, pointer: &str, length: &str) {
-        let index = self.spill(&Type::I64, "0");
-        let check = self.label();
-        let body = self.label();
-        let done = self.label();
-        self.jump(&check);
-        self.begin(&check);
-        let offset = self.value(format!("load i64, ptr {index}"));
-        let more = self.value(format!("icmp ult i64 {offset}, {length}"));
-        self.branch(&more, &body, &done);
-        self.begin(&body);
-        let decoded = self.value(format!("call {{ i32, i64 }} @tz.string.try_decode_utf8(ptr {pointer}, i64 {length}, i64 {offset}, i1 false)"));
-        let scalar = self.value(format!("extractvalue {{ i32, i64 }} {decoded}, 0"));
-        let valid = self.value(format!("icmp sge i32 {scalar}, 0"));
+        let valid = self.value(format!(
+            "call i1 @tz.string.validate_utf8(ptr {pointer}, i64 {length})"
+        ));
         self.guard(&valid, TrapKind::Encoding);
-        let next = self.value(format!("extractvalue {{ i32, i64 }} {decoded}, 1"));
-        self.instruction(format!("store i64 {next}, ptr {index}"));
-        self.jump(&check);
-        self.begin(&done);
     }
 
     fn decode_host_scalar(&mut self, ty: &Type, value: &str) -> String {

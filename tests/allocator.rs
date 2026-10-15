@@ -20,6 +20,8 @@ fn options(wasm: bool, allocator: Allocator) -> EmitOptions {
         entry: Entry::Library,
         wasm,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator,
         f16: llvm::F16Path::Soft,
     }

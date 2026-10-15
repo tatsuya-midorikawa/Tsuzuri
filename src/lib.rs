@@ -23,6 +23,7 @@ pub mod package;
 pub mod parser;
 mod ranges;
 pub mod repl;
+mod runtime_cache;
 pub mod simd;
 pub mod stdlib;
 pub mod syntax;

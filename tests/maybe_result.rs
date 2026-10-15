@@ -285,7 +285,7 @@ fn runtime_fixture_has_deterministic_import_free_lowering() {
                     .iter()
                     .any(|name| function.lines().next().unwrap().contains(name))
         }) {
-            assert!(!function.contains("call ptr @tz.alloc"), "{function}");
+            assert!(!function.contains("@tz.alloc("), "{function}");
         }
     }
 }

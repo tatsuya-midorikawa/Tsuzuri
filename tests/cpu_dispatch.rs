@@ -8,6 +8,8 @@ fn only_native_i64_standard_sum_requests_cpu_dispatch() {
         entry: llvm::Entry::Library,
         wasm: false,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     };
@@ -71,6 +73,8 @@ fn options() -> llvm::EmitOptions {
         entry: llvm::Entry::Library,
         wasm: false,
         debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     }
