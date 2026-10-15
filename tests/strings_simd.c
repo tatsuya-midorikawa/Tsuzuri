@@ -547,15 +547,15 @@ static int capture_trap_exception(EXCEPTION_POINTERS *exception) {
 }
 
 static int run_trap_case(unsigned index) {
+    fprintf(stderr, "trap case %u started\n", index);
     __try {
         runtime_trap_case(index);
-        return 0;
     } __except(capture_trap_exception(GetExceptionInformation())) {
-        if (trap_exception_code != EXCEPTION_ILLEGAL_INSTRUCTION)
-            fprintf(stderr, "trap case %u raised exception 0x%08lx at %p (image base %p)\n", index,
-                (unsigned long)trap_exception_code, trap_exception_address, GetModuleHandleW(NULL));
-        return (int)trap_exception_code;
     }
+    if (trap_exception_code)
+        fprintf(stderr, "trap case %u caught exception 0x%08lx at %p (image base %p)\n", index,
+            (unsigned long)trap_exception_code, trap_exception_address, GetModuleHandleW(NULL));
+    return (int)trap_exception_code;
 }
 #endif
 
