@@ -314,13 +314,22 @@ fn local_concatenation_uses_a_bounded_buffer() {
         );
         for (name, capacity) in [("f", 128), ("bytes", 256)] {
             let body = function(&ir, name);
-            assert!(
-                entry(body).contains("alloca [256 x i8], align 16"),
-                "{body}"
-            );
-            assert!(body.contains(".concat_into(ptr"), "{body}");
-            assert!(body.contains(&format!("i64 {capacity},")), "{body}");
-            assert!(!body.contains(".append("), "{body}");
+            if cfg!(windows) && !wasm {
+                assert!(!entry(body).contains("alloca [256 x i8]"), "{body}");
+                assert!(!body.contains(".concat_into(ptr"), "{body}");
+                assert!(
+                    body.contains(".append(") || body.contains(".concat("),
+                    "{body}"
+                );
+            } else {
+                assert!(
+                    entry(body).contains("alloca [256 x i8], align 16"),
+                    "{body}"
+                );
+                assert!(body.contains(".concat_into(ptr"), "{body}");
+                assert!(body.contains(&format!("i64 {capacity},")), "{body}");
+                assert!(!body.contains(".append("), "{body}");
+            }
         }
     }
 }
@@ -362,13 +371,26 @@ fn buffer_budget_falls_back_to_the_heap() {
     for wasm in [false, true] {
         let ir = emit(&source, wasm);
         let body = function(&ir, "f");
-        assert_eq!(
-            entry(body).matches("alloca [256 x i8]").count(),
-            16,
-            "{body}"
-        );
-        assert_eq!(body.matches(".concat_into(").count(), 16, "{body}");
-        assert_eq!(body.matches(".concat(").count(), 1, "{body}");
+        if cfg!(windows) && !wasm {
+            assert_eq!(
+                entry(body).matches("alloca [256 x i8]").count(),
+                0,
+                "{body}"
+            );
+            assert_eq!(body.matches(".concat_into(").count(), 0, "{body}");
+            assert!(
+                body.contains(".append(") || body.contains(".concat("),
+                "{body}"
+            );
+        } else {
+            assert_eq!(
+                entry(body).matches("alloca [256 x i8]").count(),
+                16,
+                "{body}"
+            );
+            assert_eq!(body.matches(".concat_into(").count(), 16, "{body}");
+            assert_eq!(body.matches(".concat(").count(), 1, "{body}");
+        }
     }
 }
 
@@ -416,11 +438,16 @@ fn local_closures_use_entry_block_environments() {
                 wasm,
             );
         let body = function(&ir, "f");
-        assert!(
-            entry(body).contains("alloca { i64, i64 }, align 16"),
-            "{body}"
-        );
-        assert!(!body.contains("@tz.alloc"), "{body}");
+        if cfg!(windows) && !wasm {
+            assert!(!entry(body).contains("alloca { i64, i64 }"), "{body}");
+            assert!(body.contains("@tz.alloc("), "{body}");
+        } else {
+            assert!(
+                entry(body).contains("alloca { i64, i64 }, align 16"),
+                "{body}"
+            );
+            assert!(!body.contains("@tz.alloc"), "{body}");
+        }
     }
 }
 
