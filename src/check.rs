@@ -5879,7 +5879,7 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
 
 /// The functions that one worker takes before a stage of `check_modules_collect` uses another
 /// thread, and how many a worker takes at a time.
-const FUNCTIONS_PER_WORKER: usize = 256;
+const FUNCTIONS_PER_WORKER: usize = 64;
 const FUNCTION_CHUNK: usize = 8;
 
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {

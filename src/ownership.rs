@@ -203,7 +203,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
 
 /// The functions that one worker checks before a check uses another thread, and how many a worker
 /// takes at a time.
-const FUNCTIONS_PER_WORKER: usize = 256;
+const FUNCTIONS_PER_WORKER: usize = 64;
 const FUNCTION_CHUNK: usize = 8;
 
 /// The checks of different functions read the module and nothing else, so they run in parallel.

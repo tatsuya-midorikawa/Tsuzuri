@@ -254,7 +254,7 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 - 関数ごとの型検査の仕上げ（同じ関数の finish の loop）: `Checker` と `&mut CheckedFunction` を項目として渡し、`name_uses`・警告・診断を関数の順に取り込みます。
 - 所有権の検査（`ownership::check_functions`。`infer_copy_all` と具体化後の検査）。
 
-後ろの 3 つは関数 256 個ごとに 1 ワーカーで、8 個ずつ取得します。検証は `src/parallel.rs`・`src/lib.rs`・`src/frontend_cache.rs` の単体テストです。
+後ろの 3 つは関数 64 個ごとに 1 ワーカー（2 ワーカーには 128 個）で、8 個ずつ取得します。標準ライブラリの宣言だけで hello も数百個あるので、hello の `check` も worker を使います（`FUNCTIONS_PER_WORKER` は hello の計測で 256 から 64 に下げました。[docs/benchmarks.md](benchmarks.md)）。検証は `src/parallel.rs`・`src/lib.rs`・`src/frontend_cache.rs` の単体テストです。
 
 **言語版（G19）:** `Edition(u16)`（`src/syntax.rs`。`E2026`、`LATEST`、`MANIFEST_DEFAULT`、`SUPPORTED`）は、ソースを読む予約語の版です。`Manifest::edition`（`[package]` の `edition`。省略は `MANIFEST_DEFAULT`、対応しない値は `E0002`）から `driver` が `SourceFile::edition` を決め（manifest のない入力、`script`、`repl`、std は `LATEST`。path・git・registry の依存は自分の manifest の値）、`SourceInput`・`ModuleInput` を通って、lexer と parser の入口に必須の引数として渡ります。既定の `LATEST` を使うのは、manifest のない入口（`parser::parse`、`analyze*`、`check::check`）、std、`tsuzuri new` の雛形など数か所だけです。lexer は、キーワードの `match` より前に `reserved_in` で `EDITION_KEYWORDS`（予約を始める edition の表で、現在は空）を引くので、古い edition のソースは新しい予約語を識別子として読みます。モジュール名の予約語の検査（`E1011`）も、そのモジュールの edition です。edition は字句だけに作用します。`ModuleInput::edition` を使うのはモジュール名の検査だけで、型検査とコード生成は edition を見ないので、IR は edition の値で byte 単位で同じです。frontend cache の parse key は edition を含みます。`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の manifest を `read_manifest` で読んでその edition を使い、なければ `LATEST` です。
 

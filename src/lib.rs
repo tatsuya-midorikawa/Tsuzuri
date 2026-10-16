@@ -1113,12 +1113,31 @@ mod tests {
     }
 
     #[test]
-    fn a_small_program_checks_on_the_calling_thread() {
-        // Only the text of the standard library that it reaches is worth parsing on workers.
-        let sources = [("Main.tz".to_owned(), "let x = 1\nx + 1\n".to_owned())];
-        let (_, stages) = parallel_stages(|| analyze_on(8, &sources).unwrap());
-        assert!(stages <= 1, "{stages} parallel stages");
-        let (_, stages) = parallel_stages(|| analyze_on(1, &sources).unwrap());
+    fn a_program_with_little_to_do_stays_on_the_calling_thread() {
+        // One tiny module and no standard library: no stage has enough work for a second thread.
+        let input = SourceInput {
+            path: "Main.tz",
+            text: "let x = 1\nx + 1\n",
+            origin: ModuleOrigin::User,
+            namespace: "",
+            edition: syntax::Edition::LATEST,
+            package: None,
+        };
+        let (result, stages) =
+            parallel_stages(|| analyze_inputs_with(&[input], None, None, Parallelism::fixed(8)));
+        assert!(result.is_ok());
         assert_eq!(stages, 0);
+    }
+
+    #[test]
+    fn hello_with_the_standard_library_uses_workers_for_its_declarations() {
+        // The standard library's text and declarations are what make even `1 + 1` worth parallel
+        // stages: its parse and the check of its functions. One thread never starts a worker.
+        let sources = [("Main.tz".to_owned(), "let x = 1\nx + 1\n".to_owned())];
+        let (sequential, stages) = parallel_stages(|| format!("{:?}", analyze_on(1, &sources)));
+        assert_eq!(stages, 0);
+        let (parallel, stages) = parallel_stages(|| format!("{:?}", analyze_on(8, &sources)));
+        assert!(stages >= 2, "{stages} parallel stages");
+        assert!(parallel == sequential);
     }
 }
