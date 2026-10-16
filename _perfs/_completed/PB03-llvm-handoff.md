@@ -8,11 +8,11 @@
 | 規模 | M |
 | 依存 | PX03 |
 | 関連 | G17, PB01, PB05, PM08 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討 |
 | 承認 | 2026-10-16 の全フェーズ実装依頼で Phase 2 の D6・D7 を承認済み（効果を測定で確認できない既定の切り替えはしない） |
 | 手本にする既存実装 | 根を限った到達可能性: `src/llvm.rs` の `reachable_functions`（`roots` が `Some` の経路はテストのビルドが使用中）と `emit_program` の `roots`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`・`collect_message`。スレッドでの並行実行: `src/test_runner.rs` と `src/cache.rs` の `std::thread::scope` |
-| 主な影響ファイル | `src/llvm.rs`（`Instrumentation`・`emit_native_build`・`emit_program`・`executable_roots`（新規））、`src/driver.rs`（`build_complete`・`run_tool_pair`（新規））、`tests/llvm_handoff.rs`（新規）、`tests/llvm_handoff.mjs`（新規）、`tests/fixtures/llvm_handoff/`（新規）、`docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md` |
+| 主な影響ファイル | `src/llvm.rs`（`Instrumentation::executable_roots`・`emit_native`・`executable_roots`）、`src/bundle_identity.rs`（新規）、`src/cache.rs`（`tool_identity`・`invoked_path`・`build_key`）、`src/driver.rs`（`compile_runtime_object`・`final_link_args`）、`src/lib.rs`・`src/main.rs`（各 1 か所）、`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`・`tests/handoff_tools.mjs`・`tests/bundle_identity.mjs`・`tests/fixtures/llvm_handoff/`（新規）、`benchmarks/check-handoff-equivalence.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_tsuzuri/language-reference/compiler/{debugging,option,platforms,usage}.md` |
 | 計測対象 | PX03 の `benchmarks/run-build.mjs`（`build` の `O0`・`O3`）: 合成 200・1,000 モジュール、`examples/hello`。本チケットの追加の workload: W2（新規。合成 1,000 モジュールのうち 100 だけを `Main.tz` から呼ぶ）、W3（新規。`examples/tasks` の macOS `-g` 実行ファイル）、W4（新規。`tests/fixtures/tasks` の `--target wasm32 --wasm-feature threads`）、W5（新規。`tests/fixtures/tasks` の `--emit object`）。指標は `wall_time`・`phase_time`（`emit`・`tool.clang`）と、Clang に渡した IR の bytes |
 
 ## 目的
@@ -696,3 +696,72 @@ used 41
   `extractvalue` は `-O0` のコードの質の問題で、生成規則の変更（PM07・PR03 の範囲）になる。
 - 見直し提案: 旧版の Phase 1 にあった「冗長な IR の削減」は、M5 で `-O0` の命令選択が支配的と分かった場合に PM07 か PR03 へ移して起票する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-16）
+
+ブランチ `perf/phase3/PB03`（基点 `c6864cf5` = main `6d15b437` + 計画の記録）。コミット: `d0850940`（WP0）、`f2e3dc3f`（WP1）、`aa53b74f`・`bd2f9c74`（WP-F）、`74babda1`（WP2）、`993e113d`（WP5）、
+それに続く文書の記録（WP7・WP9）。
+
+### 実装した範囲と、しなかったもの
+
+| WP | 内容 | 結果 |
+| --- | --- | --- |
+| WP0 | 起票時の記述を現行のコードと実測で照合し、決定を改め、`benchmarks/check-handoff-equivalence.mjs`（二つのコンパイラの差分検査）を作った | 実装 |
+| WP1（D1） | `emit_native_build`（`Entry::Console`）だけ、entry・export・ユーザーの drop から到達する関数だけを出力する（`Instrumentation::executable_roots`、`emit_native`、`executable_roots`）。`emit_native_build_for`・`llvm::emit*`・wasm・library・object・shared は不変 | 実装。W2 の CPU 時間は `-O0` で −65%、`-O3` で −36% |
+| WP-F（新規） | 同梱ツールチェーンの識別（全ファイルの fingerprint、Clang・Zig の SHA-256、ランチャーの `--version`）を並列に 1 回だけ計算し、`<cache>/bundle/` に控える（`src/bundle_identity.rs`）。署名が変わらない間は再利用。Homebrew の `wasm-ld`（`lld` への symlink）の `--version` も直した | 実装。毎ビルド約 8 s の CPU → 0.12 s |
+| WP2（D2 の前半） | `threads.c`・`wasi.c`・`-g` の `stack.c` を `compile_runtime_object` に載せた（単位 `wasm-threads`・`wasi`・`stack-debug`） | 実装。再ビルドで Clang の 1 プロセスを削る（−23〜−113 ms の CPU） |
+| WP3・WP4（D2 の後半・D4・D11） | 独立な Clang プロセスの並行実行と、組全体を 1 区間で計上する helper | **入れない**。cold の最初の 1 回だけで、理想の上限が 35〜259 ms（load の広がりの内側）。計測を `docs/benchmarks.md` に記録 |
+| WP5（D6） | `TSUZURI_LINKER=default|lld` の opt-in。最終リンク（実行ファイル・`-g` の別リンク・`--emit shared`）だけに `-fuse-ld=lld`。未設定のキー・引数は不変。lld が無ければ E2002（hint 付き）、不正な値と Windows は E2000 | 実装。既定は変えない |
+| WP6（D8） | IR の後処理の複写を非 strip の release と `sample` で測った | 採用しない。複写は上位に出ず、試作の改善は 1.4%（基準 2% 未満） |
+| WP7 | `docs/benchmarks.md` に節を 1 つ足した | 実装 |
+| WP8（D9） | `--emit wasm` の剪定 | 採用しない。成果物が同じで、効果は Clang の時間だけ。根の整合の費用に見合わない |
+| D3・D5・D7 | 変えない（launcher の制約・bitcode の得が 1〜2%） | 数値を記録 |
+| D10 | 対象外のまま | — |
+
+### 確認
+
+- 単体: `cargo test --locked --test llvm_handoff`（8 件、D1 の根・剪定・型検査・drop・trap 位置）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
+  `--lib the_linker_choice`（1 件）。`cargo clippy --all-targets --locked -- -D warnings` と `cargo fmt --all` は成功。
+  Windows: `PATH=$HOME/.cargo/bin:$PATH cargo +stable check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` が成功（Windows の挙動は Windows の CI でしか確認できない）。
+- E2E: `tests/llvm_handoff.mjs`（vtable・closure・export・trap 位置、`-O0`・`-O3`、決定性）、`tests/handoff_tools.mjs`（C ランタイムの cold 1／warm 0／`--no-cache` 1、cached と fresh の byte 一致、
+  失敗の hint と保存されないこと、`-g` の guard の overflow、`TSUZURI_LINKER` の引数・E2002・E2000・キー・目的別の無付与）、`tests/bundle_identity.mjs`（偽の配布物と spy の launcher で、
+  memo の作成・再利用・無効化（ファイルの追加・ツールの入れ替え・manifest）・上書き・cache でないディレクトリへの無書き込み）。
+  3 つとも新しいビルドで通り、`llvm_handoff.mjs`・`handoff_tools.mjs`・`bundle_identity.mjs` は基準のコンパイラでは失敗する。
+  `prebuilt_runtime.mjs`・`cache.mjs`・`wasm_threads.mjs`・`stack_overflow.mjs`（20 件）・`os.mjs`・`debug_info.mjs` も通る。
+- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。
+  WP1 の 8 モード（header・llvm・object・wasm・shared・exe0・exe3・exeg）992 比較は失敗 0（521 が byte 一致、実行ファイル 12 比較が剪定で関数を減らし挙動は同じ）。
+  WP2 の cache あり 3 モード（wasmt・wasi・exegc）372 比較は失敗 0（199 が byte 一致）。threads・WASI の `--emit object` は `-O0`・`-O3` で SHA-256 が一致。
+  `TSUZURI_LINKER` 未設定の Clang の引数列は 8 つのビルドで基準と完全に一致。
+- 同梱ツールチェーン: 実物の開発用配布物（759 MB）の複製に `scripts/toolchain/runtime.mjs` の `bundleRuntime` で `share/runtime` を作り、新しいコンパイラで同梱 object が使われる（runtime cache が空）こと、
+  `lib/` にファイルを足すと拒否されることを確かめた。runtime cache のキー（2 件）は旧コンパイラと同じ。
+
+### 計測
+
+条件・結果・再現は `docs/benchmarks.md` の「LLVM への受け渡し（PB03）」にある。機械は共有で load average 25〜225 だったので、結論は CPU 時間・プロセスごとの時間・標本数だけに基づく。
+scratch の道具（リポジトリには入れない）: W2 の生成は「計測手順」のとおり。交互 9 標本は `os.wait4` の `ru_utime + ru_stime` を CPU 時間とし、`TSUZURI_TIME_PASSES=1` の JSON から `emit` と `tool.*` を足す。
+Clang の 1 プロセスごとの時間は、引数と経過時間を記録して本物の Clang を呼ぶ Rust の wrapper を `TSUZURI_CLANG` に置いて取った。`sample` は
+`CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` の別 target dir のビルドに `sample <pid> 60 5` を当てた。
+静かな機械での正式な before／after（PX03 の `build`・`build-runtime-{cold,warm}`）は未取得で、`_perfs/README.md` の手順で取り直す。
+
+### 決定事項への追記と見つけた問題
+
+- 決定の結果: D1 採用、D2 は C ランタイムの cache 化だけ採用（並行は不採用）、D3・D5・D7 変更なし、D6 は opt-in、D8・D9 不採用、D10 対象外、WP-F 採用。
+- ★ 修正した範囲外の問題: 同梱 resource の全件ハッシュ（WP-F）、Homebrew の `wasm-ld` の `--version`（whole-build cache が黙って無効だった）。
+- 記録だけ: `run` は `--trap-info` が既定で runtime object を使わず、hello の IR が 758 KB（`build` は 122 KB）になる（計装済みの numeric を別 object にする案は別チケット）。
+  whole-build cache の hit の固定費は約 90 ms（コンパイラ本体 9 MB の SHA-256 と `--version`）。`build_key` は `ToolIdentity::hash_into` の戻り値を見ないので、symlink を含む配布物の
+  whole-build のキーは resource の識別を欠く（実際の配布物は symlink を持たない）。`tool_line`（`toolchain info`）は Homebrew の `wasm-ld` を `(unavailable)` と表示する（同じ symlink の問題）。
+  同梱ツールチェーン（Zig 0.16.0 の `zig cc`）で、`--wasm-host wasi -O0` と `--wasm-feature threads -O0` が `wasm-ld: undefined symbol: __ubsan_handle_*`（`wasi.o`・`threads.o`）で失敗する（基準のコンパイラでも同じ。`-O1` 以上は通る）。`zig cc` が `-O0` で UBSan を既定で有効にし、wasm には その runtime がないため。wasm の C ランタイムの compile に `-fno-sanitize=undefined` を足すのが候補で、本チケットでは直していない（LLVM の Clang を使う CI の `wasm_threads.mjs` には出ない）。
+  配布物の `zig cc` のリンクは約 230 ms の固定費で、Apple の ld64 の約 60 ms より重い。ソフトウェアの SHA-256 は `unsafe` を使えず、IR（1,000 モジュールで約 37 MB）とコンパイラのハッシュが毎ビルドの費用になる。
+- 後続のチケットへ: PM08 は `build_complete` の `-O{}` 5 か所と `-Wl,-x` を触る（この変更は `final_link_args` と runtime object の 3 か所を足しただけで、衝突は小さい）。
+  PM05・PR06 が runtime object やタスクの runtime を変えるときは、`tests/handoff_tools.mjs` の単位名（`wasm-threads`・`wasi`・`stack-debug`）と D1 の差分検査を再実行する。
+
+### 更新した文書
+
+`_tsuzuri/language-reference/compiler/usage.md`（ランタイム object: C ランタイムの cache と、同梱ツールチェーンの識別の信頼の範囲）、`option.md`（`TSUZURI_LINKER`、組み合わせのエラー）、
+`platforms.md`、`debugging.md`（実行ファイルに入る関数）、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`（キャッシュ、`TSUZURI_LINKER`、テストの一覧）、`src/main.rs` の HELP。
+`docs/language.md` は、変更した意味（実行ファイルから到達する関数だけを出力する）がユーザーに見える範囲を `debugging.md` が持つので、更新不要と判断した。
+
+### 変更したファイル
+
+`git diff --stat c6864cf5..HEAD` を参照（`src/` は `bundle_identity.rs`（新規）・`cache.rs`・`driver.rs`・`llvm.rs`・`lib.rs`・`main.rs`、テストは `tests/llvm_handoff.{rs,mjs}`・`handoff_tools.mjs`・`bundle_identity.mjs`・`fixtures/llvm_handoff/`、
+差分検査は `benchmarks/check-handoff-equivalence.mjs`、CI は `.github/workflows/targets.yml`）。
