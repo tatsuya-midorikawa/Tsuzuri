@@ -670,7 +670,9 @@ SHA-256、同梱 Clang と Zig の SHA-256、ランチャーの `--version` の�
 `--no-cache` はランタイムキャッシュも同梱 object も使わず、従来どおり埋め込みソースから
 ビルドします。`--emit llvm`・header・object・shared の数値／数学 IR、debug、トラップ位置の計装、
 WASM threads、memory64、スタック検査のある数値／数学 IR は分離しません。
-外部 object を使う native 実行ファイルでは未使用部分をリンク時に除去します。
+native 実行ファイルは、ランタイムをモジュールに埋め込む形式（`--no-cache`、`--trap-info`、`run`）でも、未使用の関数とデータをリンク時に除去します（`-g` は除く）。
+macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sections` で、それに合わせて関数とデータを別々の section に出します。MSVC のリンカーは `/OPT:REF` です。
+公開した `export` の関数は残します。`examples/point` を `--no-cache` でビルドしたときの `__text` は 40,552 byte から 10,844 byte に、`examples/io` は 27,316 byte から 9,780 byte になりました（macOS arm64 の `-O3`。[性能測定](../../../docs/benchmarks.md#リンク時の-gc埋め込みのビルド)）。
 数学の小さい sqrt／fabs wrapper は IR に残すので、LLVM の intrinsic へのインライン化を保ちます。
 数値の丸め・NaN・符号付きゼロ・トラップ・公開 ABI・WASM の import は変わりません。
 

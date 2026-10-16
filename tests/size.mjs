@@ -129,6 +129,27 @@ function localSymbols(file) {
   if (result.error || result.status !== 0) return null;
   return result.stdout.split("\n").filter((line) => /^\s*[0-9a-fA-F]*\s+[a-tx-z]\s/.test(line)).length;
 }
+// The names in the symbol table of an executable, without the underscore Mach-O puts before them, or null without `nm`.
+function symbolNames(file) {
+  const result = spawnSync(nm, ["-a", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (result.error || result.status !== 0) return null;
+  return new Set(result.stdout.split("\n").map((line) => line.trim().split(/\s+/).at(-1)?.replace(/^_/, "")));
+}
+
+section("an executable with the runtime embedded is collected at link time like the default build", () => {
+  // `point` shows floats, so it needs the numeric runtime's formatter but not its parser.
+  const point = example("point");
+  const plain = build(point, []);
+  for (const extra of [["--no-cache"], ["--trap-info"]]) {
+    const embedded = build(point, extra);
+    assert.deepEqual(execute(embedded), execute(plain), `point ${extra.join(" ")} runs like the default build`);
+    if (process.platform === "win32") continue; // no symbol table to read
+    const symbols = symbolNames(embedded);
+    if (symbols === null) continue;
+    assert.ok(symbols.has("tz_soft_format"), "the formatter point needs is linked");
+    assert.ok(!symbols.has("tz_soft_parse"), `the parser nothing calls is dropped from the ${extra.join(" ")} build`);
+  }
+});
 
 section("--strip drops the local symbols and leaves the program as it is", () => {
   const project = example("hello");

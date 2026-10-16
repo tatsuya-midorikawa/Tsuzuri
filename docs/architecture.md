@@ -233,7 +233,7 @@ WASM threads の `task-wasm-threads.c`、WASI ホストの `os-wasi.c`（と `ar
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
 ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。
 LLVM／header／object／shared、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
-外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。generic 数値 dispatch の到達する枝は残ります。
+外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。native の実行ファイルは、ランタイムを埋め込む形式（`--no-cache`・`--trap-info`）でも同じ除去を行います（`-g` は除く。PM08）。generic 数値 dispatch の到達する枝は残ります。
 整数の表示（`to_string`・`Display`・書式指定のない補間・トップレベルの式の結果）は `numeric.ll` ではなく、モジュールに連結する `runtime/integer.ll` が書きます。
 整数だけを表示するプログラムは数値 object を連結せず、native の `examples/hello` は 50,664 から 33,896 byte に、wasm32 の同じプログラムは 35,714 から 6,357 byte になりました（PM08。測定は `docs/benchmarks.md`）。
 float・decimal・書式指定付きの表示と `Parse` は `numeric.ll` のままです。`runtime/` の掃除は成果物／frontend cache と独立します。

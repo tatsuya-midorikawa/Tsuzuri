@@ -3034,6 +3034,12 @@ fn build_complete(
             (options.target, options.emit),
             (Target::Native, Emit::Executable) | (Target::Wasm32, Emit::Wasm)
         );
+    // PM08 D10: a native executable without -g links with the linker's garbage collection even when
+    // the runtime is embedded in the module (--no-cache, --trap-info, ...), as it does with runtime
+    // objects. Every function and datum gets a section of its own, so that an ELF or COFF linker can
+    // drop the unused ones; Mach-O subsections already allow it.
+    let gc_sections =
+        options.emit == Emit::Executable && options.target == Target::Native && !options.debug_info;
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
     let emit_time = crate::timings::Phase::start("emit");
@@ -3643,7 +3649,7 @@ fn build_complete(
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(platform.arch_name())?);
             }
-            if runtime_objects {
+            if gc_sections {
                 runtime.args(["-ffunction-sections", "-fdata-sections"]);
             }
             if options.cache && !merge_debug_ir {
@@ -3845,6 +3851,9 @@ fn build_complete(
             if options.cpu == Cpu::Native {
                 clang.args(native_ir_cpu_args(platform.arch_name(), f16)?);
             }
+            if gc_sections && !platform.mach_o() {
+                clang.args(["-ffunction-sections", "-fdata-sections"]);
+            }
             // The run that links reads the target's libraries; a compile of IR alone reads none.
             if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
                 clang
@@ -3876,7 +3885,7 @@ fn build_complete(
         if options.strip && options.emit == Emit::Executable && !platform.windows() {
             clang.arg("-Wl,-x");
         }
-        if options.emit == Emit::Executable && runtime_objects {
+        if gc_sections {
             clang.args(dead_strip_args(platform));
             for function in module.functions.iter().filter(|function| function.exported) {
                 if platform.mach_o() {
@@ -3885,9 +3894,9 @@ fn build_complete(
                     clang.arg(format!("-Wl,-u,tz_{}", function.name));
                 }
             }
-            if !numeric_objects.is_empty() {
-                clang.args(["-x", "none"]).args(&numeric_objects);
-            }
+        }
+        if options.emit == Emit::Executable && runtime_objects && !numeric_objects.is_empty() {
+            clang.args(["-x", "none"]).args(&numeric_objects);
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
