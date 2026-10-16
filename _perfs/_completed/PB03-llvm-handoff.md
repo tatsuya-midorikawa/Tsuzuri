@@ -720,20 +720,27 @@ used 41
 
 ### 確認
 
-- 単体: `cargo test --locked --test llvm_handoff`（8 件、D1 の根・剪定・型検査・drop・trap 位置）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
-  `--lib the_linker_choice`（1 件）。`cargo clippy --all-targets --locked -- -D warnings` と `cargo fmt --all` は成功。
+- 全体: `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）が成功（104 の結果グループ、1,326 件通過、失敗 0。`tests/time_passes.rs`・`tests/llvm_handoff.rs` を含む）。
+  `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、`git diff --check` は成功。
   Windows: `PATH=$HOME/.cargo/bin:$PATH cargo +stable check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` が成功（Windows の挙動は Windows の CI でしか確認できない）。
-- E2E: `tests/llvm_handoff.mjs`（vtable・closure・export・trap 位置、`-O0`・`-O3`、決定性）、`tests/handoff_tools.mjs`（C ランタイムの cold 1／warm 0／`--no-cache` 1、cached と fresh の byte 一致、
-  失敗の hint と保存されないこと、`-g` の guard の overflow、`TSUZURI_LINKER` の引数・E2002・E2000・キー・目的別の無付与）、`tests/bundle_identity.mjs`（偽の配布物と spy の launcher で、
-  memo の作成・再利用・無効化（ファイルの追加・ツールの入れ替え・manifest）・上書き・cache でないディレクトリへの無書き込み）。
-  3 つとも新しいビルドで通り、`llvm_handoff.mjs`・`handoff_tools.mjs`・`bundle_identity.mjs` は基準のコンパイラでは失敗する。
-  `prebuilt_runtime.mjs`・`cache.mjs`・`wasm_threads.mjs`・`stack_overflow.mjs`（20 件）・`os.mjs`・`debug_info.mjs` も通る。
-- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。
-  WP1 の 8 モード（header・llvm・object・wasm・shared・exe0・exe3・exeg）992 比較は失敗 0（521 が byte 一致、実行ファイル 12 比較が剪定で関数を減らし挙動は同じ）。
-  WP2 の cache あり 3 モード（wasmt・wasi・exegc）372 比較は失敗 0（199 が byte 一致）。threads・WASI の `--emit object` は `-O0`・`-O3` で SHA-256 が一致。
-  `TSUZURI_LINKER` 未設定の Clang の引数列は 8 つのビルドで基準と完全に一致。
+- 単体: `--test llvm_handoff`（8 件。D1 の根・剪定・型検査・drop・trap 位置）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
+  `--lib the_linker_choice`（1 件）。
+- 通常の release（`cargo build --release --locked`）に対する node の suite（`validate-all.sh --skip-cargo`、55 手順）: `e2e`・`primitives`・`prebuilt_runtime`・`display_parse`・`strings`・`tasks`・`async`・
+  `features`・`json`・`computations`・`control`・`lsp_sessions`・`repl`・`script`・`targets`・`f16_hardware`・`packages`・`bindgen`・`debug_info`・`frontend_cache`・`wasm_threads`・`wasm_memory`・`wasm_simd`・
+  `numeric_casts`・`integer_intrinsics`・`user_drop`・`trap_boundary`・`trap_return_sync`・`stack_overflow`（20 件）・`allocator`・`cache`・`examples`・`docgen`・`host_imports`・`ffi_extensions`・`bindings`・
+  `bindings_threads`・`host_bindings`・`gpu`・`strings_bridges`・`simd`・`benchmark_report`・`utf_simd`・`local_recursion_fuzz`・`last_use_fuzz` が通った。最初の sweep で失敗した 7 件は環境が原因で、
+  直して再実行し通った: `io`・`os`・`trap_return`（ASan の実行ファイルが load で 180 s の timeout。load 14〜26 で 92 s・182 s・24 s）、`cpu_kernels`・`cpu_dispatch`（`validate-all.sh` が Homebrew の LLVM を PATH の先頭に置き、
+  x86 向けの `clang -target x86_64-apple-macos11 cpu.c` に SDK がない。基準のコンパイラでも同じで、Apple の clang では通る）、`wasm64`・`benchmark_apps`（Node 24 が要る）。
+  `node scripts/check-docs.mjs`（全ページ: 111 ページ・1,591 リンク・560 例・native 1,066 回の `-O0`／`-O3`）が成功。
+- E2E（新規）: `tests/llvm_handoff.mjs`（vtable・closure・export・trap 位置、`-O0`・`-O3`、決定性）、`tests/handoff_tools.mjs`（C ランタイムの cold 1／warm 0／`--no-cache` 1、cached と fresh の byte 一致、
+  失敗の hint と保存されないこと、`-g` の guard の overflow、`TSUZURI_LINKER` の引数・E2002・E2000・キー・実行ファイルと共有ライブラリ以外への無付与）、`tests/bundle_identity.mjs`（偽の配布物と spy の launcher で、
+  memo の作成・再利用・無効化（ファイルの追加・ツールの入れ替え・manifest）・上書き・cache でないディレクトリへの無書き込み）。3 つとも通常の release で通り、基準のコンパイラでは失敗する。
+- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較、通常の release）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。
+  header・llvm・object・wasm・shared・wasmt（threads）・wasi の 868 比較は差 0（720 が byte 一致、148 は同じ失敗）。全 11 モードの代表 7 プロジェクト 77 比較も差 0。
+  開発中の非 LTO の build では、WP1 の 8 モード 992 比較（521 が byte 一致、実行ファイル 12 比較が剪定で関数を減らし挙動は同じ）と、cache あり 3 モード 372 比較も差 0。
+  threads・WASI の `--emit object` は `-O0`・`-O3` で SHA-256 が一致。`TSUZURI_LINKER` 未設定の Clang の引数列は 8 つのビルドで基準と完全に一致。
 - 同梱ツールチェーン: 実物の開発用配布物（759 MB）の複製に `scripts/toolchain/runtime.mjs` の `bundleRuntime` で `share/runtime` を作り、新しいコンパイラで同梱 object が使われる（runtime cache が空）こと、
-  `lib/` にファイルを足すと拒否されることを確かめた。runtime cache のキー（2 件）は旧コンパイラと同じ。
+  `lib/` にファイルを足すと拒否されることを確かめた。runtime cache のキー（2 件）は旧コンパイラと同じ。`scripts/toolchain/smoke.mjs` は開発用配布物に `share/lldb`・`share/natvis` がないので実行していない（CI が担当）。
 
 ### 計測
 
