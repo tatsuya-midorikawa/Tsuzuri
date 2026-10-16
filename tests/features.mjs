@@ -490,6 +490,9 @@ const suites = {
       ...[0n, 1n, 5n, 1000n].map(n => ["slot_count_down", [n], 7n]),
       ...[0n, 1n, 1000n].map(n => ["slot_nested", [n], n]),
       ...[[3n, 6n], [0n, -1n], [-2n, -1n]].map(([n, expected]) => ["slot_apply", [n], expected]),
+      // `make n` is Some (2 * n) for n > 0; the closure recursion ends in Some 7 at depth 0.
+      ...[[3n, 6n], [0n, -1n], [-2n, -1n]].map(([n, expected]) => ["slot_hold", [n], expected]),
+      ...[0n, 1n, 500n].map(n => ["slot_descend", [n], 7n]),
       ...[[0n, 10n], [1n, 20n], [2n, 30n], [9n, 30n], [-1n, 30n]].map(([n, expected]) => ["slot_color", [n], expected]),
     ],
     inspect(ir) {
@@ -499,14 +502,16 @@ const suites = {
         return ir.slice(start).split("\n}\n")[0];
       };
       const returns = (name) => body(name).split("\n").filter((line) => line.startsWith("  ret ")).length;
-      // Every exit constructs, copies, or calls an acyclic function: one entry-block slot and one `ret`.
-      for (const name of ["make", "pick", "explain", "label", "scratch", "find", "wrap", "piped", "choose", "keep"]) {
+      // Every exit builds a value or reads a field or a parameter: one entry-block slot and one `ret`.
+      for (const name of ["make", "pick", "explain", "label", "scratch", "find", "choose", "keep"]) {
         assert.equal(body(name).split("%tz.return.slot = alloca").length - 1, 1, `${name}: one return slot`);
         assert.match(body(name), /\ntz\.return:\n/, `${name}: one return block`);
         assert.equal(returns(name), 1, `${name}: one ret`);
       }
-      // A recursion cycle, a continuation, an unknown callee and a bare tag keep every plain `ret`.
-      for (const [name, count] of [["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3]]) {
+      // An exit that may hold the result of a call (a call, a pipeline, a local bound to one), a recursion
+      // cycle, a continuation, an unknown callee, a callee that gets the closure of its recursion, and a bare
+      // tag keep every plain `ret`.
+      for (const [name, count] of [["wrap", 2], ["piped", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3]]) {
         assert.doesNotMatch(body(name), /tz\.return/, `${name}: no return slot`);
         assert.equal(returns(name), count, `${name}: plain rets`);
       }

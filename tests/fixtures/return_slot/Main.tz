@@ -66,7 +66,7 @@ fn rec find n limit =
 export def slot_find :: i64 -> i64 -> i64
 fn slot_find start limit = Maybe.default_value (-1) (find start limit)
 
-// Exits that forward an acyclic call, a pipeline, a field and a local.
+// Exits that call a function or run a pipeline keep their plain `ret`s; exits that read a field or a parameter share the slot.
 def wrap :: i64 -> Maybe<i64>
 fn wrap n = if n > 100 then make n else None
 
@@ -96,7 +96,25 @@ export def slot_let_chain :: i64 -> i64
 fn slot_let_chain offset =
     Maybe.default_value (-1) (Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y })
 
-// A function in a recursion cycle, a continuation and an unknown callee keep their plain `ret`s.
+// A function in a recursion cycle, a continuation, an unknown callee, a local that holds a call and a callee that
+// receives the closure of its recursion keep their plain `ret`s.
+def hold :: i64 -> Maybe<i64>
+fn hold n = if n > 0 then { let r = make n; r } else None
+
+export def slot_hold :: i64 -> i64
+fn slot_hold n = Maybe.default_value (-1) (hold n)
+
+def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
+fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+
+def rec descend :: i64 -> Maybe<i64>
+fn rec descend n =
+    if n == 0 then Some 7
+    else guard n (\m -> descend m)
+
+export def slot_descend :: i64 -> i64
+fn slot_descend n = Maybe.default_value (-1) (descend n)
+
 def rec even_m :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else odd_m (n - 1)
 and odd_m :: i64 -> Maybe<i64> = \n -> if n == 0 then None else even_m (n - 1)
 
