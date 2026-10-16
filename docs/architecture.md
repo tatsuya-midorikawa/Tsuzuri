@@ -79,7 +79,10 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理。予算（1,024 個）を使い切った program だけ、関数と参照先の関数を深さ優先の順に出力し、各関数の worker をその直後に出力する 2 回目の出力（`Drain::DepthFirst`）で、連鎖を完成させる |
-| `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略 |
+| `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略。PR02 は同じ `RangeFacts` に整数の区間（`values`・`undo`・`steps`）を持たせる |
+| `src/interval.rs` | PR02 の整数の区間の純粋関数。端点は `i128` で、64-bit 以下の整数型だけを扱う。`+ - *` の `nsw`／`nuw` と結果の区間、`as`・`&`・`%`・`/`・シフト・`~` の区間を返す。オペランドを符号付きと符号なしの両方で読み（読みが切り替わる点をまたぐ区間は全域の hull で読む）、返す集合は常にそのとき取りうる値をすべて含む |
+| `src/ranges_intervals.rs` | `RangeFacts` の整数の区間（リテラル、型、キャスト、マスク、長さ、`if`、`let`、`for` のカウンター、`if` の条件による絞り込み）と `integer_flags`。深さ 32 と 1 関数あたり 2^20 ステップを超えた分は型の全域 |
+| `src/llvm_ranges.rs` | `TSUZURI_RANGE_FLAGS`（`RangeFlags`: `off`／`proven`／`audit`）の読み取りと旗の書き分け。audit は旗を書かず、主張した向きごとの `with.overflow` の検査と `TrapKind::Overflow` の trap を書く |
 | `src/runtime/numeric.c` / `numeric.ll` / `numeric_tables.h` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、書式指定付き数値表示（`tz_soft_format_spec`）。f32／f64 の最短表示は整数 Schubfach、通常の十進解析は符号を除き最大 25 ASCII 文字・19 有効桁の Eisel–Lemire と正確な fallback。長い入力を高速経路で再走査しない。生成する不変表は 20,288 bytes。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
 | `src/runtime/string.ll` / `utf8string.ll` / `string_scalar.ll` / `string_v128.ll` / `string_cpu.ll` / `string_cpu_utf16.ll` / `heap-*.ll` | UTF 共通処理、完全な scalar 参照、汎用 vector IR、native CPU wrapper。`generate_utf.py` の生成物とは別に `string_cpu_utf16.ll` は手書きの x86 専用 wrapper。変換は全入力の検証・計数後に一度だけ確保。native CPU 経路は F08 の能力・OS 状態検査と fallback、WASM は既定 scalar・simd128 指定時だけ vector IR。Windows の CPU runtime は portable baseline。UTF-8 復号の 16 bytes 未満は inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路。UTF-16 符号化は non-x86 では portable LLVM、native x86 の 32 単位以上は CPU count と検証済み入力を扱う LLVM writer。portable 符号化の 16 単位未満／初窓に surrogate がある入力は元の scalar 計数・Unicode write と 8 単位幅の ASCII copy を使う。長い bulk 経路は private noinline helper へ分離。計数は 1／2／3-byte 幅の混在 BMP も扱うが、writer は均一幅の prefix だけを一括処理する。順序比較の UTF-16 16 単位未満／UTF-8 32 bytes 未満は元の 64-bit/scalar 経路。SIMD 経路の UTF-16 の検証・修復は surrogate-free prefix の後、残りを scalar へ一度だけ渡す。変換・計数・UTF-8 検証 kernel も最初の failed bulk probe 後は scalar remainder へ一度だけ渡し、後続の ASCII 区間も再 probe しない。文字列表現・コード単位の符号なし比較・置換・trap・ABI・import は維持 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
@@ -651,7 +654,7 @@ LLVM はループごとの分岐先、ローカル変数、および評価済み
 添字をインクリメントしながらリストの先頭から繰り返し探索したり、反復処理のためにコレクション全体をディープコピーしたりすることはありません。
 
 狭い整数型の単位刻みループ（ステップ 1 のループ）は内部的に 64-bit（`i64`）の誘導変数（induction variable）へと拡張され、終端の次の値もオーバーフローすることなく表現できるようにします。
-ループ本体に入った値が元のビット幅に収まっているという事実のみを `llvm.assume` を通じてオプティマイザへ伝え、ユーザーの算術式に安易にオーバーフロー抑止フラグ（`nsw`／`nuw`）を付与することはありません。
+ループ本体に入った値が元のビット幅に収まっているという事実のみを `llvm.assume` を通じてオプティマイザへ伝え、ユーザーの算術式に、証明のないオーバーフロー抑止フラグ（`nsw`／`nuw`）を付与することはありません。ループカウンターの増分だけは、形から証明できるので `TSUZURI_RANGE_FLAGS=proven` のとき旗が付きます（後述の「整数の範囲証明」）。
 64-bit および 128-bit の単位刻みループは終点値を処理した時点で確実に停止し、任意のステップ幅を持つループはオーバーフロー検出 intrinsic と範囲比較を組み合わせて停止判定を行います。
 密な整数定数の match 結果に対しては、最大 256 要素かつ密度 1/2 以上の条件を満たす場合に静的ジャンプテーブルを生成し、それ以外の整数定数選択は `switch` 命令へ、複雑な構造・ガード・アクティブパターンを含む分岐は順序付きの条件分岐へと lowering されます。ジャンプテーブルの範囲外の値も明示的な既定節（default）へ確実に分岐します。
 代入が 1 箇所のみの小さな整数リダクション（集約）ループには LLVM のループ展開（unroll）ヒントを付与しますが、固定の展開数、特定 ISA、あるいは演算の再結合を強制することはせず、浮動小数点のリダクションやループ依存性を持つ整数の攪拌処理（ミキサー）には適用しません。
@@ -869,9 +872,18 @@ drop slot `@"tz.dyn.drop[T]"` は `drop_value(T)` と同じ drop glue（利用�
 **境界検査の省略:** `ranges.rs` は関数ごとに 1 回、型付き IR をワークリストアルゴリズムで走査して配列添字に関する不変事実 `RangeFacts` を構築します（走査ノード数が 65,536 個を超える巨大な関数については解析を打ち切り、すべての境界検査を安全に残します）。
 `Type::Array` に対する添字アクセスにおいて、閉じた静的規則のみによって「添字が必ず配列の有効範囲内に収まる」と証明できた場合に限り、境界検査の条件分岐コードの生成を省略します。証明規則として対象となるのは、`0 .. len - 1` および `len - 1 .. -1 .. 0` のループ（`len` は `.length` または std の `Array.length`）、定数境界によるループ、リテラルや `new` による静的定数長の配列、ならびに `if i >= 0 && i < len` の then 分岐の内部です。
 配列のローカル変数は、関数内で 1 回だけ宣言され、再代入も可変借用も行われない場合にのみ「安定（変更されない）」と判定されます。`Vec`、リスト、文字列、`ref mut [T]`、`Array.set` などの組み込み関数呼び出し、および公開 ABI のエントリーポイントは解析対象外であり、境界検査がそのまま残されます。
-境界検査を省略した場合でも、要素アクセス用の `getelementptr inbounds` および `load` 命令はそのまま出力され、`llvm.assume`、`!range`、`nsw`、`nuw` などの未定義動作を招きやすい危険なフラグを新設することはありません。この解析は LLVM 最適化よりも前のコンパイラフロントエンドで実行されるため、`-O0`、`-O3`、ネイティブ、WASM のすべてのビルド構成で完全に同一の判断が行われ、省略された検査箇所はトラップ情報テーブルにも出力されません。残された検査箇所における `TrapKind::BoundsCheck` の種別やソース位置情報にも変化はありません。
+境界検査を省略した場合でも、要素アクセス用の `getelementptr inbounds` および `load` 命令はそのまま出力され、この証明が `llvm.assume`、`!range`、`nsw`、`nuw` などの未定義動作を招きやすいフラグを新設することはありません（`nsw`／`nuw` は別の証明である整数の範囲証明が、`TSUZURI_RANGE_FLAGS=proven` のときだけ書きます。`llvm.assume` と `!range` は、そのモードでも書きません）。この解析は LLVM 最適化よりも前のコンパイラフロントエンドで実行されるため、`-O0`、`-O3`、ネイティブ、WASM のすべてのビルド構成で完全に同一の判断が行われ、省略された検査箇所はトラップ情報テーブルにも出力されません。残された検査箇所における `TrapKind::BoundsCheck` の種別やソース位置情報にも変化はありません。
 境界検査を省略したメモリアクセスを含む整数リダクションループに対しては、`hint_loop` による `llvm.loop.unroll.enable`（ループ展開ヒント）の付与を意図的に抑制します。これは、検査が消えたループに対して過度な展開ヒントを付与すると、LLVM がベクトル化（Vectorize）よりも前にループを無理に展開してしまい、結果として実行速度が低下する現象（[実測データ](benchmarks.md#境界検査の残り方f12)）を防ぐための重要な設計です。境界検査が残る通常のループに対するヒント付与規則は変更していません。
 検証は `cargo test --locked --lib ranges`、`cargo test --locked --test bounds_checks`、および `cargo build --release --locked && node tests/features.mjs target/release/tsuzuri bounds_checks` によって厳密に行われています。
+
+**整数の範囲証明（PR02）:** 整数の `+ - *` は型の幅で折り返すので、LLVM の `nsw`／`nuw`（その向きでオーバーフローすると結果が poison）は、その向きのオーバーフローがないと証明できた命令にだけ付けられます。折り返す演算に付けると誤コンパイルで、メモリ安全性の問題になるので、証明のない演算には旗を書きません（`@checked` の中は検査付きの経路で、旗とは別です）。
+`TSUZURI_RANGE_FLAGS` が出力を選びます。`off`（既定）は旗を書かず、PR02 より前と byte 単位で同じ IR です。`proven` は証明のある命令に旗を書きます。`audit` は旗を書かず、書くはずの向きごとに `llvm.{s,u}{add,sub,mul}.with.overflow` の結果が偽であることを検査し、真なら `TrapKind::Overflow` で止めます。audit を通ったプログラムは、その入力で証明が誤らなかったことを示すので、`proven` の試験用の経路です。変数は `cache::KEY_ENVIRONMENT` に入り、空は既定、ほかの値は `emit` のとき `E2000` です（`check` と `lsp` は IR を出さないので読みません）。ライブラリの入口は `llvm::emit_with_range_flags` で、環境変数を読みません。
+証明は 2 種類です。ループの形から証明するもの（`llvm_control.rs`、`llvm.rs`、`llvm_compare.rs`）は、増分の前の終点の判定と `index < length` が根拠です。ステップ 1 または -1 の範囲ループのカウンター（符号付きは `nsw`、符号なしの昇順は `nuw`）、narrow な範囲ループの i64 のカウンター（端点は型の範囲の拡張なので `nsw`、符号なしは `nuw` も）、配列・リスト・文字列・構造比較のループの添字（`nuw`）です。任意のステップのループは `with.overflow` の intrinsic のままで旗を付けません。
+区間から証明するもの（`interval.rs`、`ranges_intervals.rs`）は、`RangeFacts` が式の取りうる値を `[low, high]`（端点は `i128`）で持ち、64-bit 以下の整数型の `+ - *` について、オペランドを符号付きと符号なしの数として読んだ数学的な結果が、その読みの範囲に収まるときだけ `nsw`／`nuw` を返します（読みが切り替わる点をまたぐ区間は全域として読み、結果は 2 つの読みの像の共通部分です）。区間は、リテラル、型の範囲、`as`、`&`・`%`・`/`・`~`・負号・定数のシフト、`Array.length` と `.length`（`[0, i64::MAX]`）、`if` の式（両枝の hull）、不変の `let`、`for` 範囲ループのカウンター（昇順は `[start の下限, finish の上限]`、降順はその逆、符号が不明なステップは両端の hull、符号なしは常に昇順）、`if` の then 枝の内側で比較が絞り込んだ不変のローカルから得ます。比較は同じ連言の中で結果が変わらなくなるまで（最大 3 回）適用し、`else`・`||`・`assert`・`match` からは絞り込みません。
+それ以外はすべて型の全域です。`mut` のローカル、代入または可変借用されるローカル、複数回宣言された id、引数（条件がないとき）、呼び出し、`Index`、`@checked`、128-bit は旗を得ません。深さ 32 と、1 関数あたり 2^20 ステップを超えた式は、診断を出さず型の全域になります（GUIDE D-47: 解析の限界は旗を減らすだけで、プログラムの意味を変えません）。F12 の 65,536 ノードの上限を超える関数も旗を得ません。PM01 の共用体のタグ幅、PR03 の `Maybe`／`Result`／クロージャの lowering は、解析が各関数の最終の型付き IR だけを読み、配置を見ないので、旗の正しさには影響しません（型付き IR が変われば、付く旗の数は変わりえます。統合の後に audit と fuzz を再実行します）。
+旗は `FunctionEmitter::binary` と、self tail call の引数の遅延（native だけ。WASM は直接評価）で書かれます。`Add.add`・`Sub.sub`・`Mul.mul` の `$intrinsic` の呼び出しは `binary` へ inline されるので、演算子形と組み込み形は同じ旗を得ます。旗のある関数は、PR01 が純粋な scalar 関数の戻り値へ付ける `noundef` を失います（`defined_result` が旗を poison の語として数えるため）。
+検証は `cargo test --locked --lib interval`（区間関数を、ビットパターンだけを使う参照と、1〜4 bit の型のすべての区間と値の組、8〜64 bit の端、ネイティブの `overflowing_*` と照合）、`--lib ranges`（型付き IR を emitter と同じ順に歩いた 48 本の旗の表）、`--test integer_ranges`（IR の形・旗・audit の検査数・モード間の差が旗だけであること・34 本のプログラムを全入力で評価した結果との照合）、`node tests/integer_ranges_fuzz.mjs`（乱数のプログラムを BigInt の独立した評価器と、audit／proven／off の wasm32 で照合）、`node tests/range_flags_audit.mjs`（既存の suite を `audit` と `proven` で実行）で行います。`TSUZURI_RANGE_FLAGS=audit cargo test --locked` は、IR を出す Rust のテスト全体を audit で実行します。PM01 や PR03 の統合の後は、audit のテストと fuzz をもう一度実行します。
+旗が LLVM の出力を変えるかは `benchmarks/run-range-flags.mjs` が `off` と `proven` で asm を比べます（結果は [整数の範囲証明と overflow フラグ（PR02）](benchmarks.md#整数の範囲証明と-overflow-フラグpr02)）。
 
 **比較の借用:** `Eq` および `Ord` のメソッド型は共有借用（`ref`）を受け取るシグネチャを持ち、比較演算子における所有権検査はすべての型において `Use::Read`（読み取り）として処理されます。
 組み込みスカラー型以外の比較演算子は `Call(method, BorrowOperand(left), BorrowOperand(right))` へと単相化され、被演算子がメモリ上の場所であればポインタを、一時値であれば `frame_value` によるスタック値をエントリーブロックのスロットへ保存して渡します。
@@ -1176,7 +1188,7 @@ clone、drop、および添字走査は反復ループによってスタック�
 要素型から入れ子のフィールドや共有参照を辿って可変参照に到達できるような型定義も `validate_size` によって厳格に拒否され、単相化後のすべての具象型に対しても再検査が行われます（なお、関数シグネチャに含まれる可変参照はデータを格納する状態ではないため対象外であり、排他参照のクロージャ捕捉は既存の Capture 検査で拒否されます）。共有借用された要素の生存期間は通常の借用（loan）追跡によって安全に保護されます。
 可変変数（`let mut`）や `&mut` 参照を通じてコレクション全体を丸ごと新しいコレクションで置き換える操作は、従来どおり許可されます。
 
-**LLVM:** 整数の算術命令に `nsw`（No Signed Wrap）や `nuw`（No Unsigned Wrap）の未定義動作フラグを付与することはありません。除算および剰余算ではゼロ除算と符号付きの `MIN / -1` を明示的に検査し、ビットシフト演算ではシフト量をビット幅に合わせてマスク処理し、浮動小数点数から整数への変換には飽和変換 intrinsic（`llvm.fptosi.sat`／`llvm.fptoui.sat`）を用いて poison や範囲外による未定義動作を徹底的に排除します。
+**LLVM:** 整数の算術命令に `nsw`（No Signed Wrap）や `nuw`（No Unsigned Wrap）の未定義動作フラグを付与するのは、範囲証明がその向きのオーバーフローを否定できた命令だけです。既定の `off` と `audit` は 1 つも書きません（「整数の範囲証明」）。除算および剰余算ではゼロ除算と符号付きの `MIN / -1` を明示的に検査し、ビットシフト演算ではシフト量をビット幅に合わせてマスク処理し、浮動小数点数から整数への変換には飽和変換 intrinsic（`llvm.fptosi.sat`／`llvm.fptoui.sat`）を用いて poison や範囲外による未定義動作を徹底的に排除します。
 `@checked` ブロック内部に記述された整数の `+`、`-`、`*`、`**`、および単項 `-` のみは、`Int.checked_*` と同一の `checked_integer_arithmetic` によってオーバーフローが検査され、オーバーフロー時には `OverflowException` を送出します。整数のべき乗 `**` は `Int.wrapping_pow` と同様に二乗法と乗算の反復（符号付きの負の指数は `NumericRuntime` のトラップ）で計算され、`f32`／`f64` の `**` は `Math.pow` と同一の `tz_math_pow_f*` を呼び出します。
 例外は 32-bit 整数のエラーコードとして表現され、同一関数本体内の最も内側に位置する `try` のハンドラへと、途中のスコープの一時値を安全に解放しながら分岐します（`try_targets`）。
 例外が関数やラムダ式の境界を越えて自動伝播することはありません。外側を囲む `try` ブロックが存在しない場合は `TrapKind::Overflow` として安全にトラップします。`finally` ブロックは、ハンドラ内部から送出された例外を含むすべての実行経路で確実に 1 回実行されます。
@@ -1290,6 +1302,8 @@ node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri
 node tests/integer_intrinsics.mjs target/release/tsuzuri
+node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 30 1 3
+node tests/range_flags_audit.mjs target/release/tsuzuri quick
 node tests/display_parse.mjs target/release/tsuzuri
 node tests/json.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri

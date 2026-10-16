@@ -33,6 +33,7 @@ pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
     "DEVELOPER_DIR",
     "TSUZURI_ZIG",
     "TSUZURI_LLVM_CLANG",
+    crate::llvm::RANGE_FLAGS_VARIABLE,
 ];
 
 pub(crate) struct ToolIdentity {

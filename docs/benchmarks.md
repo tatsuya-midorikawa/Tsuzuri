@@ -5873,6 +5873,46 @@ F1'・C5 の後に残る差で採否を決め、**入れていません**。同�
   試作は、worker を 1,024 個使い、`-O0` の `__text` が 451,364 bytes（CE より大きい）で、期待する形になりませんでした。
 - 再開する条件は、`-O0` の計算式の速度や大きさを目標にするとき、または 128 を超える連鎖を持つ現実の program が現れたときです。
 
+### 整数の範囲証明と overflow フラグ（PR02）
+
+2026-10-16 に、整数の `+ - *` に `nsw`／`nuw` を書くと LLVM の出力が変わるかを測りました。`benchmarks/run-range-flags.mjs` は、12 の corpus（`benchmarks/` の control・computations・bounds_shapes・matrix・simd・utf・dispatch・apps・cpp・allocation、`tests/fixtures/control`、旗の候補を集めた `benchmarks/range_flags`）を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけで実行しません）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べます。Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは commit `ad13ba96` の非 LTO の release です。実行は決定的で、静かな機械は要りません。
+
+| corpus | 旗のある整数 `+ - *`（IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
+| --- | ---: | --- | --- |
+| control | 20 / 191 | 同じ | 同じ |
+| computations | 8 / 201 | 同じ | 同じ |
+| bounds_shapes | 4 / 140 | 同じ | 同じ |
+| simd | 2 / 135 | 同じ | 同じ |
+| dispatch | 2 / 131 | 同じ | 同じ |
+| cpp | 735 / 1,045 | 同じ | 同じ |
+| allocation | 12 / 162 | 同じ | （export なし） |
+| `tests/fixtures/control` | 715 / 1,169 | 同じ | 同じ |
+| utf | 12 / 156 | 同じ | module が 7 bytes 増える（13,673 → 13,680） |
+| matrix | 65 / 401 | 全レベルで差。命令数は arm64 `-O3` が 2,567 → 2,571、x86_64 `-O3` が 3,238 → 3,222 | 19 bytes 減る（53,023 → 53,004） |
+| apps | 703 / 1,118 | 全レベルで差。arm64 `-O3` が 16,265 → 16,260、x86_64 `-O3` が 16,571 → 16,563 | 31 bytes 減る（91,590 → 91,559） |
+| range_flags | 31 / 189 | arm64 `-O1` だけ 24 行（412 → 412）。ほかは同じ | 同じ |
+
+差のあった関数は、matrix では std の `Matrix.multiply_rows`・`Matrix.fma_rows` の 4 つの単相化（1 関数あたり 1〜5 命令。arm64 `subs; b.mi` が `b.lt`、`sub; tbnz` が `cmp; b.le`、`and ...f8` が `and ...7ff...f8`）、apps では std の `String.split` と `String.join` の 2 つ（1〜8 命令）だけです。どれも比較の向きとレジスタ割り当ての違いで、ベクトル化の有無や境界検査は変わりません。旗の候補を意図して集めた `benchmarks/range_flags`（`values[i + 1]`・`values[2 * i]`・窓の和・降順・`i8u` の拡張・マスク・桁の分解・条件で絞った値）でも、`-O2` と `-O3` の assembly は `off` と同じです。LLVM の IndVarSimplify などが、増分や型や `and` のマスクから同じ旗を自力で付けるためで、PR02 より前の調査（旗を IR の文字列で足した上限の実験）の結果とも一致します。
+
+`String.split`／`String.join` の時間は、次のプログラム（2,000 個の文字列を `,` で `join` して `split` し直す往復を 4,000 回）を、`off` と `proven` で `-O3` の実行ファイルにして交互に 15 回ずつ走らせて比べました（Apple M1 Max。ほかの処理と共有した機械で、負荷平均（1・5・15 分）は開始時が 55.78・93.24・123.14、終了時が 53.03・90.82・121.76）。両方の出力は同じ `63098000` で、中央値は `off` が 319.1 ms（最小 274.7、最大 855.5）、`proven` が 322.7 ms（最小 292.3、最大 712.1）です。差は標本の広がりの内側で、速くなったとは言えません。
+
+```tz
+export def churn :: i64 -> i64 -> i64
+fn churn fields rounds =
+    let parts = new [string](fields, \i -> to_string (i * 7919 % 100003))
+    let separator = ","
+    let mut total = 0i64
+    for round in 0 .. rounds - 1 do
+        let text = String.join (ref separator) (ref parts)
+        let tokens = String.split (ref separator) (ref text)
+        total = total + text.length + tokens.length + round
+    total
+```
+
+asm が変わった Matrix の 4 つの関数の時間は、負荷平均が 100 を超える機械では意味のある比較にならないので測っていません。旗が実行を速くすると言える根拠は、asm の比較からも時間の比較からも得られていません。そのため旗の既定は `off` のままで、`TSUZURI_RANGE_FLAGS=proven` はオプトインです。旗のある関数は PR01 の戻り値の `noundef` を失い（D13）、`proven` で 1 つでも旗が誤ればメモリ安全性を壊す poison になるので、測れる利得がない間は既定にしません。証明の健全性は、`audit` で既存の suite を通すこと、1〜4 bit の型の全区間・全値の総当たり、34 本のプログラムの全入力評価、乱数のプログラムと独立した BigInt の評価器との照合、証明をわざと誤らせたコンパイラを乱数のプログラムが見つけることで確かめています（[ticket](../_perfs/_completed/PR02-integer-ranges.md)）。x86 の実機は使えないので、x86_64 の結果は assembly の比較だけで、速度は測っていません。
+
+ほかの重い処理を止めた機械で時間を測り直すには、`TSUZURI_RANGE_FLAGS=off node benchmarks/run-matrix.mjs <コンパイラ>` と `TSUZURI_RANGE_FLAGS=proven node benchmarks/run-matrix.mjs <コンパイラ>` を交互に実行し、`Matrix.mul`・`Matrix.mul_parallel`・`Matrix.mul_fma` の表の中央値を比べます（`--quick` は n = 16 だけです）。`String.split`／`String.join` は上のプログラムを `off` と `proven` で `-O3` の実行ファイルにして交互に走らせます。asm の差を見直すときは `node benchmarks/run-range-flags.mjs <コンパイラ>` です。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

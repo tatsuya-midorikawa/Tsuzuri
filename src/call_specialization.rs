@@ -299,6 +299,35 @@ pub(super) fn binary_operation<'a>(
     }
 }
 
+/// The operator of a compiler-generated method `Add.add`, `Sub.sub` or `Mul.mul` of a scalar number,
+/// whose body is `x op y` of its two parameters (PR02 D10). A direct call of it is the operator
+/// itself, so the emitter writes `x op y` instead of calling it: the builtin and the operator form
+/// then take the same path. A function written in source code never qualifies, and neither does a
+/// string, whose `+` takes its operands.
+pub(super) fn intrinsic_operation(function: &CheckedFunction) -> Option<BinaryOp> {
+    if function.module != "$intrinsic" || function.parameters.len() != 2 {
+        return None;
+    }
+    let TypedExprKind::Binary(
+        operator @ (BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply),
+        left,
+        right,
+    ) = &function.body.kind
+    else {
+        return None;
+    };
+    let operand = |expression: &TypedExpr, index: usize| matches!(expression.kind, TypedExprKind::Local(id) if id == function.parameters[index].id);
+    let scalar = |ty: &Type| matches!(ty, Type::Integer(..) | Type::Binary(_) | Type::Decimal(_));
+    (operand(left, 0)
+        && operand(right, 1)
+        && function
+            .parameters
+            .iter()
+            .all(|parameter| scalar(&parameter.ty))
+        && scalar(&function.signature.result))
+    .then_some(*operator)
+}
+
 pub(crate) fn field_root(mut expression: &TypedExpr) -> Option<(usize, &Type)> {
     loop {
         match &expression.kind {
