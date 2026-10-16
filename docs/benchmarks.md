@@ -1095,7 +1095,7 @@ IR は `--allocator system` で作ります（既定の確保器が変わって�
 | bulk | 1024／256 | 0.641 | 0.426 | 423.500 | 309.187 |
 
 所要時間は数値が小さいほど良好です。tiny および small のウォーム実行では大幅な時間短縮を達成した一方、コールド起動時やバルク（bulk）実行時では旧版よりも遅い結果となっており、全般的な高速化と過大に主張することはありません。
-要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が依然としてオーバーヘッド要因となっています。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
+要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が、この時点でのオーバーヘッド要因でした。添字の取得と完了の数え方、起床の方法は PR06 で変えました（下の「Task プールのスケジューラ（PR06、2026-10-16）」）。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
 生データは `target/benchmarks/f01-measured/result.json`、同一 IR は同ディレクトリの `tasks.ll` に保存されています。
 なお、この測定結果を冒頭の言語間ベンチマークサマリーに混入させることはせず、共有 CI に恣意的な速度閾値を設定することもありません。
 
@@ -5727,6 +5727,85 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 `--no-cache` の通常 build では統合後の cold codegen cost と executable size の増加が残ります。native O3 の `examples/io` は process CPU 380 → 760 ms（before2 430 ms）、executable 50,840 → 69,976 bytes（before2 50,840 bytes）。synthetic 10-module は 1,330 → 1,610 ms（before2 1,410 ms）、101,128 → 153,528 bytes（before2 101,128 bytes）でした。CPU とサイズは両 baseline より悪化しました。これは全 streams を統合した no-cache 初回ビルドの実測であり、PR05 単独への因果帰属はしません。prebuilt/runtime-cache 経路はこの費用を避けるためのもので、cold compiler cost や成果物サイズが無償になるわけではありません。
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
+
+### Task プールのスケジューラ（PR06、2026-10-16）
+
+native の `Task.parallel`・`Task.parallel_results` の pool（`src/runtime/task.c`）は、添字の取得を group ごとの atomic な加算に、完了の数え方を参加者ごとの 1 回の減算に、
+起床を signal と連鎖に変えました（設計は [アーキテクチャ](architecture.md)）。WASM threads の pool（`src/runtime/task-wasm-threads.c`）は、添字の取得と完了を同じ形にしました。
+コンパイラが出す LLVM IR は変えていません（`tests/fixtures/tasks`・`examples/tasks` の `--emit llvm` は基準コンパイラと `cmp` で一致）。
+
+条件: Apple M1 Max（8P + 2E の 10 論理 CPU）、macOS 27.0.1、Apple Clang 21.0.0、Node 20.19.6、`-O3` generic、fast-math なし、IR は `--allocator system`。
+基準コンパイラ `target/perf/PR06/tsuzuri-before`（main `6d15b437` の release、SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）の 1 本で同じ IR を作り、
+C ランタイムだけを `--runtime` で差し替えました。before は `c6864cf5` の `src/runtime/task.c`（SHA-256 `d9b3692c05cc6dd64d4922f15d9a095bbca5698f17d2dd9c881cf18b6d889d34`）、
+after は `5118945a` の `src/runtime/task.c`（SHA-256 `321574a3d13d57c458b607417052d7b3b828f2cce1d0ad2b1b1734fc06fb13db`）です。
+**他の agent が並行してビルドしている共有機**で、排他の窓（`with-lock.sh measure`）の中で before → after → before2 を 2 分以内に続けて測りました。
+窓の開始時の load average は 40.28／55.80／68.21 で、静かな機械の値ではありません。ここの値は参考値で、正式な値は静かな機械で取り直します。
+各値は 9 標本の中央値で、括弧は最小〜最大です（単位 µs）。before2 は同じ before の再測定で、after／before の差が before2／before の揺れを超えない行は差として扱いません。
+
+```sh
+git show c6864cf5:src/runtime/task.c > target/perf/PR06/task-before.c
+BEFORE=target/perf/PR06/tsuzuri-before
+for mode in "" --data-parallel --sweep "--gap-us 1000"; do
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before
+  node benchmarks/run-tasks.mjs $BEFORE --runtime src/runtime/task.c           $mode --metrics target/perf/PR06-after
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before2
+done
+node benchmarks/metrics.mjs report target/perf/PR06-after --baseline target/perf/PR06-before
+```
+
+**回数（時間ではなく、機械に依らない）。** `tests/task_runtime.c` が pthread 呼び出しの hook で、眠っている pool の 257 添字の group 1 つが取る mutex・signal・broadcast を数えます。
+before の runtime ではこの assert は落ちます（CPU 数 2 と 4 で確認）。
+
+| 257 添字の group（CPU 数 N） | before（HEAD） | after |
+| --- | ---: | ---: |
+| `Task.parallel` の mutex の取得 | 259 | 2 + 参加した worker 数（`2 + (N - 1)` 以下） |
+| `Task.parallel_results` の mutex の取得 | 515 | 同上 |
+| broadcast | 2 | 1 以下（最後に減らした worker が、眠っている投入側を起こすときだけ） |
+| signal | 0 | 1 〜 `2 + (N - 1)` |
+| 長さ 2 の group の signal・broadcast | — | 1・1（worker が最後に終える形で固定した試験） |
+
+**短い group の warm・cold（`run-tasks.mjs`、tiny = 4 添字×0 反復、small = 32 添字×16 反復、bulk = 1024 添字×256 反復）。**
+warm は連続呼び出しの平均、p50 は 1 回ごとに計った中央値、cold は pool の起動を含む最初の呼び出しです。
+
+| 仕事 | 指標 | before | after | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | warm | 5.32 (3.0–10.4) | 1.44 (0.2–4.2) | 2.90 (0.6–10.9) |
+| tiny | p50 | 0.21 | 0.17 | 0.21 |
+| tiny | cold | 125.5 (90.8–168.1) | 127.5 (75.0–2444.3) | 123.5 (91.6–157.9) |
+| small | warm | 16.2 (8.7–39.8) | 2.39 (1.0–13.2) | 17.3 (2.8–38.0) |
+| small | p50 | 4.46 (1.3–26.7) | 1.00 (1.0–1.0) | 9.50 (1.1–40.8) |
+| small | cold | 122.0 (86.4–228.7) | 103.0 (72.9–258.6) | 123.1 (89.5–197.9) |
+| bulk | warm | 539.9 (510.6–608.3) | 566.8 (290.7–1947.1) | 578.9 (476.8–1377.1) |
+| bulk | p50 | 579.8 (530.0–650.5) | 344.5 (262.3–402.5) | 588.6 (555.4–644.8) |
+| bulk | cold | 666.8 (598.8–782.7) | 465.8 (324.3–2038.0) | 724.5 (544.3–826.8) |
+
+tiny の p50 が 0.2 µs なのは、4 添字を投入したスレッドが worker を待たずに 1 つで終えるためで、pool の費用は変わりません。small の warm・p50 は before の 16.2・4.5 µs が 2.4・1.0 µs になりました
+（before2 は 17.3・9.5 µs）。bulk の warm の平均は、after の標本に 1.9 ms の外れ値があり、before・before2 と区別できません。p50 は 580 → 345 µs です。cold は pool の起動（スレッド生成）が支配し、変わっていません。
+
+**worker が眠った後の最初の呼び出し（`--gap-us 1000`、各呼び出しの前に 1 ms 休む）。** 起床の遅延が見える設定です。休みは時間に含めません。
+
+| 仕事 | 指標 | before | after | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | p50 | 16.1 (14.5–17.4) | 6.17 (5.0–7.1) | 15.0 (13.5–18.6) |
+| small | p50 | 21.8 (18.5–24.7) | 5.83 (5.5–6.5) | 16.0 (14.4–25.7) |
+| bulk | p50 | 590.8 (550.5–781.8) | 252.3 (245.5–272.7) | 574.6 (551.1–591.6) |
+
+添字の取得・完了・起床の変更をあわせた結果で、worker が眠っている状態からの 3 種目の中央値が 2.3〜3.7 倍短くなりました（before2 との差は 1.0〜1.4 倍）。
+
+**粒度（`--sweep`、32 添字で 1 添字の仕事の量 `rounds` を変える。逐次は同じ IR の逐次の loop）。** `parallel` の p50 が `sequential` 以下になる最小の粒度:
+
+| rounds | 逐次の 32 件（p50） | before の parallel（p50） | after の parallel（p50） | before2 の parallel（p50） |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 0.25 | 1.21 | 1.21 | 2.67 |
+| 64 | 1.88 | 4.33 | 4.25 | 27.0 |
+| 256 | 9.7 | 45.8 | 16.7 | 40.6 |
+| 1024 | 41.2 | 57.8 | 42.8 | 62.3 |
+| 4096 | 168.0 | 86.8 | 87.2 | 80.6 |
+| 16384 | 690.5 | 291.9 | 231.8 | 175.5 |
+
+before は逐次の 4096 rounds（約 170 µs）で初めて並列が速くなり、1024 rounds（約 41 µs）では 40 % 遅い（57.8 対 41.2 µs）。after は 1024 rounds で逐次と並び（42.8 対 42.4 µs）、4096 rounds で半分になります。
+測った点の範囲では、並列が逐次と並ぶか下回る最小の逐次時間は、before が 168 µs（41 µs では 40 % 遅い）、after が 42 µs（並ぶ）で、168 µs では半分になります。
+それより短い group では、並列は逐次より遅いままです（256 rounds、約 10 µs で 16.7 対 9.7 µs）。
 
 ## 現実的な次の指標
 

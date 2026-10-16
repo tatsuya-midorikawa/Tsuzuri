@@ -31,7 +31,7 @@
 | 1 | group は `run`・`run_result`・`context`・`length`・`next`・`remaining`・`failure`・`next_group`。pool は mutex と 2 つの条件変数 | group に `owner`・`trap_index`・`trap`（E14）、pool に `busy`・`idle`・`waiters`（F10）が加わり、`tz_task_stop`（`min(failure, trap_index)`）・`TZ_STACK_GUARD`・item ごとの trap hook がある | execute・worker・submit・`tz_task_help_one`・`tz_channel_check_deadlock` を書き換えるとき、すべてを保つ |
 | 2 | F10 が done なら、`tz_task_submit` の先頭の `tz_mutex_held` の検査を保つ | その検査は IR の `@tz.mutex.parallel*`（`src/runtime/sync.ll`）が `tsuzuri_mutex_parallel_ok` を呼ぶ形で、`tz_task_submit` にはない | 「位置を保つ」指示は不要。ABI は変えない |
 | 3 | D7: `remaining` を削除して `helpers` を足す。既存テストの変更は `task_runtime.c`・`tasks.mjs` だけ | `tz_channel_check_deadlock` が `remaining` を読み、`tests/channel_runtime.c` が `.remaining = 1` の group を手で作って `busy`・`idle`・`waiters`・`help_depth` を white-box に検査する | **D7 は採らない。** `remaining` を残し、参加者ごとにまとめて減らす（下の設計） |
-| 4 | submit: lock → 登録 → 起こす数の計算 → unlock → signal → **その後** に claim | F10 の規則: グループを始めたスレッドは、公開する lock の中で最初の子どもを取る（channel.md の「待ちの規則」、wasm の「三段が忙しい機械で完了する」試験） | **この順は採らない。** lock の中で最初の添字を取る |
+| 4 | submit: lock → 登録 → 起こす数の計算 → unlock → signal → **その後** に claim | F10 の規則: グループを始めたスレッドは、公開するときに最初の子どもを取り済みにする（channel.md の「待ちの規則」、wasm の「三段が忙しい機械で完了する」試験） | **この順は採らない。** 公開の前に最初の添字を取る（group を作るとき `next` を 1 にする。実装は公開する lock の前にこれを済ませるので、lock の中で取るのと同じく、worker が全添字を先に取る窓がない） |
 | 5 | Windows adapter に `pthread_cond_signal` がない。`TZ_TASK_COND_SIGNAL` は新規 | どちらも F10 が足済み（`pthread_cond_init`・`pthread_cond_destroy` も）。`tz_waiter_wake` が既に signal を使う | adapter の変更は不要。新規は `tz_task_signal`・失敗注入の hook・`tasks.mjs` の `"cond_signal"` だけ |
 | 6 | D10: sanitizer は `tests/tasks.mjs` に入れない。CI の clang に runtime があるとは限らない | `tasks.mjs` に `TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` の枝が既にあり、`tests/trap_return.mjs` は `trap_boundary_runtime.c`（`task.c` を include）を TSan と ASan＋UBSan で常に実行する。`targets.yml` の Linux は `libclang-rt-21-dev` を入れる | 既存の枝を `task_runtime.c` と新しい stress 試験へ広げる |
 | 7 | 機械語: after に `ldaddal`・`ldaddl` がなく `_pthread_cond_signal` がある。before の `_pthread_cond_signal` は 0 | HEAD は既に `_pthread_cond_signal` を 5 回参照する（F10）。`ldadd`・`ldaddal`・`ldaddl` は各 1 で起票時と同じ。`remaining` を残すので `ldaddal` も残る | 機械語の基準は外し、lock 回数と signal 回数の assert で判定する |
@@ -56,14 +56,14 @@
   `remaining > 0` で、stack 上の group は参加者の下で消えない（`helpers` の代わり）。減らした後は group に触れない。
 - 失敗・trap は cold path: mutex の下で `failure`・`trap_index`・`trap` を更新し、停止の添字が小さくなったら `next` を `length` へ CAS で進め、
   `remaining` から `length - 旧 next` を引き、`work_available` を broadcast する（D6。`task_runtime.c` の `result_failure` がこの broadcast に依る）。
-- 提出したスレッドは、公開する lock の中で最初の添字を取り、unlock の後に signal し、取り尽くして `remaining` を減らし、`remaining == 0` まで待つ
+- 提出したスレッドは、公開する前に最初の添字を取り（`next` の初期値を 1 にする）、公開して unlock の後に signal し、取り尽くして `remaining` を減らし、`remaining == 0` まで待つ
   （待つ間は今までどおり `--busy`・`tz_channel_check_deadlock`・`work_done`）。`tz_task_help_one`・worker・`tz_channel_check_deadlock` も同じ
   claim・release を使う。`busy`・`idle` は join と leave の単位で動かす。
 - 新規: `tz_task_claim`・`tz_task_run_item`・`tz_task_drain`・`tz_task_release`・`tz_task_signal`。`tz_task_execute` は無くなる。
 
 保つ不変条件（どれにも試験がある）:
 
-- I1 最初の子どもは公開する lock の中で取る。I2 結合を待つスレッドは自分のグループだけを走らせる。I3 worker と `tz_task_help_one` は最も古いグループから選ぶ。
+- I1 最初の子どもは、公開する前に投入したスレッドが取る（`next` の初期値 1）。I2 結合を待つスレッドは自分のグループだけを走らせる。I3 worker と `tz_task_help_one` は最も古いグループから選ぶ。
 - I4 起こす側が `busy` を戻してから signal する。I5 `idle` は worker だけを数える。
 - I6 判定は `busy == 0` で、`idle > 0` と未着手の組も、`remaining == 0` の group もないときだけ出す。I7 手伝いは `idle == 0` のときだけで、深さは 16 まで。
 - I8 最後の release の後に group を触らない。I9 失敗・trap は最小添字で、skip した添字は `remaining` から引く。I10 `resume` は結合の後。
@@ -80,7 +80,7 @@ group は submit で 1 つ足し、トークンが補われないのは group �
 | D2 取得の単位 | 承認。1 回の `fetch_add` で 1 添字。 |
 | D3 起床 | **見直し**。全 worker への broadcast はやめる。submit は unlock の後に `min(初期数, length - 1)` 回 signal し（初期数は 1 か 2。C4 の計測で決める）、join で取った worker が、参加した group に未着手が残れば 1 つ signal する（連鎖）。 |
 | D4 待機 | 承認。pthread の条件変数と Windows の SRWLOCK・CONDITION_VARIABLE のまま。スピンは既定 0 で、静かな機械の計測で明確な利益があるときだけ入れる。 |
-| D5 手伝いと選択順 | 承認。I1（最初の子どもは公開する lock の中で取る）を明示する。 |
+| D5 手伝いと選択順 | 承認。I1（最初の子どもは公開する前に投入したスレッドが取る）を明示する。 |
 | D6 失敗の経路 | 承認。cold path で mutex の下、停止は CAS、停止の添字は `min(failure, trap_index)`、`work_available` の broadcast を残す。 |
 | D7 完了の数え方 | **見直し（起票の案は採らない）**。`remaining` を残し、参加者ごとにまとめて 1 回だけ減らす。F10 の文言「`remaining` の acq-rel で公開される」はそのまま正しい。 |
 | D8・D9 | 承認。CPU 数の読み方・stack の大きさ・`TZ_TASK_MAX_THREADS` は変えない。 |
@@ -146,7 +146,7 @@ group は submit で 1 つ足し、トークンが補われないのは group �
   `run-cpp.mjs --metrics <dir>`、PX01 の「計測手順」の before／after（before・after・before2）。
 - F10（done）: F10 は、PR06 が `tsuzuri_task_parallel`・`tsuzuri_task_parallel_results` の ABI と「join を待つ thread は自分のグループの
   未配布の仕事を手伝う」保証を保つこと、入口を増やさないことを仮定する。PR06 はどちらも保つ（D5）。加えて、F10 の待ちの規則
-  （最初の子どもを公開する lock の中で取る、空きの worker がいなければ手伝う、全員が待てば判定する）と、`busy`・`idle`・`waiters` の数え方を保つ（I1〜I10）。
+  （最初の子どもを公開する前に取る、空きの worker がいなければ手伝う、全員が待てば判定する）と、`busy`・`idle`・`waiters` の数え方を保つ（I1〜I10）。
 
 ### 停止条件
 
