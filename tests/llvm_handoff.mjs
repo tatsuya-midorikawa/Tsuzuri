@@ -123,6 +123,15 @@ try {
     const reached = execute(compiler, ["build", project("dead_extern_reached"), optimization, "--no-cache", "-o", executable(`reached${optimization}`)], { success: false });
     assert.notEqual(reached.status, 0);
     assert.match(reached.stderr, /pb03_missing_symbol/);
+
+    // 10. `tsuzuri run` instruments traps. Two runtime parts that share a line (`}define ...`) are two functions, and pruning an unused
+    // function that locks a `Mutex` removes the line break between them (`tree_lock` built before, `tree` did not build at all).
+    if (!windows) {
+      for (const name of ["tree", "tree_lock"]) {
+        const result = execute(compiler, ["run", project(name), optimization, "--no-cache"]);
+        assert.equal(result.stdout, "[1, 2, 3] 1\n", `${name} ${optimization}`);
+      }
+    }
   }
 
   // 9. The same for an operating-system API on a target that has none (the driver refuses before any tool runs): only a program

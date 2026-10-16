@@ -362,3 +362,95 @@ def shapes :: i64 -> Maybe<Shape> = \\x -> Maybe.Some (Shape.Span (only_here x))
         }
     }
 }
+
+/// The functions of `ir` that use `%tz.context`, the trap-site parameter of the functions that the instrumentation
+/// manages, without taking it: Clang rejects them (`use of undefined value '%tz.context'`).
+fn context_without_parameter(ir: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut open: Option<(String, bool)> = None;
+    for raw in ir.lines() {
+        // A runtime part can follow the closing brace of the function before it on the same line.
+        let line = match raw.strip_prefix('}') {
+            Some(rest) if !rest.is_empty() => {
+                open = None;
+                rest
+            }
+            _ => raw,
+        };
+        if line.starts_with("define ") {
+            let start = line.find('@').unwrap() + 1;
+            let name = line[start..start + line[start..].find('(').unwrap()].to_owned();
+            open = Some((name, line.contains("%tz.context")));
+        } else if line == "}" {
+            open = None;
+        } else if let Some((name, false)) = &open
+            && line.contains("%tz.context")
+        {
+            found.insert(name.clone());
+        }
+    }
+    found
+}
+
+/// A recursive union and a displayed list make the runtime parts `recursive.ll` and `display.ll`, and the emitter
+/// appends a part right behind the previous one. `recursive.ll` ends without a line break, so `display.ll` starts in
+/// the line of its last brace (`}define ...`) unless something else is appended between them.
+const TREE: &str = "\
+union Tree =
+    | Leaf
+    | Node of Tree * i64 * Tree
+
+def rec size :: Tree -> i64 = \\tree ->
+    match tree with
+    | Tree.Leaf -> 0
+    | Tree.Node (left, _, right) -> size left + 1 + size right
+
+let values = [1, 2, 3]
+$\"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}\"
+";
+
+/// The same program with an unused public function that locks a `Mutex`, whose runtime part (`sync.ll`) stands between the two
+/// runtime parts until the function is pruned.
+const TREE_WITH_LOCK: &str = "\
+union Tree =
+    | Leaf
+    | Node of Tree * i64 * Tree
+
+def rec size :: Tree -> i64 = \\tree ->
+    match tree with
+    | Tree.Leaf -> 0
+    | Tree.Node (left, _, right) -> size left + 1 + size right
+
+def bump :: i64 -> i64 = \\n ->
+    let total = Mutex.create 0i64
+    let _seen = Task.scope (ref total) 4 (shared -> index -> Mutex.with_lock shared (value -> {
+        deref value = deref value + index + n;
+        index
+    }))
+    Mutex.into_inner total
+
+let values = [1, 2, 3]
+$\"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}\"
+";
+
+#[test]
+fn the_trap_instrumentation_reads_runtime_parts_that_share_a_line() {
+    // `display.ll` follows `recursive.ll` in the line of its last brace, which the baseline compiler already
+    // instrumented wrongly: the function took no `%tz.context` and its body used it.
+    for ir in [unpruned(TREE, true).ir, executable(TREE, true).ir] {
+        assert_eq!(context_without_parameter(&ir), BTreeSet::new());
+    }
+}
+
+#[test]
+fn an_unused_function_does_not_decide_whether_a_trap_info_build_still_works() {
+    // The lock stands between the two runtime parts, so the unpruned program (which `tsuzuri run` built before
+    // pruning) has the line break that the pruned one lost with the function.
+    assert_eq!(
+        context_without_parameter(&unpruned(TREE_WITH_LOCK, true).ir),
+        BTreeSet::new()
+    );
+    let pruned = executable(TREE_WITH_LOCK, true).ir;
+    assert!(!defined(&pruned).contains("tz.fn.Main.bump"));
+    assert_eq!(context_without_parameter(&pruned), BTreeSet::new());
+}

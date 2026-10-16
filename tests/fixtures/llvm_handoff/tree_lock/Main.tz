@@ -1,0 +1,22 @@
+// The same program with an unused public function that locks a `Mutex`. Its runtime part (`sync.ll`) stands between the two runtime
+// parts of the `tree` fixture, so the unpruned program (which `tsuzuri run` built before PB03 D1) had a line break there that
+// the pruned executable loses with the function: it must still build.
+union Tree =
+    | Leaf
+    | Node of Tree * i64 * Tree
+
+def rec size :: Tree -> i64 = \tree ->
+    match tree with
+    | Tree.Leaf -> 0
+    | Tree.Node (left, _, right) -> size left + 1 + size right
+
+def bump :: i64 -> i64 = \n ->
+    let total = Mutex.create 0i64
+    let _seen = Task.scope (ref total) 4 (shared -> index -> Mutex.with_lock shared (value -> {
+        deref value = deref value + index + n;
+        index
+    }))
+    Mutex.into_inner total
+
+let values = [1, 2, 3]
+$"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}"
