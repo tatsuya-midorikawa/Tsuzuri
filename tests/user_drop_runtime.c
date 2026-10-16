@@ -103,6 +103,11 @@ int main(int argc, char **argv) {
     reset(); assert(tz_owned_array() == 31); EXPECT(1, 2);
     reset(); assert(tz_owned_nested() == 8); EXPECT(3);
     reset(); assert(tz_owned_generic() == 2); EXPECT(4);
+    reset(); assert(tz_packed_scopes() == 3012); EXPECT(204, 103);
+    reset(); assert(tz_packed_reassign() == 26); EXPECT(305, 406);
+    reset(); assert(tz_packed_array() == 3); EXPECT(103, 204, 305);
+    reset(); assert(tz_packed_temporary() == 6); EXPECT(609);
+    reset(); assert(tz_packed_consume() == 7); EXPECT(702);
     for (int index = 0; index < 1000; ++index) {
         reset();
         assert(tz_scopes() == 3);

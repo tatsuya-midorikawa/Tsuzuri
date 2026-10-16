@@ -190,3 +190,10 @@ fn lanes n =
     let v: f32x8 = Simd.splat (n as f32)
     let w = Wide { a: 3, v: v, b: 5 }
     (Simd.sum_lanes w.v) as i64 * 100 + (w.a as i64) * 10 + (w.b as i64)
+
+// Constants of plain data are static objects whose fields stand where the record keeps them.
+const Origin: Gauge = Gauge { flag: true, count: 42, tag: 7, ratio: 2.5 }
+const Pins: [Spread] = [Spread { a: 1, b: 2, c: 3, d: 4, e: true }, Spread { a: 5, b: 6, c: 7, d: 8, e: false }]
+
+export def statics :: i64 -> i64
+fn statics n = gauge_sum (ref Origin) + spread_sum (ref Pins[n % 2]) * 1000 + Origin.count * n

@@ -102,7 +102,7 @@ show 40
 | 関数値 | `<fn Main.show.lambda@12:15>` のように呼び出す関数の名前 |
 | `Task` | `<task>` |
 
-LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。
+LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。record の DWARF のメンバーは宣言の順に並び、offset はフィールドを格納している位置です（アライメントの大きい順に並べ替えて格納する record では、宣言の順と offset の順が違います。[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）。デバッガーはその offset から値を読むので、表示は宣言の順のままです。
 
 ### 読めない値と上限
 

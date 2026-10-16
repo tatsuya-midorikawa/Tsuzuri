@@ -1644,6 +1644,9 @@ const suites = {
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
+      // The static data of a constant stores each field where the record keeps it: count, ratio, flag, tag.
+      assert.match(ir, /constant %tz\.record\.Main\.Gauge \{ i64 42, double 0x4004000000000000, i1 1, i8 7 \}/);
+      assert.match(ir, /%tz\.record\.Main\.Spread \{ i64 2, i32 4, i8 1, i8 3, i1 1 \}/);
     },
   },
   stdlib: {
@@ -2256,6 +2259,8 @@ suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n <<
     records.push(["replaced", [n], ledgerSum(n, { open: true, level: 9n })]);
     records.push(["options", [n], g.flag ? gaugeSum(g) : -1n]);
     records.push(["lanes", [n], 8n * n * 100n + 35n]);
+    // Origin: 1 + 42 * 3 + 7 * 5 + 20 * 7 = 302; Pins[0] sums to 41 and Pins[1] to 78.
+    records.push(["statics", [n], 302n + (n % 2n === 0n ? 41n : 78n) * 1000n + 42n * n]);
   }
   for (const count of [0n, 1n, 2n, 5n, 33n, 100n]) {
     const keys = Array.from({ length: Number(count) }, (_, i) => [BigInt((i * 41) % 5), BigInt((i * 7919) % 101), BigInt(i % 3)]);
