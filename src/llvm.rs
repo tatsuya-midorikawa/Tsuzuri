@@ -8848,6 +8848,18 @@ mod tests {
     }
 
     #[test]
+    fn the_integer_runtime_avoids_the_words_that_tests_search_for() {
+        // The tests that forbid fast-math flags search IR text for these words, and the tests of
+        // the numeric runtime for its symbols; the integer runtime is part of that text.
+        let runtime = include_str!("runtime/integer.ll");
+        for word in [
+            "fast", "contract", "reassoc", "fmuladd", "tz_soft_", "llvm.fma",
+        ] {
+            assert!(!runtime.contains(word), "{word}");
+        }
+    }
+
+    #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
         let ir = library(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\

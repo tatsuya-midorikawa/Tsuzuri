@@ -348,40 +348,40 @@ start:
   %decimal = icmp eq i64 %base, 10
   %reach = add i64 %first, 19
   %short = icmp ult i64 %reach, %length
-  %fast.end = select i1 %short, i64 %reach, i64 %length
-  br i1 %decimal, label %fast, label %prepare
+  %lead.end = select i1 %short, i64 %reach, i64 %length
+  br i1 %decimal, label %lead, label %prepare
 ; At most 19 decimal digits cannot wrap a u64, so the leading run of digits, up to 19 units, is added
 ; without a range check and the sum is compared with the limit once. The checked loop below takes
 ; over from the first unit that is not a digit (a "_" or an error) or the 20th, and reads the texts
 ; with a prefix from the start.
-fast:
-  %fast.index = phi i64 [ %first, %start ], [ %fast.next, %fast.digit ]
-  %fast.value = phi i64 [ 0, %start ], [ %fast.grown, %fast.digit ]
-  %fast.more = icmp ult i64 %fast.index, %fast.end
-  br i1 %fast.more, label %fast.body, label %fast.exit
-fast.body:
-  %fast.at = getelementptr inbounds i16, ptr %input, i64 %fast.index
-  %fast.char = load i16, ptr %fast.at
-  %fast.offset = sub i16 %fast.char, 48
-  %fast.is = icmp ult i16 %fast.offset, 10
-  br i1 %fast.is, label %fast.digit, label %fast.exit
-fast.digit:
-  %fast.digit.wide = zext i16 %fast.offset to i64
-  %fast.scaled = mul i64 %fast.value, 10
-  %fast.grown = add i64 %fast.scaled, %fast.digit.wide
-  %fast.next = add i64 %fast.index, 1
-  br label %fast
-fast.exit:
-  %fast.over = icmp ugt i64 %fast.value, %limit
-  br i1 %fast.over, label %fail, label %fast.check
-fast.check:
-  %fast.complete = icmp eq i64 %fast.index, %length
-  %fast.entered = icmp ne i64 %fast.index, %first
-  br i1 %fast.complete, label %finish, label %prepare
+lead:
+  %lead.index = phi i64 [ %first, %start ], [ %lead.next, %lead.digit ]
+  %lead.value = phi i64 [ 0, %start ], [ %lead.grown, %lead.digit ]
+  %lead.more = icmp ult i64 %lead.index, %lead.end
+  br i1 %lead.more, label %lead.body, label %lead.exit
+lead.body:
+  %lead.at = getelementptr inbounds i16, ptr %input, i64 %lead.index
+  %lead.char = load i16, ptr %lead.at
+  %lead.offset = sub i16 %lead.char, 48
+  %lead.is = icmp ult i16 %lead.offset, 10
+  br i1 %lead.is, label %lead.digit, label %lead.exit
+lead.digit:
+  %lead.digit.wide = zext i16 %lead.offset to i64
+  %lead.scaled = mul i64 %lead.value, 10
+  %lead.grown = add i64 %lead.scaled, %lead.digit.wide
+  %lead.next = add i64 %lead.index, 1
+  br label %lead
+lead.exit:
+  %lead.over = icmp ugt i64 %lead.value, %limit
+  br i1 %lead.over, label %fail, label %lead.check
+lead.check:
+  %lead.complete = icmp eq i64 %lead.index, %length
+  %lead.entered = icmp ne i64 %lead.index, %first
+  br i1 %lead.complete, label %finish, label %prepare
 prepare:
-  %slow.index = phi i64 [ %first, %start ], [ %fast.index, %fast.check ]
-  %slow.value = phi i64 [ 0, %start ], [ %fast.value, %fast.check ]
-  %slow.previous = phi i1 [ false, %start ], [ %fast.entered, %fast.check ]
+  %slow.index = phi i64 [ %first, %start ], [ %lead.index, %lead.check ]
+  %slow.value = phi i64 [ 0, %start ], [ %lead.value, %lead.check ]
+  %slow.previous = phi i1 [ false, %start ], [ %lead.entered, %lead.check ]
   %cutoff = udiv i64 %limit, %base
   %cutoff.times = mul i64 %cutoff, %base
   %last = sub i64 %limit, %cutoff.times
@@ -420,7 +420,7 @@ accumulate:
   %next = add i64 %index, 1
   br label %loop
 finish:
-  %final = phi i64 [ %value, %loop ], [ %fast.value, %fast.check ]
+  %final = phi i64 [ %value, %loop ], [ %lead.value, %lead.check ]
   %negated = sub i64 0, %final
   %result = select i1 %negative, i64 %negated, i64 %final
   store i64 %result, ptr %out
