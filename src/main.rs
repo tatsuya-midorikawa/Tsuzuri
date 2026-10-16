@@ -148,11 +148,13 @@ Build options:
     --trap-mode return     Native object, llvm or header output: each export also comes as
                          tsuzuri_try_<name>, which returns a status and a trap record instead
                          of ending the process (implies --trap-info for object and llvm)
-    --allocator system|host|counting
+    --allocator system|host|counting|small
                          Heap of object, llvm, header, or WASM output (default: system).
                          host calls tsuzuri_host_alloc/free/realloc, which the host defines
                          (WASM imports them from tsuzuri_heap); counting adds the counts that
-                         tsuzuri_alloc_stats reports
+                         tsuzuri_alloc_stats reports; small serves blocks of up to 512 bytes
+                         from per-thread size classes (native 64-bit targets, also executables
+                         and shared libraries; not WASM, --freestanding, or --trap-mode return)
     --freestanding         Native object, llvm, or header output that needs no C library;
                          requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
   --                     Treat remaining arguments as paths
@@ -465,9 +467,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("system") => Allocator::System,
                             Some("host") => Allocator::Host,
                             Some("counting") => Allocator::Counting,
+                            Some("small") => Allocator::Small,
                             _ => {
                                 return Err(
-                                    "allocator must be 'system', 'host', or 'counting'".into()
+                                    "allocator must be 'system', 'host', 'counting', or 'small'"
+                                        .into(),
                                 );
                             }
                         },
@@ -3927,6 +3931,17 @@ mod tests {
             allocator(&["build", "Main.tz", "--emit", "object"]),
             Allocator::System
         );
+        // `small` is for native executables, objects, shared libraries, LLVM IR, and headers (PM05).
+        for emit in ["object", "llvm", "header"] {
+            assert_eq!(
+                allocator(&["build", "Main.tz", "--emit", emit, "--allocator", "small"]),
+                Allocator::Small
+            );
+        }
+        assert_eq!(
+            allocator(&["build", "Main.tz", "--allocator", "small"]),
+            Allocator::Small
+        );
         for value in ["system", "host", "counting"] {
             parse(&[
                 "build",
@@ -3966,6 +3981,57 @@ mod tests {
                     "Main.tz",
                     "--target",
                     "wasm32",
+                    "--allocator",
+                    "small",
+                ],
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--allocator",
+                    "small",
+                ],
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ),
+            (
+                vec!["build", "Main.tz", "--emit", "wgsl", "--allocator", "small"],
+                "--allocator small requires executable, object, shared library, LLVM IR, or header output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--trap-mode",
+                    "return",
+                    "--allocator",
+                    "small",
+                ],
+                "--trap-mode return keeps its own tracked allocator; remove --allocator",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--freestanding",
+                    "--allocator",
+                    "small",
+                ],
+                "--freestanding requires --allocator host: without the C library the host provides the heap",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
                     "--wasm-feature",
                     "threads",
                     "--allocator",
@@ -3995,7 +4061,7 @@ mod tests {
                     "--allocator",
                     "pool",
                 ],
-                "allocator must be 'system', 'host', or 'counting'",
+                "allocator must be 'system', 'host', 'counting', or 'small'",
             ),
             (
                 vec!["build", "Main.tz", "--emit", "object", "--allocator"],

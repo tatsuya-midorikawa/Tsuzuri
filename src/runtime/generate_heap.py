@@ -72,6 +72,22 @@ for name in shared_globals:
     text = re.sub(rf"^(@{name} = )hidden (?:local_unnamed_addr )?global", r"\1weak hidden global", text, flags=re.M)
 text = re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
 
+# LLVM knows malloc and free as allocation functions: it removes an allocation that is freed unread, turns a short-lived one
+# into a stack slot, and knows that the result aliases nothing. The attributes give the same knowledge to the entry points
+# (family "tz_small"). They only count while the entry points are calls, so these are noinline: inlined, the fast path
+# hides the allocation from the optimizer before it can drop the pair (record_sort ran twice as long that way) and every
+# allocation site carries the fast path (+5.2 KiB of code in a program that allocates, against +2.5 KiB). realloc is opaque.
+allocator_attributes = [
+    ("define internal ptr @tz_small_alloc(i64 noundef %0) local_unnamed_addr nounwind {",
+     'define internal noalias ptr @tz_small_alloc(i64 noundef %0) local_unnamed_addr nounwind noinline allockind("alloc,uninitialized") allocsize(0) "alloc-family"="tz_small" {'),
+    ("define internal void @tz_small_free(ptr noundef %0) local_unnamed_addr nounwind {",
+     'define internal void @tz_small_free(ptr noundef allocptr %0) local_unnamed_addr nounwind noinline allockind("free") "alloc-family"="tz_small" {'),
+]
+for old, new in allocator_attributes:
+    if text.count(old) != 1:
+        raise RuntimeError(f"heap-small.ll does not have exactly one {old}")
+    text = text.replace(old, new)
+
 # What the embedding relies on.
 if re.search(r"#\d|(?<![\w\"])![A-Za-z0-9_.]", text):
     raise RuntimeError("heap-small.ll still has attribute groups or metadata")

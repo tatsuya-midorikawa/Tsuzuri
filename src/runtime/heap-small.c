@@ -21,8 +21,9 @@
    later), and a flush keeps its blocks and tries again at the next free. A block is not
    owned by a thread, so a block freed by another thread goes into the caller's cache.
 
-   Memory is never returned to the system. A thread that ends keeps its cache (at most
-   16 KiB per class, 256 KiB in all): the blocks stay counted but nothing uses them again.
+   Memory is never returned to the system. A thread that ends keeps its cache (a class holds at
+   most 2 * batch + 1 blocks, about 264 KiB in all, more only while another thread holds the lock
+   of a class): the blocks stay counted but nothing uses them again.
 
    Every object that carries this code shares one allocator state through the pointer
    tz_small_shared, which the linker merges (weak, hidden). Each object has its own thread-local

@@ -122,6 +122,9 @@ pub enum Allocator {
     Host,
     /// The system allocator with counts that `tsuzuri_alloc_stats` reports (Phase 2).
     Counting,
+    /// The size-class allocator of `heap-small.ll` for native 64-bit targets (PM05): requests of up to
+    /// 512 bytes are served from per-thread caches of 16-byte classes, larger ones by the C library.
+    Small,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -989,6 +992,13 @@ fn emit_program(
             Span::default(),
         ));
     }
+    if allocator == Allocator::Small && wasm {
+        return Err(Diagnostic::new(
+            "E2000",
+            "the small allocator is for native targets; WebAssembly keeps its own heap",
+            Span::default(),
+        ));
+    }
     let mut output = String::from(
         "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
@@ -1593,6 +1603,10 @@ fn emit_program(
             Allocator::System => output.push_str(&heap),
             Allocator::Host if wasm => output.push_str(&heap_host_wasm()),
             Allocator::Host => output.push_str(include_str!("runtime/heap-host.ll")),
+            Allocator::Small => {
+                output.push_str(include_str!("runtime/heap-small.ll"));
+                output.push_str(include_str!("runtime/heap-small-native.ll"));
+            }
             Allocator::Counting => {
                 // The threads wrappers above already call the unlocked heap; they are the base.
                 if !instrumentation.wasm_threads {
@@ -1811,7 +1825,7 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
         }
     }
     match allocator {
-        Allocator::System => {}
+        Allocator::System | Allocator::Small => {}
         Allocator::Host => output.push_str(host_abi::HOST_ALLOCATOR_PROTOTYPES),
         Allocator::Counting => output.push_str(host_abi::ALLOCATION_STATS_PROTOTYPE),
     }

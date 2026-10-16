@@ -1,8 +1,10 @@
 ; --allocator small (PM05 Phase 2): @tz.alloc, @tz.free, and @tz.realloc over the size-class allocator of
-; heap-small.ll, with the same contract as heap-native.ll: a null result of the C library's allocator traps,
+; heap-small.ll, behaving as heap-native.ll does: a null result of the C library's allocator traps,
 ; a new size of 0 frees, and a null block is a new allocation. The old size is not needed; the block's class
 ; (or the C library) knows the size that is copied.
-define internal ptr @tz.alloc(i64 %size) nounwind {
+; The allocation attributes tell LLVM what it knows of malloc and free (an allocation that is freed unread is removed, the
+; result aliases nothing); the generated entry points have the same ones.
+define internal noalias ptr @tz.alloc(i64 %size) nounwind allockind("alloc,uninitialized") allocsize(0) "alloc-family"="tz.small" {
 entry:
   %pointer = call ptr @tz_small_alloc(i64 %size)
   %failed = icmp eq ptr %pointer, null
@@ -14,7 +16,7 @@ ok:
   ret ptr %pointer
 }
 
-define internal void @tz.free(ptr %pointer) nounwind {
+define internal void @tz.free(ptr allocptr %pointer) nounwind allockind("free") "alloc-family"="tz.small" {
 entry:
   call void @tz_small_free(ptr %pointer)
   ret void

@@ -7,7 +7,7 @@
 @tz_small_shared = weak hidden global ptr @tz_small_own, align 8
 @tz_small_tc = internal thread_local unnamed_addr global ptr null, align 8
 
-define internal ptr @tz_small_alloc(i64 noundef %0) local_unnamed_addr nounwind {
+define internal noalias ptr @tz_small_alloc(i64 noundef %0) local_unnamed_addr nounwind noinline allockind("alloc,uninitialized") allocsize(0) "alloc-family"="tz_small" {
   %2 = icmp ugt i64 %0, 512
   br i1 %2, label %3, label %5
 
@@ -303,7 +303,7 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   ret ptr %160
 }
 
-define internal void @tz_small_free(ptr noundef %0) local_unnamed_addr nounwind {
+define internal void @tz_small_free(ptr noundef allocptr %0) local_unnamed_addr nounwind noinline allockind("free") "alloc-family"="tz_small" {
   %2 = ptrtoint ptr %0 to i64
   %3 = icmp ult ptr %0, inttoptr (i64 281474976710656 to ptr)
   br i1 %3, label %4, label %17
