@@ -165,6 +165,9 @@ Toolchain:
   TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   Each tool comes from its variable, then a distribution's bin/, then PATH.
+  TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
+                         LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
+                         'default' or unset leaves it to Clang. Windows targets reject 'lld'.
   TSUZURI_SYSROOT        Sysroot of a TRIPLE target (its C headers and libraries): Clang gets
                          --sysroot, or -isysroot for Apple targets. A build for the machine
                          itself or for WebAssembly does not read it.

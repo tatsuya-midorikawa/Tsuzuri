@@ -148,6 +148,86 @@ try {
     assert.match(failing.stderr, /native runtime requires Clang and the platform C\/OS SDK headers/);
   }
   console.log("handoff tools: C runtime objects ok");
+
+  // WP5 (D6). TSUZURI_LINKER=lld adds -fuse-ld=lld to the final link of a native executable or shared library, never to a
+  // compile, a relocatable link or a WebAssembly build. Unset and `default` change nothing, and a bad value fails first.
+  const lldFlag = "-fuse-ld=lld";
+  const withFlag = (since) => calls().slice(since).filter((args) => args.includes(lldFlag));
+  const hello = resolve("examples/hello");
+  const haveLld = [windows ? "lld-link" : process.platform === "darwin" ? "ld64.lld" : "ld.lld"]
+    .some((tool) => spawnSync(tool, ["--version"], { encoding: "utf8" }).status === 0);
+  const link = (flags, env, output) => run(compiler, ["build", hello, "-O0", "--no-cache", ...flags, "-o", output], { env, success: false });
+  const exe = join(directory, `linker${suffix}`);
+
+  // The wrapper hides the name of the bundled launcher, whose Windows links differ, so a Windows host links nothing here.
+  for (const value of windows ? [] : [undefined, "", "default"]) {
+    const start = calls().length;
+    const result = link([], value === undefined ? base : { ...base, TSUZURI_LINKER: value }, exe);
+    assert.equal(result.status, 0, `TSUZURI_LINKER=${value}: ${result.stderr}`);
+    assert.ok(calls().length > start);
+    assert.equal(withFlag(start).length, 0, `TSUZURI_LINKER=${value} leaves the link to Clang`);
+  }
+  for (const value of ["gold", "LLD", "lld "]) {
+    const start = calls().length;
+    const result = link([], { ...base, TSUZURI_LINKER: value }, join(directory, "bad-linker"));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /E2000/);
+    assert.match(result.stderr, /TSUZURI_LINKER must be 'default' or 'lld'/);
+    assert.equal(calls().length, start, `TSUZURI_LINKER=${value} fails before any tool runs`);
+  }
+  if (windows) {
+    const start = calls().length;
+    const result = link([], { ...base, TSUZURI_LINKER: "lld" }, exe);
+    assert.match(result.stderr, /E2000[^]*not supported for Windows/);
+    assert.equal(calls().length, start);
+  } else {
+    // An LLD that fails is reported as Clang's failure with a hint, and nothing is written.
+    const failing = join(directory, "linker-failing");
+    const result = link([], { ...base, TSUZURI_LINKER: "lld", HANDOFF_FAIL: lldFlag }, failing);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /E2002/);
+    assert.match(result.stderr, /TSUZURI_LINKER=lld needs LLD/);
+    assert.ok(!existsSync(failing));
+    // One Clang run links, with the flag once; the same run is the compile of an executable.
+    const start = calls().length;
+    const built = link([], { ...base, TSUZURI_LINKER: "lld" }, exe);
+    const flagged = withFlag(start);
+    assert.equal(flagged.length, 1, "exactly one invocation carries the flag");
+    assert.equal(flagged[0].filter((argument) => argument === lldFlag).length, 1);
+    if (haveLld) {
+      assert.equal(built.status, 0, built.stderr);
+      assert.equal(run(exe, []).stdout.trim(), "5050");
+    } else {
+      assert.notEqual(built.status, 0, "without LLD Clang cannot link");
+      assert.match(built.stderr, /TSUZURI_LINKER=lld needs LLD/);
+    }
+    // A cached executable of the default linker is not returned for LLD, and the other way round.
+    const cached = join(directory, "linker-cached");
+    run(compiler, ["build", hello, "-O0", "-o", cached]);
+    const before = calls().length;
+    const other = run(compiler, ["build", hello, "-O0", "-o", join(directory, "linker-cached-lld")], { env: { ...base, TSUZURI_LINKER: "lld" }, success: false });
+    assert.ok(calls().length > before, `a build for LLD is not a hit of the default one: ${other.stderr}`);
+    // Objects and relocatable links are never given the flag.
+    for (const flags of [["--emit", "object"], ["--emit", "object", "--cpu", "generic"]]) {
+      const start = calls().length;
+      run(compiler, ["build", resolve("tests/fixtures/tasks"), "-O0", "--no-cache", ...flags, "-o", join(directory, "tasks.o")], { env: { ...base, TSUZURI_LINKER: "lld" } });
+      assert.ok(calls().length > start);
+      assert.equal(withFlag(start).length, 0, `${flags}: an object is not linked`);
+    }
+    // WebAssembly is linked by wasm-ld.
+    const start2 = calls().length;
+    run(compiler, ["build", hello, "--target", "wasm32", "-O0", "--no-cache", "-o", join(directory, "linker.wasm")], { env: { ...base, TSUZURI_LINKER: "lld" } });
+    assert.equal(withFlag(start2).length, 0, "WebAssembly");
+    if (haveLld && process.platform === "darwin") {
+      // The debug executable has its own link, with the sidecar that dsymutil reads.
+      const debug = join(directory, "linker-debug");
+      const start3 = calls().length;
+      run(compiler, ["build", hello, "-O0", "-g", "--no-cache", "-o", debug], { env: { ...base, TSUZURI_LINKER: "lld" } });
+      assert.equal(withFlag(start3).length, 1, "-g");
+      assert.equal(run(debug, []).stdout.trim(), "5050");
+    }
+  }
+  console.log("handoff tools: linker choice ok");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

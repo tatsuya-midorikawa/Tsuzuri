@@ -116,7 +116,7 @@ Windows のホストで target を実行するのは、[windows.yml](../../../.g
 
 **システムの Clang と `TSUZURI_SYSROOT`。** `TSUZURI_CLANG` がシステムの Clang のとき、名前を付けた target のランタイムの C のコンパイルとリンクに、sysroot を渡します。非 Apple の target は `--sysroot=DIR`、Apple の target は `-isysroot DIR` です。`--target native` は読みません。
 
-- その Clang は、target の CPU のコード生成（RISC-V は Apple の Clang にありません）と、target の形式のリンカーを持つ必要があります。ビルド機と違う target には `-fuse-ld=lld` を付けるので、`ld.lld` が PATH に要ります。例外は、macOS のホストで Mach-O の target を作るときで、Apple のリンカーを使います。
+- その Clang は、target の CPU のコード生成（RISC-V は Apple の Clang にありません）と、target の形式のリンカーを持つ必要があります。ビルド機と違う target には `-fuse-ld=lld` を付けるので、`ld.lld` が PATH に要ります（ビルド機の target でも `TSUZURI_LINKER=lld` で付けられます。[option.md](option.md#環境変数)）。例外は、macOS のホストで Mach-O の target を作るときで、Apple のリンカーを使います。
 - 別の CPU の macOS 向けは、macOS の SDK がそのまま使えるので、sysroot は要りません。iOS は SDK を渡さないと、Apple の Clang が macOS の SDK で黙ってリンクするので、`-Werror=incompatible-sysroot` で止めて `E2002` にします。
 - その Clang は、コンパイラが出す IR を読めなければなりません。IR に `icmp samesign` があると、Xcode 16.4 の Apple Clang は `expected icmp predicate` で読めず、`E2002` になります。LLVM 21 の Clang は読めるので、`TSUZURI_CLANG` に渡します。CI の macOS の job は、Xcode 16.4 の SDK を、Homebrew の LLVM 21 の Clang に渡しています。
 - MSVC と bare-metal の target に `TSUZURI_SYSROOT` を付けると `E2000` です。MSVC のリンカーは、Windows SDK と CRT を `INCLUDE` と `LIB` から読みます。

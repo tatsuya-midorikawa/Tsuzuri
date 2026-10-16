@@ -232,6 +232,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `test --coverage` と `-g` | `coverage cannot be combined with -g; a debug runner only builds` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
+| `TSUZURI_LINKER` が `default`・`lld` 以外（ネイティブ実行ファイルと共有ライブラリ） | `TSUZURI_LINKER must be 'default' or 'lld', not '<value>'` |
+| Windows の target で `TSUZURI_LINKER=lld` | `TSUZURI_LINKER=lld is not supported for Windows targets; unset it` |
 
 ビルドがソースを読んでから出す `E2000` には、既定の wasm32 で `File` や `Env` などに到達した場合と、`--freestanding` で IO やタスクに到達した場合があります。前者は、native にするか、`--wasm-host wasi` にするか、ホスト不要の `Path` と `Random.Pcg` に限る、というメッセージです。
 
@@ -257,8 +259,19 @@ flowchart TD
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
+| `TSUZURI_LINKER` | 未設定（Clang の既定のリンカー） | なし | ネイティブ実行ファイルと共有ライブラリの最終リンクのリンカー。`lld` は Clang に `-fuse-ld=lld` を渡す（下記）。`default`・空・未設定は Clang に任せる |
 | `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
+
+`TSUZURI_LINKER=lld` は、macOS と Linux のネイティブ実行ファイル（`-g` の別リンクを含む）と `--emit shared` の最終リンクだけに
+`-fuse-ld=lld` を足します。コンパイルだけの Clang、`--emit object` と relocatable な `-r` のリンク（`ld64.lld` は未対応）、
+WebAssembly（`wasm-ld`）、`--emit llvm` には足しません。ビルド機のリンカーでは書けない target にはもともと `-fuse-ld=lld` が付くので、
+重複はしません。LLD は Clang が見つけられる場所（Linux は `ld.lld`、macOS は `ld64.lld`。Homebrew の `lld` など）に要ります。
+無いと Clang の `invalid linker name in argument '-fuse-ld=lld'` が `E2002` になり、ヒントに LLD が要る旨を足します。
+黙って既定のリンカーへは戻しません。`default`・空・未設定以外の `lld` でない値、Windows の target の `lld` は、ツールを起動する前に `E2000` です。
+成果物キャッシュのキーはこの値を含むので、リンカーを替えても別のエントリです（未設定と `default` のキーは変わりません）。
+配布物の `tsuzuri-clang` は常に LLD でリンクし `-fuse-ld=lld` を捨てるので、そのときは何も変わりません。
+既定を `lld` にはしていません。macOS では Apple の `ld` より遅く（1,000 モジュールのオブジェクトで 84 ms に対し 109 ms）、Linux では測っていません。
 
 ### コンパイルの段階別時間
 

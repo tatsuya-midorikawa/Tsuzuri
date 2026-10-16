@@ -449,6 +449,15 @@ pub(crate) fn build_key(
             value.as_ref().map_or(&[], |value| value.as_encoded_bytes()),
         );
     }
+    // The linker that `TSUZURI_LINKER` asks for changes a native executable or shared library. Unset and `default`
+    // add nothing, so their keys are the ones that were made before the variable existed.
+    if options.target == Target::Native
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+        && let Some(linker) = std::env::var_os(crate::driver::LINKER_VARIABLE)
+            .filter(|value| !value.is_empty() && value != "default")
+    {
+        hash.field("linker", linker.as_encoded_bytes());
+    }
     let mut tools = Vec::new();
     if !(matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_kernel()) {
         tools.push(("TSUZURI_CLANG", "clang"));
