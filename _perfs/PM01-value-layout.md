@@ -892,6 +892,6 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 ### 引き継ぎ
 
-- `_features/GUIDE.md` の D-05（約 682 行）・D-31（約 1059 行）は union のタグを `i32` と書いている。実際は 1・2・4 bytes（`tag_bytes`）。GUIDE はこの作業の対象ではないので更新していない。
+- `_features/GUIDE.md` の D-05・D-31・G16 の記述と、LLVM 表現の record の箇条は、タグを `i32` と書いていたので、最終的な表現（タグの幅、`General`、niche と native だけの `NullPointer`、record の格納順、`$niche`）に直した（台帳は ticket に優先する）。
 - `docs/language.md` は ticket の想定（変更しない）と違い、union と record の格納の記述を足した。E1010 の見積もりと公開 ABI の規則は変わらない。
 - `_perfs/README.md`（この作業では編集していない）: 「メモリと成果物サイズ」の値の表現の箇条の更新と、PM01 の状態を `done` にする。
