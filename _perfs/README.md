@@ -115,7 +115,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
-| PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | doing |
+| PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | done |
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
 | PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
@@ -156,15 +156,17 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
 - 効果が測れない最適化は既定にしません。テスト済みの opt-in として出荷するか、結果を記録して段を取り下げます。
   実装済みの経路と計画、共有機での参考値と静かな機械での正式値を区別します。
 
-- **PB03**: PB01 の runtime object の事前ビルド・cache で、C runtime の並行 compile（D2）の対象は cold・`--no-cache`・
-  常に直接 compile の `threads.c`・`wasi.c`・`stack.c`（`-g`）に縮みました。先にこれらを cache 化し、並行化は計測ゲートの後に限ります。
-  並行する tool は組全体を 1 つの `tool.clang` 区間として計上し、`tests/time_passes.rs` の「段の和 ≤ total」を保ちます。
-  到達関数の剪定（D1）は `emit_native_build` 経由の native 実行ファイルだけで、`--emit llvm|object|wasm|shared` の出力は変えません。
-  リンカー（D6）は配布物の `tsuzuri-clang` が全 OS で zig 内蔵 LLD を使い、macOS では ld64.lld が Apple ld より遅いため、
-  明示的な opt-in `TSUZURI_LINKER=lld` だけにします（未設定は現行。見つからなければエラーで、黙って戻しません）。
-  bitcode の受け渡し（D7）は Clang の front end が `-O0` で 5〜9%・`-O3` で 3% のため採用せず、結果だけを記録します。
-  PB03 の範囲外で見つけた、配布物の同梱 resource を毎ビルド全件ハッシュする費用（約 19,600 file・759 MB）は、
-  manifest に保存した識別子で検証する形へ改めます。
+- **PB03**（実装済み）: PB01 の runtime object の事前ビルド・cache で、C runtime の並行 compile（D2）の対象は cold・`--no-cache`・
+  常に直接 compile の `threads.c`・`wasi.c`・`stack.c`（`-g`）に縮んだため、これらを `compile_runtime_object` の cache に載せました。
+  並行 compile は、cold の build だけの上限が 35〜259 ms で、`compile_runtime_object` を計画・実行・保存に分ける約 400 行の変更が要るため、実施せず数値を記録しました
+  （並行する tool は 1 つの `tool.clang` 区間として計上する規約と、`tests/time_passes.rs` の「段の和 ≤ total」は保ったままです）。
+  到達関数の剪定（D1）は `emit_native_build` の native 実行ファイル（`Entry::Console`）だけで、`--emit llvm|object|wasm|shared` の出力は変えません
+  （W2 の `-O0` の CPU 時間が 8,567 → 2,966 ms、`-O3` が 9,340 → 6,022 ms の参考値）。PB03 の範囲外で見つけた、配布物の同梱 resource を毎ビルド全件ハッシュする費用
+  （約 19,600 file・759 MB で、`cache` 段が 40〜51 s の壁時計）は、`src/bundle_identity.rs` で一度だけ計算して stat の署名の背後に memo する形にし、
+  cache の鍵は従来と byte 同一にしました（85〜170 ms）。Homebrew の `wasm-ld`（`lld` への symlink）で `--version` が失敗し、wasm の whole-build cache が無効になる問題も直しました。
+  リンカー（D6）は配布物の `tsuzuri-clang` が全 OS で zig 内蔵 LLD を使い、macOS では ld64.lld が Apple ld より遅いため、明示的な opt-in `TSUZURI_LINKER=lld` だけです
+  （未設定は現行。見つからなければ `E2002`、不正値と Windows は `E2000` で、黙って戻しません）。bitcode の受け渡し（D7）は 1〜2% で採用せず、
+  `wasm` の剪定（D9）は出力が byte 同一で採用せず、D8 は 2% 未満で記録だけです。
 - **PM05**: Phase 1 は WASM の heap（`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`）を 1a（wasm32 と threads）・
   1b（wasm64）に分け、F11 の上限の 3 行と F13 の関数名の置換、`size 0` の容量、threads の OOM trap の種別（`.unlocked` の誤分類）を保ちます。
   ヘッダーが残るため Phase 1 はメモリ量を減らさず、確保・解放の O(1) 化と即時の結合が成果です。ヘッダーのない小さい確保は別施策として記録します。
