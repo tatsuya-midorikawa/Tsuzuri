@@ -58,12 +58,13 @@ fn main() {
   })) write(join(dist, file), text);
   env.TSUZURI_CLANG = launcher;
   const project = join(directory, 'project');
-  write(join(project, 'Main.tz'), '42\n');
+  // A float's text comes from the numeric runtime object; an integer's is written by the module itself.
+  write(join(project, 'Main.tz'), '42.5\n');
   const output = join(directory, 'app');
   const build = (environment = env) => {
     const start = calls().length;
     run(compiler, ['build', project, '-O0', '-o', output], environment);
-    assert.equal(run(output, []).stdout.trim(), '42');
+    assert.equal(run(output, []).stdout.trim(), '42.5');
     const lines = calls().slice(start);
     return {
       version: lines.filter(line => line.startsWith('version ')).length,
