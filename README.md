@@ -962,6 +962,8 @@ node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-exam
 node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
+node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Task.parallel の native の時間。--runtime・--baseline-runtime で pool の C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る（PR06）
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick   # 同じ kernel を WASM threads の pool（Node の worker_threads）で測る。2 つのコンパイラを比べて 2 つの pool を比べる（PR06）
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
 node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）

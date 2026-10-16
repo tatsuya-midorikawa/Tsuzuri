@@ -53,6 +53,8 @@ const workloads = dataParallel ? [
   { name: "tiny", count: 4, rounds: 0, repetitions: quick ? 10 : 1000 },
   { name: "small", count: 32, rounds: 16, repetitions: quick ? 8 : 256 },
   { name: "bulk", count: 1024, rounds: 256, repetitions: quick ? 3 : 64 },
+  // 16 tasks of about 80 us each, the shape of cpp/task_parallel: fewer tasks than CPUs, each one long.
+  { name: "coarse", count: 16, rounds: 60000, repetitions: quick ? 3 : 128 },
 ];
 function reference(count, rounds) {
   let total = 0n;
