@@ -6272,6 +6272,213 @@ node benchmarks/run-cpp.mjs $BEFORE --metrics target/perf/PR06-cpp-before
 node benchmarks/run-cpp.mjs target/release/tsuzuri --metrics target/perf/PR06-cpp-after
 ```
 
+### LLVM への受け渡し（PB03、第3フェーズ、2026-10-16）
+
+比較の基準は main `6d15b437` の release（`tsuzuri-before`、SHA-256 `da78ba18e702baee…`）、after は PB03 のブランチの release です。
+Apple M1 Max（arm64）、macOS、Apple Clang 21.0.0、Homebrew LLD 23.1.1、Node 20.19.6。機械は 8 つの作業が共有していて、
+計測中の load average は 25〜190 でした（各表に書きます）。wall time は load に埋もれるので、結論には **プロセスの CPU 時間**
+（`wait4` の `ru_utime + ru_stime`。Clang など子プロセスを含む）、Clang 1 プロセスごとの時間、profile の標本数だけを使い、
+wall の改善は主張しません。静かな機械での正式な再計測は別に取ります。共有 CI に速度の合否の閾値は置きません。
+
+**到達する関数だけを Clang へ渡す（D1）。** 合成 1,000 モジュールのうち `Main.tz` が 100 モジュールだけを使う W2
+（`benchmarks/build/generate.mjs --modules 1000` に `mainSource(100)` の `Main.tz`）を、`build W2 -O0|-O3 --cpu generic --no-cache` で
+before と after を交互に 9 標本ずつ（load average 47〜91）測りました。
+
+| W2 | CPU 時間の中央値（最小〜最大） before → after | `emit` 段 | Clang の wall（load の影響を受ける） |
+| --- | --- | ---: | ---: |
+| `-O0` | 8,567 ms（8,374〜8,841）→ 2,966 ms（2,909〜3,205）。−65% | 1,454 → 294 ms | 8,021 → 1,201 ms |
+| `-O3` | 9,340 ms（8,691〜9,879）→ 6,022 ms（5,681〜6,527）。−36% | 1,270 → 222 ms | 10,881 → 4,926 ms |
+
+`emit` が縮むのは、到達しない関数の本体を生成しなくなるためです。IR だけを Clang に渡す事前の測りでは、Clang の時間は
+`-O0` で 246 → 72 ms、`-O3` で 343 → 303 ms でした（O3 の大半は最適化パスで、削れる割合が小さい）。全 public 関数が使われる
+hello や合成 1,000 モジュールの全使用では IR は変わりません。例とフィクスチャの 124 プロジェクト、992 比較では、実行ファイルを作れた 24 件のうち 4 件
+（`examples/polymorphism` 5/108 関数、`tests/fixtures/computations` 13/954、剪定用の 2 件）だけが関数を減らし、挙動・出力は同じです。
+`--emit llvm|object|wasm|shared` は 521 比較すべてが byte 単位で同じです（`benchmarks/check-handoff-equivalence.mjs`）。
+
+**同梱ツールチェーンの識別（WP-F）。** 配布物（約 19,600 ファイル・759 MB）と成果物キャッシュを併用すると、従来は毎ビルドで
+全ファイルのフィンガープリントと Zig（185 MB）・Clang の SHA-256、ランチャーの `--version`（2 プロセス）を計算しました。
+`examples/hello -O0` を同じキャッシュで繰り返すと、`cache` 段は before が 39.6〜51.0 s（whole-build cache が当たるビルドでも。load average 約 160）、
+プロセスの CPU 時間は約 8 s（user 5.0 + sys 2.9）でした。after は、署名が変わらない 2 回目以降が `cache` 段 85〜170 ms、プロセスの CPU 時間 0.12 s です。
+最初の 1 回は全ファイルを並列にハッシュして `<cache>/bundle/` に控えます。署名の変わり方、信頼の範囲、`bundle/` を消す条件は
+[ランタイム object](../_tsuzuri/language-reference/compiler/usage.md#ランタイム-object) にあります。runtime のキー（2 件）は旧コンパイラが作る値と同じで、
+配布物の `share/runtime/manifest.json` の fingerprint は Node の `scripts/toolchain/runtime.mjs` の値と一致します（同梱 object を消費して runtime cache が空）。
+配布物の `lib/` に 1 ファイルを足すと memo が外れ、全体を検証し直して同梱 object を拒否しました。Homebrew の `wasm-ld`（`lld` への symlink）では、
+従来は wasm のビルドごとに `build cache disabled: tool version query failed` を出して whole-build cache を使いませんでしたが、after は使います。
+
+**C ランタイムの cache（WP2）。** `threads.c`・`wasi.c`・`-g` 実行ファイルのスタック検査 `stack.c` は、ビルドのたびに Clang の別プロセスで
+コンパイルしていました。runtime cache に載せた結果、ソースを編集して whole-build cache が外れる再ビルドでも、これらのプロセスは 0 回です
+（9 標本の交互計測、cache あり、load average 約 100。CPU 時間の中央値）。
+
+| 再ビルド | before | after | 差 |
+| --- | ---: | ---: | ---: |
+| WASM threads `-O0` | 418.9 ms | 389.6 ms | −29 ms |
+| WASM threads `-O3` | 1,436 ms | 1,393 ms | −43 ms |
+| WASI `-O0` | 250.7 ms | 227.6 ms | −23 ms |
+| WASI `-O3` | 409.2 ms | 295.7 ms | −113 ms |
+| `-g` のスタック検査付き実行ファイル `-O0` | 373.4 ms | 330.7 ms | −43 ms |
+
+WASM threads と WASI の成果物は before と byte 単位で同じです（`--emit wasm` は `-O0` の 124 プロジェクト、`--emit object` は tasks と hello の `-O0`・`-O3`）。`--no-cache` は従来どおり毎回コンパイルします。
+
+**並行実行は採用しません（D2・D4）。** cold のビルドで Clang の各プロセスの時間を測り、独立な組が完全に重なる理想の下限を計算しました
+（load average 約 45、1 標本。実行ファイルの compile と link は 1 プロセスなので分けません）。
+
+| cold のビルド | Clang の合計 | 理想の並行 | 縮む上限 |
+| --- | ---: | ---: | ---: |
+| hello `-O3`（numeric 526 ms、task.c 41 ms、link 130 ms） | 697 ms | 656 ms | 41 ms |
+| hello `-O0` | 184 ms | 146 ms | 38 ms |
+| `examples/tasks` `-O0` | 238 ms | 164 ms | 73 ms |
+| `-g` のスタック検査付き `-O0` | 185 ms | 134 ms | 51 ms |
+| WASM threads `-O3` / `-O0` | 1,098 / 198 ms | 1,038 / 163 ms | 60 / 35 ms |
+| WASM hello `-O3`（numeric 551 ms、module 106 ms） | 657 ms | 551 ms | 106 ms |
+| WASI hello `-O3`（numeric 621 ms、wasi 149 ms、module 110 ms） | 880 ms | 621 ms | 259 ms |
+| threads の `--emit object` `-O3` | 1,120 ms | 1,060 ms | 60 ms |
+
+縮められるのは runtime object が cold の最初の 1 回だけで（warm のビルドは Clang が 1 プロセス以下）、上限も 35〜259 ms と load の広がりの内側です。
+実装は `compile_runtime_object` を計画・実行・保存に分け、`build_complete` の約 400 行を thread で囲むもので、runtime object を変える他のチケットと衝突します。
+上限が小さいので入れていません。再計測で cold のビルドの割合が大きいと分かったら、同じ表を取り直して判断します。
+
+**IR の渡し方とリンカー（D5・D6・D7）。** 変えません。数字は次のとおりです（合成 100 モジュール、IR 3.9 MB）。
+Clang の front end（IR の読み込みと検証）は `-O0` で 4.8〜9%、`-O3` で 3% で、機械語生成が `-O0` の 88%、最適化が `-O3` の 76% です。
+`.ll` を `.bc` にした Clang の時間は `-O0` で 493 → 488 ms、`-O3` で 2,858 → 2,792 ms（1〜2%）、`llvm-as` は 171 ms（`-O0` の Clang の 35%）で、
+bitcode は IR のテキストと同じ意味・同じ決定性を保てても、得が出ないので採用しません。配布物の `tsuzuri-clang` が `*.ll` の path と限った flag を要する制約もあります。
+リンカーは、macOS の ld64.lld が Apple の ld より遅く（1,000 モジュールのオブジェクト 8.9 MB で 84 ms と 109 ms）、`ld64.lld -r` は未対応です。
+`TSUZURI_LINKER=lld` を opt-in で足しましたが、既定は変えていません（Linux の実測は未取得）。
+
+**IR の後処理（D8）。** 非 strip の release を `sample` で測りました（合成 3,000 モジュールの `--emit llvm -O0`、IR 112 MB、2,967 標本）。
+`emit_with_options` は 33%（978 標本）で、うち関数の生成が約 580、`with_vector_alignment` が約 131（4.4%。埋め込みの `numeric.ll` が 256 bit ベクトルを持つので
+行ごとの処理が本当に走ります）、`RuntimeSymbols::collect` が 34（1.1%）、`escape::recursive_functions` が 35（1.2%）、`program_reach` が 30（1.0%）でした。
+`output.replace`・`lines().join` のような単なる複写は上位に出ません。runtime object を使うビルド（IR に 256 bit ベクトルがない）の事前判定を 6 回の全走査から
+1 回の `<` の検索へ替える試作は、1,000 モジュールの実行ファイルで `emit` 1,307.7 → 1,289.4 ms（1.4%）にしかならず、採否の基準（2%）を下回るので戻しました。
+
+**WASM の剪定（D9）。** 採用しません。試作（`--emit wasm` だけ根を限る）の 1,000 モジュール `-O0` では、成果物が 5,905,346 bytes で変わらず（`wasm-ld` が未使用の関数を
+元から捨てるため）、効果は Clang の時間だけで、W2 のように一部だけ使う形でしか出ないと見込みますが、その形では測っていません。`host_entries`・`reaches_reactor` の根の整合と 33 か所の `EmitOptions`、
+Async・host の glue の到達性の検証が要り、得に見合いません。
+
+再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc` が cache あり）、
+`node tests/handoff_tools.mjs <compiler>`・`node tests/llvm_handoff.mjs <compiler>`・`node tests/bundle_identity.mjs <compiler>`（プロセスの数・引数・失敗の検査）。
+測定の手順（W2 の作り方、交互 9 標本、`wait4` の CPU、Clang 1 プロセスごとの時間を記録する wrapper、`sample` の読み方）は
+[PB03 の完了記録](../_perfs/_completed/PB03-llvm-handoff.md) にあります。PX03 の `build`・`build-runtime-{cold,warm}` の正式な before／after は静かな機械で取り直します。
+
+## 成果物のサイズ
+
+`node benchmarks/metrics.mjs size [compiler] --out DIR [--project DIR]... [--quick]` は、利用者が受け取る成果物の大きさを PX01 の JSONL で記録します（PM08）。サイズは決定的なので 1 点で、各ビルドを 2 回作って同一かを確かめます。合否の基準は、ページ境界に丸められるファイルの大きさではなく section の byte 数です（Mach-O の `__text` と `__const`＋`__cstring`、ELF の `.text` と `.rodata`、wasm の CODE と DATA。`llvm-objdump -h` で読み、`TSUZURI_OBJDUMP` で指定します）。主な値は cache あり（利用者が実行する既定のビルド）で、`--no-cache` の埋め込み形式は別の variant として示します。速度の合否閾値と同じく、共有 CI にサイズの閾値は置きません。
+
+### 整数表示の分割（PM08 D2）
+
+整数の `to_string`・`Display`・補間・式の結果の表示を、`numeric.ll` から手書きの `runtime/integer.ll`（約 0.4〜0.5 KB）へ移しました。整数だけを表示するプログラムは、数値 object とその表（約 10 KB）を連結しなくなります。出力の文字列は変わらず、`tests/integer_format.mjs`（Python の独立した参照 47,029 件と、8／16 bit の全値）と `tests/size.mjs`（コンパイラ経由）で、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` を照合します。
+
+Apple M1 Max（macOS arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-objdump`。before は main `6d15b437` のリリースビルド（SHA-256 `da78ba18…`）、after は branch `perf/phase3/PM08` の整数表示の分割まで入れた非 LTO のリリースビルドです（コンパイラの最適化はその出力に影響しません）。測定時の load average は 50〜150 でしたが、サイズは決定的で load に依存しません。`examples/hello` の `-O3`、cache あり:
+
+| 成果物 | before | after |
+| --- | ---: | ---: |
+| native 実行ファイル | 50,664 | 33,896 |
+| native `__text` | 13,304 | 2,604 |
+| native `__const`＋`__cstring` | 10,160 | 64 |
+| wasm32 モジュール | 35,714 | 6,357 |
+| wasm CODE | 25,564 | 6,142 |
+| wasm DATA | 9,882 | 0 |
+| `--emit object`（native） | 72,032 | 4,896 |
+| native 実行ファイル、`--no-cache` | 117,848 | 50,824 |
+
+`-Os`／`-Oz`（`build` と `run`）は、同じ IR を Clang の別の最適化レベルでコンパイルします。`examples/hello`、cache あり、byte。ここでの before は整数表示の分割の前（`-Os`／`-Oz` を加えた時点）のコンパイラです:
+
+| 成果物 | レベル | before | after |
+| --- | --- | ---: | ---: |
+| wasm32 モジュール | `-O3` | 35,714 | 6,357 |
+| wasm32 モジュール | `-Os` | 31,820 | 2,995 |
+| wasm32 モジュール | `-Oz` | 31,428 | 2,587 |
+| native `__text` | `-O3` | 13,304 | 2,604 |
+| native `__text` | `-Os` | 12,860 | 2,680 |
+| native `__text` | `-Oz` | 11,320 | 2,484 |
+
+native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。同じ条件（macOS arm64、`-O3`、cache あり）の C と Rust の hello（`benchmarks/size/hello.c`・`hello.rs`）と並べると、次のとおりです。C は `printf` を libSystem から動的に呼ぶので `__text` が小さく、Tsuzuri は文字列・出力・確保のランタイムを成果物に持ちます:
+
+| プログラム | 実行ファイル | `__text` | `__const`＋`__cstring` |
+| --- | ---: | ---: | ---: |
+| C（`printf`） | 33,432 | 48 | 4 |
+| Rust（`println!`） | 434,168 | 215,420 | 25,315 |
+| Tsuzuri `examples/hello`（変更前） | 50,664 | 13,304 | 10,160 |
+| Tsuzuri `examples/hello`（変更後） | 33,896 | 2,604 | 64 |
+
+ほかの `examples/` も、整数だけを表示・読み取る分は同じ割合で減ります。main `6d15b437` のコンパイラ（before）と、この branch の P8 まで入れた release ビルド（after）の `-O3`、cache あり、byte です（`target/perf/PM08-before`・`PM08-after` の `size.jsonl`、`node benchmarks/metrics.mjs size`）。`io` と `point` は、整数の表示を使わない（`point` は `f64` を表示する）ので変わりません。`—` は suite が wasm32 の記録を取らなかった例です:
+
+| `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
+| --- | ---: | ---: | ---: |
+| `computations` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `control` | 51,064 → 34,248 | 11,348 → 720 | — |
+| `currying` | 50,616 → 33,848 | 13,296 → 2,596 | 35,686 → 6,326 |
+| `functional` | 51,656 → 34,872 | 14,448 → 3,888 | 41,444 → 12,086 |
+| `hello` | 50,664 → 33,896 | 13,304 → 2,604 | 35,714 → 6,357 |
+| `polymorphism` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `tasks` | 68,680 → 51,864 | 14,084 → 3,496 | — |
+| `io` | 51,432 | 9,780 | 15,593 |
+| `point` | 50,344 | 10,844 | 74 |
+
+`--wasm-opt`（Binaryen の `wasm-opt -Oz` を、リンク後の `.wasm` に通す）は、Binaryen 132（npm の `binaryen` パッケージの `wasm-opt`）で測りました。`wasm32`、cache あり、byte で、`wasm-opt` なしは同じレベルの値です:
+
+| プログラム | `-O3` | `-O3 --wasm-opt` | `-Oz` | `-Oz --wasm-opt` |
+| --- | ---: | ---: | ---: | ---: |
+| `examples/hello` | 6,357 | 5,196（−18.3%） | 2,587 | 2,156（−16.7%） |
+| `examples/io` | 15,593 | 13,807（−11.5%） | 5,734 | 4,583（−20.1%） |
+| `examples/functional` | 12,086 | 10,187（−15.7%） | 3,960 | 3,094（−21.9%） |
+| `examples/currying` | 6,326 | 5,169（−18.3%） | 2,555 | 2,129（−16.7%） |
+
+どの行も、import、export、メモリの大きさ、`tz_` の export の結果は元のモジュールと同じでした（`tests/size.mjs` は `TSUZURI_TEST_WASM_OPT` に本物の `wasm-opt` があるとき、同じ検査を実行します）。Binaryen は配布物に同梱しません。配布用のアーカイブが Linux と Windows で約 105〜111 MB あり、配布物が大きくなりすぎるためです。
+
+整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回、`i128` は 60.7 から 54.0 ns／回）。静かな機械での再測定が必要です。
+
+### 整数の `Parse` と書式指定（PM08 P8）
+
+整数の `Parse.parse` と、書式指定付きの補間（`{n:+}`・`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`）も `runtime/integer.ll` へ移しました。`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。結果と受け付ける構文は変わらず、`tests/integer_format.mjs` が Python の独立した参照（`Parse` 71,235 件、書式指定 15,200 件）、8／16 bit の全値、`numeric.ll` の `tz_soft_parse`・`tz_soft_format_spec`（同じ入力）と、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` で照合し、`tests/size.mjs` が 10 の整数型すべてをコンパイラ経由で JS の参照と照合します。float と decimal の `Parse`・精度つきの書式指定は `numeric.ll` のままです。
+
+測定条件は上と同じです。before は main `6d15b437` のリリースビルド、「整数表示の分割まで」は `7509b4f6`、after は P8 まで入れた非 LTO のリリースビルドです。`benchmarks/size/parse`（`Parse.parse` で `i32`・`i8u`・`i128u` を読み、`{n:x}` などを補間する 15 行のプログラム）、cache あり、byte で、`node benchmarks/metrics.mjs size [compiler] --out DIR --project benchmarks/size/parse` が再現します:
+
+| 成果物 | レベル | before | 整数表示の分割まで | after |
+| --- | --- | ---: | ---: | ---: |
+| native 実行ファイル | `-O3` | 84,168 | 84,248 | 34,120 |
+| native `__text` | `-O3` | 30,904 | 31,192 | 9,096 |
+| native `__const`＋`__cstring` | `-O3` | 21,044 | 21,044 | 270 |
+| native `__text` | `-Oz` | — | 25,720 | 6,764 |
+| wasm32 モジュール | `-O3` | 76,023 | 76,614 | 18,199 |
+| wasm CODE | `-O3` | 55,092 | 55,674 | 17,719 |
+| wasm DATA | `-O3` | 20,603 | 20,603 | 218 |
+| wasm32 モジュール | `-Oz` | — | 66,355 | 8,121 |
+
+整数を表示するだけのプログラム（`examples/hello`）の `-O3`／`-Oz` の大きさは変わりません。`-O0` では、`format` が `sign` を別の関数として呼ぶ分だけ、`__text` が 10,232 から 10,300 byte、wasm が 8,094 から 8,126 byte に増えます。使わない `spec`・`parse` の関数は、`-O0` の IR と object には残りますが、リンク時に除去されます（`--emit object -O0` の `examples/hello` は 33,856 から 37,432 byte）。
+
+`integer.ll` のすべての関数のコードは、arm64 の `-O3` で 2,904 byte（`-Oz` 2,376）、wasm32 で 3,059 byte（`-Oz` 2,406）で、使う関数だけが最適化後に残ります。10 進の先頭 19 桁を範囲の検査なしで足す高速経路は、約 200 byte のコードです。これを外した版は、長い 10 進数の読み取りが `numeric.ll`（ASCII への複写と `tz_soft_parse`）より最大で約 40% 遅くなりました（`i32` の範囲は 17.6 から 25.8 ns／回、全幅の `u64` は 29.5 から 41.9 ns／回）。
+
+読み取りと書式指定の速さは、同じ値の列を `numeric.ll` の経路（ASCII への複写と `tz_soft_parse`、`tz_soft_format_spec`）と `integer.ll` に渡す C の測定（`-O3`、native、4,096 件の文字列を繰り返し 2,000 万回）です。`with-lock.sh measure`（ほかの作業の重い実行と重ならない）の下で 1 回、load average 約 26 の共有機で測りました。1 回の測定で誤差が大きいため、速度の主張には使いません。静かな機械での再測定が必要です:
+
+| 入力 | `numeric.ll` | `integer.ll` |
+| --- | ---: | ---: |
+| `Parse` 0〜999 | 15.0 | 8.2 |
+| `Parse` `i32` の範囲 | 17.3 | 13.9 |
+| `Parse` 全幅の `u64`（19〜20 桁） | 29.1 | 21.2 |
+| `Parse` `0x` と 16 桁 | 49.5 | 33.7 |
+| `Parse` 符号つきの `i64` | 28.0 | 19.5 |
+| `{n:x}`（`i64`） | 32.8 | 18.8 |
+| `{n:+}`（`i64`） | 29.5 | 18.0 |
+
+単位は ns／回です。
+
+### リンク時の GC（埋め込みのビルド）
+
+ランタイムを成果物キャッシュなしでモジュールに埋め込む形式（`--no-cache`、`--trap-info`。`run` は `--trap-info` が既定）の native 実行ファイルは、これまで未使用の関数をリンク時に除去していませんでした（runtime object を使う既定のビルドだけが `-dead_strip` などを渡していました）。`-g` を除くすべての native 実行ファイルのリンクに同じ除去を適用し、Linux と Windows の GNU 系リンカーでは関数とデータを別々の section に出します。条件は上の整数表示の分割と同じです。section の byte 数（`__text`／`__const`＋`__cstring`）、`-O3`、macOS arm64、変更前は整数表示の分割まで入れたコンパイラです:
+
+| プログラム | variant | `__text` 変更前 → 変更後 | `__const`＋`__cstring` 変更前 → 変更後 |
+| --- | --- | ---: | ---: |
+| `examples/point` | `--no-cache` | 40,552 → 10,844 | 20,884 → 10,096 |
+| `examples/point` | `--trap-info` | 40,288 → 11,020 | 20,996 → 10,080 |
+| `examples/io` | `--no-cache` | 27,316 → 9,780 | 329 → 301 |
+| `examples/io` | `--trap-info` | 30,132 → 12,596 | 3,241 → 3,220 |
+| `examples/tasks` | `--no-cache` | 6,008 → 3,496 | 596 → 314 |
+| `examples/tasks` | `--trap-info` | 7,836 → 5,324 | 2,660 → 2,378 |
+| `examples/hello` | `--no-cache` | 3,088 → 2,604 | 64 → 64 |
+| `examples/hello` | `--trap-info` | 3,932 → 3,400 | 991 → 991 |
+
+どの variant も、変更後の `__text` は cache ありの既定のビルド（`examples/point` は 10,844、`examples/io` は 9,780）と同じか、`--trap-info` の計装のコードの分だけ大きい値です。プログラムの出力と `--trap-info` の位置表（`.trap.json`）は変わらず、`tests/size.mjs` は `point` の埋め込み形式の実行ファイルから、使わない数値の解析（`tz_soft_parse`）が消えていることを `nm` で確かめます。Linux と Windows のリンカーでの効果は、この機械では測っていません（CI のジョブが実行ファイルの出力と動作を確かめます）。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

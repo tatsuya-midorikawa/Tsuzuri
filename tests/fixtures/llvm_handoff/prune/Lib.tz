@@ -1,0 +1,5 @@
+def used :: i64 -> i64 = \x -> x + 1
+
+def unused :: i64 -> i64 = \x -> x * 3
+
+export def exported :: i64 -> i64 = \x -> x - 1

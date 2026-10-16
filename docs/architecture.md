@@ -18,8 +18,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
    -> closures -> lambda lifting + capture parameters + saturated export bridges
                + FunctionOrigin of every generated helper
    -> ownership -> concrete moves + loans + lifetime validation
-   -> llvm -> reachability pruning of std code + bounded known-call specialization
-           + deterministic LLVM IR
+   -> llvm -> reachability pruning of std code (a native executable emits only what its entry
+              and exports reach) + bounded known-call specialization + deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
 ```
@@ -83,6 +83,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/interval.rs` | PR02 の整数の区間の純粋関数。端点は `i128` で、64-bit 以下の整数型だけを扱う。`+ - *` の `nsw`／`nuw` と結果の区間、`as`・`&`・`%`・`/`・シフト・`~` の区間を返す。オペランドを符号付きと符号なしの両方で読み（読みが切り替わる点をまたぐ区間は全域の hull で読む）、返す集合は常にそのとき取りうる値をすべて含む |
 | `src/ranges_intervals.rs` | `RangeFacts` の整数の区間（リテラル、型、キャスト、マスク、長さ、`if`、`let`、`for` のカウンター、`if` の条件による絞り込み）と `integer_flags`。深さ 32 と 1 関数あたり 2^20 ステップを超えた分は型の全域 |
 | `src/llvm_ranges.rs` | `TSUZURI_RANGE_FLAGS`（`RangeFlags`: `off`／`proven`／`audit`）の読み取りと旗の書き分け。audit は旗を書かず、主張した向きごとの `with.overflow` の検査と `TrapKind::Overflow` の trap を書く |
+| `src/runtime/integer.ll` | 整数（`i8`〜`i128`、`i8u`〜`i128u`）の 10 進表示、書式指定付きの表示、`Parse`（PM08）。手書きの IR で、`numeric.ll` に依存しません。`@tz.integer.format`（64 bit 以下を `i64` へ拡張して受ける）と `@tz.integer.format128`、書式指定の `@tz.integer.spec`／`@tz.integer.spec128`（`+`・`x`・`X`・`o`・`b`。`flags` は `tz_soft_format_spec` と同じ）、UTF-16 のコード単位を直接読む `@tz.integer.parse`／`@tz.integer.parse128`、それらが使う内部の `digits`・`magnitude128`・`radix`・`sign`・`digit`・`scan` を持ちます。テキストを書く関数はバッファの末尾から前へ書き、呼び出し側は 10 進に 40 byte（最長の `-170141183460469231731687303715884105728`）、書式指定に 160 byte を渡します。`i128` の除算・乗算は 128 bit の入口だけが使うので、`i128` を扱わないプログラムに `__udivti3`・`__multi3` は要りません。`to_string`・`Display`・補間（書式指定を含む）・トップレベルの式の結果・整数の `Parse.parse` が使います。`tz.integer.` の記号が IR に現れたときだけモジュールへ連結する `define internal` で、メタデータも `declare` も持ちません。`tests/integer_format.mjs` が Python の独立した参照、全 8／16 bit 値、`numeric.ll` の `tz_soft_*`（同じ入力）と照合します |
 | `src/runtime/numeric.c` / `numeric.ll` / `numeric_tables.h` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、書式指定付き数値表示（`tz_soft_format_spec`）。f32／f64 の最短表示は整数 Schubfach、通常の十進解析は符号を除き最大 25 ASCII 文字・19 有効桁の Eisel–Lemire と正確な fallback。長い入力を高速経路で再走査しない。生成する不変表は 20,288 bytes。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
 | `src/runtime/string.ll` / `utf8string.ll` / `string_scalar.ll` / `string_v128.ll` / `string_cpu.ll` / `string_cpu_utf16.ll` / `heap-*.ll` | UTF 共通処理、完全な scalar 参照、汎用 vector IR、native CPU wrapper。`generate_utf.py` の生成物とは別に `string_cpu_utf16.ll` は手書きの x86 専用 wrapper。変換は全入力の検証・計数後に一度だけ確保。native CPU 経路は F08 の能力・OS 状態検査と fallback、WASM は既定 scalar・simd128 指定時だけ vector IR。Windows の CPU runtime は portable baseline。UTF-8 復号の 16 bytes 未満は inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路。UTF-16 符号化は non-x86 では portable LLVM、native x86 の 32 単位以上は CPU count と検証済み入力を扱う LLVM writer。portable 符号化の 16 単位未満／初窓に surrogate がある入力は元の scalar 計数・Unicode write と 8 単位幅の ASCII copy を使う。長い bulk 経路は private noinline helper へ分離。計数は 1／2／3-byte 幅の混在 BMP も扱うが、writer は均一幅の prefix だけを一括処理する。順序比較の UTF-16 16 単位未満／UTF-8 32 bytes 未満は元の 64-bit/scalar 経路。SIMD 経路の UTF-16 の検証・修復は surrogate-free prefix の後、残りを scalar へ一度だけ渡す。変換・計数・UTF-8 検証 kernel も最初の failed bulk probe 後は scalar remainder へ一度だけ渡し、後続の ASCII 区間も再 probe しない。文字列表現・コード単位の符号なし比較・置換・trap・ABI・import は維持 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
@@ -240,14 +241,17 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 数値ランタイムと大きな数学関数を別 object にして再利用します。`src/runtime_cache.rs` は numeric 宣言の抽出、
 math の standalone 化、正確な参照記号集合、同梱 object の照合を担い、sqrt／fabs は caller IR に残します。
 `src/cache.rs` が実際のツール・source・flags・CPU・environment を鍵に含め、検証した object を原子的に公開します。
-runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。
+runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します（`src/bundle_identity.rs`。ハッシュは並列）。この結果は同梱 Clang・Zig の SHA-256 とランチャーの `--version` の出力と合わせて `<cache>/bundle/` に控え、配布物の署名（最上位と `bin`・`lib`・`zig` 直下のファイル、`manifest.json`、2 階層目までのディレクトリの、大きさ・更新時刻・状態変更時刻・inode）が変わらない間は再利用するので、毎ビルドの全ファイル読み込み（約 760 MB）はありません。ツールの入れ替え、署名の対象のディレクトリへのファイルの追加・削除、配布物の展開し直しは署名を変え、次のビルドが全体を検証し直します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。署名が見ないのは、それ以外の場所での既存ファイルのその場の書き換えと、3 階層目より下の追加・削除で、`<cache>/bundle/` を消すと検証し直します。`TSUZURI_LLVM_CLANG`／`TSUZURI_ZIG` の上書きと配布物でないツールは控えを使わず、従来どおり毎回読みます。
 選択順はリソースとツールが一致する配布 object、`<cache>/runtime/`、埋め込みソースからのコンパイルです。
+WASM threads の `task-wasm-threads.c`、WASI ホストの `os-wasi.c`（と `arguments.c`）、`-g` の実行ファイルのスタック検査 `stack.c` は配布 object を持たず、`<cache>/runtime/`（単位は `wasm-threads`・`wasi`・`stack-debug`。キーは他の runtime object と同じ）と埋め込みソースからのコンパイルだけを使います。
 配布物には numeric／math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
 ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。
 LLVM／header／object／shared、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
-外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。generic 数値 dispatch の到達する枝は残り、
-型別 format 分割（PM08）は未実装です。`runtime/` の掃除は成果物／frontend cache と独立します。
+外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。native の実行ファイルは、ランタイムを埋め込む形式（`--no-cache`・`--trap-info`）でも同じ除去を行います（`-g` は除く。PM08）。generic 数値 dispatch の到達する枝は残ります。
+整数の表示（`to_string`・`Display`・補間・トップレベルの式の結果）、書式指定付きの補間（`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`・`{n:+}`）、整数の `Parse.parse` は `numeric.ll` ではなく、モジュールに連結する `runtime/integer.ll` が書き・読みます。
+整数だけを扱うプログラムは数値 object を連結せず、native の `examples/hello` は 50,664 から 33,896 byte に、wasm32 の同じプログラムは 35,714 から 6,357 byte になりました（PM08。測定は `docs/benchmarks.md`）。整数を `Parse` し書式指定する `benchmarks/size/parse` は、native の `__text` が 30,904 から 9,096 byte に、wasm32 のモジュールが 76,023 から 18,199 byte になります。
+float・decimal の表示・精度つきの書式指定・`Parse` は `numeric.ll` のままです。`runtime/` の掃除は成果物／frontend cache と独立します。
 `scripts/toolchain/runtime.mjs` と bundle／archive／smoke は生成・manifest・移設後の消費・破損 fallback を検証します。
 
 **Async の不変条件（B08）:** `Async<T>` の式は `Checker::eval` で loan を持たないことを検査します。これは `Async { ... }` の cold な開始、`let!` / `do!` の継続、`Async.start` の実行器表のいずれでも、字句スコープを越えて借用を保持しないための共通境界です。std の `Async.Async` は opaque かつ非 Copy で、`Async.Step` の継続は `Async.__resume` が一度だけ move して呼びます。
@@ -296,7 +300,7 @@ native のトラップは、`llvm.trap` が STATUS_ILLEGAL_INSTRUCTION（0xC0000
 
 **Target と Platform（G15）:** `--target TRIPLE` は、`src/target.rs` の閉じた表（64-bit の native の `Triple` が 22 個）から選び、`BuildOptions::triple`・`TestOptions::triple`・`BenchOptions::triple` に入ります。ビルド先の性質は `cfg!(windows)` や `env::consts::ARCH` を直接読まず、`Platform` に尋ねます。triple がなければ `Platform::HOST` で、以前の `cfg!` と同じ答えを返すので、`--target native` の IR、オブジェクト、Clang と `wasm-ld` の引数列、出力名は変わりません。
 IR が target で変わるのは、Windows の COFF の allocator と `windows_abi`、`@cpu` の level（`Platform::cpu_levels`）、`Math.fma` の命令（`Platform::hardware_fma`）、bare-metal の x86-64 の `noredzone`（`llvm::with_no_red_zone`）の 4 か所だけです。`EmitOptions` に target を足すと `tests/windows.rs` などの多数のリテラルが壊れるので、IR を作る間は `PlatformScope`（スレッドローカルの guard）が呼び出し元の `Platform` を運びます。
-Clang の引数は、`compile_args`（`--target=` と `-fPIC`）、`sdk_args`（ランタイムの C のコンパイルとリンク。`TSUZURI_SYSROOT` を `--sysroot`、Apple の target では `-isysroot` と `-Werror=incompatible-sysroot` にする）、`link_args`（ビルド機と違う target に `-fuse-ld=lld`）、`no_sdk_args`（SDK を読まない IR のコンパイルと `-r` のリンク）に分け、`HOST` ではすべて空です。ランタイムの選択（`os.c`、`net.c`、`async.c`、`task-windows.h`）は `Platform::os_apis`・`net`・`reactor` と `task_runtime_source_for` が target で決めます。ランタイムの C を書いていない、または確かめていない組み合わせ（FreeBSD・Android・iOS の `Net` と `Async.block_on`、iOS と Android の OS API）は `E2002` で拒否し、推測してリンクしません。
+Clang の引数は、`compile_args`（`--target=` と `-fPIC`）、`sdk_args`（ランタイムの C のコンパイルとリンク。`TSUZURI_SYSROOT` を `--sysroot`、Apple の target では `-isysroot` と `-Werror=incompatible-sysroot` にする）、`link_args`（ビルド機と違う target に `-fuse-ld=lld`）、`final_link_args`（`link_args` と、`TSUZURI_LINKER=lld` のときの `-fuse-ld=lld`。実行ファイル・`-g` の別リンク・`--emit shared` の最終リンクだけで、`-r` のリンクには使わない。値の検査は `build_complete` の冒頭で行い、成果物キャッシュのキーには未設定・`default` 以外のときだけ入る）、`no_sdk_args`（SDK を読まない IR のコンパイルと `-r` のリンク）に分け、`HOST` では `TSUZURI_LINKER` が未設定ならすべて空です。ランタイムの選択（`os.c`、`net.c`、`async.c`、`task-windows.h`）は `Platform::os_apis`・`net`・`reactor` と `task_runtime_source_for` が target で決めます。ランタイムの C を書いていない、または確かめていない組み合わせ（FreeBSD・Android・iOS の `Net` と `Async.block_on`、iOS と Android の OS API）は `E2002` で拒否し、推測してリンクしません。
 ビルド機で動かせない target の `run` と `test` は、`TSUZURI_RUNNER` の前置コマンド（`ForeignRunner`）を通し、なければビルドの前に `E2000` です。`test --coverage`、`test -g`、`bench` は拒否します。同梱ツールチェーンの `scripts/toolchain/clang.rs` は、`--target=<Clang の target>` を Zig の target に写す表（`NATIVE_TARGETS`）を持ちます。`--target=` がないときの挙動は変えていません。
 検証は、`tests/targets.rs`（target ごとの IR とオブジェクトの形式、キャッシュ、偽の Clang と偽の実行器による `run`・`test`、launcher の表）、`tests/targets.mjs`（22 個の target を実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。`TSUZURI_CROSS_LINK=1` で同梱ツールチェーンのリンク、`TSUZURI_CROSS_EXECUTE=1` で qemu-user）、CI の `.github/workflows/targets.yml` です。tier の記録は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) の表だけです。
 
@@ -387,7 +391,7 @@ std のソースコードは型検査の対象となりますが、`closures::lo
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`@alias` の宣言が `aliases` と一致すること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
-LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
+LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。例外は native の実行ファイル（`emit_native_build` の `Entry::Console`。`build`・`run`）で、エントリーポイントとエクスポート関数（と、利用者の `Drop` の drop glue）から到達できる関数だけを出力します（`Instrumentation::executable_roots`。PB03 D1）。実行ファイルでは利用者の公開関数も `internal` で外から呼べないのに、`-O0` ではすべてコンパイルされるためです。`--emit llvm`・`object`・`header`・`wasm`・`shared`、ライブラリの `Entry::Library`、`emit_native_build_for`、`llvm::emit` 系は今までどおり公開関数をすべて出力します。未使用の公開関数も型検査・所有権検査の対象で、その型エラーは `check` が報告します。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
 
 `std/Maybe.tc` および `std/Result.tc` は、特別なコンパイラマジックを用いず、通常のジェネリック union と関数のみを用いて型、基本操作、およびビルダーを定義しています。
 専用の型付き命令や特殊なランタイムは存在せず、union のタグ分岐、ペイロードの move／clone／drop、および既知の継続に対する特殊化の最適化を一般コードと完全に共有しています。
@@ -528,7 +532,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 
 テスト宣言 `Program.tests` は通常の名前空間から隔離され、検査時に unit を返す内部呼び出し可能関数および `CheckedModule.tests` のメタデータへと変換されます。
 テスト関数由来の属性 `FunctionOrigin.test` は局所的に生成された補助関数へも伝播され、共有されるジェネリック関数の特殊化実装は 1 つだけ生成されてルート集合からの到達性によって取捨選択されます。
-通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
+通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが（native の実行ファイルはエクスポート関数とエントリーポイントだけ）、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。
@@ -750,7 +754,7 @@ Hash の canonical stream 仕様および文字型ごとの引用規則の詳細
 **文字列補間と書式指定:** `$"a{x}b"` および `u8$"..."` 形式のリテラルは、字句解析器によって `InterpolationStart`、`InterpolationMiddle`、`InterpolationEnd` の各トークンに分割され、構文解析器によって `ExprKind::Interpolated`（固定文字列片と `InterpolationHole { value, spec }` の列）へと変換されます。字句解析器は開かれた埋め込み穴を `holes` スタック（`OpenHole { utf8, depth, start }`）で管理し、括弧のネスト深度が 0 の位置にある `}` または `:` によって穴を閉じます。埋め込み穴は同一行内に収める必要があり、穴の内部にコメントを記述することはできません。埋め込み穴を含まない文字列リテラルは通常の文字列トークンとして維持されます。リソース制限として、1 つのリテラルあたり最大 1024 個の穴、幅と精度は最大 4096、ネスト深度はパーサーの標準上限が適用されます。
 型検査（`interpolation`／`interpolation_hole`）は `TypedExprKind::Interpolated(TypedInterpolation { texts, holes })` を構築し、型はリテラルのプレフィックスに応じて `string` または `utf8string` となります。`TypedHole.operand` は常に共有借用 `ref U` となります。評価場所（変数名、フィールド、添字、参照外し）は `ref` 引数と同様に借用され、既存の参照はそのまま再利用され、それ以外の評価結果は `BorrowOperand` による一時変数として確保された後に文字列結合完了時点で安全に drop されます（引数のない関数呼び出しや単独の union case のように値を生成する式も一時値として扱われます）。穴の式は左から右へと順次 1 回ずつ評価され、値の所有権を消費することはありません。適用されるメソッドは原則として `Display.display`（カスタム書式の場合は `Format.format`）であり、リテラル自身と同一の文字列型の穴や、符号・精度・型指定を持つ数値の穴に対してはメソッド呼び出しを行いません。
 LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から右へ評価して `Piece`（データポインタ、長さ、所有者、ASCII 判定、パディング情報）を構築し、リテラルの固定長、各穴の展開長、およびフィル文字の必要数を合算して、最終結果を `@tz.string.allocate` または `@tz.utf8string.allocate` によって 1 回のメモリアロケーションで確保します。固定文字列片はメモリコピーで書き込まれ、穴の内容は各値の表示バッファから直接コピーされます（リテラルと同一型の文字列の穴は Display を経由せず元のバッファを直接読み込み、数値の ASCII 出力は UTF-16 結果の場合に `@tz.format.widen` で拡張しながらコピーします）。結合完了後、すべての一時値が解放されます。`u8$` リテラルにおいては、Display が生成した UTF-16 の結果を `@tz.utf8string.from_string` で UTF-8 へ変換し（孤立サロゲートを検出した場合はトラップ）、変換元のバッファを解放します。
-数値の書式指定処理は、ホスト環境の `printf` を使用せず、`src/runtime/numeric.c` の `tz_soft_format_spec` が多倍長の係数から直接最近接偶数丸めを行って ASCII 文字列を出力します（`numeric.ll` は `python3 src/runtime/generate.py`、`math.ll` は `python3 src/runtime/generate_math.py` で再生成します）。`flags` は bit 0 で `+` 符号を、bit 4 以降で出力スタイル（0: デフォルト、1: `f`、2: `e`、3: `x`、4: `X`、5: `o`、6: `b`）を表現します。作業バッファには、`format_capacity` が型と精度から算出するサイズ（512 バイト以下）のエントリー `alloca`、または `@tz.alloc` で確保されたヒープ領域が使用されます。パディング用の補助関数群は `runtime/format.ll` に配置され（スカラー数計数の `@tz.format.scalars.utf16`／`utf8`、フィル書き込みの `@tz.format.fill.u16`／`u8`、ASCII 拡張の `@tz.format.widen`）、前後のフィル数は LLVM が穴ごとに正確に計算します。幅のカウントは Unicode スカラー数に基づいて行われます（サロゲートペアは 1、孤立サロゲートも 1、数値の ASCII は文字数そのもの）。余白の不足分は、デフォルトで数値は左揃え（右パディング）・その他は右揃え（左パディング）となり、中央揃え `^` は不足分の半分（端数切り捨て）を前方に配置します。
+数値の書式指定処理は、ホスト環境の `printf` を使用せず、`src/runtime/numeric.c` の `tz_soft_format_spec` が多倍長の係数から直接最近接偶数丸めを行って ASCII 文字列を出力します（`numeric.ll` は `python3 src/runtime/generate.py`、`math.ll` は `python3 src/runtime/generate_math.py` で再生成します）。整数（`i8`〜`i128`、`i8u`〜`i128u`）の書式指定は `tz_soft_format_spec` ではなく、`runtime/integer.ll` の `tz.integer.spec`／`tz.integer.spec128` が同じ `flags` を受けて書きます（`f`・`e` と精度は整数には指定できません）。バッファは 160 byte で、テキストは末尾から前へ書くので、`number_piece` は末尾のアドレスを渡し、返った長さから先頭を求めます。`flags` は bit 0 で `+` 符号を、bit 4 以降で出力スタイル（0: デフォルト、1: `f`、2: `e`、3: `x`、4: `X`、5: `o`、6: `b`）を表現します。作業バッファには、`format_capacity` が型と精度から算出するサイズ（512 バイト以下）のエントリー `alloca`、または `@tz.alloc` で確保されたヒープ領域が使用されます。パディング用の補助関数群は `runtime/format.ll` に配置され（スカラー数計数の `@tz.format.scalars.utf16`／`utf8`、フィル書き込みの `@tz.format.fill.u16`／`u8`、ASCII 拡張の `@tz.format.widen`）、前後のフィル数は LLVM が穴ごとに正確に計算します。幅のカウントは Unicode スカラー数に基づいて行われます（サロゲートペアは 1、孤立サロゲートも 1、数値の ASCII は文字数そのもの）。余白の不足分は、デフォルトで数値は左揃え（右パディング）・その他は右揃え（左パディング）となり、中央揃え `^` は不足分の半分（端数切り捨て）を前方に配置します。
 
 **Format クラス（D07 Phase 2）:** `Format<'a>` は組み込み型クラスの 27 番目として定義されており、メソッド `format :: ref 'a -> ref string -> string` はコンパイラ組み込みの実装（`Operation`）を持たず、ユーザー定義の `instance` 実装に委ねられます。インスタンスのヘッド型は、`validate_format_instance` によって現在のプログラムで宣言された record または union（型引数は自由）に限定され、それ以外の型に対する実装は `E1016` エラーとなります（到達不可能な無効インスタンスの作成を防ぐためであり、`validate_drop_instance` と同一フェーズで検査されます）。クラス名 `Format`（ユーザーによる `record Format` の定義は `E1001`）およびモジュール名 `Format`（`E1011`）は予約名です。`TypedHole.custom` は、書式指定が存在し、穴の型が record または union であり、かつ指定に符号・精度・型が含まれるか `has_format_instance` が真である場合にセットされます。このとき `method` は `Format.format` に設定され、適合するインスタンスが存在しなければ `E1005`（`no instance for Format<T>`）エラーとなります。条件付きインスタンス（`instance Format<'a> => Format<Box<'a>>`）もサポートされます。カスタム指定でない穴の書式文字列は、`check_format_specs` が推論後の型に対して妥当性を検証し（`+` は数値型、精度は float および decimal、`x X o b` は整数型）、不整合がある場合や型が未確定のまま残った場合は `E1003` となります。`Display` のみを持つ record や union に対して幅とアライメントのみを指定した場合は、従来どおり Display の出力結果に対してパディングが行われます。
 `format_piece` は、借用した対象値と、検証済みの書式指定を正規の文字列表現（デフォルトのフィルや省略要素を除いた形式、例: `*>+8.2f`）にした文字列定数を、スタック上の `%tz.string` 記述子経由でインスタンスへ渡し、返却された文字列をそのまま穴の展開結果として使用します。コンパイラ側で追加のパディングや後処理を行うことはなく、幅や配置の適用はインスタンス実装側の責任となります。`std/Format.tz` に用意されている `Format.parse :: ref string -> Maybe<Format.Spec>`（字句解析器と同一の構文規則に従い、不正な文字列、先頭が `0` の幅や精度、4096 超過、禁止文字などを `None` として拒否）および `Format.pad :: ref Format.Spec -> string -> string`（スカラー数に基づくパディング）は、このための標準ライブラリ実装であり、コンパイラコアから直接参照されることはありません。なお、実行時に動的構築された書式文字列、`deriving (Format)`、`#` や `0` フラグ、ロケール依存処理、および書記素クラスタ（grapheme cluster）幅の考慮は現時点で未実装です。
@@ -773,7 +777,7 @@ LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から�
 ビット数カウント処理におけるゼロ入力時の未定義動作フラグは false に設定され、ビット回転数はビット幅に合わせて明示的にマスク処理されます。チェック付き演算（`checked_*`）は既存の `Maybe` union の構築処理を共有します。
 `i128` の checked および saturating 乗算は、64-bit limb の部分積とキャリーフラグを解析して上位 128-bit のオーバーフローを厳密に検出し、符号付き演算では絶対値の許容限界も正確に判定します。これにより、未同梱の外部ランタイムライブラリ（`__muloti4` など）に依存することなく、自己完結したコード生成を実現しています。
 整数のべき乗はバイナリ累乗法（二乗法）で実装され、最後の指数ビットの処理後に不要な二乗算を行わないように最適化されています。
-`i32` の `Int.min`・`Int.max`・`Int.leading_zeros` が使う `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` は、数値の表示や文字列化のために連結する `numeric.ll` も宣言します。同じプログラムでは生成コードの宣言だけが残ります（後述の `unique_declarations`）。`tests/integer_intrinsics.mjs` は、全幅の `Int.*` の参照値との照合に加え、これらを `IO.write_line`・文字列補間・`to_string` と組み合わせたプログラムを、ネイティブと WASM の `-O0`／`-O3` で参照値と照合します。
+`i32` の `Int.min`・`Int.max`・`Int.leading_zeros` が使う `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` は、f64 などの表示や文字列化のために連結する `numeric.ll` も宣言します（整数の表示は `integer.ll` が書き、宣言を持ちません）。同じプログラムでは生成コードの宣言だけが残ります（後述の `unique_declarations`）。`tests/integer_intrinsics.mjs` は、全幅の `Int.*` の参照値との照合に加え、これらを `IO.write_line`・文字列補間・`to_string` と組み合わせたプログラムを、ネイティブと WASM の `-O0`／`-O3` で参照値と照合します。
 
 **消費型コレクション更新:** `Array.set`、`update`、`swap`、ならびに `List.cons`、`tail` は、通常の多相 `BuiltinInstance` として提供されます。
 既存の組み込みラッパーおよび emitter の境界検査、drop、関数適用の仕組みを共有し、個別の専用フック関数は持ちません。
@@ -1052,7 +1056,7 @@ decimal 型は BID（Binary Integer Decimal）形式に準拠し、有限値、�
 再帰検査の参照グラフにもこの Display の依存エッジが含まれます。`string` に対する消費的な文字列化処理は所有権をそのまま返却します。
 `utf8string` の Display は UTF-16 文字列へと変換を行い、消費的な文字列化では変換完了後に元の UTF-8 メモリ領域を安全に解放します。
 
-数値の文字列表現の入口は `tz_soft_format` に統一されており、コンソール出力、`Display`、および `to_string` が完全に同一の出力形式を共有します。
+浮動小数点・decimal の文字列表現の入口は `tz_soft_format`（書式指定付きの数値は `tz_soft_format_spec`）に統一されており、コンソール出力、`Display`、および `to_string` が完全に同一の出力形式を共有します。整数（`i8`〜`i128`、`i8u`〜`i128u`）の表示は、同じ出力形式を `runtime/integer.ll` の `tz.integer.format`／`tz.integer.format128` が書き、書式指定付きの表示（`+`・`x`・`X`・`o`・`b`。負の数は `-` と絶対値の桁）は `tz.integer.spec`／`tz.integer.spec128` が書きます。10 進の桁、先頭の `-`、最小値（`-128i8`、`-170141183460469231731687303715884105728i128` など）、書式指定の文字列は `tz_soft_format`・`tz_soft_format_spec` と同じで、`tests/integer_format.mjs` が Python の参照と `numeric.ll` に、`tests/size.mjs` がコンパイラ経由で Python と同じ文法の JS の参照に照合します。
 整数の文字列化では、100 で除算して 2 桁ずつ数字を生成し、値が 64-bit に収まる範囲内でのみ `u128` の除算を行い、以降は高速な `u64` 除算へと切り替えます。
 各桁ペアは 32-bit 算術によって分解され、外部の大きな係数テーブルやホスト C ランタイムの文字列化関数には依存しません。
 狭幅整数の解析における cutoff 計算も `u64` で行われ、整数の有効範囲、符号、および桁区切り文字の規則が厳格に維持されます。
@@ -1069,12 +1073,11 @@ binary 浮動小数点は、既存の `tzrt_big` による Dragon4 アルゴリ�
 2 の冪乗で区間が狭まる下側境界、最小正規化数の例外、および偶数仮数の閉区間条件を明示的に処理し、同一桁数の候補が存在する場合は目標値との近接性および十進仮数の偶奇性に基づいて正しく選択します。decimal 型は既存の BID デコード処理を共有して末尾の不要なゼロを正規化します。
 第三者製ライブラリ、外部係数テーブル、あるいはホスト環境の libc 変換関数に依存することはありません。
 
-数値解析（Parse）の入口は UTF-16 の `string` を受け取り、4096 コード単位以下の ASCII 部分のみを一時バッファに切り出して処理します。
-非 ASCII 文字や孤立サロゲートが含まれている場合は直ちに `None` を返し、不正な UTF-8 変換や暗黙の文字置換を行うことはありません。
-`tz_soft_parse` は 4096 バイト以下の厳密な ASCII 構文を検証し、整数解析ではターゲット幅の cutoff 値と最終桁の値からオーバーフローを判定します。
-十進整数の先頭に 8 桁以上の数字が連続する場合、境界内の 8 バイトを一括して検証・集約します。
-基数 100,000,000 に対する cutoff と余りを計算して範囲内であることを確認したうえで値を累積し、区切り文字、非数字、または文字列末尾に達した時点で従来の 1 桁ずつのループへと復帰します。
-8 桁の一括検査が失敗した場合は入力ポインタを進めず、符号、先頭ゼロ、桁区切り、非十進表記に関する文法規則を完全に維持します（特別な SIMD 命令や追加の CPU 要件は不要です）。
+数値解析（Parse）の入口は UTF-16 の `string` を受け取ります。
+整数は `runtime/integer.ll` の `tz.integer.parse`／`tz.integer.parse128` が UTF-16 のコード単位を直接読み、ASCII への複写も 4 KiB の一時バッファも使いません。非 ASCII 文字（U+0130 のように下位バイトだけが数字や `x` と同じ単位を含む）や孤立サロゲートは数字でも記号でもないので、その時点で `None` です。不正な UTF-8 変換や暗黙の文字置換は行いません。
+長さは 1〜4096 コード単位、符号は `+`／`-`（符号なしの型の `-` は `-0` も `None`）、基数の接頭辞は小文字の `0x`・`0b` だけで、`0x` の後に数字が要り、`_` は数字と数字の間に 1 つだけ置けます。10 進の先頭の数字の連なりは 19 コード単位まで、`u64` を超えないので範囲の検査なしで足し、和を型の上限と一度だけ比べます。それ以外（`_`、20 コード単位目以降、`0x`・`0b`）は 1 桁ごとに cutoff（上限を基数で割った商）と最終桁（その余り）で判定するループが読むので、64 bit までは `u64` だけで済み、128 bit だけが `u128` の乗除算を使います。
+`f16`・`f32`・`f64`・`f128`・decimal の `Parse` は従来どおり、4096 コード単位以下の ASCII 部分を一時バッファに切り出して `tz_soft_parse` が処理します（非 ASCII 文字や孤立サロゲートを含む入力は直ちに `None`）。
+`tz_soft_parse` の整数の枝（十進 8 桁を一括して検証する高速経路を含む）は、コンパイラが生成するコードからは呼ばれません。`numeric.ll` を変えない（PM05 が byte 不変を前提にする）ために残してあり、`tests/integer_format.mjs` が `tz.integer.parse` と同じ入力で結果を比べる基準になります。
 浮動小数点数の解析では、十進係数と指数を正確な有理数として既存の `pack` 関数へ渡し、目的のバイナリ形式へと 1 回だけ丸め込みます。
 係数 4096 桁と形式ごとの指数範囲が `LIMBS` 配列内に安全に収まるよう、極端な指数値は拡大処理の前に overflow または underflow として早期分類されます。
 解析失敗時は 0（`Maybe.None`）を返し、成功時のみ出力スロットを初期化します。LLVM は成功分岐でのみスロットの値を読み出し、標準 `Maybe` の Some／None タグと共通のペイロード領域を構築します。
@@ -1242,6 +1245,7 @@ WASM ヒープマネージャはアドレス順に整列された空き領域リ
 ヒープ上限およびメインスタックサイズは、`BuildOptions` および `TestOptions` の `wasm_max_memory` と `wasm_stack_size`（CLI オプション `--wasm-max-memory`、`--wasm-stack-size`）によって設定可能です。
 プロジェクト読み込み後、未指定のオプションはルートパッケージのマニフェスト内 `[wasm]` セクション（`Project::wasm`、`BuildOptions::with_manifest_wasm`）から補填され、適用後に妥当性が再検証されます。
 `driver::wasm_memory_limits` がターゲットごとのメモリ範囲（wasm32 は 4 GiB − 64 KiB、wasm64 は 16 GiB）を一元的に検査して実効値を算出し、ビルドおよびテストランナーはその実効値から `wasm-ld` の `-z stack-size=` および `--max-memory=` 引数を組み立てます。
+`--wasm-opt`（PM08）は、`wasm-ld` が終わったあとの `.wasm` を `driver::run_wasm_opt` が Binaryen の `wasm-opt -Oz`（機能は `bulk-memory`・`sign-ext`・`nontrapping-float-to-int`・`mutable-globals`・`multivalue`・`reference-types`、`--wasm-feature simd128` のときだけ `simd`）に通し、結果で成果物を置き換えます。`--wasm-opt` を付けたときだけ `TSUZURI_WASM_OPT`（既定 `wasm-opt`）を探し、見つからないか失敗すると `run_tool` が `E2002` とヒントを返します。成果物キャッシュのキー（`cache::build_key`）は、そのときだけ `wasm-opt` の実体を含みます。`wasm64`・threads・`-g` は `BuildOptions::validate` が `E2000` にします。
 ヒープランタイム側の `heap-wasm.ll` は直接改変せず、`llvm::with_wasm_heap_limit` が生成後の IR 内にある `%fits` の 2 行と `%within` の 1 行を行全体の一致判定で安全に置換します。
 ユーザー定義の文字列定数は `c"..."` の行の途中に出現するため影響を受けず、デフォルト値の環境では置換を行わないため、デフォルト設定時の IR および生成される `.wasm` バイナリは完全に不変です。
 上限が 2 GiB 以下であれば `i32` の終端計算 `%begin + %needed` はオーバーフローしません。2 GiB を超過する場合は、`%within` を `%room = sub i32 LIMIT, %begin` との比較を行う 2 行の命令へと置き換えます（`%begin` は上限を超えません）。

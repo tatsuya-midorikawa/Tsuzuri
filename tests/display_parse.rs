@@ -37,9 +37,16 @@ fn provides_display_for_primitives_and_parse_for_numbers_and_bool() {
     accepts("to_string ()");
     accepts("let text = \"abc\"\nDisplay.display (&text)");
     let ir = accepts("to_string 42");
-    assert!(ir.contains("@tz_soft_format"));
+    // An integer has its own formatter; floats and decimals still use the numeric runtime.
+    assert!(ir.contains("@tz.integer.format"));
+    assert!(!ir.contains("@tz_soft_"), "{ir}");
+    assert!(accepts("to_string 0.1").contains("@tz_soft_format"));
+    // An integer is parsed by the integer runtime; floats and decimals by the numeric runtime.
+    let ir = accepts("def parse :: &string -> Maybe<i64>\nfn parse s = Parse.parse s");
+    assert!(ir.contains("@tz.integer.parse("), "{ir}");
+    assert!(!ir.contains("@tz_soft_"), "{ir}");
     assert!(
-        accepts("def parse :: &string -> Maybe<i64>\nfn parse s = Parse.parse s")
+        accepts("def parse :: &string -> Maybe<f64>\nfn parse s = Parse.parse s")
             .contains("@tz_soft_parse")
     );
 }
@@ -176,8 +183,14 @@ fn numeric_and_boolean_console_output_uses_the_shared_buffered_path() {
         let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
         assert!(!ir.contains("@printf"));
         assert!(ir.contains("@tz.console.write"));
-        if source != "true" {
-            assert!(ir.contains("@tz_soft_format"));
+        match source {
+            "true" => {}
+            // The result of an integer expression is written by the integer formatter.
+            "42" => {
+                assert!(ir.contains("@tz.integer.format"));
+                assert!(!ir.contains("@tz_soft_"), "{ir}");
+            }
+            _ => assert!(ir.contains("@tz_soft_format")),
         }
     }
 }

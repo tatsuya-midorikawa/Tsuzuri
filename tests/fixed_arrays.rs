@@ -505,7 +505,7 @@ fn exported_records_hold_scalar_fixed_arrays() {
             tsuzuri::driver::BuildOptions {
                 target: tsuzuri::driver::Target::Wasm32,
                 emit: tsuzuri::driver::Emit::Wasm,
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 ..Default::default()
             },
         )

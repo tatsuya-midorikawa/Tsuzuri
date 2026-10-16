@@ -8,11 +8,11 @@
 | 規模 | M |
 | 依存 | PX03 |
 | 関連 | G17, PB01, PB05, PM08 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1）。Phase 2 は要承認: D6（Linux の既定リンカーを lld にする）、D7（bitcode での受け渡し） |
+| 状態 | done |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討 |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で Phase 2 の D6・D7 を承認済み（効果を測定で確認できない既定の切り替えはしない） |
 | 手本にする既存実装 | 根を限った到達可能性: `src/llvm.rs` の `reachable_functions`（`roots` が `Some` の経路はテストのビルドが使用中）と `emit_program` の `roots`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`・`collect_message`。スレッドでの並行実行: `src/test_runner.rs` と `src/cache.rs` の `std::thread::scope` |
-| 主な影響ファイル | `src/llvm.rs`（`Instrumentation`・`emit_native_build`・`emit_program`・`executable_roots`（新規））、`src/driver.rs`（`build_complete`・`run_tool_pair`（新規））、`tests/llvm_handoff.rs`（新規）、`tests/llvm_handoff.mjs`（新規）、`tests/fixtures/llvm_handoff/`（新規）、`docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md` |
+| 主な影響ファイル | `src/llvm.rs`（`Instrumentation::executable_roots`・`emit_native`・`executable_roots`）、`src/bundle_identity.rs`（新規）、`src/cache.rs`（`tool_identity`・`invoked_path`・`build_key`）、`src/driver.rs`（`compile_runtime_object`・`final_link_args`）、`src/lib.rs`・`src/main.rs`（各 1 か所）、`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`・`tests/handoff_tools.mjs`・`tests/bundle_identity.mjs`・`tests/fixtures/llvm_handoff/`（新規）、`benchmarks/check-handoff-equivalence.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_tsuzuri/language-reference/compiler/{debugging,option,platforms,usage}.md` |
 | 計測対象 | PX03 の `benchmarks/run-build.mjs`（`build` の `O0`・`O3`）: 合成 200・1,000 モジュール、`examples/hello`。本チケットの追加の workload: W2（新規。合成 1,000 モジュールのうち 100 だけを `Main.tz` から呼ぶ）、W3（新規。`examples/tasks` の macOS `-g` 実行ファイル）、W4（新規。`tests/fixtures/tasks` の `--target wasm32 --wasm-feature threads`）、W5（新規。`tests/fixtures/tasks` の `--emit object`）。指標は `wall_time`・`phase_time`（`emit`・`tool.clang`）と、Clang に渡した IR の bytes |
 
 ## 目的
@@ -27,7 +27,51 @@ LLVM の C API／Rust バインディングに結合せず、テキストの IR 
 - PB02: フロントエンドの確保と、IR の生成中の書式化・文字列検索（`emit_program` の `output.contains(..)` によるランタイムの連結の判定を含む）。
 - PB03（本チケット）: Clang に渡す IR の量（実行ファイルで使われない公開関数）、1 回のビルドの外部プロセスの数と並行性、IR 全体の複写を伴う後処理、IR の渡し方・Clang のフラグ・リンカーの選択の判断と記録。
 
-実装者は Phase 1 だけを実装する。Phase 2 は人間が求め、該当する決定事項が承認された場合だけ着手する。
+2026-10-16 の依頼で全 Phase（Phase 2 の D6・D7・D9 を含む）を実装する。起票時の「Phase 1 だけ」「承認後だけ」の記述はこの依頼には適用しない。
+意味の保持と検証の条件は維持する。現行のコードと食い違う記述は、次の「着手時の再検討」を優先する。
+
+## 着手時の再検討（2026-10-16）
+
+HEAD `6d15b437`（第2フェーズの PR #26 を含む）で、起票時の記述を現行のコードと実測で照合した（Apple clang 21.0.0・Homebrew LLD 23.1.1・
+M1 Max。調査中の共有機の load average は 11〜112 で、時間は参考値）。起票は PB01・PB02・PM06・PM07・PR01・PR04・PR05・A17 より前で、前提が大きく変わっている。
+
+| # | 起票時の記述 | 現行（確認済み） | 扱い |
+| --- | --- | --- | --- |
+| 1 | PB01 は未完。ランタイムは HEAD の `runtime` の `Command` | PB01 完了。`compile_runtime_object`（同梱 → `runtime/` cache → Clang）、`runtime_objects`（`cache` かつ native 実行ファイルまたは wasm32 の `.wasm`、トラップ・debug・threads・stack 検査なし）、numeric・math の object、`-Wl,-dead_strip` | D4 は解決。プロセス表を作り直す |
+| 2 | task.c の 0.05〜0.12 s を並行で隠す（D2） | `native-c` は cache され steady state でプロセスがない。常に直接 compile するのは `threads.c`・`wasi.c`・`stack.c`（`-g`）と、cold・`--no-cache` の C ランタイム | 先に cache 化（WP2）。並行は残る分だけ・計測ゲート付き |
+| 3 | `tool.clang` が和になり `other` が負になりうる。判断は `wall_time` | `tests/time_passes.rs`・`metrics.mjs` の `parseTimePasses`・`run-build.mjs` の `breakdown` が「段の和 ≤ total」を検査し、option.md は二重計上をしないと定める | 並行する tool は組全体を 1 つの `tool.<名前>` 区間で計上する |
+| 4 | Windows では並行実行が起きない | wasm の threads・WASI・numeric／math object は Windows の host でも走る | Windows は CI でしか確認できない。両 Windows target の `cargo check` を保つ |
+| 5 | `emit_native_build` に `executable_roots` を足す。既存テストへの影響なし | `tests/multiversion.rs` が `emit_native_build_for(Entry::Console)` を使う。`EmitOptions` の構築は 33 か所 | 剪定は `emit_native_build` からだけ立てる（private な内側の関数）。`_for` は不変 |
+| 6 | `reachable_functions(module, None)` | 現行は `(module, roots, benches)`。`program_reach` が drop glue を根に足し、`Bench.now` の規則（G18 D3）と `clock_error(roots)` を持つ | `executable_roots` は export と entry だけ。drop は `program_reach` が足す |
+| 7 | 後処理の複写 3 か所と `output.contains` | `contains` は PB01 の `RuntimeSymbols` に置換済み。`replace` は `!runtime_objects` のみ、`lines().join` は `tz_math_` のとき。他に `has_recursion`（IR の 2 走査。どの段にも入らない）、`unique_declarations`、`with_vector_alignment` | D8 の対象と M7 の分母を更新。release は `strip = true` なので sample には非 strip の build が要る |
+| 8 | `emit_wasm_threads_build` | `emit_wasm_build(…, threads, memory64, stack_checks)`。`--emit shared`・`trap_return` の経路が増えた | 関数名と D9 の変更箇所を更新 |
+| 9 | 失敗の hint を E2E で検査 | 既定（cache あり）の C ランタイムの失敗は `runtime objects require Clang with support for the selected target`。旧 hint は `--no-cache` と `merge_debug_ir` だけ。主の Clang は `cross_hint` で包まれる | E2E の期待文を経路ごとに書く |
+| 10 | 既存テストへの影響なし | `prebuilt_runtime.mjs` は warm で Clang が 1 回だけと検査し、`cache.mjs` は compile の数を、`smoke.mjs` は同梱 object の消費を検査する | 検査用の追加プロセス・runtime key と引数の変更は不可 |
+| 11 | D6: Linux の既定リンカーを lld、macOS は Apple ld | 配布物の `tsuzuri-clang` は全 OS で LLVM clang `-c` → `zig cc`（内蔵 LLD）。launcher は `-fuse-ld=lld` を捨て、`*.ll` の path を要し、LLVM clang へは限った flag だけ渡す。macOS では ld64.lld が Apple ld より遅い（1,000 module で 84 ms と 109 ms） | opt-in の `TSUZURI_LINKER=lld` だけ。既定は変えない |
+| 12 | 計測は PX03 の `build`（`--no-cache`） | `--no-cache` は `runtime_objects=false`（既定でない経路）。`run` は `--trap-info` が既定で runtime object を使わない。既定の経路は `build-runtime-{cold,warm}` | 計測に `build-runtime-warm` と trap-info の variant を足す |
+| 13 | M1「hello・合成 1,000 は before と byte 単位で同じ」。数値は 464,271 B・29 MB | 全 public が使われるので成り立つ。数値は変わった: hello の exe IR は `--no-cache` で 740,282 B、runtime object 版で 121,933 B（+ numeric.ll 619,488 B）、`run` で 758,166 B。合成 1,000 は 139,010 行・37.3 MB。`--emit llvm` の hello は 740,290 B（起票時は 3,126 B） | 数値を取り直す |
+| 14 | PM08 の `-O{}` は 3 か所 | `format!("-O{}")` は driver に 5 か所（numeric・math、C、WASI、threads、主） | PM08 の機械的な置換は PB03 の後 |
+
+実測（再現手順は「計測手順」と実装記録）: 剪定の上限は -O0 で Clang 246 → 72 ms（3.4 倍）、-O3 で 343 → 303 ms（1.13 倍）。Clang の front end は -O0 で 5〜9%、-O3 で 3%（機械語生成が -O0 の 88%）。
+`.ll` を `.bc` にしても Clang の時間は 1〜2% しか変わらず、`llvm-as` は Clang の -O0 の 35%。compile と link の分割は hello で +25 ms。ld64.lld は ld64 より約 30% 遅い。
+
+決定（起票時からの変更）:
+
+- **D1**: 採用。`emit_native_build`（`Entry::Console`）だけ。`emit_native_build_for` と `emit`・`emit_target`・`emit_with_options` は不変。`-g` も剪定する。
+- **D2**: 縮小。まず `threads.c`・`wasi.c`・`stack.c`（`-g`）を cache 化して、プロセス自体を消す。並行は残る独立な compile だけで、組全体を 1 区間で計上し、wall の改善が広がりを超えたときだけ入れる。実行ファイルの compile と link の分割はしない。
+- **D3・D5**: 変えない。配布物の launcher が `*.ll` の path を要し、LLVM clang へ渡す flag を限っている。
+- **D6**: `TSUZURI_LINKER=default|lld` の opt-in だけ。未設定は現行。lld が見つからなければ Clang のエラーを E2002 で出し、黙って戻さない。Linux の既定化は Linux の実測が出るまでしない。
+- **D7**: 採用しない。上の数値を記録する。
+- **D8**: 計測で決める。見込みは 2% 未満。**D9**: D1 が安定した後、条件付きで実装（最後）。**D10**: 対象外のまま。
+- **D11（新規）**: 並行する tool は組全体を 1 つの `tool.<名前>` 区間で計上する。**D12（新規）**: 計測に `build-runtime-warm` と `--trap-info` の variant を含める。
+- **WP-F（新規。範囲外の発見の修正）**: 同梱 resource の識別子の費用（下記）を、検証済みの memo で O(1) に近づける。
+
+範囲外の発見（記録。★は本チケットで修正する）:
+
+- ★ 配布物（約 19,600 file・759 MB）と cache を使うと、`bundled_resource_fingerprint` と `bundled-zig-binary`（185 MB）が毎ビルド全件ハッシュされる（`cache` 段が 33〜165 s。cache hit でも）。launcher の `--version`（LLVM clang と `zig cc` の 2 プロセス）も毎ビルド 約 0.25 s。
+- `run` は `--trap-info` が既定で runtime object を使わない。hello の IR は 758 KB（`build` は 122 KB）で、Clang が -O3 で 675 ms。計装済みの numeric を別の object にする案（PB01 D5 の「将来の候補」）は別チケットにする。
+- whole-build cache の hit の固定費は 約 90 ms（コンパイラ本体 9 MB のハッシュと `--version` の起動）。frontend cache の stat による識別の流用が候補。
+- ★ Homebrew の `wasm-ld` は `lld` への symlink で、`tool_identity` が `executable_path`（`canonicalize`）経由で `lld --version` を呼んで失敗し、wasm の whole-build cache が黙って無効になる。`--version` は symlink を辿らない `invoked_path` の名前で呼ぶ（file の識別は従来どおり実体）。
 
 ## 着手条件と停止条件
 
@@ -52,13 +96,17 @@ TSUZURI_TIME_PASSES=1 target/release/tsuzuri build examples/hello -O0 --no-cache
 1. 根を限った実行ファイルのビルドで、Clang が `use of undefined value '@tz.fn.…'` などを出す、またはリンクが未定義の記号で失敗する。
    `reachable_functions` の `references` が辿らない参照の経路があるということなので、根を足して隠さない。`TypedExprKind` の variant と再現を報告する。
 2. 既存のテストの期待値を変える必要が出た（Rust テストの IR・トラップの数・DWARF の検査、E2E の出力）。PB03 は `llvm::emit`・
-   `emit_target`・`emit_with_options`・`emit_with_trap_info`・`emit_with_debug_info`・`emit_wasm_threads_build` の出力を変えない。
+   `emit_target`・`emit_with_options`・`emit_with_trap_info`・`emit_with_debug_info`・`emit_wasm_build`・`emit_native_build_for` の出力を変えない。
 3. 並行実行で、`messages` の順序・報告する診断（どちらのツールの失敗を報告するか）が HEAD と変わる、または `unsafe`・新しい crate
    （`rayon`・`tempfile` など）が必要になった。
 4. 手順 1 の IR の byte 比較（`--emit llvm` と Rust テストの IR）で差が出た。
-5. IR の渡し方（stdin）、Clang のフラグ、リンカーを変えたくなった。どれも Phase 1 では変えないと決めてある（D3・D5・D6）。計測の結果を報告する。
+5. IR の渡し方（stdin）、Clang のフラグ、既定のリンカーを変えたくなった。どれも既定では変えないと決めてある（D3・D5・D6）。計測の結果を報告する（opt-in の D6 は可）。
 6. どれかの workload で `wall_time` か `tool.clang` の中央値が before の広がり（最小〜最大）を超えて悪化した。
 7. 計測のために `src/` を変える必要が出た（計測専用の CLI オプション、隠し環境変数など）。IR の採取は `TSUZURI_CLANG` の wrapper（計測手順）で行う。
+   ただし並行する tool の計上（D11）は製品の不変条件（段の和 ≤ total）なので `src/` を変えてよい。
+8. （2026-10-16 追加）逐次の経路の `tool.*` などの段の名前・計上の仕方が変わる。
+9. （2026-10-16 追加）既存の runtime object の source・引数・`KEY_ENVIRONMENT` が変わり、同梱 object が一致しなくなる。
+   `prebuilt_runtime.mjs` の「warm の Clang は 1 回」、`cache.mjs` の compile の数、`smoke.mjs` の同梱 object の消費の期待値も変えない。
 
 ## 現状と計測（HEAD `f8dc655`）
 
@@ -648,3 +696,72 @@ used 41
   `extractvalue` は `-O0` のコードの質の問題で、生成規則の変更（PM07・PR03 の範囲）になる。
 - 見直し提案: 旧版の Phase 1 にあった「冗長な IR の削減」は、M5 で `-O0` の命令選択が支配的と分かった場合に PM07 か PR03 へ移して起票する。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-16）
+
+ブランチ `perf/phase3/PB03`（基点 `c6864cf5` = main `6d15b437` + 計画の記録）。コミット: `d0850940`（WP0）、`f2e3dc3f`（WP1）、`aa53b74f`・`bd2f9c74`（WP-F）、`74babda1`（WP2）、`993e113d`（WP5）、
+それに続く文書の記録（WP7・WP9）。
+
+### 実装した範囲と、しなかったもの
+
+| WP | 内容 | 結果 |
+| --- | --- | --- |
+| WP0 | 起票時の記述を現行のコードと実測で照合し、決定を改め、`benchmarks/check-handoff-equivalence.mjs`（二つのコンパイラの差分検査）を作った | 実装 |
+| WP1（D1） | `emit_native_build`（`Entry::Console`）だけ、entry・export・ユーザーの drop から到達する関数だけを出力する（`Instrumentation::executable_roots`、`emit_native`、`executable_roots`）。`emit_native_build_for`・`llvm::emit*`・wasm・library・object・shared は不変 | 実装。W2 の CPU 時間は `-O0` で −65%、`-O3` で −36% |
+| WP-F（新規） | 同梱ツールチェーンの識別（全ファイルの fingerprint、Clang・Zig の SHA-256、ランチャーの `--version`）を並列に 1 回だけ計算し、`<cache>/bundle/` に控える（`src/bundle_identity.rs`）。署名が変わらない間は再利用。Homebrew の `wasm-ld`（`lld` への symlink）の `--version` も直した | 実装。毎ビルド約 8 s の CPU → 0.12 s |
+| WP2（D2 の前半） | `threads.c`・`wasi.c`・`-g` の `stack.c` を `compile_runtime_object` に載せた（単位 `wasm-threads`・`wasi`・`stack-debug`） | 実装。再ビルドで Clang の 1 プロセスを削る（−23〜−113 ms の CPU） |
+| WP3・WP4（D2 の後半・D4・D11） | 独立な Clang プロセスの並行実行と、組全体を 1 区間で計上する helper | **入れない**。cold の最初の 1 回だけで、理想の上限が 35〜259 ms（load の広がりの内側）。計測を `docs/benchmarks.md` に記録 |
+| WP5（D6） | `TSUZURI_LINKER=default|lld` の opt-in。最終リンク（実行ファイル・`-g` の別リンク・`--emit shared`）だけに `-fuse-ld=lld`。未設定のキー・引数は不変。lld が無ければ E2002（hint 付き）、不正な値と Windows は E2000 | 実装。既定は変えない |
+| WP6（D8） | IR の後処理の複写を非 strip の release と `sample` で測った | 採用しない。複写は上位に出ず、試作の改善は 1.4%（基準 2% 未満） |
+| WP7 | `docs/benchmarks.md` に節を 1 つ足した | 実装 |
+| WP8（D9） | `--emit wasm` の剪定 | 採用しない。成果物が同じで、効果は Clang の時間だけ。根の整合の費用に見合わない |
+| D3・D5・D7 | 変えない（launcher の制約・bitcode の得が 1〜2%） | 数値を記録 |
+| D10 | 対象外のまま | — |
+
+### 確認
+
+- 単体: `cargo test --locked --test llvm_handoff`（8 件、D1 の根・剪定・型検査・drop・trap 位置）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
+  `--lib the_linker_choice`（1 件）。`cargo clippy --all-targets --locked -- -D warnings` と `cargo fmt --all` は成功。
+  Windows: `PATH=$HOME/.cargo/bin:$PATH cargo +stable check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` が成功（Windows の挙動は Windows の CI でしか確認できない）。
+- E2E: `tests/llvm_handoff.mjs`（vtable・closure・export・trap 位置、`-O0`・`-O3`、決定性）、`tests/handoff_tools.mjs`（C ランタイムの cold 1／warm 0／`--no-cache` 1、cached と fresh の byte 一致、
+  失敗の hint と保存されないこと、`-g` の guard の overflow、`TSUZURI_LINKER` の引数・E2002・E2000・キー・目的別の無付与）、`tests/bundle_identity.mjs`（偽の配布物と spy の launcher で、
+  memo の作成・再利用・無効化（ファイルの追加・ツールの入れ替え・manifest）・上書き・cache でないディレクトリへの無書き込み）。
+  3 つとも新しいビルドで通り、`llvm_handoff.mjs`・`handoff_tools.mjs`・`bundle_identity.mjs` は基準のコンパイラでは失敗する。
+  `prebuilt_runtime.mjs`・`cache.mjs`・`wasm_threads.mjs`・`stack_overflow.mjs`（20 件）・`os.mjs`・`debug_info.mjs` も通る。
+- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。
+  WP1 の 8 モード（header・llvm・object・wasm・shared・exe0・exe3・exeg）992 比較は失敗 0（521 が byte 一致、実行ファイル 12 比較が剪定で関数を減らし挙動は同じ）。
+  WP2 の cache あり 3 モード（wasmt・wasi・exegc）372 比較は失敗 0（199 が byte 一致）。threads・WASI の `--emit object` は `-O0`・`-O3` で SHA-256 が一致。
+  `TSUZURI_LINKER` 未設定の Clang の引数列は 8 つのビルドで基準と完全に一致。
+- 同梱ツールチェーン: 実物の開発用配布物（759 MB）の複製に `scripts/toolchain/runtime.mjs` の `bundleRuntime` で `share/runtime` を作り、新しいコンパイラで同梱 object が使われる（runtime cache が空）こと、
+  `lib/` にファイルを足すと拒否されることを確かめた。runtime cache のキー（2 件）は旧コンパイラと同じ。
+
+### 計測
+
+条件・結果・再現は `docs/benchmarks.md` の「LLVM への受け渡し（PB03）」にある。機械は共有で load average 25〜225 だったので、結論は CPU 時間・プロセスごとの時間・標本数だけに基づく。
+scratch の道具（リポジトリには入れない）: W2 の生成は「計測手順」のとおり。交互 9 標本は `os.wait4` の `ru_utime + ru_stime` を CPU 時間とし、`TSUZURI_TIME_PASSES=1` の JSON から `emit` と `tool.*` を足す。
+Clang の 1 プロセスごとの時間は、引数と経過時間を記録して本物の Clang を呼ぶ Rust の wrapper を `TSUZURI_CLANG` に置いて取った。`sample` は
+`CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` の別 target dir のビルドに `sample <pid> 60 5` を当てた。
+静かな機械での正式な before／after（PX03 の `build`・`build-runtime-{cold,warm}`）は未取得で、`_perfs/README.md` の手順で取り直す。
+
+### 決定事項への追記と見つけた問題
+
+- 決定の結果: D1 採用、D2 は C ランタイムの cache 化だけ採用（並行は不採用）、D3・D5・D7 変更なし、D6 は opt-in、D8・D9 不採用、D10 対象外、WP-F 採用。
+- ★ 修正した範囲外の問題: 同梱 resource の全件ハッシュ（WP-F）、Homebrew の `wasm-ld` の `--version`（whole-build cache が黙って無効だった）。
+- 記録だけ: `run` は `--trap-info` が既定で runtime object を使わず、hello の IR が 758 KB（`build` は 122 KB）になる（計装済みの numeric を別 object にする案は別チケット）。
+  whole-build cache の hit の固定費は約 90 ms（コンパイラ本体 9 MB の SHA-256 と `--version`）。`build_key` は `ToolIdentity::hash_into` の戻り値を見ないので、symlink を含む配布物の
+  whole-build のキーは resource の識別を欠く（実際の配布物は symlink を持たない）。`tool_line`（`toolchain info`）は Homebrew の `wasm-ld` を `(unavailable)` と表示する（同じ symlink の問題）。
+  同梱ツールチェーン（Zig 0.16.0 の `zig cc`）で、`--wasm-host wasi -O0` と `--wasm-feature threads -O0` が `wasm-ld: undefined symbol: __ubsan_handle_*`（`wasi.o`・`threads.o`）で失敗する（基準のコンパイラでも同じ。`-O1` 以上は通る）。`zig cc` が `-O0` で UBSan を既定で有効にし、wasm には その runtime がないため。wasm の C ランタイムの compile に `-fno-sanitize=undefined` を足すのが候補で、本チケットでは直していない（LLVM の Clang を使う CI の `wasm_threads.mjs` には出ない）。
+  配布物の `zig cc` のリンクは約 230 ms の固定費で、Apple の ld64 の約 60 ms より重い。ソフトウェアの SHA-256 は `unsafe` を使えず、IR（1,000 モジュールで約 37 MB）とコンパイラのハッシュが毎ビルドの費用になる。
+- 後続のチケットへ: PM08 は `build_complete` の `-O{}` 5 か所と `-Wl,-x` を触る（この変更は `final_link_args` と runtime object の 3 か所を足しただけで、衝突は小さい）。
+  PM05・PR06 が runtime object やタスクの runtime を変えるときは、`tests/handoff_tools.mjs` の単位名（`wasm-threads`・`wasi`・`stack-debug`）と D1 の差分検査を再実行する。
+
+### 更新した文書
+
+`_tsuzuri/language-reference/compiler/usage.md`（ランタイム object: C ランタイムの cache と、同梱ツールチェーンの識別の信頼の範囲）、`option.md`（`TSUZURI_LINKER`、組み合わせのエラー）、
+`platforms.md`、`debugging.md`（実行ファイルに入る関数）、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`（キャッシュ、`TSUZURI_LINKER`、テストの一覧）、`src/main.rs` の HELP。
+`docs/language.md` は、変更した意味（実行ファイルから到達する関数だけを出力する）がユーザーに見える範囲を `debugging.md` が持つので、更新不要と判断した。
+
+### 変更したファイル
+
+`git diff --stat c6864cf5..HEAD` を参照（`src/` は `bundle_identity.rs`（新規）・`cache.rs`・`driver.rs`・`llvm.rs`・`lib.rs`・`main.rs`、テストは `tests/llvm_handoff.{rs,mjs}`・`handoff_tools.mjs`・`bundle_identity.mjs`・`fixtures/llvm_handoff/`、
+差分検査は `benchmarks/check-handoff-equivalence.mjs`、CI は `.github/workflows/targets.yml`）。

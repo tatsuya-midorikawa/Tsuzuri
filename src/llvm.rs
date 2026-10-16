@@ -563,6 +563,9 @@ pub fn emit_with_debug_info(
     }
 }
 
+/// A native executable (`Entry::Console`) defines only the functions that its entry or an export
+/// reaches (`executable_roots`): the other public functions are `internal` there, so nothing can
+/// call them, yet `-O0` would still compile them (PB03 D1). Libraries keep every public function.
 pub fn emit_native_build(
     module: &CheckedModule,
     options: EmitOptions,
@@ -570,18 +573,20 @@ pub fn emit_native_build(
     debug: Option<bool>,
     trap_info: bool,
 ) -> Result<EmitOutput, Diagnostic> {
-    emit_native_build_for(
+    emit_native(
         module,
         options,
         sources,
         debug,
         trap_info,
         cpu::host_levels(),
+        options.entry == Entry::Console,
     )
 }
 
 /// `emit_native_build` for a CPU whose runtime detects `levels`, bit `L` for level `L` of
-/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3).
+/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3). It keeps
+/// every public function, whatever the entry is.
 pub fn emit_native_build_for(
     module: &CheckedModule,
     options: EmitOptions,
@@ -589,6 +594,18 @@ pub fn emit_native_build_for(
     debug: Option<bool>,
     trap_info: bool,
     levels: u8,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_native(module, options, sources, debug, trap_info, levels, false)
+}
+
+fn emit_native(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    levels: u8,
+    executable_roots: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -615,6 +632,7 @@ pub fn emit_native_build_for(
             multiversion: true,
             runtime_objects: options.runtime_objects,
             wasm_simd128: false,
+            executable_roots,
             ..Instrumentation::default()
         },
     )?;
@@ -811,6 +829,7 @@ pub(crate) fn emit_wasm_build(
             coverage: None,
             seed: None,
             range_flags: None,
+            executable_roots: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -981,6 +1000,8 @@ struct Instrumentation<'a> {
     seed: Option<u64>,
     /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
     range_flags: Option<RangeFlags>,
+    /// A native executable emits only what its entry and exports reach (PB03 D1).
+    executable_roots: bool,
 }
 
 fn emit_program(
@@ -1078,18 +1099,25 @@ fn emit_program_in(
         output.push_str("%tz.dyn = type { ptr, ptr }\n");
     }
     output.push_str(&host_abi::type_definitions(module));
-    let roots = tests.map(|selected| {
-        selected
-            .iter()
-            .map(|index| {
-                if entry == Entry::BenchRunner {
-                    module.benches[*index].function
-                } else {
-                    module.tests[*index].function
-                }
-            })
-            .collect::<Vec<_>>()
-    });
+    debug_assert!(!instrumentation.executable_roots || entry == Entry::Console);
+    let roots = tests
+        .map(|selected| {
+            selected
+                .iter()
+                .map(|index| {
+                    if entry == Entry::BenchRunner {
+                        module.benches[*index].function
+                    } else {
+                        module.tests[*index].function
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            instrumentation
+                .executable_roots
+                .then(|| executable_roots(module))
+        });
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
@@ -1560,6 +1588,9 @@ fn emit_program_in(
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
         runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
+    }
+    if runtime_symbols.prefix("tz.integer.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
     }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
@@ -2895,6 +2926,18 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// What a native executable exposes: its entry and its exports. Every other public function is
+/// `internal` in the executable, so no code outside the program can reach it (PB03 D1).
+fn executable_roots(module: &CheckedModule) -> Vec<usize> {
+    module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| function.exported || module.entry == Some(*id))
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// The functions that the program needs: user functions, exports, and the
@@ -8105,6 +8148,33 @@ fn emit_character_conversion(
     format!("define internal {llvm} {symbol}({input} %value) nounwind {{\nentry:\n{body}}}\n\n")
 }
 
+/// The IR that writes the decimal text of the integer `value` (of `bits` bits) into a new 40-byte
+/// `%buffer` with `tz.integer.format`; it leaves the text in `%text` and its length in `%length`
+/// (an i64). The formatter writes from the end of the buffer backwards.
+fn integer_text(value: &str, bits: u16, signed: bool) -> String {
+    let flag = if signed { "true" } else { "false" };
+    let mut output = String::new();
+    let call = if bits == 128 {
+        format!("call i32 @tz.integer.format128(ptr %end, i128 {value}, i1 {flag})")
+    } else if bits == 64 {
+        format!("call i32 @tz.integer.format(ptr %end, i64 {value}, i1 {flag})")
+    } else {
+        let extension = if signed { "sext" } else { "zext" };
+        let _ = writeln!(output, "  %wide = {extension} i{bits} {value} to i64");
+        format!("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 {flag})")
+    };
+    let _ = write!(
+        output,
+        "  %buffer = alloca [40 x i8], align 16\n\
+           %end = getelementptr inbounds i8, ptr %buffer, i64 40\n\
+           %count = {call}\n\
+           %length = zext i32 %count to i64\n\
+           %offset = sub i64 40, %length\n\
+           %text = getelementptr inbounds i8, ptr %buffer, i64 %offset\n"
+    );
+    output
+}
+
 fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     let symbol = builtin_symbol(instance, module);
     let ty = &instance.types[0];
@@ -8189,6 +8259,18 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                    ret %tz.string %r"
             );
         }
+        Type::Integer(bits, signed) => {
+            let value = if borrowed {
+                let _ = writeln!(body, "  %value = load {value_type}, ptr %x");
+                "%value"
+            } else {
+                "%x"
+            };
+            body.push_str(&integer_text(value, *bits, *signed));
+            body.push_str(
+                "  %r = call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)\n  ret %tz.string %r\n",
+            );
+        }
         _ => {
             let pointer = if borrowed {
                 "%x"
@@ -8252,6 +8334,39 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %false = call i1 @tz.string.equal(%tz.string %text, %tz.string {{ ptr {symbol}.false, i64 5 }})\n\
                %ok = or i1 %value, %false\n\
                br i1 %ok, label %some, label %none\nsome:"
+        );
+    } else if let Type::Integer(bits, signed) = payload {
+        // The integer parser reads the UTF-16 units itself and stores its result whole: an i128 for a
+        // 128-bit integer, else an i64 whose low bits are the value.
+        let (slot_type, call, load) = if *bits == 128 {
+            (
+                "i128",
+                format!(
+                    "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 {signed}, ptr %slot)"
+                ),
+                "  %value = load i128, ptr %slot".to_string(),
+            )
+        } else {
+            let truncate = if *bits == 64 {
+                "  %value = load i64, ptr %slot".to_string()
+            } else {
+                format!("  %wide = load i64, ptr %slot\n  %value = trunc i64 %wide to {value_type}")
+            };
+            (
+                "i64",
+                format!(
+                    "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 {bits}, i1 {signed}, ptr %slot)"
+                ),
+                truncate,
+            )
+        };
+        let _ = writeln!(
+            body,
+            "  %data = extractvalue %tz.string %text, 0\n\
+               %length = extractvalue %tz.string %text, 1\n\
+               %slot = alloca {slot_type}, align 16\n\
+               %ok = {call}\n\
+               br i1 %ok, label %some, label %none\nsome:\n{load}"
         );
     } else {
         let _ = writeln!(
@@ -8451,6 +8566,10 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
             );
         }
         Type::Unit => {}
+        Type::Integer(bits, signed) => {
+            output.push_str(&integer_text("%result", *bits, *signed));
+            output.push_str("  %printed = call i32 @tz.console.write(ptr %text, i64 %length)\n");
+        }
         _ if ty.is_numeric() => {
             let _ = writeln!(
                 output,
@@ -8640,7 +8759,7 @@ mod tests {
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
              let number = to_string 42\n\
-             let parsed: Maybe<i64> = Parse.parse ref number\n\
+             let parsed: Maybe<f64> = Parse.parse ref number\n\
              let truth = to_string true\n\
              let parsed_bool: Maybe<bool> = Parse.parse ref truth\n0",
         );
@@ -8656,7 +8775,10 @@ mod tests {
             assert!(body.contains("call %tz.string @tz.string.from_utf8("));
             assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
         }
-        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %buffer, i64 %length)"));
+        // An integer is shown by the integer formatter, which writes into a stack buffer whose
+        // start the call computes; a float is parsed by the numeric runtime from an ASCII copy.
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)"));
         assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
         assert!(ir.contains("call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)"));
         assert!(ir.contains("br i1 %ascii, label %parse, label %none"));
@@ -8812,8 +8934,11 @@ mod tests {
 
     #[test]
     fn number_formatting_keeps_the_generated_intrinsic_declarations() {
+        // A float is shown by the numeric runtime, which declares `llvm.smin.i32` too; an
+        // integer is not (it has a runtime of its own, without declarations).
         let ir = library(
-            "def run :: i32 -> i32 -> string\nfn run left right = to_string (Int.min left right)",
+            "def run :: i32 -> i32 -> f64 -> string\n\
+             fn run left right x = {\n    let low = Int.min left right;\n    to_string (x + (low as f64))\n}",
         );
         // The runtime of the number formatting is linked, and it declares `llvm.smin.i32` too.
         assert!(ir.contains("define weak hidden i32 @tz_soft_format("));
@@ -8824,6 +8949,86 @@ mod tests {
             1
         );
         assert!(!ir.contains("declare i32 @llvm.smin.i32(i32, i32) #"));
+    }
+
+    #[test]
+    fn integers_are_shown_without_the_numeric_runtime() {
+        let ir = library(
+            "def run :: i32 -> i8u -> i128 -> string\n\
+             fn run left right wide = to_string left + to_string right + to_string wide",
+        );
+        assert!(ir.contains("define internal i32 @tz.integer.format("));
+        assert!(ir.contains("define internal i32 @tz.integer.format128("));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 false)"));
+        assert!(ir.contains("call i32 @tz.integer.format128(ptr %end, i128 %x, i1 true)"));
+        // Nothing of the numeric runtime: no formatter and no intrinsic declaration.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        // A float or a decimal, parsed or shown, still links it.
+        for source in [
+            "def run :: f64 -> string\nfn run x = to_string x",
+            "def run :: string -> Maybe<f64>\nfn run text = Parse.parse ref text",
+            "def run :: string -> Maybe<d64>\nfn run text = Parse.parse ref text",
+        ] {
+            assert!(library(source).contains("tz_soft_"), "{source}");
+        }
+    }
+
+    #[test]
+    fn the_integer_runtime_avoids_the_words_that_tests_search_for() {
+        // The tests that forbid fast-math flags search IR text for these words, and the tests of
+        // the numeric runtime for its symbols; the integer runtime is part of that text.
+        let runtime = include_str!("runtime/integer.ll");
+        for word in [
+            "fast", "contract", "reassoc", "fmuladd", "tz_soft_", "llvm.fma",
+        ] {
+            assert!(!runtime.contains(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
+        let ir = library(
+            "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
+             def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
+             def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\
+             def wide :: &string -> Maybe<i128u>\nfn wide text = Parse.parse text\n\
+             def specs :: i32 -> i8u -> i128u -> string\n\
+             fn specs a b c = $\"{a:+}{b:x}{c:b}\"",
+        );
+        // The parser reads the UTF-16 text itself and stores the result as an i64 (an i128 for a
+        // 128-bit integer), which the load narrows.
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 8, i1 true, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 32, i1 false, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 64, i1 true, ptr %slot)"
+        ));
+        assert!(
+            ir.contains(
+                "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 false, ptr %slot)"
+            )
+        );
+        assert!(ir.contains("%value = trunc i64 %wide to i8\n"));
+        assert!(ir.contains("%value = trunc i64 %wide to i32\n"));
+        assert!(ir.contains("%value = load i64, ptr %slot\n"));
+        assert!(ir.contains("%value = load i128, ptr %slot\n"));
+        // The format specs take the value extended to 64 bits, or the i128, and the flags of a hole.
+        assert!(ir.contains("call i32 @tz.integer.spec(ptr "), "{ir}");
+        assert!(ir.contains("call i32 @tz.integer.spec128(ptr "), "{ir}");
+        assert!(ir.contains("i1 true, i32 1)"), "plus: {ir}");
+        assert!(ir.contains("i1 false, i32 48)"), "hexadecimal: {ir}");
+        assert!(ir.contains("i1 false, i32 96)"), "binary: {ir}");
+        // No numeric runtime, no ASCII copy of the text, and no 4 KiB buffer for it.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        assert!(!ir.contains("call i1 @tz.string.to_ascii"), "{ir}");
+        // A float's spec still uses it.
+        let ir = library("def run :: f64 -> string\nfn run x = $\"{x:.2}\"");
+        assert!(ir.contains("call i32 @tz_soft_format_spec("), "{ir}");
+        assert!(!ir.contains("tz.integer."), "{ir}");
     }
 
     #[test]
