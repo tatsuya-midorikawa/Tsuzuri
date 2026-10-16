@@ -3593,7 +3593,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             escape::staying_locals(&self.function.body)
         };
-        self.ranges = crate::ranges::analyze(self.module, self.function);
+        self.ranges = crate::ranges::analyze(
+            self.module,
+            self.function,
+            self.globals.range_flags != RangeFlags::Off,
+        );
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
             // A14: the parameters pass on to the slot, which owns them; nothing drops here.

@@ -95,6 +95,9 @@ impl RangeFacts {
     /// Records the values of the immutable integer local that `value` initializes, for the rest of
     /// the function: it is bound once and never changes.
     pub(crate) fn bind(&mut self, module: &CheckedModule, local: &Local, value: &TypedExpr) {
+        if self.steps == 0 {
+            return;
+        }
         if let Some(ty) = self.trackable(local) {
             let known = self.value(module, value, ty, 0);
             self.values.insert(local.id, known);
@@ -111,6 +114,9 @@ impl RangeFacts {
         step: &TypedExpr,
         finish: &TypedExpr,
     ) {
+        if self.steps == 0 {
+            return;
+        }
         let Some(ty) = self.trackable(local) else {
             return;
         };
@@ -145,6 +151,9 @@ impl RangeFacts {
         condition: &TypedExpr,
         depth: u32,
     ) -> usize {
+        if self.steps == 0 {
+            return 0;
+        }
         let mut comparisons = Vec::new();
         let mut terms = vec![condition];
         while let Some(term) = terms.pop() {

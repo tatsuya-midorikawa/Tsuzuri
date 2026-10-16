@@ -51,11 +51,23 @@ pub(crate) struct Entered {
     narrowed: usize,
 }
 
-pub(crate) fn analyze(module: &CheckedModule, function: &CheckedFunction) -> RangeFacts {
-    analyze_within(module, function, NODE_BUDGET)
+/// The facts of `function`. The integer intervals (PR02) are tracked only when `intervals` is set,
+/// which is when the emitter writes or checks overflow flags, so that the default mode does none of
+/// that work.
+pub(crate) fn analyze(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    intervals: bool,
+) -> RangeFacts {
+    analyze_within(module, function, NODE_BUDGET, intervals)
 }
 
-fn analyze_within(module: &CheckedModule, function: &CheckedFunction, budget: usize) -> RangeFacts {
+fn analyze_within(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    budget: usize,
+    intervals: bool,
+) -> RangeFacts {
     let mut scan = Scan::default();
     for parameter in &function.parameters {
         scan.declare_local(parameter);
@@ -70,7 +82,7 @@ fn analyze_within(module: &CheckedModule, function: &CheckedFunction, budget: us
         scan.visit(module, expression);
         work.extend(expression.children());
     }
-    scan.finish()
+    scan.finish(intervals)
 }
 
 impl RangeFacts {
@@ -244,7 +256,7 @@ impl Scan {
         }
     }
 
-    fn finish(self) -> RangeFacts {
+    fn finish(self, intervals: bool) -> RangeFacts {
         let stable: BTreeSet<usize> = self
             .declared
             .into_iter()
@@ -254,7 +266,7 @@ impl Scan {
         let mut facts = RangeFacts {
             stable,
             fixed,
-            steps: intervals::STEP_BUDGET,
+            steps: if intervals { intervals::STEP_BUDGET } else { 0 },
             ..RangeFacts::default()
         };
         for (local, kind) in self.loops {
@@ -480,7 +492,7 @@ mod tests {
             panic!("{source}\n{}: {}", error.code, error.message);
         });
         let function = function(&module, name);
-        verdicts_with(&module, function, analyze(&module, function))
+        verdicts_with(&module, function, analyze(&module, function, true))
     }
 
     #[test]
@@ -573,7 +585,7 @@ mod tests {
             .iter()
             .filter(|function| matches!(function.module.as_str(), "Main" | "$lambda"))
         {
-            let verdicts = verdicts_with(&module, function, analyze(&module, function));
+            let verdicts = verdicts_with(&module, function, analyze(&module, function, true));
             assert!(!verdicts.contains(&true), "{}: {verdicts:?}", function.name);
             checked += verdicts.len();
         }
@@ -616,12 +628,16 @@ mod tests {
             verdicts_with(
                 &module,
                 function,
-                analyze_within(&module, function, NODE_BUDGET)
+                analyze_within(&module, function, NODE_BUDGET, true)
             ),
             [true]
         );
         assert_eq!(
-            verdicts_with(&module, function, analyze_within(&module, function, 8)),
+            verdicts_with(
+                &module,
+                function,
+                analyze_within(&module, function, 8, true)
+            ),
             [false]
         );
     }
@@ -705,7 +721,7 @@ mod tests {
             panic!("{source}\n{}: {}", error.code, error.message);
         });
         let function = function(&module, name);
-        flags_with(&module, function, analyze(&module, function))
+        flags_with(&module, function, analyze(&module, function, true))
     }
 
     /// One function per row: its source after `fn`, and the flags of its `+ - *` in order.
@@ -894,16 +910,25 @@ mod tests {
     }
 
     #[test]
-    fn a_function_beyond_the_node_budget_gets_no_flags() {
+    fn a_function_beyond_the_node_budget_or_without_intervals_gets_no_flags() {
         let source = "def f :: i64 -> i64\nfn f x = (x & 255) + 1";
         let module = crate::analyze(source).unwrap();
         let function = function(&module, "f");
         assert_eq!(
-            flags_with(&module, function, analyze(&module, function)),
+            flags_with(&module, function, analyze(&module, function, true)),
             ["+ nuw nsw"]
         );
         assert_eq!(
-            flags_with(&module, function, analyze_within(&module, function, 2)),
+            flags_with(
+                &module,
+                function,
+                analyze_within(&module, function, 2, true)
+            ),
+            ["+"]
+        );
+        // The default mode of the emitter asks for no intervals at all.
+        assert_eq!(
+            flags_with(&module, function, analyze(&module, function, false)),
             ["+"]
         );
     }
@@ -913,7 +938,7 @@ mod tests {
         let source = "def f :: i64 -> i64\nfn f x =\n    let y = (x & 15) + 1\n    y * 3";
         let module = crate::analyze(source).unwrap();
         let function = function(&module, "f");
-        let mut facts = analyze(&module, function);
+        let mut facts = analyze(&module, function, true);
         let TypedExprKind::Block { bindings, result } = &function.body.kind else {
             panic!("{:?}", function.body.kind);
         };
