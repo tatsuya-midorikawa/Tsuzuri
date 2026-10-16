@@ -33,8 +33,8 @@ mod layout;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 use frame::Frame;
 // The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.
-use layout::tag_type;
 pub(crate) use layout::{UnionLayout, drop_flag, layout_bound, storage_layout, union_layout};
+use layout::{tag_type, tag_width};
 
 /// The builtin instances that emitted code calls, with their concrete
 /// callee types.

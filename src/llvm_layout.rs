@@ -24,12 +24,36 @@ impl UnionLayout {
     }
 }
 
-/// The LLVM type of the stored tag of the non-recursive union `ty`.
-pub(super) fn tag_type(ty: &Type, _module: &CheckedModule) -> &'static str {
-    let Type::Union(..) = ty else {
+/// The bytes of the stored tag of a union with `cases` cases: the smallest of 1, 2 and 4 that
+/// holds every tag (PM01 D1).
+pub(crate) fn tag_bytes(cases: usize) -> usize {
+    match cases {
+        0..=0x100 => 1,
+        0x101..=0x1_0000 => 2,
+        _ => 4,
+    }
+}
+
+/// The bytes of the stored tag of the union `ty`. The node of a recursive union keeps an `i32` tag
+/// next to its header pointers.
+pub(crate) fn tag_width(ty: &Type, module: &CheckedModule) -> usize {
+    let Type::Union(id, _) = ty else {
         unreachable!("tags belong to union types")
     };
-    "i32"
+    if module.types().recursive(ty) {
+        4
+    } else {
+        tag_bytes(module.unions[*id].cases.len())
+    }
+}
+
+/// The LLVM type of the stored tag of the union `ty`.
+pub(super) fn tag_type(ty: &Type, module: &CheckedModule) -> &'static str {
+    match tag_width(ty, module) {
+        1 => "i8",
+        2 => "i16",
+        _ => "i32",
+    }
 }
 
 /// Size and alignment in bytes of a type's LLVM representation on 64-bit
@@ -115,24 +139,27 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
                 (8, 8)
             }
         }
-        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
-            UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => aggregate(
-                &mut [(4, 4), layout_bound(&payload, module, lower)]
-                    .into_iter()
-                    .chain(drop_flag(ty, module).map(|_| (1, 1))),
-            ),
-            UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
-                &mut [(4, 4), (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
-            ),
-            UnionLayout::General(count) => {
-                if lower {
-                    (8 + 16 * count, 8)
-                } else {
-                    (16 + 16 * count, 16)
+        Type::Union(id, arguments) => {
+            let tag = (tag_width(ty, module), tag_width(ty, module));
+            match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => tag,
+                UnionLayout::Common(payload) => aggregate(
+                    &mut [tag, layout_bound(&payload, module, lower)]
+                        .into_iter()
+                        .chain(drop_flag(ty, module).map(|_| (1, 1))),
+                ),
+                UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
+                    &mut [tag, (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
+                ),
+                UnionLayout::General(count) => {
+                    if lower {
+                        (8 + 16 * count, 8)
+                    } else {
+                        (16 + 16 * count, 16)
+                    }
                 }
             }
-        },
+        }
         Type::Error
         | Type::Variable(_)
         | Type::Infer(_)
@@ -255,10 +282,12 @@ impl FunctionEmitter<'_, '_> {
         if self.module.types().recursive(ty) {
             return self.recursive_tag(ty, union);
         }
-        if matches!(self.union_layout(ty), UnionLayout::Enum) {
-            return union.to_owned();
-        }
-        self.value(format!("extractvalue {} {union}, 0", self.ty(ty)))
+        let tag = if matches!(self.union_layout(ty), UnionLayout::Enum) {
+            union.to_owned()
+        } else {
+            self.value(format!("extractvalue {} {union}, 0", self.ty(ty)))
+        };
+        self.widen_tag(ty, tag)
     }
 
     /// The tag of the union of type `ty` stored at `slot`, as `i32`. A recursive union's slot holds
@@ -269,7 +298,16 @@ impl FunctionEmitter<'_, '_> {
             return self.recursive_tag(ty, &node);
         }
         // The tag is the first field, so it is also the value of an enum-like union.
-        self.value(format!("load i32, ptr {slot}"))
+        let tag = self.value(format!("load {}, ptr {slot}", tag_type(ty, self.module)));
+        self.widen_tag(ty, tag)
+    }
+
+    /// `tag`, stored in the width of `ty`'s tag, as `i32`.
+    fn widen_tag(&mut self, ty: &Type, tag: String) -> String {
+        match tag_type(ty, self.module) {
+            "i32" => tag,
+            narrow => self.value(format!("zext {narrow} {tag} to i32")),
+        }
     }
 
     pub(super) fn union_tag(&mut self, value: &TypedExpr) -> String {
@@ -349,5 +387,28 @@ impl FunctionEmitter<'_, '_> {
         );
         let empty = self.value(format!("icmp eq i64 {size}, 0"));
         self.value(format!("select i1 {empty}, i64 1, i64 {size}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tag_bytes;
+
+    #[test]
+    fn tag_bytes_follow_case_count() {
+        for (cases, bytes) in [
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (255, 1),
+            (256, 1),
+            (257, 2),
+            (65_535, 2),
+            (65_536, 2),
+            (65_537, 4),
+            (1 << 24, 4),
+        ] {
+            assert_eq!(tag_bytes(cases), bytes, "{cases} cases");
+        }
     }
 }

@@ -1529,12 +1529,12 @@ const suites = {
     inspect(ir, header) {
       assert.doesNotMatch(header, /Shape|Maybe|Color|Pick|Tagged/);
       for (const definition of [
-        '%"tz.union.Main.Shape" = type { i32, [1 x i128] }',
-        '%"tz.union.Main.Color" = type i32',
-        '%"tz.union.Main.Pick" = type { i32, i64 }',
-        '%"tz.union.Main.Maybe[i64]" = type { i32, i64 }',
-        '%"tz.union.Main.Maybe[string]" = type { i32, %tz.string }',
-        '%"tz.union.Shapes.Shape" = type { i32, double }',
+        '%"tz.union.Main.Shape" = type { i8, [1 x i128] }',
+        '%"tz.union.Main.Color" = type i8',
+        '%"tz.union.Main.Pick" = type { i8, i64 }',
+        '%"tz.union.Main.Maybe[i64]" = type { i8, i64 }',
+        '%"tz.union.Main.Maybe[string]" = type { i8, %tz.string }',
+        '%"tz.union.Shapes.Shape" = type { i8, double }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
@@ -1543,6 +1543,21 @@ const suites = {
       // First-class constructors become one hidden function per concrete instance.
       const constructors = ir.match(/^define internal \S+ @tz\.fn\.\$case\.Main\.Maybe\.Some\.\$mono\.\d+\(/gm) ?? [];
       assert.equal(constructors.length, 2, "Maybe.Some has an i64 and a string constructor function");
+    },
+  },
+  // PM01: union tags take the fewest bytes, and the payload area, niches and field order never change a result.
+  value_layout: {
+    cases: [],
+    inspect(ir, header) {
+      assert.doesNotMatch(header, /\b(struct|union)\b/);
+      for (const definition of [
+        '%"tz.union.Main.Narrow" = type i8',
+        '%"tz.union.Main.Mid" = type i8',
+        '%"tz.union.Main.Wide" = type i16',
+        '%"tz.union.Main.Big" = type { i16, [1 x i128] }',
+      ]) {
+        assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
+      }
     },
   },
   stdlib: {
@@ -2028,6 +2043,36 @@ const structuralHashes = [
 ];
 structuralHashes.forEach((hash, which) => suites.deriving.cases.push(["hash_structure", [BigInt(which)], BigInt.asIntN(64, hash)]));
 suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n << 53n, 8)]);
+// PM01: independent references for tests/fixtures/value_layout/Main.tz. A case index, never the width
+// of the stored tag, is what a program sees, orders by, and hashes.
+{
+  const layout = suites.value_layout.cases;
+  const edge = (edges, fallback) => (k) => (edges.includes(k) ? k : fallback);
+  const index = { narrow: edge([255, 254, 128, 127, 1], 0), mid: edge([159, 128, 127, 1], 0), wide: edge([256, 255, 128, 1], 0), big: edge([0, 1, 2, 255, 256], 3) };
+  const bigValue = (k) => ({ 0: 41, 1: 5, 2: 5, 255: 255, 256: 256 })[k] ?? 3;
+  const bigHash = (k) => {
+    if (index.big(k) === 0) return unionHash(0, scalarHash(0x13, 41n, 8));
+    if (index.big(k) === 1) return unionHash(1, scalarHash(0x23, 0x4004000000000000n, 8));
+    if (index.big(k) === 2) return unionHash(2, canonicalTextHash("owned"));
+    return unionHash(index.big(k));
+  };
+  const order = (x, y) => BigInt((x < y ? 1 : 0) + (x === y ? 2 : 0) + (x > y ? 4 : 0));
+  const picks = [0, 1, 2, 3, 126, 127, 128, 129, 159, 254, 255, 256, 257];
+  for (const k of picks) {
+    layout.push(["narrow", [BigInt(k)], BigInt(index.narrow(k))], ["wide", [BigInt(k)], BigInt(index.wide(k))], ["big", [BigInt(k)], BigInt(bigValue(k))]);
+    layout.push(["narrow_hash", [BigInt(k)], BigInt.asIntN(64, unionHash(index.narrow(k)))], ["wide_hash", [BigInt(k)], BigInt.asIntN(64, unionHash(index.wide(k)))], ["big_hash", [BigInt(k)], BigInt.asIntN(64, bigHash(k))]);
+    for (const other of picks) {
+      layout.push(["mid_order", [BigInt(k), BigInt(other)], order(index.mid(k), index.mid(other))]);
+      layout.push(["narrow_equal", [BigInt(k), BigInt(other)], BigInt(+(index.narrow(k) === index.narrow(other)))]);
+      layout.push(["wide_equal", [BigInt(k), BigInt(other)], BigInt(+(index.wide(k) === index.wide(other)))]);
+      layout.push(["big_equal", [BigInt(k), BigInt(other)], BigInt(+(index.big(k) === index.big(other)))]);
+    }
+  }
+  for (const count of [0, 1, 300, 5000]) {
+    const sum = (modulus, value) => BigInt(Array.from({ length: count }, (_, i) => value(i % modulus)).reduce((total, item) => total + item, 0));
+    layout.push(["narrow_array", [BigInt(count)], sum(256, index.narrow)], ["wide_array", [BigInt(count)], sum(257, index.wide)], ["big_array", [BigInt(count)], sum(257, bigValue)]);
+  }
+}
 function canonicalTextHash(text) {
   return BigInt.asIntN(64, hashBytes([...littleEndian(0x53), ...littleEndian(text.length), ...Array.from({ length: text.length }, (_, index) => text.charCodeAt(index)).flatMap((unit) => littleEndian(unit, 2))]));
 }

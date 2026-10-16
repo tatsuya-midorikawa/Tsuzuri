@@ -65,7 +65,7 @@ fn recursive_layout_and_workers_are_instance_sensitive() {
             tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Library, wasm).unwrap()
         );
         assert!(ir.contains("tz.rec.node.Maybe.Maybe[Main.Link]"));
-        assert!(ir.contains("%\"tz.union.Maybe.Maybe[i64]\" = type { i32, i64 }"));
+        assert!(ir.contains("%\"tz.union.Maybe.Maybe[i64]\" = type { i8, i64 }"));
         assert!(ir.contains("@tz.rec.drop") && ir.contains("@tz.rec.clone"));
         assert!(!ir.contains("boxed["));
         for body in ir.split("define internal void @\"tz.drop.rec.").skip(1) {

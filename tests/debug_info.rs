@@ -200,6 +200,15 @@ fn debug_scalars_and_pointers_use_tsuzuri_shapes() {
 
 /// The `offset:` in bits of member `member` of the composite type named `owner`.
 fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
+    member_field(ir, owner, member, "offset: ")
+}
+
+/// The `size:` in bits of member `member` of the composite type named `owner`.
+fn member_size(ir: &str, owner: &str, member: &str) -> usize {
+    member_field(ir, owner, member, "size: ")
+}
+
+fn member_field(ir: &str, owner: &str, member: &str, field: &str) -> usize {
     let marker = format!("!DICompositeType(tag: DW_TAG_structure_type, name: \"{owner}\",");
     let owner = ir
         .lines()
@@ -211,10 +220,12 @@ fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
         .lines()
         .find(|line| line.contains("DW_TAG_member") && line.contains(&scope))
         .unwrap_or_else(|| panic!("{scope}\n{ir}"));
-    line.split("offset: ")
+    line.split(field)
         .nth(1)
         .unwrap()
-        .trim_end_matches(')')
+        .split([',', ')'])
+        .next()
+        .unwrap()
         .parse()
         .unwrap()
 }
@@ -261,6 +272,31 @@ fn debug_union_offsets_match_storage() {
         assert_eq!(member_offset(&ir, "Main.Tree.node", "$payload"), payload);
         // The list node `{ ptr, i64 }`.
         assert_eq!(member_offset(&ir, "[|i64|].node", "value"), 64);
+    }
+}
+
+#[test]
+fn debug_union_tags_have_their_stored_width() {
+    for wasm in [false, true] {
+        let ir = debug_ir(UNIONS, tsuzuri::llvm::Entry::Library, wasm);
+        // A union of at most 256 cases stores its tag in one byte, both bare (an enumeration of
+        // `Color`) and in front of a payload (`$tag` of `Shape` and `Maybe<i64>`).
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Color\", size: 8, align: 8,"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Shape.$tag\", size: 8, align: 8,"),
+            "{ir}"
+        );
+        assert_eq!(member_size(&ir, "Main.Shape", "$tag"), 8);
+        assert_eq!(member_size(&ir, "Maybe<i64>", "$tag"), 8);
+        // The node of a recursive union keeps an `i32` tag.
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Tree.$tag\", size: 32, align: 32,"),
+            "{ir}"
+        );
+        assert_eq!(member_size(&ir, "Main.Tree.node", "$tag"), 32);
     }
 }
 

@@ -1118,7 +1118,7 @@ fn static_data_has_the_bits_of_its_constants() {
         "[1 x i128] [i128 340282366920938463463374607431768211455]",
         "[2 x i8] c\"\\FF\\7F\"",
         "[1 x %tz.record.Main.Point] [%tz.record.Main.Point { i32 4294967293, i64 4 }]",
-        "{ i32 0, i64 zeroinitializer }, %\"tz.union.Main.Reading\" { i32 1, i64 7 }",
+        "{ i8 0, i64 zeroinitializer }, %\"tz.union.Main.Reading\" { i8 1, i64 7 }",
         "[%\"tz.union.Main.Shade\" 1, %\"tz.union.Main.Shade\" 0]",
         "[1 x { i64, i1 }] [{ i64, i1 } { i64 5, i1 1 }]",
     ] {
