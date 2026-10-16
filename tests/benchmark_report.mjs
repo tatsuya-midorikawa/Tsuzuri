@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { publishSummary, renderSummary, renderTable, updateSummary } from "../benchmarks/report.mjs";
 import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseCompilerDiagnostics, parseTimeOutput,
   parseTimePasses, readRecords, renderComparison, renderMetricsSummary, summarize, updateMetricsSummary,
@@ -10,6 +11,7 @@ import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, ma
 import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
   writeProject } from "../benchmarks/build/generate.mjs";
 import { breakdown, skipLargeWasm, VARIANTS } from "../benchmarks/run-build.mjs";
+import { parseSections, sectionSizes } from "../benchmarks/size.mjs";
 
 const result = {
   mode: "benchmark", cpu: "generic", scale: 0.1, measured_at: "2026-09-26T00:00:00.000Z",
@@ -162,6 +164,53 @@ test("fixed schema and record validation", () => {
   assert.equal(record({ suite: "apps" }).suite, "apps");
   assert.equal(record({ suite: "build", language: "go" }).language, "go");
 });
+test("size metrics and the size optimization levels", () => {
+  for (const metric of ["executable_bytes", "object_bytes", "wasm_bytes", "text_bytes", "rodata_bytes", "wasm_code_bytes", "wasm_data_bytes"]) {
+    for (const opt of ["O0", "O3", "Os", "Oz"]) assert.equal(record({ suite: "size", variant: "default", metric, opt, samples: [33768] }).median, 33768);
+    // Sizes are deterministic: two different samples mean a nondeterministic build.
+    assert.throws(() => record({ suite: "size", metric, samples: [1, 2] }), /nondeterministic/);
+  }
+  assert.throws(() => record({ suite: "size", metric: "text_bytes", opt: "O2", samples: [1] }));
+  assert.equal(record({ suite: "size", language: "c", variant: "wasm-opt", target: "wasm32", opt: "Oz", metric: "wasm_bytes", samples: [2353] }).variant, "wasm-opt");
+});
+test("size suite reads the sections of Mach-O, ELF and WASM tables (llvm-objdump -h, hexadecimal)", () => {
+  const machO = `hello:\tfile format mach-o arm64
+
+Sections:
+Idx Name          Size     VMA              Type
+  0 __text        000033f8 0000000100000460 TEXT
+  1 __stubs       00000054 0000000100003858 TEXT
+  2 __const       000027b0 00000001000038b0 DATA
+  3 __cstring     00000008 0000000100006060 DATA
+  4 __unwind_info 00000080 0000000100006068 DATA
+`;
+  // 0x33f8 = 13,304 bytes of code; 0x27b0 + 0x08 = 10,168 bytes of constants and strings.
+  assert.deepEqual(sectionSizes(machO, "hello"), { kind: "macho", code: 13304, data: 10168 });
+  assert.equal(parseSections(machO).sections.get("__stubs"), 0x54);
+  const wasm = `hello.wasm:\tfile format wasm
+
+Sections:
+Idx Name          Size     VMA      Type
+  0 TYPE          00000063 0000000a
+  8 CODE          000063dc 00000109 TEXT
+  9 DATA          0000269a 000064e8 DATA
+`;
+  assert.deepEqual(sectionSizes(wasm, "hello.wasm"), { kind: "wasm", code: 25564, data: 9882 });
+  // A module without a DATA section has no read-only data; one without CODE is not a module of ours.
+  assert.deepEqual(sectionSizes(wasm.replace(/.*DATA.*\n/, ""), "point.wasm"), { kind: "wasm", code: 25564, data: 0 });
+  assert.throws(() => sectionSizes(wasm.replace(/.*CODE.*\n/, ""), "empty.wasm"), /section CODE not found in empty\.wasm/);
+  const elf = `a.out:\tfile format elf64-x86-64
+
+Sections:
+Idx Name            Size     VMA              Type
+  0                 00000000 0000000000000000
+  1 .rodata         00002a50 0000000000200000 DATA
+  2 .text           00004080 0000000000202a50 TEXT
+`;
+  assert.deepEqual(sectionSizes(elf, "a.out"), { kind: "elf", code: 0x4080, data: 0x2a50 });
+  assert.throws(() => sectionSizes(elf.replace(/.*\.text.*\n/, ""), "a.out"), /section \.text not found in a\.out/);
+  assert.throws(() => sectionSizes("x:\tfile format unknown\n", "x"), /unrecognized object format/);
+});
 const metricTemporary = mkdtempSync(join(tmpdir(), "tsuzuri-metrics-test-"));
 try {
   test("capture and compiler SHA-256", () => {
@@ -188,6 +237,18 @@ try {
     assert.throws(() => readRecords(directory), /duplicate/);
     writeFileSync(join(directory, "z-suite.jsonl"), JSON.stringify({ ...first, run_id: "another" }) + "\n");
     assert.throws(() => readRecords(directory), /mixed run_id/);
+  });
+  test("the size action runs through the CLI and needs llvm-objdump", () => {
+    const script = fileURLToPath(new URL("../benchmarks/metrics.mjs", import.meta.url));
+    const missing = spawnSync(process.execPath, [script, "size", join(metricTemporary, "compiler"), "--out", join(metricTemporary, "size-cli")], {
+      encoding: "utf8", env: { ...process.env, TSUZURI_OBJDUMP: join(metricTemporary, "no-such-objdump") },
+    });
+    // Exit code 13 would be an unsettled top-level await: size.mjs imports this module.
+    assert.equal(missing.status, 1, missing.stderr);
+    assert.match(missing.stderr, /llvm-objdump/);
+    const usage = spawnSync(process.execPath, [script, "size"], { encoding: "utf8" });
+    assert.notEqual(usage.status, 0);
+    assert.match(usage.stderr, /Usage: node benchmarks\/metrics\.mjs process\|size/);
   });
   test("allocator IR instrumentation", () => {
     const original = "declare ptr @malloc(i64) #1\ncall ptr @calloc(i64 4, i64 8)\ncall ptr @realloc(ptr null, i64 1)\ncall void @free(ptr null)\n@malloc_usable_size\nattributes #1 = { nounwind }\n";
