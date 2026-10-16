@@ -282,3 +282,113 @@ fn known_local_function_values_call_directly() {
         );
     }
 }
+
+fn returns(function: &str) -> usize {
+    function
+        .lines()
+        .filter(|line| line.starts_with("  ret "))
+        .count()
+}
+
+#[test]
+fn union_results_return_through_one_slot() {
+    let module = analyze(
+        "union Color = Red | Green | Blue
+         union Chain = End | Link of (i64 * Chain)
+         def make :: bool -> i64 -> Maybe<i64>
+         fn make flag value = if flag then Some value else None
+         def pick :: i64 -> Result<i64, string>
+         fn pick n = match n with | 0 -> Error \"zero\" | _ -> Ok (n * 2)
+         def helper :: i64 -> Maybe<i64>
+         fn helper x = Some (x * 3)
+         def wrap :: bool -> i64 -> Maybe<i64>
+         fn wrap flag x = if flag then helper x else None
+         def single :: i64 -> Maybe<i64>
+         fn single x = Some (x + 1)
+         def scalar :: bool -> i64
+         fn scalar flag = if flag then 1 else 2
+         def color :: i64 -> Color
+         fn color n = if n == 0 then Red elif n == 1 then Green else Blue
+         def chain :: i64 -> Chain
+         fn chain n = if n == 0 then End else Link (n, End)
+         def big :: bool -> Maybe<[i64; 200]>
+         fn big flag = if flag then Some (FixedArray.init (\\i -> i)) else None",
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        // Two exits that construct or call an acyclic function share one slot and one `ret`.
+        for name in ["make", "pick", "wrap"] {
+            let function = body(&ir, &format!("tz.fn.Main.{name}"));
+            assert_eq!(
+                function.matches("%tz.return.slot = alloca").count(),
+                1,
+                "{name} wasm={wasm}: {function}"
+            );
+            assert_eq!(function.matches("tz.return:\n").count(), 1, "{name}");
+            assert_eq!(returns(function), 1, "{name} wasm={wasm}: {function}");
+            // The slot is an entry-block allocation, like the other static frames.
+            assert!(
+                function.find("%tz.return.slot = alloca").unwrap()
+                    < function.find("br label %loop").unwrap(),
+                "{name}"
+            );
+        }
+        // One exit, a scalar or bare-tag result, a recursive union, and a result bigger than the
+        // slot limit keep their plain `ret`s.
+        for (name, exits) in [
+            ("single", 1),
+            ("helper", 1),
+            ("scalar", 2),
+            ("color", 3),
+            ("chain", 2),
+            ("big", 2),
+        ] {
+            let function = body(&ir, &format!("tz.fn.Main.{name}"));
+            assert!(!function.contains("tz.return"), "{name} wasm={wasm}");
+            assert_eq!(returns(function), exits, "{name} wasm={wasm}: {function}");
+        }
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
+fn tail_forwarding_to_a_cycle_keeps_every_ret() {
+    // LLVM makes a sibling call or a loop out of `ret (call f)` only; a slot would hide the call.
+    let module = analyze(
+        "def rec even_m :: i64 -> Maybe<i64> = \\n -> if n == 0 then Some 1 else odd_m (n - 1)
+         and odd_m :: i64 -> Maybe<i64> = \\n -> if n == 0 then None else even_m (n - 1)
+         def rec count_down :: i64 -> Maybe<i64>
+         fn rec count_down n = if n == 0 then Some 7 else Maybe.bind (Some (n - 1)) (\\m -> count_down m)
+         def apply_to :: (i64 -> Maybe<i64>) -> i64 -> Maybe<i64>
+         fn apply_to f x = if x < 0 then None else f x
+         def wrap :: bool -> i64 -> Maybe<i64>
+         fn wrap flag x = if flag then even_m x else None",
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        // A function in a cycle, a call of one, and a call of an unknown function.
+        for name in ["even_m", "odd_m", "count_down", "apply_to", "wrap"] {
+            let function = body(&ir, &format!("tz.fn.Main.{name}"));
+            assert!(!function.contains("tz.return"), "{name} wasm={wasm}");
+            assert_eq!(returns(function), 2, "{name} wasm={wasm}: {function}");
+        }
+        let function = body(&ir, "tz.fn.Main.even_m");
+        let lines: Vec<_> = function.lines().collect();
+        let call = lines
+            .iter()
+            .position(|line| line.contains("call ") && line.contains("@tz.fn.Main.odd_m("))
+            .unwrap();
+        let value = lines[call].split(" = ").next().unwrap().trim();
+        assert!(lines[call + 1].starts_with("  ret "), "{function}");
+        assert!(lines[call + 1].ends_with(value), "{function}");
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}

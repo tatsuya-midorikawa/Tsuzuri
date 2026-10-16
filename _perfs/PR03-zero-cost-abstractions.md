@@ -52,11 +52,14 @@
   `emit` の `facts::apply` の直後の 1 呼び出しだけにする。`llvm_control.rs`・`llvm_bulk.rs`・`llvm_abi.rs`・`closure_wrappers`・builtin の `auxiliary` は変えない。
 - 対象の判定は 1 つの関数 `uses_return_slot(ty, module)` にまとめる: 結果が再帰でない `Type::Union` で、`union_layout` が `Enum` でなく、`storage_layout` の大きさが 1 KiB 以下。
   PM01 の niche など「スカラーの表現」の layout を足すときは、この関数だけを直す。
-- `emit_tail` の既定の枝で `ret` を出した直後に、その行の番号と「平文の `ret` を保つか」を記録する（`FunctionEmitter::note_union_return`）。
+- `emit_tail` の既定の枝で `ret` を出した直後に、その `ret` の行の番号を記録するか、平文の `ret` を保つと印を付ける（`FunctionEmitter::note_union_return`）。
   保つのは、exit が呼び出しの結果をそのまま返し、かつ (現在の関数が循環にある `recursive_functions`) または (呼び先が循環にある) または (呼び先が不明・間接) のとき（規則 D）。
-- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上で slot 化するものが 1 つ以上のときだけ、
-  slot 化する `ret T V[, !dbg !N]` を `store T V, ptr %tz.return.slot[, !dbg !N]` と `br label %tz.return[, !dbg !N]` に書き換え、入口の alloca（`%tz.return.slot = alloca T, align 16`）と
+  constructor・局所・欄・添字・payload・参照外し・static の exit と、循環にない既知の呼び先への exit は slot にできる。それ以外の形は平文の `ret` を保つ。
+- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上あり、平文を保つ exit が 1 つも無いときだけ、
+  すべての `ret T V[, !dbg !N]` を `store T V, ptr %tz.return.slot[, !dbg !N]` と `br label %tz.return[, !dbg !N]` に書き換え、入口の alloca（`%tz.return.slot = alloca T, align 16`）と
   `tz.return:`（`%tz.return.value = load`、`ret`）を足す。名前は固定。slot は `scopes`・frame に入れない（停止条件 7 は起こらない）。
+  一部の exit だけを slot にしても `ret` が複数残り、inline 後の phi は消えないので、1 つでも保つ関数は全 exit を保つ
+  （`if flag then even_m x else None` を呼ぶ関数で確かめた。一部だけ slot にした IR は slot なしと同じ）。
 - 新しい停止条件: `parity_deep(1e8)`・`bind_deep(1e8)` が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
   `ce_std_option`・`std_option_owned` の K1 が消えない（F1' を戻して報告する）。
 

@@ -28,6 +28,8 @@ mod escape;
 mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
+#[path = "llvm_return_slot.rs"]
+mod return_slot;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 use frame::Frame;
 
@@ -3402,6 +3404,7 @@ struct FunctionEmitter<'a, 'b> {
     intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
     allocas: Vec<String>,
+    return_exits: return_slot::Exits,
     debug_declarations: Vec<String>,
     debug_scope: Option<usize>,
     debug_switch: bool,
@@ -3488,6 +3491,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             clone_pending: None,
             lines: Vec::new(),
             allocas: Vec::new(),
+            return_exits: return_slot::Exits::default(),
             debug_declarations: Vec::new(),
             debug_scope: None,
             debug_switch: false,
@@ -3573,6 +3577,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             self.globals,
             self.intrinsics,
         );
+        self.apply_return_slot();
         let parameters = self
             .function
             .parameters
@@ -4102,6 +4107,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let value = self.expression(expression);
                 self.drop_all();
                 self.instruction(format!("ret {} {value}", self.ty(&expression.ty)));
+                self.note_union_return(expression);
             }
         }
     }

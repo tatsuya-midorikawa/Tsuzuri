@@ -75,6 +75,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm_frame.rs` | `new` を伴わないリテラル・小さな文字列連結・局所の捕捉環境のスタック配置、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
 | `src/llvm_escape.rs` | immutable な局所の使用位置による滞在判定と、関数・lift 済み閉包の参照グラフの循環判定。PM06 の領域選択だけに使い、正しさは frame の移送・解放で保証 |
 | `src/llvm_facts.rs` | 内部参照の属性、上限付き SSA provenance、scoped alias・限定した scalar TBAA、値と memory effects の証明。`llvm.rs` の portable layout 下界と共有 metadata 番号を使い、不変性は `Type::is_frozen` で判定。opaque std・共有可変状態・隠れた環境を不変と推測しない |
+| `src/llvm_return_slot.rs` | PR03 の戻り値 slot。再帰しない tagged union を返す関数の複数の `ret` を、入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える post-pass（`facts::apply` の後）。slot は 1 KiB 以下。1 つでも平文の `ret` を保つ exit（循環にある関数の呼び出しの結果をそのまま返す exit など）があれば全 exit を保つ |
 | `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理 |
@@ -132,6 +133,13 @@ Task 本体と、関数・閉包の参照グラフの循環に入る関数では
 環境のスタック解放は捕捉を宣言順で drop し、環境自体は free しません。
 PM07 の `append` は左辺の frame が空のときだけ使用します。静的・スタックの文字列を `realloc` へ渡さず、
 左辺の所有権を `append` へ渡した後は二重に drop しません。文字列の記述子と容量の保証は変更しません。
+
+PR03 の戻り値 slot は、再帰しない tagged union（`Maybe`・`Result` など。payload のない enum と、slot が 1 KiB を超える型を除く）を返す関数に、`ret` が 2 つ以上あり、そのすべてを slot にできるときだけ使います。
+入口の alloca `%tz.return.slot` へ store し、`tz.return:` ブロックで load して 1 回だけ `ret` するので、inline 後に呼び出し側の aggregate phi が残りません。
+slot は `scopes` にも frame にも入れず、drop・移動の経路を変えません。
+呼び出しの結果をそのまま返す exit は、現在の関数が関数参照グラフの循環にある場合、呼び先が循環にある場合、呼び先が不明・間接の場合に平文の `ret` を保ちます。
+LLVM が末尾位置の union 返却の呼び出しを sibling call にする（`-O2` 以上。相互再帰の 1e8 段が native で通る）余地を残すためです。
+一部の exit だけを slot にしても `ret` が複数残って phi が消えないため、1 つでも保つ exit があれば全 exit を保ちます。
 
 `llvm::last_use::LastUses` は具体化 IR の後方生存解析で、所有権チェッカーの State／loan は参照しません。
 ループと match の失敗先は固定点で扱い、訪問 100,000 回・深さ 128 を超えると結果全体を空にします。

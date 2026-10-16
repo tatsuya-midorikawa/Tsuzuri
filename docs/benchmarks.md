@@ -5786,6 +5786,28 @@ grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
 この性質（`let!` の連鎖の worker が `tz.alloc`・`tz.closure.clone`・間接呼び出しを持たないこと、let で束縛した関数値の呼び出しが直接であること）を
 native と wasm32 の `-O0` IR で固定します。
 
+### 戻り値 slot の後（Phase 2、F1'）
+
+`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてを slot にできる関数だけを、
+入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
+他の 8 対の IR と機械語、`@tz.specialized.` の 64 個は変わりません。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） |
+| --- | --- | --- | --- | --- |
+| `std_option` | 22／22（前 35／22） | 0・0（前 1・1） | 24／24（前 34／24） | 56／53（前 38／53） |
+| `std_option_owned` | 54／54（前 65／54） | 1・1（前 2・2） | 60／60（前 65／60） | 70／70（前 78／70） |
+
+- `ce_std_option` は `direct_std_option` と同じ `select` 1 個の形になり、union の `phi`・tag の `switch`・`llvm.trap` が消えました。
+  `ce_std_option_owned` に残る `phi` 1 個・`switch` 1 個は `direct_std_option_owned` にもある形です。
+- x86-64 の `ce_std_option` は 38 から 56 命令に増え、`direct`（53）より大きくなりました。前述のとおり命令数は性能の代理ではないので、IR と arm64 の一致を基準にします。
+- `-O3` の object の `__text` は 3,884 から 3,824 bytes です。
+- 循環にある関数や、呼び先が不明・循環にある exit は `ret` を保ちます。union を返す相互再帰の `parity_deep` と `Maybe.bind` の継続の `bind_deep` は、
+  1e8 段が native の `-O2`・`-O3` で戻り値 slot の前後とも通ります（`-O0`・`-O1` は前後とも 1e8 段で SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
+  すべての exit に slot を使うと `-O2`・`-O3` でも `parity_deep(1e8)` が SIGSEGV になるため、この規則にしました。
+- 全 exit を slot にできる関数（`if flag then helper x else None`、`helper` は循環にない）を呼ぶ側は、`-O3` の IR が 20 行から 7 行になりました。
+  循環の関数へ転送する exit を含む関数（`if flag then even_m x else None`）は全 exit が平文の `ret` のままで、呼ぶ側は 22 行から変わりません。
+  一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。
