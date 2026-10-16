@@ -1229,6 +1229,63 @@ fn link_args(platform: Platform) -> Vec<OsString> {
     }
 }
 
+/// The variable that chooses the linker of a native executable or shared library (PB03 D6).
+pub(crate) const LINKER_VARIABLE: &str = "TSUZURI_LINKER";
+
+/// The arguments of the final link of a native executable or shared library: those of `link_args`, and LLD
+/// when `TSUZURI_LINKER=lld` asks for it. A relocatable `-r` link keeps `link_args`: `ld64.lld` cannot do it.
+fn final_link_args(platform: Platform) -> Result<Vec<OsString>, Diagnostic> {
+    final_link_args_for(platform, env::var_os(LINKER_VARIABLE).as_deref())
+}
+
+/// [`final_link_args`] for the value of `TSUZURI_LINKER`: unset, empty or `default` leave the choice to Clang.
+/// The bundled launcher links with LLD whatever it is told, so `lld` changes nothing there.
+fn final_link_args_for(
+    platform: Platform,
+    linker: Option<&OsStr>,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let mut arguments = link_args(platform);
+    match linker.and_then(OsStr::to_str) {
+        None if linker.is_some() => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE} must be 'default' or 'lld'"),
+            ));
+        }
+        None | Some("" | "default") => {}
+        Some("lld") if platform.windows() => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE}=lld is not supported for Windows targets; unset it"),
+            ));
+        }
+        Some("lld") => {
+            let lld = OsString::from("-fuse-ld=lld");
+            if !arguments.contains(&lld) {
+                arguments.push(lld);
+            }
+        }
+        Some(other) => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE} must be 'default' or 'lld', not '{other}'"),
+            ));
+        }
+    }
+    Ok(arguments)
+}
+
+/// What a failing final link tells the user: `hint`, and that LLD is needed when `TSUZURI_LINKER=lld` asked for it.
+fn linker_hint(hint: String) -> String {
+    if env::var_os(LINKER_VARIABLE).is_some_and(|value| value == "lld") {
+        format!(
+            "{hint}; {LINKER_VARIABLE}=lld needs LLD (ld.lld on Linux, ld64.lld on macOS) next to Clang or on PATH, or unset it"
+        )
+    } else {
+        hint
+    }
+}
+
 /// The Clang arguments of the runs that read no SDK: the compile of IR to an object, and the
 /// relocatable link of objects. Apple's Clang would still look for an SDK and warn that the one it
 /// found, the macOS one, is not the target's; there is nothing for that SDK to get wrong.
@@ -2891,6 +2948,10 @@ fn build_complete(
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
+    // A bad TSUZURI_LINKER fails before any work, not when the link starts.
+    if options.target == Target::Native && matches!(options.emit, Emit::Executable | Emit::Shared) {
+        final_link_args(platform)?;
+    }
     if !links.is_empty() {
         if options.target != Target::Native
             || !matches!(options.emit, Emit::Executable | Emit::Shared)
@@ -3494,6 +3555,7 @@ fn build_complete(
                         &args,
                         &temporary.path,
                         clang_identity.as_ref(),
+                        RUNTIME_OBJECT_HINT,
                         &mut messages,
                     )?);
                 }
@@ -3593,6 +3655,7 @@ fn build_complete(
                     &args,
                     &temporary.path,
                     clang_identity.as_ref(),
+                    RUNTIME_OBJECT_HINT,
                     &mut messages,
                 )?;
                 fs::rename(&cached, &runtime_object)
@@ -3630,7 +3693,7 @@ fn build_complete(
             }
         }
         let stack_source = temporary.path.join("stack.c");
-        let stack_object = temporary.path.join("stack.o");
+        let mut stack_object = temporary.path.join("stack.o");
         if stack_runtime {
             fs::write(&stack_source, include_str!("runtime/stack.c"))
                 .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
@@ -3641,20 +3704,27 @@ fn build_complete(
             runtime
                 .args(["-std=c11", "-c", "-O1"])
                 .args(compile_args(platform))
-                .args(sdk_args(platform)?)
-                .arg(&stack_source)
-                .arg("-o")
-                .arg(&stack_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    &cross_hint(
-                        platform,
-                        "native runtime requires Clang and the platform C/OS SDK headers",
-                    ),
-                )?,
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
             );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                stack_object = compile_runtime_object(
+                    "stack-debug",
+                    include_str!("runtime/stack.c"),
+                    "stack.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                runtime.arg(&stack_source).arg("-o").arg(&stack_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         let wasi_object = temporary.path.join("wasi.o");
@@ -3669,7 +3739,7 @@ fn build_complete(
             } else {
                 include_str!("runtime/os-wasi.c").to_owned()
             };
-            fs::write(&source, text)
+            fs::write(&source, &text)
                 .map_err(|error| io_error("write WASI runtime", &source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime.args([
@@ -3687,18 +3757,26 @@ fn build_complete(
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
                 }
             }
-            runtime
-                .arg(options.optimization.flag())
-                .arg(&source)
-                .arg("-o")
-                .arg(&wasi_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "the WASI host needs Clang with WebAssembly support",
-                )?,
-            );
+            runtime.arg(options.optimization.flag());
+            let hint = "the WASI host needs Clang with WebAssembly support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasi",
+                    &text,
+                    "wasi.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                fs::rename(&cached, &wasi_object)
+                    .map_err(|error| io_error("stage WASI runtime", &wasi_object, error))?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&wasi_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
@@ -3716,17 +3794,27 @@ fn build_complete(
                     "-mbulk-memory",
                     "-c",
                 ])
-                .arg(options.optimization.flag())
-                .arg(&source)
-                .arg("-o")
-                .arg(&threads_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "WASM threads require Clang atomics and bulk-memory support",
-                )?,
-            );
+                .arg(options.optimization.flag());
+            let hint = "WASM threads require Clang atomics and bulk-memory support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasm-threads",
+                    include_str!("runtime/task-wasm-threads.c"),
+                    "threads.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                fs::rename(&cached, &threads_object).map_err(|error| {
+                    io_error("stage WASM thread runtime", &threads_object, error)
+                })?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&threads_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         clang
             .arg("-x")
@@ -3759,7 +3847,9 @@ fn build_complete(
             }
             // The run that links reads the target's libraries; a compile of IR alone reads none.
             if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
-                clang.args(sdk_args(platform)?).args(link_args(platform));
+                clang
+                    .args(sdk_args(platform)?)
+                    .args(final_link_args(platform)?);
             } else {
                 clang.args(no_sdk_args(platform));
             }
@@ -3832,10 +3922,10 @@ fn build_complete(
             &mut messages,
             run_tool(
                 &mut clang,
-                &cross_hint(
+                &linker_hint(cross_hint(
                     platform,
                     "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                ),
+                )),
             )?,
         );
         if let Some(symbols) = &shared_symbols {
@@ -3868,6 +3958,7 @@ fn build_complete(
             linker
                 .args(target_args(platform))
                 .args(sdk_args(platform)?)
+                .args(final_link_args(platform)?)
                 .arg(&object)
                 .args(["-g", "-lm"]);
             if native_runtime {
@@ -3888,10 +3979,10 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    &cross_hint(
+                    &linker_hint(cross_hint(
                         platform,
                         "native debug executables require the Clang linker",
-                    ),
+                    )),
                 )?,
             );
             let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
@@ -4132,7 +4223,7 @@ fn link_shared(
     linker
         .args(target_args(platform))
         .args(sdk_args(platform)?)
-        .args(link_args(platform));
+        .args(final_link_args(platform)?);
     if platform.mach_o() {
         let text: String = symbols
             .iter()
@@ -4180,10 +4271,10 @@ fn link_shared(
         messages,
         run_tool(
             &mut linker,
-            &cross_hint(
+            &linker_hint(cross_hint(
                 platform,
                 "shared libraries require the Clang linker; unresolved extern symbols need --link, -l or -L",
-            ),
+            )),
         )?,
     );
     Ok(())
@@ -4839,6 +4930,13 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
     }
 }
 
+/// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
+const RUNTIME_OBJECT_HINT: &str =
+    "runtime objects require Clang with support for the selected target";
+
+/// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
+/// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
+#[allow(clippy::too_many_arguments)]
 fn compile_runtime_object(
     unit: &str,
     source: &str,
@@ -4846,6 +4944,7 @@ fn compile_runtime_object(
     args: &[OsString],
     directory: &Path,
     identity: Option<&crate::cache::ToolIdentity>,
+    hint: &str,
     messages: &mut Vec<String>,
 ) -> Result<PathBuf, Diagnostic> {
     let output = directory.join(format!("{unit}.o"));
@@ -4902,10 +5001,7 @@ fn compile_runtime_object(
         .args(args)
         .args(["-c", input, "-o"])
         .arg(format!("{unit}.o"));
-    let message = run_tool(
-        &mut command,
-        "runtime objects require Clang with support for the selected target",
-    )?;
+    let message = run_tool(&mut command, hint)?;
     collect_message(messages, message.clone());
     if let Some((cache, key)) = cache {
         let paths = std::collections::BTreeMap::from([("artifact".to_owned(), output.clone())]);
@@ -6076,6 +6172,44 @@ mod tests {
             sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.message),
             Ok(vec![])
         );
+    }
+
+    #[test]
+    fn the_linker_choice_adds_lld_to_the_final_link_and_rejects_other_values() {
+        let lld = OsString::from("-fuse-ld=lld");
+        let choose = |platform, value: &str| final_link_args_for(platform, Some(OsStr::new(value)));
+        for platform in Triple::ALL
+            .into_iter()
+            .map(|triple| Platform::new(Some(triple)))
+            .chain([Platform::HOST])
+        {
+            // Unset, empty and `default` are the arguments that a link had before the variable existed.
+            let default = final_link_args_for(platform, None).unwrap();
+            assert_eq!(default, link_args(platform));
+            assert_eq!(choose(platform, "").unwrap(), default);
+            assert_eq!(choose(platform, "default").unwrap(), default);
+            if platform.windows() {
+                let error = choose(platform, "lld").unwrap_err();
+                assert_eq!(error.code, "E2000");
+                assert!(error.message.contains("not supported for Windows"));
+            } else {
+                // One flag, even where the machine's own linker could not write the target anyway.
+                let chosen = choose(platform, "lld").unwrap();
+                assert_eq!(
+                    chosen.iter().filter(|argument| **argument == lld).count(),
+                    1
+                );
+                assert!(default.iter().all(|argument| chosen.contains(argument)));
+            }
+            for bad in ["gold", "LLD", "lld ", "mold"] {
+                let error = choose(platform, bad).unwrap_err();
+                assert_eq!(error.code, "E2000");
+                assert!(
+                    error.message.contains("must be 'default' or 'lld'"),
+                    "{bad}"
+                );
+            }
+        }
     }
 
     #[test]

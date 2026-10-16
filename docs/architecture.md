@@ -18,8 +18,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
    -> closures -> lambda lifting + capture parameters + saturated export bridges
                + FunctionOrigin of every generated helper
    -> ownership -> concrete moves + loans + lifetime validation
-   -> llvm -> reachability pruning of std code + bounded known-call specialization
-           + deterministic LLVM IR
+   -> llvm -> reachability pruning of std code (a native executable emits only what its entry
+              and exports reach) + bounded known-call specialization + deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
 ```
@@ -226,8 +226,9 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 数値ランタイムと大きな数学関数を別 object にして再利用します。`src/runtime_cache.rs` は numeric 宣言の抽出、
 math の standalone 化、正確な参照記号集合、同梱 object の照合を担い、sqrt／fabs は caller IR に残します。
 `src/cache.rs` が実際のツール・source・flags・CPU・environment を鍵に含め、検証した object を原子的に公開します。
-runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。
+runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します（`src/bundle_identity.rs`。ハッシュは並列）。この結果は同梱 Clang・Zig の SHA-256 とランチャーの `--version` の出力と合わせて `<cache>/bundle/` に控え、配布物の署名（最上位と `bin`・`lib`・`zig` 直下のファイル、`manifest.json`、2 階層目までのディレクトリの、大きさ・更新時刻・状態変更時刻・inode）が変わらない間は再利用するので、毎ビルドの全ファイル読み込み（約 760 MB）はありません。ツールの入れ替え、署名の対象のディレクトリへのファイルの追加・削除、配布物の展開し直しは署名を変え、次のビルドが全体を検証し直します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。署名が見ないのは、それ以外の場所での既存ファイルのその場の書き換えと、3 階層目より下の追加・削除で、`<cache>/bundle/` を消すと検証し直します。`TSUZURI_LLVM_CLANG`／`TSUZURI_ZIG` の上書きと配布物でないツールは控えを使わず、従来どおり毎回読みます。
 選択順はリソースとツールが一致する配布 object、`<cache>/runtime/`、埋め込みソースからのコンパイルです。
+WASM threads の `task-wasm-threads.c`、WASI ホストの `os-wasi.c`（と `arguments.c`）、`-g` の実行ファイルのスタック検査 `stack.c` は配布 object を持たず、`<cache>/runtime/`（単位は `wasm-threads`・`wasi`・`stack-debug`。キーは他の runtime object と同じ）と埋め込みソースからのコンパイルだけを使います。
 配布物には numeric／math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
 ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。
@@ -273,7 +274,7 @@ native のトラップは、`llvm.trap` が STATUS_ILLEGAL_INSTRUCTION（0xC0000
 
 **Target と Platform（G15）:** `--target TRIPLE` は、`src/target.rs` の閉じた表（64-bit の native の `Triple` が 22 個）から選び、`BuildOptions::triple`・`TestOptions::triple`・`BenchOptions::triple` に入ります。ビルド先の性質は `cfg!(windows)` や `env::consts::ARCH` を直接読まず、`Platform` に尋ねます。triple がなければ `Platform::HOST` で、以前の `cfg!` と同じ答えを返すので、`--target native` の IR、オブジェクト、Clang と `wasm-ld` の引数列、出力名は変わりません。
 IR が target で変わるのは、Windows の COFF の allocator と `windows_abi`、`@cpu` の level（`Platform::cpu_levels`）、`Math.fma` の命令（`Platform::hardware_fma`）、bare-metal の x86-64 の `noredzone`（`llvm::with_no_red_zone`）の 4 か所だけです。`EmitOptions` に target を足すと `tests/windows.rs` などの多数のリテラルが壊れるので、IR を作る間は `PlatformScope`（スレッドローカルの guard）が呼び出し元の `Platform` を運びます。
-Clang の引数は、`compile_args`（`--target=` と `-fPIC`）、`sdk_args`（ランタイムの C のコンパイルとリンク。`TSUZURI_SYSROOT` を `--sysroot`、Apple の target では `-isysroot` と `-Werror=incompatible-sysroot` にする）、`link_args`（ビルド機と違う target に `-fuse-ld=lld`）、`no_sdk_args`（SDK を読まない IR のコンパイルと `-r` のリンク）に分け、`HOST` ではすべて空です。ランタイムの選択（`os.c`、`net.c`、`async.c`、`task-windows.h`）は `Platform::os_apis`・`net`・`reactor` と `task_runtime_source_for` が target で決めます。ランタイムの C を書いていない、または確かめていない組み合わせ（FreeBSD・Android・iOS の `Net` と `Async.block_on`、iOS と Android の OS API）は `E2002` で拒否し、推測してリンクしません。
+Clang の引数は、`compile_args`（`--target=` と `-fPIC`）、`sdk_args`（ランタイムの C のコンパイルとリンク。`TSUZURI_SYSROOT` を `--sysroot`、Apple の target では `-isysroot` と `-Werror=incompatible-sysroot` にする）、`link_args`（ビルド機と違う target に `-fuse-ld=lld`）、`final_link_args`（`link_args` と、`TSUZURI_LINKER=lld` のときの `-fuse-ld=lld`。実行ファイル・`-g` の別リンク・`--emit shared` の最終リンクだけで、`-r` のリンクには使わない。値の検査は `build_complete` の冒頭で行い、成果物キャッシュのキーには未設定・`default` 以外のときだけ入る）、`no_sdk_args`（SDK を読まない IR のコンパイルと `-r` のリンク）に分け、`HOST` では `TSUZURI_LINKER` が未設定ならすべて空です。ランタイムの選択（`os.c`、`net.c`、`async.c`、`task-windows.h`）は `Platform::os_apis`・`net`・`reactor` と `task_runtime_source_for` が target で決めます。ランタイムの C を書いていない、または確かめていない組み合わせ（FreeBSD・Android・iOS の `Net` と `Async.block_on`、iOS と Android の OS API）は `E2002` で拒否し、推測してリンクしません。
 ビルド機で動かせない target の `run` と `test` は、`TSUZURI_RUNNER` の前置コマンド（`ForeignRunner`）を通し、なければビルドの前に `E2000` です。`test --coverage`、`test -g`、`bench` は拒否します。同梱ツールチェーンの `scripts/toolchain/clang.rs` は、`--target=<Clang の target>` を Zig の target に写す表（`NATIVE_TARGETS`）を持ちます。`--target=` がないときの挙動は変えていません。
 検証は、`tests/targets.rs`（target ごとの IR とオブジェクトの形式、キャッシュ、偽の Clang と偽の実行器による `run`・`test`、launcher の表）、`tests/targets.mjs`（22 個の target を実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。`TSUZURI_CROSS_LINK=1` で同梱ツールチェーンのリンク、`TSUZURI_CROSS_EXECUTE=1` で qemu-user）、CI の `.github/workflows/targets.yml` です。tier の記録は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) の表だけです。
 
@@ -364,7 +365,7 @@ std のソースコードは型検査の対象となりますが、`closures::lo
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`@alias` の宣言が `aliases` と一致すること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
-LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
+LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。例外は native の実行ファイル（`emit_native_build` の `Entry::Console`。`build`・`run`）で、エントリーポイントとエクスポート関数（と、利用者の `Drop` の drop glue）から到達できる関数だけを出力します（`Instrumentation::executable_roots`。PB03 D1）。実行ファイルでは利用者の公開関数も `internal` で外から呼べないのに、`-O0` ではすべてコンパイルされるためです。`--emit llvm`・`object`・`header`・`wasm`・`shared`、ライブラリの `Entry::Library`、`emit_native_build_for`、`llvm::emit` 系は今までどおり公開関数をすべて出力します。未使用の公開関数も型検査・所有権検査の対象で、その型エラーは `check` が報告します。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
 
 `std/Maybe.tc` および `std/Result.tc` は、特別なコンパイラマジックを用いず、通常のジェネリック union と関数のみを用いて型、基本操作、およびビルダーを定義しています。
 専用の型付き命令や特殊なランタイムは存在せず、union のタグ分岐、ペイロードの move／clone／drop、および既知の継続に対する特殊化の最適化を一般コードと完全に共有しています。
@@ -505,7 +506,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 
 テスト宣言 `Program.tests` は通常の名前空間から隔離され、検査時に unit を返す内部呼び出し可能関数および `CheckedModule.tests` のメタデータへと変換されます。
 テスト関数由来の属性 `FunctionOrigin.test` は局所的に生成された補助関数へも伝播され、共有されるジェネリック関数の特殊化実装は 1 つだけ生成されてルート集合からの到達性によって取捨選択されます。
-通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
+通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが（native の実行ファイルはエクスポート関数とエントリーポイントだけ）、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。

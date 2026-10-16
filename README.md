@@ -794,7 +794,7 @@ LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C+
 cargo build --release
 ```
 
-`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。
+`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。
 
 x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
@@ -863,7 +863,7 @@ tsuzuri lsp
 
 - **入力の解決**: ファイルまたはディレクトリを 1 つ指定します。ディレクトリを指定した場合は、直下の `Main.tz` が自動的にエントリーポイントとして選ばれます。ファイル指定時はその親ディレクトリをルートとし、配下の全 `.tz`・`.tt`・`.tc` を相対パス順に再帰的に探索して読み込みます。
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
-- **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
+- **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。同梱ツールチェーンの識別（配布物の全ファイルの SHA-256 など）は最初のビルドで計算して `bundle/` に控え、配布物の署名が変わるまで読み直しません（信頼の範囲は `_tsuzuri/language-reference/compiler/usage.md` の「ランタイム object」）。
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
 - **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 
@@ -889,6 +889,9 @@ node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
 node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、--strip（nm・codesign・トラップ表）、整数表示（全型の境界値・IR・WASM の長さ）とオプション誤り
 node tests/integer_format.mjs   # 整数表示の関数（integer.ll）を Python の独立した参照と 8／16 bit の全値で照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）
+node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置
+node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）
+node tests/bundle_identity.mjs target/release/tsuzuri   # 同梱ツールチェーンの識別を控える memo の無効化・上書き・cache 保護（PB03 WP-F）
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証
