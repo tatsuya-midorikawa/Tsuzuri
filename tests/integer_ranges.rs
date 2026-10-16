@@ -928,7 +928,7 @@ fn cases() -> Vec<Case> {
             &["nuw nsw"],
             true,
             move |x, _| {
-                vec![if 100 > x && 0 <= x {
+                vec![if (0..100).contains(&x) {
                     vec![(x, 27)]
                 } else {
                     vec![]
@@ -943,7 +943,7 @@ fn cases() -> Vec<Case> {
             &["nuw nsw"],
             true,
             move |x, _| {
-                vec![if 99 >= x && 0 < x {
+                vec![if (1..=99).contains(&x) {
                     vec![(x, 28)]
                 } else {
                     vec![]

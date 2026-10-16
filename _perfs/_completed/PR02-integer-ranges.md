@@ -8,7 +8,7 @@
 | 規模 | L |
 | 依存 | PR01, (F12) |
 | 関連 | F12 |
-| 状態 | doing |
+| 状態 | done（既定は `off`。`TSUZURI_RANGE_FLAGS=proven`・`audit` はオプトイン。D10 は既定で有効） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討（「着手時の再検討」） |
 | 承認 | 2026-10-16 の全フェーズ実装依頼で、全 Phase と D1〜D14（D10〜D14 は再検討で追加）を承認済み。意味の保持と検証の条件は維持する（言語の意味、GUIDE D-01〜D-49、crate、WASM import、必要な LLVM の版は変えない） |
 | 手本にする既存実装 | 構造から証明した事実を IR へ出す形: `src/llvm_control.rs` の `narrow_range_loop`（`llvm.assume` と、証明を命令の直前に書く一行コメント）。型と符号で命令を選ぶ形: `src/llvm.rs` の `FunctionEmitter::binary` と `checked_integer_arithmetic`。IR の文字列検査: `src/llvm.rs` の test `emits_explicit_tail_loop_and_checked_arithmetic`、`tests/control.rs` の `accepts`。端点の E2E と BigInt 参照: `tests/control.mjs` の `rangeReference` と `inclusive` の case |
@@ -628,14 +628,14 @@ node tests/features.mjs target/release/tsuzuri
 
 ## 受け入れ条件
 
-- [ ] R1〜R5 の増分にだけ旗が付き、`only_flags` が before と phase1 の kernels で `only-flags` を出す。
-- [ ] P1〜P7 で証明できた整数 `+ - *` にだけ旗が付き、`unproven_arithmetic_has_no_flags` と brute-force の 2 テストが成功する。
-- [ ] 演算子形と builtin 形が同じ IR になる（`operator_and_builtin_forms_share_flags`）。
-- [ ] 「テスト計画」の共通コマンドがすべて成功し、E2E の新しい case が native／wasm32 × `-O0`／`-O3` で参照と一致する。
-- [ ] 生成 IR に LLVM 18 以降の構文と `!range` がなく、IR が決定的である。
-- [ ] 生成コードの before／phase1／after と計測の `report` の表を完了報告に載せ、測っていない改善を主張しない。
-- [ ] 「ドキュメント」の更新。
-- [ ] GUIDE §10 の完了の定義と §14 の性能チケットの共通手順を満たす。
+- [x] R1〜R5 の増分にだけ旗が付く（`proven_mode_flags_exactly_the_loop_increments_that_a_loop_shape_proves`）。`off` と `proven` の IR の差は旗の語と PR01 の `noundef` だけ（`proven_mode_differs_from_off_mode_only_by_flag_words`。チケットの `only_flags` の代わり）。
+- [x] P1〜P7 で証明できた整数 `+ - *` にだけ旗が付く。証明がなければ旗がないことは `programs_have_no_overflow_flags_without_a_proof`（`off`）と、`src/ranges.rs` の 48 行の表および 34 本の評価表の near-miss の行（`proven`）で、旗のある演算がどの入力でもオーバーフローしないことは全入力の評価との照合（brute-force。`proven_flags_are_those_of_an_evaluation_of_every_input`）と `interval.rs` の総当たりの単体テストで確かめた。
+- [x] 演算子形と builtin 形が同じ IR になる（`builtin_and_operator_forms_emit_the_same_instructions`。チケットの `operator_and_builtin_forms_share_flags` の名前は使わなかった）。
+- [x] 「テスト計画」の共通コマンドがすべて成功し、E2E の新しい case が native／wasm32 × `-O0`／`-O3` で参照と一致する（「実装と検証」の表）。
+- [x] 生成 IR に LLVM 18 以降の構文と `!range`・`llvm.assume` の新規出力がなく、IR が決定的である（`bounds_checks.rs::range_proofs_add_no_llvm_facts`、`emit_mode` の二度の出力の一致）。
+- [x] 生成コードの before／after と計測を完了報告に載せ、測っていない改善を主張しない（Gate A の表。時間は `String.split`／`String.join` だけ。Matrix の時間と x86_64 の速度は未測定と書いた）。
+- [x] 「ドキュメント」の更新。
+- [x] GUIDE §10 の完了の定義と §14 の性能チケットの共通手順のうち、実装者の範囲（テスト・生成コード・文書・コミット）を満たす。push・CI・`_perfs/README.md` は調整担当。
 
 ## 落とし穴
 
@@ -726,3 +726,155 @@ node tests/features.mjs target/release/tsuzuri
 - 理由: LLVM の InstCombine は両辺が非負と分かれば同じ変換を行い、旗はその材料になる。除算の命令を変えなければ 0 と MIN / -1 の
   検査の位置も変わらない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-16）
+
+PR02 の全 Phase（Phase 1: ループの形から証明する旗、Phase 2: 区間から証明する旗）と、着手時に足した D10〜D13 を実装した。D14（区間による F12 の添字の検査の除去）は範囲外とした。
+旗の既定は `off`（Gate A）で、`TSUZURI_RANGE_FLAGS=proven` と `audit` はテスト済みのオプトインとして出荷する。D10（`Add.add`・`Sub.sub`・`Mul.mul` の inline）だけは既定で有効。
+`_perfs/README.md`（共有の一覧）、中央の文書の取りまとめ、CI の判定、push は調整担当の範囲で、ここでは行っていない。チケットは `_perfs/_completed/` へ移した。
+
+### コミット（`perf/phase3/PR02`、基点 `c6864cf5`）
+
+| commit | 手順 | 内容 |
+| --- | --- | --- |
+| `760bb249` | WP0 | チケットの改訂（「着手時の再検討」、D10〜D14、Gate A の規則） |
+| `45b51c17` | WP1 | 端点の E2E（`IntegerRanges.tz`、`control.mjs` の BigInt 参照）と、旗なしの固定（`tests/integer_ranges.rs`） |
+| `ce6648f7` | WP4（D10） | `$intrinsic` の `Add`・`Sub`・`Mul` の呼び出しを `binary()` へ inline（既定で有効） |
+| `d34e72ce` | WP2・WP3 | `RangeFlags`（`TSUZURI_RANGE_FLAGS`、`KEY_ENVIRONMENT`、HELP）、R1〜R5 の構造の旗、audit の検査、`bounds_checks.rs` の書き換え |
+| `c1cc62b1` | WP5 | `src/interval.rs`: 区間の純粋関数と、総当たりの単体テスト |
+| `82915be1` | WP6 | `RangeFacts` の区間（`src/ranges_intervals.rs`。`bind`・`enter_counter`・`enter_condition` の hook） |
+| `ad13ba96` | WP7 | `integer_flags` を `binary()` と tail 引数で使う。audit の検査。34 本の評価表 |
+| `2821b786` | WP8 | `tests/integer_ranges_fuzz.mjs`、`tests/range_flags_audit.mjs`、`targets.yml` の step |
+| `359a7e4e` | WP8 | Phase 2 の E2E case（`affine_sum`・`wrap_edges`・`narrow_wrap`・`unsigned_sub`・`mixed_width`。`control.mjs` は 470 case） |
+| `ead8f36e` | WP9 | Gate A の runner（`benchmarks/run-range-flags.mjs`）と旗の候補の corpus（`benchmarks/range_flags`） |
+| `a63e4be8` | WP7 | self tail call の引数の旗のテスト |
+| `630f7156` | WP6 | 既定の `off` では区間を追わない（`ranges::analyze` の `intervals` 引数） |
+| `6b2e5c6c` | WP5 | 区間の tightness のテスト（変異テストで見つかった 3 つの精度の抜け） |
+| `d7a1d28b` | WP9 | 文書（architecture・language・README・language-reference・benchmarks） |
+| `5f651acb` | WP8 | fuzz の生成器の強化と、`integer_ranges` の表の行（エンジンの変異が見逃された 4 件への対応） |
+| このコミット | WP9 | チケットの完了報告と、`_perfs/_completed/` への移動。`tests/integer_ranges.rs` の新しい行の clippy の指摘（`manual_range_contains`）の修正 |
+
+### 実装した内容
+
+- **旗の出力**（`src/llvm_ranges.rs`）: `RangeFlags::{Off, Proven, Audit}`。環境変数 `TSUZURI_RANGE_FLAGS`（空は既定、不正な値は `E2000`、`cache::KEY_ENVIRONMENT` に入る）と、
+  ライブラリの `llvm::emit_with_range_flags`。`EmitOptions` に field は足さず、`Instrumentation::range_flags`（`None` なら環境変数）で運ぶ。
+  `off` の IR は PR02 の前と byte 単位で同じ（D10 の inline を除く）。`audit` は旗を書かず、旗を書く向きごとに `llvm.{s,u}{add,sub,mul}.with.overflow` を検査して `TrapKind::Overflow` で止める。
+- **Phase 1 の R1〜R5**（`llvm_control.rs`・`llvm.rs`・`llvm_compare.rs`）: ±1 の範囲ループ（符号付きは `nsw`、符号なし昇順は `nuw`）、narrow な範囲ループの i64 カウンター（`nsw`、符号なしは `nuw nsw`）、
+  配列・リスト・文字列・構造比較の `index < length`（`nuw`）。任意のステップの経路、`trunc`、`llvm.assume` は変えない。
+- **Phase 2 の区間**（`src/interval.rs`、`src/ranges_intervals.rs`、`src/ranges.rs`）: 端点が `i128` の区間。`+ - *` のオペランドを符号付きと符号なしの両方で読んで `nsw`／`nuw` を決め、結果は両方の読みの像の共通部分。
+  リテラル・型・`as`・`&`・`%`・`/`・`~`・負号・定数のシフト・長さ・`if` の式・不変の `let`・`for` のカウンター・`if` の then 枝の条件を扱い、`mut`・代入・可変借用・重複した id・呼び出し・`Index`・`@checked`・128-bit は型の全域。
+  深さ 32 と 1 関数あたり 2^20 ステップを超えた分は診断なしで型の全域（D7、GUIDE D-47）。`binary()` と self tail call の引数（native の遅延と WASM の直接評価）が `integer_flags` を呼ぶ。
+- **D10**（`call_specialization::intrinsic_operation` と `FunctionEmitter::call`）: `$intrinsic` の `Add`・`Sub`・`Mul` の直接呼び出しを `binary()` へ inline。整数と `f32`／`f64` の値渡しだけで、ユーザーのモジュールの同名の関数は対象外。
+  ベンチマークの IR と、`tests/fixtures/control` の wasm32 `-O3` の成果物は変わらない。変わるのは、これらを明示的に呼ぶ関数の IR（call が演算になり、PR01 の `noundef`・`memory(none)` が付く）だけ。
+- **PR01 との関係（D13）**: 旗のある関数は戻り値の `noundef` を失う（`defined_result` が旗を poison の語として数える）。`a_flagged_loop_costs_the_pure_function_its_noundef_result` で固定した。
+
+### 検証
+
+| 確認 | コマンド | 結果 |
+| --- | --- | --- |
+| 書式・lint・runtime の include | `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`（最終の tree でもう一度）、`sh scripts/check-runtime-includes.sh` | すべて成功（警告 0） |
+| GUIDE §3.1 の回帰 4 件 | `polymorphism bounds_type_growing_polymorphic_recursion`、`--lib bounds_recursive_and_flat_expression_depth`、`computations bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit` | 各 `running 1 test` で成功 |
+| Rust テスト全体（既定） | `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（`6b2e5c6c` の tree） | 104 の test binary で 1,340 passed・0 failed・1 ignored（lib 242、`integer_ranges` 16、`bounds_checks` 5）。その後の `5f651acb` は `tests/integer_ranges.rs` の表の行と fuzz の生成器だけで、`cargo test --locked --test integer_ranges` は 16 passed |
+| Rust テスト全体（audit） | `TSUZURI_RANGE_FLAGS=audit cargo test --locked --no-fail-fast`（`6b2e5c6c` の tree） | 既定と同じ 1,340 passed・0 failed・1 ignored（audit は旗を書かないので、旗の不在を要求するテストも通る） |
+| Rust テスト全体（proven） | `TSUZURI_RANGE_FLAGS=proven cargo test --locked --no-fail-fast`（`630f7156` の前の tree） | 1,339 passed・0 failed・1 ignored。その後の変更は、`off` で区間を追わないことと、テスト 1 本の追加だけ（最終の tree では回していない） |
+| Windows の型検査 | `PATH="$HOME/.cargo/bin:$PATH" cargo +stable check --locked --all-targets --target {x86_64,aarch64}-pc-windows-msvc` | 両方成功（Homebrew の `rustc` が PATH の先頭にあると `can't find crate for core` になるので、`~/.cargo/bin` を先頭にする）。Windows の実行は CI だけが確かめる |
+| E2E（release、既定。native／WASM × `-O0`／`-O3`、`live == 0`、WASM の import なし） | `node tests/<suite>.mjs target/release/tsuzuri`（`cargo build --release --locked` の直後） | control（470 case）、e2e、primitives、numeric_casts（1,585 case）、integer_intrinsics、computations、strings、display_parse が成功 |
+| E2E（audit・proven） | `node tests/range_flags_audit.mjs target/release/tsuzuri quick` | 7 suite（control・numeric_casts・integer_intrinsics・primitives・computations・strings・e2e）× `audit`・`proven` と fuzz 30 本（1,474,812 回）が成功 |
+| features（audit） | `TSUZURI_RANGE_FLAGS=audit node tests/features.mjs target/release/tsuzuri` | 14,106 case が成功（849 秒） |
+| 差分 fuzz（強化後の生成器、`5f651acb`） | `node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 200 3000 4`、`TSUZURI_FUZZ_NATIVE=1 node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 12 4000 4` | wasm32 の audit `-O0`・proven `-O3`・off `-O3` が、独立した BigInt の評価器と 7,291,200 回すべて一致（200 本。旗は 788 のうち 385）。native を足した 12 本は 1,060,135 回が一致 |
+| 差分 fuzz（強化前の生成器） | seed 1〜60（深さ 4）、1000〜1119（120 本）、`range_flags_audit.mjs quick` の 30 本 | 3,144,666 回、6,687,399 回、1,474,812 回がすべて一致 |
+| 既定の出力の比較 | `examples/*`・`tests/fixtures/*`・`benchmarks/*` の各ディレクトリを、PR02 の前のコンパイラと最終のコンパイラで `--emit llvm` と wasm32 `-O3` に出して `cmp` | 238 組のうち 204 が byte 単位で同一、33 は両方がビルドできない（比べない）、差は 1 件: `tests/fixtures/control` の IR だけ。D10 の inline（`Add.add` などの call が演算になる）と、それを使う `IntegerRanges.builtin_wrap` が PR01 の属性を得る差のみ。同じ fixture の wasm32 `-O3` は同一 |
+| 文書 | `node scripts/check-docs.mjs`（変更した 4 ページ）、`git diff --check c6864cf5` | 4 ページ・93 リンク・8 例・native 16 回（O0/O3）で成功。空白の誤りなし |
+
+### Gate A（旗が LLVM の出力を変えるか）
+
+旗の既定は、旗が LLVM の出力を変えるかで決める（D11、「実装の順序と既定の決め方」）。`benchmarks/run-range-flags.mjs <コンパイラ>` は、12 の corpus を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、
+arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけ）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べる。
+Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは commit `ad13ba96` の非 LTO の release。実行は決定的で、静かな機械は要らない。生データは `target/perf/PR02-after/gate-a/` と `gate-a-summary.log`（git 管理外）。
+
+| corpus | 旗のある整数 `+ - *`（IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
+| --- | ---: | --- | --- |
+| control・computations・bounds_shapes・simd・dispatch・cpp・`tests/fixtures/control` | 20/191・8/201・4/140・2/135・2/131・735/1,045・715/1,169 | 同じ | 同じ |
+| allocation | 12 / 162 | 同じ | （export なし） |
+| utf | 12 / 156 | 同じ | module が 7 bytes 増える（13,673 → 13,680） |
+| matrix | 65 / 401 | 全レベルで差。命令数は arm64 `-O3` が 2,567 → 2,571、x86_64 `-O3` が 3,238 → 3,222 | 19 bytes 減る |
+| apps | 703 / 1,118 | 全レベルで差。arm64 `-O3` が 16,265 → 16,260、x86_64 `-O3` が 16,571 → 16,563 | 31 bytes 減る |
+| range_flags（旗の候補を集めた kernels） | 31 / 189 | arm64 `-O1` だけ 24 行（412 → 412） | 同じ |
+
+差のあった関数は、matrix では std の `Matrix.multiply_rows`・`Matrix.fma_rows` の単相化 4 つ（1 関数あたり 1〜5 命令。比較の向き `subs; b.mi` → `b.lt`、`sub; tbnz` → `cmp; b.le`、マスクの定数の書き方）、
+apps では std の `String.split`・`String.join` だけ（1〜8 命令）。どれもベクトル化・境界検査・命令の種類は変わらない。LLVM の IndVarSimplify などが増分・型・`and` のマスクから同じ旗を自力で付けるため、
+着手前の調査（旗を IR の文字列で足した上限の実験）と一致する。**結論: 旗は測れる差を出さないので、既定は `off`。`proven` はオプトイン。** PR01 の戻り値の `noundef` を失う代償（D13）と、1 つの旗の誤りが poison になる危険を考えると、利得の見えない既定にはしない。
+
+時間は、asm が変わった種目だけを測る（D8）。`String.split`／`String.join` の往復（2,000 個の文字列を 4,000 回。`off` と `proven` の `-O3` の実行ファイル）を、調整担当の排他 lock（measure）の下で交互に 15 回ずつ走らせた。
+中央値は `off` が 319.1 ms（最小 274.7、最大 855.5）、`proven` が 322.7 ms（最小 292.3、最大 712.1）で、出力はどちらも `63098000`。差は標本の広がりの内側にある。負荷平均（1・5・15 分）は開始時が 55.78・93.24・123.14、終了時が 53.03・90.82・121.76 の共有機で、参考値に留まる。
+Matrix の 4 つの関数の時間は、負荷が高い間は測れなかった。x86_64 は実機がなく、assembly の比較だけ。速度の再測定の手順（静かな機械で `run-matrix.mjs` を `off` と `proven` で交互に）は `docs/benchmarks.md` の同名の節にある。
+
+### 誤った証明を入れたコンパイラを検査が見つけるか
+
+誤った証明は poison になり、メモリ安全性を壊しうるので、「検査が誤りを見つけられるか」を、証明にわざと誤りを入れて確かめた（ハーネスは git 管理外。`src/` の 1 か所を書き換えて `cargo build --release` した compiler を、
+`node tests/integer_ranges_fuzz.mjs <compiler> 60 1 4` と Rust のテストにかける）。
+
+**区間の関数（`src/interval.rs`）**: ファイルが std だけに依存するので、1 つの編集ごとに 31 の変異（隅の取り違え、読みの符号の無視、周期の無視、除算の片側の落とし、`complement` の off-by-one、`Int::max` の 1 ずれなど）を作り、
+単独の crate としてビルドして、同じファイルの単体テストを走らせた。最初の実行は 28 が検出され、残った 3 つは精度を落とすだけの変異（余分に広い結果、片方の読みだけを使った結果）で soundness は保っていたが、
+それぞれを検出する assertion を足し（`6b2e5c6c`）、31/31 になった。
+
+**エンジン（emitter まで）**: 次の 9 つの変異を入れた compiler を、差分 fuzz（seed 1〜60、深さ 4）と、Rust のテスト（lib の `ranges`、`integer_ranges`、`bounds_checks`）にかけた。
+
+| 変異 | 入れた誤り | 差分 fuzz | Rust のテスト |
+| --- | --- | --- | --- |
+| `narrow-less-excludes-a-value` | `x < c` が x の上限を `c - 2` にする | 検出（初版） | — |
+| `ascending-counter-stops-at-start` | 昇順のカウンターの区間が `[start, start]` | 検出（初版） | — |
+| `descending-counter-ignores-start` | 降順のカウンターの区間が開始値を含まない | 初版は見逃し → 強化後に検出（`audit -O0 wasm32: f(-8, -128) trapped`） | 実行せず |
+| `then-refinement-leaks-into-else` | then 枝の絞り込みが else 枝に残る | 検出（初版） | — |
+| `mirror-keeps-direction` | リテラルが左の比較（`100 < x`）を逆向きに読む | 見逃し（強化後も） | 検出（`ranges::tests::conditions_narrow_their_locals_in_the_then_branch_only`、`proven_flags_are_those_of_an_evaluation_of_every_input`） |
+| `reading-ignores-sense` | 符号付きと符号なしの読みを区別しない | 検出（初版） | — |
+| `signed-loop-counter-claims-nuw`（R1） | 符号付きの ±1 のカウンターに `nuw` | 初版は見逃し → 強化後に検出（`f(-9223372036854775808, …) trapped`） | 実行せず |
+| `narrow-signed-counter-claims-nuw`（R2） | narrow な符号付きのカウンターに `nuw` | 強化後に検出（`f(-32768, -32768) trapped`） | 実行せず |
+| `array-index-claims-nsw` | 配列の添字の増分に `nuw` の代わりに `nsw` | 見逃し。旗は正しい（`index + 1 ≤ length ≤ i64::MAX`）ので挙動は変わらない | 検出（`proven_mode_flags_exactly_the_loop_increments_that_a_loop_shape_proves`。旗の厳密な一致） |
+
+初版の fuzz が 4 つを見逃したのは、生成器が、開始値が効く降順のループ、0 をまたぐ ±1 のカウンター、`k < x` の形の比較、64-bit の型を、ほとんど作らなかったためで、64-bit の型を seed の 3 分の 1 にし、
+プログラムの半分の先頭を loop にし、0 をまたぐ・降順のスキームと、比較の左右の反転を足した（`5f651acb`）。`integer_ranges` の表にも、比較の 4 方向と、最大値から始まる降順のループの行を足した。
+初版で検出した 4 つ（表の 1・2・4・6 番目）は、強化後の生成器では再実行していない。
+
+### チケットから外れた判断・見つけた問題・残作業
+
+**決定への追記・変更**
+
+- D11: `EmitOptions` に field は足さず（構造体リテラルが 32 か所）、`Instrumentation::range_flags`（`None` なら環境変数）と `llvm::emit_with_range_flags` で運ぶ。CLI は `TSUZURI_RANGE_FLAGS`。
+- D13: 旗のある関数が戻り値の `noundef` を失うことは、`tests/param_facts.rs` ではなく `tests/integer_ranges.rs::a_flagged_loop_costs_the_pure_function_its_noundef_result` で固定した。
+- D7: 深さ 32、1 関数あたり 2^20 ステップ、F12 の 65,536 ノードのどれを超えても診断は出さず、旗を付けないだけ（GUIDE D-47）。E1017 に相当する診断は足していない。
+- 既定の `off` は区間を追わない（`ranges::analyze` の `intervals` 引数。`off` の IR は PR02 の前と byte 単位で同じで、コンパイル時間も増やさない）。`RangeFacts::interval` は単体テストだけが使い、emitter の入口は `integer_flags`。
+- 既定の判断は Gate A: 旗は assembly を変えないので既定は `off`、`TSUZURI_RANGE_FLAGS=proven` はオプトイン。D10 は旗と独立なので既定で有効。
+- 計測は、PX01 形式の `report` ではなく、旗が asm を変えるかを比べる専用の runner（`benchmarks/run-range-flags.mjs`）と、asm が変わった `String.split`／`String.join` の A/B の時間にした（「事前の証拠」と同じ方法で再現できる）。
+  Matrix の時間は負荷が高く測れなかった。`only_flags` の helper は、`proven_mode_differs_from_off_mode_only_by_flag_words`（`off` と `proven` の IR の差が、旗の語と PR01 の `noundef` だけ）に置き換えた。
+- E2E は `tests/fixtures/control/Main.tz` ではなく、新しい `tests/fixtures/control/IntegerRanges.tz` に置いた。範囲ループの極値の端点は `BreakContinue.tz::continue_endpoints` が既に検査していたので、`IntegerRanges.tz` と `control.mjs` の BigInt の参照は、旗の追加の前後で同じ結果を保つ固定として足した。
+- CI は `targets.yml` だけに step を足した（`control.mjs` を `audit` と `proven` で、fuzz 20 本）。`windows.yml` は Windows で確かめられないので触っていない。
+
+**見つけた問題・限界**
+
+- `check` と `lsp` は IR を出さないので、`TSUZURI_RANGE_FLAGS` の不正な値を拒否しない（IR を出すコマンドだけ `E2000`）。
+- `let mut` の蓄積変数（`total = total + i`）、呼び出しの結果、`Index`、128-bit、`else`・`||`・`assert`・`match` からの絞り込みは未対応で、旗は付かない。`proven` でも付く旗は、増分・添字・定数で縛られた演算に限られる。
+- D14（区間による F12 の添字の検査の除去）は範囲外。`values[i*4+3]` などは、別のチケットとして提案する。
+- x86_64 の速度は実機がなく未測定。Matrix の時間は未測定。PM01 と PR03 が入ったあとに、audit・fuzz・Gate A をもう一度実行する（コマンドは `docs/architecture.md` の「整数の範囲証明（PR02）」）。
+- 作業中に共有の lock の置き場所が変わり、古い lock で待っていた実行を作り直した（作業の外の問題）。
+
+### 更新した文書
+
+- `docs/architecture.md`: モジュール表に `interval.rs`・`ranges_intervals.rs`・`llvm_ranges.rs`、「付与しない」と書いていた 3 か所を実際の挙動へ、新しい段落「整数の範囲証明（PR02）」（規則・限界・検証のコマンド）。
+- `docs/language.md`: 環境変数 `TSUZURI_RANGE_FLAGS` の段落と、整数の折り返しの項（旗は値を変えない）。
+- `README.md`: 環境変数の項と、テストコマンドの 3 行（fuzz・audit の runner・Gate A）。
+- `docs/benchmarks.md`: 「整数の範囲証明と overflow フラグ（PR02）」（Gate A の表、時間、再測定の手順）。
+- `_tsuzuri/language-reference/`: `compiler/option.md`（環境変数の表、cache の鍵、節「整数の範囲証明の旗」）、`compiler/diagnostics.md`（`E2000` の行）、
+  `languages/strategy.md`（実装状態の表）、`values-and-functions/op-and-expressions.md`（整数の演算の折り返しは旗でも変わらないこと）。`node scripts/check-docs.mjs` は 4 ページで成功。
+  整数・オーバーフロー・ループのページは、値の意味が変わらないので変更なし。
+- `_perfs/README.md` は調整担当の範囲なので触っていない。
+
+### 変更したファイル
+
+- 新規: `src/interval.rs`、`src/ranges_intervals.rs`、`src/llvm_ranges.rs`、`tests/integer_ranges.rs`、`tests/integer_ranges_fuzz.mjs`、`tests/range_flags_audit.mjs`、
+  `tests/fixtures/control/IntegerRanges.tz`、`benchmarks/run-range-flags.mjs`、`benchmarks/range_flags/Main.tz`
+- 変更（コンパイラ）: `src/llvm.rs`、`src/llvm_control.rs`、`src/llvm_compare.rs`、`src/ranges.rs`、`src/call_specialization.rs`、`src/cache.rs`、`src/main.rs`、`src/lib.rs`
+- 変更（テスト・CI）: `tests/bounds_checks.rs`、`tests/control.mjs`、`tests/features.mjs`、`.github/workflows/targets.yml`
+- 変更（文書）: `README.md`、`docs/architecture.md`、`docs/language.md`、`docs/benchmarks.md`、`_tsuzuri/language-reference/{compiler/option.md, compiler/diagnostics.md, languages/strategy.md, values-and-functions/op-and-expressions.md}`、
+  `_perfs/PR02-integer-ranges.md`（`_perfs/_completed/` へ移動。`_perfs/README.md` は触っていない）
+- 生データ・作業用（git 管理外）: `target/perf/PR02-after/`（Gate A の assembly と要約、`String.split`／`String.join` の A/B）、`target/perf/PR02/tsuzuri-before`（変更前のコンパイラ）
