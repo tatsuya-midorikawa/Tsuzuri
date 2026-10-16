@@ -61,7 +61,8 @@
   claim・release を使う。`busy`・`idle` は join と leave の単位で動かす。
 - 新規: `tz_task_claim`・`tz_task_run_item`・`tz_task_drain`・`tz_task_release`・`tz_task_signal`。`tz_task_execute` は無くなる。
 
-保つ不変条件（どれにも試験がある）:
+保つ不変条件。I1 と D14（worker の完了の数え方。下の「見つけた問題」）には、変異で必ず落ちる決定的な試験がある（`tests/task_runtime.c`。下に書く）。
+ほかの I2〜I10 は、`channel_runtime.c`・`trap_boundary_runtime.c`・`task_stress.c`・`tasks.mjs`・sanitizer の実行が通ることで確かめているが、それぞれを外した実装が落ちることまでは確かめていない:
 
 - I1 最初の子どもは、公開する前に投入したスレッドが取る（`next` の初期値 1）。I2 結合を待つスレッドは自分のグループだけを走らせる。I3 worker と `tz_task_help_one` は最も古いグループから選ぶ。
 - I4 起こす側が `busy` を戻してから signal する。I5 `idle` は worker だけを数える。
@@ -72,6 +73,18 @@
 group は submit で `TZ_TASK_INITIAL_SIGNALS` 個（1 以上）足し、トークンが補われないのは group を尽くす claim のときだけだからである。連鎖の規則は「join で取った後、参加した group に未着手が残れば
 残りの数に応じて 1 〜 `TZ_TASK_CHAIN_SIGNALS` 個 signal する」。これは論証であり証明ではないので、stress（C の `tests/task_stress.c`、E2E の繰り返し）で確かめる。
 `tests/task_runtime.c` は連鎖を外した実装（CPU 3 以上で止まる）と submit の signal を外した実装（すべての CPU 数で落ちる）を検出する。
+
+I1 と D14 の試験（`tests/task_runtime.c`。レビューの指摘で足した。それまでの試験は、I1 を外した実装を落とさず（stress も 3000 group の pipeline で 4〜13 件の誤判定にしか出ない）、D14 を崩した実装を 120 回に 1 回ほどしか落とさなかった）:
+
+- I1 `first_child`: 眠っている pool で、投入側の最初の signal の時点で group の `next` が 1 以上であること（`probe_published_group`）と、その signal で投入側を止めて worker に残りの添字を全部走らせても、
+  最初の添字を走らせたのが投入側であること（`first_child_on_main`）。
+- D14 `last_worker`: 3 つの検査を hook に置く。(1) worker が pool の mutex を取った時点で、自分が実行中と数えられているなら、release していない group があること（`check_leaving`）。
+  (2) 最後に終える worker が投入側を起こした後で mutex を放す・取るなら、投入側が戻って pool を見るまで止める（`hold_back`）。投入側が戻ると、`busy` がまだ数えられていて落ちる。
+  (3) mutex を放すたびに、全添字が取られて未 release の group では `busy != 0` であること（`check_counted`）。
+- 変異の検査（作業用の task.c）: I1（`next` の初期値を 0 にして、公開の後で claim する。レビューの変異）と、D14 の 3 形（release の後で unlock して lock し直す。レビューの変異。release を lock の外で行う。
+  空きと数えてから、別の critical section で release する）は、CPU 数 2・3・4・8・32 の `-O0`・`-O3` の 10 構成のすべてで、20 回中 20 回、assert で落ちる（hang はない。落とす検査はそれぞれ
+  `probe_published_group`、`main` の `busy`・`idle` の assert、`check_leaving`、`check_counted`）。`probe_published_group` を外しても I1 は、lock 回数の assert を外しても D14 の unlock・lock の形は、同じく 20 回中 20 回落ちる。
+  変更前の試験は、I1 の変異を 100 回中 0 回、D14 の unlock・lock の形と、空きと数えてから release する形を 100 回中 4 回と 3 回（どちらも CPU 数 2 の lock 回数の assert だけ）しか落とさなかった。
 
 ### 決定事項の見直し
 
@@ -255,6 +268,8 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --quick > /tmp/tz-pr06/quic
 目標は CI の合否条件にしない。専用の計測機で before（HEAD の `task.c`）と after を同じ条件で記録して判断する（GUIDE §14、PX01 の「計測手順」）。
 
 - G1: 短いグループの起動から完了待ちまで（`tiny`・`small` の warm）を HEAD より短くする。
+  （2026-10-17: 眠った worker の起床（`--gap-us`）では tiny・small とも満たした。連続呼び出しの small は窓 1（C4 の runtime）で短くなったが、最終の runtime の非排他の run では A/A と区別できない。連続呼び出しの tiny は、改善を示せていない。
+  p50 が run によって 0.2 µs 前後から 1〜3 µs に上がり、平均に差が読めない。`docs/benchmarks.md` の PR06 の節。）
 - G2: 添字が多いグループ（`bulk`、`--data-parallel` の `chunk-boundary`・`bulk`）の配布費用を減らす。F01 で旧 runtime より遅くなった `bulk` の warm を HEAD より短くする。
 - G3: `cpp/task_parallel` の wall を C# の最速と同等以上にする（起票時の目標。未達でも Phase 1 の完了は妨げない）。
   （2026-10-16: この種目は 16 件 × 約 79 µs で、1 件ごとの claim 費用は仕事の 0.01 % にすぎず、起床の遅延と E core が支配する。Phase 1 では動かないので、改善を主張しない。）
@@ -818,6 +833,7 @@ done
 | WP5 | `e4e3b7f9`・`f757f593`・`cfd462f4`・`f63da8bd` | 文書（`docs/architecture.md`・`docs/language.md`・Task のページ・README・GUIDE の試験の行）と、計測の記録（`docs/benchmarks.md`）、`benchmarks/run-tasks.mjs` の `coarse` 種目、`benchmarks/run-tasks-wasm.mjs`（新規） |
 | WP6 | `30737c9c` | Phase 2: WASM threads の取得・完了を native と同じ形に（`join_one`・`drain`・`release`）。要素 1 の group は公開せず、その場で走らせる。`tests/wasm_threads_stress.mjs`（新規） |
 | WP7 | （commit なし） | Phase 3: スピン（20・100 µs）と添字 counter の cache line 分離の実験。作業用の変種で測り、どちらも採用しない（結果は `docs/benchmarks.md`） |
+| レビュー対応 | `f548f424` と、続く文書の commit | 統合前のレビューの指摘 2 件。(1) I1・D14 を決定的に守る試験（`tests/task_runtime.c` の `first_child` と `last_worker` の hook）と、変異の検査（「不変条件」の節）。(2) `docs/benchmarks.md` の「連続呼び出しでは worker が起きたままなので差は出ない」を、観測だけの記述に直し、G1 の達成の範囲（gap の tiny・small。連続の tiny は示せていない）を、この節とチケットの G1 に記録した |
 
 ### 実装しなかったもの
 
@@ -833,6 +849,8 @@ done
   `-O0`・`-O3` で、素の実行・ThreadSanitizer・AddressSanitizer＋UBSan のすべてで通した（最終の `task.c` で再確認）。`-Os`・`-Oz`（PM08 が使う）でも `task_runtime.c`・`task_stress.c` が通る。
   取りこぼしの探索として、`task_runtime.c` を CPU 数 2・3・4・8・32 で各 150〜500 回、`task_stress.c` を単一 host（CPU 2〜8）で 1500〜3000 round、複数 host（最大 16 host × 16 CPU、32 CPU × 4 host）で実行し、失敗も hang もなかった。
   変異の検査: 連鎖を外すと CPU 3 以上で冷えた起床の試験が止まり、submit の signal を外すとすべての CPU 数で assert が落ちる。
+  レビュー後に足した I1・D14 の検査（「不変条件」の節）は、最終の `task.c` に対して CPU 数 2・3・4・8・32 の `-O0`・`-O3` で素の実行を各 200 回、ThreadSanitizer・AddressSanitizer＋UBSan を各 40 回、失敗も hang もなかった。
+  I1 の変異 1 つと D14 の変異 3 つは、同じ 10 構成のすべてで 20 回中 20 回 assert で落ちる。
 - `node tests/tasks.mjs target/release/tsuzuri` が、素の実行・`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で通る（native／WASM、4 trap、`-O0`・`-O3`。失敗注入は `cond_signal` を足した 9 種）。
   `tests/trap_return.mjs`・`tests/trap_return_sync.mjs`・`tests/trap_boundary.mjs`（17 case、`-O0`・`-O3`）・`tests/features.mjs concurrency channel`（71 case）が通る。
   channel_threads の E2E は、CPU 1〜4・`-O0`/`-O3` で最終の runtime に 2896 回繰り返して失敗 0（Phase 1 の各段階でも 1456 回・2896 回）。
@@ -858,7 +876,10 @@ done
 - 回数（機械に依らない）: 257 添字の group の mutex の取得は `Task.parallel` で 259、`Task.parallel_results` で 515 だったのが、`2 + (CPU 数 - 1)` 以下になった。broadcast は 2 から 1 以下、signal は 1 〜 `1 + 2 × (CPU 数 - 1)`。
 - 眠った worker の後の最初の呼び出し（1 ms 休む）: 窓 1（C4 の runtime）で tiny 16.1 → 6.17 µs、small 21.8 → 5.83 µs、bulk 590.8 → 252.3 µs。最終の runtime は HEAD 比で tiny・small の p50 が 0.17〜0.27 倍、bulk が 0.46〜0.47 倍、CPU が 0.13〜0.42 倍（A/A は 0.76〜1.13）。
 - 粒度: 窓 1 で、並列が逐次と並ぶ最小の逐次時間が約 168 µs から約 42 µs になった。256 rounds（約 10 µs）の group は、どちらも逐次より遅いまま。
-- 休まない連続呼び出し: bulk は窓 2 の全変種で HEAD の 0.41〜0.52 倍。tiny・small の p50 は差が読めない（tiny は HEAD が 0.17〜0.21 µs、signal を使う方針は run ごとに 0.17〜0.21 µs か 0.8〜7 µs。最終は 3 run 中 1 run が 1.0 µs）。
+- 休まない連続呼び出し: bulk は窓 2 の全変種で HEAD の 0.41〜0.52 倍。tiny の p50 は、HEAD が測った全 run で 0.17〜0.21 µs なのに対し、signal を使う方針は run ごとに 0.17〜0.21 µs か 0.8〜7 µs になる（最終は、このチケットの 3 run 中 1 run が 1.0 µs、
+  統合前のレビューの再測定の 1 run が 2.21 µs）。small の p50 は HEAD 自身が 1〜42 µs の間で動くので、差を確定できない。原因は調べていない。
+- 目標 G1（tiny・small の warm を HEAD より短くする）: 眠った worker の起床（gap）では tiny・small とも満たした。連続呼び出しの small は、窓 1（C4 の runtime）で平均が 16.2 → 2.39 µs（before2 は 17.3 µs）と短くなったが、
+  最終の runtime の非排他の run では 0.33〜1.90 倍で A/A（0.80〜1.42）と区別できない。**連続呼び出しの tiny は、改善を示せていない**（p50 が上がる run があり、平均に差が読めない）。静かな機械での取り直しで確かめる。
 - coarse（16 添字 × 約 79 µs、`cpp/task_parallel` と同じ形）: 全方針で HEAD と揺れの範囲で同じ（0.94〜1.17）。G3 は主張しない。
 - WASM threads（9 worker、Node 20）: tiny の連続 1.68 → 0.88 µs、small 4.68 → 2.90 µs、bulk の p50 544 → 141 µs（before は 0.21 ms と 0.82 ms の二つの値に割れる）、1 ms 休んだ後の p50 は tiny 40.3 → 29.5 µs、small 88.4 → 54.6 µs、bulk 823 → 545 µs。cold は変わらない。
 - 不採用: 添字 counter を別の cache line に置く（差なし）、眠る前の 20・100 µs の spin（連続の平均が tiny ×7〜9、small ×5〜7、CPU が ×4〜×40。休み 50・200 µs でも p50 に利益なし）。
@@ -871,7 +892,8 @@ done
 - 最初の子どもを公開の前に取る規則（食い違い 4）は、F10 の規則として保った。起票時の「unlock → signal → claim」の順は採らない。
 - F10 の誤判定（native、修正済み）: 単一の host の 2 段の pipeline が、直前の group の worker がまだ走っているものとして数えられている間に block すると、空きの worker がいないと見て consumer を自分の上へ積み、
   「deadlock」と誤判定した（HEAD で 60000 group 中 1〜11 件、CPU 2〜3）。直前の group の最後の worker が、`remaining` を減らして投入側を帰した後で `busy--`・`idle++` していたのが原因で、
-  同じ critical section で行う（D14）と 0 / 180000 になった。WASM threads の `run_item` は元から同じ critical section だった。`tests/task_stress.c` が「単一の host で段数が CPU 数以下なら判定を出さない」を assert する。
+  同じ critical section で行う（D14）と 0 / 180000 になった。WASM threads の `run_item` は元から同じ critical section だった。`tests/task_stress.c` が「単一の host で段数が CPU 数以下なら判定を出さない」を assert するが、
+  これは偶然に頼る検査で（誤判定は数千 group に 1 件ほど）、決定的な検査は `tests/task_runtime.c` の `last_worker` と `first_child`（「不変条件」の節）にある。
 - macOS の `pthread_cond_signal` は、待つ者がいなかった signal を覚えていて、後から眠った worker を起こす。signal の取りこぼしの変異（連鎖を外す）が冷えた起床の試験で見つからなかったので、
   hook を POSIX の規則に直した（WP4b）。Linux・Windows の取りこぼしの検出は CI の実行でだけ確かめられる。
 - 起床の生存性（トークンの数が、尽きていない group の数以上）は論証で、証明ではない。stress と変異の検査で確かめた。
