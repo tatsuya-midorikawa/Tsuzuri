@@ -11,11 +11,11 @@
 | 規模 | L |
 | 依存 | PB02 |
 | 関連 | G17, PB06 |
-| 状態 | doing |
+| 状態 | done（全 Phase 実装・出力の同値性検証済み。速度は共有機械での目安で、正式な測定は統合担当） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討（「着手時の再検討」の節） |
 | 承認 | Phase 1 は不要（新しい crate を使わない。D1）。D8（Phase 2: 本体の型検査と所有権検査の並列化）は 2026-10-16 の全フェーズ実装依頼で承認済み |
 | 手本にする既存実装 | 並列実行と入力順への復元: `src/test_runner.rs` のテストの並列実行（`std::thread::available_parallelism().map_or(1, usize::from).min(32)`、`std::thread::scope`、`AtomicUsize` の cursor を `fetch_add` で進める、`results.sort_by_key(\|(index, _)\| *index)`）。環境変数の読み取り: `src/cache.rs` の `TSUZURI_CACHE_DIR`（`std::env::var_os`）。診断の集約: `src/diagnostic.rs` の `Diagnostics`（`is_full`・`push`・`extend`・`finish`） |
-| 主な影響ファイル | 起票時の一覧（改訂後は「着手時の再検討」と末尾の「実装と検証」。新規の `src/parallel.rs`・`src/check_functions.rs` と `src/frontend_cache.rs`・`src/driver.rs` の `Project::analyze_cached`・`src/main.rs` の usage が加わる）: Phase 1: `src/lib.rs`（`analyze_inputs_indexed_all` の分割、`analyze_inputs_threaded`・`parse_input`・`parse_inputs`・`thread_setting`・`frontend_threads`・`MAX_FRONTEND_THREADS`・`WORKER_STACK_BYTES`・`PARALLEL_PARSE_MIN_BYTES`・`#[cfg(test)] mod tests`（すべて新規））, `src/main.rs`（usage の環境変数の一覧）, `tests/parallel_frontend.mjs`（新規）, `README.md`（`## CLI` の環境変数）, `docs/architecture.md`（`## 不変条件`・`## 性能設計の原則`）, `docs/benchmarks.md`（PB04 の節）, `_perfs/README.md`（状態）。Phase 2（D8 の承認後だけ）: `src/recursive.rs`（`Cache`）, `src/check.rs`（`CheckedRecord`・`CheckedUnion`・`check_modules_collect`）, `src/ownership.rs`（`check_functions`）。`src/lexer.rs`・`src/parser.rs`・`src/llvm.rs` は変えない |
+| 主な影響ファイル | 起票時の一覧（改訂後は「着手時の再検討」と末尾の「実装と検証」。新規の `src/parallel.rs` と `src/frontend_cache.rs`・`src/driver.rs` の `Project::analyze_cached`・`src/main.rs` の usage が加わる。`src/check_functions.rs` は作らなかった）: Phase 1: `src/lib.rs`（`analyze_inputs_indexed_all` の分割、`analyze_inputs_threaded`・`parse_input`・`parse_inputs`・`thread_setting`・`frontend_threads`・`MAX_FRONTEND_THREADS`・`WORKER_STACK_BYTES`・`PARALLEL_PARSE_MIN_BYTES`・`#[cfg(test)] mod tests`（すべて新規））, `src/main.rs`（usage の環境変数の一覧）, `tests/parallel_frontend.mjs`（新規）, `README.md`（`## CLI` の環境変数）, `docs/architecture.md`（`## 不変条件`・`## 性能設計の原則`）, `docs/benchmarks.md`（PB04 の節）, `_perfs/README.md`（状態）。Phase 2（D8 の承認後だけ）: `src/recursive.rs`（`Cache`）, `src/check.rs`（`CheckedRecord`・`CheckedUnion`・`check_modules_collect`）, `src/ownership.rs`（`check_functions`）。`src/lexer.rs`・`src/parser.rs`・`src/llvm.rs` は変えない |
 | 計測対象 | PX03 の合成 200・1,000 モジュール（PX03 の生成器で約 27K・135K 行）と 1 ファイルの hello。variant は `check`（B3）と `emit-llvm`（B2）、段 `parse`・`check`・`total`（B7）、最大 RSS（B8）。`TSUZURI_THREADS`（新規）= 1・2・4・8・10 |
 
 ## 目的
@@ -716,3 +716,94 @@ cmp /tmp/tz-pb04/g1000-t1-O0.ll /tmp/tz-pb04/g1000-t10-O0.ll && cmp /tmp/tz-pb04
 - 理由: 単相化は worklist と特殊化の上限（`honors_the_exact_specialization_limit`）の判定が順序に依存し、IR 生成は文字列定数・metadata・
   トラップ地点の番号を出力順で決める。LLVM 側の並列化は PB07 の codegen unit の担当である。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-16）
+
+### 実装した範囲
+
+全 Phase を実装した（D8 は承認済み）。基準は `70f7c803`、branch `perf/phase3/PB04`、12 commit と、この文書の commit（下の表）。
+
+| commit | 内容 |
+| --- | --- |
+| `fb98c902` | 着手時の再検討（文書だけ）。起票時の計画との差 21 行、実測の段別時間、D2・D4〜D6・D8 の改訂と D10〜D14 |
+| `8db99a7b` | `recursive::Cache` を `Mutex<Memo>` の newtype に（`Debug` は従来の `RefCell` と同じ文字列、`Clone` は中身を複製）、`Interner` を `Arc<str>` に、`check.rs` の `thread_safety`（`CheckedModule: Sync`、`Checker: Send` など） |
+| `64b2969f` | `src/parallel.rs`（`ordered_for_each`・`Parallelism`・`TSUZURI_THREADS`）と所有権の検査（`ownership::check_functions`）の並列化。HELP・README・option.md・usage.md・architecture.md |
+| `85f077d3` | 関数ごとの型検査の仕上げ（finish の loop）の並列化。`ordered_for_each_owned` |
+| `68f40314` | 関数の本体の型検査（本体の loop）の並列化 |
+| `b5742f7b` | `FrontendCache` を `lookup(&self)` と `commit(&mut self)` に分ける |
+| `8ab79c45` | 構文解析（`parse_input`・`parse_plan`）の並列化 |
+| `32c527bd` | `tests/parallel_frontend.mjs` と crate 内の照合テスト（example・fixture の全 project、limit・cycle・nesting） |
+| `6f14643d`・`b180877e` | helper の fallback のテスト。`ordered_for_each_owned` が iterator を受ける |
+| `ba21c224` | 文書（読む command、README、language.md） |
+| `bc9b7bfc` | worker 1 つあたり 64 関数（256 から）。hello の計測 |
+| この commit | docs/benchmarks.md の PB04 の節、`benchmarks/run-threads.mjs`、architecture.md の表と逐次の段、strategy.md、この節、チケットを `_completed/` へ |
+
+並列にした段: `parse`（frontend cache の照合を含む）、関数ごとの本体の型検査、関数ごとの仕上げ（finish）、所有権の検査（`infer_copy_all` と具体化後の `check_all`）。
+並列にしない段（D9）: 読み込み、名前と signature の収集、`solve_members`、`constants::fold`、`recursion::check`、`warnings::unused_private`、`polymorph::specialize`、`closures::lower`、`llvm::emit`、cache の書き込み。
+
+### 実装しなかったもの
+
+- `src/check_functions.rs`（計画した新規ファイル）は作らなかった。本体の loop は `check_modules_collect` の中でそのまま `ordered_for_each_owned` にした（差分を小さくするため）。
+- `benchmarks/check-frontend-equivalence.mjs` の `--threads` は足さなかった。この runner は PB02 の stage した source への上書きに固有なので、代わりに `tests/parallel_frontend.mjs`（`TSUZURI_BASELINE=<PB04 より前の compiler>` で基準とも比べる）を作った。
+- Linux・Windows での並列の速度は測っていない（Windows は `cargo check` の型検査だけ。CI の緑は未確認）。
+- 後ろの段（specialize・closures・emit）の並列化、LLVM 側の並列コード生成（PB07・G17）。
+
+### 決定事項の追記
+
+D2 環境変数だけ（CLI の flag なし）。CLI は未設定で `min(available_parallelism, 8)`、library・LSP・REPL は 1、`1`〜`32`、不正は `E2000`（終了コード 2。`check`・`build`・`run`・`script`・`test`・`bench`・`doc`・`repl`・`lsp` は読む前に検証し、`fmt`・`new`・`toolchain info`・`api-diff` などは読まない。`publish` は検査するが未設定なら 1 スレッド）。
+D4 worker の stack は 8 MiB を明示し、worker が 2 つ以上のとき呼び出し側は評価しない。D5 段ごとの仕事量で worker の数を決める: 関数は 64 個ごと（2 worker に 128 個）、parse は 32 KiB と 2 file ごと（2 worker に 64 KiB と 4 file）。起票時の「16 file と 64 KiB」から変えた（hello の標準ライブラリの text 113 KB を 3 worker で parse して遅くならなかったため）。関数の 256 から 64 への変更は hello の探索的な計測による（docs/benchmarks.md）。
+D6 動的な cursor（関数は 8 個ずつ、parse は大きい file から 1 つずつ）。D10〜D12 は計画どおり（`lookup`/`commit`、`Mutex<Memo>`、`Arc<str>`）。
+D13 CLI の既定を自動にした（条件: 同値性の検証が通った、hello と 200 module が遅くならなかった、RSS が +10% 以内、cap 8。下の計測）。
+偏差: `Item` は遅延評価する（1 thread では consumer が読んだ項目だけを評価し、HEAD と同じ仕事量にするため）。WP2 と WP3 を 1 つの commit にした（knob と最初の段を一緒に文書化するため）。debug build のテストは list と `if` の入れ子を深さ 40 までにした（下）。
+
+### 確認
+
+実行した確認（すべて通過）:
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`: 各 commit と HEAD で緑。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: `ba21c224` で、既定（library は 1 thread）が 103 件の `test result`、1,339 passed・0 failed・1 ignored（`copy_inventory`。以前から）。同じ commit で `TSUZURI_THREADS=8` を渡して（library の解析も 8 thread にして）同じ件数が通過。`bc9b7bfc`（64 関数）では `TSUZURI_THREADS=8` で 1,340 passed・0 failed・1 ignored（test が 1 件増えた）、lib は既定と `TSUZURI_THREADS=8` の両方で 258 passed。
+- GUIDE §3.1 の stack・上限の回帰テスト 5 件（`--lib bounds_recursive_and_flat_expression_depth`、`--lib honors_the_exact_specialization_limit`、`--test polymorphism bounds_type_growing_polymorphic_recursion`、`--test computations bounds_nested_builder_expansion_not_just_source_syntax`、`--test tasks bounds_nested_task_syntax_and_types`）は、各手順の gate で既定と `TSUZURI_THREADS=8` の両方、それぞれ `1 passed`。`tests/time_passes.rs` は無変更で通る（段名を足さず、worker は `Phase` を使わない）。
+- 新しい単体テスト: `src/parallel.rs`（順序・早期終了・panic・遅延評価・8 MiB の stack・refused thread の fallback・`TSUZURI_THREADS` の表）、`src/lib.rs`（thread 数 1・2・3・8 の `DiagnosticSet`・型付き構造・警告・semantic index の一致、上限 1,000 の打ち切りを ownership・型・構文・finish の 4 つの段で、E1017・E1010・nesting、frontend cache の cold／warm の pack と manifest の bytes、example と fixture の 97 project の型付き構造）、`src/frontend_cache.rs`（旧 `parse` を参照にした `lookup`/`commit` の同値性。変異させると落ちることも確認）、`src/recursive.rs`（memo の順序・thread 非依存）。
+- `tests/parallel_frontend.mjs`（`TSUZURI_THREADS=1・2・8・未設定`、基準の compiler とも比較）: 最終の release（`bc9b7bfc`）で通過。repository の全 example と fixture、合成 200 module の native／wasm32 × `-O0`／`-O3` の IR、1,000 module、上限を超える誤り（text と `--json`）、E1017・E1010、深さ 125 と 126 の 5 つの形、不正な値、cache の bytes と mtime、whole-build cache の hit、段階別時間の合計、16 thread での 20 回。
+- 基準の compiler との出力比較: example と fixture 17 project の `--emit llvm|object|wasm|header` × native／wasm32 × `-O0`／`-O3` × thread 1・8 の 324 出力が byte 単位で同一（基準が作れない 8 構成は除く）。1,000 module の IR は before・1・8 thread で `cmp` 一致。
+- node の suite を release で、`TSUZURI_THREADS=1`（`ba21c224` のビルド。1 thread の経路は閾値に依らない）と既定（`bc9b7bfc` のビルド）の両方で通過: `frontend_cache`・`cache`・`examples`・`e2e`・`lsp_sessions`・`repl`・`script`（PATH に `tsuzuri`）・`computations`・`control`・`features`。
+- `cargo +stable check --all-targets --target {x86_64,aarch64}-pc-windows-msvc`: 緑（Windows の実行は未確認）。
+- `node scripts/check-docs.mjs`: option.md・usage.md・strategy.md で通過。`git diff --check` も通過。
+- 実行時の確認: `/usr/bin/sample` で 1,000 module の `check` を採取すると、`tsuzuri-frontend` の worker が 8 本動く。
+
+### 計測
+
+測定は共有機械で取った目安で、詳細・条件・生データの場所・再現の command は `docs/benchmarks.md` の「フロントエンドの並列化（PB04）」にある（正式な測定は統合担当）。要点（中央値。before は main `6d15b437`）:
+
+| 指標 | 結果 |
+| --- | --- |
+| `TSUZURI_THREADS=1` | 従来と同じ経路。total の比は hello 1.010、200 module 1.006、1,000 module 0.998 |
+| G1: 1,000 module の `check`、8 thread ÷ 1 thread | total で 1.39 倍（1 回目）、再測定で 1.39 倍と 1.46 倍（同じ構成の 2 回）、同じ構成でも 1.24 倍の測定が 1 つ。ほぼ達成（ノイズが約 12%） |
+| G1: 1,000 module の LLVM 出力 | 1.24 倍（未設定で 1.20 倍）。達成 |
+| G1: hello | 39.4 ms から 26.6 ms（1.48 倍）。悪化なし |
+| G2: 1,000 module の `parse` 段、10 thread ÷ 1 thread | 180.7 ms から 45.3 ms（4.0 倍）。ちょうど達成。cold cache 4.3 倍、warm 4.0 倍 |
+| G3: hello と 200 module の `check` | どちらも速い（1.48 倍、1.40 倍）。達成 |
+| G4: 1,000 module の最大 RSS | 1 thread 比 +1.8%（before 比 +3.7%）。達成。hello は +8.0%（+1.7 MiB） |
+| G5: CPU 時間（記録のみ） | 1,000 module の `check` で +37%（1,740 から 2,390 ms）、200 module で +49%、LLVM 出力（1,000）で +23% |
+
+段ごとの 1 thread に対する 8 thread の比（1,000 module の `check`）は parse 3.8 倍、check 1.65 倍、ownership 3.9 倍。逐次の床は load 約 407 ms、specialize 約 248 ms、closures 約 44 ms と、check の中の名前と signature・`recursion::check`・`unused_private` など。
+Linux と Windows の速さ、10 core 以外の機械は測っていない。CPU の増加と引き換えの、wall の短縮である。
+worker 1 つあたりの関数の閾値は hello の探索で 256 から 64 にした（256 では hello の check が速くならず、64 で 29.3 から 18.5 ms、16 でも同じ）。
+
+停止条件（`unsafe`・新しい crate・`set_var`・既存テストの期待値の変更・stack と上限の回帰・thread 数ごとの出力の不一致・hello の悪化）は、どれも起きていない。
+
+### 見つけた問題・残作業
+
+- 逐次のまま残る大きな段（1,000 module の `check`）: `warnings::unused_private` 約 146 ms、`recursion::check` 約 77 ms、`constants::fold` 約 29 ms、`validate_*` 約 34 ms、specialize 約 12%、終了時の drop 約 125 ms、読み込み約 226 ms（Microsoft Defender が `open` を遅くする）。次に並列化する価値があるのはこの順。
+- debug build（テストの 4 MiB のスレッドと、8 MiB の worker）では、list・`if` の連鎖・単項の `-` を、parser が受け付ける最大の深さ（125〜126）にすると、どのスレッド数でも stack overflow する（HEAD と同じ。release build の CLI は通る）。GUIDE §3.1 の回帰テストはこの深さを debug で試していない。本チケットの debug テストは 40 に下げ、release の `tests/parallel_frontend.mjs` が 125 と 126 を 5 つの形で確かめる。
+- `publish` は `analyze_all` を通るので、`TSUZURI_THREADS` の不正な値を拒否せず、未設定なら 1 スレッドで検査する。
+- `with-lock.sh measure` は他の heavy の run があると何時間も取れなかった（全 slot を順に待つ設計のため）。数値は heavy の slot か、負荷の下で取った。
+- README に書いた MSRV 1.85 は、リポジトリが let chain を使うので実際には満たされない（このチケットの前から）。
+
+### 更新したドキュメント
+
+`README.md`（CLI の入力とエラー報告の仕様、test 一覧、全テストを並列で通す command）、`_tsuzuri/language-reference/compiler/option.md`（環境変数の表と「コンパイラのスレッド数」、段階別時間の注記）、`compiler/usage.md`、`languages/strategy.md`、`docs/architecture.md`（不変条件の並列フロントエンド、性能設計の原則の表、段階別時間）、`docs/language.md`、`docs/benchmarks.md`（PB04 の節）、`src/main.rs` の HELP。`node scripts/check-docs.mjs` は option.md・usage.md・strategy.md で通った。
+
+### 変更したファイル
+
+`src/parallel.rs`（新規）、`src/check.rs`、`src/ownership.rs`、`src/lib.rs`、`src/frontend_cache.rs`、`src/recursive.rs`、`src/intern.rs`、`src/driver.rs`（`Project::analyze_cached` と `inputs` の可視性）、`src/main.rs`（HELP と `invalid_thread_setting`）、`src/warnings.rs`（テストの呼び出し）、`tests/parallel_frontend.mjs`・`benchmarks/run-threads.mjs`（どちらも新規）、上の文書、このチケット（`_perfs/_completed/` へ移動）。

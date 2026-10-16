@@ -65,6 +65,10 @@ scalar 要素の TBAA に反映します。
 コンパイラ内部の immutable 型述語は `TypeId` と hash-consed な Vec arena を使い、
 root と宣言の型を借用し、生成した型の子を ID で投影します。
 公開 Type と AST をすべて arena に移したわけではなく、利用者向けの構文・型・評価順・所有権規則は変えません。
+コンパイラ自身は、構文解析・関数ごとの型検査・所有権の検査を複数のスレッドで実行し、`TSUZURI_THREADS` が上限です
+（[コンパイラのスレッド数](../compiler/option.md#コンパイラのスレッド数)）。診断・IR・キャッシュの内容は変わりません。
+Apple M1 Max の共有機械での目安は、hello の `check` が 1.5 倍、合成 200 module が 1.4 倍、1,000 module が 1.2〜1.5 倍（ノイズの幅が大きい）で、
+読み込み・specialize・出力は並列にしていません（[測定](../../../docs/benchmarks.md#フロントエンドの並列化pb04)）。Linux と Windows での速さは測っていません。
 リポジトリの計測基盤は経過時間だけでなく CPU 時間・最大 RSS・確保・成果物サイズを同じ JSON Lines 形式で保存し、
 before／after の条件差と標本の広がりを明示します（[性能指標の記録](../../../docs/benchmarks.md#性能指標の記録)）。
 quick の測定は性能の証拠にせず、共有 CI には速度の合否の閾値を置きません。

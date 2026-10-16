@@ -962,6 +962,7 @@ node benchmarks/metrics.mjs process target/release/tsuzuri --out target/perf/PX0
 node benchmarks/metrics.mjs report target/perf/PX01-after --baseline target/perf/PX01-before
 node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-example
 node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before <PB04 より前の compiler> --out target/perf/PB04-after before 1 2 4 8 unset   # TSUZURI_THREADS ごとの check／emit-llvm を交互に測る（PB04）。--cache cold|warm で frontend cache も
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
