@@ -8,12 +8,79 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PM06, PM02, B05 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D3（Phase 3 の型付き IR での標準ビルダーの展開。PR03 の実装者は行わない）。Phase 1・2 は承認不要 |
+| 状態 | doing |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 着手時に再検討（HEAD `6d15b437`。下の「着手時の再検討」） |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で D3（Phase 3 の型付き IR での標準ビルダーの展開）を含む全 Phase を承認済み。D3 を入れるかどうかは証拠で決める（「着手時の再検討」の C6） |
 | 手本にする既存実装 | 既知の継続の worker: `src/call_specialization.rs` の `Specializations`（`new`・`can_borrow`・`request`）と `target`・`transparent`、`src/llvm.rs` の `FunctionEmitter::specialized`・`prepare_known_call`・`prepare_borrowed_call`・`borrowed_call` と `known_closures`。IR の到達可能な呼び出しの走査: `tests/call_specialization.rs` の `body` と `standard_maybe_result_continuations_use_allocation_free_workers`。match の生成: `src/llvm_control.rs` の `match_expression`、`src/llvm.rs` の `union_tag`・`union_layout`。計測: `benchmarks/run-computations.mjs`（tracked 実行ファイルの確保数、`--baseline`・`--artifacts`）と PX01 の `--metrics` |
 | 主な影響ファイル | `src/llvm.rs`（`FunctionEmitter` の呼び出し・match の emission）、`src/llvm_control.rs`（`match_expression`）、`src/call_specialization.rs`（展開の可否の判定、新規関数を置く）、`src/computation.rs`（読むだけ。展開の形を変えない）、`std/Maybe.tc`・`std/Result.tc`（読むだけ。本体を変えない）、`tests/call_specialization.rs`、`tests/computations.rs`、`tests/fixtures/computations/Optimization.tz`、`tests/computations.mjs`、`benchmarks/computations/`（変更なし。計測だけ）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`_perfs/README.md` |
-| 計測対象 | suite `computations` の対の種目 `bind`・`checked`・`delayed`・`array_for`・`array_bind`・`owned_capture`・`std_option`・`std_result`（`benchmarks/computations/native.cpp` の `workloads`）。`std_option_owned` は PX02 Phase 1a が条件をそろえるまで比較から外す。metric は PX01 の `wall_time`・`alloc_calls`・`alloc_bytes` と、-O3 IR・機械語の命令数（文書の表だけ） |
+| 計測対象 | suite `computations` の対の種目 `bind`・`checked`・`delayed`・`array_for`・`array_bind`・`owned_capture`・`std_option`・`std_result`・`std_option_owned`・`std_option_length` の 10 対（`benchmarks/computations/native.cpp` の `workloads`。PX02 の完了で `std_option_owned` も条件がそろった）。metric は PX01 の `wall_time`・`alloc_calls`・`alloc_bytes` と、-O3 IR・機械語の命令数（文書の表だけ） |
+
+## 着手時の再検討（2026-10-16）
+
+2026-10-16 に、HEAD `6d15b437`（第2フェーズの PR #26 を含む）・Apple clang 21.0.0（clang-2100.3.34.2）・Apple M1 Max で、起票時（`f8dc655`）の記述を
+現行のコードと生成 IR に照合した。以後の実装は、本文と食い違うときこの節に従う（本文の該当箇所は、この節の「本文の読み替え」に挙げる）。
+基準のコンパイラは `target/perf/phase3-baseline/tsuzuri-before`（`6d15b437` の release）で、GUIDE §14 の手順 1 に従い worktree の `target/perf/PR03/tsuzuri-before` に写す。
+
+### 承認と範囲
+
+- 全フェーズを実装する。D3（Phase 3）は承認済みだが、入れるかどうかは承認の有無でなく証拠（worker の数・`-O0` の生成量・予算の崖・compile 時間）で決める。
+  採否と数値は `## 実装と検証` に書く。
+- F3（`inlinehint`）は K2 が 0 件のため行わず、その証拠を記録する。
+- 「変えてはいけない意味」と停止条件は維持する。停止条件 3 の `MAX_SPECIALIZATIONS` は、C5 の実測が引き上げを必要とし、
+  その理由・compile 時間・生成物の大きさを本チケットに記録した場合に限り変える（変えなければ 1,024 のまま）。
+
+### 現行との照合
+
+| # | 起票の記述 | 現行（`6d15b437`） | 扱い |
+| --- | --- | --- | --- |
+| 1 | M2 の数え方 `awk '/^_tz_f:/{on=1;next} on&&/\.cfi_endproc/{exit} on'`。期待 `263 229 205 176 893 864` | export 関数に CFI が無く、`awk` がファイルの末尾まで進む（後続の関数を累積する）。起票時の「34／24 命令」が正しかった。`-- End function` までを数えた関数ごとの命令数は std_option 34／24、std_result **29／29**、checked 29／27、bind 25／25、delayed 35／35、array_* 98／98、owned_capture 56／56、std_option_owned 65／60、std_option_length 25／25 | 数え方を `-- End function` に直す。K4（std_result の 29 命令差）は存在しない（測定の誤り） |
+| 2 | 8 対。`std_option_owned` は PX02 まで外す（D6） | PX02 は完了。10 対（`std_option_owned` は全実装が確保する条件になり、`std_option_length` が新設された） | 10 対を測る。D6 は不要 |
+| 3 | `src/` に `alwaysinline`・`inlinehint`・`noinline` は無い。`define internal … nounwind{debug}` | `alwaysinline` がある（Unicode の表、`Async.__resume*`、`AsyncResume` の wrapper）。`define` は PR01 の facts（引数の `noundef`・`memory(...)`）を含む | F3 の編集箇所が動いた。F3 自体は不要（行 4） |
+| 4 | K2（残る呼び出し）・K3（間接呼び出し）は Phase 1 で分類 | `-O3` の 10 対で 0 件（残るのは malloc・free・memcpy・trap だけ）。関数値の 9 形（let 束縛の捕捉付き lambda の 2 回呼び、捕捉なし lambda、部分適用、パイプ、`twice`、返した閉包、record の欄の関数、`Maybe.map`／`bind`、2 段の callback）も `-O3` で呼び出し 0 件。`-O0` で残るのは、immediate でない環境を持つ部分適用のヒープ環境と、record の欄の間接呼び出しだけ | A2・A3 は特殊化と LLVM で満たされている。F3 は行わない。D4 のテストは HEAD で通る |
+| 5 | F1: 非 `Enum` の union を返す関数の全 `ret` を return slot にする。`return_value` を `tail`・`match_expression`・`llvm_bulk` の 2 か所に置く | 全 exit の slot 化は (a) `Maybe` を返す相互末尾再帰の LLVM の末尾呼び出しを壊す（`even_m`／`odd_m` の `parity_deep(1e8)` が native `-O2`／`-O3` で segfault。HEAD では通る）、(b) 1 exit の関数が `br` を得て PR01 の `memory(none)` を失い（`make x = Some (x + 1)` は HEAD で `nounwind memory(none)`）、(c) 大きさの上限が無い（union は 64 KiB まで）。`ret` を直接書く箇所は 4 ファイルに散り、1 か所の漏れが phi を残す | F1' に改める（下の「F1'」）。`return_value` の hook は作らない |
+| 6 | F1 の期待: SROA が tag を定数の `phi` にし `switch` が畳まれる（未検証） | 検証済み（`ret` を text で slot に書き換えて `clang -O3`）。`ce_std_option` は 35 → 22 行、`phi %"tz.union.`・`insertvalue`・`extractvalue`・`switch` が 0 個、`select` 1 個、機械語 34 → 24 命令で `direct` と同じ。`std_option_owned` も 65 → 54 行で `direct` と同じ。native の `__text` は 3,884 → 3,824 bytes | G1 は達成できる |
+| 7 | 手順 1 の 5 つ目 `cargo test --locked --test polymorphism honors_the_exact_specialization_limit`、停止条件 3 | `honors_the_exact_specialization_limit` は `src/polymorph.rs` の単体テスト。`--test polymorphism` では 0 件で成功する | `cargo test --locked honors_the_exact_specialization_limit`（GUIDE §3.1）を使い、`running 1 test` を見る |
+| 8 | `node scripts/check-docs.mjs docs/benchmarks.md …` が終了コード 0 | `scripts/check-docs.mjs` は `_tsuzuri/` のページだけを集め、`docs/` のページには `Requested page not found` で終了コード 1 | `docs/*.md` は `git diff --check` と目視。`_tsuzuri/` のページを変えたときだけ `check-docs.mjs <page>` |
+| 9 | D5: 到達しない worker は数を記録するだけ | 実測では 2 段の `let!` の連鎖で約 8 worker。上限 1,024 は約 128 連鎖で尽きる。要求は FIFO で出るので、300 連鎖では全連鎖が 4〜5 段目で切れ、worker と関数の本体に間接呼び出しが 181 個残る（128 連鎖以下では 4 個）。リポジトリ内の最大は 125 worker（`tests/fixtures/maybe_result`）で、崖に当たる fixture は無い | C5 で測って対処する |
+| 10 | M2: ce は direct に近づき、他は増えない | x86-64（cross compile）の `ce_std_option` は HEAD で 38 命令、`direct` は 53 命令（HEAD の ce のほうが小さい） | M2 は参考値。目標は `direct` と同じ形（G1）で、小さくすることではない |
+| 11 | E2E の `slot_tail_loop` は 1 つの exit と自己末尾呼び出し | 1 exit では slot が付かない（F1' の「exit が 2 つ以上」）。`if n > 1000 then None elif n * n > limit then Some n else find (n + 1) limit` の 2 exit 版にする | テスト計画を直す |
+| 12 | PM06・PM07・A17・PR01・F11・F12 への言及が無い | A17 の `LastUses` は `(span, 局所の id)` を鍵に `CheckedFunction` ごとに解析する。PM06 の `frame_closure`・`staying`・`recursive_functions`、PR01 の `facts::apply`（`lines` を読む）、F11 の `with_stack_checks`（wasm で入口の alloca の後ろに検査を入れる）、F12 の `ranges` が `FunctionEmitter` にある | F1' は `facts::apply` の後に動かし、入口の静的 alloca を保つ。D3 の制約になる（C6） |
+
+### F1'（Phase 2a。起票の F1 を置き換える）
+
+- 新しい module `src/llvm_return_slot.rs`（`mod return_slot`）に置く。`llvm.rs` の変更は module 宣言・`FunctionEmitter` の欄 1 つ・`emit_tail` の `ret` の直後の 1 呼び出し・
+  `emit` の `facts::apply` の直後の 1 呼び出しだけにする。`llvm_control.rs`・`llvm_bulk.rs`・`llvm_abi.rs`・`closure_wrappers`・builtin の `auxiliary` は変えない。
+- 対象の判定は 1 つの関数 `uses_return_slot(ty, module)` にまとめる: 結果が再帰でない `Type::Union` で、`union_layout` が `Enum` でなく、`storage_layout` の大きさが 1 KiB 以下。
+  PM01 の niche など「スカラーの表現」の layout を足すときは、この関数だけを直す。
+- `emit_tail` の既定の枝で `ret` を出した直後に、その行の番号と「平文の `ret` を保つか」を記録する（`FunctionEmitter::note_union_return`）。
+  保つのは、exit が呼び出しの結果をそのまま返し、かつ (現在の関数が循環にある `recursive_functions`) または (呼び先が循環にある) または (呼び先が不明・間接) のとき（規則 D）。
+- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上で slot 化するものが 1 つ以上のときだけ、
+  slot 化する `ret T V[, !dbg !N]` を `store T V, ptr %tz.return.slot[, !dbg !N]` と `br label %tz.return[, !dbg !N]` に書き換え、入口の alloca（`%tz.return.slot = alloca T, align 16`）と
+  `tz.return:`（`%tz.return.value = load`、`ret`）を足す。名前は固定。slot は `scopes`・frame に入れない（停止条件 7 は起こらない）。
+- 新しい停止条件: `parity_deep(1e8)`・`bind_deep(1e8)` が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
+  `ce_std_option`・`std_option_owned` の K1 が消えない（F1' を戻して報告する）。
+
+### C0〜C6（実装順。各段をコミットする）
+
+| 段 | 内容 | 確認 |
+| --- | --- | --- |
+| C0 | この節（チケットの再検討）。`_perfs/README.md` は統合担当が直す | `git diff --check` |
+| C1 | Phase 1: `tests/call_specialization.rs` に 2 件、`docs/benchmarks.md` に分類の表（数え方を直したもの）。IR は変えない | `--test call_specialization` が `running 8 tests`。benchmarks・全 fixture の `--emit llvm` が基準のコンパイラと byte 一致 |
+| C2 | Phase 2a: F1'。`tests/call_specialization.rs` に 2 件 | `running 10 tests`、`cargo test --locked`、IR の決定性、G1（再現の数え方） |
+| C3 | E2E: `tests/features.mjs` の suite `return_slot` と、`tests/computations.mjs` の末尾呼び出しの guard（native `-O2`／`-O3` の `parity_deep(1e8)`・`bind_deep(1e8)`） | native／WASM × `-O0`／`-O3`、`live == 0` |
+| C4 | 計測と文書: 10 対の IR・機械語・`__text`（native と wasm32）・確保数・worker 数、`with-lock.sh measure` の時間 | M3・M6 が基準と同じ、M5 が 5% 以内 |
+| C5 | worker 予算の崖（本文に無い）: 崖を測り、worker を深さ優先で出して連鎖を完成させる。上限 1,024 と `specialization_budget_falls_back_instead_of_growing_unbounded`・`honors_the_exact_specialization_limit` は変えない | 崖の前後の worker 数・間接呼び出し数・compile 時間・`__text` |
+| C6 | Phase 3（D3）: std の `Maybe`／`Result` の `Bind`／`BindReturn` で、閉包 literal が `needs_drop` でないスカラーだけを捕捉するときの emission 時の簡約。証拠があるときだけ入れ、無ければ数値を記録して取り下げる | drop 順・捕捉の評価時点・A15／A17 の複製一覧・coverage・debug 情報が変わらない |
+
+### 本文の読み替え
+
+- 「8 対」「8 種目」は 10 対（`std_option_owned`・`std_option_length` を含む）。D6 と手順 3・4 の `std_option_owned` を外す記述は無効。
+- K4 は存在しない（行 1）。分類は K1〜K3 と「差なし」で、`checked` の 29／27 は record の block 配置の違いとして記録する。
+- 機械語の数え方は `awk "/^_tz_$f:/{on=1;next} on&&/-- End function/{exit} on" comp.s | grep -cE '^[[:space:]]+[a-z]'`。「現状と計測」の `263 229 205 176 893 864` は無効で、
+  HEAD の期待は IR の行数 `35 22 28 28`、機械語 `34 24 29 29 29 27`（`ce_std_option`・`direct_std_option`・`ce_std_result`・`direct_std_result`・`ce_checked`・`direct_checked`）。
+- 「設計」の F1・F3 の節、手順 6〜7・9、D1・D2・D7、テスト計画の F1・F3 の行は、F1'（この節）に読み替える。F3・手順 9・`specialized_workers_carry_only_inlinehint` は行わない。
+- 手順 1 の 5 つ目の確認は `cargo test --locked honors_the_exact_specialization_limit`。手順 5・11 の `check-docs.mjs docs/…` は `git diff --check` に読み替える。
+- 文書は `docs/benchmarks.md` の `## 現実的な次の指標` の直前の 1 つの節に、このチケットの数値をまとめる（他の Phase 3 のチケットも同じ場所に節を足す）。
 
 ## 目的
 
@@ -57,7 +124,7 @@
    （IR の文字列、診断、確保数）を変えたくなった。
 2. 簡約・展開を成立させるために、評価順序、一回だけの評価、所有値の move・drop の位置、trap の種類と発生の有無のどれかを変える必要がある。
 3. `specialization_budget_falls_back_instead_of_growing_unbounded`（`tests/call_specialization.rs`、ちょうど 1,024 件）か
-   `honors_the_exact_specialization_limit`（`tests/polymorphism.rs`）が失敗する。または `MAX_SPECIALIZATIONS` を変えたくなった。
+   `honors_the_exact_specialization_limit`（`src/polymorph.rs` の単体テスト）が失敗する。または `MAX_SPECIALIZATIONS` を変えたくなった（C5 の記録つきの引き上げを除く）。
 4. stack-depth の 3 テスト（`bounds_type_growing_polymorphic_recursion`、`bounds_recursive_and_flat_expression_depth`、
    `bounds_nested_builder_expansion_not_just_source_syntax`）のどれかが失敗する。上限や stack サイズは上げない。
 5. 同じ入力から 2 回出した IR が一致しない。
@@ -139,11 +206,11 @@ for f in ce_std_option direct_std_option ce_std_result direct_std_result; do
   printf '%s ' $f; awk "/^define .*@tz_$f\(/,/^}/" $W/comp.opt.ll | grep -cE '^  '
 done
 for f in ce_std_option direct_std_option ce_std_result direct_std_result ce_checked direct_checked; do
-  printf '%s ' $f; awk "/^_tz_$f:/{on=1;next} on&&/\.cfi_endproc/{exit} on" $W/comp.s | grep -cE '^[[:space:]]+[a-z]'
+  printf '%s ' $f; awk "/^_tz_$f:/{on=1;next} on&&/-- End function/{exit} on" $W/comp.s | grep -cE '^[[:space:]]+[a-z]'
 done
 ```
 
-期待（HEAD）: IR の行数は `35 22 28 28`、機械語は `263 229 205 176 893 864`。
+期待（HEAD `6d15b437`、Apple clang 21.0.0）: IR の行数は `35 22 28 28`、機械語は `34 24 29 29 29 27`（2026-10-16 に `.cfi_endproc` を `-- End function` に直した。直す前の数え方は累積になる）。
 
 ## 目標と指標
 
@@ -320,7 +387,7 @@ return_value(ty, value):
 - 変更: なし。
 - 内容: GUIDE §2.3 の基準コマンドを実行し、before のコンパイラを `/tmp/tz-pr03/tsuzuri-before` に写す。「現状と計測」の再現を実行し、
   `chain.ll`・`comp.ll`・`comp.opt.ll`・`comp.s` を `/tmp/tz-pr03/before/` に保存する。「生成コードの確認」の M5・M6 も保存する。
-- 確認: 再現の期待値（IR `35 22 28 28`、機械語 `263 229 205 176 893 864`。clang の版が違えば値を記録し直す）。次の 5 つがそれぞれ `1 passed`。
+- 確認: 再現の期待値（IR `35 22 28 28`、機械語 `34 24 29 29 29 27`。clang の版が違えば値を記録し直す）。次の 5 つがそれぞれ `1 passed`（5 つ目は `--test` を付けない）。
 
 ```sh
 cd /Users/tmidorikawa/Documents/git/Tsuzuri
@@ -328,7 +395,7 @@ cargo build --release --locked && mkdir -p /tmp/tz-pr03/before && cp target/rele
 cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
 cargo test --locked --lib bounds_recursive_and_flat_expression_depth
 cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax
-cargo test --locked --test polymorphism honors_the_exact_specialization_limit
+cargo test --locked honors_the_exact_specialization_limit
 cargo test --locked --test call_specialization specialization_budget_falls_back_instead_of_growing_unbounded
 ```
 
@@ -357,7 +424,7 @@ cargo test --locked --test call_specialization specialization_budget_falls_back_
 
 - 変更: `docs/benchmarks.md`（「ドキュメント」の Phase 1 の行）。
 - 内容: 分類の表、M1・M2・M5・M6 の before、計測日と環境を書く。Phase 2 の条件に当たらなければ、ここで手順 11 へ進む。
-- 確認: `node scripts/check-docs.mjs docs/benchmarks.md` が終了コード 0。`cargo test --locked` が成功する。
+- 確認: `git diff --check` が何も出さない。`cargo test --locked` が成功する（`docs/` のページは `scripts/check-docs.mjs` の対象外）。
 
 ### 手順 6: F1 の return slot（Phase 2a、K1 のときだけ）
 
@@ -403,7 +470,7 @@ for s in computations primitives control tasks; do npx --yes --package=node@24 n
 
 - 変更: 「ドキュメント」の表のファイル。
 - 内容: Phase 2 の結果（行った段、行わなかった段と理由）を書く。
-- 確認: `node scripts/check-docs.mjs docs/benchmarks.md docs/architecture.md` が終了コード 0。`git diff --check` が何も出さない。
+- 確認: `git diff --check` が何も出さない（`docs/` のページは `scripts/check-docs.mjs` の対象外。`_tsuzuri/` のページを変えたときだけ `node scripts/check-docs.mjs <page>`）。
 
 ## 計測手順
 
@@ -464,7 +531,7 @@ cd /Users/tmidorikawa/Documents/git/Tsuzuri && W=/tmp/tz-pr03
 C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
 $C -S $W/after/comp.ll -o $W/after/comp.s && $C --target=x86_64-apple-macos -S $W/after/comp.ll -o $W/after/comp-x86.s
 for f in ce_std_option direct_std_option; do printf '%s ' $f
-  awk "/^_tz_$f:/{on=1;next} on&&/\.cfi_endproc/{exit} on" $W/after/comp.s | grep -cE '^[[:space:]]+[a-z]'; done
+  awk "/^_tz_$f:/{on=1;next} on&&/-- End function/{exit} on" $W/after/comp.s | grep -cE '^[[:space:]]+[a-z]'; done
 $C -c $W/after/comp.ll -o $W/after/comp.o && /opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/after/comp.o | grep __text
 grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
 ```
