@@ -836,6 +836,7 @@ done
 - `node tests/tasks.mjs target/release/tsuzuri` が、素の実行・`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で通る（native／WASM、4 trap、`-O0`・`-O3`。失敗注入は `cond_signal` を足した 9 種）。
   `tests/trap_return.mjs`・`tests/trap_return_sync.mjs`・`tests/trap_boundary.mjs`（17 case、`-O0`・`-O3`）・`tests/features.mjs concurrency channel`（71 case）が通る。
   channel_threads の E2E は、CPU 1〜4・`-O0`/`-O3` で最終の runtime に 2896 回繰り返して失敗 0（Phase 1 の各段階でも 1456 回・2896 回）。
+  Task を native で走らせるほかの suite も、最終の release コンパイラで通る: `tests/async.mjs`（native の test・debug test・bench の `-O0`/`-O3`。JSPI の検査は Node 20 のため省略）、`tests/stack_overflow.mjs`（20 case）、`tests/allocator.mjs`。
 - WASM threads: `node tests/wasm_threads.mjs`（変更なしで `-O0`・`-O3`）、新規の `tests/wasm_threads_stress.mjs`（1・2・3・5・7 worker、25 round と 12 round × 8 回、CPU を埋めた状態も。前の runtime でも通る）、`tests/bindings_threads.mjs`（ブラウザと tsc の検査は環境がなく省略）が通る。
   WASM threads の object は `-O3` で 8731 → 9481 バイト、`-Oz` で 6276 → 6645 バイト。
 - 生成 IR: `tests/fixtures/tasks`・`examples/tasks` の `--emit llvm` は基準コンパイラと `cmp` で一致（native、`-O0`・`-O3`）。同じコンパイラで 2 回作った出力（native IR、wasm32、wasm32 threads）も一致する。
