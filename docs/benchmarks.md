@@ -5848,12 +5848,12 @@ native の既定を `small` にするかは、次の条件を**すべて**確か
 | (a) 単体テスト（通常・ASan+UBSan・TSan）と全 features suite（`-O0`・`-O3`）が、macOS arm64・x64、Linux x64・arm64（と musl）、Windows x64 で通る | 一部だけ | macOS arm64 は単体・E2E・suite を確認した。Linux arm64（Ubuntu 24.04 のコンテナ）は単体 4 通りと、IR の host（4 スレッド・共有ライブラリ・2 オブジェクト）を確認した。macOS x64、Linux x64・musl、Windows は未確認（`targets.yml`・`windows.yml` に step を足したが、緑になるまで確認とは言えない） |
 | (b) 専用機で 2 つ以上の OS ファミリーの計測。PX01 の「improved」が代表 6 workload のうち 3 つ以上で、control・computations・cpp・apps・tasks に「adverse」がない | 未達 | macOS の apps は improved 4 つ・adverse 0 だが、専用機ではない。Linux（glibc）の record_sort は 1.75〜2.27 倍遅い（上の、glibc が大きなブロックのメモリを得て返す方法の差）。control・computations・cpp・tasks（`task_parallel`）は未計測（`run-control.mjs --allocator small` は用意した） |
 | (c) ピーク RSS が、どの app でも悪化しない | 一部だけ | macOS は同じ（小さな app で +0.1〜0.15 MiB の固定費）、Linux は最大 28% 小さい。固定費があるので「悪化なし」とは言えない |
-| (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 達成（コンパイル時間は未計測） | +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）。IR は 330 行ほど |
+| (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 一部だけ | 実行ファイルは +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）で達成。コンパイル時間は、`--emit object -O3 --no-cache` の 7 回の最小値で hello が 703 → 731 ms、apps が 838 → 875 ms、control が 142 → 161 ms（load 約 34）と、20〜36 ms 増える（`heap-small.ll` は 860 行で、LLVM がそれも最適化するため） |
 | (e) 範囲は native の実行ファイルだけで、`--allocator system` で戻せ、サニタイザーと leak 検査の注意を書く | 該当なし | 既定にしていないので、変えていない。注意は LR の [ネイティブのサイズ区分 allocator](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) に書いた |
 
 再検討の条件: 専用機で macOS と Linux の apps・control・tasks を測り、Linux の record_sort のような退行（ほかの確保を済ませたプロセスで、大きなブロックの確保と解放を繰り返すと、ページフォールトが増える）の原因を特定して直すか、起きないことを示すこと。直し方の候補は、512 バイトを超える区分を持つ（ヘッダーなしの slab は別チケット PM05b）か、解放した大きなブロックを少しの間手元に残すことですが、どちらも試していません。glibc 固有の `mallopt` で返却のしきい値を変える案は、C ライブラリを問わない（musl・Windows）設計に反するので採りません。
 
-測っていないこと: Linux x64、Windows、musl、macOS x64 での時間。`Task.parallel` を使う native のベンチマーク（`task_parallel` と PR06 の task runtime）での時間。コンパイル時間。Linux x86-64 の ELF の TLS の命令数。
+測っていないこと: Linux x64、Windows、musl、macOS x64 での時間。`Task.parallel` を使う native のベンチマーク（`task_parallel` と PR06 の task runtime）での時間。静かなマシンでのコンパイル時間。Linux x86-64 の ELF の TLS の命令数。
 
 ## 現実的な次の指標
 
