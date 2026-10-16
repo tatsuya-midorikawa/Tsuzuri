@@ -787,6 +787,9 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 - `cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings`: 問題なし。`--test call_specialization` 13、`param_facts` 9、`union_types` 10、`maybe_result` 9、`debug_info` 9、`computations` 30、
   `coverage` 8、`local_recursion` 14、`multiversion` 5、`storage` 21、`tail_recursion` 6、`trap_locations` 8、`user_drop` 26、`--lib` 227 が通過。
 - Windows の型検査（`cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`）: 通過。
+- release binary（thin LTO、`target/release/tsuzuri`、最終のコード）: `node tests/computations.mjs`（`-O0`／`-O3` で 71 件・3 trap、5 形の 1e8 段が `-O2`・`-O3` で通る）と
+  `node tests/features.mjs <release> return_slot`（83 件、native／WASM × `-O0`／`-O3`）が通過し、`benchmarks/computations`・`fixtures/return_slot`・`fixtures/maybe_result` の `--emit llvm` は LTO なしのビルドと byte 一致。
+  再現の t2・t3（`-O2`・`-O3`、1e8）は期待値（7・1）、t6 の `mut_pair`・`slices` は slot 1 個・`ret` 1 個。
 
 ### 計測（§14。`docs/benchmarks.md` の `## 抽象化コストの除去（PR03、2026-10-16）`）
 
