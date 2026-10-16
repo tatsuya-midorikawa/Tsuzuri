@@ -366,7 +366,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
   `PatternStep::Test(bool 式)` は順に評価され、false なら次の節へ。OR は alternatives を増やす。
 - LLVM 表現: `%tz.string = { ptr, i64 }`、`%tz.array = { ptr, i64 }`、`%tz.list = { ptr, i64 }`（先頭ノード・長さ）、
   リストのノード `{ ptr next, T }`、`%tz.closure = { ptr, ptr, ptr, ptr }`（code/environment/clone/drop）、
-  レコード `%tz.record.<Module.Name> = type { fields... }`、タプルはリテラル構造体、`bool` は `i1`、`unit` は `i8`、
+  レコード `%tz.record.<Module.Name> = type { fields... }`（利用者のレコードは、フィールドをアライメントの降順に並べると小さくなるときだけその順に格納する（PM01）。
+  評価・drop・`deriving`・DWARF のメンバー・公開 ABI の C の構造体は宣言順のまま。フィールドの読み書きは `field_slot` を通す）、タプルはリテラル構造体（宣言順）、`bool` は `i1`、`unit` は `i8`、
   参照は `ptr`。値は SSA の集約値（`extractvalue`／`insertvalue`）、借用可能な場所は entry block の `alloca`。
 - 公開 ABI: `export def` だけが `tz_<name>` として出力され、8/16/32/64-bit 整数・f32・f64・bool・unit 結果のみ
   （`Type::exportable`、`abi_type`、`c_type`、`export_wrapper`）。
@@ -679,8 +680,19 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
   ローカル変数・関数・アクティブパターンとの優先順位はチケット A02 の表に従う。
 - パターン: `Circle r`、`Rect (w, h)`、`Empty`、`Maybe.Some x`。ペイロードは既存のパターンで分解する。
 - 値の性質: 全ペイロードが Copy なら Copy、いずれかが drop を要すれば `needs_drop`。`==` は組み込みにしない（レコードと同じ。A07 の deriving で提供）。
-- LLVM 表現: タグ `i32` と、全ケースで共有するペイロード領域（ケースごとの別フィールドにしない）。
-  詳細なレイアウト規則はチケット A02。再帰的な共用体はチケット A04 まで `E1010` で拒否する。
+- LLVM 表現（PM01 で改めた。規則の詳細は `docs/architecture.md` と `src/llvm_layout.rs` の `UnionLayout`）:
+  - タグは case の数に応じた幅（256 個までは `i8`、65,536 個までは `i16`、それを超えると `i32`）で格納し、読む側が `zext` で `i32` に広げる
+    （`TypedExprKind::UnionTag` と `SwitchPlan.selector` は `i32` のまま。再帰 union のノードのタグは `i32`）。
+    タグと record のフィールドの読み書きは `src/llvm_layout.rs` の helper（`tag_value`・`load_tag`・`construct_value`・`tag_type`・`field_slot`）だけを通す。
+  - 全 case がペイロードなしなら値はタグだけ（`Enum`）。全ペイロードが同じ LLVM 型なら `{ iT, T }`（`Common`）。型が異なるなら共有領域 `{ iT, [N x iU] }`（`General`。
+    `U` は最大ペイロードのアラインメント（16 まで）の整数、`N` は最大ペイロードを覆う個数。ケースごとの別フィールドにはしない。ペイロードはメモリ経由で読み書きする）。
+  - case がちょうど 2 つで、1 つがペイロードなし、もう 1 つのペイロードが `string`・`utf8string`・配列なら、タグを持たずペイロードそのもの（型定義なし。`NegativeLength`:
+    長さが負の `{ ptr null, i64 -1 }` が `None`）。native のターゲットだけ、スライスでない `ref` のペイロードも同じ（`NullPointer`: null ポインターが `None`）。
+    WebAssembly は `--stack-first` でアドレス 0 も有効なオブジェクトの位置になりうるので `NullPointer` を使わない（`Maybe<ref T>` は `{ i8, ptr }`）。
+    再帰 union と `Drop` を実装した union は対象外。ゼロ埋めした値は `None` ではない（`%tz.string` のゼロは `Some ""`）ので、`None` は必ず明示的に作る（`Seq.next` の空の `Seq` と `None` など）。
+  - サイズの見積もり `layout_bound` は上限・下限とも実際のレイアウトを挟む（独立なデータレイアウトの模型でテスト）。E1010 の見積もり（`check.rs` の `Layouts`）と
+    `llvm_frame::stack_size` は保守的な上限のまま変えない。
+  再帰的な共用体は D-24（所有ノード）。
 
 ### D-06 型別名
 - `type Meters = f64`、`type Pair2<'a> = Pair<'a, 'a>`。**透過的**（別名と元の型は同一の型）。キーワード `type`（新規予約語）。
@@ -1056,7 +1068,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - 2026-10-02、利用者の「B07 の実装を完遂して」という依頼を D1・D2・D4 の承認として扱い、Phase 1 を実装した。組み込みクラス `Drop` は D-07 へ移した。
 - LLVM は move 済みの領域を `zeroinitializer` で埋め、その解放を無処理にする規則で動く。この規則を変えずに利用者の `drop` を一度だけ呼ぶため、
   非再帰の Drop 型は値の末尾に `i8` の生存フラグを持ち、構築で 1 にする。drop glue はフラグが 0 の値で `drop` を呼ばない。
-  全 case が nullary の Drop union は素の `i32` tag ではなく `General(0)` の配置にする。
+  payload のない Drop union は素のタグではなく `General { unit: 1, units: 0 }`（`{ iT, [0 x i8], i8 }`）の配置にする。record の生存フラグは並べ替えても最後で、Drop の union は niche にしない。
 - 再帰する Drop union は先頭の nullary case もノードに置く（null は move 済みだけ）。型ごとの drop helper がノードごとに `drop` を呼ぶ。
 - Drop 型は ABI の scalar record にしない。一時値から Copy の field・payload を読むときは、値を壊さず全体を解放する（非 Copy の取り出しは `E1012`）。
 - record の field は元々代入できないので、`drop` 本体での引数全体の置換の診断は field への代入ではなく読み出し・借用を勧める。
@@ -1263,7 +1275,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   …すべてのフェーズを完了させること。…判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」を、4 チケットの `要承認` の
   決定事項すべての承認として扱った。詳細は各チケットの「実装と検証」にある。
 - G16（デバッガー）: DWARF の型名は `Type::display`。`bool` 以外のスカラーは同名の typedef、`char`・`utf8char` は `DW_ATE_UTF`。payload を持つ union は
-  `$tag`（enumeration）と `$payload`（case 名を member にする union）、再帰する union とリストはノードの struct への pointer で、offset は生成 IR の格納位置から
+  `$tag`（enumeration。大きさは格納するタグの幅）と `$payload`（case 名を member にする union）、タグを持たない union（niche。PM01）は `$tag` の代わりに `$payload` に重なる
+  列挙型 `$niche`（`None` は長さの `-1`、ポインターの `0`）を持つ。record の member は宣言順で、offset は格納の位置。再帰する union とリストはノードの struct への pointer で、
+  offset は生成 IR の格納位置から
   計算する。`DISubprogram` は `linkageName` を出さず、単相化の実体は元の名前、ラムダ・task・テストは `<親>.lambda@行:列` などの名前にする。束縛の `store` は
   宣言の位置、引数の束縛は prologue（行 0）。C のランタイムはデバッグ情報なしでコンパイルする（G08 を改めた。step-in がランタイムに入らず、DWARF 5 の
   ランタイムの compile unit による `-O3` の `llvm-dwarfdump --verify` の失敗もなくなる）。LLDB の formatter `scripts/lldb/tsuzuri_lldb.py` を VS Code が
@@ -1659,7 +1673,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **std の generic 関数と特殊化の予算。** 単相化は利用者の非 generic 関数からだけ始める。std の generic 関数を先に特殊化すると、
   利用者の特殊化の予算を消費する（上限は 65,536。D-41）。`honors_the_exact_specialization_limit` は `src/polymorph.rs` の単体テストで、
   テスト用の小さい上限で予算の数え方を確かめる。std に API を足したら必ずこのテストを実行する。
-- **LLVM の型の出力順。** enum の別名（`= type i32`）は、どの record／union の struct 定義よりも前に出す（LLVM は非 struct の別名を前方参照できない）。
+- **LLVM の型の出力順。** enum の別名（`= type i8` など）は、どの record／union の struct 定義よりも前に出す（LLVM は非 struct の別名を前方参照できない）。niche の union は型定義を持たない。
 - **生成ランタイム。** `numeric.ll`・`math.ll` は手で直さず、§2.2 の手順で両方を作り直す。`Globals::FIRST_METADATA` の範囲を保つ。
   数値ランタイムに静的な表を足した形が Clang 23 の wasm32 `-O0` で不正なコードになった例がある。新しいランタイムの形は
   native と WASM の `-O0`／`-O3` で必ず確かめる。

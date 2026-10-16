@@ -85,7 +85,7 @@ fn gpu_reference_api_is_explicit_opaque_and_owned() {
         let ir = tsuzuri::llvm::emit_target(&module, tsuzuri::llvm::Entry::Console, wasm).unwrap();
         let enum_line = ir
             .lines()
-            .position(|line| line.contains("Gpu.Backend") && line.ends_with("= type i32"))
+            .position(|line| line.contains("Gpu.Backend") && line.ends_with("= type i8"))
             .unwrap();
         let record_line = ir
             .lines()

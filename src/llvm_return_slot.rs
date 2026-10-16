@@ -4,14 +4,16 @@ use super::*;
 const MAX_SLOT_BYTES: usize = 1024;
 
 /// Whether a function that returns `ty` may return through a slot: a union stored as a first-class
-/// aggregate (not a bare tag) of a size that an entry-block `alloca` can hold cheaply. A layout that
-/// is a scalar must not match here, because a scalar result never becomes an aggregate `phi`.
+/// aggregate of a tag and a payload (not a bare tag, and not a niche union, which is its payload
+/// alone: a `ptr` or a `%tz.string`) of a size that an entry-block `alloca` can hold cheaply. A
+/// layout that is a scalar must not match here, because a scalar result never becomes an aggregate
+/// `phi`.
 pub(super) fn uses_return_slot(ty: &Type, module: &CheckedModule) -> bool {
     let Type::Union(id, arguments) = ty else {
         return false;
     };
     !module.types().recursive(ty)
-        && !matches!(union_layout(*id, arguments, module), UnionLayout::Enum)
+        && union_layout(*id, arguments, module).is_aggregate()
         && storage_layout(ty, module).0 <= MAX_SLOT_BYTES
 }
 

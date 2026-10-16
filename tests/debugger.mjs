@@ -176,6 +176,73 @@ try {
   // A record with the field names of a function value keeps the default record display.
   assert.match(edge, /^\(Main\.Lookalike\) lookalike = (?:\(code = 1, environment = 2, clone = 3, drop = 4\)|\{\n  code = 1\n  environment = 2\n  clone = 3\n  drop = 4\n\})$/m);
 
+  // PM01: a union of a nullary case and a string or array payload stores no tag. `$niche` holds
+  // the length -1 for the nullary case, and the formatter reads the case from it, whichever case
+  // comes first. A native `Maybe<ref T>` is the pointer itself: the null pointer is `None`.
+  const niches = join(root, "niches");
+  mkdirSync(niches);
+  writeFileSync(join(niches, "Main.tz"), [
+    "union Alias = NoAlias | Spelled of string",
+    "union Label = Named of string | Anonymous",
+    "",
+    "def inspect :: i64 -> i64",
+    "fn inspect seed =",
+    '    let present = Maybe.Some "x"',
+    "    let absent: Maybe<string> = Maybe.None",
+    '    let alias = Spelled "abc"',
+    "    let nobody = NoAlias",
+    "    let label = Anonymous",
+    '    let named = Named "n"',
+    "    let numbers: Maybe<[i64]> = Maybe.Some [1, 2]",
+    "    let missing: Maybe<[i64]> = Maybe.None",
+    "    let values = [10, 20]",
+    "    let located = Array.find (\\x -> deref x == 20) (ref values)",
+    "    let nowhere = Array.find (\\x -> deref x == 99) (ref values)",
+    "    let total = seed + (match ref present with | Some text -> text.length | None -> 0)",
+    "    total",
+    "",
+    "inspect 5",
+    "",
+  ].join("\n"));
+  const niche = sections(session(niches, ["breakpoint set -f Main.tz -l 18", "run", "frame variable", "kill"]))
+    .find(part => part.command === "frame variable").text;
+  for (const line of [
+    '(Maybe<string>) present = Some("x")',
+    "(Maybe<string>) absent = None",
+    '(Main.Alias) alias = Spelled("abc")',
+    "(Main.Alias) nobody = NoAlias",
+    "(Main.Label) label = Anonymous",
+    '(Main.Label) named = Named("n")',
+    "(Maybe<[i64]>) numbers = Some(length=2)",
+    "(Maybe<[i64]>) missing = None",
+    "(Maybe<ref i32>) nowhere = None",
+    "(i64) total = 6",
+  ]) assert.ok(niche.includes(line), `${line}\n${niche}`);
+  assert.match(niche, /^\(Maybe<ref i32>\) located = Some\(0x[0-9a-f]+\)$/m);
+
+  // PM01: a record that is smaller with its fields sorted by alignment stores them in that order.
+  // The debug info lists the members as declared and gives each the offset where it lives, so
+  // LLDB reads the values from the right bytes.
+  const stored = join(root, "stored");
+  mkdirSync(stored);
+  writeFileSync(join(stored, "Main.tz"), [
+    "record Spread { a: i8, b: i64, c: i8, d: i32, e: bool }",
+    "record Frame { first: bool, inner: Spread, last: i16 }",
+    "",
+    "def inspect :: i64 -> i64",
+    "fn inspect seed =",
+    "    let spread = Spread { a: 1, b: seed + 1000, c: 3, d: 400, e: true }",
+    "    let frame = Frame { first: true, inner: spread, last: 7 }",
+    "    spread.b + frame.last as i64",
+    "",
+    "inspect 5",
+    "",
+  ].join("\n"));
+  const placed = sections(session(stored, ["breakpoint set -f Main.tz -l 8", "run", "frame variable", "kill"]))
+    .find(part => part.command === "frame variable").text;
+  assert.match(placed, /\(Main\.Spread\) spread = [\s\S]*?a = (?:1|'\\x01')[\s\S]*?b = 1005[\s\S]*?c = (?:3|'\\x03')[\s\S]*?d = 400[\s\S]*?e = true/);
+  assert.match(placed, /\(Main\.Frame\) frame = [\s\S]*?first = true[\s\S]*?inner = [\s\S]*?b = 1005[\s\S]*?d = 400[\s\S]*?last = 7/);
+
   // Phase 2: `test --index N -g -o PATH` builds a runner of test N alone, without running it; a
   // debugger starts it with the printed arguments and stops in the test's body.
   const specs = join(root, "specs");

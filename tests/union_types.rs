@@ -569,13 +569,15 @@ export def scaled :: i64
 fn scaled = to_int (area (Rect (3.0, 4.0)) * 10.0)
 "
     ));
-    assert!(shapes.contains("%\"tz.union.Main.Shape\" = type { i32, [1 x i128] }"));
+    assert!(shapes.contains("%\"tz.union.Main.Shape\" = type { i8, [2 x i64] }"));
     assert!(shapes.contains("switch i32"));
     // The general layout stores a payload through its field pointer, and a
-    // match reads the tag from the subject slot.
-    assert!(shapes.contains("insertvalue %\"tz.union.Main.Shape\" zeroinitializer, i32 1, 0"));
+    // match reads the one-byte tag from the subject slot and widens it for the switch.
+    assert!(shapes.contains("insertvalue %\"tz.union.Main.Shape\" zeroinitializer, i8 1, 0"));
     let area = body(&shapes, "tz.fn.Main.area");
-    assert_eq!(area.matches("load i32, ptr").count(), 1, "{area}");
+    assert_eq!(area.matches("load i8, ptr").count(), 1, "{area}");
+    assert!(area.contains("zext i8"), "{area}");
+    assert!(!area.contains("load i32, ptr"), "{area}");
     assert!(
         area.contains("getelementptr inbounds %\"tz.union.Main.Shape\", ptr"),
         "{area}"
@@ -596,7 +598,7 @@ fn code color =
 export def green :: i64
 fn green = code Green
 ");
-    assert!(colors.contains("%\"tz.union.Main.Color\" = type i32"));
+    assert!(colors.contains("%\"tz.union.Main.Color\" = type i8"));
     assert!(colors.contains("switch i32"));
     // Enum values are their tags.
     assert!(
@@ -616,16 +618,15 @@ fn answer =
     unwrap_or 0 (Some 1) + text.length
 "
     ));
-    for definition in [
-        "%\"tz.union.Main.Maybe[i64]\" = type { i32, i64 }",
-        "%\"tz.union.Main.Maybe[string]\" = type { i32, %tz.string }",
-    ] {
-        assert_eq!(
-            maybe.matches(&format!("{definition}\n")).count(),
-            1,
-            "{definition}"
-        );
-    }
+    // A union of a nullary case and a string payload has no tag: it is its payload, and has no
+    // type of its own (PM01).
+    assert_eq!(
+        maybe
+            .matches("%\"tz.union.Main.Maybe[i64]\" = type { i8, i64 }\n")
+            .count(),
+        1
+    );
+    assert!(!maybe.contains("tz.union.Main.Maybe[string]"), "{maybe}");
     assert!(!maybe.contains("%\"tz.union.Main.Maybe\" ="));
     assert!(!maybe.contains("%tz.union.Main.Maybe ="));
     // Direct constructor applications build the value without a call.
@@ -644,10 +645,10 @@ fn f value =
 export def answer :: i64
 fn answer = f (A \"abc\") + f (B 4) + f C
 ");
-    assert!(ir.contains("%\"tz.union.Main.U\" = type { i32, [1 x i128] }"));
+    assert!(ir.contains("%\"tz.union.Main.U\" = type { i8, [2 x i64] }"));
     let f = body(&ir, "tz.fn.Main.f");
     // The tag is loaded once for one switch over every case.
-    assert_eq!(f.matches("load i32, ptr").count(), 1, "{f}");
+    assert_eq!(f.matches("load i8, ptr").count(), 1, "{f}");
     let dispatch = f.find("switch i32").unwrap();
     assert!(f[dispatch..].contains("i32 0, label"), "{f}");
     assert!(f[dispatch..].contains("i32 1, label"), "{f}");
@@ -707,7 +708,7 @@ fn answer =
     assert!(
         constructors
             .iter()
-            .any(|line| line.starts_with("define internal %\"tz.union.Main.Maybe[string]\""))
+            .any(|line| line.starts_with("define internal %tz.string "))
     );
     // Recursion diagnostics run before hidden constructor functions exist.
     let error = rejects(
@@ -742,7 +743,7 @@ fn enforces_union_layout_limits() {
     );
     for wasm in [false, true] {
         let ir = llvm::emit_target(&accepts(&near), llvm::Entry::Library, wasm).unwrap();
-        assert!(ir.contains("%\"tz.union.Main.NearLimit\" = type { i32, %tz.record.Main.Wide }"));
+        assert!(ir.contains("%\"tz.union.Main.NearLimit\" = type { i8, %tz.record.Main.Wide }"));
     }
     let error = rejects(
         &format!("{}union TooLarge = Big of Wide | Small", wide(4096)),

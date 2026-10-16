@@ -506,15 +506,16 @@ const suites = {
       };
       const returns = (name) => body(name).split("\n").filter((line) => line.startsWith("  ret ")).length;
       // Every exit builds a value or reads a field or a parameter: one entry-block slot and one `ret`.
-      for (const name of ["make", "pick", "explain", "label", "scratch", "find", "choose", "keep"]) {
+      for (const name of ["make", "pick", "explain", "scratch", "find", "choose", "keep"]) {
         assert.equal(body(name).split("%tz.return.slot = alloca").length - 1, 1, `${name}: one return slot`);
         assert.match(body(name), /\ntz\.return:\n/, `${name}: one return block`);
         assert.equal(returns(name), 1, `${name}: one ret`);
       }
       // An exit that may hold the result of a call (a call, a pipeline, a local bound to one, a field of
       // either), a recursion cycle, a continuation, an unknown callee, a callee that gets the closure of its
-      // recursion, and a bare tag keep every plain `ret`.
-      for (const [name, count] of [["wrap", 2], ["piped", 2], ["read_call", 2], ["read_local", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3]]) {
+      // recursion, a bare tag, and a niche union (`label` returns a `Maybe<string>`, which is its payload and
+      // has no tag to merge, PM01) keep every plain `ret`.
+      for (const [name, count] of [["wrap", 2], ["piped", 2], ["read_call", 2], ["read_local", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3], ["label", 2]]) {
         assert.doesNotMatch(body(name), /tz\.return/, `${name}: no return slot`);
         assert.equal(returns(name), count, `${name}: plain rets`);
       }
@@ -1582,20 +1583,78 @@ const suites = {
     inspect(ir, header) {
       assert.doesNotMatch(header, /Shape|Maybe|Color|Pick|Tagged/);
       for (const definition of [
-        '%"tz.union.Main.Shape" = type { i32, [1 x i128] }',
-        '%"tz.union.Main.Color" = type i32',
-        '%"tz.union.Main.Pick" = type { i32, i64 }',
-        '%"tz.union.Main.Maybe[i64]" = type { i32, i64 }',
-        '%"tz.union.Main.Maybe[string]" = type { i32, %tz.string }',
-        '%"tz.union.Shapes.Shape" = type { i32, double }',
+        '%"tz.union.Main.Shape" = type { i8, [2 x i64] }',
+        '%"tz.union.Main.Color" = type i8',
+        '%"tz.union.Main.Pick" = type { i8, i64 }',
+        '%"tz.union.Main.Maybe[i64]" = type { i8, i64 }',
+        '%"tz.union.Shapes.Shape" = type { i8, double }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
+      // A union of a nullary case and a string payload is its payload (PM01).
+      assert.ok(!ir.includes("tz.union.Main.Maybe[string]"));
       assert.doesNotMatch(ir, /tz\.union\.Main\.Maybe = type/);
       assert.match(ir, /switch i32/);
       // First-class constructors become one hidden function per concrete instance.
       const constructors = ir.match(/^define internal \S+ @tz\.fn\.\$case\.Main\.Maybe\.Some\.\$mono\.\d+\(/gm) ?? [];
       assert.equal(constructors.length, 2, "Maybe.Some has an i64 and a string constructor function");
+    },
+  },
+  // PM01: union tags take the fewest bytes, and the payload area, niches and field order never change a result.
+  value_layout: {
+    cases: [],
+    inspect(ir, header) {
+      assert.doesNotMatch(header, /\b(struct|union)\b/);
+      for (const definition of [
+        '%"tz.union.Main.Narrow" = type i8',
+        '%"tz.union.Main.Mid" = type i8',
+        '%"tz.union.Main.Wide" = type i16',
+        '%"tz.union.Main.Big" = type { i16, [2 x i64] }',
+        '%"tz.union.Main.Shape" = type { i8, [2 x i64] }',
+        '%"tz.union.Main.Small" = type { i8, [1 x i8] }',
+        '%"tz.union.Main.Wideness" = type { i8, [1 x i128] }',
+        '%"tz.union.Main.Rich" = type { i8, [2 x i64] }',
+        '%"tz.union.Main.Nested" = type { i8, [3 x i64] }',
+        '%"tz.union.Main.Lanes" = type { i8, [2 x i128] }',
+      ]) {
+        assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
+      }
+      // PM01 Phase 2: an option-like union with a string or array payload is its payload and has no type of its own.
+      for (const name of ["Main.Alias", "Main.Label", "Maybe.Maybe[string]"]) {
+        assert.ok(!ir.includes(`tz.union.${name}"`), `${name} is its payload`);
+      }
+      assert.match(ir, /\{ ptr null, i64 -1 \}/);
+      assert.match(ir, /icmp slt i64 %v\d+, 0/);
+      // The native IR: an option of a reference is its pointer. (WebAssembly keeps the tag.)
+      assert.ok(!ir.includes("tz.union.Maybe.Maybe[ref[i64]]"));
+      assert.match(ir, /icmp eq ptr %v\d+, null/);
+      // Not an option-like union of one payload case: two payload cases, three cases, and a nested option.
+      assert.ok(ir.includes('%"tz.union.Maybe.Maybe[Maybe.Maybe[string]]" = type { i8, %tz.string }\n'));
+    },
+  },
+  // PM01 Phase 3a: a record that is smaller with its fields sorted by alignment stores them that way. The
+  // cases come from the generation block below, which works the results out from the source of the fixture.
+  record_layout: {
+    cases: [],
+    inspect(ir) {
+      for (const definition of [
+        "%tz.record.Main.Gauge = type { i64, double, i1, i8 }",
+        "%tz.record.Main.Keyed = type { i64, i8, i8 }",
+        "%tz.record.Main.Spread = type { i64, i32, i8, i8, i1 }",
+        "%tz.record.Main.Crate = type { %tz.record.Main.Gauge, i16, i1 }",
+        '%"tz.record.Main.Cargo[i64]" = type { i64, i1, i1 }',
+        '%"tz.record.Main.Cargo[string]" = type { %tz.string, i1, i1 }',
+        // Equal alignments keep their declared order.
+        '%"tz.record.Main.Cargo[bool]" = type { i1, i1, i1 }',
+        "%tz.record.Main.Ledger = type { %tz.string, %tz.array, i1, i8 }",
+        "%tz.record.Main.Rows = type { %tz.array, i1, i8 }",
+        "%tz.record.Main.Wide = type { <8 x float>, i8, i8 }",
+      ]) {
+        assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
+      }
+      // The static data of a constant stores each field where the record keeps it: count, ratio, flag, tag.
+      assert.match(ir, /constant %tz\.record\.Main\.Gauge \{ i64 42, double 0x4004000000000000, i1 1, i8 7 \}/);
+      assert.match(ir, /%tz\.record\.Main\.Spread \{ i64 2, i32 4, i8 1, i8 3, i1 1 \}/);
     },
   },
   stdlib: {
@@ -1658,7 +1717,8 @@ const suites = {
     inspect(ir, header) {
       assert.doesNotMatch(header, /Maybe|Result/);
       assert.match(ir, /@tz\.specialized\./);
-      assert.match(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
+      assert.match(ir, /tz\.union\.Maybe\.Maybe\[i64\]/);
+      assert.doesNotMatch(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
       assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
     },
   },
@@ -2083,6 +2143,175 @@ const structuralHashes = [
 ];
 structuralHashes.forEach((hash, which) => suites.deriving.cases.push(["hash_structure", [BigInt(which)], BigInt.asIntN(64, hash)]));
 suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n << 53n, 8)]);
+// PM01: independent references for tests/fixtures/value_layout/Main.tz. A case index, never the width
+// of the stored tag, is what a program sees, orders by, and hashes.
+{
+  const layout = suites.value_layout.cases;
+  const edge = (edges, fallback) => (k) => (edges.includes(k) ? k : fallback);
+  const index = { narrow: edge([255, 254, 128, 127, 1], 0), mid: edge([159, 128, 127, 1], 0), wide: edge([256, 255, 128, 1], 0), big: edge([0, 1, 2, 255, 256], 3) };
+  const bigValue = (k) => ({ 0: 41, 1: 5, 2: 5, 255: 255, 256: 256 })[k] ?? 3;
+  const bigHash = (k) => {
+    if (index.big(k) === 0) return unionHash(0, scalarHash(0x13, 41n, 8));
+    if (index.big(k) === 1) return unionHash(1, scalarHash(0x23, 0x4004000000000000n, 8));
+    if (index.big(k) === 2) return unionHash(2, canonicalTextHash("owned"));
+    return unionHash(index.big(k));
+  };
+  const order = (x, y) => BigInt((x < y ? 1 : 0) + (x === y ? 2 : 0) + (x > y ? 4 : 0));
+  const picks = [0, 1, 2, 3, 126, 127, 128, 129, 159, 254, 255, 256, 257];
+  for (const k of picks) {
+    layout.push(["narrow", [BigInt(k)], BigInt(index.narrow(k))], ["wide", [BigInt(k)], BigInt(index.wide(k))], ["big", [BigInt(k)], BigInt(bigValue(k))]);
+    layout.push(["narrow_hash", [BigInt(k)], BigInt.asIntN(64, unionHash(index.narrow(k)))], ["wide_hash", [BigInt(k)], BigInt.asIntN(64, unionHash(index.wide(k)))], ["big_hash", [BigInt(k)], BigInt.asIntN(64, bigHash(k))]);
+    for (const other of picks) {
+      layout.push(["mid_order", [BigInt(k), BigInt(other)], order(index.mid(k), index.mid(other))]);
+      layout.push(["narrow_equal", [BigInt(k), BigInt(other)], BigInt(+(index.narrow(k) === index.narrow(other)))]);
+      layout.push(["wide_equal", [BigInt(k), BigInt(other)], BigInt(+(index.wide(k) === index.wide(other)))]);
+      layout.push(["big_equal", [BigInt(k), BigInt(other)], BigInt(+(index.big(k) === index.big(other)))]);
+    }
+  }
+  for (const count of [0, 1, 300, 5000]) {
+    const sum = (modulus, value) => BigInt(Array.from({ length: count }, (_, i) => value(i % modulus)).reduce((total, item) => total + item, 0));
+    layout.push(["narrow_array", [BigInt(count)], sum(256, index.narrow)], ["wide_array", [BigInt(count)], sum(257, index.wide)], ["big_array", [BigInt(count)], sum(257, bigValue)]);
+  }
+  // The payload area: each case reads back what it was built with, in arrays whose element size is not a power of two.
+  const byte = (n) => Number(BigInt.asIntN(8, BigInt(n)));
+  const shapeValue = (i) => (i % 3 === 0 ? (i + 1) ** 2 : i % 3 === 1 ? 2 * i : -1);
+  const smallValue = (i) => (i % 3 === 0 ? +(i % 2 === 0) : i % 3 === 1 ? byte(i) : 7);
+  const references = {
+    shapes: shapeValue,
+    smalls: smallValue,
+    wideness: (i) => (i % 3 === 0 ? i + 1000 : i % 3 === 1 ? byte(i) : -5),
+    riches: (i) => (i % 4 === 0 ? 1 + String(i).length : i % 4 === 1 ? i : i % 4 === 2 ? i + 1 : -3),
+    nesteds: (i) => (i % 3 === 0 ? shapeValue(i) : i % 3 === 1 ? smallValue(i) : 11),
+    lanes: (i) => (i % 4 === 0 ? 6 : i % 4 === 1 ? 4 : i % 4 === 2 ? byte(i) : -1),
+  };
+  for (const [name, value] of Object.entries(references)) {
+    for (const count of [0, 1, 2, 3, 7, 100, 300]) {
+      layout.push([name, [BigInt(count)], BigInt(Array.from({ length: count }, (_, i) => value(i)).reduce((total, item) => total + item, 0))]);
+    }
+  }
+  // The niche: a negative length is the nullary case, so every option reads back as it was built, and
+  // dropping, moving out, and assigning over it free each string and array exactly once (`live == 0`).
+  const width = (n) => String(n).length;
+  const present = (i) => 1 + width(i);
+  const options = {
+    names: (i) => (i % 3 === 0 ? present(i) : -1),
+    labels: (i) => (i % 2 === 0 ? present(i) : -1),
+    text_options: (i) => (i % 4 === 0 ? present(i) : -2),
+    number_options: (i) => (i % 3 === 1 ? (i % 5) * 1000 + (i % 5 > 0 ? i : 0) : -3),
+    word_options: (i) => (i % 2 === 0 ? i % 4 : -4),
+    consume: (i) => (i % 4 === 0 ? present(i) : 4),
+    reassign: (i) => (i % 2 === 0 ? present(4 * i) : -2),
+    holders: (i) => i + (i % 4 === 0 ? present(i) : -2) + (i % 5 === 0 ? 2 : -4),
+    nested_options: (i) => (i % 3 === 0 ? -1 : i % 3 === 1 ? -2 : present(i)),
+  };
+  for (const [name, value] of Object.entries(options)) {
+    for (const count of [0, 1, 2, 3, 7, 100, 300]) {
+      layout.push([name, [BigInt(count)], BigInt(Array.from({ length: count }, (_, i) => value(i)).reduce((total, item) => total + item, 0))]);
+    }
+  }
+  const combinators = (i) => {
+    const first = i % 4 === 0 ? `s${i}!` : null;
+    const second = first !== null && first.length > 3 ? `${first}?` : null;
+    const third = second !== null && second.length > 4 ? second : null;
+    return (third ?? "fallback").length;
+  };
+  for (const i of [0, 1, 2, 4, 5, 8, 12, 99, 100, 1000]) {
+    layout.push(["combinators", [BigInt(i)], BigInt(combinators(i))]);
+    layout.push(["sequences", [BigInt(i)], BigInt(100 + 3 + width(i) + 1)]);
+    layout.push(["captured", [BigInt(i)], BigInt(2 * (i % 4 === 0 ? present(i) : -2))]);
+    layout.push(["tasked", [BigInt(i)], BigInt(i % 4 === 0 ? present(i) : -2)]);
+  }
+  // An option of a reference: the first value above 5 and the smallest one, or the numbers that stand for none.
+  for (const count of [0, 1, 2, 3, 7, 12, 100, 300]) {
+    const values = Array.from({ length: count }, (_, i) => (i * 7) % 11);
+    const smallest = count === 0 ? -1 : Math.min(...values);
+    const first = values.find((value) => value > 5);
+    layout.push(["references", [BigInt(count)], BigInt(smallest + (first === undefined ? -2 : first * 100) - 3)]);
+    layout.push(["word_references", [BigInt(count)], BigInt(count > 100 ? 4000 + count : -1)]);
+  }
+  // Derived Eq, Ord, Hash and Display of `Tagline = Hushed | Words of string`, a union without a tag: a case is its
+  // index, then its text, and a text compares by UTF-16 code units.
+  const tagline = (i) => (i % 3 === 0 ? { index: 0, text: "" } : { index: 1, text: `t${i}` });
+  const lineOrder = (x, y) => (x.index !== y.index ? Math.sign(x.index - y.index) : x.text < y.text ? -1 : x.text > y.text ? 1 : 0);
+  for (const left of [0, 1, 2, 3, 10]) {
+    for (const right of [0, 1, 2, 3, 10, 20]) {
+      const order = lineOrder(tagline(left), tagline(right));
+      layout.push(["tagline_flags", [BigInt(left), BigInt(right)], BigInt((order === 0 ? 1 : 2) + (order < 0 ? 4 : 0) + (order <= 0 ? 8 : 0) + (order > 0 ? 16 : 0) + (order >= 0 ? 32 : 0))]);
+    }
+  }
+  for (const i of [0, 1, 2, 3, 10, 99]) {
+    const line = tagline(i);
+    layout.push(["tagline_hash", [BigInt(i)], BigInt.asIntN(64, line.index === 0 ? unionHash(0) : unionHash(1, canonicalTextHash(line.text)))]);
+    layout.push(["tagline_display", [BigInt(i)], canonicalTextHash(line.index === 0 ? "Hushed" : `Words ${quotedLiteral(line.text, 0)}`)]);
+  }
+}
+// PM01 Phase 3a: independent references for tests/fixtures/record_layout/Main.tz. Each one repeats the arithmetic
+// of the source on BigInt, so that a field that is read or written at the wrong place gives another number.
+{
+  const records = suites.record_layout.cases;
+  const gauge = (n) => ({ flag: n % 2n === 0n, count: n * 1000003n, tag: n % 100n, ratio8: 2n * n });
+  const gaugeSum = (g) => (g.flag ? 1n : 0n) + g.count * 3n + g.tag * 5n + g.ratio8 * 7n;
+  const spread = (i) => ({ a: i % 7n, b: i * 1000n + 17n, c: i % 5n, d: i * 3n, e: i % 3n === 0n });
+  const spreadSum = (s) => s.a + s.b * 2n + s.c * 3n + s.d * 5n + (s.e ? 7n : 0n);
+  const digits = (n) => BigInt(n.toString().length);
+  const ledgerSum = (n, { open = n % 2n === 0n, level = n % 50n } = {}) => (open ? 1n : 0n) + (6n + digits(n)) * 10n + level * 100n + (3n * n + 3n) * 1000n;
+  const rowSum = (n) => (n % 2n === 0n ? 1n : 0n) + (n % 50n) * 100n + (3n * n + 3n) * 1000n;
+  const slotSum = (i) => (i % 3n === 0n ? 1n : i % 3n === 1n ? 2n + gaugeSum(gauge(i)) : 3n + gaugeSum(gauge(i)) + spreadSum(spread(i)));
+  const keyedCode = ([a, b, c]) => a * 1000000n + b * 1000n + c;
+  const compare = (x, y) => {
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+  };
+  const sumOver = (count, f) => {
+    let total = 0n;
+    for (let i = 0n; i < count; i++) total += f(i);
+    return total;
+  };
+  for (const n of [0n, 1n, 2n, 3n, 7n, 12n, 50n, 99n, 100n, 101n, 1000n]) {
+    const g = gauge(n);
+    records.push(["gauges", [n], gaugeSum(g)]);
+    records.push(["updates", [n], gaugeSum({ ...g, count: g.count + 1n, tag: 9n }) * 10007n + gaugeSum(g)]);
+    records.push(["captured", [n], 2n * gaugeSum(g)]);
+    records.push(["tasked", [n], gaugeSum(g)]);
+    records.push(["borrowed", [n], g.tag * 1000n + (g.flag ? 1n : 0n)]);
+    records.push(["crates", [n], (g.flag ? 1n : 0n) + gaugeSum(g) * 3n + n * 11n * 5n + n * 13n * 7n + g.tag]);
+    // The flags of the three cargos: wide first and last, the text's first, the flag's last.
+    const marks = (g.flag ? 1n : 0n) + (n % 3n === 0n ? 2n : 0n) + 4n + 32n;
+    records.push(["cargos", [n], n * 3n * 1000n + (5n + digits(n)) * 100n + (n % 4n === 0n ? 64n : 0n) + marks]);
+    records.push(["ledgers", [n], ledgerSum(n)]);
+    records.push(["moved", [n], (6n + digits(n)) * 1000n + (n % 50n) + (3n * n + 3n) * 100000n]);
+    records.push(["projected", [n], (6n + digits(n)) * 10n + (n % 50n)]);
+    records.push(["replaced", [n], ledgerSum(n, { open: true, level: 9n })]);
+    records.push(["options", [n], g.flag ? gaugeSum(g) : -1n]);
+    records.push(["lanes", [n], 8n * n * 100n + 35n]);
+    // Origin: 1 + 42 * 3 + 7 * 5 + 20 * 7 = 302; Pins[0] sums to 41 and Pins[1] to 78.
+    records.push(["statics", [n], 302n + (n % 2n === 0n ? 41n : 78n) * 1000n + 42n * n]);
+  }
+  for (const count of [0n, 1n, 2n, 5n, 33n, 100n]) {
+    const keys = Array.from({ length: Number(count) }, (_, i) => [BigInt((i * 41) % 5), BigInt((i * 7919) % 101), BigInt(i % 3)]);
+    const sorted = [...keys].sort(compare);
+    records.push(["ordered", [count], count === 0n ? 0n : keyedCode(sorted[0]) + keyedCode(sorted[sorted.length - 1]) * 100000000n]);
+    const spreads = Array.from({ length: Number(count) }, (_, i) => spread(BigInt(i)));
+    const spreadTotal = spreads.reduce((total, s) => total + spreadSum(s), 0n);
+    records.push(["spreads", [count], count === 0n ? spreadTotal : spreadTotal * 100n + spreads[spreads.length - 1].d]);
+    records.push(["ledger_array", [count], sumOver(count, ledgerSum) + count]);
+    records.push(["row_copies", [count], sumOver(count, rowSum) * 4n]);
+    records.push(["slots", [count], sumOver(count, slotSum)]);
+    const map = new Map();
+    for (let step = 0n; step < count; step++) map.set(`${step % 2n === 0n ? 1 : 0},${step % 13n},${step % 7n}`, step);
+    records.push(["keyed_map", [count], BigInt(map.size) * 1000n + (map.has("1,4,4") ? map.get("1,4,4") : -1n)]);
+  }
+  // Records that differ in one field, and in every field, in each position of the declared order.
+  const inputs = [[0n, 5n, 3n], [1n, 5n, 3n], [1n, 4n, 3n], [1n, 5n, 2n], [2n, 1n, 0n]];
+  for (const x of inputs) {
+    for (const y of inputs) {
+      const order = compare(x, y);
+      records.push(["keyed_flags", [...x, ...y], BigInt((order === 0 ? 1 : 2) + (order < 0 ? 4 : 0) + (order <= 0 ? 8 : 0) + (order > 0 ? 16 : 0) + (order >= 0 ? 32 : 0))]);
+    }
+    records.push(["keyed_hash", x, BigInt.asIntN(64, compositeHash(0x52, [scalarHash(0x10, x[0], 1), scalarHash(0x13, x[1], 8), scalarHash(0x10, x[2], 1)]))]);
+    records.push(["keyed_display", x, canonicalTextHash(`Keyed { a: ${x[0]}, b: ${x[1]}, c: ${x[2]} }`)]);
+  }
+}
 function canonicalTextHash(text) {
   return BigInt.asIntN(64, hashBytes([...littleEndian(0x53), ...littleEndian(text.length), ...Array.from({ length: text.length }, (_, index) => text.charCodeAt(index)).flatMap((unit) => littleEndian(unit, 2))]));
 }

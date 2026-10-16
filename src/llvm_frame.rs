@@ -521,8 +521,9 @@ impl FunctionEmitter<'_, '_> {
         let mut frames = BTreeMap::new();
         for (index, field) in fields {
             let (value, field_frames) = self.frame_inner(field);
+            let slot = self.field_slot(ty, *index);
             aggregate = self.value(format!(
-                "insertvalue {llvm} {aggregate}, {} {value}, {index}",
+                "insertvalue {llvm} {aggregate}, {} {value}, {slot}",
                 self.ty(&field.ty)
             ));
             if !field_frames.is_empty() {
@@ -699,10 +700,11 @@ impl FunctionEmitter<'_, '_> {
             let llvm = self.ty(ty);
             let mut result = value.to_owned();
             for (index, candidates) in Self::field_frames(frames) {
-                let field = self.value(format!("extractvalue {llvm} {value}, {index}"));
+                let slot = self.field_slot(ty, index);
+                let field = self.value(format!("extractvalue {llvm} {value}, {slot}"));
                 let moved = self.relocate(&types[index], &field, &candidates);
                 result = self.value(format!(
-                    "insertvalue {llvm} {result}, {} {moved}, {index}",
+                    "insertvalue {llvm} {result}, {} {moved}, {slot}",
                     self.ty(&types[index])
                 ));
             }
@@ -818,7 +820,8 @@ impl FunctionEmitter<'_, '_> {
                 if !field.needs_drop(&self.module.types()) {
                     continue;
                 }
-                let extracted = self.value(format!("extractvalue {llvm} {value}, {index}"));
+                let slot = self.field_slot(ty, index);
+                let extracted = self.value(format!("extractvalue {llvm} {value}, {slot}"));
                 match fields.get(&index) {
                     Some(candidates) => self.drop_framed(field, &extracted, candidates),
                     None => self.drop_value(field, &extracted),

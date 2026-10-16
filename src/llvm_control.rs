@@ -491,9 +491,9 @@ impl FunctionEmitter<'_, '_> {
         let labels: Vec<_> = arms.iter().map(|_| self.label()).collect();
         let switch = self.switch_plan(local, arms);
         if let Some(plan) = &switch {
-            let subject = if plan.tag && self.module.types().recursive(&local.ty) {
-                let node = self.value(format!("load ptr, ptr {}", self.locals[&local.id]));
-                self.recursive_tag(&local.ty, &node)
+            let subject = if plan.tag {
+                let slot = self.locals[&local.id].clone();
+                self.load_tag(&local.ty, &slot)
             } else {
                 self.value(format!(
                     "load {}, ptr {}",
