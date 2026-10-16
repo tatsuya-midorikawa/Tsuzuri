@@ -20,9 +20,10 @@ declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)
 ; @tz.heap.small[capacity / 16 - 2] (last in, first out); @tz.heap.smallmask has a bit for every list
 ; that is not empty, so a request finds the smallest list that serves it with one count of trailing
 ; zeros. Larger free blocks are in one list in address order, @tz.heap.free, and a request takes the
-; first that fits, except that a request that would cut a rest of 64 KiB or more, and at least four times
-; its own size, from that block is served from the end of the heap while the end can grow: a hole that
-; has been cut up is no longer the hole of the next large request.
+; first that fits, except that a block from which it would cut a rest of 64 KiB or more, and at least four
+; times its own size, is passed over: a hole that has been cut up is no longer the hole of the next large
+; request. When every block that fits is passed over, the end of the heap serves the request while the end
+; can grow, and otherwise the first block that was passed over is cut.
 ; A block of capacity 32 to 528 that is released is not merged at once: it is pushed on the list of its
 ; capacity in @tz.heap.fast (next in the payload word at +16) and stays an ordinary block that is in
 ; use for every other block, so a request of that capacity pops it back in a few instructions, which
@@ -380,6 +381,7 @@ large:
   br label %search
 search:
   %block = phi i32 [ %head, %large ], [ %next, %advance ]
+  %held = phi i32 [ 0, %large ], [ %heldnext, %advance ]
   %empty = icmp eq i32 %block, 0
   br i1 %empty, label %miss, label %inspect
 inspect:
@@ -391,21 +393,27 @@ inspect:
   %enough = icmp uge i32 %capacity, %needed
   br i1 %enough, label %candidate, label %advance
 advance:
+  %heldnext = phi i32 [ %held, %inspect ], [ %heldsel, %hold ]
   br label %search
 candidate:
   ; A request that would cut a rest of 64 KiB or more, and at least four times its own size, from a block
-  ; leaves the block to the large requests while the heap can grow: a hole that is cut into pieces is no longer
-  ; the hole of the next large request.
+  ; passes the block over: a hole that is cut into pieces is no longer the hole of the next large request.
+  ; The search goes on, and the first block that the request does not cut like that serves it.
   %rest = sub i32 %capacity, %needed
   %restlarge = icmp uge i32 %rest, 65536
   %quarter = lshr i32 %rest, 2
   %wasteful = icmp uge i32 %quarter, %needed
   %keep = and i1 %restlarge, %wasteful
-  br i1 %keep, label %prefertop, label %reuse
+  br i1 %keep, label %hold, label %reuse
+hold:
+  ; The first block that was passed over is remembered: it is cut only when the end of the heap cannot grow.
+  %unheld = icmp eq i32 %held, 0
+  %heldsel = select i1 %unheld, i32 %block, i32 %held
+  br label %advance
 prefertop:
   %topbegin = load i32, ptr @tz.heap.end
   %topgrown = call i1 @tz.heap.extend(i32 %topbegin, i32 %needed)
-  br i1 %topgrown, label %topallocated, label %reuse
+  br i1 %topgrown, label %topallocated, label %reuseheld
 topallocated:
   %topend = add i32 %topbegin, %needed
   store i32 %topend, ptr @tz.heap.end
@@ -418,7 +426,15 @@ reuse:
   %takenp = inttoptr i32 %taken to ptr
   %data = getelementptr i8, ptr %takenp, i32 16
   ret ptr %data
+reuseheld:
+  %takenheld = call i32 @tz.heap.carve(i32 %held, i32 %needed)
+  %heldp = inttoptr i32 %takenheld to ptr
+  %heldata = getelementptr i8, ptr %heldp, i32 16
+  ret ptr %heldata
 miss:
+  %passed = icmp ne i32 %held, 0
+  br i1 %passed, label %prefertop, label %nofit
+nofit:
   %pending = load i32, ptr @tz.heap.fastmask
   %stocked = icmp ne i32 %pending, 0
   br i1 %stocked, label %flushing, label %bump

@@ -1175,6 +1175,13 @@ const suites = {
     ],
     traps: [["vec_bounds", []], ["vec_negative_capacity", []], ["vec_negative_reserve", []], ["vec_overflow_reserve", []], ["vec_overflow_capacity", []], ["vec_negative_truncate", []]],
   },
+  // PM05: a bounded live set in the WASM heap. A temporary that is freed above kept blocks must leave a hole that later rounds
+  // reuse: the heap stays under 8 MiB (the 16 MiB heap was full after 100 rounds and failed after 3,000 when only the first
+  // hole was looked at). 3600 rounds: 1800 * 299999 + 1800 * 37499 + 3600.
+  heap_churn: {
+    wasmMemory: 8 * 1024 * 1024,
+    cases: [["churn", [3600n], 1800n * 299999n + 1800n * 37499n + 3600n]],
+  },
   array_bulk: {
     cases: [
       ["array_basics", [], 44n],
@@ -2200,7 +2207,8 @@ int main(int argc, char **argv) {
       const exports = new WebAssembly.Instance(module).exports;
       for (const [exported, args, expected] of suite.cases) {
         assert.equal(exports[`tz_${exported}`](...args), expected, `${name} WASM O${optimization}: ${exported}(${args})`);
-        assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024, `${name}: WASM stays within 16 MiB`);
+        const memoryLimit = suite.wasmMemory ?? 16 * 1024 * 1024;
+        assert.ok(exports.memory.buffer.byteLength <= memoryLimit, `${name}: WASM stays within ${memoryLimit / 1048576} MiB`);
       }
       for (const [exported, args, expected] of bounded) {
         const result = executeBounded(process.execPath, ["-e", boundedWasmCall, wasm, `tz_${exported}`, ...args.map(String)]);

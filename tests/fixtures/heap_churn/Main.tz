@@ -1,0 +1,20 @@
+// The WASM heap under a bounded live set (tests/features.mjs, suite heap_churn). Every round allocates a temporary array of
+// 2.4 MB or 0.3 MB, then a 6-element array that is kept (it goes into a Vec), and frees the temporary when the round ends:
+// the temporary is a hole that the kept array pins. At most 3 MB are live at a time, so the program must run any number of
+// rounds in a heap of 16 MiB. A heap that serves every small request from its end whenever the first hole is large, and so
+// leaves one more hole behind every second round, is full after a hundred rounds and fails after a few thousand.
+// The result is the sum of the last element of each temporary plus the length of the Vec: 1800 * 299999 + 1800 * 37499 + 3600
+// for 3600 rounds, in general `rounds * 168750` for an even `rounds`.
+export def churn :: i64 -> i64
+fn churn rounds =
+    let mut kept: Vec<[i64]> = Vec.empty()
+    let mut total = 0
+    let mut index = 0
+    while index < rounds do
+        let count = if index % 2 == 0 then 300000 else 37500
+        let scratch = new [i64](count, k -> k)
+        let node = new [i64](6, k -> k)
+        kept = Vec.push kept node
+        total = total + scratch[count - 1]
+        index = index + 1
+    total + Vec.length (ref kept)
