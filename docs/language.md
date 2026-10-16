@@ -3387,13 +3387,13 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 | `Mutex.into_inner mutex` | `Mutex<'a> -> 'a` | ロックを消費して値を返す |
 
 - `AtomicValue`: `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` だけが満たす組み込みの印です。ほかの型は `E1005`（`atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for ...`）です。`fetch_*` は、さらに `Integer` を要求します（`bool` は `E1005`）。
-- 順序: すべての `Atomic` 操作は sequentially consistent です。ネイティブでは `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`（`seq_cst`）に下がり、ランタイムの関数は呼びません（`fetch_add` は AArch64 の LSE では `ldaddal` 1 命令、x86-64 では `lock` 付きの 1 命令です）。`bool` は 1 バイトです。既定の wasm32 では通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。セルは `@tz.alloc` が返す 16 バイト境界のブロックに置かれるので、`--allocator host`・`counting` でも整列を満たします。
+- 順序: すべての `Atomic` 操作は sequentially consistent です。ネイティブでは `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`（`seq_cst`）に下がり、ランタイムの関数は呼びません（`fetch_add` は AArch64 の LSE では `ldaddal` 1 命令、x86-64 では `lock` 付きの 1 命令です）。`bool` は 1 バイトです。既定の wasm32 では通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。セルは `@tz.alloc` が返す 16 バイト境界のブロックに置かれるので、`--allocator host`・`counting`・`small` でも整列を満たします。
 - `Sync`: `Atomic<'a>` と、`Send` な値を入れた `Mutex<'a>` は `Sync`（と `Send`）です。`Mutex<'a>` は `'a` の中身を見ずに `Sync` と判定します。ロックの外から `'a` に触れる道はなく、`Mutex.create` が `'a` に `Send` を求めるためです。
 - `Mutex.with_lock`: `callback` の結果は `Send` で、ロック中の値への借用を持てません。`ref` を返すことは `E1013`（`tasks require owned values`）です。借用を捕捉した関数値と、それを含む `Maybe`・タプル・配列・レコード・`Seq` は、借用を持たない結果だと証明できなければ `E1013`（`Mutex.with_lock results must be proven free of borrowed environments`）です。ロックが外れた後で、置き換えられて解放された値や、ほかのタスクが書く値を読むことになるからです。値のコピーを捕捉した関数のように証明できる結果は通ります。結果が借用を持ちうるときは、ロックと `callback` を一度に渡して直接呼びます（引数の一部だけを渡すことと、関数値にすることは `E1013`、`Mutex.with_lock must be fully applied directly when its result may hold borrowed values`）。同じスレッドでロックを持ったまま別の `with_lock` を呼ぶこと（入れ子）と、ロック中に `Task.parallel`・`Task.parallel_results`・`Task.scope`・`Parallel.*` を始めることは、ネイティブでは標準エラーに診断（`Mutex.with_lock cannot be nested; release the outer mutex first`、`parallel work cannot start inside Mutex.with_lock; move it outside the critical section`）を出してトラップします（WASM はトラップだけです）。ロック中に待つ場所をなくすので、デッドロックしません。待つスレッドは眠り、順序（公平性）は保証しません。`with` は予約語でドットの後ろにも書けないので、名前は `with_lock` です。作る関数も `new` が予約語なので `create` です。
 - ロックの実装: ネイティブでは、セルの先頭の語（0 解放、1 保持、2 保持して待ちがいる）を compare-exchange（acquire）で取り、exchange（release）で解放します。待つスレッドは、全 `Mutex` で共有する 1 組の pthread の mutex と条件変数で眠ります。既定の wasm32 は 1 スレッドで、ロックは開いている `with_lock` の有無を示す 1 つのフラグです。`Mutex` を使うと、ネイティブでは `Task.parallel` と `Task.scope` の呼び出しが、開始前にロックの有無を検査するラッパー経由になります。`Mutex` を使わないプログラムの IR は変わりません。
 - トラップ: `Mutex.with_lock` の中のトラップはポイズンを残しません。既定ではプロセスが終わります。`--trap-mode return` では、境界がそのスレッドの持つロックを解放して状態を消し、同じグループの待っている子どもも終わらせてから、トラップを呼び出し元へ返します。ロックの中の値は、その呼び出しが確保したほかのものと同じく境界が解放します。
 - 循環: `Arc` は `Mutex` の中に入れられるので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指す循環を作れます。サイクルコレクターはなく、循環のブロックは解放されません。循環の一方は `Arc.Weak` で持ちます（[Rc / Arc](#rc--arc)）。
-- ターゲット: `Mutex` は、ネイティブ、既定の wasm32、`--wasm-feature threads`（Worker 間で待ちます）で使え、`--freestanding` では `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting` で使えます。
+- ターゲット: `Mutex` は、ネイティブ、既定の wasm32、`--wasm-feature threads`（Worker 間で待ちます）で使え、`--freestanding` では `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting`・`small` で使えます。
 
 ### Channel
 
@@ -3848,7 +3848,7 @@ WASM ターゲットにおいては、stack-first 配置モデルに基づき、
 一方、wasm32 でメモリ上限が 2 GiB を超過する場合やマルチスレッド有効化時においては、各関数のプロローグで静的フレーム確保直後にスタックポインタが自身のスタック有効範囲（下端に 4 KiB の安全マージンを確保）に収まっているかを明示検証し、オーバーフロー時はスタックフレームメモリを使用する前に安全にトラップします。
 この 4 KiB の安全余白は、スタック検査を持たないスレッドランタイムや 128-bit 整数補助関数のフレーム（合計 1 KiB 未満）を保護するために設けられています。検査は関数のエントリーポイントでのみ行われ、インライン展開後は LLVM 最適化によってループの外側へと効率的に巻き上げられます。
 文字列バッファは、スタックおよび静的データ領域の後方に続くヒープ領域へと動的確保され、解放されたブロックは再利用されます（WASM では、容量 528 バイト以下のブロックは同じ容量の次の要求に返され、ヒープを伸ばす前にまとめて隣と結合されます。詳細は[スタックとヒープ](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md)）。
-ネイティブ環境においては標準の `malloc` / `free` アロケータが使用されます（`--allocator host` の出力はホストの関数を呼びます。[ホスト提供の allocator](#ホスト提供の-allocator) を参照。なお、WASM のコールスタックの最大呼び出し深度は実行環境の WebAssembly 仮想マシンエンジンに依存します）。
+ネイティブ環境においては標準の `malloc` / `free` アロケータが使用されます（`--allocator host` の出力はホストの関数を呼びます。`--allocator small` は 512 バイト以下の確保をサイズ区分から返します。[ホスト提供の allocator](#ホスト提供の-allocator) を参照。なお、WASM のコールスタックの最大呼び出し深度は実行環境の WebAssembly 仮想マシンエンジンに依存します）。
 スタック上に配置されるリテラルデータ領域や配列の一時作業領域は関数のプロローグで一括確保されるため、末尾再帰ループの各反復でスタックが際限なく肥大化することはありません。
 ただし、非末尾の再帰関数では呼び出しごとのスタックフレームが独立して領域を確保するため、巨大なデータ構造を取り扱う際は明示的に `new` を用いてヒープ領域上に確保してください。
 
@@ -3974,7 +3974,7 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 
 ### ホスト提供の allocator
 
-`tsuzuri build` の `--allocator system|host|counting` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
+`tsuzuri build` の `--allocator system|host|counting|small` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
 `system`（既定）はネイティブで C ライブラリの `malloc`／`realloc`／`free`、WASM でモジュール内のヒープ（容量別のリストと小さなブロックのキャッシュ、終端のブロックのその場の拡張）で、指定しない場合と出力が一致します。
 `host` と `counting` は、ホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）だけで使え、`--emit exe`・`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed` と `--trap-mode return` との併用は `E2000` です。`build` 以外のコマンドは既定の allocator だけを使います。
 
@@ -4004,6 +4004,11 @@ typedef struct {
 } tsuzuri_allocation_stats;
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
+
+`--allocator small` は native の 64-bit の target で使うサイズ区分の allocator です（PM05。既定ではありません）。実行ファイル（`--emit exe`）・`object`・`llvm`・`header`・`shared` に付けられ、WASM（`E2000`: `--allocator small requires a native target; WebAssembly modules keep their own heap`）・`wgsl`・`spirv`・`--trap-mode return`・`--freestanding` とは併用できません。
+0〜512 バイトの確保を、16 バイト刻みの 32 区分（16、32、……、512 バイトのブロック）から返します。それより大きい確保と、区分に属さないポインターは `system` と同じ C ライブラリの `malloc`・`realloc`・`free` です。ブロックにヘッダーはなく、戻り値は 16 バイト境界で、`tsuzuri_alloc`・`tsuzuri_free` の契約は変わりません。ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放します（`small` のブロックを C ライブラリの `free` へ渡すと壊れます）。
+区分ごとの region（1 MiB、1 MiB 境界）から切り出し、スレッドごとのキャッシュで確保・解放します。別のスレッドが解放したブロックは、解放したスレッドのキャッシュに入ります。スレッド間で共有する中央のスタックは try-lock で守り、取れなければ待たずに確保は `malloc` へ、解放はキャッシュに残して次の解放でやり直すので、スレッドが他のスレッドを待つことはありません。メモリは OS へ返しません。終わったスレッドのキャッシュ（1 スレッドで約 264 KiB まで）は再利用されません。
+1 つのプログラムにリンクした複数のオブジェクトは 1 つの状態を共有します（共有ライブラリは自分の状態を持ちます）。`--allocator` は同じ値で揃えてください。`small` のオブジェクトと `system` のオブジェクトをリンクすると、`system` 側のコードが `small` のブロックを `free` へ渡して壊れます。`small` のブロックは、ASan の use-after-free の検出や leak checker からは、1 MiB の region の `malloc` 1 つとして見えます。テストのために、生成コードは弱い hidden の `tz_small_stats(uint64_t out[5])`（region から切り出したバイト数、中央とキャッシュにあるバイト数、region の数、キャッシュの数、区分の allocator 自身の `malloc` のバイト数）を持ちます。全部のブロックを解放した後は、最初の 2 つが等しくなります。
 
 `--freestanding`（ネイティブの `--emit object`・`llvm`・`header`、`--allocator host` が必須）は C ライブラリに依存しない出力を作ります。生成コードが参照する外部の関数は、`tsuzuri_host_*`、プログラムが宣言した extern のホスト関数、freestanding な C 環境が提供する `memcpy`・`memmove`・`memset`・`memcmp`、コンパイラの組み込みランタイム（compiler-rt／libgcc。128-bit 整数の除算の `__divti3` など）だけです。CPU ディスパッチは使わず、トラップは `llvm.trap` だけです。
 標準 IO、OS API、`Net` のソケット、並列タスク、プログラム引数、Debug 出力を使うプログラムは `E2000`（`--freestanding cannot use ...`）で、`--emit header` でも同じです。`--trap-info`・`--debug-output` との併用も `E2000` です。

@@ -232,12 +232,35 @@ tsuzuri build --emit object --allocator host Main.tz
 | `system`（既定） | ネイティブでは C 標準ライブラリの `malloc` / `realloc` / `free`。WASM ではモジュール内のヒープ（[WASM のヒープ](#wasm-のヒープ)） |
 | `host` | ホストの `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` に委譲する |
 | `counting` | `system` を包み、確保回数、解放回数、使用中バイト、ピークバイトを数える。`tsuzuri_alloc_stats` で読む |
+| `small` | native の 64-bit だけ。512 バイト以下をサイズ区分から返し、それより大きいものは C 標準ライブラリ（[ネイティブのサイズ区分 allocator](#ネイティブのサイズ区分-allocator)） |
 
 `host` と `counting` は、`--emit object`、`llvm`、`header`、または WASM だけで使えます。`--emit exe`、`wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`、`--trap-mode return` と一緒だと `E2000` です。`host` は `--wasm-feature threads` とも同時には指定できません。実行ファイルの既定ヒープは `system` のままです。
 
 `--freestanding` は、C 標準ライブラリに依存しない native の `object` / `llvm` / `header` を出します。`--allocator host` が必須です。残ってよい外部は、ホストの allocator、自分で宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Debug`、プログラム引数は `E2000` で拒否されます。
 
 関数の契約とリンク方法は [ネイティブ連携 (C ABI)](../compiler/native-interop.md) と [コンパイラ オプション](../compiler/option.md) を見てください。
+
+## ネイティブのサイズ区分 allocator
+
+`--allocator small` は、native の 64-bit で小さなブロックの確保と解放を短い手順にするアロケータです。既定ではなく、`system` のままのプログラムには何も変わりません。
+
+```sh
+tsuzuri build --allocator small Main.tz
+```
+
+- 0 から 512 バイトの確保は、16 バイト刻みの 32 区分（16、32、……、512 バイトのブロック）から返します。ブロックにヘッダーはなく、先頭は 16 バイト境界です。513 バイト以上の確保と、`realloc` で大きくなったブロックは、`system` と同じ C 標準ライブラリの `malloc` / `realloc` / `free` が受け持ちます。
+- 区分ごとに、1 MiB 境界の 1 MiB の region を持ちます。region は 1 つの区分のブロックだけを持ち、アドレスから区分がわかるので、解放にサイズは要りません。
+- スレッドごとにキャッシュを持ち、確保と解放はロックもアトミック命令も使いません。キャッシュが空になると、中央のスタックから 4 KiB ぶんをまとめて受け取るか、region の未使用の部分から切り出します。キャッシュが溢れると、4 KiB ぶんを中央へ返します。中央のスタックは try-lock で守ります。ロックが取れなければ待たず、確保は `malloc` から、解放はキャッシュに残して次の解放で再試行するので、他のスレッドを待つことはありません。
+- あるスレッドが確保したブロックを別のスレッドが解放してもかまいません。解放したスレッドのキャッシュに入り、その後はそのスレッドが使います。
+- 確保に失敗した（C ライブラリが null を返した）ときは、`system` と同じく、その場でトラップします。
+- メモリは OS へ返しません。終わったスレッドのキャッシュ（1 スレッドで約 264 KiB まで）は、ほかのスレッドから使われません。
+- `Atomic` と `Mutex` のセルは、`system` と同じく 16 バイト境界に置かれます。ホストへ返した所有バッファは、`tsuzuri_free` で解放します。C の `free` へ渡してはいけません。
+
+出力は、実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared` です。WASM は自前のヒープ（[WASM のヒープ](#wasm-のヒープ)）を使い続けるので `E2000` になります。`wgsl` と `spirv` の出力、`--trap-mode return`、`--freestanding` とも一緒には指定できません。
+
+1 つのプログラムにリンクした複数のオブジェクトは、1 つの状態を共有します（macOS と Linux。共有ライブラリは自分の状態を持ちます）。同じプログラムの中で `--allocator` を混ぜてはいけません。`system` のオブジェクトが `small` のブロックを `free` へ渡すと壊れます。ASan の use-after-free の検出や leak checker は、ブロック 1 つ 1 つではなく、1 MiB の region の `malloc` 1 つを見ます。
+
+コードは、確保するプログラムで約 2.5 KiB 増えます。`.bss` に約 130 KiB を使いますが、触るまで物理メモリにはなりません。確保と解放の呼び出しは、`system` の `malloc` と `free` と同じように、読まれないまま解放されるブロックを LLVM が取り除けます。測定した範囲（Apple M1 Max の PX02 の app）では、`system` より遅くなったものはなく、`binary_trees` や `tokenize` のように小さなブロックを大量に確保して手放すプログラムで速くなりました。メモリ使用量は同等です。数値、条件、計測できていないこと（Linux・Windows、静かなマシンでの値）は [docs/benchmarks.md](../../../docs/benchmarks.md) にあります。
 
 ## 他の言語との比較
 
@@ -258,6 +281,7 @@ tsuzuri build --emit object --allocator host Main.tz
 - 再帰的な union の子ノードは自動的にヒープ確保され、スタックを浪費しません。
 - 暗黙のコレクション複製は `--warn implicit-copy`（`W1006`）で見つけられます。
 - `--allocator host` と `--freestanding` は `build` のオブジェクト出力向けです。実行ファイルの既定にはなりません。
+- `--allocator small` は native の 64-bit 向けのサイズ区分 allocator で、実行ファイルにも付けられます。既定は `system` のままです。
 
 ## 関連項目
 
