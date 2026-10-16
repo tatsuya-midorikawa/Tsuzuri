@@ -46,12 +46,17 @@
 
 enum { TZ_TASK_MAX_THREADS = 32 };
 
-/* How many sleeping workers a submit wakes. Each worker that joins a group while it still has unstarted
-   items wakes one more (tz_task_worker_main), so a group spreads over the workers without its submitter
-   having to wake each of them. */
+/* How many sleeping workers a submit wakes, and how many more each worker that joins a group wakes while the group
+   still has unstarted items (tz_task_worker_main). The workers start like the branches of a tree, so a group
+   spreads over them in a few steps without its submitter calling the kernel for each, and a group that the
+   submitter finishes alone wakes one worker. */
 #ifndef TZ_TASK_INITIAL_SIGNALS
-#define TZ_TASK_INITIAL_SIGNALS 2
+#define TZ_TASK_INITIAL_SIGNALS 1
 #endif
+#ifndef TZ_TASK_CHAIN_SIGNALS
+#define TZ_TASK_CHAIN_SIGNALS 2
+#endif
+_Static_assert(TZ_TASK_INITIAL_SIGNALS >= 1 && TZ_TASK_CHAIN_SIGNALS >= 1, "a group needs a wakeup to bring in the workers");
 
 #if !defined(_WIN32)
 #ifndef TSUZURI_TRAP_INFO_DEFINED
@@ -350,12 +355,14 @@ static void *tz_task_worker_main(void *pointer) {
         ++tz_task_pool.busy;
         --tz_task_pool.idle;
         tz_task_counted = 1;
-        /* The group still has unstarted items: wake the next worker (a hint; the group may be gone by
-           then, and a wakeup that finds nothing is harmless). A lost wakeup is not: see the argument at
-           tz_task_submit. */
-        int more = atomic_load_explicit(&group->next, memory_order_relaxed) < group->length;
+        /* The group still has unstarted items: wake the next workers, as many as it has items left, up to
+           TZ_TASK_CHAIN_SIGNALS (a hint; the group may be gone by then, and a wakeup that finds nothing
+           is harmless). A lost wakeup is not: see the argument at tz_task_submit. */
+        uint64_t seen = atomic_load_explicit(&group->next, memory_order_relaxed);
+        unsigned wakes = seen >= group->length ? 0
+            : group->length - seen < TZ_TASK_CHAIN_SIGNALS ? (unsigned)(group->length - seen) : TZ_TASK_CHAIN_SIGNALS;
         tz_task_unlock();
-        if (more) tz_task_signal(&tz_task_pool.work_available);
+        while (wakes-- != 0) tz_task_signal(&tz_task_pool.work_available);
         tz_task_run_item(group, index);
         uint64_t done = 1 + tz_task_drain(group);
         /* The items are released, and the worker counted free, in one critical section: when the
@@ -404,12 +411,13 @@ static void tz_task_start_pool(void) {
 
 /* Waking workers, and why a wakeup is never lost. A token is a signal that was sent and has not been taken, or a
    worker that is awake and has not looked at the groups yet. A worker looks at every group with the mutex held
-   before it sleeps, so a token ends in a claim, or in nothing left to claim. A submit adds one token or two (and
-   never more than the group has other items) for its group, and a worker that claims an item at its join adds one
-   while that group still has unstarted items. The tokens are therefore never fewer than the groups that have
-   unstarted items: a token is used up by a claim that passes it on, or that empties its group. The thread that
-   waits for a join runs its own items to the end, so a group never needs a token to finish; the tokens bring the
-   threads that a pipeline needs, and that a thread blocked on a channel waits for while idle != 0. */
+   before it sleeps, so a token ends in a claim, or in nothing left to claim. A submit adds TZ_TASK_INITIAL_SIGNALS
+   tokens for its group (never more than the group has other items), and a worker that claims an item at its join
+   adds up to TZ_TASK_CHAIN_SIGNALS while that group still has unstarted items (at least one, so the token that
+   the claim used up is replaced). The tokens are therefore never fewer than the groups that have unstarted items:
+   a token is used up by a claim that passes it on, or that empties its group. The thread that waits for a join
+   runs its own items to the end, so a group never needs a token to finish; the tokens bring the threads that a
+   pipeline needs, and that a thread blocked on a channel waits for while idle != 0. */
 static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(void *, uint64_t), void *context, uint64_t length) {
     if (length == 0) return UINT64_MAX;
     if (length == 1) {

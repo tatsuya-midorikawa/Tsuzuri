@@ -190,9 +190,9 @@ static uint32_t result_visit(void *context, uint64_t index) {
 
 /* One group of ITEMS indices on a pool that is asleep. The mutex is taken a few times, not once for each index
    (259 times for `run` and 515 for `results` before PR06): twice by the submitter, once by each worker that took
-   part. The workers are woken by signals that pass along the group: some at the submit, one for each worker that
-   joins while items are unstarted, and at most one broadcast, by the worker that finishes the group for a
-   submitter that waits. A pool of one thread takes no lock and wakes nobody. */
+   part. The workers are woken by signals that pass along the group: some at the submit, up to
+   TZ_TASK_CHAIN_SIGNALS for each worker that joins while items are unstarted, and at most one broadcast, by the
+   worker that finishes the group for a submitter that waits. A pool of one thread takes no lock and wakes nobody. */
 static void check_group_cost(int results) {
     quiesce();
     reset_hits();
@@ -207,7 +207,7 @@ static void check_group_cost(int results) {
         return;
     }
     assert(taken <= 2 + (required - 1));
-    assert(woken >= 1 && woken <= TZ_TASK_INITIAL_SIGNALS + (required - 1));
+    assert(woken >= 1 && woken <= TZ_TASK_INITIAL_SIGNALS + TZ_TASK_CHAIN_SIGNALS * (required - 1));
     assert(broadcast <= 1);
 }
 
