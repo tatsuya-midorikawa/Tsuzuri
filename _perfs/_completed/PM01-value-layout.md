@@ -822,7 +822,7 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 ## 実装と検証（2026-10-16）
 
-ブランチ `perf/phase3/PM01`（基準 `70f7c803`）。統合ブランチ `perf/phase3-representation-runtime` を 3 回取り込んだ（PR03 を `7825b916`、PB04・PR02 を `ff5612a2`、PB03・PM08・PR06 と各 ticket の review の修正を `a17e330a`・`d5b91402`。取り込んだ先頭は `7f41badc`）。
+ブランチ `perf/phase3/PM01`（基準 `70f7c803`）。統合ブランチ `perf/phase3-representation-runtime` を 4 回取り込んだ（PR03 を `7825b916`、PB04・PR02 を `ff5612a2`、PB03・PM08・PR06 と各 ticket の review の修正を `a17e330a`・`d5b91402`、PM05（WASM のヒープと native の `--allocator small`）と PR06 の review の修正を `62045e93`。取り込んだ先頭は `127abe27`）。
 全 Phase のうち Phase 1・2・3a を実装した。Phase 3b（タプル）は D10 のとおり実施せず、その根拠を下に記録する。
 
 ### 実装した内容
@@ -830,12 +830,15 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 | 段 | commit | 内容 |
 | --- | --- | --- |
 | 準備 | `291e220f` | `benchmarks/layout/{Main.tz,sizes.mjs,ir-diff.mjs}`（workload、型の大きさの表、2 つのコンパイラの IR の差分） |
-| 整理（IR 同一） | `6a0ef1b4` | `src/llvm_layout.rs`。タグと record の添字の全経路を helper に通した（218 job の IR が同一。差は `Dyn.of`・vtable の確保サイズが `ptrtoint (getelementptr …)` の定数式になったことだけ） |
+| 整理（IR 同一） | `6a0ef1b4` | `src/llvm_layout.rs`。タグと record の添字の全経路を helper に通した（`-O0` の native・wasm32 の 218 job のうち 191 は IR が同一、25 は両方のコンパイラが同じに失敗し、差が出たのは `dyn_dispatch` の 2 job だけで、`Dyn.of`・vtable の確保サイズが `ptrtoint (getelementptr …)` の定数式になったことによる） |
 | Phase 1 | `a22167ea`、`52704d6f` | タグの幅 1・2・4 bytes（`tag_bytes`）。`General { unit, units }`（`[units x iU]`、`unit = min(最大アラインメント, 16)`） |
 | Phase 2 | `5833c3dd` | `Niche::NegativeLength`（string・utf8string・配列）と `Niche::NullPointer`（スライスでない `ref`、native だけ）。`Seq.next` の空値の明示構築。DWARF の `$payload`・`$niche`、LLDB の formatter、natvis、`debugging.md`（WP9） |
 | 統合 | `7825b916` | PR03 の取り込み。`uses_return_slot` は `UnionLayout::is_aggregate()`（`Common`・`General`）だけを対象にする |
 | 統合 | `ff5612a2`、`a17e330a`、`d5b91402` | PB04・PR02、PB03・PM08・PR06 と各 ticket の review の修正の取り込み。`src/llvm.rs` の衝突は移した union の block の跡と `executable_roots` の追加だけで、block の中身への上流の変更はなかった。`tests/features.mjs` の `return_slot` の pin は上流の構造の規則の一覧を採り、`label`（niche の `Maybe<string>`）を平文の `ret` の側に置いた |
 | Phase 3a | `9d9b237c`、`19b49017`、`57143a03` | `record_slots`・`place_fields`・`field_slot`（全経路。IR 同一の段の後に並べ替えを有効化）。`union_layout`・`record_slots` の memo |
+| 検証・文書 | `aecd92a6`、`10e21cfe`、`3ca08ed6`、`4572059c`、`90549d30` | タグのない union（`Hushed \| Words of string`）の導出 Eq/Ord/Hash/Display の case、`src/llvm_layout.rs` のモジュールの説明、入れ子の target scope が自分の target と memo を持つことのテスト、GUIDE の台帳（D-05・D-31・G16・record の箇条）と `architecture.md` の最終の表現への修正 |
+| 計測・完了 | `6667906b` | 計測の記録（`docs/benchmarks.md`、この節）、再帰ノードの領域の記述の修正と固定するテスト、ticket を `_perfs/_completed/` へ移動 |
+| 統合 | `62045e93` | PM05 と PR06 の review の修正の取り込み。衝突は `docs/benchmarks.md` の節の順（PM01、PM05 の順で両方を残した）だけで、`src/llvm.rs` ほかのソースに衝突はなかった |
 
 ### 決定事項の結果
 
@@ -851,10 +854,19 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 ### 検証
 
-- Rust: `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（`with-lock.sh heavy`）が 102 binary、1,335 件成功、1 件 ignored、失敗 0。GUIDE §3.1 の 4 つの回帰テスト（`honors_the_exact_specialization_limit`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`bounds_type_growing_polymorphic_recursion`）を含む。`cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、`cargo +stable check --all-targets --target {x86_64,aarch64}-pc-windows-msvc` も通る。
-- 新しい Rust テスト: `src/llvm_layout.rs` の `tag_bytes_follow_case_count`・`layout_bounds_cover_actual_sizes`・`union_sizes_follow_the_documented_rule`・`record_sizes_follow_the_documented_rule`・`fields_are_placed_by_decreasing_alignment_only_when_that_saves_bytes`、`tests/value_layout.rs`（12 件。定義、タグの幅、niche、record の定義・添字・リテラル・更新・借用・ホストの wrapper、戻り値 slot）、`tests/debug_info.rs`（タグの幅、niche、record のメンバーの順と offset）、`tests/param_facts.rs`（`dereferenceable` の下限）。
-- E2E: features の suite `value_layout`（927 件）と `record_layout`（225 件）が native・wasm32 × `-O0`・`-O3` で通る（`live == 0`、WASM の import なし）。期待値は JS の BigInt で独立に求め、Hash は `compositeHash`・`scalarHash` の参照で書いた。`record_layout` の export を基準のコンパイラと新しいコンパイラで実行して 214 回の呼び出しの結果が一致した（差分 0）。`tests/user_drop.mjs`（並べ替えた Drop record。native の C ホストと WASM、`-O0`・`-O3`、ASan）、`tests/debug_info.mjs`、`tests/debugger.mjs`（LLDB が niche の union と並べ替えた record の値を正しく読む）、既存の `tests/host_abi.rs`（`Inner { i8, i16u, bool }` が `{ i16, i8, i1 }` に並べ替わり、C の構造体は宣言順のまま往復する）。node の suite の一覧と結果は最終報告に書く。
-- IR 同一の段: `ir-diff.mjs` で WP2（218 job）と WP10（native と wasm32 の `-O0` 111 project、`-O3` 4 project）が前の build と同一。
+- Rust（最終の tree。`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`、`with-lock.sh heavy`）: 103 binary と doc-test で 1,442 件成功、1 件 ignored、失敗 0。GUIDE §3.1 の 4 つの回帰テスト（`honors_the_exact_specialization_limit`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`bounds_type_growing_polymorphic_recursion`）を含む。
+  統合ブランチの取り込み前（`d5b91402`）の全件は 1,436 件成功、1 件 ignored、失敗 0。`cargo build --all-targets --locked`、`cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、`cargo +stable check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` も通る。
+- 取り込み後に対象を絞った Rust のテスト（`running N tests`、N ≠ 0。すべて失敗 0）: lib 306、value_layout 13、debug_info 13、param_facts 9、union_types 10、call_specialization 13、maybe_result 9、generic_records 16、user_drop 26、host_abi 4、display_parse 6、integer_ranges 16、integers 4、llvm_handoff 8、prebuilt_runtime 4、allocator 9、recursive_types 4、constants 32、gpu 16、fixed_arrays 15、dyn_dispatch 23、last_use 30、tasks 13、async 15。
+- 新しい Rust テスト: `src/llvm_layout.rs` の `tag_bytes_follow_case_count`・`layout_bounds_cover_actual_sizes`・`union_sizes_follow_the_documented_rule`・`record_sizes_follow_the_documented_rule`・`fields_are_placed_by_decreasing_alignment_only_when_that_saves_bytes`、`tests/value_layout.rs`（13 件。定義、タグの幅、niche、再帰ノードの領域、record の定義・添字・リテラル・更新・借用・ホストの wrapper、戻り値 slot）、`tests/debug_info.rs`（タグの幅、niche、record のメンバーの順と offset）、`tests/param_facts.rs`（`dereferenceable` の下限）。
+- E2E: features の suite `value_layout`（969 件）と `record_layout`（225 件）が native・wasm32 × `-O0`・`-O3` で通る（`live == 0`、WASM の import なし）。期待値は JS の BigInt で独立に求め、Hash は `compositeHash`・`scalarHash` の参照で書いた。`record_layout` の export を基準のコンパイラと新しいコンパイラで実行して 214 回の呼び出しの結果が一致した（差分 0）。`tests/user_drop.mjs`（並べ替えた Drop record。native の C ホストと WASM、`-O0`・`-O3`、ASan）、`tests/debug_info.mjs`、`tests/debugger.mjs`（LLDB が niche の union と並べ替えた record の値を正しく読む）、既存の `tests/host_abi.rs`（`Inner { i8, i16u, bool }` が `{ i16, i8, i1 }` に並べ替わり、C の構造体は宣言順のまま往復する）。
+- 取り込み後（`62045e93`）の release コンパイラでの確認（Node 24.21.0、Apple clang 21 を PATH の先頭、LLVM 21 を末尾に置いた。`target/perf/PM01-final/verify2` と `full-features*.log`）: features の suite を 1 つずつ — record_layout 225、value_layout 969、unions 27、maybe_result 26、return_slot 83、vec 15、concurrency 71、channel 24、param_facts 113、generic_records 10、recursive_types 23、deriving 209 — と、features の全体 15,383 件が native・wasm32 × `-O0`・`-O3` で通る。
+  同じ全体 15,383 件と、上の suite を PM05 の native `--allocator small`（`TSUZURI_TEST_ALLOCATOR=small`。解放漏れは `tz_small_stats` で検査）でも通した。個別の件数: record_layout 225、value_layout 969、unions 27、maybe_result 26、return_slot 83、vec 15、concurrency 71、channel 24、arena 27、rc 37、hash_map 192、generic_records 10、recursive_types 23、dyn_dispatch 55、exceptions 76、parallel 36、storage 24、borrowed_records 57、fixed_arrays 23、iteration_protocol 26、map_set 26。
+  ASan（`TSUZURI_ASAN=1`、`ASAN_OPTIONS=detect_stack_use_after_return=1`）: record_layout 225、value_layout 969、storage 24。ほかに `tests/small_allocator.mjs`、`tests/wasm_heap.mjs`（wasm32・wasm64）、`tests/integer_format.mjs`、`tests/debug_info.mjs`、`tests/debugger.mjs`、`tests/user_drop.mjs`（ASan も）、`tests/host_imports.mjs`、`tests/prebuilt_runtime.mjs`、`tests/llvm_handoff.mjs`、`tests/tasks.mjs`、`tests/computations.mjs`、`tests/cpu_kernels.mjs`、`tests/bindgen.mjs`、`sh scripts/check-runtime-includes.sh`（50 file）が通る。
+- 取り込み前（`d5b91402`）の node suite の掃引（`target/perf/PM01-node-sweep`。32 件）: features の全体 15,383 件を含む 30 件が exit 0。`cpu_kernels` と `bindgen` だけ exit 1 だったのは、その掃引が Homebrew の clang 23.1.1 を PATH の先頭にして走らせたためで、コンパイラの問題ではない（`cpu_kernels` は `clang -target x86_64-apple-macos11` が `stdio.h` を見つけられず、`bindgen` は libclang 23 が無名の構造体を別の名前で出して golden と食い違う）。Apple clang 21 と Node 24 で再実行して両方通り、取り込み後のコンパイラでも通る。
+- ドキュメント: `node scripts/check-docs.mjs`（record・tuple・union・debugging・native-interop の 5 ページ）が 92 link、33 例、58 回の native 実行（`-O0`・`-O3`）で通る。`git diff --check`。
+- PM05 の heap との組み合わせ（WASM）: wasm64（`TSUZURI_TEST_WASM_TARGET=wasm64`）で features の record_layout 225、value_layout 969、unions 27、maybe_result 26、return_slot 83、recursive_types 23 が通る。`tests/wasm64.mjs`、`tests/wasm_threads.mjs`（threads の heap）、`tests/wasm_memory.mjs`、`tests/wasm_simd.mjs`、`tests/targets.mjs`、`tests/control.mjs`、`tests/async.mjs`、`tests/json.mjs`、`tests/strings.mjs`、`tests/simd.mjs`（467 件）も通る。確保の大きさは union と record が小さくなった分だけ小さくなり、アラインメントの最大は 16 のまま（モデルの大きさとアラインメントの上限・下限が、5 つのデータレイアウトの実際の値を挟むことを `layout_bounds_cover_actual_sizes` が確かめる）。
+- IR: 6 project（`tests/fixtures/{record_layout,value_layout,user_drop,recursive_types,maybe_result}`、`benchmarks/layout`）× 5 通り（native `-O0`・`-O3`、wasm32 `-O0`・`-O3`、native `--allocator small` `-O3`）を `--no-cache` で 2 回ずつ `--emit llvm` して一致（30 組）。`declare` の重複はない。
+- IR 同一の段: `ir-diff.mjs` で、WP2 は `-O0` の native・wasm32 の 218 job のうち `Dyn.of` の 2 job を除いて、WP10 は native と wasm32 の `-O0` 111 project と `-O3` 4 project のすべてで、前の build と IR が同一。
 - 期待値を変えた既存テスト（規則から手で書き直した。停止条件 2・3 の対象外に着手時に分類済み）: `tests/union_types.rs`、`tests/constants.rs`、`tests/gpu.rs`、`tests/recursive_types.rs`、`tests/param_facts.rs`、`tests/debug_info.rs`、`tests/features.mjs` の `unions`・`maybe_result`、PR03 の `return_slot` の suite の `label`（`Maybe<string>` は niche になり戻り値 slot を使わない）。
 
 ### 計測
@@ -901,8 +913,26 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 3. タプル型の同一性が構造だけなので、組み込みと利用者のタプルを分けず、「ランタイムが読むタプルはすべて宣言順に固定されている」ことを `tests/value_layout.rs` で固定する（`Mutex`・`Channel`・`Seq`・`Vec.pop`・`IO`・`Os`）。
 4. 利用者のコードでは 3 要素以上のタプルだけが対象になる（2 要素は常に不変）ので、効果を record での計測と同じ workload（`benchmarks/layout` に 3 要素のタプルの配列を足す）で確かめてから判断する。
 
+### 決定事項からの逸脱と見つけた問題
+
+- D2: 再帰ノードの領域を非再帰と同じ `[units x iU]` にした（上の D2。着手時の案は `[ceil(unit * units / 16) x i128]`）。
+- D5: 参照の niche は native だけ（承認済み）。wasm32・wasm64 は `--stack-first` でアドレス 0 がスタック上の有効な位置になりうるため、`Maybe<ref T>` は `{ i8, ptr }` のまま。
+- D6: `$niche`（DWARF の列挙型）と LLDB の formatter・natvis を Phase 2 の完了条件にした（承認済み）。D10: Phase 3b は実施しない（下に根拠）。
+- `Dyn.of` と vtable の複製の確保サイズを `ptrtoint (getelementptr …)` の定数式にした（承認済み。メモリ安全が `storage_layout` の値に依存しなくなった）。
+- 計測手順を変えた点: 手順 2 は `opt` と手書きのデータレイアウトでなく `benchmarks/layout/sizes.mjs`（clang だけ。target の本物のレイアウト）。手順 3 は 9 回でなく 15 回（3 回ビルドし直して各 5 回）。
+  手順 4 は、runner の `--baseline` が `ce` の版しか測らないので、コンパイラを入れ替えた 3 + 3 回と、`direct` を同じ process で測る runner の複製（コミットしない）の 3 回で、同じ process の組の比を使った。
+- `docs/language.md` を変えた（ticket の想定は変更なし）。union と record の格納の記述を足しただけで、E1010 の見積もりと公開 ABI の規則は変わらない。
+- 見つけた問題（PM01 の範囲外で、どれも基準 `6d15b437` にもある）:
+  - `Task.parallel` の結果の要素が union またはタプルだと、item の関数の名前が `@tz.task.item."tz.union.Maybe.Maybe[i64]"`・`@tz.task.item.{ i64, i1 }` のように不正な識別子になり、clang が `E2002` で失敗する（`parallel_tasks` が名前を LLVM の型の文字列から作る）。
+    `Task<Maybe<i64>>`・`Task<(i64 * bool)>` は基準 `6d15b437` でも同じに失敗する。PM01 の niche の union（`Maybe<string>` など。LLVM 型が `%tz.string`・`ptr`・`%tz.array`）は有効な名前になるので、`Task<Maybe<string>>` は今は動く（`Task<string>` と同じ item の関数を共有し、`-O0`・`-O3` で期待値 112 を確かめた）。直すには、名前を型の識別子から作る。
+  - `benchmarks/run-build.mjs --quick` は 1 sample で、同じコマンドが load によって 2 倍近く動くため、コンパイル時間の比較には使えない（命令数か 15 回の wall time を使う）。
+  - 取り込み前の node suite の掃引で `cpu_kernels` と `bindgen` が失敗したのは、PATH の先頭の clang が Homebrew の 23.1.1 だったため（上の「検証」）。掃引と CI の手順には、Apple clang を先頭、LLVM 21 を末尾に置く環境を書いておくとよい。
+
 ### 引き継ぎ
 
 - `_features/GUIDE.md` の D-05・D-31・G16 の記述と、LLVM 表現の record の箇条は、タグを `i32` と書いていたので、最終的な表現（タグの幅、`General`、niche と native だけの `NullPointer`、record の格納順、`$niche`）に直した（台帳は ticket に優先する）。
 - `docs/language.md` は ticket の想定（変更しない）と違い、union と record の格納の記述を足した。E1010 の見積もりと公開 ABI の規則は変わらない。
-- `_perfs/README.md`（この作業では編集していない）: 「メモリと成果物サイズ」の値の表現の箇条の更新と、PM01 の状態を `done` にする。
+- 更新した `_tsuzuri/language-reference/` のページ: `built-in-types-and-modules/union.md`（タグの幅、領域、niche、メモリ上の大きさ）、`record.md`（フィールドの格納順）、`tuple.md`、`compiler/debugging.md`（`$tag`・`$payload`・`$niche`、LLDB と natvis）、`compiler/native-interop.md`。`node scripts/check-docs.mjs` はこの 5 ページで 92 link、33 例、58 回の native 実行が通る。
+- 変更した主なファイル: `src/llvm_layout.rs`（新規。配置の規則すべて）、`src/llvm.rs`・`src/llvm_control.rs`・`src/llvm_task.rs`・`src/llvm_frame.rs`・`src/llvm_abi.rs`・`src/llvm_return_slot.rs`・`src/check.rs`（helper 経由への置き換えと doc）、`src/llvm_debug.rs`、`scripts/lldb/tsuzuri_lldb.py`、`src/runtime/tsuzuri.natvis`、`tests/value_layout.rs`（新規）、`tests/fixtures/{value_layout,record_layout}/Main.tz`（新規）、`tests/fixtures/user_drop/Main.tz`、`tests/{union_types,constants,gpu,recursive_types,param_facts,debug_info}.rs`、`tests/{features,debug_info,debugger,user_drop}.mjs`、`tests/user_drop_runtime.c`、`benchmarks/layout/`（新規）、`docs/{architecture,benchmarks,language}.md`、`README.md`、`_features/GUIDE.md`。
+- `_perfs/README.md`（この作業では編集していない）: PM01 の行を `_completed/PM01-value-layout.md` への link と `done` にする。冒頭の値の表現の文（「ペイロードの型が異なる union は 16 bytes 単位の領域を持ちます」）は、「union のタグは 1〜4 bytes、ペイロードの型が異なる union の領域は最大のペイロードのアラインメント（16 bytes 以下）の単位です。2 ケースで一方が `string`・`utf8string`・配列（native では参照）のペイロードを持つ union はタグを持たず、record は余白が減る順に並べます（PM01）」と読み替える。
+- 残る作業: 専用機での時間と RSS の再計測（共有機の値は目安）。計画（未実装）の niche（`bool` の未使用の値、関数値のコードポインター、ペイロードを持つケースが 2 つ以上の union）とタプルの並べ替え（Phase 3b。前提は上の (c)）。
