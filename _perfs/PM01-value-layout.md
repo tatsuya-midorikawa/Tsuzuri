@@ -8,9 +8,9 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | A02, A04, A16, G08, G16, E05 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1・D2（Phase 1: タグの幅と General の領域）, D5（Phase 2: niche）, D7（Phase 3a: レコードの並べ替え）, D10（Phase 3b: タプルの並べ替え） |
+| 状態 | doing |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討（`## 着手時の再検討（2026-10-16）`） |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で D1・D2（Phase 1）、D5（Phase 2）、D7（Phase 3a）は承認済み。D10（Phase 3b）は承認ではなく、根拠を記録して実施しない（`## 着手時の再検討（2026-10-16）`） |
 | 手本にする既存実装 | 再帰 union の null による表現（`src/llvm_recursive.rs` の `recursive_tag`・`recursive_construct`、GUIDE §9 D-24）。`UnionLayout` で分岐する値の分解（`src/llvm.rs` の `payload_value`・`drop_value`）。宣言順の C 配置を内部表現と別に計算する公開 ABI（`src/llvm_abi.rs` の `record_layout`・`read_host_record`・`write_host_record`） |
 | 主な影響ファイル | `src/llvm.rs`（`UnionLayout`・`union_layout`・`storage_layout`・`llvm_type`・`emit_program`・`construct_value`・`union_tag`・`payload_value`・`payload_pointer`・`drop_value`・`clone_value`・`emit_expression_mode`・`emit_place`・`sequence_next`・`io_entry`）, `src/llvm_task.rs`（`parallel_result_tasks`）, `src/llvm_debug.rs`（`layout`・`fields`・`ty`）, `src/llvm_frame.rs`（`field_types`・`frame_value`、Phase 3a）, `src/llvm_abi.rs`（`read_host_record`・`write_host_record`、Phase 3a）, `src/llvm_control.rs`（確認のみ）, `tests/value_layout.rs`（新規）, `tests/union_types.rs`, `tests/fixtures/value_layout/Main.tz`（新規）, `tests/features.mjs`, `tests/debug_info.mjs`, `benchmarks/layout/Main.tz`（新規）, `docs/architecture.md`, `docs/benchmarks.md`, `_perfs/README.md` |
 | 計測対象 | 型ごとの値の大きさとアラインメント（bytes、native と wasm32）。`benchmarks/layout/Main.tz`（新規）の最大 RSS（bytes）。`benchmarks/computations/Main.tz` の `ce_std_option`・`direct_std_option`・`ce_std_result`・`direct_std_result`・`ce_std_option_owned`・`direct_std_option_owned` の時間 |
@@ -52,6 +52,55 @@ union・`Maybe`・`Result`・レコードの値を小さくし、配列やコレ
 8. Phase 3a: レコードのフィールドを添字の直書きで扱うランタイム・生成コードで、`field_slot`（新規）を通せないものがある。レコードの宣言が std 由来かを判定する手段がない。公開 ABI の変換がレコードをフィールドごとでなくバイト列として写している。
 9. `unsafe`、新しい crate、WASM の既定の import が必要になった。スタックや入れ子の深さの上限を上げたくなった。
 10. `## 計測手順` の時間で、変更後の値が変更前の 3 回の最小〜最大の範囲より遅い種目がある。既定の表現にせず、結果を記録して判断を仰ぐ（`_perfs/README.md` の運用ルール）。
+
+## 着手時の再検討（2026-10-16）
+
+HEAD `6d15b437`（起票の `f8dc655` から 388 commit 後。第 2 フェーズ、A13〜A17、B07、C08〜C11、D08〜D11、E09〜E13、F08〜F13、G16〜G18 が入った）の
+コードと生成 IR（`--emit llvm`）で、この ticket の記述を照合した。依頼は全 Phase の実装で、`要承認` は承認済みである（上の `承認` 行）。
+「実装者は Phase 1 だけを行う」は適用しない。意味の保持と検証の条件は変わらない。`## 現状と計測` の値の大きさの表と、`## 目標と指標` の
+配列の合計の計算（188,000,000 → 133,000,000 → 125,000,000 → 109,000,000 bytes）は、native・wasm32 とも再現できた。行番号は `6d15b437` のもの。
+
+### 食い違いと対応
+
+| 起票の記述 | 現在の実態 | 対応 |
+| --- | --- | --- |
+| 大きさの計算は 4 か所 | 6 つ。`src/llvm.rs` の `storage_layout`／`layout_bound`、`src/llvm_debug.rs` の `layout`・`union_type`、`src/check.rs` の `Layouts`、`src/llvm_frame.rs` の `stack_size`、`src/const_static.rs` の `layout`（静的データの 4 MiB の予算。`{ i32, T }` と宣言順を仮定）、PR01 の `layout_bound(…, lower = true)` | `Layouts`・`stack_size`・`const_static::layout` は保守的な上限のまま（D4）。残りは揃えて変え、「実際の大きさ ≤ モデル」を独立したデータレイアウトの模型でテストする |
+| `storage_layout` の呼び出し元は自身と `union_layout` だけ | `Dyn.of` の確保サイズ（A14。メモリ安全に直結）、vtable の複製の確保、`llvm_frame.rs` の環境の予算、`layout_bound(lower)`（PR01 の `align N dereferenceable(S)`）が使う | `Dyn.of` と vtable の確保サイズは `ptrtoint (getelementptr …)` の定数式（`sizeof`。`max(1)` は保つ）にして、モデルへの依存を外す。`dereferenceable` の下限は物理順で求める |
+| タグを書くのは `construct_value` だけ | `static_constant`、`emit_character_conversion`（`Utf8Char.of_u32`）、`emit_parse`（`Parse.parse`）が `i32` のタグを手書きする | 手書きの IR も `tag_type` を通す |
+| タグは `union_tag`・`case_switch` が読み、`match_expression` は変えない | `case_switch` は自分で `extractvalue … , 0` する。`match_expression` は `SwitchPlan.selector`（`i32`）で場所を `load` する（幅の狭いタグではパディングを読む）。ほかに `async_slot_builtin`、`sequence_next`、`parallel_result_tasks` | 全部を `src/llvm_layout.rs` の `tag_value`・`load_tag` に通す。起票の grep（`load i32, ptr`）では `match_expression` が見つからないので、`plan.selector`・`extractvalue … , 0` も探す |
+| General の `unit` は 1・2・4・8・16、`units ≥ 1` | 256-bit の SIMD の payload は `storage_layout` のアラインメントが 32 で、`[1 x i256]` は 16 でしか揃わない。B07 の Drop union には live flag の `i8` があり、payload なしの Drop union は `{ i32, [0 x i128], i8 }`（32 bytes） | `unit = min(最大アラインメント, 16)`。payload がない Drop union は `unit 1`・`units 0`。flag の添字（union は 2、レコードは `fields.len()`）は変えない。Drop union は niche にしない |
+| 再帰 union のノードは変えない | ノードの領域は `UnionLayout::General(count)` から `[count x i128]` を作る | `count = ceil(unit * units / 16)`（HEAD と同じ値）にして、ノードの型を変えない |
+| 手順 4 の grep は `load i32, ptr`・`store i32` | 型を動的に組む箇所（`match_expression`）と、`zeroinitializer` に頼る箇所（`Seq.next` が空の `Seq` と `None` を `zeroinitializer` で作る）は見つからない | `Seq.next` の空値を明示構築に直してから niche を入れる（HEAD でも同じ意味）。`zeroinitializer` が「空」を意味する箇所を全部調べる |
+| デバッグ情報は `layout`・`fields`・`ty` | G16 で `$tag`（列挙型 `size: 32`）・`$payload`、LLDB の formatter（`scripts/lldb/tsuzuri_lldb.py`）、natvis（`Maybe<*>`）、`debugging.md` が `$tag` に依存する。`tests/debug_info.rs` が `Shape` の `$payload` の offset を固定する | D6 の DWARF は typedef だけにせず、`$payload` と `$niche`（niche の語に重ねるメンバー）を持つ構造体にし、formatter・natvis・`debugging.md` を更新する（WP9。Phase 2 の完了条件） |
+| ポインターの null が niche になる | wasm32／wasm64 は `--stack-first` でスタックがアドレス 0 から始まり、`alloca` がアドレス 0 になりうる | 単一ポインターの niche（null）は native だけ。wasm では長さが負の niche（string・utf8string・配列）だけ使い、`Maybe<ref T>` は `{ tag, ptr }` のまま。型定義の文字列は target ごとに決定的であればよい |
+| タプルの並べ替え（Phase 3b）は計測を見て判断 | `Mutex` の cell は `(i32u * T)` で、先頭の語を C／LL の runtime（`tsuzuri_mutex_lock(void *)`）が lock として読む。添字を手書きするタプルが約 10 ある（`Seq.next`、`Vec.pop`、`IO.__read_line`、`Os.*`、`Channel.bounded`、`static_constant`、`llvm_compare`・`llvm_hash`・`llvm_display`） | 実施しない。理由・モデルによる大きさの表・将来の前提（`Declared` の例外）を `## 実装と検証` に記録する |
+| 既存テストへの影響 | `tests/union_types.rs`（572〜661 行と 745 行。745 行は `{ i32, %tz.record.Main.Wide }` を固定する）、`tests/debug_info.rs`（`Shape` の `$payload` の offset 128）、`tests/constants.rs`（静的な union の定数）、`tests/recursive_types.rs`（68 行。再帰でない `Maybe[i64]`）、`tests/gpu.rs`（88 行）、`tests/features.mjs`（`unions` の IR）も変わる | 期待値は規則から手で書き直す（出力から写さない）。停止条件 2・3 の対象外とする |
+| 計測 | 手順 2 は `opt` と手書きのデータレイアウトに依存し、生データは `target/perf/PM01/$P` | `benchmarks/layout/sizes.mjs` は clang だけで target ごとの配置を使う（`opt` 版と同じ値を確認済み）。生データは GUIDE §14 の `target/perf/PM01-before`・`PM01-after`、RSS と確保は `benchmarks/metrics.mjs process`。コンパイル時間は `benchmarks/run-build.mjs` の quick を前後で記録する（合否にしない） |
+
+### 実装の順序（改訂）
+
+1. 先に tag と record のフィールドの全経路を helper に通す、IR 同一の整理（`src/llvm_layout.rs`。`llvm.rs` から旧名を再 export する）。`Dyn.of`・vtable の確保サイズだけは定数式が変わる。
+2. Phase 1: tag の幅（`i8`／`i16`／`i32`）、次に General の領域（`unit = min(最大アラインメント, 16)`）。
+3. Phase 2: `Seq.next` の空値と niche の下準備（`union_layout` の memo）、長さが負の niche（string・utf8string・配列）、単一ポインターの niche（native だけ）、DWARF・LLDB・natvis。
+4. Phase 3a: `record_slots`・`field_slot` を通す IR 同一の段、並べ替えの有効化（`layout_bound` の上限・下限、`const_static`、`static_constant`、DWARF の offset、frame、公開 ABI の変換）。
+5. Phase 3b: 実施しない（`## 実装と検証` に根拠）。
+
+### 決定事項の更新
+
+- D1・D2: 承認。D2 は `unit = min(最大アラインメント, 16)`、payload のない Drop union は `units 0`、再帰ノードの領域は `[ceil(unit * units / 16) x i128]`、`unit` が 16 のときの下限のアラインメントは 8（LLVM 17 の x86-64 は `i128` を 8 で揃える）。
+- D3: `union_tag` の戻りは `i32`（`zext`）のまま。SSA 値用の `tag_value` と場所用の `load_tag` の 2 つに集め、手書きの IR は `tag_type` を使う。
+- D4: 変えない。「実際の大きさ ≤ モデル」を、独立したデータレイアウトの模型（aarch64、x86-64 LLVM 18 以上、x86-64 LLVM 17 以下、wasm32）でテストする。
+- D5: 承認。`Seq.next` の修正の後に、長さが負の niche、単一ポインターの niche（native だけ）の順。`user_drop` の union は niche にしない。
+- D6: 承認。型の定義を出さず、LLVM 型は payload の型、`None` は定数。DWARF は `$payload` と `$niche` を持つ構造体（WP9 は Phase 2 の完了条件）。
+- D7・D8・D9: 承認。`layout_bound` の下限も物理順。`union_layout`・`record_slots` は memo する。
+- D10: 実施しない（上の表）。D11: 承認（`benchmarks/layout/sizes.mjs` と PX01 の計測を足す）。
+
+### 停止条件の更新
+
+- 2: `tests/union_types.rs` の `enforces_union_layout_limits` の IR の文字列（745 行）は変わってよい。E1010 の判定・`stack_size` は変えない。
+- 3: 上の表の既存テストの期待値は変わってよい（規則から書き直す）。それ以外は変わったら止める。
+- 5: 該当する箇所はすべてコンパイラ内（コード生成）で、ランタイムの `.ll`・C には無い。helper に通せない箇所が残ったら止める。
+- 追加: モデルの上限・下限が、対応する target のデータレイアウトで実際の大きさと食い違う／G16 のテスト・文書が壊れる／ランタイムが固定の offset で読むタプル・レコードを例外にできない／niche の型が `zeroinitializer` で作られている箇所が残る／説明のつかないコンパイル時間の悪化。
 
 ## 現状と計測（HEAD `f8dc655`）
 
