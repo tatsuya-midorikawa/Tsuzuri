@@ -916,6 +916,7 @@ node tests/frontend_cache.mjs target/release/tsuzuri
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
+node tests/wasm_threads_stress.mjs target/release/tsuzuri   # WASM threads の pool を 1〜7 ワーカーで、グループ・入れ子・Task.scope・pipeline の厳密な値と照合する（PR06）。引数は [コンパイラ] [rounds（既定 12）]。止まったら watchdog が終了させる
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
