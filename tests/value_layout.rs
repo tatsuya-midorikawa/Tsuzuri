@@ -228,6 +228,26 @@ fn total = alias_length (alias_of 1) + label_length (label_of 1) + (match raw_of
 }
 
 #[test]
+fn only_aggregate_unions_return_through_a_slot() {
+    // PR03's return slot merges the exits of a function that returns a tag and a payload; a niche
+    // union is its payload alone, so its exits keep their plain `ret`s.
+    let source = "def text :: bool -> string -> Maybe<string>
+fn text flag value = if flag then Some value else None
+def number :: bool -> i64 -> Maybe<i64>
+fn number flag value = if flag then Some value else None
+";
+    for wasm in [false, true] {
+        let ir = ir_for(source, wasm);
+        let text = body(&ir, "tz.fn.Main.text");
+        assert!(!text.contains("tz.return"), "{text}");
+        assert_eq!(text.matches("  ret %tz.string ").count(), 2, "{text}");
+        let number = body(&ir, "tz.fn.Main.number");
+        assert_eq!(number.matches("%tz.return.slot = alloca").count(), 1);
+        assert_eq!(number.matches("  ret ").count(), 1, "{number}");
+    }
+}
+
+#[test]
 fn other_unions_keep_their_tag() {
     // Two payload cases, three cases, a Drop union, a nested option, and a recursive union.
     let source = "extern def drop_log :: i64 -> unit

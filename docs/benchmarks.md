@@ -5720,6 +5720,159 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
+## 抽象化コストの除去（PR03、2026-10-16）
+
+計算式・Maybe／Result・関数値が、手書きと同じ `-O3` の生成コードになっているかを `benchmarks/computations` の 10 対で調べた記録です。
+実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に速度の閾値はありません。
+
+### 数え方と再現（Phase 1）
+
+- 基準は main `6d15b437`（第2フェーズ）の release コンパイラ、Apple clang 21.0.0（clang-2100.3.34.2）、Apple M1 Max（arm64）です。
+  `--emit llvm` の IR を `run-computations.mjs` と同じ旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module`）で最適化します。
+- 数える対象は export 関数 `tz_ce_<種目>`・`tz_direct_<種目>` の本体です。IR は `^define .*@tz_<k>_<p>\(` から `^}` までの 2 空白で始まる行、
+  機械語はラベルの次の行から `-- End function` までの、空白に続く英小文字で始まる行（命令）です。
+  これらの関数には CFI の指示が無いため、`.cfi_endproc` で止める数え方は後続の関数まで累積して数えます（起票時の `263 229 205 176 893 864` はその値です。
+  関数ごとの値は下の表）。
+
+```sh
+W=target/perf/PR03-shape && mkdir -p $W
+target/release/tsuzuri build benchmarks/computations --emit llvm -o $W/comp.ll
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+$C -S -emit-llvm $W/comp.ll -o $W/comp.opt.ll && $C -S $W/comp.ll -o $W/comp.s
+$C --target=x86_64-apple-macos -S $W/comp.ll -o $W/comp-x86.s && $C -c $W/comp.ll -o $W/comp.o
+for p in bind checked delayed array_for array_bind owned_capture std_option std_result std_option_owned std_option_length; do for k in ce direct; do
+  body=$(awk "/^define .*@tz_${k}_$p\(/,/^}/" $W/comp.opt.ll)
+  printf '%s_%s ir=%s phiU=%s switch=%s calls=%s indirect=%s arm64=%s x86-64=%s\n' $k $p \
+    "$(printf '%s\n' "$body" | grep -cE '^  ')" "$(printf '%s\n' "$body" | grep -c 'phi %"tz.union.')" \
+    "$(printf '%s\n' "$body" | grep -c 'switch ')" "$(printf '%s\n' "$body" | grep 'call ' | grep -vc llvm.trap)" \
+    "$(printf '%s\n' "$body" | grep -cE 'call [^@]*%')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp.s | grep -cE '^[[:space:]]+[a-z]')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp-x86.s | grep -cE '^[[:space:]]+[a-z]')"
+done; done
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/comp.o | grep __text
+grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
+```
+
+### 分類（基準 `6d15b437`）
+
+分類は、union の値の `phi` と tag の `switch` が inline の後も残る（K1）、`@tz.specialized.`・`@tz.fn.`・`@tz.apply.` の呼び出しが残る（K2）、
+呼び先が値の間接呼び出しが残る（K3）の 3 つと「差なし」です。K2・K3 は 10 対のどれにも残らず（呼び出しは malloc・free・memcpy・`llvm.trap` だけ）、
+起票時に仮定した「機械語だけの差」（K4）は、数え方の誤りで生じた見かけの差でした。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） | 分類 |
+| --- | --- | --- | --- | --- | --- |
+| `bind` | 18／18 | 0・0 | 25／25 | 64／64 | 差なし |
+| `checked` | 28／28 | 0・0 | 29／27 | 31／30 | 差なし（record の block 配置の違い。union ではない） |
+| `delayed` | 23／23 | 0・0 | 35／35 | 68／68 | 差なし |
+| `array_for` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `array_bind` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `owned_capture` | 49／49 | 0・0 | 56／56 | 88／88 | 差なし |
+| `std_option` | 35／22 | 1・1 | 34／24 | 38／53 | **K1** |
+| `std_result` | 28／28 | 0・0 | 29／29 | 31／31 | 差なし |
+| `std_option_owned` | 65／54 | 2・2 | 65／60 | 78／70 | **K1**（呼び出しは両版とも malloc・free・memcpy の 3 個） |
+| `std_option_length` | 22／22 | 0・0 | 25／25 | 52／52 | 差なし |
+
+- `std_option` の K1 の形は、inline された worker の 2 つの `ret` が `phi %"tz.union.Maybe.Maybe[i64]"`（`zeroinitializer` と `insertvalue`）になり、
+  `extractvalue` の tag を `switch` し、既定の枝に `llvm.trap` が残ることです。`direct_std_option` は同じ条件を `select` 1 個にしています。
+- x86-64 の `ce_std_option`（38 命令）は `direct`（53 命令）より小さく、機械語の命令数は性能の代理になりません。目標は `direct` と同じ形にすることで、
+  命令数を減らすことではありません。
+- `-O3` の object の `__text` は 3,884 bytes、`@tz.specialized.` の定義は `benchmarks/computations/Main.tz` で 64 個です。
+  `let!` が 2 つの連鎖（`def run … Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y }`）は、`-O0` で 9 個の worker を作ります。
+  `run` から到達するのは 8 個の連鎖（`0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`、`Run`・thunk・`Bind`・`bind`・継続・`BindReturn`・`map`・継続）で、
+  残る 1 個（`@tz.specialized.1`）は閉包の apply wrapper（`@tz.apply.Maybe.map.$mono.8.1`）だけが呼ぶ `map` の worker で、
+  本体に間接呼び出しを持ちますが `run` からは到達しません。
+
+`tests/call_specialization.rs` の `standard_let_chain_workers_are_direct_and_allocation_free` と `known_local_function_values_call_directly` が、
+この性質（`let!` の連鎖の worker が `tz.alloc`・`tz.closure.clone`・間接呼び出しを持たないこと、let で束縛した関数値の呼び出しが直接であること）を
+native と wasm32 の `-O0` IR で固定します。
+
+### 戻り値 slot の後（Phase 2、F1'）
+
+`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてを slot にできる関数だけを、
+入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
+他の 8 対の IR と機械語、`@tz.specialized.` の 64 個は変わりません。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） |
+| --- | --- | --- | --- | --- |
+| `std_option` | 22／22（前 35／22） | 0・0（前 1・1） | 24／24（前 34／24） | 56／53（前 38／53） |
+| `std_option_owned` | 54／54（前 65／54） | 1・1（前 2・2） | 60／60（前 65／60） | 70／70（前 78／70） |
+
+- `ce_std_option` は `direct_std_option` と同じ `select` 1 個の形になり、union の `phi`・tag の `switch`・`llvm.trap` が消えました。
+  `ce_std_option_owned` に残る `phi` 1 個・`switch` 1 個は `direct_std_option_owned` にもある形です。
+- x86-64 の `ce_std_option` は 38 から 56 命令に増え、`direct`（53）より大きくなりました。前述のとおり命令数は性能の代理ではないので、IR と arm64 の一致を基準にします。
+- `-O3` の object の `__text` は 3,884 から 3,824 bytes です。
+- 循環にある関数や、呼び先が不明・循環にある exit は `ret` を保ちます。union を返す相互再帰の `parity_deep` と `Maybe.bind` の継続の `bind_deep` は、
+  1e8 段が native の `-O2`・`-O3` で戻り値 slot の前後とも通ります（`-O0`・`-O1` は前後とも 1e8 段で SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
+  すべての exit に slot を使うと `-O2`・`-O3` でも `parity_deep(1e8)` が SIGSEGV になるため、この規則にしました。
+- 全 exit を slot にできる関数（`if flag then helper x else None`、`helper` は循環にない）を呼ぶ側は、`-O3` の IR が 20 行から 7 行になりました。
+  循環の関数へ転送する exit を含む関数（`if flag then even_m x else None`）は全 exit が平文の `ret` のままで、呼ぶ側は 22 行から変わりません。
+  一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
+- 時間（`node benchmarks/run-computations.mjs <後のコンパイラ> --baseline <基準のコンパイラ> --metrics DIR --artifacts DIR`、native、`-O3`、15 標本の中央値と最小〜最大、3 回、
+  `with-lock.sh measure` の中で実行、開始時の負荷平均は約 50、Node 24.21.0、Apple clang 21.0.0）。`std_option`（size 2,000,000、ms/呼び出し）は、基準 5.558・5.517・5.501（最小〜最大 5.397〜6.247）から
+  後 4.755・4.826・4.685（4.618〜5.069）になり、3 回とも同じ向きで 14〜17% 短く、基準の最小と後の最大が重なりません。`direct_std_option` は 4.744・4.821・4.688 で、ce／direct は 3 回とも 1.00（0.999〜1.002）、
+  C++ は 4.765・4.770・4.715、Rust は 4.685・4.834・4.708 です。他の 9 対は広がりの範囲内で、native の ce／direct は 0.92〜1.03、基準／後は 0.98〜1.06 でした
+  （`std_option_owned` は 0.188・0.186・0.194 対 0.195・0.190・0.198 で 2〜4% 短い向きですが、広がりが重なるので主張しません）。WASM の warmed 時間は 3 回で向きが揃わず（`std_option` の基準／後は 1.28・0.76・0.75）、何も主張しません。
+  確保（`allocations_at_size_64`）は 10 種目とも前・後・direct で同じです。後のコンパイラは LTO なしの release build で、生成物は release build と同じ IR です（`cmp` で確認）。
+  生データは `target/perf/PR03-after/`（git 管理外）です。共有 machine での値なので、静かな machine での再測定は統合時に行います。
+
+### 特殊化の予算を使い切る連鎖（Phase 2c）
+
+`let!` が 2 つの Maybe の連鎖 1 つは worker を 8 個要求します（上の `0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`）。予算は 1,024 個なので、連鎖が約 128 個を超える program は予算を使い切ります。
+以前は要求された順に worker を出力したため、使い切ると、すべての連鎖が途中で打ち切られました。打ち切られた連鎖は、worker から通常の関数へ閉包の値を渡す形（部分的な特殊化）になり、`-O3` でも間接呼び出しが残りました。
+今は、予算内の program は以前と同じ要求順で出力します（corpus の IR が native 110 件・wasm32 105 件とも byte 単位で同じです）。予算を使い切った program だけ、2 回目の出力で、
+関数と、その関数が名前で参照する関数（束縛ごとの lift 済みラムダなど）を深さ優先の順に出し、各関数の worker をその直後に出します。このため、予算で完成できる分の連鎖は全体が直接呼び出しになり、残りは最初から通常の経路になります。
+予算の 1,024 個、予算を使い切ったときの通常の経路、`@tz.specialized.` の定義数（1,024）は変わりません。
+
+```sh
+W=target/perf/PR03-chains && mkdir -p $W/proj && node -e '
+const n = Number(process.argv[1]);
+const lines = ["def mix :: i64 -> i64 -> i64", "fn mix value salt = (value ^ (Bits.ushr value 13)) * 6364136223846793005 + salt", "", "def pick :: i64 -> i64 -> Maybe<i64>", "fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)", ""];
+for (let i = 0; i < n; i++) lines.push(`def step${i} :: i64 -> i64 -> i64`, `fn step${i} state salt =`, "    Maybe.default_value (state ^ salt) (Maybe {", `        let! a = pick (state + ${i}) salt`, "        let! b = pick a salt", "        return mix b salt", "    })", "", `export def run${i} :: i64 -> i64 -> i64`, `fn run${i} state salt = step${i} state salt`, "");
+console.log(lines.join("\n"));' 300 > $W/proj/Main.tz
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+target/release/tsuzuri build $W/proj --emit llvm -o $W/b.ll && $C -S -emit-llvm $W/b.ll -o $W/b.opt.ll && $C -c $W/b.ll -o $W/b.o
+grep -c '^define internal .*@tz\.specialized\.' $W/b.ll
+awk '/^define .*@tz_run/{on=1;hit=0} on&&/call [^@]*%/{hit=1} /^}/{if(on&&hit)n++; on=0} END{print n+0}' $W/b.opt.ll
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/b.o | awk '$1=="__text"{print $2}'
+```
+
+3 行の出力は、worker の数、間接呼び出しを持つ `tz_run*` の数（`-O3` の IR）、`__text` の bytes です。N は第 1 引数です。基準は `6d15b437`、Apple clang 21.0.0、Apple M1 Max です。
+
+| 連鎖の数 N | worker | 間接呼び出しを持つ export（前→後） | `__text`（前→後） |
+| --- | --- | --- | --- |
+| 120 | 961 | 0→0 | 7,616→7,616（出力が同じ） |
+| 140 | 1,024 | 0→0 | 8,884→9,236 |
+| 200 | 1,024 | 89→0 | 20,940→14,784 |
+| 300 | 1,024 | 300→0 | 46,804→24,036 |
+
+- N=300 の export の本体は、前は 26〜28 行で、すべてに間接呼び出し（閉包の関数 pointer を呼ぶ `tail call`）が 1 つあり、`-O3` の IR の関数定義は 602 個でした。
+  後は、完成した連鎖 128 個が 15〜17 行で呼び出しを持たず、残りの 172 個が 28〜29 行（呼び出しは `llvm.trap` だけ）で、関数定義は 300 個です。
+- 閉包が束縛値だけを捕捉する形（`pick (state + i) 1`・`pick a 2`。lift 済みラムダは通常の関数として呼ばれる）では、前も間接呼び出しは残らず、差は小さく、`__text` は N=300 で 21,596 から 17,508、N=600 で 43,196 から 39,108 bytes です。
+- 300 個の export を 1 回ずつ呼ぶ C の driver を 2,000,000 回繰り返した user CPU 時間は、N=300 の上の形で 1.71 秒から 0.91 秒（5 回の交互実行の中央値、0.88〜0.93）、
+  束縛値だけを捕捉する形で 0.76 秒から 0.65 秒です。共有 machine（負荷平均 60〜90）での値で、どちらの出力も同じです。
+- 予算を使い切った program は 2 回出力するので、`tsuzuri build --emit llvm` が長くなります（N=300 で user CPU 0.24 秒から 0.29〜0.31 秒、release build で 3 回）。clang `-O3` の時間（0.93〜1.00 秒）は変わりません。予算内の program の時間は変わりません。
+
+### 型付き IR での標準ビルダーの展開（Phase 3、D3。入れていません）
+
+D3 は、std の `Maybe`／`Result` の `Bind`／`BindReturn` を、閉包 literal が `needs_drop` でないスカラーだけを捕捉するとき、emission 時に `match` と lift 済みラムダの直接呼び出しへ簡約する案です。
+F1'・C5 の後に残る差で採否を決め、**入れていません**。同じ連鎖を CE（上の生成元）と手書きの入れ子の `match` で書き、N 個の export を 1 回ずつ呼ぶ C の driver を繰り返して測りました
+（Apple M1 Max、clang 21 の `-O0` または `-O3`、`-fPIC -fno-fast-math -ffp-contract=off`、user CPU 時間、共有 machine で負荷平均 30〜90、出力の checksum は両方同じ）。
+
+| 条件 | `__text`（CE／手書き） | 時間（CE／手書き） | clang の user CPU（CE／手書き） |
+| --- | --- | --- | --- |
+| `-O3`、N=128（予算内）、4,000,000 回 | 8,124／8,056 bytes | 0.51／0.69 秒 | 0.54／0.12 秒 |
+| `-O3`、N=300（予算超過）、2,000,000 回 | 24,036／18,888 bytes | 0.92〜0.97／0.83〜0.86 秒 | 1.05／0.27 秒 |
+| `-O0`、N=300、20,000 回 | 411,512／136,232 bytes | 0.43／0.10 秒 | 0.41／0.13 秒 |
+
+- 既定の `-O3` で、予算内の連鎖は手書きと同じ大きさで、CE のほうが短い時間でした（N=128）。K1 は F1' が消しています。
+  予算を使い切る N=300 の差（`__text` +27%、時間 +10〜13%）は、予算を超えた 172 連鎖が通常の経路を使うためで、完成した連鎖は 1 回あたり約 1.0 ns、通常の経路の連鎖は約 2 ns です（上の値から計算）。
+- `-O0` の差は大きい（`__text` 3.0 倍、時間 4.3 倍）のですが、`-O0` の用途は REPL とデバッグで、既定は `-O3` です。worker を `alwaysinline` にする代案は、IR を書き換えて測ると、
+  `-O0` の `__text` が 411,512 から 645,352 bytes に増え、時間は 0.40 から 0.33 秒にしか縮まないので、代わりになりません。
+- D3 を実装するには、emission 時に型付きの `Match`（パターンの step・新しい局所の id・`borrowed` の集合）と呼び出しを組み立てます。A17 の `LastUses` は `(span, 局所の id)` を鍵に emission の前に作られ、
+  新しい局所はその一覧にありません。coverage の領域・debug 情報・drop の順序を変えないことの確認に使える試作がありません。`Bind`・`BindReturn` を `match` と無名ラムダの呼び出しに手で展開した
+  試作は、worker を 1,024 個使い、`-O0` の `__text` が 451,364 bytes（CE より大きい）で、期待する形になりませんでした。
+- 再開する条件は、`-O0` の計算式の速度や大きさを目標にするとき、または 128 を超える連鎖を持つ現実の program が現れたときです。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

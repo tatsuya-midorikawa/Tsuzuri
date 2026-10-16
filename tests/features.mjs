@@ -467,6 +467,52 @@ const suites = {
     ],
     inspect(ir) { assert.doesNotMatch(ir, /%tz\.hkt|dictionary/); },
   },
+  // PR03 F1': a union result leaves through one return slot only when every exit may, so the cases also cover the
+  // functions that keep their plain `ret`s. Expected values are worked out by hand from the source.
+  return_slot: {
+    cases: [
+      ...[[5n, 10n], [1n, 2n], [0n, -1n], [-7n, -1n], [(1n << 62n) - 1n, (1n << 63n) - 2n]].map(([n, expected]) => ["slot_make", [n], expected]),
+      ...[[0n, 4n], [21n, 42n], [1n, 2n], [-3n, -6n]].map(([n, expected]) => ["slot_pick", [n], expected]),
+      // "zero" is 4 bytes; "negative " is 9 bytes plus the digits of -n.
+      ...[[7n, 7n], [1n, 1n], [0n, 4n], [-1n, 10n], [-12n, 11n], [-1000000n, 16n]].map(([n, expected]) => ["slot_explain", [n], expected]),
+      // "item " is 5 bytes plus the digits of n.
+      ...[[7n, 6n], [12345n, 10n], [0n, -1n], [-3n, -1n]].map(([n, expected]) => ["slot_label", [n], expected]),
+      // "scratch " is 8 bytes plus the characters of n; the Ok exit returns that length, the Error exit the text.
+      ...[[7n, 9n], [0n, 9n], [-12n, 11n], [12345n, 13n]].map(([n, expected]) => ["slot_scratch", [n], expected]),
+      // The first n with n * n > limit, or none up to 1000.
+      ["slot_find", [1n, 50n], 8n], ["slot_find", [1n, 2000000n], -1n], ["slot_find", [1000n, 0n], 1000n],
+      ["slot_find", [1001n, 0n], -1n], ["slot_find", [0n, 0n], 1n], ["slot_find", [-5n, 3n], -5n],
+      ...[[150n, 300n], [101n, 202n], [100n, -1n], [50n, -1n]].flatMap(([n, expected]) => [["slot_wrap", [n], expected], ["slot_piped", [n], expected]]),
+      ...[[3n, 3n], [1n, 1n], [0n, -1n], [-8n, -1n]].map(([n, expected]) => ["slot_field", [n], expected]),
+      ...[[1n, 101n], [50n, 150n], [0n, -1n], [-4n, -1n]].map(([n, expected]) => ["slot_local", [n], expected]),
+      ...[[5n, 45n], [0n, 40n], [-30n, 10n]].map(([n, expected]) => ["slot_let_chain", [n], expected]),
+      ...[[0n, 1n], [1n, 0n], [10n, 1n], [7n, 0n], [1000n, 1n], [999n, 0n]].map(([n, expected]) => ["slot_parity", [n], expected]),
+      ...[0n, 1n, 5n, 1000n].map(n => ["slot_count_down", [n], 7n]),
+      ...[0n, 1n, 1000n].map(n => ["slot_nested", [n], n]),
+      ...[[3n, 6n], [0n, -1n], [-2n, -1n]].map(([n, expected]) => ["slot_apply", [n], expected]),
+      ...[[0n, 10n], [1n, 20n], [2n, 30n], [9n, 30n], [-1n, 30n]].map(([n, expected]) => ["slot_color", [n], expected]),
+    ],
+    inspect(ir) {
+      const body = (name) => {
+        const start = ir.search(new RegExp(`^define [^\\n]*@tz\\.fn\\.Main\\.${name}\\(`, "m"));
+        assert.ok(start >= 0, `${name} is defined`);
+        return ir.slice(start).split("\n}\n")[0];
+      };
+      const returns = (name) => body(name).split("\n").filter((line) => line.startsWith("  ret ")).length;
+      // Every exit constructs, copies, or calls an acyclic function: one entry-block slot and one `ret`.
+      for (const name of ["make", "pick", "explain", "scratch", "find", "wrap", "piped", "choose", "keep"]) {
+        assert.equal(body(name).split("%tz.return.slot = alloca").length - 1, 1, `${name}: one return slot`);
+        assert.match(body(name), /\ntz\.return:\n/, `${name}: one return block`);
+        assert.equal(returns(name), 1, `${name}: one ret`);
+      }
+      // A recursion cycle, a continuation, an unknown callee, a bare tag and a niche union (`label` returns a
+      // `Maybe<string>`, which is its payload and has no tag to merge, PM01) keep every plain `ret`.
+      for (const [name, count] of [["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3], ["label", 2]]) {
+        assert.doesNotMatch(body(name), /tz\.return/, `${name}: no return slot`);
+        assert.equal(returns(name), count, `${name}: plain rets`);
+      }
+    },
+  },
   fma_reductions: {
     cases: [
       ...[32, 64].flatMap((bits) => [...Array.from({ length: 18 }, (_, index) => index), 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025].flatMap((count) => [0, 1, 7].flatMap((seed) => orderedReferences(count, seed, bits).map((expected, operation) => [`ordered${bits}`, [BigInt(count), BigInt(seed), BigInt(operation)], expected])))),

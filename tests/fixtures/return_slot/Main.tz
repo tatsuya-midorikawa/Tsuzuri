@@ -1,0 +1,137 @@
+// PR03 F1': a function that returns a union through one return slot when every exit may leave through it,
+// and the functions that keep their plain `ret`s. Each export reduces its union result to an i64.
+union Color = Red | Green | Blue
+record Cell { left: Maybe<i64>, right: Maybe<i64> }
+
+// Exits that construct the result.
+def make :: i64 -> Maybe<i64>
+fn make n = if n > 0 then Some (n * 2) else None
+
+export def slot_make :: i64 -> i64
+fn slot_make n = Maybe.default_value (-1) (make n)
+
+def pick :: i64 -> Result<i64, string>
+fn pick n =
+    match n with
+    | 0 -> Error "zero"
+    | _ -> Ok (n * 2)
+
+export def slot_pick :: i64 -> i64
+fn slot_pick n =
+    match pick n with
+    | Ok value -> value
+    | Error text -> text.length
+
+// Payloads of different LLVM types, one of them an owned string.
+def explain :: i64 -> Result<i64, string>
+fn explain n =
+    if n > 0 then Ok n
+    elif n == 0 then Error "zero"
+    else Error ("negative " + to_string (-n))
+
+export def slot_explain :: i64 -> i64
+fn slot_explain n =
+    match explain n with
+    | Ok value -> value
+    | Error text -> text.length
+
+def label :: i64 -> Maybe<string>
+fn label n = if n > 0 then Some ("item " + to_string n) else None
+
+export def slot_label :: i64 -> i64
+fn slot_label n =
+    match label n with
+    | Some text -> text.length
+    | None -> -1
+
+// One exit moves a local out, the other drops it at the end of the scope.
+def scratch :: i64 -> Result<i64, string>
+fn scratch n =
+    let text = "scratch " + to_string n
+    if n > 0 then Ok text.length else Error text
+
+export def slot_scratch :: i64 -> i64
+fn slot_scratch n =
+    match scratch n with
+    | Ok value -> value
+    | Error text -> text.length
+
+// Two exits and a self tail call: the slot and the loop's back edge live in one function.
+def rec find :: i64 -> i64 -> Maybe<i64>
+fn rec find n limit =
+    if n > 1000 then None
+    elif n * n > limit then Some n
+    else find (n + 1) limit
+
+export def slot_find :: i64 -> i64 -> i64
+fn slot_find start limit = Maybe.default_value (-1) (find start limit)
+
+// Exits that forward an acyclic call, a pipeline, a field and a local.
+def wrap :: i64 -> Maybe<i64>
+fn wrap n = if n > 100 then make n else None
+
+export def slot_wrap :: i64 -> i64
+fn slot_wrap n = Maybe.default_value (-1) (wrap n)
+
+def piped :: i64 -> Maybe<i64>
+fn piped n = if n > 100 then n |> make else None
+
+export def slot_piped :: i64 -> i64
+fn slot_piped n = Maybe.default_value (-1) (piped n)
+
+def choose :: i64 -> Cell -> Maybe<i64>
+fn choose n cell = if n > 0 then cell.left else cell.right
+
+export def slot_field :: i64 -> i64
+fn slot_field n = Maybe.default_value (-1) (choose n (Cell { left: Some n, right: None }))
+
+def keep :: i64 -> Maybe<i64> -> Maybe<i64>
+fn keep n found = if n > 0 then found else None
+
+export def slot_local :: i64 -> i64
+fn slot_local n = Maybe.default_value (-1) (keep n (Some (n + 100)))
+
+// The standard Maybe builder, which expands to Bind and BindReturn workers.
+export def slot_let_chain :: i64 -> i64
+fn slot_let_chain offset =
+    Maybe.default_value (-1) (Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y })
+
+// A function in a recursion cycle, a continuation and an unknown callee keep their plain `ret`s.
+def rec even_m :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else odd_m (n - 1)
+and odd_m :: i64 -> Maybe<i64> = \n -> if n == 0 then None else even_m (n - 1)
+
+export def slot_parity :: i64 -> i64
+fn slot_parity n = Maybe.default_value 0 (even_m n)
+
+def rec count_down :: i64 -> Maybe<i64>
+fn rec count_down n =
+    if n == 0 then Some 7
+    else Maybe.bind (Some (n - 1)) (\m -> count_down m)
+
+export def slot_count_down :: i64 -> i64
+fn slot_count_down n = Maybe.default_value (-1) (count_down n)
+
+def rec nest :: i64 -> Maybe<i64>
+fn rec nest n =
+    if n == 0 then Some 0
+    else Maybe.map (\v -> v + 1) (nest (n - 1))
+
+export def slot_nested :: i64 -> i64
+fn slot_nested n = Maybe.default_value (-1) (nest n)
+
+def apply_to :: (i64 -> Maybe<i64>) -> i64 -> Maybe<i64>
+fn apply_to f x = if x < 0 then None else f x
+
+export def slot_apply :: i64 -> i64
+fn slot_apply n = Maybe.default_value (-1) (apply_to make n)
+
+// A result that is a bare tag is not an aggregate and keeps its `ret`s.
+def color :: i64 -> Color
+fn color n = if n == 0 then Red elif n == 1 then Green else Blue
+
+export def slot_color :: i64 -> i64
+fn slot_color n =
+    match color n with
+    | Red -> 10
+    | Green -> 20
+    | Blue -> 30

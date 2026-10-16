@@ -302,6 +302,49 @@ budget 1
     assert.equal(instance.exports.tz_budget(1n), expectedBudget);
   }
 
+  // PR03: 300 two-`let!` Maybe chains need about 2,400 workers, more than the budget of 1,024. The chains of the
+  // first functions are specialized completely and the rest keep the generic path; every result stays the same.
+  const chainsProject = join(temporary, "chains");
+  mkdirSync(chainsProject);
+  const chainCount = 300;
+  const chainSource = `def pick :: i64 -> i64 -> Maybe<i64>
+fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)
+${Array.from({ length: chainCount }, (_, index) => `def step${index} :: i64 -> i64 -> i64
+fn step${index} state salt = Maybe.default_value (-1) (Maybe { let! a = pick (state + ${index}) salt; let! b = pick a salt; return a + b })`).join("\n")}
+export def chains :: i64 -> i64
+fn chains state = {
+    let mut total = 0;
+    ${Array.from({ length: chainCount }, (_, index) => `total = total + step${index} state ${index % 5 + 1};`).join("\n    ")}
+    total
+}
+chains 5
+`;
+  writeFileSync(join(chainsProject, "Main.tz"), chainSource);
+  const chainsIr = join(temporary, "chains.ll");
+  cli(["build", chainsProject, "--emit", "llvm", "-o", chainsIr]);
+  assert.equal(readFileSync(chainsIr, "utf8").match(/^define internal .*@tz\.specialized\./gm).length, 1024, "the chains use the whole worker budget");
+  // The reference follows the source: a missing `pick` result makes the whole chain -1.
+  const chainTotal = (state) => {
+    const pick = (value, salt) => (value & 7n) === 0n ? null : value ^ salt;
+    let total = 0n;
+    for (let index = 0; index < chainCount; index++) {
+      const salt = BigInt(index % 5 + 1);
+      const first = pick(state + BigInt(index), salt);
+      const second = first === null ? null : pick(first, salt);
+      total += second === null ? -1n : first + second;
+    }
+    return total;
+  };
+  for (const optimization of [0, 3]) {
+    assert.equal(cli(["run", chainsProject, `-O${optimization}`]).stdout, `${chainTotal(5n)}\n`);
+    const wasm = join(temporary, `chains-${optimization}.wasm`);
+    cli(["build", chainsProject, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+    const { instance } = await WebAssembly.instantiate(readFileSync(wasm));
+    for (const state of [0n, 5n, 1000n]) {
+      assert.equal(instance.exports.tz_chains(state), chainTotal(state), `chains(${state}) at -O${optimization}`);
+    }
+  }
+
   const largeProject = join(temporary, "large");
   mkdirSync(largeProject);
   const benchmark = join(root, "benchmarks/computations");
@@ -318,6 +361,46 @@ ce_owned_capture 262144 42 == direct_owned_capture 262144 42
   const { instance } = await WebAssembly.instantiate(readFileSync(largeWasm));
   for (const name of ["array_for", "owned_capture"]) {
     assert.equal(instance.exports[`tz_ce_${name}`](262144n, 42n), instance.exports[`tz_direct_${name}`](262144n, 42n));
+  }
+
+  // PR03: a return slot must not turn the tail calls of a union-returning mutual recursion or continuation into
+  // frames. At -O2 and -O3 LLVM compiles them to jumps, so 1e8 levels fit in the stack; -O0 and -O1 do not, and a
+  // sanitizer keeps its frames, so this runs only for the optimized native build.
+  if (process.platform !== "win32" && sanitizer.length === 0) {
+    const tailProject = join(temporary, "tail");
+    mkdirSync(tailProject);
+    writeFileSync(join(tailProject, "Main.tz"), String.raw`
+def rec even_m :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else odd_m (n - 1)
+and odd_m :: i64 -> Maybe<i64> = \n -> if n == 0 then None else even_m (n - 1)
+export def parity_deep :: i64 -> i64
+fn parity_deep n = Maybe.default_value 0 (even_m n)
+def rec count_down :: i64 -> Maybe<i64>
+fn rec count_down n =
+    if n == 0 then Some 7
+    else Maybe.bind (Some (n - 1)) (\m -> count_down m)
+export def bind_deep :: i64 -> i64
+fn bind_deep n = Maybe.default_value 0 (count_down n)
+`);
+    const tailIr = join(temporary, "tail.ll");
+    cli(["build", tailProject, "--emit", "llvm", "-o", tailIr]);
+    cli(["build", tailProject, "--emit", "header", "-o", join(temporary, "tail.h")]);
+    const tailHost = join(temporary, "tail-host.c");
+    writeFileSync(tailHost, `
+#include <stdint.h>
+#include <stdio.h>
+#include "tail.h"
+int main(void) {
+    printf("%lld %lld\\n", (long long)tz_parity_deep(100000000), (long long)tz_bind_deep(100000000));
+    return 0;
+}
+`);
+    for (const optimization of [2, 3]) {
+      const tailNative = join(temporary, `tail-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-I${temporary}`, tailHost, tailIr, "-lm", "-o", tailNative]);
+      const result = execute(tailNative, [], false);
+      assert.equal(result.stdout, "1 7\n", `tail calls stay jumps at -O${optimization} (status ${result.status}, signal ${result.signal})`);
+    }
+    console.log("Computations: 1e8-level union tail recursion runs in constant stack at -O2 and -O3");
   }
 } finally {
   rmSync(temporary, { recursive: true, force: true });

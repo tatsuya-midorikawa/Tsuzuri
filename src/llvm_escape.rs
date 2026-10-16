@@ -51,9 +51,9 @@ pub(super) fn staying_locals(body: &TypedExpr) -> BTreeSet<usize> {
     candidates
 }
 
-/// Marks cycles, including indirect recursion through lifted closures, without using the Rust stack.
-pub(super) fn recursive_functions(module: &CheckedModule) -> Vec<bool> {
-    let graph: Vec<Vec<usize>> = module
+/// The functions that each function names, by a call or a closure, in id order.
+pub(super) fn references(module: &CheckedModule) -> Vec<Vec<usize>> {
+    module
         .functions
         .iter()
         .map(|function| {
@@ -71,7 +71,12 @@ pub(super) fn recursive_functions(module: &CheckedModule) -> Vec<bool> {
             }
             targets.into_iter().collect()
         })
-        .collect();
+        .collect()
+}
+
+/// Marks cycles, including indirect recursion through lifted closures, without using the Rust stack.
+pub(super) fn recursive_functions(module: &CheckedModule) -> Vec<bool> {
+    let graph = references(module);
     let mut reverse = vec![Vec::new(); graph.len()];
     for (caller, edges) in graph.iter().enumerate() {
         for &callee in edges {
