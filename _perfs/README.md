@@ -116,7 +116,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | doing |
-| PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | doing |
+| PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
 | PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
@@ -202,13 +202,12 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   特殊化の worker 予算（1,024）は、使い切ったときだけ参照順の depth-first で再生成し（300 連鎖で間接呼び出し 300→0）、予算内のプログラムの出力は変わりません。
   型付き IR での展開（Phase 3、D3）は、`-O3` に差が残らず、`-O0` に残る差（`__text` 3.0 倍、実行 4.3 倍、Clang の compile 3.2 倍）も
   worker の `alwaysinline` では埋まらなかったため、証拠を記録して実施しません（再開の条件は `docs/benchmarks.md`）。
-- **PB04**: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
-  finish（7.8%）です。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も要りません。
-  試作では 1,000 module の `check` が 1.43〜1.46 倍、hello が 25〜35% 短く、出力は HEAD と byte 一致でした。D8 を承認して全段を実装し、順は
-  Sync 化 → 並列の helper と設定 → 所有権 → finish → 本体 → frontend cache の `&self` lookup／`&mut self` commit 分割 → parse です。
-  既定は CLI だけ自動（`min(コア数, 8)`）で、library・LSP・REPL は 1、`TSUZURI_THREADS=1` が従来の経路、不正値は `E2000` です。
-  小さな入力は段ごとの仕事量で逐次にし、診断・IR・pack の byte は thread 数に依らず同じにします。G1 の「`check` を 1/5」は並列化できる段だけの上限が約 1.9 倍で
-  到達できないため、「8 thread で 1,000 module の `check` 1.4 倍以上・`emit-llvm` 1.2 倍以上・hello は悪化しない」に改めます（期待値で、CI の閾値ではありません）。
+- **PB04**（実装済み）: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
+  finish（7.8%）でした。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も使っていません。
+  `src/parallel.rs` の `ordered_for_each`（8 MiB の worker、項目順に結果を渡す）で、所有権 → finish → 本体 → frontend cache の `&self` lookup／`&mut self` commit 分割 → parse の順に
+  並列化しました。既定は CLI だけ自動（`min(コア数, 8)`）で、library・LSP・REPL・`publish` は 1、`TSUZURI_THREADS=1` が従来の経路、不正値は `E2000` です。
+  診断・IR・pack の byte は thread 数で変わらず、thread 数はキャッシュの鍵に入りません。共有機での参考値は、1,000 module の `check` が 1.39〜1.46 倍、
+  hello が 1.48 倍、parse が 4.0 倍で、CPU 時間は 37〜49% 増えます。Linux と Windows の scale は未測定で、G1 は期待値で CI の閾値ではありません。
 - **PM08**: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げです。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
   wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
   `tz_soft_format` と PR04 の表です。主な成果は D2（整数表示の runtime を分けた `integer.ll`）で、native の hello は C の hello と同程度（33,768 bytes）、
