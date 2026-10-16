@@ -28,8 +28,13 @@ mod escape;
 mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
+#[path = "llvm_layout.rs"]
+mod layout;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 use frame::Frame;
+// The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.
+use layout::tag_type;
+pub(crate) use layout::{UnionLayout, drop_flag, layout_bound, storage_layout, union_layout};
 
 /// The builtin instances that emitted code calls, with their concrete
 /// callee types.
@@ -1077,12 +1082,13 @@ fn emit_program(
         } else {
             ""
         };
+        let tag = tag_type(&ty, module);
         let layout = match shape {
-            UnionLayout::Enum => "i32".into(),
+            UnionLayout::Enum => tag.into(),
             UnionLayout::Common(payload) => {
-                format!("{{ i32, {}{flag} }}", llvm_type(&payload, module))
+                format!("{{ {tag}, {}{flag} }}", llvm_type(&payload, module))
             }
-            UnionLayout::General(count) => format!("{{ i32, [{count} x i128]{flag} }}"),
+            UnionLayout::General(count) => format!("{{ {tag}, [{count} x i128]{flag} }}"),
         };
         if module.types().recursive(&ty) {
             let fields = match union_layout(*id, arguments, module) {
@@ -2292,7 +2298,8 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
             match union_layout(*id, arguments, module) {
                 UnionLayout::Enum => case_id.to_string(),
                 UnionLayout::Common(common) => format!(
-                    "{{ i32 {case_id}, {} }}",
+                    "{{ {} {case_id}, {} }}",
+                    tag_type(&value.ty, module),
                     match payload {
                         Some(payload) => typed(payload),
                         None => format!("{} zeroinitializer", llvm_type(&common, module)),
@@ -2428,6 +2435,8 @@ fn emit_dyn_tables(
                 )
             };
         }
+        // The header's `size` and `align` are the model's upper bound for documentation; no code
+        // reads them. The allocations of the cell and of its clone use the LLVM size instead.
         let (size, align) = storage_layout(ty, module);
         let size = size.max(1);
         if drops.insert(ty.clone()) {
@@ -2442,7 +2451,8 @@ fn emit_dyn_tables(
         }
         if key.copy && clones.insert(ty.clone()) {
             let mut clone = emitter!();
-            let copy = clone.value(format!("call ptr @tz.alloc(i64 {size})"));
+            let bytes = clone.cell_size(ty);
+            let copy = clone.value(format!("call ptr @tz.alloc(i64 {bytes})"));
             let value = clone.value(format!("load {}, ptr %data", clone.ty(ty)));
             let value = if ty.needs_drop(&module.types()) {
                 clone.clone_value(ty, &value)
@@ -2638,170 +2648,6 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         | Type::Application(..) => {
             unreachable!("erroneous and polymorphic types cannot reach LLVM")
         }
-    }
-}
-
-/// How a union instance stores its tag and payload.
-enum UnionLayout {
-    /// Every case is nullary, so the value is its `i32` tag.
-    Enum,
-    /// Every payload has the LLVM type of this one: `{ i32, T }`.
-    Common(Type),
-    /// Payloads of different LLVM types share `{ i32, [K x i128] }` storage
-    /// that holds the largest payload.
-    General(usize),
-}
-
-/// Size and alignment in bytes of a type's LLVM representation on 64-bit
-/// targets with 16-byte `i128`, which bound those of wasm32 and older layouts.
-fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
-    layout_bound(ty, module, false)
-}
-
-/// Portable lower bounds for reference guarantees, or the existing allocation upper bounds.
-/// Explicit slots and heap blocks are aligned to 16, even for 256-bit SIMD values.
-fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (usize, usize) {
-    let aggregate = |fields: &mut dyn Iterator<Item = (usize, usize)>| {
-        let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
-            (
-                size.next_multiple_of(field_align) + field,
-                align.max(field_align),
-            )
-        });
-        (size.next_multiple_of(align), align)
-    };
-    match ty {
-        Type::Simd(vector) => (
-            vector.bytes(),
-            if lower {
-                vector.bytes().min(8)
-            } else {
-                vector.bytes()
-            },
-        ),
-        Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
-            let bytes = usize::from(*bits).div_ceil(8);
-            (bytes, if lower { bytes.min(8) } else { bytes })
-        }
-        Type::Bool | Type::Unit => (1, 1),
-        Type::Char => (2, 2),
-        Type::Utf8Char => (4, 4),
-        Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
-        Type::Function(..) | Type::Task(_) => {
-            if lower {
-                (16, 4)
-            } else {
-                (32, 8)
-            }
-        }
-        Type::Vec(_) => (24, 8),
-        Type::Dyn(_) => {
-            if lower {
-                (8, 4)
-            } else {
-                (16, 8)
-            }
-        }
-        Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => {
-            if lower {
-                (4, 4)
-            } else {
-                (8, 8)
-            }
-        }
-        Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
-        Type::Length(_) => unreachable!("a length is not a value"),
-        // The stride of `[N x T]` is the element's size, already a multiple of its alignment.
-        Type::FixedArray(element, _) => {
-            let (size, align) = layout_bound(element, module, lower);
-            (size * fixed_length(ty), align)
-        }
-        Type::Tuple(elements) => {
-            aggregate(&mut elements.iter().map(|ty| layout_bound(ty, module, lower)))
-        }
-        Type::Record(id, arguments) => aggregate(
-            &mut module
-                .types()
-                .record_fields(*id, arguments)
-                .iter()
-                .map(|ty| layout_bound(ty, module, lower))
-                .chain(drop_flag(ty, module).map(|_| (1, 1))),
-        ),
-        Type::Union(..) if module.types().recursive(ty) => {
-            if lower {
-                (4, 4)
-            } else {
-                (8, 8)
-            }
-        }
-        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
-            UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => aggregate(
-                &mut [(4, 4), layout_bound(&payload, module, lower)]
-                    .into_iter()
-                    .chain(drop_flag(ty, module).map(|_| (1, 1))),
-            ),
-            UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
-                &mut [(4, 4), (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
-            ),
-            UnionLayout::General(count) => {
-                if lower {
-                    (8 + 16 * count, 8)
-                } else {
-                    (16 + 16 * count, 16)
-                }
-            }
-        },
-        Type::Error
-        | Type::Variable(_)
-        | Type::Infer(_)
-        | Type::Partial(_)
-        | Type::Application(..) => {
-            unreachable!("erroneous and polymorphic types cannot reach LLVM")
-        }
-    }
-}
-
-fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
-    let payloads: Vec<_> = module
-        .types()
-        .union_payloads(id, arguments)
-        .into_iter()
-        .flatten()
-        .collect();
-    let Some(first) = payloads.first() else {
-        // A Drop union keeps its live flag after the tag, so it is never a bare tag.
-        return if module.unions[id].user_drop {
-            UnionLayout::General(0)
-        } else {
-            UnionLayout::Enum
-        };
-    };
-    let llvm = llvm_type(first, module);
-    if payloads.iter().all(|ty| llvm_type(ty, module) == llvm) {
-        return UnionLayout::Common(first.clone());
-    }
-    let bytes = payloads
-        .iter()
-        .map(|ty| storage_layout(ty, module).0)
-        .max()
-        .unwrap_or(0);
-    UnionLayout::General(bytes.div_ceil(16))
-}
-
-/// The index of the live flag (`i8 1`) that follows the fields of a Drop record, or the tag and
-/// payload of a non-recursive Drop union. Moved-out storage is zero, which clears the flag, so
-/// the drop glue skips the user drop there (B07). Recursive Drop unions use a null node instead.
-fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
-    match ty {
-        Type::Record(id, _) if module.records[*id].user_drop => {
-            Some(module.records[*id].fields.len())
-        }
-        Type::Union(id, _) if module.unions[*id].user_drop && !module.types().recursive(ty) => {
-            Some(2)
-        }
-        _ => None,
     }
 }
 
@@ -5198,139 +5044,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
-    fn union_layout(&self, ty: &Type) -> UnionLayout {
-        let Type::Union(id, arguments) = ty else {
-            unreachable!("union layouts belong to union types")
-        };
-        union_layout(*id, arguments, self.module)
-    }
-
-    /// The payload storage of the union stored at `slot`, typed by each case's load or store.
-    fn payload_pointer(&mut self, ty: &Type, slot: &str) -> String {
-        if self.module.types().recursive(ty) {
-            let node = self.value(format!("load ptr, ptr {slot}"));
-            return self.recursive_payload(ty, &node);
-        }
-        self.value(format!(
-            "getelementptr inbounds {}, ptr {slot}, i32 0, i32 1",
-            self.ty(ty)
-        ))
-    }
-
-    fn construct(&mut self, ty: &Type, case_id: usize, payload: Option<&TypedExpr>) -> String {
-        let payload = payload.map(|payload| (self.expression(payload), self.ty(&payload.ty)));
-        self.construct_value(ty, case_id, payload)
-    }
-
-    fn construct_value(
-        &mut self,
-        ty: &Type,
-        case_id: usize,
-        payload: Option<(String, String)>,
-    ) -> String {
-        if self.module.types().recursive(ty) {
-            return self.recursive_construct(ty, case_id, payload);
-        }
-        let layout = self.union_layout(ty);
-        if matches!(layout, UnionLayout::Enum) {
-            return case_id.to_string();
-        }
-        let llvm = self.ty(ty);
-        let tagged = self.value(format!(
-            "insertvalue {llvm} zeroinitializer, i32 {case_id}, 0"
-        ));
-        let tagged = self.mark_live(ty, tagged);
-        let Some((value, payload_type)) = payload else {
-            return tagged;
-        };
-        if let UnionLayout::Common(_) = layout {
-            return self.value(format!(
-                "insertvalue {llvm} {tagged}, {payload_type} {value}, 1"
-            ));
-        }
-        let slot = self.spill(ty, &tagged);
-        let pointer = self.payload_pointer(ty, &slot);
-        self.instruction(format!("store {payload_type} {value}, ptr {pointer}"));
-        self.value(format!("load {llvm}, ptr {slot}"))
-    }
-
-    fn union_tag(&mut self, value: &TypedExpr) -> String {
-        if self.module.types().recursive(&value.ty) {
-            let (union, frames) = self.read_operand(value);
-            let tag = self.recursive_tag(&value.ty, &union);
-            self.release_operand(value, &union, &frames);
-            return tag;
-        }
-        if Self::is_place(value) {
-            // The tag is the first field, so it is also the value of an enum-like union.
-            let slot = self.place(value);
-            return self.value(format!("load i32, ptr {slot}"));
-        }
-        let (union, frames) = self.read_operand(value);
-        let tag = if matches!(self.union_layout(&value.ty), UnionLayout::Enum) {
-            union.clone()
-        } else {
-            self.value(format!("extractvalue {} {union}, 0", self.ty(&value.ty)))
-        };
-        self.release_operand(value, &union, &frames);
-        tag
-    }
-
-    fn payload_value(&mut self, ty: &Type, union: &str, payload: &Type) -> String {
-        if self.module.types().recursive(ty) {
-            let pointer = self.recursive_payload(ty, union);
-            return self.value(format!("load {}, ptr {pointer}", self.ty(payload)));
-        }
-        match self.union_layout(ty) {
-            UnionLayout::Enum => unreachable!("nullary cases have no payload"),
-            UnionLayout::Common(_) => {
-                self.value(format!("extractvalue {} {union}, 1", self.ty(ty)))
-            }
-            UnionLayout::General(_) => {
-                let slot = self.spill(ty, union);
-                let pointer = self.payload_pointer(ty, &slot);
-                self.value(format!("load {}, ptr {pointer}", self.ty(payload)))
-            }
-        }
-    }
-
-    /// Cases whose payload owns resources, by tag.
-    fn owning_cases(&self, ty: &Type) -> Vec<(usize, Type)> {
-        let Type::Union(id, arguments) = ty else {
-            unreachable!("union cases belong to union types")
-        };
-        let types = self.module.types();
-        types
-            .union_payloads(*id, arguments)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(case, payload)| Some((case, payload.filter(|ty| ty.needs_drop(&types))?)))
-            .collect()
-    }
-
-    /// Branches on the tag of `value` to one new block per case; other tags reach the returned
-    /// join block.
-    fn case_switch(
-        &mut self,
-        ty: &Type,
-        value: &str,
-        cases: &[(usize, Type)],
-    ) -> (Vec<String>, String) {
-        let tag = if self.module.types().recursive(ty) {
-            self.recursive_tag(ty, value)
-        } else {
-            self.value(format!("extractvalue {} {value}, 0", self.ty(ty)))
-        };
-        let labels: Vec<_> = cases.iter().map(|_| self.label()).collect();
-        let done = self.label();
-        self.instruction(format!("switch i32 {tag}, label %{done} ["));
-        for ((case, _), label) in cases.iter().zip(&labels) {
-            self.instruction(format!("  i32 {case}, label %{label}"));
-        }
-        self.instruction("]");
-        (labels, done)
-    }
-
     fn allocate_array(&mut self, element: &Type, length: &str) -> (String, String) {
         let bytes = self.allocation_size(&self.ty(element), length);
         let empty = self.value(format!("icmp eq i64 {length}, 0"));
@@ -5409,7 +5122,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let key = target.vtable_key();
         let value = self.expression(argument);
         if self.module.vtables.contains_key(&(key.clone(), ty.clone())) {
-            let size = storage_layout(ty, self.module).0.max(1);
+            let size = self.cell_size(ty);
             let cell = self.value(format!("call ptr @tz.alloc(i64 {size})"));
             self.instruction(format!("store {} {value}, ptr {cell}", self.ty(ty)));
             let pair = self.value(format!(
@@ -7487,8 +7200,7 @@ impl FunctionEmitter<'_, '_> {
             let current = self.value(format!("load i8, ptr {lock}, align 1"));
             let taken = self.value(format!("icmp eq i8 {current}, 2"));
             fail(self, &taken);
-            let state_type = self.ty(&state);
-            let tag = self.value(format!("extractvalue {state_type} %arg0, 0"));
+            let tag = self.tag_value(&state, "%arg0");
             let present = self.value(format!("icmp eq i32 {tag}, {some}"));
             let store = self.label();
             let empty = self.label();
@@ -7525,11 +7237,7 @@ impl FunctionEmitter<'_, '_> {
         let result_slot = self.slot(&result_type);
         let head = self.value(format!("extractvalue {} %arg0, 0", self.ty(sequence)));
         let step = self.value(format!("extractvalue {} %arg0, 1", self.ty(sequence)));
-        let tag = if self.module.types().recursive(head_type) {
-            self.recursive_tag(head_type, &head)
-        } else {
-            self.value(format!("extractvalue {} {head}, 0", self.ty(head_type)))
-        };
+        let tag = self.tag_value(head_type, &head);
         let has_head = self.value(format!("icmp eq i32 {tag}, 1"));
         let ready = self.label();
         let deferred = self.label();
@@ -7551,7 +7259,7 @@ impl FunctionEmitter<'_, '_> {
         self.jump(&done);
         self.begin(&deferred);
         self.drop_value(head_type, &head);
-        let tag = self.value(format!("extractvalue {} {step}, 0", self.ty(step_type)));
+        let tag = self.tag_value(step_type, &step);
         let has_step = self.value(format!("icmp eq i32 {tag}, 1"));
         self.branch(&has_step, &invoke, &empty);
         self.begin(&invoke);
@@ -7962,9 +7670,10 @@ fn emit_character_conversion(
             let cases = &module.unions[*id].cases;
             let none = cases.iter().position(|(name, _)| name == "None").unwrap();
             let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
+            let tag = tag_type(&result, module);
             let _ = writeln!(
                 body,
-                "  %none = insertvalue {llvm} zeroinitializer, i32 {none}, 0\n  ret {llvm} %none\nvalid_value:\n  %some = insertvalue {llvm} zeroinitializer, i32 {some}, 0\n  %result = insertvalue {llvm} %some, i32 %value, 1\n  ret {llvm} %result"
+                "  %none = insertvalue {llvm} zeroinitializer, {tag} {none}, 0\n  ret {llvm} %none\nvalid_value:\n  %some = insertvalue {llvm} zeroinitializer, {tag} {some}, 0\n  %result = insertvalue {llvm} %some, i32 %value, 1\n  ret {llvm} %result"
             );
         } else {
             body.push_str(
@@ -8100,6 +7809,7 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     let cases = &module.unions[id].cases;
     let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
     let none = cases.iter().position(|(name, _)| name == "None").unwrap();
+    let tag = tag_type(&result, module);
     let mut globals = String::new();
     let mut body = String::from("  %text = load %tz.string, ptr %x\n");
     if matches!(payload, Type::Char | Type::Utf8Char) {
@@ -8144,10 +7854,10 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     }
     let _ = writeln!(
         body,
-        "  %tag = insertvalue {result_type} zeroinitializer, i32 {some}, 0\n\
+        "  %tag = insertvalue {result_type} zeroinitializer, {tag} {some}, 0\n\
            %result = insertvalue {result_type} %tag, {value_type} %value, 1\n\
            ret {result_type} %result\nnone:\n\
-           %empty = insertvalue {result_type} zeroinitializer, i32 {none}, 0\n\
+           %empty = insertvalue {result_type} zeroinitializer, {tag} {none}, 0\n\
            ret {result_type} %empty"
     );
     format!(
