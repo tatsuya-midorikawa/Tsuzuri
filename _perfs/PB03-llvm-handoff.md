@@ -71,7 +71,7 @@ M1 Max。調査中の共有機の load average は 11〜112 で、時間は参�
 - ★ 配布物（約 19,600 file・759 MB）と cache を使うと、`bundled_resource_fingerprint` と `bundled-zig-binary`（185 MB）が毎ビルド全件ハッシュされる（`cache` 段が 33〜165 s。cache hit でも）。launcher の `--version`（LLVM clang と `zig cc` の 2 プロセス）も毎ビルド 約 0.25 s。
 - `run` は `--trap-info` が既定で runtime object を使わない。hello の IR は 758 KB（`build` は 122 KB）で、Clang が -O3 で 675 ms。計装済みの numeric を別の object にする案（PB01 D5 の「将来の候補」）は別チケットにする。
 - whole-build cache の hit の固定費は 約 90 ms（コンパイラ本体 9 MB のハッシュと `--version` の起動）。frontend cache の stat による識別の流用が候補。
-- Homebrew の `wasm-ld` は `lld` への symlink で、`tool_identity` が `executable_path`（`canonicalize`）経由で `lld --version` を呼んで失敗し、wasm の whole-build cache が黙って無効になる。
+- ★ Homebrew の `wasm-ld` は `lld` への symlink で、`tool_identity` が `executable_path`（`canonicalize`）経由で `lld --version` を呼んで失敗し、wasm の whole-build cache が黙って無効になる。`--version` は symlink を辿らない `invoked_path` の名前で呼ぶ（file の識別は従来どおり実体）。
 
 ## 着手条件と停止条件
 
