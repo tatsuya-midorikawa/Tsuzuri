@@ -725,10 +725,10 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
   `honors_the_exact_specialization_limit`）: すべて `running 1 test`・1 passed。
 - `cargo test --locked --test call_specialization`: `running 13 tests`・13 passed（Phase 1 の 2 件・F1' の 3 件・予算の 2 件を含む）。`--lib`: 227 passed（`return_slot` の 4 件を含む）。
   関連: `computations` 30、`coverage` 8、`debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10、`multiversion` 5、`storage` 21、`user_drop` 26 がすべて通過。
-- 全体 `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）: C2 の時点（`8fed1e16`）で 103 binary・1,312 passed・0 failed・1 ignored。C5 の後は、`--lib` 226、`call_specialization` 12、`computations` 30、`coverage` 8、
+- 全体 `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）: C2 の時点（`8fed1e16`）で 101 binary・1,312 passed・0 failed・1 ignored。C5 の後は、`--lib` 226、`call_specialization` 12、`computations` 30、`coverage` 8、
   `debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10 が通過。最終のコード（C5 の実装に文書とチケットだけを足したもの）での
-  `cargo test --locked --no-fail-fast`（`with-lock.sh heavy` の 1 件、約 20 分）: 103 binary・1,314 passed・0 failed・1 ignored（`copy_inventory` の測定用）で終了コード 0
-  （規則 D の版 `78b8188d` の結果。規則 E に直した後の全体の再実行は「レビューの指摘と修正」）。
+  `cargo test --locked --no-fail-fast`（`with-lock.sh heavy` の 1 件、約 20 分）: 101 binary・1,314 passed・0 failed・1 ignored（`copy_inventory` の測定用）で終了コード 0
+  （規則 D の版 `78b8188d` の結果。binary の数は当初 103 と書いたが、`test result_…` という名前の 2 件を数えた誤りで、実際は 101。規則 E に直した後の全体の再実行は「レビューの指摘と修正」）。
 - E2E（native／WASM × `-O0`／`-O3`、`live == 0`、WASM は import なし）。`tests/features.mjs` の suite `return_slot` は 83 件で、IR の slot 数・`ret` 数・`tz.return` の有無も確かめる。
   基準のコンパイラでは `make: one return slot 0 !== 1` で失敗する（実装の前に赤、後に緑）。`tests/computations.mjs` は `-O0`／`-O3` で 71 件と 3 trap、
   native `-O2`／`-O3` の再帰 5 形（`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep`）の 1e8 段（`1 7 1 7 7`）、300 連鎖の予算（worker の定義が 1,024 個、結果は JS の参照と一致、native と WASM の `-O0`／`-O3`）。
@@ -791,6 +791,10 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
   `node tests/features.mjs <release> return_slot`（83 件、native／WASM × `-O0`／`-O3`）が通過し、`benchmarks/computations`・`fixtures/return_slot`・`fixtures/maybe_result` の `--emit llvm` は LTO なしのビルドと byte 一致。
   再現の t2・t3（`-O2`・`-O3`、1e8）は期待値（7・1）、t6 の `mut_pair`・`slices` は slot 1 個・`ret` 1 個。
   差分 fuzz は差 0（`tests/local_recursion_fuzz.mjs` 100 件が native `-O0`（3 件に 1 件は `-O3` も）で評価器と一致、`tests/last_use_fuzz.mjs` 150 件・native `-O0`／`-O3` の 300 実行、seed 1000、深さ 4）。
+- `with-lock.sh heavy` の 1 件（最終のコード、`c93e2008` と同じ src）: `features.mjs` の 16 suite を release binary で実行して通過
+  （`return_slot` 83、`unions` 27、`maybe_result` 26、`higher_kinds` 17、`last_use` 120、`local_recursion` 130、`computation_extensions` 13、`storage` 24、`param_facts` 113、`explicit_copy` 10、
+  `consuming_update` 10、`exceptions` 76、`recursive_types` 23、`typeclasses` 39、`deriving` 209、`stdlib` 3 件）。続けて `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（1,161 秒）:
+  101 binary・1,316 passed・0 failed・1 ignored（`copy_inventory`）で終了コード 0（規則 D の版の 1,314 件より、`call_specialization` と `--lib` の新しい試験の 2 件が多い）。
 
 ### 計測（§14。`docs/benchmarks.md` の `## 抽象化コストの除去（PR03、2026-10-16）`）
 
