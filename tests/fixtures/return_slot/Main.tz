@@ -79,6 +79,24 @@ fn piped n = if n > 100 then n |> make else None
 export def slot_piped :: i64 -> i64
 fn slot_piped n = Maybe.default_value (-1) (piped n)
 
+// A field of a call's result, or of a local that holds one, may hold the call too and keeps the plain `ret`s.
+record Holder { value: Maybe<i64> }
+
+def holder :: i64 -> Holder
+fn holder n = Holder { value: make n }
+
+def read_call :: i64 -> Maybe<i64>
+fn read_call n = if n > 100 then (holder n).value else None
+
+export def slot_read_call :: i64 -> i64
+fn slot_read_call n = Maybe.default_value (-1) (read_call n)
+
+def read_local :: i64 -> Maybe<i64>
+fn read_local n = if n > 100 then { let h = holder n; h.value } else None
+
+export def slot_read_local :: i64 -> i64
+fn slot_read_local n = Maybe.default_value (-1) (read_local n)
+
 def choose :: i64 -> Cell -> Maybe<i64>
 fn choose n cell = if n > 0 then cell.left else cell.right
 

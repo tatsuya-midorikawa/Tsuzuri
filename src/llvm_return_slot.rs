@@ -48,22 +48,27 @@ impl FunctionEmitter<'_, '_> {
     /// local, or a continuation-passing recursion over a union run in a constant stack. A slot hides
     /// the call, and no analysis of the call graph proves that a callee cannot lead back: the recursion
     /// may run through a closure that a caller passes as an argument. So an exit that may hold the result
-    /// of a call (a call, a pipeline, a local that is not a parameter, or any other shape) keeps the `ret`s of
-    /// its function. An exit that builds a value, or reads one from storage or from a parameter, has no call to hide.
+    /// of a call (a call, a pipeline, a local that is not a parameter, a field of such a value, or any
+    /// other shape) keeps the `ret`s of its function. An exit that builds a value, or reads one from
+    /// storage or from a parameter, has no call to hide.
     fn may_leave_through_slot(&self, expression: &TypedExpr) -> bool {
+        matches!(expression.kind, TypedExprKind::Construct { .. }) || self.reads_storage(expression)
+    }
+
+    /// Whether `expression` reads a parameter or storage, so that no value that a call or a
+    /// constructor produced reaches it, not even as a field.
+    fn reads_storage(&self, expression: &TypedExpr) -> bool {
         use TypedExprKind::*;
         match &expression.kind {
-            Construct { .. }
-            | Field(..)
-            | Index(..)
-            | UnionPayload { .. }
-            | Dereference(_)
-            | Static(_) => true,
+            Static(_) | Dereference(_) => true,
             Local(id) => self
                 .function
                 .parameters
                 .iter()
                 .any(|parameter| parameter.id == *id && !parameter.mutable),
+            Field(value, _) | Index(value, _) | UnionPayload { value, .. } => {
+                self.reads_storage(value)
+            }
             _ => false,
         }
     }

@@ -482,7 +482,7 @@ const suites = {
       // The first n with n * n > limit, or none up to 1000.
       ["slot_find", [1n, 50n], 8n], ["slot_find", [1n, 2000000n], -1n], ["slot_find", [1000n, 0n], 1000n],
       ["slot_find", [1001n, 0n], -1n], ["slot_find", [0n, 0n], 1n], ["slot_find", [-5n, 3n], -5n],
-      ...[[150n, 300n], [101n, 202n], [100n, -1n], [50n, -1n]].flatMap(([n, expected]) => [["slot_wrap", [n], expected], ["slot_piped", [n], expected]]),
+      ...[[150n, 300n], [101n, 202n], [100n, -1n], [50n, -1n]].flatMap(([n, expected]) => [["slot_wrap", [n], expected], ["slot_piped", [n], expected], ["slot_read_call", [n], expected], ["slot_read_local", [n], expected]]),
       ...[[3n, 3n], [1n, 1n], [0n, -1n], [-8n, -1n]].map(([n, expected]) => ["slot_field", [n], expected]),
       ...[[1n, 101n], [50n, 150n], [0n, -1n], [-4n, -1n]].map(([n, expected]) => ["slot_local", [n], expected]),
       ...[[5n, 45n], [0n, 40n], [-30n, 10n]].map(([n, expected]) => ["slot_let_chain", [n], expected]),
@@ -508,10 +508,10 @@ const suites = {
         assert.match(body(name), /\ntz\.return:\n/, `${name}: one return block`);
         assert.equal(returns(name), 1, `${name}: one ret`);
       }
-      // An exit that may hold the result of a call (a call, a pipeline, a local bound to one), a recursion
-      // cycle, a continuation, an unknown callee, a callee that gets the closure of its recursion, and a bare
-      // tag keep every plain `ret`.
-      for (const [name, count] of [["wrap", 2], ["piped", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3]]) {
+      // An exit that may hold the result of a call (a call, a pipeline, a local bound to one, a field of
+      // either), a recursion cycle, a continuation, an unknown callee, a callee that gets the closure of its
+      // recursion, and a bare tag keep every plain `ret`.
+      for (const [name, count] of [["wrap", 2], ["piped", 2], ["read_call", 2], ["read_local", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3]]) {
         assert.doesNotMatch(body(name), /tz\.return/, `${name}: no return slot`);
         assert.equal(returns(name), count, `${name}: plain rets`);
       }

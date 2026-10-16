@@ -311,6 +311,15 @@ fn union_results_return_through_one_slot() {
          fn wrap flag x = if flag then helper x else None
          def hold :: bool -> i64 -> Maybe<i64>
          fn hold flag x = if flag then { let r = helper x; r } else None
+         record Holder { value: Maybe<i64> }
+         def holder :: i64 -> Holder
+         fn holder x = Holder { value: Some x }
+         def read_param :: bool -> Holder -> Maybe<i64>
+         fn read_param flag h = if flag then h.value else None
+         def read_call :: bool -> i64 -> Maybe<i64>
+         fn read_call flag x = if flag then (holder x).value else None
+         def read_local :: bool -> i64 -> Maybe<i64>
+         fn read_local flag x = if flag then { let h = holder x; h.value } else None
          def single :: i64 -> Maybe<i64>
          fn single x = Some (x + 1)
          def scalar :: bool -> i64
@@ -325,10 +334,10 @@ fn union_results_return_through_one_slot() {
     .unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
-        // Two exits that build a value, or read it from a parameter, share one slot and one `ret`.
-        // `pair` and `window` have the parameters that make `facts::apply` put scope declarations in
-        // front of the body, which moves every `ret` down.
-        for name in ["make", "pick", "pass", "pair", "window"] {
+        // Two exits that build a value, or read it from a parameter (or a field of one), share one slot
+        // and one `ret`. `pair` and `window` have the parameters that make `facts::apply` put scope
+        // declarations in front of the body, which moves every `ret` down.
+        for name in ["make", "pick", "pass", "pair", "window", "read_param"] {
             let function = body(&ir, &format!("tz.fn.Main.{name}"));
             assert_eq!(
                 function.matches("%tz.return.slot = alloca").count(),
@@ -351,12 +360,14 @@ fn union_results_return_through_one_slot() {
                 "{name}: {function}"
             );
         }
-        // An exit that may hold the result of a call (a call, or a local bound to one), one exit, a
-        // scalar or bare-tag result, a recursive union, and a result bigger than the slot limit keep
-        // their plain `ret`s.
+        // An exit that may hold the result of a call (a call, a local bound to one, or a field of either),
+        // one exit, a scalar or bare-tag result, a recursive union, and a result bigger than the slot limit
+        // keep their plain `ret`s.
         for (name, exits) in [
             ("wrap", 2),
             ("hold", 2),
+            ("read_call", 2),
+            ("read_local", 2),
             ("single", 1),
             ("helper", 1),
             ("scalar", 2),

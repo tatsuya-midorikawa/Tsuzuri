@@ -5788,7 +5788,7 @@ native と wasm32 の `-O0` IR で固定します。
 
 ### 戻り値 slot の後（Phase 2、F1'）
 
-`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてが値を作る・読む exit（constructor、欄・添字・payload・参照外し・static・引数）の関数だけを、
+`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてが値を作る・読む exit（constructor、参照外し・static・引数、引数の欄・添字・payload）の関数だけを、
 入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
 他の 8 対の IR と機械語、`@tz.specialized.` の 64 個は変わりません。
 
@@ -5801,7 +5801,7 @@ native と wasm32 の `-O0` IR で固定します。
   `ce_std_option_owned` に残る `phi` 1 個・`switch` 1 個は `direct_std_option_owned` にもある形です。
 - x86-64 の `ce_std_option` は 38 から 56 命令に増え、`direct`（53）より大きくなりました。前述のとおり命令数は性能の代理ではないので、IR と arm64 の一致を基準にします。
 - `-O3` の object の `__text` は 3,884 から 3,824 bytes です。
-- 呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所）を 1 つでも持つ関数は、全 exit が平文の `ret` のままです。LLVM は `ret (call f)` を sibling call やループにするので、
+- 呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所、それらの欄）を 1 つでも持つ関数は、全 exit が平文の `ret` のままです。LLVM は `ret (call f)` を sibling call やループにするので、
   slot がその呼び出しを隠すと、union を返す再帰が定数のスタックで走らなくなります。5 つの再帰（相互再帰の `parity_deep`、`Maybe.bind` の継続の `bind_deep`、局所を経由する `parity_local_deep`、
   閉包を引数で渡す `guard_deep`、自己再帰を局所で受ける `self_local_deep`）の 1e8 段は、native の `-O2`・`-O3` で基準も後も通ります（`-O0`・`-O1` は基準でも SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
   呼び先が循環に入るかを呼び出しグラフで調べ、入らないときは呼び出しを返す exit も slot にする版は、局所を経由する再帰と、閉包を引数で渡す再帰（`guard` と `Maybe.bind` は参照の循環に入らないが、閉包がそこから戻る）の
