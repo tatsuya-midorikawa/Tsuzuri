@@ -5756,7 +5756,7 @@ fn churn fields rounds =
     total
 ```
 
-asm が変わった Matrix の 4 つの関数の時間は、負荷平均が 100 を超える機械では意味のある比較にならないので測っていません。旗が実行を速くすると言える根拠は、asm の比較からも時間の比較からも得られていません。そのため旗の既定は `off` のままで、`TSUZURI_RANGE_FLAGS=proven` はオプトインです。旗のある関数は PR01 の戻り値の `noundef` を失い（D13）、`proven` で 1 つでも旗が誤ればメモリ安全性を壊す poison になるので、測れる利得がない間は既定にしません。証明の健全性は、`audit` で既存の suite を通すこと、1〜4 bit の型の全区間・全値の総当たり、34 本のプログラムの全入力評価、乱数のプログラムと独立した BigInt の評価器との照合、証明をわざと誤らせたコンパイラを乱数のプログラムが見つけることで確かめています（[ticket](../_perfs/_completed/PR02-integer-ranges.md)）。x86 の実機は使えないので、x86_64 の結果は assembly の比較だけで、速度は測っていません。
+asm が変わった Matrix の 4 つの関数の時間は、負荷平均が 100 を超える機械では意味のある比較にならないので測っていません。旗が実行を速くすると言える根拠は、asm の比較からも時間の比較からも得られていません。そのため旗の既定は `off` のままで、`TSUZURI_RANGE_FLAGS=proven` はオプトインです。旗のある関数は PR01 の戻り値の `noundef` を失い（D13）、`proven` で 1 つでも旗が誤ればメモリ安全性を壊す poison になるので、測れる利得がない間は既定にしません。証明の健全性は、`audit` で既存の suite を通すこと、1〜4 bit の型の全区間・全値の総当たり、38 本のプログラムの全入力評価、乱数のプログラムと独立した BigInt の評価器との照合、証明をわざと誤らせたコンパイラを乱数のプログラムが見つけることで確かめています（[ticket](../_perfs/_completed/PR02-integer-ranges.md)）。x86 の実機は使えないので、x86_64 の結果は assembly の比較だけで、速度は測っていません。
 
 ほかの重い処理を止めた機械で時間を測り直すには、`TSUZURI_RANGE_FLAGS=off node benchmarks/run-matrix.mjs <コンパイラ>` と `TSUZURI_RANGE_FLAGS=proven node benchmarks/run-matrix.mjs <コンパイラ>` を交互に実行し、`Matrix.mul`・`Matrix.mul_parallel`・`Matrix.mul_fma` の表の中央値を比べます（`--quick` は n = 16 だけです）。`String.split`／`String.join` は上のプログラムを `off` と `proven` で `-O3` の実行ファイルにして交互に走らせます。asm の差を見直すときは `node benchmarks/run-range-flags.mjs <コンパイラ>` です。
 
