@@ -2364,6 +2364,12 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
   console.log("WASM realloc: split, absorb, fallback, null, zero and coalescing passed at O0/O3");
 }
 
+// The heap alone, against the design's own arithmetic: tests/wasm_heap.mjs (wasm64 too when the suites run on it).
+async function wasmHeapChecks() {
+  const { memory64Supported, runHeapTests } = await import("./wasm_heap.mjs");
+  runHeapTests({ targets: wasmTarget === "wasm64" && memory64Supported() ? ["wasm32", "wasm64"] : ["wasm32"] });
+}
+
 // Static data on WASM threads (D11 Phase 2): the workers read the one read-only table in the shared
 // memory, and a table read in a worker loop returns the same values as in the single-threaded build.
 async function constStaticsWasmThreadsChecks() {
@@ -2450,7 +2456,7 @@ for (const [name, suite] of Object.entries(suites)) {
   if (name === "rc") await rcWasmThreadsChecks();
   if (name === "const_statics") await constStaticsWasmThreadsChecks();
   if (name === "matrix") await matrixWasmThreadsChecks();
-  if (name === "vec") wasmReallocationChecks();
+  if (name === "vec") { wasmReallocationChecks(); await wasmHeapChecks(); }
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();
   console.log(`${name}: native/WASM at O0/O3 passed`);

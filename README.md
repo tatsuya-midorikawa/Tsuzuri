@@ -917,6 +917,7 @@ node tests/frontend_cache.mjs target/release/tsuzuri
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_memory.mjs target/release/tsuzuri
+node tests/wasm_heap.mjs   # WASM の heap だけを wasm32・wasm64 で検査（compiler は不要。wasm64 は Node.js 24 以降。PM05）
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）
