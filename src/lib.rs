@@ -999,6 +999,119 @@ mod tests {
         }
     }
 
+    /// Analyzes `sources` as the user modules and compares the whole result at 1, 2 and 8 threads.
+    fn assert_same_on_every_thread_count(sources: &[(String, String)]) -> String {
+        let sequential = format!("{:?}", analyze_on(1, sources));
+        for threads in [2, 8] {
+            let (parallel, stages) =
+                parallel_stages(|| format!("{:?}", analyze_on(threads, sources)));
+            assert!(stages > 0, "{threads} threads");
+            assert!(parallel == sequential, "{threads} threads");
+        }
+        sequential
+    }
+
+    /// The modules that make the stages of the check run on workers.
+    fn large_project() -> Vec<(String, String)> {
+        (0..30).map(clean_module).collect()
+    }
+
+    #[test]
+    fn limit_and_cycle_errors_do_not_depend_on_the_thread_count() {
+        for (main, code) in [
+            // F is specialized without end (E1017).
+            (
+                "def rec f :: 'a -> unit\nfn rec f x = f [x]\nf 1\n",
+                "E1017",
+            ),
+            ("record A { b: B }\nrecord B { a: A }\n", "E1010"),
+        ] {
+            let mut sources = large_project();
+            sources.push(("Main.tz".to_owned(), main.to_owned()));
+            let dump = assert_same_on_every_thread_count(&sources);
+            assert!(dump.contains(&format!("\"{code}\"")), "{code}: {dump}");
+        }
+    }
+
+    #[test]
+    fn the_deepest_accepted_nesting_is_checked_the_same_on_workers() {
+        // The deepest nesting that the parser accepts inside `\x -> let _ = ...`, in a function
+        // that a worker of each stage checks among many others. Lists and `if` chains use more
+        // stack per level, which a debug build of the tests (4 MiB threads) cannot take that deep.
+        let depth = syntax::MAX_NESTING - 3;
+        let shallow = 40;
+        let shapes = [
+            format!("{}1{}", "(".repeat(depth), ")".repeat(depth)),
+            format!("{}1", "1 + ".repeat(depth)),
+            format!("{}0{}", "[".repeat(shallow), "]".repeat(shallow)),
+            format!("{}1", "if true then 0 else ".repeat(shallow)),
+        ];
+        let mut sources = large_project();
+        for (index, shape) in shapes.iter().enumerate() {
+            sources.push((
+                format!("Deep{index}.tz"),
+                format!("def deep :: i64 -> i64 = \\x ->\n    let _value = {shape}\n    x\n"),
+            ));
+        }
+        let dump = assert_same_on_every_thread_count(&sources);
+        assert!(
+            dump.starts_with("Ok(CheckedModule"),
+            "{}",
+            &dump[..300.min(dump.len())]
+        );
+        // One more level is a syntax error on every thread count.
+        let mut too_deep = large_project();
+        too_deep.push((
+            "Deep.tz".to_owned(),
+            format!(
+                "def deep :: i64 -> i64 = \\x ->\n    let _value = {}1{}\n    x\n",
+                "(".repeat(depth + 1),
+                ")".repeat(depth + 1)
+            ),
+        ));
+        let dump = assert_same_on_every_thread_count(&too_deep);
+        assert!(dump.contains("syntax nesting exceeds 128"), "{dump}");
+    }
+
+    #[test]
+    fn examples_and_fixtures_analyze_identically_on_every_thread_count() {
+        // Every stage of every project runs on workers (`eager`), however small the project is.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut projects = Vec::new();
+        for directory in ["examples", "tests/fixtures"] {
+            for entry in std::fs::read_dir(root.join(directory)).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    projects.push(entry.path());
+                }
+            }
+        }
+        projects.sort();
+        let (mut analyzed, mut accepted) = (0, 0);
+        for path in &projects {
+            let Ok(project) = driver::Project::load(path) else {
+                continue;
+            };
+            let inputs = project.inputs();
+            let analyze = |parallelism| {
+                parallel_stages(|| {
+                    format!(
+                        "{:?}",
+                        analyze_inputs_with(&inputs, None, None, parallelism)
+                    )
+                })
+            };
+            let (sequential, stages) = analyze(Parallelism::SEQUENTIAL);
+            assert_eq!(stages, 0);
+            let (parallel, stages) = analyze(Parallelism::eager(8));
+            assert!(parallel == sequential, "{}", path.display());
+            assert!(stages >= 4, "{}: {stages} parallel stages", path.display());
+            analyzed += 1;
+            accepted += usize::from(sequential.starts_with("Ok("));
+        }
+        assert!(analyzed >= 90 && accepted >= 90, "{analyzed} {accepted}");
+    }
+
     #[test]
     fn a_small_program_checks_on_the_calling_thread() {
         // Only the text of the standard library that it reaches is worth parsing on workers.

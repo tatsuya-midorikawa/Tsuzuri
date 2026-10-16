@@ -2458,7 +2458,7 @@ impl Project {
         }
     }
 
-    fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
+    pub(crate) fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
         self.sources
             .iter()
             .map(|source| crate::SourceInput {

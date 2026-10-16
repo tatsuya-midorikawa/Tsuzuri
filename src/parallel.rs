@@ -31,16 +31,35 @@ const WORKER_STACK_BYTES: usize = 8 << 20;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Parallelism {
     threads: usize,
+    /// Tests only: every stage uses all the threads, however little work it has, so that small
+    /// programs exercise the parallel paths too.
+    #[cfg(test)]
+    eager: bool,
 }
 
 impl Parallelism {
     /// One thread: every stage runs on the calling thread, as it did before PB04.
-    pub(crate) const SEQUENTIAL: Self = Self { threads: 1 };
+    pub(crate) const SEQUENTIAL: Self = Self {
+        threads: 1,
+        #[cfg(test)]
+        eager: false,
+    };
 
     /// At most `threads` workers, between 1 and `MAX_THREADS`.
     pub(crate) fn fixed(threads: usize) -> Self {
         Self {
             threads: threads.clamp(1, MAX_THREADS),
+            #[cfg(test)]
+            eager: false,
+        }
+    }
+
+    /// `fixed(threads)`, with every stage that has two items or more on that many workers.
+    #[cfg(test)]
+    pub(crate) fn eager(threads: usize) -> Self {
+        Self {
+            eager: true,
+            ..Self::fixed(threads)
         }
     }
 
@@ -80,6 +99,10 @@ impl Parallelism {
     /// How many workers `units` of work justify: one per `per_worker` units, and at most the
     /// threads allowed. Fewer than 2 means that the stage runs on the calling thread.
     pub(crate) fn workers(self, units: usize, per_worker: usize) -> usize {
+        #[cfg(test)]
+        if self.eager {
+            return self.threads.min(units);
+        }
         self.threads.min(units / per_worker.max(1))
     }
 }
@@ -399,6 +422,17 @@ mod tests {
         assert_eq!(Parallelism::fixed(1000).threads, MAX_THREADS);
         let automatic = Parallelism::automatic().threads;
         assert!((1..=AUTOMATIC_THREADS).contains(&automatic));
+    }
+
+    #[test]
+    fn eager_parallelism_ignores_the_amount_of_work() {
+        let eager = Parallelism::eager(8);
+        assert_eq!(eager.workers(0, 256), 0);
+        assert_eq!(eager.workers(3, 256), 3);
+        assert_eq!(eager.workers(1_000_000, 256), 8);
+        assert_eq!(Parallelism::eager(1).workers(100, 4), 1);
+        assert_ne!(eager, Parallelism::fixed(8));
+        assert_eq!(Parallelism::fixed(8).workers(100, 256), 0);
     }
 
     #[test]
