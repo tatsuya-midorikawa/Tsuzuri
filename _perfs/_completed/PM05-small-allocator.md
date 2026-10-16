@@ -739,7 +739,7 @@ native の `--allocator small`（Phase 2）:
 - `node tests/small_allocator.mjs target/release/tsuzuri`: 単体 4 通り、E2000 の拒否、IR の決定性と 1 つの thread-local と宣言の重複なし、`examples/hello` のキャッシュ、object と C の host（成長・primitives・tasks の fixture）で `carved == stocked`、確保と解放の組を LLVM が取り除くこと（`noinline` か属性を外すと失敗する probe）、`tz_coalescing` に atomic の read-modify-write がないこと、2 つの object が 1 つの状態を共有すること、共有ライブラリ。
 - `TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri`: 全スイート（14,106 件）が通る。追跡する malloc の代わりに `tz_small_stats` を使い、各呼び出しのあとで切り出したブロックがすべてキャッシュか中央に戻っていること（`carved == stocked`）と、allocator 自身の `malloc` 以外が生きていないことを確かめる。
 - `cargo test --locked --test allocator`（9 件）、`cargo test --lib`、`cargo test --bin tsuzuri`。IR の 1 つの定義、属性、`mmap`・`pthread`・`calloc` がないこと、既定の出力の不変。
-- Linux arm64（Docker、Ubuntu 24.04）で、`--target aarch64-unknown-linux-gnu` の IR を clang 18 と 20 でコンパイルし、4 スレッドの host、共有ライブラリ、2 つの object（GNU ld と lld）を確かめた。
+- Linux arm64（Docker、Ubuntu 24.04）で、`--target aarch64-unknown-linux-gnu` の IR を clang 18 と 20 でコンパイルし、4 スレッドの host、共有ライブラリ、2 つの object（GNU ld と lld）を確かめた。Linux x64（同じ Docker の amd64、エミュレーション）でも、`--target x86_64-unknown-linux-gnu` の IR の host・共有ライブラリ・2 つの object と、単体 3 通り（通常・`-O3`・ASan+UBSan。TSan はエミュレーションなので省く）が clang 20 で通る。
 - `--emit llvm` の IR を 17 個の named triple で clang 21 がコンパイルできる（riscv64 は Homebrew の clang に backend がなく、確かめていない）。
 - Windows の `cargo check --all-targets` は x86_64・aarch64 の MSVC で通る。Windows の実行時の挙動は、CI の job が緑になるまで確かめたとは言えない。
 

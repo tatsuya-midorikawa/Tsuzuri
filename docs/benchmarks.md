@@ -5845,7 +5845,7 @@ native の既定を `small` にするかは、次の条件を**すべて**確か
 
 | 条件 | 結果 | 根拠・足りないもの |
 | --- | --- | --- |
-| (a) 単体テスト（通常・ASan+UBSan・TSan）と全 features suite（`-O0`・`-O3`）が、macOS arm64・x64、Linux x64・arm64（と musl）、Windows x64 で通る | 一部だけ | macOS arm64 は単体・E2E・suite を確認した。Linux arm64（Ubuntu 24.04 のコンテナ）は単体 4 通りと、IR の host（4 スレッド・共有ライブラリ・2 オブジェクト）を確認した。macOS x64、Linux x64・musl、Windows は未確認（`targets.yml`・`windows.yml` に step を足したが、緑になるまで確認とは言えない） |
+| (a) 単体テスト（通常・ASan+UBSan・TSan）と全 features suite（`-O0`・`-O3`）が、macOS arm64・x64、Linux x64・arm64（と musl）、Windows x64 で通る | 一部だけ | macOS arm64 は単体・E2E・全 suite（14,106 件）を確認した。Linux arm64（Ubuntu 24.04 のコンテナ、clang 18・20）は単体 4 通りと、IR の host（4 スレッド・共有ライブラリ・2 オブジェクト）を確認した。Linux x64（同じコンテナの amd64、エミュレーション）は単体 3 通り（TSan なし）と同じ host を確認した。全 suite は macOS arm64 だけ。macOS x64、musl、Windows は未確認（`targets.yml`・`windows.yml` に step を足したが、緑になるまで確認とは言えない） |
 | (b) 専用機で 2 つ以上の OS ファミリーの計測。PX01 の「improved」が代表 6 workload のうち 3 つ以上で、control・computations・cpp・apps・tasks に「adverse」がない | 未達 | macOS の apps は improved 4 つ・adverse 0 だが、専用機ではない。Linux（glibc）の record_sort は 1.75〜2.27 倍遅い（上の、glibc が大きなブロックのメモリを得て返す方法の差）。control・computations・cpp・tasks（`task_parallel`）は未計測（`run-control.mjs --allocator small` は用意した） |
 | (c) ピーク RSS が、どの app でも悪化しない | 一部だけ | macOS は同じ（小さな app で +0.1〜0.15 MiB の固定費）、Linux は最大 28% 小さい。固定費があるので「悪化なし」とは言えない |
 | (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 一部だけ | 実行ファイルは +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）で達成。コンパイル時間は、`--emit object -O3 --no-cache` の 7 回の最小値で hello が 703 → 731 ms、apps が 838 → 875 ms、control が 142 → 161 ms（load 約 34）と、20〜36 ms 増える（`heap-small.ll` は 860 行で、LLVM がそれも最適化するため） |
