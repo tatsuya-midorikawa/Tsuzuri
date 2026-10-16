@@ -2219,6 +2219,21 @@ suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n <<
     layout.push(["references", [BigInt(count)], BigInt(smallest + (first === undefined ? -2 : first * 100) - 3)]);
     layout.push(["word_references", [BigInt(count)], BigInt(count > 100 ? 4000 + count : -1)]);
   }
+  // Derived Eq, Ord, Hash and Display of `Tagline = Hushed | Words of string`, a union without a tag: a case is its
+  // index, then its text, and a text compares by UTF-16 code units.
+  const tagline = (i) => (i % 3 === 0 ? { index: 0, text: "" } : { index: 1, text: `t${i}` });
+  const lineOrder = (x, y) => (x.index !== y.index ? Math.sign(x.index - y.index) : x.text < y.text ? -1 : x.text > y.text ? 1 : 0);
+  for (const left of [0, 1, 2, 3, 10]) {
+    for (const right of [0, 1, 2, 3, 10, 20]) {
+      const order = lineOrder(tagline(left), tagline(right));
+      layout.push(["tagline_flags", [BigInt(left), BigInt(right)], BigInt((order === 0 ? 1 : 2) + (order < 0 ? 4 : 0) + (order <= 0 ? 8 : 0) + (order > 0 ? 16 : 0) + (order >= 0 ? 32 : 0))]);
+    }
+  }
+  for (const i of [0, 1, 2, 3, 10, 99]) {
+    const line = tagline(i);
+    layout.push(["tagline_hash", [BigInt(i)], BigInt.asIntN(64, line.index === 0 ? unionHash(0) : unionHash(1, canonicalTextHash(line.text)))]);
+    layout.push(["tagline_display", [BigInt(i)], canonicalTextHash(line.index === 0 ? "Hushed" : `Words ${quotedLiteral(line.text, 0)}`)]);
+  }
 }
 // PM01 Phase 3a: independent references for tests/fixtures/record_layout/Main.tz. Each one repeats the arithmetic
 // of the source on BigInt, so that a field that is read or written at the wrong place gives another number.

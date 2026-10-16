@@ -529,3 +529,27 @@ fn word_references count =
     match long with
     | Some word -> word.length * 1000 + count
     | None -> -1
+
+// The derived Eq, Ord, Hash and Display of a union that has no tag: the case index, not the bytes of the value,
+// decides the order and the hash, and the payload follows it.
+union Tagline = Hushed | Words of string deriving (Eq, Ord, Hash, Display)
+
+def tagline :: i64 -> Tagline
+fn tagline i = if i % 3 == 0 then Hushed else Words ("t" + to_string i)
+
+def flags :: Ord<'a> => 'a -> 'a -> i64
+fn flags left right =
+    (if left == right then 1 else 0) + (if left != right then 2 else 0) +
+    (if left < right then 4 else 0) + (if left <= right then 8 else 0) +
+    (if left > right then 16 else 0) + (if left >= right then 32 else 0)
+
+export def tagline_flags :: i64 -> i64 -> i64
+fn tagline_flags left right = flags (tagline left) (tagline right)
+
+export def tagline_hash :: i64 -> i64
+fn tagline_hash i = Hash.hash (ref (tagline i)) as i64
+
+export def tagline_display :: i64 -> i64
+fn tagline_display i =
+    let text = Display.display (ref (tagline i))
+    Hash.hash (ref text) as i64
