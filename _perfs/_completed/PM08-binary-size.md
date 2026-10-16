@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | PB01 |
 | 関連 | PB03, G08, F05 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
 | 承認 | 2026-10-16 の全フェーズ実装依頼で D8（外部ツール `wasm-opt`。明示の opt-in だけ）・D9・新しい D10（埋め込み native のリンク時 GC）を含む全フェーズを承認済み。リンカーの未使用コード除去は PB01 Phase 3 が実装済みで、D1 は取り下げ（「着手時の再検討」） |
 | 手本にする既存実装 | 記号で足すランタイム IR: `src/llvm.rs` の `output.contains("@tz.display.")` → `runtime/display.ll` の分岐。手書きのランタイム IR: `src/runtime/display.ll`・`src/runtime/console.ll`。CLI の検証: `src/main.rs` の `parse` の `-O0`〜`-O3` の分岐と `src/driver.rs` の `BuildOptions::validate`（E2000）。大きさの記録: PX01 の process suite（`benchmarks/metrics.mjs`（PX01 で新規）の `executable_bytes`・`object_bytes`・`wasm_bytes`） |
@@ -646,15 +646,17 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
 
 ## 受け入れ条件
 
-- [ ] hello・point・computations・control・currying・polymorphism の native の実行ファイル（`-O0`・`-O3`）の `nm` に `tz_soft` がない。
-- [ ] 整数 10 型の境界値の表示が BigInt の参照と一致する（native・WASM × `-O0`・`-O3`・`-Oz`、WASM の import は空）。
-- [ ] `-Os`・`-Oz` が build・run で使え、`--emit llvm` の IR が `-O3` と同じ。test では E2000。
-- [ ] 手順 9 の `-Oz` の wrapper で数値・トラップ・所有権の suite がすべて成功した。
-- [ ] `--strip` が局所シンボルを除き、実行結果と `.trap.json` を変えない。macOS で署名が有効。診断の表の E2000 が出る。
-- [ ] 整数を表示しないプログラムの IR と成果物が既定の指定で変わらない（io を `cmp`）。2 回のビルドがバイト一致する。
-- [ ] `target/perf/PM08-before`・`PM08-after`・`PM08-dead-strip-probe` があり、比較の表と dead_strip の値を完了報告と PB01 へ届けた。
-- [ ] `docs/benchmarks.md` に成果物サイズの節があり、C・Rust の hello と並んでいる。
-- [ ] GUIDE §10 の完了の定義を満たす。
+2026-10-16 の実装での結果（詳細は「実装と検証」）。
+
+- [x] hello・point・computations・control・currying・polymorphism の native の実行ファイル（`-O0`・`-O3`）の `nm` に `tz_soft` がない。（`point` は `f64` を表示するので `_tz_soft_format` だけがある。ほかの 5 つにはない）
+- [x] 整数 10 型の境界値の表示が BigInt の参照と一致する（native・WASM × `-O0`・`-O3`・`-Oz`、WASM の import は空）。（`Parse`・書式指定も Python と BigInt の参照と一致）
+- [x] `-Os`・`-Oz` が build・run で使え、`--emit llvm` の IR が `-O3` と同じ。test では E2000。
+- [x] 手順 9 の `-Oz` の wrapper で数値・トラップ・所有権の suite がすべて成功した。
+- [x] `--strip` が局所シンボルを除き、実行結果と `.trap.json` を変えない。macOS で署名が有効。診断の表の E2000 が出る。
+- [x] 整数を表示しないプログラムの IR と成果物が既定の指定で変わらない（io を `cmp`）。2 回のビルドがバイト一致する。（文字列・float・bool だけを出す 2 つのプログラムの IR・object・wasm32・実行ファイル、`io` の IR が main のコンパイラと byte 一致）
+- [x] `target/perf/PM08-before`・`PM08-after` があり、比較の表を完了報告へ届けた。（`PM08-dead-strip-probe` は D1 の取り下げで作っていない。PB01 Phase 3 が実装済みで、効果は D10 の表にある）
+- [x] `docs/benchmarks.md` に成果物サイズの節があり、C・Rust の hello と並んでいる。
+- [x] GUIDE §10 の完了の定義を満たす。（速さの再測定と Linux・Windows の実測は「残りの作業」）
 
 ## 落とし穴
 
@@ -686,7 +688,7 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
 - 決定: リンカーの未使用コード除去と関数ごとの section、`math.ll` の分離は PB01 Phase 3 が持つ。PM08 は大きさの計測、サイズ優先の指定、
   整数の表示の分離、`--strip` を持ち、`-dead_strip` の効果は wrapper で計測して PB01 へ渡すだけにする。
 - 理由: PB01 の D10 が同じ変更を要承認で計画している。全実行ファイルのリンクを 2 つのチケットで変えると検証が二重になる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 取り下げ（PB01 Phase 3 が実装済みだったので、PM08 は埋め込み形式の穴だけを D10 で埋めた。「実装と検証」）
 
 ### D2: 整数の表示を数値ランタイムから分ける
 
@@ -694,7 +696,8 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
   `emit_display` は `Type::Integer` でこれを呼ぶ。`numeric.c`・`numeric.ll`・`tz_soft_format` は変えない。
 - 理由: 整数の変換は 25 行ほどだが、`tz_soft_format` 経由だと `numeric` 全体（hello の `-O3` の `__text` 33,184 bytes の大半）が入る。`numeric.c` に関数を足しても
   `@tz_soft_` の検索で全体が入る。手書き IR は `display.ll` と同じ扱いで、`generate.py` と `FIRST_METADATA` の規則に触れない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`278f928e`、書式指定付きの表示と `Parse` は P8 の `f2cb7b6d`）。API は `@tz.integer.format`（`ptr %end, i64, i1`）・`format128` で、テキストを末尾から前へ書く（呼び出し側が先頭を計算）。
+  P8 で `spec`・`spec128`・`parse`・`parse128` を足した
 
 ### D3: `-Os`・`-Oz` の表現と渡し方
 
@@ -702,13 +705,13 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
   IR は変えず、`optsize`・`minsize` 属性も付けない。build と run だけで受け、test は E2000。
 - 理由: wrapper の計測で IR 入力のまま `-Oz` が `__text` を 8.6〜10.4% 減らした。属性の付与は全 `define` と手書き IR に触る。
   `TestOptions` は別の型で、test の成果物の大きさに利用者の利益がない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`3b80ceab` の `OptLevel`、`cc767e9f` の `-Os`・`-Oz`）。`bench` も E2000。repl・script・check・doc・fmt は元から `-O0`〜`-O3` 以外を拒否する
 
 ### D4: 既定の最適化
 
 - 決定: 既定は `-O3` のまま（test は `-O0` のまま）。サイズ優先は明示指定だけ。
 - 理由: 起票時の既定案。実行速度の既定を変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（既定は `-O3` のまま。`-Os` は小さい native で増えることがあり、既定にしない根拠になった）
 
 ### D5: `--strip`
 
@@ -716,7 +719,7 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
   `-g` との併用、実行ファイル以外の出力は E2000。既定では除かない。
 - 理由: `-Wl,-x` は ld64・GNU ld・lld が共通で受け、リンカーが署名するので macOS の署名が有効なまま（`codesign -v` を確認済み）。
   外部シンボルは残る。削減は 592〜1,120 bytes と小さく、プロファイラーが内部関数の名前を失うので既定にはしない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`c5544cc3`）。native の実行ファイルのリンクにだけ `-Wl,-x`。`platform.windows()` では何もしない。`-g`・実行ファイル以外・WASM・build 以外は E2000
 
 ### D6: 大きさの指標と size suite
 
@@ -724,22 +727,120 @@ $L/llvm-objdump -h $W/f.wasm | grep CODE
   section の大きさは `llvm-objdump -h`（`TSUZURI_OBJDUMP`）だけで読む。大きさは 2 回のビルドの一致を確かめた 1 標本。
 - 理由: file の大きさは 16 KiB 単位でしか動かず改善を隠す。`llvm-objdump` は Mach-O・ELF・WASM を同じ形で読め、既にテストが使っている。
   size suite を別の script にすると記録・比較のコードが重複する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`a0c2890c`）。`rodata_bytes`・`wasm_data_bytes` も足し、cache あり既定を主、`--no-cache` を別の variant にした
 
 ### D7: C ランタイムと CPU dispatch（F05）
 
 - 決定: `task.c`・`cpu.c`・`io.c`・`task-wasm-threads.c` も同じ `-Os`・`-Oz` でコンパイルする。CPU dispatch の版の数は変えない。
 - 理由: `build_complete` の 3 か所が同じ値を使う今の形を保てる。dispatch の版は `Array.sum` の数関数で、減らすと実行時の選択（F05）の意味が変わる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`cc767e9f`）。C ランタイム・WASM スレッドのランタイムにも同じレベルを渡す。dispatch の版は変えていない
 
 ### D8: `wasm-opt`
 
 - 決定: Phase 2 で `wasm-opt -Oz` を opt-in の後処理として検討する。導入する場合は `TSUZURI_WASM_OPT` で選び、なければ E2002。
 - 理由: 新しい外部ツールで、配布物（G14）・cache の鍵・CI の環境に影響する。計測機にもない。
-- 状態: 要承認（承認前は Phase 2 に着手しない）
+- 状態: 承認済み・実装済み（`7509b4f6`）。`--wasm-opt` を付けたときだけ、`TSUZURI_WASM_OPT`（なければ PATH の `wasm-opt`）を実行する。自動検出も同梱もしない。見つからない・失敗したときは `E2002` とヒント。
+  ツールの同一性は `--wasm-opt` のときだけ cache の鍵に入る
 
 ### D9: `tz_soft_format` の分割
 
 - 決定: 浮動小数点・decimal ごとの分割は PB01 Phase 3 の後に、size suite で効果を測ってから判断する。Phase 1 では行わない。
 - 理由: `-dead_strip` なしでは `weak hidden` の定義がすべて残るので分割の効果が出ない。`numeric.c` の変更は 2 つの生成物の再生成を伴う。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 読み替えて実装済み（`f2cb7b6d`）。`numeric.c`・`numeric.ll`・`math.ll`・`numeric_tables.h` は変えず（PM05 が byte 不変を前提にする）、整数の `Parse`・書式指定を `integer.ll` の手書き IR で分けた。
+  `tz_soft_format` の float・decimal ごとの分割は行っていない（cache ありの既定は section 単位で未使用部分を除くので、`numeric.c` の再生成に見合う効果が測れていない）
+
+### D10: 埋め込み native のリンク時 GC（着手時に新設）
+
+- 決定: 埋め込み native（`--no-cache`・`--trap-info`）のリンクにも dead strip を使い、非 Mach-O では module IR に `-ffunction-sections -fdata-sections` を付ける。`-g` の経路は変えない。
+- 状態: 実装済み（`715be3d8`）。`--no-cache` の `examples/point` の `__text` は 40,552 から 10,844 byte（cache ありの既定と同じ）
+
+## 実装と検証（2026-10-16）
+
+着手時の HEAD は `70f7c803`（main `6d15b437` ＋ 計画）、branch `perf/phase3/PM08`。全フェーズ（D8・D9 と新設の D10 を含む）を実装した。`_perfs/README.md` は変えていない（統合担当が更新する）。
+
+### 実装したもの（コミット）
+
+| 作業 | コミット | 内容 |
+| --- | --- | --- |
+| P0 | `b6baa355` | 着手時の再検討の記録（起票時の記述と現行のコード、偵察の効果、D2 で期待値が変わるテスト） |
+| P1 | `3b80ceab` | `OptLevel { O0, O1, O2, O3, Os, Oz }`（`BuildOptions::optimization: u8` の置き換え。IR・実行ファイル・wasm・object は before と同一） |
+| P2 | `a0c2890c` | size suite（`benchmarks/size.mjs`、`benchmarks/metrics.mjs size`）。`text_bytes`・`rodata_bytes`・`wasm_code_bytes`・`wasm_data_bytes` と `opt` の `Os`・`Oz`。C・Rust の hello（`benchmarks/size/hello.{c,rs}`） |
+| P3 | `cc767e9f` | `-Os`・`-Oz`（`build`・`run`）。`test`・`bench` は E2000。`tests/size.mjs`（新規）、CI、smoke |
+| P4 | `c5544cc3` | `--strip`（`-Wl,-x`。native 実行ファイルだけ。`platform.windows()` では何もしない） |
+| P5 | `278f928e` | D2: `src/runtime/integer.ll`（`@tz.integer.format`・`format128`）。整数の表示が数値ランタイムを使わない |
+| 統合 | `9c4e46f1`・`e667d20c` | `perf/phase3/PB03` の取り込み（衝突は `driver.rs`・README・`targets.yml`・`benchmarks.md` の並べ方だけ） |
+| P6 | `715be3d8` | D10: 埋め込み native のリンク時 GC（`--no-cache`・`--trap-info`。`-g` は除く） |
+| P7 | `7509b4f6` | D8: `--wasm-opt`（明示の opt-in。`TSUZURI_WASM_OPT`。`E2002` とヒント。cache の鍵にツールの同一性） |
+| P8 | `f2cb7b6d` | 整数の `Parse`・書式指定（`{n:+}`・`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`）を `integer.ll` へ（`tz.integer.parse`・`parse128`・`spec`・`spec128`） |
+| 修正 | `ab25f3c6`・`13c94833` | PB03 の `tests/bundle_identity.mjs` の fixture を float に（下の一覧）。`integer.ll` の識別子から `fast` を除く（features の fast-math の検査が IR の文字列に当たった） |
+| P9 | （このコミット） | 文書の最終確認、`docs/benchmarks.md` の表、この節、`_perfs/_completed/` へ移動 |
+
+実装しなかったもの: `tz_soft_format` の float・decimal ごとの分割（D9 の元の意味。`numeric.c` を変えず、cache ありの既定は section 単位で除くので効果が測れていない）、Binaryen の同梱と自動検出（承認の範囲外）、`optsize`・`minsize` 属性、配布 bundle の `-Os`・`-Oz` の object、Windows の実測（`windows.yml` で確かめる）。
+
+### 設計と、起票時の決定から外れた判断
+
+- `integer.ll` の API は `@tz.integer.format(ptr %end, i64, i1)`・`format128(ptr %end, i128, i1)` で、テキストを呼び出し側の 40 byte の buffer の末尾から前へ書き、長さを返す（起票時は `(ptr, i128, i1)` で先頭から書く案）。逆順の複写が要らず、`i128` の除算と乗算は 128 bit の入口だけが使う（`i128` を扱わないプログラムに `__udivti3`・`__multi3` は要らない）。書式指定（`spec`・`spec128`）は 160 byte、`Parse`（`parse`・`parse128`）は UTF-16 のコード単位を直接読む。
+  `Parse` は 4096 コード単位の上限・符号・`0x`／`0b`・`_` の置き方・範囲を `tz_soft_parse` と同じに保つ。10 進の先頭 19 コード単位は `u64` を超えないので範囲の検査なしで足し、和を一度だけ上限と比べる（約 200 byte。外した版は長い 10 進数の読み取りが `numeric.ll` より最大 40% 遅かった）。
+- 手書きの IR の関数はすべて `define internal`、メタデータも `declare` も持たない。`tz.integer.` の記号が IR に現れたときだけ連結し、`RuntimeSymbols::prefix` で選ぶ。`.gitignore` の例外と `abi.rs` の予約名に足した。
+- コメント・識別子にも注意が要る。runtime の IR は生成 IR の一部なので、`tz_soft_`・`fast`・`contract`・`reassoc`・`fmuladd` を含むと、数値ランタイムの有無や fast-math の有無を文字列で調べるテストに当たる（`llvm.rs` の単体テストで守る）。
+- D10 の条件は `gc_sections = 実行ファイル && native && !debug_info`。すべての該当リンクに `dead_strip_args` と `-u` の root を渡し、非 Mach-O では module IR と C ランタイムに `-ffunction-sections -fdata-sections` を付ける。`-g` の経路は変えない。
+- `-Os`・`-Oz` は IR を変えず Clang に渡すだけ。`test`・`bench` は E2000（`X supports -O0 to -O3; use -Os or -Oz with build or run`）。既定は `-O3` のまま。
+- `--strip` は `platform.windows()` のとき何もしない。`-g`・実行ファイル以外・WASM・build 以外は E2000。
+- `--wasm-opt`: `build` の wasm32 `--emit wasm` だけ（threads・`-g` とは E2000）。リンクの後に `wasm-opt <in> -o <out> -Oz --enable-bulk-memory …`（SIMD を使うときは `--enable-simd`）を実行して結果を成果物にする。ツールは `TSUZURI_WASM_OPT`、なければ PATH の `wasm-opt`。`--wasm-opt` なしでは探さない。見つからない・失敗は `E2002` とヒント。cache の鍵にはこのときだけツールの同一性を入れる。`toolchain info` が `TSUZURI_WASM_OPT` を示す。
+- `tests/size.mjs` は `TSUZURI_TEST_SECTION=名前の一部` で節を選べる。
+
+### 期待値が変わった既存テスト
+
+D2（`278f928e`。先に宣言した 8 件と、実装で見つかった 1 件）。どれも整数を表示して数値ランタイムを連結させていたので、意図は保ち、float に移して整数の検査を足した:
+`src/llvm.rs` の `emits_utf16_display_and_ascii_parse`・`number_formatting_keeps_the_generated_intrinsic_declarations`、`tests/display_parse.rs` の `provides_display_for_primitives_and_parse_for_numbers_and_bool`・`numeric_and_boolean_console_output_uses_the_shared_buffered_path`、`tests/integers.rs` の `integer_intrinsics_beside_number_formatting_declare_each_symbol_once`、`tests/prebuilt_runtime.rs` の `object_runtime_emission_is_deterministic_and_preserves_intrinsic_wrappers`、`tests/targets.rs` の `a_different_triple_or_sysroot_never_reuses_a_cached_build`、`tests/display_parse.mjs` の `display-only`。
+P8（`f2cb7b6d`）: `src/llvm.rs` の `emits_utf16_display_and_ascii_parse`（ASCII の複写は f64 の `Parse` で示す）・`integers_are_shown_without_the_numeric_runtime`（数値ランタイムが入る例は f64・d64 の `Parse`）、`tests/display_parse.rs` の `provides_display_for_primitives_and_parse_for_numbers_and_bool`（i64 の `Parse` は `@tz.integer.parse`、f64 は `@tz_soft_parse`）、`tests/display_parse.mjs` の `parse-only`（f64 に。`integer-parse` を足した）。
+PB03 の取り込みで入った `tests/bundle_identity.mjs`（`ab25f3c6`）: `42` の cold build は数値 object の compile を数えていたので、`42.5` にした（数・出力の検査の意図は同じ）。
+P1 の型の変更（`options.optimization` の比較、`optimization: 4` の検査、`tests/f16_hardware.rs` などの構築）は期待値の変更ではなく型の追従。
+新しいテスト: `tests/size.mjs`、`tests/integer_format.mjs`（Python の独立した参照と `numeric.ll` の `tz_soft_*` との照合）、`src/llvm.rs` の単体テスト、`src/main.rs` の `size_levels_apply_to_build_and_run_only` など、`tests/toolchain.rs` の `TSUZURI_WASM_OPT` の 1 行。
+
+### 計測
+
+条件: Apple M1 Max（macOS 27.0.1、arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-objdump`、Binaryen 132（npm、scratch。リポジトリに依存を足していない）、load average 20〜150 の共有機。サイズは決定的なので load に依存しない。before は main `6d15b437` のリリースビルド（`target/perf/PM08/tsuzuri-before`、記録は `target/perf/PM08-before/size.jsonl`）、after は P8 まで入れたコンパイラ（`target/perf/PM08-after/size.jsonl`、非 LTO と LTO のリリースで同じサイズ）。表と再現のコマンドは `docs/benchmarks.md` の「成果物のサイズ」。主な値（`-O3`、cache あり）:
+
+| 成果物 | before | after |
+| --- | ---: | ---: |
+| `examples/hello` native 実行ファイル／`__text`／`__const` | 50,664／13,304／10,160 | 33,896／2,604／64 |
+| `examples/hello` wasm32 | 35,714 | 6,357（`-Oz` 2,587、`-Oz --wasm-opt` 2,156） |
+| `benchmarks/size/parse` native `__text` | 30,904 | 9,096 |
+| `benchmarks/size/parse` wasm32 | 76,023 | 18,199（`-Oz` 8,121） |
+| `--no-cache` の `examples/point` `__text`（D10） | 40,552 | 10,844 |
+| `examples/io`・`point` | 変化なし（整数の表示を使わない・f64 を表示する） | |
+
+`-Os`・`-Oz` と `--strip`・`--wasm-opt` の表も同じ節にある。C・Rust の hello との並べ方（C 33,432、Rust 434,168 byte）も同じ節。速さは、整数の `Parse` と書式指定の C の測定（`numeric.ll` → `integer.ll`、ns／回: 0〜999 の `Parse` 15.9 → 8.7、全幅の `u64` 32.0 → 22.9、`{n:x}` 35.8 → 19.2）を load average 約 30 の共有機で 1 回測っただけで、速度の主張には使わない。静かな機械での再測定が必要。共有 CI に速度・サイズの閾値は置いていない。
+
+### 確認（コマンドと結果）
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`: 通過。GUIDE §3.1 の 3 つの回帰テストは `cargo test` に含まれて通過。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（P8 の状態。`with-lock.sh heavy`）: 104 グループ、1,332 件が通過、失敗 0、無視 1（元からの `#[ignore]`）。その後の変更（識別子の rename と単体テスト 1 件）のあとに `cargo test --locked --lib llvm::`（20 件）と関係する統合テストを再実行して通過。
+- `cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（rustup の toolchain）: どちらも通過。Windows の挙動は `windows.yml` が緑になって初めて確認できる（`platform.windows()` を使い、`cfg!(windows)` は使っていない）。
+- 完全な LTO の `cargo build --release --locked`（SHA-256 `344f3e15…`）に対する node の suite（`with-lock.sh heavy`）。`size`・`integer_format`・`display_parse`・`numeric_casts`・`integer_intrinsics`・`primitives`・`strings`・`strings_bridges`・`e2e`・`examples`・`io`・`tasks`・`trap_boundary`・`trap_return`・`trap_return_sync`・`stack_overflow`・`user_drop`・`allocator`・`cache`・`frontend_cache`・`prebuilt_runtime`・`os`・`wasm_memory`・`wasm64`（Node 24）・`wasm_simd`・`wasm_threads`・`targets`・`host_imports`・`host_bindings`・`bindings`・`json`・`script`・`repl`・`debug_info`（`llvm-dwarfdump` を PATH に）・`cpu_dispatch`・`computations`・`control`・`utf_simd`・`bundle_identity`・`handoff_tools`・`llvm_handoff`・`features`（全 suite、1,665 秒）がすべて通過。
+  1 回目の実行で見つかったもの: `features` が `\bfast\b` の検査で失敗（`integer.ll` の識別子 `fast`。rename して単体テストで守った）、`bundle_identity`（上の期待値の変更）、`io`・`trap_return`・`os` が ASan の実行の 180 秒の制限で ETIMEDOUT（負荷による。この 3 つの IR は変更前と同一で、`io` の IR は byte 一致。負荷が下がってから再実行して通過）、`wasm64` は Node 24 が必要、`cpu_dispatch` は PATH の先頭に Homebrew の clang を置いた私の設定の誤り（Apple clang で通過）。
+  rename 後の LTO ビルドで `size`・`integer_format`・`display_parse`・`bundle_identity`・`cpu_dispatch`・`io`・`trap_return`・`os`・`features`・`wasm64` を再実行して通過。ほかの suite は rename の前のビルドで通過した（機械語は同じで、IR の識別子だけが違う）。
+- `-Oz` の wrapper（`build`・`run` を `-Oz` に置き換えて同じ suite を走らせる）: `numeric_casts`・`integer_intrinsics`・`primitives`・`strings`・`display_parse`・`e2e`・`io`・`tasks`・`trap_boundary`・`user_drop`。`io` は 1 回目が ASan の制限で落ち、再実行で通過。P3 の時点でも `control`・`computations`・`cpu_dispatch`・`allocator`・`features` などを含む全 suite で確認した。
+- `node scripts/check-docs.mjs`（言語リファレンスの 5 ページ `option`・`usage`・`webassembly`（PM08 が変えた 3 ページ）と `debugging`・`platforms`（PB03 が変えた 2 ページ））: 124 リンク、11 の例、native の実行 10 回（`-O0`・`-O3`）、test の project 1 つで通過。`README.md`・`docs/*.md` は同じ script の対象外。
+- `sh scripts/check-runtime-includes.sh`（48 ファイル）通過。`git diff --exit-code`: `numeric.c`・`numeric.ll`・`math.ll`・`numeric_tables.h` に差分なし（PM05 の前提）。`git diff --check` 通過。
+- 整数の参照: `node tests/integer_format.mjs`（clang と Python だけ。native・WASM × `-O0`・`-O3`・`-Os`・`-Oz`）が、Python の独立した参照 47,029 件の表示・15,200 件の書式指定・71,235 件の `Parse`、8／16 bit の全値の C ライブラリとの照合、`numeric.ll` の `tz_soft_*` との同一入力での一致を確かめる。IR の約 35 か所の変異（上限の 1 違い、先頭 19 桁の窓、`_`、符号、基数、128 bit の分割、桁の隣の文字）はすべて検出された（検出されなかった変異は等価なものだけ）。`tests/size.mjs` は 10 の整数型の表示・`Parse`・書式指定を 4 つのレベルでコンパイラ経由で照合する。
+- 受け入れ条件の `nm`: hello・computations・control・currying・polymorphism（`-O0`・`-O3`）の native 実行ファイルに `tz_soft` の記号はない。`point` は `f64` を表示するので `_tz_soft_format`（float の表示）だけがある。
+- 決定性と不変: `tests/size.mjs` が `-Oz` の 2 回の cold build の byte 一致を確かめる。整数の表示・`Parse`・書式指定のないプログラム（文字列・float・bool だけを出す 2 つ）の `--emit llvm`・object・wasm32・実行ファイルは main `6d15b437` のコンパイラと byte 一致（`cmp`）。
+- `node tests/benchmark_report.mjs` 通過（size suite の指標・記録・`opt` の `Os`・`Oz`）。size suite は全 9 つの `examples/` と `benchmarks/size/parse` で実行し、2 回のビルドの一致を確かめて記録した。
+
+### 残りの作業と、見つけた問題
+
+- Linux と Windows でのリンク（`--gc-sections`・`-ffunction-sections`・`-Wl,-x`・MSVC の `/OPT:REF`）の実測はこの機械では取れない。理由づけと `cargo check` までで、`targets.yml`・`windows.yml` の緑で確かめる。
+- 速さの測定（`Parse`・書式指定の C の測定）は、共有機で `with-lock.sh measure` の順番が回ってこず、1 回だけ測った値を指標として載せた。静かな機械で `integer.ll`／`numeric.ll` の比較を再測定する。
+- Homebrew の `wasm-ld` は multi-call の symlink（`lld`）で `cache::tool_identity` が失敗し、wasm のビルドが `build cache disabled` になる（PB03 の持ち分。直していない）。測定とテストは `TSUZURI_WASM_LD` に `lld -flavor wasm` を呼ぶ wrapper を指して行った。
+- `tz_soft_parse` の整数の枝（10 進 8 桁の一括処理を含む）と `tz_soft_format_spec` の整数の枝は、コンパイラが生成するコードから呼ばれなくなった。PM05 が `numeric.ll` の byte 不変を前提にするので残してあり、`integer_format.mjs` の基準になっている。float・decimal ごとの `tz_soft_format` の分割は、効果が測れていないので行っていない。
+- `-Os` は小さい native では `-O3` より `__text` が増えることがある（`examples/io`）。既定にしない根拠として「設計」に残した。
+- `_perfs/README.md` の PB03 の行のリンクは、PB03 のチケットが `_completed/` へ移ったので古い（統合担当が直す）。PM08 の行は `done`、`_completed/PM08-binary-size.md` にする。
+
+### 更新した文書とファイル
+
+- 言語リファレンス: `_tsuzuri/language-reference/compiler/option.md`（`-Os`・`-Oz`・`--strip`・`--wasm-opt`・`TSUZURI_WASM_OPT`）、`usage.md`（整数ランタイム、リンク時の GC、成果物の大きさ）、`webassembly.md`（成果物の大きさ）。`debugging.md`・`platforms.md` は PB03 の変更で、PM08 は触っていない。
+- `README.md`（CLI の表、テストの一覧）、`docs/architecture.md`（`integer.ll`、`OptLevel`、D10、`--wasm-opt`、`Parse` の経路。「型別 format 分割（PM08）は未実装です」の文を実装後の説明へ）、`docs/benchmarks.md`（「成果物のサイズ」）、`docs/language.md`（トラップ位置の節に `-Os`・`-Oz`・`--strip`・`--wasm-opt` でも変わらないこと）。
+- コード: `src/driver.rs`（`OptLevel`、`BuildOptions::{strip, wasm_opt}`、`gc_sections`、`run_wasm_opt`）、`src/main.rs`、`src/cache.rs`、`src/repl.rs`、`src/abi.rs`、`src/llvm.rs`・`src/llvm_display.rs`（整数の表示・`Parse`・書式指定）、`src/runtime/integer.ll`（新規）、`.gitignore`。
+- テストと benchmark: `tests/size.mjs`・`tests/integer_format.mjs`・`tests/integer_format_reference.py`・`tests/integer_format_runtime.c`（新規）、`tests/display_parse.{rs,mjs}`・`features.mjs`・`integers.rs`・`prebuilt_runtime.rs`・`targets.rs`・`toolchain.rs`・`bundle_identity.mjs`・`benchmark_report.mjs`・`f16_hardware.rs`・`fixed_arrays.rs`・`host_abi.rs`・`trap_locations.rs`、`benchmarks/{metrics,size}.mjs`・`benchmarks/size/{hello.c,hello.rs,parse/Main.tz}`、`scripts/toolchain/smoke.mjs`、`.github/workflows/{targets,windows}.yml`。

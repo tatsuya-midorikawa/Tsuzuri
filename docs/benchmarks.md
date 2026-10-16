@@ -5839,7 +5839,28 @@ Apple M1 Max（macOS arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-
 | native `__text` | `-Os` | 12,860 | 2,680 |
 | native `__text` | `-Oz` | 11,320 | 2,484 |
 
-native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。
+native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。同じ条件（macOS arm64、`-O3`、cache あり）の C と Rust の hello（`benchmarks/size/hello.c`・`hello.rs`）と並べると、次のとおりです。C は `printf` を libSystem から動的に呼ぶので `__text` が小さく、Tsuzuri は文字列・出力・確保のランタイムを成果物に持ちます:
+
+| プログラム | 実行ファイル | `__text` | `__const`＋`__cstring` |
+| --- | ---: | ---: | ---: |
+| C（`printf`） | 33,432 | 48 | 4 |
+| Rust（`println!`） | 434,168 | 215,420 | 25,315 |
+| Tsuzuri `examples/hello`（変更前） | 50,664 | 13,304 | 10,160 |
+| Tsuzuri `examples/hello`（変更後） | 33,896 | 2,604 | 64 |
+
+ほかの `examples/` も、整数だけを表示・読み取る分は同じ割合で減ります。main `6d15b437` のコンパイラ（before）と、この branch の P8 まで入れた release ビルド（after）の `-O3`、cache あり、byte です（`target/perf/PM08-before`・`PM08-after` の `size.jsonl`、`node benchmarks/metrics.mjs size`）。`io` と `point` は、整数の表示を使わない（`point` は `f64` を表示する）ので変わりません。`—` は suite が wasm32 の記録を取らなかった例です:
+
+| `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
+| --- | ---: | ---: | ---: |
+| `computations` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `control` | 51,064 → 34,248 | 11,348 → 720 | — |
+| `currying` | 50,616 → 33,848 | 13,296 → 2,596 | 35,686 → 6,326 |
+| `functional` | 51,656 → 34,872 | 14,448 → 3,888 | 41,444 → 12,086 |
+| `hello` | 50,664 → 33,896 | 13,304 → 2,604 | 35,714 → 6,357 |
+| `polymorphism` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `tasks` | 68,680 → 51,864 | 14,084 → 3,496 | — |
+| `io` | 51,432 | 9,780 | 15,593 |
+| `point` | 50,344 | 10,844 | 74 |
 
 `--wasm-opt`（Binaryen の `wasm-opt -Oz` を、リンク後の `.wasm` に通す）は、Binaryen 132（npm の `binaryen` パッケージの `wasm-opt`）で測りました。`wasm32`、cache あり、byte で、`wasm-opt` なしは同じレベルの値です:
 
