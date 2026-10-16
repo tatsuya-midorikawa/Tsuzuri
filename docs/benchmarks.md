@@ -5720,6 +5720,72 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
+## 抽象化コストの除去（PR03、2026-10-16）
+
+計算式・Maybe／Result・関数値が、手書きと同じ `-O3` の生成コードになっているかを `benchmarks/computations` の 10 対で調べた記録です。
+実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に速度の閾値はありません。
+
+### 数え方と再現（Phase 1）
+
+- 基準は main `6d15b437`（第2フェーズ）の release コンパイラ、Apple clang 21.0.0（clang-2100.3.34.2）、Apple M1 Max（arm64）です。
+  `--emit llvm` の IR を `run-computations.mjs` と同じ旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module`）で最適化します。
+- 数える対象は export 関数 `tz_ce_<種目>`・`tz_direct_<種目>` の本体です。IR は `^define .*@tz_<k>_<p>\(` から `^}` までの 2 空白で始まる行、
+  機械語はラベルの次の行から `-- End function` までの、空白に続く英小文字で始まる行（命令）です。
+  これらの関数には CFI の指示が無いため、`.cfi_endproc` で止める数え方は後続の関数まで累積して数えます（起票時の `263 229 205 176 893 864` はその値です。
+  関数ごとの値は下の表）。
+
+```sh
+W=target/perf/PR03-shape && mkdir -p $W
+target/release/tsuzuri build benchmarks/computations --emit llvm -o $W/comp.ll
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+$C -S -emit-llvm $W/comp.ll -o $W/comp.opt.ll && $C -S $W/comp.ll -o $W/comp.s
+$C --target=x86_64-apple-macos -S $W/comp.ll -o $W/comp-x86.s && $C -c $W/comp.ll -o $W/comp.o
+for p in bind checked delayed array_for array_bind owned_capture std_option std_result std_option_owned std_option_length; do for k in ce direct; do
+  body=$(awk "/^define .*@tz_${k}_$p\(/,/^}/" $W/comp.opt.ll)
+  printf '%s_%s ir=%s phiU=%s switch=%s calls=%s indirect=%s arm64=%s x86-64=%s\n' $k $p \
+    "$(printf '%s\n' "$body" | grep -cE '^  ')" "$(printf '%s\n' "$body" | grep -c 'phi %"tz.union.')" \
+    "$(printf '%s\n' "$body" | grep -c 'switch ')" "$(printf '%s\n' "$body" | grep 'call ' | grep -vc llvm.trap)" \
+    "$(printf '%s\n' "$body" | grep -cE 'call [^@]*%')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp.s | grep -cE '^[[:space:]]+[a-z]')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp-x86.s | grep -cE '^[[:space:]]+[a-z]')"
+done; done
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/comp.o | grep __text
+grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
+```
+
+### 分類（基準 `6d15b437`）
+
+分類は、union の値の `phi` と tag の `switch` が inline の後も残る（K1）、`@tz.specialized.`・`@tz.fn.`・`@tz.apply.` の呼び出しが残る（K2）、
+呼び先が値の間接呼び出しが残る（K3）の 3 つと「差なし」です。K2・K3 は 10 対のどれにも残らず（呼び出しは malloc・free・memcpy・`llvm.trap` だけ）、
+起票時に仮定した「機械語だけの差」（K4）は、数え方の誤りで生じた見かけの差でした。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） | 分類 |
+| --- | --- | --- | --- | --- | --- |
+| `bind` | 18／18 | 0・0 | 25／25 | 64／64 | 差なし |
+| `checked` | 28／28 | 0・0 | 29／27 | 31／30 | 差なし（record の block 配置の違い。union ではない） |
+| `delayed` | 23／23 | 0・0 | 35／35 | 68／68 | 差なし |
+| `array_for` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `array_bind` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `owned_capture` | 49／49 | 0・0 | 56／56 | 88／88 | 差なし |
+| `std_option` | 35／22 | 1・1 | 34／24 | 38／53 | **K1** |
+| `std_result` | 28／28 | 0・0 | 29／29 | 31／31 | 差なし |
+| `std_option_owned` | 65／54 | 2・2 | 65／60 | 78／70 | **K1**（呼び出しは両版とも malloc・free・memcpy の 3 個） |
+| `std_option_length` | 22／22 | 0・0 | 25／25 | 52／52 | 差なし |
+
+- `std_option` の K1 の形は、inline された worker の 2 つの `ret` が `phi %"tz.union.Maybe.Maybe[i64]"`（`zeroinitializer` と `insertvalue`）になり、
+  `extractvalue` の tag を `switch` し、既定の枝に `llvm.trap` が残ることです。`direct_std_option` は同じ条件を `select` 1 個にしています。
+- x86-64 の `ce_std_option`（38 命令）は `direct`（53 命令）より小さく、機械語の命令数は性能の代理になりません。目標は `direct` と同じ形にすることで、
+  命令数を減らすことではありません。
+- `-O3` の object の `__text` は 3,884 bytes、`@tz.specialized.` の定義は `benchmarks/computations/Main.tz` で 64 個です。
+  `let!` が 2 つの連鎖（`def run … Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y }`）は、`-O0` で 9 個の worker を作ります。
+  `run` から到達するのは 8 個の連鎖（`0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`、`Run`・thunk・`Bind`・`bind`・継続・`BindReturn`・`map`・継続）で、
+  残る 1 個（`@tz.specialized.1`）は閉包の apply wrapper（`@tz.apply.Maybe.map.$mono.8.1`）だけが呼ぶ `map` の worker で、
+  本体に間接呼び出しを持ちますが `run` からは到達しません。
+
+`tests/call_specialization.rs` の `standard_let_chain_workers_are_direct_and_allocation_free` と `known_local_function_values_call_directly` が、
+この性質（`let!` の連鎖の worker が `tz.alloc`・`tz.closure.clone`・間接呼び出しを持たないこと、let で束縛した関数値の呼び出しが直接であること）を
+native と wasm32 の `-O0` IR で固定します。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

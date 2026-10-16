@@ -185,3 +185,100 @@ fn specialization_budget_falls_back_instead_of_growing_unbounded() {
     assert!(body(&ir, "tz.fn.Main.probe").contains("@tz.specialized."));
     assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
 }
+
+/// The callee text of a `call` line: everything between `call ` and the argument list.
+fn callee(line: &str) -> &str {
+    let (_, call) = line.split_once("call ").unwrap();
+    call.split_once('(').map_or(call, |(callee, _)| callee)
+}
+
+/// Every function that `roots` reach through calls. Each call on the way names its callee and the
+/// callees never allocate, clone a closure, or go through a closure wrapper.
+fn reachable_workers(ir: &str, roots: &[&str]) -> std::collections::BTreeSet<String> {
+    let mut visited = std::collections::BTreeSet::new();
+    let mut pending: Vec<String> = roots.iter().map(|name| (*name).to_owned()).collect();
+    while let Some(name) = pending.pop() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        for line in body(ir, &name)
+            .lines()
+            .filter(|line| line.contains("call "))
+        {
+            let callee = callee(line);
+            let (_, target) = callee
+                .split_once('@')
+                .unwrap_or_else(|| panic!("{name}: indirect call: {line}"));
+            assert_ne!(target, "tz.alloc", "{name}: {line}");
+            assert_ne!(target, "tz.closure.clone", "{name}: {line}");
+            assert!(!target.starts_with("tz.apply."), "{name}: {line}");
+            if target.starts_with("tz.") {
+                pending.push(target.to_owned());
+            }
+        }
+    }
+    visited
+}
+
+#[test]
+fn standard_let_chain_workers_are_direct_and_allocation_free() {
+    // Two `let!` steps use both `Bind` (a continuation that binds again) and `BindReturn`.
+    let module = analyze(
+        "def run :: i64 -> i64
+         fn run offset = Maybe.get (Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y })
+         def checked :: i64 -> i64
+         fn checked offset =
+             let value: Result<i64, i64> = Result { let! x = Ok 20; let! y = Ok (x + offset); return x + y }
+             Result.get value",
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        for name in ["run", "checked"] {
+            let root = format!("tz.fn.Main.{name}");
+            assert!(body(&ir, &root).contains("@tz.specialized."), "{name}");
+            // Every worker reachable from the function is direct and allocation free.
+            reachable_workers(&ir, &[&root]);
+        }
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
+fn known_local_function_values_call_directly() {
+    let module = analyze(
+        "def add3 :: i64 -> i64 -> i64 -> i64
+         fn add3 a b c = a + b + c
+         def let_twice :: i64 -> i64 -> i64
+         fn let_twice a b = { let add = \\x -> x + a; add (add b) }
+         def let_plain :: i64 -> i64
+         fn let_plain b = { let inc = \\x -> x + 1; inc (inc b) }
+         def partial :: i64 -> i64
+         fn partial x = { let f = add3 1 2; f (f x) }",
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        for name in ["let_twice", "let_plain", "partial"] {
+            let function = body(&ir, &format!("tz.fn.Main.{name}"));
+            let direct = function
+                .lines()
+                .filter(|line| line.contains("call "))
+                .filter(|line| {
+                    let callee = callee(line);
+                    callee.contains("@tz.specialized.") || callee.contains("@tz.fn.")
+                })
+                .count();
+            // Both calls name the lambda or its worker; neither goes through the closure's code pointer.
+            assert!(direct >= 2, "{name} wasm={wasm}: {function}");
+            assert!(!function.contains("call i64 %"), "{name} wasm={wasm}");
+        }
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}

@@ -1371,6 +1371,7 @@ Async は `tests/async.rs` が opaque / non-Copy、実際の借用を持つ call
 ネイティブ環境では全関数呼び出し後の未解放メモリバイト数が 0 であることを検証し、WASM 環境ではデフォルトの 16 MiB を超える累積確保の反復耐性を検査します。また、型注釈のない配列 bind と手書きのループ処理においてメモリ確保量が完全に一致することを確認します。
 `.tt` および `.tc` におけるエラー診断の正確な位置特定、ファイル出力保護、ならびに決定論的な IR および WASM 生成も確認されます。
 `tests/call_specialization.rs` と `tests/fixtures/computations/Optimization.tz` は、静的に既知の関数値、動的関数値、スコープ外へエスケープする関数値、可変引数の評価順序、所有権を持つ捕捉値および戻り値、相互再帰、ならびに特殊化予算上限に達した際の安全な通常経路へのフォールバックを網羅的に検査します。
+同じファイルの `standard_let_chain_workers_are_direct_and_allocation_free` は、`let!` が 2 つの標準 Maybe／Result の連鎖から到達する worker が確保・閉包の複製・間接呼び出し・apply wrapper を持たないこと（native と wasm32、IR の決定性を含む）を、`known_local_function_values_call_directly` は、let で束縛した関数値（捕捉付き lambda・捕捉なし lambda・部分適用）の呼び出しが直接であることを固定します。
 コンピュテーション式の実行テストには、520 個の異なる継続によって予算を超過する大規模ケースや、`-O3` 最適化下で 262,144 回のコールバックを実行するストレステストが含まれ、ネイティブおよび WASM の双方でメモリ解放、スタック消費量、および演算結果の正確性が確認されています。
 `benchmarks/run-computations.mjs` は、最適化後 IR におけるメモリ確保回数と、手書きの Tsuzuri および C++ 実装との実行時間を分離して測定し、共有 CI 上では `--quick` による意味論の正しさの検査のみを実行します。
 Clang の AddressSanitizer（ASan）が利用可能な環境では、
