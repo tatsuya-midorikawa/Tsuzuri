@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
-use crate::parallel::Parallelism;
+use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
@@ -5876,6 +5877,11 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
     check_modules_all(modules).map_err(crate::first_error)
 }
 
+/// The functions that one worker takes before a stage of `check_modules_collect` uses another
+/// thread, and how many a worker takes at a time.
+const FUNCTIONS_PER_WORKER: usize = 256;
+const FUNCTION_CHUNK: usize = 8;
+
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
     check_modules_indexed_all(modules, None, Parallelism::library())
 }
@@ -7326,34 +7332,56 @@ fn check_modules_collect(
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
     let mut name_uses = Vec::new();
-    for (function, mut checker) in functions.iter_mut().zip(pending) {
-        name_uses.push(std::mem::take(&mut checker.name_uses));
-        let checked = (|| {
-            checker.finish(&mut function.body)?;
-            let coverage = checker.check_coverage()?;
-            if function.origin.module == ModuleOrigin::User {
-                warnings.extend(coverage);
-                warnings.extend(warnings::unused_locals(function));
-                warnings.append(&mut checker.shadowing_warnings);
+    // Finishing a function reads the shared tables and changes only that function and its checker,
+    // so the functions finish in parallel; what each leaves for the shared lists is applied in
+    // function order.
+    let unfinished: Vec<_> = functions.iter_mut().zip(pending).collect();
+    let workers = parallelism.workers(unfinished.len(), FUNCTIONS_PER_WORKER);
+    ordered_for_each_owned(
+        unfinished,
+        workers,
+        FUNCTION_CHUNK,
+        None,
+        |_, (function, mut checker)| {
+            let name_use = std::mem::take(&mut checker.name_uses);
+            let mut function_warnings = Vec::new();
+            let checked = (|| {
+                checker.finish(&mut function.body)?;
+                let coverage = checker.check_coverage()?;
+                if function.origin.module == ModuleOrigin::User {
+                    function_warnings.extend(coverage);
+                    function_warnings.extend(warnings::unused_locals(function));
+                    function_warnings.append(&mut checker.shadowing_warnings);
+                }
+                if function.name == "$entry" {
+                    entry_result(&mut function.body, &names, &classes, &types);
+                    function.signature.result = function.body.ty.clone();
+                }
+                function.constraints.extend(checker.constraints);
+                function.members = checker.members;
+                Ok(())
+            })();
+            let error = checked.err().map(|error| {
+                // Unfinished types must not reach the ownership recovery pass.
+                function.body = TypedExpr::error(function.span);
+                let id = names
+                    .functions
+                    .get(&function.qualified_name())
+                    .map_or(usize::MAX, |info| info.id);
+                classes.derived_error(id, error)
+            });
+            (name_use, function_warnings, error)
+        },
+        |_, outcome| {
+            let (name_use, function_warnings, error) = outcome.get();
+            name_uses.push(name_use);
+            warnings.extend(function_warnings);
+            if let Some(error) = error {
+                diagnostics.push(error);
             }
-            if function.name == "$entry" {
-                entry_result(&mut function.body, &names, &classes, &types);
-                function.signature.result = function.body.ty.clone();
-            }
-            function.constraints.extend(checker.constraints);
-            function.members = checker.members;
-            Ok(())
-        })();
-        if let Err(error) = checked {
-            // Unfinished types must not reach the ownership recovery pass.
-            function.body = TypedExpr::error(function.span);
-            let id = names
-                .functions
-                .get(&function.qualified_name())
-                .map_or(usize::MAX, |info| info.id);
-            diagnostics.push(classes.derived_error(id, error));
-        }
-    }
+            ControlFlow::Continue(())
+        },
+    );
     if let Err(error) = diagnostics.check() {
         if !diagnostics.is_full() {
             let recovered: Vec<_> = recovered_functions

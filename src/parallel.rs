@@ -278,6 +278,42 @@ pub(crate) fn ordered_for_each<T, P, C>(
     });
 }
 
+/// `ordered_for_each` over `items` that each worker takes by value, such as the `&mut` borrows
+/// of the elements of a vector: `produce(index, item)` runs once for each item.
+pub(crate) fn ordered_for_each_owned<I, T, P, C>(
+    items: Vec<I>,
+    workers: usize,
+    chunk: usize,
+    claim: Option<&[usize]>,
+    produce: P,
+    consume: C,
+) where
+    I: Send,
+    T: Send,
+    P: Fn(usize, I) -> T + Sync,
+    C: FnMut(usize, Item<'_, T>) -> ControlFlow<()>,
+{
+    let slots: Vec<Mutex<Option<I>>> = items
+        .into_iter()
+        .map(|item| Mutex::new(Some(item)))
+        .collect();
+    ordered_for_each(
+        slots.len(),
+        workers,
+        chunk,
+        claim,
+        |index| {
+            let item = slots[index]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("a stage evaluates each item once");
+            produce(index, item)
+        },
+        consume,
+    );
+}
+
 /// The message of a panic payload that `panic!` made, for tests.
 #[cfg(test)]
 fn message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -588,5 +624,48 @@ mod tests {
             },
         );
         assert_eq!(results, vec![1201; 4]);
+    }
+
+    #[test]
+    fn owned_items_are_delivered_once_and_mutable_borrows_reach_the_workers() {
+        let mut values: Vec<u64> = (0..50).collect();
+        let mut doubled = Vec::new();
+        ordered_for_each_owned(
+            values.iter_mut().collect(),
+            3,
+            4,
+            None,
+            |index, value: &mut u64| {
+                *value *= 2;
+                (index, *value)
+            },
+            |item, result| {
+                let (index, value) = result.get();
+                assert_eq!(item, index);
+                doubled.push(value);
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(doubled, (0..50).map(|value| value * 2).collect::<Vec<_>>());
+        assert_eq!(values, doubled);
+        let names: Vec<String> = (0..20).map(|index| format!("item {index}")).collect();
+        let mut lengths = Vec::new();
+        ordered_for_each_owned(
+            names,
+            4,
+            1,
+            None,
+            |_, name: String| name.len(),
+            |_, length| {
+                lengths.push(length.get());
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(
+            lengths,
+            (0..20)
+                .map(|index| format!("item {index}").len())
+                .collect::<Vec<_>>()
+        );
     }
 }

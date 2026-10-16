@@ -429,6 +429,14 @@ mod tests {
         threads: usize,
         sources: &[(String, String)],
     ) -> Result<check::CheckedModule, DiagnosticSet> {
+        analyze_indexed_on(threads, sources, None)
+    }
+
+    fn analyze_indexed_on(
+        threads: usize,
+        sources: &[(String, String)],
+        index: Option<&mut check::semantic::SemanticIndex>,
+    ) -> Result<check::CheckedModule, DiagnosticSet> {
         let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| text.as_str()));
         let inputs: Vec<_> = sources
             .iter()
@@ -447,7 +455,7 @@ mod tests {
                 package: None,
             })
             .collect();
-        analyze_inputs_with(&inputs, None, None, Parallelism::fixed(threads))
+        analyze_inputs_with(&inputs, index, None, Parallelism::fixed(threads))
     }
 
     /// The stages that started workers while `run` ran on this thread.
@@ -463,6 +471,27 @@ mod tests {
         for function in 0..functions {
             text += &format!(
                 "\ndef broken{function} :: i64 -> i64 = \\x ->\n    let value = Owned{index} {{ text: \"text\", count: x + {function} }}\n    let other = {{ value with count = x + 1 }}\n    value.text.length\n"
+            );
+        }
+        (format!("Module{index}.tz"), text)
+    }
+
+    /// A module whose only function does not cover the case `Blue`: E1021 when the function is finished.
+    fn incomplete_match_module(index: usize) -> (String, String) {
+        (
+            format!("Module{index}.tz"),
+            format!(
+                "union Color{index} = Red | Green | Blue\n\ndef pick :: Color{index} -> i64 = \\color ->\n    match color with\n    | Red -> 1\n    | Green -> 2\n"
+            ),
+        )
+    }
+
+    /// A module whose functions each leave a local unused (W1001) and call a neighbour.
+    fn unused_local_module(index: usize) -> (String, String) {
+        let mut text = String::new();
+        for function in 0..24 {
+            text += &format!(
+                "def f{function} :: i64 -> i64 = \\x ->\n    let unused{function} = x + {index}\n    x * {function}\n\n"
             );
         }
         (format!("Module{index}.tz"), text)
@@ -581,6 +610,58 @@ mod tests {
                 parallel_stages(|| format!("{:?}", analyze_on(threads, &sources)));
             assert!(stages > 0, "{threads} threads");
             assert!(parallel == sequential, "{threads} threads");
+        }
+    }
+
+    #[test]
+    fn finish_errors_replay_the_diagnostic_cap_on_every_thread_count() {
+        // The match of each module fails when its function is finished, after every body checked:
+        // 1,100 errors reach the cap of 1,000 in function order.
+        let sources: Vec<_> = (0..1100).map(incomplete_match_module).collect();
+        let sequential = analyze_on(1, &sources).unwrap_err();
+        assert_eq!(sequential.diagnostics.len(), 50);
+        assert_eq!(sequential.omitted, 950);
+        assert!(sequential.omitted_is_lower_bound);
+        for (index, diagnostic) in sequential.diagnostics.iter().enumerate() {
+            assert_eq!(diagnostic.code, "E1021", "{diagnostic:?}");
+            assert_eq!(diagnostic.span.source, Some(index));
+        }
+        for threads in [2, 8] {
+            let (parallel, stages) = parallel_stages(|| analyze_on(threads, &sources).unwrap_err());
+            assert!(stages > 0, "{threads} threads");
+            assert_eq!(parallel, sequential, "{threads} threads");
+        }
+    }
+
+    #[test]
+    fn warnings_and_the_semantic_index_do_not_depend_on_the_thread_count() {
+        let sources: Vec<_> = (0..30).map(unused_local_module).collect();
+        let mut sequential_index = check::semantic::SemanticIndex::default();
+        let sequential = analyze_indexed_on(1, &sources, Some(&mut sequential_index)).unwrap();
+        assert!(
+            sequential.warnings.len() >= 30 * 24,
+            "{}",
+            sequential.warnings.len()
+        );
+        assert!(
+            sequential
+                .warnings
+                .iter()
+                .all(|warning| warning.code == "W1001")
+        );
+        let sequential = format!("{sequential:?}");
+        let sequential_index = format!("{sequential_index:?}");
+        for threads in [2, 3, 8] {
+            let mut index = check::semantic::SemanticIndex::default();
+            let (parallel, stages) = parallel_stages(|| {
+                analyze_indexed_on(threads, &sources, Some(&mut index)).unwrap()
+            });
+            assert!(stages >= 3, "{threads} threads: {stages} parallel stages");
+            assert!(format!("{parallel:?}") == sequential, "{threads} threads");
+            assert!(
+                format!("{index:?}") == sequential_index,
+                "{threads} threads"
+            );
         }
     }
 
