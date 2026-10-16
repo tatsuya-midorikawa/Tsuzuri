@@ -18,8 +18,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
    -> closures -> lambda lifting + capture parameters + saturated export bridges
                + FunctionOrigin of every generated helper
    -> ownership -> concrete moves + loans + lifetime validation
-   -> llvm -> reachability pruning of std code + bounded known-call specialization
-           + deterministic LLVM IR
+   -> llvm -> reachability pruning of std code (a native executable emits only what its entry
+              and exports reach) + bounded known-call specialization + deterministic LLVM IR
    -> Clang -O0..3 -> native executable / PIC object
                    -> wasm32 object -> LLD -> standalone .wasm
 ```
@@ -361,7 +361,7 @@ std のソースコードは型検査の対象となりますが、`closures::lo
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`@alias` の宣言が `aliases` と一致すること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
 関数の由来情報は `CheckedFunction.origin`（`FunctionOrigin`）によって一元管理され、自動生成された `$lambda`、`$task`、`$builtin`、`$case`、`$export` などの補助関数は呼び出し元の `module` や `test` を継承し、`parent` フィールドに親関数の ID を保持します。
-LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
+LLVM コード生成時、ユーザー由来の関数はすべて出力されますが、std 由来の関数については、ユーザーの通常コード（テスト関数を除く）、エクスポート関数、またはエントリーポイントから参照されて到達可能なもののみが出力対象となります（`reachable_functions`）。例外は native の実行ファイル（`emit_native_build` の `Entry::Console`。`build`・`run`）で、エントリーポイントとエクスポート関数（と、利用者の `Drop` の drop glue）から到達できる関数だけを出力します（`Instrumentation::executable_roots`。PB03 D1）。実行ファイルでは利用者の公開関数も `internal` で外から呼べないのに、`-O0` ではすべてコンパイルされるためです。`--emit llvm`・`object`・`header`・`wasm`・`shared`、ライブラリの `Entry::Library`、`emit_native_build_for`、`llvm::emit` 系は今までどおり公開関数をすべて出力します。未使用の公開関数も型検査・所有権検査の対象で、その型エラーは `check` が報告します。名前付きレコードおよび union の型定義についても、ユーザー定義の型、および実際に出力される関数のシグネチャや本体から集められたものだけが出力されます。
 
 `std/Maybe.tc` および `std/Result.tc` は、特別なコンパイラマジックを用いず、通常のジェネリック union と関数のみを用いて型、基本操作、およびビルダーを定義しています。
 専用の型付き命令や特殊なランタイムは存在せず、union のタグ分岐、ペイロードの move／clone／drop、および既知の継続に対する特殊化の最適化を一般コードと完全に共有しています。
@@ -502,7 +502,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 
 テスト宣言 `Program.tests` は通常の名前空間から隔離され、検査時に unit を返す内部呼び出し可能関数および `CheckedModule.tests` のメタデータへと変換されます。
 テスト関数由来の属性 `FunctionOrigin.test` は局所的に生成された補助関数へも伝播され、共有されるジェネリック関数の特殊化実装は 1 つだけ生成されてルート集合からの到達性によって取捨選択されます。
-通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
+通常ビルドでは公開宣言、エクスポート関数、エントリーポイントが到達性のルートとなりますが（native の実行ファイルはエクスポート関数とエントリーポイントだけ）、テストビルドでは選択されたテスト関数群がルートとなり、同一の `reachable_functions` アルゴリズムが適用されます。
 テスト用内部関数のシンボル名には `@tz.fn.Module.$test.index` という決定的な命名規則が用いられ、テストランナーのみが `tsuzuri_test_count` および `tsuzuri_test_run` を公開関数としてエクスポートします。
 ネイティブの C エントリーポイントは `strtoull`、errno、および endptr を用いて指定されたテストインデックスを厳密に検証し、WASM 側の Node.js エントリーポイントはインポートが空であることを確認します。
 `driver::run_tests` はテストランナーを 1 回だけビルドし、上限付きの並列ワーカープロセスを用いて各テストを独立したサブプロセスとして実行します。30 秒のタイムアウトに達したテストプロセスは安全に終了・待機され、実行結果は元のテスト宣言順序へ並べ直されて出力されます。

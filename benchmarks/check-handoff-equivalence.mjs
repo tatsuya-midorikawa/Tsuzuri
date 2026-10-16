@@ -18,7 +18,7 @@ const usage = "Usage: node benchmarks/check-handoff-equivalence.mjs --before <co
   + "[--quick] [--only a,b] [--modes header,llvm,object,wasm,shared,exe0,exe3,exeg] [--jobs N] [--timeout ms]";
 const ALL_MODES = ["header", "llvm", "object", "wasm", "shared", "exe0", "exe3", "exeg"];
 const QUICK = ["examples/hello", "examples/tasks", "tests/fixtures/dyn_dispatch", "tests/fixtures/cpu_versions",
-  "tests/fixtures/debug_info", "tests/fixtures/llvm_handoff"];
+  "tests/fixtures/debug_info", "llvm_handoff/prune", "llvm_handoff/reach"];
 const sharedExtension = platform() === "darwin" ? "dylib" : "so";
 
 export function parseArguments(argv) {
@@ -42,15 +42,21 @@ export function parseArguments(argv) {
   return options;
 }
 
+// Directories that hold Tsuzuri sources directly, one or two levels below `examples`, `tests/fixtures` and `benchmarks`.
 export function projects(only, quick) {
   const found = [];
+  const visit = (directory, name, depth) => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
+    if (entries.some((entry) => entry.isFile() && /\.(tz|tt|tc)$/.test(entry.name))) found.push(name);
+    else if (depth > 0) {
+      for (const entry of entries) if (entry.isDirectory()) visit(join(directory, entry.name), `${name}/${entry.name}`, depth - 1);
+    }
+  };
   for (const parent of ["examples", "tests/fixtures", "benchmarks"]) {
     const directory = join(root, parent);
     if (!existsSync(directory)) continue;
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-      if (!entry.isDirectory()) continue;
-      const path = join(directory, entry.name);
-      if (readdirSync(path).some((name) => /\.(tz|tt|tc)$/.test(name))) found.push(`${parent}/${entry.name}`);
+      if (entry.isDirectory()) visit(join(directory, entry.name), `${parent}/${entry.name}`, 1);
     }
   }
   const wanted = only ?? (quick ? QUICK : null);

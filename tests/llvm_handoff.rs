@@ -1,0 +1,239 @@
+use std::collections::BTreeSet;
+use tsuzuri::{analyze, llvm, trap::TrapSource};
+
+const SOURCE: &str = "\
+def used :: i64 -> i64 = \\x -> x + 1
+
+def unused :: i64 -> i64 = \\x -> x * 3
+
+export def exported :: i64 -> i64 = \\x -> x - 1
+
+used 41
+";
+
+fn options(entry: llvm::Entry) -> llvm::EmitOptions {
+    llvm::EmitOptions {
+        entry,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    }
+}
+
+fn sources(text: &str) -> Vec<TrapSource<'_>> {
+    std::iter::once(TrapSource {
+        path: "Main.tz",
+        text,
+    })
+    .chain(
+        tsuzuri::stdlib::SOURCES
+            .iter()
+            .map(|(path, text)| TrapSource { path, text }),
+    )
+    .collect()
+}
+
+/// The names that `ir` defines, such as `@tz.fn.Main.used`.
+fn defined(ir: &str) -> BTreeSet<String> {
+    ir.lines()
+        .filter(|line| line.starts_with("define "))
+        .filter_map(|line| {
+            let start = line.find('@')? + 1;
+            let end = start + line[start..].find('(')?;
+            Some(line[start..end].to_owned())
+        })
+        .collect()
+}
+
+fn executable(text: &str, trap_info: bool) -> llvm::EmitOutput {
+    let module = analyze(text).unwrap();
+    llvm::emit_native_build(
+        &module,
+        options(llvm::Entry::Console),
+        &sources(text),
+        None,
+        trap_info,
+    )
+    .unwrap()
+}
+
+fn unpruned(text: &str, trap_info: bool) -> llvm::EmitOutput {
+    let module = analyze(text).unwrap();
+    llvm::emit_native_build_for(
+        &module,
+        options(llvm::Entry::Console),
+        &sources(text),
+        None,
+        trap_info,
+        0,
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_executables_emit_only_entry_and_export_reachable_functions() {
+    let ir = executable(SOURCE, false).ir;
+    let names = defined(&ir);
+    for name in [
+        "tz.fn.Main.used",
+        "tz.fn.Main.exported",
+        "tz_exported",
+        "main",
+    ] {
+        assert!(names.contains(name), "{name} is defined: {names:?}");
+    }
+    assert!(!ir.contains("@tz.fn.Main.unused"), "{names:?}");
+    assert!(!ir.contains("@tz.apply.Main.unused"));
+    // The same input gives the same text.
+    assert_eq!(ir, executable(SOURCE, false).ir);
+}
+
+#[test]
+fn library_and_plain_emission_keep_public_functions() {
+    let module = analyze(SOURCE).unwrap();
+    let kept = |ir: &str| defined(ir).contains("tz.fn.Main.unused");
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let build =
+            llvm::emit_native_build_for(&module, options(entry), &sources(SOURCE), None, false, 0)
+                .unwrap();
+        assert!(
+            kept(&build.ir),
+            "emit_native_build_for keeps every public function"
+        );
+        assert!(kept(&llvm::emit(&module, entry).unwrap()));
+        assert!(kept(
+            &llvm::emit_with_options(&module, options(entry)).unwrap()
+        ));
+    }
+    let library = llvm::emit_native_build(
+        &module,
+        options(llvm::Entry::Library),
+        &sources(SOURCE),
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(kept(&library.ir), "a library is not an executable");
+}
+
+#[test]
+fn pruning_only_removes_unreachable_definitions() {
+    let pruned = defined(&executable(SOURCE, false).ir);
+    let full = defined(&unpruned(SOURCE, false).ir);
+    let removed: Vec<_> = full.difference(&pruned).cloned().collect();
+    // The function and the closure body of its lambda.
+    assert_eq!(removed, ["tz.apply.Main.unused.0", "tz.fn.Main.unused"]);
+    assert!(pruned.is_subset(&full));
+}
+
+#[test]
+fn a_program_that_uses_every_public_function_is_unchanged() {
+    let source = "def double :: i64 -> i64 = \\x -> x + x\n\nexport def twice :: i64 -> i64 = \\x -> double x\n\ndouble 21\n";
+    assert_eq!(executable(source, false).ir, unpruned(source, false).ir);
+    assert_eq!(executable(source, true).ir, unpruned(source, true).ir);
+}
+
+#[test]
+fn callees_of_the_entry_and_of_exports_survive_through_closures_and_helpers() {
+    let source = "\
+def inner :: i64 -> i64 = \\x -> x + 7
+
+def outer :: i64 -> i64 = \\x -> inner x
+
+export def exported :: i64 -> i64 = \\x -> outer x
+
+def via_closure :: i64 -> i64 = \\x -> (\\y -> helper y) x
+
+def helper :: i64 -> i64 = \\x -> x * 2
+
+def orphan :: i64 -> i64 = \\x -> x + 100
+
+via_closure 1
+";
+    let pruned = defined(&executable(source, false).ir);
+    let names: Vec<_> = pruned
+        .iter()
+        .filter(|name| name.starts_with("tz.fn.Main."))
+        .collect();
+    for needed in ["inner", "outer", "exported", "via_closure", "helper"] {
+        assert!(
+            names
+                .iter()
+                .any(|name| name.as_str() == format!("tz.fn.Main.{needed}")),
+            "{needed} is reachable: {names:?}"
+        );
+    }
+    assert!(!pruned.contains("tz.fn.Main.orphan"), "{names:?}");
+}
+
+#[test]
+fn trap_sites_of_removed_functions_are_gone_and_the_rest_are_kept() {
+    let source = "\
+def divide :: i64 -> i64 -> i64 = \\a b -> a / b
+
+def never_called :: i64 -> i64 -> i64 = \\a b -> a / b
+
+export def exported :: i64 -> i64 -> i64 = \\a b -> divide a b
+
+divide 84 2
+";
+    let pruned = executable(source, true);
+    let full = unpruned(source, true);
+    assert!(!pruned.trap_sites.is_empty());
+    assert!(
+        pruned.trap_sites.len() < full.trap_sites.len(),
+        "{} sites of {}",
+        pruned.trap_sites.len(),
+        full.trap_sites.len()
+    );
+    assert!(!pruned.ir.contains("@tz.fn.Main.never_called"));
+    assert!(full.ir.contains("@tz.fn.Main.never_called"));
+}
+
+#[test]
+fn unused_public_functions_are_still_checked() {
+    let source = SOURCE.replace("x * 3", "true");
+    let error = analyze(&source).unwrap_err();
+    assert_eq!(error.code, "E1003", "{error:?}");
+    assert!(
+        error.message.contains("expected i64, found bool"),
+        "{error:?}"
+    );
+    let start = source.find("true").unwrap();
+    assert!(
+        error.span.start <= start && start < error.span.end,
+        "{:?} should cover offset {start}",
+        error.span
+    );
+}
+
+#[test]
+fn user_drop_glue_stays_a_root_of_every_executable() {
+    let drop = |names: &BTreeSet<String>| {
+        names
+            .iter()
+            .filter(|name| name.starts_with("tz.fn.Main.$instance.") && name.ends_with(".drop"))
+            .count()
+    };
+    let reached = "\
+record Resource { id: i64 }
+
+instance Drop<Resource> {
+    fn drop _value = ()
+}
+
+def use_resource :: i64 -> i64 = \\x ->
+    let resource = Resource { id: x }
+    resource.id + 1
+
+use_resource 41
+";
+    assert_eq!(drop(&defined(&executable(reached, false).ir)), 1);
+    assert_eq!(executable(reached, false).ir, unpruned(reached, false).ir);
+    // Drop glue calls the user drop without a reference in any body, so it is never pruned.
+    let unreached = reached.replace("use_resource 41", "0");
+    assert_eq!(drop(&defined(&executable(&unreached, false).ir)), 1);
+}

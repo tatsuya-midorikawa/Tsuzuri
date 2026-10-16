@@ -531,6 +531,9 @@ pub fn emit_with_debug_info(
     }
 }
 
+/// A native executable (`Entry::Console`) defines only the functions that its entry or an export
+/// reaches (`executable_roots`): the other public functions are `internal` there, so nothing can
+/// call them, yet `-O0` would still compile them (PB03 D1). Libraries keep every public function.
 pub fn emit_native_build(
     module: &CheckedModule,
     options: EmitOptions,
@@ -538,18 +541,20 @@ pub fn emit_native_build(
     debug: Option<bool>,
     trap_info: bool,
 ) -> Result<EmitOutput, Diagnostic> {
-    emit_native_build_for(
+    emit_native(
         module,
         options,
         sources,
         debug,
         trap_info,
         cpu::host_levels(),
+        options.entry == Entry::Console,
     )
 }
 
 /// `emit_native_build` for a CPU whose runtime detects `levels`, bit `L` for level `L` of
-/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3).
+/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3). It keeps
+/// every public function, whatever the entry is.
 pub fn emit_native_build_for(
     module: &CheckedModule,
     options: EmitOptions,
@@ -557,6 +562,18 @@ pub fn emit_native_build_for(
     debug: Option<bool>,
     trap_info: bool,
     levels: u8,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_native(module, options, sources, debug, trap_info, levels, false)
+}
+
+fn emit_native(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    levels: u8,
+    executable_roots: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -583,6 +600,7 @@ pub fn emit_native_build_for(
             multiversion: true,
             runtime_objects: options.runtime_objects,
             wasm_simd128: false,
+            executable_roots,
             ..Instrumentation::default()
         },
     )?;
@@ -778,6 +796,7 @@ pub(crate) fn emit_wasm_build(
             multiversion: false,
             coverage: None,
             seed: None,
+            executable_roots: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -946,6 +965,8 @@ struct Instrumentation<'a> {
     coverage: Option<&'a crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
     seed: Option<u64>,
+    /// A native executable emits only what its entry and exports reach (PB03 D1).
+    executable_roots: bool,
 }
 
 fn emit_program(
@@ -997,18 +1018,25 @@ fn emit_program(
         output.push_str("%tz.dyn = type { ptr, ptr }\n");
     }
     output.push_str(&host_abi::type_definitions(module));
-    let roots = tests.map(|selected| {
-        selected
-            .iter()
-            .map(|index| {
-                if entry == Entry::BenchRunner {
-                    module.benches[*index].function
-                } else {
-                    module.tests[*index].function
-                }
-            })
-            .collect::<Vec<_>>()
-    });
+    debug_assert!(!instrumentation.executable_roots || entry == Entry::Console);
+    let roots = tests
+        .map(|selected| {
+            selected
+                .iter()
+                .map(|index| {
+                    if entry == Entry::BenchRunner {
+                        module.benches[*index].function
+                    } else {
+                        module.tests[*index].function
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            instrumentation
+                .executable_roots
+                .then(|| executable_roots(module))
+        });
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
@@ -2803,6 +2831,18 @@ fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// What a native executable exposes: its entry and its exports. Every other public function is
+/// `internal` in the executable, so no code outside the program can reach it (PB03 D1).
+fn executable_roots(module: &CheckedModule) -> Vec<usize> {
+    module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| function.exported || module.entry == Some(*id))
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// The functions that the program needs: user functions, exports, and the

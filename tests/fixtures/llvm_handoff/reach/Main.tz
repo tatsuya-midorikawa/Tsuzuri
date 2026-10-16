@@ -1,0 +1,48 @@
+// PB03 D1: a native executable keeps what its entry and exports reach through dyn vtables,
+// function values and helpers, and drops the public functions that nothing reaches.
+record Square { side: i64 }
+record Bar { length: i64 }
+record Cube { edge: i64 }
+
+instance Shapes.Sized<Square> {
+    fn size square = square.side * square.side
+}
+
+instance Shapes.Sized<Bar> {
+    fn size bar = bar.length
+}
+
+instance Shapes.Sized<Cube> {
+    fn size cube = cube.edge * cube.edge * cube.edge
+}
+
+def shapes :: i64 -> [dyn Shapes.Sized]
+fn shapes x = [Dyn.of (Square { side: x }), Dyn.of (Bar { length: x + 1 })]
+
+def total :: i64 -> i64
+fn total x =
+    let items = shapes x
+    let mut sum = 0i64
+    for index in 0i64 .. (items.length - 1) do sum = sum + Shapes.Sized.size (ref items[index])
+    sum
+
+def apply_twice :: (i64 -> i64) -> i64 -> i64 = \f x -> f (f x)
+
+def add_three :: i64 -> i64 = \x -> x + 3
+
+def only_for_export :: i64 -> i64 = \x -> x * 7
+
+export def exported_seven :: i64 -> i64 = \x -> only_for_export x
+
+// Nothing reaches these: the only Cube vtable is built here.
+def cubes :: i64 -> [dyn Shapes.Sized]
+fn cubes x = [Dyn.of (Cube { edge: x })]
+
+def unused_total :: i64 -> i64
+fn unused_total x =
+    let items = cubes x
+    Shapes.Sized.size (ref items[0]) + 1000
+
+def unused_closure :: i64 -> i64 = \x -> apply_twice (\y -> y * y) x
+
+to_string (total 6) + "," + to_string (apply_twice add_three 10) + "," + to_string (Extra.used_helper 5)
