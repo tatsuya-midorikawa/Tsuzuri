@@ -12077,3 +12077,37 @@ mod allocation_tests {
         }
     }
 }
+
+/// The frontend shares these types between threads (PB04). Putting an `Rc`, a `Cell` or a
+/// `RefCell` into one of them stops this test from compiling.
+#[cfg(test)]
+mod thread_safety {
+    use super::*;
+
+    fn send<T: Send>() {}
+    fn sync<T: Sync>() {}
+
+    #[test]
+    fn frontend_data_crosses_threads() {
+        send::<Result<Program, Vec<Diagnostic>>>();
+        sync::<Program>();
+        sync::<crate::SourceInput<'static>>();
+        sync::<ModuleInput<'static>>();
+        send::<crate::frontend_cache::Parsed>();
+        sync::<crate::frontend_cache::FrontendCache>();
+        send::<CheckedModule>();
+        sync::<CheckedModule>();
+        sync::<CheckedRecord>();
+        sync::<CheckedUnion>();
+        send::<CheckedFunction>();
+        sync::<CheckedFunction>();
+        send::<TypedExpr>();
+        send::<TypeContext<'static>>();
+        sync::<TypeContext<'static>>();
+        sync::<Names>();
+        sync::<polymorph::Classes>();
+        sync::<polymorph::Scheme>();
+        send::<polymorph::Inference>();
+        send::<Checker<'static>>();
+    }
+}
