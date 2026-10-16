@@ -1,0 +1,14 @@
+// The same with a user generic record as the element of the channel.
+record Cased<'a> { value: 'a }
+
+def helper :: i64
+fn helper =
+    let pair: (Channel.Sender<Cased<i64>> * Channel.Receiver<Cased<i64>>) = Channel.bounded 2
+    match pair with
+    | (sender, receiver) ->
+        let _sent = Channel.send (ref sender) (Cased { value: 41i64 })
+        match Channel.recv (ref receiver) with
+        | Maybe.Some held -> held.value + 1
+        | Maybe.None -> 0
+
+"ok"

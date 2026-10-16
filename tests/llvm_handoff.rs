@@ -48,6 +48,44 @@ fn defined(ir: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The lines of `ir` that define a named type, such as `%tz.string = type { ptr, i64 }`.
+fn type_definitions(ir: &str) -> BTreeSet<String> {
+    ir.lines()
+        .filter(|line| line.starts_with('%') && line.contains(" = type "))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The record, union and node types that `ir` names without defining them, which Clang rejects
+/// (`load operand must be a pointer to a first class type`).
+fn undefined_types(ir: &str) -> BTreeSet<String> {
+    let defined: BTreeSet<String> = type_definitions(ir)
+        .iter()
+        .filter_map(|line| line.split_once(" = type "))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    let mut used = BTreeSet::new();
+    let mut at = 0;
+    while let Some(found) = ir[at..].find('%') {
+        let start = at + found;
+        let rest = &ir[start + 1..];
+        let length = if let Some(quoted) = rest.strip_prefix('"') {
+            quoted.find('"').map(|end| end + 2)
+        } else {
+            Some(
+                rest.find(|c: char| !(c.is_ascii_alphanumeric() || "._$-".contains(c)))
+                    .unwrap_or(rest.len()),
+            )
+        };
+        let name = &ir[start..start + 1 + length.unwrap_or(0)];
+        if name.starts_with("%\"tz.") || name.starts_with("%tz.record.") {
+            used.insert(name.to_owned());
+        }
+        at = start + 1;
+    }
+    used.difference(&defined).cloned().collect()
+}
+
 fn executable(text: &str, trap_info: bool) -> llvm::EmitOutput {
     let module = analyze(text).unwrap();
     llvm::emit_native_build(
@@ -236,4 +274,91 @@ use_resource 41
     // Drop glue calls the user drop without a reference in any body, so it is never pruned.
     let unreached = reached.replace("use_resource 41", "0");
     assert_eq!(drop(&defined(&executable(&unreached, false).ir)), 1);
+}
+
+/// A public function that nothing reaches names the element type of a channel. The drops of the
+/// channel ends are still roots, and their builtins load that type.
+const CHANNEL: &str = "\
+def helper :: i64
+fn helper =
+    let pair: (Channel.Sender<Maybe<i64>> * Channel.Receiver<Maybe<i64>>) = Channel.bounded 2
+    match pair with
+    | (sender, receiver) ->
+        let _sent = Channel.send (ref sender) (Maybe.Some 41i64)
+        match Channel.recv (ref receiver) with
+        | Maybe.Some (Maybe.Some v) -> v + 1
+        | _ -> 0
+
+\"ok\"
+";
+
+/// The same with a user generic record as the element.
+const CASED: &str = "\
+record Cased<'a> { value: 'a }
+
+def helper :: i64
+fn helper =
+    let pair: (Channel.Sender<Cased<i64>> * Channel.Receiver<Cased<i64>>) = Channel.bounded 2
+    match pair with
+    | (sender, receiver) ->
+        let _sent = Channel.send (ref sender) (Cased { value: 41i64 })
+        match Channel.recv (ref receiver) with
+        | Maybe.Some held -> held.value + 1
+        | Maybe.None -> 0
+
+\"ok\"
+";
+
+#[test]
+fn the_types_that_a_rooted_drop_loads_stay_defined_when_only_a_removed_function_names_them() {
+    for (name, source) in [("std element", CHANNEL), ("user generic element", CASED)] {
+        for trap_info in [false, true] {
+            let pruned = executable(source, trap_info).ir;
+            assert!(
+                !defined(&pruned).contains("tz.fn.Main.helper"),
+                "{name}: the unused function is pruned"
+            );
+            assert_eq!(
+                undefined_types(&pruned),
+                BTreeSet::new(),
+                "{name} (trap info {trap_info}): every named type has a definition"
+            );
+            assert_eq!(
+                undefined_types(&unpruned(source, trap_info).ir),
+                BTreeSet::new(),
+                "{name}: the check accepts the unpruned program"
+            );
+        }
+    }
+}
+
+#[test]
+fn pruning_removes_no_type_definition() {
+    // A definition costs a line, and a drop or a builtin can load a type that no emitted body names,
+    // so the executable defines every type that the unpruned program defines.
+    let pair = "\
+record Pair<'a, 'b> { left: 'a, right: 'b }
+
+union Shape =
+    | Dot of i64
+    | Span of Pair<i64, string>
+
+def only_here :: i64 -> Pair<i64, string> = \\x -> Pair { left: x, right: \"x\" }
+
+def shapes :: i64 -> Maybe<Shape> = \\x -> Maybe.Some (Shape.Span (only_here x))
+
+\"ok\"
+";
+    for source in [SOURCE, CHANNEL, CASED, pair] {
+        for trap_info in [false, true] {
+            let pruned = executable(source, trap_info).ir;
+            let full = unpruned(source, trap_info).ir;
+            assert_eq!(
+                type_definitions(&pruned),
+                type_definitions(&full),
+                "{source}"
+            );
+            assert!(defined(&pruned).is_subset(&defined(&full)));
+        }
+    }
 }

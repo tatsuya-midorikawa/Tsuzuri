@@ -1,0 +1,4 @@
+// The same symbol reached from the entry: the link still fails on it.
+extern "pb03_missing_symbol" def missing :: i64 -> i64
+
+missing 1

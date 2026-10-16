@@ -106,7 +106,31 @@ try {
     build("reach", [optimization, "--target", "wasm32"], reachWasm);
     const instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(reachWasm)));
     assert.equal(instance.exports.tz_exported_seven(6n), 42n);
+
+    // 7. The drops of the ends of a channel stay roots, and their builtins load the element type, so its definition must not
+    // go with an unused function that is the only one to name it (std `Maybe<i64>`, a user generic record).
+    for (const name of ["channel_std", "channel_user"]) {
+      const channel = executable(`${name}${optimization}`);
+      build(name, [optimization], channel);
+      assert.equal(execute(channel, []).stdout.replaceAll("\r\n", "\n"), "ok\n", `${name} ${optimization}`);
+    }
+
+    // 8. Dead code that used to fail the build builds now: an extern symbol that no library provides, named only by an
+    // unused public function. The entry that calls it still fails at the link.
+    const dead = executable(`dead-extern${optimization}`);
+    build("dead_extern", [optimization], dead);
+    assert.equal(execute(dead, []).stdout.replaceAll("\r\n", "\n"), "ok\n");
+    const reached = execute(compiler, ["build", project("dead_extern_reached"), optimization, "--no-cache", "-o", executable(`reached${optimization}`)], { success: false });
+    assert.notEqual(reached.status, 0);
+    assert.match(reached.stderr, /pb03_missing_symbol/);
   }
+
+  // 9. The same for an operating-system API on a target that has none (the driver refuses before any tool runs): only a program
+  // that reaches `File.read_text` is refused.
+  const windows_gnu = (name) => execute(compiler, ["build", project(name), "--target", "x86_64-pc-windows-gnu", "-O0", "--no-cache", "-o", join(root, `${name}.exe`)], { success: false });
+  const refusal = /operating-system APIs are not supported on Windows/;
+  assert.match(windows_gnu("dead_os_reached").stderr, refusal);
+  assert.doesNotMatch(windows_gnu("dead_os").stderr, refusal);
   console.log("llvm handoff: roots ok");
 } finally {
   rmSync(root, { recursive: true, force: true });

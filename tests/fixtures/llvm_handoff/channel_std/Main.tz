@@ -1,0 +1,13 @@
+// An unused public function names the element type of a channel. The drops of the two channel ends stay roots of the
+// executable, and their builtins load that type, so its definition must not go with the function.
+def helper :: i64
+fn helper =
+    let pair: (Channel.Sender<Maybe<i64>> * Channel.Receiver<Maybe<i64>>) = Channel.bounded 2
+    match pair with
+    | (sender, receiver) ->
+        let _sent = Channel.send (ref sender) (Maybe.Some 41i64)
+        match Channel.recv (ref receiver) with
+        | Maybe.Some (Maybe.Some v) -> v + 1
+        | _ -> 0
+
+"ok"
