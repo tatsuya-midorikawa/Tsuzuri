@@ -444,6 +444,43 @@ fn bulk = {
         }
       }
       console.log(`WASM threads O${optimization}: the Channel exports of one task and the refusals inside a lock`);
+      // PM05: the heap under its lock. Each task allocates blocks of many sizes (a Vec that grows by
+      // reallocation, strings, arrays of 4, 12, 75 and 625 elements) and returns an array that the
+      // caller frees on another thread than the one that allocated it. Whatever the schedule, the
+      // totals are the same and only the stacks of the workers stay live.
+      const heapOutput = join(directory, `heap-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/heap_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "--trap-info", `-O${optimization}`, "-o", heapOutput]);
+      const heapBytes = readFileSync(heapOutput);
+      // Round r of task t pushes the last elements of the four blocks, 4t + 712 together, and the length of "<r>-<t>".
+      const crossTotal = (tasks, rounds) => {
+        let total = 0n;
+        for (let task = 0n; task < tasks; task++) {
+          for (let round = 0n; round < rounds; round++) total += 4n * task + 712n + BigInt(`${round}-${task}`.length);
+        }
+        return total;
+      };
+      for (const workers of [1, 2, 3]) {
+        const heapPool = await createThreadPool(heapBytes, { workers });
+        try {
+          for (const [tasks, rounds] of [[1n, 1n], [4n, 120n], [7n, 1000n], [16n, 40n], [3n, 3000n]]) {
+            assert.equal(heapPool.call("tz_cross_free", tasks, rounds), crossTotal(tasks, rounds), `${tasks} tasks of ${rounds} rounds on ${workers + 1} threads`);
+          }
+          assert.equal(heapPool.call("tsuzuri_thread_heap_live_bytes"), BigInt(workers) * (262144n + 16n));
+        } finally {
+          await heapPool.close();
+        }
+      }
+      // The trap of a heap that is full is an allocation failure here too, from allocate and from reallocate.
+      const heapSites = JSON.parse(readFileSync(`${heapOutput}.trap.json`, "utf8")).sites;
+      const heapInstance = () => new WebAssembly.Instance(new WebAssembly.Module(heapBytes), { env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true }) }, tsuzuri_threads: threadImports }).exports;
+      for (const [name, count] of [["exhaust", 3000000n], ["grow", 3000000n]]) {
+        const full = heapInstance();
+        assert.throws(() => full[`tz_${name}`](count), WebAssembly.RuntimeError, name);
+        assert.equal(heapSites.find((site) => site.id === full.tsuzuri_trap_site())?.kind, "allocation failed", name);
+      }
+      assert.equal(heapInstance().tz_exhaust(100n), 99n);
+      assert.equal(heapInstance().tz_grow(100n), 100n);
+      console.log(`WASM threads O${optimization}: mixed block sizes freed on other threads leave only the worker stacks live, and a full heap traps as an allocation failure`);
       const object = join(directory, `threads-${optimization}.o`);
       const linked = join(directory, `linked-${optimization}.wasm`);
       cli(["build", source, "--target", "wasm32", "--emit", "object", "--wasm-feature", "threads", `-O${optimization}`, "-o", object]);

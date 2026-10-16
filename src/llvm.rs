@@ -718,7 +718,8 @@ fn heap_native_tracked() -> &'static str {
 }
 
 /// A heap runtime renamed to the base under `heap-counting.ll` (F13 Phase 2). The trap
-/// sites of the renamed functions stay allocation failures (`traps::runtime_kind`).
+/// sites of the renamed functions stay allocation failures (`traps::runtime_kind`), as those of the
+/// `.unlocked` functions that the threads wrappers call.
 fn counted_base(heap: &str) -> String {
     heap.replace("@tz.alloc(", "@tz.alloc.base(")
         .replace("@tz.free(", "@tz.free.base(")
@@ -8729,6 +8730,95 @@ mod tests {
         assert!(rewritten.contains("  %within = icmp ule i64 %end, 17179869184\n"));
         assert_eq!(rewritten.matches("17179869152\n").count(), 2);
         assert_eq!(rewritten.lines().count(), heap64.lines().count());
+    }
+
+    #[test]
+    fn heap_traps_are_only_in_the_allocation_entry_points() {
+        // `traps::runtime_kind` names these functions: a trap in a helper would be a numeric runtime trap.
+        for (name, heap) in [
+            ("heap-wasm.ll", include_str!("runtime/heap-wasm.ll")),
+            ("heap-wasm64.ll", include_str!("runtime/heap-wasm64.ll")),
+        ] {
+            for function in heap.split("\ndefine ").skip(1) {
+                let header = function.lines().next().unwrap();
+                let traps = function.matches("call void @llvm.trap()").count() > 0;
+                let allocation = header.contains("@tz.alloc(") || header.contains("@tz.realloc(");
+                assert_eq!(traps, allocation, "{name}: {header}");
+            }
+            for entry in ["@tz.alloc(", "@tz.free(", "@tz.realloc("] {
+                let defines = heap
+                    .lines()
+                    .filter(|line| line.starts_with("define ") && line.contains(entry))
+                    .count();
+                assert_eq!(defines, 1, "{name}: {entry}");
+            }
+        }
+    }
+
+    #[test]
+    fn threads_heap_traps_report_allocation_failures() {
+        let source = "export def make :: i64 -> i64\nfn make count = { let values = new [i64](count, n -> n); values[count - 1] }";
+        let module = checked(source);
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: true,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let output =
+            emit_wasm_build(&module, options, &sources, None, true, true, false, false).unwrap();
+        // The wrappers of the threads runtime and the unlocked heap define each entry point once.
+        for name in [
+            "tz.alloc",
+            "tz.free",
+            "tz.realloc",
+            "tz.heap.alloc.unlocked",
+            "tz.heap.free.unlocked",
+            "tz.heap.realloc.unlocked",
+        ] {
+            let defines = output
+                .ir
+                .lines()
+                .filter(|line| line.starts_with("define ") && line.contains(&format!("@{name}(")))
+                .count();
+            assert_eq!(defines, 1, "{name}");
+        }
+        // The trap of the unlocked functions is an allocation failure, not a numeric runtime trap.
+        for name in ["tz.heap.alloc.unlocked", "tz.heap.realloc.unlocked"] {
+            let body = output
+                .ir
+                .split(&format!("define internal ptr @{name}("))
+                .nth(1)
+                .unwrap()
+                .split("\n}")
+                .next()
+                .unwrap();
+            let reports = body
+                .lines()
+                .filter(|line| line.contains("@tz.trap.report("))
+                .count();
+            // The heap runs under the context of its caller: the site is the caller's plus the kind.
+            let kinds: Vec<u32> = body
+                .lines()
+                .filter_map(|line| {
+                    line.trim()
+                        .strip_prefix("%tz.trap.")?
+                        .split_once(" = add i32 %tz.context, ")?
+                        .1
+                        .parse()
+                        .ok()
+                })
+                .collect();
+            assert_eq!(reports, 1, "{name}");
+            assert_eq!(kinds, [TrapKind::AllocationFailure as u32], "{name}");
+        }
     }
 
     #[test]

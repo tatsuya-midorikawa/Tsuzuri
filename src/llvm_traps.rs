@@ -166,7 +166,12 @@ fn runtime_kind(function: &str) -> TrapKind {
         TrapKind::MatchFailure
     } else if matches!(
         function,
-        "@tz.alloc" | "@tz.realloc" | "@tz.alloc.base" | "@tz.realloc.base"
+        "@tz.alloc"
+            | "@tz.realloc"
+            | "@tz.alloc.base"
+            | "@tz.realloc.base"
+            | "@tz.heap.alloc.unlocked"
+            | "@tz.heap.realloc.unlocked"
     ) {
         TrapKind::AllocationFailure
     } else if function.contains("concat") || function.ends_with(".append") {
