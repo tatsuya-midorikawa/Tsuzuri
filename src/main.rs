@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, Triple, WasmHost};
+use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
 
 const HELP: &str = "\
@@ -589,11 +589,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     );
                     continue;
                 }
-                Some("-O0" | "-O1" | "-O2" | "-O3") => {
+                Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
                     if optimization.is_some() {
                         return Err("optimization specified more than once".into());
                     }
-                    optimization = Some(argument.to_str().unwrap().as_bytes()[2] - b'0');
+                    optimization = OptLevel::from_flag(level);
                     continue;
                 }
                 Some("--cpu") => {
@@ -792,7 +792,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             Emit::Executable
         }),
-        optimization: optimization.unwrap_or(if action == Action::Test { 0 } else { 3 }),
+        optimization: optimization.unwrap_or(if action == Action::Test {
+            OptLevel::O0
+        } else {
+            OptLevel::O3
+        }),
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
         trap_info: trap_info
@@ -1003,6 +1007,13 @@ fn run_formatter(arguments: &Arguments) -> ExitCode {
     }
 }
 
+/// The `-O0` to `-O3` number of a `test` or `bench` build; `parse` rejects `-Os` and `-Oz` for both.
+fn speed_level(optimization: OptLevel) -> u8 {
+    optimization
+        .speed_level()
+        .unwrap_or_else(|| unreachable!("parse rejects -Os and -Oz for test and bench"))
+}
+
 fn run_test_action(
     arguments: &Arguments,
     project: &Project,
@@ -1011,7 +1022,7 @@ fn run_test_action(
 ) -> ExitCode {
     let options = driver::TestOptions {
         target: arguments.options.target,
-        optimization: arguments.options.optimization,
+        optimization: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
         wasm_max_memory: arguments.options.wasm_max_memory,
@@ -1241,7 +1252,7 @@ fn run_bench_action(
 ) -> ExitCode {
     let options = driver::BenchOptions {
         target: arguments.options.target,
-        optimization: arguments.options.optimization,
+        optimization: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
         samples: arguments
@@ -1846,7 +1857,9 @@ fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOpt
                 return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
             }
             Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
-                options.build.optimization = level.as_bytes()[2] - b'0';
+                if let Some(level) = OptLevel::from_flag(level) {
+                    options.build.optimization = level;
+                }
                 "optimization"
             }
             Some("--cpu") => {
@@ -2243,7 +2256,7 @@ mod tests {
         assert_eq!(parsed.action, Action::Run);
         assert_eq!(parsed.input, PathBuf::from("a.tz"));
         assert!(!parsed.options.cache && parsed.json && parsed.options.trap_info);
-        assert_eq!(parsed.options.optimization, 3);
+        assert_eq!(parsed.options.optimization, OptLevel::O3);
         assert_eq!(parsed.links.libraries, ["m"]);
         assert_eq!(
             parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0).unwrap_err(),
@@ -2268,7 +2281,7 @@ mod tests {
     #[test]
     fn parses_repl_options() {
         let defaults = parse_repl(&[]).unwrap();
-        assert_eq!(defaults.build.optimization, 0);
+        assert_eq!(defaults.build.optimization, OptLevel::O0);
         assert_eq!(defaults.build.cpu, Cpu::Generic);
         assert!(defaults.build.cache);
         assert!(defaults.build.trap_info);
@@ -2279,7 +2292,7 @@ mod tests {
         assert_eq!(defaults.timeout, Some(std::time::Duration::from_secs(10)));
         let custom =
             parse_repl(&["-O3", "--cpu", "native", "--no-cache", "--timeout", "0"]).unwrap();
-        assert_eq!(custom.build.optimization, 3);
+        assert_eq!(custom.build.optimization, OptLevel::O3);
         assert_eq!(custom.build.cpu, Cpu::Native);
         assert!(!custom.build.cache);
         assert_eq!(custom.timeout, None);
@@ -2288,7 +2301,10 @@ mod tests {
             Some(std::time::Duration::from_secs(3600))
         );
         // The REPL's -O0 default leaves build's and run's -O3 default alone.
-        assert_eq!(parse(&["run", "Main.tz"]).unwrap().options.optimization, 3);
+        assert_eq!(
+            parse(&["run", "Main.tz"]).unwrap().options.optimization,
+            OptLevel::O3
+        );
     }
 
     #[test]
@@ -2820,7 +2836,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(tests.action, Action::Test);
-        assert_eq!(tests.options.optimization, 0);
+        assert_eq!(tests.options.optimization, OptLevel::O0);
         assert_eq!(tests.test_filter.as_deref(), Some("name"));
         let formatting = parse(&["fmt", "--check", "Sources", "--json"]).unwrap();
         assert_eq!(formatting.action, Action::Fmt);
@@ -2834,7 +2850,7 @@ mod tests {
         }
         let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
-        assert_eq!(arguments.options.optimization, 0);
+        assert_eq!(arguments.options.optimization, OptLevel::O0);
         for (kind, emit) in [
             ("shared", Emit::Shared),
             ("bindings-cs", Emit::BindingsCs),
@@ -3017,7 +3033,7 @@ mod tests {
         .unwrap();
         assert_eq!(bench.action, Action::Bench);
         assert_eq!(bench.bench_samples, Some(5));
-        assert_eq!(bench.options.optimization, 3);
+        assert_eq!(bench.options.optimization, OptLevel::O3);
         assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
         assert_eq!(bench.test_indices, vec![1]);
         assert!(links_apply(Action::Bench, &bench.options));
@@ -3026,7 +3042,7 @@ mod tests {
                 .unwrap()
                 .options
                 .optimization,
-            0
+            OptLevel::O0
         );
         let test = parse(&[
             "test",

@@ -329,11 +329,67 @@ pub const MAX_WASM32_MEMORY: u64 = (1 << 32) - 65536;
 /// wasm-ld's limit for 64-bit memories.
 pub const MAX_WASM64_MEMORY: u64 = 1 << 34;
 
+/// The LLVM optimization level of a build: `-O0` to `-O3` and the size levels `-Os` and `-Oz`.
+/// None of them enables fast-math or any other change of the language's meaning; the size levels
+/// only change what Clang does with the same IR (`build` and `run` accept them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+    Os,
+    Oz,
+}
+
+impl OptLevel {
+    /// The Clang option of this level.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::O0 => "-O0",
+            Self::O1 => "-O1",
+            Self::O2 => "-O2",
+            Self::O3 => "-O3",
+            Self::Os => "-Os",
+            Self::Oz => "-Oz",
+        }
+    }
+
+    /// The level of a `-O0` to `-O3`, `-Os` or `-Oz` argument.
+    pub fn from_flag(flag: &str) -> Option<Self> {
+        [Self::O0, Self::O1, Self::O2, Self::O3, Self::Os, Self::Oz]
+            .into_iter()
+            .find(|level| level.flag() == flag)
+    }
+
+    /// The level as the number `test` and `bench` take; the size levels have none.
+    pub fn speed_level(self) -> Option<u8> {
+        match self {
+            Self::O0 => Some(0),
+            Self::O1 => Some(1),
+            Self::O2 => Some(2),
+            Self::O3 => Some(3),
+            Self::Os | Self::Oz => None,
+        }
+    }
+
+    /// The level of `-O<digit>`, for a digit from 0 to 3.
+    pub fn from_speed_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(Self::O0),
+            1 => Some(Self::O1),
+            2 => Some(Self::O2),
+            3 => Some(Self::O3),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
     pub emit: Emit,
-    pub optimization: u8,
+    pub optimization: OptLevel,
     pub cpu: Cpu,
     pub debug_output: bool,
     pub trap_info: bool,
@@ -371,7 +427,7 @@ impl Default for BuildOptions {
         Self {
             target: Target::Native,
             emit: Emit::Executable,
-            optimization: 3,
+            optimization: OptLevel::O3,
             cpu: Cpu::Generic,
             debug_output: false,
             trap_info: false,
@@ -551,12 +607,6 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--trap-mode return is only valid for native object, llvm or header output",
-            ));
-        }
-        if self.optimization > 3 {
-            return Err(driver_error(
-                "E2000",
-                "optimization level must be 0, 1, 2, or 3",
             ));
         }
         self.validate_allocator()?;
@@ -2960,7 +3010,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     matches!(options.emit, Emit::Object | Emit::Shared),
                 )
             })?;
@@ -2982,7 +3034,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
                 )
             })?;
@@ -2994,7 +3048,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
                     options.wasm_threads,
                     options.target == Target::Wasm64,
@@ -3009,7 +3065,7 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.optimization != 0,
+                    options.optimization != OptLevel::O0,
                     options.trap_info,
                 )
             })?;
@@ -3372,7 +3428,7 @@ fn build_complete(
                 .into_iter()
                 .map(OsString::from)
                 .collect();
-            args.push(format!("-O{}", options.optimization).into());
+            args.push(options.optimization.flag().into());
             if options.target.is_wasm() {
                 args.extend(
                     [
@@ -3481,7 +3537,7 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
-                .arg(format!("-O{}", options.optimization));
+                .arg(options.optimization.flag());
             if (task_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
                 && !platform.windows()
             {
@@ -3609,7 +3665,7 @@ fn build_complete(
                 }
             }
             runtime
-                .arg(format!("-O{}", options.optimization))
+                .arg(options.optimization.flag())
                 .arg(&source)
                 .arg("-o")
                 .arg(&wasi_object);
@@ -3637,7 +3693,7 @@ fn build_complete(
                     "-mbulk-memory",
                     "-c",
                 ])
-                .arg(format!("-O{}", options.optimization))
+                .arg(options.optimization.flag())
                 .arg(&source)
                 .arg("-o")
                 .arg(&threads_object);
@@ -3653,7 +3709,7 @@ fn build_complete(
             .arg("-x")
             .arg("ir")
             .arg("-Wno-override-module")
-            .arg(format!("-O{}", options.optimization));
+            .arg(options.optimization.flag());
         if options.debug_info {
             clang.arg("-g");
         }
@@ -5228,14 +5284,8 @@ mod tests {
                 .code,
             "E2004"
         );
-        assert!(
-            BuildOptions {
-                optimization: 4,
-                ..BuildOptions::default()
-            }
-            .validate()
-            .is_err()
-        );
+        // A level above 3 has no `OptLevel`; `parse` rejects it before a `BuildOptions` exists.
+        assert_eq!(OptLevel::from_speed_level(4), None);
         let bindings = BuildOptions {
             target: Target::Wasm32,
             emit: Emit::BindingsJs,

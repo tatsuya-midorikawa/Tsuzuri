@@ -241,7 +241,7 @@ assert.ok(api.memory.buffer.byteLength <= 16 * 1024 * 1024);
             tsuzuri::driver::BuildOptions {
                 target: tsuzuri::driver::Target::Wasm32,
                 emit: tsuzuri::driver::Emit::Wasm,
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 trap_info: optimization == 3,
                 ..Default::default()
             },

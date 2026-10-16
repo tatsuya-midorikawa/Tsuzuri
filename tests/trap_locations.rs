@@ -331,7 +331,7 @@ fn trap_context_preserves_collections_closures_and_parallel_task_abis() {
             &native,
             tsuzuri::driver::BuildOptions {
                 trap_info: true,
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 ..Default::default()
             },
         )
@@ -352,7 +352,7 @@ fn trap_context_preserves_collections_closures_and_parallel_task_abis() {
                 target: tsuzuri::driver::Target::Wasm32,
                 emit: tsuzuri::driver::Emit::Wasm,
                 trap_info: true,
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 ..Default::default()
             },
         )
@@ -400,7 +400,7 @@ fn parallel_callbacks_report_their_source_traps() {
             &project,
             &executable,
             tsuzuri::driver::BuildOptions {
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 trap_info: true,
                 ..Default::default()
             },
@@ -417,7 +417,7 @@ fn parallel_callbacks_report_their_source_traps() {
             tsuzuri::driver::BuildOptions {
                 target: tsuzuri::driver::Target::Wasm32,
                 emit: tsuzuri::driver::Emit::Wasm,
-                optimization,
+                optimization: tsuzuri::driver::OptLevel::from_speed_level(optimization).unwrap(),
                 trap_info: true,
                 ..Default::default()
             },
