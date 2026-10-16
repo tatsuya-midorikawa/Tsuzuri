@@ -893,7 +893,7 @@ node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
 node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、埋め込み形式のリンク時 GC、--strip（nm・codesign・トラップ表）、整数の表示・書式指定・Parse（全型の境界値・参照との照合・IR・WASM）、--wasm-opt（偽の wasm-opt での呼び出し・キャッシュ・E2002。TSUZURI_TEST_WASM_OPT に本物があれば実行）とオプション誤り（TSUZURI_TEST_SECTION=名前の一部 で節を選べる）
 node tests/integer_format.mjs   # 整数の表示・書式指定・Parse（integer.ll）を Python の独立した参照、8／16 bit の全値、numeric.ll の tz_soft_* と照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）
-node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置
+node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置・型定義・剪定で通るようになるビルド・`run` の trap 計装
 node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）
 node tests/bundle_identity.mjs target/release/tsuzuri   # 同梱ツールチェーンの識別を控える memo の無効化・上書き・cache 保護（PB03 WP-F）
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合

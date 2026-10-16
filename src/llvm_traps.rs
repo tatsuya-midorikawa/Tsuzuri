@@ -228,6 +228,19 @@ impl Sites {
     }
 }
 
+/// The lines of `ir`. The emitter appends a runtime part right behind the last line of the text before it, and a
+/// part that follows a function without a line break of its own (`}define ...`) shares the line of that function's
+/// closing brace. LLVM reads it, but the instrumentation works line by line: it would take the function for the part
+/// of the one before it. The brace and the rest are the two lines that they are.
+fn ir_lines(ir: &str) -> impl Iterator<Item = &str> {
+    ir.lines()
+        .flat_map(|line| match line.strip_prefix('}') {
+            Some(rest) if !rest.is_empty() => [Some("}"), Some(rest)],
+            _ => [Some(line), None],
+        })
+        .flatten()
+}
+
 pub(super) fn instrument(
     ir: String,
     module: &CheckedModule,
@@ -245,7 +258,7 @@ pub(super) fn instrument(
     }
     let mut functions: BTreeMap<String, Function> = BTreeMap::new();
     let mut current = None;
-    for raw in ir.lines() {
+    for raw in ir_lines(&ir) {
         let (line, marker) = marked(raw, &marks);
         if line.starts_with("define ") {
             if let Some(call) = callable(line, true) {
@@ -343,7 +356,7 @@ pub(super) fn instrument(
     let mut output = String::with_capacity(ir.len());
     let mut function = String::new();
     let mut sequence = 0usize;
-    for raw in ir.lines() {
+    for raw in ir_lines(&ir) {
         let (line, marker) = marked(raw, &marks);
         if line.starts_with('!')
             && line

@@ -6297,6 +6297,16 @@ before と after を交互に 9 標本ずつ（load average 47〜91）測りま�
 hello や合成 1,000 モジュールの全使用では IR は変わりません。例とフィクスチャの 124 プロジェクト、992 比較では、実行ファイルを作れた 24 件のうち 4 件
 （`examples/polymorphism` 5/108 関数、`tests/fixtures/computations` 13/954、剪定用の 2 件）だけが関数を減らし、挙動・出力は同じです。
 `--emit llvm|object|wasm|shared` は 521 比較すべてが byte 単位で同じです（`benchmarks/check-handoff-equivalence.mjs`）。
+入口のないプロジェクトは実行ファイルにならず、剪定を通らないので、これだけでは剪定の正しさの根拠として足りませんでした（レビューが、剪定で型定義が消えて Clang が IR を拒否する例を見つけました）。
+そこで検査を広げ、入口のない 98 プロジェクトに入口を足して実行ファイルにし（export を plain な公開関数にした版、入口が関数の一部を呼ぶ版を含む）、入口のある 34 件は export を plain にした複製を作って、
+`-O0`・`-O3`・`-g`・`--trap-info`・cache ありの `-O3` でビルドして基準と比べました。132 プロジェクトの全 16 モード 3,332 比較で、終了状態・stdout・stderr の差、増えた関数・宣言、型定義の差は 0 です。
+IR が剪定された 1,352 比較（新しい 5 モード）では、626,595 関数のうち 284,133 が消えています。基準で失敗していたビルドのうち、剪定で通るようになったのは 29 件で、
+25 件はリンクが、使われないコードだけが名指す未定義のシンボルで失敗していたもの、4 件は基準の trap 計装の不具合（`}define` の行を読めない）でした。後者は剪定が行の共有を起こす例が見つかったので、
+同じ変更で直しています（[完了記録](../_perfs/_completed/PB03-llvm-handoff.md#レビューでの指摘と修正2026-10-17)）。
+
+レビュー後の型定義の修正（完了記録の指摘 1）は、剪定した実行ファイルでも、剪定しない場合の到達と型の収集をもう一度行うので、W2 の `emit` 段が増えます。
+機械占有（`with-lock.sh measure`）なしで load average 25〜40 の参考値（`-O0`、交互 7 標本の最小値）は、基準 1,057 ms、修正前の剪定 188 ms、修正後 252 ms（+64 ms）です。
+Clang に渡す IR は変わらず、`tool.*` の最小は 644 → 637 ms で、W2 の `-O0` 全体（約 3 s）の 2% です。上の表の `emit` と CPU 時間は修正前の値で、静かな機械での正式な再計測で取り直します。
 
 **同梱ツールチェーンの識別（WP-F）。** 配布物（約 19,600 ファイル・759 MB）と成果物キャッシュを併用すると、従来は毎ビルドで
 全ファイルのフィンガープリントと Zig（185 MB）・Clang の SHA-256、ランチャーの `--version`（2 プロセス）を計算しました。
@@ -6357,7 +6367,7 @@ bitcode は IR のテキストと同じ意味・同じ決定性を保てても�
 元から捨てるため）、効果は Clang の時間だけで、W2 のように一部だけ使う形でしか出ないと見込みますが、その形では測っていません。`host_entries`・`reaches_reactor` の根の整合と 33 か所の `EmitOptions`、
 Async・host の glue の到達性の検証が要り、得に見合いません。
 
-再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc` が cache あり）、
+再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc`・`libc` が cache あり。`lib0`・`lib3`・`libg`・`libt`・`libc` は入口のないプロジェクトを実行ファイルにする）、
 `node tests/handoff_tools.mjs <compiler>`・`node tests/llvm_handoff.mjs <compiler>`・`node tests/bundle_identity.mjs <compiler>`（プロセスの数・引数・失敗の検査）。
 測定の手順（W2 の作り方、交互 9 標本、`wait4` の CPU、Clang 1 プロセスごとの時間を記録する wrapper、`sample` の読み方）は
 [PB03 の完了記録](../_perfs/_completed/PB03-llvm-handoff.md) にあります。PX03 の `build`・`build-runtime-{cold,warm}` の正式な before／after は静かな機械で取り直します。

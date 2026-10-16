@@ -12,7 +12,7 @@
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討 |
 | 承認 | 2026-10-16 の全フェーズ実装依頼で Phase 2 の D6・D7 を承認済み（効果を測定で確認できない既定の切り替えはしない） |
 | 手本にする既存実装 | 根を限った到達可能性: `src/llvm.rs` の `reachable_functions`（`roots` が `Some` の経路はテストのビルドが使用中）と `emit_program` の `roots`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`・`collect_message`。スレッドでの並行実行: `src/test_runner.rs` と `src/cache.rs` の `std::thread::scope` |
-| 主な影響ファイル | `src/llvm.rs`（`Instrumentation::executable_roots`・`emit_native`・`executable_roots`）、`src/bundle_identity.rs`（新規）、`src/cache.rs`（`tool_identity`・`invoked_path`・`build_key`）、`src/driver.rs`（`compile_runtime_object`・`final_link_args`）、`src/lib.rs`・`src/main.rs`（各 1 か所）、`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`・`tests/handoff_tools.mjs`・`tests/bundle_identity.mjs`・`tests/fixtures/llvm_handoff/`（新規）、`benchmarks/check-handoff-equivalence.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_tsuzuri/language-reference/compiler/{debugging,option,platforms,usage}.md` |
+| 主な影響ファイル | `src/llvm.rs`（`Instrumentation::executable_roots`・`emit_native`・`executable_roots`・`emit_program` の型定義）、`src/llvm_traps.rs`（`ir_lines`）、`src/bundle_identity.rs`（新規）、`src/cache.rs`（`tool_identity`・`invoked_path`・`build_key`）、`src/driver.rs`（`compile_runtime_object`・`stage_runtime_object`・`final_link_args`）、`src/lib.rs`・`src/main.rs`（各 1 か所）、`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`・`tests/handoff_tools.mjs`・`tests/bundle_identity.mjs`・`tests/fixtures/llvm_handoff/`（新規）、`benchmarks/check-handoff-equivalence.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/benchmarks.md`、`docs/language.md`、`README.md`、`_tsuzuri/language-reference/compiler/{debugging,native-interop,option,platforms,usage}.md` |
 | 計測対象 | PX03 の `benchmarks/run-build.mjs`（`build` の `O0`・`O3`）: 合成 200・1,000 モジュール、`examples/hello`。本チケットの追加の workload: W2（新規。合成 1,000 モジュールのうち 100 だけを `Main.tz` から呼ぶ）、W3（新規。`examples/tasks` の macOS `-g` 実行ファイル）、W4（新規。`tests/fixtures/tasks` の `--target wasm32 --wasm-feature threads`）、W5（新規。`tests/fixtures/tasks` の `--emit object`）。指標は `wall_time`・`phase_time`（`emit`・`tool.clang`）と、Clang に渡した IR の bytes |
 
 ## 目的
@@ -266,7 +266,8 @@ fn executable_roots(module: &CheckedModule) -> Vec<usize> {
 - `Entry::Console` は `build_complete` が `Emit::Executable` のときだけ選ぶので、対象は native の `build`・`run` の実行ファイルだけ。
   `emit_program` は `Entry::Console` のとき `validate_main` を通すので、`module.entry` は必ず `Some`。
 - `reachable_functions` は変えない。`roots` が `Some` の経路は、テストのビルドで HEAD から使われている。
-- `named_types(module, &emitted)` は `emitted` から型を集めるので、消えた関数だけが使う型の定義も IR から消える（意図どおり）。
+- `named_types(module, &emitted)` は `emitted` から型を集めるので、消えた関数だけが使う型の定義も IR から消える（起票時の想定。**誤りだった**: drop の builtin は、出力する本体に現れない型を読む。
+  剪定した実行ファイルは、剪定しないプログラムが定義する型をすべて定義する。「レビューでの指摘と修正」の指摘 1）。
 
 ### 並行実行（D2）
 
@@ -721,10 +722,12 @@ used 41
 ### 確認
 
 - 全体: `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）が成功（104 の結果グループ、1,326 件通過、失敗 0。`tests/time_passes.rs`・`tests/llvm_handoff.rs` を含む）。
+  レビュー後の修正を入れた最終の tree でも成功（104 グループ、1,332 件通過、失敗 0、無視 1。増えた 6 件は型定義の 2 件、`%tz.context` の 2 件、全プロジェクトの 1 件、`stage_runtime_object` の 1 件）。
+  最終の tree で、通常の release の `tests/llvm_handoff.mjs`・`tests/handoff_tools.mjs`・`tests/bundle_identity.mjs` と、変更した 5 ページの `node scripts/check-docs.mjs`（118 リンク・13 例・native 12 回）も成功。
   `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、`git diff --check` は成功。
   Windows: `PATH=$HOME/.cargo/bin:$PATH cargo +stable check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` が成功（Windows の挙動は Windows の CI でしか確認できない）。
-- 単体: `--test llvm_handoff`（8 件。D1 の根・剪定・型検査・drop・trap 位置）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
-  `--lib the_linker_choice`（1 件）。
+- 単体: `--test llvm_handoff`（13 件。D1 の根・剪定・型検査・drop・trap 位置、レビュー後の型定義・`%tz.context`・全プロジェクトの IR）、`--lib bundle_identity`（11 件）、`--lib cache`（25 件。既存の `bundled_resource_identity_*` は変更なし）、
+  `--lib the_linker_choice`（1 件）、`--lib a_runtime_object_that_is_staged`（1 件）。
 - 通常の release（`cargo build --release --locked`）に対する node の suite（`validate-all.sh --skip-cargo`、55 手順）: `e2e`・`primitives`・`prebuilt_runtime`・`display_parse`・`strings`・`tasks`・`async`・
   `features`・`json`・`computations`・`control`・`lsp_sessions`・`repl`・`script`・`targets`・`f16_hardware`・`packages`・`bindgen`・`debug_info`・`frontend_cache`・`wasm_threads`・`wasm_memory`・`wasm_simd`・
   `numeric_casts`・`integer_intrinsics`・`user_drop`・`trap_boundary`・`trap_return_sync`・`stack_overflow`（20 件）・`allocator`・`cache`・`examples`・`docgen`・`host_imports`・`ffi_extensions`・`bindings`・
@@ -735,12 +738,70 @@ used 41
 - E2E（新規）: `tests/llvm_handoff.mjs`（vtable・closure・export・trap 位置、`-O0`・`-O3`、決定性）、`tests/handoff_tools.mjs`（C ランタイムの cold 1／warm 0／`--no-cache` 1、cached と fresh の byte 一致、
   失敗の hint と保存されないこと、`-g` の guard の overflow、`TSUZURI_LINKER` の引数・E2002・E2000・キー・実行ファイルと共有ライブラリ以外への無付与）、`tests/bundle_identity.mjs`（偽の配布物と spy の launcher で、
   memo の作成・再利用・無効化（ファイルの追加・ツールの入れ替え・manifest）・上書き・cache でないディレクトリへの無書き込み）。3 つとも通常の release で通り、基準のコンパイラでは失敗する。
-- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較、通常の release）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。
+- 差分検査（`benchmarks/check-handoff-equivalence.mjs`、基準 `6d15b437` の release との比較、通常の release）: 例・フィクスチャ・ベンチマークの 124 プロジェクト。ただしこの検査は剪定を、実行ファイルを作れる 24 件でしか通さなかった（広げた検査は「レビューでの指摘と修正」）。
   header・llvm・object・wasm・shared・wasmt（threads）・wasi の 868 比較は差 0（720 が byte 一致、148 は同じ失敗）。全 11 モードの代表 7 プロジェクト 77 比較も差 0。
   開発中の非 LTO の build では、WP1 の 8 モード 992 比較（521 が byte 一致、実行ファイル 12 比較が剪定で関数を減らし挙動は同じ）と、cache あり 3 モード 372 比較も差 0。
   threads・WASI の `--emit object` は `-O0`・`-O3` で SHA-256 が一致。`TSUZURI_LINKER` 未設定の Clang の引数列は 8 つのビルドで基準と完全に一致。
 - 同梱ツールチェーン: 実物の開発用配布物（759 MB）の複製に `scripts/toolchain/runtime.mjs` の `bundleRuntime` で `share/runtime` を作り、新しいコンパイラで同梱 object が使われる（runtime cache が空）こと、
   `lib/` にファイルを足すと拒否されることを確かめた。runtime cache のキー（2 件）は旧コンパイラと同じ。`scripts/toolchain/smoke.mjs` は開発用配布物に `share/lldb`・`share/natvis` がないので実行していない（CI が担当）。
+
+### レビューでの指摘と修正（2026-10-17）
+
+統合ブランチへの最初のマージの後の独立レビューが、剪定の穴を 3 件指摘した。元の差分検査は剪定を、実行ファイルを作れる 24 プロジェクトでしか通さなかった。
+残りの 100 件ほどは入口がなく `E2004` で止まるので、ライブラリの形のコードを剪定したビルドを、一度も見ていなかった。
+
+**指摘 1（HIGH）: 以前通ったビルドが通らない。**
+
+- 症状: `Main.tz` が std だけで、`Channel.Sender<Maybe<i64>>`・`Channel.Receiver<Maybe<i64>>` を使う未使用の公開関数と、トップレベルの `"ok"` を持つと、基準のコンパイラは `ok` を出すが、
+  Clang が `load operand must be a pointer to a first class type` で IR を拒否する（`tests/fixtures/llvm_handoff/channel_std`。`tests/fixtures/channel` も同じ）。
+- 根本原因: `named_types` は、出力する関数が名指す型だけを定義し、record・union の型引数を辿らない。`Drop` は全実行ファイルの根で、`Drop<Channel.Sender<'a>>` の builtin は
+  `'a`（型引数にしか現れない `Maybe<i64>`）を読む。その型を名指すのが未使用の公開関数だけだと、定義が関数と一緒に消えた。
+- 修正（`8faf9bb9`）: 剪定した実行ファイルは、剪定しないプログラムが定義する型をすべて定義する（`emit_program`。根が決めるのは出力する関数だけ）。定義は 1 行で、剪定の前に通ったどのプログラムも持っていた集合である。
+- 確認: 修正の前に `tests/llvm_handoff.rs`（名指す型がすべて定義されること、定義が 1 つも消えないこと）と `tests/llvm_handoff.mjs`（`channel_std`・`channel_user` の `-O0`・`-O3` のビルドと実行）を足し、前者は修正前に失敗する。
+- 費用: 剪定しない場合の到達と型の収集をもう一度行うので、W2（1,000 モジュール）の `emit` 段は 188 → 252 ms（+64 ms。機械占有なし、load average 25〜40、`-O0`、7 標本の最小値。基準は 1,057 ms）。Clang の時間は変わらず、W2 の `-O0` 全体の約 2%。
+  WP9 の W2 の表（`emit` 294 ms など）は修正前の値で、静かな機械での再計測で取り直す。
+
+**指摘 2: `wasi.o` の rename。**
+
+- 根本原因: `compile_runtime_object` は `<unit>.o` に書き、WASI のランタイムの staging 名も `wasi.o` なので、`fs::rename` が path を自分自身へ rename していた。Unix では no-op で、Windows は CI でしか分からない。
+- 修正（`16a8ab9b`）: `stage_runtime_object` が path が同じなら何もしない。native C・WASI・WASM threads の 3 か所が使う。単体テストは存在しない path を渡す。rename すれば失敗するので、skip したときだけ通る（skip を外すと失敗することを確かめた）。
+
+**指摘 3: 失敗していたビルドが通る。** OS API（`x86_64-pc-windows-gnu` の `File.read_text` は `E2002` だった）、どのライブラリにもない `extern` のシンボル（未定義のシンボルでリンクが失敗していた）、C のランタイムを、未使用の公開関数だけが使うビルドは、
+実行ファイルがその関数を出力しないので通る。入口・export・`Drop` から到達すれば今までどおり失敗し、型検査は未使用の公開関数にも行う（`6475ed95`）。
+文書: `option.md`（`--emit exe` の中身と、通るようになる 3 種）、`usage.md`、`platforms.md`（`E2002` の表の後）、`native-interop.md`（`extern` の例。`check-docs` が実行し、基準のコンパイラでは未定義のシンボルで失敗する）、`debugging.md`、`docs/language.md`、`docs/architecture.md`。
+
+**指摘 4（広げた差分検査が見つけた。レビューにはなかった）: `tsuzuri run` が、以前通ったプログラムで失敗する。**
+
+- 症状: `tests/fixtures/llvm_handoff/tree_lock`（再帰的な union、表示するリスト、`Mutex` を使う未使用の公開関数）は、基準のコンパイラの `tsuzuri run`（`--trap-info` が既定）が `[1, 2, 3] 1` を出す。
+  PB03 の剪定は `use of undefined value '%tz.context'`（`E2002`）で失敗した。`tree`（`tree_lock` から未使用の関数を除いたもの）は、基準のコンパイラも同じ理由で失敗する（既存の不具合）。
+- 根本原因: ランタイムの `.ll` のうち `recursive.ll`・`display.ll`・`debug.ll`・`character.ll` は末尾に改行がなく、エミッタは次の部分を直後に付け足すので、次が `define` なら前の関数の閉じ括弧と同じ行（`}define ...`）になる。
+  LLVM は読めるが、`llvm_traps::instrument` は行ごとに `define` を探すので、その関数を登録せず、本体を前の関数の一部として `%tz.context` を使わせ、署名には引数を足さなかった。
+  `Mutex` と並列タスクの `sync.ll` のような別の部分が間に入るプログラムでは行が分かれていて、剪定でその部分が消えると共有が起きた。
+- 修正（`6cc70aa8`）: `instrument` は、閉じ括弧とその残りを別の行として読む（`ir_lines`）。出力が変わるのは `--trap-info` で行を共有する場合だけで、そこは以前、壊れていたか、関数が計装されていなかった。
+- 確認: 修正の前に `tests/llvm_handoff.rs`（`%tz.context` を使う関数が引数に取ること。`tree` は剪定の有無にかかわらず、`tree_lock` は剪定したときだけ失敗した）と `tests/llvm_handoff.mjs`（`run` の `-O0`・`-O3`）を足し、修正前の実行ファイルで失敗することを確かめた。
+
+**広げた差分検査**（`benchmarks/check-handoff-equivalence.mjs` の新しいモード、`684028fa`）。入口のない 98 プロジェクト（`Main.tz` のないものを含む）に、次の入口を足して実行ファイルにし、入口のある 34 プロジェクトには export を plain な公開関数にした複製を作る。
+
+- `keep`: 定数の入口（`"ok"`）。export はそのまま（実行ファイルの根）。`none`: 定数の入口と、plain にした export（drop のほかは何も到達しない。最大の剪定）。
+- `even`・`odd`: export を plain にして、引数をスカラーと文字列で書ける関数の偶数番目・奇数番目を入口から呼び、結果を表示する。`unexport`: 入口のある 34 件の複製。
+- ビルドは `lib0`（`-O0 --no-cache`）、`lib3`（`-O3 --no-cache`）、`libg`（`-O0 -g`）、`libt`（`-O3 --trap-info`。`tsuzuri run` が作るもの）、`libc`（`-O3`、cache あり。`tsuzuri build` の既定）。
+- 基準のコンパイラとの比較で要求するのは、プログラムの終了状態・stdout・stderr が同じこと、IR が関数と宣言を失うだけで record・union の型定義が同じこと。
+  失敗していたビルドが通ってよいのは、リンクが、剪定されたコードだけが名指すシンボルで失敗していた場合と、基準の trap 計装の失敗（指摘 4）の場合だけで、リンクが失敗のままなら未定義のシンボルが減る場合だけ許す。ほかは差として数える。
+
+結果（通常の release `eb1d78f2…`、基準 `6d15b437` の release `da78ba18…`、`--jobs 5`）: 132 プロジェクトの全 16 モード、**3,332 比較で差 0**。
+
+| 群 | 比較 | 内訳 |
+| --- | ---: | --- |
+| `--emit header\|llvm\|object\|wasm\|shared`、threads・WASI の wasm | 924 | 745 が byte 一致、179 が同じ失敗 |
+| 元のプロジェクトの `exe0`・`exe3`・`exeg`・`exegc` | 528 | 121 が同じ挙動（88 は IR も同じ、33 は剪定で関数が減る）、3 は剪定でリンクが通る、404 は同じ失敗（入口なしの `E2004` など） |
+| 新しい `lib0`・`lib3`・`libg`・`libt`・`libc` | 1,880 | 1,672 が両方で成功（1,482 は終了コード 0 で同じ出力、190 は同じ trap で終わる）、うち 1,352 は IR が剪定され（626,595 関数のうち 284,133 が消える）、26 は剪定で通るようになった（リンク 22、trap 計装 4）、22 はリンクが失敗のまま未定義のシンボルが減る、160 は基準も新も作れない |
+
+作れない 160 は、`bindgen` の `expected.tz`（module 名が小文字で `E1011`。25 件）と、host import の `extern` のシンボルを入口・export・`Drop` が使う fixture（`async_host`・`bindings`・`host_imports`・`user_drop` など。リンクの `E2002`。135 件）である。`-O3` では基準の LLVM が未使用の内部関数を捨てるので、未定義のシンボルで失敗するのは `-O0`・`-g` だけで、剪定で通るようになるリンクの 22 はすべてそこに出る。
+限界: 入口が呼ぶのは、引数を整数 `3`・浮動小数点 `0.5`・`true`・`"ab"` で書ける関数だけで、前提を assert する関数は trap する（190 比較が同じ trap で終わり、その後の呼び出しは実行されない。コンパイルと IR は検査済み）。Linux と Windows では実行していない。
+
+Rust のテスト `pruning_keeps_the_ir_of_every_project_valid`（`tests/llvm_handoff.rs`、`5a0bdfb1`）は、同じ変換（入口なしは `keep`・`none`、入口ありは原形と `unexport`）の 231 プログラム・693 ビルド（cache あり・なしの `build` と `run`）を、
+Clang と基準のコンパイラなしで検査する。剪定した IR の関数が剪定しない IR の部分集合であること、プログラムの型定義が同じこと、定義のない型を名指さないこと、`%tz.context` を使う関数が引数に取ること。CI で動く。
+修正の前のコードに戻すと、型の不具合（`channel` の `Cased[i64]` など）と trap 計装の不具合（`tree_lock`）で失敗する。
 
 ### 計測
 
@@ -761,14 +822,18 @@ Clang の 1 プロセスごとの時間は、引数と経過時間を記録し�
   配布物の `zig cc` のリンクは約 230 ms の固定費で、Apple の ld64 の約 60 ms より重い。ソフトウェアの SHA-256 は `unsafe` を使えず、IR（1,000 モジュールで約 37 MB）とコンパイラのハッシュが毎ビルドの費用になる。
 - 後続のチケットへ: PM08 は `build_complete` の `-O{}` 5 か所と `-Wl,-x` を触る（この変更は `final_link_args` と runtime object の 3 か所を足しただけで、衝突は小さい）。
   PM05・PR06 が runtime object やタスクの runtime を変えるときは、`tests/handoff_tools.mjs` の単位名（`wasm-threads`・`wasi`・`stack-debug`）と D1 の差分検査を再実行する。
+  ランタイムの部分を足す・並べ替えるチケット（PM01・PR03・PR02・PM05）は、剪定でどの部分が入るかを変えるので、`pruning_keeps_the_ir_of_every_project_valid` と広げた差分検査（`lib0`〜`libc`）を再実行する。
+- ★ レビュー後に直した、基準にもあった不具合: `tsuzuri run`（trap 計装）が、再帰的な union と表示するリストを持つ単純なプログラムで `use of undefined value '%tz.context'` になる（指摘 4。`tree` fixture）。
+  `}define` の行をまたぐ runtime の部分を `llvm_traps::instrument` が読めなかったのが原因で、剪定が行の共有を新たに起こしうるので、同じ変更で直した。
+- 記録だけ（レビュー後）: 入口が呼ぶ関数の引数が固定なので、広げた差分検査の 190 比較は同じ trap で終わる。関数ごとに別の実行にする（引数で呼ぶ関数を選ぶ入口）と、trap の後の呼び出しも比べられる。
 
 ### 更新した文書
 
-`_tsuzuri/language-reference/compiler/usage.md`（ランタイム object: C ランタイムの cache と、同梱ツールチェーンの識別の信頼の範囲）、`option.md`（`TSUZURI_LINKER`、組み合わせのエラー）、
-`platforms.md`、`debugging.md`（実行ファイルに入る関数）、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`（キャッシュ、`TSUZURI_LINKER`、テストの一覧）、`src/main.rs` の HELP。
-`docs/language.md` は、変更した意味（実行ファイルから到達する関数だけを出力する）がユーザーに見える範囲を `debugging.md` が持つので、更新不要と判断した。
+`_tsuzuri/language-reference/compiler/usage.md`（ランタイム object: C ランタイムの cache と、同梱ツールチェーンの識別の信頼の範囲。実行ファイルに入る関数）、`option.md`（`TSUZURI_LINKER`、組み合わせのエラー。`--emit exe` に入る関数と、通るようになるビルド）、
+`platforms.md`（`E2002` の表の後に、実行ファイルでは到達する関数が使うときだけ）、`native-interop.md`（`extern` のシンボルが未定義でもリンクできる例）、`debugging.md`（実行ファイルに入る関数）、`docs/architecture.md`（剪定、型定義、trap 計装の行）、
+`docs/language.md`（実行ファイルに入る関数と、通るようになるビルド）、`docs/benchmarks.md`、`README.md`（キャッシュ、`TSUZURI_LINKER`、テストの一覧）、`src/main.rs` の HELP。
 
 ### 変更したファイル
 
-`git diff --stat c6864cf5..HEAD` を参照（`src/` は `bundle_identity.rs`（新規）・`cache.rs`・`driver.rs`・`llvm.rs`・`lib.rs`・`main.rs`、テストは `tests/llvm_handoff.{rs,mjs}`・`handoff_tools.mjs`・`bundle_identity.mjs`・`fixtures/llvm_handoff/`、
+`git diff --stat c6864cf5..HEAD` を参照（`src/` は `bundle_identity.rs`（新規）・`cache.rs`・`driver.rs`・`llvm.rs`・`llvm_traps.rs`・`lib.rs`・`main.rs`、テストは `tests/llvm_handoff.{rs,mjs}`・`handoff_tools.mjs`・`bundle_identity.mjs`・`fixtures/llvm_handoff/`、
 差分検査は `benchmarks/check-handoff-equivalence.mjs`、CI は `.github/workflows/targets.yml`）。

@@ -1138,11 +1138,23 @@ fn emit_program_in(
                 .executable_roots
                 .then(|| executable_roots(module))
         });
+    let pruned = roots.is_some() && tests.is_none();
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
-    let named = named_types(module, &emitted);
+    // An executable defines the types of the program that it would be without pruning. A drop or a builtin
+    // loads types that no emitted body names (the drop of a `Channel.Sender<'a>` loads `'a`), the unpruned
+    // program has them defined by the functions that are now gone, and a definition costs a line (PB03 D1).
+    let named = if pruned {
+        let unpruned = program_reach(module, None, entry == Entry::BenchRunner).1;
+        let all: Vec<bool> = (0..module.functions.len())
+            .map(|id| unpruned.contains(&id))
+            .collect();
+        named_types(module, &all)
+    } else {
+        named_types(module, &emitted)
+    };
     let generic = |ty: &&Type| matches!(ty, Type::Record(_, arguments) | Type::Union(_, arguments) if !arguments.is_empty());
     let record_types = (0..module.records.len())
         .filter(|id| module.records[*id].parameters.is_empty())

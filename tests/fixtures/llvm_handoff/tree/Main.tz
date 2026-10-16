@@ -1,0 +1,15 @@
+// A recursive union and a displayed list: the runtime parts `recursive.ll` and `display.ll` are appended one behind the
+// other, and `recursive.ll` ends without a line break, so `display.ll` starts in the line of its last brace. The trap
+// instrumentation of `tsuzuri run` used to read that function as a part of the one before it (`use of undefined value
+// '%tz.context'`).
+union Tree =
+    | Leaf
+    | Node of Tree * i64 * Tree
+
+def rec size :: Tree -> i64 = \tree ->
+    match tree with
+    | Tree.Leaf -> 0
+    | Tree.Node (left, _, right) -> size left + 1 + size right
+
+let values = [1, 2, 3]
+$"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}"

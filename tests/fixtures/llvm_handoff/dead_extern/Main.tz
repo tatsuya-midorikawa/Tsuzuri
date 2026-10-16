@@ -1,0 +1,7 @@
+// A symbol that no library provides, named only by a public function that nothing reaches: the executable has no
+// reference to it, so it links (before PB03 D1 the link failed on the undefined symbol).
+extern "pb03_missing_symbol" def missing :: i64 -> i64
+
+def never_called :: i64 -> i64 = \x -> missing x
+
+"ok"
