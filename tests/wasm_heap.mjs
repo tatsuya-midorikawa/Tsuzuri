@@ -32,8 +32,17 @@ define i32 @probe_small(i32 %index) {
   %value = load i32, ptr %slot
   ret i32 %value
 }
-` : "");
-const probeExports = (target) => (target === "wasm32" ? ["probe_end", "probe_free", "probe_mask", "probe_small"] : []);
+` : `
+define i64 @probe_end() { %value = load i64, ptr @tz.heap.end ret i64 %value }
+define i64 @probe_free() { %value = load i64, ptr @tz.heap.free ret i64 %value }
+define i64 @probe_mask() { %value = load i64, ptr @tz.heap.smallmask ret i64 %value }
+define i64 @probe_small(i64 %index) {
+  %slot = getelementptr [32 x i64], ptr @tz.heap.small, i64 0, i64 %index
+  %value = load i64, ptr %slot
+  ret i64 %value
+}
+`);
+const probeExports = ["probe_end", "probe_free", "probe_mask", "probe_small"];
 
 // An empty module with one 64-bit memory.
 export const memory64Supported = () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 0]));
@@ -53,7 +62,7 @@ export function buildHeap({ target = "wasm32", optimization = 3, directory, extr
   execute(clang, [`--target=${target}`, `-O${optimization}`, ...(bulkMemory ? ["-mbulk-memory"] : []), "-Wno-override-module", "-c", `${stem}.ll`, "-o", `${stem}.o`]);
   execute(wasmLd, [
     ...(target === "wasm64" ? ["-mwasm64"] : []), `${stem}.o`, "--no-entry", "--export=allocate", "--export=resize", "--export=release",
-    "--export=__heap_base", "--export-memory", `--max-memory=${LIMIT}`, ...[...probeExports(target), ...exports].map((name) => `--export=${name}`), "-o", `${stem}.wasm`,
+    "--export=__heap_base", "--export-memory", `--max-memory=${LIMIT}`, ...[...probeExports, ...exports].map((name) => `--export=${name}`), "-o", `${stem}.wasm`,
   ]);
   return new WebAssembly.Module(readFileSync(`${stem}.wasm`));
 }
@@ -76,9 +85,9 @@ export function instantiate(module, target) {
     allocate: (size) => number(exports.allocate(BigInt(size))),
     resize: (old, previous, size) => number(exports.resize(pointer(old), BigInt(previous), BigInt(size))),
     release: (address) => exports.release(pointer(address)),
-    probe: (name, ...argument) => number(exports[name](...argument)),
-    // The design's invariants, from the blocks themselves (only where the walker knows the layout).
-    check: () => (target === "wasm32" ? inspectHeap(api) : null),
+    probe: (name, ...argument) => number(exports[name](...argument.map(pointer))),
+    // The design's invariants, from the blocks themselves.
+    check: () => inspectHeap(api),
   };
   return api;
 }
@@ -212,10 +221,8 @@ export function reuseCases({ fresh }) {
 }
 
 // Sizes around every capacity step: neighbouring blocks are exactly one capacity apart.
-export function boundaryCases({ fresh, target }) {
-  // The size-0 clamp is part of the wasm32 heap; the wasm64 heap follows when it is ported (until then it keeps a block of 16).
-  const zero = target === "wasm32" ? [0] : [];
-  for (const size of [...zero, 1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 511, 512, 513, 528, 1000, 4096, 70000]) {
+export function boundaryCases({ fresh }) {
+  for (const size of [0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 511, 512, 513, 528, 1000, 4096, 70000]) {
     const api = fresh();
     const first = api.allocate(size), second = api.allocate(1);
     assert.equal(first % 16, 0, `alignment of ${size}`);
@@ -226,7 +233,7 @@ export function boundaryCases({ fresh, target }) {
     assert.equal(api.allocate(size), first, `reuse of ${size}`);
   }
   // Growing or shrinking a block across a capacity step: in place exactly when the capacity suffices.
-  for (const [from, to] of [[16, 16], [16, 17], [17, 16], [32, 33], [40, 8], [512, 513], [513, 512], [1, 2000], [2000, 1], [64, 70000], ...(target === "wasm32" ? [[0, 8], [0, 100]] : [])]) {
+  for (const [from, to] of [[16, 16], [16, 17], [17, 16], [32, 33], [40, 8], [512, 513], [513, 512], [1, 2000], [2000, 1], [64, 70000], [0, 8], [0, 100]]) {
     const api = fresh();
     const block = api.allocate(from);
     api.allocate(16);
@@ -254,8 +261,6 @@ export function boundaryCases({ fresh, target }) {
 // A block that touches the end of the heap is given back by lowering the end (the memory itself
 // stays); a block in the middle is only linked. The end is read from the heap's own global.
 export function trimCases({ fresh }) {
-  const api0 = fresh();
-  if (api0.check() === null) return;
   { // one block
     const api = fresh();
     const a = api.allocate(1000);
@@ -308,7 +313,6 @@ export function trimCases({ fresh }) {
 // less the block takes it all; PREV_FREE of the block and of the block after are kept right; and a
 // request that the neighbour cannot serve moves the block. Capacities: 32 bytes -> 48, 128 -> 144, 16 -> 32.
 export function absorbCases({ fresh }) {
-  const walked = fresh().check() !== null;
   { // 48 + 144 = 192; a request of 80 needs 96: the rest of 96 is a free block, which serves a request of 64 (capacity 80) whole
     const api = fresh();
     const a = api.allocate(32), b = api.allocate(128), guard = api.allocate(16);
@@ -316,10 +320,8 @@ export function absorbCases({ fresh }) {
     api.release(b);
     assert.equal(api.resize(a, 32, 80), a);
     assert.ok(holds(api.bytes(), a, 32, 0x5a));
-    if (walked) {
-      const start = api.firstPayload - 16;
-      assert.deepEqual(api.check().blocks, [{ address: start, size: 96, free: false }, { address: start + 96, size: 96, free: true }, { address: start + 192, size: 32, free: false }]);
-    }
+    const start = api.firstPayload - 16;
+    assert.deepEqual(api.check().blocks, [{ address: start, size: 96, free: false }, { address: start + 96, size: 96, free: true }, { address: start + 192, size: 32, free: false }]);
     assert.equal(api.allocate(64), a + 96);
     assert.equal(guard, a + 48 + 144);
     api.check();
@@ -332,12 +334,10 @@ export function absorbCases({ fresh }) {
       api.allocate(16);
       api.release(b);
       assert.equal(api.resize(a, 32, size), a);
-      if (walked) {
-        const start = api.firstPayload - 16;
-        const kept = rest === 32 ? 96 : 128;
-        const tail = rest === 32 ? [{ address: start + 96, size: 32, free: true }] : [];
-        assert.deepEqual(api.check().blocks, [{ address: start, size: kept, free: false }, ...tail, { address: start + 128, size: 32, free: false }]);
-      }
+      const start = api.firstPayload - 16;
+      const kept = rest === 32 ? 96 : 128;
+      const tail = rest === 32 ? [{ address: start + 96, size: 32, free: true }] : [];
+      assert.deepEqual(api.check().blocks, [{ address: start, size: kept, free: false }, ...tail, { address: start + 128, size: 32, free: false }]);
     }
   }
   { // 48 + 48 = 96 = a request of 70: nothing is left, and the block after the pair no longer follows a free block
@@ -370,10 +370,8 @@ export function absorbCases({ fresh }) {
     const moved = api.resize(a, 32, 100);
     assert.equal(moved, guard + 32);
     assert.ok(holds(api.bytes(), moved, 32, 0x6b));
-    if (walked) {
-      const start = api.firstPayload - 16;
-      assert.deepEqual(api.check().blocks, [{ address: start, size: 96, free: true }, { address: start + 96, size: 32, free: false }, { address: start + 128, size: 128, free: false }]);
-    }
+    const start = api.firstPayload - 16;
+    assert.deepEqual(api.check().blocks, [{ address: start, size: 96, free: true }, { address: start + 96, size: 32, free: false }, { address: start + 128, size: 128, free: false }]);
   }
   { // the memory above the end holds the stale header of a free block (it was merged into the top block that was given back):
     // a block that ends at the end must not read it as a neighbour
@@ -386,7 +384,7 @@ export function absorbCases({ fresh }) {
     api.release(b);
     api.release(c);
     api.check();
-    if (walked) assert.equal(api.probe("probe_end"), a + 32);
+    assert.equal(api.probe("probe_end"), a + 32);
     // 48 + the stale 128 = 176 would serve a request of 100 (capacity 128) if the stale header were read
     const moved = api.resize(a, 32, 100);
     assert.notEqual(moved, 0);
@@ -399,7 +397,6 @@ export function absorbCases({ fresh }) {
 // from the smallest list that serves it; larger free blocks are in one list in address order and a
 // request takes the first that fits. Capacities: 16 bytes -> 32, 32 -> 48, 40 -> 64, 64 -> 80, 128 -> 144.
 export function binCases({ fresh }) {
-  if (fresh().check() === null) return;
   { // last in, first out
     const api = fresh();
     const a0 = api.allocate(32);
