@@ -229,6 +229,32 @@ pub(crate) fn ordered_for_each<T, P, C>(
     chunk: usize,
     claim: Option<&[usize]>,
     produce: P,
+    consume: C,
+) where
+    T: Send,
+    P: Fn(usize) -> T + Sync,
+    C: FnMut(usize, Item<'_, T>) -> ControlFlow<()>,
+{
+    ordered_for_each_with_stack(
+        WORKER_STACK_BYTES,
+        count,
+        workers,
+        chunk,
+        claim,
+        produce,
+        consume,
+    );
+}
+
+/// `ordered_for_each` whose workers have `stack` bytes of stack: a stack that the system refuses
+/// leaves the stage to the calling thread, which the tests use.
+fn ordered_for_each_with_stack<T, P, C>(
+    stack: usize,
+    count: usize,
+    workers: usize,
+    chunk: usize,
+    claim: Option<&[usize]>,
+    produce: P,
     mut consume: C,
 ) where
     T: Send,
@@ -277,7 +303,7 @@ pub(crate) fn ordered_for_each<T, P, C>(
         while started < workers.min(chunks)
             && std::thread::Builder::new()
                 .name("tsuzuri-frontend".into())
-                .stack_size(WORKER_STACK_BYTES)
+                .stack_size(stack)
                 .spawn_scoped(scope, work)
                 .is_ok()
         {
@@ -422,6 +448,29 @@ mod tests {
         assert_eq!(Parallelism::fixed(1000).threads, MAX_THREADS);
         let automatic = Parallelism::automatic().threads;
         assert!((1..=AUTOMATIC_THREADS).contains(&automatic));
+    }
+
+    #[test]
+    fn a_stack_that_the_system_refuses_leaves_the_stage_to_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let mut seen = Vec::new();
+        // No thread can have a stack this large, so none starts: the stage runs where it is called.
+        ordered_for_each_with_stack(
+            usize::MAX / 2,
+            50,
+            4,
+            3,
+            None,
+            |item| (item, std::thread::current().id()),
+            |index, result| {
+                let (item, thread) = result.get();
+                assert_eq!((index, thread), (item, caller));
+                seen.push(item);
+                ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(seen, (0..50).collect::<Vec<_>>());
+        assert_eq!(PARALLEL_STAGES.get(), 0, "no worker started");
     }
 
     #[test]
