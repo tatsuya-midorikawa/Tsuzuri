@@ -439,16 +439,22 @@ impl DebugContext {
                     })
                     .collect(),
             };
+            // The members stay in declared order; a record may place them elsewhere in memory.
+            let order: Vec<usize> = match ty {
+                Type::Record(..) => super::layout::physical_fields(ty, module)
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect(),
+                _ => (0..members.len()).collect(),
+            };
+            let mut offsets = vec![0; members.len()];
             let mut offset: usize = 0;
-            let placed = members
-                .into_iter()
-                .map(|member| {
-                    offset = offset.next_multiple_of(member.alignment);
-                    let placed = (member, offset);
-                    offset += placed.0.size;
-                    placed
-                })
-                .collect();
+            for index in order {
+                offset = offset.next_multiple_of(members[index].alignment);
+                offsets[index] = offset;
+                offset += members[index].size;
+            }
+            let placed = members.into_iter().zip(offsets).collect();
             composite(
                 "DW_TAG_structure_type",
                 id,
@@ -949,11 +955,10 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (pointer, pointer),
         Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
-        Type::Record(id, arguments) => aggregate(
-            module
-                .types()
-                .record_fields(*id, arguments)
+        Type::Record(..) => aggregate(
+            super::layout::physical_fields(ty, module)
                 .into_iter()
+                .map(|(_, field)| field)
                 .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
             module,
             wasm,

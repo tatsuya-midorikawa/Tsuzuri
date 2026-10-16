@@ -1045,7 +1045,6 @@ fn emit_program_in(
     let mut output = String::from(
         "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
-    let types = module.types();
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
         output.push_str("%tz.dyn = type { ptr, ptr }\n");
@@ -1087,17 +1086,13 @@ fn emit_program_in(
         );
     let mut record_definitions = String::new();
     for ty in record_types {
-        let Type::Record(id, arguments) = &ty else {
-            unreachable!("only record types are collected")
-        };
         let _ = writeln!(
             record_definitions,
             "{} = type {{ {} }}",
             llvm_type(&ty, module),
-            types
-                .record_fields(*id, arguments)
+            layout::physical_fields(&ty, module)
                 .iter()
-                .map(|ty| llvm_type(ty, module))
+                .map(|(_, ty)| llvm_type(ty, module))
                 .chain(drop_flag(&ty, module).map(|_| "i8".to_owned()))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -2318,8 +2313,12 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
         }
         TypedExprKind::Record(fields) if fields.is_empty() => "zeroinitializer".into(),
         TypedExprKind::Record(fields) => {
+            let Type::Record(id, arguments) = &value.ty else {
+                unreachable!("a record literal has a record type")
+            };
+            // The fields stand in the order of the LLVM type of the record.
             let mut ordered: Vec<_> = fields.iter().collect();
-            ordered.sort_by_key(|(index, _)| *index);
+            ordered.sort_by_key(|(index, _)| layout::field_slot(*id, arguments, module, *index));
             format!(
                 "{{ {} }}",
                 ordered
@@ -4072,15 +4071,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .map(|(index, field)| (*index, field, self.expression(field)))
             .collect();
         for (index, field, value) in values {
+            let slot = self.field_slot(&expression.ty, index);
             if field.ty.needs_drop(&self.module.types()) {
                 let previous = self.value(format!(
-                    "extractvalue {} {record}, {index}",
+                    "extractvalue {} {record}, {slot}",
                     self.ty(&expression.ty),
                 ));
                 self.drop_value(&field.ty, &previous);
             }
             record = self.value(format!(
-                "insertvalue {} {record}, {} {value}, {index}",
+                "insertvalue {} {record}, {} {value}, {slot}",
                 self.ty(&expression.ty),
                 self.ty(&field.ty),
             ));
@@ -4477,8 +4477,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let mut record = "zeroinitializer".into();
                 for (index, field) in fields {
                     let value = self.expression(field);
+                    let slot = self.field_slot(&expression.ty, *index);
                     record = self.value(format!(
-                        "insertvalue {} {record}, {} {value}, {index}",
+                        "insertvalue {} {record}, {} {value}, {slot}",
                         self.ty(&expression.ty),
                         self.ty(&field.ty)
                     ));
@@ -4572,8 +4573,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Field(record, index) => {
                 let value = self.expression(record);
+                let slot = self.field_slot(&record.ty, *index);
                 let field = self.value(format!(
-                    "extractvalue {} {value}, {index}",
+                    "extractvalue {} {value}, {slot}",
                     self.ty(&record.ty)
                 ));
                 if record.ty.has_user_drop(&self.module.types()) {
@@ -4590,7 +4592,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 if record.ty.needs_drop(&self.module.types()) {
                     let remainder = self.value(format!(
-                        "insertvalue {} {value}, {} zeroinitializer, {index}",
+                        "insertvalue {} {value}, {} zeroinitializer, {slot}",
                         self.ty(&record.ty),
                         self.ty(&expression.ty)
                     ));
@@ -4760,8 +4762,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Dereference(value) => self.expression_mode(value, false),
             TypedExprKind::Field(value, index) => {
                 let slot = self.place(value);
+                let position = self.field_slot(&value.ty, *index);
                 self.value(format!(
-                    "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {index}",
+                    "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {position}",
                     self.ty(&value.ty)
                 ))
             }
@@ -4839,8 +4842,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let fields = self.module.types().record_fields(*id, arguments);
                 for (index, field) in fields.iter().enumerate() {
                     if field.needs_drop(&self.module.types()) {
+                        let slot = self.field_slot(ty, index);
                         let extracted =
-                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                            self.value(format!("extractvalue {} {value}, {slot}", self.ty(ty)));
                         self.drop_value(field, &extracted);
                     }
                 }
@@ -5001,11 +5005,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let fields = self.module.types().record_fields(*id, arguments);
                 for (index, field) in fields.iter().enumerate() {
                     if field.needs_drop(&self.module.types()) {
+                        let slot = self.field_slot(ty, index);
                         let field_value =
-                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                            self.value(format!("extractvalue {} {value}, {slot}", self.ty(ty)));
                         let copy = self.clone_value(field, &field_value);
                         result = self.value(format!(
-                            "insertvalue {} {result}, {} {copy}, {index}",
+                            "insertvalue {} {result}, {} {copy}, {slot}",
                             self.ty(ty),
                             self.ty(field)
                         ));

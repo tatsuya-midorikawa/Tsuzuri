@@ -191,12 +191,10 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
         Type::Tuple(elements) => {
             aggregate(&mut elements.iter().map(|ty| layout_bound(ty, module, lower)))
         }
-        Type::Record(id, arguments) => aggregate(
-            &mut module
-                .types()
-                .record_fields(*id, arguments)
+        Type::Record(..) => aggregate(
+            &mut physical_fields(ty, module)
                 .iter()
-                .map(|ty| layout_bound(ty, module, lower))
+                .map(|(_, field)| layout_bound(field, module, lower))
                 .chain(drop_flag(ty, module).map(|_| (1, 1))),
         ),
         Type::Union(..) if module.types().recursive(ty) => {
@@ -354,7 +352,55 @@ pub(crate) fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
     }
 }
 
+/// The position in the LLVM type of each logical field of the record `id` at `arguments`:
+/// `slots[index]` is where field `index` lives (PM01 D7). `None` keeps the declared order. Every
+/// reader and writer of a field goes through `field_slot`, so the layout of a record is decided
+/// here and nowhere else.
+pub(crate) fn record_slots(
+    _id: usize,
+    _arguments: &[Type],
+    _module: &CheckedModule,
+) -> Option<Vec<usize>> {
+    None
+}
+
+/// The position in the LLVM type of the field `index` of the record `id` at `arguments`.
+pub(crate) fn field_slot(
+    id: usize,
+    arguments: &[Type],
+    module: &CheckedModule,
+    index: usize,
+) -> usize {
+    record_slots(id, arguments, module).map_or(index, |slots| slots[index])
+}
+
+/// The fields of the record type `ty` as `(logical index, type)`, in the order of its LLVM type.
+pub(super) fn physical_fields(ty: &Type, module: &CheckedModule) -> Vec<(usize, Type)> {
+    let Type::Record(id, arguments) = ty else {
+        unreachable!("only a record has fields in its type")
+    };
+    let mut fields: Vec<_> = module
+        .types()
+        .record_fields(*id, arguments)
+        .into_iter()
+        .enumerate()
+        .collect();
+    if let Some(slots) = record_slots(*id, arguments, module) {
+        fields.sort_by_key(|&(index, _)| slots[index]);
+    }
+    fields
+}
+
 impl FunctionEmitter<'_, '_> {
+    /// The position in the LLVM type of `ty` of its field `index`: a record may keep its fields
+    /// out of order, while a tuple and every other aggregate keeps them as declared.
+    pub(super) fn field_slot(&self, ty: &Type, index: usize) -> usize {
+        match ty {
+            Type::Record(id, arguments) => field_slot(*id, arguments, self.module, index),
+            _ => index,
+        }
+    }
+
     pub(super) fn union_layout(&self, ty: &Type) -> UnionLayout {
         let Type::Union(id, arguments) = ty else {
             unreachable!("union layouts belong to union types")
