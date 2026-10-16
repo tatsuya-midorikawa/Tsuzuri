@@ -227,6 +227,7 @@ math の standalone 化、正確な参照記号集合、同梱 object の照合�
 `src/cache.rs` が実際のツール・source・flags・CPU・environment を鍵に含め、検証した object を原子的に公開します。
 runtime identity はコンパイラ実行ファイル自体に依存せず、選択した UTF module の IR と `cpu.c` の実際の内容を含みます。配布 manifest はコンパイラ自身と runtime object 群を除く同梱リソースの fingerprint も保持し、実行時には manifest の一覧だけに頼らず同梱ディレクトリ上の全ファイルを列挙して内容を検証します（`src/bundle_identity.rs`。ハッシュは並列）。この結果は同梱 Clang・Zig の SHA-256 とランチャーの `--version` の出力と合わせて `<cache>/bundle/` に控え、配布物の署名（最上位と `bin`・`lib`・`zig` 直下のファイル、`manifest.json`、2 階層目までのディレクトリの、大きさ・更新時刻・状態変更時刻・inode）が変わらない間は再利用するので、毎ビルドの全ファイル読み込み（約 760 MB）はありません。ツールの入れ替え、署名の対象のディレクトリへのファイルの追加・削除、配布物の展開し直しは署名を変え、次のビルドが全体を検証し直します。SDK／header などの変更・追加・削除があれば配布 object を拒否し、runtime cache も新しい内容 fingerprint に切り替わります。署名が見ないのは、それ以外の場所での既存ファイルのその場の書き換えと、3 階層目より下の追加・削除で、`<cache>/bundle/` を消すと検証し直します。`TSUZURI_LLVM_CLANG`／`TSUZURI_ZIG` の上書きと配布物でないツールは控えを使わず、従来どおり毎回読みます。
 選択順はリソースとツールが一致する配布 object、`<cache>/runtime/`、埋め込みソースからのコンパイルです。
+WASM threads の `task-wasm-threads.c`、WASI ホストの `os-wasi.c`（と `arguments.c`）、`-g` の実行ファイルのスタック検査 `stack.c` は配布 object を持たず、`<cache>/runtime/`（単位は `wasm-threads`・`wasi`・`stack-debug`。キーは他の runtime object と同じ）と埋め込みソースからのコンパイルだけを使います。
 配布物には numeric／math × native・scalar WASM・SIMD WASM × O0〜O3 の 24 個と、
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
 ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。

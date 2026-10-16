@@ -1,6 +1,8 @@
 // Differential check between two Tsuzuri compilers for PB03 (the handoff to LLVM): every example, fixture
 // and benchmark project is built by both compilers in several modes.
-//   - `--emit header|llvm|object|wasm|shared` outputs must be byte identical (diagnostics too, for failures);
+//   - `--emit header|llvm|object|wasm|shared` outputs must be byte identical (diagnostics too, for failures), and so
+//     must the WebAssembly of the modes with the cache on (`wasmt`: threads, `wasi`: the WASI host), which compile
+//     their C runtimes through the runtime cache;
 //   - native executables (`-O0`, `-O3`, `-g`) must behave identically (exit status, stdout, stderr), and the IR
 //     handed to Clang may only lose functions (a pruned executable defines a subset of the before's functions).
 // Usage: node benchmarks/check-handoff-equivalence.mjs --before <compiler> --after <compiler> --out <dir>
@@ -15,8 +17,10 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "Usage: node benchmarks/check-handoff-equivalence.mjs --before <compiler> --after <compiler> --out <dir> "
-  + "[--quick] [--only a,b] [--modes header,llvm,object,wasm,shared,exe0,exe3,exeg] [--jobs N] [--timeout ms]";
-const ALL_MODES = ["header", "llvm", "object", "wasm", "shared", "exe0", "exe3", "exeg"];
+  + "[--quick] [--only a,b] [--modes header,llvm,object,wasm,shared,wasmt,wasi,exe0,exe3,exeg,exegc] [--jobs N] [--timeout ms]";
+const ALL_MODES = ["header", "llvm", "object", "wasm", "shared", "wasmt", "wasi", "exe0", "exe3", "exeg", "exegc"];
+// The modes that run with the build cache on, each in a cache directory of its own.
+const CACHED_MODES = new Set(["wasmt", "wasi", "exegc"]);
 const QUICK = ["examples/hello", "examples/tasks", "tests/fixtures/dyn_dispatch", "tests/fixtures/cpu_versions",
   "tests/fixtures/debug_info", "llvm_handoff/prune", "llvm_handoff/reach"];
 const sharedExtension = platform() === "darwin" ? "dylib" : "so";
@@ -129,11 +133,14 @@ function modeArguments(mode, project, output) {
     case "exe0": return [...base, "-O0", "--cpu", "generic", "--no-cache", "-o", output];
     case "exe3": return [...base, "-O3", "--cpu", "generic", "--no-cache", "-o", output];
     case "exeg": return [...base, "-O0", "-g", "--cpu", "generic", "--no-cache", "-o", output];
+    case "wasmt": return [...base, "--target", "wasm32", "--wasm-feature", "threads", "-O0", "-o", output];
+    case "wasi": return [...base, "--target", "wasm32", "--wasm-host", "wasi", "-O0", "-o", output];
+    case "exegc": return [...base, "-O0", "-g", "--cpu", "generic", "-o", output];
     default: throw new Error(mode);
   }
 }
 
-const extension = (mode) => ({ header: "h", llvm: "ll", object: "o", wasm: "wasm", shared: sharedExtension }[mode] ?? "exe");
+const extension = (mode) => ({ header: "h", llvm: "ll", object: "o", wasm: "wasm", wasmt: "wasm", wasi: "wasm", shared: sharedExtension }[mode] ?? "exe");
 
 // A wrapper that keeps the IR that reaches Clang (module.ll) of a build, and runs the real Clang.
 function writeSpy(directory) {
@@ -155,7 +162,10 @@ process.exitCode = result.status ?? 1;
 export function normalize(text, replacements) {
   let result = text;
   for (const [from, to] of replacements) result = result.split(from).join(to);
-  return result.replace(/\.tsuzuri-\d+-\d+/g, ".tsuzuri-N").replace(/tsuzuri-clang-\d+-\d+/g, "tsuzuri-clang-N");
+  // A Homebrew `wasm-ld` (a link to the multi-call `lld`) made the compilers before PB03 WP-F disable the cache of
+  // a WebAssembly build and say so; the fix removes the message and is the only intended change of a diagnostic.
+  return result.replace(/\.tsuzuri-\d+-\d+/g, ".tsuzuri-N").replace(/tsuzuri-clang-\d+-\d+/g, "tsuzuri-clang-N")
+    .replace(/^build cache disabled: tool version query failed\n/gm, "");
 }
 
 async function execute(label, compiler, project, mode, context) {
@@ -166,6 +176,7 @@ async function execute(label, compiler, project, mode, context) {
   const ir = join(directory, "module.ll.copy");
   const env = { ...process.env, TMPDIR: directory, HANDOFF_IR_COPY: ir,
     HANDOFF_REAL_CLANG: process.env.TSUZURI_CLANG ?? "clang" };
+  if (CACHED_MODES.has(mode)) env.TSUZURI_CACHE_DIR = join(directory, "cache");
   const spying = mode.startsWith("exe") || mode === "object";
   if (spying && platform() !== "win32") env.TSUZURI_CLANG = context.spy;
   const replacements = [[directory, "<WORK>"], [join(root, project), "<PROJECT>"], [root, "<ROOT>"]];

@@ -3415,6 +3415,7 @@ fn build_complete(
                         &args,
                         &temporary.path,
                         clang_identity.as_ref(),
+                        RUNTIME_OBJECT_HINT,
                         &mut messages,
                     )?);
                 }
@@ -3514,6 +3515,7 @@ fn build_complete(
                     &args,
                     &temporary.path,
                     clang_identity.as_ref(),
+                    RUNTIME_OBJECT_HINT,
                     &mut messages,
                 )?;
                 fs::rename(&cached, &runtime_object)
@@ -3551,7 +3553,7 @@ fn build_complete(
             }
         }
         let stack_source = temporary.path.join("stack.c");
-        let stack_object = temporary.path.join("stack.o");
+        let mut stack_object = temporary.path.join("stack.o");
         if stack_runtime {
             fs::write(&stack_source, include_str!("runtime/stack.c"))
                 .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
@@ -3562,20 +3564,27 @@ fn build_complete(
             runtime
                 .args(["-std=c11", "-c", "-O1"])
                 .args(compile_args(platform))
-                .args(sdk_args(platform)?)
-                .arg(&stack_source)
-                .arg("-o")
-                .arg(&stack_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    &cross_hint(
-                        platform,
-                        "native runtime requires Clang and the platform C/OS SDK headers",
-                    ),
-                )?,
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
             );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                stack_object = compile_runtime_object(
+                    "stack-debug",
+                    include_str!("runtime/stack.c"),
+                    "stack.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                runtime.arg(&stack_source).arg("-o").arg(&stack_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         let wasi_object = temporary.path.join("wasi.o");
@@ -3590,7 +3599,7 @@ fn build_complete(
             } else {
                 include_str!("runtime/os-wasi.c").to_owned()
             };
-            fs::write(&source, text)
+            fs::write(&source, &text)
                 .map_err(|error| io_error("write WASI runtime", &source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime.args([
@@ -3608,18 +3617,26 @@ fn build_complete(
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
                 }
             }
-            runtime
-                .arg(format!("-O{}", options.optimization))
-                .arg(&source)
-                .arg("-o")
-                .arg(&wasi_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "the WASI host needs Clang with WebAssembly support",
-                )?,
-            );
+            runtime.arg(format!("-O{}", options.optimization));
+            let hint = "the WASI host needs Clang with WebAssembly support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasi",
+                    &text,
+                    "wasi.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                fs::rename(&cached, &wasi_object)
+                    .map_err(|error| io_error("stage WASI runtime", &wasi_object, error))?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&wasi_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
@@ -3637,17 +3654,27 @@ fn build_complete(
                     "-mbulk-memory",
                     "-c",
                 ])
-                .arg(format!("-O{}", options.optimization))
-                .arg(&source)
-                .arg("-o")
-                .arg(&threads_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "WASM threads require Clang atomics and bulk-memory support",
-                )?,
-            );
+                .arg(format!("-O{}", options.optimization));
+            let hint = "WASM threads require Clang atomics and bulk-memory support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasm-threads",
+                    include_str!("runtime/task-wasm-threads.c"),
+                    "threads.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                fs::rename(&cached, &threads_object).map_err(|error| {
+                    io_error("stage WASM thread runtime", &threads_object, error)
+                })?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&threads_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         clang
             .arg("-x")
@@ -4756,6 +4783,13 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
     }
 }
 
+/// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
+const RUNTIME_OBJECT_HINT: &str =
+    "runtime objects require Clang with support for the selected target";
+
+/// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
+/// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
+#[allow(clippy::too_many_arguments)]
 fn compile_runtime_object(
     unit: &str,
     source: &str,
@@ -4763,6 +4797,7 @@ fn compile_runtime_object(
     args: &[OsString],
     directory: &Path,
     identity: Option<&crate::cache::ToolIdentity>,
+    hint: &str,
     messages: &mut Vec<String>,
 ) -> Result<PathBuf, Diagnostic> {
     let output = directory.join(format!("{unit}.o"));
@@ -4819,10 +4854,7 @@ fn compile_runtime_object(
         .args(args)
         .args(["-c", input, "-o"])
         .arg(format!("{unit}.o"));
-    let message = run_tool(
-        &mut command,
-        "runtime objects require Clang with support for the selected target",
-    )?;
+    let message = run_tool(&mut command, hint)?;
     collect_message(messages, message.clone());
     if let Some((cache, key)) = cache {
         let paths = std::collections::BTreeMap::from([("artifact".to_owned(), output.clone())]);
