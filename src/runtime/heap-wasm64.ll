@@ -8,6 +8,7 @@
 declare i64 @llvm.wasm.memory.size.i64(i32)
 declare i64 @llvm.wasm.memory.grow.i64(i32, i64)
 declare i64 @llvm.cttz.i64(i64, i1)
+declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 
 ; heap-wasm.ll for 64-bit memory, with words of 8 bytes. A block is a 16-byte header and a payload, both
 ; 16-byte aligned, with a capacity that is a multiple of 16 and at least 32 (the 16 bytes of the header
@@ -29,7 +30,8 @@ declare i64 @llvm.cttz.i64(i64, i1)
 ; neighbours. @tz.heap.fastmask has a bit for every list of @tz.heap.fast that is not empty and
 ; maybe for some that are: a pop does not clear the bit, a flush does.
 ; A block at the end of the heap grows in place (@tz.realloc), and one that touches the end when it is
-; released is given back by lowering the end, so a heap that is emptied again is empty.
+; released is given back by lowering the end, so a heap that is emptied again is empty. A block that
+; has to move is copied with llvm.memcpy, which is memory.copy: every WASM build enables bulk memory.
 ; Invariants: two free blocks are never adjacent (a release merges both neighbours), no free block
 ; touches @tz.heap.end, PREV_FREE is set exactly when the block before is free (a block in
 ; @tz.heap.fast is not free), and every free block is in the list of its capacity once.
@@ -575,19 +577,7 @@ fallback:
   %replacement = call ptr @tz.alloc(i64 %new_size)
   %smaller = icmp ult i64 %old_size, %new_size
   %bytes = select i1 %smaller, i64 %old_size, i64 %new_size
-  br label %copy_test
-copy_test:
-  %index = phi i64 [ 0, %fallback ], [ %next_index, %copy ]
-  %more = icmp ult i64 %index, %bytes
-  br i1 %more, label %copy, label %copied
-copy:
-  %source = getelementptr i8, ptr %old, i64 %index
-  %target = getelementptr i8, ptr %replacement, i64 %index
-  %byte = load i8, ptr %source
-  store i8 %byte, ptr %target
-  %next_index = add i64 %index, 1
-  br label %copy_test
-copied:
+  call void @llvm.memcpy.p0.p0.i64(ptr %replacement, ptr %old, i64 %bytes, i1 false)
   call void @tz.free(ptr %old)
   ret ptr %replacement
 fail:

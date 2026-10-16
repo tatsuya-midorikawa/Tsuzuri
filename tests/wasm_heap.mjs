@@ -67,7 +67,7 @@ function threadsLiveBytes() {
 
 // Compiles the heap of `target` with the wrappers (and `extra` IR that may read the heap's own
 // globals) and links a module that exports allocate, resize, release, __heap_base and memory.
-export function buildHeap({ target = "wasm32", optimization = 3, directory, extra = "", exports = [], bulkMemory = false }) {
+export function buildHeap({ target = "wasm32", optimization = 3, directory, extra = "", exports = [], bulkMemory = true }) {
   const heap = readFileSync(join(root, "src/runtime", target === "wasm64" ? "heap-wasm64.ll" : "heap-wasm.ll"), "utf8");
   const stem = join(directory, `heap-${target}-${optimization}`);
   const threads = target === "wasm32" ? threadsLiveBytes() : "";

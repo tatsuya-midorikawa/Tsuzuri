@@ -2315,7 +2315,7 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
 `);
     for (const optimization of [0, 3]) {
       const object = join(directory, `realloc-${optimization}.o`), output = join(directory, `realloc-${optimization}.wasm`);
-      execute(clang, ["--target=wasm32", `-O${optimization}`, "-Wno-override-module", "-c", input, "-o", object]);
+      execute(clang, ["--target=wasm32", "-mbulk-memory", `-O${optimization}`, "-Wno-override-module", "-c", input, "-o", object]);
       execute(process.env.TSUZURI_WASM_LD ?? "wasm-ld", [object, "--no-entry", "--export=allocate", "--export=resize", "--export=release", "--export-memory", "--max-memory=16777216", "-o", output]);
       const module = new WebAssembly.Module(readFileSync(output));
       assert.deepEqual(WebAssembly.Module.imports(module), []);
