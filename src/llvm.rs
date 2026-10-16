@@ -30,7 +30,7 @@ mod facts;
 mod frame;
 #[path = "llvm_return_slot.rs"]
 mod return_slot;
-use call_specialization::{ClosureTarget, Specialization, Specializations};
+use call_specialization::{ClosureTarget, Drain, Specialization, Specializations};
 use frame::Frame;
 
 /// The builtin instances that emitted code calls, with their concrete
@@ -929,7 +929,7 @@ pub fn emit_bench_runner_with(
     .map(|(ir, _)| ir)
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Instrumentation<'a> {
     runtime_objects: bool,
     wasm_simd128: bool,
@@ -957,6 +957,48 @@ fn emit_program(
     tests: Option<&[usize]>,
     debug_output: bool,
     instrumentation: Instrumentation<'_>,
+) -> Result<(String, Option<traps::Marks>), Diagnostic> {
+    let mut exhausted = false;
+    let first = emit_program_in(
+        module,
+        entry,
+        wasm,
+        tests,
+        debug_output,
+        instrumentation,
+        Drain::InRequestOrder,
+        &mut exhausted,
+    )?;
+    if !exhausted {
+        return Ok(first);
+    }
+    // The worker budget ran out. Request order spreads it over every chain and cuts each of them
+    // part-way. This pass emits each function right before the functions it names and the workers
+    // of each function right after it, so the chains of as many functions as the budget allows are
+    // complete and the others keep the generic path.
+    emit_program_in(
+        module,
+        entry,
+        wasm,
+        tests,
+        debug_output,
+        instrumentation,
+        Drain::DepthFirst,
+        &mut exhausted,
+    )
+}
+
+/// Emits the program once. `exhausted` tells whether a worker request found the budget spent.
+#[allow(clippy::too_many_arguments)]
+fn emit_program_in(
+    module: &CheckedModule,
+    entry: Entry,
+    wasm: bool,
+    tests: Option<&[usize]>,
+    debug_output: bool,
+    instrumentation: Instrumentation<'_>,
+    drain: Drain,
+    exhausted: &mut bool,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
     if instrumentation.runtime_objects
         && (instrumentation.traps
@@ -1143,7 +1185,12 @@ fn emit_program(
         ));
     }
     let mut specializations = Specializations::new(module);
-    for (id, function) in module.functions.iter().enumerate() {
+    let order = match drain {
+        Drain::InRequestOrder => (0..module.functions.len()).collect(),
+        Drain::DepthFirst => call_specialization::reference_order(module),
+    };
+    for id in order {
+        let function = &module.functions[id];
         // A callback extern has no function body: its calls pass the host the callback wrappers directly.
         if !emitted[id]
             || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks)
@@ -1199,6 +1246,17 @@ fn emit_program(
         if let Some(marks) = &mut globals.traps {
             marks.source(&output[start..], function);
         }
+        if drain == Drain::DepthFirst {
+            call_specialization::emit_workers(
+                module,
+                &mut builtins,
+                &mut intrinsics,
+                &mut globals,
+                &mut specializations,
+                drain,
+                &mut output,
+            );
+        }
     }
     output.push_str(&emit_dyn_tables(
         module,
@@ -1208,25 +1266,16 @@ fn emit_program(
         &mut globals,
         &mut specializations,
     ));
-    let mut next = 0;
-    while let Some(key) = specializations.requests.get(next).cloned() {
-        let start = output.len();
-        let emitter = FunctionEmitter::new(
-            module,
-            &module.functions[key.function],
-            key.function,
-            &mut builtins,
-            &mut intrinsics,
-            &mut globals,
-            &mut specializations,
-        )
-        .specialized(next, &key);
-        output.push_str(&emitter.emit());
-        if let Some(marks) = &mut globals.traps {
-            marks.source(&output[start..], &module.functions[key.function]);
-        }
-        next += 1;
-    }
+    call_specialization::emit_workers(
+        module,
+        &mut builtins,
+        &mut intrinsics,
+        &mut globals,
+        &mut specializations,
+        drain,
+        &mut output,
+    );
+    *exhausted = specializations.exhausted();
     // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
     for id in std::mem::take(&mut globals.callbacks) {
         let function = &module.functions[id];

@@ -5808,6 +5808,43 @@ native と wasm32 の `-O0` IR で固定します。
   循環の関数へ転送する exit を含む関数（`if flag then even_m x else None`）は全 exit が平文の `ret` のままで、呼ぶ側は 22 行から変わりません。
   一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
 
+### 特殊化の予算を使い切る連鎖（Phase 2c）
+
+`let!` が 2 つの Maybe の連鎖 1 つは worker を 8 個要求します（上の `0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`）。予算は 1,024 個なので、連鎖が約 128 個を超える program は予算を使い切ります。
+以前は要求された順に worker を出力したため、使い切ると、すべての連鎖が途中で打ち切られました。打ち切られた連鎖は、worker から通常の関数へ閉包の値を渡す形（部分的な特殊化）になり、`-O3` でも間接呼び出しが残りました。
+今は、予算内の program は以前と同じ要求順で出力します（corpus の IR が native 110 件・wasm32 105 件とも byte 単位で同じです）。予算を使い切った program だけ、2 回目の出力で、
+関数と、その関数が名前で参照する関数（束縛ごとの lift 済みラムダなど）を深さ優先の順に出し、各関数の worker をその直後に出します。このため、予算で完成できる分の連鎖は全体が直接呼び出しになり、残りは最初から通常の経路になります。
+予算の 1,024 個、予算を使い切ったときの通常の経路、`@tz.specialized.` の定義数（1,024）は変わりません。
+
+```sh
+W=target/perf/PR03-chains && mkdir -p $W/proj && node -e '
+const n = Number(process.argv[1]);
+const lines = ["def mix :: i64 -> i64 -> i64", "fn mix value salt = (value ^ (Bits.ushr value 13)) * 6364136223846793005 + salt", "", "def pick :: i64 -> i64 -> Maybe<i64>", "fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)", ""];
+for (let i = 0; i < n; i++) lines.push(`def step${i} :: i64 -> i64 -> i64`, `fn step${i} state salt =`, "    Maybe.default_value (state ^ salt) (Maybe {", `        let! a = pick (state + ${i}) salt`, "        let! b = pick a salt", "        return mix b salt", "    })", "", `export def run${i} :: i64 -> i64 -> i64`, `fn run${i} state salt = step${i} state salt`, "");
+console.log(lines.join("\n"));' 300 > $W/proj/Main.tz
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+target/release/tsuzuri build $W/proj --emit llvm -o $W/b.ll && $C -S -emit-llvm $W/b.ll -o $W/b.opt.ll && $C -c $W/b.ll -o $W/b.o
+grep -c '^define internal .*@tz\.specialized\.' $W/b.ll
+awk '/^define .*@tz_run/{on=1;hit=0} on&&/call [^@]*%/{hit=1} /^}/{if(on&&hit)n++; on=0} END{print n+0}' $W/b.opt.ll
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/b.o | awk '$1=="__text"{print $2}'
+```
+
+3 行の出力は、worker の数、間接呼び出しを持つ `tz_run*` の数（`-O3` の IR）、`__text` の bytes です。N は第 1 引数です。基準は `6d15b437`、Apple clang 21.0.0、Apple M1 Max です。
+
+| 連鎖の数 N | worker | 間接呼び出しを持つ export（前→後） | `__text`（前→後） |
+| --- | --- | --- | --- |
+| 120 | 961 | 0→0 | 7,616→7,616（出力が同じ） |
+| 140 | 1,024 | 0→0 | 8,884→9,236 |
+| 200 | 1,024 | 89→0 | 20,940→14,784 |
+| 300 | 1,024 | 300→0 | 46,804→24,036 |
+
+- N=300 の export の本体は、前は 26〜28 行で、すべてに間接呼び出し（閉包の関数 pointer を呼ぶ `tail call`）が 1 つあり、`-O3` の IR の関数定義は 602 個でした。
+  後は、完成した連鎖 128 個が 15〜17 行で呼び出しを持たず、残りの 172 個が 28〜29 行（呼び出しは `llvm.trap` だけ）で、関数定義は 300 個です。
+- 閉包が束縛値だけを捕捉する形（`pick (state + i) 1`・`pick a 2`。lift 済みラムダは通常の関数として呼ばれる）では、前も間接呼び出しは残らず、差は小さく、`__text` は N=300 で 21,596 から 17,508、N=600 で 43,196 から 39,108 bytes です。
+- 300 個の export を 1 回ずつ呼ぶ C の driver を 2,000,000 回繰り返した user CPU 時間は、N=300 の上の形で 1.71 秒から 0.91 秒（5 回の交互実行の中央値、0.88〜0.93）、
+  束縛値だけを捕捉する形で 0.76 秒から 0.65 秒です。共有 machine（負荷平均 60〜90）での値で、どちらの出力も同じです。
+- 予算を使い切った program は 2 回出力するので、`tsuzuri build --emit llvm` が長くなります（N=300 で user CPU 0.25 秒から 0.35 秒、LTO なしの release build の値）。予算内の program の時間は変わりません。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

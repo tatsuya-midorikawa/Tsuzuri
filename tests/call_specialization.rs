@@ -392,3 +392,64 @@ fn tail_forwarding_to_a_cycle_keeps_every_ret() {
         );
     }
 }
+
+/// `chains` independent functions, each with its own two-`let!` Maybe chain (about 8 workers each).
+fn chain_source(chains: usize) -> String {
+    let mut source = String::from(
+        "def pick :: i64 -> i64 -> Maybe<i64>
+         fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)\n",
+    );
+    for index in 0..chains {
+        writeln!(
+            source,
+            "def step{index} :: i64 -> i64
+             fn step{index} state = Maybe.default_value (-1) (Maybe {{ let! a = pick (state + {index}) 1; let! b = pick a 2; return a + b }})"
+        )
+        .unwrap();
+    }
+    source
+}
+
+/// The ids of the worker definitions, in the order the IR defines them.
+fn worker_ids(ir: &str) -> Vec<usize> {
+    ir.lines()
+        .filter(|line| line.starts_with("define "))
+        .filter_map(|line| line.split_once("@tz.specialized."))
+        .map(|(_, rest)| rest.split('(').next().unwrap().parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn exhausted_worker_budget_completes_chains_instead_of_cutting_all_of_them() {
+    // 600 chains need far more than the 1,024 workers of the budget. Emitting the requests in order
+    // cut every chain part-way, which left an indirect call in each of them; the chains of the first
+    // functions are now complete and the later ones keep the generic path.
+    let module = analyze(&chain_source(600)).unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(worker_ids(&ir).len(), 1024, "wasm={wasm}");
+        for index in [0, 50] {
+            let root = format!("tz.fn.Main.step{index}");
+            assert!(body(&ir, &root).contains("@tz.specialized."), "{index}");
+            reachable_workers(&ir, &[&root]);
+        }
+        assert!(
+            !body(&ir, "tz.fn.Main.step599").contains("@tz.specialized."),
+            "wasm={wasm}"
+        );
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+        );
+    }
+}
+
+#[test]
+fn workers_within_the_budget_are_emitted_in_request_order() {
+    let module = analyze(&chain_source(40)).unwrap();
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    let ids = worker_ids(&ir);
+    assert!(ids.len() > 200 && ids.len() < 1024, "{}", ids.len());
+    assert!(ids.windows(2).all(|pair| pair[0] + 1 == pair[1]), "{ids:?}");
+    reachable_workers(&ir, &["tz.fn.Main.step0", "tz.fn.Main.step39"]);
+}

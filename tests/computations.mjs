@@ -302,6 +302,49 @@ budget 1
     assert.equal(instance.exports.tz_budget(1n), expectedBudget);
   }
 
+  // PR03: 300 two-`let!` Maybe chains need about 2,400 workers, more than the budget of 1,024. The chains of the
+  // first functions are specialized completely and the rest keep the generic path; every result stays the same.
+  const chainsProject = join(temporary, "chains");
+  mkdirSync(chainsProject);
+  const chainCount = 300;
+  const chainSource = `def pick :: i64 -> i64 -> Maybe<i64>
+fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)
+${Array.from({ length: chainCount }, (_, index) => `def step${index} :: i64 -> i64 -> i64
+fn step${index} state salt = Maybe.default_value (-1) (Maybe { let! a = pick (state + ${index}) salt; let! b = pick a salt; return a + b })`).join("\n")}
+export def chains :: i64 -> i64
+fn chains state = {
+    let mut total = 0;
+    ${Array.from({ length: chainCount }, (_, index) => `total = total + step${index} state ${index % 5 + 1};`).join("\n    ")}
+    total
+}
+chains 5
+`;
+  writeFileSync(join(chainsProject, "Main.tz"), chainSource);
+  const chainsIr = join(temporary, "chains.ll");
+  cli(["build", chainsProject, "--emit", "llvm", "-o", chainsIr]);
+  assert.equal(readFileSync(chainsIr, "utf8").match(/^define internal .*@tz\.specialized\./gm).length, 1024, "the chains use the whole worker budget");
+  // The reference follows the source: a missing `pick` result makes the whole chain -1.
+  const chainTotal = (state) => {
+    const pick = (value, salt) => (value & 7n) === 0n ? null : value ^ salt;
+    let total = 0n;
+    for (let index = 0; index < chainCount; index++) {
+      const salt = BigInt(index % 5 + 1);
+      const first = pick(state + BigInt(index), salt);
+      const second = first === null ? null : pick(first, salt);
+      total += second === null ? -1n : first + second;
+    }
+    return total;
+  };
+  for (const optimization of [0, 3]) {
+    assert.equal(cli(["run", chainsProject, `-O${optimization}`]).stdout, `${chainTotal(5n)}\n`);
+    const wasm = join(temporary, `chains-${optimization}.wasm`);
+    cli(["build", chainsProject, "--target", "wasm32", `-O${optimization}`, "-o", wasm]);
+    const { instance } = await WebAssembly.instantiate(readFileSync(wasm));
+    for (const state of [0n, 5n, 1000n]) {
+      assert.equal(instance.exports.tz_chains(state), chainTotal(state), `chains(${state}) at -O${optimization}`);
+    }
+  }
+
   const largeProject = join(temporary, "large");
   mkdirSync(largeProject);
   const benchmark = join(root, "benchmarks/computations");
