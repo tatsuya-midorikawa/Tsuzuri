@@ -59,7 +59,8 @@ loop:
   br i1 %done, label %exit, label %body
 body:
   %pointer = inttoptr i32 %block to ptr
-  %capacity = load i32, ptr %pointer
+  %flags = load i32, ptr %pointer
+  %capacity = and i32 %flags, -16
   %next_pointer = getelementptr i8, ptr %pointer, i32 4
   %next = load i32, ptr %next_pointer
   %remaining = sub i32 %live, %capacity
