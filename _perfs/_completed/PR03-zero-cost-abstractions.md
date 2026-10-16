@@ -8,7 +8,7 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PM06, PM02, B05 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 着手時に再検討（HEAD `6d15b437`。下の「着手時の再検討」） |
 | 承認 | 2026-10-16 の全フェーズ実装依頼で D3（Phase 3 の型付き IR での標準ビルダーの展開）を含む全 Phase を承認済み。D3 を入れるかどうかは証拠で決める（「着手時の再検討」の C6） |
 | 手本にする既存実装 | 既知の継続の worker: `src/call_specialization.rs` の `Specializations`（`new`・`can_borrow`・`request`）と `target`・`transparent`、`src/llvm.rs` の `FunctionEmitter::specialized`・`prepare_known_call`・`prepare_borrowed_call`・`borrowed_call` と `known_closures`。IR の到達可能な呼び出しの走査: `tests/call_specialization.rs` の `body` と `standard_maybe_result_continuations_use_allocation_free_workers`。match の生成: `src/llvm_control.rs` の `match_expression`、`src/llvm.rs` の `union_tag`・`union_layout`。計測: `benchmarks/run-computations.mjs`（tracked 実行ファイルの確保数、`--baseline`・`--artifacts`）と PX01 の `--metrics` |
@@ -587,15 +587,15 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
 
 ## 受け入れ条件
 
-- [ ] 8 対の分類の表（K1〜K4）と before の M1〜M6 が `docs/benchmarks.md` にあり、コマンド・日付・clang の版が付いている。
-- [ ] Phase 1 の Rust テストが通る。F1・F3 を行った場合はその Rust テストも通る。
-- [ ] F1 を行った場合、`tz_ce_std_option` の -O3 IR が G1 を満たす。満たさない場合は F1 が入っておらず、その旨が報告・記録されている。
-- [ ] M3（`alloc_calls`・`alloc_bytes`）と M6 が 8 種目・2 ファイルで before と同じ。M5 の増加が 5% 以内。
-- [ ] M4 を 3 回測り、before・after・広がりが記録されている。速さの主張は 3 回とも同じ向きのものだけ。
-- [ ] `tests/computations.mjs`・`tests/primitives.mjs`・`tests/control.mjs`・`tests/tasks.mjs` が native／WASM × `-O0`／`-O3` で通り、未解放 0。
-- [ ] 同じ入力から 2 回出した IR が一致する（native と wasm32）。
-- [ ] `cargo test --locked` が成功し、手順 1 の 5 テストが通る。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] 10 対の分類の表（K1〜K3 と差なし。K4 は存在しなかった）と before・after の M1〜M6 が `docs/benchmarks.md` にあり、コマンド・日付・clang の版が付いている。
+- [x] Phase 1 の Rust テストが通る。F1' のテストも通る（F3 は行わない）。
+- [x] F1' で、`tz_ce_std_option` の -O3 IR が `tz_direct_std_option` と同じ形（G1。22 行・`phi` 0・`select` 1）になった。
+- [x] M3（`alloc_calls`・`alloc_bytes`）と M6 が 10 種目で before と同じ。M5 は native が −1.5%、wasm32 が +0.5% で 5% 以内。
+- [x] M4 を 3 回測り、before・after・広がりを記録した。速さの主張は 3 回とも同じ向きの `std_option`（−14〜17%）だけ。
+- [x] `tests/computations.mjs`・`tests/primitives.mjs`・`tests/control.mjs`・`tests/tasks.mjs` が native／WASM × `-O0`／`-O3` で通り、未解放 0（release binary）。
+- [x] 同じ入力から 2 回出した IR が一致する（native と wasm32。`features.mjs` の全 suite と Rust の試験で確認）。
+- [x] `cargo test --locked` が成功し（1,314 passed）、手順 1 の 5 テストが通る。
+- [x] GUIDE §10 の完了の定義を満たす（`_perfs/README.md` の状態欄は統合担当が更新する）。
 
 ## 落とし穴
 
@@ -631,14 +631,14 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
   `ret` の出し方だけで済み、評価順序・所有権・trap に触れない。型付き IR の展開は局所 id の付け替えと drop の位置の再現が要り、費用が大きい。
 - 見直し提案: 起票時の既定案「簡約は型付き IR（LLVM 生成の前）で行い、LLVM の最適化に依存しない」を Phase 3 の方針として残し、Phase 2a を
   F1 にする。F1 は LLVM の SROA に依存するので、LLVM の版を上げたら手順 7 の確認をやり直す。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: F1' で確定（2026-10-16。`実装と検証`）
 
 ### D2: return slot の対象と名前
 
 - 決定: `FunctionEmitter::emit` が出す関数で、結果の union の `union_layout` が `UnionLayout::Enum` 以外のものだけ。名前は
   `%tz.return.slot`・`tz.return`・`%tz.return.value` に固定する。slot は drop の対象にしない。
 - 理由: `UnionLayout::Enum` は `i32` で集約値の `phi` が生じない。固定名は決定性を保ち、`%v<n>`・`b<n>` と衝突しない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 確定（2026-10-16。対象は非再帰・非 `Enum`・1 KiB 以下で、exit が 2 つ以上、全 exit が slot にできるもの。`実装と検証`）
 
 ### D3: 型付き IR での標準ビルダーの展開（Phase 3）
 
@@ -647,7 +647,7 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
   場合だけ、引数を左から順に一度ずつ評価して callee の本体を呼び出し元へ展開する。構築子が既知の `match` は選ばれた枝へ直接つなぐ。
   worker を作らないので予算を使わない。
 - 理由: 生成器に関数本体の展開の仕組みがなく、局所 id の対応・drop の位置・debug 情報の扱いを新しく作る必要がある（非自明な新しい仕組み）。
-- 状態: 要承認（承認前は Phase 3 に着手しない）
+- 状態: 取り下げ（2026-10-16。全 Phase の承認は得たが、F1'・C5 の後に `-O3` の差が残らず、`-O0` の差の数値と再開の条件を `docs/benchmarks.md` に記録した。`実装と検証`）
 
 ### D4: 呼び先が既知の関数値の呼び出し
 
@@ -655,7 +655,7 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
   `FunctionEmitter::bind` の不変な let 束縛の登録で直接呼び出しになる範囲を、`known_local_function_values_call_directly` で固定する。K3 が対象の
   種目に見つかったら記録だけにする。
 - 理由: 残る間接呼び出しは逃げる関数値・可変の局所・record の欄など、流れの解析なしには呼び先を決められないものである。表現は PM02 が持つ。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 確定（2026-10-16。新しい既知化は無し。`known_local_function_values_call_directly` で固定した）
 
 ### D5: 特殊化の予算とコードサイズ
 
@@ -663,13 +663,13 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
   コードサイズの歯止めは `benchmarks/computations` の -O3 object の `__text` の 5% で、超えたら停止する。
 - 理由: `specialization_budget_falls_back_instead_of_growing_unbounded` はちょうど 1,024 件を確かめている。F1・F3 は worker の数を変えない。
   数え方の変更は予算の意味（生成量の上限）を変える。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 確定（2026-10-16。上限・数え方は変えず、使い切ったときの出力順だけを C5 で直した）
 
 ### D6: `std_option_owned` の扱い
 
 - 決定: PX02 Phase 1a が完了するまで PR03 の比較表・M4 から外す。M3 は他の種目と同じく記録する。
 - 理由: 参照実装が確保しないため、時間の比が抽象化の費用を表さない（PX02 の `### std_option_owned の不一致`）。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 無効（2026-10-16。PX02 は完了していて、`std_option_owned` は全実装が確保する条件になった。10 対に含めて測った）
 
 ### D7: inline 属性
 
@@ -677,4 +677,117 @@ grep -c '^define internal .*@tz\.specialized\.' $W/after/comp.ll
   `@tz.apply.*` には付けない。
 - 理由: `alwaysinline` は -O0 でも展開してデバッグ時の段の対応とコードサイズを変える。HEAD では -O3 後に呼び出しが残らないので、
   属性は必要が確かめられたときだけ足す。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 確定（2026-10-16。`alwaysinline` は使わず、`inlinehint` は K2 が無いので付けない）
+
+## 実装と検証（2026-10-16）
+
+branch `perf/phase3/PR03`（基準 `70f7c803`。`6d15b437` に README の計画を足したもの）。環境は Apple M1 Max（arm64）・macOS・Apple clang 21.0.0（clang-2100.3.34.2）・
+rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `npx --package=node@24`）で、他の作業と共有する machine（負荷平均 7〜108）。IR・機械語・サイズは決定的で、時間は参考値。
+
+### 実装した Phase と段
+
+| 段 | コミット | 内容 |
+| --- | --- | --- |
+| C0 | `19d795d6` | 「着手時の再検討」（食い違いの表、F1'、C0〜C6、本文の読み替え） |
+| C1 | `e3419fcc` | Phase 1。`tests/call_specialization.rs` に `standard_let_chain_workers_are_direct_and_allocation_free`・`known_local_function_values_call_directly`、`docs/benchmarks.md` に数え方と 10 対の分類。IR は変えていない（corpus の `--emit llvm` が基準と byte 一致） |
+| C2 | `8fed1e16` | Phase 2a。F1'（`src/llvm_return_slot.rs`、`src/llvm.rs` に 6 行）。`tests/call_specialization.rs` に `union_results_return_through_one_slot`・`tail_forwarding_to_a_cycle_keeps_every_ret`、`--lib return_slot` に 3 件 |
+| C3 | `6cc47077` | E2E。`tests/features.mjs` の suite `return_slot`（`tests/fixtures/return_slot`、69 件）、`tests/computations.mjs` の native `-O2`／`-O3` の末尾呼び出し guard |
+| C5 | `80251cc1` | worker 予算の崖。予算を使い切った program だけ 2 回目の出力を深さ優先で行う（`src/call_specialization.rs`・`src/llvm.rs`・`src/llvm_escape.rs`）。`tests/call_specialization.rs` に 2 件、`tests/computations.mjs` に 300 連鎖の E2E |
+| C4・C6 | このコミット | 計測と文書（`docs/benchmarks.md`・`docs/language.md`・`README.md`・`computation-expressions.md`）、D3 の取り下げ、このチケットの完了 |
+
+### 実装した内容
+
+- F1'（`src/llvm_return_slot.rs`）。非再帰の `Type::Union`（`UnionLayout::Enum` を除く、`storage_layout` が 1 KiB 以下）を返す関数のうち、`ret` が 2 つ以上あり、どの `ret` も slot にできるものを、入口の `alloca`
+  への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える。`facts::apply` の後の post-pass で、`llvm.rs` の変更は module 宣言・欄 1 つ・初期化・2 つの呼び出しの 6 行だけ。
+  規則 D: 呼び出しの結果をそのまま返す exit は、現在の関数が循環にあるか、呼び先が循環にあるか、呼び先が不明なとき平文の `ret` を保ち、1 つでも保つ関数は全 exit を保つ（一部だけ slot にしても inline 後の `phi` が消えない）。
+  対象の判定は `uses_return_slot(ty, module)` の 1 関数で、PM01 の「niche は除く」はこの関数に足す。
+- worker 予算（C5）。`emit_program` は従来どおり出力し、`Specializations::exhausted()`（要求が予算に断られた）ときだけ、2 回目を `Drain::DepthFirst` で出力する。
+  関数を、その関数が名前で参照する関数（束縛ごとの lift 済みラムダ）が直後に続く順（`reference_order`）に出力し、各関数の worker を直後に出力する。予算内の program は byte 単位で以前と同じ。
+
+### 実装しなかったもの
+
+- F3（`inlinehint`）と手順 9、`specialized_workers_carry_only_inlinehint`: K2・K3 が 10 対のどれにも無く（呼び出しは malloc・free・memcpy・`llvm.trap` だけ）、不要。
+- D3（Phase 3）: 取り下げ。F1'・C5 の後、`-O3` に差は残らない（`std_option`・`std_option_owned` は direct と同じ形、予算内の連鎖は手書きと同じ大きさで同じ速さ）。残る差は `-O0`（`__text` 3.0 倍、時間 4.3 倍）と、
+  128 を超える連鎖の compile 時間で、数値・代案（`alwaysinline` の IR 書き換えと、手で展開した源泉の試作）・再開の条件は `docs/benchmarks.md` の `### 型付き IR での標準ビルダーの展開`。
+- `MAX_SPECIALIZATIONS` の引き上げ: しない（1,024 のまま）。`specialization_budget_falls_back_instead_of_growing_unbounded`・`honors_the_exact_specialization_limit` は変えていない。
+- 起票の F1（全 exit を slot にする）: 行わない。全 exit の slot 化は `parity_deep(1e8)` を native `-O2`／`-O3` で SIGSEGV にする（IR を書き換えて確かめた）。
+
+### 確認と結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`: 各段で問題なし。
+- GUIDE §3.1 の 4 件（`--test polymorphism bounds_type_growing_polymorphic_recursion`・`--lib bounds_recursive_and_flat_expression_depth`・`--test computations bounds_nested_builder_expansion_not_just_source_syntax`・
+  `honors_the_exact_specialization_limit`）: すべて `running 1 test`・1 passed。
+- `cargo test --locked --test call_specialization`: `running 12 tests`・12 passed（Phase 1 の 2 件・F1' の 2 件・予算の 2 件を含む）。`--lib`: 226 passed（`return_slot` の 3 件を含む）。
+  関連: `computations` 30、`coverage` 8、`debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10、`multiversion` 5、`storage` 21、`user_drop` 26 がすべて通過。
+- 全体 `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）: C2 の時点（`8fed1e16`）で 103 binary・1,312 passed・0 failed・1 ignored。C5 の後は、`--lib` 226、`call_specialization` 12、`computations` 30、`coverage` 8、
+  `debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10 が通過。最終のコード（C5 の実装に文書とチケットだけを足したもの）での
+  `cargo test --locked --no-fail-fast`（`with-lock.sh heavy` の 1 件、約 20 分）: 103 binary・1,314 passed・0 failed・1 ignored（`copy_inventory` の測定用）で終了コード 0。
+- E2E（native／WASM × `-O0`／`-O3`、`live == 0`、WASM は import なし）。`tests/features.mjs` の suite `return_slot` は 69 件で、IR の slot 数・`ret` 数・`tz.return` の有無も確かめる。
+  基準のコンパイラでは `make: one return slot 0 !== 1` で失敗する（実装の前に赤、後に緑）。`tests/computations.mjs` は `-O0`／`-O3` で 71 件と 3 trap、
+  native `-O2`／`-O3` の `parity_deep(1e8)`・`bind_deep(1e8)`（`1 7`）、300 連鎖の予算（worker の定義が 1,024 個、結果は JS の参照と一致、native と WASM の `-O0`／`-O3`）。
+  release binary（`target/release/tsuzuri`、thin LTO）での Node suite: `computations`・`e2e`・`primitives`・`control`・`tasks`・`user_drop`・`cpu_dispatch`・`json` は通過、`io` は通常の優先度で通過
+  （`nice 19` で負荷平均 180 のとき、prompt の表示待ちが timeout して失敗した）、`debug_info` は `TSUZURI_DWARFDUMP`・`TSUZURI_LLVM_LINK` を Homebrew の LLVM 21 に向けて通過（環境に無い tool で最初は失敗）。
+  `features.mjs` の 16 suite（`return_slot`・`unions`・`maybe_result`・`higher_kinds`・`last_use`・`local_recursion`・`computation_extensions`・`storage`・`param_facts`・`explicit_copy`・`consuming_update`・`exceptions`・
+  `recursive_types`・`typeclasses`・`deriving`・`stdlib`）は LTO なしの最終のコードで通過。`strings`・`examples`・全 `features.mjs` suite（14,175 件）・`async`（Node 24）も release binary で通過した
+  （`computations`〜`json` は、ロックの待ちが長かったため優先度を下げて 1 本ずつ、`strings` 以降は `with-lock.sh heavy` の 1 件で実行した）。
+- 全 corpus の IR の比較（`--emit llvm`、native と wasm32）。基準 → F1': native 109 件のうち 66 件が byte 一致、43 件は slot の書き換え（`ret` 1,857 個）を戻すと一致、不一致 0 件。
+  wasm32 104 件は 66 件が一致、38 件が戻すと一致（`ret` 1,586 個）で、不一致 0 件。skip の一覧も同じ。F1' → 最終: native 110 件・wasm32 105 件（`return_slot` を含む）がすべて byte 一致
+  （予算内の program は変わらない）。IR は native と wasm32 で 2 回出力して一致。
+- Windows の型検査（rustup の `stable`、`PATH` と `RUSTC` を rustup の toolchain に向けた）: `cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` とも通過。
+- 末尾呼び出しの guard の感度: 全 exit を slot にした IR（書き換え）で `parity_deep(1e8)` は `-O2`・`-O3` とも終了コード 139。F1' の IR は基準と byte 一致で、通る。基準のコンパイラは `-O0`・`-O1` で 139（docs が保証するのは自己末尾呼び出しだけ）。
+- 差分テスト（`tsuzuri-final-fast`、F1'・C5 を含む最終のコード）: `tests/last_use_fuzz.mjs`（300 件、seed 1000、深さ 4、native `-O0`／`-O3` の 600 実行、差 0）・
+  `tests/local_recursion_fuzz.mjs`（100 件が native `-O0`（3 件に 1 件は `-O3` も）で評価器と一致）。
+- `node scripts/check-docs.mjs _tsuzuri/language-reference/computation-expressions/computation-expressions.md`: 1 ページ・24 リンク・10 例・native 20 回（O0/O3）で通過。`docs/*.md`・`README.md` は `git diff --check`。
+
+### 計測（§14。`docs/benchmarks.md` の `## 抽象化コストの除去（PR03、2026-10-16）`）
+
+基準は `6d15b437` の release（`target/perf/PR03/tsuzuri-before`）、後は F1'・C5 を含む最終のコード。clang・環境は上のとおり。生データは `target/perf/PR03-after/`（git 管理外）。
+
+| 指標 | 前 | 後 | 備考 |
+| --- | --- | --- | --- |
+| M1/M2 `ce_std_option` の IR の行・union の `phi`・`switch` | 35・1・1 | 22・0・0 | `direct_std_option` は 22・0・0。`select` 1 個で同じ形 |
+| M2 `ce_std_option` の機械語（arm64／x86-64） | 34／38 | 24／56 | `direct` は 24／53。x86-64 の命令数は性能の代理にならない（HEAD の ce が direct より小さかった） |
+| M1/M2 `ce_std_option_owned` の IR の行・`phi`・`switch`（arm64） | 65・2・2（65） | 54・1・1（60） | `direct` は 54・1・1（60）で同じ形 |
+| 他の 8 対（bind・checked・delayed・array_for・array_bind・owned_capture・std_result・std_option_length） | — | 変化なし | IR・機械語とも byte 単位で同じ |
+| M3 確保（`allocations_at_size_64`、決定的） | bind・checked・delayed・std_option・std_result・std_option_length は 0 回、array_for・array_bind は 1 回 512 bytes、owned_capture は 1 回 2,048 bytes、std_option_owned は 55 回 1,210 bytes | 同じ | direct・ce・基準の 3 者が全種目で一致 |
+| M5 native `__text`（`benchmarks/computations`、`-O3`） | 3,884 bytes | 3,824 bytes（−1.5%） | 5% 以内 |
+| M5 wasm32 CODE section（`-O3`／`-O0`） | 9,144／28,463 bytes | 9,191／28,559 bytes（+0.51%／+0.34%） | 5% 以内 |
+| M6 worker 数（`comp.ll`／`chain.ll`） | 64／9 | 64／9 | 変化なし |
+| C5 300 連鎖: 間接呼び出しを持つ export／`__text`／ループの user CPU | 300 個／46,804 bytes／1.71 秒 | 0 個／24,036 bytes／0.91 秒 | N=200: 89 個／20,940 bytes → 0 個／14,784 bytes。N≤128 は byte 一致。compile 時間（user CPU）は 0.24 秒 → 0.29〜0.31 秒 |
+| M4 時間（native、ms/呼び出し、15 標本の中央値、3 回） | `std_option` 5.558・5.517・5.501 | 4.755・4.826・4.685（−14〜17%、3 回とも同じ向き、広がりが重ならない） | `direct_std_option` は 4.744・4.821・4.688 で ce／direct は 1.00。他の 9 対は広がりの範囲内（ce／direct 0.92〜1.03、基準／後 0.98〜1.06）。WASM は向きが揃わず主張しない。共有 machine（負荷平均 約 50）での参考値 |
+
+### 決定事項への追記
+
+- D1: F1' で確定（型付き IR での簡約は Phase 3 の D3 として取り下げ）。D2: 対象は非再帰・非 `Enum` の union を返す `fn`・`$lambda`・`@tz.specialized.*` で、exit が 2 つ以上で全 exit が slot にできるもの、1 KiB 以下。
+  builtin・wrapper・export は対象外。名前は `%tz.return.slot`・`tz.return`・`%tz.return.value`。
+- D8（追加）: 規則 D は、1 つでも平文の `ret` を保つ exit がある関数の全 exit を保つ（all-or-nothing）。理由: 一部だけを slot にした試作は `ret` が複数残り、inline 後の `phi` が消えない。
+  slot 化で LLVM が末尾呼び出しにできなくなる相互再帰（`parity_deep(1e8)`）を守る。
+- D9（追加）: 予算を使い切った program だけ 2 回目の出力を深さ優先にする（`reference_order`）。関数 id 順の深さ優先では、捕捉のない lambda が連鎖の根より後（高い id）に出て予算が先に尽き、連鎖が途中で切れた
+  （600 連鎖の IR の試験が検出した）ため、参照順にした。予算内の program の出力は変えない。
+- D5: `MAX_SPECIALIZATIONS` は 1,024 のまま。到達しない worker は数を記録するだけ（C5 が崖を直したので引き上げは不要）。
+- D7: `alwaysinline` は使わない。worker に付ける案を IR の書き換えで測ると、`-O0` の `__text` は 411,512 → 645,352 bytes、時間は 0.40 → 0.33 秒で、効果が小さい。
+
+### 見つけた問題・残作業
+
+- 起票の M2 の数え方（`.cfi_endproc` まで）は export 関数に CFI が無く、後続の関数を累積して数える。数え方は `-- End function` まで（`docs/benchmarks.md`）。起票の K4（機械語だけの差）は数え方の誤りで、存在しない。
+- 起票の F1（全 exit の slot 化）は LLVM の末尾呼び出し（sibling call）を壊す。docs が保証する末尾呼び出しは自己末尾呼び出しのループだけだが、HEAD は `-O2`／`-O3` で union を返す相互再帰を定数スタックで走らせており、これを守る。
+- x86-64 の `ce_std_option` は 38 から 56 命令に増えた（`direct` は 53）。arm64 は `direct` と同じ 24。命令数は性能の代理にしない。
+- `Instrumentation` が `Copy` になった（再出力のため）。他のチケットがこの構造体に `Copy` でない欄を足すと、`emit_program` の 2 回呼び出しを参照渡しか `Clone` に直す。
+- PM01 を先に統合するときは、`uses_return_slot` に「niche は除く」を足し、`param_facts`・`union_types`・`maybe_result` と `return_slot` の suite を再確認する（コンパイラの出力を調べる試験は
+  `Maybe<i64>`・`Result` の fixture を使い、union の型名の文字列に依らない。型名の文字列を持つのは、IR の文字列を直接渡す `rewrite` の単体テストだけ）。
+  PR02 が編集する `binary`・`array_loop_control`・`tail_arguments`・`range_loop` には触れていない。
+- D3 は `-O0` の計算式の速度・大きさを目標にするとき、または 128 を超える連鎖を持つ現実の program が現れたときに再検討する（`docs/benchmarks.md`）。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/computation-expressions/computation-expressions.md` の `## 性能`（予算を使い切ったときの挙動）。`node scripts/check-docs.mjs <そのページ>` で通過。
+  `Maybe`／`Result` の利用者向けの意味・構文・診断は変えていないので、他の `_tsuzuri/` のページは更新不要。
+- `docs/language.md`（予算の段落）、`docs/architecture.md`（`llvm_return_slot.rs` と `call_specialization.rs` の行、戻り値 slot と予算の説明、新しい試験）、
+  `docs/benchmarks.md`（`## 抽象化コストの除去（PR03、2026-10-16）`: 数え方・分類・F1' 後・予算を使い切る連鎖・D3 の取り下げ）、`README.md`（最適化の項に予算の 1 文）。
+  `_perfs/README.md` は統合担当が直す（状態を `done`、パスを `_completed/` に）。
+
+### 変更したファイル
+
+- 実装: `src/llvm_return_slot.rs`（新規）、`src/llvm.rs`、`src/call_specialization.rs`、`src/llvm_escape.rs`（`references` を `recursive_functions` から取り出した）。
+- 試験: `tests/call_specialization.rs`、`tests/features.mjs`、`tests/computations.mjs`、`tests/fixtures/return_slot/Main.tz`（新規）。
+- 文書: 上の「更新した文書」とこのチケット（`_perfs/_completed/` へ移動）。

@@ -5807,6 +5807,13 @@ native と wasm32 の `-O0` IR で固定します。
 - 全 exit を slot にできる関数（`if flag then helper x else None`、`helper` は循環にない）を呼ぶ側は、`-O3` の IR が 20 行から 7 行になりました。
   循環の関数へ転送する exit を含む関数（`if flag then even_m x else None`）は全 exit が平文の `ret` のままで、呼ぶ側は 22 行から変わりません。
   一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
+- 時間（`node benchmarks/run-computations.mjs <後のコンパイラ> --baseline <基準のコンパイラ> --metrics DIR --artifacts DIR`、native、`-O3`、15 標本の中央値と最小〜最大、3 回、
+  `with-lock.sh measure` の中で実行、開始時の負荷平均は約 50、Node 24.21.0、Apple clang 21.0.0）。`std_option`（size 2,000,000、ms/呼び出し）は、基準 5.558・5.517・5.501（最小〜最大 5.397〜6.247）から
+  後 4.755・4.826・4.685（4.618〜5.069）になり、3 回とも同じ向きで 14〜17% 短く、基準の最小と後の最大が重なりません。`direct_std_option` は 4.744・4.821・4.688 で、ce／direct は 3 回とも 1.00（0.999〜1.002）、
+  C++ は 4.765・4.770・4.715、Rust は 4.685・4.834・4.708 です。他の 9 対は広がりの範囲内で、native の ce／direct は 0.92〜1.03、基準／後は 0.98〜1.06 でした
+  （`std_option_owned` は 0.188・0.186・0.194 対 0.195・0.190・0.198 で 2〜4% 短い向きですが、広がりが重なるので主張しません）。WASM の warmed 時間は 3 回で向きが揃わず（`std_option` の基準／後は 1.28・0.76・0.75）、何も主張しません。
+  確保（`allocations_at_size_64`）は 10 種目とも前・後・direct で同じです。後のコンパイラは LTO なしの release build で、生成物は release build と同じ IR です（`cmp` で確認）。
+  生データは `target/perf/PR03-after/`（git 管理外）です。共有 machine での値なので、静かな machine での再測定は統合時に行います。
 
 ### 特殊化の予算を使い切る連鎖（Phase 2c）
 
