@@ -16,13 +16,15 @@
 static long processors = 4;
 static atomic_uint created, joined, outstanding, peak;
 static atomic_uint parked, broadcasts, signals;
-/* How often the pool mutex was taken, and how many workers are asleep on the pool's condition now. */
-static atomic_uint locks, asleep;
+/* How often the pool mutex was taken, how many workers are asleep on the pool's condition now, and how many
+   of the signals sent to them have not woken one yet. */
+static atomic_uint locks, asleep, pending;
 static int fail_create, fail_join;
 static const char *failure = "";
 static pthread_mutex_t observation = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t observed = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t *worker_condition;
+static pthread_mutex_t *pool_mutex;
 
 static long test_sysconf(int name) {
     assert(name == _SC_NPROCESSORS_ONLN);
@@ -66,7 +68,11 @@ static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
         assert(pthread_cond_broadcast(&observed) == 0);
         assert(pthread_mutex_unlock(&observation) == 0);
         int error = pthread_cond_wait(condition, mutex);
+        assert(pthread_mutex_lock(&observation) == 0);
         atomic_fetch_sub(&asleep, 1);
+        if (atomic_load(&pending) > 0) atomic_fetch_sub(&pending, 1);
+        assert(pthread_cond_broadcast(&observed) == 0);
+        assert(pthread_mutex_unlock(&observation) == 0);
         return error;
     }
     return pthread_cond_wait(condition, mutex);
@@ -79,7 +85,19 @@ static int test_broadcast(pthread_cond_t *condition) {
 
 static int test_signal(pthread_cond_t *condition) {
     atomic_fetch_add(&signals, 1);
-    return strcmp(failure, "cond_signal") == 0 ? EINVAL : pthread_cond_signal(condition);
+    if (strcmp(failure, "cond_signal") == 0) return EINVAL;
+    if (condition != worker_condition) return pthread_cond_signal(condition);
+    // POSIX drops a signal that finds nobody to wake. macOS remembers it and wakes a later sleeper, which would hide a
+    // lost wakeup, so the signal is passed on only when a sleeper exists that no earlier signal is on its way to wake.
+    // With the pool mutex held a counted sleeper really waits, so a signal that is passed on never misses it, and the
+    // counts change only under this mutex (a worker updates them after it has taken the mutex back).
+    assert(pthread_mutex_lock(pool_mutex) == 0);
+    if (atomic_load(&pending) < atomic_load(&asleep)) {
+        atomic_fetch_add(&pending, 1);
+        assert(pthread_cond_signal(condition) == 0);
+    }
+    assert(pthread_mutex_unlock(pool_mutex) == 0);
+    return 0;
 }
 
 static int test_once(pthread_once_t *once, void (*initialize)(void)) {
@@ -157,10 +175,11 @@ static void check_hits(unsigned expected) {
     assert(tz_task_pool.groups == NULL && tz_task_pool.tail == NULL);
 }
 
-/* Waits until every worker is asleep, so that nothing of an earlier group is left that could take the mutex. */
+/* Waits until every worker is asleep and no signal is still on its way to wake one, so that nothing of an earlier
+   group is left that could take the mutex or wake without a signal of the next group. */
 static void quiesce(void) {
     assert(pthread_mutex_lock(&observation) == 0);
-    while (atomic_load(&asleep) != required - 1) assert(pthread_cond_wait(&observed, &observation) == 0);
+    while (atomic_load(&asleep) != required - 1 || atomic_load(&pending) != 0) assert(pthread_cond_wait(&observed, &observation) == 0);
     assert(pthread_mutex_unlock(&observation) == 0);
 }
 
@@ -238,6 +257,7 @@ static uint32_t result_stop(void *context, uint64_t index) {
 
 int main(int argc, char **argv) {
     worker_condition = &tz_task_pool.work_available;
+    pool_mutex = &tz_task_pool.mutex;
     if (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9') && argv[1][0] != '-') {
         failure = argv[1];
         fail_create = strcmp(argv[1], "create") == 0;
