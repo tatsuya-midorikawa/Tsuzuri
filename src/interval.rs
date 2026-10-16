@@ -315,6 +315,23 @@ pub(crate) fn shift_right(left: Interval, count: u32) -> Interval {
     Interval::new(left.low >> count, left.high >> count)
 }
 
+/// `left` shifted right by `count`, below the width, with zeros coming in (`Bits.ushr`): the bit
+/// patterns, read as unsigned numbers, shifted, and read in the type again.
+pub(crate) fn shift_right_logical(ty: Int, left: Interval, count: u32) -> Interval {
+    wrap(ty, shift_right(reading(ty, left, false), count))
+}
+
+/// `~value`, which is `-value - 1` for a signed type and `max - value` for an unsigned one: every
+/// value maps to a value of the type, in the opposite order.
+pub(crate) fn complement(ty: Int, value: Interval) -> Interval {
+    let (low, high) = if ty.signed {
+        (-value.high - 1, -value.low - 1)
+    } else {
+        (ty.max() - value.high, ty.max() - value.low)
+    };
+    Interval::new(low, high)
+}
+
 /// `left <<< count` for a count below the width: the product with a power of two, cut to the width.
 pub(crate) fn shift_left(ty: Int, left: Interval, count: u32) -> Interval {
     wrap(
@@ -761,6 +778,37 @@ mod tests {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn logical_shifts_and_complements_agree_with_every_value_up_to_4_bits() {
+        for bits in 1..=4 {
+            for signed in [false, true] {
+                let ty = int(bits, signed);
+                for interval in all_intervals(ty) {
+                    let flipped = complement(ty, interval);
+                    assert!(flipped.within(ty.full()), "{ty:?} {interval:?}");
+                    for value in interval.low..=interval.high {
+                        let (_, pattern) = readings(ty, value);
+                        let expected = value_of(ty, !pattern & (ty.modulus() as u128 - 1));
+                        assert!(flipped.contains(expected), "~ {ty:?} {value}");
+                        for count in 0..u32::from(bits) {
+                            let shifted = shift_right_logical(ty, interval, count);
+                            assert!(
+                                shifted.contains(value_of(ty, pattern >> count)),
+                                "ushr {ty:?} {value} {count} in {interval:?}: {shifted:?}"
+                            );
+                        }
+                    }
+                    // A complement reverses the order, so it is as tight as the interval.
+                    assert_eq!(
+                        flipped.high - flipped.low,
+                        interval.high - interval.low,
+                        "{ty:?} {interval:?}"
+                    );
                 }
             }
         }

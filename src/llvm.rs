@@ -4007,6 +4007,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let (value, frames) = self.frame_value(expression);
             self.heap_initializer = previous;
             self.bind_local(local, &value);
+            self.ranges.bind(self.module, local, expression);
             self.bind_frames(local, frames);
             if let Some(target) = target {
                 self.known_closures.insert(local.id, target);

@@ -81,6 +81,8 @@ impl FunctionEmitter<'_, '_> {
         let stride = self.expression(step);
         // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
+        self.ranges
+            .enter_counter(self.module, local, start, step, finish);
         let Type::Integer(bits, signed) = local.ty else {
             unreachable!("integer range checked")
         };
