@@ -103,7 +103,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | todo |
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
-| PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | doing |
+| PM05 | [小さい確保のための size-class allocator](_completed/PM05-small-allocator.md) | P1 | L | PX01, (F13) | done |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
@@ -167,11 +167,14 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   リンカー（D6）は配布物の `tsuzuri-clang` が全 OS で zig 内蔵 LLD を使い、macOS では ld64.lld が Apple ld より遅いため、明示的な opt-in `TSUZURI_LINKER=lld` だけです
   （未設定は現行。見つからなければ `E2002`、不正値と Windows は `E2000` で、黙って戻しません）。bitcode の受け渡し（D7）は 1〜2% で採用せず、
   `wasm` の剪定（D9）は出力が byte 同一で採用せず、D8 は 2% 未満で記録だけです。
-- **PM05**: Phase 1 は WASM の heap（`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`）を 1a（wasm32 と threads）・
-  1b（wasm64）に分け、F11 の上限の 3 行と F13 の関数名の置換、`size 0` の容量、threads の OOM trap の種別（`.unlocked` の誤分類）を保ちます。
-  ヘッダーが残るため Phase 1 はメモリ量を減らさず、確保・解放の O(1) 化と即時の結合が成果です。ヘッダーのない小さい確保は別施策として記録します。
-  Phase 2 の native `--allocator small` は C から IR を生成して実装し、既定は変えません。
-  Phase 3 の既定の切り替え（D10）は、複数 OS での測定・sanitizer・全 suite の通過を満たしたときだけ行い、満たさなければ opt-in のまま根拠を記録します。
+- **PM05**（実装済み。native の `small` は opt-in）: Phase 1 は WASM の heap（`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`）を 1a（wasm32 と threads）・
+  1b（wasm64）・1c（末尾ブロックの in-place 伸長と `memory.copy`）で作り直し、boundary tag・32 本の容量別リスト・即時の結合・末尾の返却を入れました。
+  F11 の上限の 3 行と F13 の関数名の置換、`size 0` の容量、threads の OOM trap の種別（`.unlocked` の誤分類）は保ち、後者は直しました。
+  ヘッダーが残るため Phase 1 はメモリ量を減らしません。成果は確保・解放の O(1) 化と即時の結合で、ランダムな置換の負荷は共有機の参考値で 0.13〜0.18 倍の時間です。
+  heap 単体は 1,819 → 3,699 bytes に増えます。ヘッダーのない小さい確保は別施策（PM05b）として記録しました。
+  Phase 2 の native `--allocator small` は C（`src/runtime/heap-small.c`）から `generate_heap.py` で IR を生成して実装し、既定は変えません
+  （wasm・`--freestanding`・`--trap-mode return` との併用は `E2000`）。Phase 3 の既定の切り替え（D10）は、複数 OS での測定・sanitizer・全 suite の通過が揃わず
+  （Linux の `record_sort` が `small` で 1.75〜2.3 倍遅い、専用機での 2 OS 以上の測定がない）、満たしていない gate と根拠を `docs/benchmarks.md` に記録して opt-in のままにしました。
 - **PR02**（実装済み）: F12 の `RangeFacts` は配列の添字専用の表で、区間の仕組みはなかったため、Phase 2 は整数の区間の解析器（`src/interval.rs`・`src/ranges_intervals.rs`）の新設になりました。
   整数の `+ - *` は言語定義で折り返すため、`nsw`／`nuw` は「その命令でその旗の overflow が起きない」証明のある箇所だけに付けます。
   LLVM の IndVarSimplify が同じ旗を自力で付けるので、先に生成コードで証拠を取り（Gate A）、12 の corpus のうち 8 は asm が同一、残りも 1〜8 命令の差で

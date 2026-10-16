@@ -1018,7 +1018,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri bench` | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
-| CLI | `--allocator system\|host\|counting`・`--freestanding`（F13、実装済み）、値 `small`（PM05） | F13・PM05 | `small` を既定にする段だけ |
+| CLI | `--allocator system\|host\|counting\|small`・`--freestanding`（F13・PM05、実装済み。`small` は native の opt-in で、既定にする段は PM05 D10 の条件を満たしたときだけ） | F13・PM05 | `small` を既定にする段だけ |
 | CLI | `--wasm-max-memory`・`--wasm-stack-size`、manifest の `[wasm]`（`max-memory`・`stack-size`） | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--target wasm64` | F11 | いいえ（Phase 2 承認済み・実装済み） |
 | CLI | `--emit bitcode` | PR08 | いいえ |
