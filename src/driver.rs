@@ -3579,8 +3579,7 @@ fn build_complete(
                     RUNTIME_OBJECT_HINT,
                     &mut messages,
                 )?;
-                fs::rename(&cached, &runtime_object)
-                    .map_err(|error| io_error("stage native runtime", &runtime_object, error))?;
+                stage_runtime_object(&cached, &runtime_object, "stage native runtime")?;
             } else {
                 runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
                 collect_message(
@@ -3692,8 +3691,7 @@ fn build_complete(
                     hint,
                     &mut messages,
                 )?;
-                fs::rename(&cached, &wasi_object)
-                    .map_err(|error| io_error("stage WASI runtime", &wasi_object, error))?;
+                stage_runtime_object(&cached, &wasi_object, "stage WASI runtime")?;
             } else {
                 runtime.arg(&source).arg("-o").arg(&wasi_object);
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
@@ -3729,9 +3727,7 @@ fn build_complete(
                     hint,
                     &mut messages,
                 )?;
-                fs::rename(&cached, &threads_object).map_err(|error| {
-                    io_error("stage WASM thread runtime", &threads_object, error)
-                })?;
+                stage_runtime_object(&cached, &threads_object, "stage WASM thread runtime")?;
             } else {
                 runtime.arg(&source).arg("-o").arg(&threads_object);
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
@@ -4934,6 +4930,16 @@ fn compile_runtime_object(
     Ok(output)
 }
 
+/// Moves the object of a runtime unit to where the link looks for it. A unit that is named like its
+/// staging file (`wasi` and `wasi.o`) is there already, and renaming a file onto itself is not
+/// defined on every platform.
+fn stage_runtime_object(object: &Path, staged: &Path, what: &str) -> Result<(), Diagnostic> {
+    if object == staged {
+        return Ok(());
+    }
+    fs::rename(object, staged).map_err(|error| io_error(what, staged, error))
+}
+
 /// Resolves a tool from its variable (even when empty), the distribution, then `PATH`.
 pub fn resolve_tool(variable: &str, fallback: &str) -> (ToolSource, OsString) {
     if let Some(value) = env::var_os(variable) {
@@ -6133,6 +6139,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_runtime_object_that_is_staged_already_is_not_renamed_onto_itself() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        // The unit `wasi` compiles to `wasi.o`, where the WASI runtime is staged. A rename of that path onto
+        // itself would fail here (the file is not there), so passing means it is skipped.
+        let wasi = directory.path.join("wasi.o");
+        stage_runtime_object(&wasi, &wasi, "stage WASI runtime").unwrap();
+        assert!(!wasi.exists());
+        // A unit with a name of its own is moved to the staging name.
+        let cached = directory.path.join("native-c.o");
+        let staged = directory.path.join("task.o");
+        fs::write(&cached, b"object").unwrap();
+        stage_runtime_object(&cached, &staged, "stage native runtime").unwrap();
+        assert!(!cached.exists());
+        assert_eq!(fs::read(&staged).unwrap(), b"object");
+        // What it could not move is reported against the staged file.
+        let error = stage_runtime_object(&cached, &staged, "stage native runtime").unwrap_err();
+        assert!(
+            error.message.contains("stage native runtime"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
