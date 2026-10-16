@@ -16,6 +16,8 @@
 static long processors = 4;
 static atomic_uint created, joined, outstanding, peak;
 static atomic_uint parked, broadcasts;
+/* How often the pool mutex was taken, and how many workers are asleep on the pool's condition now. */
+static atomic_uint locks, asleep;
 static int fail_create, fail_join;
 static const char *failure = "";
 static pthread_mutex_t observation = PTHREAD_MUTEX_INITIALIZER;
@@ -47,6 +49,7 @@ static int test_join(pthread_t thread, void **result) {
 }
 
 static int test_lock(pthread_mutex_t *mutex) {
+    atomic_fetch_add(&locks, 1);
     return strcmp(failure, "mutex_lock") == 0 ? EINVAL : pthread_mutex_lock(mutex);
 }
 
@@ -59,8 +62,12 @@ static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
     if (condition == worker_condition) {
         assert(pthread_mutex_lock(&observation) == 0);
         atomic_fetch_add(&parked, 1);
+        atomic_fetch_add(&asleep, 1);
         assert(pthread_cond_broadcast(&observed) == 0);
         assert(pthread_mutex_unlock(&observation) == 0);
+        int error = pthread_cond_wait(condition, mutex);
+        atomic_fetch_sub(&asleep, 1);
+        return error;
     }
     return pthread_cond_wait(condition, mutex);
 }
@@ -144,6 +151,13 @@ static void check_hits(unsigned expected) {
     assert(tz_task_pool.groups == NULL && tz_task_pool.tail == NULL);
 }
 
+/* Waits until every worker is asleep, so that nothing of an earlier group is left that could take the mutex. */
+static void quiesce(void) {
+    assert(pthread_mutex_lock(&observation) == 0);
+    while (atomic_load(&asleep) != required - 1) assert(pthread_cond_wait(&observed, &observation) == 0);
+    assert(pthread_mutex_unlock(&observation) == 0);
+}
+
 static uint32_t result_visit(void *context, uint64_t index) {
     visit(context, index);
     return 0;
@@ -196,6 +210,27 @@ int main(int argc, char **argv) {
     assert(atomic_load(&created) == required - 1 && atomic_load(&joined) == 0);
     tsuzuri_task_parallel(publish, published, ITEMS);
     for (unsigned index = 0; index < ITEMS; ++index) assert(published[index] == (index + 1) * 37);
+
+    // A group takes the pool mutex a few times, not once for each index: the submitter publishes the group and
+    // waits for it, and each worker that took part lets go of its items. A pool of one thread never takes it.
+    // (The mutex was taken once for each index before PR06: 259 times for this group, 515 for `results`.)
+    quiesce();
+    for (unsigned round = 0; round < 3; ++round) {
+        reset_hits();
+        unsigned before = atomic_load(&locks);
+        tsuzuri_task_parallel(visit, hits, ITEMS);
+        unsigned taken = atomic_load(&locks) - before;
+        check_hits(1);
+        assert(taken <= (required > 1 ? 2 + (required - 1) : 0));
+        quiesce();
+        reset_hits();
+        before = atomic_load(&locks);
+        assert(tsuzuri_task_parallel_results(result_visit, hits, ITEMS) == UINT64_MAX);
+        taken = atomic_load(&locks) - before;
+        check_hits(1);
+        assert(taken <= (required > 1 ? 2 + (required - 1) : 0));
+        quiesce();
+    }
 
     reset_hits();
     tsuzuri_task_parallel(nested, hits, 32);

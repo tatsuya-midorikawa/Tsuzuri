@@ -7,7 +7,7 @@
      - one large group: every index runs exactly once under contention for the claim;
      - pipelines (a producer and consumers on one channel): a group may end with the deadlock verdict when
        the threads run out, which is allowed here, but never with a hang, and never with a wrong sum when
-       no verdict was given.
+       no verdict was given. A host alone, with no more stages than threads, never gets the verdict.
    Usage: task_stress [cpus [hosts [rounds]]]. The pool reads the CPU count once, so the count is an
    argument. tests/tasks.mjs builds this at -O0 and -O3, and under ThreadSanitizer and AddressSanitizer
    when TSUZURI_TSAN=1 or TSUZURI_ASAN=1. POSIX only (alarm). */
@@ -200,6 +200,11 @@ static void pipeline_group(unsigned seed) {
     if (atomic_load(&pipeline.verdicts) == 0) {
         assert(atomic_load(&pipeline.sum) == pipeline.items * (pipeline.items + 1) / 2);
     } else {
+        /* A host alone has the whole pool, and every stage has a thread of its own when there are no more
+           stages than threads, so no stage is ever stacked on a waiting thread. The verdict was given
+           here before PR06: a worker of the group before was still counted running when the producer
+           blocked, so the pool looked full and the consumer was stacked on the producer. */
+        assert(hosts != 1 || processors < 2 || (long)length > processors);
         atomic_fetch_add(&verdict_groups, 1);
     }
     free(pipeline.channel);
