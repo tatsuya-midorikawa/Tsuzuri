@@ -1,7 +1,10 @@
-//! Value layout of unions (PM01): how a union stores its tag and payload, the models of how many
-//! bytes a type takes, and the emitter methods that read and write a union's tag. Every reader of
-//! a tag goes through `tag_value` or `load_tag`, every writer through `construct_value` or, in
-//! text IR, `tag_type`, so the width of the tag is decided in one place.
+//! Value layout (PM01): how a union stores its tag and payload (`UnionLayout`, with the niches),
+//! in what order a record keeps its fields (`record_slots`), the models of how many bytes a type
+//! takes, and the emitter methods that read and write a union's tag. Every reader of a tag goes
+//! through `tag_value` or `load_tag`, every writer through `construct_value` or, in text IR,
+//! `tag_type`, so the width of the tag is decided in one place; every reader and writer of a
+//! record's field goes through `field_slot`. A layout that depends on the target reads it from
+//! `target_scope`, which `emit_program` opens, together with the memo of the layouts it works out.
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
