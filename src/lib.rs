@@ -193,9 +193,11 @@ pub(crate) fn analyze_inputs_with(
                 Some(name.to_owned())
             };
             let parsed = match cache.as_mut() {
-                Some(cache) => cache
-                    .parse(input.text, id, input.edition)
-                    .map(|parsed| (parsed.program, Some((parsed.key, parsed.interface)))),
+                Some(cache) => {
+                    let (parsed, lookup) = cache.lookup(input.text, id, input.edition);
+                    cache.commit(lookup);
+                    parsed.map(|parsed| (parsed.program, Some((parsed.key, parsed.interface))))
+                }
                 None => parser::parse_with_source_all(input.text, id, input.edition)
                     .map(|program| (program, None)),
             };

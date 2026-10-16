@@ -362,6 +362,17 @@ enum Stored {
     Fresh(Vec<u8>),
 }
 
+/// What `FrontendCache::lookup` found out about one source.
+pub(crate) struct Lookup {
+    key: [u8; 32],
+    /// The pack held an entry for the key that did not decode.
+    rejected: bool,
+    /// The entry of this analysis that the source gives: the entry of the pack that decoded
+    /// (a hit), or a new encoding. None when the source has no parse, no interface or no entry
+    /// small enough, which is a miss.
+    stored: Option<Stored>,
+}
+
 pub(crate) struct FrontendCache {
     /// `<root>/frontend`, canonicalized.
     directory: PathBuf,
@@ -442,47 +453,96 @@ impl FrontendCache {
 
     /// Parses `text` as source `source` of `edition`, or decodes its entry from the project's
     /// pack. The program and the diagnostics are those of `parser::parse_with_source_all`.
+    /// The cache is not changed: the sources of an analysis can be looked up on several threads
+    /// and recorded with `commit`, in the order of the sources, afterwards.
+    pub(crate) fn lookup(
+        &self,
+        text: &str,
+        source: usize,
+        edition: Edition,
+    ) -> (Result<Parsed, Vec<Diagnostic>>, Lookup) {
+        let key = parse_key(&self.identity, edition, text);
+        let mut rejected = false;
+        if let Some(range) = self.packed.get(&key) {
+            match load(&self.pack[range.clone()], &key, source) {
+                Some(parsed) => {
+                    let stored = Some(Stored::Packed(range.clone()));
+                    return (
+                        Ok(parsed),
+                        Lookup {
+                            key,
+                            rejected,
+                            stored,
+                        },
+                    );
+                }
+                None => rejected = true,
+            }
+        }
+        let mut lookup = Lookup {
+            key,
+            rejected,
+            stored: None,
+        };
+        let program = match crate::parser::parse_with_source_all(text, source, edition) {
+            Ok(program) => program,
+            Err(errors) => return (Err(errors), lookup),
+        };
+        let encoded = syntax_codec::encode(&program, source, Mode::Full)
+            .and_then(|full| Ok((full, interface_hash(&self.identity, &program, source)?)));
+        let Ok((full, interface)) = encoded else {
+            // Without an interface hash, the parse key stands in: it changes with any edit.
+            let parsed = Parsed {
+                program,
+                key,
+                interface: key,
+            };
+            return (Ok(parsed), lookup);
+        };
+        let entry = entry_bytes(&key, &interface, &full);
+        if entry.len() as u64 <= MAX_ENTRY_BYTES {
+            lookup.stored = Some(Stored::Fresh(entry));
+        }
+        let parsed = Parsed {
+            program,
+            key,
+            interface,
+        };
+        (Ok(parsed), lookup)
+    }
+
+    /// Records what `lookup` found, as a sequential parse of the source would have: the lookups
+    /// of an analysis are committed in the order of its sources.
+    pub(crate) fn commit(&mut self, lookup: Lookup) {
+        // An earlier source with the same text may have found the entry undecodable: it removed
+        // the entry, so this source is a plain miss, as it is when parsed after that one.
+        if lookup.rejected && self.packed.remove(&lookup.key).is_some() {
+            self.stats.rejected += 1;
+        }
+        match lookup.stored {
+            Some(stored @ Stored::Packed(_)) => {
+                self.stats.hits += 1;
+                self.keep(lookup.key, stored);
+            }
+            Some(stored) => {
+                self.stats.misses += 1;
+                self.keep(lookup.key, stored);
+            }
+            None => self.stats.misses += 1,
+        }
+    }
+
+    /// `lookup` and `commit` of one source.
+    #[cfg(test)]
     pub(crate) fn parse(
         &mut self,
         text: &str,
         source: usize,
         edition: Edition,
     ) -> Result<Parsed, Vec<Diagnostic>> {
-        let key = parse_key(&self.identity, edition, text);
-        if let Some(range) = self.packed.get(&key).cloned() {
-            match load(&self.pack[range.clone()], &key, source) {
-                Some(parsed) => {
-                    self.stats.hits += 1;
-                    self.keep(key, Stored::Packed(range));
-                    return Ok(parsed);
-                }
-                None => {
-                    self.stats.rejected += 1;
-                    self.packed.remove(&key);
-                }
-            }
-        }
-        self.stats.misses += 1;
-        let program = crate::parser::parse_with_source_all(text, source, edition)?;
-        let encoded = syntax_codec::encode(&program, source, Mode::Full)
-            .and_then(|full| Ok((full, interface_hash(&self.identity, &program, source)?)));
-        let Ok((full, interface)) = encoded else {
-            // Without an interface hash, the parse key stands in: it changes with any edit.
-            return Ok(Parsed {
-                program,
-                key,
-                interface: key,
-            });
-        };
-        let entry = entry_bytes(&key, &interface, &full);
-        if entry.len() as u64 <= MAX_ENTRY_BYTES {
-            self.keep(key, Stored::Fresh(entry));
-        }
-        Ok(Parsed {
-            program,
-            key,
-            interface,
-        })
+        let (parsed, lookup) = self.lookup(text, source, edition);
+        self.commit(lookup);
+        parsed
     }
 
     fn keep(&mut self, key: [u8; 32], stored: Stored) {
@@ -1031,6 +1091,197 @@ mod tests {
         assert!(cache.entries.is_empty());
         analyze(&mut cache, &[OTHER]);
         assert_eq!(pack_entries(&cache), 1);
+    }
+
+    /// `parse` as it was before `lookup` and `commit` were separate: the reference of the
+    /// equivalence tests.
+    fn reference_parse(
+        cache: &mut FrontendCache,
+        text: &str,
+        source: usize,
+        edition: Edition,
+    ) -> Result<Parsed, Vec<Diagnostic>> {
+        let key = parse_key(&cache.identity, edition, text);
+        if let Some(range) = cache.packed.get(&key).cloned() {
+            match load(&cache.pack[range.clone()], &key, source) {
+                Some(parsed) => {
+                    cache.stats.hits += 1;
+                    cache.keep(key, Stored::Packed(range));
+                    return Ok(parsed);
+                }
+                None => {
+                    cache.stats.rejected += 1;
+                    cache.packed.remove(&key);
+                }
+            }
+        }
+        cache.stats.misses += 1;
+        let program = parse_with_source_all(text, source, edition)?;
+        let (full, interface) = syntax_codec::encode(&program, source, Mode::Full)
+            .and_then(|full| Ok((full, interface_hash(&cache.identity, &program, source)?)))
+            .unwrap();
+        let entry = entry_bytes(&key, &interface, &full);
+        assert!(entry.len() as u64 <= MAX_ENTRY_BYTES);
+        cache.keep(key, Stored::Fresh(entry));
+        Ok(Parsed {
+            program,
+            key,
+            interface,
+        })
+    }
+
+    /// An entry of an analysis: the byte range of the old pack, or the new bytes.
+    type Entry = ([u8; 32], Result<Range<usize>, Vec<u8>>);
+
+    /// What a cache will write: its entries in order.
+    fn entries_of(cache: &FrontendCache) -> Vec<Entry> {
+        cache
+            .entries
+            .iter()
+            .map(|(key, stored)| match stored {
+                Stored::Packed(range) => (*key, Ok(range.clone())),
+                Stored::Fresh(bytes) => (*key, Err(bytes.clone())),
+            })
+            .collect()
+    }
+
+    fn comparable(result: &Result<Parsed, Vec<Diagnostic>>) -> String {
+        match result {
+            Ok(parsed) => format!(
+                "{:?} {:?} {:?}",
+                parsed.program, parsed.key, parsed.interface
+            ),
+            Err(errors) => format!("{errors:?}"),
+        }
+    }
+
+    /// Looks the sources of a corpus up on `threads` threads and commits them in order: the
+    /// results, the entries, the statistics and the pack that `finish` writes equal those of
+    /// sequential parses of a cache that starts from the same pack, which has an entry that does
+    /// not decode.
+    fn assert_lookups_equal_parses(threads: usize) {
+        const FIRST: &str = "def first :: i64 = 1\n";
+        const SECOND: &str = "def second :: i64 -> i64 = \\n -> n + 2\n";
+        const DAMAGED: &str = "def damaged :: i64 = 3\n";
+        const KEPT: &str = "def kept :: i64 = 4\n";
+        const THIRD: &str = "def third :: i64 = 5\n";
+        const FOURTH: &str = "def fourth :: i64 = 6\n";
+        const BROKEN: &str = "def broken :: = \n";
+        let (_first, reference_root) = root();
+        let (_second, candidate_root) = root();
+        // Both caches belong to one project, so that their files are comparable.
+        let key = project(&reference_root, "program");
+        let open = |root: &Path| FrontendCache::open_with(root, key, IDENTITY).unwrap();
+        for root in [&reference_root, &candidate_root] {
+            analyze(&mut open(root), &[FIRST, SECOND, DAMAGED, KEPT]);
+            let cache = open(root);
+            let range = cache.packed[&parse_key(&IDENTITY, Edition::LATEST, DAMAGED)].clone();
+            let mut bytes = fs::read(cache.pack_path()).unwrap();
+            bytes[range.end - 1] ^= 1;
+            fs::write(cache.pack_path(), bytes).unwrap();
+        }
+        // Hits, the damaged entry twice, new sources twice, a syntax error twice.
+        let corpus = [
+            FIRST, DAMAGED, SECOND, DAMAGED, THIRD, FIRST, BROKEN, KEPT, BROKEN, FOURTH, THIRD,
+        ];
+        let mut reference = open(&reference_root);
+        let expected: Vec<_> = corpus
+            .iter()
+            .enumerate()
+            .map(|(index, text)| reference_parse(&mut reference, text, index, Edition::LATEST))
+            .collect();
+        assert_eq!(reference.stats, stats(4, 7, 1));
+
+        let mut candidate = open(&candidate_root);
+        let looked: Vec<_> = {
+            let shared = &candidate;
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let done = std::sync::Mutex::new(Vec::new());
+            std::thread::scope(|scope| {
+                for _ in 0..threads {
+                    scope.spawn(|| {
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(text) = corpus.get(index) else { break };
+                            let looked = shared.lookup(text, index, Edition::LATEST);
+                            done.lock().unwrap().push((index, looked));
+                        }
+                    });
+                }
+            });
+            let mut done = done.into_inner().unwrap();
+            done.sort_by_key(|(index, _)| *index);
+            done.into_iter().map(|(_, looked)| looked).collect()
+        };
+        let mut actual = Vec::new();
+        for (parsed, lookup) in looked {
+            candidate.commit(lookup);
+            actual.push(parsed);
+        }
+        let render = |results: &[Result<Parsed, Vec<Diagnostic>>]| {
+            results.iter().map(comparable).collect::<Vec<_>>()
+        };
+        assert_eq!(render(&actual), render(&expected), "{threads} threads");
+        assert_eq!(candidate.stats, reference.stats, "{threads} threads");
+        assert_eq!(entries_of(&candidate), entries_of(&reference));
+        assert_eq!(candidate.kept, reference.kept);
+        assert_eq!(candidate.packed.len(), reference.packed.len());
+        let records: Vec<_> = expected
+            .iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, parsed)| (format!("M{index}"), parsed.key, parsed.interface))
+            .collect();
+        let records: Vec<_> = records
+            .iter()
+            .map(|(name, source, interface)| ModuleRecord {
+                name,
+                path: name,
+                origin: ModuleOrigin::User,
+                kind: Some(SourceKind::Code),
+                namespace: "",
+                entry: false,
+                source: *source,
+                interface: *interface,
+            })
+            .collect();
+        let delta = reference.finish(&records);
+        assert_eq!(candidate.finish(&records), delta, "{threads} threads");
+        assert_eq!(
+            fs::read(candidate.pack_path()).unwrap(),
+            fs::read(reference.pack_path()).unwrap(),
+            "{threads} threads"
+        );
+        assert_eq!(
+            fs::read(candidate.manifest_path()).unwrap(),
+            fs::read(reference.manifest_path()).unwrap(),
+            "{threads} threads"
+        );
+        // Six texts parse: the broken one has no entry and the duplicates share theirs.
+        assert_eq!(pack_entries(&candidate), 6);
+    }
+
+    #[test]
+    fn lookups_committed_in_order_equal_sequential_parses() {
+        for threads in [1, 2, 4] {
+            assert_lookups_equal_parses(threads);
+        }
+    }
+
+    #[test]
+    fn a_lookup_changes_nothing_until_it_is_committed() {
+        let (_temporary, root) = root();
+        analyze(&mut open(&root, IDENTITY), &[SOURCE]);
+        let mut cache = open(&root, IDENTITY);
+        let (parsed, lookup) = cache.lookup(SOURCE, 3, Edition::LATEST);
+        assert!(parsed.is_ok());
+        let (_, other) = cache.lookup(OTHER, 4, Edition::LATEST);
+        assert_eq!(cache.stats, stats(0, 0, 0));
+        assert!(cache.entries.is_empty() && cache.kept.is_empty());
+        cache.commit(other);
+        cache.commit(lookup);
+        assert_eq!(cache.stats, stats(1, 1, 0));
+        assert_eq!(cache.entries.len(), 2);
     }
 
     /// Rewrites the only entry of the pack with `edit` applied to its header and a fresh
