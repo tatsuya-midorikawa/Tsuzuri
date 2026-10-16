@@ -195,6 +195,8 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 | `E2002` | FreeBSD・Android・iOS の `Net` | `the Net socket API is only available for macOS, Linux, and Windows targets; <triple> has no implementation of it` |
 | `E2002` | FreeBSD・Android・iOS の `Async.block_on` | `Async.block_on is only available for macOS, Linux, and Windows targets; use Async.run for <triple>` |
 
+実行ファイル（`--emit exe`）で、OS API・`Net`・`Async.block_on` の `E2002` が出るのは、入口か `export def`、`Drop` の実装から到達する関数が使うときだけです。どこからも呼ばれない公開関数だけが使うときは出ません。その関数を実行ファイルにコンパイルしないからです（以前は `E2002` でした。たとえば `File.read_text` だけを使う未使用の公開関数は、`x86_64-pc-windows-gnu` の実行ファイルを拒まれました）。`--emit object` と `--emit llvm` などは公開関数をすべて出力するので、今までどおり拒みます（[出力とターゲット](option.md#出力とターゲット)）。
+
 ## 既知の制限
 
 - 32-bit のネイティブ target は、受け付けません。native の IR は 64-bit のポインターを前提にします。

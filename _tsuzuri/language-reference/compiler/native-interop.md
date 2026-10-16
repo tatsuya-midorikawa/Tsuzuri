@@ -166,6 +166,16 @@ int main(void) {
 
 呼び出しは副作用として扱われ、引数は左から右に評価されます。部分適用はできます。コンパイラが純粋な計算だと思って消すことはありません。`const` の初期化から `extern` を呼ぶことはできません。
 
+実行ファイル（`--emit exe`）は、入口、`export def`、`Drop` の実装から到達する関数だけをコンパイルします。どこからも呼ばれない公開関数だけが呼ぶ `extern` のシンボルは、リンクに現れません。次のプログラムは、どのライブラリも `no_such_c_function` を持たなくてもリンクでき、`ok` を出力します。`never_called` を入口から呼ぶと、リンクは未定義のシンボルで失敗します（以前は、呼ばなくても失敗しました）。`--emit object` と `--emit llvm` は公開関数をすべて出力するので、シンボルへの参照が残ります。
+
+```tsuzuri run=ok
+extern "no_such_c_function" def missing :: i64 -> i64
+
+def never_called :: i64 -> i64 = \x -> missing x
+
+"ok"
+```
+
 ```mermaid
 flowchart LR
   host["C の main"] --> exportFn["tz_quote"]

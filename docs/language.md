@@ -37,6 +37,14 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 自己完結した LLVM／header／object／shared 出力、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
 未使用 section の除去でも公開 export、丸め・NaN・符号付きゼロ・トラップ・ABI・WASM import は変わりません。
 
+通常の native 実行ファイル（`build`・`run`）は、入口・`export def`・`Drop` の実装から到達する関数だけを Clang へ渡します。
+どこからも呼ばれない公開関数は実行ファイルの内部関数で外から呼べないため出力せず、型検査・所有権検査は今までどおり受けます。
+名前付きレコードと union の型定義は、剪定しない場合のプログラムと同じ集合を出力します。
+その関数だけが使う OS API・定義のない `extern` のシンボル・C ランタイムはプラットフォームの検査にもリンクにも現れないので、
+以前は `E2002` やリンクの失敗だったビルドが通ります。入口か `export def` から到達するなら今までどおり失敗します。
+`--emit object`・`llvm`・`header`・`wasm`・`shared` は公開関数をすべて出力します。
+詳細は [出力とターゲット](../_tsuzuri/language-reference/compiler/option.md#出力とターゲット) にあります。
+
 ## ソースと宣言
 
 フロントエンドは不要な本体・局所値の複製と子列の確保を省き、型述語に private TypeId arena を使います。
