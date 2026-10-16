@@ -75,9 +75,10 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm_frame.rs` | `new` を伴わないリテラル・小さな文字列連結・局所の捕捉環境のスタック配置、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
 | `src/llvm_escape.rs` | immutable な局所の使用位置による滞在判定と、関数・lift 済み閉包の参照グラフの循環判定。PM06 の領域選択だけに使い、正しさは frame の移送・解放で保証 |
 | `src/llvm_facts.rs` | 内部参照の属性、上限付き SSA provenance、scoped alias・限定した scalar TBAA、値と memory effects の証明。`llvm.rs` の portable layout 下界と共有 metadata 番号を使い、不変性は `Type::is_frozen` で判定。opaque std・共有可変状態・隠れた環境を不変と推測しない |
+| `src/llvm_return_slot.rs` | PR03 の戻り値 slot。再帰しない tagged union を返す関数の複数の `ret` を、入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える post-pass（`facts::apply` の後）。slot は 1 KiB 以下。1 つでも平文の `ret` を保つ exit（循環にある関数の呼び出しの結果をそのまま返す exit など）があれば全 exit を保つ |
 | `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
-| `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理 |
+| `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理。予算（1,024 個）を使い切った program だけ、関数と参照先の関数を深さ優先の順に出力し、各関数の worker をその直後に出力する 2 回目の出力（`Drain::DepthFirst`）で、連鎖を完成させる |
 | `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略 |
 | `src/runtime/numeric.c` / `numeric.ll` / `numeric_tables.h` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、書式指定付き数値表示（`tz_soft_format_spec`）。f32／f64 の最短表示は整数 Schubfach、通常の十進解析は符号を除き最大 25 ASCII 文字・19 有効桁の Eisel–Lemire と正確な fallback。長い入力を高速経路で再走査しない。生成する不変表は 20,288 bytes。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
 | `src/runtime/string.ll` / `utf8string.ll` / `string_scalar.ll` / `string_v128.ll` / `string_cpu.ll` / `string_cpu_utf16.ll` / `heap-*.ll` | UTF 共通処理、完全な scalar 参照、汎用 vector IR、native CPU wrapper。`generate_utf.py` の生成物とは別に `string_cpu_utf16.ll` は手書きの x86 専用 wrapper。変換は全入力の検証・計数後に一度だけ確保。native CPU 経路は F08 の能力・OS 状態検査と fallback、WASM は既定 scalar・simd128 指定時だけ vector IR。Windows の CPU runtime は portable baseline。UTF-8 復号の 16 bytes 未満は inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路。UTF-16 符号化は non-x86 では portable LLVM、native x86 の 32 単位以上は CPU count と検証済み入力を扱う LLVM writer。portable 符号化の 16 単位未満／初窓に surrogate がある入力は元の scalar 計数・Unicode write と 8 単位幅の ASCII copy を使う。長い bulk 経路は private noinline helper へ分離。計数は 1／2／3-byte 幅の混在 BMP も扱うが、writer は均一幅の prefix だけを一括処理する。順序比較の UTF-16 16 単位未満／UTF-8 32 bytes 未満は元の 64-bit/scalar 経路。SIMD 経路の UTF-16 の検証・修復は surrogate-free prefix の後、残りを scalar へ一度だけ渡す。変換・計数・UTF-8 検証 kernel も最初の failed bulk probe 後は scalar remainder へ一度だけ渡し、後続の ASCII 区間も再 probe しない。文字列表現・コード単位の符号なし比較・置換・trap・ABI・import は維持 |
@@ -132,6 +133,13 @@ Task 本体と、関数・閉包の参照グラフの循環に入る関数では
 環境のスタック解放は捕捉を宣言順で drop し、環境自体は free しません。
 PM07 の `append` は左辺の frame が空のときだけ使用します。静的・スタックの文字列を `realloc` へ渡さず、
 左辺の所有権を `append` へ渡した後は二重に drop しません。文字列の記述子と容量の保証は変更しません。
+
+PR03 の戻り値 slot は、再帰しない tagged union（`Maybe`・`Result` など。payload のない enum と、slot が 1 KiB を超える型を除く）を返す関数に、`ret` が 2 つ以上あり、そのすべてを slot にできるときだけ使います。
+入口の alloca `%tz.return.slot` へ store し、`tz.return:` ブロックで load して 1 回だけ `ret` するので、inline 後に呼び出し側の aggregate phi が残りません。
+slot は `scopes` にも frame にも入れず、drop・移動の経路を変えません。
+呼び出しの結果をそのまま返す exit は、現在の関数が関数参照グラフの循環にある場合、呼び先が循環にある場合、呼び先が不明・間接の場合に平文の `ret` を保ちます。
+LLVM が末尾位置の union 返却の呼び出しを sibling call にする（`-O2` 以上。相互再帰の 1e8 段が native で通る）余地を残すためです。
+一部の exit だけを slot にしても `ret` が複数残って phi が消えないため、1 つでも保つ exit があれば全 exit を保ちます。
 
 `llvm::last_use::LastUses` は具体化 IR の後方生存解析で、所有権チェッカーの State／loan は参照しません。
 ループと match の失敗先は固定点で扱い、訪問 100,000 回・深さ 128 を超えると結果全体を空にします。
@@ -1371,7 +1379,9 @@ Async は `tests/async.rs` が opaque / non-Copy、実際の借用を持つ call
 ネイティブ環境では全関数呼び出し後の未解放メモリバイト数が 0 であることを検証し、WASM 環境ではデフォルトの 16 MiB を超える累積確保の反復耐性を検査します。また、型注釈のない配列 bind と手書きのループ処理においてメモリ確保量が完全に一致することを確認します。
 `.tt` および `.tc` におけるエラー診断の正確な位置特定、ファイル出力保護、ならびに決定論的な IR および WASM 生成も確認されます。
 `tests/call_specialization.rs` と `tests/fixtures/computations/Optimization.tz` は、静的に既知の関数値、動的関数値、スコープ外へエスケープする関数値、可変引数の評価順序、所有権を持つ捕捉値および戻り値、相互再帰、ならびに特殊化予算上限に達した際の安全な通常経路へのフォールバックを網羅的に検査します。
-コンピュテーション式の実行テストには、520 個の異なる継続によって予算を超過する大規模ケースや、`-O3` 最適化下で 262,144 回のコールバックを実行するストレステストが含まれ、ネイティブおよび WASM の双方でメモリ解放、スタック消費量、および演算結果の正確性が確認されています。
+同じファイルの `standard_let_chain_workers_are_direct_and_allocation_free` は、`let!` が 2 つの標準 Maybe／Result の連鎖から到達する worker が確保・閉包の複製・間接呼び出し・apply wrapper を持たないこと（native と wasm32、IR の決定性を含む）を、`known_local_function_values_call_directly` は、let で束縛した関数値（捕捉付き lambda・捕捉なし lambda・部分適用）の呼び出しが直接であることを固定します。
+`exhausted_worker_budget_completes_chains_instead_of_cutting_all_of_them` は、600 個の連鎖が予算を使い切るとき、worker の定義が 1,024 個のまま、先頭の連鎖から到達する worker がすべて直接呼び出しで、最後の連鎖が通常の経路を使うことを、`workers_within_the_budget_are_emitted_in_request_order` は、予算内の program の worker が連続した id で要求順に出力されることを固定します。
+コンピュテーション式の実行テストには、520 個の異なる継続によって予算を超過する大規模ケースや、300 個の `let!` の連鎖（約 2,400 個の worker を要求）で予算を使い切って結果が変わらないことの確認、`-O3` 最適化下で 262,144 回のコールバックを実行するストレステストが含まれ、ネイティブおよび WASM の双方でメモリ解放、スタック消費量、および演算結果の正確性が確認されています。
 `benchmarks/run-computations.mjs` は、最適化後 IR におけるメモリ確保回数と、手書きの Tsuzuri および C++ 実装との実行時間を分離して測定し、共有 CI 上では `--quick` による意味論の正しさの検査のみを実行します。
 Clang の AddressSanitizer（ASan）が利用可能な環境では、
 `TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/computations.mjs target/release/tsuzuri`
