@@ -106,7 +106,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | doing |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
-| PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | doing |
+| PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 
 ### PB. ビルド速度
@@ -115,7 +115,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
-| PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | doing |
+| PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | doing |
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
 | PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
@@ -191,14 +191,14 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   並列化しました。既定は CLI だけ自動（`min(コア数, 8)`）で、library・LSP・REPL・`publish` は 1、`TSUZURI_THREADS=1` が従来の経路、不正値は `E2000` です。
   診断・IR・pack の byte は thread 数で変わらず、thread 数はキャッシュの鍵に入りません。共有機での参考値は、1,000 module の `check` が 1.39〜1.46 倍、
   hello が 1.48 倍、parse が 4.0 倍で、CPU 時間は 37〜49% 増えます。Linux と Windows の scale は未測定で、G1 は期待値で CI の閾値ではありません。
-- **PM08**: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げです。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
+- **PM08**（実装済み）: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げでした。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
   wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
-  `tz_soft_format` と PR04 の表です。主な成果は D2（整数表示の runtime を分けた `integer.ll`）で、native の hello は C の hello と同程度（33,768 bytes）、
-  wasm の hello は約 82% 減（6,568 bytes）が見込めます。`-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えない）、`--strip` は opt-in、
-  `wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、自動検出も同梱もせず、使えなければ `E2002` にします。
-  D2 は既存の 8 か所のテスト期待値（`display_parse`・`integers`・`prebuilt_runtime`・`targets` の Clang 呼び出し数など）を変えるため、先に一覧を宣言します。
-  サイズの測定は、利用者が得る cache あり既定を主とし、`--no-cache` は別に表示します（ファイルの大きさはページ単位なので、受け入れはセクションの bytes で判定）。
-
+  `tz_soft_format` と PR04 の表でした。主な成果は D2（整数の表示・書式指定・`Parse` を手書き IR の `src/runtime/integer.ll` に分け、`numeric.ll` に依存させない変更）で、
+  native の hello は 50,664 → 33,896 bytes（`__text` 13,304 → 2,604）、wasm の hello は 35,714 → 6,357 bytes（`-Oz` 2,587、`-Oz --wasm-opt` 2,156）になりました。
+  `-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えず、`test`・`bench` は `E2000`）、`--strip` は opt-in、`wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、
+  自動検出も同梱もせず、使えなければ `E2002` です。embedded 経路（`--no-cache`・`--trap-info`・`-g`）にもリンク時 GC を入れました。
+  `numeric.c`・`numeric.ll`・`math.ll`・`numeric_tables.h` は変更せず、`integer.ll` は独立した Python の参照（format 47,029・spec 15,200・parse 71,235 件）と照合しています。
+  サイズは利用者が得る cache あり既定を主とし、`--no-cache` は別に表示します。float・decimal の `tz_soft_format` の分割は実施していません。
 - 8 チケットは別々の worktree で並行して開発し、重なる箇所の順に統合します。`src/driver.rs` を触る PB03 → PM08 → PB04、runtime の PR06・PM05、
   `src/llvm.rs` の PM01 → PR03 → PR02 の順で、統合のたびに生成 IR の差分（既定の出力が変わらないこと）と全 suite を再確認します。
   共有機で並行して進めるため、時間の測定は排他的な窓で行い、負荷を記録します。各チケットの時間の数値は参考値で、
