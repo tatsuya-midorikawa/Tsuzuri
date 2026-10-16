@@ -1,0 +1,63 @@
+export def range_edges :: i64 -> i64 -> bool -> i64
+fn range_edges first last down =
+    let mut total = 0i64
+    if down then
+        for i in first .. -1 .. last do
+            if i % 2 == 0 then continue
+            total = total + i * 3
+    else
+        for i in first .. last do
+            if i % 2 == 0 then continue
+            total = total + i * 3
+    total
+
+export def range_edges_u64 :: i64u -> i64u -> i64
+fn range_edges_u64 first last =
+    let mut total = 0i64u
+    for i in first .. last do total = total + (i ^ 5i64u) * 7i64u
+    total as i64
+
+export def range_edges_u32 :: i32u -> i32u -> i64
+fn range_edges_u32 first last =
+    let mut total = 0i64
+    for i in first .. last do total = total + (i as i64) * 3
+    total
+
+export def range_edges_i8 :: i8 -> i8 -> bool -> i64
+fn range_edges_i8 first last down =
+    let mut total = 0i64
+    if down then
+        for i in first .. -1i8 .. last do total = total * 31 + (i as i64)
+    else
+        for i in first .. last do total = total * 31 + (i as i64)
+    total
+
+export def range_edges_i128 :: i64
+fn range_edges_i128 =
+    let mut count = 0i64
+    let mut low = 0i64
+    for i in 170141183460469231731687303715884105724i128 .. 170141183460469231731687303715884105727i128 do
+        count = count + 1
+        low = low + (i as i64)
+    for i in -170141183460469231731687303715884105725i128 .. -1i128 .. -170141183460469231731687303715884105728i128 do
+        count = count + 1
+        low = low + (i as i64)
+    count * 1000 + low
+
+export def each_break :: i64 -> i64
+fn each_break n =
+    let values = new [i64](n, \i -> i)
+    let mut total = 0i64
+    for value in values do
+        if value == 100 then break
+        total = total + value
+    total
+
+export def each_continue :: i64 -> i64
+fn each_continue n =
+    let values = new [i64](n, \i -> i * 7 - 3)
+    let mut total = 0i64
+    for value in values do
+        if value % 3 == 0 then continue
+        total = total + value
+    total
