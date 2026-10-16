@@ -25,8 +25,11 @@ const wasmOptions = process.env.TSUZURI_TEST_WASM_SIMD === "1" ? ["--wasm-featur
 // wasm64 needs Node.js 24 or newer.
 const wasmTarget = process.env.TSUZURI_TEST_WASM_TARGET ?? "wasm32";
 // F13: `host` builds the native IR and header with --allocator host and tracks tsuzuri_host_*.
+// PM05: `small` builds it with --allocator small; the C library's calls are still tracked, and after each call every block
+// that the size classes cut from a region is back in a cache or a central stack and nothing else is live.
 const hostAllocator = process.env.TSUZURI_TEST_ALLOCATOR === "host";
-const allocatorOptions = hostAllocator ? ["--allocator", "host"] : [];
+const smallAllocator = process.env.TSUZURI_TEST_ALLOCATOR === "small";
+const allocatorOptions = hostAllocator ? ["--allocator", "host"] : smallAllocator ? ["--allocator", "small"] : [];
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
@@ -2104,6 +2107,14 @@ function run(name, suite) {
 #include <stdlib.h>
 #include "tz-${name}.h"
 static _Atomic uint64_t live;
+${smallAllocator && sourceIr.includes("@tz_small_stats(") ? `void tz_small_stats(uint64_t *out);
+/* The size classes' own malloc blocks (regions, leaves, caches) stay live; out[4] is their size. */
+static int balanced(void) {
+    uint64_t stats[5];
+    tz_small_stats(stats);
+    return stats[0] == stats[1] && live == stats[4];
+}
+#define NO_LEAK balanced()` : "#define NO_LEAK (live == 0)"}
 void *tracked_alloc(uint64_t size) {
     uint64_t *p = malloc((size_t)size + 16);
     assert(p);
@@ -2150,12 +2161,12 @@ int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
             ${traps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
-            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && live == 0 ? 0 : 1;`).join("\n")}
+            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && NO_LEAK ? 0 : 1;`).join("\n")}
         }
         return 0;
     }
     ${[...suite.cases, ...suite.nativeCases ?? []].map(([exported, args, expected]) =>
-    `assert(tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)}); assert(live == 0);`).join("\n    ")}
+    `assert(tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)}); assert(NO_LEAK);`).join("\n    ")}
     return 0;
 }
 `);

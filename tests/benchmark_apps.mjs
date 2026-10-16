@@ -64,11 +64,15 @@ assert.equal(options.quick, true);
 assert.equal(options.cpu, "native");
 assert.equal(options.scale, 1);
 assert.equal(parseArguments(["--scale", "1e-3"]).scale, 0.001);
+// PM05: the allocator of the timing object, system unless asked.
+assert.equal(options.allocator, "system");
+assert.equal(parseArguments(["--allocator", "small"]).allocator, "small");
 for (const args of [
   ["--unknown"], ["--baseline", "x"], ["-O3"], ["--quick", "--quick"],
   ["--scale", "1", "--scale", "1"], ["--cpu", "generic", "--cpu", "generic"],
   ["--metrics", "x", "--metrics", "y"], ["--artifacts", "x", "--artifacts", "y"],
   ["--scale"], ["--cpu"], ["--metrics"], ["--artifacts"],
+  ["--allocator"], ["--allocator", "host"], ["--allocator", "small", "--allocator", "small"],
   ["--metrics", "--quick"], ["--metrics", "-x"], ["--artifacts", "-q"], ["--quick", "--scale", "1"],
   ["--scale", "0"], ["--scale", "-1"], ["--scale", "Infinity"], ["--scale", "NaN"],
   ["--scale", "0x1"], ["--scale", "10.1"], ["--cpu", "wrong"],

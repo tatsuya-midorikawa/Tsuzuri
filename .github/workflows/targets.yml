@@ -125,6 +125,18 @@ jobs:
           node tests/features.mjs target/release/tsuzuri storage
           node tests/features.mjs target/release/tsuzuri last_use
           node tests/features.mjs target/release/tsuzuri param_facts
+      # PM05: the WASM heap alone, the unit tests of the size-class allocator (plain, ASan+UBSan, TSan), --allocator small end
+      # to end, and the vec and storage suites with every block of the size classes accounted for.
+      - name: WASM heap and size-class allocator
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          node tests/wasm_heap.mjs
+          node tests/small_allocator.mjs target/release/tsuzuri
+          TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri vec
+          TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri storage
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
