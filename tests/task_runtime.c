@@ -1,3 +1,5 @@
+/* The checks are assertions: some toolchains define NDEBUG for optimized builds (the bundled Windows toolchain does from -O1). */
+#undef NDEBUG
 #include <assert.h>
 #include <errno.h>
 #if defined(_WIN32)
@@ -224,9 +226,12 @@ int main(int argc, char **argv) {
     assert(tsuzuri_task_parallel_results(result_stop, hits, ITEMS) == 3);
     for (unsigned index = 0; index <= 3; ++index) assert(atomic_load(&hits[index]) == 1);
     if (required == 1) for (unsigned index = 4; index < ITEMS; ++index) assert(atomic_load(&hits[index]) == 0);
+    // Whatever was started after the failure was recorded ran once, never twice.
+    for (unsigned index = 4; index < ITEMS; ++index) assert(atomic_load(&hits[index]) <= 1);
     reset_hits();
     assert(tsuzuri_task_parallel_results(result_failure, hits, ITEMS) == 2);
-    assert(atomic_load(&hits[2]) == 1);
+    assert(atomic_load(&hits[0]) == 1 && atomic_load(&hits[1]) == 1 && atomic_load(&hits[2]) == 1);
+    for (unsigned index = 3; index < ITEMS; ++index) assert(atomic_load(&hits[index]) <= 1);
     assert(tsuzuri_task_parallel_results(NULL, NULL, 0) == UINT64_MAX);
     tz_task_shutdown();
     tz_task_shutdown();

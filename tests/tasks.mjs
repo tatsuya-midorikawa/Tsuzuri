@@ -177,6 +177,23 @@ int main(int argc, char **argv) {
       }
     }
 
+    // PR06: nested groups, the lowest failing index, one large group and pipelines from several hosts at
+    // once, with exact expected values and an alarm instead of a hang. The pool reads the CPU count once,
+    // so each count is a run of its own.
+    const stress = join(temporary, `stress-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`, "-pthread", "tests/task_stress.c", "-o", stress]);
+    for (const [cpus, hosts] of [[1, 3], [2, 1], [2, 4], [3, 3], [4, 1], [4, 6], [8, 8]]) {
+      assert.match(execute(stress, [String(cpus), String(hosts)]).stdout, /^task_stress: .* passed/);
+    }
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      const checked = join(temporary, `stress-${sanitizer}-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/task_stress.c", "-o", checked]);
+      for (const [cpus, hosts] of [[2, 1], [4, 6]]) {
+        assert.match(execute(checked, [String(cpus), String(hosts)]).stdout, /^task_stress: .* passed/);
+      }
+    }
+
     // F10 Phase 2: Tsuzuri pipelines between tasks that run at the same time, on pools of one to four
     // threads. Each size is its own build because the pool reads the CPU count once. A result never
     // depends on the schedule; an export that needs more threads than there are traps with the
@@ -257,6 +274,13 @@ ${channelTraps.map((name, index) => `        case ${channelCases.length + index}
     execute(native, []);
     for (const [index, name] of traps.entries()) {
       assert.notEqual(execute(native, [String(index)], false).status, 0, `native ${name}`);
+    }
+    // The result of a group never depends on how many threads run it: the same program on 2 to 4 threads, repeated.
+    for (const threads of [2, 3, 4]) {
+      const sized = join(temporary, `native-${optimization}-${threads}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", "-DTRACKING", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+        host, ir, "src/runtime/task.c", "-pthread", "-lm", "-o", sized]);
+      for (let repeat = 0; repeat < 3; repeat++) execute(sized, []);
     }
 
     const object = join(temporary, `tasks-${optimization}.o`);
