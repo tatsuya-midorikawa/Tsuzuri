@@ -363,9 +363,11 @@ ce_owned_capture 262144 42 == direct_owned_capture 262144 42
     assert.equal(instance.exports[`tz_ce_${name}`](262144n, 42n), instance.exports[`tz_direct_${name}`](262144n, 42n));
   }
 
-  // PR03: a return slot must not turn the tail calls of a union-returning mutual recursion or continuation into
-  // frames. At -O2 and -O3 LLVM compiles them to jumps, so 1e8 levels fit in the stack; -O0 and -O1 do not, and a
-  // sanitizer keeps its frames, so this runs only for the optimized native build.
+  // PR03: a return slot must not turn the tail calls of a union-returning recursion into frames. At -O2 and
+  // -O3 LLVM compiles them to jumps, so 1e8 levels fit in the stack; -O0 and -O1 do not, and a sanitizer keeps
+  // its frames, so this runs only for the optimized native build. The recursion runs through a mutual call, a
+  // continuation, a local that holds the call, and a closure that is passed to functions that are in no cycle
+  // by themselves.
   if (process.platform !== "win32" && sanitizer.length === 0) {
     const tailProject = join(temporary, "tail");
     mkdirSync(tailProject);
@@ -380,7 +382,27 @@ fn rec count_down n =
     else Maybe.bind (Some (n - 1)) (\m -> count_down m)
 export def bind_deep :: i64 -> i64
 fn bind_deep n = Maybe.default_value 0 (count_down n)
+def rec even_l :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else { let r = odd_l (n - 1); r }
+and odd_l :: i64 -> Maybe<i64> = \n -> if n == 0 then None else { let r = even_l (n - 1); r }
+export def parity_local_deep :: i64 -> i64
+fn parity_local_deep n = Maybe.default_value 0 (even_l n)
+def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
+fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+def rec descend :: i64 -> Maybe<i64>
+fn rec descend n =
+    if n == 0 then Some 7
+    else guard n (\m -> descend m)
+export def guard_deep :: i64 -> i64
+fn guard_deep n = Maybe.default_value 0 (descend n)
+def rec self_local :: i64 -> Maybe<i64>
+fn rec self_local n =
+    if n == 0 then Some 7
+    else { let r = self_local (n - 1); r }
+export def self_local_deep :: i64 -> i64
+fn self_local_deep n = Maybe.default_value 0 (self_local n)
 `);
+    // The value of each export at depth 1e8: an even depth ends in `Some 1`, the others in `Some 7`.
+    const tailCases = [["parity_deep", 1], ["bind_deep", 7], ["parity_local_deep", 1], ["guard_deep", 7], ["self_local_deep", 7]];
     const tailIr = join(temporary, "tail.ll");
     cli(["build", tailProject, "--emit", "llvm", "-o", tailIr]);
     cli(["build", tailProject, "--emit", "header", "-o", join(temporary, "tail.h")]);
@@ -390,7 +412,7 @@ fn bind_deep n = Maybe.default_value 0 (count_down n)
 #include <stdio.h>
 #include "tail.h"
 int main(void) {
-    printf("%lld %lld\\n", (long long)tz_parity_deep(100000000), (long long)tz_bind_deep(100000000));
+    printf("${tailCases.map(() => "%lld").join(" ")}\\n", ${tailCases.map(([name]) => `(long long)tz_${name}(100000000)`).join(", ")});
     return 0;
 }
 `);
@@ -398,7 +420,7 @@ int main(void) {
       const tailNative = join(temporary, `tail-${optimization}`);
       execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-I${temporary}`, tailHost, tailIr, "-lm", "-o", tailNative]);
       const result = execute(tailNative, [], false);
-      assert.equal(result.stdout, "1 7\n", `tail calls stay jumps at -O${optimization} (status ${result.status}, signal ${result.signal})`);
+      assert.equal(result.stdout, `${tailCases.map(([, value]) => value).join(" ")}\n`, `tail calls stay jumps at -O${optimization} (status ${result.status}, signal ${result.signal})`);
     }
     console.log("Computations: 1e8-level union tail recursion runs in constant stack at -O2 and -O3");
   }

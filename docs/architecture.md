@@ -75,7 +75,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm_frame.rs` | `new` を伴わないリテラル・小さな文字列連結・局所の捕捉環境のスタック配置、実行時アドレス判定、スコープ外移動時のヒープ移送、フレームを考慮した解放 |
 | `src/llvm_escape.rs` | immutable な局所の使用位置による滞在判定と、関数・lift 済み閉包の参照グラフの循環判定。PM06 の領域選択だけに使い、正しさは frame の移送・解放で保証 |
 | `src/llvm_facts.rs` | 内部参照の属性、上限付き SSA provenance、scoped alias・限定した scalar TBAA、値と memory effects の証明。`llvm.rs` の portable layout 下界と共有 metadata 番号を使い、不変性は `Type::is_frozen` で判定。opaque std・共有可変状態・隠れた環境を不変と推測しない |
-| `src/llvm_return_slot.rs` | PR03 の戻り値 slot。再帰しない tagged union を返す関数の複数の `ret` を、入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える post-pass（`facts::apply` の後）。slot は 1 KiB 以下。1 つでも平文の `ret` を保つ exit（循環にある関数の呼び出しの結果をそのまま返す exit など）があれば全 exit を保つ |
+| `src/llvm_return_slot.rs` | PR03 の戻り値 slot。再帰しない tagged union を返す関数の複数の `ret` を、入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える post-pass（`facts::apply` の後）。slot は 1 KiB 以下。呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所、それらの欄）が 1 つでもあれば全 exit を平文の `ret` のまま残し、LLVM の末尾呼び出しを守る |
 | `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理。予算（1,024 個）を使い切った program だけ、関数と参照先の関数を深さ優先の順に出力し、各関数の worker をその直後に出力する 2 回目の出力（`Drain::DepthFirst`）で、連鎖を完成させる |
@@ -141,9 +141,12 @@ PM07 の `append` は左辺の frame が空のときだけ使用します。静�
 PR03 の戻り値 slot は、再帰しない tagged union（`Maybe`・`Result` など。payload のない enum と、slot が 1 KiB を超える型を除く）を返す関数に、`ret` が 2 つ以上あり、そのすべてを slot にできるときだけ使います。
 入口の alloca `%tz.return.slot` へ store し、`tz.return:` ブロックで load して 1 回だけ `ret` するので、inline 後に呼び出し側の aggregate phi が残りません。
 slot は `scopes` にも frame にも入れず、drop・移動の経路を変えません。
-呼び出しの結果をそのまま返す exit は、現在の関数が関数参照グラフの循環にある場合、呼び先が循環にある場合、呼び先が不明・間接の場合に平文の `ret` を保ちます。
-LLVM が末尾位置の union 返却の呼び出しを sibling call にする（`-O2` 以上。相互再帰の 1e8 段が native で通る）余地を残すためです。
+slot にできる exit は、値を作る exit（constructor）と、記憶域や変更しない引数から読む exit（参照外し・static・引数、引数の欄・添字・payload）だけです。
+呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所、それらの欄・添字・payload、その他の形）が 1 つでもある関数は、呼び先にかかわらず全 exit を平文の `ret` のまま残します。
+LLVM は `ret (call f)` を sibling call やループにし（native `-O2` 以上）、union を返す相互再帰、局所を経由する再帰、引数で渡した閉包を経由する再帰が 1e8 段でも定数のスタックで走ります。
+slot はこの呼び出しを隠し、閉包を引数で渡す再帰を含め、呼び先が循環に戻らないことを呼び出しグラフから証明できないので、呼び出しを返す関数には使いません。
 一部の exit だけを slot にしても `ret` が複数残って phi が消えないため、1 つでも保つ exit があれば全 exit を保ちます。
+`ret` の位置は最終の行から探します（`facts::apply` が本体の前に scope の宣言を挿入しても動き、`ret` の数が `emit_tail` の報告と合わない関数は書き換えません）。
 
 `llvm::last_use::LastUses` は具体化 IR の後方生存解析で、所有権チェッカーの State／loan は参照しません。
 ループと match の失敗先は固定点で扱い、訪問 100,000 回・深さ 128 を超えると結果全体を空にします。
@@ -1409,6 +1412,7 @@ Async は `tests/async.rs` が opaque / non-Copy、実際の借用を持つ call
 `tests/call_specialization.rs` と `tests/fixtures/computations/Optimization.tz` は、静的に既知の関数値、動的関数値、スコープ外へエスケープする関数値、可変引数の評価順序、所有権を持つ捕捉値および戻り値、相互再帰、ならびに特殊化予算上限に達した際の安全な通常経路へのフォールバックを網羅的に検査します。
 同じファイルの `standard_let_chain_workers_are_direct_and_allocation_free` は、`let!` が 2 つの標準 Maybe／Result の連鎖から到達する worker が確保・閉包の複製・間接呼び出し・apply wrapper を持たないこと（native と wasm32、IR の決定性を含む）を、`known_local_function_values_call_directly` は、let で束縛した関数値（捕捉付き lambda・捕捉なし lambda・部分適用）の呼び出しが直接であることを固定します。
 `exhausted_worker_budget_completes_chains_instead_of_cutting_all_of_them` は、600 個の連鎖が予算を使い切るとき、worker の定義が 1,024 個のまま、先頭の連鎖から到達する worker がすべて直接呼び出しで、最後の連鎖が通常の経路を使うことを、`workers_within_the_budget_are_emitted_in_request_order` は、予算内の program の worker が連続した id で要求順に出力されることを固定します。
+`union_results_return_through_one_slot` は戻り値 slot を使う関数（constructor・引数を返す exit、`facts::apply` が本体の前に scope の宣言を足す参照引数を含む）と使わない関数を、`tail_forwarding_to_a_cycle_keeps_every_ret` は、相互再帰・局所を経由する再帰・引数の閉包を経由する再帰を含む、呼び出しを返しうる exit が平文の `ret` のままであること、`no_call_result_leaves_through_a_slot_in_real_programs` は、ベンチマークと fixture の IR で呼び出しの結果が slot に入らないことを固定します。`tests/computations.mjs` は、この 5 つの再帰の 1e8 段が native `-O2`・`-O3` で通ることを実行して確かめます。
 コンピュテーション式の実行テストには、520 個の異なる継続によって予算を超過する大規模ケースや、300 個の `let!` の連鎖（約 2,400 個の worker を要求）で予算を使い切って結果が変わらないことの確認、`-O3` 最適化下で 262,144 回のコールバックを実行するストレステストが含まれ、ネイティブおよび WASM の双方でメモリ解放、スタック消費量、および演算結果の正確性が確認されています。
 `benchmarks/run-computations.mjs` は、最適化後 IR におけるメモリ確保回数と、手書きの Tsuzuri および C++ 実装との実行時間を分離して測定し、共有 CI 上では `--quick` による意味論の正しさの検査のみを実行します。
 Clang の AddressSanitizer（ASan）が利用可能な環境では、

@@ -5788,7 +5788,7 @@ native と wasm32 の `-O0` IR で固定します。
 
 ### 戻り値 slot の後（Phase 2、F1'）
 
-`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてを slot にできる関数だけを、
+`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてが値を作る・読む exit（constructor、参照外し・static・引数、引数の欄・添字・payload）の関数だけを、
 入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
 他の 8 対の IR と機械語、`@tz.specialized.` の 64 個は変わりません。
 
@@ -5801,11 +5801,13 @@ native と wasm32 の `-O0` IR で固定します。
   `ce_std_option_owned` に残る `phi` 1 個・`switch` 1 個は `direct_std_option_owned` にもある形です。
 - x86-64 の `ce_std_option` は 38 から 56 命令に増え、`direct`（53）より大きくなりました。前述のとおり命令数は性能の代理ではないので、IR と arm64 の一致を基準にします。
 - `-O3` の object の `__text` は 3,884 から 3,824 bytes です。
-- 循環にある関数や、呼び先が不明・循環にある exit は `ret` を保ちます。union を返す相互再帰の `parity_deep` と `Maybe.bind` の継続の `bind_deep` は、
-  1e8 段が native の `-O2`・`-O3` で戻り値 slot の前後とも通ります（`-O0`・`-O1` は前後とも 1e8 段で SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
-  すべての exit に slot を使うと `-O2`・`-O3` でも `parity_deep(1e8)` が SIGSEGV になるため、この規則にしました。
-- 全 exit を slot にできる関数（`if flag then helper x else None`、`helper` は循環にない）を呼ぶ側は、`-O3` の IR が 20 行から 7 行になりました。
-  循環の関数へ転送する exit を含む関数（`if flag then even_m x else None`）は全 exit が平文の `ret` のままで、呼ぶ側は 22 行から変わりません。
+- 呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所、それらの欄）を 1 つでも持つ関数は、全 exit が平文の `ret` のままです。LLVM は `ret (call f)` を sibling call やループにするので、
+  slot がその呼び出しを隠すと、union を返す再帰が定数のスタックで走らなくなります。5 つの再帰（相互再帰の `parity_deep`、`Maybe.bind` の継続の `bind_deep`、局所を経由する `parity_local_deep`、
+  閉包を引数で渡す `guard_deep`、自己再帰を局所で受ける `self_local_deep`）の 1e8 段は、native の `-O2`・`-O3` で基準も後も通ります（`-O0`・`-O1` は基準でも SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
+  呼び先が循環に入るかを呼び出しグラフで調べ、入らないときは呼び出しを返す exit も slot にする版は、局所を経由する再帰と、閉包を引数で渡す再帰（`guard` と `Maybe.bind` は参照の循環に入らないが、閉包がそこから戻る）の
+  1e8 段を `stack overflow`（終了コード 134）や SIGSEGV にしたので、取りやめました。
+- `if flag then helper x else None` のように exit が呼び出しの結果を返す関数は slot にしないので、呼ぶ側の `-O3` の IR は slot なしとほぼ同じです（`helper` が 2 つの constructor の exit を持つとき、基準 20 行、後 22 行。
+  `phi` 2・`switch` 1・`select` 1 は同じで、`helper` の slot が 2 行足します）。呼び出しを返す exit も slot にする版は 7 行にしましたが、上の理由で取りやめました。`helper x = Some (x * 3)` のように exit が 1 つの呼び先では、どの版も 4 行です。
   一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
 - 時間（`node benchmarks/run-computations.mjs <後のコンパイラ> --baseline <基準のコンパイラ> --metrics DIR --artifacts DIR`、native、`-O3`、15 標本の中央値と最小〜最大、3 回、
   `with-lock.sh measure` の中で実行、開始時の負荷平均は約 50、Node 24.21.0、Apple clang 21.0.0）。`std_option`（size 2,000,000、ms/呼び出し）は、基準 5.558・5.517・5.501（最小〜最大 5.397〜6.247）から
@@ -5814,6 +5816,7 @@ native と wasm32 の `-O0` IR で固定します。
   （`std_option_owned` は 0.188・0.186・0.194 対 0.195・0.190・0.198 で 2〜4% 短い向きですが、広がりが重なるので主張しません）。WASM の warmed 時間は 3 回で向きが揃わず（`std_option` の基準／後は 1.28・0.76・0.75）、何も主張しません。
   確保（`allocations_at_size_64`）は 10 種目とも前・後・direct で同じです。後のコンパイラは LTO なしの release build で、生成物は release build と同じ IR です（`cmp` で確認）。
   生データは `target/perf/PR03-after/`（git 管理外）です。共有 machine での値なので、静かな machine での再測定は統合時に行います。
+  その後に戻り値 slot の規則を狭めました（呼び出しを返す exit を持つ関数は slot にしない）が、`benchmarks/computations` を `-O3` で作る arm64 の機械語全体は byte 単位で同じなので、この値は変わりません。
 
 ### 特殊化の予算を使い切る連鎖（Phase 2c）
 

@@ -299,10 +299,27 @@ fn union_results_return_through_one_slot() {
          fn make flag value = if flag then Some value else None
          def pick :: i64 -> Result<i64, string>
          fn pick n = match n with | 0 -> Error \"zero\" | _ -> Ok (n * 2)
+         def pass :: bool -> Maybe<i64> -> Maybe<i64>
+         fn pass flag found = if flag then found else None
+         def pair :: ref mut i64 -> ref i64 -> Maybe<i64> =
+             \\a b -> if (deref a) > (deref b) then Some (deref a) else None
+         def window :: ref mut [i64..] -> ref [i64] -> i64 -> Maybe<i64> =
+             \\out input i -> if i < 0 then None else Some input[i]
          def helper :: i64 -> Maybe<i64>
          fn helper x = Some (x * 3)
          def wrap :: bool -> i64 -> Maybe<i64>
          fn wrap flag x = if flag then helper x else None
+         def hold :: bool -> i64 -> Maybe<i64>
+         fn hold flag x = if flag then { let r = helper x; r } else None
+         record Holder { value: Maybe<i64> }
+         def holder :: i64 -> Holder
+         fn holder x = Holder { value: Some x }
+         def read_param :: bool -> Holder -> Maybe<i64>
+         fn read_param flag h = if flag then h.value else None
+         def read_call :: bool -> i64 -> Maybe<i64>
+         fn read_call flag x = if flag then (holder x).value else None
+         def read_local :: bool -> i64 -> Maybe<i64>
+         fn read_local flag x = if flag then { let h = holder x; h.value } else None
          def single :: i64 -> Maybe<i64>
          fn single x = Some (x + 1)
          def scalar :: bool -> i64
@@ -317,8 +334,10 @@ fn union_results_return_through_one_slot() {
     .unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
-        // Two exits that construct or call an acyclic function share one slot and one `ret`.
-        for name in ["make", "pick", "wrap"] {
+        // Two exits that build a value, or read it from a parameter (or a field of one), share one slot
+        // and one `ret`. `pair` and `window` have the parameters that make `facts::apply` put scope
+        // declarations in front of the body, which moves every `ret` down.
+        for name in ["make", "pick", "pass", "pair", "window", "read_param"] {
             let function = body(&ir, &format!("tz.fn.Main.{name}"));
             assert_eq!(
                 function.matches("%tz.return.slot = alloca").count(),
@@ -334,9 +353,21 @@ fn union_results_return_through_one_slot() {
                 "{name}"
             );
         }
-        // One exit, a scalar or bare-tag result, a recursive union, and a result bigger than the
-        // slot limit keep their plain `ret`s.
+        for name in ["pair", "window"] {
+            let function = body(&ir, &format!("tz.fn.Main.{name}"));
+            assert!(
+                function.contains("noalias.scope.decl"),
+                "{name}: {function}"
+            );
+        }
+        // An exit that may hold the result of a call (a call, a local bound to one, or a field of either),
+        // one exit, a scalar or bare-tag result, a recursive union, and a result bigger than the slot limit
+        // keep their plain `ret`s.
         for (name, exits) in [
+            ("wrap", 2),
+            ("hold", 2),
+            ("read_call", 2),
+            ("read_local", 2),
             ("single", 1),
             ("helper", 1),
             ("scalar", 2),
@@ -357,10 +388,20 @@ fn union_results_return_through_one_slot() {
 
 #[test]
 fn tail_forwarding_to_a_cycle_keeps_every_ret() {
-    // LLVM makes a sibling call or a loop out of `ret (call f)` only; a slot would hide the call.
+    // LLVM makes a sibling call or a loop out of `ret (call f)` only; a slot would hide the call. The
+    // recursion can run through a local that holds the call (`even_l`, `self_local`) or through a closure
+    // that is passed as an argument to functions that are in no cycle by themselves (`guard`, `Maybe.bind`).
     let module = analyze(
         "def rec even_m :: i64 -> Maybe<i64> = \\n -> if n == 0 then Some 1 else odd_m (n - 1)
          and odd_m :: i64 -> Maybe<i64> = \\n -> if n == 0 then None else even_m (n - 1)
+         def rec even_l :: i64 -> Maybe<i64> = \\n -> if n == 0 then Some 1 else { let r = odd_l (n - 1); r }
+         and odd_l :: i64 -> Maybe<i64> = \\n -> if n == 0 then None else { let r = even_l (n - 1); r }
+         def rec self_local :: i64 -> Maybe<i64>
+         fn rec self_local n = if n == 0 then Some 7 else { let r = self_local (n - 1); r }
+         def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
+         fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+         def rec descend :: i64 -> Maybe<i64>
+         fn rec descend n = if n == 0 then Some 7 else guard n (\\m -> descend m)
          def rec count_down :: i64 -> Maybe<i64>
          fn rec count_down n = if n == 0 then Some 7 else Maybe.bind (Some (n - 1)) (\\m -> count_down m)
          def apply_to :: (i64 -> Maybe<i64>) -> i64 -> Maybe<i64>
@@ -371,12 +412,27 @@ fn tail_forwarding_to_a_cycle_keeps_every_ret() {
     .unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
-        // A function in a cycle, a call of one, and a call of an unknown function.
-        for name in ["even_m", "odd_m", "count_down", "apply_to", "wrap"] {
+        // A function in a cycle, a call of one, a call of an unknown function, a local that holds a call,
+        // and a callee that receives the closure of its recursion.
+        for name in [
+            "even_m",
+            "odd_m",
+            "even_l",
+            "odd_l",
+            "self_local",
+            "guard",
+            "descend",
+            "count_down",
+            "apply_to",
+            "wrap",
+        ] {
             let function = body(&ir, &format!("tz.fn.Main.{name}"));
             assert!(!function.contains("tz.return"), "{name} wasm={wasm}");
             assert_eq!(returns(function), 2, "{name} wasm={wasm}: {function}");
         }
+        // The workers that the closures are specialized into keep their calls as well.
+        assert!(ir.contains("@tz.specialized."), "wasm={wasm}");
+        assert_eq!(calls_stored_in_a_slot(&ir), Vec::<String>::new());
         let function = body(&ir, "tz.fn.Main.even_m");
         let lines: Vec<_> = function.lines().collect();
         let call = lines
@@ -390,6 +446,85 @@ fn tail_forwarding_to_a_cycle_keeps_every_ret() {
             ir,
             llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
         );
+    }
+}
+
+/// The functions of `ir` that store the result of a call into their return slot, which hides the call
+/// from LLVM's tail-call formation.
+fn calls_stored_in_a_slot(ir: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for block in ir
+        .split("\n\n")
+        .filter(|block| block.starts_with("define "))
+    {
+        let lines: Vec<_> = block.lines().collect();
+        for line in &lines {
+            let Some((operand, _)) = line
+                .strip_prefix("  store ")
+                .and_then(|rest| rest.split_once(", ptr %tz.return.slot"))
+            else {
+                continue;
+            };
+            let definition = format!("  {} = ", operand.split_whitespace().last().unwrap());
+            if lines.iter().any(|candidate| {
+                candidate
+                    .strip_prefix(&definition)
+                    .is_some_and(|value| value.starts_with("call "))
+            }) {
+                found.push(format!("{}: {line}", lines[0]));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn no_call_result_leaves_through_a_slot_in_real_programs() {
+    // The Maybe and Result builders, the computation fixtures and the slot fixture exercise most
+    // of the exit shapes; a slot is used somewhere in each of the first three.
+    let computations = analyze_modules(&[
+        (
+            "Main.tz",
+            include_str!("../benchmarks/computations/Main.tz"),
+        ),
+        (
+            "Checked.tc",
+            include_str!("../benchmarks/computations/Checked.tc"),
+        ),
+        (
+            "Delayed.tc",
+            include_str!("../benchmarks/computations/Delayed.tc"),
+        ),
+        (
+            "Fold.tc",
+            include_str!("../benchmarks/computations/Fold.tc"),
+        ),
+        (
+            "Identity.tc",
+            include_str!("../benchmarks/computations/Identity.tc"),
+        ),
+    ])
+    .unwrap();
+    let maybe_result = analyze(include_str!("fixtures/maybe_result/Main.tz")).unwrap();
+    let return_slot = analyze(include_str!("fixtures/return_slot/Main.tz")).unwrap();
+    for (name, module, uses_slot) in [
+        ("benchmarks/computations", computations, true),
+        ("fixtures/maybe_result", maybe_result, true),
+        ("fixtures/return_slot", return_slot, true),
+    ] {
+        for wasm in [false, true] {
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            assert_eq!(
+                calls_stored_in_a_slot(&ir),
+                Vec::<String>::new(),
+                "{name} wasm={wasm}"
+            );
+            assert_eq!(
+                ir.contains("%tz.return.slot = alloca"),
+                uses_slot,
+                "{name} wasm={wasm}"
+            );
+        }
     }
 }
 

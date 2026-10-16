@@ -52,15 +52,18 @@
   `emit` の `facts::apply` の直後の 1 呼び出しだけにする。`llvm_control.rs`・`llvm_bulk.rs`・`llvm_abi.rs`・`closure_wrappers`・builtin の `auxiliary` は変えない。
 - 対象の判定は 1 つの関数 `uses_return_slot(ty, module)` にまとめる: 結果が再帰でない `Type::Union` で、`union_layout` が `Enum` でなく、`storage_layout` の大きさが 1 KiB 以下。
   PM01 の niche など「スカラーの表現」の layout を足すときは、この関数だけを直す。
-- `emit_tail` の既定の枝で `ret` を出した直後に、その `ret` の行の番号を記録するか、平文の `ret` を保つと印を付ける（`FunctionEmitter::note_union_return`）。
-  保つのは、exit が呼び出しの結果をそのまま返し、かつ (現在の関数が循環にある `recursive_functions`) または (呼び先が循環にある) または (呼び先が不明・間接) のとき（規則 D）。
-  constructor・局所・欄・添字・payload・参照外し・static の exit と、循環にない既知の呼び先への exit は slot にできる。それ以外の形は平文の `ret` を保つ。
-- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上あり、平文を保つ exit が 1 つも無いときだけ、
+- `emit_tail` の既定の枝で `ret` を出した直後に、slot にできる exit の数を数えるか、平文の `ret` を保つと印を付ける（`FunctionEmitter::note_union_return`）。
+  slot にできるのは、値を作る exit（constructor）と、読む exit（参照外し・static・変更しない引数、変更しない引数の欄・添字・payload）だけ。呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所・それらの欄・その他の形）は、
+  呼び先が何であっても平文の `ret` を保つ（規則 E）。最初の版の規則 D は、現在の関数と呼び先が `recursive_functions` の循環に入らない呼び出しの exit を slot にできるとしたが、
+  レビューが、局所を経由する再帰と、閉包を引数で渡す再帰（`guard` と `Maybe.bind` は参照の循環に入らないが、閉包がそこから戻る）の 1e8 段を `stack overflow` にすると指摘した。
+  呼び先が循環に戻らないことは参照グラフから証明できないので、呼び出しを返す exit は slot にしない。
+- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上あり、平文を保つ exit が 1 つも無いときだけ、最終の `lines` の `  ret ` の行
+  （`facts::apply` が本体の前に `noalias.scope.decl` を挿入するので、記録した行番号は使わない。数が報告した exit の数と合わないときは書き換えない）の
   すべての `ret T V[, !dbg !N]` を `store T V, ptr %tz.return.slot[, !dbg !N]` と `br label %tz.return[, !dbg !N]` に書き換え、入口の alloca（`%tz.return.slot = alloca T, align 16`）と
   `tz.return:`（`%tz.return.value = load`、`ret`）を足す。名前は固定。slot は `scopes`・frame に入れない（停止条件 7 は起こらない）。
   一部の exit だけを slot にしても `ret` が複数残り、inline 後の phi は消えないので、1 つでも保つ関数は全 exit を保つ
   （`if flag then even_m x else None` を呼ぶ関数で確かめた。一部だけ slot にした IR は slot なしと同じ）。
-- 新しい停止条件: `parity_deep(1e8)`・`bind_deep(1e8)` が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
+- 新しい停止条件: `parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep`（1e8 段）が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
   `ce_std_option`・`std_option_owned` の K1 が消えない（F1' を戻して報告する）。
 
 ### C0〜C6（実装順。各段をコミットする）
@@ -691,15 +694,18 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 | C0 | `19d795d6` | 「着手時の再検討」（食い違いの表、F1'、C0〜C6、本文の読み替え） |
 | C1 | `e3419fcc` | Phase 1。`tests/call_specialization.rs` に `standard_let_chain_workers_are_direct_and_allocation_free`・`known_local_function_values_call_directly`、`docs/benchmarks.md` に数え方と 10 対の分類。IR は変えていない（corpus の `--emit llvm` が基準と byte 一致） |
 | C2 | `8fed1e16` | Phase 2a。F1'（`src/llvm_return_slot.rs`、`src/llvm.rs` に 6 行）。`tests/call_specialization.rs` に `union_results_return_through_one_slot`・`tail_forwarding_to_a_cycle_keeps_every_ret`、`--lib return_slot` に 3 件 |
-| C3 | `6cc47077` | E2E。`tests/features.mjs` の suite `return_slot`（`tests/fixtures/return_slot`、69 件）、`tests/computations.mjs` の native `-O2`／`-O3` の末尾呼び出し guard |
+| C3 | `6cc47077` | E2E。`tests/features.mjs` の suite `return_slot`（`tests/fixtures/return_slot`、初版 69 件、レビューの修正で 83 件）、`tests/computations.mjs` の native `-O2`／`-O3` の末尾呼び出し guard |
 | C5 | `80251cc1` | worker 予算の崖。予算を使い切った program だけ 2 回目の出力を深さ優先で行う（`src/call_specialization.rs`・`src/llvm.rs`・`src/llvm_escape.rs`）。`tests/call_specialization.rs` に 2 件、`tests/computations.mjs` に 300 連鎖の E2E |
-| C4・C6 | このコミット | 計測と文書（`docs/benchmarks.md`・`docs/language.md`・`README.md`・`computation-expressions.md`）、D3 の取り下げ、このチケットの完了 |
+| C4・C6 | `fb6d13bd`・`78b8188d` | 計測と文書（`docs/benchmarks.md`・`docs/language.md`・`README.md`・`computation-expressions.md`）、D3 の取り下げ、このチケットの完了 |
+| レビューの修正 | `972f23eb`・`1d056c91`・このコミット | 規則 D → 規則 E、`ret` を最終の `lines` から探す、試験・文書（下の「レビューの指摘と修正」） |
 
 ### 実装した内容
 
 - F1'（`src/llvm_return_slot.rs`）。非再帰の `Type::Union`（`UnionLayout::Enum` を除く、`storage_layout` が 1 KiB 以下）を返す関数のうち、`ret` が 2 つ以上あり、どの `ret` も slot にできるものを、入口の `alloca`
   への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える。`facts::apply` の後の post-pass で、`llvm.rs` の変更は module 宣言・欄 1 つ・初期化・2 つの呼び出しの 6 行だけ。
-  規則 D: 呼び出しの結果をそのまま返す exit は、現在の関数が循環にあるか、呼び先が循環にあるか、呼び先が不明なとき平文の `ret` を保ち、1 つでも保つ関数は全 exit を保つ（一部だけ slot にしても inline 後の `phi` が消えない）。
+  規則 E: 値を作る exit（constructor）と読む exit（参照外し・static・変更しない引数、その欄・添字・payload）だけを slot にし、呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所・それらの欄）を 1 つでも持つ関数は、
+  呼び先にかかわらず全 exit を平文の `ret` のまま残す。一部だけ slot にしても inline 後の `phi` が消えないので、1 つでも保つ関数は全 exit を保つ。最初の版の規則 D（呼び先が循環にない呼び出しは slot にする）は、
+  レビューの指摘で規則 E に置き換えた（下の「レビューの指摘と修正」）。`ret` は最終の `lines` から探し、数が合わない関数は書き換えない。
   対象の判定は `uses_return_slot(ty, module)` の 1 関数で、PM01 の「niche は除く」はこの関数に足す。
 - worker 予算（C5）。`emit_program` は従来どおり出力し、`Specializations::exhausted()`（要求が予算に断られた）ときだけ、2 回目を `Drain::DepthFirst` で出力する。
   関数を、その関数が名前で参照する関数（束縛ごとの lift 済みラムダ）が直後に続く順（`reference_order`）に出力し、各関数の worker を直後に出力する。予算内の program は byte 単位で以前と同じ。
@@ -717,27 +723,78 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`: 各段で問題なし。
 - GUIDE §3.1 の 4 件（`--test polymorphism bounds_type_growing_polymorphic_recursion`・`--lib bounds_recursive_and_flat_expression_depth`・`--test computations bounds_nested_builder_expansion_not_just_source_syntax`・
   `honors_the_exact_specialization_limit`）: すべて `running 1 test`・1 passed。
-- `cargo test --locked --test call_specialization`: `running 12 tests`・12 passed（Phase 1 の 2 件・F1' の 2 件・予算の 2 件を含む）。`--lib`: 226 passed（`return_slot` の 3 件を含む）。
+- `cargo test --locked --test call_specialization`: `running 13 tests`・13 passed（Phase 1 の 2 件・F1' の 3 件・予算の 2 件を含む）。`--lib`: 227 passed（`return_slot` の 4 件を含む）。
   関連: `computations` 30、`coverage` 8、`debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10、`multiversion` 5、`storage` 21、`user_drop` 26 がすべて通過。
-- 全体 `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）: C2 の時点（`8fed1e16`）で 103 binary・1,312 passed・0 failed・1 ignored。C5 の後は、`--lib` 226、`call_specialization` 12、`computations` 30、`coverage` 8、
+- 全体 `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`）: C2 の時点（`8fed1e16`）で 101 binary・1,312 passed・0 failed・1 ignored。C5 の後は、`--lib` 226、`call_specialization` 12、`computations` 30、`coverage` 8、
   `debug_info` 9、`local_recursion` 14、`maybe_result` 9、`param_facts` 9、`tail_recursion` 6、`trap_locations` 8、`union_types` 10 が通過。最終のコード（C5 の実装に文書とチケットだけを足したもの）での
-  `cargo test --locked --no-fail-fast`（`with-lock.sh heavy` の 1 件、約 20 分）: 103 binary・1,314 passed・0 failed・1 ignored（`copy_inventory` の測定用）で終了コード 0。
-- E2E（native／WASM × `-O0`／`-O3`、`live == 0`、WASM は import なし）。`tests/features.mjs` の suite `return_slot` は 69 件で、IR の slot 数・`ret` 数・`tz.return` の有無も確かめる。
+  `cargo test --locked --no-fail-fast`（`with-lock.sh heavy` の 1 件、約 20 分）: 101 binary・1,314 passed・0 failed・1 ignored（`copy_inventory` の測定用）で終了コード 0
+  （規則 D の版 `78b8188d` の結果。binary の数は当初 103 と書いたが、`test result_…` という名前の 2 件を数えた誤りで、実際は 101。規則 E に直した後の全体の再実行は「レビューの指摘と修正」）。
+- E2E（native／WASM × `-O0`／`-O3`、`live == 0`、WASM は import なし）。`tests/features.mjs` の suite `return_slot` は 83 件で、IR の slot 数・`ret` 数・`tz.return` の有無も確かめる。
   基準のコンパイラでは `make: one return slot 0 !== 1` で失敗する（実装の前に赤、後に緑）。`tests/computations.mjs` は `-O0`／`-O3` で 71 件と 3 trap、
-  native `-O2`／`-O3` の `parity_deep(1e8)`・`bind_deep(1e8)`（`1 7`）、300 連鎖の予算（worker の定義が 1,024 個、結果は JS の参照と一致、native と WASM の `-O0`／`-O3`）。
+  native `-O2`／`-O3` の再帰 5 形（`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep`）の 1e8 段（`1 7 1 7 7`）、300 連鎖の予算（worker の定義が 1,024 個、結果は JS の参照と一致、native と WASM の `-O0`／`-O3`）。
   release binary（`target/release/tsuzuri`、thin LTO）での Node suite: `computations`・`e2e`・`primitives`・`control`・`tasks`・`user_drop`・`cpu_dispatch`・`json` は通過、`io` は通常の優先度で通過
   （`nice 19` で負荷平均 180 のとき、prompt の表示待ちが timeout して失敗した）、`debug_info` は `TSUZURI_DWARFDUMP`・`TSUZURI_LLVM_LINK` を Homebrew の LLVM 21 に向けて通過（環境に無い tool で最初は失敗）。
   `features.mjs` の 16 suite（`return_slot`・`unions`・`maybe_result`・`higher_kinds`・`last_use`・`local_recursion`・`computation_extensions`・`storage`・`param_facts`・`explicit_copy`・`consuming_update`・`exceptions`・
-  `recursive_types`・`typeclasses`・`deriving`・`stdlib`）は LTO なしの最終のコードで通過。`strings`・`examples`・全 `features.mjs` suite（14,175 件）・`async`（Node 24）も release binary で通過した
+  `recursive_types`・`typeclasses`・`deriving`・`stdlib`）は LTO なしの最終のコードで通過。`strings`・`examples`・全 `features.mjs` suite（14,175 件。規則 D の版）・`async`（Node 24）も release binary で通過した
   （`computations`〜`json` は、ロックの待ちが長かったため優先度を下げて 1 本ずつ、`strings` 以降は `with-lock.sh heavy` の 1 件で実行した）。
-- 全 corpus の IR の比較（`--emit llvm`、native と wasm32）。基準 → F1': native 109 件のうち 66 件が byte 一致、43 件は slot の書き換え（`ret` 1,857 個）を戻すと一致、不一致 0 件。
-  wasm32 104 件は 66 件が一致、38 件が戻すと一致（`ret` 1,586 個）で、不一致 0 件。skip の一覧も同じ。F1' → 最終: native 110 件・wasm32 105 件（`return_slot` を含む）がすべて byte 一致
-  （予算内の program は変わらない）。IR は native と wasm32 で 2 回出力して一致。
+- 全 corpus の IR の比較（`--emit llvm`、native と wasm32）。規則 D の版（初版）: 基準 → F1' は native 109 件のうち 66 件が byte 一致、43 件は slot の書き換え（`ret` 1,857 個）を戻すと一致、不一致 0 件。
+  wasm32 104 件は 66 件が一致、38 件が戻すと一致（`ret` 1,586 個）で、不一致 0 件。skip の一覧も同じ。F1' → C5 の最終: native 110 件・wasm32 105 件（`return_slot` を含む）がすべて byte 一致
+  （予算内の program は変わらない）。IR は native と wasm32 で 2 回出力して一致。規則 E に直した後の比較は「レビューの指摘と修正」。
 - Windows の型検査（rustup の `stable`、`PATH` と `RUSTC` を rustup の toolchain に向けた）: `cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` とも通過。
-- 末尾呼び出しの guard の感度: 全 exit を slot にした IR（書き換え）で `parity_deep(1e8)` は `-O2`・`-O3` とも終了コード 139。F1' の IR は基準と byte 一致で、通る。基準のコンパイラは `-O0`・`-O1` で 139（docs が保証するのは自己末尾呼び出しだけ）。
+- 末尾呼び出しの guard の感度: 全 exit を slot にした IR（書き換え）で `parity_deep(1e8)` は `-O2`・`-O3` とも終了コード 139。規則 E の IR は、`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep` の
+  1e8 段が `-O2`・`-O3` とも基準と同じ値（`1 7 1 7 7`）で通る。基準のコンパイラは `-O0`・`-O1` で 139（docs が保証するのは自己末尾呼び出しだけ）。
 - 差分テスト（`tsuzuri-final-fast`、F1'・C5 を含む最終のコード）: `tests/last_use_fuzz.mjs`（300 件、seed 1000、深さ 4、native `-O0`／`-O3` の 600 実行、差 0）・
   `tests/local_recursion_fuzz.mjs`（100 件が native `-O0`（3 件に 1 件は `-O3` も）で評価器と一致）。
 - `node scripts/check-docs.mjs _tsuzuri/language-reference/computation-expressions/computation-expressions.md`: 1 ページ・24 リンク・10 例・native 20 回（O0/O3）で通過。`docs/*.md`・`README.md` は `git diff --check`。
+
+### レビューの指摘と修正（2026-10-16）
+
+統合担当の独立したレビュー（`70f7c803..78b8188d`）が 2 件の問題と 1 件の文書の主張を指摘した。いずれも再現し、`972f23eb`・`1d056c91` と、このコミットで直した。
+
+1. 末尾呼び出しの退行（高）。初版の規則 D は、呼び先が循環にない呼び出しの exit も slot にした。規則 D が循環と認めない次の 2 形で、slot が LLVM の sibling call を壊した
+   （`ulimit -s 8192`、native `-O2`／`-O3`、深さ 1e8。基準は結果を出し、規則 D の版は `trap: stack overflow`（終了コード 134）か SIGSEGV（139））。
+   - 局所を経由する exit `{ let r = odd_m (n - 1); r }`。`Local` を「呼び出しを転送できない」に分類していた。SROA の後、基準は `ret (call)`、slot の版は `call; store; load; store`。
+   - 関数値の引数を経由する再帰 `guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k` と `loop n = … guard n (\m -> loop m)`。`guard`・`bind` は `escape::references` の SCC に無く、
+     `loop → W_guard → W_bind → lambda → loop` の鎖が末尾呼び出しを失った。
+   修正は規則 E（D8）。呼び出しの結果を返しうる exit を 1 つでも持つ関数は、全 exit を平文の `ret` のままにする。呼び先が循環に戻らないことは、引数の閉包・動的呼び出し・暗黙の Drop／Display の呼び出しを含め
+   参照グラフから証明できないので、呼び先を調べる規則は置かない（証明できないなら平文の `ret`）。slot にする exit は、値を作る・読むものだけ（constructor・欄・添字・payload・参照外し・static・変更しない引数）。
+2. slot が付かない取り逃し（中。誤った code ではない）。`note_union_return` は `facts::apply` の前に `self.lines.len() - 1` を記録したが、`facts::apply` は `ref`／slice の引数が 2 つ以上で `ref mut` が 1 つあるとき
+   `noalias.scope.decl` を先頭に挿入するため、記録した index がずれ、`rewrite` が書き換えを諦めて全 `ret` が残った（`ref mut i64 → ref i64 → Maybe<i64>`: slot 0 個、`ret` 2 個）。
+   `rewrite` は index を受け取らず、最終の `lines` から `  ret ` の行を探し、数が報告された exit の数と一致し、すべてが結果型の接頭辞を持つときだけ書き換える（合わなければ何も変えない）。
+   報告されない `ret`（`llvm_control.rs` の `lookup_match` の末尾）がある関数も、数が合わないので書き換えない。同じ引数の関数は slot 1 個・`ret` 1 個になった。
+3. 文書の「20 → 7 行」。規則 D の「呼び出しを転送する slot」でだけ成り立つ数だった。`use_wrap3`（`helper` が constructor の exit を 2 つ持ち、`wrap3 flag x = if flag then helper x else None`）の呼び出し側は
+   `-O3` で基準 20 行・規則 D 7 行・規則 E 22 行（`phi` 2・`switch` 1・`select` 1 は基準と同じで、`helper` の slot が 2 行足す）。`use_wrap2` は 22・22・22、レビューの変種（`helper x = Some (x * 3)`）は 4・4・4。
+   呼び出しを返す関数に F1' の効果は無いので、`docs/benchmarks.md` からこの主張を外した。
+4. 自己点検での絞り込み（誤った code の報告ではない）。規則 E の最初の版は、欄・添字・payload の exit を、元の値にかかわらず slot にしていた。呼び出しの結果の欄（`(holder x).value`）や、呼び出しを束縛した局所の欄は、
+   呼び出しの値が `extractvalue` を通って `ret` に届きうるので、元の値が変更しない引数・記憶域（参照外し・static）であるときだけ slot にする（`reads_storage`）。この形が基準で末尾呼び出しになる例は見つからず
+   （4 関数の相互再帰 `fa → ub → fb → ua → fa` は基準も `-O2`・`-O3` で SIGSEGV）、退行の実例は無い。「証明できなければ平文の `ret`」を徹底しただけで、corpus の IR は最初の版と byte 一致のまま（下の比較）。
+
+修正後の確認（Rust は debug の test binary、E2E の release は thin LTO。IR・機械語は決定的で、時間は測っていない）:
+
+- 再現（native、`ulimit -s 8192`、1e8）。t2（`guard`、期待値 7）と t3（局所、期待値 1）は、基準が期待値、規則 D の版が 134、修正後が `-O2`・`-O3` とも期待値。5 形（`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・
+  `self_local_deep`、期待値 `1 7 1 7 7`）は、基準が通り、規則 D の版が 139、修正後が通る。
+- 試験（実装の前に赤）。`tests/call_specialization.rs` の `union_results_return_through_one_slot`（`noalias.scope.decl` が先頭に入る `ref mut`＋`ref` の引数の関数が slot 1 個・`ret` 1 個。引数の欄を返す `read_param` は slot、
+  呼び出しの結果の欄を返す `read_call` と呼び出しを束縛した局所の欄を返す `read_local` は平文の `ret`）・
+  `tail_forwarding_to_a_cycle_keeps_every_ret`（局所・自己の局所・閉包再帰・引数の関数を追加）・`no_call_result_leaves_through_a_slot_in_real_programs`（新規。`benchmarks/computations`・`maybe_result`・`return_slot` の
+  3 program で、slot への store が呼び出しの結果を運ばない）の 3 件が、規則 D の版で失敗し、修正後に通る（`read_call`・`read_local` の確認は、規則 E の最初の版でも失敗する）。
+  `--lib return_slot` は 4 件（先頭に行が入った後でも exit を見つける試験を追加し、報告と数が合わなければ書き換えない試験に直した）。
+  `tests/features.mjs` の `return_slot`（83 件。`slot_hold`・`slot_descend`・`slot_read_call`・`slot_read_local` と、`hold`・`descend`・`read_call`・`read_local` の `ret` 数を追加）は規則 D の版で `wrap: no return slot` で失敗する。`tests/computations.mjs` の guard は 5 形の 1e8 段。
+- IR の比較（`--emit llvm`、native と wasm32）。基準 → 規則 E: native 110 件（67 件が byte 一致、43 件は slot の書き換えを戻すと一致、不一致 0、`ret` 1,265 個）、wasm32 105 件（67 件と 38 件、不一致 0、`ret` 1,123 個）。skip の一覧は同じ。
+  規則 D → 規則 E: native は 110 件のうち 90 件が byte 一致で 20 件が変わり、259 関数が slot を失い（`return_slot` の fixture に足した関数を含む）、得た関数は 0、他の変更は 0。wasm32 は 105 件のうち 90 件が一致、15 件が変わり、209 関数が slot を失い、得た関数 0、他の変更 0。
+  規則 E の最初の版との比較は、`return_slot` の fixture（比べるたびに関数を足した）以外の native 109 件・wasm32 104 件が byte 一致で、fixture も同じ版で出力すると byte 一致（`reads_storage` は corpus の IR を変えない）。
+  `benchmarks/computations` の arm64 の `.s` は規則 D の版と byte 一致なので、M4 の時間は規則 E にも当てはまる（slot のある関数は 11 → 10 個で、失ったのは呼び出しの exit を持つ Result の bind の worker 1 個）。
+  10 対の IR の行数・`phi`・`switch`、`__text` 3,824 bytes、worker 64 個も規則 D の版と同じ。wasm32 の CODE section は `-O3` 9,191 bytes（基準 +0.51%）、`-O0` 28,541 bytes（+0.27%。規則 D は +0.34%）。
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings`: 問題なし。`--test call_specialization` 13、`param_facts` 9、`union_types` 10、`maybe_result` 9、`debug_info` 9、`computations` 30、
+  `coverage` 8、`local_recursion` 14、`multiversion` 5、`storage` 21、`tail_recursion` 6、`trap_locations` 8、`user_drop` 26、`--lib` 227 が通過。
+- Windows の型検査（`cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`）: 通過。
+- release binary（thin LTO、`target/release/tsuzuri`、最終のコード）: `node tests/computations.mjs`（`-O0`／`-O3` で 71 件・3 trap、5 形の 1e8 段が `-O2`・`-O3` で通る）と
+  `node tests/features.mjs <release> return_slot`（83 件、native／WASM × `-O0`／`-O3`）が通過し、`benchmarks/computations`・`fixtures/return_slot`・`fixtures/maybe_result` の `--emit llvm` は LTO なしのビルドと byte 一致。
+  再現の t2・t3（`-O2`・`-O3`、1e8）は期待値（7・1）、t6 の `mut_pair`・`slices` は slot 1 個・`ret` 1 個。
+  差分 fuzz は差 0（`tests/local_recursion_fuzz.mjs` 100 件が native `-O0`（3 件に 1 件は `-O3` も）で評価器と一致、`tests/last_use_fuzz.mjs` 150 件・native `-O0`／`-O3` の 300 実行、seed 1000、深さ 4）。
+- `with-lock.sh heavy` の 1 件（最終のコード、`c93e2008` と同じ src）: `features.mjs` の 16 suite を release binary で実行して通過
+  （`return_slot` 83、`unions` 27、`maybe_result` 26、`higher_kinds` 17、`last_use` 120、`local_recursion` 130、`computation_extensions` 13、`storage` 24、`param_facts` 113、`explicit_copy` 10、
+  `consuming_update` 10、`exceptions` 76、`recursive_types` 23、`typeclasses` 39、`deriving` 209、`stdlib` 3 件）。続けて `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（1,161 秒）:
+  101 binary・1,316 passed・0 failed・1 ignored（`copy_inventory`）で終了コード 0（規則 D の版の 1,314 件より、`call_specialization` と `--lib` の新しい試験の 2 件が多い）。
 
 ### 計測（§14。`docs/benchmarks.md` の `## 抽象化コストの除去（PR03、2026-10-16）`）
 
@@ -751,7 +808,7 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 | 他の 8 対（bind・checked・delayed・array_for・array_bind・owned_capture・std_result・std_option_length） | — | 変化なし | IR・機械語とも byte 単位で同じ |
 | M3 確保（`allocations_at_size_64`、決定的） | bind・checked・delayed・std_option・std_result・std_option_length は 0 回、array_for・array_bind は 1 回 512 bytes、owned_capture は 1 回 2,048 bytes、std_option_owned は 55 回 1,210 bytes | 同じ | direct・ce・基準の 3 者が全種目で一致 |
 | M5 native `__text`（`benchmarks/computations`、`-O3`） | 3,884 bytes | 3,824 bytes（−1.5%） | 5% 以内 |
-| M5 wasm32 CODE section（`-O3`／`-O0`） | 9,144／28,463 bytes | 9,191／28,559 bytes（+0.51%／+0.34%） | 5% 以内 |
+| M5 wasm32 CODE section（`-O3`／`-O0`） | 9,144／28,463 bytes | 9,191／28,541 bytes（+0.51%／+0.27%） | 5% 以内 |
 | M6 worker 数（`comp.ll`／`chain.ll`） | 64／9 | 64／9 | 変化なし |
 | C5 300 連鎖: 間接呼び出しを持つ export／`__text`／ループの user CPU | 300 個／46,804 bytes／1.71 秒 | 0 個／24,036 bytes／0.91 秒 | N=200: 89 個／20,940 bytes → 0 個／14,784 bytes。N≤128 は byte 一致。compile 時間（user CPU）は 0.24 秒 → 0.29〜0.31 秒 |
 | M4 時間（native、ms/呼び出し、15 標本の中央値、3 回） | `std_option` 5.558・5.517・5.501 | 4.755・4.826・4.685（−14〜17%、3 回とも同じ向き、広がりが重ならない） | `direct_std_option` は 4.744・4.821・4.688 で ce／direct は 1.00。他の 9 対は広がりの範囲内（ce／direct 0.92〜1.03、基準／後 0.98〜1.06）。WASM は向きが揃わず主張しない。共有 machine（負荷平均 約 50）での参考値 |
@@ -760,8 +817,9 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 
 - D1: F1' で確定（型付き IR での簡約は Phase 3 の D3 として取り下げ）。D2: 対象は非再帰・非 `Enum` の union を返す `fn`・`$lambda`・`@tz.specialized.*` で、exit が 2 つ以上で全 exit が slot にできるもの、1 KiB 以下。
   builtin・wrapper・export は対象外。名前は `%tz.return.slot`・`tz.return`・`%tz.return.value`。
-- D8（追加）: 規則 D は、1 つでも平文の `ret` を保つ exit がある関数の全 exit を保つ（all-or-nothing）。理由: 一部だけを slot にした試作は `ret` が複数残り、inline 後の `phi` が消えない。
-  slot 化で LLVM が末尾呼び出しにできなくなる相互再帰（`parity_deep(1e8)`）を守る。
+- D8（追加）: 規則 E は、呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所・それらの欄）を 1 つでも持つ関数の全 exit を平文の `ret` のままにする（all-or-nothing）。理由: 一部だけを slot にした試作は
+  `ret` が複数残り、inline 後の `phi` が消えない。呼び先が循環に戻らないことは、閉包を引数で渡す再帰を含め、参照グラフから証明できないので、呼び先を調べて slot にする規則 D は取りやめた。
+  slot 化で LLVM が末尾呼び出しにできなくなる再帰（`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep` の 1e8 段）を守る。
 - D9（追加）: 予算を使い切った program だけ 2 回目の出力を深さ優先にする（`reference_order`）。関数 id 順の深さ優先では、捕捉のない lambda が連鎖の根より後（高い id）に出て予算が先に尽き、連鎖が途中で切れた
   （600 連鎖の IR の試験が検出した）ため、参照順にした。予算内の program の出力は変えない。
 - D5: `MAX_SPECIALIZATIONS` は 1,024 のまま。到達しない worker は数を記録するだけ（C5 が崖を直したので引き上げは不要）。
@@ -770,7 +828,8 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 ### 見つけた問題・残作業
 
 - 起票の M2 の数え方（`.cfi_endproc` まで）は export 関数に CFI が無く、後続の関数を累積して数える。数え方は `-- End function` まで（`docs/benchmarks.md`）。起票の K4（機械語だけの差）は数え方の誤りで、存在しない。
-- 起票の F1（全 exit の slot 化）は LLVM の末尾呼び出し（sibling call）を壊す。docs が保証する末尾呼び出しは自己末尾呼び出しのループだけだが、HEAD は `-O2`／`-O3` で union を返す相互再帰を定数スタックで走らせており、これを守る。
+- 起票の F1（全 exit の slot 化）は LLVM の末尾呼び出し（sibling call）を壊す。docs が保証する末尾呼び出しは自己末尾呼び出しのループだけだが、HEAD は `-O2`／`-O3` で union を返す再帰（相互再帰・局所を経由する再帰・
+  引数の閉包を経由する再帰）を定数スタックで走らせており、これを守る（規則 E）。
 - x86-64 の `ce_std_option` は 38 から 56 命令に増えた（`direct` は 53）。arm64 は `direct` と同じ 24。命令数は性能の代理にしない。
 - `Instrumentation` が `Copy` になった（再出力のため）。他のチケットがこの構造体に `Copy` でない欄を足すと、`emit_program` の 2 回呼び出しを参照渡しか `Clone` に直す。
 - PM01 を先に統合するときは、`uses_return_slot` に「niche は除く」を足し、`param_facts`・`union_types`・`maybe_result` と `return_slot` の suite を再確認する（コンパイラの出力を調べる試験は
