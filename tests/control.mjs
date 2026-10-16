@@ -198,6 +198,35 @@ for (const seed of [0n, 1n, -1n, max, min, 123456789n, -987654321n, 65535n, 4294
   cases.push(["builtin_wrap", [seed], wrap(a + b * 3n + c + d + e + f)]);
 }
 cases.push(["builtin_order", [], 123007n]);
+// PR02: arithmetic that a range proof covers, and at the edge of the range, where a flag would be wrong.
+for (const n of [0n, 1n, 255n, 256n, 511n, 65535n, 0x7fffn << 8n | 100n, -1n, min, max]) {
+  const weight = (n >> 8n) & 255n;
+  let total = 0n;
+  for (let i = 0n; i <= (n & 255n); i++) total = wrap(total + wrap(wrap(i * 3n + 1n) * weight));
+  cases.push(["affine_sum", [n], total]);
+}
+for (const x of [0n, 1n, max - 1n, max, -1n, min + 1n, min]) {
+  for (const y of [0n, 1n, 2n, max, -1n, min]) {
+    const a = x >= 0n ? wrap(x + 1n) : wrap(x - 1n), b = y > 0n ? wrap(y - 1n) : wrap(y + 1n);
+    cases.push(["wrap_edges", [x, y], wrap(a * 3n + b)]);
+  }
+}
+for (const x of [-128, -1, 0, 1, 63, 64, 127]) {
+  for (const y of [-128, -1, 0, 1, 126, 127]) {
+    const s = BigInt.asIntN(8, BigInt.asIntN(8, BigInt(x & 63) * 2n) + 1n), t = BigInt.asIntN(8, BigInt(y & 127) + 1n);
+    cases.push(["narrow_wrap", [x, y], BigInt.asIntN(8, s + t) * 1000n + t]);
+  }
+}
+for (const x of [0, 1, 2, 127, 128, 255]) {
+  for (const y of [0, 1, 2, 127, 128, 255]) {
+    const a = x !== 0 ? (x - 1) & 255 : 255, b = (y - 1) & 255;
+    cases.push(["unsigned_sub", [x, y], BigInt((a + b) & 255)]);
+  }
+}
+for (const x of [-32768, -32767, -256, -1, 0, 1, 127, 128, 255, 256, 32767]) {
+  const wide = BigInt(x) * BigInt(x), narrow = BigInt.asIntN(8, BigInt.asIntN(8, BigInt(x & 255)) * 2n);
+  cases.push(["mixed_width", [x], wide * 1000n + narrow]);
+}
 for (const n of [0n, 1n, 2n, 100n, 101n, 4096n]) {
   let breaking = 0n, skipping = 0n;
   for (let i = 0n; i < n && i !== 100n; i++) breaking += i;

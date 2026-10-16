@@ -80,3 +80,36 @@ fn builtin_order =
     let mut log = 0
     let sum = Add.add (tick (&mut log) 1) (Mul.mul (tick (&mut log) 2) (tick (&mut log) 3))
     log * 1000 + sum
+
+// PR02: arithmetic that a range proof covers, next to arithmetic at the edge of the range, where a
+// flag would be wrong. The control suite runs these in the off, audit and proven modes.
+export def affine_sum :: i64 -> i64
+fn affine_sum n =
+    let weight = (n >>> 8) & 255
+    let mut total = 0i64
+    for i in 0 .. (n & 255) do total = total + (i * 3 + 1) * weight
+    total
+
+export def wrap_edges :: i64 -> i64 -> i64
+fn wrap_edges x y =
+    let a = if x >= 0 then x + 1 else x - 1
+    let b = if y > 0 then y - 1 else y + 1
+    a * 3 + b
+
+export def narrow_wrap :: i8 -> i8 -> i64
+fn narrow_wrap x y =
+    let s = (x & 63) * 2 + 1
+    let t = (y & 127) + 1
+    ((s + t) as i64) * 1000 + (t as i64)
+
+export def unsigned_sub :: i8u -> i8u -> i64
+fn unsigned_sub x y =
+    let a = if x != 0 then x - 1 else 255i8u
+    let b = y - 1
+    ((a + b) as i64)
+
+export def mixed_width :: i16 -> i64
+fn mixed_width x =
+    let wide = (x as i32) * (x as i32)
+    let narrow = ((x & 255) as i8) * 2
+    (wide as i64) * 1000 + (narrow as i64)
