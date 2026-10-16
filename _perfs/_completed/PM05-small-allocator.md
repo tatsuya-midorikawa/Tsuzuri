@@ -785,7 +785,7 @@ node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small --metrics 
 ### 見つけた問題・残作業
 
 - 確保と解放を LLVM に知らせる属性だけでは足りなかった。入口が inline されると、呼び出し側が確保の呼び出しを見る前に、callee 側で fast path に置き換わる。`noinline` が要る（probe の IR テストで固定した）。
-- Linux（glibc）の record_sort が small で遅い。原因は未確認（命令数は同じで、ページフォールトが増える）。再検討の条件は `docs/benchmarks.md` にある。
+- Linux（glibc）の record_sort が small で遅い。命令数は同じで、ページフォールトが増える。`strace` で、small は 1 呼び出しごとに `brk` でヒープの末尾を 3.2 MB ずつ 4 回伸ばして縮めていた（system は末尾を小さなチャンクが押さえていて縮まない）。glibc の trim の挙動で、small が小さなブロックを C ライブラリのヒープの外に置くための副作用。しきい値を env で固定すると約 61 回まで減るが、残りの差は説明できていない。解放した大きなブロックを `small` が少しの間手元に残す案が候補。再検討の条件は `docs/benchmarks.md` にある。
 - Windows では Tsuzuri のオブジェクトを 2 つ以上リンクできない（`lld-link` が COMDAT なしの弱い定義の重複を拒否する。`numeric.ll` の弱い関数も同じで、既存の制限）。`small` の状態を 1 つのプログラムの複数オブジェクトで共有する検査は macOS と Linux だけ。Windows の job（`windows.yml`）は未実行。
 - 単体テストの ASan は、Linux では LeakSanitizer が allocator 自身の表を報告する（`detect_leaks=0` で止めた）。ASan・leak checker は、small のブロックを 1 MiB の region の `malloc` 1 つとして見る（文書に書いた）。
 - 終わったスレッドのキャッシュ（約 264 KiB まで）は再利用されない。`.bss` が仮想で約 130 KiB 増える。macOS の TLS は thunk の呼び出しが要る。
