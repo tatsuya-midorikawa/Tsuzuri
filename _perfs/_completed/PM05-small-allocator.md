@@ -8,9 +8,9 @@
 | 規模 | L |
 | 依存 | PX01, (F13) |
 | 関連 | F11, F13, PM04, A04, PX02 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D2（旧 Phase 1 のサイズ付き解放の取り下げ。Phase 2 の前）, D10（native の既定 allocator の切り替え。Phase 3 の前）。Phase 1 は承認不要 |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で D2（旧 Phase 1 のサイズ付き解放の取り下げ）・D10（native の既定 allocator の切り替え）を承認済み。ただし D10 は、測定で効果と安全を確認できたときだけ既定を変え、確認できなければ opt-in のまま根拠を記録する |
 | 手本にする既存実装 | WASM heap: `src/runtime/heap-wasm.ll` の `@tz.alloc`（bump と `@llvm.wasm.memory.grow.i32`）・`@tz.free`（前後の結合）・`@tz.realloc`（隣の空きの吸収）。threads: `src/runtime/heap-wasm-threads.ll` の lock wrapper と `tsuzuri_thread_heap_live_bytes` の走査、`src/llvm.rs` の heap 連結（`.unlocked` への改名）。単体の heap 検査: `tests/features.mjs` の `wasmReallocationChecks`（`heap-wasm.ll` だけを wasm にして address を照合）。Phase 2: `src/runtime/generate.py`（C から target 中立の IR を生成）、`src/runtime/task.c`（pool と `atexit`）、`tests/features.mjs` の `sanitizerKind` |
 | 主な影響ファイル | Phase 1: `src/runtime/heap-wasm.ll`, `src/runtime/heap-wasm-threads.ll`, `tests/features.mjs`（`wasmReallocationChecks` の拡張と `wasmHeapStress`（新規））, `benchmarks/run-heap.mjs`（新規）, `docs/architecture.md`, `docs/benchmarks.md`。確認のみ: `src/llvm.rs`, `src/llvm_traps.rs`, `tests/primitives.mjs`, `tests/wasm_threads.mjs`, `tests/tasks.mjs`。Phase 2: `src/runtime/heap-small.c`（新規）, `src/runtime/heap-small.ll`（新規、生成）, `src/runtime/heap-small-native.ll`（新規）, `src/runtime/generate.py`, `src/llvm.rs`, `src/main.rs`, `src/driver.rs`, `tests/heap_small_test.c`（新規）, `tests/small_allocator.mjs`（新規）, `benchmarks/run-control.mjs`, `docs/language.md`, `_docs/tools/command-line.md`。Phase 3: 確保追跡をする全 harness（「既存テストへの影響」） |
 | 計測対象 | Phase 1: `benchmarks/control/Main.tz` の `list_sum`・`closure_churn`・`closure_capture`・`array_copy` の wasm32 `-O3`（時間と線形メモリの大きさ）。Phase 2: 同じ 4 種目の native `-O3`（`benchmarks/run-control.mjs`）と、PX02 が done なら `benchmarks/apps` の `binary_trees`（最大 RSS） |
@@ -22,6 +22,47 @@
 
 段階は 3 つ。実装者は Phase 1（WASM の size-class 化）だけを実装する。Phase 2（native の `--allocator small`）は人間が依頼し D2 が承認された場合だけ、
 Phase 3（native の既定の切り替え）は D10 が承認された場合だけ着手する。
+
+## 着手時の再検討（2026-10-16）
+
+2026-10-16 の依頼で、全フェーズの実装と `要承認` の判断（D2・D10）が許可された。意味の保持と検証の条件は維持する。
+起票時の記述（HEAD `f8dc655`）を、HEAD `6d15b437`（第2フェーズの PR #26）の現行のコードと実測に照合した。以下は、食い違いと、それに伴う方針の改めである。
+行番号は動くので関数名で書く。以降の本文のうち、この節と食い違う記述（「Phase 1 だけを実装する」「`f8dc655` の事実」など）はこの節を優先する。
+
+### 現行との差
+
+| 起票時の記述 | 現行 | 扱い |
+| --- | --- | --- |
+| F13 は詳細化中。値は `system`・`host`、`Allocator` は新規 | F13 は done。`llvm::Allocator { System, Host, Counting }`、`--allocator system\|host\|counting`、`--freestanding`、`BuildOptions::validate_allocator`、`heap-host.ll`、`heap-counting.ll`、WASM の host allocator（import）がある | `Small` は 4 つ目の値。`src/main.rs` の解析・`HELP`・診断 `allocator must be 'system', 'host', or 'counting'` とその単体テストを、意図した変更として直す |
+| heap の連結は `if wasm { heap-wasm.ll } else { heap-native.ll }` | `emit_program` の末尾は、threads なら `heap-wasm.ll` を `.unlocked` へ改名、memory64 なら `heap-wasm64.ll`、`--trap-mode return` なら追跡版の native heap、その上に `match allocator`（`counted_base` の `.base` 改名、`heap_host_wasm`）。`runtime_symbols.prefix("tz.alloc")` などが連結の条件 | 3 つの文字列置換（`.unlocked`・`.base`・host の import）が成り立つよう、`define internal ... @tz.alloc(` などを heap ごとに 1 回だけ置く。補助関数は `@tz.heap.*`（`@tz.alloc`・`@tz.free`・`@tz.realloc` で始めない）。`tests/allocator.rs` は define 行の数を数える |
+| WASM の heap は `heap-wasm.ll` だけ | `heap-wasm64.ll`（F11 Phase 2。ヘッダーは i64 の容量と next、上限は 16 GiB）がある。`tests/wasm64.mjs`、`TSUZURI_TEST_WASM_TARGET=wasm64` | i32 の `size_flags` は使えない。wasm64 は語を i64 にして同じ設計を移す（Phase 1b） |
+| 上限の定数 `16777184`・`16777216` を変えない（D5） | F11 の `llvm::with_wasm_heap_limit` が heap の 3 行（`%fits`×2・`%within`）を行全体の一致で置換し、2 GiB 超では `%room = sub i32 LIMIT, %begin` を挿入する。上限は wasm32 で 4 GiB − 64 KiB、wasm64 で 16 GiB。単体テスト `wasm_heap_limit_lines_are_unique`・`wasm_heap_limit_above_2_gib_compares_the_remaining_room`、`tests/wasm_memory.mjs`、`tests/wasm64.mjs` が行と順序に依存 | 3 行を各 heap で一字違わず 1 回だけ保ち、`%end = add ... %begin, %needed` を `%within` の直前に、`%ceil = add i32 %end, 65535` も保つ。`end ≤ 上限` も保つ |
+| 容量は最小 32 | `(size + 31) & -16` は size 0 で 16。区分の添字が負になる。生成コードは 0 を 1 に直して呼ぶが、`@tz.alloc(0)` 自体は守られていない | 容量を `max(32, ...)` にし、size 0 を単体テストする |
+| threads の `.unlocked` の OOM trap も `AllocationFailure`（停止条件 2） | `runtime_kind` は `@tz.alloc`・`@tz.realloc` とその `.base` だけを知る。threads の OOM の trap は `numeric runtime trap` と報告される（`--trap-info` の JSON で確認） | 既存の不具合。heap の名前を触る変更に密接なので、`@tz.heap.alloc.unlocked`・`@tz.heap.realloc.unlocked` を `AllocationFailure` に直し、テストと文書（trap の種類）を更新する |
+| 複写に `@llvm.memcpy` を使えない（bulk memory がない） | driver は wasm32・wasm64 のすべての compile に `-mbulk-memory` を付ける。付けないのは heap だけを単体で compile する検査（`wasmReallocationChecks`・`tests/wasm_memory.mjs`・`tests/wasm64.mjs`・`tests/utf_simd.mjs`）。1 byte ずつのループは `-O3` でも `memcpy` にならない | 既定はループのまま。`@llvm.memcpy` は Phase 1c の候補（検査へ旗を足す）で、測定で効果が見えたときだけ |
+| live bytes の使用箇所は `tests/wasm_threads.mjs` の `reserved` | `tests/features.mjs` の rc、`tests/wasm_threads.mjs` の 7 か所（チャンネルの `0n` を含む）も `tsuzuri_thread_heap_live_bytes` を照合する | 式は変えず、値が変わらないことを保つ（上限のブロックを top へ返しても `end − base − Σ空き` は同じ） |
+| Phase 3 の harness は 12 ファイル | `@malloc` を置換する検査は 22 ファイル（`async`・`bindgen`・`f16_hardware`・`ffi_extensions`・`gpu_vulkan_language`・`json`・`net`・`os`・`user_drop`・`utf_simd` などが増えた）と、`instrumentAllocations` を使う 4 つの runner。すべて `--emit llvm` から始まる。`BuildOptions::validate_bindings`・`--trap-mode return` の検査は `allocator != System` で書かれている | 既定を変えるなら native の実行ファイルの出力だけで、`validate` の後に解決する（`Allocator::default()` を変えない）。そうすれば 22 ファイルは変わらない |
+| 実行時の C は malloc を使わない（F13） | `os.c`・`net.c`・`gpu*.c`・`stack.c` は内部の一時領域に libc の `malloc` を使う。Tsuzuri が所有する結果は `tsuzuri_alloc` の複写で渡す | 境界は保たれている。`small` は外来のポインターを libc の `free`・`realloc` へ回す |
+| PB01 は未着手 | heap は事前ビルドの単位ではない（単位は `numeric`・`math`・`native-c`）。heap の本文は module の IR に入り、`build_key`（compiler の digest・`{options:?}`・IR）に入るので `Small` は自動で鍵に入る。`RuntimeSymbols::prefix("tz.alloc")` などが heap の連結を決める | `heap-small.ll` は module の IR に連結する（bundle・manifest は変えない）。補助関数の名前を `@tz.alloc` などで始めない |
+| `generate.py` に `heap-small.c` を足す | `generate.py` は `numeric_tables.h` も書く（PR04）。`generate_math.py` は `#N`・`!N` を numeric の後ろへずらす。`Globals::default` の FIRST_METADATA は numeric と math だけから決める。`define hidden` → `define weak hidden` は関数だけ | 専用の `generate_heap.py`。生成物は metadata・attribute を持たない（`-fno-strict-aliasing`、`!N`・`#N` を除く）。numeric・math・`numeric_tables.h` は不変 |
+| 確保の多い 4 種目 | PM06 で `closure_churn`・`closure_capture` の確保は 0 回。`array_copy` は 2 回、`list_sum` は n 回（16 bytes のノード）。`@tz.string.append`（PM07）が `@tz.realloc(null または ptr, old, new)` を呼び、Vec の伸長も realloc | 計測は PX02 の apps と、断片化を起こす新しい種目（`benchmarks/heap`）。native の realloc は `old_size` ではなく address の登録表で分岐する |
+| 「57% が malloc／free」 | PB02 が測ったのは Rust 製 compiler 自身の確保 | 利用者のプログラムの根拠にしない（動機から外す） |
+| E14 は未考慮 | `--trap-mode return` は追跡版の libc heap を使い、`docs/language.md` は malloc 互換の結果と境界の object との混在リンクを約束する。`tsuzuri_alloc`・`tsuzuri_free` は weak | `small` を object・shared・header・bindings・`--trap-mode return` の既定にしない。明示した `small` の object は、system や境界の object と混在リンクできない（文書に書く） |
+
+### 測定と事実（2026-10-16、native `-O3` の追跡 IR、PX02 の apps の通常の大きさ、WASM は HEAD）
+
+- WASM の線形メモリ: `list_sum` 100000 で 1,114,112 → 4,259,840 bytes（ノード 1 個 32 bytes）。64 MiB の上限なら `tokenize` 200000 が 22.6 MB、`format_join` 100000 が 21.2 MB で、既定の 16 MiB では確保失敗のトラップになる。`closure_pipeline` の 16 MB の配列は、どの allocator でも既定の上限に収まらない。
+- apps の確保は、すべて 48 bytes 以下の小さな確保が占める（`tokenize` 400,003 回・`format_join` 200,003 回・`csv_aggregate` 700,005 回・`record_sort` 3,350,639 回・`tree_transform` 792,564 回・`binary_trees` 1,018,000 回）。512 bytes の区分の上限は apps では使われない。
+- 各 allocator の最大 live（断片化なしの模型。WASM の実測と約 0.1% で一致）: `tokenize` は glibc 21.5・macOS の tiny と `small` 15.1・WASM の現行 21.5 MB、`csv_aggregate` は 11.2・8.0・11.2 MB、`binary_trees` は 131・98・131 KB。`small` は glibc 比で 13〜30% 小さく、macOS の tiny（16 bytes 刻み・ヘッダーなし）と同じ。`binary_trees` の最大 live は 98 KB で、最大 RSS の差は測れない。
+- 生成コード: arm64 macOS の `_Thread_local` は、使うたびに TLV の thunk を `blr` で呼ぶ。Linux の native IR は `-fPIC` で compile するので、実行ファイルでは linker の緩和に頼る。
+
+### 計画の改め
+
+- **Phase 1**（承認不要の WASM の heap）を 1a（wasm32 と threads）・1b（wasm64）・1c（任意）に分ける。ヘッダー（16 bytes）が残るので、Phase 1 はメモリ量を減らさず、確保・解放の O(1) 化・即時の結合・top への返却が成果である。1c（top のブロックの realloc のその場での伸長、`@llvm.memcpy` による複写）は、測定で効果が見えたときだけ入れる。ヘッダーのない WASM の小さい確保（旧「対象外」）は別施策 PM05b として、完了報告に残す。
+- **Phase 2**（native の `--allocator small`、既定は変えない）は、C（freestanding C11）から target 中立の IR を専用の生成器で作り、手書きの shim から呼ぶ。lock は try-lock で、競合したら libc の `malloc` へ退く（待ち続けない）。
+- **Phase 3**: 既定の切り替えは、複数 OS での測定・sanitizer・全 suite の通過がそろったときだけ行う。そろわなければ opt-in のまま、足りない条件を記録する。
+- 決定事項の改め: D1（上の分割）、D3（容量の下限 32）、D4（wasm64 は i64 の語。大きなブロックは address 順のリストで O(空きの数) のまま）、D6（try-lock。キャッシュを登録して統計に使う）、D7（`free`・`realloc` とも address の登録表で分岐する。外来のポインターは libc）、D8（C → IR は専用の生成器）、D9（system の追跡 IR は生成コードの leak なしを、small の統計は allocator の会計を示す。`TSUZURI_TEST_ALLOCATOR=small` で全 suite を通す）、D10（下の条件）、D11（wasm32・wasm64・`--freestanding`・bare-metal・`--trap-mode return`・kernel の出力は `E2000`）、D12（計測は apps と `benchmarks/heap`。WASM は `wasm_memory_bytes`）。
+- D10 の条件（すべて）: (a) 単体テストが通常・ASan・UBSan・TSan で通り、全 `tests/features.mjs` の suite が `small` で `-O0`・`-O3` で通る。macOS（arm64・x64）・Linux（x64・arm64）・Windows x64 の job が緑。(b) 専用機で 2 つ以上の OS を測り、`compareRuns` が `改善` と判定する種目が `binary_trees`・`tree_transform`・`record_sort`・`tokenize`・`csv_aggregate`・`format_join` のうち 3 つ以上で、`悪化` は control・computations・cpp・apps・tasks の全種目で 0 個。(c) 最大 RSS が悪化する app がなく、小さな確保が残り続ける app では減る。(d) 実行ファイルの増加がおよそ 4 KiB 以下で、compile 時間が測れる差を持たない。(e) 範囲は native の実行ファイルだけで、`--allocator system` の escape hatch と sanitizer・leak 検査の注意を文書にする。
 
 ## 着手条件と停止条件
 
@@ -533,13 +574,13 @@ target/release/tsuzuri build tests/fixtures/primitives/Main.tz --target wasm32 -
 
 ## 受け入れ条件
 
-- [ ] Phase 1: 「実装手順」1〜9 の確認がすべて成功し、`wasmHeapStress` が O0・O3 で成功する。
-- [ ] Phase 1: 既存テストの期待値を変えていない（`git diff --stat tests/` は `tests/features.mjs` の追加だけ）。
-- [ ] Phase 1: 「生成コードの確認」の IR と機械語の条件を満たす（決定性、heap の断片より前の IR が不変、トラップの位置、import が空）。
-- [ ] Phase 1: before／after を PX01 形式で記録し、`docs/benchmarks.md` に計測条件とともに要約した。計測していない改善を書いていない。
-- [ ] Phase 2（依頼された場合）: 手順 10〜14 の確認、ASan・TSan の単体、既定の IR の不変、`alloc_calls` が system と同じ。
-- [ ] Phase 3（承認された場合）: 手順 15 の確認。
-- [ ] GUIDE §14 の性能チケットの共通手順と §10 の完了の定義を満たす。
+- [x] Phase 1: 「実装手順」1〜9 の確認がすべて成功し、`wasmHeapStress` が O0・O3 で成功する。（stress は `tests/wasm_heap.mjs` の 20,000 操作で、wasm32・wasm64 の `-O0`・`-O3`）
+- [x] Phase 1: 既存テストの期待値を変えていない。（変えたのは `tests/allocator.mjs` の診断の文言 `allocator must be 'system', 'host', 'counting', or 'small'` だけ。`tests/features.mjs` は足すだけで、標準の heap だけを単体で compile する検査に `-mbulk-memory` を足した）
+- [x] Phase 1: 「生成コードの確認」の IR と機械語の条件を満たす（決定性、heap の断片より前の IR が不変、トラップの位置、import が空）。（benchmarks の apps・control・heap と `examples/hello` の native の IR は、直前の main の compiler と同一。wasm32・wasm64 の IR の差は heap の本文だけ）
+- [x] Phase 1: before／after を記録し、`docs/benchmarks.md` に計測条件とともに要約した。計測していない改善を書いていない。（記録は `benchmarks/run-heap.mjs` の標準の JSON で、PX01 の METRICS には入れていない: D12 の追記）
+- [x] Phase 2（依頼された場合）: 手順 10〜14 の確認、ASan・TSan の単体、既定の IR の不変、`alloc_calls` が system と同じ。（追跡する IR は常に system で、`--allocator small` は時間を測る object だけに付く）
+- [x] Phase 3（承認された場合）: 手順 15 の確認。（既定を変えず、条件ごとの結果を `docs/benchmarks.md` に記録した。変えるための条件は満たされていない）
+- [x] GUIDE §14 の性能チケットの共通手順と §10 の完了の定義を満たす。（専用機の計測だけは、取れなかったので調整担当に引き継ぐ）
 
 ## 落とし穴
 
@@ -646,3 +687,128 @@ target/release/tsuzuri build tests/fixtures/primitives/Main.tz --target wasm32 -
   native は `benchmarks/run-control.mjs --allocator` と workload `host` の `peak_rss`。9 標本の中央値・最小・最大で、合否の閾値は置かない。
 - 理由: HEAD に WASM の確保の計測がなく、PX01 の `METRICS` に線形メモリがない。`*_bytes` の名前は PX01 の決定的な値の規則（全標本が等しい）に合う。
 - 状態: 既定案（実装者はこの案に従う。PX01 の `METRICS` への追加は PX01 の担当に知らせる）
+
+## 実装と検証（2026-10-16）
+
+全 3 phase の実装依頼（D2・D10 の承認つき）を受け、Phase 1（WASM のヒープの作り直し。1a の wasm32 と threads、1b の wasm64、1c の `memory.copy` による移動）と
+Phase 2（native の `--allocator small`）を実装した。Phase 3（native の既定の切り替え）は、D10 の条件のうち確かめられなかったものがあるので、既定を変えず、
+条件ごとの結果を記録した（`docs/benchmarks.md` の「ヒープ（PM05）」）。コミットは `perf/phase3/PM05`（基点 `c6864cf5`）にある。
+チケットの `_completed/` への移動はこの節と同じコミットで行った。`_perfs/README.md` は調整担当の範囲なので触っていない。
+
+### 実装した範囲
+
+| phase | 内容 | コミット |
+| --- | --- | --- |
+| 0 | 着手時の再検討（上の節） | `f5ece8a6` |
+| 1 | 手順 1: heap 単体のテスト `tests/wasm_heap.mjs`（HEAD の heap で先に緑にした） | `a347c2a1` |
+| 1a | 境界タグ、即時の結合、top の返却、size 0 の容量の下限、flag による隣の吸収 | `5ddd77bf` |
+| 1a | 容量 32〜528 の 32 本の LIFO リスト（mask と `cttz`）、大きい空きは address 順の先頭一致、threads の live bytes | `91c1a71b` |
+| 1a | `runtime_kind` の修正（threads の `.unlocked` の OOM を `AllocationFailure`）と、別 worker での解放の検査 | `04bc4fab` |
+| 1b | wasm64 への移植（i64 の語） | `f78b1af4` |
+| 1 | `benchmarks/run-heap.mjs`（PX01 の METRICS には入れていない標準の runner） | `aa724c36` |
+| 1 | 解放した小さなブロックのキャッシュ（隣と結合せず、同じ容量の次の要求へ後入れ先出しで返す） | `a3153810` |
+| 1c | 再確保の複写を `llvm.memcpy`（`memory.copy`）に。終端のブロックのその場の拡張は 1a で実装した | `c6310e52` |
+| 1 | 文書 | `9c297713` |
+| 1 | matrix suite が見つけた退行の修正（大きな穴を切る要求は、終端を延ばせる間は終端から返す） | `93b6aa05` |
+| 2 | `src/runtime/heap-small.c` と `tests/heap_small_test.c`（C の単体テスト） | `22539253` |
+| 2 | `generate_heap.py`、生成した `heap-small.ll`、手書きの `heap-small-native.ll`（`nsw`・`nuw` を出さない） | `740092ef`、`ae9c033a` |
+| 2 | `Allocator::Small`、E2000 の規則、LLVM に確保と解放と知らせる属性（`noinline`・`noalias`・`allockind`） | `c10272a4` |
+| 2 | `tests/small_allocator.mjs`、features の small モード、runner の `--allocator`、CI の step | `638af142` |
+| 2 | 文書 | `9a999ed0` |
+| 2 | `benchmarks/run-small.mjs`、単体テストの LeakSanitizer | `b8aed3c0` |
+| 3 | 計測の記録と、既定にしない判断 | `a19ed126` と本節 |
+
+### 実装しなかったもの
+
+- PM05b: ヘッダーなしの区分の確保（WASM のページ表、native の slab）。起票時の対象外のまま。Linux の record_sort の退行（下）の候補でもあるので、後継チケットの候補にする。
+- サイズ付きの解放（D2）、region・ページの OS への返却、終了したスレッドのキャッシュの回収、`memory.grow` の先取り、16 MiB の上限の変更（F11）。
+- native の既定の `small` への切り替え（D10）。
+
+### 確認コマンドと結果
+
+WASM のヒープ（Phase 1）:
+
+- `node tests/wasm_heap.mjs both`（Node 24）: wasm32・wasm64 の `-O0`・`-O3`。再利用、キャッシュ、結合、top の返却と伸長、大きな穴、吸収、境界の大きさ、resize、上限、20,000 操作の stress。手で導いたアドレスと、不変条件を歩く検査（枠の連なり、リストと結合の整合、live bytes の計算）。変異は各 heap で 78 通り（キャッシュまで）と穴の規則 12 通りを検出した（残るのは等価な変異だけ）。
+- release の compiler で `tests/wasm_threads.mjs`（別 worker での解放と live bytes）、`tests/wasm_memory.mjs`、`tests/wasm64.mjs`（Node 24）、`tests/primitives.mjs`、`tests/tasks.mjs` が通る。`tests/features.mjs` の全スイート（14,106 件、native と WASM の `-O0`・`-O3`）が通る。
+- 直前の main の compiler と IR を比べた。benchmarks の apps・control・heap と `examples/hello` は、native の IR が同一で、wasm32・wasm64 の IR は heap の本文（`@tz.alloc` 周辺）だけが違う。
+- 見つけた退行: 最初の版は matrix suite の `parallel_mismatches64(3, 500, 1500, 1, 10)` を `-O0` で確保失敗にした（大きな穴の切り刻み）。上の規則で直し、`holeCases` を足した。前の heap は warm の状態に助けられて通っていただけで、新しいインスタンスでは前の heap も失敗する。
+
+native の `--allocator small`（Phase 2）:
+
+- `tests/heap_small_test.c`（C の単体）: macOS arm64 で通常・`-O0`・`-O3`・ASan+UBSan・TSan が通る。Linux arm64（Ubuntu 24.04 のコンテナ、clang 18）でも 4 通りが通る。変異は 49 通り以上を検出した。
+- `node tests/small_allocator.mjs target/release/tsuzuri`: 単体 4 通り、E2000 の拒否、IR の決定性と 1 つの thread-local と宣言の重複なし、`examples/hello` のキャッシュ、object と C の host（成長・primitives・tasks の fixture）で `carved == stocked`、確保と解放の組を LLVM が取り除くこと（`noinline` か属性を外すと失敗する probe）、`tz_coalescing` に atomic の read-modify-write がないこと、2 つの object が 1 つの状態を共有すること、共有ライブラリ。
+- `TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri`: 全スイート（14,106 件）が通る。追跡する malloc の代わりに `tz_small_stats` を使い、各呼び出しのあとで切り出したブロックがすべてキャッシュか中央に戻っていること（`carved == stocked`）と、allocator 自身の `malloc` 以外が生きていないことを確かめる。
+- `cargo test --locked --test allocator`（9 件）、`cargo test --lib`、`cargo test --bin tsuzuri`。IR の 1 つの定義、属性、`mmap`・`pthread`・`calloc` がないこと、既定の出力の不変。
+- Linux arm64（Docker、Ubuntu 24.04）で、`--target aarch64-unknown-linux-gnu` の IR を clang 18 と 20 でコンパイルし、4 スレッドの host、共有ライブラリ、2 つの object（GNU ld と lld）を確かめた。Linux x64（同じ Docker の amd64、エミュレーション）でも、`--target x86_64-unknown-linux-gnu` の IR の host・共有ライブラリ・2 つの object と、単体 3 通り（通常・`-O3`・ASan+UBSan。TSan はエミュレーションなので省く）が clang 20 で通る。
+- `--emit llvm` の IR を 17 個の named triple で clang 21 がコンパイルできる（riscv64 は Homebrew の clang に backend がなく、確かめていない）。
+- Windows の `cargo check --all-targets` は x86_64・aarch64 の MSVC で通る。Windows の実行時の挙動は、CI の job が緑になるまで確かめたとは言えない。
+
+共通:
+
+- `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings` が通る。§3.1 の 4 つの回帰テスト（既定の stack）が通る。
+- 最終の木での `RUST_MIN_STACK=4194304 cargo test --locked` の全体は、下の「全体のテスト」に書く。
+
+### 計測
+
+条件と結果は `docs/benchmarks.md` の「ヒープ（PM05）」にある。共有のマシン（load average 20〜60）で、`with-lock.sh measure` は全 slot が埋まっていて取れなかったので、取らずに測った。
+**目安**で、専用機の正式な値は調整担当が取り直す。生データは `target/perf/PM05-after/run-small-macos.json`（コミットしない）。再現するコマンド:
+
+```sh
+node benchmarks/run-heap.mjs target/release/tsuzuri --baseline target/perf/PM05/tsuzuri-before --capacity   # WASM の heap（Node 20 でよい）
+node benchmarks/run-small.mjs target/release/tsuzuri --rounds 5 --rss-runs 9 --json target/perf/PM05-after/run-small-macos.json   # native の system と small（PX02 の app）
+node benchmarks/run-control.mjs target/release/tsuzuri --allocator small --metrics target/perf/PM05-after   # task_parallel を含む control（Node 24 が要る場合がある）
+node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small --metrics target/perf/PM05-apps-after
+```
+
+- WASM（Phase 1）: 直前の main に対して、無作為な置き換えが 0.13〜0.18 倍、確保の多い app は 0.83〜0.98 倍（同じか少し速い）、移動が 0.07〜0.88 倍。`vec_growth` は時間が 1.5 倍になって見える（ヒープの関数の差ではなく、生成コードの揺れ。メモリは 5.06 → 3.06 MiB）。成果物は、heap 単体が 1,819 → 3,699 バイト、control が 11,357 → 11,143、apps が 91,625 → 81,275、heap の kernel が 4,275 → 5,240。
+- native（Phase 2、macOS arm64）: tokenize 0.64、csv_aggregate 0.62、tree_transform 0.40、binary_trees 0.49（時間の中央値の比）、format_join 0.83、map_count・record_sort・spectral_norm は 0.97〜0.99。closure_pipeline と graph_bfs は中央値で 1.16 だが最小値では 1.05・1.04 で、確保がほぼない（8 回、7 回）のでコードの配置の差。ピーク RSS は同じ（固定費 +0.15 MiB まで）。コードは +2.3〜3.1 KiB、`__bss` が仮想で +130 KiB。コンパイル時間は +20〜36 ms。
+- native（Linux arm64、Docker の仮想マシン）: tokenize 0.59、tree_transform 0.68、binary_trees 0.71、csv_aggregate 0.85、format_join 0.89（中央値）、RSS は tokenize 21.49 → 15.45 MiB、csv_aggregate 11.75 → 8.75 MiB。**record_sort は 1.75（最小）〜2.27（中央値）倍遅い**。
+- 生成コードの確認（GUIDE §14 の 5）: `tz_small_alloc`・`tz_small_free` の fast path は arm64 で約 30 命令ずつ。入口を `noinline` にして LLVM に `malloc`・`free` と同じに扱わせたので、record_sort の確保と解放は取り除かれ、Linux arm64 の callgrind の命令数は system と small で 72,534,347 と 72,535,381 と同じ。inline にした最初の版は record_sort が macOS で 2.1 倍、graph_bfs が 2〜2.5 倍遅く、コードも 5.2 KiB 増えた。
+
+### 決定事項への追記
+
+| D | 結果 |
+| --- | --- |
+| D1 | 3 phase を実装した（Phase 3 は記録だけ）。Phase 1 は 1a・1b・1c に分け、1c の `memory.copy` による移動と、終端のブロックのその場の拡張を実装した。ヘッダーなしの区分は PM05b として切り出した。 |
+| D2 | 取り下げのまま。native は address から区分を引く。 |
+| D3 | 16 バイト刻みの 32 区分のまま。WASM に size 0 の容量の下限（32）を足し、境界の大きさを検査する。 |
+| D4 | 設計どおり（行 3・4・5 の補正も反映）。実測で、解放した小さなブロックの結合を遅らせるキャッシュを足し、matrix suite が見つけた大きな穴の規則（終端から返す）を足した。大きい空きの探索は空きの数に比例のまま（文書に書いた）。 |
+| D5 | 変更なし。F11 の 3 行を各 heap に一字違わず 1 回だけ保った。 |
+| D6 | spinlock ではなく try-lock（待たない）。取れなければ、確保は `malloc`、解放は手元のキャッシュに残す。起票時の「待つ処理がない」を満たし、スレッドの数が多くても待たない。 |
+| D7 | 登録表は 2 段（`top[addr >> 34]` → region ごとの 1 バイト）。region が 1 つの区分だけを持つので、16 KiB のページ表は要らない。2^48 以上の address は C ライブラリの経路。 |
+| D8 | C（`heap-small.c`）→ 専用の `generate_heap.py` → IR → 手書きの shim。`generate.py` には足さない（`numeric.ll`・`math.ll`・`numeric_tables.h` は不変で、`git diff --exit-code` が空）。C は freestanding な C11 で、64-bit だけ、pthread・mmap なし。 |
+| D9 | 追跡は system の IR で続ける。small は `tz_small_stats`（`carved == stocked`）と C の単体テストで確かめる。 |
+| D10 | 既定にしない（opt-in のまま）。条件 (a)〜(e) の結果と、足りないもの（専用機での 2 つ以上の OS ファミリーの計測、Linux x64・Windows の確認、Linux の record_sort の原因）は `docs/benchmarks.md` にある。 |
+| D11 | 値は `small`。文言は既存の E2000 の言い回しに合わせ `--allocator small requires a native target; WebAssembly modules keep their own heap`（起票時の案と違う）。カーネル出力は `--allocator small requires executable, object, shared library, LLVM IR, or header output`。`--trap-mode return`・`--freestanding` は既存の規則で拒否される。 |
+| D12 | WASM は `benchmarks/run-heap.mjs`、native は `benchmarks/run-small.mjs`（A/B）と `run-control.mjs`・`run-apps.mjs` の `--allocator`。PX01 の METRICS への `wasm_memory_bytes` の追加はしていない（PX01 の担当に委ねる）。 |
+
+### 見つけた問題・残作業
+
+- 確保と解放を LLVM に知らせる属性だけでは足りなかった。入口が inline されると、呼び出し側が確保の呼び出しを見る前に、callee 側で fast path に置き換わる。`noinline` が要る（probe の IR テストで固定した）。
+- Linux（glibc）の record_sort が small で遅い。命令数は同じで、ページフォールトが増える。`strace` で、small は 1 呼び出しごとに `brk` でヒープの末尾を 3.2 MB ずつ 4 回伸ばして縮めていた（system は末尾を小さなチャンクが押さえていて縮まない）。glibc の trim の挙動で、small が小さなブロックを C ライブラリのヒープの外に置くための副作用。しきい値を env で固定すると約 61 回まで減るが、残りの差は説明できていない。解放した大きなブロックを `small` が少しの間手元に残す案が候補。再検討の条件は `docs/benchmarks.md` にある。
+- Windows では Tsuzuri のオブジェクトを 2 つ以上リンクできない（`lld-link` が COMDAT なしの弱い定義の重複を拒否する。`numeric.ll` の弱い関数も同じで、既存の制限）。`small` の状態を 1 つのプログラムの複数オブジェクトで共有する検査は macOS と Linux だけ。Windows の job（`windows.yml`）は未実行。
+- 単体テストの ASan は、Linux では LeakSanitizer が allocator 自身の表を報告する（`detect_leaks=0` で止めた）。ASan・leak checker は、small のブロックを 1 MiB の region の `malloc` 1 つとして見る（文書に書いた）。
+- 終わったスレッドのキャッシュ（約 264 KiB まで）は再利用されない。`.bss` が仮想で約 130 KiB 増える。macOS の TLS は thunk の呼び出しが要る。
+- `_features/GUIDE.md` の拡張点の表の行 `--allocator`（`small` を既定にする段だけ要承認）は、調整担当が「実装済み。`small` は opt-in」に直す（このブランチでは触っていない）。
+- `with-lock.sh measure` の全 slot を、ほかの agent が長く占有していて、専用の測定ができなかった。調整担当の正式な計測が要る。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/`: `ownership-and-memory/stack-and-heap.md`（WASM のヒープの規則、新しい節「ネイティブのサイズ区分 allocator」、表と要約）、`compiler/option.md`、`compiler/native-interop.md`、`compiler/diagnostics.md`（E2000）、`compiler/webassembly.md`（threads の trap の種類）、`built-in-types-and-modules/atomic.md`。`node scripts/check-docs.mjs` を変更した 5 ページ以上で実行して通った。
+- `docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`（「ヒープ（PM05）」の 1 節）、`README.md`（`--allocator` の行、テストと runner の行）。
+- 「言語リファレンスの目次」は、新しいページがないので変更なし。`languages/why-tsuzuri.md` は `--allocator host` だけに触れるので変更なし。
+
+### 変更したファイル
+
+実装: `src/llvm.rs`、`src/llvm_traps.rs`、`src/driver.rs`、`src/main.rs`、`src/runtime/heap-wasm.ll`、`heap-wasm64.ll`、`heap-wasm-threads.ll`、`heap-small.c`、`heap-small.ll`（生成）、`heap-small-native.ll`、`generate_heap.py`、`.gitignore`。
+テスト: `tests/wasm_heap.mjs`、`tests/heap_small_test.c`、`tests/small_allocator.mjs`、`tests/allocator.rs`、`tests/allocator.mjs`、`tests/features.mjs`、`tests/wasm_threads.mjs`、`tests/benchmark_apps.mjs`、`tests/fixtures/heap_threads/Main.tz`。
+ベンチマーク: `benchmarks/run-heap.mjs`、`benchmarks/heap/`、`benchmarks/run-small.mjs`、`benchmarks/run-apps.mjs`、`benchmarks/run-control.mjs`。
+CI: `.github/workflows/targets.yml`、`windows.yml`。文書は上のとおり。
+
+### 全体のテスト
+
+最終の木（Rust のコードは `5313641c` 以前から変わらず、以後は文書と C の単体テストだけ）:
+
+- `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`、17 分）: 103 binaries、1,309 passed、0 failed、1 ignored。Phase 1 の木（`9c297713`）は 1,307 passed で、差の 2 件は `tests/allocator.rs` の small の 2 件。
+- release の compiler での node suite（`with-lock.sh heavy`）: `features.mjs` の全スイート（既定で 14,106 件）、`TSUZURI_TEST_ALLOCATOR=small` の全スイート（14,106 件）、`e2e`、`examples`、`strings`、`utf_simd --quick`（`llvm-objdump` を PATH に置く）、`user_drop`、`trap_return`、`trap_boundary`、`stack_overflow`、`io`、`json`、`cache`、`prebuilt_runtime`、`host_imports`、`host_bindings`、`wasm_simd`（`TSUZURI_OBJDUMP`）、`os`、`async`（Node 24）、`net_wasm`（Node 24）、wasm64 の `features.mjs vec storage`（Node 24）、`wasm_heap both`、`wasm_threads`、`wasm_memory`、`wasm64`、`primitives`、`tasks`、`allocator`、`small_allocator` がすべて通る。
+- `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、Windows の `cargo check --all-targets`（x86_64・aarch64 の MSVC）、`sh scripts/check-runtime-includes.sh`（49 ファイル）、`git diff --check`、生成 IR の決定性（wasm32・wasm64・threads・small・counting・host で 2 回の出力が同一）、宣言の重複なし、`numeric.ll`・`math.ll`・`numeric_tables.h` が基点から不変。

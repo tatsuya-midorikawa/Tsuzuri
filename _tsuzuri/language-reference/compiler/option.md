@@ -195,7 +195,7 @@ Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュ
 | `--link PATH` | なし | ホストのオブジェクトか静的ライブラリ。繰り返せる |
 | `-l NAME` | なし | システムライブラリ名。例は `-l sqlite3`。`lib` や拡張子は付けない |
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
-| `--allocator system\|host\|counting` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` まで |
+| `--allocator system\|host\|counting\|small` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`small` は native の 64-bit のサイズ区分で、実行ファイルにも付けられる |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 
@@ -206,6 +206,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 ```
 
 `--allocator host` は、ホストが定義する `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` を呼びます。WASM ではモジュール `tsuzuri_heap` の `alloc`、`free`、`realloc` として import します。`counting` は `tsuzuri_alloc_stats` で回数を読めます。どちらも `--emit exe`、`wgsl`、`spirv`、`--trap-mode return` とは排他です。`host` は `--wasm-feature threads` とも排他です。
+
+`--allocator small` は、native の 64-bit で 0〜512 バイトの確保を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリの `malloc` に任せます。実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared` に付けられます。WASM、`wgsl`、`spirv`、`--trap-mode return`、`--freestanding` とは排他です（いずれも `E2000`）。既定ではありません。設計と制限は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。`run`・`check`・`test` は付けられません（`build` だけです）。
 
 `--freestanding` は IO、OS API、タスク、`Debug`、プログラム引数、`Gpu.WebGpu`・`Gpu.Vulkan`・`Gpu.Auto` のデバイスを `E2000` で拒否します。`--trap-info` と `--debug-output` とも一緒には使えません。トラップは `llvm.trap` だけです。
 
@@ -244,6 +246,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--emit shared` や `bindings-cs` などが native の target でない（`wasm32`、`wasm64`） | `'--emit shared' requires '--target native'`（`bindings-cs` などは各名前で同じ形） |
 | Windows の target で `--emit shared` | `'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL` |
 | `--emit shared` と `--allocator host` | `--allocator host cannot be combined with --emit shared: ...` |
+| `--allocator small` が wasm32 / wasm64 | `--allocator small requires a native target; WebAssembly modules keep their own heap` |
+| `--allocator small` が `wgsl` / `spirv` などのカーネル出力 | `--allocator small requires executable, object, shared library, LLVM IR, or header output` |
 | `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |
 | `bindings-cs` などの `-o` の拡張子が違う | `bindings output must end with '.cs'; its file name, without the extension, names the shared library`（`.py`、`.hpp` も同じ形） |
 | `--freestanding` が exe | `--freestanding requires object, LLVM IR, or header output` |

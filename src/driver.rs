@@ -857,6 +857,18 @@ impl BuildOptions {
                 "--trap-mode return keeps its own tracked allocator; remove --allocator",
             ));
         }
+        if self.allocator == llvm::Allocator::Small && self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Small && self.emit.is_kernel() {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires executable, object, shared library, LLVM IR, or header output",
+            ));
+        }
         if self.freestanding {
             if self.target != Target::Native {
                 return Err(driver_error(
