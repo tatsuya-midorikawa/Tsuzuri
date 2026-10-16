@@ -2448,9 +2448,13 @@ impl Project {
             })
             .flatten();
         drop(cache_time);
+        // The commands of the command line use the available cores unless `TSUZURI_THREADS` says otherwise.
+        let parallelism = crate::parallel::Parallelism::command_line();
         match frontend {
-            Some(mut cache) => crate::analyze_inputs_with(&inputs, None, Some(&mut cache)),
-            None => crate::analyze_inputs_all(&inputs),
+            Some(mut cache) => {
+                crate::analyze_inputs_with(&inputs, None, Some(&mut cache), parallelism)
+            }
+            None => crate::analyze_inputs_with(&inputs, None, None, parallelism),
         }
     }
 

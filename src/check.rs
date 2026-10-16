@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::parallel::Parallelism;
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
@@ -5876,12 +5877,13 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
 }
 
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_indexed_all(modules, None)
+    check_modules_indexed_all(modules, None, Parallelism::library())
 }
 
 pub(crate) fn check_modules_indexed_all(
     modules: &[ModuleInput<'_>],
     semantic: Option<&mut semantic::SemanticIndex>,
+    parallelism: Parallelism,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -5889,6 +5891,7 @@ pub(crate) fn check_modules_indexed_all(
         &mut diagnostics,
         warnings::WarningOptions::default(),
         semantic,
+        parallelism,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -5903,6 +5906,7 @@ fn check_modules_collect(
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
+    parallelism: Parallelism,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -7437,11 +7441,12 @@ fn check_modules_collect(
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
-    let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
-        let first = errors[0].clone();
-        diagnostics.extend(errors);
-        first
-    })?;
+    let copy_constraints =
+        crate::ownership::infer_copy_all(&module, parallelism).map_err(|errors| {
+            let first = errors[0].clone();
+            diagnostics.extend(errors);
+            first
+        })?;
     let recursive_functions = function_declarations
         .iter()
         .enumerate()
@@ -7463,7 +7468,7 @@ fn check_modules_collect(
     drop(closures_time);
     let mut module = module?;
     let ownership_time = crate::timings::Phase::start("ownership");
-    diagnostics.extend(crate::ownership::check_all(&module));
+    diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
     drop(ownership_time);
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);

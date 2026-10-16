@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 use crate::check::{
     CallbackContract, CheckedModule, Local, MAX_RECORD_REGIONS, RegionMask, RegionSlots,
@@ -6,6 +7,7 @@ use crate::check::{
 };
 use crate::copies::{CopyKind, CopyRead};
 use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::parallel::{Parallelism, ordered_for_each};
 use crate::syntax::BinaryOp;
 
 #[path = "ownership_control.rs"]
@@ -139,13 +141,20 @@ pub fn check(module: &CheckedModule) -> Result<(), Diagnostic> {
 }
 
 pub fn check_all(module: &CheckedModule) -> Vec<Diagnostic> {
-    check_functions(module, false).err().unwrap_or_default()
+    check_all_with(module, Parallelism::library())
+}
+
+pub(crate) fn check_all_with(module: &CheckedModule, parallelism: Parallelism) -> Vec<Diagnostic> {
+    check_functions(module, false, parallelism)
+        .err()
+        .unwrap_or_default()
 }
 
 pub(crate) fn infer_copy_all(
     module: &CheckedModule,
+    parallelism: Parallelism,
 ) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
-    check_functions(module, true)
+    check_functions(module, true, parallelism)
 }
 
 // ponytail: access errors only while types are broken; Error stubs lack loans, so lifetimes wait.
@@ -192,45 +201,70 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
     reads
 }
 
+/// The functions that one worker checks before a check uses another thread, and how many a worker
+/// takes at a time.
+const FUNCTIONS_PER_WORKER: usize = 256;
+const FUNCTION_CHUNK: usize = 8;
+
+/// The checks of different functions read the module and nothing else, so they run in parallel.
+/// The results are consumed in function order by the loop that used to run them: it stops at the
+/// first function after `Diagnostics` is full, and a stage on one thread does not even check that
+/// function, so the diagnostics and the constraints do not depend on the number of threads.
 fn check_functions(
     module: &CheckedModule,
     infer: bool,
+    parallelism: Parallelism,
 ) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
     let closed = closed_returns(module);
     let mut constraints = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
-    for (id, function) in module.functions.iter().enumerate() {
-        if diagnostics.is_full() {
-            break;
-        }
-        let scalar = !infer && ownership_free(&function.body);
-        if scalar && !cfg!(debug_assertions) {
-            constraints.push(BTreeSet::new());
-            continue;
-        }
-        let mut recovered = Vec::new();
-        let checked = check_body(
-            module,
-            function.parameters.iter(),
-            &function.body,
-            infer,
-            &closed,
-            function.is_task,
-            module.user_drops.values().any(|drop| *drop == id),
-            Contract::of(function),
-            &mut recovered,
-            None,
-        );
-        if scalar {
-            debug_assert!(recovered.is_empty());
-            debug_assert!(matches!(&checked, Ok(required) if required.is_empty()));
-        }
-        diagnostics.extend(recovered);
-        match checked {
-            Ok(required) => constraints.push(required),
-            Err(error) => diagnostics.push(error),
-        }
-    }
+    let count = module.functions.len();
+    ordered_for_each(
+        count,
+        parallelism.workers(count, FUNCTIONS_PER_WORKER),
+        FUNCTION_CHUNK,
+        None,
+        |id| {
+            let function = &module.functions[id];
+            let scalar = !infer && ownership_free(&function.body);
+            if scalar && !cfg!(debug_assertions) {
+                return None;
+            }
+            let mut recovered = Vec::new();
+            let checked = check_body(
+                module,
+                function.parameters.iter(),
+                &function.body,
+                infer,
+                &closed,
+                function.is_task,
+                module.user_drops.values().any(|drop| *drop == id),
+                Contract::of(function),
+                &mut recovered,
+                None,
+            );
+            if scalar {
+                debug_assert!(recovered.is_empty());
+                debug_assert!(matches!(&checked, Ok(required) if required.is_empty()));
+            }
+            Some((recovered, checked))
+        },
+        |_, outcome| {
+            if diagnostics.is_full() {
+                return ControlFlow::Break(());
+            }
+            let Some((recovered, checked)) = outcome.get() else {
+                constraints.push(BTreeSet::new());
+                return ControlFlow::Continue(());
+            };
+            diagnostics.extend(recovered);
+            match checked {
+                Ok(required) => constraints.push(required),
+                Err(error) => diagnostics.push(error),
+            }
+            ControlFlow::Continue(())
+        },
+    );
     if diagnostics.is_empty() {
         Ok(constraints)
     } else {
