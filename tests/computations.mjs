@@ -319,6 +319,46 @@ ce_owned_capture 262144 42 == direct_owned_capture 262144 42
   for (const name of ["array_for", "owned_capture"]) {
     assert.equal(instance.exports[`tz_ce_${name}`](262144n, 42n), instance.exports[`tz_direct_${name}`](262144n, 42n));
   }
+
+  // PR03: a return slot must not turn the tail calls of a union-returning mutual recursion or continuation into
+  // frames. At -O2 and -O3 LLVM compiles them to jumps, so 1e8 levels fit in the stack; -O0 and -O1 do not, and a
+  // sanitizer keeps its frames, so this runs only for the optimized native build.
+  if (process.platform !== "win32" && sanitizer.length === 0) {
+    const tailProject = join(temporary, "tail");
+    mkdirSync(tailProject);
+    writeFileSync(join(tailProject, "Main.tz"), String.raw`
+def rec even_m :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else odd_m (n - 1)
+and odd_m :: i64 -> Maybe<i64> = \n -> if n == 0 then None else even_m (n - 1)
+export def parity_deep :: i64 -> i64
+fn parity_deep n = Maybe.default_value 0 (even_m n)
+def rec count_down :: i64 -> Maybe<i64>
+fn rec count_down n =
+    if n == 0 then Some 7
+    else Maybe.bind (Some (n - 1)) (\m -> count_down m)
+export def bind_deep :: i64 -> i64
+fn bind_deep n = Maybe.default_value 0 (count_down n)
+`);
+    const tailIr = join(temporary, "tail.ll");
+    cli(["build", tailProject, "--emit", "llvm", "-o", tailIr]);
+    cli(["build", tailProject, "--emit", "header", "-o", join(temporary, "tail.h")]);
+    const tailHost = join(temporary, "tail-host.c");
+    writeFileSync(tailHost, `
+#include <stdint.h>
+#include <stdio.h>
+#include "tail.h"
+int main(void) {
+    printf("%lld %lld\\n", (long long)tz_parity_deep(100000000), (long long)tz_bind_deep(100000000));
+    return 0;
+}
+`);
+    for (const optimization of [2, 3]) {
+      const tailNative = join(temporary, `tail-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", `-I${temporary}`, tailHost, tailIr, "-lm", "-o", tailNative]);
+      const result = execute(tailNative, [], false);
+      assert.equal(result.stdout, "1 7\n", `tail calls stay jumps at -O${optimization} (status ${result.status}, signal ${result.signal})`);
+    }
+    console.log("Computations: 1e8-level union tail recursion runs in constant stack at -O2 and -O3");
+  }
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
