@@ -871,7 +871,7 @@ diff -r target/perf/PM01/ir-before target/perf/PM01/ir-after && echo identical
 
 ### 計測
 
-共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動き、load average は 4〜9）で、`with-lock.sh measure`（ほかの agent の重い処理と重ねない）の下で取った。RSS と時間は**目安**で、専用機での再計測は統括側が行う。型の大きさは決定的。
+共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動く）で取った。時間・RSS は `with-lock.sh measure`（ほかの agent の重い処理と重ねない）の下で、load average は 4〜11。命令数と深い入れ子の wall time は、ほかの agent の作業が重なった load average 13〜25 の間。RSS と時間は**目安**で、専用機での再計測は統括側が行う。型の大きさは決定的。
 表・コマンド・生成コードの確認は `docs/benchmarks.md` の「値のレイアウト（PM01、2026-10-16）」にある。比較した release コンパイラは main（`6d15b437`）、integration（`7f41badc`。PM01 を含まない）、final（`d5b91402`。PM05 を取り込む前）。
 
 - 型の大きさ（native・wasm32・x86-64。`benchmarks/layout/sizes.mjs`）: `Color` 4 → 1、`Maybe<bool>` 8 → 2、`Small` 32 → 2、`Maybe<string>` 24 → 16、`Result<i64, string>`・`Shape` 32 → 24、`Mixed` 32 → 24、`Tagged` 24 → 16、`Maybe<ref Point>` は native 16 → 8（wasm32 は 8 のまま）、`Maybe<i64>`・`Point` は 16。配列の合計は 188,000,000 → 109,000,000 bytes。

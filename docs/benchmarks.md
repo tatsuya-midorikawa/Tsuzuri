@@ -6486,7 +6486,7 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 union・`Maybe`・`Result`・record の値の大きさと、`benchmarks/layout` の最大メモリ使用量（RSS）・時間・コンパイル時間の記録です。
 実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に大きさや速度の閾値はありません。
-値の大きさは決定的です。RSS・時間・コンパイル時間は、ほかの作業と共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動き、計測中の load average は 4〜9）で取った値で、専用機の値ではありません。**目安**であり、正式な値は静かなマシンで取り直します。
+値の大きさは決定的です。RSS・時間・コンパイル時間は、ほかの作業と共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動く）で取った値で、専用機の値ではありません。時間と RSS は、ほかの agent の重い処理と重ならないように lock を取って測り、その間の load average は 4〜11 でした。命令数と深い入れ子の wall time は、ほかの agent の作業が重なった 13〜25 の間に測りました。**目安**であり、正式な値は静かなマシンで取り直します。
 
 比較する release コンパイラ（`cargo build --release --locked`）は 3 つです。
 
@@ -6598,7 +6598,7 @@ clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module -S x.ll -o
 
 どの project も、3 つのコンパイラの中央値の差は 0.04 秒以内で、範囲が重なります。差は雑音の内です。
 
-wall time は機械の load に左右されるので、同じコマンドの命令数（`/usr/bin/time -l` の `instructions retired`、百万、3 回の中央値）も測りました。深く入れ子にした型（`Maybe` を 100 重、ペイロードの両方が自分自身である `union Both<'a> = L of 'a | R of 'a` を 12・16・18 重）を含みます。
+wall time は機械の load に左右されるので、同じコマンドの命令数（`/usr/bin/time -l` の `instructions retired`、百万、3 回の中央値）も測りました。深く入れ子にした型（`Maybe` を 100 重、ペイロードの両方が自分自身である `Both<'a>` を 12・16・18 重）を含みます。
 入れ子の入力は、`union Both<'a> = L of 'a | R of 'a`、`def f :: i64 -> Both<Both<…<i64>…>>`（n 重）、`fn f x = L (L (… (L 1)…))`、`export def answer :: i64`、`fn answer = match f 1 with | L _ -> 1 | R _ -> 0` の形です（`Maybe` の版は `Maybe<…>`・`Some (…)`・`Some _ -> 1 | None -> 0`）。
 
 | 入力 | main | integration | final | final / integration |
