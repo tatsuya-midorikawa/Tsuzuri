@@ -183,9 +183,42 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   `cpp/task_parallel`（0.768）は 2026-10-13 の集計で 0.94 に更新済みで、Phase 1 では動かない形（16 件 × 約 79 µs）なので、
   この種目の改善は主張しません。機械語ではなく lock 回数と signal 回数の assert で受け入れを判定します。
   WASM threads は 28 byte の `ThreadState`・import・poison bit の規約を保ちます。
-- **PM01**・**PR03**・**PB04**・**PM08**: 調査中です。確定した方針は、着手前にこの節へ追記します。
+- **PM01**: union の tag を読み書きする箇所は起票の 3 か所ではなく 10 か所以上あり（`match_expression` の `load i32`、`case_switch`、
+  手書き IR の `Parse.parse`・`Utf8Char.of_u32`、`static_constant`、Async、`Seq.next`、`parallel_result_tasks`）、大きさのモデルも 4 つではなく 6 つです
+  （`Dyn.of` の確保サイズと PR01 の `dereferenceable` の下限を含む）。そこで、先に tag・フィールドの全経路を helper に通す IR 同一の整理
+  （`src/llvm_layout.rs`）を行い、その後に tag の幅（`i8`／`i16`／`i32`）、General の領域（`unit = min(最大アラインメント, 16)`、
+  B07 の Drop 共用体は `units 0`）、niche の順に切り替えます。niche は `Seq.next` の `zeroinitializer` による空値を明示構築に直してから入れ、
+  G16 のデバッガ契約（`$tag`・LLDB・natvis）を保つため DWARF の `$niche` と formatter を必須にします。単一ポインターの niche（null）は native だけで、
+  wasm32／wasm64 は `--stack-first` でアドレス 0 が有効なため使いません。レコードの並べ替え（Phase 3a）は `record_slots`／`field_slot` を通し、
+  `layout_bound` の下限も物理順にします。タプルの並べ替え（Phase 3b）は、`Mutex` の cell（`(i32u * T)`。offset 0 を C／LL の runtime が lock word として読む）と、
+  添字を手書きする約 10 の builtin に衝突するため実施せず、理由と前提を記録します。`Dyn.of` と vtable の確保サイズはモデルでなく `sizeof` の定数式にします。
+  E1010 の見積もりと `stack_size` は保守的な上限のままで、「実際の大きさ ≤ モデル」をテストで固定します。
+- **PR03**: 残る問題は、`ce_std_option`・`ce_std_option_owned` に inline 後も残る union の `phi` と `switch`（K1）だけです。
+  residual な利用者呼び出し（K2）と間接呼び出し（K3）は `-O3` の 10 組で出ず、F3（`inlinehint`）は不要です。起票の F1（全 exit を return slot にする）は
+  `Maybe` を返す相互末尾再帰の末尾呼び出しを壊し（`parity_deep(1e8)` が `-O2`／`-O3` で segfault）、1 exit の関数の `memory(none)` も失わせるため採りません。
+  代わりに、循環しうる呼び出しへ転送する exit を除いて slot 化し、exit が 2 つ以上で slot 化が 1 つ以上、領域は 1 KiB 以下のときだけ適用します。
+  別に、特殊化の worker 予算（1,024）の崖（`let!` が 2 つの連鎖で約 8 worker、約 128 連鎖で枯渇し、300 連鎖では全連鎖が途中から間接呼び出しになる）を
+  測って対処します。型付き IR での展開（Phase 3、D3）は、drop 順・捕捉の評価時点・複製一覧に触れるため、std の `Maybe`／`Result` の
+  `Bind`／`BindReturn` で `needs_drop` でないスカラーだけを捕捉する閉包に限り、効果の証拠（予算の崖、`-O0` の生成量）があるときだけ入れます。
+  M2 の機械語の数え方は CFI が無く累積になるため直します。
+- **PB04**: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
+  finish（7.8%）です。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も要りません。
+  試作では 1,000 module の `check` が 1.43〜1.46 倍、hello が 25〜35% 短く、出力は HEAD と byte 一致でした。D8 を承認して全段を実装し、順は
+  Sync 化 → 並列の helper と設定 → 所有権 → finish → 本体 → frontend cache の `&self` lookup／`&mut self` commit 分割 → parse です。
+  既定は CLI だけ自動（`min(コア数, 8)`）で、library・LSP・REPL は 1、`TSUZURI_THREADS=1` が従来の経路、不正値は `E2000` です。
+  小さな入力は段ごとの仕事量で逐次にし、診断・IR・pack の byte は thread 数に依らず同じにします。G1 の「`check` を 1/5」は並列化できる段だけの上限が約 1.9 倍で
+  到達できないため、「8 thread で 1,000 module の `check` 1.4 倍以上・`emit-llvm` 1.2 倍以上・hello は悪化しない」に改めます（期待値で、CI の閾値ではありません）。
+- **PM08**: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げです。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
+  wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
+  `tz_soft_format` と PR04 の表です。主な成果は D2（整数表示の runtime を分けた `integer.ll`）で、native の hello は C の hello と同程度（33,768 bytes）、
+  wasm の hello は約 82% 減（6,568 bytes）が見込めます。`-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えない）、`--strip` は opt-in、
+  `wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、自動検出も同梱もせず、使えなければ `E2002` にします。
+  D2 は既存の 8 か所のテスト期待値（`display_parse`・`integers`・`prebuilt_runtime`・`targets` の Clang 呼び出し数など）を変えるため、先に一覧を宣言します。
+  サイズの測定は、利用者が得る cache あり既定を主とし、`--no-cache` は別に表示します（ファイルの大きさはページ単位なので、受け入れはセクションの bytes で判定）。
 
-- 共有機で 8 チケットを並行して進めるため、時間の測定は排他的な窓で行い、負荷を記録します。各チケットの時間の数値は参考値で、
+- 8 チケットは別々の worktree で並行して開発し、重なる箇所の順に統合します。`src/driver.rs` を触る PB03 → PM08 → PB04、runtime の PR06・PM05、
+  `src/llvm.rs` の PM01 → PR03 → PR02 の順で、統合のたびに生成 IR の差分（既定の出力が変わらないこと）と全 suite を再確認します。
+  共有機で並行して進めるため、時間の測定は排他的な窓で行い、負荷を記録します。各チケットの時間の数値は参考値で、
   静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
 
 ### 第2フェーズ7件の実装方針（2026-10-14）
