@@ -25,7 +25,7 @@ define internal ptr @tz_small_alloc(i64 noundef %0) local_unnamed_addr nounwind 
   %10 = getelementptr inbounds i8, ptr %7, i64 8
   %11 = icmp ne i64 %0, 0
   %12 = sext i1 %11 to i64
-  %13 = add nsw i64 %0, %12
+  %13 = add i64 %0, %12
   %14 = lshr i64 %13, 4
   %15 = and i64 %14, 4294967295
   %16 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %10, i64 0, i64 %15
@@ -58,7 +58,7 @@ declare nonnull ptr @llvm.threadlocal.address.p0(ptr nonnull)
 define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noinline nounwind {
   %2 = icmp ne i64 %0, 0
   %3 = sext i1 %2 to i64
-  %4 = add nsw i64 %0, %3
+  %4 = add i64 %0, %3
   %5 = lshr i64 %4, 4
   %6 = tail call align 8 ptr @llvm.threadlocal.address.p0(ptr align 8 @tz_small_tc)
   %7 = load ptr, ptr %6, align 8
@@ -90,11 +90,11 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   %24 = shl i32 %23, 4
   %25 = add i32 %24, 16
   %26 = udiv i32 4096, %25
-  %27 = shl nuw nsw i32 %26, 1
-  %28 = shl nuw nsw i64 %22, 4
+  %27 = shl i32 %26, 1
+  %28 = shl i64 %22, 4
   %29 = getelementptr inbounds i8, ptr %13, i64 %28
   store i32 %27, ptr %29, align 4
-  %30 = add nuw nsw i64 %22, 1
+  %30 = add i64 %22, 1
   %31 = icmp eq i64 %30, 32
   br i1 %31, label %14, label %21
 
@@ -218,14 +218,14 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   %107 = and i64 %81, 16383
   %108 = getelementptr inbounds i8, ptr %104, i64 %107
   store i8 %106, ptr %108, align 1
-  %109 = shl nuw nsw i64 %44, 4
-  %110 = add nuw nsw i64 %109, 16
+  %109 = shl i64 %44, 4
+  %110 = add i64 %109, 16
   %111 = udiv i64 4096, %110
   %112 = udiv i64 1048576, %110
   %113 = urem i64 %112, %111
-  %114 = sub nuw nsw i64 %112, %113
+  %114 = sub i64 %112, %113
   store i64 %74, ptr %63, align 8
-  %115 = mul nuw nsw i64 %114, %110
+  %115 = mul i64 %114, %110
   %116 = add i64 %115, %74
   store i64 %116, ptr %65, align 16
   %117 = getelementptr inbounds i8, ptr %45, i64 4
@@ -243,13 +243,13 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   br label %144
 
 122:                                              ; preds = %103, %62
-  %123 = shl nuw nsw i64 %44, 4
-  %124 = add nuw nsw i64 %123, 16
+  %123 = shl i64 %44, 4
+  %124 = add i64 %123, 16
   %125 = udiv i64 4096, %124
   %126 = trunc i64 %125 to i32
   %127 = load i64, ptr %63, align 8
   %128 = inttoptr i64 %127 to ptr
-  %129 = mul nuw nsw i64 %125, %124
+  %129 = mul i64 %125, %124
   %130 = add i64 %127, %129
   store i64 %130, ptr %63, align 8
   %131 = getelementptr inbounds i8, ptr %45, i64 40
@@ -271,7 +271,7 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   %140 = phi ptr [ %141, %138 ], [ %128, %122 ]
   %141 = getelementptr inbounds i8, ptr %140, i64 %124
   store ptr %141, ptr %140, align 8
-  %142 = add nuw nsw i32 %139, 1
+  %142 = add i32 %139, 1
   %143 = icmp eq i32 %142, %126
   br i1 %143, label %136, label %138
 
@@ -293,7 +293,7 @@ define internal fastcc ptr @tz_small_alloc_slow(i64 noundef %0) unnamed_addr noi
   %154 = getelementptr inbounds i8, ptr %152, i64 12
   %155 = load i32, ptr %154, align 4
   %156 = lshr i32 %155, 1
-  %157 = add nsw i32 %156, -1
+  %157 = add i32 %156, -1
   %158 = getelementptr inbounds i8, ptr %152, i64 8
   store i32 %157, ptr %158, align 8
   br label %159
@@ -341,13 +341,13 @@ define internal void @tz_small_free(ptr noundef %0) local_unnamed_addr nounwind 
   br i1 %24, label %25, label %27
 
 25:                                               ; preds = %21
-  %26 = add nsw i32 %18, -1
+  %26 = add i32 %18, -1
   tail call fastcc void @tz_small_free_slow(ptr noundef %0, i32 noundef %26)
   br label %40
 
 27:                                               ; preds = %21
   %28 = getelementptr inbounds i8, ptr %23, i64 8
-  %29 = add nsw i32 %18, -1
+  %29 = add i32 %18, -1
   %30 = zext i32 %29 to i64
   %31 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %28, i64 0, i64 %30
   %32 = load ptr, ptr %31, align 8
@@ -397,11 +397,11 @@ define internal fastcc void @tz_small_free_slow(ptr noundef %0, i32 noundef %1) 
   %17 = shl i32 %16, 4
   %18 = add i32 %17, 16
   %19 = udiv i32 4096, %18
-  %20 = shl nuw nsw i32 %19, 1
-  %21 = shl nuw nsw i64 %15, 4
+  %20 = shl i32 %19, 1
+  %21 = shl i64 %15, 4
   %22 = getelementptr inbounds i8, ptr %6, i64 %21
   store i32 %20, ptr %22, align 4
-  %23 = add nuw nsw i64 %15, 1
+  %23 = add i64 %15, 1
   %24 = icmp eq i64 %23, 32
   br i1 %24, label %7, label %14
 
@@ -479,7 +479,7 @@ define internal fastcc void @tz_small_flush(ptr noundef nonnull %0, i32 noundef 
   %28 = phi i32 [ %31, %27 ], [ 1, %9 ]
   %29 = phi ptr [ %30, %27 ], [ %13, %9 ]
   %30 = load ptr, ptr %29, align 8
-  %31 = add nuw nsw i32 %28, 1
+  %31 = add i32 %28, 1
   %32 = icmp eq i32 %31, %12
   br i1 %32, label %15, label %27
 
@@ -509,7 +509,7 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
   %13 = getelementptr inbounds i8, ptr %10, i64 8
   %14 = icmp ne i64 %1, 0
   %15 = sext i1 %14 to i64
-  %16 = add nsw i64 %1, %15
+  %16 = add i64 %1, %15
   %17 = lshr i64 %16, 4
   %18 = and i64 %17, 4294967295
   %19 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %13, i64 0, i64 %18
@@ -572,13 +572,13 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
   br i1 %54, label %55, label %57
 
 55:                                               ; preds = %51
-  %56 = add nsw i32 %48, -1
+  %56 = add i32 %48, -1
   tail call fastcc void @tz_small_free_slow(ptr noundef nonnull %0, i32 noundef %56)
   br label %165
 
 57:                                               ; preds = %51
   %58 = getelementptr inbounds i8, ptr %53, i64 8
-  %59 = add nsw i32 %48, -1
+  %59 = add i32 %48, -1
   %60 = zext i32 %59 to i64
   %61 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %58, i64 0, i64 %60
   %62 = load ptr, ptr %61, align 8
@@ -631,10 +631,10 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
   br i1 %90, label %91, label %97
 
 91:                                               ; preds = %89
-  %92 = add nuw nsw i64 %1, 68719476735
+  %92 = add i64 %1, 68719476735
   %93 = lshr i64 %92, 4
   %94 = trunc i64 %93 to i32
-  %95 = add nsw i32 %85, -1
+  %95 = add i32 %85, -1
   %96 = icmp eq i32 %95, %94
   br i1 %96, label %165, label %97
 
@@ -654,7 +654,7 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
 
 105:                                              ; preds = %101
   %106 = getelementptr inbounds i8, ptr %103, i64 8
-  %107 = add nuw nsw i64 %1, 68719476735
+  %107 = add i64 %1, 68719476735
   %108 = lshr i64 %107, 4
   %109 = and i64 %108, 4294967295
   %110 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %106, i64 0, i64 %109
@@ -681,10 +681,10 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
   br i1 %122, label %165, label %123
 
 123:                                              ; preds = %120
-  %124 = add nsw i32 %85, -1
+  %124 = add i32 %85, -1
   %125 = zext i32 %124 to i64
-  %126 = shl nuw nsw i64 %125, 4
-  %127 = add nuw nsw i64 %126, 16
+  %126 = shl i64 %125, 4
+  %127 = add i64 %126, 16
   %128 = tail call i64 @llvm.umin.i64(i64 %127, i64 %1)
   tail call void @llvm.memcpy.p0.p0.i64(ptr nonnull align 1 %121, ptr nonnull align 1 %0, i64 %128, i1 false)
   br i1 %32, label %129, label %142
@@ -722,13 +722,13 @@ define internal ptr @tz_small_realloc(ptr noundef %0, i64 noundef %1) local_unna
   br i1 %149, label %150, label %152
 
 150:                                              ; preds = %146
-  %151 = add nsw i32 %143, -1
+  %151 = add i32 %143, -1
   tail call fastcc void @tz_small_free_slow(ptr noundef nonnull %0, i32 noundef %151)
   br label %165
 
 152:                                              ; preds = %146
   %153 = getelementptr inbounds i8, ptr %148, i64 8
-  %154 = add nsw i32 %143, -1
+  %154 = add i32 %143, -1
   %155 = zext i32 %154 to i64
   %156 = getelementptr inbounds [32 x %struct.tz_small_slot], ptr %153, i64 0, i64 %155
   %157 = load ptr, ptr %156, align 8
@@ -785,8 +785,8 @@ define weak hidden void @tz_small_stats(ptr noundef writeonly %0) local_unnamed_
   br i1 %18, label %19, label %16
 
 19:                                               ; preds = %16
-  %20 = shl nuw nsw i64 %11, 4
-  %21 = add nuw nsw i64 %20, 16
+  %20 = shl i64 %11, 4
+  %21 = add i64 %20, 16
   %22 = getelementptr inbounds i8, ptr %15, i64 40
   %23 = load i64, ptr %22, align 8
   %24 = mul i64 %23, %21
@@ -802,7 +802,7 @@ define weak hidden void @tz_small_stats(ptr noundef writeonly %0) local_unnamed_
   %34 = zext i32 %33 to i64
   %35 = add i64 %14, %34
   store atomic i32 0, ptr %15 release, align 64
-  %36 = add nuw nsw i64 %11, 1
+  %36 = add i64 %11, 1
   %37 = icmp eq i64 %36, 32
   br i1 %37, label %4, label %10
 
@@ -843,14 +843,14 @@ define weak hidden void @tz_small_stats(ptr noundef writeonly %0) local_unnamed_
 61:                                               ; preds = %52, %61
   %62 = phi i64 [ 0, %52 ], [ %71, %61 ]
   %63 = phi i64 [ %53, %52 ], [ %70, %61 ]
-  %64 = shl nuw nsw i64 %62, 4
+  %64 = shl i64 %62, 4
   %65 = getelementptr inbounds i8, ptr %56, i64 %64
   %66 = load i32, ptr %65, align 8
   %67 = zext i32 %66 to i64
-  %68 = add nuw nsw i64 %64, 16
-  %69 = mul nuw nsw i64 %68, %67
+  %68 = add i64 %64, 16
+  %69 = mul i64 %68, %67
   %70 = add i64 %69, %63
-  %71 = add nuw nsw i64 %62, 1
+  %71 = add i64 %62, 1
   %72 = icmp eq i64 %71, 32
   br i1 %72, label %57, label %61
 }

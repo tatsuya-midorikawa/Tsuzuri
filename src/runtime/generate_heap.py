@@ -60,6 +60,9 @@ text = text.replace("getelementptr inbounds nuw", "getelementptr inbounds")
 text = text.replace("getelementptr nuw", "getelementptr")
 text = text.replace("or disjoint", "or").replace("zext nneg", "zext").replace("icmp samesign", "icmp")
 text = re.sub(r"trunc (?:nuw |nsw )+", "trunc ", text)
+# No overflow promises either: the program's own tests check that the IR of checked arithmetic has none, and the
+# optimizer finds the ranges of these loops without them.
+text = re.sub(r"\b(add|sub|mul|shl) (?:nuw |nsw )+", r"\1 ", text)
 for name in internal:
     text = text.replace(f"define hidden ptr @{name}(", f"define internal ptr @{name}(")
     text = text.replace(f"define hidden void @{name}(", f"define internal void @{name}(")
@@ -72,8 +75,8 @@ text = re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
 # What the embedding relies on.
 if re.search(r"#\d|(?<![\w\"])![A-Za-z0-9_.]", text):
     raise RuntimeError("heap-small.ll still has attribute groups or metadata")
-if re.search(r"\b(samesign|nneg|disjoint|captures|range|initializes)\b|inbounds nuw", text):
-    raise RuntimeError("heap-small.ll uses IR syntax that older LLVM versions do not read")
+if re.search(r"\b(samesign|nneg|disjoint|captures|range|initializes|nuw|nsw)\b", text):
+    raise RuntimeError("heap-small.ll uses IR syntax that older LLVM versions do not read, or an overflow promise")
 defined = re.findall(r"^define (?:[a-z]+ )*[^@]*@([^ (]+)\(", text, flags=re.M)
 for name in internal + shared_functions:
     if name not in defined:
