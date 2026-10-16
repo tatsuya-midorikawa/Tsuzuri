@@ -52,15 +52,18 @@
   `emit` の `facts::apply` の直後の 1 呼び出しだけにする。`llvm_control.rs`・`llvm_bulk.rs`・`llvm_abi.rs`・`closure_wrappers`・builtin の `auxiliary` は変えない。
 - 対象の判定は 1 つの関数 `uses_return_slot(ty, module)` にまとめる: 結果が再帰でない `Type::Union` で、`union_layout` が `Enum` でなく、`storage_layout` の大きさが 1 KiB 以下。
   PM01 の niche など「スカラーの表現」の layout を足すときは、この関数だけを直す。
-- `emit_tail` の既定の枝で `ret` を出した直後に、その `ret` の行の番号を記録するか、平文の `ret` を保つと印を付ける（`FunctionEmitter::note_union_return`）。
-  保つのは、exit が呼び出しの結果をそのまま返し、かつ (現在の関数が循環にある `recursive_functions`) または (呼び先が循環にある) または (呼び先が不明・間接) のとき（規則 D）。
-  constructor・局所・欄・添字・payload・参照外し・static の exit と、循環にない既知の呼び先への exit は slot にできる。それ以外の形は平文の `ret` を保つ。
-- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上あり、平文を保つ exit が 1 つも無いときだけ、
+- `emit_tail` の既定の枝で `ret` を出した直後に、slot にできる exit の数を数えるか、平文の `ret` を保つと印を付ける（`FunctionEmitter::note_union_return`）。
+  slot にできるのは、値を作る exit（constructor）と、読む exit（欄・添字・payload・参照外し・static・変更しない引数）だけ。呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所・その他の形）は、
+  呼び先が何であっても平文の `ret` を保つ（規則 E）。最初の版の規則 D は、現在の関数と呼び先が `recursive_functions` の循環に入らない呼び出しの exit を slot にできるとしたが、
+  レビューが、局所を経由する再帰と、閉包を引数で渡す再帰（`guard` と `Maybe.bind` は参照の循環に入らないが、閉包がそこから戻る）の 1e8 段を `stack overflow` にすると指摘した。
+  呼び先が循環に戻らないことは参照グラフから証明できないので、呼び出しを返す exit は slot にしない。
+- `emit` の `facts::apply` の後で `FunctionEmitter::apply_return_slot` が、union の exit が 2 つ以上あり、平文を保つ exit が 1 つも無いときだけ、最終の `lines` の `  ret ` の行
+  （`facts::apply` が本体の前に `noalias.scope.decl` を挿入するので、記録した行番号は使わない。数が報告した exit の数と合わないときは書き換えない）の
   すべての `ret T V[, !dbg !N]` を `store T V, ptr %tz.return.slot[, !dbg !N]` と `br label %tz.return[, !dbg !N]` に書き換え、入口の alloca（`%tz.return.slot = alloca T, align 16`）と
   `tz.return:`（`%tz.return.value = load`、`ret`）を足す。名前は固定。slot は `scopes`・frame に入れない（停止条件 7 は起こらない）。
   一部の exit だけを slot にしても `ret` が複数残り、inline 後の phi は消えないので、1 つでも保つ関数は全 exit を保つ
   （`if flag then even_m x else None` を呼ぶ関数で確かめた。一部だけ slot にした IR は slot なしと同じ）。
-- 新しい停止条件: `parity_deep(1e8)`・`bind_deep(1e8)` が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
+- 新しい停止条件: `parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep`（1e8 段）が native `-O2`／`-O3` で落ちる。`param_facts`・`union_types` などの IR の期待値を直す必要が出る。
   `ce_std_option`・`std_option_owned` の K1 が消えない（F1' を戻して報告する）。
 
 ### C0〜C6（実装順。各段をコミットする）
@@ -699,7 +702,9 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 
 - F1'（`src/llvm_return_slot.rs`）。非再帰の `Type::Union`（`UnionLayout::Enum` を除く、`storage_layout` が 1 KiB 以下）を返す関数のうち、`ret` が 2 つ以上あり、どの `ret` も slot にできるものを、入口の `alloca`
   への store と 1 つの `tz.return` ブロックの load・`ret` に書き換える。`facts::apply` の後の post-pass で、`llvm.rs` の変更は module 宣言・欄 1 つ・初期化・2 つの呼び出しの 6 行だけ。
-  規則 D: 呼び出しの結果をそのまま返す exit は、現在の関数が循環にあるか、呼び先が循環にあるか、呼び先が不明なとき平文の `ret` を保ち、1 つでも保つ関数は全 exit を保つ（一部だけ slot にしても inline 後の `phi` が消えない）。
+  規則 E: 値を作る exit（constructor）と読む exit（欄・添字・payload・参照外し・static・変更しない引数）だけを slot にし、呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所）を 1 つでも持つ関数は、
+  呼び先にかかわらず全 exit を平文の `ret` のまま残す。一部だけ slot にしても inline 後の `phi` が消えないので、1 つでも保つ関数は全 exit を保つ。最初の版の規則 D（呼び先が循環にない呼び出しは slot にする）は、
+  レビューの指摘で規則 E に置き換えた（下の「レビューの指摘と修正」）。`ret` は最終の `lines` から探し、数が合わない関数は書き換えない。
   対象の判定は `uses_return_slot(ty, module)` の 1 関数で、PM01 の「niche は除く」はこの関数に足す。
 - worker 予算（C5）。`emit_program` は従来どおり出力し、`Specializations::exhausted()`（要求が予算に断られた）ときだけ、2 回目を `Drain::DepthFirst` で出力する。
   関数を、その関数が名前で参照する関数（束縛ごとの lift 済みラムダ）が直後に続く順（`reference_order`）に出力し、各関数の worker を直後に出力する。予算内の program は byte 単位で以前と同じ。
@@ -734,7 +739,8 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
   wasm32 104 件は 66 件が一致、38 件が戻すと一致（`ret` 1,586 個）で、不一致 0 件。skip の一覧も同じ。F1' → 最終: native 110 件・wasm32 105 件（`return_slot` を含む）がすべて byte 一致
   （予算内の program は変わらない）。IR は native と wasm32 で 2 回出力して一致。
 - Windows の型検査（rustup の `stable`、`PATH` と `RUSTC` を rustup の toolchain に向けた）: `cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` とも通過。
-- 末尾呼び出しの guard の感度: 全 exit を slot にした IR（書き換え）で `parity_deep(1e8)` は `-O2`・`-O3` とも終了コード 139。F1' の IR は基準と byte 一致で、通る。基準のコンパイラは `-O0`・`-O1` で 139（docs が保証するのは自己末尾呼び出しだけ）。
+- 末尾呼び出しの guard の感度: 全 exit を slot にした IR（書き換え）で `parity_deep(1e8)` は `-O2`・`-O3` とも終了コード 139。規則 E の IR は、`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep` の
+  1e8 段が `-O2`・`-O3` とも基準と同じ値（`1 7 1 7 7`）で通る。基準のコンパイラは `-O0`・`-O1` で 139（docs が保証するのは自己末尾呼び出しだけ）。
 - 差分テスト（`tsuzuri-final-fast`、F1'・C5 を含む最終のコード）: `tests/last_use_fuzz.mjs`（300 件、seed 1000、深さ 4、native `-O0`／`-O3` の 600 実行、差 0）・
   `tests/local_recursion_fuzz.mjs`（100 件が native `-O0`（3 件に 1 件は `-O3` も）で評価器と一致）。
 - `node scripts/check-docs.mjs _tsuzuri/language-reference/computation-expressions/computation-expressions.md`: 1 ページ・24 リンク・10 例・native 20 回（O0/O3）で通過。`docs/*.md`・`README.md` は `git diff --check`。
@@ -751,7 +757,7 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 | 他の 8 対（bind・checked・delayed・array_for・array_bind・owned_capture・std_result・std_option_length） | — | 変化なし | IR・機械語とも byte 単位で同じ |
 | M3 確保（`allocations_at_size_64`、決定的） | bind・checked・delayed・std_option・std_result・std_option_length は 0 回、array_for・array_bind は 1 回 512 bytes、owned_capture は 1 回 2,048 bytes、std_option_owned は 55 回 1,210 bytes | 同じ | direct・ce・基準の 3 者が全種目で一致 |
 | M5 native `__text`（`benchmarks/computations`、`-O3`） | 3,884 bytes | 3,824 bytes（−1.5%） | 5% 以内 |
-| M5 wasm32 CODE section（`-O3`／`-O0`） | 9,144／28,463 bytes | 9,191／28,559 bytes（+0.51%／+0.34%） | 5% 以内 |
+| M5 wasm32 CODE section（`-O3`／`-O0`） | 9,144／28,463 bytes | 9,191／28,541 bytes（+0.51%／+0.27%） | 5% 以内 |
 | M6 worker 数（`comp.ll`／`chain.ll`） | 64／9 | 64／9 | 変化なし |
 | C5 300 連鎖: 間接呼び出しを持つ export／`__text`／ループの user CPU | 300 個／46,804 bytes／1.71 秒 | 0 個／24,036 bytes／0.91 秒 | N=200: 89 個／20,940 bytes → 0 個／14,784 bytes。N≤128 は byte 一致。compile 時間（user CPU）は 0.24 秒 → 0.29〜0.31 秒 |
 | M4 時間（native、ms/呼び出し、15 標本の中央値、3 回） | `std_option` 5.558・5.517・5.501 | 4.755・4.826・4.685（−14〜17%、3 回とも同じ向き、広がりが重ならない） | `direct_std_option` は 4.744・4.821・4.688 で ce／direct は 1.00。他の 9 対は広がりの範囲内（ce／direct 0.92〜1.03、基準／後 0.98〜1.06）。WASM は向きが揃わず主張しない。共有 machine（負荷平均 約 50）での参考値 |
@@ -760,8 +766,9 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 
 - D1: F1' で確定（型付き IR での簡約は Phase 3 の D3 として取り下げ）。D2: 対象は非再帰・非 `Enum` の union を返す `fn`・`$lambda`・`@tz.specialized.*` で、exit が 2 つ以上で全 exit が slot にできるもの、1 KiB 以下。
   builtin・wrapper・export は対象外。名前は `%tz.return.slot`・`tz.return`・`%tz.return.value`。
-- D8（追加）: 規則 D は、1 つでも平文の `ret` を保つ exit がある関数の全 exit を保つ（all-or-nothing）。理由: 一部だけを slot にした試作は `ret` が複数残り、inline 後の `phi` が消えない。
-  slot 化で LLVM が末尾呼び出しにできなくなる相互再帰（`parity_deep(1e8)`）を守る。
+- D8（追加）: 規則 E は、呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所）を 1 つでも持つ関数の全 exit を平文の `ret` のままにする（all-or-nothing）。理由: 一部だけを slot にした試作は
+  `ret` が複数残り、inline 後の `phi` が消えない。呼び先が循環に戻らないことは、閉包を引数で渡す再帰を含め、参照グラフから証明できないので、呼び先を調べて slot にする規則 D は取りやめた。
+  slot 化で LLVM が末尾呼び出しにできなくなる再帰（`parity_deep`・`bind_deep`・`parity_local_deep`・`guard_deep`・`self_local_deep` の 1e8 段）を守る。
 - D9（追加）: 予算を使い切った program だけ 2 回目の出力を深さ優先にする（`reference_order`）。関数 id 順の深さ優先では、捕捉のない lambda が連鎖の根より後（高い id）に出て予算が先に尽き、連鎖が途中で切れた
   （600 連鎖の IR の試験が検出した）ため、参照順にした。予算内の program の出力は変えない。
 - D5: `MAX_SPECIALIZATIONS` は 1,024 のまま。到達しない worker は数を記録するだけ（C5 が崖を直したので引き上げは不要）。
@@ -770,7 +777,8 @@ rustc 1.98（MSRV 1.85 の API だけを使用）・Node 20.19.6（Node 24 は `
 ### 見つけた問題・残作業
 
 - 起票の M2 の数え方（`.cfi_endproc` まで）は export 関数に CFI が無く、後続の関数を累積して数える。数え方は `-- End function` まで（`docs/benchmarks.md`）。起票の K4（機械語だけの差）は数え方の誤りで、存在しない。
-- 起票の F1（全 exit の slot 化）は LLVM の末尾呼び出し（sibling call）を壊す。docs が保証する末尾呼び出しは自己末尾呼び出しのループだけだが、HEAD は `-O2`／`-O3` で union を返す相互再帰を定数スタックで走らせており、これを守る。
+- 起票の F1（全 exit の slot 化）は LLVM の末尾呼び出し（sibling call）を壊す。docs が保証する末尾呼び出しは自己末尾呼び出しのループだけだが、HEAD は `-O2`／`-O3` で union を返す再帰（相互再帰・局所を経由する再帰・
+  引数の閉包を経由する再帰）を定数スタックで走らせており、これを守る（規則 E）。
 - x86-64 の `ce_std_option` は 38 から 56 命令に増えた（`direct` は 53）。arm64 は `direct` と同じ 24。命令数は性能の代理にしない。
 - `Instrumentation` が `Copy` になった（再出力のため）。他のチケットがこの構造体に `Copy` でない欄を足すと、`emit_program` の 2 回呼び出しを参照渡しか `Clone` に直す。
 - PM01 を先に統合するときは、`uses_return_slot` に「niche は除く」を足し、`param_facts`・`union_types`・`maybe_result` と `return_slot` の suite を再確認する（コンパイラの出力を調べる試験は
