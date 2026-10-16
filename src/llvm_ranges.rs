@@ -102,18 +102,54 @@ impl FunctionEmitter<'_, '_> {
         if self.globals.range_flags != RangeFlags::Audit {
             return;
         }
-        self.audit_add(bits, current, stride, flags);
+        self.audit("add", bits, current, stride, flags);
         self.jump(step);
         self.begin(step);
     }
 
-    /// Traps if `left + right` overflows in a sense that `flags` claims it cannot.
-    fn audit_add(&mut self, bits: u16, left: &str, right: &str, flags: Flags) {
+    /// The flag words of the integer `left operator right` whose operands have the values `lhs`
+    /// and `rhs`. Proven mode returns what the intervals of the operands prove; audit mode
+    /// writes no words and traps where a proof is wrong; off mode asks nothing.
+    pub(super) fn arithmetic_flags(
+        &mut self,
+        operator: BinaryOp,
+        left: &TypedExpr,
+        right: &TypedExpr,
+        lhs: &str,
+        rhs: &str,
+    ) -> &'static str {
+        if self.globals.range_flags == RangeFlags::Off {
+            return "";
+        }
+        let flags = self
+            .ranges
+            .integer_flags(self.module, operator, left, right);
+        let Type::Integer(bits, _) = left.ty else {
+            return "";
+        };
+        if flags == Flags::default() {
+            return "";
+        }
+        if self.globals.range_flags == RangeFlags::Proven {
+            return flags.text();
+        }
+        let operation = match operator {
+            BinaryOp::Add => "add",
+            BinaryOp::Subtract => "sub",
+            _ => "mul",
+        };
+        self.audit(operation, bits, lhs, rhs, flags);
+        ""
+    }
+
+    /// Traps if `left operation right` overflows in a sense that `flags` claims it cannot.
+    fn audit(&mut self, operation: &str, bits: u16, left: &str, right: &str, flags: Flags) {
         for (claimed, signed) in [(flags.nsw, true), (flags.nuw, false)] {
             if !claimed {
                 continue;
             }
-            let (_, overflow) = self.checked_integer_arithmetic(bits, signed, "add", left, right);
+            let (_, overflow) =
+                self.checked_integer_arithmetic(bits, signed, operation, left, right);
             let within = self.value(format!("xor i1 {overflow}, true"));
             self.guard(&within, TrapKind::Overflow);
         }

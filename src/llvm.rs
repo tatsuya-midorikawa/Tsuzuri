@@ -4058,8 +4058,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             );
             if let Some((operator, left, right, helper)) = operation {
                 // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let lhs = self.expression(left);
+                let rhs = self.expression(right);
                 if let Some(helper) = helper {
                     self.cover_call(helper);
                 }
@@ -4068,8 +4068,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 } else {
                     "sub"
                 };
+                let words = self.arithmetic_flags(operator, left, right, &lhs, &rhs);
                 pending.push(Argument::Arithmetic(format!(
-                    "{opcode} {} {left}, {right}",
+                    "{opcode} {words}{} {lhs}, {rhs}",
                     self.ty(&argument.ty)
                 )));
             } else {
@@ -6645,7 +6646,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _ => unreachable!("operator checked or handled separately"),
             }
         };
-        self.value(format!("{instruction} {} {lhs}, {rhs}", self.ty(&left.ty)))
+        let words = if matches!(operator, Add | Subtract | Multiply) && !left.ty.is_float() {
+            self.arithmetic_flags(operator, left, right, &lhs, &rhs)
+        } else {
+            ""
+        };
+        self.value(format!(
+            "{instruction} {words}{} {lhs}, {rhs}",
+            self.ty(&left.ty)
+        ))
     }
 }
 

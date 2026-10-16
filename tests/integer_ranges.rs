@@ -45,9 +45,8 @@ fn emit_once(source: &str, wasm: bool) -> String {
     llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
 }
 
-/// The IR of `source` in one flag mode, which does not depend on `TSUZURI_RANGE_FLAGS`; two
-/// emissions must be identical.
-fn emit_mode(source: &str, wasm: bool, flags: RangeFlags) -> String {
+/// The IR of `source` in one flag mode, which does not depend on `TSUZURI_RANGE_FLAGS`.
+fn emit_mode_once(source: &str, wasm: bool, flags: RangeFlags) -> String {
     let module = analyze(source).unwrap_or_else(|error| {
         panic!(
             "{source}\n{}: {} at {:?}",
@@ -63,11 +62,13 @@ fn emit_mode(source: &str, wasm: bool, flags: RangeFlags) -> String {
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     };
-    let first = llvm::emit_with_range_flags(&module, options, flags).unwrap();
-    assert_eq!(
-        first,
-        llvm::emit_with_range_flags(&module, options, flags).unwrap()
-    );
+    llvm::emit_with_range_flags(&module, options, flags).unwrap()
+}
+
+/// `emit_mode_once`, which must give the same IR twice.
+fn emit_mode(source: &str, wasm: bool, flags: RangeFlags) -> String {
+    let first = emit_mode_once(source, wasm, flags);
+    assert_eq!(first, emit_mode_once(source, wasm, flags));
     first
 }
 
@@ -329,8 +330,8 @@ fn audit_mode_traps_instead_of_writing_a_flag() {
         ("each_list", 1),
         ("each_text", 1),
         ("arithmetic", 0),
-        // The range loop and the loop that fills the new array.
-        ("counted", 2),
+        // The range loop, the loop that fills the new array, and `values.length - 1`.
+        ("counted", 3),
     ]);
     for (name, source) in PROGRAMS {
         for wasm in [false, true] {
@@ -721,4 +722,744 @@ fn the_environment_chooses_the_mode_and_a_wrong_name_is_an_error() {
         "{stderr}"
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+// The flags that the intervals prove, checked against an evaluation of every input that does not
+// use the compiler: each case lists the operands of its `+ - *` for one input, and the flags that
+// the compiler must write are those that no evaluated pair of operands overflows.
+
+type Operands = Box<dyn Fn(i128, i128) -> Vec<Vec<(i128, i128)>>>;
+
+/// A straight-line program of numbers of `bits` bits, with an evaluation of it.
+struct Case {
+    /// The program, which defines `f`.
+    source: &'static str,
+    bits: u32,
+    signed: bool,
+    /// The inputs `(x, y)` that are evaluated; a program of one parameter ignores `y`.
+    inputs: Vec<(i128, i128)>,
+    /// The operators of the `+ - *` of `f`, in the order that they are evaluated.
+    operators: &'static str,
+    /// For one input, the operands of each of them in each execution, in that order.
+    operands: Operands,
+    /// The flags that proven mode writes on each, `""`, `"nsw"`, `"nuw"` or `"nuw nsw"`.
+    expected: &'static [&'static str],
+    /// Whether they are all the flags that the evaluation allows, or only some of them.
+    complete: bool,
+}
+
+/// The value of the type of `bits` bits that has the bit pattern of `value`.
+fn wrap(bits: u32, signed: bool, value: i128) -> i128 {
+    let modulus = 1_i128 << bits;
+    let pattern = value.rem_euclid(modulus);
+    if signed && pattern >= modulus / 2 {
+        pattern - modulus
+    } else {
+        pattern
+    }
+}
+
+/// Whether `a operator b` overflows as signed numbers and as unsigned numbers of `bits` bits.
+fn overflows(operator: char, bits: u32, a: i128, b: i128) -> (bool, bool) {
+    let modulus = 1_i128 << bits;
+    let apply = |left: i128, right: i128| match operator {
+        '+' => left.checked_add(right),
+        '-' => left.checked_sub(right),
+        _ => left.checked_mul(right),
+    };
+    let signed = apply(wrap(bits, true, a), wrap(bits, true, b));
+    let unsigned = apply(wrap(bits, false, a), wrap(bits, false, b));
+    (
+        signed.is_none_or(|value| value < -(modulus / 2) || value >= modulus / 2),
+        unsigned.is_none_or(|value| value < 0 || value >= modulus),
+    )
+}
+
+fn range(bits: u32, signed: bool) -> (i128, i128) {
+    let modulus = 1_i128 << bits;
+    if signed {
+        (-(modulus / 2), modulus / 2 - 1)
+    } else {
+        (0, modulus - 1)
+    }
+}
+
+/// Every value of a number type, as the input of a one-parameter program.
+fn every(bits: u32, signed: bool) -> Vec<(i128, i128)> {
+    let (low, high) = range(bits, signed);
+    (low..=high).map(|x| (x, 0)).collect()
+}
+
+/// Every pair of values of a number type.
+fn every_pair(bits: u32, signed: bool) -> Vec<(i128, i128)> {
+    let (low, high) = range(bits, signed);
+    (low..=high)
+        .flat_map(|x| (low..=high).map(move |y| (x, y)))
+        .collect()
+}
+
+/// Every pair of the values near the edges of a number type, and of the thresholds that the
+/// programs below compare with.
+fn edge_pairs(bits: u32, signed: bool) -> Vec<(i128, i128)> {
+    let (low, high) = range(bits, signed);
+    let mut values: Vec<i128> = [
+        low,
+        low + 1,
+        low / 2,
+        -3,
+        -2,
+        -1,
+        0,
+        1,
+        2,
+        3,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        63,
+        64,
+        99,
+        100,
+        127,
+        128,
+        255,
+        256,
+        65_535,
+        65_536,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0xFFFF_FFFF,
+        0x1_0000_0000,
+        high / 2,
+        high - 1,
+        high,
+    ]
+    .into_iter()
+    .filter(|value| (low..=high).contains(value))
+    .collect();
+    values.sort_unstable();
+    values.dedup();
+    values
+        .iter()
+        .flat_map(|&x| values.iter().map(move |&y| (x, y)))
+        .collect()
+}
+
+fn case(
+    source: &'static str,
+    (bits, signed): (u32, bool),
+    inputs: Vec<(i128, i128)>,
+    operators: &'static str,
+    expected: &'static [&'static str],
+    complete: bool,
+    operands: impl Fn(i128, i128) -> Vec<Vec<(i128, i128)>> + 'static,
+) -> Case {
+    Case {
+        source,
+        bits,
+        signed,
+        inputs,
+        operators,
+        operands: Box::new(operands),
+        expected,
+        complete,
+    }
+}
+
+fn cases() -> Vec<Case> {
+    vec![
+        // Widening keeps the range of the operand: 255 * 3 + 1 fits an i32 either way.
+        case(
+            "def f :: i8u -> i32\nfn f x = (x as i32) * 3 + 1",
+            (32, true),
+            every(8, false),
+            "*+",
+            &["nuw nsw", "nuw nsw"],
+            true,
+            move |x, _| vec![vec![(x, 3)], vec![(x * 3, 1)]],
+        ),
+        // As an unsigned number a negative i8 is large, so only the signed reading proves it.
+        case(
+            "def f :: i8 -> i32\nfn f x = (x as i32) * 3",
+            (32, true),
+            every(8, true),
+            "*",
+            &["nsw"],
+            true,
+            move |x, _| vec![vec![(x, 3)]],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = x + 1",
+            (8, true),
+            every(8, true),
+            "+",
+            &[""],
+            true,
+            move |x, _| vec![vec![(x, 1)]],
+        ),
+        // At 127 the signed sum overflows; the unsigned one, 128, does not.
+        case(
+            "def f :: i8 -> i8\nfn f x = if x >= 0 then x + 1 else 0",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![if x >= 0 { vec![(x, 1)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = if x >= 0 && x < 100 then x * 2 else 0",
+            (8, true),
+            every(8, true),
+            "*",
+            &["nuw"],
+            true,
+            move |x, _| {
+                vec![if (0..100).contains(&x) {
+                    vec![(x, 2)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = if x >= 0 && x < 64 then x * 2 else 0",
+            (8, true),
+            every(8, true),
+            "*",
+            &["nuw nsw"],
+            true,
+            move |x, _| {
+                vec![if (0..64).contains(&x) {
+                    vec![(x, 2)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        // An unsigned `x - 1` after `x != 0`: the same bits as a signed number overflow at 128.
+        case(
+            "def f :: i8u -> i8u\nfn f x = if x != 0 then x - 1 else 0",
+            (8, false),
+            every(8, false),
+            "-",
+            &["nuw"],
+            true,
+            move |x, _| vec![if x != 0 { vec![(x, 1)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i8u -> i8u\nfn f x = x - 1",
+            (8, false),
+            every(8, false),
+            "-",
+            &[""],
+            true,
+            move |x, _| vec![vec![(x, 1)]],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = (x & 63) * 2 + 1",
+            (8, true),
+            every(8, true),
+            "*+",
+            &["nuw nsw", "nuw nsw"],
+            true,
+            move |x, _| vec![vec![(x & 63, 2)], vec![((x & 63) * 2, 1)]],
+        ),
+        // 127 + 1 is 128: no signed overflow is proved, an unsigned one cannot happen.
+        case(
+            "def f :: i8 -> i8\nfn f x = (x & 127) + 1",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x & 127, 1)]],
+        ),
+        case(
+            "def f :: i8 -> i8 -> i8\nfn f x y = x + y",
+            (8, true),
+            every_pair(8, true),
+            "+",
+            &[""],
+            true,
+            move |x, y| vec![vec![(x, y)]],
+        ),
+        case(
+            "def f :: i8 -> i8 -> i8\nfn f x y = x * y",
+            (8, true),
+            every_pair(8, true),
+            "*",
+            &[""],
+            true,
+            move |x, y| vec![vec![(x, y)]],
+        ),
+        case(
+            "def f :: i8u -> i8u -> i8u\nfn f x y = (x >>> 4) + (y >>> 4)",
+            (8, false),
+            every_pair(8, false),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, y| vec![vec![(x >> 4, y >> 4)]],
+        ),
+        case(
+            "def f :: i8u -> i8u\nfn f x = (x >>> 1) * 2",
+            (8, false),
+            every(8, false),
+            "*",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x >> 1, 2)]],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = x % 10 + 1",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nsw"],
+            true,
+            move |x, _| vec![vec![(x % 10, 1)]],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = (x / 4) + 1",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nsw"],
+            true,
+            move |x, _| vec![vec![(x / 4, 1)]],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = (-(x & 15)) + 15",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nsw"],
+            true,
+            move |x, _| vec![vec![(-(x & 15), 15)]],
+        ),
+        case(
+            "def f :: i16 -> i8\nfn f x = ((x & 127) as i8) + 1",
+            (8, true),
+            every(16, true),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x & 127, 1)]],
+        ),
+        case(
+            "def f :: i16 -> i32\nfn f x = (x as i32) * (x as i32)",
+            (32, true),
+            every(16, true),
+            "*",
+            &["nsw"],
+            true,
+            move |x, _| vec![vec![(x, x)]],
+        ),
+        case(
+            "def f :: i32 -> i32\nfn f x = (x & 65535) * (x & 65535)",
+            (32, true),
+            edge_pairs(32, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x & 65535, x & 65535)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = (x & 255) * 1000000 + 1",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*+",
+            &["nuw nsw", "nuw nsw"],
+            true,
+            move |x, _| vec![vec![(x & 255, 1_000_000)], vec![((x & 255) * 1_000_000, 1)]],
+        ),
+        // Near misses at the edge of the range: (2^32 - 1) * 2^32 is below 2^64, (2^32 - 1) *
+        // (2^32 + 1) is exactly 2^64 - 1, and (2^32 - 1) * (2^32 + 2) is above.
+        case(
+            "def f :: i64 -> i64\nfn f x = (x & 4294967295) * 4294967296",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x & 0xFFFF_FFFF, 4_294_967_296)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = (x & 4294967295) * 4294967297",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*",
+            &["nuw"],
+            true,
+            move |x, _| vec![vec![(x & 0xFFFF_FFFF, 4_294_967_297)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = (x & 4294967295) * 4294967298",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*",
+            &[""],
+            true,
+            move |x, _| vec![vec![(x & 0xFFFF_FFFF, 4_294_967_298)]],
+        ),
+        case(
+            "def f :: i64u -> i64u\nfn f x = x % 10 + 48",
+            (64, false),
+            edge_pairs(64, false)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, _| vec![vec![(x % 10, 48)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = if x > 0 then x - 1 else 0",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "-",
+            &["nuw nsw"],
+            true,
+            move |x, _| vec![if x > 0 { vec![(x, 1)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = if x >= 0 then x + 1 else 0",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![if x >= 0 { vec![(x, 1)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i64 -> i64 -> i64\nfn f x y = if x == y && y == 7 then x * 100 else 0",
+            (64, true),
+            edge_pairs(64, true),
+            "*",
+            &["nuw nsw"],
+            true,
+            move |x, y| {
+                vec![if x == y && y == 7 {
+                    vec![(x, 100)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = if x < 100 && x >= 0 then x + 1 else 0",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, _| {
+                vec![if (0..100).contains(&x) {
+                    vec![(x, 1)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        // The else branch is not narrowed, so what the conditional yields is any number, although
+        // only a non-negative one can reach the addition.
+        case(
+            "def f :: i64 -> i64\nfn f x = (if x < 10 then 0 else x) + 1",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+",
+            &[""],
+            false,
+            move |x, _| vec![vec![(if x < 10 { 0 } else { x }, 1)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x = if x >= 0 && x < 100 then (x & 15) + x else 0",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, _| {
+                vec![if (0..100).contains(&x) {
+                    vec![(x & 15, x)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        // A mutable local can change, so nothing is known of it, although this one never does.
+        case(
+            "def f :: i64 -> i64\nfn f x =\n    let mut y = x & 15\n    y * 4 + 1",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "*+",
+            &["", ""],
+            false,
+            move |x, _| vec![vec![(x & 15, 4)], vec![((x & 15) * 4, 1)]],
+        ),
+        case(
+            "def f :: i64 -> i64\nfn f x =\n    let y = x & 15\n    let z = y + 3\n    z * z",
+            (64, true),
+            edge_pairs(64, true)
+                .into_iter()
+                .map(|(x, _)| (x, 0))
+                .collect(),
+            "+*",
+            &["nuw nsw", "nuw nsw"],
+            true,
+            move |x, _| vec![vec![(x & 15, 3)], vec![((x & 15) + 3, (x & 15) + 3)]],
+        ),
+        case(
+            "def f :: i8 -> i8 -> i8\nfn f x y = (x + y) - y",
+            (8, true),
+            every_pair(8, true),
+            "+-",
+            &["", ""],
+            true,
+            move |x, y| vec![vec![(x, y)], vec![(wrap(8, true, x + y), y)]],
+        ),
+    ]
+}
+
+/// The `add`, `sub` and `mul` of a function in the order of the text, as `(opcode, flag words)`,
+/// without the negations that the compiler writes as `sub 0, x`.
+fn flagged_operations(body: &str) -> Vec<(String, String)> {
+    body.lines()
+        .filter_map(|line| line.trim().split_once(" = ").map(|(_, rest)| rest))
+        .filter(|rest| {
+            ["add ", "sub ", "mul "]
+                .iter()
+                .any(|opcode| rest.starts_with(opcode))
+        })
+        .filter(|rest| !rest.starts_with("sub i") || !rest.contains(" 0, "))
+        .map(|rest| {
+            let mut words = rest.split_whitespace();
+            let opcode = words.next().unwrap().to_owned();
+            let flags: Vec<&str> = words
+                .take_while(|word| matches!(*word, "nuw" | "nsw"))
+                .collect();
+            (opcode, flags.join(" "))
+        })
+        .collect()
+}
+
+#[test]
+fn proven_flags_are_those_of_an_evaluation_of_every_input() {
+    for case in cases() {
+        let source = case.source;
+        // For each operation: whether none of its executions overflows as signed, as unsigned.
+        let mut free = vec![(true, true); case.operators.len()];
+        for &(x, y) in &case.inputs {
+            let executions = (case.operands)(x, y);
+            assert_eq!(executions.len(), case.operators.len(), "{source}");
+            for (index, (operator, pairs)) in case.operators.chars().zip(executions).enumerate() {
+                for (a, b) in pairs {
+                    // The evaluation must stay in the type, as the program does.
+                    let (low, high) = range(case.bits, case.signed);
+                    assert!(
+                        (low..=high).contains(&a) && (low..=high).contains(&b),
+                        "{source}: {a} {operator} {b}"
+                    );
+                    let (signed, unsigned) = overflows(operator, case.bits, a, b);
+                    free[index].0 &= !signed;
+                    free[index].1 &= !unsigned;
+                }
+            }
+        }
+        for wasm in [false, true] {
+            let proven_ir = emit_mode_once(source, wasm, RangeFlags::Proven);
+            let written = flagged_operations(&function_ir(&proven_ir, "f"));
+            assert_eq!(written.len(), case.operators.len(), "{source}\n{written:?}");
+            let mut claimed = 0;
+            for (index, (operator, ((opcode, words), expected))) in case
+                .operators
+                .chars()
+                .zip(written.iter().zip(case.expected))
+                .enumerate()
+            {
+                let context = format!("{source} wasm={wasm} operation {index} ({operator})");
+                let instruction = match operator {
+                    '+' => "add",
+                    '-' => "sub",
+                    _ => "mul",
+                };
+                assert_eq!(opcode, instruction, "{context}");
+                assert_eq!(words, expected, "{context}");
+                let (signed_free, unsigned_free) = free[index];
+                // A flag is written only when no evaluated pair overflows in that sense ...
+                assert!(
+                    !words.contains("nsw") || signed_free,
+                    "unsound nsw: {context}"
+                );
+                assert!(
+                    !words.contains("nuw") || unsigned_free,
+                    "unsound nuw: {context}"
+                );
+                // ... and, where the case says so, whenever that holds.
+                if case.complete {
+                    assert_eq!(words.contains("nsw"), signed_free, "missing nsw: {context}");
+                    assert_eq!(
+                        words.contains("nuw"),
+                        unsigned_free,
+                        "missing nuw: {context}"
+                    );
+                }
+                claimed += words.split_whitespace().count();
+            }
+            // Audit mode checks each claimed sense, and writes no flag.
+            let off_ir = emit_mode_once(source, wasm, RangeFlags::Off);
+            let audit_ir = emit_mode_once(source, wasm, RangeFlags::Audit);
+            let (off, audit) = (function_ir(&off_ir, "f"), function_ir(&audit_ir, "f"));
+            assert!(!has_flag(&off) && !has_flag(&audit), "{source}");
+            assert_eq!(
+                count(&audit, "with.overflow") - count(&off, "with.overflow"),
+                claimed,
+                "{source} wasm={wasm}\n{audit}"
+            );
+            assert_eq!(
+                without_flags(&proven_ir),
+                without_flags(&off_ir),
+                "{source} wasm={wasm}"
+            );
+        }
+    }
+}
+
+/// Loops, and the `+ - *` of their bodies: the sorted shapes of every integer instruction of `f` in
+/// proven mode. The loop counters carry the flags of their loop (R1-R5), the instructions of the
+/// body those that the range of the counter proves, and a mutable local proves nothing.
+const LOOPS: &[(&str, &[&str])] = &[
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. 99 do total = total + i * 2\n    total",
+        &["add i64 %, %", "add nsw i64 %, 1", "mul nuw nsw i64 %, 2"],
+    ),
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 100 .. -1 .. 1 do total = total + (i - 1)\n    total",
+        &[
+            "add i64 %, %",
+            "add nsw i64 %, 18446744073709551615",
+            "sub nuw nsw i64 %, 1",
+        ],
+    ),
+    // The counter of a loop to an unknown bound can be the maximum: `i + 1` cannot be proved to be
+    // free of signed overflow, but the counter is not negative.
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + (i + 1)\n    total",
+        &["add i64 %, %", "add nsw i64 %, 1", "add nuw i64 %, 1"],
+    ),
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + i * 2\n    total",
+        &["add i64 %, %", "add nsw i64 %, 1", "mul nuw i64 %, 2"],
+    ),
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + i * 3\n    total",
+        &["add i64 %, %", "add nsw i64 %, 1", "mul i64 %, 3"],
+    ),
+    (
+        "def f :: ref [i64] -> i64\nfn f values =\n    let mut total = 0\n    for i in 0 .. values.length - 1 do total = total + (i + 1)\n    total",
+        &[
+            "add i64 %, %",
+            "add nsw i64 %, 1",
+            "add nuw nsw i64 %, 1",
+            "sub nsw i64 %, 1",
+        ],
+    ),
+    // A step of unknown sign keeps the counter between the bounds, which are known.
+    (
+        "def f :: i64 -> i64 -> i64\nfn f n s =\n    let mut total = 0\n    for i in 0 .. s .. 9 do total = total + (i + 1)\n    total",
+        &["add i64 %, %", "add nuw nsw i64 %, 1"],
+    ),
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9 .. -1 .. n do total = total + (i + 1)\n    total",
+        &[
+            "add i64 %, %",
+            "add nsw i64 %, 1",
+            "add nsw i64 %, 18446744073709551615",
+        ],
+    ),
+    (
+        "def f :: i8u -> i64\nfn f n =\n    let mut total = 0\n    for i in 0i8u .. n do total = total + ((i as i64) + 1)\n    total",
+        &[
+            "add i64 %, %",
+            "add nuw nsw i64 %, 1",
+            "add nuw nsw i64 %, 1",
+        ],
+    ),
+    // A counter that the program updates is a mutable local, whatever its loop condition says.
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    let mut i = 0\n    while i < 10 do\n        total = total + i\n        i = i + 1\n    total",
+        &["add i64 %, %", "add i64 %, 1"],
+    ),
+];
+
+#[test]
+fn loop_bodies_get_the_flags_that_the_range_of_their_counter_proves() {
+    for (source, expected) in LOOPS {
+        for wasm in [false, true] {
+            let ir = emit_mode_once(source, wasm, RangeFlags::Proven);
+            assert_eq!(
+                arithmetic(&function_ir(&ir, "f")),
+                *expected,
+                "{source} wasm={wasm}"
+            );
+            let off = emit_mode_once(source, wasm, RangeFlags::Off);
+            assert_eq!(
+                without_flags(&ir),
+                without_flags(&off),
+                "{source} wasm={wasm}"
+            );
+            let flags: usize = arithmetic(&function_ir(&ir, "f"))
+                .iter()
+                .map(|line| {
+                    line.split_whitespace()
+                        .take_while(|word| !word.starts_with('i'))
+                        .filter(|word| matches!(*word, "nuw" | "nsw"))
+                        .count()
+                })
+                .sum();
+            let audit = function_ir(&emit_mode_once(source, wasm, RangeFlags::Audit), "f");
+            let checks =
+                count(&audit, "with.overflow") - count(&function_ir(&off, "f"), "with.overflow");
+            assert_eq!(checks, flags, "{source} wasm={wasm}\n{audit}");
+            assert!(!has_flag(&audit), "{source}");
+        }
+    }
 }

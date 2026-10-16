@@ -74,7 +74,6 @@ impl RangeFacts {
 
     /// The overflow flags that `left operator right` is proved to have. There are none unless it is
     /// an integer `+`, `-` or `*` of at most 64 bits whose operands are both of that type.
-    #[allow(dead_code)]
     pub(crate) fn integer_flags(
         &mut self,
         module: &CheckedModule,
