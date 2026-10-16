@@ -20,7 +20,9 @@ declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)
 ; @tz.heap.small[capacity / 16 - 2] (last in, first out); @tz.heap.smallmask has a bit for every list
 ; that is not empty, so a request finds the smallest list that serves it with one count of trailing
 ; zeros. Larger free blocks are in one list in address order, @tz.heap.free, and a request takes the
-; first that fits.
+; first that fits, except that a request that would cut a rest of 64 KiB or more, and at least four times
+; its own size, from that block is served from the end of the heap while the end can grow: a hole that
+; has been cut up is no longer the hole of the next large request.
 ; A block of capacity 32 to 528 that is released is not merged at once: it is pushed on the list of its
 ; capacity in @tz.heap.fast (next in the payload word at +16) and stays an ordinary block that is in
 ; use for every other block, so a request of that capacity pops it back in a few instructions, which
@@ -387,9 +389,30 @@ inspect:
   %nextp = getelementptr i8, ptr %p, i32 4
   %next = load i32, ptr %nextp
   %enough = icmp uge i32 %capacity, %needed
-  br i1 %enough, label %reuse, label %advance
+  br i1 %enough, label %candidate, label %advance
 advance:
   br label %search
+candidate:
+  ; A request that would cut a rest of 64 KiB or more, and at least four times its own size, from a block
+  ; leaves the block to the large requests while the heap can grow: a hole that is cut into pieces is no longer
+  ; the hole of the next large request.
+  %rest = sub i32 %capacity, %needed
+  %restlarge = icmp uge i32 %rest, 65536
+  %quarter = lshr i32 %rest, 2
+  %wasteful = icmp uge i32 %quarter, %needed
+  %keep = and i1 %restlarge, %wasteful
+  br i1 %keep, label %prefertop, label %reuse
+prefertop:
+  %topbegin = load i32, ptr @tz.heap.end
+  %topgrown = call i1 @tz.heap.extend(i32 %topbegin, i32 %needed)
+  br i1 %topgrown, label %topallocated, label %reuse
+topallocated:
+  %topend = add i32 %topbegin, %needed
+  store i32 %topend, ptr @tz.heap.end
+  %topheader = inttoptr i32 %topbegin to ptr
+  store i32 %needed, ptr %topheader
+  %toppayload = getelementptr i8, ptr %topheader, i32 16
+  ret ptr %toppayload
 reuse:
   %taken = call i32 @tz.heap.carve(i32 %block, i32 %needed)
   %takenp = inttoptr i32 %taken to ptr

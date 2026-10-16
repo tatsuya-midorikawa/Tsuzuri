@@ -775,6 +775,65 @@ export function topGrowthCases({ fresh }) {
   }
 }
 
+// A request that would cut a rest of 64 KiB or more, and at least four times its own size, from a free block of the large list
+// leaves the block alone while the end of the heap can grow, so that the hole stays whole for the next large request (a
+// freed 6 MB block that medium requests had cut up made the next 6 MB request grow the heap past 16 MiB in the matrix suite).
+// Capacities: capacity(100000) = 100016, capacity(10000) = 10016, capacity(40000) = 40016, capacity(30000) = 30016.
+export function holeCases({ fresh }) {
+  // A hole of `size` bytes below a guard block, and the address that a request of `request` bytes gets.
+  const served = (size, request) => {
+    const api = fresh();
+    const hole = api.allocate(size), guard = api.allocate(16);
+    api.release(hole);
+    const block = api.allocate(request);
+    api.check();
+    return { api, hole, guard, block };
+  };
+  { // the end serves it: the guard's block has capacity 32, so the new block follows it, and the hole is whole
+    const { api, hole, guard, block } = served(1000000, 2000);
+    assert.equal(block, guard + 32);
+    assert.equal(api.allocate(1000000), hole);
+    api.check();
+  }
+  // rest = 100016 - 10016 = 90000: 64 KiB or more and four times 10016 is 40064: the end
+  { const { hole, guard, block } = served(100000, 10000); assert.equal(block, guard + 32); assert.notEqual(block, hole); }
+  // rest = 60000 is under 64 KiB, and rest = 70000 is under four times 30016: the hole is cut
+  assert.equal(served(100000, 40000).block, served(100000, 40000).hole);
+  assert.equal(served(100000, 30000).block, served(100000, 30000).hole);
+  // the thresholds: capacity(75536) = 75552 and a request of capacity 10016 leave exactly 65536 (the end); capacity(75520) = 75536
+  // leaves 65520 (the hole)
+  { const { guard, block } = served(75536, 10000); assert.equal(block, guard + 32); }
+  { const { hole, block } = served(75520, 10000); assert.equal(block, hole); }
+  // four times the request: capacity(20000) = 20016 and 4 * 20016 = 80064; capacity(100064) = 100080 leaves exactly that (the end),
+  // capacity(100048) = 100064 leaves 80048, a little less (the hole)
+  { const { guard, block } = served(100064, 20000); assert.equal(block, guard + 32); }
+  { const { hole, block } = served(100048, 20000); assert.equal(block, hole); }
+  { // the end cannot grow: the hole is cut after all
+    const api = fresh();
+    const hole = api.allocate(1000000);
+    api.allocate(16);
+    api.release(hole);
+    const end = api.probe("probe_end");
+    api.allocate(LIMIT - end - 16);
+    assert.equal(api.memory.buffer.byteLength, LIMIT);
+    assert.equal(api.allocate(2000), hole);
+    assert.equal(api.memory.buffer.byteLength, LIMIT);
+    api.check();
+  }
+  { // the matrix suite's pattern: a 6 MB block is freed, medium blocks follow, and the 6 MB request returns to the hole
+    const api = fresh();
+    api.allocate(6000000);
+    const copy = api.allocate(6000000);
+    api.allocate(32);
+    api.release(copy);
+    const medium = [api.allocate(36000), api.allocate(36000), api.allocate(12000)];
+    assert.equal(api.allocate(6000000), copy);
+    assert.ok(api.memory.buffer.byteLength <= LIMIT);
+    for (const block of medium) api.release(block);
+    api.check();
+  }
+}
+
 // The 16 MiB limit: requests above 16777184 fail the size check, and the last page cannot be passed.
 export function limitCases({ fresh }) {
   for (const size of [MAX_REQUEST + 1, 2 ** 40]) assert.throws(() => fresh().allocate(size), WebAssembly.RuntimeError, `allocate ${size}`);
@@ -886,12 +945,13 @@ export function runHeapTests({ targets = ["wasm32"], optimizations = [0, 3], ext
         binCases(context);
         fastCases(context);
         topGrowthCases(context);
+        holeCases(context);
         boundaryCases(context);
         limitCases(context);
         stress(context);
         for (const run of extraCases) run(context);
       }
-      console.log(`WASM heap (${target}): reuse, cache, flush, coalescing, top return and growth, absorption, boundary sizes, resize, limits and a 20000-operation stress passed at O0/O3`);
+      console.log(`WASM heap (${target}): reuse, cache, flush, coalescing, top return and growth, holes kept for large requests, absorption, boundary sizes, resize, limits and a 20000-operation stress passed at O0/O3`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
