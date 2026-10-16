@@ -5,6 +5,7 @@
 @tz.heap.smallmask = internal global i32 0
 @tz.heap.fast = internal global [32 x i32] zeroinitializer
 @tz.heap.fastmask = internal global i32 0
+@tz.heap.largest = internal global i32 0
 declare i32 @llvm.wasm.memory.size.i32(i32)
 declare i32 @llvm.wasm.memory.grow.i32(i32, i32)
 declare i32 @llvm.cttz.i32(i32, i1)
@@ -22,8 +23,10 @@ declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)
 ; zeros. Larger free blocks are in one list in address order, @tz.heap.free, and a request takes the
 ; first that fits, except that a block from which it would cut a rest of 64 KiB or more, and at least four
 ; times its own size, is passed over: a hole that has been cut up is no longer the hole of the next large
-; request. When every block that fits is passed over, the end of the heap serves the request while the end
-; can grow, and otherwise the first block that was passed over is cut.
+; request. A block of more than twice the largest recent request is not passed over (@tz.heap.largest is
+; the largest capacity asked of the lists of large blocks, which loses 1/64 with every such request): no
+; recent request has come near it. When every block that fits is passed over, the end of the heap serves
+; the request while the end can grow, and otherwise the first block that was passed over is cut.
 ; A block of capacity 32 to 528 that is released is not merged at once: it is pushed on the list of its
 ; capacity in @tz.heap.fast (next in the payload word at +16) and stays an ordinary block that is in
 ; use for every other block, so a request of that capacity pops it back in a few instructions, which
@@ -378,6 +381,12 @@ frombin:
   ret ptr %bindata
 large:
   %head = load i32, ptr @tz.heap.free
+  %seen = load i32, ptr @tz.heap.largest
+  %faded = lshr i32 %seen, 6
+  %fading = sub i32 %seen, %faded
+  %bigger = icmp ugt i32 %needed, %fading
+  %largest = select i1 %bigger, i32 %needed, i32 %fading
+  store i32 %largest, ptr @tz.heap.largest
   br label %search
 search:
   %block = phi i32 [ %head, %large ], [ %next, %advance ]
@@ -398,12 +407,18 @@ advance:
 candidate:
   ; A request that would cut a rest of 64 KiB or more, and at least four times its own size, from a block
   ; passes the block over: a hole that is cut into pieces is no longer the hole of the next large request.
-  ; The search goes on, and the first block that the request does not cut like that serves it.
+  ; That holds only for a block of at most twice the largest recent request: a hole that no recent request
+  ; has come near is not kept for one that may never come (a heap of blocks of a few KB to a few hundred KB
+  ; would otherwise grow to its limit around the big free blocks that merging leaves). The search goes on,
+  ; and the first block that the request does not cut like that serves it.
   %rest = sub i32 %capacity, %needed
   %restlarge = icmp uge i32 %rest, 65536
   %quarter = lshr i32 %rest, 2
   %wasteful = icmp uge i32 %quarter, %needed
-  %keep = and i1 %restlarge, %wasteful
+  %cut = and i1 %restlarge, %wasteful
+  %midpoint = lshr i32 %capacity, 1
+  %plausible = icmp ule i32 %midpoint, %largest
+  %keep = and i1 %cut, %plausible
   br i1 %keep, label %hold, label %reuse
 hold:
   ; The first block that was passed over is remembered: it is cut only when the end of the heap cannot grow.

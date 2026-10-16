@@ -18,3 +18,30 @@ fn churn rounds =
         total = total + scratch[count - 1]
         index = index + 1
     total + Vec.length (ref kept)
+
+// The steady churn of benchmarks/heap/Main.tz (its reference is benchmarks/heap/reference.mjs): `slots` arrays of 1 to
+// `spread` elements, then `rounds` times a random slot gets a new array of a random size. The live data are 3 MB or less and
+// the blocks are freed in no order, so merging leaves free blocks of 64 KiB and more that no request comes near; the heap must
+// not keep them for large requests that never come and grow to its limit around them. The result is `i64`, wrapped.
+def step :: i64u -> i64u
+fn step state = (state ^ (state >>> 13)) * 6364136223846793005 + 1442695040888963407
+
+def block :: i64u -> i64 -> [i64u]
+fn block salt count = new [i64u](count, \index -> salt + (index as i64u))
+
+export def steady_churn :: i64 -> i64 -> i64 -> i64u -> i64
+fn steady_churn slots rounds spread seed =
+    let mut state = seed
+    let mut values: Vec<[i64u]> = Vec.with_capacity slots
+    for _index in 0 .. (slots - 1) do
+        state = step state
+        values = Vec.push values (block state (1 + ((state >>> 40) as i64) % spread))
+    for _round in 0 .. (rounds - 1) do
+        state = step state
+        let slot = ((state >>> 33) as i64) % slots
+        values = Vec.set values slot (block state (1 + ((state >>> 20) as i64) % spread))
+    let mut total = 0i64u
+    for index in 0 .. (slots - 1) do
+        let row = Vec.at (ref values) index
+        total = total * 31 + row[0] + row[row.length - 1] + (row.length as i64u)
+    total as i64

@@ -11,6 +11,7 @@ import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matr
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
+import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
@@ -1177,10 +1178,16 @@ const suites = {
   },
   // PM05: a bounded live set in the WASM heap. A temporary that is freed above kept blocks must leave a hole that later rounds
   // reuse: the heap stays under 8 MiB (the 16 MiB heap was full after 100 rounds and failed after 3,000 when only the first
-  // hole was looked at). 3600 rounds: 1800 * 299999 + 1800 * 37499 + 3600.
+  // hole was looked at). 3600 rounds: 1800 * 299999 + 1800 * 37499 + 3600. The steady churn (a live set of 3 MB, blocks of up to
+  // 64 KB replaced at random) runs after it in the same instance, whose largest request was 2.4 MB: it must not grow the heap to
+  // its limit around the free blocks that merging leaves (16 MiB before the bound on the holes); its checksum is the independent
+  // reference of benchmarks/heap, wrapped to i64.
   heap_churn: {
     wasmMemory: 8 * 1024 * 1024,
-    cases: [["churn", [3600n], 1800n * 299999n + 1800n * 37499n + 3600n]],
+    cases: [
+      ["churn", [3600n], 1800n * 299999n + 1800n * 37499n + 3600n],
+      ["steady_churn", [100n, 10000n, 8000n, 42n], BigInt.asIntN(64, steadyChurnReference(100, 10000, 8000, 42n))],
+    ],
   },
   array_bulk: {
     cases: [
