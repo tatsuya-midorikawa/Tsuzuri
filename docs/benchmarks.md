@@ -5726,7 +5726,7 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 Apple M1 Max（arm64）、macOS、Apple Clang 21.0.0、Homebrew LLD 23.1.1、Node 20.19.6。機械は 8 つの作業が共有していて、
 計測中の load average は 25〜190 でした（各表に書きます）。wall time は load に埋もれるので、結論には **プロセスの CPU 時間**
 （`wait4` の `ru_utime + ru_stime`。Clang など子プロセスを含む）、Clang 1 プロセスごとの時間、profile の標本数だけを使い、
-wall の改善は主張しません。静かな機械での正式な再計測は別に取ります。共有 CI に速度の合否の閾値は置きません。
+wall の改善は主張しません。共有の `with-lock.sh measure`（機械全体の占有）は 40 分待っても取れなかったので、ここの数値は占有なしの値です。静かな機械での正式な再計測は別に取ります。共有 CI に速度の合否の閾値は置きません。
 
 **到達する関数だけを Clang へ渡す（D1）。** 合成 1,000 モジュールのうち `Main.tz` が 100 モジュールだけを使う W2
 （`benchmarks/build/generate.mjs --modules 1000` に `mainSource(100)` の `Main.tz`）を、`build W2 -O0|-O3 --cpu generic --no-cache` で
