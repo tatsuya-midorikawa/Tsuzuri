@@ -189,6 +189,15 @@ for (const [first, last, down] of [
   for (let n = i128min + 3n; n >= i128min; n--) { count++; low += BigInt.asIntN(64, n); }
   cases.push(["range_edges_i128", [], wrap(count * 1000n + low)]);
 }
+// PR02 D10: the builtin forms `Add.add`, `Sub.sub` and `Mul.mul` wrap like the operators and keep the order of evaluation.
+for (const seed of [0n, 1n, -1n, max, min, 123456789n, -987654321n, 65535n, 4294967295n]) {
+  const a = wrap(seed + max), b = wrap(a - seed), c = wrap(seed * seed);
+  const d = BigInt.asIntN(8, BigInt.asIntN(8, seed) + 127n);
+  const e = BigInt.asUintN(16, BigInt.asUintN(16, seed) * 65535n);
+  const f = BigInt.asUintN(32, BigInt.asUintN(32, seed) - 1n);
+  cases.push(["builtin_wrap", [seed], wrap(a + b * 3n + c + d + e + f)]);
+}
+cases.push(["builtin_order", [], 123007n]);
 for (const n of [0n, 1n, 2n, 100n, 101n, 4096n]) {
   let breaking = 0n, skipping = 0n;
   for (let i = 0n; i < n && i !== 100n; i++) breaking += i;

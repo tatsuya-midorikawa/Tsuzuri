@@ -6033,6 +6033,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     }
                 }
                 let symbol = if callbacks.is_empty() {
+            // PR02 D10: a direct `Add.add x y` (or `Sub.sub`, `Mul.mul`) on numbers is `x + y`.
+            if arguments.len() == 2
+                && let Some(operator) = call_specialization::intrinsic_operation(function)
+            {
+                let value = self.binary(operator, &arguments[0], &arguments[1]);
+                self.cover_call(id);
+                return value;
+            }
                     format!("@tz.fn.{}", function.qualified_name())
                 } else if let Some(variant) = self.specializations.request(Specialization {
                     function: id,

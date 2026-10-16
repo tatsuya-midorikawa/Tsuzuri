@@ -61,3 +61,22 @@ fn each_continue n =
         if value % 3 == 0 then continue
         total = total + value
     total
+
+export def builtin_wrap :: i64 -> i64
+fn builtin_wrap seed =
+    let a = Add.add seed 9223372036854775807
+    let b = Sub.sub a seed
+    let c = Mul.mul seed seed
+    let d = Add.add (seed as i8) 127i8
+    let e = Mul.mul (seed as i16u) 65535i16u
+    let f = Sub.sub (seed as i32u) 1i32u
+    a + b * 3 + c + (d as i64) + (e as i64) + (f as i64)
+
+def tick :: &mut i64 -> i64 -> i64
+fn tick log digit = { *log = *log * 10 + digit; digit }
+
+export def builtin_order :: i64
+fn builtin_order =
+    let mut log = 0
+    let sum = Add.add (tick (&mut log) 1) (Mul.mul (tick (&mut log) 2) (tick (&mut log) 3))
+    log * 1000 + sum
