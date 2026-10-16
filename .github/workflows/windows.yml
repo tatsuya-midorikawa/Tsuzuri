@@ -154,6 +154,9 @@ jobs:
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/prebuilt_runtime.mjs target/release/tsuzuri.exe
+      - name: Size levels and artifact size
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/size.mjs target/release/tsuzuri.exe
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

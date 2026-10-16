@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。
+- 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を付けます。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -26,6 +26,7 @@
 | `--target` | | ○ | ○（native の target だけ） | ○ | ○（ビルド機の target だけ） | | | | |
 | `--emit` | | ○ | | | | | | | |
 | `-O0`〜`-O3` | | ○ | ○ | ○ | ○ | | | ○ | ○ |
+| `-Os` / `-Oz` | | ○ | ○ | | | | | | |
 | `--cpu` | | ○ | ○ | | | | | ○ | ○ |
 | `--no-cache` | | ○ | ○ | | | | | ○ | ○ |
 | `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
@@ -79,9 +80,18 @@
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
 | `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` / `bench` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
+| `-Os` `-Oz` | `-O3`（付けない場合） | 成果物の大きさを優先する LLVM の最適化。`build` と `run` だけ |
 | `--cpu generic\|native` | `generic` | native の実行ファイルとオブジェクト。`native` はこの機械の命令セットで、古い CPU では動きません。x86-64 の `native` は、`f16` の変換と演算に F16C と AVX512-FP16 も使います（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)） |
 
-`check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O` を受け、`--cpu` は拒否します。
+`check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O0`〜`-O3` を受け、`--cpu` は拒否します。
+
+`-Os` と `-Oz` は、LLVM のサイズ最適化です。`-Os` は大きさと速さの釣り合いを取り、`-Oz` は大きさを優先します。どちらも Tsuzuri が出す LLVM IR を変えません。`--emit llvm` の出力は、`-O0` から `-Oz` まで同じです。変わるのは、IR を機械語にする Clang に渡す最適化レベルだけです。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表、`-g` のデバッグ情報、WebAssembly の import は、`-O3` と同じです。代わりに、速度は落ちることがあります。数値と数学のランタイムの object も同じレベルでコンパイルします。配布物の `share/runtime/` には `-O0`〜`-O3` の object だけがあるので、`-Os` と `-Oz` の最初のビルドは Clang でランタイムをコンパイルし、結果を `runtime/` のキャッシュに保存します。`--no-cache` のときはランタイムを IR のままモジュールに埋め込み、毎回いっしょにコンパイルします。
+
+`test` と `bench` は `-O0`〜`-O3` だけを受け付け、`-Os` と `-Oz` は `E2000` です。`repl` と `script` も、`-O0`〜`-O3` だけです。`--emit bindings-js` などの `-O` を無視する出力は、`-Os` と `-Oz` も無視します。
+
+```text
+<command line>:1:1: error[E2000]: test supports -O0 to -O3; use -Os or -Oz with build or run
+```
 
 `--cpu native` は、native の `exe` と `object` だけです。`llvm`、`header`、WASM では `E2000` です。対応するホストは x86、x86_64、arm、aarch64 です。`--target` で別の target を名指しすると、ビルド機の命令セットは別の機械のものなので `E2000` です。その target には `--cpu generic` を使います。
 

@@ -818,7 +818,7 @@ target の一覧、CI が確かめている範囲（tier）、制限は [対応�
 ```text
 tsuzuri check source.tz|source.tt|source.tc|directory [--json]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--cpu generic|native] [--target native|TRIPLE] [--json]
+tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--cpu generic|native] [--target native|TRIPLE] [--json]
 tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
 tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
@@ -841,6 +841,7 @@ tsuzuri lsp
 | `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は `aarch64-apple-darwin` や `x86_64-unknown-linux-musl` など 22 個の native の名前で、`tsuzuri --help` に一覧が出ます。32-bit は対象外）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
+| `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
@@ -885,6 +886,7 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
+node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさとオプション誤り
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証

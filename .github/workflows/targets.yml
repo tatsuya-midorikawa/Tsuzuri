@@ -142,6 +142,12 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/prebuilt_runtime.mjs target/release/tsuzuri
+      - name: Size levels and artifact size
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/size.mjs target/release/tsuzuri
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |

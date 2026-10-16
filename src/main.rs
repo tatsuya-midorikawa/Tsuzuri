@@ -25,7 +25,7 @@ Usage:
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--target native|TRIPLE] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -128,6 +128,9 @@ Build options:
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
                          ctypes, and C++20 bindings of the shared library NAME
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
+  -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
+                         take -O0 to -O3. Language semantics, traps, and debug information do
+                         not change; the code is usually slower than at -O3
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -589,7 +592,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     );
                     continue;
                 }
-                Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
+                Some(level @ ("-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Oz")) => {
                     if optimization.is_some() {
                         return Err("optimization specified more than once".into());
                     }
@@ -720,6 +723,18 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         return Err(
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
+    }
+    if matches!(action, Action::Test | Action::Bench)
+        && optimization.is_some_and(|level| level.speed_level().is_none())
+    {
+        let name = if action == Action::Test {
+            "test"
+        } else {
+            "bench"
+        };
+        return Err(format!(
+            "{name} supports -O0 to -O3; use -Os or -Oz with build or run"
+        ));
     }
     if !matches!(action, Action::Test | Action::Bench)
         && (test_filter.is_some() || test_list || !test_indices.is_empty())
@@ -2317,6 +2332,8 @@ mod tests {
             (&["--json"], REPL_USAGE),
             (&["-o", "out"], REPL_USAGE),
             (&["-g"], REPL_USAGE),
+            (&["-Os"], REPL_USAGE),
+            (&["-Oz"], REPL_USAGE),
             (&["--emit", "llvm"], REPL_USAGE),
             (&["--timeout", "3601"], REPL_TIMEOUT),
             (&["--timeout", "x"], REPL_TIMEOUT),
@@ -2334,6 +2351,58 @@ mod tests {
         ] {
             assert_eq!(parse_repl(values).unwrap_err(), message, "{values:?}");
         }
+    }
+
+    #[test]
+    fn size_levels_apply_to_build_and_run_only() {
+        for (flag, level) in [("-Os", OptLevel::Os), ("-Oz", OptLevel::Oz)] {
+            for action in ["build", "run"] {
+                let arguments = parse(&[action, "Main.tz", flag]).unwrap();
+                assert_eq!(arguments.options.optimization, level, "{action} {flag}");
+            }
+            let wasm = parse(&["build", "Main.tz", "--target", "wasm32", flag]).unwrap();
+            assert_eq!(wasm.options.optimization, level);
+            // `-Os` and `-Oz` are accepted without an action name, like the other levels.
+            assert_eq!(
+                parse(&["Main.tz", flag]).unwrap().options.optimization,
+                level
+            );
+            for action in ["test", "bench"] {
+                assert_eq!(
+                    parse(&[action, "Main.tz", flag]).unwrap_err(),
+                    format!("{action} supports -O0 to -O3; use -Os or -Oz with build or run")
+                );
+            }
+            assert_eq!(
+                parse(&["check", "Main.tz", flag]).unwrap_err(),
+                "check does not use an optimization level"
+            );
+            assert_eq!(
+                parse(&["fmt", "Main.tz", flag]).unwrap_err(),
+                "fmt does not use optimization, CPU tuning, or compiler warning options"
+            );
+            assert_eq!(
+                parse(&["build", "Main.tz", "-O3", flag]).unwrap_err(),
+                "optimization specified more than once"
+            );
+            assert_eq!(
+                parse(&["build", "Main.tz", flag, "-O3"]).unwrap_err(),
+                "optimization specified more than once"
+            );
+            assert!(script_arguments(&[OsString::from(flag), OsString::from("a.tz")]).is_err());
+        }
+        // The default level and the size levels do not leak into each other.
+        for action in ["build", "run"] {
+            let arguments = parse(&[action, "Main.tz"]).unwrap();
+            assert_eq!(arguments.options.optimization, OptLevel::O3);
+        }
+        assert_eq!(
+            parse(&["test", "Main.tz"]).unwrap().options.optimization,
+            OptLevel::O0
+        );
+        assert!(parse(&["build", "Main.tz", "-Ot"]).is_err());
+        assert!(parse(&["build", "Main.tz", "-OS"]).is_err());
+        assert!(HELP.contains("-Os, -Oz"));
     }
 
     #[test]

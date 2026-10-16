@@ -242,7 +242,7 @@ tsuzuri check demo
 
 `Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
-`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。
+`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。成果物の大きさを優先するときは `-Os` と `-Oz` も付けられます（[最適化と CPU](option.md#最適化と-cpu)）。
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
 
@@ -646,7 +646,7 @@ C ランタイムも、連結するソースとコンパイル引数が同じな
 1 エントリ 256 MiB の同じ方針を使います。部分的な保存や checksum の不一致は再コンパイルします。
 
 配布物には generic CPU の native と、scalar／SIMD128 の wasm32 の `-O0`〜`-O3` の object が
-`share/runtime/` に入ります。同梱 Clang を使い、ソース・引数・ツール・環境と SHA-256 が一致する
+`share/runtime/` に入ります。`-Os` と `-Oz` の object は入れず、最初のビルドで作って `runtime/` に保存します。同梱 Clang を使い、ソース・引数・ツール・環境と SHA-256 が一致する
 組だけを選びます。`TSUZURI_CLANG`・`TSUZURI_LLVM_CLANG`・`TSUZURI_ZIG` を上書きした場合、
 未収録の組、破損した同梱物は
 埋め込みソースのコンパイルへ戻ります。配布物がなくてもビルドできます。

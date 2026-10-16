@@ -216,9 +216,16 @@ try {
       { env: { ...bundled, TSUZURI_CACHE_DIR: disabledRoot } });
     assert.equal(run(fallback, []).stdout, '43\n');
     await assert.rejects(readdir(disabledRoot), { code: 'ENOENT' });
+    // The bundle holds no -Os/-Oz objects: the runtime compiles from its embedded source with the bundled tools.
+    for (const target of ['native', 'wasm32']) {
+      const artifact = path.join(directory, `prebuilt-size${target === 'native' ? suffix : '.wasm'}`);
+      run(compiler, ['build', numeric, '--target', target, '-Oz', '-o', artifact], { env: bundled });
+      if (target === 'native') assert.equal(run(artifact, []).stdout, '43\n');
+      else assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(await readFile(artifact))), []);
+    }
     console.log('Relocated prebuilt numeric/math objects: native/WASM O0/O3 consumed and executed.');
   }
-  for (const optimization of ['-O0', '-O3']) {
+  for (const optimization of ['-O0', '-O3', '-Os', '-Oz']) {
     const artifact = path.join(directory, 'kernel.wasm');
     run(compiler, ['build', kernel, '--target', 'wasm32', optimization, '--no-cache', '-o', artifact]);
     const wasm = await WebAssembly.instantiate(await readFile(artifact));
@@ -232,6 +239,10 @@ try {
   const greeting = path.join(directory, `greeting${suffix}`);
   run(compiler, ['build', created, '--no-cache', '-o', greeting]);
   assert.equal(run(greeting, []).stdout, 'Hello, Tsuzuri!\n');
+  const small = path.join(directory, `small${suffix}`);
+  run(compiler, ['build', created, '-Oz', '--no-cache', '-o', small]);
+  assert.equal(run(small, []).stdout, 'Hello, Tsuzuri!\n');
+  console.log('Bundled native -Oz: linked and executed.');
   await mkdir(path.join(created, 'Shapes'));
   await writeFile(path.join(created, 'Shapes', 'Square.tz'), 'namespace Acme::Smoke::Shapes\n\ndef side :: i64 -> i64 = \\x -> x * 2\n');
   await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (Square.side 20 + Shapes::Square.side 1)\n    0\n');
