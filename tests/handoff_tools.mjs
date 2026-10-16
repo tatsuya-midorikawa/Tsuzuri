@@ -154,8 +154,10 @@ try {
   const lldFlag = "-fuse-ld=lld";
   const withFlag = (since) => calls().slice(since).filter((args) => args.includes(lldFlag));
   const hello = resolve("examples/hello");
-  const haveLld = [windows ? "lld-link" : process.platform === "darwin" ? "ld64.lld" : "ld.lld"]
-    .some((tool) => spawnSync(tool, ["--version"], { encoding: "utf8" }).status === 0);
+  // Whether the Clang that the build runs finds an LLD, by the rules of that Clang (beside it or on PATH).
+  const probe = join(directory, "lld-probe.c");
+  writeFileSync(probe, "int main(void) { return 0; }\n");
+  const haveLld = !windows && spawnSync(base.HANDOFF_CLANG, [probe, lldFlag, "-o", join(directory, "lld-probe")], { encoding: "utf8" }).status === 0;
   const link = (flags, env, output) => run(compiler, ["build", hello, "-O0", "--no-cache", ...flags, "-o", output], { env, success: false });
   const exe = join(directory, `linker${suffix}`);
 
@@ -207,6 +209,13 @@ try {
     const before = calls().length;
     const other = run(compiler, ["build", hello, "-O0", "-o", join(directory, "linker-cached-lld")], { env: { ...base, TSUZURI_LINKER: "lld" }, success: false });
     assert.ok(calls().length > before, `a build for LLD is not a hit of the default one: ${other.stderr}`);
+    // A shared library has its own link run, which gets the flag too (the compile before it does not).
+    const library = join(directory, "linker-library");
+    const sharedFailing = run(compiler, ["build", resolve("tests/fixtures/llvm_handoff/prune"), "--emit", "shared", "-O0", "--no-cache", "-o", library],
+      { env: { ...base, TSUZURI_LINKER: "lld", HANDOFF_FAIL: lldFlag }, success: false });
+    assert.match(sharedFailing.stderr, /E2002/);
+    assert.match(sharedFailing.stderr, /shared libraries require the Clang linker[^]*TSUZURI_LINKER=lld needs LLD/);
+    assert.ok(!existsSync(library));
     // Objects and relocatable links are never given the flag.
     for (const flags of [["--emit", "object"], ["--emit", "object", "--cpu", "generic"]]) {
       const start = calls().length;
