@@ -5720,6 +5720,42 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
+## 成果物のサイズ
+
+`node benchmarks/metrics.mjs size [compiler] --out DIR [--project DIR]... [--quick]` は、利用者が受け取る成果物の大きさを PX01 の JSONL で記録します（PM08）。サイズは決定的なので 1 点で、各ビルドを 2 回作って同一かを確かめます。合否の基準は、ページ境界に丸められるファイルの大きさではなく section の byte 数です（Mach-O の `__text` と `__const`＋`__cstring`、ELF の `.text` と `.rodata`、wasm の CODE と DATA。`llvm-objdump -h` で読み、`TSUZURI_OBJDUMP` で指定します）。主な値は cache あり（利用者が実行する既定のビルド）で、`--no-cache` の埋め込み形式は別の variant として示します。速度の合否閾値と同じく、共有 CI にサイズの閾値は置きません。
+
+### 整数表示の分割（PM08 D2）
+
+整数の `to_string`・`Display`・補間・式の結果の表示を、`numeric.ll` から手書きの `runtime/integer.ll`（約 0.4〜0.5 KB）へ移しました。整数だけを表示するプログラムは、数値 object とその表（約 10 KB）を連結しなくなります。出力の文字列は変わらず、`tests/integer_format.mjs`（Python の独立した参照 47,029 件と、8／16 bit の全値）と `tests/size.mjs`（コンパイラ経由）で、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` を照合します。
+
+Apple M1 Max（macOS arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-objdump`。before は main `6d15b437` のリリースビルド（SHA-256 `da78ba18…`）、after は branch `perf/phase3/PM08` の整数表示の分割まで入れた非 LTO のリリースビルドです（コンパイラの最適化はその出力に影響しません）。測定時の load average は 50〜150 でしたが、サイズは決定的で load に依存しません。`examples/hello` の `-O3`、cache あり:
+
+| 成果物 | before | after |
+| --- | ---: | ---: |
+| native 実行ファイル | 50,664 | 33,896 |
+| native `__text` | 13,304 | 2,604 |
+| native `__const`＋`__cstring` | 10,160 | 64 |
+| wasm32 モジュール | 35,714 | 6,357 |
+| wasm CODE | 25,564 | 6,142 |
+| wasm DATA | 9,882 | 0 |
+| `--emit object`（native） | 72,032 | 4,896 |
+| native 実行ファイル、`--no-cache` | 117,848 | 50,824 |
+
+`-Os`／`-Oz`（`build` と `run`）は、同じ IR を Clang の別の最適化レベルでコンパイルします。`examples/hello`、cache あり、byte。ここでの before は整数表示の分割の前（`-Os`／`-Oz` を加えた時点）のコンパイラです:
+
+| 成果物 | レベル | before | after |
+| --- | --- | ---: | ---: |
+| wasm32 モジュール | `-O3` | 35,714 | 6,357 |
+| wasm32 モジュール | `-Os` | 31,820 | 2,995 |
+| wasm32 モジュール | `-Oz` | 31,428 | 2,587 |
+| native `__text` | `-O3` | 13,304 | 2,604 |
+| native `__text` | `-Os` | 12,860 | 2,680 |
+| native `__text` | `-Oz` | 11,320 | 2,484 |
+
+native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。
+
+整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回、`i128` は 60.7 から 54.0 ns／回）。静かな機械での再測定が必要です。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

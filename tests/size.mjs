@@ -106,12 +106,16 @@ section("WASM modules at -Os and -Oz behave like -O3 and are smaller", () => {
     "",
     "export def label :: i64 -> i64 = \\n -> (to_string n).length",
     "",
+    // A float's text is the numeric runtime, the largest part of a module that shows numbers.
+    "export def shown :: f64 -> i64 = \\x -> (to_string x).length",
+    "",
   ].join("\n"));
   const modules = Object.fromEntries(LEVELS.map((level) => [level, build(project, ["--target", "wasm32", level], ".wasm")]));
   for (const level of LEVELS) {
     const api = wasmInstance(modules[level]);
     assert.equal(api.tz_total(1000n), 333833500n, `${level} total`);
     assert.equal(api.tz_label(-123456n), 7n, `${level} label`);
+    assert.equal(api.tz_shown(-1.25), 5n, `${level} shown`);
   }
   const bytes = (level) => statSync(modules[level]).size;
   assert.ok(bytes("-Os") < bytes("-O3"), "-Os is smaller than -O3");
@@ -139,7 +143,7 @@ section("--strip drops the local symbols and leaves the program as it is", () =>
     assert.ok(after <= before, `local symbols: ${before} before, ${after} after`);
     if (process.platform === "darwin") {
       assert.equal(after, 0, "no local symbol is left in a Mach-O executable");
-      if (extra.includes("--no-cache")) assert.ok(before > 10, "the embedded runtime leaves local symbols to drop");
+      if (extra.includes("--no-cache")) assert.ok(before > 0, "the unstripped embedded build has local symbols to drop");
       const signature = spawnSync("codesign", ["-v", stripped], { encoding: "utf8" });
       if (!signature.error) assert.equal(signature.status, 0, `the stripped executable keeps a valid signature: ${signature.stderr}`);
     }
@@ -153,6 +157,84 @@ section("--strip drops the local symbols and leaves the program as it is", () =>
     assert.equal(execute(output).status, 0);
   }
   assert.equal(traps[0], traps[1], "--strip leaves the trap table unchanged");
+});
+
+// The integer types, their widths, and the values whose text is hard to get right: the extremes, the
+// neighbors of powers of ten and of two, and, for the wide types, the parts of the 128-bit split.
+const INTEGER_TYPES = [8, 16, 32, 64, 128].flatMap((bits) => [false, true].map((signed) => ({ bits, signed,
+  name: `i${bits}${signed ? "" : "u"}`,
+  low: signed ? -(1n << BigInt(bits - 1)) : 0n, high: (1n << BigInt(bits - (signed ? 1 : 0))) - 1n })));
+function integerValues({ bits, signed, low, high }) {
+  const values = new Set([low, low + 1n, high - 1n, high, 0n, 1n, 9n, 10n, 99n, 100n, 127n, 128n, 255n, 256n]);
+  for (const exponent of [3n, 4n, 5n, 9n, 10n, 18n, 19n, 20n, 37n, 38n]) {
+    for (const delta of [-1n, 0n, 1n]) values.add(10n ** exponent + delta);
+  }
+  for (const exponent of [7n, 8n, 15n, 16n, 31n, 32n, 63n, 64n, 65n, 127n]) values.add(2n ** exponent - 1n);
+  for (const value of [...values]) if (signed) values.add(-value);
+  return [...values].filter((value) => value >= low && value <= high).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+const literal = (value, { name }) => `${value}${name}`;
+
+section("integers print the same text in to_string and interpolation at every level", () => {
+  const lines = [], expected = [];
+  for (const [index, type] of INTEGER_TYPES.entries()) {
+    const values = integerValues(type);
+    lines.push(`    let values${index} = [${values.map((value) => literal(value, type)).join(", ")}]`,
+      `    for value in values${index} do`, "        do! IO.write_line (to_string value)", '        do! IO.write_line $"{value}"');
+    for (const value of values) expected.push(value.toString(), value.toString());
+  }
+  const project = join(directory, "integer-project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "Main.tz"), ["def main :: unit -> i32 = \\() ->", ...lines, "    0", ""].join("\n"));
+  const text = expected.join("\n") + "\n";
+  for (const level of ["-O0", "-O3", "-Os", "-Oz"]) {
+    const result = execute(build(project, [level]));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.replaceAll("\r\n", "\n"), text, `native ${level}`);
+  }
+  // `run` links the formatter into the module with the trap table: the other path.
+  assert.equal(tsuzuri(["run", project, "-O0"]).stdout.replaceAll("\r\n", "\n"), text);
+});
+
+section("the top-level result of an integer expression is written by the integer formatter", () => {
+  for (const type of INTEGER_TYPES) {
+    for (const value of [type.low, type.high, 0n]) {
+      const project = join(directory, `result-${counter++}`);
+      mkdirSync(project, { recursive: true });
+      writeFileSync(join(project, "Main.tz"), `${literal(value, type)}\n`);
+      const ir = join(directory, `result${counter++}.ll`);
+      tsuzuri(["build", project, "--emit", "llvm", "-o", ir]);
+      assert.ok(!readFileSync(ir, "utf8").includes("tz_soft_"), `${type.name}: no numeric runtime`);
+      for (const level of ["-O0", "-Oz"]) {
+        assert.equal(execute(build(project, [level])).stdout.trim(), value.toString(), `${type.name} ${value} ${level}`);
+      }
+    }
+  }
+});
+
+section("an integer-only WASM module carries no numeric tables and its integer text has the right length", () => {
+  const exports = INTEGER_TYPES.filter(({ bits }) => bits <= 64).map(({ name }) =>
+    `export def length_${name} :: ${name} -> i64 = \\x -> (to_string x).length`);
+  const project = join(directory, "wasm-integers");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "Main.tz"), exports.join("\n") + "\n");
+  const withFloat = join(directory, "wasm-float");
+  mkdirSync(withFloat, { recursive: true });
+  writeFileSync(join(withFloat, "Main.tz"), exports.join("\n") + "\nexport def length_f64 :: f64 -> i64 = \\x -> (to_string x).length\n");
+  const size = (file) => statSync(file).size;
+  for (const level of ["-O0", "-O3", "-Oz"]) {
+    const integers = build(project, ["--target", "wasm32", level], ".wasm");
+    const floats = build(withFloat, ["--target", "wasm32", level], ".wasm");
+    assert.ok(size(integers) * 2 < size(floats), `${level}: ${size(integers)} bytes without the numeric runtime, ${size(floats)} with it`);
+    const api = wasmInstance(integers);
+    for (const type of INTEGER_TYPES.filter(({ bits }) => bits <= 64)) {
+      for (const value of integerValues(type)) {
+        // WebAssembly wraps the argument to the width of the parameter: a Number to 32 bits, a BigInt to 64.
+        const argument = type.bits === 64 ? value : Number(value);
+        assert.equal(api[`tz_length_${type.name}`](argument), BigInt(value.toString().length), `${level} ${type.name} ${value}`);
+      }
+    }
+  }
 });
 
 section("the option errors of --strip", () => {

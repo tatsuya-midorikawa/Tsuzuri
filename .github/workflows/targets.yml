@@ -148,6 +148,12 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/size.mjs target/release/tsuzuri
+      - name: Integer text against a Python reference
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/integer_format.mjs
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |

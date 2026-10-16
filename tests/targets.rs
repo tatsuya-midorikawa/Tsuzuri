@@ -1016,7 +1016,8 @@ fn a_sysroot_the_target_cannot_read_is_refused_before_any_tool_runs() {
 #[test]
 fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
     use fake_toolchain::{setup, text};
-    let setup = setup("cache", "let total = 40 + 2\ntotal\n");
+    // A float result keeps the numeric runtime in the build: an integer's text has no object of its own.
+    let setup = setup("cache", "let total = 40.0 + 2.0\ntotal\n");
     let mut targets = Triple::ALL
         .into_iter()
         .filter(|triple| triple.os() == Os::Linux || triple.os() == Os::FreeBsd);

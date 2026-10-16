@@ -94,13 +94,17 @@ fn integer_intrinsics_beside_number_formatting_declare_each_symbol_once() {
                     )
                 })
                 .collect();
+            // A float is shown by the numeric runtime, which declares the same intrinsics as the
+            // integer expressions; integers alone are shown by the integer formatter (D2).
+            let library =
+                format!("{library}def shown :: f64 -> string\nfn shown x = to_string x\n");
             // The top-level result is shown through `@tz_soft_format` in the console entry.
             let total = SELECTION_EXPRESSIONS
                 .iter()
                 .map(|expression| format!("(({expression}) as i64)"))
                 .collect::<Vec<_>>()
                 .join(" + ");
-            let console = format!("let left: {ty} = 5\nlet right: {ty} = 9\n{total}\n");
+            let console = format!("let left: {ty} = 5\nlet right: {ty} = 9\n({total}) as f64\n");
             let programs = [
                 (llvm::Entry::Library, analyze(&library).unwrap()),
                 (llvm::Entry::Console, analyze(&console).unwrap()),

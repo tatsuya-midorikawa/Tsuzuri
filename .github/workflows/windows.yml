@@ -157,6 +157,9 @@ jobs:
       - name: Size levels and artifact size
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/size.mjs target/release/tsuzuri.exe
+      - name: Integer text against a Python reference
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/integer_format.mjs
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

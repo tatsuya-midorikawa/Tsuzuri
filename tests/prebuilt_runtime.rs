@@ -16,7 +16,7 @@ fn options(wasm: bool) -> llvm::EmitOptions {
 fn object_runtime_emission_is_deterministic_and_preserves_intrinsic_wrappers() {
     let module = analyze(
         "export def value :: f64 -> f64 = \\x -> Math.sin x + Math.sqrt x\n\
-        export def shown :: i64 = (to_string 42).length\n",
+        export def shown :: i64 = (to_string 4.5).length\n",
     )
     .unwrap();
     for wasm in [false, true] {
@@ -31,6 +31,18 @@ fn object_runtime_emission_is_deterministic_and_preserves_intrinsic_wrappers() {
         let embedded = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(embedded.contains("define weak hidden i32 @tz_soft_format("));
         assert!(embedded.contains("define internal double @tz_math_sin_f64("));
+    }
+}
+
+#[test]
+fn integer_text_needs_no_numeric_runtime_object() {
+    // The integer formatter is part of the module, so the numeric object is not declared at all.
+    let module = analyze("export def shown :: i64 = (to_string 42).length\n").unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_with_options(&module, options(wasm)).unwrap();
+        assert!(ir.contains("define internal i32 @tz.integer.format("));
+        assert!(!ir.contains("@tz_soft_"), "{ir}");
+        assert!(llvm::duplicate_declarations(&ir).is_empty());
     }
 }
 

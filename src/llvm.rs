@@ -1472,6 +1472,9 @@ fn emit_program(
     if runtime_symbols.prefix("tz.format.") {
         runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
     }
+    if runtime_symbols.prefix("tz.integer.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+    }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
             runtime_symbols.append(&mut output, crate::runtime_cache::numeric_declarations());
@@ -7978,6 +7981,33 @@ fn emit_character_conversion(
     format!("define internal {llvm} {symbol}({input} %value) nounwind {{\nentry:\n{body}}}\n\n")
 }
 
+/// The IR that writes the decimal text of the integer `value` (of `bits` bits) into a new 40-byte
+/// `%buffer` with `tz.integer.format`; it leaves the text in `%text` and its length in `%length`
+/// (an i64). The formatter writes from the end of the buffer backwards.
+fn integer_text(value: &str, bits: u16, signed: bool) -> String {
+    let flag = if signed { "true" } else { "false" };
+    let mut output = String::new();
+    let call = if bits == 128 {
+        format!("call i32 @tz.integer.format128(ptr %end, i128 {value}, i1 {flag})")
+    } else if bits == 64 {
+        format!("call i32 @tz.integer.format(ptr %end, i64 {value}, i1 {flag})")
+    } else {
+        let extension = if signed { "sext" } else { "zext" };
+        let _ = writeln!(output, "  %wide = {extension} i{bits} {value} to i64");
+        format!("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 {flag})")
+    };
+    let _ = write!(
+        output,
+        "  %buffer = alloca [40 x i8], align 16\n\
+           %end = getelementptr inbounds i8, ptr %buffer, i64 40\n\
+           %count = {call}\n\
+           %length = zext i32 %count to i64\n\
+           %offset = sub i64 40, %length\n\
+           %text = getelementptr inbounds i8, ptr %buffer, i64 %offset\n"
+    );
+    output
+}
+
 fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     let symbol = builtin_symbol(instance, module);
     let ty = &instance.types[0];
@@ -8060,6 +8090,18 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                 body,
                 "  %r = call %tz.string @tz.string.new(ptr {symbol}.unit, i64 2)\n\
                    ret %tz.string %r"
+            );
+        }
+        Type::Integer(bits, signed) => {
+            let value = if borrowed {
+                let _ = writeln!(body, "  %value = load {value_type}, ptr %x");
+                "%value"
+            } else {
+                "%x"
+            };
+            body.push_str(&integer_text(value, *bits, *signed));
+            body.push_str(
+                "  %r = call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)\n  ret %tz.string %r\n",
             );
         }
         _ => {
@@ -8324,6 +8366,10 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
             );
         }
         Type::Unit => {}
+        Type::Integer(bits, signed) => {
+            output.push_str(&integer_text("%result", *bits, *signed));
+            output.push_str("  %printed = call i32 @tz.console.write(ptr %text, i64 %length)\n");
+        }
         _ if ty.is_numeric() => {
             let _ = writeln!(
                 output,
@@ -8529,7 +8575,10 @@ mod tests {
             assert!(body.contains("call %tz.string @tz.string.from_utf8("));
             assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
         }
-        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %buffer, i64 %length)"));
+        // An integer is shown by the integer formatter, which writes into a stack buffer whose
+        // start the call computes; parsing still uses the numeric runtime.
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)"));
         assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
         assert!(ir.contains("call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)"));
         assert!(ir.contains("br i1 %ascii, label %parse, label %none"));
@@ -8685,8 +8734,11 @@ mod tests {
 
     #[test]
     fn number_formatting_keeps_the_generated_intrinsic_declarations() {
+        // A float is shown by the numeric runtime, which declares `llvm.smin.i32` too; an
+        // integer is not (it has a runtime of its own, without declarations).
         let ir = library(
-            "def run :: i32 -> i32 -> string\nfn run left right = to_string (Int.min left right)",
+            "def run :: i32 -> i32 -> f64 -> string\n\
+             fn run left right x = {\n    let low = Int.min left right;\n    to_string (x + (low as f64))\n}",
         );
         // The runtime of the number formatting is linked, and it declares `llvm.smin.i32` too.
         assert!(ir.contains("define weak hidden i32 @tz_soft_format("));
@@ -8697,6 +8749,28 @@ mod tests {
             1
         );
         assert!(!ir.contains("declare i32 @llvm.smin.i32(i32, i32) #"));
+    }
+
+    #[test]
+    fn integers_are_shown_without_the_numeric_runtime() {
+        let ir = library(
+            "def run :: i32 -> i8u -> i128 -> string\n\
+             fn run left right wide = to_string left + to_string right + to_string wide",
+        );
+        assert!(ir.contains("define internal i32 @tz.integer.format("));
+        assert!(ir.contains("define internal i32 @tz.integer.format128("));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 false)"));
+        assert!(ir.contains("call i32 @tz.integer.format128(ptr %end, i128 %x, i1 true)"));
+        // Nothing of the numeric runtime: no formatter and no intrinsic declaration.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        // A float, a parse, and a format spec still link it.
+        for source in [
+            "def run :: f64 -> string\nfn run x = to_string x",
+            "def run :: string -> Maybe<i64>\nfn run text = Parse.parse ref text",
+        ] {
+            assert!(library(source).contains("tz_soft_"), "{source}");
+        }
     }
 
     #[test]

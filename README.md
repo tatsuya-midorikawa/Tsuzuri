@@ -887,7 +887,8 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
-node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、--strip（nm・codesign・トラップ表）とオプション誤り
+node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、--strip（nm・codesign・トラップ表）、整数表示（全型の境界値・IR・WASM の長さ）とオプション誤り
+node tests/integer_format.mjs   # 整数表示の関数（integer.ll）を Python の独立した参照と 8／16 bit の全値で照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証

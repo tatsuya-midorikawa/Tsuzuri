@@ -79,6 +79,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理 |
 | `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略 |
+| `src/runtime/integer.ll` | 整数（`i8`〜`i128`、`i8u`〜`i128u`）の 10 進表示（PM08）。手書きの IR で、`@tz.integer.format`（64 bit 以下を `i64` へ拡張して受ける）と `@tz.integer.format128`、桁を書く内部の `@tz.integer.digits` の 3 関数を持ち、`numeric.ll` に依存しません。テキストはバッファの末尾から前へ書き、呼び出し側は 40 byte（最長の `-170141183460469231731687303715884105728`）を渡します。`i128` の除算は 128 bit の入口だけが使うので、`i128` を表示しないプログラムに `__udivti3` は要りません。`to_string`・`Display`・書式指定のない補間・トップレベルの式の結果が使います。`tz.integer.` の記号が IR に現れたときだけモジュールへ連結する `define internal` で、メタデータも `declare` も持ちません。`tests/integer_format.mjs` が Python の独立した参照と全 8／16 bit 値で照合します |
 | `src/runtime/numeric.c` / `numeric.ll` / `numeric_tables.h` | 多倍長整数を用いた f16／f128／decimal 演算、比較、広幅・異形式間の変換、書式指定付き数値表示（`tz_soft_format_spec`）。f32／f64 の最短表示は整数 Schubfach、通常の十進解析は符号を除き最大 25 ASCII 文字・19 有効桁の Eisel–Lemire と正確な fallback。長い入力を高速経路で再走査しない。生成する不変表は 20,288 bytes。f16 を `half` 命令で計算するビルドでも、結果のビット（NaN を含む）はこのルーチンと同一（D10） |
 | `src/runtime/string.ll` / `utf8string.ll` / `string_scalar.ll` / `string_v128.ll` / `string_cpu.ll` / `string_cpu_utf16.ll` / `heap-*.ll` | UTF 共通処理、完全な scalar 参照、汎用 vector IR、native CPU wrapper。`generate_utf.py` の生成物とは別に `string_cpu_utf16.ll` は手書きの x86 専用 wrapper。変換は全入力の検証・計数後に一度だけ確保。native CPU 経路は F08 の能力・OS 状態検査と fallback、WASM は既定 scalar・simd128 指定時だけ vector IR。Windows の CPU runtime は portable baseline。UTF-8 復号の 16 bytes 未満は inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路。UTF-16 符号化は non-x86 では portable LLVM、native x86 の 32 単位以上は CPU count と検証済み入力を扱う LLVM writer。portable 符号化の 16 単位未満／初窓に surrogate がある入力は元の scalar 計数・Unicode write と 8 単位幅の ASCII copy を使う。長い bulk 経路は private noinline helper へ分離。計数は 1／2／3-byte 幅の混在 BMP も扱うが、writer は均一幅の prefix だけを一括処理する。順序比較の UTF-16 16 単位未満／UTF-8 32 bytes 未満は元の 64-bit/scalar 経路。SIMD 経路の UTF-16 の検証・修復は surrogate-free prefix の後、残りを scalar へ一度だけ渡す。変換・計数・UTF-8 検証 kernel も最初の failed bulk probe 後は scalar remainder へ一度だけ渡し、後続の ASCII 区間も再 probe しない。文字列表現・コード単位の符号なし比較・置換・trap・ABI・import は維持 |
 | `src/runtime/closure.ll` | 関数値の環境の複製および解放。環境ごとの固有処理は LLVM emitter が生成 |
@@ -231,8 +232,10 @@ runtime identity はコンパイラ実行ファイル自体に依存せず、選
 task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めます。
 ツールの上書き・未収録の組・破損は source fallback です。`--no-cache` は配布 object も runtime cache も使いません。
 LLVM／header／object／shared、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
-外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。generic 数値 dispatch の到達する枝は残り、
-型別 format 分割（PM08）は未実装です。`runtime/` の掃除は成果物／frontend cache と独立します。
+外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。generic 数値 dispatch の到達する枝は残ります。
+整数の表示（`to_string`・`Display`・書式指定のない補間・トップレベルの式の結果）は `numeric.ll` ではなく、モジュールに連結する `runtime/integer.ll` が書きます。
+整数だけを表示するプログラムは数値 object を連結せず、native の `examples/hello` は 50,664 から 33,896 byte に、wasm32 の同じプログラムは 35,714 から 6,357 byte になりました（PM08。測定は `docs/benchmarks.md`）。
+float・decimal・書式指定付きの表示と `Parse` は `numeric.ll` のままです。`runtime/` の掃除は成果物／frontend cache と独立します。
 `scripts/toolchain/runtime.mjs` と bundle／archive／smoke は生成・manifest・移設後の消費・破損 fallback を検証します。
 
 **Async の不変条件（B08）:** `Async<T>` の式は `Checker::eval` で loan を持たないことを検査します。これは `Async { ... }` の cold な開始、`let!` / `do!` の継続、`Async.start` の実行器表のいずれでも、字句スコープを越えて借用を保持しないための共通境界です。std の `Async.Async` は opaque かつ非 Copy で、`Async.Step` の継続は `Async.__resume` が一度だけ move して呼びます。
@@ -747,7 +750,7 @@ LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から�
 ビット数カウント処理におけるゼロ入力時の未定義動作フラグは false に設定され、ビット回転数はビット幅に合わせて明示的にマスク処理されます。チェック付き演算（`checked_*`）は既存の `Maybe` union の構築処理を共有します。
 `i128` の checked および saturating 乗算は、64-bit limb の部分積とキャリーフラグを解析して上位 128-bit のオーバーフローを厳密に検出し、符号付き演算では絶対値の許容限界も正確に判定します。これにより、未同梱の外部ランタイムライブラリ（`__muloti4` など）に依存することなく、自己完結したコード生成を実現しています。
 整数のべき乗はバイナリ累乗法（二乗法）で実装され、最後の指数ビットの処理後に不要な二乗算を行わないように最適化されています。
-`i32` の `Int.min`・`Int.max`・`Int.leading_zeros` が使う `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` は、数値の表示や文字列化のために連結する `numeric.ll` も宣言します。同じプログラムでは生成コードの宣言だけが残ります（後述の `unique_declarations`）。`tests/integer_intrinsics.mjs` は、全幅の `Int.*` の参照値との照合に加え、これらを `IO.write_line`・文字列補間・`to_string` と組み合わせたプログラムを、ネイティブと WASM の `-O0`／`-O3` で参照値と照合します。
+`i32` の `Int.min`・`Int.max`・`Int.leading_zeros` が使う `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` は、f64 などの表示や文字列化のために連結する `numeric.ll` も宣言します（整数の表示は `integer.ll` が書き、宣言を持ちません）。同じプログラムでは生成コードの宣言だけが残ります（後述の `unique_declarations`）。`tests/integer_intrinsics.mjs` は、全幅の `Int.*` の参照値との照合に加え、これらを `IO.write_line`・文字列補間・`to_string` と組み合わせたプログラムを、ネイティブと WASM の `-O0`／`-O3` で参照値と照合します。
 
 **消費型コレクション更新:** `Array.set`、`update`、`swap`、ならびに `List.cons`、`tail` は、通常の多相 `BuiltinInstance` として提供されます。
 既存の組み込みラッパーおよび emitter の境界検査、drop、関数適用の仕組みを共有し、個別の専用フック関数は持ちません。
@@ -1017,7 +1020,7 @@ decimal 型は BID（Binary Integer Decimal）形式に準拠し、有限値、�
 再帰検査の参照グラフにもこの Display の依存エッジが含まれます。`string` に対する消費的な文字列化処理は所有権をそのまま返却します。
 `utf8string` の Display は UTF-16 文字列へと変換を行い、消費的な文字列化では変換完了後に元の UTF-8 メモリ領域を安全に解放します。
 
-数値の文字列表現の入口は `tz_soft_format` に統一されており、コンソール出力、`Display`、および `to_string` が完全に同一の出力形式を共有します。
+浮動小数点・decimal の文字列表現の入口は `tz_soft_format`（書式指定付きの数値は `tz_soft_format_spec`）に統一されており、コンソール出力、`Display`、および `to_string` が完全に同一の出力形式を共有します。整数（`i8`〜`i128`、`i8u`〜`i128u`）の書式指定のない表示は、同じ出力形式を `runtime/integer.ll` の `tz.integer.format`／`tz.integer.format128` が書きます。10 進の桁、先頭の `-`、最小値（`-128i8`、`-170141183460469231731687303715884105728i128` など）は `tz_soft_format` と同じで、`tests/integer_format.mjs` が Python の参照と、`tests/size.mjs` がコンパイラ経由で照合します。
 整数の文字列化では、100 で除算して 2 桁ずつ数字を生成し、値が 64-bit に収まる範囲内でのみ `u128` の除算を行い、以降は高速な `u64` 除算へと切り替えます。
 各桁ペアは 32-bit 算術によって分解され、外部の大きな係数テーブルやホスト C ランタイムの文字列化関数には依存しません。
 狭幅整数の解析における cutoff 計算も `u64` で行われ、整数の有効範囲、符号、および桁区切り文字の規則が厳格に維持されます。
