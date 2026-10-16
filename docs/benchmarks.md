@@ -1070,13 +1070,21 @@ WASM のタスクは逐次フォールバックであり、マルチコア性能
 cargo build --release --locked
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick
 node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f01-task-before.o --artifacts target/benchmarks/f01-measured
+node benchmarks/run-tasks.mjs target/release/tsuzuri --runtime <task.c> --baseline-runtime <before-task.c> --metrics target/perf/<run>
+node benchmarks/run-tasks.mjs target/release/tsuzuri --sweep           # 32 タスクで 1 件の長さを変える（粒度）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --gap-us 1000     # 各呼び出しの前に 1 ms 休み、worker を眠らせる（起床の遅延）
 ```
 
-`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイムオブジェクトを指定します。
+`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイム（オブジェクトまたは C ファイル）を指定します。
+`--runtime` は測定側のランタイムの C ファイルを指定します（既定は `src/runtime/task.c`）。コンパイラの埋め込みランタイムと切り離して、同じコンパイラ・同じ IR で前後のランタイムを比べられます。
 同一の LLVM IR を新旧両ランタイムへリンクし、タスク生成、クロージャ捕捉、結果メモリ確保、並行実行、完了待機、およびリソース解放に至る全行程を測定対象に含めます。
+IR は `--allocator system` で作ります（既定の確保器が変わっても比較の対象が変わらないようにするためです）。
 コールド測定（cold）は初回呼び出しおよびスレッドプールの遅延起動時間を計測し、ウォーム測定（warm）は同一プロセス内でのプール再利用時の時間を計測します。コンパイル時間、プロセス起動時間、およびプロセス終了時のシャットダウン時間は計測区間外です。
 `--quick` オプションは独立した整数参照実装との結果一致を確認するスモークテストであり、速度に関する合否判定閾値は設けていません。
-通常の測定では 7 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+通常の測定では 9 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+1 サンプルは 1 プロセスで、`warm_ms_per_call`（連続呼び出しの平均）、`warm_p50_ms`（1 回ごとに計った呼び出しの中央値）、`cpu_ms_per_call`（プロセスの CPU 時間を呼び出し数で割った値）を出します。
+`--gap-us` は 1 回ごとの呼び出しの前に休みを入れます。休みは時間に含めません。worker が眠った後の起床の遅延を見るための設定で、休みなしの連続呼び出しは worker が起きたままになり、この遅延を隠します。
+`--metrics` の生データは、モードごとに別の suite（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）へ書きます。
 
 チケット F01 実装時における測定結果（Apple M1 Max、10 logical CPUs、macOS Darwin 27、Apple Clang 21、`-O3 generic`、fast-math なし）:
 
@@ -1102,7 +1110,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --artifacts
 既存ハーネスのデータ並列比較モードを使用し、Array と Parallel の `init`、`map`、`sum` を同一の入力データおよび整数演算で比較します。
 入出力メモリの確保、クロージャ捕捉、並行計算、スレッド間同期、およびリソース解放の全所要時間を計測します。`sum` の計測には入力データの生成時間も含まれるため、純粋な加算カーネル単体の演算速度比較ではない点に留意してください。
 整数の加算演算は結合法則により処理順序が異なっても同一の合計値となり、各測定結果は独立した参照リファレンスと厳密に照合されます。WASM 環境においては 18 件の正確性検証のみを実施し、並列による高速化として報告することはありません。
-7 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
+9 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
 
 チケット F02 実装時における Apple M1 Max（10 logical CPUs）、Apple Clang 21、`-O3 generic` のウォーム中央値（ms/call、数値が小さいほど高速）:
 
