@@ -844,8 +844,45 @@ mod tests {
             divide(i64, Interval::new(-7, 7), Interval::point(2)),
             Interval::new(-3, 3)
         );
+        // The remainder never exceeds the dividend either.
+        assert_eq!(
+            remainder(i64, Interval::new(0, 3), Interval::point(10)),
+            Interval::new(0, 3)
+        );
+        assert_eq!(
+            remainder(i64, Interval::new(-3, 0), Interval::point(10)),
+            Interval::new(-3, 0)
+        );
         // A zero divisor traps, and nothing follows it.
         assert_eq!(remainder(i64, any, Interval::point(0)), any);
         assert_eq!(divide(i64, any, Interval::point(0)), any);
+    }
+
+    #[test]
+    fn each_reading_of_the_operands_tightens_what_is_known() {
+        let u8 = int(8, false);
+        let run = |left: (i128, i128), right: (i128, i128)| {
+            arithmetic(
+                Operation::Add,
+                u8,
+                Interval::new(left.0, left.1),
+                Interval::new(right.0, right.1),
+            )
+        };
+        // 100..=150 crosses 128, which says nothing as a signed number, but the unsigned sum
+        // 150..=200 stays below 256: the result comes from that reading, and only `nuw` holds.
+        let sum = run((100, 150), (50, 50));
+        assert_eq!(sum.result, Interval::new(150, 200));
+        assert_eq!(sum.flags, Flags::UNSIGNED);
+        // Adding zero overflows in neither sense, whatever the operand is.
+        let same = run((100, 150), (0, 0));
+        assert_eq!(same.result, Interval::new(100, 150));
+        assert_eq!(
+            same.flags,
+            Flags {
+                nsw: true,
+                nuw: true
+            }
+        );
     }
 }
