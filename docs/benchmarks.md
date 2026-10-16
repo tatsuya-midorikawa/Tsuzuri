@@ -6057,6 +6057,70 @@ node benchmarks/metrics.mjs report target/perf/PB04-after/t8 --baseline target/p
 TSUZURI_BASELINE=target/perf/PB04/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri
 ```
 
+## 値のレイアウト（PM01、2026-10-16）
+
+union・`Maybe`・`Result`・record の値の大きさと、`benchmarks/layout` の最大メモリ使用量の記録です。
+実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に大きさや速度の閾値はありません。
+
+### 型の大きさ（決定的）
+
+- 基準は `70f7c803`（main に計画の commit を足したもの）の release コンパイラ、後は `perf/phase3/PM01` の release コンパイラです。
+  `benchmarks/layout/sizes.mjs` が `--emit llvm -O0` の型定義を clang の target ごとのデータレイアウトで測ります（native は Apple M1 Max の AArch64、`x86_64-unknown-linux-gnu`、wasm32）。
+  Rust の列は `rustc -O` の `size_of`（rustc 1.98.1、AArch64）です。
+- niche の union は型定義を持たないので、その大きさはペイロードの型（`%tz.string` は 16、スライスでない参照は native で `ptr` の 8）で読みます。
+
+```sh
+node benchmarks/layout/sizes.mjs <compiler> benchmarks/layout --out target/perf/PM01-sizes --target native --target wasm32 --target x86_64-unknown-linux-gnu
+```
+
+| 型 | 前 | 後 | Rust（参考） | 後の型定義（native） |
+| --- | ---: | ---: | ---: | --- |
+| `Color`（3 ケース） | 4 | 1 | 1 | `i8` |
+| `Maybe<bool>` | 8 | 2 | 1 | `{ i8, i1 }` |
+| `Small`（`bool`・`i8` のペイロード） | 32 | 2 | 2 | `{ i8, [1 x i8] }` |
+| `Maybe<i64>` | 16 | 16 | 16 | `{ i8, i64 }` |
+| `Maybe<ref Point>`（native） | 16 | 8 | 8 | `ptr`（型定義なし） |
+| `Maybe<ref Point>`（wasm32） | 8 | 8 | – | `{ i8, ptr }`（`--stack-first` でアドレス 0 が有効なため、タグを残します） |
+| `Maybe<string>` | 24 | 16 | 24 | `%tz.string`（型定義なし） |
+| `Result<i64, string>` | 32 | 24 | 24 | `{ i8, [2 x i64] }` |
+| `Shape`（`f64` と `f64 * f64`） | 32 | 24 | 24 | `{ i8, [2 x i64] }` |
+| `Mixed { bool, i64, bool, i64 }` | 32 | 24 | 24 | `{ i64, i64, i1, i1 }` |
+| `Tagged { i8, i64, bool }` | 24 | 16 | 16 | `{ i64, i8, i1 }` |
+| `Point { i64, i64 }` | 16 | 16 | 16 | `{ i64, i64 }` |
+| `benchmarks/layout` の配列の合計 | 188,000,000 | 109,000,000 | – | |
+
+wasm32 と x86-64 は、`Maybe<ref Point>` の行を除いて native と同じ値です（x86-64 の LLVM 18 未満が `i128` を 8 バイトに揃えることは、`i128` を持つ union の下限で考慮しています）。
+配列の合計は、要素数 1,000,000 の 8 個の配列（`Color`・`Result<i64, string>`・`Maybe<string>`・`Mixed`・`Shape`・`Small`・`Maybe<bool>`・`Tagged`）の要素の大きさの和です。
+`Maybe<bool>` の 2 バイトは、`bool` の未使用の値を niche にしない（ticket の対象外）ためで、Rust は 1 バイトです。
+
+### 最大 RSS と時間
+
+〔計測待ち〕
+
+### 生成コードの確認
+
+`benchmarks/layout` を前後のコンパイラで `--emit llvm`（`-O0`・`-O3`）と `-O3` の実行ファイルにして数えました（Apple clang 21、`llvm-objdump`）。
+
+| 数えるもの | 前 | 後 |
+| --- | ---: | ---: |
+| `-O0` の IR の `zext i8 `（狭いタグを広げる） | 5 | 12 |
+| `-O3` の IR の `load i8, ptr` | 14 | 20 |
+| `-O3` の機械語の `ldrb` | 12 | 16 |
+| `-O0` の IR の `icmp slt i64 %v, 0`（長さが負の niche） | 1 | 3 |
+| `-O0` の IR の `icmp eq ptr`（null の niche など） | 6 | 7 |
+| `-O3` の実行ファイルの `__text` | 12,608 | 12,920 |
+
+型定義は `Maybe[string]`・`Maybe[ref[Main.Point]]` がなく（niche）、record は `Mixed = { i64, i64, i1, i1 }`、`Tagged = { i64, i8, i1 }`、
+`m.b`・`m.d`・`t.value` の読み出しが `getelementptr … i32 0, i32 0`・`i32 1`・`i32 0` です。`__text` が増えるのは、niche の比較と狭いタグの `zext` の分です。
+
+### 実装済みと計画
+
+- 実装済み: タグの幅（1・2・4 バイト）、`General` の領域（最大アラインメントの整数の配列）、niche（長さが負の `string`・`utf8string`・配列、native の参照）、record のフィールドの格納順、
+  DWARF・LLDB・natvis の対応。計測は上の表のとおりです。
+- 計画（未実装）: タプルの並べ替え（`_perfs/_completed/PM01-value-layout.md` の「Phase 3b を実施しない根拠」）、`bool` の未使用の値や関数値のコードポインターの niche、
+  ペイロードを持つケースが 2 つ以上の union の niche、wasm32 向けの `storage_layout`。
+- 生データ: `target/perf/PM01-sizes-final/`（型の大きさ）、`target/perf/PM01-measure/`（RSS・時間・コンパイル時間）、`target/perf/PM01-codegen/`（生成コード）。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

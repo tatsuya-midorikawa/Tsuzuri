@@ -1270,6 +1270,39 @@ fn use n =
         }
     }
 
+    /// A nested `target_scope` has its own target and its own memo: a layout that depends on the
+    /// target is never taken from the scope around it, and the outer answers come back at its end.
+    #[test]
+    fn layouts_follow_the_innermost_target_scope() {
+        let module = crate::analyze(&source()).unwrap();
+        let (id, arguments) = types(&module)
+            .into_iter()
+            .find_map(|(label, ty)| match ty {
+                Type::Union(id, arguments) if label == "Maybe<ref Mixed>" => Some((id, arguments)),
+                _ => None,
+            })
+            .unwrap();
+        let niche = || {
+            matches!(
+                union_layout(id, &arguments, &module),
+                UnionLayout::Niche { .. }
+            )
+        };
+        // Outside any scope the target is native, and nothing is remembered.
+        assert!(niche());
+        {
+            let _wasm = target_scope(true);
+            assert!(!niche());
+            assert!(!niche());
+            {
+                let _native = target_scope(false);
+                assert!(niche());
+            }
+            assert!(!niche());
+        }
+        assert!(niche());
+    }
+
     /// The placement is a stable sort by decreasing alignment that is kept only when it takes
     /// fewer bytes, with the model's `(size, alignment)` of each field as input.
     #[test]
