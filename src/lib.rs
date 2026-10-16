@@ -14,6 +14,8 @@ pub mod formatter;
 pub(crate) mod frontend_cache;
 pub mod gpu;
 pub mod gpu_devices;
+// The proof engine that uses these functions follows in the next commit.
+#[allow(dead_code)]
 mod interval;
 pub mod lexer;
 pub mod llvm;
