@@ -5,8 +5,9 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use tsuzuri::analyze;
+use tsuzuri::check::CheckedModule;
 use tsuzuri::llvm::{self, RangeFlags};
+use tsuzuri::{analyze, analyze_modules};
 
 /// The IR of `source` for native or WASM; two emissions must be identical.
 fn emit(source: &str, wasm: bool) -> String {
@@ -53,6 +54,11 @@ fn emit_mode_once(source: &str, wasm: bool, flags: RangeFlags) -> String {
             error.code, error.message, error.span
         )
     });
+    emit_module_mode(&module, wasm, flags)
+}
+
+/// The IR of an analyzed program in one flag mode.
+fn emit_module_mode(module: &CheckedModule, wasm: bool, flags: RangeFlags) -> String {
     let options = llvm::EmitOptions {
         entry: llvm::Entry::Library,
         wasm,
@@ -62,7 +68,7 @@ fn emit_mode_once(source: &str, wasm: bool, flags: RangeFlags) -> String {
         allocator: llvm::Allocator::System,
         f16: llvm::F16Path::Soft,
     };
-    llvm::emit_with_range_flags(&module, options, flags).unwrap()
+    llvm::emit_with_range_flags(module, options, flags).unwrap()
 }
 
 /// `emit_mode_once`, which must give the same IR twice.
@@ -456,6 +462,36 @@ fn builtin_calls_that_are_not_two_number_operands_stay_calls() {
         assert!(function_ir(&ir, "partial").contains("@tz.apply.$intrinsic.Add.add"));
         assert!(function_ir(&ir, "value").contains("@tz.apply.$intrinsic.Add.add"));
         assert!(function_ir(&ir, "join").contains("call "));
+    }
+    // A user module named `Add` is not the generated one: whatever its `add` does, it is called, so
+    // `Add.add 40 2` is 1042 there and not 42. A user function with the shape of the generated `x - y`
+    // is called as well.
+    let module = analyze_modules(&[
+        (
+            "Add",
+            "def add :: i64 -> i64 -> i64\nfn add a b = a + b + 1000\n\
+             def minus :: i64 -> i64 -> i64\nfn minus a b = a - b",
+        ),
+        (
+            "Main",
+            "def answer :: i64\nfn answer = Add.add 40 2\n\
+             def shaped :: i64\nfn shaped = Add.minus 40 2",
+        ),
+    ])
+    .unwrap();
+    for wasm in [false, true] {
+        for flags in [RangeFlags::Off, RangeFlags::Proven, RangeFlags::Audit] {
+            let ir = emit_module_mode(&module, wasm, flags);
+            for (name, callee) in [("answer", "Add.add"), ("shaped", "Add.minus")] {
+                let body = function_ir(&ir, name);
+                assert!(
+                    body.contains(&format!("call i64 @tz.fn.{callee}(i64 40, i64 2)"))
+                        && !body.contains("$intrinsic"),
+                    "{flags:?} wasm={wasm}\n{body}"
+                );
+            }
+            assert!(ir.contains(", 1000"), "{flags:?} wasm={wasm}");
+        }
     }
 }
 

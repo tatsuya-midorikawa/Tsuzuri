@@ -629,7 +629,7 @@ node tests/features.mjs target/release/tsuzuri
 ## 受け入れ条件
 
 - [x] R1〜R5 の増分にだけ旗が付く（`proven_mode_flags_exactly_the_loop_increments_that_a_loop_shape_proves`）。`off` と `proven` の IR の差は旗の語と PR01 の `noundef` だけ（`proven_mode_differs_from_off_mode_only_by_flag_words`。チケットの `only_flags` の代わり）。
-- [x] P1〜P7 で証明できた整数 `+ - *` にだけ旗が付く。証明がなければ旗がないことは `programs_have_no_overflow_flags_without_a_proof`（`off`）と、`src/ranges.rs` の 48 行の表および 34 本の評価表の near-miss の行（`proven`）で、旗のある演算がどの入力でもオーバーフローしないことは全入力の評価との照合（brute-force。`proven_flags_are_those_of_an_evaluation_of_every_input`）と `interval.rs` の総当たりの単体テストで確かめた。
+- [x] P1〜P7 で証明できた整数 `+ - *` にだけ旗が付く。証明がなければ旗がないことは `programs_have_no_overflow_flags_without_a_proof`（`off`）と、`src/ranges.rs` の 48 行の表および 38 本の評価表の near-miss の行（`proven`）で、旗のある演算がどの入力でもオーバーフローしないことは全入力の評価との照合（brute-force。`proven_flags_are_those_of_an_evaluation_of_every_input`）と `interval.rs` の総当たりの単体テストで確かめた。
 - [x] 演算子形と builtin 形が同じ IR になる（`builtin_and_operator_forms_emit_the_same_instructions`。チケットの `operator_and_builtin_forms_share_flags` の名前は使わなかった）。
 - [x] 「テスト計画」の共通コマンドがすべて成功し、E2E の新しい case が native／wasm32 × `-O0`／`-O3` で参照と一致する（「実装と検証」の表）。
 - [x] 生成 IR に LLVM 18 以降の構文と `!range`・`llvm.assume` の新規出力がなく、IR が決定的である（`bounds_checks.rs::range_proofs_add_no_llvm_facts`、`emit_mode` の二度の出力の一致）。
@@ -743,7 +743,7 @@ PR02 の全 Phase（Phase 1: ループの形から証明する旗、Phase 2: 区
 | `d34e72ce` | WP2・WP3 | `RangeFlags`（`TSUZURI_RANGE_FLAGS`、`KEY_ENVIRONMENT`、HELP）、R1〜R5 の構造の旗、audit の検査、`bounds_checks.rs` の書き換え |
 | `c1cc62b1` | WP5 | `src/interval.rs`: 区間の純粋関数と、総当たりの単体テスト |
 | `82915be1` | WP6 | `RangeFacts` の区間（`src/ranges_intervals.rs`。`bind`・`enter_counter`・`enter_condition` の hook） |
-| `ad13ba96` | WP7 | `integer_flags` を `binary()` と tail 引数で使う。audit の検査。34 本の評価表 |
+| `ad13ba96` | WP7 | `integer_flags` を `binary()` と tail 引数で使う。audit の検査。評価表（このコミットでは 34 本。`5f651acb` で 38 本） |
 | `2821b786` | WP8 | `tests/integer_ranges_fuzz.mjs`、`tests/range_flags_audit.mjs`、`targets.yml` の step |
 | `359a7e4e` | WP8 | Phase 2 の E2E case（`affine_sum`・`wrap_edges`・`narrow_wrap`・`unsigned_sub`・`mixed_width`。`control.mjs` は 470 case） |
 | `ead8f36e` | WP9 | Gate A の runner（`benchmarks/run-range-flags.mjs`）と旗の候補の corpus（`benchmarks/range_flags`） |
@@ -752,7 +752,9 @@ PR02 の全 Phase（Phase 1: ループの形から証明する旗、Phase 2: 区
 | `6b2e5c6c` | WP5 | 区間の tightness のテスト（変異テストで見つかった 3 つの精度の抜け） |
 | `d7a1d28b` | WP9 | 文書（architecture・language・README・language-reference・benchmarks） |
 | `5f651acb` | WP8 | fuzz の生成器の強化と、`integer_ranges` の表の行（エンジンの変異が見逃された 4 件への対応） |
-| このコミット | WP9 | チケットの完了報告と、`_perfs/_completed/` への移動。`tests/integer_ranges.rs` の新しい行の clippy の指摘（`manual_range_contains`）の修正 |
+| `ad3f2739` | WP9 | チケットの完了報告と、`_perfs/_completed/` への移動。`tests/integer_ranges.rs` の新しい行の clippy の指摘（`manual_range_contains`）の修正 |
+| `f8f52667` | レビュー後 | `Add` という名前のユーザーモジュールの関数が inline されず呼び出しのまま残ることのテスト（`builtin_calls_that_are_not_two_number_operands_stay_calls`） |
+| このコミット | レビュー後 | 評価表の件数（34 本 → 38 本）と、assembly が変わった corpus の一覧（`strategy.md`）の訂正 |
 
 ### 実装した内容
 
