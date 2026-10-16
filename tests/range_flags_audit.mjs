@@ -6,8 +6,8 @@
 //
 //   node tests/range_flags_audit.mjs [compiler] [quick|full] [mode ...]
 //
-// quick: the suites that compute with integers, a few minutes. full: every node suite of the
-// README's test list and the other differential fuzzers, an hour or more on a loaded machine.
+// quick: the suites that compute with integers, about 20 minutes on a loaded machine. full: every node
+// suite of the README's test list and the other differential fuzzers, an hour or more.
 // TSUZURI_AUDIT_SUITES=control,e2e names the suites to run instead.
 //
 // The same check for the Rust tests is `TSUZURI_RANGE_FLAGS=audit cargo test --locked` (and
