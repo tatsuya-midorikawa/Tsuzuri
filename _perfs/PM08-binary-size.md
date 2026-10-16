@@ -8,9 +8,9 @@
 | 規模 | M |
 | 依存 | PB01 |
 | 関連 | PB03, G08, F05 |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 1）。Phase 2 は要承認: D8（外部ツール `wasm-opt` の導入）。リンカーの未使用コード除去は PB01 の D10（要承認）の範囲で、PM08 は計測だけを行う（D1） |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で D8（外部ツール `wasm-opt`。明示の opt-in だけ）・D9・新しい D10（埋め込み native のリンク時 GC）を含む全フェーズを承認済み。リンカーの未使用コード除去は PB01 Phase 3 が実装済みで、D1 は取り下げ（「着手時の再検討」） |
 | 手本にする既存実装 | 記号で足すランタイム IR: `src/llvm.rs` の `output.contains("@tz.display.")` → `runtime/display.ll` の分岐。手書きのランタイム IR: `src/runtime/display.ll`・`src/runtime/console.ll`。CLI の検証: `src/main.rs` の `parse` の `-O0`〜`-O3` の分岐と `src/driver.rs` の `BuildOptions::validate`（E2000）。大きさの記録: PX01 の process suite（`benchmarks/metrics.mjs`（PX01 で新規）の `executable_bytes`・`object_bytes`・`wasm_bytes`） |
 | 主な影響ファイル | `src/main.rs`（`HELP`・`parse`・単体テスト）, `src/driver.rs`（`BuildOptions`・`BuildOptions::validate`・`build_complete`）, `src/test_runner.rs`（`TestOptions` は変えない。変換だけ）, `src/llvm.rs`（`console_main`・`emit_display`・ランタイム IR を足す分岐）, `src/runtime/integer.ll`（新規）, `tests/display_parse.mjs`, `tests/size.mjs`（新規）, `benchmarks/metrics.mjs`（PX01 で新規。`size` suite と 2 つの metric を足す）, `benchmarks/size/hello.c`・`benchmarks/size/hello.rs`（新規）, `docs/benchmarks.md`, `docs/architecture.md`, `_docs/tools/command-line.md`, `_docs/tools/build-and-cache.md`, `README.md`, `_perfs/README.md` の状態欄 |
 | 計測対象 | native の実行ファイル（`-O0`・`-O3`・`-Os`・`-Oz`）と object（`-O3`・`-Oz`）、wasm32 の `.wasm`（`-O0`・`-O3`・`-Oz`）。種目は `examples/` のビルドできる project（「計測済みの事実」）と C・Rust の hello |
@@ -29,6 +29,79 @@ Phase 1 は次の 4 つで、どれも言語の意味を変えない。実装者
 
 リンカーの未使用コード除去（`-Wl,-dead_strip`・`-Wl,--gc-sections`・`-ffunction-sections`）と `math.ll` の分離は PB01 Phase 3（PB01 の D10）が持つ。
 PM08 はその効果を計測して PB01 へ渡すだけで、そのリンク引数は足さない（D1）。
+
+## 着手時の再検討（2026-10-16）
+
+2026-10-16 の依頼で、全フェーズ（D8・D9 と新しい D10 を含む）を実装する。以下の「現状と計測（HEAD `f8dc655`）」「実装手順」「決定事項」は起票時の記録で、
+このセクションと食い違う箇所はこのセクションが優先する（旧 `_docs/tools/*.md` は `_tsuzuri/language-reference/compiler/` の各ページ、GUIDE §8.1）。
+着手時の HEAD は `70f7c803`（main `6d15b437` + 計画）、偵察は release コンパイラ（SHA-256 `da78ba18…`）、M1 Max、macOS 27.0.1、Apple clang 21.0.0 で行った。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| リンクの dead strip・`-ffunction-sections` はどこにもない。PB01 Phase 3 が入れる | PB01 Phase 3 が実装済み: `driver.rs` の `dead_strip_args`（Mach-O `-Wl,-dead_strip`、MSVC `/OPT:REF`、それ以外 `--gc-sections`）と `-Wl,-u` の root、runtime object の `-ffunction-sections -fdata-sections`。ただし `runtime_objects`（cache あり、`-g`・`--trap-info`・trap-return・threads・stack 検査なし、native 実行ファイルか wasm32 の `.wasm`）のときだけ | D1「計測だけ」は取り下げ。残る穴は `--no-cache`・`--trap-info`・`-g`・object／shared と、非 Mach-O での module IR（`-ffunction-sections` なし）。D10 |
+| hello `-O3` 67,256 bytes（`__text` 33,184）、`-O0` 100,824 | cache あり既定 50,664（13,304）、`-O0` 69,048（31,992）。`--no-cache` は 117,848（43,496）、`-O0` 188,232（111,352） | PR04 の表（+20,288 bytes）と `tz_soft_format_spec`・`tz_soft_parse` で `numeric.ll` は 460,147 → 619,488 bytes。起票時の表は使えない |
+| wasm hello `-O3` 59 bytes、functional 5,778、io 22,327 | 35,714、41,444、15,593。`examples/hello` は `main :: unit -> i32` + `IO.write_line` になり（`2291223a`）、wasm の 81% が数値ランタイム | D2 の効果が起票時の見積りより大きい（wasm hello −82%） |
+| 整数を 1 つ表示すると `numeric` 全体が入る | cache あり: `tz_soft_format` と補助（`format_float` 4,180 bytes ほか）と表 `tzrt_schubfach_g`（`__const` 10,160 bytes）が入る | 目標は C の hello（33,432 bytes）と同程度 |
+| `output.contains("@tz.integer.format")` で `integer.ll` を足す | runtime IR の選択は `RuntimeSymbols`（`src/runtime_cache.rs`）。`runtime_symbols.prefix("tz.integer.")` を使う。`.gitignore` の例外行（GUIDE §2.2）と `src/abi.rs` の予約名の検査の一覧にも足す | 手順 6 の補足 |
+| 整数の表示の呼び出し元は `console_main`・`emit_display` | `llvm_display.rs` の `number_piece`（書式指定付きの補間）は `tz_soft_format_spec` を、`Parse` は `tz_soft_parse` を呼ぶ | D2 は書式指定なしの表示まで。`{n:x}`・`+`・桁数・`Parse` は P8（手書き IR）で分ける |
+| 既存テストへの影響は `display_parse.mjs` の 1 か所 | D2 で期待値が変わるテストが複数ある（下の一覧） | 先に宣言する（GUIDE §13.1） |
+| `-O{}` を 3 か所、`!= 0` を 3 か所で使う | `build_complete` に 5 + 4 か所、`main.rs` の parse・test・bench（JSON の `"opt"`）・repl、`repl.rs`、`tests/f16_hardware.rs`、`driver.rs` の単体テスト | `bench` も `-Os`・`-Oz` を拒否する |
+| `--strip` の条件は `!cfg!(windows)` | `platform.windows()`（`--target TRIPLE` のクロスビルド、G15） | |
+| size suite は `--no-cache` の 2 回のビルドと `cmp` | PX01 の process suite と PX03 の build は `--no-cache`（埋め込み）の大きさを記録しており、利用者が得る既定ではない。`opt` の許可値は `O0`・`O3`・`none` | 既定（cache あり、専用 cache dir）を主に、`--no-cache` を別の variant で測る。同一性は `artifactFingerprint` |
+| `text_bytes` だけを指標にする | `__const` の 10 KB の表が D2 で除かれる分の約半分で、ページ単位の丸めに隠れる | `rodata_bytes`・`wasm_data_bytes` を足す |
+| `wasm-opt` は計測機にない | 今も repo・配布物・CI のどこにもない。Binaryen の配布物は Linux・Windows で約 105〜111 MB | 同梱しない。明示の `--wasm-opt` と `TSUZURI_WASM_OPT` だけ（D8） |
+
+### 偵察で測った効果（実コンパイラを変えない手作業の IR・wrapper・リンク。2026-10-16）
+
+- D2 相当（`module.ll` を直して数値を外した）: native hello `-O3` 50,664 → 33,768 bytes（`__text` 13,304 → 1,052、`__const` 10,160 → 8）、wasm hello 35,714 → 6,568 bytes。
+- `-Os`・`-Oz`（Clang の全呼び出しを差し替え）: native の `__text` は hello 13,304 → 12,860／11,320、io 9,780 → 10,508（`-Os` は増える）／9,496。wasm は io 15,593 → 5,822／5,734（−63%）、functional 41,444 → 33,283／32,802。
+- `-Wl,-x`: native の file −320〜−1,104 bytes（0.6〜1.6%）。`--no-cache` の埋め込みのリンクに `-Wl,-dead_strip`: hello `-O3` 117,848 → 50,608。
+- `wasm-opt -Oz`（Binaryen 132）: wasm hello −55%、io −11%、functional −50%。`-Oz` の上でも −15〜−58%。
+
+### 作業の順序（コミット）
+
+| 作業 | 内容 | 確認 |
+| --- | --- | --- |
+| P0 | この再検討の記録（このチケットだけ。`_perfs/README.md` は統合担当が更新する） | `git diff --check` |
+| P1 | `OptLevel`（挙動を変えない） | 単体テスト、IR・成果物の `cmp` |
+| P2 | size suite（`benchmarks/metrics.mjs`）と before の記録 | `tests/benchmark_report.mjs` |
+| P3 | `-Os`・`-Oz`（build・run） | 単体テスト、`tests/size.mjs`、既存 E2E |
+| P4 | `--strip`（native 実行ファイル、`-Wl,-x`） | `nm`・`codesign -v`・`.trap.json` |
+| P5 | D2: `integer.ll` | 整数の境界の参照照合（native・wasm32 × `-O0`・`-O3`・`-Os`・`-Oz`）、既存 E2E |
+| P6 | D10: 埋め込み native のリンク時 GC | `--no-cache`・`--trap-info` の hello の大きさと全 suite |
+| P7 | D8: `--wasm-opt`（明示の opt-in だけ） | 偽の `wasm-opt` の script と実 Binaryen（scratch） |
+| P8 | D9: 整数の `Parse`・書式指定を手書き IR で分ける | `tz_soft_parse`・`tz_soft_format_spec` を oracle にした差分テスト |
+| P9 | 文書、`docs/benchmarks.md`、この節の更新、`_completed/` へ移動 | `node scripts/check-docs.mjs` |
+
+### D2 で期待値が変わる既存テスト（先に宣言する）
+
+`numeric.ll` が入る前提で書かれたテストのうち、整数だけの表示を使うもの。意図（数値ランタイムが入る／Clang を数える）は保ち、fixture を `f64` などへ移す。
+`tests/display_parse.rs`（`to_string 42` が `@tz_soft_format` を含む検査、`["0.1", "0.1f32", "42", "true"]` の繰り返しの検査）、`tests/integers.rs`（`SELECTION_EXPRESSIONS` の
+「numeric.ll is linked」）、`tests/prebuilt_runtime.rs`（`(to_string 42).length` の宣言の検査）、`tests/targets.rs`（`let total = 40 + 2` の cold build が Clang を 2 回数える）、
+`tests/display_parse.mjs`（`display-only`）、`src/llvm.rs` の `number_formatting_keeps_the_generated_intrinsic_declarations`。実装で見つかった残りは「実装と検証」に足す。
+P1 の型の変更（`options.optimization` の比較、`optimization: 4` の検査、`tests/f16_hardware.rs` の構築）は期待値の変更ではなく型の追従。
+
+### 決定事項の更新
+
+- D1 取り下げ: PB01 Phase 3 が実装済み。PM08 は PB01 の runtime object の引数と root を変えず、D10 で穴だけを埋める。
+- D2: 既定案のまま。書式指定なしの整数の表示だけ（`numeric.c`・`numeric.ll`・`tz_soft_*` は変えない）。G5 は「cache あり既定の経路」で読む。
+- D3: `OptLevel` を使い、`-Os`・`-Oz` は build・run だけ。`test`・`bench` は E2000。`optsize`・`minsize` 属性は付けない。配布 bundle に Os／Oz の object は足さない
+  （`-Os`・`-Oz` の初回のビルドは runtime cache か埋め込みソースから作る）。
+- D4: 既定は `-O3` のまま。`-Os` は小さい native では増えることがある。
+- D5: `--strip` は opt-in。`platform.windows()` では何もしない（文書化）。`-g`・実行ファイル以外・wasm は E2000。
+- D6: size suite は cache あり既定を主、`--no-cache` を別の variant にする。`rodata_bytes`・`wasm_data_bytes` を足す。
+- D7: C ランタイムにも同じ `-Os`・`-Oz` を渡す。
+- D8: 承認済み。`--wasm-opt`（`TSUZURI_WASM_OPT` で実行ファイルを選ぶ）だけ。自動検出も同梱もしない。要求されて見つからない・失敗したときは `E2002`。
+- D9: `numeric.c` は変えず（PM05 が `numeric.ll` の byte 不変を前提にする）、整数の `Parse`・書式指定を `integer.ll` の手書き IR で分ける。
+- D10（新設）: 埋め込み native のリンク（`--no-cache`・`--trap-info`）にも dead strip を使い、非 Mach-O では module IR に `-ffunction-sections -fdata-sections` を付ける。
+  `-g` の経路は変えない。効果が測れない・意味が変わる場合は入れない。
+
+### 停止条件の更新
+
+- 取り下げ: 「`-Wl,-dead_strip` などを足したくなった」（PB01 が実装済み。D10 は別に判断する）、「IR に `optsize` が要る」（`-Oz` だけで足りた）、「`wasm-opt` が必要」（D8 は承認済みの opt-in）。
+- 追加: D2 以外で `--no-cache` の成果物の byte が変わる（D10 の判断を除く）、上の一覧にない既存テストの期待値を変える必要がある、`numeric.ll`・`math.ll`・`numeric_tables.h` が変わる。
 
 ## 着手条件と停止条件
 
