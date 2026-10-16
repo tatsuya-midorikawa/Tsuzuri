@@ -900,6 +900,56 @@ fn cases() -> Vec<Case> {
             true,
             move |x, _| vec![vec![(x, 1)]],
         ),
+        // The literal on the left reads the other way round: `100 < x` is `x > 100`. From 101 up the
+        // signed sum overflows, and the unsigned one, 154 at most, does not.
+        case(
+            "def f :: i8 -> i8\nfn f x = if 100 < x then x + 27 else 0",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![if 100 < x { vec![(x, 27)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = if 100 <= x then x + 27 else 0",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw"],
+            true,
+            move |x, _| vec![if 100 <= x { vec![(x, 27)] } else { vec![] }],
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = if 100 > x && 0 <= x then x + 27 else 0",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, _| {
+                vec![if 100 > x && 0 <= x {
+                    vec![(x, 27)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
+        case(
+            "def f :: i8 -> i8\nfn f x = if 99 >= x && 0 < x then x + 28 else 0",
+            (8, true),
+            every(8, true),
+            "+",
+            &["nuw nsw"],
+            true,
+            move |x, _| {
+                vec![if 99 >= x && 0 < x {
+                    vec![(x, 28)]
+                } else {
+                    vec![]
+                }]
+            },
+        ),
         // At 127 the signed sum overflows; the unsigned one, 128, does not.
         case(
             "def f :: i8 -> i8\nfn f x = if x >= 0 then x + 1 else 0",
@@ -1427,6 +1477,16 @@ const LOOPS: &[(&str, &[&str])] = &[
     (
         "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    let mut i = 0\n    while i < 10 do\n        total = total + i\n        i = i + 1\n    total",
         &["add i64 %, %", "add i64 %, 1"],
+    ),
+    // A descending counter takes its largest value first: `i + 1` overflows as a signed number at
+    // the start, although the loop ends at 9223372036854775806.
+    (
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9223372036854775807 .. -1 .. 9223372036854775806 do total = total + (i + 1)\n    total",
+        &[
+            "add i64 %, %",
+            "add nsw i64 %, 18446744073709551615",
+            "add nuw i64 %, 1",
+        ],
     ),
 ];
 

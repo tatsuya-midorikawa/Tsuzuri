@@ -67,7 +67,9 @@ function generate(seed) {
   const below = (n) => Math.floor(random() * n);
   const chance = (p) => random() < p;
   const pick = (list) => list[below(list.length)];
-  const T = pick(types);
+  // 64-bit programs get a third of the seeds: their loops are the ones whose counters carry flags
+  // that a loop shape alone proves.
+  const T = chance(0.33) ? pick([I64, typeOf("i64u")]) : pick(types);
   let counter = 0;
   const fresh = (prefix) => `${prefix}${counter++}`;
   const lit = (t, v) => ({ t: "lit", ty: t, v });
@@ -128,7 +130,12 @@ function generate(seed) {
     const e = pick(scope);
     if (chance(0.7)) {
       const c = anyLit(T);
-      return { node: { t: "cmp", op, a: variable(e), b: c }, narrowed: [narrowing(e, op, c.v)] };
+      // `k op x` says the same as `x flipped-op k`, and a proof must read it that way round too.
+      const flipped = { "<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!=" };
+      const node = chance(0.35)
+        ? { t: "cmp", op: flipped[op], a: c, b: variable(e) }
+        : { t: "cmp", op, a: variable(e), b: c };
+      return { node, narrowed: [narrowing(e, op, c.v)] };
     }
     const a = chance(0.7) ? variable(e) : expr(T, scope, d - 1);
     const b = chance(0.5) ? variable(pick(scope)) : expr(T, scope, d - 1);
@@ -181,6 +188,8 @@ function generate(seed) {
         : { lo: near(start), hi: near(stop), step: step === 1n && chance(0.5) ? null : near(step), range: [start, stop] };
     };
     const window = (a, b, step) => ({ ...step, range: [a, b] });
+    // A descending loop whose counter takes its largest values at the start, which a proof must not forget.
+    const descending = (first, last) => ({ lo: small(first), hi: small(last), step: lit(t, -1n), range: [BigInt(last), BigInt(first)] });
     const schemes = [
       () => ({ lo: small(below(6)), hi: small(5 + below(9)), step: null, range: [0n, 13n] }),
       () => ({ lo: small(below(10)), hi: small(below(10)), step: small(1 + below(3)), range: [0n, 9n] }),
@@ -194,11 +203,16 @@ function generate(seed) {
       () => scaled(2 + below(40), 0n, false),
       () => scaled(2 + below(40), 0n, false),
       ...(t.signed ? [
-        () => ({ lo: small(5 + below(8)), hi: small(below(6)), step: lit(t, -1n), range: [0n, 12n] }),
+        // A counter of step 1 or -1 that crosses zero: it is -1 and then 0, which is an unsigned overflow.
+        () => { const k = 1 + below(5); return { lo: small(-k), hi: small(k), step: null, range: [BigInt(-k), BigInt(k)] }; },
+        () => { const k = 1 + below(5); return { lo: small(k), hi: small(-k), step: lit(t, -1n), range: [BigInt(-k), BigInt(k)] }; },
+        () => descending(5 + below(8), below(6)),
+        () => descending(5 + below(8), below(6)),
         () => { const last = low(t) + BigInt(below(8)); return window(low(t), last, { lo: near(low(t)), hi: near(last), step: null }); },
         () => { const first = low(t) + BigInt(below(8)); return window(low(t), first, { lo: near(first), hi: near(low(t)), step: lit(t, -1n) }); },
         () => { const last = high(t) - BigInt(below(8)); return window(last, high(t), { lo: near(high(t)), hi: near(last), step: lit(t, -2n) }); },
         () => scaled(2 + below(40), low(t) / 2n, false),
+        () => scaled(2 + below(40), 0n, true),
         () => scaled(2 + below(40), 0n, true),
       ] : []),
     ];
@@ -246,7 +260,9 @@ function generate(seed) {
     return leaf(t, scope);
   }
 
-  return { T, body: expr(T, [entry("x"), entry("y")], depth) };
+  // Half of the programs are a loop at the top, with the rest of the generator inside it.
+  const scope = [entry("x"), entry("y")];
+  return { T, body: depth >= 2 && chance(0.5) ? loop(scope, depth) : expr(T, scope, depth) };
 }
 
 // ---- source ----
