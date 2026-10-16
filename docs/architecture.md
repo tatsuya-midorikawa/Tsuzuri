@@ -1090,7 +1090,7 @@ CPU コア数の取得に失敗した場合は追加ワーカーを起動しま�
 最初の添字は、グループを公開する前に（`next` の初期値を 1 にして）投入したスレッドが取ります（F10）。worker は join のときだけ mutex の下で最初の添字を取り、残りは mutex なしに取り尽くします。チャンネルを待つスレッドが他のグループの未着手の項目を走らせる手伝い（`tz_task_help_one`）も同じ取り方です。投入したスレッドは、自グループが終わるのを待つあいだ、自グループの項目だけを走らせます。
 残存数（`remaining`）は、各スレッドが走らせた添字の数を、止まるときに 1 回だけ acq-rel の `fetch_sub` で引きます（添字ごとではありません）。worker は、引くことと `busy`・`idle` の更新を 1 つの lock の中で行うので、投入したスレッドがグループの終わりを見たとき、そのグループの worker は走っているものとして数えられていません。worker が最初に取った添字は、引かれるまで `remaining` を 0 にしないので、スタック上のグループは、それを読む worker の下で消えません。引いた後、スレッドはグループに触れません。
 失敗と trap は cold path です。mutex の下で最小の添字を記録し、まだ誰も取っていない添字は `next` を `length` へ進める compare-exchange 1 回で外して、その数を `remaining` から引き、`work_available` を broadcast します。
-投入は、`TZ_TASK_INITIAL_SIGNALS`（2）人までの worker を signal で起こします（グループの残りの添字より多くは起こしません）。グループに未着手が残っているうちに最初の添字を取った worker は、もう 1 人起こします。全 worker への broadcast はしません。起床が失われない論拠は `tz_task_submit` の直前のコメントにあります。最後に `remaining` を引いたのが worker なら、結合を待つスレッドのために `work_done` を broadcast します（1 グループにつき 1 回以下）。
+投入は、`TZ_TASK_INITIAL_SIGNALS`（1）本の signal で眠っている worker を起こします（グループの残りの添字より多くは起こしません）。グループに未着手が残っているうちに最初の添字を取った worker は、未着手の数に応じて `TZ_TASK_CHAIN_SIGNALS`（2）本まで起こします。起きる worker は木の枝のように増え、投入したスレッドが自分で終えるグループでは 1 人しか起きません。全 worker への broadcast はしません。起床が失われない論拠は `tz_task_submit` の直前のコメントにあります。最後に `remaining` を引いたのが worker なら、結合を待つスレッドのために `work_done` を broadcast します（1 グループにつき 1 回以下）。
 257 添字のグループで pool の mutex を取る回数は、投入したスレッドが 2 回、参加した worker が 1 回ずつです。`tests/task_runtime.c` が lock・signal・broadcast の数を hook で数えて検査します。
 `Parallel` の完全適用は専用の `TypedExprKind::Parallel` として扱われ、通常の関数呼び出しへ消去される前にコールバックおよび結果の所有環境が静的に検査されます。
 カリー化されたコールバックにおける 1 引数／2 引数の適用段階が区別され、mapper-first API は入力型を先行推論しますが、実行時の引数受け渡し順序は変更しません。
