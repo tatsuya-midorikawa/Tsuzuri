@@ -41,7 +41,10 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 
 フロントエンドは不要な本体・局所値の複製と子列の確保を省き、型述語に private TypeId arena を使います。
 公開 AST と型の契約、宣言・子・診断・捕捉の順序、所有権規則、構文・CLI・資源上限は変わりません。
-フロントエンドの並列化と型付き IR 全体の arena 移行は行っていません。
+型付き IR 全体の arena 移行は行っていません。
+フロントエンドは、構文解析・関数ごとの型検査・所有権の検査を複数のスレッドで実行できます（環境変数 `TSUZURI_THREADS`。
+[コンパイラのスレッド数](../_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
+診断の順序・件数・上限、IR、キャッシュの内容はスレッド数で変わりません。
 
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。

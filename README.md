@@ -880,6 +880,7 @@ sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテストスレッド。PowerShell は先に $env:RUST_MIN_STACK='4194304'
+TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
 cargo build --release --locked
 
 # 統合 E2E テスト・言語機能テスト
