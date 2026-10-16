@@ -1463,3 +1463,25 @@ fn loop_bodies_get_the_flags_that_the_range_of_their_counter_proves() {
         }
     }
 }
+
+#[test]
+fn the_arguments_of_a_self_tail_call_get_the_flags_of_their_operands() {
+    // The subtraction is deferred to the loop latch on native and written in place on WASM; both
+    // carry the flag that the condition proves, and the accumulator, which is unknown, carries none.
+    let source = "def rec count :: i64u -> i64u -> i64u\nfn rec count n acc = if n != 0 then count (n - 1) (acc + 3) else acc\n";
+    for wasm in [false, true] {
+        let proven = emit_mode(source, wasm, RangeFlags::Proven);
+        let body = function_ir(&proven, "count");
+        assert_eq!(
+            arithmetic(&body),
+            ["add i64 %, 3", "sub nuw i64 %, 1"],
+            "wasm={wasm}\n{body}"
+        );
+        assert!(!body.contains("call i64 @tz.fn.Main.count"), "{body}");
+        let off = emit_mode(source, wasm, RangeFlags::Off);
+        assert_eq!(without_flags(&proven), without_flags(&off));
+        let audit = function_ir(&emit_mode(source, wasm, RangeFlags::Audit), "count");
+        assert!(!has_flag(&audit), "{audit}");
+        assert_eq!(count(&audit, "@llvm.usub.with.overflow.i64("), 1, "{audit}");
+    }
+}
