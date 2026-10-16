@@ -8,12 +8,65 @@
 | 規模 | L |
 | 依存 | PR01, (F12) |
 | 関連 | F12 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（言語の意味、GUIDE D-01〜D-30、crate、WASM import、必要な LLVM の版を変えない。D1〜D9 はすべて既定案） |
+| 状態 | doing |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-16 の全フェーズ実装依頼で、全 Phase と D1〜D14（D10〜D14 は再検討で追加）を承認済み。意味の保持と検証の条件は維持する（言語の意味、GUIDE D-01〜D-49、crate、WASM import、必要な LLVM の版は変えない） |
 | 手本にする既存実装 | 構造から証明した事実を IR へ出す形: `src/llvm_control.rs` の `narrow_range_loop`（`llvm.assume` と、証明を命令の直前に書く一行コメント）。型と符号で命令を選ぶ形: `src/llvm.rs` の `FunctionEmitter::binary` と `checked_integer_arithmetic`。IR の文字列検査: `src/llvm.rs` の test `emits_explicit_tail_loop_and_checked_arithmetic`、`tests/control.rs` の `accepts`。端点の E2E と BigInt 参照: `tests/control.mjs` の `rangeReference` と `inclusive` の case |
 | 主な影響ファイル | `src/llvm_control.rs`（`range_loop`, `narrow_range_loop`）, `src/llvm.rs`（`FunctionEmitter::binary`, `array_loop_control`, tail call 引数の遅延 `Argument::Arithmetic`, test module）, `src/ranges.rs`（F12 で新規。PR02 は算術の伝播を足す）, `tests/integer_ranges.rs`（新規）, `tests/fixtures/control/Main.tz`, `tests/control.mjs`, `docs/architecture.md`, `_perfs/README.md` |
 | 計測対象 | PX01 形式の `control` suite の `for_mix`, `integer128_mix`, `match_dispatch`, `closure_capture`, `closure_churn`, `float32_mix`, `float64_mix`, `array_sum`, `array_copy` と、`cpp` suite の `format_parse`, `math_intrinsics`, `task_sequence`, `task_sequential`。生成コードは `/tmp/tz-PR02/kernels`（「生成コードの確認」） |
+
+## 着手時の再検討（2026-10-16）
+
+HEAD `6d15b437`（第 2 フェーズの統合後）に対して、実装の前に読み取りだけの調査と生成コードの実験を行った。起票時（`f8dc655`）との食い違いは次のとおりで、
+停止条件 1 とテストの期待値の変更に該当したので、チケットを改訂してから実装する（GUIDE §13.1）。起票時の「Phase 1 だけ」「承認待ち」の注記は適用しない。
+
+| # | チケットの記述 | 現行コードの事実 | 扱い |
+| --- | --- | --- | --- |
+| 1 | F12 の `RangeFacts` に算術の伝播を足す。`interval` が F12 にある前提 | F12 の表は配列の添字専用（`below_length`・`constant`（i64 の定数ループだけ）・`lengths`・`stable`・`guards`）。区間も、i64 以外の整数型の事実も、`let`・引数の事実もない | 停止条件 1。Phase 2 は区間の解析器の新設とする。再利用は `Scan`（stable・declared・duplicated）・`NODE_BUDGET`・`root`・`length_root`・`loop_kind`・`If` の 3 か所の push/pop |
+| 2 | D3: 演算子形と builtin 形は同じ経路で同じ旗を得る | **成り立たない**。`Add.add n 1` は `call @tz.fn.$intrinsic.Add.add.N`（別関数）で、演算子形は inline の `add`。tail 引数の経路だけ `binary_operation` が inline する。PR01 の属性も変わる（`noundef`・`memory(none)`） | D10 を新設し、旗より前に、`$intrinsic` の `Add`・`Subtract`・`Multiply` の呼び出しを inline する（既定で有効） |
+| 3 | tail 引数の遅延（`Argument::Arithmetic`）で旗を付ける | 遅延は native だけ。WASM は `self.expression` を直接呼ぶ | 旗は native と WASM の両方で検査する |
+| 4 | 既存テストは `emits_explicit_tail_loop_and_checked_arithmetic` だけ | `tests/bounds_checks.rs` の `range_proofs_add_no_llvm_facts` が、範囲ループの IR に ` nsw `・` nuw ` がないことを要求する。`tests/tail_recursion.rs` は tail の `n - 1` に旗がないことを要求する（こちらは変わらず成り立つ） | 前者は意図した変更として書き換える（`llvm.assume`・`!range` の不在は維持し、旗は増分の行と証明済みの演算だけ許す） |
+| 5 | 文書は `docs/architecture.md` の整数 LLVM の段落 | 「付与しない」旨の記述が 3 か所（narrow ループ、F12、LLVM の段落）。`_tsuzuri/language-reference/languages/strategy.md` の実装状態の表にも行が要る | すべて実際の挙動に合わせて直す |
+| 6 | R5 は `array_loop_control` | 同じ形が `list_loop_control` と `llvm_compare.rs` の構造比較にもある（`icmp ult`＋`add 1`） | 同じ証明で `nuw` を付ける |
+| 7 | 計測対象は control 9 種と cpp 4 種 | 13 種すべてに Phase 1 の旗が付くが、`-O3` の asm は同一になる見込み（「事前の証拠」）。ticket のままの Phase 2 で旗が付く演算はない | 時間の計測は asm が変わった種目だけにする。13 種は drift の対照 |
+| 8 | 一時ファイルは `/tmp/tz-PR02/...` | 共有機・作業規則のため | `target/perf/PR02/`（git 管理外）を使う |
+| 9 | PR01 は `!range` を PR02 に送った（対象外の項） | PR02 の D4 は `!range` を出さない | D4 を維持する（`!range`・`llvm.assume` は新しく出さない） |
+| 10 | 切り替えの仕組みはない | `EmitOptions` の構造体リテラルが 32 か所（14 ファイル）ある。コードの出力を変える環境変数は `cache::KEY_ENVIRONMENT` に入れる必要がある | field は足さない（D11・D12） |
+
+### 追加・変更した決定
+
+- D2（拡張）: R1〜R5 に、`list_loop_control` と `llvm_compare.rs` の同形の増分（`nuw`）を足す。一般経路・`trunc`・`llvm.assume` は触らない。
+- D7（拡張）: `interval` の再帰の深さ 32 に、1 関数あたりの問い合わせの総ステップ数の上限を足す。超過は診断を出さず事実なし（GUIDE D-47 の「D-19 の例外」: 最適化の解析は結果が常に正しいので、コンパイルを止めない）。
+- D8（変更）: 時間の計測は、旗で asm が変わった種目だけ。13 種は drift の対照。PX02 の `apps` は計測の対象に加える。
+- D10（新）: `$intrinsic` の `Add`・`Subtract`・`Multiply` の呼び出しを、emitter で `binary()` の経路へ inline する（整数と `f32`／`f64` の値渡しだけ。文字列と所有値は対象外）。既定で有効。評価順序・coverage・debug 情報・trap の位置を変えない。
+- D11（新）: 旗の出力は `RangeFlags::{Off, Proven, Audit}`。`EmitOptions` に field は足さない。環境変数 `TSUZURI_RANGE_FLAGS=off|proven|audit`（CLI と E2E 用）を `cache::KEY_ENVIRONMENT` に入れる。不正な値は `E2000`。既定は Gate A（生成コードの証拠）で決める。
+- D12（新）: 監査モード（`Audit`）は、旗を付ける代わりに `with.overflow` と trap（`TrapKind::Overflow`）を出す。誤った旗を poison ではなく確実な trap にし、既存の全 suite を監査モードで通す。
+- D13（新）: 旗付きの関数は PR01 の戻り値の `noundef` を失う（`defined_result` が `nsw`・`nuw` を poison の源として扱う）。受け入れ、`tests/param_facts.rs` で固定する。
+- D14（新）: 区間を使った F12 の添字の検査の除去は PR02 の範囲外（`values[i*4+3]`・`0 .. len-2` の `values[i]` は -O0 で見える効果があるので、別のチケットとして提案する）。
+
+### 実装の順序と既定の決め方
+
+1. WP0 チケットの改訂（この節）。2. WP1 端点の E2E（現行のコンパイラで通る）と「旗なし」の固定。3. WP4（D10）。4. WP2＋WP3 R1〜R5 の旗・`RangeFlags`・監査モード。
+5. WP5 区間の純粋関数（総当たりの単体テスト）。6. WP6 `interval()` と範囲の scope（IR は変えない）。7. WP7 `integer_flags`（`binary`・tail 引数）。8. WP8 差分 fuzz。9. WP9 計測・文書。
+
+- 旗の既定は **Gate A**: `Off` と `Proven` の `-O3` の asm（native arm64・x86_64・wasm32）を、同じ corpus で比べる。測れる差がなければ既定は `Off` のままにし、opt-in として出荷する。
+  D10 は旗と独立なので既定で有効。
+- 区間の解析は、emitter が出す直前の型付き IR（各関数の最終形）に対して走らせる。局所 id が重複する関数、形が分からない式は「事実なし」（旗なし）とする。
+  union・record の配置（PM01）や Maybe／Result・closure の lowering（PR03）には依存しない。
+
+### 事前の証拠（コードを書く前、2026-10-16、Apple M1 Max、`target/release/tsuzuri`＝`6d15b437`）
+
+R1〜R5 より広い集合（次の block の phi に入るループの増分すべて。降順は `nsw` だけ、昇順は `nuw nsw`）へ IR の文字列で旗を足し、`clang -O3 -S` の asm を無改変の IR と比べた（旗が証明できる集合より多いので、asm が同じなら実装も同じ）。
+
+| corpus | arm64 `-O3` の asm の差 | 備考 |
+| --- | --- | --- |
+| control・computations・bounds_shapes・matrix・simd・cpp・utf・dispatch・apps の利用者の関数 | 0 行 | `-O1`・`-O2`・wasm32 `-O3` でも 0 行（apps の std を含めた `-O2` だけ 6 行） |
+| apps の std（`String.join`・`split`・`append_range`） | 277 行 | レジスタ名の置換と 1 命令（`cmp; b.lt`→`cbz`） |
+| matrix の std（`Matrix.*`、x86_64 `-O3`） | 338 行 | レジスタ割当・spill の位置。最適化後 IR は 4 行減。x86 の実機はなく速度は不明 |
+
+- 無改変の IR の旗は 0 個、`clang -O3` の後の IR には旗付きの加算が 45 個（`add nuw nsw i64 %x, 1` が 16 個、`add nsw i64 %x, -1` が 10 個）。LLVM の IndVarSimplify が同じ旗を自力で付ける。
+- Phase 2 の候補 11 kernels（`i*2+1`・`values[i+1]`・`i*4+3`・`values.length/4`・窓の和など）に、証明できる旗だけを手で付けても asm は実質同一（呼び出し元の事実を消す `noinline` でも同一）。変わったのは i32 の `values[(i*2+1) as i64]` だけで、`i*2` が i32 を超えうるため旗は証明できない。
+- 旗の誤りの実証: 降順の増分 `add i64 %c, -1` に `nuw` を付けると、`-O3` の `for_mix(1000, 7)` が `9655105086575823893` から `9098160460397412210` に変わる（1e8 回のループが 1 回に潰れる）。
 
 ## 目的
 
