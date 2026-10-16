@@ -172,6 +172,12 @@ Toolchain:
                          cannot run, for run and test, such as 'qemu-aarch64 -L /usr/aarch64-linux-gnu'.
                          It is split at white space; nothing is downloaded or installed.
 
+Code generation:
+  TSUZURI_RANGE_FLAGS    off, proven, or audit (default: off). proven writes nsw/nuw on integer
+                         + - * and on loop counters that a range proof shows cannot overflow;
+                         audit keeps the wrapping instruction and traps where a proof is wrong,
+                         for tests. Any other value is an error.
+
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit
 results do not print anything. 'def main :: unit -> i32' and
