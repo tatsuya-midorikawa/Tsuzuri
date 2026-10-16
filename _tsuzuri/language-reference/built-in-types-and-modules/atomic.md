@@ -93,7 +93,7 @@ max=70
 - セルは、値 1 つ分のバッファを持つレコードです。レコードをムーブしてもセルは動かないので、借用はムーブの後も有効です。ヒープの確保は `Atomic.create` で 1 回です。
 - ネイティブでは `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`（すべて `seq_cst`）に下がり、ランタイムの関数は呼びません。たとえば `fetch_add` は、AArch64 では LSE の `ldaddal` 1 命令、x86-64 では `lock` 付きの 1 命令（更新前の値を使うと `lock xadd`、使わないと `lock add`）です。命令の選択は LLVM のターゲット設定に従います。
 - `--wasm-feature threads` では WASM の atomic 命令（`i64.atomic.rmw.add` など）です。既定の wasm32 は 1 スレッドなので、LLVM が通常の命令へ下げます。どちらも import は増えません。
-- `bool` は 1 バイトです。セルの確保は 16 バイト境界で、8 バイトの atomic 命令に必要な整列を満たします（`--allocator host` と `counting` も同じ保証です）。
+- `bool` は 1 バイトです。セルの確保は 16 バイト境界で、8 バイトの atomic 命令に必要な整列を満たします（`--allocator host`・`counting`・`small` も同じ保証です）。
 - 同じセルを多数のスレッドが更新すると、キャッシュラインの奪い合いで遅くなります。更新の回数を減らせるなら、タスクごとに集計してから 1 回足す方が速いのが一般的です。性能の優位は主張しません。
 
 ## API リファレンス

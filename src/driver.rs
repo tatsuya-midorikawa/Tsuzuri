@@ -857,6 +857,18 @@ impl BuildOptions {
                 "--trap-mode return keeps its own tracked allocator; remove --allocator",
             ));
         }
+        if self.allocator == llvm::Allocator::Small && self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Small && self.emit.is_kernel() {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires executable, object, shared library, LLVM IR, or header output",
+            ));
+        }
         if self.freestanding {
             if self.target != Target::Native {
                 return Err(driver_error(
@@ -1299,6 +1311,28 @@ fn final_link_args_for(
         }
     }
     Ok(arguments)
+}
+
+/// `TSUZURI_LINKER=lld` with `-Os` or `-Oz` on a Mach-O target: the final link shares the compile's Clang run, and
+/// Apple's Clang hands the size level to `ld64.lld`, which rejects it, so the combination fails before any work.
+fn check_linker_with_optimization(
+    platform: Platform,
+    linker: Option<&OsStr>,
+    optimization: OptLevel,
+) -> Result<(), Diagnostic> {
+    if platform.mach_o()
+        && matches!(optimization, OptLevel::Os | OptLevel::Oz)
+        && linker.is_some_and(|value| value == "lld")
+    {
+        return Err(driver_error(
+            "E2000",
+            format!(
+                "{LINKER_VARIABLE}=lld cannot be combined with {} for a Mach-O target (Clang passes the size level to ld64.lld, which rejects it); use -O2 or unset {LINKER_VARIABLE}",
+                optimization.flag()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// What a failing final link tells the user: `hint`, and that LLD is needed when `TSUZURI_LINKER=lld` asked for it.
@@ -2981,6 +3015,11 @@ fn build_complete(
     // A bad TSUZURI_LINKER fails before any work, not when the link starts.
     if options.target == Target::Native && matches!(options.emit, Emit::Executable | Emit::Shared) {
         final_link_args(platform)?;
+        check_linker_with_optimization(
+            platform,
+            env::var_os(LINKER_VARIABLE).as_deref(),
+            options.optimization,
+        )?;
     }
     if !links.is_empty() {
         if options.target != Target::Native
@@ -6256,6 +6295,36 @@ mod tests {
             sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.message),
             Ok(vec![])
         );
+    }
+
+    #[test]
+    fn lld_is_refused_with_size_levels_for_mach_o_targets_only() {
+        let lld = Some(OsStr::new("lld"));
+        for platform in Triple::ALL
+            .into_iter()
+            .map(|triple| Platform::new(Some(triple)))
+            .chain([Platform::HOST])
+        {
+            for level in [OptLevel::Os, OptLevel::Oz] {
+                let result = check_linker_with_optimization(platform, lld, level);
+                if platform.mach_o() {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, "E2000");
+                    assert!(error.message.contains(level.flag()));
+                } else {
+                    assert!(result.is_ok());
+                }
+                // Unset, `default` and the other levels are never refused.
+                assert!(check_linker_with_optimization(platform, None, level).is_ok());
+                assert!(
+                    check_linker_with_optimization(platform, Some(OsStr::new("default")), level)
+                        .is_ok()
+                );
+            }
+            for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+                assert!(check_linker_with_optimization(platform, lld, level).is_ok());
+            }
+        }
     }
 
     #[test]

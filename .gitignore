@@ -40,6 +40,8 @@ target
 !src/runtime/heap-native.ll
 !src/runtime/heap-host.ll
 !src/runtime/heap-counting.ll
+!src/runtime/heap-small.ll
+!src/runtime/heap-small-native.ll
 !src/runtime/heap-wasm.ll
 !src/runtime/heap-wasm64.ll
 !src/runtime/heap-wasm-threads.ll

@@ -203,7 +203,10 @@ static void pipeline_group(unsigned seed) {
         /* A host alone has the whole pool, and every stage has a thread of its own when there are no more
            stages than threads, so no stage is ever stacked on a waiting thread. The verdict was given
            here before PR06: a worker of the group before was still counted running when the producer
-           blocked, so the pool looked full and the consumer was stacked on the producer. */
+           blocked, so the pool looked full and the consumer was stacked on the producer. This catches
+           that only by chance (1 to 11 groups in 60000 at 2 or 3 CPUs); tests/task_runtime.c checks the two
+           causes without chance: the first item is claimed before the group is published (I1), and the
+           worker that finishes a group is counted free in the critical section that releases its items (D14). */
         assert(hosts != 1 || processors < 2 || (long)length > processors);
         atomic_fetch_add(&verdict_groups, 1);
     }

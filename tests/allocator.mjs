@@ -48,7 +48,7 @@ fn grow count =
   const hostOutput = "--allocator host requires object, LLVM IR, header, or WebAssembly output";
   rejects(["build", abi, "--allocator", "host", "-o", join(work, "x")], hostOutput);
   rejects(["build", abi, "--emit", "wgsl", "--allocator", "host", "-o", join(work, "x.wgsl")], hostOutput);
-  rejects(["build", abi, "--emit", "object", "--allocator", "pool", "-o", join(work, "x.o")], "allocator must be 'system', 'host', or 'counting'");
+  rejects(["build", abi, "--emit", "object", "--allocator", "pool", "-o", join(work, "x.o")], "allocator must be 'system', 'host', 'counting', or 'small'");
   rejects(["build", abi, "--target", "wasm32", "--wasm-feature", "threads", "--allocator", "host", "-o", join(work, "x.wasm")], "--allocator host cannot be combined with --wasm-feature threads");
   rejects(["run", abi, "--allocator", "system"], "--allocator is only valid with build");
   rejects(["build", abi, "--allocator", "counting", "-o", join(work, "x")], "--allocator counting requires object, LLVM IR, header, or WebAssembly output");

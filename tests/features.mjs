@@ -25,8 +25,11 @@ const wasmOptions = process.env.TSUZURI_TEST_WASM_SIMD === "1" ? ["--wasm-featur
 // wasm64 needs Node.js 24 or newer.
 const wasmTarget = process.env.TSUZURI_TEST_WASM_TARGET ?? "wasm32";
 // F13: `host` builds the native IR and header with --allocator host and tracks tsuzuri_host_*.
+// PM05: `small` builds it with --allocator small; the C library's calls are still tracked, and after each call every block
+// that the size classes cut from a region is back in a cache or a central stack and nothing else is live.
 const hostAllocator = process.env.TSUZURI_TEST_ALLOCATOR === "host";
-const allocatorOptions = hostAllocator ? ["--allocator", "host"] : [];
+const smallAllocator = process.env.TSUZURI_TEST_ALLOCATOR === "small";
+const allocatorOptions = hostAllocator ? ["--allocator", "host"] : smallAllocator ? ["--allocator", "small"] : [];
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
@@ -2385,6 +2388,14 @@ function run(name, suite) {
 #include <stdlib.h>
 #include "tz-${name}.h"
 static _Atomic uint64_t live;
+${smallAllocator && sourceIr.includes("@tz_small_stats(") ? `void tz_small_stats(uint64_t *out);
+/* The size classes' own malloc blocks (regions, leaves, caches) stay live; out[4] is their size. */
+static int balanced(void) {
+    uint64_t stats[5];
+    tz_small_stats(stats);
+    return stats[0] == stats[1] && live == stats[4];
+}
+#define NO_LEAK balanced()` : "#define NO_LEAK (live == 0)"}
 void *tracked_alloc(uint64_t size) {
     uint64_t *p = malloc((size_t)size + 16);
     assert(p);
@@ -2431,12 +2442,12 @@ int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
             ${traps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
-            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && live == 0 ? 0 : 1;`).join("\n")}
+            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && NO_LEAK ? 0 : 1;`).join("\n")}
         }
         return 0;
     }
     ${[...suite.cases, ...suite.nativeCases ?? []].map(([exported, args, expected]) =>
-    `assert(tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)}); assert(live == 0);`).join("\n    ")}
+    `assert(tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)}); assert(NO_LEAK);`).join("\n    ")}
     return 0;
 }
 `);
@@ -2596,7 +2607,7 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
 `);
     for (const optimization of [0, 3]) {
       const object = join(directory, `realloc-${optimization}.o`), output = join(directory, `realloc-${optimization}.wasm`);
-      execute(clang, ["--target=wasm32", `-O${optimization}`, "-Wno-override-module", "-c", input, "-o", object]);
+      execute(clang, ["--target=wasm32", "-mbulk-memory", `-O${optimization}`, "-Wno-override-module", "-c", input, "-o", object]);
       execute(process.env.TSUZURI_WASM_LD ?? "wasm-ld", [object, "--no-entry", "--export=allocate", "--export=resize", "--export=release", "--export-memory", "--max-memory=16777216", "-o", output]);
       const module = new WebAssembly.Module(readFileSync(output));
       assert.deepEqual(WebAssembly.Module.imports(module), []);
@@ -2643,6 +2654,12 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
   console.log("WASM realloc: split, absorb, fallback, null, zero and coalescing passed at O0/O3");
+}
+
+// The heap alone, against the design's own arithmetic: tests/wasm_heap.mjs (wasm64 too when the suites run on it).
+async function wasmHeapChecks() {
+  const { memory64Supported, runHeapTests } = await import("./wasm_heap.mjs");
+  runHeapTests({ targets: wasmTarget === "wasm64" && memory64Supported() ? ["wasm32", "wasm64"] : ["wasm32"] });
 }
 
 // Static data on WASM threads (D11 Phase 2): the workers read the one read-only table in the shared
@@ -2731,7 +2748,7 @@ for (const [name, suite] of Object.entries(suites)) {
   if (name === "rc") await rcWasmThreadsChecks();
   if (name === "const_statics") await constStaticsWasmThreadsChecks();
   if (name === "matrix") await matrixWasmThreadsChecks();
-  if (name === "vec") wasmReallocationChecks();
+  if (name === "vec") { wasmReallocationChecks(); await wasmHeapChecks(); }
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();
   console.log(`${name}: native/WASM at O0/O3 passed`);

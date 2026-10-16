@@ -24,7 +24,33 @@ static const char *failure = "";
 static pthread_mutex_t observation = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t observed = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t *worker_condition;
+static pthread_cond_t *done_condition;
 static pthread_mutex_t *pool_mutex;
+
+/* The thread of main, the only submitter that the checks below watch. */
+static _Thread_local int on_main;
+/* I1: the first signal of the next group (sent by main) is held until the workers have run every item but the first. */
+static atomic_int first_child_probe, others_done, first_child_on_main;
+/* D14: the worker that finishes a group releases its items, wakes the submitter and counts itself free in one critical
+   section. While the check is armed, (1) a worker that takes the pool mutex while it is counted running still has
+   items to release (check_leaving), so it has not released them before taking the mutex; (2) a thread that lets go of
+   the mutex or takes it again right after it woke the submitter (a broadcast on work_done) is held back until the test
+   has looked at the pool, which a submitter that has returned would find still counting the thread as running; and
+   (3) whenever a thread lets go of the mutex, a group that is claimed to the end and not released yet has a thread that
+   the pool counts as running (check_counted). A pool that does none of these things is not touched by the hold. */
+static atomic_int hold_armed, hold_released;
+static _Thread_local int woke_submitter;
+static void probe_published_group(void);
+static void wait_for_workers(void);
+static void check_counted(void);
+static void check_leaving(void);
+
+static void hold_back(void) {
+    if (!atomic_load(&hold_armed)) return;
+    assert(pthread_mutex_lock(&observation) == 0);
+    while (!atomic_load(&hold_released)) assert(pthread_cond_wait(&observed, &observation) == 0);
+    assert(pthread_mutex_unlock(&observation) == 0);
+}
 
 static long test_sysconf(int name) {
     assert(name == _SC_NPROCESSORS_ONLN);
@@ -51,15 +77,29 @@ static int test_join(pthread_t thread, void **result) {
 }
 
 static int test_lock(pthread_mutex_t *mutex) {
+    if (woke_submitter) {
+        woke_submitter = 0;
+        hold_back();
+    }
     atomic_fetch_add(&locks, 1);
-    return strcmp(failure, "mutex_lock") == 0 ? EINVAL : pthread_mutex_lock(mutex);
+    if (strcmp(failure, "mutex_lock") == 0) return EINVAL;
+    int error = pthread_mutex_lock(mutex);
+    if (error == 0 && !on_main && atomic_load(&hold_armed)) check_leaving();
+    return error;
 }
 
 static int test_unlock(pthread_mutex_t *mutex) {
-    return strcmp(failure, "mutex_unlock") == 0 ? EINVAL : pthread_mutex_unlock(mutex);
+    if (atomic_load(&hold_armed)) check_counted();
+    int held = woke_submitter;
+    woke_submitter = 0;
+    int error = strcmp(failure, "mutex_unlock") == 0 ? EINVAL : pthread_mutex_unlock(mutex);
+    if (held) hold_back();
+    return error;
 }
 
 static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
+    if (atomic_load(&hold_armed)) check_counted();
+    woke_submitter = 0;
     if (strcmp(failure, "cond_wait") == 0) return EINVAL;
     if (condition == worker_condition) {
         assert(pthread_mutex_lock(&observation) == 0);
@@ -80,6 +120,7 @@ static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
 
 static int test_broadcast(pthread_cond_t *condition) {
     atomic_fetch_add(&broadcasts, 1);
+    if (condition == done_condition) woke_submitter = 1;
     return strcmp(failure, "cond_broadcast") == 0 ? EINVAL : pthread_cond_broadcast(condition);
 }
 
@@ -92,11 +133,17 @@ static int test_signal(pthread_cond_t *condition) {
     // With the pool mutex held a counted sleeper really waits, so a signal that is passed on never misses it, and the
     // counts change only under this mutex (a worker updates them after it has taken the mutex back).
     assert(pthread_mutex_lock(pool_mutex) == 0);
+    // The submitter's first signal of a group that is being watched (I1): the group is published and nothing has woken
+    // yet, so the first item has to be the submitter's already; then the submitter waits here until the workers have
+    // run everything else, and has to be the one that runs the first item whatever the workers have done meanwhile.
+    int probe = on_main && atomic_exchange(&first_child_probe, 0);
+    if (probe) probe_published_group();
     if (atomic_load(&pending) < atomic_load(&asleep)) {
         atomic_fetch_add(&pending, 1);
         assert(pthread_cond_signal(condition) == 0);
     }
     assert(pthread_mutex_unlock(pool_mutex) == 0);
+    if (probe) wait_for_workers();
     return 0;
 }
 
@@ -188,6 +235,54 @@ static uint32_t result_visit(void *context, uint64_t index) {
     return 0;
 }
 
+/* With the pool mutex held, from the first signal of a group: the group is published and no worker has been woken, so
+   the first item must be claimed already, as the submitter's. A pool that publishes the group first and lets the
+   submitter claim afterwards would let the workers take every item, the first too. */
+static void probe_published_group(void) {
+    assert(tz_task_pool.tail != NULL && atomic_load(&tz_task_pool.tail->next) >= 1);
+}
+
+static void wait_for_workers(void) {
+    assert(pthread_mutex_lock(&observation) == 0);
+    while (atomic_load(&others_done) != ITEMS - 1) assert(pthread_cond_wait(&observed, &observation) == 0);
+    assert(pthread_mutex_unlock(&observation) == 0);
+}
+
+/* With the pool mutex held, while the check of D14 runs (one group, nothing that waits on a channel, so no thread is
+   uncounted): when every item of a group is claimed and some are not released, the thread that holds them is running
+   or about to release them, and the pool counts it as running until it has. A pool that counted the worker free
+   first, in a critical section of its own, would show nobody running while the last item is still unreleased. */
+static void check_counted(void) {
+    for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
+        if (atomic_load(&group->next) >= group->length && atomic_load(&group->remaining) != 0) assert(tz_task_pool.busy != 0);
+    }
+}
+
+/* With the pool mutex just taken by a worker, in the check of D14: a worker that is counted running has items that it
+   has not released, so no group is finished. A worker that released its items before it took the mutex to count
+   itself free would find the group finished here. */
+static void check_leaving(void) {
+    if (!tz_task_counted) return;
+    for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
+        assert(atomic_load(&group->remaining) != 0);
+    }
+}
+
+/* The first item records on which thread it ran, and every other item counts itself; the one that ends last tells the
+   submitter, which waits in its first signal (test_signal), that the workers have run all the rest. */
+static void first_child(void *context, uint64_t index) {
+    visit(context, index);
+    if (index == 0) {
+        atomic_store(&first_child_on_main, on_main);
+        return;
+    }
+    if (atomic_fetch_add(&others_done, 1) + 1 == ITEMS - 1) {
+        assert(pthread_mutex_lock(&observation) == 0);
+        assert(pthread_cond_broadcast(&observed) == 0);
+        assert(pthread_mutex_unlock(&observation) == 0);
+    }
+}
+
 /* One group of ITEMS indices on a pool that is asleep. The mutex is taken a few times, not once for each index
    (259 times for `run` and 515 for `results` before PR06): twice by the submitter, once by each worker that took
    part. The workers are woken by signals that pass along the group: some at the submit, up to
@@ -256,7 +351,9 @@ static uint32_t result_stop(void *context, uint64_t index) {
 }
 
 int main(int argc, char **argv) {
+    on_main = 1;
     worker_condition = &tz_task_pool.work_available;
+    done_condition = &tz_task_pool.work_done;
     pool_mutex = &tz_task_pool.mutex;
     if (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9') && argv[1][0] != '-') {
         failure = argv[1];
@@ -304,12 +401,41 @@ int main(int argc, char **argv) {
     check_hits(1);
 
     if (required > 1) {
+        // I1: the thread that submits a group starts its first item, even when it is held up for as long as the
+        // workers need to take every other one. The first signal of the group waits (test_signal) until they have.
+        quiesce();
+        reset_hits();
+        atomic_store(&others_done, 0);
+        atomic_store(&first_child_on_main, 0);
+        atomic_store(&first_child_probe, 1);
+        tsuzuri_task_parallel(first_child, hits, ITEMS);
+        assert(atomic_load(&first_child_probe) == 0);
+        assert(atomic_load(&first_child_on_main) == 1);
+        check_hits(1);
+    }
+
+    if (required > 1) {
+        // D14: the worker that finishes the group releases its items, wakes the submitter and counts itself free in one
+        // critical section. Armed, the hooks check that a worker has not released its items before it takes the mutex
+        // (check_leaving), hold back a worker that lets go of the mutex or takes it again right after it woke the
+        // submitter until the submitter has returned and the pool has been looked at (a submitter that returned meanwhile
+        // finds the worker still counted as running), and check at every release of the mutex (check_counted) that no
+        // worker was counted free while it still had an item to release.
         quiesce();
         unsigned signals_before = atomic_load(&signals), broadcasts_before = atomic_load(&broadcasts);
+        atomic_store(&hold_released, 0);
+        atomic_store(&hold_armed, 1);
         tsuzuri_task_parallel(last_worker, NULL, 2);
         assert(atomic_load(&signals) - signals_before == 1);
         assert(atomic_load(&broadcasts) - broadcasts_before == 1);
-        assert(tz_task_pool.groups == NULL && tz_task_pool.busy == 0);
+        tz_task_lock();
+        assert(tz_task_pool.groups == NULL && tz_task_pool.busy == 0 && tz_task_pool.idle == required - 1);
+        tz_task_unlock();
+        atomic_store(&hold_armed, 0);
+        assert(pthread_mutex_lock(&observation) == 0);
+        atomic_store(&hold_released, 1);
+        assert(pthread_cond_broadcast(&observed) == 0);
+        assert(pthread_mutex_unlock(&observation) == 0);
     }
 
     reset_hits();
