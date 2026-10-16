@@ -1,6 +1,46 @@
 use super::*;
 
-pub(super) type Cache = std::cell::RefCell<BTreeMap<Box<[Type]>, Result<bool, Diagnostic>>>;
+/// The memo of `TypeContext::recursive_checked` for one declaration, by the arguments of its
+/// instances. The result for an instance depends only on the instance and the declarations,
+/// never on which queries came first, so threads may share it (PB04). The lock is held only to
+/// read or insert an entry, never while a type is analyzed.
+#[derive(Default)]
+pub(super) struct Cache(std::sync::Mutex<Memo>);
+
+type Memo = BTreeMap<Box<[Type]>, Result<bool, Diagnostic>>;
+
+impl Cache {
+    fn entries(&self) -> std::sync::MutexGuard<'_, Memo> {
+        // A panic while the lock is held cannot leave an entry half written.
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, arguments: &[Type]) -> Option<Result<bool, Diagnostic>> {
+        self.entries().get(arguments).cloned()
+    }
+
+    fn insert(&self, arguments: Box<[Type]>, value: Result<bool, Diagnostic>) {
+        self.entries().insert(arguments, value);
+    }
+}
+
+impl Clone for Cache {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(self.entries().clone()))
+    }
+}
+
+/// Prints as the `RefCell` that this type replaced, so that the `Debug` dumps of a checked
+/// module stay comparable between revisions.
+impl std::fmt::Debug for Cache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefCell")
+            .field("value", &*self.entries())
+            .finish()
+    }
+}
 
 /// Whether `ty` is a generic record or union at its own parameters, the type that its
 /// declaration is checked as.
@@ -270,8 +310,8 @@ impl TypeContext<'_> {
             Type::Union(id, arguments) => (&self.unions[*id].recursive, arguments),
             _ => return Ok(false),
         };
-        if let Some(value) = cache.borrow().get(arguments) {
-            return value.clone().map_err(|mut error| {
+        if let Some(value) = cache.get(arguments) {
+            return value.map_err(|mut error| {
                 error.span = span;
                 error
             });
@@ -287,16 +327,10 @@ impl TypeContext<'_> {
                     }
                     match node {
                         Type::Record(id, arguments) => {
-                            self.records[id]
-                                .recursive
-                                .borrow_mut()
-                                .insert(arguments, Ok(recursive));
+                            self.records[id].recursive.insert(arguments, Ok(recursive));
                         }
                         Type::Union(id, arguments) => {
-                            self.unions[id]
-                                .recursive
-                                .borrow_mut()
-                                .insert(arguments, Ok(recursive));
+                            self.unions[id].recursive.insert(arguments, Ok(recursive));
                         }
                         _ => unreachable!(),
                     }
@@ -304,9 +338,7 @@ impl TypeContext<'_> {
                 Ok(result)
             }
             Err(error) => {
-                cache
-                    .borrow_mut()
-                    .insert(arguments.clone(), Err(error.clone()));
+                cache.insert(arguments.clone(), Err(error.clone()));
                 Err(error)
             }
         }
@@ -467,6 +499,194 @@ mod tests {
                 module.types().recursive(&Type::Union(id, Box::default())),
                 "{}",
                 union.name
+            );
+        }
+    }
+
+    #[test]
+    fn cache_prints_as_the_refcell_it_replaced_and_clones_its_entries() {
+        let cache = Cache::default();
+        let reference =
+            std::cell::RefCell::new(BTreeMap::<Box<[Type]>, Result<bool, Diagnostic>>::new());
+        assert_eq!(format!("{cache:?}"), format!("{reference:?}"));
+        let key: Box<[Type]> = vec![Type::Integer(64, true), Type::Bool].into();
+        let error = Diagnostic::new("E1010", "recursive", Span::new(1, 2));
+        cache.insert(key.clone(), Ok(true));
+        cache.insert(Box::default(), Err(error.clone()));
+        reference.borrow_mut().insert(key.clone(), Ok(true));
+        reference.borrow_mut().insert(Box::default(), Err(error));
+        assert_eq!(format!("{cache:?}"), format!("{reference:?}"));
+        assert_eq!(cache.get(&key), Some(Ok(true)));
+        assert_eq!(cache.get(&[Type::Bool]), None);
+        let copy = cache.clone();
+        copy.insert(vec![Type::Bool].into(), Ok(false));
+        assert_eq!(
+            cache.get(&[Type::Bool]),
+            None,
+            "a clone does not share entries"
+        );
+        assert_eq!(copy.get(&key), Some(Ok(true)));
+    }
+
+    const MEMO_SOURCE: &str = "record Plain { values: [[i64]], flag: bool }\n\
+        record Pair<'a, 'b> { left: 'a, right: 'b }\n\
+        union Tree = Empty | Branch of [Tree]\n\
+        union Chain<'a> = End | Link of 'a * Chain<'a>\n\
+        union A = Stop | ToB of B | ToC of C\n\
+        union B = ToA of A\n\
+        union C = BackB of B\n\
+        def plain :: Plain -> unit = \\_x -> ()\n\
+        def pair :: Pair<i64, Tree> -> unit = \\_x -> ()\n\
+        def chain :: Chain<i64> -> unit = \\_x -> ()\n\
+        def nested :: Chain<Chain<bool>> -> unit = \\_x -> ()\n\
+        def mixed :: Pair<Chain<i64>, A> -> unit = \\_x -> ()";
+
+    /// The same declarations with empty memos.
+    fn fresh(module: &CheckedModule) -> (Vec<CheckedRecord>, Vec<CheckedUnion>) {
+        let mut records = module.records.clone();
+        let mut unions = module.unions.clone();
+        records
+            .iter_mut()
+            .for_each(|record| record.recursive = Cache::default());
+        unions
+            .iter_mut()
+            .for_each(|union| union.recursive = Cache::default());
+        (records, unions)
+    }
+
+    fn shuffled(queries: &[Type], seed: u64) -> Vec<Type> {
+        let mut order = queries.to_vec();
+        let mut state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        for index in (1..order.len()).rev() {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            order.swap(index, (state >> 33) as usize % (index + 1));
+        }
+        order
+    }
+
+    #[test]
+    fn recursive_memo_does_not_depend_on_the_order_or_thread_of_queries() {
+        let module = crate::analyze(MEMO_SOURCE).unwrap();
+        let mut queries = BTreeSet::new();
+        for (id, record) in module.records.iter().enumerate() {
+            if record.origin == ModuleOrigin::User {
+                let own = record
+                    .parameters
+                    .iter()
+                    .cloned()
+                    .map(Type::Variable)
+                    .collect();
+                queries.insert(Type::Record(id, own));
+            }
+        }
+        for (id, union) in module.unions.iter().enumerate() {
+            if union.origin == ModuleOrigin::User {
+                let own = union
+                    .parameters
+                    .iter()
+                    .cloned()
+                    .map(Type::Variable)
+                    .collect();
+                queries.insert(Type::Union(id, own));
+            }
+        }
+        for function in module
+            .functions
+            .iter()
+            .filter(|function| function.origin.module == ModuleOrigin::User)
+        {
+            queries.insert(function.parameters[0].ty.clone());
+        }
+        let queries: Vec<_> = queries.into_iter().collect();
+        let memos = |records: &[CheckedRecord], unions: &[CheckedUnion]| {
+            let records: Vec<_> = records
+                .iter()
+                .map(|record| format!("{:?}", record.recursive))
+                .collect();
+            let unions: Vec<_> = unions
+                .iter()
+                .map(|union| format!("{:?}", union.recursive))
+                .collect();
+            (records, unions)
+        };
+        let run = |records: &[CheckedRecord], unions: &[CheckedUnion], order: &[Type]| {
+            let types = TypeContext { records, unions };
+            let mut answers: Vec<_> = order
+                .iter()
+                .map(|ty| (ty.clone(), types.recursive_checked(ty, Span::default())))
+                .collect();
+            answers.sort_by(|left, right| left.0.cmp(&right.0));
+            answers
+        };
+        let (records, unions) = fresh(&module);
+        let expected = run(&records, &unions, &queries);
+        let expected_memos = memos(&records, &unions);
+        // The recursion of each root, derived by hand from the declarations.
+        let flags: BTreeMap<_, _> = expected
+            .iter()
+            .map(|(ty, answer)| (ty.display(&module.types()), answer.clone().unwrap()))
+            .collect();
+        for (name, recursive) in [
+            ("Main.Plain", false),
+            ("Main.Pair<i64, Main.Tree>", false),
+            ("Main.Chain<i64>", true),
+            ("Main.Chain<Main.Chain<bool>>", true),
+            ("Main.Pair<Main.Chain<i64>, Main.A>", false),
+            ("Main.Tree", true),
+            ("Main.A", true),
+            ("Main.B", true),
+            ("Main.C", true),
+        ] {
+            assert_eq!(flags.get(name), Some(&recursive), "{name} in {flags:?}");
+        }
+        for seed in 1..=12 {
+            let (records, unions) = fresh(&module);
+            let order = shuffled(&queries, seed);
+            assert_eq!(run(&records, &unions, &order), expected, "order {seed}");
+            assert_eq!(
+                memos(&records, &unions),
+                expected_memos,
+                "memo after order {seed}"
+            );
+        }
+        for round in 0..4 {
+            let (records, unions) = fresh(&module);
+            let types = TypeContext {
+                records: &records,
+                unions: &unions,
+            };
+            let answers: Vec<_> = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..4)
+                    .map(|worker| {
+                        let order = shuffled(&queries, 100 * round + worker);
+                        scope.spawn(move || {
+                            let mut answers: Vec<_> = order
+                                .iter()
+                                .map(|ty| {
+                                    (ty.clone(), types.recursive_checked(ty, Span::default()))
+                                })
+                                .collect();
+                            answers.sort_by(|left, right| left.0.cmp(&right.0));
+                            answers
+                        })
+                    })
+                    .collect();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect()
+            });
+            for answer in answers {
+                assert_eq!(answer, expected, "thread round {round}");
+            }
+            assert_eq!(
+                memos(&records, &unions),
+                expected_memos,
+                "memo after thread round {round}"
             );
         }
     }

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Symbol(u32);
 
 #[derive(Default)]
 pub(super) struct Interner {
-    ids: HashMap<Rc<str>, Symbol>,
-    names: Vec<Rc<str>>,
+    ids: HashMap<Arc<str>, Symbol>,
+    names: Vec<Arc<str>>,
 }
 
 impl Interner {
@@ -16,8 +16,8 @@ impl Interner {
             return symbol;
         }
         let symbol = Symbol(u32::try_from(self.names.len()).expect("source limits bound symbols"));
-        let text: Rc<str> = Rc::from(text);
-        self.names.push(Rc::clone(&text));
+        let text: Arc<str> = Arc::from(text);
+        self.names.push(Arc::clone(&text));
         self.ids.insert(text, symbol);
         symbol
     }
@@ -42,7 +42,7 @@ mod tests {
         assert_eq!(names.lookup("helper"), Some(second));
         assert_eq!(names.lookup("absent"), None);
         assert_eq!(names.names.len(), 2);
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             &names.names[0],
             names.ids.get_key_value("Main").unwrap().0
         ));

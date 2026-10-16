@@ -159,6 +159,11 @@ Build options:
   -h, --help             Show this help
   --version              Show the compiler version
 
+Threads:
+  TSUZURI_THREADS        Threads that the compiler itself uses (1-32; default: the available
+                         cores, at most 8). 1 runs the analysis on one thread. The output does
+                         not depend on it, and it does not affect the programs that are built.
+
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
@@ -890,6 +895,14 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
                 "{option} must be a byte count or a number followed by KiB, MiB, or GiB, such as {example}"
             )
         })
+}
+
+/// An invalid `TSUZURI_THREADS` is a command-line error, reported before the command reads a
+/// source (exit code 2, like the other invalid settings).
+fn invalid_thread_setting(json: bool) -> Option<ExitCode> {
+    let error = tsuzuri::validate_thread_setting().err()?;
+    print_diagnostic(&error, Path::new("<command line>"), "", json);
+    Some(ExitCode::from(2))
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
@@ -2058,6 +2071,9 @@ fn main() -> ExitCode {
         return bindgen_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "repl") {
+        if let Some(code) = invalid_thread_setting(false) {
+            return code;
+        }
         return repl_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
@@ -2073,6 +2089,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if arguments.action != Action::Fmt
+        && let Some(code) = invalid_thread_setting(json)
+    {
+        return code;
+    }
     if arguments.action == Action::Lsp {
         return ExitCode::from(tsuzuri::lsp::serve(
             std::io::stdin(),

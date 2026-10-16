@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
@@ -5875,13 +5877,19 @@ pub fn check_modules(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, Diagn
     check_modules_all(modules).map_err(crate::first_error)
 }
 
+/// The functions that one worker takes before a stage of `check_modules_collect` uses another
+/// thread, and how many a worker takes at a time.
+const FUNCTIONS_PER_WORKER: usize = 64;
+const FUNCTION_CHUNK: usize = 8;
+
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_indexed_all(modules, None)
+    check_modules_indexed_all(modules, None, Parallelism::library())
 }
 
 pub(crate) fn check_modules_indexed_all(
     modules: &[ModuleInput<'_>],
     semantic: Option<&mut semantic::SemanticIndex>,
+    parallelism: Parallelism,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -5889,6 +5897,7 @@ pub(crate) fn check_modules_indexed_all(
         &mut diagnostics,
         warnings::WarningOptions::default(),
         semantic,
+        parallelism,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -5903,6 +5912,7 @@ fn check_modules_collect(
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
     semantic: Option<&mut semantic::SemanticIndex>,
+    parallelism: Parallelism,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -7141,97 +7151,116 @@ fn check_modules_collect(
     let mut recovered_functions = Vec::new();
     let mut pending = Vec::new();
     let mut warnings = Vec::new();
-    for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
-        if diagnostics.is_full() {
-            break;
-        }
-        let scheme = &signatures[id];
-        if scheme.is_poisoned() {
-            continue;
-        }
-        let signature = scheme.signature.clone();
-        let mut checker = Checker::new(module, &names, types, &signatures, &classes);
-        checker.indexing = indexing;
-        if let Some(active) = active_results.get(&id) {
-            checker.use_active_result(&signature.result, active);
-        }
-        let checked = (|| {
-            let contracts = regions::contract(function, module, &names, types)?;
-            checker.type_parameters = scheme.variables.clone();
-            checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
-            checker.members = scheme.members.clone();
-            let mut parameters = Vec::new();
-            for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-                parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+    // The bodies of different functions are checked in parallel: each reads the shared tables and
+    // changes only its own declaration (`computation::expand`). The loop that collects the results
+    // runs in declaration order, stops once `diagnostics` is full, and a stage on one thread does
+    // not even check the later bodies, so the outcome does not depend on the number of threads.
+    let workers = parallelism.workers(function_declarations.len(), FUNCTIONS_PER_WORKER);
+    ordered_for_each_owned(
+        function_declarations.iter_mut(),
+        workers,
+        FUNCTION_CHUNK,
+        None,
+        |id, (module, function)| {
+            let scheme = &signatures[id];
+            if scheme.is_poisoned() {
+                return None;
             }
-            computation::expand(&mut function.body, &names, module)?;
-            checker.recovering = true;
-            let body = if let Some(import) = external_functions.get(&id) {
-                let mut import = import.clone();
-                import.callbacks = signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)));
-                TypedExpr {
-                    kind: TypedExprKind::HostCall(
-                        Box::new(import),
-                        parameters
-                            .iter()
-                            .map(|local| TypedExpr {
-                                kind: TypedExprKind::Local(local.id),
-                                ty: local.ty.clone(),
-                                span: local.span,
-                            })
-                            .collect(),
-                    ),
-                    ty: signature.result.clone(),
-                    span: function.name.span,
+            let signature = scheme.signature.clone();
+            let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+            checker.indexing = indexing;
+            if let Some(active) = active_results.get(&id) {
+                checker.use_active_result(&signature.result, active);
+            }
+            let checked = (|| {
+                let contracts = regions::contract(function, module, &names, types)?;
+                checker.type_parameters = scheme.variables.clone();
+                checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
+                checker.members = scheme.members.clone();
+                let mut parameters = Vec::new();
+                for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
+                    parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
                 }
-            } else {
-                checker.expression(&function.body, Some(&signature.result))?
-            };
-            Ok(CheckedFunction {
-                module: module.clone(),
-                region_sources: contracts.result,
-                callback_contracts: contracts.callbacks,
-                region_slots: contracts.slots,
-                origin: FunctionOrigin {
-                    provenance: function.name.provenance,
-                    test: test_functions.get(&id).copied(),
-                    bench: bench_functions.get(&id).copied(),
-                    cpu: cpu_levels.get(&id).copied().unwrap_or(0),
-                    ..FunctionOrigin::source(names.origin(module))
-                },
-                name: function.name.text.clone(),
-                visibility: function.visibility,
-                exported: function.exported,
-                parameters,
-                signature,
-                body,
-                span: function.name.span,
-                type_parameters: scheme.variables.clone(),
-                constraints: scheme.constraints.clone(),
-                members: Vec::new(),
-                capture_count: 0,
-                is_task: false,
-                owned_captures: false,
-            })
-        })();
-        diagnostics.extend(
-            std::mem::take(&mut checker.recovered)
+                computation::expand(&mut function.body, &names, module)?;
+                checker.recovering = true;
+                let body = if let Some(import) = external_functions.get(&id) {
+                    let mut import = import.clone();
+                    import.callbacks = signature
+                        .parameters
+                        .iter()
+                        .any(|ty| matches!(ty, Type::Function(..)));
+                    TypedExpr {
+                        kind: TypedExprKind::HostCall(
+                            Box::new(import),
+                            parameters
+                                .iter()
+                                .map(|local| TypedExpr {
+                                    kind: TypedExprKind::Local(local.id),
+                                    ty: local.ty.clone(),
+                                    span: local.span,
+                                })
+                                .collect(),
+                        ),
+                        ty: signature.result.clone(),
+                        span: function.name.span,
+                    }
+                } else {
+                    checker.expression(&function.body, Some(&signature.result))?
+                };
+                Ok(CheckedFunction {
+                    module: module.clone(),
+                    region_sources: contracts.result,
+                    callback_contracts: contracts.callbacks,
+                    region_slots: contracts.slots,
+                    origin: FunctionOrigin {
+                        provenance: function.name.provenance,
+                        test: test_functions.get(&id).copied(),
+                        bench: bench_functions.get(&id).copied(),
+                        cpu: cpu_levels.get(&id).copied().unwrap_or(0),
+                        ..FunctionOrigin::source(names.origin(module))
+                    },
+                    name: function.name.text.clone(),
+                    visibility: function.visibility,
+                    exported: function.exported,
+                    parameters,
+                    signature,
+                    body,
+                    span: function.name.span,
+                    type_parameters: scheme.variables.clone(),
+                    constraints: scheme.constraints.clone(),
+                    members: Vec::new(),
+                    capture_count: 0,
+                    is_task: false,
+                    owned_captures: false,
+                })
+            })();
+            let recovered: Vec<_> = std::mem::take(&mut checker.recovered)
                 .into_iter()
-                .map(|error| classes.derived_error(id, error)),
-        );
-        match checked {
-            Ok(function) if !checker.poisoned => {
-                functions.push(function);
-                ids.push(id);
-                pending.push(checker);
+                .map(|error| classes.derived_error(id, error))
+                .collect();
+            let checked = checked.map_err(|error| classes.derived_error(id, error));
+            Some((recovered, checked, checker))
+        },
+        |id, outcome| {
+            if diagnostics.is_full() {
+                return ControlFlow::Break(());
             }
-            Ok(function) => recovered_functions.push((id, function, checker)),
-            Err(error) => diagnostics.push(classes.derived_error(id, error)),
-        }
-    }
+            let Some((recovered, checked, checker)) = outcome.get() else {
+                return ControlFlow::Continue(());
+            };
+            diagnostics.extend(recovered);
+            match checked {
+                Ok(function) if !checker.poisoned => {
+                    functions.push(function);
+                    ids.push(id);
+                    pending.push(checker);
+                }
+                Ok(function) => recovered_functions.push((id, function, checker)),
+                Err(error) => diagnostics.push(error),
+            }
+            ControlFlow::Continue(())
+        },
+    );
     let mut entry = modules
         .iter()
         .find(|module| {
@@ -7322,34 +7351,55 @@ fn check_modules_collect(
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
     let mut name_uses = Vec::new();
-    for (function, mut checker) in functions.iter_mut().zip(pending) {
-        name_uses.push(std::mem::take(&mut checker.name_uses));
-        let checked = (|| {
-            checker.finish(&mut function.body)?;
-            let coverage = checker.check_coverage()?;
-            if function.origin.module == ModuleOrigin::User {
-                warnings.extend(coverage);
-                warnings.extend(warnings::unused_locals(function));
-                warnings.append(&mut checker.shadowing_warnings);
+    // Finishing a function reads the shared tables and changes only that function and its checker,
+    // so the functions finish in parallel; what each leaves for the shared lists is applied in
+    // function order.
+    let workers = parallelism.workers(functions.len(), FUNCTIONS_PER_WORKER);
+    ordered_for_each_owned(
+        functions.iter_mut().zip(pending),
+        workers,
+        FUNCTION_CHUNK,
+        None,
+        |_, (function, mut checker)| {
+            let name_use = std::mem::take(&mut checker.name_uses);
+            let mut function_warnings = Vec::new();
+            let checked = (|| {
+                checker.finish(&mut function.body)?;
+                let coverage = checker.check_coverage()?;
+                if function.origin.module == ModuleOrigin::User {
+                    function_warnings.extend(coverage);
+                    function_warnings.extend(warnings::unused_locals(function));
+                    function_warnings.append(&mut checker.shadowing_warnings);
+                }
+                if function.name == "$entry" {
+                    entry_result(&mut function.body, &names, &classes, &types);
+                    function.signature.result = function.body.ty.clone();
+                }
+                function.constraints.extend(checker.constraints);
+                function.members = checker.members;
+                Ok(())
+            })();
+            let error = checked.err().map(|error| {
+                // Unfinished types must not reach the ownership recovery pass.
+                function.body = TypedExpr::error(function.span);
+                let id = names
+                    .functions
+                    .get(&function.qualified_name())
+                    .map_or(usize::MAX, |info| info.id);
+                classes.derived_error(id, error)
+            });
+            (name_use, function_warnings, error)
+        },
+        |_, outcome| {
+            let (name_use, function_warnings, error) = outcome.get();
+            name_uses.push(name_use);
+            warnings.extend(function_warnings);
+            if let Some(error) = error {
+                diagnostics.push(error);
             }
-            if function.name == "$entry" {
-                entry_result(&mut function.body, &names, &classes, &types);
-                function.signature.result = function.body.ty.clone();
-            }
-            function.constraints.extend(checker.constraints);
-            function.members = checker.members;
-            Ok(())
-        })();
-        if let Err(error) = checked {
-            // Unfinished types must not reach the ownership recovery pass.
-            function.body = TypedExpr::error(function.span);
-            let id = names
-                .functions
-                .get(&function.qualified_name())
-                .map_or(usize::MAX, |info| info.id);
-            diagnostics.push(classes.derived_error(id, error));
-        }
-    }
+            ControlFlow::Continue(())
+        },
+    );
     if let Err(error) = diagnostics.check() {
         if !diagnostics.is_full() {
             let recovered: Vec<_> = recovered_functions
@@ -7437,11 +7487,12 @@ fn check_modules_collect(
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
-    let copy_constraints = crate::ownership::infer_copy_all(&module).map_err(|errors| {
-        let first = errors[0].clone();
-        diagnostics.extend(errors);
-        first
-    })?;
+    let copy_constraints =
+        crate::ownership::infer_copy_all(&module, parallelism).map_err(|errors| {
+            let first = errors[0].clone();
+            diagnostics.extend(errors);
+            first
+        })?;
     let recursive_functions = function_declarations
         .iter()
         .enumerate()
@@ -7463,7 +7514,7 @@ fn check_modules_collect(
     drop(closures_time);
     let mut module = module?;
     let ownership_time = crate::timings::Phase::start("ownership");
-    diagnostics.extend(crate::ownership::check_all(&module));
+    diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
     drop(ownership_time);
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
@@ -12075,5 +12126,39 @@ mod allocation_tests {
         ] {
             assert!(!ty.is_frozen(&module.types()), "{ty:?}");
         }
+    }
+}
+
+/// The frontend shares these types between threads (PB04). Putting an `Rc`, a `Cell` or a
+/// `RefCell` into one of them stops this test from compiling.
+#[cfg(test)]
+mod thread_safety {
+    use super::*;
+
+    fn send<T: Send>() {}
+    fn sync<T: Sync>() {}
+
+    #[test]
+    fn frontend_data_crosses_threads() {
+        send::<Result<Program, Vec<Diagnostic>>>();
+        sync::<Program>();
+        sync::<crate::SourceInput<'static>>();
+        sync::<ModuleInput<'static>>();
+        send::<crate::frontend_cache::Parsed>();
+        sync::<crate::frontend_cache::FrontendCache>();
+        send::<CheckedModule>();
+        sync::<CheckedModule>();
+        sync::<CheckedRecord>();
+        sync::<CheckedUnion>();
+        send::<CheckedFunction>();
+        sync::<CheckedFunction>();
+        send::<TypedExpr>();
+        send::<TypeContext<'static>>();
+        sync::<TypeContext<'static>>();
+        sync::<Names>();
+        sync::<polymorph::Classes>();
+        sync::<polymorph::Scheme>();
+        send::<polymorph::Inference>();
+        send::<Checker<'static>>();
     }
 }
