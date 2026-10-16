@@ -260,7 +260,11 @@ tsuzuri build --allocator small Main.tz
 
 1 つのプログラムにリンクした複数のオブジェクトは、1 つの状態を共有します（macOS と Linux。共有ライブラリは自分の状態を持ちます）。同じプログラムの中で `--allocator` を混ぜてはいけません。`system` のオブジェクトが `small` のブロックを `free` へ渡すと壊れます。ASan の use-after-free の検出や leak checker は、ブロック 1 つ 1 つではなく、1 MiB の region の `malloc` 1 つを見ます。
 
-コードは、確保するプログラムで約 2.5 KiB 増えます。`.bss` に約 130 KiB を使いますが、触るまで物理メモリにはなりません。確保と解放の呼び出しは、`system` の `malloc` と `free` と同じように、読まれないまま解放されるブロックを LLVM が取り除けます。測定した範囲（Apple M1 Max の PX02 の app）では、`system` より遅くなったものはなく、`binary_trees` や `tokenize` のように小さなブロックを大量に確保して手放すプログラムで速くなりました。メモリ使用量は同等です。数値、条件、計測できていないこと（Linux・Windows、静かなマシンでの値）は [docs/benchmarks.md](../../../docs/benchmarks.md) にあります。
+コードは、確保するプログラムで約 2.5 KiB 増えます。`.bss` に約 130 KiB を使いますが、触るまで物理メモリにはなりません。確保と解放の呼び出しは、`system` の `malloc` と `free` と同じように、読まれないまま解放されるブロックを LLVM が取り除けます。
+
+測定した範囲（Apple M1 Max、PX02 の app）では、`binary_trees`、`tree_transform`、`tokenize`、`csv_aggregate` のように小さなブロックを大量に確保して手放すプログラムの時間は `system` の 0.4〜0.65 倍で、macOS で `system` より遅くなった app はありませんでした。ピーク RSS は macOS で同じです（スレッドのキャッシュなどの固定費で、小さなプログラムは 0.1〜0.15 MiB 増えます）。glibc では、16〜24 バイトの確保が多いプログラムで約 25% 小さくなります。
+
+既知の制限: Linux（arm64、glibc）では、ほかの確保を済ませたプロセスで大きな配列の確保と解放を繰り返す `record_sort` が `system` の 1.7〜2.3 倍遅くなりました。命令数は同じで、ページフォールトが増えています。小さなブロックが C ライブラリのヒープから出て、大きなブロックのメモリの得方と返し方が変わるためと推測していて、原因を確かめられていません。そのため既定にはしていません。数値、条件、測っていないこと（Linux x64・Windows、専用機の値）は [docs/benchmarks.md](../../../docs/benchmarks.md) にあります。
 
 ## 他の言語との比較
 

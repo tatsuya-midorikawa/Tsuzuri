@@ -5720,7 +5720,11 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
-### WASM のヒープ（PM05 Phase 1）
+### ヒープ（PM05）
+
+PM05 は、WASM の `system` ヒープの作り直し（Phase 1）、native の `--allocator small`（Phase 2）、native の既定を `small` にするかの判断（Phase 3）の記録です。どの数値も、ほかの作業と共有のマシンで、専用機ではありません。**目安**であり、正式な値は静かなマシンで取り直します。
+
+#### WASM のヒープ（Phase 1）
 
 WASM の `system` ヒープを、境界タグと容量別のリスト、解放した小さなブロックのキャッシュ、終端のブロックのその場の拡張、`memory.copy` による移動に作り直しました（設計は [architecture.md](architecture.md)）。比較対象は直前の main（6d15b437）の compiler（SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）で、`benchmarks/run-heap.mjs` が両方のコンパイラで同じ入力を wasm32 `-O3` に作り、Node.js で同じ参照値と照らしながら、1 sample ごとに順序を入れ替えて走らせます。
 
@@ -5775,6 +5779,81 @@ WASM の `system` ヒープを、境界タグと容量別のリスト、解放�
 ヒープ単体は 1.9 KiB 大きくなりますが、以前は `@tz.alloc`／`@tz.free` の全体が呼び出し箇所ごとにインライン化されていたのに対し、新しいヒープはキャッシュの出し入れだけをインライン化するので、確保・解放の多い成果物では小さくなります。
 
 メモリの大きさ（`memory.buffer.byteLength`、ヒープの最大値のページ丸め。PX02 の app は両方とも同じ値）: tokenize 7.19 MiB、format_join 6.81、csv_aggregate 7.50、record_sort 3.81、tree_transform 1.19、binary_trees 1.13、graph_bfs 7.56、`vec_growth` は 5.06 → 3.06 MiB。`--capacity` で見つけた「上限の 16 MiB に収まる最大のサイズ」も、10 個の app すべてで同じでした（tokenize 132,861、format_join 59,049、csv_aggregate 132,861、record_sort 199,292、graph_bfs 88,574 など）。断片化する無作為な置き換えでは、20,000 slots × 8〜800 B で 10.31 → 10.00 MiB、100,000 slots × 8〜160 B で 13.38 → 12.63 MiB（約 3〜6% 小さい）、500 slots × 8〜16 KB で 5.75 → 5.81 MiB（約 1% 大きい）です。
+
+matrix スイートで見つけた退行と修正: 作り直した最初のヒープは、`features.mjs matrix` の `parallel_mismatches64(3, 500, 1500, 1, 10)` を `-O0` で unreachable（確保失敗）にしました。解放した 6 MB のブロック（大きな穴）から 36 KB の要求を先頭一致で切り出すので、次の 6 MB の要求が穴に収まらず、ヒープが上限の 16 MiB を超えたためです。以前のヒープは、直前の呼び出しが残した状態のおかげで通っていただけで、新しいインスタンスで同じ呼び出しをすると同じように失敗します。穴から切り出すと残りが 64 KiB 以上で、しかも要求の 4 倍以上になる要求は、終端を延ばせる間は終端から返すようにしました（上限の手前で延ばせなければ、これまでどおり穴から切り出します）。この呼び出しの確保・解放の列を再生した使い捨ての計測（リポジトリには入れていません）で、ピークは 17.38 MiB から 11.75 MiB になり、上限に収まります。ベンチマークの kernel と app の線形メモリの大きさは、この規則の前後で変わりません。`tests/wasm_heap.mjs` の `holeCases` が、切る場合と切らない場合、64 KiB と 4 倍の境界、終端を延ばせない場合を、手で導いたアドレスで検査します。規則の変異 12 通りは、wasm32 と wasm64 の両方で検出されます。`features.mjs` の全スイート（14,106 件、native と WASM の `-O0` と `-O3`）はこのヒープで通りました。
+
+#### native の `--allocator small`（Phase 2）
+
+`--allocator small` は、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保を C ライブラリの `malloc` に任せる native 専用の allocator です（設計は [architecture.md](architecture.md)、使い方は [スタックとヒープ](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator)）。`benchmarks/run-small.mjs` は、同じコンパイラで `benchmarks/apps` を `--allocator system` と `small` の object にし、同じ host（`benchmarks/apps/host.c`）で、ラウンドごとに順序を入れ替えて走らせます。時間は calibrated repeats の CPU 時間、ピーク RSS は workload ごとに別のプロセスで `/usr/bin/time` から読みます。両方のチェックサムは一致します。この節の数値は release コンパイラ（コミット `b8aed3c0`）で取り、生データは `target/perf/PM05-after/run-small-macos.json`（コミットしません）です。
+
+条件の限界: Apple M1 Max、macOS 27.0.1、Homebrew LLVM 21（clang 21）。計測中のホストの load average は 20〜40 で、専用機でも、`with-lock.sh measure` の下でもありません（ほかの作業が全 slot を占有していて取れませんでした）。5 ラウンド（各 15 samples）、RSS は 9 回の中央値です。**この表は目安**で、正式な値は静かなマシンで取り直します。Linux は、同じ M1 Max の上の Docker の仮想マシン（linuxkit 6.6.12、arm64）で、Ubuntu 24.04、clang 20.1.2、glibc 2.39 を使いました。IR は macOS のコンパイラが `--target aarch64-unknown-linux-gnu` で出し、コンテナの中で `clang-20 -O3` でコンパイルして同じ host（`-O3`）とリンクしました（手順は `benchmarks/run-small.mjs` と同じ。スクリプトはリポジトリに入れていません）。仮想マシンの中の load average は 2 でも、ホストが忙しいので、揺れが大きい値です。
+
+macOS（arm64、`-O3`、`--cpu generic`）:
+
+| workload | size | system ms（最小 / 中央 / 最大） | small ms（最小 / 中央 / 最大） | small / system（中央、最小） | system RSS MiB | small RSS MiB |
+| --- | ---: | --- | --- | --- | ---: | ---: |
+| tokenize | 200000 | 13.44 / 13.97 / 19.06 | 8.654 / 8.949 / 10.38 | 0.641, 0.644 | 16.28 | 16.23 |
+| format_join | 100000 | 19.20 / 19.64 / 23.07 | 15.88 / 16.37 / 21.24 | 0.834, 0.827 | 17.94 | 17.95 |
+| csv_aggregate | 100000 | 26.82 / 28.26 / 36.36 | 16.44 / 17.45 / 22.47 | 0.618, 0.613 | 9.52 | 9.52 |
+| map_count | 200000 | 9.507 / 9.988 / 12.33 | 9.453 / 9.871 / 14.22 | 0.988, 0.994 | 1.69 | 1.84 |
+| record_sort | 200000 | 10.83 / 11.43 / 13.17 | 10.76 / 11.05 / 13.50 | 0.967, 0.993 | 10.89 | 10.89 |
+| tree_transform | 256 | 20.23 / 21.12 / 26.34 | 7.836 / 8.444 / 10.89 | 0.400, 0.387 | 1.86 | 1.83 |
+| binary_trees | 2000 | 26.28 / 26.77 / 33.01 | 12.00 / 13.01 / 16.65 | 0.486, 0.457 | 1.81 | 1.83 |
+| closure_pipeline | 1000000 | 2.922 / 2.955 / 3.675 | 3.077 / 3.445 / 5.129 | 1.166, 1.053 | 16.98 | 17.06 |
+| graph_bfs | 100000 | 3.759 / 4.088 / 6.589 | 3.917 / 4.724 / 5.902 | 1.156, 1.042 | 14.67 | 14.69 |
+| spectral_norm | 500 | 9.414 / 9.924 / 12.91 | 9.526 / 9.693 / 12.55 | 0.977, 1.012 | 1.70 | 1.70 |
+
+Linux（arm64、Docker の仮想マシン、glibc 2.39、`-O3`）:
+
+| workload | size | system ms（最小 / 中央 / 最大） | small ms（最小 / 中央 / 最大） | small / system（中央、最小） | system RSS MiB | small RSS MiB |
+| --- | ---: | --- | --- | --- | ---: | ---: |
+| tokenize | 200000 | 16.42 / 18.21 / 60.64 | 9.915 / 10.72 / 21.62 | 0.589, 0.604 | 21.49 | 15.45 |
+| format_join | 100000 | 19.46 / 20.17 / 73.18 | 15.75 / 17.87 / 34.29 | 0.886, 0.809 | 17.18 | 17.19 |
+| csv_aggregate | 100000 | 21.28 / 21.77 / 22.78 | 15.33 / 18.59 / 28.80 | 0.854, 0.720 | 11.75 | 8.75 |
+| map_count | 200000 | 17.27 / 17.94 / 19.08 | 18.86 / 29.85 / 47.12 | 1.664, 1.092 | 1.38 | 1.50 |
+| record_sort | 200000 | 5.731 / 6.087 / 37.35 | 10.00 / 13.84 / 16.96 | 2.274, 1.745 | 10.24 | 10.25 |
+| tree_transform | 256 | 12.54 / 13.20 / 22.63 | 7.092 / 8.982 / 16.00 | 0.680, 0.566 | 1.50 | 1.50 |
+| binary_trees | 2000 | 17.63 / 17.87 / 26.26 | 11.25 / 12.70 / 18.14 | 0.711, 0.638 | 1.50 | 1.50 |
+| closure_pipeline | 1000000 | 5.420 / 5.502 / 10.36 | 5.319 / 6.522 / 10.91 | 1.185, 0.981 | 16.25 | 16.35 |
+| graph_bfs | 100000 | 4.264 / 4.873 / 9.594 | 4.669 / 5.368 / 7.769 | 1.102, 1.095 | 14.00 | 13.96 |
+| spectral_norm | 500 | 9.233 / 9.654 / 17.69 | 9.392 / 12.93 / 36.46 | 1.339, 1.017 | 1.38 | 1.38 |
+
+読み方:
+
+- 小さなブロックを大量に確保して手放す workload（tokenize、csv_aggregate、tree_transform、binary_trees、macOS では format_join も）は、最小値で 0.39〜0.83 倍です。macOS で最小値と最大値の範囲が重ならない（PX01 の「improved」の条件）のは、tokenize、csv_aggregate、tree_transform、binary_trees の 4 つで、「adverse」（範囲が逆に重ならない）はありません。Linux の表は揺れが大きく、範囲が重ならないものはありませんでした。
+- 確保をほとんどしない workload は、差が確保の実行時間ではなく、コードの配置の差です。1 回の呼び出しの確保は、closure_pipeline が 8 回、graph_bfs が 7 回、spectral_norm が 41 回、map_count が 0 回です（入口に数える呼び出しを足した IR で数えた値）。Linux arm64 の callgrind では、map_count の命令数は system が 89,780,711、small が 89,188,411 で、small のほうが少なくなっています。macOS の最小値の比は 0.99〜1.05 です。
+- **Linux の record_sort は small のほうが遅い**（最小値で 1.75 倍、中央値で 2.27 倍）。命令数は、callgrind で system が 72,534,347、small が 72,535,381 と同じです。同じプロセスで先に別の workload を走らせたあとに 1 呼び出しずつ測ると、system は 5.4〜5.7 ms（ページフォールトは 1 呼び出しあたり 0.1 回）、small は 10.2〜11.3 ms（約 1,800 回）で、先に何も走らせていないプロセスでは、どちらも約 10 ms（約 1,050 回）で同じです。record_sort は 3.2 MB（16 バイト × 200,000）の配列を確保して解放します。命令ではなく、glibc がこの大きなブロックのメモリを得て返す方法が違います。小さなブロックが glibc のヒープから出るので、その配置が変わるためと推測しています（`MALLOC_MMAP_THRESHOLD_` と `MALLOC_TRIM_THRESHOLD_` をどちらも 256 MiB にすると、small のページフォールトは約 61 回に減り、9.1 ms になりますが、system の 5.7 ms には届かず、残りの差は説明できていません）。ピーク RSS が小さくなる（tokenize 21.49 → 15.45 MiB、csv_aggregate 11.75 → 8.75 MiB）のも、同じ配置の変化の別の面と考えられます。macOS では、ページフォールトは cold で 19.7、warm で 0 回で、どちらも system と同じです（10.5〜11.2 ms）。
+- ピーク RSS は、macOS では同じか、固定費の分（スレッドのキャッシュ、登録表、region の最初のページ）だけ大きい（map_count で 1.69 → 1.84 MiB）です。glibc では、16 バイトから 24 バイトの確保が多い workload で 25〜28% 小さくなります（上の 2 例）。macOS の `malloc` は 16 バイト刻みでヘッダーを持たないので、`small` と同じ大きさになり、RSS では差が出ません。
+
+確保 1 つあたりの大きさ（モデルです。計測ではなく、各 allocator の規則から数えました。glibc は 8 バイトのヘッダーを足して 16 の倍数に切り上げ、最小 32 バイト、WASM は 16 バイトのヘッダーを足して 16 の倍数、最小 32 バイト、`small` は 16 の倍数、最小 16 バイト）:
+
+| 要求（バイト） | 8 | 16 | 24 | 32 | 48 | 100 | 512 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| glibc | 32 | 32 | 32 | 48 | 64 | 112 | 528 |
+| WASM のヒープ | 32 | 32 | 48 | 48 | 64 | 128 | 528 |
+| `small`（native） | 16 | 16 | 32 | 32 | 48 | 112 | 512 |
+
+`binary_trees` のノード（48 バイト）は、glibc で 64 バイト、`small` で 48 バイトです。測った RSS（1.5〜1.8 MiB）は、実行ファイル自身の大きさに隠れて、この差を示しません。
+
+生成コードの確認（`llvm-objdump -d --no-show-raw-insn`、arm64 の macOS、`examples/hello`）: `tz_small_alloc` の fast path は約 30 命令で、512 バイトを超えるかの比較、TLS の取得（Mach-O は `tlv_get_addr` の thunk の呼び出し）、区分のスロットの計算、リストの先頭の取り出しと個数の減算、return です。`tz_small_free` も約 30 命令で、`>> 48` の確認、2 段の登録表の引き（`ldapr` と `ldrb`）、TLS の取得、リストの先頭への追加、個数の比較です。ELF の実行ファイルでは、TLS の取得は 1〜2 命令で済みます（x86-64 では未計測）。入口の 2 関数は `noinline` で、`noalias`・`allockind`・`alloc-family` を持ちます。LLVM はこれらを `malloc`・`free` と同じに扱い、読まれないまま解放される確保を取り除きます（`tests/small_allocator.mjs` の probe が、`noinline` か属性を外すと失敗することを手で確かめました）。インライン化を許した最初の版では、record_sort が macOS で 2.1 倍、graph_bfs が 2〜2.5 倍遅く（確保と解放の組が取り除かれず）、コードも 5.2 KiB 増えました。
+
+コードの大きさ（`-O3`、macOS）: `examples/hello` の `__text` は 43,496 → 45,968 バイト（+2,472）、`benchmarks/apps` の object は 57,808 → 60,916（+3,108）、`benchmarks/control` の object は 3,664 → 5,980（+2,316）です。`__bss` が 133,184 バイト（仮想。触るまで物理メモリではありません）増えます。
+
+#### 既定にするか（Phase 3）
+
+native の既定を `small` にするかは、次の条件を**すべて**確かめられたときだけ変えるとしました。確かめられなかった条件があるので、既定は `system` のままです。
+
+| 条件 | 結果 | 根拠・足りないもの |
+| --- | --- | --- |
+| (a) 単体テスト（通常・ASan+UBSan・TSan）と全 features suite（`-O0`・`-O3`）が、macOS arm64・x64、Linux x64・arm64（と musl）、Windows x64 で通る | 一部だけ | macOS arm64 は単体・E2E・suite を確認した。Linux arm64（Ubuntu 24.04 のコンテナ）は単体 4 通りと、IR の host（4 スレッド・共有ライブラリ・2 オブジェクト）を確認した。macOS x64、Linux x64・musl、Windows は未確認（`targets.yml`・`windows.yml` に step を足したが、緑になるまで確認とは言えない） |
+| (b) 専用機で 2 つ以上の OS ファミリーの計測。PX01 の「improved」が代表 6 workload のうち 3 つ以上で、control・computations・cpp・apps・tasks に「adverse」がない | 未達 | macOS の apps は improved 4 つ・adverse 0 だが、専用機ではない。Linux（glibc）の record_sort は 1.75〜2.27 倍遅い（上の、glibc が大きなブロックのメモリを得て返す方法の差）。control・computations・cpp・tasks（`task_parallel`）は未計測（`run-control.mjs --allocator small` は用意した） |
+| (c) ピーク RSS が、どの app でも悪化しない | 一部だけ | macOS は同じ（小さな app で +0.1〜0.15 MiB の固定費）、Linux は最大 28% 小さい。固定費があるので「悪化なし」とは言えない |
+| (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 達成（コンパイル時間は未計測） | +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）。IR は 330 行ほど |
+| (e) 範囲は native の実行ファイルだけで、`--allocator system` で戻せ、サニタイザーと leak 検査の注意を書く | 該当なし | 既定にしていないので、変えていない。注意は LR の [ネイティブのサイズ区分 allocator](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) に書いた |
+
+再検討の条件: 専用機で macOS と Linux の apps・control・tasks を測り、Linux の record_sort のような退行（ほかの確保を済ませたプロセスで、大きなブロックの確保と解放を繰り返すと、ページフォールトが増える）の原因を特定して直すか、起きないことを示すこと。直し方の候補は、512 バイトを超える区分を持つ（ヘッダーなしの slab は別チケット PM05b）か、解放した大きなブロックを少しの間手元に残すことですが、どちらも試していません。glibc 固有の `mallopt` で返却のしきい値を変える案は、C ライブラリを問わない（musl・Windows）設計に反するので採りません。
+
+測っていないこと: Linux x64、Windows、musl、macOS x64 での時間。`Task.parallel` を使う native のベンチマーク（`task_parallel` と PR06 の task runtime）での時間。コンパイル時間。Linux x86-64 の ELF の TLS の命令数。
 
 ## 現実的な次の指標
 
