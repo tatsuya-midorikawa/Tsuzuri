@@ -154,8 +154,10 @@ try {
   const lldFlag = "-fuse-ld=lld";
   const withFlag = (since) => calls().slice(since).filter((args) => args.includes(lldFlag));
   const hello = resolve("examples/hello");
-  const haveLld = [windows ? "lld-link" : process.platform === "darwin" ? "ld64.lld" : "ld.lld"]
-    .some((tool) => spawnSync(tool, ["--version"], { encoding: "utf8" }).status === 0);
+  // Whether the Clang that the build runs finds an LLD, by the rules of that Clang (beside it or on PATH).
+  const probe = join(directory, "lld-probe.c");
+  writeFileSync(probe, "int main(void) { return 0; }\n");
+  const haveLld = !windows && spawnSync(base.HANDOFF_CLANG, [probe, lldFlag, "-o", join(directory, "lld-probe")], { encoding: "utf8" }).status === 0;
   const link = (flags, env, output) => run(compiler, ["build", hello, "-O0", "--no-cache", ...flags, "-o", output], { env, success: false });
   const exe = join(directory, `linker${suffix}`);
 
