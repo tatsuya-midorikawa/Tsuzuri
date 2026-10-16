@@ -1,0 +1,15 @@
+def show :: Maybe<i32> -> string
+fn show parsed = if Maybe.is_none (&parsed) then "none" else to_string (Maybe.get parsed)
+
+def main :: unit -> i32 = \() ->
+    for text in ["42", "-7", "+5", "0x2a", "0b101", "1_000", "2147483647", "2147483648", "", "_1", "abc"] do
+        let parsed: Maybe<i32> = Parse.parse (&text)
+        do! IO.write_line (show parsed)
+    let small: Maybe<i8u> = Parse.parse (&"255")
+    do! IO.write_line (to_string (Maybe.get small))
+    let big: Maybe<i128u> = Parse.parse (&"340282366920938463463374607431768211455")
+    do! IO.write_line (to_string (Maybe.get big))
+    let n = 255
+    let m = -255
+    do! IO.write_line $"{n:x} {n:X} {n:o} {n:b} {n:+} {m:x} {m:b} {m:+}"
+    0

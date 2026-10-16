@@ -5767,6 +5767,41 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回、`i128` は 60.7 から 54.0 ns／回）。静かな機械での再測定が必要です。
 
+### 整数の `Parse` と書式指定（PM08 P8）
+
+整数の `Parse.parse` と、書式指定付きの補間（`{n:+}`・`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`）も `runtime/integer.ll` へ移しました。`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。結果と受け付ける構文は変わらず、`tests/integer_format.mjs` が Python の独立した参照（`Parse` 71,235 件、書式指定 15,200 件）、8／16 bit の全値、`numeric.ll` の `tz_soft_parse`・`tz_soft_format_spec`（同じ入力）と、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` で照合し、`tests/size.mjs` が 10 の整数型すべてをコンパイラ経由で JS の参照と照合します。float と decimal の `Parse`・精度つきの書式指定は `numeric.ll` のままです。
+
+測定条件は上と同じです。before は main `6d15b437` のリリースビルド、「整数表示の分割まで」は `7509b4f6`、after は P8 まで入れた非 LTO のリリースビルドです。`benchmarks/size/parse`（`Parse.parse` で `i32`・`i8u`・`i128u` を読み、`{n:x}` などを補間する 15 行のプログラム）、cache あり、byte で、`node benchmarks/metrics.mjs size [compiler] --out DIR --project benchmarks/size/parse` が再現します:
+
+| 成果物 | レベル | before | 整数表示の分割まで | after |
+| --- | --- | ---: | ---: | ---: |
+| native 実行ファイル | `-O3` | 84,168 | 84,248 | 34,120 |
+| native `__text` | `-O3` | 30,904 | 31,192 | 9,096 |
+| native `__const`＋`__cstring` | `-O3` | 21,044 | 21,044 | 270 |
+| native `__text` | `-Oz` | — | 25,720 | 6,764 |
+| wasm32 モジュール | `-O3` | 76,023 | 76,614 | 18,199 |
+| wasm CODE | `-O3` | 55,092 | 55,674 | 17,719 |
+| wasm DATA | `-O3` | 20,603 | 20,603 | 218 |
+| wasm32 モジュール | `-Oz` | — | 66,355 | 8,121 |
+
+整数を表示するだけのプログラム（`examples/hello`）の `-O3`／`-Oz` の大きさは変わりません。`-O0` では、`format` が `sign` を別の関数として呼ぶ分だけ、`__text` が 10,232 から 10,300 byte、wasm が 8,094 から 8,126 byte に増えます。使わない `spec`・`parse` の関数は、`-O0` の IR と object には残りますが、リンク時に除去されます（`--emit object -O0` の `examples/hello` は 33,856 から 37,432 byte）。
+
+`integer.ll` のすべての関数のコードは、arm64 の `-O3` で 2,904 byte（`-Oz` 2,376）、wasm32 で 3,059 byte（`-Oz` 2,406）で、使う関数だけが最適化後に残ります。10 進の先頭 19 桁を範囲の検査なしで足す高速経路は、約 200 byte のコードです。これを外した版は、長い 10 進数の読み取りが `numeric.ll`（ASCII への複写と `tz_soft_parse`）より最大で約 40% 遅くなりました（`i32` の範囲は 17.6 から 25.8 ns／回、全幅の `u64` は 29.5 から 41.9 ns／回）。
+
+読み取りと書式指定の速さは、同じ値の列を `numeric.ll` の経路（ASCII への複写と `tz_soft_parse`、`tz_soft_format_spec`）と `integer.ll` に渡す C の測定（`-O3`、native、4,096 件の文字列を繰り返し 2,000 万回）です。1 回の測定で、load average が約 30 の共有機のため誤差が大きく、速度の主張には使いません。静かな機械での再測定が必要です:
+
+| 入力 | `numeric.ll` | `integer.ll` |
+| --- | ---: | ---: |
+| `Parse` 0〜999 | 15.9 | 8.7 |
+| `Parse` `i32` の範囲 | 18.2 | 14.9 |
+| `Parse` 全幅の `u64`（19〜20 桁） | 32.0 | 22.9 |
+| `Parse` `0x` と 16 桁 | 52.3 | 35.6 |
+| `Parse` 符号つきの `i64` | 30.0 | 20.6 |
+| `{n:x}`（`i64`） | 35.8 | 19.2 |
+| `{n:+}`（`i64`） | 29.8 | 19.0 |
+
+単位は ns／回です。
+
 ### リンク時の GC（埋め込みのビルド）
 
 ランタイムを成果物キャッシュなしでモジュールに埋め込む形式（`--no-cache`、`--trap-info`。`run` は `--trap-info` が既定）の native 実行ファイルは、これまで未使用の関数をリンク時に除去していませんでした（runtime object を使う既定のビルドだけが `-dead_strip` などを渡していました）。`-g` を除くすべての native 実行ファイルのリンクに同じ除去を適用し、Linux と Windows の GNU 系リンカーでは関数とデータを別々の section に出します。条件は上の整数表示の分割と同じです。section の byte 数（`__text`／`__const`＋`__cstring`）、`-O3`、macOS arm64、変更前は整数表示の分割まで入れたコンパイラです:

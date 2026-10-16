@@ -1,4 +1,4 @@
-// PM08: the size optimization levels, --strip, the integer formatter split, and the size of the artifacts.
+// PM08: the size optimization levels, --strip, the integer runtime split (text, format specs, Parse), and the size of the artifacts.
 //   node tests/size.mjs [path/to/tsuzuri]
 // Sizes are deterministic, so the checks compare bytes exactly where a fixed relation is promised and
 // say "not larger" where it is not; no size or speed threshold is a pass or fail condition of the suite.
@@ -265,6 +265,133 @@ section("an integer-only WASM module carries no numeric tables and its integer t
   }
 });
 
+// What Parse.parse makes of a text, from the grammar of the language reference: an optional sign, then decimal
+// digits, "0x" and hexadecimal digits, or "0b" and binary digits, with a single "_" allowed between two digits,
+// within the type's range and 4096 units. Written here again with BigInt for the programs the compiler builds.
+const INTEGER_TEXT = /^[+-]?(?:[0-9](?:_?[0-9])*|0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0b[01](?:_?[01])*)$/;
+function parseReference(text, { signed, low, high }) {
+  if (text.length === 0 || text.length > 4096 || !INTEGER_TEXT.test(text)) return null;
+  const negative = text.startsWith("-");
+  if (negative && !signed) return null;
+  const magnitude = BigInt(text.replace(/^[+-]/, "").replaceAll("_", ""));
+  const value = negative ? -magnitude : magnitude;
+  return value >= low && value <= high ? value : null;
+}
+// What a format hole shows: the sign ("+" asked for or "-"), then the digits of the magnitude in the base.
+const specReference = (value, base, plus = false, upper = false) => {
+  const digits = (value < 0n ? -value : value).toString(base);
+  return (value < 0n ? "-" : plus ? "+" : "") + (upper ? digits.toUpperCase() : digits);
+};
+const INVALID_TEXTS = ["", "+", "-", "_1", "1_", "1__0", "+-1", "-+1", "++1", "0x", "0b", "-0x", "0x_1", "0xg", "0b2", "0X1",
+  "0B1", " 1", "1 ", "00x1", "0x0x1", "1e3", "1.5", "０", "１２", "٣", "Ā", "\u0130", "\u0178"];
+
+section("integer Parse and format specs print the same at every level and match the reference", () => {
+  const lines = [], expected = [];
+  for (const [index, type] of INTEGER_TYPES.entries()) {
+    const values = integerValues(type);
+    const texts = [...INVALID_TEXTS, "0".repeat(4095) + "1", "0".repeat(4097), "0x" + "0".repeat(4094), "0x" + "0".repeat(4095)];
+    for (const value of [...values, type.low - 1n, type.high + 1n, type.high * 2n + 1n]) {
+      const magnitude = value < 0n ? -value : value;
+      const sign = value < 0n ? "-" : "";
+      const digits = magnitude.toString();
+      texts.push(value.toString(), sign + "0x" + magnitude.toString(16), sign + "0X" + magnitude.toString(16).toUpperCase(),
+        sign + "0b" + magnitude.toString(2), (value < 0n ? "-" : "+") + "00" + digits,
+        sign + "0x" + magnitude.toString(16).toUpperCase().split("").join("_"), digits.split("").join("_"));
+    }
+    lines.push(`    for text in [${texts.map((text) => JSON.stringify(text)).join(", ")}] do`,
+      `        let parsed${index}: Maybe<${type.name}> = Parse.parse (&text)`,
+      `        do! IO.write_line (if Maybe.is_none (&parsed${index}) then "none" else to_string (Maybe.get parsed${index}))`);
+    for (const text of texts) expected.push(String(parseReference(text, type) ?? "none"));
+    lines.push(`    let values${index} = [${values.map((value) => literal(value, type)).join(", ")}]`,
+      `    for value in values${index} do`,
+      '        do! IO.write_line $"{value:+}|{value:x}|{value:X}|{value:o}|{value:b}|{value:5}|{value:+6}"');
+    for (const value of values) {
+      expected.push([specReference(value, 10, true), specReference(value, 16), specReference(value, 16, false, true),
+        specReference(value, 8), specReference(value, 2), value.toString().padStart(5),
+        specReference(value, 10, true).padStart(6)].join("|"));
+    }
+  }
+  const project = join(directory, "integer-parse-project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "Main.tz"), ["def main :: unit -> i32 = \\() ->", ...lines, "    0", ""].join("\n"));
+  const text = expected.join("\n") + "\n";
+  for (const level of ["-O0", "-O3", "-Os", "-Oz"]) {
+    const result = execute(build(project, [level]));
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.replaceAll("\r\n", "\n").split("\n");
+    const reference = text.split("\n");
+    assert.equal(lines.length, reference.length, `native ${level}: lines`);
+    for (const [number, line] of reference.entries()) assert.equal(lines[number], line, `native ${level}: line ${number + 1}`);
+  }
+  // `run` links the runtime into the module with the trap table: the other path.
+  assert.equal(tsuzuri(["run", project, "-O0"]).stdout.replaceAll("\r\n", "\n"), text);
+  // None of it needs the numeric runtime, nor the ASCII copy and 4 KiB buffer that parser used to take.
+  const ir = join(directory, `parse${counter++}.ll`);
+  tsuzuri(["build", project, "--emit", "llvm", "-o", ir]);
+  const emitted = readFileSync(ir, "utf8");
+  assert.ok(!emitted.includes("tz_soft_"), "no numeric runtime");
+  assert.ok(!emitted.includes("call i1 @tz.string.to_ascii"), "no ASCII copy of the text");
+});
+
+section("a float still uses the numeric runtime to parse, with the ASCII copy", () => {
+  const project = join(directory, "float-parse");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "Main.tz"), [
+    "def main :: unit -> i32 = \\() ->",
+    '    let parsed: Maybe<f64> = Parse.parse (&"2.5")',
+    "    do! IO.write_line (to_string (Maybe.get parsed))",
+    '    let spec = $"{Maybe.get parsed:.3}"',
+    "    do! IO.write_line spec",
+    "    0",
+    "",
+  ].join("\n"));
+  const ir = join(directory, `float-parse${counter++}.ll`);
+  tsuzuri(["build", project, "--emit", "llvm", "-o", ir]);
+  const emitted = readFileSync(ir, "utf8");
+  assert.ok(emitted.includes("call i32 @tz_soft_parse(") && emitted.includes("call i32 @tz_soft_format_spec("));
+  assert.ok(emitted.includes("call i1 @tz.string.to_ascii("));
+  assert.equal(execute(build(project, ["-Oz"])).stdout.replaceAll("\r\n", "\n"), "2.5\n2.500\n");
+});
+
+section("an integer-only WASM module parses and formats specs without the numeric runtime", () => {
+  const types = INTEGER_TYPES.filter(({ bits }) => bits <= 64);
+  // Each export parses the text of its own argument in decimal, hexadecimal, and binary and returns the sum of the
+  // three parses, so a wrong digit, base, sign, or range anywhere changes the answer.
+  const body = types.flatMap(({ name }) => [
+    `export def round_${name} :: ${name} -> i64 = \\x ->`,
+    "    let decimal = to_string x",
+    '    let hexadecimal = $"0x{x:x}"',
+    '    let binary = $"0b{x:b}"',
+    `    let first: Maybe<${name}> = Parse.parse (&decimal)`,
+    `    let second: Maybe<${name}> = Parse.parse (&hexadecimal)`,
+    `    let third: Maybe<${name}> = Parse.parse (&binary)`,
+    "    if Maybe.is_none (&first) || Maybe.is_none (&second) || Maybe.is_none (&third) then 0 else",
+    "        (Maybe.get first) as i64 + (Maybe.get second) as i64 + (Maybe.get third) as i64",
+  ]);
+  const project = join(directory, "wasm-parse");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "Main.tz"), body.join("\n") + "\n");
+  const withFloat = join(directory, "wasm-parse-float");
+  mkdirSync(withFloat, { recursive: true });
+  writeFileSync(join(withFloat, "Main.tz"), body.join("\n") +
+    '\nexport def parse_f64 :: i64 -> i64 = \\n ->\n    let parsed: Maybe<f64> = Parse.parse (&(to_string n))\n    to_int (Maybe.get parsed)\n');
+  const size = (file) => statSync(file).size;
+  for (const level of ["-O0", "-O3", "-Oz"]) {
+    const integers = build(project, ["--target", "wasm32", level], ".wasm");
+    const floats = build(withFloat, ["--target", "wasm32", level], ".wasm");
+    assert.ok(size(integers) + 16384 < size(floats), `${level}: ${size(integers)} bytes without the numeric runtime, ${size(floats)} with it`);
+    const api = wasmInstance(integers);
+    for (const type of types) {
+      for (const value of integerValues(type)) {
+        // A negative value has no "0x" text that parses back to it, so its binary and hexadecimal parses fail.
+        if (value < 0n) continue;
+        const argument = type.bits === 64 ? value : Number(value);
+        assert.equal(BigInt.asIntN(64, api[`tz_round_${type.name}`](argument)), BigInt.asIntN(64, value * 3n), `${level} ${type.name} ${value}`);
+      }
+    }
+  }
+});
+
 // A stand-in for Binaryen's wasm-opt: it logs its arguments, answers --version with a version taken from the
 // environment, and writes its input back with one extra custom section, so a test sees what ran and what came out.
 function fakeWasmOpt(name) {
@@ -428,8 +555,11 @@ section("the option errors of -Os and -Oz", () => {
 });
 
 let failed = 0;
+// TSUZURI_TEST_SECTION=text runs only the sections whose name contains the text.
+const only = process.env.TSUZURI_TEST_SECTION ?? "";
 try {
   for (const [name, body] of sections) {
+    if (!name.includes(only)) continue;
     try {
       body();
       console.log(`Size: ${name} passed`);

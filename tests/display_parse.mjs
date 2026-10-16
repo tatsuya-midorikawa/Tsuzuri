@@ -148,7 +148,9 @@ try {
   if (!process.argv.includes("--runtime-only")) {
     execute(process.execPath, [join(root, "tests/features.mjs"), compiler, "display_parse"]);
     for (const [name, source, expected, symbol] of [
-      ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "tz_soft_parse"],
+      // A float's text is parsed by the numeric runtime, an integer's by the integer runtime in the module.
+      ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<f64> = Parse.parse (&text); to_int (Maybe.get n) }', 42, "tz_soft_parse"],
+      ["integer-parse", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "tz.integer.parse"],
       ["display-only", "export def value :: i64\nfn value = (to_string 4.5).length", 3, "tz_soft_format"],
       // An integer's text comes from the integer formatter in the module, with no numeric runtime.
       ["integer-display", "export def value :: i64\nfn value = (to_string 42).length + (to_string (-7i8)).length", 4, "tz.integer.format"],
@@ -159,8 +161,8 @@ try {
       const ir = join(directory, "program.ll");
       cli(["build", directory, "--emit", "llvm", "-o", ir]);
       const text = readFileSync(ir, "utf8");
-      assert.ok(text.includes(`call i32 @${symbol}(`), `${name}: ${symbol}`);
-      if (symbol === "tz.integer.format") assert.ok(!text.includes("tz_soft_"), "the numeric runtime is not linked");
+      assert.match(text, new RegExp(`call \\S+ @${symbol.replaceAll(".", "\\.")}\\(`), `${name}: ${symbol}`);
+      if (symbol.startsWith("tz.integer.")) assert.ok(!text.includes("tz_soft_"), "the numeric runtime is not linked");
       const host = join(directory, "host.c");
       writeFileSync(host, `#undef NDEBUG\n#include <assert.h>\nextern long long tz_value(void);\nint main(void) { assert(tz_value() == ${expected}); }\n`);
       for (const optimization of [0, 3]) {

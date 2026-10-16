@@ -1753,6 +1753,7 @@ const suites = {
     inspect(ir) {
       assert.match(ir, /@tz_soft_format/);
       assert.match(ir, /@tz_soft_parse/);
+      assert.match(ir, /@tz\.integer\.parse/);
       assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf|@memcmp/);
     },
   },

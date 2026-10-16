@@ -677,13 +677,15 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 数学の小さい sqrt／fabs wrapper は IR に残すので、LLVM の intrinsic へのインライン化を保ちます。
 数値の丸め・NaN・符号付きゼロ・トラップ・公開 ABI・WASM の import は変わりません。
 
-整数（`i8`〜`i128`、`i8u`〜`i128u`）の `to_string`、`Display`、書式指定のない文字列補間、トップレベルの式の結果の表示は、
-数値ランタイムを使いません。数百 byte の整数専用のテキスト生成（`runtime/integer.ll`）をモジュールの IR に入れて書くので、
-整数だけを表示するプログラムには数値 object も、その表（約 10 KB の読み取り専用データ）も入りません。
-`examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,357 byte になりました
+整数（`i8`〜`i128`、`i8u`〜`i128u`）の `to_string`、`Display`、文字列補間（書式指定の `{n:+}`、`{n:x}`、`{n:X}`、`{n:o}`、`{n:b}` を含む）、
+トップレベルの式の結果の表示と、整数の `Parse.parse` は、数値ランタイムを使いません。整数専用のテキスト生成と解析（`runtime/integer.ll`）を
+モジュールの IR に入れて処理し、最適化後には使った関数だけが残るので、整数だけを扱うプログラムには数値 object も、その表（約 10 KB の読み取り専用データ）も入りません。
+`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。
+`examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,357 byte になりました。
+整数を `Parse` し書式指定する `benchmarks/size/parse` の wasm32 モジュールは 76,023 byte から 18,199 byte になります
 （macOS arm64 の `-O3`。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
-`f16`・`f32`・`f64`・`f128`・decimal の表示、書式指定付きの表示（`{n:x}`、`{x:+}`、`{x:.2}` など）、`Parse` は、これまでどおり数値ランタイムを使います。
-どちらの表示も出力の文字列は同じです。
+`f16`・`f32`・`f64`・`f128`・decimal の表示、精度つきの書式指定（`{x:.2}` など）、それらの `Parse` は、これまでどおり数値ランタイムを使います。
+どちらの処理も、出力の文字列と `Parse` が受け付ける構文・範囲は同じです。
 
 ### 構文解析の結果
 

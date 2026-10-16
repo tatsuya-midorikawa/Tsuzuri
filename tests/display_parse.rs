@@ -41,8 +41,12 @@ fn provides_display_for_primitives_and_parse_for_numbers_and_bool() {
     assert!(ir.contains("@tz.integer.format"));
     assert!(!ir.contains("@tz_soft_"), "{ir}");
     assert!(accepts("to_string 0.1").contains("@tz_soft_format"));
+    // An integer is parsed by the integer runtime; floats and decimals by the numeric runtime.
+    let ir = accepts("def parse :: &string -> Maybe<i64>\nfn parse s = Parse.parse s");
+    assert!(ir.contains("@tz.integer.parse("), "{ir}");
+    assert!(!ir.contains("@tz_soft_"), "{ir}");
     assert!(
-        accepts("def parse :: &string -> Maybe<i64>\nfn parse s = Parse.parse s")
+        accepts("def parse :: &string -> Maybe<f64>\nfn parse s = Parse.parse s")
             .contains("@tz_soft_parse")
     );
 }

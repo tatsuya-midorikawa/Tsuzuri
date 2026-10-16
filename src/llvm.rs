@@ -8208,6 +8208,39 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %ok = or i1 %value, %false\n\
                br i1 %ok, label %some, label %none\nsome:"
         );
+    } else if let Type::Integer(bits, signed) = payload {
+        // The integer parser reads the UTF-16 units itself and stores its result whole: an i128 for a
+        // 128-bit integer, else an i64 whose low bits are the value.
+        let (slot_type, call, load) = if *bits == 128 {
+            (
+                "i128",
+                format!(
+                    "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 {signed}, ptr %slot)"
+                ),
+                "  %value = load i128, ptr %slot".to_string(),
+            )
+        } else {
+            let truncate = if *bits == 64 {
+                "  %value = load i64, ptr %slot".to_string()
+            } else {
+                format!("  %wide = load i64, ptr %slot\n  %value = trunc i64 %wide to {value_type}")
+            };
+            (
+                "i64",
+                format!(
+                    "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 {bits}, i1 {signed}, ptr %slot)"
+                ),
+                truncate,
+            )
+        };
+        let _ = writeln!(
+            body,
+            "  %data = extractvalue %tz.string %text, 0\n\
+               %length = extractvalue %tz.string %text, 1\n\
+               %slot = alloca {slot_type}, align 16\n\
+               %ok = {call}\n\
+               br i1 %ok, label %some, label %none\nsome:\n{load}"
+        );
     } else {
         let _ = writeln!(
             body,
@@ -8599,7 +8632,7 @@ mod tests {
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
              let number = to_string 42\n\
-             let parsed: Maybe<i64> = Parse.parse ref number\n\
+             let parsed: Maybe<f64> = Parse.parse ref number\n\
              let truth = to_string true\n\
              let parsed_bool: Maybe<bool> = Parse.parse ref truth\n0",
         );
@@ -8616,7 +8649,7 @@ mod tests {
             assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
         }
         // An integer is shown by the integer formatter, which writes into a stack buffer whose
-        // start the call computes; parsing still uses the numeric runtime.
+        // start the call computes; a float is parsed by the numeric runtime from an ASCII copy.
         assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
         assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)"));
         assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
@@ -8804,13 +8837,59 @@ mod tests {
         assert!(ir.contains("call i32 @tz.integer.format128(ptr %end, i128 %x, i1 true)"));
         // Nothing of the numeric runtime: no formatter and no intrinsic declaration.
         assert!(!ir.contains("tz_soft_"), "{ir}");
-        // A float, a parse, and a format spec still link it.
+        // A float or a decimal, parsed or shown, still links it.
         for source in [
             "def run :: f64 -> string\nfn run x = to_string x",
-            "def run :: string -> Maybe<i64>\nfn run text = Parse.parse ref text",
+            "def run :: string -> Maybe<f64>\nfn run text = Parse.parse ref text",
+            "def run :: string -> Maybe<d64>\nfn run text = Parse.parse ref text",
         ] {
             assert!(library(source).contains("tz_soft_"), "{source}");
         }
+    }
+
+    #[test]
+    fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
+        let ir = library(
+            "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
+             def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
+             def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\
+             def wide :: &string -> Maybe<i128u>\nfn wide text = Parse.parse text\n\
+             def specs :: i32 -> i8u -> i128u -> string\n\
+             fn specs a b c = $\"{a:+}{b:x}{c:b}\"",
+        );
+        // The parser reads the UTF-16 text itself and stores the result as an i64 (an i128 for a
+        // 128-bit integer), which the load narrows.
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 8, i1 true, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 32, i1 false, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 64, i1 true, ptr %slot)"
+        ));
+        assert!(
+            ir.contains(
+                "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 false, ptr %slot)"
+            )
+        );
+        assert!(ir.contains("%value = trunc i64 %wide to i8\n"));
+        assert!(ir.contains("%value = trunc i64 %wide to i32\n"));
+        assert!(ir.contains("%value = load i64, ptr %slot\n"));
+        assert!(ir.contains("%value = load i128, ptr %slot\n"));
+        // The format specs take the value extended to 64 bits, or the i128, and the flags of a hole.
+        assert!(ir.contains("call i32 @tz.integer.spec(ptr "), "{ir}");
+        assert!(ir.contains("call i32 @tz.integer.spec128(ptr "), "{ir}");
+        assert!(ir.contains("i1 true, i32 1)"), "plus: {ir}");
+        assert!(ir.contains("i1 false, i32 48)"), "hexadecimal: {ir}");
+        assert!(ir.contains("i1 false, i32 96)"), "binary: {ir}");
+        // No numeric runtime, no ASCII copy of the text, and no 4 KiB buffer for it.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        assert!(!ir.contains("call i1 @tz.string.to_ascii"), "{ir}");
+        // A float's spec still uses it.
+        let ir = library("def run :: f64 -> string\nfn run x = $\"{x:.2}\"");
+        assert!(ir.contains("call i32 @tz_soft_format_spec("), "{ir}");
+        assert!(!ir.contains("tz.integer."), "{ir}");
     }
 
     #[test]
