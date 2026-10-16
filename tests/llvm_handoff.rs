@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use tsuzuri::{analyze, llvm, trap::TrapSource};
 
 const SOURCE: &str = "\
@@ -39,6 +40,8 @@ fn sources(text: &str) -> Vec<TrapSource<'_>> {
 /// The names that `ir` defines, such as `@tz.fn.Main.used`.
 fn defined(ir: &str) -> BTreeSet<String> {
     ir.lines()
+        // A runtime part can follow the closing brace of the function before it on the same line.
+        .map(|line| line.strip_prefix('}').unwrap_or(line))
         .filter(|line| line.starts_with("define "))
         .filter_map(|line| {
             let start = line.find('@')? + 1;
@@ -453,4 +456,261 @@ fn an_unused_function_does_not_decide_whether_a_trap_info_build_still_works() {
     let pruned = executable(TREE_WITH_LOCK, true).ir;
     assert!(!defined(&pruned).contains("tz.fn.Main.bump"));
     assert_eq!(context_without_parameter(&pruned), BTreeSet::new());
+}
+
+fn is_source(name: &str) -> bool {
+    [".tz", ".tt", ".tc"]
+        .iter()
+        .any(|extension| name.ends_with(extension))
+}
+
+fn sorted_entries(directory: &Path) -> Vec<std::fs::DirEntry> {
+    let mut entries: Vec<_> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    entries
+}
+
+/// The directories below `examples`, `tests/fixtures` and `benchmarks` that hold sources directly, at most two
+/// levels down (the projects of benchmarks/check-handoff-equivalence.mjs).
+fn project_directories() -> Vec<PathBuf> {
+    fn visit(directory: PathBuf, depth: usize, found: &mut Vec<PathBuf>) {
+        let entries = sorted_entries(&directory);
+        if entries
+            .iter()
+            .any(|entry| entry.path().is_file() && is_source(&entry.file_name().to_string_lossy()))
+        {
+            found.push(directory);
+        } else if depth > 0 {
+            for entry in entries.iter().filter(|entry| entry.path().is_dir()) {
+                visit(entry.path(), depth - 1, found);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    for parent in ["examples", "tests/fixtures", "benchmarks"] {
+        for entry in sorted_entries(&root.join(parent))
+            .iter()
+            .filter(|entry| entry.path().is_dir())
+        {
+            visit(entry.path(), 1, &mut found);
+        }
+    }
+    found
+}
+
+/// The sources of a project as `("Geometry/Point.tz", text)`.
+fn project_sources(directory: &Path) -> Vec<(String, String)> {
+    fn visit(directory: &Path, prefix: &str, found: &mut Vec<(String, String)>) {
+        for entry in sorted_entries(directory) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                visit(&entry.path(), &format!("{prefix}{name}/"), found);
+            } else if is_source(&name) {
+                let text = std::fs::read_to_string(entry.path()).unwrap();
+                found.push((format!("{prefix}{name}"), text));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    visit(directory, "", &mut found);
+    found
+}
+
+/// `export def` as a plain public function, which only an entry can reach in an executable.
+fn without_exports(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.strip_prefix("export def ") {
+            Some(rest) => format!("def {rest}"),
+            None => line.to_owned(),
+        })
+        .collect()
+}
+
+/// A program of `files` with a constant entry: top-level code at the end of `Main.tz`.
+fn with_entry(mut files: Vec<(String, String)>) -> Vec<(String, String)> {
+    match files.iter_mut().find(|(path, _)| path == "Main.tz") {
+        Some((_, text)) => text.push_str("\n\n\"ok\"\n"),
+        None => files.push(("Main.tz".to_owned(), "\"ok\"\n".to_owned())),
+    }
+    files
+}
+
+/// The functions that a build keeps of every `@cpu` function depend on the CPU of the machine that emits.
+fn without_cpu_versions(names: BTreeSet<String>) -> BTreeSet<String> {
+    names
+        .into_iter()
+        .filter(|name| !name.contains(".cpu."))
+        .collect()
+}
+
+/// The definitions of the record and union types of a program (the types of the runtime parts, which a program defines
+/// only when it uses the part, are not its own).
+fn program_types(ir: &str) -> BTreeSet<String> {
+    type_definitions(ir)
+        .into_iter()
+        .filter(|line| {
+            ["%\"tz.record.", "%tz.record.", "%\"tz.union.", "%tz.union."]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        })
+        .collect()
+}
+
+/// What a native executable of `program` must keep of the unpruned program, for the builds that the driver makes: `build` with the
+/// cache on (the numeric runtime is an object of its own), `build` without it, and `run` (traps are instrumented).
+fn pruning_problems(
+    label: &str,
+    program: &[(String, String)],
+    problems: &mut Vec<String>,
+) -> usize {
+    let user: Vec<(&str, &str)> = program
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    let Ok(module) = tsuzuri::analyze_modules(&user) else {
+        return 0;
+    };
+    if module.entry.is_none() {
+        return 0;
+    }
+    let sources: Vec<TrapSource<'_>> = user
+        .iter()
+        .copied()
+        .chain(tsuzuri::stdlib::sources_for(
+            user.iter().map(|(_, text)| *text),
+        ))
+        .map(|(path, text)| TrapSource { path, text })
+        .collect();
+    let mut emitted = 0;
+    for (trap_info, runtime_objects) in [(false, true), (false, false), (true, false)] {
+        let options = llvm::EmitOptions {
+            runtime_objects,
+            ..options(llvm::Entry::Console)
+        };
+        let unpruned = llvm::emit_native_build_for(&module, options, &sources, None, trap_info, 0);
+        let pruned = llvm::emit_native_build(&module, options, &sources, None, trap_info);
+        let case = format!("{label} (trap info {trap_info}, runtime objects {runtime_objects})");
+        let (unpruned, pruned) = match (unpruned, pruned) {
+            (Ok(unpruned), Ok(pruned)) => (unpruned.ir, pruned.ir),
+            // What the unpruned program does not emit, the executable may emit (dead code that failed).
+            (Err(_), _) => continue,
+            (Ok(_), Err(error)) => {
+                problems.push(format!("{case}: the executable does not emit: {error:?}"));
+                continue;
+            }
+        };
+        emitted += 1;
+        let (kept, had) = (
+            without_cpu_versions(defined(&pruned)),
+            without_cpu_versions(defined(&unpruned)),
+        );
+        let gained: Vec<_> = kept.difference(&had).collect();
+        if !gained.is_empty() {
+            problems.push(format!("{case}: the executable defines {gained:?} only"));
+        }
+        if program_types(&pruned) != program_types(&unpruned) {
+            problems.push(format!("{case}: the types of the program differ"));
+        }
+        if undefined_types(&unpruned).is_empty() && !undefined_types(&pruned).is_empty() {
+            problems.push(format!(
+                "{case}: the executable names {:?} without defining them",
+                undefined_types(&pruned)
+            ));
+        }
+        for (name, ir) in [("unpruned", &unpruned), ("pruned", &pruned)] {
+            let lost = context_without_parameter(ir);
+            if !lost.is_empty() {
+                problems.push(format!(
+                    "{case}: {name} {lost:?} use %tz.context without taking it"
+                ));
+            }
+        }
+    }
+    emitted
+}
+
+/// Nearly every example, fixture and benchmark is a library, and the executables are the only builds that prune, so each
+/// project is made an executable: as it is if it has an entry, else with a constant entry (and with its exports as plain
+/// public functions, so that nothing is reachable but the drops of std types). The IR of the pruned executable is checked
+/// without Clang (benchmarks/check-handoff-equivalence.mjs builds and runs them against a baseline compiler).
+#[test]
+fn pruning_keeps_the_ir_of_every_project_valid() {
+    let directories = project_directories();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let totals = std::sync::Mutex::new((0usize, 0usize, Vec::<String>::new()));
+    let workers = std::thread::available_parallelism()
+        .map_or(2, usize::from)
+        .min(8);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            std::thread::Builder::new()
+                .stack_size(16 << 20)
+                .spawn_scoped(scope, || {
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(directory) = directories.get(index) else {
+                            break;
+                        };
+                        let name = directory
+                            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                            .unwrap()
+                            .display()
+                            .to_string();
+                        let files = project_sources(directory);
+                        let user: Vec<(&str, &str)> = files
+                            .iter()
+                            .map(|(path, text)| (path.as_str(), text.as_str()))
+                            .collect();
+                        let Ok(original) = tsuzuri::analyze_modules(&user) else {
+                            continue;
+                        };
+                        let exports = files.iter().any(|(_, text)| {
+                            text.lines().any(|line| line.starts_with("export def "))
+                        });
+                        let plain: Vec<_> = files
+                            .iter()
+                            .map(|(path, text)| (path.clone(), without_exports(text)))
+                            .collect();
+                        let mut programs = Vec::new();
+                        if original.entry.is_some() {
+                            programs.push(("as it is", files.clone()));
+                            if exports {
+                                programs.push(("unexport", plain));
+                            }
+                        } else {
+                            if exports {
+                                programs.push(("keep", with_entry(files.clone())));
+                            }
+                            programs.push(("none", with_entry(plain)));
+                        }
+                        let mut problems = Vec::new();
+                        let (mut built, mut emitted) = (0, 0);
+                        for (variant, program) in &programs {
+                            let count = pruning_problems(
+                                &format!("{name} {variant}"),
+                                program,
+                                &mut problems,
+                            );
+                            built += usize::from(count > 0);
+                            emitted += count;
+                        }
+                        let mut totals = totals.lock().unwrap();
+                        totals.0 += built;
+                        totals.1 += emitted;
+                        totals.2.extend(problems);
+                    }
+                })
+                .unwrap();
+        }
+    });
+    let (programs, emissions, problems) = totals.into_inner().unwrap();
+    println!("pruning: {programs} programs, {emissions} builds checked");
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    // The corpus is checked, not skipped: 130 projects make about 300 programs that analyze and emit.
+    assert!(programs >= 200, "only {programs} programs were checked");
+    assert!(emissions >= 600, "only {emissions} builds were checked");
 }
