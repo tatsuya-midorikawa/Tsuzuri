@@ -46,6 +46,18 @@
 
 enum { TZ_TASK_MAX_THREADS = 32 };
 
+/* How many sleeping workers a submit wakes, and how many more each worker that joins a group wakes while the group
+   still has unstarted items (tz_task_worker_main). The workers start like the branches of a tree, so a group
+   spreads over them in a few steps without its submitter calling the kernel for each, and a group that the
+   submitter finishes alone wakes one worker. */
+#ifndef TZ_TASK_INITIAL_SIGNALS
+#define TZ_TASK_INITIAL_SIGNALS 1
+#endif
+#ifndef TZ_TASK_CHAIN_SIGNALS
+#define TZ_TASK_CHAIN_SIGNALS 2
+#endif
+_Static_assert(TZ_TASK_INITIAL_SIGNALS >= 1 && TZ_TASK_CHAIN_SIGNALS >= 1, "a group needs a wakeup to bring in the workers");
+
 #if !defined(_WIN32)
 #ifndef TSUZURI_TRAP_INFO_DEFINED
 #define TSUZURI_TRAP_INFO_DEFINED
@@ -79,8 +91,13 @@ struct tz_task_group {
     void (*run)(void *, uint64_t);
     uint32_t (*run_result)(void *, uint64_t);
     void *context;
+    /* Fixed once the group is published: a failure does not shrink it. */
     uint64_t length;
-    uint64_t next;
+    /* The next index to claim, taken with fetch_add and without the mutex: it can run past `length`
+       by the number of threads that lost the race. A failure moves it to `length` (see tz_task_run_item). */
+    _Atomic uint64_t next;
+    /* The items that have not finished or been skipped. A thread takes the items it ran off once, when it
+       stops, so the group is not finished until every thread that claimed an item has let go of it. */
     _Atomic uint64_t remaining;
     uint64_t failure;
     struct tz_task_group *next_group;
@@ -164,6 +181,10 @@ static void tz_task_wake(pthread_cond_t *condition) {
     tz_task_check("pthread_cond_broadcast", TZ_TASK_COND_BROADCAST(condition));
 }
 
+static void tz_task_signal(pthread_cond_t *condition) {
+    tz_task_check("pthread_cond_signal", TZ_TASK_COND_SIGNAL(condition));
+}
+
 /* The index from which unstarted items are skipped: the lowest failing or trapping item. */
 static uint64_t tz_task_stop(const struct tz_task_group *group) {
 #if !defined(_WIN32)
@@ -173,7 +194,19 @@ static uint64_t tz_task_stop(const struct tz_task_group *group) {
 #endif
 }
 
-static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
+/* Claims the next unstarted item of `group` without the mutex: 1 and its index, or 0 when the group has
+   none left. Each index is returned to one thread, so a claimed item always runs, once. */
+static int tz_task_claim(struct tz_task_group *group, uint64_t *index) {
+    if (atomic_load_explicit(&group->next, memory_order_relaxed) >= group->length) return 0;
+    *index = atomic_fetch_add_explicit(&group->next, 1, memory_order_relaxed);
+    return *index < group->length;
+}
+
+/* Runs item `index`, which the calling thread claimed. A failure or a trap is the cold path: it takes the
+   mutex, and the items that nobody has claimed are taken out of the group by one compare-exchange, so
+   that none of them starts. Every index below the failing one was claimed before it, because claims
+   only grow, so the lowest failure is the one that is recorded. */
+static void tz_task_run_item(struct tz_task_group *group, uint64_t index) {
     uint32_t failed = 0;
     int trapped = 0;
 #if !defined(_WIN32)
@@ -184,14 +217,7 @@ static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
 #endif
     if (group->run_result) failed = group->run_result(group->context, index);
     else group->run(group->context, index);
-    if (!group->run_result && !trapped) {
-        if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_acq_rel) == 1) {
-            tz_task_lock();
-            tz_task_wake(&tz_task_pool.work_done);
-            tz_task_unlock();
-        }
-        return;
-    }
+    if (!failed && !trapped) return;
     tz_task_lock();
     uint64_t before = tz_task_stop(group);
     if (failed && index < group->failure) group->failure = index;
@@ -201,17 +227,33 @@ static void tz_task_execute(struct tz_task_group *group, uint64_t index) {
         group->trap = trap;
     }
 #endif
-    uint64_t stop = tz_task_stop(group);
-    if (stop < before) {
-        uint64_t skipped = group->next < group->length ? group->length - group->next : 0;
-        group->length = stop;
-        atomic_fetch_sub_explicit(&group->remaining, skipped, memory_order_relaxed);
+    if (tz_task_stop(group) < before) {
+        uint64_t next = atomic_load_explicit(&group->next, memory_order_relaxed);
+        while (next < group->length && !atomic_compare_exchange_weak_explicit(
+                   &group->next, &next, group->length, memory_order_relaxed, memory_order_relaxed)) {}
+        if (next < group->length) {
+            atomic_fetch_sub_explicit(&group->remaining, group->length - next, memory_order_relaxed);
+        }
         tz_task_wake(&tz_task_pool.work_available);
     }
-    if (atomic_fetch_sub_explicit(&group->remaining, 1, memory_order_release) == 1) {
-        tz_task_wake(&tz_task_pool.work_done);
-    }
     tz_task_unlock();
+}
+
+/* Runs the items of `group` that this thread can still claim; the number that it ran. */
+static uint64_t tz_task_drain(struct tz_task_group *group) {
+    uint64_t done = 0, index;
+    while (tz_task_claim(group, &index)) {
+        tz_task_run_item(group, index);
+        ++done;
+    }
+    return done;
+}
+
+/* Takes `done` items that this thread ran off `remaining`; 1 when they were the last, and whoever
+   waits for the join has to be woken (with the mutex held). Nothing of the group may be touched after
+   this: its owner can return and free it. */
+static int tz_task_release(struct tz_task_group *group, uint64_t done) {
+    return atomic_fetch_sub_explicit(&group->remaining, done, memory_order_acq_rel) == done;
 }
 
 /* A thread that waits for a channel to change. It lives on the stack of the waiting thread; the
@@ -235,7 +277,7 @@ static void tz_waiter_wake(struct tz_waiter *waiter, int doomed) {
     waiter->woken = 1;
     waiter->doomed = doomed;
     if (waiter->counted) ++tz_task_pool.busy;
-    tz_task_check("pthread_cond_signal", TZ_TASK_COND_SIGNAL(&waiter->condition));
+    tz_task_signal(&waiter->condition);
 }
 
 /* With the mutex held: wakes the first waiter of `channel` for room (`sender`) or for an item, or all. */
@@ -260,7 +302,7 @@ static void tz_channel_wake(void *channel, int sender, int all) {
 static void tz_channel_check_deadlock(void) {
     if (!tz_task_pool.waiters || tz_task_pool.busy != 0) return;
     for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
-        if (tz_task_pool.idle != 0 && group->next < group->length) return;
+        if (tz_task_pool.idle != 0 && atomic_load_explicit(&group->next, memory_order_relaxed) < group->length) return;
         if (atomic_load_explicit(&group->remaining, memory_order_acquire) == 0) return;
     }
     fprintf(stderr, "Tsuzuri runtime: deadlock: every task is waiting on a channel\n");
@@ -280,12 +322,13 @@ static void tz_channel_check_deadlock(void) {
 static int tz_task_help_one(void) {
     if (tz_task_pool.idle != 0 || tz_task_help_depth >= TZ_CHANNEL_HELP_DEPTH) return 0;
     for (struct tz_task_group *group = tz_task_pool.groups; group; group = group->next_group) {
-        if (group->next < group->length) {
-            uint64_t index = group->next++;
+        uint64_t index;
+        if (tz_task_claim(group, &index)) {
             ++tz_task_help_depth;
             tz_task_unlock();
-            tz_task_execute(group, index);
+            tz_task_run_item(group, index);
             tz_task_lock();
+            if (tz_task_release(group, 1)) tz_task_wake(&tz_task_pool.work_done);
             --tz_task_help_depth;
             return 1;
         }
@@ -300,19 +343,34 @@ static void *tz_task_worker_main(void *pointer) {
 #endif
     tz_task_lock();
     while (!tz_task_pool.stopping) {
+        /* The first item is claimed under the mutex: until this thread lets go of it the group is not
+           finished, so its owner cannot return while this thread still reads the group. */
         struct tz_task_group *group = tz_task_pool.groups;
-        while (group && group->next >= group->length) group = group->next_group;
+        uint64_t index = 0;
+        while (group && !tz_task_claim(group, &index)) group = group->next_group;
         if (!group) {
             tz_task_wait(&tz_task_pool.work_available);
             continue;
         }
-        uint64_t index = group->next++;
         ++tz_task_pool.busy;
         --tz_task_pool.idle;
         tz_task_counted = 1;
+        /* The group still has unstarted items: wake the next workers, as many as it has items left, up to
+           TZ_TASK_CHAIN_SIGNALS (a hint; the group may be gone by then, and a wakeup that finds nothing
+           is harmless). A lost wakeup is not: see the argument at tz_task_submit. */
+        uint64_t seen = atomic_load_explicit(&group->next, memory_order_relaxed);
+        unsigned wakes = seen >= group->length ? 0
+            : group->length - seen < TZ_TASK_CHAIN_SIGNALS ? (unsigned)(group->length - seen) : TZ_TASK_CHAIN_SIGNALS;
         tz_task_unlock();
-        tz_task_execute(group, index);
+        while (wakes-- != 0) tz_task_signal(&tz_task_pool.work_available);
+        tz_task_run_item(group, index);
+        uint64_t done = 1 + tz_task_drain(group);
+        /* The items are released, and the worker counted free, in one critical section: when the
+           owner sees the group finished, no worker of it is still counted as running. Otherwise a
+           thread that waits on a channel right after the join would see no free worker, run an item
+           on top of itself, and report a deadlock that is not one. */
         tz_task_lock();
+        if (tz_task_release(group, done)) tz_task_wake(&tz_task_pool.work_done);
         tz_task_counted = 0;
         --tz_task_pool.busy;
         ++tz_task_pool.idle;
@@ -351,6 +409,15 @@ static void tz_task_start_pool(void) {
     }
 }
 
+/* Waking workers, and why a wakeup is never lost. A token is a signal that was sent and has not been taken, or a
+   worker that is awake and has not looked at the groups yet. A worker looks at every group with the mutex held
+   before it sleeps, so a token ends in a claim, or in nothing left to claim. A submit adds TZ_TASK_INITIAL_SIGNALS
+   tokens for its group (never more than the group has other items), and a worker that claims an item at its join
+   adds up to TZ_TASK_CHAIN_SIGNALS while that group still has unstarted items (at least one, so the token that
+   the claim used up is replaced). The tokens are therefore never fewer than the groups that have unstarted items:
+   a token is used up by a claim that passes it on, or that empties its group. The thread that waits for a join
+   runs its own items to the end, so a group never needs a token to finish; the tokens bring the threads that a
+   pipeline needs, and that a thread blocked on a channel waits for while idle != 0. */
 static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(void *, uint64_t), void *context, uint64_t length) {
     if (length == 0) return UINT64_MAX;
     if (length == 1) {
@@ -368,7 +435,9 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
     }
     struct tz_task_group group = {
         .run = run, .run_result = run_result, .context = context, .length = length,
-        .remaining = length, .failure = UINT64_MAX,
+        /* Item 0 is this thread's, claimed before the group is published (F10): no worker can take every
+           item before the thread that waits for the group has started one. */
+        .next = 1, .remaining = length, .failure = UINT64_MAX,
     };
 #if !defined(_WIN32)
     group.owner = tsuzuri_trap_hooks.owner ? tsuzuri_trap_hooks.owner() : NULL;
@@ -387,20 +456,19 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
     if (tz_task_pool.tail) tz_task_pool.tail->next_group = &group;
     else tz_task_pool.groups = &group;
     tz_task_pool.tail = &group;
-    tz_task_wake(&tz_task_pool.work_available);
+    unsigned wakes = tz_task_pool.thread_count < TZ_TASK_INITIAL_SIGNALS ? tz_task_pool.thread_count : TZ_TASK_INITIAL_SIGNALS;
+    if (wakes > length - 1) wakes = (unsigned)(length - 1);
+    tz_task_unlock();
+    while (wakes-- != 0) tz_task_signal(&tz_task_pool.work_available);
+    tz_task_run_item(&group, 0);
+    (void)tz_task_release(&group, 1 + tz_task_drain(&group));
+    tz_task_lock();
     while (atomic_load_explicit(&group.remaining, memory_order_acquire) != 0) {
-        if (group.next < group.length) {
-            uint64_t index = group.next++;
-            tz_task_unlock();
-            tz_task_execute(&group, index);
-            tz_task_lock();
-        } else {
-            // Waiting for the join, this thread cannot change a channel.
-            --tz_task_pool.busy;
-            tz_channel_check_deadlock();
-            tz_task_wait(&tz_task_pool.work_done);
-            ++tz_task_pool.busy;
-        }
+        // Waiting for the join, this thread cannot change a channel.
+        --tz_task_pool.busy;
+        tz_channel_check_deadlock();
+        tz_task_wait(&tz_task_pool.work_done);
+        ++tz_task_pool.busy;
     }
     struct tz_task_group **link = &tz_task_pool.groups;
     struct tz_task_group *previous = NULL;

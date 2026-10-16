@@ -1,3 +1,5 @@
+/* The checks are assertions: some toolchains define NDEBUG for optimized builds (the bundled Windows toolchain does from -O1). */
+#undef NDEBUG
 #include <assert.h>
 #include <errno.h>
 #if defined(_WIN32)
@@ -13,12 +15,16 @@
 
 static long processors = 4;
 static atomic_uint created, joined, outstanding, peak;
-static atomic_uint parked, broadcasts;
+static atomic_uint parked, broadcasts, signals;
+/* How often the pool mutex was taken, how many workers are asleep on the pool's condition now, and how many
+   of the signals sent to them have not woken one yet. */
+static atomic_uint locks, asleep, pending;
 static int fail_create, fail_join;
 static const char *failure = "";
 static pthread_mutex_t observation = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t observed = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t *worker_condition;
+static pthread_mutex_t *pool_mutex;
 
 static long test_sysconf(int name) {
     assert(name == _SC_NPROCESSORS_ONLN);
@@ -45,6 +51,7 @@ static int test_join(pthread_t thread, void **result) {
 }
 
 static int test_lock(pthread_mutex_t *mutex) {
+    atomic_fetch_add(&locks, 1);
     return strcmp(failure, "mutex_lock") == 0 ? EINVAL : pthread_mutex_lock(mutex);
 }
 
@@ -57,8 +64,16 @@ static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
     if (condition == worker_condition) {
         assert(pthread_mutex_lock(&observation) == 0);
         atomic_fetch_add(&parked, 1);
+        atomic_fetch_add(&asleep, 1);
         assert(pthread_cond_broadcast(&observed) == 0);
         assert(pthread_mutex_unlock(&observation) == 0);
+        int error = pthread_cond_wait(condition, mutex);
+        assert(pthread_mutex_lock(&observation) == 0);
+        atomic_fetch_sub(&asleep, 1);
+        if (atomic_load(&pending) > 0) atomic_fetch_sub(&pending, 1);
+        assert(pthread_cond_broadcast(&observed) == 0);
+        assert(pthread_mutex_unlock(&observation) == 0);
+        return error;
     }
     return pthread_cond_wait(condition, mutex);
 }
@@ -66,6 +81,23 @@ static int test_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
 static int test_broadcast(pthread_cond_t *condition) {
     atomic_fetch_add(&broadcasts, 1);
     return strcmp(failure, "cond_broadcast") == 0 ? EINVAL : pthread_cond_broadcast(condition);
+}
+
+static int test_signal(pthread_cond_t *condition) {
+    atomic_fetch_add(&signals, 1);
+    if (strcmp(failure, "cond_signal") == 0) return EINVAL;
+    if (condition != worker_condition) return pthread_cond_signal(condition);
+    // POSIX drops a signal that finds nobody to wake. macOS remembers it and wakes a later sleeper, which would hide a
+    // lost wakeup, so the signal is passed on only when a sleeper exists that no earlier signal is on its way to wake.
+    // With the pool mutex held a counted sleeper really waits, so a signal that is passed on never misses it, and the
+    // counts change only under this mutex (a worker updates them after it has taken the mutex back).
+    assert(pthread_mutex_lock(pool_mutex) == 0);
+    if (atomic_load(&pending) < atomic_load(&asleep)) {
+        atomic_fetch_add(&pending, 1);
+        assert(pthread_cond_signal(condition) == 0);
+    }
+    assert(pthread_mutex_unlock(pool_mutex) == 0);
+    return 0;
 }
 
 static int test_once(pthread_once_t *once, void (*initialize)(void)) {
@@ -83,6 +115,7 @@ static int test_atexit(void (*callback)(void)) {
 #define TZ_TASK_MUTEX_UNLOCK test_unlock
 #define TZ_TASK_COND_WAIT test_wait
 #define TZ_TASK_COND_BROADCAST test_broadcast
+#define TZ_TASK_COND_SIGNAL test_signal
 #define TZ_TASK_ONCE test_once
 #define TZ_TASK_ATEXIT test_atexit
 #include "../src/runtime/task.c"
@@ -142,9 +175,65 @@ static void check_hits(unsigned expected) {
     assert(tz_task_pool.groups == NULL && tz_task_pool.tail == NULL);
 }
 
+/* Waits until every worker is asleep and no signal is still on its way to wake one, so that nothing of an earlier
+   group is left that could take the mutex or wake without a signal of the next group. */
+static void quiesce(void) {
+    assert(pthread_mutex_lock(&observation) == 0);
+    while (atomic_load(&asleep) != required - 1 || atomic_load(&pending) != 0) assert(pthread_cond_wait(&observed, &observation) == 0);
+    assert(pthread_mutex_unlock(&observation) == 0);
+}
+
 static uint32_t result_visit(void *context, uint64_t index) {
     visit(context, index);
     return 0;
+}
+
+/* One group of ITEMS indices on a pool that is asleep. The mutex is taken a few times, not once for each index
+   (259 times for `run` and 515 for `results` before PR06): twice by the submitter, once by each worker that took
+   part. The workers are woken by signals that pass along the group: some at the submit, up to
+   TZ_TASK_CHAIN_SIGNALS for each worker that joins while items are unstarted, and at most one broadcast, by the
+   worker that finishes the group for a submitter that waits. A pool of one thread takes no lock and wakes nobody. */
+static void check_group_cost(int results) {
+    quiesce();
+    reset_hits();
+    unsigned locks_before = atomic_load(&locks), signals_before = atomic_load(&signals), broadcasts_before = atomic_load(&broadcasts);
+    if (results) assert(tsuzuri_task_parallel_results(result_visit, hits, ITEMS) == UINT64_MAX);
+    else tsuzuri_task_parallel(visit, hits, ITEMS);
+    unsigned taken = atomic_load(&locks) - locks_before, woken = atomic_load(&signals) - signals_before;
+    unsigned broadcast = atomic_load(&broadcasts) - broadcasts_before;
+    check_hits(1);
+    if (required == 1) {
+        assert(taken == 0 && woken == 0 && broadcast == 0);
+        return;
+    }
+    assert(taken <= 2 + (required - 1));
+    assert(woken >= 1 && woken <= TZ_TASK_INITIAL_SIGNALS + TZ_TASK_CHAIN_SIGNALS * (required - 1));
+    assert(broadcast <= 1);
+}
+
+static atomic_uint late;
+
+/* Item 1 is the only one that a worker can take: item 0, the submitter's, ends after the worker started it, and
+   the worker ends after the submitter waits for the join (it no longer counts as running). So the worker
+   finishes the group, and has to wake the submitter that sleeps. */
+static void last_worker(void *context, uint64_t index) {
+    (void)context;
+    if (index == 0) {
+        assert(pthread_mutex_lock(&mutex) == 0);
+        while (atomic_load(&late) == 0) assert(pthread_cond_wait(&ready, &mutex) == 0);
+        assert(pthread_mutex_unlock(&mutex) == 0);
+        return;
+    }
+    assert(pthread_mutex_lock(&mutex) == 0);
+    atomic_store(&late, 1);
+    assert(pthread_cond_broadcast(&ready) == 0);
+    assert(pthread_mutex_unlock(&mutex) == 0);
+    for (;;) {
+        tz_task_lock();
+        uint64_t running = tz_task_pool.busy;
+        tz_task_unlock();
+        if (running == 1) break;
+    }
 }
 
 static uint32_t result_failure(void *context, uint64_t index) {
@@ -168,6 +257,7 @@ static uint32_t result_stop(void *context, uint64_t index) {
 
 int main(int argc, char **argv) {
     worker_condition = &tz_task_pool.work_available;
+    pool_mutex = &tz_task_pool.mutex;
     if (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9') && argv[1][0] != '-') {
         failure = argv[1];
         fail_create = strcmp(argv[1], "create") == 0;
@@ -194,6 +284,33 @@ int main(int argc, char **argv) {
     assert(atomic_load(&created) == required - 1 && atomic_load(&joined) == 0);
     tsuzuri_task_parallel(publish, published, ITEMS);
     for (unsigned index = 0; index < ITEMS; ++index) assert(published[index] == (index + 1) * 37);
+
+    // A group takes the pool mutex a few times, not once for each index: the submitter publishes the group and
+    // waits for it, and each worker that took part lets go of its items. A pool of one thread never takes it.
+    // (The mutex was taken once for each index before PR06: 259 times for this group, 515 for `results`.)
+    quiesce();
+    for (unsigned round = 0; round < 3; ++round) {
+        check_group_cost(0);
+        check_group_cost(1);
+    }
+
+    // A pool that sleeps is woken as far as the group needs it: every item waits for all the workers, so a
+    // wakeup that is lost hangs here (the alarm of tests/tasks.mjs and of the callers ends it).
+    quiesce();
+    arrivals = 0;
+    reset_hits();
+    tsuzuri_task_parallel(rendezvous, hits, ITEMS);
+    assert(arrivals == required);
+    check_hits(1);
+
+    if (required > 1) {
+        quiesce();
+        unsigned signals_before = atomic_load(&signals), broadcasts_before = atomic_load(&broadcasts);
+        tsuzuri_task_parallel(last_worker, NULL, 2);
+        assert(atomic_load(&signals) - signals_before == 1);
+        assert(atomic_load(&broadcasts) - broadcasts_before == 1);
+        assert(tz_task_pool.groups == NULL && tz_task_pool.busy == 0);
+    }
 
     reset_hits();
     tsuzuri_task_parallel(nested, hits, 32);
@@ -224,9 +341,12 @@ int main(int argc, char **argv) {
     assert(tsuzuri_task_parallel_results(result_stop, hits, ITEMS) == 3);
     for (unsigned index = 0; index <= 3; ++index) assert(atomic_load(&hits[index]) == 1);
     if (required == 1) for (unsigned index = 4; index < ITEMS; ++index) assert(atomic_load(&hits[index]) == 0);
+    // Whatever was started after the failure was recorded ran once, never twice.
+    for (unsigned index = 4; index < ITEMS; ++index) assert(atomic_load(&hits[index]) <= 1);
     reset_hits();
     assert(tsuzuri_task_parallel_results(result_failure, hits, ITEMS) == 2);
-    assert(atomic_load(&hits[2]) == 1);
+    assert(atomic_load(&hits[0]) == 1 && atomic_load(&hits[1]) == 1 && atomic_load(&hits[2]) == 1);
+    for (unsigned index = 3; index < ITEMS; ++index) assert(atomic_load(&hits[index]) <= 1);
     assert(tsuzuri_task_parallel_results(NULL, NULL, 0) == UINT64_MAX);
     tz_task_shutdown();
     tz_task_shutdown();

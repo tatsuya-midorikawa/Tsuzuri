@@ -1070,13 +1070,24 @@ WASM のタスクは逐次フォールバックであり、マルチコア性能
 cargo build --release --locked
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick
 node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f01-task-before.o --artifacts target/benchmarks/f01-measured
+node benchmarks/run-tasks.mjs target/release/tsuzuri --runtime <task.c> --baseline-runtime <before-task.c> --metrics target/perf/<run>
+node benchmarks/run-tasks.mjs target/release/tsuzuri --sweep           # 32 タスクで 1 件の長さを変える（粒度）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --gap-us 1000     # 各呼び出しの前に 1 ms 休み、worker を眠らせる（起床の遅延）
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick       # WASM threads の pool（Node.js の worker_threads）
 ```
 
-`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイムオブジェクトを指定します。
+`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイム（オブジェクトまたは C ファイル）を指定します。
+`--runtime` は測定側のランタイムの C ファイルを指定します（既定は `src/runtime/task.c`）。コンパイラの埋め込みランタイムと切り離して、同じコンパイラ・同じ IR で前後のランタイムを比べられます。
 同一の LLVM IR を新旧両ランタイムへリンクし、タスク生成、クロージャ捕捉、結果メモリ確保、並行実行、完了待機、およびリソース解放に至る全行程を測定対象に含めます。
+IR は `--allocator system` で作ります（既定の確保器が変わっても比較の対象が変わらないようにするためです）。
 コールド測定（cold）は初回呼び出しおよびスレッドプールの遅延起動時間を計測し、ウォーム測定（warm）は同一プロセス内でのプール再利用時の時間を計測します。コンパイル時間、プロセス起動時間、およびプロセス終了時のシャットダウン時間は計測区間外です。
 `--quick` オプションは独立した整数参照実装との結果一致を確認するスモークテストであり、速度に関する合否判定閾値は設けていません。
-通常の測定では 7 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+通常の測定では 9 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+1 サンプルは 1 プロセスで、`warm_ms_per_call`（連続呼び出しの平均）、`warm_p50_ms`（1 回ごとに計った呼び出しの中央値）、`cpu_ms_per_call`（プロセスの CPU 時間を呼び出し数で割った値）を出します。
+`--gap-us` は 1 回ごとの呼び出しの前に休みを入れます。休みは時間に含めません。worker が眠った後の起床の遅延を見るための設定で、休みなしの連続呼び出しは worker が起きたままになり、この遅延を隠します。
+`--metrics` の生データは、モードごとに別の suite（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）へ書きます。
+仕事は tiny（4 添字×0 反復）、small（32 添字×16 反復）、bulk（1024 添字×256 反復）に、`cpp/task_parallel` と同じ形の coarse（16 添字×60000 反復、1 件あたり約 80 µs）を加えた 4 つです。
+`run-tasks-wasm.mjs` は、同じ kernel の `Task.parallel` を WASM threads の pool（Node の `worker_threads`）で測り、JSON を 1 行出力します。測る対象はコンパイラが埋め込む `task-wasm-threads.c` なので、2 つのコンパイラを比べると 2 つの pool を比べられます。
 
 チケット F01 実装時における測定結果（Apple M1 Max、10 logical CPUs、macOS Darwin 27、Apple Clang 21、`-O3 generic`、fast-math なし）:
 
@@ -1087,7 +1098,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f
 | bulk | 1024／256 | 0.641 | 0.426 | 423.500 | 309.187 |
 
 所要時間は数値が小さいほど良好です。tiny および small のウォーム実行では大幅な時間短縮を達成した一方、コールド起動時やバルク（bulk）実行時では旧版よりも遅い結果となっており、全般的な高速化と過大に主張することはありません。
-要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が依然としてオーバーヘッド要因となっています。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
+要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が、この時点でのオーバーヘッド要因でした。添字の取得と完了の数え方、起床の方法は PR06 で変えました（下の「Task プールのスケジューラ（PR06、2026-10-16）」）。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
 生データは `target/benchmarks/f01-measured/result.json`、同一 IR は同ディレクトリの `tasks.ll` に保存されています。
 なお、この測定結果を冒頭の言語間ベンチマークサマリーに混入させることはせず、共有 CI に恣意的な速度閾値を設定することもありません。
 
@@ -1102,7 +1113,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --artifacts
 既存ハーネスのデータ並列比較モードを使用し、Array と Parallel の `init`、`map`、`sum` を同一の入力データおよび整数演算で比較します。
 入出力メモリの確保、クロージャ捕捉、並行計算、スレッド間同期、およびリソース解放の全所要時間を計測します。`sum` の計測には入力データの生成時間も含まれるため、純粋な加算カーネル単体の演算速度比較ではない点に留意してください。
 整数の加算演算は結合法則により処理順序が異なっても同一の合計値となり、各測定結果は独立した参照リファレンスと厳密に照合されます。WASM 環境においては 18 件の正確性検証のみを実施し、並列による高速化として報告することはありません。
-7 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
+9 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
 
 チケット F02 実装時における Apple M1 Max（10 logical CPUs）、Apple Clang 21、`-O3 generic` のウォーム中央値（ms/call、数値が小さいほど高速）:
 
@@ -6058,6 +6069,207 @@ node benchmarks/run-frontend.mjs target/perf/PB04/tsuzuri-before --out target/pe
 node benchmarks/metrics.mjs report target/perf/PB04-after/t8 --baseline target/perf/PB04-before
 # 出力の同値性（基準の compiler とも）
 TSUZURI_BASELINE=target/perf/PB04/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri
+
+### Task プールのスケジューラ（PR06、2026-10-16）
+
+native の `Task.parallel`・`Task.parallel_results` の pool（`src/runtime/task.c`）は、添字の取得を group ごとの atomic な加算に、完了の数え方を参加者ごとの 1 回の減算に、
+起床を signal と木の形の連鎖に変えました（設計は [アーキテクチャ](architecture.md)）。WASM threads の pool（`src/runtime/task-wasm-threads.c`）は、添字の取得と完了を同じ形にしました。
+コンパイラが出す LLVM IR は変えていません（`tests/fixtures/tasks`・`examples/tasks` の `--emit llvm` は基準コンパイラと `cmp` で一致）。
+
+条件: Apple M1 Max（8P + 2E の 10 論理 CPU）、macOS 27.0.1、Apple Clang 21.0.0、Node 20.19.6、`-O3` generic、fast-math なし、IR は `--allocator system`。
+基準コンパイラ `target/perf/PR06/tsuzuri-before`（main `6d15b437` の release、SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）の 1 本で同じ IR を作り、
+C ランタイムだけを `--runtime` で差し替えました。before は `c6864cf5` の `src/runtime/task.c`（SHA-256 `d9b3692c05cc6dd64d4922f15d9a095bbca5698f17d2dd9c881cf18b6d889d34`）です。
+測定は他の agent が並行してビルドしている**共有機**で、次の 3 組です。どれも静かな機械の値ではなく参考値で、正式な値は静かな機械で取り直します。
+
+- 窓 1（排他の窓、`with-lock.sh measure`、開始時の load average 40.28／55.80／68.21）: C4 の runtime（`5118945a`、SHA-256 `321574a3d13d57c458b607417052d7b3b828f2cce1d0ad2b1b1734fc06fb13db`。
+  signal 2 + 連鎖 1）の before → after → before2 を 2 分以内に続けて測りました。
+- 窓 2（排他の窓、18:42〜18:49。1 分平均の load average は開始時の 89.77 から 29〜47 に下がりました）: 起床の方針の変種を HEAD と同じ run の中で交互に測りました（比だけを載せます）。
+  WASM threads の before／after、`--data-parallel`、採用しなかった変種もここです。
+- 最終の runtime（初期 signal 1 + 連鎖 2）: 排他の窓が取れなかったので、1 分平均の load average が 20〜65 の共有機（19:52〜20:01）で、最終の `src/runtime/task.c`
+  （SHA-256 `ac27826f0366c1863049f4c03a5c846a760793832904eb0f02ba44d5d6f3d4b0`）と処理が同じ試作（定数名・コメント・`_Static_assert` だけが違います）を、HEAD と同じ run の中で交互に 2 回測りました。
+  各回に HEAD を HEAD 自身と比べる A/A も測り、揺れの大きさの目安にします。
+
+生データは `target/perf/PR06-*`（git 管理外）です。
+
+各値は 9 標本の中央値で、括弧は最小〜最大です（単位 µs）。before2 は同じ before の再測定で、after／before の差が before2／before の揺れを超えない行は差として扱いません。
+
+```sh
+git show c6864cf5:src/runtime/task.c > target/perf/PR06/task-before.c
+git show 5118945a:src/runtime/task.c > target/perf/PR06/task-c4.c   # 窓 1 の after（C4 の runtime）
+BEFORE=target/perf/PR06/tsuzuri-before
+for mode in "" --data-parallel --sweep "--gap-us 1000"; do
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-c4.c     $mode --metrics target/perf/PR06-after
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before2
+done
+node benchmarks/metrics.mjs report target/perf/PR06-after --baseline target/perf/PR06-before
+```
+
+**回数（時間ではなく、機械に依らない）。** `tests/task_runtime.c` が pthread 呼び出しの hook で、眠っている pool の 257 添字の group 1 つが取る mutex・signal・broadcast を数えます。
+before の runtime ではこの assert は落ちます（CPU 数 2 と 4 で確認）。
+
+| 257 添字の group（CPU 数 N） | before（HEAD） | after |
+| --- | ---: | ---: |
+| `Task.parallel` の mutex の取得 | 259 | 2 + 参加した worker 数（`2 + (N - 1)` 以下） |
+| `Task.parallel_results` の mutex の取得 | 515 | 同上 |
+| broadcast | 2 | 1 以下（最後に減らした worker が、眠っている投入側を起こすときだけ） |
+| signal | 0 | 1 〜 `1 + 2 × (N - 1)`（投入で 1、加わった worker が最大 2） |
+| 長さ 2 の group の signal・broadcast | — | 1・1（worker が最後に終える形で固定した試験） |
+
+**窓 1: 短い group の warm・cold。** この窓の after は C4 の runtime（初期 signal 2 + 連鎖 1）です。最終の runtime は起床の数だけが違い、後の節で測っています。
+tiny = 4 添字×0 反復、small = 32 添字×16 反復、bulk = 1024 添字×256 反復です。
+warm は連続呼び出しの平均、p50 は 1 回ごとに計った中央値、cold は pool の起動を含む最初の呼び出しです。
+
+| 仕事 | 指標 | before | after（C4） | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | warm | 5.32 (3.0–10.4) | 1.44 (0.2–4.2) | 2.90 (0.6–10.9) |
+| tiny | p50 | 0.21 | 0.17 | 0.21 |
+| tiny | cold | 125.5 (90.8–168.1) | 127.5 (75.0–2444.3) | 123.5 (91.6–157.9) |
+| small | warm | 16.2 (8.7–39.8) | 2.39 (1.0–13.2) | 17.3 (2.8–38.0) |
+| small | p50 | 4.46 (1.3–26.7) | 1.00 (1.0–1.0) | 9.50 (1.1–40.8) |
+| small | cold | 122.0 (86.4–228.7) | 103.0 (72.9–258.6) | 123.1 (89.5–197.9) |
+| bulk | warm | 539.9 (510.6–608.3) | 566.8 (290.7–1947.1) | 578.9 (476.8–1377.1) |
+| bulk | p50 | 579.8 (530.0–650.5) | 344.5 (262.3–402.5) | 588.6 (555.4–644.8) |
+| bulk | cold | 666.8 (598.8–782.7) | 465.8 (324.3–2038.0) | 724.5 (544.3–826.8) |
+
+tiny の p50 が 0.2 µs なのは、4 添字を投入したスレッドが worker を待たずに 1 つで終えるためで、pool の費用は変わりません。small の warm・p50 は before の 16.2・4.5 µs が 2.4・1.0 µs になりました
+（before2 は 17.3・9.5 µs）。bulk の warm の平均は、after の標本に 1.9 ms の外れ値があり、before・before2 と区別できません。p50 は 580 → 345 µs です。cold は pool の起動（スレッド生成）が支配し、変わっていません。
+
+**窓 1: worker が眠った後の最初の呼び出し（`--gap-us 1000`、各呼び出しの前に 1 ms 休む）。** 起床の遅延が見える設定です。休みは時間に含めません。
+
+| 仕事 | 指標 | before | after（C4） | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | p50 | 16.1 (14.5–17.4) | 6.17 (5.0–7.1) | 15.0 (13.5–18.6) |
+| small | p50 | 21.8 (18.5–24.7) | 5.83 (5.5–6.5) | 16.0 (14.4–25.7) |
+| bulk | p50 | 590.8 (550.5–781.8) | 252.3 (245.5–272.7) | 574.6 (551.1–591.6) |
+
+起床の変更（と添字の取得・完了の変更）をあわせた結果で、worker が眠っている状態からの 3 種目の中央値が 2.3〜3.7 倍短くなりました（before2 との差は 1.0〜1.4 倍）。
+
+**窓 1: 粒度（`--sweep`、32 添字で 1 添字の仕事の量 `rounds` を変える。逐次は同じ IR の逐次の loop）。** `parallel` の p50 が `sequential` 以下になる最小の粒度:
+
+| rounds | 逐次の 32 件（p50） | before の parallel（p50） | after（C4）の parallel（p50） | before2 の parallel（p50） |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 0.25 | 1.21 | 1.21 | 2.67 |
+| 64 | 1.88 | 4.33 | 4.25 | 27.0 |
+| 256 | 9.7 | 45.8 | 16.7 | 40.6 |
+| 1024 | 41.2 | 57.8 | 42.8 | 62.3 |
+| 4096 | 168.0 | 86.8 | 87.2 | 80.6 |
+| 16384 | 690.5 | 291.9 | 231.8 | 175.5 |
+
+before は逐次の 4096 rounds（約 170 µs）で初めて並列が速くなり、1024 rounds（約 41 µs）では 40 % 遅い（57.8 対 41.2 µs）。after（C4）は 1024 rounds で逐次と並び（42.8 対 42.4 µs）、4096 rounds で半分になります。
+測った点の範囲では、並列が逐次と並ぶか下回る最小の逐次時間は、before が 168 µs（41 µs では 40 % 遅い）、after（C4）が 42 µs（並ぶ）で、168 µs では半分になります。
+それより短い group では、並列は逐次より遅いままです（256 rounds、約 10 µs で 16.7 対 9.7 µs）。
+
+**起床の方針の選択（窓 2）。** 変種を HEAD と同じ run の中で交互に測った比（変種 ÷ HEAD、小さいほど速い）です。
+gap は 1 ms 休んだ後の最初の呼び出しの p50、CPU はそのときの 1 呼び出しあたりのプロセス CPU 時間、連続は休まない連続呼び出しの warm の平均です。
+「初期 n + 連鎖 m」は、投入が起こす worker の数 n と、group に加わった worker が起こす数 m です。
+
+| 変種 | gap tiny | gap small | gap bulk | gap CPU tiny | 連続 bulk |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A/A（HEAD 対 HEAD） | 0.95 | 1.13 | 1.02 | 1.01 | 1.01 |
+| 添字と完了の変更のみ（起床は HEAD と同じ broadcast） | 1.04 | 0.94 | 0.52 | 0.94 | 0.51 |
+| 初期 1 + 連鎖 1 | 0.29 | 0.25 | 0.45 | 0.17 | 0.41 |
+| 初期 2 + 連鎖 1（C4） | 0.36 | 0.34 | 0.49 | 0.20 | 0.49 |
+| 初期 3 + 連鎖 1 | 0.47 | 0.42 | 0.48 | 0.27 | 0.50 |
+| 初期 2 + 連鎖 2 | 0.34 | 0.36 | 0.55 | 0.18 | 0.52 |
+
+- 添字の atomic な取得と完了の一括だけで、bulk は約半分になります（0.51）。tiny・small の gap は HEAD と同じで（1.04・0.94）、起床を broadcast のままにしても、眠った worker の起床は速くなりません。
+- 起床を signal と連鎖にすると、tiny・small の gap は 0.25〜0.47 倍、tiny の CPU は 0.17〜0.27 倍になります。初期の signal が少ないほど速く（1 つ 0.29、2 つ 0.36、3 つ 0.47）、最終は初期 1 にしました。
+- 起床を signal にすると、連続して投入する tiny の p50 が上がる run があります。load average 20〜65 の run では、HEAD の 0.2 µs に対して初期 2 + 連鎖 1 が 7.0・2.9 µs、初期 1 + 連鎖 1 が 1.5・0.8 µs でした。投入側が signal ごとに kernel を呼ぶためと考えています。
+- 連鎖 1 では `--data-parallel` の bulk（64 チャンク）が不安定でした。`Parallel.init` の中央値は、初期 1 + 連鎖 1 が 6 run のうち 3 run で 2.4〜2.9 ms（残りは 0.88〜1.5 ms）、初期 1 + 連鎖 2 は 6 run とも 1.07〜1.24 ms でした。
+  HEAD 自身が 0.87〜2.80 ms と揺れるので、差としては読まず、連鎖が 1 本だと加わる worker が 1 つずつしか増えない形を避けて、連鎖を 2 にした木の形（初期 1 + 連鎖 2）を採用しました。機構は計測していません。
+
+**最終の runtime（初期 signal 1 + 連鎖 2）と HEAD（load average 20〜65 の run、2 回）。** 各セルは 最終 / HEAD = 比（µs）です。右の 2 列は同じ run で HEAD を HEAD 自身と比べた A/A の比で、これが 1 から離れる分は揺れです。
+
+| 指標 | 仕事 | pass 1 | pass 2 | A/A pass 1 | A/A pass 2 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| gap p50 | tiny | 4.42 / 26.2 = 0.17 | 4.17 / 15.5 = 0.27 | 0.76 | 1.02 |
+| gap p50 | small | 5.96 / 21.8 = 0.27 | 4.38 / 16.6 = 0.26 | 1.07 | 1.00 |
+| gap p50 | bulk | 254 / 551 = 0.46 | 264 / 568 = 0.47 | 0.98 | 1.03 |
+| gap p50 | coarse | 338 / 360 = 0.94 | 300 / 291 = 1.03 | 0.97 | 0.98 |
+| gap CPU | tiny | 16.7 / 130 = 0.13 | 13.8 / 78.6 = 0.18 | 0.87 | 0.95 |
+| gap CPU | small | 19.8 / 90.1 = 0.22 | 13.0 / 92.9 = 0.14 | 1.03 | 1.01 |
+| gap CPU | bulk | 696 / 1646 = 0.42 | 1202 / 3059 = 0.39 | 0.90 | 1.01 |
+| gap CPU | coarse | 1403 / 1442 = 0.97 | 1391 / 1409 = 0.99 | 1.00 | 1.01 |
+| 連続 p50 | tiny | 0.17 / 0.21 = 0.80 | 0.17 / 0.21 = 0.80 | 1.00 | 1.00 |
+| 連続 p50 | small | 4.21 / 1.13 = 3.74 | 1.00 / 1.08 = 0.92 | 2.72 | 0.96 |
+| 連続 p50 | bulk | 221 / 595 = 0.37 | 337 / 354 = 0.95 | 1.00 | 0.96 |
+| 連続 p50 | coarse | 320 / 330 = 0.97 | 765 / 669 = 1.14 | 0.94 | 1.00 |
+
+- 眠った worker の起床（gap）は、tiny・small の p50 が 0.17〜0.27 倍（A/A は 0.76〜1.07）、bulk が 0.46〜0.47 倍（A/A は 0.98〜1.03）、CPU が 0.13〜0.42 倍でした。
+  休まない連続呼び出しでは worker が起きたままなので、tiny・small の p50 に差は出ません（small の pass 1 の 3.74 は A/A も 2.72 まで揺れます）。bulk の連続呼び出しは pass 2 の HEAD が 354 µs と速く、0.95 でした。
+- tiny の連続呼び出しの p50 は、HEAD が測った全 run で 0.17〜0.21 µs なのに対し、signal を使う方針では run ごとに 0.17〜0.21 µs か 0.8〜7 µs のどちらかになります。最終の方針は 3 run のうち 1 run が 1.0 µs でした（上の pass 1・2 は 0.17 µs）。
+  眠っている worker を 1 つ起こす kernel 呼び出しの費用が投入側に乗る場合があります。平均（warm）は run 間の揺れが大きく（最終 0.3〜6.7 µs、HEAD 1.9〜9.6 µs）、差として読めません。
+- coarse（16 添字 × 約 79 µs、`cpp/task_parallel` と同じ形）は、全方針で HEAD と揺れの範囲で同じです（比 0.94〜1.17、A/A は 0.94〜1.10）。Phase 1 は group ごとの費用を減らしますが、この形の仕事量は変えません。
+
+**粒度（`--sweep`）、最終 / HEAD（µs）。** 逐次は同じ IR の逐次の loop で、最終の run の p50 です。
+
+| rounds | 逐次 | pass 1 | pass 2 |
+| ---: | ---: | ---: | ---: |
+| 256 | 10.0 | 10.5 / 10.8 | 18.3 / 40.6 |
+| 1024 | 42.4 | 43.4 / 40.8 | 43.3 / 55.2 |
+| 4096 | 172 | 81.6 / 97.4 | 89.0 / 77.2 |
+| 16384 | 690 | 187 / 189 | 189 / 164 |
+
+最終は 1024 rounds（逐次 42.4 µs）で 2 回とも逐次と並び（43.4・43.3 µs）、HEAD は窓 1 の 2 回と上の 6 回（最終との run の 2 回と A/A の 4 回）のうち 7 回が 51.8〜65.6 µs でした（残りの 1 回は 40.8 µs）。
+256 rounds（逐次 10.0 µs）では、最終も HEAD も逐次より遅いままです（最終 10.5・18.3 µs、HEAD 10.8〜53.0 µs）。
+
+**`--data-parallel`（Array と Parallel の chunk 版、各 3 回交互）。** `Parallel.init` の bulk（64 チャンク）は、最終が 1.07〜1.24 ms（6 回）、HEAD が 0.87〜2.80 ms（9 回）でした。
+chunk-boundary（8193 添字、1 チャンクの境界）は、最終が 46.1〜52.6 µs（6 回）、HEAD が 55.9〜89.5 µs（9 回）です。同じ run の Array 版は 5.2〜5.4 ms（bulk）と 60.7〜62.8 µs（chunk-boundary）で、変わりません。
+
+**WASM threads（`benchmarks/run-tasks-wasm.mjs`、窓 2）。** Node の `worker_threads` 9 つ、`-O3`、同じ kernel（`benchmarks/tasks/Main.tz`）です。
+before は基準コンパイラ（C6 より前の `task-wasm-threads.c`）、after は添字の lock-free な取得と完了の一括を入れた `30737c9c` 以降の runtime で、9 標本の中央値です。
+この表の値は、同じ処理を `benchmarks/run-tasks-wasm.mjs` に移す前の作業用の版で測りました（移した版は `--quick` で動作を確認しただけです）。
+
+| 仕事 | 指標 | before | after |
+| --- | --- | ---: | ---: |
+| tiny | 連続の平均 | 1.68 µs | 0.88 µs |
+| tiny | 1 ms 休んだ後の p50 | 40.3 µs | 29.5 µs |
+| small | 連続の平均 | 4.68 µs | 2.90 µs |
+| small | 1 ms 休んだ後の p50 | 88.4 µs | 54.6 µs |
+| bulk | 連続の平均 | 236 µs | 199 µs |
+| bulk | 連続の p50 | 544 µs | 141 µs |
+| bulk | 1 ms 休んだ後の p50 | 823 µs | 545 µs |
+| 3 種目 | cold（新しい pool の最初の呼び出し） | 0.83〜1.18 ms | 0.80〜1.05 ms |
+
+bulk の連続の p50 は、before が 0.21 ms と 0.82〜0.85 ms の二つの値に割れ（9 標本の中央値が 544 µs）、after は 9 標本のうち 7 つが 0.14 ms でした。cold は worker の起動が支配し、変わっていません。
+この測定は 1 つの pool の大きさ（9 worker）と Node の 1 つの版（20.19.6）だけです。
+
+**採用しなかった変種。** 窓 2 で、作業木の runtime（C4 の `src/runtime/task.c`）に対する比（変種 ÷ C4）を測りました。
+
+| 変種 | 結果 | 判断 |
+| --- | --- | --- |
+| 添字の counter を 128 B の line に 1 つだけ置く | 連続の平均が tiny 0.63・small 1.01・bulk 1.02、p50 が 1.00・2.12・1.05、sweep の 6 点が 0.66〜1.04 | 差が出ないので採用しない |
+| 眠る前に 20 µs spin する | 連続の平均が tiny ×7.4・small ×4.8・bulk ×1.06、CPU が ×14.7・×9.5・×1.17。gap 50・200 µs の p50 は 0.90〜1.10、tiny・small の gap の CPU は ×4.1〜×5.3。sweep は 16〜1024 rounds で ×1.38〜×11.7 | 採用しない |
+| 眠る前に 100 µs spin する | 連続の平均が tiny ×8.9・small ×7.1・bulk ×1.53、CPU が ×14.3・×12.3・×1.90。gap 50 µs の p50 が tiny ×5.25・small ×4.67、gap の CPU が ×35・×41 | 採用しない |
+
+spin の既定は 0 のままで、コードも入れていません。休みが 50〜200 µs でも、spin のない C4 に対して p50 の改善はありませんでした。
+
+**限界と、静かな機械での取り直し。**
+
+- 上の値はすべて、他の agent がビルドしている共有機のものです。窓 1・窓 2 は排他の窓ですが load average は 30〜90 で、最終の runtime の値は排他の窓ではありません。A/A の揺れ（上の表では 0.76〜1.13、連続 small の p50 は 2.72 まで）を超える差だけを読み、正式な値は静かな機械で取り直します。
+- `cpp/task_parallel`（`_perfs/README.md` の 0.94）は、`run-cpp.mjs` が Node.js 24 以降を要求し、この機械の Node が 20.19.6 なので測っていません。代わりに同じ形の `coarse` を測りました（上）。
+- CPU 数を変えた拡大（1・2・4・8）は測っていません。macOS には CPU を固定する手段がなく、`run-tasks.mjs` は常に 10 論理 CPU です。CPU 数を変えた確認は、`tests/task_runtime.c`・`tests/task_stress.c` の `cpu_count` hook による回数と正しさ（2・3・4・8・16・32）に限ります。
+- Linux と Windows の時間は測っていません。
+
+静かな機械で取り直すコマンド:
+
+```sh
+git show c6864cf5:src/runtime/task.c > target/perf/PR06/task-before.c   # 基準コンパイラは main 6d15b437 の release
+BEFORE=target/perf/PR06/tsuzuri-before
+for mode in "" --sweep "--gap-us 1000"; do   # 1 つの run の中で、HEAD と最終の runtime を交互に測る
+  node benchmarks/run-tasks.mjs $BEFORE --runtime src/runtime/task.c --baseline-runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-final
+done
+for pair in "before target/perf/PR06/task-before.c" "after src/runtime/task.c"; do   # --data-parallel は --baseline-runtime を取らない
+  set -- $pair
+  node benchmarks/run-tasks.mjs $BEFORE --runtime $2 --data-parallel --metrics target/perf/PR06-final-dp-$1
+done
+# WASM threads: 基準コンパイラは古い runtime を、release のコンパイラは新しい runtime を埋め込む
+node benchmarks/run-tasks-wasm.mjs $BEFORE --gap-us 1000
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --gap-us 1000
+# Node.js 24 以降で（`run-cpp.mjs` が要求する）。cpp/task_parallel の before と after
+node benchmarks/run-cpp.mjs $BEFORE --metrics target/perf/PR06-cpp-before
+node benchmarks/run-cpp.mjs target/release/tsuzuri --metrics target/perf/PR06-cpp-after
 ```
 
 ## 現実的な次の指標

@@ -8,12 +8,114 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | F01, F02, B06, F06, F10 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（D1・D4 は起票時の施策・既定案を置き換える既定案。D7 は F10 の文言の修正が必要。各項の「見直し提案」を参照） |
+| 状態 | done（Phase 1・2 を実装・検証済み。Phase 3 のスピンは計測後に不採用。`cpp/task_parallel`（G3）の改善は主張しない） |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-16 に HEAD `6d15b437` で再検討（「着手時の再検討（2026-10-16）」） |
+| 承認 | 2026-10-16 の全フェーズ実装の依頼で、Phase 2・3 と D1・D3・D4・D7・D10 の見直しを含めて承認済み（起票時の「Phase 1 だけ」の注記は適用しない） |
 | 手本にする既存実装 | 原子的な添字の取得: `src/runtime/task-wasm-threads.c` の `Group`（`atomic_uint_least64_t next` を `atomic_fetch_add_explicit` で取る）と `run_one`。pthread 呼び出しの差し替えと時間に依らない観測: `tests/task_runtime.c` の `test_broadcast`・`test_wait`（`parked`・`broadcasts`・`peak`）と、失敗名を `argv` で渡す子プロセス方式（`tests/tasks.mjs` の `for (const operation of [...])`）。同じ IR に旧 runtime をリンクする比較: `benchmarks/run-tasks.mjs` の `--baseline-runtime` |
-| 主な影響ファイル | `src/runtime/task.c`, `src/runtime/task-windows.h`, `tests/task_runtime.c`, `tests/tasks.mjs`, `benchmarks/run-tasks.mjs`, `docs/architecture.md`, `docs/benchmarks.md`, `_perfs/README.md`（状態欄）。Phase 2: `src/runtime/task-wasm-threads.c`, `tests/wasm_threads.mjs`。変えない: `src/runtime/task-wasm.ll`、コンパイラ（`src/*.rs`） |
-| 計測対象 | `benchmarks/run-tasks.mjs` の Task runtime 比較（`tiny`・`small`・`bulk`）と `--data-parallel`（`small`・`chunk-boundary`・`bulk`）、`benchmarks/run-cpp.mjs` の `cpp/task_parallel`・`cpp/task_sequential` |
+| 主な影響ファイル | `src/runtime/task.c`, `tests/task_runtime.c`, `tests/task_stress.c`（新規）, `tests/tasks.mjs`, `benchmarks/run-tasks.mjs`, `benchmarks/run-tasks-wasm.mjs`（新規）, `README.md`, `docs/architecture.md`, `docs/language.md`, `docs/benchmarks.md`, `_tsuzuri/language-reference/`（Task のページと WebAssembly のページ）。Phase 2: `src/runtime/task-wasm-threads.c`, `tests/wasm_threads_stress.mjs`（新規。`tests/wasm_threads.mjs` は変えない）。変えない: `src/runtime/task-wasm.ll`、コンパイラ（`src/*.rs`）、`src/runtime/task-windows.h`（`pthread_cond_signal` は F10 が足済み）、`tests/channel_runtime.c`・`sync_runtime.c`・`trap_boundary_runtime.c` の期待値 |
+| 計測対象 | `benchmarks/run-tasks.mjs` の Task runtime 比較（`tiny`・`small`・`bulk`・`coarse`）と `--data-parallel`（`small`・`chunk-boundary`・`bulk`）・`--sweep`・`--gap-us`、`benchmarks/run-tasks-wasm.mjs`（WASM threads）、`benchmarks/run-cpp.mjs` の `cpp/task_parallel`・`cpp/task_sequential`（Node.js 24 が要り、この実装では測っていない） |
+
+## 着手時の再検討（2026-10-16）
+
+起票（HEAD `f8dc655`）の後に F10（`Channel`・`Mutex`・`Task.scope`）と E14（trap 境界）が入り、`src/runtime/task.c` は 655 行になりました。
+着手前に HEAD `6d15b437` のコードと実測で照合した結果を記録します。**この節は、下の旧記述（現状・設計・手順・受け入れ条件・決定事項）と
+食い違うところで優先します。** 旧記述のうち置き換えた箇所には、この節への注記を入れました。
+2026-10-16 の依頼で、Phase 2・3 を含む全フェーズを実装します（Phase 1 を先に完了してから Phase 2 に入ります）。
+調査の試作・計測・ログはセッションの作業域にあり、コミットしません。計測は他の agent が並行してビルドしている共有機
+（load average 17〜167）の参考値で、静かな機械での正式値は統合後に取り直します。
+
+### 食い違い
+
+| # | 起票の記述 | 現行（`6d15b437`） | 影響 |
+| --- | --- | --- | --- |
+| 1 | group は `run`・`run_result`・`context`・`length`・`next`・`remaining`・`failure`・`next_group`。pool は mutex と 2 つの条件変数 | group に `owner`・`trap_index`・`trap`（E14）、pool に `busy`・`idle`・`waiters`（F10）が加わり、`tz_task_stop`（`min(failure, trap_index)`）・`TZ_STACK_GUARD`・item ごとの trap hook がある | execute・worker・submit・`tz_task_help_one`・`tz_channel_check_deadlock` を書き換えるとき、すべてを保つ |
+| 2 | F10 が done なら、`tz_task_submit` の先頭の `tz_mutex_held` の検査を保つ | その検査は IR の `@tz.mutex.parallel*`（`src/runtime/sync.ll`）が `tsuzuri_mutex_parallel_ok` を呼ぶ形で、`tz_task_submit` にはない | 「位置を保つ」指示は不要。ABI は変えない |
+| 3 | D7: `remaining` を削除して `helpers` を足す。既存テストの変更は `task_runtime.c`・`tasks.mjs` だけ | `tz_channel_check_deadlock` が `remaining` を読み、`tests/channel_runtime.c` が `.remaining = 1` の group を手で作って `busy`・`idle`・`waiters`・`help_depth` を white-box に検査する | **D7 は採らない。** `remaining` を残し、参加者ごとにまとめて減らす（下の設計） |
+| 4 | submit: lock → 登録 → 起こす数の計算 → unlock → signal → **その後** に claim | F10 の規則: グループを始めたスレッドは、公開するときに最初の子どもを取り済みにする（channel.md の「待ちの規則」、wasm の「三段が忙しい機械で完了する」試験） | **この順は採らない。** 公開の前に最初の添字を取る（group を作るとき `next` を 1 にする。実装は公開する lock の前にこれを済ませるので、lock の中で取るのと同じく、worker が全添字を先に取る窓がない） |
+| 5 | Windows adapter に `pthread_cond_signal` がない。`TZ_TASK_COND_SIGNAL` は新規 | どちらも F10 が足済み（`pthread_cond_init`・`pthread_cond_destroy` も）。`tz_waiter_wake` が既に signal を使う | adapter の変更は不要。新規は `tz_task_signal`・失敗注入の hook・`tasks.mjs` の `"cond_signal"` だけ |
+| 6 | D10: sanitizer は `tests/tasks.mjs` に入れない。CI の clang に runtime があるとは限らない | `tasks.mjs` に `TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` の枝が既にあり、`tests/trap_return.mjs` は `trap_boundary_runtime.c`（`task.c` を include）を TSan と ASan＋UBSan で常に実行する。`targets.yml` の Linux は `libclang-rt-21-dev` を入れる | 既存の枝を `task_runtime.c` と新しい stress 試験へ広げる |
+| 7 | 機械語: after に `ldaddal`・`ldaddl` がなく `_pthread_cond_signal` がある。before の `_pthread_cond_signal` は 0 | HEAD は既に `_pthread_cond_signal` を 5 回参照する（F10）。`ldadd`・`ldaddal`・`ldaddl` は各 1 で起票時と同じ。`remaining` を残すので `ldaddal` も残る | 機械語の基準は外し、lock 回数と signal 回数の assert で判定する |
+| 8 | `run-tasks.mjs --metrics` は未実装（PX01 Phase 2）。標本数は 7 | `--metrics` は実装済みで、その場合の標本は既に 9。suite 名は `--data-parallel` でも `tasks` 固定で、`writeRecords` の `wx` により同じ run に 2 つの mode は書けない。`--runtime`・`--sweep` はない | D10 の suite の分割は必要。CI の `run-tasks.mjs --quick --metrics`（`targets.yml`）を保つ |
+| 9 | `cpp/task_parallel` の相対性能 0.768 | 古い値。2026-10-13 の集計（`docs/benchmarks.md`）は **0.94007**（Tsuzuri 0.240655 ms、C# 0.226232 ms）。16 件 × 約 79 µs を 10 論理 CPU（8P＋2E）で走らせる形で、理想の臨界経路は 2 件分の約 158 µs、実測は 235〜285 µs で HEAD と試作に差がない。支配するのは起床の遅延と E core | **G3 は Phase 1 では達成できない。** この種目の改善は主張しない |
+| 10 | F01 作業時の tiny／small／bulk（1.3／4.6／423 µs） | 負荷の高い共有機では再現しない（HEAD は 6.6〜9.9／20〜22／603〜627 µs） | 静かな機械で測る。A/A の drift 実行（before2）を残す |
+| 11 | WASM threads: `run_one` が添字ごとに 2 回 lock し、`signal_work` が添字ごとに `epoch` を増やす。新しいグループから探す | `signal_work` はない（`progress()` は新しい仕事・グループの終わり・チャンネルの変化・競合したロックの解放のときだけ。`wasm_threads.mjs` が 5000 個の子どもで `epoch` の移動を 8 回以下に制限する）。添字ごとに `queue_mutex` を 2 回取り、解錠のたびに `notify` する点は同じ。グループは古い順 | Phase 2 の記述（`helpers`、submit ごとの `notify(min(desired-1,length-1))`）を書き直す |
+| 12 | 失敗: mutex の下で `length = stop` | `length` を不変にして `next` を `length` へ CAS で進めても同じ（停止の添字は以後のどの claim より小さい）。停止の添字は `min(failure, trap_index)` のまま | 擬似コードに `tz_task_stop` を使う。trap も同じ cold path |
+| 13 | `task.md` の「Windows では Win32 のスレッドプール」 | `CreateThread` と SRWLOCK・CONDITION_VARIABLE による自前の pool（Win32 ThreadPool API ではない） | 同じ PR で文言を直す |
+| 14 | `docs/architecture.md` の native と WASM threads の段落 | 現行は正しいが、設計の変更後は `remaining`・`next` の説明が誤りになる | 書き換える。`benchmarks.md` の「7 サンプル」も直す |
+| 15 | （記述なし）`task_runtime.c` に assert を足す | `#undef NDEBUG` がない。`tests/windows.mjs` は zig cc で build し、`-O1` 以上は `NDEBUG` を定義する（AGENTS.md） | `#undef NDEBUG` を足す |
+
+### 設計（Design R）
+
+試作を HEAD の `task.c` に当て、`tests/task_runtime.c`・`channel_runtime.c`・`sync_runtime.c`・`trap_boundary_runtime.c`（変更なし）、
+`tests/tasks.mjs`（`TSUZURI_TSAN=1` を含む）、channel_threads の E2E、複数 host の pipeline・入れ子の stress が、素の実行・TSan・ASan＋UBSan で
+通ることを確かめました。
+
+- `next` は `_Atomic uint64_t`。取得は relaxed の事前 load と `fetch_add`（尽きた後は RMW しない）。`length` は公開後に不変（失敗でも縮めない）。
+- `remaining` は残す。参加者（worker・提出したスレッド・チャンネルを待つスレッドの手伝い）は自分が終えた添字の数を数え、止まるときに
+  `fetch_sub(done, acq_rel)` を 1 回だけ行う。worker が join で **mutex の下で取った最初の添字** があるので、その参加者が減らすまで
+  `remaining > 0` で、stack 上の group は参加者の下で消えない（`helpers` の代わり）。減らした後は group に触れない。
+- 失敗・trap は cold path: mutex の下で `failure`・`trap_index`・`trap` を更新し、停止の添字が小さくなったら `next` を `length` へ CAS で進め、
+  `remaining` から `length - 旧 next` を引き、`work_available` を broadcast する（D6。`task_runtime.c` の `result_failure` がこの broadcast に依る）。
+- 提出したスレッドは、公開する前に最初の添字を取り（`next` の初期値を 1 にする）、公開して unlock の後に signal し、取り尽くして `remaining` を減らし、`remaining == 0` まで待つ
+  （待つ間は今までどおり `--busy`・`tz_channel_check_deadlock`・`work_done`）。`tz_task_help_one`・worker・`tz_channel_check_deadlock` も同じ
+  claim・release を使う。`busy`・`idle` は join と leave の単位で動かす。
+- 新規: `tz_task_claim`・`tz_task_run_item`・`tz_task_drain`・`tz_task_release`・`tz_task_signal`。`tz_task_execute` は無くなる。
+
+保つ不変条件（どれにも試験がある）:
+
+- I1 最初の子どもは、公開する前に投入したスレッドが取る（`next` の初期値 1）。I2 結合を待つスレッドは自分のグループだけを走らせる。I3 worker と `tz_task_help_one` は最も古いグループから選ぶ。
+- I4 起こす側が `busy` を戻してから signal する。I5 `idle` は worker だけを数える。
+- I6 判定は `busy == 0` で、`idle > 0` と未着手の組も、`remaining == 0` の group もないときだけ出す。I7 手伝いは `idle == 0` のときだけで、深さは 16 まで。
+- I8 最後の release の後に group を触らない。I9 失敗・trap は最小添字で、skip した添字は `remaining` から引く。I10 `resume` は結合の後。
+
+起こす数の生存性（signal の数を絞る方式に必要な論証）: 飛行中のトークン（signal と、起きたがまだ取っていない worker）の数は、尽きていない group の数以上である。
+group は submit で `TZ_TASK_INITIAL_SIGNALS` 個（1 以上）足し、トークンが補われないのは group を尽くす claim のときだけだからである。連鎖の規則は「join で取った後、参加した group に未着手が残れば
+残りの数に応じて 1 〜 `TZ_TASK_CHAIN_SIGNALS` 個 signal する」。これは論証であり証明ではないので、stress（C の `tests/task_stress.c`、E2E の繰り返し）で確かめる。
+`tests/task_runtime.c` は連鎖を外した実装（CPU 3 以上で止まる）と submit の signal を外した実装（すべての CPU 数で落ちる）を検出する。
+
+### 決定事項の見直し
+
+| 決定 | 結果 |
+| --- | --- |
+| D1 取得の方式 | 承認。group ごとの atomic な `next`。worker ごとの deque は入れない（ABI に spawn がなく、deque は最小添字・`started`・F10 の手伝いの規則を崩す）。 |
+| D2 取得の単位 | 承認。1 回の `fetch_add` で 1 添字。 |
+| D3 起床 | **見直し**。全 worker への broadcast はやめる。submit は unlock の後に `min(TZ_TASK_INITIAL_SIGNALS, length - 1, worker 数)` 回 signal し、join で最初の添字を取った worker が、参加した group に未着手が残れば、残りの数に応じて最大 `TZ_TASK_CHAIN_SIGNALS` 回 signal する（木の形）。**採用は初期数 1・連鎖 2**（C4 の初期案は初期数 2・連鎖 1。比較は `docs/benchmarks.md`）。 |
+| D4 待機 | 承認。pthread の条件変数と Windows の SRWLOCK・CONDITION_VARIABLE のまま。スピンは入れない（20・100 µs を計測した結果は明確な利益がなく、CPU 時間は 4〜40 倍。`docs/benchmarks.md`）。 |
+| D5 手伝いと選択順 | 承認。I1（最初の子どもは公開する前に投入したスレッドが取る）を明示する。 |
+| D6 失敗の経路 | 承認。cold path で mutex の下、停止は CAS、停止の添字は `min(failure, trap_index)`、`work_available` の broadcast を残す。 |
+| D7 完了の数え方 | **見直し（起票の案は採らない）**。`remaining` を残し、参加者ごとにまとめて 1 回だけ減らす。F10 の文言「`remaining` の acq-rel で公開される」はそのまま正しい。 |
+| D8・D9 | 承認。CPU 数の読み方・stack の大きさ・`TZ_TASK_MAX_THREADS` は変えない。 |
+| D10 計測と sanitizer | **見直し**。`run-tasks.mjs` に `--runtime`・`--sweep`・`--gap-us`（アイドルの後の cold wake）・p50・CPU 時間を足す。sanitizer は既存の `TSUZURI_TSAN`・`TSUZURI_ASAN` の枝を使う。 |
+| D11 Phase 2・3 | 承認。Phase 2 の記述は書き直す（上の食い違い 11）。Phase 3 のスピンは既定 0 のまま、コードに入れずに実験だけ行い、結果を記録した（不採用）。 |
+| D12 試験の順序（新規） | 試験を先に足し、既存の assert は弱めない。HEAD で通る試験（C2）を先に、lock 回数・signal 回数の assert は設計の変更（C3・C4）と同じ commit で足す。 |
+| D13 計測（新規） | 共有機では排他の窓（`with-lock.sh measure`）で測り、load average を記録する。p50 と最小・最大、cold と warm を載せる。正式値は静かな機械で取り直す。 |
+| D14 完了と空きの数え方（新規） | worker は `remaining` を減らすことと `busy`・`idle` の更新を 1 つの lock の中で行う（F10 の誤判定の修正。「見つけた問題」）。 |
+
+### 実装手順（改訂）
+
+起票時の「実装手順」（手順 1〜9）は旧設計の計画で、次の work package（WP）に置き換えます。各 WP は 1 commit で、その範囲の検証が通ってから次へ進みます。
+
+| WP | 内容 | 主な変更 | 確認 |
+| --- | --- | --- | --- |
+| 0 | チケットの改訂 | この節 | `git diff --check` |
+| 1 | 計測 harness | `benchmarks/run-tasks.mjs`: `--runtime`・`--sweep`・`--gap-us`、suite の分割、p50・CPU 時間 | `node --check`、`--quick --metrics` を 2 つの mode で同じ run に |
+| 2 | 試験を先に（HEAD で通る） | `tests/task_runtime.c`（`#undef NDEBUG`、`hits ≤ 1`）、`tests/task_stress.c`（新規）、`tests/tasks.mjs` | HEAD で緑。TSan・ASan も緑 |
+| 3 | native の核（Design R、broadcast は残す） | `src/runtime/task.c`、`tests/task_runtime.c` の lock 回数の assert | C 検査（`-O0`・`-O3` × CPU 数 `-1`・`0`・`1`・`2`・`4`・`1000`、channel 1〜4、trap_boundary、TSan、ASan＋UBSan）、`tasks.mjs`（`TSUZURI_TSAN=1` を含む）、`trap_return.mjs`、`cargo test --locked` |
+| 4 | 起床の方針 | `tz_task_signal`、`"cond_signal"` の失敗注入、signal 回数の assert、連鎖 | 同じ matrix と stress |
+| 5 | Phase 1 の計測と文書 | `docs/benchmarks.md`・`docs/architecture.md`・language-reference | `node scripts/check-docs.mjs`、`target/perf/PR06-*` |
+| 6 | Phase 2（WASM threads） | `src/runtime/task-wasm-threads.c` | `node tests/wasm_threads.mjs`（変更なし）、`bindings_threads.mjs`、`features.mjs concurrency channel` |
+| 7 | Phase 3（スピンの実験） | `TZ_TASK_SPIN`（時間で上限を持つ） | 明確な利益がなければ採用せず結果を記録 |
+
+### 受け入れ条件（改訂）
+
+起票時の「受け入れ条件」の機械語の項目は次に置き換えます。
+
+- [x] 257 添字の group で、pool の mutex の取得回数が `2 + (CPU 数 - 1)` 以下（`run` と `results`。HEAD は 259 と 515）。成功した group の broadcast は 1 回以下（HEAD は 2 回）。（`tests/task_runtime.c` の `check_group_cost`。HEAD の runtime ではこの assert が落ちることを確かめた）
+- [x] 長さ 2 の group の signal は 1 回、長さ 257 の group の signal は `初期数 + 連鎖数 × (CPU 数 - 1)` 以下（初期数 1・連鎖数 2）。broadcast は 0 か 1 回。
+- [x] 複数 host から入れ子の group を同時に走らせても、合計が独立な参照式と一致する。pipeline の stress は終了する（判定の trap は許す）。（`tests/task_stress.c`）
+- [x] C 検査が素の実行・TSan・ASan＋UBSan で通る。`tests/tasks.mjs` が素の実行と `TSUZURI_TSAN=1` で通る（`TSUZURI_ASAN=1` も）。`tests/wasm_threads.mjs`（Phase 2 のとき）と `tests/trap_return.mjs` が通る。
+- [x] 既存の white-box テスト（`channel_runtime.c`・`sync_runtime.c`・`trap_boundary_runtime.c`）の assert を変えずに通る。（3 ファイルは変更なし。`task_runtime.c` は assert を足し、`hits[2] == 1` を `hits[0..2] == 1` に強めただけ）
+- [x] `ir-same`（コンパイラを変えない）、`cargo test --locked`、Windows の `cargo check`（x86_64・aarch64 の MSVC）が通る。（結果は末尾の「実装と検証」）
 
 ## 目的
 
@@ -22,11 +124,11 @@
 結果の順序・`Task.parallel_results` の最小添字の失敗・未開始の停止・全 join・trap と runtime 失敗の診断（F01・B06）は変えない。
 .NET の thread pool や rayon と同等以上の fork/join 性能を目標にするが、主張するのは計測した結果だけにする。
 
-- Phase 1（native、本チケットの実装範囲）: `task.c` の取得・起床・完了待ちの規則を変える。Windows の adapter（`task-windows.h`）に 1 関数を足す。
-- Phase 2（WASM threads）: `task-wasm-threads.c` を同じ規則にそろえる。
-- Phase 3（待機前のスピン）: Phase 1 の計測で park と起床が支配的なときだけ評価する。
+- Phase 1（native）: `task.c` の取得・起床・完了待ちの規則を変える。Windows の adapter（`task-windows.h`）は変えない（`pthread_cond_signal` は F10 が足済み）。
+- Phase 2（WASM threads）: `task-wasm-threads.c` の添字ごとの lock と通知を減らす（食い違い 11）。
+- Phase 3（待機前のスピン）: Phase 1 の計測で park と起床が支配的なときだけ評価する。既定は 0。
 
-実装者は Phase 1 だけを実装する。Phase 2・3 は人間が求めた場合だけ着手する。既定の WASM（`task-wasm.ll` の逐次実行）はどの Phase でも変えない。
+2026-10-16 の依頼で Phase 1・2・3 を実装する（「着手時の再検討」）。既定の WASM（`task-wasm.ll` の逐次実行）はどの Phase でも変えない。
 
 ## 着手条件と停止条件
 
@@ -38,13 +140,15 @@
 - GUIDE §2.3 の基準コマンドが成功し、手順 1 の before（HEAD の `task.c` の写し、`tsuzuri-before`、計測）を保存していること。
 - F10 が done なら、`grep -n "tz_mutex_held" src/runtime/task.c` で `tz_task_submit` の先頭の検査を確かめ、その位置（1 CPU の分岐と `pthread_once` より前）を保つ。
   F10 が todo なら何もしない（F10 はこの位置に検査を置くと仮定している）。
+  （2026-10-16: F10 は done。この検査は `task.c` ではなく IR の `@tz.mutex.parallel*` にある。食い違い 2。）
 
 ### 前提とする他チケットのインターフェース
 
 - PX01: PX01 形式（schema 1 の JSON Lines、`target/perf/<run_id>/<suite>.jsonl`）、`node benchmarks/metrics.mjs report <run> --baseline <run>`、
   `run-cpp.mjs --metrics <dir>`、PX01 の「計測手順」の before／after（before・after・before2）。
-- F10（todo、並行して詳細化中）: F10 は、PR06 が `tsuzuri_task_parallel`・`tsuzuri_task_parallel_results` の ABI と「join を待つ thread は自分のグループの
-  未配布の仕事を手伝う」保証を保つこと、入口を増やさないことを仮定する。PR06 はどちらも保つ（D5）。
+- F10（done）: F10 は、PR06 が `tsuzuri_task_parallel`・`tsuzuri_task_parallel_results` の ABI と「join を待つ thread は自分のグループの
+  未配布の仕事を手伝う」保証を保つこと、入口を増やさないことを仮定する。PR06 はどちらも保つ（D5）。加えて、F10 の待ちの規則
+  （最初の子どもを公開する前に取る、空きの worker がいなければ手伝う、全員が待てば判定する）と、`busy`・`idle`・`waiters` の数え方を保つ（I1〜I10）。
 
 ### 停止条件
 
@@ -56,9 +160,15 @@
 - TSan・ASan・UBSan の報告を、設計の手順（添字の取得に mutex を使わない）を崩さずに直せない。
 - `pthread_cond_signal`（Windows は `WakeConditionVariable`）以外の新しい OS API、`libatomic` などの追加ライブラリ、C11 以外の言語機能が必要になった。
 - 手順 8 の計測で、after が before より `bulk`・`cpp/task_parallel` の時間で広がりを超えて遅い。スピンや定数の調整で取り繕わない。
-- Phase 2 で `ThreadState`（`_Static_assert` の 28 bytes）か import（`tsuzuri_threads` の `spawn_workers`・`worker_ready`）を変える必要が出た。
+- Phase 2 で `ThreadState`（`_Static_assert` の 28 bytes）か import（`tsuzuri_threads` の `spawn_workers`・`worker_ready`）、poison bit の規約を変える必要が出た。
+- F10 の試験（`tests/channel_runtime.c`・`tests/tasks.mjs` の channel_threads・`tests/wasm_threads.mjs` の三段・入れ子）の assert を変えないと通らない。判定の件数が変わる。
+- `length` を縮める処理を戻したくなった（TSan が競合を報告する）。
+- 追加の試験は、条件変数・原子カウンター・alarm（`perl -e 'alarm N; exec @ARGV'`）だけで書く。sleep や時間の閾値は使わない。
 
 ## 現状と計測（HEAD `f8dc655`）
+
+> 2026-10-16 の注記: この節は起票時（HEAD `f8dc655`）の記述です。現行（`6d15b437`）との差は「着手時の再検討」の食い違いの表を見てください
+> （F10・E14 による group・pool の欄の追加、WASM threads の通知の変更、`task_parallel` の値の更新など）。
 
 ### native scheduler の構造
 
@@ -109,6 +219,8 @@
 
 - 2026-09-26 の `cpp/task_parallel`（50000 × 16）の相対性能は 0.768 で、最速は C#（`_perfs/README.md` の「現状」）。個々の値は `docs/benchmarks.md` の
   横断比較の表の `cpp/task_parallel` 行。逐次の `task_sequence`・`task_sequential` は Tsuzuri が最速。
+  （2026-10-16: 0.768 は 2026-09-26 の集計（Tsuzuri 0.2708 ms、C# 0.2079 ms）の値で古い。2026-10-13 の集計は 0.94007（0.240655 ms と 0.226232 ms）で、
+  プールを変えずに ±15 % 動く。食い違い 9。）
 - F01 作業時（Apple M1 Max、10 logical CPU、Apple Clang 21、O3 generic）の `run-tasks.mjs`（`docs/benchmarks.md` の「Task プール」）:
 
 | 仕事 | 要素数／反復 | 新 pool cold ms | 旧 runtime cold ms | 新 pool warm us/call | 旧 runtime warm us/call |
@@ -145,6 +257,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --quick > /tmp/tz-pr06/quic
 - G1: 短いグループの起動から完了待ちまで（`tiny`・`small` の warm）を HEAD より短くする。
 - G2: 添字が多いグループ（`bulk`、`--data-parallel` の `chunk-boundary`・`bulk`）の配布費用を減らす。F01 で旧 runtime より遅くなった `bulk` の warm を HEAD より短くする。
 - G3: `cpp/task_parallel` の wall を C# の最速と同等以上にする（起票時の目標。未達でも Phase 1 の完了は妨げない）。
+  （2026-10-16: この種目は 16 件 × 約 79 µs で、1 件ごとの claim 費用は仕事の 0.01 % にすぎず、起床の遅延と E core が支配する。Phase 1 では動かないので、改善を主張しない。）
 - G4: CPU 時間の合計を増やさない（Phase 1 はスピンを入れず、起こす worker を減らす）。
 - G5: 仕事の粒度を変えた種目で、`Task.parallel` が逐次版より遅くならない最小の粒度を記録する（起票時の目標）。
 
@@ -179,6 +292,10 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --quick > /tmp/tz-pr06/quic
 - 生成 IR: コンパイラを変えないので、同じ入力の `--emit llvm` は byte 単位で同じ。overflow・丸め・NaN・符号付きゼロは scheduler が触らない。
 
 ## 設計
+
+> 2026-10-16 の注記: この節は起票時の設計（`helpers` を足して `remaining` を消す、unlock の後に signal して claim する、`min(thread_count, length - 1)` の signal）です。
+> 実装する設計は「着手時の再検討」の「設計（Design R）」と「決定事項の見直し」で、D3・D7 はこの節と異なります。D1・D2・D5・D6 の方針（atomic な添字の取得、
+> 1 添字ずつ、自分のグループだけの手伝い、cold path の失敗）は残ります。
 
 ### 方式（Phase 1）
 
@@ -305,6 +422,9 @@ submit（length >= 2 かつ CPU 数 >= 2。それ以外の速い経路は HEAD �
   最大の値を採る。どれも満たさなければ 0（入れない）。
 
 ## 実装手順
+
+> 2026-10-16 の注記: 手順 1〜9 は起票時の旧設計の計画です。実装は「着手時の再検討」の「実装手順（改訂）」（WP 0〜7）で進めます。
+> 各手順の確認コマンド（`c_check`・`cargo test` の件数確認・`ir-same`）は WP の確認にそのまま使います。ただし HEAD の runtime は `6d15b437` の `task.c` です。
 
 各手順の後で tree は compile でき、それまでのテストは成功する。`cargo test --locked <filter>` は 0 件でも成功するので、`running N tests` の N が 0 でないことを
 必ず見る（GUIDE §3.1）。C の単体テストは次の関数（以下「C 検査」）で行う。TSan と ASan は別の binary にする。
@@ -478,6 +598,9 @@ cmp /tmp/tz-pr06/before.ll /tmp/tz-pr06/after.ll && cmp /tmp/tz-pr06/before-O3.l
 
 ### runtime の機械語（arm64、Apple clang 21、`-O3`）
 
+> 2026-10-16 の注記: この小節の期待は採りません（食い違い 7）。HEAD は既に `_pthread_cond_signal` を 5 回参照し、`remaining` を残すので `ldaddal` も残ります。
+> 受け入れは lock 回数と signal 回数の assert（「受け入れ条件（改訂）」）で判定します。機械語は参考として `target/perf/PR06-*` の `.s` に残すだけです。
+
 ```sh
 clang -std=c11 -O3 -S src/runtime/task.c -o /tmp/tz-pr06/after.s
 for f in before after; do
@@ -541,15 +664,19 @@ done
 
 ## 受け入れ条件
 
-- [ ] C 検査が `c-check-ok`（`-O0`・`-O3` × CPU 数 `-1`・`0`・`1`・`2`・`4`・`1000`、TSan、ASan＋UBSan）。
-- [ ] 失敗注入 9 種がすべて診断と非 0 終了になる。
-- [ ] lock 数と起床数の上界の assert が成功する。
-- [ ] `node tests/tasks.mjs`・`node tests/wasm_threads.mjs`・`cargo test --locked` が成功する。
-- [ ] `ir-same` が出て、`task-wasm.ll`・`task-wasm-threads.c`・コンパイラに差分がない。
-- [ ] `after.s` に `ldaddal`・`ldaddl` がなく、`_pthread_cond_signal` がある。
-- [ ] before・after・before2 を PX01 形式で記録し、M1〜M7 を `docs/benchmarks.md` に載せた。改善と書く指標は `drift.txt` で「判定できない」でないものだけ。
-- [ ] 「ドキュメント」の更新が終わっている。
-- [ ] GUIDE §10 の完了の定義を満たす。
+> 2026-10-16 の注記: 「着手時の再検討」の「受け入れ条件（改訂）」が優先します。次の項目のうち、機械語の項目は採りません。完了時の状態は項目ごとに書きました。
+
+- [x] C 検査が `c-check-ok`（`-O0`・`-O3` × CPU 数 `-1`・`0`・`1`・`2`・`4`・`1000`、TSan、ASan＋UBSan）。
+- [x] 失敗注入 9 種がすべて診断と非 0 終了になる（`cond_signal` を足した 9 種）。
+- [x] lock 数と起床数の上界の assert が成功する。
+- [x] `node tests/tasks.mjs`・`node tests/wasm_threads.mjs`・`cargo test --locked` が成功する。
+- [x] `ir-same` が出て、`task-wasm.ll`・コンパイラに差分がない（`task-wasm-threads.c` は Phase 2 で変えた。起票時のこの項目は Phase 1 だけの条件）。
+- [x] 機械語の項目（`after.s` に `ldaddal`・`ldaddl` がなく、`_pthread_cond_signal` がある）は**採らず**（食い違い 7）、lock 回数と signal 回数の assert で判定した。参考に測った機械語（arm64、Apple clang 21、`-O3`）: before は `ldadd` 1・`ldaddal` 1・`ldaddl` 1・`_pthread_cond_signal` の参照 5、
+  after は `ldadd` 5（relaxed の取得ほか）・`ldaddal` 3（`remaining` の減算。参加者ごと）・`cas` 1（失敗の停止）・`_pthread_cond_signal` の参照 7。
+- [ ] before・after・before2 を PX01 形式で記録し、M1〜M7 を `docs/benchmarks.md` に載せた。**M1〜M4・M6 は載せた**（窓 1 は before・after・before2、最終の runtime は同じ run の A/B と A/A）。
+  **M5（`cpp/task_parallel`）と M7（CPU 数 1・2・4・8）は未測定**（`run-cpp.mjs` が Node.js 24 を要し、この機械は 20.19.6。macOS に CPU を固定する手段がない）。`drift.txt` 相当の判定は、A/A の比で代えた。静かな機械での取り直しのコマンドは `docs/benchmarks.md` にある。
+- [x] 「ドキュメント」の更新が終わっている。
+- [x] GUIDE §10 の完了の定義を満たす（末尾の「実装と検証」に各項目の結果）。
 
 ## 落とし穴
 
@@ -584,6 +711,9 @@ done
 - Windows 実機での build と計測（G10）。既定の WASM の逐次実行。
 
 ## 決定事項
+
+> 2026-10-16 の注記: 各決定の現在の結果は「着手時の再検討」の「決定事項の見直し」にあります（D3・D7・D10 は見直し、D12・D13 は新規）。
+> 以下は起票時の記録で、D3・D7 の本文は置き換えられています。
 
 ### D1: 取得の方式と work stealing
 
@@ -669,3 +799,97 @@ done
   スピンを候補 0・64・1024 から計測で選ぶ。どちらも人間が求めた場合だけ着手する。
 - 理由: Phase 1 で native の規則と証明を固めてから移す方が、WASM の host 制御領域を壊す危険が小さい。スピンは CPU 時間を増やすので、計測なしには入れない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-16）
+
+ブランチ `perf/phase3/PR06`（基底 `c6864cf5` = main `6d15b437` + 計画の commit）。起票時の記述は F10・E14 の前のコードに基づくので、着手時に `6d15b437` のコードと実測で照合し直し、
+「着手時の再検討（2026-10-16）」へ記録しました（D7 と「unlock → signal → claim」の順は採らず、G3 は Phase 1 では動かない）。この節は、その再検討に沿って実装した結果です。
+
+### 実装した範囲（commit と内容）
+
+| 段 | commit | 内容 |
+| --- | --- | --- |
+| WP0 | `4efd73c2` | 着手時の再検討（食い違い 15 行、Design R、不変条件 I1〜I10、D1〜D13、WP0〜7、改訂した受け入れ条件） |
+| WP1 | `a5488f67` | `benchmarks/run-tasks.mjs`: `--runtime`・`--sweep`・`--gap-us`・p50・CPU 時間・suite の分割（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）。CI の `--quick --metrics` は維持 |
+| WP2 | `498d9e6d` | 試験を先に（HEAD の runtime で緑）: `tests/task_stress.c`（新規）、`tests/task_runtime.c` の `#undef NDEBUG` と `hits ≤ 1`、`tests/tasks.mjs` の配線 |
+| WP3 | `5ae9256d` | native の核（Design R2）: `next` の atomic な取得、`length` は不変、失敗・trap は cold path で CAS、`remaining` は参加者ごとに 1 回の `fetch_sub`、worker は release と `busy`・`idle` を 1 つの lock の中で動かす（D14）。lock 回数の assert |
+| WP4 | `5118945a`・`0525963e` | 起床: broadcast をやめ、submit は signal 1 本（`TZ_TASK_INITIAL_SIGNALS`）、加わった worker は未着手が残れば最大 2 本（`TZ_TASK_CHAIN_SIGNALS`）を起こす木の形。signal・broadcast の回数の assert、`cond_signal` の失敗注入、眠っている pool が必要な数だけ起きる試験、worker が最後に終える group の試験。C4 は初期 2・連鎖 1 で、計測の後に `0525963e` で現在の形にした |
+| WP4b | `31442c35` | 試験の強化: macOS は「待つ者がいなかった signal」を覚えていて、連鎖を外しても冷えた起床の試験が止まらなかったので、signal の hook を POSIX の規則（待っている者がいるときだけ届く）に直し、静止を待つ |
+| WP5 | `e4e3b7f9`・`f757f593`・`cfd462f4`・`f63da8bd` | 文書（`docs/architecture.md`・`docs/language.md`・Task のページ・README・GUIDE の試験の行）と、計測の記録（`docs/benchmarks.md`）、`benchmarks/run-tasks.mjs` の `coarse` 種目、`benchmarks/run-tasks-wasm.mjs`（新規） |
+| WP6 | `30737c9c` | Phase 2: WASM threads の取得・完了を native と同じ形に（`join_one`・`drain`・`release`）。要素 1 の group は公開せず、その場で走らせる。`tests/wasm_threads_stress.mjs`（新規） |
+| WP7 | （commit なし） | Phase 3: スピン（20・100 µs）と添字 counter の cache line 分離の実験。作業用の変種で測り、どちらも採用しない（結果は `docs/benchmarks.md`） |
+
+### 実装しなかったもの
+
+- WASM threads の起床の絞り込み（`memory.atomic.notify` の個数指定）と、ロックの 3 状態化（uncontended の解錠で notify しない）: 眠るスレッドは idle worker・join・lock 待ち・チャンネル待ちが同じ `epoch` の語を待ち、
+  個数指定は別の理由で眠っているスレッドを起こして idle worker を飢えさせうる（そうなると pool は誤った deadlock 判定を出す）。host の `fail()` と `bindings-threads.mjs` の変更が要るので、`ThreadState`・import・poison の規則を変えない方針では見送りました。
+- worker ごとの deque と work stealing（D1）、複数の添字をまとめて取る方式（D2）、CPU 数・stack の大きさの変更（D8・D9）、待機前のスピン（D4。実験のみ）。
+- `cpp/task_parallel` の改善の主張（G3）と、その before／after の測定（M5）、CPU 数を変えた拡大（M7）。
+- Windows の実機での実行（`windows.yml` の green だけが証拠）。
+
+### 確認コマンドと結果
+
+- C 検査: `tests/{task,channel,sync,trap_boundary}_runtime.c`（CPU 数 -1・0・1・2・4・1000、channel は 1〜4、trap_boundary は 0・1・2・4・32）と `tests/task_stress.c`（CPU 数 / host 数 1/3・2/1・2/4・3/3・4/1・4/6・8/8）を
+  `-O0`・`-O3` で、素の実行・ThreadSanitizer・AddressSanitizer＋UBSan のすべてで通した（最終の `task.c` で再確認）。`-Os`・`-Oz`（PM08 が使う）でも `task_runtime.c`・`task_stress.c` が通る。
+  取りこぼしの探索として、`task_runtime.c` を CPU 数 2・3・4・8・32 で各 150〜500 回、`task_stress.c` を単一 host（CPU 2〜8）で 1500〜3000 round、複数 host（最大 16 host × 16 CPU、32 CPU × 4 host）で実行し、失敗も hang もなかった。
+  変異の検査: 連鎖を外すと CPU 3 以上で冷えた起床の試験が止まり、submit の signal を外すとすべての CPU 数で assert が落ちる。
+- `node tests/tasks.mjs target/release/tsuzuri` が、素の実行・`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で通る（native／WASM、4 trap、`-O0`・`-O3`。失敗注入は `cond_signal` を足した 9 種）。
+  `tests/trap_return.mjs`・`tests/trap_return_sync.mjs`・`tests/trap_boundary.mjs`（17 case、`-O0`・`-O3`）・`tests/features.mjs concurrency channel`（71 case）が通る。
+  channel_threads の E2E は、CPU 1〜4・`-O0`/`-O3` で最終の runtime に 2896 回繰り返して失敗 0（Phase 1 の各段階でも 1456 回・2896 回）。
+  Task を native で走らせるほかの suite も、最終の release コンパイラで通る: `tests/async.mjs`（native の test・debug test・bench の `-O0`/`-O3`。JSPI の検査は Node 20 のため省略）、`tests/stack_overflow.mjs`（20 case）、`tests/allocator.mjs`。
+- WASM threads: `node tests/wasm_threads.mjs`（変更なしで `-O0`・`-O3`）、新規の `tests/wasm_threads_stress.mjs`（1・2・3・5・7 worker、25 round と 12 round × 8 回、CPU を埋めた状態も。前の runtime でも通る）、`tests/bindings_threads.mjs`（ブラウザと tsc の検査は環境がなく省略）が通る。
+  WASM threads の object は `-O3` で 8731 → 9481 バイト、`-Oz` で 6276 → 6645 バイト。
+- 生成 IR: `tests/fixtures/tasks`・`examples/tasks` の `--emit llvm` は基準コンパイラと `cmp` で一致（native、`-O0`・`-O3`）。同じコンパイラで 2 回作った出力（native IR、wasm32、wasm32 threads）も一致する。
+  既定の wasm32 は基準と byte で一致し、threads の wasm は runtime が変わった分だけ違う。コンパイラ（`src/*.rs`）は変えていない。
+- GUIDE §3.1 の回帰テスト 4 件（既定の stack で）が通る。
+- Rust: `RUST_MIN_STACK=4194304 cargo test --locked`（全体、`with-lock.sh heavy` の下）が、`30737c9c` で 101 の test binary・1305 件、最終の木（コードは `0525963e`。その後は文書と計測用の script だけ）でも
+  101 の test binary・1305 件（ignored 1）で通り、失敗 0。`--test tasks`（13）・`--test parallel`（2）・`--test concurrency`（19）は最終の runtime で個別にも通る。`cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、
+  `sh scripts/check-runtime-includes.sh`（47 ファイル）が通る。
+- Windows: `cargo check --all-targets --locked --target {x86_64,aarch64}-pc-windows-msvc` が通る（`cargo +stable` は `/opt/homebrew/bin/rustc` を先に見つけて `core` を探せないので、
+  `PATH=<stable の bin>:$PATH cargo check ...` で実行した）。Rust のファイルは変えていない。同梱の zig で `tests/task_runtime.c` と `src/runtime/task.c` を `x86_64-windows-gnu`・`aarch64-windows-gnu`（`-O0`・`-O3`、`-Wall -Wextra -Werror`）へ
+  compile した（実行はできない）。`task_runtime.c` は `#undef NDEBUG` で始まる（zig cc は `-O1` 以上で `NDEBUG` を定義し、`assert(...)` の中の呼び出しが消えるため）。Windows の green は `windows.yml` の実行でだけ確かめられる。
+- 文書: `node scripts/check-docs.mjs`（Task のページと WebAssembly のページ: 57 の link、12 の例、18 の native 実行）が通る。
+
+### 計測
+
+条件と結果の全体は `docs/benchmarks.md` の「Task プールのスケジューラ（PR06、2026-10-16）」にあります。生データは `target/perf/PR06-*`（git 管理外）、before のコンパイラは `target/perf/PR06/tsuzuri-before`（SHA-256 `da78ba18…55fb`）です。
+計測は他の agent がビルドしている共有機（load average 20〜100）で、排他の窓（`with-lock.sh measure`）を 2 回取りました。最終の runtime の値は排他の窓ではなく、A/A の揺れ付きです。**静かな機械での正式値は、統合後に取り直します**（コマンドは同じ節の末尾）。
+
+- 回数（機械に依らない）: 257 添字の group の mutex の取得は `Task.parallel` で 259、`Task.parallel_results` で 515 だったのが、`2 + (CPU 数 - 1)` 以下になった。broadcast は 2 から 1 以下、signal は 1 〜 `1 + 2 × (CPU 数 - 1)`。
+- 眠った worker の後の最初の呼び出し（1 ms 休む）: 窓 1（C4 の runtime）で tiny 16.1 → 6.17 µs、small 21.8 → 5.83 µs、bulk 590.8 → 252.3 µs。最終の runtime は HEAD 比で tiny・small の p50 が 0.17〜0.27 倍、bulk が 0.46〜0.47 倍、CPU が 0.13〜0.42 倍（A/A は 0.76〜1.13）。
+- 粒度: 窓 1 で、並列が逐次と並ぶ最小の逐次時間が約 168 µs から約 42 µs になった。256 rounds（約 10 µs）の group は、どちらも逐次より遅いまま。
+- 休まない連続呼び出し: bulk は窓 2 の全変種で HEAD の 0.41〜0.52 倍。tiny・small の p50 は差が読めない（tiny は HEAD が 0.17〜0.21 µs、signal を使う方針は run ごとに 0.17〜0.21 µs か 0.8〜7 µs。最終は 3 run 中 1 run が 1.0 µs）。
+- coarse（16 添字 × 約 79 µs、`cpp/task_parallel` と同じ形）: 全方針で HEAD と揺れの範囲で同じ（0.94〜1.17）。G3 は主張しない。
+- WASM threads（9 worker、Node 20）: tiny の連続 1.68 → 0.88 µs、small 4.68 → 2.90 µs、bulk の p50 544 → 141 µs（before は 0.21 ms と 0.82 ms の二つの値に割れる）、1 ms 休んだ後の p50 は tiny 40.3 → 29.5 µs、small 88.4 → 54.6 µs、bulk 823 → 545 µs。cold は変わらない。
+- 不採用: 添字 counter を別の cache line に置く（差なし）、眠る前の 20・100 µs の spin（連続の平均が tiny ×7〜9、small ×5〜7、CPU が ×4〜×40。休み 50・200 µs でも p50 に利益なし）。
+- 主張しないこと: `cpp/task_parallel`（M5）、CPU 数別の拡大（M7）、Linux・Windows の時間。CI に速度の合否の閾値は入れていない。
+
+### 決定事項の追記と、見つけた問題
+
+- 決定事項（結果は「着手時の再検討」の「決定事項の見直し」の表）: D3 は初期 signal 1・連鎖 2 の木の形を採った（起票の既定案の `min(thread_count, length - 1)` 本は採らない。C4 の初期案は初期 2・連鎖 1 で、計測の後に変えた）。
+  D4 はスピンなし（実験は不採用）。D7 は採らない（`remaining` を残す）。D10 は `--runtime`・`--sweep`・`--gap-us` に加え、`coarse` 種目と `benchmarks/run-tasks-wasm.mjs` を足した。D11 の Phase 2 は書き直した範囲だけ実装した（上の「実装しなかったもの」）。D12〜D14 は新規。
+- 最初の子どもを公開の前に取る規則（食い違い 4）は、F10 の規則として保った。起票時の「unlock → signal → claim」の順は採らない。
+- F10 の誤判定（native、修正済み）: 単一の host の 2 段の pipeline が、直前の group の worker がまだ走っているものとして数えられている間に block すると、空きの worker がいないと見て consumer を自分の上へ積み、
+  「deadlock」と誤判定した（HEAD で 60000 group 中 1〜11 件、CPU 2〜3）。直前の group の最後の worker が、`remaining` を減らして投入側を帰した後で `busy--`・`idle++` していたのが原因で、
+  同じ critical section で行う（D14）と 0 / 180000 になった。WASM threads の `run_item` は元から同じ critical section だった。`tests/task_stress.c` が「単一の host で段数が CPU 数以下なら判定を出さない」を assert する。
+- macOS の `pthread_cond_signal` は、待つ者がいなかった signal を覚えていて、後から眠った worker を起こす。signal の取りこぼしの変異（連鎖を外す）が冷えた起床の試験で見つからなかったので、
+  hook を POSIX の規則に直した（WP4b）。Linux・Windows の取りこぼしの検出は CI の実行でだけ確かめられる。
+- 起床の生存性（トークンの数が、尽きていない group の数以上）は論証で、証明ではない。stress と変異の検査で確かめた。
+- `cargo +stable` が Windows target の `core` を見つけられない（上の Windows の項）。
+- 共有機のロック（`with-lock.sh`）: 保持中の job を `stop_bash` で止めると slot が孤児になり、全員が待ち続ける（今回 14:28〜14:58）。実行中のスクリプトを書き換えると、動いている `sh` が新しいファイルの途中を読んで
+  コマンドを再実行する。統合側で気を付けてほしい。
+
+### 更新した `_tsuzuri/language-reference/` のページ
+
+- `async-tasks-and-lazy/task.md`: native の pool の説明（添字を atomic に配ること、mutex の取得回数、起床の数と木の形）。Windows の説明を「Win32 のスレッドプール」から `CreateThread` と SRWLOCK・条件変数の常駐 pool に直した。
+- `compiler/webassembly.md`: WASM threads で、グループを始めたスレッドが最初の子どもを公開する前に取る、という説明に直した。
+- 例と `run=` の出力は変えていない。`node scripts/check-docs.mjs` は 2 ページで通る。
+
+### 変更したファイル
+
+- runtime: `src/runtime/task.c`、`src/runtime/task-wasm-threads.c`。
+- 試験: `tests/task_runtime.c`（assert の追加と、`hits[2] == 1` を `hits[0..2] == 1` に強めた）、`tests/task_stress.c`（新規）、`tests/tasks.mjs`、`tests/wasm_threads_stress.mjs`（新規）。
+- 計測: `benchmarks/run-tasks.mjs`、`benchmarks/run-tasks-wasm.mjs`（新規）。
+- 文書: `README.md`、`_features/GUIDE.md`（試験の行）、`docs/architecture.md`、`docs/language.md`、`docs/benchmarks.md`、`_tsuzuri/language-reference/async-tasks-and-lazy/task.md`、`_tsuzuri/language-reference/compiler/webassembly.md`、
+  このチケット（`_perfs/` から `_perfs/_completed/` へ移動）。
+- 変えていない: `src/*.rs`（コンパイラ）、`src/runtime/task-wasm.ll`、`src/runtime/task-windows.h`、`tests/wasm_threads.mjs`、`tests/channel_runtime.c`・`sync_runtime.c`・`trap_boundary_runtime.c`、`_perfs/README.md`（統合側が PR06 の行を更新する）。

@@ -891,7 +891,7 @@ node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の co
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証
-node tests/tasks.mjs target/release/tsuzuri
+node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
@@ -923,6 +923,7 @@ node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREAD
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
+node tests/wasm_threads_stress.mjs target/release/tsuzuri   # WASM threads の pool を 1〜7 ワーカーで、グループ・入れ子・Task.scope・pipeline の厳密な値と照合する（PR06）。引数は [コンパイラ] [rounds（既定 12）]。止まったら watchdog が終了させる
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
@@ -969,6 +970,8 @@ node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri
 node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before <PB04 より前の compiler> --out target/perf/PB04-after before 1 2 4 8 unset   # TSUZURI_THREADS ごとの check／emit-llvm を交互に測る（PB04）。--cache cold|warm で frontend cache も
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
+node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Task.parallel の native の時間。--runtime・--baseline-runtime で pool の C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る（PR06）
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick   # 同じ kernel を WASM threads の pool（Node の worker_threads）で測る。2 つのコンパイラを比べて 2 つの pool を比べる（PR06）
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
 node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）
