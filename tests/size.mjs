@@ -118,6 +118,59 @@ section("WASM modules at -Os and -Oz behave like -O3 and are smaller", () => {
   assert.ok(bytes("-Oz") <= bytes("-Os"), "-Oz is not larger than -Os");
 });
 
+const nm = process.env.TSUZURI_NM ?? "nm";
+// The local symbols of an object file (lowercase `nm` types; weak and unique symbols are not local), or null without `nm`.
+function localSymbols(file) {
+  const result = spawnSync(nm, ["-a", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout.split("\n").filter((line) => /^\s*[0-9a-fA-F]*\s+[a-tx-z]\s/.test(line)).length;
+}
+
+section("--strip drops the local symbols and leaves the program as it is", () => {
+  const project = example("hello");
+  for (const extra of [[], ["--no-cache"], ["-Oz"]]) {
+    const plain = build(project, extra);
+    const stripped = build(project, [...extra, "--strip"]);
+    assert.deepEqual(execute(stripped), execute(plain), `hello ${extra.join(" ")} --strip runs like the unstripped build`);
+    if (process.platform === "win32") continue; // a Windows link is left as it is
+    assert.ok(statSync(stripped).size <= statSync(plain).size, "the stripped executable is not larger");
+    const before = localSymbols(plain), after = localSymbols(stripped);
+    if (before === null) continue;
+    assert.ok(after <= before, `local symbols: ${before} before, ${after} after`);
+    if (process.platform === "darwin") {
+      assert.equal(after, 0, "no local symbol is left in a Mach-O executable");
+      if (extra.includes("--no-cache")) assert.ok(before > 10, "the embedded runtime leaves local symbols to drop");
+      const signature = spawnSync("codesign", ["-v", stripped], { encoding: "utf8" });
+      if (!signature.error) assert.equal(signature.status, 0, `the stripped executable keeps a valid signature: ${signature.stderr}`);
+    }
+  }
+  // The trap table comes from the source map, not from symbols.
+  const traps = [];
+  for (const extra of [[], ["--strip"]]) {
+    const output = join(directory, `trap${counter++}${suffix}`);
+    tsuzuri(["build", example("point"), "--trap-info", ...extra, "-o", output]);
+    traps.push(readFileSync(`${output}.trap.json`, "utf8"));
+    assert.equal(execute(output).status, 0);
+  }
+  assert.equal(traps[0], traps[1], "--strip leaves the trap table unchanged");
+});
+
+section("the option errors of --strip", () => {
+  const fails = (args, message) => {
+    const result = tsuzuri(args, { status: 2 });
+    assert.ok(result.stderr.includes(`error[E2000]: ${message}`), `${args.join(" ")}\n${result.stderr}`);
+  };
+  const hello = example("hello");
+  fails(["build", hello, "--strip", "--strip"], "strip specified more than once");
+  fails(["run", hello, "--strip"], "--strip is only valid with build");
+  fails(["test", hello, "--strip"], "--strip is only valid with build");
+  fails(["build", hello, "--strip", "-g"], "--strip cannot be combined with --debug-info: a debugger needs the symbols");
+  fails(["build", hello, "--strip", "--emit", "object"], "--strip requires native executable output (--emit exe)");
+  fails(["build", hello, "--strip", "--target", "wasm32"],
+    "--strip requires a native executable; WASM output is already stripped unless --debug-info is used");
+  assert.match(tsuzuri(["--help"]).stdout, /--strip\s+Link a native executable without its local symbols/);
+});
+
 section("the option errors of -Os and -Oz", () => {
   const fails = (args, message) => {
     const result = tsuzuri(args, { status: 2 });

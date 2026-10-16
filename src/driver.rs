@@ -417,6 +417,8 @@ pub struct BuildOptions {
     pub allocator: llvm::Allocator,
     /// `--freestanding`: a native object that needs no C library (F13 Phase 3).
     pub freestanding: bool,
+    /// `--strip`: a native executable without local symbols (PM08).
+    pub strip: bool,
     /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
     /// every non-native target.
     pub triple: Option<Triple>,
@@ -444,6 +446,7 @@ impl Default for BuildOptions {
             trap_return: false,
             allocator: llvm::Allocator::System,
             freestanding: false,
+            strip: false,
             triple: None,
         }
     }
@@ -610,6 +613,26 @@ impl BuildOptions {
             ));
         }
         self.validate_allocator()?;
+        if self.strip {
+            if self.target.is_wasm() {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip requires a native executable; WASM output is already stripped unless --debug-info is used",
+                ));
+            }
+            if self.emit != Emit::Executable {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip requires native executable output (--emit exe)",
+                ));
+            }
+            if self.debug_info {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip cannot be combined with --debug-info: a debugger needs the symbols",
+                ));
+            }
+        }
         if (self.emit == Emit::Executable && self.target != Target::Native)
             || (self.emit == Emit::Wasm && !self.target.is_wasm())
         {
@@ -3758,6 +3781,10 @@ fn build_complete(
         );
         if options.emit == Emit::Executable && !platform.windows() && dwarf_sidecar.is_none() {
             clang.arg("-lm");
+        }
+        // `-x` drops the local symbols and keeps the global ones; Windows links are left as they are.
+        if options.strip && options.emit == Emit::Executable && !platform.windows() {
+            clang.arg("-Wl,-x");
         }
         if options.emit == Emit::Executable && runtime_objects {
             clang.args(dead_strip_args(platform));

@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を付けます。
+- 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を、`build` の native 実行ファイルに `--strip` を付けます（[成果物を小さくする](#成果物を小さくする)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -35,6 +35,7 @@
 | `--trap-mode` | | ○ | | | | | | | |
 | `--allocator` | | ○ | | | | | | | |
 | `--freestanding` | | ○ | | | | | | | |
+| `--strip` | | ○ | | | | | | | |
 | `--wasm-feature` | | ○ | | | | | | | |
 | `--wasm-host` | | ○ | | | | | | | |
 | `--wasm-max-memory` | | ○ | | ○ | | | | | |
@@ -108,6 +109,19 @@ add 20 22
 
 ```text
 42
+```
+
+## 成果物を小さくする
+
+| オプション | 既定 | 意味 |
+| --- | --- | --- |
+| `-Os` `-Oz` | オフ | LLVM のサイズ最適化（[最適化と CPU](#最適化と-cpu)）。`build` と `run` |
+| `--strip` | オフ | native の実行ファイルのリンクで、ローカルシンボルを除く。`build` の `--emit exe` だけ |
+
+`--strip` はリンカーに `-Wl,-x` を渡します。ローカルシンボルだけが消え、グローバルシンボルは残ります。プログラムの動作と `--trap-info` の位置表（`.trap.json`）は変わらず、macOS のコード署名も有効なままです。小さくなるのはシンボル表の分だけで、`examples/hello` の既定のビルドは 50,664 バイトから 50,344 バイト（0.6%、macOS arm64 で測定）です。`-g` とは組み合わせられず（デバッガーがシンボルを使うため）、`--emit object`・`llvm`・`header`・`shared`、バインディング、WASM は `E2000` です。WASM の出力は `--debug-info` を付けない限り、すでにシンボルを持ちません。Windows のリンクは変えないので、`--strip` を付けても成果物は同じです。`build` 以外のサブコマンドは `--strip` を拒否します。
+
+```text
+<command line>:1:1: error[E2000]: --strip cannot be combined with --debug-info: a debugger needs the symbols
 ```
 
 ## 診断とデバッグ

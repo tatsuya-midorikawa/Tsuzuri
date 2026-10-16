@@ -240,9 +240,9 @@ try {
   run(compiler, ['build', created, '--no-cache', '-o', greeting]);
   assert.equal(run(greeting, []).stdout, 'Hello, Tsuzuri!\n');
   const small = path.join(directory, `small${suffix}`);
-  run(compiler, ['build', created, '-Oz', '--no-cache', '-o', small]);
+  run(compiler, ['build', created, '-Oz', '--strip', '--no-cache', '-o', small]);
   assert.equal(run(small, []).stdout, 'Hello, Tsuzuri!\n');
-  console.log('Bundled native -Oz: linked and executed.');
+  console.log('Bundled native -Oz --strip: linked and executed.');
   await mkdir(path.join(created, 'Shapes'));
   await writeFile(path.join(created, 'Shapes', 'Square.tz'), 'namespace Acme::Smoke::Shapes\n\ndef side :: i64 -> i64 = \\x -> x * 2\n');
   await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (Square.side 20 + Shapes::Square.side 1)\n    0\n');

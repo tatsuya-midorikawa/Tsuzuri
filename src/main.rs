@@ -158,6 +158,8 @@ Build options:
                          tsuzuri_alloc_stats reports
     --freestanding         Native object, llvm, or header output that needs no C library;
                          requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
+    --strip                Link a native executable without its local symbols (build only; not with -g;
+                         a Windows link is left as it is)
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -295,6 +297,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut trap_return = false;
     let mut allocator = None;
     let mut freestanding = false;
+    let mut strip = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -482,6 +485,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("freestanding specified more than once".into());
                     }
                     freestanding = true;
+                    continue;
+                }
+                Some("--strip") => {
+                    if strip {
+                        return Err("strip specified more than once".into());
+                    }
+                    strip = true;
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -714,6 +724,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if freestanding && action != Action::Build {
         return Err("--freestanding is only valid with build".into());
     }
+    if strip && action != Action::Build {
+        return Err("--strip is only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -831,6 +844,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         trap_return,
         allocator: allocator.unwrap_or_default(),
         freestanding,
+        strip,
         triple,
     };
     options.validate().map_err(|error| error.message)?;
@@ -2403,6 +2417,62 @@ mod tests {
         assert!(parse(&["build", "Main.tz", "-Ot"]).is_err());
         assert!(parse(&["build", "Main.tz", "-OS"]).is_err());
         assert!(HELP.contains("-Os, -Oz"));
+    }
+
+    #[test]
+    fn strip_is_a_build_option_for_native_executables() {
+        assert!(
+            parse(&["build", "Main.tz", "--strip"])
+                .unwrap()
+                .options
+                .strip
+        );
+        assert!(!parse(&["build", "Main.tz"]).unwrap().options.strip);
+        assert!(parse(&["Main.tz", "--strip", "-Oz"]).unwrap().options.strip);
+        let wasm = "--strip requires a native executable; WASM output is already stripped unless --debug-info is used";
+        for (values, message) in [
+            (
+                vec!["build", "Main.tz", "--strip", "--strip"],
+                "strip specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["check", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "-g"],
+                "--strip cannot be combined with --debug-info: a debugger needs the symbols",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--emit", "object"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--emit", "llvm"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--target", "wasm32"],
+                wasm,
+            ),
+            (
+                vec![
+                    "build", "Main.tz", "--strip", "--target", "wasm32", "--emit", "object",
+                ],
+                wasm,
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        assert!(HELP.contains("--strip"));
     }
 
     #[test]
