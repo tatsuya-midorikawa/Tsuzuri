@@ -157,6 +157,44 @@ fn recursive_unions_keep_an_i32_tag_in_their_node() {
 }
 
 #[test]
+fn recursive_unions_with_different_payloads_end_their_node_with_the_payload_area() {
+    // The node ends with the area a non-recursive union would have: `[units x iU]`, where `U` is the
+    // largest payload alignment, at most 16 (the child pointer's 8, or an `i128`'s 16), and `units`
+    // hold the largest payload (8 bytes, 16 bytes for a string, 16 bytes for an `i128`).
+    for (union, case, area) in [
+        (
+            "union Small = Num of i32 | Next of Small | Flag of bool",
+            "Next (Flag true)",
+            "[1 x i64]",
+        ),
+        (
+            "union Expr = Num of i64 | Neg of Expr | Name of string | Small of i8",
+            "Neg (Name \"abc\")",
+            "[2 x i64]",
+        ),
+        (
+            "union Wide = Big of i128 | Next of Wide | Tiny of i8",
+            "Next (Tiny 1)",
+            "[1 x i128]",
+        ),
+    ] {
+        let name = union.split_whitespace().nth(1).unwrap();
+        let constructor = case.split_whitespace().next().unwrap();
+        let source = format!(
+            "{union}\nexport def depth :: i64\nfn depth =\n    match {case} with\n    | {constructor} _ -> 1\n    | _ -> 0\n"
+        );
+        for wasm in [false, true] {
+            let ir = ir_for(&source, wasm);
+            assert_eq!(
+                definition(&ir, &format!("tz.rec.node.Main.{name}")),
+                format!("%\"tz.rec.node.Main.{name}\" = type {{ ptr, ptr, ptr, i32, {area} }}"),
+                "{ir}"
+            );
+        }
+    }
+}
+
+#[test]
 fn dyn_values_allocate_the_llvm_size_of_their_value() {
     let source = "class Shape<'a> {\n    def area :: ref 'a -> i64\n}\nrecord Square { side: i64, tag: i8 }\ninstance Shape<Square> {\n    fn area s = s.side * s.side\n}\nexport def total :: i64\nfn total =\n    let shape: dyn Shape = Dyn.of (Square { side: 3, tag: 1 })\n    Shape.area (ref shape)\n";
     let size = "ptrtoint (ptr getelementptr (%tz.record.Main.Square, ptr null, i32 1) to i64)";

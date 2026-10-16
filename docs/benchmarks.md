@@ -6479,16 +6479,24 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 どの variant も、変更後の `__text` は cache ありの既定のビルド（`examples/point` は 10,844、`examples/io` は 9,780）と同じか、`--trap-info` の計装のコードの分だけ大きい値です。プログラムの出力と `--trap-info` の位置表（`.trap.json`）は変わらず、`tests/size.mjs` は `point` の埋め込み形式の実行ファイルから、使わない数値の解析（`tz_soft_parse`）が消えていることを `nm` で確かめます。Linux と Windows のリンカーでの効果は、この機械では測っていません（CI のジョブが実行ファイルの出力と動作を確かめます）。
 
-## 値のレイアウト（PM01、2026-10-16）
+### 値のレイアウト（PM01、2026-10-16）
 
-union・`Maybe`・`Result`・record の値の大きさと、`benchmarks/layout` の最大メモリ使用量の記録です。
+union・`Maybe`・`Result`・record の値の大きさと、`benchmarks/layout` の最大メモリ使用量（RSS）・時間・コンパイル時間の記録です。
 実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に大きさや速度の閾値はありません。
+値の大きさは決定的です。RSS・時間・コンパイル時間は、ほかの作業と共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動き、計測中の load average は 4〜9）で取った値で、専用機の値ではありません。**目安**であり、正式な値は静かなマシンで取り直します。
 
-### 型の大きさ（決定的）
+比較する release コンパイラ（`cargo build --release --locked`）は 3 つです。
 
-- 基準は `70f7c803`（main に計画の commit を足したもの）の release コンパイラ、後は `perf/phase3/PM01` の release コンパイラです。
-  `benchmarks/layout/sizes.mjs` が `--emit llvm -O0` の型定義を clang の target ごとのデータレイアウトで測ります（native は Apple M1 Max の AArch64、`x86_64-unknown-linux-gnu`、wasm32）。
-  Rust の列は `rustc -O` の `size_of`（rustc 1.98.1、AArch64）です。
+| 名前 | 内容 |
+| --- | --- |
+| main | `6d15b437`（第 3 フェーズの前）。値の大きさの計測は、計画の commit だけを足した `70f7c803` のコンパイラ |
+| integration | `7f41badc`。統合ブランチで、PM01 を含まない。PM01 だけの効果（時間・生成コード）はこれとの比較で見る |
+| final | `d5b91402`。この ticket（`7f41badc` を取り込み済み）。その後に取り込む PM05（`127abe27`）は含まない |
+
+#### 型の大きさ（決定的）
+
+- `benchmarks/layout/sizes.mjs` が `--emit llvm -O0` の型定義を clang の target ごとのデータレイアウトで測ります（native は Apple M1 Max の AArch64、`x86_64-unknown-linux-gnu`、wasm32）。
+  前は main、後は final のコンパイラです。Rust の列は `rustc -O` の `size_of`（rustc 1.98.1、AArch64）です。
 - niche の union は型定義を持たないので、その大きさはペイロードの型（`%tz.string` は 16、スライスでない参照は native で `ptr` の 8）で読みます。
 
 ```sh
@@ -6515,33 +6523,147 @@ wasm32 と x86-64 は、`Maybe<ref Point>` の行を除いて native と同じ�
 配列の合計は、要素数 1,000,000 の 8 個の配列（`Color`・`Result<i64, string>`・`Maybe<string>`・`Mixed`・`Shape`・`Small`・`Maybe<bool>`・`Tagged`）の要素の大きさの和です。
 `Maybe<bool>` の 2 バイトは、`bool` の未使用の値を niche にしない（ticket の対象外）ためで、Rust は 1 バイトです。
 
-### 最大 RSS と時間
+#### 最大 RSS
 
-〔計測待ち〕
+`benchmarks/layout` を `-O3` で作った実行ファイルの maximum resident set size（`/usr/bin/time -l`、bytes）です。コンパイラごとに 3 回ビルドし直し、ビルドごとに 5 回測った 15 回の中央値と最小〜最大です（出力はどれも `16166714`）。
 
-### 生成コードの確認
+```sh
+<compiler> build benchmarks/layout -O3 -o layout && /usr/bin/time -l ./layout
+```
 
-`benchmarks/layout` を前後のコンパイラで `--emit llvm`（`-O0`・`-O3`）と `-O3` の実行ファイルにして数えました（Apple clang 21、`llvm-objdump`）。
-
-| 数えるもの | 前 | 後 |
+| コンパイラ | 中央値 | 最小〜最大 |
 | --- | ---: | ---: |
-| `-O0` の IR の `zext i8 `（狭いタグを広げる） | 5 | 12 |
-| `-O3` の IR の `load i8, ptr` | 14 | 20 |
-| `-O3` の機械語の `ldrb` | 12 | 16 |
-| `-O0` の IR の `icmp slt i64 %v, 0`（長さが負の niche） | 1 | 3 |
-| `-O0` の IR の `icmp eq ptr`（null の niche など） | 6 | 7 |
-| `-O3` の実行ファイルの `__text` | 12,608 | 12,920 |
+| main | 165,871,616 | 165,855,232〜165,888,000 |
+| integration | 165,871,616 | 165,871,616〜165,904,384 |
+| final | 110,854,144 | 110,854,144〜110,886,912 |
 
-型定義は `Maybe[string]`・`Maybe[ref[Main.Point]]` がなく（niche）、record は `Mixed = { i64, i64, i1, i1 }`、`Tagged = { i64, i8, i1 }`、
-`m.b`・`m.d`・`t.value` の読み出しが `getelementptr … i32 0, i32 0`・`i32 1`・`i32 0` です。`__text` が増えるのは、niche の比較と狭いタグの `zext` の分です。
+final は main・integration より 55,017,472 bytes（33.2%）少なくなりました。配列の要素の合計（188,000,000 → 109,000,000 bytes）の 79,000,000 bytes（42.0%）より小さいのは、基準では全要素が `None` の `Maybe<string>` の配列（24,000,000 bytes）が RSS に現れなかったためです。
 
-### 実装済みと計画
+- 最小の `examples/hello` の RSS は 1,671,168 bytes（プロセスの基本分）です。基準の 165,871,616 は、188,000,000 から 24,000,000 を引いた値にこの 1.67 MB を足した値に近く、final の 110,854,144 は 109,000,000 にこの 1.67 MB を足した値に近いままです（差はどちらも約 0.2 MB）。
+- 確かめるために、全要素を `Some "x"` にした版（`options` の条件を `i >= 0` にした `benchmarks/layout` の複製。出力は `17166714`）を main と final で測りました（3 回）。main は 205,963,264〜206,012,416、final は 126,926,848〜126,943,232 bytes で、差は 79.0 MB、配列の要素の合計の差と一致します。
+  `Some "x"` の文字列の確保（1 個約 16 bytes、100 万個）が加わるので、どちらも全要素が `None` の版より 16 MB 余分に増えます。
+- 基準の `None` は全ビットが 0 で、その配列のページは書き込まれずに常駐しませんでした（上の 2 つの測定からそう読めます。書き込みが省かれる仕組みそのものは調べていません）。変更後の `None` は `{ ptr null, i64 -1 }` で 0 ではないので、配列は書き込まれて常駐します。全要素が `None` の `Maybe<string>` の配列だけを見ると、基準で 0 だった常駐が 16,000,000 bytes に増えます。この workload では、ほかの配列の縮小がそれを上回ります。
+
+#### 時間
+
+`benchmarks/run-computations.mjs`（`benchmarks/computations/Main.tz`。同じ process の中で C++・Rust の参照も測る）で、PM01 を含まない integration と final を比べました（native `-O3`。clang 23.1.1、Node.js 20.19.6）。runner は `--baseline` に渡したコンパイラの computation 式の版（`ce`）を、現在のコンパイラの `ce`・`direct`（直接書いた版）と同じ process で交互に測ります。
+
+```sh
+node benchmarks/run-computations.mjs <final> --baseline <integration>   # 順向き 3 回
+node benchmarks/run-computations.mjs <integration> --baseline <final>   # 逆向き 3 回
+# direct の比較: native.cpp の WORKLOAD の `before_tz_ce_##name` を `before_tz_direct_##name` にした runner の複製で、順向きを 3 回
+```
+
+`ce` は順向きと逆向きの 6 run の、`direct` は上の複製の 3 run の、同じ process の組から比 final / integration を作りました。別々の run の値を比べると、機械の状態の差が混ざります（同じコードの C++ の参照が、順向きの run で逆向きより 0.5〜1.0% 遅く出ました）。
+表の ms は final の、run ごとの中央値の中央値です（1 回の呼び出しの時間）。比は中央値と、最小〜最大です。
+
+| workload | `ce` final（ms） | `ce` の比 | `direct` final（ms） | `direct` の比 |
+| --- | ---: | ---: | ---: | ---: |
+| `bind` | 3.190 | 1.000（0.996〜1.004） | 3.249 | 0.997（0.993〜1.000） |
+| `checked` | 5.207 | 1.001（0.992〜1.004） | 5.203 | 1.002（1.001〜1.004） |
+| `delayed` | 1.297 | 1.000（0.997〜1.003） | 1.317 | 1.002（0.996〜1.004） |
+| `array_for` | 0.005611 | 1.000（0.988〜1.005） | 0.005678 | 1.002（0.998〜1.006） |
+| `array_bind` | 0.005559 | 0.998（0.994〜1.009） | 0.005658 | 1.000（0.994〜1.004） |
+| `owned_capture` | 0.02631 | 0.999（0.993〜1.005） | 0.02674 | 1.002（0.998〜1.011） |
+| `std_option` | 4.490 | 1.001（0.997〜1.013） | 5.175 | 1.003（0.999〜1.010） |
+| `std_result` | 5.213 | 1.003（0.991〜1.004） | 5.299 | 0.997（0.996〜1.001） |
+| `std_option_owned` | 0.1756 | 1.001（0.991〜1.013） | 0.1777 | 0.996（0.995〜1.010） |
+| `std_option_length` | 3.892 | 1.002（1.000〜1.008） | 3.943 | 1.003（0.996〜1.007） |
+
+- 20 の組の中央値はすべて 0.996〜1.003、最小〜最大も 0.988〜1.013 に収まります。時間は変わりません。ticket の停止条件 10（変更後が変更前より遅い種目）に当たるものはありません（比が最も大きい組で 1.013 で、`direct` で 3 回とも 1 を超えたのは `checked` の 1.001〜1.004 だけ）。`std_option` の `direct` は前後とも C++ の約 1.14 倍で、PM01 より前からある差です（`ce` は 1.00 倍）。
+- `std_option`・`std_option_length`（`Maybe<i64>`）と `std_result`（`Result<i64, i64>`）の `ce`・`direct` の 6 つは、`-O3` の機械語が前後で同一でした（下のコマンドの `.s` を、ラベルを正規化して関数ごとに比べた）。型の大きさ（16 bytes）も同じで、時間が変わらないのはこのためです。
+  `std_option_owned`（`Maybe<string>`）の機械語は変わり（`ce` は 69 行から 67 行。定数のタグ `mov w8, #1`・`cbnz` の検査が、長さの符号の検査 `tbz x8, #63` に代わる）、native の時間は 1.00 倍でした（ループに `malloc`・`free` の呼び出しが残っています）。
+- wasm32（同じ runner の `wasm` 欄。15 sample の中央値の比）は、`std_option_owned` だけが、順向きでも逆向きでも final の所要時間が integration の 95.3〜96.7%（約 4% 速い）で、ほかは 3% 以内でした。原因（wasm32 の生成コード）は調べていません。
+
+```sh
+<compiler> build benchmarks/computations --emit llvm -o x.ll
+clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module -S x.ll -o x.s
+```
+
+#### コンパイル時間
+
+`<compiler> build <project> --emit llvm -O0 -o out.ll` の wall time（`/usr/bin/time -p`、秒）の中央値と最小〜最大です。コンパイラごとに 3 回、1 回に 5 回の 15 回で、3 つのコンパイラを交互に実行しました。
+
+| project | main | integration | final |
+| --- | ---: | ---: | ---: |
+| `benchmarks/computations` | 1.10（0.96〜1.32） | 1.08（0.97〜1.70） | 1.09（0.99〜1.27） |
+| `benchmarks/layout` | 1.04（0.95〜1.39） | 1.09（0.95〜1.51） | 1.04（0.97〜1.33） |
+| `tests/fixtures/value_layout`（features の suite は 969 case） | 1.33（1.25〜1.57） | 1.34（1.25〜2.63） | 1.36（1.23〜1.63） |
+| `tests/fixtures/record_layout` | 1.06（0.99〜1.22） | 1.10（0.99〜1.47） | 1.10（0.98〜1.64） |
+| `examples/hello` | 1.05（0.95〜1.20） | 1.02（0.93〜1.22） | 1.00（0.90〜1.15） |
+| `examples/point` | 0.96（0.91〜1.28） | 0.98（0.90〜1.15） | 0.95（0.86〜1.05） |
+
+どの project も、3 つのコンパイラの中央値の差は 0.04 秒以内で、範囲が重なります。差は雑音の内です。
+
+wall time は機械の load に左右されるので、同じコマンドの命令数（`/usr/bin/time -l` の `instructions retired`、百万、3 回の中央値）も測りました。深く入れ子にした型（`Maybe` を 100 重、ペイロードの両方が自分自身である `union Both<'a> = L of 'a | R of 'a` を 12・16・18 重）を含みます。
+入れ子の入力は、`union Both<'a> = L of 'a | R of 'a`、`def f :: i64 -> Both<Both<…<i64>…>>`（n 重）、`fn f x = L (L (… (L 1)…))`、`export def answer :: i64`、`fn answer = match f 1 with | L _ -> 1 | R _ -> 0` の形です（`Maybe` の版は `Maybe<…>`・`Some (…)`・`Some _ -> 1 | None -> 0`）。
+
+| 入力 | main | integration | final | final / integration |
+| --- | ---: | ---: | ---: | ---: |
+| `Maybe` の 100 重 | 13,377 | 13,532 | 13,563 | +0.2% |
+| `Both` の 12 重 | 3,641 | 3,656 | 3,676 | +0.5% |
+| `Both` の 16 重 | 8,545 | 8,695 | 8,594 | −1.2% |
+| `Both` の 18 重 | 24,520 | 25,222 | 25,121 | −0.4% |
+| `examples/hello` | 3,147 | 3,084 | 3,093 | +0.3% |
+| `benchmarks/computations` | 3,182 | 3,202 | 3,215 | +0.4% |
+| `benchmarks/layout` | 3,072 | 3,102 | 3,107 | +0.2% |
+| `tests/fixtures/value_layout` | 6,467 | 6,393 | 6,459 | +1.0% |
+| `tests/fixtures/record_layout` | 3,390 | 3,613 | 3,426 | −5.2% |
+
+final と integration の差は −5.2%〜+1.0%、final と main の差は −1.7%〜+2.5% です。`record_layout` の integration は 3 回が 3,462〜3,659 とばらつきます。`Both` の入れ子の深さに対する増え方（12 → 16 → 18 重で約 2.3 倍、2.9 倍）は 3 つのコンパイラで同じで、PM01 は入れ子に対して余分な作業を足していません（`union_layout`・`record_slots` の結果を target ごとの memo に入れています）。
+`Both` の 16 重の wall time を 3 回測ったとき final が 2.6 秒と 3.1 秒の回がありましたが、命令数は同じで、ほかの agent の作業が重なった（load average 13〜25）ためです。
+
+#### 生成コードの確認
+
+`benchmarks/layout` を、PM01 を含まない integration と final のコンパイラで IR と `-O3` の実行ファイルにして数えました（Apple clang 21、LLVM 21 の `llvm-objdump`）。
+`--emit llvm` の出力は最適化レベルによらず同じ（`-O0` と `-O3` で一致）で、最適化は clang が行います。IR の行は出力した IR の数、機械語の行は `-O3` の実行ファイルの数です。
+
+```sh
+<compiler> build benchmarks/layout --emit llvm -O0 -o layout.ll
+<compiler> build benchmarks/layout -O3 -o layout
+llvm-objdump -d --no-show-raw-insn layout | grep -cw ldrb
+size -m layout        # Section __text
+```
+
+| 数えるもの | integration | final |
+| --- | ---: | ---: |
+| 出力した IR の `zext i8 `（狭いタグを `i32` に広げる） | 5 | 12 |
+| 出力した IR の `load i8, ptr` | 14 | 20 |
+| 出力した IR の `icmp slt i64 %v, 0`（長さが負の niche） | 1 | 3 |
+| 出力した IR の `icmp eq ptr`（null の niche など） | 6 | 7 |
+| `-O3` の機械語の `ldrb` | 2 | 6 |
+| `-O3` の実行ファイルの `__text`（bytes） | 1,760 | 2,032 |
+
+- final の IR には `Maybe[string]`・`Maybe[ref[Main.Point]]` の型定義がありません（niche。integration は 23 か所に現れます）。record は `Mixed = { i64, i64, i1, i1 }`、`Tagged = { i64, i8, i1 }` で、`m.b`・`m.d`・`t.value` の読み出しは `getelementptr … i32 0, i32 0`・`i32 0, i32 1`・`i32 0, i32 0` です。
+- `-O3` の機械語では、`Color`・`Small`・`Maybe<bool>` のタグが 1 byte の `ldrb` + `cmp w, #n` で読まれます（`ldrb w11, [x19, x10]; cmp w11, #0x3` など）。integration は 2 つ（うち 1 つは数字を出力する `putchar` の前の読み出し）でした。
+  `__text` が 272 bytes 増えるのは、狭いタグの読み出しと niche の比較が増える分です。値が小さくなる効果は、時間でなく RSS（上）に現れます。
+- `--emit llvm` の出力は main と integration で同じ数です（5・14・1・6）。`ldrb` は +4、`__text` は +272 bytes で、PM08 などが入る前の build を main と比べた古い計測でも +4 と +312 bytes（12,608 → 12,920）でした。integration の実行ファイルが小さい（`__text` が 1,760）のは、PM08 の整数表示の分割など PM01 以外の変更です。
+
+#### 期待と実測
+
+| 項目 | 期待（ticket の `## 目標と指標` と着手時の再検討） | 実測 |
+| --- | --- | --- |
+| `Color`・`Maybe<bool>`・`Small` | 1・2・2 bytes | 1・2・2 |
+| `Maybe<string>` | 24 → 16 bytes | 24 → 16 |
+| `Result<i64, string>`・`Shape` | 32 → 24 bytes | 32 → 24 |
+| `Mixed`・`Tagged` | 32 → 24、24 → 16 bytes | 32 → 24、24 → 16 |
+| `Maybe<ref Point>` | native 16 → 8、wasm32 8 → 4 | native 16 → 8。wasm32 は 8 のまま（niche は native だけ。承認済みの変更） |
+| `Maybe<i64>`・`Point` | 変わらない（16・16） | 16・16 |
+| 配列の合計 | 188,000,000 → 109,000,000 bytes | 計算値のとおり。RSS は 165,871,616 → 110,854,144（−33.2%）。基準の全 `None` の配列が常駐していなかったため、計算値の減少（−42.0%）より小さい |
+| 時間（native） | 変わらない（`Maybe<i64>`・`Result` の 16 bytes は同じ） | `ce`・`direct` の 10 種目とも比（final / integration）の中央値は 0.996〜1.003。`Maybe<i64>`・`Result` の機械語は同一 |
+| 時間（wasm32） | 主張しない | `std_option_owned` が約 4% 速い（原因は未調査）。ほかは 3% 以内 |
+| コンパイル時間 | 記録する（合否にしない） | wall time・命令数とも雑音の内。深い入れ子でも同じ増え方 |
+
+`Maybe<bool>` の 2 bytes は、`bool` の未使用の値を niche にしない（ticket の対象外）ためで、Rust は 1 byte です。時間の効果は、PX02 の実アプリ型の workload（`{ i64u, i64u }` の record と再帰 union だけを持つ）には期待しておらず、測っていません。
+
+#### 実装済みと計画
 
 - 実装済み: タグの幅（1・2・4 バイト）、`General` の領域（最大アラインメントの整数の配列）、niche（長さが負の `string`・`utf8string`・配列、native の参照）、record のフィールドの格納順、
   DWARF・LLDB・natvis の対応。計測は上の表のとおりです。
 - 計画（未実装）: タプルの並べ替え（`_perfs/_completed/PM01-value-layout.md` の「Phase 3b を実施しない根拠」）、`bool` の未使用の値や関数値のコードポインターの niche、
-  ペイロードを持つケースが 2 つ以上の union の niche、wasm32 向けの `storage_layout`。
-- 生データ: `target/perf/PM01-sizes-final/`（型の大きさ）、`target/perf/PM01-measure/`（RSS・時間・コンパイル時間）、`target/perf/PM01-codegen/`（生成コード）。
+  ペイロードを持つケースが 2 つ以上の union の niche、wasm32 の参照の niche、wasm32 向けの `storage_layout`。
+- 未了: 専用機での時間・RSS の再計測（上の値は共有のマシンで、取り直す予定）。PM05 を取り込んだ後（`--allocator small`、WASM のヒープ）の PM01 の効果は測っていません。
+- 生データ（コミットしない。作業ツリーの `target/perf/`）: `PM01-sizes-before`・`PM01-sizes-final2`（型の大きさ）、`PM01-measure2`・`PM01-measure3`（RSS・時間・コンパイル時間。`measure2.sh`・`measure3.sh` が手順）、`PM01-final/`（生成コード `codegen`、命令数 `instr.txt`、全 `Some` の版 `layout-some`、`direct` の同一 process の比較 `direct-run`、深い入れ子 `deep`）。
 
 ## 現実的な次の指標
 
