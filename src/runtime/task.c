@@ -46,6 +46,13 @@
 
 enum { TZ_TASK_MAX_THREADS = 32 };
 
+/* How many sleeping workers a submit wakes. Each worker that joins a group while it still has unstarted
+   items wakes one more (tz_task_worker_main), so a group spreads over the workers without its submitter
+   having to wake each of them. */
+#ifndef TZ_TASK_INITIAL_SIGNALS
+#define TZ_TASK_INITIAL_SIGNALS 2
+#endif
+
 #if !defined(_WIN32)
 #ifndef TSUZURI_TRAP_INFO_DEFINED
 #define TSUZURI_TRAP_INFO_DEFINED
@@ -169,6 +176,10 @@ static void tz_task_wake(pthread_cond_t *condition) {
     tz_task_check("pthread_cond_broadcast", TZ_TASK_COND_BROADCAST(condition));
 }
 
+static void tz_task_signal(pthread_cond_t *condition) {
+    tz_task_check("pthread_cond_signal", TZ_TASK_COND_SIGNAL(condition));
+}
+
 /* The index from which unstarted items are skipped: the lowest failing or trapping item. */
 static uint64_t tz_task_stop(const struct tz_task_group *group) {
 #if !defined(_WIN32)
@@ -261,7 +272,7 @@ static void tz_waiter_wake(struct tz_waiter *waiter, int doomed) {
     waiter->woken = 1;
     waiter->doomed = doomed;
     if (waiter->counted) ++tz_task_pool.busy;
-    tz_task_check("pthread_cond_signal", TZ_TASK_COND_SIGNAL(&waiter->condition));
+    tz_task_signal(&waiter->condition);
 }
 
 /* With the mutex held: wakes the first waiter of `channel` for room (`sender`) or for an item, or all. */
@@ -339,7 +350,12 @@ static void *tz_task_worker_main(void *pointer) {
         ++tz_task_pool.busy;
         --tz_task_pool.idle;
         tz_task_counted = 1;
+        /* The group still has unstarted items: wake the next worker (a hint; the group may be gone by
+           then, and a wakeup that finds nothing is harmless). A lost wakeup is not: see the argument at
+           tz_task_submit. */
+        int more = atomic_load_explicit(&group->next, memory_order_relaxed) < group->length;
         tz_task_unlock();
+        if (more) tz_task_signal(&tz_task_pool.work_available);
         tz_task_run_item(group, index);
         uint64_t done = 1 + tz_task_drain(group);
         /* The items are released, and the worker counted free, in one critical section: when the
@@ -386,6 +402,14 @@ static void tz_task_start_pool(void) {
     }
 }
 
+/* Waking workers, and why a wakeup is never lost. A token is a signal that was sent and has not been taken, or a
+   worker that is awake and has not looked at the groups yet. A worker looks at every group with the mutex held
+   before it sleeps, so a token ends in a claim, or in nothing left to claim. A submit adds one token or two (and
+   never more than the group has other items) for its group, and a worker that claims an item at its join adds one
+   while that group still has unstarted items. The tokens are therefore never fewer than the groups that have
+   unstarted items: a token is used up by a claim that passes it on, or that empties its group. The thread that
+   waits for a join runs its own items to the end, so a group never needs a token to finish; the tokens bring the
+   threads that a pipeline needs, and that a thread blocked on a channel waits for while idle != 0. */
 static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_result)(void *, uint64_t), void *context, uint64_t length) {
     if (length == 0) return UINT64_MAX;
     if (length == 1) {
@@ -424,8 +448,10 @@ static uint64_t tz_task_submit(void (*run)(void *, uint64_t), uint32_t (*run_res
     if (tz_task_pool.tail) tz_task_pool.tail->next_group = &group;
     else tz_task_pool.groups = &group;
     tz_task_pool.tail = &group;
+    unsigned wakes = tz_task_pool.thread_count < TZ_TASK_INITIAL_SIGNALS ? tz_task_pool.thread_count : TZ_TASK_INITIAL_SIGNALS;
+    if (wakes > length - 1) wakes = (unsigned)(length - 1);
     tz_task_unlock();
-    tz_task_wake(&tz_task_pool.work_available);
+    while (wakes-- != 0) tz_task_signal(&tz_task_pool.work_available);
     tz_task_run_item(&group, 0);
     (void)tz_task_release(&group, 1 + tz_task_drain(&group));
     tz_task_lock();

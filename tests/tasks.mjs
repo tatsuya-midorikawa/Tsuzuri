@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
     execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`,
       "-pthread", "tests/task_runtime.c", "-o", scheduler]);
     for (const topology of ["-1", "0", "1", "4", "1000"]) execute(scheduler, [topology]);
-    for (const operation of ["create", "join", "mutex_lock", "mutex_unlock", "cond_wait", "cond_broadcast", "once", "atexit"]) {
+    for (const operation of ["create", "join", "mutex_lock", "mutex_unlock", "cond_wait", "cond_signal", "cond_broadcast", "once", "atexit"]) {
       const failed = execute(scheduler, [operation], false);
       assert.notEqual(failed.status, 0, `pthread_${operation} failures must be reported`);
       assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: ${operation === "atexit" ? "atexit" : `pthread_${operation}`} failed`));
