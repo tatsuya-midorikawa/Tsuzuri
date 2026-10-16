@@ -30,6 +30,10 @@ record Empty { }
 record Cleanup { value: i64 }
 instance Drop<Cleanup> { fn drop value = () }
 union Chain = End | Link of (i64 * Chain)
+union Color = Red | Green | Blue
+union Shape = Circle of f64 | Rect of f64 * f64 | Blank
+union Huge = Big of i128 | Little of i8 | Missing
+union Lane8 = Eight of f32x8 | Byte of i8 | Absent8
 def shared :: ref i64 -> i64 = \value -> deref value
 def change :: ref mut i64 -> i64 -> unit = \value next -> deref value = next
 def pair :: ref Pair<i128> -> i128 = \value -> value.value
@@ -39,6 +43,11 @@ def empty :: ref Empty -> i64 = \value -> 0
 def wide :: ref f64x4 -> i64 = \value -> 0
 def cleanup :: ref Cleanup -> i64 = \value -> value.value
 def chain :: ref Chain -> i64 = \value -> 0
+def color :: ref Color -> i64 = \value -> 0
+def shape :: ref Shape -> i64 = \value -> 0
+def maybe_text :: ref Maybe<string> -> i64 = \value -> 0
+def huge :: ref Huge -> i64 = \value -> 0
+def lanes :: ref Lane8 -> i64 = \value -> 0
 def dyn_pointer :: ref dyn Display -> i64 = \value -> 0
 def function_pointer :: ref (i64 -> i64) -> i64 = \value -> 0
 "#;
@@ -59,6 +68,13 @@ def function_pointer :: ref (i64 -> i64) -> i64 = \value -> 0
         assert!(header(&ir, "wide").contains("align 8 dereferenceable(32)"));
         assert!(header(&ir, "cleanup").contains("align 8 dereferenceable(16)"));
         assert!(header(&ir, "chain").contains("align 4 dereferenceable(4)"));
+        // A union is a tag of its own width and a payload area at the largest payload alignment
+        // (PM01); an `i128` payload only guarantees the 8-byte alignment of older LLVM.
+        assert!(header(&ir, "color").contains("align 1 dereferenceable(1)"));
+        assert!(header(&ir, "shape").contains("align 8 dereferenceable(24)"));
+        assert!(header(&ir, "maybe_text").contains("align 8 dereferenceable(24)"));
+        assert!(header(&ir, "huge").contains("align 8 dereferenceable(24)"));
+        assert!(header(&ir, "lanes").contains("align 8 dereferenceable(40)"));
         assert!(header(&ir, "dyn_pointer").contains("align 4 dereferenceable(8)"));
         assert!(header(&ir, "function_pointer").contains("align 4 dereferenceable(16)"));
     }

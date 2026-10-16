@@ -5,22 +5,30 @@
 use super::*;
 
 /// How a union instance stores its tag and payload.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UnionLayout {
-    /// Every case is nullary, so the value is its `i32` tag.
+    /// Every case is nullary, so the value is its tag.
     Enum,
-    /// Every payload has the LLVM type of this one: `{ i32, T }`.
+    /// Every payload has the LLVM type of this one: `{ iT, T }`.
     Common(Type),
-    /// Payloads of different LLVM types share `{ i32, [K x i128] }` storage
-    /// that holds the largest payload.
-    General(usize),
+    /// Payloads of different LLVM types share an area of `units` integers of `unit` bytes,
+    /// `{ iT, [units x i{8*unit}] }`. `unit` is the largest alignment of a payload, at most 16 (the
+    /// one an `i128` has), so every payload stores at the area's own alignment, and `units`
+    /// make the area hold the largest payload.
+    General { unit: usize, units: usize },
 }
 
 impl UnionLayout {
     /// Whether a value of this layout is an LLVM aggregate that holds a tag and a payload
-    /// (`Common`, `General`). The others are not: an enum is its tag alone. Passes that only need
-    /// the coarse shape of a union value, such as a return slot for aggregates, ask this.
+    /// (`Common`, `General`). An enum is its tag alone. Passes that only need the coarse shape of
+    /// a union value, such as a return slot for aggregates, ask this.
     pub(crate) fn is_aggregate(&self) -> bool {
         !matches!(self, UnionLayout::Enum)
+    }
+
+    /// The LLVM type of the payload area of a `General` layout.
+    fn area(unit: usize, units: usize) -> String {
+        format!("[{units} x i{}]", 8 * unit)
     }
 }
 
@@ -148,16 +156,16 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
                         .into_iter()
                         .chain(drop_flag(ty, module).map(|_| (1, 1))),
                 ),
-                UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
-                    &mut [tag, (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
+                // The area aligns like its integers: exactly `unit` up to 8 bytes, and 16 for an
+                // `i128`, which older x86-64 LLVM aligns to 8.
+                UnionLayout::General { unit, units } => aggregate(
+                    &mut [
+                        tag,
+                        (unit * units, if lower && unit == 16 { 8 } else { unit }),
+                    ]
+                    .into_iter()
+                    .chain(drop_flag(ty, module).map(|_| (1, 1))),
                 ),
-                UnionLayout::General(count) => {
-                    if lower {
-                        (8 + 16 * count, 8)
-                    } else {
-                        (16 + 16 * count, 16)
-                    }
-                }
             }
         }
         Type::Error
@@ -180,7 +188,7 @@ pub(crate) fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule
     let Some(first) = payloads.first() else {
         // A Drop union keeps its live flag after the tag, so it is never a bare tag.
         return if module.unions[id].user_drop {
-            UnionLayout::General(0)
+            UnionLayout::General { unit: 1, units: 0 }
         } else {
             UnionLayout::Enum
         };
@@ -189,12 +197,49 @@ pub(crate) fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule
     if payloads.iter().all(|ty| llvm_type(ty, module) == llvm) {
         return UnionLayout::Common(first.clone());
     }
-    let bytes = payloads
-        .iter()
-        .map(|ty| storage_layout(ty, module).0)
-        .max()
-        .unwrap_or(0);
-    UnionLayout::General(bytes.div_ceil(16))
+    let (bytes, alignment) = payloads.iter().map(|ty| storage_layout(ty, module)).fold(
+        (0, 1),
+        |(bytes, alignment): (usize, usize), (size, align)| (bytes.max(size), alignment.max(align)),
+    );
+    let unit = alignment.min(16);
+    UnionLayout::General {
+        unit,
+        units: bytes.div_ceil(unit),
+    }
+}
+
+/// The body of the LLVM type definition of the non-recursive union `ty`.
+pub(super) fn union_body(ty: &Type, module: &CheckedModule) -> String {
+    let Type::Union(id, arguments) = ty else {
+        unreachable!("only union types are defined here")
+    };
+    let tag = tag_type(ty, module);
+    let flag = if drop_flag(ty, module).is_some() {
+        ", i8"
+    } else {
+        ""
+    };
+    match union_layout(*id, arguments, module) {
+        UnionLayout::Enum => tag.into(),
+        UnionLayout::Common(payload) => {
+            format!("{{ {tag}, {}{flag} }}", llvm_type(&payload, module))
+        }
+        UnionLayout::General { unit, units } => {
+            format!("{{ {tag}, {}{flag} }}", UnionLayout::area(unit, units))
+        }
+    }
+}
+
+/// The type of the payload storage that ends the node of the recursive union `ty`.
+pub(super) fn node_region(ty: &Type, module: &CheckedModule) -> String {
+    let Type::Union(id, arguments) = ty else {
+        unreachable!("only union types have nodes")
+    };
+    match union_layout(*id, arguments, module) {
+        UnionLayout::Enum => "i8".into(),
+        UnionLayout::Common(payload) => llvm_type(&payload, module),
+        UnionLayout::General { unit, units } => UnionLayout::area(unit, units),
+    }
 }
 
 /// The index of the live flag (`i8 1`) that follows the fields of a Drop record, or the tag and
@@ -337,7 +382,7 @@ impl FunctionEmitter<'_, '_> {
             UnionLayout::Common(_) => {
                 self.value(format!("extractvalue {} {union}, 1", self.ty(ty)))
             }
-            UnionLayout::General(_) => {
+            UnionLayout::General { .. } => {
                 let slot = self.spill(ty, union);
                 let pointer = self.payload_pointer(ty, &slot);
                 self.value(format!("load {}, ptr {pointer}", self.ty(payload)))
@@ -392,7 +437,8 @@ impl FunctionEmitter<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::tag_bytes;
+    use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn tag_bytes_follow_case_count() {
@@ -409,6 +455,342 @@ mod tests {
             (1 << 24, 4),
         ] {
             assert_eq!(tag_bytes(cases), bytes, "{cases} cases");
+        }
+    }
+
+    /// A data layout reduced to what changes the size of the types that Tsuzuri emits: the size of
+    /// a pointer and the alignment of `i128`. It is written down here, apart from the model
+    /// under test.
+    #[derive(Clone, Copy)]
+    struct Machine {
+        pointer: usize,
+        wide: usize,
+    }
+
+    const MACHINES: [(&str, Machine); 5] = [
+        (
+            "aarch64",
+            Machine {
+                pointer: 8,
+                wide: 16,
+            },
+        ),
+        (
+            "x86-64, LLVM 18 and later",
+            Machine {
+                pointer: 8,
+                wide: 16,
+            },
+        ),
+        (
+            "x86-64, LLVM 17 and earlier",
+            Machine {
+                pointer: 8,
+                wide: 8,
+            },
+        ),
+        (
+            "wasm32",
+            Machine {
+                pointer: 4,
+                wide: 16,
+            },
+        ),
+        (
+            "wasm32, LLVM 17 and earlier",
+            Machine {
+                pointer: 4,
+                wide: 8,
+            },
+        ),
+    ];
+
+    /// The fields of an aggregate body, split at the commas outside nested brackets and quotes.
+    fn split_fields(body: &str) -> Vec<&str> {
+        let (mut depth, mut quoted, mut start) = (0usize, false, 0);
+        let mut fields = Vec::new();
+        for (index, c) in body.char_indices() {
+            match c {
+                '"' => quoted = !quoted,
+                '{' | '[' | '<' if !quoted => depth += 1,
+                '}' | ']' | '>' if !quoted => depth -= 1,
+                ',' if !quoted && depth == 0 => {
+                    fields.push(body[start..index].trim());
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        let last = body[start..].trim();
+        if !last.is_empty() {
+            fields.push(last);
+        }
+        fields
+    }
+
+    /// The size and alignment of the LLVM type `text` on `machine`, by the rules of a data layout.
+    fn measure(text: &str, named: &BTreeMap<String, String>, machine: Machine) -> (usize, usize) {
+        let text = text.trim();
+        let between = |open, close| {
+            text.strip_prefix(open)
+                .and_then(|rest| rest.strip_suffix(close))
+        };
+        if let Some(body) = between('{', '}') {
+            let (size, align) = split_fields(body)
+                .into_iter()
+                .map(|field| measure(field, named, machine))
+                .fold((0usize, 1usize), |(size, align), (field, field_align)| {
+                    (
+                        size.next_multiple_of(field_align) + field,
+                        align.max(field_align),
+                    )
+                });
+            return (size.next_multiple_of(align), align);
+        }
+        if let Some(body) = between('[', ']') {
+            let (count, element) = body.split_once(" x ").unwrap();
+            let (size, align) = measure(element, named, machine);
+            return (count.parse::<usize>().unwrap() * size, align);
+        }
+        if let Some(body) = between('<', '>') {
+            let (count, element) = body.split_once(" x ").unwrap();
+            let bytes = (count.parse::<usize>().unwrap() * measure(element, named, machine).0)
+                .next_power_of_two();
+            return (bytes, bytes);
+        }
+        if let Some(name) = text.strip_prefix('%') {
+            let body = named
+                .get(name.trim_matches('"'))
+                .unwrap_or_else(|| panic!("no definition of {text}"));
+            return measure(body, named, machine);
+        }
+        match text {
+            "i1" | "i8" => (1, 1),
+            "i16" | "half" => (2, 2),
+            "i32" | "float" => (4, 4),
+            "i64" | "double" => (8, 8),
+            "i128" => (16, machine.wide),
+            "fp128" => (16, 16),
+            "ptr" => (machine.pointer, machine.pointer),
+            other => panic!("the test does not model the LLVM type {other}"),
+        }
+    }
+
+    /// The named types that `ir` defines, by name without the sigil and quotes.
+    fn definitions(ir: &str) -> BTreeMap<String, String> {
+        ir.lines()
+            .filter_map(|line| {
+                let (name, body) = line.strip_prefix('%')?.split_once(" = type ")?;
+                (body != "opaque").then(|| (name.trim_matches('"').to_owned(), body.to_owned()))
+            })
+            .collect()
+    }
+
+    fn many(cases: usize) -> String {
+        let cases: Vec<_> = (0..cases)
+            .map(|index| match index {
+                0 => "M0 of i64".to_owned(),
+                1 => "M1 of string".to_owned(),
+                _ => format!("M{index}"),
+            })
+            .collect();
+        format!("union Many = {}\n", cases.join(" | "))
+    }
+
+    fn source() -> String {
+        format!(
+            "extern def drop_log :: i64 -> unit
+record Flags {{ a: bool, b: bool }}
+record Mixed {{ a: bool, b: i64, c: bool, d: i64 }}
+record Wide128 {{ a: i128, b: bool }}
+record Lanes4 {{ v: f32x4, tag: i8 }}
+record Lanes8 {{ v: f32x8, tag: i8 }}
+record Resource {{ id: i64, name: string }}
+instance Drop<Resource> {{ fn drop value = drop_log value.id }}
+union Color = Red | Green | Blue
+union Small = Flag of bool | Code of i8 | Nothing
+union Shape = Circle of f64 | Rect of f64 * f64 | Empty
+union Rich = Name of string | Count of i64 | Pair of i64 * bool | Nada
+union Huge = Big of i128 | Little of i8 | Missing
+union Lane4 = Four of f32x4 | Scalar of i32 | Absent4
+union Lane8 = Eight of f32x8 | Byte of i8 | Absent8
+union Nested = Inner of Shape | Outer of Small | Void
+union Holder = Held of Mixed | Wide of Wide128 | Lanes of Lanes4 | Idle
+union Slot = Free | Full of i64
+instance Drop<Slot> {{ fn drop _value = drop_log 1 }}
+union Latch = Open | Closed
+instance Drop<Latch> {{ fn drop _value = drop_log 2 }}
+union Cell = Number of i64 | Text of string | Vacant
+instance Drop<Cell> {{ fn drop _value = drop_log 3 }}
+{many}export def use :: i64 -> i64
+fn use n =
+    let flags = Flags {{ a: true, b: false }}
+    let mixed = Mixed {{ a: true, b: 1, c: false, d: 2 }}
+    let wide = Wide128 {{ a: 1i128, b: true }}
+    let lanes4 = Lanes4 {{ v: Simd.splat 1.0, tag: 1 }}
+    let lanes8 = Lanes8 {{ v: Simd.splat 1.0, tag: 1 }}
+    let resource = Resource {{ id: 1, name: \"a\" }}
+    let color = Green
+    let small = Nothing
+    let shape = Empty
+    let rich = Nada
+    let huge = Missing
+    let lane4 = Absent4
+    let lane8 = Absent8
+    let nested = Void
+    let holder = Idle
+    let slot = Free
+    let latch = Open
+    let cell = Vacant
+    let many = M2
+    let a: Maybe<string> = None
+    let b: Maybe<bool> = Some true
+    let c: Result<i64, string> = Ok n
+    let d: Result<Shape, Rich> = Error Nada
+    let e: Maybe<ref Mixed> = None
+    n
+",
+            many = many(300)
+        )
+    }
+
+    /// The types of `source` that the tests below measure, with the labels of their rows.
+    fn types(module: &CheckedModule) -> Vec<(&'static str, Type)> {
+        let union = |name: &str, arguments: &[Type]| {
+            let id = module
+                .unions
+                .iter()
+                .position(|union| union.name == name)
+                .unwrap_or_else(|| panic!("no union {name}"));
+            Type::Union(id, arguments.into())
+        };
+        let record = |name: &str| {
+            let id = module
+                .records
+                .iter()
+                .position(|record| record.name == name)
+                .unwrap_or_else(|| panic!("no record {name}"));
+            Type::Record(id, Box::default())
+        };
+        let shape = union("Main.Shape", &[]);
+        let rich = union("Main.Rich", &[]);
+        vec![
+            ("Color", union("Main.Color", &[])),
+            ("Small", union("Main.Small", &[])),
+            ("Shape", shape.clone()),
+            ("Rich", rich.clone()),
+            ("Huge", union("Main.Huge", &[])),
+            ("Lane4", union("Main.Lane4", &[])),
+            ("Lane8", union("Main.Lane8", &[])),
+            ("Nested", union("Main.Nested", &[])),
+            ("Holder", union("Main.Holder", &[])),
+            ("Slot", union("Main.Slot", &[])),
+            ("Latch", union("Main.Latch", &[])),
+            ("Cell", union("Main.Cell", &[])),
+            ("Many", union("Main.Many", &[])),
+            ("Maybe<string>", union("Maybe.Maybe", &[Type::String])),
+            ("Maybe<bool>", union("Maybe.Maybe", &[Type::Bool])),
+            (
+                "Result<i64, string>",
+                union("Result.Result", &[Type::Integer(64, true), Type::String]),
+            ),
+            (
+                "Result<Shape, Rich>",
+                union("Result.Result", &[shape, rich]),
+            ),
+            (
+                "Maybe<ref Mixed>",
+                union(
+                    "Maybe.Maybe",
+                    &[Type::Reference(Box::new(record("Main.Mixed")), false)],
+                ),
+            ),
+            ("Flags", record("Main.Flags")),
+            ("Mixed", record("Main.Mixed")),
+            ("Wide128", record("Main.Wide128")),
+            ("Lanes4", record("Main.Lanes4")),
+            ("Lanes8", record("Main.Lanes8")),
+            ("Resource", record("Main.Resource")),
+        ]
+    }
+
+    /// The model's upper and lower bounds hold the size and alignment that LLVM gives each type
+    /// under every data layout that Tsuzuri targets (PM01 D4).
+    #[test]
+    fn layout_bounds_cover_actual_sizes() {
+        let module = crate::analyze(&source())
+            .unwrap_or_else(|error| panic!("{}: {}\n{}", error.code, error.message, source()));
+        for wasm in [false, true] {
+            let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
+            let named = definitions(&ir);
+            for (label, ty) in types(&module) {
+                let (upper, lower) = (
+                    layout_bound(&ty, &module, false),
+                    layout_bound(&ty, &module, true),
+                );
+                let name = llvm_type(&ty, &module);
+                for (machine_name, machine) in MACHINES
+                    .iter()
+                    .filter(|(_, machine)| (machine.pointer == 4) == wasm)
+                {
+                    let (size, align) = measure(&name, &named, *machine);
+                    let context = format!(
+                        "{label} on {machine_name}: {name} is {size}/{align}, bounds {lower:?}..{upper:?}"
+                    );
+                    assert!(lower.0 <= size && size <= upper.0, "{context}");
+                    assert!(lower.1 <= align && align <= upper.1, "{context}");
+                    assert_eq!(size % align, 0, "{context}");
+                }
+            }
+        }
+    }
+
+    /// The sizes that `docs/architecture.md` states for unions, on a target whose `i128` is
+    /// 16-byte aligned: the tag takes its own width and the payload area starts at the alignment
+    /// of the largest payload.
+    #[test]
+    fn union_sizes_follow_the_documented_rule() {
+        let module = crate::analyze(&source()).unwrap();
+        let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, false).unwrap();
+        let named = definitions(&ir);
+        let machine = MACHINES[0].1;
+        for (label, size, align) in [
+            ("Color", 1, 1),
+            ("Small", 2, 1),
+            ("Shape", 24, 8),
+            ("Rich", 24, 8),
+            ("Huge", 32, 16),
+            ("Lane4", 32, 16),
+            ("Lane8", 48, 16),
+            ("Nested", 32, 8),
+            ("Holder", 48, 16),
+            ("Slot", 24, 8),
+            ("Latch", 2, 1),
+            ("Cell", 32, 8),
+            ("Many", 24, 8),
+            ("Maybe<string>", 24, 8),
+            ("Maybe<bool>", 2, 1),
+            ("Result<i64, string>", 24, 8),
+            ("Result<Shape, Rich>", 32, 8),
+            ("Maybe<ref Mixed>", 16, 8),
+        ] {
+            let ty = types(&module)
+                .into_iter()
+                .find_map(|(name, ty)| (name == label).then_some(ty))
+                .unwrap();
+            let name = llvm_type(&ty, &module);
+            assert_eq!(
+                measure(&name, &named, machine),
+                (size, align),
+                "{label}: {name}"
+            );
+            // Up to 8-byte units the layout is the same everywhere, so the bounds are exact.
+            let narrow = !matches!(label, "Huge" | "Lane4" | "Lane8" | "Holder");
+            if narrow && !label.starts_with("Maybe<ref") {
+                let expected = Some((size, align));
+                assert_eq!(Some(layout_bound(&ty, &module, false)), expected, "{label}");
+                assert_eq!(Some(layout_bound(&ty, &module, true)), expected, "{label}");
+            }
         }
     }
 }

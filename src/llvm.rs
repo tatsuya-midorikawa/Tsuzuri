@@ -1075,39 +1075,25 @@ fn emit_program(
         let Type::Union(id, arguments) = &ty else {
             unreachable!("only union types are collected")
         };
-        let shape = union_layout(*id, arguments, module);
-        let is_enum = matches!(shape, UnionLayout::Enum);
-        let flag = if drop_flag(&ty, module).is_some() {
-            ", i8"
-        } else {
-            ""
-        };
-        let tag = tag_type(&ty, module);
-        let layout = match shape {
-            UnionLayout::Enum => tag.into(),
-            UnionLayout::Common(payload) => {
-                format!("{{ {tag}, {}{flag} }}", llvm_type(&payload, module))
-            }
-            UnionLayout::General(count) => format!("{{ {tag}, [{count} x i128]{flag} }}"),
-        };
         if module.types().recursive(&ty) {
-            let fields = match union_layout(*id, arguments, module) {
-                UnionLayout::Enum => "i8".into(),
-                UnionLayout::Common(payload) => llvm_type(&payload, module),
-                UnionLayout::General(count) => format!("[{count} x i128]"),
-            };
             let _ = writeln!(
                 union_definitions,
-                "{} = type {{ ptr, ptr, ptr, i32, {fields} }}",
-                recursive::node_type(&ty, module)
+                "{} = type {{ ptr, ptr, ptr, i32, {} }}",
+                recursive::node_type(&ty, module),
+                layout::node_region(&ty, module)
             );
         } else {
-            let destination = if is_enum {
+            let destination = if matches!(union_layout(*id, arguments, module), UnionLayout::Enum) {
                 &mut output
             } else {
                 &mut union_definitions
             };
-            let _ = writeln!(destination, "{} = type {layout}", llvm_type(&ty, module));
+            let _ = writeln!(
+                destination,
+                "{} = type {}",
+                llvm_type(&ty, module),
+                layout::union_body(&ty, module)
+            );
         }
     }
     output.push_str(&record_definitions);
@@ -2305,7 +2291,7 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
                         None => format!("{} zeroinitializer", llvm_type(&common, module)),
                     }
                 ),
-                UnionLayout::General(_) => unreachable!("static unions share one payload type"),
+                UnionLayout::General { .. } => unreachable!("static unions share one payload type"),
             }
         }
         _ => unreachable!("a static constant holds only plain data"),
@@ -4806,7 +4792,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 if cases.is_empty() {
                     return;
                 }
-                let spilled = matches!(self.union_layout(ty), UnionLayout::General(_))
+                let spilled = matches!(self.union_layout(ty), UnionLayout::General { .. })
                     .then(|| self.spill(ty, value));
                 let (labels, done) = self.case_switch(ty, value, &cases);
                 for ((_, payload), label) in cases.into_iter().zip(labels) {

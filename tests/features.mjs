@@ -1529,7 +1529,7 @@ const suites = {
     inspect(ir, header) {
       assert.doesNotMatch(header, /Shape|Maybe|Color|Pick|Tagged/);
       for (const definition of [
-        '%"tz.union.Main.Shape" = type { i8, [1 x i128] }',
+        '%"tz.union.Main.Shape" = type { i8, [2 x i64] }',
         '%"tz.union.Main.Color" = type i8',
         '%"tz.union.Main.Pick" = type { i8, i64 }',
         '%"tz.union.Main.Maybe[i64]" = type { i8, i64 }',
@@ -1554,7 +1554,13 @@ const suites = {
         '%"tz.union.Main.Narrow" = type i8',
         '%"tz.union.Main.Mid" = type i8',
         '%"tz.union.Main.Wide" = type i16',
-        '%"tz.union.Main.Big" = type { i16, [1 x i128] }',
+        '%"tz.union.Main.Big" = type { i16, [2 x i64] }',
+        '%"tz.union.Main.Shape" = type { i8, [2 x i64] }',
+        '%"tz.union.Main.Small" = type { i8, [1 x i8] }',
+        '%"tz.union.Main.Wideness" = type { i8, [1 x i128] }',
+        '%"tz.union.Main.Rich" = type { i8, [2 x i64] }',
+        '%"tz.union.Main.Nested" = type { i8, [3 x i64] }',
+        '%"tz.union.Main.Lanes" = type { i8, [2 x i128] }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
@@ -2071,6 +2077,23 @@ suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n <<
   for (const count of [0, 1, 300, 5000]) {
     const sum = (modulus, value) => BigInt(Array.from({ length: count }, (_, i) => value(i % modulus)).reduce((total, item) => total + item, 0));
     layout.push(["narrow_array", [BigInt(count)], sum(256, index.narrow)], ["wide_array", [BigInt(count)], sum(257, index.wide)], ["big_array", [BigInt(count)], sum(257, bigValue)]);
+  }
+  // The payload area: each case reads back what it was built with, in arrays whose element size is not a power of two.
+  const byte = (n) => Number(BigInt.asIntN(8, BigInt(n)));
+  const shapeValue = (i) => (i % 3 === 0 ? (i + 1) ** 2 : i % 3 === 1 ? 2 * i : -1);
+  const smallValue = (i) => (i % 3 === 0 ? +(i % 2 === 0) : i % 3 === 1 ? byte(i) : 7);
+  const references = {
+    shapes: shapeValue,
+    smalls: smallValue,
+    wideness: (i) => (i % 3 === 0 ? i + 1000 : i % 3 === 1 ? byte(i) : -5),
+    riches: (i) => (i % 4 === 0 ? 1 + String(i).length : i % 4 === 1 ? i : i % 4 === 2 ? i + 1 : -3),
+    nesteds: (i) => (i % 3 === 0 ? shapeValue(i) : i % 3 === 1 ? smallValue(i) : 11),
+    lanes: (i) => (i % 4 === 0 ? 6 : i % 4 === 1 ? 4 : i % 4 === 2 ? byte(i) : -1),
+  };
+  for (const [name, value] of Object.entries(references)) {
+    for (const count of [0, 1, 2, 3, 7, 100, 300]) {
+      layout.push([name, [BigInt(count)], BigInt(Array.from({ length: count }, (_, i) => value(i)).reduce((total, item) => total + item, 0))]);
+    }
   }
 }
 function canonicalTextHash(text) {

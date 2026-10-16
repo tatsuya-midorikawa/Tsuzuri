@@ -262,10 +262,15 @@ fn debug_union_offsets_match_storage() {
     // Offsets in bits from `union_layout` and the node `{ ptr, ptr, ptr, i32, payload }`.
     for (wasm, tag, payload) in [(false, 192, 256), (true, 96, 128)] {
         let ir = debug_ir(UNIONS, tsuzuri::llvm::Entry::Library, wasm);
-        // `General`: payloads of different LLVM types share `[1 x i128]` after the tag.
+        // `General`: payloads of different LLVM types share `[2 x i64]` after the one-byte tag,
+        // aligned to the largest payload alignment (8): 64 bits in, and 24 bytes in all.
         assert_eq!(member_offset(&ir, "Main.Shape", "$tag"), 0);
-        assert_eq!(member_offset(&ir, "Main.Shape", "$payload"), 128);
-        // `Common`: `{ i32, i64 }`.
+        assert_eq!(member_offset(&ir, "Main.Shape", "$payload"), 64);
+        assert!(
+            ir.contains("DW_TAG_structure_type, name: \"Main.Shape\", size: 192, align: 64,"),
+            "{ir}"
+        );
+        // `Common`: `{ i8, i64 }`.
         assert_eq!(member_offset(&ir, "Maybe<i64>", "$payload"), 64);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "next"), 0);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "$tag"), tag);

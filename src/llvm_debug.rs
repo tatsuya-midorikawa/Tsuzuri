@@ -599,7 +599,7 @@ impl DebugContext {
         let (storage_size, storage_alignment) = match &shape {
             UnionLayout::Enum => (1, 1),
             UnionLayout::Common(payload) => layout(payload, module, self.wasm),
-            UnionLayout::General(count) => (16 * count, 16),
+            UnionLayout::General { unit, units } => (unit * units, *unit),
         };
         let payloads: Vec<_> = module.unions[union]
             .cases
@@ -642,10 +642,7 @@ impl DebugContext {
             }
         }
         members.push((Member::new("$tag", tag, tag_bytes, tag_bytes), header));
-        let payload_offset = match shape {
-            UnionLayout::General(_) if !recursive => 16,
-            _ => (header + tag_bytes).next_multiple_of(storage_alignment),
-        };
+        let payload_offset = (header + tag_bytes).next_multiple_of(storage_alignment);
         if let Some(payload) = payload {
             members.push((
                 Member::new("$payload", payload, storage_size, storage_alignment),
@@ -880,10 +877,15 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
                     module,
                     wasm,
                 ),
-                UnionLayout::General(count) if drop_flag(ty, module).is_some() => {
-                    (32 + count * 16, 16)
+                UnionLayout::General { unit, units } => {
+                    let flag = usize::from(drop_flag(ty, module).is_some());
+                    let alignment = tag.max(unit);
+                    (
+                        (tag.next_multiple_of(unit) + unit * units + flag)
+                            .next_multiple_of(alignment),
+                        alignment,
+                    )
                 }
-                UnionLayout::General(count) => (16 + count * 16, 16),
             }
         }
         _ => (0, 1),

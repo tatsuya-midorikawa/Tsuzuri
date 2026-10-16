@@ -569,7 +569,7 @@ export def scaled :: i64
 fn scaled = to_int (area (Rect (3.0, 4.0)) * 10.0)
 "
     ));
-    assert!(shapes.contains("%\"tz.union.Main.Shape\" = type { i8, [1 x i128] }"));
+    assert!(shapes.contains("%\"tz.union.Main.Shape\" = type { i8, [2 x i64] }"));
     assert!(shapes.contains("switch i32"));
     // The general layout stores a payload through its field pointer, and a
     // match reads the one-byte tag from the subject slot and widens it for the switch.
@@ -646,7 +646,7 @@ fn f value =
 export def answer :: i64
 fn answer = f (A \"abc\") + f (B 4) + f C
 ");
-    assert!(ir.contains("%\"tz.union.Main.U\" = type { i8, [1 x i128] }"));
+    assert!(ir.contains("%\"tz.union.Main.U\" = type { i8, [2 x i64] }"));
     let f = body(&ir, "tz.fn.Main.f");
     // The tag is loaded once for one switch over every case.
     assert_eq!(f.matches("load i8, ptr").count(), 1, "{f}");

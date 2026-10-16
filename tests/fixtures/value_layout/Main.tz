@@ -199,3 +199,136 @@ fn big_array count =
     for item in items do
         total = total + big_code (ref item)
     total
+
+// The payload area of a union whose cases have payloads of different LLVM types is aligned to the
+// largest payload alignment: 8 for Shape and Rich, 1 for Small, 16 for Wideness, and the cap of 16
+// for Lanes, whose 256-bit payload is stored with a 16-byte alignment.
+union Shape = Circle of f64 | Rect of f64 * f64 | Blank
+
+union Small = Flag of bool | Code of i8 | Nothing
+
+union Wideness = Huge of i128 | Little of i8 | Missing
+
+union Rich = Name of string | Count of i64 | Pair of i64 * bool | Nada
+
+union Nested = Inner of Shape | Outer of Small | Void
+
+union Lanes = Four of f32x4 | Eight of f32x8 | Scalar of i8 | Absent
+
+def shape_value :: i64 -> Shape
+fn shape_value i =
+    if i % 3 == 0 then Circle ((i + 1) as f64) elif i % 3 == 1 then Rect (i as f64, 2.0) else Blank
+
+def shape_area :: ref Shape -> i64
+fn shape_area shape =
+    match shape with
+    | Circle r -> (r * r) as i64
+    | Rect (w, h) -> (w * h) as i64
+    | Blank -> -1
+
+export def shapes :: i64 -> i64
+fn shapes count =
+    let items = new [Shape](count, i -> shape_value i)
+    let mut total = 0
+    for item in items do
+        total = total + shape_area (ref item)
+    total
+
+def small_value :: i64 -> Small
+fn small_value i =
+    if i % 3 == 0 then Flag (i % 2 == 0) elif i % 3 == 1 then Code (i as i8) else Nothing
+
+def small_code :: ref Small -> i64
+fn small_code value =
+    match value with
+    | Flag b -> if b then 1 else 0
+    | Code c -> c as i64
+    | Nothing -> 7
+
+export def smalls :: i64 -> i64
+fn smalls count =
+    let items = new [Small](count, i -> small_value i)
+    let mut total = 0
+    for item in items do
+        total = total + small_code (ref item)
+    total
+
+def wideness_value :: i64 -> Wideness
+fn wideness_value i =
+    if i % 3 == 0 then Huge ((i as i128) <<< 72) elif i % 3 == 1 then Little (i as i8) else Missing
+
+def wideness_code :: ref Wideness -> i64
+fn wideness_code value =
+    match value with
+    | Huge v -> ((v >>> 72) as i64) + 1000
+    | Little c -> c as i64
+    | Missing -> -5
+
+export def wideness :: i64 -> i64
+fn wideness count =
+    let items = new [Wideness](count, i -> wideness_value i)
+    let mut total = 0
+    for item in items do
+        total = total + wideness_code (ref item)
+    total
+
+def rich_value :: i64 -> Rich
+fn rich_value i =
+    if i % 4 == 0 then Name ("n" + to_string i) elif i % 4 == 1 then Count i elif i % 4 == 2 then Pair (i, i % 2 == 0) else Nada
+
+def rich_code :: ref Rich -> i64
+fn rich_code value =
+    match value with
+    | Name text -> text.length
+    | Count n -> n
+    | Pair (n, b) -> if b then n + 1 else n
+    | Nada -> -3
+
+export def riches :: i64 -> i64
+fn riches count =
+    let items = new [Rich](count, i -> rich_value i)
+    let mut total = 0
+    for item in items do
+        total = total + rich_code (ref item)
+    total
+
+def nested_value :: i64 -> Nested
+fn nested_value i =
+    if i % 3 == 0 then Inner (shape_value i) elif i % 3 == 1 then Outer (small_value i) else Void
+
+def nested_code :: ref Nested -> i64
+fn nested_code value =
+    match value with
+    | Inner shape -> shape_area (ref shape)
+    | Outer small -> small_code (ref small)
+    | Void -> 11
+
+export def nesteds :: i64 -> i64
+fn nesteds count =
+    let items = new [Nested](count, i -> nested_value i)
+    let mut total = 0
+    for item in items do
+        total = total + nested_code (ref item)
+    total
+
+def lanes_value :: i64 -> Lanes
+fn lanes_value i =
+    if i % 4 == 0 then Four (Simd.splat 1.5) elif i % 4 == 1 then Eight (Simd.splat 0.5) elif i % 4 == 2 then Scalar (i as i8) else Absent
+
+def lanes_code :: ref Lanes -> i64
+fn lanes_code value =
+    match value with
+    | Four v -> Simd.sum_lanes v as i64
+    | Eight v -> Simd.sum_lanes v as i64
+    | Scalar c -> c as i64
+    | Absent -> -1
+
+// A 48-byte element is 16-aligned but not 32-aligned, so a vector payload must be accessed with
+// the 16-byte alignment that its slot has.
+export def lanes :: i64 -> i64
+fn lanes count =
+    let items = new [Lanes](count, i -> lanes_value i)
+    let mut total = 0
+    for item in items do
+        total = total + lanes_code (ref item)
+    total
