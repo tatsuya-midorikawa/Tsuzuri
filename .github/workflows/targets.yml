@@ -130,6 +130,14 @@ jobs:
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           node tests/last_use_fuzz.mjs target/release/tsuzuri 40 1 4
+      - name: Integer range proofs (audit mode and differential fuzz)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          TSUZURI_RANGE_FLAGS=audit node tests/control.mjs target/release/tsuzuri
+          TSUZURI_RANGE_FLAGS=proven node tests/control.mjs target/release/tsuzuri
+          node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 20 1 3
       - name: UTF SIMD and scalar fallbacks
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
