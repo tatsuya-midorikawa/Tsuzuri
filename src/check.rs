@@ -3502,8 +3502,8 @@ impl CheckedRecord {
     }
 }
 
-/// A union declaration. Cases keep declaration order, and a case's index is
-/// its runtime `i32` tag.
+/// A union declaration. Cases keep declaration order, and a case's index is its tag. The tag is
+/// stored in the fewest of 1, 2 and 4 bytes that hold every index, and read as an `i32`.
 #[derive(Clone, Debug)]
 pub struct CheckedUnion {
     pub name: String,

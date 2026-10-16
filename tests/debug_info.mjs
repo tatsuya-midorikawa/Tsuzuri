@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -79,6 +79,36 @@ try {
     const viewText = readFileSync(viewIr, "utf8");
     for (const item of ["DW_TAG_enumeration_type, name: \"Main.Color\"", "DW_TAG_union_type, name: \"Main.Shape.$payload\"", "name: \"Main.Tree.node\"", "DW_TAG_typedef, name: \"i64\""]) assert.ok(viewText.includes(item), item);
     assert.ok(!viewText.includes("linkageName:"));
+    // PM01: a union of a nullary case and a string payload stores no tag. Its structure holds
+    // `$payload` and, over the length, `$niche`, an enumeration whose one enumerator is -1.
+    const niche = join(root, "niche");
+    mkdirSync(niche, { recursive: true });
+    writeFileSync(join(niche, "Main.tz"), [
+      "union Alias = NoAlias | Spelled of string",
+      "export def answer :: i64 -> i64",
+      "fn answer input =",
+      '    let alias = Spelled "abc"',
+      "    let missing: Maybe<string> = Maybe.None",
+      "    input + (match ref alias with | Spelled text -> text.length | NoAlias -> 0) + (match ref missing with | Some _ -> 1 | None -> 0)",
+      "",
+    ].join("\n"));
+    const nicheObject = join(root, `niche${optimization}.o`);
+    execute(compiler, ["build", niche, "--emit", "object", optimization, "-g", "-o", nicheObject]);
+    const nicheWasm = join(root, `niche${optimization}.wasm`);
+    execute(compiler, ["build", niche, "--target", "wasm32", optimization, "-g", "-o", nicheWasm]);
+    assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(nicheWasm))), []);
+    for (const file of [nicheObject, nicheWasm]) {
+      execute(dwarf, ["--verify", file]);
+      if (optimization !== "-O0") continue;
+      const info = execute(dwarf, ["--debug-info", file]);
+      for (const item of ['"$niche"', '"$payload"', '"NoAlias"', '"Spelled"']) assert.ok(info.includes(item), `${file}: ${item}`);
+      assert.ok(!info.includes('"Main.Alias.$tag"'), file);
+    }
+    const nicheIr = join(root, `niche${optimization}.ll`);
+    execute(compiler, ["build", niche, "--emit", "llvm", optimization, "-g", "-o", nicheIr]);
+    const nicheText = readFileSync(nicheIr, "utf8");
+    for (const item of ['DW_TAG_enumeration_type, name: "Main.Alias.$niche"', '!DIEnumerator(name: "NoAlias", value: -1)', 'DW_TAG_union_type, name: "Main.Alias.$payload"']) assert.ok(nicheText.includes(item), item);
+    assert.ok(!nicheText.includes('name: "Main.Alias.$tag"'));
     console.log(`debug info: native/WASM ${optimization} verified`);
   }
 } finally { rmSync(root, { recursive: true, force: true }); }

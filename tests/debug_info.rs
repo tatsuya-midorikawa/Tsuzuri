@@ -306,6 +306,63 @@ fn debug_union_tags_have_their_stored_width() {
 }
 
 #[test]
+fn debug_niche_unions_overlay_the_niche_on_the_payload() {
+    let source = "union Alias = NoAlias | Spelled of string\nexport def answer :: i64 -> i64\nfn answer n =\n    let alias = Spelled \"abc\"\n    let missing: Maybe<string> = None\n    n + (match alias with | Spelled text -> text.length | NoAlias -> 0) + (match missing with | Some _ -> 1 | None -> 0)\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The union is its payload `{ ptr, i64 }` of 16 bytes: `$payload`, a C union of the payload
+        // case, at offset 0, and `$niche` over the length at offset 8. No tag is stored.
+        for owner in ["Main.Alias", "Maybe<string>"] {
+            assert!(
+                ir.contains(&format!(
+                    "DW_TAG_structure_type, name: \"{owner}\", size: 128, align: 64,"
+                )),
+                "{owner}\n{ir}"
+            );
+            assert_eq!(member_offset(&ir, owner, "$payload"), 0, "{owner}");
+            assert_eq!(member_offset(&ir, owner, "$niche"), 64, "{owner}");
+            assert_eq!(member_size(&ir, owner, "$niche"), 64, "{owner}");
+            assert!(
+                ir.contains(&format!(
+                    "DW_TAG_enumeration_type, name: \"{owner}.$niche\", size: 64, align: 64,"
+                )),
+                "{owner}\n{ir}"
+            );
+            assert!(!ir.contains(&format!("name: \"{owner}.$tag\"")), "{owner}");
+        }
+        // The nullary case is the enumerator at the value of the niche, the length -1.
+        assert!(ir.contains("!DIEnumerator(name: \"NoAlias\", value: -1)"));
+        assert!(ir.contains("!DIEnumerator(name: \"None\", value: -1)"));
+        assert!(ir.contains("DW_TAG_member, name: \"Spelled\""));
+    }
+}
+
+#[test]
+fn debug_pointer_niches_overlay_the_null_pointer_on_native_targets_only() {
+    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let values = [1, 2, 3]\n    let found = Array.find (\\x -> deref x == n) (ref values)\n    match found with\n    | Some value -> deref value\n    | None -> -1\n";
+    let native = debug_ir(source, tsuzuri::llvm::Entry::Library, false);
+    let owner = "Maybe<ref i64>";
+    // The union is the 8-byte pointer: `$payload` at offset 0 and `$niche` over the same bytes.
+    assert!(
+        native.contains(&format!(
+            "DW_TAG_structure_type, name: \"{owner}\", size: 64, align: 64,"
+        )),
+        "{native}"
+    );
+    assert_eq!(member_offset(&native, owner, "$payload"), 0);
+    assert_eq!(member_offset(&native, owner, "$niche"), 0);
+    assert_eq!(member_size(&native, owner, "$niche"), 64);
+    // The nullary case is the enumerator at the value of the niche, the null pointer.
+    assert!(native.contains("!DIEnumerator(name: \"None\", value: 0)"));
+    assert!(!native.contains(&format!("name: \"{owner}.$tag\"")));
+    // WebAssembly keeps the tag in front of the pointer.
+    let wasm = debug_ir(source, tsuzuri::llvm::Entry::Library, true);
+    assert_eq!(member_offset(&wasm, owner, "$tag"), 0);
+    assert!(wasm.contains(&format!("name: \"{owner}.$tag\"")));
+    assert!(!wasm.contains(&format!("name: \"{owner}.$niche\"")));
+}
+
+#[test]
 fn debug_codeview_flag_joins_the_module_flags_for_windows_objects() {
     let source = "export def answer :: i64 -> i64\nfn answer input =\n    let shape: Maybe<i64> = Maybe.Some input\n    Maybe.default_value 0 shape + 2\n";
     let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, false);

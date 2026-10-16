@@ -33,7 +33,9 @@ mod layout;
 use call_specialization::{ClosureTarget, Specialization, Specializations};
 use frame::Frame;
 // The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.
-pub(crate) use layout::{UnionLayout, drop_flag, layout_bound, storage_layout, union_layout};
+pub(crate) use layout::{
+    Niche, UnionLayout, drop_flag, layout_bound, storage_layout, union_layout,
+};
 use layout::{tag_type, tag_width};
 
 /// The builtin instances that emitted code calls, with their concrete
@@ -961,6 +963,9 @@ fn emit_program(
     debug_output: bool,
     instrumentation: Instrumentation<'_>,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
+    // Layouts that depend on the target (the null-pointer niche) read it while the program is
+    // emitted.
+    let _target = layout::target_scope(wasm);
     if instrumentation.runtime_objects
         && (instrumentation.traps
             || instrumentation.debug.is_some()
@@ -1083,10 +1088,11 @@ fn emit_program(
                 layout::node_region(&ty, module)
             );
         } else {
-            let destination = if matches!(union_layout(*id, arguments, module), UnionLayout::Enum) {
-                &mut output
-            } else {
-                &mut union_definitions
+            let destination = match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => &mut output,
+                // A union with a niche is its payload, and has no type of its own.
+                UnionLayout::Niche { .. } => continue,
+                _ => &mut union_definitions,
             };
             let _ = writeln!(
                 destination,
@@ -2194,7 +2200,11 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         }
         Type::Record(..) => format!("%\"tz.record.{}\"", canonical_type(ty, module)),
         Type::Union(..) if module.types().recursive(ty) => "ptr".into(),
-        Type::Union(..) => format!("%\"tz.union.{}\"", canonical_type(ty, module)),
+        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
+            // A union with a niche is its payload.
+            UnionLayout::Niche { payload, .. } => llvm_type(&payload, module),
+            _ => format!("%\"tz.union.{}\"", canonical_type(ty, module)),
+        },
         Type::Array(_) => "%tz.array".into(),
         Type::List(_) => "%tz.list".into(),
         Type::Vec(_) => "%tz.vec".into(),
@@ -2291,7 +2301,9 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
                         None => format!("{} zeroinitializer", llvm_type(&common, module)),
                     }
                 ),
-                UnionLayout::General { .. } => unreachable!("static unions share one payload type"),
+                UnionLayout::General { .. } | UnionLayout::Niche { .. } => {
+                    unreachable!("static unions share one payload type and have a tag")
+                }
             }
         }
         _ => unreachable!("a static constant holds only plain data"),
@@ -4802,7 +4814,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                             let pointer = self.payload_pointer(ty, slot);
                             self.value(format!("load {}, ptr {pointer}", self.ty(&payload)))
                         }
-                        None => self.value(format!("extractvalue {} {value}, 1", self.ty(ty))),
+                        None => self.payload_value(ty, value, &payload),
                     };
                     self.drop_value(&payload, &extracted);
                     self.jump(&done);
@@ -7223,6 +7235,20 @@ impl FunctionEmitter<'_, '_> {
         let result_slot = self.slot(&result_type);
         let head = self.value(format!("extractvalue {} %arg0, 0", self.ty(sequence)));
         let step = self.value(format!("extractvalue {} %arg0, 1", self.ty(sequence)));
+        // The remainder of a finished sequence is `Seq.empty`, and an exhausted result holds
+        // `None`. Both are built rather than zeroed, because a layout may encode `None` in
+        // bytes other than zero (PM01).
+        let none_head = self.nullary_value(head_type, "None");
+        let none_step = self.nullary_value(step_type, "None");
+        let sequence_ty = self.ty(sequence);
+        let empty_sequence = self.value(format!(
+            "insertvalue {sequence_ty} zeroinitializer, {} {none_head}, 0",
+            self.ty(head_type)
+        ));
+        let empty_sequence = self.value(format!(
+            "insertvalue {sequence_ty} {empty_sequence}, {} {none_step}, 1",
+            self.ty(step_type)
+        ));
         let tag = self.tag_value(head_type, &head);
         let has_head = self.value(format!("icmp eq i32 {tag}, 1"));
         let ready = self.label();
@@ -7234,7 +7260,11 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&ready);
         self.drop_value(step_type, &step);
         let result = self.value(format!(
-            "insertvalue {} zeroinitializer, {} {head}, 1",
+            "insertvalue {} zeroinitializer, {sequence_ty} {empty_sequence}, 0",
+            self.ty(&result_type)
+        ));
+        let result = self.value(format!(
+            "insertvalue {} {result}, {} {head}, 1",
             self.ty(&result_type),
             self.ty(head_type)
         ));
@@ -7259,8 +7289,17 @@ impl FunctionEmitter<'_, '_> {
         ));
         self.jump(&done);
         self.begin(&empty);
+        let result = self.value(format!(
+            "insertvalue {} zeroinitializer, {sequence_ty} {empty_sequence}, 0",
+            self.ty(&result_type)
+        ));
+        let result = self.value(format!(
+            "insertvalue {} {result}, {} {none_head}, 1",
+            self.ty(&result_type),
+            self.ty(head_type)
+        ));
         self.instruction(format!(
-            "store {} zeroinitializer, ptr {result_slot}",
+            "store {} {result}, ptr {result_slot}",
             self.ty(&result_type)
         ));
         self.jump(&done);

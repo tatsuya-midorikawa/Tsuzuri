@@ -1533,11 +1533,12 @@ const suites = {
         '%"tz.union.Main.Color" = type i8',
         '%"tz.union.Main.Pick" = type { i8, i64 }',
         '%"tz.union.Main.Maybe[i64]" = type { i8, i64 }',
-        '%"tz.union.Main.Maybe[string]" = type { i8, %tz.string }',
         '%"tz.union.Shapes.Shape" = type { i8, double }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
+      // A union of a nullary case and a string payload is its payload (PM01).
+      assert.ok(!ir.includes("tz.union.Main.Maybe[string]"));
       assert.doesNotMatch(ir, /tz\.union\.Main\.Maybe = type/);
       assert.match(ir, /switch i32/);
       // First-class constructors become one hidden function per concrete instance.
@@ -1564,6 +1565,17 @@ const suites = {
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
+      // PM01 Phase 2: an option-like union with a string or array payload is its payload and has no type of its own.
+      for (const name of ["Main.Alias", "Main.Label", "Maybe.Maybe[string]"]) {
+        assert.ok(!ir.includes(`tz.union.${name}"`), `${name} is its payload`);
+      }
+      assert.match(ir, /\{ ptr null, i64 -1 \}/);
+      assert.match(ir, /icmp slt i64 %v\d+, 0/);
+      // The native IR: an option of a reference is its pointer. (WebAssembly keeps the tag.)
+      assert.ok(!ir.includes("tz.union.Maybe.Maybe[ref[i64]]"));
+      assert.match(ir, /icmp eq ptr %v\d+, null/);
+      // Not an option-like union of one payload case: two payload cases, three cases, and a nested option.
+      assert.ok(ir.includes('%"tz.union.Maybe.Maybe[Maybe.Maybe[string]]" = type { i8, %tz.string }\n'));
     },
   },
   stdlib: {
@@ -1626,7 +1638,8 @@ const suites = {
     inspect(ir, header) {
       assert.doesNotMatch(header, /Maybe|Result/);
       assert.match(ir, /@tz\.specialized\./);
-      assert.match(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
+      assert.match(ir, /tz\.union\.Maybe\.Maybe\[i64\]/);
+      assert.doesNotMatch(ir, /tz\.union\.Maybe\.Maybe\[string\]/);
       assert.match(ir, /tz\.union\.Result\.Result\[string,i64\]/);
     },
   },
@@ -2094,6 +2107,46 @@ suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n <<
     for (const count of [0, 1, 2, 3, 7, 100, 300]) {
       layout.push([name, [BigInt(count)], BigInt(Array.from({ length: count }, (_, i) => value(i)).reduce((total, item) => total + item, 0))]);
     }
+  }
+  // The niche: a negative length is the nullary case, so every option reads back as it was built, and
+  // dropping, moving out, and assigning over it free each string and array exactly once (`live == 0`).
+  const width = (n) => String(n).length;
+  const present = (i) => 1 + width(i);
+  const options = {
+    names: (i) => (i % 3 === 0 ? present(i) : -1),
+    labels: (i) => (i % 2 === 0 ? present(i) : -1),
+    text_options: (i) => (i % 4 === 0 ? present(i) : -2),
+    number_options: (i) => (i % 3 === 1 ? (i % 5) * 1000 + (i % 5 > 0 ? i : 0) : -3),
+    word_options: (i) => (i % 2 === 0 ? i % 4 : -4),
+    consume: (i) => (i % 4 === 0 ? present(i) : 4),
+    reassign: (i) => (i % 2 === 0 ? present(4 * i) : -2),
+    holders: (i) => i + (i % 4 === 0 ? present(i) : -2) + (i % 5 === 0 ? 2 : -4),
+    nested_options: (i) => (i % 3 === 0 ? -1 : i % 3 === 1 ? -2 : present(i)),
+  };
+  for (const [name, value] of Object.entries(options)) {
+    for (const count of [0, 1, 2, 3, 7, 100, 300]) {
+      layout.push([name, [BigInt(count)], BigInt(Array.from({ length: count }, (_, i) => value(i)).reduce((total, item) => total + item, 0))]);
+    }
+  }
+  const combinators = (i) => {
+    const first = i % 4 === 0 ? `s${i}!` : null;
+    const second = first !== null && first.length > 3 ? `${first}?` : null;
+    const third = second !== null && second.length > 4 ? second : null;
+    return (third ?? "fallback").length;
+  };
+  for (const i of [0, 1, 2, 4, 5, 8, 12, 99, 100, 1000]) {
+    layout.push(["combinators", [BigInt(i)], BigInt(combinators(i))]);
+    layout.push(["sequences", [BigInt(i)], BigInt(100 + 3 + width(i) + 1)]);
+    layout.push(["captured", [BigInt(i)], BigInt(2 * (i % 4 === 0 ? present(i) : -2))]);
+    layout.push(["tasked", [BigInt(i)], BigInt(i % 4 === 0 ? present(i) : -2)]);
+  }
+  // An option of a reference: the first value above 5 and the smallest one, or the numbers that stand for none.
+  for (const count of [0, 1, 2, 3, 7, 12, 100, 300]) {
+    const values = Array.from({ length: count }, (_, i) => (i * 7) % 11);
+    const smallest = count === 0 ? -1 : Math.min(...values);
+    const first = values.find((value) => value > 5);
+    layout.push(["references", [BigInt(count)], BigInt(smallest + (first === undefined ? -2 : first * 100) - 3)]);
+    layout.push(["word_references", [BigInt(count)], BigInt(count > 100 ? 4000 + count : -1)]);
   }
 }
 function canonicalTextHash(text) {

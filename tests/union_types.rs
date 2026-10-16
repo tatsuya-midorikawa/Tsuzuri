@@ -618,16 +618,15 @@ fn answer =
     unwrap_or 0 (Some 1) + text.length
 "
     ));
-    for definition in [
-        "%\"tz.union.Main.Maybe[i64]\" = type { i8, i64 }",
-        "%\"tz.union.Main.Maybe[string]\" = type { i8, %tz.string }",
-    ] {
-        assert_eq!(
-            maybe.matches(&format!("{definition}\n")).count(),
-            1,
-            "{definition}"
-        );
-    }
+    // A union of a nullary case and a string payload has no tag: it is its payload, and has no
+    // type of its own (PM01).
+    assert_eq!(
+        maybe
+            .matches("%\"tz.union.Main.Maybe[i64]\" = type { i8, i64 }\n")
+            .count(),
+        1
+    );
+    assert!(!maybe.contains("tz.union.Main.Maybe[string]"), "{maybe}");
     assert!(!maybe.contains("%\"tz.union.Main.Maybe\" ="));
     assert!(!maybe.contains("%tz.union.Main.Maybe ="));
     // Direct constructor applications build the value without a call.
@@ -709,7 +708,7 @@ fn answer =
     assert!(
         constructors
             .iter()
-            .any(|line| line.starts_with("define internal %\"tz.union.Main.Maybe[string]\""))
+            .any(|line| line.starts_with("define internal %tz.string "))
     );
     // Recursion diagnostics run before hidden constructor functions exist.
     let error = rejects(

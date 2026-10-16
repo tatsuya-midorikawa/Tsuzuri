@@ -19,7 +19,9 @@ fn ir_for(source: &str, wasm: bool) -> String {
 /// The body of the LLVM function whose symbol starts with `symbol`.
 fn body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     let start = ir
-        .find(&format!("@{symbol}("))
+        .match_indices(&format!("@{symbol}("))
+        .map(|(at, _)| at)
+        .find(|&at| ir[ir[..at].rfind('\n').map_or(0, |line| line + 1)..].starts_with("define"))
         .unwrap_or_else(|| panic!("missing {symbol}\n{ir}"));
     let end = ir[start..].find("\n}\n").unwrap() + start;
     &ir[start..end]
@@ -158,4 +160,141 @@ fn dyn_values_allocate_the_llvm_size_of_their_value() {
         assert!(ir.matches(size).count() >= 2, "{ir}");
         assert!(ir.contains(&format!("icmp eq i64 {size}, 0")), "{ir}");
     }
+}
+
+#[test]
+fn option_like_unions_are_their_payload() {
+    // One nullary case and one string, utf8string, or array payload, in either order.
+    let source = "union Alias = NoAlias | Spelled of string
+union Label = Named of string | Anonymous
+union Raw = NoRaw | Bytes of utf8string
+union Numbers = NoNumbers | Filled of [i64]
+def alias_of :: i64 -> Alias
+fn alias_of n = if n == 0 then NoAlias else Spelled \"a\"
+def label_of :: i64 -> Label
+fn label_of n = if n == 0 then Anonymous else Named \"a\"
+def alias_length :: Alias -> i64
+fn alias_length alias =
+    match alias with
+    | Spelled text -> text.length
+    | NoAlias -> 0
+def label_length :: Label -> i64
+fn label_length label =
+    match label with
+    | Named text -> text.length
+    | Anonymous -> 0
+def raw_of :: Raw
+fn raw_of = Bytes u8\"a\"
+def numbers_of :: Numbers
+fn numbers_of = NoNumbers
+export def total :: i64
+fn total = alias_length (alias_of 1) + label_length (label_of 1) + (match raw_of() with | Bytes _ -> 1 | NoRaw -> 0) + (match numbers_of() with | Filled _ -> 1 | NoNumbers -> 0)
+";
+    for wasm in [false, true] {
+        let ir = ir_for(source, wasm);
+        for name in ["Alias", "Label", "Raw", "Numbers"] {
+            assert!(
+                !ir.contains(&format!("tz.union.Main.{name}")),
+                "{name}\n{ir}"
+            );
+        }
+        // The union is its payload: no type of its own, and the nullary case is a constant.
+        assert!(
+            body(&ir, "tz.fn.Main.alias_of").contains("ret %tz.string { ptr null, i64 -1 }"),
+            "{ir}"
+        );
+        assert!(
+            body(&ir, "tz.fn.Main.label_of").contains("ret %tz.string { ptr null, i64 -1 }"),
+            "{ir}"
+        );
+        assert!(
+            body(&ir, "tz.fn.Main.raw_of").contains("ret %tz.utf8string"),
+            "{ir}"
+        );
+        assert!(
+            body(&ir, "tz.fn.Main.numbers_of").contains("ret %tz.array { ptr null, i64 -1 }"),
+            "{ir}"
+        );
+        // A match tests the sign of the length and selects the case number: `NoAlias` is case 0 and
+        // `Anonymous` is case 1, so the selects differ and nothing reads a tag byte.
+        let alias = body(&ir, "tz.fn.Main.alias_length");
+        assert!(alias.contains("icmp slt i64"), "{alias}");
+        assert!(alias.contains(", i32 0, i32 1"), "{alias}");
+        let label = body(&ir, "tz.fn.Main.label_length");
+        assert!(label.contains("icmp slt i64"), "{label}");
+        assert!(label.contains(", i32 1, i32 0"), "{label}");
+        assert!(!alias.contains("load i8"), "{alias}");
+    }
+}
+
+#[test]
+fn other_unions_keep_their_tag() {
+    // Two payload cases, three cases, a Drop union, a nested option, and a recursive union.
+    let source = "extern def drop_log :: i64 -> unit
+union Twin = Left of string | Right of string
+union Trio = Uno | Dos of string | Tres
+union Guard = Dormant | Gripped of string
+instance Drop<Guard> { fn drop _value = drop_log 4 }
+union Sized = Missing | Present of i64
+union Chain = End | Link of Chain
+export def total :: i64
+fn total =
+    let twin = Left \"a\"
+    let trio = Uno
+    let guard = Dormant
+    let sized = Missing
+    let chain = End
+    let nested: Maybe<Maybe<string>> = Some None
+    let result: Result<string, string> = Ok \"a\"
+    0
+";
+    for wasm in [false, true] {
+        let ir = ir_for(source, wasm);
+        for (name, body) in [
+            ("Twin", "{ i8, %tz.string }"),
+            ("Trio", "{ i8, %tz.string }"),
+            ("Guard", "{ i8, %tz.string, i8 }"),
+            ("Sized", "{ i8, i64 }"),
+        ] {
+            assert_eq!(
+                definition(&ir, &format!("tz.union.Main.{name}")),
+                format!("%\"tz.union.Main.{name}\" = type {body}"),
+            );
+        }
+        assert_eq!(
+            definition(&ir, "tz.union.Maybe.Maybe[Maybe.Maybe[string]]"),
+            "%\"tz.union.Maybe.Maybe[Maybe.Maybe[string]]\" = type { i8, %tz.string }",
+        );
+        assert!(!ir.contains("tz.union.Maybe.Maybe[string]\""), "{ir}");
+        assert!(ir.contains("tz.rec.node.Main.Chain"), "{ir}");
+    }
+}
+
+#[test]
+fn an_option_of_a_reference_is_its_pointer_on_native_targets_only() {
+    let source = "export def find :: i64 -> i64
+fn find n =
+    let values = [1, 2, 3]
+    match Array.find (\\x -> deref x == n) (ref values) with
+    | Some value -> deref value
+    | None -> -1
+";
+    let native = ir_for(source, false);
+    // No type of its own: the option is the `ptr`, and the null pointer is `None`.
+    assert!(
+        !native.contains("tz.union.Maybe.Maybe[ref[i64]]"),
+        "{native}"
+    );
+    let search = "tz.fn.Array.find.$mono.1";
+    assert!(body(&native, search).contains("ret ptr null"), "{native}");
+    let find = body(&native, "tz.fn.Main.find");
+    assert!(find.contains("icmp eq ptr"), "{find}");
+    assert!(find.contains("select i1"), "{find}");
+    // WebAssembly keeps the tag: `--stack-first` can place a valid object at address 0.
+    let wasm = ir_for(source, true);
+    assert_eq!(
+        definition(&wasm, "tz.union.Maybe.Maybe[ref[i64]]"),
+        "%\"tz.union.Maybe.Maybe[ref[i64]]\" = type { i8, ptr }",
+    );
+    assert!(!body(&wasm, search).contains("ret ptr null"), "{wasm}");
 }

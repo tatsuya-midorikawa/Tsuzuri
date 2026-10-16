@@ -4,6 +4,55 @@
 //! text IR, `tag_type`, so the width of the tag is decided in one place.
 use super::*;
 
+/// The encoding of an option-like union that stores no tag (PM01 D5): one value of the payload
+/// type that the payload never has stands for the nullary case.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Niche {
+    /// A string or array `{ ptr, i64 }`: a negative length is the nullary case, as in
+    /// `{ ptr null, i64 -1 }`. No string or array has one.
+    NegativeLength,
+    /// A reference to one value, a single `ptr`: the null pointer is the nullary case. No
+    /// reference is null, but linear memory starts at address 0, where `--stack-first` can put a
+    /// valid object, so WebAssembly has no such niche (see `webassembly`).
+    NullPointer,
+}
+
+impl Niche {
+    /// The constant that stands for the nullary case.
+    fn nullary(self) -> &'static str {
+        match self {
+            Niche::NegativeLength => "{ ptr null, i64 -1 }",
+            Niche::NullPointer => "null",
+        }
+    }
+}
+
+thread_local! {
+    /// Whether the program that this thread is emitting targets WebAssembly. Layouts that depend
+    /// on the target (`Niche::NullPointer`) read it, because `union_layout` and `llvm_type` are
+    /// called with a module alone. Outside `target_scope` the target is native.
+    static WEBASSEMBLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the emission of a program for WebAssembly (`wasm`) or a native target until the guard is
+/// dropped; the previous target comes back then.
+pub(crate) fn target_scope(wasm: bool) -> TargetScope {
+    TargetScope(WEBASSEMBLY.replace(wasm))
+}
+
+pub(crate) struct TargetScope(bool);
+
+impl Drop for TargetScope {
+    fn drop(&mut self) {
+        WEBASSEMBLY.set(self.0);
+    }
+}
+
+/// Whether the program being emitted targets WebAssembly.
+fn webassembly() -> bool {
+    WEBASSEMBLY.get()
+}
+
 /// How a union instance stores its tag and payload.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UnionLayout {
@@ -16,14 +65,24 @@ pub(crate) enum UnionLayout {
     /// one an `i128` has), so every payload stores at the area's own alignment, and `units`
     /// make the area hold the largest payload.
     General { unit: usize, units: usize },
+    /// Two cases, case `none` without a payload and case `some` with one: the value is the payload
+    /// itself, with no tag, and `niche` tells the nullary case from every payload. The LLVM type
+    /// of the union is the payload's, and the payload lives in the union's own storage.
+    Niche {
+        niche: Niche,
+        payload: Type,
+        none: usize,
+        some: usize,
+    },
 }
 
 impl UnionLayout {
     /// Whether a value of this layout is an LLVM aggregate that holds a tag and a payload
-    /// (`Common`, `General`). An enum is its tag alone. Passes that only need the coarse shape of
-    /// a union value, such as a return slot for aggregates, ask this.
+    /// (`Common`, `General`). An enum is its tag alone and a niche union is its payload alone, so
+    /// neither is one. Passes that only need the coarse shape of a union value, such as a return
+    /// slot for aggregates, ask this.
     pub(crate) fn is_aggregate(&self) -> bool {
-        !matches!(self, UnionLayout::Enum)
+        matches!(self, UnionLayout::Common(_) | UnionLayout::General { .. })
     }
 
     /// The LLVM type of the payload area of a `General` layout.
@@ -166,6 +225,7 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
                     .into_iter()
                     .chain(drop_flag(ty, module).map(|_| (1, 1))),
                 ),
+                UnionLayout::Niche { payload, .. } => layout_bound(&payload, module, lower),
             }
         }
         Type::Error
@@ -179,12 +239,11 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
 }
 
 pub(crate) fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
-    let payloads: Vec<_> = module
-        .types()
-        .union_payloads(id, arguments)
-        .into_iter()
-        .flatten()
-        .collect();
+    let cases = module.types().union_payloads(id, arguments);
+    if let Some(niche) = niche_layout(id, arguments, &cases, module) {
+        return niche;
+    }
+    let payloads: Vec<_> = cases.into_iter().flatten().collect();
     let Some(first) = payloads.first() else {
         // A Drop union keeps its live flag after the tag, so it is never a bare tag.
         return if module.unions[id].user_drop {
@@ -208,6 +267,40 @@ pub(crate) fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule
     }
 }
 
+/// The niche layout of union `id` at `arguments`, if it has one: exactly two cases, one nullary and
+/// one whose payload is a string, `utf8string`, array, or (outside WebAssembly) reference to one
+/// value, in a union that is neither recursive (its value is a node pointer) nor a Drop union (it
+/// keeps a live flag). `cases` are the payloads of its cases.
+fn niche_layout(
+    id: usize,
+    arguments: &[Type],
+    cases: &[Option<Type>],
+    module: &CheckedModule,
+) -> Option<UnionLayout> {
+    let (none, some, payload) = match cases {
+        [None, Some(payload)] => (0, 1, payload),
+        [Some(payload), None] => (1, 0, payload),
+        _ => return None,
+    };
+    let niche = match payload {
+        Type::String | Type::Utf8String | Type::Array(_) => Niche::NegativeLength,
+        // A reference to a slice is a pointer and a length, which is not this niche.
+        Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
+            Niche::NullPointer
+        }
+        _ => return None,
+    };
+    if module.unions[id].user_drop || module.types().recursive(&Type::Union(id, arguments.into())) {
+        return None;
+    }
+    Some(UnionLayout::Niche {
+        niche,
+        payload: payload.clone(),
+        none,
+        some,
+    })
+}
+
 /// The body of the LLVM type definition of the non-recursive union `ty`.
 pub(super) fn union_body(ty: &Type, module: &CheckedModule) -> String {
     let Type::Union(id, arguments) = ty else {
@@ -227,6 +320,9 @@ pub(super) fn union_body(ty: &Type, module: &CheckedModule) -> String {
         UnionLayout::General { unit, units } => {
             format!("{{ {tag}, {}{flag} }}", UnionLayout::area(unit, units))
         }
+        UnionLayout::Niche { .. } => {
+            unreachable!("a niche union is its payload and has no definition")
+        }
     }
 }
 
@@ -239,6 +335,7 @@ pub(super) fn node_region(ty: &Type, module: &CheckedModule) -> String {
         UnionLayout::Enum => "i8".into(),
         UnionLayout::Common(payload) => llvm_type(&payload, module),
         UnionLayout::General { unit, units } => UnionLayout::area(unit, units),
+        UnionLayout::Niche { .. } => unreachable!("a recursive union has no niche"),
     }
 }
 
@@ -271,6 +368,10 @@ impl FunctionEmitter<'_, '_> {
             let node = self.value(format!("load ptr, ptr {slot}"));
             return self.recursive_payload(ty, &node);
         }
+        // A niche union is its payload: both live at the union's own address.
+        if matches!(self.union_layout(ty), UnionLayout::Niche { .. }) {
+            return slot.to_owned();
+        }
         self.value(format!(
             "getelementptr inbounds {}, ptr {slot}, i32 0, i32 1",
             self.ty(ty)
@@ -299,7 +400,15 @@ impl FunctionEmitter<'_, '_> {
             return self.recursive_construct(ty, case_id, payload);
         }
         let layout = self.union_layout(ty);
+        if let UnionLayout::Niche { niche, .. } = &layout {
+            // A niche union is its payload, or the constant that no payload equals.
+            return match payload {
+                Some((value, _)) => value,
+                None => niche.nullary().to_owned(),
+            };
+        }
         if !layout.is_aggregate() {
+            // What is left is an enumeration, whose value is its tag.
             return case_id.to_string();
         }
         let llvm = self.ty(ty);
@@ -322,12 +431,40 @@ impl FunctionEmitter<'_, '_> {
         self.value(format!("load {llvm}, ptr {slot}"))
     }
 
+    /// The value of the nullary case `name` of the union `ty`, built by its layout: a layout may
+    /// encode the case in bytes other than zero, so the all-zero value is not `None`.
+    pub(super) fn nullary_value(&mut self, ty: &Type, name: &str) -> String {
+        let Type::Union(id, _) = ty else {
+            unreachable!("cases belong to union types")
+        };
+        let case = self.module.unions[*id]
+            .cases
+            .iter()
+            .position(|(case, payload)| case == name && payload.is_none())
+            .unwrap_or_else(|| panic!("{name} is a nullary case of the standard union"));
+        self.construct_value(ty, case, None)
+    }
+
     /// The tag of the SSA union value `union` of type `ty`, as `i32`.
     pub(super) fn tag_value(&mut self, ty: &Type, union: &str) -> String {
         if self.module.types().recursive(ty) {
             return self.recursive_tag(ty, union);
         }
-        let tag = if matches!(self.union_layout(ty), UnionLayout::Enum) {
+        let layout = self.union_layout(ty);
+        if let UnionLayout::Niche {
+            niche, none, some, ..
+        } = layout
+        {
+            let field = match niche {
+                Niche::NegativeLength => {
+                    self.value(format!("extractvalue {} {union}, 1", self.ty(ty)))
+                }
+                // The union is its pointer.
+                Niche::NullPointer => union.to_owned(),
+            };
+            return self.niche_tag(niche, &field, none, some);
+        }
+        let tag = if matches!(layout, UnionLayout::Enum) {
             union.to_owned()
         } else {
             self.value(format!("extractvalue {} {union}, 0", self.ty(ty)))
@@ -342,9 +479,36 @@ impl FunctionEmitter<'_, '_> {
             let node = self.value(format!("load ptr, ptr {slot}"));
             return self.recursive_tag(ty, &node);
         }
+        if let UnionLayout::Niche {
+            niche, none, some, ..
+        } = self.union_layout(ty)
+        {
+            let field = match niche {
+                Niche::NegativeLength => {
+                    let pointer = self.value(format!(
+                        "getelementptr inbounds {}, ptr {slot}, i32 0, i32 1",
+                        self.ty(ty)
+                    ));
+                    self.value(format!("load i64, ptr {pointer}"))
+                }
+                Niche::NullPointer => self.value(format!("load ptr, ptr {slot}")),
+            };
+            return self.niche_tag(niche, &field, none, some);
+        }
         // The tag is the first field, so it is also the value of an enum-like union.
         let tag = self.value(format!("load {}, ptr {slot}", tag_type(ty, self.module)));
         self.widen_tag(ty, tag)
+    }
+
+    /// The tag of a niche union, as `i32`, from the niche field `field` that it stores (the length
+    /// or the pointer): `none` when the field holds the value of the nullary case, `some`
+    /// otherwise.
+    fn niche_tag(&mut self, niche: Niche, field: &str, none: usize, some: usize) -> String {
+        let absent = match niche {
+            Niche::NegativeLength => self.value(format!("icmp slt i64 {field}, 0")),
+            Niche::NullPointer => self.value(format!("icmp eq ptr {field}, null")),
+        };
+        self.value(format!("select i1 {absent}, i32 {none}, i32 {some}"))
     }
 
     /// `tag`, stored in the width of `ty`'s tag, as `i32`.
@@ -387,6 +551,8 @@ impl FunctionEmitter<'_, '_> {
                 let pointer = self.payload_pointer(ty, &slot);
                 self.value(format!("load {}, ptr {pointer}", self.ty(payload)))
             }
+            // A niche union is its payload.
+            UnionLayout::Niche { .. } => union.to_owned(),
         }
     }
 
@@ -622,6 +788,12 @@ union Latch = Open | Closed
 instance Drop<Latch> {{ fn drop _value = drop_log 2 }}
 union Cell = Number of i64 | Text of string | Vacant
 instance Drop<Cell> {{ fn drop _value = drop_log 3 }}
+union Alias = NoAlias | Spelled of string
+union Label = Named of string | Anonymous
+union Twin = Left of string | Right of string
+union Trio = Uno | Dos of string | Tres
+union Guard = Dormant | Gripped of string
+instance Drop<Guard> {{ fn drop _value = drop_log 4 }}
 {many}export def use :: i64 -> i64
 fn use n =
     let flags = Flags {{ a: true, b: false }}
@@ -642,12 +814,19 @@ fn use n =
     let slot = Free
     let latch = Open
     let cell = Vacant
+    let alias = NoAlias
+    let label = Anonymous
+    let twin = Left \"a\"
+    let trio = Uno
+    let guard = Dormant
     let many = M2
     let a: Maybe<string> = None
     let b: Maybe<bool> = Some true
     let c: Result<i64, string> = Ok n
     let d: Result<Shape, Rich> = Error Nada
     let e: Maybe<ref Mixed> = None
+    let f: Maybe<utf8string> = None
+    let g: Maybe<[i64]> = None
     n
 ",
             many = many(300)
@@ -689,6 +868,22 @@ fn use n =
             ("Cell", union("Main.Cell", &[])),
             ("Many", union("Main.Many", &[])),
             ("Maybe<string>", union("Maybe.Maybe", &[Type::String])),
+            (
+                "Maybe<utf8string>",
+                union("Maybe.Maybe", &[Type::Utf8String]),
+            ),
+            (
+                "Maybe<[i64]>",
+                union(
+                    "Maybe.Maybe",
+                    &[Type::Array(Box::new(Type::Integer(64, true)))],
+                ),
+            ),
+            ("Alias", union("Main.Alias", &[])),
+            ("Label", union("Main.Label", &[])),
+            ("Twin", union("Main.Twin", &[])),
+            ("Trio", union("Main.Trio", &[])),
+            ("Guard", union("Main.Guard", &[])),
             ("Maybe<bool>", union("Maybe.Maybe", &[Type::Bool])),
             (
                 "Result<i64, string>",
@@ -723,6 +918,8 @@ fn use n =
         for wasm in [false, true] {
             let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
             let named = definitions(&ir);
+            // The layouts and bounds of the type depend on the target, as they do while emitting.
+            let _target = target_scope(wasm);
             for (label, ty) in types(&module) {
                 let (upper, lower) = (
                     layout_bound(&ty, &module, false),
@@ -768,11 +965,21 @@ fn use n =
             ("Latch", 2, 1),
             ("Cell", 32, 8),
             ("Many", 24, 8),
-            ("Maybe<string>", 24, 8),
+            // A nullary case and a string or array payload need no tag: the union is its payload.
+            ("Maybe<string>", 16, 8),
+            ("Maybe<utf8string>", 16, 8),
+            ("Maybe<[i64]>", 16, 8),
+            ("Alias", 16, 8),
+            ("Label", 16, 8),
+            // Two payload cases, three cases, and a Drop union keep their tag.
+            ("Twin", 24, 8),
+            ("Trio", 24, 8),
+            ("Guard", 32, 8),
             ("Maybe<bool>", 2, 1),
             ("Result<i64, string>", 24, 8),
             ("Result<Shape, Rich>", 32, 8),
-            ("Maybe<ref Mixed>", 16, 8),
+            // A reference is a pointer, so an option of one is the pointer on a native target.
+            ("Maybe<ref Mixed>", 8, 8),
         ] {
             let ty = types(&module)
                 .into_iter()
@@ -784,7 +991,8 @@ fn use n =
                 (size, align),
                 "{label}: {name}"
             );
-            // Up to 8-byte units the layout is the same everywhere, so the bounds are exact.
+            // Up to 8-byte units the layout is the same everywhere, so the bounds are exact. A
+            // pointer is 4 bytes in the lower bound, which covers wasm32.
             let narrow = !matches!(label, "Huge" | "Lane4" | "Lane8" | "Holder");
             if narrow && !label.starts_with("Maybe<ref") {
                 let expected = Some((size, align));
@@ -792,5 +1000,19 @@ fn use n =
                 assert_eq!(Some(layout_bound(&ty, &module, true)), expected, "{label}");
             }
         }
+        // On WebAssembly an option of a reference keeps its tag: address 0 can hold an object.
+        let wasm_ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, true).unwrap();
+        let wasm_named = definitions(&wasm_ir);
+        let _target = target_scope(true);
+        let ty = types(&module)
+            .into_iter()
+            .find_map(|(name, ty)| (name == "Maybe<ref Mixed>").then_some(ty))
+            .unwrap();
+        let name = llvm_type(&ty, &module);
+        assert_eq!(
+            wasm_named[name.trim_start_matches('%').trim_matches('"')],
+            "{ i8, ptr }"
+        );
+        assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
     }
 }

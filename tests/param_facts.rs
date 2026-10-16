@@ -69,10 +69,11 @@ def function_pointer :: ref (i64 -> i64) -> i64 = \value -> 0
         assert!(header(&ir, "cleanup").contains("align 8 dereferenceable(16)"));
         assert!(header(&ir, "chain").contains("align 4 dereferenceable(4)"));
         // A union is a tag of its own width and a payload area at the largest payload alignment
-        // (PM01); an `i128` payload only guarantees the 8-byte alignment of older LLVM.
+        // (PM01); an `i128` payload only guarantees the 8-byte alignment of older LLVM. An option of
+        // a string has no tag: it is the 16-byte string.
         assert!(header(&ir, "color").contains("align 1 dereferenceable(1)"));
         assert!(header(&ir, "shape").contains("align 8 dereferenceable(24)"));
-        assert!(header(&ir, "maybe_text").contains("align 8 dereferenceable(24)"));
+        assert!(header(&ir, "maybe_text").contains("align 8 dereferenceable(16)"));
         assert!(header(&ir, "huge").contains("align 8 dereferenceable(24)"));
         assert!(header(&ir, "lanes").contains("align 8 dereferenceable(40)"));
         assert!(header(&ir, "dyn_pointer").contains("align 4 dereferenceable(8)"));

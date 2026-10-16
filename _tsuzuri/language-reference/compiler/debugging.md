@@ -102,7 +102,7 @@ show 40
 | 関数値 | `<fn Main.show.lambda@12:15>` のように呼び出す関数の名前 |
 | `Task` | `<task>` |
 
-LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。
+LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。
 
 ### 読めない値と上限
 
@@ -155,7 +155,7 @@ VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug**
 
 Windows で、MSVC のリンカー（`link.exe`）でリンクする Clang（配布物の `tsuzuri-clang` 以外。たとえば `TSUZURI_CLANG` に指定した LLVM の `clang`）を使うと、`-g` のネイティブのビルドは DWARF に加えて CodeView も出します。実行ファイルでは、リンカーが出力の拡張子を `.pdb` にした PDB（`app.exe` なら `app.pdb`）を隣に書きます。実行ファイルは PDB をディレクトリなしの名前で指すので、Visual Studio や WinDbg は隣の PDB を見つけます。PDB の関数と型の名前は DWARF と同じ Tsuzuri の名前（`Main.show`、`Main.Shape`、`$tag`）です。`tsuzuri test --index N -g -o PATH` のランナーにも PDB を書きます。
 
-PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result`、`Task` を Tsuzuri の値として表示します。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。
+PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result`、`Task` を Tsuzuri の値として表示します。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。`Maybe<string>` と `Maybe<utf8string>` はタグを持たない（`$niche` が `-1` なら `None`）ので、型名を指定した専用の定義があります。`Maybe<[T]>`、ネイティブの `Maybe<ref T>`、タグを持たない利用者の union は既定の表示で、`$niche` が値を持たない case の列挙子のときだけ case 名になります。
 
 `--emit object` と `--emit llvm` の `-g` も CodeView を含みます。自分で MSVC のリンカーでリンクするときは、`/DEBUG` と `/NATVIS:<配布物>/share/natvis/tsuzuri.natvis` を付けます。
 

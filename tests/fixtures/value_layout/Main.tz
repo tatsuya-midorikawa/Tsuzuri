@@ -332,3 +332,200 @@ fn lanes count =
     for item in items do
         total = total + lanes_code (ref item)
     total
+
+// An option-like union with a string or array payload stores no tag: a negative length is the
+// nullary case, whichever case it is. Moving the payload out, assigning over the value, and
+// dropping all follow the same rules as for a tagged union.
+union Alias = NoAlias | Spelled of string
+
+union Label = Named of string | Anonymous
+
+record Holder { id: i64, name: Maybe<string>, tags: Maybe<[string]> }
+
+def alias_value :: i64 -> Alias
+fn alias_value i = if i % 3 == 0 then Spelled ("t" + to_string i) else NoAlias
+
+def alias_length :: ref Alias -> i64
+fn alias_length alias =
+    match alias with
+    | Spelled text -> text.length
+    | NoAlias -> -1
+
+export def names :: i64 -> i64
+fn names count =
+    let items = new [Alias](count, i -> alias_value i)
+    let mut total = 0
+    for item in items do
+        total = total + alias_length (ref item)
+    total
+
+def label_value :: i64 -> Label
+fn label_value i = if i % 2 == 0 then Named ("L" + to_string i) else Anonymous
+
+def label_length :: ref Label -> i64
+fn label_length label =
+    match label with
+    | Named text -> text.length
+    | Anonymous -> -1
+
+export def labels :: i64 -> i64
+fn labels count =
+    let items = new [Label](count, i -> label_value i)
+    let mut total = 0
+    for item in items do
+        total = total + label_length (ref item)
+    total
+
+def text_option :: i64 -> Maybe<string>
+fn text_option i = if i % 4 == 0 then Some ("s" + to_string i) else None
+
+def text_option_length :: ref Maybe<string> -> i64
+fn text_option_length option =
+    match option with
+    | Some text -> text.length
+    | None -> -2
+
+export def text_options :: i64 -> i64
+fn text_options count =
+    let items = new [Maybe<string>](count, i -> text_option i)
+    let mut total = 0
+    for item in items do
+        total = total + text_option_length (ref item)
+    total
+
+def numbers_option :: i64 -> Maybe<[i64]>
+fn numbers_option i = if i % 3 == 1 then Some (new [i64](i % 5, j -> j + i)) else None
+
+def numbers_code :: ref Maybe<[i64]> -> i64
+fn numbers_code option =
+    match option with
+    | Some numbers -> numbers.length * 1000 + (if numbers.length > 0 then numbers[0] else 0)
+    | None -> -3
+
+export def number_options :: i64 -> i64
+fn number_options count =
+    let items = new [Maybe<[i64]>](count, i -> numbers_option i)
+    let mut total = 0
+    for item in items do
+        total = total + numbers_code (ref item)
+    total
+
+def words_option :: i64 -> Maybe<[string]>
+fn words_option i = if i % 2 == 0 then Some (new [string](i % 4, j -> "w" + to_string j)) else None
+
+def words_code :: ref Maybe<[string]> -> i64
+fn words_code option =
+    match option with
+    | Some words -> words.length
+    | None -> -4
+
+export def word_options :: i64 -> i64
+fn word_options count =
+    let items = new [Maybe<[string]>](count, i -> words_option i)
+    let mut total = 0
+    for item in items do
+        total = total + words_code (ref item)
+    total
+
+// The payload moves out of the option, which is dropped with its storage cleared.
+export def consume :: i64 -> i64
+fn consume count =
+    let mut total = 0
+    let mut i = 0
+    while i < count do
+        let option = text_option i
+        let text = match option with | Some value -> value | None -> "none"
+        total = total + text.length
+        i = i + 1
+    total
+
+export def combinators :: i64 -> i64
+fn combinators i =
+    let first = Maybe.map (\s -> s + "!") (text_option i)
+    let second = Maybe.bind first (\s -> if s.length > 3 then Some (s + "?") else None)
+    let third = Maybe.filter (\s -> s.length > 4) second
+    let fourth = Maybe.or_else third (\() -> Some "fallback")
+    (Maybe.default_value "none" fourth).length
+
+// Each assignment drops the value that it replaces.
+export def reassign :: i64 -> i64
+fn reassign count =
+    let mut slot: Maybe<string> = None
+    let mut total = 0
+    let mut i = 0
+    while i < count do
+        slot = text_option (i * 4 + i % 2)
+        total = total + text_option_length (ref slot)
+        i = i + 1
+    total
+
+def holder_value :: i64 -> Holder
+fn holder_value i =
+    Holder { id: i, name: text_option i, tags: if i % 5 == 0 then Some (new [string](2, _j -> "g")) else None }
+
+export def holders :: i64 -> i64
+fn holders count =
+    let items = new [Holder](count, i -> holder_value i)
+    let mut total = 0
+    for item in items do
+        total = total + item.id + text_option_length (ref item.name) + words_code (ref item.tags)
+    total
+
+def nested_option :: i64 -> Maybe<Maybe<string>>
+fn nested_option i =
+    if i % 3 == 0 then None elif i % 3 == 1 then Some None else Some (Some ("n" + to_string i))
+
+def nested_length :: ref Maybe<Maybe<string>> -> i64
+fn nested_length option =
+    match option with
+    | None -> -1
+    | Some inner ->
+        match inner with
+        | None -> -2
+        | Some text -> text.length
+
+export def nested_options :: i64 -> i64
+fn nested_options count =
+    let items = new [Maybe<Maybe<string>>](count, i -> nested_option i)
+    let mut total = 0
+    for item in items do
+        total = total + nested_length (ref item)
+    total
+
+// A finished sequence is `Seq.empty` and an exhausted step is `None`, however the layout encodes them.
+export def sequences :: i64 -> i64
+fn sequences n =
+    let mapped = Seq.map (\s -> s + "!") (Seq.once ("seq" + to_string n))
+    let items = Seq.to_array mapped
+    let empty: Seq<string> = Seq.empty()
+    let none_items = Seq.to_array empty
+    items.length * 100 + items[0].length + none_items.length
+
+export def captured :: i64 -> i64
+fn captured i =
+    let option = text_option i
+    let probe = \() -> text_option_length (ref option)
+    probe () + probe ()
+
+export def tasked :: i64 -> i64
+fn tasked i =
+    let result = Task.run (task { return text_option i })
+    text_option_length (ref result)
+
+// An option of a reference is the pointer itself on a native target, with the null pointer for
+// `None`, and a tag and a pointer on WebAssembly. A result does not depend on which.
+export def references :: i64 -> i64
+fn references count =
+    let values = new [i64](count, i -> (i * 7) % 11)
+    let smallest = Array.min (ref values)
+    let found = Array.find (\x -> deref x > 5) (ref values)
+    let missing = Array.find (\x -> deref x > 100) (ref values)
+    (match smallest with | Some v -> deref v | None -> -1) + (match found with | Some v -> deref v * 100 | None -> -2) + (match missing with | Some v -> deref v * 10000 | None -> -3)
+
+export def word_references :: i64 -> i64
+fn word_references count =
+    let words = new [string](count, i -> "w" + to_string i)
+    let long = Array.find (\word -> word.length > 3) (ref words)
+    match long with
+    | Some word -> word.length * 1000 + count
+    | None -> -1

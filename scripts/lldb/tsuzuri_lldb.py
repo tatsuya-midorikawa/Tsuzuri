@@ -4,10 +4,10 @@ Load them with `command script import <path>/tsuzuri_lldb.py`. They show strings
 slices, `Vec`, lists, unions (including `Maybe` and `Result`), `Map`, `Set`, characters, `unit`,
 and function values as Tsuzuri values. They read the DWARF shapes that the compiler emits (the
 "Debug information" section of `docs/architecture.md`): types carry their Tsuzuri names, and a
-union stores `$tag` and `$payload`, names that no Tsuzuri identifier can take. Only LLDB's own
-`lldb` module is used. A value that cannot be read, such as an uninitialized local, gets a summary
-in angle brackets, and an element at an address past the address space gets no child, instead of an
-exception.
+union stores `$tag` and `$payload`, or `$niche` and `$payload` when it has no tag, names that no
+Tsuzuri identifier can take. Only LLDB's own `lldb` module is used. A value that cannot be read,
+such as an uninitialized local, gets a summary in angle brackets, and an element at an address
+past the address space gets no child, instead of an exception.
 """
 
 import lldb
@@ -354,8 +354,8 @@ class CollectionProvider(SequenceProvider):
 
 
 def union_node_type(sbtype):
-    """The structure with `$tag` that a value of `sbtype` holds, or that it points to as a
-    recursive union's node; otherwise None."""
+    """The structure with `$tag` or `$niche` that a value of `sbtype` holds, or that it points to
+    as a recursive union's node; otherwise None."""
     node = sbtype.GetCanonicalType()
     if node.IsPointerType():
         node = node.GetPointeeType().GetCanonicalType()
@@ -363,7 +363,8 @@ def union_node_type(sbtype):
             return None
     if node.GetTypeClass() != lldb.eTypeClassStruct:
         return None
-    return node if "$tag" in field_names(node) else None
+    names = field_names(node)
+    return node if "$tag" in names or "$niche" in names else None
 
 
 def is_union(sbtype, _dict):
@@ -399,6 +400,9 @@ def active_case(valobj):
         value = value.Dereference().GetNonSyntheticValue()
     if not value.IsValid() or value.GetError().Fail():
         raise Unreadable()
+    niche = value.GetChildMemberWithName("$niche")
+    if niche.IsValid():
+        return niche_case(value, niche)
     tag = member(value, "$tag")
     code = tag.GetValueAsUnsigned()
     names = {case.GetValueAsUnsigned(): case.GetName() for case in strip(tag.GetType()).GetEnumMembers()}
@@ -408,6 +412,23 @@ def active_case(valobj):
     if payload.IsValid():
         payload = payload.GetChildMemberWithName(names[code])
     return names[code], payload if payload.IsValid() else None
+
+
+def niche_case(value, niche):
+    """The case name and payload (None if nullary) of a union that stores no tag. Its `$niche`
+    field overlays the payload and holds the value of the nullary case, which no payload has; any
+    other value means the one case with a payload, the only member of `$payload`."""
+    if niche.GetError().Fail():
+        raise Unreadable()
+    code = niche.GetValueAsSigned()
+    for case in strip(niche.GetType()).GetEnumMembers():
+        if case.GetValueAsSigned() == code:
+            return case.GetName(), None
+    payload = member(value, "$payload")
+    if payload.GetNumChildren() != 1:
+        raise Unreadable()
+    case = payload.GetChildAtIndex(0)
+    return case.GetName(), case
 
 
 def parts(payload):
