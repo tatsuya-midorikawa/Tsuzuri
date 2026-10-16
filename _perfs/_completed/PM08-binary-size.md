@@ -811,7 +811,7 @@ P1 の型の変更（`options.optimization` の比較、`optimization: 4` の検
 | `--no-cache` の `examples/point` `__text`（D10） | 40,552 | 10,844 |
 | `examples/io`・`point` | 変化なし（整数の表示を使わない・f64 を表示する） | |
 
-`-Os`・`-Oz` と `--strip`・`--wasm-opt` の表も同じ節にある。C・Rust の hello との並べ方（C 33,432、Rust 434,168 byte）も同じ節。速さは、整数の `Parse` と書式指定の C の測定（`numeric.ll` → `integer.ll`、ns／回: 0〜999 の `Parse` 15.9 → 8.7、全幅の `u64` 32.0 → 22.9、`{n:x}` 35.8 → 19.2）を load average 約 30 の共有機で 1 回測っただけで、速度の主張には使わない。静かな機械での再測定が必要。共有 CI に速度・サイズの閾値は置いていない。
+`-Os`・`-Oz` と `--strip`・`--wasm-opt` の表も同じ節にある。C・Rust の hello との並べ方（C 33,432、Rust 434,168 byte）も同じ節。速さは、整数の `Parse` と書式指定の C の測定（`numeric.ll` → `integer.ll`、ns／回: 0〜999 の `Parse` 15.0 → 8.2、全幅の `u64` 29.1 → 21.2、`{n:x}` 32.8 → 18.8）を `with-lock.sh measure` の下で、load average 約 26 の共有機で 1 回測っただけで、速度の主張には使わない。静かな機械での再測定が必要。共有 CI に速度・サイズの閾値は置いていない。
 
 ### 確認（コマンドと結果）
 
@@ -832,7 +832,7 @@ P1 の型の変更（`options.optimization` の比較、`optimization: 4` の検
 ### 残りの作業と、見つけた問題
 
 - Linux と Windows でのリンク（`--gc-sections`・`-ffunction-sections`・`-Wl,-x`・MSVC の `/OPT:REF`）の実測はこの機械では取れない。理由づけと `cargo check` までで、`targets.yml`・`windows.yml` の緑で確かめる。
-- 速さの測定（`Parse`・書式指定の C の測定）は、共有機で `with-lock.sh measure` の順番が回ってこず、1 回だけ測った値を指標として載せた。静かな機械で `integer.ll`／`numeric.ll` の比較を再測定する。
+- 速さの測定（`Parse`・書式指定の C の測定）は 1 回だけ（`with-lock.sh measure` の下、load average 約 26）。静かな機械で `integer.ll`／`numeric.ll` の比較を複数回で再測定する。decimal の先頭 19 桁の経路を外すと長い 10 進数が遅くなるので、`Parse` の変更では必ず比べる。
 - Homebrew の `wasm-ld` は multi-call の symlink（`lld`）で `cache::tool_identity` が失敗し、wasm のビルドが `build cache disabled` になる（PB03 の持ち分。直していない）。測定とテストは `TSUZURI_WASM_LD` に `lld -flavor wasm` を呼ぶ wrapper を指して行った。
 - `tz_soft_parse` の整数の枝（10 進 8 桁の一括処理を含む）と `tz_soft_format_spec` の整数の枝は、コンパイラが生成するコードから呼ばれなくなった。PM05 が `numeric.ll` の byte 不変を前提にするので残してあり、`integer_format.mjs` の基準になっている。float・decimal ごとの `tz_soft_format` の分割は、効果が測れていないので行っていない。
 - `-Os` は小さい native では `-O3` より `__text` が増えることがある（`examples/io`）。既定にしない根拠として「設計」に残した。
