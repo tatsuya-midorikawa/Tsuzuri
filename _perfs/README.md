@@ -88,7 +88,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PR01 | [所有権・借用から導く最適化情報の付与](_completed/PR01-ownership-facts.md) | P1 | L | PX01 | done |
 | PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | doing |
-| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | doing |
+| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](_completed/PR03-zero-cost-abstractions.md) | P1 | L | PX01 | done |
 | PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
 | PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | doing |
@@ -193,14 +193,14 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   `layout_bound` の下限も物理順にします。タプルの並べ替え（Phase 3b）は、`Mutex` の cell（`(i32u * T)`。offset 0 を C／LL の runtime が lock word として読む）と、
   添字を手書きする約 10 の builtin に衝突するため実施せず、理由と前提を記録します。`Dyn.of` と vtable の確保サイズはモデルでなく `sizeof` の定数式にします。
   E1010 の見積もりと `stack_size` は保守的な上限のままで、「実際の大きさ ≤ モデル」をテストで固定します。
-- **PR03**: 残る問題は、`ce_std_option`・`ce_std_option_owned` に inline 後も残る union の `phi` と `switch`（K1）だけです。
-  residual な利用者呼び出し（K2）と間接呼び出し（K3）は `-O3` の 10 組で出ず、F3（`inlinehint`）は不要です。起票の F1（全 exit を return slot にする）は
-  `Maybe` を返す相互末尾再帰の末尾呼び出しを壊し（`parity_deep(1e8)` が `-O2`／`-O3` で segfault）、1 exit の関数の `memory(none)` も失わせるため採りません。
-  代わりに、循環しうる呼び出しへ転送する exit を除いて slot 化し、exit が 2 つ以上で slot 化が 1 つ以上、領域は 1 KiB 以下のときだけ適用します。
-  別に、特殊化の worker 予算（1,024）の崖（`let!` が 2 つの連鎖で約 8 worker、約 128 連鎖で枯渇し、300 連鎖では全連鎖が途中から間接呼び出しになる）を
-  測って対処します。型付き IR での展開（Phase 3、D3）は、drop 順・捕捉の評価時点・複製一覧に触れるため、std の `Maybe`／`Result` の
-  `Bind`／`BindReturn` で `needs_drop` でないスカラーだけを捕捉する閉包に限り、効果の証拠（予算の崖、`-O0` の生成量）があるときだけ入れます。
-  M2 の機械語の数え方は CFI が無く累積になるため直します。
+- **PR03**（実装済み）: 残る問題は、`ce_std_option`・`ce_std_option_owned` に inline 後も残る union の `phi` と `switch`（K1）だけでした。
+  residual な利用者呼び出し（K2）と間接呼び出し（K3）は `-O3` の 10 組で出ず、F3（`inlinehint`）は不要でした。起票の F1（全 exit を return slot にする）は
+  `Maybe` を返す相互末尾再帰の末尾呼び出しを壊し（`parity_deep(1e8)` が `-O2`／`-O3` で segfault）、1 exit の関数の `memory(none)` も失わせるため採らず、
+  循環しうる呼び出しへ転送する exit がない関数で、exit が 2 つ以上・領域が 1 KiB 以下・再帰でも `Enum` でもない union の戻り値だけを
+  1 つの slot にまとめる後処理（`src/llvm_return_slot.rs`）を実装しました。`ce_std_option` は `direct` と同じ形（IR 35→22 行、arm64 34→24 命令）になりました。
+  特殊化の worker 予算（1,024）は、使い切ったときだけ参照順の depth-first で再生成し（300 連鎖で間接呼び出し 300→0）、予算内のプログラムの出力は変わりません。
+  型付き IR での展開（Phase 3、D3）は、`-O3` に差が残らず、`-O0` に残る差（`__text` 3.0 倍、実行 4.3 倍、Clang の compile 3.2 倍）も
+  worker の `alwaysinline` では埋まらなかったため、証拠を記録して実施しません（再開の条件は `docs/benchmarks.md`）。
 - **PB04**: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
   finish（7.8%）です。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も要りません。
   試作では 1,000 module の `check` が 1.43〜1.46 倍、hello が 25〜35% 短く、出力は HEAD と byte 一致でした。D8 を承認して全段を実装し、順は
