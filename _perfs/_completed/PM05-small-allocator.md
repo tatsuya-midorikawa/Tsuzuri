@@ -807,4 +807,8 @@ CI: `.github/workflows/targets.yml`、`windows.yml`。文書は上のとおり�
 
 ### 全体のテスト
 
-（最終の木での `RUST_MIN_STACK=4194304 cargo test --locked` の結果をここに書く。）
+最終の木（Rust のコードは `5313641c` 以前から変わらず、以後は文書と C の単体テストだけ）:
+
+- `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`、17 分）: 103 binaries、1,309 passed、0 failed、1 ignored。Phase 1 の木（`9c297713`）は 1,307 passed で、差の 2 件は `tests/allocator.rs` の small の 2 件。
+- release の compiler での node suite（`with-lock.sh heavy`）: `features.mjs` の全スイート（既定で 14,106 件）、`TSUZURI_TEST_ALLOCATOR=small` の全スイート（14,106 件）、`e2e`、`examples`、`strings`、`utf_simd --quick`（`llvm-objdump` を PATH に置く）、`user_drop`、`trap_return`、`trap_boundary`、`stack_overflow`、`io`、`json`、`cache`、`prebuilt_runtime`、`host_imports`、`host_bindings`、`wasm_simd`（`TSUZURI_OBJDUMP`）、`os`、`async`（Node 24）、`net_wasm`（Node 24）、wasm64 の `features.mjs vec storage`（Node 24）、`wasm_heap both`、`wasm_threads`、`wasm_memory`、`wasm64`、`primitives`、`tasks`、`allocator`、`small_allocator` がすべて通る。
+- `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、Windows の `cargo check --all-targets`（x86_64・aarch64 の MSVC）、`sh scripts/check-runtime-includes.sh`（49 ファイル）、`git diff --check`、生成 IR の決定性（wasm32・wasm64・threads・small・counting・host で 2 回の出力が同一）、宣言の重複なし、`numeric.ll`・`math.ll`・`numeric_tables.h` が基点から不変。
