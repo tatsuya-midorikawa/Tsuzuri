@@ -110,7 +110,7 @@ static void reset(void) {
 struct stats { uint64_t carved, stocked, regions, caches, persistent; };
 
 static struct stats stats(void) {
-    uint64_t out[5];
+    tz_small_u64 out[5];
     tz_small_stats(out);
     return (struct stats){out[0], out[1], out[2], out[3], out[4]};
 }
