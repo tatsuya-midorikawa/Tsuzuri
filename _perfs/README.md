@@ -99,7 +99,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](PM01-value-layout.md) | P1 | L | PX01 | doing |
+| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](_completed/PM01-value-layout.md) | P1 | L | PX01 | done |
 | PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | todo |
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
@@ -190,6 +190,26 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   WASM threads の pool は 28 byte の `ThreadState`・import・poison bit の規約を保ち、lock-free の claim とまとめた release、長さ 1 の group の inline 実行にしました。
   lock 回数は 257 要素の group で 259／515 回から `2 + (N-1)` 回以下になり、C の試験で assert しています。1 ms 休んだ後の起床は共有機の参考値で 0.17〜0.47 倍です。
   `cpp/task_parallel`（0.768）は 2026-10-13 の集計で 0.94 に更新済みで、Phase 1 では動かない形（16 件 × 約 79 µs）なので、この種目の改善は主張しません（Node 24 での前後測定は未実施）。
+- **PM01**（実装済み。Phase 3b は実施せず）: union の tag を読み書きする箇所は起票の 3 か所ではなく 10 か所以上あり（`match_expression` の `load i32`、`case_switch`、
+  手書き IR の `Parse.parse`・`Utf8Char.of_u32`、`static_constant`、Async、`Seq.next`、`parallel_result_tasks`）、大きさのモデルも 4 つではなく 6 つでした
+  （`Dyn.of` の確保サイズと PR01 の `dereferenceable` の下限を含む）。そこで、先に tag・フィールドの全経路を helper に通す IR 同一の整理
+  （`src/llvm_layout.rs`）を行い、その後に tag の幅（`i8`／`i16`／`i32`）、General の領域（`unit = min(最大アラインメント, 16)`、
+  B07 の Drop 共用体は `units 0`）、niche の順に切り替えました。niche は `Seq.next` の `zeroinitializer` による空値を明示構築に直してから入れ、
+  G16 のデバッガ契約（`$tag`・LLDB・natvis）を保つため DWARF の `$niche` と formatter を入れました。単一ポインターの niche（null）は native だけで、
+  wasm32／wasm64 は `--stack-first` でアドレス 0 が有効なため使いません。レコードの並べ替え（Phase 3a）は `record_slots`／`field_slot` を通し、
+  `layout_bound` の下限も物理順にしています。結果は `Color` 4→1、`Maybe<bool>` 8→2、`Small` 32→2、`Maybe<string>` 24→16、`Result<i64, string>`・`Shape` 32→24、
+  `Mixed` 32→24、`Tagged` 24→16、`Maybe<ref Point>` 16→8（native）で、配列の要素の合計は 188→109 MB、RSS は共有機の目安で 165.9→110.9 MB です。
+  `Maybe<i64>`・`Result` の機械語と時間、コンパイル時間は変わりません。タプルの並べ替え（Phase 3b）は、`Mutex` の cell（`(i32u * T)`。offset 0 を C／LL の runtime が lock word として読む）と、
+  添字を手書きする約 10 の builtin に衝突するため実施せず、サイズの表と前提を記録しました。`Dyn.of` と vtable の確保サイズはモデルでなく `sizeof` の定数式です。
+  E1010 の見積もりと `stack_size` は保守的な上限のままで、「実際の大きさ ≤ モデル」をテストで固定しています。
+- **PR03**（実装済み）: 残る問題は、`ce_std_option`・`ce_std_option_owned` に inline 後も残る union の `phi` と `switch`（K1）だけでした。
+  residual な利用者呼び出し（K2）と間接呼び出し（K3）は `-O3` の 10 組で出ず、F3（`inlinehint`）は不要でした。起票の F1（全 exit を return slot にする）は
+  `Maybe` を返す相互末尾再帰の末尾呼び出しを壊し（`parity_deep(1e8)` が `-O2`／`-O3` で segfault）、1 exit の関数の `memory(none)` も失わせるため採らず、
+  循環しうる呼び出しへ転送する exit がない関数で、exit が 2 つ以上・領域が 1 KiB 以下・再帰でも `Enum` でもない union の戻り値だけを
+  1 つの slot にまとめる後処理（`src/llvm_return_slot.rs`）を実装しました。`ce_std_option` は `direct` と同じ形（IR 35→22 行、arm64 34→24 命令）になりました。
+  特殊化の worker 予算（1,024）は、使い切ったときだけ参照順の depth-first で再生成し（300 連鎖で間接呼び出し 300→0）、予算内のプログラムの出力は変わりません。
+  型付き IR での展開（Phase 3、D3）は、`-O3` に差が残らず、`-O0` に残る差（`__text` 3.0 倍、実行 4.3 倍、Clang の compile 3.2 倍）も
+  worker の `alwaysinline` では埋まらなかったため、証拠を記録して実施しません（再開の条件は `docs/benchmarks.md`）。
 - **PB04**（実装済み）: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
   finish（7.8%）でした。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も使っていません。
   `src/parallel.rs` の `ordered_for_each`（8 MiB の worker、項目順に結果を渡す）で、所有権 → finish → 本体 → frontend cache の `&self` lookup／`&mut self` commit 分割 → parse の順に
