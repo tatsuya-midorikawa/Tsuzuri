@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hex, reference, checkReference, workloads } from "../benchmarks/apps/reference.mjs";
 import { assertStrictFloatIR, optionalTool, parseArguments, zigReferenceBuild } from "../benchmarks/run-apps.mjs";
+import { parseArguments as smallArguments } from "../benchmarks/run-small.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 for (const cpu of ["generic", "native"]) for (const system of ["linux", "darwin", "win32"]) {
@@ -78,6 +79,15 @@ for (const args of [
   ["--scale", "0x1"], ["--scale", "10.1"], ["--cpu", "wrong"],
   ["one", "two"],
 ]) assert.throws(() => parseArguments(args), /unknown|duplicate|missing|mutually exclusive|invalid|unexpected/, JSON.stringify(args));
+
+// PM05: the A/B runner of the two allocators.
+const small = smallArguments(["target/release/tsuzuri", "--rounds", "3", "--rss-runs", "2", "--scale", "0.5", "--only", "tokenize,record_sort", "--cpu", "native", "--json", "x.json"]);
+assert.deepEqual([small.rounds, small.rssRuns, small.scale, small.only, small.cpu], [3, 2, 0.5, ["tokenize", "record_sort"], "native"]);
+assert.deepEqual([smallArguments([]).rounds, smallArguments([]).rssRuns, smallArguments([]).scale, smallArguments([]).cpu], [5, 9, 1, "generic"]);
+for (const args of [
+  ["--unknown"], ["--rounds"], ["--rounds", "0"], ["--rounds", "1.5"], ["--rss-runs", "-1"], ["--scale", "0"], ["--scale", "11"], ["--cpu", "wrong"],
+  ["--only"], ["--json"], ["--allocator", "small"], ["one", "two"],
+]) assert.throws(() => smallArguments(args), /unknown|missing|invalid|unexpected/, JSON.stringify(args));
 
 mkdirSync(join(root, "target"), { recursive: true });
 const temporary = mkdtempSync(join(root, "target", "px02-apps-tests-"));

@@ -18,8 +18,8 @@ const suffix = windows ? ".exe" : "";
 const threadFlags = windows ? [] : ["-pthread"];
 const mathFlags = windows ? [] : ["-lm"];
 
-function execute(program, programArguments, success = true) {
-  const result = spawnSync(program, programArguments, { cwd: root, encoding: "utf8", timeout: 600_000, maxBuffer: 32 * 1024 * 1024 });
+function execute(program, programArguments, success = true, environment = {}) {
+  const result = spawnSync(program, programArguments, { cwd: root, encoding: "utf8", timeout: 600_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ...environment } });
   if (result.error) throw result.error;
   if (success) assert.equal(result.status, 0, `${program} ${programArguments.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
@@ -47,7 +47,9 @@ try {
   for (const [name, flags] of variants) {
     const binary = join(work, `heap-small-${name}${suffix}`);
     execute(clang, ["-std=c11", "-g", "-fno-strict-aliasing", "-Wall", "-Wextra", ...flags, ...threadFlags, join(root, "tests/heap_small_test.c"), "-o", binary]);
-    const result = execute(binary, [], false);
+    // The allocator never returns its tables and the test zeroes the state that points at them, which LeakSanitizer (on by
+    // default on Linux) would report; the program-level checks below look at the leaks that matter.
+    const result = execute(binary, [], false, { ASAN_OPTIONS: "detect_leaks=0" });
     // A sanitizer that cannot start on this machine (a TSan that rejects its address-space layout) says so before a test runs.
     if (result.status !== 0 && /FATAL: \w*Sanitizer/.test(result.stderr) && !/WARNING: \w*Sanitizer|Assertion failed|runtime error/.test(result.stderr)) {
       console.log(`small allocator unit tests (${name}) skipped: ${result.stderr.split("\n").find((line) => /FATAL/.test(line))}`);
