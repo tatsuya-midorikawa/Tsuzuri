@@ -710,6 +710,9 @@ Phase 2（native の `--allocator small`）を実装した。Phase 3（native �
 | 1c | 再確保の複写を `llvm.memcpy`（`memory.copy`）に。終端のブロックのその場の拡張は 1a で実装した | `c6310e52` |
 | 1 | 文書 | `9c297713` |
 | 1 | matrix suite が見つけた退行の修正（大きな穴を切る要求は、終端を延ばせる間は終端から返す） | `93b6aa05` |
+| 1 | レビューの修正 1: 穴の探索を、飛ばしたブロックの後ろへ続け、最初に飛ばしたブロックを覚える | `f868b2c6` |
+| 1 | レビューの修正 2: 取っておく穴を、最近の最大の要求の 2 倍までにする（1/64 ずつ忘れる） | `3ccac597` |
+| 2 | レビューの修正: 動かない sanitizer の単体テストを省く（`TSUZURI_NO_SANITIZERS`、空のプログラムの確認） | `44322972` |
 | 2 | `src/runtime/heap-small.c` と `tests/heap_small_test.c`（C の単体テスト） | `22539253` |
 | 2 | `generate_heap.py`、生成した `heap-small.ll`、手書きの `heap-small-native.ll`（`nsw`・`nuw` を出さない） | `740092ef`、`ae9c033a` |
 | 2 | `Allocator::Small`、E2000 の規則、LLVM に確保と解放と知らせる属性（`noinline`・`noalias`・`allockind`） | `c10272a4` |
@@ -728,10 +731,10 @@ Phase 2（native の `--allocator small`）を実装した。Phase 3（native �
 
 WASM のヒープ（Phase 1）:
 
-- `node tests/wasm_heap.mjs both`（Node 24）: wasm32・wasm64 の `-O0`・`-O3`。再利用、キャッシュ、結合、top の返却と伸長、大きな穴、吸収、境界の大きさ、resize、上限、20,000 操作の stress。手で導いたアドレスと、不変条件を歩く検査（枠の連なり、リストと結合の整合、live bytes の計算）。変異は各 heap で 78 通り（キャッシュまで）と穴の規則 12 通りを検出した（残るのは等価な変異だけ）。
+- `node tests/wasm_heap.mjs both`（Node 24）: wasm32・wasm64 の `-O0`・`-O3`。再利用、キャッシュ、結合、top の返却と伸長、大きな穴、吸収、境界の大きさ、resize、上限、20,000 操作の stress。手で導いたアドレスと、不変条件を歩く検査（枠の連なり、リストと結合の整合、live bytes の計算）。変異は各 heap で 78 通り（キャッシュまで）と、穴の規則 39 通り（しきい値、飛ばして覚える探索、最近の最大の要求の上限と減衰）を入れ、穴の規則の 37 通りを検出した（残る 2 通りは等価な変異）。
 - release の compiler で `tests/wasm_threads.mjs`（別 worker での解放と live bytes）、`tests/wasm_memory.mjs`、`tests/wasm64.mjs`（Node 24）、`tests/primitives.mjs`、`tests/tasks.mjs` が通る。`tests/features.mjs` の全スイート（14,106 件、native と WASM の `-O0`・`-O3`）が通る。
 - 直前の main の compiler と IR を比べた。benchmarks の apps・control・heap と `examples/hello` は、native の IR が同一で、wasm32・wasm64 の IR は heap の本文（`@tz.alloc` 周辺）だけが違う。
-- 見つけた退行: 最初の版は matrix suite の `parallel_mismatches64(3, 500, 1500, 1, 10)` を `-O0` で確保失敗にした（大きな穴の切り刻み）。上の規則で直し、`holeCases` を足した。前の heap は warm の状態に助けられて通っていただけで、新しいインスタンスでは前の heap も失敗する。
+- 見つけた退行: 最初の版は matrix suite の `parallel_mismatches64(3, 500, 1500, 1, 10)` を `-O0` で確保失敗にした（大きな穴の切り刻み）。上の規則で直し、`holeCases` を足した。前の heap は warm の状態に助けられて通っていただけで、新しいインスタンスでは前の heap も失敗する（実プログラムで確かめた: baseline の compiler は 12.63 MiB で止まり、規則のある heap は 12.69 MiB で通る）。この規則は、のちの独立レビューで 2 つの欠陥が見つかり、2026-10-17 に直した（下の「レビューの指摘への対応」）。
 
 native の `--allocator small`（Phase 2）:
 
@@ -750,8 +753,8 @@ native の `--allocator small`（Phase 2）:
 
 ### 計測
 
-条件と結果は `docs/benchmarks.md` の「ヒープ（PM05）」にある。共有のマシン（load average 20〜60）で、`with-lock.sh measure` は全 slot が埋まっていて取れなかったので、取らずに測った。
-**目安**で、専用機の正式な値は調整担当が取り直す。生データは `target/perf/PM05-after/run-small-macos.json`（コミットしない）。再現するコマンド:
+条件と結果は `docs/benchmarks.md` の「ヒープ（PM05）」にある。native（Phase 2）の測定は、共有のマシン（load average 20〜60）で、`with-lock.sh measure` は全 slot が埋まっていて取れなかったので、取らずに測った。WASM（Phase 1）の表は、2026-10-17 に `with-lock.sh measure` で取り直した（直前まで別の agent の作業が続いていて、load average は約 20）。
+**目安**で、専用機の正式な値は調整担当が取り直す。生データは `target/perf/PM05-after/run-small-macos.json` と `target/perf/PM05-t3/run-heap-vs-*-final.json`（コミットしない）。再現するコマンド:
 
 ```sh
 node benchmarks/run-heap.mjs target/release/tsuzuri --baseline target/perf/PM05/tsuzuri-before --capacity   # WASM の heap（Node 20 でよい）
@@ -760,7 +763,7 @@ node benchmarks/run-control.mjs target/release/tsuzuri --allocator small --metri
 node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small --metrics target/perf/PM05-apps-after
 ```
 
-- WASM（Phase 1）: 直前の main に対して、無作為な置き換えが 0.13〜0.18 倍、確保の多い app は 0.83〜0.98 倍（同じか少し速い）、移動が 0.07〜0.88 倍。`vec_growth` は時間が 1.5 倍になって見える（ヒープの関数の差ではなく、生成コードの揺れ。メモリは 5.06 → 3.06 MiB）。成果物は、heap 単体が 1,819 → 3,699 バイト、control が 11,357 → 11,143、apps が 91,625 → 81,275、heap の kernel が 4,275 → 5,240。
+- WASM（Phase 1）: 直前の main に対して（2026-10-17 に取り直し、`with-lock.sh measure`、load average 約 20、9 samples の最小値）、無作為な置き換えが 0.17 倍、確保の多い app は 0.88〜1.04 倍（同じか少し速い）、移動は 0.07〜0.88 倍（使い捨ての driver の以前の値。取り直していない）。`vec_growth` は時間が 1.5 倍になって見える（ヒープの関数の差ではなく、生成コードの揺れ。メモリは 5.06 → 3.06 MiB）。成果物は、heap 単体が 1,817 → 4,025 バイト、control が 11,357 → 11,471、apps が 91,625 → 81,597、heap の kernel が 4,275 → 5,568（previous = 穴の規則の修正前は 3,815、11,261、81,393、5,358）。`steady_churn` のメモリの大きさは、数十 KB のブロックの無作為な置き換えで baseline と同じ水準（5.0〜8.3 MiB）。以前の版の表（heap 単体 3,699 など）は、穴の規則を足す前に取っていた。
 - native（Phase 2、macOS arm64）: tokenize 0.64、csv_aggregate 0.62、tree_transform 0.40、binary_trees 0.49（時間の中央値の比）、format_join 0.83、map_count・record_sort・spectral_norm は 0.97〜0.99。closure_pipeline と graph_bfs は中央値で 1.16 だが最小値では 1.05・1.04 で、確保がほぼない（8 回、7 回）のでコードの配置の差。ピーク RSS は同じ（固定費 +0.15 MiB まで）。コードは +2.3〜3.1 KiB、`__bss` が仮想で +130 KiB。コンパイル時間は +20〜36 ms。
 - native（Linux arm64、Docker の仮想マシン）: tokenize 0.59、tree_transform 0.68、binary_trees 0.71、csv_aggregate 0.85、format_join 0.89（中央値）、RSS は tokenize 21.49 → 15.45 MiB、csv_aggregate 11.75 → 8.75 MiB。**record_sort は 1.75（最小）〜2.27（中央値）倍遅い**。
 - 生成コードの確認（GUIDE §14 の 5）: `tz_small_alloc`・`tz_small_free` の fast path は arm64 で約 30 命令ずつ。入口を `noinline` にして LLVM に `malloc`・`free` と同じに扱わせたので、record_sort の確保と解放は取り除かれ、Linux arm64 の callgrind の命令数は system と small で 72,534,347 と 72,535,381 と同じ。inline にした最初の版は record_sort が macOS で 2.1 倍、graph_bfs が 2〜2.5 倍遅く、コードも 5.2 KiB 増えた。
@@ -791,19 +794,42 @@ node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small --metrics 
 - 終わったスレッドのキャッシュ（約 264 KiB まで）は再利用されない。`.bss` が仮想で約 130 KiB 増える。macOS の TLS は thunk の呼び出しが要る。
 - `_features/GUIDE.md` の拡張点の表の行 `--allocator`（`small` を既定にする段だけ要承認）は、調整担当が「実装済み。`small` は opt-in」に直す（このブランチでは触っていない）。
 - `with-lock.sh measure` の全 slot を、ほかの agent が長く占有していて、専用の測定ができなかった。調整担当の正式な計測が要る。
+- 穴を取っておく規則の限界（「レビューの指摘への対応」）: 大きさが連続的に散る乱数列では、以前の first-fit の heap より大きくなり、まれに確保失敗する（2/60 seed）。取っておく量を測る別の方法（確保を数える、空きの割合）は試していない。ヘッダーなしの区分（PM05b）で小さな確保が穴を作らなくなれば、規則は要らなくなるかもしれない。
+- `tests/wasm_threads_stress.mjs`（PR06）はこのブランチにない。heap を共有する worker の確保・解放は `tests/wasm_threads.mjs` と `tests/tasks.mjs` で確かめた。統合ブランチでの再確認は、マージ後に調整担当が `node tests/wasm_threads_stress.mjs` を走らせる。
 
 ### 更新した文書
 
-- `_tsuzuri/language-reference/`: `ownership-and-memory/stack-and-heap.md`（WASM のヒープの規則、新しい節「ネイティブのサイズ区分 allocator」、表と要約）、`compiler/option.md`、`compiler/native-interop.md`、`compiler/diagnostics.md`（E2000）、`compiler/webassembly.md`（threads の trap の種類）、`built-in-types-and-modules/atomic.md`。`node scripts/check-docs.mjs` を変更した 5 ページ以上で実行して通った。
-- `docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`（「ヒープ（PM05）」の 1 節）、`README.md`（`--allocator` の行、テストと runner の行）。
+- `_tsuzuri/language-reference/`: `ownership-and-memory/stack-and-heap.md`（WASM のヒープの規則、新しい節「ネイティブのサイズ区分 allocator」、表と要約。2026-10-17 に、大きな穴の探索と最近の最大の要求の上限を書き直した）、`compiler/option.md`、`compiler/native-interop.md`、`compiler/diagnostics.md`（E2000）、`compiler/webassembly.md`（threads の trap の種類）、`built-in-types-and-modules/atomic.md`。`node scripts/check-docs.mjs` を変更した 5 ページ以上で実行して通った。
+- `docs/language.md`、`docs/architecture.md`（穴の規則の段落を 2026-10-17 に書き直した）、`docs/benchmarks.md`（「ヒープ（PM05）」の 1 節。2026-10-17 に、WASM の表を静かなマシンで取り直し、成果物の大きさと断片化の数値を直し、「レビューで見つけた問題と修正」を足した）、`README.md`（`--allocator` の行、テストと runner の行、`wasm_heap.mjs` と `small_allocator.mjs` の説明）。
 - 「言語リファレンスの目次」は、新しいページがないので変更なし。`languages/why-tsuzuri.md` は `--allocator host` だけに触れるので変更なし。
 
 ### 変更したファイル
 
 実装: `src/llvm.rs`、`src/llvm_traps.rs`、`src/driver.rs`、`src/main.rs`、`src/runtime/heap-wasm.ll`、`heap-wasm64.ll`、`heap-wasm-threads.ll`、`heap-small.c`、`heap-small.ll`（生成）、`heap-small-native.ll`、`generate_heap.py`、`.gitignore`。
-テスト: `tests/wasm_heap.mjs`、`tests/heap_small_test.c`、`tests/small_allocator.mjs`、`tests/allocator.rs`、`tests/allocator.mjs`、`tests/features.mjs`、`tests/wasm_threads.mjs`、`tests/benchmark_apps.mjs`、`tests/fixtures/heap_threads/Main.tz`。
+テスト: `tests/wasm_heap.mjs`、`tests/heap_small_test.c`、`tests/small_allocator.mjs`、`tests/allocator.rs`、`tests/allocator.mjs`、`tests/features.mjs`、`tests/wasm_threads.mjs`、`tests/benchmark_apps.mjs`、`tests/fixtures/heap_threads/Main.tz`、`tests/fixtures/heap_churn/Main.tz`。
 ベンチマーク: `benchmarks/run-heap.mjs`、`benchmarks/heap/`、`benchmarks/run-small.mjs`、`benchmarks/run-apps.mjs`、`benchmarks/run-control.mjs`。
 CI: `.github/workflows/targets.yml`、`windows.yml`。文書は上のとおり。
+
+### レビューの指摘への対応（2026-10-17）
+
+統合ブランチ（`perf/phase3-representation-runtime`）へ入れたあとの独立したレビューが、2 件を見つけた。直しは `perf/phase3/PM05` の `a42fe7a7` の次のコミットにある。
+
+**1. 大きな穴の規則が、使える穴を使わない（HIGH）**
+
+- 症状: 上の「matrix suite が見つけた退行」の規則は、最初に収まるブロックだけを見ていた。そのブロックが大きいと、後ろに合う穴があっても要求は終端を延ばして返され、後ろの穴は上限に届くまで使われない。大きな一時配列を解放したとき、その後ろに小さなブロックが生き残っていると、穴は繰り返しごとに 1 つずつ増える。有界なプログラムが 16 MiB のヒープを使い切った。再現（`docs/benchmarks.md` の「レビューで見つけた問題と修正」に数値の表）: 0.3 MB と 2.4 MB の一時ブロックを交互に確保し、48 B を 1 つ残して一時ブロックを解放する繰り返しは、以前のヒープ（`c6864cf5`）が 4.69 MiB、`a42fe7a7` は 100 回で 15.94 MiB・3,292 回で確保失敗、直したヒープは 3.06 MiB。Tsuzuri のプログラム（`tests/fixtures/heap_churn`）では、`a42fe7a7` が 3,000 回までに unreachable、直したヒープは 6,000 回で 4.25 MiB。
+- 修正 1（`f868b2c6`）: 探索を飛ばしたブロックの後ろへ続け、最初に飛ばしたブロックを覚える。そう切り出さずに済む最初のブロックがあればそれを使い、なければ終端を延ばせる間は終端から返し、延ばせなければ覚えたブロックから切り出す。wasm32・wasm64・threads の同じテキスト（`heap-wasm.ll`・`heap-wasm64.ll`。threads は `.unlocked` に改名した同じ本文）。F11 の 3 行は一字違わず 1 回だけ。
+- 再計測で見つけた欠陥（修正 2）: 規則を足す前に測った文書の数値（「500 slots × 8〜16 KB で 5.75 → 5.81 MiB」など）を取り直すと、規則のある heap（`a42fe7a7` と修正 1）は、数十 KB の確保と解放を無作為な順に繰り返すだけのプログラムで、合体でできた 64 KiB 以上の穴を、来ない大きな要求のために取っておき、上限の 16 MiB まで伸びた（`benchmarks/heap` の `steady_churn`: 500 × 8〜16 KB で 5.75 → 16.00 MiB、100 × 8〜64 KB で 5.44 → 16.00、200 × 8〜32 KB で 5.06 → 16.00、60 × 8〜160 KB で 8.19 → 16.00）。確保失敗にはならないが、生きているデータが 3〜5 MB のプログラムが 16 MiB を使い、あとの大きな確保が失敗しやすくなる。修正 1 だけでは変わらなかった。
+- 修正 2（`3ccac597`）: 飛ばすのは、最近の最大の要求（`@tz.heap.largest`。大きいブロックのリストを探した要求の容量の最大で、探すたびに `x - x / 64` に減らしてから要求の容量との大きいほうに更新する）の 2 倍までのブロックだけにした。それより大きい穴は普通のブロックと同じに切り出す。単純な最大値（減衰なし）は、最初に大きな要求が 1 回あると効かなくなる（試作: そのあとの `steady_churn` が 12.63、10.31、10.63 MiB に戻った）ので、減衰を入れた。`steady_churn` は 5.81、5.44、5.00、8.31 MiB で、以前のヒープと同じ水準に戻った。matrix の呼び出し（`parallel_mismatches64(3, 500, 1500, 1, 10)`）は 12.69 MiB で通る。
+- 検討して採らなかったもの: 小さい（容量 528 以下の）要求は穴を飛ばさず切り出す案は、小さなブロックが 528 B 以下の乱数列（一時配列 0.2〜2.5 MB）の確保失敗を 0 にし、heap を以前より小さくした（使い捨ての試作、60 seed）が、穴の大きさちょうどの次の要求を、小さな要求が削って入らなくする（matrix の呼び出しの形で、間に小さな確保が入れば起こりうるが、実プログラムでは確かめていない）うえ、保つブロックが 600 B 以上の列には効かないので採らなかった。空きの割合で取っておく量を制限する案は、`holeCases` が定める「heap がほぼ穴だけでも取っておく」と両立しないと見て、試していない。
+- テスト（前のヒープで失敗し、直したヒープで通る）: `tests/wasm_heap.mjs` の `holeCases`（複数の穴: 後ろの穴が使われる、最初に飛ばした穴から切り出す、後ろのブロックが小さすぎる、終端を延ばせない、小さい要求も穴から離れる。最大の要求の上限: `probe_largest` の 100016 → 98454 → 96916 → 200016 と同じ大きさの要求が保つこと、最後の要求が 101616 なら穴 200032 が残り 101600 なら切られること、201600 は残り 201632 は切られること、小さな要求 44 回目で穴 1000016 が切られること）、`accumulationCases`（穴の数と heap の大きさ。0.3/2.4 MB、0.5/4.5 MB、0.3/6 MB、8 種類の大きさ）、`boundedLiveCases`（一時配列 0.2〜1.5 MB と保つ小さなブロック 1,000 個の乱数列、12 seed × 3,000 step。前のヒープは 3 seed で確保失敗）、`steadyChurnCases`（`steady_churn` の 3 設定を、最初に 2.4 MB の要求があった場合とない場合で、heap が 8 MiB 以内）。`tests/features.mjs` の suite `heap_churn`（fixture `tests/fixtures/heap_churn`: `churn` を 3,600 回と、独立した参照 `benchmarks/heap/reference.mjs` の `steady_churn`。WASM のメモリが 8 MiB 以内、native は `live == 0`。wasm32・wasm64 の `-O0`・`-O3`）。
+- 変異: 各 heap で 39 通り（既存のしきい値 12、飛ばして覚える探索 11、最大の要求の上限と減衰 16）を入れ、37 通りを検出した。残る 2 通りは等価（`rest ≥ 65535` は残りが 16 の倍数で `65536` と同じ。`needed ≥ fading` は `>` と、等しいときの値が同じ）。元の「最初の 1 ブロックだけ」の規則に戻す変異は、`holeCases`・`accumulationCases`・`boundedLiveCases` が検出する。
+- 残る制限（`docs/benchmarks.md` と言語リファレンスに書いた）: 一時配列が 0.2〜2.5 MB の乱数で小さなブロックを 2,000 個保つ列は、以前のヒープが 60 seed とも通るのに対し、2 seed（8、32）が確保失敗し、heap は最大 15.88 MiB（以前は 11.19）。600 B〜6 KB のブロックを保つ列は heap が最大 11.9〜13.3 MiB（以前は 7.4〜7.6）で、確保失敗はない。穴を取っておく規則の取り引きで、同じ大きさの要求が繰り返すプログラム（matrix、`churn`）を助ける代わりに、大きさが連続的に散るプログラムで heap が大きくなる。飛ばしたブロックしかないとき、探索はリストの最後まで見る。
+
+**2. 単体テストの sanitizer 版が動かない clang で止まる（MEDIUM、CI だけ）**
+
+- 症状: `tests/small_allocator.mjs` は ASan+UBSan と TSan の版を Windows 以外のすべてで走らせ、`TSUZURI_NO_SANITIZERS` を無視した。`targets.yml` の macOS の 2 脚（macos-15 と macos-15-intel、Homebrew の LLVM 21）では、空の `-fsanitize=address` のプログラムが起動で止まり（この機械でも再現: 15 秒で終わらない）、`-fsanitize=thread` のプログラムは SIGSEGV で落ちる（`-fsanitize=undefined` は動く）。実行の 600 秒の timeout まで止まるか、`FATAL: ...Sanitizer` を出さない signal の終了が失敗になる。`vscode.yml` と `tests/net.mjs` は同じ理由で macOS に `TSUZURI_NO_SANITIZERS=1` を付けている。
+- 修正（`44322972`）: `TSUZURI_NO_SANITIZERS=1` で 2 つの sanitizer 版を省く。macOS の 2 脚の `targets.yml` が付ける。付いていなくても、sanitizer 版ごとに、同じ flags で作った空のプログラムを先に走らせる（30 秒、SIGKILL）。止まる、signal で終わる、0 以外で終わるときは、その版を理由つきで省く（GitHub Actions では `::warning::` も出す）。sanitizer が動くなら、単体テストの失敗は、止まる・落ちるを含めて失敗のまま。通常と `-O3` の版は必ず走って決める。
+- 確かめた: Apple clang（4 版が通る、26 秒）、`TSUZURI_NO_SANITIZERS=1`（2 版を省き、8 秒）、Homebrew LLVM 21（asan-ubsan は「空のプログラムが 30 秒で終わらない」、tsan は「空のプログラムが SIGSEGV で終わった」と省き、終了コード 0。通常と `-O3` は通る）。
 
 ### 全体のテスト
 
@@ -812,3 +838,10 @@ CI: `.github/workflows/targets.yml`、`windows.yml`。文書は上のとおり�
 - `RUST_MIN_STACK=4194304 cargo test --locked`（`with-lock.sh heavy`、17 分）: 103 binaries、1,309 passed、0 failed、1 ignored。Phase 1 の木（`9c297713`）は 1,307 passed で、差の 2 件は `tests/allocator.rs` の small の 2 件。
 - release の compiler での node suite（`with-lock.sh heavy`）: `features.mjs` の全スイート（既定で 14,106 件）、`TSUZURI_TEST_ALLOCATOR=small` の全スイート（14,106 件）、`e2e`、`examples`、`strings`、`utf_simd --quick`（`llvm-objdump` を PATH に置く）、`user_drop`、`trap_return`、`trap_boundary`、`stack_overflow`、`io`、`json`、`cache`、`prebuilt_runtime`、`host_imports`、`host_bindings`、`wasm_simd`（`TSUZURI_OBJDUMP`）、`os`、`async`（Node 24）、`net_wasm`（Node 24）、wasm64 の `features.mjs vec storage`（Node 24）、`wasm_heap both`、`wasm_threads`、`wasm_memory`、`wasm64`、`primitives`、`tasks`、`allocator`、`small_allocator` がすべて通る。
 - `cargo fmt --check`、`cargo clippy --all-targets --locked -- -D warnings`、Windows の `cargo check --all-targets`（x86_64・aarch64 の MSVC）、`sh scripts/check-runtime-includes.sh`（49 ファイル）、`git diff --check`、生成 IR の決定性（wasm32・wasm64・threads・small・counting・host で 2 回の出力が同一）、宣言の重複なし、`numeric.ll`・`math.ll`・`numeric_tables.h` が基点から不変。
+
+レビュー修正後の木（2026-10-17、heap の本文は `3ccac597`、以後は文書だけ）:
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（`with-lock.sh heavy`、17 分）: 103 binaries、1,309 passed、0 failed、1 ignored（修正前と同じ件数）。最初の実行は `tests/f16_hardware.rs` の 2 件が失敗した。`has_half` が IR の中の語 `half` を探し、WASM の IR に入る heap の値の名前 `%half` に反応したためで、`%midpoint` に改名した（振る舞いは同じ）。`wasm_heap_limit_lines_are_unique` など F11 の 3 行の検査は通る（3 行は一字も変えていない）。
+- release の compiler（SHA-256 `c06b9551b530…`）: `wasm_heap both`（wasm32・wasm64 の `-O0`・`-O3`、Node 24）、`features.mjs` の `vec`（wasm32・wasm64・simd128）・`heap_churn`（2 件。wasm32・wasm64・`TSUZURI_TEST_ALLOCATOR=small`）・`matrix`（529 件。wasm32・wasm64）・`storage`（24 件。small・wasm64）、`wasm_threads`、`wasm_memory`、`wasm64`、`primitives`、`tasks`、`allocator`、`small_allocator`、`net_wasm`（Node 24）が通る。`features.mjs` の全スイートは、改名前の同じ heap の compiler（`258663eaa0c1…`）で 14,108 件（14,106 件と `heap_churn` の 2 件）が通った。`e2e`、`examples`、`strings`、`user_drop`、`trap_return`、`trap_boundary`、`stack_overflow`、`io`、`json`、`cache`、`prebuilt_runtime`、`host_imports`、`host_bindings`、`wasm_simd`、`utf_simd --quick`、`os`、`async`（Node 24）も同じ compiler で通る。機械の load が 30〜140 の間は、`net_wasm` の `accept_flood`（128000 と 128024）と、`features.mjs` の compiler 呼び出しの 180 秒の timeout が一度ずつ失敗したが、load が下がってから同じ compiler で通った（heap と関係のない、負荷による失敗）。
+- 統合ブランチ（`perf/phase3-representation-runtime`、`fbdcb0ab`）の木に、この heap・テスト・fixture を重ねた build（`git archive` から、リポジトリには入れていない）: `wasm_heap both`、`features.mjs vec`・`heap_churn`、`wasm_threads`、`wasm_threads_stress`（PR06、12 rounds）、`tasks` が通る。
+- 変異（修正後のテストで）: 各 heap で 39 通りのうち 37 通りを検出。残る 2 通りは等価。
