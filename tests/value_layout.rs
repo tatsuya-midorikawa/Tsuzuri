@@ -27,12 +27,18 @@ fn body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &ir[start..end]
 }
 
-/// The definition line of the LLVM type `name`.
+/// The definition line of the LLVM type `name`, which LLVM writes quoted when it has brackets.
 fn definition<'a>(ir: &'a str, name: &str) -> &'a str {
-    let prefix = format!("%\"{name}\" = type ");
+    let quoted = format!("%\"{name}\" = type ");
+    let plain = format!("%{name} = type ");
     ir.lines()
-        .find(|line| line.starts_with(&prefix))
+        .find(|line| line.starts_with(&quoted) || line.starts_with(&plain))
         .unwrap_or_else(|| panic!("missing {name}\n{ir}"))
+}
+
+/// The body of the definition of the LLVM type `name`: what follows `= type `.
+fn type_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    definition(ir, name).split_once(" = type ").unwrap().1
 }
 
 /// `union Many` with `cases` cases; the first carries `payload` when it is given, and so does
@@ -317,4 +323,139 @@ fn find n =
         "%\"tz.union.Maybe.Maybe[ref[i64]]\" = type { i8, ptr }",
     );
     assert!(!body(&wasm, search).contains("ret ptr null"), "{wasm}");
+}
+
+/// The records of the tests below: `Mixed` and `Ties` shrink when their fields are sorted,
+/// `Pair` and `Point` would not, and `Cargo`, `Nested` and `Guarded` combine the rule with
+/// generics, nesting and the live flag of a Drop record.
+const RECORDS: &str = "extern def drop_log :: i64 -> unit
+record Mixed { flag: bool, count: i64, tag: i8, ratio: f64 }
+record Point { x: i64, y: i64 }
+record Pair { small: i8, wide: i64 }
+record Ties { a: bool, b: i64, c: bool, d: i64 }
+record Nested { first: bool, inner: Mixed, last: bool }
+record Cargo<'a> { first: bool, value: 'a, last: bool }
+record Guarded { flag: bool, count: i64, mark: i8 }
+instance Drop<Guarded> { fn drop value = drop_log value.count }
+export def count_of :: Mixed -> i64
+fn count_of m = m.count
+export def tag_of :: Mixed -> i64
+fn tag_of m = m.tag as i64
+export def flag_of :: Mixed -> bool
+fn flag_of m = m.flag
+export def make :: i64 -> Mixed
+fn make n = Mixed { ratio: 1.5, tag: 3, flag: n > 0, count: n }
+export def bump :: Mixed -> Mixed
+fn bump m = { m with count = m.count + 1, tag = 9 }
+def lend :: ref i8 -> i64
+fn lend t = deref t as i64
+export def borrow_tag :: ref Mixed -> i64
+fn borrow_tag m = lend (ref m.tag)
+export def total :: i64
+fn total =
+    let point = Point { x: 1, y: 2 }
+    let pair = Pair { small: 1, wide: 2 }
+    let ties = Ties { a: true, b: 1, c: false, d: 2 }
+    let nested = Nested { first: true, inner: make 1, last: false }
+    let wide: Cargo<i64> = Cargo { first: true, value: 1, last: false }
+    let text = Cargo { first: true, value: \"a\", last: false }
+    let flag = Cargo { first: true, value: true, last: false }
+    let guarded = Guarded { flag: true, count: 1, mark: 2 }
+    0
+";
+
+/// The indices that the `insertvalue` or `getelementptr` instructions of `function` use, in order.
+fn field_indices(function: &str, instruction: &str) -> Vec<usize> {
+    function
+        .lines()
+        .filter(|line| line.contains(instruction))
+        .map(|line| {
+            let last = line.rsplit(", ").next().unwrap();
+            last.trim_start_matches("i32 ").parse().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn records_store_their_fields_by_decreasing_alignment() {
+    let native = ir_for(RECORDS, false);
+    let wasm = ir_for(RECORDS, true);
+    for (name, body) in [
+        ("tz.record.Main.Mixed", "{ i64, double, i1, i8 }"),
+        // Equal bytes either way: the declared order stays.
+        ("tz.record.Main.Point", "{ i64, i64 }"),
+        ("tz.record.Main.Pair", "{ i8, i64 }"),
+        // Equal alignments keep their declared order.
+        ("tz.record.Main.Ties", "{ i64, i64, i1, i1 }"),
+        ("tz.record.Main.Nested", "{ %tz.record.Main.Mixed, i1, i1 }"),
+        // One generic record, three instances, three orders.
+        ("tz.record.Main.Cargo[i64]", "{ i64, i1, i1 }"),
+        ("tz.record.Main.Cargo[string]", "{ %tz.string, i1, i1 }"),
+        ("tz.record.Main.Cargo[bool]", "{ i1, i1, i1 }"),
+        // The live flag of a Drop record stays after the fields.
+        ("tz.record.Main.Guarded", "{ i64, i1, i8, i8 }"),
+    ] {
+        assert_eq!(type_body(&native, name), body, "{name}");
+        // The order does not depend on the target: it is the same in the IR for WebAssembly.
+        assert_eq!(type_body(&wasm, name), body, "{name}");
+    }
+}
+
+#[test]
+fn field_accesses_use_the_position_in_the_type_not_the_declared_one() {
+    for wasm in [false, true] {
+        let ir = ir_for(RECORDS, wasm);
+        // flag, count, tag, ratio are at 2, 0, 3, 1 in `{ i64, double, i1, i8 }`.
+        for (function, slot) in [("count_of", 0), ("flag_of", 2), ("tag_of", 3)] {
+            let function = body(&ir, &format!("tz.fn.Main.{function}"));
+            assert_eq!(
+                field_indices(function, "getelementptr inbounds %tz.record.Main.Mixed"),
+                [slot],
+                "{function}"
+            );
+        }
+        // A literal is evaluated in the order it is written (ratio, tag, flag, count) and stores
+        // each value where the field lives.
+        let make = body(&ir, "tz.fn.Main.make");
+        assert_eq!(
+            field_indices(make, "insertvalue %tz.record.Main.Mixed"),
+            [1, 3, 2, 0]
+        );
+        // An update changes count and tag in place.
+        let bump = body(&ir, "tz.fn.Main.bump");
+        assert_eq!(
+            field_indices(bump, "insertvalue %tz.record.Main.Mixed"),
+            [0, 3]
+        );
+        // A borrowed field is the address of its position, and the borrowed record is only
+        // known to hold the bytes of the physical layout.
+        let borrow = body(&ir, "tz.fn.Main.borrow_tag");
+        assert_eq!(
+            field_indices(borrow, "getelementptr inbounds %tz.record.Main.Mixed"),
+            [3]
+        );
+        assert!(borrow.contains("align 8 dereferenceable(24)"), "{borrow}");
+    }
+}
+
+#[test]
+fn a_public_record_keeps_its_c_struct_in_declared_order() {
+    for wasm in [false, true] {
+        let ir = ir_for(RECORDS, wasm);
+        // The C struct has the declared fields, each as the host sees it.
+        assert!(
+            ir.contains("%tz_record_4Main_5Mixed = type { i32, i64, i32, double }"),
+            "{ir}"
+        );
+        // The wrapper reads the C fields in declared order and stores each at its position.
+        let wrapper = body(&ir, "tz_count_of");
+        assert_eq!(
+            field_indices(wrapper, "getelementptr inbounds %tz_record_4Main_5Mixed"),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(
+            field_indices(wrapper, "insertvalue %tz.record.Main.Mixed"),
+            [2, 0, 3, 1]
+        );
+    }
 }

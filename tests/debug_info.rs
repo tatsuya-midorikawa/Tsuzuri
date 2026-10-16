@@ -232,6 +232,65 @@ fn member_field(ir: &str, owner: &str, member: &str, field: &str) -> usize {
 
 const UNIONS: &str = "union Shape = Empty | Circle of f64 | Rect of f64 * f64\nunion Color = Red | Green\nunion Tree = Leaf | Node of Tree * i64 * Tree\n\nexport def answer :: i64 -> i64\nfn answer input =\n    let color = Green\n    let shape = Rect (1.5, 2.0)\n    let tree = Node (Leaf, input, Leaf)\n    let maybe = Maybe.Some input\n    let chain = [|input, 2|]\n    let size = match shape with | Rect (w, _) -> w as i64 | _ -> 0\n    let leaf = match tree with | Node (_, value, _) -> value | Leaf -> 0\n    let first = match color with | Green -> 1 | Red -> 0\n    size + leaf + first + Maybe.default_value 0 maybe + chain.length\n";
 
+/// The names of the members of the structure named `owner`, in the order the debug info lists them.
+fn member_names(ir: &str, owner: &str) -> Vec<String> {
+    let marker = format!("!DICompositeType(tag: DW_TAG_structure_type, name: \"{owner}\",");
+    let line = ir
+        .lines()
+        .find(|line| line.contains(&marker))
+        .unwrap_or_else(|| panic!("{marker}\n{ir}"));
+    let elements = line
+        .split("elements: ")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')');
+    let list = ir
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{elements} = !{{")))
+        .unwrap_or_else(|| panic!("{elements}\n{ir}"));
+    list.trim_end_matches('}')
+        .split(", ")
+        .map(|id| {
+            let line = ir
+                .lines()
+                .find(|line| line.starts_with(&format!("{id} = ")))
+                .unwrap();
+            line.split("name: \"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn debug_record_members_stay_declared_and_take_the_stored_offsets() {
+    let source = "record Mixed { flag: bool, count: i64, tag: i8, ratio: f64 }\nrecord Pair { small: i8, wide: i64 }\nexport def answer :: i64 -> i64\nfn answer n =\n    let mixed = Mixed { flag: n > 0, count: n, tag: 3, ratio: 1.5 }\n    let pair = Pair { small: 1, wide: 2 }\n    mixed.count + mixed.tag as i64 + pair.wide\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The record is stored as { count, ratio, flag, tag }: 8 + 8 + 1 + 1 bytes, 24 with padding.
+        let owner = "Main.Mixed";
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_structure_type, name: \"{owner}\", size: 192, align: 64,"
+            )),
+            "{ir}"
+        );
+        assert_eq!(member_offset(&ir, owner, "count"), 0);
+        assert_eq!(member_offset(&ir, owner, "ratio"), 64);
+        assert_eq!(member_offset(&ir, owner, "flag"), 128);
+        assert_eq!(member_offset(&ir, owner, "tag"), 136);
+        // A debugger still lists the fields in the order they were declared.
+        assert_eq!(member_names(&ir, owner), ["flag", "count", "tag", "ratio"]);
+        // A record that needs no reordering has the offsets of its declared order.
+        assert_eq!(member_offset(&ir, "Main.Pair", "small"), 0);
+        assert_eq!(member_offset(&ir, "Main.Pair", "wide"), 64);
+    }
+}
+
 #[test]
 fn debug_unions_expose_cases_and_payloads() {
     for wasm in [false, true] {

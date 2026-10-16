@@ -220,6 +220,29 @@ try {
   ]) assert.ok(niche.includes(line), `${line}\n${niche}`);
   assert.match(niche, /^\(Maybe<ref i32>\) located = Some\(0x[0-9a-f]+\)$/m);
 
+  // PM01: a record that is smaller with its fields sorted by alignment stores them in that order.
+  // The debug info lists the members as declared and gives each the offset where it lives, so
+  // LLDB reads the values from the right bytes.
+  const stored = join(root, "stored");
+  mkdirSync(stored);
+  writeFileSync(join(stored, "Main.tz"), [
+    "record Spread { a: i8, b: i64, c: i8, d: i32, e: bool }",
+    "record Frame { first: bool, inner: Spread, last: i16 }",
+    "",
+    "def inspect :: i64 -> i64",
+    "fn inspect seed =",
+    "    let spread = Spread { a: 1, b: seed + 1000, c: 3, d: 400, e: true }",
+    "    let frame = Frame { first: true, inner: spread, last: 7 }",
+    "    spread.b + frame.last as i64",
+    "",
+    "inspect 5",
+    "",
+  ].join("\n"));
+  const placed = sections(session(stored, ["breakpoint set -f Main.tz -l 8", "run", "frame variable", "kill"]))
+    .find(part => part.command === "frame variable").text;
+  assert.match(placed, /\(Main\.Spread\) spread = [\s\S]*?a = (?:1|'\\x01')[\s\S]*?b = 1005[\s\S]*?c = (?:3|'\\x03')[\s\S]*?d = 400[\s\S]*?e = true/);
+  assert.match(placed, /\(Main\.Frame\) frame = [\s\S]*?first = true[\s\S]*?inner = [\s\S]*?b = 1005[\s\S]*?d = 400[\s\S]*?last = 7/);
+
   // Phase 2: `test --index N -g -o PATH` builds a runner of test N alone, without running it; a
   // debugger starts it with the printed arguments and stops in the test's body.
   const specs = join(root, "specs");

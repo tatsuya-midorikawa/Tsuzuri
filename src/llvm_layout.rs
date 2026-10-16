@@ -3,6 +3,9 @@
 //! a tag goes through `tag_value` or `load_tag`, every writer through `construct_value` or, in
 //! text IR, `tag_type`, so the width of the tag is decided in one place.
 use super::*;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// The encoding of an option-like union that stores no tag (PM01 D5): one value of the payload
 /// type that the payload never has stands for the nullary case.
@@ -31,20 +34,84 @@ thread_local! {
     /// Whether the program that this thread is emitting targets WebAssembly. Layouts that depend
     /// on the target (`Niche::NullPointer`) read it, because `union_layout` and `llvm_type` are
     /// called with a module alone. Outside `target_scope` the target is native.
-    static WEBASSEMBLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static WEBASSEMBLY: Cell<bool> = const { Cell::new(false) };
+    /// The layouts that the program being emitted has worked out so far (see `Memo`).
+    static MEMO: RefCell<Option<Memo>> = const { RefCell::new(None) };
+}
+
+/// The layouts of one kind of type, found by its id and then by its type arguments.
+type Table<T> = HashMap<usize, Vec<(Box<[Type]>, T)>>;
+
+/// The layouts of the unions and records of one module, for one target. A layout is a pure
+/// function of the module, the type and the target, and the emitter asks for it at every use of a
+/// type, so it is worked out once. The memo lives as long as its `target_scope`, which is shorter
+/// than the module it belongs to.
+#[derive(Default)]
+struct Memo {
+    /// The address of the module that the entries belong to.
+    module: usize,
+    unions: Table<UnionLayout>,
+    records: Table<Option<Rc<[usize]>>>,
+}
+
+/// The result of `compute` for the type `id` at `arguments`, from the table that `table` picks
+/// when the current scope has seen it. Nothing is borrowed while `compute` runs, because it asks
+/// for the layouts of other types.
+fn memoized<T: Clone>(
+    module: &CheckedModule,
+    id: usize,
+    arguments: &[Type],
+    table: fn(&mut Memo) -> &mut Table<T>,
+    compute: impl FnOnce() -> T,
+) -> T {
+    let address = std::ptr::from_ref(module) as usize;
+    let seen = MEMO.with_borrow_mut(|memo| {
+        let memo = memo.as_mut()?;
+        if memo.module != address {
+            *memo = Memo {
+                module: address,
+                ..Memo::default()
+            };
+        }
+        table(memo)
+            .get(&id)?
+            .iter()
+            .find(|(key, _)| **key == *arguments)
+            .map(|(_, value)| value.clone())
+    });
+    if let Some(value) = seen {
+        return value;
+    }
+    let value = compute();
+    MEMO.with_borrow_mut(|memo| {
+        if let Some(memo) = memo.as_mut().filter(|memo| memo.module == address) {
+            table(memo)
+                .entry(id)
+                .or_default()
+                .push((arguments.into(), value.clone()));
+        }
+    });
+    value
 }
 
 /// Marks the emission of a program for WebAssembly (`wasm`) or a native target until the guard is
-/// dropped; the previous target comes back then.
+/// dropped; the previous target and layouts come back then.
 pub(crate) fn target_scope(wasm: bool) -> TargetScope {
-    TargetScope(WEBASSEMBLY.replace(wasm))
+    TargetScope {
+        wasm: WEBASSEMBLY.replace(wasm),
+        memo: MEMO.replace(Some(Memo::default())),
+    }
 }
 
-pub(crate) struct TargetScope(bool);
+pub(crate) struct TargetScope {
+    wasm: bool,
+    memo: Option<Memo>,
+}
 
 impl Drop for TargetScope {
     fn drop(&mut self) {
-        WEBASSEMBLY.set(self.0);
+        WEBASSEMBLY.set(self.wasm);
+        MEMO.set(self.memo.take());
     }
 }
 
@@ -129,18 +196,21 @@ pub(crate) fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize
     layout_bound(ty, module, false)
 }
 
+/// The size and alignment of a structure that stores `fields`, each a `(size, alignment)`, in this
+/// order.
+fn aggregate(fields: &mut dyn Iterator<Item = (usize, usize)>) -> (usize, usize) {
+    let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
+        (
+            size.next_multiple_of(field_align) + field,
+            align.max(field_align),
+        )
+    });
+    (size.next_multiple_of(align), align)
+}
+
 /// Portable lower bounds for reference guarantees, or the existing allocation upper bounds.
 /// Explicit slots and heap blocks are aligned to 16, even for 256-bit SIMD values.
 pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (usize, usize) {
-    let aggregate = |fields: &mut dyn Iterator<Item = (usize, usize)>| {
-        let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
-            (
-                size.next_multiple_of(field_align) + field,
-                align.max(field_align),
-            )
-        });
-        (size.next_multiple_of(align), align)
-    };
     match ty {
         Type::Simd(vector) => (
             vector.bytes(),
@@ -237,6 +307,16 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
 }
 
 pub(crate) fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
+    memoized(
+        module,
+        id,
+        arguments,
+        |memo| &mut memo.unions,
+        || work_out_union_layout(id, arguments, module),
+    )
+}
+
+fn work_out_union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
     let cases = module.types().union_payloads(id, arguments);
     if let Some(niche) = niche_layout(id, arguments, &cases, module) {
         return niche;
@@ -353,15 +433,65 @@ pub(crate) fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 }
 
 /// The position in the LLVM type of each logical field of the record `id` at `arguments`:
-/// `slots[index]` is where field `index` lives (PM01 D7). `None` keeps the declared order. Every
-/// reader and writer of a field goes through `field_slot`, so the layout of a record is decided
-/// here and nowhere else.
+/// `slots[index]` is where field `index` lives (PM01 D7, D8). `None` keeps the declared order.
+/// Every reader and writer of a field goes through `field_slot`, so the layout of a record is
+/// decided here and nowhere else, and everything the program can observe (the order of
+/// evaluation, drops and clones, the derived comparison, hash and display, the debug info and the
+/// C struct of a public record) stays in the declared order.
+///
+/// A record of the user's program stores its fields by decreasing alignment when that makes the
+/// model of its size (`layout_bound`) strictly smaller; fields of one alignment keep their declared
+/// order, and the live flag of a Drop record stays last. A record of the standard library keeps its
+/// order: the runtime and hand-written IR index it (`Seq`, `Mutex`, `Channel`, `Matrix`, ...).
 pub(crate) fn record_slots(
-    _id: usize,
-    _arguments: &[Type],
-    _module: &CheckedModule,
-) -> Option<Vec<usize>> {
-    None
+    id: usize,
+    arguments: &[Type],
+    module: &CheckedModule,
+) -> Option<Rc<[usize]>> {
+    let record = &module.records[id];
+    if record.origin != ModuleOrigin::User || record.fields.len() < 2 {
+        return None;
+    }
+    memoized(
+        module,
+        id,
+        arguments,
+        |memo| &mut memo.records,
+        || {
+            let fields: Vec<_> = module
+                .types()
+                .record_fields(id, arguments)
+                .iter()
+                .map(|ty| layout_bound(ty, module, false))
+                .collect();
+            place_fields(&fields, record.user_drop)
+        },
+    )
+}
+
+/// The slots that store `fields`, each the `(size, alignment)` model of a field in declared order,
+/// by decreasing alignment, or `None` when that takes no fewer bytes than the declared order.
+/// `flag` adds the live flag of a Drop record after the fields.
+fn place_fields(fields: &[(usize, usize)], flag: bool) -> Option<Rc<[usize]>> {
+    let size = |order: &mut dyn Iterator<Item = usize>| {
+        aggregate(
+            &mut order
+                .map(|index| fields[index])
+                .chain(flag.then_some((1, 1))),
+        )
+        .0
+    };
+    let mut order: Vec<usize> = (0..fields.len()).collect();
+    // The sort is stable.
+    order.sort_by_key(|&index| std::cmp::Reverse(fields[index].1));
+    if size(&mut order.iter().copied()) >= size(&mut (0..fields.len())) {
+        return None;
+    }
+    let mut slots = vec![0; fields.len()];
+    for (slot, index) in order.into_iter().enumerate() {
+        slots[index] = slot;
+    }
+    Some(slots.into())
 }
 
 /// The position in the LLVM type of the field `index` of the record `id` at `arguments`.
@@ -814,6 +944,14 @@ mod tests {
             "extern def drop_log :: i64 -> unit
 record Flags {{ a: bool, b: bool }}
 record Mixed {{ a: bool, b: i64, c: bool, d: i64 }}
+record Spread {{ a: i8, b: i64, c: i8, d: i32, e: bool }}
+record Pair8 {{ small: i8, wide: i64 }}
+record Framed {{ a: bool, inner: Mixed, b: bool }}
+record Cargo<'a> {{ first: bool, value: 'a, last: bool }}
+record Overlay {{ a: bool, b: i128, c: i8 }}
+record Vectors {{ a: i8, v: f32x8, b: i8 }}
+record Guarded {{ a: bool, b: i64, c: i8 }}
+instance Drop<Guarded> {{ fn drop value = drop_log value.b }}
 record Wide128 {{ a: i128, b: bool }}
 record Lanes4 {{ v: f32x4, tag: i8 }}
 record Lanes8 {{ v: f32x8, tag: i8 }}
@@ -844,6 +982,15 @@ instance Drop<Guard> {{ fn drop _value = drop_log 4 }}
 fn use n =
     let flags = Flags {{ a: true, b: false }}
     let mixed = Mixed {{ a: true, b: 1, c: false, d: 2 }}
+    let spread = Spread {{ a: 1, b: 2, c: 3, d: 4, e: true }}
+    let pair8 = Pair8 {{ small: 1, wide: 2 }}
+    let framed = Framed {{ a: true, inner: mixed, b: false }}
+    let cargo_wide = Cargo {{ first: true, value: n, last: false }}
+    let cargo_text = Cargo {{ first: true, value: \"a\", last: false }}
+    let cargo_flag = Cargo {{ first: true, value: true, last: false }}
+    let overlay = Overlay {{ a: true, b: 1i128, c: 2 }}
+    let vectors = Vectors {{ a: 1, v: Simd.splat 1.0, b: 2 }}
+    let guarded = Guarded {{ a: true, b: 1, c: 2 }}
     let wide = Wide128 {{ a: 1i128, b: true }}
     let lanes4 = Lanes4 {{ v: Simd.splat 1.0, tag: 1 }}
     let lanes8 = Lanes8 {{ v: Simd.splat 1.0, tag: 1 }}
@@ -889,14 +1036,15 @@ fn use n =
                 .unwrap_or_else(|| panic!("no union {name}"));
             Type::Union(id, arguments.into())
         };
-        let record = |name: &str| {
+        let record_of = |name: &str, arguments: &[Type]| {
             let id = module
                 .records
                 .iter()
                 .position(|record| record.name == name)
                 .unwrap_or_else(|| panic!("no record {name}"));
-            Type::Record(id, Box::default())
+            Type::Record(id, arguments.into())
         };
+        let record = |name: &str| record_of(name, &[]);
         let shape = union("Main.Shape", &[]);
         let rich = union("Main.Rich", &[]);
         vec![
@@ -948,6 +1096,18 @@ fn use n =
             ),
             ("Flags", record("Main.Flags")),
             ("Mixed", record("Main.Mixed")),
+            ("Spread", record("Main.Spread")),
+            ("Pair8", record("Main.Pair8")),
+            ("Framed", record("Main.Framed")),
+            (
+                "Cargo<i64>",
+                record_of("Main.Cargo", &[Type::Integer(64, true)]),
+            ),
+            ("Cargo<string>", record_of("Main.Cargo", &[Type::String])),
+            ("Cargo<bool>", record_of("Main.Cargo", &[Type::Bool])),
+            ("Overlay", record("Main.Overlay")),
+            ("Vectors", record("Main.Vectors")),
+            ("Guarded", record("Main.Guarded")),
             ("Wide128", record("Main.Wide128")),
             ("Lanes4", record("Main.Lanes4")),
             ("Lanes8", record("Main.Lanes8")),
@@ -1060,5 +1220,88 @@ fn use n =
             "{ i8, ptr }"
         );
         assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
+    }
+
+    /// The sizes that `docs/architecture.md` states for records, on a target whose `i128` is
+    /// 16-byte aligned: a record of the user's program stores its fields by decreasing alignment
+    /// when that makes it smaller (PM01 D7, D8).
+    #[test]
+    fn record_sizes_follow_the_documented_rule() {
+        let module = crate::analyze(&source()).unwrap();
+        let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, false).unwrap();
+        let named = definitions(&ir);
+        let machine = MACHINES[0].1;
+        for (label, body, size, align) in [
+            // Declared order needs 32 bytes: a bool, 7 bytes of padding, an i64, a bool, 7 more.
+            ("Mixed", "{ i64, i64, i1, i1 }", 24, 8),
+            ("Spread", "{ i64, i32, i8, i8, i1 }", 16, 8),
+            // The same size either way keeps the declared order.
+            ("Pair8", "{ i8, i64 }", 16, 8),
+            ("Flags", "{ i1, i1 }", 2, 1),
+            ("Framed", "{ %tz.record.Main.Mixed, i1, i1 }", 32, 8),
+            ("Cargo<i64>", "{ i64, i1, i1 }", 16, 8),
+            ("Cargo<string>", "{ %tz.string, i1, i1 }", 24, 8),
+            ("Cargo<bool>", "{ i1, i1, i1 }", 3, 1),
+            ("Overlay", "{ i128, i1, i8 }", 32, 16),
+            ("Vectors", "{ <8 x float>, i8, i8 }", 64, 32),
+            // The live flag of a Drop record stays last.
+            ("Guarded", "{ i64, i1, i8, i8 }", 16, 8),
+        ] {
+            let ty = types(&module)
+                .into_iter()
+                .find_map(|(name, ty)| (name == label).then_some(ty))
+                .unwrap();
+            let name = llvm_type(&ty, &module);
+            assert_eq!(
+                named[name.trim_start_matches('%').trim_matches('"')],
+                body,
+                "{label}: {name}"
+            );
+            assert_eq!(
+                measure(&name, &named, machine),
+                (size, align),
+                "{label}: {name}"
+            );
+            // The model sees the same order, so its upper bound is no smaller than the size.
+            assert!(layout_bound(&ty, &module, false).0 >= size, "{label}");
+        }
+    }
+
+    /// The placement is a stable sort by decreasing alignment that is kept only when it takes
+    /// fewer bytes, with the model's `(size, alignment)` of each field as input.
+    #[test]
+    fn fields_are_placed_by_decreasing_alignment_only_when_that_saves_bytes() {
+        let place =
+            |fields: &[(usize, usize)], flag| place_fields(fields, flag).map(|s| s.to_vec());
+        // bool, i64, bool, i64: the i64s first, each group in declared order.
+        let mixed = [(1, 1), (8, 8), (1, 1), (8, 8)];
+        assert_eq!(place(&mixed, false), Some(vec![2, 0, 3, 1]));
+        // No byte saved: equal alignments, a small field before a large one that fills the gap
+        // anyway, a zero-sized field, and a single field.
+        assert_eq!(place(&[(8, 8), (8, 8)], false), None);
+        assert_eq!(place(&[(1, 1), (8, 8)], false), None);
+        assert_eq!(place(&[(0, 1), (8, 8)], false), None);
+        assert_eq!(place(&[(8, 8)], false), None);
+        // The flag of a Drop record takes the last byte; it can tip the choice.
+        let guarded = [(1, 1), (8, 8), (1, 1)];
+        assert_eq!(place(&guarded, false), Some(vec![1, 0, 2]));
+        assert_eq!(place(&guarded, true), Some(vec![1, 0, 2]));
+        // Alignments of 16 and 8 come in front of the bytes.
+        assert_eq!(
+            place(&[(1, 1), (16, 16), (8, 8)], false),
+            Some(vec![2, 0, 1])
+        );
+        // Every result is a permutation.
+        for fields in [
+            &mixed[..],
+            &guarded[..],
+            &[(2, 2), (4, 4), (1, 1), (8, 8)][..],
+        ] {
+            if let Some(slots) = place(fields, false) {
+                let mut sorted = slots.clone();
+                sorted.sort_unstable();
+                assert_eq!(sorted, (0..fields.len()).collect::<Vec<_>>());
+            }
+        }
     }
 }

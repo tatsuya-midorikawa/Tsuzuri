@@ -1624,6 +1624,28 @@ const suites = {
       assert.ok(ir.includes('%"tz.union.Maybe.Maybe[Maybe.Maybe[string]]" = type { i8, %tz.string }\n'));
     },
   },
+  // PM01 Phase 3a: a record that is smaller with its fields sorted by alignment stores them that way. The
+  // cases come from the generation block below, which works the results out from the source of the fixture.
+  record_layout: {
+    cases: [],
+    inspect(ir) {
+      for (const definition of [
+        "%tz.record.Main.Gauge = type { i64, double, i1, i8 }",
+        "%tz.record.Main.Keyed = type { i64, i8, i8 }",
+        "%tz.record.Main.Spread = type { i64, i32, i8, i8, i1 }",
+        "%tz.record.Main.Crate = type { %tz.record.Main.Gauge, i16, i1 }",
+        '%"tz.record.Main.Cargo[i64]" = type { i64, i1, i1 }',
+        '%"tz.record.Main.Cargo[string]" = type { %tz.string, i1, i1 }',
+        // Equal alignments keep their declared order.
+        '%"tz.record.Main.Cargo[bool]" = type { i1, i1, i1 }',
+        "%tz.record.Main.Ledger = type { %tz.string, %tz.array, i1, i8 }",
+        "%tz.record.Main.Rows = type { %tz.array, i1, i8 }",
+        "%tz.record.Main.Wide = type { <8 x float>, i8, i8 }",
+      ]) {
+        assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
+      }
+    },
+  },
   stdlib: {
     cases: [
       ["answer", [], 42n],
@@ -2193,6 +2215,71 @@ suites.deriving.cases.push(["hash_default_decimal", [], scalarHash(0x33, 398n <<
     const first = values.find((value) => value > 5);
     layout.push(["references", [BigInt(count)], BigInt(smallest + (first === undefined ? -2 : first * 100) - 3)]);
     layout.push(["word_references", [BigInt(count)], BigInt(count > 100 ? 4000 + count : -1)]);
+  }
+}
+// PM01 Phase 3a: independent references for tests/fixtures/record_layout/Main.tz. Each one repeats the arithmetic
+// of the source on BigInt, so that a field that is read or written at the wrong place gives another number.
+{
+  const records = suites.record_layout.cases;
+  const gauge = (n) => ({ flag: n % 2n === 0n, count: n * 1000003n, tag: n % 100n, ratio8: 2n * n });
+  const gaugeSum = (g) => (g.flag ? 1n : 0n) + g.count * 3n + g.tag * 5n + g.ratio8 * 7n;
+  const spread = (i) => ({ a: i % 7n, b: i * 1000n + 17n, c: i % 5n, d: i * 3n, e: i % 3n === 0n });
+  const spreadSum = (s) => s.a + s.b * 2n + s.c * 3n + s.d * 5n + (s.e ? 7n : 0n);
+  const digits = (n) => BigInt(n.toString().length);
+  const ledgerSum = (n, { open = n % 2n === 0n, level = n % 50n } = {}) => (open ? 1n : 0n) + (6n + digits(n)) * 10n + level * 100n + (3n * n + 3n) * 1000n;
+  const rowSum = (n) => (n % 2n === 0n ? 1n : 0n) + (n % 50n) * 100n + (3n * n + 3n) * 1000n;
+  const slotSum = (i) => (i % 3n === 0n ? 1n : i % 3n === 1n ? 2n + gaugeSum(gauge(i)) : 3n + gaugeSum(gauge(i)) + spreadSum(spread(i)));
+  const keyedCode = ([a, b, c]) => a * 1000000n + b * 1000n + c;
+  const compare = (x, y) => {
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+  };
+  const sumOver = (count, f) => {
+    let total = 0n;
+    for (let i = 0n; i < count; i++) total += f(i);
+    return total;
+  };
+  for (const n of [0n, 1n, 2n, 3n, 7n, 12n, 50n, 99n, 100n, 101n, 1000n]) {
+    const g = gauge(n);
+    records.push(["gauges", [n], gaugeSum(g)]);
+    records.push(["updates", [n], gaugeSum({ ...g, count: g.count + 1n, tag: 9n }) * 10007n + gaugeSum(g)]);
+    records.push(["captured", [n], 2n * gaugeSum(g)]);
+    records.push(["tasked", [n], gaugeSum(g)]);
+    records.push(["borrowed", [n], g.tag * 1000n + (g.flag ? 1n : 0n)]);
+    records.push(["crates", [n], (g.flag ? 1n : 0n) + gaugeSum(g) * 3n + n * 11n * 5n + n * 13n * 7n + g.tag]);
+    // The flags of the three cargos: wide first and last, the text's first, the flag's last.
+    const marks = (g.flag ? 1n : 0n) + (n % 3n === 0n ? 2n : 0n) + 4n + 32n;
+    records.push(["cargos", [n], n * 3n * 1000n + (5n + digits(n)) * 100n + (n % 4n === 0n ? 64n : 0n) + marks]);
+    records.push(["ledgers", [n], ledgerSum(n)]);
+    records.push(["moved", [n], (6n + digits(n)) * 1000n + (n % 50n) + (3n * n + 3n) * 100000n]);
+    records.push(["projected", [n], (6n + digits(n)) * 10n + (n % 50n)]);
+    records.push(["replaced", [n], ledgerSum(n, { open: true, level: 9n })]);
+    records.push(["options", [n], g.flag ? gaugeSum(g) : -1n]);
+    records.push(["lanes", [n], 8n * n * 100n + 35n]);
+  }
+  for (const count of [0n, 1n, 2n, 5n, 33n, 100n]) {
+    const keys = Array.from({ length: Number(count) }, (_, i) => [BigInt((i * 41) % 5), BigInt((i * 7919) % 101), BigInt(i % 3)]);
+    const sorted = [...keys].sort(compare);
+    records.push(["ordered", [count], count === 0n ? 0n : keyedCode(sorted[0]) + keyedCode(sorted[sorted.length - 1]) * 100000000n]);
+    const spreads = Array.from({ length: Number(count) }, (_, i) => spread(BigInt(i)));
+    const spreadTotal = spreads.reduce((total, s) => total + spreadSum(s), 0n);
+    records.push(["spreads", [count], count === 0n ? spreadTotal : spreadTotal * 100n + spreads[spreads.length - 1].d]);
+    records.push(["ledger_array", [count], sumOver(count, ledgerSum) + count]);
+    records.push(["row_copies", [count], sumOver(count, rowSum) * 4n]);
+    records.push(["slots", [count], sumOver(count, slotSum)]);
+    const map = new Map();
+    for (let step = 0n; step < count; step++) map.set(`${step % 2n === 0n ? 1 : 0},${step % 13n},${step % 7n}`, step);
+    records.push(["keyed_map", [count], BigInt(map.size) * 1000n + (map.has("1,4,4") ? map.get("1,4,4") : -1n)]);
+  }
+  // Records that differ in one field, and in every field, in each position of the declared order.
+  const inputs = [[0n, 5n, 3n], [1n, 5n, 3n], [1n, 4n, 3n], [1n, 5n, 2n], [2n, 1n, 0n]];
+  for (const x of inputs) {
+    for (const y of inputs) {
+      const order = compare(x, y);
+      records.push(["keyed_flags", [...x, ...y], BigInt((order === 0 ? 1 : 2) + (order < 0 ? 4 : 0) + (order <= 0 ? 8 : 0) + (order > 0 ? 16 : 0) + (order >= 0 ? 32 : 0))]);
+    }
+    records.push(["keyed_hash", x, BigInt.asIntN(64, compositeHash(0x52, [scalarHash(0x10, x[0], 1), scalarHash(0x13, x[1], 8), scalarHash(0x10, x[2], 1)]))]);
+    records.push(["keyed_display", x, canonicalTextHash(`Keyed { a: ${x[0]}, b: ${x[1]}, c: ${x[2]} }`)]);
   }
 }
 function canonicalTextHash(text) {
