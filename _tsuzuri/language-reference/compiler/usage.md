@@ -96,6 +96,7 @@ TSUZURI_CLANG: path /usr/bin/clang (Apple clang version 21.0.0 (clang-2100.3.34.
 TSUZURI_WASM_LD: path /opt/homebrew/Cellar/lld/23.1.1/bin/lld (unavailable)
 TSUZURI_LLVM_LINK: path llvm-link (not found)
 TSUZURI_DSYMUTIL: path /usr/bin/dsymutil (Apple LLVM version 21.0.0)
+TSUZURI_WASM_OPT: path wasm-opt (not found)
 node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ```
 
@@ -114,7 +115,7 @@ node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 
 `tsuzuri test --target wasm64` は、Node.js 24 以降の memory64 を要求します。Python 3.9 以降は、リポジトリの参照実装テスト用です。コンパイラを使うだけなら要りません。
 
-ツールの場所は `TSUZURI_CLANG`、`TSUZURI_WASM_LD`、`TSUZURI_LLVM_LINK`、`TSUZURI_DSYMUTIL` で指定できます。未設定なら PATH の `clang`、`wasm-ld`、`llvm-link`、`dsymutil` です。
+ツールの場所は `TSUZURI_CLANG`、`TSUZURI_WASM_LD`、`TSUZURI_LLVM_LINK`、`TSUZURI_DSYMUTIL`、`TSUZURI_WASM_OPT` で指定できます。未設定なら PATH の `clang`、`wasm-ld`、`llvm-link`、`dsymutil`、`wasm-opt` です。`wasm-opt`（Binaryen）は `--wasm-opt` を付けたときだけ使います。
 
 ### macOS
 

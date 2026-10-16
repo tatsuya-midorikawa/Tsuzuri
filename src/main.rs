@@ -160,6 +160,9 @@ Build options:
                          requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
     --strip                Link a native executable without its local symbols (build only; not with -g;
                          a Windows link is left as it is)
+    --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
+                         only; not with -g or threads). It is never run unless asked: install Binaryen
+                         or set TSUZURI_WASM_OPT, or the build fails with E2002
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -169,6 +172,8 @@ Toolchain:
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
   TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
+  TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
+                         does not run anything
   Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
@@ -301,6 +306,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut allocator = None;
     let mut freestanding = false;
     let mut strip = false;
+    let mut wasm_opt = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -495,6 +501,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("strip specified more than once".into());
                     }
                     strip = true;
+                    continue;
+                }
+                Some("--wasm-opt") => {
+                    if wasm_opt {
+                        return Err("wasm-opt specified more than once".into());
+                    }
+                    wasm_opt = true;
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -730,6 +743,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if strip && action != Action::Build {
         return Err("--strip is only valid with build".into());
     }
+    if wasm_opt && action != Action::Build {
+        return Err("--wasm-opt is only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -848,6 +864,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         allocator: allocator.unwrap_or_default(),
         freestanding,
         strip,
+        wasm_opt,
         triple,
     };
     options.validate().map_err(|error| error.message)?;
@@ -1537,6 +1554,7 @@ fn toolchain_info() -> String {
         ("TSUZURI_WASM_LD", "wasm-ld"),
         ("TSUZURI_LLVM_LINK", "llvm-link"),
         ("TSUZURI_DSYMUTIL", "dsymutil"),
+        ("TSUZURI_WASM_OPT", "wasm-opt"),
     ] {
         let (source, tool) = driver::resolve_tool(variable, fallback);
         info += &tool_line(variable, source, &tool);
@@ -2476,6 +2494,97 @@ mod tests {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
         assert!(HELP.contains("--strip"));
+    }
+
+    #[test]
+    fn wasm_opt_is_a_build_option_for_wasm32_output() {
+        let wasm_opt = |values: &[&str]| parse(values).map(|arguments| arguments.options.wasm_opt);
+        assert_eq!(
+            wasm_opt(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-opt",
+                "-Oz"
+            ]),
+            Ok(true)
+        );
+        assert_eq!(
+            wasm_opt(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-opt"
+            ]),
+            Ok(true)
+        );
+        // Nothing asks for the tool unless the flag is there.
+        assert_eq!(
+            wasm_opt(&["build", "Main.tz", "--target", "wasm32"]),
+            Ok(false)
+        );
+        let output = "--wasm-opt requires WASM output (--target wasm32, --emit wasm)";
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-opt",
+                    "--wasm-opt",
+                ],
+                "wasm-opt specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--wasm-opt"],
+                "--wasm-opt is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--wasm-opt"],
+                "--wasm-opt is only valid with build",
+            ),
+            (vec!["build", "Main.tz", "--wasm-opt"], output),
+            (
+                vec!["build", "Main.tz", "--target", "wasm64", "--wasm-opt"],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "object",
+                    "--wasm-opt",
+                ],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "threads",
+                    "--wasm-opt",
+                ],
+                "--wasm-opt cannot be combined with --wasm-feature threads",
+            ),
+            (
+                vec!["build", "Main.tz", "--target", "wasm32", "-g", "--wasm-opt"],
+                "--wasm-opt cannot be combined with --debug-info: the optimizer rewrites the code the names and debug information describe",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        assert!(HELP.contains("--wasm-opt") && HELP.contains("TSUZURI_WASM_OPT"));
     }
 
     #[test]

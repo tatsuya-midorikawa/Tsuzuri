@@ -1207,6 +1207,7 @@ WASM ヒープマネージャはアドレス順に整列された空き領域リ
 ヒープ上限およびメインスタックサイズは、`BuildOptions` および `TestOptions` の `wasm_max_memory` と `wasm_stack_size`（CLI オプション `--wasm-max-memory`、`--wasm-stack-size`）によって設定可能です。
 プロジェクト読み込み後、未指定のオプションはルートパッケージのマニフェスト内 `[wasm]` セクション（`Project::wasm`、`BuildOptions::with_manifest_wasm`）から補填され、適用後に妥当性が再検証されます。
 `driver::wasm_memory_limits` がターゲットごとのメモリ範囲（wasm32 は 4 GiB − 64 KiB、wasm64 は 16 GiB）を一元的に検査して実効値を算出し、ビルドおよびテストランナーはその実効値から `wasm-ld` の `-z stack-size=` および `--max-memory=` 引数を組み立てます。
+`--wasm-opt`（PM08）は、`wasm-ld` が終わったあとの `.wasm` を `driver::run_wasm_opt` が Binaryen の `wasm-opt -Oz`（機能は `bulk-memory`・`sign-ext`・`nontrapping-float-to-int`・`mutable-globals`・`multivalue`・`reference-types`、`--wasm-feature simd128` のときだけ `simd`）に通し、結果で成果物を置き換えます。`--wasm-opt` を付けたときだけ `TSUZURI_WASM_OPT`（既定 `wasm-opt`）を探し、見つからないか失敗すると `run_tool` が `E2002` とヒントを返します。成果物キャッシュのキー（`cache::build_key`）は、そのときだけ `wasm-opt` の実体を含みます。`wasm64`・threads・`-g` は `BuildOptions::validate` が `E2000` にします。
 ヒープランタイム側の `heap-wasm.ll` は直接改変せず、`llvm::with_wasm_heap_limit` が生成後の IR 内にある `%fits` の 2 行と `%within` の 1 行を行全体の一致判定で安全に置換します。
 ユーザー定義の文字列定数は `c"..."` の行の途中に出現するため影響を受けず、デフォルト値の環境では置換を行わないため、デフォルト設定時の IR および生成される `.wasm` バイナリは完全に不変です。
 上限が 2 GiB 以下であれば `i32` の終端計算 `%begin + %needed` はオーバーフローしません。2 GiB を超過する場合は、`%within` を `%room = sub i32 LIMIT, %begin` との比較を行う 2 行の命令へと置き換えます（`%begin` は上限を超えません）。

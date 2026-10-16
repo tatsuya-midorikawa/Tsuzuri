@@ -4,8 +4,8 @@
 // say "not larger" where it is not; no size or speed threshold is a pass or fail condition of the suite.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactFingerprint } from "../benchmarks/metrics.mjs";
 
@@ -91,7 +91,8 @@ section("size builds are deterministic and the cache keeps the levels apart", ()
   }
 });
 
-section("WASM modules at -Os and -Oz behave like -O3 and are smaller", () => {
+// A small library with integer and float text: its WASM module holds both formatters.
+function wasmProject() {
   const project = join(directory, "wasm-project");
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "Main.tz"), [
@@ -110,13 +111,19 @@ section("WASM modules at -Os and -Oz behave like -O3 and are smaller", () => {
     "export def shown :: f64 -> i64 = \\x -> (to_string x).length",
     "",
   ].join("\n"));
+  return project;
+}
+const wasmResults = (file, level) => {
+  const api = wasmInstance(file);
+  assert.equal(api.tz_total(1000n), 333833500n, `${level} total`);
+  assert.equal(api.tz_label(-123456n), 7n, `${level} label`);
+  assert.equal(api.tz_shown(-1.25), 5n, `${level} shown`);
+};
+
+section("WASM modules at -Os and -Oz behave like -O3 and are smaller", () => {
+  const project = wasmProject();
   const modules = Object.fromEntries(LEVELS.map((level) => [level, build(project, ["--target", "wasm32", level], ".wasm")]));
-  for (const level of LEVELS) {
-    const api = wasmInstance(modules[level]);
-    assert.equal(api.tz_total(1000n), 333833500n, `${level} total`);
-    assert.equal(api.tz_label(-123456n), 7n, `${level} label`);
-    assert.equal(api.tz_shown(-1.25), 5n, `${level} shown`);
-  }
+  for (const level of LEVELS) wasmResults(modules[level], level);
   const bytes = (level) => statSync(modules[level]).size;
   assert.ok(bytes("-Os") < bytes("-O3"), "-Os is smaller than -O3");
   assert.ok(bytes("-Oz") <= bytes("-Os"), "-Oz is not larger than -Os");
@@ -258,6 +265,118 @@ section("an integer-only WASM module carries no numeric tables and its integer t
   }
 });
 
+// A stand-in for Binaryen's wasm-opt: it logs its arguments, answers --version with a version taken from the
+// environment, and writes its input back with one extra custom section, so a test sees what ran and what came out.
+function fakeWasmOpt(name) {
+  const file = join(directory, name);
+  writeFileSync(file, `#!${process.execPath}
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_WASM_OPT_LOG, JSON.stringify(args) + "\\n");
+if (args[0] === "--version") { console.log("wasm-opt version fake-" + (process.env.FAKE_WASM_OPT_VERSION ?? "1")); process.exit(0); }
+if (process.env.FAKE_WASM_OPT_FAIL) { console.error("fake wasm-opt failed"); process.exit(3); }
+const output = args[args.indexOf("-o") + 1];
+const name = Buffer.from("fake-opt");
+writeFileSync(output, Buffer.concat([readFileSync(args[0]), Buffer.from([0, name.length + 1, name.length]), name]));
+`);
+  chmodSync(file, 0o755);
+  return file;
+}
+const customSections = (file, name) => WebAssembly.Module.customSections(new WebAssembly.Module(readFileSync(file)), name).length;
+
+section("--wasm-opt runs the named wasm-opt on request only, and the cache knows the tool", () => {
+  if (process.platform === "win32") return; // the stand-in is a script
+  const project = wasmProject();
+  const log = join(directory, "wasm-opt.log");
+  const fake = fakeWasmOpt("fake-wasm-opt.mjs");
+  const environment = (extra = {}) => ({ ...env, TSUZURI_WASM_OPT: fake, FAKE_WASM_OPT_LOG: log, ...extra });
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+  const runs = () => calls().filter((args) => args[0] !== "--version");
+  const wasm = ["--target", "wasm32", "-Oz"];
+  // Without the flag the tool is never looked at, whatever the environment says.
+  const plain = build(project, wasm, ".wasm", environment());
+  assert.deepEqual(calls(), []);
+  assert.equal(customSections(plain, "fake-opt"), 0);
+  // With it, the linked module goes through -Oz with the features the module uses, and the result is the artifact.
+  const optimized = build(project, [...wasm, "--wasm-opt"], ".wasm", environment());
+  assert.equal(runs().length, 1);
+  const [input, flag, produced, level, ...features] = runs()[0];
+  assert.ok(input.length > 0 && flag === "-o" && produced.endsWith("optimized.wasm") && level === "-Oz", JSON.stringify(runs()[0]));
+  assert.deepEqual(features, ["--enable-bulk-memory", "--enable-sign-ext", "--enable-nontrapping-float-to-int",
+    "--enable-mutable-globals", "--enable-multivalue", "--enable-reference-types"]);
+  assert.equal(customSections(optimized, "fake-opt"), 1);
+  wasmResults(optimized, "-Oz --wasm-opt");
+  // SIMD adds its feature.
+  const before = runs().length;
+  build(project, [...wasm, "--wasm-feature", "simd128", "--wasm-opt"], ".wasm", environment());
+  assert.equal(runs().length, before + 1);
+  assert.ok(runs().at(-1).includes("--enable-simd"));
+  // The whole-build cache keys on the tool: the same build is a hit, another version of the tool is a miss.
+  // (Where the linker's identity cannot be read, the cache is off and both builds run the tool.)
+  const count = runs().length;
+  build(project, [...wasm, "--wasm-opt"], ".wasm", environment());
+  if (runs().length === count) {
+    build(project, [...wasm, "--wasm-opt"], ".wasm", environment({ FAKE_WASM_OPT_VERSION: "2" }));
+    assert.equal(runs().length, count + 1, "another version of wasm-opt is another cache entry");
+  }
+});
+
+section("--wasm-opt reports a missing or failing wasm-opt as E2002 with a hint, and never looks for one on its own", () => {
+  const project = wasmProject();
+  const hint = "install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable";
+  const missing = join(directory, "no-such-wasm-opt");
+  const output = join(directory, `missing${counter++}.wasm`);
+  const result = tsuzuri(["build", project, "--target", "wasm32", "--wasm-opt", "-o", output],
+    { environment: { ...env, TSUZURI_WASM_OPT: missing }, status: 1 });
+  assert.ok(result.stderr.includes(`error[E2002]: cannot execute '${missing}'`), result.stderr);
+  assert.ok(result.stderr.includes(hint), result.stderr);
+  assert.ok(!existsSync(output), "no module is published when wasm-opt cannot run");
+  if (process.platform === "win32") return; // the rest needs a script
+  const fake = fakeWasmOpt("failing-wasm-opt.mjs");
+  const log = join(directory, "failing.log");
+  const failing = join(directory, `failing${counter++}.wasm`);
+  const failure = tsuzuri(["build", project, "--target", "wasm32", "--wasm-opt", "-o", failing],
+    { environment: { ...env, TSUZURI_WASM_OPT: fake, FAKE_WASM_OPT_LOG: log, FAKE_WASM_OPT_FAIL: "1" }, status: 1 });
+  assert.ok(failure.stderr.includes(`error[E2002]: '${fake}' failed`), failure.stderr);
+  assert.ok(failure.stderr.includes("fake wasm-opt failed") && failure.stderr.includes(hint), failure.stderr);
+  assert.ok(!existsSync(failing), "no module is published when wasm-opt fails");
+  // A wasm-opt on PATH is used when asked for and is not found when not.
+  const directoryOnPath = join(directory, "on-path");
+  mkdirSync(directoryOnPath, { recursive: true });
+  writeFileSync(join(directoryOnPath, "wasm-opt"), readFileSync(fake));
+  chmodSync(join(directoryOnPath, "wasm-opt"), 0o755);
+  const pathLog = join(directory, "on-path.log");
+  const onPath = { ...env, PATH: `${directoryOnPath}${delimiter}${process.env.PATH}`, FAKE_WASM_OPT_LOG: pathLog };
+  delete onPath.TSUZURI_WASM_OPT;
+  build(project, ["--target", "wasm32"], ".wasm", onPath);
+  assert.ok(!existsSync(pathLog), "an installed wasm-opt is not run without --wasm-opt");
+  assert.equal(customSections(build(project, ["--target", "wasm32", "--wasm-opt"], ".wasm", onPath), "fake-opt"), 1);
+});
+
+section("a real wasm-opt makes the module smaller and keeps its imports, exports, and results", () => {
+  // Only where Binaryen is installed (the stand-in above does not need it): TSUZURI_TEST_WASM_OPT or PATH.
+  const tool = process.env.TSUZURI_TEST_WASM_OPT ?? "wasm-opt";
+  const version = spawnSync(tool, ["--version"], { encoding: "utf8" });
+  if (version.error || version.status !== 0) {
+    console.log("  (no wasm-opt: set TSUZURI_TEST_WASM_OPT to run the real-tool check)");
+    return;
+  }
+  const project = wasmProject();
+  const real = { ...env, TSUZURI_WASM_OPT: tool };
+  for (const level of ["-O3", "-Oz"]) {
+    const plain = build(project, ["--target", "wasm32", level], ".wasm", real);
+    const optimized = build(project, ["--target", "wasm32", level, "--wasm-opt"], ".wasm", real);
+    assert.ok(statSync(optimized).size < statSync(plain).size, `${level}: ${statSync(optimized).size} < ${statSync(plain).size}`);
+    wasmResults(optimized, `${level} --wasm-opt`);
+    const [left, right] = [plain, optimized].map((file) => new WebAssembly.Module(readFileSync(file)));
+    assert.deepEqual(WebAssembly.Module.imports(right), WebAssembly.Module.imports(left));
+    assert.deepEqual(WebAssembly.Module.exports(right).map(({ name, kind }) => `${name}:${kind}`).sort(),
+      WebAssembly.Module.exports(left).map(({ name, kind }) => `${name}:${kind}`).sort());
+    assert.equal(new WebAssembly.Instance(right).exports.memory.buffer.byteLength,
+      new WebAssembly.Instance(left).exports.memory.buffer.byteLength);
+  }
+});
+
 section("the option errors of --strip", () => {
   const fails = (args, message) => {
     const result = tsuzuri(args, { status: 2 });
@@ -272,6 +391,22 @@ section("the option errors of --strip", () => {
   fails(["build", hello, "--strip", "--target", "wasm32"],
     "--strip requires a native executable; WASM output is already stripped unless --debug-info is used");
   assert.match(tsuzuri(["--help"]).stdout, /--strip\s+Link a native executable without its local symbols/);
+});
+
+section("the option errors of --wasm-opt", () => {
+  const fails = (args, message) => {
+    const result = tsuzuri(args, { status: 2 });
+    assert.ok(result.stderr.includes(`error[E2000]: ${message}`), `${args.join(" ")}\n${result.stderr}`);
+  };
+  const hello = example("hello");
+  fails(["build", hello, "--target", "wasm32", "--wasm-opt", "--wasm-opt"], "wasm-opt specified more than once");
+  fails(["run", hello, "--wasm-opt"], "--wasm-opt is only valid with build");
+  fails(["build", hello, "--wasm-opt"], "--wasm-opt requires WASM output (--target wasm32, --emit wasm)");
+  fails(["build", hello, "--target", "wasm32", "--emit", "object", "--wasm-opt"], "--wasm-opt requires WASM output (--target wasm32, --emit wasm)");
+  fails(["build", hello, "--target", "wasm32", "--wasm-feature", "threads", "--wasm-opt"],
+    "--wasm-opt cannot be combined with --wasm-feature threads");
+  assert.match(tsuzuri(["--help"]).stdout, /--wasm-opt\s+Run Binaryen's wasm-opt -Oz/);
+  assert.match(tsuzuri(["--help"]).stdout, /TSUZURI_WASM_OPT\s+Binaryen optimizer/);
 });
 
 section("the option errors of -Os and -Oz", () => {

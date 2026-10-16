@@ -5754,6 +5754,17 @@ Apple M1 Max（macOS arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-
 
 native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。
 
+`--wasm-opt`（Binaryen の `wasm-opt -Oz` を、リンク後の `.wasm` に通す）は、Binaryen 132（npm の `binaryen` パッケージの `wasm-opt`）で測りました。`wasm32`、cache あり、byte で、`wasm-opt` なしは同じレベルの値です:
+
+| プログラム | `-O3` | `-O3 --wasm-opt` | `-Oz` | `-Oz --wasm-opt` |
+| --- | ---: | ---: | ---: | ---: |
+| `examples/hello` | 6,357 | 5,196（−18.3%） | 2,587 | 2,156（−16.7%） |
+| `examples/io` | 15,593 | 13,807（−11.5%） | 5,734 | 4,583（−20.1%） |
+| `examples/functional` | 12,086 | 10,187（−15.7%） | 3,960 | 3,094（−21.9%） |
+| `examples/currying` | 6,326 | 5,169（−18.3%） | 2,555 | 2,129（−16.7%） |
+
+どの行も、import、export、メモリの大きさ、`tz_` の export の結果は元のモジュールと同じでした（`tests/size.mjs` は `TSUZURI_TEST_WASM_OPT` に本物の `wasm-opt` があるとき、同じ検査を実行します）。Binaryen は配布物に同梱しません。配布用のアーカイブが Linux と Windows で約 105〜111 MB あり、配布物が大きくなりすぎるためです。
+
 整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回、`i128` は 60.7 から 54.0 ns／回）。静かな機械での再測定が必要です。
 
 ### リンク時の GC（埋め込みのビルド）

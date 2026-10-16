@@ -856,6 +856,7 @@ tsuzuri lsp
 | `--allocator system\|host\|counting` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--strip` | native の実行ファイルのリンクでローカルシンボルを除きます（`build` の `--emit exe` だけ。`-g`・WASM とは組み合わせられず、Windows のリンクは変わりません）。 |
+| `--wasm-opt` | wasm32 の `.wasm` のリンク後に Binaryen の `wasm-opt -Oz` を実行します（`build` の `--emit wasm` だけ。`-g`・threads・wasm64 とは組み合わせられません）。Binaryen は同梱せず、`--wasm-opt` を付けたときだけ使います。見つからない・失敗したときは `E2002` です。場所は環境変数 `TSUZURI_WASM_OPT`（この変数だけでは何も実行しません）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
 | `--json` | 診断情報やテスト結果を 1 行 1 JSON オブジェクト形式で標準エラー出力へ返します。 |
 
@@ -887,7 +888,7 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
-node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、--strip（nm・codesign・トラップ表）、整数表示（全型の境界値・IR・WASM の長さ）とオプション誤り
+node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、埋め込み形式のリンク時 GC、--strip（nm・codesign・トラップ表）、整数表示（全型の境界値・IR・WASM の長さ）、--wasm-opt（偽の wasm-opt での呼び出し・キャッシュ・E2002。TSUZURI_TEST_WASM_OPT に本物があれば実行）とオプション誤り
 node tests/integer_format.mjs   # 整数表示の関数（integer.ll）を Python の独立した参照と 8／16 bit の全値で照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）
 node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置
 node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）

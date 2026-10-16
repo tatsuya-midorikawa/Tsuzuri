@@ -419,6 +419,9 @@ pub struct BuildOptions {
     pub freestanding: bool,
     /// `--strip`: a native executable without local symbols (PM08).
     pub strip: bool,
+    /// `--wasm-opt`: run Binaryen's `wasm-opt -Oz` over the linked `.wasm` (PM08). The tool is never
+    /// looked for unless this is set.
+    pub wasm_opt: bool,
     /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
     /// every non-native target.
     pub triple: Option<Triple>,
@@ -447,6 +450,7 @@ impl Default for BuildOptions {
             allocator: llvm::Allocator::System,
             freestanding: false,
             strip: false,
+            wasm_opt: false,
             triple: None,
         }
     }
@@ -630,6 +634,26 @@ impl BuildOptions {
                 return Err(driver_error(
                     "E2000",
                     "--strip cannot be combined with --debug-info: a debugger needs the symbols",
+                ));
+            }
+        }
+        if self.wasm_opt {
+            if self.target != Target::Wasm32 || self.emit != Emit::Wasm {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt requires WASM output (--target wasm32, --emit wasm)",
+                ));
+            }
+            if self.wasm_threads {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt cannot be combined with --wasm-feature threads",
+                ));
+            }
+            if self.debug_info {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt cannot be combined with --debug-info: the optimizer rewrites the code the names and debug information describe",
                 ));
             }
         }
@@ -1170,6 +1194,8 @@ fn target_args(platform: Platform) -> Vec<OsString> {
 
 /// The environment variable that names the sysroot of a named target: its C headers and libraries.
 pub const SYSROOT_VARIABLE: &str = "TSUZURI_SYSROOT";
+/// The Binaryen `wasm-opt` that `--wasm-opt` runs (PM08): the variable, then a distribution, then `PATH`.
+pub(crate) const WASM_OPT_VARIABLE: &str = "TSUZURI_WASM_OPT";
 
 /// The Clang arguments of the runs that read the headers and libraries of a named target: the
 /// runtime's C compile and the link. A build for the machine the compiler runs on does not use
@@ -4148,6 +4174,9 @@ fn build_complete(
                     ),
                 )?,
             );
+            if options.wasm_opt {
+                run_wasm_opt(&artifact, &temporary.path, options.wasm_simd, &mut messages)?;
+            }
         }
     }
     let sidecars: Vec<_> = sidecar
@@ -5087,6 +5116,48 @@ fn collect_message(messages: &mut Vec<String>, message: String) {
     if !message.trim().is_empty() {
         messages.push(message);
     }
+}
+
+/// Runs Binaryen's `wasm-opt -Oz` over the linked module and replaces it with the result (PM08).
+/// The tool comes from `TSUZURI_WASM_OPT`, a distribution, or `PATH`, and only because `--wasm-opt`
+/// asked: a missing or failing tool is E2002 with an install hint, never a silent skip. The features
+/// are the ones this compiler's modules use; `simd` only for `--wasm-feature simd128`.
+fn run_wasm_opt(
+    artifact: &Path,
+    directory: &Path,
+    simd: bool,
+    messages: &mut Vec<String>,
+) -> Result<(), Diagnostic> {
+    let optimized = directory.join("optimized.wasm");
+    let mut command = Command::new(tool(WASM_OPT_VARIABLE, "wasm-opt"));
+    command.arg(artifact).arg("-o").arg(&optimized).arg("-Oz");
+    for feature in [
+        "bulk-memory",
+        "sign-ext",
+        "nontrapping-float-to-int",
+        "mutable-globals",
+        "multivalue",
+        "reference-types",
+    ] {
+        command.arg(format!("--enable-{feature}"));
+    }
+    if simd {
+        command.arg("--enable-simd");
+    }
+    collect_message(
+        messages,
+        run_tool(
+            &mut command,
+            "--wasm-opt runs Binaryen's wasm-opt: install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable",
+        )?,
+    );
+    fs::rename(&optimized, artifact).map_err(|error| {
+        io_error(
+            "replace the WASM output with the optimized module",
+            artifact,
+            error,
+        )
+    })
 }
 
 fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {

@@ -464,6 +464,10 @@ pub(crate) fn build_key(
         if options.emit == Emit::Wasm || options.wasm_threads || options.wasm_host.is_some() {
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
         }
+        // `--wasm-opt` rewrites the module with the tool that is installed, so its identity is the key's.
+        if options.wasm_opt && options.emit == Emit::Wasm {
+            tools.push((crate::driver::WASM_OPT_VARIABLE, "wasm-opt"));
+        }
         if options.platform().mach_o() && options.debug_info && options.target == Target::Native {
             if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
