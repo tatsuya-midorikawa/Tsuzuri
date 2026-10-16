@@ -330,7 +330,7 @@ fn ordered_for_each_with_stack<T, P, C>(
 /// `ordered_for_each` over `items` that each worker takes by value, such as the `&mut` borrows
 /// of the elements of a vector: `produce(index, item)` runs once for each item.
 pub(crate) fn ordered_for_each_owned<I, T, P, C>(
-    items: Vec<I>,
+    items: impl IntoIterator<Item = I>,
     workers: usize,
     chunk: usize,
     claim: Option<&[usize]>,
@@ -714,7 +714,7 @@ mod tests {
         let mut values: Vec<u64> = (0..50).collect();
         let mut doubled = Vec::new();
         ordered_for_each_owned(
-            values.iter_mut().collect(),
+            values.iter_mut(),
             3,
             4,
             None,

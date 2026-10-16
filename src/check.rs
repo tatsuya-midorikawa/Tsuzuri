@@ -7155,10 +7155,9 @@ fn check_modules_collect(
     // changes only its own declaration (`computation::expand`). The loop that collects the results
     // runs in declaration order, stops once `diagnostics` is full, and a stage on one thread does
     // not even check the later bodies, so the outcome does not depend on the number of threads.
-    let declarations: Vec<_> = function_declarations.iter_mut().collect();
-    let workers = parallelism.workers(declarations.len(), FUNCTIONS_PER_WORKER);
+    let workers = parallelism.workers(function_declarations.len(), FUNCTIONS_PER_WORKER);
     ordered_for_each_owned(
-        declarations,
+        function_declarations.iter_mut(),
         workers,
         FUNCTION_CHUNK,
         None,
@@ -7355,10 +7354,9 @@ fn check_modules_collect(
     // Finishing a function reads the shared tables and changes only that function and its checker,
     // so the functions finish in parallel; what each leaves for the shared lists is applied in
     // function order.
-    let unfinished: Vec<_> = functions.iter_mut().zip(pending).collect();
-    let workers = parallelism.workers(unfinished.len(), FUNCTIONS_PER_WORKER);
+    let workers = parallelism.workers(functions.len(), FUNCTIONS_PER_WORKER);
     ordered_for_each_owned(
-        unfinished,
+        functions.iter_mut().zip(pending),
         workers,
         FUNCTION_CHUNK,
         None,
