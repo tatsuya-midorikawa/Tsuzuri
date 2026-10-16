@@ -87,11 +87,11 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | PR01 | [所有権・借用から導く最適化情報の付与](_completed/PR01-ownership-facts.md) | P1 | L | PX01 | done |
-| PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | todo |
-| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
+| PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | doing |
+| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | doing |
 | PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
-| PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | todo |
+| PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | doing |
 | PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | todo |
 | PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | todo |
 
@@ -99,14 +99,14 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](PM01-value-layout.md) | P1 | L | PX01 | todo |
+| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](PM01-value-layout.md) | P1 | L | PX01 | doing |
 | PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | todo |
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
-| PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | todo |
+| PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | doing |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
-| PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | todo |
+| PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | doing |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 
 ### PB. ビルド速度
@@ -115,8 +115,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
-| PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | todo |
-| PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | todo |
+| PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | doing |
+| PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | doing |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
 | PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
@@ -142,6 +142,51 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第3フェーズ8件の実装方針（2026-10-16）
+
+PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの実装と判断を許可した依頼に基づいて進めます。
+起票時の Phase 1 限定と `要承認` の注記は今回の依頼には適用せず、意味の保持と検証の条件は維持します。
+変更前の基準は `6d15b437`（第2フェーズの PR #26）、保存したコンパイラは `target/perf/phase3-baseline/tsuzuri-before` です。
+8 チケットはどれも起票時の `f8dc655` に対して書かれています。着手前に現行のコードと実測で照合し、食い違いを各チケットの
+「着手時の再検討（2026-10-16）」に記録して、次のとおり方針を改めました。
+
+- 第2フェーズ（PB01・PB02・PR01・PM06・PM07・PR04・PR05）と A17 は実装済みです。旧コードの行番号、未実装を前提とした停止条件、
+  PM06・PM07・PR01 より前の測定値は使わず、現行の型・ABI・配布形式・生成 IR を基準にします。
+- 効果が測れない最適化は既定にしません。テスト済みの opt-in として出荷するか、結果を記録して段を取り下げます。
+  実装済みの経路と計画、共有機での参考値と静かな機械での正式値を区別します。
+
+- **PB03**: PB01 の runtime object の事前ビルド・cache で、C runtime の並行 compile（D2）の対象は cold・`--no-cache`・
+  常に直接 compile の `threads.c`・`wasi.c`・`stack.c`（`-g`）に縮みました。先にこれらを cache 化し、並行化は計測ゲートの後に限ります。
+  並行する tool は組全体を 1 つの `tool.clang` 区間として計上し、`tests/time_passes.rs` の「段の和 ≤ total」を保ちます。
+  到達関数の剪定（D1）は `emit_native_build` 経由の native 実行ファイルだけで、`--emit llvm|object|wasm|shared` の出力は変えません。
+  リンカー（D6）は配布物の `tsuzuri-clang` が全 OS で zig 内蔵 LLD を使い、macOS では ld64.lld が Apple ld より遅いため、
+  明示的な opt-in `TSUZURI_LINKER=lld` だけにします（未設定は現行。見つからなければエラーで、黙って戻しません）。
+  bitcode の受け渡し（D7）は Clang の front end が `-O0` で 5〜9%・`-O3` で 3% のため採用せず、結果だけを記録します。
+  PB03 の範囲外で見つけた、配布物の同梱 resource を毎ビルド全件ハッシュする費用（約 19,600 file・759 MB）は、
+  manifest に保存した識別子で検証する形へ改めます。
+- **PM05**: Phase 1 は WASM の heap（`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`）を 1a（wasm32 と threads）・
+  1b（wasm64）に分け、F11 の上限の 3 行と F13 の関数名の置換、`size 0` の容量、threads の OOM trap の種別（`.unlocked` の誤分類）を保ちます。
+  ヘッダーが残るため Phase 1 はメモリ量を減らさず、確保・解放の O(1) 化と即時の結合が成果です。ヘッダーのない小さい確保は別施策として記録します。
+  Phase 2 の native `--allocator small` は C から IR を生成して実装し、既定は変えません。
+  Phase 3 の既定の切り替え（D10）は、複数 OS での測定・sanitizer・全 suite の通過を満たしたときだけ行い、満たさなければ opt-in のまま根拠を記録します。
+- **PR02**: F12 の `RangeFacts` は配列の添字専用の表で、区間の仕組みはありません。Phase 2 は解析器の新設になります。
+  整数の `+ - *` は言語定義で折り返すため、`nsw`／`nuw` は「その命令でその旗の overflow が起きない」証明のある箇所だけに付けます。
+  LLVM の IndVarSimplify が同じ旗を自力で付けるので、証拠が先です（Gate A）。生成コードの差が無ければ旗は既定で出さず、
+  `TSUZURI_RANGE_FLAGS=off|proven|audit` の opt-in とテスト専用の監査モードで出荷します。
+  演算子形と `Add.add` 形が別の経路になっている点（`$intrinsic` の呼び出し）は旗と独立の欠陥なので、同じチケットで揃えます。
+- **PR06**: 起票は F10（Channel・Mutex・`Task.scope`）と E14（trap 境界）より前で、D7（`remaining` を消して `helpers` を足す）と
+  「解錠してから signal し、その後に claim する」順は F10 のデッドロック検出と white-box テストを壊すため採りません。
+  代わりに group ごとの atomic な `next`（claim）、不変の `length`、参加者ごとにまとめて 1 回だけ減らす `remaining`、
+  mutex の下の CAS による失敗・trap の停止で、既存のプール試験を変えずに通す設計に改めます。deque は使いません。
+  起こす worker の数は、全員への broadcast をやめて 1〜2 本の初期 signal と join 時の連鎖にします。spin は既定 0 のままです。
+  `cpp/task_parallel`（0.768）は 2026-10-13 の集計で 0.94 に更新済みで、Phase 1 では動かない形（16 件 × 約 79 µs）なので、
+  この種目の改善は主張しません。機械語ではなく lock 回数と signal 回数の assert で受け入れを判定します。
+  WASM threads は 28 byte の `ThreadState`・import・poison bit の規約を保ちます。
+- **PM01**・**PR03**・**PB04**・**PM08**: 調査中です。確定した方針は、着手前にこの節へ追記します。
+
+- 共有機で 8 チケットを並行して進めるため、時間の測定は排他的な窓で行い、負荷を記録します。各チケットの時間の数値は参考値で、
+  静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
 
 ### 第2フェーズ7件の実装方針（2026-10-14）
 
@@ -297,3 +342,8 @@ graph LR
 | PB06 | D2（Phase 2: 常駐サーバー） |
 | PB07 | D1（既定の codegen unit 分割）、D10（Phase 2） |
 | PR01・PR02・PR07・PR08・PM07 | なし |
+
+第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
+（PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で承認済みです。
+承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力など）を
+行うものではありません。残りのチケット（PB05・PB06・PB07・PM02・PM03・PM04・PM09・PR07・PR08）は未承認のままです。
