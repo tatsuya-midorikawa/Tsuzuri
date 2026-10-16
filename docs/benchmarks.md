@@ -5720,6 +5720,93 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
+### LLVM への受け渡し（PB03、第3フェーズ、2026-10-16）
+
+比較の基準は main `6d15b437` の release（`tsuzuri-before`、SHA-256 `da78ba18e702baee…`）、after は PB03 のブランチの release です。
+Apple M1 Max（arm64）、macOS、Apple Clang 21.0.0、Homebrew LLD 23.1.1、Node 20.19.6。機械は 8 つの作業が共有していて、
+計測中の load average は 25〜190 でした（各表に書きます）。wall time は load に埋もれるので、結論には **プロセスの CPU 時間**
+（`wait4` の `ru_utime + ru_stime`。Clang など子プロセスを含む）、Clang 1 プロセスごとの時間、profile の標本数だけを使い、
+wall の改善は主張しません。静かな機械での正式な再計測は別に取ります。共有 CI に速度の合否の閾値は置きません。
+
+**到達する関数だけを Clang へ渡す（D1）。** 合成 1,000 モジュールのうち `Main.tz` が 100 モジュールだけを使う W2
+（`benchmarks/build/generate.mjs --modules 1000` に `mainSource(100)` の `Main.tz`）を、`build W2 -O0|-O3 --cpu generic --no-cache` で
+before と after を交互に 9 標本ずつ（load average 47〜91）測りました。
+
+| W2 | CPU 時間の中央値（最小〜最大） before → after | `emit` 段 | Clang の wall（load の影響を受ける） |
+| --- | --- | ---: | ---: |
+| `-O0` | 8,567 ms（8,374〜8,841）→ 2,966 ms（2,909〜3,205）。−65% | 1,454 → 294 ms | 8,021 → 1,201 ms |
+| `-O3` | 9,340 ms（8,691〜9,879）→ 6,022 ms（5,681〜6,527）。−36% | 1,270 → 222 ms | 10,881 → 4,926 ms |
+
+`emit` が縮むのは、到達しない関数の本体を生成しなくなるためです。IR だけを Clang に渡す事前の測りでは、Clang の時間は
+`-O0` で 246 → 72 ms、`-O3` で 343 → 303 ms でした（O3 の大半は最適化パスで、削れる割合が小さい）。全 public 関数が使われる
+hello や合成 1,000 モジュールの全使用では IR は変わりません。例とフィクスチャの 124 プロジェクト、992 比較では、実行ファイルを作れた 24 件のうち 4 件
+（`examples/polymorphism` 5/108 関数、`tests/fixtures/computations` 13/954、剪定用の 2 件）だけが関数を減らし、挙動・出力は同じです。
+`--emit llvm|object|wasm|shared` は 521 比較すべてが byte 単位で同じです（`benchmarks/check-handoff-equivalence.mjs`）。
+
+**同梱ツールチェーンの識別（WP-F）。** 配布物（約 19,600 ファイル・759 MB）と成果物キャッシュを併用すると、従来は毎ビルドで
+全ファイルのフィンガープリントと Zig（185 MB）・Clang の SHA-256、ランチャーの `--version`（2 プロセス）を計算しました。
+`examples/hello -O0` を同じキャッシュで繰り返すと、`cache` 段は before が 39.6〜51.0 s（whole-build cache が当たるビルドでも。load average 約 160）、
+プロセスの CPU 時間は約 8 s（user 5.0 + sys 2.9）でした。after は、署名が変わらない 2 回目以降が `cache` 段 85〜170 ms、プロセスの CPU 時間 0.12 s です。
+最初の 1 回は全ファイルを並列にハッシュして `<cache>/bundle/` に控えます。署名の変わり方、信頼の範囲、`bundle/` を消す条件は
+[ランタイム object](../_tsuzuri/language-reference/compiler/usage.md#ランタイム-object) にあります。runtime のキー（2 件）は旧コンパイラが作る値と同じで、
+配布物の `share/runtime/manifest.json` の fingerprint は Node の `scripts/toolchain/runtime.mjs` の値と一致します（同梱 object を消費して runtime cache が空）。
+配布物の `lib/` に 1 ファイルを足すと memo が外れ、全体を検証し直して同梱 object を拒否しました。Homebrew の `wasm-ld`（`lld` への symlink）では、
+従来は wasm のビルドごとに `build cache disabled: tool version query failed` を出して whole-build cache を使いませんでしたが、after は使います。
+
+**C ランタイムの cache（WP2）。** `threads.c`・`wasi.c`・`-g` 実行ファイルのスタック検査 `stack.c` は、ビルドのたびに Clang の別プロセスで
+コンパイルしていました。runtime cache に載せた結果、ソースを編集して whole-build cache が外れる再ビルドでも、これらのプロセスは 0 回です
+（9 標本の交互計測、cache あり、load average 約 100。CPU 時間の中央値）。
+
+| 再ビルド | before | after | 差 |
+| --- | ---: | ---: | ---: |
+| WASM threads `-O0` | 418.9 ms | 389.6 ms | −29 ms |
+| WASM threads `-O3` | 1,436 ms | 1,393 ms | −43 ms |
+| WASI `-O0` | 250.7 ms | 227.6 ms | −23 ms |
+| WASI `-O3` | 409.2 ms | 295.7 ms | −113 ms |
+| `-g` のスタック検査付き実行ファイル `-O0` | 373.4 ms | 330.7 ms | −43 ms |
+
+WASM threads と WASI の成果物は before と byte 単位で同じです（`--emit wasm` は `-O0` の 124 プロジェクト、`--emit object` は tasks と hello の `-O0`・`-O3`）。`--no-cache` は従来どおり毎回コンパイルします。
+
+**並行実行は採用しません（D2・D4）。** cold のビルドで Clang の各プロセスの時間を測り、独立な組が完全に重なる理想の下限を計算しました
+（load average 約 45、1 標本。実行ファイルの compile と link は 1 プロセスなので分けません）。
+
+| cold のビルド | Clang の合計 | 理想の並行 | 縮む上限 |
+| --- | ---: | ---: | ---: |
+| hello `-O3`（numeric 526 ms、task.c 41 ms、link 130 ms） | 697 ms | 656 ms | 41 ms |
+| hello `-O0` | 184 ms | 146 ms | 38 ms |
+| `examples/tasks` `-O0` | 238 ms | 164 ms | 73 ms |
+| `-g` のスタック検査付き `-O0` | 185 ms | 134 ms | 51 ms |
+| WASM threads `-O3` / `-O0` | 1,098 / 198 ms | 1,038 / 163 ms | 60 / 35 ms |
+| WASM hello `-O3`（numeric 551 ms、module 106 ms） | 657 ms | 551 ms | 106 ms |
+| WASI hello `-O3`（numeric 621 ms、wasi 149 ms、module 110 ms） | 880 ms | 621 ms | 259 ms |
+| threads の `--emit object` `-O3` | 1,120 ms | 1,060 ms | 60 ms |
+
+縮められるのは runtime object が cold の最初の 1 回だけで（warm のビルドは Clang が 1 プロセス以下）、上限も 35〜259 ms と load の広がりの内側です。
+実装は `compile_runtime_object` を計画・実行・保存に分け、`build_complete` の約 400 行を thread で囲むもので、runtime object を変える他のチケットと衝突します。
+上限が小さいので入れていません。再計測で cold のビルドの割合が大きいと分かったら、同じ表を取り直して判断します。
+
+**IR の渡し方とリンカー（D5・D6・D7）。** 変えません。数字は次のとおりです（合成 100 モジュール、IR 3.9 MB）。
+Clang の front end（IR の読み込みと検証）は `-O0` で 4.8〜9%、`-O3` で 3% で、機械語生成が `-O0` の 88%、最適化が `-O3` の 76% です。
+`.ll` を `.bc` にした Clang の時間は `-O0` で 493 → 488 ms、`-O3` で 2,858 → 2,792 ms（1〜2%）、`llvm-as` は 171 ms（`-O0` の Clang の 35%）で、
+bitcode は IR のテキストと同じ意味・同じ決定性を保てても、得が出ないので採用しません。配布物の `tsuzuri-clang` が `*.ll` の path と限った flag を要する制約もあります。
+リンカーは、macOS の ld64.lld が Apple の ld より遅く（1,000 モジュールのオブジェクト 8.9 MB で 84 ms と 109 ms）、`ld64.lld -r` は未対応です。
+`TSUZURI_LINKER=lld` を opt-in で足しましたが、既定は変えていません（Linux の実測は未取得）。
+
+**IR の後処理（D8）。** 非 strip の release を `sample` で測りました（合成 3,000 モジュールの `--emit llvm -O0`、IR 112 MB、2,967 標本）。
+`emit_with_options` は 33%（978 標本）で、うち関数の生成が約 580、`with_vector_alignment` が約 131（4.4%。埋め込みの `numeric.ll` が 256 bit ベクトルを持つので
+行ごとの処理が本当に走ります）、`RuntimeSymbols::collect` が 34（1.1%）、`escape::recursive_functions` が 35（1.2%）、`program_reach` が 30（1.0%）でした。
+`output.replace`・`lines().join` のような単なる複写は上位に出ません。runtime object を使うビルド（IR に 256 bit ベクトルがない）の事前判定を 6 回の全走査から
+1 回の `<` の検索へ替える試作は、1,000 モジュールの実行ファイルで `emit` 1,307.7 → 1,289.4 ms（1.4%）にしかならず、採否の基準（2%）を下回るので戻しました。
+
+**WASM の剪定（D9）。** 採用しません。試作（`--emit wasm` だけ根を限る）の 1,000 モジュール `-O0` では、成果物が 5,905,346 bytes で変わらず（`wasm-ld` が未使用の関数を
+元から捨てるため）、効果は Clang の時間だけで、W2 のように一部だけ使う形でしか出ないと見込みますが、その形では測っていません。`host_entries`・`reaches_reactor` の根の整合と 33 か所の `EmitOptions`、
+Async・host の glue の到達性の検証が要り、得に見合いません。
+
+再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc` が cache あり）、
+`node tests/handoff_tools.mjs <compiler>`・`node tests/llvm_handoff.mjs <compiler>`・`node tests/bundle_identity.mjs <compiler>`（プロセスの数・引数・失敗の検査）。
+測定の手順（W2 の作り方、交互 9 標本、`wait4` の CPU、Clang 1 プロセスごとの時間を記録する wrapper、`sample` の読み方）は
+[PB03 の完了記録](../_perfs/_completed/PB03-llvm-handoff.md) にあります。PX03 の `build`・`build-runtime-{cold,warm}` の正式な before／after は静かな機械で取り直します。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。
