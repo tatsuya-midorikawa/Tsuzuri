@@ -81,6 +81,8 @@ impl FunctionEmitter<'_, '_> {
         let stride = self.expression(step);
         // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
+        self.ranges
+            .enter_counter(self.module, local, start, step, finish);
         let Type::Integer(bits, signed) = local.ty else {
             unreachable!("integer range checked")
         };
@@ -101,6 +103,7 @@ impl FunctionEmitter<'_, '_> {
         }
         if one || minus_one {
             let latch = self.label();
+            let step = self.increment_block(&advance);
             let order = match (signed, minus_one) {
                 (true, false) => "sle",
                 (true, true) => "sge",
@@ -111,7 +114,7 @@ impl FunctionEmitter<'_, '_> {
             self.branch(&nonempty, &work, &exit);
             self.begin(&work);
             self.instruction(format!(
-                "{current} = phi {ty} [ {first}, %{entry} ], [ {next}, %{advance} ]"
+                "{current} = phi {ty} [ {first}, %{entry} ], [ {next}, %{step} ]"
             ));
             self.instruction(format!(
                 "store {ty} {current}, ptr {}",
@@ -125,7 +128,16 @@ impl FunctionEmitter<'_, '_> {
             let done = self.value(format!("icmp eq {ty} {current}, {last}"));
             self.branch(&done, &exit, &advance);
             self.begin(&advance);
-            self.instruction(format!("{next} = add {ty} {current}, {stride}"));
+            // `first` is on the right side of `last` (`nonempty`) and `current` has not reached
+            // `last`, so the step stays between them: the signed view cannot overflow, and an
+            // unsigned loop only counts up (R1).
+            let flags = Flags {
+                nsw: signed,
+                nuw: !signed,
+            };
+            self.audit_increment(&step, bits, &current, &stride, flags);
+            let words = self.flag_text(flags);
+            self.instruction(format!("{next} = add {words}{ty} {current}, {stride}"));
             self.jump(&work);
             self.hint_loop(body, reads);
         } else {
@@ -198,13 +210,14 @@ impl FunctionEmitter<'_, '_> {
         let test = self.label();
         let work = self.label();
         let advance = self.label();
+        let step = self.increment_block(&advance);
         let exit = self.label();
         let current = self.fresh();
         let next = self.fresh();
         self.jump(&test);
         self.begin(&test);
         self.instruction(format!(
-            "{current} = phi i64 [ {first}, %{entry} ], [ {next}, %{advance} ]"
+            "{current} = phi i64 [ {first}, %{entry} ], [ {next}, %{step} ]"
         ));
         let valid = self.value(format!(
             "icmp {} i64 {current}, {last}",
@@ -228,10 +241,16 @@ impl FunctionEmitter<'_, '_> {
         self.jump(&advance);
         self.begin(&advance);
         // A narrow range's first out-of-range value still fits i64, including signed/unsigned extrema.
-        self.instruction(format!(
-            "{next} = add i64 {current}, {}",
-            if descending { -1 } else { 1 }
-        ));
+        // `current` is between the two extended endpoints, so the i64 step cannot overflow when read
+        // as signed, and it cannot when read as unsigned either while the type is unsigned (R2).
+        let stride = if descending { "-1" } else { "1" };
+        let flags = Flags {
+            nsw: true,
+            nuw: !signed,
+        };
+        self.audit_increment(&step, 64, &current, stride, flags);
+        let words = self.flag_text(flags);
+        self.instruction(format!("{next} = add {words}i64 {current}, {stride}"));
         self.jump(&test);
         self.hint_loop(body, reads);
         self.begin(&exit);

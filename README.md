@@ -863,6 +863,8 @@ tsuzuri lsp
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
+- **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
+- **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
 - **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 
 ---
@@ -879,6 +881,7 @@ sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテストスレッド。PowerShell は先に $env:RUST_MIN_STACK='4194304'
+TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
 cargo build --release --locked
 
 # 統合 E2E テスト・言語機能テスト
@@ -894,6 +897,9 @@ node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
 node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカルな let rec の差分テスト（B09）。乱数で作った入れ子のグループ・クロージャ・借用の捕捉のプログラムを、独立した JS の評価器と照合する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。リフト（src/closures_rec.rs）を変えたときに回す
 node tests/last_use_fuzz.mjs target/release/tsuzuri 300 1000 4   # 最後の使用の move（A17 Phase 1・2）を独立した AST 評価器と native O0/O3 で照合。引数は [コンパイラ] [件数] [最初の seed] [深さ]
+node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 300 1 4   # 整数の範囲証明（PR02）の差分テスト。型の端に定数を合わせた乱数のプログラムを、独立した BigInt の評価器と、audit（-O0）・proven・off（-O3）の wasm32 で照合する。TSUZURI_FUZZ_NATIVE=1 で native も。引数は [コンパイラ] [件数] [最初の seed] [深さ]。型付き IR や emitter を変えた後に回す
+node tests/range_flags_audit.mjs target/release/tsuzuri quick   # 既存の node の suite を TSUZURI_RANGE_FLAGS=audit と proven で実行し、fuzz も回す（quick は整数の suite だけで、負荷のある機械で 20 分ほど。full はすべての suite で 1 時間以上）。Rust のテストは TSUZURI_RANGE_FLAGS=audit cargo test --locked
+node benchmarks/run-range-flags.mjs target/release/tsuzuri   # 旗が asm を変えるか: 12 の corpus を off と proven で arm64・x86_64（-O1〜-O3）と wasm32 に出して比べる（PR02 Gate A）
 node tests/json.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
@@ -913,6 +919,7 @@ node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
 node tests/frontend_cache.mjs target/release/tsuzuri
+node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
@@ -959,6 +966,7 @@ node benchmarks/metrics.mjs process target/release/tsuzuri --out target/perf/PX0
 node benchmarks/metrics.mjs report target/perf/PX01-after --baseline target/perf/PX01-before
 node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-example
 node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before <PB04 より前の compiler> --out target/perf/PB04-after before 1 2 4 8 unset   # TSUZURI_THREADS ごとの check／emit-llvm を交互に測る（PB04）。--cache cold|warm で frontend cache も
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）

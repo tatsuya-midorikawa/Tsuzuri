@@ -1,4 +1,7 @@
-use tsuzuri::llvm::{EmitOptions, EmitOutput, Entry, emit_with_options, emit_with_trap_info};
+use tsuzuri::llvm::{
+    EmitOptions, EmitOutput, Entry, RangeFlags, emit_with_options, emit_with_range_flags,
+    emit_with_trap_info,
+};
 use tsuzuri::trap::{TrapKind, TrapSource};
 
 const FORWARD: &str = r"export def shape :: i64 -> i64
@@ -231,27 +234,51 @@ fn other_trap_kinds_are_unchanged() {
     }
 }
 
+/// The IR of `source` in one flag mode (PR02), whatever `TSUZURI_RANGE_FLAGS` says.
+fn emit_flags(source: &str, flags: RangeFlags) -> String {
+    let module = tsuzuri::analyze(source).unwrap();
+    let options = EmitOptions {
+        entry: Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: tsuzuri::llvm::Allocator::System,
+        f16: tsuzuri::llvm::F16Path::Soft,
+    };
+    emit_with_range_flags(&module, options, flags).unwrap()
+}
+
 #[test]
 fn range_proofs_add_no_llvm_facts() {
+    // F12 removes checks; it adds no `llvm.assume` or `!range`, in any flag mode. The overflow
+    // flags belong to PR02: none without a proof (off, and audit, which traps instead), and in
+    // proven mode only on integer `add`, `sub` and `mul`.
     for (name, source) in PROVEN {
-        let module = tsuzuri::analyze(source).unwrap();
-        let options = EmitOptions {
-            entry: Entry::Library,
-            wasm: false,
-            debug_output: false,
-            runtime_objects: false,
-            wasm_simd128: false,
-            allocator: tsuzuri::llvm::Allocator::System,
-            f16: tsuzuri::llvm::F16Path::Soft,
-        };
-        let ir = emit_with_options(&module, options).unwrap();
-        for fact in ["llvm.assume", "!range", " nsw ", " nuw "] {
-            assert!(!ir.contains(fact), "{name}: {fact}");
+        for flags in [RangeFlags::Off, RangeFlags::Proven, RangeFlags::Audit] {
+            let ir = emit_flags(source, flags);
+            for fact in ["llvm.assume", "!range"] {
+                assert!(!ir.contains(fact), "{name} {flags:?}: {fact}");
+            }
+            for line in ir.lines().filter(|line| {
+                line.split(|c: char| !c.is_alphanumeric())
+                    .any(|word| matches!(word, "nsw" | "nuw"))
+            }) {
+                let flagged = line.split_once(" = ").is_some_and(|(_, rest)| {
+                    ["add ", "sub ", "mul "]
+                        .iter()
+                        .any(|opcode| rest.starts_with(opcode))
+                });
+                assert!(
+                    flags == RangeFlags::Proven && flagged,
+                    "{name} {flags:?}: {line}"
+                );
+            }
+            assert!(
+                ir.contains("getelementptr inbounds i64"),
+                "{name}: elements are still addressed"
+            );
         }
-        assert!(
-            ir.contains("getelementptr inbounds i64"),
-            "{name}: elements are still addressed"
-        );
     }
 }
 

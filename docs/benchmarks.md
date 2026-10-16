@@ -5873,6 +5873,190 @@ F1'・C5 の後に残る差で採否を決め、**入れていません**。同�
   試作は、worker を 1,024 個使い、`-O0` の `__text` が 451,364 bytes（CE より大きい）で、期待する形になりませんでした。
 - 再開する条件は、`-O0` の計算式の速度や大きさを目標にするとき、または 128 を超える連鎖を持つ現実の program が現れたときです。
 
+### 整数の範囲証明と overflow フラグ（PR02）
+
+2026-10-16 に、整数の `+ - *` に `nsw`／`nuw` を書くと LLVM の出力が変わるかを測りました。`benchmarks/run-range-flags.mjs` は、12 の corpus（`benchmarks/` の control・computations・bounds_shapes・matrix・simd・utf・dispatch・apps・cpp・allocation、`tests/fixtures/control`、旗の候補を集めた `benchmarks/range_flags`）を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけで実行しません）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べます。Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは commit `ad13ba96` の非 LTO の release です。実行は決定的で、静かな機械は要りません。
+
+| corpus | 旗のある整数 `+ - *`（IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
+| --- | ---: | --- | --- |
+| control | 20 / 191 | 同じ | 同じ |
+| computations | 8 / 201 | 同じ | 同じ |
+| bounds_shapes | 4 / 140 | 同じ | 同じ |
+| simd | 2 / 135 | 同じ | 同じ |
+| dispatch | 2 / 131 | 同じ | 同じ |
+| cpp | 735 / 1,045 | 同じ | 同じ |
+| allocation | 12 / 162 | 同じ | （export なし） |
+| `tests/fixtures/control` | 715 / 1,169 | 同じ | 同じ |
+| utf | 12 / 156 | 同じ | module が 7 bytes 増える（13,673 → 13,680） |
+| matrix | 65 / 401 | 全レベルで差。命令数は arm64 `-O3` が 2,567 → 2,571、x86_64 `-O3` が 3,238 → 3,222 | 19 bytes 減る（53,023 → 53,004） |
+| apps | 703 / 1,118 | 全レベルで差。arm64 `-O3` が 16,265 → 16,260、x86_64 `-O3` が 16,571 → 16,563 | 31 bytes 減る（91,590 → 91,559） |
+| range_flags | 31 / 189 | arm64 `-O1` だけ 24 行（412 → 412）。ほかは同じ | 同じ |
+
+差のあった関数は、matrix では std の `Matrix.multiply_rows`・`Matrix.fma_rows` の 4 つの単相化（1 関数あたり 1〜5 命令。arm64 `subs; b.mi` が `b.lt`、`sub; tbnz` が `cmp; b.le`、`and ...f8` が `and ...7ff...f8`）、apps では std の `String.split` と `String.join` の 2 つ（1〜8 命令）だけです。どれも比較の向きとレジスタ割り当ての違いで、ベクトル化の有無や境界検査は変わりません。旗の候補を意図して集めた `benchmarks/range_flags`（`values[i + 1]`・`values[2 * i]`・窓の和・降順・`i8u` の拡張・マスク・桁の分解・条件で絞った値）でも、`-O2` と `-O3` の assembly は `off` と同じです。LLVM の IndVarSimplify などが、増分や型や `and` のマスクから同じ旗を自力で付けるためで、PR02 より前の調査（旗を IR の文字列で足した上限の実験）の結果とも一致します。
+
+`String.split`／`String.join` の時間は、次のプログラム（2,000 個の文字列を `,` で `join` して `split` し直す往復を 4,000 回）を、`off` と `proven` で `-O3` の実行ファイルにして交互に 15 回ずつ走らせて比べました（Apple M1 Max。ほかの処理と共有した機械で、負荷平均（1・5・15 分）は開始時が 55.78・93.24・123.14、終了時が 53.03・90.82・121.76）。両方の出力は同じ `63098000` で、中央値は `off` が 319.1 ms（最小 274.7、最大 855.5）、`proven` が 322.7 ms（最小 292.3、最大 712.1）です。差は標本の広がりの内側で、速くなったとは言えません。
+
+```tz
+export def churn :: i64 -> i64 -> i64
+fn churn fields rounds =
+    let parts = new [string](fields, \i -> to_string (i * 7919 % 100003))
+    let separator = ","
+    let mut total = 0i64
+    for round in 0 .. rounds - 1 do
+        let text = String.join (ref separator) (ref parts)
+        let tokens = String.split (ref separator) (ref text)
+        total = total + text.length + tokens.length + round
+    total
+```
+
+asm が変わった Matrix の 4 つの関数の時間は、負荷平均が 100 を超える機械では意味のある比較にならないので測っていません。旗が実行を速くすると言える根拠は、asm の比較からも時間の比較からも得られていません。そのため旗の既定は `off` のままで、`TSUZURI_RANGE_FLAGS=proven` はオプトインです。旗のある関数は PR01 の戻り値の `noundef` を失い（D13）、`proven` で 1 つでも旗が誤ればメモリ安全性を壊す poison になるので、測れる利得がない間は既定にしません。証明の健全性は、`audit` で既存の suite を通すこと、1〜4 bit の型の全区間・全値の総当たり、34 本のプログラムの全入力評価、乱数のプログラムと独立した BigInt の評価器との照合、証明をわざと誤らせたコンパイラを乱数のプログラムが見つけることで確かめています（[ticket](../_perfs/_completed/PR02-integer-ranges.md)）。x86 の実機は使えないので、x86_64 の結果は assembly の比較だけで、速度は測っていません。
+
+ほかの重い処理を止めた機械で時間を測り直すには、`TSUZURI_RANGE_FLAGS=off node benchmarks/run-matrix.mjs <コンパイラ>` と `TSUZURI_RANGE_FLAGS=proven node benchmarks/run-matrix.mjs <コンパイラ>` を交互に実行し、`Matrix.mul`・`Matrix.mul_parallel`・`Matrix.mul_fma` の表の中央値を比べます（`--quick` は n = 16 だけです）。`String.split`／`String.join` は上のプログラムを `off` と `proven` で `-O3` の実行ファイルにして交互に走らせます。asm の差を見直すときは `node benchmarks/run-range-flags.mjs <コンパイラ>` です。
+
+### フロントエンドの並列化（PB04）
+
+フロントエンドの構文解析（frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査は、`TSUZURI_THREADS` が許すスレッド数（CLI で未設定なら使える core 数の最大 8）で並列に動きます。
+結果は入力の順に、並列化前と同じ処理へ渡すので、診断・IR・cache の bytes は thread 数で変わりません（[`tests/parallel_frontend.mjs`](../tests/parallel_frontend.mjs) が基準の compiler とも比べます）。ここは速度だけを扱います。
+
+**条件。** Apple M1 Max（10 core。性能 8・効率 2）、macOS 27.0.1、Rust 1.98.1、Apple Clang 21.0.0、Node v20.19.6。
+before は main `6d15b437` の release（SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）、
+after は PB04 の `bc9b7bfc` の release（`af340a11e10350bd6b7740826d860463359030a238dec81af41c307454ffcadd`）で、どちらも thin LTO・CGU 1 です。
+cache は無効（cold／warm の表だけ有効）、`LC_ALL=C`、`TSUZURI_TIME_PASSES=1` です。
+構成を 1 回ごとに交互に実行し、最初の 1 回を捨てて（[`benchmarks/run-threads.mjs`](../benchmarks/run-threads.mjs) の手順）、中央値（最小–最大）を出しました。
+実時間はプロセス全体（起動と終了を含み、Microsoft Defender が `open` を遅くします）、total は compiler の `TSUZURI_TIME_PASSES` の total、CPU 時間は user+sys（粒度 10 ms）、
+parse・check・ownership は段の時間（ms）です。生成した入力は PX03 の `benchmarks/build/generate.mjs` の 200 と 1,000 module です。
+
+**共有機械の目安です。** 他の作業のビルドやテストが動いており、負荷平均は測定中に 20〜50 でした（2026-10-16 19:32〜19:53、`uptime`）。
+`with-lock.sh measure` は何時間待っても取れなかったので、heavy の slot を 1 つ取って測りました。
+静かな機械での正式な比較は統合担当が行います。生データは `target/perf/PB04/raw-*.json` と `measure-all.log`（`target/` は追跡されません）にあります。
+
+hello の `check`:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 107（53–589） | 39.8（37.2–47.4） | 30 | 21.0（20.7–21.3） | 5.0 | 29.7 |
+| 2 thread | 116（43–256） | 34.8（32.3–52.1） | 50 | 21.4（21.0–22.2） | 3.7 | 26.0 |
+| 4 thread | 98（37–193） | 27.5（24.9–58.5） | 50 | 22.0（21.5–22.8） | 3.0 | 19.6 |
+| 8 thread | 103（41–220） | 26.6（22.5–38.3） | 60 | 22.5（22.1–22.9） | 3.0 | 18.7 |
+| before | 112（56–243） | 39.4（37.4–45.7） | 30 | 20.9（20.6–21.1） | 5.0 | 29.5 |
+| 未設定（自動） | 93（37–180） | 26.5（23.1–36.7） | 60 | 22.6（22.0–23.2） | 3.0 | 18.5 |
+
+合成 200 module の `check`:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 445（390–649） | 375.2（356.6–440.6） | 360 | 144.3（142.8–145.6） | 42.0 | 216.1 | 30.3 |
+| 2 thread | 432（342–635） | 348.4（322.1–468.5） | 480 | 144.8（143.3–146.8） | 31.2 | 194.2 | 22.4 |
+| 4 thread | 350（285–571） | 278.3（246.1–361.3） | 500 | 146.9（144.8–149.3） | 19.9 | 150.2 | 13.3 |
+| 8 thread | 339（279–441） | 265.6（229.2–333.9） | 520 | 150.7（147.3–153.3） | 16.7 | 140.7 | 10.6 |
+| before | 446（399–614） | 372.9（361.5–445.9） | 350 | 142.1（140.9–143.5） | 41.0 | 214.5 | 30.1 |
+| 未設定（自動） | 310（261–698） | 265.4（229.9–325.8） | 520 | 151.2（149.1–154.0） | 14.2 | 143.0 | 10.5 |
+
+合成 200 module の LLVM 出力（`-O0`、`--emit llvm`）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | emit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 725（607–7183） | 646.8（593.4–2676.0） | 600 | 154.9（153.0–156.4） | 39.8 | 211.6 | 226.5 |
+| 8 thread | 574（500–2479） | 533.6（484.6–1310.9） | 760 | 161.3（158.6–166.0） | 12.9 | 131.3 | 222.9 |
+| before | 694（608–2950） | 632.5（596.9–1314.3） | 590 | 155.0（153.8–156.7） | 40.5 | 207.1 | 219.3 |
+
+合成 1,000 module の `check`（1 回目）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 2228（1916–3458） | 2104.6（1861.3–3286.5） | 1740 | 631.0（612.2–632.6） | 180.7 | 953.0 | 154.8 |
+| 2 thread | 1997（1766–5416） | 1904.6（1739.2–5324.7） | 2240 | 633.6（614.3–635.8） | 130.2 | 837.3 | 112.7 |
+| 4 thread | 1683（1444–10417） | 1573.1（1402.1–10135.8） | 2260 | 635.2（628.5–637.5） | 63.4 | 636.5 | 60.3 |
+| 8 thread | 1624（1528–5071） | 1514.2（1414.1–4018.1） | 2390 | 642.4（632.4–647.4） | 47.0 | 577.9 | 40.1 |
+| 10 thread | 1749（1323–2295） | 1674.5（1301.3–2173.9） | 2430 | 643.0（638.7–668.3） | 45.3 | 609.0 | 43.1 |
+| before | 2200（1933–5511） | 2109.4（1853.9–5389.2） | 1720 | 619.7（616.2–623.5） | 184.2 | 943.0 | 157.0 |
+| 未設定（自動） | 1795（1402–5886） | 1691.5（1359.5–2665.1） | 2390 | 639.3（621.1–662.3） | 49.2 | 583.0 | 41.1 |
+
+同じ構成の再測定（21 標本。`8+A=1` は `8` と同じ構成で、ノイズの幅を見るために入れました）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 2178（1937–2535） | 2067.6（1892.3–2430.8） | 1740 | 628.5（611.4–633.3） | 182.2 | 952.4 | 155.7 |
+| 4 thread | 1636（1442–3486） | 1544.1（1393.3–3323.8） | 2290 | 632.5（616.0–640.1） | 63.0 | 649.2 | 60.6 |
+| 8 thread | 1544（1263–3616） | 1489.6（1241.3–3450.8） | 2440 | 638.5（634.6–650.3） | 42.4 | 566.2 | 39.7 |
+| before | 2135（1927–3237） | 2014.8（1845.0–3193.5） | 1730 | 620.1（615.7–622.3） | 180.6 | 936.1 | 155.4 |
+| 8+A=1 | 1449（1337–2094） | 1413.0（1262.9–2041.5） | 2430 | 637.6（632.2–648.1） | 43.5 | 569.2 | 39.8 |
+
+合成 1,000 module の LLVM 出力（`-O0`）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | emit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 3356（3112–3562） | 3258.6（3085.5–3477.9） | 2910 | 663.1（657.8–666.2） | 181.3 | 957.0 | 1080.7 |
+| 8 thread | 2712（2567–5031） | 2634.5（2547.8–4909.3） | 3590 | 675.1（669.9–679.4） | 44.9 | 575.5 | 1091.2 |
+| before | 3313（3156–6589） | 3276.4（3133.0–6527.0） | 2870 | 667.6（665.2–668.5） | 179.9 | 942.1 | 1065.8 |
+| 未設定（自動） | 2824（2653–3020） | 2706.5（2557.9–2926.5） | 3580 | 674.3（668.2–688.6） | 49.3 | 571.6 | 1101.9 |
+
+合成 1,000 module の `check`、frontend cache が cold（毎回空）と warm:
+
+| 構成 | 実時間 ms | compiler の total ms | parse | 最大 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 1 thread | 2281（2125–3380） | 2230.8（2052.6–3026.3） | 276.8 | 638.0（622.1–643.4） |
+| 8 thread | 1531（1370–3961） | 1429.2（1347.3–3561.8） | 64.2 | 653.7（646.2–657.0） |
+| before | 2279（2125–2703） | 2251.7（2019.1–2655.7） | 275.9 | 631.1（627.7–632.7） |
+
+| 構成 | 実時間 ms | compiler の total ms | parse | 最大 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 1 thread | 2060（1910–4934） | 1960.0（1826.0–4822.0） | 117.1 | 629.4（623.5–632.0） |
+| 8 thread | 1412（1370–6485） | 1333.0（1305.6–5244.0） | 29.0 | 641.6（633.5–662.3） |
+| before | 2065（1933–3066） | 2020.4（1882.8–2896.2） | 114.7 | 632.8（629.4–634.9） |
+
+読み取り:
+
+- `TSUZURI_THREADS=1` は従来と同じ経路で、速さも変わりません（total の 1 thread ÷ before は hello 1.010、200 module 1.006、1,000 module 0.998、LLVM 出力 0.995）。
+- hello: total は 39.4 ms から 8 thread で 26.6 ms、未設定（8 になる）で 26.5 ms に縮み、1.48〜1.49 倍です。プロセスの実時間は起動と終了の費用が大きく、112 ms から 103／94 ms で、遅くはなっていません（最小–最大は重なります）。CPU 時間は 30 から 60 ms、最大 RSS は 20.9 から 22.5 MiB（+8.0%）です。
+- 200 module の `check`: total は 372.9 ms から 265.6 ms（1.40 倍。1 thread 比 1.41 倍）です。8 thread と 1 thread の段ごとの比は parse 2.5 倍、check 1.54 倍、ownership 2.9 倍で、CPU は +49%、最大 RSS は +6.0% です。
+- 1,000 module の `check`: total の 1 thread 比は、1 回目が 8 thread で 1.39 倍、10 thread で 1.26 倍、未設定（これも 8 thread）で 1.24 倍、再測定が 8 thread で 1.39 倍と 1.46 倍（同じ構成の 2 回）、4 thread で 1.34 倍です。同じ構成どうしが最大 12% 違うので、ノイズの幅はそのくらいです。改訂した目標 G1 の 1.4 倍は、届いた測定と届かなかった測定があり、「ほぼ達成」と書きます。
+  段ごとの 1 thread に対する 8 thread の比は parse 3.8 倍（10 thread で 4.0 倍。G2 の 1/4 にちょうど届く）、check 1.65 倍、ownership 3.9 倍です。CPU 時間は +37%（1,740 から 2,390 ms）、最大 RSS は 1 thread 比 +1.8%（631.0 から 642.4 MiB。before 比 +3.7%）で、G4 の +10% 以内です。
+- LLVM 出力: 1,000 module で total が 3,258.6 ms から 2,634.5 ms（1.24 倍。未設定で 1.20 倍）、200 module で 1.21 倍です。emit は 1,066〜1,102 ms のまま（逐次）で、CPU は +23%、最大 RSS は +1.8% です。
+- frontend cache: cold は total が 2,230.8 から 1,429.2 ms（1.56 倍）で parse が 4.3 倍、warm は 1,960.0 から 1,333.0 ms（1.47 倍）で parse が 4.0 倍です（SHA-256 と復号も並列になります）。
+- 床: 1,000 module で 8 thread の total 1,514 ms のうち、load 407 ms、specialize 248 ms、closures 44 ms の 699 ms（46%）は並列にしない段です。`check` の 578 ms の中にも、名前と signature の収集、`solve_members`、`constants::fold`、`recursion::check`、`warnings::unused_private` の逐次の部分があります（HEAD `6d15b437` の計装版で `unused_private` 146 ms、`recursion::check` 77 ms、名前と signature の収集 79 ms、`validate` 34 ms、`constants::fold` 29 ms。チケットの「着手時の再検討」）。10 thread は 8 thread より速くなりませんでした（この機械は性能 core が 8 個で、残りの 2 個は効率 core です）。
+
+worker 1 つあたりの関数の数（`FUNCTIONS_PER_WORKER`）の探索（値を環境変数で変えられるようにした使い捨ての計測用ビルド。リポジトリには入れていません。hello を 61 標本）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 thread | 128（59–900） | 37.2（34.0–126.4） | 40 | 21.7（21.0–22.2） | 3.0 | 29.3 |
+| before | 120（54–2268） | 38.8（36.8–71.1） | 30 | 20.9（20.6–21.3） | 5.0 | 28.9 |
+| 8+FPW=64+OPW=64 | 108（51–1291） | 26.2（23.3–92.3） | 60 | 22.7（22.1–23.6） | 3.1 | 18.5 |
+| 8+FPW=16+OPW=16+PBW=8192+PSW=1 | 102（44–2203） | 27.2（21.7–115.7） | 60 | 23.3（22.1–24.4） | 2.7 | 19.4 |
+
+256 では hello の check が 1 thread と変わらず（29.3 ms。標準ライブラリの宣言だけで 256〜511 関数あり、worker が 1 つ未満になるため）、64 で 18.5 ms（total 26.2 ms）になり、16 と parse の 8 KiB・1 file でも 19.4 ms で、これ以上は得になりません。
+200 module は 256・64・16 のどれでも total が 230 ms 前後で同じです。1 回に取る関数の数（chunk の 1・8・32）も 200 module で差が出ません（236.2・230.0・234.6 ms）。そこで 64 にしました（bc9b7bfc）。
+
+CLI の既定を自動にする条件（D13）の判定:
+同値性の検証が通る（`tests/parallel_frontend.mjs`、emit の 324 出力、全テスト）。hello と 200 module が遅くならない（どちらも 1.4 倍以上速い）。
+最大 RSS が +10% 以内（1,000 module で +1.8%、hello で +8.0%）。仕事の量が少ない段は 1 thread のまま（標準ライブラリを含まない 1 module は全段が 1 thread。単体テスト）。上限は 8。
+そこで CLI の既定は自動（`min(core 数, 8)`）にしました。`TSUZURI_THREADS=1` で従来の経路に戻せます。
+
+並列に動いていることは `sample` でも確かめました。`TSUZURI_THREADS=8` の 1,000 module の `check` を `/usr/bin/sample` で採取すると、`tsuzuri-frontend` という名前の worker が 8 本、同じ段で同じくらいの数の標本（87〜96）を取っていました（`target/perf/PB04/sample-check-s1000-t8.txt`）。
+
+測っていないこと: Linux と Windows での速さ（thread の起動費用も違います）と、10 core 以外の機械です。CI に速度の閾値は置きません。並列にしていない段（読み込み・specialize・closures・emit など）の並列化はこのチケットの範囲外です（出力側の並列は PB07・G17）。
+
+再現（`target/` の下に置く前提）:
+
+```sh
+node benchmarks/build/generate.mjs --modules 200 --out target/perf/PB04/s200
+node benchmarks/build/generate.mjs --modules 1000 --out target/perf/PB04/s1000
+shasum -a 256 target/release/tsuzuri target/perf/PB04/tsuzuri-before
+# 構成を交互に測る（表の手順）。before は --before の compiler、数字は TSUZURI_THREADS、unset は未設定
+node benchmarks/run-threads.mjs target/release/tsuzuri examples/hello check 61 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/hello before 1 2 4 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s200 check 21 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s200 before 1 2 4 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 2 4 8 10 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 emit-llvm 9 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 9 --cache cold --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 8
+# PX03 の runner（各 9 標本、cache 無効）を thread 数ごとに
+for n in 1 2 4 8 10; do TSUZURI_THREADS=$n node benchmarks/run-frontend.mjs target/release/tsuzuri --out target/perf/PB04-after/t$n --sizes 200,1000; done
+node benchmarks/run-frontend.mjs target/perf/PB04/tsuzuri-before --out target/perf/PB04-before --sizes 200,1000
+node benchmarks/metrics.mjs report target/perf/PB04-after/t8 --baseline target/perf/PB04-before
+# 出力の同値性（基準の compiler とも）
+TSUZURI_BASELINE=target/perf/PB04/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri
+```
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

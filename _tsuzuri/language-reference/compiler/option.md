@@ -259,6 +259,37 @@ flowchart TD
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
 | `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
+| `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
+| `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
+
+### コンパイラのスレッド数
+
+`TSUZURI_THREADS=4 tsuzuri check Main.tz` のように指定します。CLI のフラグではありません。
+コンパイラが型検査などで使うスレッドの上限で、作ったプログラムが使うスレッド（`Task`）には作用しません。
+
+| 値 | 意味 |
+| --- | --- |
+| 未設定、空 | `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は使える core 数（最大 8）。`repl`・`lsp`・`publish` とライブラリ API は 1 |
+| `1` | 呼び出したスレッドだけで実行する |
+| `2` から `32` | その数まで。仕事の量が少ない段は、これより少ないスレッド（1 を含む）で実行する |
+| それ以外（`0`、`33`、`abc`、`1.5`、`-1`、`+4`、空白だけ） | `E2000`（終了コード 2）。`check`・`build`・`run`・`script`・`test`・`bench`・`doc`・`repl`・`lsp` は、ソースを読む前に失敗する。`fmt`・`new`・`toolchain info`・`api-diff` など、検査しないコマンドは値を読まない |
+
+数は 10 進の ASCII 数字で書きます。前後の空白と先頭の 0 は許します。
+
+並列に実行する段は、現在は次の 4 つです。どれもソースや関数ごとに独立した仕事で、`parse`・`check`・`ownership` の段に含まれます。
+
+- ソースの構文解析（frontend cache の照合と復号を含む。標準ライブラリのソースも数えます）
+- 関数の本体の型検査（式の型付けと、`computation` 式の展開）
+- 関数ごとの型検査の仕上げ（型変数の解決、`match` の網羅性の検査と到達不能の警告、使われない局所変数とシャドーイングの警告）
+- 所有権の検査（`check` の中の借用と Copy の推論と、具体化後の `ownership`）
+
+ソースの合計が 64 KiB に満たない、または 4 個に満たないときの構文解析と、検査する関数（標準ライブラリのものを含む）が 128 個に満たない段は、1 スレッドで実行します。
+並列に動くスレッドは、それぞれ 8 MiB のスタックを持ちます（macOS と Linux のメインスレッドの既定と同じ）。
+
+診断の順序と重複の除去、1,000 件の上限、50 件の表示、IR、警告、終了コードは、スレッド数で変わりません。
+段の結果は入力の順に取り込み、並列でない実行と同じ処理を同じ順で通すためです。
+スレッド数はキャッシュのキーに入りません。同じソースは、スレッド数を変えてもキャッシュに当たります。
+言語サーバーとライブラリ API は、この変数を指定しない限り 1 スレッドで解析します。
 
 ### コンパイルの段階別時間
 
@@ -272,7 +303,8 @@ flowchart TD
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
 外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
 tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。
-同じ段は合算し、入れ子の二重計上はしません。`parse` は frontend cache からの復号も、
+同じ段は合算し、入れ子の二重計上はしません。並列に実行する段（[コンパイラのスレッド数](#コンパイラのスレッド数)）も、
+呼び出したスレッドの経過時間（wall-clock）を測るので、段の合計が `total_ms` を超えることはありません。`parse` は frontend cache からの復号も、
 `cache` は frontend cache の準備・保存と成果物 cache の操作も含みます。
 `emit` は LLVM IR・header・GPU カーネルの生成に加え、Windows ABI・CodeView・no-red-zone、
 WASM の heap／host／runtime の IR 変換と、freestanding header の IR の検査も含みます。
@@ -302,7 +334,30 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 
 `Gpu.Vulkan` か `Gpu.Auto` を使う native のプログラムは、実行時にさらに `TSUZURI_VULKAN_LIBRARY`（読み込む Vulkan のローダーのパス。設定すればそれだけを書いたとおりに試し、空なら Vulkan を無効にする。設定がなければ、システムの場所の絶対パスだけを探し、作業ディレクトリは探さない）と `TSUZURI_GPU_AUTO_MIN_WORK`（`Gpu.Auto` の規則を「lane 数 × カーネルの重みが指定の数以上」に置き換える。`0` は、デバイスが使えるなら常に Vulkan）を読みます。ローダーが見つけるドライバは、Vulkan のローダー自身の変数（`VK_DRIVER_FILES` など）に従います。どれも、コンパイル時のオプションでもキャッシュのキーでもありません。詳しくは [Gpu](../built-in-types-and-modules/gpu.md#native-vulkan-のローダーを実行時に読み込む) と [Gpu.Auto](../built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ) にあります。
 
-キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
+キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT`、`TSUZURI_RANGE_FLAGS` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
+
+### 整数の範囲証明の旗
+
+`TSUZURI_RANGE_FLAGS=proven tsuzuri build Main.tz --emit llvm` のように指定します。CLI のフラグではありません。
+整数の `+`・`-`・`*` は、どのモードでも型の幅で折り返し、計算の結果、診断、終了コードは変わりません。変わるのは LLVM の IR に書く
+`nsw`（符号付きのオーバーフローがない）と `nuw`（符号なしのオーバーフローがない）だけです。
+
+| 値 | 書くもの | 使いどころ |
+| --- | --- | --- |
+| `off`（既定。空と未設定も同じ） | 旗を書きません | 通常のビルド |
+| `proven` | 範囲から「その向きでオーバーフローしない」と証明できた命令にだけ旗を書きます | LLVM に範囲を伝えます |
+| `audit` | 旗を書きません。`proven` なら旗を書く向きごとに、オーバーフローしたら trap する検査を書きます | 証明が誤っていないかを試験で確かめます |
+
+ほかの値は、IR を出すコマンドで `E2000` です（`check` と `lsp` は IR を出さないので読みません）。値はビルドキャッシュのキーに入ります。
+
+証明できるのは、ステップ 1 または -1 の `for` のカウンターの増分、配列・リスト・文字列の `for ... in` の添字、リテラル・型・`as`・`&` のマスク・`%`・
+`/`・定数のシフト・長さから決まる範囲、`for` のカウンターと不変の `let` と `if` の then 枝の条件が絞った範囲での `+ - *` です。`let mut` の変数、
+代入される変数、関数の呼び出しの結果、`@checked` の中、128-bit の整数は証明の対象になりません。証明できない演算は旗のない折り返しのままです。
+旗を書くと、その関数の戻り値には、PR01 が純粋な関数へ付ける `noundef` が付かなくなります。
+
+既定が `off` なのは、旗が LLVM の出力を変えたかを `benchmarks/run-range-flags.mjs` で測った結果によります。12 の corpus の多くで、`-O1`〜`-O3` の arm64 と x86_64 の
+assembly と wasm32 の module は `off` と同じでした（[整数の範囲証明と overflow フラグ](../../../docs/benchmarks.md#整数の範囲証明と-overflow-フラグpr02)）。
+`audit` で既存のテストを通すと、証明が誤っていればその場で trap します。
 
 ## まとめ
 

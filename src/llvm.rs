@@ -6,6 +6,7 @@ use crate::check::{
     SharedKind, Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, Span};
+use crate::interval::Flags;
 use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
 
@@ -22,6 +23,7 @@ mod debug;
 #[path = "last_use.rs"]
 pub(crate) mod last_use;
 pub use debug::with_codeview;
+pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
@@ -412,6 +414,8 @@ mod io;
 mod math;
 #[path = "llvm_parallel.rs"]
 mod parallel;
+#[path = "llvm_ranges.rs"]
+mod range_flags;
 #[path = "llvm_recursive.rs"]
 mod recursive;
 #[path = "llvm_shared.rs"]
@@ -469,6 +473,32 @@ pub fn emit_with_options(
             runtime_objects: options.runtime_objects,
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the overflow flags that `flags` names, instead of those of
+/// `TSUZURI_RANGE_FLAGS` or the default (PR02).
+pub fn emit_with_range_flags(
+    module: &CheckedModule,
+    options: EmitOptions,
+    flags: RangeFlags,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            range_flags: Some(flags),
             ..Instrumentation::default()
         },
     )
@@ -787,6 +817,7 @@ pub(crate) fn emit_wasm_build(
             multiversion: false,
             coverage: None,
             seed: None,
+            range_flags: None,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -955,6 +986,8 @@ struct Instrumentation<'a> {
     coverage: Option<&'a crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
     seed: Option<u64>,
+    /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
+    range_flags: Option<RangeFlags>,
 }
 
 fn emit_program(
@@ -1027,6 +1060,10 @@ fn emit_program_in(
     if entry == Entry::Console {
         validate_main(module)?;
     }
+    let range_flags = match instrumentation.range_flags {
+        Some(flags) => flags,
+        None => RangeFlags::from_environment()?,
+    };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
         return Err(Diagnostic::new(
@@ -1166,6 +1203,7 @@ fn emit_program_in(
         coverage: instrumentation.coverage.cloned(),
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
+        range_flags,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1892,6 +1930,8 @@ struct Globals {
     /// once, at its first use.
     statics: BTreeSet<usize>,
     recursive_functions: Vec<bool>,
+    /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
+    range_flags: RangeFlags,
 }
 
 impl Default for Globals {
@@ -1934,6 +1974,7 @@ impl Default for Globals {
             emitted_copies: BTreeSet::new(),
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
+            range_flags: RangeFlags::DEFAULT,
         }
     }
 }
@@ -3448,7 +3489,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             escape::staying_locals(&self.function.body)
         };
-        self.ranges = crate::ranges::analyze(self.module, self.function);
+        self.ranges = crate::ranges::analyze(
+            self.module,
+            self.function,
+            self.globals.range_flags != RangeFlags::Off,
+        );
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
             // A14: the parameters pass on to the slot, which owns them; nothing drops here.
@@ -3863,6 +3908,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let (value, frames) = self.frame_value(expression);
             self.heap_initializer = previous;
             self.bind_local(local, &value);
+            self.ranges.bind(self.module, local, expression);
             self.bind_frames(local, frames);
             if let Some(target) = target {
                 self.known_closures.insert(local.id, target);
@@ -3913,8 +3959,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             );
             if let Some((operator, left, right, helper)) = operation {
                 // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let lhs = self.expression(left);
+                let rhs = self.expression(right);
                 if let Some(helper) = helper {
                     self.cover_call(helper);
                 }
@@ -3923,8 +3969,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 } else {
                     "sub"
                 };
+                let words = self.arithmetic_flags(operator, left, right, &lhs, &rhs);
                 pending.push(Argument::Arithmetic(format!(
-                    "{opcode} {} {left}, {right}",
+                    "{opcode} {words}{} {lhs}, {rhs}",
                     self.ty(&argument.ty)
                 )));
             } else {
@@ -5369,6 +5416,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let condition = self.label();
         let element = self.label();
         let advance = self.label();
+        let step = self.increment_block(&advance);
         let exit = self.label();
         let index = self.fresh();
         let next_index = self.fresh();
@@ -5377,10 +5425,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.jump(&condition);
         self.begin(&condition);
         self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{advance} ]"
+            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{step} ]"
         ));
         self.instruction(format!(
-            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{advance} ]"
+            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{step} ]"
         ));
         let more = self.value(format!("icmp ult i64 {index}, {length}"));
         self.branch(&more, &element, &exit);
@@ -5390,7 +5438,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         body(self, &node, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
-        self.instruction(format!("{next_index} = add i64 {index}, 1"));
+        // `index < length` as unsigned numbers: the step cannot wrap (R4).
+        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
+        let words = self.flag_text(Flags::UNSIGNED);
+        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
         self.jump(&condition);
         self.begin(&exit);
         node
@@ -5405,13 +5456,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let condition = self.label();
         let element = self.label();
         let advance = self.label();
+        let step = self.increment_block(&advance);
         let exit = self.label();
         let index = self.fresh();
         let next = self.fresh();
         self.jump(&condition);
         self.begin(&condition);
         self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next}, %{advance} ]"
+            "{index} = phi i64 [ 0, %{entry} ], [ {next}, %{step} ]"
         ));
         let more = self.value(format!("icmp ult i64 {index}, {length}"));
         self.branch(&more, &element, &exit);
@@ -5419,7 +5471,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         body(self, &index, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
-        self.instruction(format!("{next} = add i64 {index}, 1"));
+        // `index < length` as unsigned numbers: the step cannot wrap (R3).
+        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
+        let words = self.flag_text(Flags::UNSIGNED);
+        self.instruction(format!("{next} = add {words}i64 {index}, 1"));
         self.jump(&condition);
         self.begin(&exit);
     }
@@ -5752,6 +5807,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
                 let value = self.expression(&arguments[0]);
+                self.cover_call(id);
+                return value;
+            }
+            // PR02 D10: a direct `Add.add x y` (or `Sub.sub`, `Mul.mul`) on numbers is `x + y`.
+            if arguments.len() == 2
+                && let Some(operator) = call_specialization::intrinsic_operation(function)
+            {
+                let value = self.binary(operator, &arguments[0], &arguments[1]);
                 self.cover_call(id);
                 return value;
             }
@@ -6358,7 +6421,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _ => unreachable!("operator checked or handled separately"),
             }
         };
-        self.value(format!("{instruction} {} {lhs}, {rhs}", self.ty(&left.ty)))
+        let words = if matches!(operator, Add | Subtract | Multiply) && !left.ty.is_float() {
+            self.arithmetic_flags(operator, left, right, &lhs, &rhs)
+        } else {
+            ""
+        };
+        self.value(format!(
+            "{instruction} {words}{} {lhs}, {rhs}",
+            self.ty(&left.ty)
+        ))
     }
 }
 
@@ -6827,6 +6898,7 @@ fn emit_typed_builtin(
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
+        range_flags: shared_globals.range_flags,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();

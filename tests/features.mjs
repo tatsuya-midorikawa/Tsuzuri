@@ -1872,7 +1872,8 @@ const suites = {
       ...[-1n, 0n, 1n, 2n, 3n, 4n].map((start) => ["tail_walk", [start], start >= 0n && start < 3n ? [10n, 20n, 30n].slice(Number(start)).reduce((sum, value) => sum + value, 0n) : 0n]),
     ],
     traps: [["replaced", [2n]], ["other", [1n]], ["past_end", [0n]], ["past_end", [3n]], ["literal_past", [0n]]],
-    inspect(ir) { assert.doesNotMatch(ir, /llvm\.assume|!range| nsw | nuw /); },
+    // Range proofs remove checks and add no facts; overflow flags (PR02) are written only in proven mode.
+    inspect(ir) { assert.doesNotMatch(ir, process.env.TSUZURI_RANGE_FLAGS === "proven" ? /llvm\.assume|!range/ : /llvm\.assume|!range| nsw | nuw /); },
   },
   // C11: every expected value is computed by tests/matrix-cases.mjs from JavaScript numbers and BigInt.
   matrix: {

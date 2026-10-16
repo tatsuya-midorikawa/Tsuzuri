@@ -1,0 +1,81 @@
+// Kernels for Gate A of PR02 (benchmarks/run-range-flags.mjs). Each kernel has integer + - * that a
+// range proof covers, or deliberately has none; the runner reports whether the assembly that LLVM
+// generates differs between TSUZURI_RANGE_FLAGS=off and =proven. Nothing here is a timing benchmark.
+
+// The arithmetic of an index, with a proof: the counter lies in [0, length - 1] or [0, length - 2].
+export def k_sum_ref :: ref [i64] -> i64
+fn k_sum_ref values =
+    let mut total = 0i64
+    for i in 0 .. values.length - 1 do total = total + values[i]
+    total
+
+export def k_diff :: ref [i64] -> i64
+fn k_diff values =
+    let mut total = 0i64
+    for i in 0 .. values.length - 2 do total = total + (values[i + 1] - values[i])
+    total
+
+export def k_pairs :: ref [i64] -> i64
+fn k_pairs values =
+    let mut total = 0i64
+    for i in 0 .. values.length / 2 - 1 do total = total + values[2 * i] * values[2 * i + 1]
+    total
+
+export def k_window :: ref [i64] -> i64
+fn k_window values =
+    let mut total = 0i64
+    for i in 1 .. values.length - 2 do total = total + values[i - 1] + values[i] + values[i + 1]
+    total
+
+export def k_down :: ref [i64] -> i64
+fn k_down values =
+    let mut total = 0i64
+    for i in values.length - 2 .. -1 .. 0 do total = total + (values[i + 1] - values[i])
+    total
+
+// The types prove it: a byte widened to 32 bits cannot overflow a small product, and a mask bounds
+// a value of any width.
+export def k_widen :: ref [i8u] -> i64
+fn k_widen values =
+    let mut total = 0i64
+    for x in values do total = total + (((x as i32) * 3 + 1) as i64)
+    total
+
+export def k_mask :: ref [i64] -> i64
+fn k_mask values =
+    let mut total = 0i64
+    for i in 0 .. values.length - 1 do total = total + (values[i] & 255) * 1000 + ((values[i] >>> 56) & 15)
+    total
+
+export def k_digits :: i64u -> i64u
+fn k_digits n =
+    let mut rest = n
+    let mut sum = 0i64u
+    while rest != 0 do
+        sum = sum + (rest % 10) * 7
+        rest = rest / 10
+    sum
+
+// A condition proves a bound, but only on the then branch.
+export def k_guarded :: i64 -> i64
+fn k_guarded x = if x >= 0 && x < 1000 then x * 3 + 1 else x - 1
+
+// No proof: the bound of the loop is unknown, the index arithmetic can wrap, and an i32 counter
+// widened to the index type may overflow its product. The assembly must not change.
+export def k_stride_unbounded :: ref [i64] -> i64 -> i64
+fn k_stride_unbounded values n =
+    let mut total = 0i64
+    for i in 0 .. n - 1 do total = total + values[i * 4 + 3]
+    total
+
+export def k_stride32_free :: ref [i64] -> i32 -> i64
+fn k_stride32_free values n =
+    let mut total = 0i64
+    for i = 0 to n - 1 do total = total + values[(i * 2 + 1) as i64]
+    total
+
+export def k_wrap_hash :: i64 -> i64 -> i64
+fn k_wrap_hash seed count =
+    let mut state = seed
+    for i in 0 .. count do state = state * 6364136223846793005 + (i + 1442695040888963407)
+    state
