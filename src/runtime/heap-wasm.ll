@@ -1,17 +1,23 @@
 @__heap_base = external global i8
 @tz.heap.end = internal global i32 0
 @tz.heap.free = internal global i32 0
+@tz.heap.small = internal global [32 x i32] zeroinitializer
+@tz.heap.smallmask = internal global i32 0
 declare i32 @llvm.wasm.memory.size.i32(i32)
 declare i32 @llvm.wasm.memory.grow.i32(i32, i32)
+declare i32 @llvm.cttz.i32(i32, i1)
 
 ; A block is a 16-byte header and a payload, both 16-byte aligned, with a capacity that is a multiple
 ; of 16 and at least 32. Header word 0 holds the capacity with two flags in its low bits: FREE (1) and
 ; PREV_FREE (2: the block before this one is free). A free block also holds the next (+4) and previous
-; (+8) block of its list, in address order, and in its last four bytes its capacity, which the block
-; after it reads to find it.
+; (+8) block of its list and, in its last four bytes, its capacity, which the block after it reads to
+; find it. Free blocks of capacity 32 to 528 are in the list of their capacity, @tz.heap.small[capacity
+; / 16 - 2] (last in, first out); @tz.heap.smallmask has a bit for every list that is not empty, so a
+; request finds the smallest list that serves it with one count of trailing zeros. Larger free blocks
+; are in one list in address order, @tz.heap.free, and a request takes the first that fits.
 ; Invariants: two free blocks are never adjacent (a release merges both neighbours), no free block
 ; touches @tz.heap.end (such a block is given back by lowering the end), PREV_FREE is set exactly when
-; the block before is free, and every free block is in the list once.
+; the block before is free, and every free block is in the list of its capacity once.
 
 ; Makes the block a free block of the given size, whose neighbours are already merged, and links it in.
 define internal void @tz.heap.insert(i32 %block, i32 %size) nounwind {
@@ -27,11 +33,37 @@ entry:
   %sflags = load i32, ptr %successor
   %marked = or i32 %sflags, 2
   store i32 %marked, ptr %successor
+  %binned = icmp ule i32 %size, 528
+  br i1 %binned, label %bin, label %ordered
+bin:
+  %class = lshr i32 %size, 4
+  %index = sub i32 %class, 2
+  %slot = getelementptr [32 x i32], ptr @tz.heap.small, i32 0, i32 %index
+  %first = load i32, ptr %slot
+  %bnextp = getelementptr i8, ptr %p, i32 4
+  store i32 %first, ptr %bnextp
+  %bprevp = getelementptr i8, ptr %p, i32 8
+  store i32 0, ptr %bprevp
+  %occupied = icmp ne i32 %first, 0
+  br i1 %occupied, label %chain, label %publish
+chain:
+  %fp = inttoptr i32 %first to ptr
+  %fprev = getelementptr i8, ptr %fp, i32 8
+  store i32 %block, ptr %fprev
+  br label %publish
+publish:
+  store i32 %block, ptr %slot
+  %mask = load i32, ptr @tz.heap.smallmask
+  %bit = shl i32 1, %index
+  %marked_mask = or i32 %mask, %bit
+  store i32 %marked_mask, ptr @tz.heap.smallmask
+  br label %exit
+ordered:
   %head = load i32, ptr @tz.heap.free
   br label %search
 search:
-  %current = phi i32 [ %head, %entry ], [ %following, %advance ]
-  %previous = phi i32 [ 0, %entry ], [ %current, %advance ]
+  %current = phi i32 [ %head, %ordered ], [ %following, %advance ]
+  %previous = phi i32 [ 0, %ordered ], [ %current, %advance ]
   %last = icmp eq i32 %current, 0
   %later = icmp ugt i32 %current, %block
   %place = or i1 %last, %later
@@ -72,6 +104,8 @@ exit:
 define internal void @tz.heap.unlink(i32 %block) nounwind {
 entry:
   %p = inttoptr i32 %block to ptr
+  %flags = load i32, ptr %p
+  %size = and i32 %flags, -16
   %nextp = getelementptr i8, ptr %p, i32 4
   %next = load i32, ptr %nextp
   %prevp = getelementptr i8, ptr %p, i32 8
@@ -79,7 +113,24 @@ entry:
   %inner = icmp ne i32 %prev, 0
   br i1 %inner, label %middle, label %first
 first:
+  %binned = icmp ule i32 %size, 528
+  br i1 %binned, label %binhead, label %largehead
+largehead:
   store i32 %next, ptr @tz.heap.free
+  br label %fixnext
+binhead:
+  %class = lshr i32 %size, 4
+  %index = sub i32 %class, 2
+  %slot = getelementptr [32 x i32], ptr @tz.heap.small, i32 0, i32 %index
+  store i32 %next, ptr %slot
+  %emptied = icmp eq i32 %next, 0
+  br i1 %emptied, label %clear, label %fixnext
+clear:
+  %mask = load i32, ptr @tz.heap.smallmask
+  %bit = shl i32 1, %index
+  %inverse = xor i32 %bit, -1
+  %cleared = and i32 %mask, %inverse
+  store i32 %cleared, ptr @tz.heap.smallmask
   br label %fixnext
 middle:
   %pp = inttoptr i32 %prev to ptr
@@ -133,10 +184,30 @@ start:
   %masked = and i32 %rounded, -16
   %short = icmp ult i32 %masked, 32
   %needed = select i1 %short, i32 32, i32 %masked
+  %binned = icmp ule i32 %needed, 528
+  br i1 %binned, label %bins, label %large
+bins:
+  %class = lshr i32 %needed, 4
+  %index = sub i32 %class, 2
+  %mask = load i32, ptr @tz.heap.smallmask
+  %above = shl i32 -1, %index
+  %eligible = and i32 %mask, %above
+  %any = icmp ne i32 %eligible, 0
+  br i1 %any, label %frombin, label %large
+frombin:
+  %lowest = call i32 @llvm.cttz.i32(i32 %eligible, i1 true)
+  %slot = getelementptr [32 x i32], ptr @tz.heap.small, i32 0, i32 %lowest
+  %binhead = load i32, ptr %slot
+  call void @tz.heap.unlink(i32 %binhead)
+  %binblock = call i32 @tz.heap.take(i32 %binhead, i32 %needed)
+  %binp = inttoptr i32 %binblock to ptr
+  %bindata = getelementptr i8, ptr %binp, i32 16
+  ret ptr %bindata
+large:
   %head = load i32, ptr @tz.heap.free
   br label %search
 search:
-  %block = phi i32 [ %head, %start ], [ %next, %advance ]
+  %block = phi i32 [ %head, %large ], [ %next, %advance ]
   %empty = icmp eq i32 %block, 0
   br i1 %empty, label %bump, label %inspect
 inspect:

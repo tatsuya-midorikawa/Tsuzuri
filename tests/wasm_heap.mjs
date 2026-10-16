@@ -26,8 +26,14 @@ define void @release(ptr %value) { call void @tz.free(ptr %value) ret void }
 const probes = (target) => (target === "wasm32" ? `
 define i32 @probe_end() { %value = load i32, ptr @tz.heap.end ret i32 %value }
 define i32 @probe_free() { %value = load i32, ptr @tz.heap.free ret i32 %value }
+define i32 @probe_mask() { %value = load i32, ptr @tz.heap.smallmask ret i32 %value }
+define i32 @probe_small(i32 %index) {
+  %slot = getelementptr [32 x i32], ptr @tz.heap.small, i32 0, i32 %index
+  %value = load i32, ptr %slot
+  ret i32 %value
+}
 ` : "");
-const probeExports = (target) => (target === "wasm32" ? ["probe_end", "probe_free"] : []);
+const probeExports = (target) => (target === "wasm32" ? ["probe_end", "probe_free", "probe_mask", "probe_small"] : []);
 
 // An empty module with one 64-bit memory.
 export const memory64Supported = () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 0]));
@@ -80,8 +86,10 @@ export function instantiate(module, target) {
 // The blocks of the heap from its start to its end, with every invariant of the design checked:
 // capacities are multiples of 16 and at least 32 and tile the heap exactly; a free block's footer
 // holds its capacity; PREV_FREE is set exactly when the block before is free; no two free blocks
-// touch; the last block is not free; the list holds the free blocks, once each, in address order,
-// with correct prev links.
+// touch; the last block is not free; every free block is in exactly one list with correct prev
+// links: the list of its capacity when that is 32 to 528 (and the mask has a bit for every list that
+// is not empty), otherwise the large list, which is in address order.
+// Returns the block addresses (headers, not payloads) of each list, head first.
 export function inspectHeap(api) {
   const word = api.word;
   const view = new DataView(api.memory.buffer);
@@ -109,16 +117,31 @@ export function inspectHeap(api) {
     assert.ok(blocks.length === 0 || !blocks[blocks.length - 1].free, "the last block is not free");
   }
   const byAddress = new Map(blocks.map((block) => [block.address, block]));
-  const listed = [];
-  for (let node = api.probe("probe_free"), previous = 0; node !== 0; previous = node, node = read(node + word)) {
-    assert.ok(byAddress.get(node)?.free, `list entry ${node} is a free block`);
-    assert.equal(read(node + 2 * word), previous, `block ${node}: prev link`);
-    assert.ok(node > previous, "the list is in address order");
-    assert.ok(listed.length <= blocks.length, "the list ends");
-    listed.push(node);
-  }
-  assert.deepEqual(listed, blocks.filter((block) => block.free).map((block) => block.address), "the list holds every free block once");
-  return { start, end, blocks };
+  const listed = new Set();
+  const walk = (head, label, accept) => {
+    const nodes = [];
+    for (let node = head, previous = 0; node !== 0; previous = node, node = read(node + word)) {
+      const block = byAddress.get(node);
+      assert.ok(block?.free, `${label}: ${node} is a free block`);
+      assert.ok(accept(block), `${label}: ${node} has capacity ${block.size}`);
+      assert.equal(read(node + 2 * word), previous, `${label}: block ${node} prev link`);
+      assert.ok(!listed.has(node), `${label}: block ${node} is in one list`);
+      listed.add(node);
+      nodes.push(node);
+      assert.ok(nodes.length <= blocks.length, `${label} ends`);
+    }
+    return nodes;
+  };
+  const mask = api.probe("probe_mask");
+  const small = Array.from({ length: 32 }, (_, index) => {
+    const head = api.probe("probe_small", index);
+    assert.equal((mask >>> index) & 1, head === 0 ? 0 : 1, `mask bit ${index}`);
+    return walk(head, `small[${index}]`, (block) => block.size === (index + 2) * 16);
+  });
+  const large = walk(api.probe("probe_free"), "large", (block) => block.size > 528);
+  assert.deepEqual(large, [...large].sort((a, b) => a - b), "the large list is in address order");
+  assert.equal(listed.size, blocks.filter((block) => block.free).length, "every free block is in a list");
+  return { start, end, blocks, small, large };
 }
 
 // The capacity of a block that serves `size` bytes: the 16-byte header plus the request, rounded up
@@ -301,6 +324,22 @@ export function absorbCases({ fresh }) {
     assert.equal(guard, a + 48 + 144);
     api.check();
   }
+  { // 48 + 80 = 128 after the release: a request of 80 needs 96 and leaves 32, which is a free block; a request of 90 needs 112 and
+    // leaves 16, which stays with the block
+    for (const [size, rest] of [[80, 32], [90, 16]]) {
+      const api = fresh();
+      const a = api.allocate(32), b = api.allocate(64);
+      api.allocate(16);
+      api.release(b);
+      assert.equal(api.resize(a, 32, size), a);
+      if (walked) {
+        const start = api.firstPayload - 16;
+        const kept = rest === 32 ? 96 : 128;
+        const tail = rest === 32 ? [{ address: start + 96, size: 32, free: true }] : [];
+        assert.deepEqual(api.check().blocks, [{ address: start, size: kept, free: false }, ...tail, { address: start + 128, size: 32, free: false }]);
+      }
+    }
+  }
   { // 48 + 48 = 96 = a request of 70: nothing is left, and the block after the pair no longer follows a free block
     const api = fresh();
     const a = api.allocate(32), b = api.allocate(32);
@@ -353,6 +392,102 @@ export function absorbCases({ fresh }) {
     assert.notEqual(moved, 0);
     assert.ok(holds(api.bytes(), moved, 32, 0x7d));
     api.check();
+  }
+}
+
+// Free blocks of capacity 32 to 528 wait in a list per capacity, last in first out, and a request takes
+// from the smallest list that serves it; larger free blocks are in one list in address order and a
+// request takes the first that fits. Capacities: 16 bytes -> 32, 32 -> 48, 40 -> 64, 64 -> 80, 128 -> 144.
+export function binCases({ fresh }) {
+  if (fresh().check() === null) return;
+  { // last in, first out
+    const api = fresh();
+    const a0 = api.allocate(32);
+    api.allocate(32);
+    const a2 = api.allocate(32);
+    api.allocate(32);
+    api.allocate(16);
+    api.release(a0);
+    api.release(a2);
+    assert.deepEqual(api.check().small[1], [a2 - 16, a0 - 16]);
+    assert.equal(api.allocate(32), a2);
+    assert.equal(api.allocate(32), a0);
+    assert.deepEqual(api.check().small[1], []);
+  }
+  { // the smallest list that serves the request: a request of capacity 64 takes the block of 80 (the 16 left stay with it)
+    const api = fresh();
+    const x = api.allocate(32);
+    api.allocate(16);
+    const y = api.allocate(64);
+    api.allocate(16);
+    const z = api.allocate(128);
+    api.allocate(16);
+    for (const block of [x, y, z]) api.release(block);
+    const lists = api.check().small;
+    assert.deepEqual([lists[1], lists[3], lists[7]], [[x - 16], [y - 16], [z - 16]]);
+    assert.equal(api.allocate(40), y);
+    assert.equal(api.allocate(100), z);
+    assert.equal(api.allocate(32), x);
+    assert.deepEqual(api.check().small.flat(), []);
+  }
+  { // a block of 144 serves a request of 48 and keeps 96 in the list of 96, which then serves a request of 80 whole
+    const api = fresh();
+    const z = api.allocate(128);
+    api.allocate(16);
+    api.release(z);
+    assert.equal(api.allocate(32), z);
+    assert.deepEqual(api.check().small[4], [z - 16 + 48]);
+    assert.equal(api.allocate(64), z + 48);
+    assert.deepEqual(api.check().small.flat(), []);
+  }
+  { // the rest of a block is split off from 32 bytes up: 80 -> 48 + 32 (the smallest list)
+    const api = fresh();
+    const y = api.allocate(64);
+    api.allocate(16);
+    api.release(y);
+    assert.deepEqual(api.check().small[3], [y - 16]);
+    assert.equal(api.allocate(32), y);
+    const lists = api.check().small;
+    assert.deepEqual([lists[0], lists[3]], [[y - 16 + 48], []]);
+  }
+  { // no small list serves the request: the first large block is split and its rest stays in the large list
+    const api = fresh();
+    const l1 = api.allocate(1000);
+    api.allocate(16);
+    api.release(l1);
+    assert.deepEqual(api.check().large, [l1 - 16]);
+    assert.equal(api.allocate(16), l1);
+    assert.deepEqual(api.check().large, [l1 - 16 + 32]);
+  }
+  { // first fit by address among large blocks (capacities 1024 and 2016): 1520 does not fit the first; the rest of 496 is a small list
+    const api = fresh();
+    const l1 = api.allocate(1000);
+    api.allocate(16);
+    const l2 = api.allocate(2000);
+    api.allocate(16);
+    api.release(l2);
+    api.release(l1);
+    assert.deepEqual(api.check().large, [l1 - 16, l2 - 16]);
+    assert.equal(api.allocate(1500), l2);
+    const lists = api.check();
+    assert.deepEqual(lists.large, [l1 - 16]);
+    assert.deepEqual(lists.small[29], [l2 - 16 + 1520]);
+  }
+  { // 528 is the largest capacity with a list of its own, 544 the smallest large one
+    const api = fresh();
+    const small = api.allocate(512);
+    api.allocate(16);
+    const large = api.allocate(513);
+    api.allocate(16);
+    api.release(small);
+    api.release(large);
+    const lists = api.check();
+    assert.deepEqual(lists.small[31], [small - 16]);
+    assert.deepEqual(lists.large, [large - 16]);
+    assert.equal(api.allocate(512), small);
+    assert.deepEqual(api.check().small[31], []);
+    assert.equal(api.allocate(513), large);
+    assert.deepEqual(api.check().large, []);
   }
 }
 
@@ -452,6 +587,7 @@ export function runHeapTests({ targets = ["wasm32"], optimizations = [0, 3], ext
         reuseCases(context);
         trimCases(context);
         absorbCases(context);
+        binCases(context);
         boundaryCases(context);
         limitCases(context);
         stress(context);
