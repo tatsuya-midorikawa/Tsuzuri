@@ -97,6 +97,7 @@ TSUZURI_CLANG: path /usr/bin/clang (Apple clang version 21.0.0 (clang-2100.3.34.
 TSUZURI_WASM_LD: path /opt/homebrew/Cellar/lld/23.1.1/bin/lld (unavailable)
 TSUZURI_LLVM_LINK: path llvm-link (not found)
 TSUZURI_DSYMUTIL: path /usr/bin/dsymutil (Apple LLVM version 21.0.0)
+TSUZURI_WASM_OPT: path wasm-opt (not found)
 node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ```
 
@@ -115,7 +116,7 @@ node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 
 `tsuzuri test --target wasm64` は、Node.js 24 以降の memory64 を要求します。Python 3.9 以降は、リポジトリの参照実装テスト用です。コンパイラを使うだけなら要りません。
 
-ツールの場所は `TSUZURI_CLANG`、`TSUZURI_WASM_LD`、`TSUZURI_LLVM_LINK`、`TSUZURI_DSYMUTIL` で指定できます。未設定なら PATH の `clang`、`wasm-ld`、`llvm-link`、`dsymutil` です。
+ツールの場所は `TSUZURI_CLANG`、`TSUZURI_WASM_LD`、`TSUZURI_LLVM_LINK`、`TSUZURI_DSYMUTIL`、`TSUZURI_WASM_OPT` で指定できます。未設定なら PATH の `clang`、`wasm-ld`、`llvm-link`、`dsymutil`、`wasm-opt` です。`wasm-opt`（Binaryen）は `--wasm-opt` を付けたときだけ使います。
 
 ### macOS
 
@@ -243,7 +244,7 @@ tsuzuri check demo
 
 `Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
-`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。
+`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。成果物の大きさを優先するときは `-Os` と `-Oz` も付けられます（[最適化と CPU](option.md#最適化と-cpu)）。
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
 
@@ -394,6 +395,8 @@ tsuzuri build demo/Main.tz -o demo/hello
 ```text
 scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library
 ```
+
+成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。
 
 ### test
 
@@ -642,22 +645,48 @@ Price.price()
 コンパイルし、同じ保存先の `runtime/` で再利用します。キーは実際のランタイムソース、target、
 最適化レベル、CPU／SIMD 機能、Clang の内容と版、SDK に関係する環境変数から作ります。
 利用者のソースを編集して成果物キャッシュが外れても、同じランタイムの再コンパイルは不要です。
-C ランタイムも、連結するソースとコンパイル引数が同じなら再利用します。
+C ランタイム（native のタスク・OS・非同期など、`--wasm-feature threads` の WASM スレッド、`--wasm-host wasi` の WASI、
+`-g` の実行ファイルのスタック検査）も、連結するソースとコンパイル引数が同じなら再利用します。
 `runtime/` は成果物・構文解析のキャッシュとは独立して掃除し、上限 2 GiB、未使用 30 日、
 1 エントリ 256 MiB の同じ方針を使います。部分的な保存や checksum の不一致は再コンパイルします。
 
 配布物には generic CPU の native と、scalar／SIMD128 の wasm32 の `-O0`〜`-O3` の object が
-`share/runtime/` に入ります。同梱 Clang を使い、ソース・引数・ツール・環境と SHA-256 が一致する
+`share/runtime/` に入ります。`-Os` と `-Oz` の object は入れず、最初のビルドで作って `runtime/` に保存します。同梱 Clang を使い、ソース・引数・ツール・環境と SHA-256 が一致する
 組だけを選びます。`TSUZURI_CLANG`・`TSUZURI_LLVM_CLANG`・`TSUZURI_ZIG` を上書きした場合、
 未収録の組、破損した同梱物は
 埋め込みソースのコンパイルへ戻ります。配布物がなくてもビルドできます。
 
+同梱ツールチェーン（`bin/tsuzuri-clang`）の識別は、配布物の全ファイル（macOS の開発用配布物で約 2 万個、約 760 MB）の
+SHA-256、同梱 Clang と Zig の SHA-256、ランチャーの `--version` の出力から作り、成果物キャッシュとランタイム object の
+キーに入ります。これを毎回計算すると CPU を数秒使うので、最初のビルドで並列に計算して保存先の `bundle/` に控え、
+以後は配布物の署名が変わらない間、その控えを使います（キー自体は控えの有無で変わりません）。
+署名は、最上位のファイル、`bin`・`lib`・`zig` 直下のファイル、`manifest.json`、2 階層目までのディレクトリそれぞれの
+大きさ・更新時刻・状態変更時刻・inode（Windows では大きさ・更新時刻・作成時刻）です。同梱ツールの入れ替え、
+それらのディレクトリへのファイルの追加と削除、配布物の展開し直し（新しい `manifest.json`）は署名を変えるので、
+次のビルドで全体を計算し直します。見えないのは、`include/` や `zig/lib/libc/` のヘッダーのように上記以外の
+場所でファイルをその場で書き換えた場合と、3 階層目より下のファイルの追加・削除です。その編集のあとは
+保存先の `bundle/` を消すと、次のビルドが全体を計算し直します。署名を取った時刻の 2 秒以内に更新されたファイルが
+あるときは、時計の粒度の内側で起きる次の変更を見逃さないよう控えません（直後のビルドが控えます）。`TSUZURI_LLVM_CLANG` か `TSUZURI_ZIG` を設定した場合は
+配布物の外のツールを使うので控えを使わず、従来どおり毎回読みます。
+
 `--no-cache` はランタイムキャッシュも同梱 object も使わず、従来どおり埋め込みソースから
 ビルドします。`--emit llvm`・header・object・shared の数値／数学 IR、debug、トラップ位置の計装、
 WASM threads、memory64、スタック検査のある数値／数学 IR は分離しません。
-外部 object を使う native 実行ファイルでは未使用部分をリンク時に除去します。
+native 実行ファイルは、ランタイムをモジュールに埋め込む形式（`--no-cache`、`--trap-info`、`run`）でも、未使用の関数とデータをリンク時に除去します（`-g` は除く）。
+macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sections` で、それに合わせて関数とデータを別々の section に出します。MSVC のリンカーは `/OPT:REF` です。
+公開した `export` の関数は残します。`examples/point` を `--no-cache` でビルドしたときの `__text` は 40,552 byte から 10,844 byte に、`examples/io` は 27,316 byte から 9,780 byte になりました（macOS arm64 の `-O3`。[性能測定](../../../docs/benchmarks.md#リンク時の-gc埋め込みのビルド)）。
 数学の小さい sqrt／fabs wrapper は IR に残すので、LLVM の intrinsic へのインライン化を保ちます。
 数値の丸め・NaN・符号付きゼロ・トラップ・公開 ABI・WASM の import は変わりません。
+
+整数（`i8`〜`i128`、`i8u`〜`i128u`）の `to_string`、`Display`、文字列補間（書式指定の `{n:+}`、`{n:x}`、`{n:X}`、`{n:o}`、`{n:b}` を含む）、
+トップレベルの式の結果の表示と、整数の `Parse.parse` は、数値ランタイムを使いません。整数専用のテキスト生成と解析（`runtime/integer.ll`）を
+モジュールの IR に入れて処理し、最適化後には使った関数だけが残るので、整数だけを扱うプログラムには数値 object も、その表（約 10 KB の読み取り専用データ）も入りません。
+`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。
+`examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,357 byte になりました。
+整数を `Parse` し書式指定する `benchmarks/size/parse` の wasm32 モジュールは 76,023 byte から 18,199 byte になります
+（macOS arm64 の `-O3`。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
+`f16`・`f32`・`f64`・`f128`・decimal の表示、精度つきの書式指定（`{x:.2}` など）、それらの `Parse` は、これまでどおり数値ランタイムを使います。
+どちらの処理も、出力の文字列と `Parse` が受け付ける構文・範囲は同じです。
 
 ### 構文解析の結果
 

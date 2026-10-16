@@ -17,13 +17,13 @@ pub(super) fn uses_return_slot(ty: &Type, module: &CheckedModule) -> bool {
         && storage_layout(ty, module).0 <= MAX_SLOT_BYTES
 }
 
-/// The `ret` lines that a function with a union result wrote, as `emit_tail` reports them.
+/// The union exits that a function wrote with `emit_tail`, as they were reported to `note_union_return`.
 #[derive(Default)]
 pub(super) struct Exits {
     eligible: Option<bool>,
-    /// The index of each `ret` line that may move into the slot.
-    returns: Vec<usize>,
-    /// An exit forwards a call that may recurse, so this function keeps all of its `ret`s.
+    /// How many `ret` lines may move into the slot.
+    count: usize,
+    /// An exit may hold the result of a call, so this function keeps all of its `ret`s.
     keeps_ret: bool,
 }
 
@@ -39,44 +39,39 @@ impl FunctionEmitter<'_, '_> {
             return;
         }
         if self.may_leave_through_slot(expression) {
-            self.return_exits.returns.push(self.lines.len() - 1);
+            self.return_exits.count += 1;
         } else {
             self.return_exits.keeps_ret = true;
         }
     }
 
-    /// Whether returning `expression` through the slot is safe for tail calls. LLVM only forms a
-    /// sibling call or a loop out of `ret (call f)`, so a call that may be part of a recursion cycle
-    /// (a mutual or continuation-passing tail recursion over a union) keeps its plain `ret`. A
-    /// callee of unknown identity counts as part of a cycle, and so does every exit of a function
-    /// that is itself part of one. Shapes that cannot forward a call result may always use the slot.
+    /// Whether returning `expression` through the slot keeps LLVM's tail calls. LLVM turns `ret (call f)`
+    /// into a sibling call or a loop, which is what lets a mutual recursion, a recursion through a
+    /// local, or a continuation-passing recursion over a union run in a constant stack. A slot hides
+    /// the call, and no analysis of the call graph proves that a callee cannot lead back: the recursion
+    /// may run through a closure that a caller passes as an argument. So an exit that may hold the result
+    /// of a call (a call, a pipeline, a local that is not a parameter, a field of such a value, or any
+    /// other shape) keeps the `ret`s of its function. An exit that builds a value, or reads one from
+    /// storage or from a parameter, has no call to hide.
     fn may_leave_through_slot(&self, expression: &TypedExpr) -> bool {
+        matches!(expression.kind, TypedExprKind::Construct { .. }) || self.reads_storage(expression)
+    }
+
+    /// Whether `expression` reads a parameter or storage, so that no value that a call or a
+    /// constructor produced reaches it, not even as a field.
+    fn reads_storage(&self, expression: &TypedExpr) -> bool {
         use TypedExprKind::*;
-        let callee = match &expression.kind {
-            Call(callee, _) | Binary(BinaryOp::Pipe, _, callee) => callee,
-            Construct { .. }
-            | Local(_)
-            | Field(..)
-            | Index(..)
-            | UnionPayload { .. }
-            | Dereference(_)
-            | Static(_) => return true,
-            _ => return false,
-        };
-        let cyclic = |id: usize| {
-            self.globals
-                .recursive_functions
-                .get(id)
-                .copied()
-                .unwrap_or(true)
-        };
-        if cyclic(self.function_id) {
-            return false;
-        }
-        match &callee.kind {
-            Function(FunctionRef::Builtin(_)) => true,
-            _ => call_specialization::target(callee, &self.known_closures, self.module)
-                .is_some_and(|target| !cyclic(target.function)),
+        match &expression.kind {
+            Static(_) | Dereference(_) => true,
+            Local(id) => self
+                .function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.id == *id && !parameter.mutable),
+            Field(value, _) | Index(value, _) | UnionPayload { value, .. } => {
+                self.reads_storage(value)
+            }
+            _ => false,
         }
     }
 
@@ -85,30 +80,37 @@ impl FunctionEmitter<'_, '_> {
     /// that has to keep one `ret` keeps them all.
     pub(super) fn apply_return_slot(&mut self) {
         let exits = std::mem::take(&mut self.return_exits);
-        if exits.keeps_ret || exits.returns.len() < 2 {
+        if exits.keeps_ret || exits.count < 2 {
             return;
         }
         let ty = self.ty(&self.function.signature.result);
-        rewrite(&mut self.lines, &mut self.allocas, &exits.returns, &ty);
+        rewrite(&mut self.lines, &mut self.allocas, exits.count, &ty);
     }
 }
 
-/// Moves the `ret` at each index of `exits` into `%tz.return.slot` and adds the shared `tz.return`
-/// block. A line that is not the expected `ret` leaves everything as it was.
-fn rewrite(lines: &mut Vec<String>, allocas: &mut Vec<String>, exits: &[usize], ty: &str) -> bool {
+/// Moves each `ret` of `lines` into `%tz.return.slot` and adds the shared `tz.return` block. The
+/// exits are found in the final lines, because `facts::apply` puts scope declarations in front of the
+/// body. Everything stays as it was unless the function has exactly `exits` `ret` lines, all of them of
+/// type `ty`.
+fn rewrite(lines: &mut Vec<String>, allocas: &mut Vec<String>, exits: usize, ty: &str) -> bool {
     let prefix = format!("  ret {ty} ");
-    if exits.is_empty()
-        || exits.iter().any(|&index| {
-            !lines
-                .get(index)
-                .is_some_and(|line| line.starts_with(&prefix))
-        })
+    let returns: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("  ret "))
+        .map(|(index, _)| index)
+        .collect();
+    if exits == 0
+        || returns.len() != exits
+        || returns
+            .iter()
+            .any(|&index| !lines[index].starts_with(&prefix))
     {
         return false;
     }
     allocas.push(format!("%tz.return.slot = alloca {ty}, align 16"));
-    let mut rewritten = Vec::with_capacity(lines.len() + exits.len() + 3);
-    let mut next = exits.iter().copied().peekable();
+    let mut rewritten = Vec::with_capacity(lines.len() + exits + 3);
+    let mut next = returns.iter().copied().peekable();
     for (index, line) in std::mem::take(lines).into_iter().enumerate() {
         if next.next_if_eq(&index).is_none() {
             rewritten.push(line);
@@ -155,7 +157,7 @@ mod tests {
             "  ret %\"tz.union.Maybe.Maybe[i64]\" zeroinitializer",
         ]);
         let mut allocas = vec!["%v9 = alloca i64, align 16".to_owned()];
-        assert!(rewrite(&mut body, &mut allocas, &[2, 4], TY));
+        assert!(rewrite(&mut body, &mut allocas, 2, TY));
         assert_eq!(
             allocas,
             [
@@ -188,7 +190,7 @@ mod tests {
             &format!("  ret {TY} %v4, !dbg !8"),
         ]);
         let mut allocas = Vec::new();
-        assert!(rewrite(&mut body, &mut allocas, &[0, 2], TY));
+        assert!(rewrite(&mut body, &mut allocas, 2, TY));
         assert_eq!(
             body[..2],
             [
@@ -207,17 +209,46 @@ mod tests {
     }
 
     #[test]
-    fn leaves_the_function_alone_when_an_index_is_not_a_ret_of_the_result_type() {
+    fn finds_the_exits_behind_lines_that_facts_put_in_front() {
+        let scope = "  call void @llvm.experimental.noalias.scope.decl(metadata !3)";
+        let mut body = lines(&[
+            scope,
+            scope,
+            "  br i1 %v0, label %b0, label %b1",
+            "b0:",
+            &format!("  ret {TY} %v1"),
+            "b1:",
+            &format!("  ret {TY} zeroinitializer"),
+        ]);
+        let mut allocas = Vec::new();
+        assert!(rewrite(&mut body, &mut allocas, 2, TY));
+        assert_eq!(body[..2], [scope.to_owned(), scope.to_owned()]);
+        assert_eq!(body[4], format!("  store {TY} %v1, ptr %tz.return.slot"));
+        assert_eq!(
+            body[7],
+            format!("  store {TY} zeroinitializer, ptr %tz.return.slot")
+        );
+        assert_eq!(body.len(), 12);
+    }
+
+    #[test]
+    fn leaves_the_function_alone_unless_it_has_exactly_the_reported_rets_of_the_result_type() {
         let plain = lines(&[
             &format!("  ret {TY} %v1"),
             "b1:",
             &format!("  ret {TY} %v2"),
         ]);
-        for exits in [&[][..], &[1, 2], &[0, 3]] {
-            let mut body = plain.clone();
+        let other = lines(&[
+            &format!("  ret {TY} %v1"),
+            "b1:",
+            "  ret %\"tz.union.Result.Result[i64,i64]\" %v2",
+        ]);
+        // No exit was reported, one more or one fewer than the lines hold, or a `ret` of another type.
+        for (body, exits) in [(&plain, 0), (&plain, 1), (&plain, 3), (&other, 2)] {
+            let mut copy = body.clone();
             let mut allocas = Vec::new();
-            assert!(!rewrite(&mut body, &mut allocas, exits, TY));
-            assert_eq!(body, plain);
+            assert!(!rewrite(&mut copy, &mut allocas, exits, TY));
+            assert_eq!(&copy, body);
             assert!(allocas.is_empty());
         }
     }

@@ -1,0 +1,3 @@
+class Sized<'a> {
+    def size :: ref 'a -> i64
+}

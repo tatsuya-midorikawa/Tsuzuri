@@ -580,7 +580,7 @@ fn cpu_versions_keep_the_features_of_their_half_operations() {
 fn driver_builds_follow_the_hosts_path() {
     // The driver's choice reaches the IR of a build: AArch64 hosts emit `half`, and WASM never
     // does. The decision itself is unit-tested in `src/driver.rs`.
-    use tsuzuri::driver::{BuildOptions, Emit, Project, Target};
+    use tsuzuri::driver::{BuildOptions, Emit, OptLevel, Project, Target};
     let directory = std::env::temp_dir().join(format!("tsuzuri-f16-build-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("Main.tz"), OPERATIONS).unwrap();
@@ -596,7 +596,7 @@ fn driver_builds_follow_the_hosts_path() {
             BuildOptions {
                 target,
                 emit: Emit::Llvm,
-                optimization: 0,
+                optimization: OptLevel::O0,
                 cache: false,
                 ..BuildOptions::default()
             },

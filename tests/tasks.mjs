@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
     execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`,
       "-pthread", "tests/task_runtime.c", "-o", scheduler]);
     for (const topology of ["-1", "0", "1", "4", "1000"]) execute(scheduler, [topology]);
-    for (const operation of ["create", "join", "mutex_lock", "mutex_unlock", "cond_wait", "cond_broadcast", "once", "atexit"]) {
+    for (const operation of ["create", "join", "mutex_lock", "mutex_unlock", "cond_wait", "cond_signal", "cond_broadcast", "once", "atexit"]) {
       const failed = execute(scheduler, [operation], false);
       assert.notEqual(failed.status, 0, `pthread_${operation} failures must be reported`);
       assert.match(failed.stderr, new RegExp(`Tsuzuri task runtime: ${operation === "atexit" ? "atexit" : `pthread_${operation}`} failed`));
@@ -174,6 +174,23 @@ int main(int argc, char **argv) {
       execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/channel_runtime.c", "-o", checked]);
       for (const threads of ["1", "2", "4"]) {
         assert.match(execute(checked, [threads]).stdout, /^channel_runtime: \d+ threads passed/);
+      }
+    }
+
+    // PR06: nested groups, the lowest failing index, one large group and pipelines from several hosts at
+    // once, with exact expected values and an alarm instead of a hang. The pool reads the CPU count once,
+    // so each count is a run of its own.
+    const stress = join(temporary, `stress-${optimization}`);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", `-O${optimization}`, "-pthread", "tests/task_stress.c", "-o", stress]);
+    for (const [cpus, hosts] of [[1, 3], [2, 1], [2, 4], [3, 3], [4, 1], [4, 6], [8, 8]]) {
+      assert.match(execute(stress, [String(cpus), String(hosts)]).stdout, /^task_stress: .* passed/);
+    }
+    for (const [variable, sanitizer] of [["TSUZURI_TSAN", "thread"], ["TSUZURI_ASAN", "address"]]) {
+      if (process.env[variable] !== "1") continue;
+      const checked = join(temporary, `stress-${sanitizer}-${optimization}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-g", `-fsanitize=${sanitizer}`, "-pthread", "tests/task_stress.c", "-o", checked]);
+      for (const [cpus, hosts] of [[2, 1], [4, 6]]) {
+        assert.match(execute(checked, [String(cpus), String(hosts)]).stdout, /^task_stress: .* passed/);
       }
     }
 
@@ -257,6 +274,13 @@ ${channelTraps.map((name, index) => `        case ${channelCases.length + index}
     execute(native, []);
     for (const [index, name] of traps.entries()) {
       assert.notEqual(execute(native, [String(index)], false).status, 0, `native ${name}`);
+    }
+    // The result of a group never depends on how many threads run it: the same program on 2 to 4 threads, repeated.
+    for (const threads of [2, 3, 4]) {
+      const sized = join(temporary, `native-${optimization}-${threads}`);
+      execute(clang, ["-std=c11", `-O${optimization}`, "-Wno-override-module", "-DTRACKING", `-DTZ_TASK_SYSCONF(name)=${threads}L`,
+        host, ir, "src/runtime/task.c", "-pthread", "-lm", "-o", sized]);
+      for (let repeat = 0; repeat < 3; repeat++) execute(sized, []);
     }
 
     const object = join(temporary, `tasks-${optimization}.o`);

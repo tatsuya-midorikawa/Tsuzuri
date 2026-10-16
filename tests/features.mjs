@@ -482,7 +482,7 @@ const suites = {
       // The first n with n * n > limit, or none up to 1000.
       ["slot_find", [1n, 50n], 8n], ["slot_find", [1n, 2000000n], -1n], ["slot_find", [1000n, 0n], 1000n],
       ["slot_find", [1001n, 0n], -1n], ["slot_find", [0n, 0n], 1n], ["slot_find", [-5n, 3n], -5n],
-      ...[[150n, 300n], [101n, 202n], [100n, -1n], [50n, -1n]].flatMap(([n, expected]) => [["slot_wrap", [n], expected], ["slot_piped", [n], expected]]),
+      ...[[150n, 300n], [101n, 202n], [100n, -1n], [50n, -1n]].flatMap(([n, expected]) => [["slot_wrap", [n], expected], ["slot_piped", [n], expected], ["slot_read_call", [n], expected], ["slot_read_local", [n], expected]]),
       ...[[3n, 3n], [1n, 1n], [0n, -1n], [-8n, -1n]].map(([n, expected]) => ["slot_field", [n], expected]),
       ...[[1n, 101n], [50n, 150n], [0n, -1n], [-4n, -1n]].map(([n, expected]) => ["slot_local", [n], expected]),
       ...[[5n, 45n], [0n, 40n], [-30n, 10n]].map(([n, expected]) => ["slot_let_chain", [n], expected]),
@@ -490,6 +490,9 @@ const suites = {
       ...[0n, 1n, 5n, 1000n].map(n => ["slot_count_down", [n], 7n]),
       ...[0n, 1n, 1000n].map(n => ["slot_nested", [n], n]),
       ...[[3n, 6n], [0n, -1n], [-2n, -1n]].map(([n, expected]) => ["slot_apply", [n], expected]),
+      // `make n` is Some (2 * n) for n > 0; the closure recursion ends in Some 7 at depth 0.
+      ...[[3n, 6n], [0n, -1n], [-2n, -1n]].map(([n, expected]) => ["slot_hold", [n], expected]),
+      ...[0n, 1n, 500n].map(n => ["slot_descend", [n], 7n]),
       ...[[0n, 10n], [1n, 20n], [2n, 30n], [9n, 30n], [-1n, 30n]].map(([n, expected]) => ["slot_color", [n], expected]),
     ],
     inspect(ir) {
@@ -499,15 +502,17 @@ const suites = {
         return ir.slice(start).split("\n}\n")[0];
       };
       const returns = (name) => body(name).split("\n").filter((line) => line.startsWith("  ret ")).length;
-      // Every exit constructs, copies, or calls an acyclic function: one entry-block slot and one `ret`.
-      for (const name of ["make", "pick", "explain", "scratch", "find", "wrap", "piped", "choose", "keep"]) {
+      // Every exit builds a value or reads a field or a parameter: one entry-block slot and one `ret`.
+      for (const name of ["make", "pick", "explain", "scratch", "find", "choose", "keep"]) {
         assert.equal(body(name).split("%tz.return.slot = alloca").length - 1, 1, `${name}: one return slot`);
         assert.match(body(name), /\ntz\.return:\n/, `${name}: one return block`);
         assert.equal(returns(name), 1, `${name}: one ret`);
       }
-      // A recursion cycle, a continuation, an unknown callee, a bare tag and a niche union (`label` returns a
-      // `Maybe<string>`, which is its payload and has no tag to merge, PM01) keep every plain `ret`.
-      for (const [name, count] of [["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3], ["label", 2]]) {
+      // An exit that may hold the result of a call (a call, a pipeline, a local bound to one, a field of
+      // either), a recursion cycle, a continuation, an unknown callee, a callee that gets the closure of its
+      // recursion, a bare tag, and a niche union (`label` returns a `Maybe<string>`, which is its payload and
+      // has no tag to merge, PM01) keep every plain `ret`.
+      for (const [name, count] of [["wrap", 2], ["piped", 2], ["read_call", 2], ["read_local", 2], ["hold", 2], ["guard", 2], ["descend", 2], ["even_m", 2], ["odd_m", 2], ["count_down", 2], ["nest", 2], ["apply_to", 2], ["color", 3], ["label", 2]]) {
         assert.doesNotMatch(body(name), /tz\.return/, `${name}: no return slot`);
         assert.equal(returns(name), count, `${name}: plain rets`);
       }
@@ -1858,6 +1863,7 @@ const suites = {
     inspect(ir) {
       assert.match(ir, /@tz_soft_format/);
       assert.match(ir, /@tz_soft_parse/);
+      assert.match(ir, /@tz\.integer\.parse/);
       assert.doesNotMatch(ir, /@printf|@strtod|@strtof|@snprintf|@memcmp/);
     },
   },

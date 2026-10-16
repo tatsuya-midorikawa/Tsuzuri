@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::check::CheckedModule;
 use crate::check::semantic::SemanticIndex;
 use crate::diagnostic::{Diagnostic, DiagnosticSet, Severity, Span};
-use crate::driver::{self, BuildOptions, Project};
+use crate::driver::{self, BuildOptions, OptLevel, Project};
 use crate::syntax::{
     Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, Recursion, Token, TokenKind,
 };
@@ -29,7 +29,7 @@ impl Default for ReplOptions {
     fn default() -> Self {
         Self {
             build: BuildOptions {
-                optimization: 0,
+                optimization: OptLevel::O0,
                 trap_info: true,
                 ..BuildOptions::default()
             },

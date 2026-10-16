@@ -378,6 +378,7 @@ mod tests {
             include_str!("runtime/heap-wasm-threads.ll"),
             include_str!("runtime/heap-wasm.ll"),
             include_str!("runtime/heap-wasm64.ll"),
+            include_str!("runtime/integer.ll"),
             include_str!("runtime/math.ll"),
             include_str!("runtime/numeric.ll"),
             include_str!("runtime/recursive.ll"),

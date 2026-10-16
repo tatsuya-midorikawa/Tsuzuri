@@ -49,6 +49,7 @@ target
 !src/runtime/recursive.ll
 !src/runtime/display.ll
 !src/runtime/format.ll
+!src/runtime/integer.ll
 !src/runtime/numeric.ll
 !src/runtime/math.ll
 !src/runtime/unicode.ll

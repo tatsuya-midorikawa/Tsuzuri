@@ -2,6 +2,7 @@ pub mod abi;
 pub mod api_diff;
 pub mod bindgen;
 pub mod bindings;
+mod bundle_identity;
 pub mod cache;
 pub mod check;
 pub mod copies;

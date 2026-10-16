@@ -10,6 +10,7 @@
 - LLDB では `command script import <配布物>/share/lldb/tsuzuri_lldb.py` で formatter を読み込みます。VS Code では何もしなくても読み込まれます。
 - 呼び出し履歴とブレークポイントには `Main.show` のような Tsuzuri の関数名を使います。
 - ステップ実行は、ランタイムとコンパイラーが生成した補助関数に入りません。
+- ネイティブの実行ファイルには、入口と `export def` から到達できる関数だけが入ります。どこからも呼ばれない公開関数のブレークポイントは張れません。
 - `tsuzuri test --index N -g -o PATH` で 1 件のテストをデバッグ用にビルドできます。VS Code では Testing ビューの **Debug** です。
 - Windows で MSVC のリンカーを使うビルドは、実行ファイルの隣に PDB を書き、Visual Studio の natvis の表示を埋め込みます。
 - 表示を保証するのは `-O0` のネイティブだけです。`-O3` では変数が消えることがあり、WebAssembly は DWARF を保持するだけです。
@@ -156,6 +157,8 @@ VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug**
 Windows で、MSVC のリンカー（`link.exe`）でリンクする Clang（配布物の `tsuzuri-clang` 以外。たとえば `TSUZURI_CLANG` に指定した LLVM の `clang`）を使うと、`-g` のネイティブのビルドは DWARF に加えて CodeView も出します。実行ファイルでは、リンカーが出力の拡張子を `.pdb` にした PDB（`app.exe` なら `app.pdb`）を隣に書きます。実行ファイルは PDB をディレクトリなしの名前で指すので、Visual Studio や WinDbg は隣の PDB を見つけます。PDB の関数と型の名前は DWARF と同じ Tsuzuri の名前（`Main.show`、`Main.Shape`、`$tag`）です。`tsuzuri test --index N -g -o PATH` のランナーにも PDB を書きます。
 
 PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result`、`Task` を Tsuzuri の値として表示します。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。`Maybe<string>` と `Maybe<utf8string>` はタグを持たない（`$niche` が `-1` なら `None`）ので、型名を指定した専用の定義があります。`Maybe<[T]>`、ネイティブの `Maybe<ref T>`、タグを持たない利用者の union は既定の表示で、`$niche` が値を持たない case の列挙子のときだけ case 名になります。
+
+ネイティブの実行ファイルには、入口（`def main` かトップレベルのコード）と `export def` から到達できる関数だけが入ります。どこからも呼ばれない公開関数は、実行ファイルの内部関数で外から呼べないのに `-O0` ではコンパイルされていたので、入れません。そのため DWARF にもトラップ位置の表にも載りません。すべての公開関数を含めて確かめたいときは、`--emit object` か `--emit llvm` でビルドします。未使用の公開関数の型エラーは `check` が今までどおり報告します。
 
 `--emit object` と `--emit llvm` の `-g` も CodeView を含みます。自分で MSVC のリンカーでリンクするときは、`/DEBUG` と `/NATVIS:<配布物>/share/natvis/tsuzuri.natvis` を付けます。
 
