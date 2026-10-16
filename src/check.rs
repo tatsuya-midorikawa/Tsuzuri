@@ -7151,97 +7151,117 @@ fn check_modules_collect(
     let mut recovered_functions = Vec::new();
     let mut pending = Vec::new();
     let mut warnings = Vec::new();
-    for (id, (module, function)) in function_declarations.iter_mut().enumerate() {
-        if diagnostics.is_full() {
-            break;
-        }
-        let scheme = &signatures[id];
-        if scheme.is_poisoned() {
-            continue;
-        }
-        let signature = scheme.signature.clone();
-        let mut checker = Checker::new(module, &names, types, &signatures, &classes);
-        checker.indexing = indexing;
-        if let Some(active) = active_results.get(&id) {
-            checker.use_active_result(&signature.result, active);
-        }
-        let checked = (|| {
-            let contracts = regions::contract(function, module, &names, types)?;
-            checker.type_parameters = scheme.variables.clone();
-            checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
-            checker.members = scheme.members.clone();
-            let mut parameters = Vec::new();
-            for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-                parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+    // The bodies of different functions are checked in parallel: each reads the shared tables and
+    // changes only its own declaration (`computation::expand`). The loop that collects the results
+    // runs in declaration order, stops once `diagnostics` is full, and a stage on one thread does
+    // not even check the later bodies, so the outcome does not depend on the number of threads.
+    let declarations: Vec<_> = function_declarations.iter_mut().collect();
+    let workers = parallelism.workers(declarations.len(), FUNCTIONS_PER_WORKER);
+    ordered_for_each_owned(
+        declarations,
+        workers,
+        FUNCTION_CHUNK,
+        None,
+        |id, (module, function)| {
+            let scheme = &signatures[id];
+            if scheme.is_poisoned() {
+                return None;
             }
-            computation::expand(&mut function.body, &names, module)?;
-            checker.recovering = true;
-            let body = if let Some(import) = external_functions.get(&id) {
-                let mut import = import.clone();
-                import.callbacks = signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)));
-                TypedExpr {
-                    kind: TypedExprKind::HostCall(
-                        Box::new(import),
-                        parameters
-                            .iter()
-                            .map(|local| TypedExpr {
-                                kind: TypedExprKind::Local(local.id),
-                                ty: local.ty.clone(),
-                                span: local.span,
-                            })
-                            .collect(),
-                    ),
-                    ty: signature.result.clone(),
-                    span: function.name.span,
+            let signature = scheme.signature.clone();
+            let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+            checker.indexing = indexing;
+            if let Some(active) = active_results.get(&id) {
+                checker.use_active_result(&signature.result, active);
+            }
+            let checked = (|| {
+                let contracts = regions::contract(function, module, &names, types)?;
+                checker.type_parameters = scheme.variables.clone();
+                checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
+                checker.members = scheme.members.clone();
+                let mut parameters = Vec::new();
+                for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
+                    parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
                 }
-            } else {
-                checker.expression(&function.body, Some(&signature.result))?
-            };
-            Ok(CheckedFunction {
-                module: module.clone(),
-                region_sources: contracts.result,
-                callback_contracts: contracts.callbacks,
-                region_slots: contracts.slots,
-                origin: FunctionOrigin {
-                    provenance: function.name.provenance,
-                    test: test_functions.get(&id).copied(),
-                    bench: bench_functions.get(&id).copied(),
-                    cpu: cpu_levels.get(&id).copied().unwrap_or(0),
-                    ..FunctionOrigin::source(names.origin(module))
-                },
-                name: function.name.text.clone(),
-                visibility: function.visibility,
-                exported: function.exported,
-                parameters,
-                signature,
-                body,
-                span: function.name.span,
-                type_parameters: scheme.variables.clone(),
-                constraints: scheme.constraints.clone(),
-                members: Vec::new(),
-                capture_count: 0,
-                is_task: false,
-                owned_captures: false,
-            })
-        })();
-        diagnostics.extend(
-            std::mem::take(&mut checker.recovered)
+                computation::expand(&mut function.body, &names, module)?;
+                checker.recovering = true;
+                let body = if let Some(import) = external_functions.get(&id) {
+                    let mut import = import.clone();
+                    import.callbacks = signature
+                        .parameters
+                        .iter()
+                        .any(|ty| matches!(ty, Type::Function(..)));
+                    TypedExpr {
+                        kind: TypedExprKind::HostCall(
+                            Box::new(import),
+                            parameters
+                                .iter()
+                                .map(|local| TypedExpr {
+                                    kind: TypedExprKind::Local(local.id),
+                                    ty: local.ty.clone(),
+                                    span: local.span,
+                                })
+                                .collect(),
+                        ),
+                        ty: signature.result.clone(),
+                        span: function.name.span,
+                    }
+                } else {
+                    checker.expression(&function.body, Some(&signature.result))?
+                };
+                Ok(CheckedFunction {
+                    module: module.clone(),
+                    region_sources: contracts.result,
+                    callback_contracts: contracts.callbacks,
+                    region_slots: contracts.slots,
+                    origin: FunctionOrigin {
+                        provenance: function.name.provenance,
+                        test: test_functions.get(&id).copied(),
+                        bench: bench_functions.get(&id).copied(),
+                        cpu: cpu_levels.get(&id).copied().unwrap_or(0),
+                        ..FunctionOrigin::source(names.origin(module))
+                    },
+                    name: function.name.text.clone(),
+                    visibility: function.visibility,
+                    exported: function.exported,
+                    parameters,
+                    signature,
+                    body,
+                    span: function.name.span,
+                    type_parameters: scheme.variables.clone(),
+                    constraints: scheme.constraints.clone(),
+                    members: Vec::new(),
+                    capture_count: 0,
+                    is_task: false,
+                    owned_captures: false,
+                })
+            })();
+            let recovered: Vec<_> = std::mem::take(&mut checker.recovered)
                 .into_iter()
-                .map(|error| classes.derived_error(id, error)),
-        );
-        match checked {
-            Ok(function) if !checker.poisoned => {
-                functions.push(function);
-                ids.push(id);
-                pending.push(checker);
+                .map(|error| classes.derived_error(id, error))
+                .collect();
+            let checked = checked.map_err(|error| classes.derived_error(id, error));
+            Some((recovered, checked, checker))
+        },
+        |id, outcome| {
+            if diagnostics.is_full() {
+                return ControlFlow::Break(());
             }
-            Ok(function) => recovered_functions.push((id, function, checker)),
-            Err(error) => diagnostics.push(classes.derived_error(id, error)),
-        }
-    }
+            let Some((recovered, checked, checker)) = outcome.get() else {
+                return ControlFlow::Continue(());
+            };
+            diagnostics.extend(recovered);
+            match checked {
+                Ok(function) if !checker.poisoned => {
+                    functions.push(function);
+                    ids.push(id);
+                    pending.push(checker);
+                }
+                Ok(function) => recovered_functions.push((id, function, checker)),
+                Err(error) => diagnostics.push(error),
+            }
+            ControlFlow::Continue(())
+        },
+    );
     let mut entry = modules
         .iter()
         .find(|module| {

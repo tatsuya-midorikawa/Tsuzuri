@@ -476,6 +476,26 @@ mod tests {
         (format!("Module{index}.tz"), text)
     }
 
+    /// A module whose functions each add a number and a string: one error in each body.
+    fn type_error_module(index: usize, functions: usize) -> (String, String) {
+        let mut text = String::new();
+        for function in 0..functions {
+            text += &format!("def bad{function} :: i64 -> i64 = \\x -> x + \"{index}\"\n\n");
+        }
+        (format!("Module{index}.tz"), text)
+    }
+
+    /// A module whose function has a type error and, after it, a value that is used after it moved:
+    /// the recovery pass reports the second error because the body is only partly typed.
+    fn recovered_module(index: usize) -> (String, String) {
+        (
+            format!("Module{index}.tz"),
+            format!(
+                "record Owned{index} {{ text: string, count: i64 }}\n\ndef mixed :: i64 -> i64 = \\x ->\n    let value = Owned{index} {{ text: \"text\", count: x }}\n    let other = {{ value with count = 1 }}\n    let bad = x + \"{index}\"\n    value.text.length\n"
+            ),
+        )
+    }
+
     /// A module whose only function does not cover the case `Blue`: E1021 when the function is finished.
     fn incomplete_match_module(index: usize) -> (String, String) {
         (
@@ -614,6 +634,50 @@ mod tests {
     }
 
     #[test]
+    fn body_errors_replay_the_diagnostic_cap_on_every_thread_count() {
+        // 1,600 errors in 400 modules: the cap of 1,000 is reached while the bodies are checked, in
+        // the middle of the stage, and a later body never adds to the diagnostics.
+        let sources: Vec<_> = (0..400).map(|index| type_error_module(index, 4)).collect();
+        let sequential = analyze_on(1, &sources).unwrap_err();
+        assert_eq!(sequential.diagnostics.len(), 50);
+        assert_eq!(sequential.omitted, 950);
+        assert!(sequential.omitted_is_lower_bound);
+        let code = sequential.diagnostics[0].code;
+        assert!(
+            sequential
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == code)
+        );
+        for threads in [2, 3, 8] {
+            let (parallel, stages) = parallel_stages(|| analyze_on(threads, &sources).unwrap_err());
+            assert!(stages > 0, "{threads} threads");
+            assert_eq!(parallel, sequential, "{threads} threads");
+        }
+    }
+
+    #[test]
+    fn body_errors_below_the_cap_and_the_recovery_pass_do_not_depend_on_the_thread_count() {
+        let mut sources: Vec<_> = (0..120).map(|index| type_error_module(index, 3)).collect();
+        sources.extend((120..400).map(recovered_module));
+        let sequential = analyze_on(1, &sources).unwrap_err();
+        assert!(!sequential.omitted_is_lower_bound, "{}", sequential.omitted);
+        assert_eq!(sequential.diagnostics.len(), 50);
+        assert!(sequential.omitted > 0);
+        for threads in [2, 3, 8] {
+            let (parallel, stages) = parallel_stages(|| analyze_on(threads, &sources).unwrap_err());
+            assert!(stages > 0, "{threads} threads");
+            assert_eq!(parallel, sequential, "{threads} threads");
+        }
+        // Only the recovered modules: every error of the recovery pass is reported, in module order.
+        let recovered: Vec<_> = (0..300).map(recovered_module).collect();
+        let sequential = analyze_on(1, &recovered).unwrap_err();
+        for threads in [2, 8] {
+            assert_eq!(analyze_on(threads, &recovered).unwrap_err(), sequential);
+        }
+    }
+
+    #[test]
     fn finish_errors_replay_the_diagnostic_cap_on_every_thread_count() {
         // The match of each module fails when its function is finished, after every body checked:
         // 1,100 errors reach the cap of 1,000 in function order.
@@ -656,7 +720,7 @@ mod tests {
             let (parallel, stages) = parallel_stages(|| {
                 analyze_indexed_on(threads, &sources, Some(&mut index)).unwrap()
             });
-            assert!(stages >= 3, "{threads} threads: {stages} parallel stages");
+            assert!(stages >= 4, "{threads} threads: {stages} parallel stages");
             assert!(format!("{parallel:?}") == sequential, "{threads} threads");
             assert!(
                 format!("{index:?}") == sequential_index,
