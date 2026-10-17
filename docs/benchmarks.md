@@ -7380,11 +7380,192 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 ### PR07 プロファイル誘導最適化（PGO）
 
 <!-- phase4:PR07 -->
+`--profile-generate DIR` と `--profile-use PATH`（PR07）の測定と、生成コードの確認の記録です。主張は測った範囲に限ります。
+
+**条件**: Apple M1 Max（10 core）、macOS 27.0.1、Node v20.19.6（wasm は Node v24.21.0 も）、rustc 1.98.1（LLVM 22.1.8）。Tsuzuri は release build で、run `apple-1`・`brew-1` が commit `a9105ace`（作業ツリーはクリーン、SHA-256 `09a47c15…`）、`apple-2` が `46800137` ＋ docs（SHA-256 `9f52d022…`）です。Clang は Apple clang 21.0.0（`/usr/bin/clang`。`apple-1`・`apple-2`）と Homebrew LLVM 21.1.8（`brew-1`）で、`llvm-profdata` は各 Clang と対のものです。run は他の作業が並行する共有機で、1 分の load average は開始時に 15〜35、実行中に最大 50 でした。電源は AC です。生データ（`control.jsonl`、`--artifacts` の object・IR・asm・profile）は `target/perf/PR07/`（コミットしない）にあります。
+
+### M1: 時間（`benchmarks/control` の 16 種目、native `-O3`）
+
+`node benchmarks/run-control.mjs target/release/tsuzuri --pgo --pgo-runs 5` の 1 run は、plain の host と PGO の host を 5 回ずつ交互に動かし、1 host の 12 標本 × 5 回 = 60 標本の CPU 時間の中央値を比べます。訓練は、計装した object を link した host の `--quick` の 1 回です（`--scale 0.02` と `--scale 1` で訓練しても、`tail_mix`・`match_dispatch`・`closure_capture` の比は 0.02 以内で同じでした）。`apple-2` だけは `--pgo-rust-llvm /opt/homebrew/opt/llvm@22/bin` を付け、Rust の object も rustc の LLVM の profile で最適化しています。表は「PGO あり／なし」の比で、1 未満は PGO のほうが短い時間です。C・C++・Rust は Tsuzuri と同じ手順（`-fprofile-generate` → `--quick` → `-fprofile-use`、Rust は `-C profile-generate` → `-C profile-use`）です。
+
+| 種目 | 仕事量 | Tsuzuri PGO なし（ms、apple-2） | Tsuzuri apple-1 | Tsuzuri apple-2 | Tsuzuri brew-1 | C（apple-2） | C++（apple-2） | Rust（apple-2、LLVM 22） |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `while_mix` | 8000000 | 13.21 | 1.000 | 1.003 | 1.004 | 1.003 | 1.003 | 1.006 |
+| `for_mix` | 8000000 | 13.18 | 1.000 | 1.006 | 1.006 | 1.008 | 1.009 | 1.004 |
+| `tail_mix` | 8000000 | 13.20 | 1.212 | 1.203 | 1.196 | 1.005 | 1.000 | 1.001 |
+| `tail_if_mix` | 8000000 | 13.20 | 1.191 | 1.206 | 1.197 | 1.008 | 1.007 | 1.005 |
+| `tail_builtin_mix` | 8000000 | 13.19 | 1.207 | 1.209 | 1.196 | 1.006 | 1.005 | 1.007 |
+| `match_dispatch` | 8000000 | 2.644 | 1.622 | 1.639 | 1.626 | 1.004 | 1.006 | 1.011 |
+| `array_sum` | 4000000 | 2.012 | 1.028 | 1.035 | 0.976 | 1.024 | 1.041 | 1.026 |
+| `array_index_sum` | 4000000 | 1.988 | 1.032 | 1.061 | 0.987 | 1.045 | 1.028 | 1.035 |
+| `array_copy` | 2000000 | 1.844 | 1.016 | 1.007 | 0.965 | 1.014 | 1.012 | 1.010 |
+| `list_sum` | 100000 | 1.861 | 0.997 | 1.013 | 0.982 | 1.010 | 1.015 | 1.009 |
+| `closure_capture` | 1000000 | 1.991 | 0.830 | 0.831 | 0.828 | 0.835 | 0.833 | 0.833 |
+| `closure_churn` | 1000000 | 6.681 | 0.871 | 0.877 | 0.864 | 0.569 | 0.563 | 0.395 |
+| `record_pipeline` | 8000000 | 13.21 | 1.005 | 1.000 | 0.994 | 0.998 | 1.000 | 0.998 |
+| `integer128_mix` | 2000000 | 5.232 | 1.014 | 0.996 | 0.997 | 0.994 | 0.999 | 0.995 |
+| `float32_mix` | 4000000 | 9.292 | 0.993 | 0.998 | 0.992 | 1.001 | 1.000 | 1.002 |
+| `float64_mix` | 4000000 | 9.280 | 1.004 | 0.998 | 0.994 | 0.997 | 0.996 | 0.997 |
+
+読み取りは次のとおりです（3 つの run が同じ向きで、2 つの Clang で同じです）。
+
+- 速くなる種目は 2 つで、`closure_capture` が約 17%、`closure_churn` が 12〜14% です。遅くなる種目は 4 つで、`tail_mix`・`tail_if_mix`・`tail_builtin_mix` が約 20%、`match_dispatch` が約 63% です。ほかの 10 種目は ±3% で、`array_*` の動きは C・C++・Rust の同じコードも同じ向きに動いたので、host の配置の揺れです。**PGO を使えば速くなる、とは言えません。**
+- C・C++・Rust にも PGO を掛けると、`closure_churn` は C 0.57、C++ 0.56、Rust 0.40 まで短くなり、Tsuzuri の 0.87 は追いつきません。`tail_*` と `match_dispatch` は、C・C++・Rust が変わらないのに Tsuzuri だけが遅くなります。
+- 原因の観察（Phase 0。IR・asm・remark）: `closure_*` は profile が間接呼び出しの対象を記録し、呼び出しが特殊化されます（Tsuzuri の `tz_closure_capture` の `$lambda.28.1` 50.45%・`$lambda.29.1` 49.55%）。`tail_*` は PGO のビルドで `tz_tail_mix` の呼び出し先の inline の threshold が 75（PGO なしは 250）になり、ループの依存の鎖が 1 段長くなります。`match_dispatch` は PGO なしが `loop-unroll`（実行時の trip count × 8）なのに、PGO は vectorizer の fallback の scalar loop に `branch_weights 119, 119` が付いて unroll されません。
+
+| 種目 | Tsuzuri／C（PGO なし） | （PGO あり） | Tsuzuri／Rust（PGO なし） | （PGO あり） |
+| --- | ---: | ---: | ---: | ---: |
+| `while_mix` | 0.999 | 1.000 | 1.000 | 0.997 |
+| `for_mix` | 0.999 | 0.997 | 0.624 | 0.626 |
+| `tail_mix` | 1.000 | 1.197 | 0.998 | 1.201 |
+| `tail_if_mix` | 0.999 | 1.195 | 0.997 | 1.196 |
+| `tail_builtin_mix` | 1.000 | 1.201 | 0.999 | 1.199 |
+| `match_dispatch` | 0.614 | 1.001 | 0.995 | 1.613 |
+| `array_sum` | 0.995 | 1.006 | 1.000 | 1.009 |
+| `array_index_sum` | 0.992 | 1.007 | 0.989 | 1.014 |
+| `array_copy` | 1.001 | 0.995 | 1.002 | 1.000 |
+| `list_sum` | 0.980 | 0.983 | 0.979 | 0.982 |
+| `closure_capture` | 1.001 | 0.997 | 0.999 | 0.996 |
+| `closure_churn` | 1.016 | 1.565 | 0.702 | 1.560 |
+| `record_pipeline` | 0.999 | 1.002 | 1.000 | 1.002 |
+| `integer128_mix` | 0.998 | 1.000 | 0.951 | 0.952 |
+| `float32_mix` | 1.004 | 1.001 | 1.002 | 0.999 |
+| `float64_mix` | 0.998 | 0.999 | 0.999 | 1.000 |
+
+「同じ手段で競う」比較（`apple-2`）です。1 未満は Tsuzuri のほうが短い時間です。PGO なしでは C と同等以上（`match_dispatch` は C の 0.61 倍、`closure_churn` は Rust の 0.70 倍）だった Tsuzuri は、全員が PGO を使うと、`tail_*` で約 1.20 倍、`closure_churn` で C の 1.57 倍、`match_dispatch` で Rust の 1.61 倍になります。PGO を使う利用者に対して Tsuzuri が同等とは言えず、`tail_*`・`match_dispatch` の悪化と `closure_churn` の伸びの小ささは、Tsuzuri の IR（呼び出しの形、ループの形）を直す課題として残ります。
+
+### 生成コードの確認
+
+`--artifacts` が残す IR・asm・object で確かめました。
+
+| 確認 | 結果 |
+| --- | --- |
+| clang に渡る IR に `!prof` を足すのは Clang だけ | Tsuzuri の module を Clang が最適化した IR で、PGO なしは `function_entry_count`・`branch_weights` が 0 件。PGO あり（`apple-2`）は、entry count のある関数 20、重みの付いた命令 121、`branch_weights` の node 29。C は 16・101・24、C++ は 16・109・24、Rust は 15・107・26 |
+| fast-math 系の flag（`fast`・`reassoc`・`nnan`・`ninf`・`nsz`・`arcp`・`contract`・`afn`） | PGO なしも PGO ありも 0 件（Tsuzuri・C・C++・Rust） |
+| 計装版と PGO 版の section | 計装した object には `__llvm_prf_cnts`・`_data`・`_vals`・`_vnds`・`_names` の 5 つ（`llvm-objdump -h`）。PGO の object と PGO なしの object には 0 |
+| 計装の counter | 計装した IR の `@__profc_` は 188 |
+| PGO 名 | `llvm-profdata show` の関数名は、公開の関数が `tz_<name>`、内部関数が `tsuzuri;tz.apply.$lambda.28.1` の形（module の `source_filename` が `tsuzuri` のため。パスに左右されない） |
+
+### M2・M3: 大きさとビルド時間
+
+`benchmarks/control` の `--emit object -O3 --no-cache`（4 種のビルドを交互に 9 回。`TSUZURI_TIME_PASSES=1` の `total_ms` と `tool.clang`・`tool.llvm-profdata`）。load average は 28 でした。
+
+| 項目 | Apple clang 21.0.0 | Homebrew clang 21.1.8 |
+| --- | ---: | ---: |
+| object: PGO なし | 5,392 B | 5,392 B |
+| object: 計装 | 17,144 B（3.2 倍） | 16,064 B（3.0 倍） |
+| object: PGO | 5,848 B（+8.5%） | 5,808 B（+7.7%） |
+| `.profraw`（`--quick` の訓練）／ merge 後の `.profdata`（control・C・C++ を含む） | 6,496 B ／ 8,040 B | 同じ |
+| ビルド全体の中央値（最小〜最大）: PGO なし | 140 ms（119〜225） | 146 ms（143〜226） |
+| 〃 計装 | 129 ms（116〜314） | 151 ms（147〜265） |
+| 〃 `--profile-use file.profdata` | 157 ms（120〜211） | 179 ms（149〜733） |
+| 〃 `--profile-use dir`（merge を含む） | 193 ms（141〜420） | 178 ms（165〜330） |
+| うち Clang の compile: PGO なし／use | 100 ms ／ 109 ms | 114 ms ／ 126 ms |
+| うち `llvm-profdata merge`（`dir` のとき） | 17 ms（4〜35） | 20 ms（19〜157） |
+
+`--profile-use` は Clang の compile に約 10 ms、merge に約 20 ms を足し、ビルドは PGO なしの 1.1〜1.4 倍です。ディレクトリを渡した build と merge 済みの file を渡した build の object は byte 同一でした（`cmp`）。計装のビルドは PGO なしと差がありません。
+
+### 範囲の判断（D6）と trap の分岐（D9）
+
+- **数値・数学のランタイム（D6）は PGO の対象にしません。** `Math.sin`・`Math.exp`・`Math.sqrt` を 3,000 万回呼ぶ例を、既定（数学のランタイムは別の prebuilt object）と `--no-cache`（IR のまま埋め込む）で、それぞれ plain と PGO で作り、15 回交互に実行しました（最小／中央値 ms）。既定: 284.9／302.0 → PGO 285.8／309.4。埋め込み: 262.9／288.7 → PGO 266.7／291.3（既定のビルドの profile を埋め込みのビルドに使っても 266.1／276.3）。埋め込みは PGO と無関係に約 8% 速く（呼び出しに inline されるため）、プロファイルは `tz_math_sin_f64`・`tz_math_exp_f64` の分岐を数えても、使った成果物に差が出ません。PGO のビルドだけ埋め込む案は、プロファイルの効果ではない差を混ぜ、コンパイルが約 0.4 秒増えるので取り下げました。C のランタイム（task など）は計装していません。
+- **trap の分岐への `!prof`・`llvm.expect`（D9）は足しません。** `node benchmarks/run-trap-layout.mjs target/release/tsuzuri` は 21 の corpus（`benchmarks/` の 11、`tests/fixtures/control`、`examples/` の 9）の `-O3` の asm で、trap の命令 177 個（arm64 と x86-64 で同じ数）を分類します。arm64 では out of line（直前が無条件の jump か return）132、関数の末尾で条件分岐の直後 9、失敗の経路の連鎖（`free` の後など）14、ループが尽きたときの fall-through（ループの back edge の直後）21、hot path が飛び越える形は 1（`examples/functional` の失敗の経路の中）です。x86-64 は 129・10・16・21・1。`control` と `computations` は全部 out of line です。hot path が trap の block を飛び越す形はなく、重みを足す根拠がありません。
+
+### WebAssembly（wasm32）
+
+`node benchmarks/run-wasm-pgo.mjs target/release/tsuzuri --suite apps|control`（module を plain・計装・PGO で作り、計装した module を同じ process で訓練して `writeProfile` で書き、plain と PGO を 15 回交互に実行。V8 の 2 段のコンパイルの揺れを避けるため `--no-liftoff`）。仕事量は apps が native の半分、control が 4 分の 1 です。load average は 20〜32 でした。
+
+- **counts は native と一致します。** `tests/pgo.mjs` は、同じ `library` の fixture の native の計装版と wasm の計装版を同じ入力で動かし、`llvm-profdata show` の `tz_total` が `[100000, 1, 33333, 33334]` で等しいことを確かめます。wasm 向けの profile でない native の profile を wasm の build に使うと、多くの関数で hash が合いません（control の profile の 22 関数のうち 10 関数）。
+- **大きさ**: control の module は 11,471 → 10,359 B（PGO、−9.7%）、計装版は 23,801 B。apps は 30,895 → 35,767 B（PGO、+15.8%）、計装版は 64,150 B。
+
+| apps | Node 24 PGO あり／なし | Node 20 | control | Node 24 | Node 20 |
+| --- | ---: | ---: | --- | ---: | ---: |
+| `tokenize` | 0.916 | 0.934 | `while_mix` | 1.016 | 1.044 |
+| `format_join` | 0.945 | 1.032 | `tail_mix` | 1.022 | 1.010 |
+| `csv_aggregate` | 0.865 | 0.852 | `match_dispatch` | 0.986 | 1.026 |
+| `map_count` | 1.020 | 1.011 | `array_sum` | 0.999 | 0.979 |
+| `record_sort` | 1.002 | 0.999 | `closure_capture` | 0.983 | **1.517** |
+| `tree_transform` | 0.947 | 0.995 | `closure_churn` | 1.012 | 1.029 |
+| `binary_trees` | 1.024 | 0.965 | `float32_mix` | 1.034 | 1.060 |
+| `closure_pipeline` | 1.054 | 1.078 | ほか 9 種目 | 0.981〜1.016 | 0.977〜1.023 |
+| `graph_bfs` | 0.973 | 0.993 | | | |
+| `spectral_norm` | 1.002 | 0.985 | | | |
+
+Node 24 の apps は 4 種目が 5〜14% 速く、`binary_trees`・`closure_pipeline` が 2〜5% 遅く、control は差がありません。Node 20 では apps の効果が小さく、control の `closure_capture` が約 50% 遅くなります（3 回の run で 1.47〜1.52）。つまり効果は workload と JavaScript エンジンで変わり、既定にはしません。間接呼び出しの対象を数えるランタイムが wasm にないので、`closure_*` の PGO の主な効果（呼び出しの特殊化）は得られません。
+
+### 測っていないもの
+
+- Linux（ELF の `--gc-sections` が `__llvm_prf_*` を残すか、`libclang_rt.profile` の置き場所）、x86-64、Windows は測っていません。Windows は拒否します。
+- `--emit bitcode`（PR08 の ThinLTO）との併用は確かめていません。許可リスト（native は `exe`・`object`、wasm32 は `wasm`）に入れていないので `E2000` です（`src/main.rs` の拒否の表と `tests/pgo.mjs` がこの拒否を確かめます）。許すには、`Profile::validate` に `Emit::Bitcode` を足し、計装と使用が bitcode の compile に届くことと、`llvm-link` で併合した C ランタイムを含む module の profile が合うことを、host を含めて確かめる必要があります。
+- 速度の閾値は共有 CI に置きません。`node tests/pgo.mjs` は動作だけを確かめ、時間は測りません。
+
+再現:
+
+```sh
+node benchmarks/run-control.mjs target/release/tsuzuri --pgo --pgo-runs 5 --pgo-rust-llvm /opt/homebrew/opt/llvm@22/bin --metrics target/perf/PR07/apple-2 --artifacts target/perf/PR07/apple-2-artifacts
+node benchmarks/run-wasm-pgo.mjs target/release/tsuzuri --suite apps     # control も
+node benchmarks/run-trap-layout.mjs target/release/tsuzuri
+node tests/pgo.mjs target/release/tsuzuri
+```
 <!-- /phase4:PR07 -->
 
 ### PR08 言語間 LTO と bitcode 出力
 
 <!-- phase4:PR08 -->
+`--emit bitcode`（PR08）は、プログラムと、それが使う C ランタイムを 1 つの ThinLTO の bitcode にします。C・C++ のホストが `-flto=thin` でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--emit object` のリンクでは、その呼び出しは呼び出しのまま残ります。使い方は [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) にあります。この節は、その効果を測った記録です。速さは、同じ Clang でビルドとリンクをした構成だけで述べます。
+
+#### 種目 `lto/small_call`
+
+`benchmarks/run-lto.mjs` は、`export def add :: i64 -> i64 -> i64`（`fn add x y = x + y`）を 3 通りにリンクした C のホスト（`benchmarks/lto/small_call.c`）を走らせます。ホストは長さ 1024 の配列を実行時に作り、`total = tz_add(total, values[i & 1023])` を `n` 回回して合計を出力します。`n` は引数なので、ループ全体は定数になりません。
+
+| variant | リンク |
+| --- | --- |
+| `object` | `--emit object` の `add.o` と、`-O3` の通常のリンク |
+| `bitcode` | `--emit bitcode` の `add.bc` と、ホストも `-O3 -flto=thin` の ThinLTO のリンク（同じ Clang） |
+| `c-only` | `add` を同じファイルの C（`static`）で書き、`-O3 -flto=thin` で 1 回のビルド（ticket の `c_only`。PX01 の variant 名は `[a-z0-9-]+` なので `c-only`） |
+
+```sh
+export TSUZURI_CLANG=/opt/homebrew/opt/llvm@21/bin/clang      # ホストのビルドとリンクも、この Clang が行う
+node benchmarks/run-lto.mjs target/release/tsuzuri --artifacts target/perf/PR08-after/artifacts-llvm21-r1 \
+  --metrics target/perf/PR08-after/lto-llvm21-r1
+```
+
+3 通りとも、時間を測る前に `n = 1000` と `n = 1000000000` の出力を、このスクリプトが独立に計算した和（Python で確かめた参照値 `498932` と `499351563280`）と比べ、違えば測りません。測定は、1 回の捨て走行のあと、variant の順序を回しながら 9 回ずつ走らせます（`/usr/bin/time` の起動を含む wall time。PX01 の `wall_time`）。記録は PX01 の suite `lto`、workload `small_call`、`size` が `n` です。
+
+環境: コミット `d832fe24`（作業ツリーは clean）、release の `tsuzuri`（SHA-256 `804153ccac44…`）、macOS 27.0.1、Apple M1 Max（10 core）、Node v20.19.6。**専用機ではありません**。ほかのビルドが動いていて、開始時と終了時の load average は 12〜18 でした。表の値は目安です。
+
+結果（`n = 1000000000`、ms。`中央値（最小〜最大）`、9 標本）:
+
+| 構成・実行 | `object` | `bitcode` | `c-only` |
+| --- | --- | --- | --- |
+| Homebrew LLVM 21.1.8、1 回目 | 1163.1（998.7〜1288.6） | 674.1（547.7〜730.6） | 676.0（540.4〜803.9） |
+| Homebrew LLVM 21.1.8、2 回目 | 1020.9（993.4〜1260.6） | 632.0（526.8〜687.4） | 533.7（528.0〜670.5） |
+| Apple clang 21.0.0、1 回目 | 1116.6（991.7〜1231.0） | 548.8（528.9〜732.5） | 551.1（531.7〜689.3） |
+| Apple clang 21.0.0、2 回目 | 1101.0（994.2〜1272.6） | 566.8（529.4〜697.3） | 614.0（528.3〜687.3） |
+
+| 指標 | `object` | `bitcode` | `c-only` |
+| --- | --- | --- | --- |
+| M1: `main` の中の `tz_add` を指す命令（`llvm-objdump -d`） | 1（`bl`） | 0 | 0 |
+| M3: 実行ファイルの大きさ、Homebrew LLVM 21（bytes） | 33,640 | 33,592 | 33,592 |
+| M3: 同、Apple clang 21（bytes） | 33,704 | 33,656 | 33,656 |
+
+読み方は、このファイルのほかの節と同じです。差は、中央値の差が両者の広がりを超え、かつ範囲が重ならないときだけ読みます。4 回とも、`object` の最小（991.7〜998.7 ms）は `bitcode` の最大（687.4〜732.5 ms）より大きく、範囲が重なりません。呼び出しが inline された `bitcode` は `object` の 0.5〜0.6 倍の時間で（改善）、`bitcode` と `c-only` は 4 回とも範囲が重なり、中央値の比は 0.92〜1.18 の間で向きも揃いません（差なし）。`bitcode` と `c-only` の実行ファイルは、ファイルの大きさ（Homebrew の構成で 33,592 bytes）と `__text` の大きさ（500 bytes）が同じです。共有機の load の揺れで、同じ構成の中央値が 533.7〜676.0 ms（`c-only`）と動くので、`bitcode` が `c-only` より速い、あるいは遅いとは読みません。
+
+#### ビルドの費用
+
+`--emit bitcode` は、IR にそのコンパイラの Clang が C の関数に付ける `target-cpu` を付けるために、小さな C ファイルを Clang で 1 回コンパイルして属性を読みます。C ランタイムを使うプログラムは、そのランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます（object の経路は、ランタイムを別の object にして `-r` のリンクで 1 つにします）。release の `tsuzuri build --no-cache -O3`（Homebrew LLVM 21、9 回の wall time、中央値と範囲）:
+
+| プログラム | `--emit object` | `--emit bitcode` | 出力の大きさ（object → bitcode） |
+| --- | --- | --- | --- |
+| `add` だけ（C ランタイムなし） | 90 ms（80〜220） | 140 ms（140〜250） | 368 → 2,112 bytes |
+| `add`・`sum`・`bytes`（C ランタイムあり） | 560 ms（530〜710） | 470 ms（400〜7,700。1 回だけ 7.7 s に伸びた） | 29,344 → 9,872 bytes |
+
+C ランタイムを使わないプログラムでは、bitcode は属性を読む 1 回の Clang の分だけ遅く（約 50 ms）、使うプログラムでは、この測定では object より短くなりました。bitcode はビルドキャッシュを使わない（PR08 D7）ので、どちらも `--no-cache` で測っています。
+
+#### 測っていないこと
+
+- x86-64 と Linux、Windows の時間は測っていません。1 つの関数、1 つのループだけの測定で、ホストの規模が大きいときの時間、ホストのリンク時間（ThinLTO のリンクと通常のリンクの差）、ほかの関数の inline の効果は測っていません。
+- 閾値は置きません（共有 CI の揺れが大きいため）。`benchmarks/run-lto.mjs` は値を出すだけで、合否の判定をしません。
+- 生データ（`*.jsonl`、実行ファイル、`samples.json`）は `target/perf/PR08-after/` に残しました（Git には入れません）。
 <!-- /phase4:PR08 -->
 
 ## 現実的な次の指標

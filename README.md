@@ -556,6 +556,7 @@ clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -l
 - **不透明ハンドルとコールバック**: `extern type Counter` でホスト側のポインタを安全な不透明ハンドルとして扱えます。また、環境キャプチャを持たないトップレベル関数は関数ポインタとしてホストへ渡せます。
 - **ホストライブラリのリンク**: ネイティブ実行ファイルのビルド時には、`--link PATH`、`-l NAME`、`-L DIR` や `Tsuzuri.toml` の `[native]` セクションを通じて、外部の C/C++ ライブラリやオブジェクトを直接リンクできます。
 - **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は未対応で `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
+- **言語間 LTO（bitcode）**: `--emit bitcode` は、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。C・C++ のホストが、bitcode を書いた Clang と同じ Clang の `-flto=thin`（Linux は `-fuse-ld=lld`）でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--target wasm32` は `wasm-ld` の LTO で同じことができます。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link`（`TSUZURI_LLVM_LINK`）が要ります。Windows と `wasm64` は `E2000` です。10 億回のループの測定（M1 Max、macOS、共有機の目安）では、bitcode のリンクは `--emit object` のリンクの約 0.5〜0.6 倍の時間で、C で書いた同じ関数と区別できませんでした。使い方と確かめた組み合わせは [ネイティブ連携](_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode)、測定は [docs/benchmarks.md](docs/benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 - **デスクトップ GUI 連携の例**: Python/Tkinter などのデスクトップ GUI から Tsuzuri のネイティブ共有ライブラリを呼び出すことも可能です（詳細は `examples/desktop` を参照してください）。
 
 ### WebAssembly (ブラウザ / Node.js)
@@ -794,7 +795,7 @@ LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C+
 cargo build --release
 ```
 
-`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。
+`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`--emit bitcode` が C ランタイムを IR のまま 1 つにまとめる `llvm-link` は、`TSUZURI_LLVM_LINK` で指定します（なければ、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します）。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。`--profile-use` にディレクトリを渡すときに `.profraw` を merge する `llvm-profdata` は `TSUZURI_LLVM_PROFDATA` で指定します（未設定なら `TSUZURI_CLANG` の Clang の隣、その toolchain の順で探し、PATH は探しません）。
 
 x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
@@ -839,7 +840,7 @@ tsuzuri lsp
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
 | `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は `aarch64-apple-darwin` や `x86_64-unknown-linux-musl` など 22 個の native の名前で、`tsuzuri --help` に一覧が出ます。32-bit は対象外）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bitcode\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bitcode` は C・C++ のホストが `-flto=thin` で小さな公開関数を inline できる ThinLTO の LLVM bitcode（native と wasm32。同じ Clang でリンクする。C ランタイムを使うプログラムには `llvm-link` が要る）、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
@@ -857,6 +858,7 @@ tsuzuri lsp
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--strip` | native の実行ファイルのリンクでローカルシンボルを除きます（`build` の `--emit exe` だけ。`-g`・WASM とは組み合わせられず、Windows のリンクは変わりません）。 |
 | `--wasm-opt` | wasm32 の `.wasm` のリンク後に Binaryen の `wasm-opt -Oz` を実行します（`build` の `--emit wasm` だけ。`-g`・threads・wasm64 とは組み合わせられません）。Binaryen は同梱せず、`--wasm-opt` を付けたときだけ使います。見つからない・失敗したときは `E2002` です。場所は環境変数 `TSUZURI_WASM_OPT`（この変数だけでは何も実行しません）。 |
+| `--profile-generate DIR` / `--profile-use PATH` | プロファイル誘導最適化（`build` と `run`）。`--profile-generate` は、native の実行ファイルとオブジェクトを計装し、正常に終了したときに LLVM の raw profile（`.profraw`）を `DIR` に書きます。`--profile-use` は、merge 済みの `.profdata` か `.profraw` のディレクトリ（`llvm-profdata` で merge）で最適化します。wasm32 の module も使え、その host は module の隣の `app.wasm.profile.mjs` の `writeProfile(instance)` で書きます。LLVM の Clang が要り（同梱の `tsuzuri-clang` は `E2002`）、Windows と別の機械の `--target` は `E2000` です。速くなる種目も遅くなる種目もあります（[詳細](./_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
 | `--json` | 診断情報やテスト結果を 1 行 1 JSON オブジェクト形式で標準エラー出力へ返します。 |
 
@@ -896,6 +898,7 @@ node tests/integer_format.mjs   # 整数の表示・書式指定・Parse（integ
 node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置・型定義・剪定で通るようになるビルド・`run` の trap 計装
 node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）
 node tests/bundle_identity.mjs target/release/tsuzuri   # 同梱ツールチェーンの識別を控える memo の無効化・上書き・cache 保護（PB03 WP-F）
+node tests/pgo.mjs target/release/tsuzuri   # PGO（PR07）: 計装した実行ファイル・object・run の raw profile、--profile-use の directory と merge 済みの file、cache の鍵、古い profile の W2001、llvm-profdata の探索、wasm32 の writer（counts を native と照合）。LLVM の Clang と llvm-profdata が無いと skip（LLVM_PREFIX か TSUZURI_PGO_STRICT=1 では失敗）
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証
@@ -972,6 +975,8 @@ native Windows の標準 COFF object は Clang が書く `TimeDateStamp`（heade
 node benchmarks/run.mjs target/release/tsuzuri
 node benchmarks/run-cpp.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri
+node benchmarks/run-control.mjs target/release/tsuzuri --pgo   # PGO（PR07）: plain と PGO の host を交互に測り、variant pgo の行も記録する（C・C++ も同じ profile。--pgo-rust-llvm DIR で Rust も）
+node benchmarks/run-trap-layout.mjs target/release/tsuzuri   # trap の block が hot path に置かれるかの asm の走査（PR07 D9）
 node benchmarks/run-computations.mjs target/release/tsuzuri
 node benchmarks/run-control.mjs target/release/tsuzuri --metrics target/perf/PX01-example
 node benchmarks/metrics.mjs process target/release/tsuzuri --out target/perf/PX01-example
@@ -982,6 +987,7 @@ node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 ch
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
 node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small   # 時間を測る object だけ --allocator small（run-control.mjs も同じ。追跡する IR は system のまま。--metrics の records は、Tsuzuri の時間と peak RSS の variant が small、確保の数（alloc_calls・alloc_bytes）の variant が system で、既定の run とは比較で対応しません。PM05）
 node benchmarks/run-small.mjs target/release/tsuzuri --rounds 5 --rss-runs 9   # PX02 の app の --allocator system と small を同じコンパイラで交互に走らせ、CPU 時間と peak RSS を比べる（Tsuzuri だけ。macOS と Linux。PM05）
+node benchmarks/run-lto.mjs target/release/tsuzuri --metrics target/perf/PR08-after/lto   # C のループが Tsuzuri の tz_add を呼ぶ時間を、--emit object のリンク・--emit bitcode の ThinLTO のリンク（同じ Clang）・C で書いた add の 3 通りで比べる（9 回、順序を回す。--quick は正しさだけ。PR08）
 node benchmarks/run-heap.mjs target/release/tsuzuri --baseline OLDER_COMPILER --capacity   # WASM の heap（PM05）。確保の多い kernel と PX02 の app を wasm32 で走らせ、時間とメモリの大きさ、上限までに収まる最大のサイズを比べる。--quick は動作確認だけ
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Task.parallel の native の時間。--runtime・--baseline-runtime で pool の C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る（PR06）
