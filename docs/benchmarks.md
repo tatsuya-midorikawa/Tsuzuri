@@ -5731,12 +5731,19 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
 
-## 抽象化コストの除去（PR03、2026-10-16）
+## 第3フェーズの測定（2026-10-16〜17）
+
+PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 の測定・生成コードの確認の記録です。基準のコンパイラは main の `6d15b437`（第2フェーズの PR #26）、
+各 subsection の「after」は、それぞれのチケットの branch または統合後のコンパイラです。チケットごとの数値は、他の作業が並行して動く共有機（M1 Max、負荷平均 4〜200）で
+取った参考値を含み、各 subsection に条件と負荷を書いています。統合後の静かな機械での前後比較は、この節の最後の「第3フェーズ統合の最終比較」にまとめます。
+実装済みの経路と計画、測った効果と測っていない効果は、subsection ごとに分けて書きます。共有 CI に速度の合否の閾値は置きません。
+
+### 抽象化コストの除去（PR03、2026-10-16）
 
 計算式・Maybe／Result・関数値が、手書きと同じ `-O3` の生成コードになっているかを `benchmarks/computations` の 10 対で調べた記録です。
 実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に速度の閾値はありません。
 
-### 数え方と再現（Phase 1）
+#### 数え方と再現（Phase 1）
 
 - 基準は main `6d15b437`（第2フェーズ）の release コンパイラ、Apple clang 21.0.0（clang-2100.3.34.2）、Apple M1 Max（arm64）です。
   `--emit llvm` の IR を `run-computations.mjs` と同じ旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module`）で最適化します。
@@ -5764,7 +5771,7 @@ done; done
 grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
 ```
 
-### 分類（基準 `6d15b437`）
+#### 分類（基準 `6d15b437`）
 
 分類は、union の値の `phi` と tag の `switch` が inline の後も残る（K1）、`@tz.specialized.`・`@tz.fn.`・`@tz.apply.` の呼び出しが残る（K2）、
 呼び先が値の間接呼び出しが残る（K3）の 3 つと「差なし」です。K2・K3 は 10 対のどれにも残らず（呼び出しは malloc・free・memcpy・`llvm.trap` だけ）、
@@ -5797,7 +5804,7 @@ grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
 この性質（`let!` の連鎖の worker が `tz.alloc`・`tz.closure.clone`・間接呼び出しを持たないこと、let で束縛した関数値の呼び出しが直接であること）を
 native と wasm32 の `-O0` IR で固定します。
 
-### 戻り値 slot の後（Phase 2、F1'）
+#### 戻り値 slot の後（Phase 2、F1'）
 
 `FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてが値を作る・読む exit（constructor、参照外し・static・引数、引数の欄・添字・payload）の関数だけを、
 入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
@@ -5829,7 +5836,7 @@ native と wasm32 の `-O0` IR で固定します。
   生データは `target/perf/PR03-after/`（git 管理外）です。共有 machine での値なので、静かな machine での再測定は統合時に行います。
   その後に戻り値 slot の規則を狭めました（呼び出しを返す exit を持つ関数は slot にしない）が、`benchmarks/computations` を `-O3` で作る arm64 の機械語全体は byte 単位で同じなので、この値は変わりません。
 
-### 特殊化の予算を使い切る連鎖（Phase 2c）
+#### 特殊化の予算を使い切る連鎖（Phase 2c）
 
 `let!` が 2 つの Maybe の連鎖 1 つは worker を 8 個要求します（上の `0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`）。予算は 1,024 個なので、連鎖が約 128 個を超える program は予算を使い切ります。
 以前は要求された順に worker を出力したため、使い切ると、すべての連鎖が途中で打ち切られました。打ち切られた連鎖は、worker から通常の関数へ閉包の値を渡す形（部分的な特殊化）になり、`-O3` でも間接呼び出しが残りました。
@@ -5866,7 +5873,7 @@ awk '/^define .*@tz_run/{on=1;hit=0} on&&/call [^@]*%/{hit=1} /^}/{if(on&&hit)n+
   束縛値だけを捕捉する形で 0.76 秒から 0.65 秒です。共有 machine（負荷平均 60〜90）での値で、どちらの出力も同じです。
 - 予算を使い切った program は 2 回出力するので、`tsuzuri build --emit llvm` が長くなります（N=300 で user CPU 0.24 秒から 0.29〜0.31 秒、release build で 3 回）。clang `-O3` の時間（0.93〜1.00 秒）は変わりません。予算内の program の時間は変わりません。
 
-### 型付き IR での標準ビルダーの展開（Phase 3、D3。入れていません）
+#### 型付き IR での標準ビルダーの展開（Phase 3、D3。入れていません）
 
 D3 は、std の `Maybe`／`Result` の `Bind`／`BindReturn` を、閉包 literal が `needs_drop` でないスカラーだけを捕捉するとき、emission 時に `match` と lift 済みラムダの直接呼び出しへ簡約する案です。
 F1'・C5 の後に残る差で採否を決め、**入れていません**。同じ連鎖を CE（上の生成元）と手書きの入れ子の `match` で書き、N 個の export を 1 回ずつ呼ぶ C の driver を繰り返して測りました
@@ -6372,11 +6379,11 @@ Async・host の glue の到達性の検証が要り、得に見合いません�
 測定の手順（W2 の作り方、交互 9 標本、`wait4` の CPU、Clang 1 プロセスごとの時間を記録する wrapper、`sample` の読み方）は
 [PB03 の完了記録](../_perfs/_completed/PB03-llvm-handoff.md) にあります。PX03 の `build`・`build-runtime-{cold,warm}` の正式な before／after は静かな機械で取り直します。
 
-## 成果物のサイズ
+### 成果物のサイズ
 
 `node benchmarks/metrics.mjs size [compiler] --out DIR [--project DIR]... [--quick]` は、利用者が受け取る成果物の大きさを PX01 の JSONL で記録します（PM08）。サイズは決定的なので 1 点で、各ビルドを 2 回作って同一かを確かめます。合否の基準は、ページ境界に丸められるファイルの大きさではなく section の byte 数です（Mach-O の `__text` と `__const`＋`__cstring`、ELF の `.text` と `.rodata`、wasm の CODE と DATA。`llvm-objdump -h` で読み、`TSUZURI_OBJDUMP` で指定します）。主な値は cache あり（利用者が実行する既定のビルド）で、`--no-cache` の埋め込み形式は別の variant として示します。速度の合否閾値と同じく、共有 CI にサイズの閾値は置きません。
 
-### 整数表示の分割（PM08 D2）
+#### 整数表示の分割（PM08 D2）
 
 整数の `to_string`・`Display`・補間・式の結果の表示を、`numeric.ll` から手書きの `runtime/integer.ll`（約 0.4〜0.5 KB）へ移しました。整数だけを表示するプログラムは、数値 object とその表（約 10 KB）を連結しなくなります。出力の文字列は変わらず、`tests/integer_format.mjs`（Python の独立した参照 47,029 件と、8／16 bit の全値）と `tests/size.mjs`（コンパイラ経由）で、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` を照合します。
 
@@ -6440,7 +6447,7 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回、`i128` は 60.7 から 54.0 ns／回）。静かな機械での再測定が必要です。
 
-### 整数の `Parse` と書式指定（PM08 P8）
+#### 整数の `Parse` と書式指定（PM08 P8）
 
 整数の `Parse.parse` と、書式指定付きの補間（`{n:+}`・`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`）も `runtime/integer.ll` へ移しました。`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。結果と受け付ける構文は変わらず、`tests/integer_format.mjs` が Python の独立した参照（`Parse` 71,235 件、書式指定 15,200 件）、8／16 bit の全値、`numeric.ll` の `tz_soft_parse`・`tz_soft_format_spec`（同じ入力）と、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` で照合し、`tests/size.mjs` が 10 の整数型すべてをコンパイラ経由で JS の参照と照合します。float と decimal の `Parse`・精度つきの書式指定は `numeric.ll` のままです。
 
@@ -6475,7 +6482,7 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 単位は ns／回です。
 
-### リンク時の GC（埋め込みのビルド）
+#### リンク時の GC（埋め込みのビルド）
 
 ランタイムを成果物キャッシュなしでモジュールに埋め込む形式（`--no-cache`、`--trap-info`。`run` は `--trap-info` が既定）の native 実行ファイルは、これまで未使用の関数をリンク時に除去していませんでした（runtime object を使う既定のビルドだけが `-dead_strip` などを渡していました）。`-g` を除くすべての native 実行ファイルのリンクに同じ除去を適用し、Linux と Windows の GNU 系リンカーでは関数とデータを別々の section に出します。条件は上の整数表示の分割と同じです。section の byte 数（`__text`／`__const`＋`__cstring`）、`-O3`、macOS arm64、変更前は整数表示の分割まで入れたコンパイラです:
 
