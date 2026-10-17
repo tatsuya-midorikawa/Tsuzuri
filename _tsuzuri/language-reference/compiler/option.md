@@ -355,7 +355,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--profile-generate` と `--profile-use` を両方付ける、または重複させる | `--profile-generate and --profile-use cannot be combined; build once with each` / `profile generation specified more than once` / `profile use specified more than once`。終了コード 2 |
 | `--profile-generate`・`--profile-use` に値がない、空 | `--profile-generate needs a value`（`--profile-use` も同じ形） |
 | `--profile-generate`・`--profile-use` を `build`・`run` 以外に付ける | `--profile-generate and --profile-use are only valid with build or run` |
-| プロファイルの旗が `exe`・`object`（native）と `wasm`（wasm32）以外の出力 | `profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds`（WebAssembly は `... needs --emit wasm for WebAssembly; ...`） |
+| プロファイルの旗が `exe`・`object`（native）と `wasm`（wasm32）以外の出力（`--emit bitcode`・`llvm`・`shared` など） | `profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds`（WebAssembly は `... needs --emit wasm for WebAssembly; ...`） |
 | プロファイルの旗が `wasm64` | `profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option` |
 | プロファイルの旗と `--wasm-feature threads` | `--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic` |
 | `--profile-generate` と、wasm32 の `--wasm-opt` | `--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads` |

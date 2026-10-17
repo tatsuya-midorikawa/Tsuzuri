@@ -182,7 +182,8 @@ Build options:
                          llvm-profdata merges. Build both times with the same Clang and options; a profile
                          that no longer matches is one W2001 warning. Both profile options need an LLVM
                          Clang in TSUZURI_CLANG, not the bundled launcher; they are not available on
-                         Windows, for another machine's --target, or with wasm64
+                         Windows, for another machine's --target, with wasm64, or with another --emit
+                         kind such as bitcode, llvm, or shared
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -4565,6 +4566,19 @@ mod tests {
                     "Main.tz",
                     "--target",
                     "wasm32",
+                    "--emit",
+                    "bitcode",
+                    "--profile-generate",
+                    "p",
+                ],
+                wasm_emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
                     "--wasm-feature",
                     "threads",
                     "--profile-generate",
@@ -4659,6 +4673,17 @@ mod tests {
             (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
         ] {
             assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+        // The bitcode of --emit bitcode (PR08) is not instrumented or trained: a host's own link would do that.
+        // A Windows host refuses --emit bitcode for itself before this check.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                assert_eq!(
+                    parse(&["build", "Main.tz", "--emit", "bitcode", option, "p"]).unwrap_err(),
+                    emit,
+                    "{option}"
+                );
+            }
         }
     }
 

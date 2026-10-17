@@ -609,7 +609,7 @@ mod tests {
                 "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option"
             );
         }
-        for emit in [Emit::Object, Emit::Llvm, Emit::BindingsJs] {
+        for emit in [Emit::Object, Emit::Llvm, Emit::Bitcode, Emit::BindingsJs] {
             let options = BuildOptions { emit, ..wasm };
             assert_eq!(
                 used.validate(options).unwrap_err().message,
@@ -639,9 +639,11 @@ mod tests {
         if !cfg!(windows) {
             used.validate(optimized).unwrap();
         }
-        // Only an executable or an object is accepted; any other output is refused by default.
+        // Only an executable or an object is accepted; any other output is refused by default,
+        // including the bitcode of --emit bitcode (PR08), which a host's own link would instrument.
         for emit in [
             Emit::Llvm,
+            Emit::Bitcode,
             Emit::Header,
             Emit::Shared,
             Emit::Wgsl,
