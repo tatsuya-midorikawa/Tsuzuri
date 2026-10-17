@@ -1121,7 +1121,7 @@ fn emit_program_in(
         Some(flags) => flags,
         None => RangeFlags::from_environment()?,
     };
-    let strings = match instrumentation.strings {
+    let string_form = match instrumentation.strings {
         Some(form) => form,
         None => StringForm::from_environment()?,
     };
@@ -1291,7 +1291,7 @@ fn emit_program_in(
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
         range_flags,
-        strings,
+        strings: string_form,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1636,14 +1636,20 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, include_str!("runtime/debug.ll"));
     }
     if runtime_symbols.prefix("tz.display.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/display.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.display_runtime(include_str!("runtime/display.ll"))?,
+        );
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
         runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
     }
     if runtime_symbols.prefix("tz.integer.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.integer_runtime(include_str!("runtime/integer.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
@@ -1691,7 +1697,10 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, DYN_CLONE);
     }
     if runtime_symbols.prefix("tz.character.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/character.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.character_runtime(include_str!("runtime/character.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.unicode.") {
         runtime_symbols.append(&mut output, include_str!("runtime/unicode.ll"));
@@ -1710,6 +1719,7 @@ fn emit_program_in(
         || runtime_symbols.prefix("tz.alloc")
         || runtime_symbols.prefix("tz.realloc")
     {
+        let string_runtime = output.len();
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
         let cpu_utf16 = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
@@ -1745,6 +1755,10 @@ fn emit_program_in(
             } else {
                 include_str!("runtime/string_scalar.ll")
             });
+        }
+        if string_form == StringForm::Compact {
+            let utf16 = output.split_off(string_runtime);
+            output.push_str(&string_form.string_runtime(&utf16)?);
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")

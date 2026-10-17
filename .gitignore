@@ -36,6 +36,11 @@ target
 !src/runtime/string_v128.ll
 !src/runtime/string_cpu.ll
 !src/runtime/string_cpu_utf16.ll
+!src/runtime/string_latin1.ll
+!src/runtime/string_compact.ll
+!src/runtime/display_compact.ll
+!src/runtime/character_compact.ll
+!src/runtime/integer_compact.ll
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll
 !src/runtime/heap-host.ll
