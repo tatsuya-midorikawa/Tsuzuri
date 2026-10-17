@@ -209,6 +209,16 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   `compact` を既定にするのは、確保量（決定的）・最大 RSS・時間（cpp 5 種目・`utf/*`・apps の文字列系）の基準を満たしたときだけで、満たさなければ opt-in で出荷します（PM05 D10 と同じ扱い）。
   Phase 2 は `generate_utf.py` に Latin-1 の vector kernel の生成（`string_latin1_v128.ll`）と、最大の scalar を返す UTF-8 の計数（非 ASCII の Latin-1 入力も Latin-1 にする）を足し、`cpu.c` は変えません。
   `String.to_code_units`／`from_code_units` の「O(1) で移送」は Latin-1 の値で成り立たなくなるため、文書の契約を書き換えます。PM05 の allocator（16 bytes のヘッダー・16 bytes 刻み）のため、短い文字列は半分になりません。
+- **PR08**（計画。全フェーズ: native の `--emit bitcode` と wasm32）: 起票は第2・第3フェーズより前で、`Emit` は 6 でなく 14、C ランタイムは `task.c`・`cpu.c`・`io.c` でなく
+  `os`・`net`・`async`・GPU・`trap`・task・`cpu`・`io`・`arguments` の連結、公開の定義は object の `nm -g` で 8 でなく 32 記号でした。着手前の実測（Apple clang 21、Homebrew LLVM 21〜23、
+  配布物、Zig の ELF cross-link）で方針を改めました。D3（全 `define` に `target-cpu`・`target-features`・`tune-cpu` を付ける）は、F08 の `@cpu` 版の `"target-features"`
+  （x86-64 Linux 42・AArch64 Linux 28）を、`llvm-as` の「group が inline に勝つ」規則で消すため、汎用は `target-cpu`・`tune-cpu` だけ、`--cpu native` だけ features も写し、
+  自前の features は残します（features を写すと host の Clang との差で inline が外れ、`target-cpu` だけなら Apple 21・Homebrew 21・22 の host で inline します）。
+  配布物の `tsuzuri-clang` は `-x ir` の `-flto=thin` を黙って落として object を出すので、launcher を直し、成果物の magic を検査します。
+  C ランタイムは `merge_debug_ir` と同じ `-S -emit-llvm` → `llvm-link --internalize`（`trap.c` も含む）で、`llvm-link` は bitcode だけ「環境変数、同梱、Clang の隣、PATH」の順に探します。
+  ThinLTO のみ（lld は host の full LTO + ThinLTO の bitcode を link エラーにする）、cache なし、Windows は E2000、Rust は macOS の `-plugin-opt` で失敗するので CI に入れず未検証の表に記録します。
+  wasm32 は手作業で import が空・inline を確認でき、同じ仕組みで実装します（threads・WASI・wasm64 は対象外）。既定の出力は変えず、`lto/small_call` を object・bitcode・C だけの 3 通りで測り、
+  効果は host と bitcode の Clang が一致する構成にだけ主張します。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
