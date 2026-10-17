@@ -14,6 +14,7 @@
 - `watch` は、`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は、そのコマンドを単独で実行したときと同じです。
 - `serve`（macOS と Linux）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラ・作業ディレクトリ・環境で起動した `check` と `build` は、サーバーが実行して出力を返し、サーバーがなければ（断られても）黙って自分で実行します。出力はサーバーがなくても同じです。`--no-server` でサーバーを使わずに実行できます。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
+- 実行時の分岐の頻度で最適化するには、`build` と `run` に `--profile-generate DIR` を付けて計装し、動かして集めたプロファイルを `--profile-use` で渡して作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。速くなる種目と遅くなる種目があるので、前後を測ります。
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
@@ -69,7 +70,7 @@ tsuzuri-0.1.0-darwin-arm64/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。C ランタイムを使うプログラムの `--emit bitcode` は、ランタイムを `llvm-link` で 1 つにまとめるので、Linux の配布物では `llvm-link` を別に入れます（Clang と同じ LLVM のもの。C ランタイムを使わないプログラムと wasm32 には要りません。[言語間 LTO と bitcode](native-interop.md#言語間-lto-と-bitcode)）。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 
@@ -108,7 +109,7 @@ TSUZURI_WASM_OPT: path wasm-opt (not found)
 node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ```
 
-各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。
+各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。`--emit bitcode` は、`llvm-link` を PATH より前に、Clang と同じディレクトリでも探します。この探索はここには出ないので、`TSUZURI_LLVM_LINK: path llvm-link (not found)` でも、`llvm-link` が Clang の隣にあれば bitcode は作れます。
 
 ## ソースからビルドする
 
@@ -257,6 +258,8 @@ tsuzuri check demo
 
 `run` は `--target TRIPLE` も受け付けます（native の target だけで、WebAssembly は `E2000`）。ビルド機で動かせない target は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ、その実行器を通して実行します。指定がなければ、ビルドの前に `E2000` です（[ほかの target の実行ファイルを動かす](platforms.md#ほかの-target-の実行ファイルを動かす)）。
 
+`run` に `--profile-generate DIR` を付けると、計装したプログラムを実行し、正常に終了したときに `DIR` へ LLVM の raw profile を書きます。トラップした実行は書きません。`--profile-use PATH` を付けると、プロファイルで最適化したプログラムを実行します。`run` は `--trap-info` でビルドするので、その IR に合うプロファイルは `run` か `build --trap-info` で作ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
+
 ### repl
 
 宣言、トップレベルの `let`、式を 1 つずつ入力して、型と値をすぐ確かめます。F# の `dotnet fsi` に近い使い方ですが、JIT はありません。入力ごとに、それまでに受け付けた宣言と `let` の後ろへ入力を足した `Main.tz` を作り、`run` と同じ経路（解析、LLVM IR、Clang、実行）で検査して実行します。数値の意味やトラップは `run` と同じで、最適化レベルは時間だけを変えます。
@@ -404,6 +407,16 @@ scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point c
 ```
 
 成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。
+
+実行時の分岐の頻度で最適化するには、`--profile-generate DIR` で計装した実行ファイルを代表的な仕事で動かし、`DIR` を `--profile-use` に渡して作り直します。`DIR` の `.profraw` は `llvm-profdata` で merge されます（merge 済みの `.profdata` も渡せます）。
+
+```sh
+tsuzuri build demo/Main.tz -o demo/hello.gen --profile-generate demo/prof
+demo/hello.gen
+tsuzuri build demo/Main.tz -o demo/hello --profile-use demo/prof
+```
+
+native の `exe` と `object`、wasm32 の module だけで、Windows と別の機械の `--target` は `E2000` です。プロファイルの中身（merge したバイト列）が成果物キャッシュのキーに入ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
 ### test
 
@@ -681,7 +694,7 @@ Price.price()
 
 ## ビルドキャッシュ
 
-`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）をまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。
+`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）、`--profile-use` のプロファイルの中身、`--profile-generate` のディレクトリをまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。プロファイルの旗を付けないビルドのキーは、旗がなかったときと同じです。`TSUZURI_LLVM_PROFDATA` と `LLVM_PROFILE_FILE` はキーに入りません（前者の結果はプロファイルの中身に、後者は実行時だけに効きます）。
 
 保存先は `TSUZURI_CACHE_DIR` です。空でなければそのパスを使います。未設定のときは次です。
 

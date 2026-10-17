@@ -202,7 +202,7 @@ try {
     [["build", root, "--target", "wasm32", "--wasm-max-memory", "1MiB"], "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size"],
     [["build", root, "--target", "wasm32", "--wasm-stack-size", "1000"], "--wasm-stack-size must be a multiple of 16 bytes and at least 64 KiB"],
     [["run", root, "--wasm-max-memory", "64MiB"], "--wasm-max-memory and --wasm-stack-size are only valid with build or test"],
-    [["build", root, "--wasm-max-memory", "64MiB"], "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output"],
+    [["build", root, "--wasm-max-memory", "64MiB"], "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output"],
     [["build", root, "--target", "wasm32", "--emit", "object", "--wasm-stack-size", "2MiB"], "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size"],
     [["test", root, "--wasm-max-memory", "64MiB"], "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64"],
   ];
