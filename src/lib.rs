@@ -28,6 +28,7 @@ mod ranges;
 pub mod repl;
 pub mod resident;
 mod runtime_cache;
+pub mod server;
 pub mod simd;
 pub mod stdlib;
 pub mod syntax;
