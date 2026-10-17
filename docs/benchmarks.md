@@ -5897,24 +5897,28 @@ F1'・C5 の後に残る差で採否を決め、**入れていません**。同�
 
 ### 整数の範囲証明と overflow フラグ（PR02）
 
-2026-10-16 に、整数の `+ - *` に `nsw`／`nuw` を書くと LLVM の出力が変わるかを測りました。`benchmarks/run-range-flags.mjs` は、12 の corpus（`benchmarks/` の control・computations・bounds_shapes・matrix・simd・utf・dispatch・apps・cpp・allocation、`tests/fixtures/control`、旗の候補を集めた `benchmarks/range_flags`）を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけで実行しません）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べます。Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは commit `ad13ba96` の非 LTO の release です。実行は決定的で、静かな機械は要りません。
+2026-10-16 に、整数の `+ - *` に `nsw`／`nuw` を書くと LLVM の出力が変わるかを測り、2026-10-17 に、第3フェーズの統合後のコンパイラで測り直しました。`benchmarks/run-range-flags.mjs` は、12 の corpus（`benchmarks/` の control・computations・bounds_shapes・matrix・simd・utf・dispatch・apps・cpp・allocation、`tests/fixtures/control`、旗の候補を集めた `benchmarks/range_flags`）を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけで実行しません）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べます。assembly は、コメントと空行だけを無視して、行の順序のまま比べます（命令・オペランド・即値・label・ディレクティブ・データはすべて比較に入ります）。コメントは target ごとの構文（AArch64 は `;` と `//`、x86 は `#`。文字列の中は除く）だけを除くので、AArch64 の即値の `#` は残ります。差は、最短の編集列の長さ（消した行と足した行の合計）で数えます（`benchmarks/assembly.mjs`）。module は byte で比べます。Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは第3フェーズの統合後（`src/` は commit `1127b73c` と同じ）の非 LTO の release（SHA-256 `9ecd461d…`）です。実行は決定的で、静かな機械は要りません。
 
-| corpus | 旗のある整数 `+ - *`（IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
+最初の測定（2026-10-16）は、`#`・`@` 以降を捨て、命令を数えるだけの比較で、即値の違いと順序の違いを見落としました（PR #27 の Copilot のレビューで指摘）。上の比較に直して測り直した結果が、次の表です。
+
+| corpus | 旗のある整数 `+ - *`（`off` → `proven`、IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
 | --- | ---: | --- | --- |
-| control | 20 / 191 | 同じ | 同じ |
-| computations | 8 / 201 | 同じ | 同じ |
-| bounds_shapes | 4 / 140 | 同じ | 同じ |
-| simd | 2 / 135 | 同じ | 同じ |
-| dispatch | 2 / 131 | 同じ | 同じ |
-| cpp | 735 / 1,045 | 同じ | 同じ |
-| allocation | 12 / 162 | 同じ | （export なし） |
-| `tests/fixtures/control` | 715 / 1,169 | 同じ | 同じ |
-| utf | 12 / 156 | 同じ | module が 7 bytes 増える（13,673 → 13,680） |
-| matrix | 65 / 401 | 全レベルで差。命令数は arm64 `-O3` が 2,567 → 2,571、x86_64 `-O3` が 3,238 → 3,222 | 19 bytes 減る（53,023 → 53,004） |
-| apps | 703 / 1,118 | 全レベルで差。arm64 `-O3` が 16,265 → 16,260、x86_64 `-O3` が 16,571 → 16,563 | 31 bytes 減る（91,590 → 91,559） |
-| range_flags | 31 / 189 | arm64 `-O1` だけ 24 行（412 → 412）。ほかは同じ | 同じ |
+| control | 0 → 20 / 191 | 同じ | 同じ |
+| computations | 0 → 8 / 201 | 同じ | 同じ |
+| bounds_shapes | 0 → 4 / 140 | 同じ | 同じ |
+| simd | 0 → 2 / 135 | 同じ | 同じ |
+| utf | 0 → 12 / 156 | 同じ | 同じ |
+| dispatch | 0 → 2 / 131 | 同じ | 同じ |
+| cpp | 106 → 120 / 381 | 同じ | 同じ |
+| allocation | 0 → 12 / 162 | 同じ | （export なし） |
+| range_flags | 0 → 31 / 189 | 同じ | 同じ |
+| `tests/fixtures/control` | 615 → 715 / 1,169 | 同じ | 同じ |
+| matrix | 0 → 65 / 401 | 全レベルで差。編集列は arm64 が `-O1` 282（1,836 → 1,838 行）・`-O2` 496（2,404 → 2,404 行）・`-O3` 162（2,975 → 2,983 行）、x86_64 が 307（2,454 → 2,447 行）・577（3,283 → 3,272 行）・449（4,073 → 4,054 行） | module が 166 bytes 減る（39,068 → 38,902） |
+| apps | 0 → 88 / 454 | 全レベルで差。編集列は arm64 が `-O1` 13（3,460 → 3,461 行）・`-O2` 207（4,305 → 4,298 行）・`-O3` 508（4,963 → 4,955 行）、x86_64 が 199（4,122 → 4,123 行）・28（4,772 → 4,764 行）・319（4,923 → 4,922 行） | module が 31 bytes 減る（30,771 → 30,740） |
 
-差のあった関数は、matrix では std の `Matrix.multiply_rows`・`Matrix.fma_rows` の 4 つの単相化（1 関数あたり 1〜5 命令。arm64 `subs; b.mi` が `b.lt`、`sub; tbnz` が `cmp; b.le`、`and ...f8` が `and ...7ff...f8`）、apps では std の `String.split` と `String.join` の 2 つ（1〜8 命令）だけです。どれも比較の向きとレジスタ割り当ての違いで、ベクトル化の有無や境界検査は変わりません。旗の候補を意図して集めた `benchmarks/range_flags`（`values[i + 1]`・`values[2 * i]`・窓の和・降順・`i8u` の拡張・マスク・桁の分解・条件で絞った値）でも、`-O2` と `-O3` の assembly は `off` と同じです。LLVM の IndVarSimplify などが、増分や型や `and` のマスクから同じ旗を自力で付けるためで、PR02 より前の調査（旗を IR の文字列で足した上限の実験）の結果とも一致します。
+`off` の旗（cpp の 106 と `tests/fixtures/control` の 615）は、IR に連結される runtime の IR（cpp の `tz_math_rem_pio2_large` など、fixtures の `numeric.ll` の `format_float` や `tz_soft_*`）が持つ旗で、range の証明が足す旗は `proven` との差です。第3フェーズの統合前の測定（commit `ad13ba96`）は apps が 703 / 1,118、cpp が 735 / 1,045 でした。PM08 が整数の表示を `numeric.ll` から外し、整数しか表示しない apps の IR は、`numeric.ll`（13,843 行、`tz_soft_*` の 10 の関数）を連結しなくなったので、全体の数が小さくなりました（main の IR は 27,115 行、今は 13,773 行です）。
+
+差のあった関数は、matrix では std の `Matrix.multiply_rows` の 3 つと `Matrix.fma_rows` の 1 つの単相化、apps では std の `String.split` と `String.join` の 2 つだけです（どの target・どのレベルでも同じ関数です。`-O3` の arm64 で、matrix は 1 関数あたり 10〜30 行、`String.split` は 176 行を消して 169 行を足し、`String.join` は 85 行を消して 84 行を足します）。差の中身は、比較と分岐の形（arm64 の `subs; b.mi` が `b.lt`、`sub; tbnz` が `cmp; b.le`、x86_64 の `decq; js` が `testq; jle`）、レジスタ割り当て、label の番号、`and` の定数（`0xfffffffffffffff8` が `0x7ffffffffffffff8`）、スタックの大きさ（x86_64 の `subq $56, %rsp` が `$40`）です。`-O3` の matrix と apps の 4 つの assembly を grep で数えた概算では、ベクトル命令の数（49・45・142・59）と trap の命令（`brk`・`ud2`）の数（19・19・23・23）は、`off` と `proven` で同じです。旗の候補を意図して集めた `benchmarks/range_flags`（`values[i + 1]`・`values[2 * i]`・窓の和・降順・`i8u` の拡張・マスク・桁の分解・条件で絞った値）でも、`-O1`〜`-O3` の assembly は `off` と同じです。LLVM の IndVarSimplify などが、増分や型や `and` のマスクから同じ旗を自力で付けるためで、PR02 より前の調査（旗を IR の文字列で足した上限の実験）の結果とも一致します。
 
 `String.split`／`String.join` の時間は、次のプログラム（2,000 個の文字列を `,` で `join` して `split` し直す往復を 4,000 回）を、`off` と `proven` で `-O3` の実行ファイルにして交互に 15 回ずつ走らせて比べました（Apple M1 Max。ほかの処理と共有した機械で、負荷平均（1・5・15 分）は開始時が 55.78・93.24・123.14、終了時が 53.03・90.82・121.76）。両方の出力は同じ `63098000` で、中央値は `off` が 319.1 ms（最小 274.7、最大 855.5）、`proven` が 322.7 ms（最小 292.3、最大 712.1）です。差は標本の広がりの内側で、速くなったとは言えません。
 
