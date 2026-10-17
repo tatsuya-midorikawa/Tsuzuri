@@ -1,0 +1,7 @@
+def divide :: i64 -> i64 -> i64 = \a b -> a / b
+
+def main :: Array<string> -> i32 = \args ->
+    let mut i = 3
+    while i > 0 do
+        i = i - 1
+    if divide 10 args.length > 0 then 0 else 1

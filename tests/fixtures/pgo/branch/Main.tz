@@ -1,0 +1,12 @@
+def classify :: i64 -> i64 = \n ->
+    match n % 3 with
+    | 0 -> 1
+    | 1 -> 10
+    | _ -> 100
+
+let mut total = 0
+let mut i = 0
+while i < 100000 do
+    total = total + classify i
+    i = i + 1
+total

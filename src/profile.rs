@@ -40,6 +40,8 @@ pub(crate) struct PreparedProfile {
     flag: OsString,
     key: (&'static str, Vec<u8>),
     generate: bool,
+    /// The staged copy that Clang reads, and the path that the user gave for it.
+    staged: Option<(PathBuf, PathBuf)>,
 }
 
 impl Profile {
@@ -160,6 +162,7 @@ fn prepare_with(
                     directory.as_os_str().as_encoded_bytes().to_vec(),
                 ),
                 generate: true,
+                staged: None,
             }))
         }
         Profile::Use(path) => {
@@ -181,6 +184,7 @@ fn prepare_with(
                 flag,
                 key: ("profile-use-sha256", digest.to_vec()),
                 generate: false,
+                staged: Some((staged, path.clone())),
             }))
         }
     }
@@ -332,7 +336,24 @@ impl PreparedProfile {
         if self.generate {
             text
         } else {
-            summarize_profile_warnings(text)
+            summarize_profile_warnings(self.shown(text))
+        }
+    }
+
+    /// The failure of a Clang run, with the profile named as the user gave it.
+    pub(crate) fn clang_error(&self, mut error: Diagnostic) -> Diagnostic {
+        error.message = self.shown(error.message);
+        error
+    }
+
+    /// `text` with the staged copy of the profile, which is gone when the build ends, named as the
+    /// user gave it.
+    fn shown(&self, text: String) -> String {
+        match &self.staged {
+            Some((staged, given)) => {
+                text.replace(&*staged.to_string_lossy(), &given.to_string_lossy())
+            }
+            None => text,
         }
     }
 }
@@ -861,5 +882,20 @@ mod tests {
             used.clang_output(text)
                 .starts_with("profile data does not match 1 function(s)")
         );
+        // The staged copy is gone when the build ends, so a failure names the profile that the user gave.
+        let staged = directory.path.join(STAGED);
+        let failure = driver_error(
+            "E2002",
+            format!("Error in reading profile {}: bad", staged.display()),
+        );
+        assert_eq!(
+            used.clang_error(failure).message,
+            format!(
+                "Error in reading profile {}: bad",
+                directory.path.join("p.profdata").display()
+            )
+        );
+        let failure = driver_error("E2002", "not about a profile");
+        assert_eq!(generate.clang_error(failure).message, "not about a profile");
     }
 }

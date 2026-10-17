@@ -4028,7 +4028,11 @@ fn build_complete(
             Some(staged) => staged.hint(clang_hint),
             None => clang_hint,
         };
-        let clang_output = run_tool(&mut clang, &clang_hint)?;
+        let clang_output =
+            run_tool(&mut clang, &clang_hint).map_err(|error| match &staged_profile {
+                Some(staged) => staged.clang_error(error),
+                None => error,
+            })?;
         collect_message(
             &mut messages,
             match &staged_profile {
