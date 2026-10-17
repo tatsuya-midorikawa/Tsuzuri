@@ -277,6 +277,9 @@ pub enum Emit {
     BindingsJs,
     /// `--emit shared` (E13 Phase 2): a native shared library that exports the public C ABI.
     Shared,
+    /// `--emit bitcode` (PR08): one ThinLTO bitcode file of the program and the runtime it needs, which a
+    /// host links with `-flto=thin` so that its calls into the program can inline.
+    Bitcode,
     /// `--emit bindings-cs` (E13 Phase 2): C# `LibraryImport` bindings of the shared library.
     BindingsCs,
     /// `--emit bindings-py` (E13 Phase 2): a Python `ctypes` module for the shared library.
@@ -494,6 +497,9 @@ impl BuildOptions {
         if self.emit == Emit::Shared {
             self.validate_shared()?;
         }
+        if self.emit == Emit::Bitcode {
+            self.validate_bitcode()?;
+        }
         if self.wasm_threads
             && (self.target != Target::Wasm32
                 || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::BindingsJs))
@@ -606,6 +612,7 @@ impl BuildOptions {
                         | Emit::Llvm
                         | Emit::Header
                         | Emit::Shared
+                        | Emit::Bitcode
                         | Emit::BindingsCs
                         | Emit::BindingsPy
                         | Emit::BindingsCpp
@@ -784,6 +791,24 @@ impl BuildOptions {
         Ok(())
     }
 
+    /// The options of `--emit bitcode` (PR08): bitcode that a host's LTO link reads, from a native
+    /// target. The other options of an object apply to it unchanged.
+    fn validate_bitcode(self) -> Result<(), Diagnostic> {
+        if self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+            ));
+        }
+        if self.platform().windows() {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
+            ));
+        }
+        Ok(())
+    }
+
     /// The options of a named native target (`--target TRIPLE`): what its operating system, or the
     /// lack of one, and the tools of the machine the compiler runs on can produce.
     fn validate_triple(self, triple: Triple) -> Result<(), Diagnostic> {
@@ -921,6 +946,7 @@ impl BuildOptions {
             Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
             Emit::Spirv | Emit::SpirvRelaxed => "spv",
             Emit::Shared => platform.shared_extension(),
+            Emit::Bitcode => "bc",
             Emit::BindingsJs => "mjs",
             Emit::BindingsCs => "cs",
             Emit::BindingsPy => "py",
@@ -5756,6 +5782,111 @@ mod tests {
                 format!(
                     "bindings output must end with '.{extension}'; its file name, without the extension, names the shared library"
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn validates_bitcode_output() {
+        let bitcode = BuildOptions {
+            emit: Emit::Bitcode,
+            ..BuildOptions::default()
+        };
+        assert_eq!(
+            bitcode.output_path(Path::new("dir/Main.tz")),
+            Path::new("dir/Main.bc")
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                bitcode.validate().unwrap_err().message,
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally"
+            );
+            return;
+        }
+        assert!(bitcode.validate().is_ok());
+        // The options of an object keep their meaning for bitcode.
+        for options in [
+            BuildOptions {
+                optimization: OptLevel::Oz,
+                debug_info: true,
+                ..bitcode
+            },
+            BuildOptions {
+                trap_return: true,
+                trap_info: true,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Small,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Host,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Counting,
+                ..bitcode
+            },
+            BuildOptions {
+                triple: Some(Triple::X86_64LinuxGnu),
+                ..bitcode
+            },
+        ] {
+            assert!(options.validate().is_ok(), "{options:?}");
+        }
+        if native_cpu_flag(env::consts::ARCH).is_ok() {
+            assert!(
+                BuildOptions {
+                    cpu: Cpu::Native,
+                    ..bitcode
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for (options, message) in [
+            (
+                BuildOptions {
+                    target: Target::Wasm32,
+                    ..bitcode
+                },
+                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+            ),
+            (
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..bitcode
+                },
+                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+            ),
+            (
+                BuildOptions {
+                    triple: Some(Triple::X86_64WindowsMsvc),
+                    ..bitcode
+                },
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
+            ),
+            (
+                BuildOptions {
+                    strip: true,
+                    ..bitcode
+                },
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                BuildOptions {
+                    freestanding: true,
+                    allocator: llvm::Allocator::Host,
+                    ..bitcode
+                },
+                "--freestanding requires object, LLVM IR, or header output",
+            ),
+        ] {
+            assert_eq!(
+                options.validate().unwrap_err().message,
+                message,
+                "{options:?}"
             );
         }
     }

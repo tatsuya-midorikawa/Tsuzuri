@@ -112,8 +112,8 @@ Build options:
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
     --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv,
-                         spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or
-                         bindings-cpp
+                         spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py,
+                         or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
                          wgsl writes the strict WebGPU compute shader of the one exported kernel
                          (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
@@ -123,6 +123,9 @@ Build options:
                          device must report the strict float controls); spirv-relaxed also
                          allows f32 division and follows the device's floating-point rules
                          shared links a native .dylib or .so that exports the C ABI
+                         bitcode writes one ThinLTO LLVM bitcode file of the program and the
+                         runtime it needs, for a host that links with -flto=thin and the same
+                         Clang (native; llvm-link is needed when the program uses the C runtime)
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
@@ -177,7 +180,8 @@ Threads:
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
-  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
+  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects and for --emit bitcode with the
+                         C runtime (default: llvm-link; --emit bitcode also tries the directory of Clang)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
                          does not run anything
@@ -619,13 +623,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("spirv") => Emit::Spirv,
                             Some("spirv-relaxed") => Emit::SpirvRelaxed,
                             Some("shared") => Emit::Shared,
+                            Some("bitcode") => Emit::Bitcode,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
                             Some("bindings-py") => Emit::BindingsPy,
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -3175,7 +3180,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],
@@ -4137,6 +4142,119 @@ mod tests {
         // Without link inputs every one of these stays valid.
         assert!(parse(&["build", "Main.tz", "--target", "wasm32"]).is_ok());
         assert!(parse(&["build", "Main.tz", "--emit", "object"]).is_ok());
+    }
+
+    #[test]
+    fn parses_bitcode_output() {
+        if cfg!(windows) {
+            assert_eq!(
+                parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap_err(),
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally"
+            );
+            return;
+        }
+        let bitcode = parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap();
+        assert_eq!(bitcode.options.emit, Emit::Bitcode);
+        assert_eq!(
+            bitcode.options.output_path(Path::new("dir/Kernel.tz")),
+            Path::new("dir/Kernel.bc")
+        );
+        // The options of an object keep their meaning for bitcode.
+        for values in [
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-O0"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-Oz", "-g"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--trap-info"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "host",
+            ],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--no-cache"],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap().options.emit,
+                Emit::Bitcode,
+                "{values:?}"
+            );
+        }
+        let returning = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--trap-mode",
+            "return",
+        ])
+        .unwrap();
+        assert!(returning.options.trap_return && returning.options.trap_info);
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--target",
+                    "wasm32",
+                ],
+                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--target",
+                    "wasm64",
+                ],
+                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--link",
+                    "host.o",
+                ],
+                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            ),
+            (
+                vec!["build", "Kernel.tz", "--emit", "bitcode", "--strip"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--freestanding",
+                    "--allocator",
+                    "host",
+                ],
+                "--freestanding requires object, LLVM IR, or header output",
+            ),
+            (
+                vec!["run", "Kernel.tz", "--emit", "bitcode"],
+                "--output requires build or doc; --target and --emit require a supported build/test action",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
     }
 
     #[test]
