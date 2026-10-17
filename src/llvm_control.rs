@@ -272,7 +272,7 @@ impl FunctionEmitter<'_, '_> {
                 element,
                 &data,
                 &length,
-                |emitter, pointer, _, exit, advance| {
+                |emitter, pointer, exit, advance| {
                     emitter.locals.insert(local.id, pointer.to_owned());
                     emitter.loop_body(body, exit, advance);
                 },

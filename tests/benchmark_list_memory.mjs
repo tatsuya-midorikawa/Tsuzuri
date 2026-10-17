@@ -8,12 +8,14 @@ import { consChunks, reference, repeats, sizes, workloads } from "../benchmarks/
 for (const name of workloads) {
   for (const n of [0, 1, 2, 3, 10, 1000]) {
     let total = 0n;
-    for (let i = 0n; i < BigInt(n); ++i) total += name === "clone_list" ? 2n * i : name === "walk_list" ? 16n * i : name === "string_list" ? 3n : i;
+    for (let i = 0n; i < BigInt(n); ++i) total += name === "clone_list" ? 2n * i : name === "walk_list" || name === "fold_list" ? 16n * i : name === "string_list" ? 3n : i;
+    // The comparison counts the 16 times that two equal lists are equal, however long they are.
+    if (name === "compare_list") total = 16n;
     assert.equal(reference(name, n), total, `${name}(${n})`);
   }
 }
 assert.throws(() => reference("missing", 1), /unknown list-memory workload/);
-assert.equal(workloads.length, 7);
+assert.equal(workloads.length, 9);
 for (const grid of Object.values(sizes)) assert.ok(grid.every((size, index) => Number.isSafeInteger(size) && size > 0 && (index === 0 || size > grid[index - 1])));
 assert.ok(repeats("bulk_new", 1, false) > repeats("bulk_new", 1000000, false), "small sizes repeat more");
 assert.ok(repeats("index_walk", 10000, false) <= 3, "the quadratic size runs few times");
@@ -36,7 +38,8 @@ if (compiler && existsSync(compiler)) {
     assert.ok(allocations.calls >= 1 || size === 0, `${workload}(${size}) allocates`);
     // A list that is built at once is one chunk; `List.cons` adds one per step of the growth rule.
     if (workload === "cons_build") assert.equal(allocations.calls, consChunks(size), `${workload}(${size}) chunks`);
-    if (["bulk_new", "tail_consume", "index_walk", "walk_list"].includes(workload)) assert.equal(allocations.calls, 1, `${workload}(${size}) is one chunk`);
+    if (workload === "compare_list") assert.equal(allocations.calls, consChunks(size) + (size === 0 ? 0 : 1), `${workload}(${size}) chunks`);
+    if (["bulk_new", "tail_consume", "index_walk", "walk_list", "fold_list"].includes(workload)) assert.equal(allocations.calls, 1, `${workload}(${size}) is one chunk`);
     assert.ok(wall_ms.length === 1 && wall_ms[0] > 0, `${workload}(${size}) is timed`);
   }
   assert.equal(wasm.default.rows.length, workloads.length);

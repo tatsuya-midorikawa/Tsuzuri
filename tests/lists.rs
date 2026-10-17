@@ -309,3 +309,42 @@ export def copied :: i64 -> i64\nfn copied n = { let values = new [|i64|](n, i -
         assert_eq!(copied.matches("@tz.alloc(").count(), 2, "{copied}");
     }
 }
+
+#[test]
+fn a_list_walk_counts_the_slots_of_each_chunk_in_an_inner_loop() {
+    // The walk of a borrowed list is an outer loop over chunks around a counted loop over the live
+    // slots of a chunk from a base address, the shape of a loop over an array, which LLVM
+    // vectorizes. The chunk is the only pointer that the outer loop carries, its link is read once
+    // after the slots, and no `select` makes the address of an element wait for a load.
+    let source = "def each :: ref [|i64|] -> i64
+fn each values = { let mut total = 0i64; for value in values do total = total + value; total }
+export def run :: i64 -> i64
+fn run n = { let values = new [|i64|](n, i -> i); each (ref values) }";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let body = definition(&ir, " @tz.fn.Main.each(");
+        // The position, the first slot and the counter of the inner loop.
+        assert_eq!(body.matches(" = phi i64 [").count(), 3, "{body}");
+        assert_eq!(body.matches(" = phi ptr [ %v").count(), 1, "{body}");
+        let chunk = body
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .split_once(" = phi ptr [ %v")
+                    .map(|(name, _)| name)
+            })
+            .unwrap();
+        assert_eq!(
+            body.matches(&format!(" = load ptr, ptr {chunk}\n")).count(),
+            1,
+            "{body}"
+        );
+        assert!(!body.contains("select"), "{body}");
+        // The element is addressed from the base by the counter, and not from the chunk.
+        assert_eq!(
+            body.matches("getelementptr inbounds i64, ptr").count(),
+            1,
+            "{body}"
+        );
+    }
+}

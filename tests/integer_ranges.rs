@@ -259,8 +259,9 @@ const STRUCTURAL: &[(&str, &[&str])] = &[
         "each_list",
         &[
             "add i64 %, %",
-            "add i64 %, 1",
+            "add i64 %, %",
             "add nuw i64 %, 1",
+            "sub i64 %, %",
             "sub i64 %, %",
             "sub i64 %, %",
         ],
@@ -532,17 +533,26 @@ fn counter<'a>(blocks: &'a [Block], ty: &str) -> Counter<'a> {
         .flat_map(|block| block.lines.iter().map(move |line| (block, line)))
         .filter(|(_, line)| line.contains(&format!(" = phi {ty} [ ")) && incoming(line).len() == 2)
         .collect();
-    // The index of a list loop comes first; a function of these tests has one loop.
-    let (header, line) = phis[0];
-    let [(first, entry), (next, increment)] = incoming(line).try_into().unwrap();
-    Counter {
-        header,
-        current: line.split(" = ").next().unwrap().to_owned(),
-        first,
-        next,
-        entry: block(&entry),
-        increment: block(&increment),
-    }
+    // The index of a loop adds a constant to itself. A list loop has other `phi`s of two operands
+    // before it: the position of its chunk, which adds the length of a run, and the first slot.
+    let mut counters = phis.into_iter().filter_map(|(header, line)| {
+        let current = line.split(" = ").next().unwrap();
+        let [(first, entry), (next, increment)] = incoming(line).try_into().unwrap();
+        let steps = block(&increment).lines.iter().any(|line| {
+            line.strip_prefix(&format!("{next} = add "))
+                .and_then(|rest| rest.split_once(&format!(" {current}, ")))
+                .is_some_and(|(_, stride)| stride.parse::<i128>().is_ok())
+        });
+        steps.then(|| Counter {
+            header,
+            current: current.to_owned(),
+            first,
+            next,
+            entry: block(&entry),
+            increment: block(&increment),
+        })
+    });
+    counters.next().unwrap()
 }
 
 /// The two last lines of a block: a comparison and the branch on it.
@@ -692,9 +702,11 @@ fn compare_loop(source: &str, wasm: bool, flags: RangeFlags) -> String {
 
 #[test]
 fn structural_comparison_loops_count_with_an_unsigned_index() {
-    // The cursor of a list adds the step of two slots and the first slots of both lists, which no
-    // proof covers (the chunk of a list is not an index).
-    let cursors = ["sub i64 %, %"; 4];
+    // A list comparison adds more: the end of each run, the first slots of both lists and the
+    // slots that a run uses up on each side. No proof covers them (the chunk of a list is not an
+    // index); the counter of the inner loop is the unsigned index.
+    let sums = ["add i64 %, %"; 3];
+    let differences = ["sub i64 %, %"; 7];
     let cases: [(&str, Vec<&str>, Vec<&str>); 2] = [
         (
             ARRAY_COMPARE,
@@ -703,10 +715,13 @@ fn structural_comparison_loops_count_with_an_unsigned_index() {
         ),
         (
             LIST_COMPARE,
-            ["add i64 %, 1"; 3].into_iter().chain(cursors).collect(),
-            ["add i64 %, 1", "add i64 %, 1", "add nuw i64 %, 1"]
-                .into_iter()
-                .chain(cursors)
+            sums.into_iter()
+                .chain(["add i64 %, 1"])
+                .chain(differences)
+                .collect(),
+            sums.into_iter()
+                .chain(["add nuw i64 %, 1"])
+                .chain(differences)
                 .collect(),
         ),
     ];

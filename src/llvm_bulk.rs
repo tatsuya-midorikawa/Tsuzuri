@@ -495,7 +495,7 @@ impl FunctionEmitter<'_, '_> {
                 if instance.builtin == Builtin::ListToArray {
                     let (array, data) = self.allocate_array(element, &length);
                     let index = self.spill(&Type::I64, "0");
-                    self.list_loop(element, &head, &length, |emitter, pointer, _| {
+                    self.list_each(element, &head, &length, |emitter, pointer| {
                         let value =
                             emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
                         let value = emitter.clone_value(element, &value);
@@ -513,7 +513,7 @@ impl FunctionEmitter<'_, '_> {
                 if instance.builtin == Builtin::ListFoldRef {
                     let state_type = &parameters[1];
                     let state = self.spill(state_type, "%arg1");
-                    self.list_loop(element, &head, &length, |emitter, pointer, _| {
+                    self.list_each(element, &head, &length, |emitter, pointer| {
                         let borrowed = emitter.borrowed_element(element, pointer);
                         let previous =
                             emitter.value(format!("load {}, ptr {state}", emitter.ty(state_type)));

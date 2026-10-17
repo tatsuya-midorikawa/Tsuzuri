@@ -7295,7 +7295,7 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 ### PM04 連結リストの連続表現
 
 <!-- phase4:PM04 -->
-**状態（Phase 1）:** chunk の表現（`src/llvm_list.rs`）に切り替えました。リストは `%tz.list = { ptr, i64 }` のまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes）と長さを持ちます。一度に作るリストは要素数ちょうどの 1 つの chunk、`List.cons` は先頭の chunk の空き slot を埋め、満杯なら容量 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足します。走査は `(chunk, slot)` の cursor で、chunk の終わりだけ分岐します。表現を変える flag はありません（PM01・PM06 と同じ）。Phase 2（chunk ごとの二重 loop と `llvm.memcpy`）の測定は、この節の後ろに足します。
+**状態（Phase 1・Phase 2a）:** chunk の表現（`src/llvm_list.rs`）に切り替えました。リストは `%tz.list = { ptr, i64 }` のまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes）と長さを持ちます。一度に作るリストは要素数ちょうどの 1 つの chunk、`List.cons` は先頭の chunk の空き slot を埋め、満杯なら容量 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足します。走査は、Phase 1 では `(chunk, slot)` の cursor で chunk の終わりだけ分岐するループでしたが、Phase 2a で chunk ごとの二重 loop（外側が chunk、内側が chunk の live な slot を数える loop）に替えました。表現を変える flag はありません（PM01・PM06 と同じ）。Phase 2b（`llvm.memcpy`）の測定は、この節の後ろに足します。
 
 **条件.** 基準は main `9dd0fbbc` の release コンパイラー（SHA-256 `5e1b9687…`）、変更後は Phase 1 のコンパイラー（SHA-256 `78eb5882…`、`0f9f16af`）です。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6、native `-O3` と wasm32 `-O3`。確保の回数と bytes は決定的です（`benchmarks/tracked_alloc.c` が数える要求量で、allocator の丸めは含みません）。時間と peak RSS は `node benchmarks/run-list-memory.mjs $COMPILER --baseline $BEFORE --samples 9 --wasm`（before と after の build を交互に、標本ごとに 1 回の warm-up の後、中央値）で、他の作業が並行して動く共有機の値です（開始時の 1 分の load average は 22〜65）。同じコンパイラーどうしを交互に測る A/A の差は 0.1〜1.2%（after の `bulk_new` 1,000,000 個が 4.7%、`walk_list` 1,000 個が 3.8%）でした。時間は参考値で、速度の合否の閾値は置きません。
 
@@ -7334,7 +7334,7 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 | `walk_list`（`for` の総和 16 回） | 37.49 | 9.614 | 0.256 | 16.98 | 9.27 | 0.546 |
 | `index_walk`（n = 10,000） | 52.56 | 0.0157 | 0.0003 | 1.80 | 1.67 | |
 
-空の process の RSS は 1.61 MB です。`walk_list` から build の時間（`bulk_new`）を引いた総和の時間は、1 要素あたり before が約 1.13 ns、after が約 0.54 ns です。`index_walk` は node の連結では $O(n^2)$ でしたが、一度に作ったリストでは $O(1)$ です。`string_list` は要素ごとの文字列の確保が残るので、確保の回数は半分、RSS は 0.68 倍です。
+空の process の RSS は 1.61 MB です。`walk_list` から build の時間（`bulk_new`）を引いた 15 回分の総和の時間は、1 要素あたり before が約 1.20 ns、Phase 1 の after が約 0.58 ns です（Phase 2a は下）。`index_walk` は node の連結では $O(n^2)$ でしたが、一度に作ったリストでは $O(1)$ です。`string_list` は要素ごとの文字列の確保が残るので、確保の回数は半分、RSS は 0.68 倍です。
 
 **WASM（wasm32、既定の 16 MiB のヒープ。heap の高水位 bytes。`trap` は out of memory）.**
 
@@ -7356,7 +7356,31 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 
 **小さいリストの悪化.** 要求 bytes は、`i64` の要素 1 個のリストで 16 → 32（`bulk_new`・`cons_build` とも 2.0 倍）、`cons_build` の 2 個で 32 → 72（2.25 倍）、3 個で 48 → 72（1.5 倍）、4 個で 64 → 128（2.0 倍）、8 個で 128 → 208（1.63 倍）、16 個で 256 → 320（1.25 倍）です。1,000 個で 0.72 倍、1,000,000 個で 0.50 倍に下がります。一度に作るリストは、2 個で 1.25 倍、3 個で同じ、4 個以上で小さくなります。malloc の丸めを入れた footprint は 257 要素以上のすべての `i64` で node 以下です（モデル `target/perf/PM04/model2.mjs`）。時間は 16 個で `bulk_new` が 9 倍速く、1 個のときは差が雑音の範囲です（2.60e-5 ms と 2.46e-5 ms）。
 
-**生成コードの確認（`walk_list` の `for` の総和、`clang -O3` の arm64）.** cursor の slot を `select` で進めた最初の版は、1 要素あたり `add`・`cmp`・`csinc` が slot の再帰の経路（3 cycle）に入り、総和が node の連結と同じ約 1 ns でした。chunk の終わりを分岐し、slot を分岐の合流点の `phi` にすると、LLVM は chunk の更新を分岐のままにし、slot の再帰は `add` 1 つになります。1 要素あたりの命令は `add x12, x9, #1`・`ldr x13, [x11, #16]`（容量）・`cmp`・`b.ne`・`ldr`（要素）・`add`（総和）と、レジスタの移動と回数の `subs` です。
+**生成コードの確認（Phase 1 の cursor。`walk_list` の `for` の総和、`clang -O3` の arm64）.** cursor の slot を `select` で進めた最初の版は、1 要素あたり `add`・`cmp`・`csinc` が slot の再帰の経路（3 cycle）に入り、総和が node の連結と同じ約 1 ns でした。chunk の終わりを分岐し、slot を分岐の合流点の `phi` にすると、LLVM は chunk の更新を分岐のままにし、slot の再帰は `add` 1 つになります。1 要素あたりの命令は `add x12, x9, #1`・`ldr x13, [x11, #16]`（容量）・`cmp`・`b.ne`・`ldr`（要素）・`add`（総和）と、レジスタの移動と回数の `subs` です。この loop は 1 要素ずつ進むのでベクトル化できず、Phase 2a で替えました。
+
+**Phase 2a（chunk ごとの二重 loop）.** 走査（`for`、`List.fold_ref`、clone、`List.to_array`、hash、display）を、chunk を順にたどる外側の loop と、chunk の live な slot `run` 個を 0 から数える内側の loop にしました。内側の loop は配列の loop と同じ形で、要素は基点からの `getelementptr inbounds T, ptr base, i64 offset` です。2 つのリストの構造比較は、左右の現在の chunk に残る slot の数と残りの組数の最小を run とし、run ごとに内側の loop を回して、run で使い切った側だけが次の chunk に進みます。測定の workload に `fold_list`（`List.fold_ref` の総和 16 回）と `compare_list`（`List.cons` で作ったリストと、同じ要素の `new` のリストの比較 16 回。chunk の境界が左右で違う）を足しました（全 9 種目）。
+
+条件は Phase 1 と同じ機械で、Phase 1 のコンパイラー（`0f9f16af`、SHA-256 `78eb5882…`）と Phase 2a のコンパイラー（SHA-256 `93fcbfb4…`）を `node benchmarks/run-list-memory.mjs $PHASE2A --baseline $PHASE1 --samples 9 --wasm` で交互に測りました（中央値 ms、load average は 15〜45）。確保の回数と bytes、WASM の heap の高水位は Phase 1 と同じです。
+
+| workload | n | Phase 1 ms | Phase 2a ms | 比 |
+| --- | ---: | ---: | ---: | ---: |
+| `walk_list`（`for` の総和 16 回） | 1,000,000 | 9.264 | 2.243 | 0.24 |
+| | 1,000 | 0.00768 | 0.00161 | 0.21 |
+| | 16 | 1.47e-4 | 9.68e-5 | 0.66 |
+| `fold_list`（`List.fold_ref` の総和 16 回） | 1,000,000 | 9.267 | 2.287 | 0.25 |
+| | 1,000 | 0.00784 | 0.00136 | 0.17 |
+| | 16 | 1.47e-4 | 5.23e-5 | 0.36 |
+| `compare_list`（`==` 16 回） | 1,000,000 | 15.701 | 7.940 | 0.51 |
+| | 1,000 | 0.01494 | 0.00916 | 0.61 |
+| | 16 | 4.23e-4 | 3.72e-4 | 0.88 |
+| `bulk_new` | 1,000,000 | 0.914 | 0.502 | 0.55 |
+| `cons_build` | 1,000,000 | 1.434 | 1.040 | 0.73 |
+| `clone_list` | 1,000,000 | 2.251 | 1.092 | 0.49 |
+| `tail_consume`・`string_list`・`index_walk` | 1,000,000 など | 同じ | 同じ | 0.99〜1.03 |
+
+`tail_consume`・`string_list`・`index_walk` は走査が時間の大半ではなく（`List.tail` の連続、要素ごとの文字列の確保、添字）、差は雑音の範囲です。n = 1 の差も雑音の範囲です。基準（main `9dd0fbbc`）との比は、別の run で `walk_list` が 38.51 → 2.74 ms、`fold_list` が 37.17 → 2.32 ms、`compare_list` が 66.98 → 8.90 ms（n = 1,000,000）、n = 1,000 では 0.0359 → 0.00161 ms、0.0359 → 0.00137 ms、0.0575 → 0.00932 ms でした。build を引いた 1 要素あたりの総和（`walk_list` と `bulk_new` の差 ÷ 15,000,000）は、before 約 1.20 ns、Phase 1 約 0.58 ns、Phase 2a 約 0.12 ns です。
+
+生成コード（`clang -O3`、arm64）の確認です。`bulk_new`・`walk_list` の内側の総和は `ldp q4, q5, [x9, #-48]`・`ldp q6, q7, [x9, #-16]`・`add.2d` が 4 本・`add x9, x9, #64`・`subs x10, x10, #8`・`b.ne` で、`i64` を 8 個ずつ 4 本の accumulator で足します。余りの要素は同じ chunk の scalar の loop（`ldr x13, [x12], #8`・`add`・`adds`・`b.lo`）です。`List.cons` で作ったリストの `cons_build` も、各 chunk の run が同じ `vector.body` で、chunk の終わりに `next`（`ldr x9, [x9]`）と容量（`ldr x10, [x9, #16]`）を読みます。比較の内側の loop は `ldr x5, [x2], #8`・`ldr x6, [x3], #8`・`cmp x5, x6`・`b.ne`（不一致で抜ける）・回数の `b.ne` で、要素ごとに早く抜けるのでベクトル化されません（Phase 1 の cursor の 2 倍速い）。
 
 **追認できないこと・限界.**
 - 1 要素ごとに node を確保していた表現より、要素が数個のリストと、`List.cons` で伸ばした 256 要素以下のリストは確保の bytes が大きくなります（上の表）。

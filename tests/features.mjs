@@ -1097,7 +1097,7 @@ const suites = {
       const lists = helpers.map((match) => match[1]).filter((body) => /phi ptr \[[^\n]+\], \[/.test(body));
       assert.ok(lists.length >= 6, "list comparison helpers are present");
       for (const body of lists) {
-        assert.equal((body.match(/phi ptr \[[^\n]+\], \[/g) ?? []).length, 4, "each list cursor is a chunk, left for the next one by a branch, and both advance in lockstep");
+        assert.equal((body.match(/phi ptr \[[^\n]+\], \[/g) ?? []).length, 4, "each list cursor is a chunk, left for the next one by a branch, and both advance by runs in lockstep");
         assert.ok(!body.includes("@tz.alloc") && !body.includes("@tz.list.index"));
       }
     },

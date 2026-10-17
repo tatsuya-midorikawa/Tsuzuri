@@ -37,6 +37,23 @@ pub(super) struct ListBuilder {
     prefixed: bool,
 }
 
+/// The element that a list loop is at: its address, the labels that leave the loop and that go on
+/// to the next element, and the two numbers that make up its position in the list.
+struct ListStep {
+    pointer: String,
+    position: String,
+    offset: String,
+    exit: String,
+    advance: String,
+}
+
+impl ListStep {
+    /// The position of the element in the list, a value that a body asks for only if it uses it.
+    fn index(&self, emitter: &mut FunctionEmitter<'_, '_>) -> String {
+        emitter.value(format!("add i64 {}, {}", self.position, self.offset))
+    }
+}
+
 impl FunctionEmitter<'_, '_> {
     /// A node of the list that this representation replaced: its size bounds the length of a
     /// list, which `list_guard_length` checks before anything is allocated.
@@ -238,104 +255,132 @@ impl FunctionEmitter<'_, '_> {
         length: &str,
         body: impl FnOnce(&mut Self, &str, &str),
     ) {
-        self.list_loop_control(element, head, length, |emitter, pointer, index, _, _| {
-            body(emitter, pointer, index);
+        self.list_walk(element, head, length, |emitter, step| {
+            let index = step.index(emitter);
+            body(emitter, &step.pointer, &index);
         });
     }
 
-    /// `list_loop` whose body also gets the labels that leave the loop and that start the next
+    /// `list_loop` for a body that does not need the position of the element.
+    pub(super) fn list_each(
+        &mut self,
+        element: &Type,
+        head: &str,
+        length: &str,
+        body: impl FnOnce(&mut Self, &str),
+    ) {
+        self.list_walk(element, head, length, |emitter, step| {
+            body(emitter, &step.pointer);
+        });
+    }
+
+    /// `list_each` whose body also gets the labels that leave the loop and that start the next
     /// iteration, and must jump to the second at the end of each iteration.
-    ///
-    /// The cursor is a chunk and a slot. A branch leaves a chunk that the slot ran out of: with a
-    /// `select` between the next chunk and this one, the address of the next element would wait
-    /// for the load of the link.
     pub(super) fn list_loop_control(
         &mut self,
         element: &Type,
         head: &str,
         length: &str,
-        body: impl FnOnce(&mut Self, &str, &str, &str, &str),
+        body: impl FnOnce(&mut Self, &str, &str, &str),
+    ) {
+        self.list_walk(element, head, length, |emitter, step| {
+            body(emitter, &step.pointer, &step.exit, &step.advance);
+        });
+    }
+
+    /// The loop of the three above. It is two loops. The outer one goes from chunk to chunk, and
+    /// the inner one is a counted loop over the `run` live slots of the chunk from a base address:
+    /// the shape of a loop over an array, which LLVM unrolls and vectorizes. A cursor that leaves
+    /// a chunk by a branch inside a single loop keeps the slot, the end of the chunk and the
+    /// chunk in the chain from an element to the next.
+    fn list_walk(
+        &mut self,
+        element: &Type,
+        head: &str,
+        length: &str,
+        body: impl FnOnce(&mut Self, &ListStep),
     ) {
         let first = self.label();
-        let condition = self.label();
+        let chunks = self.label();
+        let slots = self.label();
         let current = self.label();
         let advance = self.label();
         let step = self.increment_block(&advance);
-        let join = self.label();
+        let after = self.label();
+        let hop = self.label();
         let exit = self.label();
-        let index = self.fresh();
-        let next_index = self.fresh();
         let chunk = self.fresh();
         let next_chunk = self.fresh();
-        let slot = self.fresh();
-        let next_slot = self.fresh();
+        let position = self.fresh();
+        let next_position = self.fresh();
+        let start = self.fresh();
+        let offset = self.fresh();
+        let next_offset = self.fresh();
         let nonempty = self.value(format!("icmp ne i64 {length}, 0"));
         self.branch(&nonempty, &first, &exit);
         self.begin(&first);
-        let start = self.list_first_slot(element, head, length);
-        self.jump(&condition);
-        self.begin(&condition);
+        let first_slot = self.list_first_slot(element, head, length);
+        self.jump(&chunks);
+        self.begin(&chunks);
         self.instruction(format!(
-            "{index} = phi i64 [ 0, %{first} ], [ {next_index}, %{join} ]"
+            "{chunk} = phi ptr [ {head}, %{first} ], [ {next_chunk}, %{hop} ]"
         ));
         self.instruction(format!(
-            "{chunk} = phi ptr [ {head}, %{first} ], [ {next_chunk}, %{join} ]"
+            "{position} = phi i64 [ 0, %{first} ], [ {next_position}, %{hop} ]"
         ));
         self.instruction(format!(
-            "{slot} = phi i64 [ {start}, %{first} ], [ {next_slot}, %{join} ]"
+            "{start} = phi i64 [ {first_slot}, %{first} ], [ 0, %{hop} ]"
         ));
-        let more = self.value(format!("icmp ult i64 {index}, {length}"));
-        self.branch(&more, &current, &exit);
+        let capacity = self.list_load_field(element, &chunk, 2);
+        let run = self.value(format!("sub i64 {capacity}, {start}"));
+        let base = self.list_slot(element, &chunk, &start);
+        self.jump(&slots);
+        self.begin(&slots);
+        self.instruction(format!(
+            "{offset} = phi i64 [ 0, %{chunks} ], [ {next_offset}, %{step} ]"
+        ));
+        let more = self.value(format!("icmp ult i64 {offset}, {run}"));
+        self.branch(&more, &current, &after);
         self.begin(&current);
-        let pointer = self.list_slot(element, &chunk, &slot);
-        body(self, &pointer, &index, &exit, &advance);
+        let pointer = self.value(format!(
+            "getelementptr inbounds {}, ptr {base}, i64 {offset}",
+            self.ty(element)
+        ));
+        body(
+            self,
+            &ListStep {
+                pointer,
+                position: position.clone(),
+                offset: offset.clone(),
+                exit: exit.clone(),
+                advance: advance.clone(),
+            },
+        );
         self.jump(&advance);
         self.begin(&advance);
-        // `index < length` as unsigned numbers: the step cannot wrap (R4).
-        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
-        self.list_step(element, &chunk, &slot, &next_slot, &next_chunk, &join);
+        // `offset < run` as unsigned numbers: the step cannot wrap (R4).
+        self.audit_increment(&step, 64, &offset, "1", Flags::UNSIGNED);
         let words = self.flag_text(Flags::UNSIGNED);
-        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
-        self.jump(&condition);
-        self.begin(&exit);
-    }
-
-    /// Moves the cursor `(chunk, slot)` one slot on, from the block that the caller is in to the
-    /// new block `join`, where `next_chunk` is the chunk of the next element and `next_slot` its
-    /// slot. A branch leaves a chunk that the slot ran out of, and the link of that chunk is read
-    /// only then. A `select` for the slot, or for the chunk, would put the comparison with the
-    /// capacity, or the load of the link, in the chain from one element to the next: 3 cycles
-    /// instead of 1 for the slot, and a load for the chunk.
-    fn list_step(
-        &mut self,
-        element: &Type,
-        chunk: &str,
-        slot: &str,
-        next_slot: &str,
-        next_chunk: &str,
-        join: &str,
-    ) {
-        let hop = self.label();
-        let moved = self.value(format!("add i64 {slot}, 1"));
-        let capacity = self.list_load_field(element, chunk, 2);
-        let full = self.value(format!("icmp eq i64 {moved}, {capacity}"));
-        let from = self.block.clone();
-        self.branch(&full, &hop, join);
+        self.instruction(format!("{next_offset} = add {words}i64 {offset}, 1"));
+        self.jump(&slots);
+        self.begin(&after);
+        self.instruction(format!("{next_position} = add i64 {position}, {run}"));
+        let remaining = self.value(format!("icmp ult i64 {next_position}, {length}"));
+        self.branch(&remaining, &hop, &exit);
         self.begin(&hop);
-        let following = self.value(format!("load ptr, ptr {chunk}"));
-        self.jump(join);
-        self.begin(join);
-        self.instruction(format!(
-            "{next_chunk} = phi ptr [ {following}, %{hop} ], [ {chunk}, %{from} ]"
-        ));
-        self.instruction(format!(
-            "{next_slot} = phi i64 [ 0, %{hop} ], [ {moved}, %{from} ]"
-        ));
+        self.instruction(format!("{next_chunk} = load ptr, ptr {chunk}"));
+        self.jump(&chunks);
+        self.begin(&exit);
     }
 
     /// Runs `body` once per pair of elements of two lists, each a head and a length, in order, as
     /// many pairs as `length`, the smaller of the lengths. The body gets the addresses of a pair
     /// and ends in the block that goes on with the next pair.
+    ///
+    /// A run is the pairs that lie in one chunk of each list: as many as the smaller of the slots
+    /// that the two current chunks have left, and of the pairs that `length` has left. The outer
+    /// loop goes from run to run, and the inner loop is a counted loop over a run, as in
+    /// `list_loop_control`. Only a cursor whose chunk the run used up moves on to the next chunk.
     pub(super) fn list_lockstep_loop(
         &mut self,
         element: &Type,
@@ -345,15 +390,18 @@ impl FunctionEmitter<'_, '_> {
         body: impl FnOnce(&mut Self, &str, &str),
     ) {
         let first = self.label();
-        let condition = self.label();
+        let runs = self.label();
+        let slots = self.label();
         let current = self.label();
         let advance = self.label();
         let step = self.increment_block(&advance);
-        let middle = self.label();
+        let after = self.label();
+        let moving = self.label();
+        let left_hop = self.label();
+        let left_join = self.label();
+        let right_hop = self.label();
         let join = self.label();
         let exit = self.label();
-        let index = self.fresh();
-        let next_index = self.fresh();
         let left_chunk = self.fresh();
         let left_next_chunk = self.fresh();
         let left_slot = self.fresh();
@@ -362,59 +410,102 @@ impl FunctionEmitter<'_, '_> {
         let right_next_chunk = self.fresh();
         let right_slot = self.fresh();
         let right_next_slot = self.fresh();
+        let compared = self.fresh();
+        let next_compared = self.fresh();
+        let offset = self.fresh();
+        let next_offset = self.fresh();
         let nonempty = self.value(format!("icmp ne i64 {length}, 0"));
         self.branch(&nonempty, &first, &exit);
         self.begin(&first);
         let left_start = self.list_first_slot(element, left.0, left.1);
         let right_start = self.list_first_slot(element, right.0, right.1);
-        self.jump(&condition);
-        self.begin(&condition);
-        self.instruction(format!(
-            "{index} = phi i64 [ 0, %{first} ], [ {next_index}, %{join} ]"
-        ));
+        self.jump(&runs);
+        self.begin(&runs);
         self.instruction(format!(
             "{left_chunk} = phi ptr [ {}, %{first} ], [ {left_next_chunk}, %{join} ]",
             left.0
+        ));
+        self.instruction(format!(
+            "{left_slot} = phi i64 [ {left_start}, %{first} ], [ {left_next_slot}, %{join} ]"
         ));
         self.instruction(format!(
             "{right_chunk} = phi ptr [ {}, %{first} ], [ {right_next_chunk}, %{join} ]",
             right.0
         ));
         self.instruction(format!(
-            "{left_slot} = phi i64 [ {left_start}, %{first} ], [ {left_next_slot}, %{join} ]"
-        ));
-        self.instruction(format!(
             "{right_slot} = phi i64 [ {right_start}, %{first} ], [ {right_next_slot}, %{join} ]"
         ));
-        let more = self.value(format!("icmp ult i64 {index}, {length}"));
-        self.branch(&more, &current, &exit);
+        self.instruction(format!(
+            "{compared} = phi i64 [ 0, %{first} ], [ {next_compared}, %{join} ]"
+        ));
+        let left_capacity = self.list_load_field(element, &left_chunk, 2);
+        let right_capacity = self.list_load_field(element, &right_chunk, 2);
+        let left_room = self.value(format!("sub i64 {left_capacity}, {left_slot}"));
+        let right_room = self.value(format!("sub i64 {right_capacity}, {right_slot}"));
+        let pending = self.value(format!("sub i64 {length}, {compared}"));
+        let left_less = self.value(format!("icmp ult i64 {left_room}, {right_room}"));
+        let room = self.value(format!(
+            "select i1 {left_less}, i64 {left_room}, i64 {right_room}"
+        ));
+        let room_less = self.value(format!("icmp ult i64 {room}, {pending}"));
+        let run = self.value(format!("select i1 {room_less}, i64 {room}, i64 {pending}"));
+        let left_base = self.list_slot(element, &left_chunk, &left_slot);
+        let right_base = self.list_slot(element, &right_chunk, &right_slot);
+        self.jump(&slots);
+        self.begin(&slots);
+        self.instruction(format!(
+            "{offset} = phi i64 [ 0, %{runs} ], [ {next_offset}, %{step} ]"
+        ));
+        let more = self.value(format!("icmp ult i64 {offset}, {run}"));
+        self.branch(&more, &current, &after);
         self.begin(&current);
-        let left_pointer = self.list_slot(element, &left_chunk, &left_slot);
-        let right_pointer = self.list_slot(element, &right_chunk, &right_slot);
+        let ty = self.ty(element);
+        let left_pointer = self.value(format!(
+            "getelementptr inbounds {ty}, ptr {left_base}, i64 {offset}"
+        ));
+        let right_pointer = self.value(format!(
+            "getelementptr inbounds {ty}, ptr {right_base}, i64 {offset}"
+        ));
         body(self, &left_pointer, &right_pointer);
         self.jump(&advance);
         self.begin(&advance);
-        // `index < length` as unsigned numbers: the step cannot wrap (R5).
-        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
-        self.list_step(
-            element,
-            &left_chunk,
-            &left_slot,
-            &left_next_slot,
-            &left_next_chunk,
-            &middle,
-        );
-        self.list_step(
-            element,
-            &right_chunk,
-            &right_slot,
-            &right_next_slot,
-            &right_next_chunk,
-            &join,
-        );
+        // `offset < run` as unsigned numbers: the step cannot wrap (R5).
+        self.audit_increment(&step, 64, &offset, "1", Flags::UNSIGNED);
         let words = self.flag_text(Flags::UNSIGNED);
-        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
-        self.jump(&condition);
+        self.instruction(format!("{next_offset} = add {words}i64 {offset}, 1"));
+        self.jump(&slots);
+        self.begin(&after);
+        self.instruction(format!("{next_compared} = add i64 {compared}, {run}"));
+        let remaining = self.value(format!("icmp ult i64 {next_compared}, {length}"));
+        self.branch(&remaining, &moving, &exit);
+        self.begin(&moving);
+        let left_moved = self.value(format!("add i64 {left_slot}, {run}"));
+        let left_full = self.value(format!("icmp eq i64 {left_moved}, {left_capacity}"));
+        self.branch(&left_full, &left_hop, &left_join);
+        self.begin(&left_hop);
+        let left_following = self.value(format!("load ptr, ptr {left_chunk}"));
+        self.jump(&left_join);
+        self.begin(&left_join);
+        self.instruction(format!(
+            "{left_next_chunk} = phi ptr [ {left_following}, %{left_hop} ], [ {left_chunk}, %{moving} ]"
+        ));
+        self.instruction(format!(
+            "{left_next_slot} = phi i64 [ 0, %{left_hop} ], [ {left_moved}, %{moving} ]"
+        ));
+        let right_moved = self.value(format!("add i64 {right_slot}, {run}"));
+        let right_full = self.value(format!("icmp eq i64 {right_moved}, {right_capacity}"));
+        self.branch(&right_full, &right_hop, &join);
+        self.begin(&right_hop);
+        let right_following = self.value(format!("load ptr, ptr {right_chunk}"));
+        self.jump(&join);
+        self.begin(&join);
+        self.instruction(format!(
+            "{right_next_chunk} = phi ptr [ {right_following}, %{right_hop} ], [ {right_chunk}, %{left_join} ]"
+        ));
+        self.instruction(format!(
+            "{right_next_slot} = phi i64 [ 0, %{right_hop} ], [ {right_moved}, %{left_join} ]"
+        ));
+        self.jump(&runs);
         self.begin(&exit);
     }
 

@@ -76,3 +76,23 @@ fn walk_list n =
     for _ in 1 .. 16 do
         for value in values do total = total + value
     total
+
+// `List.fold_ref` over a `new` list 16 times: 16 n (n - 1) / 2.
+export def fold_list :: i64 -> i64
+fn fold_list n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let mut total = 0i64
+    for _ in 1 .. 16 do total = total + List.fold_ref (state -> value -> state + deref value) 0 (ref values)
+    total
+
+// A list that `List.cons` built compared 16 times with a `new` list of the same elements: 16. Their chunks differ, so a comparison goes by runs of
+// different lengths.
+export def compare_list :: i64 -> i64
+fn compare_list n =
+    assert (n >= 0 && n <= 100000000)
+    let consed = build n
+    let made = new [|i64|](n, \i -> n - 1 - i)
+    let mut same = 0i64
+    for _ in 1 .. 16 do same = same + (if consed == made then 1 else 0)
+    same

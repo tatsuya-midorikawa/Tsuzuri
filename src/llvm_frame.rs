@@ -864,11 +864,11 @@ impl FunctionEmitter<'_, '_> {
                 }
                 let llvm = self.ty(element);
                 if elements.iter().all(Vec::is_empty) {
-                    self.list_loop(
+                    self.list_each(
                         element,
                         storage,
                         &elements.len().to_string(),
-                        |emitter, pointer, _| {
+                        |emitter, pointer| {
                             let value = emitter.value(format!("load {llvm}, ptr {pointer}"));
                             emitter.drop_value(element, &value);
                         },
