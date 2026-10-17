@@ -114,17 +114,17 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
 | PR06 | [Task プールの低遅延化と work stealing](_completed/PR06-task-scheduler.md) | P2 | L | PX01 | done |
-| PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | todo |
-| PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | todo |
+| PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | doing |
+| PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | doing |
 
 ### PM. メモリと成果物サイズ
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](_completed/PM01-value-layout.md) | P1 | L | PX01 | done |
-| PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | todo |
-| PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
-| PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
+| PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | doing |
+| PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | doing |
+| PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | doing |
 | PM05 | [小さい確保のための size-class allocator](_completed/PM05-small-allocator.md) | P1 | L | PX01, (F13) | done |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
@@ -139,8 +139,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | done |
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
-| PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
-| PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
+| PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | doing |
+| PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | doing |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
 
 ## `_features` との関係
@@ -164,6 +164,51 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第4フェーズ7件の実装方針（2026-10-17）
+
+PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と判断を許可した依頼に基づいて進めます。
+起票時の Phase 1 限定と `要承認` の注記は今回の依頼には適用せず、意味の保持と検証の条件は維持します。
+変更前の基準は `9dd0fbbc`（第3フェーズの PR #27 の後）、保存したコンパイラは `target/perf/phase4-baseline/tsuzuri-before` です。
+7 チケットはどれも起票時の `f8dc655` に対して書かれています。着手前に現行のコードと実測で照合し、食い違いを各チケットの
+「着手時の再検討（2026-10-17）」に記録して、次のとおり方針を改めました。
+
+- 第3フェーズ（PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）までは実装済みです。旧コードの行番号、未実装を前提とした停止条件、第3フェーズより前の測定値は使わず、
+  現行の型・ABI・配布形式・生成 IR を基準にします。
+- 効果が測れない最適化と既定の切り替えは行いません。テスト済みの opt-in として出荷するか、証拠を残して段を取り下げます。承認は実装の許可で、既定の切り替えの許可ではありません
+  （PB05 の既定のバックエンドは `llvm` のままです）。実装済みの経路と計画、共有機の参考値と静かな機械での正式値を区別します。
+- 7 チケットは別々の worktree で並行して開発し、重なる箇所の順に統合します。`src/main.rs`・`src/driver.rs`・`src/cache.rs` を触る PR07 → PR08 → PB06、
+  生成 IR と runtime の PM02 → PM04 → PM03、生成 IR を読むため最後に PB05 の順で、統合のたびに全 suite を確認し、既定の出力が変わる箇所をチケットごとに宣言したものと照合します。
+  共有機で並行して進めるため、時間の測定は負荷を記録した参考値とし、静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
+
+- **PB06**（計画。全フェーズを実装する）: 起票は G17 の cache を常駐させて編集後の `check` を 100 ms 級にする想定でしたが、G17 が出荷したのは解析ごとに開く parse の cache だけで、
+  check 結果の再利用は先送りのままでした。baseline の編集後の `check` は 200 module が 268 ms（全体を通す check・specialize・closures・ownership が約 195 ms）、
+  1,000 module が 1,368 ms（約 865 ms）なので、G1（100 ms 以下）は取り下げ、常駐で消せる費用（load・parse・cache・compiler の hash・process の起動）を測って記録します。
+  Phase 1 は `cli(raw, program_arguments, out, err)`（出力は byte 同一）と `tsuzuri watch check|build|test`、Phase 2 は `tsuzuri serve`・client・`--no-server`・
+  `serve --status/--stop` で、server は opt-in（なければ出力も挙動も今と同じ）です。この機械では新しい process の `open()` が 1 file 0.3〜0.7 ms で、400 file を超えると
+  1,000 module の `check` の約 45% が `load` になります。常駐の主な利得は stat 署名（ctime 付き、racy の窓つき）で本文を再利用する SourceMemo と `file_digest` の memo
+  （compiler の hash 約 45 ms）で、watch も毎秒の全体読み直しをやめて stat 署名にします。`RuntimeObjects`（約 1%）と tool の `--version` の memo（shim の変更が見えない）は取り下げました。
+  環境の比較は完全一致（52 変数の多くがセッション固有）から、コンパイラと tool が読む変数に絞り、`src/` の読み取りを走査する drift test で守ります。出力は cold と exact にし、
+  `TemporaryDirectory` の警告は sink に、`TSUZURI_TIME_PASSES` は要求ごとの report 行にします。LSP・REPL との socket 共有、Windows の named pipe（std に server 側の API がない）、
+  tool 問い合わせの memo は採りません。LSP・REPL が自分の process で同じ memo を使う案は、測って効果が出るときだけ採用します。効果は環境依存なので環境つきで記録します。
+- **PR07**（計画。全フェーズを実装する）: 起票時の前提は `driver::build`・10 field の `BuildOptions`・計装範囲が module IR 全体、という形でしたが、現行は `build_linked`・22 field・PB01 の別 object
+  （既定の cache あり経路では `numeric`・`math` は計装されない）です。旗は `build --profile-generate <dir>`・`--profile-use <file|dir>` で、clang の IR PGO（`-x ir` に `-fprofile-generate`・`-fprofile-use`）を使い、
+  実装は新しい `src/profile.rs` に置きます。許す出力は native の exe・object だけで、Windows・別の machine の target・`--freestanding` との generate・WASM は `E2000` です。
+  配布物の `tsuzuri-clang` は `-fprofile-*` を黙って捨て、`llvm-profdata` も profile runtime も持たないため、launcher の clang では両方の旗を `E2002` にします（launcher は変えません）。
+  `llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、clang の隣、`clang -print-resource-dir` の toolchain の順で探し、PATH は見ません。
+  profile は IR・clang・option に結び付くので、generate と use は同じ clang で行い、古い profile は `W2001` の 1 行にします。`run` は Phase 2 で受けます。
+  偵察では、control の 16 種目のうち `closure_*` が −12〜−18%（間接呼び出しの対象を使う）、`tail_*`・`match_dispatch` が +18〜+64% で、Apple clang 21.0.0 と Homebrew 21.1.8 で同じでした。
+  docs は両方向を記録し、PGO は profile が要るため常に opt-in です。C/C++ の参照にも PGO を掛けて比較し、D6（PB01 の object）・D9（trap への `!prof`）は測定で判断します。
+  WASM は export だけの writer で可能と分かったので、試作で `llvm-profdata show` との一致と時間の差を測ってから出荷か `E2000` のままかを決めます。
+- **PM03**（計画。全フェーズを実装する）: 起票時の D1（長さ語の bit 63 を Latin-1 の印にする）は PM01 の niche（`Maybe<string>` の None は長さ `-1`、判定は `icmp slt len, 0`）と衝突し、
+  Latin-1 の `Some` が `None` と読まれるため、印を bit 62 にします（UTF-16 の語は HEAD と同じで、bit 63 は常に 0。`llvm_layout.rs`・niche・DWARF・natvis は変えません）。
+  起票時の「2 bytes／単位を仮定している箇所」の表には、PM06/PM07（`append`・`concat_into`・frame の buffer）、補間、PM08 の `integer.ll` の parse、`for ... in text`、PR05 の CPU 経路、
+  G16 の LLDB formatter・natvis が抜けていました。`tests/debugger.mjs` が表示を固定するため D9 は取り下げ、formatter を印に対応させます。
+  PR05 の `string_v128.ll` は `generate_utf.py` の生成物なので、HEAD の runtime は編集せず、追加層（`string_compact.ll`・`string_latin1.ll` ほか）と include 時の `.utf16` への改名で
+  公開名を dispatcher にします。既定の切り替えは測定が決めます: `TSUZURI_RANGE_FLAGS` と同じ形の `TSUZURI_STRINGS=utf16|compact` を最初に入れ、`utf16` は baseline と byte 同一の IR にします。
+  `compact` を既定にするのは、確保量（決定的）・最大 RSS・時間（cpp 5 種目・`utf/*`・apps の文字列系）の基準を満たしたときだけで、満たさなければ opt-in で出荷します（PM05 D10 と同じ扱い）。
+  Phase 2 は `generate_utf.py` に Latin-1 の vector kernel の生成（`string_latin1_v128.ll`）と、最大の scalar を返す UTF-8 の計数（非 ASCII の Latin-1 入力も Latin-1 にする）を足し、`cpu.c` は変えません。
+  `String.to_code_units`／`from_code_units` の「O(1) で移送」は Latin-1 の値で成り立たなくなるため、文書の契約を書き換えます。PM05 の allocator（16 bytes のヘッダー・16 bytes 刻み）のため、短い文字列は半分になりません。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
