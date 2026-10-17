@@ -268,11 +268,15 @@ impl FunctionEmitter<'_, '_> {
         ));
         self.borrowed_locals.insert(local.id);
         if let Type::List(element) = &source.ty {
-            self.list_loop_control(&data, &length, |emitter, node, exit, advance| {
-                let pointer = emitter.list_element_pointer(element, node);
-                emitter.locals.insert(local.id, pointer);
-                emitter.loop_body(body, exit, advance);
-            });
+            self.list_loop_control(
+                element,
+                &data,
+                &length,
+                |emitter, pointer, _, exit, advance| {
+                    emitter.locals.insert(local.id, pointer.to_owned());
+                    emitter.loop_body(body, exit, advance);
+                },
+            );
         } else {
             self.array_loop_control(&length, |emitter, index, exit, advance| {
                 let pointer = emitter.element_pointer(&local.ty, &data, index);

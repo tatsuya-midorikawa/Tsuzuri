@@ -467,15 +467,15 @@ impl FunctionEmitter<'_, '_> {
             Builtin::ArrayToList => {
                 let data = self.value("extractvalue %tz.array %arg0, 0");
                 let length = self.value("extractvalue %tz.array %arg0, 1");
-                let (head, tail) = self.list_builder();
+                let builder = self.list_builder(element, &length);
                 self.array_loop(&length, |emitter, index| {
                     let pointer = emitter.element_pointer(element, &data, index);
                     let value =
                         emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
                     let value = emitter.clone_value(element, &value);
-                    emitter.append_list(element, &tail, &value);
+                    emitter.list_append(element, &builder, index, &value);
                 });
-                self.finish_list(&head, &length)
+                self.list_finish(element, &builder, &length)
             }
             Builtin::ArraySortBy => self.stable_array_sort(element, &parameters[0]),
             Builtin::ListMap
@@ -495,8 +495,7 @@ impl FunctionEmitter<'_, '_> {
                 if instance.builtin == Builtin::ListToArray {
                     let (array, data) = self.allocate_array(element, &length);
                     let index = self.spill(&Type::I64, "0");
-                    self.list_loop(&head, &length, |emitter, node| {
-                        let pointer = emitter.list_element_pointer(element, node);
+                    self.list_loop(element, &head, &length, |emitter, pointer, _| {
                         let value =
                             emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
                         let value = emitter.clone_value(element, &value);
@@ -514,9 +513,8 @@ impl FunctionEmitter<'_, '_> {
                 if instance.builtin == Builtin::ListFoldRef {
                     let state_type = &parameters[1];
                     let state = self.spill(state_type, "%arg1");
-                    self.list_loop(&head, &length, |emitter, node| {
-                        let pointer = emitter.list_element_pointer(element, node);
-                        let borrowed = emitter.borrowed_element(element, &pointer);
+                    self.list_loop(element, &head, &length, |emitter, pointer, _| {
+                        let borrowed = emitter.borrowed_element(element, pointer);
                         let previous =
                             emitter.value(format!("load {}, ptr {state}", emitter.ty(state_type)));
                         let (partial, rest) = emitter.apply_value(
@@ -543,34 +541,41 @@ impl FunctionEmitter<'_, '_> {
                     } else {
                         element
                     };
-                let (output_head, tail) = self.list_builder();
-                self.list_loop(&head, &length, |emitter, node| {
-                    let pointer = emitter.list_element_pointer(element, node);
+                let builder = self.list_builder(output_element, &length);
+                self.list_loop(element, &head, &length, |emitter, pointer, index| {
                     let value = if instance.builtin == Builtin::ListMapRef {
-                        let borrowed = emitter.borrowed_element(element, &pointer);
+                        let borrowed = emitter.borrowed_element(element, pointer);
                         let borrowed_type = Type::Reference(Box::new(element.clone()), false);
-                        emitter.apply_value("%arg0", &parameters[0], Some((&borrowed_type, &borrowed)), true).0
+                        emitter
+                            .apply_value(
+                                "%arg0",
+                                &parameters[0],
+                                Some((&borrowed_type, &borrowed)),
+                                true,
+                            )
+                            .0
                     } else {
-                        let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                        let value =
+                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
                         let value = emitter.clone_value(element, &value);
                         if instance.builtin == Builtin::ListMap {
-                            emitter.apply_value("%arg0", &parameters[0], Some((element, &value)), true).0
-                        } else { value }
+                            emitter
+                                .apply_value("%arg0", &parameters[0], Some((element, &value)), true)
+                                .0
+                        } else {
+                            value
+                        }
                     };
                     if instance.builtin == Builtin::ListReverse {
-                        let previous = emitter.value(format!("load ptr, ptr {output_head}"));
-                        let node_type = emitter.list_node_type(element);
-                        let next = emitter.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({node_type}, ptr null, i32 1) to i64))"));
-                        emitter.instruction(format!("store ptr {previous}, ptr {next}"));
-                        let slot = emitter.list_element_pointer(element, &next);
-                        emitter.instruction(format!("store {} {value}, ptr {slot}", emitter.ty(element)));
-                        emitter.instruction(format!("store ptr {next}, ptr {output_head}"));
-                    } else { emitter.append_list(output_element, &tail, &value); }
+                        emitter.list_prepend(output_element, &builder, index, &length, &value);
+                    } else {
+                        emitter.list_append(output_element, &builder, index, &value);
+                    }
                 });
                 if matches!(instance.builtin, Builtin::ListMap | Builtin::ListMapRef) {
                     self.drop_value(&parameters[0], "%arg0");
                 }
-                self.finish_list(&output_head, &length)
+                self.list_finish(output_element, &builder, &length)
             }
             _ => unreachable!("bulk collection builtins only"),
         }

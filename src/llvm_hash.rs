@@ -50,23 +50,21 @@ impl FunctionEmitter<'_, '_> {
         let state = self.hash_word(OFFSET, if linked { "76" } else { "65" });
         let state = self.hash_word(&state, &length);
         let state_slot = self.spill(&Type::Integer(64, false), &state);
-        let cursor =
-            linked.then(|| self.spill(&Type::Reference(Box::new(Type::Unit), false), &data));
-        self.array_loop(&length, |emitter, index| {
-            let pointer = if let Some(cursor) = &cursor {
-                let node = emitter.value(format!("load ptr, ptr {cursor}"));
-                let next = emitter.value(format!("load ptr, ptr {node}"));
-                emitter.instruction(format!("store ptr {next}, ptr {cursor}"));
-                emitter.list_element_pointer(element, &node)
-            } else {
-                emitter.element_pointer(element, &data, index)
-            };
+        let step = |emitter: &mut Self, pointer: &str, index: &str| {
             let state = emitter.value(format!("load i64, ptr {state_slot}"));
             let state = emitter.hash_word(&state, index);
-            let hash = emitter.hash_element(&methods[0], &pointer);
+            let hash = emitter.hash_element(&methods[0], pointer);
             let state = emitter.hash_word(&state, &hash);
             emitter.instruction(format!("store i64 {state}, ptr {state_slot}"));
-        });
+        };
+        if linked {
+            self.list_loop(element, &data, &length, step);
+        } else {
+            self.array_loop(&length, |emitter, index| {
+                let pointer = emitter.element_pointer(element, &data, index);
+                step(emitter, &pointer, index);
+            });
+        }
         self.value(format!("load i64, ptr {state_slot}"))
     }
 
