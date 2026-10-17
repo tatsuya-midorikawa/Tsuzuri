@@ -301,9 +301,11 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Moves the cursor `(chunk, slot)` one slot on, from the block that the caller is in to the
-    /// new block `join`, where `next_chunk` is the chunk of the next element and `next_slot`,
-    /// defined before the branch, its slot. The link of a chunk is read only when the slot ran out
-    /// of it.
+    /// new block `join`, where `next_chunk` is the chunk of the next element and `next_slot` its
+    /// slot. A branch leaves a chunk that the slot ran out of, and the link of that chunk is read
+    /// only then. A `select` for the slot, or for the chunk, would put the comparison with the
+    /// capacity, or the load of the link, in the chain from one element to the next: 3 cycles
+    /// instead of 1 for the slot, and a load for the chunk.
     fn list_step(
         &mut self,
         element: &Type,
@@ -317,9 +319,6 @@ impl FunctionEmitter<'_, '_> {
         let moved = self.value(format!("add i64 {slot}, 1"));
         let capacity = self.list_load_field(element, chunk, 2);
         let full = self.value(format!("icmp eq i64 {moved}, {capacity}"));
-        self.instruction(format!(
-            "{next_slot} = select i1 {full}, i64 0, i64 {moved}"
-        ));
         let from = self.block.clone();
         self.branch(&full, &hop, join);
         self.begin(&hop);
@@ -328,6 +327,9 @@ impl FunctionEmitter<'_, '_> {
         self.begin(join);
         self.instruction(format!(
             "{next_chunk} = phi ptr [ {following}, %{hop} ], [ {chunk}, %{from} ]"
+        ));
+        self.instruction(format!(
+            "{next_slot} = phi i64 [ 0, %{hop} ], [ {moved}, %{from} ]"
         ));
     }
 
