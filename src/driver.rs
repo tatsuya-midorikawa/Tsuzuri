@@ -3453,6 +3453,9 @@ fn build_complete(
     protect_sources(project, output)?;
     protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    // An instrumented WebAssembly module comes with the writer that its host runs to save the counters.
+    let profile_writer = (options.target.is_wasm() && matches!(profile, Profile::Generate(_)))
+        .then(|| profile::wasm_writer_path(output));
     let dwarf_sidecar = (platform.mach_o()
         && options.debug_info
         && matches!(options.emit, Emit::Executable | Emit::Shared))
@@ -3462,6 +3465,10 @@ fn build_complete(
         PathBuf::from(path)
     });
     if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
+    }
+    if let Some(sidecar) = &profile_writer {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
@@ -3494,10 +3501,20 @@ fn build_complete(
         });
     let mut messages = Vec::new();
     // The merge of a profile comes first: the cache key records the bytes that Clang will read.
-    let staged_profile = profile::prepare_profile(profile, &temporary.path, &mut messages)?;
+    let staged_profile = profile::prepare_profile(
+        profile,
+        options.target.is_wasm(),
+        &temporary.path,
+        &mut messages,
+    )?;
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
     let staged_pdb = temporary.path.join("artifact.pdb");
+    let staged_writer = temporary.path.join("profile.mjs");
+    if let (Profile::Generate(directory), Some(_)) = (profile, &profile_writer) {
+        fs::write(&staged_writer, profile::wasm_writer(directory))
+            .map_err(|error| io_error("write profile writer", &staged_writer, error))?;
+    }
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -3508,6 +3525,9 @@ fn build_complete(
         std::collections::BTreeMap::from([("artifact".to_owned(), artifact.clone())]);
     if sidecar.is_some() {
         cache_paths.insert("traps".into(), staged_sidecar.clone());
+    }
+    if profile_writer.is_some() {
+        cache_paths.insert("profile".into(), staged_writer.clone());
     }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
@@ -3661,6 +3681,10 @@ fn build_complete(
                 }
             }
         }
+        let text = match &staged_profile {
+            Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
+            _ => text,
+        };
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
@@ -3918,7 +3942,7 @@ fn build_complete(
             .arg("-Wno-override-module")
             .arg(options.optimization.flag());
         if let Some(staged) = &staged_profile {
-            clang.arg(staged.flag());
+            clang.args(staged.args());
         }
         if options.debug_info {
             clang.arg("-g");
@@ -4243,6 +4267,12 @@ fn build_complete(
             for (symbol, _) in llvm::host_entries(module) {
                 linker.arg(format!("--export={symbol}"));
             }
+            if staged_profile
+                .as_ref()
+                .is_some_and(profile::PreparedProfile::instruments_wasm)
+            {
+                linker.args(profile::WASM_LINK_ARGS);
+            }
             if !llvm::host_entries(module).is_empty() {
                 linker.arg("--export=tsuzuri_async_set_epoch");
             }
@@ -4269,6 +4299,7 @@ fn build_complete(
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
+        .chain(profile_writer.as_ref().map(|path| (&staged_writer, path)))
         .collect();
     if !cache_hit && let Some((cache, key)) = &cache {
         let _cache_time = crate::timings::Phase::start("cache");

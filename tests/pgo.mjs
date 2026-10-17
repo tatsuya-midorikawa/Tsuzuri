@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { artifactFingerprint } from "../benchmarks/metrics.mjs";
 
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
@@ -141,8 +142,10 @@ section("option errors need no tool", () => {
     [["--profile-generate", "a", "--profile-generate", "b"], "profile generation specified more than once"],
     [["--profile-use", "a", "--profile-use", "b"], "profile use specified more than once"],
     [["--profile-generate", "a", "--profile-use", "b"], "--profile-generate and --profile-use cannot be combined; build once with each"],
-    [["--profile-generate", "a", "--target", "wasm32"], "profile-guided optimization is native-only; remove --target wasm32 or the profile option"],
-    [["--profile-use", "a", "--target", "wasm64"], "profile-guided optimization is native-only; remove --target wasm64 or the profile option"],
+    [["--profile-use", "a", "--target", "wasm64"], "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option"],
+    [["--profile-generate", "a", "--target", "wasm32", "--emit", "object"], "profile-guided optimization needs --emit wasm for WebAssembly"],
+    [["--profile-use", "a", "--target", "wasm32", "--wasm-feature", "threads"], "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic"],
+    [["--profile-generate", "a", "--target", "wasm32", "--wasm-opt"], "--profile-generate cannot be combined with --wasm-opt"],
     [["--profile-generate", "a", "--emit", "llvm"], "profile-guided optimization needs --emit exe or object"],
     [["--profile-use", "a", "--emit", "shared"], "profile-guided optimization needs --emit exe or object"],
     [["--profile-generate", "a", "--emit", "object", "--freestanding", "--allocator", "host"], "--profile-generate cannot be combined with --freestanding"],
@@ -315,6 +318,67 @@ section("an object takes the profile runtime from the final link", () => {
   const optimized = executable("library-use");
   execute(realClang, [host, used, "-o", optimized, "-lm"]);
   assert.equal(execute(optimized, []).stdout, total);
+});
+
+section("a wasm32 module is instrumented, and the writer beside it saves the profile", () => {
+  trained();
+  const profdata = needProfdata();
+  const plain = join(root, "library-plain.wasm");
+  const probe = build("library", ["--target", "wasm32"], plain, { status: null });
+  if (probe.status !== 0) skip(`no WebAssembly toolchain: ${probe.stderr.split("\n")[0]}`);
+  const directory = join(root, "wasm-profile");
+  const generated = join(root, "library-generate.wasm");
+  const instrument = ["--target", "wasm32", "--profile-generate", directory];
+  const built = build("library", instrument, generated);
+  assert.ok(!built.stderr.includes("error"), built.stderr);
+  const writer = `${generated}.profile.mjs`;
+  assert.ok(existsSync(writer), "the writer is published beside the module");
+  // The host runs the module, and the writer saves what the module counted. The writer of another module refuses a module that was not instrumented.
+  const run = `import { readFileSync } from "node:fs";
+import { defaultDirectory, profileBytes, writeProfile } from ${JSON.stringify(pathToFileURL(writer).href)};
+const open = async (file) => (await WebAssembly.instantiate(readFileSync(file), {})).instance;
+const instance = await open(${JSON.stringify(generated)});
+console.log(JSON.stringify({ result: String(instance.exports.tz_total(100000n)), directory: defaultDirectory, written: await writeProfile(instance) }));
+try { profileBytes(await open(${JSON.stringify(plain)})); } catch (error) { console.log(JSON.stringify({ refused: error.message })); }
+`;
+  const [trained_, refused] = execute(process.execPath, ["--input-type=module", "-e", run]).stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(trained_.result, "3699964");
+  assert.equal(trained_.directory, directory);
+  assert.equal(dirname(trained_.written), directory);
+  assert.equal(profraws(directory).length, 1);
+  assert.match(refused.refused, /does not export __llvm_profile_raw_version/);
+
+  // The counts of the module are the counts of the native program of the same source.
+  const counts = (file) => execute(profdata, ["show", "--all-functions", "--counts", file]).stdout.match(/tz_total:\n\s+Hash: \S+\n\s+Counters: \d+\n\s+Block counts: (\[[^\]]*\])/)?.[1];
+  const nativeDirectory = join(root, "wasm-oracle-profile");
+  const object = join(root, "wasm-oracle.o");
+  build("library", ["--emit", "object", "--profile-generate", nativeDirectory], object);
+  const oracle = executable("wasm-oracle");
+  execute(realClang, [join(fixtures, "host.c"), object, "-o", oracle, `-fprofile-generate=${nativeDirectory}`, "-lm"]);
+  execute(oracle, []);
+  assert.equal(counts(trained_.written), "[100000, 1, 33333, 33334]");
+  assert.equal(counts(trained_.written), counts(files(nativeDirectory)[0]));
+
+  // The cache returns the module and its writer.
+  const again = join(root, "library-generate-again.wasm");
+  build("library", instrument, again);
+  assert.deepEqual(readFileSync(again), readFileSync(generated));
+  assert.equal(readFileSync(`${again}.profile.mjs`, "utf8"), readFileSync(writer, "utf8"));
+
+  // The profile applies to the same program without a word, and the module still computes the same.
+  const used = join(root, "library-use.wasm");
+  const applied = build("library", ["--target", "wasm32", "--profile-use", directory], used);
+  assert.equal(applied.stderr, "");
+  const evaluate = (file) => execute(process.execPath, ["-e", `const module = new WebAssembly.Module(require("node:fs").readFileSync(${JSON.stringify(file)}));
+console.log(String(new WebAssembly.Instance(module, {}).exports.tz_total(100000n)));`]).stdout.trim();
+  assert.equal(evaluate(used), "3699964");
+  // A program that changed is told so in one line.
+  const changed = join(root, "project-changed-library");
+  mkdirSync(changed, { recursive: true });
+  writeFileSync(join(changed, "Main.tz"), readFileSync(join(fixtures, "library", "Main.tz"), "utf8").replace("    | _ -> 100", "    | 2 -> 100\n    | _ -> 1000"));
+  const stale = tz(["build", changed, "--target", "wasm32", "--profile-use", directory, "-o", join(root, "library-stale.wasm")]);
+  assert.match(stale.stderr.trim(), /^profile data does not match \d+ function\(s\) in this build; they are optimized without profile data\./);
+  assert.equal(evaluate(join(root, "library-stale.wasm")), "3699964");
 });
 
 section("a directory of raw profiles and its merge build the same program", () => {

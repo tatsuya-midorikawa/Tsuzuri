@@ -40,6 +40,8 @@ pub(crate) struct PreparedProfile {
     flag: OsString,
     key: (&'static str, Vec<u8>),
     generate: bool,
+    /// A WebAssembly module has no profile runtime and no value-profiling runtime.
+    wasm: bool,
     /// The staged copy that Clang reads, and the path that the user gave for it.
     staged: Option<(PathBuf, PathBuf)>,
 }
@@ -58,24 +60,15 @@ impl Profile {
     }
 
     /// The checks that need no tool: where the build runs and what it makes. Only native
-    /// executables and objects of the machine that builds them can be instrumented and trained;
-    /// every other output is rejected, so that a new kind of output is never accepted by default.
+    /// executables and objects of the machine that builds them, and WebAssembly modules of
+    /// `wasm32`, can be instrumented and trained; every other output is rejected, so that a new
+    /// kind of output is never accepted by default.
     pub fn validate(&self, options: BuildOptions) -> Result<(), Diagnostic> {
         if self.is_none() {
             return Ok(());
         }
         if options.target.is_wasm() {
-            let name = if options.target == Target::Wasm64 {
-                "wasm64"
-            } else {
-                "wasm32"
-            };
-            return Err(driver_error(
-                "E2000",
-                format!(
-                    "profile-guided optimization is native-only; remove --target {name} or the profile option"
-                ),
-            ));
+            return self.validate_wasm(options);
         }
         if !matches!(options.emit, Emit::Executable | Emit::Object) {
             return Err(driver_error(
@@ -116,6 +109,39 @@ impl Profile {
         Ok(())
     }
 
+    /// A `wasm32` module has no profile runtime: its host writes the counters (`profile-wasm.mjs`),
+    /// so only a single-threaded module of `--emit wasm` is instrumented.
+    fn validate_wasm(&self, options: BuildOptions) -> Result<(), Diagnostic> {
+        let refuse = |message: &str| Err(driver_error("E2000", message));
+        if options.target != Target::Wasm32 {
+            return refuse(
+                "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option",
+            );
+        }
+        if options.emit != Emit::Wasm {
+            return refuse(
+                "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds",
+            );
+        }
+        if options.wasm_threads {
+            return refuse(
+                "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic",
+            );
+        }
+        if matches!(self, Self::Generate(_)) && options.wasm_opt {
+            return refuse(
+                "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads",
+            );
+        }
+        // The toolchain that builds and trains a module is only verified on macOS and Linux.
+        if cfg!(windows) {
+            return refuse(
+                "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux",
+            );
+        }
+        Ok(())
+    }
+
     /// The bundled launcher `tsuzuri-clang` passes LLVM Clang only a fixed set of options, so it
     /// would build the program without the profile options and report success.
     pub(crate) fn require_llvm_clang(&self) -> Result<(), Diagnostic> {
@@ -133,17 +159,30 @@ impl Profile {
     }
 }
 
-/// Stages `profile` in `temporary` for one build; `None` for a build without a profile.
+/// Stages `profile` in `temporary` for one build of a native program, or of a `wasm32` module when
+/// `wasm`; `None` for a build without a profile.
 pub(crate) fn prepare_profile(
     profile: &Profile,
+    wasm: bool,
     temporary: &Path,
     messages: &mut Vec<String>,
 ) -> Result<Option<PreparedProfile>, Diagnostic> {
-    prepare_with(profile, temporary, messages, &find_profdata)
+    prepare_for(profile, wasm, temporary, messages, &find_profdata)
 }
 
+#[cfg(test)]
 fn prepare_with(
     profile: &Profile,
+    temporary: &Path,
+    messages: &mut Vec<String>,
+    profdata: &dyn Fn() -> Result<OsString, Diagnostic>,
+) -> Result<Option<PreparedProfile>, Diagnostic> {
+    prepare_for(profile, false, temporary, messages, profdata)
+}
+
+fn prepare_for(
+    profile: &Profile,
+    wasm: bool,
     temporary: &Path,
     messages: &mut Vec<String>,
     profdata: &dyn Fn() -> Result<OsString, Diagnostic>,
@@ -153,8 +192,12 @@ fn prepare_with(
         Profile::Generate(directory) => {
             let directory = std::path::absolute(directory)
                 .map_err(|error| io_error("resolve profile directory", directory, error))?;
-            let mut flag = OsString::from("-fprofile-generate=");
-            flag.push(&directory);
+            // The directory of a WebAssembly module is only the default of its profile writer.
+            let mut flag = OsString::from("-fprofile-generate");
+            if !wasm {
+                flag.push("=");
+                flag.push(&directory);
+            }
             Ok(Some(PreparedProfile {
                 flag,
                 key: (
@@ -162,6 +205,7 @@ fn prepare_with(
                     directory.as_os_str().as_encoded_bytes().to_vec(),
                 ),
                 generate: true,
+                wasm,
                 staged: None,
             }))
         }
@@ -184,6 +228,7 @@ fn prepare_with(
                 flag,
                 key: ("profile-use-sha256", digest.to_vec()),
                 generate: false,
+                wasm,
                 staged: Some((staged, path.clone())),
             }))
         }
@@ -314,21 +359,36 @@ impl PreparedProfile {
         &self.flag
     }
 
+    /// The Clang options of the IR compile of a program or a module. A WebAssembly module has no
+    /// runtime that records indirect-call targets, so neither the instrumentation nor the use of
+    /// the profile deals with them (`-disable-vp`); the two must agree, or Clang calls the
+    /// profile stale.
+    pub(crate) fn args(&self) -> Vec<&OsStr> {
+        let mut args = vec![self.flag.as_os_str()];
+        if self.wasm {
+            args.extend(["-mllvm", "-disable-vp"].map(OsStr::new));
+        }
+        args
+    }
+
     /// Whether the program is instrumented, which makes the link read Clang's profile runtime.
     pub(crate) fn instruments(&self) -> bool {
         self.generate
     }
 
+    /// Whether the build makes an instrumented WebAssembly module, which needs the writer of
+    /// `profile-wasm.mjs` instead of a runtime.
+    pub(crate) fn instruments_wasm(&self) -> bool {
+        self.generate && self.wasm
+    }
+
     /// The hint of a failing Clang run: `base`, and what this profile adds to the causes.
     pub(crate) fn hint(&self, base: String) -> String {
-        format!(
-            "{base}; {}",
-            if self.generate {
-                RUNTIME_HINT
-            } else {
-                READ_HINT
-            }
-        )
+        match (self.generate, self.wasm) {
+            (true, true) => base,
+            (true, false) => format!("{base}; {RUNTIME_HINT}"),
+            (false, _) => format!("{base}; {READ_HINT}"),
+        }
     }
 
     /// What Clang printed, with the warnings of a profile that no longer matches summarized.
@@ -385,6 +445,43 @@ pub(crate) fn unwritten_profile(
             directory.display()
         )
     })
+}
+
+/// The writer that a host runs to save the counters of an instrumented WebAssembly module, which
+/// has no profile runtime: it is published beside the module as `app.wasm.profile.mjs`.
+const WASM_WRITER: &str = include_str!("runtime/profile-wasm.mjs");
+
+/// What `wasm-ld` must export for that writer: the bounds of the profile sections (the linker
+/// makes them), the version of the raw format that the instrumentation wrote, and the memory.
+pub(crate) const WASM_LINK_ARGS: [&str; 8] = [
+    "--export=__start___llvm_prf_cnts",
+    "--export=__stop___llvm_prf_cnts",
+    "--export=__start___llvm_prf_data",
+    "--export=__stop___llvm_prf_data",
+    "--export=__start___llvm_prf_names",
+    "--export=__stop___llvm_prf_names",
+    "--export=__llvm_profile_raw_version",
+    "--export-memory",
+];
+
+pub(crate) fn wasm_writer_path(output: &Path) -> PathBuf {
+    let mut path = output.as_os_str().to_owned();
+    path.push(".profile.mjs");
+    PathBuf::from(path)
+}
+
+/// The writer, whose default directory is the one that `--profile-generate` named.
+pub(crate) fn wasm_writer(directory: &Path) -> String {
+    let directory = serde_json::to_string(&*directory.to_string_lossy())
+        .expect("a string is JSON serializable");
+    WASM_WRITER.replace("__TSUZURI_PROFILE_DIRECTORY__", &directory)
+}
+
+/// `ir` with the symbol that Clang's profile runtime would define. Without a definition, the
+/// instrumentation refers to a runtime that a WebAssembly module does not have, and the link fails.
+pub(crate) fn wasm_instrumented_ir(mut ir: String) -> String {
+    ir.push_str("\n@__llvm_profile_runtime = hidden global i32 0\n");
+    ir
 }
 
 /// Clang reports each function whose control flow no longer matches the profile on a line of its
@@ -492,16 +589,55 @@ mod tests {
         };
         // A build without a profile is never refused here.
         Profile::None.validate(wasm).unwrap();
-        for (target, name) in [(Target::Wasm32, "wasm32"), (Target::Wasm64, "wasm64")] {
-            let options = BuildOptions { target, ..wasm };
-            for profile in [&generate, &used] {
-                assert_eq!(
-                    profile.validate(options).unwrap_err().message,
-                    format!(
-                        "profile-guided optimization is native-only; remove --target {name} or the profile option"
-                    )
-                );
-            }
+        // A `wasm32` module is instrumented and trained by its host; `wasm64` is not.
+        if cfg!(windows) {
+            assert_eq!(
+                generate.validate(wasm).unwrap_err().message,
+                "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux"
+            );
+        } else {
+            generate.validate(wasm).unwrap();
+            used.validate(wasm).unwrap();
+        }
+        let wasm64 = BuildOptions {
+            target: Target::Wasm64,
+            ..wasm
+        };
+        for profile in [&generate, &used] {
+            assert_eq!(
+                profile.validate(wasm64).unwrap_err().message,
+                "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option"
+            );
+        }
+        for emit in [Emit::Object, Emit::Llvm, Emit::BindingsJs] {
+            let options = BuildOptions { emit, ..wasm };
+            assert_eq!(
+                used.validate(options).unwrap_err().message,
+                "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds",
+                "{emit:?}"
+            );
+        }
+        let threads = BuildOptions {
+            wasm_threads: true,
+            ..wasm
+        };
+        for profile in [&generate, &used] {
+            assert_eq!(
+                profile.validate(threads).unwrap_err().message,
+                "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic"
+            );
+        }
+        let optimized = BuildOptions {
+            wasm_opt: true,
+            ..wasm
+        };
+        assert_eq!(
+            generate.validate(optimized).unwrap_err().message,
+            "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads"
+        );
+        // The merged profile is read by Clang before Binaryen runs, so a build that uses it may use Binaryen.
+        if !cfg!(windows) {
+            used.validate(optimized).unwrap();
         }
         // Only an executable or an object is accepted; any other output is refused by default.
         for emit in [
@@ -926,6 +1062,80 @@ mod tests {
         );
         let failure = driver_error("E2002", "not about a profile");
         assert_eq!(generate.clang_error(failure).message, "not about a profile");
+    }
+
+    #[test]
+    fn prepares_webassembly_profiles_without_a_runtime() {
+        let directory = scratch();
+        let mut messages = Vec::new();
+        let generate = prepare_for(
+            &Profile::Generate(directory.path.join("prof")),
+            true,
+            &directory.path,
+            &mut messages,
+            &no_profdata,
+        )
+        .unwrap()
+        .unwrap();
+        // Nothing writes a file for a module, so Clang gets no directory; the writer carries it.
+        assert_eq!(
+            generate.args(),
+            ["-fprofile-generate", "-mllvm", "-disable-vp"].map(OsStr::new)
+        );
+        assert!(generate.instruments() && generate.instruments_wasm());
+        assert_eq!(generate.hint("base".into()), "base");
+        let indexed = directory.path.join("p.profdata");
+        fs::write(&indexed, INDEXED_MAGIC).unwrap();
+        let used = prepare_for(
+            &Profile::Use(indexed.clone()),
+            true,
+            &directory.path,
+            &mut messages,
+            &no_profdata,
+        )
+        .unwrap()
+        .unwrap();
+        let args = used.args();
+        assert!(args[0].to_string_lossy().starts_with("-fprofile-use="));
+        assert_eq!(args[1..], ["-mllvm", "-disable-vp"].map(OsStr::new));
+        assert!(!used.instruments_wasm());
+        // A native program keeps the one option that it had.
+        let native = prepare_with(
+            &Profile::Use(indexed),
+            &directory.path,
+            &mut messages,
+            &no_profdata,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(native.args().len(), 1);
+        assert!(!native.instruments_wasm());
+    }
+
+    #[test]
+    fn the_wasm_writer_names_its_directory_and_the_module_defines_the_runtime_hook() {
+        let text = wasm_writer(Path::new("/work/a \"b\"/prof"));
+        assert!(text.contains("export const defaultDirectory = \"/work/a \\\"b\\\"/prof\";"));
+        assert!(!text.contains("__TSUZURI_PROFILE_DIRECTORY__"));
+        assert_eq!(
+            wasm_writer_path(Path::new("out/app.wasm")),
+            PathBuf::from("out/app.wasm.profile.mjs")
+        );
+        let ir = wasm_instrumented_ir("define void @f() {\n  ret void\n}\n".into());
+        assert!(ir.starts_with("define void @f()"));
+        assert!(ir.ends_with("@__llvm_profile_runtime = hidden global i32 0\n"));
+        // Everything that the writer reads is exported: the bounds of its three sections, and the version.
+        assert!(text.contains("__start___llvm_prf_${name}"));
+        assert!(text.contains("__stop___llvm_prf_${name}"));
+        assert!(text.contains("__llvm_profile_raw_version"));
+        for section in ["cnts", "data", "names"] {
+            for bound in ["start", "stop"] {
+                let export = format!("--export=__{bound}___llvm_prf_{section}");
+                assert!(WASM_LINK_ARGS.contains(&export.as_str()), "{export}");
+            }
+        }
+        assert!(WASM_LINK_ARGS.contains(&"--export=__llvm_profile_raw_version"));
+        assert!(WASM_LINK_ARGS.contains(&"--export-memory"));
     }
 
     #[test]

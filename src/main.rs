@@ -4311,6 +4311,13 @@ mod tests {
             .unwrap_err(),
             "--profile-generate and --profile-use cannot be combined; build once with each"
         );
+        // A `wasm32` module is instrumented, and trained by its host.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                let wasm = parse(&["build", "Main.tz", "--target", "wasm32", option, "prof"]);
+                assert!(wasm.is_ok(), "{option}: {:?}", wasm.err());
+            }
+        }
         // Nothing else of the build is a reason to refuse a profile (D16).
         for extra in [
             &["-O0"][..],
@@ -4333,8 +4340,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_profile_combinations() {
-        let wasm32 = "profile-guided optimization is native-only; remove --target wasm32 or the profile option";
-        let wasm64 = "profile-guided optimization is native-only; remove --target wasm64 or the profile option";
+        let wasm64 = "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option";
+        let wasm_emit = "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds";
+        let threads = "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic";
         let emit = "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds";
         let only_build_or_run =
             "--profile-generate and --profile-use are only valid with build or run";
@@ -4394,10 +4402,12 @@ mod tests {
                     "Main.tz",
                     "--target",
                     "wasm32",
+                    "--emit",
+                    "object",
                     "--profile-use",
                     "p",
                 ],
-                wasm32,
+                wasm_emit,
             ),
             (
                 &[
@@ -4405,10 +4415,24 @@ mod tests {
                     "Main.tz",
                     "--target",
                     "wasm32",
+                    "--wasm-feature",
+                    "threads",
                     "--profile-generate",
                     "p",
                 ],
-                wasm32,
+                threads,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-opt",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads",
             ),
             (
                 &[

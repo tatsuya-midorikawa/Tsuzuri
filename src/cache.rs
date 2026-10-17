@@ -633,7 +633,10 @@ impl BuildCache {
             let mut remaining = MAX_ENTRY_BYTES;
             let mut result = BTreeMap::new();
             for (name, fields) in files {
-                if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+                if !matches!(
+                    name.as_str(),
+                    "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+                ) {
                     return Err(invalid("invalid cache artifact name"));
                 }
                 let size = fields["size"]
@@ -723,7 +726,10 @@ impl BuildCache {
         let mut remaining = MAX_ENTRY_BYTES;
         let mut files = serde_json::Map::new();
         for (name, source) in paths {
-            if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+            if !matches!(
+                name.as_str(),
+                "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+            ) {
                 return Err(invalid("invalid cache artifact name"));
             }
             let bytes = read_regular(source, remaining)?;
@@ -1071,8 +1077,9 @@ mod tests {
             fs::write(&path, name).unwrap();
             path
         };
-        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF.
-        for sidecars in [["traps", "dwarf"], ["traps", "pdb"]] {
+        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF, and an
+        // instrumented WebAssembly module caches its profile writer (PR07).
+        for sidecars in [["traps", "dwarf"], ["traps", "pdb"], ["traps", "profile"]] {
             let mut hash = Sha256::new();
             hash.field("sidecars", sidecars.join(",").as_bytes());
             let key = hash.hex();
