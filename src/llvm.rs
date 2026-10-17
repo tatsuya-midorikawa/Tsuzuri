@@ -4586,8 +4586,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
             TypedExprKind::TaskRun(task) => {
                 let task = self.expression(task);
-                let code = self.value(format!("extractvalue %tz.closure {task}, 0"));
-                let environment = self.value(format!("extractvalue %tz.closure {task}, 1"));
+                let (code, environment) = self.closure_parts(&task);
                 self.value(format!(
                     "call {} {code}(ptr {environment})",
                     self.ty(&expression.ty)
@@ -5771,6 +5770,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         array
     }
 
+    /// The code pointer and the environment of the function value `closure`.
+    fn closure_parts(&mut self, closure: &str) -> (String, String) {
+        let code = self.value(format!("extractvalue %tz.closure {closure}, 0"));
+        let environment = self.value(format!("extractvalue %tz.closure {closure}, 1"));
+        (code, environment)
+    }
+
     fn apply_value(
         &mut self,
         callee: &str,
@@ -5778,8 +5784,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         argument: Option<(&Type, &str)>,
         borrowed: bool,
     ) -> (String, Type) {
-        let code = self.value(format!("extractvalue %tz.closure {callee}, 0"));
-        let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
+        let (code, environment) = self.closure_parts(callee);
         let result = ty.after_arguments(usize::from(argument.is_some()));
         let argument = argument.map_or_else(String::new, |(ty, value)| {
             format!("{} {value}, ", self.ty(ty))
