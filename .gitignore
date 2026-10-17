@@ -62,3 +62,4 @@ __pycache__/
 examples/**/Main
 examples/**/*.exe
 prompts.md
+benchmarks/csharp/obj/
