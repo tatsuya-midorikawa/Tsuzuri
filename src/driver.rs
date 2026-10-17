@@ -4651,12 +4651,37 @@ pub fn run_with_arguments(
     json: bool,
     arguments: &[OsString],
 ) -> Result<Vec<String>, Diagnostic> {
+    run_profiled(
+        module,
+        project,
+        options,
+        links,
+        json,
+        arguments,
+        &Profile::None,
+    )
+}
+
+/// [`run_with_arguments`] with a profile (PR07): `--profile-generate` runs the instrumented
+/// program, which writes its raw profile when it exits, and `--profile-use` runs the program
+/// that the profile optimized. `run` builds with `--trap-info`, so a profile of a `run` matches
+/// a `build --trap-info` best.
+pub fn run_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
     run_process(
         module,
         project,
         options,
         links,
         RunStdio::Inherit { json, arguments },
+        profile,
     )
     .map(|(messages, _)| messages)
 }
@@ -4683,6 +4708,7 @@ pub fn run_captured(
             timeout,
             limit: MAX_CAPTURED_OUTPUT,
         },
+        &Profile::None,
     )
 }
 
@@ -4710,6 +4736,7 @@ fn run_process(
     options: BuildOptions,
     links: &LinkInputs,
     stdio: RunStdio<'_>,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
@@ -4727,7 +4754,7 @@ fn run_process(
     } else {
         "program"
     });
-    let (messages, sites) = build_complete(
+    let (mut messages, sites) = build_complete(
         module,
         project,
         &output,
@@ -4737,8 +4764,9 @@ fn run_process(
         },
         links,
         "run",
-        &Profile::None,
+        profile,
     )?;
+    let started = std::time::SystemTime::now();
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
         RunStdio::Inherit { json, arguments } => {
@@ -4811,6 +4839,11 @@ fn run_process(
         io::stderr()
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
+    }
+    if let Profile::Generate(directory) = profile
+        && let Some(message) = profile::unwritten_profile(directory, started)
+    {
+        messages.push(message);
     }
     Ok((messages, stdout))
 }

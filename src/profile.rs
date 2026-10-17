@@ -358,6 +358,35 @@ impl PreparedProfile {
     }
 }
 
+/// The warning of an instrumented `run` that ended normally but left no raw profile in `directory`
+/// since `started`, for example because the directory cannot be written. `None` when a profile was
+/// written, or when `LLVM_PROFILE_FILE` sent it elsewhere.
+pub(crate) fn unwritten_profile(
+    directory: &Path,
+    started: std::time::SystemTime,
+) -> Option<String> {
+    if env::var_os("LLVM_PROFILE_FILE").is_some() {
+        return None;
+    }
+    // A file system may round a time down, so a profile written at the very start still counts.
+    let since = started - std::time::Duration::from_secs(2);
+    let written = fs::read_dir(directory).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry.path().extension() == Some(OsStr::new("profraw"))
+                && entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|modified| modified >= since)
+        })
+    });
+    (!written).then(|| {
+        format!(
+            "the program wrote no profile under '{}'; check that the directory can be written (a program that traps or is killed writes none)",
+            directory.display()
+        )
+    })
+}
+
 /// Clang reports each function whose control flow no longer matches the profile on a line of its
 /// own, which makes thousands of lines for a large program. One line says how many there are.
 pub(crate) fn summarize_profile_warnings(text: String) -> String {
@@ -897,5 +926,43 @@ mod tests {
         );
         let failure = driver_error("E2002", "not about a profile");
         assert_eq!(generate.clang_error(failure).message, "not about a profile");
+    }
+
+    #[test]
+    fn warns_when_an_instrumented_run_wrote_no_profile() {
+        if env::var_os("LLVM_PROFILE_FILE").is_some() {
+            // The user chose where the profile goes, and the warning stays out of the way.
+            assert_eq!(
+                unwritten_profile(Path::new("absent"), std::time::SystemTime::now()),
+                None
+            );
+            return;
+        }
+        let directory = scratch();
+        let started = std::time::SystemTime::now();
+        let missing = directory.path.join("absent");
+        assert_eq!(
+            unwritten_profile(&missing, started).unwrap(),
+            format!(
+                "the program wrote no profile under '{}'; check that the directory can be written (a program that traps or is killed writes none)",
+                missing.display()
+            )
+        );
+        assert!(unwritten_profile(&directory.path, started).is_some());
+        // Other files are not profiles.
+        fs::write(directory.path.join("notes.txt"), "x").unwrap();
+        assert!(unwritten_profile(&directory.path, started).is_some());
+        let profile = directory.path.join("default_1_0.profraw");
+        fs::write(&profile, "x").unwrap();
+        assert_eq!(unwritten_profile(&directory.path, started), None);
+        // A profile of an earlier run is not the profile of this one.
+        let hour = std::time::Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&profile)
+            .unwrap()
+            .set_modified(started - hour)
+            .unwrap();
+        assert!(unwritten_profile(&directory.path, started).is_some());
     }
 }

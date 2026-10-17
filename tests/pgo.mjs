@@ -155,12 +155,17 @@ section("option errors need no tool", () => {
     const result = tz(["build", project("branch"), ...args], { env, status: 2 });
     assert.ok(result.stderr.includes(`error[E2000]: ${message}`), `${args.join(" ")}\n${result.stderr}`);
   }
-  for (const action of ["check", "test", "fmt", "run"]) {
+  for (const action of ["check", "test", "fmt"]) {
     for (const option of ["--profile-generate", "--profile-use"]) {
       const result = tz([action, project("branch"), option, "prof"], { env, status: 2 });
-      assert.ok(result.stderr.includes("error[E2000]: --profile-generate and --profile-use are only valid with build"), `${action} ${option}\n${result.stderr}`);
+      assert.ok(result.stderr.includes("error[E2000]: --profile-generate and --profile-use are only valid with build or run"), `${action} ${option}\n${result.stderr}`);
     }
   }
+  // `run` takes them, and refuses what a build refuses.
+  const refusedRun = tz(["run", project("branch"), "--profile-generate", "a", "--profile-use", "b"], { env, status: 2 });
+  assert.ok(refusedRun.stderr.includes("--profile-generate and --profile-use cannot be combined; build once with each"), refusedRun.stderr);
+  const crossRun = tz(["run", project("branch"), "--profile-use", "a", "--target", cross], { env, status: 2 });
+  assert.ok(crossRun.stderr.includes(`apply to the machine that builds; remove --target ${cross}`), crossRun.stderr);
 
   // A profile that cannot be read is refused before any tool runs.
   const raw = join(root, "raw.profraw");
@@ -189,10 +194,12 @@ section("the bundled launcher is refused", () => {
   const launcher = join(directory, "tsuzuri-clang");
   writeFileSync(launcher, `#!/bin/sh\necho ran > "${marker}"\nexit 99\n`);
   chmodSync(launcher, 0o755);
-  for (const args of [["--profile-generate", join(directory, "prof")], ["--profile-use", join(directory, "prof")]]) {
-    const result = tz(["build", project("branch"), ...args], { env: { ...baseEnv, TSUZURI_CLANG: launcher }, status: 1 });
-    assert.ok(result.stderr.includes("error[E2002]: profile options need an LLVM Clang: the bundled Clang launcher (tsuzuri-clang) passes no profile options to LLVM Clang"), result.stderr);
-    assert.ok(result.stderr.includes("set TSUZURI_CLANG to an LLVM 21 Clang"), result.stderr);
+  for (const action of ["build", "run"]) {
+    for (const args of [["--profile-generate", join(directory, "prof")], ["--profile-use", join(directory, "prof")]]) {
+      const result = tz([action, project("branch"), ...args], { env: { ...baseEnv, TSUZURI_CLANG: launcher }, status: 1 });
+      assert.ok(result.stderr.includes("error[E2002]: profile options need an LLVM Clang: the bundled Clang launcher (tsuzuri-clang) passes no profile options to LLVM Clang"), result.stderr);
+      assert.ok(result.stderr.includes("set TSUZURI_CLANG to an LLVM 21 Clang"), result.stderr);
+    }
   }
   assert.ok(!existsSync(marker), "the launcher must not run");
 });
@@ -245,6 +252,43 @@ section("a trapped run writes no profile", () => {
   assert.deepEqual(profraws(profile), []);
   execute(exe, ["argument"]);
   assert.equal(profraws(profile).length, 1);
+});
+
+section("run builds with the profile options and runs the program", () => {
+  trained();
+  const profile = join(root, "run-profile");
+  // The instrumented program runs, prints what the program prints, and leaves its profile where the option says.
+  const generated = tz(["run", project("branch"), "--profile-generate", profile]);
+  assert.equal(generated.stdout, total);
+  assert.equal(generated.stderr, "");
+  assert.equal(profraws(profile).length, 1);
+  // A profile of a run is a profile of a run: the same build applies it without a warning.
+  needProfdata();
+  const used = tz(["run", project("branch"), "--profile-use", profile]);
+  assert.equal(used.stdout, total);
+  assert.equal(used.stderr, "");
+  // A trap ends the run before the profile is written, and the trap is reported as usual.
+  const trapProfile = join(root, "run-trap-profile");
+  const trapped = tz(["run", project("trap"), "--profile-generate", trapProfile], { status: 1 });
+  assert.ok(trapped.stderr.includes("error[E2005]: program terminated with signal"), trapped.stderr);
+  assert.deepEqual(profraws(trapProfile), []);
+  // A directory that cannot be written is reported once the program has ended normally.
+  const unwritable = join(root, "not-a-directory");
+  writeFileSync(unwritable, "a file\n");
+  const sub = join(unwritable, "profiles");
+  const warned = tz(["run", project("branch"), "--profile-generate", sub]);
+  assert.equal(warned.stdout, total);
+  assert.ok(warned.stderr.includes(`the program wrote no profile under '${sub}'; check that the directory can be written`), warned.stderr);
+  const json = tz(["run", project("branch"), "--profile-generate", sub, "--json"]);
+  const warnings = json.stderr.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+  assert.equal(warnings.length, 1, json.stderr);
+  assert.equal(warnings[0].code, "W2001");
+  assert.ok(warnings[0].message.startsWith("the program wrote no profile under"), json.stderr);
+  // LLVM_PROFILE_FILE chooses the file, so the warning stays out of the way.
+  const chosen = join(root, "run-chosen", "run.profraw");
+  const redirected = tz(["run", project("branch"), "--profile-generate", sub], { env: { ...baseEnv, LLVM_PROFILE_FILE: chosen } });
+  assert.equal(redirected.stderr, "");
+  assert.ok(existsSync(chosen));
 });
 
 section("an object takes the profile runtime from the final link", () => {

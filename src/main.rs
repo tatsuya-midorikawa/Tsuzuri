@@ -25,7 +25,8 @@ Usage:
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native]
+                    [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -165,11 +166,11 @@ Build options:
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
-    --profile-generate DIR Native executable or object output: instrument the program so that it writes
-                         LLVM raw profiles (.profraw) under DIR when it exits. Run it on a typical
-                         workload, then build again with --profile-use. An object needs
-                         -fprofile-generate at its final link
-    --profile-use PATH     Native executable or object output: optimize with the profile PATH, an
+    --profile-generate DIR Native executable or object output, and run: instrument the program so that it
+                         writes LLVM raw profiles (.profraw) under DIR when it exits normally (a run that
+                         traps or is killed writes none). Run it on a typical workload, then build again
+                         with --profile-use. An object needs -fprofile-generate at its final link
+    --profile-use PATH     Native executable or object output, and run: optimize with the profile PATH, an
                          indexed .profdata file or a directory of .profraw files that llvm-profdata
                          merges. Build both times with the same Clang and options; a profile that no
                          longer matches is one W2001 warning. Both profile options need an LLVM Clang
@@ -798,8 +799,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if wasm_opt && action != Action::Build {
         return Err("--wasm-opt is only valid with build".into());
     }
-    if (profile_generate.is_some() || profile_use.is_some()) && action != Action::Build {
-        return Err("--profile-generate and --profile-use are only valid with build".into());
+    if (profile_generate.is_some() || profile_use.is_some())
+        && !matches!(action, Action::Build | Action::Run)
+    {
+        return Err("--profile-generate and --profile-use are only valid with build or run".into());
     }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
@@ -1104,13 +1107,14 @@ fn run_action(
             links,
             &arguments.profile,
         ),
-        Action::Run => driver::run_with_arguments(
+        Action::Run => driver::run_profiled(
             module,
             project,
             arguments.options,
             links,
             arguments.json,
             program_arguments,
+            &arguments.profile,
         ),
     }
 }
@@ -4286,6 +4290,27 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(used.profile, Profile::Use(PathBuf::from("p.profdata")));
+        // `run` takes both options too: it builds the program with them and runs it.
+        let run = parse(&["run", "Main.tz", "--profile-generate", "prof", "-O2"]).unwrap();
+        assert_eq!(run.action, Action::Run);
+        assert_eq!(
+            run.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let run = parse(&["run", "Main.tz", "--profile-use", "p.profdata"]).unwrap();
+        assert_eq!(run.profile, Profile::Use(PathBuf::from("p.profdata")));
+        assert_eq!(
+            parse(&[
+                "run",
+                "Main.tz",
+                "--profile-use",
+                "p",
+                "--profile-generate",
+                "q"
+            ])
+            .unwrap_err(),
+            "--profile-generate and --profile-use cannot be combined; build once with each"
+        );
         // Nothing else of the build is a reason to refuse a profile (D16).
         for extra in [
             &["-O0"][..],
@@ -4311,7 +4336,8 @@ mod tests {
         let wasm32 = "profile-guided optimization is native-only; remove --target wasm32 or the profile option";
         let wasm64 = "profile-guided optimization is native-only; remove --target wasm64 or the profile option";
         let emit = "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds";
-        let only_build = "--profile-generate and --profile-use are only valid with build";
+        let only_build_or_run =
+            "--profile-generate and --profile-use are only valid with build or run";
         for (values, expected) in [
             (
                 &[
@@ -4443,13 +4469,20 @@ mod tests {
                 ],
                 "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
             ),
-            (&["run", "Main.tz", "--profile-use", "p"], only_build),
-            (&["run", "Main.tz", "--profile-generate", "p"], only_build),
-            (&["check", "Main.tz", "--profile-use", "p"], only_build),
-            (&["test", "Main.tz", "--profile-use", "p"], only_build),
-            (&["bench", "Main.tz", "--profile-generate", "p"], only_build),
-            (&["fmt", "Main.tz", "--profile-use", "p"], only_build),
-            (&["doc", "Main.tz", "--profile-use", "p"], only_build),
+            (
+                &["check", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["test", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["bench", "Main.tz", "--profile-generate", "p"],
+                only_build_or_run,
+            ),
+            (&["fmt", "Main.tz", "--profile-use", "p"], only_build_or_run),
+            (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
         ] {
             assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
         }
