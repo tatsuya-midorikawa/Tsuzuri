@@ -8,11 +8,11 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | C07, PM05 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（リストの記憶域を要素ごとのノードから chunk 列へ変え、docs/language.md の記憶域・計算量の記述を変える） |
+| 状態 | doing |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD 9dd0fbbc で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-17 の全フェーズ実装依頼で D1（記憶域を chunk 列へ変え、docs/language.md の記憶域・計算量の記述を変える）と、改めた D3・D7・D10・D11、新設の D12〜D15、Phase 2（連続領域の高速経路）を承認済み（測定で効果を確認できない既定の切り替えは行わない。D14） |
 | 手本にする既存実装 | 置き換える経路: `src/llvm.rs` の `list_node_type`・`list_element_pointer`・`list_builder`・`append_list`・`finish_list`・`list_loop`・`list_loop_control`。連続領域の手本: `src/llvm.rs` の `allocate_array`・`element_pointer`・`allocation_size`・`array_loop`、`src/llvm_frame.rs` の `frame_array` と、`heap_copy`・`drop_frame_contents` の `Frame::Array` の arm。反復 drop の手本: `src/llvm.rs` の `drop_value` の `Type::List` の arm（次を読んでから free する） |
-| 主な影響ファイル | `src/llvm.rs`, `src/llvm_bulk.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/llvm_compare.rs`, `src/llvm_display.rs`, `src/llvm_hash.rs`, `tests/lists.rs`, `tests/primitives.mjs`, `tests/features.mjs`, `tests/fixtures/list_chunks/Main.tz`（新規）, `benchmarks/list-memory/Main.tz`（新規）, `benchmarks/run-list-memory.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/patterns.md`, `_docs/language-reference/types.md` |
+| 主な影響ファイル | `src/llvm.rs`, `src/llvm_bulk.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/llvm_compare.rs`, `src/llvm_display.rs`, `src/llvm_hash.rs`, `tests/lists.rs`, `tests/primitives.mjs`, `tests/features.mjs`, `tests/fixtures/list_chunks/Main.tz`（新規）, `benchmarks/list-memory/Main.tz`（新規）, `benchmarks/run-list-memory.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/patterns.md`, `_docs/language-reference/types.md`。着手時に足したもの（「着手時の再検討」。`_docs/` は `_tsuzuri/language-reference/` に読み替える）: `src/llvm_debug.rs`, `scripts/lldb/tsuzuri_lldb.py`, `src/copies.rs`, `tests/storage.rs`, `tests/integer_ranges.rs`, `tests/debug_info.rs`, `tests/debug_info.mjs`, `tests/debugger.mjs`, `tests/copy_cost.rs`, `benchmarks/list-memory/host.c`（新規）, `_tsuzuri/language-reference/` の `list.md`・`stack-and-heap.md`・`array.md`・`vec.md`・`for-in.md`・`compiler/debugging.md` |
 | 計測対象 | `benchmarks/list-memory`（新規、6 種目）の `alloc_calls`・`alloc_bytes`・`wall_time`・`peak_rss`、`control/list_sum` の `wall_time`、`tests/primitives.mjs` の確保回数（決定的） |
 
 ## 目的
@@ -25,6 +25,159 @@ Tsuzuri のリストは一意に所有され、複製は深く、ノードのリ
 先頭の chunk を書き換えられるのは所有者だけなので、構造を共有しなくても観測できる意味を保ったまま表現を変えられる。
 
 実装者は Phase 1 だけを実装する。Phase 2（設計の「Phase 分割」）は人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-17）
+
+2026-10-17 の依頼で、全フェーズ（Phase 1・Phase 2、D1〜D11 と下の D12〜D15 を含む）を実装する。以下の「着手条件と停止条件」「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」「決定事項」は
+起票時の記録で、このセクションと食い違う箇所はこのセクションが優先する（旧 `_docs/` のパスは GUIDE §8.1 で `_tsuzuri/language-reference/` に読み替える）。
+着手時の HEAD は `a2313d19`（main `9dd0fbbc` + 第4フェーズの計画）。偵察は main `9dd0fbbc` の release コンパイラ（SHA-256 `5e1b9687…`。HEAD から build した release と byte 単位で同一）、
+Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 20.19.6、1 分の load average 6〜27（ほかの作業と共有）で行った。時間は共有機の参考値で、正式な前後比較は統合後に行う。
+生データと偵察用の scratch は `target/perf/PM04/`・`target/perf/PM04-before/`（git の管理外）。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| 依存 PX01 は todo。PX01 の interface を前提にする | PX01〜PX03 は done。`benchmarks/metrics.mjs` に `instrumentAllocations`・`makeRecord(context, { suite, workload, size, language, variant, opt, cpu_mode, metric, samples })`・`writeRecords`・`captureRun`・`measureProcess`・`compareRuns`・`report --baseline`、metric `alloc_calls`・`alloc_bytes`・`wall_time`・`peak_rss` と `benchmarks/tracked_alloc.c` が実在する。`measureProcess` は `os.tmpdir()` に時間の報告を書く | 着手条件は満たす。runner は `TMPDIR` を worktree の下へ向けて動かす |
+| `%tz.list`・`stack_size`・`storage_layout` は 16 bytes。`src/llvm_debug.rs` は「変更なし」 | 記述子は同じ（`layout_bound` の `Type::List` は (16, 8)）。ただし `llvm_debug.rs` の `list_node` は `head` を `<list>.node { next, value }` へのポインターとして書き、`scripts/lldb/tsuzuri_lldb.py` の `ListProvider` は `next` を辿って `value` を読む（G16）。`tests/debug_info.rs`（`[\|i64\|].node` の `value` offset 64）・`tests/debug_info.mjs`・`tests/debugger.mjs`（`chain = length=2 {…}` と garbage の probe）・`docs/architecture.md` の DWARF の節・`compiler/debugging.md` が連動する。natvis は list の view を持たず（メンバーのまま）、`vsc/` に list 固有の code はない | ticket の「変更なし」は誤り。DWARF・LLDB provider・3 つのテスト・2 つの文書を変える（D12） |
+| `List.cons`・`List.tail` は `emit_typed_builtin` の arm | builtin ごとの関数 `@tz.builtin.List.cons.<T>`・`List.tail.<T>`（`src/llvm.rs` の builtin 本体の `Builtin::ListCons`・`ListTail`）を wrapper `@tz.fn.$builtin.List.cons.N` が呼ぶ。wrapper は移動済みの引数の slot を drop する loop を持つ（`-O0` では長さ 0 を見て抜ける）。`-O3` では inline される | `list_push_front`・`list_pop_front` は builtin 本体に置く。wrapper の drop は chunk の外側 loop が null を見て抜ける形になる |
+| 再現: `@tz.alloc` の呼び出し 7 箇所、node の GEP 22 箇所（`grep -c "call ptr @tz.alloc"`） | 同じ sample で `@tz.alloc(` は 5 箇所（リスト関連は 3: `List.cons` 本体・`new` の loop・clone の loop。PR01 が使用箇所に `nonnull` を付けるので `call nonnull ptr @tz.alloc(`）、node の `getelementptr inbounds { ptr, i64 }` は 18、サイズ式の `getelementptr ({ ptr, i64 }, ptr null, i32 1)` は 5。`run` は 99444・9 で一致 | 数え方を `grep -c "@tz.alloc("` と型付き GEP の別計数にする。`--emit llvm` の IR は `-O0` と `-O3` で同一（最適化は clang の段）なので「`-O3` の IR」は `clang -O3 -S -emit-llvm` で作る。sample は `-O3` で定数 99444 に畳まれる（`-O3` の証拠は list-memory の export で取る） |
+| D7: 比較 helper の IR は `phi ptr` がちょうど 2 つ、`@tz.alloc`・`@tz.list.index` なし（features の typeclasses `inspect`） | 同じ検査が実在する。加えて PR02 が list の loop に pin を足した: `tests/integer_ranges.rs` の `STRUCTURAL`（`each_list` の算術が `add i64 %, %` と `add nuw i64 %, 1` だけ）・`assert_index_loop`（添字の phi が先頭、増分の block が header へ戻る）・`structural_comparison_loops_count_with_an_unsigned_index`（`LIST_COMPARE`）・audit の件数 | 下の一覧で先に declare する。loop の増分は `increment_block`・`audit_increment` の規約を守る |
+| 既存テストへの影響は `lists.rs`・`primitives.mjs`・features の 3 か所 | 加えて `tests/storage.rs`（`alloca [2 x { ptr, i64 }]`・`[2 x { ptr, %tz.string }]` の検査）、`tests/copy_cost.rs`・`src/copies.rs`・`ownership-and-memory/ownership.md` の W1006 の文言「allocates a new node for every element」 | 一覧に足す（D12・D13） |
+| D3: `K = 32768 / size`（要素領域）、容量は 1 から倍々 | macOS の `malloc` は 1 KiB を超えると丸めが粗い（1,040→1,280、4,112→5,120、16,400→20,480、32,776〜→49,152。実測）。K = 4,096 の i64 の chunk は header 込み 32,792 bytes で 49,152 に丸まり、2 のべきの容量は 1 KiB 以上で約 23〜25% を捨てる。WASM の heap は block = max(32, (n + 31) & ~15)（16 bytes の header。PM05）、`--allocator small` は 512 bytes まで 16 bytes 刻みで header なし | モデルと実測で D3 を改める（D3'）。M1 の `alloc_bytes` は要求量で丸めを見ないので、M4（`peak_rss`）と footprint のモデルで見る |
+| D7: 分岐なしの `select` で chunk を進める flat loop（「loop の形を HEAD に近く保つ」） | C の試作（clang -O3、i64 を 1,000,000 個足す）で、node の連結 1.00〜1.06 ns/要素に対し select の cursor は 1.87〜1.98（1.9 倍遅い）、同じ cursor を分岐にすると 0.53〜0.55、chunk ごとの二重 loop は 0.10〜0.13（配列 0.13〜0.15 と同じ。ベクトル化） | D7 を改める（D7'）。Phase 1 は分岐の cursor、Phase 2 は二重 loop |
+| WASM の確保量は計測しない（計算値） | wasm32 の module で heap の高水位を測れる（`memory.buffer`）。node の list は 100,000 個で +3.1 MB（32 bytes/要素）、400,000 個で +12.8 MB、600,000 個で OOM trap（既定 16 MiB の heap）。chunk は 8 bytes/要素なので約 1.9M 要素まで通る見込み | WASM を実測に加え、上限の拡大を文書に書く |
+| workload `cons_build` は `values = List.cons i values` の loop と総和 | 同じ関数が `for value in values` でも使うと、A17 の last-use 解析が `ForEach` の source の局所変数を丸ごと除外し、loop の `List.cons i values` が毎回 `values` を複製する（`@tz.alloc` は n = 1,000 で 500,500 回、n = 16,000 で 2.8 s。`--warn implicit-copy` が W1006 を出す）。cons の loop を別関数 `build` に出すと n 回 | PM04 の外の既知の制約（完了報告に書く）。workload は `build` を関数に分け、表現の効果と混ぜない |
+| `control/list_sum` は Tsuzuri が最速。参照は node ごとの確保 | 参照（`benchmarks/control/reference.{c,rs}`、C++ は同じ C）は node ごとの `malloc` の連結リスト。今日の 100,000 個（load 11〜14、12 標本）は Tsuzuri 1.826 ms、C 1.869、C++ 1.872、Rust 1.872。`--allocator small` は 0.405 倍（docs/benchmarks.md）。確保は 100,000 回・1,600,000 bytes | PM04 の後は Tsuzuri のリストが連続領域になり、この種目は同じデータ構造の比較ではなくなる（近いのは `array_sum`）。参照は変えず、文書に書く（D15） |
+| Phase 2: `heap_copy` を「要素が drop 不要の Copy のとき」memcpy にする | `heap_copy` は stack の frame を heap へ**移す**（要素の所有権ごとビット単位）。frame 候補がすべて空なら要素の型を問わず複製しない。`src/llvm*.rs` に `llvm.memcpy` はまだない（runtime の手書き IR だけ） | memcpy の条件は「frame 候補が空」。clone・`List.to_array`・`Array.to_list` は `!needs_drop`。intrinsic は `memcpy.p0.p0.i{ポインター幅}`（wasm32 は i32、wasm64・native は i64）を `intrinsics` に一度だけ登録 |
+| `docs/benchmarks.md` に節「リストの表現（PM04）」を新設 | 第4フェーズの足場（`<!-- phase4:PM04 -->` の組）が先に入った | その組の間にだけ書く |
+| README.md の `// ノードもスタック`、`_docs/library-reference/arrays-and-lists.md`、`_docs/language-reference/{ownership,patterns,types}.md` | 注釈は `docs/language.md` の 1515・1521・2878 行。README は 168 行（「添字アクセスは $O(n)$」）。`_docs/` は `_tsuzuri/language-reference/` の `built-in-types-and-modules/{list,array,vec}.md`・`ownership-and-memory/{stack-and-heap,ownership}.md`・`pattern-matching/`・`types-and-type-inference/types.md`・`loops-and-conditionals/for-in.md`。`list.md` の 5・39 行は「末尾のノードは複数のリストで共有できます」「残りを共有します」と書き、同じページの 166 行以降（所有者は常に 1 つ）と矛盾する（PM04 と無関係に不正確） | 同じ変更で直す（WP6）。共有の記述は誤りとして直す |
+| 手本: `allocate_array`・`element_pointer`・`allocation_size`・`array_loop`・`frame_array` | すべて実在。`array_loop`・`list_loop_control` は PR02 の `increment_block`・`audit_increment` を使う。`allocate_array` は長さ 0 でも 1 byte を確保するが、リストの空は null（I1） | 新しい loop も同じ規約で書く |
+| niche: `Maybe<リスト>` で null の head を使うか | 使わない。`niche_layout` の payload は string・utf8string・array・参照だけで、`Type::List` は tag の layout。空リストは `zeroinitializer`（null と 0）で、移動済みの slot も同じ | I1 は保つ。`Maybe<[\|T\|]>` を負の長さの niche に加えるのは別施策（PM04 に含めない） |
+| Task の環境・結果・export | `llvm_task.rs` に list 固有の経路はない。list は export できない（`Type::exportable` は 8〜64 bit の整数・`f32`・`f64`・`bool`。list の戻り値は `E1008`。実測）。bindgen にも list はない | 影響なし |
+
+### 現行の経路の一覧（行番号は HEAD `a2313d19`）
+
+起票時の「生成と消費の経路」の表は名前のうえでは今も正しい。場所と、PM04 で置き換わる先は次のとおり。リストの表現を直接読み書きするのはこの一覧がすべて（`grep -rn "Type::List\|%tz.list" src` で確認。`src/check.rs`・`ownership.rs`・`control.rs`・`last_use.rs`・`recursive.rs`・`type_arena.rs` は型の解析だけで表現に依存しない）。
+
+| 経路 | 場所 | 現行 | PM04 |
+| --- | --- | --- | --- |
+| リテラル（heap） | `src/llvm.rs` `heap_collection`（4809） | `list_builder`・要素ごとの `append_list`。loop の中は prefix を `finish_list(&head, index)` で一時値に登録 | `list_builder(length)`・slot の番号で格納。prefix は `capacity = index` の細工（D4） |
+| `new [\|T\|](n, f)` | `llvm.rs` の `TypedExprKind::NewList`（4660） | `allocation_size(list_node_type, n)` → `array_loop` の中で `append_list` | 同じ検査 → chunk 1 つ → `array_loop` の添字が slot |
+| リテラル（stack） | `src/llvm_frame.rs` `frame_list`（462）・`frame_node`（507）・`Frame::List`（500） | `alloca [n x { ptr, T }]` を連結 | `alloca { ptr, i64, i64, [n x T] }`（D8） |
+| `Array.to_list`・`List.map`・`map_ref`・`reverse`・`to_array`・`fold_ref` | `src/llvm_bulk.rs` `bulk_collection_builtin`（400。`ArrayToList` 467、`ListMap` 以降 481） | `list_loop` と `append_list`。reverse は出力の先頭へ差し込む | `list_builder(length)`。reverse は slot `length − 1 − i` |
+| `List.cons`・`List.tail` | `llvm.rs` の builtin 本体（`emit_typed_builtin` 6956。`ListCons` 7218・`ListTail` 7234）と wrapper | node 1 個の確保・解放 | `list_push_front`・`list_pop_front` |
+| 複製・解放 | `llvm.rs` `clone_value`（5083。List の arm 5205）・`drop_value`（4932。arm 5023） | `list_loop` で node ごと | 外側は chunk、内側は生きた slot |
+| 索引 | `llvm.rs` `checked_element_pointer`（5392。arm 5401） | `list_loop(&data, index)` | `list_locate` |
+| パターン | `llvm.rs` `emit_place` の `ListTail`（4892）。`[\|a, b\|]` は `Index(matched, i)`、`h :: t` は `Index(matched, 0)` と `ListTail(matched, 1)`（`src/control.rs`） | count 個進める loop | `list_skip`・`list_locate` |
+| `for` | `src/llvm_control.rs` `for_each`（259。271 行） | `list_loop_control` | D7' |
+| 比較・表示・Hash | `src/llvm_compare.rs` `structural_compare`（69）、`llvm_display.rs` `structural_display`（419）、`llvm_hash.rs` `structural_hash`（17） | 比較は左右の `phi ptr`。表示・Hash は `array_loop` と memory の cursor（`load ptr`／`store ptr`） | `list_cursor_*`（比較は lockstep）、表示・Hash は `list_loop_control` |
+| stack からの移動 | `llvm_frame.rs` `frame_test`（648）・`heap_copy`（733。arm 782）・`drop_frame_contents`（848。arm 890）・`relocate` | node 単位 | D8 |
+| helper | `llvm.rs` の `list_node_type`（5428）〜`list_loop_control`（5479） | node の表現の知識 | 置き換え（`list_element_pointer`・`frame_node` は削除） |
+| 大きさ | `llvm_frame.rs` の `stack_size`・`frame_bytes`（List の arm）、`llvm_layout.rs` `layout_bound`（233）、E1010 | 16 bytes | 変更なし |
+| デバッガ・診断 | `llvm_debug.rs`（407・533）、`scripts/lldb/tsuzuri_lldb.py`、`src/copies.rs`（134・155） | node を辿る。W1006 の文言 | D12・D13 |
+
+### 偵察で測った事実（基準は main `9dd0fbbc`、2026-10-17）
+
+- 再現: `run` は sample 99444・nolist 9（ticket のとおり）。基準の focused test は `copy_cost` 16・`debug_info` 13・`integer_ranges` 16・`lists` 7・`storage` 21 件が通り、`node tests/debugger.mjs`（LLDB。24 s）と `node tests/debug_info.mjs` も通る（`TMPDIR=$PWD/target/tmp`）。
+- 確保（`benchmarks/tracked_alloc.c`。要求量。回数／bytes）。`tail_consume`・`index_walk` は `bulk_new` と同じ:
+
+| 種目 | n = 1 | n = 2 | n = 16 | n = 1,000 | n = 1,000,000 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `bulk_new`・`cons_build`・`tail_consume` | 1 / 16 | 2 / 32 | 16 / 256 | 1,000 / 16,000 | 1,000,000 / 16,000,000 |
+| `clone_list` | 2 / 32 | 4 / 64 | 32 / 512 | 2,000 / 32,000 | 2,000,000 / 32,000,000 |
+| `string_list` | 2 / 30 | 4 / 60 | 32 / 480 | 2,000 / 30,000 | 2,000,000 / 30,000,000 |
+
+- 時間と peak RSS（native、`-O2` の host、1 回の呼び出しの平均を 7 標本の中央値で。load 6.4〜6.9）: `bulk_new` n = 1,000,000 は 19.4 ms・16.95 MB（空の process は 1.61 MB）、n = 1,000 は 19.3 µs。`cons_build` 1,000,000 は 19.0 ms、`tail_consume` 17.5 ms、`clone_list` 38.1 ms・32.3 MB、`string_list` 41.5 ms・47.7 MB、`index_walk` は n = 1,000 で 464 µs、n = 10,000 で 49.8 ms（$O(n^2)$）。`control/list_sum` は上の行のとおり。
+- WASM（Node 20.19.6、wasm32 `-O3`、import 空）: `bulk_new`・`cons_build` は 100,000 個で memory 1,114,112 → 4,259,840 bytes、400,000 個で 13,893,632、600,000 個で OOM（`unreachable`）。`string_list` は 100,000 個で 9,109,504、200,000 個で OOM。
+- C の試作（`target/perf/PM04/proto.c`。clang -O3、1,000,000 個の i64 の総和、最小の ns/要素）: 配列 0.13〜0.15、node 1.00〜1.06、D7 の select cursor 1.87〜1.98（bulk の 1 chunk も cons 構築の 250 超の chunk も同じ）、分岐の cursor 0.53〜0.55、二重 loop 0.10〜0.13（bulk）・0.12〜0.18（cons 構築）。
+- D3 の footprint モデル（`target/perf/PM04/model2.mjs`。native の `system` は macOS の実測の丸め、`small` は 16 bytes 刻み・512 bytes まで、WASM は上の block の式。i64、header 24 bytes、各 chunk の確保サイズの和）:
+
+| n | node | 一括（1 chunk） | cons・起票の規則 | cons・D3' | WASM の node | WASM の一括 | WASM・起票の規則 | WASM・D3' |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16 | 32 | 32 | 32 | 32 | 48 | 48 | 48 |
+| 2 | 32 | 48 | 80 | 80 | 64 | 64 | 112 | 112 |
+| 4 | 64 | 64 | 144 | 144 | 128 | 80 | 192 | 192 |
+| 8 | 128 | 96 | 240 | 224 | 256 | 112 | 304 | 288 |
+| 16 | 256 | 160 | 400 | 336 | 512 | 176 | 480 | 416 |
+| 100 | 1,600 | 832 | 1,232 | 1,088 | 3,200 | 848 | 1,344 | 1,216 |
+| 1,000 | 16,000 | 8,192 | 10,192 | 12,096 | 32,000 | 8,048 | 8,656 | 11,776 |
+| 10,000 | 160,000 | 81,920 | 139,216 | 96,064 | 320,000 | 80,048 | 98,960 | 86,880 |
+| 1,000,000 | 16,000,000 | 8,011,776 | 12,034,000 | 8,025,920 | 32,000,000 | 8,000,048 | 8,040,432 | 8,020,608 |
+
+  cons 構築の footprint ÷ node（native の i64）: 起票の規則は n = 1 が 2.00、n = 2 が 2.50、n = 4 が 2.25、n = 17〜256 の最悪 1.47、n = 257〜100,000 の最悪 1.37、n = 1〜100,000 の幾何平均 0.899、n = 1,000,000 は 0.752（K が header 込みで 32 KiB を超え、macOS が 49,152 へ丸めるため）。
+  D3' は n = 1 が 2.00、n = 2 が 2.50、n = 4 が 2.25（同じ）、n = 17〜256 の最悪 1.24、n = 257〜100,000 の最悪 0.87、幾何平均 0.721、n = 1,000,000 は 0.502（chunk の数は 256 → 261）。WASM の i64 は幾何平均 0.394 → 0.370、n = 1,000,000 は 0.251（node の 4 倍）。
+  string（16 bytes の slot）の幾何平均は 0.857 → 0.672、WASM の i8 は node の 0.06 倍。n = 1,000 のように個々の n では D3' が上回ることもある（鋸歯）ので、判断は範囲の最悪値と幾何平均で行う。
+
+### 決定事項の更新
+
+- D1（表現）: 維持。`%tz.list = { ptr, i64 }` はそのまま、field 0 は先頭 chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] }`（header 24 bytes は native・wasm32・wasm64 で同じ。slot は `round_up(24, align(T))` から）。不変条件 I1〜I5 は維持する。**表現の切り替えに opt-out の flag は置かない**（D14）。
+- D2（計算量）: 維持。`values[index]` は $O(先行する chunk 数)$（bulk なら $O(1)$）。`values[0]` と `head :: tail` の head は chunk の数によらず $O(1)$。
+- D3'（容量の伸ばし方）: 改める。`LIST_CHUNK_MAX_BYTES = 32768` は **header を含む chunk 全体**の上限で、`K = max(1, (32768 − slot の offset) / max(1, size(T)))`。最初の chunk は 32 bytes に収まる容量 `c0 = max(1, (32 − slot の offset) / max(1, size(T)))`（i64 は 1、i32 は 2、i8 は 8、string・24 bytes の record は 1）、先頭 chunk が満杯のときの次の容量は `min(c + c / 2 + 1, K)`（約 1.5 倍）。size は `layout_bound(T, module, false)`（両 target で同じ値）で足りる（容量は性能の定数で、意味に関わらない）。上の定数は測って再調整できるよう Rust の定数 3 つ（上限・最初の bytes・header）にする。**報告する悪化**: 一括生成は native の i64 で n = 1 が node の 2.0 倍（32 bytes）、n = 2 が 1.5 倍、n = 3・4 で同じ、n ≥ 5 で小さい（string は n = 1 が 1.5 倍、n = 2 で同じ、n ≥ 3 で小さい。WASM の i64 は n = 1 が 1.5 倍、n = 2 で同じ）。cons で伸ばすリストは n = 1〜4 が 2.0 / 2.5 / 1.7 / 2.25 倍、n = 8 が 1.75 倍、n = 16 が 1.31 倍、n = 17〜256 で最大 1.24 倍、n = 257〜100,000 では最大 0.87 倍で、それより大きい n は 0.5 倍へ収束する（native の `system`・`small` の i64。モデル。WP6 で実測して確かめる）。WASM の i64 は n ≤ 4 が最大 1.75 倍、n = 17〜256 が最大 0.76 倍、n ≥ 257 が最大 0.44 倍。G2 の「1,000 要素以上では記憶量を HEAD 以下」は「257 要素以上のすべての n で」に改める。
+- D4（一括生成）: 維持。builder は長さを先に受け取り、`list_builder(element, length)` は長さ 0 で確保せず null を返す（`append_list` は slot の番号で格納）。heap のリテラルの prefix（`tracking`。loop の中のリテラルが途中で `break`・`continue` で抜ける場合）は、prefix を登録する前に `capacity = index` を store し、最後に `capacity = n` にする（I5 と prefix の drop を保つ）。
+- D5（トラップの境界）: 維持。`new [|T|](n, f)` の長さの検査は `allocation_size(list_node_type(T), n)` のまま、callback の前。chunk の bytes（`offset + n × size`）は D5 の上限の内側で溢れない。
+- D6（drop・clone の順序と反復）: 維持。外側は chunk、内側は生きた slot。`next` を読んでから free する。再帰しない。
+- D7'（走査の形）: 改める。Phase 1 の単一リストの走査（`for`・`List.fold_ref`・`map`・`map_ref`・`reverse` と `to_array` と clone の source・hash・display）は、状態 `(chunk, slot, index)` を持ち、chunk の終わりを **分岐**（`br`）で次へ進める cursor にする（`select` の cursor は node の連結より遅いので採らない）。`phi ptr` は各リストに 1 つ、添字の phi を header の先頭に置き増分の block を header へ戻す形を保ち、PR02 の R4・R5 の pin に合う。helper の API は `list_loop_control(list, |emitter, 要素の pointer, 添字, exit, advance|)` に固定し、Phase 2（D11）は helper の中身だけを二重 loop に替える。compare は左右の cursor を lockstep で進める（`phi ptr` が 2 つ）。
+- D8（stack のリテラル）: 維持。alloca は `{ ptr, i64, i64, [n x T] }` align 16（header は null・0・n）で、`frame_test`・`relocate` は変えない。`frame_bytes` の式も据え置く（n = 1 で 16 bytes の slot の要素は alloca が 8〜16 bytes 上回るが、上限 64 KiB の見積もりには影響しない）。`List.cons`・`List.tail`・`drop_value` へ渡るのは、consuming な読み出しが `relocate` で heap へ移した後のリストだけ、という不変条件を `escape_*`・`stack_escape` のテストで固定する（stack の chunk を `next` に持つ heap の chunk は、関数を出ると dangling になる）。
+- D9（`List.tail` の解放の粒度）: 維持。先頭要素をその場で drop し、chunk は空になった時点で free する。縮小・再配置はしない。
+- D10（計測の workload）: 改める。6 種目（`bulk_new`・`cons_build`・`tail_consume`・`clone_list`・`index_walk`・`string_list`）の式は ticket のまま。`cons_build` は cons の loop を別関数 `build` に出す（A17 の制約。上の表）。確保の回数・bytes は n = 1、2、3、4、8、16、1,000、1,000,000（`index_walk` は 10,000 まで）、時間と peak RSS は n = 1、16、1,000、1,000,000、WASM は 100,000・400,000・600,000・1,000,000・2,000,000 での heap の高水位と OOM の境目。`tracked_alloc.c` は要求量なので、native の footprint は `/usr/bin/time` の peak RSS とモデルで補う。
+- D11（Phase 分割）: 改める。Phase 1 = D1〜D10 と D12・D13 の全体（表現、D7' の分岐 cursor、D3'）。Phase 2 は 2a（`list_loop_control` の中身を chunk ごとの二重 loop に替える。compare は左右の run の loop）と 2b（`llvm.memcpy`: Copy で drop 不要の clone・`List.to_array`・`Array.to_list`、frame 候補が空の `heap_copy`）。1 件ごとに AGENTS.md のとおり before・after と生成コードの確認を付け、効果が測れない件は撤回して証拠を記録する（PM01 3b・PR03 Phase 3 の前例）。
+- D12（新設。デバッガ、G16）: `llvm_debug.rs` の `list_node` を chunk の型 `<list>.chunk`（`next`・`rest`・`capacity`・`slots`。`slots` は要素型の長さ 0 の配列）に替える。`scripts/lldb/tsuzuri_lldb.py` の `ListProvider` は位置 p を `(chunk, slot)` に変える同じ算法（先頭は `slot = capacity − (length − rest)`、`p` が chunk の生きた数に届かなければ次の chunk へ）で読み、要約 `length=N` と子の並び `[0] = …` の出力、address が 2^64 を超える入力で子を返さない振る舞いを保つ。natvis は list の view を持たないので変えない（メンバーの表示は新しい型になる）。`vsc/` は変えない。
+- D13（新設。W1006 の文言）: リストの暗黙の複製の警告の文言を、配列と同じ形の「implicit copy of a list allocates and copies every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit」に改める（`src/copies.rs`・`tests/copy_cost.rs`・`ownership.md`。完了済みの A15 ticket は履歴なので直さない）。「新しい node を確保する」は表現の変更で偽になるため。診断のコード・位置は変えない。
+- D14（新設。既定の切り替えの扱い）: 表現の切り替えは既定の出力を変える。PM01・PM06 と同じく flag は置かず、次の gate を測って満たしたときだけ残す。満たさなければ止めて報告する。fallback は基準コンパイラ（保存済み）と commit の revert で、list は export・ABI に出ないので host から表現は見えない。gate 1（Phase 1）: ①「変えてはいけない意味」の全テスト（下）が通る。② 一括生成した 1,000 個以上のリストの `alloc_bytes` が要素あたり `size(T) + 1` bytes 以下（header は 24 bytes）。③ `bulk_new`・`cons_build` の n = 1,000,000 の `peak_rss` が before の 0.6 倍以下、`clone_list` は 0.6 倍以下。④ `for` の総和の ns/要素（D7' の分岐 cursor）が before 以下。⑤ `control/list_sum` の中央値が before の最大値を超えない。⑥ 小さい n の悪化は D3' の範囲で、数値を `docs/benchmarks.md` に書く。gate 2（Phase 2 の各 item）: 生成コードに意図した形（ベクトル命令・`memcpy` の呼び出し）があり、同じ workload で 9 標本の最小値が A/A の揺れを超えて改善する。
+- D15（新設。計測の整合）: ①`control/list_sum` の C・C++・Rust の参照は node ごとの確保の連結リストのまま変えず、PM04 の後は同じデータ構造の比較ではないと表に注記する（matched な比較は `array_sum`）。②native の `alloc_bytes` は要求量で、allocator の丸めは見えない。D3 の判断は peak RSS と footprint のモデルで行い、モデルの node の値は実測（上の peak RSS の 16.95 MB など）で検証する。③ A17 の「`for` の source を丸ごと除外する」制約で loop の `List.cons` が毎回複製される件は PM04 の範囲外で、完了報告に再現を書く（W1006 で見える）。
+
+### 先に宣言する既存テストの期待値の変更
+
+意味の検査は変えない。変えるのは、表現（ノード・chunk）や loop の形を直接読む検査だけで、意図は保つ。「ticket」は起票時に挙げていたもの。
+
+| 場所 | 変更 | 時期 |
+| --- | --- | --- |
+| `tests/lists.rs` `runtime_fixture_uses_linked_nodes_and_entry_allocas`（ticket） | `runtime_fixture_uses_list_chunks_and_entry_allocas` に改名。`{ ptr, i64, i64, [0 x i64] }` を含み、`getelementptr inbounds { ptr, i64 },` を含まず、`phi ptr` を含み、`loop:` の後に alloca がない | WP3 |
+| `tests/storage.rs` `bound_literals_use_stack_storage`・`stack_literals_stay_in_the_entry_block_of_tail_loops` | `alloca [2 x { ptr, i64 }]` → `alloca { ptr, i64, i64, [2 x i64] }`、`alloca [2 x { ptr, %tz.string }]` → `alloca { ptr, i64, i64, [2 x %tz.string] }`（入口の block にある、heap の確保が増えない、は同じ） | WP3 |
+| `tests/primitives.mjs`（ticket） | `tz_list_length(100000)` の確保 100,000 → 1。表 `storage`: `escape_list()` 3 → 1、`heap_literals()` 4 → 3。`stack_list`・`empty_stack`・`temporary_stack` は 0 のまま | WP3 |
+| `tests/integer_ranges.rs` の `STRUCTURAL` の `each_list`・audit の件数・`assert_index_loop`・`structural_comparison_loops_count_with_an_unsigned_index`（`LIST_COMPARE`） | 分岐の cursor の slot の増分（`add i64 %, 1`。proof のない通常の加算）が加わり、増分の block の形が変わる。R4・R5 の証明（`index < length` の unsigned の増分に `nuw`、audit は `uadd.with.overflow` 1 件）の主張は変えず、期待を新しい形に合わせる。Phase 2 でもう一度更新する | WP3・WP7 |
+| features `typeclasses` の `inspect`（ticket は「変えない」） | Phase 1 は変えない（分岐の cursor で `phi ptr` が各リスト 1 つ）。Phase 2 は compare が run の loop になるので、「ちょうど 2 つ」を「`@tz.alloc` と index helper の呼び出しがなく、左右の cursor が lockstep」の形の検査に置き換える（`phi ptr` の数の下限は残す） | WP7 |
+| `tests/debug_info.rs`（306〜338 行）・`tests/debug_info.mjs`（69 行）・`tests/debugger.mjs` | `[\|i64\|].node`・`value` offset 64 → `[\|i64\|].chunk` の `next`・`rest`・`capacity`・`slots` の offset（24 bytes の header、slot は 24）。LLDB の期待 `chain = length=2 {[0] = 4 [1] = 5}` と garbage の probe の `None` は同じ | WP4 |
+| `tests/copy_cost.rs` の `LIST`・`src/copies.rs`・`ownership.md` の W1006 | 文言を D13 の形に | WP5 |
+| ほかの `phi ptr` の検査（`tests/control.rs` の `for n in xs`、`tests/polymorphism.rs`、`tests/local_recursion.rs`） | 変わらない（Phase 1）。Phase 2 の後も `phi ptr` は残る見込みで、残らなければ同じ表で宣言する | WP7 |
+
+### 作業の順序（コミット）
+
+| 作業 | 内容 | 確認 |
+| --- | --- | --- |
+| WP0 | この再検討（docs だけ） | `git diff --check` |
+| WP1 | `benchmarks/list-memory`（6 種目の `Main.tz`・`host.c`）と `benchmarks/run-list-memory.mjs`、before の記録（`target/perf/PM04-before/`） | checksum が式と一致、`bulk_new` 1,000,000 が 1,000,000 回・16,000,000 bytes、tracked で `live == 0` |
+| WP2 | 表現を helper に集める（node のまま）。`list_loop_control` が要素の pointer と添字を渡し、`list_locate`・`list_skip`・`list_push_front`・`list_pop_front`・`list_cursor_*`・builder を既存 code の移動で作る。hash・display・compare・`for`・builtin は helper だけを呼ぶ | 基準 IR（sample・nolist・`tests/fixtures/lists`・`storage`・`typeclasses`）の差が、`%vN`・label の番号と、hash・display の走査が helper 経由になる箇所だけであること（差分を保存して読む。それ以外は基準コンパイラの出力と `cmp` で一致）。`cargo test --test lists --test storage --test integer_ranges`、`node tests/primitives.mjs` |
+| WP3 | chunk 表現へ切り替え（D1・D3'・D4〜D9・D7'）。`list_element_pointer`・`frame_node` を削除、`Frame::List.nodes` → `chunk`。宣言済みの期待値だけを更新 | 同じ test と features（typeclasses・consuming_update・recursive_types・tasks・storage）。`nolist` の IR が基準と byte 同一 |
+| WP4 | デバッガ（D12）: DWARF・LLDB provider・3 つのテスト・文書 | `cargo test --test debug_info`、`node tests/debug_info.mjs`、`node tests/debugger.mjs` |
+| WP5 | テスト: `tests/lists.rs`（決定性・空・境界）、E2E suite `list_chunks`（境界は D3' の容量列から計算して ±1。native・wasm32 × `-O0`・`-O3`、`live == 0`、import 空）、W1006（D13） | `cargo test --test lists --test copy_cost`、`node tests/features.mjs target/release/tsuzuri list_chunks` |
+| WP6 | Phase 1 の計測（after）と gate 1 の判定、文書（language.md・architecture.md・README・LR）と `docs/benchmarks.md` の marker | `node scripts/check-docs.mjs <変更したページ>`、`git diff --check`、before/after を `target/perf/PM04-after/` に保存し、Phase 1 のコンパイラを `tsuzuri-phase1` として保存 |
+| WP7 | Phase 2a（D11）: `list_loop_control` の二重 loop、compare の run の loop、pin の更新 | `clang -O3` の IR・`llvm-objdump` でベクトル命令を確認、`for` の総和・`bulk_new`・`list_sum` の ns/要素を `tsuzuri-phase1` と before に対して測る、`TSUZURI_RANGE_FLAGS=audit` の suite |
+| WP8 | Phase 2b（D11）: `llvm.memcpy`。item ごとに before/after・IR・asm。測れない item は撤回して記録 | 各 item の IR に `memcpy`、時間が改善 |
+| WP9 | 全 suite と追加の検査、文書の仕上げ、「実装と検証」、`_completed/` へ移動 | 下の一覧 |
+
+WP9 の確認: `cargo test --locked --no-fail-fast`。Node の suite は `primitives`・`features`（全 suite。list を使う fixture は array_bulk・consuming_update・control・deriving・explicit_copy・generic_records・higher_kinds・iteration_protocol・json・last_use・maybe_result・recursive_types・simd・storage・strings・tasks・type_aliases・typeclasses・unions と新規の list_chunks）・`control`・`computations`・`tasks`・`json`・`wasm_threads`・`stack_overflow`（1,000,000 要素の drop・clone・compare・走査）・`last_use_fuzz`・`debug_info`・`debugger`。追加の検査は `TSUZURI_TEST_ALLOCATOR=small`、`TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1`、`TSUZURI_TEST_WASM_TARGET=wasm64`、`TSUZURI_RANGE_FLAGS=audit`（`integer_ranges` と list の suite）。GUIDE §3.1 の 4 つの回帰テストも通す。`cargo +1.99.0 fmt`・clippy（`-D warnings`）と `sh scripts/check-runtime-includes.sh`（runtime を変えない見込みなので不変の確認）。
+
+### 停止条件の更新
+
+- 維持: `%tz.list` の 2 語を変えないと実現できない、リストを使わないプログラムの IR が 1 byte でも変わる（基準コンパイラとの `cmp`）、要素の評価順・drop・clone の順序・トラップの種類と境界が変わる、再帰する helper が要る（1,000,000 要素で stack overflow）、`@tz.realloc`・runtime の新しい関数・`unsafe`・新しい crate・既定の WASM import が要る。
+- 改める: 「既存テストの期待値の変更」は上の一覧が範囲。「`alloc_bytes` が要素あたり `size(T) + 1` bytes を超える」は n ≥ 1,000 の一括生成に限る（header 24 bytes）。「`control/list_sum` の中央値が before の最大値を超える」は A/A（基準どうし）の揺れを併記して判断する。「Phase 2 の項目に手を付けたくなった」は取り下げ（Phase 2 も実装する）。
+- 追加: D7' の分岐 cursor の `for` の総和が before（node）より遅い、LLDB の provider を `tests/debugger.mjs` の期待のまま通せない、D14 の gate を満たさない（止めて報告）。
+
+### 受け入れ条件の変更
+
+- 「D1 が承認され」は承認済み。Phase 1（WP1〜WP6）に加え Phase 2（WP7・WP8。撤回した item は証拠と理由を `docs/benchmarks.md` と「実装と検証」に書く）が終わっている。
+- 「全 suite が native・WASM × `-O0`・`-O3`」に、LLDB のテスト、`TSUZURI_RANGE_FLAGS=audit`、`--allocator small`、ASan、wasm64 の通過を加える。
+- 「M1〜M4 の before・after」に、小さい n の悪化（node の 2.0〜2.5 倍）、WASM の heap の高水位と上限（node 0.5M → chunk 1.9M 要素）、`control/list_sum`、`for` の総和の ns/要素、Phase 2 の各 item の判定を加える。
+- G2 は「257 要素以上のすべての n で記憶量が HEAD 以下」。文書は `docs/language.md`・`docs/architecture.md`・`README.md`・LR（`list.md`・`stack-and-heap.md`・`ownership.md`・`array.md`・`vec.md`・`for-in.md`・`pattern-matching`・`types.md`・`compiler/debugging.md`）で、`list.md` の共有の誤記も直す。
+
+### 他チケットとの関係
+
+- PM02（`%tz.closure` の縮小）・PM03（`%tz.string` の Latin-1）: list の slot の大きさ・DWARF の要素型は `ty(element)`・`layout_bound` を通すので自動で追従する。`llvm_debug.rs` の list の arm は `Type::Function`・string の arm の隣で、textual な衝突が起きる。統合順は PM02 → PM04 → PM03。PM03 の後は `string_list` の bytes が変わるので、比較は同じ系列のコンパイラどうしで行う。
+- PM01: 影響なし（list は niche の payload ではない）。PM05: chunk は 512 bytes まで `small` の size class、超えると `malloc`。`@tz.realloc` は使わない。WASM は chunk の確保が 16 MiB − 32 bytes 以下であること（bulk の i64 で約 2.09M 要素。heap 全体の既定 16 MiB の方が先に尽きる）。PM06・PM07: `Frame::List` の形だけが変わり、`relocate`・`take` の規約は同じ。PR01: 確保は `call ptr @tz.alloc(` の形で出す（後処理が文字列で探す）。PR02: loop の増分は `increment_block`・`audit_increment` を通す。PR03: 影響なし。
+- PB05: 新しい IR の形（`getelementptr inbounds { ptr, i64, i64, [0 x T] }, ptr %c, i32 0, i32 3, i64 %s`・`select`・Phase 2 の `llvm.memcpy.p0.p0.i32`／`i64`）を扱えること。PB06・PR07・PR08: 影響なし。
+- 衝突しやすいファイル: `src/llvm.rs`（list の helper、`drop_value`・`clone_value`・`heap_collection`・builtin 本体）、`src/llvm_bulk.rs`・`src/llvm_frame.rs`・`src/llvm_debug.rs`、`tests/features.mjs`・`tests/primitives.mjs`（storage の表）、`docs/language.md`・`docs/architecture.md`、`docs/benchmarks.md`（marker の中だけ）。
 
 ## 着手条件と停止条件
 
