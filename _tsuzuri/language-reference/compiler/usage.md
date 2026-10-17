@@ -11,6 +11,7 @@
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。`build` は `--target` で、ビルド機とは別の OS や CPU 向けの成果物も作れます（[対応プラットフォーム](platforms.md)）。
 - `repl` は、宣言と式を 1 つずつ受け取り、入力ごとにプログラムを作り直して検査し、実行します。
 - `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
+- `watch` は、`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は、そのコマンドを単独で実行したときと同じです。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
@@ -19,7 +20,7 @@
 
 ## コマンドの流れ
 
-`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`watch` は、次の語（`check`・`build`・`test`）以降をそのコマンドの引数として読み、そのコマンドの流れを繰り返します。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
 
 ```mermaid
 flowchart TD
@@ -33,6 +34,8 @@ flowchart TD
   kind -->|toolchain info| tools["解決したツールを表示"]
   kind -->|bindgen| bind["C ヘッダーから extern を生成"]
   kind -->|lsp| server["stdio の言語サーバー"]
+  kind -->|watch| watching["check・build・test を実行し、読むファイルが変わるたびに繰り返す"]
+  watching --> load
   kind -->|repl| interactive["入力ごとに Main.tz を作って検査し実行"]
   kind -->|script| single["1 つのファイルを Main.tz として読む"]
   single --> typed
@@ -584,6 +587,26 @@ C の ABI が Tsuzuri のホスト ABI と一致すると確かめられた宣�
 `tsuzuri lsp` は、標準入出力の言語サーバーです。パスもビルドオプションも取りません。エディターは未保存のバッファを渡し、診断、ホバー、定義、補完、参照、リネームを受け取ります。`shutdown` のあと入力が終わると終了コード 0、`shutdown` なしで入力が閉じるかプロトコルに失敗すると 1 です。
 
 診断の見た目は [診断メッセージとエラーコード](diagnostics.md) に分けています。
+
+### watch
+
+`tsuzuri watch` は、`check`・`build`・`test` のどれかを 1 回実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。保存してから結果を見るまでの手間を省くコマンドで、1 回ごとの仕事は、新しく `tsuzuri check` などを実行するのと同じです。
+
+```sh
+tsuzuri watch check demo
+tsuzuri watch build demo -O0 -o demo/hello
+tsuzuri watch test demo --filter parse
+```
+
+- コマンド名は必須です。`tsuzuri watch` だけ、`run`・`fmt`・`lsp` などほかのコマンド、コマンド名のない入力（`tsuzuri watch demo`）は、終了コード 2 の `E2000`（`watch runs check, build, or test; use tsuzuri watch check <path>`）です。引数の検査はそのコマンドと同じなので、`tsuzuri watch check demo --no-cache` も `check` と同じ `E2000` です。`watch` という名前のディレクトリは、`tsuzuri build watch` のようにサブコマンドを書いて渡します。
+- 各回の診断、警告、テストの結果、成果物は、同じ引数で単独のコマンドを実行したときと同じです。各回の終わりに、標準エラーへ `watch: run N finished with exit code C` を書きます。`--json` を付けると、同じ行が `{"type":"watch","run":N,"exit":C}` の 1 行の JSON になります。
+- 失敗しても止まりません。止めるのは Ctrl-C などで、後片付けは要りません（ファイルを作らず、socket も開きません）。実行は同じプロセスの中なので、環境変数と作業ディレクトリは最初から最後まで同じです。`TSUZURI_THREADS` が不正なときは、監視を始める前に終了コード 2 です。
+- 見るのは、その回の読み込みが開いたファイルです。ユーザーのソース（`.tz`・`.tt`・`.tc`）、`Tsuzuri.toml`、`Tsuzuri.lock`、パス依存のパッケージのファイルが入り、標準ライブラリと成果物は入りません。隠しファイルや、ほかの拡張子のファイルを足しても実行されません。入力が読めないとき（ディレクトリがまだない、など）は、その診断を出して待ち、直ったら実行します。
+- ファイルの追加と削除、新しいディレクトリは 1 秒以内、書き換えは 100 ms ほどで見つかります。実行中に保存すると、その回が終わったあとにもう一度実行します。
+
+見つけ方は、ファイルを開かずに `stat` で見る方法です。100 ms ごとに、読んだファイルの大きさと更新時刻を比べます（Unix では、これに inode と状態変更時刻を足します。状態変更時刻はカーネルが書き込み・名前の付け替え・`utimes` のたびに更新し、プログラムからは戻せないので、同じ長さで更新時刻を元に戻した書き換えも見つかります）。1 秒ごとに、ディレクトリを探し直して追加と削除を調べます。`stat` が変わったファイルだけを読み直し、本文が同じなら実行しません。`touch` や、内容を変えない保存で実行が走らないのはこのためです。更新時刻の粒度に収まるほど新しいファイル（2 秒以内に書かれたもの）は、その時間が過ぎたあとにもう一度だけ読み直して確かめます。Unix 以外では状態変更時刻を使えないので、1 秒ごとにすべてのファイルを読み直して比べます。
+
+1,000 module のプロジェクトで何もしていないときの CPU は、Apple M1 Max の macOS で 1 core の約 2% でした（`stat` が 1 秒に 10 回、1,000 ファイルです）。
 
 ### toolchain info
 

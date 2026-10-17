@@ -95,7 +95,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/stdlib.rs` / `std/` | 埋め込み標準ライブラリのソースコード、予約 std モジュール名、std の仮想パス解決 |
 | `src/driver.rs` | ソースファイルの列挙、`Main.tz` の選択、LLVM／LLD の起動、ステージング、出力保護。ツールは `TSUZURI_*` → 配布物（実行ファイルの2階層上に `manifest.json`）の `bin/` → `PATH` の優先順で解決（`resolve_tool`。キャッシュキーにも同一の解決ロジックを使用）。native の target ごとの Clang 引数（`compile_args`・`sdk_args`・`link_args`）、`TSUZURI_SYSROOT`、foreign target の実行器（`foreign_runner`）。f16 の経路は純関数 `f16_path`（WASM、ターゲットの OS・アーキテクチャ、`--cpu`、`CpuFeatures`）が選び、`--cpu native` の x86-64 では clang へ `-mf16c`・`-mavx512fp16` も渡す（D10） |
 | `src/target.rs` | `--target TRIPLE` が名指しできる 22 個の native の `Triple` の閉じた表（Clang の target、OS、CPU）、ビルド先の性質を答える `Platform`、`--target` の値の解析（`parse_target`）、foreign target の実行器 `TSUZURI_RUNNER`（`ForeignRunner`）。64-bit のポインターだけで、32-bit の target は表に入れない |
-| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す） |
+| `src/main.rs` | CLI オプションの解析と診断・警告の表示、`toolchain info`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl` のオプション、`script` の引数の取り分け（ファイルより前を `run` のオプションとして解析し、後ろをプログラムへ渡す）。プロジェクトを読むコマンド（`parse_arguments` 以降）は `cli(raw, program_arguments, out, err)` で、診断と警告を `err` に書き、終了コードを数値で返す。`watch` はこの `cli` を繰り返し呼ぶ |
+| `src/watch.rs` | `tsuzuri watch` の変更検出（PB06）。最後の実行が読んだファイル（ユーザーのソースとマニフェスト）の本文と `FileStamp` を覚え、100 ms ごとに stat を比べ、1 s ごとにディレクトリを探し直す。新しい crate は使わない |
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML（`[package]` の `edition` を含む）、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 単一使用と `LastUses` の証明を生成と共有した暗黙の複製箇所の列挙（`copies::sites`）、`W1006` とインレイヒントの基となる配列・リストの複製検出（`costly_sites`） |
@@ -277,6 +278,8 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 後ろの 3 つは関数 64 個ごとに 1 ワーカー（2 ワーカーには 128 個）で、8 個ずつ取得します。標準ライブラリの宣言だけで hello も数百個あるので、hello の `check` も worker を使います（`FUNCTIONS_PER_WORKER` は hello の計測で 256 から 64 に下げました。[docs/benchmarks.md](benchmarks.md)）。並列にしない段は、プロジェクトの読み込み、名前と signature の収集、`solve_members`、`constants::fold`、`recursion::check`、`warnings::unused_private`、`polymorph::specialize`（worklist と上限の判定が順序に依存します）、`closures::lower`、`llvm::emit`（文字列定数・metadata・trap 点の番号が出力順で決まります）、キャッシュの書き込みです。
 
 検証は `src/parallel.rs`・`src/lib.rs`・`src/frontend_cache.rs` の単体テスト（thread 数 1・2・3・8 の診断と型付き構造の一致、上限の打ち切り、example と fixture の全 project）と、実際の CLI で出力・キャッシュの bytes・不正な値を照合する `tests/parallel_frontend.mjs` です。
+
+**watch（PB06）:** `tsuzuri watch check|build|test` は、`cli`（`src/main.rs`）を同じプロセスで繰り返し呼びます。`cli` は診断と警告を書き込み先（`err`）へ書いて終了コードを数値で返すので、出力は単独のコマンドと byte 単位で同じで、回ごとの状態行だけが `watch` のものです。`src/watch.rs` の `Watcher` は、`Project::load` が読んだユーザーのソースとマニフェストを、本文と `FileStamp`（`lstat` の大きさ・更新時刻、Unix では inode と状態変更時刻）で覚えます。スナップショットは実行の前に取るので、実行中の保存は次の周期で見つかってもう一度実行されます。100 ms ごとに `FileStamp` を比べ、変わったファイルだけを読み直して本文が違うときだけ変更とします（`touch` と、内容を変えない保存は実行しません）。1 s ごとに、`Project::load` と同じ走査（`collect_sources`。隠しファイルと上限が同じ）でファイルの追加と削除を調べます。ファイルを読む前に stamp を取るので、読んでいる間の書き込みは違う stamp として見えます。読んだ時刻が stamp の時刻から 2 s 以内のファイルは、更新時刻の粒度のために同じ stamp の書き込みを見逃しうるので、その時間が過ぎたあとにもう一度だけ読みます（git の racily clean と同じ考え方です）。Unix 以外は状態変更時刻がなく、プログラムが更新時刻を戻せるので、1 s ごとに全ファイルを読み直します。検証は `src/watch.rs` の単体テストと `tests/watch.mjs` です。
 
 **言語版（G19）:** `Edition(u16)`（`src/syntax.rs`。`E2026`、`LATEST`、`MANIFEST_DEFAULT`、`SUPPORTED`）は、ソースを読む予約語の版です。`Manifest::edition`（`[package]` の `edition`。省略は `MANIFEST_DEFAULT`、対応しない値は `E0002`）から `driver` が `SourceFile::edition` を決め（manifest のない入力、`script`、`repl`、std は `LATEST`。path・git・registry の依存は自分の manifest の値）、`SourceInput`・`ModuleInput` を通って、lexer と parser の入口に必須の引数として渡ります。既定の `LATEST` を使うのは、manifest のない入口（`parser::parse`、`analyze*`、`check::check`）、std、`tsuzuri new` の雛形など数か所だけです。lexer は、キーワードの `match` より前に `reserved_in` で `EDITION_KEYWORDS`（予約を始める edition の表で、現在は空）を引くので、古い edition のソースは新しい予約語を識別子として読みます。モジュール名の予約語の検査（`E1011`）も、そのモジュールの edition です。edition は字句だけに作用します。`ModuleInput::edition` を使うのはモジュール名の検査だけで、型検査とコード生成は edition を見ないので、IR は edition の値で byte 単位で同じです。frontend cache の parse key は edition を含みます。`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の manifest を `read_manifest` で読んでその edition を使い、なければ `LATEST` です。
 
@@ -1357,6 +1360,7 @@ node tests/bindings.mjs target/release/tsuzuri
 node tests/bindings_threads.mjs target/release/tsuzuri
 node tests/host_bindings.mjs target/release/tsuzuri
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri
+node tests/watch.mjs target/release/tsuzuri
 ```
 
 Rust レベルの単体テストは、LLVM がインストールされていない軽量環境でも完全に実行可能です。字句解析、型検査、エラー発生ケース、メモリレイアウト計算、IR の不変条件検証、および 6,500 パターンに及ぶ決定論的なソースコード変異テスト（mutation test）を網羅的に実行します。

@@ -45,6 +45,8 @@ Usage:
                              a debugger starts PATH with the printed argument 0
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
+    tsuzuri watch check|build|test source.tz|directory [options of that command]
+                             Run it again each time a source or manifest that it reads changes
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
@@ -79,6 +81,12 @@ nanoseconds; see Bench.with_input and Bench.of) in its own native process, one a
 doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
 median, minimum, and maximum time per iteration of --samples samples (default 11, at most 1000)
 at -O3 by default. It has no pass or fail threshold.
+`tsuzuri watch check|build|test PATH [options]` runs that command, then again each time a source
+or manifest that it reads changes: it polls every 100 ms, and a save that leaves the text as it
+was does not count. After each run it writes `watch: run N finished with exit code C` (with --json,
+the object {\"type\":\"watch\",\"run\":N,\"exit\":C}) to standard error. It runs in this process and
+ends only when it is stopped, for example with Ctrl-C. A directory named watch is built with
+`tsuzuri build watch`.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -2201,6 +2209,9 @@ fn main() -> ExitCode {
         }
         return repl_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "watch") {
+        return watch_main(&raw[1..]);
+    }
     ExitCode::from(cli(
         &raw,
         program_arguments.as_deref(),
@@ -2342,6 +2353,60 @@ fn cli(
             write_diagnostic(err, &error, &source.path, &source.text, arguments.json);
             EXIT_FAILURE
         }
+    }
+}
+
+/// The arguments of `tsuzuri watch ARGS`, `ARGS` being those of `check`, `build` or `test`. The
+/// command is named, so that `watch app` is not read as a build of `app`.
+fn parse_watch_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+    match arguments.first().and_then(|command| command.to_str()) {
+        Some("check" | "build" | "test") => parse_arguments(arguments),
+        _ => Err("watch runs check, build, or test; use tsuzuri watch check <path>".into()),
+    }
+}
+
+/// `tsuzuri watch ARGS`: runs `ARGS` (a `check`, `build` or `test` command) and again each time
+/// that a file it reads changes. After each run it writes a status line to standard error. It
+/// ends only when it is stopped.
+fn watch_main(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let parsed = match parse_watch_arguments(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    // Every run would report the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
+    // The snapshot comes before the run: a save during the run starts another run.
+    let mut watcher = tsuzuri::watch::Watcher::new(&parsed.input, parsed.action == Action::Test);
+    let mut run = 0_u64;
+    loop {
+        run += 1;
+        let code = cli(arguments, None, &mut io::stdout(), &mut io::stderr());
+        if json {
+            errln!(
+                io::stderr(),
+                "{{\"type\":\"watch\",\"run\":{run},\"exit\":{code}}}"
+            );
+        } else {
+            errln!(
+                io::stderr(),
+                "watch: run {run} finished with exit code {code}"
+            );
+        }
+        watcher.wait_for_change();
     }
 }
 
@@ -4504,5 +4569,55 @@ mod tests {
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
+    }
+
+    #[test]
+    fn watch_arguments_accept_check_build_test_only() {
+        let watch = |values: &[&str]| {
+            parse_watch_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        for (values, action, input) in [
+            (vec!["check", "Main.tz"], Action::Check, "Main.tz"),
+            (
+                vec!["build", "Main.tz", "-O0", "-o", "out"],
+                Action::Build,
+                "Main.tz",
+            ),
+            (
+                vec!["test", "Specs.tz", "--filter", "x"],
+                Action::Test,
+                "Specs.tz",
+            ),
+            (vec!["check", "app", "--json"], Action::Check, "app"),
+            // A directory named `watch` or `check` is a path after the command.
+            (vec!["check", "watch"], Action::Check, "watch"),
+            (vec!["build", "--", "check"], Action::Build, "check"),
+        ] {
+            let parsed = watch(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            assert_eq!(parsed.action, action, "{values:?}");
+            assert_eq!(parsed.input, PathBuf::from(input), "{values:?}");
+        }
+        let usage = "watch runs check, build, or test; use tsuzuri watch check <path>";
+        for values in [
+            vec![],
+            vec!["run", "Main.tz"],
+            vec!["fmt", "Main.tz"],
+            vec!["lsp"],
+            vec!["doc", "app", "-o", "out"],
+            vec!["bench", "Specs.tz"],
+            vec!["watch", "check", "Main.tz"],
+            // An input without a command is not a build: the command is always named.
+            vec!["Main.tz"],
+            vec!["--json", "check", "Main.tz"],
+        ] {
+            assert_eq!(watch(&values).unwrap_err(), usage, "{values:?}");
+        }
+        // The command's own rules apply.
+        assert_eq!(
+            watch(&["check", "Main.tz", "--no-cache"]).unwrap_err(),
+            "--no-cache is only valid with build, run, script, or repl"
+        );
+        assert!(watch(&["check"]).is_err());
+        assert!(watch(&["check", "a", "b"]).is_err());
     }
 }

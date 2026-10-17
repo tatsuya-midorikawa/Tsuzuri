@@ -630,6 +630,17 @@ VS Code や Neovim など、LSP 対応のエディタから利用可能な標準
 - **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、未使用ローカル変数のクイックフィックス。
 - **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md) を参照してください。
 
+### 変更の監視 (`tsuzuri watch`)
+
+`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は単独のコマンドと同じで、回の終わりに `watch: run N finished with exit code C` を標準エラーへ書きます（`--json` では `{"type":"watch","run":N,"exit":C}`）。
+
+```sh
+tsuzuri watch check app/
+tsuzuri watch test app/ --filter parse
+```
+
+変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。速くするものではなく、1 回ごとの仕事は新しいコマンドと同じです。Ctrl-C で止めます。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#watch) を参照してください。
+
 ### REPL (`tsuzuri repl`)
 
 宣言・トップレベルの `let`・式を 1 つずつ入力し、型と値を確かめる対話環境です。JIT は使わず、入力ごとにそれまでに受け付けた宣言と `let` を含む `Main.tz` を作り直し、`tsuzuri run` と同じ経路で検査・実行します（既定 `-O0`）。
@@ -823,6 +834,7 @@ tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SE
 tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
 tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3]
+tsuzuri watch check|build|test source.tz|directory [options of that command]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
@@ -930,6 +942,7 @@ node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
+node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000（Windows でも動く）
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri

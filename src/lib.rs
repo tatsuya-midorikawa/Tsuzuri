@@ -34,6 +34,7 @@ pub(crate) mod syntax_codec;
 pub mod target;
 pub mod timings;
 pub mod trap;
+pub mod watch;
 
 use check::{ModuleInput, ModuleOrigin};
 use diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};

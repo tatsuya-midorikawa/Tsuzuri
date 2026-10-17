@@ -54,6 +54,10 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 [コンパイラのスレッド数](../_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
 診断の順序・件数・上限、IR、キャッシュの内容はスレッド数で変わりません。
 
+`tsuzuri watch check|build|test` は、そのコマンドを同じプロセスで実行し、読むファイル（ユーザーのソースとマニフェスト）が変わるたびにもう一度実行します（PB06）。
+各回の診断・警告・IR・終了コードは、同じ引数の単独のコマンドと同じです。変更は `stat`（Unix では状態変更時刻を含みます）で見つけ、
+本文が同じ保存では実行しません（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#watch)）。
+
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
