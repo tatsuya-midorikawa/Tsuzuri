@@ -61,6 +61,8 @@ const bridges = [
   `define i64 @t_join(ptr %parts, i64 %count, i32 %kind, ptr %out) {\n  %p0 = insertvalue %tz.array zeroinitializer, ptr %parts, 0\n  %p1 = insertvalue %tz.array %p0, i64 %count, 1\n${stringResult("call %tz.string @tz.display.join(%tz.array %p1, i32 %kind)")}`,
   `define i64 @t_quote(ptr %src, i64 %w, i32 %kind, ptr %out) {\n${stringResult("call %tz.string @tz.display.quote(ptr %src, i64 %w, i32 %kind)")}`,
   `define i32 @t_is_ascii(ptr %p, i64 %n) {\n${flag("call i1 @tz.string.is_ascii(ptr %p, i64 %n)")}`,
+  `define i64 @t_slice(ptr %data, i64 %w, i64 %first, i64 %last, ptr %out) {\n${stringResult("call %tz.string @tz.string.slice(ptr %data, i64 %w, i64 %first, i64 %last)")}`,
+  `define i64 @t_string_join(ptr %separator, i64 %sw, ptr %parts, i64 %count, ptr %out) {\n${stringResult("call %tz.string @tz.string.join(ptr %separator, i64 %sw, ptr %parts, i64 %count)")}`,
   `define i32 @t_is_latin1_units(ptr %p, i64 %n) {\n${flag("call i1 @tz.string.is_latin1_units(ptr %p, i64 %n)")}`,
   `define void @t_widen_in_place(ptr %p, i64 %n) {\n  call void @tz.string.widen_in_place(ptr %p, i64 %n)\n  ret void\n}\n`,
   `define void @t_narrow_in_place(ptr %p, i64 %n) {\n  call void @tz.string.narrow_in_place(ptr %p, i64 %n)\n  ret void\n}\n`,
@@ -455,6 +457,40 @@ function run(module, label) {
     drop(input);
   }
   noLeaks(`${label}: characters`);
+
+  // slice and join, which the standard library's String.slice and String.join call
+  for (const units of unitSamples) for (const form of formsOf(units)) {
+    const text = make(units, form);
+    for (let first = 0; first <= units.length; ++first) for (let last = first; last <= units.length; ++last) {
+      const { value, calls, bytes: size } = tracked(() => output(api.t_slice(text.ptr, text.word, BigInt(first), BigInt(last), OUT)));
+      const wanted = units.slice(first, last);
+      same([value.form, value.units], [wanted.length === 0 ? "E" : form, wanted], `slice ${form}${units}[${first}, ${last})`);
+      same([calls, size], wanted.length === 0 ? [0, 0] : [1, form === "U" ? wanted.length * 2 : wanted.length], "slice makes one buffer of the slice's size");
+      drop(value);
+    }
+    drop(text);
+  }
+  for (const [separatorUnits, partList] of [
+    [[44], [ascii(3), latin(2), [], ascii(1)]], [[], [ascii(2), ascii(2)]], [[32, 0xe9], [latin(3), latin(1)]],
+    [[0x3042], [ascii(2), ascii(2), ascii(1)]], [[44], [ascii(1), wide(3), ascii(1)]], [[44], [wide(2)]], [[0x3042], [ascii(2)]],
+    [[44], []], [[44], [[]]], [[44], [[], []]], [ascii(40), [latin(40), latin(33)]], [[1], Array.from({ length: 20 }, (_, index) => ascii(index % 5))],
+  ]) for (const separatorForm of formsOf(separatorUnits)) for (const makeUtf16 of [false, true]) {
+    const separator = make(separatorUnits, separatorForm);
+    const strings = partList.map((units) => make(units, makeUtf16 || hasUnitsAbove(units, 255) ? "U" : "L"));
+    const array = api.t_alloc(BigInt(Math.max(strings.length, 1) * 16));
+    strings.forEach((text, index) => {
+      view().setUint32(array + index * 16, text.ptr, true);
+      view().setBigUint64(array + index * 16 + 8, text.word, true);
+    });
+    const expected = partList.flatMap((units, index) => (index ? [...separatorUnits, ...units] : units));
+    const wide = strings.some((text) => text.form === "U") || (separator.form === "U" && strings.length > 1);
+    const { value, calls } = tracked(() => output(api.t_string_join(separator.ptr, separator.word, array, BigInt(strings.length), OUT)));
+    same([value.form, value.units], [expected.length === 0 ? "E" : wide ? "U" : "L", expected], `join ${separatorForm}${separatorUnits} of ${strings.map((text) => text.form)}`);
+    same(calls, expected.length === 0 ? 0 : 1, "join allocates once");
+    drop(value, separator, ...strings);
+    api.t_free(array);
+  }
+  noLeaks(`${label}: slice and join`);
 
   // display.join and display.quote
   const partSamples = [[], ascii(3), latin(5), [0xe9], wide(4), [0x3042]];

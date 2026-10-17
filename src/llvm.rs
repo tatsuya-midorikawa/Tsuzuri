@@ -3729,7 +3729,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let length = self.value("extractvalue %tz.array %p0, 1");
             let value = self.value(format!("call {result} @{symbol}(ptr {data}, i64 {length})"));
             self.instruction(format!("ret {result} {value}"));
-        } else {
+        } else if !self.compact_body() {
             self.tail(&self.function.body);
         }
     }

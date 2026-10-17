@@ -454,3 +454,128 @@ utf16:
   %d = insertvalue %tz.string %c, i64 %length, 1
   ret %tz.string %d
 }
+
+; Copies the text of a string, given as a pointer and a length word, to unit `%offset` of the data of a
+; result that is UTF-16 when `%wide` and Latin-1 otherwise. A Latin-1 result only takes Latin-1 text.
+define internal void @tz.string.put(ptr %output, i64 %offset, ptr %source, i64 %word, i1 %wide) nounwind {
+entry:
+  br i1 %wide, label %units, label %bytes
+units:
+  %unit_target = getelementptr inbounds i16, ptr %output, i64 %offset
+  call void @tz.string.copy_as_utf16(ptr %unit_target, ptr %source, i64 %word)
+  ret void
+bytes:
+  %byte_target = getelementptr inbounds i8, ptr %output, i64 %offset
+  %count = and i64 %word, 4611686018427387903
+  call void @tz.string.copy_bytes(ptr %byte_target, ptr %source, i64 %count)
+  ret void
+}
+
+; The units [`%first`, `%last`) of a string, which the caller has checked to be in range, as a string of the
+; same form: a slice of a Latin-1 string is Latin-1. This is what String.slice does, in one allocation.
+define internal %tz.string @tz.string.slice(ptr %data, i64 %word, i64 %first, i64 %last) nounwind {
+entry:
+  %length = sub i64 %last, %first
+  %empty = icmp eq i64 %length, 0
+  br i1 %empty, label %zero, label %copy
+zero:
+  ret %tz.string zeroinitializer
+copy:
+  %marked = and i64 %word, 4611686018427387904
+  %latin1 = icmp ne i64 %marked, 0
+  br i1 %latin1, label %bytes, label %units
+bytes:
+  %byte_result = call %tz.string @tz.string.allocate_latin1(i64 %length)
+  %byte_target = extractvalue %tz.string %byte_result, 0
+  %byte_source = getelementptr inbounds i8, ptr %data, i64 %first
+  call void @tz.string.copy_bytes(ptr %byte_target, ptr %byte_source, i64 %length)
+  ret %tz.string %byte_result
+units:
+  %unit_result = call %tz.string @tz.string.allocate(i64 %length)
+  %unit_target = extractvalue %tz.string %unit_result, 0
+  %unit_source = getelementptr inbounds i16, ptr %data, i64 %first
+  call void @tz.string.copy(ptr %unit_target, ptr %unit_source, i64 %length)
+  ret %tz.string %unit_result
+}
+
+; The strings of an array of `%count` strings with `%separator` between them, as String.join makes
+; them: Latin-1 when the separator, if it is used, and every part are Latin-1 or empty, and UTF-16
+; otherwise. A total that no string can have is a trap. The parts are borrowed.
+define internal %tz.string @tz.string.join(ptr %separator, i64 %separator_word, ptr %parts, i64 %count) nounwind {
+entry:
+  %separator_length = and i64 %separator_word, 4611686018427387903
+  %separator_marked = and i64 %separator_word, 4611686018427387904
+  %separator_plain = icmp eq i64 %separator_marked, 0
+  %separator_full = icmp ne i64 %separator_word, 0
+  %separator_utf16 = and i1 %separator_plain, %separator_full
+  %several = icmp ugt i64 %count, 1
+  %separator_wide = and i1 %separator_utf16, %several
+  br label %size_test
+size_test:
+  %size_index = phi i64 [ 0, %entry ], [ %size_next, %size_step ]
+  %total = phi i64 [ 0, %entry ], [ %grown, %size_step ]
+  %wide = phi i1 [ %separator_wide, %entry ], [ %wide_next, %size_step ]
+  %size_more = icmp ult i64 %size_index, %count
+  br i1 %size_more, label %size_body, label %allocate
+size_body:
+  %size_pointer = getelementptr inbounds %tz.string, ptr %parts, i64 %size_index
+  %size_part = load %tz.string, ptr %size_pointer
+  %size_word = extractvalue %tz.string %size_part, 1
+  %size_length = and i64 %size_word, 4611686018427387903
+  %size_marked = and i64 %size_word, 4611686018427387904
+  %size_plain = icmp eq i64 %size_marked, 0
+  %size_full = icmp ne i64 %size_word, 0
+  %size_utf16 = and i1 %size_plain, %size_full
+  %wide_next = or i1 %wide, %size_utf16
+  %not_first = icmp ne i64 %size_index, 0
+  %extra = select i1 %not_first, i64 %separator_length, i64 0
+  %with_separator = add i64 %total, %extra
+  %grown = add i64 %with_separator, %size_length
+  %fits = icmp ule i64 %grown, 9007199254740991
+  br i1 %fits, label %size_step, label %fail
+size_step:
+  %size_next = add i64 %size_index, 1
+  br label %size_test
+fail:
+  call void @llvm.trap()
+  unreachable
+allocate:
+  br i1 %wide, label %allocate_units, label %allocate_bytes
+allocate_units:
+  %unit_result = call %tz.string @tz.string.allocate(i64 %total)
+  br label %write
+allocate_bytes:
+  %byte_result = call %tz.string @tz.string.allocate_latin1(i64 %total)
+  br label %write
+write:
+  %result = phi %tz.string [ %unit_result, %allocate_units ], [ %byte_result, %allocate_bytes ]
+  %output = extractvalue %tz.string %result, 0
+  br label %write_test
+write_test:
+  %index = phi i64 [ 0, %write ], [ %next, %write_step ]
+  %offset = phi i64 [ 0, %write ], [ %after_part, %write_step ]
+  %more = icmp ult i64 %index, %count
+  br i1 %more, label %write_body, label %done
+write_body:
+  %first = icmp eq i64 %index, 0
+  br i1 %first, label %write_part, label %write_separator
+write_separator:
+  call void @tz.string.put(ptr %output, i64 %offset, ptr %separator, i64 %separator_word, i1 %wide)
+  %after_separator = add i64 %offset, %separator_length
+  br label %write_part
+write_part:
+  %part_offset = phi i64 [ %offset, %write_body ], [ %after_separator, %write_separator ]
+  %part_pointer = getelementptr inbounds %tz.string, ptr %parts, i64 %index
+  %part = load %tz.string, ptr %part_pointer
+  %part_data = extractvalue %tz.string %part, 0
+  %part_word = extractvalue %tz.string %part, 1
+  %part_length = and i64 %part_word, 4611686018427387903
+  call void @tz.string.put(ptr %output, i64 %part_offset, ptr %part_data, i64 %part_word, i1 %wide)
+  %after_part = add i64 %part_offset, %part_length
+  br label %write_step
+write_step:
+  %next = add i64 %index, 1
+  br label %write_test
+done:
+  ret %tz.string %result
+}

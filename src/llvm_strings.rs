@@ -223,6 +223,84 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
+    /// In the compact form, `String.slice` and `String.join` of the standard library are runtime
+    /// calls: written in the language, each builds a vector of UTF-16 units and `from_code_units`
+    /// narrows it, which costs a second allocation and pass for every Latin-1 result. Returns
+    /// whether it wrote the body of the function being emitted, whose parameters are `%p0`, ....
+    pub(super) fn compact_body(&mut self) -> bool {
+        if self.globals.strings != StringForm::Compact
+            || self.function.origin.module != ModuleOrigin::Std
+            || self.function.module != "String"
+        {
+            return false;
+        }
+        let signature = &self.function.signature;
+        match (signature.parameters.as_slice(), self.function.name.as_str()) {
+            ([Type::Reference(text, false), first, last], "slice")
+                if **text == Type::String && *first == Type::I64 && *last == Type::I64 =>
+            {
+                let result = signature.result.clone();
+                self.slice_body(&result);
+                true
+            }
+            (
+                [
+                    Type::Reference(separator, false),
+                    Type::Reference(parts, false),
+                ],
+                "join",
+            ) if **separator == Type::String
+                && matches!(parts.as_ref(), Type::Array(element) if **element == Type::String)
+                && signature.result == Type::String =>
+            {
+                let text = self.value("load %tz.string, ptr %p0");
+                let data = self.value(format!("extractvalue %tz.string {text}, 0"));
+                let word = self.value(format!("extractvalue %tz.string {text}, 1"));
+                let items = self.value("extractvalue %tz.array %p1, 0");
+                let count = self.value("extractvalue %tz.array %p1, 1");
+                let result = self.value(format!(
+                    "call %tz.string @tz.string.join(ptr {data}, i64 {word}, ptr {items}, i64 {count})"
+                ));
+                self.instruction(format!("ret %tz.string {result}"));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `String.slice text first last`: `None` unless 0 <= first <= last <= length.
+    fn slice_body(&mut self, result: &Type) {
+        let Type::Union(id, _) = result else {
+            unreachable!("String.slice returns a Maybe")
+        };
+        let none = self.module.unions[*id]
+            .cases
+            .iter()
+            .position(|(name, _)| name == "None")
+            .expect("Maybe.None exists");
+        let text = self.value("load %tz.string, ptr %p0");
+        let data = self.value(format!("extractvalue %tz.string {text}, 0"));
+        let word = self.value(format!("extractvalue %tz.string {text}, 1"));
+        let length = self.value(format!("and i64 {word}, {MASK}"));
+        let before = self.value("icmp slt i64 %p1, 0");
+        let inverted = self.value("icmp slt i64 %p2, %p1");
+        let beyond = self.value(format!("icmp sgt i64 %p2, {length}"));
+        let rejected = self.value(format!("or i1 {before}, {inverted}"));
+        let invalid = self.value(format!("or i1 {rejected}, {beyond}"));
+        let missing = self.label();
+        let present = self.label();
+        self.branch(&invalid, &missing, &present);
+        self.begin(&missing);
+        let empty = self.construct_value(result, none, None);
+        self.instruction(format!("ret {} {empty}", self.ty(result)));
+        self.begin(&present);
+        let piece = self.value(format!(
+            "call %tz.string @tz.string.slice(ptr {data}, i64 {word}, i64 %p1, i64 %p2)"
+        ));
+        let some = self.integer_some(result, &Type::String, &piece);
+        self.instruction(format!("ret {} {some}", self.ty(result)));
+    }
+
     /// The constant that holds the text of a string literal, and the length word of the string that
     /// it makes. In the compact form a UTF-16 literal of units that are all at most 0xFF is a
     /// constant of bytes and its word is marked; any other literal is as it always was.
