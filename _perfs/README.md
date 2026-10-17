@@ -219,6 +219,18 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   ThinLTO のみ（lld は host の full LTO + ThinLTO の bitcode を link エラーにする）、cache なし、Windows は E2000、Rust は macOS の `-plugin-opt` で失敗するので CI に入れず未検証の表に記録します。
   wasm32 は手作業で import が空・inline を確認でき、同じ仕組みで実装します（threads・WASI・wasm64 は対象外）。既定の出力は変えず、`lto/small_call` を object・bitcode・C だけの 3 通りで測り、
   効果は host と bitcode の Clang が一致する構成にだけ主張します。
+- **PM04**（計画。全フェーズを実装する）: リストを要素ごとの node から「header 24 bytes（`next`・`rest`・`capacity`）+ 連続した slot」の chunk の連結へ変えます。`%tz.list = { ptr, i64 }` の 2 語、export 不可、所有権は変えません。
+  起票は PM01・PM05〜PM07・PR01〜PR03 より前で、3 点を実測で改めました。
+  ①走査（D7）: 起票の「分岐なしの `select` で chunk を進める flat loop」は、C の試作（1,000,000 個の i64 の総和）で node の連結（1.0 ns/要素）より遅く（1.9 ns）、分岐にすると 0.53 ns、
+  chunk ごとの二重 loop は 0.10〜0.13 ns（配列と同じ）でした。Phase 1 は分岐の cursor、Phase 2 は helper の中身を二重 loop にし、`llvm.memcpy`（drop 不要の clone・`List.to_array`・`Array.to_list`、
+  frame 候補が空の `heap_copy`）を足します。
+  ②容量（D3）: 要素領域 32 KiB の chunk は header 込みで macOS の `malloc` に 49,152 bytes へ丸められるので chunk 全体で 32 KiB とし、32 bytes の最初の chunk から約 1.5 倍で伸ばします
+  （cons 構築の footprint の幾何平均 0.899 → 0.721 倍、100 万要素 0.75 → 0.50 倍。WASM は 16 bytes の heap header のため一括生成が 0.25 倍）。
+  小さいリストは悪化します（native の i64 は n = 1・2・4 が node の 2.0・2.5・2.25 倍、n ≥ 257 は 0.87 倍以下）。
+  ③デバッガ（G16）: DWARF の `list_node` と LLDB の `ListProvider` が node を辿るので chunk に合わせて直します（起票は「変更なし」）。`tests/storage.rs`・PR02 の `tests/integer_ranges.rs` の list の loop の pin・
+  W1006 の文言も先に宣言して変えます。既定は flag を置かず（PM01・PM06 と同じ。戻すときは commit の revert）、一括生成の bytes・peak RSS・`for` の ns/要素・`control/list_sum` を基準
+  （main `9dd0fbbc`、保存済みの `tsuzuri-before`）と比べる gate を満たしたときだけ残し、満たさなければ証拠を残して取り下げます。
+  範囲外で見つけた問題: A17 の last-use が `for` の source の局所変数を丸ごと除外し、同じ関数で `values = List.cons i values` を loop すると毎回複製します（$O(n^2)$。PM04 では直しません）。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
