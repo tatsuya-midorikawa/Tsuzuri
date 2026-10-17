@@ -1,5 +1,7 @@
 pub mod abi;
 pub mod api_diff;
+#[cfg(feature = "fast-backend")]
+pub mod backend;
 pub mod bindgen;
 pub mod bindings;
 mod bundle_identity;
