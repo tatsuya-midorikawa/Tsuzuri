@@ -50,7 +50,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match tsuzuri::backend::compile(&text) {
+    let threads = std::env::var("TSUZURI_THREADS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .min(8)
+        });
+    match tsuzuri::backend::compile(&text, &tsuzuri::backend::Options::host(threads)) {
         Ok(object) => match std::fs::write(output, object) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

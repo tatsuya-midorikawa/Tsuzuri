@@ -261,7 +261,6 @@ pub(crate) enum Inst<'a> {
     Call {
         dst: u32,
         ret: Ty,
-        ret_ext: Ext,
         callee: Callee<'a>,
         start: u32,
         len: u32,

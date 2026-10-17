@@ -68,28 +68,42 @@ impl<'a> Parser<'a, '_> {
         }
         self.lex.skip_ws_nl();
         let mut current = match self.try_label() {
-            Some(label) => {
-                self.lex.skip_to_eol();
-                self.begin_block(Some(label))?
-            }
+            Some(label) => self.begin_block(Some(label))?,
             None => {
                 self.unnamed_entry = Some(numbered);
                 self.begin_block(None)?
             }
         };
+        // After a terminator the rest of the block is dead: `call @llvm.trap` is followed by its
+        // `unreachable`, and a trap is never followed by code that runs.
+        let mut closed = false;
         loop {
             self.lex.skip_ws_nl();
             if self.lex.peek() == b'}' || self.lex.eof() {
                 break;
             }
+            // The generator may put the first instruction of a block on the line of its label.
             if let Some(label) = self.try_label() {
                 self.func.blocks[current as usize].last = self.func.insts.len() as u32;
-                self.lex.skip_to_eol();
                 current = self.begin_block(Some(label))?;
+                closed = false;
                 continue;
             }
+            let before = self.func.insts.len();
             self.instruction()?;
             self.lex.skip_to_eol();
+            if closed {
+                self.func.insts.truncate(before);
+            } else if let Some(inst) = self.func.insts[before..].last() {
+                closed = matches!(
+                    inst,
+                    Inst::Unreachable
+                        | Inst::Ret { .. }
+                        | Inst::Br { .. }
+                        | Inst::CondBr { .. }
+                        | Inst::Switch { .. }
+                );
+            }
         }
         self.func.blocks[current as usize].last = self.func.insts.len() as u32;
         for (index, block) in self.func.blocks.iter().enumerate() {
@@ -994,15 +1008,13 @@ impl<'a> Parser<'a, '_> {
     }
 
     fn call(&mut self, dst: u32) -> Res<()> {
-        let mut ret_ext = Ext::None;
-        // Flags, calling convention and return attributes, then the type.
+        // Flags, calling convention and return attributes, then the type. The extension of a result
+        // comes from the callee's own declaration.
         while !starts_type(&mut self.lex) {
             let word = self.lex.word();
             match word {
                 "" => bail!("a call near {}", self.lex.context()),
-                "ccc" | "fastcc" | "coldcc" => {}
-                "signext" => ret_ext = Ext::Sext,
-                "zeroext" => ret_ext = Ext::Zext,
+                "ccc" | "fastcc" | "coldcc" | "signext" | "zeroext" => {}
                 "fast" | "nnan" | "ninf" | "nsz" | "arcp" | "contract" | "afn" | "reassoc" => {
                     bail!("the fast-math flag '{word}'")
                 }
@@ -1052,6 +1064,12 @@ impl<'a> Parser<'a, '_> {
                 self.lex.bump();
                 let name = self.lex.name()?;
                 if name.starts_with("llvm.") {
+                    if name == "llvm.trap" {
+                        // A trap does not return: it is an `unreachable` that the CPU reports.
+                        self.lex.skip_to_eol();
+                        self.push(Inst::Unreachable);
+                        return Ok(());
+                    }
                     if SKIPPED_INTRINSICS
                         .iter()
                         .any(|prefix| name.starts_with(prefix))
@@ -1104,7 +1122,6 @@ impl<'a> Parser<'a, '_> {
         self.push(Inst::Call {
             dst,
             ret,
-            ret_ext,
             callee,
             start,
             len,

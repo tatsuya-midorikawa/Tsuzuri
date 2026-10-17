@@ -129,7 +129,12 @@ pub(crate) struct Module<'a> {
     pub types: TypeTable<'a>,
     pub syms: Vec<Sym<'a>>,
     pub by_name: FxMap<&'a str, u32>,
+    /// The functions that the lowering calls though the text does not name them.
+    pub libcalls: Vec<u32>,
 }
+
+/// The `header` of a function that the translator adds: there is no text to read.
+pub(crate) const SYNTHETIC: usize = usize::MAX;
 
 /// The end of the item that starts at `start`: after its last line. A function ends at its closing
 /// brace, which the generator may follow with the next item on the same line.
@@ -623,11 +628,55 @@ pub(crate) fn scan(text: &str) -> Res<Module<'_>> {
         }
         pos = end.max(pos + 1);
     }
+    // What the lowering calls without the module naming it: the C library for `frem`, and the
+    // routines of the compiler runtime for the division of 128-bit integers, which no CPU divides.
+    let mut libcalls = Vec::new();
+    let mut want = |name: &'static str, ty: Ty, parameters: usize| {
+        let id = match by_name.get(name) {
+            Some(&id) => id,
+            None => {
+                let id = syms.len() as u32;
+                let sym = Sym {
+                    name,
+                    linkage: Linkage::External,
+                    hidden: false,
+                    kind: SymKind::Function {
+                        sig: Sig {
+                            ret: ty,
+                            ret_ext: Ext::None,
+                            params: vec![(ty, Ext::None); parameters],
+                            variadic: false,
+                        },
+                        header: SYNTHETIC,
+                        body_end: None,
+                    },
+                };
+                add_symbol(&mut syms, &mut by_name, sym);
+                id
+            }
+        };
+        libcalls.push(id);
+    };
+    if text.contains(" frem ") {
+        want("fmod", Ty::Double, 2);
+        want("fmodf", Ty::Float, 2);
+    }
+    for (pattern, name) in [
+        (" udiv i128 ", "__udivti3"),
+        (" sdiv i128 ", "__divti3"),
+        (" urem i128 ", "__umodti3"),
+        (" srem i128 ", "__modti3"),
+    ] {
+        if text.contains(pattern) {
+            want(name, Ty::Int(128), 2);
+        }
+    }
     Ok(Module {
         text,
         types: types.finish(),
         syms,
         by_name,
+        libcalls,
     })
 }
 
@@ -680,6 +729,9 @@ impl<'a> Module<'a> {
                 needed[id] = true;
                 work.push(id as u32);
             }
+        }
+        for &id in &self.libcalls {
+            needed[id as usize] = true;
         }
         while let Some(id) = work.pop() {
             let sym = &self.syms[id as usize];

@@ -38,9 +38,6 @@ const OTHER_NAMES: [&str; 7] = [
 const OPAQUE: u8 = 7;
 
 pub(crate) const I1: Ty = Ty::Int(1);
-pub(crate) const I8: Ty = Ty::Int(8);
-pub(crate) const I32: Ty = Ty::Int(32);
-pub(crate) const I64: Ty = Ty::Int(64);
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Compound {
@@ -64,6 +61,18 @@ pub(crate) struct Entry {
 }
 
 const TOO_LARGE: u64 = 1 << 40;
+
+/// Structs and arrays of more scalars than this are kept in memory, not flattened.
+pub(crate) const FLATTEN_LEAVES: u64 = 16;
+
+/// A scalar of an aggregate in memory.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Leaf {
+    pub offset: u64,
+    pub ty: Ty,
+    /// `(bit, lanes)` for a lane of a `<N x i1>`, which memory keeps as one packed integer.
+    pub packed: Option<(u16, u16)>,
+}
 
 #[derive(Default)]
 pub(crate) struct TypeTable<'a> {
@@ -141,14 +150,6 @@ impl<'a> Types<'a> {
     pub(crate) fn shape(&self, ty: Ty) -> Option<&Compound> {
         match ty {
             Ty::Compound(id) => Some(&self.entry(id).shape),
-            _ => None,
-        }
-    }
-
-    /// The fields of a struct type, or the element of an array or vector as one repeated field.
-    pub(crate) fn struct_fields(&self, ty: Ty) -> Option<&[Ty]> {
-        match self.shape(ty)? {
-            Compound::Struct { fields, .. } => Some(fields),
             _ => None,
         }
     }
@@ -300,6 +301,18 @@ impl<'a> Types<'a> {
         })
     }
 
+    /// Whether a value of the type lives in memory: a struct or array of more than
+    /// `FLATTEN_LEAVES` scalars. A vector is always its lanes, because the operations on it are.
+    pub(crate) fn is_large(&self, ty: Ty) -> Res<bool> {
+        Ok(match ty {
+            Ty::Compound(id) => {
+                let entry = self.entry(id);
+                !matches!(entry.shape, Compound::Vector { .. }) && entry.leaves > FLATTEN_LEAVES
+            }
+            _ => false,
+        })
+    }
+
     pub(crate) fn field_offset(&self, ty: Ty, index: usize) -> Option<u64> {
         match ty {
             Ty::Compound(id) => self.entry(id).offsets.get(index).copied(),
@@ -307,10 +320,16 @@ impl<'a> Types<'a> {
         }
     }
 
-    /// The scalar types of the leaves of `ty`, in memory order, with their offsets from `base`.
-    pub(crate) fn leaf_layout(&self, ty: Ty, base: u64, out: &mut Vec<(u64, Ty)>) -> Res<()> {
+    /// The scalar leaves of `ty` in memory order, with their offsets from `base`. The lanes of a
+    /// `<N x i1>` are one packed integer in memory: each lane says its bit and the lane count, and
+    /// shares the offset of the integer.
+    pub(crate) fn leaf_layout(&self, ty: Ty, base: u64, out: &mut Vec<Leaf>) -> Res<()> {
         match ty {
-            Ty::Int(_) | Ty::Half | Ty::Float | Ty::Double | Ty::Ptr => out.push((base, ty)),
+            Ty::Int(_) | Ty::Half | Ty::Float | Ty::Double | Ty::Ptr => out.push(Leaf {
+                offset: base,
+                ty,
+                packed: None,
+            }),
             Ty::Void => {}
             Ty::Compound(id) => match &self.entry(id).shape {
                 Compound::Struct { fields, .. } => {
@@ -326,6 +345,22 @@ impl<'a> Types<'a> {
                     }
                 }
                 Compound::Vector { len, elem } => {
+                    if *elem == I1 {
+                        let lanes = u16::try_from(*len)
+                            .ok()
+                            .filter(|&lanes| lanes <= 64)
+                            .ok_or_else(|| {
+                                Failure::new("a mask vector of more than 64 lanes in memory")
+                            })?;
+                        for bit in 0..lanes {
+                            out.push(Leaf {
+                                offset: base,
+                                ty: I1,
+                                packed: Some((bit, lanes)),
+                            });
+                        }
+                        return Ok(());
+                    }
                     let bits = match *elem {
                         Ty::Int(bits) => u32::from(bits),
                         Ty::Half => 16,
@@ -336,7 +371,11 @@ impl<'a> Types<'a> {
                         bail!("a vector of {} in memory", self.describe(*elem));
                     }
                     for index in 0..u64::from(*len) {
-                        out.push((base + index * u64::from(bits / 8), *elem));
+                        out.push(Leaf {
+                            offset: base + index * u64::from(bits / 8),
+                            ty: *elem,
+                            packed: None,
+                        });
                     }
                 }
             },
@@ -480,11 +519,5 @@ impl<'a> Types<'a> {
             fields: fields.into_boxed_slice(),
             packed,
         })
-    }
-}
-
-impl<'a> TypeTable<'a> {
-    pub(crate) fn named_count(&self) -> usize {
-        self.named.len()
     }
 }

@@ -75,12 +75,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Whether only a comment or nothing is left on the line.
-    pub(crate) fn at_line_end(&mut self) -> bool {
-        self.skip_ws();
-        matches!(self.peek(), b'\n' | b';') || self.eof()
-    }
-
     pub(crate) fn eat(&mut self, byte: u8) -> bool {
         self.skip_ws();
         if self.peek() == byte {
