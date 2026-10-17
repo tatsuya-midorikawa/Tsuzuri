@@ -181,6 +181,15 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   生成 IR と runtime の PM02 → PM04 → PM03、生成 IR を読むため最後に PB05 の順で、統合のたびに全 suite を確認し、既定の出力が変わる箇所をチケットごとに宣言したものと照合します。
   共有機で並行して進めるため、時間の測定は負荷を記録した参考値とし、静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
 
+- **PB05**（計画。全フェーズを実装する）: 起票時の `f8dc655` から、`runtime_objects`（numeric と math）、`compile_runtime_object`、`run` が常に `trap_info`（計装は IR の書き換えなので fast でも使える）、
+  runtime IR の SIMD・atomic・TLS・`weak`・`fastcc`・`byval` が増えていました。IR の棚卸し（命令 51 種・intrinsic 47 種・vector 型 23 種）で D6 に無い構成要素に個別の方針を決め、
+  停止条件 1・2・3・8 は解消しました。Cranelift は `rust-version` 1.85 以下の最新の 0.121.2（31 package、C を compile する `build.rs` なし）を `=` で固定し、feature `fast-backend`（`x86`・`arm64`）に入れます。
+  `cranelift-native` は使わず、出力は host の CPU に依りません。スパイクでは、Cranelift の back end は LLVM の命令あたり約 1/4 の時間で関数単位に並列化でき、Mach-O は `LC_BUILD_VERSION` を足せば
+  warning なしで link でき、TLS と trap の signal（SIGTRAP）が LLVM 経路と合うことを確認しました。計測は back end だけで、ゲート（合成 1,000 module の `build-edit-body`）は WP9 で測ります。
+  検証の wrapper は 2 経路（`tsuzuri` の `build`/`run` と、`TSUZURI_CLANG` の `.ll` の `-O0`）で、suite の多くは `--emit llvm` の IR を自分で clang に渡すので後者が主（約 410 件、前者は約 190 件）です。
+  `half` は駆動側が `F16Path::Soft`、vector は lane の scalar 化、集約値は 2 層（小さいものは平らに、大きいものは参照）で扱います。`-g` の行情報（Phase 2）は IR の `!DILocation` から gimli で作り、
+  変数・型の DIE は作りません。wasm の直接生成（D13）は、wasm32 `-O0` の Clang が 57〜60%（合成 200 module）と確かめましたが、`object` に wasm の writer がなく Cranelift も wasm を出さないので
+  （手書きの relocatable wasm の writer が約 3.5〜4.5K 行）、ゲートを通った後に WP16 で再確認して WP17〜20 で実装します。D12（既定の切り替え）は行わず `llvm` が既定のままです。
 - **PB06**（計画。全フェーズを実装する）: 起票は G17 の cache を常駐させて編集後の `check` を 100 ms 級にする想定でしたが、G17 が出荷したのは解析ごとに開く parse の cache だけで、
   check 結果の再利用は先送りのままでした。baseline の編集後の `check` は 200 module が 268 ms（全体を通す check・specialize・closures・ownership が約 195 ms）、
   1,000 module が 1,368 ms（約 865 ms）なので、G1（100 ms 以下）は取り下げ、常駐で消せる費用（load・parse・cache・compiler の hash・process の起動）を測って記録します。
@@ -191,15 +200,16 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   環境の比較は完全一致（52 変数の多くがセッション固有）から、コンパイラと tool が読む変数に絞り、`src/` の読み取りを走査する drift test で守ります。出力は cold と exact にし、
   `TemporaryDirectory` の警告は sink に、`TSUZURI_TIME_PASSES` は要求ごとの report 行にします。LSP・REPL との socket 共有、Windows の named pipe（std に server 側の API がない）、
   tool 問い合わせの memo は採りません。LSP・REPL が自分の process で同じ memo を使う案は、測って効果が出るときだけ採用します。効果は環境依存なので環境つきで記録します。
-- **PR07**（計画。全フェーズを実装する）: 起票時の前提は `driver::build`・10 field の `BuildOptions`・計装範囲が module IR 全体、という形でしたが、現行は `build_linked`・22 field・PB01 の別 object
-  （既定の cache あり経路では `numeric`・`math` は計装されない）です。旗は `build --profile-generate <dir>`・`--profile-use <file|dir>` で、clang の IR PGO（`-x ir` に `-fprofile-generate`・`-fprofile-use`）を使い、
-  実装は新しい `src/profile.rs` に置きます。許す出力は native の exe・object だけで、Windows・別の machine の target・`--freestanding` との generate・WASM は `E2000` です。
-  配布物の `tsuzuri-clang` は `-fprofile-*` を黙って捨て、`llvm-profdata` も profile runtime も持たないため、launcher の clang では両方の旗を `E2002` にします（launcher は変えません）。
-  `llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、clang の隣、`clang -print-resource-dir` の toolchain の順で探し、PATH は見ません。
-  profile は IR・clang・option に結び付くので、generate と use は同じ clang で行い、古い profile は `W2001` の 1 行にします。`run` は Phase 2 で受けます。
-  偵察では、control の 16 種目のうち `closure_*` が −12〜−18%（間接呼び出しの対象を使う）、`tail_*`・`match_dispatch` が +18〜+64% で、Apple clang 21.0.0 と Homebrew 21.1.8 で同じでした。
-  docs は両方向を記録し、PGO は profile が要るため常に opt-in です。C/C++ の参照にも PGO を掛けて比較し、D6（PB01 の object）・D9（trap への `!prof`）は測定で判断します。
-  WASM は export だけの writer で可能と分かったので、試作で `llvm-profdata show` との一致と時間の差を測ってから出荷か `E2000` のままかを決めます。
+- **PM02**（計画。全フェーズを実装する）: 起票時の `{ 静的記述子, 環境 }`（32 → 16 bytes）は、現行のコードに対して 3 点を直しました。棚卸しは 23 行ではなく 25 行（PM06 の `llvm_frame.rs` が環境欄を足した）、
+  大きさの模型は `llvm_layout.rs` の `layout_bound` の上限と**下限**（PR01 の `dereferenceable`）の 2 本で、下限を変えないと wasm32 で誤った属性になること、既存テスト 4 件
+  （`param_facts`・`integer_ranges`・`call_specialization`・`debugger.mjs`）の期待値が変わることです。基準のコンパイラの IR を手作業で descriptor 案に書き換えた偵察では、
+  正しさ（native・wasm32 × `-O0`・`-O3`）と時間は基準と同じで、`task_parallel` の確保量は 1,024 → 768 bytes でした。ただし immediate の clone／drop を null にしない（起票時は Phase 2 の P2-b）と
+  `closure_churn` が +28.7% 遅くなるため、P2-b を Phase 1 に移します。記述子が `@tz.apply.*` を指すと LLVM の「呼び出しが 1 回だけの内部関数」の inline の加点が効かず、
+  `-O3` の text が小さい例（hello・currying）で +17% になり、`closures` の probe の確保が畳まれなくなりました（wrapper と lambda worker を `alwaysinline` にすると hello +3.7%・functional +1.0%・currying +3.8%）。
+  D1 は WP6 のゲート（`closures` の probe が畳まれる、時間が広がりの範囲内、text の増加が小さい）つきで維持し、通らなければコードを値に残す `{ code, 環境, vtable }`（24 bytes。偵察では text・時間とも基準と同じ）へ
+  切り替えます。P2-c（E1010 の見積もりと `stack_size` を 16 に）は、`docs/language.md` が 32 を保守的な上限と書き、PM01 の D4 が受理される program を変える変更を禁じ、効果が測れないため取り下げます。
+  P2-a（`!invariant.load`）は WP7 の測定で決め、`Maybe<fn>` を null の記述子で表す niche（24 → 16 bytes）は任意の作業（WP9）です。この機械では `lldb` が `run` で応答せず（基準でも `tests/debugger.mjs` が ETIMEDOUT）、
+  x86-64・Linux・Windows の記述子の再配置と実コンパイラでの実行ファイルの大きさは未測定です。
 - **PM03**（計画。全フェーズを実装する）: 起票時の D1（長さ語の bit 63 を Latin-1 の印にする）は PM01 の niche（`Maybe<string>` の None は長さ `-1`、判定は `icmp slt len, 0`）と衝突し、
   Latin-1 の `Some` が `None` と読まれるため、印を bit 62 にします（UTF-16 の語は HEAD と同じで、bit 63 は常に 0。`llvm_layout.rs`・niche・DWARF・natvis は変えません）。
   起票時の「2 bytes／単位を仮定している箇所」の表には、PM06/PM07（`append`・`concat_into`・frame の buffer）、補間、PM08 の `integer.ll` の parse、`for ... in text`、PR05 の CPU 経路、
@@ -209,16 +219,6 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   `compact` を既定にするのは、確保量（決定的）・最大 RSS・時間（cpp 5 種目・`utf/*`・apps の文字列系）の基準を満たしたときだけで、満たさなければ opt-in で出荷します（PM05 D10 と同じ扱い）。
   Phase 2 は `generate_utf.py` に Latin-1 の vector kernel の生成（`string_latin1_v128.ll`）と、最大の scalar を返す UTF-8 の計数（非 ASCII の Latin-1 入力も Latin-1 にする）を足し、`cpu.c` は変えません。
   `String.to_code_units`／`from_code_units` の「O(1) で移送」は Latin-1 の値で成り立たなくなるため、文書の契約を書き換えます。PM05 の allocator（16 bytes のヘッダー・16 bytes 刻み）のため、短い文字列は半分になりません。
-- **PR08**（計画。全フェーズ: native の `--emit bitcode` と wasm32）: 起票は第2・第3フェーズより前で、`Emit` は 6 でなく 14、C ランタイムは `task.c`・`cpu.c`・`io.c` でなく
-  `os`・`net`・`async`・GPU・`trap`・task・`cpu`・`io`・`arguments` の連結、公開の定義は object の `nm -g` で 8 でなく 32 記号でした。着手前の実測（Apple clang 21、Homebrew LLVM 21〜23、
-  配布物、Zig の ELF cross-link）で方針を改めました。D3（全 `define` に `target-cpu`・`target-features`・`tune-cpu` を付ける）は、F08 の `@cpu` 版の `"target-features"`
-  （x86-64 Linux 42・AArch64 Linux 28）を、`llvm-as` の「group が inline に勝つ」規則で消すため、汎用は `target-cpu`・`tune-cpu` だけ、`--cpu native` だけ features も写し、
-  自前の features は残します（features を写すと host の Clang との差で inline が外れ、`target-cpu` だけなら Apple 21・Homebrew 21・22 の host で inline します）。
-  配布物の `tsuzuri-clang` は `-x ir` の `-flto=thin` を黙って落として object を出すので、launcher を直し、成果物の magic を検査します。
-  C ランタイムは `merge_debug_ir` と同じ `-S -emit-llvm` → `llvm-link --internalize`（`trap.c` も含む）で、`llvm-link` は bitcode だけ「環境変数、同梱、Clang の隣、PATH」の順に探します。
-  ThinLTO のみ（lld は host の full LTO + ThinLTO の bitcode を link エラーにする）、cache なし、Windows は E2000、Rust は macOS の `-plugin-opt` で失敗するので CI に入れず未検証の表に記録します。
-  wasm32 は手作業で import が空・inline を確認でき、同じ仕組みで実装します（threads・WASI・wasm64 は対象外）。既定の出力は変えず、`lto/small_call` を object・bitcode・C だけの 3 通りで測り、
-  効果は host と bitcode の Clang が一致する構成にだけ主張します。
 - **PM04**（計画。全フェーズを実装する）: リストを要素ごとの node から「header 24 bytes（`next`・`rest`・`capacity`）+ 連続した slot」の chunk の連結へ変えます。`%tz.list = { ptr, i64 }` の 2 語、export 不可、所有権は変えません。
   起票は PM01・PM05〜PM07・PR01〜PR03 より前で、3 点を実測で改めました。
   ①走査（D7）: 起票の「分岐なしの `select` で chunk を進める flat loop」は、C の試作（1,000,000 個の i64 の総和）で node の連結（1.0 ns/要素）より遅く（1.9 ns）、分岐にすると 0.53 ns、
@@ -231,25 +231,25 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   W1006 の文言も先に宣言して変えます。既定は flag を置かず（PM01・PM06 と同じ。戻すときは commit の revert）、一括生成の bytes・peak RSS・`for` の ns/要素・`control/list_sum` を基準
   （main `9dd0fbbc`、保存済みの `tsuzuri-before`）と比べる gate を満たしたときだけ残し、満たさなければ証拠を残して取り下げます。
   範囲外で見つけた問題: A17 の last-use が `for` の source の局所変数を丸ごと除外し、同じ関数で `values = List.cons i values` を loop すると毎回複製します（$O(n^2)$。PM04 では直しません）。
-- **PM02**（計画。全フェーズを実装する）: 起票時の `{ 静的記述子, 環境 }`（32 → 16 bytes）は、現行のコードに対して 3 点を直しました。棚卸しは 23 行ではなく 25 行（PM06 の `llvm_frame.rs` が環境欄を足した）、
-  大きさの模型は `llvm_layout.rs` の `layout_bound` の上限と**下限**（PR01 の `dereferenceable`）の 2 本で、下限を変えないと wasm32 で誤った属性になること、既存テスト 4 件
-  （`param_facts`・`integer_ranges`・`call_specialization`・`debugger.mjs`）の期待値が変わることです。基準のコンパイラの IR を手作業で descriptor 案に書き換えた偵察では、
-  正しさ（native・wasm32 × `-O0`・`-O3`）と時間は基準と同じで、`task_parallel` の確保量は 1,024 → 768 bytes でした。ただし immediate の clone／drop を null にしない（起票時は Phase 2 の P2-b）と
-  `closure_churn` が +28.7% 遅くなるため、P2-b を Phase 1 に移します。記述子が `@tz.apply.*` を指すと LLVM の「呼び出しが 1 回だけの内部関数」の inline の加点が効かず、
-  `-O3` の text が小さい例（hello・currying）で +17% になり、`closures` の probe の確保が畳まれなくなりました（wrapper と lambda worker を `alwaysinline` にすると hello +3.7%・functional +1.0%・currying +3.8%）。
-  D1 は WP6 のゲート（`closures` の probe が畳まれる、時間が広がりの範囲内、text の増加が小さい）つきで維持し、通らなければコードを値に残す `{ code, 環境, vtable }`（24 bytes。偵察では text・時間とも基準と同じ）へ
-  切り替えます。P2-c（E1010 の見積もりと `stack_size` を 16 に）は、`docs/language.md` が 32 を保守的な上限と書き、PM01 の D4 が受理される program を変える変更を禁じ、効果が測れないため取り下げます。
-  P2-a（`!invariant.load`）は WP7 の測定で決め、`Maybe<fn>` を null の記述子で表す niche（24 → 16 bytes）は任意の作業（WP9）です。この機械では `lldb` が `run` で応答せず（基準でも `tests/debugger.mjs` が ETIMEDOUT）、
-  x86-64・Linux・Windows の記述子の再配置と実コンパイラでの実行ファイルの大きさは未測定です。
-- **PB05**（計画。全フェーズを実装する）: 起票時の `f8dc655` から、`runtime_objects`（numeric と math）、`compile_runtime_object`、`run` が常に `trap_info`（計装は IR の書き換えなので fast でも使える）、
-  runtime IR の SIMD・atomic・TLS・`weak`・`fastcc`・`byval` が増えていました。IR の棚卸し（命令 51 種・intrinsic 47 種・vector 型 23 種）で D6 に無い構成要素に個別の方針を決め、
-  停止条件 1・2・3・8 は解消しました。Cranelift は `rust-version` 1.85 以下の最新の 0.121.2（31 package、C を compile する `build.rs` なし）を `=` で固定し、feature `fast-backend`（`x86`・`arm64`）に入れます。
-  `cranelift-native` は使わず、出力は host の CPU に依りません。スパイクでは、Cranelift の back end は LLVM の命令あたり約 1/4 の時間で関数単位に並列化でき、Mach-O は `LC_BUILD_VERSION` を足せば
-  warning なしで link でき、TLS と trap の signal（SIGTRAP）が LLVM 経路と合うことを確認しました。計測は back end だけで、ゲート（合成 1,000 module の `build-edit-body`）は WP9 で測ります。
-  検証の wrapper は 2 経路（`tsuzuri` の `build`/`run` と、`TSUZURI_CLANG` の `.ll` の `-O0`）で、suite の多くは `--emit llvm` の IR を自分で clang に渡すので後者が主（約 410 件、前者は約 190 件）です。
-  `half` は駆動側が `F16Path::Soft`、vector は lane の scalar 化、集約値は 2 層（小さいものは平らに、大きいものは参照）で扱います。`-g` の行情報（Phase 2）は IR の `!DILocation` から gimli で作り、
-  変数・型の DIE は作りません。wasm の直接生成（D13）は、wasm32 `-O0` の Clang が 57〜60%（合成 200 module）と確かめましたが、`object` に wasm の writer がなく Cranelift も wasm を出さないので
-  （手書きの relocatable wasm の writer が約 3.5〜4.5K 行）、ゲートを通った後に WP16 で再確認して WP17〜20 で実装します。D12（既定の切り替え）は行わず `llvm` が既定のままです。
+- **PR07**（計画。全フェーズを実装する）: 起票時の前提は `driver::build`・10 field の `BuildOptions`・計装範囲が module IR 全体、という形でしたが、現行は `build_linked`・22 field・PB01 の別 object
+  （既定の cache あり経路では `numeric`・`math` は計装されない）です。旗は `build --profile-generate <dir>`・`--profile-use <file|dir>` で、clang の IR PGO（`-x ir` に `-fprofile-generate`・`-fprofile-use`）を使い、
+  実装は新しい `src/profile.rs` に置きます。許す出力は native の exe・object だけで、Windows・別の machine の target・`--freestanding` との generate・WASM は `E2000` です。
+  配布物の `tsuzuri-clang` は `-fprofile-*` を黙って捨て、`llvm-profdata` も profile runtime も持たないため、launcher の clang では両方の旗を `E2002` にします（launcher は変えません）。
+  `llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、clang の隣、`clang -print-resource-dir` の toolchain の順で探し、PATH は見ません。
+  profile は IR・clang・option に結び付くので、generate と use は同じ clang で行い、古い profile は `W2001` の 1 行にします。`run` は Phase 2 で受けます。
+  偵察では、control の 16 種目のうち `closure_*` が −12〜−18%（間接呼び出しの対象を使う）、`tail_*`・`match_dispatch` が +18〜+64% で、Apple clang 21.0.0 と Homebrew 21.1.8 で同じでした。
+  docs は両方向を記録し、PGO は profile が要るため常に opt-in です。C/C++ の参照にも PGO を掛けて比較し、D6（PB01 の object）・D9（trap への `!prof`）は測定で判断します。
+  WASM は export だけの writer で可能と分かったので、試作で `llvm-profdata show` との一致と時間の差を測ってから出荷か `E2000` のままかを決めます。
+- **PR08**（計画。全フェーズ: native の `--emit bitcode` と wasm32）: 起票は第2・第3フェーズより前で、`Emit` は 6 でなく 14、C ランタイムは `task.c`・`cpu.c`・`io.c` でなく
+  `os`・`net`・`async`・GPU・`trap`・task・`cpu`・`io`・`arguments` の連結、公開の定義は object の `nm -g` で 8 でなく 32 記号でした。着手前の実測（Apple clang 21、Homebrew LLVM 21〜23、
+  配布物、Zig の ELF cross-link）で方針を改めました。D3（全 `define` に `target-cpu`・`target-features`・`tune-cpu` を付ける）は、F08 の `@cpu` 版の `"target-features"`
+  （x86-64 Linux 42・AArch64 Linux 28）を、`llvm-as` の「group が inline に勝つ」規則で消すため、汎用は `target-cpu`・`tune-cpu` だけ、`--cpu native` だけ features も写し、
+  自前の features は残します（features を写すと host の Clang との差で inline が外れ、`target-cpu` だけなら Apple 21・Homebrew 21・22 の host で inline します）。
+  配布物の `tsuzuri-clang` は `-x ir` の `-flto=thin` を黙って落として object を出すので、launcher を直し、成果物の magic を検査します。
+  C ランタイムは `merge_debug_ir` と同じ `-S -emit-llvm` → `llvm-link --internalize`（`trap.c` も含む）で、`llvm-link` は bitcode だけ「環境変数、同梱、Clang の隣、PATH」の順に探します。
+  ThinLTO のみ（lld は host の full LTO + ThinLTO の bitcode を link エラーにする）、cache なし、Windows は E2000、Rust は macOS の `-plugin-opt` で失敗するので CI に入れず未検証の表に記録します。
+  wasm32 は手作業で import が空・inline を確認でき、同じ仕組みで実装します（threads・WASI・wasm64 は対象外）。既定の出力は変えず、`lto/small_call` を object・bitcode・C だけの 3 通りで測り、
+  効果は host と bitcode の Clang が一致する構成にだけ主張します。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
@@ -493,6 +493,7 @@ graph LR
 | PR01・PR02・PR07・PR08・PM07 | なし |
 
 第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
-（PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で承認済みです。
-承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力など）を
-行うものではありません。残りのチケット（PB05・PB06・PB07・PM02・PM03・PM04・PM09・PR07・PR08）は未承認のままです。
+（PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で、第4フェーズの 7 件
+（PB05・PB06・PM02・PM03・PM04・PR07・PR08）の `要承認` は 2026-10-17 の全フェーズ実装の依頼で承認済みです。
+承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力、PB05 D12 の既定のバックエンド、
+PM03 の `TSUZURI_STRINGS` の既定など）を行うものではありません。残りのチケット（PB07・PM09）は未承認のままです。
