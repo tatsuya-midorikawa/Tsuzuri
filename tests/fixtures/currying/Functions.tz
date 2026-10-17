@@ -192,6 +192,29 @@ fn curried_replaced flag =
     let original = callback (curry_switch ref mut callback)
     original * 10000 + callback 2
 
+def curry_inc :: i64 -> i64
+fn curry_inc x = x + 1
+
+def curry_add3 :: i64 -> i64 -> i64 -> i64
+fn curry_add3 a b c = a + b + c
+
+// The four kinds of function values side by side (PM02): a function without captures, a capture
+// that fits the environment slot, an environment on the heap, and a partial application. The
+// array copy clones every one of them, and the end of the function drops them all.
+export def curried_mixed_kinds :: i64 -> i64
+fn curried_mixed_kinds seed =
+    let literal = "abc"
+    let prefix = clone_string ref literal
+    let plain: i64 -> i64 = curry_inc
+    let immediate: i64 -> i64 = \x -> x + seed
+    let heap: i64 -> i64 = \x -> x + prefix.length
+    let partial: i64 -> i64 = curry_add3 seed 2
+    let functions = [plain, immediate, heap, partial]
+    let copy = functions
+    let mut total: i64 = 0
+    for f in copy do total = total + f 10
+    total + functions[1] 0
+
 export def curried_dynamic_init :: bool -> i64 -> i64
 fn curried_dynamic_init flag count =
     let literal = "abcd"
