@@ -421,7 +421,7 @@ pub(crate) fn resolve(
         fingerprint: inventory.as_ref().map(Inventory::fingerprint),
         launcher: digest(request.launcher)?,
         clang: digest(request.clang)?,
-        zig: request.zig.map(&digest).transpose()?,
+        zig: request.zig.map(digest).transpose()?,
         version,
     };
     if let (Some(memo), Some((entries, newest)), Some(members), true) =
