@@ -264,7 +264,7 @@ Windows（MSVC）で試験しているのは、実行ファイルと、アロケ
 
 コードは、確保するプログラムで約 2.5 KiB 増えます。`.bss` に約 130 KiB を使いますが、触るまで物理メモリにはなりません。確保と解放の呼び出しは、`system` の `malloc` と `free` と同じように、読まれないまま解放されるブロックを LLVM が取り除けます。
 
-測定した範囲（Apple M1 Max、PX02 の app）では、`binary_trees`、`tree_transform`、`tokenize`、`csv_aggregate` のように小さなブロックを大量に確保して手放すプログラムの時間は `system` の 0.4〜0.65 倍で、macOS で `system` より遅くなった app はありませんでした。ピーク RSS は macOS で同じです（スレッドのキャッシュなどの固定費で、小さなプログラムは 0.1〜0.15 MiB 増えます）。glibc では、16〜24 バイトの確保が多いプログラムで約 25% 小さくなります。
+測定した範囲（Apple M1 Max、PX02 の app）では、`binary_trees`、`tree_transform`、`tokenize`、`csv_aggregate` のように小さなブロックを大量に確保して手放すプログラムの時間は `system` の 0.4〜0.65 倍で、macOS で `system` より遅くなった app は `closure_pipeline`（約 1.06 倍。確保が少なく、コードの配置の差と読めます）だけでした。ピーク RSS は macOS で同じです（スレッドのキャッシュなどの固定費で、小さなプログラムは 0.1〜0.15 MiB 増えます）。glibc では、16〜24 バイトの確保が多いプログラムで約 25% 小さくなります。
 
 既知の制限: Linux（arm64、glibc）では、ほかの確保を済ませたプロセスで大きな配列の確保と解放を繰り返す `record_sort` が `system` の 1.7〜2.3 倍遅くなりました。命令数は同じで、ページフォールトが増えています。`system` では C ライブラリのヒープの末尾を小さなブロックが押さえているので、glibc は大きな配列を解放しても末尾を OS へ返しません。`small` は小さなブロックを region に置くので、末尾が空いて、解放のたびに glibc が返し、次の確保で取り直します（`strace` の `brk` で確認）。そのため既定にはしていません。数値、条件、測っていないこと（Linux x64・Windows、専用機の値）は [docs/benchmarks.md](../../../docs/benchmarks.md) にあります。
 
