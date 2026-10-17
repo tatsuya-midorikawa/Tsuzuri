@@ -6,8 +6,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tsuzuri::driver::Project;
-use tsuzuri::driver::lto::{TargetAttributes, probe_target_attributes, stamp_target_attributes};
+#[cfg(unix)]
+use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::ffi::OsStr;
+#[cfg(unix)]
+use std::sync::OnceLock;
+
+use tsuzuri::diagnostic::Diagnostic;
+use tsuzuri::driver::lto::{TargetAttributes, stamp_target_attributes};
+#[cfg(unix)]
+use tsuzuri::driver::lto::{is_bitcode, llvm_link_tool, probe_target_attributes};
+use tsuzuri::driver::{self, BuildOptions, Emit, Project};
 use tsuzuri::llvm::{Allocator, EmitOptions, Entry, F16Path};
 
 fn clang() -> OsString {
@@ -364,6 +374,735 @@ fn probes_the_target_attributes_of_clang() {
         error
             .message
             .ends_with("bitcode output requires Clang that emits LLVM IR; set TSUZURI_CLANG")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+const ADD: &str = "export def add :: i64 -> i64 -> i64\nfn add x y = x + y\n";
+
+/// Exports that take a slice and return an array, so the program allocates.
+#[cfg(unix)]
+const BUFFERS: &str = r#"export def add :: i64 -> i64 -> i64
+fn add x y = x + y
+
+export def sum :: ref [i64] -> i64
+fn sum values = Array.sum values
+
+export def bytes :: i64 -> [ubyte]
+fn bytes count = new [ubyte](count, index -> index as ubyte)
+"#;
+
+/// Division traps on zero, which `--trap-mode return` hands to the host (E14).
+#[cfg(unix)]
+const TRAPS: &str = r#"export def div :: i64 -> i64 -> i64
+fn div a b = a / b
+
+export def sum_to :: i64 -> i64
+fn sum_to count =
+    let values = new [i64](count, \i -> i)
+    Array.sum (ref values)
+"#;
+
+fn write(directory: &Path, name: &str, text: &str) -> PathBuf {
+    let path = directory.join(name);
+    fs::write(&path, text).unwrap();
+    path
+}
+
+/// Builds the project at `source` into `output` through the library, as `tsuzuri build` does.
+fn build(source: &Path, output: &Path, options: BuildOptions) -> Result<(), Diagnostic> {
+    let project = Project::load(source).unwrap();
+    let module = project.analyze().unwrap();
+    driver::build(&module, &project, output, options).map(drop)
+}
+
+fn bitcode_options() -> BuildOptions {
+    BuildOptions {
+        emit: Emit::Bitcode,
+        cache: false,
+        ..BuildOptions::default()
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_builds_no_bitcode_yet() {
+    let directory = scratch("windows");
+    let source = write(&directory, "Main.tz", ADD);
+    let error = build(&source, &directory.join("add.bc"), bitcode_options()).unwrap_err();
+    assert_eq!(error.code, "E2000");
+    assert!(
+        error.message.contains("not supported on Windows"),
+        "{}",
+        error.message
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+const ADD_TOTAL: &str = "4999950000\n";
+
+#[cfg(unix)]
+const ADD_HOST: &str = r#"#include <stdint.h>
+#include <stdio.h>
+
+int64_t tz_add(int64_t x, int64_t y);
+
+int main(void) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < 100000; i++) total = tz_add(total, i);
+    printf("%lld\n", (long long)total);
+    return 0;
+}
+"#;
+
+#[cfg(unix)]
+const ADD_HOST_CPP: &str = r#"#include <cstdint>
+#include <cstdio>
+
+extern "C" std::int64_t tz_add(std::int64_t x, std::int64_t y);
+
+int main() {
+    std::int64_t total = 0;
+    for (std::int64_t i = 0; i < 100000; i++) total = tz_add(total, i);
+    std::printf("%lld\n", static_cast<long long>(total));
+    return 0;
+}
+"#;
+
+#[cfg(unix)]
+const TASKS_HOST: &str = r#"#include <stdint.h>
+#include <stdio.h>
+
+int64_t tz_task_parallel(void);
+int64_t tz_parallel_sum(int64_t count);
+int64_t tz_sequence(int64_t n);
+
+int main(void) {
+    printf("%lld %lld %lld\n", (long long)tz_task_parallel(), (long long)tz_parallel_sum(10), (long long)tz_sequence(5));
+    return 0;
+}
+"#;
+
+/// Allocates and frees arrays through the program's own heap functions; `-DCOUNTING` also reads the counts of
+/// `--allocator counting`.
+#[cfg(unix)]
+const BUFFERS_HOST: &str = r#"#include <stdint.h>
+#include <stdio.h>
+
+typedef struct { uint8_t *ptr; int64_t len; } bytes_t;
+int64_t tz_add(int64_t x, int64_t y);
+int64_t tz_sum(const int64_t *values, int64_t length);
+void tz_bytes(bytes_t *out, int64_t count);
+void tsuzuri_free(void *ptr);
+#ifdef COUNTING
+typedef struct { uint64_t allocations, frees, live_bytes, peak_bytes; } stats_t;
+void tsuzuri_alloc_stats(stats_t *stats);
+#endif
+
+int main(void) {
+    int checked = 0;
+    for (int round = 0; round < 100; round++) {
+        bytes_t bytes;
+        tz_bytes(&bytes, 257);
+        checked += bytes.len == 257 && bytes.ptr[255] == 255 && bytes.ptr[256] == 0;
+        tsuzuri_free(bytes.ptr);
+    }
+    int64_t values[] = {1, 2, 3};
+    printf("%d %lld %lld\n", checked, (long long)tz_add(40, 2), (long long)tz_sum(values, 3));
+#ifdef COUNTING
+    stats_t stats;
+    tsuzuri_alloc_stats(&stats);
+    printf("%d %llu\n", stats.allocations >= 100 && stats.allocations == stats.frees, (unsigned long long)stats.live_bytes);
+#endif
+    return 0;
+}
+"#;
+
+/// The host of `--allocator host` owns every block of the program and sees each one freed.
+#[cfg(unix)]
+const HOST_ALLOCATOR_HOST: &str = r#"#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct { uint8_t *ptr; int64_t len; } bytes_t;
+void tz_bytes(bytes_t *out, int64_t count);
+void tsuzuri_free(void *ptr);
+
+static uint64_t live, allocations;
+void *tsuzuri_host_alloc(uint64_t size, uint64_t align) { (void)align; live += size; allocations++; return malloc(size); }
+void tsuzuri_host_free(void *ptr, uint64_t size, uint64_t align) { (void)align; live -= size; free(ptr); }
+void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint64_t align) { (void)align; live += new_size; live -= old_size; return realloc(ptr, new_size); }
+
+int main(void) {
+    int checked = 0;
+    for (int round = 0; round < 100; round++) {
+        bytes_t bytes;
+        tz_bytes(&bytes, 257);
+        checked += bytes.len == 257 && bytes.ptr[255] == 255 && bytes.ptr[256] == 0;
+        tsuzuri_free(bytes.ptr);
+    }
+    printf("%d %d %llu\n", checked, allocations >= 100, (unsigned long long)live);
+    return 0;
+}
+"#;
+
+#[cfg(unix)]
+const TRAPS_HOST: &str = r#"#include <stdint.h>
+#include <stdio.h>
+
+typedef struct { uint32_t site; uint32_t kind; } trap_info;
+int64_t tz_div(int64_t a, int64_t b);
+int32_t tsuzuri_try_div(trap_info *trap, int64_t *result, int64_t a, int64_t b);
+int64_t tz_sum_to(int64_t count);
+
+int main(void) {
+    trap_info trap;
+    int64_t result = 0;
+    int ok = tsuzuri_try_div(&trap, &result, 84, 2);
+    int64_t quotient = result;
+    int trapped = tsuzuri_try_div(&trap, &result, 1, 0);
+    printf("%d %lld %d %lld %lld\n", ok, (long long)quotient, trapped != 0, (long long)tz_div(9, 3), (long long)tz_sum_to(100));
+    return 0;
+}
+"#;
+
+/// Whether `tool` starts and answers `--version`.
+#[cfg(unix)]
+fn runs(tool: &OsStr) -> bool {
+    Command::new(tool)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// A test that needs `reason` skips on a developer's machine and fails on CI, which installs every tool.
+#[cfg(unix)]
+fn unavailable(reason: &str) {
+    assert!(std::env::var_os("CI").is_none(), "{reason}");
+    eprintln!("skipped: {reason}");
+}
+
+/// A tool of the LLVM that `llvm-link` comes from: the one beside it, else the one on `PATH`.
+#[cfg(unix)]
+fn llvm_tool(name: &str) -> Option<OsString> {
+    let link = llvm_link_tool();
+    let beside = Path::new(&link)
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map(|directory| directory.join(name).into_os_string());
+    let found = beside
+        .into_iter()
+        .chain([OsString::from(name)])
+        .find(|tool| runs(tool));
+    if found.is_none() {
+        unavailable(&format!(
+            "{name} was not found: put the tools of the LLVM that Clang comes from next to Clang or on PATH"
+        ));
+    }
+    found
+}
+
+/// The flags that make a link read bitcode: ThinLTO, and LLD on Linux, because GNU ld cannot read it.
+#[cfg(unix)]
+fn lto_flags() -> Vec<&'static str> {
+    let mut flags = vec!["-O3", "-flto=thin"];
+    if cfg!(target_os = "linux") {
+        flags.push("-fuse-ld=lld");
+    }
+    flags
+}
+
+/// Whether the Clang of the build links with ThinLTO here; it is asked once.
+#[cfg(unix)]
+fn thinlto_link_works() -> bool {
+    static WORKS: OnceLock<Result<(), String>> = OnceLock::new();
+    let outcome = WORKS.get_or_init(|| {
+        let directory = scratch("thinlto-probe");
+        let source = write(&directory, "probe.c", "int main(void) { return 0; }\n");
+        let result = Command::new(clang())
+            .args(lto_flags())
+            .arg(&source)
+            .arg("-o")
+            .arg(directory.join("probe"))
+            .output();
+        let outcome = match result {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(String::from_utf8_lossy(&output.stderr).into_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        let _ = fs::remove_dir_all(directory);
+        outcome
+    });
+    if let Err(reason) = outcome {
+        unavailable(&format!("this Clang cannot link with -flto=thin: {reason}"));
+    }
+    outcome.is_ok()
+}
+
+/// Links `inputs` into `directory/name` with `compiler`, which must be the Clang that built them.
+#[cfg(unix)]
+fn link(
+    compiler: &OsStr,
+    directory: &Path,
+    name: &str,
+    inputs: &[&Path],
+    lto: bool,
+    extra: &[&str],
+) -> PathBuf {
+    let program = directory.join(name);
+    let mut command = Command::new(compiler);
+    if lto {
+        command.args(lto_flags());
+    } else {
+        command.arg("-O3");
+    }
+    let result = command
+        .args(inputs)
+        .arg("-o")
+        .arg(&program)
+        .args(extra)
+        .arg("-lm")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    program
+}
+
+#[cfg(unix)]
+fn run(program: &Path) -> String {
+    let output = Command::new(program).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}: {} {}",
+        program.display(),
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The symbols of a bitcode file, object, or executable as `(type, name)`, without the underscore of Mach-O.
+#[cfg(unix)]
+fn symbols(nm: &OsStr, file: &Path) -> Vec<(char, String)> {
+    let output = Command::new(nm).arg(file).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().rev();
+            let name = fields.next()?;
+            let kind = fields.next()?.chars().next()?;
+            let name = if cfg!(target_vendor = "apple") {
+                name.strip_prefix('_').unwrap_or(name)
+            } else {
+                name
+            };
+            Some((kind, name.to_owned()))
+        })
+        .collect()
+}
+
+/// The names that `file` defines with the given symbol types.
+#[cfg(unix)]
+fn defined(nm: &OsStr, file: &Path, kinds: &str) -> BTreeSet<String> {
+    symbols(nm, file)
+        .into_iter()
+        .filter(|(kind, _)| kinds.contains(*kind))
+        .map(|(_, name)| name)
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn a_c_host_inlines_the_bitcode_but_not_an_object() {
+    let Some(nm) = llvm_tool("llvm-nm") else {
+        return;
+    };
+    if !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("inline");
+    let source = write(&directory, "Main.tz", ADD);
+    let (bitcode, object) = (directory.join("add.bc"), directory.join("add.o"));
+    build(&source, &bitcode, bitcode_options()).unwrap();
+    build(
+        &source,
+        &object,
+        BuildOptions {
+            emit: Emit::Object,
+            ..bitcode_options()
+        },
+    )
+    .unwrap();
+    assert!(is_bitcode(&fs::read(&bitcode).unwrap()));
+    assert!(!is_bitcode(&fs::read(&object).unwrap()));
+    let host = write(&directory, "host.c", ADD_HOST);
+    let called = link(
+        &clang(),
+        &directory,
+        "called",
+        &[&host, &object],
+        false,
+        &[],
+    );
+    let inlined = link(
+        &clang(),
+        &directory,
+        "inlined",
+        &[&host, &bitcode],
+        true,
+        &[],
+    );
+    assert_eq!(run(&called), ADD_TOTAL);
+    assert_eq!(run(&inlined), ADD_TOTAL);
+    // The host's loop calls `tz_add` through the object, and has no call left after ThinLTO imported it.
+    assert!(defined(&nm, &called, "Tt").contains("tz_add"));
+    assert!(
+        !symbols(&nm, &inlined)
+            .iter()
+            .any(|(_, name)| name == "tz_add"),
+        "{:?}",
+        symbols(&nm, &inlined)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_cpp_host_inlines_the_bitcode_too() {
+    let Some(nm) = llvm_tool("llvm-nm") else {
+        return;
+    };
+    if !thinlto_link_works() {
+        return;
+    }
+    let clang = clang();
+    let compiler = Path::new(&clang).with_file_name("clang++").into_os_string();
+    if !runs(&compiler) {
+        unavailable(&format!("{} is not installed", compiler.to_string_lossy()));
+        return;
+    }
+    let directory = scratch("cpp");
+    let source = write(&directory, "Main.tz", ADD);
+    let bitcode = directory.join("add.bc");
+    build(&source, &bitcode, bitcode_options()).unwrap();
+    let host = write(&directory, "host.cpp", ADD_HOST_CPP);
+    let inlined = link(
+        &compiler,
+        &directory,
+        "inlined",
+        &[&host, &bitcode],
+        true,
+        &[],
+    );
+    assert_eq!(run(&inlined), ADD_TOTAL);
+    assert!(
+        !symbols(&nm, &inlined)
+            .iter()
+            .any(|(_, name)| name == "tz_add")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
+    let (Some(nm), Some(_)) = (llvm_tool("llvm-nm"), llvm_tool("llvm-link")) else {
+        return;
+    };
+    if !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("runtime");
+    let source = root().join("tests/fixtures/tasks/Main.tz");
+    let (bitcode, object) = (directory.join("tasks.bc"), directory.join("tasks.o"));
+    build(&source, &bitcode, bitcode_options()).unwrap();
+    build(
+        &source,
+        &object,
+        BuildOptions {
+            emit: Emit::Object,
+            ..bitcode_options()
+        },
+    )
+    .unwrap();
+    // The program's exports are the only strong symbols: the tasks, the CPU detection, and the rest of the C
+    // runtime are inside, and a second library built the same way would not collide with them.
+    let module = Project::load(&source).unwrap().analyze().unwrap();
+    let exports: BTreeSet<String> = module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| format!("tz_{}", function.name))
+        .collect();
+    assert!(exports.len() >= 30, "{exports:?}");
+    assert_eq!(defined(&nm, &bitcode, "TDBR"), exports);
+    let weak = defined(&nm, &bitcode, "WV");
+    assert!(
+        weak.iter()
+            .all(|name| name.starts_with("tz_soft_") || name.starts_with("tsuzuri_")),
+        "{weak:?}"
+    );
+    let host = write(&directory, "host.c", TASKS_HOST);
+    let linked = link(
+        &clang(),
+        &directory,
+        "from-object",
+        &[&host, &object],
+        false,
+        &["-pthread"],
+    );
+    let inlined = link(
+        &clang(),
+        &directory,
+        "from-bitcode",
+        &[&host, &bitcode],
+        true,
+        &["-pthread"],
+    );
+    assert_eq!(run(&linked), "42 285 11\n");
+    assert_eq!(run(&inlined), "42 285 11\n");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn cpu_kernels_agree_through_bitcode_and_an_object() {
+    if llvm_tool("llvm-link").is_none() || !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("kernels");
+    let source = root().join("tests/fixtures/cpu_kernels/Main.tz");
+    let exports: Vec<String> = fs::read_to_string(&source)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.strip_prefix("export def ")?.split_whitespace().next())
+        .map(str::to_owned)
+        .collect();
+    assert!(exports.len() >= 24, "{exports:?}");
+    let mut text = String::from("#include <stdint.h>\n#include <stdio.h>\n");
+    for name in &exports {
+        text.push_str(&format!("int64_t tz_{name}(int64_t pattern);\n"));
+    }
+    text.push_str("int main(void) {\n    for (int64_t pattern = 0; pattern < 5; pattern++) {\n");
+    for name in &exports {
+        text.push_str(&format!(
+            "        printf(\"{name} %lld %lld\\n\", (long long)pattern, (long long)tz_{name}(pattern));\n"
+        ));
+    }
+    text.push_str("    }\n    return 0;\n}\n");
+    let host = write(&directory, "host.c", &text);
+    // The `@cpu` versions of F08 name their own target features: a link that merged the attributes of the
+    // functions would run an instruction that this machine lacks, or give other results.
+    let (bitcode, object) = (directory.join("kernels.bc"), directory.join("kernels.o"));
+    build(&source, &bitcode, bitcode_options()).unwrap();
+    build(
+        &source,
+        &object,
+        BuildOptions {
+            emit: Emit::Object,
+            ..bitcode_options()
+        },
+    )
+    .unwrap();
+    let linked = link(
+        &clang(),
+        &directory,
+        "from-object",
+        &[&host, &object],
+        false,
+        &["-pthread"],
+    );
+    let inlined = link(
+        &clang(),
+        &directory,
+        "from-bitcode",
+        &[&host, &bitcode],
+        true,
+        &["-pthread"],
+    );
+    let expected = run(&linked);
+    assert_eq!(expected.lines().count(), exports.len() * 5);
+    assert_eq!(run(&inlined), expected);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn every_allocator_works_through_bitcode() {
+    if llvm_tool("llvm-link").is_none() || !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("allocators");
+    let source = write(&directory, "Main.tz", BUFFERS);
+    let host = write(&directory, "host.c", BUFFERS_HOST);
+    let host_allocator = write(&directory, "allocator.c", HOST_ALLOCATOR_HOST);
+    // The counting allocator's statistics and the host's own allocator both see every block freed.
+    let cases: [(&str, Allocator, &Path, &[&str], &str); 4] = [
+        ("system", Allocator::System, &host, &[], "100 42 6\n"),
+        ("small", Allocator::Small, &host, &[], "100 42 6\n"),
+        (
+            "counting",
+            Allocator::Counting,
+            &host,
+            &["-DCOUNTING"],
+            "100 42 6\n1 0\n",
+        ),
+        ("host", Allocator::Host, &host_allocator, &[], "100 1 0\n"),
+    ];
+    for (name, allocator, main, extra, expected) in cases {
+        let bitcode = directory.join(format!("{name}.bc"));
+        let options = BuildOptions {
+            allocator,
+            ..bitcode_options()
+        };
+        build(&source, &bitcode, options)
+            .unwrap_or_else(|error| panic!("{name}: {}", error.message));
+        let program = link(&clang(), &directory, name, &[main, &bitcode], true, extra);
+        assert_eq!(run(&program), expected, "{name}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_trap_returns_to_a_host_that_links_the_bitcode() {
+    let Some(nm) = llvm_tool("llvm-nm") else {
+        return;
+    };
+    if llvm_tool("llvm-link").is_none() || !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("traps");
+    let source = write(&directory, "Main.tz", TRAPS);
+    let bitcode = directory.join("traps.bc");
+    build(
+        &source,
+        &bitcode,
+        BuildOptions {
+            trap_return: true,
+            ..bitcode_options()
+        },
+    )
+    .unwrap();
+    let strong = defined(&nm, &bitcode, "TDBR");
+    for name in [
+        "tz_div",
+        "tz_sum_to",
+        "tsuzuri_try_div",
+        "tsuzuri_try_sum_to",
+    ] {
+        assert!(strong.contains(name), "{name} is missing: {strong:?}");
+    }
+    let host = write(&directory, "host.c", TRAPS_HOST);
+    let program = link(
+        &clang(),
+        &directory,
+        "traps",
+        &[&host, &bitcode],
+        true,
+        &["-pthread"],
+    );
+    assert_eq!(run(&program), "0 42 1 3 4950\n");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn bitcode_is_the_same_bytes_every_time() {
+    if llvm_tool("llvm-link").is_none() {
+        return;
+    }
+    let directory = scratch("determinism");
+    for source in [
+        write(&directory, "Main.tz", BUFFERS),
+        root().join("tests/fixtures/tasks/Main.tz"),
+    ] {
+        let name = source.parent().unwrap().file_name().unwrap().to_owned();
+        let first = directory.join(format!("{}-1.bc", name.to_string_lossy()));
+        let second = directory.join(format!("{}-2.bc", name.to_string_lossy()));
+        build(&source, &first, bitcode_options()).unwrap();
+        build(&source, &second, bitcode_options()).unwrap();
+        assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// Runs `tsuzuri build --emit bitcode` on `source` with `environment`, which must fail, and returns its stderr. The
+/// failed build leaves no output behind.
+#[cfg(unix)]
+fn build_failure(source: &Path, output: &Path, environment: &[(&str, &OsStr)]) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+    command
+        .arg("build")
+        .arg(source)
+        .args(["--emit", "bitcode", "--no-cache", "-o"])
+        .arg(output);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    let result = command.output().unwrap();
+    assert!(!result.status.success());
+    assert!(!output.exists());
+    String::from_utf8_lossy(&result.stderr).into_owned()
+}
+
+#[test]
+#[cfg(unix)]
+fn a_clang_that_drops_lto_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = scratch("without-lto");
+    // The bundled launcher compiled IR without `-flto=thin` for a while: it wrote a native object instead.
+    let wrapper = write(
+        &directory,
+        "clang-without-lto",
+        "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do a=$1; shift; n=$((n - 1)); [ \"$a\" = -flto=thin ] || set -- \"$@\" \"$a\"; done\nexec \"$REAL_CLANG\" \"$@\"\n",
+    );
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let source = write(&directory, "Main.tz", ADD);
+    let real = clang();
+    let message = build_failure(
+        &source,
+        &directory.join("add.bc"),
+        &[
+            ("TSUZURI_CLANG", wrapper.as_os_str()),
+            ("REAL_CLANG", real.as_os_str()),
+        ],
+    );
+    assert!(message.contains("error[E2002]"), "{message}");
+    assert!(
+        message.contains("did not write LLVM bitcode for --emit bitcode"),
+        "{message}"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_missing_llvm_link_names_the_variable() {
+    let directory = scratch("no-llvm-link");
+    let missing = directory.join("no-such-llvm-link");
+    let message = build_failure(
+        &root().join("tests/fixtures/tasks/Main.tz"),
+        &directory.join("tasks.bc"),
+        &[("TSUZURI_LLVM_LINK", missing.as_os_str())],
+    );
+    assert!(
+        message.contains("error[E2002]: cannot execute"),
+        "{message}"
+    );
+    assert!(
+        message.contains("bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang"),
+        "{message}"
     );
     fs::remove_dir_all(directory).unwrap();
 }
