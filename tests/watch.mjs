@@ -4,7 +4,7 @@
 // usage: node tests/watch.mjs [target/release/tsuzuri]
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -26,8 +26,8 @@ function cold(args) {
 const statusLine = /^watch: run (\d+) finished with exit code (\d+)\n|^\{"type":"watch","run":(\d+),"exit":(\d+)\}\n/m;
 
 // Starts `tsuzuri watch ARGS` in the test root and collects what each run writes before its status line.
-function watch(args) {
-  const child = spawn(compiler, ["watch", ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+function watch(args, program = compiler, extra = {}) {
+  const child = spawn(program, ["watch", ...args], { cwd: root, env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
   children.add(child);
   const state = { runs: [], stderr: "", stdout: "", consumed: 0, waiters: [], exit: null };
   child.stdout.setEncoding("utf8").on("data", (chunk) => { state.stdout += chunk; });
@@ -55,6 +55,17 @@ function watch(args) {
     if (!check()) state.waiters.push(check);
   });
   state.stop = () => { children.delete(child); child.kill("SIGTERM"); };
+  // Resolves with the exit code when the process ends by itself.
+  state.exited = () => new Promise((done, fail) => {
+    const timer = setTimeout(() => fail(new Error(`the watch did not stop after 60 s\nstderr so far: ${state.stderr}`)), 60_000);
+    const check = () => {
+      if (state.exit === null) return false;
+      clearTimeout(timer);
+      done(state.exit);
+      return true;
+    };
+    if (!check()) state.waiters.push(check);
+  });
   return state;
 }
 
@@ -205,7 +216,38 @@ try {
   assert.equal(threads.status, 2);
   assert.match(threads.stderr, /TSUZURI_THREADS must be an integer from 1 to 32/);
 
-  console.log("Watch: runs equal the commands alone, same-length same-time edits, additions, removals, new directories, touches, JSON status lines, build, test and usage errors passed");
+  // 12: a compiler that is replaced while it watches (a rebuild) ends the watch after the run that
+  // follows, so that no cache is written under the identity of a file that is no longer there.
+  save(main, "42\n");
+  for (const [name, extra, last] of [["text", [], "watch: the compiler binary changed; stopping (start tsuzuri watch again)\n"], ["json", ["--json"], "{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}\n"]]) {
+    const copy = join(root, `compiler-${name}`);
+    copyFileSync(compiler, copy);
+    chmodSync(copy, 0o755);
+    const replaced = watch(["check", "app", ...extra], copy);
+    assert.equal((await replaced.run(1)).exit, 0);
+    copyFileSync(compiler, `${copy}.next`);
+    chmodSync(`${copy}.next`, 0o755);
+    renameSync(`${copy}.next`, copy);
+    save(main, `${46 + extra.length}\n`);
+    assert.equal((await replaced.run(2)).exit, 0);
+    assert.equal(await replaced.exited(), 1, name);
+    assert.ok(replaced.stderr.endsWith(last), replaced.stderr);
+  }
+
+  // 13: TSUZURI_TIME_PASSES reports each run alone: the phases of an earlier run are not summed in.
+  save(main, "42\n");
+  const timed = watch(["check", "app"], compiler, { TSUZURI_TIME_PASSES: "1" });
+  const reports = (run) => run.stderr.split("\n").filter((line) => line.startsWith("{\"time_passes\":1,"));
+  const timedFirst = await timed.run(1);
+  assert.equal(reports(timedFirst).length, 1);
+  assert.ok(JSON.parse(reports(timedFirst)[0]).phases.some((phase) => phase.name === "specialize"));
+  save(main, "missing\n");
+  const timedSecond = await timed.run(2);
+  assert.equal(reports(timedSecond).length, 1);
+  assert.ok(!JSON.parse(reports(timedSecond)[0]).phases.some((phase) => phase.name === "specialize"), "a failed run has no specialize phase");
+  timed.stop();
+
+  console.log("Watch: runs equal the commands alone, same-length same-time edits, additions, removals, new directories, touches, JSON status lines, build, test, usage errors and a replaced compiler passed");
 } finally {
   for (const child of children) child.kill("SIGTERM");
   rmSync(root, { recursive: true, force: true });

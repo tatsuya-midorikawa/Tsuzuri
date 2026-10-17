@@ -60,8 +60,21 @@ pub fn render(phases: &[(String, f64)], total_ms: f64) -> String {
 pub struct Report(Option<Instant>);
 
 impl Report {
+    /// A report covers the phases since its start, so a process that runs commands one after the
+    /// other (`tsuzuri watch`) reports each of them alone.
     pub fn start() -> Self {
+        if enabled() {
+            PHASES
+                .lock()
+                .expect("compiler phase timings poisoned")
+                .clear();
+        }
         Self(start())
+    }
+
+    /// Makes the report print nothing: the commands of `tsuzuri watch` have reports of their own.
+    pub fn disarm(&mut self) {
+        self.0 = None;
     }
 }
 

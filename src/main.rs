@@ -2146,7 +2146,7 @@ fn help() -> String {
 }
 
 fn main() -> ExitCode {
-    let _time_passes = tsuzuri::timings::Report::start();
+    let mut time_passes = tsuzuri::timings::Report::start();
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{}", help());
@@ -2210,6 +2210,7 @@ fn main() -> ExitCode {
         return repl_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "watch") {
+        time_passes.disarm();
         return watch_main(&raw[1..]);
     }
     ExitCode::from(cli(
@@ -2389,12 +2390,22 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
     if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
         return ExitCode::from(code);
     }
-    // The snapshot comes before the run: a save during the run starts another run.
-    let mut watcher = tsuzuri::watch::Watcher::new(&parsed.input, parsed.action == Action::Test);
+    // The snapshot comes before the run: a save during the run starts another run. The state
+    // remembers the sources that the runs and the snapshots read, so that a run opens only the
+    // files that changed, and pins the compiler that started the watch.
+    let mut resident = tsuzuri::resident::ResidentState::new();
+    let mut watcher = {
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+        tsuzuri::watch::Watcher::new(&parsed.input, parsed.action == Action::Test)
+    };
     let mut run = 0_u64;
     loop {
         run += 1;
-        let code = cli(arguments, None, &mut io::stdout(), &mut io::stderr());
+        let code = {
+            let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+            let _report = tsuzuri::timings::Report::start();
+            cli(arguments, None, &mut io::stdout(), &mut io::stderr())
+        };
         if json {
             errln!(
                 io::stderr(),
@@ -2406,6 +2417,23 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
                 "watch: run {run} finished with exit code {code}"
             );
         }
+        // A rebuilt compiler would run on with the caches and keys of the file that replaced it.
+        if resident.compiler_changed() {
+            if json {
+                errln!(
+                    io::stderr(),
+                    "{{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}}"
+                );
+            } else {
+                errln!(
+                    io::stderr(),
+                    "watch: the compiler binary changed; stopping (start tsuzuri watch again)"
+                );
+            }
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        resident.trim();
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
         watcher.wait_for_change();
     }
 }

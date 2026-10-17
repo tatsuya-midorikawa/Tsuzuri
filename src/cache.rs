@@ -956,16 +956,30 @@ impl Sha256 {
 }
 
 pub fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
+    // A resident process remembers a digest while the stamp of its file is the same, and then does not open the file.
+    let started = crate::resident::clock();
+    let stamp = started
+        .and_then(|_| std::fs::metadata(path).ok())
+        .map(|metadata| crate::resident::FileStamp::from_metadata(&metadata));
+    if let Some(stamp) = &stamp
+        && let Some(digest) = crate::resident::cached_digest(path, stamp)
+    {
+        return Ok(digest);
+    }
     let mut file = std::fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
-    loop {
+    let digest = loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
-            return Ok(hash.finalize());
+            break hash.finalize();
         }
         hash.update(&buffer[..count]);
+    };
+    if let (Some(started), Some(stamp)) = (started, stamp) {
+        crate::resident::remember_digest(path, stamp, started, digest);
     }
+    Ok(digest)
 }
 
 #[cfg(test)]

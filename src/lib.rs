@@ -26,6 +26,7 @@ mod parallel;
 pub mod parser;
 mod ranges;
 pub mod repl;
+pub mod resident;
 mod runtime_cache;
 pub mod simd;
 pub mod stdlib;

@@ -9,9 +9,9 @@
 //! - Every [`DISCOVER_EVERY`] polls the directories are scanned again (no file is opened) for
 //!   added and removed sources and manifests. Where a stamp cannot show every write (not Unix),
 //!   every file is read again then.
-//! - A file that was written in the last [`RACY`] before it was read could be written again with
-//!   the same stamp, because timestamps have a granularity. It is read again once, after the
-//!   window has passed.
+//! - A file that was written in the last [`RACY`](crate::resident::RACY) before it was read could
+//!   be written again with the same stamp, because timestamps have a granularity. It is read
+//!   again once, after the window has passed.
 //!
 //! Opening a file is the expensive part of loading a project on some machines (an on-access scan
 //! makes it 0.3 to 0.7 ms), and a stamp is a `stat`, so a project of a thousand modules costs a
@@ -20,90 +20,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use crate::check::ModuleOrigin;
 use crate::driver::{self, Project, SourceError};
+use crate::resident::{FileStamp, STAMP_SHOWS_WRITES};
 
 /// How often the stamps of the watched files are compared.
 pub const POLL: Duration = Duration::from_millis(100);
 /// Every this many polls (1 s) the directories are scanned for added and removed files.
 pub const DISCOVER_EVERY: u32 = 10;
-/// The longest timestamp granularity that is taken into account (a FAT file system's 2 s). A write
-/// less than this long after the stamp's time can leave the stamp as it was.
-pub const RACY: Duration = Duration::from_secs(2);
-/// Whether every write to a file changes its stamp, so that a file whose stamp is the same need
-/// not be read: on Unix the status-change time says so, and a program cannot set it back.
-const STAMP_SHOWS_WRITES: bool = cfg!(unix);
-
-/// What `lstat` says about a file: enough to tell, without reading it, that it was written. On Unix
-/// that is the device, the inode, the size, the modification time and the status-change time, which
-/// the kernel sets on every write, rename, `utimes` and `chmod`. Elsewhere it is the size and the
-/// modification time, which a program can set back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FileStamp {
-    /// A regular file, not a symbolic link or a directory.
-    regular: bool,
-    len: u64,
-    modified: Option<SystemTime>,
-    #[cfg(unix)]
-    identity: (u64, u64),
-    #[cfg(unix)]
-    changed: (i64, i64),
-}
-
-impl FileStamp {
-    /// The stamp of the file at `path` itself (a symbolic link is not followed), or `None` when
-    /// there is none.
-    pub(crate) fn of(path: &Path) -> Option<Self> {
-        fs::symlink_metadata(path)
-            .ok()
-            .map(|metadata| Self::from_metadata(&metadata))
-    }
-
-    pub(crate) fn from_metadata(metadata: &fs::Metadata) -> Self {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            regular: metadata.is_file(),
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-            #[cfg(unix)]
-            identity: (metadata.dev(), metadata.ino()),
-            #[cfg(unix)]
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-
-    /// The time of the newest change that the stamp records.
-    #[cfg(unix)]
-    fn time(&self) -> SystemTime {
-        let (seconds, nanoseconds) = self.changed;
-        match (u64::try_from(seconds), u32::try_from(nanoseconds)) {
-            (Ok(seconds), Ok(nanoseconds)) => UNIX_EPOCH + Duration::new(seconds, nanoseconds),
-            _ => UNIX_EPOCH,
-        }
-    }
-
-    #[cfg(not(unix))]
-    fn time(&self) -> SystemTime {
-        self.modified.unwrap_or(UNIX_EPOCH)
-    }
-
-    /// Whether a write after `read_at` could leave this stamp as it is. The time of a stamp has a
-    /// granularity, so a read that is not at least [`RACY`] later than the stamp's time cannot rule
-    /// out another write in the same tick (git calls such an entry racily clean).
-    pub(crate) fn is_racy(&self, read_at: SystemTime) -> bool {
-        read_at < self.time() + RACY
-    }
-
-    /// When a file that was read at `read_at` has to be read once more, if it has to be.
-    fn verify_after(stamp: Option<Self>, read_at: SystemTime) -> Option<SystemTime> {
-        stamp
-            .filter(|stamp| stamp.is_racy(read_at))
-            .map(|stamp| stamp.time() + RACY)
-    }
-}
 
 /// A watched file as the last run could have read it.
 #[derive(Debug)]
@@ -349,6 +275,7 @@ fn observe(input: &Path, tests: bool, previous: Option<&Observation>) -> Observa
 mod tests {
     use super::*;
     use crate::driver::TemporaryDirectory;
+    use crate::resident::RACY;
     use std::fs::File;
 
     fn project() -> (TemporaryDirectory, PathBuf) {
