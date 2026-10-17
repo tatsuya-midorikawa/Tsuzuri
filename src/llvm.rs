@@ -1112,7 +1112,7 @@ fn emit_program_in(
         ));
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.closure.desc = type { ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
@@ -2067,6 +2067,55 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
+/// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
+/// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
+/// copy, a task is never cloned, and a function that borrows owned captures is not cloned either
+/// (B07).
+fn closure_slots(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> (String, String) {
+    let name = function.qualified_name();
+    if count == 0 {
+        ("null".to_owned(), "null".to_owned())
+    } else if immediate {
+        (
+            "@tz.closure.immediate.clone".to_owned(),
+            "@tz.closure.immediate.drop".to_owned(),
+        )
+    } else if !function.is_task
+        && !function.owned_captures
+        && function.signature.parameters[..count]
+            .iter()
+            .all(|ty| ty.can_capture(&module.types()))
+    {
+        (
+            format!("@tz.env.clone.{name}.{count}"),
+            format!("@tz.env.drop.{name}.{count}"),
+        )
+    } else {
+        ("null".to_owned(), format!("@tz.env.drop.{name}.{count}"))
+    }
+}
+
+/// The static descriptor of the closure of `function` with `count` captures: its code and how to
+/// clone and drop its environment. It stands alone in its block, so that a reader that splits the
+/// IR at blank lines finds every function at the start of its own block.
+fn closure_descriptor_definition(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> String {
+    let name = function.qualified_name();
+    let (clone, drop) = closure_slots(module, function, count, immediate);
+    format!(
+        "@tz.desc.{name}.{count} = internal unnamed_addr constant %tz.closure.desc {{ ptr @tz.apply.{name}.{count}, ptr {clone}, ptr {drop} }}\n\n"
+    )
+}
+
 fn closure_wrappers(
     module: &CheckedModule,
     function: &CheckedFunction,
@@ -2175,6 +2224,9 @@ fn closure_wrappers(
             output.push_str(&apply.auxiliary(&format!(
                 "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
             )));
+            output.push_str(&closure_descriptor_definition(
+                module, function, count, immediate,
+            ));
             continue;
         }
         let mut apply = FunctionEmitter::new(
@@ -2294,6 +2346,9 @@ fn closure_wrappers(
             "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
             llvm_type(&result, module)
         )));
+        output.push_str(&closure_descriptor_definition(
+            module, function, count, immediate,
+        ));
     }
     output
 }
@@ -5632,32 +5687,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let value = self.value(format!(
             "insertvalue %tz.closure {value}, ptr {environment}, 1"
         ));
-        if count == 0 {
+        let immediate = immediate_capture(function, count, self.globals);
+        let (clone, drop) = closure_slots(self.module, function, count, immediate);
+        let value = if clone == "null" {
+            value
+        } else {
+            self.value(format!("insertvalue %tz.closure {value}, ptr {clone}, 2"))
+        };
+        if drop == "null" {
             return value;
         }
-        if immediate_capture(function, count, self.globals) {
-            let value = self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.clone, 2"
-            ));
-            return self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.drop, 3"
-            ));
-        }
-        let value = if !function.is_task
-            && !function.owned_captures
-            && function.signature.parameters[..count]
-                .iter()
-                .all(|ty| ty.can_capture(&self.module.types()))
-        {
-            self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
-            ))
-        } else {
-            value
-        };
-        self.value(format!(
-            "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
-        ))
+        self.value(format!("insertvalue %tz.closure {value}, ptr {drop}, 3"))
     }
 
     fn stack_closure(&mut self, target: ClosureTarget, values: &[String]) -> String {
