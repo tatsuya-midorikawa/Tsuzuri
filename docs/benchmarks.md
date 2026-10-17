@@ -7415,7 +7415,7 @@ Node 24 の apps は 4 種目が 5〜14% 速く、`binary_trees`・`closure_pipe
 ### 測っていないもの
 
 - Linux（ELF の `--gc-sections` が `__llvm_prf_*` を残すか、`libclang_rt.profile` の置き場所）、x86-64、Windows は測っていません。Windows は拒否します。
-- ThinLTO（PR08）との併用は確かめていません。許すかは PR08 の側で決めます（許可リストに入れていないので既定では `E2000`）。
+- `--emit bitcode`（PR08 の ThinLTO）との併用は確かめていません。許可リスト（native は `exe`・`object`、wasm32 は `wasm`）に入れていないので `E2000` です（`src/main.rs` の拒否の表と `tests/pgo.mjs` がこの拒否を確かめます）。許すには、`Profile::validate` に `Emit::Bitcode` を足し、計装と使用が bitcode の compile に届くことと、`llvm-link` で併合した C ランタイムを含む module の profile が合うことを、host を含めて確かめる必要があります。
 - 速度の閾値は共有 CI に置きません。`node tests/pgo.mjs` は動作だけを確かめ、時間は測りません。
 
 再現:
