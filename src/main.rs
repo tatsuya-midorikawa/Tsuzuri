@@ -166,16 +166,19 @@ Build options:
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
-    --profile-generate DIR Native executable or object output, and run: instrument the program so that it
-                         writes LLVM raw profiles (.profraw) under DIR when it exits normally (a run that
-                         traps or is killed writes none). Run it on a typical workload, then build again
-                         with --profile-use. An object needs -fprofile-generate at its final link
-    --profile-use PATH     Native executable or object output, and run: optimize with the profile PATH, an
-                         indexed .profdata file or a directory of .profraw files that llvm-profdata
-                         merges. Build both times with the same Clang and options; a profile that no
-                         longer matches is one W2001 warning. Both profile options need an LLVM Clang
-                         in TSUZURI_CLANG, not the bundled launcher; they are not available on
-                         Windows or for another machine's --target
+    --profile-generate DIR Native executable or object output, run, and a wasm32 module: instrument the
+                         program so that it writes LLVM raw profiles (.profraw) under DIR when it exits
+                         normally (a run that traps or is killed writes none). Run it on a typical
+                         workload, then build again with --profile-use. An object needs
+                         -fprofile-generate at its final link. A wasm32 module has no runtime: its host
+                         calls writeProfile(instance) of the app.wasm.profile.mjs that the build writes
+                         beside it (Clang 21; no indirect-call profile)
+    --profile-use PATH     Native executable or object output, run, and a wasm32 module: optimize with the
+                         profile PATH, an indexed .profdata file or a directory of .profraw files that
+                         llvm-profdata merges. Build both times with the same Clang and options; a profile
+                         that no longer matches is one W2001 warning. Both profile options need an LLVM
+                         Clang in TSUZURI_CLANG, not the bundled launcher; they are not available on
+                         Windows, for another machine's --target, or with wasm64
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -4317,6 +4320,15 @@ mod tests {
                 let wasm = parse(&["build", "Main.tz", "--target", "wasm32", option, "prof"]);
                 assert!(wasm.is_ok(), "{option}: {:?}", wasm.err());
             }
+        }
+        for text in [
+            "--profile-generate DIR",
+            "--profile-use PATH",
+            "TSUZURI_LLVM_PROFDATA",
+            "writeProfile(instance)",
+            "W2001",
+        ] {
+            assert!(HELP.contains(text), "{text}");
         }
         // Nothing else of the build is a reason to refuse a profile (D16).
         for extra in [

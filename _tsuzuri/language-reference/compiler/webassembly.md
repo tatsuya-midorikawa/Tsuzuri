@@ -261,6 +261,18 @@ WebAssembly のモジュールは、内容のほとんどがコードです。�
 tsuzuri build Main.tz --target wasm32 -Oz --wasm-opt -o shop.wasm
 ```
 
+## プロファイルで最適化する
+
+wasm32 の module も、実行時の分岐の頻度で最適化できます。module はプロファイルのランタイムを持たないので、`--profile-generate DIR` は計装した `shop.wasm` と、その隣に書き出し役の `shop.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に LLVM の raw profile ができ、`--profile-use DIR` で作り直します（手順と制限は [プロファイル誘導最適化](option.md#webassembly-の-module)）。
+
+```sh
+tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-generate prof
+node train.mjs                      # shop.wasm を動かして writeProfile(instance) を呼ぶ
+tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-use prof
+```
+
+書き出し役は Clang 21 の raw profile だけを書き、間接呼び出しの対象は数えません。測ると、効果は workload と JavaScript エンジンで変わります。`benchmarks/apps` は Node 24 で 4 種目が 5〜14% 速く、2 種目が 2〜5% 遅くなり、`benchmarks/control` は差がありません。Node 20 では `benchmarks/control` の `closure_capture` が約 50% 遅くなりました（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。使う前に、自分の host で前後を測ってください。
+
 ## 線形メモリとスタック
 
 既定の上限は 16 MiB、メインスタックは 1 MiB です。どちらも 64 KiB ページに揃ったメモリ上限の内側に収まる必要があり、上限はスタックより少なくとも 64 KiB 大きくします。

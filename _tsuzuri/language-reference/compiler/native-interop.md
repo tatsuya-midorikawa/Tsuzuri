@@ -102,6 +102,16 @@ add 20 22
 
 `--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。
 
+C のホストに入れる object も、プロファイルで最適化できます。`--emit object --profile-generate DIR` の object は計装されていますが、プロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます（付けないと、macOS では `___llvm_profile_runtime` が未定義です）。ホストを動かすと `DIR` にプロファイルができ、`--emit object --profile-use DIR` で作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
+
+```sh
+tsuzuri build Main.tz --emit object -o add.o --profile-generate prof
+clang -O2 main.c add.o -o addhost -fprofile-generate=prof
+./addhost                                  # prof/default_*.profraw ができる
+tsuzuri build Main.tz --emit object -o add.o --profile-use prof
+clang -O2 main.c add.o -o addhost
+```
+
 AArch64 向けに出した IR は、`f16` の演算に LLVM の `half` 命令を含みます（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。AArch64 では、`half` はライブラリ関数を呼ばずに機械語へ下がります。その IR のターゲットを x86-64 などに変えて `llc` や `clang` に渡すと、`half` は `__extendhfsf2` のようなライブラリ関数の呼び出しになり、リンクが解決できないことがあります。IR のターゲットは変えないでください。
 
 ## ホスト関数を import する
