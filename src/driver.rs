@@ -5348,7 +5348,10 @@ impl Drop for TemporaryDirectory {
         if !self.removed {
             if let Err(error) = fs::remove_dir_all(&self.path) {
                 if error.kind() != io::ErrorKind::NotFound {
-                    eprintln!("warning: cannot remove '{}': {error}", self.path.display());
+                    crate::resident::warn(&format!(
+                        "warning: cannot remove '{}': {error}",
+                        self.path.display()
+                    ));
                 }
             }
         }

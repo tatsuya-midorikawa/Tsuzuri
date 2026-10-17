@@ -2598,11 +2598,12 @@ impl server::Handler for CommandServer {
         }
         let state = &mut self.state;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let mut out = Vec::new();
             let started = tsuzuri::timings::begin_command();
-            let code = {
+            let (code, mut err) = {
                 let _scope = tsuzuri::resident::Scope::enter(state);
-                cli(&raw, None, &mut out, &mut err)
+                // What the command writes and what its drops warn are one text, in order.
+                tsuzuri::resident::capture(|err| cli(&raw, None, &mut out, err))
             };
             if let Some(report) = tsuzuri::timings::take_report(started) {
                 errln!(&mut err, "{report}");

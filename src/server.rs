@@ -1668,6 +1668,43 @@ mod tests {
         found
     }
 
+    /// What a server runs writes to the streams that it is given, never to the process's own: a
+    /// write that bypasses them would reach the server's log instead of the client. These are the
+    /// places that do (none of them is on the way of `check` or `build`, except the two that the
+    /// server collects: the warning of a temporary directory that cannot be removed, `resident::warn`,
+    /// and the report of `TSUZURI_TIME_PASSES`, `timings`). A new one has to be looked at.
+    #[test]
+    fn only_known_code_writes_to_the_streams_of_the_process() {
+        let mut found = BTreeMap::new();
+        for (file, text) in sources() {
+            if file == "main.rs" || file == "server.rs" {
+                continue;
+            }
+            let lines = text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| {
+                    ["println!(", "print!(", "io::stderr()", "io::stdout()"]
+                        .iter()
+                        .any(|site| line.contains(site))
+                })
+                .count();
+            if lines > 0 {
+                found.insert(file, lines);
+            }
+        }
+        let expected: BTreeMap<String, usize> = [
+            // `run` relays the standard error of the program that it started.
+            ("driver.rs", 2),
+            ("resident.rs", 1),
+            ("timings.rs", 1),
+        ]
+        .into_iter()
+        .map(|(file, count)| (file.to_owned(), count))
+        .collect();
+        assert_eq!(found, expected);
+    }
+
     /// Every variable that the code reads has to be in the set that a server compares, or a
     /// request could run under settings that the client does not have. A new `TSUZURI_` variable
     /// needs nothing; any other name has to be added to `VARIABLES` (or a prefix) on purpose.

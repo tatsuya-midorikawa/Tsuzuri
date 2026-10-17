@@ -217,6 +217,62 @@ pub fn is_active() -> bool {
     ACTIVE.with(|active| active.borrow().is_some())
 }
 
+thread_local! {
+    /// What the command that this thread runs wrote to its standard error, while a server collects it.
+    static CAPTURE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// The standard error of a command that a server runs: every write goes to the buffer of
+/// [`capture`], where [`warn`] writes too, so that the text keeps the order of a command's own.
+pub struct Captured;
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        CAPTURE.with(|capture| {
+            capture
+                .borrow_mut()
+                .get_or_insert_with(Vec::new)
+                .extend_from_slice(bytes);
+        });
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Runs `command`, which writes its standard error to the `Captured` that it is given, and
+/// returns its result and what was written to it, or warned, meanwhile.
+pub fn capture<T>(command: impl FnOnce(&mut Captured) -> T) -> (T, Vec<u8>) {
+    /// Puts the buffer of the capture that was running back, also when the command panics.
+    struct Outer(Option<Vec<u8>>);
+    impl Drop for Outer {
+        fn drop(&mut self) {
+            CAPTURE.with(|capture| *capture.borrow_mut() = self.0.take());
+        }
+    }
+    let outer = Outer(CAPTURE.with(|capture| capture.borrow_mut().replace(Vec::new())));
+    let result = command(&mut Captured);
+    let written = CAPTURE.with(|capture| capture.borrow_mut().take());
+    drop(outer);
+    (result, written.unwrap_or_default())
+}
+
+/// A warning of code that has no writer to its hand (a drop), as a line of the standard error: of
+/// the command that a server is running, or of the process.
+pub(crate) fn warn(message: &str) {
+    let captured = CAPTURE.with(|capture| {
+        capture.borrow_mut().as_mut().map(|buffer| {
+            buffer.extend_from_slice(message.as_bytes());
+            buffer.push(b'\n');
+        })
+    });
+    if captured.is_none() {
+        eprintln!("{message}");
+    }
+}
+
 /// The time a read begins, when a state is active and a stamp can show every write: `None`
 /// otherwise, and then nothing is looked up or remembered.
 pub(crate) fn clock() -> Option<SystemTime> {
@@ -317,6 +373,56 @@ mod tests {
         cache::{Sha256, file_digest},
         driver::read_source_text,
     };
+    use std::io::Write;
+
+    #[test]
+    fn a_capture_holds_the_writes_and_the_warnings_of_a_command_in_order() {
+        let ((), written) = capture(|err| {
+            writeln!(err, "first").unwrap();
+            warn("warning: second");
+            writeln!(err, "third").unwrap();
+        });
+        assert_eq!(written, b"first\nwarning: second\nthird\n");
+        // A capture inside a capture keeps its own text, and the outer one goes on.
+        let (inner, outer) = capture(|err| {
+            writeln!(err, "outer 1").unwrap();
+            let ((), inner) = capture(|err| writeln!(err, "inner").unwrap());
+            writeln!(err, "outer 2").unwrap();
+            inner
+        });
+        assert_eq!(inner, b"inner\n");
+        assert_eq!(outer, b"outer 1\nouter 2\n");
+        // Nothing is collected after the capture: a warning goes to the standard error.
+        CAPTURE.with(|capture| assert!(capture.borrow().is_none()));
+    }
+
+    #[test]
+    fn a_capture_ends_with_a_command_that_panics() {
+        let panicked = std::panic::catch_unwind(|| capture(|_| panic!("a command that fails")));
+        assert!(panicked.is_err());
+        CAPTURE.with(|capture| assert!(capture.borrow().is_none()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_directory_that_cannot_be_removed_warns_in_the_capture() {
+        use std::os::unix::fs::PermissionsExt;
+        let holder = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let inner = TemporaryDirectory::new(&holder.path).unwrap();
+        let path = inner.path.clone();
+        fs::set_permissions(&holder.path, fs::Permissions::from_mode(0o500)).unwrap();
+        let ((), written) = capture(|_| drop(inner));
+        fs::set_permissions(&holder.path, fs::Permissions::from_mode(0o700)).unwrap();
+        // A user who can remove anything (root) has nothing to be warned about.
+        if path.exists() {
+            let written = String::from_utf8(written).unwrap();
+            assert!(
+                written.starts_with(&format!("warning: cannot remove '{}'", path.display())),
+                "{written}"
+            );
+            assert!(written.ends_with('\n'));
+        }
+    }
 
     fn file(text: &str) -> (TemporaryDirectory, PathBuf) {
         let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
