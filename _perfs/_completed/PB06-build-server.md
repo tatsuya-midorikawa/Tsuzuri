@@ -878,7 +878,7 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 
 ### 確認
 
-- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,494 passed、0 failed、1 ignored（全 106 の test binary）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。PB06 の新しいテスト: `cargo test --lib -- resident:: watch:: server::` が 42 件（resident 10、watch 10、server 22）、`cargo test --bin tsuzuri` が 24 件（`watch`・`serve`・`--no-server` の引数を含む）。
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,494 passed、0 failed、1 ignored（全 106 の test binary）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。PB06 の新しいテスト: `cargo test --lib -- resident:: watch:: server::` が 42 件（resident 10、watch 10、server 22）、`cargo test --bin tsuzuri` が 25 件（`watch`・`serve`・`--no-server` の引数と、直接出力する関数の一覧の guard を含む）。
 - E2E（`target/release/tsuzuri`）: `tests/watch.mjs`（差し替えたコンパイラで止まる・回ごとの報告を追加）、`tests/server.mjs`（5 回連続で成功。負荷の平均 42 のときを含む）、`tests/lsp_sessions.mjs`（常駐状態のあとで、同じ長さ・同じ更新時刻のファイルを読み直す scenario を追加）、`tests/repl.mjs`、`tests/script.mjs`、`tests/cache.mjs`、`tests/parallel_frontend.mjs`、`tests/e2e.mjs`、`tests/prebuilt_runtime.mjs`、`tests/bundle_identity.mjs`、`tests/handoff_tools.mjs`、`tests/llvm_handoff.mjs`、`tests/frontend_cache.mjs`、`tests/benchmark_report.mjs`。14 の suite を 1 つずつ順に実行し、すべて終了コード 0（`parallel_frontend` が 136 s、ほかは 5〜49 s）。
 - 既定の出力が変わらないこと: `target/perf/PB06/compare.mjs`（51 のコマンド。終了コード・stdout・stderr・ファイル。`--help` と引数なしのヘルプの 2 つだけが違う）と `examples-compare.mjs`（`examples/*` と `tests/fixtures/*` の 114 project の `check` と `--emit llvm` の `-O0`・`-O3`、342 のコマンドで 0 件の差）を、基準の `9dd0fbbc` のコンパイラと最終のコンパイラで比べた（scratch。`target/perf/PB06/` に置いた）。
 - `cargo +1.99.0 fmt --all -- --check`、`cargo +1.99.0 clippy --all-targets --locked -- -D warnings`、`cargo check --locked --all-targets --target x86_64-pc-windows-msvc`、`--target x86_64-unknown-freebsd`（Linux と同じ cfg の経路の型検査）が通る。`node scripts/check-docs.mjs`（usage・option・diagnostics・strategy）と `git diff --check` が通る。新しい crate と `unsafe` はない。
@@ -897,7 +897,7 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 - Linux・x86-64・Windows の実機では動かしていない（Linux 相当の cfg の経路は FreeBSD の型検査だけ）。Windows に server はない（`serve` は `E2000`、`--no-server` は受け付けて何もしない）。
 - 速度はほかの作業と共有する機械（1 分の load average 19〜48）の参考値で、`open()` の費用はこの機械のセキュリティ agent の性質に強く依存する。正式な測定は統合担当が静かな機械で行う。
 - サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめない（`0700` のディレクトリが唯一の防御）。umask・資源の上限などはサーバーのもの。待っているクライアントは時間制限なしで待つ。
-- 2 つの drift test（環境変数の読み取り、直接出力）は、ほかのチケットが統合されたあとで、新しい読み取り・出力があれば失敗する。失敗は、その名前を比べる集合に入れるか、出力を書き込み先へ流すかの判断を求めるもので、期待の表を見直して更新する。
+- 3 つの drift test（環境変数の読み取り、`src/` の直接出力、`src/main.rs` で直接出力する関数の一覧）は、ほかのチケットが統合されたあとで、新しい読み取り・出力があれば失敗する。失敗は、その名前を比べる集合に入れるか、出力を書き込み先へ流すかの判断を求めるもので、期待の表を見直して更新する。`main.rs` の一覧に足してよいのは、server が断るコマンドの関数だけ。
 - `tests/server.mjs` はソケットのパスのために短い `TMPDIR` を要する（macOS は 103 byte まで）。panic の経路（`internal`）は E2E で起こせず、`catch_unwind` の単体の確認はない。
 
 ### 決定事項の最終状態（D13〜D16。D1〜D12 は各決定の「状態」）

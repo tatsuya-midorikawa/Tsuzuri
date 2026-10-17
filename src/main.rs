@@ -5067,4 +5067,56 @@ mod tests {
         );
         assert!(parse(&["lsp", "--no-server"]).is_err());
     }
+
+    /// A server hands a command's `out` and `err` to the client. A print that bypasses them in a
+    /// function that `check` or `build` reach would appear on the server's terminal instead.
+    #[test]
+    fn only_functions_that_a_server_never_runs_print_directly() {
+        let source = include_str!("main.rs");
+        let source = &source[..source.find("#[cfg(test)]").unwrap()];
+        let mut function = "";
+        let mut found = std::collections::BTreeSet::new();
+        for line in source.lines() {
+            let line = line.trim_start();
+            let declared = ["pub fn ", "async fn ", "fn "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(rest) = declared {
+                function = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap();
+            }
+            let prints = ["println!(", "print!(", "io::stdout()", "io::stderr()"]
+                .iter()
+                .any(|site| line.contains(site));
+            if prints && !line.starts_with("//") {
+                found.insert(function);
+            }
+        }
+        let expected = std::collections::BTreeSet::from([
+            "api_diff_command",
+            "bindgen_command",
+            "debug_test",
+            "main",
+            "new_project",
+            "print_coverage",
+            "print_diagnostic",
+            "print_diagnostics",
+            "print_output",
+            "publish_package",
+            "repl_command",
+            "run_bench_action",
+            "run_formatter",
+            "run_test_action",
+            "serve_main",
+            "start_server",
+            "watch_main",
+        ]);
+        assert_eq!(
+            found, expected,
+            "write through the `out` and `err` of `cli` in whatever `check` and `build` reach; \
+             list a function here only if a server refuses its command"
+        );
+    }
 }
