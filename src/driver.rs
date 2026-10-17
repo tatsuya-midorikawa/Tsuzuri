@@ -698,11 +698,14 @@ impl BuildOptions {
         }
         if self.wasm_max_memory.is_some()
             && (!self.target.is_wasm()
-                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm))
+                || !matches!(
+                    self.emit,
+                    Emit::Object | Emit::Llvm | Emit::Wasm | Emit::Bitcode
+                ))
         {
             return Err(driver_error(
                 "E2000",
-                "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+                "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output",
             ));
         }
         if self.wasm_stack_size.is_some() && (!self.target.is_wasm() || self.emit != Emit::Wasm) {
@@ -795,15 +798,15 @@ impl BuildOptions {
     }
 
     /// The options of `--emit bitcode` (PR08): bitcode that a host's LTO link reads, from a native
-    /// target. The other options of an object apply to it unchanged.
+    /// target or from wasm32. The other options of an object apply to it unchanged.
     fn validate_bitcode(self) -> Result<(), Diagnostic> {
-        if self.target != Target::Native {
+        if !matches!(self.target, Target::Native | Target::Wasm32) {
             return Err(driver_error(
                 "E2000",
-                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
             ));
         }
-        if self.platform().windows() {
+        if self.target == Target::Native && self.platform().windows() {
             return Err(driver_error(
                 "E2000",
                 "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
@@ -929,7 +932,12 @@ impl BuildOptions {
     /// Fills options the command line left unset from the root manifest's
     /// `[wasm]`, for the outputs where each option applies.
     pub fn with_manifest_wasm(mut self, wasm: crate::package::WasmSettings) -> Self {
-        if self.target.is_wasm() && matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm) {
+        if self.target.is_wasm()
+            && matches!(
+                self.emit,
+                Emit::Object | Emit::Llvm | Emit::Wasm | Emit::Bitcode
+            )
+        {
             self.wasm_max_memory = self.wasm_max_memory.or(wasm.max_memory);
         }
         if self.target.is_wasm() && self.emit == Emit::Wasm {
@@ -3670,7 +3678,10 @@ fn build_complete(
                 }
             }
         }
-        if options.emit == Emit::Bitcode {
+        // The attributes make a host's inliner accept the functions, and for `+simd128` keep the SIMD of a function
+        // through the link. A WebAssembly function without SIMD carries none: it inlines without them.
+        if options.emit == Emit::Bitcode && (options.target == Target::Native || options.wasm_simd)
+        {
             text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
         }
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
@@ -5072,7 +5083,8 @@ const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
 
 /// The IR of a `--emit bitcode` build with the target attributes that a C function compiled with the same flags has
-/// (PR08 D3): the CPU and its tuning, and for `--cpu native` the features too.
+/// (PR08 D3): the CPU and its tuning, and for `--cpu native` the features too. A WebAssembly function keeps its
+/// features as well, because `+simd128` is what lets the link's code generator use SIMD for it.
 fn bitcode_ir(
     ir: &str,
     options: BuildOptions,
@@ -5080,8 +5092,20 @@ fn bitcode_ir(
     f16: llvm::F16Path,
     directory: &Path,
 ) -> Result<String, Diagnostic> {
-    let mut flags = compile_args(platform);
-    flags.extend(no_sdk_args(platform));
+    let wasm = options.target.is_wasm();
+    let mut flags = if wasm {
+        [
+            "--target=wasm32-unknown-unknown",
+            "-mbulk-memory",
+            "-msimd128",
+        ]
+        .map(OsString::from)
+        .to_vec()
+    } else {
+        let mut flags = compile_args(platform);
+        flags.extend(no_sdk_args(platform));
+        flags
+    };
     if options.cpu == Cpu::Native {
         flags.extend(
             native_ir_cpu_args(platform.arch_name(), f16)?
@@ -5091,7 +5115,7 @@ fn bitcode_ir(
     }
     let attributes =
         lto::probe_target_attributes(&tool("TSUZURI_CLANG", "clang"), &flags, directory)?;
-    let attributes = if options.cpu == Cpu::Native {
+    let attributes = if wasm || options.cpu == Cpu::Native {
         attributes
     } else {
         attributes.without_features()
@@ -5858,6 +5882,73 @@ mod tests {
             bitcode.output_path(Path::new("dir/Main.tz")),
             Path::new("dir/Main.bc")
         );
+        // WebAssembly: wasm32 on every host, with the options that an object of it has.
+        let wasm = BuildOptions {
+            target: Target::Wasm32,
+            ..bitcode
+        };
+        for options in [
+            wasm,
+            BuildOptions {
+                optimization: OptLevel::Oz,
+                debug_info: true,
+                wasm_simd: true,
+                wasm_max_memory: Some(64 << 20),
+                ..wasm
+            },
+        ] {
+            assert!(options.validate().is_ok(), "{options:?}");
+        }
+        for (options, message) in [
+            (
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..bitcode
+                },
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
+            ),
+            (
+                BuildOptions {
+                    wasm_threads: true,
+                    ..wasm
+                },
+                "--wasm-feature threads requires wasm32 object or WASM output",
+            ),
+            (
+                BuildOptions {
+                    wasm_jspi: true,
+                    ..wasm
+                },
+                "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
+            ),
+            (
+                BuildOptions {
+                    wasm_host: Some(WasmHost::Wasi),
+                    ..wasm
+                },
+                "--wasm-host wasi requires wasm32 object or WASM output",
+            ),
+            (
+                BuildOptions {
+                    wasm_stack_size: Some(1 << 20),
+                    ..wasm
+                },
+                "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size",
+            ),
+            (
+                BuildOptions {
+                    trap_return: true,
+                    ..wasm
+                },
+                "--trap-mode return is only valid for native object, llvm or header output",
+            ),
+        ] {
+            assert_eq!(
+                options.validate().unwrap_err().message,
+                message,
+                "{options:?}"
+            );
+        }
         if cfg!(windows) {
             assert_eq!(
                 bitcode.validate().unwrap_err().message,
@@ -5908,20 +5999,6 @@ mod tests {
             );
         }
         for (options, message) in [
-            (
-                BuildOptions {
-                    target: Target::Wasm32,
-                    ..bitcode
-                },
-                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
-            ),
-            (
-                BuildOptions {
-                    target: Target::Wasm64,
-                    ..bitcode
-                },
-                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
-            ),
             (
                 BuildOptions {
                     triple: Some(Triple::X86_64WindowsMsvc),
@@ -6107,7 +6184,8 @@ mod tests {
             wasm_threads,
             ..BuildOptions::default()
         };
-        let limit = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let limit =
+            "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output";
         let size = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
         for (target, emit, max, stack, message) in [
             (Target::Native, Emit::Executable, memory, None, limit),

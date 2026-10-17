@@ -125,7 +125,8 @@ Build options:
                          shared links a native .dylib or .so that exports the C ABI
                          bitcode writes one ThinLTO LLVM bitcode file of the program and the
                          runtime it needs, for a host that links with -flto=thin and the same
-                         Clang (native; llvm-link is needed when the program uses the C runtime)
+                         Clang (native, where llvm-link is needed when the program uses the C
+                         runtime, or --target wasm32, which links with wasm-ld)
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
@@ -3721,7 +3722,8 @@ mod tests {
         );
         let untargeted =
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64";
-        let output = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let output =
+            "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output";
         let stack_output = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
         let memory_range =
             "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32";
@@ -4146,6 +4148,15 @@ mod tests {
 
     #[test]
     fn parses_bitcode_output() {
+        let wasm = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--target",
+            "wasm32",
+        ]);
+        assert_eq!(wasm.unwrap().options.emit, Emit::Bitcode);
         if cfg!(windows) {
             assert_eq!(
                 parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap_err(),
@@ -4181,6 +4192,26 @@ mod tests {
                 "host",
             ],
             vec!["build", "Kernel.tz", "--emit", "bitcode", "--no-cache"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-max-memory",
+                "64MiB",
+            ],
         ] {
             assert_eq!(
                 parse(&values).unwrap().options.emit,
@@ -4206,20 +4237,9 @@ mod tests {
                     "--emit",
                     "bitcode",
                     "--target",
-                    "wasm32",
-                ],
-                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
-            ),
-            (
-                vec![
-                    "build",
-                    "Kernel.tz",
-                    "--emit",
-                    "bitcode",
-                    "--target",
                     "wasm64",
                 ],
-                "'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet",
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
             ),
             (
                 vec![

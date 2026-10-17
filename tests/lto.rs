@@ -1106,3 +1106,234 @@ fn a_missing_llvm_link_names_the_variable() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+/// The host of the WebAssembly tests: `run` calls the exported function in a loop.
+#[cfg(unix)]
+const WASM_ADD_HOST: &str = r#"#include <stdint.h>
+
+int64_t tz_add(int64_t x, int64_t y);
+
+int64_t run(int64_t n) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < n; i++) total = tz_add(total, i);
+    return total;
+}
+"#;
+
+/// `run` of the SIMD fixture calls its `transform` once.
+#[cfg(unix)]
+const WASM_SIMD_HOST: &str = r#"#include <stdint.h>
+
+int64_t tz_transform(int64_t count, int32_t seed);
+
+int64_t run(int64_t n) { return tz_transform(n, 5); }
+"#;
+
+/// Instantiates the module without imports, and prints its imports and `run(n)`.
+#[cfg(unix)]
+const NODE_RUN: &str = "const m = new WebAssembly.Module(require('fs').readFileSync(process.argv[1])); const i = new WebAssembly.Instance(m, {}); console.log(JSON.stringify({imports: WebAssembly.Module.imports(m), result: String(i.exports.run(BigInt(process.argv[2])))}));";
+
+/// What the WebAssembly tests need besides Clang: a Clang with the WebAssembly backend, `wasm-ld`, and Node.
+#[cfg(unix)]
+struct WasmTools {
+    wasm_ld: OsString,
+}
+
+#[cfg(unix)]
+fn wasm_tools() -> Option<WasmTools> {
+    let clang = clang();
+    let beside = Path::new(&clang).with_file_name("wasm-ld").into_os_string();
+    let wasm_ld = std::env::var_os("TSUZURI_WASM_LD")
+        .into_iter()
+        .chain([beside, OsString::from("wasm-ld")])
+        .find(|tool| runs(tool));
+    let Some(wasm_ld) = wasm_ld else {
+        unavailable(
+            "wasm-ld was not found: set TSUZURI_WASM_LD or put it next to Clang or on PATH",
+        );
+        return None;
+    };
+    if !runs(OsStr::new("node")) {
+        unavailable("node is not installed");
+        return None;
+    }
+    let directory = scratch("wasm-probe");
+    let source = write(
+        &directory,
+        "probe.c",
+        "int tsuzuri_probe(void) { return 0; }\n",
+    );
+    let compiled = Command::new(&clang)
+        .args(["--target=wasm32-unknown-unknown", "-c"])
+        .arg(&source)
+        .arg("-o")
+        .arg(directory.join("probe.o"))
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(directory);
+    if !compiled.status.success() {
+        unavailable(&format!(
+            "this Clang has no WebAssembly backend: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+        return None;
+    }
+    Some(WasmTools { wasm_ld })
+}
+
+/// Links `inputs` with `host` into `directory/name.wasm`, which exports only `run`, with `wasm-ld`'s LTO or not.
+#[cfg(unix)]
+fn link_wasm(
+    tools: &WasmTools,
+    directory: &Path,
+    name: &str,
+    inputs: &[&Path],
+    lto: bool,
+) -> PathBuf {
+    let module = directory.join(format!("{name}.wasm"));
+    let mut linker = OsString::from("--ld-path=");
+    linker.push(&tools.wasm_ld);
+    let mut command = Command::new(clang());
+    command
+        .args(["--target=wasm32-unknown-unknown", "-O3", "-nostdlib"])
+        .arg(&linker)
+        .args(["-Wl,--no-entry", "-Wl,--export=run"]);
+    if lto {
+        command.arg("-flto=thin");
+    }
+    let result = command
+        .args(inputs)
+        .arg("-o")
+        .arg(&module)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    module
+}
+
+/// The output of Node for `run(n)`: `{"imports":[],"result":"..."}`.
+#[cfg(unix)]
+fn run_wasm(module: &Path, n: u64) -> String {
+    let output = Command::new("node")
+        .args(["-e", NODE_RUN])
+        .arg(module)
+        .arg(n.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        module.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// The lines of the disassembly of `module` that contain one of `needles`.
+#[cfg(unix)]
+fn disassembly_matches(objdump: &OsStr, module: &Path, needles: &[&str]) -> usize {
+    let output = Command::new(objdump)
+        .args(["-d", "--no-show-raw-insn"])
+        .arg(module)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+        .count()
+}
+
+#[test]
+#[cfg(unix)]
+fn wasm_ld_inlines_wasm32_bitcode_and_the_module_has_no_import() {
+    let Some(objdump) = llvm_tool("llvm-objdump") else {
+        return;
+    };
+    let Some(tools) = wasm_tools() else {
+        return;
+    };
+    let directory = scratch("wasm");
+    let source = write(&directory, "Main.tz", ADD);
+    let (bitcode, object) = (directory.join("add.bc"), directory.join("add.o"));
+    let wasm = BuildOptions {
+        target: driver::Target::Wasm32,
+        ..bitcode_options()
+    };
+    build(&source, &bitcode, wasm).unwrap();
+    build(
+        &source,
+        &object,
+        BuildOptions {
+            emit: Emit::Object,
+            ..wasm
+        },
+    )
+    .unwrap();
+    assert!(is_bitcode(&fs::read(&bitcode).unwrap()));
+    // The bitcode of a program is the same bytes every time, as for a native target.
+    let again = directory.join("again.bc");
+    build(&source, &again, wasm).unwrap();
+    assert_eq!(fs::read(&bitcode).unwrap(), fs::read(&again).unwrap());
+    let host = write(&directory, "host.c", WASM_ADD_HOST);
+    let called = link_wasm(&tools, &directory, "called", &[&host, &object], false);
+    let inlined = link_wasm(&tools, &directory, "inlined", &[&host, &bitcode], true);
+    let expected = r#"{"imports":[],"result":"4999950000"}"#;
+    assert_eq!(run_wasm(&called, 100_000), expected);
+    assert_eq!(run_wasm(&inlined, 100_000), expected);
+    // The module of the object has `tz_add` and calls it; the LTO link inlined it and dropped it.
+    assert!(disassembly_matches(&objdump, &called, &["tz_add"]) > 0);
+    assert_eq!(disassembly_matches(&objdump, &inlined, &["tz_add"]), 0);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn wasm32_bitcode_keeps_its_simd_through_the_link() {
+    let Some(objdump) = llvm_tool("llvm-objdump") else {
+        return;
+    };
+    let Some(tools) = wasm_tools() else {
+        return;
+    };
+    let directory = scratch("wasm-simd");
+    let source = root().join("tests/fixtures/wasm_simd/Main.tz");
+    let host = write(&directory, "host.c", WASM_SIMD_HOST);
+    let simd_instructions = ["v128.", "i32x4.", "i64x2.", "i8x16.", "i16x8."];
+    let mut counts = Vec::new();
+    // The host is built without -msimd128 either way: the functions of the bitcode carry the feature themselves.
+    for simd in [false, true] {
+        let bitcode = directory.join(format!("simd-{simd}.bc"));
+        let options = BuildOptions {
+            target: driver::Target::Wasm32,
+            wasm_simd: simd,
+            ..bitcode_options()
+        };
+        build(&source, &bitcode, options).unwrap();
+        let module = link_wasm(
+            &tools,
+            &directory,
+            &format!("simd-{simd}"),
+            &[&host, &bitcode],
+            true,
+        );
+        // sum of ((i + 5) * 3 + 7) for i < 100000
+        assert_eq!(
+            run_wasm(&module, 100_000),
+            r#"{"imports":[],"result":"15002050000"}"#,
+            "simd {simd}"
+        );
+        counts.push(disassembly_matches(&objdump, &module, &simd_instructions));
+    }
+    assert_eq!(counts[0], 0, "no SIMD without --wasm-feature simd128");
+    assert!(counts[1] > 0, "the link dropped the SIMD of the bitcode");
+    fs::remove_dir_all(directory).unwrap();
+}
