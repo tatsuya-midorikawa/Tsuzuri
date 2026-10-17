@@ -122,8 +122,10 @@ try {
   run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", join(temporary, "control.ll"), "-o", join(temporary, "control.optimized.ll")]);
   run(clang, [...flags, "-Wno-override-module", "-S", join(temporary, "control.ll"), "-o", join(temporary, "control.s")]);
   generated.push("control.optimized.ll", "control.s");
-  for (const [name, mode, standard] of [["c", "c", "c11"], ["cpp", "c++", "c++20"]]) {
-    const common = ["-x", mode, `-std=${standard}`, ...flags, "-Wall", "-Wextra", "-Werror", `-DPREFIX=${name}_`, `${fixture}/reference.c`];
+  const references = [["c", "c", "c11"], ["cpp", "c++", "c++20"]];
+  const referenceArguments = (name, mode, standard) => ["-x", mode, `-std=${standard}`, ...flags, "-Wall", "-Wextra", "-Werror", `-DPREFIX=${name}_`, `${fixture}/reference.c`];
+  for (const [name, mode, standard] of references) {
+    const common = referenceArguments(name, mode, standard);
     run(clang, [...common, "-c", "-o", join(temporary, `${name}.o`)]);
     run(clang, [...common, "-S", "-o", join(temporary, `${name}.s`)]);
     run(clang, [...common, "-S", "-emit-llvm", "-o", join(temporary, `${name}.ll`)]);
@@ -144,26 +146,43 @@ try {
     generated.push("before.ll", "before.h", "before.o", "before.s", "before.optimized.ll");
   }
   const hostFlags = ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : [])];
-  const hostObjects = (control) => [control, "c.o", "cpp.o", "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name));
-  const linkHost = (control, output) => run(clang, [...hostFlags, `${fixture}/host.c`, "-I", temporary, ...hostObjects(control), "-lm", "-o", output]);
+  const hostObjects = (control, c, cpp) => [control, c, cpp, "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name));
+  const linkHost = (output, control, c, cpp) => run(clang, [...hostFlags, `${fixture}/host.c`, "-I", temporary, ...hostObjects(control, c, cpp), "-lm", "-o", output]);
   const native = join(temporary, "benchmark");
-  linkHost("control.o", native);
-  // PR07: the instrumented object, linked into a host that a --quick run exercises, writes the profile that builds the PGO object.
+  linkHost(native, "control.o", "c.o", "cpp.o");
+  // PR07: the instrumented objects (Tsuzuri, C and C++ alike), linked into a host that a --quick run exercises, write the profile
+  // that builds the PGO objects. Rust has no PGO build: its LLVM is not the one of Clang's profile runtime.
   const profile = join(temporary, "profile");
+  const merged = join(temporary, "control.profdata");
   const hosts = [{ binary: native, runs: [] }];
+  let profdata = null;
+  let rawProfiles = [];
   if (pgo) {
+    profdata = findProfdata();
     run(compiler, ["build", fixture, "--emit", "object", ...objectFlags, "--profile-generate", profile, "-o", join(temporary, "control.gen.o")]);
+    for (const [name, mode, standard] of references) {
+      run(clang, [...referenceArguments(name, mode, standard), `-fprofile-generate=${profile}`, "-c", "-o", join(temporary, `${name}.gen.o`)]);
+    }
     run(clang, [...hostFlags, "-c", `${fixture}/host.c`, "-I", temporary, "-o", join(temporary, "host.o")]);
     const train = join(temporary, "benchmark-train");
-    run(clang, [...flags, join(temporary, "host.o"), ...hostObjects("control.gen.o"), `-fprofile-generate=${profile}`, "-lm", "-o", train]);
+    run(clang, [...flags, join(temporary, "host.o"), ...hostObjects("control.gen.o", "c.gen.o", "cpp.gen.o"), `-fprofile-generate=${profile}`, "-lm", "-o", train]);
     const environment = { ...process.env };
     delete environment.LLVM_PROFILE_FILE;
     run(train, ["--quick"], environment);
-    assert.ok(readdirSync(profile).some((name) => name.endsWith(".profraw")), "the training run wrote no profile");
+    rawProfiles = readdirSync(profile).filter((name) => name.endsWith(".profraw")).sort();
+    assert.ok(rawProfiles.length > 0, "the training run wrote no profile");
+    run(profdata, ["merge", "-o", merged, ...rawProfiles.map((name) => join(profile, name))]);
     run(compiler, ["build", fixture, "--emit", "object", ...objectFlags, "--profile-use", profile, "-o", join(temporary, "control.pgo.o")]);
+    for (const [name, mode, standard] of references) {
+      const used = [...referenceArguments(name, mode, standard), `-fprofile-use=${merged}`];
+      run(clang, [...used, "-c", "-o", join(temporary, `${name}.pgo.o`)]);
+      run(clang, [...used, "-S", "-o", join(temporary, `${name}.pgo.s`)]);
+      run(clang, [...used, "-S", "-emit-llvm", "-o", join(temporary, `${name}.pgo.ll`)]);
+      generated.push(`${name}.gen.o`, `${name}.pgo.o`, `${name}.pgo.s`, `${name}.pgo.ll`);
+    }
     hosts.push({ binary: join(temporary, "benchmark-pgo"), runs: [] });
-    linkHost("control.pgo.o", hosts[1].binary);
-    generated.push("control.gen.o", "control.pgo.o");
+    linkHost(hosts[1].binary, "control.pgo.o", "c.pgo.o", "cpp.pgo.o");
+    generated.push("control.gen.o", "control.pgo.o", "control.profdata");
   }
   // The plain and the PGO host run alternately, so that a change of the machine's load reaches both.
   const rounds = pgo ? pgoRuns : 1;
@@ -217,7 +236,7 @@ try {
   let pgoReport = null;
   if (pgo) {
     // The IR that Tsuzuri wrote, optimized by Clang with and without the profile, shows what the profile changes: `!prof` metadata
-    // on branches and entries, and no fast-math flag that the plain build lacks.
+    // on branches and entries, and no fast-math flag that the plain build lacks. The C and C++ objects are read the same way.
     const count = (text, pattern) => (text.match(pattern) ?? []).length;
     const describe = (text) => ({
       functions_with_entry_count: count(text, /^define .*!prof /gm),
@@ -225,39 +244,42 @@ try {
       branch_weight_nodes: count(text, /branch_weights/g),
       fast_math_flags: count(text, / (?:fast|reassoc|nnan|ninf|nsz|arcp|contract|afn) /g),
     });
-    const profdata = findProfdata();
-    const raws = readdirSync(profile).filter((name) => name.endsWith(".profraw")).sort();
-    const merged = join(temporary, "control.profdata");
-    run(profdata, ["merge", "-o", merged, ...raws.map((name) => join(profile, name))]);
+    const text = (name) => readFileSync(join(temporary, name), "utf8");
     const source = join(temporary, "control.ll");
     const irFlags = [...flags, "-Wno-override-module"];
     run(clang, [...irFlags, `-fprofile-use=${merged}`, "-S", "-emit-llvm", source, "-o", join(temporary, "control.pgo.ll")]);
     run(clang, [...irFlags, `-fprofile-use=${merged}`, "-S", source, "-o", join(temporary, "control.pgo.s")]);
     run(clang, [...irFlags, `-fprofile-generate=${profile}`, "-S", "-emit-llvm", source, "-o", join(temporary, "control.gen.ll")]);
-    generated.push("control.profdata", "control.pgo.ll", "control.pgo.s", "control.gen.ll");
+    generated.push("control.pgo.ll", "control.pgo.s", "control.gen.ll");
     const size = (name) => statSync(join(temporary, name)).size;
-    const ratio = (plain, used, variant) => (plain[`${variant}_median_ms`] > 0 ? used[`${variant}_median_ms`] / plain[`${variant}_median_ms`] : null);
+    const entry = (plain, used, variant) => ({
+      plain_median_ms: plain[`${variant}_median_ms`], pgo_median_ms: used[`${variant}_median_ms`],
+      pgo_over_plain: plain[`${variant}_median_ms`] > 0 ? used[`${variant}_median_ms`] / plain[`${variant}_median_ms`] : null,
+    });
     pgoReport = {
       runs: rounds,
-      training: "one --quick run of the instrumented control object, linked with -fprofile-generate",
+      training: "one --quick run of the instrumented Tsuzuri, C and C++ objects, linked with -fprofile-generate",
       llvm_profdata: run(profdata, ["--version"]).trim().split("\n")[0],
-      raw_profiles: raws.length,
-      raw_profile_bytes: raws.reduce((sum, name) => sum + statSync(join(profile, name)).size, 0),
+      raw_profiles: rawProfiles.length,
+      raw_profile_bytes: rawProfiles.reduce((sum, name) => sum + statSync(join(profile, name)).size, 0),
       merged_profile_bytes: statSync(merged).size,
       object_bytes: { plain: size("control.o"), instrumented: size("control.gen.o"), pgo: size("control.pgo.o") },
       inspection: {
-        plain: describe(optimized),
-        pgo: describe(readFileSync(join(temporary, "control.pgo.ll"), "utf8")),
-        instrumented_counters: count(readFileSync(join(temporary, "control.gen.ll"), "utf8"), /@__profc_/g),
+        tsuzuri: { plain: describe(optimized), pgo: describe(text("control.pgo.ll")) },
+        c: { plain: describe(text("c.ll")), pgo: describe(text("c.pgo.ll")) },
+        cpp: { plain: describe(text("cpp.ll")), pgo: describe(text("cpp.pgo.ll")) },
+        instrumented_tsuzuri_counters: count(text("control.gen.ll"), /@__profc_/g),
       },
-      // The other variants are the same code in both hosts: their ratios say how far the machine moved between the two.
+      // Rust is the same object in both hosts, so its ratio says how far the machine moved between the two.
       workloads: result.workloads.map((plain, index) => {
         const used = pgoResult.workloads[index];
         assert.deepEqual([used.name, used.size], [plain.name, plain.size]);
         return {
-          name: plain.name, size: plain.size, plain_median_ms: plain.tsuzuri_median_ms, pgo_median_ms: used.tsuzuri_median_ms,
-          pgo_over_plain: ratio(plain, used, "tsuzuri"),
-          unchanged_code_ratio: Object.fromEntries(["c", "cpp", "rust"].map((variant) => [variant, ratio(plain, used, variant)])),
+          name: plain.name, size: plain.size,
+          tsuzuri: entry(plain, used, "tsuzuri"), c: entry(plain, used, "c"), cpp: entry(plain, used, "cpp"), rust_unchanged: entry(plain, used, "rust"),
+          tsuzuri_over_c: { plain: plain.tsuzuri_over_c, pgo: used.tsuzuri_over_c },
+          tsuzuri_over_cpp: { plain: plain.tsuzuri_over_cpp, pgo: used.tsuzuri_over_cpp },
+          tsuzuri_over_rust: { plain: plain.tsuzuri_over_rust, pgo: used.tsuzuri_over_rust },
         };
       }),
       host: pgoResult,
@@ -279,7 +301,10 @@ try {
       [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name, name === "tsuzuri" ? tsuzuriVariant : "default"]),
         ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
     // A PGO object is another variant of the same workload, so that the records of a run without --pgo are never mistaken for it.
-    if (pgo) records.push(...inProcessRecords(context, "control", pgoResult.workloads, [["tsuzuri", "tsuzuri", tsuzuriVariant === "default" ? "pgo" : `${tsuzuriVariant}-pgo`]], { cpu }));
+    if (pgo) {
+      records.push(...inProcessRecords(context, "control", pgoResult.workloads,
+        [["tsuzuri", "tsuzuri", tsuzuriVariant === "default" ? "pgo" : `${tsuzuriVariant}-pgo`], ["c", "c", "pgo"], ["cpp", "cpp", "pgo"]], { cpu }));
+    }
     for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
       records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
         variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
