@@ -909,7 +909,7 @@ node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカル�
 node tests/last_use_fuzz.mjs target/release/tsuzuri 300 1000 4   # 最後の使用の move（A17 Phase 1・2）を独立した AST 評価器と native O0/O3 で照合。引数は [コンパイラ] [件数] [最初の seed] [深さ]
 node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 300 1 4   # 整数の範囲証明（PR02）の差分テスト。型の端に定数を合わせた乱数のプログラムを、独立した BigInt の評価器と、audit（-O0）・proven・off（-O3）の wasm32 で照合する。TSUZURI_FUZZ_NATIVE=1 で native も。引数は [コンパイラ] [件数] [最初の seed] [深さ]。型付き IR や emitter を変えた後に回す
 node tests/range_flags_audit.mjs target/release/tsuzuri quick   # 既存の node の suite を TSUZURI_RANGE_FLAGS=audit と proven で実行し、fuzz も回す（quick は整数の suite だけで、負荷のある機械で 20 分ほど。full はすべての suite で 1 時間以上）。Rust のテストは TSUZURI_RANGE_FLAGS=audit cargo test --locked
-node benchmarks/run-range-flags.mjs target/release/tsuzuri   # 旗が asm を変えるか: 12 の corpus を off と proven で arm64・x86_64（-O1〜-O3）と wasm32 に出して比べる（PR02 Gate A）
+node benchmarks/run-range-flags.mjs target/release/tsuzuri   # 旗が asm を変えるか: 12 の corpus を off と proven で arm64・x86_64（-O1〜-O3）と wasm32 に出して比べる（PR02 Gate A。asm はコメントだけを除いて行の順序のまま、即値も含めて比べる）
 node tests/json.mjs target/release/tsuzuri
 node tests/computations.mjs target/release/tsuzuri
 node tests/control.mjs target/release/tsuzuri
