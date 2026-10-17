@@ -1,0 +1,5 @@
+// An operating-system API named only by a public function that nothing reaches. A target without those APIs
+// (Windows) refuses a program that reaches them, and no longer one that does not (before PB03 D1 it was E2002).
+def never_called :: string -> IO<Result<string, Os.Error>> = \path -> File.read_text path
+
+"ok"

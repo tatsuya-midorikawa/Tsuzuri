@@ -6,6 +6,7 @@ use crate::check::{
     SharedKind, Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, Span};
+use crate::interval::Flags;
 use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
 
@@ -22,14 +23,24 @@ mod debug;
 #[path = "last_use.rs"]
 pub(crate) mod last_use;
 pub use debug::with_codeview;
+pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
 mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
-use call_specialization::{ClosureTarget, Specialization, Specializations};
+#[path = "llvm_layout.rs"]
+mod layout;
+#[path = "llvm_return_slot.rs"]
+mod return_slot;
+use call_specialization::{ClosureTarget, Drain, Specialization, Specializations};
 use frame::Frame;
+// The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.
+pub(crate) use layout::{
+    Niche, UnionLayout, drop_flag, layout_bound, storage_layout, union_layout,
+};
+use layout::{tag_type, tag_width};
 
 /// The builtin instances that emitted code calls, with their concrete
 /// callee types.
@@ -122,6 +133,9 @@ pub enum Allocator {
     Host,
     /// The system allocator with counts that `tsuzuri_alloc_stats` reports (Phase 2).
     Counting,
+    /// The size-class allocator of `heap-small.ll` for native 64-bit targets (PM05): requests of up to
+    /// 512 bytes are served from per-thread caches of 16-byte classes, larger ones by the C library.
+    Small,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,6 +417,8 @@ mod io;
 mod math;
 #[path = "llvm_parallel.rs"]
 mod parallel;
+#[path = "llvm_ranges.rs"]
+mod range_flags;
 #[path = "llvm_recursive.rs"]
 mod recursive;
 #[path = "llvm_shared.rs"]
@@ -460,6 +476,32 @@ pub fn emit_with_options(
             runtime_objects: options.runtime_objects,
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the overflow flags that `flags` names, instead of those of
+/// `TSUZURI_RANGE_FLAGS` or the default (PR02).
+pub fn emit_with_range_flags(
+    module: &CheckedModule,
+    options: EmitOptions,
+    flags: RangeFlags,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            range_flags: Some(flags),
             ..Instrumentation::default()
         },
     )
@@ -531,6 +573,9 @@ pub fn emit_with_debug_info(
     }
 }
 
+/// A native executable (`Entry::Console`) defines only the functions that its entry or an export
+/// reaches (`executable_roots`): the other public functions are `internal` there, so nothing can
+/// call them, yet `-O0` would still compile them (PB03 D1). Libraries keep every public function.
 pub fn emit_native_build(
     module: &CheckedModule,
     options: EmitOptions,
@@ -538,18 +583,20 @@ pub fn emit_native_build(
     debug: Option<bool>,
     trap_info: bool,
 ) -> Result<EmitOutput, Diagnostic> {
-    emit_native_build_for(
+    emit_native(
         module,
         options,
         sources,
         debug,
         trap_info,
         cpu::host_levels(),
+        options.entry == Entry::Console,
     )
 }
 
 /// `emit_native_build` for a CPU whose runtime detects `levels`, bit `L` for level `L` of
-/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3).
+/// `syntax::CPU_TARGETS`: `@cpu` functions get versions for these levels (F08 Phase 3). It keeps
+/// every public function, whatever the entry is.
 pub fn emit_native_build_for(
     module: &CheckedModule,
     options: EmitOptions,
@@ -557,6 +604,18 @@ pub fn emit_native_build_for(
     debug: Option<bool>,
     trap_info: bool,
     levels: u8,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_native(module, options, sources, debug, trap_info, levels, false)
+}
+
+fn emit_native(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    levels: u8,
+    executable_roots: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -583,6 +642,7 @@ pub fn emit_native_build_for(
             multiversion: true,
             runtime_objects: options.runtime_objects,
             wasm_simd128: false,
+            executable_roots,
             ..Instrumentation::default()
         },
     )?;
@@ -718,7 +778,8 @@ fn heap_native_tracked() -> &'static str {
 }
 
 /// A heap runtime renamed to the base under `heap-counting.ll` (F13 Phase 2). The trap
-/// sites of the renamed functions stay allocation failures (`traps::runtime_kind`).
+/// sites of the renamed functions stay allocation failures (`traps::runtime_kind`), as those of the
+/// `.unlocked` functions that the threads wrappers call.
 fn counted_base(heap: &str) -> String {
     heap.replace("@tz.alloc(", "@tz.alloc.base(")
         .replace("@tz.free(", "@tz.free.base(")
@@ -778,6 +839,8 @@ pub(crate) fn emit_wasm_build(
             multiversion: false,
             coverage: None,
             seed: None,
+            range_flags: None,
+            executable_roots: false,
         },
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function.
@@ -927,7 +990,7 @@ pub fn emit_bench_runner_with(
     .map(|(ir, _)| ir)
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Instrumentation<'a> {
     runtime_objects: bool,
     wasm_simd128: bool,
@@ -946,6 +1009,10 @@ struct Instrumentation<'a> {
     coverage: Option<&'a crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
     seed: Option<u64>,
+    /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
+    range_flags: Option<RangeFlags>,
+    /// A native executable emits only what its entry and exports reach (PB03 D1).
+    executable_roots: bool,
 }
 
 fn emit_program(
@@ -955,6 +1022,51 @@ fn emit_program(
     tests: Option<&[usize]>,
     debug_output: bool,
     instrumentation: Instrumentation<'_>,
+) -> Result<(String, Option<traps::Marks>), Diagnostic> {
+    // Layouts that depend on the target (the null-pointer niche) read it while the program is
+    // emitted, in both passes.
+    let _target = layout::target_scope(wasm);
+    let mut exhausted = false;
+    let first = emit_program_in(
+        module,
+        entry,
+        wasm,
+        tests,
+        debug_output,
+        instrumentation,
+        Drain::InRequestOrder,
+        &mut exhausted,
+    )?;
+    if !exhausted {
+        return Ok(first);
+    }
+    // The worker budget ran out. Request order spreads it over every chain and cuts each of them
+    // part-way. This pass emits each function right before the functions it names and the workers
+    // of each function right after it, so the chains of as many functions as the budget allows are
+    // complete and the others keep the generic path.
+    emit_program_in(
+        module,
+        entry,
+        wasm,
+        tests,
+        debug_output,
+        instrumentation,
+        Drain::DepthFirst,
+        &mut exhausted,
+    )
+}
+
+/// Emits the program once. `exhausted` tells whether a worker request found the budget spent.
+#[allow(clippy::too_many_arguments)]
+fn emit_program_in(
+    module: &CheckedModule,
+    entry: Entry,
+    wasm: bool,
+    tests: Option<&[usize]>,
+    debug_output: bool,
+    instrumentation: Instrumentation<'_>,
+    drain: Drain,
+    exhausted: &mut bool,
 ) -> Result<(String, Option<traps::Marks>), Diagnostic> {
     if instrumentation.runtime_objects
         && (instrumentation.traps
@@ -973,6 +1085,10 @@ fn emit_program(
     if entry == Entry::Console {
         validate_main(module)?;
     }
+    let range_flags = match instrumentation.range_flags {
+        Some(flags) => flags,
+        None => RangeFlags::from_environment()?,
+    };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
         return Err(Diagnostic::new(
@@ -988,32 +1104,57 @@ fn emit_program(
             Span::default(),
         ));
     }
+    if allocator == Allocator::Small && wasm {
+        return Err(Diagnostic::new(
+            "E2000",
+            "the small allocator is for native targets; WebAssembly keeps its own heap",
+            Span::default(),
+        ));
+    }
     let mut output = String::from(
         "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
-    let types = module.types();
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
         output.push_str("%tz.dyn = type { ptr, ptr }\n");
     }
     output.push_str(&host_abi::type_definitions(module));
-    let roots = tests.map(|selected| {
-        selected
-            .iter()
-            .map(|index| {
-                if entry == Entry::BenchRunner {
-                    module.benches[*index].function
-                } else {
-                    module.tests[*index].function
-                }
-            })
-            .collect::<Vec<_>>()
-    });
+    debug_assert!(!instrumentation.executable_roots || entry == Entry::Console);
+    let roots = tests
+        .map(|selected| {
+            selected
+                .iter()
+                .map(|index| {
+                    if entry == Entry::BenchRunner {
+                        module.benches[*index].function
+                    } else {
+                        module.tests[*index].function
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            instrumentation
+                .executable_roots
+                .then(|| executable_roots(module))
+        });
+    let pruned = roots.is_some() && tests.is_none();
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
-    let named = named_types(module, &emitted);
+    // An executable defines the types of the program that it would be without pruning. A drop or a builtin
+    // loads types that no emitted body names (the drop of a `Channel.Sender<'a>` loads `'a`), the unpruned
+    // program has them defined by the functions that are now gone, and a definition costs a line (PB03 D1).
+    let named = if pruned {
+        let unpruned = program_reach(module, None, entry == Entry::BenchRunner).1;
+        let all: Vec<bool> = (0..module.functions.len())
+            .map(|id| unpruned.contains(&id))
+            .collect();
+        named_types(module, &all)
+    } else {
+        named_types(module, &emitted)
+    };
     let generic = |ty: &&Type| matches!(ty, Type::Record(_, arguments) | Type::Union(_, arguments) if !arguments.is_empty());
     let record_types = (0..module.records.len())
         .filter(|id| module.records[*id].parameters.is_empty())
@@ -1033,17 +1174,13 @@ fn emit_program(
         );
     let mut record_definitions = String::new();
     for ty in record_types {
-        let Type::Record(id, arguments) = &ty else {
-            unreachable!("only record types are collected")
-        };
         let _ = writeln!(
             record_definitions,
             "{} = type {{ {} }}",
             llvm_type(&ty, module),
-            types
-                .record_fields(*id, arguments)
+            layout::physical_fields(&ty, module)
                 .iter()
-                .map(|ty| llvm_type(ty, module))
+                .map(|(_, ty)| llvm_type(ty, module))
                 .chain(drop_flag(&ty, module).map(|_| "i8".to_owned()))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -1070,38 +1207,26 @@ fn emit_program(
         let Type::Union(id, arguments) = &ty else {
             unreachable!("only union types are collected")
         };
-        let shape = union_layout(*id, arguments, module);
-        let is_enum = matches!(shape, UnionLayout::Enum);
-        let flag = if drop_flag(&ty, module).is_some() {
-            ", i8"
-        } else {
-            ""
-        };
-        let layout = match shape {
-            UnionLayout::Enum => "i32".into(),
-            UnionLayout::Common(payload) => {
-                format!("{{ i32, {}{flag} }}", llvm_type(&payload, module))
-            }
-            UnionLayout::General(count) => format!("{{ i32, [{count} x i128]{flag} }}"),
-        };
         if module.types().recursive(&ty) {
-            let fields = match union_layout(*id, arguments, module) {
-                UnionLayout::Enum => "i8".into(),
-                UnionLayout::Common(payload) => llvm_type(&payload, module),
-                UnionLayout::General(count) => format!("[{count} x i128]"),
-            };
             let _ = writeln!(
                 union_definitions,
-                "{} = type {{ ptr, ptr, ptr, i32, {fields} }}",
-                recursive::node_type(&ty, module)
+                "{} = type {{ ptr, ptr, ptr, i32, {} }}",
+                recursive::node_type(&ty, module),
+                layout::node_region(&ty, module)
             );
         } else {
-            let destination = if is_enum {
-                &mut output
-            } else {
-                &mut union_definitions
+            let destination = match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => &mut output,
+                // A union with a niche is its payload, and has no type of its own.
+                UnionLayout::Niche { .. } => continue,
+                _ => &mut union_definitions,
             };
-            let _ = writeln!(destination, "{} = type {layout}", llvm_type(&ty, module));
+            let _ = writeln!(
+                destination,
+                "{} = type {}",
+                llvm_type(&ty, module),
+                layout::union_body(&ty, module)
+            );
         }
     }
     output.push_str(&record_definitions);
@@ -1129,6 +1254,7 @@ fn emit_program(
         coverage: instrumentation.coverage.cloned(),
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
+        range_flags,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1141,7 +1267,12 @@ fn emit_program(
         ));
     }
     let mut specializations = Specializations::new(module);
-    for (id, function) in module.functions.iter().enumerate() {
+    let order = match drain {
+        Drain::InRequestOrder => (0..module.functions.len()).collect(),
+        Drain::DepthFirst => call_specialization::reference_order(module),
+    };
+    for id in order {
+        let function = &module.functions[id];
         // A callback extern has no function body: its calls pass the host the callback wrappers directly.
         if !emitted[id]
             || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks)
@@ -1197,6 +1328,17 @@ fn emit_program(
         if let Some(marks) = &mut globals.traps {
             marks.source(&output[start..], function);
         }
+        if drain == Drain::DepthFirst {
+            call_specialization::emit_workers(
+                module,
+                &mut builtins,
+                &mut intrinsics,
+                &mut globals,
+                &mut specializations,
+                drain,
+                &mut output,
+            );
+        }
     }
     output.push_str(&emit_dyn_tables(
         module,
@@ -1206,25 +1348,16 @@ fn emit_program(
         &mut globals,
         &mut specializations,
     ));
-    let mut next = 0;
-    while let Some(key) = specializations.requests.get(next).cloned() {
-        let start = output.len();
-        let emitter = FunctionEmitter::new(
-            module,
-            &module.functions[key.function],
-            key.function,
-            &mut builtins,
-            &mut intrinsics,
-            &mut globals,
-            &mut specializations,
-        )
-        .specialized(next, &key);
-        output.push_str(&emitter.emit());
-        if let Some(marks) = &mut globals.traps {
-            marks.source(&output[start..], &module.functions[key.function]);
-        }
-        next += 1;
-    }
+    call_specialization::emit_workers(
+        module,
+        &mut builtins,
+        &mut intrinsics,
+        &mut globals,
+        &mut specializations,
+        drain,
+        &mut output,
+    );
+    *exhausted = specializations.exhausted();
     // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
     for id in std::mem::take(&mut globals.callbacks) {
         let function = &module.functions[id];
@@ -1472,6 +1605,9 @@ fn emit_program(
     if runtime_symbols.prefix("tz.format.") {
         runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
     }
+    if runtime_symbols.prefix("tz.integer.") {
+        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+    }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
             runtime_symbols.append(&mut output, crate::runtime_cache::numeric_declarations());
@@ -1592,6 +1728,10 @@ fn emit_program(
             Allocator::System => output.push_str(&heap),
             Allocator::Host if wasm => output.push_str(&heap_host_wasm()),
             Allocator::Host => output.push_str(include_str!("runtime/heap-host.ll")),
+            Allocator::Small => {
+                output.push_str(include_str!("runtime/heap-small.ll"));
+                output.push_str(include_str!("runtime/heap-small-native.ll"));
+            }
             Allocator::Counting => {
                 // The threads wrappers above already call the unlocked heap; they are the base.
                 if !instrumentation.wasm_threads {
@@ -1810,7 +1950,7 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
         }
     }
     match allocator {
-        Allocator::System => {}
+        Allocator::System | Allocator::Small => {}
         Allocator::Host => output.push_str(host_abi::HOST_ALLOCATOR_PROTOTYPES),
         Allocator::Counting => output.push_str(host_abi::ALLOCATION_STATS_PROTOTYPE),
     }
@@ -1848,6 +1988,8 @@ struct Globals {
     /// once, at its first use.
     statics: BTreeSet<usize>,
     recursive_functions: Vec<bool>,
+    /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
+    range_flags: RangeFlags,
 }
 
 impl Default for Globals {
@@ -1890,6 +2032,7 @@ impl Default for Globals {
             emitted_copies: BTreeSet::new(),
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
+            range_flags: RangeFlags::DEFAULT,
         }
     }
 }
@@ -2202,7 +2345,11 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         }
         Type::Record(..) => format!("%\"tz.record.{}\"", canonical_type(ty, module)),
         Type::Union(..) if module.types().recursive(ty) => "ptr".into(),
-        Type::Union(..) => format!("%\"tz.union.{}\"", canonical_type(ty, module)),
+        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
+            // A union with a niche is its payload.
+            UnionLayout::Niche { payload, .. } => llvm_type(&payload, module),
+            _ => format!("%\"tz.union.{}\"", canonical_type(ty, module)),
+        },
         Type::Array(_) => "%tz.array".into(),
         Type::List(_) => "%tz.list".into(),
         Type::Vec(_) => "%tz.vec".into(),
@@ -2265,8 +2412,12 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
         }
         TypedExprKind::Record(fields) if fields.is_empty() => "zeroinitializer".into(),
         TypedExprKind::Record(fields) => {
+            let Type::Record(id, arguments) = &value.ty else {
+                unreachable!("a record literal has a record type")
+            };
+            // The fields stand in the order of the LLVM type of the record.
             let mut ordered: Vec<_> = fields.iter().collect();
-            ordered.sort_by_key(|(index, _)| *index);
+            ordered.sort_by_key(|(index, _)| layout::field_slot(*id, arguments, module, *index));
             format!(
                 "{{ {} }}",
                 ordered
@@ -2292,13 +2443,16 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
             match union_layout(*id, arguments, module) {
                 UnionLayout::Enum => case_id.to_string(),
                 UnionLayout::Common(common) => format!(
-                    "{{ i32 {case_id}, {} }}",
+                    "{{ {} {case_id}, {} }}",
+                    tag_type(&value.ty, module),
                     match payload {
                         Some(payload) => typed(payload),
                         None => format!("{} zeroinitializer", llvm_type(&common, module)),
                     }
                 ),
-                UnionLayout::General(_) => unreachable!("static unions share one payload type"),
+                UnionLayout::General { .. } | UnionLayout::Niche { .. } => {
+                    unreachable!("static unions share one payload type and have a tag")
+                }
             }
         }
         _ => unreachable!("a static constant holds only plain data"),
@@ -2428,6 +2582,8 @@ fn emit_dyn_tables(
                 )
             };
         }
+        // The header's `size` and `align` are the model's upper bound for documentation; no code
+        // reads them. The allocations of the cell and of its clone use the LLVM size instead.
         let (size, align) = storage_layout(ty, module);
         let size = size.max(1);
         if drops.insert(ty.clone()) {
@@ -2442,7 +2598,8 @@ fn emit_dyn_tables(
         }
         if key.copy && clones.insert(ty.clone()) {
             let mut clone = emitter!();
-            let copy = clone.value(format!("call ptr @tz.alloc(i64 {size})"));
+            let bytes = clone.cell_size(ty);
+            let copy = clone.value(format!("call ptr @tz.alloc(i64 {bytes})"));
             let value = clone.value(format!("load {}, ptr %data", clone.ty(ty)));
             let value = if ty.needs_drop(&module.types()) {
                 clone.clone_value(ty, &value)
@@ -2641,168 +2798,16 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
     }
 }
 
-/// How a union instance stores its tag and payload.
-enum UnionLayout {
-    /// Every case is nullary, so the value is its `i32` tag.
-    Enum,
-    /// Every payload has the LLVM type of this one: `{ i32, T }`.
-    Common(Type),
-    /// Payloads of different LLVM types share `{ i32, [K x i128] }` storage
-    /// that holds the largest payload.
-    General(usize),
-}
-
-/// Size and alignment in bytes of a type's LLVM representation on 64-bit
-/// targets with 16-byte `i128`, which bound those of wasm32 and older layouts.
-fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
-    layout_bound(ty, module, false)
-}
-
-/// Portable lower bounds for reference guarantees, or the existing allocation upper bounds.
-/// Explicit slots and heap blocks are aligned to 16, even for 256-bit SIMD values.
-fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (usize, usize) {
-    let aggregate = |fields: &mut dyn Iterator<Item = (usize, usize)>| {
-        let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
-            (
-                size.next_multiple_of(field_align) + field,
-                align.max(field_align),
-            )
-        });
-        (size.next_multiple_of(align), align)
-    };
-    match ty {
-        Type::Simd(vector) => (
-            vector.bytes(),
-            if lower {
-                vector.bytes().min(8)
-            } else {
-                vector.bytes()
-            },
-        ),
-        Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => {
-            let bytes = usize::from(*bits).div_ceil(8);
-            (bytes, if lower { bytes.min(8) } else { bytes })
-        }
-        Type::Bool | Type::Unit => (1, 1),
-        Type::Char => (2, 2),
-        Type::Utf8Char => (4, 4),
-        Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
-        Type::Function(..) | Type::Task(_) => {
-            if lower {
-                (16, 4)
-            } else {
-                (32, 8)
-            }
-        }
-        Type::Vec(_) => (24, 8),
-        Type::Dyn(_) => {
-            if lower {
-                (8, 4)
-            } else {
-                (16, 8)
-            }
-        }
-        Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => {
-            if lower {
-                (4, 4)
-            } else {
-                (8, 8)
-            }
-        }
-        Type::ArrayView(_) => unreachable!("an exclusive slice target is not a value"),
-        Type::Length(_) => unreachable!("a length is not a value"),
-        // The stride of `[N x T]` is the element's size, already a multiple of its alignment.
-        Type::FixedArray(element, _) => {
-            let (size, align) = layout_bound(element, module, lower);
-            (size * fixed_length(ty), align)
-        }
-        Type::Tuple(elements) => {
-            aggregate(&mut elements.iter().map(|ty| layout_bound(ty, module, lower)))
-        }
-        Type::Record(id, arguments) => aggregate(
-            &mut module
-                .types()
-                .record_fields(*id, arguments)
-                .iter()
-                .map(|ty| layout_bound(ty, module, lower))
-                .chain(drop_flag(ty, module).map(|_| (1, 1))),
-        ),
-        Type::Union(..) if module.types().recursive(ty) => {
-            if lower {
-                (4, 4)
-            } else {
-                (8, 8)
-            }
-        }
-        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
-            UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => aggregate(
-                &mut [(4, 4), layout_bound(&payload, module, lower)]
-                    .into_iter()
-                    .chain(drop_flag(ty, module).map(|_| (1, 1))),
-            ),
-            UnionLayout::General(count) if drop_flag(ty, module).is_some() => aggregate(
-                &mut [(4, 4), (16 * count, if lower { 8 } else { 16 }), (1, 1)].into_iter(),
-            ),
-            UnionLayout::General(count) => {
-                if lower {
-                    (8 + 16 * count, 8)
-                } else {
-                    (16 + 16 * count, 16)
-                }
-            }
-        },
-        Type::Error
-        | Type::Variable(_)
-        | Type::Infer(_)
-        | Type::Partial(_)
-        | Type::Application(..) => {
-            unreachable!("erroneous and polymorphic types cannot reach LLVM")
-        }
-    }
-}
-
-fn union_layout(id: usize, arguments: &[Type], module: &CheckedModule) -> UnionLayout {
-    let payloads: Vec<_> = module
-        .types()
-        .union_payloads(id, arguments)
-        .into_iter()
-        .flatten()
-        .collect();
-    let Some(first) = payloads.first() else {
-        // A Drop union keeps its live flag after the tag, so it is never a bare tag.
-        return if module.unions[id].user_drop {
-            UnionLayout::General(0)
-        } else {
-            UnionLayout::Enum
-        };
-    };
-    let llvm = llvm_type(first, module);
-    if payloads.iter().all(|ty| llvm_type(ty, module) == llvm) {
-        return UnionLayout::Common(first.clone());
-    }
-    let bytes = payloads
+/// What a native executable exposes: its entry and its exports. Every other public function is
+/// `internal` in the executable, so no code outside the program can reach it (PB03 D1).
+fn executable_roots(module: &CheckedModule) -> Vec<usize> {
+    module
+        .functions
         .iter()
-        .map(|ty| storage_layout(ty, module).0)
-        .max()
-        .unwrap_or(0);
-    UnionLayout::General(bytes.div_ceil(16))
-}
-
-/// The index of the live flag (`i8 1`) that follows the fields of a Drop record, or the tag and
-/// payload of a non-recursive Drop union. Moved-out storage is zero, which clears the flag, so
-/// the drop glue skips the user drop there (B07). Recursive Drop unions use a null node instead.
-fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
-    match ty {
-        Type::Record(id, _) if module.records[*id].user_drop => {
-            Some(module.records[*id].fields.len())
-        }
-        Type::Union(id, _) if module.unions[*id].user_drop && !module.types().recursive(ty) => {
-            Some(2)
-        }
-        _ => None,
-    }
+        .enumerate()
+        .filter(|(id, function)| function.exported || module.entry == Some(*id))
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// The functions that the program needs: user functions, exports, and the
@@ -3402,6 +3407,7 @@ struct FunctionEmitter<'a, 'b> {
     intrinsics: &'b mut BTreeSet<String>,
     lines: Vec<String>,
     allocas: Vec<String>,
+    return_exits: return_slot::Exits,
     debug_declarations: Vec<String>,
     debug_scope: Option<usize>,
     debug_switch: bool,
@@ -3488,6 +3494,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             clone_pending: None,
             lines: Vec::new(),
             allocas: Vec::new(),
+            return_exits: return_slot::Exits::default(),
             debug_declarations: Vec::new(),
             debug_scope: None,
             debug_switch: false,
@@ -3552,7 +3559,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             escape::staying_locals(&self.function.body)
         };
-        self.ranges = crate::ranges::analyze(self.module, self.function);
+        self.ranges = crate::ranges::analyze(
+            self.module,
+            self.function,
+            self.globals.range_flags != RangeFlags::Off,
+        );
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
             // A14: the parameters pass on to the slot, which owns them; nothing drops here.
@@ -3573,6 +3584,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             self.globals,
             self.intrinsics,
         );
+        self.apply_return_slot();
         let parameters = self
             .function
             .parameters
@@ -3966,6 +3978,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let (value, frames) = self.frame_value(expression);
             self.heap_initializer = previous;
             self.bind_local(local, &value);
+            self.ranges.bind(self.module, local, expression);
             self.bind_frames(local, frames);
             if let Some(target) = target {
                 self.known_closures.insert(local.id, target);
@@ -4016,8 +4029,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             );
             if let Some((operator, left, right, helper)) = operation {
                 // Snapshot operands now; only the nontrapping wrapping operation moves to the latch.
-                let left = self.expression(left);
-                let right = self.expression(right);
+                let lhs = self.expression(left);
+                let rhs = self.expression(right);
                 if let Some(helper) = helper {
                     self.cover_call(helper);
                 }
@@ -4026,8 +4039,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 } else {
                     "sub"
                 };
+                let words = self.arithmetic_flags(operator, left, right, &lhs, &rhs);
                 pending.push(Argument::Arithmetic(format!(
-                    "{opcode} {} {left}, {right}",
+                    "{opcode} {words}{} {lhs}, {rhs}",
                     self.ty(&argument.ty)
                 )));
             } else {
@@ -4102,6 +4116,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let value = self.expression(expression);
                 self.drop_all();
                 self.instruction(format!("ret {} {value}", self.ty(&expression.ty)));
+                self.note_union_return(expression);
             }
         }
     }
@@ -4173,15 +4188,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .map(|(index, field)| (*index, field, self.expression(field)))
             .collect();
         for (index, field, value) in values {
+            let slot = self.field_slot(&expression.ty, index);
             if field.ty.needs_drop(&self.module.types()) {
                 let previous = self.value(format!(
-                    "extractvalue {} {record}, {index}",
+                    "extractvalue {} {record}, {slot}",
                     self.ty(&expression.ty),
                 ));
                 self.drop_value(&field.ty, &previous);
             }
             record = self.value(format!(
-                "insertvalue {} {record}, {} {value}, {index}",
+                "insertvalue {} {record}, {} {value}, {slot}",
                 self.ty(&expression.ty),
                 self.ty(&field.ty),
             ));
@@ -4578,8 +4594,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let mut record = "zeroinitializer".into();
                 for (index, field) in fields {
                     let value = self.expression(field);
+                    let slot = self.field_slot(&expression.ty, *index);
                     record = self.value(format!(
-                        "insertvalue {} {record}, {} {value}, {index}",
+                        "insertvalue {} {record}, {} {value}, {slot}",
                         self.ty(&expression.ty),
                         self.ty(&field.ty)
                     ));
@@ -4673,8 +4690,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Field(record, index) => {
                 let value = self.expression(record);
+                let slot = self.field_slot(&record.ty, *index);
                 let field = self.value(format!(
-                    "extractvalue {} {value}, {index}",
+                    "extractvalue {} {value}, {slot}",
                     self.ty(&record.ty)
                 ));
                 if record.ty.has_user_drop(&self.module.types()) {
@@ -4691,7 +4709,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 if record.ty.needs_drop(&self.module.types()) {
                     let remainder = self.value(format!(
-                        "insertvalue {} {value}, {} zeroinitializer, {index}",
+                        "insertvalue {} {value}, {} zeroinitializer, {slot}",
                         self.ty(&record.ty),
                         self.ty(&expression.ty)
                     ));
@@ -4861,8 +4879,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Dereference(value) => self.expression_mode(value, false),
             TypedExprKind::Field(value, index) => {
                 let slot = self.place(value);
+                let position = self.field_slot(&value.ty, *index);
                 self.value(format!(
-                    "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {index}",
+                    "getelementptr inbounds {}, ptr {slot}, i32 0, i32 {position}",
                     self.ty(&value.ty)
                 ))
             }
@@ -4940,8 +4959,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let fields = self.module.types().record_fields(*id, arguments);
                 for (index, field) in fields.iter().enumerate() {
                     if field.needs_drop(&self.module.types()) {
+                        let slot = self.field_slot(ty, index);
                         let extracted =
-                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                            self.value(format!("extractvalue {} {value}, {slot}", self.ty(ty)));
                         self.drop_value(field, &extracted);
                     }
                 }
@@ -4960,7 +4980,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 if cases.is_empty() {
                     return;
                 }
-                let spilled = matches!(self.union_layout(ty), UnionLayout::General(_))
+                let spilled = matches!(self.union_layout(ty), UnionLayout::General { .. })
                     .then(|| self.spill(ty, value));
                 let (labels, done) = self.case_switch(ty, value, &cases);
                 for ((_, payload), label) in cases.into_iter().zip(labels) {
@@ -4970,7 +4990,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                             let pointer = self.payload_pointer(ty, slot);
                             self.value(format!("load {}, ptr {pointer}", self.ty(&payload)))
                         }
-                        None => self.value(format!("extractvalue {} {value}, 1", self.ty(ty))),
+                        None => self.payload_value(ty, value, &payload),
                     };
                     self.drop_value(&payload, &extracted);
                     self.jump(&done);
@@ -5102,11 +5122,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let fields = self.module.types().record_fields(*id, arguments);
                 for (index, field) in fields.iter().enumerate() {
                     if field.needs_drop(&self.module.types()) {
+                        let slot = self.field_slot(ty, index);
                         let field_value =
-                            self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+                            self.value(format!("extractvalue {} {value}, {slot}", self.ty(ty)));
                         let copy = self.clone_value(field, &field_value);
                         result = self.value(format!(
-                            "insertvalue {} {result}, {} {copy}, {index}",
+                            "insertvalue {} {result}, {} {copy}, {slot}",
                             self.ty(ty),
                             self.ty(field)
                         ));
@@ -5198,139 +5219,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
-    fn union_layout(&self, ty: &Type) -> UnionLayout {
-        let Type::Union(id, arguments) = ty else {
-            unreachable!("union layouts belong to union types")
-        };
-        union_layout(*id, arguments, self.module)
-    }
-
-    /// The payload storage of the union stored at `slot`, typed by each case's load or store.
-    fn payload_pointer(&mut self, ty: &Type, slot: &str) -> String {
-        if self.module.types().recursive(ty) {
-            let node = self.value(format!("load ptr, ptr {slot}"));
-            return self.recursive_payload(ty, &node);
-        }
-        self.value(format!(
-            "getelementptr inbounds {}, ptr {slot}, i32 0, i32 1",
-            self.ty(ty)
-        ))
-    }
-
-    fn construct(&mut self, ty: &Type, case_id: usize, payload: Option<&TypedExpr>) -> String {
-        let payload = payload.map(|payload| (self.expression(payload), self.ty(&payload.ty)));
-        self.construct_value(ty, case_id, payload)
-    }
-
-    fn construct_value(
-        &mut self,
-        ty: &Type,
-        case_id: usize,
-        payload: Option<(String, String)>,
-    ) -> String {
-        if self.module.types().recursive(ty) {
-            return self.recursive_construct(ty, case_id, payload);
-        }
-        let layout = self.union_layout(ty);
-        if matches!(layout, UnionLayout::Enum) {
-            return case_id.to_string();
-        }
-        let llvm = self.ty(ty);
-        let tagged = self.value(format!(
-            "insertvalue {llvm} zeroinitializer, i32 {case_id}, 0"
-        ));
-        let tagged = self.mark_live(ty, tagged);
-        let Some((value, payload_type)) = payload else {
-            return tagged;
-        };
-        if let UnionLayout::Common(_) = layout {
-            return self.value(format!(
-                "insertvalue {llvm} {tagged}, {payload_type} {value}, 1"
-            ));
-        }
-        let slot = self.spill(ty, &tagged);
-        let pointer = self.payload_pointer(ty, &slot);
-        self.instruction(format!("store {payload_type} {value}, ptr {pointer}"));
-        self.value(format!("load {llvm}, ptr {slot}"))
-    }
-
-    fn union_tag(&mut self, value: &TypedExpr) -> String {
-        if self.module.types().recursive(&value.ty) {
-            let (union, frames) = self.read_operand(value);
-            let tag = self.recursive_tag(&value.ty, &union);
-            self.release_operand(value, &union, &frames);
-            return tag;
-        }
-        if Self::is_place(value) {
-            // The tag is the first field, so it is also the value of an enum-like union.
-            let slot = self.place(value);
-            return self.value(format!("load i32, ptr {slot}"));
-        }
-        let (union, frames) = self.read_operand(value);
-        let tag = if matches!(self.union_layout(&value.ty), UnionLayout::Enum) {
-            union.clone()
-        } else {
-            self.value(format!("extractvalue {} {union}, 0", self.ty(&value.ty)))
-        };
-        self.release_operand(value, &union, &frames);
-        tag
-    }
-
-    fn payload_value(&mut self, ty: &Type, union: &str, payload: &Type) -> String {
-        if self.module.types().recursive(ty) {
-            let pointer = self.recursive_payload(ty, union);
-            return self.value(format!("load {}, ptr {pointer}", self.ty(payload)));
-        }
-        match self.union_layout(ty) {
-            UnionLayout::Enum => unreachable!("nullary cases have no payload"),
-            UnionLayout::Common(_) => {
-                self.value(format!("extractvalue {} {union}, 1", self.ty(ty)))
-            }
-            UnionLayout::General(_) => {
-                let slot = self.spill(ty, union);
-                let pointer = self.payload_pointer(ty, &slot);
-                self.value(format!("load {}, ptr {pointer}", self.ty(payload)))
-            }
-        }
-    }
-
-    /// Cases whose payload owns resources, by tag.
-    fn owning_cases(&self, ty: &Type) -> Vec<(usize, Type)> {
-        let Type::Union(id, arguments) = ty else {
-            unreachable!("union cases belong to union types")
-        };
-        let types = self.module.types();
-        types
-            .union_payloads(*id, arguments)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(case, payload)| Some((case, payload.filter(|ty| ty.needs_drop(&types))?)))
-            .collect()
-    }
-
-    /// Branches on the tag of `value` to one new block per case; other tags reach the returned
-    /// join block.
-    fn case_switch(
-        &mut self,
-        ty: &Type,
-        value: &str,
-        cases: &[(usize, Type)],
-    ) -> (Vec<String>, String) {
-        let tag = if self.module.types().recursive(ty) {
-            self.recursive_tag(ty, value)
-        } else {
-            self.value(format!("extractvalue {} {value}, 0", self.ty(ty)))
-        };
-        let labels: Vec<_> = cases.iter().map(|_| self.label()).collect();
-        let done = self.label();
-        self.instruction(format!("switch i32 {tag}, label %{done} ["));
-        for ((case, _), label) in cases.iter().zip(&labels) {
-            self.instruction(format!("  i32 {case}, label %{label}"));
-        }
-        self.instruction("]");
-        (labels, done)
-    }
-
     fn allocate_array(&mut self, element: &Type, length: &str) -> (String, String) {
         let bytes = self.allocation_size(&self.ty(element), length);
         let empty = self.value(format!("icmp eq i64 {length}, 0"));
@@ -5409,7 +5297,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let key = target.vtable_key();
         let value = self.expression(argument);
         if self.module.vtables.contains_key(&(key.clone(), ty.clone())) {
-            let size = storage_layout(ty, self.module).0.max(1);
+            let size = self.cell_size(ty);
             let cell = self.value(format!("call ptr @tz.alloc(i64 {size})"));
             self.instruction(format!("store {} {value}, ptr {cell}", self.ty(ty)));
             let pair = self.value(format!(
@@ -5598,6 +5486,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let condition = self.label();
         let element = self.label();
         let advance = self.label();
+        let step = self.increment_block(&advance);
         let exit = self.label();
         let index = self.fresh();
         let next_index = self.fresh();
@@ -5606,10 +5495,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.jump(&condition);
         self.begin(&condition);
         self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{advance} ]"
+            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{step} ]"
         ));
         self.instruction(format!(
-            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{advance} ]"
+            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{step} ]"
         ));
         let more = self.value(format!("icmp ult i64 {index}, {length}"));
         self.branch(&more, &element, &exit);
@@ -5619,7 +5508,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         body(self, &node, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
-        self.instruction(format!("{next_index} = add i64 {index}, 1"));
+        // `index < length` as unsigned numbers: the step cannot wrap (R4).
+        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
+        let words = self.flag_text(Flags::UNSIGNED);
+        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
         self.jump(&condition);
         self.begin(&exit);
         node
@@ -5634,13 +5526,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let condition = self.label();
         let element = self.label();
         let advance = self.label();
+        let step = self.increment_block(&advance);
         let exit = self.label();
         let index = self.fresh();
         let next = self.fresh();
         self.jump(&condition);
         self.begin(&condition);
         self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next}, %{advance} ]"
+            "{index} = phi i64 [ 0, %{entry} ], [ {next}, %{step} ]"
         ));
         let more = self.value(format!("icmp ult i64 {index}, {length}"));
         self.branch(&more, &element, &exit);
@@ -5648,7 +5541,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         body(self, &index, &exit, &advance);
         self.jump(&advance);
         self.begin(&advance);
-        self.instruction(format!("{next} = add i64 {index}, 1"));
+        // `index < length` as unsigned numbers: the step cannot wrap (R3).
+        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
+        let words = self.flag_text(Flags::UNSIGNED);
+        self.instruction(format!("{next} = add {words}i64 {index}, 1"));
         self.jump(&condition);
         self.begin(&exit);
     }
@@ -5981,6 +5877,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
                 let value = self.expression(&arguments[0]);
+                self.cover_call(id);
+                return value;
+            }
+            // PR02 D10: a direct `Add.add x y` (or `Sub.sub`, `Mul.mul`) on numbers is `x + y`.
+            if arguments.len() == 2
+                && let Some(operator) = call_specialization::intrinsic_operation(function)
+            {
+                let value = self.binary(operator, &arguments[0], &arguments[1]);
                 self.cover_call(id);
                 return value;
             }
@@ -6587,7 +6491,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _ => unreachable!("operator checked or handled separately"),
             }
         };
-        self.value(format!("{instruction} {} {lhs}, {rhs}", self.ty(&left.ty)))
+        let words = if matches!(operator, Add | Subtract | Multiply) && !left.ty.is_float() {
+            self.arithmetic_flags(operator, left, right, &lhs, &rhs)
+        } else {
+            ""
+        };
+        self.value(format!(
+            "{instruction} {words}{} {lhs}, {rhs}",
+            self.ty(&left.ty)
+        ))
     }
 }
 
@@ -7056,6 +6968,7 @@ fn emit_typed_builtin(
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
+        range_flags: shared_globals.range_flags,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -7487,8 +7400,7 @@ impl FunctionEmitter<'_, '_> {
             let current = self.value(format!("load i8, ptr {lock}, align 1"));
             let taken = self.value(format!("icmp eq i8 {current}, 2"));
             fail(self, &taken);
-            let state_type = self.ty(&state);
-            let tag = self.value(format!("extractvalue {state_type} %arg0, 0"));
+            let tag = self.tag_value(&state, "%arg0");
             let present = self.value(format!("icmp eq i32 {tag}, {some}"));
             let store = self.label();
             let empty = self.label();
@@ -7525,11 +7437,21 @@ impl FunctionEmitter<'_, '_> {
         let result_slot = self.slot(&result_type);
         let head = self.value(format!("extractvalue {} %arg0, 0", self.ty(sequence)));
         let step = self.value(format!("extractvalue {} %arg0, 1", self.ty(sequence)));
-        let tag = if self.module.types().recursive(head_type) {
-            self.recursive_tag(head_type, &head)
-        } else {
-            self.value(format!("extractvalue {} {head}, 0", self.ty(head_type)))
-        };
+        // The remainder of a finished sequence is `Seq.empty`, and an exhausted result holds
+        // `None`. Both are built rather than zeroed, because a layout may encode `None` in
+        // bytes other than zero (PM01).
+        let none_head = self.nullary_value(head_type, "None");
+        let none_step = self.nullary_value(step_type, "None");
+        let sequence_ty = self.ty(sequence);
+        let empty_sequence = self.value(format!(
+            "insertvalue {sequence_ty} zeroinitializer, {} {none_head}, 0",
+            self.ty(head_type)
+        ));
+        let empty_sequence = self.value(format!(
+            "insertvalue {sequence_ty} {empty_sequence}, {} {none_step}, 1",
+            self.ty(step_type)
+        ));
+        let tag = self.tag_value(head_type, &head);
         let has_head = self.value(format!("icmp eq i32 {tag}, 1"));
         let ready = self.label();
         let deferred = self.label();
@@ -7540,7 +7462,11 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&ready);
         self.drop_value(step_type, &step);
         let result = self.value(format!(
-            "insertvalue {} zeroinitializer, {} {head}, 1",
+            "insertvalue {} zeroinitializer, {sequence_ty} {empty_sequence}, 0",
+            self.ty(&result_type)
+        ));
+        let result = self.value(format!(
+            "insertvalue {} {result}, {} {head}, 1",
             self.ty(&result_type),
             self.ty(head_type)
         ));
@@ -7551,7 +7477,7 @@ impl FunctionEmitter<'_, '_> {
         self.jump(&done);
         self.begin(&deferred);
         self.drop_value(head_type, &head);
-        let tag = self.value(format!("extractvalue {} {step}, 0", self.ty(step_type)));
+        let tag = self.tag_value(step_type, &step);
         let has_step = self.value(format!("icmp eq i32 {tag}, 1"));
         self.branch(&has_step, &invoke, &empty);
         self.begin(&invoke);
@@ -7565,8 +7491,17 @@ impl FunctionEmitter<'_, '_> {
         ));
         self.jump(&done);
         self.begin(&empty);
+        let result = self.value(format!(
+            "insertvalue {} zeroinitializer, {sequence_ty} {empty_sequence}, 0",
+            self.ty(&result_type)
+        ));
+        let result = self.value(format!(
+            "insertvalue {} {result}, {} {none_head}, 1",
+            self.ty(&result_type),
+            self.ty(head_type)
+        ));
         self.instruction(format!(
-            "store {} zeroinitializer, ptr {result_slot}",
+            "store {} {result}, ptr {result_slot}",
             self.ty(&result_type)
         ));
         self.jump(&done);
@@ -7962,9 +7897,10 @@ fn emit_character_conversion(
             let cases = &module.unions[*id].cases;
             let none = cases.iter().position(|(name, _)| name == "None").unwrap();
             let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
+            let tag = tag_type(&result, module);
             let _ = writeln!(
                 body,
-                "  %none = insertvalue {llvm} zeroinitializer, i32 {none}, 0\n  ret {llvm} %none\nvalid_value:\n  %some = insertvalue {llvm} zeroinitializer, i32 {some}, 0\n  %result = insertvalue {llvm} %some, i32 %value, 1\n  ret {llvm} %result"
+                "  %none = insertvalue {llvm} zeroinitializer, {tag} {none}, 0\n  ret {llvm} %none\nvalid_value:\n  %some = insertvalue {llvm} zeroinitializer, {tag} {some}, 0\n  %result = insertvalue {llvm} %some, i32 %value, 1\n  ret {llvm} %result"
             );
         } else {
             body.push_str(
@@ -7976,6 +7912,33 @@ fn emit_character_conversion(
         format!("  ret {llvm} %value\n")
     };
     format!("define internal {llvm} {symbol}({input} %value) nounwind {{\nentry:\n{body}}}\n\n")
+}
+
+/// The IR that writes the decimal text of the integer `value` (of `bits` bits) into a new 40-byte
+/// `%buffer` with `tz.integer.format`; it leaves the text in `%text` and its length in `%length`
+/// (an i64). The formatter writes from the end of the buffer backwards.
+fn integer_text(value: &str, bits: u16, signed: bool) -> String {
+    let flag = if signed { "true" } else { "false" };
+    let mut output = String::new();
+    let call = if bits == 128 {
+        format!("call i32 @tz.integer.format128(ptr %end, i128 {value}, i1 {flag})")
+    } else if bits == 64 {
+        format!("call i32 @tz.integer.format(ptr %end, i64 {value}, i1 {flag})")
+    } else {
+        let extension = if signed { "sext" } else { "zext" };
+        let _ = writeln!(output, "  %wide = {extension} i{bits} {value} to i64");
+        format!("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 {flag})")
+    };
+    let _ = write!(
+        output,
+        "  %buffer = alloca [40 x i8], align 16\n\
+           %end = getelementptr inbounds i8, ptr %buffer, i64 40\n\
+           %count = {call}\n\
+           %length = zext i32 %count to i64\n\
+           %offset = sub i64 40, %length\n\
+           %text = getelementptr inbounds i8, ptr %buffer, i64 %offset\n"
+    );
+    output
 }
 
 fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
@@ -8062,6 +8025,18 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
                    ret %tz.string %r"
             );
         }
+        Type::Integer(bits, signed) => {
+            let value = if borrowed {
+                let _ = writeln!(body, "  %value = load {value_type}, ptr %x");
+                "%value"
+            } else {
+                "%x"
+            };
+            body.push_str(&integer_text(value, *bits, *signed));
+            body.push_str(
+                "  %r = call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)\n  ret %tz.string %r\n",
+            );
+        }
         _ => {
             let pointer = if borrowed {
                 "%x"
@@ -8100,6 +8075,7 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     let cases = &module.unions[id].cases;
     let some = cases.iter().position(|(name, _)| name == "Some").unwrap();
     let none = cases.iter().position(|(name, _)| name == "None").unwrap();
+    let tag = tag_type(&result, module);
     let mut globals = String::new();
     let mut body = String::from("  %text = load %tz.string, ptr %x\n");
     if matches!(payload, Type::Char | Type::Utf8Char) {
@@ -8126,6 +8102,39 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %ok = or i1 %value, %false\n\
                br i1 %ok, label %some, label %none\nsome:"
         );
+    } else if let Type::Integer(bits, signed) = payload {
+        // The integer parser reads the UTF-16 units itself and stores its result whole: an i128 for a
+        // 128-bit integer, else an i64 whose low bits are the value.
+        let (slot_type, call, load) = if *bits == 128 {
+            (
+                "i128",
+                format!(
+                    "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 {signed}, ptr %slot)"
+                ),
+                "  %value = load i128, ptr %slot".to_string(),
+            )
+        } else {
+            let truncate = if *bits == 64 {
+                "  %value = load i64, ptr %slot".to_string()
+            } else {
+                format!("  %wide = load i64, ptr %slot\n  %value = trunc i64 %wide to {value_type}")
+            };
+            (
+                "i64",
+                format!(
+                    "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 {bits}, i1 {signed}, ptr %slot)"
+                ),
+                truncate,
+            )
+        };
+        let _ = writeln!(
+            body,
+            "  %data = extractvalue %tz.string %text, 0\n\
+               %length = extractvalue %tz.string %text, 1\n\
+               %slot = alloca {slot_type}, align 16\n\
+               %ok = {call}\n\
+               br i1 %ok, label %some, label %none\nsome:\n{load}"
+        );
     } else {
         let _ = writeln!(
             body,
@@ -8144,10 +8153,10 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
     }
     let _ = writeln!(
         body,
-        "  %tag = insertvalue {result_type} zeroinitializer, i32 {some}, 0\n\
+        "  %tag = insertvalue {result_type} zeroinitializer, {tag} {some}, 0\n\
            %result = insertvalue {result_type} %tag, {value_type} %value, 1\n\
            ret {result_type} %result\nnone:\n\
-           %empty = insertvalue {result_type} zeroinitializer, i32 {none}, 0\n\
+           %empty = insertvalue {result_type} zeroinitializer, {tag} {none}, 0\n\
            ret {result_type} %empty"
     );
     format!(
@@ -8324,6 +8333,10 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
             );
         }
         Type::Unit => {}
+        Type::Integer(bits, signed) => {
+            output.push_str(&integer_text("%result", *bits, *signed));
+            output.push_str("  %printed = call i32 @tz.console.write(ptr %text, i64 %length)\n");
+        }
         _ if ty.is_numeric() => {
             let _ = writeln!(
                 output,
@@ -8513,7 +8526,7 @@ mod tests {
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
              let number = to_string 42\n\
-             let parsed: Maybe<i64> = Parse.parse ref number\n\
+             let parsed: Maybe<f64> = Parse.parse ref number\n\
              let truth = to_string true\n\
              let parsed_bool: Maybe<bool> = Parse.parse ref truth\n0",
         );
@@ -8529,7 +8542,10 @@ mod tests {
             assert!(body.contains("call %tz.string @tz.string.from_utf8("));
             assert_eq!(body.contains("call void @tz.free(ptr %data)"), consumed);
         }
-        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %buffer, i64 %length)"));
+        // An integer is shown by the integer formatter, which writes into a stack buffer whose
+        // start the call computes; a float is parsed by the numeric runtime from an ASCII copy.
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call %tz.string @tz.string.from_ascii(ptr %text, i64 %length)"));
         assert!(ir.contains("constant [4 x i16] [i16 116, i16 114, i16 117, i16 101]"));
         assert!(ir.contains("call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)"));
         assert!(ir.contains("br i1 %ascii, label %parse, label %none"));
@@ -8685,8 +8701,11 @@ mod tests {
 
     #[test]
     fn number_formatting_keeps_the_generated_intrinsic_declarations() {
+        // A float is shown by the numeric runtime, which declares `llvm.smin.i32` too; an
+        // integer is not (it has a runtime of its own, without declarations).
         let ir = library(
-            "def run :: i32 -> i32 -> string\nfn run left right = to_string (Int.min left right)",
+            "def run :: i32 -> i32 -> f64 -> string\n\
+             fn run left right x = {\n    let low = Int.min left right;\n    to_string (x + (low as f64))\n}",
         );
         // The runtime of the number formatting is linked, and it declares `llvm.smin.i32` too.
         assert!(ir.contains("define weak hidden i32 @tz_soft_format("));
@@ -8697,6 +8716,86 @@ mod tests {
             1
         );
         assert!(!ir.contains("declare i32 @llvm.smin.i32(i32, i32) #"));
+    }
+
+    #[test]
+    fn integers_are_shown_without_the_numeric_runtime() {
+        let ir = library(
+            "def run :: i32 -> i8u -> i128 -> string\n\
+             fn run left right wide = to_string left + to_string right + to_string wide",
+        );
+        assert!(ir.contains("define internal i32 @tz.integer.format("));
+        assert!(ir.contains("define internal i32 @tz.integer.format128("));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 true)"));
+        assert!(ir.contains("call i32 @tz.integer.format(ptr %end, i64 %wide, i1 false)"));
+        assert!(ir.contains("call i32 @tz.integer.format128(ptr %end, i128 %x, i1 true)"));
+        // Nothing of the numeric runtime: no formatter and no intrinsic declaration.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        // A float or a decimal, parsed or shown, still links it.
+        for source in [
+            "def run :: f64 -> string\nfn run x = to_string x",
+            "def run :: string -> Maybe<f64>\nfn run text = Parse.parse ref text",
+            "def run :: string -> Maybe<d64>\nfn run text = Parse.parse ref text",
+        ] {
+            assert!(library(source).contains("tz_soft_"), "{source}");
+        }
+    }
+
+    #[test]
+    fn the_integer_runtime_avoids_the_words_that_tests_search_for() {
+        // The tests that forbid fast-math flags search IR text for these words, and the tests of
+        // the numeric runtime for its symbols; the integer runtime is part of that text.
+        let runtime = include_str!("runtime/integer.ll");
+        for word in [
+            "fast", "contract", "reassoc", "fmuladd", "tz_soft_", "llvm.fma",
+        ] {
+            assert!(!runtime.contains(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
+        let ir = library(
+            "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
+             def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
+             def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\
+             def wide :: &string -> Maybe<i128u>\nfn wide text = Parse.parse text\n\
+             def specs :: i32 -> i8u -> i128u -> string\n\
+             fn specs a b c = $\"{a:+}{b:x}{c:b}\"",
+        );
+        // The parser reads the UTF-16 text itself and stores the result as an i64 (an i128 for a
+        // 128-bit integer), which the load narrows.
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 8, i1 true, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 32, i1 false, ptr %slot)"
+        ));
+        assert!(ir.contains(
+            "call i1 @tz.integer.parse(ptr %data, i64 %length, i32 64, i1 true, ptr %slot)"
+        ));
+        assert!(
+            ir.contains(
+                "call i1 @tz.integer.parse128(ptr %data, i64 %length, i1 false, ptr %slot)"
+            )
+        );
+        assert!(ir.contains("%value = trunc i64 %wide to i8\n"));
+        assert!(ir.contains("%value = trunc i64 %wide to i32\n"));
+        assert!(ir.contains("%value = load i64, ptr %slot\n"));
+        assert!(ir.contains("%value = load i128, ptr %slot\n"));
+        // The format specs take the value extended to 64 bits, or the i128, and the flags of a hole.
+        assert!(ir.contains("call i32 @tz.integer.spec(ptr "), "{ir}");
+        assert!(ir.contains("call i32 @tz.integer.spec128(ptr "), "{ir}");
+        assert!(ir.contains("i1 true, i32 1)"), "plus: {ir}");
+        assert!(ir.contains("i1 false, i32 48)"), "hexadecimal: {ir}");
+        assert!(ir.contains("i1 false, i32 96)"), "binary: {ir}");
+        // No numeric runtime, no ASCII copy of the text, and no 4 KiB buffer for it.
+        assert!(!ir.contains("tz_soft_"), "{ir}");
+        assert!(!ir.contains("call i1 @tz.string.to_ascii"), "{ir}");
+        // A float's spec still uses it.
+        let ir = library("def run :: f64 -> string\nfn run x = $\"{x:.2}\"");
+        assert!(ir.contains("call i32 @tz_soft_format_spec("), "{ir}");
+        assert!(!ir.contains("tz.integer."), "{ir}");
     }
 
     #[test]
@@ -8729,6 +8828,95 @@ mod tests {
         assert!(rewritten.contains("  %within = icmp ule i64 %end, 17179869184\n"));
         assert_eq!(rewritten.matches("17179869152\n").count(), 2);
         assert_eq!(rewritten.lines().count(), heap64.lines().count());
+    }
+
+    #[test]
+    fn heap_traps_are_only_in_the_allocation_entry_points() {
+        // `traps::runtime_kind` names these functions: a trap in a helper would be a numeric runtime trap.
+        for (name, heap) in [
+            ("heap-wasm.ll", include_str!("runtime/heap-wasm.ll")),
+            ("heap-wasm64.ll", include_str!("runtime/heap-wasm64.ll")),
+        ] {
+            for function in heap.split("\ndefine ").skip(1) {
+                let header = function.lines().next().unwrap();
+                let traps = function.matches("call void @llvm.trap()").count() > 0;
+                let allocation = header.contains("@tz.alloc(") || header.contains("@tz.realloc(");
+                assert_eq!(traps, allocation, "{name}: {header}");
+            }
+            for entry in ["@tz.alloc(", "@tz.free(", "@tz.realloc("] {
+                let defines = heap
+                    .lines()
+                    .filter(|line| line.starts_with("define ") && line.contains(entry))
+                    .count();
+                assert_eq!(defines, 1, "{name}: {entry}");
+            }
+        }
+    }
+
+    #[test]
+    fn threads_heap_traps_report_allocation_failures() {
+        let source = "export def make :: i64 -> i64\nfn make count = { let values = new [i64](count, n -> n); values[count - 1] }";
+        let module = checked(source);
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: true,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let output =
+            emit_wasm_build(&module, options, &sources, None, true, true, false, false).unwrap();
+        // The wrappers of the threads runtime and the unlocked heap define each entry point once.
+        for name in [
+            "tz.alloc",
+            "tz.free",
+            "tz.realloc",
+            "tz.heap.alloc.unlocked",
+            "tz.heap.free.unlocked",
+            "tz.heap.realloc.unlocked",
+        ] {
+            let defines = output
+                .ir
+                .lines()
+                .filter(|line| line.starts_with("define ") && line.contains(&format!("@{name}(")))
+                .count();
+            assert_eq!(defines, 1, "{name}");
+        }
+        // The trap of the unlocked functions is an allocation failure, not a numeric runtime trap.
+        for name in ["tz.heap.alloc.unlocked", "tz.heap.realloc.unlocked"] {
+            let body = output
+                .ir
+                .split(&format!("define internal ptr @{name}("))
+                .nth(1)
+                .unwrap()
+                .split("\n}")
+                .next()
+                .unwrap();
+            let reports = body
+                .lines()
+                .filter(|line| line.contains("@tz.trap.report("))
+                .count();
+            // The heap runs under the context of its caller: the site is the caller's plus the kind.
+            let kinds: Vec<u32> = body
+                .lines()
+                .filter_map(|line| {
+                    line.trim()
+                        .strip_prefix("%tz.trap.")?
+                        .split_once(" = add i32 %tz.context, ")?
+                        .1
+                        .parse()
+                        .ok()
+                })
+                .collect();
+            assert_eq!(reports, 1, "{name}");
+            assert_eq!(kinds, [TrapKind::AllocationFailure as u32], "{name}");
+        }
     }
 
     #[test]

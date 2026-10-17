@@ -116,7 +116,7 @@ Windows のホストで target を実行するのは、[windows.yml](../../../.g
 
 **システムの Clang と `TSUZURI_SYSROOT`。** `TSUZURI_CLANG` がシステムの Clang のとき、名前を付けた target のランタイムの C のコンパイルとリンクに、sysroot を渡します。非 Apple の target は `--sysroot=DIR`、Apple の target は `-isysroot DIR` です。`--target native` は読みません。
 
-- その Clang は、target の CPU のコード生成（RISC-V は Apple の Clang にありません）と、target の形式のリンカーを持つ必要があります。ビルド機と違う target には `-fuse-ld=lld` を付けるので、`ld.lld` が PATH に要ります。例外は、macOS のホストで Mach-O の target を作るときで、Apple のリンカーを使います。
+- その Clang は、target の CPU のコード生成（RISC-V は Apple の Clang にありません）と、target の形式のリンカーを持つ必要があります。ビルド機と違う target には `-fuse-ld=lld` を付けるので、`ld.lld` が PATH に要ります（ビルド機の target でも `TSUZURI_LINKER=lld` で付けられます。[option.md](option.md#環境変数)）。例外は、macOS のホストで Mach-O の target を作るときで、Apple のリンカーを使います。
 - 別の CPU の macOS 向けは、macOS の SDK がそのまま使えるので、sysroot は要りません。iOS は SDK を渡さないと、Apple の Clang が macOS の SDK で黙ってリンクするので、`-Werror=incompatible-sysroot` で止めて `E2002` にします。
 - その Clang は、コンパイラが出す IR を読めなければなりません。IR に `icmp samesign` があると、Xcode 16.4 の Apple Clang は `expected icmp predicate` で読めず、`E2002` になります。LLVM 21 の Clang は読めるので、`TSUZURI_CLANG` に渡します。CI の macOS の job は、Xcode 16.4 の SDK を、Homebrew の LLVM 21 の Clang に渡しています。
 - MSVC と bare-metal の target に `TSUZURI_SYSROOT` を付けると `E2000` です。MSVC のリンカーは、Windows SDK と CRT を `INCLUDE` と `LIB` から読みます。
@@ -195,6 +195,8 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 | `E2002` | FreeBSD・Android・iOS の `Net` | `the Net socket API is only available for macOS, Linux, and Windows targets; <triple> has no implementation of it` |
 | `E2002` | FreeBSD・Android・iOS の `Async.block_on` | `Async.block_on is only available for macOS, Linux, and Windows targets; use Async.run for <triple>` |
 
+実行ファイル（`--emit exe`）で、OS API・`Net`・`Async.block_on` の `E2002` が出るのは、入口か `export def`、`Drop` の実装から到達する関数が使うときだけです。どこからも呼ばれない公開関数だけが使うときは出ません。その関数を実行ファイルにコンパイルしないからです（以前は `E2002` でした。たとえば `File.read_text` だけを使う未使用の公開関数は、`x86_64-pc-windows-gnu` の実行ファイルを拒まれました）。`--emit object` と `--emit llvm` などは公開関数をすべて出力するので、今までどおり拒みます（[出力とターゲット](option.md#出力とターゲット)）。
+
 ## 既知の制限
 
 - 32-bit のネイティブ target は、受け付けません。native の IR は 64-bit のポインターを前提にします。
@@ -202,6 +204,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - iOS の実行ファイルは、SDK を `TSUZURI_SYSROOT` に渡し、macOS のホストでリンクします。実機とシミュレーターでは動かしていません。
 - MSVC の target の実行ファイルは、Windows のホストの MSVC のリンカーが作ります。ほかのホストで `INCLUDE` と `LIB` に Windows SDK を用意してリンクする方法は、確かめていません。Windows の `--emit shared` と OS API は、実装がないので受け付けません（[G10](../../../_features/_completed/G10-windows.md) の対象外です）。
 - 同梱ツールチェーンは、Mach-O の `--emit object` でランタイムを含むものを作れません。リンカーが `-keep_private_externs` を受け付けないからです（ランタイムを要しないプログラムのオブジェクトと、LLVM IR は作れます）。Windows の COFF の `--emit object` でランタイムを含むものは、ホストを問わず `E2002` です。
+- Windows の x86-64 の `i128`・`i128u` の `/` と `%` は、正しい値になりません。LLVM が `__udivti3` の系列を、オペランドをポインターで渡して XMM0 で返す規約で呼ぶのに対し、Windows のビルドに連結する `runtime/wasm.ll` の定義は `i128` を 2 つのレジスタで受けるからです（assembly の読解による結論で、Windows の実機では確かめていません）。`to_string`・補間・`Parse` の整数は `i128` の除算を使わないので、影響を受けません。
 - bare-metal の x86-64 は、`noredzone` を IR の関数に付けるだけで、`-mcmodel` や割り込みの規約までは扱いません。RISC-V の bare-metal は `rv64gc`、`lp64d` に固定です。
 - クロスコンパイルで C ライブラリや sysroot を自動で取得することはありません。同梱ツールチェーンか、`TSUZURI_SYSROOT` だけです。
 

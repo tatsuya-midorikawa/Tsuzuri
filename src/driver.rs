@@ -329,11 +329,67 @@ pub const MAX_WASM32_MEMORY: u64 = (1 << 32) - 65536;
 /// wasm-ld's limit for 64-bit memories.
 pub const MAX_WASM64_MEMORY: u64 = 1 << 34;
 
+/// The LLVM optimization level of a build: `-O0` to `-O3` and the size levels `-Os` and `-Oz`.
+/// None of them enables fast-math or any other change of the language's meaning; the size levels
+/// only change what Clang does with the same IR (`build` and `run` accept them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+    Os,
+    Oz,
+}
+
+impl OptLevel {
+    /// The Clang option of this level.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::O0 => "-O0",
+            Self::O1 => "-O1",
+            Self::O2 => "-O2",
+            Self::O3 => "-O3",
+            Self::Os => "-Os",
+            Self::Oz => "-Oz",
+        }
+    }
+
+    /// The level of a `-O0` to `-O3`, `-Os` or `-Oz` argument.
+    pub fn from_flag(flag: &str) -> Option<Self> {
+        [Self::O0, Self::O1, Self::O2, Self::O3, Self::Os, Self::Oz]
+            .into_iter()
+            .find(|level| level.flag() == flag)
+    }
+
+    /// The level as the number `test` and `bench` take; the size levels have none.
+    pub fn speed_level(self) -> Option<u8> {
+        match self {
+            Self::O0 => Some(0),
+            Self::O1 => Some(1),
+            Self::O2 => Some(2),
+            Self::O3 => Some(3),
+            Self::Os | Self::Oz => None,
+        }
+    }
+
+    /// The level of `-O<digit>`, for a digit from 0 to 3.
+    pub fn from_speed_level(level: u8) -> Option<Self> {
+        match level {
+            0 => Some(Self::O0),
+            1 => Some(Self::O1),
+            2 => Some(Self::O2),
+            3 => Some(Self::O3),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
     pub emit: Emit,
-    pub optimization: u8,
+    pub optimization: OptLevel,
     pub cpu: Cpu,
     pub debug_output: bool,
     pub trap_info: bool,
@@ -361,6 +417,11 @@ pub struct BuildOptions {
     pub allocator: llvm::Allocator,
     /// `--freestanding`: a native object that needs no C library (F13 Phase 3).
     pub freestanding: bool,
+    /// `--strip`: a native executable without local symbols (PM08).
+    pub strip: bool,
+    /// `--wasm-opt`: run Binaryen's `wasm-opt -Oz` over the linked `.wasm` (PM08). The tool is never
+    /// looked for unless this is set.
+    pub wasm_opt: bool,
     /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
     /// every non-native target.
     pub triple: Option<Triple>,
@@ -371,7 +432,7 @@ impl Default for BuildOptions {
         Self {
             target: Target::Native,
             emit: Emit::Executable,
-            optimization: 3,
+            optimization: OptLevel::O3,
             cpu: Cpu::Generic,
             debug_output: false,
             trap_info: false,
@@ -388,6 +449,8 @@ impl Default for BuildOptions {
             trap_return: false,
             allocator: llvm::Allocator::System,
             freestanding: false,
+            strip: false,
+            wasm_opt: false,
             triple: None,
         }
     }
@@ -553,13 +616,47 @@ impl BuildOptions {
                 "--trap-mode return is only valid for native object, llvm or header output",
             ));
         }
-        if self.optimization > 3 {
-            return Err(driver_error(
-                "E2000",
-                "optimization level must be 0, 1, 2, or 3",
-            ));
-        }
         self.validate_allocator()?;
+        if self.strip {
+            if self.target.is_wasm() {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip requires a native executable; WASM output is already stripped unless --debug-info is used",
+                ));
+            }
+            if self.emit != Emit::Executable {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip requires native executable output (--emit exe)",
+                ));
+            }
+            if self.debug_info {
+                return Err(driver_error(
+                    "E2000",
+                    "--strip cannot be combined with --debug-info: a debugger needs the symbols",
+                ));
+            }
+        }
+        if self.wasm_opt {
+            if self.target != Target::Wasm32 || self.emit != Emit::Wasm {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt requires WASM output (--target wasm32, --emit wasm)",
+                ));
+            }
+            if self.wasm_threads {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt cannot be combined with --wasm-feature threads",
+                ));
+            }
+            if self.debug_info {
+                return Err(driver_error(
+                    "E2000",
+                    "--wasm-opt cannot be combined with --debug-info: the optimizer rewrites the code the names and debug information describe",
+                ));
+            }
+        }
         if (self.emit == Emit::Executable && self.target != Target::Native)
             || (self.emit == Emit::Wasm && !self.target.is_wasm())
         {
@@ -758,6 +855,18 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--trap-mode return keeps its own tracked allocator; remove --allocator",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Small && self.target != Target::Native {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ));
+        }
+        if self.allocator == llvm::Allocator::Small && self.emit.is_kernel() {
+            return Err(driver_error(
+                "E2000",
+                "--allocator small requires executable, object, shared library, LLVM IR, or header output",
             ));
         }
         if self.freestanding {
@@ -1097,6 +1206,8 @@ fn target_args(platform: Platform) -> Vec<OsString> {
 
 /// The environment variable that names the sysroot of a named target: its C headers and libraries.
 pub const SYSROOT_VARIABLE: &str = "TSUZURI_SYSROOT";
+/// The Binaryen `wasm-opt` that `--wasm-opt` runs (PM08): the variable, then a distribution, then `PATH`.
+pub(crate) const WASM_OPT_VARIABLE: &str = "TSUZURI_WASM_OPT";
 
 /// The Clang arguments of the runs that read the headers and libraries of a named target: the
 /// runtime's C compile and the link. A build for the machine the compiler runs on does not use
@@ -1153,6 +1264,85 @@ fn link_args(platform: Platform) -> Vec<OsString> {
         vec!["-fuse-ld=lld".into()]
     } else {
         Vec::new()
+    }
+}
+
+/// The variable that chooses the linker of a native executable or shared library (PB03 D6).
+pub(crate) const LINKER_VARIABLE: &str = "TSUZURI_LINKER";
+
+/// The arguments of the final link of a native executable or shared library: those of `link_args`, and LLD
+/// when `TSUZURI_LINKER=lld` asks for it. A relocatable `-r` link keeps `link_args`: `ld64.lld` cannot do it.
+fn final_link_args(platform: Platform) -> Result<Vec<OsString>, Diagnostic> {
+    final_link_args_for(platform, env::var_os(LINKER_VARIABLE).as_deref())
+}
+
+/// [`final_link_args`] for the value of `TSUZURI_LINKER`: unset, empty or `default` leave the choice to Clang.
+/// The bundled launcher links with LLD whatever it is told, so `lld` changes nothing there.
+fn final_link_args_for(
+    platform: Platform,
+    linker: Option<&OsStr>,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let mut arguments = link_args(platform);
+    match linker.and_then(OsStr::to_str) {
+        None if linker.is_some() => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE} must be 'default' or 'lld'"),
+            ));
+        }
+        None | Some("" | "default") => {}
+        Some("lld") if platform.windows() => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE}=lld is not supported for Windows targets; unset it"),
+            ));
+        }
+        Some("lld") => {
+            let lld = OsString::from("-fuse-ld=lld");
+            if !arguments.contains(&lld) {
+                arguments.push(lld);
+            }
+        }
+        Some(other) => {
+            return Err(driver_error(
+                "E2000",
+                format!("{LINKER_VARIABLE} must be 'default' or 'lld', not '{other}'"),
+            ));
+        }
+    }
+    Ok(arguments)
+}
+
+/// `TSUZURI_LINKER=lld` with `-Os` or `-Oz` on a Mach-O target: the final link shares the compile's Clang run, and
+/// Apple's Clang hands the size level to `ld64.lld`, which rejects it, so the combination fails before any work.
+fn check_linker_with_optimization(
+    platform: Platform,
+    linker: Option<&OsStr>,
+    optimization: OptLevel,
+) -> Result<(), Diagnostic> {
+    if platform.mach_o()
+        && matches!(optimization, OptLevel::Os | OptLevel::Oz)
+        && linker.is_some_and(|value| value == "lld")
+    {
+        return Err(driver_error(
+            "E2000",
+            format!(
+                "{LINKER_VARIABLE}=lld cannot be combined with {} for a Mach-O target (Clang passes the size level to ld64.lld, which rejects it); use -O2 or unset {LINKER_VARIABLE}",
+                optimization.flag()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// What a failing final link tells the user: `hint`, and that LLD is needed when `TSUZURI_LINKER=lld` asked for it.
+fn linker_hint(hint: String) -> String {
+    if env::var_os(LINKER_VARIABLE).is_some_and(|value| value == "lld") {
+        format!(
+            "{hint}; {LINKER_VARIABLE}=lld needs LLD (ld.lld on Linux, ld64.lld on macOS) next to Clang or on PATH, or unset it"
+        )
+    } else {
+        hint
     }
 }
 
@@ -2448,13 +2638,17 @@ impl Project {
             })
             .flatten();
         drop(cache_time);
+        // The commands of the command line use the available cores unless `TSUZURI_THREADS` says otherwise.
+        let parallelism = crate::parallel::Parallelism::command_line();
         match frontend {
-            Some(mut cache) => crate::analyze_inputs_with(&inputs, None, Some(&mut cache)),
-            None => crate::analyze_inputs_all(&inputs),
+            Some(mut cache) => {
+                crate::analyze_inputs_with(&inputs, None, Some(&mut cache), parallelism)
+            }
+            None => crate::analyze_inputs_with(&inputs, None, None, parallelism),
         }
     }
 
-    fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
+    pub(crate) fn inputs(&self) -> Vec<crate::SourceInput<'_>> {
         self.sources
             .iter()
             .map(|source| crate::SourceInput {
@@ -2818,6 +3012,15 @@ fn build_complete(
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
+    // A bad TSUZURI_LINKER fails before any work, not when the link starts.
+    if options.target == Target::Native && matches!(options.emit, Emit::Executable | Emit::Shared) {
+        final_link_args(platform)?;
+        check_linker_with_optimization(
+            platform,
+            env::var_os(LINKER_VARIABLE).as_deref(),
+            options.optimization,
+        )?;
+    }
     if !links.is_empty() {
         if options.target != Target::Native
             || !matches!(options.emit, Emit::Executable | Emit::Shared)
@@ -2900,6 +3103,12 @@ fn build_complete(
             (options.target, options.emit),
             (Target::Native, Emit::Executable) | (Target::Wasm32, Emit::Wasm)
         );
+    // PM08 D10: a native executable without -g links with the linker's garbage collection even when
+    // the runtime is embedded in the module (--no-cache, --trap-info, ...), as it does with runtime
+    // objects. Every function and datum gets a section of its own, so that an ELF or COFF linker can
+    // drop the unused ones; Mach-O subsections already allow it.
+    let gc_sections =
+        options.emit == Emit::Executable && options.target == Target::Native && !options.debug_info;
     // The bytes of a SPIR-V module, which have no text form for `text` to carry (F09 Phase 3).
     let mut spirv = None;
     let emit_time = crate::timings::Phase::start("emit");
@@ -2960,7 +3169,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     matches!(options.emit, Emit::Object | Emit::Shared),
                 )
             })?;
@@ -2982,7 +3193,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
                 )
             })?;
@@ -2994,7 +3207,9 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.debug_info.then_some(options.optimization != 0),
+                    options
+                        .debug_info
+                        .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
                     options.wasm_threads,
                     options.target == Target::Wasm64,
@@ -3009,7 +3224,7 @@ fn build_complete(
                     module,
                     emission,
                     sources,
-                    options.optimization != 0,
+                    options.optimization != OptLevel::O0,
                     options.trap_info,
                 )
             })?;
@@ -3372,7 +3587,7 @@ fn build_complete(
                 .into_iter()
                 .map(OsString::from)
                 .collect();
-            args.push(format!("-O{}", options.optimization).into());
+            args.push(options.optimization.flag().into());
             if options.target.is_wasm() {
                 args.extend(
                     [
@@ -3415,6 +3630,7 @@ fn build_complete(
                         &args,
                         &temporary.path,
                         clang_identity.as_ref(),
+                        RUNTIME_OBJECT_HINT,
                         &mut messages,
                     )?);
                 }
@@ -3481,7 +3697,7 @@ fn build_complete(
                 .args(["-std=c11", "-c"])
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
-                .arg(format!("-O{}", options.optimization));
+                .arg(options.optimization.flag());
             if (task_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
                 && !platform.windows()
             {
@@ -3502,7 +3718,7 @@ fn build_complete(
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(platform.arch_name())?);
             }
-            if runtime_objects {
+            if gc_sections {
                 runtime.args(["-ffunction-sections", "-fdata-sections"]);
             }
             if options.cache && !merge_debug_ir {
@@ -3514,10 +3730,10 @@ fn build_complete(
                     &args,
                     &temporary.path,
                     clang_identity.as_ref(),
+                    RUNTIME_OBJECT_HINT,
                     &mut messages,
                 )?;
-                fs::rename(&cached, &runtime_object)
-                    .map_err(|error| io_error("stage native runtime", &runtime_object, error))?;
+                stage_runtime_object(&cached, &runtime_object, "stage native runtime")?;
             } else {
                 runtime.arg(&runtime_source).arg("-o").arg(&runtime_object);
                 collect_message(
@@ -3551,7 +3767,7 @@ fn build_complete(
             }
         }
         let stack_source = temporary.path.join("stack.c");
-        let stack_object = temporary.path.join("stack.o");
+        let mut stack_object = temporary.path.join("stack.o");
         if stack_runtime {
             fs::write(&stack_source, include_str!("runtime/stack.c"))
                 .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
@@ -3562,20 +3778,27 @@ fn build_complete(
             runtime
                 .args(["-std=c11", "-c", "-O1"])
                 .args(compile_args(platform))
-                .args(sdk_args(platform)?)
-                .arg(&stack_source)
-                .arg("-o")
-                .arg(&stack_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    &cross_hint(
-                        platform,
-                        "native runtime requires Clang and the platform C/OS SDK headers",
-                    ),
-                )?,
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
             );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                stack_object = compile_runtime_object(
+                    "stack-debug",
+                    include_str!("runtime/stack.c"),
+                    "stack.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                runtime.arg(&stack_source).arg("-o").arg(&stack_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
         }
         let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
         let wasi_object = temporary.path.join("wasi.o");
@@ -3590,7 +3813,7 @@ fn build_complete(
             } else {
                 include_str!("runtime/os-wasi.c").to_owned()
             };
-            fs::write(&source, text)
+            fs::write(&source, &text)
                 .map_err(|error| io_error("write WASI runtime", &source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime.args([
@@ -3608,18 +3831,25 @@ fn build_complete(
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
                 }
             }
-            runtime
-                .arg(format!("-O{}", options.optimization))
-                .arg(&source)
-                .arg("-o")
-                .arg(&wasi_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "the WASI host needs Clang with WebAssembly support",
-                )?,
-            );
+            runtime.arg(options.optimization.flag());
+            let hint = "the WASI host needs Clang with WebAssembly support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasi",
+                    &text,
+                    "wasi.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                stage_runtime_object(&cached, &wasi_object, "stage WASI runtime")?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&wasi_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
@@ -3637,23 +3867,31 @@ fn build_complete(
                     "-mbulk-memory",
                     "-c",
                 ])
-                .arg(format!("-O{}", options.optimization))
-                .arg(&source)
-                .arg("-o")
-                .arg(&threads_object);
-            collect_message(
-                &mut messages,
-                run_tool(
-                    &mut runtime,
-                    "WASM threads require Clang atomics and bulk-memory support",
-                )?,
-            );
+                .arg(options.optimization.flag());
+            let hint = "WASM threads require Clang atomics and bulk-memory support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasm-threads",
+                    include_str!("runtime/task-wasm-threads.c"),
+                    "threads.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                stage_runtime_object(&cached, &threads_object, "stage WASM thread runtime")?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&threads_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
         }
         clang
             .arg("-x")
             .arg("ir")
             .arg("-Wno-override-module")
-            .arg(format!("-O{}", options.optimization));
+            .arg(options.optimization.flag());
         if options.debug_info {
             clang.arg("-g");
         }
@@ -3678,9 +3916,14 @@ fn build_complete(
             if options.cpu == Cpu::Native {
                 clang.args(native_ir_cpu_args(platform.arch_name(), f16)?);
             }
+            if gc_sections && !platform.mach_o() {
+                clang.args(["-ffunction-sections", "-fdata-sections"]);
+            }
             // The run that links reads the target's libraries; a compile of IR alone reads none.
             if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
-                clang.args(sdk_args(platform)?).args(link_args(platform));
+                clang
+                    .args(sdk_args(platform)?)
+                    .args(final_link_args(platform)?);
             } else {
                 clang.args(no_sdk_args(platform));
             }
@@ -3703,7 +3946,11 @@ fn build_complete(
         if options.emit == Emit::Executable && !platform.windows() && dwarf_sidecar.is_none() {
             clang.arg("-lm");
         }
-        if options.emit == Emit::Executable && runtime_objects {
+        // `-x` drops the local symbols and keeps the global ones; Windows links are left as they are.
+        if options.strip && options.emit == Emit::Executable && !platform.windows() {
+            clang.arg("-Wl,-x");
+        }
+        if gc_sections {
             clang.args(dead_strip_args(platform));
             for function in module.functions.iter().filter(|function| function.exported) {
                 if platform.mach_o() {
@@ -3712,9 +3959,9 @@ fn build_complete(
                     clang.arg(format!("-Wl,-u,tz_{}", function.name));
                 }
             }
-            if !numeric_objects.is_empty() {
-                clang.args(["-x", "none"]).args(&numeric_objects);
-            }
+        }
+        if options.emit == Emit::Executable && runtime_objects && !numeric_objects.is_empty() {
+            clang.args(["-x", "none"]).args(&numeric_objects);
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
@@ -3749,10 +3996,10 @@ fn build_complete(
             &mut messages,
             run_tool(
                 &mut clang,
-                &cross_hint(
+                &linker_hint(cross_hint(
                     platform,
                     "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                ),
+                )),
             )?,
         );
         if let Some(symbols) = &shared_symbols {
@@ -3785,6 +4032,7 @@ fn build_complete(
             linker
                 .args(target_args(platform))
                 .args(sdk_args(platform)?)
+                .args(final_link_args(platform)?)
                 .arg(&object)
                 .args(["-g", "-lm"]);
             if native_runtime {
@@ -3805,10 +4053,10 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    &cross_hint(
+                    &linker_hint(cross_hint(
                         platform,
                         "native debug executables require the Clang linker",
-                    ),
+                    )),
                 )?,
             );
             let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
@@ -3965,6 +4213,9 @@ fn build_complete(
                     ),
                 )?,
             );
+            if options.wasm_opt {
+                run_wasm_opt(&artifact, &temporary.path, options.wasm_simd, &mut messages)?;
+            }
         }
     }
     let sidecars: Vec<_> = sidecar
@@ -4049,7 +4300,7 @@ fn link_shared(
     linker
         .args(target_args(platform))
         .args(sdk_args(platform)?)
-        .args(link_args(platform));
+        .args(final_link_args(platform)?);
     if platform.mach_o() {
         let text: String = symbols
             .iter()
@@ -4097,10 +4348,10 @@ fn link_shared(
         messages,
         run_tool(
             &mut linker,
-            &cross_hint(
+            &linker_hint(cross_hint(
                 platform,
                 "shared libraries require the Clang linker; unresolved extern symbols need --link, -l or -L",
-            ),
+            )),
         )?,
     );
     Ok(())
@@ -4756,6 +5007,13 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
     }
 }
 
+/// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
+const RUNTIME_OBJECT_HINT: &str =
+    "runtime objects require Clang with support for the selected target";
+
+/// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
+/// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
+#[allow(clippy::too_many_arguments)]
 fn compile_runtime_object(
     unit: &str,
     source: &str,
@@ -4763,6 +5021,7 @@ fn compile_runtime_object(
     args: &[OsString],
     directory: &Path,
     identity: Option<&crate::cache::ToolIdentity>,
+    hint: &str,
     messages: &mut Vec<String>,
 ) -> Result<PathBuf, Diagnostic> {
     let output = directory.join(format!("{unit}.o"));
@@ -4819,10 +5078,7 @@ fn compile_runtime_object(
         .args(args)
         .args(["-c", input, "-o"])
         .arg(format!("{unit}.o"));
-    let message = run_tool(
-        &mut command,
-        "runtime objects require Clang with support for the selected target",
-    )?;
+    let message = run_tool(&mut command, hint)?;
     collect_message(messages, message.clone());
     if let Some((cache, key)) = cache {
         let paths = std::collections::BTreeMap::from([("artifact".to_owned(), output.clone())]);
@@ -4836,6 +5092,16 @@ fn compile_runtime_object(
         }
     }
     Ok(output)
+}
+
+/// Moves the object of a runtime unit to where the link looks for it. A unit that is named like its
+/// staging file (`wasi` and `wasi.o`) is there already, and renaming a file onto itself is not
+/// defined on every platform.
+fn stage_runtime_object(object: &Path, staged: &Path, what: &str) -> Result<(), Diagnostic> {
+    if object == staged {
+        return Ok(());
+    }
+    fs::rename(object, staged).map_err(|error| io_error(what, staged, error))
 }
 
 /// Resolves a tool from its variable (even when empty), the distribution, then `PATH`.
@@ -4899,6 +5165,48 @@ fn collect_message(messages: &mut Vec<String>, message: String) {
     if !message.trim().is_empty() {
         messages.push(message);
     }
+}
+
+/// Runs Binaryen's `wasm-opt -Oz` over the linked module and replaces it with the result (PM08).
+/// The tool comes from `TSUZURI_WASM_OPT`, a distribution, or `PATH`, and only because `--wasm-opt`
+/// asked: a missing or failing tool is E2002 with an install hint, never a silent skip. The features
+/// are the ones this compiler's modules use; `simd` only for `--wasm-feature simd128`.
+fn run_wasm_opt(
+    artifact: &Path,
+    directory: &Path,
+    simd: bool,
+    messages: &mut Vec<String>,
+) -> Result<(), Diagnostic> {
+    let optimized = directory.join("optimized.wasm");
+    let mut command = Command::new(tool(WASM_OPT_VARIABLE, "wasm-opt"));
+    command.arg(artifact).arg("-o").arg(&optimized).arg("-Oz");
+    for feature in [
+        "bulk-memory",
+        "sign-ext",
+        "nontrapping-float-to-int",
+        "mutable-globals",
+        "multivalue",
+        "reference-types",
+    ] {
+        command.arg(format!("--enable-{feature}"));
+    }
+    if simd {
+        command.arg("--enable-simd");
+    }
+    collect_message(
+        messages,
+        run_tool(
+            &mut command,
+            "--wasm-opt runs Binaryen's wasm-opt: install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable",
+        )?,
+    );
+    fs::rename(&optimized, artifact).map_err(|error| {
+        io_error(
+            "replace the WASM output with the optimized module",
+            artifact,
+            error,
+        )
+    })
 }
 
 fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
@@ -5228,14 +5536,8 @@ mod tests {
                 .code,
             "E2004"
         );
-        assert!(
-            BuildOptions {
-                optimization: 4,
-                ..BuildOptions::default()
-            }
-            .validate()
-            .is_err()
-        );
+        // A level above 3 has no `OptLevel`; `parse` rejects it before a `BuildOptions` exists.
+        assert_eq!(OptLevel::from_speed_level(4), None);
         let bindings = BuildOptions {
             target: Target::Wasm32,
             emit: Emit::BindingsJs,
@@ -5998,6 +6300,98 @@ mod tests {
         assert_eq!(
             sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.message),
             Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn lld_is_refused_with_size_levels_for_mach_o_targets_only() {
+        let lld = Some(OsStr::new("lld"));
+        for platform in Triple::ALL
+            .into_iter()
+            .map(|triple| Platform::new(Some(triple)))
+            .chain([Platform::HOST])
+        {
+            for level in [OptLevel::Os, OptLevel::Oz] {
+                let result = check_linker_with_optimization(platform, lld, level);
+                if platform.mach_o() {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, "E2000");
+                    assert!(error.message.contains(level.flag()));
+                } else {
+                    assert!(result.is_ok());
+                }
+                // Unset, `default` and the other levels are never refused.
+                assert!(check_linker_with_optimization(platform, None, level).is_ok());
+                assert!(
+                    check_linker_with_optimization(platform, Some(OsStr::new("default")), level)
+                        .is_ok()
+                );
+            }
+            for level in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+                assert!(check_linker_with_optimization(platform, lld, level).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn the_linker_choice_adds_lld_to_the_final_link_and_rejects_other_values() {
+        let lld = OsString::from("-fuse-ld=lld");
+        let choose = |platform, value: &str| final_link_args_for(platform, Some(OsStr::new(value)));
+        for platform in Triple::ALL
+            .into_iter()
+            .map(|triple| Platform::new(Some(triple)))
+            .chain([Platform::HOST])
+        {
+            // Unset, empty and `default` are the arguments that a link had before the variable existed.
+            let default = final_link_args_for(platform, None).unwrap();
+            assert_eq!(default, link_args(platform));
+            assert_eq!(choose(platform, "").unwrap(), default);
+            assert_eq!(choose(platform, "default").unwrap(), default);
+            if platform.windows() {
+                let error = choose(platform, "lld").unwrap_err();
+                assert_eq!(error.code, "E2000");
+                assert!(error.message.contains("not supported for Windows"));
+            } else {
+                // One flag, even where the machine's own linker could not write the target anyway.
+                let chosen = choose(platform, "lld").unwrap();
+                assert_eq!(
+                    chosen.iter().filter(|argument| **argument == lld).count(),
+                    1
+                );
+                assert!(default.iter().all(|argument| chosen.contains(argument)));
+            }
+            for bad in ["gold", "LLD", "lld ", "mold"] {
+                let error = choose(platform, bad).unwrap_err();
+                assert_eq!(error.code, "E2000");
+                assert!(
+                    error.message.contains("must be 'default' or 'lld'"),
+                    "{bad}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_runtime_object_that_is_staged_already_is_not_renamed_onto_itself() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        // The unit `wasi` compiles to `wasi.o`, where the WASI runtime is staged. A rename of that path onto
+        // itself would fail here (the file is not there), so passing means it is skipped.
+        let wasi = directory.path.join("wasi.o");
+        stage_runtime_object(&wasi, &wasi, "stage WASI runtime").unwrap();
+        assert!(!wasi.exists());
+        // A unit with a name of its own is moved to the staging name.
+        let cached = directory.path.join("native-c.o");
+        let staged = directory.path.join("task.o");
+        fs::write(&cached, b"object").unwrap();
+        stage_runtime_object(&cached, &staged, "stage native runtime").unwrap();
+        assert!(!cached.exists());
+        assert_eq!(fs::read(&staged).unwrap(), b"object");
+        // What it could not move is reported against the staged file.
+        let error = stage_runtime_object(&cached, &staged, "stage native runtime").unwrap_err();
+        assert!(
+            error.message.contains("stage native runtime"),
+            "{}",
+            error.message
         );
     }
 

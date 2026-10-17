@@ -6,7 +6,11 @@ use crate::check::{
     CheckedFunction, CheckedModule, FunctionRef, Local, ModuleOrigin, PatternStep, Type, TypedExpr,
     TypedExprKind,
 };
+use crate::interval::Interval;
 use crate::syntax::BinaryOp;
+
+#[path = "ranges_intervals.rs"]
+mod intervals;
 
 /// A function with more typed nodes than this gets no facts, so every check stays.
 pub(crate) const NODE_BUDGET: usize = 65_536;
@@ -26,18 +30,47 @@ pub(crate) struct RangeFacts {
     lengths: BTreeMap<usize, u64>,
     /// Locals declared once and never assigned or mutably borrowed.
     stable: BTreeSet<usize>,
+    /// The stable locals that are not declared `mut`: what is known of their values (PR02) holds
+    /// wherever they are read.
+    fixed: BTreeSet<usize>,
     /// `(index local, array local)` pairs from enclosing `if` conditions (R5), innermost last.
     guards: Vec<(usize, usize)>,
+    /// The values of immutable integer locals: loop counters, `let` values and what the enclosing
+    /// `if` conditions prove (PR02). A local without an entry can have any value of its type.
+    values: BTreeMap<usize, Interval>,
+    /// What `values` held before each narrowing, innermost last, to put back when its scope ends.
+    undo: Vec<(usize, Option<Interval>)>,
+    /// How many expression nodes the interval proofs of this function may still visit.
+    steps: usize,
 }
 
-pub(crate) fn analyze(module: &CheckedModule, function: &CheckedFunction) -> RangeFacts {
-    analyze_within(module, function, NODE_BUDGET)
+/// What `enter_condition` pushed, for `leave_condition` to remove again.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Entered {
+    guards: usize,
+    narrowed: usize,
 }
 
-fn analyze_within(module: &CheckedModule, function: &CheckedFunction, budget: usize) -> RangeFacts {
+/// The facts of `function`. The integer intervals (PR02) are tracked only when `intervals` is set,
+/// which is when the emitter writes or checks overflow flags, so that the default mode does none of
+/// that work.
+pub(crate) fn analyze(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    intervals: bool,
+) -> RangeFacts {
+    analyze_within(module, function, NODE_BUDGET, intervals)
+}
+
+fn analyze_within(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    budget: usize,
+    intervals: bool,
+) -> RangeFacts {
     let mut scan = Scan::default();
     for parameter in &function.parameters {
-        scan.declare(parameter.id);
+        scan.declare_local(parameter);
     }
     let mut work = vec![&function.body];
     let mut nodes = 0;
@@ -49,7 +82,7 @@ fn analyze_within(module: &CheckedModule, function: &CheckedFunction, budget: us
         scan.visit(module, expression);
         work.extend(expression.children());
     }
-    scan.finish()
+    scan.finish(intervals)
 }
 
 impl RangeFacts {
@@ -78,12 +111,12 @@ impl RangeFacts {
         }
     }
 
-    /// Records what `condition` proves inside the `then` branch and returns how many facts it pushed.
+    /// Records what `condition` proves inside the `then` branch and returns what it pushed.
     pub(crate) fn enter_condition(
         &mut self,
         module: &CheckedModule,
         condition: &TypedExpr,
-    ) -> usize {
+    ) -> Entered {
         let mut non_negative = BTreeSet::new();
         let mut below = Vec::new();
         let mut terms = vec![condition];
@@ -108,11 +141,15 @@ impl RangeFacts {
                 self.guards.push((index, array));
             }
         }
-        self.guards.len() - before
+        Entered {
+            guards: self.guards.len() - before,
+            narrowed: self.refine(module, condition, 0),
+        }
     }
 
-    pub(crate) fn leave_condition(&mut self, pushed: usize) {
-        self.guards.truncate(self.guards.len() - pushed);
+    pub(crate) fn leave_condition(&mut self, entered: Entered) {
+        self.guards.truncate(self.guards.len() - entered.guards);
+        self.restore(self.undo.len() - entered.narrowed);
     }
 }
 
@@ -124,6 +161,8 @@ enum Loop {
 #[derive(Default)]
 struct Scan {
     declared: BTreeSet<usize>,
+    /// The locals declared `mut`.
+    mutable: BTreeSet<usize>,
     /// Ids declared more than once cannot carry facts.
     duplicated: BTreeSet<usize>,
     unstable: BTreeSet<usize>,
@@ -135,6 +174,13 @@ impl Scan {
     fn declare(&mut self, id: usize) {
         if !self.declared.insert(id) {
             self.duplicated.insert(id);
+        }
+    }
+
+    fn declare_local(&mut self, local: &Local) {
+        self.declare(local.id);
+        if local.mutable {
+            self.mutable.insert(local.id);
         }
     }
 
@@ -171,7 +217,7 @@ impl Scan {
             }
             TypedExprKind::Block { bindings, .. } => {
                 for (local, value) in bindings {
-                    self.declare(local.id);
+                    self.declare_local(local);
                     if let Some(length) = literal_length(value) {
                         self.literals.push((local.id, length));
                     }
@@ -184,24 +230,24 @@ impl Scan {
                 finish,
                 ..
             } => {
-                self.declare(local.id);
+                self.declare_local(local);
                 if let Some(kind) = loop_kind(module, local, start, step, finish) {
                     self.loops.push((local.id, kind));
                 }
             }
             TypedExprKind::ForEach { owner, local, .. } => {
-                self.declare(owner.id);
-                self.declare(local.id);
+                self.declare_local(owner);
+                self.declare_local(local);
             }
             TypedExprKind::Match { local, arms, .. } => {
-                self.declare(local.id);
+                self.declare_local(local);
                 for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
                     for (binding, _) in &alternative.bindings {
-                        self.declare(binding.id);
+                        self.declare_local(binding);
                     }
                     for step in &alternative.steps {
                         if let PatternStep::Bind(binding, _) = step {
-                            self.declare(binding.id);
+                            self.declare_local(binding);
                         }
                     }
                 }
@@ -210,14 +256,17 @@ impl Scan {
         }
     }
 
-    fn finish(self) -> RangeFacts {
+    fn finish(self, intervals: bool) -> RangeFacts {
         let stable: BTreeSet<usize> = self
             .declared
             .into_iter()
             .filter(|id| !self.unstable.contains(id) && !self.duplicated.contains(id))
             .collect();
+        let fixed = stable.difference(&self.mutable).copied().collect();
         let mut facts = RangeFacts {
             stable,
+            fixed,
+            steps: if intervals { intervals::STEP_BUDGET } else { 0 },
             ..RangeFacts::default()
         };
         for (local, kind) in self.loops {
@@ -443,7 +492,7 @@ mod tests {
             panic!("{source}\n{}: {}", error.code, error.message);
         });
         let function = function(&module, name);
-        verdicts_with(&module, function, analyze(&module, function))
+        verdicts_with(&module, function, analyze(&module, function, true))
     }
 
     #[test]
@@ -536,7 +585,7 @@ mod tests {
             .iter()
             .filter(|function| matches!(function.module.as_str(), "Main" | "$lambda"))
         {
-            let verdicts = verdicts_with(&module, function, analyze(&module, function));
+            let verdicts = verdicts_with(&module, function, analyze(&module, function, true));
             assert!(!verdicts.contains(&true), "{}: {verdicts:?}", function.name);
             checked += verdicts.len();
         }
@@ -579,13 +628,331 @@ mod tests {
             verdicts_with(
                 &module,
                 function,
-                analyze_within(&module, function, NODE_BUDGET)
+                analyze_within(&module, function, NODE_BUDGET, true)
             ),
             [true]
         );
         assert_eq!(
-            verdicts_with(&module, function, analyze_within(&module, function, 8)),
+            verdicts_with(
+                &module,
+                function,
+                analyze_within(&module, function, 8, true)
+            ),
             [false]
+        );
+    }
+
+    /// The flags that the engine proves for every integer `+ - *` of an expression, in the order the
+    /// emitter reaches them, applying `bind`, `enter_counter` and `enter_condition` where it does.
+    fn flag_walk(
+        module: &CheckedModule,
+        facts: &mut RangeFacts,
+        expression: &TypedExpr,
+        flags: &mut Vec<String>,
+    ) {
+        match &expression.kind {
+            TypedExprKind::Block { bindings, result } => {
+                for (local, value) in bindings {
+                    flag_walk(module, facts, value, flags);
+                    facts.bind(module, local, value);
+                }
+                flag_walk(module, facts, result, flags);
+            }
+            TypedExprKind::ForRange {
+                local,
+                start,
+                step,
+                finish,
+                body,
+            } => {
+                for part in [start, step, finish] {
+                    flag_walk(module, facts, part, flags);
+                }
+                facts.enter_counter(module, local, start, step, finish);
+                flag_walk(module, facts, body, flags);
+            }
+            TypedExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                flag_walk(module, facts, condition, flags);
+                let entered = facts.enter_condition(module, condition);
+                flag_walk(module, facts, then_branch, flags);
+                facts.leave_condition(entered);
+                flag_walk(module, facts, else_branch, flags);
+            }
+            TypedExprKind::Binary(operator, left, right) => {
+                flag_walk(module, facts, left, flags);
+                flag_walk(module, facts, right, flags);
+                let symbol = match operator {
+                    BinaryOp::Add => "+",
+                    BinaryOp::Subtract => "-",
+                    BinaryOp::Multiply => "*",
+                    _ => return,
+                };
+                if matches!(left.ty, Type::Integer(bits, _) if bits <= 64) {
+                    let proven = facts.integer_flags(module, *operator, left, right);
+                    flags.push(format!("{symbol} {}", proven.text()).trim().to_owned());
+                }
+            }
+            _ => {
+                for child in expression.children() {
+                    flag_walk(module, facts, child, flags);
+                }
+            }
+        }
+    }
+
+    fn flags_with(
+        module: &CheckedModule,
+        function: &CheckedFunction,
+        facts: RangeFacts,
+    ) -> Vec<String> {
+        let mut facts = facts;
+        let mut flags = Vec::new();
+        flag_walk(module, &mut facts, &function.body, &mut flags);
+        assert!(facts.undo.is_empty(), "every narrowing is undone again");
+        flags
+    }
+
+    fn flags(source: &str, name: &str) -> Vec<String> {
+        let module = crate::analyze(source).unwrap_or_else(|error| {
+            panic!("{source}\n{}: {}", error.code, error.message);
+        });
+        let function = function(&module, name);
+        flags_with(&module, function, analyze(&module, function, true))
+    }
+
+    /// One function per row: its source after `fn`, and the flags of its `+ - *` in order.
+    fn expect_flags(rows: &[(&str, &[&str])]) {
+        for (index, (definition, expected)) in rows.iter().enumerate() {
+            let source = format!("def f :: {definition}");
+            assert_eq!(flags(&source, "f"), *expected, "row {index}: {definition}");
+        }
+    }
+
+    #[test]
+    fn types_casts_masks_and_remainders_prove_flags_without_any_flow() {
+        expect_flags(&[
+            // A narrow value widened keeps its range: 255 * 3 + 1 fits an i32 either way.
+            (
+                "i8u -> i32\nfn f x = (x as i32) * 3 + 1",
+                &["* nuw nsw", "+ nuw nsw"],
+            ),
+            // As an unsigned number an i8 is not below 128, so only the signed reading proves it.
+            ("i8 -> i32\nfn f x = (x as i32) * 3", &["* nsw"]),
+            ("i32 -> i32 -> i32\nfn f a b = a + b", &["+"]),
+            ("i8 -> i8\nfn f x = x + 1", &["+"]),
+            ("i64 -> i64\nfn f x = (x & 255) + 1", &["+ nuw nsw"]),
+            ("i64 -> i64\nfn f x = (x & 255) * (x & 255)", &["* nuw nsw"]),
+            ("i64 -> i64\nfn f x = x % 10 + 1", &["+ nsw"]),
+            ("i64u -> i64u\nfn f x = x % 10 + 48", &["+ nuw nsw"]),
+            ("i64u -> i64u\nfn f x = (x >>> 56) + 1", &["+ nuw nsw"]),
+            ("i64 -> i64\nfn f x = (x <<< 3) + 1", &["+"]),
+            ("i64 -> i64\nfn f x = (x / 4) + 1", &["+ nsw"]),
+            // A mask with the sign bit set, a variable shift and an `or` prove nothing.
+            ("i64 -> i64\nfn f x = (x & -2) + 1", &["+"]),
+            ("i64 -> i64 -> i64\nfn f x n = (x >>> n) + 1", &["+"]),
+            ("i64 -> i64 -> i64\nfn f x y = (x | y) + 1", &["+"]),
+            // A cast that wraps can be any value of the narrower type.
+            ("i64 -> i8\nfn f x = (x as i8) + 1", &["+"]),
+            ("i64 -> i8\nfn f x = ((x & 127) as i8) + 1", &["+ nuw"]),
+            ("i64 -> i64\nfn f x = (-(x & 255)) + 255", &["+ nsw"]),
+            ("i64 -> i64\nfn f x = (~(x & 255)) + 256", &["+ nsw"]),
+            (
+                "bool -> i64\nfn f c = (if c then 3 else 9) + 1",
+                &["+ nuw nsw"],
+            ),
+            // `length` is not negative and below 2^63.
+            (
+                "ref [i64] -> i64\nfn f values = values.length + 1",
+                &["+ nuw"],
+            ),
+            (
+                "ref [i64] -> i64\nfn f values = values.length - 1",
+                &["- nsw"],
+            ),
+            (
+                "ref [i64] -> i64\nfn f values = Array.length values - 1",
+                &["- nsw"],
+            ),
+            ("ref string -> i64\nfn f text = text.length * 2", &["* nuw"]),
+        ]);
+    }
+
+    #[test]
+    fn let_values_and_loop_counters_carry_their_ranges() {
+        expect_flags(&[
+            (
+                "i64 -> i64\nfn f x =\n    let y = x & 15\n    y * 4 + 1",
+                &["* nuw nsw", "+ nuw nsw"],
+            ),
+            // A mutable local can change, so it proves nothing.
+            (
+                "i64 -> i64\nfn f x =\n    let mut y = x & 15\n    y * 4",
+                &["*"],
+            ),
+            (
+                "i64 -> i64\nfn f x =\n    let y = x & 15\n    let z = y + 3\n    z * z",
+                &["+ nuw nsw", "* nuw nsw"],
+            ),
+            (
+                "i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. 99 do total = total + i * 2\n    total",
+                &["* nuw nsw", "+"],
+            ),
+            (
+                "i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 100 .. -1 .. 1 do total = total + (i - 1)\n    total",
+                &["- nuw nsw", "+"],
+            ),
+            // The counter of a loop to an unknown bound is not negative, and can be the maximum.
+            (
+                "i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + (i + 1)\n    total",
+                &["+ nuw", "+"],
+            ),
+            // Down to an unknown bound the counter stays below its start.
+            (
+                "i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9 .. -1 .. n do total = total + (i + 1)\n    total",
+                &["+ nsw", "+"],
+            ),
+            // A step of unknown sign keeps the counter between the bounds, both of them.
+            (
+                "i64 -> i64 -> i64\nfn f n s =\n    let mut total = 0\n    for i in 0 .. s .. 9 do total = total + (i + 1)\n    total",
+                &["+ nuw nsw", "+"],
+            ),
+            // A counter of an unsigned type counts up whatever the step.
+            (
+                "i8u -> i64\nfn f n =\n    let mut total = 0\n    for i in 0i8u .. n do total = total + ((i as i64) + 1)\n    total",
+                &["+ nuw nsw", "+"],
+            ),
+            (
+                "ref [i64] -> i64\nfn f values =\n    let mut total = 0\n    for i in 0 .. values.length - 1 do total = total + (i + 1)\n    total",
+                &["- nsw", "+ nuw nsw", "+"],
+            ),
+        ]);
+    }
+
+    #[test]
+    fn conditions_narrow_their_locals_in_the_then_branch_only() {
+        expect_flags(&[
+            (
+                "i64 -> i64\nfn f x = if x < 100 && x >= 0 then x + 1 else 0",
+                &["+ nuw nsw"],
+            ),
+            (
+                "i64 -> i64\nfn f x = if x > 0 then x - 1 else 0",
+                &["- nuw nsw"],
+            ),
+            (
+                "i64u -> i64u\nfn f x = if x != 0 then x - 1 else 0",
+                &["- nuw"],
+            ),
+            (
+                "i64u -> i64u\nfn f x = if x > 0 then x - 1 else 0",
+                &["- nuw"],
+            ),
+            (
+                "i64 -> i64\nfn f x = if 0 < x && x <= 9 then x * x else 0",
+                &["* nuw nsw"],
+            ),
+            (
+                "i64 -> i64 -> i64\nfn f x y = if x == y && y == 7 then x * 100 else 0",
+                &["* nuw nsw"],
+            ),
+            // The else branch, a disjunction, and a condition on a mutable local prove nothing.
+            ("i64 -> i64\nfn f x = if x < 10 then 0 else x + 1", &["+"]),
+            ("i64 -> i64\nfn f x = (if x < 10 then 0 else x) + 1", &["+"]),
+            (
+                "i64 -> i64\nfn f x = if x < 0 || x > 10 then x + 1 else 0",
+                &["+"],
+            ),
+            (
+                "i64 -> i64\nfn f x =\n    let mut y = x\n    if y < 10 then y + 1 else 0",
+                &["+"],
+            ),
+            // A bound that is itself an unknown number still bounds the local by its type.
+            (
+                "i64 -> i64 -> i64\nfn f x n = if x < n then x + 1 else 0",
+                &["+ nsw"],
+            ),
+            (
+                "i64 -> i64 -> i64\nfn f x n = if n > x then x + 1 else 0",
+                &["+ nsw"],
+            ),
+            (
+                "i8 -> i8\nfn f x = if x < 127 then x + 1 else 0",
+                &["+ nsw"],
+            ),
+            ("i8 -> i8\nfn f x = if x <= 127 then x + 1 else 0", &["+"]),
+            // The values of the then branch are those of the condition's operand, wherever it is used.
+            (
+                "i64 -> i64\nfn f x =\n    let y = if x >= 0 && x < 50 then x else 0\n    y * 2",
+                &["* nuw nsw"],
+            ),
+        ]);
+    }
+
+    #[test]
+    fn nesting_beyond_the_depth_limit_proves_nothing_and_flags_stay_sound() {
+        // `((x & 1) + 1) + 1 ...`: after k additions the value is in [k, k + 1], so an i8 add is
+        // provably free of signed overflow up to k = 126.
+        let additions = 100;
+        let sum = (0..additions).fold("(x & 1)".to_owned(), |sum, _| format!("({sum} + 1)"));
+        let source = format!("def f :: i8 -> i8\nfn f x = {sum}");
+        let proven = flags(&source, "f");
+        assert_eq!(proven.len(), additions);
+        let free = |flags: &str| flags == "+ nuw nsw";
+        assert!(proven[..20].iter().all(|flags| free(flags)), "{proven:?}");
+        assert!(proven[60..].iter().all(|flags| flags == "+"), "{proven:?}");
+        // Nothing is flagged that can overflow: the k-th addition (counting from 1) produces at
+        // most k + 1, which exceeds 127 only after k = 126.
+        assert!(proven.iter().all(|flags| flags == "+" || free(flags)));
+    }
+
+    #[test]
+    fn a_function_beyond_the_node_budget_or_without_intervals_gets_no_flags() {
+        let source = "def f :: i64 -> i64\nfn f x = (x & 255) + 1";
+        let module = crate::analyze(source).unwrap();
+        let function = function(&module, "f");
+        assert_eq!(
+            flags_with(&module, function, analyze(&module, function, true)),
+            ["+ nuw nsw"]
+        );
+        assert_eq!(
+            flags_with(
+                &module,
+                function,
+                analyze_within(&module, function, 2, true)
+            ),
+            ["+"]
+        );
+        // The default mode of the emitter asks for no intervals at all.
+        assert_eq!(
+            flags_with(&module, function, analyze(&module, function, false)),
+            ["+"]
+        );
+    }
+
+    #[test]
+    fn intervals_follow_the_typed_expression() {
+        let source = "def f :: i64 -> i64\nfn f x =\n    let y = (x & 15) + 1\n    y * 3";
+        let module = crate::analyze(source).unwrap();
+        let function = function(&module, "f");
+        let mut facts = analyze(&module, function, true);
+        let TypedExprKind::Block { bindings, result } = &function.body.kind else {
+            panic!("{:?}", function.body.kind);
+        };
+        let (local, value) = &bindings[0];
+        assert_eq!(
+            facts.interval(&module, value),
+            Some(Interval::new(1, 16)),
+            "{value:?}"
+        );
+        facts.bind(&module, local, value);
+        assert_eq!(facts.interval(&module, result), Some(Interval::new(3, 48)));
+        assert_eq!(
+            facts.interval(&module, &function.body),
+            Some(Interval::new(3, 48))
         );
     }
 }

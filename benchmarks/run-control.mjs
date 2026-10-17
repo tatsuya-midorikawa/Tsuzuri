@@ -5,11 +5,11 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
+import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--baseline compiler] [--artifacts directory] [--metrics directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--allocator system|small] [--baseline compiler] [--artifacts directory] [--metrics directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -19,6 +19,8 @@ const take = (flag, fallback) => {
   return value;
 };
 const cpu = take("--cpu", "generic");
+// PM05: the allocator of the timing object only; the tracked IR (allocation counts) always uses the system allocator.
+const allocator = take("--allocator", "system");
 const scale = Number(take("--scale", "1"));
 const artifacts = take("--artifacts", null);
 const metrics = take("--metrics", null);
@@ -26,12 +28,13 @@ const baselineArgument = take("--baseline", null);
 const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
 const positional = args.filter((arg) => arg !== "--quick");
-if (!["generic", "native"].includes(cpu) || !Number.isFinite(scale) || scale <= 0 || scale > 10
+if (!["generic", "native"].includes(cpu) || !["system", "small"].includes(allocator) || !Number.isFinite(scale) || scale <= 0 || scale > 10
   || (quick && scale !== 1) || positional.length > 1
     || positional.some((arg) => arg.startsWith("-")) || args.filter((arg) => arg === "--quick").length > 1) {
   throw new Error(usage);
 }
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
+const { timing: tsuzuriVariant, allocation: allocationVariant } = allocatorVariants(allocator);
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
@@ -102,7 +105,7 @@ try {
   const generated = [];
   for (const [emit, extension] of [["object", "o"], ["header", "h"], ["llvm", "ll"]]) {
     const path = join(temporary, `control.${extension}`);
-    run(compiler, ["build", fixture, "--emit", emit, ...(emit === "object" ? tsuzuriFlags : []), "-o", path]);
+    run(compiler, ["build", fixture, "--emit", emit, ...(emit === "object" ? [...tsuzuriFlags, ...(allocator === "system" ? [] : ["--allocator", allocator])] : []), "-o", path]);
     generated.push(`control.${extension}`);
   }
   run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", join(temporary, "control.ll"), "-o", join(temporary, "control.optimized.ll")]);
@@ -179,10 +182,11 @@ try {
     const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
     assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));
     const records = inProcessRecords(context, "control", result.workloads,
-      [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name]), ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
+      [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name, name === "tsuzuri" ? tsuzuriVariant : "default"]),
+        ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
     for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
       records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
-        opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+        variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
     }
     writeRecords(metrics, "control", records);
     generated.push("control.tracked.ll", "control.tracked.o", "tracked_alloc.o");
@@ -203,7 +207,7 @@ try {
       architecture: arch(), cpu: cpus()[0]?.model, logical_cpus: cpus().length,
     },
     mode: quick ? "correctness-smoke" : "benchmark",
-    cpu, scale, wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags, tsuzuri_flags: tsuzuriFlags,
+    cpu, scale, wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags, tsuzuri_flags: tsuzuriFlags, tsuzuri_allocator: allocator,
     inspection, ...result,
     note: "Native CPU time; two warmups per variant; rotating/reversed order; no LTO. Array workloads include allocation, initialization, traversal and free. C/C++ share a C-compatible baseline; Rust uses the same system allocation with safe slice traversal. Ratios below 1 favor Tsuzuri; microbenchmarks are not a general language ranking.",
   }, null, 2));

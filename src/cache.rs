@@ -33,6 +33,7 @@ pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
     "DEVELOPER_DIR",
     "TSUZURI_ZIG",
     "TSUZURI_LLVM_CLANG",
+    crate::llvm::RANGE_FLAGS_VARIABLE,
 ];
 
 pub(crate) struct ToolIdentity {
@@ -41,58 +42,11 @@ pub(crate) struct ToolIdentity {
     bundled_resource_fingerprint: std::sync::OnceLock<Option<String>>,
 }
 
-fn collect_bundled_resources(
-    directory: &Path,
-    prefix: &str,
-    compiler: &str,
-    inventory: &mut Vec<(String, String)>,
-) -> Option<()> {
-    let mut entries: Vec<_> = fs::read_dir(directory)
-        .ok()?
-        .collect::<Result<_, _>>()
-        .ok()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let name = entry.file_name().into_string().ok()?;
-        let path = if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
-        if path == compiler
-            || path == "share/runtime"
-            || path.starts_with("share/runtime/")
-            || (prefix.is_empty() && path == "manifest.json")
-        {
-            continue;
-        }
-        let file_path = entry.path();
-        let metadata = fs::symlink_metadata(&file_path).ok()?;
-        if metadata.file_type().is_symlink() {
-            return None;
-        }
-        if metadata.is_dir() {
-            collect_bundled_resources(&file_path, &path, compiler, inventory)?;
-        } else if metadata.is_file() {
-            let digest = file_digest(&file_path).ok()?;
-            inventory.push((
-                path,
-                digest.iter().map(|byte| format!("{byte:02x}")).collect(),
-            ));
-        } else {
-            return None;
-        }
-    }
-    Some(())
-}
-
+/// The fingerprint of every resource of the distribution at `root`, read in full; `tool_identity` finds it
+/// through `bundle_identity::resolve` instead, which remembers it between builds.
 fn bundled_resource_fingerprint(root: &Path) -> Option<String> {
-    let mut inventory = Vec::new();
     let compiler = format!("bin/tsuzuri{}", std::env::consts::EXE_SUFFIX);
-    collect_bundled_resources(root, "", &compiler, &mut inventory)?;
-    let mut hash = Sha256::new();
-    hash.update(&serde_json::to_vec(&inventory).ok()?);
-    Some(hash.hex())
+    Some(crate::bundle_identity::inventory(root, &compiler, &file_digest)?.fingerprint())
 }
 
 impl ToolIdentity {
@@ -102,6 +56,18 @@ impl ToolIdentity {
             bundle_root,
             bundled_resource_fingerprint: std::sync::OnceLock::new(),
         }
+    }
+
+    /// An identity whose bundled-resource fingerprint is already known: `None` when a resource is unreadable
+    /// or a symbolic link, which leaves the identity without a cache key.
+    fn with_fingerprint(
+        fields: Vec<(&'static str, Vec<u8>)>,
+        bundle_root: PathBuf,
+        fingerprint: Option<String>,
+    ) -> Self {
+        let identity = Self::new(fields, Some(bundle_root));
+        let _ = identity.bundled_resource_fingerprint.set(fingerprint);
+        identity
     }
 
     fn hash_into(&self, hash: &mut Sha256) -> bool {
@@ -169,22 +135,60 @@ pub(crate) fn tool_identity(
     cpu: crate::driver::Cpu,
 ) -> io::Result<ToolIdentity> {
     let tool = crate::driver::resolve_tool(variable, fallback).1;
-    let path = executable_path(&tool)?;
-    let output = std::process::Command::new(&path)
-        .arg("--version")
-        .output()?;
+    let invoked = invoked_path(&tool)?;
+    let path = real_path(&invoked)?;
+    let launcher = path.file_stem().is_some_and(|name| name == "tsuzuri-clang");
+    // An override points the launcher at tools outside the distribution, which a remembered identity cannot see.
+    let overridden = std::env::var_os("TSUZURI_LLVM_CLANG").is_some()
+        || std::env::var_os("TSUZURI_ZIG").is_some();
+    let mut identity = if launcher && !overridden {
+        bundled_identity(&path)?
+    } else {
+        read_identity(&invoked, &path, launcher)?
+    };
+    if variable == "TSUZURI_CLANG" && cpu == crate::driver::Cpu::Native {
+        let output = std::process::Command::new(&invoked)
+            .args(["-dM", "-E", "-x", "c", "-"])
+            .arg(if matches!(std::env::consts::ARCH, "arm" | "aarch64") {
+                "-mcpu=native"
+            } else {
+                "-march=native"
+            })
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(invalid("native CPU feature query failed"));
+        }
+        identity.fields.push(("native-cpu-features", output.stdout));
+        identity
+            .fields
+            .push(("native-cpu-diagnostics", output.stderr));
+    }
+    Ok(identity)
+}
+
+/// What `--version` of the tool printed: standard output, then standard error.
+fn version_of(path: &Path) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let output = std::process::Command::new(path).arg("--version").output()?;
     if !output.status.success() {
         return Err(invalid("tool version query failed"));
     }
+    Ok((output.stdout, output.stderr))
+}
+
+/// The identity of a tool that is read in full on every call, with the Clang and Zig that a bundled
+/// launcher names (the overrides included) when `bundled` is set. `invoked` runs it, `path` is the file behind it.
+fn read_identity(invoked: &Path, path: &Path, bundled: bool) -> io::Result<ToolIdentity> {
+    let (stdout, stderr) = version_of(invoked)?;
     let mut fields = vec![
         ("tool-path", path.as_os_str().as_encoded_bytes().to_vec()),
-        ("tool-binary", file_digest(&path)?.to_vec()),
-        ("tool-version-stdout", output.stdout),
-        ("tool-version-stderr", output.stderr),
+        ("tool-binary", file_digest(path)?.to_vec()),
+        ("tool-version-stdout", stdout),
+        ("tool-version-stderr", stderr),
     ];
     let mut bundle_root = None;
     // The launcher alone does not identify the Clang or C SDK bundled beside it.
-    if path.file_stem().is_some_and(|name| name == "tsuzuri-clang") {
+    if bundled {
         let root = path
             .parent()
             .and_then(Path::parent)
@@ -212,23 +216,56 @@ pub(crate) fn tool_identity(
             ));
         }
     }
-    if variable == "TSUZURI_CLANG" && cpu == crate::driver::Cpu::Native {
-        let output = std::process::Command::new(&path)
-            .args(["-dM", "-E", "-x", "c", "-"])
-            .arg(if matches!(std::env::consts::ARCH, "arm" | "aarch64") {
-                "-mcpu=native"
-            } else {
-                "-march=native"
-            })
-            .stdin(std::process::Stdio::null())
-            .output()?;
-        if !output.status.success() {
-            return Err(invalid("native CPU feature query failed"));
-        }
-        fields.push(("native-cpu-features", output.stdout));
-        fields.push(("native-cpu-diagnostics", output.stderr));
-    }
     Ok(ToolIdentity::new(fields, bundle_root))
+}
+
+/// The identity of the launcher `<root>/bin/tsuzuri-clang` with the Clang and Zig of its distribution, with the
+/// same fields as `read_identity`. The fingerprint of the distribution's files, the tool digests and the
+/// launcher's `--version` come from `bundle_identity::resolve`, which hashes the distribution once and
+/// remembers the result in the cache directory, so that a build does not read 760 MB again.
+fn bundled_identity(path: &Path) -> io::Result<ToolIdentity> {
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| invalid("invalid bundled compiler path"))?;
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let clang = root.join("bin").join(format!("clang{suffix}"));
+    let zig = root.join("zig").join(format!("zig{suffix}"));
+    let compiler = format!("bin/tsuzuri{suffix}");
+    let request = crate::bundle_identity::Request {
+        root,
+        launcher: path,
+        clang: &clang,
+        zig: zig.is_file().then_some(zig.as_path()),
+        compiler: &compiler,
+    };
+    // Opening the root first marks it as a cache: a nonempty directory without the marker is refused later.
+    let memo = default_root()
+        .filter(|root| BuildCache::open(root).is_ok())
+        .map(|root| root.join("bundle"));
+    let resolved = crate::bundle_identity::resolve(
+        &request,
+        memo.as_deref(),
+        &crate::bundle_identity::Clock::system(),
+        &file_digest,
+        &|| version_of(path),
+    )?;
+    let mut fields = vec![
+        ("tool-path", path.as_os_str().as_encoded_bytes().to_vec()),
+        ("tool-binary", resolved.launcher.to_vec()),
+        ("tool-version-stdout", resolved.version.0),
+        ("tool-version-stderr", resolved.version.1),
+        ("bundled-resources", Vec::new()),
+        ("bundled-clang-binary", resolved.clang.to_vec()),
+    ];
+    if let Some(zig) = resolved.zig {
+        fields.push(("bundled-zig-binary", zig.to_vec()));
+    }
+    Ok(ToolIdentity::with_fingerprint(
+        fields,
+        root.to_path_buf(),
+        resolved.fingerprint,
+    ))
 }
 
 pub(crate) fn runtime_key(
@@ -413,11 +450,24 @@ pub(crate) fn build_key(
             value.as_ref().map_or(&[], |value| value.as_encoded_bytes()),
         );
     }
+    // The linker that `TSUZURI_LINKER` asks for changes a native executable or shared library. Unset and `default`
+    // add nothing, so their keys are the ones that were made before the variable existed.
+    if options.target == Target::Native
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+        && let Some(linker) = std::env::var_os(crate::driver::LINKER_VARIABLE)
+            .filter(|value| !value.is_empty() && value != "default")
+    {
+        hash.field("linker", linker.as_encoded_bytes());
+    }
     let mut tools = Vec::new();
     if !(matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_kernel()) {
         tools.push(("TSUZURI_CLANG", "clang"));
         if options.emit == Emit::Wasm || options.wasm_threads || options.wasm_host.is_some() {
             tools.push(("TSUZURI_WASM_LD", "wasm-ld"));
+        }
+        // `--wasm-opt` rewrites the module with the tool that is installed, so its identity is the key's.
+        if options.wasm_opt && options.emit == Emit::Wasm {
+            tools.push((crate::driver::WASM_OPT_VARIABLE, "wasm-opt"));
         }
         if options.platform().mach_o() && options.debug_info && options.target == Target::Native {
             if matches!(options.emit, Emit::Executable | Emit::Shared) {
@@ -463,19 +513,30 @@ fn plain_path(verbatim: &str) -> Option<String> {
 }
 
 pub fn executable_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
+    real_path(&invoked_path(tool)?)
+}
+
+/// The path that runs `tool`: the tool itself, or its first match on `PATH`, absolute but not resolved through
+/// links. A multi-call binary chooses its behavior by the name it is called by, and Homebrew's `wasm-ld` is a
+/// link to `lld`, which answers neither `--version` nor a link under its own name.
+pub(crate) fn invoked_path(tool: &std::ffi::OsStr) -> io::Result<PathBuf> {
+    invoked_path_in(tool, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+fn invoked_path_in(tool: &std::ffi::OsStr, search: &std::ffi::OsStr) -> io::Result<PathBuf> {
     let path = Path::new(tool);
     if path.components().count() > 1 || path.is_absolute() {
-        return real_path(path);
+        return std::path::absolute(path);
     }
-    for root in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+    for root in std::env::split_paths(search) {
         let candidate = root.join(tool);
         if candidate.is_file() {
-            return real_path(&candidate);
+            return std::path::absolute(candidate);
         }
         if cfg!(windows) && candidate.extension().is_none() {
             let candidate = candidate.with_extension("exe");
             if candidate.is_file() {
-                return real_path(&candidate);
+                return std::path::absolute(candidate);
             }
         }
     }
@@ -1045,6 +1106,25 @@ mod tests {
         assert!(root.join(".tsuzuri-cache").is_file());
         assert!(root.join("packages/git/package").is_dir());
         BuildCache::open(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_runs_under_the_name_it_is_found_by_not_the_file_behind_a_link() {
+        let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let bin = fs::canonicalize(&temporary.path).unwrap();
+        fs::write(bin.join("lld"), b"multi-call").unwrap();
+        std::os::unix::fs::symlink("lld", bin.join("wasm-ld")).unwrap();
+        let search = std::env::join_paths([bin.join("missing"), bin.clone()]).unwrap();
+        let invoked = invoked_path_in("wasm-ld".as_ref(), &search).unwrap();
+        assert_eq!(invoked, bin.join("wasm-ld"));
+        assert_eq!(real_path(&invoked).unwrap(), bin.join("lld"));
+        // A path is kept as it is, and a missing tool is an error.
+        assert_eq!(
+            invoked_path_in(bin.join("wasm-ld").as_os_str(), "".as_ref()).unwrap(),
+            bin.join("wasm-ld")
+        );
+        assert!(invoked_path_in("nothing-here".as_ref(), &search).is_err());
     }
 
     #[test]

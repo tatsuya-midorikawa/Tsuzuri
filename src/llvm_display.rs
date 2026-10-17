@@ -26,7 +26,8 @@ struct Pad {
     width: usize,
 }
 
-/// The most bytes `tz_soft_format_spec` writes for a number of this type, with room to spare.
+/// The most bytes `tz_soft_format_spec` writes for a float or decimal of this type, with room to spare;
+/// an integer's text, at most 129 bytes of a binary form, takes 160 from `tz.integer.spec`.
 fn format_capacity(ty: &Type, spec: &FormatSpec) -> usize {
     let digits = match ty {
         Type::Binary(16) => 5,
@@ -294,14 +295,42 @@ impl FunctionEmitter<'_, '_> {
             Some(FormatKind::Binary) => 6,
         };
         let flags = u32::from(spec.plus) | (style << 4);
-        let count = self.value(format!(
-            "call i32 @tz_soft_format_spec(ptr {buffer}, ptr {operand}, i32 {}, i32 {flags}, i32 {})",
-            numeric_kind(ty),
-            spec.precision.unwrap_or(0)
-        ));
+        let (data, length) = if let Type::Integer(bits, signed) = ty {
+            // The integer runtime writes backwards from the end of the buffer.
+            let loaded = self.value(format!("load i{bits}, ptr {operand}"));
+            let end = self.value(format!(
+                "getelementptr inbounds i8, ptr {buffer}, i64 {capacity}"
+            ));
+            let count = if *bits == 128 {
+                self.value(format!(
+                    "call i32 @tz.integer.spec128(ptr {end}, i128 {loaded}, i1 {signed}, i32 {flags})"
+                ))
+            } else {
+                let wide = if *bits == 64 {
+                    loaded
+                } else {
+                    let extension = if *signed { "sext" } else { "zext" };
+                    self.value(format!("{extension} i{bits} {loaded} to i64"))
+                };
+                self.value(format!(
+                    "call i32 @tz.integer.spec(ptr {end}, i64 {wide}, i1 {signed}, i32 {flags})"
+                ))
+            };
+            let length = self.value(format!("zext i32 {count} to i64"));
+            let back = self.value(format!("sub i64 0, {length}"));
+            let start = self.value(format!("getelementptr inbounds i8, ptr {end}, i64 {back}"));
+            (start, length)
+        } else {
+            let count = self.value(format!(
+                "call i32 @tz_soft_format_spec(ptr {buffer}, ptr {operand}, i32 {}, i32 {flags}, i32 {})",
+                numeric_kind(ty),
+                spec.precision.unwrap_or(0)
+            ));
+            (buffer, self.value(format!("zext i32 {count} to i64")))
+        };
         Piece {
-            data: buffer,
-            length: self.value(format!("zext i32 {count} to i64")),
+            data,
+            length,
             owned,
             ascii: true,
             pad: None,

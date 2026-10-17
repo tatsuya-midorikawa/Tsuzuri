@@ -249,6 +249,42 @@ fn owned_generic =
     let function = keep (resource 4)
     Owned.call (ref function) 1
 
+// A record that is stored with its fields sorted by alignment and the live flag after them (PM01): its user
+// drop reads the fields at their stored places, and a moved-out value is not dropped a second time.
+record Packed { flag: bool, id: i64, mark: i8, name: string }
+
+instance Drop<Packed> {
+    fn drop value = drop_log (value.id * 100 + (value.mark as i64))
+}
+
+export def packed_scopes :: i64
+fn packed_scopes =
+    let first = Packed { flag: true, id: 1, mark: 3, name: "first" }
+    let second = Packed { flag: false, id: 2, mark: 4, name: "second" }
+    first.name.length + second.name.length + (if first.flag then 1 else 0) + (if second.flag then 100 else 0) + (first.mark as i64) * 1000
+
+export def packed_reassign :: i64
+fn packed_reassign =
+    let mut packed = Packed { flag: true, id: 3, mark: 5, name: "a" }
+    packed = Packed { flag: false, id: 4, mark: 6, name: "bb" }
+    packed.name.length * 10 + (packed.mark as i64)
+
+export def packed_array :: i64
+fn packed_array =
+    let all = new [Packed](3, i -> Packed { flag: i % 2 == 0, id: i + 1, mark: (i + 3) as i8, name: "n" })
+    Array.length (ref all)
+
+export def packed_temporary :: i64
+fn packed_temporary = (Packed { flag: true, id: 6, mark: 9, name: "t" }).id
+
+private def eat :: Packed -> i64
+fn eat packed = packed.id
+
+export def packed_consume :: i64
+fn packed_consume =
+    let packed = Packed { flag: true, id: 7, mark: 2, name: "x" }
+    eat packed
+
 export def trap_after_create :: i64
 fn trap_after_create =
     let owned = resource 9

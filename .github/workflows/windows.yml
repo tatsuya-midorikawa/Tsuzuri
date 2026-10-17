@@ -129,6 +129,14 @@ jobs:
       - name: W8 WASM threads
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/wasm_threads.mjs target/release/tsuzuri.exe
+      # PM05: the WASM heap alone, and --allocator small on MSVC (thread-local cache, weak hidden shared state, unit tests).
+      - name: PM05 WASM heap and size-class allocator
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/wasm_heap.mjs
+          if ($LASTEXITCODE -ne 0) { throw "WASM heap failed: $LASTEXITCODE" }
+          node tests/small_allocator.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "Small allocator failed: $LASTEXITCODE" }
       - name: Numeric casts
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/numeric_casts.mjs target/release/tsuzuri.exe
@@ -154,6 +162,12 @@ jobs:
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/prebuilt_runtime.mjs target/release/tsuzuri.exe
+      - name: Size levels and artifact size
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/size.mjs target/release/tsuzuri.exe
+      - name: Integer text against a Python reference
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/integer_format.mjs
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

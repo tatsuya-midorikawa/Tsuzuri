@@ -54,6 +54,7 @@ fn info(
         "TSUZURI_WASM_LD",
         "TSUZURI_LLVM_LINK",
         "TSUZURI_DSYMUTIL",
+        "TSUZURI_WASM_OPT",
     ] {
         command.env_remove(variable);
     }
@@ -83,8 +84,9 @@ fn reports_path_tools_without_distribution() {
     assert_eq!(lines[0], format!("tsuzuri {}", env!("CARGO_PKG_VERSION")));
     assert_eq!(lines[1], "distribution: none");
     assert_eq!(lines[2], "TSUZURI_CLANG: path clang (not found)");
-    assert_eq!(lines[6], "node: path node (not found)");
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines[6], "TSUZURI_WASM_OPT: path wasm-opt (not found)");
+    assert_eq!(lines[7], "node: path node (not found)");
+    assert_eq!(lines.len(), 8);
     fs::remove_dir_all(root).unwrap();
 }
 

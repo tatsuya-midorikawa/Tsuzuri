@@ -5,18 +5,18 @@ import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { arch, cpus, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, measureProcess, median, readRecords, writeRecords } from "./metrics.mjs";
+import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations, makeRecord, measureProcess, median, readRecords, writeRecords } from "./metrics.mjs";
 import { checkReference, hex, reference, workloads as definitions, wrap } from "./apps/reference.mjs";
 
 const filename = fileURLToPath(import.meta.url);
 const root = resolve(dirname(filename), "..");
 const fixture = join(root, "benchmarks/apps");
-const usage = "Usage: node benchmarks/run-apps.mjs [compiler] [--quick | --scale number] [--cpu generic|native] [--artifacts directory] [--metrics directory]";
+const usage = "Usage: node benchmarks/run-apps.mjs [compiler] [--quick | --scale number] [--cpu generic|native] [--allocator system|small] [--artifacts directory] [--metrics directory]";
 const checkSizes = [0, 1, 2, 17, 257];
 const checkSeeds = [0n, 42n, (1n << 64n) - 1n, 1n << 63n, (1n << 63n) - 1n];
 
 export function parseArguments(args) {
-  const options = { compiler: join(root, "target/release/tsuzuri"), quick: false, scale: 1, cpu: "generic", artifacts: null, metrics: null };
+  const options = { compiler: join(root, "target/release/tsuzuri"), quick: false, scale: 1, cpu: "generic", allocator: "system", artifacts: null, metrics: null };
   const seen = new Set();
   let compiler = false;
   for (let index = 0; index < args.length; ++index) {
@@ -27,7 +27,7 @@ export function parseArguments(args) {
       compiler = true;
       continue;
     }
-    if (!["--quick", "--scale", "--cpu", "--artifacts", "--metrics"].includes(flag)) throw new Error(`unknown flag: ${flag}\n${usage}`);
+    if (!["--quick", "--scale", "--cpu", "--allocator", "--artifacts", "--metrics"].includes(flag)) throw new Error(`unknown flag: ${flag}\n${usage}`);
     if (seen.has(flag)) throw new Error(`duplicate flag: ${flag}\n${usage}`);
     seen.add(flag);
     if (flag === "--quick") {
@@ -43,6 +43,10 @@ export function parseArguments(args) {
     } else if (flag === "--cpu") {
       if (!["generic", "native"].includes(value)) throw new Error(`invalid --cpu: ${value}\n${usage}`);
       options.cpu = value;
+    } else if (flag === "--allocator") {
+      // PM05: the allocator of the timing object only; the tracked IR (allocation counts) always uses the system allocator.
+      if (!["system", "small"].includes(value)) throw new Error(`invalid --allocator: ${value}\n${usage}`);
+      options.allocator = value;
     } else options[flag.slice(2)] = resolve(value);
   }
   if (seen.has("--quick") && seen.has("--scale")) throw new Error(`--quick and --scale are mutually exclusive\n${usage}`);
@@ -100,7 +104,8 @@ export function zigReferenceBuild(source, directory, cpu = "generic", system = p
 export async function runApps(options) {
   if (Number(process.versions.node.split(".")[0]) < 24) throw new Error("Apps benchmarks require Node.js 24+; use npx --yes --package=node@24 node benchmarks/run-apps.mjs");
   checkReference();
-  const { compiler, quick, scale, cpu, artifacts, metrics } = options;
+  const { compiler, quick, scale, cpu, allocator, artifacts, metrics } = options;
+  const { timing: tsuzuriVariant, allocation: allocationVariant } = allocatorVariants(allocator);
   const clang = process.env.TSUZURI_CLANG ?? "clang";
   const rustc = process.env.TSUZURI_RUSTC ?? process.env.RUSTC ?? "rustc";
   if (metrics && existsSync(join(metrics, "apps.jsonl"))) throw new Error(`apps.jsonl already exists in ${metrics}; choose a new run directory`);
@@ -155,7 +160,7 @@ export async function runApps(options) {
     const compilerHash = createHash("sha256").update(readFileSync(compiler)).digest("hex");
     if (context) assert.equal(context.host.tsuzuri_sha256, compilerHash, "compiler changed while capturing metadata");
     for (const [emit, extension] of [["object", "o"], ["header", "h"], ["llvm", "ll"]]) {
-      run(compiler, ["build", fixture, "--emit", emit, ...tsuzuriFlags, "-o", path(`apps.${extension}`)]);
+      run(compiler, ["build", fixture, "--emit", emit, ...tsuzuriFlags, ...(emit === "object" && allocator !== "system" ? ["--allocator", allocator] : []), "-o", path(`apps.${extension}`)]);
       generated.push(`apps.${extension}`);
     }
     run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", path("apps.ll"), "-o", path("apps.optimized.ll")]);
@@ -291,7 +296,8 @@ export async function runApps(options) {
     let metricCount = 0;
     const records = [];
     if (metrics) {
-      records.push(...inProcessRecords(context, "apps", result.workloads, languages.map((language) => [language, language, "default"]), { cpu }));
+      records.push(...inProcessRecords(context, "apps", result.workloads,
+        languages.map((language) => [language, language, language === "tsuzuri" ? tsuzuriVariant : "default"]), { cpu }));
       for (const language of languages) {
         const prefix = language === "tsuzuri" ? "tz_" : `${language}_`;
         const processHost = compileHost(`apps-rss-${language}`, [`-DPROCESS_PREFIX=${prefix}`, `-DPROCESS_LABEL="${language}"`],
@@ -303,14 +309,15 @@ export async function runApps(options) {
           const checksum = expected(work.name, work.size, "42");
           for (const output of measured.stdout) assert.equal(output.trim(), checksum, `${work.name}/${language}/RSS checksum`);
           assert.ok(measured.peak_rss_bytes.every((value) => Number.isSafeInteger(value) && value > 0));
-          records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language, opt: "O3",
+          records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language,
+            variant: language === "tsuzuri" ? tsuzuriVariant : "default", opt: "O3",
             cpu_mode: cpu, metric: "peak_rss", samples: measured.peak_rss_bytes }));
           work[`${language}_peak_rss_bytes`] = measured.peak_rss_bytes;
         }
       }
       for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
         records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language: "tsuzuri",
-          opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+          variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
       }
       metricCount = definitions.length * languages.length * 3 + definitions.length * 2;
       assert.equal(records.length, metricCount);
@@ -338,7 +345,7 @@ export async function runApps(options) {
       mode: quick ? "correctness-smoke" : "benchmark", cpu, scale, skipped,
       wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags,
       rust_native_static_libs: nativeLibs, zig_flags: zig.program ? zigBuild.flags : null,
-      go_flags: go.program ? goFlags : null, tsuzuri_flags: tsuzuriFlags,
+      go_flags: go.program ? goFlags : null, tsuzuri_flags: tsuzuriFlags, tsuzuri_allocator: allocator,
       correctness: { native_O0: { checks: 250, language: "tsuzuri" }, native_O3: { checks_per_language: 250, languages },
         wasm: wasmChecks, independent_reference: "BigInt wrapping u64 and strictly ordered Number f64" },
       allocations: tracking.workloads, metrics: metrics ? { directory: metrics, records: metricCount } : null,

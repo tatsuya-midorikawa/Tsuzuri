@@ -80,11 +80,7 @@ impl FunctionEmitter<'_, '_> {
         ));
         let flag = emitter.value(format!("getelementptr i8, ptr {started_value}, i64 %index"));
         emitter.instruction(format!("store i8 1, ptr {flag}"));
-        let tag = if emitter.module.types().recursive(item) {
-            emitter.recursive_tag(item, &value)
-        } else {
-            emitter.value(format!("extractvalue {} {value}, 0", emitter.ty(item)))
-        };
+        let tag = emitter.tag_value(item, &value);
         let failed = emitter.value(format!("icmp eq i32 {tag}, {error_case}"));
         let failed = emitter.value(format!("zext i1 {failed} to i32"));
         emitter.instruction(format!("ret i32 {failed}"));

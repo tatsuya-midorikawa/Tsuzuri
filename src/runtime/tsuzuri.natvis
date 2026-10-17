@@ -58,6 +58,22 @@
       </ArrayItems>
     </Expand>
   </Type>
+  <!-- A Maybe of a string stores no `$tag`: `$niche` is -1 for None (PM01). These entries come
+       before `Maybe<*>`, which would otherwise match them first. -->
+  <Type Name="Maybe&lt;string&gt;">
+    <DisplayString Condition="$niche == -1">None</DisplayString>
+    <DisplayString>Some({$payload.Some})</DisplayString>
+    <Expand>
+      <Item Name="[value]" Condition="$niche != -1">$payload.Some</Item>
+    </Expand>
+  </Type>
+  <Type Name="Maybe&lt;utf8string&gt;">
+    <DisplayString Condition="$niche == -1">None</DisplayString>
+    <DisplayString>Some({$payload.Some})</DisplayString>
+    <Expand>
+      <Item Name="[value]" Condition="$niche != -1">$payload.Some</Item>
+    </Expand>
+  </Type>
   <Type Name="Maybe&lt;*&gt;">
     <DisplayString Condition="$tag == 0">None</DisplayString>
     <DisplayString Condition="$tag == 1">Some({$payload.Some})</DisplayString>

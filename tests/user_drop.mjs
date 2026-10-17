@@ -84,6 +84,12 @@ try {
     assert.equal(call("owned_array"), 31n); values([1, 2]);
     assert.equal(call("owned_nested"), 8n); values([3]);
     assert.equal(call("owned_generic"), 2n); values([4]);
+    // A Drop record whose fields are stored by alignment: 5 + 6 + 1 + 3000, the drop reads id and mark in place.
+    assert.equal(call("packed_scopes"), 3012n); values([204, 103]);
+    assert.equal(call("packed_reassign"), 26n); values([305, 406]);
+    assert.equal(call("packed_array"), 3n); values([103, 204, 305]);
+    assert.equal(call("packed_temporary"), 6n); values([609]);
+    assert.equal(call("packed_consume"), 7n); values([702]);
     for (let index = 0; index < 10000; index++) { assert.equal(call("scopes"), 3n); values([2, 1]); }
     assert.ok(instance.exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
     const trapped = instantiate(wasm);

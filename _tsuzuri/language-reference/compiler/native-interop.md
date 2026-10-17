@@ -31,7 +31,7 @@
 
 `i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、タスク、排他借用、戻り値としての借用は出せません。配列の要素として渡せるのは `i64`、`f64`、`ubyte` と、仕様が許す文字列です。固定長配列そのものは引数にできず、レコードで包みます。長さ 0 の配列フィールドも、ISO C に無いので拒否します。
 
-`bool` と 8 / 16 bit 整数は、境界で 32 bit に正規化されます。レコードのフィールドも同様で、C コンパイラごとの構造体の詰め方には依存しません。生成される typedef 名は、モジュール名の長さと型引数で一意です。C の予約語になるフィールドには `tz_` が付き、それでも衝突すると `E1008` です。
+`bool` と 8 / 16 bit 整数は、境界で 32 bit に正規化されます。レコードのフィールドも同様で、C コンパイラごとの構造体の詰め方には依存しません。C の構造体のフィールドは、宣言の順に並びます。コンパイラが値を小さくするために格納の順を変えること（[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）は、境界で変換されるので、ホストからは見えません。生成される typedef 名は、モジュール名の長さと型引数で一意です。C の予約語になるフィールドには `tz_` が付き、それでも衝突すると `E1008` です。
 
 `export` と `private` は別の軸です。`private export` はコンパイルエラーで、private な関数はヘッダーにも公開シンボルにも出ません。公開名 `tz_add` はプロジェクト全体で 1 つです。
 
@@ -165,6 +165,16 @@ int main(void) {
 シンボル名は 255 バイト以下の C 識別子です。`tz_`、`tsuzuri`、`__` で始まる名前と、`malloc` や `write` などランタイムが使う名前は `E1008` です。同じシンボルを複数の `extern` で宣言することはできますが、型が違うと `E1008` です。
 
 呼び出しは副作用として扱われ、引数は左から右に評価されます。部分適用はできます。コンパイラが純粋な計算だと思って消すことはありません。`const` の初期化から `extern` を呼ぶことはできません。
+
+実行ファイル（`--emit exe`）は、入口、`export def`、`Drop` の実装から到達する関数だけをコンパイルします。どこからも呼ばれない公開関数だけが呼ぶ `extern` のシンボルは、リンクに現れません。次のプログラムは、どのライブラリも `no_such_c_function` を持たなくてもリンクでき、`ok` を出力します。`never_called` を入口から呼ぶと、リンクは未定義のシンボルで失敗します（以前は、呼ばなくても失敗しました）。`--emit object` と `--emit llvm` は公開関数をすべて出力するので、シンボルへの参照が残ります。
+
+```tsuzuri run=ok
+extern "no_such_c_function" def missing :: i64 -> i64
+
+def never_called :: i64 -> i64 = \x -> missing x
+
+"ok"
+```
 
 ```mermaid
 flowchart LR
@@ -369,6 +379,8 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 これらの 3 関数は、`Task.parallel` の並列ワーカーから複数のスレッドで同時に呼び出される可能性があります。Tsuzuri 側ではロックを取得しないため、ホスト側でスレッドセーフに実装してください。また、アロケータ関数の中から Tsuzuri の関数を再帰的に呼び出したり、`longjmp` や C++ の例外を送出して関数を抜けたりしてはいけません。
 
 `--allocator counting` は system allocator を同じ 16 バイトヘッダーで包み、確保回数、解放回数、現在の要求バイト、その最大を数えます。`tsuzuri_alloc_stats` で読みます。
+
+`--allocator small` は、native の 64-bit のサイズ区分 allocator です（`--emit exe`、`object`、`llvm`、`header`、`shared`。WASM、`--trap-mode return`、`--freestanding` とは排他で、`E2000` です）。512 バイト以下を区分から、それより大きいブロックを C ライブラリの `malloc` から取ります。`tsuzuri_alloc` が返すバッファも同じなので、ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放し、C の `free` へは渡さないでください。区分の状態は、1 つのプログラムにリンクした Tsuzuri のオブジェクトで共有されます（macOS と Linux）。`--allocator` はオブジェクトごとに混ぜないでください。設計は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。
 
 `--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`Channel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
 

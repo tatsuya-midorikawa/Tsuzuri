@@ -1070,13 +1070,24 @@ WASM のタスクは逐次フォールバックであり、マルチコア性能
 cargo build --release --locked
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick
 node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f01-task-before.o --artifacts target/benchmarks/f01-measured
+node benchmarks/run-tasks.mjs target/release/tsuzuri --runtime <task.c> --baseline-runtime <before-task.c> --metrics target/perf/<run>
+node benchmarks/run-tasks.mjs target/release/tsuzuri --sweep           # 32 タスクで 1 件の長さを変える（粒度）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --gap-us 1000     # 各呼び出しの前に 1 ms 休み、worker を眠らせる（起床の遅延）
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick       # WASM threads の pool（Node.js の worker_threads）
 ```
 
-`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイムオブジェクトを指定します。
+`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイム（オブジェクトまたは C ファイル）を指定します。
+`--runtime` は測定側のランタイムの C ファイルを指定します（既定は `src/runtime/task.c`）。コンパイラの埋め込みランタイムと切り離して、同じコンパイラ・同じ IR で前後のランタイムを比べられます。
 同一の LLVM IR を新旧両ランタイムへリンクし、タスク生成、クロージャ捕捉、結果メモリ確保、並行実行、完了待機、およびリソース解放に至る全行程を測定対象に含めます。
+IR は `--allocator system` で作ります（既定の確保器が変わっても比較の対象が変わらないようにするためです）。
 コールド測定（cold）は初回呼び出しおよびスレッドプールの遅延起動時間を計測し、ウォーム測定（warm）は同一プロセス内でのプール再利用時の時間を計測します。コンパイル時間、プロセス起動時間、およびプロセス終了時のシャットダウン時間は計測区間外です。
 `--quick` オプションは独立した整数参照実装との結果一致を確認するスモークテストであり、速度に関する合否判定閾値は設けていません。
-通常の測定では 7 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+通常の測定では 9 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
+1 サンプルは 1 プロセスで、`warm_ms_per_call`（連続呼び出しの平均）、`warm_p50_ms`（1 回ごとに計った呼び出しの中央値）、`cpu_ms_per_call`（プロセスの CPU 時間を呼び出し数で割った値）を出します。
+`--gap-us` は 1 回ごとの呼び出しの前に休みを入れます。休みは時間に含めません。worker が眠った後の起床の遅延を見るための設定です。休みなしの連続呼び出しでは、HEAD の tiny の p50 は測った全 run で 0.2 µs 前後のままで、この遅延が現れません。
+`--metrics` の生データは、モードごとに別の suite（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）へ書きます。
+仕事は tiny（4 添字×0 反復）、small（32 添字×16 反復）、bulk（1024 添字×256 反復）に、`cpp/task_parallel` と同じ形の coarse（16 添字×60000 反復、1 件あたり約 80 µs）を加えた 4 つです。
+`run-tasks-wasm.mjs` は、同じ kernel の `Task.parallel` を WASM threads の pool（Node の `worker_threads`）で測り、JSON を 1 行出力します。測る対象はコンパイラが埋め込む `task-wasm-threads.c` なので、2 つのコンパイラを比べると 2 つの pool を比べられます。
 
 チケット F01 実装時における測定結果（Apple M1 Max、10 logical CPUs、macOS Darwin 27、Apple Clang 21、`-O3 generic`、fast-math なし）:
 
@@ -1087,7 +1098,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f
 | bulk | 1024／256 | 0.641 | 0.426 | 423.500 | 309.187 |
 
 所要時間は数値が小さいほど良好です。tiny および small のウォーム実行では大幅な時間短縮を達成した一方、コールド起動時やバルク（bulk）実行時では旧版よりも遅い結果となっており、全般的な高速化と過大に主張することはありません。
-要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が依然としてオーバーヘッド要因となっています。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
+要素単位でのタスク割り当て、通知処理、およびミューテックスのロック競合が、この時点でのオーバーヘッド要因でした。添字の取得と完了の数え方、起床の方法は PR06 で変えました（下の「Task プールのスケジューラ（PR06、2026-10-16）」）。大量要素の処理に対しては、後述のチケット F02 による固定チャンク分割 API を用いて別途評価を実施します。
 生データは `target/benchmarks/f01-measured/result.json`、同一 IR は同ディレクトリの `tasks.ll` に保存されています。
 なお、この測定結果を冒頭の言語間ベンチマークサマリーに混入させることはせず、共有 CI に恣意的な速度閾値を設定することもありません。
 
@@ -1102,7 +1113,7 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --artifacts
 既存ハーネスのデータ並列比較モードを使用し、Array と Parallel の `init`、`map`、`sum` を同一の入力データおよび整数演算で比較します。
 入出力メモリの確保、クロージャ捕捉、並行計算、スレッド間同期、およびリソース解放の全所要時間を計測します。`sum` の計測には入力データの生成時間も含まれるため、純粋な加算カーネル単体の演算速度比較ではない点に留意してください。
 整数の加算演算は結合法則により処理順序が異なっても同一の合計値となり、各測定結果は独立した参照リファレンスと厳密に照合されます。WASM 環境においては 18 件の正確性検証のみを実施し、並列による高速化として報告することはありません。
-7 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
+9 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
 
 チケット F02 実装時における Apple M1 Max（10 logical CPUs）、Apple Clang 21、`-O3 generic` のウォーム中央値（ms/call、数値が小さいほど高速）:
 
@@ -5719,6 +5730,1541 @@ PB01 の runtime reuse を測る `build-runtime-warm` では、`examples/hello` 
 `--no-cache` の通常 build では統合後の cold codegen cost と executable size の増加が残ります。native O3 の `examples/io` は process CPU 380 → 760 ms（before2 430 ms）、executable 50,840 → 69,976 bytes（before2 50,840 bytes）。synthetic 10-module は 1,330 → 1,610 ms（before2 1,410 ms）、101,128 → 153,528 bytes（before2 101,128 bytes）でした。CPU とサイズは両 baseline より悪化しました。これは全 streams を統合した no-cache 初回ビルドの実測であり、PR05 単独への因果帰属はしません。prebuilt/runtime-cache 経路はこの費用を避けるためのもので、cold compiler cost や成果物サイズが無償になるわけではありません。
 
 正式 run の raw data は再現用 `target/perf/phase2-formal/final-verified-9ecafb3/` にあります（通常は git 管理外）。個別チケットの受け入れ範囲・意味論検査は PB01、PB02、PR01、PM06、PM07/A17、PR04、PR05 の各完了記録に記載します。共有 CI に性能の pass/fail 閾値は追加していません。
+
+## 第3フェーズの測定（2026-10-16〜17）
+
+PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 の測定・生成コードの確認の記録です。基準のコンパイラは main の `6d15b437`（第2フェーズの PR #26）、
+各 subsection の「after」は、それぞれのチケットの branch または統合後のコンパイラです。チケットごとの数値は、他の作業が並行して動く共有機（M1 Max、負荷平均 4〜200）で
+取った参考値を含み、各 subsection に条件と負荷を書いています。統合後の静かな機械での前後比較は、この節の最後の「第3フェーズ統合の最終比較」にまとめます。
+実装済みの経路と計画、測った効果と測っていない効果は、subsection ごとに分けて書きます。共有 CI に速度の合否の閾値は置きません。
+
+### 抽象化コストの除去（PR03、2026-10-16）
+
+計算式・Maybe／Result・関数値が、手書きと同じ `-O3` の生成コードになっているかを `benchmarks/computations` の 10 対で調べた記録です。
+実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に速度の閾値はありません。
+
+#### 数え方と再現（Phase 1）
+
+- 基準は main `6d15b437`（第2フェーズ）の release コンパイラ、Apple clang 21.0.0（clang-2100.3.34.2）、Apple M1 Max（arm64）です。
+  `--emit llvm` の IR を `run-computations.mjs` と同じ旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module`）で最適化します。
+- 数える対象は export 関数 `tz_ce_<種目>`・`tz_direct_<種目>` の本体です。IR は `^define .*@tz_<k>_<p>\(` から `^}` までの 2 空白で始まる行、
+  機械語はラベルの次の行から `-- End function` までの、空白に続く英小文字で始まる行（命令）です。
+  これらの関数には CFI の指示が無いため、`.cfi_endproc` で止める数え方は後続の関数まで累積して数えます（起票時の `263 229 205 176 893 864` はその値です。
+  関数ごとの値は下の表）。
+
+```sh
+W=target/perf/PR03-shape && mkdir -p $W
+target/release/tsuzuri build benchmarks/computations --emit llvm -o $W/comp.ll
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+$C -S -emit-llvm $W/comp.ll -o $W/comp.opt.ll && $C -S $W/comp.ll -o $W/comp.s
+$C --target=x86_64-apple-macos -S $W/comp.ll -o $W/comp-x86.s && $C -c $W/comp.ll -o $W/comp.o
+for p in bind checked delayed array_for array_bind owned_capture std_option std_result std_option_owned std_option_length; do for k in ce direct; do
+  body=$(awk "/^define .*@tz_${k}_$p\(/,/^}/" $W/comp.opt.ll)
+  printf '%s_%s ir=%s phiU=%s switch=%s calls=%s indirect=%s arm64=%s x86-64=%s\n' $k $p \
+    "$(printf '%s\n' "$body" | grep -cE '^  ')" "$(printf '%s\n' "$body" | grep -c 'phi %"tz.union.')" \
+    "$(printf '%s\n' "$body" | grep -c 'switch ')" "$(printf '%s\n' "$body" | grep 'call ' | grep -vc llvm.trap)" \
+    "$(printf '%s\n' "$body" | grep -cE 'call [^@]*%')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp.s | grep -cE '^[[:space:]]+[a-z]')" \
+    "$(awk "/^_tz_${k}_$p:/{on=1;next} on&&/-- End function/{exit} on" $W/comp-x86.s | grep -cE '^[[:space:]]+[a-z]')"
+done; done
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/comp.o | grep __text
+grep -c '^define internal .*@tz\.specialized\.' $W/comp.ll
+```
+
+#### 分類（基準 `6d15b437`）
+
+分類は、union の値の `phi` と tag の `switch` が inline の後も残る（K1）、`@tz.specialized.`・`@tz.fn.`・`@tz.apply.` の呼び出しが残る（K2）、
+呼び先が値の間接呼び出しが残る（K3）の 3 つと「差なし」です。K2・K3 は 10 対のどれにも残らず（呼び出しは malloc・free・memcpy・`llvm.trap` だけ）、
+起票時に仮定した「機械語だけの差」（K4）は、数え方の誤りで生じた見かけの差でした。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） | 分類 |
+| --- | --- | --- | --- | --- | --- |
+| `bind` | 18／18 | 0・0 | 25／25 | 64／64 | 差なし |
+| `checked` | 28／28 | 0・0 | 29／27 | 31／30 | 差なし（record の block 配置の違い。union ではない） |
+| `delayed` | 23／23 | 0・0 | 35／35 | 68／68 | 差なし |
+| `array_for` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `array_bind` | 117／117 | 0・0 | 98／98 | 148／148 | 差なし |
+| `owned_capture` | 49／49 | 0・0 | 56／56 | 88／88 | 差なし |
+| `std_option` | 35／22 | 1・1 | 34／24 | 38／53 | **K1** |
+| `std_result` | 28／28 | 0・0 | 29／29 | 31／31 | 差なし |
+| `std_option_owned` | 65／54 | 2・2 | 65／60 | 78／70 | **K1**（呼び出しは両版とも malloc・free・memcpy の 3 個） |
+| `std_option_length` | 22／22 | 0・0 | 25／25 | 52／52 | 差なし |
+
+- `std_option` の K1 の形は、inline された worker の 2 つの `ret` が `phi %"tz.union.Maybe.Maybe[i64]"`（`zeroinitializer` と `insertvalue`）になり、
+  `extractvalue` の tag を `switch` し、既定の枝に `llvm.trap` が残ることです。`direct_std_option` は同じ条件を `select` 1 個にしています。
+- x86-64 の `ce_std_option`（38 命令）は `direct`（53 命令）より小さく、機械語の命令数は性能の代理になりません。目標は `direct` と同じ形にすることで、
+  命令数を減らすことではありません。
+- `-O3` の object の `__text` は 3,884 bytes、`@tz.specialized.` の定義は `benchmarks/computations/Main.tz` で 64 個です。
+  `let!` が 2 つの連鎖（`def run … Maybe { let! x = Some 20; let! y = Some (x + offset); return x + y }`）は、`-O0` で 9 個の worker を作ります。
+  `run` から到達するのは 8 個の連鎖（`0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`、`Run`・thunk・`Bind`・`bind`・継続・`BindReturn`・`map`・継続）で、
+  残る 1 個（`@tz.specialized.1`）は閉包の apply wrapper（`@tz.apply.Maybe.map.$mono.8.1`）だけが呼ぶ `map` の worker で、
+  本体に間接呼び出しを持ちますが `run` からは到達しません。
+
+`tests/call_specialization.rs` の `standard_let_chain_workers_are_direct_and_allocation_free` と `known_local_function_values_call_directly` が、
+この性質（`let!` の連鎖の worker が `tz.alloc`・`tz.closure.clone`・間接呼び出しを持たないこと、let で束縛した関数値の呼び出しが直接であること）を
+native と wasm32 の `-O0` IR で固定します。
+
+#### 戻り値 slot の後（Phase 2、F1'）
+
+`FunctionEmitter::apply_return_slot`（`src/llvm_return_slot.rs`）は、再帰しない tagged union を返し、`ret` が 2 つ以上あり、そのすべてが値を作る・読む exit（constructor、参照外し・static・引数、引数の欄・添字・payload）の関数だけを、
+入口の alloca への store と 1 つの `tz.return` ブロックの load・`ret` に書き換えます（規則は [architecture.md](architecture.md)）。同じ手順で測り直した K1 の 2 種目です。
+他の 8 対の IR と機械語、`@tz.specialized.` の 64 個は変わりません。
+
+| 種目 | IR の行（ce／direct） | union の `phi`・`switch`（ce） | 機械語 arm64（ce／direct） | 機械語 x86-64（ce／direct） |
+| --- | --- | --- | --- | --- |
+| `std_option` | 22／22（前 35／22） | 0・0（前 1・1） | 24／24（前 34／24） | 56／53（前 38／53） |
+| `std_option_owned` | 54／54（前 65／54） | 1・1（前 2・2） | 60／60（前 65／60） | 70／70（前 78／70） |
+
+- `ce_std_option` は `direct_std_option` と同じ `select` 1 個の形になり、union の `phi`・tag の `switch`・`llvm.trap` が消えました。
+  `ce_std_option_owned` に残る `phi` 1 個・`switch` 1 個は `direct_std_option_owned` にもある形です。
+- x86-64 の `ce_std_option` は 38 から 56 命令に増え、`direct`（53）より大きくなりました。前述のとおり命令数は性能の代理ではないので、IR と arm64 の一致を基準にします。
+- `-O3` の object の `__text` は 3,884 から 3,824 bytes です。
+- 呼び出しの結果を返しうる exit（呼び出し・パイプ・引数でない局所、それらの欄）を 1 つでも持つ関数は、全 exit が平文の `ret` のままです。LLVM は `ret (call f)` を sibling call やループにするので、
+  slot がその呼び出しを隠すと、union を返す再帰が定数のスタックで走らなくなります。5 つの再帰（相互再帰の `parity_deep`、`Maybe.bind` の継続の `bind_deep`、局所を経由する `parity_local_deep`、
+  閉包を引数で渡す `guard_deep`、自己再帰を局所で受ける `self_local_deep`）の 1e8 段は、native の `-O2`・`-O3` で基準も後も通ります（`-O0`・`-O1` は基準でも SIGSEGV で、docs が保証する末尾呼び出しは自己末尾呼び出しのループだけです）。
+  呼び先が循環に入るかを呼び出しグラフで調べ、入らないときは呼び出しを返す exit も slot にする版は、局所を経由する再帰と、閉包を引数で渡す再帰（`guard` と `Maybe.bind` は参照の循環に入らないが、閉包がそこから戻る）の
+  1e8 段を `stack overflow`（終了コード 134）や SIGSEGV にしたので、取りやめました。
+- `if flag then helper x else None` のように exit が呼び出しの結果を返す関数は slot にしないので、呼ぶ側の `-O3` の IR は slot なしとほぼ同じです（`helper` が 2 つの constructor の exit を持つとき、基準 20 行、後 22 行。
+  `phi` 2・`switch` 1・`select` 1 は同じで、`helper` の slot が 2 行足します）。呼び出しを返す exit も slot にする版は 7 行にしましたが、上の理由で取りやめました。`helper x = Some (x * 3)` のように exit が 1 つの呼び先では、どの版も 4 行です。
+  一部の exit だけを slot にした試作は、`ret` が複数残って inline 後の aggregate の `phi` が消えず、slot なしと同じ最適化結果になったため採りませんでした。
+- 時間（`node benchmarks/run-computations.mjs <後のコンパイラ> --baseline <基準のコンパイラ> --metrics DIR --artifacts DIR`、native、`-O3`、15 標本の中央値と最小〜最大、3 回、
+  `with-lock.sh measure` の中で実行、開始時の負荷平均は約 50、Node 24.21.0、Apple clang 21.0.0）。`std_option`（size 2,000,000、ms/呼び出し）は、基準 5.558・5.517・5.501（最小〜最大 5.397〜6.247）から
+  後 4.755・4.826・4.685（4.618〜5.069）になり、3 回とも同じ向きで 14〜17% 短く、基準の最小と後の最大が重なりません。`direct_std_option` は 4.744・4.821・4.688 で、ce／direct は 3 回とも 1.00（0.999〜1.002）、
+  C++ は 4.765・4.770・4.715、Rust は 4.685・4.834・4.708 です。他の 9 対は広がりの範囲内で、native の ce／direct は 0.92〜1.03、基準／後は 0.98〜1.06 でした
+  （`std_option_owned` は 0.188・0.186・0.194 対 0.195・0.190・0.198 で 2〜4% 短い向きですが、広がりが重なるので主張しません）。WASM の warmed 時間は、この共有機の 3 回では向きが揃わず（`std_option` の基準／後は 1.28・0.76・0.75）、何も主張しませんでした。
+  静かな機械での再測定（Node 24.21.0、5 run。最後の「第3フェーズ統合の最終比較」）では向きが揃い、`std_option` の `ce` は after が 1.26〜1.38 倍遅く（`direct` と同じ `select` の形になり、V8 では分岐の形の before より遅い）、`std_option_owned` は 0.86 倍に短くなりました。
+  確保（`allocations_at_size_64`）は 10 種目とも前・後・direct で同じです。後のコンパイラは LTO なしの release build で、生成物は release build と同じ IR です（`cmp` で確認）。
+  生データは `target/perf/PR03-after/`（git 管理外）です。共有 machine での値なので、静かな machine での再測定は統合時に行います。
+  その後に戻り値 slot の規則を狭めました（呼び出しを返す exit を持つ関数は slot にしない）が、`benchmarks/computations` を `-O3` で作る arm64 の機械語全体は byte 単位で同じなので、この値は変わりません。
+
+#### 特殊化の予算を使い切る連鎖（Phase 2c）
+
+`let!` が 2 つの Maybe の連鎖 1 つは worker を 8 個要求します（上の `0 → 4 → 3 → 6 → 8 → 2 → 5 → 7`）。予算は 1,024 個なので、連鎖が約 128 個を超える program は予算を使い切ります。
+以前は要求された順に worker を出力したため、使い切ると、すべての連鎖が途中で打ち切られました。打ち切られた連鎖は、worker から通常の関数へ閉包の値を渡す形（部分的な特殊化）になり、`-O3` でも間接呼び出しが残りました。
+今は、予算内の program は以前と同じ要求順で出力します（corpus の IR が native 110 件・wasm32 105 件とも byte 単位で同じです）。予算を使い切った program だけ、2 回目の出力で、
+関数と、その関数が名前で参照する関数（束縛ごとの lift 済みラムダなど）を深さ優先の順に出し、各関数の worker をその直後に出します。このため、予算で完成できる分の連鎖は全体が直接呼び出しになり、残りは最初から通常の経路になります。
+予算の 1,024 個、予算を使い切ったときの通常の経路、`@tz.specialized.` の定義数（1,024）は変わりません。
+
+```sh
+W=target/perf/PR03-chains && mkdir -p $W/proj && node -e '
+const n = Number(process.argv[1]);
+const lines = ["def mix :: i64 -> i64 -> i64", "fn mix value salt = (value ^ (Bits.ushr value 13)) * 6364136223846793005 + salt", "", "def pick :: i64 -> i64 -> Maybe<i64>", "fn pick state salt = if (state & 7) == 0 then None else Some (state ^ salt)", ""];
+for (let i = 0; i < n; i++) lines.push(`def step${i} :: i64 -> i64 -> i64`, `fn step${i} state salt =`, "    Maybe.default_value (state ^ salt) (Maybe {", `        let! a = pick (state + ${i}) salt`, "        let! b = pick a salt", "        return mix b salt", "    })", "", `export def run${i} :: i64 -> i64 -> i64`, `fn run${i} state salt = step${i} state salt`, "");
+console.log(lines.join("\n"));' 300 > $W/proj/Main.tz
+C='/usr/bin/clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module'
+target/release/tsuzuri build $W/proj --emit llvm -o $W/b.ll && $C -S -emit-llvm $W/b.ll -o $W/b.opt.ll && $C -c $W/b.ll -o $W/b.o
+grep -c '^define internal .*@tz\.specialized\.' $W/b.ll
+awk '/^define .*@tz_run/{on=1;hit=0} on&&/call [^@]*%/{hit=1} /^}/{if(on&&hit)n++; on=0} END{print n+0}' $W/b.opt.ll
+/opt/homebrew/opt/llvm@21/bin/llvm-size -A $W/b.o | awk '$1=="__text"{print $2}'
+```
+
+3 行の出力は、worker の数、間接呼び出しを持つ `tz_run*` の数（`-O3` の IR）、`__text` の bytes です。N は第 1 引数です。基準は `6d15b437`、Apple clang 21.0.0、Apple M1 Max です。
+
+| 連鎖の数 N | worker | 間接呼び出しを持つ export（前→後） | `__text`（前→後） |
+| --- | --- | --- | --- |
+| 120 | 961 | 0→0 | 7,616→7,616（出力が同じ） |
+| 140 | 1,024 | 0→0 | 8,884→9,236 |
+| 200 | 1,024 | 89→0 | 20,940→14,784 |
+| 300 | 1,024 | 300→0 | 46,804→24,036 |
+
+- N=300 の export の本体は、前は 26〜28 行で、すべてに間接呼び出し（閉包の関数 pointer を呼ぶ `tail call`）が 1 つあり、`-O3` の IR の関数定義は 602 個でした。
+  後は、完成した連鎖 128 個が 15〜17 行で呼び出しを持たず、残りの 172 個が 28〜29 行（呼び出しは `llvm.trap` だけ）で、関数定義は 300 個です。
+- 閉包が束縛値だけを捕捉する形（`pick (state + i) 1`・`pick a 2`。lift 済みラムダは通常の関数として呼ばれる）では、前も間接呼び出しは残らず、差は小さく、`__text` は N=300 で 21,596 から 17,508、N=600 で 43,196 から 39,108 bytes です。
+- 300 個の export を 1 回ずつ呼ぶ C の driver を 2,000,000 回繰り返した user CPU 時間は、N=300 の上の形で 1.71 秒から 0.91 秒（5 回の交互実行の中央値、0.88〜0.93）、
+  束縛値だけを捕捉する形で 0.76 秒から 0.65 秒です。共有 machine（負荷平均 60〜90）での値で、どちらの出力も同じです。
+- 予算を使い切った program は 2 回出力するので、`tsuzuri build --emit llvm` が長くなります（N=300 で user CPU 0.24 秒から 0.29〜0.31 秒、release build で 3 回）。clang `-O3` の時間（0.93〜1.00 秒）は変わりません。予算内の program の時間は変わりません。
+
+#### 型付き IR での標準ビルダーの展開（Phase 3、D3。入れていません）
+
+D3 は、std の `Maybe`／`Result` の `Bind`／`BindReturn` を、閉包 literal が `needs_drop` でないスカラーだけを捕捉するとき、emission 時に `match` と lift 済みラムダの直接呼び出しへ簡約する案です。
+F1'・C5 の後に残る差で採否を決め、**入れていません**。同じ連鎖を CE（上の生成元）と手書きの入れ子の `match` で書き、N 個の export を 1 回ずつ呼ぶ C の driver を繰り返して測りました
+（Apple M1 Max、clang 21 の `-O0` または `-O3`、`-fPIC -fno-fast-math -ffp-contract=off`、user CPU 時間、共有 machine で負荷平均 30〜90、出力の checksum は両方同じ）。
+
+| 条件 | `__text`（CE／手書き） | 時間（CE／手書き） | clang の user CPU（CE／手書き） |
+| --- | --- | --- | --- |
+| `-O3`、N=128（予算内）、4,000,000 回 | 8,124／8,056 bytes | 0.51／0.69 秒 | 0.54／0.12 秒 |
+| `-O3`、N=300（予算超過）、2,000,000 回 | 24,036／18,888 bytes | 0.92〜0.97／0.83〜0.86 秒 | 1.05／0.27 秒 |
+| `-O0`、N=300、20,000 回 | 411,512／136,232 bytes | 0.43／0.10 秒 | 0.41／0.13 秒 |
+
+- 既定の `-O3` で、予算内の連鎖は手書きと同じ大きさで、CE のほうが短い時間でした（N=128）。K1 は F1' が消しています。
+  予算を使い切る N=300 の差（`__text` +27%、時間 +10〜13%）は、予算を超えた 172 連鎖が通常の経路を使うためで、完成した連鎖は 1 回あたり約 1.0 ns、通常の経路の連鎖は約 2 ns です（上の値から計算）。
+- `-O0` の差は大きい（`__text` 3.0 倍、時間 4.3 倍）のですが、`-O0` の用途は REPL とデバッグで、既定は `-O3` です。worker を `alwaysinline` にする代案は、IR を書き換えて測ると、
+  `-O0` の `__text` が 411,512 から 645,352 bytes に増え、時間は 0.40 から 0.33 秒にしか縮まないので、代わりになりません。
+- D3 を実装するには、emission 時に型付きの `Match`（パターンの step・新しい局所の id・`borrowed` の集合）と呼び出しを組み立てます。A17 の `LastUses` は `(span, 局所の id)` を鍵に emission の前に作られ、
+  新しい局所はその一覧にありません。coverage の領域・debug 情報・drop の順序を変えないことの確認に使える試作がありません。`Bind`・`BindReturn` を `match` と無名ラムダの呼び出しに手で展開した
+  試作は、worker を 1,024 個使い、`-O0` の `__text` が 451,364 bytes（CE より大きい）で、期待する形になりませんでした。
+- 再開する条件は、`-O0` の計算式の速度や大きさを目標にするとき、または 128 を超える連鎖を持つ現実の program が現れたときです。
+
+### 整数の範囲証明と overflow フラグ（PR02）
+
+2026-10-16 に、整数の `+ - *` に `nsw`／`nuw` を書くと LLVM の出力が変わるかを測り、2026-10-17 に、第3フェーズの統合後のコンパイラで測り直しました。`benchmarks/run-range-flags.mjs` は、12 の corpus（`benchmarks/` の control・computations・bounds_shapes・matrix・simd・utf・dispatch・apps・cpp・allocation、`tests/fixtures/control`、旗の候補を集めた `benchmarks/range_flags`）を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64（`arm64-apple-macos14`）と x86_64（`x86_64-unknown-linux-gnu`。assembly を出すだけで実行しません）の `-O1`・`-O2`・`-O3` の assembly と、wasm32 `-O3` の module を比べます。assembly は、コメントと空行だけを無視して、行の順序のまま比べます（命令・オペランド・即値・label・ディレクティブ・データはすべて比較に入ります）。コメントは target ごとの構文（AArch64 は `;` と `//`、x86 は `#`。文字列の中は除く）だけを除くので、AArch64 の即値の `#` は残ります。差は、最短の編集列の長さ（消した行と足した行の合計）で数えます（`benchmarks/assembly.mjs`）。module は byte で比べます。Apple M1 Max、Homebrew Clang 21.1.8、コンパイラは第3フェーズの統合後（`src/` は commit `1127b73c` と同じ）の非 LTO の release（SHA-256 `9ecd461d…`）です。実行は決定的で、静かな機械は要りません。
+
+最初の測定（2026-10-16）は、`#`・`@` 以降を捨て、命令を数えるだけの比較で、即値の違いと順序の違いを見落としました（PR #27 の Copilot のレビューで指摘）。上の比較に直して測り直した結果が、次の表です。
+
+| corpus | 旗のある整数 `+ - *`（`off` → `proven`、IR の全体） | arm64・x86_64 の `-O1`〜`-O3` | wasm32 `-O3` |
+| --- | ---: | --- | --- |
+| control | 0 → 20 / 191 | 同じ | 同じ |
+| computations | 0 → 8 / 201 | 同じ | 同じ |
+| bounds_shapes | 0 → 4 / 140 | 同じ | 同じ |
+| simd | 0 → 2 / 135 | 同じ | 同じ |
+| utf | 0 → 12 / 156 | 同じ | 同じ |
+| dispatch | 0 → 2 / 131 | 同じ | 同じ |
+| cpp | 106 → 120 / 381 | 同じ | 同じ |
+| allocation | 0 → 12 / 162 | 同じ | （export なし） |
+| range_flags | 0 → 31 / 189 | 同じ | 同じ |
+| `tests/fixtures/control` | 615 → 715 / 1,169 | 同じ | 同じ |
+| matrix | 0 → 65 / 401 | 全レベルで差。編集列は arm64 が `-O1` 282（1,836 → 1,838 行）・`-O2` 496（2,404 → 2,404 行）・`-O3` 162（2,975 → 2,983 行）、x86_64 が 307（2,454 → 2,447 行）・577（3,283 → 3,272 行）・449（4,073 → 4,054 行） | module が 166 bytes 減る（39,068 → 38,902） |
+| apps | 0 → 88 / 454 | 全レベルで差。編集列は arm64 が `-O1` 13（3,460 → 3,461 行）・`-O2` 207（4,305 → 4,298 行）・`-O3` 508（4,963 → 4,955 行）、x86_64 が 199（4,122 → 4,123 行）・28（4,772 → 4,764 行）・319（4,923 → 4,922 行） | module が 31 bytes 減る（30,771 → 30,740） |
+
+`off` の旗（cpp の 106 と `tests/fixtures/control` の 615）は、IR に連結される runtime の IR（cpp の `tz_math_rem_pio2_large` など、fixtures の `numeric.ll` の `format_float` や `tz_soft_*`）が持つ旗で、range の証明が足す旗は `proven` との差です。第3フェーズの統合前の測定（commit `ad13ba96`）は apps が 703 / 1,118、cpp が 735 / 1,045 でした。PM08 が整数の表示を `numeric.ll` から外し、整数しか表示しない apps の IR は、`numeric.ll`（13,843 行、`tz_soft_*` の 10 の関数）を連結しなくなったので、全体の数が小さくなりました（main の IR は 27,115 行、今は 13,773 行です）。
+
+差のあった関数は、matrix では std の `Matrix.multiply_rows` の 3 つと `Matrix.fma_rows` の 1 つの単相化、apps では std の `String.split` と `String.join` の 2 つだけです（どの target・どのレベルでも同じ関数です。`-O3` の arm64 で、matrix は 1 関数あたり 10〜30 行、`String.split` は 176 行を消して 169 行を足し、`String.join` は 85 行を消して 84 行を足します）。差の中身は、比較と分岐の形（arm64 の `subs; b.mi` が `b.lt`、`sub; tbnz` が `cmp; b.le`、x86_64 の `decq; js` が `testq; jle`）、レジスタ割り当て、label の番号、`and` の定数（`0xfffffffffffffff8` が `0x7ffffffffffffff8`）、スタックの大きさ（x86_64 の `subq $56, %rsp` が `$40`）です。`-O3` の matrix と apps の 4 つの assembly を grep で数えた概算では、ベクトル命令の数（49・45・142・59）と trap の命令（`brk`・`ud2`）の数（19・19・23・23）は、`off` と `proven` で同じです。旗の候補を意図して集めた `benchmarks/range_flags`（`values[i + 1]`・`values[2 * i]`・窓の和・降順・`i8u` の拡張・マスク・桁の分解・条件で絞った値）でも、`-O1`〜`-O3` の assembly は `off` と同じです。LLVM の IndVarSimplify などが、増分や型や `and` のマスクから同じ旗を自力で付けるためで、PR02 より前の調査（旗を IR の文字列で足した上限の実験）の結果とも一致します。
+
+`String.split`／`String.join` の時間は、次のプログラム（2,000 個の文字列を `,` で `join` して `split` し直す往復を 4,000 回）を、`off` と `proven` で `-O3` の実行ファイルにして交互に 15 回ずつ走らせて比べました（Apple M1 Max。ほかの処理と共有した機械で、負荷平均（1・5・15 分）は開始時が 55.78・93.24・123.14、終了時が 53.03・90.82・121.76）。両方の出力は同じ `63098000` で、中央値は `off` が 319.1 ms（最小 274.7、最大 855.5）、`proven` が 322.7 ms（最小 292.3、最大 712.1）です。差は標本の広がりの内側で、速くなったとは言えません。
+
+```tz
+export def churn :: i64 -> i64 -> i64
+fn churn fields rounds =
+    let parts = new [string](fields, \i -> to_string (i * 7919 % 100003))
+    let separator = ","
+    let mut total = 0i64
+    for round in 0 .. rounds - 1 do
+        let text = String.join (ref separator) (ref parts)
+        let tokens = String.split (ref separator) (ref text)
+        total = total + text.length + tokens.length + round
+    total
+```
+
+asm が変わった Matrix の 4 つの関数の時間は、負荷平均が 100 を超える機械では意味のある比較にならないので測っていません。旗が実行を速くすると言える根拠は、asm の比較からも時間の比較からも得られていません。そのため旗の既定は `off` のままで、`TSUZURI_RANGE_FLAGS=proven` はオプトインです。旗のある関数は PR01 の戻り値の `noundef` を失い（D13）、`proven` で 1 つでも旗が誤ればメモリ安全性を壊す poison になるので、測れる利得がない間は既定にしません。証明の健全性は、`audit` で既存の suite を通すこと、1〜4 bit の型の全区間・全値の総当たり、38 本のプログラムの全入力評価、乱数のプログラムと独立した BigInt の評価器との照合、証明をわざと誤らせたコンパイラを乱数のプログラムが見つけることで確かめています（[ticket](../_perfs/_completed/PR02-integer-ranges.md)）。x86 の実機は使えないので、x86_64 の結果は assembly の比較だけで、速度は測っていません。
+
+ほかの重い処理を止めた機械で時間を測り直すには、`TSUZURI_RANGE_FLAGS=off node benchmarks/run-matrix.mjs <コンパイラ>` と `TSUZURI_RANGE_FLAGS=proven node benchmarks/run-matrix.mjs <コンパイラ>` を交互に実行し、`Matrix.mul`・`Matrix.mul_parallel`・`Matrix.mul_fma` の表の中央値を比べます（`--quick` は n = 16 だけです）。`String.split`／`String.join` は上のプログラムを `off` と `proven` で `-O3` の実行ファイルにして交互に走らせます。asm の差を見直すときは `node benchmarks/run-range-flags.mjs <コンパイラ>` です。
+
+### フロントエンドの並列化（PB04）
+
+フロントエンドの構文解析（frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査は、`TSUZURI_THREADS` が許すスレッド数（CLI で未設定なら使える core 数の最大 8）で並列に動きます。
+結果は入力の順に、並列化前と同じ処理へ渡すので、診断・IR・cache の bytes は thread 数で変わりません（[`tests/parallel_frontend.mjs`](../tests/parallel_frontend.mjs) が基準の compiler とも比べます）。ここは速度だけを扱います。
+
+**条件。** Apple M1 Max（10 core。性能 8・効率 2）、macOS 27.0.1、Rust 1.98.1、Apple Clang 21.0.0、Node v20.19.6。
+before は main `6d15b437` の release（SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）、
+after は PB04 の `bc9b7bfc` の release（`af340a11e10350bd6b7740826d860463359030a238dec81af41c307454ffcadd`）で、どちらも thin LTO・CGU 1 です。
+cache は無効（cold／warm の表だけ有効）、`LC_ALL=C`、`TSUZURI_TIME_PASSES=1` です。
+構成を 1 回ごとに交互に実行し、最初の 1 回を捨てて（[`benchmarks/run-threads.mjs`](../benchmarks/run-threads.mjs) の手順）、中央値（最小–最大）を出しました。
+実時間はプロセス全体（起動と終了を含み、Microsoft Defender が `open` を遅くします）、total は compiler の `TSUZURI_TIME_PASSES` の total、CPU 時間は user+sys（粒度 10 ms）、
+parse・check・ownership は段の時間（ms）です。生成した入力は PX03 の `benchmarks/build/generate.mjs` の 200 と 1,000 module です。
+
+**共有機械の目安です。** 他の作業のビルドやテストが動いており、負荷平均は測定中に 20〜50 でした（2026-10-16 19:32〜19:53、`uptime`）。
+`with-lock.sh measure` は何時間待っても取れなかったので、heavy の slot を 1 つ取って測りました。
+静かな機械での正式な比較は統合担当が行います。生データは `target/perf/PB04/raw-*.json` と `measure-all.log`（`target/` は追跡されません）にあります。
+
+hello の `check`:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 107（53–589） | 39.8（37.2–47.4） | 30 | 21.0（20.7–21.3） | 5.0 | 29.7 |
+| 2 thread | 116（43–256） | 34.8（32.3–52.1） | 50 | 21.4（21.0–22.2） | 3.7 | 26.0 |
+| 4 thread | 98（37–193） | 27.5（24.9–58.5） | 50 | 22.0（21.5–22.8） | 3.0 | 19.6 |
+| 8 thread | 103（41–220） | 26.6（22.5–38.3） | 60 | 22.5（22.1–22.9） | 3.0 | 18.7 |
+| before | 112（56–243） | 39.4（37.4–45.7） | 30 | 20.9（20.6–21.1） | 5.0 | 29.5 |
+| 未設定（自動） | 93（37–180） | 26.5（23.1–36.7） | 60 | 22.6（22.0–23.2） | 3.0 | 18.5 |
+
+合成 200 module の `check`:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 445（390–649） | 375.2（356.6–440.6） | 360 | 144.3（142.8–145.6） | 42.0 | 216.1 | 30.3 |
+| 2 thread | 432（342–635） | 348.4（322.1–468.5） | 480 | 144.8（143.3–146.8） | 31.2 | 194.2 | 22.4 |
+| 4 thread | 350（285–571） | 278.3（246.1–361.3） | 500 | 146.9（144.8–149.3） | 19.9 | 150.2 | 13.3 |
+| 8 thread | 339（279–441） | 265.6（229.2–333.9） | 520 | 150.7（147.3–153.3） | 16.7 | 140.7 | 10.6 |
+| before | 446（399–614） | 372.9（361.5–445.9） | 350 | 142.1（140.9–143.5） | 41.0 | 214.5 | 30.1 |
+| 未設定（自動） | 310（261–698） | 265.4（229.9–325.8） | 520 | 151.2（149.1–154.0） | 14.2 | 143.0 | 10.5 |
+
+合成 200 module の LLVM 出力（`-O0`、`--emit llvm`）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | emit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 725（607–7183） | 646.8（593.4–2676.0） | 600 | 154.9（153.0–156.4） | 39.8 | 211.6 | 226.5 |
+| 8 thread | 574（500–2479） | 533.6（484.6–1310.9） | 760 | 161.3（158.6–166.0） | 12.9 | 131.3 | 222.9 |
+| before | 694（608–2950） | 632.5（596.9–1314.3） | 590 | 155.0（153.8–156.7） | 40.5 | 207.1 | 219.3 |
+
+合成 1,000 module の `check`（1 回目）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 2228（1916–3458） | 2104.6（1861.3–3286.5） | 1740 | 631.0（612.2–632.6） | 180.7 | 953.0 | 154.8 |
+| 2 thread | 1997（1766–5416） | 1904.6（1739.2–5324.7） | 2240 | 633.6（614.3–635.8） | 130.2 | 837.3 | 112.7 |
+| 4 thread | 1683（1444–10417） | 1573.1（1402.1–10135.8） | 2260 | 635.2（628.5–637.5） | 63.4 | 636.5 | 60.3 |
+| 8 thread | 1624（1528–5071） | 1514.2（1414.1–4018.1） | 2390 | 642.4（632.4–647.4） | 47.0 | 577.9 | 40.1 |
+| 10 thread | 1749（1323–2295） | 1674.5（1301.3–2173.9） | 2430 | 643.0（638.7–668.3） | 45.3 | 609.0 | 43.1 |
+| before | 2200（1933–5511） | 2109.4（1853.9–5389.2） | 1720 | 619.7（616.2–623.5） | 184.2 | 943.0 | 157.0 |
+| 未設定（自動） | 1795（1402–5886） | 1691.5（1359.5–2665.1） | 2390 | 639.3（621.1–662.3） | 49.2 | 583.0 | 41.1 |
+
+同じ構成の再測定（21 標本。`8+A=1` は `8` と同じ構成で、ノイズの幅を見るために入れました）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 2178（1937–2535） | 2067.6（1892.3–2430.8） | 1740 | 628.5（611.4–633.3） | 182.2 | 952.4 | 155.7 |
+| 4 thread | 1636（1442–3486） | 1544.1（1393.3–3323.8） | 2290 | 632.5（616.0–640.1） | 63.0 | 649.2 | 60.6 |
+| 8 thread | 1544（1263–3616） | 1489.6（1241.3–3450.8） | 2440 | 638.5（634.6–650.3） | 42.4 | 566.2 | 39.7 |
+| before | 2135（1927–3237） | 2014.8（1845.0–3193.5） | 1730 | 620.1（615.7–622.3） | 180.6 | 936.1 | 155.4 |
+| 8+A=1 | 1449（1337–2094） | 1413.0（1262.9–2041.5） | 2430 | 637.6（632.2–648.1） | 43.5 | 569.2 | 39.8 |
+
+合成 1,000 module の LLVM 出力（`-O0`）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check | emit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 thread | 3356（3112–3562） | 3258.6（3085.5–3477.9） | 2910 | 663.1（657.8–666.2） | 181.3 | 957.0 | 1080.7 |
+| 8 thread | 2712（2567–5031） | 2634.5（2547.8–4909.3） | 3590 | 675.1（669.9–679.4） | 44.9 | 575.5 | 1091.2 |
+| before | 3313（3156–6589） | 3276.4（3133.0–6527.0） | 2870 | 667.6（665.2–668.5） | 179.9 | 942.1 | 1065.8 |
+| 未設定（自動） | 2824（2653–3020） | 2706.5（2557.9–2926.5） | 3580 | 674.3（668.2–688.6） | 49.3 | 571.6 | 1101.9 |
+
+合成 1,000 module の `check`、frontend cache が cold（毎回空）と warm:
+
+| 構成 | 実時間 ms | compiler の total ms | parse | 最大 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 1 thread | 2281（2125–3380） | 2230.8（2052.6–3026.3） | 276.8 | 638.0（622.1–643.4） |
+| 8 thread | 1531（1370–3961） | 1429.2（1347.3–3561.8） | 64.2 | 653.7（646.2–657.0） |
+| before | 2279（2125–2703） | 2251.7（2019.1–2655.7） | 275.9 | 631.1（627.7–632.7） |
+
+| 構成 | 実時間 ms | compiler の total ms | parse | 最大 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 1 thread | 2060（1910–4934） | 1960.0（1826.0–4822.0） | 117.1 | 629.4（623.5–632.0） |
+| 8 thread | 1412（1370–6485） | 1333.0（1305.6–5244.0） | 29.0 | 641.6（633.5–662.3） |
+| before | 2065（1933–3066） | 2020.4（1882.8–2896.2） | 114.7 | 632.8（629.4–634.9） |
+
+読み取り:
+
+- `TSUZURI_THREADS=1` は従来と同じ経路で、速さも変わりません（total の 1 thread ÷ before は hello 1.010、200 module 1.006、1,000 module 0.998、LLVM 出力 0.995）。
+- hello: total は 39.4 ms から 8 thread で 26.6 ms、未設定（8 になる）で 26.5 ms に縮み、1.48〜1.49 倍です。プロセスの実時間は起動と終了の費用が大きく、112 ms から 103／94 ms で、遅くはなっていません（最小–最大は重なります）。CPU 時間は 30 から 60 ms、最大 RSS は 20.9 から 22.5 MiB（+8.0%）です。
+- 200 module の `check`: total は 372.9 ms から 265.6 ms（1.40 倍。1 thread 比 1.41 倍）です。8 thread と 1 thread の段ごとの比は parse 2.5 倍、check 1.54 倍、ownership 2.9 倍で、CPU は +49%、最大 RSS は +6.0% です。
+- 1,000 module の `check`: total の 1 thread 比は、1 回目が 8 thread で 1.39 倍、10 thread で 1.26 倍、未設定（これも 8 thread）で 1.24 倍、再測定が 8 thread で 1.39 倍と 1.46 倍（同じ構成の 2 回）、4 thread で 1.34 倍です。同じ構成どうしが最大 12% 違うので、ノイズの幅はそのくらいです。改訂した目標 G1 の 1.4 倍は、届いた測定と届かなかった測定があり、「ほぼ達成」と書きます。
+  段ごとの 1 thread に対する 8 thread の比は parse 3.8 倍（10 thread で 4.0 倍。G2 の 1/4 にちょうど届く）、check 1.65 倍、ownership 3.9 倍です。CPU 時間は +37%（1,740 から 2,390 ms）、最大 RSS は 1 thread 比 +1.8%（631.0 から 642.4 MiB。before 比 +3.7%）で、G4 の +10% 以内です。
+- LLVM 出力: 1,000 module で total が 3,258.6 ms から 2,634.5 ms（1.24 倍。未設定で 1.20 倍）、200 module で 1.21 倍です。emit は 1,066〜1,102 ms のまま（逐次）で、CPU は +23%、最大 RSS は +1.8% です。この値は PR03 を取り込む前の PB04 の branch のものです。統合後のコンパイラでは、特殊化の予算（1,024）を使い切る 1,000 module の emit が 2 回出力で約 2 倍（1,011 → 2,078〜2,123 ms）になり、total は before より 1.10 倍（8 thread）〜1.27 倍（1 thread）長くなりました（200 module は 1.24 倍速いまま。最後の「第3フェーズ統合の最終比較」）。
+- frontend cache: cold は total が 2,230.8 から 1,429.2 ms（1.56 倍）で parse が 4.3 倍、warm は 1,960.0 から 1,333.0 ms（1.47 倍）で parse が 4.0 倍です（SHA-256 と復号も並列になります）。
+- 床: 1,000 module で 8 thread の total 1,514 ms のうち、load 407 ms、specialize 248 ms、closures 44 ms の 699 ms（46%）は並列にしない段です。`check` の 578 ms の中にも、名前と signature の収集、`solve_members`、`constants::fold`、`recursion::check`、`warnings::unused_private` の逐次の部分があります（HEAD `6d15b437` の計装版で `unused_private` 146 ms、`recursion::check` 77 ms、名前と signature の収集 79 ms、`validate` 34 ms、`constants::fold` 29 ms。チケットの「着手時の再検討」）。10 thread は 8 thread より速くなりませんでした（この機械は性能 core が 8 個で、残りの 2 個は効率 core です）。
+
+worker 1 つあたりの関数の数（`FUNCTIONS_PER_WORKER`）の探索（値を環境変数で変えられるようにした使い捨ての計測用ビルド。リポジトリには入れていません。hello を 61 標本）:
+
+| 構成 | 実時間 ms | compiler の total ms | user+sys ms | 最大 RSS MiB | parse | check |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 thread | 128（59–900） | 37.2（34.0–126.4） | 40 | 21.7（21.0–22.2） | 3.0 | 29.3 |
+| before | 120（54–2268） | 38.8（36.8–71.1） | 30 | 20.9（20.6–21.3） | 5.0 | 28.9 |
+| 8+FPW=64+OPW=64 | 108（51–1291） | 26.2（23.3–92.3） | 60 | 22.7（22.1–23.6） | 3.1 | 18.5 |
+| 8+FPW=16+OPW=16+PBW=8192+PSW=1 | 102（44–2203） | 27.2（21.7–115.7） | 60 | 23.3（22.1–24.4） | 2.7 | 19.4 |
+
+256 では hello の check が 1 thread と変わらず（29.3 ms。標準ライブラリの宣言だけで 256〜511 関数あり、worker が 1 つ未満になるため）、64 で 18.5 ms（total 26.2 ms）になり、16 と parse の 8 KiB・1 file でも 19.4 ms で、これ以上は得になりません。
+200 module は 256・64・16 のどれでも total が 230 ms 前後で同じです。1 回に取る関数の数（chunk の 1・8・32）も 200 module で差が出ません（236.2・230.0・234.6 ms）。そこで 64 にしました（bc9b7bfc）。
+
+CLI の既定を自動にする条件（D13）の判定:
+同値性の検証が通る（`tests/parallel_frontend.mjs`、emit の 324 出力、全テスト）。hello と 200 module が遅くならない（どちらも 1.4 倍以上速い）。
+最大 RSS が +10% 以内（1,000 module で +1.8%、hello で +8.0%）。仕事の量が少ない段は 1 thread のまま（標準ライブラリを含まない 1 module は全段が 1 thread。単体テスト）。上限は 8。
+そこで CLI の既定は自動（`min(core 数, 8)`）にしました。`TSUZURI_THREADS=1` で従来の経路に戻せます。
+
+並列に動いていることは `sample` でも確かめました。`TSUZURI_THREADS=8` の 1,000 module の `check` を `/usr/bin/sample` で採取すると、`tsuzuri-frontend` という名前の worker が 8 本、同じ段で同じくらいの数の標本（87〜96）を取っていました（`target/perf/PB04/sample-check-s1000-t8.txt`）。
+
+測っていないこと: Linux と Windows での速さ（thread の起動費用も違います）と、10 core 以外の機械です。CI に速度の閾値は置きません。並列にしていない段（読み込み・specialize・closures・emit など）の並列化はこのチケットの範囲外です（出力側の並列は PB07・G17）。
+
+再現（`target/` の下に置く前提）:
+
+```sh
+node benchmarks/build/generate.mjs --modules 200 --out target/perf/PB04/s200
+node benchmarks/build/generate.mjs --modules 1000 --out target/perf/PB04/s1000
+shasum -a 256 target/release/tsuzuri target/perf/PB04/tsuzuri-before
+# 構成を交互に測る（表の手順）。before は --before の compiler、数字は TSUZURI_THREADS、unset は未設定
+node benchmarks/run-threads.mjs target/release/tsuzuri examples/hello check 61 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/hello before 1 2 4 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s200 check 21 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s200 before 1 2 4 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 2 4 8 10 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 emit-llvm 9 --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 8 unset
+node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 9 --cache cold --before target/perf/PB04/tsuzuri-before --out target/perf/PB04-after/s1000 before 1 8
+# PX03 の runner（各 9 標本、cache 無効）を thread 数ごとに
+for n in 1 2 4 8 10; do TSUZURI_THREADS=$n node benchmarks/run-frontend.mjs target/release/tsuzuri --out target/perf/PB04-after/t$n --sizes 200,1000; done
+node benchmarks/run-frontend.mjs target/perf/PB04/tsuzuri-before --out target/perf/PB04-before --sizes 200,1000
+node benchmarks/metrics.mjs report target/perf/PB04-after/t8 --baseline target/perf/PB04-before
+# 出力の同値性（基準の compiler とも）
+TSUZURI_BASELINE=target/perf/PB04/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri
+
+### Task プールのスケジューラ（PR06、2026-10-16）
+
+native の `Task.parallel`・`Task.parallel_results` の pool（`src/runtime/task.c`）は、添字の取得を group ごとの atomic な加算に、完了の数え方を参加者ごとの 1 回の減算に、
+起床を signal と木の形の連鎖に変えました（設計は [アーキテクチャ](architecture.md)）。WASM threads の pool（`src/runtime/task-wasm-threads.c`）は、添字の取得と完了を同じ形にしました。
+コンパイラが出す LLVM IR は変えていません（`tests/fixtures/tasks`・`examples/tasks` の `--emit llvm` は基準コンパイラと `cmp` で一致）。
+
+条件: Apple M1 Max（8P + 2E の 10 論理 CPU）、macOS 27.0.1、Apple Clang 21.0.0、Node 20.19.6、`-O3` generic、fast-math なし、IR は `--allocator system`。
+基準コンパイラ `target/perf/PR06/tsuzuri-before`（main `6d15b437` の release、SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）の 1 本で同じ IR を作り、
+C ランタイムだけを `--runtime` で差し替えました。before は `c6864cf5` の `src/runtime/task.c`（SHA-256 `d9b3692c05cc6dd64d4922f15d9a095bbca5698f17d2dd9c881cf18b6d889d34`）です。
+測定は他の agent が並行してビルドしている**共有機**で、次の 3 組です。どれも静かな機械の値ではなく参考値で、正式な値は静かな機械で取り直します。
+
+- 窓 1（排他の窓、`with-lock.sh measure`、開始時の load average 40.28／55.80／68.21）: C4 の runtime（`5118945a`、SHA-256 `321574a3d13d57c458b607417052d7b3b828f2cce1d0ad2b1b1734fc06fb13db`。
+  signal 2 + 連鎖 1）の before → after → before2 を 2 分以内に続けて測りました。
+- 窓 2（排他の窓、18:42〜18:49。1 分平均の load average は開始時の 89.77 から 29〜47 に下がりました）: 起床の方針の変種を HEAD と同じ run の中で交互に測りました（比だけを載せます）。
+  WASM threads の before／after、`--data-parallel`、採用しなかった変種もここです。
+- 最終の runtime（初期 signal 1 + 連鎖 2）: 排他の窓が取れなかったので、1 分平均の load average が 20〜65 の共有機（19:52〜20:01）で、最終の `src/runtime/task.c`
+  （SHA-256 `ac27826f0366c1863049f4c03a5c846a760793832904eb0f02ba44d5d6f3d4b0`）と処理が同じ試作（定数名・コメント・`_Static_assert` だけが違います）を、HEAD と同じ run の中で交互に 2 回測りました。
+  各回に HEAD を HEAD 自身と比べる A/A も測り、揺れの大きさの目安にします。
+
+生データは `target/perf/PR06-*`（git 管理外）です。
+
+各値は 9 標本の中央値で、括弧は最小〜最大です（単位 µs）。before2 は同じ before の再測定で、after／before の差が before2／before の揺れを超えない行は差として扱いません。
+
+```sh
+git show c6864cf5:src/runtime/task.c > target/perf/PR06/task-before.c
+git show 5118945a:src/runtime/task.c > target/perf/PR06/task-c4.c   # 窓 1 の after（C4 の runtime）
+BEFORE=target/perf/PR06/tsuzuri-before
+for mode in "" --data-parallel --sweep "--gap-us 1000"; do
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-c4.c     $mode --metrics target/perf/PR06-after
+  node benchmarks/run-tasks.mjs $BEFORE --runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-before2
+done
+node benchmarks/metrics.mjs report target/perf/PR06-after --baseline target/perf/PR06-before
+```
+
+**回数（時間ではなく、機械に依らない）。** `tests/task_runtime.c` が pthread 呼び出しの hook で、眠っている pool の 257 添字の group 1 つが取る mutex・signal・broadcast を数えます。
+before の runtime ではこの assert は落ちます（CPU 数 2 と 4 で確認）。
+
+| 257 添字の group（CPU 数 N） | before（HEAD） | after |
+| --- | ---: | ---: |
+| `Task.parallel` の mutex の取得 | 259 | 2 + 参加した worker 数（`2 + (N - 1)` 以下） |
+| `Task.parallel_results` の mutex の取得 | 515 | 同上 |
+| broadcast | 2 | 1 以下（最後に減らした worker が、眠っている投入側を起こすときだけ） |
+| signal | 0 | 1 〜 `1 + 2 × (N - 1)`（投入で 1、加わった worker が最大 2） |
+| 長さ 2 の group の signal・broadcast | — | 1・1（worker が最後に終える形で固定した試験） |
+
+**窓 1: 短い group の warm・cold。** この窓の after は C4 の runtime（初期 signal 2 + 連鎖 1）です。最終の runtime は起床の数だけが違い、後の節で測っています。
+tiny = 4 添字×0 反復、small = 32 添字×16 反復、bulk = 1024 添字×256 反復です。
+warm は連続呼び出しの平均、p50 は 1 回ごとに計った中央値、cold は pool の起動を含む最初の呼び出しです。
+
+| 仕事 | 指標 | before | after（C4） | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | warm | 5.32 (3.0–10.4) | 1.44 (0.2–4.2) | 2.90 (0.6–10.9) |
+| tiny | p50 | 0.21 | 0.17 | 0.21 |
+| tiny | cold | 125.5 (90.8–168.1) | 127.5 (75.0–2444.3) | 123.5 (91.6–157.9) |
+| small | warm | 16.2 (8.7–39.8) | 2.39 (1.0–13.2) | 17.3 (2.8–38.0) |
+| small | p50 | 4.46 (1.3–26.7) | 1.00 (1.0–1.0) | 9.50 (1.1–40.8) |
+| small | cold | 122.0 (86.4–228.7) | 103.0 (72.9–258.6) | 123.1 (89.5–197.9) |
+| bulk | warm | 539.9 (510.6–608.3) | 566.8 (290.7–1947.1) | 578.9 (476.8–1377.1) |
+| bulk | p50 | 579.8 (530.0–650.5) | 344.5 (262.3–402.5) | 588.6 (555.4–644.8) |
+| bulk | cold | 666.8 (598.8–782.7) | 465.8 (324.3–2038.0) | 724.5 (544.3–826.8) |
+
+tiny の p50 が 0.2 µs なのは、4 添字を投入したスレッドが worker を待たずに 1 つで終えるためで、pool の費用は変わりません。small の warm・p50 は before の 16.2・4.5 µs が 2.4・1.0 µs になりました
+（before2 は 17.3・9.5 µs）。bulk の warm の平均は、after の標本に 1.9 ms の外れ値があり、before・before2 と区別できません。p50 は 580 → 345 µs です。cold は pool の起動（スレッド生成）が支配し、変わっていません。
+
+**窓 1: worker が眠った後の最初の呼び出し（`--gap-us 1000`、各呼び出しの前に 1 ms 休む）。** 起床の遅延が見える設定です。休みは時間に含めません。
+
+| 仕事 | 指標 | before | after（C4） | before2 |
+| --- | --- | ---: | ---: | ---: |
+| tiny | p50 | 16.1 (14.5–17.4) | 6.17 (5.0–7.1) | 15.0 (13.5–18.6) |
+| small | p50 | 21.8 (18.5–24.7) | 5.83 (5.5–6.5) | 16.0 (14.4–25.7) |
+| bulk | p50 | 590.8 (550.5–781.8) | 252.3 (245.5–272.7) | 574.6 (551.1–591.6) |
+
+起床の変更（と添字の取得・完了の変更）をあわせた結果で、worker が眠っている状態からの 3 種目の中央値が 2.3〜3.7 倍短くなりました（before2 との差は 1.0〜1.4 倍）。
+
+**窓 1: 粒度（`--sweep`、32 添字で 1 添字の仕事の量 `rounds` を変える。逐次は同じ IR の逐次の loop）。** `parallel` の p50 が `sequential` 以下になる最小の粒度:
+
+| rounds | 逐次の 32 件（p50） | before の parallel（p50） | after（C4）の parallel（p50） | before2 の parallel（p50） |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 0.25 | 1.21 | 1.21 | 2.67 |
+| 64 | 1.88 | 4.33 | 4.25 | 27.0 |
+| 256 | 9.7 | 45.8 | 16.7 | 40.6 |
+| 1024 | 41.2 | 57.8 | 42.8 | 62.3 |
+| 4096 | 168.0 | 86.8 | 87.2 | 80.6 |
+| 16384 | 690.5 | 291.9 | 231.8 | 175.5 |
+
+before は逐次の 4096 rounds（約 170 µs）で初めて並列が速くなり、1024 rounds（約 41 µs）では 40 % 遅い（57.8 対 41.2 µs）。after（C4）は 1024 rounds で逐次と並び（42.8 対 42.4 µs）、4096 rounds で半分になります。
+測った点の範囲では、並列が逐次と並ぶか下回る最小の逐次時間は、before が 168 µs（41 µs では 40 % 遅い）、after（C4）が 42 µs（並ぶ）で、168 µs では半分になります。
+それより短い group では、並列は逐次より遅いままです（256 rounds、約 10 µs で 16.7 対 9.7 µs）。
+
+**起床の方針の選択（窓 2）。** 変種を HEAD と同じ run の中で交互に測った比（変種 ÷ HEAD、小さいほど速い）です。
+gap は 1 ms 休んだ後の最初の呼び出しの p50、CPU はそのときの 1 呼び出しあたりのプロセス CPU 時間、連続は休まない連続呼び出しの warm の平均です。
+「初期 n + 連鎖 m」は、投入が起こす worker の数 n と、group に加わった worker が起こす数 m です。
+
+| 変種 | gap tiny | gap small | gap bulk | gap CPU tiny | 連続 bulk |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A/A（HEAD 対 HEAD） | 0.95 | 1.13 | 1.02 | 1.01 | 1.01 |
+| 添字と完了の変更のみ（起床は HEAD と同じ broadcast） | 1.04 | 0.94 | 0.52 | 0.94 | 0.51 |
+| 初期 1 + 連鎖 1 | 0.29 | 0.25 | 0.45 | 0.17 | 0.41 |
+| 初期 2 + 連鎖 1（C4） | 0.36 | 0.34 | 0.49 | 0.20 | 0.49 |
+| 初期 3 + 連鎖 1 | 0.47 | 0.42 | 0.48 | 0.27 | 0.50 |
+| 初期 2 + 連鎖 2 | 0.34 | 0.36 | 0.55 | 0.18 | 0.52 |
+
+- 添字の atomic な取得と完了の一括だけで、bulk は約半分になります（0.51）。tiny・small の gap は HEAD と同じで（1.04・0.94）、起床を broadcast のままにしても、眠った worker の起床は速くなりません。
+- 起床を signal と連鎖にすると、tiny・small の gap は 0.25〜0.47 倍、tiny の CPU は 0.17〜0.27 倍になります。初期の signal が少ないほど速く（1 つ 0.29、2 つ 0.36、3 つ 0.47）、最終は初期 1 にしました。
+- 起床を signal にすると、連続して投入する tiny の p50 が上がる run があります。load average 20〜65 の run では、HEAD の 0.2 µs に対して初期 2 + 連鎖 1 が 7.0・2.9 µs、初期 1 + 連鎖 1 が 1.5・0.8 µs でした。原因は調べていません。
+- 連鎖 1 では `--data-parallel` の bulk（64 チャンク）が不安定でした。`Parallel.init` の中央値は、初期 1 + 連鎖 1 が 6 run のうち 3 run で 2.4〜2.9 ms（残りは 0.88〜1.5 ms）、初期 1 + 連鎖 2 は 6 run とも 1.07〜1.24 ms でした。
+  HEAD 自身が 0.87〜2.80 ms と揺れるので、差としては読まず、連鎖が 1 本だと加わる worker が 1 つずつしか増えない形を避けて、連鎖を 2 にした木の形（初期 1 + 連鎖 2）を採用しました。機構は計測していません。
+
+**最終の runtime（初期 signal 1 + 連鎖 2）と HEAD（load average 20〜65 の run、2 回）。** 各セルは 最終 / HEAD = 比（µs）です。右の 2 列は同じ run で HEAD を HEAD 自身と比べた A/A の比で、これが 1 から離れる分は揺れです。
+
+| 指標 | 仕事 | pass 1 | pass 2 | A/A pass 1 | A/A pass 2 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| gap p50 | tiny | 4.42 / 26.2 = 0.17 | 4.17 / 15.5 = 0.27 | 0.76 | 1.02 |
+| gap p50 | small | 5.96 / 21.8 = 0.27 | 4.38 / 16.6 = 0.26 | 1.07 | 1.00 |
+| gap p50 | bulk | 254 / 551 = 0.46 | 264 / 568 = 0.47 | 0.98 | 1.03 |
+| gap p50 | coarse | 338 / 360 = 0.94 | 300 / 291 = 1.03 | 0.97 | 0.98 |
+| gap CPU | tiny | 16.7 / 130 = 0.13 | 13.8 / 78.6 = 0.18 | 0.87 | 0.95 |
+| gap CPU | small | 19.8 / 90.1 = 0.22 | 13.0 / 92.9 = 0.14 | 1.03 | 1.01 |
+| gap CPU | bulk | 696 / 1646 = 0.42 | 1202 / 3059 = 0.39 | 0.90 | 1.01 |
+| gap CPU | coarse | 1403 / 1442 = 0.97 | 1391 / 1409 = 0.99 | 1.00 | 1.01 |
+| 連続 p50 | tiny | 0.17 / 0.21 = 0.80 | 0.17 / 0.21 = 0.80 | 1.00 | 1.00 |
+| 連続 p50 | small | 4.21 / 1.13 = 3.74 | 1.00 / 1.08 = 0.92 | 2.72 | 0.96 |
+| 連続 p50 | bulk | 221 / 595 = 0.37 | 337 / 354 = 0.95 | 1.00 | 0.96 |
+| 連続 p50 | coarse | 320 / 330 = 0.97 | 765 / 669 = 1.14 | 0.94 | 1.00 |
+
+- 眠った worker の起床（gap）は、tiny・small の p50 が 0.17〜0.27 倍（A/A は 0.76〜1.07）、bulk が 0.46〜0.47 倍（A/A は 0.98〜1.03）、CPU が 0.13〜0.42 倍でした。
+  休まない連続呼び出しでは、tiny の p50 が run によって 0.2 µs 前後から 1〜3 µs に上がることがあり（下）、small の p50 は HEAD 自身が 1〜42 µs の間で動くので、差を確定できません（small の pass 1 の 3.74 は A/A も 2.72 まで揺れます）。bulk の連続呼び出しは pass 2 の HEAD が 354 µs と速く、0.95 でした。
+- tiny の連続呼び出しの p50 は、HEAD が測った全 run で 0.17〜0.21 µs なのに対し、signal を使う方針では run ごとに 0.17〜0.21 µs か 0.8〜7 µs のどちらかになります。最終の方針は、上の pass 1・2 では 0.17 µs で、`coarse` を足した別の run では 1.0 µs でした。
+  統合前のレビューが同じ形で測り直した run では、最終の 9 標本のうち 7 つが 1.58〜2.92 µs（中央値 2.21 µs）で、HEAD の 9 標本は 0.21〜0.25 µs でした。平均（warm）は run 間の揺れが大きく（最終 0.3〜6.7 µs、HEAD 1.9〜9.6 µs。
+  レビューの 2 run では 5.19 と 5.54 µs、8.54 と 8.26 µs の組）、差として読めません。原因は調べていません。
+- 目標 G1（tiny・small の warm を HEAD より短くする）: 眠った worker の起床（gap）では tiny・small とも満たしました。連続呼び出しの small は、窓 1（C4 の runtime）で平均が 16.2 → 2.39 µs（before2 は 17.3 µs）と短くなりましたが、
+  最終の runtime の非排他の run では 0.33〜1.90 倍で A/A（0.80〜1.42）と区別できません。連続呼び出しの tiny は、改善を示せていません（p50 が上がる run があり、平均に差が読めません）。
+- coarse（16 添字 × 約 79 µs、`cpp/task_parallel` と同じ形）は、全方針で HEAD と揺れの範囲で同じです（比 0.94〜1.17、A/A は 0.94〜1.10）。Phase 1 は group ごとの費用を減らしますが、この形の仕事量は変えません。
+
+**粒度（`--sweep`）、最終 / HEAD（µs）。** 逐次は同じ IR の逐次の loop で、最終の run の p50 です。
+
+| rounds | 逐次 | pass 1 | pass 2 |
+| ---: | ---: | ---: | ---: |
+| 256 | 10.0 | 10.5 / 10.8 | 18.3 / 40.6 |
+| 1024 | 42.4 | 43.4 / 40.8 | 43.3 / 55.2 |
+| 4096 | 172 | 81.6 / 97.4 | 89.0 / 77.2 |
+| 16384 | 690 | 187 / 189 | 189 / 164 |
+
+最終は 1024 rounds（逐次 42.4 µs）で 2 回とも逐次と並び（43.4・43.3 µs）、HEAD は窓 1 の 2 回と上の 6 回（最終との run の 2 回と A/A の 4 回）のうち 7 回が 51.8〜65.6 µs でした（残りの 1 回は 40.8 µs）。
+256 rounds（逐次 10.0 µs）では、最終も HEAD も逐次より遅いままです（最終 10.5・18.3 µs、HEAD 10.8〜53.0 µs）。
+
+**`--data-parallel`（Array と Parallel の chunk 版、各 3 回交互）。** `Parallel.init` の bulk（64 チャンク）は、最終が 1.07〜1.24 ms（6 回）、HEAD が 0.87〜2.80 ms（9 回）でした。
+chunk-boundary（8193 添字、1 チャンクの境界）は、最終が 46.1〜52.6 µs（6 回）、HEAD が 55.9〜89.5 µs（9 回）です。同じ run の Array 版は 5.2〜5.4 ms（bulk）と 60.7〜62.8 µs（chunk-boundary）で、変わりません。
+
+**WASM threads（`benchmarks/run-tasks-wasm.mjs`、窓 2）。** Node の `worker_threads` 9 つ、`-O3`、同じ kernel（`benchmarks/tasks/Main.tz`）です。
+before は基準コンパイラ（C6 より前の `task-wasm-threads.c`）、after は添字の lock-free な取得と完了の一括を入れた `30737c9c` 以降の runtime で、9 標本の中央値です。
+この表の値は、同じ処理を `benchmarks/run-tasks-wasm.mjs` に移す前の作業用の版で測りました（移した版は `--quick` で動作を確認しただけです）。
+
+| 仕事 | 指標 | before | after |
+| --- | --- | ---: | ---: |
+| tiny | 連続の平均 | 1.68 µs | 0.88 µs |
+| tiny | 1 ms 休んだ後の p50 | 40.3 µs | 29.5 µs |
+| small | 連続の平均 | 4.68 µs | 2.90 µs |
+| small | 1 ms 休んだ後の p50 | 88.4 µs | 54.6 µs |
+| bulk | 連続の平均 | 236 µs | 199 µs |
+| bulk | 連続の p50 | 544 µs | 141 µs |
+| bulk | 1 ms 休んだ後の p50 | 823 µs | 545 µs |
+| 3 種目 | cold（新しい pool の最初の呼び出し） | 0.83〜1.18 ms | 0.80〜1.05 ms |
+
+bulk の連続の p50 は、before が 0.21 ms と 0.82〜0.85 ms の二つの値に割れ（9 標本の中央値が 544 µs）、after は 9 標本のうち 7 つが 0.14 ms でした。cold は worker の起動が支配し、変わっていません。
+この測定は 1 つの pool の大きさ（9 worker）と Node の 1 つの版（20.19.6）だけです。
+
+**採用しなかった変種。** 窓 2 で、作業木の runtime（C4 の `src/runtime/task.c`）に対する比（変種 ÷ C4）を測りました。
+
+| 変種 | 結果 | 判断 |
+| --- | --- | --- |
+| 添字の counter を 128 B の line に 1 つだけ置く | 連続の平均が tiny 0.63・small 1.01・bulk 1.02、p50 が 1.00・2.12・1.05、sweep の 6 点が 0.66〜1.04 | 差が出ないので採用しない |
+| 眠る前に 20 µs spin する | 連続の平均が tiny ×7.4・small ×4.8・bulk ×1.06、CPU が ×14.7・×9.5・×1.17。gap 50・200 µs の p50 は 0.90〜1.10、tiny・small の gap の CPU は ×4.1〜×5.3。sweep は 16〜1024 rounds で ×1.38〜×11.7 | 採用しない |
+| 眠る前に 100 µs spin する | 連続の平均が tiny ×8.9・small ×7.1・bulk ×1.53、CPU が ×14.3・×12.3・×1.90。gap 50 µs の p50 が tiny ×5.25・small ×4.67、gap の CPU が ×35・×41 | 採用しない |
+
+spin の既定は 0 のままで、コードも入れていません。休みが 50〜200 µs でも、spin のない C4 に対して p50 の改善はありませんでした。
+
+**限界と、静かな機械での取り直し。**
+
+- 上の値はすべて、他の agent がビルドしている共有機のものです。窓 1・窓 2 は排他の窓ですが load average は 30〜90 で、最終の runtime の値は排他の窓ではありません。A/A の揺れ（上の表では 0.76〜1.13、連続 small の p50 は 2.72 まで）を超える差だけを読み、正式な値は静かな機械で取り直します。
+- `cpp/task_parallel`（`_perfs/README.md` の 0.94）は、`run-cpp.mjs` が Node.js 24 以降を要求し、この機械の Node が 20.19.6 なので測っていません。代わりに同じ形の `coarse` を測りました（上）。
+- CPU 数を変えた拡大（1・2・4・8）は測っていません。macOS には CPU を固定する手段がなく、`run-tasks.mjs` は常に 10 論理 CPU です。CPU 数を変えた確認は、`tests/task_runtime.c`・`tests/task_stress.c` の `cpu_count` hook による回数と正しさ（2・3・4・8・16・32）に限ります。
+- Linux と Windows の時間は測っていません。
+
+静かな機械で取り直すコマンド:
+
+```sh
+git show c6864cf5:src/runtime/task.c > target/perf/PR06/task-before.c   # 基準コンパイラは main 6d15b437 の release
+BEFORE=target/perf/PR06/tsuzuri-before
+for mode in "" --sweep "--gap-us 1000"; do   # 1 つの run の中で、HEAD と最終の runtime を交互に測る
+  node benchmarks/run-tasks.mjs $BEFORE --runtime src/runtime/task.c --baseline-runtime target/perf/PR06/task-before.c $mode --metrics target/perf/PR06-final
+done
+for pair in "before target/perf/PR06/task-before.c" "after src/runtime/task.c"; do   # --data-parallel は --baseline-runtime を取らない
+  set -- $pair
+  node benchmarks/run-tasks.mjs $BEFORE --runtime $2 --data-parallel --metrics target/perf/PR06-final-dp-$1
+done
+# WASM threads: 基準コンパイラは古い runtime を、release のコンパイラは新しい runtime を埋め込む
+node benchmarks/run-tasks-wasm.mjs $BEFORE --gap-us 1000
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --gap-us 1000
+# Node.js 24 以降で（`run-cpp.mjs` が要求する）。cpp/task_parallel の before と after
+node benchmarks/run-cpp.mjs $BEFORE --metrics target/perf/PR06-cpp-before
+node benchmarks/run-cpp.mjs target/release/tsuzuri --metrics target/perf/PR06-cpp-after
+```
+
+### LLVM への受け渡し（PB03、第3フェーズ、2026-10-16）
+
+比較の基準は main `6d15b437` の release（`tsuzuri-before`、SHA-256 `da78ba18e702baee…`）、after は PB03 のブランチの release です。
+Apple M1 Max（arm64）、macOS、Apple Clang 21.0.0、Homebrew LLD 23.1.1、Node 20.19.6。機械は 8 つの作業が共有していて、
+計測中の load average は 25〜190 でした（各表に書きます）。wall time は load に埋もれるので、結論には **プロセスの CPU 時間**
+（`wait4` の `ru_utime + ru_stime`。Clang など子プロセスを含む）、Clang 1 プロセスごとの時間、profile の標本数だけを使い、
+wall の改善は主張しません。共有の `with-lock.sh measure`（機械全体の占有）は 40 分待っても取れなかったので、ここの数値は占有なしの値です。静かな機械での正式な再計測は別に取ります。共有 CI に速度の合否の閾値は置きません。
+
+**到達する関数だけを Clang へ渡す（D1）。** 合成 1,000 モジュールのうち `Main.tz` が 100 モジュールだけを使う W2
+（`benchmarks/build/generate.mjs --modules 1000` に `mainSource(100)` の `Main.tz`）を、`build W2 -O0|-O3 --cpu generic --no-cache` で
+before と after を交互に 9 標本ずつ（load average 47〜91）測りました。
+
+| W2 | CPU 時間の中央値（最小〜最大） before → after | `emit` 段 | Clang の wall（load の影響を受ける） |
+| --- | --- | ---: | ---: |
+| `-O0` | 8,567 ms（8,374〜8,841）→ 2,966 ms（2,909〜3,205）。−65% | 1,454 → 294 ms | 8,021 → 1,201 ms |
+| `-O3` | 9,340 ms（8,691〜9,879）→ 6,022 ms（5,681〜6,527）。−36% | 1,270 → 222 ms | 10,881 → 4,926 ms |
+
+（静かな機械での再測定は最後の「第3フェーズ統合の最終比較」にあります。CPU 時間は `-O0` が 7,250 → 3,320 ms（−54%、共有機の −65% より小さい）、`-O3` が 7,790 → 5,330 ms（−32%）、実時間は −69%・−45% です。）
+
+`emit` が縮むのは、到達しない関数の本体を生成しなくなるためです。IR だけを Clang に渡す事前の測りでは、Clang の時間は
+`-O0` で 246 → 72 ms、`-O3` で 343 → 303 ms でした（O3 の大半は最適化パスで、削れる割合が小さい）。全 public 関数が使われる
+hello や合成 1,000 モジュールの全使用では IR は変わりません。例とフィクスチャの 124 プロジェクト、992 比較では、実行ファイルを作れた 24 件のうち 4 件
+（`examples/polymorphism` 5/108 関数、`tests/fixtures/computations` 13/954、剪定用の 2 件）だけが関数を減らし、挙動・出力は同じです。
+`--emit llvm|object|wasm|shared` は 521 比較すべてが byte 単位で同じです（`benchmarks/check-handoff-equivalence.mjs`）。
+入口のないプロジェクトは実行ファイルにならず、剪定を通らないので、これだけでは剪定の正しさの根拠として足りませんでした（レビューが、剪定で型定義が消えて Clang が IR を拒否する例を見つけました）。
+そこで検査を広げ、入口のない 98 プロジェクトに入口を足して実行ファイルにし（export を plain な公開関数にした版、入口が関数の一部を呼ぶ版を含む）、入口のある 34 件は export を plain にした複製を作って、
+`-O0`・`-O3`・`-g`・`--trap-info`・cache ありの `-O3` でビルドして基準と比べました。132 プロジェクトの全 16 モード 3,332 比較で、終了状態・stdout・stderr の差、増えた関数・宣言、型定義の差は 0 です。
+IR が剪定された 1,352 比較（新しい 5 モード）では、626,595 関数のうち 284,133 が消えています。基準で失敗していたビルドのうち、剪定で通るようになったのは 29 件で、
+25 件はリンクが、使われないコードだけが名指す未定義のシンボルで失敗していたもの、4 件は基準の trap 計装の不具合（`}define` の行を読めない）でした。後者は剪定が行の共有を起こす例が見つかったので、
+同じ変更で直しています（[完了記録](../_perfs/_completed/PB03-llvm-handoff.md#レビューでの指摘と修正2026-10-17)）。
+
+レビュー後の型定義の修正（完了記録の指摘 1）は、剪定した実行ファイルでも、剪定しない場合の到達と型の収集をもう一度行うので、W2 の `emit` 段が増えます。
+機械占有（`with-lock.sh measure`）なしで load average 25〜40 の参考値（`-O0`、交互 7 標本の最小値）は、基準 1,057 ms、修正前の剪定 188 ms、修正後 252 ms（+64 ms）です。
+Clang に渡す IR は変わらず、`tool.*` の最小は 644 → 637 ms で、W2 の `-O0` 全体（約 3 s）の 2% です。上の表の `emit` と CPU 時間は修正前の値で、静かな機械での正式な再計測で取り直します。
+
+**同梱ツールチェーンの識別（WP-F）。** 配布物（約 19,600 ファイル・759 MB）と成果物キャッシュを併用すると、従来は毎ビルドで
+全ファイルのフィンガープリントと Zig（185 MB）・Clang の SHA-256、ランチャーの `--version`（2 プロセス）を計算しました。
+`examples/hello -O0` を同じキャッシュで繰り返すと、`cache` 段は before が 39.6〜51.0 s（whole-build cache が当たるビルドでも。load average 約 160）、
+プロセスの CPU 時間は約 8 s（user 5.0 + sys 2.9）でした。after は、署名が変わらない 2 回目以降が `cache` 段 85〜170 ms、プロセスの CPU 時間 0.12 s です。
+最初の 1 回は全ファイルを並列にハッシュして `<cache>/bundle/` に控えます。署名の変わり方、信頼の範囲、`bundle/` を消す条件は
+[ランタイム object](../_tsuzuri/language-reference/compiler/usage.md#ランタイム-object) にあります。runtime のキー（2 件）は旧コンパイラが作る値と同じで、
+配布物の `share/runtime/manifest.json` の fingerprint は Node の `scripts/toolchain/runtime.mjs` の値と一致します（同梱 object を消費して runtime cache が空）。
+配布物の `lib/` に 1 ファイルを足すと memo が外れ、全体を検証し直して同梱 object を拒否しました。Homebrew の `wasm-ld`（`lld` への symlink）では、
+従来は wasm のビルドごとに `build cache disabled: tool version query failed` を出して whole-build cache を使いませんでしたが、after は使います。
+
+**C ランタイムの cache（WP2）。** `threads.c`・`wasi.c`・`-g` 実行ファイルのスタック検査 `stack.c` は、ビルドのたびに Clang の別プロセスで
+コンパイルしていました。runtime cache に載せた結果、ソースを編集して whole-build cache が外れる再ビルドでも、これらのプロセスは 0 回です
+（9 標本の交互計測、cache あり、load average 約 100。CPU 時間の中央値）。
+
+| 再ビルド | before | after | 差 |
+| --- | ---: | ---: | ---: |
+| WASM threads `-O0` | 418.9 ms | 389.6 ms | −29 ms |
+| WASM threads `-O3` | 1,436 ms | 1,393 ms | −43 ms |
+| WASI `-O0` | 250.7 ms | 227.6 ms | −23 ms |
+| WASI `-O3` | 409.2 ms | 295.7 ms | −113 ms |
+| `-g` のスタック検査付き実行ファイル `-O0` | 373.4 ms | 330.7 ms | −43 ms |
+
+WASM threads と WASI の成果物は before と byte 単位で同じです（`--emit wasm` は `-O0` の 124 プロジェクト、`--emit object` は tasks と hello の `-O0`・`-O3`）。`--no-cache` は従来どおり毎回コンパイルします。
+
+**並行実行は採用しません（D2・D4）。** cold のビルドで Clang の各プロセスの時間を測り、独立な組が完全に重なる理想の下限を計算しました
+（load average 約 45、1 標本。実行ファイルの compile と link は 1 プロセスなので分けません）。
+
+| cold のビルド | Clang の合計 | 理想の並行 | 縮む上限 |
+| --- | ---: | ---: | ---: |
+| hello `-O3`（numeric 526 ms、task.c 41 ms、link 130 ms） | 697 ms | 656 ms | 41 ms |
+| hello `-O0` | 184 ms | 146 ms | 38 ms |
+| `examples/tasks` `-O0` | 238 ms | 164 ms | 73 ms |
+| `-g` のスタック検査付き `-O0` | 185 ms | 134 ms | 51 ms |
+| WASM threads `-O3` / `-O0` | 1,098 / 198 ms | 1,038 / 163 ms | 60 / 35 ms |
+| WASM hello `-O3`（numeric 551 ms、module 106 ms） | 657 ms | 551 ms | 106 ms |
+| WASI hello `-O3`（numeric 621 ms、wasi 149 ms、module 110 ms） | 880 ms | 621 ms | 259 ms |
+| threads の `--emit object` `-O3` | 1,120 ms | 1,060 ms | 60 ms |
+
+縮められるのは runtime object が cold の最初の 1 回だけで（warm のビルドは Clang が 1 プロセス以下）、上限も 35〜259 ms と load の広がりの内側です。
+実装は `compile_runtime_object` を計画・実行・保存に分け、`build_complete` の約 400 行を thread で囲むもので、runtime object を変える他のチケットと衝突します。
+上限が小さいので入れていません。再計測で cold のビルドの割合が大きいと分かったら、同じ表を取り直して判断します。
+
+**IR の渡し方とリンカー（D5・D6・D7）。** 変えません。数字は次のとおりです（合成 100 モジュール、IR 3.9 MB）。
+Clang の front end（IR の読み込みと検証）は `-O0` で 4.8〜9%、`-O3` で 3% で、機械語生成が `-O0` の 88%、最適化が `-O3` の 76% です。
+`.ll` を `.bc` にした Clang の時間は `-O0` で 493 → 488 ms、`-O3` で 2,858 → 2,792 ms（1〜2%）、`llvm-as` は 171 ms（`-O0` の Clang の 35%）で、
+bitcode は IR のテキストと同じ意味・同じ決定性を保てても、得が出ないので採用しません。配布物の `tsuzuri-clang` が `*.ll` の path と限った flag を要する制約もあります。
+リンカーは、macOS の ld64.lld が Apple の ld より遅く（1,000 モジュールのオブジェクト 8.9 MB で 84 ms と 109 ms）、`ld64.lld -r` は未対応です。
+`TSUZURI_LINKER=lld` を opt-in で足しましたが、既定は変えていません（Linux の実測は未取得）。
+
+**IR の後処理（D8）。** 非 strip の release を `sample` で測りました（合成 3,000 モジュールの `--emit llvm -O0`、IR 112 MB、2,967 標本）。
+`emit_with_options` は 33%（978 標本）で、うち関数の生成が約 580、`with_vector_alignment` が約 131（4.4%。埋め込みの `numeric.ll` が 256 bit ベクトルを持つので
+行ごとの処理が本当に走ります）、`RuntimeSymbols::collect` が 34（1.1%）、`escape::recursive_functions` が 35（1.2%）、`program_reach` が 30（1.0%）でした。
+`output.replace`・`lines().join` のような単なる複写は上位に出ません。runtime object を使うビルド（IR に 256 bit ベクトルがない）の事前判定を 6 回の全走査から
+1 回の `<` の検索へ替える試作は、1,000 モジュールの実行ファイルで `emit` 1,307.7 → 1,289.4 ms（1.4%）にしかならず、採否の基準（2%）を下回るので戻しました。
+
+**WASM の剪定（D9）。** 採用しません。試作（`--emit wasm` だけ根を限る）の 1,000 モジュール `-O0` では、成果物が 5,905,346 bytes で変わらず（`wasm-ld` が未使用の関数を
+元から捨てるため）、効果は Clang の時間だけで、W2 のように一部だけ使う形でしか出ないと見込みますが、その形では測っていません。`host_entries`・`reaches_reactor` の根の整合と 33 か所の `EmitOptions`、
+Async・host の glue の到達性の検証が要り、得に見合いません。
+
+再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc`・`libc` が cache あり。`lib0`・`lib3`・`libg`・`libt`・`libc` は入口のないプロジェクトを実行ファイルにする）、
+`node tests/handoff_tools.mjs <compiler>`・`node tests/llvm_handoff.mjs <compiler>`・`node tests/bundle_identity.mjs <compiler>`（プロセスの数・引数・失敗の検査）。
+測定の手順（W2 の作り方、交互 9 標本、`wait4` の CPU、Clang 1 プロセスごとの時間を記録する wrapper、`sample` の読み方）は
+[PB03 の完了記録](../_perfs/_completed/PB03-llvm-handoff.md) にあります。PX03 の `build`・`build-runtime-{cold,warm}` の正式な before／after は静かな機械で取り直します。
+
+### 成果物のサイズ
+
+`node benchmarks/metrics.mjs size [compiler] --out DIR [--project DIR]... [--quick]` は、利用者が受け取る成果物の大きさを PX01 の JSONL で記録します（PM08）。サイズは決定的なので 1 点で、各ビルドを 2 回作って同一かを確かめます。合否の基準は、ページ境界に丸められるファイルの大きさではなく section の byte 数です（Mach-O の `__text` と `__const`＋`__cstring`、ELF の `.text` と `.rodata`、wasm の CODE と DATA。`llvm-objdump -h` で読み、`TSUZURI_OBJDUMP` で指定します）。主な値は cache あり（利用者が実行する既定のビルド）で、`--no-cache` の埋め込み形式は別の variant として示します。速度の合否閾値と同じく、共有 CI にサイズの閾値は置きません。
+
+#### 整数表示の分割（PM08 D2）
+
+整数の `to_string`・`Display`・補間・式の結果の表示を、`numeric.ll` から手書きの `runtime/integer.ll`（約 0.4〜0.5 KB）へ移しました。整数だけを表示するプログラムは、数値 object とその表（約 10 KB）を連結しなくなります。出力の文字列は変わらず、`tests/integer_format.mjs`（Python の独立した参照 47,029 件と、8／16 bit の全値）と `tests/size.mjs`（コンパイラ経由）で、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` を照合します。
+
+Apple M1 Max（macOS arm64）、Apple clang 21.0.0、Homebrew LLVM 21 の `llvm-objdump`。before は main `6d15b437` のリリースビルド（SHA-256 `da78ba18…`）、after は branch `perf/phase3/PM08` の整数表示の分割まで入れた非 LTO のリリースビルドです（コンパイラの最適化はその出力に影響しません）。測定時の load average は 50〜150 でしたが、サイズは決定的で load に依存しません。`examples/hello` の `-O3`、cache あり:
+
+| 成果物 | before | after |
+| --- | ---: | ---: |
+| native 実行ファイル | 50,664 | 33,896 |
+| native `__text` | 13,304 | 2,604 |
+| native `__const`＋`__cstring` | 10,160 | 64 |
+| wasm32 モジュール | 35,714 | 6,357 |
+| wasm CODE | 25,564 | 6,142 |
+| wasm DATA | 9,882 | 0 |
+| `--emit object`（native） | 72,032 | 4,896 |
+| native 実行ファイル、`--no-cache` | 117,848 | 50,824 |
+
+`-Os`／`-Oz`（`build` と `run`）は、同じ IR を Clang の別の最適化レベルでコンパイルします。`examples/hello`、cache あり、byte。ここでの before は整数表示の分割の前（`-Os`／`-Oz` を加えた時点）のコンパイラです:
+
+| 成果物 | レベル | before | after |
+| --- | --- | ---: | ---: |
+| wasm32 モジュール | `-O3` | 35,714 | 6,357 |
+| wasm32 モジュール | `-Os` | 31,820 | 2,995 |
+| wasm32 モジュール | `-Oz` | 31,428 | 2,587 |
+| native `__text` | `-O3` | 13,304 | 2,604 |
+| native `__text` | `-Os` | 12,860 | 2,680 |
+| native `__text` | `-Oz` | 11,320 | 2,484 |
+
+native の実行ファイルの大きさは macOS のページ境界（16 KiB）と libSystem の stub を含み、`benchmarks/size/hello.c`（5050 を `printf` で出す C のプログラム。`-O3`）も 33,432 byte です。そのため、`-Oz` や `--strip` による section の縮小はファイルの大きさにはほとんど現れません（`--strip` は `examples/hello` で 33,896 から 33,784 byte、`-Oz --strip` は 33,752 byte）。native でサイズを比べるときは section の byte 数を見てください。同じ条件（macOS arm64、`-O3`、cache あり）の C と Rust の hello（`benchmarks/size/hello.c`・`hello.rs`）と並べると、次のとおりです。C は `printf` を libSystem から動的に呼ぶので `__text` が小さく、Tsuzuri は文字列・出力・確保のランタイムを成果物に持ちます:
+
+| プログラム | 実行ファイル | `__text` | `__const`＋`__cstring` |
+| --- | ---: | ---: | ---: |
+| C（`printf`） | 33,432 | 48 | 4 |
+| Rust（`println!`） | 434,168 | 215,420 | 25,315 |
+| Tsuzuri `examples/hello`（変更前） | 50,664 | 13,304 | 10,160 |
+| Tsuzuri `examples/hello`（変更後） | 33,896 | 2,604 | 64 |
+
+ほかの `examples/` も、整数だけを表示・読み取る分は同じ割合で減ります。main `6d15b437` のコンパイラ（before）と、この branch の P8 まで入れた release ビルド（after）の `-O3`、cache あり、byte です（`target/perf/PM08-before`・`PM08-after` の `size.jsonl`、`node benchmarks/metrics.mjs size`）。`io` と `point` は、整数の表示を使わない（`point` は `f64` を表示する）ので変わりません。`—` は suite が wasm32 の記録を取らなかった例です:
+
+| `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
+| --- | ---: | ---: | ---: |
+| `computations` | 50,280 → 33,464 | 10,812 → 304 | — |
+| `control` | 51,064 → 34,248 | 11,348 → 720 | — |
+| `currying` | 50,616 → 33,848 | 13,296 → 2,596 | 35,686 → 6,326 |
+| `functional` | 51,656 → 34,872 | 14,448 → 3,888 | 41,444 → 12,086 |
+| `hello` | 50,664 → 33,896 | 13,304 → 2,604 | 35,714 → 6,357 |
+| `polymorphism` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `tasks` | 68,680 → 51,864 | 14,084 → 3,496 | — |
+| `io` | 51,432 | 9,780 | 15,593 |
+| `point` | 50,344 | 10,844 | 74 |
+
+この表は PM08 の branch（PM05 の WASM ヒープを取り込む前）の値です。統合後の最終 commit では、wasm32 の module が PM05 のヒープと、統合時の `integer.ll` の変更（128 bit の除算をやめ、`tz.integer.digits` を 2 桁ずつにした）の分だけ変わりました（hello 6,357 → 6,833、`currying` 6,326 → 6,802、`functional` 12,086 → 10,251、`io` 15,593 → 12,956 bytes）。
+`io` も変わります（native `__text` 9,780 → 9,716、wasm32 15,593 → 12,956 bytes）。`tasks` の native `__text` は 3,496 → 3,876 bytes です。統合後の全値は、最後の「第3フェーズ統合の最終比較」の表にあります。
+`--wasm-opt`（Binaryen の `wasm-opt -Oz` を、リンク後の `.wasm` に通す）は、Binaryen 132（npm の `binaryen` パッケージの `wasm-opt`）で測りました。`wasm32`、cache あり、byte で、`wasm-opt` なしは同じレベルの値です:
+
+| プログラム | `-O3` | `-O3 --wasm-opt` | `-Oz` | `-Oz --wasm-opt` |
+| --- | ---: | ---: | ---: | ---: |
+| `examples/hello` | 6,357 | 5,196（−18.3%） | 2,587 | 2,156（−16.7%） |
+| `examples/io` | 15,593 | 13,807（−11.5%） | 5,734 | 4,583（−20.1%） |
+| `examples/functional` | 12,086 | 10,187（−15.7%） | 3,960 | 3,094（−21.9%） |
+| `examples/currying` | 6,326 | 5,169（−18.3%） | 2,555 | 2,129（−16.7%） |
+
+どの行も、import、export、メモリの大きさ、`tz_` の export の結果は元のモジュールと同じでした（`tests/size.mjs` は `TSUZURI_TEST_WASM_OPT` に本物の `wasm-opt` があるとき、同じ検査を実行します）。Binaryen は配布物に同梱しません。配布用のアーカイブが Linux と Windows で約 105〜111 MB あり、配布物が大きくなりすぎるためです。
+
+整数の変換の速さは、同じ値の列を `tz_soft_format` と `tz.integer.format` に渡す C の測定（2,000 万回、`-O3`、native）で同等でした。ただし load average が約 95 の共有機での測定で誤差が大きいため、速度の主張には使いません（0〜999 の値は 9.1 から 5.7 ns／回、全幅の `i64` は 26.3 から 24.8 ns／回）。`i128` の 10 進表示は、その後 `udiv i128` をやめて 10^9 で割る 32 bit 桁の筆算（`tz.integer.divide128`）にしたので、測り直しました（2026-10-17。Apple M1 Max、`with-lock.sh measure` の下で load average 約 6、同じ 4,096 個の値を 7 回走らせた最小値の `tz_soft_format`（`numeric.ll`）→ `tz.integer.format128`、`-O3`）。64 bit 以下の値は 22.6 から 26.4 ns／回、20 桁は 25.8 から 25.4 ns／回、39 桁は 63.2 から 57.4 ns／回です（筆算にする前の `integer.ll` は 27.4、26.6、53.9 ns／回）。1 回だけの測定で、速度の主張には使いません。静かな機械での再測定が必要です。
+
+#### 整数の `Parse` と書式指定（PM08 P8）
+
+整数の `Parse.parse` と、書式指定付きの補間（`{n:+}`・`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`）も `runtime/integer.ll` へ移しました。`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。結果と受け付ける構文は変わらず、`tests/integer_format.mjs` が Python の独立した参照（`Parse` 71,235 件、書式指定 15,200 件）、8／16 bit の全値、`numeric.ll` の `tz_soft_parse`・`tz_soft_format_spec`（同じ入力）と、native と WASM の `-O0`／`-O3`／`-Os`／`-Oz` で照合し、`tests/size.mjs` が 10 の整数型すべてをコンパイラ経由で JS の参照と照合します。float と decimal の `Parse`・精度つきの書式指定は `numeric.ll` のままです。
+
+測定条件は上と同じです。before は main `6d15b437` のリリースビルド、「整数表示の分割まで」は `7509b4f6`、after は P8 まで入れた非 LTO のリリースビルドです。`benchmarks/size/parse`（`Parse.parse` で `i32`・`i8u`・`i128u` を読み、`{n:x}` などを補間する 15 行のプログラム）、cache あり、byte で、`node benchmarks/metrics.mjs size [compiler] --out DIR --project benchmarks/size/parse` が再現します:
+
+| 成果物 | レベル | before | 整数表示の分割まで | after |
+| --- | --- | ---: | ---: | ---: |
+| native 実行ファイル | `-O3` | 84,168 | 84,248 | 34,120 |
+| native `__text` | `-O3` | 30,904 | 31,192 | 9,096 |
+| native `__const`＋`__cstring` | `-O3` | 21,044 | 21,044 | 270 |
+| native `__text` | `-Oz` | — | 25,720 | 6,764 |
+| wasm32 モジュール | `-O3` | 76,023 | 76,614 | 18,199 |
+| wasm CODE | `-O3` | 55,092 | 55,674 | 17,719 |
+| wasm DATA | `-O3` | 20,603 | 20,603 | 218 |
+| wasm32 モジュール | `-Oz` | — | 66,355 | 8,121 |
+
+PM05 の WASM ヒープを取り込んだ統合後のコンパイラでは、`parse` の wasm32 は `-O3` が 16,766 bytes（code 16,282、data 228）、`-Oz` が 9,096 bytes、native の `__text` は `-O3` が 9,156、`-Oz` が 6,808 bytes です（最後の「第3フェーズ統合の最終比較」）。
+整数を表示するだけのプログラム（`examples/hello`）の `-O3`／`-Oz` の大きさは変わりません。`-O0` では、`format` が `sign` を別の関数として呼ぶ分だけ、`__text` が 10,232 から 10,300 byte、wasm が 8,094 から 8,126 byte に増えます。使わない `spec`・`parse` の関数は、`-O0` の IR と object には残りますが、リンク時に除去されます（`--emit object -O0` の `examples/hello` は 33,856 から 37,432 byte）。
+
+`integer.ll` のすべての関数のコードは、arm64 の `-O3` で 2,904 byte（`-Oz` 2,376）、wasm32 で 3,059 byte（`-Oz` 2,406）で、使う関数だけが最適化後に残ります。10 進の先頭 19 桁を範囲の検査なしで足す高速経路は、約 200 byte のコードです。これを外した版は、長い 10 進数の読み取りが `numeric.ll`（ASCII への複写と `tz_soft_parse`）より最大で約 40% 遅くなりました（`i32` の範囲は 17.6 から 25.8 ns／回、全幅の `u64` は 29.5 から 41.9 ns／回）。
+
+読み取りと書式指定の速さは、同じ値の列を `numeric.ll` の経路（ASCII への複写と `tz_soft_parse`、`tz_soft_format_spec`）と `integer.ll` に渡す C の測定（`-O3`、native、4,096 件の文字列を繰り返し 2,000 万回）です。`with-lock.sh measure`（ほかの作業の重い実行と重ならない）の下で 1 回、load average 約 26 の共有機で測りました。1 回の測定で誤差が大きいため、速度の主張には使いません。静かな機械での再測定が必要です:
+
+| 入力 | `numeric.ll` | `integer.ll` |
+| --- | ---: | ---: |
+| `Parse` 0〜999 | 15.0 | 8.2 |
+| `Parse` `i32` の範囲 | 17.3 | 13.9 |
+| `Parse` 全幅の `u64`（19〜20 桁） | 29.1 | 21.2 |
+| `Parse` `0x` と 16 桁 | 49.5 | 33.7 |
+| `Parse` 符号つきの `i64` | 28.0 | 19.5 |
+| `{n:x}`（`i64`） | 32.8 | 18.8 |
+| `{n:+}`（`i64`） | 29.5 | 18.0 |
+
+単位は ns／回です。
+
+#### リンク時の GC（埋め込みのビルド）
+
+ランタイムを成果物キャッシュなしでモジュールに埋め込む形式（`--no-cache`、`--trap-info`。`run` は `--trap-info` が既定）の native 実行ファイルは、これまで未使用の関数をリンク時に除去していませんでした（runtime object を使う既定のビルドだけが `-dead_strip` などを渡していました）。`-g` を除くすべての native 実行ファイルのリンクに同じ除去を適用し、Linux と Windows の GNU 系リンカーでは関数とデータを別々の section に出します。条件は上の整数表示の分割と同じです。section の byte 数（`__text`／`__const`＋`__cstring`）、`-O3`、macOS arm64、変更前は整数表示の分割まで入れたコンパイラです:
+
+| プログラム | variant | `__text` 変更前 → 変更後 | `__const`＋`__cstring` 変更前 → 変更後 |
+| --- | --- | ---: | ---: |
+| `examples/point` | `--no-cache` | 40,552 → 10,844 | 20,884 → 10,096 |
+| `examples/point` | `--trap-info` | 40,288 → 11,020 | 20,996 → 10,080 |
+| `examples/io` | `--no-cache` | 27,316 → 9,780 | 329 → 301 |
+| `examples/io` | `--trap-info` | 30,132 → 12,596 | 3,241 → 3,220 |
+| `examples/tasks` | `--no-cache` | 6,008 → 3,496 | 596 → 314 |
+| `examples/tasks` | `--trap-info` | 7,836 → 5,324 | 2,660 → 2,378 |
+| `examples/hello` | `--no-cache` | 3,088 → 2,604 | 64 → 64 |
+| `examples/hello` | `--trap-info` | 3,932 → 3,400 | 991 → 991 |
+
+どの variant も、変更後の `__text` は cache ありの既定のビルド（`examples/point` は 10,844、`examples/io` は 9,780）と同じか、`--trap-info` の計装のコードの分だけ大きい値です。プログラムの出力と `--trap-info` の位置表（`.trap.json`）は変わらず、`tests/size.mjs` は `point` の埋め込み形式の実行ファイルから、使わない数値の解析（`tz_soft_parse`）が消えていることを `nm` で確かめます。Linux と Windows のリンカーでの効果は、この機械では測っていません（CI のジョブが実行ファイルの出力と動作を確かめます）。
+
+### 値のレイアウト（PM01、2026-10-16）
+
+union・`Maybe`・`Result`・record の値の大きさと、`benchmarks/layout` の最大メモリ使用量（RSS）・時間・コンパイル時間の記録です。
+実装済みの変更と計画を分けて書き、速さの主張は測定と生成コードの両方がある場合だけにします。共有 CI に大きさや速度の閾値はありません。
+値の大きさは決定的です。RSS・時間・コンパイル時間は、ほかの作業と共有のマシン（Apple M1 Max、macOS 27.0.1。Microsoft Defender と VS Code が常時動く）で取った値で、専用機の値ではありません。時間と RSS は、ほかの agent の重い処理と重ならないように lock を取って測り、その間の load average は 4〜11 でした。命令数と深い入れ子の wall time は、ほかの agent の作業が重なった 13〜25 の間に測りました。**目安**であり、正式な値は静かなマシンで取り直します。
+
+比較する release コンパイラ（`cargo build --release --locked`）は 3 つです。
+
+| 名前 | 内容 |
+| --- | --- |
+| main | `6d15b437`（第 3 フェーズの前）。値の大きさの計測は、計画の commit だけを足した `70f7c803` のコンパイラ |
+| integration | `7f41badc`。統合ブランチで、PM01 を含まない。PM01 だけの効果（時間・生成コード）はこれとの比較で見る |
+| final | `d5b91402`。この ticket（`7f41badc` を取り込み済み）。その後に取り込む PM05（`127abe27`）は含まない |
+
+#### 型の大きさ（決定的）
+
+- `benchmarks/layout/sizes.mjs` が `--emit llvm -O0` の型定義を clang の target ごとのデータレイアウトで測ります（native は Apple M1 Max の AArch64、`x86_64-unknown-linux-gnu`、wasm32）。
+  前は main、後は final のコンパイラです。Rust の列は `rustc -O` の `size_of`（rustc 1.98.1、AArch64）です。
+- niche の union は型定義を持たないので、その大きさはペイロードの型（`%tz.string` は 16、スライスでない参照は native で `ptr` の 8）で読みます。
+
+```sh
+node benchmarks/layout/sizes.mjs <compiler> benchmarks/layout --out target/perf/PM01-sizes --target native --target wasm32 --target x86_64-unknown-linux-gnu
+```
+
+| 型 | 前 | 後 | Rust（参考） | 後の型定義（native） |
+| --- | ---: | ---: | ---: | --- |
+| `Color`（3 ケース） | 4 | 1 | 1 | `i8` |
+| `Maybe<bool>` | 8 | 2 | 1 | `{ i8, i1 }` |
+| `Small`（`bool`・`i8` のペイロード） | 32 | 2 | 2 | `{ i8, [1 x i8] }` |
+| `Maybe<i64>` | 16 | 16 | 16 | `{ i8, i64 }` |
+| `Maybe<ref Point>`（native） | 16 | 8 | 8 | `ptr`（型定義なし） |
+| `Maybe<ref Point>`（wasm32） | 8 | 8 | – | `{ i8, ptr }`（`--stack-first` でアドレス 0 が有効なため、タグを残します） |
+| `Maybe<string>` | 24 | 16 | 24 | `%tz.string`（型定義なし） |
+| `Result<i64, string>` | 32 | 24 | 24 | `{ i8, [2 x i64] }` |
+| `Shape`（`f64` と `f64 * f64`） | 32 | 24 | 24 | `{ i8, [2 x i64] }` |
+| `Mixed { bool, i64, bool, i64 }` | 32 | 24 | 24 | `{ i64, i64, i1, i1 }` |
+| `Tagged { i8, i64, bool }` | 24 | 16 | 16 | `{ i64, i8, i1 }` |
+| `Point { i64, i64 }` | 16 | 16 | 16 | `{ i64, i64 }` |
+| `benchmarks/layout` の配列の合計 | 188,000,000 | 109,000,000 | – | |
+
+wasm32 と x86-64 は、`Maybe<ref Point>` の行を除いて native と同じ値です（x86-64 の LLVM 18 未満が `i128` を 8 バイトに揃えることは、`i128` を持つ union の下限で考慮しています）。
+配列の合計は、要素数 1,000,000 の 8 個の配列（`Color`・`Result<i64, string>`・`Maybe<string>`・`Mixed`・`Shape`・`Small`・`Maybe<bool>`・`Tagged`）の要素の大きさの和です。
+`Maybe<bool>` の 2 バイトは、`bool` の未使用の値を niche にしない（ticket の対象外）ためで、Rust は 1 バイトです。
+
+#### 最大 RSS
+
+`benchmarks/layout` を `-O3` で作った実行ファイルの maximum resident set size（`/usr/bin/time -l`、bytes）です。コンパイラごとに 3 回ビルドし直し、ビルドごとに 5 回測った 15 回の中央値と最小〜最大です（出力はどれも `16166714`）。
+
+```sh
+<compiler> build benchmarks/layout -O3 -o layout && /usr/bin/time -l ./layout
+```
+
+| コンパイラ | 中央値 | 最小〜最大 |
+| --- | ---: | ---: |
+| main | 165,871,616 | 165,855,232〜165,888,000 |
+| integration | 165,871,616 | 165,871,616〜165,904,384 |
+| final | 110,854,144 | 110,854,144〜110,886,912 |
+
+final は main・integration より 55,017,472 bytes（33.2%）少なくなりました。配列の要素の合計（188,000,000 → 109,000,000 bytes）の 79,000,000 bytes（42.0%）より小さいのは、基準では全要素が `None` の `Maybe<string>` の配列（24,000,000 bytes）が RSS に現れなかったためです。
+
+- 最小の `examples/hello` の RSS は 1,671,168 bytes（プロセスの基本分）です。基準の 165,871,616 は、188,000,000 から 24,000,000 を引いた値にこの 1.67 MB を足した値に近く、final の 110,854,144 は 109,000,000 にこの 1.67 MB を足した値に近いままです（差はどちらも約 0.2 MB）。
+- 確かめるために、全要素を `Some "x"` にした版（`options` の条件を `i >= 0` にした `benchmarks/layout` の複製。出力は `17166714`）を main と final で測りました（3 回）。main は 205,963,264〜206,012,416、final は 126,926,848〜126,943,232 bytes で、差は 79.0 MB、配列の要素の合計の差と一致します。
+  `Some "x"` の文字列の確保（1 個約 16 bytes、100 万個）が加わるので、どちらも全要素が `None` の版より 16 MB 余分に増えます。
+- 基準の `None` は全ビットが 0 で、その配列のページは書き込まれずに常駐しませんでした（上の 2 つの測定からそう読めます。書き込みが省かれる仕組みそのものは調べていません）。変更後の `None` は `{ ptr null, i64 -1 }` で 0 ではないので、配列は書き込まれて常駐します。全要素が `None` の `Maybe<string>` の配列だけを見ると、基準で 0 だった常駐が 16,000,000 bytes に増えます。この workload では、ほかの配列の縮小がそれを上回ります。
+
+#### 時間
+
+`benchmarks/run-computations.mjs`（`benchmarks/computations/Main.tz`。同じ process の中で C++・Rust の参照も測る）で、PM01 を含まない integration と final を比べました（native `-O3`。clang 23.1.1、Node.js 20.19.6）。runner は `--baseline` に渡したコンパイラの computation 式の版（`ce`）を、現在のコンパイラの `ce`・`direct`（直接書いた版）と同じ process で交互に測ります。
+
+```sh
+node benchmarks/run-computations.mjs <final> --baseline <integration>   # 順向き 3 回
+node benchmarks/run-computations.mjs <integration> --baseline <final>   # 逆向き 3 回
+# direct の比較: native.cpp の WORKLOAD の `before_tz_ce_##name` を `before_tz_direct_##name` にした runner の複製で、順向きを 3 回
+```
+
+`ce` は順向きと逆向きの 6 run の、`direct` は上の複製の 3 run の、同じ process の組から比 final / integration を作りました。別々の run の値を比べると、機械の状態の差が混ざります（同じコードの C++ の参照が、順向きの run で逆向きより 0.5〜1.0% 遅く出ました）。
+表の ms は final の、run ごとの中央値の中央値です（1 回の呼び出しの時間）。比は中央値と、最小〜最大です。
+
+| workload | `ce` final（ms） | `ce` の比 | `direct` final（ms） | `direct` の比 |
+| --- | ---: | ---: | ---: | ---: |
+| `bind` | 3.190 | 1.000（0.996〜1.004） | 3.249 | 0.997（0.993〜1.000） |
+| `checked` | 5.207 | 1.001（0.992〜1.004） | 5.203 | 1.002（1.001〜1.004） |
+| `delayed` | 1.297 | 1.000（0.997〜1.003） | 1.317 | 1.002（0.996〜1.004） |
+| `array_for` | 0.005611 | 1.000（0.988〜1.005） | 0.005678 | 1.002（0.998〜1.006） |
+| `array_bind` | 0.005559 | 0.998（0.994〜1.009） | 0.005658 | 1.000（0.994〜1.004） |
+| `owned_capture` | 0.02631 | 0.999（0.993〜1.005） | 0.02674 | 1.002（0.998〜1.011） |
+| `std_option` | 4.490 | 1.001（0.997〜1.013） | 5.175 | 1.003（0.999〜1.010） |
+| `std_result` | 5.213 | 1.003（0.991〜1.004） | 5.299 | 0.997（0.996〜1.001） |
+| `std_option_owned` | 0.1756 | 1.001（0.991〜1.013） | 0.1777 | 0.996（0.995〜1.010） |
+| `std_option_length` | 3.892 | 1.002（1.000〜1.008） | 3.943 | 1.003（0.996〜1.007） |
+
+- 20 の組の中央値はすべて 0.996〜1.003、最小〜最大も 0.988〜1.013 に収まります。時間は変わりません。ticket の停止条件 10（変更後が変更前より遅い種目）に当たるものはありません（比が最も大きい組で 1.013 で、`direct` で 3 回とも 1 を超えたのは `checked` の 1.001〜1.004 だけ）。`std_option` の `direct` は前後とも C++ の約 1.14 倍で、PM01 より前からある差です（`ce` は 1.00 倍）。
+- `std_option`・`std_option_length`（`Maybe<i64>`）と `std_result`（`Result<i64, i64>`）の `ce`・`direct` の 6 つは、`-O3` の機械語が前後で同一でした（下のコマンドの `.s` を、ラベルを正規化して関数ごとに比べた）。型の大きさ（16 bytes）も同じで、時間が変わらないのはこのためです。
+  `std_option_owned`（`Maybe<string>`）の機械語は変わり（`ce` は 69 行から 67 行。定数のタグ `mov w8, #1`・`cbnz` の検査が、長さの符号の検査 `tbz x8, #63` に代わる）、native の時間は 1.00 倍でした（ループに `malloc`・`free` の呼び出しが残っています）。
+- wasm32（同じ runner の `wasm` 欄。15 sample の中央値の比）は、`std_option_owned` だけが、順向きでも逆向きでも final の所要時間が integration の 95.3〜96.7%（約 4% 速い）で、ほかは 3% 以内でした。原因（wasm32 の生成コード）は調べていません。
+
+```sh
+<compiler> build benchmarks/computations --emit llvm -o x.ll
+clang -O3 -fPIC -fno-fast-math -ffp-contract=off -Wno-override-module -S x.ll -o x.s
+```
+
+#### コンパイル時間
+
+`<compiler> build <project> --emit llvm -O0 -o out.ll` の wall time（`/usr/bin/time -p`、秒）の中央値と最小〜最大です。コンパイラごとに 3 回、1 回に 5 回の 15 回で、3 つのコンパイラを交互に実行しました。
+
+| project | main | integration | final |
+| --- | ---: | ---: | ---: |
+| `benchmarks/computations` | 1.10（0.96〜1.32） | 1.08（0.97〜1.70） | 1.09（0.99〜1.27） |
+| `benchmarks/layout` | 1.04（0.95〜1.39） | 1.09（0.95〜1.51） | 1.04（0.97〜1.33） |
+| `tests/fixtures/value_layout`（features の suite は 969 case） | 1.33（1.25〜1.57） | 1.34（1.25〜2.63） | 1.36（1.23〜1.63） |
+| `tests/fixtures/record_layout` | 1.06（0.99〜1.22） | 1.10（0.99〜1.47） | 1.10（0.98〜1.64） |
+| `examples/hello` | 1.05（0.95〜1.20） | 1.02（0.93〜1.22） | 1.00（0.90〜1.15） |
+| `examples/point` | 0.96（0.91〜1.28） | 0.98（0.90〜1.15） | 0.95（0.86〜1.05） |
+
+どの project も、3 つのコンパイラの中央値の差は 0.04 秒以内で、範囲が重なります。差は雑音の内です。
+
+wall time は機械の load に左右されるので、同じコマンドの命令数（`/usr/bin/time -l` の `instructions retired`、百万、3 回の中央値）も測りました。深く入れ子にした型（`Maybe` を 100 重、ペイロードの両方が自分自身である `Both<'a>` を 12・16・18 重）を含みます。
+入れ子の入力は、`union Both<'a> = L of 'a | R of 'a`、`def f :: i64 -> Both<Both<…<i64>…>>`（n 重）、`fn f x = L (L (… (L 1)…))`、`export def answer :: i64`、`fn answer = match f 1 with | L _ -> 1 | R _ -> 0` の形です（`Maybe` の版は `Maybe<…>`・`Some (…)`・`Some _ -> 1 | None -> 0`）。
+
+| 入力 | main | integration | final | final / integration |
+| --- | ---: | ---: | ---: | ---: |
+| `Maybe` の 100 重 | 13,377 | 13,532 | 13,563 | +0.2% |
+| `Both` の 12 重 | 3,641 | 3,656 | 3,676 | +0.5% |
+| `Both` の 16 重 | 8,545 | 8,695 | 8,594 | −1.2% |
+| `Both` の 18 重 | 24,520 | 25,222 | 25,121 | −0.4% |
+| `examples/hello` | 3,147 | 3,084 | 3,093 | +0.3% |
+| `benchmarks/computations` | 3,182 | 3,202 | 3,215 | +0.4% |
+| `benchmarks/layout` | 3,072 | 3,102 | 3,107 | +0.2% |
+| `tests/fixtures/value_layout` | 6,467 | 6,393 | 6,459 | +1.0% |
+| `tests/fixtures/record_layout` | 3,390 | 3,613 | 3,426 | −5.2% |
+
+final と integration の差は −5.2%〜+1.0%、final と main の差は −1.7%〜+2.5% です。`record_layout` の integration は 3 回が 3,462〜3,659 とばらつきます。`Both` の入れ子の深さに対する増え方（12 → 16 → 18 重で約 2.3 倍、2.9 倍）は 3 つのコンパイラで同じで、PM01 は入れ子に対して余分な作業を足していません（`union_layout`・`record_slots` の結果を target ごとの memo に入れています）。
+`Both` の 16 重の wall time を 3 回測ったとき final が 2.6 秒と 3.1 秒の回がありましたが、命令数は同じで、ほかの agent の作業が重なった（load average 13〜25）ためです。
+
+#### 生成コードの確認
+
+`benchmarks/layout` を、PM01 を含まない integration と final のコンパイラで IR と `-O3` の実行ファイルにして数えました（Apple clang 21、LLVM 21 の `llvm-objdump`）。
+`--emit llvm` の出力は最適化レベルによらず同じ（`-O0` と `-O3` で一致）で、最適化は clang が行います。IR の行は出力した IR の数、機械語の行は `-O3` の実行ファイルの数です。
+
+```sh
+<compiler> build benchmarks/layout --emit llvm -O0 -o layout.ll
+<compiler> build benchmarks/layout -O3 -o layout
+llvm-objdump -d --no-show-raw-insn layout | grep -cw ldrb
+size -m layout        # Section __text
+```
+
+| 数えるもの | integration | final |
+| --- | ---: | ---: |
+| 出力した IR の `zext i8 `（狭いタグを `i32` に広げる） | 5 | 12 |
+| 出力した IR の `load i8, ptr` | 14 | 20 |
+| 出力した IR の `icmp slt i64 %v, 0`（長さが負の niche） | 1 | 3 |
+| 出力した IR の `icmp eq ptr`（null の niche など） | 6 | 7 |
+| `-O3` の機械語の `ldrb` | 2 | 6 |
+| `-O3` の実行ファイルの `__text`（bytes） | 1,760 | 2,032 |
+
+- final の IR には `Maybe[string]`・`Maybe[ref[Main.Point]]` の型定義がありません（niche。integration は 23 か所に現れます）。record は `Mixed = { i64, i64, i1, i1 }`、`Tagged = { i64, i8, i1 }` で、`m.b`・`m.d`・`t.value` の読み出しは `getelementptr … i32 0, i32 0`・`i32 0, i32 1`・`i32 0, i32 0` です。
+- `-O3` の機械語では、`Color`・`Small`・`Maybe<bool>` のタグが 1 byte の `ldrb` + `cmp w, #n` で読まれます（`ldrb w11, [x19, x10]; cmp w11, #0x3` など）。integration は 2 つ（うち 1 つは数字を出力する `putchar` の前の読み出し）でした。
+  `__text` が 272 bytes 増えるのは、狭いタグの読み出しと niche の比較が増える分です。値が小さくなる効果は、時間でなく RSS（上）に現れます。
+- `--emit llvm` の出力は main と integration で同じ数です（5・14・1・6）。`ldrb` は +4、`__text` は +272 bytes で、PM08 などが入る前の build を main と比べた古い計測でも +4 と +312 bytes（12,608 → 12,920）でした。integration の実行ファイルが小さい（`__text` が 1,760）のは、PM08 の整数表示の分割など PM01 以外の変更です。
+
+#### 期待と実測
+
+| 項目 | 期待（ticket の `## 目標と指標` と着手時の再検討） | 実測 |
+| --- | --- | --- |
+| `Color`・`Maybe<bool>`・`Small` | 1・2・2 bytes | 1・2・2 |
+| `Maybe<string>` | 24 → 16 bytes | 24 → 16 |
+| `Result<i64, string>`・`Shape` | 32 → 24 bytes | 32 → 24 |
+| `Mixed`・`Tagged` | 32 → 24、24 → 16 bytes | 32 → 24、24 → 16 |
+| `Maybe<ref Point>` | native 16 → 8、wasm32 8 → 4 | native 16 → 8。wasm32 は 8 のまま（niche は native だけ。承認済みの変更） |
+| `Maybe<i64>`・`Point` | 変わらない（16・16） | 16・16 |
+| 配列の合計 | 188,000,000 → 109,000,000 bytes | 計算値のとおり。RSS は 165,871,616 → 110,854,144（−33.2%）。基準の全 `None` の配列が常駐していなかったため、計算値の減少（−42.0%）より小さい |
+| 時間（native） | 変わらない（`Maybe<i64>`・`Result` の 16 bytes は同じ） | `ce`・`direct` の 10 種目とも比（final / integration）の中央値は 0.996〜1.003。`Maybe<i64>`・`Result` の機械語は同一 |
+| 時間（wasm32） | 主張しない | `std_option_owned` が約 4% 速い（原因は未調査）。ほかは 3% 以内 |
+| コンパイル時間 | 記録する（合否にしない） | wall time・命令数とも雑音の内。深い入れ子でも同じ増え方 |
+
+`Maybe<bool>` の 2 bytes は、`bool` の未使用の値を niche にしない（ticket の対象外）ためで、Rust は 1 byte です。時間の効果は、PX02 の実アプリ型の workload（`{ i64u, i64u }` の record と再帰 union だけを持つ）には期待しておらず、測っていません。
+
+#### 実装済みと計画
+
+- 実装済み: タグの幅（1・2・4 バイト）、`General` の領域（最大アラインメントの整数の配列）、niche（長さが負の `string`・`utf8string`・配列、native の参照）、record のフィールドの格納順、
+  DWARF・LLDB・natvis の対応。計測は上の表のとおりです。
+- 計画（未実装）: タプルの並べ替え（`_perfs/_completed/PM01-value-layout.md` の「Phase 3b を実施しない根拠」）、`bool` の未使用の値や関数値のコードポインターの niche、
+  ペイロードを持つケースが 2 つ以上の union の niche、wasm32 の参照の niche、wasm32 向けの `storage_layout`。
+- 未了: 専用機での時間・RSS の再計測（上の値は共有のマシンで、取り直す予定）。PM05 を取り込んだ後（`--allocator small`、WASM のヒープ）の PM01 の効果は測っていません。
+- 生データ（コミットしない。作業ツリーの `target/perf/`）: `PM01-sizes-before`・`PM01-sizes-final2`（型の大きさ）、`PM01-measure2`・`PM01-measure3`（RSS・時間・コンパイル時間。`measure2.sh`・`measure3.sh` が手順）、`PM01-final/`（生成コード `codegen`、命令数 `instr.txt`、全 `Some` の版 `layout-some`、`direct` の同一 process の比較 `direct-run`、深い入れ子 `deep`）。
+
+### ヒープ（PM05）
+
+PM05 は、WASM の `system` ヒープの作り直し（Phase 1）、native の `--allocator small`（Phase 2）、native の既定を `small` にするかの判断（Phase 3）の記録です。どの数値も、ほかの作業と共有のマシンで、専用機ではありません。**目安**であり、正式な値は静かなマシンで取り直します。
+
+#### WASM のヒープ（Phase 1）
+
+WASM の `system` ヒープを、境界タグと容量別のリスト、解放した小さなブロックのキャッシュ、終端のブロックのその場の拡張、`memory.copy` による移動に作り直しました（設計は [architecture.md](architecture.md)）。比較対象は 2 つで、直前の main（6d15b437）の compiler（SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`、以下 baseline）と、大きな穴の規則を直す前（`a42fe7a7`）の compiler（SHA-256 `b0e2c20fcfda303f6dc2578a6d693b35631a9138e4b8f327aff9ea91a47c1665`、以下 previous）です。`benchmarks/run-heap.mjs` が 2 つのコンパイラで同じ入力を wasm32 `-O3` に作り、Node.js で同じ参照値と照らしながら、1 sample ごとに順序を入れ替えて走らせます。この節の表は 2026-10-17 に、レビューの修正（穴の探索と上限）を入れた compiler（current、コミット `3ccac597` の木の release build、SHA-256 `c06b9551b53065960fb55a38ad27e10aa9e7ca05aaac893326f08adb4ad0f3fd`）で取り直したものです。
+
+条件の限界: Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node.js 20.19.6。`with-lock.sh measure` で全 slot を取って測りましたが、ほかの agent の作業が直前まで続いていて、計測中の 1 分の load average は 19〜20 でした（専用機の静かな状態ではありません）。9 samples（1 回の warm-up のあと、1 sample ごとに順序を入れ替えます）の最小値と中央値で、生データは `target/perf/PM05-t3/run-heap-vs-main-final.json` と `run-heap-vs-previous-final.json`（コミットしません）です。load average が 5 だった別の回（コミット `f868b2c6` の compiler、SHA-256 `664e467c9c1b…`）の値とは、どの比も ±0.03 以内で一致しました。**この表は目安**で、正式な値は調整担当が取り直します。
+
+| workload | baseline 最小 ms | current 最小 ms | 比（最小） | 比（中央値） |
+| --- | ---: | ---: | ---: | ---: |
+| `small_churn`（4,000 slots、サイズ 8〜48 B、40 万回の無作為な置き換え） | 33.7 | 5.63 | 0.17 | 0.17 |
+| `mixed_churn`（2,000 slots、サイズ 8〜1,600 B、20 万回） | 233 | 38.9 | 0.17 | 0.17 |
+| tokenize 60,000 | 4.16 | 4.33 | 1.04 | 1.02 |
+| format_join 30,000 | 8.24 | 8.09 | 0.98 | 0.97 |
+| csv_aggregate 60,000 | 14.7 | 14.6 | 0.99 | 1.00 |
+| record_sort 60,000 | 5.68 | 5.49 | 0.97 | 0.98 |
+| tree_transform 128 | 4.99 | 4.54 | 0.91 | 0.91 |
+| binary_trees 1,000 | 7.60 | 6.95 | 0.91 | 0.96 |
+| graph_bfs 50,000 | 2.72 | 2.39 | 0.88 | 0.91 |
+| `vec_growth`（20 万要素の Vec を 20 回） | 7.23 | 11.3 | 1.56 | 1.53 |
+
+無作為な置き換えでは、以前のヒープは解放のたびにアドレス順の空きリストを先頭から探していたので、空きブロックの数に比例して遅くなっていました。新しいヒープは容量別のリストで一定時間です。PX02 の app は、最小値で 0.88〜1.04 倍、中央値で 0.91〜1.02 倍（同じか少し速い）です。大きな穴の探索を直す前の compiler（previous）との比は、どの workload も 0.96〜1.02 倍（中央値）で、差は揺れの範囲です。メモリの大きさと、`--capacity` で見つけた最大のサイズは、3 つの compiler で同じです。
+
+`vec_growth` は Node 20.19.6 では時間が悪化して見えますが、差はヒープの関数にありません。（Node 24.21.0 の静かな機械で 5 回測り直すと、比は 0.92〜0.95 で、悪化は再現しません。最後の「第3フェーズ統合の最終比較」。以下は Node 20 の V8 の値です。）CPU profile では、ヒープ関数の自己時間は 45 ms → 2.6 ms に減り、`tz_vec_growth` 自身が 304 ms → 504 ms に増えました（どちらも 40 回の合計）。baseline の IR に新しいヒープのテキストを入れても、新しい IR に baseline のヒープを入れても、遅さはヒープのテキストに従い（baseline の IR とヒープ 9.2 ms、新しい IR と baseline のヒープ 9.3 ms、新しい IR と新しいヒープ 14.6 ms、baseline の IR と新しいヒープ 15.0 ms）、LLVM が出す `tz_vec_growth` の WASM は、ヒープによって push ループの誘導変数が 1 つ違います。V8 TurboFan が出した機械語では、遅い側の push ループの中にスタックへの退避と読み戻しが入っていました。アロケータの設計ではなく生成コードの揺れで、別のカーネルでは逆に出ることもあります（この切り分けの実験は、穴の規則を足す前のヒープで取りました。取り直した比は 1.53〜1.56 で、同じ傾向です）。メモリは 5.06 → 3.06 MiB に減ります（以前は 2 倍に伸ばすたびに新しいバッファへ移して古い領域が残り、新しいヒープは終端でその場で伸ばします）。
+
+ヒープだけの測定（C のドライバーで `allocate`／`resize`／`release` を呼ぶ、リポジトリには入れていない使い捨てのもの、中央値、load の下）:
+
+| パターン | baseline ms | current ms | 比 |
+| --- | ---: | ---: | ---: |
+| 32 B を 2 万個 確保して同じ順に解放（50 回） | 8.19 | 8.36 | 1.02 |
+| 32 B を 2 万個 確保して逆順に解放（50 回） | 7.99 | 7.12 | 0.89 |
+| 32 B の確保と解放を 100 万回 | 6.07 | 7.48 | 1.23 |
+| 24 B のノードの二分木を作って解放（深さ 14、40 回） | 43.6 | 32.2 | 0.74 |
+| 48 B のノードの二分木を作って解放（深さ 12、160 回） | 41.4 | 27.4 | 0.66 |
+| 無作為な置き換え（4,000 slots、8〜48 B） | 77.2 | 9.83 | 0.13 |
+| 無作為な置き換え（2,000 slots、8〜1,600 B） | 326 | 59.9 | 0.18 |
+| 40 B の先入れ先出し 4,000 slots、40 万回 | 2.06 | 2.23 | 1.08 |
+| Vec の倍々の拡張（16 B → 2 MiB、20 回） | 0.86 | 0.01 | 0.02 |
+| 移動（隣に使用中のブロック）64 B × 20 万回 | 6.27 | 5.54 | 0.88 |
+| 移動 1 KiB × 10 万回 | 38.4 | 6.13 | 0.16 |
+| 移動 16 KiB × 2 万回 | 113 | 7.45 | 0.07 |
+| 移動 256 KiB × 2,000 回 | 312 | 24.2 | 0.08 |
+
+遅くなるパターンも残ります。528 バイトより大きいブロックを確保してすぐ解放する繰り返し（`pairs` の 1,000 B で最小値 4.61 → 8.90 ms、約 1.9 倍、1 組あたり約 4 ns の差）は、終端のブロックを毎回戻して取り直す分だけ命令が多いためです。ブロックが 1 KiB を超える確保は、中身を埋める費用のほうがはるかに大きく、アプリでは差が見えません。
+
+成果物の大きさ（`-O3`、コンパイラの出力そのまま。ヒープだけは `heap-wasm.ll` と wrapper 3 つを clang `-O3` で wasm32 にして wasm-ld `--strip-all`）:
+
+| 対象 | baseline bytes | previous bytes | current bytes |
+| --- | ---: | ---: | ---: |
+| ヒープだけ（`allocate`／`resize`／`release` の wrapper 付き、wasm32） | 1,817 | 3,815 | 4,025 |
+| `benchmarks/control` | 11,357 | 11,261 | 11,471 |
+| `benchmarks/apps` | 91,625 | 81,393 | 81,597 |
+| `benchmarks/heap` | 4,275 | 5,358 | 5,568 |
+
+ヒープ単体は 2.2 KiB 大きくなりますが、以前は `@tz.alloc`／`@tz.free` の全体が呼び出し箇所ごとにインライン化されていたのに対し、新しいヒープはキャッシュの出し入れだけをインライン化するので、確保・解放の多い成果物では小さくなります（apps は 10 KB 小さい）。穴の規則（previous の列）で約 120 バイト、その探索の修正（current の列）でさらに約 210 バイト増えました。この表の以前の版（ヒープだけ 3,699、control 11,143、apps 81,275、heap 5,240）は、穴の規則を足す前のヒープで取ったもので、規則の分が入っていませんでした。
+
+メモリの大きさ（`memory.buffer.byteLength`、ヒープの最大値のページ丸め。PX02 の app は両方とも同じ値）: tokenize 7.19 MiB、format_join 6.81、csv_aggregate 7.50、record_sort 3.81、tree_transform 1.19、binary_trees 1.13、graph_bfs 7.56、`vec_growth` は 5.06 → 3.06 MiB。`--capacity` で見つけた「上限の 16 MiB に収まる最大のサイズ」も、10 個の app すべてで同じでした（tokenize 132,861、format_join 59,049、csv_aggregate 132,861、record_sort 199,292、graph_bfs 88,574 など）。断片化する無作為な置き換えでは、20,000 slots × 8〜800 B で 10.31 → 10.00 MiB、100,000 slots × 8〜160 B で 13.38 → 12.63 MiB（約 3〜6% 小さい）、500 slots × 8〜16 KB で 5.75 → 5.81 MiB（約 1% 大きい）です。大きな穴の規則を直す前（previous）は、最後の 500 slots × 8〜16 KB が 16.00 MiB（上限）でした（次の節）。
+
+matrix スイートで見つけた退行と修正: 作り直した最初のヒープは、`features.mjs matrix` の `parallel_mismatches64(3, 500, 1500, 1, 10)` を `-O0` で unreachable（確保失敗）にしました。解放した 6 MB のブロック（大きな穴）から 36 KB の要求を先頭一致で切り出すので、次の 6 MB の要求が穴に収まらず、ヒープが上限の 16 MiB を超えたためです。以前のヒープは、直前の呼び出しが残した状態のおかげで通っていただけで、新しいインスタンスで同じ呼び出しをすると同じように失敗します。穴から切り出すと残りが 64 KiB 以上で、しかも要求の 4 倍以上になるブロックは飛ばし、ほかに収まるブロックがなければ終端を延ばせる間は終端から返すようにしました（上限の手前で延ばせなければ、これまでどおり穴から切り出します。飛ばす範囲と探索は、次の節で直しました）。この呼び出しをコンパイルした実プログラムを新しいインスタンスから走らせると、以前のヒープ（baseline の compiler）は unreachable で止まり（止まった時点で 12.63 MiB）、規則のあるヒープ（previous と current）は `-O0`・`-O3` とも 12.69 MiB で通ります（最初の修正のときの、確保・解放の列を再生した使い捨ての計測では、ピークは 17.38 MiB から 11.75 MiB でした）。`tests/wasm_heap.mjs` の `holeCases` が、切る場合と切らない場合、64 KiB と 4 倍の境界、終端を延ばせない場合を、手で導いたアドレスで検査します。
+
+#### レビューで見つけた問題と修正（穴の規則、2026-10-17）
+
+独立したコードレビューが、上の規則の 2 つの欠陥を見つけました（どちらも wasm32・wasm64・threads の同じ heap のテキストです）。
+
+1. 規則は、最初に収まるブロックだけを見ていました。その穴が大きいと、後ろにちょうど収まる穴があっても、要求は終端を延ばして返され、後ろの穴は上限に届くまで使われません。大きな一時配列を解放したとき、その後ろに小さなブロックが生き残っていると（`new` した配列を解放する前に、Vec に積む配列を作る繰り返しなど）、穴は生き残ったブロックに挟まれて合体できず、繰り返しごとに穴が 1 つ増えました。
+   - ライブラリ単体の再生（0.3 MB と 2.4 MB の一時ブロックを交互に確保し、48 B のブロックを 1 つずつ残し、一時ブロックを解放する）: 以前のヒープ（`c6864cf5`）は 6,000 回で 4.69 MiB、previous は 100 回で 15.94 MiB、3,292 回で確保失敗、修正後は 3.06 MiB。
+   - Tsuzuri のプログラム（`tests/fixtures/heap_churn` の `churn`: 30 万要素と 3.75 万要素の配列を交互に作り、6 要素の配列を Vec に積む。`wasm32`）: baseline は 20,000 回まで 5.63 MiB、previous は 100 回で 15.94 MiB、3,000 回までに unreachable、修正後は 100 回で 3.88 MiB、6,000 回で 4.25 MiB、20,000 回で 5.56 MiB（積んだ配列の分だけ増えます）。
+   - 一時配列（0.2〜1.5 MB、1 step に 1〜2 個）の間に 40〜240 B のブロックを 1,000 個保つ乱数列（60 seed、4,000 step）: 上限を使い切った seed は、baseline 0、previous 21、修正後 0（ヒープの最大は 6.81、16.00、10.25 MiB）。
+2. 規則は、飛ばした穴を、その大きさの要求が来るかどうかに関わらず、上限に届くまで取っておきました。数十 KB の確保と解放を無作為な順に繰り返すだけのプログラムでも、合体でできた 64 KiB 以上の穴は取っておかれ、ヒープは上限まで伸びます（ここまでの文書の数値は、この規則を足す前に取ったので、これを示していませんでした）。`benchmarks/heap` の `steady_churn`（`-O3`、wasm32）のメモリの大きさ:
+
+| slots × サイズ（回数） | baseline | previous | current |
+| --- | ---: | ---: | ---: |
+| 20,000 × 8〜800 B（40 万） | 10.31 MiB | 10.00 | 10.00 |
+| 100,000 × 8〜160 B（40 万） | 13.38 | 12.63 | 12.63 |
+| 500 × 8〜16,000 B（40 万） | 5.75 | 16.00 | 5.81 |
+| 100 × 8〜64,000 B（1 万） | 5.44 | 16.00 | 5.44 |
+| 200 × 8〜32,000 B（2 万） | 5.06 | 16.00 | 5.00 |
+| 60 × 8〜160,000 B（2 万） | 8.19 | 16.00 | 8.31 |
+| 500 × 8〜16,000 B（5 万） | 5.69 | 16.00 | 5.75 |
+| 1,000 × 8〜8,000 B（5 万） | 5.56 | 8.25 | 5.63 |
+
+   最初の修正（最初に飛ばしたブロックを覚えて探索を続ける）だけでは、この表の previous の列はほとんど変わらず（上限のまま）、500 × 16 KB の 5 万回が 12.81 MiB、1,000 × 8 KB の 5 万回が 5.94 MiB に減っただけでした。
+
+修正は 2 つです。(1) 探索は、飛ばしたブロックを覚えて先へ進み、そう切り出さずに済む最初のブロックがあればそれを使います。なければ終端を延ばせる間は終端から返し、延ばせなければ、覚えた最初のブロックから切り出します（`@tz.heap.alloc_slow`）。(2) 飛ばすのは、最近の最大の要求（`@tz.heap.largest`。大きいブロックのリストを探した要求の容量の最大で、探すたびに 1/64 を忘れます）の 2 倍までのブロックだけです。それより大きい穴は、最近のどの要求も近づいていないので、普通のブロックと同じに切り出します。最大の要求をただの最大値にすると、プログラムの最初に 1 回だけ大きな要求があれば効かなくなるので、減衰を入れました（減衰のない試作では、最初に 2.4 MB の要求が 1 回あったあとの `steady_churn`（100 × 64 KB の 1 万回、200 × 32 KB の 2 万回、500 × 16 KB の 5 万回）が 12.63、10.31、10.63 MiB に戻りました。使い捨ての再生で確かめ、リポジトリには入れていません）。
+
+残る制限: (a) 一時配列が 0.2〜2.5 MB の乱数で、2,000 個の小さなブロックを保つ乱数列（60 seed）は、baseline が 0 seed で確保失敗するのに対し、修正後も 2 seed（8、32）が確保失敗し、ヒープは最大 15.88 MiB まで伸びます（baseline は 11.19 MiB）。穴を取っておくのは、同じ大きさの要求が繰り返すプログラムを助ける代わりに、大きさが連続的に散るプログラムでヒープを大きくする取り引きで、この規則の性質です。(b) 600 B〜6 KB のブロックを保つ同じ列では、ヒープの最大が baseline 7.4 MiB に対して 11.9〜13.3 MiB になります（確保失敗はありません）。(c) 探索は、飛ばしたブロックしかないとき、リストの最後まで見ます（空きブロックの数に比例）。
+
+`tests/wasm_heap.mjs` の新しい検査は、前のヒープで失敗し、修正後に通ります。`holeCases` の複数の穴（後ろの穴が使われる、最初に飛ばした穴から切り出す、終端を延ばせないとき、小さい要求も穴から離れる）と最大の要求の上限（`probe_largest` の 100016 → 98454 → 96916 → 200016、最後の要求が 101616 なら穴 200032 は残り 101600 なら切られる、201600 は残り 201632 は切られる、44 回目の小さな要求で穴が切られる）、`accumulationCases`（穴の数が増えない）、`boundedLiveCases`（上の乱数列、12 seed）、`steadyChurnCases`（上の表の 3 設定を、最初に 2.4 MB の要求があった場合とない場合で）です。`tests/features.mjs` の `heap_churn`（`churn` と `steady_churn` を、wasm32 の `-O0`・`-O3` と native で）が、同じ形のプログラムを compiler 越しに検査し、WASM のメモリが 8 MiB 以内であることを確かめます（`steady_churn` の期待値は `benchmarks/heap/reference.mjs` の独立した参照）。変異は各 heap で 39 通り（しきい値 12、飛ばす・覚える 11、最大の要求の上限と減衰 16）を入れ、37 通りを検出しました（残る 2 通りは等価です。`rest ≥ 65535` は残りが 16 の倍数なので `65536` と同じ、`needed ≥ fading` と `needed > fading` は等しいときに同じ値になります）。
+
+#### native の `--allocator small`（Phase 2）
+
+`--allocator small` は、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保を C ライブラリの `malloc` に任せる native 専用の allocator です（設計は [architecture.md](architecture.md)、使い方は [スタックとヒープ](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator)）。`benchmarks/run-small.mjs` は、同じコンパイラで `benchmarks/apps` を `--allocator system` と `small` の object にし、同じ host（`benchmarks/apps/host.c`）で、ラウンドごとに順序を入れ替えて走らせます。時間は calibrated repeats の CPU 時間、ピーク RSS は workload ごとに別のプロセスで `/usr/bin/time` から読みます。両方のチェックサムは一致します。この節の数値は release コンパイラ（コミット `b8aed3c0`）で取り、生データは `target/perf/PM05-after/run-small-macos.json`（コミットしません）です。
+
+条件の限界: Apple M1 Max、macOS 27.0.1、Homebrew LLVM 21（clang 21）。計測中のホストの load average は 20〜40 で、専用機でも、`with-lock.sh measure` の下でもありません（ほかの作業が全 slot を占有していて取れませんでした）。5 ラウンド（各 15 samples）、RSS は 9 回の中央値です。**この表は目安**で、正式な値は静かなマシンで取り直します。Linux は、同じ M1 Max の上の Docker の仮想マシン（linuxkit 6.6.12、arm64）で、Ubuntu 24.04、clang 20.1.2、glibc 2.39 を使いました。IR は macOS のコンパイラが `--target aarch64-unknown-linux-gnu` で出し、コンテナの中で `clang-20 -O3` でコンパイルして同じ host（`-O3`）とリンクしました（手順は `benchmarks/run-small.mjs` と同じ。スクリプトはリポジトリに入れていません）。仮想マシンの中の load average は 2 でも、ホストが忙しいので、揺れが大きい値です。
+
+macOS（arm64、`-O3`、`--cpu generic`）:
+
+| workload | size | system ms（最小 / 中央 / 最大） | small ms（最小 / 中央 / 最大） | small / system（中央、最小） | system RSS MiB | small RSS MiB |
+| --- | ---: | --- | --- | --- | ---: | ---: |
+| tokenize | 200000 | 13.44 / 13.97 / 19.06 | 8.654 / 8.949 / 10.38 | 0.641, 0.644 | 16.28 | 16.23 |
+| format_join | 100000 | 19.20 / 19.64 / 23.07 | 15.88 / 16.37 / 21.24 | 0.834, 0.827 | 17.94 | 17.95 |
+| csv_aggregate | 100000 | 26.82 / 28.26 / 36.36 | 16.44 / 17.45 / 22.47 | 0.618, 0.613 | 9.52 | 9.52 |
+| map_count | 200000 | 9.507 / 9.988 / 12.33 | 9.453 / 9.871 / 14.22 | 0.988, 0.994 | 1.69 | 1.84 |
+| record_sort | 200000 | 10.83 / 11.43 / 13.17 | 10.76 / 11.05 / 13.50 | 0.967, 0.993 | 10.89 | 10.89 |
+| tree_transform | 256 | 20.23 / 21.12 / 26.34 | 7.836 / 8.444 / 10.89 | 0.400, 0.387 | 1.86 | 1.83 |
+| binary_trees | 2000 | 26.28 / 26.77 / 33.01 | 12.00 / 13.01 / 16.65 | 0.486, 0.457 | 1.81 | 1.83 |
+| closure_pipeline | 1000000 | 2.922 / 2.955 / 3.675 | 3.077 / 3.445 / 5.129 | 1.166, 1.053 | 16.98 | 17.06 |
+| graph_bfs | 100000 | 3.759 / 4.088 / 6.589 | 3.917 / 4.724 / 5.902 | 1.156, 1.042 | 14.67 | 14.69 |
+| spectral_norm | 500 | 9.414 / 9.924 / 12.91 | 9.526 / 9.693 / 12.55 | 0.977, 1.012 | 1.70 | 1.70 |
+
+Linux（arm64、Docker の仮想マシン、glibc 2.39、`-O3`）:
+
+| workload | size | system ms（最小 / 中央 / 最大） | small ms（最小 / 中央 / 最大） | small / system（中央、最小） | system RSS MiB | small RSS MiB |
+| --- | ---: | --- | --- | --- | ---: | ---: |
+| tokenize | 200000 | 16.42 / 18.21 / 60.64 | 9.915 / 10.72 / 21.62 | 0.589, 0.604 | 21.49 | 15.45 |
+| format_join | 100000 | 19.46 / 20.17 / 73.18 | 15.75 / 17.87 / 34.29 | 0.886, 0.809 | 17.18 | 17.19 |
+| csv_aggregate | 100000 | 21.28 / 21.77 / 22.78 | 15.33 / 18.59 / 28.80 | 0.854, 0.720 | 11.75 | 8.75 |
+| map_count | 200000 | 17.27 / 17.94 / 19.08 | 18.86 / 29.85 / 47.12 | 1.664, 1.092 | 1.38 | 1.50 |
+| record_sort | 200000 | 5.731 / 6.087 / 37.35 | 10.00 / 13.84 / 16.96 | 2.274, 1.745 | 10.24 | 10.25 |
+| tree_transform | 256 | 12.54 / 13.20 / 22.63 | 7.092 / 8.982 / 16.00 | 0.680, 0.566 | 1.50 | 1.50 |
+| binary_trees | 2000 | 17.63 / 17.87 / 26.26 | 11.25 / 12.70 / 18.14 | 0.711, 0.638 | 1.50 | 1.50 |
+| closure_pipeline | 1000000 | 5.420 / 5.502 / 10.36 | 5.319 / 6.522 / 10.91 | 1.185, 0.981 | 16.25 | 16.35 |
+| graph_bfs | 100000 | 4.264 / 4.873 / 9.594 | 4.669 / 5.368 / 7.769 | 1.102, 1.095 | 14.00 | 13.96 |
+| spectral_norm | 500 | 9.233 / 9.654 / 17.69 | 9.392 / 12.93 / 36.46 | 1.339, 1.017 | 1.38 | 1.38 |
+
+読み方:
+
+- 小さなブロックを大量に確保して手放す workload（tokenize、csv_aggregate、tree_transform、binary_trees、macOS では format_join も）は、最小値で 0.39〜0.83 倍です。macOS で最小値と最大値の範囲が重ならない（PX01 の「improved」の条件）のは、tokenize、csv_aggregate、tree_transform、binary_trees の 4 つで、「adverse」（範囲が逆に重ならない）はありません。Linux の表は揺れが大きく、範囲が重ならないものはありませんでした。
+- 確保をほとんどしない workload は、差が確保の実行時間ではなく、コードの配置の差です。1 回の呼び出しの確保は、closure_pipeline が 8 回、graph_bfs が 7 回、spectral_norm が 41 回、map_count が 0 回です（入口に数える呼び出しを足した IR で数えた値）。Linux arm64 の callgrind では、map_count の命令数は system が 89,780,711、small が 89,188,411 で、small のほうが少なくなっています。macOS の最小値の比は 0.99〜1.05 です。静かな機械での再測定（最後の「第3フェーズ統合の最終比較」、3 run）では、closure_pipeline が 1.06 倍（3 run のうち 1 run と `run-apps.mjs` の run で範囲が重ならず、逆向き）で、macOS の「adverse」は 0 ではなく 1 つです（format_join は 3 run とも 0.76〜0.77 倍の改善）。
+- **Linux の record_sort は small のほうが遅い**（最小値で 1.75 倍、中央値で 2.27 倍）。命令数は、callgrind で system が 72,534,347、small が 72,535,381 と同じです。同じプロセスで先に別の workload を走らせたあとに 1 呼び出しずつ測ると、system は 5.4〜5.7 ms（ページフォールトは 1 呼び出しあたり 0.1 回）、small は 10.2〜11.3 ms（約 1,300〜1,800 回）で、先に何も走らせていないプロセスでは、どちらも約 10 ms（約 1,050 回）で同じです。record_sort は 3.2 MB（16 バイト × 200,000）の配列を確保して解放します。原因は、glibc がこの大きなブロックのメモリを得て返す方法です。`strace` で、small は 1 呼び出しごとに `brk` でヒープの末尾を 3.2 MB ずつ 4 回伸ばし、解放のたびに元の位置まで縮めていました。system の `brk` は 132 KiB ずつ伸びるだけです。glibc の `free` は、ヒープの末尾の空きが trim のしきい値（動的な mmap のしきい値の 2 倍）を超えると、末尾を OS へ返します。system では、ほかの workload が残した小さなチャンクが末尾を押さえていて起きません。small は小さなブロックを C ライブラリのヒープの外（region）に置くので、末尾が空き、毎回返して取り直します。`MALLOC_TRIM_THRESHOLD_` だけを 256 MiB にすると、動的な mmap のしきい値が止まって配列が毎回 `mmap` され、同じように遅いままです。`MALLOC_MMAP_THRESHOLD_` も 256 MiB にすると、ページフォールトは約 61 回に減って 9.1 ms になりますが、system の 5.7 ms には届かず、残りの差は説明できていません。ピーク RSS が小さくなる（tokenize 21.49 → 15.45 MiB、csv_aggregate 11.75 → 8.75 MiB）のも、小さなブロックが C ライブラリのヒープを占めない効果の別の面です。macOS では、ページフォールトは cold で 19.7、warm で 0 回で、どちらも system と同じです（10.5〜11.2 ms）。
+- ピーク RSS は、macOS では同じか、固定費の分（スレッドのキャッシュ、登録表、region の最初のページ）だけ大きい（map_count で 1.69 → 1.84 MiB）です。glibc では、16 バイトから 24 バイトの確保が多い workload で 25〜28% 小さくなります（上の 2 例）。macOS の `malloc` は 16 バイト刻みでヘッダーを持たないので、`small` と同じ大きさになり、RSS では差が出ません。
+
+確保 1 つあたりの大きさ（モデルです。計測ではなく、各 allocator の規則から数えました。glibc は 8 バイトのヘッダーを足して 16 の倍数に切り上げ、最小 32 バイト、WASM は 16 バイトのヘッダーを足して 16 の倍数、最小 32 バイト、`small` は 16 の倍数、最小 16 バイト）:
+
+| 要求（バイト） | 8 | 16 | 24 | 32 | 48 | 100 | 512 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| glibc | 32 | 32 | 32 | 48 | 64 | 112 | 528 |
+| WASM のヒープ | 32 | 32 | 48 | 48 | 64 | 128 | 528 |
+| `small`（native） | 16 | 16 | 32 | 32 | 48 | 112 | 512 |
+
+`binary_trees` のノード（48 バイト）は、glibc で 64 バイト、`small` で 48 バイトです。測った RSS（1.5〜1.8 MiB）は、実行ファイル自身の大きさに隠れて、この差を示しません。
+
+生成コードの確認（`llvm-objdump -d --no-show-raw-insn`、arm64 の macOS、`examples/hello`）: `tz_small_alloc` の fast path は約 30 命令で、512 バイトを超えるかの比較、TLS の取得（Mach-O は `tlv_get_addr` の thunk の呼び出し）、区分のスロットの計算、リストの先頭の取り出しと個数の減算、return です。`tz_small_free` も約 30 命令で、`>> 48` の確認、2 段の登録表の引き（`ldapr` と `ldrb`）、TLS の取得、リストの先頭への追加、個数の比較です。ELF の実行ファイルでは、TLS の取得は 1〜2 命令で済みます（x86-64 では未計測）。入口の 2 関数は `noinline` で、`noalias`・`allockind`・`alloc-family` を持ちます。LLVM はこれらを `malloc`・`free` と同じに扱い、読まれないまま解放される確保を取り除きます（`tests/small_allocator.mjs` の probe が、`noinline` か属性を外すと失敗することを手で確かめました）。インライン化を許した最初の版では、record_sort が macOS で 2.1 倍、graph_bfs が 2〜2.5 倍遅く（確保と解放の組が取り除かれず）、コードも 5.2 KiB 増えました。
+
+コードの大きさ（`-O3`、macOS）: `examples/hello` の `__text` は 43,496 → 45,968 バイト（+2,472）、`benchmarks/apps` の object は 57,808 → 60,916（+3,108）、`benchmarks/control` の object は 3,664 → 5,980（+2,316）です。`__bss` が 133,184 バイト（仮想。触るまで物理メモリではありません）増えます。
+
+#### 既定にするか（Phase 3）
+
+native の既定を `small` にするかは、次の条件を**すべて**確かめられたときだけ変えるとしました。確かめられなかった条件があるので、既定は `system` のままです。
+
+| 条件 | 結果 | 根拠・足りないもの |
+| --- | --- | --- |
+| (a) 単体テスト（通常・ASan+UBSan・TSan）と全 features suite（`-O0`・`-O3`）が、macOS arm64・x64、Linux x64・arm64（と musl）、Windows x64 で通る | 一部だけ | macOS arm64 は単体・E2E・全 suite（14,106 件）を確認した。Linux arm64（Ubuntu 24.04 のコンテナ、clang 18・20）は単体 4 通りと、IR の host（4 スレッド・共有ライブラリ・2 オブジェクト）を確認した。Linux x64（同じコンテナの amd64、エミュレーション）は単体 3 通り（TSan なし）と同じ host を確認した。全 suite は macOS arm64 だけ。macOS x64、musl、Windows は未確認（`targets.yml`・`windows.yml` に step を足したが、緑になるまで確認とは言えない） |
+| (b) 専用機で 2 つ以上の OS ファミリーの計測。PX01 の「improved」が代表 6 workload のうち 3 つ以上で、control・computations・cpp・apps・tasks に「adverse」がない | 未達 | macOS の apps は improved 4 つ・adverse 0 だが、専用機ではない。Linux（glibc）の record_sort は 1.75〜2.27 倍遅い（上の、glibc が大きなブロックのメモリを得て返す方法の差）。control・computations・cpp・tasks（`task_parallel`）は未計測（`run-control.mjs --allocator small` は用意した） |
+| (c) ピーク RSS が、どの app でも悪化しない | 一部だけ | macOS は同じ（小さな app で +0.1〜0.15 MiB の固定費）、Linux は最大 28% 小さい。固定費があるので「悪化なし」とは言えない |
+| (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 一部だけ | 実行ファイルは +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）で達成。コンパイル時間は、`--emit object -O3 --no-cache` の 7 回の最小値で hello が 703 → 731 ms、apps が 838 → 875 ms、control が 142 → 161 ms（load 約 34）と、20〜36 ms 増える（`heap-small.ll` は 860 行で、LLVM がそれも最適化するため） |
+| (e) 範囲は native の実行ファイルだけで、`--allocator system` で戻せ、サニタイザーと leak 検査の注意を書く | 該当なし | 既定にしていないので、変えていない。注意は LR の [ネイティブのサイズ区分 allocator](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) に書いた |
+
+再検討の条件: 専用機で macOS と Linux の apps・control・tasks を測り、Linux の record_sort のような退行（ほかの確保を済ませたプロセスで、大きなブロックの確保と解放を繰り返すと、glibc が毎回ヒープの末尾を返して取り直す）を直すか、起きないことを示すこと。直し方の候補は、解放した大きなブロックを `small` が少しの間手元に残す（glibc の末尾を空けない）か、512 バイトを超える区分を持つ（ヘッダーなしの slab は別チケット PM05b）ことですが、どちらも試していません。glibc 固有の `mallopt` で返却のしきい値を変える案は、C ライブラリを問わない（musl・Windows）設計に反するので採りません。
+
+測っていないこと: Linux x64、Windows、musl、macOS x64 での時間。`Task.parallel` を使う native のベンチマーク（`task_parallel` と PR06 の task runtime）での時間。静かなマシンでのコンパイル時間。Linux x86-64 の ELF の TLS の命令数。
+
+### 第3フェーズ統合の最終比較（2026-10-17）
+
+PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 を取り込んだ統合 branch のコンパイラと、第 3 フェーズの前の main のコンパイラを、同じ機械・同じ入力で、1 つの測定が終わるまで次を始めない運用で測り直した記録です。
+個別チケットの値は、他の作業が並行して動く共有機での参考値でした。ここは各 subsection と同じ形（before／after、中央値と最小〜最大、A/A）で書き、前の値と食い違うものは各項目に書いて、前の記述を直しました。
+
+**条件。** Apple M1 Max（8 性能 core + 2 効率 core、AC 電源）、macOS 27.0.1、Node.js 24.21.0、Apple clang 21.0.0（`/usr/bin/clang`、PATH の先頭）、Homebrew LLVM 21.1.8（`llvm-objdump` と `wasm-ld` だけ。PATH の最後）、rustc 1.98.1 です。
+before は main `6d15b437`（第 2 フェーズの PR #26）の release（SHA-256 `da78ba18e702baeee494baece9778cfd453266f13482a5a12ed5f1474e7055fb`）、
+after は統合 branch の `a5a6b3d89b2d512e3220c2dc9d5d21eddee51c9b`（8 件と各レビューの修正を取り込んだ、検証済みの release。SHA-256 `c2e27b4ec8005f6e9f4d1d622a4f2fa6cd9a9ad492848f9b2ef7af65c03309c4`）です。
+どちらも `Cargo.toml` の release（thin LTO、CGU 1、strip）です。測定はこの commit の clean な detached checkout で行い、コンパイラは再ビルドしていません。
+この測定のあとに統合 branch へ入った commit（`33fd8b54`・`99aa9795`・`1127b73c`。CI の失敗の修正）は、`src/runtime/integer.ll`（128 bit の除算を 32 bit の桁ごとの除算に変更）・`src/bundle_identity.rs`（クロージャの渡し方）・テスト・benchmark の runner・文書を変えています。
+これらを入れたコンパイラでの測り直しはしていません（`parse` の大きさと i128 の書式の時間は、`integer.ll` の変更で変わりうる値です。64 bit までの経路は変わっていません）。
+runner の定義した旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off` など）は変えておらず、fast-math・再結合・暗黙の FMA は使っていません。
+
+**機械の状態。** 各測定の前に `ps` で tsuzuri・clang・cargo・node・rustc の残りが無いことと、1 分平均の load average が 14 未満であることを確かめ、満たすまで待ちました（開始時と終了時の `uptime` を記録）。
+Microsoft Defender・VS Code の renderer・Copilot の runtime・GitKraken・Spotlight などが常駐していて、2〜6 core を使い続けます。この床は 1 分平均で 8〜13 で、これより静かにはなりませんでした（専用機ではありません）。
+ほかの作業の重い処理（`cargo clippy`、toolchain のビルドと検証、`cargo test`。合わせて約 30 分）が窓に重なったので、その間は待ち、その後の測定の開始時の load average は 5〜13 でした。run の開始時の load average を、下の各項目に書きます。
+同梱ツールチェーンの識別の 1 回目の run だけは、開始時の load average が 40〜50 でした（下の表は静かな機械で取り直した run の値です）。
+
+**方法。** 各 cell は 9 標本以上です。in-process の runner は 1 run に 15 標本で、before・after を同じ process の中で順序を回して測ります。別 process の測定は 1 round ごとに構成の順序を回し、最初の 1 round を捨てます。
+表は中央値と（最小〜最大）で、run を重ねた表は run ごとの中央値の中央値と、全 run の最小〜最大です。A/A は、before のコンパイラを before 自身と比べた run（runner が持たない測定は、同じ before を別の構成名で入れた `before2`）の比です。
+差は、中央値の差が両者の広がりを超え、かつ範囲が重ならないときだけ読み（PX01 の判定より厳しい規則）、表では「改善」「悪化」、満たさないものは「差なし」と書きます。
+**測っていないこと**: x86-64、Linux、Windows の時間、Node.js 20 の WASM の時間（WASM はすべて Node 24.21.0 の V8）、専用機での時間、LTO なしのコンパイラです。共有 CI に速度の閾値は置きません。
+
+#### PX01 の runtime kernel（PR03・PM01・PR02）
+
+`node benchmarks/run-computations.mjs $AFTER --baseline $BEFORE --metrics DIR` を 5 回（1 run に 15 標本。before の `ce` と after の `ce`・`direct`・C++・Rust を同じ process で交互に測ります。native は CPU 時間、WASM は warmed の wall time）と、
+A/A として `$BEFORE --baseline $BEFORE` を 1 回測りました。`direct`（手書きの版）の before との比は、runner の複製（`before_tz_ce_` を `before_tz_direct_` に替えたもの。リポジトリには入れていません）を 3 回と A/A を 1 回です。
+`run-control.mjs` も同じ形で 5 回と A/A 1 回です。run の開始時の load average は 8.2〜13.7 でした。
+
+native（`-O3`、`--cpu generic`、CPU 時間、ms/呼び出し。size は `benchmarks/computations/Main.tz` のとおり）:
+
+| workload | before（`ce`、中央値と最小〜最大） | after（`ce`） | 比 after/before（5 run の中央値と範囲） | 判定（5 run） | A/A | after `direct` | `direct` の before との比（3 run） |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| `bind` | 3.228（3.130〜3.343） | 3.206（3.131〜3.504） | 0.999（0.993〜1.001） | 差なし | 0.996 | 3.214 | 0.999 |
+| `checked` | 5.218（5.148〜6.092） | 5.220（5.113〜5.501） | 0.999（0.997〜1.001） | 差なし | 1.000 | 5.120 | 1.000 |
+| `delayed` | 1.299（1.268〜1.369） | 1.302（1.280〜1.808） | 0.999（0.993〜1.007） | 差なし | 1.003 | 1.301 | 0.993 |
+| `array_for` | 0.00562（0.00556〜0.00611） | 0.00561（0.00557〜0.00584） | 0.999（0.996〜1.004） | 差なし | 1.002 | 0.00569 | 0.999 |
+| `array_bind` | 0.00562（0.00553〜0.00643） | 0.00561（0.00554〜0.00913） | 0.999（0.997〜1.003） | 差なし | 0.996 | 0.00567 | 1.001 |
+| `owned_capture` | 0.0263（0.0257〜0.0296） | 0.0262（0.0257〜0.0307） | 0.997（0.994〜1.001） | 差なし | 0.993 | 0.0266 | 1.000 |
+| `std_option` | 5.220（5.114〜5.537） | 4.467（4.386〜4.754） | **0.856（0.855〜0.857）** | **改善 5/5** | 1.003 | 4.481 | 1.003 |
+| `std_result` | 5.232（5.100〜6.569） | 5.228（5.126〜6.362） | 1.002（0.995〜1.006） | 差なし | 0.995 | 5.246 | 0.998 |
+| `std_option_owned` | 0.1779（0.1749〜0.1999） | 0.1760（0.1730〜0.2026） | 0.990（0.987〜0.992） | 差なし | 0.995 | 0.1767 | 1.002 |
+| `std_option_length` | 3.921（3.817〜4.039） | 3.887（3.811〜4.261） | 1.000（0.991〜1.006） | 差なし | 1.009 | 3.888 | 0.994 |
+
+- `std_option`（`Maybe<i64>` の `let!` の連鎖）だけが 5 run とも改善でした（5.220 → 4.467 ms、−14.4%。run ごとの比は 0.855〜0.857、A/A は 1.003）。after の `ce` は `direct` と同じ時間（`ce`／`direct` は 1.000）で、PR03 の目標（`ce` を `direct` と同じ形にする）の結果です。PR03 の節の「14〜17% 短い」と一致します。
+- ほかの 9 対は、比が 0.990〜1.002 で差がありません。`direct` の before との比は全 10 種目で 0.993〜1.003、`ce`／`direct` は 0.996〜1.003（`checked` だけ 1.020 で、before でも同じ値の record の block の配置の差。PR03 の分類のとおり union ではありません）です。確保（`allocations_at_size_64`）は 10 種目とも before・after・`direct` で同じです（`std_option_owned` は 55 回・1,210 bytes）。
+- `Maybe<i64>`・`Result<i64, i64>` の native の時間が変わらないことと、`std_option_owned`（`Maybe<string>`）が 0.990 で差と読めないことは、PM01 の記録と一致します。
+
+WASM（`-O3`、Node.js 24.21.0 の V8、warmed の wall time、µs/呼び出し。1 呼び出しは `size = 1024` 回の繰り返し）:
+
+| workload | before（`ce`） | after（`ce`） | 比 after/before（5 run の中央値と範囲） | 判定（5 run） | A/A | after `direct` | `direct` の before との比（3 run） |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| `bind` | 1.945（1.876〜2.029） | 1.947（1.876〜2.031） | 0.999（0.990〜1.006） | 差なし | 1.004 | 1.942 | 1.001 |
+| `checked` | 2.076（1.995〜2.308） | 2.097（1.980〜2.304） | 1.009（0.989〜1.016） | 差なし | 1.000 | 2.087 | 1.001 |
+| `delayed` | 2.814（2.703〜16.623） | 2.823（2.704〜10.111） | 1.003（0.988〜1.006） | 差なし | 1.006 | 2.864 | 1.006 |
+| `array_for` | 0.7278（0.7025〜1.041） | 0.7328（0.7050〜0.9392） | 1.016（1.007〜1.024） | 差なし | 0.997 | 0.7413 | 1.011 |
+| `array_bind` | 0.7211（0.7025〜1.021） | 0.7238（0.7030〜2.694） | 1.007（0.993〜1.009） | 差なし | 1.029 | 0.7220 | 0.998 |
+| `owned_capture` | 4.007（3.880〜6.507） | 3.998（3.866〜5.585） | 0.996（0.993〜0.998） | 差なし | 1.001 | 4.064 | 1.004 |
+| `std_option` | 1.818（1.727〜7.184） | 2.297（2.194〜8.534） | **1.269（1.259〜1.378）** | **悪化 3/5** | 1.007 | 2.293 | 0.998 |
+| `std_result` | 2.079（1.975〜2.680） | 2.080（1.986〜2.507） | 1.002（0.992〜1.004） | 差なし | 0.995 | 2.098 | 0.993 |
+| `std_option_owned` | 5.667（5.530〜7.587） | 4.854（4.738〜6.913） | **0.864（0.854〜0.871）** | **改善 4/5** | 0.999 | 4.899 | 0.890 |
+| `std_option_length` | 2.109（2.043〜2.995） | 2.114（2.043〜5.578） | 1.002（1.000〜1.005） | 差なし | 0.997 | 2.176 | 0.997 |
+
+- **`std_option` の `ce` は WASM で遅くなりました**（1.82 → 2.30 µs、比 1.259〜1.378。5 run のうち 3 run は範囲も重ならず「悪化」で、残り 2 run（比 1.378・1.269）は 1 標本の外れ値（最大 7.2 µs など）で範囲が重なっただけです。A/A は 1.007）。
+  PR03 の節の「WASM の warmed 時間は 3 回で向きが揃わず（…）、何も主張しません」は共有機での値で、静かな機械では向きが揃います（その文を、この結果で置き換えました）。
+  理由は生成された WASM に見えます（`llvm-objdump -d` で `tz_ce_std_option` を比べた）。before の `ce` は tag を分岐で扱う形（`br_table`、77 命令）で、after の `ce` は `direct` と同じ形（`select` が 1 反復に 2 回、loop は 2 回ずつ展開、116 命令）です。
+  `direct_std_option` は before でも after でもこの `select` の形で、2.34 µs（before）と 2.29 µs（after）です。V8 では分岐の形の古い `ce`（1.82 µs）のほうが `select` の形の `direct` より約 22% 速く、F1' は `ce` を後者に揃えました。native の `-O3` では逆に `select` の形が速く、5.22 → 4.47 ms です。
+  PR03 の目標（`ce` と `direct` が同じ形）は WASM でも満たしていますが、WASM の `std_option` だけは before より遅い、というのが実測です。
+- `std_option_owned`（`Maybe<string>`）の WASM は速くなりました（5.67 → 4.85 µs、比 0.854〜0.871）。`direct` も 0.867〜0.890 で同じ向きなので、`ce` の形ではなく確保を含む経路（PM01 の値の大きさと PM05 の WASM のヒープ）の効果と読めますが、3 つの変更の合計で、個別には分けていません。
+- ほかの 8 種目は 0.996〜1.016 で差がありません（`array_for` の 1.016 は 5 run とも「差なし」）。`benchmarks/computations` の WASM module（`-O3`）は 9,636 → 10,075 bytes（+4.6%）です。
+
+control（native、`-O3`、CPU 時間、ms/呼び出し。16 種目、5 run と A/A 1 回）:
+
+| workload | before（中央値と最小〜最大） | after | 比 after/before（5 run の中央値と範囲） | A/A |
+| --- | ---: | ---: | ---: | ---: |
+| `while_mix` | 12.978（12.555〜13.690） | 12.954（12.566〜14.206） | 0.998（0.996〜1.004） | 0.999 |
+| `for_mix` | 12.892（12.537〜13.400） | 12.961（12.537〜14.204） | 1.002（0.999〜1.008） | 1.000 |
+| `tail_mix` | 12.930（12.566〜13.944） | 12.882（12.588〜14.213） | 0.997（0.992〜0.999） | 0.993 |
+| `tail_if_mix` | 12.922（12.536〜13.757） | 12.871（12.586〜13.492） | 0.999（0.996〜1.000） | 1.002 |
+| `tail_builtin_mix` | 12.908（12.600〜13.466） | 12.922（12.542〜13.743） | 1.003（0.998〜1.011） | 0.996 |
+| `match_dispatch` | 2.585（2.546〜2.852） | 2.580（2.530〜3.348） | 0.998（0.996〜1.002） | 0.999 |
+| `array_sum` | 1.961（1.843〜2.371） | 1.958（1.819〜2.220） | 0.999（0.972〜1.016） | 1.017 |
+| `array_index_sum` | 1.970（1.819〜2.135） | 1.936（1.842〜2.228） | 0.993（0.968〜1.005） | 0.996 |
+| `array_copy` | 1.677（1.565〜2.096） | 1.695（1.542〜2.421） | 0.995（0.983〜1.034） | 0.965 |
+| `list_sum` | 1.795（1.768〜2.311） | 1.799（1.768〜2.061） | 1.003（0.997〜1.008） | 0.998 |
+| `closure_capture` | 1.932（1.873〜2.095） | 1.928（1.879〜2.237） | 1.001（0.996〜1.004） | 1.005 |
+| `closure_churn` | 6.497（6.348〜6.645） | 6.498（6.383〜6.680） | 1.002（1.000〜1.004） | 1.003 |
+| `record_pipeline` | 12.944（12.590〜14.523） | 12.906（12.638〜14.146） | 0.997（0.992〜1.004） | 1.011 |
+| `integer128_mix` | 5.059（4.941〜5.735） | 5.066（4.984〜6.303） | 1.001（0.998〜1.003） | 1.000 |
+| `float32_mix` | 8.997（8.896〜11.287） | 9.000（8.891〜9.327） | 0.999（0.995〜1.001） | 0.997 |
+| `float64_mix` | 9.000（8.876〜10.094） | 9.016（8.854〜9.329） | 1.002（0.989〜1.003） | 1.000 |
+
+- 16 種目すべてが「差なし」でした（比の中央値は 0.993〜1.003、run ごとの範囲は 0.968〜1.034、A/A は 0.965〜1.017）。PR02 の D10（`$intrinsic` の `Add`/`Sub`/`Mul` の inline）の対象を含む整数の種目（`integer128_mix` 1.001、`while_mix`・`for_mix`・`tail_*_mix` 0.997〜1.003）と、PM01 の record の `record_pipeline`（0.997）も同じです。
+
+#### フロントエンドの並列化（PB04）
+
+`node benchmarks/run-threads.mjs $AFTER <project> check|emit-llvm <runs> --before $BEFORE --out DIR before 1 2 4 8 unset`（10 thread は 1,000 module だけ）を、構成を 1 round ごとに順序を回して測りました（最初の 1 round を捨てる）。
+hello は 61 標本、合成 200 module（`benchmarks/build/generate.mjs --modules 200`）の `check` は 21 標本の run を 2 回、合成 1,000 module の `check` は 11 標本の run を 2 回、LLVM 出力（`--emit llvm -O0 --cpu generic --no-cache`）は 1,000 module が 9 標本、200 module が 15 標本、frontend cache の cold／warm が 9 標本です。
+cache は無効（cold／warm の表だけ有効）、`TSUZURI_TIME_PASSES=1`、`LC_ALL=C` です。「before ÷ total」は compiler の total（TSUZURI_TIME_PASSES）の中央値の比で、run 1／run 2 は同じ構成の再測定です（total の差は 0.3〜3% で、これが再現性の幅です）。run の開始時の load average は 8.3〜13.0（終了時は最大 15.5）でした。
+
+hello の `check`（61 標本）:
+
+| 構成 | 実時間 ms | compiler の total ms | before ÷ total | user+sys ms | 最大 RSS MiB | parse | check |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before | 141（58〜232） | 38.3（36.1〜131.2） | 1.00 | 30 | 20.8（20.5〜21.0） | 5.0 | 28.6 |
+| 1 thread | 124（59〜249） | 38.5（36.6〜64.0） | 0.99 | 30 | 21.0（20.8〜21.4） | 4.9 | 29.0 |
+| 4 thread | 118（46〜235） | 26.1（23.6〜36.8） | 1.47 | 50 | 22.0（21.7〜22.7） | 2.9 | 18.4 |
+| 8 thread | 119（44〜221） | 23.8（22.4〜32.5） | 1.61 | 60 | 22.6（22.1〜23.1） | 2.7 | 16.2 |
+| 未設定（自動） | 111（41〜224） | 24.1（22.0〜31.3） | 1.59 | 60 | 22.6（22.0〜23.5） | 2.9 | 16.6 |
+
+合成 200 module の `check`（21 標本 × 2 run）:
+
+| 構成 | 実時間 ms | compiler の total ms | before ÷ total（run 1 / run 2） | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before | 393（373〜483） | 352.7（348.5〜377.3） | 1.00 | 340 | 142.0（141.0〜142.9） | 38.5 | 201.5 | 29.0 |
+| 1 thread | 398（375〜570） | 352.9（348.3〜441.4） | 1.00 / 0.99 | 340 | 143.8（143.1〜145.0） | 38.4 | 202.8 | 28.7 |
+| 4 thread | 289（272〜391） | 250.0（246.1〜258.3） | 1.41 / 1.39 | 480 | 145.3（144.4〜147.0） | 13.5 | 135.4 | 11.3 |
+| 8 thread | 270（238〜453） | 225.9（220.5〜386.0） | 1.56 / 1.49 | 520 | 148.3（146.9〜150.5） | 9.3 | 118.2 | 6.9 |
+| 未設定（自動） | 270（242〜397） | 226.3（219.6〜259.9） | 1.56 / 1.50 | 520 | 148.3（147.1〜150.0） | 9.5 | 117.4 | 7.0 |
+
+合成 1,000 module の `check`（11 標本 × 2 run）:
+
+| 構成 | 実時間 ms | compiler の total ms | before ÷ total（run 1 / run 2） | user+sys ms | 最大 RSS MiB | parse | check | ownership |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before | 2113（1983〜2700） | 2066.3（1932.5〜2648.6） | 1.00 | 1710 | 619.9（616.7〜621.7） | 174.0 | 921.7 | 152.8 |
+| 1 thread | 2171（2038〜2506） | 2088.9（1982.8〜2460.4） | 0.99 / 0.96 | 1710 | 615.1（613.5〜634.8） | 173.4 | 935.7 | 150.6 |
+| 4 thread | 1559（1448〜1877） | 1523.2（1351.2〜1811.8） | 1.36 / 1.32 | 2240 | 619.0（617.1〜632.1） | 57.9 | 617.6 | 56.0 |
+| 8 thread | 1544（1406〜1841） | 1493.9（1339.1〜1732.4） | 1.38 / 1.34 | 2440 | 636.6（621.5〜638.6） | 39.7 | 541.5 | 40.5 |
+| 10 thread | 1567（1424〜2453） | 1503.6（1391.4〜2035.9） | 1.37 / 1.36 | 2500 | 641.7（638.1〜650.1） | 39.7 | 558.8 | 38.2 |
+| 未設定（自動） | 1604（1434〜3074） | 1510.7（1265.0〜2784.9） | 1.37 / 1.37 | 2470 | 635.9（620.6〜641.3） | 40.5 | 560.7 | 37.5 |
+
+LLVM 出力（`-O0`、`--emit llvm`）:
+
+| project と構成 | 実時間 ms | compiler の total ms | before ÷ total | user+sys ms | 最大 RSS MiB | parse | check | emit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 200 module、before | 635（612〜746） | 595.9（573.4〜673.7） | 1.00 | 570 | 154.7（153.9〜156.5） | 38.7 | 204.7 | 210.9 |
+| 200 module、1 thread | 632（599〜749） | 592.8（571.7〜713.6） | 1.01 | 570 | 153.1（152.4〜154.8） | 38.6 | 205.3 | 209.1 |
+| 200 module、8 thread | 521（480〜602） | 478.7（449.7〜561.0） | 1.24 | 760 | 158.5（157.0〜160.8） | 9.7 | 127.4 | 213.9 |
+| 1,000 module、before | 3323（3032〜3514） | 3272.3（2935.9〜3473.3） | 1.00 | 2800 | 666.9（664.9〜668.9） | 174.1 | 911.4 | 1011.3 |
+| 1,000 module、1 thread | 4236（4020〜4645） | 4171.9（3971.9〜4514.9） | 0.78 | 3810 | 697.9（696.0〜699.9） | 172.3 | 943.1 | 2078.2 |
+| 1,000 module、8 thread | 3737（3473〜4025） | 3587.9（3438.8〜3908.0） | 0.91 | 4580 | 706.6（704.4〜712.5） | 45.1 | 548.1 | 2123.1 |
+
+frontend cache（1,000 module の `check`、9 標本）: cold は before の total 2,084.6 ms に対して 8 thread が 1,418.0 ms（1.47 倍。parse 258.5 → 49.1 ms）、warm は 1,991.3 ms に対して 1,506.9 ms（1.32 倍。parse 112.2 → 27.0 ms）です。
+
+- `TSUZURI_THREADS=1` は before と同じ速さです（total の before ÷ 1 thread は hello 0.99、200 module 1.00・0.99、1,000 module 0.99・0.96、frontend cache の cold 1.00、warm 0.98）。
+- hello の total は 38.3 → 23.8 ms（8 thread で 1.61 倍、未設定で 1.59 倍）で、check が 28.6 → 16.2 ms、parse が 5.0 → 2.7 ms です。process の実時間は 141 → 119 ms（未設定 111 ms）で、起動と終了（Microsoft Defender が `open` を遅くします）が大きく、範囲が重なるので差と読みません。user+sys は 30 → 60 ms、最大 RSS は 20.8 → 22.6 MiB（+8.7%）です。
+- 200 module の total は 352.7 → 225.9 ms（1.56 倍、再測定 1.49 倍）、実時間は 393 → 270 ms、user+sys は 340 → 520 ms（+53%）、最大 RSS は 142.0 → 148.3 MiB（+4.4%）です。
+- 1,000 module の total は 2,066 → 1,494 ms（1.38 倍、再測定 1.34 倍）で、10 thread（1.37・1.36 倍）と未設定（1.37・1.37 倍）は 8 thread より速くなりません（性能 core が 8 個）。実時間は 2,113 → 1,544 ms（1.37 倍）、user+sys は 1,710 → 2,440 ms（+43%）、最大 RSS は 619.9 → 636.6 MiB（+2.7%）で、G4 の +10% 以内です。
+  parse は 174 → 40 ms（4.4 倍）、check は 922 → 542 ms、ownership は 153 → 41 ms で、load（389〜403 ms）・specialize（244〜246 ms）・closures（43〜44 ms）は逐次のままです。PB04 の節の値（hello 1.48 倍、200 module 1.40 倍、1,000 module 1.39 倍、LR の目安は 1.5・1.4・1.2〜1.5 倍）と同じ範囲で、静かな機械では hello と 200 module がやや大きく出ました。
+- **LLVM 出力は、1,000 module では統合後のコンパイラのほうが before より遅くなりました**（total 3,272 → 3,588 ms（8 thread）、4,172 ms（1 thread）。before ÷ after は 0.91・0.78 で、時間は 1.10 倍・1.27 倍）。`emit` 段が 1,011 ms から 2,078〜2,123 ms（2.05〜2.10 倍）になったためです（8 thread が 1 thread より縮める 0.58 s より、emit の増加 1.07 s のほうが大きい）。
+  before・after とも IR に `@tz.specialized.` の定義が 1,024 個あり、特殊化の予算を使い切っています。PR03 の Phase 2c は、予算を使い切った program だけを 2 回出力するので、`emit` が約 2 倍になります。200 module は予算内で、`emit` は 211 → 209 ms、total は 596 → 479 ms（1.24 倍）と速くなります。
+  PB04 の節の「LLVM 出力: 1,000 module で total が 3,258.6 ms から 2,634.5 ms（1.24 倍）」は、PR03 を取り込む前の PB04 の branch の値で、統合後の 1,000 module では成り立ちません（PB04 の節のその文に、この注意を足しました）。実行ファイルの `build`（1,000 module のすべてを使う）も同じ理由で遅くなります（下の PB03 の表）。
+
+#### LLVM への受け渡し（PB03）
+
+`build <project> -O0|-O3 --cpu generic --no-cache -o OUT` を、before・after・before2（before と同じコンパイラ。A/A）の順序を 1 round ごとに回して、最初の 1 round を捨てた 9 標本（hello は 15 標本）で測りました
+（リポジトリに入れない scratch の runner。実時間は `hrtime`、CPU 時間は `/usr/bin/time -l` の user+sys（子の Clang・リンカーを含み、粒度 10 ms）、`emit` と外部ツールの時間は `TSUZURI_TIME_PASSES=1` の `emit` 段と `tool.*` 段の合計）。
+W2 は、合成 1,000 module のうち 100 module だけを `Main.tz` から使う project（`mainSource(100)`）で、実行ファイルの stdout は before・after とも `expectedOutput(100, "12345")` と一致しました。run の開始時の load average は 9.6〜12.3 でした。
+
+| workload | 指標 | before | after | after ÷ before | A/A（before2 ÷ before） | 判定 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| W2 `-O0` | 実時間 ms | 7715（7387〜8278） | 2369（2262〜2569） | 0.307 | 1.002 | 改善 |
+| W2 `-O0` | CPU 時間 ms（user+sys） | 7250（7090〜7400） | 3320（3300〜3350） | 0.458 | 1.000 | 改善 |
+| W2 `-O0` | `emit` 段 ms | 1046.6（999.0〜1188.1） | 257.6（255.1〜320.3） | 0.246 | 0.969 | 改善 |
+| W2 `-O0` | 外部ツール（Clang など）ms | 4420（4303〜4787） | 582（566〜592） | 0.132 | 1.015 | 改善 |
+| W2 `-O3` | 実時間 ms | 8265（8059〜8687） | 4574（4281〜4944） | 0.553 | 0.990 | 改善 |
+| W2 `-O3` | CPU 時間 ms（user+sys） | 7790（7730〜7950） | 5330（5240〜5510） | 0.684 | 1.003 | 改善 |
+| W2 `-O3` | `emit` 段 ms | 1002.8（990.6〜1147.2） | 254.9（252.3〜269.3） | 0.254 | 1.006 | 改善 |
+| W2 `-O3` | 外部ツール（Clang など）ms | 5064（4970〜5364） | 2643（2552〜2975） | 0.522 | 0.990 | 改善 |
+| hello `-O0` | 実時間 ms | 327（285〜406） | 265（167〜333） | 0.811 | 0.989 | 差なし |
+| hello `-O0` | CPU 時間 ms | 220（210〜230） | 200（190〜240） | 0.909 | 1.000 | 差なし |
+| hello `-O3` | 実時間 ms | 874（800〜1022） | 319（259〜429） | 0.365 | 0.958 | 改善 |
+| hello `-O3` | CPU 時間 ms | 720（700〜740） | 250（230〜260） | 0.347 | 0.986 | 改善 |
+| hello `-O3` | 外部ツール ms | 788（696〜928） | 250（170〜291） | 0.318 | 0.940 | 改善 |
+| 合成 200 `-O0` | 実時間 ms | 1645（1620〜1701） | 1506（1463〜1586） | 0.915 | 1.003 | 改善 |
+| 合成 200 `-O0` | CPU 時間 ms | 1620（1600〜1640） | 1770（1740〜1790） | 1.093 | 1.000 | 悪化 |
+| 合成 200 `-O3` | 実時間 ms | 7129（6973〜7362） | 6057（5987〜6343） | 0.850 | 1.008 | 改善 |
+| 合成 200 `-O3` | CPU 時間 ms | 6970（6900〜7060） | 6240（6190〜6380） | 0.895 | 1.000 | 改善 |
+| 合成 200 `-O3` | 最大 RSS MiB | 354.8（352.2〜356.5） | 300.2（297.0〜303.0） | 0.846 | 0.998 | 改善 |
+| 合成 1,000 `-O0`（すべて使う） | 実時間 ms | 7915（7748〜8686） | 8434（8075〜10957） | 1.066 | 0.996 | 差なし |
+| 合成 1,000 `-O0` | CPU 時間 ms | 7390（7270〜7580） | 9240（9070〜9710） | 1.250 | 0.993 | 悪化 |
+| 合成 1,000 `-O0` | `emit` 段 ms | 1029.9（1014.9〜1263.9） | 2194.3（2143.7〜2505.5） | 2.131 | 1.006 | 悪化 |
+| 合成 1,000 `-O0` | 最大 RSS MiB | 667.4（664.8〜671.6） | 706.4（703.3〜709.8） | 1.059 | 1.002 | 悪化 |
+
+- **W2（到達する関数だけを Clang へ渡す。D1）**: `-O0` は実時間 −69%（7,715 → 2,369 ms）、CPU 時間 −54%（7,250 → 3,320 ms）、`-O3` は実時間 −45%、CPU 時間 −32% です。A/A は 0.990〜1.015 でした。PB03 の節の共有機での値（CPU 時間は `-O0` が −65%、`-O3` が −36%）と比べると、`-O3` はほぼ一致し、**`-O0` の CPU 時間の短縮は −54% でした**。
+  after の frontend は複数 thread で動き、その分の user+sys が CPU 時間に入ります（1,000 module の `check` で +43%、PB04 の表）。実時間（−69%）のほうが CPU 時間（−54%）より大きく縮むのはこのためです。共有機の値は、before が 8,567 ms、after が 2,966 ms で、ここでは 7,250 ms と 3,320 ms です（共有機の after が PB04 の並列 frontend を含んでいたかは確かめていません）。
+  `emit` 段は、レビュー後の型定義の修正（剪定しない場合の到達と型の収集をもう一度行う）を含めて 258 ms で、共有機の「修正後 252 ms」と一致します。
+- **hello の `--no-cache` のビルド**: `-O3` は実時間 874 → 319 ms、CPU 時間 720 → 250 ms で「改善」です。これは PB03 ではなく PM08 の効果です（整数だけを表示する hello が数値 object を使わなくなり、`--no-cache` で毎回コンパイルしていた数値 object が無くなる）。`-O0` は範囲が重なり、差と読めません。
+- **合成 1,000 module のすべてを使うビルドは遅くなりました**: CPU 時間 +25%（7,390 → 9,240 ms）、`emit` 段 2.13 倍、最大 RSS +5.9% で、実時間は 7,915 → 8,434 ms（+6.6%）と範囲が重なり差と読めません。外部ツールの時間は 4,526 → 4,558 ms で同じです。
+  W2 と違って 1,000 module のすべてが使われ、特殊化の予算（1,024）を使い切るため、PR03 の Phase 2c が `emit` を 2 回行います（上の PB04 の LLVM 出力と同じ理由）。CPU 時間の増加 +1,850 ms は、2 回目の emit（約 1.2 s）と frontend の thread の分（約 0.7 s）です。
+  合成 200 module は予算内で、`-O0` の実時間は −8.5%、CPU 時間は +9%（thread の分）、`-O3` は実時間 −15%、CPU 時間 −10.5%、最大 RSS −15% です。
+
+同梱ツールチェーンの識別（WP-F）: `vsc/toolchain`（macOS arm64 の配布物、759 MB、約 19,600 ファイル）の APFS clone を before・after の compiler ごとに作り、各 `bin/` にコンパイラを置いて、`examples/hello -O0`（cache あり、1 回目の warm-up の後は whole-build cache が当たる）を 9 標本、交互に測りました（`TSUZURI_CACHE_DIR` は構成ごと）。開始時の load average は 9.7 です。
+
+| 構成 | 実時間 ms | CPU 時間 ms | `cache` 段 ms | 最大 RSS MiB |
+| --- | ---: | ---: | ---: | ---: |
+| before | 14,596（13,830〜16,396） | 6,950（6,870〜7,040） | 14,525（13,726〜16,100） | 33.5（32.2〜34.7） |
+| after | 202（110〜481） | 120（110〜120） | 78.7（60.0〜230.8） | 24.4（23.9〜24.5） |
+
+after は実時間で 1/72、CPU 時間で 1/58 です（範囲は重なりません）。before の実時間が CPU 時間より 7.6 s 長いのは、全ファイルの読み込み（Defender の検査を含む）の待ちです。PB03 の節の値（`cache` 段 39.6〜51.0 s・CPU 約 8 s、after は 85〜170 ms・0.12 s）と同じ形で、`cache` 段の絶対値は機械の load で変わります（共有機の load average は約 160 でした）。
+同じ run を load average 40〜50 で行った 1 回目も、before の CPU 時間が 6,930 ms、after が 120 ms でした（`cache` 段は before が 16.7 s、after が 75 ms）。
+
+測っていないこと: PB03 の WP2（`threads.c`・`wasi.c`・`-g` の `stack.c` の runtime cache。−29〜−113 ms）、PX03 の `build` suite（`run-build.mjs`）です。後者は、合成 200 module と hello だけに絞って 1 compiler 目を始めたところ、10 分たっても最初の workload（合成 200 module の全 variant。WASM `-O3` が重い）が終わらなかったので中止し、上の `check`・LLVM 出力・`-O0`／`-O3` の `build` を 1 つずつ測りました。
+
+#### 成果物のサイズ（PM08）
+
+`node benchmarks/metrics.mjs size $COMPILER --out DIR`（9 つの `examples/` と C・Rust の hello。cache あり・なし、native と wasm32、`-O0`・`-O3`・`-Os`・`-Oz`、`--emit object`）を before と after で 1 回ずつ測りました。サイズは決定的なので 1 点で足ります（各ビルドを 2 回作って同一かを suite が確かめます）。
+`parse` は `--project benchmarks/size/parse` の別の run です。byte の値で、section の大きさは `llvm-objdump -h`（Homebrew LLVM 21）で読んでいます。`-O3`、cache あり（`--no-cache` の行は埋め込み形式）の before → after:
+
+| 成果物 | `hello` | `io` | `point` | `parse` |
+| --- | ---: | ---: | ---: | ---: |
+| native 実行ファイル | 50,664 → 33,896 | 51,432（同じ） | 50,344（同じ） | 84,168 → 34,104 |
+| native `__text` | 13,304 → 2,724 | 9,780 → 9,716 | 10,844（同じ） | 30,904 → 9,156 |
+| native `__const`＋`__cstring` | 10,160 → 64 | 301（同じ） | 10,096（同じ） | 21,044 → 270 |
+| wasm32 モジュール | 35,714 → 6,833 | 15,593 → 12,956 | 74（同じ） | 76,023 → 16,766 |
+| wasm CODE | 25,564 → 6,591 | 15,320 → 12,695 | 16（同じ） | 55,092 → 16,282 |
+| wasm DATA | 9,882 → 13 | 25 → 13 | 0（同じ） | 20,603 → 228 |
+| native 実行ファイル、`--no-cache` | 117,848 → 33,896 | 69,976 → 51,432 | 84,072 → 50,344 | 117,912 → 34,104 |
+| native `__text`、`--no-cache` | 43,496 → 2,724 | 27,316 → 9,716 | 40,552 → 10,844 | 48,040 → 9,156 |
+| `--emit object`（native） | 72,032 → 5,024 | 38,264 → 38,216 | 392（同じ） | 77,816 → 13,072 |
+
+`examples/` ごとの `-O3`、cache ありの before → after（byte。`—` は suite が wasm32 を取らない例）:
+
+| `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
+| --- | ---: | ---: | ---: |
+| `computations` | 50,280 → 33,464 | 10,812 → 304 | — |
+| `control` | 51,064 → 34,248 | 11,348 → 840 | — |
+| `currying` | 50,616 → 33,864 | 13,296 → 2,716 | 35,686 → 6,802 |
+| `functional` | 51,656 → 34,888 | 14,448 → 4,008 | 41,444 → 10,251 |
+| `hello` | 50,664 → 33,896 | 13,304 → 2,724 | 35,714 → 6,833 |
+| `polymorphism` | 50,280 → 33,464 | 10,812 → 304 | — |
+| `tasks` | 68,680 → 51,864 | 14,084 → 3,876 | — |
+| `io` | 51,432（同じ） | 9,780 → 9,716 | 15,593 → 12,956 |
+| `point` | 50,344（同じ） | 10,844（同じ） | 74（同じ） |
+
+9 つの `examples/` の全 variant 177 値のうち、小さくなったものが 144、同じものが 26、大きくなったものは 7 だけです（`io` の wasm32 `-O0` の module 18,332 → 18,893 bytes（code 17,824 → 18,391、data 51 → 63）が cache あり・なしの 2 variant に 3 値ずつ、`tasks` の native object `-O3` 16,072 → 16,544 bytes）。
+`-Os`・`-Oz` の before の値は suite が取らないので、after だけを書きます（hello の wasm32 は `-Os` 4,493、`-Oz` 3,905 bytes、native `__text` は `-Os` 2,800、`-Oz` 2,588。`parse` の wasm32 `-Oz` は 9,096、native `__text` の `-Oz` は 6,808）。
+
+- **追認できたこと**: native の hello は 50,664 → 33,896 bytes、`__const`＋`__cstring` は 10,160 → 64 bytes で、PM08 の節の値と一致します。`computations`・`control`・`currying`・`functional`・`polymorphism` の native 実行ファイルも、ほぼ一致します（50,280 → 33,464 など。`currying` と `functional` は PM08 の節より 16 bytes 大きい）。
+  `__text` と `--emit object` は、PM08 の節より 120〜128 bytes 大きくなりました（hello の `__text` は 13,304 → 2,724（PM08 の節は 2,604）、`--emit object` は 72,032 → 5,024（同 4,896）、`computations` の `__text` は 10,812 → 304（同 184））。この run の compiler は、PM08 の branch の後で `integer.ll` を 2 つ変えているためです。128 bit の除算をやめたこと（Windows の x86-64 で桁が壊れたため）は、`parse` の `__text` を 80 bytes 縮め、`tz.integer.digits` を 2 桁ずつにしたこと（`format_parse` の悪化への対処。下の C++ 比較の suite）は、整数を表示するすべてのプログラムの `__text` を 120 bytes（`-Oz` は 104、wasm32 は 124 bytes）増やします。
+  `--no-cache`（埋め込み形式）の native の実行ファイルは、リンク時の GC のあと cache ありと同じ大きさです（hello 33,896、`point` 50,344、`io` 51,432）。`parse` は native 34,104 bytes（PM08 の節は 34,120）、`__text` 9,156 bytes（同 9,096）です。
+- **PM08 の節の値と食い違うもの（PM05 の WASM ヒープを取り込んだ後の値）**: hello の wasm32 module は `-O3` が 6,833 bytes（PM08 の節は 6,357。code 6,591、data 13）、`-Os` が 4,493（同 2,995）、`-Oz` が 3,905（同 2,587）です。
+  PM08 の節は PM05 の WASM ヒープを取り込む前の値で、ヒープの関数が各 module に入るぶん、確保の少ない hello・`currying` は約 470〜1,500 bytes 大きくなります（`currying` 6,326 → 6,802）。確保の多い `functional`・`io`・`parse` は新しいヒープでコードが小さくなり、module が縮みます（`functional` 12,086 → 10,251、`io` 15,593 → 12,956、`parse` 18,199 → 16,766 bytes）。
+  `tasks` の native `__text` は 3,496 → 3,876 bytes（PR06 の新しい task pool の分と、上の `digits` の 120 bytes）です。PM08 の節は「`io` と `point` は変わりません」と書いていましたが、`io` は上のとおり変わります（native `__text` −64、wasm32 −2,637 bytes。`point` は native も wasm32 も変わりません）。
+  PM08 の節の表と、[WebAssembly への出力](../_tsuzuri/language-reference/compiler/webassembly.md) などの数値は、この run の値に置き換えました。
+- wasm-opt（Binaryen 132）の値は、この機械に Binaryen が無いので再測定していません。PM08 の節の wasm-opt の割合（−11.5〜−21.9%）は、PM05 のヒープを取り込む前の module に対する値です。
+
+#### Task pool のスケジューラ（PR06）
+
+before は main `6d15b437` の `src/runtime/task.c`（SHA-256 `d9b3692c05cc6dd64d4922f15d9a095bbca5698f17d2dd9c881cf18b6d889d34`）、after は統合 branch の `src/runtime/task.c`（`ac27826f0366c1863049f4c03a5c846a760793832904eb0f02ba44d5d6f3d4b0`。PR06 の節の最終の runtime と同じ）です。
+`benchmarks/run-tasks.mjs $BEFORE --runtime <after の task.c> --baseline-runtime <before の task.c> --metrics DIR` は、before のコンパイラが出す同じ IR に C の runtime だけを差し替え（native、`-O3 --cpu generic`、`--allocator system`、9 標本、1 標本ごとに順序を反転）、
+休まない run と `--gap-us 1000`（各呼び出しの前に 1 ms 休む。worker が眠った状態からの起床）の run をそれぞれ 3 回測りました。A/A は両方に before の runtime を渡した run です。
+WASM threads は `benchmarks/run-tasks-wasm.mjs $COMPILER`（9 worker、各標本が新しい pool。コンパイラが自分の runtime を埋め込む）を before・after の順に交互に 4 回測りました。run の開始時の load average は 4.5〜12.0 です。
+
+眠った worker の起床（`--gap-us 1000`、native、µs。3 run の中央値と範囲、比は run ごと、A/A は before の runtime どうしの比）:
+
+| workload | 指標 | before | after | 比 after/before（run ごと） | 判定 | A/A |
+| --- | --- | ---: | ---: | --- | --- | ---: |
+| tiny | p50（1 回ずつ） | 13.4（11.5〜26.1） | 3.38（2.21〜4.42） | 0.23 / 0.25 / 0.25 | 改善 3/3 | 0.97 |
+| tiny | CPU/呼び出し | 95.3（79.8〜130） | 12.0（9.89〜15.1） | 0.12 / 0.13 / 0.13 | 改善 3/3 | 0.99 |
+| small | p50 | 15.7（11.6〜25.0） | 4.33（2.92〜5.54） | 0.22 / 0.28 / 0.28 | 改善 3/3 | 0.93 |
+| small | CPU/呼び出し | 102（89.1〜124） | 12.8（9.69〜16.9） | 0.11 / 0.13 / 0.13 | 改善 3/3 | 1.04 |
+| bulk | p50 | 558（522〜600） | 347（238〜383） | 0.50 / 0.62 / 0.63 | 改善 3/3 | 1.01 |
+| bulk | CPU/呼び出し | 3,911（2,302〜4,093） | 2,349（901〜2,694） | 0.45 / 0.60 / 0.60 | 改善 3/3 | 1.02 |
+| coarse | p50 | 253（222〜365） | 259（250〜346） | 0.99 / 1.14 / 1.03 | 差なし | 1.01 |
+| coarse | CPU/呼び出し | 1,453（1,399〜1,489） | 1,435（1,358〜1,446） | 0.98 / 0.99 / 0.99 | 差なし | 1.00 |
+
+休まない連続呼び出し（native、µs、3 run）:
+
+| workload | 指標 | before | after | 比 after/before（run ごと） | 判定 | A/A |
+| --- | --- | ---: | ---: | --- | --- | ---: |
+| tiny | warm（平均） | 6.54（0.77〜19.1） | 4.24（0.24〜8.49） | 0.89 / 0.65 / 0.61 | 差なし | 0.97 |
+| tiny | p50 | 0.21（0.21〜0.63） | 0.21（0.17〜2.21） | 0.80 / 1.00 / 7.78 | 差なし | 1.00 |
+| small | warm | 23.6（13.1〜37.3） | 8.12（1.01〜15.6） | 0.43 / 0.40 / 0.29 | 改善 3/3 | 1.14 |
+| small | p50 | 16.5（1.08〜44.4） | 3.25（0.96〜8.63） | 0.24 / 0.32 / 0.15 | 差なし | 1.12 |
+| bulk | warm | 612（531〜1,084） | 280（233〜350） | 0.41 / 0.45 / 0.48 | 改善 3/3 | 1.02 |
+| bulk | p50 | 592（523〜699） | 271（210〜327） | 0.38 / 0.48 / 0.47 | 改善 3/3 | 1.00 |
+| bulk | cold | 733（538〜1,987） | 446（321〜521） | 0.49 / 0.62 / 0.61 | 改善 3/3 | 0.98 |
+| coarse | warm | 238（225〜313） | 259（240〜1,060） | 1.07 / 1.05 / 1.08 | 差なし | 0.99 |
+| coarse | p50 | 227（214〜288） | 256（240〜311） | 1.07 / 1.09 / 1.13 | 差なし | 1.02 |
+
+WASM threads（Node 24.21.0、9 worker、µs。4 run の中央値、比は run ごと）:
+
+| workload | 指標 | before | after | 比 after/before（run ごと） | 範囲が重ならない run |
+| --- | --- | ---: | ---: | --- | --- |
+| tiny | 連続の平均 | 0.80〜0.84 | 0.65〜0.71 | 0.86 / 0.83 / 0.86 / 0.79 | － |
+| small | 連続の平均 | 3.11〜3.16 | 1.82〜1.84 | 0.59 / 0.58 / 0.58 / 0.59 | 4/4（p50） |
+| bulk | 連続の平均 | 165〜223 | 92.6〜99.3 | 0.57 / 0.59 / 0.56 / 0.43 | 2/4（p50） |
+| tiny | 1 ms 休んだ後の p50 | 7.67 / 8.88 / 10.33 / 12.87 | 11.92 / 9.25 / 8.67 / 8.29 | 1.55 / 1.04 / 0.84 / 0.64 | 0/4 |
+| small | 1 ms 休んだ後の p50 | 9.42 / 15.25 / 11.96 / 11.29 | 10.71 / 11.29 / 9.21 / 10.17 | 1.14 / 0.74 / 0.77 / 0.90 | 1/4 |
+| bulk | 1 ms 休んだ後の p50 | 535 / 548 / 553 / 548 | 359 / 272 / 281 / 319 | 0.67 / 0.50 / 0.51 / 0.58 | 4/4 |
+| 3 種目 | cold（新しい pool の最初の呼び出し） | 0.83〜1.12 ms | 0.81〜1.23 ms | 0.88〜1.21 | 0/4 |
+
+data-parallel（`--data-parallel`、native、before の runtime と after の runtime を 2 回ずつ交互に）: `Parallel.init`・`map`・`sum` の chunk-boundary（8,193 添字）は 64.6／68.3／78.8 → 54.0／56.9／63.9 µs（比 0.88・0.80／0.87・0.80／0.83・0.80。`map` と `sum` は範囲が重ならない）、
+同じ run の `Array` 版は 60.6〜61 µs で変わらず（1.00〜1.01）、bulk（262,144 添字）は `Parallel.init` 830 → 855 µs（1.02・1.03）、`Array` 版 5.1 ms で変わらず、`Parallel.sum` は before・after とも 5.1 ms（`Array` 版と同じ時間）です。
+粒度の掃引（`--sweep`、32 添字、1 回）の逐次／before／after の p50 は、256 rounds が 9.6／47.1／19.2 µs、1,024 rounds が 41.2／69.1／44.9 µs、4,096 rounds が 166／77.5／90.7 µs、16,384 rounds が 667／165／171 µs です。
+`cpp/task_parallel`（`benchmarks/run-cpp.mjs`。before・after を 3 回ずつ別 process で、Node 24 で測れた）の Tsuzuri の wall は 2.358／1.920／1.973 → 2.334／1.976／2.008 ms（比 0.990／1.029／1.018。同じ run の組の範囲は重なり、before どうしの A/A は 0.81・0.84）で、C++ との比は 0.999 → 0.993 です。CPU 時間は 13.90／14.11／14.13 → 13.80／14.13／14.14 ms で変わりません。
+
+- **追認できたこと**: 眠った worker の起床（gap）の p50 が tiny・small で 0.22〜0.28 倍、bulk で 0.50〜0.63 倍、CPU 時間が tiny・small で 0.11〜0.13 倍、bulk で 0.45〜0.60 倍（3 run とも A/A の 0.93〜1.04 を超え、範囲が重ならない）。PR06 の節の「0.17〜0.27 倍・0.46〜0.47 倍・CPU 0.13〜0.42 倍」と同じ範囲です。
+  休まない連続呼び出しの small の warm（平均）0.29〜0.43 倍と bulk の 0.41〜0.48 倍も改善です（3/3）。coarse（16 添字 × 約 80 µs、`cpp/task_parallel` と同じ形）は gap・連続とも変わらず、PR06 の節の「全方針で HEAD と揺れの範囲で同じ」と一致します。
+- **追認できないこと・前の記述と違うこと**: 連続呼び出しの tiny は改善が示せません（warm の比 0.61〜0.89 は範囲が重なり、p50 は 3 run 目に 1.6 µs へ上がる run があります。PR06 の節の「原因は調べていません」のとおり）。連続の small の p50 も run 間の揺れが大きく（1.0〜44 µs）読めません。
+  coarse の連続呼び出しは、3 run とも after が 5〜13% 長い向き（warm 1.05〜1.08、p50 1.07〜1.13）ですが、範囲が重なり、A/A（0.99・1.02）と区別できる差とは読めません。`cpp/task_parallel` の wall は 0.990〜1.029 で、G3 の目標（`_perfs/README.md` の 0.94）に対する効果は示せません。
+  WASM threads は、PR06 の節（Node 20.19.6）の表では 1 ms 休んだ後の p50 が tiny 40.3 → 29.5 µs、small 88.4 → 54.6 µs と短くなっていましたが、Node 24.21.0 では before が 7.7〜12.9 µs、9.4〜15.3 µs と大きく短く、after との差は run ごとに向きが変わります（tiny 0.64〜1.55、small 0.74〜1.14）。
+  休んだ後の bulk（0.50〜0.67、4/4）と、連続呼び出しの small（0.58〜0.59）・bulk（0.43〜0.59）は Node 20 の表と同じ向きの改善です。PR06 の節の WASM の表は Node 20.19.6 の値で、tiny・small の「休んだ後」の改善は Node 24 では確かめられませんでした。
+
+#### ヒープ（PM05）
+
+WASM のヒープは `node benchmarks/run-heap.mjs $AFTER --baseline $BEFORE --samples 9`（9 標本、1 回の warm-up の後、1 標本ごとに順序を入れ替える）を 5 回、native の `--allocator small` は `node benchmarks/run-small.mjs $AFTER --rounds 5 --rss-runs 9`（system と small の object を同じ host で、ラウンドごとに順序を入れ替え、15 標本）を 3 回、
+`run-apps.mjs`・`run-control.mjs` の `--allocator system` と `--allocator small` を 1 回ずつ測りました。run の開始時の load average は 5.5〜9.4 です。
+
+WASM のヒープ（Node 24.21.0、`-O3`、ms。5 run の中央値と最小〜最大、比は run ごと）:
+
+| workload | baseline | current | 比 current/baseline（run ごと） | 範囲が重ならない run | メモリ MiB（baseline → current） |
+| --- | ---: | ---: | --- | --- | --- |
+| `small_churn` | 33.5（32.4〜35.2） | 5.67（5.26〜7.81） | 0.17 / 0.17 / 0.17 / 0.17 / 0.17 | 5/5 | 1.31 → 1.31 |
+| `mixed_churn` | 232（230〜300） | 37.2（35.9〜39.9） | 0.16 / 0.16 / 0.16 / 0.16 / 0.16 | 5/5 | 2.88 → 2.88 |
+| `vec_growth` | 7.32（6.93〜8.26） | 6.80（6.62〜7.49） | 0.95 / 0.93 / 0.92 / 0.92 / 0.95 | 3/5 | 5.06 → 3.06 |
+| `tokenize` | 3.99（3.76〜8.32） | 4.01（3.74〜5.96） | 1.01 / 1.08 / 1.00 / 1.00 / 1.01 | 0/5 | 7.19 → 7.19 |
+| `format_join` | 7.29（6.84〜8.55） | 6.36（5.95〜7.80） | 0.88 / 0.87 / 0.88 / 0.86 / 0.86 | 2/5 | 6.81 → 6.75 |
+| `csv_aggregate` | 13.4（13.0〜56.4） | 10.1（9.83〜16.6） | 0.75 / 0.76 / 0.76 / 0.77 / 0.77 | 3/5 | 7.50 → 7.44 |
+| `record_sort` | 4.46（4.23〜4.64） | 5.15（4.95〜5.40） | 1.14 / 1.14 / 1.15 / 1.17 / 1.15 | 5/5 | 3.81 → 3.75 |
+| `tree_transform` | 4.99（4.80〜6.48） | 4.38（4.22〜6.29） | 0.87 / 0.88 / 0.88 / 0.87 / 0.89 | 4/5 | 1.19 → 1.13 |
+| `binary_trees` | 7.73（7.30〜43.0） | 7.41（7.12〜12.4） | 0.72 / 0.96 / 0.97 / 0.98 / 0.98 | 0/5 | 1.13 → 1.13 |
+| `graph_bfs` | 2.57（2.38〜4.32） | 2.60（2.41〜4.29） | 1.03 / 1.01 / 0.99 / 0.98 / 1.08 | 0/5 | 7.56 → 7.50 |
+
+native の `--allocator small`（macOS arm64、`-O3 --cpu generic`、ms。3 run を通した最小／中央／最大。比は run ごとの中央値）:
+
+| workload | size | system | small | small/system（run ごと） | 範囲が重ならない run | RSS MiB（system → small） |
+| --- | ---: | --- | --- | --- | --- | --- |
+| tokenize | 200000 | 13.4 / 13.6 / 14.1 | 8.50 / 8.60 / 9.43 | 0.641 / 0.633 / 0.629 | 3/3 | 16.22 → 16.22 |
+| format_join | 100000 | 18.4 / 18.8 / 23.4 | 14.0 / 14.3 / 16.1 | 0.773 / 0.763 / 0.761 | 3/3 | 17.88 → 17.91 |
+| csv_aggregate | 100000 | 23.6 / 24.3 / 26.7 | 13.8 / 14.0 / 14.6 | 0.583 / 0.583 / 0.576 | 3/3 | 9.47 → 9.45 |
+| map_count | 200000 | 9.12 / 9.43 / 9.90 | 9.04 / 9.31 / 10.2 | 1.004 / 0.988 / 0.986 | 0/3 | 1.69 → 1.81 |
+| record_sort | 200000 | 10.6 / 11.0 / 12.1 | 10.4 / 10.6 / 12.6 | 0.982 / 0.961 / 0.971 | 0/3 | 10.88 → 10.86 |
+| tree_transform | 256 | 19.7 / 20.3 / 21.2 | 7.77 / 7.97 / 9.72 | 0.395 / 0.391 / 0.393 | 3/3 | 1.91 → 1.78 |
+| binary_trees | 2000 | 25.3 / 26.0 / 41.0 | 11.7 / 11.9 / 13.7 | 0.468 / 0.466 / 0.458 | 3/3 | 1.80 → 1.78 |
+| closure_pipeline | 1000000 | 2.85 / 2.89 / 3.68 | 3.02 / 3.07 / 3.19 | 1.066 / 1.058 / 1.061 | 1/3 | 16.95 → 17.02 |
+| graph_bfs | 100000 | 3.58 / 3.85 / 7.10 | 3.59 / 3.95 / 4.68 | 1.038 / 1.024 / 1.026 | 0/3 | 14.67 → 14.64 |
+| spectral_norm | 500 | 9.21 / 9.36 / 9.76 | 9.23 / 9.43 / 20.9 | 1.032 / 1.006 / 1.002 | 0/3 | 1.66 → 1.67 |
+
+`run-apps.mjs`（1 回、CPU 時間）の `--allocator small` ÷ `system` は、tokenize 0.661、format_join 0.825、csv_aggregate 0.602、tree_transform 0.394、binary_trees 0.456（範囲が重ならない）、closure_pipeline 1.062（範囲が重ならず、逆向き）、map_count 1.037、record_sort 1.002、graph_bfs 0.990、spectral_norm 1.007 で、
+`run-control.mjs` の 16 種目は `list_sum` が 0.405（範囲が重ならない）で、ほかは 0.973〜1.044（重なる）です。
+
+- **追認できたこと（native）**: 小さなブロックを大量に確保して手放す workload は tokenize 0.63、format_join 0.76〜0.77、csv_aggregate 0.58、tree_transform 0.39、binary_trees 0.46〜0.47 倍で、3 run とも範囲が重なりません（PM05 の節の 0.64・0.83・0.62・0.40・0.49 と同じ範囲）。確保をほとんどしない map_count・record_sort・graph_bfs・spectral_norm は 0.96〜1.04 で差がなく、RSS は PM05 の節の表と同じです。
+  control の `list_sum`（リストの節を確保する）も 0.405 倍になります。
+- **前の記述と違うこと**: PM05 の節と LR は「macOS で adverse（範囲が逆に重ならない）は 0」としていましたが、**closure_pipeline が 1.06 倍（`run-small` で 3 run のうち 1 run、`run-apps` の run でも範囲が重ならない）**で、adverse が 1 つあります（絶対値は 2.89 → 3.07 ms。1 回の呼び出しの確保は 8 回）。
+  確保をしない map_count・graph_bfs・spectral_norm の 1.00〜1.04 も、PM05 の節のとおりコードの配置の差と読めます。既定を `system` のまま変えない判断（Phase 3 の条件 (b)）は、この結果でも変わりません。
+- **前の記述と違うこと（WASM のヒープ、Node 24 の V8）**: PM05 の節（Node 20.19.6）は `vec_growth` が 1.53〜1.56 倍に悪化すると書き、原因を V8 TurboFan の生成コードの揺れとしていましたが、Node 24.21.0 では 5 run とも 0.92〜0.95 倍（メモリは 5.06 → 3.06 MiB）で、悪化は再現しません。
+  一方、`record_sort` は 1.14〜1.17 倍（5 run とも範囲が重ならない。PM05 の節は 0.97〜0.98）、`csv_aggregate` は 0.75〜0.77 倍（同 0.99〜1.00）、`format_join` は 0.86〜0.88 倍（同 0.97）、`tree_transform` は 0.87〜0.89 倍（同 0.91）です。
+  `small_churn`・`mixed_churn` の 0.17・0.16 倍は PM05 の節と一致し、メモリの大きさも同じか 1 page（0.06 MiB）小さい値です（`vec_growth` は 5.06 → 3.06 MiB）。WASM の時間は V8 の版に左右され、Node 20 と 24 の値を混ぜた主張はしません。
+- 測っていないこと: Linux と Windows、`--allocator small` の既定化の判断に要る専用機での Linux の値（PM05 の節の Phase 3 の表）、`Task.parallel` を使う native の `small` での時間です。
+
+#### 値のレイアウト（PM01）
+
+値の大きさは決定的です（`node benchmarks/layout/sizes.mjs $COMPILER benchmarks/layout --target native --target wasm32 --target x86_64-unknown-linux-gnu`）。before → after は PM01 の節の表と 12 行すべて一致しました（native・x86-64・wasm32 とも）:
+`Color` 4 → 1、`Maybe<bool>` 8 → 2、`Small` 32 → 2、`Maybe<i64>` 16 → 16、`Maybe<ref Point>` は native が 16 → 8（型定義なしの niche）で wasm32 は 8 のまま、`Maybe<string>` 24 → 16（型定義なし）、
+`Result<i64, string>`・`Shape`・`Mixed` が 32 → 24、`Tagged` 24 → 16、`Point` 16 → 16（bytes）。
+
+`benchmarks/layout` の実行ファイル（`-O3 --cpu generic --no-cache`。84,104 → 33,544 bytes）を、before・after・before2 の順序を回して 15 回ずつ走らせました（`/usr/bin/time -l`。出力はどれも `16166714`）。2 run とも、開始時の load average は 5.0〜11.8 です。
+
+| 構成 | 最大 RSS（bytes。中央値と最小〜最大） | CPU 時間 ms | 実時間 ms |
+| --- | ---: | ---: | ---: |
+| before | 165,920,768（165,904,384〜165,920,768） | 20（20〜20） | 119.2（42.7〜213.7） |
+| after | 110,837,760（110,837,760〜110,870,528） | 20（10〜20） | 111.2（37.7〜205.6） |
+| before2（A/A） | 165,920,768（165,904,384〜165,920,768） | 20（20〜30） | 106.6（47.4〜194.3） |
+
+最大 RSS は 55,083,008 bytes（−33.2%）減り、範囲は重なりません（2 run 目も 110,837,760 で同じ）。PM01 の節の 165,871,616 → 110,854,144（−33.2%）と一致します。時間は、この runner（CPU 時間の粒度 10 ms）では 20 ms と読み取れる差がありません。`benchmarks/computations` の `Maybe`・`Result` の時間は上の PX01 の表のとおり変わらず、PM01 の節の「時間は変わらない」と一致します。
+コンパイル時間（`build <project> --emit llvm -O0 --no-cache`、15 標本、before・after・before2）は、`benchmarks/layout` の実時間が 148 → 132 ms、`tests/fixtures/value_layout` が 303 → 256 ms、`tests/fixtures/record_layout` が 161 → 143 ms で、どれも範囲が重なります（A/A は 0.74〜1.02）。
+CPU 時間は 30 → 60、270 → 340、50 → 80 ms と増えます（PB04 の thread の分。1 つの project で 30〜70 ms）。`emit` 段は 2.3 → 2.2、64.6 → 66.8、12.9 → 13.3 ms で変わりません。PM01 の節の「コンパイル時間は雑音の内」と矛盾しません（CPU 時間の増加は PM01 ではなく PB04 によります）。
+
+#### 整数の overflow フラグ（PR02）
+
+`node benchmarks/run-range-flags.mjs $AFTER`（決定的。12 の corpus を `TSUZURI_RANGE_FLAGS=off` と `=proven` で IR にし、arm64・x86_64 の `-O1`〜`-O3` の assembly と wasm32 `-O3` の module を比べる）をこの窓でも 1 回実行しました。ただし、`_validate` の checkout の runner は、PR #27 のレビューで指摘された修正前の比較（命令を数えるだけ）で、
+12 の corpus のうち 10 が同じ、差が出たのは matrix と apps だけ（旗のある整数 `+ - *` の数は PR02 の節の表と一致）、という結論は同じでしたが、差の数は修正後の比較の値ではありません。修正後の比較（`benchmarks/assembly.mjs`。コメントと空行だけを無視して順序のまま比べる）での統合後のコンパイラの結果は、PR02 の節の表のとおりで、ここでは重ねて載せません。
+
+`String.split`／`String.join` の往復（PR02 の節のプログラム）を `off` と `proven` の `-O3 --cpu generic --no-cache` の実行ファイルにして、交互に 15 回ずつ走らせました（開始時の load average 9.8）。実時間は `off` が 291.9 ms（277.7〜350.8）、`proven` が 342.7 ms（285.9〜396.3）、CPU 時間は 250 ms と 260 ms（比 1.17・1.04）で、
+範囲が重なり差と読めません（速くはなっていない）。PR02 の節（319.1 対 322.7 ms）と同じ結論です。matrix の時間（`run-matrix.mjs`）は、1 回に数分かかるので測っていません。旗の既定は `off` のままです。
+
+#### C++ 比較の suite（`run-cpp.mjs`）
+
+PR06 の `cpp/task_parallel` のために `node benchmarks/run-cpp.mjs $COMPILER --metrics DIR` を before・after で 3 回ずつ（別 process、1 run に 12 標本、native `-O3`）測ったところ、`task_parallel` は変わらず（上の PR06）、ほかの workload は 1 つを除いて差がありません。
+
+| workload | before（run ごとの中央値 ms） | after | after/before（run ごと） | before2・3 ÷ before（A/A） | 範囲が重ならない run | Tsuzuri／C++（before → after） |
+| --- | --- | --- | --- | --- | --- | --- |
+| `format_parse` | 3.815 / 3.873 / 3.641 | 4.265 / 4.246 / 4.295 | 1.118 / 1.096 / 1.179 | 1.015 / 0.954 | 3/3 | 1.138 → 1.276 |
+| `array_sum` | 3.933 / 3.928 / 3.832 | 4.015 / 3.876 / 3.932 | 1.021 / 0.987 / 1.026 | 0.999 / 0.974 | 0/3 | 1.017 → 1.004 |
+| `integer_mix` | 32.74 / 31.69 / 31.76 | 32.62 / 31.86 / 32.42 | 0.996 / 1.005 / 1.021 | 0.968 / 0.970 | 0/3 | 0.996 → 1.000 |
+| `utf8_roundtrip` | 0.881 / 0.888 / 0.868 | 0.883 / 0.871 / 0.872 | 1.002 / 0.981 / 1.004 | 1.007 / 0.985 | 0/3 | 1.255 → 1.234 |
+
+- **`format_parse` は統合後のコンパイラで 10〜18% 遅くなりました**（3 run とも範囲が重ならず、A/A は 0.95・1.02、C++ との比は 1.14 → 1.28）。`format_parse` は 64 bit の符号なし整数（最大 20 桁）の `to_string` と `Parse.parse` を繰り返す workload です。
+  `-O3` の object で `tz_format_parse` を比べると、before は 116 命令で `tz_soft_format`・`tz_soft_parse`（`numeric.ll`）と `malloc`・`free` を呼び、after は 191 命令で `tz.integer.digits`（2 回）・`tz.integer.scan`（PM08 の `integer.ll`）と `malloc`・`free` を呼びます。
+  経路が PM08 の整数の書式・読み取りに変わったことと同時に遅くなっているので、PM08 の変更が原因の候補ですが、この測定では PM08 の変更だけを外した版との比較をしていないので、原因は確定していません。PM08 の節の C の測定（`Parse` 全幅の `u64` 29.1 → 21.2 ns、`i64` の書式 26.3 → 24.8 ns）は、この workload の単位（確保を含む `to_string` と `Parse.parse` の往復）とは別の測定です。
+  **対処と再測定**: 20 桁の値では、`tz.integer.digits` が 1 桁ずつ書くこと（C の測定で `to_string` 相当が 25.0 ns。`numeric.ll` は 22.8 ns）が主な差でした。`Parse` は 20.5 ns と 19.8 ns でほぼ同じです。そこで `tz.integer.digits` を、100 以上の間は 2 桁ずつ書く形にしました（表は持たず、`/ 100` と `/ 10` の乗算で桁を作ります）。同じ値の列で 20 桁の値は 25.0 → 18.9 ns、5〜10 桁は 11.4 → 8.7 ns、0〜999 は 4.3 → 3.5 ns で（`numeric.ll` は 22.8・14.2・7.3 ns。Apple M1 Max、`-O3`、native、4,096 個の値を 9 回繰り返した最小値、1 回の測定）、`__text` が native の hello で 120 bytes（`-Oz` は 104、wasm32 の hello は 124 bytes）増えます。4 桁ずつ書く版は 20 桁で 14.6 ns まで速くなりますが、`__text` が 188 bytes（wasm32 の hello は 171 bytes）増えるので採りませんでした。
+  `run-cpp.mjs` を、main・統合時（`a5a6b3d8`）・変更後の 3 つで交互に 3 run ずつ（別 process、1 run に 12 標本。`with-lock.sh measure` の下）測り直しました。`format_parse` の cpu 時間の中央値（ms）は、main が 3.783・3.764・3.655、統合時が 4.212・4.239・4.218、変更後が 3.833・3.835・3.855 で、C++ との比は 1.14・1.14・1.11、1.28・1.28・1.28、1.16・1.17・1.17 です。悪化は +12% から +2% に戻りました（main との差が残る分は、この測定では切り分けていません）。ほかの 11 種目は、統合時も変更後も main の ±2% 以内です（最大は `utf16_compare` の 1.020 で、0.084 ms の種目）。この 3 run は、ほかの重い処理と重ならないようにしたうえでの値ですが、専用機ではありません（各 run の開始時の 1 分の load average は 7.9〜9.1。この機械の下限は 8〜10 です）。
+- 12 種目のうち `format_parse` 以外は差がありません（`array_sum` の 1.021・0.987・1.026 は 3 run とも範囲が重なる）。
+
+#### チケットごとの追認と、追認できなかったこと
+
+- **PR03**: 追認 — `std_option` の native が −14.4%（5/5、A/A 1.003）で、`ce` が `direct` と同じ時間になった。ほかの 9 対は差がなく、確保は同じ。追認できない — WASM の `std_option` は 1.26〜1.38 倍遅い（before の `ce` は分岐の形で、V8 では `select` の形の `direct` より約 22% 速かった。PR03 の節の「向きが揃わない」を置き換えた）。`std_option_owned` の WASM は 0.86 倍（改善）。
+- **PM01**: 追認 — 型の大きさ 12 行がすべて一致、最大 RSS が 165,920,768 → 110,837,760（−33.2%、A/A は同じ値）、native の時間は変わらない。CPU 時間の増加は PB04 の thread による。
+- **PM05**: 追認 — WASM のヒープの `small_churn`・`mixed_churn` が 0.17・0.16 倍（5 run）、native の `small` が tokenize・csv_aggregate・tree_transform・binary_trees・format_join で 0.39〜0.77 倍。追認できない — `vec_growth` の悪化（1.53 倍）は Node 24 で再現しない（0.92〜0.95 倍）、`record_sort` が 1.14〜1.17 倍、`closure_pipeline` が native で 1.06 倍（adverse が 1 つ）。
+- **PB04**: 追認 — `check` の total が hello 1.61 倍、200 module 1.49〜1.56 倍、1,000 module 1.34〜1.38 倍、`THREADS=1` は before と同じ、RSS +2.7〜8.7%、user+sys +43〜53%。追認できない — 1,000 module の LLVM 出力は before より 1.10 倍（1 thread は 1.27 倍）遅い（PR03 の Phase 2c の 2 回出力）。
+- **PB03**: 追認 — W2 の実時間が `-O0` で −69%、`-O3` で −45%、CPU 時間が −54%・−32%、`emit` 段が 1/4、同梱ツールチェーンの識別が 14.6 s → 0.2 s（`cache` 段 14.5 s → 79 ms）。追認できない — `-O0` の CPU 時間の短縮は −65% でなく −54%、すべての module を使う 1,000 module の `build` は CPU 時間が +25%（`emit` 2.13 倍）。
+- **PM08**: 追認 — native の hello 50,664 → 33,896 bytes（`__text` 13,304 → 2,724）、`--emit object` 72,032 → 5,024 など。追認できない — wasm32 の値は PM05 のヒープの後で変わった（hello `-O3` 6,833、`-Os` 4,493、`-Oz` 3,905。`io` は 15,593 → 12,956 で「変わらない」ではない）。`run-cpp.mjs` の `format_parse`（64 bit 符号なし整数の書式と読み取りの往復）は、統合時に 10〜18% 遅かった（`tz.integer.digits` が 1 桁ずつ書くため）。2 桁ずつ書く形に変え、main との差は +2% になった（上の C++ 比較の suite）。
+- **PR06**: 追認 — 眠った worker の起床の p50 が tiny・small で 0.22〜0.28 倍、bulk で 0.50〜0.63 倍、CPU が 0.11〜0.60 倍。coarse と `cpp/task_parallel` は変わらない。追認できない — WASM の「休んだ後」の tiny・small は Node 24 では改善と読めない。連続の tiny は改善と読めない。
+- **PR02**: 追認 — 12 の corpus のうち 10 は assembly・module が同じで、差は matrix と apps だけ（数命令）。旗は時間の根拠にならず、既定は `off`。control の整数の種目 16 種はすべて差なし。
 
 ## 現実的な次の指標
 

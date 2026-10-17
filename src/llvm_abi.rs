@@ -751,8 +751,10 @@ impl FunctionEmitter<'_, '_> {
                 let value = self.value(format!("load {}, ptr {slot}", abi_type(field)));
                 self.decode_host_scalar(field, &value)
             };
+            // The C struct keeps the declared order; the record may not.
+            let internal = self.field_slot(ty, index);
             record = self.value(format!(
-                "insertvalue {} {record}, {} {value}, {index}",
+                "insertvalue {} {record}, {} {value}, {internal}",
                 self.ty(ty),
                 self.ty(field)
             ));
@@ -773,7 +775,8 @@ impl FunctionEmitter<'_, '_> {
                 "getelementptr inbounds %{}, ptr {pointer}, i32 0, i32 {index}",
                 record_name(ty, self.module)
             ));
-            let extracted = self.value(format!("extractvalue {} {value}, {index}", self.ty(ty)));
+            let internal = self.field_slot(ty, index);
+            let extracted = self.value(format!("extractvalue {} {value}, {internal}", self.ty(ty)));
             if matches!(field, Type::Record(..)) {
                 self.write_host_record(field, &extracted, &slot);
             } else if let Type::FixedArray(element, _) = field {

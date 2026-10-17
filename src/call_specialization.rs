@@ -15,11 +15,29 @@ pub(super) struct Specialization {
     pub borrowed: usize,
 }
 
+/// The order in which the requested workers are emitted. A program that stays within the budget is
+/// always emitted `InRequestOrder`. One that runs out of the budget is emitted again `DepthFirst`,
+/// so that the workers of one function are complete before the next function asks for its own:
+/// in request order, a budget that is too small for every chain cuts all of them part-way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Drain {
+    InRequestOrder,
+    DepthFirst,
+}
+
 pub(super) struct Specializations {
     pub eligible: Vec<BTreeSet<usize>>,
     pub requests: Vec<Specialization>,
     keys: BTreeMap<Specialization, usize>,
     readable: BTreeMap<ClosureTarget, bool>,
+    /// A request found the budget spent.
+    refused: bool,
+    /// `InRequestOrder`: the next request to emit.
+    next: usize,
+    /// `DepthFirst`: the requests that wait for emission, the next one last, and how many requests
+    /// have been put there.
+    pending: Vec<usize>,
+    scheduled: usize,
 }
 
 impl Specializations {
@@ -66,6 +84,10 @@ impl Specializations {
             requests: Vec::new(),
             keys: BTreeMap::new(),
             readable: BTreeMap::new(),
+            refused: false,
+            next: 0,
+            pending: Vec::new(),
+            scheduled: 0,
         }
     }
 
@@ -93,12 +115,87 @@ impl Specializations {
         }
         if self.requests.len() == MAX_SPECIALIZATIONS {
             // This is an optimization budget, not a limit on valid source programs.
+            self.refused = true;
             return None;
         }
         let id = self.requests.len();
         self.requests.push(key.clone());
         self.keys.insert(key, id);
         Some(id)
+    }
+
+    /// Whether a request found the budget spent, so that some call keeps its generic path.
+    pub fn exhausted(&self) -> bool {
+        self.refused
+    }
+
+    /// The next requested worker to emit, with its id.
+    fn next_worker(&mut self, drain: Drain) -> Option<(usize, Specialization)> {
+        let id = match drain {
+            Drain::InRequestOrder => {
+                let id = self.next;
+                if id == self.requests.len() {
+                    return None;
+                }
+                self.next += 1;
+                id
+            }
+            Drain::DepthFirst => {
+                // The requests that the last emission made, the first of them on top.
+                self.pending
+                    .extend((self.scheduled..self.requests.len()).rev());
+                self.scheduled = self.requests.len();
+                self.pending.pop()?
+            }
+        };
+        Some((id, self.requests[id].clone()))
+    }
+}
+
+/// The order in which `DepthFirst` emits the functions: each one is followed by the functions it
+/// names, so that the lifted closures of a chain come right after the function that builds it.
+pub(super) fn reference_order(module: &CheckedModule) -> Vec<usize> {
+    let graph = escape::references(module);
+    let mut seen = vec![false; graph.len()];
+    let mut order = Vec::with_capacity(graph.len());
+    for root in 0..graph.len() {
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            if !std::mem::replace(&mut seen[id], true) {
+                order.push(id);
+                pending.extend(graph[id].iter().rev());
+            }
+        }
+    }
+    order
+}
+
+/// Emits the workers that have been requested and not yet emitted, and those that their emission requests.
+pub(super) fn emit_workers(
+    module: &CheckedModule,
+    builtins: &mut Builtins,
+    intrinsics: &mut BTreeSet<String>,
+    globals: &mut Globals,
+    specializations: &mut Specializations,
+    drain: Drain,
+    output: &mut String,
+) {
+    while let Some((id, key)) = specializations.next_worker(drain) {
+        let start = output.len();
+        let emitter = FunctionEmitter::new(
+            module,
+            &module.functions[key.function],
+            key.function,
+            builtins,
+            intrinsics,
+            globals,
+            specializations,
+        )
+        .specialized(id, &key);
+        output.push_str(&emitter.emit());
+        if let Some(marks) = &mut globals.traps {
+            marks.source(&output[start..], &module.functions[key.function]);
+        }
     }
 }
 
@@ -200,6 +297,35 @@ pub(super) fn binary_operation<'a>(
         }
         _ => None,
     }
+}
+
+/// The operator of a compiler-generated method `Add.add`, `Sub.sub` or `Mul.mul` of a scalar number,
+/// whose body is `x op y` of its two parameters (PR02 D10). A direct call of it is the operator
+/// itself, so the emitter writes `x op y` instead of calling it: the builtin and the operator form
+/// then take the same path. A function written in source code never qualifies, and neither does a
+/// string, whose `+` takes its operands.
+pub(super) fn intrinsic_operation(function: &CheckedFunction) -> Option<BinaryOp> {
+    if function.module != "$intrinsic" || function.parameters.len() != 2 {
+        return None;
+    }
+    let TypedExprKind::Binary(
+        operator @ (BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply),
+        left,
+        right,
+    ) = &function.body.kind
+    else {
+        return None;
+    };
+    let operand = |expression: &TypedExpr, index: usize| matches!(expression.kind, TypedExprKind::Local(id) if id == function.parameters[index].id);
+    let scalar = |ty: &Type| matches!(ty, Type::Integer(..) | Type::Binary(_) | Type::Decimal(_));
+    (operand(left, 0)
+        && operand(right, 1)
+        && function
+            .parameters
+            .iter()
+            .all(|parameter| scalar(&parameter.ty))
+        && scalar(&function.signature.result))
+    .then_some(*operator)
 }
 
 pub(crate) fn field_root(mut expression: &TypedExpr) -> Option<(usize, &Type)> {

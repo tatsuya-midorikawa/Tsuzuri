@@ -200,6 +200,15 @@ fn debug_scalars_and_pointers_use_tsuzuri_shapes() {
 
 /// The `offset:` in bits of member `member` of the composite type named `owner`.
 fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
+    member_field(ir, owner, member, "offset: ")
+}
+
+/// The `size:` in bits of member `member` of the composite type named `owner`.
+fn member_size(ir: &str, owner: &str, member: &str) -> usize {
+    member_field(ir, owner, member, "size: ")
+}
+
+fn member_field(ir: &str, owner: &str, member: &str, field: &str) -> usize {
     let marker = format!("!DICompositeType(tag: DW_TAG_structure_type, name: \"{owner}\",");
     let owner = ir
         .lines()
@@ -211,15 +220,76 @@ fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
         .lines()
         .find(|line| line.contains("DW_TAG_member") && line.contains(&scope))
         .unwrap_or_else(|| panic!("{scope}\n{ir}"));
-    line.split("offset: ")
+    line.split(field)
         .nth(1)
         .unwrap()
-        .trim_end_matches(')')
+        .split([',', ')'])
+        .next()
+        .unwrap()
         .parse()
         .unwrap()
 }
 
 const UNIONS: &str = "union Shape = Empty | Circle of f64 | Rect of f64 * f64\nunion Color = Red | Green\nunion Tree = Leaf | Node of Tree * i64 * Tree\n\nexport def answer :: i64 -> i64\nfn answer input =\n    let color = Green\n    let shape = Rect (1.5, 2.0)\n    let tree = Node (Leaf, input, Leaf)\n    let maybe = Maybe.Some input\n    let chain = [|input, 2|]\n    let size = match shape with | Rect (w, _) -> w as i64 | _ -> 0\n    let leaf = match tree with | Node (_, value, _) -> value | Leaf -> 0\n    let first = match color with | Green -> 1 | Red -> 0\n    size + leaf + first + Maybe.default_value 0 maybe + chain.length\n";
+
+/// The names of the members of the structure named `owner`, in the order the debug info lists them.
+fn member_names(ir: &str, owner: &str) -> Vec<String> {
+    let marker = format!("!DICompositeType(tag: DW_TAG_structure_type, name: \"{owner}\",");
+    let line = ir
+        .lines()
+        .find(|line| line.contains(&marker))
+        .unwrap_or_else(|| panic!("{marker}\n{ir}"));
+    let elements = line
+        .split("elements: ")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')');
+    let list = ir
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{elements} = !{{")))
+        .unwrap_or_else(|| panic!("{elements}\n{ir}"));
+    list.trim_end_matches('}')
+        .split(", ")
+        .map(|id| {
+            let line = ir
+                .lines()
+                .find(|line| line.starts_with(&format!("{id} = ")))
+                .unwrap();
+            line.split("name: \"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn debug_record_members_stay_declared_and_take_the_stored_offsets() {
+    let source = "record Mixed { flag: bool, count: i64, tag: i8, ratio: f64 }\nrecord Pair { small: i8, wide: i64 }\nexport def answer :: i64 -> i64\nfn answer n =\n    let mixed = Mixed { flag: n > 0, count: n, tag: 3, ratio: 1.5 }\n    let pair = Pair { small: 1, wide: 2 }\n    mixed.count + mixed.tag as i64 + pair.wide\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The record is stored as { count, ratio, flag, tag }: 8 + 8 + 1 + 1 bytes, 24 with padding.
+        let owner = "Main.Mixed";
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_structure_type, name: \"{owner}\", size: 192, align: 64,"
+            )),
+            "{ir}"
+        );
+        assert_eq!(member_offset(&ir, owner, "count"), 0);
+        assert_eq!(member_offset(&ir, owner, "ratio"), 64);
+        assert_eq!(member_offset(&ir, owner, "flag"), 128);
+        assert_eq!(member_offset(&ir, owner, "tag"), 136);
+        // A debugger still lists the fields in the order they were declared.
+        assert_eq!(member_names(&ir, owner), ["flag", "count", "tag", "ratio"]);
+        // A record that needs no reordering has the offsets of its declared order.
+        assert_eq!(member_offset(&ir, "Main.Pair", "small"), 0);
+        assert_eq!(member_offset(&ir, "Main.Pair", "wide"), 64);
+    }
+}
 
 #[test]
 fn debug_unions_expose_cases_and_payloads() {
@@ -251,10 +321,15 @@ fn debug_union_offsets_match_storage() {
     // Offsets in bits from `union_layout` and the node `{ ptr, ptr, ptr, i32, payload }`.
     for (wasm, tag, payload) in [(false, 192, 256), (true, 96, 128)] {
         let ir = debug_ir(UNIONS, tsuzuri::llvm::Entry::Library, wasm);
-        // `General`: payloads of different LLVM types share `[1 x i128]` after the tag.
+        // `General`: payloads of different LLVM types share `[2 x i64]` after the one-byte tag,
+        // aligned to the largest payload alignment (8): 64 bits in, and 24 bytes in all.
         assert_eq!(member_offset(&ir, "Main.Shape", "$tag"), 0);
-        assert_eq!(member_offset(&ir, "Main.Shape", "$payload"), 128);
-        // `Common`: `{ i32, i64 }`.
+        assert_eq!(member_offset(&ir, "Main.Shape", "$payload"), 64);
+        assert!(
+            ir.contains("DW_TAG_structure_type, name: \"Main.Shape\", size: 192, align: 64,"),
+            "{ir}"
+        );
+        // `Common`: `{ i8, i64 }`.
         assert_eq!(member_offset(&ir, "Maybe<i64>", "$payload"), 64);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "next"), 0);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "$tag"), tag);
@@ -262,6 +337,88 @@ fn debug_union_offsets_match_storage() {
         // The list node `{ ptr, i64 }`.
         assert_eq!(member_offset(&ir, "[|i64|].node", "value"), 64);
     }
+}
+
+#[test]
+fn debug_union_tags_have_their_stored_width() {
+    for wasm in [false, true] {
+        let ir = debug_ir(UNIONS, tsuzuri::llvm::Entry::Library, wasm);
+        // A union of at most 256 cases stores its tag in one byte, both bare (an enumeration of
+        // `Color`) and in front of a payload (`$tag` of `Shape` and `Maybe<i64>`).
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Color\", size: 8, align: 8,"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Shape.$tag\", size: 8, align: 8,"),
+            "{ir}"
+        );
+        assert_eq!(member_size(&ir, "Main.Shape", "$tag"), 8);
+        assert_eq!(member_size(&ir, "Maybe<i64>", "$tag"), 8);
+        // The node of a recursive union keeps an `i32` tag.
+        assert!(
+            ir.contains("DW_TAG_enumeration_type, name: \"Main.Tree.$tag\", size: 32, align: 32,"),
+            "{ir}"
+        );
+        assert_eq!(member_size(&ir, "Main.Tree.node", "$tag"), 32);
+    }
+}
+
+#[test]
+fn debug_niche_unions_overlay_the_niche_on_the_payload() {
+    let source = "union Alias = NoAlias | Spelled of string\nexport def answer :: i64 -> i64\nfn answer n =\n    let alias = Spelled \"abc\"\n    let missing: Maybe<string> = None\n    n + (match alias with | Spelled text -> text.length | NoAlias -> 0) + (match missing with | Some _ -> 1 | None -> 0)\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The union is its payload `{ ptr, i64 }` of 16 bytes: `$payload`, a C union of the payload
+        // case, at offset 0, and `$niche` over the length at offset 8. No tag is stored.
+        for owner in ["Main.Alias", "Maybe<string>"] {
+            assert!(
+                ir.contains(&format!(
+                    "DW_TAG_structure_type, name: \"{owner}\", size: 128, align: 64,"
+                )),
+                "{owner}\n{ir}"
+            );
+            assert_eq!(member_offset(&ir, owner, "$payload"), 0, "{owner}");
+            assert_eq!(member_offset(&ir, owner, "$niche"), 64, "{owner}");
+            assert_eq!(member_size(&ir, owner, "$niche"), 64, "{owner}");
+            assert!(
+                ir.contains(&format!(
+                    "DW_TAG_enumeration_type, name: \"{owner}.$niche\", size: 64, align: 64,"
+                )),
+                "{owner}\n{ir}"
+            );
+            assert!(!ir.contains(&format!("name: \"{owner}.$tag\"")), "{owner}");
+        }
+        // The nullary case is the enumerator at the value of the niche, the length -1.
+        assert!(ir.contains("!DIEnumerator(name: \"NoAlias\", value: -1)"));
+        assert!(ir.contains("!DIEnumerator(name: \"None\", value: -1)"));
+        assert!(ir.contains("DW_TAG_member, name: \"Spelled\""));
+    }
+}
+
+#[test]
+fn debug_pointer_niches_overlay_the_null_pointer_on_native_targets_only() {
+    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let values = [1, 2, 3]\n    let found = Array.find (\\x -> deref x == n) (ref values)\n    match found with\n    | Some value -> deref value\n    | None -> -1\n";
+    let native = debug_ir(source, tsuzuri::llvm::Entry::Library, false);
+    let owner = "Maybe<ref i64>";
+    // The union is the 8-byte pointer: `$payload` at offset 0 and `$niche` over the same bytes.
+    assert!(
+        native.contains(&format!(
+            "DW_TAG_structure_type, name: \"{owner}\", size: 64, align: 64,"
+        )),
+        "{native}"
+    );
+    assert_eq!(member_offset(&native, owner, "$payload"), 0);
+    assert_eq!(member_offset(&native, owner, "$niche"), 0);
+    assert_eq!(member_size(&native, owner, "$niche"), 64);
+    // The nullary case is the enumerator at the value of the niche, the null pointer.
+    assert!(native.contains("!DIEnumerator(name: \"None\", value: 0)"));
+    assert!(!native.contains(&format!("name: \"{owner}.$tag\"")));
+    // WebAssembly keeps the tag in front of the pointer.
+    let wasm = debug_ir(source, tsuzuri::llvm::Entry::Library, true);
+    assert_eq!(member_offset(&wasm, owner, "$tag"), 0);
+    assert!(wasm.contains(&format!("name: \"{owner}.$tag\"")));
+    assert!(!wasm.contains(&format!("name: \"{owner}.$niche\"")));
 }
 
 #[test]

@@ -439,16 +439,22 @@ impl DebugContext {
                     })
                     .collect(),
             };
+            // The members stay in declared order; a record may place them elsewhere in memory.
+            let order: Vec<usize> = match ty {
+                Type::Record(..) => super::layout::physical_fields(ty, module)
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect(),
+                _ => (0..members.len()).collect(),
+            };
+            let mut offsets = vec![0; members.len()];
             let mut offset: usize = 0;
-            let placed = members
-                .into_iter()
-                .map(|member| {
-                    offset = offset.next_multiple_of(member.alignment);
-                    let placed = (member, offset);
-                    offset += placed.0.size;
-                    placed
-                })
-                .collect();
+            for index in order {
+                offset = offset.next_multiple_of(members[index].alignment);
+                offsets[index] = offset;
+                offset += members[index].size;
+            }
+            let placed = members.into_iter().zip(offsets).collect();
             composite(
                 "DW_TAG_structure_type",
                 id,
@@ -566,7 +572,7 @@ impl DebugContext {
     }
 
     /// The definition of union `ty` named `display` (G16 D5). A union whose cases are all
-    /// nullary is an enumeration of its `i32` tag. Another is a structure of the tag `$tag` and
+    /// nullary is an enumeration of its tag. Another is a structure of the tag `$tag` and
     /// the payload `$payload`, a C union with a member for each case with a payload, at the
     /// offsets of `union_layout`. A recursive union is a typedef of a pointer to its node, which
     /// adds the `next`, `drop`, and `clone` pointers of `recursive_header` before them; a null
@@ -584,44 +590,42 @@ impl DebugContext {
         let shape = union_layout(union, arguments, module);
         let recursive = module.types().recursive(ty);
         if matches!(shape, UnionLayout::Enum) && !recursive {
-            return self.tag_type(union, display, module, next, definitions);
+            return self.tag_type(union, ty, display, module, next, definitions);
         }
-        let tag = self.tag_type(union, &format!("{display}.$tag"), module, next, definitions);
-        let tag = metadata(next, definitions, tag);
-        let (storage_size, storage_alignment) = match &shape {
-            UnionLayout::Enum => (1, 1),
-            UnionLayout::Common(payload) => layout(payload, module, self.wasm),
-            UnionLayout::General(count) => (16 * count, 16),
-        };
-        let payloads: Vec<_> = module.unions[union]
-            .cases
-            .iter()
-            .zip(module.types().union_payloads(union, arguments))
-            .filter_map(|((case, _), payload)| Some((case.clone(), payload?)))
-            .collect();
-        let payload = (!payloads.is_empty()).then(|| {
-            let id = *next;
-            *next += 1;
-            let members = payloads
-                .iter()
-                .map(|(case, payload)| {
-                    let (size, alignment) = layout(payload, module, self.wasm);
-                    let member = self.ty(payload, module, next, definitions);
-                    (Member::new(case, member, size, alignment), 0)
-                })
-                .collect();
-            let definition = composite(
-                "DW_TAG_union_type",
-                id,
-                &quote(&format!("{display}.$payload")),
-                (storage_size, storage_alignment),
-                members,
+        if let UnionLayout::Niche { niche, none, .. } = shape {
+            return self.niche_union_type(
+                (union, arguments),
+                (ty, display),
+                (niche, none),
+                module,
                 next,
                 definitions,
             );
-            definitions.push(format!("!{id} = {definition}"));
-            id
-        });
+        }
+        let tag = self.tag_type(
+            union,
+            ty,
+            &format!("{display}.$tag"),
+            module,
+            next,
+            definitions,
+        );
+        let tag = metadata(next, definitions, tag);
+        let tag_bytes = tag_width(ty, module);
+        let (storage_size, storage_alignment) = match &shape {
+            UnionLayout::Enum => (1, 1),
+            UnionLayout::Common(payload) => layout(payload, module, self.wasm),
+            UnionLayout::General { unit, units } => (unit * units, *unit),
+            UnionLayout::Niche { .. } => unreachable!("handled above"),
+        };
+        let payload = self.payload_union(
+            (union, arguments),
+            display,
+            (storage_size, storage_alignment),
+            module,
+            next,
+            definitions,
+        );
         let header = if recursive { 3 * pointer } else { 0 };
         let mut members = Vec::new();
         if recursive {
@@ -633,11 +637,8 @@ impl DebugContext {
                 ));
             }
         }
-        members.push((Member::new("$tag", tag, 4, 4), header));
-        let payload_offset = match shape {
-            UnionLayout::General(_) if !recursive => 16,
-            _ => (header + 4).next_multiple_of(storage_alignment),
-        };
+        members.push((Member::new("$tag", tag, tag_bytes, tag_bytes), header));
+        let payload_offset = (header + tag_bytes).next_multiple_of(storage_alignment);
         if let Some(payload) = payload {
             members.push((
                 Member::new("$payload", payload, storage_size, storage_alignment),
@@ -680,18 +681,132 @@ impl DebugContext {
         )
     }
 
-    /// The definition of the enumeration named `name` of the `i32` tag of `union`, with an
+    /// The `$payload` C union of the union `union`, which has a member for each case with a
+    /// payload, in `storage` bytes `(size, alignment)`; none for a union without payloads.
+    fn payload_union(
+        &mut self,
+        (union, arguments): (usize, &[Type]),
+        display: &str,
+        storage: (usize, usize),
+        module: &CheckedModule,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> Option<usize> {
+        let payloads: Vec<_> = module.unions[union]
+            .cases
+            .iter()
+            .zip(module.types().union_payloads(union, arguments))
+            .filter_map(|((case, _), payload)| Some((case.clone(), payload?)))
+            .collect();
+        if payloads.is_empty() {
+            return None;
+        }
+        let id = *next;
+        *next += 1;
+        let members = payloads
+            .iter()
+            .map(|(case, payload)| {
+                let (size, alignment) = layout(payload, module, self.wasm);
+                let member = self.ty(payload, module, next, definitions);
+                (Member::new(case, member, size, alignment), 0)
+            })
+            .collect();
+        let definition = composite(
+            "DW_TAG_union_type",
+            id,
+            &quote(&format!("{display}.$payload")),
+            storage,
+            members,
+            next,
+            definitions,
+        );
+        definitions.push(format!("!{id} = {definition}"));
+        Some(id)
+    }
+
+    /// The structure of a union with a niche (PM01): `$payload`, the C union of its one payload at
+    /// offset 0, and `$niche`, the field that tells the cases apart, overlaid on it. `$niche` is an
+    /// enumeration over the integer that holds the niche, with one enumerator, the nullary case,
+    /// at the value that stands for it: a payload is every other value. The formatter of
+    /// `scripts/lldb` and `tsuzuri.natvis` read the case from it.
+    fn niche_union_type(
+        &mut self,
+        (union, arguments): (usize, &[Type]),
+        (ty, display): (&Type, &str),
+        (niche, none): (Niche, usize),
+        module: &CheckedModule,
+        next: &mut usize,
+        definitions: &mut Vec<String>,
+    ) -> String {
+        let (size, alignment) = layout(ty, module, self.wasm);
+        let payload = self.payload_union(
+            (union, arguments),
+            display,
+            (size, alignment),
+            module,
+            next,
+            definitions,
+        );
+        let (value, offset, integer) = match niche {
+            // The length follows the data pointer in `{ ptr, i64 }`.
+            Niche::NegativeLength => (
+                -1,
+                self.pointer().next_multiple_of(8),
+                Type::Integer(64, true),
+            ),
+            // The union is its pointer, which is 8 bytes wherever the niche exists.
+            Niche::NullPointer => (0, 0, Type::Integer(64, false)),
+        };
+        self.ty(&integer, module, next, definitions);
+        let base = self.bases[&integer];
+        let enumerator = metadata(
+            next,
+            definitions,
+            format!(
+                "!DIEnumerator(name: {}, value: {value})",
+                quote(&module.unions[union].cases[none].0)
+            ),
+        );
+        let elements = list(&[enumerator], next, definitions);
+        let field = metadata(
+            next,
+            definitions,
+            format!(
+                "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: 64, align: 64, baseType: !{base}, elements: !{elements})",
+                quote(&format!("{display}.$niche"))
+            ),
+        );
+        let mut members = Vec::new();
+        if let Some(payload) = payload {
+            members.push((Member::new("$payload", payload, size, alignment), 0));
+        }
+        members.push((Member::new("$niche", field, 8, 8), offset));
+        composite(
+            "DW_TAG_structure_type",
+            *self.types.get(ty).unwrap(),
+            &quote(display),
+            (size, alignment),
+            members,
+            next,
+            definitions,
+        )
+    }
+
+    /// The definition of the enumeration named `name` of the tag of the union `ty`, with an
     /// enumerator per case.
     fn tag_type(
         &mut self,
         union: usize,
+        ty: &Type,
         name: &str,
         module: &CheckedModule,
         next: &mut usize,
         definitions: &mut Vec<String>,
     ) -> String {
-        self.ty(&Type::I32, module, next, definitions);
-        let base = self.bases[&Type::I32];
+        let bits = 8 * tag_width(ty, module);
+        let integer = Type::Integer(bits as u16, bits == 32);
+        self.ty(&integer, module, next, definitions);
+        let base = self.bases[&integer];
         let enumerators: Vec<_> = module.unions[union]
             .cases
             .iter()
@@ -706,7 +821,7 @@ impl DebugContext {
             .collect();
         let elements = list(&enumerators, next, definitions);
         format!(
-            "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: 32, align: 32, baseType: !{base}, elements: !{elements})",
+            "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: {bits}, align: {bits}, baseType: !{base}, elements: !{elements})",
             quote(name)
         )
     }
@@ -840,11 +955,10 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (pointer, pointer),
         Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
-        Type::Record(id, arguments) => aggregate(
-            module
-                .types()
-                .record_fields(*id, arguments)
+        Type::Record(..) => aggregate(
+            super::layout::physical_fields(ty, module)
                 .into_iter()
+                .map(|(_, field)| field)
                 .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
             module,
             wasm,
@@ -858,18 +972,29 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
             )
         }
         Type::Union(..) if module.types().recursive(ty) => (pointer, pointer),
-        Type::Union(id, arguments) => match union_layout(*id, arguments, module) {
-            UnionLayout::Enum => (4, 4),
-            UnionLayout::Common(payload) => aggregate(
-                [Type::Integer(32, true), payload]
-                    .into_iter()
-                    .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
-                module,
-                wasm,
-            ),
-            UnionLayout::General(count) if drop_flag(ty, module).is_some() => (32 + count * 16, 16),
-            UnionLayout::General(count) => (16 + count * 16, 16),
-        },
+        Type::Union(id, arguments) => {
+            let tag = tag_width(ty, module);
+            match union_layout(*id, arguments, module) {
+                UnionLayout::Enum => (tag, tag),
+                UnionLayout::Common(payload) => aggregate(
+                    [Type::Integer(8 * tag as u16, false), payload]
+                        .into_iter()
+                        .chain(drop_flag(ty, module).map(|_| Type::Integer(8, false))),
+                    module,
+                    wasm,
+                ),
+                UnionLayout::General { unit, units } => {
+                    let flag = usize::from(drop_flag(ty, module).is_some());
+                    let alignment = tag.max(unit);
+                    (
+                        (tag.next_multiple_of(unit) + unit * units + flag)
+                            .next_multiple_of(alignment),
+                        alignment,
+                    )
+                }
+                UnionLayout::Niche { payload, .. } => layout(&payload, module, wasm),
+            }
+        }
         _ => (0, 1),
     }
 }

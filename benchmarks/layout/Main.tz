@@ -1,0 +1,73 @@
+union Color = Red | Green | Blue
+
+union Shape =
+    | Circle of f64
+    | Rect of f64 * f64
+    | Empty
+
+union Small = Flag of bool | Code of i8 | Nothing
+
+record Mixed { a: bool, b: i64, c: bool, d: i64 }
+
+record Tagged { tag: i8, value: i64, ok: bool }
+
+record Point { x: i64, y: i64 }
+
+def code :: Color -> i64 = \c ->
+    match c with
+    | Red -> 1
+    | Green -> 2
+    | Blue -> 3
+
+def area :: Shape -> f64 = \shape ->
+    match shape with
+    | Circle r -> r * r * 3.0
+    | Rect (w, h) -> w * h
+    | Empty -> 0.0
+
+def small :: Small -> i64 = \s ->
+    match s with
+    | Flag b -> if b then 1 else 0
+    | Code c -> if c == 3 then 3 else 0
+    | Nothing -> 0
+
+def first_x :: Maybe<ref Point> -> i64 = \o ->
+    match o with
+    | Some q -> q.x
+    | None -> 0
+
+let n = 1000000
+let colors = new [Color](n, \i -> if i % 3 == 0 then Red else Green)
+let results = new [Result<i64, string>](n, \i -> if i % 2 == 0 then Ok 1 else Ok 2)
+let options = new [Maybe<string>](n, \i -> if i < 0 then Some "x" else None)
+let mixed = new [Mixed](n, \i -> Mixed { a: i % 2 == 0, b: 1, c: false, d: 2 })
+let shapes = new [Shape](n, \i -> if i % 2 == 0 then Circle 1.0 else Rect (1.0, 2.0))
+let smalls = new [Small](n, \i -> if i % 2 == 0 then Flag true else Code 3)
+let flags = new [Maybe<bool>](n, \i -> if i % 2 == 0 then Some true else None)
+let tagged = new [Tagged](n, \i -> Tagged { tag: 1, value: 5, ok: i % 2 == 0 })
+let p = Point { x: 7, y: 8 }
+let fallback: Maybe<i64> = Some 41
+let mut total = first_x (Some (ref p)) + Maybe.default_value 0 fallback
+for c in colors do
+    total = total + code c
+for r in results do
+    match r with
+    | Ok v -> total = total + v
+    | Error _ -> total = total + 0
+for o in options do
+    match o with
+    | Some _ -> total = total + 1
+    | None -> total = total + 0
+for m in mixed do
+    total = total + m.b + m.d
+for s in shapes do
+    total = total + to_int (area s)
+for s in smalls do
+    total = total + small s
+for f in flags do
+    match f with
+    | Some b -> total = total + (if b then 1 else 0)
+    | None -> total = total + 0
+for t in tagged do
+    total = total + t.value
+total

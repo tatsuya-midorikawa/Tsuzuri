@@ -992,6 +992,7 @@ mod tests {
                 &mut Diagnostics::new(0),
                 WarningOptions { shadowing: enabled },
                 None,
+                crate::parallel::Parallelism::SEQUENTIAL,
             )
             .unwrap();
             let warnings: Vec<_> = module

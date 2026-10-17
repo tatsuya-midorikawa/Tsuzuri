@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, Project, Target, Triple, WasmHost};
+use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
 
 const HELP: &str = "\
@@ -25,7 +25,7 @@ Usage:
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3] [--target native|TRIPLE] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -128,6 +128,9 @@ Build options:
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
                          ctypes, and C++20 bindings of the shared library NAME
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
+  -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
+                         take -O0 to -O3. Language semantics, traps, and debug information do
+                         not change; the code is usually slower than at -O3
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -148,29 +151,52 @@ Build options:
     --trap-mode return     Native object, llvm or header output: each export also comes as
                          tsuzuri_try_<name>, which returns a status and a trap record instead
                          of ending the process (implies --trap-info for object and llvm)
-    --allocator system|host|counting
+    --allocator system|host|counting|small
                          Heap of object, llvm, header, or WASM output (default: system).
                          host calls tsuzuri_host_alloc/free/realloc, which the host defines
                          (WASM imports them from tsuzuri_heap); counting adds the counts that
-                         tsuzuri_alloc_stats reports
+                         tsuzuri_alloc_stats reports; small serves blocks of up to 512 bytes
+                         from per-thread size classes (native 64-bit targets, also executables
+                         and shared libraries; not WASM, --freestanding, or --trap-mode return)
     --freestanding         Native object, llvm, or header output that needs no C library;
                          requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
+    --strip                Link a native executable without its local symbols (build only; not with -g;
+                         a Windows link is left as it is)
+    --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
+                         only; not with -g or threads). It is never run unless asked: install Binaryen
+                         or set TSUZURI_WASM_OPT, or the build fails with E2002
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
+
+Threads:
+  TSUZURI_THREADS        Threads that the compiler itself uses (1-32; default: the available
+                         cores, at most 8). 1 runs the analysis on one thread. The output does
+                         not depend on it, and it does not affect the programs that are built.
 
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
   TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
+  TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
+                         does not run anything
   Each tool comes from its variable, then a distribution's bin/, then PATH.
+  TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
+                         LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
+                         'default' or unset leaves it to Clang. Windows targets reject 'lld'.
   TSUZURI_SYSROOT        Sysroot of a TRIPLE target (its C headers and libraries): Clang gets
                          --sysroot, or -isysroot for Apple targets. A build for the machine
                          itself or for WebAssembly does not read it.
   TSUZURI_RUNNER         Command that runs the executables of a TRIPLE target this machine
                          cannot run, for run and test, such as 'qemu-aarch64 -L /usr/aarch64-linux-gnu'.
                          It is split at white space; nothing is downloaded or installed.
+
+Code generation:
+  TSUZURI_RANGE_FLAGS    off, proven, or audit (default: off). proven writes nsw/nuw on integer
+                         + - * and on loop counters that a range proof shows cannot overflow;
+                         audit keeps the wrapping instruction and traps where a proof is wrong,
+                         for tests. Any other value is an error.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit
@@ -292,6 +318,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut trap_return = false;
     let mut allocator = None;
     let mut freestanding = false;
+    let mut strip = false;
+    let mut wasm_opt = false;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -465,9 +493,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("system") => Allocator::System,
                             Some("host") => Allocator::Host,
                             Some("counting") => Allocator::Counting,
+                            Some("small") => Allocator::Small,
                             _ => {
                                 return Err(
-                                    "allocator must be 'system', 'host', or 'counting'".into()
+                                    "allocator must be 'system', 'host', 'counting', or 'small'"
+                                        .into(),
                                 );
                             }
                         },
@@ -479,6 +509,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("freestanding specified more than once".into());
                     }
                     freestanding = true;
+                    continue;
+                }
+                Some("--strip") => {
+                    if strip {
+                        return Err("strip specified more than once".into());
+                    }
+                    strip = true;
+                    continue;
+                }
+                Some("--wasm-opt") => {
+                    if wasm_opt {
+                        return Err("wasm-opt specified more than once".into());
+                    }
+                    wasm_opt = true;
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -589,11 +633,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     );
                     continue;
                 }
-                Some("-O0" | "-O1" | "-O2" | "-O3") => {
+                Some(level @ ("-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Oz")) => {
                     if optimization.is_some() {
                         return Err("optimization specified more than once".into());
                     }
-                    optimization = Some(argument.to_str().unwrap().as_bytes()[2] - b'0');
+                    optimization = OptLevel::from_flag(level);
                     continue;
                 }
                 Some("--cpu") => {
@@ -711,6 +755,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if freestanding && action != Action::Build {
         return Err("--freestanding is only valid with build".into());
     }
+    if strip && action != Action::Build {
+        return Err("--strip is only valid with build".into());
+    }
+    if wasm_opt && action != Action::Build {
+        return Err("--wasm-opt is only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -720,6 +770,18 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         return Err(
             "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
         );
+    }
+    if matches!(action, Action::Test | Action::Bench)
+        && optimization.is_some_and(|level| level.speed_level().is_none())
+    {
+        let name = if action == Action::Test {
+            "test"
+        } else {
+            "bench"
+        };
+        return Err(format!(
+            "{name} supports -O0 to -O3; use -Os or -Oz with build or run"
+        ));
     }
     if !matches!(action, Action::Test | Action::Bench)
         && (test_filter.is_some() || test_list || !test_indices.is_empty())
@@ -792,7 +854,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             Emit::Executable
         }),
-        optimization: optimization.unwrap_or(if action == Action::Test { 0 } else { 3 }),
+        optimization: optimization.unwrap_or(if action == Action::Test {
+            OptLevel::O0
+        } else {
+            OptLevel::O3
+        }),
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
         trap_info: trap_info
@@ -812,6 +878,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         trap_return,
         allocator: allocator.unwrap_or_default(),
         freestanding,
+        strip,
+        wasm_opt,
         triple,
     };
     options.validate().map_err(|error| error.message)?;
@@ -884,6 +952,14 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
                 "{option} must be a byte count or a number followed by KiB, MiB, or GiB, such as {example}"
             )
         })
+}
+
+/// An invalid `TSUZURI_THREADS` is a command-line error, reported before the command reads a
+/// source (exit code 2, like the other invalid settings).
+fn invalid_thread_setting(json: bool) -> Option<ExitCode> {
+    let error = tsuzuri::validate_thread_setting().err()?;
+    print_diagnostic(&error, Path::new("<command line>"), "", json);
+    Some(ExitCode::from(2))
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
@@ -1003,6 +1079,13 @@ fn run_formatter(arguments: &Arguments) -> ExitCode {
     }
 }
 
+/// The `-O0` to `-O3` number of a `test` or `bench` build; `parse` rejects `-Os` and `-Oz` for both.
+fn speed_level(optimization: OptLevel) -> u8 {
+    optimization
+        .speed_level()
+        .unwrap_or_else(|| unreachable!("parse rejects -Os and -Oz for test and bench"))
+}
+
 fn run_test_action(
     arguments: &Arguments,
     project: &Project,
@@ -1011,7 +1094,7 @@ fn run_test_action(
 ) -> ExitCode {
     let options = driver::TestOptions {
         target: arguments.options.target,
-        optimization: arguments.options.optimization,
+        optimization: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
         wasm_max_memory: arguments.options.wasm_max_memory,
@@ -1241,7 +1324,7 @@ fn run_bench_action(
 ) -> ExitCode {
     let options = driver::BenchOptions {
         target: arguments.options.target,
-        optimization: arguments.options.optimization,
+        optimization: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
         samples: arguments
@@ -1494,6 +1577,7 @@ fn toolchain_info() -> String {
         ("TSUZURI_WASM_LD", "wasm-ld"),
         ("TSUZURI_LLVM_LINK", "llvm-link"),
         ("TSUZURI_DSYMUTIL", "dsymutil"),
+        ("TSUZURI_WASM_OPT", "wasm-opt"),
     ] {
         let (source, tool) = driver::resolve_tool(variable, fallback);
         info += &tool_line(variable, source, &tool);
@@ -1846,7 +1930,9 @@ fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOpt
                 return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
             }
             Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
-                options.build.optimization = level.as_bytes()[2] - b'0';
+                if let Some(level) = OptLevel::from_flag(level) {
+                    options.build.optimization = level;
+                }
                 "optimization"
             }
             Some("--cpu") => {
@@ -2052,6 +2138,9 @@ fn main() -> ExitCode {
         return bindgen_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "repl") {
+        if let Some(code) = invalid_thread_setting(false) {
+            return code;
+        }
         return repl_command(&raw[1..]);
     }
     let json = flags.iter().any(|argument| *argument == "--json");
@@ -2067,6 +2156,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if arguments.action != Action::Fmt
+        && let Some(code) = invalid_thread_setting(json)
+    {
+        return code;
+    }
     if arguments.action == Action::Lsp {
         return ExitCode::from(tsuzuri::lsp::serve(
             std::io::stdin(),
@@ -2243,7 +2337,7 @@ mod tests {
         assert_eq!(parsed.action, Action::Run);
         assert_eq!(parsed.input, PathBuf::from("a.tz"));
         assert!(!parsed.options.cache && parsed.json && parsed.options.trap_info);
-        assert_eq!(parsed.options.optimization, 3);
+        assert_eq!(parsed.options.optimization, OptLevel::O3);
         assert_eq!(parsed.links.libraries, ["m"]);
         assert_eq!(
             parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0).unwrap_err(),
@@ -2268,7 +2362,7 @@ mod tests {
     #[test]
     fn parses_repl_options() {
         let defaults = parse_repl(&[]).unwrap();
-        assert_eq!(defaults.build.optimization, 0);
+        assert_eq!(defaults.build.optimization, OptLevel::O0);
         assert_eq!(defaults.build.cpu, Cpu::Generic);
         assert!(defaults.build.cache);
         assert!(defaults.build.trap_info);
@@ -2279,7 +2373,7 @@ mod tests {
         assert_eq!(defaults.timeout, Some(std::time::Duration::from_secs(10)));
         let custom =
             parse_repl(&["-O3", "--cpu", "native", "--no-cache", "--timeout", "0"]).unwrap();
-        assert_eq!(custom.build.optimization, 3);
+        assert_eq!(custom.build.optimization, OptLevel::O3);
         assert_eq!(custom.build.cpu, Cpu::Native);
         assert!(!custom.build.cache);
         assert_eq!(custom.timeout, None);
@@ -2288,7 +2382,10 @@ mod tests {
             Some(std::time::Duration::from_secs(3600))
         );
         // The REPL's -O0 default leaves build's and run's -O3 default alone.
-        assert_eq!(parse(&["run", "Main.tz"]).unwrap().options.optimization, 3);
+        assert_eq!(
+            parse(&["run", "Main.tz"]).unwrap().options.optimization,
+            OptLevel::O3
+        );
     }
 
     #[test]
@@ -2301,6 +2398,8 @@ mod tests {
             (&["--json"], REPL_USAGE),
             (&["-o", "out"], REPL_USAGE),
             (&["-g"], REPL_USAGE),
+            (&["-Os"], REPL_USAGE),
+            (&["-Oz"], REPL_USAGE),
             (&["--emit", "llvm"], REPL_USAGE),
             (&["--timeout", "3601"], REPL_TIMEOUT),
             (&["--timeout", "x"], REPL_TIMEOUT),
@@ -2318,6 +2417,205 @@ mod tests {
         ] {
             assert_eq!(parse_repl(values).unwrap_err(), message, "{values:?}");
         }
+    }
+
+    #[test]
+    fn size_levels_apply_to_build_and_run_only() {
+        for (flag, level) in [("-Os", OptLevel::Os), ("-Oz", OptLevel::Oz)] {
+            for action in ["build", "run"] {
+                let arguments = parse(&[action, "Main.tz", flag]).unwrap();
+                assert_eq!(arguments.options.optimization, level, "{action} {flag}");
+            }
+            let wasm = parse(&["build", "Main.tz", "--target", "wasm32", flag]).unwrap();
+            assert_eq!(wasm.options.optimization, level);
+            // `-Os` and `-Oz` are accepted without an action name, like the other levels.
+            assert_eq!(
+                parse(&["Main.tz", flag]).unwrap().options.optimization,
+                level
+            );
+            for action in ["test", "bench"] {
+                assert_eq!(
+                    parse(&[action, "Main.tz", flag]).unwrap_err(),
+                    format!("{action} supports -O0 to -O3; use -Os or -Oz with build or run")
+                );
+            }
+            assert_eq!(
+                parse(&["check", "Main.tz", flag]).unwrap_err(),
+                "check does not use an optimization level"
+            );
+            assert_eq!(
+                parse(&["fmt", "Main.tz", flag]).unwrap_err(),
+                "fmt does not use optimization, CPU tuning, or compiler warning options"
+            );
+            assert_eq!(
+                parse(&["build", "Main.tz", "-O3", flag]).unwrap_err(),
+                "optimization specified more than once"
+            );
+            assert_eq!(
+                parse(&["build", "Main.tz", flag, "-O3"]).unwrap_err(),
+                "optimization specified more than once"
+            );
+            assert!(script_arguments(&[OsString::from(flag), OsString::from("a.tz")]).is_err());
+        }
+        // The default level and the size levels do not leak into each other.
+        for action in ["build", "run"] {
+            let arguments = parse(&[action, "Main.tz"]).unwrap();
+            assert_eq!(arguments.options.optimization, OptLevel::O3);
+        }
+        assert_eq!(
+            parse(&["test", "Main.tz"]).unwrap().options.optimization,
+            OptLevel::O0
+        );
+        assert!(parse(&["build", "Main.tz", "-Ot"]).is_err());
+        assert!(parse(&["build", "Main.tz", "-OS"]).is_err());
+        assert!(HELP.contains("-Os, -Oz"));
+    }
+
+    #[test]
+    fn strip_is_a_build_option_for_native_executables() {
+        assert!(
+            parse(&["build", "Main.tz", "--strip"])
+                .unwrap()
+                .options
+                .strip
+        );
+        assert!(!parse(&["build", "Main.tz"]).unwrap().options.strip);
+        assert!(parse(&["Main.tz", "--strip", "-Oz"]).unwrap().options.strip);
+        let wasm = "--strip requires a native executable; WASM output is already stripped unless --debug-info is used";
+        for (values, message) in [
+            (
+                vec!["build", "Main.tz", "--strip", "--strip"],
+                "strip specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["check", "Main.tz", "--strip"],
+                "--strip is only valid with build",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "-g"],
+                "--strip cannot be combined with --debug-info: a debugger needs the symbols",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--emit", "object"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--emit", "llvm"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec!["build", "Main.tz", "--strip", "--target", "wasm32"],
+                wasm,
+            ),
+            (
+                vec![
+                    "build", "Main.tz", "--strip", "--target", "wasm32", "--emit", "object",
+                ],
+                wasm,
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        assert!(HELP.contains("--strip"));
+    }
+
+    #[test]
+    fn wasm_opt_is_a_build_option_for_wasm32_output() {
+        let wasm_opt = |values: &[&str]| parse(values).map(|arguments| arguments.options.wasm_opt);
+        assert_eq!(
+            wasm_opt(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-opt",
+                "-Oz"
+            ]),
+            Ok(true)
+        );
+        assert_eq!(
+            wasm_opt(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-opt"
+            ]),
+            Ok(true)
+        );
+        // Nothing asks for the tool unless the flag is there.
+        assert_eq!(
+            wasm_opt(&["build", "Main.tz", "--target", "wasm32"]),
+            Ok(false)
+        );
+        let output = "--wasm-opt requires WASM output (--target wasm32, --emit wasm)";
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-opt",
+                    "--wasm-opt",
+                ],
+                "wasm-opt specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--wasm-opt"],
+                "--wasm-opt is only valid with build",
+            ),
+            (
+                vec!["test", "Main.tz", "--wasm-opt"],
+                "--wasm-opt is only valid with build",
+            ),
+            (vec!["build", "Main.tz", "--wasm-opt"], output),
+            (
+                vec!["build", "Main.tz", "--target", "wasm64", "--wasm-opt"],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "object",
+                    "--wasm-opt",
+                ],
+                output,
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "threads",
+                    "--wasm-opt",
+                ],
+                "--wasm-opt cannot be combined with --wasm-feature threads",
+            ),
+            (
+                vec!["build", "Main.tz", "--target", "wasm32", "-g", "--wasm-opt"],
+                "--wasm-opt cannot be combined with --debug-info: the optimizer rewrites the code the names and debug information describe",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        assert!(HELP.contains("--wasm-opt") && HELP.contains("TSUZURI_WASM_OPT"));
     }
 
     #[test]
@@ -2820,7 +3118,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(tests.action, Action::Test);
-        assert_eq!(tests.options.optimization, 0);
+        assert_eq!(tests.options.optimization, OptLevel::O0);
         assert_eq!(tests.test_filter.as_deref(), Some("name"));
         let formatting = parse(&["fmt", "--check", "Sources", "--json"]).unwrap();
         assert_eq!(formatting.action, Action::Fmt);
@@ -2834,7 +3132,7 @@ mod tests {
         }
         let arguments = parse(&["build", "A.tz", "--target", "wasm32", "-O0"]).unwrap();
         assert_eq!(arguments.options.emit, Emit::Wasm);
-        assert_eq!(arguments.options.optimization, 0);
+        assert_eq!(arguments.options.optimization, OptLevel::O0);
         for (kind, emit) in [
             ("shared", Emit::Shared),
             ("bindings-cs", Emit::BindingsCs),
@@ -3017,7 +3315,7 @@ mod tests {
         .unwrap();
         assert_eq!(bench.action, Action::Bench);
         assert_eq!(bench.bench_samples, Some(5));
-        assert_eq!(bench.options.optimization, 3);
+        assert_eq!(bench.options.optimization, OptLevel::O3);
         assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
         assert_eq!(bench.test_indices, vec![1]);
         assert!(links_apply(Action::Bench, &bench.options));
@@ -3026,7 +3324,7 @@ mod tests {
                 .unwrap()
                 .options
                 .optimization,
-            0
+            OptLevel::O0
         );
         let test = parse(&[
             "test",
@@ -3927,6 +4225,17 @@ mod tests {
             allocator(&["build", "Main.tz", "--emit", "object"]),
             Allocator::System
         );
+        // `small` is for native executables, objects, shared libraries, LLVM IR, and headers (PM05).
+        for emit in ["object", "llvm", "header"] {
+            assert_eq!(
+                allocator(&["build", "Main.tz", "--emit", emit, "--allocator", "small"]),
+                Allocator::Small
+            );
+        }
+        assert_eq!(
+            allocator(&["build", "Main.tz", "--allocator", "small"]),
+            Allocator::Small
+        );
         for value in ["system", "host", "counting"] {
             parse(&[
                 "build",
@@ -3966,6 +4275,57 @@ mod tests {
                     "Main.tz",
                     "--target",
                     "wasm32",
+                    "--allocator",
+                    "small",
+                ],
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--allocator",
+                    "small",
+                ],
+                "--allocator small requires a native target; WebAssembly modules keep their own heap",
+            ),
+            (
+                vec!["build", "Main.tz", "--emit", "wgsl", "--allocator", "small"],
+                "--allocator small requires executable, object, shared library, LLVM IR, or header output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--trap-mode",
+                    "return",
+                    "--allocator",
+                    "small",
+                ],
+                "--trap-mode return keeps its own tracked allocator; remove --allocator",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--freestanding",
+                    "--allocator",
+                    "small",
+                ],
+                "--freestanding requires --allocator host: without the C library the host provides the heap",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
                     "--wasm-feature",
                     "threads",
                     "--allocator",
@@ -3995,7 +4355,7 @@ mod tests {
                     "--allocator",
                     "pool",
                 ],
-                "allocator must be 'system', 'host', or 'counting'",
+                "allocator must be 'system', 'host', 'counting', or 'small'",
             ),
             (
                 vec!["build", "Main.tz", "--emit", "object", "--allocator"],

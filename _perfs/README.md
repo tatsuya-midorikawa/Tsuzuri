@@ -72,6 +72,28 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 - 合成 1,000 モジュールでは、Clang の処理が `-O0` で 3.70 s、`-O3` で 7.62 s でした。フロントエンドは単一スレッドで、1 秒あたり約 5 万行です。
 - フロントエンドのサンプリング（1 ms 間隔）では、サンプルの 57% が malloc／free／memmove にありました。型付き IR の複製、所有権検査の 2 回の実行、IR 文字列の生成が主な処理です。
 
+## 第3フェーズ後の変化（2026-10-17）
+
+第3フェーズの 8 件を統合した compiler を、main（`6d15b437`）と、静かな機械（Apple M1 Max。1 分の load average の下限は 8〜13）で前後比較した値です。
+表・条件・測っていないことは [docs/benchmarks.md](../docs/benchmarks.md#第3フェーズ統合の最終比較2026-10-17) にあります。
+上の「現状（2026-09-29）」は、履歴としてそのまま残します。x86-64・Linux・Windows の測定と専用機の測定はありません。
+
+- 実行速度（PR03）: `std_option` の `Maybe<i64>` の連鎖が native で 5.22 → 4.47 ms（−14.4%、5 run とも改善、A/A 1.003）で、`ce` が `direct` と同じ時間になりました。
+  control の 16 種目と、computations のほかの 9 対は差がありません。
+- Task（PR06）: 起床の p50 が 0.22〜0.63 倍、CPU 時間が 0.11〜0.60 倍です。粗い粒度と `cpp/task_parallel` は差がありません。
+- メモリ（PM01・PM05）: `Color` 4 → 1、`Small` 32 → 2、`Maybe<string>` 24 → 16、`Result`・`Shape` 32 → 24 byte。`benchmarks/layout` の最大 RSS は −33.2%、時間は変わりません。
+  WASM の heap は小さい確保の churn が 0.16〜0.17 倍です。native の `--allocator small` は allocation の多い app で 0.39〜0.77 倍ですが、`closure_pipeline` は 1.06 倍で、既定は `system` のままです。
+- 成果物（PM08）: native の hello は 50,664 → 33,896 byte（`__text` 13,304 → 2,724）、`--emit object` は 72,032 → 5,024 byte、WASM の hello は 35,714 → 6,833 byte です。
+- ビルド（PB03・PB04）: `check` の total が 8 thread で 1.34〜1.61 倍（CPU 時間 +43%、RSS +3〜9%）。`-O0` の実行ファイルは実時間 −69%・CPU 時間 −54%、`-O3` は −45%・−32%。
+  同梱 toolchain の識別は 14.6 s → 0.2 s です。
+- 整数の範囲証明（PR02）: 旗を書いても生成コードに測れる利得はなく、既定は `off` です。
+
+悪化した点と、期待に届かなかった点:
+
+- 合成 1,000 module で特殊化の予算 1,024 を使い切ると、PR03 の 2 回目の出力が `emit` を 2 倍にします（`--emit llvm` の total が 8 thread で 3,272 → 3,588 ms、`build -O0` の CPU 時間は +25%）。200 module は影響を受けません。
+- WASM の `std_option` は 1.27 倍遅くなりました。PR03 が `ce` を `direct` と同じ `select` の形にしたためで、V8 は分岐の形を速く実行します。native は 14.4% 速くなっています。
+- `run-cpp.mjs` の `format_parse` は、統合時に main より 12% 遅くなりました（PM08 の `integer.ll` が 1 桁ずつ書くため）。`tz.integer.digits` を 2 桁ずつ書く形にして +2% に戻しました（`__text` は +120 byte）。
+
 ## 一覧
 
 ### PX. 計測基盤
@@ -87,11 +109,11 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | PR01 | [所有権・借用から導く最適化情報の付与](_completed/PR01-ownership-facts.md) | P1 | L | PX01 | done |
-| PR02 | [整数範囲の証明による算術フラグとループ最適化](PR02-integer-ranges.md) | P2 | L | PR01, (F12) | todo |
-| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](PR03-zero-cost-abstractions.md) | P1 | L | PX01 | todo |
+| PR02 | [整数範囲の証明による算術フラグとループ最適化](_completed/PR02-integer-ranges.md) | P2 | L | PR01, (F12) | done |
+| PR03 | [抽象化コストの除去（計算式・Maybe／Result・関数値）](_completed/PR03-zero-cost-abstractions.md) | P1 | L | PX01 | done |
 | PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
-| PR06 | [Task プールの低遅延化と work stealing](PR06-task-scheduler.md) | P2 | L | PX01 | todo |
+| PR06 | [Task プールの低遅延化と work stealing](_completed/PR06-task-scheduler.md) | P2 | L | PX01 | done |
 | PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | todo |
 | PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | todo |
 
@@ -99,14 +121,14 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](PM01-value-layout.md) | P1 | L | PX01 | todo |
+| PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](_completed/PM01-value-layout.md) | P1 | L | PX01 | done |
 | PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | todo |
 | PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | todo |
 | PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | todo |
-| PM05 | [小さい確保のための size-class allocator](PM05-small-allocator.md) | P1 | L | PX01, (F13) | todo |
+| PM05 | [小さい確保のための size-class allocator](_completed/PM05-small-allocator.md) | P1 | L | PX01, (F13) | done |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
-| PM08 | [成果物サイズの最小化](PM08-binary-size.md) | P2 | M | PB01 | todo |
+| PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
 
 ### PB. ビルド速度
@@ -115,8 +137,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | --- | --- | --- | --- | --- | --- |
 | PB01 | [ランタイムの事前ビルドと必要部分だけのリンク](_completed/PB01-prebuilt-runtime.md) | P0 | M | PX03 | done |
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
-| PB03 | [LLVM とリンカーへの受け渡しの高速化](PB03-llvm-handoff.md) | P1 | M | PX03 | todo |
-| PB04 | [フロントエンドの並列化](PB04-parallel-frontend.md) | P2 | L | PB02 | todo |
+| PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | done |
+| PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | todo |
 | PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | todo |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
@@ -142,6 +164,92 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第3フェーズ8件の実装方針（2026-10-16）
+
+PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの実装と判断を許可した依頼に基づいて進めます。
+起票時の Phase 1 限定と `要承認` の注記は今回の依頼には適用せず、意味の保持と検証の条件は維持します。
+変更前の基準は `6d15b437`（第2フェーズの PR #26）、保存したコンパイラは `target/perf/phase3-baseline/tsuzuri-before` です。
+8 チケットはどれも起票時の `f8dc655` に対して書かれています。着手前に現行のコードと実測で照合し、食い違いを各チケットの
+「着手時の再検討（2026-10-16）」に記録して、次のとおり方針を改めました。
+
+- 第2フェーズ（PB01・PB02・PR01・PM06・PM07・PR04・PR05）と A17 は実装済みです。旧コードの行番号、未実装を前提とした停止条件、
+  PM06・PM07・PR01 より前の測定値は使わず、現行の型・ABI・配布形式・生成 IR を基準にします。
+- 効果が測れない最適化は既定にしません。テスト済みの opt-in として出荷するか、結果を記録して段を取り下げます。
+  実装済みの経路と計画、共有機での参考値と静かな機械での正式値を区別します。
+
+- **PB03**（実装済み）: PB01 の runtime object の事前ビルド・cache で、C runtime の並行 compile（D2）の対象は cold・`--no-cache`・
+  常に直接 compile の `threads.c`・`wasi.c`・`stack.c`（`-g`）に縮んだため、これらを `compile_runtime_object` の cache に載せました。
+  並行 compile は、cold の build だけの上限が 35〜259 ms で、`compile_runtime_object` を計画・実行・保存に分ける約 400 行の変更が要るため、実施せず数値を記録しました
+  （並行する tool は 1 つの `tool.clang` 区間として計上する規約と、`tests/time_passes.rs` の「段の和 ≤ total」は保ったままです）。
+  到達関数の剪定（D1）は `emit_native_build` の native 実行ファイル（`Entry::Console`）だけで、`--emit llvm|object|wasm|shared` の出力は変えません
+  （W2 の `-O0` の CPU 時間が 8,567 → 2,966 ms、`-O3` が 9,340 → 6,022 ms の参考値）。PB03 の範囲外で見つけた、配布物の同梱 resource を毎ビルド全件ハッシュする費用
+  （約 19,600 file・759 MB で、`cache` 段が 40〜51 s の壁時計）は、`src/bundle_identity.rs` で一度だけ計算して stat の署名の背後に memo する形にし、
+  cache の鍵は従来と byte 同一にしました（85〜170 ms）。Homebrew の `wasm-ld`（`lld` への symlink）で `--version` が失敗し、wasm の whole-build cache が無効になる問題も直しました。
+  リンカー（D6）は配布物の `tsuzuri-clang` が全 OS で zig 内蔵 LLD を使い、macOS では ld64.lld が Apple ld より遅いため、明示的な opt-in `TSUZURI_LINKER=lld` だけです
+  （未設定は現行。見つからなければ `E2002`、不正値と Windows は `E2000` で、黙って戻しません）。bitcode の受け渡し（D7）は 1〜2% で採用せず、
+  `wasm` の剪定（D9）は出力が byte 同一で採用せず、D8 は 2% 未満で記録だけです。
+- **PM05**（実装済み。native の `small` は opt-in）: Phase 1 は WASM の heap（`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`）を 1a（wasm32 と threads）・
+  1b（wasm64）・1c（末尾ブロックの in-place 伸長と `memory.copy`）で作り直し、boundary tag・32 本の容量別リスト・即時の結合・末尾の返却を入れました。
+  F11 の上限の 3 行と F13 の関数名の置換、`size 0` の容量、threads の OOM trap の種別（`.unlocked` の誤分類）は保ち、後者は直しました。
+  ヘッダーが残るため Phase 1 はメモリ量を減らしません。成果は確保・解放の O(1) 化と即時の結合で、ランダムな置換の負荷は共有機の参考値で 0.13〜0.18 倍の時間です。
+  heap 単体は 1,819 → 3,699 bytes に増えます。ヘッダーのない小さい確保は別施策（PM05b）として記録しました。
+  Phase 2 の native `--allocator small` は C（`src/runtime/heap-small.c`）から `generate_heap.py` で IR を生成して実装し、既定は変えません
+  （wasm・`--freestanding`・`--trap-mode return` との併用は `E2000`）。Phase 3 の既定の切り替え（D10）は、複数 OS での測定・sanitizer・全 suite の通過が揃わず
+  （Linux の `record_sort` が `small` で 1.75〜2.3 倍遅い、専用機での 2 OS 以上の測定がない）、満たしていない gate と根拠を `docs/benchmarks.md` に記録して opt-in のままにしました。
+- **PR02**（実装済み）: F12 の `RangeFacts` は配列の添字専用の表で、区間の仕組みはなかったため、Phase 2 は整数の区間の解析器（`src/interval.rs`・`src/ranges_intervals.rs`）の新設になりました。
+  整数の `+ - *` は言語定義で折り返すため、`nsw`／`nuw` は「その命令でその旗の overflow が起きない」証明のある箇所だけに付けます。
+  LLVM の IndVarSimplify が同じ旗を自力で付けるので、先に生成コードで証拠を取り（Gate A）、12 の corpus のうち 8 は asm が同一、残りも 1〜8 命令の差で
+  ベクトル化と境界検査は変わりませんでした。そのため旗は既定で出さず（`off`）、`TSUZURI_RANGE_FLAGS=proven` と、旗の代わりに `with.overflow` の trap を出す
+  テスト専用の `audit` を opt-in として出荷し、全 suite を audit で通しています。演算子形と `Add.add` 形が別の経路になっていた点（`$intrinsic` の呼び出し）は
+  旗と独立の欠陥なので、同じチケットで揃え、これは既定で有効です。
+- **PR06**（実装済み）: 起票は F10（Channel・Mutex・`Task.scope`）と E14（trap 境界）より前で、D7（`remaining` を消して `helpers` を足す）と
+  「解錠してから signal し、その後に claim する」順は F10 のデッドロック検出と white-box テストを壊すため採りませんでした。
+  代わりに group ごとの atomic な `next`（claim）、不変の `length`、参加者ごとにまとめて 1 回だけ減らす `remaining`、
+  mutex の下の CAS による失敗・trap の停止、release と `busy`／`idle` の更新を同じ critical section に入れる変更（F10 に既にあった、
+  group の終わり直後に単一 host の 2 段 pipeline を誤ってデッドロックと判定する競合の修正を含む）で、既存のプール試験を変えずに通しました。deque は使っていません。
+  起こす worker は、全員への broadcast をやめ、submit で 1 本、join した worker が最大 2 本ずつ起こす形です。spin は測定のうえ不採用で、既定は 0 のままです。
+  WASM threads の pool は 28 byte の `ThreadState`・import・poison bit の規約を保ち、lock-free の claim とまとめた release、長さ 1 の group の inline 実行にしました。
+  lock 回数は 257 要素の group で 259／515 回から `2 + (N-1)` 回以下になり、C の試験で assert しています。1 ms 休んだ後の起床は共有機の参考値で 0.17〜0.47 倍です。
+  `cpp/task_parallel`（0.768）は 2026-10-13 の集計で 0.94 に更新済みで、Phase 1 では動かない形（16 件 × 約 79 µs）なので、この種目の改善は主張しません（Node 24 での前後測定は未実施）。
+- **PM01**（実装済み。Phase 3b は実施せず）: union の tag を読み書きする箇所は起票の 3 か所ではなく 10 か所以上あり（`match_expression` の `load i32`、`case_switch`、
+  手書き IR の `Parse.parse`・`Utf8Char.of_u32`、`static_constant`、Async、`Seq.next`、`parallel_result_tasks`）、大きさのモデルも 4 つではなく 6 つでした
+  （`Dyn.of` の確保サイズと PR01 の `dereferenceable` の下限を含む）。そこで、先に tag・フィールドの全経路を helper に通す IR 同一の整理
+  （`src/llvm_layout.rs`）を行い、その後に tag の幅（`i8`／`i16`／`i32`）、General の領域（`unit = min(最大アラインメント, 16)`、
+  B07 の Drop 共用体は `units 0`）、niche の順に切り替えました。niche は `Seq.next` の `zeroinitializer` による空値を明示構築に直してから入れ、
+  G16 のデバッガ契約（`$tag`・LLDB・natvis）を保つため DWARF の `$niche` と formatter を入れました。単一ポインターの niche（null）は native だけで、
+  wasm32／wasm64 は `--stack-first` でアドレス 0 が有効なため使いません。レコードの並べ替え（Phase 3a）は `record_slots`／`field_slot` を通し、
+  `layout_bound` の下限も物理順にしています。結果は `Color` 4→1、`Maybe<bool>` 8→2、`Small` 32→2、`Maybe<string>` 24→16、`Result<i64, string>`・`Shape` 32→24、
+  `Mixed` 32→24、`Tagged` 24→16、`Maybe<ref Point>` 16→8（native）で、配列の要素の合計は 188→109 MB、RSS は共有機の目安で 165.9→110.9 MB です。
+  `Maybe<i64>`・`Result` の機械語と時間、コンパイル時間は変わりません。タプルの並べ替え（Phase 3b）は、`Mutex` の cell（`(i32u * T)`。offset 0 を C／LL の runtime が lock word として読む）と、
+  添字を手書きする約 10 の builtin に衝突するため実施せず、サイズの表と前提を記録しました。`Dyn.of` と vtable の確保サイズはモデルでなく `sizeof` の定数式です。
+  E1010 の見積もりと `stack_size` は保守的な上限のままで、「実際の大きさ ≤ モデル」をテストで固定しています。
+- **PR03**（実装済み）: 残る問題は、`ce_std_option`・`ce_std_option_owned` に inline 後も残る union の `phi` と `switch`（K1）だけでした。
+  residual な利用者呼び出し（K2）と間接呼び出し（K3）は `-O3` の 10 組で出ず、F3（`inlinehint`）は不要でした。起票の F1（全 exit を return slot にする）は
+  `Maybe` を返す相互末尾再帰の末尾呼び出しを壊し（`parity_deep(1e8)` が `-O2`／`-O3` で segfault）、1 exit の関数の `memory(none)` も失わせるため採らず、
+  循環しうる呼び出しへ転送する exit がない関数で、exit が 2 つ以上・領域が 1 KiB 以下・再帰でも `Enum` でもない union の戻り値だけを
+  1 つの slot にまとめる後処理（`src/llvm_return_slot.rs`）を実装しました。`ce_std_option` は `direct` と同じ形（IR 35→22 行、arm64 34→24 命令）になりました。
+  特殊化の worker 予算（1,024）は、使い切ったときだけ参照順の depth-first で再生成し（300 連鎖で間接呼び出し 300→0）、予算内のプログラムの出力は変わりません。
+  型付き IR での展開（Phase 3、D3）は、`-O3` に差が残らず、`-O0` に残る差（`__text` 3.0 倍、実行 4.3 倍、Clang の compile 3.2 倍）も
+  worker の `alwaysinline` では埋まらなかったため、証拠を記録して実施しません（再開の条件は `docs/benchmarks.md`）。
+- **PB04**（実装済み）: parse だけの Phase 1 は 1,000 module の `check` の 9.6% で単独の効果が小さく、並列化の本体は所有権（16.9%）・本体検査（13.6%）・
+  finish（7.8%）でした。`Send`／`Sync` の障害は 2 つ（`recursive.rs` の `Cache` と `intern.rs` の `Rc<str>`）で、新 crate も `unsafe` も使っていません。
+  `src/parallel.rs` の `ordered_for_each`（8 MiB の worker、項目順に結果を渡す）で、所有権 → finish → 本体 → frontend cache の `&self` lookup／`&mut self` commit 分割 → parse の順に
+  並列化しました。既定は CLI だけ自動（`min(コア数, 8)`）で、library・LSP・REPL・`publish` は 1、`TSUZURI_THREADS=1` が従来の経路、不正値は `E2000` です。
+  診断・IR・pack の byte は thread 数で変わらず、thread 数はキャッシュの鍵に入りません。共有機での参考値は、1,000 module の `check` が 1.39〜1.46 倍、
+  hello が 1.48 倍、parse が 4.0 倍で、CPU 時間は 37〜49% 増えます。Linux と Windows の scale は未測定で、G1 は期待値で CI の閾値ではありません。
+- **PM08**（実装済み）: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げでした。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
+  wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
+  `tz_soft_format` と PR04 の表でした。主な成果は D2（整数の表示・書式指定・`Parse` を手書き IR の `src/runtime/integer.ll` に分け、`numeric.ll` に依存させない変更）で、
+  native の hello は 50,664 → 33,896 bytes（`__text` 13,304 → 2,724）、wasm の hello は 35,714 → 6,833 bytes（`-Oz` 3,905）になりました。これは第3フェーズの統合後の値で、PM08 の branch 単体では `__text` 2,604、wasm の hello は 6,357 bytes（`-Oz` 2,587、`-Oz --wasm-opt` 2,156）でした。差は PM05 の WASM ヒープと、統合時の `integer.ll` の 2 つの変更（128 bit の除算をやめた: Windows の x86-64 で桁が壊れたため。`digits` を 2 桁ずつにした: `format_parse` が 10〜18% 遅くなったため）です。
+  `-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えず、`test`・`bench` は `E2000`）、`--strip` は opt-in、`wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、
+  自動検出も同梱もせず、使えなければ `E2002` です。embedded 経路（`--no-cache`・`--trap-info`・`-g`）にもリンク時 GC を入れました。
+  `numeric.c`・`numeric.ll`・`math.ll`・`numeric_tables.h` は変更せず、`integer.ll` は独立した Python の参照（format 47,029・spec 15,200・parse 71,235 件）と照合しています。
+  サイズは利用者が得る cache あり既定を主とし、`--no-cache` は別に表示します。float・decimal の `tz_soft_format` の分割は実施していません。
+- 8 チケットは別々の worktree で並行して開発し、重なる箇所の順に統合します。`src/driver.rs` を触る PB03 → PM08 → PB04、runtime の PR06・PM05、
+  `src/llvm.rs` の PM01 → PR03 → PR02 の順で、統合のたびに生成 IR の差分（既定の出力が変わらないこと）と全 suite を再確認します。
+  共有機で並行して進めるため、時間の測定は排他的な窓で行い、負荷を記録します。各チケットの時間の数値は参考値で、
+  静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
 
 ### 第2フェーズ7件の実装方針（2026-10-14）
 
@@ -297,3 +405,8 @@ graph LR
 | PB06 | D2（Phase 2: 常駐サーバー） |
 | PB07 | D1（既定の codegen unit 分割）、D10（Phase 2） |
 | PR01・PR02・PR07・PR08・PM07 | なし |
+
+第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
+（PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で承認済みです。
+承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力など）を
+行うものではありません。残りのチケット（PB05・PB06・PB07・PM02・PM03・PM04・PM09・PR07・PR08）は未承認のままです。

@@ -125,11 +125,36 @@ jobs:
           node tests/features.mjs target/release/tsuzuri storage
           node tests/features.mjs target/release/tsuzuri last_use
           node tests/features.mjs target/release/tsuzuri param_facts
+      # PM05: the WASM heap alone, the unit tests of the size-class allocator (plain, ASan+UBSan, TSan), --allocator small end
+      # to end, and the vec and storage suites with every block of the size classes accounted for.
+      - name: WASM heap and size-class allocator
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          # Linux runs the unit tests with ASan+UBSan and TSan (libclang-rt-21-dev above). The Homebrew LLVM 21 of the macOS
+          # runners builds sanitizer programs that never start (an empty AddressSanitizer program hangs, a ThreadSanitizer
+          # one dies with SIGSEGV; vscode.yml leaves them out of the Net tests for the same reason), so macOS runs them
+          # without sanitizers: the plain and -O3 unit tests, which always run, decide there.
+          if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
+          node tests/wasm_heap.mjs
+          node tests/small_allocator.mjs target/release/tsuzuri
+          TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri vec
+          TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri storage
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           node tests/last_use_fuzz.mjs target/release/tsuzuri 40 1 4
+      - name: Integer range proofs (audit mode and differential fuzz)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          TSUZURI_RANGE_FLAGS=audit node tests/control.mjs target/release/tsuzuri
+          TSUZURI_RANGE_FLAGS=proven node tests/control.mjs target/release/tsuzuri
+          node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 20 1 3
       - name: UTF SIMD and scalar fallbacks
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
@@ -142,6 +167,26 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/prebuilt_runtime.mjs target/release/tsuzuri
+      - name: Size levels and artifact size
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/size.mjs target/release/tsuzuri
+      - name: Integer text against a Python reference
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/integer_format.mjs
+      - name: Handoff to Clang (PB03) - pruning, C runtime cache, linker choice, bundle identity
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/llvm_handoff.mjs target/release/tsuzuri
+          node tests/handoff_tools.mjs target/release/tsuzuri
+          node tests/bundle_identity.mjs target/release/tsuzuri
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
@@ -200,16 +245,18 @@ jobs:
           LC_ALL: C
           TSUZURI_CACHE_DIR: ""
         run: node benchmarks/run-frontend.mjs target/release/tsuzuri --out target/perf/ci-frontend --quick
-      - name: Isolated frontend equivalence
+      # PB04: the frontend runs on worker threads, so nothing the compiler prints or writes may depend on TSUZURI_THREADS
+      # (diagnostics, IR, exit codes, frontend cache bytes). This replaces PB02's isolated equivalence: that runner overlaid the
+      # frontend files of the tree on the sources of a621fada, and since PB04 they need src/parallel.rs and the callers in
+      # src/lib.rs (and the later tickets change what the frontend records), so the overlay no longer builds.
+      - name: Frontend output independent of the thread count
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 25
         env:
           RUST_MIN_STACK: "4194304"
           LC_ALL: C
           TSUZURI_CACHE_DIR: ""
-        run: |
-          git fetch --no-tags --depth=1 origin a621fada69bf27f425bfbb012cc7d0a699721db6
-          node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-ci-equivalence --baseline-ref=a621fada69bf27f425bfbb012cc7d0a699721db6 --quick --cli-matrix
+        run: node tests/parallel_frontend.mjs target/release/tsuzuri
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:

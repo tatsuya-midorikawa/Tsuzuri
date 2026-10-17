@@ -43,7 +43,7 @@ AI が書いたコードも、人が書いたコードも、同じ検査を通�
 
 速くするために、次の意味は変えません。
 
-- 通常の整数の加減乗算は、型の幅で折り返します。未定義動作にはしません。
+- 通常の整数の加減乗算は、型の幅で折り返します。未定義動作にはしません。LLVM の `nsw`／`nuw` は、範囲から証明できた演算にだけ、`TSUZURI_RANGE_FLAGS=proven` のときに書きます（既定は `off`）。
 - オーバーフローを失敗にしたい式には `@checked` を付けます。飽和などは `Int` の別 API です。
 - 浮動小数点の丸め、NaN、符号付きゼロ、評価順序を保ちます。
 - fast-math、式の再結合、暗黙の FMA は有効にしません。`-O3` も同じです。
@@ -65,6 +65,10 @@ scalar 要素の TBAA に反映します。
 コンパイラ内部の immutable 型述語は `TypeId` と hash-consed な Vec arena を使い、
 root と宣言の型を借用し、生成した型の子を ID で投影します。
 公開 Type と AST をすべて arena に移したわけではなく、利用者向けの構文・型・評価順・所有権規則は変えません。
+コンパイラ自身は、構文解析・関数ごとの型検査・所有権の検査を複数のスレッドで実行し、`TSUZURI_THREADS` が上限です
+（[コンパイラのスレッド数](../compiler/option.md#コンパイラのスレッド数)）。診断・IR・キャッシュの内容は変わりません。
+Apple M1 Max の共有機械での目安は、hello の `check` が 1.5 倍、合成 200 module が 1.4 倍、1,000 module が 1.2〜1.5 倍（ノイズの幅が大きい）で、
+読み込み・specialize・出力は並列にしていません（[測定](../../../docs/benchmarks.md#フロントエンドの並列化pb04)）。Linux と Windows での速さは測っていません。
 リポジトリの計測基盤は経過時間だけでなく CPU 時間・最大 RSS・確保・成果物サイズを同じ JSON Lines 形式で保存し、
 before／after の条件差と標本の広がりを明示します（[性能指標の記録](../../../docs/benchmarks.md#性能指標の記録)）。
 quick の測定は性能の証拠にせず、共有 CI には速度の合否の閾値を置きません。
@@ -102,7 +106,7 @@ flowchart TD
 | SIMD | `-O3` の自動ベクトル化に加え、128-bit と 256-bit の明示的な SIMD 型があります。既定の `--cpu generic` は、そのアーキテクチャの基準命令です。 |
 | `--cpu native` | ビルド機の命令セットに合わせます。古い CPU へはそのバイナリを配布できません。 |
 | 実行時の命令選択 | 同梱の整数配列の和、最小、最大だけが、実行時に命令セットを選びます。選べない環境は基準実装です。利用者の関数が版を持つのが `@cpu` です。 |
-| 複数コア | `Task.parallel` が明示的な並列です。ネイティブは常駐プール、既定の WebAssembly は逐次です。自動並列化はありません。 |
+| 複数コア | `Task.parallel` が明示的な並列です。ネイティブは常駐プール、既定の WebAssembly は逐次です。自動並列化はありません。コンパイラ自身がフロントエンドで使うスレッドは別で、`TSUZURI_THREADS` が上限です（[コンパイラのスレッド数](../compiler/option.md#コンパイラのスレッド数)）。 |
 | GPU | 厳密な `i32` と `i32u` の WGSL 生成、厳密な `i32`・`i32u`・`i64`・`i64u`・`f32` の SPIR-V 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成と緩い `f32` の SPIR-V 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`・`--emit spirv-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto`、Node.js の WebGPU ホスト試作までです。実行できないときは `Unavailable` で、CPU への切り替えはプログラムが書きます。`Gpu.Auto` だけが、バックエンドを呼び出しごとに選びます。 |
 | WebAssembly | 既定は SIMD なし、threads なし、OS API の import なしです。それぞれ明示したときだけ有効になります。 |
 
@@ -152,6 +156,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 式、カリー化、レコード、共用体、網羅的な `match` | 実装済み | A02、A03 を含む基礎言語 |
 | 所有権、借用、複数 region、排他借用フィールド、`Drop` | 実装済み | A09、A12、A13、B07。region 間の outlives はない |
 | 借用・型から導く LLVM の最適化情報 | 限定した証明済みの範囲で実装済み | 通常の内部関数の pointer 属性、scalar `noundef`、限定した memory effects、scoped alias、scalar TBAA。集約値全体や runtime の byte copy は対象外。速度は別途測る |
+| 整数の範囲証明と `nsw`／`nuw` の旗 | オプトインで実装済み（既定は `off`） | PR02。`TSUZURI_RANGE_FLAGS=off\|proven\|audit`。ループの形と区間から証明できた整数の `+ - *` だけ。`let mut`・呼び出しの結果・128-bit は対象外。旗が変えた assembly は、Matrix と `String.split`／`String.join` の関数ごとに 1〜8 命令、utf の wasm32 `-O3`（7 bytes 増）、旗の候補を集めた `range_flags` の arm64 `-O1`（24 行。命令数は同じ）だけで、速度の向上は主張しない（[整数の範囲証明の旗](../compiler/option.md#整数の範囲証明の旗)） |
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
 | `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |

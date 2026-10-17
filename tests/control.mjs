@@ -153,6 +153,86 @@ for (const args of [
 for (const args of [[1n, 3n, 12n], [umax - 1n, 2n, umax], [umax, 1n, umax], [3n, 1n, 1n]]) {
   cases.push(["unsigned_steps", args, rangeReference(...args, true)]);
 }
+// PR02: loops with the literal step 1 or -1 that end at the extremes of their type. The values, not only
+// the iteration count, are compared with a BigInt reference, so a loop that skips or repeats an end fails.
+function edgeReference(first, last, down, step) {
+  let total = 0n;
+  for (let n = first; down ? n >= last : n <= last; n += down ? -1n : 1n) total = step(total, n);
+  return total;
+}
+for (const [first, last, down] of [
+  [max - 3n, max, 0], [min + 3n, min, 1], [max, max, 0], [min, min, 1], [min, min, 0], [max, max, 1],
+  [3n, 1n, 0], [1n, 3n, 1], [-2n, 3n, 0], [3n, -2n, 1], [max - 1n, max, 1], [min + 1n, min, 0],
+]) {
+  cases.push(["range_edges", [first, last, down], edgeReference(first, last, down === 1,
+    (total, n) => n % 2n === 0n ? total : wrap(total + n * 3n))]);
+}
+for (const [first, last] of [[umax - 3n, umax], [umax, umax], [(1n << 63n) - 2n, (1n << 63n) + 1n], [5n, 3n], [0n, 3n], [umax - 1n, umax]]) {
+  cases.push(["range_edges_u64", [first, last], BigInt.asIntN(64, edgeReference(first, last, false,
+    (total, n) => BigInt.asUintN(64, total + BigInt.asUintN(64, (n ^ 5n) * 7n))))]);
+}
+for (const [first, last] of [[4294967292, 4294967295], [0, 3], [3, 1], [4294967295, 4294967295], [2147483646, 2147483649]]) {
+  cases.push(["range_edges_u32", [first, last], edgeReference(BigInt(first), BigInt(last), false,
+    (total, n) => total + n * 3n)]);
+}
+for (const [first, last, down] of [
+  [124, 127, 0], [125, 127, 0], [127, 127, 0], [-125, -128, 1], [-128, -128, 0], [-128, -128, 1], [127, 127, 1],
+  [3, 1, 0], [1, 3, 1], [-3, 4, 0], [4, -3, 1], [126, 127, 1], [-127, -128, 0],
+]) {
+  cases.push(["range_edges_i8", [first, last, down], edgeReference(BigInt(first), BigInt(last), down === 1,
+    (total, n) => wrap(total * 31n + n))]);
+}
+{
+  const i128max = (1n << 127n) - 1n, i128min = -(1n << 127n);
+  let count = 0n, low = 0n;
+  for (let n = i128max - 3n; n <= i128max; n++) { count++; low += BigInt.asIntN(64, n); }
+  for (let n = i128min + 3n; n >= i128min; n--) { count++; low += BigInt.asIntN(64, n); }
+  cases.push(["range_edges_i128", [], wrap(count * 1000n + low)]);
+}
+// PR02 D10: the builtin forms `Add.add`, `Sub.sub` and `Mul.mul` wrap like the operators and keep the order of evaluation.
+for (const seed of [0n, 1n, -1n, max, min, 123456789n, -987654321n, 65535n, 4294967295n]) {
+  const a = wrap(seed + max), b = wrap(a - seed), c = wrap(seed * seed);
+  const d = BigInt.asIntN(8, BigInt.asIntN(8, seed) + 127n);
+  const e = BigInt.asUintN(16, BigInt.asUintN(16, seed) * 65535n);
+  const f = BigInt.asUintN(32, BigInt.asUintN(32, seed) - 1n);
+  cases.push(["builtin_wrap", [seed], wrap(a + b * 3n + c + d + e + f)]);
+}
+cases.push(["builtin_order", [], 123007n]);
+// PR02: arithmetic that a range proof covers, and at the edge of the range, where a flag would be wrong.
+for (const n of [0n, 1n, 255n, 256n, 511n, 65535n, 0x7fffn << 8n | 100n, -1n, min, max]) {
+  const weight = (n >> 8n) & 255n;
+  let total = 0n;
+  for (let i = 0n; i <= (n & 255n); i++) total = wrap(total + wrap(wrap(i * 3n + 1n) * weight));
+  cases.push(["affine_sum", [n], total]);
+}
+for (const x of [0n, 1n, max - 1n, max, -1n, min + 1n, min]) {
+  for (const y of [0n, 1n, 2n, max, -1n, min]) {
+    const a = x >= 0n ? wrap(x + 1n) : wrap(x - 1n), b = y > 0n ? wrap(y - 1n) : wrap(y + 1n);
+    cases.push(["wrap_edges", [x, y], wrap(a * 3n + b)]);
+  }
+}
+for (const x of [-128, -1, 0, 1, 63, 64, 127]) {
+  for (const y of [-128, -1, 0, 1, 126, 127]) {
+    const s = BigInt.asIntN(8, BigInt.asIntN(8, BigInt(x & 63) * 2n) + 1n), t = BigInt.asIntN(8, BigInt(y & 127) + 1n);
+    cases.push(["narrow_wrap", [x, y], BigInt.asIntN(8, s + t) * 1000n + t]);
+  }
+}
+for (const x of [0, 1, 2, 127, 128, 255]) {
+  for (const y of [0, 1, 2, 127, 128, 255]) {
+    const a = x !== 0 ? (x - 1) & 255 : 255, b = (y - 1) & 255;
+    cases.push(["unsigned_sub", [x, y], BigInt((a + b) & 255)]);
+  }
+}
+for (const x of [-32768, -32767, -256, -1, 0, 1, 127, 128, 255, 256, 32767]) {
+  const wide = BigInt(x) * BigInt(x), narrow = BigInt.asIntN(8, BigInt.asIntN(8, BigInt(x & 255)) * 2n);
+  cases.push(["mixed_width", [x], wide * 1000n + narrow]);
+}
+for (const n of [0n, 1n, 2n, 100n, 101n, 4096n]) {
+  let breaking = 0n, skipping = 0n;
+  for (let i = 0n; i < n && i !== 100n; i++) breaking += i;
+  for (let i = 0n; i < n; i++) if ((i * 7n - 3n) % 3n !== 0n) skipping += i * 7n - 3n;
+  cases.push(["each_break", [n], breaking], ["each_continue", [n], skipping]);
+}
 for (const n of [0n, 1n, 127n, 4096n]) {
   let total = 0n;
   for (let i = 0n; i < n; i++) total = wrap(total + ((i * 17n) ^ -123n));

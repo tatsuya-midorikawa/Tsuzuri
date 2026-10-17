@@ -833,6 +833,12 @@ equivalence の binary preparation は release build を各側一回だけ、各
 これは全体の上限ではなく、cold runner で 25 / 5 分以内に成功するという保証はありません。
 RSS benchmark とこの isolation runner は macOS / Linux 用です。CI smoke に速度の合否閾値は設けません。
 
+第3フェーズ（2026-10-17）の変更: PB04 が frontend を worker thread で動かし、`src/parallel.rs` と `src/lib.rs` の呼び出しを加えました。
+`owned` の frontend file を a621fada の source に重ねるこの runner の「after」は `crate::parallel` を解決できず、build できなくなりました
+（`cargo check` が E0432 と引数の数の不一致で失敗します）。frontend が記録するものを増やす後続のチケットとも、型付き module の完全一致は両立しません。
+そのため CI の step は `tests/parallel_frontend.mjs`（`TSUZURI_THREADS` が 1・2・8・未設定のどれでも診断・IR・終了コード・frontend cache の bytes が同じこと）に
+置き換えました。この runner は、PB02 の commit の frontend に対する記録として残します。
+
 Windows x64 / ARM64 の `cargo check --locked --all-targets` はいずれも成功しました。
 Homebrew の rustc 1.98.1 に Windows std がないため、installed targets を持つ rustup stable
 1.96.1 の cargo / rustc を明示して確認しました。Windows での実行結果を保証するものではありません。

@@ -1,0 +1,5 @@
+// The same API reached from the entry: a Windows target still refuses the build.
+def main :: unit -> i32 = \() ->
+    let! _text = File.read_text "keep.txt"
+    do! IO.write_line "done"
+    0

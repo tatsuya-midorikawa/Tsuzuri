@@ -151,6 +151,7 @@ impl FunctionEmitter<'_, '_> {
                 let test = self.label();
                 let body = self.label();
                 let advance = self.label();
+                let step = self.increment_block(&advance);
                 let finish = self.label();
                 let index = self.fresh();
                 let increment = self.fresh();
@@ -161,11 +162,13 @@ impl FunctionEmitter<'_, '_> {
                 self.jump(&test);
                 self.begin(&test);
                 self.instruction(format!(
-                    "{index} = phi i64 [ 0, %{start} ], [ {increment}, %{advance} ]"
+                    "{index} = phi i64 [ 0, %{start} ], [ {increment}, %{step} ]"
                 ));
                 if linked {
-                    self.instruction(format!("{left_node} = phi ptr [ {left_data}, %{start} ], [ {left_next}, %{advance} ]"));
-                    self.instruction(format!("{right_node} = phi ptr [ {right_data}, %{start} ], [ {right_next}, %{advance} ]"));
+                    self.instruction(format!(
+                        "{left_node} = phi ptr [ {left_data}, %{start} ], [ {left_next}, %{step} ]"
+                    ));
+                    self.instruction(format!("{right_node} = phi ptr [ {right_data}, %{start} ], [ {right_next}, %{step} ]"));
                 }
                 let more = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.branch(&more, &body, &finish);
@@ -188,11 +191,14 @@ impl FunctionEmitter<'_, '_> {
                 self.comparison_field(operator, methods, [&left, &right], &result, &done);
                 self.jump(&advance);
                 self.begin(&advance);
+                // `index < length` as unsigned numbers: the step cannot wrap (R5).
+                self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
                 if linked {
                     self.instruction(format!("{left_next} = load ptr, ptr {left_node}"));
                     self.instruction(format!("{right_next} = load ptr, ptr {right_node}"));
                 }
-                self.instruction(format!("{increment} = add i64 {index}, 1"));
+                let words = self.flag_text(Flags::UNSIGNED);
+                self.instruction(format!("{increment} = add {words}i64 {index}, 1"));
                 self.jump(&test);
                 self.begin(&finish);
                 if !equality {

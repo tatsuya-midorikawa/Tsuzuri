@@ -13,6 +13,7 @@ export const METRICS = Object.freeze({
   wall_time: "ms", cpu_time: "ms", user_time: "ms", sys_time: "ms", phase_time: "ms",
   peak_rss: "bytes", alloc_calls: "count", alloc_bytes: "bytes",
   executable_bytes: "bytes", object_bytes: "bytes", wasm_bytes: "bytes",
+  text_bytes: "bytes", rodata_bytes: "bytes", wasm_code_bytes: "bytes", wasm_data_bytes: "bytes",
 });
 export const LANGUAGES = Object.freeze(["tsuzuri", "c", "cpp", "rust", "zig", "go", "csharp", "javascript"]);
 const labels = ["Tsuzuri", "C", "C++", "Rust", "Zig", "Go", "C#", "JavaScript"];
@@ -142,7 +143,7 @@ export function validateRecord(record) {
   assert.ok(LANGUAGES.includes(record.language));
   assert.match(record.variant, /^[a-z0-9-]+$/);
   assert.ok(["native", "wasm32"].includes(record.target));
-  assert.ok(["O0", "O3", "none"].includes(record.opt));
+  assert.ok(["O0", "O3", "Os", "Oz", "none"].includes(record.opt));
   assert.ok(["generic", "native"].includes(record.cpu_mode));
   assert.ok(Object.hasOwn(METRICS, record.metric));
   assert.equal(record.unit, METRICS[record.metric]);
@@ -330,6 +331,15 @@ export function inProcessRecords(context, suite, workloads, variants, { cpu = "g
         metric, samples: work.raw.map((sample) => sample[column]) }))));
 }
 
+// PM05: only the timing object of run-apps.mjs and run-control.mjs takes --allocator. The tracked IR that counts allocations has no
+// runtime in it, so those counts are of the system allocator whatever the timing object uses and say so. `default` is the system
+// allocator: the records of a default run keep the labels they had before --allocator existed, and a run with another allocator
+// never matches them in a comparison.
+export function allocatorVariants(allocator) {
+  assert.ok(["system", "small"].includes(allocator), `unknown allocator: ${allocator}`);
+  return allocator === "system" ? { timing: "default", allocation: "default" } : { timing: allocator, allocation: "system" };
+}
+
 export function processRecords(context, fields, measured, { phases = true } = {}) {
   const samples = {
     wall_time: measured.wall_ms, cpu_time: measured.user_ms.map((value, index) => value + measured.sys_ms[index]),
@@ -502,20 +512,21 @@ function processSuite(compiler, out, projects, quick) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const usage = "Usage: node benchmarks/metrics.mjs process [compiler] --out dir [--project dir]... [--quick] | report dir... [--baseline dir | --publish]";
+  const usage = "Usage: node benchmarks/metrics.mjs process|size [compiler] --out dir [--project dir]... [--quick] | report dir... [--baseline dir | --publish]";
   const [action, ...args] = process.argv.slice(2);
   const options = {}, positional = [], projects = [];
   let quick = false, publish = false;
+  const measuring = action === "process" || action === "size";
   for (let index = 0; index < args.length; ++index) {
     const arg = args[index];
-    if (arg === "--quick" && !quick && action === "process") quick = true;
+    if (arg === "--quick" && !quick && measuring) quick = true;
     else if (arg === "--publish" && !publish && action === "report") publish = true;
     else if (["--out", "--baseline", "--project"].includes(arg)) {
       const value = args[++index];
       assert.ok(value && !value.startsWith("-"), usage);
-      if (arg === "--project" && action === "process") projects.push(value);
+      if (arg === "--project" && measuring) projects.push(value);
       else {
-        assert.ok(options[arg] === undefined && (arg === "--out" && action === "process" || arg === "--baseline" && action === "report"), usage);
+        assert.ok(options[arg] === undefined && (arg === "--out" && measuring || arg === "--baseline" && action === "report"), usage);
         options[arg] = value;
       }
     } else {
@@ -528,6 +539,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const out = resolve(options["--out"]);
     assert.ok(!existsSync(join(out, "process.jsonl")), `EEXIST: ${out}/process.jsonl`);
     processSuite(resolve(positional[0] ?? join(root, "target/release/tsuzuri")), out, projects.length ? projects : ["examples/hello"], quick);
+  } else if (action === "size") {
+    assert.ok(options["--out"] && positional.length <= 1, usage);
+    const out = resolve(options["--out"]);
+    assert.ok(!existsSync(join(out, "size.jsonl")), `EEXIST: ${out}/size.jsonl`);
+    // A dynamic import without `await`: size.mjs imports this module, which must finish evaluating first.
+    import("./size.mjs").then(({ SIZE_PROJECTS, sizeSuite }) => sizeSuite(resolve(positional[0] ?? join(root, "target/release/tsuzuri")),
+      out, { projects: projects.length ? projects.map((project) => resolve(project)) : SIZE_PROJECTS, quick }));
   } else if (action === "report") {
     assert.ok(positional.length > 0 && !(publish && options["--baseline"]), usage);
     const runs = positional.map(readRecords);
