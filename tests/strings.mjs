@@ -176,10 +176,14 @@ define void @test_concat(i64 %left, i64 %right) {
     ["guard_concat", [-1n, 1n]],
   ];
   const guardIr = join(scratch, "length-guards.ll");
+  // With TSUZURI_STRINGS=compact, `concat` is the dispatcher and the UTF-16 function is `concat.utf16`;
+  // this test is about that one, and tests/compact_strings_raw.mjs does the guards of the Latin-1 paths.
+  const compactStrings = environment.TSUZURI_STRINGS === "compact";
   const runtimeGuards = ["allocate", "concat"].map((name) => {
-    const definition = sourceIr.match(new RegExp(`^define internal %tz\\.string @tz\\.string\\.${name}\\([\\s\\S]*?^}`, "m"));
+    const symbol = compactStrings && name === "concat" ? "concat\\.utf16" : name;
+    const definition = sourceIr.match(new RegExp(`^define internal %tz\\.string @tz\\.string\\.${symbol}\\([\\s\\S]*?^}`, "m"));
     assert.ok(definition, `missing string ${name} runtime`);
-    return definition[0];
+    return definition[0].replace("@tz.string.concat.utf16(", "@tz.string.concat(");
   }).join("\n");
   writeFileSync(guardIr, `%tz.string = type { ptr, i64 }
 @recorded_bytes = internal global i64 0

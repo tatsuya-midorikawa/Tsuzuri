@@ -1643,7 +1643,10 @@ fn emit_program_in(
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.format_runtime(include_str!("runtime/format.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.integer.") {
         runtime_symbols.append(
@@ -2042,7 +2045,6 @@ struct Globals {
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
     /// The form of the strings that the program makes (PM03).
-    #[allow(dead_code)]
     strings: StringForm,
 }
 
@@ -4436,12 +4438,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.match_expression(local, value, arms, &expression.ty, false, None)
             }
             TypedExprKind::String(text) => {
-                let name = self.string_constant(text);
+                let (name, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {name}, i64 {})",
-                    &ty[1..],
-                    text.len()
+                    "call {ty} @{}.new(ptr {name}, i64 {word})",
+                    &ty[1..]
                 ))
             }
             TypedExprKind::Local(_)
@@ -4778,13 +4779,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let ty = self.ty(&string.ty);
                 let element = self.ty(&expression.ty);
                 let data = self.value(format!("extractvalue {ty} {value}, 0"));
-                let length = self.value(format!("extractvalue {ty} {value}, 1"));
+                let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                let length = self.string_count(&string.ty, &word);
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid, TrapKind::BoundsCheck);
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {element}, ptr {data}, i64 {index}"
-                ));
-                let unit = self.value(format!("load {element}, ptr {pointer}"));
+                let unit = if self.marks_length(&string.ty) {
+                    self.string_unit(&data, &word, &index)
+                } else {
+                    let pointer = self.value(format!(
+                        "getelementptr inbounds {element}, ptr {data}, i64 {index}"
+                    ));
+                    self.value(format!("load {element}, ptr {pointer}"))
+                };
                 self.release_operand(string, &value, &frames);
                 unit
             }
@@ -4853,7 +4859,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     return length;
                 }
                 let (value, frames) = self.read_operand(string);
-                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
+                let length = self.string_length(&string.ty, &value);
                 self.release_operand(string, &value, &frames);
                 length
             }
@@ -6961,7 +6967,7 @@ fn emit_builtin(
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
-        Builtin::Parse => emit_parse(instance, ty, module),
+        Builtin::Parse => emit_parse(instance, ty, module, globals.strings),
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
@@ -8119,7 +8125,12 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     )
 }
 
-fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> String {
+fn emit_parse(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    module: &CheckedModule,
+    form: StringForm,
+) -> String {
     let symbol = builtin_symbol(instance, module);
     let payload = &instance.types[0];
     let value_type = llvm_type(payload, module);
@@ -8192,6 +8203,14 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                br i1 %ok, label %some, label %none\nsome:\n{load}"
         );
     } else {
+        // The numeric parser reads the ASCII bytes that `to_ascii` wrote, and counts them.
+        let (count, count_operand) = match form {
+            StringForm::Utf16 => (String::new(), "%length"),
+            StringForm::Compact => (
+                format!("  %count = and i64 %length, {}\n", strings::MASK),
+                "%count",
+            ),
+        };
         let _ = writeln!(
             body,
             "  %data = extractvalue %tz.string %text, 0\n\
@@ -8200,7 +8219,8 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %buffer = alloca [4096 x i8], align 16\n\
                %ascii = call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)\n\
                br i1 %ascii, label %parse, label %none\nparse:\n\
-               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length, i32 {})\n\
+               {count}\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 {count_operand}, i32 {})\n\
                %ok = icmp ne i32 %parsed, 0\n\
                br i1 %ok, label %some, label %none\nsome:\n\
                %value = load {value_type}, ptr %slot",

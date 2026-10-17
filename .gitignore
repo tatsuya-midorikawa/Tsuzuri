@@ -40,6 +40,7 @@ target
 !src/runtime/string_compact.ll
 !src/runtime/display_compact.ll
 !src/runtime/character_compact.ll
+!src/runtime/format_compact.ll
 !src/runtime/integer_compact.ll
 !src/runtime/utf8string.ll
 !src/runtime/heap-native.ll

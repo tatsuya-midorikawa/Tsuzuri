@@ -19,16 +19,15 @@ use super::*;
 use std::borrow::Cow;
 
 /// Bit 62 of the length word: the string is Latin-1.
-#[allow(dead_code)] // the emitter reads it from WP4 on
 pub const LATIN1: u64 = 1 << 62;
 /// The bits of the length word that count the units.
-#[allow(dead_code)]
 pub const MASK: u64 = LATIN1 - 1;
 
 const KERNELS: &str = include_str!("runtime/string_latin1.ll");
 const STRING_LAYER: &str = include_str!("runtime/string_compact.ll");
 const DISPLAY_LAYER: &str = include_str!("runtime/display_compact.ll");
 const CHARACTER_LAYER: &str = include_str!("runtime/character_compact.ll");
+const FORMAT_LAYER: &str = include_str!("runtime/format_compact.ll");
 const INTEGER_LAYER: &str = include_str!("runtime/integer_compact.ll");
 
 /// The definitions of the string runtime that `string_compact.ll` defines again. The original of
@@ -125,6 +124,14 @@ impl StringForm {
         }
     }
 
+    /// `format.ll` for this form: the layer only adds helpers.
+    pub(crate) fn format_runtime<'a>(self, utf16: &'a str) -> Result<Cow<'a, str>, Diagnostic> {
+        match self {
+            Self::Utf16 => Ok(Cow::Borrowed(utf16)),
+            Self::Compact => layered(utf16, &[], &[], &[FORMAT_LAYER]).map(Cow::Owned),
+        }
+    }
+
     /// `character.ll` for this form.
     pub(crate) fn character_runtime<'a>(self, utf16: &'a str) -> Result<Cow<'a, str>, Diagnostic> {
         match self {
@@ -144,6 +151,133 @@ impl StringForm {
                 layered(utf16, INTEGER_TAKEN, &[], &[&copies, INTEGER_LAYER]).map(Cow::Owned)
             }
         }
+    }
+}
+
+/// What the emitter does with the length word of a string. With `utf16` these are the instructions that
+/// the emitter always wrote, and the word is the length; with `compact` the word is taken apart.
+impl FunctionEmitter<'_, '_> {
+    /// Whether a value of `ty` can be a Latin-1 string.
+    pub(super) fn marks_length(&self, ty: &Type) -> bool {
+        *ty == Type::String && self.globals.strings == StringForm::Compact
+    }
+
+    /// The length word of the string `value`, which is its length only in the UTF-16 form.
+    pub(super) fn string_word(&mut self, ty: &Type, value: &str) -> String {
+        self.value(format!("extractvalue {} {value}, 1", self.ty(ty)))
+    }
+
+    /// The number of units that the length word `word` of a string of type `ty` counts.
+    pub(super) fn string_count(&mut self, ty: &Type, word: &str) -> String {
+        if self.marks_length(ty) {
+            self.value(format!("and i64 {word}, {MASK}"))
+        } else {
+            word.to_owned()
+        }
+    }
+
+    /// The number of units of the string `value`.
+    pub(super) fn string_length(&mut self, ty: &Type, value: &str) -> String {
+        let word = self.string_word(ty, value);
+        self.string_count(ty, &word)
+    }
+
+    /// Whether the length word `word` is the one of a Latin-1 string (an `i1`).
+    pub(super) fn string_is_latin1(&mut self, word: &str) -> String {
+        let marked = self.value(format!("and i64 {word}, {LATIN1}"));
+        self.value(format!("icmp ne i64 {marked}, 0"))
+    }
+
+    /// The unit at `index` of the string with the data `data` and the length word `word`, as an
+    /// `i16`: a byte of a Latin-1 string is widened. The index is in bounds.
+    pub(super) fn string_unit(&mut self, data: &str, word: &str, index: &str) -> String {
+        let latin1 = self.string_is_latin1(word);
+        self.string_unit_with(&latin1, data, index)
+    }
+
+    /// `string_unit` for a string that `latin1` (an `i1` that the caller has computed once) says
+    /// is Latin-1 or not.
+    pub(super) fn string_unit_with(&mut self, latin1: &str, data: &str, index: &str) -> String {
+        let bytes = self.label();
+        let units = self.label();
+        let join = self.label();
+        self.branch(latin1, &bytes, &units);
+        self.begin(&bytes);
+        let pointer = self.value(format!(
+            "getelementptr inbounds i8, ptr {data}, i64 {index}"
+        ));
+        let byte = self.value(format!("load i8, ptr {pointer}"));
+        let widened = self.value(format!("zext i8 {byte} to i16"));
+        let from_bytes = self.block.clone();
+        self.jump(&join);
+        self.begin(&units);
+        let pointer = self.value(format!(
+            "getelementptr inbounds i16, ptr {data}, i64 {index}"
+        ));
+        let unit = self.value(format!("load i16, ptr {pointer}"));
+        let from_units = self.block.clone();
+        self.jump(&join);
+        self.begin(&join);
+        self.value(format!(
+            "phi i16 [ {widened}, %{from_bytes} ], [ {unit}, %{from_units} ]"
+        ))
+    }
+
+    /// The constant that holds the text of a string literal, and the length word of the string that
+    /// it makes. In the compact form a UTF-16 literal of units that are all at most 0xFF is a
+    /// constant of bytes and its word is marked; any other literal is as it always was.
+    pub(super) fn string_literal(&mut self, text: &StringLiteral) -> (String, u64) {
+        if self.globals.strings == StringForm::Compact
+            && let StringLiteral::Utf16(units) = text
+            && !units.is_empty()
+            && units.iter().all(|unit| *unit <= 0xFF)
+        {
+            let name = format!("@tz.literal.{}", self.globals.definitions.len());
+            let escaped = units
+                .iter()
+                .map(|unit| format!("\\{unit:02X}"))
+                .collect::<String>();
+            self.globals.definitions.push(format!(
+                "{name} = private unnamed_addr constant [{} x i8] c\"{escaped}\"",
+                units.len()
+            ));
+            return (name, units.len() as u64 | LATIN1);
+        }
+        (self.string_constant(text), text.len() as u64)
+    }
+
+    /// The address of the unit at `index`: the unit itself in a UTF-16 string, and a stack slot
+    /// that holds the widened byte in a Latin-1 one. `slot` is an `i16` alloca of the loop.
+    pub(super) fn string_unit_pointer(
+        &mut self,
+        latin1: &str,
+        data: &str,
+        index: &str,
+        slot: &str,
+    ) -> String {
+        let bytes = self.label();
+        let units = self.label();
+        let join = self.label();
+        self.branch(latin1, &bytes, &units);
+        self.begin(&bytes);
+        let pointer = self.value(format!(
+            "getelementptr inbounds i8, ptr {data}, i64 {index}"
+        ));
+        let byte = self.value(format!("load i8, ptr {pointer}"));
+        let widened = self.value(format!("zext i8 {byte} to i16"));
+        self.instruction(format!("store i16 {widened}, ptr {slot}"));
+        let from_bytes = self.block.clone();
+        self.jump(&join);
+        self.begin(&units);
+        let pointer = self.value(format!(
+            "getelementptr inbounds i16, ptr {data}, i64 {index}"
+        ));
+        let from_units = self.block.clone();
+        self.jump(&join);
+        self.begin(&join);
+        self.value(format!(
+            "phi ptr [ {slot}, %{from_bytes} ], [ {pointer}, %{from_units} ]"
+        ))
     }
 }
 
@@ -388,6 +522,13 @@ mod tests {
         let integer = include_str!("runtime/integer.ll");
         let compact = StringForm::Compact.integer_runtime(integer).unwrap();
         assert_layer(integer, &compact, INTEGER_TAKEN, &[], INTEGER_LAYER);
+        let format = include_str!("runtime/format.ll");
+        let compact_format = StringForm::Compact.format_runtime(format).unwrap();
+        assert_layer(format, &compact_format, &[], &[], FORMAT_LAYER);
+        assert!(matches!(
+            StringForm::Utf16.format_runtime(format).unwrap(),
+            Cow::Borrowed(_)
+        ));
         for name in INTEGER_COPIED {
             assert!(
                 defined(&compact).contains(&format!("{name}.latin1").as_str()),
