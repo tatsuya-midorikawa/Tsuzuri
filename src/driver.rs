@@ -3201,7 +3201,7 @@ fn build_complete(
                     options
                         .debug_info
                         .then_some(options.optimization != OptLevel::O0),
-                    matches!(options.emit, Emit::Object | Emit::Shared),
+                    matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode),
                 )
             })?;
             if output.ir.contains("@tz.callback.") {
@@ -3213,7 +3213,10 @@ fn build_complete(
             trap_sites = output.trap_sites;
             output.ir
         } else if options.target == Target::Native
-            && matches!(options.emit, Emit::Executable | Emit::Object | Emit::Shared)
+            && matches!(
+                options.emit,
+                Emit::Executable | Emit::Object | Emit::Shared | Emit::Bitcode
+            )
             // A freestanding object has no CPU dispatch: its runtime reads the CPU through the C library.
             && !options.freestanding
         {
@@ -3384,9 +3387,9 @@ fn build_complete(
     // src/runtime/os-wasi.c.
     let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
         && (io_runtime || os_runtime || arguments_runtime || wasi_command);
-    // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
+    // Only objects, libraries and bitcode embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
-        && matches!(options.emit, Emit::Object | Emit::Shared)
+        && matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode)
         && [
             "tsuzuri_trap_raise",
             "tsuzuri_boundary_run",
@@ -3524,9 +3527,11 @@ fn build_complete(
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
     // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    // Bitcode is not cached (PR08 D7): it runs `llvm-link`, whose identity the key does not hold, and its
+    // C runtime is merged as IR, which the runtime object cache does not hold.
     let cache_time = crate::timings::Phase::start("cache");
     let clang_identity = if options.cache
-        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+        && !matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Bitcode)
         && !options.emit.is_kernel()
     {
         match crate::cache::tool_identity("TSUZURI_CLANG", "clang", options.cpu) {
@@ -3540,7 +3545,7 @@ fn build_complete(
         None
     };
     let cache = if options.cache
-        && options.emit != Emit::Header
+        && !matches!(options.emit, Emit::Header | Emit::Bitcode)
         && !options.emit.is_spirv()
         && links.is_empty()
     {
@@ -3665,12 +3670,17 @@ fn build_complete(
                 }
             }
         }
+        if options.emit == Emit::Bitcode {
+            text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
+        }
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
             && options.debug_info
             && native_runtime
             && options.emit == Emit::Object;
+        // Bitcode is one file, so its C runtime is merged as IR too (PR08 D4).
+        let merge_runtime_ir = merge_debug_ir || options.emit == Emit::Bitcode;
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
@@ -3722,8 +3732,12 @@ fn build_complete(
             fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            // `-S -emit-llvm` writes the IR; `-c` beside it is an unused argument that Clang warns about.
+            runtime.arg("-std=c11");
+            if !merge_runtime_ir {
+                runtime.arg("-c");
+            }
             runtime
-                .args(["-std=c11", "-c"])
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
@@ -3741,8 +3755,9 @@ fn build_complete(
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
             // runtime unit at Clang's default (DWARF 5) would otherwise raise when merged (G16).
-            if merge_debug_ir {
-                runtime.args(["-S", "-emit-llvm"]);
+            if merge_runtime_ir {
+                // `zig cc` adds its own `-c` to a `-S` compile, and then reports it as unused.
+                runtime.args(["-S", "-emit-llvm", "-Wno-unused-command-line-argument"]);
             }
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(platform.arch_name())?);
@@ -3750,7 +3765,7 @@ fn build_complete(
             if gc_sections {
                 runtime.args(["-ffunction-sections", "-fdata-sections"]);
             }
-            if options.cache && !merge_debug_ir {
+            if options.cache && !merge_runtime_ir {
                 let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
                 let cached = compile_runtime_object(
                     "native-c",
@@ -3776,20 +3791,30 @@ fn build_complete(
                     )?,
                 );
             }
-            if merge_debug_ir {
+            if merge_runtime_ir {
                 let combined = temporary.path.join("combined.ll");
-                let mut linker = Command::new(tool("TSUZURI_LLVM_LINK", "llvm-link"));
-                linker
-                    .arg(&ir)
-                    .arg(&runtime_object)
-                    .arg("-S")
-                    .arg("-o")
-                    .arg(&combined);
+                let bitcode = options.emit == Emit::Bitcode;
+                let mut linker = Command::new(if bitcode {
+                    lto::llvm_link_tool()
+                } else {
+                    tool("TSUZURI_LLVM_LINK", "llvm-link")
+                });
+                // The program's own file comes first: `--internalize` leaves its symbols alone and hides
+                // the runtime's, so only the program's public ABI stays visible to a host.
+                linker.arg(&ir).arg(&runtime_object);
+                if bitcode {
+                    linker.arg("--internalize");
+                }
+                linker.arg("-S").arg("-o").arg(&combined);
                 collect_message(
                     &mut messages,
                     run_tool(
                         &mut linker,
-                        "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK",
+                        if bitcode {
+                            "bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang"
+                        } else {
+                            "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK"
+                        },
                     )?,
                 );
                 ir = combined;
@@ -3960,6 +3985,10 @@ fn build_complete(
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
             clang.arg("-c");
         }
+        // The bitcode carries the summary that a host's ThinLTO link imports from (PR08 D2).
+        if options.emit == Emit::Bitcode {
+            clang.arg("-flto=thin");
+        }
         let object = temporary.path.join("module.o");
         clang.arg(&ir).arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
@@ -4021,16 +4050,18 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
-        collect_message(
-            &mut messages,
-            run_tool(
-                &mut clang,
-                &linker_hint(cross_hint(
-                    platform,
-                    "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                )),
-            )?,
-        );
+        let mut clang_hint = linker_hint(cross_hint(
+            platform,
+            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+        ));
+        if merge_runtime_ir && options.emit == Emit::Bitcode {
+            // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
+            clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
+        }
+        collect_message(&mut messages, run_tool(&mut clang, &clang_hint)?);
+        if options.emit == Emit::Bitcode {
+            lto::check_bitcode(&artifact, &tool("TSUZURI_CLANG", "clang"))?;
+        }
         if let Some(symbols) = &shared_symbols {
             link_shared(
                 symbols,
@@ -5039,6 +5070,34 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 /// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
+
+/// The IR of a `--emit bitcode` build with the target attributes that a C function compiled with the same flags has
+/// (PR08 D3): the CPU and its tuning, and for `--cpu native` the features too.
+fn bitcode_ir(
+    ir: &str,
+    options: BuildOptions,
+    platform: Platform,
+    f16: llvm::F16Path,
+    directory: &Path,
+) -> Result<String, Diagnostic> {
+    let mut flags = compile_args(platform);
+    flags.extend(no_sdk_args(platform));
+    if options.cpu == Cpu::Native {
+        flags.extend(
+            native_ir_cpu_args(platform.arch_name(), f16)?
+                .into_iter()
+                .map(OsString::from),
+        );
+    }
+    let attributes =
+        lto::probe_target_attributes(&tool("TSUZURI_CLANG", "clang"), &flags, directory)?;
+    let attributes = if options.cpu == Cpu::Native {
+        attributes
+    } else {
+        attributes.without_features()
+    };
+    lto::stamp_target_attributes(ir, &attributes)
+}
 
 /// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
 /// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
