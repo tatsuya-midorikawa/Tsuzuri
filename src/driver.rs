@@ -27,6 +27,10 @@ pub use test_runner::{
 mod bindgen_driver;
 pub use bindgen_driver::bindgen;
 
+#[path = "profile.rs"]
+mod profile;
+pub use profile::Profile;
+
 /// The target attributes and the checks of `--emit bitcode` (PR08).
 pub mod lto;
 
@@ -3034,7 +3038,20 @@ pub fn build_linked(
     options: BuildOptions,
     links: &LinkInputs,
 ) -> Result<Vec<String>, Diagnostic> {
-    build_complete(module, project, output, options, links, "build").map(|(messages, _)| messages)
+    build_profiled(module, project, output, options, links, &Profile::None)
+}
+
+/// Like [`build_linked`], instrumenting the program or optimizing it with a profile (PR07).
+pub fn build_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
+    build_complete(module, project, output, options, links, "build", profile)
+        .map(|(messages, _)| messages)
 }
 
 fn build_complete(
@@ -3044,8 +3061,11 @@ fn build_complete(
     options: BuildOptions,
     links: &LinkInputs,
     action: &str,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    profile.validate(options)?;
+    profile.require_llvm_clang()?;
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
@@ -3473,6 +3493,9 @@ fn build_complete(
     protect_sources(project, output)?;
     protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    // An instrumented WebAssembly module comes with the writer that its host runs to save the counters.
+    let profile_writer = (options.target.is_wasm() && matches!(profile, Profile::Generate(_)))
+        .then(|| profile::wasm_writer_path(output));
     let dwarf_sidecar = (platform.mach_o()
         && options.debug_info
         && matches!(options.emit, Emit::Executable | Emit::Shared))
@@ -3482,6 +3505,10 @@ fn build_complete(
         PathBuf::from(path)
     });
     if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
+    }
+    if let Some(sidecar) = &profile_writer {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
@@ -3513,9 +3540,21 @@ fn build_complete(
             "artifact"
         });
     let mut messages = Vec::new();
+    // The merge of a profile comes first: the cache key records the bytes that Clang will read.
+    let staged_profile = profile::prepare_profile(
+        profile,
+        options.target.is_wasm(),
+        &temporary.path,
+        &mut messages,
+    )?;
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
     let staged_pdb = temporary.path.join("artifact.pdb");
+    let staged_writer = temporary.path.join("profile.mjs");
+    if let (Profile::Generate(directory), Some(_)) = (profile, &profile_writer) {
+        fs::write(&staged_writer, profile::wasm_writer(directory))
+            .map_err(|error| io_error("write profile writer", &staged_writer, error))?;
+    }
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -3526,6 +3565,9 @@ fn build_complete(
         std::collections::BTreeMap::from([("artifact".to_owned(), artifact.clone())]);
     if sidecar.is_some() {
         cache_paths.insert("traps".into(), staged_sidecar.clone());
+    }
+    if profile_writer.is_some() {
+        cache_paths.insert("profile".into(), staged_writer.clone());
     }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
@@ -3567,6 +3609,9 @@ fn build_complete(
                 &text,
                 output,
                 clang_identity.as_ref(),
+                staged_profile
+                    .as_ref()
+                    .map(profile::PreparedProfile::cache_field),
             )?;
             let cache = crate::cache::BuildCache::open(&root)?;
             Ok((cache, key))
@@ -3684,6 +3729,10 @@ fn build_complete(
         {
             text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
         }
+        let text = match &staged_profile {
+            Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
+            _ => text,
+        };
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
@@ -3957,6 +4006,9 @@ fn build_complete(
             .arg("ir")
             .arg("-Wno-override-module")
             .arg(options.optimization.flag());
+        if let Some(staged) = &staged_profile {
+            clang.args(staged.args());
+        }
         if options.debug_info {
             clang.arg("-g");
         }
@@ -4069,7 +4121,22 @@ fn build_complete(
             // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
             clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
         }
-        collect_message(&mut messages, run_tool(&mut clang, &clang_hint)?);
+        let clang_hint = match &staged_profile {
+            Some(staged) => staged.hint(clang_hint),
+            None => clang_hint,
+        };
+        let clang_output =
+            run_tool(&mut clang, &clang_hint).map_err(|error| match &staged_profile {
+                Some(staged) => staged.clang_error(error),
+                None => error,
+            })?;
+        collect_message(
+            &mut messages,
+            match &staged_profile {
+                Some(staged) => staged.clang_output(clang_output),
+                None => clang_output,
+            },
+        );
         if options.emit == Emit::Bitcode {
             lto::check_bitcode(&artifact, &tool("TSUZURI_CLANG", "clang"))?;
         }
@@ -4106,6 +4173,13 @@ fn build_complete(
                 .args(final_link_args(platform)?)
                 .arg(&object)
                 .args(["-g", "-lm"]);
+            // The link of an instrumented program reads Clang's profile runtime, which the compile did not.
+            if let Some(staged) = staged_profile
+                .as_ref()
+                .filter(|staged| staged.instruments())
+            {
+                linker.arg(staged.flag());
+            }
             if native_runtime {
                 linker.arg(&runtime_object);
                 if task_runtime || net_runtime {
@@ -4269,6 +4343,12 @@ fn build_complete(
             for (symbol, _) in llvm::host_entries(module) {
                 linker.arg(format!("--export={symbol}"));
             }
+            if staged_profile
+                .as_ref()
+                .is_some_and(profile::PreparedProfile::instruments_wasm)
+            {
+                linker.args(profile::WASM_LINK_ARGS);
+            }
             if !llvm::host_entries(module).is_empty() {
                 linker.arg("--export=tsuzuri_async_set_epoch");
             }
@@ -4295,6 +4375,7 @@ fn build_complete(
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
+        .chain(profile_writer.as_ref().map(|path| (&staged_writer, path)))
         .collect();
     if !cache_hit && let Some((cache, key)) = &cache {
         let _cache_time = crate::timings::Phase::start("cache");
@@ -4677,12 +4758,37 @@ pub fn run_with_arguments(
     json: bool,
     arguments: &[OsString],
 ) -> Result<Vec<String>, Diagnostic> {
+    run_profiled(
+        module,
+        project,
+        options,
+        links,
+        json,
+        arguments,
+        &Profile::None,
+    )
+}
+
+/// [`run_with_arguments`] with a profile (PR07): `--profile-generate` runs the instrumented
+/// program, which writes its raw profile when it exits, and `--profile-use` runs the program
+/// that the profile optimized. `run` builds with `--trap-info`, so a profile of a `run` matches
+/// a `build --trap-info` best.
+pub fn run_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
     run_process(
         module,
         project,
         options,
         links,
         RunStdio::Inherit { json, arguments },
+        profile,
     )
     .map(|(messages, _)| messages)
 }
@@ -4709,6 +4815,7 @@ pub fn run_captured(
             timeout,
             limit: MAX_CAPTURED_OUTPUT,
         },
+        &Profile::None,
     )
 }
 
@@ -4736,6 +4843,7 @@ fn run_process(
     options: BuildOptions,
     links: &LinkInputs,
     stdio: RunStdio<'_>,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
@@ -4753,7 +4861,7 @@ fn run_process(
     } else {
         "program"
     });
-    let (messages, sites) = build_complete(
+    let (mut messages, sites) = build_complete(
         module,
         project,
         &output,
@@ -4763,7 +4871,9 @@ fn run_process(
         },
         links,
         "run",
+        profile,
     )?;
+    let started = std::time::SystemTime::now();
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
         RunStdio::Inherit { json, arguments } => {
@@ -4836,6 +4946,11 @@ fn run_process(
         io::stderr()
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
+    }
+    if let Profile::Generate(directory) = profile
+        && let Some(message) = profile::unwritten_profile(directory, started)
+    {
+        messages.push(message);
     }
     Ok((messages, stdout))
 }
