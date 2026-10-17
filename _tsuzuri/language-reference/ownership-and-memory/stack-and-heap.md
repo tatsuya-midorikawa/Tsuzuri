@@ -258,6 +258,8 @@ tsuzuri build --allocator small Main.tz
 
 出力は、実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared` です。WASM は自前のヒープ（[WASM のヒープ](#wasm-のヒープ)）を使い続けるので `E2000` になります。`wgsl` と `spirv` の出力、`--trap-mode return`、`--freestanding` とも一緒には指定できません。
 
+Windows（MSVC）で試験しているのは、実行ファイルと、アロケータの単体テスト（スレッドを含む）です。ランタイムを埋め込む COFF の `--emit object` は、`--allocator` に関係なく `E2002` で作れません。Windows の `shared` は試験していません。
+
 1 つのプログラムにリンクした複数のオブジェクトは、1 つの状態を共有します（macOS と Linux。共有ライブラリは自分の状態を持ちます）。同じプログラムの中で `--allocator` を混ぜてはいけません。`system` のオブジェクトが `small` のブロックを `free` へ渡すと壊れます。共有ライブラリのブロックは、確保したその共有ライブラリの `tsuzuri_free` で解放してください（ELF で複数の共有ライブラリを読み込むと、`tsuzuri_free` が先に読み込んだほうへ解決されることがあります）。ASan の use-after-free の検出や leak checker は、ブロック 1 つ 1 つではなく、1 MiB の region の `malloc` 1 つを見ます。
 
 コードは、確保するプログラムで約 2.5 KiB 増えます。`.bss` に約 130 KiB を使いますが、触るまで物理メモリにはなりません。確保と解放の呼び出しは、`system` の `malloc` と `free` と同じように、読まれないまま解放されるブロックを LLVM が取り除けます。

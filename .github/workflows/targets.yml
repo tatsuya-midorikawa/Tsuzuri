@@ -245,16 +245,18 @@ jobs:
           LC_ALL: C
           TSUZURI_CACHE_DIR: ""
         run: node benchmarks/run-frontend.mjs target/release/tsuzuri --out target/perf/ci-frontend --quick
-      - name: Isolated frontend equivalence
+      # PB04: the frontend runs on worker threads, so nothing the compiler prints or writes may depend on TSUZURI_THREADS
+      # (diagnostics, IR, exit codes, frontend cache bytes). This replaces PB02's isolated equivalence: that runner overlaid the
+      # frontend files of the tree on the sources of a621fada, and since PB04 they need src/parallel.rs and the callers in
+      # src/lib.rs (and the later tickets change what the frontend records), so the overlay no longer builds.
+      - name: Frontend output independent of the thread count
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 25
         env:
           RUST_MIN_STACK: "4194304"
           LC_ALL: C
           TSUZURI_CACHE_DIR: ""
-        run: |
-          git fetch --no-tags --depth=1 origin a621fada69bf27f425bfbb012cc7d0a699721db6
-          node benchmarks/check-frontend-equivalence.mjs target/perf/PB02-ci-equivalence --baseline-ref=a621fada69bf27f425bfbb012cc7d0a699721db6 --quick --cli-matrix
+        run: node tests/parallel_frontend.mjs target/release/tsuzuri
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:

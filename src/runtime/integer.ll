@@ -7,9 +7,12 @@
 ; length, starts at `%end` minus that length. A caller provides 40 bytes for a decimal text, the
 ; length of the longest one, "-170141183460469231731687303715884105728", and 160 for a format
 ; spec, which also has the 128 digits of a binary text. Integers of 64 bits or less take the
-; 64-bit entry points: the caller extends the value to i64. Only the 128-bit entry points divide
-; or multiply an i128, so a program that shows or parses no i128 or u128 value never needs the
-; 128-bit division and multiplication routines.
+; 64-bit entry points: the caller extends the value to i64. Only the 128-bit entry points multiply
+; an i128, so a program that shows or parses no i128 or u128 value never needs the 128-bit
+; multiplication routine. Nothing here divides an i128: the division is done on 32-bit digits with
+; 64-bit operations. LLVM turns an i128 division by anything but a few constants into a call of
+; __udivti3, and on Windows x64 that call passes the operands by pointer and returns in XMM0, which
+; the __udivti3 of src/runtime/wasm.ll, appended to Windows builds, does not follow.
 ;
 ; The parsers read the UTF-16 code units of a string directly. The numeric runtime's parser and
 ; formatters, which the tests compare these functions with, give the same results.
@@ -40,47 +43,73 @@ exit:
   ret i32 %count.next
 }
 
-; The decimal digits of an unsigned 128-bit number. A number above 2^64 - 1 splits by 10^19
-; twice, into top * 10^38 + middle * 10^19 + low with top at most 3; each part below 10^19 is
-; written with 19 digits when something precedes it. Wrapping 64-bit arithmetic recovers the
-; remainders from the low halves, because the true values fit in 64 bits.
+; Divides the unsigned 128-bit number `%high:%low` by `%divisor`, which is not zero and below 2^32,
+; digit by digit in base 2^32: each partial dividend, a remainder below the divisor followed by the
+; next 32-bit digit, fits in 64 bits, and each quotient digit fits in 32. Returns the two halves of the
+; quotient and the remainder.
+define internal { i64, i64, i64 } @tz.integer.divide128(i64 %high, i64 %low, i64 %divisor) noinline nounwind {
+entry:
+  %digit3 = lshr i64 %high, 32
+  %digit2 = and i64 %high, 4294967295
+  %digit1 = lshr i64 %low, 32
+  %digit0 = and i64 %low, 4294967295
+  %quotient3 = udiv i64 %digit3, %divisor
+  %product3 = mul i64 %quotient3, %divisor
+  %remainder3 = sub i64 %digit3, %product3
+  %scaled2 = shl i64 %remainder3, 32
+  %partial2 = or i64 %scaled2, %digit2
+  %quotient2 = udiv i64 %partial2, %divisor
+  %product2 = mul i64 %quotient2, %divisor
+  %remainder2 = sub i64 %partial2, %product2
+  %scaled1 = shl i64 %remainder2, 32
+  %partial1 = or i64 %scaled1, %digit1
+  %quotient1 = udiv i64 %partial1, %divisor
+  %product1 = mul i64 %quotient1, %divisor
+  %remainder1 = sub i64 %partial1, %product1
+  %scaled0 = shl i64 %remainder1, 32
+  %partial0 = or i64 %scaled0, %digit0
+  %quotient0 = udiv i64 %partial0, %divisor
+  %product0 = mul i64 %quotient0, %divisor
+  %remainder0 = sub i64 %partial0, %product0
+  %upper3 = shl i64 %quotient3, 32
+  %quotient.high = or i64 %upper3, %quotient2
+  %upper1 = shl i64 %quotient1, 32
+  %quotient.low = or i64 %upper1, %quotient0
+  %result.high = insertvalue { i64, i64, i64 } zeroinitializer, i64 %quotient.high, 0
+  %result.low = insertvalue { i64, i64, i64 } %result.high, i64 %quotient.low, 1
+  %result = insertvalue { i64, i64, i64 } %result.low, i64 %remainder0, 2
+  ret { i64, i64, i64 } %result
+}
+
+; The decimal digits of an unsigned 128-bit number. While the number has a bit above 2^64 - 1, its
+; last nine digits are the remainder of a division by 10^9 (written with leading zeros), and the
+; quotient goes on; what is left fits in 64 bits and is written as the top digits.
 define internal i32 @tz.integer.magnitude128(ptr %end, i128 %magnitude) nounwind {
 entry:
-  %wide = icmp ugt i128 %magnitude, 18446744073709551615
-  br i1 %wide, label %split, label %narrow
-narrow:
-  %narrow.value = trunc i128 %magnitude to i64
-  %narrow.count = call i32 @tz.integer.digits(ptr %end, i64 %narrow.value, i32 1)
-  ret i32 %narrow.count
-split:
-  %quotient = udiv i128 %magnitude, 10000000000000000000
-  %quotient.low = trunc i128 %quotient to i64
-  %magnitude.low = trunc i128 %magnitude to i64
-  %quotient.times = mul i64 %quotient.low, -8446744073709551616
-  %low = sub i64 %magnitude.low, %quotient.times
-  %upper = udiv i128 %quotient, 10000000000000000000
-  %top = trunc i128 %upper to i64
-  %top.times = mul i64 %top, -8446744073709551616
-  %middle = sub i64 %quotient.low, %top.times
-  %has.top = icmp ne i64 %top, 0
-  %middle.least = select i1 %has.top, i32 19, i32 1
-  %low.count = call i32 @tz.integer.digits(ptr %end, i64 %low, i32 19)
-  %middle.end = getelementptr inbounds i8, ptr %end, i32 -19
-  %middle.count = call i32 @tz.integer.digits(ptr %middle.end, i64 %middle, i32 %middle.least)
-  %parts = add i32 %low.count, %middle.count
-  br i1 %has.top, label %with.top, label %joined
-with.top:
-  %top.back = sub i32 0, %parts
-  %top.at = getelementptr inbounds i8, ptr %end, i32 %top.back
-  %top.slot = getelementptr inbounds i8, ptr %top.at, i32 -1
-  %top.byte = trunc i64 %top to i8
-  %top.char = add i8 %top.byte, 48
-  store i8 %top.char, ptr %top.slot
-  %with.count = add i32 %parts, 1
-  br label %joined
-joined:
-  %wide.count = phi i32 [ %with.count, %with.top ], [ %parts, %split ]
-  ret i32 %wide.count
+  %high.wide = lshr i128 %magnitude, 64
+  %high.start = trunc i128 %high.wide to i64
+  %low.start = trunc i128 %magnitude to i64
+  br label %chunk
+chunk:
+  %high = phi i64 [ %high.start, %entry ], [ %high.next, %body ]
+  %low = phi i64 [ %low.start, %entry ], [ %low.next, %body ]
+  %at = phi ptr [ %end, %entry ], [ %at.next, %body ]
+  %written = phi i32 [ 0, %entry ], [ %written.next, %body ]
+  %wide = icmp ne i64 %high, 0
+  br i1 %wide, label %body, label %last
+body:
+  %division = call { i64, i64, i64 } @tz.integer.divide128(i64 %high, i64 %low, i64 1000000000)
+  %high.next = extractvalue { i64, i64, i64 } %division, 0
+  %low.next = extractvalue { i64, i64, i64 } %division, 1
+  %remainder = extractvalue { i64, i64, i64 } %division, 2
+  %nine = call i32 @tz.integer.digits(ptr %at, i64 %remainder, i32 9)
+  %at.next = getelementptr inbounds i8, ptr %at, i32 -9
+  %written.next = add i32 %written, 9
+  br label %chunk
+last:
+  %top = call i32 @tz.integer.digits(ptr %at, i64 %low, i32 1)
+  %count = add i32 %written, %top
+  ret i32 %count
 }
 
 ; Writes the digits of a 128-bit number, given as two halves, in base 2^`%shift` before `%end`:
@@ -446,9 +475,18 @@ start:
   %extra = and i1 %signed, %negative
   %extra.wide = zext i1 %extra to i128
   %limit = add i128 %ceiling, %extra.wide
-  %cutoff = udiv i128 %limit, %base
-  %cutoff.times = mul i128 %cutoff, %base
-  %last = sub i128 %limit, %cutoff.times
+  %limit.high.wide = lshr i128 %limit, 64
+  %limit.high = trunc i128 %limit.high.wide to i64
+  %limit.low = trunc i128 %limit to i64
+  %division = call { i64, i64, i64 } @tz.integer.divide128(i64 %limit.high, i64 %limit.low, i64 %base.small)
+  %cutoff.high = extractvalue { i64, i64, i64 } %division, 0
+  %cutoff.low = extractvalue { i64, i64, i64 } %division, 1
+  %last.small = extractvalue { i64, i64, i64 } %division, 2
+  %cutoff.high.wide = zext i64 %cutoff.high to i128
+  %cutoff.high.shifted = shl i128 %cutoff.high.wide, 64
+  %cutoff.low.wide = zext i64 %cutoff.low to i128
+  %cutoff = or i128 %cutoff.high.shifted, %cutoff.low.wide
+  %last = zext i64 %last.small to i128
   br label %loop
 loop:
   %index = phi i64 [ %first, %start ], [ %after, %separator ], [ %next, %accumulate ]

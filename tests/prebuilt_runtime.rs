@@ -47,6 +47,16 @@ fn integer_text_needs_no_numeric_runtime_object() {
 }
 
 #[test]
+fn integer_runtime_never_divides_an_i128() {
+    // LLVM turns an i128 division into a call of __udivti3 or a relative. On Windows x64 that call passes the operands
+    // by pointer and returns in XMM0, which the helpers of runtime/wasm.ll do not follow: the digits come out wrong.
+    let source = include_str!("../src/runtime/integer.ll");
+    for instruction in ["udiv i128", "urem i128", "sdiv i128", "srem i128"] {
+        assert!(!source.contains(instruction), "integer.ll has `{instruction}`");
+    }
+}
+
+#[test]
 fn object_runtimes_reject_trap_instrumentation() {
     let module = analyze("export def value :: i64 = 42\n").unwrap();
     let error = llvm::emit_with_trap_info(&module, options(false), &[]).unwrap_err();

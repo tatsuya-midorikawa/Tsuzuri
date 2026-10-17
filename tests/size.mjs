@@ -172,8 +172,12 @@ section("--strip drops the local symbols and leaves the program as it is", () =>
     if (process.platform === "darwin") {
       assert.equal(after, 0, "no local symbol is left in a Mach-O executable");
       if (extra.includes("--no-cache")) assert.ok(before > 0, "the unstripped embedded build has local symbols to drop");
-      const signature = spawnSync("codesign", ["-v", stripped], { encoding: "utf8" });
-      if (!signature.error) assert.equal(signature.status, 0, `the stripped executable keeps a valid signature: ${signature.stderr}`);
+      // Only a linker that signs its output (Apple silicon) leaves a signature for --strip to keep valid.
+      const original = spawnSync("codesign", ["-v", plain], { encoding: "utf8" });
+      if (!original.error && original.status === 0) {
+        const signature = spawnSync("codesign", ["-v", stripped], { encoding: "utf8" });
+        assert.equal(signature.status, 0, `the stripped executable keeps a valid signature: ${signature.stderr}`);
+      }
     }
   }
   // The trap table comes from the source map, not from symbols.

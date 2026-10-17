@@ -154,7 +154,7 @@ try {
     const numeric = path.join(directory, 'numeric');
     await mkdir(numeric);
     await writeFile(path.join(numeric, 'Main.tz'),
-      'export def answer :: i64 = (to_string 42).length\nexport def sine :: f64 -> f64 = \\x -> Math.sin x\n42\n');
+      'export def answer :: i64 = (to_string 4.5).length\nexport def sine :: f64 -> f64 = \\x -> Math.sin x\n42\n');
     const bundled = { ...environment, TSUZURI_TIME_PASSES: '1', TSUZURI_CACHE_DIR: path.join(directory, 'prebuilt-cache') };
     // Preserve the environment used to build these objects; other smoke checks intentionally
     // supply bogus SDK locations to prove the source fallback is also independent.
@@ -180,7 +180,7 @@ try {
         else {
           const module = new WebAssembly.Module(await readFile(artifact));
           assert.deepEqual(WebAssembly.Module.imports(module), []);
-          assert.equal(new WebAssembly.Instance(module).exports.tz_answer(), 2n);
+          assert.equal(new WebAssembly.Instance(module).exports.tz_answer(), 3n);
         }
       }
     }
@@ -204,7 +204,8 @@ try {
     const corruptPath = path.join(tools, 'share/runtime', corrupt.file);
     const originalObject = await readFile(corruptPath);
     await writeFile(corruptPath, 'corrupt');
-    await writeFile(path.join(numeric, 'Main.tz'), '43\n');
+    // Integer text is part of the module, so only a float's text needs the numeric object that was just corrupted.
+    await writeFile(path.join(numeric, 'Main.tz'), 'export def answer :: i64 = (to_string 4.5).length\n43\n');
     const fallback = path.join(directory, `prebuilt-fallback${suffix}`);
     run(compiler, ['build', numeric, '-O0', '-o', fallback], { env: bundled });
     assert.equal(run(fallback, []).stdout, '43\n');

@@ -240,9 +240,9 @@ ${body}
     assert(tz_owned_results() == 12 && tz_list_results() == 42); settled();`,
     },
   };
-  for (const [name, { source, body }] of Object.entries(fixtures)) {
-    // The thread pool of the task runtime is covered by the unit tests' threads on Windows.
-    if (windows && name === "tasks") continue;
+  // A Windows COFF object cannot embed the runtime that these programs need (E2002: the trap runtime; the thread pool of the tasks),
+  // so Windows runs the unit tests (including their threads), the IR checks, and the executables of section C, not these objects.
+  for (const [name, { source, body }] of windows ? [] : Object.entries(fixtures)) {
     const headerPath = header(source, name, ["--allocator", "small"]);
     assert.ok(headerPath);
     for (const optimization of ["-O0", "-O3"]) {
@@ -260,7 +260,7 @@ ${body}
 
   // E. The path of an allocation that finds a block in the thread's cache has no atomic instruction: the atomic operations
   // (the try-lock, the registry's publication) are all in functions that the fast path only calls when the cache is empty.
-  const disassembler = process.env.TSUZURI_OBJDUMP ?? (windows ? null : "objdump");
+  const disassembler = windows ? null : process.env.TSUZURI_OBJDUMP ?? "objdump";
   const objdump = disassembler && spawnSync(disassembler, ["--version"], { encoding: "utf8" });
   if (objdump && !objdump.error && objdump.status === 0) {
     const object = join(work, "primitives-O3.o");

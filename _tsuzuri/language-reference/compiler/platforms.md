@@ -204,6 +204,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - iOS の実行ファイルは、SDK を `TSUZURI_SYSROOT` に渡し、macOS のホストでリンクします。実機とシミュレーターでは動かしていません。
 - MSVC の target の実行ファイルは、Windows のホストの MSVC のリンカーが作ります。ほかのホストで `INCLUDE` と `LIB` に Windows SDK を用意してリンクする方法は、確かめていません。Windows の `--emit shared` と OS API は、実装がないので受け付けません（[G10](../../../_features/_completed/G10-windows.md) の対象外です）。
 - 同梱ツールチェーンは、Mach-O の `--emit object` でランタイムを含むものを作れません。リンカーが `-keep_private_externs` を受け付けないからです（ランタイムを要しないプログラムのオブジェクトと、LLVM IR は作れます）。Windows の COFF の `--emit object` でランタイムを含むものは、ホストを問わず `E2002` です。
+- Windows の x86-64 の `i128`・`i128u` の `/` と `%` は、正しい値になりません。LLVM が `__udivti3` の系列を、オペランドをポインターで渡して XMM0 で返す規約で呼ぶのに対し、Windows のビルドに連結する `runtime/wasm.ll` の定義は `i128` を 2 つのレジスタで受けるからです（assembly の読解による結論で、Windows の実機では確かめていません）。`to_string`・補間・`Parse` の整数は `i128` の除算を使わないので、影響を受けません。
 - bare-metal の x86-64 は、`noredzone` を IR の関数に付けるだけで、`-mcmodel` や割り込みの規約までは扱いません。RISC-V の bare-metal は `rv64gc`、`lp64d` に固定です。
 - クロスコンパイルで C ライブラリや sysroot を自動で取得することはありません。同梱ツールチェーンか、`TSUZURI_SYSROOT` だけです。
 

@@ -745,6 +745,7 @@ cmp /tmp/tz-pb04/g1000-t1-O0.ll /tmp/tz-pb04/g1000-t10-O0.ll && cmp /tmp/tz-pb04
 
 - `src/check_functions.rs`（計画した新規ファイル）は作らなかった。本体の loop は `check_modules_collect` の中でそのまま `ordered_for_each_owned` にした（差分を小さくするため）。
 - `benchmarks/check-frontend-equivalence.mjs` の `--threads` は足さなかった。この runner は PB02 の stage した source への上書きに固有なので、代わりに `tests/parallel_frontend.mjs`（`TSUZURI_BASELINE=<PB04 より前の compiler>` で基準とも比べる）を作った。
+  CI（`targets.yml` の macOS・Linux 4 host）は、PB02 の isolation runner の step を外し、`tests/parallel_frontend.mjs`（基準の compiler なし）を走らせる。PB04 の `src/parallel.rs` と `src/lib.rs` の呼び出しがあると、その runner の「after」の tree は build できないため（PR #27 の CI で判明）。
 - Linux・Windows での並列の速度は測っていない（Windows は `cargo check` の型検査だけ。CI の緑は未確認）。
 - 後ろの段（specialize・closures・emit）の並列化、LLVM 側の並列コード生成（PB07・G17）。
 

@@ -1,3 +1,7 @@
+// PB02's isolation runner: it stages the sources of --baseline-ref, overlays the frontend files that PB02 changed (`owned`) and
+// compares the typed module, the IR and the diagnostics of the two trees. It is valid for the frontend of PB02's own commit only:
+// since PB04 those files need src/parallel.rs and the callers in src/lib.rs, so the overlay of a later tree does not build, and
+// CI runs tests/parallel_frontend.mjs instead.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
