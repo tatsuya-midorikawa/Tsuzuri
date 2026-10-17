@@ -62,7 +62,7 @@ tsuzuri-0.1.0-darwin-arm64/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。C ランタイムを使うプログラムの `--emit bitcode` は、ランタイムを `llvm-link` で 1 つにまとめるので、Linux の配布物では `llvm-link` を別に入れます（Clang と同じ LLVM のもの。C ランタイムを使わないプログラムと wasm32 には要りません。[言語間 LTO と bitcode](native-interop.md#言語間-lto-と-bitcode)）。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 
@@ -101,7 +101,7 @@ TSUZURI_WASM_OPT: path wasm-opt (not found)
 node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ```
 
-各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。
+各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。`--emit bitcode` は、`llvm-link` を PATH より前に、Clang と同じディレクトリでも探します。この探索はここには出ないので、`TSUZURI_LLVM_LINK: path llvm-link (not found)` でも、`llvm-link` が Clang の隣にあれば bitcode は作れます。
 
 ## ソースからビルドする
 

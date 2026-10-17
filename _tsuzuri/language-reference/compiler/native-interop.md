@@ -12,6 +12,7 @@
 - 所有して返ったバッファは、ホストが `tsuzuri_free` で 1 回だけ解放します。
 - `tsuzuri bindgen` は、C ヘッダーから ABI の一致する `extern` を生成し、残りを `W2002` で報告します。
 - `--emit shared` で共有ライブラリを出し、`--emit bindings-cs`／`bindings-py`／`bindings-cpp` で C#、Python、C++ のバインディングを生成できます。
+- `--emit bitcode` は、プログラムとランタイムを 1 つの ThinLTO の bitcode にします。`-flto=thin` で同じ Clang からリンクする C・C++ のホストが、小さな公開関数を inline できます（native と wasm32）。
 
 ## 公開できる型
 
@@ -364,6 +365,121 @@ trap: integer division by zero (site 82)
 2
 ```
 
+## 言語間 LTO と bitcode
+
+`--emit object` をリンクした C のホストは、`tz_add` のような小さな関数も、呼び出しのまま持ちます。リンカーはオブジェクトの中身を見ないので、ホストのループへ inline できません。`--emit bitcode` は、プログラムと、それが使うランタイム（C で書かれたタスク、CPU の検出、標準入出力など）を 1 つにまとめた LLVM bitcode（ThinLTO の要約つき、拡張子 `.bc`）を出します。ホストを `-flto=thin` でビルドしてリンクすると、LLVM が `tz_add` をホストのループへ inline します。
+
+```tsuzuri
+export def add :: i64 -> i64 -> i64
+fn add x y = x + y
+```
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+int64_t tz_add(int64_t x, int64_t y);
+
+int main(void) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < 100000; i++) total = tz_add(total, i);
+    printf("%lld\n", (long long)total);
+    return 0;
+}
+```
+
+```sh
+tsuzuri build Main.tz --emit bitcode -o add.bc
+clang -O3 -flto=thin host.c add.bc -o host
+./host
+```
+
+実行結果:
+
+```text
+4999950000
+```
+
+`--emit object` の `add.o` とリンクした実行ファイルには `tz_add` のシンボルが残り、`main` はそれを呼びます。bitcode とリンクした実行ファイルには、`llvm-nm host` に `tz_add` がなく、呼び出しの命令も残りません。C++ のホストも同じです（`extern "C"` で宣言します）。
+
+この小さなループを 10 億回呼ぶ測定（M1 Max、macOS）では、bitcode のリンクは `--emit object` のリンクの約 0.5〜0.6 倍の時間で、同じ関数を C で書いた場合と区別できませんでした。1 つの関数と 1 つの負荷だけの値で、共有機での目安です（[測定](../../../docs/benchmarks.md#pr08-言語間-lto-と-bitcode-出力)）。
+
+### ホストのビルド
+
+- ホストのソースも `-flto=thin` でコンパイルし、同じ指定でリンクします。`-flto=thin` なしでコンパイルしたホストの呼び出しは、native のオブジェクトの中にあり、LLVM は inline できません。
+- bitcode を書いた Clang と同じ Clang でリンクします（次の項）。
+- Linux では `-fuse-ld=lld` を付けます。GNU ld は、LLVM のプラグインなしでは bitcode を読めません。macOS の Apple の `ld` は、そのまま読みます。
+- C ランタイムを使うプログラムのホストには、実行ファイルのときと同じ `-pthread` と `-lm` が要ります。
+- `-g` の bitcode は、DWARF 4 のデバッグ情報を持ちます（G16）。ホストが既定の DWARF 5 だと、リンクで `warning: linking module flags 'Dwarf Version': IDs have conflicting values` が出ます（結果は正しいままです）。ホストに `-gdwarf-4` を付けると出ません。
+- ホストの `-flto`（full LTO）と ThinLTO の bitcode の組は、lld ではリンクエラーです。どちらも `-flto=thin` にします。
+
+### 同じ Clang で書き、同じ Clang で読む
+
+bitcode は、LLVM の版ごとに形式が進みます。LTO のリンクを行う LLVM は、bitcode を書いた LLVM と同じか、それより新しい版でなければなりません。コンパイラは `TSUZURI_CLANG`（なければ PATH の `clang`）で bitcode を書くので、ホストのリンクも同じ Clang で行います。コンパイラは版を検査しません。どの LLVM が書いたかは、`clang --version` と、bitcode の識別子で分かります。
+
+```sh
+clang --version
+llvm-bcanalyzer -dump add.bc | grep -m1 "record string"
+```
+
+2 行目は、Homebrew の LLVM 21.1.8 なら `record string = 'LLVM21.1.8'`、Apple clang 21 なら `record string = 'APPLE_1_2100.3.34.2_0'` です。
+
+古い LLVM でリンクすると、`error: Unknown attribute kind (105) (Producer: 'LLVM23.1.1' Reader: 'LLVM APPLE_1_2100.3.34.2_0')` のように、リンクの LLVM が読めない属性で止まります（C ランタイムを含む bitcode で確認しました）。新しい LLVM は読めますが、inline されない組み合わせがあります（Homebrew の LLVM 23 のリンクで、Apple clang や LLVM 21・22 の bitcode を読んだとき）。別の Clang の IR は、ほかの点でも合いません。Apple clang で書いた C ランタイムの IR は `"probe-stack"="__chkstk_darwin"` を持つので、Homebrew の LLVM でリンクすると `LLVM ERROR: Unsupported stack probing method` で止まります。確実なのは、コンパイラの `TSUZURI_CLANG` と同じ Clang でホストをリンクする組み合わせです。
+
+### 何が入るか
+
+bitcode の外から見える記号は、`--emit object` と同じ公開 C ABI です。通常（強い）の定義は `tz_<名前>` だけで、`--trap-mode return` では `tsuzuri_try_<名前>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`、`Async` を使うプログラムでは `tsuzuri_async_*` が加わります。`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、f16 などのソフトウェア実装 `tz_soft_*`、`--allocator small` の `tz_small_*` は、弱い定義です。C ランタイムの関数は、この bitcode の中の内部関数で、ホストの名前と衝突しません。
+
+LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含むときだけ、関数を inline します。Clang は C の関数に `"target-cpu"`、`"tune-cpu"`、`"target-features"` を付けますが、このコンパイラの IR は付けません。そこで `--emit bitcode` は、小さな C のファイルを同じ Clang で `-S -emit-llvm` にして読み、その Clang が C の関数に付ける `target-cpu` と `tune-cpu` を、IR の全関数に付けます。既定で `target-features` を写さないのは、同じ CPU でも feature の列が少し違うホストで inline されなくなるからです。`--cpu native` は features も写します。F08 の `@cpu` 版のように、関数が自分の `target-features` を持つときは、それを保ちます。
+
+### オプションと必要なツール
+
+`--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--freestanding`、bare-metal の target、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
+
+C ランタイムを使うプログラム（タスク、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
+
+Clang が bitcode を書かないとき（`-x ir -flto=thin -c` の `-flto=thin` を落とすランチャーなど）は、出力の先頭が bitcode でないので `E2002` で止めます。配布物の `tsuzuri-clang` は `-flto` を同梱の LLVM Clang に渡します。
+
+### WebAssembly
+
+`--target wasm32 --emit bitcode` は、同じ形の bitcode を出します。WebAssembly には C ランタイムも `llvm-link` もありません。ホストは `wasm-ld` の LTO でリンクします。
+
+```c
+#include <stdint.h>
+
+int64_t tz_add(int64_t x, int64_t y);
+
+int64_t run(int64_t n) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < n; i++) total = tz_add(total, i);
+    return total;
+}
+```
+
+```sh
+tsuzuri build Main.tz --target wasm32 --emit bitcode -o add.bc
+clang --target=wasm32-unknown-unknown -O3 -flto=thin -nostdlib -fuse-ld=lld \
+  -Wl,--no-entry -Wl,--export=run host.c add.bc -o out.wasm
+```
+
+`wasm-ld` が Clang の隣か PATH にないときは、`--ld-path=/path/to/wasm-ld` を付けます。Node.js で `run(100000n)` を呼ぶと `4999950000n` で、import は空、`tz_add` は inline されて、モジュールに名前も残りません。
+
+`--wasm-feature simd128` のときは、`-msimd128` の probe の `target-cpu` と `target-features`（`+simd128` を含む）を全関数に付けます。付けないと、`wasm-ld` の LTO が SIMD を使わない命令へ落とします（結果は変わりません）。ホストが `-msimd128` でなくても、bitcode の関数は SIMD を保ちます。`--wasm-max-memory` は通ります。`--wasm-feature threads`・`jspi`・`webgpu`・`net`、`--wasm-host wasi`、`--wasm-stack-size`、`wasm64` は `E2000` です。
+
+### 確かめた範囲
+
+| 組み合わせ | 状況 |
+| --- | --- |
+| macOS arm64、C・C++ のホスト、同じ Clang（Apple clang 21、Homebrew LLVM 21） | inline と実行を確認 |
+| macOS から同梱の Zig（`tsuzuri-clang`）で Linux の x86-64（glibc）と AArch64（musl）のホストをリンク | `tz_add` が inline されることを確認。実行はしていません |
+| macOS で、同梱の Zig のホスト（`tsuzuri-clang`） | `error: LTO requires using LLD` でリンクできません（Zig 0.16.0 の Mach-O）。macOS のホストはシステムの Clang で作ります |
+| Linux（x86-64、AArch64）での実行 | ホストのテスト（`tests/lto.rs`、LLD でリンク）は書きましたが、このマシンでは動かしていません（Docker のコンテナが起動しませんでした） |
+| wasm32 と `wasm-ld`（C のホスト、Node.js 20） | import なし、結果、inline、`simd128` の保持を確認 |
+| wasm32 と Rust（`-C linker-plugin-lto`、rustc 1.96.1 の LLVM 22.1.2 の `rust-lld`） | 手で確認（結果が正しく、inline）。テストにはしていません |
+| native の Rust（macOS） | `-C linker-plugin-lto` の `-plugin-opt` を Apple の `ld` と `ld64.lld` が拒否してリンクできません。`-plugin-opt` を落とすと、リンクできても `tz_add` は inline されません |
+| native の Rust（Linux）、macOS の `-fuse-ld=lld` | 未確認 |
+| Windows | 未対応です。`E2000` |
+
 ## ホスト提供の allocator
 
 `--allocator host` は、文字列、配列、`Vec`、クロージャの環境、`tsuzuri_alloc` を含むヒープを、ホストの 3 関数へ向けます。`object`、`llvm`、`header`、WASM だけで、実行ファイルや `--trap-mode return` とは排他です。
@@ -592,6 +708,7 @@ C の名前はリンク名としてそのまま残り、Tsuzuri 側の名前だ�
 - 所有バッファは `tsuzuri_free`、ヒープの差し替えは `--allocator host` です。
 - `tsuzuri bindgen` は、ABI の一致を確かめられる C の宣言だけを生成し、推測で型を当てはめません。
 - `--emit shared` の共有ライブラリを、生成した C#、Python、C++ のバインディングから呼べます。
+- `--emit bitcode` の bitcode を、同じ Clang の `-flto=thin` でリンクすると、小さな公開関数がホストのループへ inline されます（[言語間 LTO と bitcode](#言語間-lto-と-bitcode)）。
 - `Async.start` と `Async.block_on` を使うプログラムは、`tsuzuri_async_poll`・`tsuzuri_async_complete`（`block_on` では `tsuzuri_async_post` も）でホストが実行器を進めます。
 
 ## 関連項目
