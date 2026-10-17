@@ -23,7 +23,7 @@ tsuzuri build Main.tz --target wasm32 -o shop.wasm
 tsuzuri build Main.tz --target wasm64 -o shop64.wasm
 ```
 
-既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
+既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`--emit bitcode` は、`wasm-ld` の LTO でホストの C へ小さな関数を inline するための bitcode を出します（`wasm32` だけ。[言語間 LTO と bitcode](native-interop.md#webassembly)）。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 
 次の関数は、ネイティブでも WASM でも同じ計算です。ネイティブの `run` は 42 を出します。
 
@@ -289,7 +289,7 @@ max-memory = "64MiB"
 stack-size = "1MiB"
 ```
 
-オブジェクトを自分で `wasm-ld` するときは、スタックを `-z stack-size` で渡します。`--wasm-stack-size` が効くのは、コンパイラが WASM までリンクするときだけです。
+オブジェクトを自分で `wasm-ld` するときは、スタックを `-z stack-size` で渡します。`--wasm-stack-size` が効くのは、コンパイラが WASM までリンクするときだけです。`--emit bitcode` も、リンクはホストの側なので同じです。
 
 `memory` を export するモジュールでは、呼び出しのあと線形メモリが伸びることがあります。`DataView` や `TypedArray` は、呼び出しのたびに `api.memory.buffer` から取り直してください。伸びる前に握ったビューは無効です。
 

@@ -7431,6 +7431,61 @@ node tests/pgo.mjs target/release/tsuzuri
 ### PR08 言語間 LTO と bitcode 出力
 
 <!-- phase4:PR08 -->
+`--emit bitcode`（PR08）は、プログラムと、それが使う C ランタイムを 1 つの ThinLTO の bitcode にします。C・C++ のホストが `-flto=thin` でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--emit object` のリンクでは、その呼び出しは呼び出しのまま残ります。使い方は [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) にあります。この節は、その効果を測った記録です。速さは、同じ Clang でビルドとリンクをした構成だけで述べます。
+
+#### 種目 `lto/small_call`
+
+`benchmarks/run-lto.mjs` は、`export def add :: i64 -> i64 -> i64`（`fn add x y = x + y`）を 3 通りにリンクした C のホスト（`benchmarks/lto/small_call.c`）を走らせます。ホストは長さ 1024 の配列を実行時に作り、`total = tz_add(total, values[i & 1023])` を `n` 回回して合計を出力します。`n` は引数なので、ループ全体は定数になりません。
+
+| variant | リンク |
+| --- | --- |
+| `object` | `--emit object` の `add.o` と、`-O3` の通常のリンク |
+| `bitcode` | `--emit bitcode` の `add.bc` と、ホストも `-O3 -flto=thin` の ThinLTO のリンク（同じ Clang） |
+| `c-only` | `add` を同じファイルの C（`static`）で書き、`-O3 -flto=thin` で 1 回のビルド（ticket の `c_only`。PX01 の variant 名は `[a-z0-9-]+` なので `c-only`） |
+
+```sh
+export TSUZURI_CLANG=/opt/homebrew/opt/llvm@21/bin/clang      # ホストのビルドとリンクも、この Clang が行う
+node benchmarks/run-lto.mjs target/release/tsuzuri --artifacts target/perf/PR08-after/artifacts-llvm21-r1 \
+  --metrics target/perf/PR08-after/lto-llvm21-r1
+```
+
+3 通りとも、時間を測る前に `n = 1000` と `n = 1000000000` の出力を、このスクリプトが独立に計算した和（Python で確かめた参照値 `498932` と `499351563280`）と比べ、違えば測りません。測定は、1 回の捨て走行のあと、variant の順序を回しながら 9 回ずつ走らせます（`/usr/bin/time` の起動を含む wall time。PX01 の `wall_time`）。記録は PX01 の suite `lto`、workload `small_call`、`size` が `n` です。
+
+環境: コミット `d832fe24`（作業ツリーは clean）、release の `tsuzuri`（SHA-256 `804153ccac44…`）、macOS 27.0.1、Apple M1 Max（10 core）、Node v20.19.6。**専用機ではありません**。ほかのビルドが動いていて、開始時と終了時の load average は 12〜18 でした。表の値は目安です。
+
+結果（`n = 1000000000`、ms。`中央値（最小〜最大）`、9 標本）:
+
+| 構成・実行 | `object` | `bitcode` | `c-only` |
+| --- | --- | --- | --- |
+| Homebrew LLVM 21.1.8、1 回目 | 1163.1（998.7〜1288.6） | 674.1（547.7〜730.6） | 676.0（540.4〜803.9） |
+| Homebrew LLVM 21.1.8、2 回目 | 1020.9（993.4〜1260.6） | 632.0（526.8〜687.4） | 533.7（528.0〜670.5） |
+| Apple clang 21.0.0、1 回目 | 1116.6（991.7〜1231.0） | 548.8（528.9〜732.5） | 551.1（531.7〜689.3） |
+| Apple clang 21.0.0、2 回目 | 1101.0（994.2〜1272.6） | 566.8（529.4〜697.3） | 614.0（528.3〜687.3） |
+
+| 指標 | `object` | `bitcode` | `c-only` |
+| --- | --- | --- | --- |
+| M1: `main` の中の `tz_add` を指す命令（`llvm-objdump -d`） | 1（`bl`） | 0 | 0 |
+| M3: 実行ファイルの大きさ、Homebrew LLVM 21（bytes） | 33,640 | 33,592 | 33,592 |
+| M3: 同、Apple clang 21（bytes） | 33,704 | 33,656 | 33,656 |
+
+読み方は、このファイルのほかの節と同じです。差は、中央値の差が両者の広がりを超え、かつ範囲が重ならないときだけ読みます。4 回とも、`object` の最小（991.7〜998.7 ms）は `bitcode` の最大（687.4〜732.5 ms）より大きく、範囲が重なりません。呼び出しが inline された `bitcode` は `object` の 0.5〜0.6 倍の時間で（改善）、`bitcode` と `c-only` は 4 回とも範囲が重なり、中央値の比は 0.92〜1.18 の間で向きも揃いません（差なし）。`bitcode` と `c-only` の実行ファイルは、ファイルの大きさ（Homebrew の構成で 33,592 bytes）と `__text` の大きさ（500 bytes）が同じです。共有機の load の揺れで、同じ構成の中央値が 533.7〜676.0 ms（`c-only`）と動くので、`bitcode` が `c-only` より速い、あるいは遅いとは読みません。
+
+#### ビルドの費用
+
+`--emit bitcode` は、IR にそのコンパイラの Clang が C の関数に付ける `target-cpu` を付けるために、小さな C ファイルを Clang で 1 回コンパイルして属性を読みます。C ランタイムを使うプログラムは、そのランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます（object の経路は、ランタイムを別の object にして `-r` のリンクで 1 つにします）。release の `tsuzuri build --no-cache -O3`（Homebrew LLVM 21、9 回の wall time、中央値と範囲）:
+
+| プログラム | `--emit object` | `--emit bitcode` | 出力の大きさ（object → bitcode） |
+| --- | --- | --- | --- |
+| `add` だけ（C ランタイムなし） | 90 ms（80〜220） | 140 ms（140〜250） | 368 → 2,112 bytes |
+| `add`・`sum`・`bytes`（C ランタイムあり） | 560 ms（530〜710） | 470 ms（400〜7,700。1 回だけ 7.7 s に伸びた） | 29,344 → 9,872 bytes |
+
+C ランタイムを使わないプログラムでは、bitcode は属性を読む 1 回の Clang の分だけ遅く（約 50 ms）、使うプログラムでは、この測定では object より短くなりました。bitcode はビルドキャッシュを使わない（PR08 D7）ので、どちらも `--no-cache` で測っています。
+
+#### 測っていないこと
+
+- x86-64 と Linux、Windows の時間は測っていません。1 つの関数、1 つのループだけの測定で、ホストの規模が大きいときの時間、ホストのリンク時間（ThinLTO のリンクと通常のリンクの差）、ほかの関数の inline の効果は測っていません。
+- 閾値は置きません（共有 CI の揺れが大きいため）。`benchmarks/run-lto.mjs` は値を出すだけで、合否の判定をしません。
+- 生データ（`*.jsonl`、実行ファイル、`samples.json`）は `target/perf/PR08-after/` に残しました（Git には入れません）。
 <!-- /phase4:PR08 -->
 
 ## 現実的な次の指標
