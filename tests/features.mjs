@@ -409,6 +409,30 @@ function atomicSequence(bits, signed, start, delta, mask) {
   return BigInt.asIntN(64, seen.reduce((total, value) => total + BigInt.asIntN(64, value), 0n));
 }
 
+// PM04: the chunks of a list that List.cons grows (src/llvm_list.rs): the first chunk has `first` slots and each
+// next one half as many again, up to `largest`. The lengths of the suite are those at, next to and between them.
+function chunkBoundaries(first, largest, limit) {
+  const boundaries = [];
+  let capacity = first;
+  let total = first;
+  while (total <= limit) {
+    boundaries.push(total);
+    capacity = Math.min(capacity + (capacity >> 1) + 1, largest);
+    total += capacity;
+  }
+  return boundaries;
+}
+function chunkLengths(first, largest, limit) {
+  const lengths = new Set([0, 1, 2, 3]);
+  for (const boundary of chunkBoundaries(first, largest, limit)) {
+    for (const delta of [-2, -1, 0, 1, 2]) if (boundary + delta >= 0) lengths.add(boundary + delta);
+  }
+  return [...lengths].sort((a, b) => a - b);
+}
+const weightedSum = (values) => values.reduce((total, value, position) => total + value * BigInt(position + 1), 0n);
+const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i));
+const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
+
 const suites = {
   storage: {
     input: "storage/Storage.tz",
@@ -1078,6 +1102,66 @@ const suites = {
       }
     },
   },
+  list_chunks: (() => {
+    const call = (name, n, expected) => [name, [BigInt(n)], expected];
+    const digits = (value) => BigInt(String(value).length);
+    // i64 elements: the first chunk has 1 slot (32 bytes with the header) and the largest 4093 (32 KiB).
+    const numbers = chunkLengths(1, 4093, 15000).flatMap((n) => {
+      const down = descending(n);
+      const half = Math.floor(n / 2);
+      const refilled = down.slice(half);
+      for (let i = 1; i <= half; ++i) refilled.unshift(1000000n + BigInt(i));
+      const grown = [...Array.from({ length: 30 }, (_, i) => BigInt(30 - i)), ...Array.from({ length: n }, (_, i) => BigInt(i + 100))].slice(10);
+      const rest = down.slice(3);
+      const head = (index) => down[index] ?? 0n;
+      const pattern = n >= 3 ? head(0) + head(1) * 10n + head(2) * 100n + weightedSum(rest) * 1000n
+        : n === 2 ? head(0) + head(1) * 10n : n === 1 ? head(0) : 0n;
+      return [
+        call("cons_walk", n, weightedSum(down)), call("cons_length", n, BigInt(n)), call("index_walk", n, weightedSum(down)),
+        call("tail_walk", n, weightedSum(down)), call("refill", n, weightedSum(refilled) * 1000n + BigInt(refilled.length)),
+        call("compare_prefix", n, 14n), call("compare_suffix", n, 50n), call("compare_copy", n, 41n),
+        call("compare_change", n, n === 0 ? 41n : 14n),
+        call("copy_weighted", n, 4n * weightedSum(down)),
+        call("map_weighted", n, weightedSum(down.map((value) => value * 2n + 1n))),
+        call("reverse_weighted", n, weightedSum(ascending(n))), call("to_array_weighted", n, weightedSum(down)),
+        call("from_array_weighted", n, weightedSum([5n, ...ascending(n).map((value) => value + 7n)]) * 10n + weightedSum(ascending(n).map((value) => value + 7n))),
+        call("bulk_grow", n, weightedSum(grown) * 100n + BigInt(grown.length)),
+        call("pattern_rest", n, pattern),
+        call("pattern_exact", n, n === 2 ? 10n : n === 1 ? 5n : n === 0 ? 7n : 99n),
+        call("display_length", n, n === 0 ? 4n : 4n + down.reduce((total, value) => total + digits(value), 0n) + 2n * BigInt(n - 1)),
+        call("hash_layout", n, n === 0 ? 1n : 11n),
+        call("stack_cons", n, BigInt(n - 1) + BigInt(n) * 2n + BigInt(n + 1) * 3n + BigInt(n + 2) * 4n),
+        call("stack_tail", n, BigInt(n + 1) + BigInt(n + 2) * 2n),
+        call("stack_escape", n, 1n + BigInt(n) * 2n + BigInt(n + 1) * 3n + BigInt(n + 2) * 4n + (BigInt(n + 1) + BigInt(n + 2) * 2n + BigInt(n + 3) * 3n) * 100n),
+      ];
+    });
+    // Strings, lists and 16-byte integers have 16-byte slots (a chunk holds at most 2046 of them); () has no size.
+    const owned = chunkLengths(1, 2046, 15000).flatMap((n) => {
+      const half = Math.floor(n / 2);
+      const lengths = Array.from({ length: n }, (_, position) => BigInt(((n - 1 - position) % 5) + 1));
+      const view = n >= 2 ? lengths[0] + lengths[1] * 10n + weightedSum(lengths.slice(2)) * 100n
+        : n === 1 ? lengths[0] : 0n;
+      const down = descending(n);
+      const nested = down.map((value) => (value + (value + 1n) * 2n));
+      return [
+        call("words_walk", n, weightedSum(lengths)), call("words_index", n, weightedSum(lengths)),
+        call("words_tail", n, weightedSum(lengths.slice(half)) * 10n + BigInt(n - half)),
+        call("words_map", n, 3n * weightedSum(lengths)), call("words_drop", n, BigInt(n)), call("words_view", n, view),
+        call("wide_walk", n, weightedSum(down)), call("wide_index_tail", n, BigInt(n) * BigInt(n - 1) / 2n),
+        call("nested_walk", n, weightedSum(nested)), call("nested_tail", n, BigInt(n - Math.floor(n / 3))),
+      ];
+    });
+    const units = chunkLengths(8, 32744, 15000).map((n) => call("units_walk", n, BigInt(n) * 1000003n + BigInt(n - Math.floor(n / 2))));
+    const deep = (n) => call("deep_ops", n, 1000000n + weightedSum(descending(n)) % 1000n);
+    return {
+      cases: [...numbers, ...owned, ...units],
+      nativeCases: [deep(250000), deep(1000000)],
+      inspect(ir) {
+        assert.ok(ir.includes("{ ptr, i64, i64, [0 x i64] }"), "the lists are chunks");
+        assert.ok(!ir.includes("getelementptr inbounds { ptr, i64 },"), "no list node is left");
+      },
+    };
+  })(),
   recursive_types: {
     cases: [
       ["deep_drop", [0n], 0n], ["deep_drop", [100000n], 100000n],

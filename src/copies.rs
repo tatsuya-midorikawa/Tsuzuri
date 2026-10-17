@@ -153,7 +153,7 @@ pub(crate) fn message(ty: &Type) -> &'static str {
             "implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit"
         }
         Type::List(_) => {
-            "implicit copy of a list allocates a new node for every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit"
+            "implicit copy of a list allocates and copies every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit"
         }
         Type::Dyn(_) => {
             "implicit copy of a dyn value allocates and clones the stored value; borrow it with 'ref', or use the value only once so that it moves"

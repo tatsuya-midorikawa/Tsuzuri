@@ -232,3 +232,80 @@ fn runtime_fixture_uses_list_chunks_and_entry_allocas() {
         }
     }
 }
+
+/// The text of the definition that starts with `header`, up to its closing brace.
+fn definition<'a>(ir: &'a str, header: &str) -> &'a str {
+    let start = ir
+        .find(header)
+        .unwrap_or_else(|| panic!("missing {header}\n{ir}"));
+    let body = &ir[start..];
+    &body[..body.find("\n}\n").unwrap()]
+}
+
+fn emit_library(source: &str, wasm: bool) -> String {
+    let module = analyze(source)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+    );
+    ir
+}
+
+#[test]
+fn consed_chunks_grow_by_half_up_to_32_kib() {
+    // The first chunk fits 32 bytes with its 24-byte header and a later one at most 32 KiB, in slots
+    // of the element, with the slots aligned like it: 16-byte slots start at offset 32.
+    let source = "export def i :: i64 -> i64\nfn i x = (List.cons x [||]).length
+export def s :: i64 -> i64\nfn s x = (List.cons (\"a\" + \"b\") [||]).length + x
+export def u :: i64 -> i64\nfn u x = (List.cons () [||]).length + x
+export def w :: i64 -> i64\nfn w x = (List.cons (x as i128) [||]).length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        for (symbol, chunk, first, largest) in [
+            ("i64", "{ ptr, i64, i64, [0 x i64] }", 1, 4093),
+            ("string", "{ ptr, i64, i64, [0 x %tz.string] }", 1, 2046),
+            ("i128", "{ ptr, i64, i64, [0 x i128] }", 1, 2046),
+            ("unit", "{ ptr, i64, i64, [0 x i8] }", 8, 32744),
+        ] {
+            let header = format!("define internal %tz.list @tz.builtin.List.cons.{symbol}(");
+            let body = definition(&ir, &header);
+            assert!(body.contains(chunk), "{symbol}\n{body}");
+            assert!(
+                body.contains("icmp ugt i64 %v") && body.contains(&format!(", {largest}\n")),
+                "{symbol} caps a chunk at {largest} slots\n{body}"
+            );
+            assert!(
+                body.contains(&format!("i64 {first}, i64 %v")),
+                "{symbol} starts with {first} slots\n{body}"
+            );
+            assert_eq!(body.matches("@tz.alloc(").count(), 1, "{symbol}\n{body}");
+        }
+    }
+}
+
+#[test]
+fn a_list_built_at_once_is_one_chunk_and_the_empty_list_has_none() {
+    let source = "export def literal :: i64 -> i64\nfn literal x = (new [|x, 2, 3|]).length
+export def empty :: i64 -> i64\nfn empty x = { let values: [|i64|] = [||]; values.length + x }
+export def generated :: i64 -> i64\nfn generated n = (new [|i64|](n, i -> i)).length
+export def copied :: i64 -> i64\nfn copied n = { let values = new [|i64|](n, i -> i); let borrowed = &values; let copy = *borrowed; copy.length + values.length }";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let function = |name: &str| definition(&ir, &format!(" @tz.fn.Main.{name}("));
+        assert_eq!(function("literal").matches("@tz.alloc(").count(), 1);
+        assert_eq!(function("empty").matches("@tz.alloc(").count(), 0);
+        // The length check of the allocation size comes before the chunk is allocated.
+        let generated = function("generated");
+        assert_eq!(generated.matches("@tz.alloc(").count(), 1, "{generated}");
+        assert!(
+            generated.find("udiv i64 9223372036854775807").unwrap()
+                < generated.find("@tz.alloc(").unwrap(),
+            "{generated}"
+        );
+        // A copy allocates its chunk once, not once per element.
+        let copied = function("copied");
+        assert_eq!(copied.matches("@tz.alloc(").count(), 2, "{copied}");
+    }
+}
