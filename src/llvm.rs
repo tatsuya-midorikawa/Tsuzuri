@@ -2067,6 +2067,25 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
+/// Whether the adapters of closures and the workers of lambdas inline into the calls of known closures
+/// whatever their size (PM02). A static descriptor keeps the adapter in the program for as long as the
+/// descriptor exists, so LLVM no longer sees the sole call of a known closure's adapter as the last
+/// call of a local function, and a tiny program that built its closures inline grew by 11 to 17 % of
+/// its code. Native code measures better with the attribute. On WebAssembly the adapter that the
+/// descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
+/// without the attribute they are as large as before (`docs/benchmarks.md`, PM02).
+fn inline_closures(globals: &Globals) -> bool {
+    !globals.wasm
+}
+
+fn apply_attributes(globals: &Globals) -> &'static str {
+    if inline_closures(globals) {
+        "nounwind alwaysinline"
+    } else {
+        "nounwind"
+    }
+}
+
 /// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
 /// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
 /// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
@@ -2124,6 +2143,7 @@ fn closure_wrappers(
     let mut output = String::new();
     let name = function.qualified_name();
     let arity = function.parameters.len();
+    let attributes = apply_attributes(globals);
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
         let immediate = immediate_capture(function, count, globals);
@@ -2217,9 +2237,12 @@ fn closure_wrappers(
             apply.begin(&done);
             apply.instruction(format!("ret {result} {value}"));
             let argument = apply.ty(&function.signature.parameters[count]);
-            output.push_str(&apply.auxiliary(&format!(
-                "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
-            )));
+            output.push_str(&apply.auxiliary_with(
+                &format!(
+                    "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
+                ),
+                attributes,
+            ));
             output.push_str(&closure_descriptor_definition(
                 module, function, count, immediate,
             ));
@@ -2338,10 +2361,13 @@ fn closure_wrappers(
             String::new()
         };
         let borrow = if function.is_task { "" } else { ", i1 %borrow" };
-        output.push_str(&apply.auxiliary(&format!(
-            "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
-            llvm_type(&result, module)
-        )));
+        output.push_str(&apply.auxiliary_with(
+            &format!(
+                "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
+                llvm_type(&result, module)
+            ),
+            attributes,
+        ));
         output.push_str(&closure_descriptor_definition(
             module, function, count, immediate,
         ));
@@ -3583,7 +3609,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn auxiliary(self, signature: &str) -> String {
-        let mut output = format!("define internal {signature} nounwind {{\nentry:\n");
+        self.auxiliary_with(signature, "nounwind")
+    }
+
+    fn auxiliary_with(self, signature: &str, attributes: &str) -> String {
+        let mut output = format!("define internal {signature} {attributes} {{\nentry:\n");
         for line in self.allocas {
             let _ = writeln!(output, "  {line}");
         }
@@ -3668,9 +3698,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         // the table number is constant and keeps only the tables that a program reads (D09).
         // Resuming a continuation inlines too, so even at -O0 a chain of suspended computations
         // costs no extra frames per level (B08).
+        // The worker of a lambda is called by its adapter, which inlines into the call of a known
+        // closure (`inline_closures`); the adapter that stays for the descriptor would otherwise keep
+        // the worker from being the last call of a local function. A debugger still steps into the
+        // worker of an unoptimized build.
         let inline = if self.function.module == "$builtin"
             && (self.function.name.starts_with("Unicode.__table_")
                 || self.function.name.starts_with("Async.__resume"))
+            || self.function.module == "$lambda"
+                && self.symbol.starts_with("@tz.fn.")
+                && inline_closures(self.globals)
+                && !self.globals.debug_unoptimized()
         {
             " alwaysinline"
         } else {

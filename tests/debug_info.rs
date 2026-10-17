@@ -239,6 +239,53 @@ fn debug_function_values_show_their_descriptor_and_environment() {
     }
 }
 
+/// Native code inlines a lambda's worker into the calls of a known closure when the build is optimized
+/// (PM02), but a debugger still steps into the worker of an unoptimized build; the adapters, which
+/// carry no debug information, inline in both. WebAssembly inlines none of them by attribute.
+#[test]
+fn debug_builds_without_optimization_keep_lambda_workers_out_of_line() {
+    use tsuzuri::{analyze, llvm, trap::TrapSource};
+    let source = "export def answer :: i64 -> i64\nfn answer input =\n    let add = \\offset -> input + offset\n    add 2\n";
+    let module = analyze(source).unwrap();
+    let sources = [TrapSource {
+        path: "sources/Main.tz",
+        text: source,
+    }];
+    for wasm in [false, true] {
+        let options = llvm::EmitOptions {
+            entry: llvm::Entry::Library,
+            wasm,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: llvm::Allocator::System,
+            f16: llvm::F16Path::Soft,
+        };
+        for optimized in [false, true] {
+            let ir = llvm::emit_with_debug_info(&module, options, &sources, optimized, false)
+                .unwrap()
+                .ir;
+            let defined = |marker: &str| {
+                ir.lines()
+                    .filter(|line| line.starts_with("define internal ") && line.contains(marker))
+                    .collect::<Vec<_>>()
+            };
+            let workers = defined("@tz.fn.$lambda.");
+            assert_eq!(workers.len(), 1, "{ir}");
+            assert_eq!(
+                workers[0].contains(" alwaysinline"),
+                optimized && !wasm,
+                "{ir}"
+            );
+            let adapters = defined("@tz.apply.");
+            assert!(!adapters.is_empty());
+            for line in adapters {
+                assert_eq!(line.contains(" nounwind alwaysinline "), !wasm, "{line}");
+            }
+        }
+    }
+}
+
 /// The `offset:` in bits of member `member` of the composite type named `owner`.
 fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
     member_field(ir, owner, member, "offset: ")

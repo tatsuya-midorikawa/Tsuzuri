@@ -1032,6 +1032,11 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
 }
 
 impl Globals {
+    /// Whether the program carries debug information and is not optimized.
+    pub(super) fn debug_unoptimized(&self) -> bool {
+        self.debug.as_ref().is_some_and(|debug| !debug.optimized)
+    }
+
     pub(super) fn debug_subprogram(
         &mut self,
         module: &CheckedModule,

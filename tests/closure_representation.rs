@@ -177,6 +177,34 @@ fn closure_values_are_a_descriptor_and_an_environment() {
     }
 }
 
+/// A descriptor keeps its adapter alive, which takes away LLVM's bonus for inlining the last call of a
+/// local function; so that a known closure still folds, native code inlines the adapter and the worker
+/// of a lambda into the call (PM02). Specialized workers, tasks, and ordinary functions are left to
+/// LLVM, and so is every function on WebAssembly, where the attribute made programs 30 to 50 % larger.
+#[test]
+fn native_adapters_and_lambda_workers_inline_into_known_calls() {
+    for wasm in [false, true] {
+        let ir = mix_ir(wasm);
+        let defined = |marker: &'static str| {
+            ir.lines()
+                .filter(move |line| line.starts_with("define internal ") && line.contains(marker))
+                .collect::<Vec<_>>()
+        };
+        let adapters = defined("@tz.apply.");
+        let lambdas = defined("@tz.fn.$lambda.");
+        assert!(adapters.len() > 3 && lambdas.len() >= 2, "wasm: {wasm}");
+        for line in adapters {
+            assert_eq!(line.contains(" nounwind alwaysinline {"), !wasm, "{line}");
+        }
+        for line in lambdas {
+            assert_eq!(line.contains(" alwaysinline"), !wasm, "{line}");
+        }
+        for line in defined("@tz.fn.Mix.") {
+            assert!(!line.contains("alwaysinline"), "{line}");
+        }
+    }
+}
+
 /// What a descriptor names depends on the kind of closure, and on the target: a capture that
 /// fits a pointer is stored in the environment slot itself, which a wasm32 `i64` does not.
 #[test]
