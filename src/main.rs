@@ -197,6 +197,10 @@ Code generation:
                          + - * and on loop counters that a range proof shows cannot overflow;
                          audit keeps the wrapping instruction and traps where a proof is wrong,
                          for tests. Any other value is an error.
+  TSUZURI_STRINGS        utf16 or compact (default: utf16). compact stores a string whose code
+                         units are all at most 0xFF with one byte per unit (Latin-1) and any other
+                         string as UTF-16. The values, the order, the hash, the output, and the
+                         host ABI (always UTF-16) do not change. Any other value is an error.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit

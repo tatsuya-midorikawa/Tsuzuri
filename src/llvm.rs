@@ -24,6 +24,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
@@ -425,6 +426,8 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_strings.rs"]
+mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
 #[path = "llvm_task.rs"]
@@ -502,6 +505,32 @@ pub fn emit_with_range_flags(
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
             range_flags: Some(flags),
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the string form that `form` names, instead of that of
+/// `TSUZURI_STRINGS` or the default (PM03).
+pub fn emit_with_strings(
+    module: &CheckedModule,
+    options: EmitOptions,
+    form: StringForm,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            strings: Some(form),
             ..Instrumentation::default()
         },
     )
@@ -840,6 +869,7 @@ pub(crate) fn emit_wasm_build(
             coverage: None,
             seed: None,
             range_flags: None,
+            strings: None,
             executable_roots: false,
         },
     )?;
@@ -1011,6 +1041,8 @@ struct Instrumentation<'a> {
     seed: Option<u64>,
     /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
     range_flags: Option<RangeFlags>,
+    /// The form of the strings that the program makes (PM03); `None` takes `TSUZURI_STRINGS` or the default.
+    strings: Option<StringForm>,
     /// A native executable emits only what its entry and exports reach (PB03 D1).
     executable_roots: bool,
 }
@@ -1088,6 +1120,10 @@ fn emit_program_in(
     let range_flags = match instrumentation.range_flags {
         Some(flags) => flags,
         None => RangeFlags::from_environment()?,
+    };
+    let strings = match instrumentation.strings {
+        Some(form) => form,
+        None => StringForm::from_environment()?,
     };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
@@ -1255,6 +1291,7 @@ fn emit_program_in(
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
         range_flags,
+        strings,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1990,6 +2027,9 @@ struct Globals {
     recursive_functions: Vec<bool>,
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
+    /// The form of the strings that the program makes (PM03).
+    #[allow(dead_code)]
+    strings: StringForm,
 }
 
 impl Default for Globals {
@@ -2033,6 +2073,7 @@ impl Default for Globals {
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
+            strings: StringForm::DEFAULT,
         }
     }
 }
@@ -6969,6 +7010,7 @@ fn emit_typed_builtin(
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
+        strings: shared_globals.strings,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
