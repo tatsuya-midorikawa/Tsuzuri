@@ -7290,6 +7290,42 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 ### PM03 コンパクト文字列
 
 <!-- phase4:PM03 -->
+実装の記録（WP1〜WP11）は、実装の進行に合わせてこの region に足します。ticket は [PM03](../_perfs/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
+
+#### baseline（PM03 の前。WP1）
+
+- 条件: 2026-10-17 夜〜18 未明、Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`・`metrics.mjs` は Node 24 が必須）。
+  基準の compiler は main `9dd0fbbc` の release build（SHA-256 `5e1b9687…`）で、計測した worktree の commit は `8cc8359b`（計画の文書だけの差）。1 分の load average は 11〜15（他の作業が並行する共有機）なので、時間は参考値です。
+  確保量（calls・bytes）は決定的な値です。生データは worktree の `target/perf/PM03-before/`（Git の外。`cpp.jsonl`・`utf.jsonl`・`apps.jsonl`・`process.jsonl`・`environment.txt`）。
+  runner は `sh target/perf/PM03/run-bench.sh <label> <compiler>`（`run-cpp.mjs`・`run-utf.mjs`・`run-apps.mjs`・`metrics.mjs process` を順に 1 回ずつ。PX01 形式）。
+- M1（決定的な確保量。tracked。baseline）:
+
+  | 種目 | 大きさ | 確保 calls | 確保 bytes |
+  | --- | ---: | ---: | ---: |
+  | `cpp/utf16_scan` | 262,144 | 30 | 1,572,816 |
+  | `cpp/utf16_compare` | 262,144 | 33 | 3,145,684 |
+  | `cpp/utf16_validate` | 262,144 | 32 | 2,621,396 |
+  | `cpp/utf8_roundtrip` | 262,144 | 32 | 2,359,248 |
+  | `cpp/format_parse` | 50,000 | 50,000 | 1,939,624 |
+  | `apps/tokenize` | 200,000 | 400,003 | 12,500,022 |
+  | `apps/format_join` | 100,000 | 200,003 | 15,038,726 |
+  | `apps/csv_aggregate` | 100,000 | 700,005 | 13,405,744 |
+  | `apps/map_count` | 200,000 | 16 | 36,768 |
+  | `apps/record_sort` | 200,000 | 3 | 9,600,000 |
+
+- M2（`execute` の最大 RSS。9 標本の中央値、最小〜最大。baseline）:
+
+  | project | `-O0` | `-O3` |
+  | --- | ---: | ---: |
+  | `ascii_words` | 11,354,112（11,337,728〜11,370,496） | 11,370,496（11,354,112〜11,386,880） |
+  | `latin1_csv` | 41,467,904（41,451,520〜41,484,288） | 49,643,520（49,577,984〜49,676,288） |
+  | `cjk_lines` | 37,879,808（37,847,040〜37,912,576） | 37,896,192（37,830,656〜44,302,336） |
+
+  3 project の出力は `2088890`・`2888890`・`1888890`（Python の参照 `sum(len(f"word-{i}"))` ほかと一致）です。
+- M4（baseline の大きさ）: native の hello の実行ファイル 33,896 bytes（`-O3`）・35,800 bytes（`-O0`）、`--emit object` 5,024 bytes、WASM の hello 6,833 bytes（`-O3`）。
+  3 project の実行ファイルは `-O3` で 33,640・33,720・33,720 bytes です。
+- M3（時間。参考値。baseline の cpu 時間の中央値）: `cpp/utf16_scan` 0.0404 ms、`utf16_compare` 0.0863 ms、`utf16_validate` 0.2638 ms、`utf8_roundtrip` 0.8812 ms、`format_parse` 3.857 ms。
+  `utf` の 90 行と apps の時間は raw data にあります。after・before2 との比較は WP9 で書きます。
 <!-- /phase4:PM03 -->
 
 ### PM04 連結リストの連続表現
