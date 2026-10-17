@@ -211,10 +211,16 @@ fn with<T>(operation: impl FnOnce(&mut ResidentState) -> T) -> Option<T> {
     ACTIVE.with(|active| active.borrow_mut().as_mut().map(operation))
 }
 
+/// Whether this thread runs its commands for a process that stays (`watch`, `serve`): such a
+/// process never asks a build server to run a command.
+pub fn is_active() -> bool {
+    ACTIVE.with(|active| active.borrow().is_some())
+}
+
 /// The time a read begins, when a state is active and a stamp can show every write: `None`
 /// otherwise, and then nothing is looked up or remembered.
 pub(crate) fn clock() -> Option<SystemTime> {
-    (STAMP_SHOWS_WRITES && ACTIVE.with(|active| active.borrow().is_some())).then(SystemTime::now)
+    (STAMP_SHOWS_WRITES && is_active()).then(SystemTime::now)
 }
 
 /// The identity of the compiler that the active state pinned, if it pinned one.

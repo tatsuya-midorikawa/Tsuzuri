@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
 use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
+use tsuzuri::server;
 
 /// `eprintln!` to `err`. A failed write panics with the message that `eprintln!` has.
 macro_rules! errln {
@@ -47,6 +48,9 @@ Usage:
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
     tsuzuri watch check|build|test source.tz|directory [options of that command]
                              Run it again each time a source or manifest that it reads changes
+    tsuzuri serve directory [--idle-timeout SECONDS]
+    tsuzuri serve --status directory | --stop directory
+                             A build server (Unix) that runs check and build for that project
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
@@ -87,6 +91,17 @@ was does not count. After each run it writes `watch: run N finished with exit co
 the object {\"type\":\"watch\",\"run\":N,\"exit\":C}) to standard error. It runs in this process and
 ends only when it is stopped, for example with Ctrl-C. A directory named watch is built with
 `tsuzuri build watch`.
+`tsuzuri serve DIR` (macOS and Linux) is a build server for the project at DIR, in the foreground:
+`tsuzuri check` and `tsuzuri build` of that project, started with the same compiler, working
+directory, and environment variables that the compiler and its tools read (PATH, TSUZURI_*, the
+SDK and locale variables, ...), ask it to run the command and print what it printed, and run the
+command themselves, without a word, when no server is there or it refuses; --no-server skips the
+asking. It keeps what it read between commands, and stops after --idle-timeout seconds (1 to
+86400, default 1800) without a request, with `tsuzuri serve --stop DIR`, or when the compiler file
+is replaced. `tsuzuri serve --status DIR` prints its counters. The sockets are in
+TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the user's cache
+(macOS) or runtime (Linux) directory, which only its owner can enter. A directory named serve is
+built with `tsuzuri build serve`.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -170,6 +185,8 @@ Build options:
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable cache reads and writes: artifacts and parsed sources for
                            build/run/script, artifacts for repl
+    --no-server            Run check or build in this process even where tsuzuri serve runs
+                           for the project
     -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
@@ -268,6 +285,8 @@ struct Arguments {
     bench_samples: Option<usize>,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
+    /// `--no-server`: `check` and `build` run in this process even where a build server runs.
+    no_server: bool,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -291,6 +310,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             coverage: None,
             bench_samples: None,
             test_seed: None,
+            no_server: false,
         });
     }
     let mut position = 0;
@@ -359,6 +379,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
     let mut no_cache = false;
+    let mut no_server = false;
     let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
@@ -379,6 +400,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("no-cache specified more than once".into());
                     }
                     no_cache = true;
+                    continue;
+                }
+                Some("--no-server") => {
+                    if no_server {
+                        return Err("no-server specified more than once".into());
+                    }
+                    no_server = true;
                     continue;
                 }
                 Some("--deny-warnings") => {
@@ -722,6 +750,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
+    if no_server && !matches!(action, Action::Check | Action::Build) {
+        return Err("--no-server is only valid with check or build".into());
+    }
     if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
     {
@@ -938,6 +969,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         coverage,
         bench_samples,
         test_seed,
+        no_server,
     })
 }
 
@@ -2213,6 +2245,10 @@ fn main() -> ExitCode {
         time_passes.disarm();
         return watch_main(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "serve") {
+        time_passes.disarm();
+        return serve_main(&raw[1..]);
+    }
     ExitCode::from(cli(
         &raw,
         program_arguments.as_deref(),
@@ -2259,6 +2295,18 @@ fn cli(
     }
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
+    }
+    // A build server that runs this project takes the command, and gives back what it printed.
+    // A process that is one itself (`watch`, `serve`) never asks.
+    if !arguments.no_server
+        && matches!(arguments.action, Action::Check | Action::Build)
+        && !tsuzuri::resident::is_active()
+        && let Some(response) = tsuzuri::server::request(&arguments.input, raw)
+    {
+        tsuzuri::timings::silence_report();
+        let _ = out.write_all(response.stdout.as_bytes());
+        let _ = err.write_all(response.stderr.as_bytes());
+        return response.exit;
     }
     let load_time = tsuzuri::timings::Phase::start("load");
     let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
@@ -2417,7 +2465,7 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
                 "watch: run {run} finished with exit code {code}"
             );
         }
-        // A rebuilt compiler would run on with the caches and keys of the file that replaced it.
+        // A rebuilt compiler is not the one that this process runs: stop, and start the new one.
         if resident.compiler_changed() {
             if json {
                 errln!(
@@ -2435,6 +2483,294 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
         resident.trim();
         let _scope = tsuzuri::resident::Scope::enter(&mut resident);
         watcher.wait_for_change();
+    }
+}
+
+const SERVE_USAGE: &str = "serve takes one project directory: tsuzuri serve DIR [--idle-timeout SECONDS], tsuzuri serve --status DIR, or tsuzuri serve --stop DIR";
+
+/// What `tsuzuri serve` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+enum ServeMode {
+    Run { input: PathBuf, idle: u64 },
+    Status(PathBuf),
+    Stop(PathBuf),
+}
+
+fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
+    let mut input = None;
+    let mut idle = None;
+    let (mut status, mut stop) = (false, false);
+    let mut position = 0;
+    while position < arguments.len() {
+        let argument = &arguments[position];
+        position += 1;
+        match argument.to_str() {
+            Some("--idle-timeout") => {
+                if idle.is_some() {
+                    return Err("idle-timeout specified more than once".into());
+                }
+                let value = arguments
+                    .get(position)
+                    .and_then(|value| value.to_str())
+                    .ok_or("--idle-timeout requires a number of seconds")?;
+                position += 1;
+                let invalid = || {
+                    format!(
+                        "--idle-timeout must be an integer from 1 to {}, not '{value}'",
+                        server::MAX_IDLE_SECONDS
+                    )
+                };
+                let seconds: u64 = value.parse().map_err(|_| invalid())?;
+                if !(1..=server::MAX_IDLE_SECONDS).contains(&seconds) {
+                    return Err(invalid());
+                }
+                idle = Some(seconds);
+            }
+            Some("--status") => {
+                if std::mem::replace(&mut status, true) {
+                    return Err("status specified more than once".into());
+                }
+            }
+            Some("--stop") => {
+                if std::mem::replace(&mut stop, true) {
+                    return Err("stop specified more than once".into());
+                }
+            }
+            Some(value) if value.starts_with('-') => {
+                return Err(format!("unknown option '{value}' for serve; {SERVE_USAGE}"));
+            }
+            _ => {
+                if input.replace(PathBuf::from(argument)).is_some() {
+                    return Err(SERVE_USAGE.into());
+                }
+            }
+        }
+    }
+    let input = input.ok_or(SERVE_USAGE)?;
+    match (status, stop, idle) {
+        (false, false, idle) => Ok(ServeMode::Run {
+            input,
+            idle: idle.unwrap_or(server::DEFAULT_IDLE_SECONDS),
+        }),
+        (true, true, _) => Err("--status and --stop cannot be used together".into()),
+        (_, _, Some(_)) => Err("--idle-timeout applies to starting a server".into()),
+        (true, false, None) => Ok(ServeMode::Status(input)),
+        (false, true, None) => Ok(ServeMode::Stop(input)),
+    }
+}
+
+/// The server's commands: `check` and `build` of the project at `root`, through [`cli`] with the
+/// state that a process that stays keeps between them.
+struct CommandServer {
+    state: tsuzuri::resident::ResidentState,
+    root: PathBuf,
+}
+
+impl server::Handler for CommandServer {
+    fn run(
+        &mut self,
+        request: &server::Request,
+        log: &mut dyn Write,
+    ) -> Result<server::Response, server::Refused> {
+        use server::{Refusal, Refused};
+        let raw: Vec<OsString> = request.args.iter().map(OsString::from).collect();
+        let arguments = parse_arguments(&raw).map_err(|message| {
+            Refused::new(
+                Refusal::Unsupported,
+                format!("the command line is not valid ({message})"),
+            )
+        })?;
+        if !matches!(arguments.action, Action::Check | Action::Build) || arguments.no_server {
+            return Err(Refused::new(
+                Refusal::Unsupported,
+                "a server runs check and build, without --no-server",
+            ));
+        }
+        if server::project_root(&arguments.input).as_deref() != Some(self.root.as_path()) {
+            return Err(Refused::new(
+                Refusal::Root,
+                format!(
+                    "{} is not in the project that this server runs ({})",
+                    arguments.input.display(),
+                    self.root.display()
+                ),
+            ));
+        }
+        let state = &mut self.state;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let started = tsuzuri::timings::begin_command();
+            let code = {
+                let _scope = tsuzuri::resident::Scope::enter(state);
+                cli(&raw, None, &mut out, &mut err)
+            };
+            if let Some(report) = tsuzuri::timings::take_report(started) {
+                errln!(&mut err, "{report}");
+            }
+            (code, out, err)
+        }));
+        let Ok((code, out, err)) = outcome else {
+            // What the command left in the state cannot be trusted; the panic message is in the log.
+            self.state = tsuzuri::resident::ResidentState::new();
+            let _ = writeln!(log, "serve: the command panicked; resident state dropped");
+            return Err(Refused::new(
+                Refusal::Internal,
+                "the command panicked; see the server's standard error",
+            ));
+        };
+        if self.state.trim() {
+            let _ = writeln!(
+                log,
+                "serve: resident state dropped (over {} bytes)",
+                tsuzuri::resident::MAX_RESIDENT_BYTES
+            );
+        }
+        match (String::from_utf8(out), String::from_utf8(err)) {
+            (Ok(stdout), Ok(stderr)) => Ok(server::Response {
+                exit: code,
+                stdout,
+                stderr,
+            }),
+            _ => Err(Refused::new(
+                Refusal::Internal,
+                "the output of the command is not valid UTF-8",
+            )),
+        }
+    }
+
+    fn compiler_changed(&self) -> bool {
+        self.state.compiler_changed()
+    }
+
+    fn status(&self) -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        vec![
+            ("resident_bytes", json!(self.state.bytes())),
+            (
+                "resident_limit_bytes",
+                json!(tsuzuri::resident::MAX_RESIDENT_BYTES),
+            ),
+            ("source_hits", json!(self.state.source_hits)),
+            ("source_reads", json!(self.state.source_reads)),
+            ("digest_hits", json!(self.state.digest_hits)),
+            ("digest_reads", json!(self.state.digest_reads)),
+        ]
+    }
+}
+
+fn serve_failure(code: &'static str, message: String, exit: u8) -> ExitCode {
+    print_diagnostic(
+        &Diagnostic::new(code, message, Span::default()),
+        Path::new("<command line>"),
+        "",
+        false,
+    );
+    ExitCode::from(exit)
+}
+
+/// `tsuzuri serve DIR [--idle-timeout SECONDS]`, `serve --status DIR`, and `serve --stop DIR`.
+fn serve_main(arguments: &[OsString]) -> ExitCode {
+    let mode = match parse_serve_arguments(arguments) {
+        Ok(mode) => mode,
+        Err(message) => return serve_failure("E2000", message, EXIT_USAGE),
+    };
+    if !cfg!(unix) {
+        return serve_failure(
+            "E2000",
+            "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server".into(),
+            EXIT_USAGE,
+        );
+    }
+    match mode {
+        ServeMode::Status(input) => match server::control(&input, &server::Operation::Status) {
+            Ok(reply) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&reply).expect("a status is serializable")
+                );
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Stop(input) => match server::control(&input, &server::Operation::Shutdown) {
+            Ok(_) => {
+                let root = server::project_root(&input).unwrap_or(input);
+                println!("stopped the build server for {}", root.display());
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Run { input, idle } => start_server(&input, idle),
+    }
+}
+
+fn start_server(input: &Path, idle: u64) -> ExitCode {
+    // Every request would find the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+        return ExitCode::from(code);
+    }
+    let directory = match server::server_directory() {
+        Ok(directory) => directory,
+        Err(error) => return serve_failure("E2000", error.to_string(), EXIT_USAGE),
+    };
+    let Some(root) = server::project_root(input).filter(|root| root.to_str().is_some()) else {
+        return serve_failure(
+            "E2001",
+            format!(
+                "cannot find the project of {}: it must be an existing project directory or file with a UTF-8 path, not a symbolic link",
+                input.display()
+            ),
+            EXIT_FAILURE,
+        );
+    };
+    if let Err(message) = server::ensure_private_directory(&directory) {
+        return serve_failure("E2001", message, EXIT_FAILURE);
+    }
+    let compiler = env::current_exe().and_then(std::fs::canonicalize);
+    let cwd = env::current_dir();
+    let (Ok(compiler), Ok(cwd)) = (compiler, cwd) else {
+        return serve_failure(
+            "E2001",
+            "cannot find the compiler file or the working directory".into(),
+            EXIT_FAILURE,
+        );
+    };
+    let environment = match server::current_environment() {
+        Ok(environment) => environment,
+        Err(name) => {
+            return serve_failure(
+                "E2000",
+                format!(
+                    "the environment variable {} is not valid UTF-8; the build server compares it with its clients'",
+                    name.to_string_lossy()
+                ),
+                EXIT_USAGE,
+            );
+        }
+    };
+    let config = server::Config::new(
+        directory,
+        root.clone(),
+        std::time::Duration::from_secs(idle),
+        compiler,
+        cwd,
+        environment,
+    );
+    let mut handler = CommandServer {
+        state: tsuzuri::resident::ResidentState::new(),
+        root,
+    };
+    match server::serve(&config, &mut handler, &mut io::stderr()) {
+        Ok(server::Stop::Idle | server::Stop::Shutdown) => ExitCode::SUCCESS,
+        Ok(server::Stop::CompilerChanged) => ExitCode::from(EXIT_FAILURE),
+        Err(error) => {
+            let exit = if error.code == "E2000" {
+                EXIT_USAGE
+            } else {
+                EXIT_FAILURE
+            };
+            serve_failure(error.code, error.message, exit)
+        }
     }
 }
 
@@ -4647,5 +4983,87 @@ mod tests {
         );
         assert!(watch(&["check"]).is_err());
         assert!(watch(&["check", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn serve_arguments_need_one_directory_and_valid_timeout() {
+        let serve = |values: &[&str]| {
+            parse_serve_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        let run = |input: &str, idle| ServeMode::Run {
+            input: PathBuf::from(input),
+            idle,
+        };
+        assert_eq!(serve(&["app"]), Ok(run("app", 1800)));
+        assert_eq!(serve(&["app", "--idle-timeout", "1"]), Ok(run("app", 1)));
+        assert_eq!(
+            serve(&["--idle-timeout", "86400", "app"]),
+            Ok(run("app", 86400))
+        );
+        assert_eq!(serve(&["app/Main.tz"]), Ok(run("app/Main.tz", 1800)));
+        assert_eq!(
+            serve(&["--status", "app"]),
+            Ok(ServeMode::Status(PathBuf::from("app")))
+        );
+        assert_eq!(
+            serve(&["app", "--stop"]),
+            Ok(ServeMode::Stop(PathBuf::from("app")))
+        );
+        for values in [
+            vec![],
+            vec!["a", "b"],
+            vec!["--status"],
+            vec!["--idle-timeout", "5"],
+            vec!["app", "--idle-timeout"],
+            vec!["app", "--idle-timeout", "0"],
+            vec!["app", "--idle-timeout", "86401"],
+            vec!["app", "--idle-timeout", "x"],
+            vec!["app", "--idle-timeout", "-1"],
+            vec!["app", "--idle-timeout", "1", "--idle-timeout", "2"],
+            vec!["app", "-O0"],
+            vec!["app", "--json"],
+            vec!["--status", "--stop", "app"],
+            vec!["--status", "--status", "app"],
+            vec!["--stop", "--stop", "app"],
+            vec!["--status", "app", "--idle-timeout", "5"],
+            vec!["--stop", "app", "--idle-timeout", "5"],
+        ] {
+            assert!(serve(&values).is_err(), "{values:?}");
+        }
+        assert_eq!(
+            serve(&["app", "--idle-timeout", "0"]).unwrap_err(),
+            "--idle-timeout must be an integer from 1 to 86400, not '0'"
+        );
+        assert_eq!(serve(&[]).unwrap_err(), SERVE_USAGE);
+    }
+
+    #[test]
+    fn no_server_is_only_valid_with_check_or_build() {
+        for values in [
+            vec!["check", "Main.tz", "--no-server"],
+            vec!["build", "Main.tz", "--no-server", "-O0"],
+            vec!["--no-server", "Main.tz"],
+        ] {
+            assert!(parse(&values).unwrap().no_server, "{values:?}");
+        }
+        assert!(!parse(&["check", "Main.tz"]).unwrap().no_server);
+        for values in [
+            vec!["run", "Main.tz", "--no-server"],
+            vec!["test", "Main.tz", "--no-server"],
+            vec!["bench", "Main.tz", "--no-server"],
+            vec!["doc", "Main.tz", "-o", "out", "--no-server"],
+            vec!["fmt", "Main.tz", "--no-server"],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap_err(),
+                "--no-server is only valid with check or build",
+                "{values:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["check", "Main.tz", "--no-server", "--no-server"]).unwrap_err(),
+            "no-server specified more than once"
+        );
+        assert!(parse(&["lsp", "--no-server"]).is_err());
     }
 }

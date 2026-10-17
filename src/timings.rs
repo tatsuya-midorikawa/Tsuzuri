@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -59,17 +60,44 @@ pub fn render(phases: &[(String, f64)], total_ms: f64) -> String {
 
 pub struct Report(Option<Instant>);
 
+/// Set by a command that was run by a build server: the report that came back with its output is
+/// the report of that command, and this process prints none.
+static SILENCED: AtomicBool = AtomicBool::new(false);
+
+pub fn silence_report() {
+    SILENCED.store(true, Ordering::Relaxed);
+}
+
+fn reset() {
+    PHASES
+        .lock()
+        .expect("compiler phase timings poisoned")
+        .clear();
+}
+
+/// The report line of the command that began at `started` (from [`start`]), without printing it:
+/// a build server puts it at the end of the command's standard error. The phases are forgotten.
+pub fn take_report(started: Option<Instant>) -> Option<String> {
+    let total_ms = started?.elapsed().as_secs_f64() * 1000.0;
+    let mut phases = PHASES.lock().expect("compiler phase timings poisoned");
+    let line = render(&phases, total_ms);
+    phases.clear();
+    Some(line)
+}
+
+/// Forgets the phases of the commands before: the next command is reported alone.
+pub fn begin_command() -> Option<Instant> {
+    if enabled() {
+        reset();
+    }
+    start()
+}
+
 impl Report {
     /// A report covers the phases since its start, so a process that runs commands one after the
     /// other (`tsuzuri watch`) reports each of them alone.
     pub fn start() -> Self {
-        if enabled() {
-            PHASES
-                .lock()
-                .expect("compiler phase timings poisoned")
-                .clear();
-        }
-        Self(start())
+        Self(begin_command())
     }
 
     /// Makes the report print nothing: the commands of `tsuzuri watch` have reports of their own.
@@ -80,7 +108,9 @@ impl Report {
 
 impl Drop for Report {
     fn drop(&mut self) {
-        if let Some(started) = self.0 {
+        if let Some(started) = self.0
+            && !SILENCED.load(Ordering::Relaxed)
+        {
             let total_ms = started.elapsed().as_secs_f64() * 1000.0;
             let phases = PHASES.lock().expect("compiler phase timings poisoned");
             eprintln!("{}", render(&phases, total_ms));

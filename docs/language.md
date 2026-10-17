@@ -59,6 +59,12 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 本文が同じ保存では実行しません。プロセスは、読んだソースの本文と内容ハッシュを `stat` つきで覚え、書き換えられていないファイルは開き直さず、
 起動したコンパイラのファイルが差し替えられると、その回のあとで止まります（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#watch)）。
 
+`tsuzuri serve DIR`（macOS と Linux。PB06）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラのファイル・作業ディレクトリ・
+コンパイラとそのツールが読む環境変数（`PATH`、`TSUZURI_*` など）で起動した `check` と `build` は、サーバーが実行して出力を返し、
+サーバーがなければ（断られても）黙って自分で実行します。標準出力・標準エラー・終了コード・成果物は、サーバーの有無と `--no-server` の有無で変わりません。
+ソケットは、`TSUZURI_SERVER_DIR`（空ならサーバーを使わない）の `0700` のディレクトリにあり、同じ利用者だけを信頼します
+（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。
+
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
