@@ -129,6 +129,54 @@ fn closure_descriptors_pair_with_apply_functions() {
     }
 }
 
+/// A function value is a descriptor and an environment (PM02): it is built from `@tz.desc.*` and
+/// its code is the first entry of the descriptor, which every reader loads right after taking the
+/// descriptor out of the value. No instruction names a third or fourth field.
+#[test]
+fn closure_values_are_a_descriptor_and_an_environment() {
+    for wasm in [false, true] {
+        let ir = mix_ir(wasm);
+        assert!(ir.contains("\n%tz.closure = type { ptr, ptr }\n"), "{ir}");
+        let lines: Vec<&str> = ir.lines().collect();
+        let (mut built, mut read) = (0, 0);
+        for (position, line) in lines.iter().enumerate() {
+            let line = line.trim();
+            if line.contains("insertvalue %tz.closure ")
+                || line.contains("extractvalue %tz.closure ")
+            {
+                let index: usize = line.rsplit(", ").next().unwrap().parse().unwrap();
+                assert!(index < 2, "{line}");
+            }
+            if let Some((_, value)) =
+                line.split_once("insertvalue %tz.closure zeroinitializer, ptr ")
+            {
+                let target = value.split(',').next().unwrap();
+                let head = format!("{target} = internal unnamed_addr constant %tz.closure.desc ");
+                assert!(ir.lines().any(|line| line.starts_with(&head)), "{line}");
+                assert!(line.ends_with(", 0"), "{line}");
+                built += 1;
+            }
+            if let Some((result, _)) = line.split_once(" = extractvalue %tz.closure ")
+                && line.ends_with(", 0")
+            {
+                let next = lines[position + 1].trim();
+                assert!(
+                    next.ends_with(&format!(" = load ptr, ptr {result}"))
+                        || next.contains(&format!(
+                            " = getelementptr inbounds %tz.closure.desc, ptr {result}, i32 0, i32 "
+                        )),
+                    "{line}\n{next}"
+                );
+                read += 1;
+            }
+        }
+        assert!(
+            built > 0 && read > 0,
+            "wasm: {wasm}: {built} built, {read} read"
+        );
+    }
+}
+
 /// What a descriptor names depends on the kind of closure, and on the target: a capture that
 /// fits a pointer is stored in the environment slot itself, which a wasm32 `i64` does not.
 #[test]

@@ -19,6 +19,8 @@ pub(super) struct DebugContext {
     opaque: Option<usize>,
     /// The pointer to a function type that a function value's `code` member has.
     code: Option<usize>,
+    /// The pointer to the descriptor that a function value's `descriptor` member has.
+    descriptor: Option<usize>,
     locations: BTreeMap<(usize, usize, usize), usize>,
 }
 
@@ -211,6 +213,7 @@ impl DebugContext {
             bases: BTreeMap::new(),
             opaque: None,
             code: None,
+            descriptor: None,
             locations: BTreeMap::new(),
         }
     }
@@ -413,13 +416,11 @@ impl DebugContext {
                     ]
                 }
                 Type::Function(..) | Type::Task(_) => {
-                    let code = self.code_pointer(next, definitions);
+                    let descriptor = self.descriptor_pointer(next, definitions);
                     let opaque = self.opaque_pointer(next, definitions);
                     vec![
-                        Member::new("code", code, pointer, pointer),
+                        Member::new("descriptor", descriptor, pointer, pointer),
                         Member::new("environment", opaque, pointer, pointer),
-                        Member::new("clone", opaque, pointer, pointer),
-                        Member::new("drop", opaque, pointer, pointer),
                     ]
                 }
                 // A14: the owned data and the vtable of a dyn value.
@@ -526,6 +527,37 @@ impl DebugContext {
             ),
         );
         self.code = Some(id);
+        id
+    }
+
+    /// The pointer to the static descriptor that a function value starts with: the `code` that it
+    /// calls, and how to `clone` and `drop` its environment (null where there is nothing to do).
+    fn descriptor_pointer(&mut self, next: &mut usize, definitions: &mut Vec<String>) -> usize {
+        if let Some(id) = self.descriptor {
+            return id;
+        }
+        let pointer = self.pointer();
+        let code = self.code_pointer(next, definitions);
+        let opaque = self.opaque_pointer(next, definitions);
+        let descriptor = *next;
+        *next += 1;
+        let members = vec![
+            (Member::new("code", code, pointer, pointer), 0),
+            (Member::new("clone", opaque, pointer, pointer), pointer),
+            (Member::new("drop", opaque, pointer, pointer), 2 * pointer),
+        ];
+        let definition = composite(
+            "DW_TAG_structure_type",
+            descriptor,
+            &quote("closure.descriptor"),
+            (3 * pointer, pointer),
+            members,
+            next,
+            definitions,
+        );
+        definitions.push(format!("!{descriptor} = {definition}"));
+        let id = self.pointer_to(descriptor, next, definitions);
+        self.descriptor = Some(id);
         id
     }
 
@@ -953,7 +985,7 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Vec(_) => (24, 8),
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (pointer, pointer),
-        Type::Function(..) | Type::Task(_) => (4 * pointer, pointer),
+        Type::Function(..) | Type::Task(_) => (2 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
         Type::Record(..) => aggregate(
             super::layout::physical_fields(ty, module)

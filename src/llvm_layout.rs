@@ -233,9 +233,9 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
         Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
         Type::Function(..) | Type::Task(_) => {
             if lower {
-                (16, 4)
+                (8, 4)
             } else {
-                (32, 8)
+                (16, 8)
             }
         }
         Type::Vec(_) => (24, 8),
@@ -1211,10 +1211,10 @@ fn use n =
             ("Maybe<ref Mixed>", 8, 8),
             // A function value is `CLOSURE_POINTERS` pointers; a union holds it like any payload
             // (the bounds below allow for the narrower pointers of wasm32).
-            ("Choice", 40, 8),
-            ("Callback", 40, 8),
-            ("Maybe<fn>", 40, 8),
-            ("Result<fn, string>", 40, 8),
+            ("Choice", 24, 8),
+            ("Callback", 24, 8),
+            ("Maybe<fn>", 24, 8),
+            ("Result<fn, string>", 24, 8),
         ] {
             let ty = types(&module)
                 .into_iter()
@@ -1261,9 +1261,9 @@ fn use n =
         assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
     }
 
-    /// The number of pointers in a function value and in a `Task` (PM02): the code, the
-    /// environment, and what clone and drop need. Every model of its size follows this number.
-    const CLOSURE_POINTERS: usize = 4;
+    /// The number of pointers in a function value and in a `Task` (PM02): the static descriptor
+    /// (code, clone, and drop) and the environment. Every model of its size follows this number.
+    const CLOSURE_POINTERS: usize = 2;
 
     /// A function value takes the same number of pointers on every machine, so its size is that
     /// number of pointers wide, and the model's bounds hold it: the upper bound for 64-bit

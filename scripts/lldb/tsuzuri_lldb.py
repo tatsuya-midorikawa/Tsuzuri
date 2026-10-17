@@ -501,13 +501,20 @@ class UnionProvider:
 
 def is_function(sbtype, _dict):
     """Only the generated function value and `Task` types: a record may name its fields the same,
-    but its `code` is never a function pointer and its type name has no `->`."""
+    but its `descriptor` never points to a structure whose `code` is a function pointer, and its
+    type name has no `->`."""
     try:
         canonical = sbtype.GetCanonicalType()
-        if field_names(canonical) != ["code", "environment", "clone", "drop"]:
+        if field_names(canonical) != ["descriptor", "environment"]:
             return False
         name = strip(sbtype).GetName() or ""
-        code = canonical.GetFieldAtIndex(0).GetType().GetCanonicalType()
+        descriptor = canonical.GetFieldAtIndex(0).GetType().GetCanonicalType()
+        if not descriptor.IsPointerType():
+            return False
+        entries = descriptor.GetPointeeType().GetCanonicalType()
+        if entries.GetFieldAtIndex(0).GetName() != "code":
+            return False
+        code = entries.GetFieldAtIndex(0).GetType().GetCanonicalType()
         return (
             code.IsPointerType()
             and code.GetPointeeType().IsFunctionType()
@@ -522,7 +529,10 @@ def function_summary(valobj):
     value = target(valobj)
     if (strip(value.GetType()).GetName() or "").startswith("Task<"):
         return "<task>"
-    code = member(value, "code").GetValueAsUnsigned()
+    descriptor = member(value, "descriptor")
+    code = 0
+    if descriptor.GetValueAsUnsigned() != 0:
+        code = member(descriptor.Dereference(), "code").GetValueAsUnsigned()
     return f"<fn {function_name(valobj.GetTarget(), code)}>"
 
 

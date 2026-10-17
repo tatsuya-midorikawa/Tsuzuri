@@ -1112,7 +1112,7 @@ fn emit_program_in(
         ));
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.closure.desc = type { ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr }\n%tz.closure.desc = type { ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
@@ -5678,25 +5678,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn closure_descriptor(&mut self, id: usize, count: usize, environment: &str) -> String {
-        let function = &self.module.functions[id];
-        let name = function.qualified_name();
+        let name = self.module.functions[id].qualified_name();
         let value = self.value(format!(
-            "insertvalue %tz.closure zeroinitializer, ptr @tz.apply.{name}.{count}, 0"
+            "insertvalue %tz.closure zeroinitializer, ptr @tz.desc.{name}.{count}, 0"
         ));
-        let value = self.value(format!(
+        self.value(format!(
             "insertvalue %tz.closure {value}, ptr {environment}, 1"
-        ));
-        let immediate = immediate_capture(function, count, self.globals);
-        let (clone, drop) = closure_slots(self.module, function, count, immediate);
-        let value = if clone == "null" {
-            value
-        } else {
-            self.value(format!("insertvalue %tz.closure {value}, ptr {clone}, 2"))
-        };
-        if drop == "null" {
-            return value;
-        }
-        self.value(format!("insertvalue %tz.closure {value}, ptr {drop}, 3"))
+        ))
     }
 
     fn stack_closure(&mut self, target: ClosureTarget, values: &[String]) -> String {
@@ -5747,7 +5735,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                %target = load ptr, ptr %target.slot\n\
                %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
                %task = load %tz.closure, ptr %slot\n\
-               %code = extractvalue %tz.closure %task, 0\n\
+               %descriptor = extractvalue %tz.closure %task, 0\n\
+               %code = load ptr, ptr %descriptor\n\
                %env = extractvalue %tz.closure %task, 1\n\
                %result = call {ty} %code(ptr %env)\n\
                %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
@@ -5770,9 +5759,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         array
     }
 
-    /// The code pointer and the environment of the function value `closure`.
+    /// The code pointer and the environment of the function value `closure`. The code is the first
+    /// entry of the static descriptor that the value points to.
     fn closure_parts(&mut self, closure: &str) -> (String, String) {
-        let code = self.value(format!("extractvalue %tz.closure {closure}, 0"));
+        let descriptor = self.value(format!("extractvalue %tz.closure {closure}, 0"));
+        let code = self.value(format!("load ptr, ptr {descriptor}"));
         let environment = self.value(format!("extractvalue %tz.closure {closure}, 1"));
         (code, environment)
     }
