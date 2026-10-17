@@ -22,10 +22,12 @@ extern int64_t tz_tail_consume(int64_t);
 extern int64_t tz_clone_list(int64_t);
 extern int64_t tz_index_walk(int64_t);
 extern int64_t tz_string_list(int64_t);
+extern int64_t tz_walk_list(int64_t);
 
 static const struct { const char *name; int64_t (*kernel)(int64_t); } workloads[] = {
     {"bulk_new", tz_bulk_new}, {"cons_build", tz_cons_build}, {"tail_consume", tz_tail_consume},
     {"clone_list", tz_clone_list}, {"index_walk", tz_index_walk}, {"string_list", tz_string_list},
+    {"walk_list", tz_walk_list},
 };
 
 #ifndef TRACKING

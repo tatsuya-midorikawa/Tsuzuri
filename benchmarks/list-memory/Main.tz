@@ -66,3 +66,13 @@ fn string_list n =
     let mut total = 0i64
     for value in values do total = total + value.length
     total
+
+// A `new` list summed 16 times by `for`: 16 n (n - 1) / 2. The sums, not the build, take the time: this is the cost per element of a walk.
+export def walk_list :: i64 -> i64
+fn walk_list n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let mut total = 0i64
+    for _ in 1 .. 16 do
+        for value in values do total = total + value
+    total
