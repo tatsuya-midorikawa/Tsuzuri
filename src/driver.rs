@@ -27,6 +27,9 @@ pub use test_runner::{
 mod bindgen_driver;
 pub use bindgen_driver::bindgen;
 
+/// The target attributes and the checks of `--emit bitcode` (PR08).
+pub mod lto;
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
