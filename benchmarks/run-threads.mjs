@@ -34,7 +34,7 @@ assert.ok(configurations.every((name) => name === "unset" || (name === "before" 
 mkdirSync(options.out, { recursive: true });
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const range = (values, digits = 1) => `${median(values).toFixed(digits)} (${Math.min(...values).toFixed(digits)}-${Math.max(...values).toFixed(digits)})`;
-const samples = Object.fromEntries(configurations.map((name) => [name, { wall_ms: [], user_ms: [], sys_ms: [], peak_rss_bytes: [], total_ms: [], phases: {} }]));
+const samples = Object.fromEntries(configurations.map((name) => [name, { wall_ms: [], user_ms: [], sys_ms: [], cpu_ms: [], peak_rss_bytes: [], total_ms: [], phases: {} }]));
 for (let round = 0; round <= Number(runs); round++) {
   for (const name of configurations) {
     const env = { ...process.env, LC_ALL: "C", TSUZURI_CACHE_DIR: "", TSUZURI_TIME_PASSES: "1" };
@@ -62,6 +62,7 @@ for (let round = 0; round <= Number(runs); round++) {
     sample.wall_ms.push(wall);
     sample.user_ms.push(timing.user_ms);
     sample.sys_ms.push(timing.sys_ms);
+    sample.cpu_ms.push(timing.user_ms + timing.sys_ms); // per run: the median of a sum is not the sum of the medians
     sample.peak_rss_bytes.push(timing.peak_rss_bytes);
     sample.total_ms.push(passes.total_ms);
     for (const phase of passes.phases) (sample.phases[phase.name] ??= []).push(phase.ms);
@@ -70,6 +71,6 @@ for (let round = 0; round <= Number(runs); round++) {
 console.log(`# ${project} ${variant}${options.cache ? ` (frontend cache ${options.cache})` : ""}, ${runs} samples, compiler ${compiler}`);
 for (const [name, sample] of Object.entries(samples)) {
   const phases = Object.entries(sample.phases).map(([phase, values]) => `${phase}=${median(values).toFixed(1)}`).join(" ");
-  console.log(`${name.padEnd(6)} wall ${range(sample.wall_ms, 0)} ms, total ${range(sample.total_ms)} ms, cpu ${median(sample.user_ms) + median(sample.sys_ms)} ms, rss ${range(sample.peak_rss_bytes.map((bytes) => bytes / 1048576))} MiB | ${phases}`);
+  console.log(`${name.padEnd(6)} wall ${range(sample.wall_ms, 0)} ms, total ${range(sample.total_ms)} ms, cpu ${range(sample.cpu_ms, 0)} ms, rss ${range(sample.peak_rss_bytes.map((bytes) => bytes / 1048576))} MiB | ${phases}`);
 }
 writeFileSync(join(options.out, `${variant}${options.cache ? `-${options.cache}` : ""}.json`), JSON.stringify({ project, variant, runs: Number(runs), compiler, before: options.before, cache: options.cache, samples }, null, 1) + "\n");

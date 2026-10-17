@@ -3,7 +3,8 @@
 // usage: node benchmarks/layout/ir-diff.mjs <before-compiler> <after-compiler> [--out dir] [--opt -O0[,-O3]] [--wasm] [--lines N] [project...]
 //
 // Without projects it takes every directory of `tests/fixtures`, `examples`, and `benchmarks/layout|computations`.
-// A project that neither compiler builds counts as the same when both fail with the same first diagnostic line.
+// A project that neither compiler builds counts as the same when both fail with the same first diagnostic line (error[E...]);
+// a compiler that cannot be started, or that fails without a diagnostic, stops the run.
 // Exit status 1 when some IR differs. The IR of both compilers is kept under `<out>/before` and `<out>/after`.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -51,7 +52,11 @@ async function build(compiler, side, project, target, opt) {
     await execute(compiler, flags, { env: { ...process.env, TSUZURI_CACHE_DIR: "" }, maxBuffer: 1 << 28 });
     return { text: readFileSync(file, "utf8") };
   } catch (error) {
-    return { failure: String(error.stderr ?? error.message).split("\n").find((line) => /error/.test(line))?.replaceAll(project, "<project>") ?? "failed" };
+    // Only an exit with a compiler diagnostic is a failure of the project. A compiler that cannot be started, or that dies
+    // without a diagnostic, is a failure of the run: two of those must not count as two builds that fail alike.
+    const diagnostic = typeof error.code === "number" ? String(error.stderr ?? "").split("\n").find((line) => /error\[E\d+\]/.test(line)) : undefined;
+    if (diagnostic === undefined) throw error;
+    return { failure: diagnostic.replaceAll(project, "<project>") };
   }
 }
 

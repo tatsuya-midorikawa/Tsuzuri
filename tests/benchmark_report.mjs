@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -357,6 +357,32 @@ try {
     coff.writeUInt16LE(2, 2);
     writeFileSync(file, coff);
     assert.throws(() => artifactFingerprint(file), /COFF section headers/);
+  });
+  test("the IR diff runner counts a diagnostic as a failure of the project and a missing compiler as a failure of the run", () => {
+    if (platform() === "win32") return;
+    const script = fileURLToPath(new URL("../benchmarks/layout/ir-diff.mjs", import.meta.url));
+    const project = join(metricTemporary, "ir-diff-project");
+    mkdirSync(project);
+    writeFileSync(join(project, "Main.tz"), "1\n");
+    const fake = (name, body) => {
+      const file = join(metricTemporary, name);
+      writeFileSync(file, `#!/bin/sh\n${body}\n`);
+      chmodSync(file, 0o755);
+      return file;
+    };
+    const diff = (before, after) => spawnSync(process.execPath, [script, before, after, "--out", join(metricTemporary, "ir-diff-out"), project], { encoding: "utf8" });
+    const rejecting = fake("rejecting", 'echo "Main.tz:1:1: error[E2002]: no" >&2; exit 1');
+    const alike = diff(rejecting, rejecting);
+    assert.equal(alike.status, 0, alike.stderr);
+    assert.match(alike.stdout, /both failed alike 1/);
+    const other = diff(rejecting, fake("rejecting-other", 'echo "Main.tz:1:1: error[E2003]: no" >&2; exit 1'));
+    assert.equal(other.status, 1);
+    assert.match(other.stdout, /DIFF/);
+    for (const [before, after] of [["/no/such/compiler", "/no/such/compiler"], [fake("crashing", 'echo "boom" >&2; exit 1'), fake("crashing-again", 'echo "boom" >&2; exit 1')]]) {
+      const broken = diff(before, after);
+      assert.notEqual(broken.status, 0, `${before}: ${broken.stdout}`);
+      assert.doesNotMatch(broken.stdout, /both failed alike/);
+    }
   });
   test("comparison verdicts and conditions", () => {
     const quick = { ...context, mode: "quick" };
