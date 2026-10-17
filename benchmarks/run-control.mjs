@@ -5,7 +5,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
+import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations, makeRecord, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -34,6 +34,7 @@ if (!["generic", "native"].includes(cpu) || !["system", "small"].includes(alloca
   throw new Error(usage);
 }
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
+const { timing: tsuzuriVariant, allocation: allocationVariant } = allocatorVariants(allocator);
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? "rustc";
 const run = (program, arguments_) => execFileSync(program, arguments_, {
@@ -181,10 +182,11 @@ try {
     const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
     assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));
     const records = inProcessRecords(context, "control", result.workloads,
-      [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name]), ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
+      [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name, name === "tsuzuri" ? tsuzuriVariant : "default"]),
+        ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
     for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
       records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
-        opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+        variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
     }
     writeRecords(metrics, "control", records);
     generated.push("control.tracked.ll", "control.tracked.o", "tracked_alloc.o");

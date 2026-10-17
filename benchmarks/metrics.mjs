@@ -331,6 +331,15 @@ export function inProcessRecords(context, suite, workloads, variants, { cpu = "g
         metric, samples: work.raw.map((sample) => sample[column]) }))));
 }
 
+// PM05: only the timing object of run-apps.mjs and run-control.mjs takes --allocator. The tracked IR that counts allocations has no
+// runtime in it, so those counts are of the system allocator whatever the timing object uses and say so. `default` is the system
+// allocator: the records of a default run keep the labels they had before --allocator existed, and a run with another allocator
+// never matches them in a comparison.
+export function allocatorVariants(allocator) {
+  assert.ok(["system", "small"].includes(allocator), `unknown allocator: ${allocator}`);
+  return allocator === "system" ? { timing: "default", allocation: "default" } : { timing: allocator, allocation: "system" };
+}
+
 export function processRecords(context, fields, measured, { phases = true } = {}) {
   const samples = {
     wall_time: measured.wall_ms, cpu_time: measured.user_ms.map((value, index) => value + measured.sys_ms[index]),

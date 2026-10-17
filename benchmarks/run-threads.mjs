@@ -11,7 +11,8 @@ import { parseTimeOutput, parseTimePasses } from "./metrics.mjs";
 // the compiler's own total and phases (TSUZURI_TIME_PASSES), user+sys CPU time and peak RSS, and writes the raw samples.
 //   node benchmarks/run-threads.mjs <compiler> <project dir> <check|emit-llvm> <runs> --out <dir> <configuration>...
 // A configuration is a thread count (1..32), `unset` (the compiler's own choice) or `before` (the compiler named by --before).
-// --cache cold|warm uses a frontend cache (fresh for every run, or filled by the first run); without it the cache is disabled.
+// --cache cold|warm gives every configuration a cache directory of its own (fresh for every run, or filled by the first run) and
+// leaves every cache on, parsed sources included, which --no-cache would turn off; without it every cache is disabled.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const options = { cache: null, before: null, out: null };
@@ -46,7 +47,7 @@ for (let round = 0; round <= Number(runs); round++) {
     }
     const output = join(options.out, `${name}.ll`);
     const command = variant === "check" ? ["check", project]
-      : ["build", project, "--emit", "llvm", "-O0", "--cpu", "generic", "--no-cache", "-o", output];
+      : ["build", project, "--emit", "llvm", "-O0", "--cpu", "generic", ...(options.cache ? [] : ["--no-cache"]), "-o", output];
     const report = join(options.out, "time.out");
     const started = process.hrtime.bigint();
     const child = spawnSync("/usr/bin/time", [platform() === "darwin" ? "-l" : "-v", "-o", report, name === "before" ? options.before : resolve(compiler), ...command],

@@ -5,7 +5,7 @@ import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { arch, cpus, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { captureRun, inProcessRecords, instrumentAllocations, makeRecord, measureProcess, median, readRecords, writeRecords } from "./metrics.mjs";
+import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations, makeRecord, measureProcess, median, readRecords, writeRecords } from "./metrics.mjs";
 import { checkReference, hex, reference, workloads as definitions, wrap } from "./apps/reference.mjs";
 
 const filename = fileURLToPath(import.meta.url);
@@ -105,6 +105,7 @@ export async function runApps(options) {
   if (Number(process.versions.node.split(".")[0]) < 24) throw new Error("Apps benchmarks require Node.js 24+; use npx --yes --package=node@24 node benchmarks/run-apps.mjs");
   checkReference();
   const { compiler, quick, scale, cpu, allocator, artifacts, metrics } = options;
+  const { timing: tsuzuriVariant, allocation: allocationVariant } = allocatorVariants(allocator);
   const clang = process.env.TSUZURI_CLANG ?? "clang";
   const rustc = process.env.TSUZURI_RUSTC ?? process.env.RUSTC ?? "rustc";
   if (metrics && existsSync(join(metrics, "apps.jsonl"))) throw new Error(`apps.jsonl already exists in ${metrics}; choose a new run directory`);
@@ -295,7 +296,8 @@ export async function runApps(options) {
     let metricCount = 0;
     const records = [];
     if (metrics) {
-      records.push(...inProcessRecords(context, "apps", result.workloads, languages.map((language) => [language, language, "default"]), { cpu }));
+      records.push(...inProcessRecords(context, "apps", result.workloads,
+        languages.map((language) => [language, language, language === "tsuzuri" ? tsuzuriVariant : "default"]), { cpu }));
       for (const language of languages) {
         const prefix = language === "tsuzuri" ? "tz_" : `${language}_`;
         const processHost = compileHost(`apps-rss-${language}`, [`-DPROCESS_PREFIX=${prefix}`, `-DPROCESS_LABEL="${language}"`],
@@ -307,14 +309,15 @@ export async function runApps(options) {
           const checksum = expected(work.name, work.size, "42");
           for (const output of measured.stdout) assert.equal(output.trim(), checksum, `${work.name}/${language}/RSS checksum`);
           assert.ok(measured.peak_rss_bytes.every((value) => Number.isSafeInteger(value) && value > 0));
-          records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language, opt: "O3",
+          records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language,
+            variant: language === "tsuzuri" ? tsuzuriVariant : "default", opt: "O3",
             cpu_mode: cpu, metric: "peak_rss", samples: measured.peak_rss_bytes }));
           work[`${language}_peak_rss_bytes`] = measured.peak_rss_bytes;
         }
       }
       for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
         records.push(makeRecord(context, { suite: "apps", workload: work.name, size: work.size, language: "tsuzuri",
-          opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
+          variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
       }
       metricCount = definitions.length * languages.length * 3 + definitions.length * 2;
       assert.equal(records.length, metricCount);

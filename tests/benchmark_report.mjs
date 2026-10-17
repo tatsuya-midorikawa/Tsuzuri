@@ -5,13 +5,14 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishSummary, renderSummary, renderTable, updateSummary } from "../benchmarks/report.mjs";
-import { artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseCompilerDiagnostics, parseTimeOutput,
+import { allocatorVariants, artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseCompilerDiagnostics, parseTimeOutput,
   parseTimePasses, readRecords, renderComparison, renderMetricsSummary, summarize, updateMetricsSummary,
   unsupportedReason, validateGnuTimeVersion, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
 import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
   writeProject } from "../benchmarks/build/generate.mjs";
 import { breakdown, skipLargeWasm, VARIANTS } from "../benchmarks/run-build.mjs";
 import { parseSections, sectionSizes } from "../benchmarks/size.mjs";
+import { assemblyLines, difference } from "../benchmarks/assembly.mjs";
 
 const result = {
   mode: "benchmark", cpu: "generic", scale: 0.1, measured_at: "2026-09-26T00:00:00.000Z",
@@ -163,6 +164,55 @@ test("fixed schema and record validation", () => {
   ]) assert.throws(() => validateRecord({ ...valid, ...change }));
   assert.equal(record({ suite: "apps" }).suite, "apps");
   assert.equal(record({ suite: "build", language: "go" }).language, "go");
+});
+test("allocator variants: a run with another allocator never matches the default run", () => {
+  assert.deepEqual(allocatorVariants("system"), { timing: "default", allocation: "default" });
+  assert.deepEqual(allocatorVariants("small"), { timing: "small", allocation: "system" });
+  assert.throws(() => allocatorVariants("pool"), /unknown allocator/);
+  const timing = (variant, metric = "wall_time") => record({ suite: "control", variant, opt: "O3", metric, samples: Array(9).fill(1) });
+  const verdicts = (before, after) => compareRuns([before], [after]).map((row) => row.verdict);
+  assert.deepEqual(verdicts(timing("default"), timing(allocatorVariants("system").timing)), ["差なし"]);
+  assert.deepEqual(verdicts(timing("default"), timing(allocatorVariants("small").timing)), ["片側のみ", "片側のみ"]);
+  const peak = (variant) => record({ suite: "apps", variant, opt: "O3", samples: Array(9).fill(1687552) });
+  assert.deepEqual(verdicts(peak("default"), peak(allocatorVariants("small").timing)), ["片側のみ", "片側のみ"]);
+  const counts = (variant) => record({ suite: "apps", variant, opt: "O3", metric: "alloc_calls", samples: [7] });
+  assert.deepEqual(verdicts(counts("default"), counts(allocatorVariants("small").allocation)), ["片側のみ", "片側のみ"]);
+  assert.equal(counts(allocatorVariants("small").allocation).variant, "system");
+  // The summary gives the small allocator a column of its own.
+  const summary = renderMetricsSummary([timing("default"), record({ suite: "control", language: "c", variant: "default", opt: "O3", metric: "wall_time", samples: Array(9).fill(2) }),
+    record({ suite: "control", variant: "small", opt: "O3", metric: "wall_time", samples: Array(9).fill(3) })]);
+  assert.match(summary, /Tsuzuri small/);
+});
+test("assembly comparison keeps immediates, operands and order", () => {
+  // `#` starts an immediate on AArch64 and a comment on x86; `;` and `//` are the AArch64 comments.
+  assert.notDeepEqual(assemblyLines("mov w0, #1", "arm64"), assemblyLines("mov w0, #2", "arm64"));
+  assert.deepEqual(assemblyLines("\tmov\tw0, #1 ; constant\n\n\tadd w1, w0, #4 // sum\n; %bb.1:\n", "arm64"), ["mov\tw0, #1", "add w1, w0, #4"]);
+  assert.deepEqual(assemblyLines("\tcallq\tfoo@PLT # call\n\t.type\tfoo,@function\n# %bb.0:\n\tmovl\t$1, %eax\n", "x86_64"),
+    ["callq\tfoo@PLT", ".type\tfoo,@function", "movl\t$1, %eax"]);
+  assert.deepEqual(assemblyLines('\t.asciz\t"a#b;c" # comment\n', "x86_64"), ['.asciz\t"a#b;c"']);
+  assert.deepEqual(assemblyLines('\t.asciz\t"say \\" # inside" ; outside\n', "arm64"), ['.asciz\t"say \\" # inside"']);
+  assert.throws(() => assemblyLines("nop", "riscv"), /unknown assembly target/);
+  // The same instructions in another order are a difference; the distance is that of an edit script.
+  const swapped = [assemblyLines("mov x0, x1\nadd x1, x1, x2\n", "arm64"), assemblyLines("add x1, x1, x2\nmov x0, x1\n", "arm64")];
+  assert.equal(difference(...swapped), 2);
+  assert.equal(difference(["a", "b", "c"], ["a", "b", "c"]), 0);
+  assert.equal(difference(["a", "b", "c"], ["a", "c"]), 1);
+  assert.equal(difference([], ["a", "b"]), 2);
+  const lcs = (a, b) => {
+    const table = Array.from({ length: a.length + 1 }, () => new Int32Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; --i) for (let j = b.length - 1; j >= 0; --j) {
+      table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+    return table[0][0];
+  };
+  let state = 12345;
+  const random = (bound) => (state = (state * 1103515245 + 12345) & 0x7fffffff) % bound;
+  for (let round = 0; round < 2000; ++round) {
+    const alphabet = 1 + random(5);
+    const a = Array.from({ length: random(14) }, () => String(random(alphabet)));
+    const b = Array.from({ length: random(14) }, () => String(random(alphabet)));
+    assert.equal(difference(a, b), a.length + b.length - 2 * lcs(a, b), JSON.stringify([a, b]));
+  }
 });
 test("size metrics and the size optimization levels", () => {
   for (const metric of ["executable_bytes", "object_bytes", "wasm_bytes", "text_bytes", "rodata_bytes", "wasm_code_bytes", "wasm_data_bytes"]) {

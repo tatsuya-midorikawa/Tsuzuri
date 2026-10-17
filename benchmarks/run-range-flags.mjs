@@ -1,8 +1,9 @@
 // Gate A of PR02: does writing the overflow flags that the range proofs allow change the code that
 // LLVM generates? Every corpus is built to IR in TSUZURI_RANGE_FLAGS=off and =proven, the IR is
 // compiled at -O1, -O2 and -O3 for arm64 and x86_64 (assembly only, nothing runs), and the
-// wasm32 -O3 module is built in both modes. The report lists, for each corpus, how many integer
-// instructions carry a flag and where the assembly or the module differs.
+// wasm32 -O3 module is built in both modes. The assembly of the two modes is compared line by line, in
+// order, with only comments and blank lines ignored; the module is compared byte by byte. The report lists,
+// for each corpus, how many integer instructions carry a flag and where the assembly or the module differs.
 //
 //   node benchmarks/run-range-flags.mjs [compiler] [--levels 1,2,3] [--targets arm64,x86_64,wasm32]
 //                                       [--corpora control,matrix,...] [--keep dir]
@@ -13,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assemblyLines, difference } from "./assembly.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -55,18 +57,6 @@ function run(program, programArgs, env = {}) {
   return result;
 }
 
-// The instructions of an assembly file: directives, comments and blank lines do not count.
-function instructions(assembly) {
-  return assembly.split("\n").map((line) => line.replace(/\s*[;#@].*$/, "").trim()).filter((line) => line && !line.startsWith(".") && !line.startsWith("//"));
-}
-
-function difference(a, b) {
-  const counts = new Map();
-  for (const line of a) counts.set(line, (counts.get(line) ?? 0) + 1);
-  for (const line of b) counts.set(line, (counts.get(line) ?? 0) - 1);
-  return [...counts.values()].reduce((total, count) => total + Math.abs(count), 0);
-}
-
 mkdirSync(work, { recursive: true });
 const rows = [];
 try {
@@ -78,19 +68,21 @@ try {
       run(compiler, ["build", path, "--emit", "llvm", "-o", file], { TSUZURI_RANGE_FLAGS: mode });
       ir[mode] = file;
     }
-    const proven = readFileSync(ir.proven, "utf8");
-    const flagged = (proven.match(/ = (?:add|sub|mul) (?:nuw |nsw )+i\d+/g) ?? []).length;
-    const arithmetic = (proven.match(/ = (?:add|sub|mul) (?:nuw |nsw )*i\d+/g) ?? []).length;
-    const row = { corpus: name, flagged, arithmetic, results: {} };
+    // The flags of `off` are the ones that hand-written runtime IR carries; the proofs add the rest.
+    const count = (mode, pattern) => (readFileSync(ir[mode], "utf8").match(pattern) ?? []).length;
+    const flaggedOff = count("off", / = (?:add|sub|mul) (?:nuw |nsw )+i\d+/g);
+    const flagged = count("proven", / = (?:add|sub|mul) (?:nuw |nsw )+i\d+/g);
+    const arithmetic = count("proven", / = (?:add|sub|mul) (?:nuw |nsw )*i\d+/g);
+    const row = { corpus: name, flaggedOff, flagged, arithmetic, results: {} };
     for (const target of targets.filter((t) => t !== "wasm32")) {
       for (const level of levels) {
         const text = {};
         for (const mode of ["off", "proven"]) {
           const out = join(work, `${name}-${mode}-${target}-O${level}.s`);
           run(clang, [`-O${level}`, "-S", `--target=${triples[target]}`, "-fPIC", "-fno-fast-math", "-ffp-contract=off", "-Wno-override-module", ir[mode], "-o", out]);
-          text[mode] = instructions(readFileSync(out, "utf8"));
+          text[mode] = assemblyLines(readFileSync(out, "utf8"), target);
         }
-        row.results[`${target} -O${level}`] = { off: text.off.length, proven: text.proven.length, differing: difference(text.off, text.proven) };
+        row.results[`${target} -O${level}`] = { unit: "lines", off: text.off.length, proven: text.proven.length, differing: difference(text.off, text.proven) };
       }
     }
     if (targets.includes("wasm32")) {
@@ -101,15 +93,16 @@ try {
           run(compiler, ["build", path, "--target", "wasm32", "-O3", "-o", out], { TSUZURI_RANGE_FLAGS: mode });
           bytes[mode] = readFileSync(out);
         }
-        row.results["wasm32 -O3"] = { off: bytes.off.length, proven: bytes.proven.length, differing: Buffer.compare(bytes.off, bytes.proven) === 0 ? 0 : 1 };
+        row.results["wasm32 -O3"] = { unit: "bytes", off: bytes.off.length, proven: bytes.proven.length, differing: Buffer.compare(bytes.off, bytes.proven) === 0 ? 0 : 1 };
       } catch (error) {
         // A corpus without an entry point or an export is not a WebAssembly module.
         if (!/E2004/.test(String(error))) throw error;
       }
     }
     rows.push(row);
-    const summary = Object.entries(row.results).map(([key, value]) => `${key}: ${value.differing === 0 ? "same" : `${value.differing} differ (${value.off} -> ${value.proven})`}`).join("; ");
-    console.log(`${name}: ${flagged} of ${arithmetic} integer + - * carry a flag; ${summary}`);
+    const describe = ([key, value]) => `${key}: ${value.differing === 0 ? "same" : value.unit === "bytes" ? `module differs (${value.off} -> ${value.proven} bytes)` : `${value.differing} lines differ (${value.off} -> ${value.proven} lines)`}`;
+    const summary = Object.entries(row.results).map(describe).join("; ");
+    console.log(`${name}: ${flaggedOff} (off) and ${flagged} (proven) of ${arithmetic} integer + - * carry a flag; ${summary}`);
   }
   writeFileSync(join(work, "report.json"), JSON.stringify(rows, null, 2));
   const changed = rows.flatMap((row) => Object.entries(row.results).filter(([, value]) => value.differing !== 0).map(([key]) => `${row.corpus} ${key}`));

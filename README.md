@@ -980,7 +980,7 @@ node benchmarks/run-build.mjs target/release/tsuzuri --out target/perf/PX03-exam
 node benchmarks/run-build.mjs target/release/tsuzuri --quick --languages tsuzuri   # ビルド比較の正しさだけ
 node benchmarks/run-threads.mjs target/release/tsuzuri target/perf/PB04/s1000 check 11 --before <PB04 より前の compiler> --out target/perf/PB04-after before 1 2 4 8 unset   # TSUZURI_THREADS ごとの check／emit-llvm を交互に測る（PB04）。--cache cold|warm で frontend cache も
 node benchmarks/run-apps.mjs target/release/tsuzuri --metrics target/perf/PX02-apps
-node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small   # 時間を測る object だけ --allocator small（run-control.mjs も同じ。追跡する IR は system のまま。PM05）
+node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small   # 時間を測る object だけ --allocator small（run-control.mjs も同じ。追跡する IR は system のまま。--metrics の records は、Tsuzuri の時間と peak RSS の variant が small、確保の数（alloc_calls・alloc_bytes）の variant が system で、既定の run とは比較で対応しません。PM05）
 node benchmarks/run-small.mjs target/release/tsuzuri --rounds 5 --rss-runs 9   # PX02 の app の --allocator system と small を同じコンパイラで交互に走らせ、CPU 時間と peak RSS を比べる（Tsuzuri だけ。macOS と Linux。PM05）
 node benchmarks/run-heap.mjs target/release/tsuzuri --baseline OLDER_COMPILER --capacity   # WASM の heap（PM05）。確保の多い kernel と PX02 の app を wasm32 で走らせ、時間とメモリの大きさ、上限までに収まる最大のサイズを比べる。--quick は動作確認だけ
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
