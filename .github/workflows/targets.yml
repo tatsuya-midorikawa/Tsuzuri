@@ -133,6 +133,11 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          # Linux runs the unit tests with ASan+UBSan and TSan (libclang-rt-21-dev above). The Homebrew LLVM 21 of the macOS
+          # runners builds sanitizer programs that never start (an empty AddressSanitizer program hangs, a ThreadSanitizer
+          # one dies with SIGSEGV; vscode.yml leaves them out of the Net tests for the same reason), so macOS runs them
+          # without sanitizers: the plain and -O3 unit tests, which always run, decide there.
+          if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
           node tests/wasm_heap.mjs
           node tests/small_allocator.mjs target/release/tsuzuri
           TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri vec

@@ -42,9 +42,10 @@ define ${t} @probe_fast(${t} %index) {
   ret ${t} %value
 }
 define void @probe_flush() { call void @tz.heap.flush() ret void }
+define ${t} @probe_largest() { %value = load ${t}, ptr @tz.heap.largest ret ${t} %value }
 `;
 };
-const probeExports = ["probe_end", "probe_free", "probe_mask", "probe_small", "probe_fastmask", "probe_fast", "probe_flush"];
+const probeExports = ["probe_end", "probe_free", "probe_mask", "probe_small", "probe_fastmask", "probe_fast", "probe_flush", "probe_largest"];
 
 // An empty module with one 64-bit memory.
 export const memory64Supported = () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 0]));
@@ -778,6 +779,9 @@ export function topGrowthCases({ fresh }) {
 // A request that would cut a rest of 64 KiB or more, and at least four times its own size, from a free block of the large list
 // leaves the block alone while the end of the heap can grow, so that the hole stays whole for the next large request (a
 // freed 6 MB block that medium requests had cut up made the next 6 MB request grow the heap past 16 MiB in the matrix suite).
+// The search goes on past such a block: the first later block that the request does not cut wastefully serves it, and only
+// when there is none does the end serve it (when the end cannot grow, the first block that was passed over is cut). Only
+// blocks of at most twice the largest recent request are passed over (see the last cases).
 // Capacities: capacity(100000) = 100016, capacity(10000) = 10016, capacity(40000) = 40016, capacity(30000) = 30016.
 export function holeCases({ fresh }) {
   // A hole of `size` bytes below a guard block, and the address that a request of `request` bytes gets.
@@ -831,6 +835,254 @@ export function holeCases({ fresh }) {
     assert.ok(api.memory.buffer.byteLength <= LIMIT);
     for (const block of medium) api.release(block);
     api.check();
+  }
+  // Several holes at once, each below a block that stays in use so that they never merge: holes[i] is the payload of the free
+  // block that held `sizes[i]` bytes, and pins[i] the block above it (capacity 32).
+  const pinned = (sizes) => {
+    const api = fresh();
+    const holes = [], pins = [];
+    for (const size of sizes) { holes.push(api.allocate(size)); pins.push(api.allocate(16)); }
+    for (const hole of holes) api.release(hole);
+    assert.deepEqual(api.check().large, holes.map((hole) => hole - 16), "the holes are in the large list in address order");
+    return { api, holes, pins, end: api.probe("probe_end"), bytes: api.memory.buffer.byteLength };
+  };
+  { // the first hole would be cut wastefully (rest 980000), a later one fits exactly: it serves the request and the end stays
+    const { api, holes, end, bytes } = pinned([1000000, 20000]);
+    assert.equal(api.allocate(20000), holes[1]);
+    assert.equal(api.probe("probe_end"), end);
+    assert.equal(api.memory.buffer.byteLength, bytes);
+    assert.deepEqual(api.check().large, [holes[0] - 16]);
+  }
+  { // the same with a hole in between that is too small, and with a later hole that is not the best fit: the first block that
+    // is not cut wastefully wins (capacity(25008) = 25024 leaves a rest of 5008, which stays free), not the exact one after it
+    const { api, holes, end } = pinned([1000000, 5000, 25008, 20000]);
+    assert.equal(api.allocate(20000), holes[2]);
+    assert.equal(api.probe("probe_end"), end);
+    assert.deepEqual(api.check().large, [holes[0] - 16, holes[1] - 16, holes[2] - 16 + capacity(20000), holes[3] - 16]);
+  }
+  { // every hole that fits would be cut wastefully: the end serves it and every hole stays
+    const { api, holes, pins, end } = pinned([1000000, 900000, 800000]);
+    assert.equal(api.allocate(10000), pins[2] + 32);
+    assert.equal(api.probe("probe_end"), end + capacity(10000));
+    assert.deepEqual(api.check().large, holes.map((hole) => hole - 16));
+  }
+  { // a small request that no list serves is kept off the hole as well: a block cut from a hole of exactly the size of a later
+    // request would make that request grow the heap
+    const { api, holes, pins, end } = pinned([1000000]);
+    assert.equal(api.allocate(48), pins[0] + 32);
+    assert.equal(api.probe("probe_end"), end + 64);
+    assert.deepEqual(api.check().large, [holes[0] - 16]);
+  }
+  { // the end cannot grow: the first hole that was passed over is cut, although later blocks are passed over as well and a block
+    // that is too small comes last
+    const { api, holes } = pinned([1000000, 900000, 800000, 5008]);
+    api.allocate(LIMIT - api.probe("probe_end") - 16);
+    assert.equal(api.memory.buffer.byteLength, LIMIT);
+    assert.equal(api.allocate(10000), holes[0]);
+    assert.deepEqual(api.check().large, [holes[0] - 16 + capacity(10000), holes[1] - 16, holes[2] - 16, holes[3] - 16]);
+  }
+  { // the end cannot grow, but a later hole is not cut wastefully: it serves the request, and the first hole stays whole
+    const { api, holes } = pinned([1000000, 20000]);
+    api.allocate(LIMIT - api.probe("probe_end") - 16);
+    assert.equal(api.allocate(20000), holes[1]);
+    assert.deepEqual(api.check().large, [holes[0] - 16]);
+  }
+  // The bound on holes that are kept: a block of more than twice the largest recent request is cut like any other, because no
+  // recent request has come near it (a heap of blocks of up to a few hundred KB would otherwise grow to its limit around the big
+  // free blocks that merging leaves). @tz.heap.largest is the largest capacity asked of the lists of large blocks; every such
+  // request first takes 1/64 off it (x - x / 64, rounded down), then raises it to its own capacity if that is larger.
+  { // the arithmetic: capacity 100016, then requests of capacity 32 (which reach the large list when no small list serves them)
+    const api = fresh();
+    assert.equal(api.probe("probe_largest"), 0);
+    api.allocate(100000);
+    assert.equal(api.probe("probe_largest"), 100016);
+    api.allocate(100000);
+    assert.equal(api.probe("probe_largest"), 100016, "a request as large as it keeps it");
+    api.allocate(16);
+    assert.equal(api.probe("probe_largest"), 100016 - 1562, "100016 / 64 = 1562 (rounded down)");
+    api.allocate(16);
+    assert.equal(api.probe("probe_largest"), 98454 - 1538, "98454 / 64 = 1538");
+    api.allocate(200000);
+    assert.equal(api.probe("probe_largest"), 200016, "a larger request raises it");
+    // a request that a small list serves does not reach the large list
+    const cached = api.allocate(16);
+    api.allocate(16);
+    api.release(cached);
+    api.flush();
+    const before = api.probe("probe_largest");
+    assert.equal(api.allocate(16), cached);
+    assert.equal(api.probe("probe_largest"), before);
+  }
+  { // 100 blocks of capacity 2016 merge into a hole of 201600, 100 times the largest request: a request of 3000 cuts it
+    const api = fresh();
+    const blocks = Array.from({ length: 100 }, () => api.allocate(2000));
+    api.allocate(16);
+    for (const block of blocks) api.release(block);
+    assert.deepEqual(api.check().large, [blocks[0] - 16]);
+    const end = api.probe("probe_end");
+    assert.equal(api.allocate(3000), blocks[0]);
+    assert.equal(api.probe("probe_end"), end);
+    api.check();
+  }
+  // Two blocks of capacity 100016 merge into a hole of 200032, which is kept while twice the largest recent request, after the
+  // 1/64 that the request itself takes off, is at least that. The last large request is a block of capacity 101616, then
+  // 101616 - 1587 = 100029 and half the hole, 100016, is below it: the end serves the request; for capacity 101600 it is
+  // 101600 - 1587 = 100013, below half the hole: the hole is cut.
+  for (const [size, kept] of [[101600, true], [101584, false]]) {
+    const api = fresh();
+    const a = api.allocate(100000), b = api.allocate(100000);
+    api.allocate(16);
+    const last = api.allocate(size);
+    assert.equal(b, a + 100016);
+    api.release(a);
+    api.release(b);
+    assert.deepEqual(api.check().large, [a - 16]);
+    assert.equal(api.allocate(10000), kept ? last + capacity(size) : a, `the last large request has capacity ${capacity(size)}`);
+    assert.deepEqual(api.check().large, kept ? [a - 16] : [a - 16 + capacity(10000)]);
+  }
+  // The bound itself: a last large request of capacity 102400 leaves 102400 - 1600 = 100800 after the 1/64, and a hole of 100 blocks
+  // of capacity 2016 is 201600 = 2 * 100800: it is kept (twice the largest recent request is not more than that). With one
+  // more block of capacity 32 merged into it, 201632 is more than twice 100800: it is cut.
+  for (const [extra, kept] of [[false, true], [true, false]]) {
+    const api = fresh();
+    const blocks = Array.from({ length: 100 }, () => api.allocate(2000));
+    const small = extra ? api.allocate(16) : 0;
+    api.allocate(16);
+    const last = api.allocate(102384);
+    for (const block of blocks) api.release(block);
+    if (extra) { api.release(small); api.flush(); }
+    assert.deepEqual(api.check().large, [blocks[0] - 16]);
+    assert.equal(api.allocate(3000), kept ? last + 102400 : blocks[0], `a hole of ${extra ? 201632 : 201600}`);
+  }
+  { // a hole is kept for the requests that follow and let go after about 44 of them: with 1000000 bytes (capacity 1000016) the
+    // bound is half of that, and 63/64 per request halves the largest recent request (984391 after the guard) in 44 steps
+    const api = fresh();
+    const hole = api.allocate(1000000), guard = api.allocate(16);
+    api.release(hole);
+    const kept = [];
+    let request = 0, block = 0;
+    while (block !== hole) {
+      block = api.allocate(48);
+      request++;
+      assert.ok(request <= 60, "the hole is let go within 60 requests");
+      if (block !== hole) kept.push(block);
+    }
+    assert.ok(request > 30, `the hole was kept for only ${request - 1} requests`);
+    // the requests that left the hole alone were served from the end, one after the other
+    kept.forEach((address, index) => assert.equal(address, guard + 32 + 64 * index));
+    api.check();
+  }
+}
+
+// A temporary that is released while a small block allocated after it stays leaves a hole that the small block pins; the
+// next temporary of its size, or a size that the hole serves without waste, must find the hole again instead of growing the
+// heap. The first version of the rule above looked at the first block that fits only, so every request that was small
+// next to the first (largest) hole grew the heap: a program with 3 MB of live data had a full heap after a hundred rounds
+// (one more hole of 0.3 MB every second round) and failed after a few thousand. Here the number of holes stays about the
+// number of sizes, and the heap stays within twice the largest temporary and the kept blocks.
+export function accumulationCases({ fresh }) {
+  const rounds = (sizes, count, node) => {
+    const api = fresh();
+    for (let round = 0; round < count; round++) {
+      const temporary = api.allocate(sizes[round % sizes.length]);
+      api.allocate(node);
+      api.release(temporary);
+    }
+    const lists = api.check();
+    assert.ok(lists.large.length <= sizes.length + 1, `${sizes}: ${lists.large.length} holes`);
+    const bound = 2 * Math.max(...sizes) + count * capacity(node) + 2 ** 20;
+    assert.ok(api.memory.buffer.byteLength <= bound, `${sizes}: a heap of ${api.memory.buffer.byteLength} bytes`);
+  };
+  rounds([2400000, 300000], 4000, 48);
+  rounds([4500000, 500000], 4000, 48);
+  rounds([6000000, 300000], 4000, 100);
+  rounds([2400000, 300000, 2000000, 250000, 1500000, 400000, 2200000, 200000], 5000, 48);
+}
+
+// Random temporaries of 200 KB to 1.5 MB (one or two per step) between kept blocks of 40 to 240 bytes, of which 1000 are kept
+// at a time: at most 4 MB of live data. A heap that serves these from the end whenever the first hole is large, and so
+// leaves a hole of another size behind every temporary, runs out of its 16 MiB (21 of 60 seeds within 4000 steps in a
+// scratch measurement), where the first-fit heap before it did not on any seed. Every block is stamped at both ends with a
+// byte that is never 0 and checked when it is released.
+export function boundedLiveCases({ fresh }) {
+  const seeds = 12, steps = 3000, kept = 1000;
+  for (let seed = 1; seed <= seeds; seed++) {
+    const api = fresh();
+    const next = xorshift32(seed * 7717);
+    const bytes = api.bytes;
+    const stamp = (block, id) => {
+      block.id = (id % 255) + 1;
+      const edge = Math.min(block.size, 64);
+      bytes().fill(block.id, block.address, block.address + edge);
+      bytes().fill(block.id, block.address + block.size - edge, block.address + block.size);
+    };
+    const verify = (block) => {
+      const edge = Math.min(block.size, 64);
+      assert.ok(holds(bytes(), block.address, edge, block.id), `seed ${seed}: the start of block ${block.address} was overwritten`);
+      assert.ok(holds(bytes(), block.address + block.size - edge, edge, block.id), `seed ${seed}: the end of block ${block.address} was overwritten`);
+    };
+    const live = [];
+    let serial = 0;
+    const make = (size) => {
+      const block = { address: api.allocate(size), size, id: 0 };
+      assert.equal(block.address % 16, 0);
+      stamp(block, ++serial);
+      return block;
+    };
+    for (let step = 0; step < steps; step++) {
+      const temporaries = [];
+      for (let count = 1 + (next() % 2); count > 0; count--) {
+        temporaries.push(make(200000 + (next() % 1300000)));
+        live.push(make(40 + (next() % 200)));
+        if (live.length > kept) { const old = live.shift(); verify(old); api.release(old.address); }
+      }
+      for (const block of temporaries) { verify(block); api.release(block.address); }
+      if (step % 500 === 0) api.check();
+    }
+    for (const block of live) { verify(block); api.release(block.address); }
+    api.flush();
+    assert.deepEqual(api.check().blocks, [], `seed ${seed}: everything released, no block is left`);
+    assert.equal(api.allocate(32), api.firstPayload, `seed ${seed}: the heap is whole again`);
+  }
+}
+
+// The steady churn of benchmarks/heap, replayed: a live set of 3 to 4 MB whose blocks (8 bytes to 16, 32 or 64 KB) are replaced at
+// random, so that merging leaves free blocks of 64 KiB and more but no request is ever near them. A heap that keeps every such
+// hole for a request that never comes grows to its limit (16 MiB for 3 MB of live data); the first-fit heap before PM05 needs
+// about 4.5 MiB. The random numbers are those of benchmarks/heap/reference.mjs.
+export function steadyChurnCases({ fresh }) {
+  const wrap = (value) => BigInt.asUintN(64, value);
+  const step = (state) => wrap((state ^ (state >> 13n)) * 6364136223846793005n + 1442695040888963407n);
+  for (const [slots, rounds, spread] of [[100, 10000, 8000], [200, 20000, 4000], [500, 50000, 2000]]) {
+    // The second time, a single request of 2.4 MB came first: the bound on the holes lets go of it after a few hundred requests.
+    for (const first of [0, 2400000]) {
+      const api = fresh();
+      const bound = BigInt(spread), count = BigInt(slots);
+      if (first) api.release(api.allocate(first));
+      let state = 42n;
+      const vector = api.allocate(slots * 16);
+      const rows = [];
+      for (let index = 0; index < slots; index++) {
+        state = step(state);
+        const size = Number(1n + (state >> 40n) % bound) * 8;
+        rows.push({ address: api.allocate(size), size });
+      }
+      for (let round = 0; round < rounds; round++) {
+        state = step(state);
+        const slot = Number((state >> 33n) % count);
+        const size = Number(1n + (state >> 20n) % bound) * 8;
+        const address = api.allocate(size);
+        api.release(rows[slot].address);
+        rows[slot] = { address, size };
+      }
+      const bytes = api.memory.buffer.byteLength;
+      assert.ok(bytes <= 8 * 2 ** 20, `${slots} slots of up to ${spread * 8} bytes (first request ${first}): a heap of ${bytes} bytes`);
+      api.check();
+      for (const row of rows) api.release(row.address);
+      api.release(vector);
+      api.flush();
+      assert.deepEqual(api.check().blocks, [], `${slots} slots: everything released, no block is left`);
+    }
   }
 }
 
@@ -946,12 +1198,15 @@ export function runHeapTests({ targets = ["wasm32"], optimizations = [0, 3], ext
         fastCases(context);
         topGrowthCases(context);
         holeCases(context);
+        accumulationCases(context);
+        boundedLiveCases(context);
+        steadyChurnCases(context);
         boundaryCases(context);
         limitCases(context);
         stress(context);
         for (const run of extraCases) run(context);
       }
-      console.log(`WASM heap (${target}): reuse, cache, flush, coalescing, top return and growth, holes kept for large requests, absorption, boundary sizes, resize, limits and a 20000-operation stress passed at O0/O3`);
+      console.log(`WASM heap (${target}): reuse, cache, flush, coalescing, top return and growth, holes kept for large requests (only near the recent ones) and found again among many, bounded live data, steady churn, absorption, boundary sizes, resize, limits and a 20000-operation stress passed at O0/O3`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

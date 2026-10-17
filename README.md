@@ -904,7 +904,7 @@ node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
 TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri   # 同じスイートを --allocator small で。追跡する malloc の代わりに tz_small_stats（切り出したブロックが全部キャッシュか中央に戻ったか）で解放漏れを検査する（PM05）
-node tests/small_allocator.mjs target/release/tsuzuri   # --allocator small（PM05）。heap-small.c の C のユニットテスト（通常・ASan+UBSan・TSan）、拒否、IR、LLVM が確保と解放の組を取り除くこと、object と C のホストでの解放漏れ・複数スレッド・複数オブジェクト・共有ライブラリの検査。--unit は compiler なしでユニットテストだけ
+node tests/small_allocator.mjs target/release/tsuzuri   # --allocator small（PM05）。heap-small.c の C のユニットテスト（通常・ASan+UBSan・TSan）、拒否、IR、LLVM が確保と解放の組を取り除くこと、object と C のホストでの解放漏れ・複数スレッド・複数オブジェクト・共有ライブラリの検査。--unit は compiler なしでユニットテストだけ。TSUZURI_NO_SANITIZERS=1 で ASan+UBSan と TSan のユニットテストを省く（空のプログラムが起動しない clang、Homebrew の LLVM 21 の macOS でも、自動で省いて理由を出す。通常と -O3 は必ず走る。macOS の CI はこれを付ける）
 node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカルな let rec の差分テスト（B09）。乱数で作った入れ子のグループ・クロージャ・借用の捕捉のプログラムを、独立した JS の評価器と照合する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。リフト（src/closures_rec.rs）を変えたときに回す
 node tests/last_use_fuzz.mjs target/release/tsuzuri 300 1000 4   # 最後の使用の move（A17 Phase 1・2）を独立した AST 評価器と native O0/O3 で照合。引数は [コンパイラ] [件数] [最初の seed] [深さ]
 node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 300 1 4   # 整数の範囲証明（PR02）の差分テスト。型の端に定数を合わせた乱数のプログラムを、独立した BigInt の評価器と、audit（-O0）・proven・off（-O3）の wasm32 で照合する。TSUZURI_FUZZ_NATIVE=1 で native も。引数は [コンパイラ] [件数] [最初の seed] [深さ]。型付き IR や emitter を変えた後に回す
@@ -935,7 +935,7 @@ node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREAD
 node tests/wasm_threads.mjs target/release/tsuzuri
 node tests/wasm_threads_stress.mjs target/release/tsuzuri   # WASM threads の pool を 1〜7 ワーカーで、グループ・入れ子・Task.scope・pipeline の厳密な値と照合する（PR06）。引数は [コンパイラ] [rounds（既定 12）]。止まったら watchdog が終了させる
 node tests/wasm_memory.mjs target/release/tsuzuri
-node tests/wasm_heap.mjs   # WASM の heap だけを wasm32・wasm64 で検査（compiler は不要。wasm64 は Node.js 24 以降。PM05）
+node tests/wasm_heap.mjs   # WASM の heap だけを wasm32・wasm64 で検査（compiler は不要。wasm64 は Node.js 24 以降。PM05）。手で導いたアドレス、不変条件の検査、穴を複数残す確保（大きな一時配列を解放したあとに小さなブロックが生き残る列）、取っておく穴の上限（最近の最大の要求の 2 倍まで、1/64 ずつ忘れる）、生きているデータが一定の乱数列や、数十 KB のブロックの無作為な置き換えで heap が上限まで伸びないこと
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
 node tests/bindings_threads.mjs target/release/tsuzuri   # スレッドのグルー（TSUZURI_BROWSER か TSUZURI_PLAYWRIGHT で実ブラウザも）
 node tests/host_bindings.mjs target/release/tsuzuri   # 共有ライブラリと C#・Python・C++ のバインディング（dotnet が無ければ C# を飛ばす）

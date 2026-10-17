@@ -1,6 +1,8 @@
 // PM05 Phase 2: --allocator small, end to end, on native 64-bit targets.
 // Usage: node tests/small_allocator.mjs [compiler] [--unit]
 // `--unit` only builds and runs tests/heap_small_test.c (the unit tests of src/runtime/heap-small.c) and needs no compiler.
+// The unit tests also run with AddressSanitizer + UBSan and ThreadSanitizer (not on Windows); TSUZURI_NO_SANITIZERS=1 leaves
+// those two out, and so does a clang whose sanitizer runtime does not start (see sanitizerProblem).
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,12 +41,39 @@ function rejects(arguments_, message, status = 2) {
 }
 
 const work = mkdtempSync(join(tmpdir(), "tsuzuri-small-allocator-"));
+// A sanitizer runtime that this clang cannot start must not fail the run: the Homebrew LLVM 21 of the macOS CI builds sanitizer
+// programs that never start (an empty AddressSanitizer program hangs, an empty ThreadSanitizer program dies with SIGSEGV), so no
+// unit test could say anything. TSUZURI_NO_SANITIZERS=1 leaves the sanitizer variants out without trying them (tests/net.mjs
+// does the same); otherwise an empty program built with the same flags decides, so that a hang or a crash of the unit tests
+// themselves under a working sanitizer still fails. The plain variants and -O3 always run and always decide.
+const sanitizers = process.env.TSUZURI_NO_SANITIZERS !== "1";
+function sanitizerProblem(name, flags) {
+  const source = join(work, "empty.c"), binary = join(work, `empty-${name}${suffix}`);
+  writeFileSync(source, "int main(void) { return 0; }\n");
+  const built = spawnSync(clang, [...flags, ...threadFlags, source, "-o", binary], { cwd: root, encoding: "utf8", timeout: 120_000 });
+  if (built.error || built.status !== 0) return null; // the build of the unit tests below reports it
+  const result = spawnSync(binary, [], { cwd: root, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: { ...process.env, ASAN_OPTIONS: "detect_leaks=0" } });
+  const what = "an empty program built with the same flags";
+  if (result.error?.code === "ETIMEDOUT") return `${what} did not exit within 30 s`;
+  if (result.signal) return `${what} was killed by ${result.signal}`;
+  if (result.status !== 0) return `${what} exited with status ${result.status}: ${result.stderr.split("\n").find((line) => line.trim()) ?? ""}`;
+  return null;
+}
+function skipped(name, why) {
+  console.log(`small allocator unit tests (${name}) skipped: ${why}`);
+  // GitHub Actions shows this next to the job instead of leaving it in the log.
+  if (process.env.GITHUB_ACTIONS) console.log(`::warning::small allocator unit tests (${name}) skipped: ${why}`);
+}
 try {
   // The unit tests: every class, the boundaries, chains and flushes, regions, resize, failing malloc, the address limit,
   // random operations against a model, and four threads that hand blocks to each other. Plain, then with sanitizers.
-  const variants = [["O0", ["-O0"]], ["O3", ["-O3"]]];
-  if (!windows) variants.push(["asan-ubsan", ["-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]], ["tsan", ["-O1", "-fsanitize=thread"]]);
-  for (const [name, flags] of variants) {
+  const variants = [["O0", ["-O0"], false], ["O3", ["-O3"], false]];
+  if (!windows) variants.push(["asan-ubsan", ["-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"], true], ["tsan", ["-O1", "-fsanitize=thread"], true]);
+  for (const [name, flags, sanitized] of variants) {
+    if (sanitized) {
+      const why = sanitizers ? sanitizerProblem(name, flags) : "TSUZURI_NO_SANITIZERS=1";
+      if (why) { skipped(name, why); continue; }
+    }
     const binary = join(work, `heap-small-${name}${suffix}`);
     execute(clang, ["-std=c11", "-g", "-fno-strict-aliasing", "-Wall", "-Wextra", ...flags, ...threadFlags, join(root, "tests/heap_small_test.c"), "-o", binary]);
     // The allocator never returns its tables and the test zeroes the state that points at them, which LeakSanitizer (on by
@@ -52,7 +81,7 @@ try {
     const result = execute(binary, [], false, { ASAN_OPTIONS: "detect_leaks=0" });
     // A sanitizer that cannot start on this machine (a TSan that rejects its address-space layout) says so before a test runs.
     if (result.status !== 0 && /FATAL: \w*Sanitizer/.test(result.stderr) && !/WARNING: \w*Sanitizer|Assertion failed|runtime error/.test(result.stderr)) {
-      console.log(`small allocator unit tests (${name}) skipped: ${result.stderr.split("\n").find((line) => /FATAL/.test(line))}`);
+      skipped(name, result.stderr.split("\n").find((line) => /FATAL/.test(line)));
       continue;
     }
     assert.equal(result.status, 0, `${name}\n${result.stdout}\n${result.stderr}`);
