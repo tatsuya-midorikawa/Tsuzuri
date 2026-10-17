@@ -419,6 +419,7 @@ pub(crate) fn build_key(
     ir: &str,
     output: &Path,
     clang: Option<&ToolIdentity>,
+    profile: Option<(&str, &[u8])>,
 ) -> io::Result<String> {
     use crate::driver::{Emit, Target};
     let mut hash = Sha256::new();
@@ -431,6 +432,11 @@ pub(crate) fn build_key(
     hash.field("action", action.as_bytes());
     hash_output_path(&mut hash, options, output)?;
     hash.field("ir-and-embedded-runtime", ir.as_bytes());
+    // The profile that Clang reads, or the directory that an instrumented program writes to (PR07). A
+    // build without one adds nothing, so its key is the one that there was before.
+    if let Some((tag, bytes)) = profile {
+        hash.field(tag, bytes);
+    }
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
         hash.field(

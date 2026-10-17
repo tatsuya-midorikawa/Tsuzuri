@@ -165,6 +165,16 @@ Build options:
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
+    --profile-generate DIR Native executable or object output: instrument the program so that it writes
+                         LLVM raw profiles (.profraw) under DIR when it exits. Run it on a typical
+                         workload, then build again with --profile-use. An object needs
+                         -fprofile-generate at its final link
+    --profile-use PATH     Native executable or object output: optimize with the profile PATH, an
+                         indexed .profdata file or a directory of .profraw files that llvm-profdata
+                         merges. Build both times with the same Clang and options; a profile that no
+                         longer matches is one W2001 warning. Both profile options need an LLVM Clang
+                         in TSUZURI_CLANG, not the bundled launcher; they are not available on
+                         Windows or for another machine's --target
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -181,6 +191,8 @@ Toolchain:
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
                          does not run anything
+  TSUZURI_LLVM_PROFDATA  llvm-profdata that --profile-use runs to merge a directory of .profraw files
+                         (default: the one beside Clang or in Clang's toolchain; PATH is not searched)
   Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
@@ -226,6 +238,8 @@ struct Arguments {
     output: Option<PathBuf>,
     options: BuildOptions,
     links: driver::LinkInputs,
+    /// `--profile-generate` or `--profile-use` (PR07).
+    profile: driver::Profile,
     json: bool,
     deny_warnings: bool,
     warn_implicit_copy: bool,
@@ -252,6 +266,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             output: None,
             options: BuildOptions::default(),
             links: driver::LinkInputs::default(),
+            profile: driver::Profile::None,
             json: false,
             deny_warnings: false,
             warn_implicit_copy: false,
@@ -320,6 +335,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut freestanding = false;
     let mut strip = false;
     let mut wasm_opt = false;
+    let mut profile_generate = None;
+    let mut profile_use = None;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -523,6 +540,26 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("wasm-opt specified more than once".into());
                     }
                     wasm_opt = true;
+                    continue;
+                }
+                Some("--profile-generate") => {
+                    if profile_generate.is_some() {
+                        return Err("profile generation specified more than once".into());
+                    }
+                    profile_generate = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-generate")?,
+                        "--profile-generate",
+                    )?);
+                    continue;
+                }
+                Some("--profile-use") => {
+                    if profile_use.is_some() {
+                        return Err("profile use specified more than once".into());
+                    }
+                    profile_use = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-use")?,
+                        "--profile-use",
+                    )?);
                     continue;
                 }
                 Some("-g" | "--debug-info") => {
@@ -761,6 +798,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if wasm_opt && action != Action::Build {
         return Err("--wasm-opt is only valid with build".into());
     }
+    if (profile_generate.is_some() || profile_use.is_some()) && action != Action::Build {
+        return Err("--profile-generate and --profile-use are only valid with build".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -883,6 +923,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         triple,
     };
     options.validate().map_err(|error| error.message)?;
+    let profile = match (profile_generate, profile_use) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "--profile-generate and --profile-use cannot be combined; build once with each"
+                    .into(),
+            );
+        }
+        (Some(directory), None) => {
+            driver::Profile::generate(&directory).map_err(|error| error.message)?
+        }
+        (None, Some(path)) => driver::Profile::Use(path),
+        (None, None) => driver::Profile::None,
+    };
+    profile.validate(options).map_err(|error| error.message)?;
     if let Some(error) = output
         .as_deref()
         .and_then(|output| driver::bindings_output_error(options.emit, output))
@@ -899,6 +953,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         output,
         options,
         links,
+        profile,
         json,
         deny_warnings,
         warn_implicit_copy,
@@ -910,6 +965,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         bench_samples,
         test_seed,
     })
+}
+
+/// The value of `--profile-generate` or `--profile-use`: a path that is not empty.
+fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err(format!("{option} needs a value"));
+    }
+    Ok(PathBuf::from(value))
 }
 
 /// Whether the action links a native executable, the only output that takes host link inputs.
@@ -1030,7 +1093,7 @@ fn run_action(
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
         Action::Bench => unreachable!("benchmarks use an isolated runner"),
-        Action::Build => driver::build_linked(
+        Action::Build => driver::build_profiled(
             module,
             project,
             &arguments
@@ -1039,6 +1102,7 @@ fn run_action(
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
             links,
+            &arguments.profile,
         ),
         Action::Run => driver::run_with_arguments(
             module,
@@ -4197,6 +4261,222 @@ mod tests {
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn parses_profile_options() {
+        use tsuzuri::driver::Profile;
+        assert_eq!(parse(&["build", "Main.tz"]).unwrap().profile, Profile::None);
+        // The directory that an instrumented program writes to is absolute: the program decides where it runs.
+        let generate = parse(&["build", "Main.tz", "--profile-generate", "prof"]).unwrap();
+        assert_eq!(
+            generate.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let used = parse(&[
+            "build",
+            "Main.tz",
+            "--profile-use",
+            "p.profdata",
+            "--emit",
+            "object",
+            "-O2",
+        ])
+        .unwrap();
+        assert_eq!(used.profile, Profile::Use(PathBuf::from("p.profdata")));
+        // Nothing else of the build is a reason to refuse a profile (D16).
+        for extra in [
+            &["-O0"][..],
+            &["-Os"],
+            &["-Oz"],
+            &["--no-cache"],
+            &["--strip"],
+            &["-g"],
+            &["--trap-info"],
+            &["--cpu", "native"],
+            &["--allocator", "small"],
+        ] {
+            for option in ["--profile-generate", "--profile-use"] {
+                let mut values = vec!["build", "Main.tz", option, "prof"];
+                values.extend_from_slice(extra);
+                parse(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_profile_combinations() {
+        let wasm32 = "profile-guided optimization is native-only; remove --target wasm32 or the profile option";
+        let wasm64 = "profile-guided optimization is native-only; remove --target wasm64 or the profile option";
+        let emit = "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds";
+        let only_build = "--profile-generate and --profile-use are only valid with build";
+        for (values, expected) in [
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-generate",
+                    "b",
+                ][..],
+                "profile generation specified more than once",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-use",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "profile use specified more than once",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate"],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use"],
+                "--profile-use needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate", ""],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use", ""],
+                "--profile-use needs a value",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "--profile-generate and --profile-use cannot be combined; build once with each",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm32,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--profile-generate",
+                    "p",
+                ],
+                wasm32,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm64,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "llvm", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "header",
+                    "--profile-generate",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "wgsl", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "bindings-py",
+                    "--profile-use",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate", "/tmp/100%/prof"],
+                "--profile-generate directory must not contain '%'; choose another directory",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
+            ),
+            (&["run", "Main.tz", "--profile-use", "p"], only_build),
+            (&["run", "Main.tz", "--profile-generate", "p"], only_build),
+            (&["check", "Main.tz", "--profile-use", "p"], only_build),
+            (&["test", "Main.tz", "--profile-use", "p"], only_build),
+            (&["bench", "Main.tz", "--profile-generate", "p"], only_build),
+            (&["fmt", "Main.tz", "--profile-use", "p"], only_build),
+            (&["doc", "Main.tz", "--profile-use", "p"], only_build),
+        ] {
+            assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_profile_options_on_windows() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(
+                parse(&["build", "Main.tz", option, "p"]).unwrap_err(),
+                "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn repl_and_script_do_not_take_profile_options() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(parse_repl(&[option, "p"]).unwrap_err(), REPL_USAGE);
+            let split = script_arguments(
+                &[option, "p", "a.tz"]
+                    .iter()
+                    .map(OsString::from)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(split.unwrap_err(), SCRIPT_OPTIONS);
         }
     }
 

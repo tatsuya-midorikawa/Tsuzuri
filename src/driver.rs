@@ -27,6 +27,10 @@ pub use test_runner::{
 mod bindgen_driver;
 pub use bindgen_driver::bindgen;
 
+#[path = "profile.rs"]
+mod profile;
+pub use profile::Profile;
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
@@ -2997,7 +3001,20 @@ pub fn build_linked(
     options: BuildOptions,
     links: &LinkInputs,
 ) -> Result<Vec<String>, Diagnostic> {
-    build_complete(module, project, output, options, links, "build").map(|(messages, _)| messages)
+    build_profiled(module, project, output, options, links, &Profile::None)
+}
+
+/// Like [`build_linked`], instrumenting the program or optimizing it with a profile (PR07).
+pub fn build_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
+    build_complete(module, project, output, options, links, "build", profile)
+        .map(|(messages, _)| messages)
 }
 
 fn build_complete(
@@ -3007,8 +3024,11 @@ fn build_complete(
     options: BuildOptions,
     links: &LinkInputs,
     action: &str,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    profile.validate(options)?;
+    profile.require_llvm_clang()?;
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
@@ -3473,6 +3493,8 @@ fn build_complete(
             "artifact"
         });
     let mut messages = Vec::new();
+    // The merge of a profile comes first: the cache key records the bytes that Clang will read.
+    let staged_profile = profile::prepare_profile(profile, &temporary.path, &mut messages)?;
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
     let staged_pdb = temporary.path.join("artifact.pdb");
@@ -3525,6 +3547,9 @@ fn build_complete(
                 &text,
                 output,
                 clang_identity.as_ref(),
+                staged_profile
+                    .as_ref()
+                    .map(profile::PreparedProfile::cache_field),
             )?;
             let cache = crate::cache::BuildCache::open(&root)?;
             Ok((cache, key))
@@ -3892,6 +3917,9 @@ fn build_complete(
             .arg("ir")
             .arg("-Wno-override-module")
             .arg(options.optimization.flag());
+        if let Some(staged) = &staged_profile {
+            clang.arg(staged.flag());
+        }
         if options.debug_info {
             clang.arg("-g");
         }
@@ -3992,15 +4020,21 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
+        let clang_hint = linker_hint(cross_hint(
+            platform,
+            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+        ));
+        let clang_hint = match &staged_profile {
+            Some(staged) => staged.hint(clang_hint),
+            None => clang_hint,
+        };
+        let clang_output = run_tool(&mut clang, &clang_hint)?;
         collect_message(
             &mut messages,
-            run_tool(
-                &mut clang,
-                &linker_hint(cross_hint(
-                    platform,
-                    "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                )),
-            )?,
+            match &staged_profile {
+                Some(staged) => staged.clang_output(clang_output),
+                None => clang_output,
+            },
         );
         if let Some(symbols) = &shared_symbols {
             link_shared(
@@ -4035,6 +4069,13 @@ fn build_complete(
                 .args(final_link_args(platform)?)
                 .arg(&object)
                 .args(["-g", "-lm"]);
+            // The link of an instrumented program reads Clang's profile runtime, which the compile did not.
+            if let Some(staged) = staged_profile
+                .as_ref()
+                .filter(|staged| staged.instruments())
+            {
+                linker.arg(staged.flag());
+            }
             if native_runtime {
                 linker.arg(&runtime_object);
                 if task_runtime || net_runtime {
@@ -4692,6 +4733,7 @@ fn run_process(
         },
         links,
         "run",
+        &Profile::None,
     )?;
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
