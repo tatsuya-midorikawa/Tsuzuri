@@ -11,7 +11,6 @@ past the address space gets no child, instead of an exception.
 """
 
 import lldb
-
 TEXT_LIMIT = 1024
 LENGTH_LIMIT = 1 << 32
 ADDRESS_LIMIT = 1 << 64
@@ -275,7 +274,8 @@ def list_summary(valobj):
 
 
 class ListProvider:
-    """The elements of a list, in order along the `next` links of its nodes."""
+    """The elements of a list, in order. Its chunks follow the `next` links, and a chunk holds the
+    last `live` of its slots, `live` being the length from that chunk on, less its `rest`."""
 
     def __init__(self, valobj, _dict):
         self.valobj = valobj
@@ -283,35 +283,54 @@ class ListProvider:
 
     def update(self):
         self.count = 0
-        self.nodes = []
+        self.chunks = []
+        self.starts = []
         try:
             value = self.valobj.GetNonSyntheticValue()
             head = member(value, "head")
-            node = strip(head.GetType()).GetPointeeType()
-            field = node.GetFieldAtIndex(1)
-            self.offset = field.GetOffsetInBytes()
-            self.element = field.GetType()
+            chunk = strip(head.GetType()).GetPointeeType()
+            fields = {
+                chunk.GetFieldAtIndex(index).GetName(): chunk.GetFieldAtIndex(index)
+                for index in range(chunk.GetNumberOfFields())
+            }
+            self.rest = fields["rest"].GetOffsetInBytes()
+            self.capacity = fields["capacity"].GetOffsetInBytes()
+            self.slots = fields["slots"].GetOffsetInBytes()
+            self.element = fields["slots"].GetType().GetArrayElementType()
+            self.stride = self.element.GetByteSize()
             self.head = head.GetValueAsUnsigned()
             self.count = length_of(value)
         except Exception:
             self.count = 0
         return False
 
-    def node(self, index):
-        """The address of node `index`, following the links from the last node visited."""
-        process = self.valobj.GetProcess()
-        while len(self.nodes) <= index:
-            if self.nodes:
-                error = lldb.SBError()
-                address = process.ReadPointerFromMemory(self.nodes[-1], error)
-                if error.Fail():
-                    return 0
+    def word(self, address, size):
+        error = lldb.SBError()
+        value = self.valobj.GetProcess().ReadUnsignedFromMemory(address, size, error)
+        if error.Fail():
+            raise Unreadable()
+        return value
+
+    def chunk(self, number):
+        """The chunk `number` as `(address, position of its first element, its elements, its
+        first slot)`, found along the links from the last chunk visited."""
+        while len(self.chunks) <= number:
+            if self.chunks:
+                address, position, live, _ = self.chunks[-1]
+                position += live
+                address = self.word(address, self.valobj.GetProcess().GetAddressByteSize())
             else:
-                address = self.head
-            if address == 0:
-                return 0
-            self.nodes.append(address)
-        return self.nodes[index]
+                address, position = self.head, 0
+            if address == 0 or position >= self.count:
+                raise Unreadable()
+            rest = self.word(address + self.rest, 8)
+            capacity = self.word(address + self.capacity, 8)
+            live = self.count - position - rest
+            if not 0 < live <= capacity:
+                raise Unreadable()
+            self.chunks.append((address, position, live, capacity - live))
+            self.starts.append(position)
+        return self.chunks[number]
 
     def num_children(self, max_children=LENGTH_LIMIT):
         return min(self.count, max_children)
@@ -326,12 +345,23 @@ class ListProvider:
         if not 0 <= index < self.count:
             return None
         try:
-            address = self.node(index)
+            while not self.chunks or index >= self.starts[-1] + self.chunks[-1][2]:
+                self.chunk(len(self.chunks))
+            # The last chunk that starts at or before `index`.
+            low, high = 0, len(self.starts) - 1
+            while low < high:
+                middle = (low + high + 1) // 2
+                if self.starts[middle] <= index:
+                    low = middle
+                else:
+                    high = middle - 1
+            address, position, _, first = self.chunks[low]
+            slot = first + index - position
         except Exception:
             return None
-        if address == 0:
-            return None
-        return child_at(self.valobj, f"[{index}]", address + self.offset, self.element)
+        return child_at(
+            self.valobj, f"[{index}]", address + self.slots + slot * self.stride, self.element
+        )
 
 
 def is_collection(sbtype, _dict):
