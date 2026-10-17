@@ -9,7 +9,7 @@ import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations,
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--allocator system|small] [--baseline compiler] [--pgo [--pgo-runs n]] [--artifacts directory] [--metrics directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--allocator system|small] [--baseline compiler] [--pgo [--pgo-runs n] [--pgo-rust-llvm directory]] [--artifacts directory] [--metrics directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -28,15 +28,19 @@ const baselineArgument = take("--baseline", null);
 const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
 // PR07: with --pgo the control object is also built with the profile of a --quick training run, and the host that links it runs
-// alternately with the host of the plain object, --pgo-runs times (a --quick run once).
+// alternately with the host of the plain object, --pgo-runs times (a --quick run once). The C and C++ references get a profile of
+// the same run. rustc has its own LLVM, so Rust gets one only from --pgo-rust-llvm DIR, the bin directory of the LLVM that rustc
+// uses (clang and llvm-profdata of that version); without it the Rust object is the same in both hosts, which makes it a control.
 const pgo = args.includes("--pgo");
 const pgoRunsArgument = take("--pgo-runs", null);
+const rustLlvmArgument = take("--pgo-rust-llvm", null);
+const rustLlvm = rustLlvmArgument && resolve(rustLlvmArgument);
 const pgoRuns = Number(pgoRunsArgument ?? (quick ? 1 : 5));
 const positional = args.filter((arg) => arg !== "--quick" && arg !== "--pgo");
 if (!["generic", "native"].includes(cpu) || !["system", "small"].includes(allocator) || !Number.isFinite(scale) || scale <= 0 || scale > 10
   || (quick && scale !== 1) || positional.length > 1
     || positional.some((arg) => arg.startsWith("-")) || args.filter((arg) => arg === "--quick").length > 1 || args.filter((arg) => arg === "--pgo").length > 1
-    || !Number.isInteger(pgoRuns) || pgoRuns < 1 || pgoRuns > 21 || (!pgo && pgoRunsArgument !== null)) {
+    || !Number.isInteger(pgoRuns) || pgoRuns < 1 || pgoRuns > 21 || (!pgo && (pgoRunsArgument !== null || rustLlvmArgument !== null))) {
   throw new Error(usage);
 }
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
@@ -146,17 +150,18 @@ try {
     generated.push("before.ll", "before.h", "before.o", "before.s", "before.optimized.ll");
   }
   const hostFlags = ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : [])];
-  const hostObjects = (control, c, cpp) => [control, c, cpp, "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name));
-  const linkHost = (output, control, c, cpp) => run(clang, [...hostFlags, `${fixture}/host.c`, "-I", temporary, ...hostObjects(control, c, cpp), "-lm", "-o", output]);
+  const hostObjects = (control, c, cpp, rust = "control_reference.o") => [control, c, cpp, rust, ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name));
+  const linkHost = (output, control, c, cpp, rust) => run(clang, [...hostFlags, `${fixture}/host.c`, "-I", temporary, ...hostObjects(control, c, cpp, rust), "-lm", "-o", output]);
   const native = join(temporary, "benchmark");
   linkHost(native, "control.o", "c.o", "cpp.o");
   // PR07: the instrumented objects (Tsuzuri, C and C++ alike), linked into a host that a --quick run exercises, write the profile
-  // that builds the PGO objects. Rust has no PGO build: its LLVM is not the one of Clang's profile runtime.
+  // that builds the PGO objects. Rust has its own LLVM, so its profile comes from a run of its own (--pgo-rust-llvm).
   const profile = join(temporary, "profile");
   const merged = join(temporary, "control.profdata");
   const hosts = [{ binary: native, runs: [] }];
   let profdata = null;
   let rawProfiles = [];
+  let rustObject = "control_reference.o";
   if (pgo) {
     profdata = findProfdata();
     run(compiler, ["build", fixture, "--emit", "object", ...objectFlags, "--profile-generate", profile, "-o", join(temporary, "control.gen.o")]);
@@ -180,9 +185,32 @@ try {
       run(clang, [...used, "-S", "-emit-llvm", "-o", join(temporary, `${name}.pgo.ll`)]);
       generated.push(`${name}.gen.o`, `${name}.pgo.o`, `${name}.pgo.s`, `${name}.pgo.ll`);
     }
-    hosts.push({ binary: join(temporary, "benchmark-pgo"), runs: [] });
-    linkHost(hosts[1].binary, "control.pgo.o", "c.pgo.o", "cpp.pgo.o");
     generated.push("control.gen.o", "control.pgo.o", "control.profdata");
+    if (rustLlvm) {
+      // The instrumented Rust object counts in the runtime of the LLVM that rustc has, so that LLVM's clang links the host that trains
+      // it and its llvm-profdata merges the result; the other objects are the plain ones.
+      const rustProfile = join(temporary, "rust-profile");
+      const rustMerged = join(temporary, "rust.profdata");
+      const generating = join(temporary, "rust-generate");
+      const using = join(temporary, "rust-use");
+      assert.equal(run(join(rustLlvm, "llvm-profdata"), ["--version"]).match(/LLVM version (\d+)/)?.[1], run(rustc, ["-vV"]).match(/LLVM version: (\d+)/)?.[1],
+        "--pgo-rust-llvm must be the LLVM that rustc uses");
+      run(rustc, [...rustFlags, "-C", `profile-generate=${rustProfile}`, "--emit=obj", `${fixture}/reference.rs`, "--out-dir", generating]);
+      run(join(rustLlvm, "clang"), [...flags, join(temporary, "host.o"), ...hostObjects("control.o", "c.o", "cpp.o", join("rust-generate", "control_reference.o")),
+        `-fprofile-generate=${rustProfile}`, "-lm", "-o", join(temporary, "benchmark-train-rust")], environment);
+      run(join(temporary, "benchmark-train-rust"), ["--quick"], environment);
+      run(join(rustLlvm, "llvm-profdata"), ["merge", "-o", rustMerged, ...readdirSync(rustProfile).filter((name) => name.endsWith(".profraw")).map((name) => join(rustProfile, name))]);
+      run(rustc, [...rustFlags, "-C", `profile-use=${rustMerged}`, "--emit=obj,asm,llvm-ir", `${fixture}/reference.rs`, "--out-dir", using]);
+      rustObject = join("rust-use", "control_reference.o");
+      for (const [from, to] of [["control_reference.o", "rust.pgo.o"], ["control_reference.s", "rust.pgo.s"], ["control_reference.ll", "rust.pgo.ll"]]) {
+        copyFileSync(join(using, from), join(temporary, to));
+        generated.push(to);
+      }
+      copyFileSync(rustMerged, join(temporary, "rust.profdata"));
+      generated.push("rust.profdata");
+    }
+    hosts.push({ binary: join(temporary, "benchmark-pgo"), runs: [] });
+    linkHost(hosts[1].binary, "control.pgo.o", "c.pgo.o", "cpp.pgo.o", rustObject);
   }
   // The plain and the PGO host run alternately, so that a change of the machine's load reaches both.
   const rounds = pgo ? pgoRuns : 1;
@@ -258,8 +286,10 @@ try {
     });
     pgoReport = {
       runs: rounds,
-      training: "one --quick run of the instrumented Tsuzuri, C and C++ objects, linked with -fprofile-generate",
+      training: "one --quick run of the instrumented Tsuzuri, C and C++ objects, linked with -fprofile-generate"
+        + (rustLlvm ? "; Rust has a run of its own with the LLVM of rustc" : ""),
       llvm_profdata: run(profdata, ["--version"]).trim().split("\n")[0],
+      rust_pgo: Boolean(rustLlvm),
       raw_profiles: rawProfiles.length,
       raw_profile_bytes: rawProfiles.reduce((sum, name) => sum + statSync(join(profile, name)).size, 0),
       merged_profile_bytes: statSync(merged).size,
@@ -268,15 +298,16 @@ try {
         tsuzuri: { plain: describe(optimized), pgo: describe(text("control.pgo.ll")) },
         c: { plain: describe(text("c.ll")), pgo: describe(text("c.pgo.ll")) },
         cpp: { plain: describe(text("cpp.ll")), pgo: describe(text("cpp.pgo.ll")) },
+        ...(rustLlvm ? { rust: { plain: describe(text("control_reference.ll")), pgo: describe(text("rust.pgo.ll")) } } : {}),
         instrumented_tsuzuri_counters: count(text("control.gen.ll"), /@__profc_/g),
       },
-      // Rust is the same object in both hosts, so its ratio says how far the machine moved between the two.
+      // Without --pgo-rust-llvm, Rust is the same object in both hosts, so its ratio says how far the machine moved between the two.
       workloads: result.workloads.map((plain, index) => {
         const used = pgoResult.workloads[index];
         assert.deepEqual([used.name, used.size], [plain.name, plain.size]);
         return {
           name: plain.name, size: plain.size,
-          tsuzuri: entry(plain, used, "tsuzuri"), c: entry(plain, used, "c"), cpp: entry(plain, used, "cpp"), rust_unchanged: entry(plain, used, "rust"),
+          tsuzuri: entry(plain, used, "tsuzuri"), c: entry(plain, used, "c"), cpp: entry(plain, used, "cpp"), rust: entry(plain, used, "rust"),
           tsuzuri_over_c: { plain: plain.tsuzuri_over_c, pgo: used.tsuzuri_over_c },
           tsuzuri_over_cpp: { plain: plain.tsuzuri_over_cpp, pgo: used.tsuzuri_over_cpp },
           tsuzuri_over_rust: { plain: plain.tsuzuri_over_rust, pgo: used.tsuzuri_over_rust },
@@ -303,7 +334,8 @@ try {
     // A PGO object is another variant of the same workload, so that the records of a run without --pgo are never mistaken for it.
     if (pgo) {
       records.push(...inProcessRecords(context, "control", pgoResult.workloads,
-        [["tsuzuri", "tsuzuri", tsuzuriVariant === "default" ? "pgo" : `${tsuzuriVariant}-pgo`], ["c", "c", "pgo"], ["cpp", "cpp", "pgo"]], { cpu }));
+        [["tsuzuri", "tsuzuri", tsuzuriVariant === "default" ? "pgo" : `${tsuzuriVariant}-pgo`], ["c", "c", "pgo"], ["cpp", "cpp", "pgo"],
+          ...(rustLlvm ? [["rust", "rust", "pgo"]] : [])], { cpu }));
     }
     for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
       records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
@@ -316,6 +348,7 @@ try {
     mkdirSync(resolve(artifacts), { recursive: true });
     for (const name of generated) copyFileSync(join(temporary, name), join(resolve(artifacts), name));
     if (pgo) cpSync(profile, join(resolve(artifacts), "profile"), { recursive: true });
+    if (rustLlvm) cpSync(join(temporary, "rust-profile"), join(resolve(artifacts), "rust-profile"), { recursive: true });
   }
   console.log(JSON.stringify({
     environment: {
