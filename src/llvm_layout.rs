@@ -981,6 +981,9 @@ union Twin = Left of string | Right of string
 union Trio = Uno | Dos of string | Tres
 union Guard = Dormant | Gripped of string
 instance Drop<Guard> {{ fn drop _value = drop_log 4 }}
+record Handlers {{ first: i64 -> i64, second: i64 -> i64 }}
+union Choice = NoChoice | Handler of (i64 -> i64)
+union Callback = Call of (i64 -> i64) | Words of string
 {many}export def use :: i64 -> i64
 fn use n =
     let flags = Flags {{ a: true, b: false }}
@@ -1023,6 +1026,12 @@ fn use n =
     let e: Maybe<ref Mixed> = None
     let f: Maybe<utf8string> = None
     let g: Maybe<[i64]> = None
+    let handlers = Handlers {{ first: \\x -> x + n, second: \\x -> x * n }}
+    let choice = NoChoice
+    let callback = Words \"a\"
+    let h: Maybe<i64 -> i64> = None
+    let i: Result<i64 -> i64, string> = Error \"x\"
+    let job: Task<i64> = task {{ return n }}
     n
 ",
             many = many(300)
@@ -1050,6 +1059,7 @@ fn use n =
         let record = |name: &str| record_of(name, &[]);
         let shape = union("Main.Shape", &[]);
         let rich = union("Main.Rich", &[]);
+        let closure = Type::function(vec![Type::I64], Type::I64);
         vec![
             ("Color", union("Main.Color", &[])),
             ("Small", union("Main.Small", &[])),
@@ -1115,6 +1125,16 @@ fn use n =
             ("Lanes4", record("Main.Lanes4")),
             ("Lanes8", record("Main.Lanes8")),
             ("Resource", record("Main.Resource")),
+            ("Closure", closure.clone()),
+            ("Task<i64>", Type::Task(Box::new(Type::I64))),
+            ("Handlers", record("Main.Handlers")),
+            ("Choice", union("Main.Choice", &[])),
+            ("Callback", union("Main.Callback", &[])),
+            ("Maybe<fn>", union("Maybe.Maybe", &[closure.clone()])),
+            (
+                "Result<fn, string>",
+                union("Result.Result", &[closure, Type::String]),
+            ),
         ]
     }
 
@@ -1189,6 +1209,12 @@ fn use n =
             ("Result<Shape, Rich>", 32, 8),
             // A reference is a pointer, so an option of one is the pointer on a native target.
             ("Maybe<ref Mixed>", 8, 8),
+            // A function value is `CLOSURE_POINTERS` pointers; a union holds it like any payload
+            // (the bounds below allow for the narrower pointers of wasm32).
+            ("Choice", 40, 8),
+            ("Callback", 40, 8),
+            ("Maybe<fn>", 40, 8),
+            ("Result<fn, string>", 40, 8),
         ] {
             let ty = types(&module)
                 .into_iter()
@@ -1202,7 +1228,17 @@ fn use n =
             );
             // Up to 8-byte units the layout is the same everywhere, so the bounds are exact. A
             // pointer is 4 bytes in the lower bound, which covers wasm32.
-            let narrow = !matches!(label, "Huge" | "Lane4" | "Lane8" | "Holder");
+            let narrow = !matches!(
+                label,
+                "Huge"
+                    | "Lane4"
+                    | "Lane8"
+                    | "Holder"
+                    | "Choice"
+                    | "Callback"
+                    | "Maybe<fn>"
+                    | "Result<fn, string>"
+            );
             if narrow && !label.starts_with("Maybe<ref") {
                 let expected = Some((size, align));
                 assert_eq!(Some(layout_bound(&ty, &module, false)), expected, "{label}");
@@ -1223,6 +1259,73 @@ fn use n =
             "{ i8, ptr }"
         );
         assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
+    }
+
+    /// The number of pointers in a function value and in a `Task` (PM02): the code, the
+    /// environment, and what clone and drop need. Every model of its size follows this number.
+    const CLOSURE_POINTERS: usize = 4;
+
+    /// A function value takes the same number of pointers on every machine, so its size is that
+    /// number of pointers wide, and the model's bounds hold it: the upper bound for 64-bit
+    /// pointers and the lower bound for the 4-byte pointers of wasm32. A union or a record keeps
+    /// it inline.
+    #[test]
+    fn function_values_are_as_wide_as_their_pointers() {
+        let module = crate::analyze(&source()).unwrap();
+        let find = |label: &str| {
+            types(&module)
+                .into_iter()
+                .find_map(|(name, ty)| (name == label).then_some(ty))
+                .unwrap()
+        };
+        for wasm in [false, true] {
+            let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
+            let named = definitions(&ir);
+            let _target = target_scope(wasm);
+            for label in ["Closure", "Task<i64>"] {
+                let ty = find(label);
+                assert_eq!(llvm_type(&ty, &module), "%tz.closure", "{label}");
+                assert_eq!(
+                    layout_bound(&ty, &module, false),
+                    (CLOSURE_POINTERS * 8, 8),
+                    "{label}"
+                );
+                assert_eq!(
+                    layout_bound(&ty, &module, true),
+                    (CLOSURE_POINTERS * 4, 4),
+                    "{label}"
+                );
+                for (machine_name, machine) in MACHINES
+                    .iter()
+                    .filter(|(_, machine)| (machine.pointer == 4) == wasm)
+                {
+                    assert_eq!(
+                        measure("%tz.closure", &named, *machine),
+                        (CLOSURE_POINTERS * machine.pointer, machine.pointer),
+                        "{label} on {machine_name}"
+                    );
+                }
+            }
+            // Two function values in a record, and one in a tagged union beside the tag.
+            let handlers = llvm_type(&find("Handlers"), &module);
+            let maybe = llvm_type(&find("Maybe<fn>"), &module);
+            for (machine_name, machine) in MACHINES
+                .iter()
+                .filter(|(_, machine)| (machine.pointer == 4) == wasm)
+            {
+                let word = machine.pointer;
+                assert_eq!(
+                    measure(&handlers, &named, *machine),
+                    (2 * CLOSURE_POINTERS * word, word),
+                    "Handlers on {machine_name}"
+                );
+                assert_eq!(
+                    measure(&maybe, &named, *machine),
+                    (word + CLOSURE_POINTERS * word, word),
+                    "Maybe<fn> on {machine_name}"
+                );
+            }
+        }
     }
 
     /// The sizes that `docs/architecture.md` states for records, on a target whose `i128` is
