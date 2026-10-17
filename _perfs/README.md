@@ -231,6 +231,16 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   W1006 の文言も先に宣言して変えます。既定は flag を置かず（PM01・PM06 と同じ。戻すときは commit の revert）、一括生成の bytes・peak RSS・`for` の ns/要素・`control/list_sum` を基準
   （main `9dd0fbbc`、保存済みの `tsuzuri-before`）と比べる gate を満たしたときだけ残し、満たさなければ証拠を残して取り下げます。
   範囲外で見つけた問題: A17 の last-use が `for` の source の局所変数を丸ごと除外し、同じ関数で `values = List.cons i values` を loop すると毎回複製します（$O(n^2)$。PM04 では直しません）。
+- **PM02**（計画。全フェーズを実装する）: 起票時の `{ 静的記述子, 環境 }`（32 → 16 bytes）は、現行のコードに対して 3 点を直しました。棚卸しは 23 行ではなく 25 行（PM06 の `llvm_frame.rs` が環境欄を足した）、
+  大きさの模型は `llvm_layout.rs` の `layout_bound` の上限と**下限**（PR01 の `dereferenceable`）の 2 本で、下限を変えないと wasm32 で誤った属性になること、既存テスト 4 件
+  （`param_facts`・`integer_ranges`・`call_specialization`・`debugger.mjs`）の期待値が変わることです。基準のコンパイラの IR を手作業で descriptor 案に書き換えた偵察では、
+  正しさ（native・wasm32 × `-O0`・`-O3`）と時間は基準と同じで、`task_parallel` の確保量は 1,024 → 768 bytes でした。ただし immediate の clone／drop を null にしない（起票時は Phase 2 の P2-b）と
+  `closure_churn` が +28.7% 遅くなるため、P2-b を Phase 1 に移します。記述子が `@tz.apply.*` を指すと LLVM の「呼び出しが 1 回だけの内部関数」の inline の加点が効かず、
+  `-O3` の text が小さい例（hello・currying）で +17% になり、`closures` の probe の確保が畳まれなくなりました（wrapper と lambda worker を `alwaysinline` にすると hello +3.7%・functional +1.0%・currying +3.8%）。
+  D1 は WP6 のゲート（`closures` の probe が畳まれる、時間が広がりの範囲内、text の増加が小さい）つきで維持し、通らなければコードを値に残す `{ code, 環境, vtable }`（24 bytes。偵察では text・時間とも基準と同じ）へ
+  切り替えます。P2-c（E1010 の見積もりと `stack_size` を 16 に）は、`docs/language.md` が 32 を保守的な上限と書き、PM01 の D4 が受理される program を変える変更を禁じ、効果が測れないため取り下げます。
+  P2-a（`!invariant.load`）は WP7 の測定で決め、`Maybe<fn>` を null の記述子で表す niche（24 → 16 bytes）は任意の作業（WP9）です。この機械では `lldb` が `run` で応答せず（基準でも `tests/debugger.mjs` が ETIMEDOUT）、
+  x86-64・Linux・Windows の記述子の再配置と実コンパイラでの実行ファイルの大きさは未測定です。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
