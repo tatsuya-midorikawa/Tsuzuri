@@ -7,12 +7,21 @@
   their members, whose `$tag` shows the case name.
 -->
 <AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <!-- A `string` is Latin-1 when bit 62 of `length` is set (`TSUZURI_STRINGS=compact`): the low 62 bits count
+       the bytes at `data`. A Latin-1 string shows as UTF-8 here, so only its ASCII text reads as text; its
+       elements are the bytes. Bit 63 is never set (PM01's niche). -->
   <Type Name="string">
+    <DisplayString Condition="(length &amp; 0x4000000000000000) != 0">{(char*)data,[length &amp; 0x3FFFFFFFFFFFFFFF]s8}</DisplayString>
     <DisplayString>{data,[length]su}</DisplayString>
+    <StringView Condition="(length &amp; 0x4000000000000000) != 0">(char*)data,[length &amp; 0x3FFFFFFFFFFFFFFF]s8</StringView>
     <StringView>data,[length]su</StringView>
     <Expand>
-      <Item Name="[length]">length</Item>
-      <ArrayItems>
+      <Item Name="[length]">length &amp; 0x3FFFFFFFFFFFFFFF</Item>
+      <ArrayItems Condition="(length &amp; 0x4000000000000000) != 0">
+        <Size>length &amp; 0x3FFFFFFFFFFFFFFF</Size>
+        <ValuePointer>(unsigned char*)data</ValuePointer>
+      </ArrayItems>
+      <ArrayItems Condition="(length &amp; 0x4000000000000000) == 0">
         <Size>length</Size>
         <ValuePointer>data</ValuePointer>
       </ArrayItems>

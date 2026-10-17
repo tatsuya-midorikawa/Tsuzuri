@@ -51,6 +51,8 @@ function sections(output) {
 }
 
 try {
+  // PM03: the reading of a string of either form, without a session (a session needs a debugserver that can launch programs).
+  execute("python3", ["tests/lldb_strings.py"]);
   execute(lldb, ["--version"]);
   const output = session(fixture, [
     "type category list tsuzuri",
