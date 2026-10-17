@@ -736,10 +736,16 @@ mod sockets {
         for _ in 0..2 {
             match UnixListener::bind(socket) {
                 Ok(listener) => {
-                    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-                        .map_err(|error| {
-                            failure(format!("cannot protect {}: {error}", socket.display()))
-                        })?;
+                    // Only this user can enter the directory, so nobody can connect before this.
+                    if let Err(error) =
+                        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+                    {
+                        let _ = std::fs::remove_file(socket);
+                        return Err(failure(format!(
+                            "cannot protect {}: {error}",
+                            socket.display()
+                        )));
+                    }
                     return Ok(listener);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
@@ -767,7 +773,7 @@ mod sockets {
                     )));
                 }
                 Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                    // ponytail: a server that was killed leaves its socket; nobody answers, so it is removed
+                    // A server that was killed leaves its socket; nobody answers, so it is removed.
                     let _ = std::fs::remove_file(socket);
                 }
                 Err(error) => {
