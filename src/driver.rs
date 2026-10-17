@@ -3229,7 +3229,13 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
-    let f16 = platform_f16_path(platform, options.target, options.cpu);
+    let fast = options.backend == Backend::Fast;
+    // The fast backend has no `half`: it uses the bit-exact integer routines of the runtime.
+    let f16 = if fast {
+        llvm::F16Path::Soft
+    } else {
+        platform_f16_path(platform, options.target, options.cpu)
+    };
     let runtime_objects = options.cache
         && !options.debug_info
         && !options.trap_info
@@ -3773,7 +3779,13 @@ fn build_complete(
                 }
             }
         }
-        fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+        let object = temporary.path.join("module.o");
+        if fast {
+            // The IR is translated in memory and never written.
+            translate_fast(&text, platform, &object)?;
+        } else {
+            fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+        }
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
             && options.debug_info
@@ -4024,11 +4036,13 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
-        clang
-            .arg("-x")
-            .arg("ir")
-            .arg("-Wno-override-module")
-            .arg(options.optimization.flag());
+        if !fast {
+            clang
+                .arg("-x")
+                .arg("ir")
+                .arg("-Wno-override-module")
+                .arg(options.optimization.flag());
+        }
         if options.debug_info {
             clang.arg("-g");
         }
@@ -4068,8 +4082,7 @@ fn build_complete(
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
             clang.arg("-c");
         }
-        let object = temporary.path.join("module.o");
-        clang.arg(&ir).arg("-o").arg(
+        clang.arg(if fast { &object } else { &ir }).arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
                 || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
@@ -4129,16 +4142,24 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
-        collect_message(
-            &mut messages,
-            run_tool(
-                &mut clang,
-                &linker_hint(cross_hint(
-                    platform,
-                    "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                )),
-            )?,
-        );
+        if fast && options.emit == Emit::Object {
+            // The translated object is the output; with the C runtime it is merged below.
+            if !native_runtime {
+                fs::rename(&object, &artifact)
+                    .map_err(|error| io_error("write object", &artifact, error))?;
+            }
+        } else {
+            collect_message(
+                &mut messages,
+                run_tool(
+                    &mut clang,
+                    &linker_hint(cross_hint(
+                        platform,
+                        "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+                    )),
+                )?,
+            );
+        }
         if let Some(symbols) = &shared_symbols {
             link_shared(
                 symbols,
@@ -5147,6 +5168,26 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 /// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
+
+/// Translates the module's IR with the fast backend and writes the object (PB05).
+#[cfg(feature = "fast-backend")]
+fn translate_fast(text: &str, platform: Platform, object: &Path) -> Result<(), Diagnostic> {
+    let bytes = crate::backend::translate(
+        text,
+        platform,
+        crate::parallel::Parallelism::command_line(),
+        cfg!(debug_assertions),
+    )?;
+    fs::write(object, bytes).map_err(|error| io_error("write object", object, error))
+}
+
+#[cfg(not(feature = "fast-backend"))]
+fn translate_fast(_: &str, _: Platform, _: &Path) -> Result<(), Diagnostic> {
+    Err(driver_error(
+        "E2000",
+        "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
+    ))
+}
 
 /// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
 /// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
