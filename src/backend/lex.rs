@@ -151,7 +151,7 @@ impl<'a> Lexer<'a> {
     /// and escapes stay as they are spelled.
     pub(crate) fn name(&mut self) -> Res<&'a str> {
         if self.peek() == b'"' {
-            return Ok(self.quoted()?);
+            return self.quoted();
         }
         let start = self.pos;
         while is_name_byte(self.peek()) {

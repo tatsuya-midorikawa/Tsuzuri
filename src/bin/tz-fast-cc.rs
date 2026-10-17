@@ -32,14 +32,32 @@ fn read_only(files: &[String]) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let mut arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.first().is_some_and(|flag| flag == "--read") {
         return read_only(&arguments[1..]);
+    }
+    // `--target TRIPLE` translates for another machine, to look at its code without running it.
+    let mut platform = tsuzuri::target::Platform::HOST;
+    if let Some(position) = arguments.iter().position(|argument| argument == "--target") {
+        let Some(name) = arguments.get(position + 1).cloned() else {
+            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE]");
+            return ExitCode::from(2);
+        };
+        match tsuzuri::target::parse_target(&name) {
+            Ok((tsuzuri::driver::Target::Native, triple)) => {
+                platform = tsuzuri::target::Platform::new(triple);
+            }
+            _ => {
+                eprintln!("tz-fast-cc: --target takes a native target");
+                return ExitCode::from(2);
+            }
+        }
+        arguments.drain(position..position + 2);
     }
     let (input, output) = match arguments.as_slice() {
         [input, flag, output] if flag == "-o" => (input, output),
         _ => {
-            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o");
+            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE]");
             return ExitCode::from(2);
         }
     };
@@ -58,7 +76,11 @@ fn main() -> ExitCode {
                 .map_or(1, usize::from)
                 .min(8)
         });
-    match tsuzuri::backend::compile(&text, &tsuzuri::backend::Options::host(threads)) {
+    let options = tsuzuri::backend::Options {
+        platform,
+        ..tsuzuri::backend::Options::host(threads)
+    };
+    match tsuzuri::backend::compile(&text, &options) {
         Ok(object) => match std::fs::write(output, object) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

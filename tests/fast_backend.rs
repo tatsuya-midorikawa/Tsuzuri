@@ -218,6 +218,10 @@ fn rejects_unsupported_constructs_with_e2002() {
         "an alloca with a variable count in @f",
     );
     expect_refusal(
+        "define void @f() {\nentry:\n  br label %next\nnext:\n  %p = alloca i64\n  ret void\n}\n",
+        "an alloca outside the entry block in @f",
+    );
+    expect_refusal(
         "declare double @llvm.sin.f64(double)\ndefine double @f(double %x) {\n  %r = call double @llvm.sin.f64(double %x)\n  ret double %r\n}\n",
         "the intrinsic llvm.sin.f64 in @f",
     );

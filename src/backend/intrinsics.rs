@@ -371,8 +371,8 @@ impl<'w, 'a> Lower<'w, 'a> {
             }
             _ => {
                 // Overflow runs toward the sign of the first operand's side.
-                let max = self.iconst(cty, (1i128 << (bits - 1)) - 1);
-                let min = self.iconst(cty, -(1i128 << (bits - 1)));
+                let max = self.iconst(cty, i128::MAX >> (128 - bits));
+                let min = self.iconst(cty, i128::MIN >> (128 - bits));
                 let zero = self.iconst(cty, 0);
                 let negative = self.b.ins().icmp(IntCC::SignedLessThan, x, zero);
                 let bound = self.b.ins().select(negative, min, max);
@@ -477,21 +477,20 @@ impl<'w, 'a> Lower<'w, 'a> {
         }
         let cty = self.clif_type(ty)?;
         let mask = self.b.ins().band_imm(amount, i64::from(bits) - 1);
-        let (high, low) = if left { (a, b) } else { (a, b) };
         // fshl: (a << s) | ((b >> 1) >> (bits - 1 - s)); fshr: ((a << 1) << (bits - 1 - s)) | (b >> s).
         let inverse = {
             let top = self.iconst(cty, i128::from(bits) - 1);
             self.b.ins().isub(top, mask)
         };
         Ok(if left {
-            let shifted = self.b.ins().ishl(high, mask);
-            let half = self.b.ins().ushr_imm(low, 1);
+            let shifted = self.b.ins().ishl(a, mask);
+            let half = self.b.ins().ushr_imm(b, 1);
             let rest = self.b.ins().ushr(half, inverse);
             self.b.ins().bor(shifted, rest)
         } else {
-            let half = self.b.ins().ishl_imm(high, 1);
+            let half = self.b.ins().ishl_imm(a, 1);
             let upper = self.b.ins().ishl(half, inverse);
-            let lower = self.b.ins().ushr(low, mask);
+            let lower = self.b.ins().ushr(b, mask);
             self.b.ins().bor(upper, lower)
         })
     }

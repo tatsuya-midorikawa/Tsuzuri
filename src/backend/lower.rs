@@ -250,7 +250,7 @@ impl<'w, 'a> Lower<'w, 'a> {
             let count = self.leaf_clif_types(ty)?.len();
             let params: Vec<Value> = self.b.block_params(clif)[next..next + count].to_vec();
             next += count;
-            self.vals[dst as usize] = Some(self.from_leaves(ty, &params));
+            self.vals[dst as usize] = Some(self.leaves_to_val(ty, &params));
         }
         Ok(())
     }
@@ -307,7 +307,7 @@ impl<'w, 'a> Lower<'w, 'a> {
     }
 
     /// Builds the value of type `ty` from its leaves.
-    pub(super) fn from_leaves(&mut self, ty: Ty, leaves: &[Value]) -> Val {
+    pub(super) fn leaves_to_val(&mut self, ty: Ty, leaves: &[Value]) -> Val {
         match ty {
             Ty::Compound(_) => self.multi(leaves),
             _ => Val::S(leaves[0]),
@@ -725,12 +725,31 @@ impl<'w, 'a> Lower<'w, 'a> {
                 else_block,
             } => {
                 let cond = self.terminator_condition(cond)?;
-                let then_args = self.edge_args(from, then_block)?;
-                let else_args = self.edge_args(from, else_block)?;
-                let (then_clif, else_clif) = (self.block(then_block), self.block(else_block));
-                self.b
-                    .ins()
-                    .brif(cond, then_clif, &then_args, else_clif, &else_args);
+                // The copy of a large phi must happen on its own edge only, so such an edge goes
+                // through a block of its own; the other phis travel as block arguments.
+                let mut targets: Vec<(ir::Block, Vec<BlockArg>)> = Vec::new();
+                let mut edges: Vec<(ir::Block, u32)> = Vec::new();
+                for block in [then_block, else_block] {
+                    if self.has_large_phis(block)? {
+                        let edge = self.b.create_block();
+                        edges.push((edge, block));
+                        targets.push((edge, Vec::new()));
+                    } else {
+                        let args = self.edge_args(from, block)?;
+                        targets.push((self.block(block), args));
+                    }
+                }
+                self.b.ins().brif(
+                    cond,
+                    targets[0].0,
+                    &targets[0].1,
+                    targets[1].0,
+                    &targets[1].1,
+                );
+                for (edge, block) in edges {
+                    self.b.switch_to_block(edge);
+                    self.jump_to(from, block)?;
+                }
                 Ok(())
             }
             Inst::Switch {
@@ -829,6 +848,20 @@ impl<'w, 'a> Lower<'w, 'a> {
     fn has_phis(&self, block: u32) -> bool {
         let data = &self.func.blocks[block as usize];
         data.first < data.last && matches!(self.func.insts[data.first as usize], Inst::Phi { .. })
+    }
+
+    fn has_large_phis(&mut self, block: u32) -> Res<bool> {
+        let func = self.func;
+        let data = &func.blocks[block as usize];
+        for index in data.first..data.last {
+            let Inst::Phi { ty, .. } = func.insts[index as usize] else {
+                break;
+            };
+            if self.is_large(ty)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn ret(&mut self, ty: Ty, val: Op) -> Res<()> {

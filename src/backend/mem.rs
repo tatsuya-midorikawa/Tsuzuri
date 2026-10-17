@@ -5,6 +5,7 @@ use cranelift_codegen::ir::{self, AtomicRmwOp, InstBuilder, Value, types};
 use super::error::{Failure, Res, bail};
 use super::func::{Const, Op, Ordering, RmwOp};
 use super::lower::{Lower, Place, Val, imm32, plain};
+use super::target::Arch;
 use super::types::{Compound, Leaf, Ty};
 
 impl<'w, 'a> Lower<'w, 'a> {
@@ -640,17 +641,32 @@ impl<'w, 'a> Lower<'w, 'a> {
 
     fn atomic_type(&self, ty: Ty) -> Res<ir::Type> {
         match ty {
-            Ty::Int(bits) if matches!(bits, 8 | 16 | 32 | 64) => self.clif_type(ty),
+            Ty::Int(8 | 16 | 32 | 64) => self.clif_type(ty),
             Ty::Ptr => Ok(self.target.pointer),
             other => bail!("an atomic operation on {}", self.types.describe(other)),
         }
+    }
+
+    /// A value whose bits above its type are zero. The load-exclusive loops of AArch64 compare
+    /// and extend whole registers (`umin`/`umax` of 8 and 16 bits, the expected value of a 32-bit
+    /// compare-and-swap) and assume that nothing is above the type; Cranelift does not clear it.
+    fn zero_extended(&mut self, value: Value) -> Value {
+        let kind = self.b.func.dfg.value_type(value);
+        if self.target.arch != Arch::Aarch64 || kind == types::I64 {
+            return value;
+        }
+        let wide = self.b.ins().uextend(types::I64, value);
+        self.b.ins().ireduce(kind, wide)
     }
 
     pub(super) fn atomic_rmw(&mut self, op: RmwOp, ty: Ty, pointer: Val, value: Val) -> Res<Val> {
         let kind = self.atomic_type(ty)?;
         let place = self.place_of(pointer)?;
         let address = self.place_address(place)?;
-        let operand = self.scalar(value)?;
+        let mut operand = self.scalar(value)?;
+        if matches!(op, RmwOp::UMax | RmwOp::UMin) {
+            operand = self.zero_extended(operand);
+        }
         let op = match op {
             RmwOp::Xchg => AtomicRmwOp::Xchg,
             RmwOp::Add => AtomicRmwOp::Add,
@@ -684,10 +700,11 @@ impl<'w, 'a> Lower<'w, 'a> {
         let place = self.place_of(pointer)?;
         let address = self.place_address(place)?;
         let (expected, replacement) = (self.scalar(expected)?, self.scalar(replacement)?);
+        let compared = self.zero_extended(expected);
         let old = self
             .b
             .ins()
-            .atomic_cas(plain(), address, expected, replacement);
+            .atomic_cas(plain(), address, compared, replacement);
         let success = self
             .b
             .ins()

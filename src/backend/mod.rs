@@ -25,6 +25,7 @@ mod types;
 
 use std::cell::RefCell;
 use std::ops::ControlFlow;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use cranelift_codegen::Context;
@@ -192,12 +193,18 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
     let module = module::scan(ir)?;
     let needed = module.reachable();
     let types = Types::overlay(&module.types, ir);
-    let builder = ObjectBuilder::new(
+    let mut builder = ObjectBuilder::new(
         isa.clone(),
         "tsuzuri",
         cranelift_module::default_libcall_names(),
     )
     .map_err(|error| Failure::new(format!("the object writer: {error}")))?;
+    if target.format != Format::MachO {
+        // So that the linker's garbage collection can drop what nothing uses, as Clang's
+        // `-ffunction-sections -fdata-sections` allow; Mach-O subsections already do.
+        builder.per_function_section(true);
+        builder.per_data_object_section(true);
+    }
     let mut object = ObjectModule::new(builder);
 
     // Declare every symbol that is needed, in the order of the IR.
@@ -336,6 +343,12 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
         );
         description.set_align(u64::from(*align).max(natural).max(1));
         match init {
+            // Mach-O has no weak definitions in zerofill sections: Clang writes the zeros out.
+            data::Init::Zero(size)
+                if sym.linkage == Linkage::Weak && target.format == Format::MachO =>
+            {
+                description.define(vec![0; size as usize].into_boxed_slice());
+            }
             data::Init::Zero(size) => description.define_zeroinit(size as usize),
             data::Init::Bytes { bytes, relocs } => {
                 description.define(bytes.into_boxed_slice());
@@ -410,19 +423,34 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
 fn compile_function(shared: &Shared<'_>, index: usize) -> Res<Compiled> {
     let id = shared.work[index];
     let sym = &shared.module.syms[id as usize];
-    let result = STATE.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let state = slot.get_or_insert_with(|| State {
-            context: Context::new(),
-            builder: FunctionBuilderContext::new(),
-            control: ControlPlane::default(),
-        });
-        let result = compile_in(shared, state, id);
-        if result.is_err() {
-            // A function that failed leaves the builder's context half used.
-            *slot = None;
-        }
-        result
+    // A few instruction-selection rules of Cranelift stop with `unimplemented!`; that is a refusal
+    // of the translator like any other, not a crash of the compiler.
+    let attempt = catch_unwind(AssertUnwindSafe(|| {
+        STATE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let state = slot.get_or_insert_with(|| State {
+                context: Context::new(),
+                builder: FunctionBuilderContext::new(),
+                control: ControlPlane::default(),
+            });
+            let result = compile_in(shared, state, id);
+            if result.is_err() {
+                // A function that failed leaves the builder's context half used.
+                *slot = None;
+            }
+            result
+        })
+    }));
+    let result = attempt.unwrap_or_else(|payload| {
+        STATE.with(|cell| *cell.borrow_mut() = None);
+        let detail = payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(Failure::new(format!(
+            "an operation that Cranelift does not implement for this target ({detail})"
+        )))
     });
     result.map_err(|failure| failure.in_function(sym.name))
 }

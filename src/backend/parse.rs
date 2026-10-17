@@ -16,6 +16,8 @@ struct Parser<'a, 'c> {
     labels: FxMap<&'a str, u32>,
     /// The number of the entry block when the body leaves it unnamed.
     unnamed_entry: Option<u32>,
+    /// False once the second block begins: an alloca after that would be a dynamic one.
+    in_entry: bool,
 }
 
 const SKIPPED_INTRINSICS: [&str; 8] = [
@@ -47,6 +49,7 @@ pub(crate) fn parse_function<'a>(cx: &mut Cx<'a>, header_pos: usize) -> Res<Func
         locals: FxMap::default(),
         labels: FxMap::default(),
         unnamed_entry: None,
+        in_entry: true,
     };
     parser.run()?;
     Ok(parser.func)
@@ -86,12 +89,13 @@ impl<'a> Parser<'a, '_> {
             if let Some(label) = self.try_label() {
                 self.func.blocks[current as usize].last = self.func.insts.len() as u32;
                 current = self.begin_block(Some(label))?;
+                self.in_entry = false;
                 closed = false;
                 continue;
             }
             let before = self.func.insts.len();
             self.instruction()?;
-            self.lex.skip_to_eol();
+            self.end_of_instruction()?;
             if closed {
                 self.func.insts.truncate(before);
             } else if let Some(inst) = self.func.insts[before..].last() {
@@ -124,6 +128,34 @@ impl<'a> Parser<'a, '_> {
             }
         }
         self.func.n_locals = self.locals.len() as u32;
+        Ok(())
+    }
+
+    /// Only attachments, a comment or the closing brace may follow an instruction on its line. A
+    /// second instruction is not read, so it is refused rather than dropped.
+    fn end_of_instruction(&mut self) -> Res<()> {
+        self.lex.skip_ws();
+        let next = self.lex.peek();
+        if next == b'%'
+            || matches!(
+                self.lex.peek_word(),
+                "ret"
+                    | "br"
+                    | "switch"
+                    | "unreachable"
+                    | "call"
+                    | "store"
+                    | "tail"
+                    | "musttail"
+                    | "fence"
+            )
+        {
+            bail!(
+                "more than one instruction on a line near {}",
+                self.lex.context()
+            );
+        }
+        self.lex.skip_to_eol();
         Ok(())
     }
 
@@ -558,6 +590,10 @@ impl<'a> Parser<'a, '_> {
         if self.lex.peek_word() == "inalloca" {
             bail!("an inalloca alloca");
         }
+        if !self.in_entry {
+            // Each run of such an alloca takes new stack; a fixed slot would be another meaning.
+            bail!("an alloca outside the entry block");
+        }
         let ty = self.ty()?;
         let mut count = 1u64;
         let mut align = 0u32;
@@ -865,13 +901,8 @@ impl<'a> Parser<'a, '_> {
     }
 
     fn cmpxchg(&mut self, dst: u32) -> Res<()> {
-        loop {
-            match self.lex.peek_word() {
-                "weak" | "volatile" => {
-                    self.lex.word();
-                }
-                _ => break,
-            }
+        while matches!(self.lex.peek_word(), "weak" | "volatile") {
+            self.lex.word();
         }
         let (_, ptr) = self.typed_operand()?;
         self.comma()?;

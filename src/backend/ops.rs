@@ -230,25 +230,50 @@ impl<'w, 'a> Lower<'w, 'a> {
         if !matches!(ty, Ty::Float | Ty::Double) {
             bail!("a floating-point comparison of {}", self.types.describe(ty));
         }
-        let cc = match pred {
-            FPred::False => return Ok(self.b.ins().iconst(types::I8, 0)),
-            FPred::True => return Ok(self.b.ins().iconst(types::I8, 1)),
-            FPred::Oeq => FloatCC::Equal,
-            FPred::Ogt => FloatCC::GreaterThan,
-            FPred::Oge => FloatCC::GreaterThanOrEqual,
-            FPred::Olt => FloatCC::LessThan,
-            FPred::Ole => FloatCC::LessThanOrEqual,
-            FPred::One => FloatCC::OrderedNotEqual,
-            FPred::Ord => FloatCC::Ordered,
-            FPred::Ueq => FloatCC::UnorderedOrEqual,
-            FPred::Ugt => FloatCC::UnorderedOrGreaterThan,
-            FPred::Uge => FloatCC::UnorderedOrGreaterThanOrEqual,
-            FPred::Ult => FloatCC::UnorderedOrLessThan,
-            FPred::Ule => FloatCC::UnorderedOrLessThanOrEqual,
-            FPred::Une => FloatCC::NotEqual,
-            FPred::Uno => FloatCC::Unordered,
-        };
-        Ok(self.b.ins().fcmp(cc, x, y))
+        // AArch64 has no condition for `one`, `ueq` and the unordered-or forms of `<` and `>`
+        // (Cranelift stops with `unimplemented`), so they are built from the plain ones, on every
+        // target alike: `ult` is "not `oge`", `ueq` is "unordered or `oeq`", and so on.
+        let plain = |this: &mut Self, cc: FloatCC| this.b.ins().fcmp(cc, x, y);
+        Ok(match pred {
+            FPred::False => self.b.ins().iconst(types::I8, 0),
+            FPred::True => self.b.ins().iconst(types::I8, 1),
+            FPred::Oeq => plain(self, FloatCC::Equal),
+            FPred::Ogt => plain(self, FloatCC::GreaterThan),
+            FPred::Oge => plain(self, FloatCC::GreaterThanOrEqual),
+            FPred::Olt => plain(self, FloatCC::LessThan),
+            FPred::Ole => plain(self, FloatCC::LessThanOrEqual),
+            FPred::Ord => plain(self, FloatCC::Ordered),
+            FPred::Une => plain(self, FloatCC::NotEqual),
+            FPred::Uno => plain(self, FloatCC::Unordered),
+            FPred::One => {
+                let (less, greater) = (
+                    plain(self, FloatCC::LessThan),
+                    plain(self, FloatCC::GreaterThan),
+                );
+                self.b.ins().bor(less, greater)
+            }
+            FPred::Ueq => {
+                let (unordered, equal) =
+                    (plain(self, FloatCC::Unordered), plain(self, FloatCC::Equal));
+                self.b.ins().bor(unordered, equal)
+            }
+            FPred::Ugt => {
+                let not = plain(self, FloatCC::LessThanOrEqual);
+                self.b.ins().bxor_imm(not, 1)
+            }
+            FPred::Uge => {
+                let not = plain(self, FloatCC::LessThan);
+                self.b.ins().bxor_imm(not, 1)
+            }
+            FPred::Ult => {
+                let not = plain(self, FloatCC::GreaterThanOrEqual);
+                self.b.ins().bxor_imm(not, 1)
+            }
+            FPred::Ule => {
+                let not = plain(self, FloatCC::GreaterThan);
+                self.b.ins().bxor_imm(not, 1)
+            }
+        })
     }
 
     // ---- select ----

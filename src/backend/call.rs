@@ -116,7 +116,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 }
             }
             RetPlan::Scalar(_) => Val::S(results[0]),
-            RetPlan::Leaves(_) => self.from_leaves(ret, &results),
+            RetPlan::Leaves(_) => self.leaves_to_val(ret, &results),
             RetPlan::Sret => {
                 let address = result_address.expect("an sret call has a result address");
                 if self.is_large(ret)? {
