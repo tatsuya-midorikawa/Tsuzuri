@@ -52,7 +52,10 @@ fn integer_runtime_never_divides_an_i128() {
     // by pointer and returns in XMM0, which the helpers of runtime/wasm.ll do not follow: the digits come out wrong.
     let source = include_str!("../src/runtime/integer.ll");
     for instruction in ["udiv i128", "urem i128", "sdiv i128", "srem i128"] {
-        assert!(!source.contains(instruction), "integer.ll has `{instruction}`");
+        assert!(
+            !source.contains(instruction),
+            "integer.ll has `{instruction}`"
+        );
     }
 }
 
