@@ -7,10 +7,10 @@
 | 優先度 | P2 |
 | 規模 | XL |
 | 依存 | PB01, PB02 |
-| 関連 | PB03, PB07, G08, G04 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（第二のバックエンドとして Cranelift を採る。チケット全体）、D2（入力を Tsuzuri が出す `-O0` の LLVM IR テキストにする）、D3（Cranelift 系 crate の追加と cargo feature `fast-backend`）。D12（既定のバックエンドの変更）は本チケットでは行わない |
+| 関連 | PB03, PB04, PB07, G08, G04 |
+| 状態 | doing |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD `9dd0fbbc` で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-17 の全フェーズ実装依頼で D1（第二のバックエンドとして Cranelift を採る。チケット全体）、D2（入力を Tsuzuri が出す `-O0` の LLVM IR テキストにする）、D3（Cranelift 系 crate・`target-lexicon`・Phase 2 の `gimli`/`object` の追加と cargo feature `fast-backend`）、D9（DWARF の行情報）、D13（直接の WASM 生成の評価と、ゲートを通った場合の実装）を含む全フェーズを承認済み（測定で効果を確認できない既定の切り替えは行わない）。D12（既定のバックエンドの変更）は本チケットでは行わず、既定は `llvm` のまま |
 | 手本にする既存実装 | LLVM 以外の出力と対応外の早期拒否: `src/gpu.rs` の `extract_kernel`・`GpuKernel::wgsl`・`wgsl_type`。外部ツールの起動と一時ディレクトリ: `src/driver.rs` の `build_complete`・`tool`・`TemporaryDirectory`。CLI の値付きオプション: `src/main.rs` の `--cpu` の分岐と `BuildOptions::cpu`。cache の鍵: `src/cache.rs` の `build_key`。trap の E2E: `tests/e2e.mjs` の `traps`（SIGILL・SIGTRAP を `_Exit(86)` にする C harness） |
 | 主な影響ファイル | `Cargo.toml`, `Cargo.lock`, `src/lib.rs`, `src/main.rs`, `src/driver.rs`, `src/cache.rs`, `src/backend/mod.rs`・`ir.rs`・`layout.rs`・`lower.rs`（新規）, `tests/fast_backend.rs`（新規）, `tests/fast_backend.mjs`（新規）, `docs/architecture.md`, `docs/language.md`, `docs/benchmarks.md`, `README.md`, `_perfs/README.md` |
 | 計測対象 | PX03 の合成プロジェクト（`benchmarks/build/generate.mjs`、PX03 で新規）の native `-O0` の variant `build`・`build-edit-body`・`build-edit-signature`、`examples/hello`・`examples/computations` の `-O0` ビルド、生成コードの実行時間（`benchmarks/run-control.mjs` の `-O0` 相当） |
@@ -26,6 +26,255 @@ Go や Zig の自前のバックエンド、Rust の Cranelift によるデバ�
 - Phase 1 は明示の `--backend fast`（新規）だけで選ぶ。自動では選ばず、既定も変えない（D12）。対応しない組み合わせと命令は
   E2000・E2002 で拒否し、黙って違う意味のコードを作らない。
 - 実装者は Phase 1 だけを実装する。Phase 2（DWARF の行情報・`--trap-info`・`test` コマンド）と直接の WASM 生成（D13）は人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-17）
+
+2026-10-17 の依頼で、全フェーズ（Phase 1・Phase 2・D13 の評価と、ゲートを通った場合の実装）を実装する。起票時の「Phase 1 だけ」「人間が求めた場合だけ」と
+`要承認` の注記は今回の依頼には適用せず、意味の保持・既定を変えない・測定で決める条件は維持する。以下の「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」
+「決定事項」は起票時の記録で、このセクションと食い違う箇所はこのセクションが優先する（旧 `_docs/` のパスは `_tsuzuri/language-reference/` に読み替える。GUIDE §8.1）。
+着手時の HEAD は `a2313d19`（main `9dd0fbbc` + 第4フェーズの計測の足場）。偵察は、保存した release コンパイラ（`target/perf/phase4-baseline/tsuzuri-before`、SHA-256 `5e1b9687…`）、
+Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1（MSRV の確認は rustup の 1.85.0）、Node 20.19.6、LLVM 21 の単体ツールで行った。
+共有機で 1 分の load average は 4〜30 だったので、時間は参考値である。生データと script は `target/perf/PB05/`（git 管理外）。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| 起票の HEAD は `f8dc655`。PB01・PB02・PX03 を前提とする | 第2・3フェーズが実装済み（PB01〜PB04、PX01〜PX03、PM01・PM05〜PM08、PR01〜PR06、G10 など）。`src/llvm*.rs` は 21,797 行（`src/llvm.rs` 8,997）、`src/driver.rs` 7,063 行で `build_complete` は約 1,280 行 | 起票時の行番号・件数・「まだない」は使わない。D2（lowering を二重に持たない）の理由は強まった（起票時は 10,888 行） |
+| `EmitOptions { entry, wasm, debug_output }` と `external_numeric: bool`（numeric だけを宣言にする） | `EmitOptions { entry, wasm, wasm_simd128, debug_output, runtime_objects, allocator, f16 }`。`runtime_objects` が **numeric と math** を宣言だけにする（`src/runtime_cache.rs` の `numeric_declarations`・`math_declarations`・`math_source`）。連結する runtime は `RuntimeSymbols`（記号の集合）で決まる | 名前を現行に合わせる。fast も `runtime_objects` の条件を LLVM 経路と同じにして、Clang に渡すはずの IR をそのまま翻訳する（意味の一致が構成で保たれる） |
+| `driver::runtime_object(cache, unit, source, input, args, directory, messages)`。unit は `numeric`・`native-c` | private な `compile_runtime_object(unit, source, input, args, directory, identity, hint, messages)`（`src/driver.rs`）。unit は `numeric`・`math`・`native-c`（`task.c` に `os.c`・`net.c`・`async.c`・`gpu.c`・`trap.c`・`cpu.c`・`io.c`・`arguments.c` を連結）・`wasi`・`wasm-threads`・`stack-debug`。配布物は 52 個の object を持つ（`runtime_cache::prebuilt`）。`identity: None`（`--no-cache`）でも毎回 Clang で作る形で動く | fast も同じ関数を同じ引数（`-O0` …）で呼ぶ。object と cache は LLVM 経路と共有される |
+| native の実行ファイルは `clang -x ir module.ll` で compile と link を 1 回で行う | 同じ。引数は `-x ir -Wno-override-module -O0 -fPIC module.ll -o artifact -lm -Wl,-dead_strip -Wl,-u,_tz_<export> -x none numeric.o math.o -x none task.o …`。runtime object を使う条件は `options.cache && !debug_info && !trap_info && !trap_return && !wasm_threads && !stack_checks` で、native の実行ファイルと wasm32 の `.wasm` だけ。`--emit object` は `module.o` と `task.o` を `clang -r -nostdlib [-Wl,-keep_private_externs]` で結合する | fast は `module.o` を in-process で作り、`-x ir … module.ll` を `module.o` に替えた同じ link コマンドを使う。`module.ll` は書かない |
+| 再現: hello の IR は 3,126 bytes、命令は 14 種、intrinsic は `@llvm.trap` だけ | `examples/hello`（`IO.write_line` を使う）の `build -O0` の module IR は 144,918 bytes・3,559 行・124 define・約 2,500 命令で、`run` は 160,789 bytes（`closure`・`heap-native`・`integer`・`string`・`string_v128`・`utf8string` の runtime が入る）。102 の project の生成コードに 49 種、runtime の `.ll` に 48 種、合わせて 51 種の命令・47 種の intrinsic・23 種の vector 型が現れた | 手順 2 の棚卸しは「再現」の `grep` では足りない。D6 の外の構成要素を下の表で決める |
+| 診断の表: `--backend fast` は `-g`・`--trap-info` を E2000 で拒否し、`run` は Phase 1 で対応。`--trap-info` は Phase 2（trap 位置の表を Cranelift から作る） | `tsuzuri run` は常に `trap_info: true`（`src/main.rs` の `trap_info: trap_info \|\| action == Action::Run`。起票時の HEAD にもあった）。trap-info の計装は IR の書き換えである（`src/llvm_traps.rs`: 呼び出しに `i32 %tz.context` を足す、`@tz.trap.report(i32 site)` が `switch` で `@tz.trap.message.N` を `write(2, …)` する、`.trap.json` の sidecar）。機械語の位置表は使わない | 起票時の表では `run --backend fast` が自己矛盾だった。`run` と `--trap-info` は Phase 1 から対応する（翻訳の入力が IR のままなので追加の機構は要らない）。Phase 2 の「`--trap-info`」は消える。ただし `trap_info` では `runtime_objects` が false になり、numeric.ll・math.ll が IR に入って翻訳される |
+| D6: `volatile`・atomic は E2002（出なければ実装しない）、vector は 128 bit 以下だけ、`half` と `byval`・`sret`・`fastcc` は停止条件 3 | 実 IR に出る: atomic（`atomicrmw` 7 種・`cmpxchg`・`fence acquire`・`load atomic`・`store atomic`。Rc・`Atomic`・`Mutex`・`Channel`・`heap-small.ll`・`heap-counting.ll`）、`volatile`（`math.ll` の load 9・store 23）、`thread_local`（Async の executor、`heap-small.ll`）、vector（全 string module の `string_v128.ll`: PR05 が `<16 x i32>`・`shufflevector`・`llvm.vector.reduce.add` を使う。user の SIMD は最大 `<32 x i32>`）、`half`（aarch64 の既定は `F16Path::Hardware`）、`fastcc`・`byval`・`sret`（numeric.ll の内部関数） | D6 を拡張する（下の表）。停止条件 3 は止めずに個別の方針で解く |
+| D8: 集約値は scalar の列に平らにする | SSA の集約値の leaf 数は 1〜16 が大半（(型, module) の組で 2,955）、17〜64 が 28、`[1024 x i64]` を値で返す呼び出しが 1（`fixed_arrays`。A16） | 二層にする: 小さい集約は列、大きい集約は stack 上の値（by-ref） |
+| D7: 手書きの `.ll` と `math.ll` は IR と一緒に翻訳し、`numeric` は PB01 の object | math も PB01 Phase 3 で外部 object になった（`sqrt`・`fabs` の小さい wrapper だけ IR に残る）。`--no-cache`・`run`（`trap_info`）・`-g`・`--emit llvm\|object` では numeric.ll（13,843 行）と math.ll（5,653 行）が IR に入る。PM08 が整数の表示を `integer.ll` に分けたので、整数だけを表示する program では numeric は入らない | translator は numeric.ll・math.ll も翻訳できる必要がある（`fastcc`・`byval`・`sret`・`weak hidden`・`volatile`・TBAA などの metadata・`icmp samesign`）。C との境界の signature は scalar と ptr だけ |
+| `BuildOptions` は 10 field、`optimization` は数値 | 22 field（`allocator`・`freestanding`・`strip`・`wasm_opt`・`triple`・`trap_return`・`wasm_jspi`・`wasm_webgpu`・`wasm_net`・`wasm_host`・`wasm_max_memory`・`wasm_stack_size` …）、`optimization` は `OptLevel`（`O0`〜`O3`・`Os`・`Oz`）。`BuildOptions { … }` の構築は 80 か所で、全 field を書くのは `src/main.rs` の `parse_arguments` の 1 か所だけ（残りは `..options`・`..BuildOptions::default()`） | `backend` を足す変更は `Default`・`main.rs` の 1 か所・`validate` で済む。E2000 の文言は `{flag}` で `-Os`・`-Oz` を含める。他チケットが `BuildOptions` に field を足すと `parse_arguments` が衝突する |
+| `build_key` はバックエンドを区別する入力がまだない。`BuildOptions` の `Debug` 表示に入るので鍵は自動で分かれる | 確認した（`src/cache.rs` の `build_key` は `hash.field("options", format!("{options:?}"))`）。ほかに IR の全文・compiler binary の digest・Clang の同定・`KEY_ENVIRONMENT`・`TSUZURI_LINKER` が入る。runtime object の鍵（`runtime_key`）は source・引数・Clang の同定で、backend を含まない | `build_key` は変えない。runtime object の cache は両バックエンドで共有してよい。初回は全 entry が 1 度 miss する（`compiler-binary` の digest が変わる時と同じ） |
+| Clang の処理は `-O0` で 3.70 s、`-O3` で 7.62 s（合成 1,000 module、124,003 行、IR 約 29 MB） | 現行の生成器（139,010 行）の `-O0` の edit→build（cache あり・runtime object は warm・load 約 30 の共有機）は total 8.5〜9.0 s: `tool.clang` 4.3〜4.6 s、`emit` 2.1〜2.3 s、`cache` 0.4〜0.5 s、`check` 0.57〜0.6 s、`load` 0.25〜0.38 s、`specialize` 0.24 s。module IR は 37.4 MB・56,186 define・953,775 命令（PB03 の剪定後）。200 module は total 1.6〜1.8 s、`tool.clang` 0.90〜0.97 s、IR 7.7 MB・11,965 define・197,881 命令 | 削れる上限は `tool.clang` の約 50〜55%（compile が約 85%、link が約 15%）。`emit` と `check` は減らない。G3（124K 行を 1 s 以下）は PB05 だけでは届かない |
+| 小さなプログラムは Clang の起動とランタイムの compile が支配的で、その大半は PB01 の対象 | hello の `-O0` の edit→build（cache あり）は total 280〜460 ms で、`tool.clang` は 75〜97 ms、`cache` 段（system clang の同定）が 110〜320 ms。新しく link した binary の初回起動は macOS が 310〜370 ms かける（2 回目は 40〜110 ms） | 小さい project の fast の利得は 70 ms 程度までで、G1 は大きい project でだけ意味がある。`run`・`--no-cache` で numeric・math を IR で持つ program は、Clang の `-O0` の compile が numeric.ll で約 180〜330 ms、math.ll で約 220〜300 ms 増える。fast なら翻訳（見積り 数十 ms）になる |
+| D11: wrapper は `tsuzuri` を包み、`build`・`run` の `-O0` に `--backend fast` を足す | native の E2E の多くは `--emit llvm` の IR を suite 自身が `process.env.TSUZURI_CLANG ?? "clang"` で compile する（`@malloc` を tracked に置換した text）。調べた 28 の suite（`features.mjs` の 58 suite を含む）で、`tsuzuri` の `build`・`run` のうち wrapper が掴める `-O0` は合計 約 190 件、clang への `.ll` の `-O0` の compile は約 410 件（`features.mjs` だけで 138） | wrapper を 2 経路にする（D11 の更新） |
+| 「Phase 2（DWARF・`--trap-info`・`test`）と D13 は人間が求めた場合だけ」 | 全フェーズの実装を依頼された | Phase 2・3 も実装・判断する（下の WP） |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl`、`--target native\|wasm32`、`-O0`〜`-O3` | `--emit` は 14 種（`shared`・`bindings-js\|cs\|py\|cpp`・`spirv`・`spirv-relaxed`・`wgsl-relaxed` を含む）、`--target` は native・wasm32・wasm64・TRIPLE（G15）、`-Os`・`-Oz`、`--cpu native`・`--freestanding`・`--allocator system\|host\|counting\|small`・`--trap-mode return`・`--strip`・`--wasm-opt`・`--link`・`-l`・`-L` | E2000 の表を作り直す（下の表） |
+| 段名 `backend.parse`・`backend.lower`・`backend.object` | `TSUZURI_TIME_PASSES` は JSON 1 行（`load`・`cache`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`tool.<名>`）。worker thread は timings に触れず、並列の段は呼び出し側 thread の実時間で測る（`src/parallel.rs` の規約）。`tests/time_passes.rs` は「段の和 ≤ total」を検査する | 段は `backend.scan`（逐次）・`backend.compile`（並列の解析 + lower + Cranelift）・`backend.object` にする |
+| 停止条件 1・2: `rust-version = "1.85"` で build できる Cranelift が無い、C/C++ を compile する `build.rs` がある | 0.121.2（`rust-version` 1.85.0）が 1.85 以下の最新（0.122.0 は 1.86.0 を要求）。rustc 1.85.0 で `cargo check` が通り（21 s）、依存は 31 package（30 crate 名）で、C/C++ を compile する `build.rs` も network を使う `build.rs` もない | 停止条件 1・2 は解消 |
+| 停止条件 8: Cranelift の object を Clang で link して linker の warning が設定で消せないなら止める | Mach-O の object には `LC_BUILD_VERSION` がなく、`ld: warning: no platform load command found in '…', assuming: macOS` が出る。`object::write::Object::set_macho_build_version` を呼べば消える（スパイクで確認）。`.note.GNU-stack` は `cranelift-object` が出す | 停止条件 8 は解消した形で組み込み、`tests/fast_backend.mjs` が stderr が空であることを検査する |
+
+### 実 IR の棚卸し（D6 に無い構成要素と処理方針）
+
+方法（手順 2 の前倒し。script は `target/perf/PB05/inventory.mjs`・`digest.mjs`・`aggregates.mjs` で、WP1 で `tests/fast_backend.mjs inventory` にする）: ①`examples/*`・`tests/fixtures/*` の 102 project の
+`--emit llvm -O0` の IR から runtime の `.ll` の関数・global を除いた生成コード（define 44,777・call 146,397・命令 約 100 万）、②`src/runtime/*.ll` 30 ファイルを 1 つずつ、
+③native の `-O0` の実行ファイルと `run` の module IR（Clang 呼び出しの前に複写。hello・computations・tasks・control・io・polymorphism・point・functional・currying）。
+標本なので網羅は保証しない。translator が知らない命令・intrinsic・属性は E2002 にし、parity の suite で見つかったものを足す。結果（命令 51 種・intrinsic 47 種・vector 型 23 種の和集合）のうち D6 に無いもの:
+
+| 構成要素 | 実測の出どころ | 方針 |
+| --- | --- | --- |
+| 集約値の SSA（`phi`・`select`・call の引数と戻り・`insertvalue`・`extractvalue`） | 全 module。最大 1,024 leaf | D8 を二層にする（下） |
+| `i128` の演算（加減乗・shift・比較・`phi`・`sext`・`zext`・`trunc`・`sdiv`・`udiv`・`srem`・`urem`） | 19 project、`integer.ll`・`numeric.ll` | Cranelift の `i128`。割り算・剰余は Cranelift が `__divti3`・`__udivti3`・`__modti3`・`__umodti3` の libcall にする（LLVM と同じ名前。MSVC は `windows_abi` が IR に実装を足す） |
+| `llvm.{s,u}{add,sub,mul}.with.overflow.{i8,i32,i64,i128}`・`llvm.{s,u}{add,sub}.sat.*` | 整数の checked・saturating の builtin | Cranelift の `*_overflow`・`*_sat`。そのスカラー幅で未対応なら手書きの列（`i128` の乗算も手書き） |
+| `llvm.fshl/fshr`・`ctpop`・`ctlz`・`cttz`・`bswap`・`bitreverse`・`abs`・`smin/smax/umin/umax`・`scmp` | 整数の builtin、numeric.ll、math.ll | `rotl/rotr`・`popcnt`・`clz`・`ctz`・`bswap`・`bitrev`・`iabs`・比較と `select` |
+| `llvm.floor/ceil/trunc/roundeven/sqrt/fabs/copysign/fma/is.fpclass`・`frem` | `Math`、math.ll | `floor/ceil/trunc/nearest/sqrt/fabs/fcopysign/fma`。`is.fpclass` は整数の bit 検査。`frem` は `fmod`・`fmodf` の呼び出し（LLVM と同じ）。FMA がない CPU の `fma` は libm の `fma`（LLVM の `-O0` と同じ） |
+| atomic: `atomicrmw`（add・sub・and・or・xor・xchg・umax）・`cmpxchg`・`fence`・`load atomic`・`store atomic` | Rc・`Atomic`・`Mutex`・`Channel`・`heap-small.ll`・`heap-counting.ll` | Cranelift の `atomic_rmw`・`atomic_cas`・`atomic_load`・`atomic_store`・`fence`。Cranelift の順序は seq_cst だけで、要求より強い（意味は保たれる）。`cmpxchg` は strong で実装する |
+| `volatile` の load・store | math.ll、`heap-wasm-threads.ll` | 通常の load・store（最適化しないので消えない） |
+| `thread_local` の global と `llvm.threadlocal.address` | Async の executor（`tz.async.*`）、`heap-small.ll` | `declare_data(tls = true)` と `tls_value`。aarch64 の Mach-O で動作を確認した（下）。ELF・COFF は `cranelift-object` が対応しているので実行は CI で確かめる |
+| `weak` linkage と `weak hidden` | `tsuzuri_alloc`・`tsuzuri_free`（host ABI）、numeric.ll の入口 | `Linkage::Preemptible`（weak）。`weak hidden` は記号の scope を `object::write` で hidden にする。`linkonce*`・`common`・`extern_weak`・`appending`・`alias`・`ifunc`・`section`・`comdat` は実 IR に無く E2002 |
+| `fastcc`・`tail`・`byval`・`sret` | numeric.ll・`heap-small.ll` の内部関数 | module 内部の関数だけ（C との境界には出ない）。`fastcc`・`tail` は無視、`sret` は ptr 引数、`byval(T)` は呼び出し側で stack に複写した領域の ptr を渡す。宣言のみの関数と外から呼ばれる定義の `byval`・`sret`・`inreg`・`musttail`・`invoke`・`va_arg` は E2002 |
+| vector（`<2 x i1>`〜`<32 x i32>`）・`shufflevector`・`extractelement`・`insertelement`・`bitcast <N x i1> to iN`・`llvm.vector.reduce.add` | `string_v128.ll`（PR05）の全 string module、user の SIMD（F03・F04）、`@cpu` の version | lane の scalar 化（SIMD 命令は使わない。Cranelift は 128 bit までで、x86-64 の既定の ISA 拡張に依らず決定的）。値は lane の列、memory は自然な layout。`target-features` は無視する（全 version が同じ意味） |
+| `half`（`fadd`・`fcmp`・`fpext`・`fptrunc`） | aarch64 の既定の `F16Path::Hardware` | fast の駆動は `F16Path::Soft`（`tz_soft_*` の整数の実装。D10 は全経路でビットが同じと定める）を渡す。translator は `half` を E2002 にする |
+| `llvm.trap` と `unreachable` | 13,442 組 | aarch64: `debugtrap` の後に `trap`、x86_64: `trap`。スパイクで、LLVM の `llvm.trap` と `debugtrap`+`trap` が SIGTRAP、`trap` だけは SIGILL と確認した。直後でない `unreachable` は `trap` |
+| metadata（`!tbaa`・`!alias.scope`・`!noalias`・`!llvm.loop`・`!prof`・`!nonnull`・`!range`・`!tbaa.struct`）と `llvm.assume`・`llvm.lifetime.*`・`llvm.experimental.noalias.scope.decl` | numeric・math・生成コード | 読み飛ばす（D6 のまま） |
+| 命令の flag（`nsw`・`nuw`・`exact`・`inbounds`・`samesign`・`nneg`・`disjoint`）と属性（`noundef`・`nonnull`・`noalias`・`nocapture`・`readonly`・`align`・`dereferenceable`・`alwaysinline`・`noinline`・`cold`・`memory(…)`・`"target-features"`・`"tz-cpu"`） | 全 module | 捨てる。fast-math の flag は実 IR に出ていないので E2002 のまま。`signext`・`zeroext` は C との境界で `AbiParam::sext`・`uext` に写す |
+| `switch`（`i1`・`i8`・`i16`・`i32`・`i64`）、定数式 `getelementptr (T, ptr null, i32 1)`（sizeof の idiom が 18,330 回）・`ptrtoint`・`inttoptr` | match・case・allocation の大きさ | `cranelift_frontend::Switch`（`i1` は `brif`）。定数式は layout で畳む |
+| global の初期化子の記号参照（関数・data のアドレス） | closure descriptor・vtable（PM02 の静的 descriptor でも同じ） | `DataDescription` の `write_function_addr`・`write_data_addr`（再配置） |
+| 宣言だけで呼ばれない intrinsic（`llvm.vector.reduce.add.v8i16` が全 module に 1 行ある） | 全 module | 呼ばれるまで型を解釈しない。到達性で、root（外から見える define・アドレスが取られる関数・初期化子から参照される関数）から届く関数と global だけ翻訳する |
+
+alloca はすべて `align 16`（53,016）か `align 8`（23）で、Cranelift の slot の alignment（16）を超えるものはない。C との境界（`declare` と外から見える `define`）の型は `ptr`・`i32`・`i64`・`float`・`double`・`void` だけで、
+集約・`i128`・vector は 1 つもない（D8 の前提は成り立つ）。`llvm.frameaddress` は wasm だけ、`llvm.dbg.*` は `-g` だけに出る。
+
+### 偵察で測った事実（2026-10-17）
+
+**時間のモデル**（native `-O0`、cache あり・runtime object は warm・source を実際に編集して再 build、`TSUZURI_TIME_PASSES=1`、共有機。参考値）:
+
+| project | module IR | total | `tool.clang` | `emit` | `cache` | 残り（`load`・`check`・`specialize`…） |
+| --- | --- | --- | --- | --- | --- | --- |
+| `examples/hello` | 145 KB・124 define・約 2,500 命令 | 280〜460 ms | 75〜97 ms | 2 ms | 110〜320 ms | 約 30 ms |
+| 合成 200 module | 7.7 MB・11,965 define・197,881 命令 | 1.6〜1.8 s | 0.90〜0.97 s | 0.21 s | 0.19 s | 約 0.2〜0.3 s |
+| 合成 1,000 module | 37.4 MB・56,186 define・953,775 命令 | 8.5〜9.0 s（load 約 30） | 4.3〜4.6 s | 2.1〜2.3 s | 0.4〜0.5 s | 約 1.2 s |
+
+- 合成 200 module の `tool.clang` を compile と link に分けて replay すると、compile が 0.93〜1.05 s、link が 0.15〜0.24 s。`-ftime-report` では pass の合計が 1.47 s で（AArch64 の `-O0` は GlobalISel）、
+  IRTranslator 10%・LoopSimplify 7%・InstructionSelect 7%・Prologue/Epilogue 6.5%・Legalizer 4.6%・Fast RA 4.3% など。LLVM の命令 1 個あたり約 4.8 µs。link は PB05 の後も Clang のまま残る。
+- wasm32 `-O0`（D13 の証拠）: hello は total 260〜280 ms のうち `tool.clang` 43〜55 ms・`tool.wasm-ld` 33 ms。合成 200 module は total 1.83〜2.2 s のうち `tool.clang` 1.05〜1.10 s（57〜60%）・`tool.wasm-ld` 34〜55 ms（2〜3%）。
+- 小さい program の edit→build→run は、build の外の固定費が大きい: `cache` 段（system clang の同定）が 110〜320 ms、新しく link した binary の初回起動が 310〜370 ms（同じ binary の 2 回目は 40〜110 ms）。
+  PB05 が削れるのは Clang の 75〜97 ms のうち翻訳に替わる分だけで、小さい project の G1 の利得は小さい。合成 200・1,000 module では total の 30〜40% の短縮が見込める（見積り。`emit`・`check`・link は残る。WP9 で実測する）。
+- `run`・`--no-cache`・`-g` で numeric.ll・math.ll が IR に入る program の Clang `-O0` は、numeric.ll の compile だけで 180〜330 ms、math.ll で 220〜300 ms。
+  `run -O0 --no-cache` の hello は total 0.82〜1.0 s（`tool.clang` 0.40〜0.43 s。C ランタイムの compile と module の 2 回の Clang）。
+
+**Cranelift の入手性とスパイク**（`target/perf/PB05/proto/`、git 管理外。rustc 1.85.0 で build）:
+
+- `rust-version` が 1.85 以下の最新は `cranelift-{codegen,frontend,module,object}` 0.121.2（`cargo info` で 0.121.x が 1.85.0、0.122・0.123 が 1.86.0、0.124 が 1.87.0、…、0.136 が 1.96.0）。
+  MSRV 対応の resolver は `target-lexicon` 0.13.5・`gimli` 0.31.1・`object` 0.36.7・`regalloc2` 0.12.2 を選び、`cargo tree -e normal` は 31 package（30 crate 名。`hashbrown` が 2 版）で、いまの `tsuzuri` の 9 行に足される。
+  `cc`・`cmake`・`bindgen` は無く、`build.rs` を持つのは cranelift-codegen・cranelift-assembler-x64・cranelift-isle（Rust の生成器）、`object`・`anyhow`・`libm`・`crc32fast`・`target-lexicon`（rustc の version の検査）だけで、
+  C/C++ を compile する `build.rs` も network を使う `build.rs` もない。ライセンスは Apache-2.0（LLVM-exception つき）・MIT・Zlib・Unlicense などで、feature を既定にして配布に含める時（D12 以降）は表記が要る。
+- 4 crate + 依存の release build（既定の profile で LTO なし、`-j4`、load 約 30）の費用。スパイク（自分のコードは数百行）の binary は strip 後、`arm64` だけが 2.5 MB（wall 43 s・CPU 76 s）、`x86` + `arm64` が 4.3 MB（57 s・102 s）、
+  4 arch 全部入り（x86・arm64・s390x・riscv64）が 5.6 MB（50 s・114 s）で、`tsuzuri` は 9.5 MB。`thin` LTO・`codegen-units = 1` の本物の値は WP2 で測る。
+- 速さ: 12,000 関数（合成 200 module の define 数）× 約 27 CLIF 命令（合計 約 33 万、合成 200 module の LLVM 命令の約 1.7 倍）を `opt_level = none` で build + compile するのに、1 thread で 33 + 386 ms、4 thread で wall 147 ms、
+  8 thread で wall 97 ms（load 約 20）。`define_function_bytes` の定義が 1 ms、object の書き出しが 3 ms。1 命令あたり約 1.2 µs で、Clang（LLVM の命令 1 個あたり約 4.8 µs）の約 1/4。ただし計測したのは Cranelift の back end だけで、
+  IR の解析と翻訳（集約の展開で CLIF の命令は LLVM の命令より増える）の時間は含まない。合成 1,000 module（約 95 万命令）の外挿は back end が 1 thread で約 1.5 s、8 thread で約 0.4 s。IR の解析（37 MB）は別に 0.2〜0.4 s と見積もり、WP9 のゲートで実測する。
+- Mach-O: Cranelift の object を `clang obj -o exe` で link・実行できる。`LC_BUILD_VERSION` が無いと `ld: warning: no platform load command found … assuming: macOS` が出るが、`set_macho_build_version` で消える。
+  `MH_SUBSECTIONS_VIA_SYMBOLS` は付く（`-dead_strip` が関数単位で効く）。thread-local: `tls_model = macho` の `tls_value` で、main thread と worker thread の counter が別になることを実行で確認した。
+  別の triple の object（x86_64・aarch64 の Linux の ELF、x86_64 の macOS、x86_64・aarch64 の Windows の COFF）も出して `llvm-objdump -h` で読めた（実行はできない。aarch64 の Windows は `CallConv::WindowsFastcall` と出るので未検証とする）。
+- trap の signal（aarch64 macOS で実行）: LLVM の `llvm.trap` は SIGTRAP、Cranelift の `trap`（`udf #0xc11f`）は SIGILL、`debugtrap`（`brk #0xf000`）は SIGTRAP、`debugtrap` + `trap` は SIGTRAP。
+- 並列: `Context::compile` の後に `ModuleReloc::from_mach_reloc` で再配置を worker で作り、`define_function_bytes` を関数の順に呼ぶ形が成り立つ（object は決定的）。`src/parallel.rs` の `ordered_for_each` が使える。
+
+**既存 suite と parity（D11 の更新の根拠）**: 28 の suite を、baseline の compiler と clang の spy の下で実行し（全部成功。`utf_simd` は spy の置き場に `llvm-objdump` が無く落ちた。wrapper の置き場に LLVM の各ツールの symlink が要る）、
+`tsuzuri build`・`run` の `-O0` で経路 A の wrapper が掴める件数と、clang への `.ll` の `-O0` で経路 B の wrapper が掴める件数を数えた（A / B）:
+control 0/3、primitives 7/3、computations 5/10、strings 10/18、numeric_casts 3/3、integer_intrinsics 10/14、examples 9/0、io 14/21、tasks 4/12、display_parse 32/43、host_imports 1/3、os 24/43、e2e 23/15、json 0/2、
+async 1/8、ffi_extensions 11/8、user_drop 1/4、trap_return 1/3、trap_return_sync 0/4、f16_hardware 2/10、cpu_dispatch 2/5、cpu_kernels 2/5、allocator 6/10、small_allocator 1/3、stack_overflow 9/10、integer_format 0/6、utf_simd 0/2、
+features 9/138（58 suite・15,385 case）。合計は A が約 190 件、B が約 410 件。
+
+- 経路 B は `TSUZURI_CLANG` に wrapper（sh script）を指す。`.ll` の入力が `-O0`（または `-O` なし）の呼び出しだけ、`.ll` を翻訳して `.o` に替え、残りの引数は本物の clang に渡す。suite の source は変えない。
+  suite が `--emit llvm` で作る IR は runtime 全体を含む（numeric・math・`string_v128` を含む）ので、translator が numeric.ll・math.ll・vector を扱えることが前提になる。
+  `tsuzuri` 自身の `-x ir` の compile（既定の LLVM 経路）も同じ wrapper で翻訳される。経路 A は `--backend fast` の driver の経路そのもの（link・runtime object・cache・E2005）を検証する。
+- 翻訳だけを呼ぶ入口は、`tsuzuri` の隠しサブコマンド `__fast-object IN.ll -o OUT.o`（`--help` に出さず、`docs/architecture.md` に書く）にする。別の `[[bin]]` を足さず、検証する binary と同じものを使うため。
+- 除外する suite: 機械語の pattern を検査するもの（`simd`・`wasm_simd`・`cpu_dispatch` の inspect・`cpu_kernels`・`utf_simd`・`f16_hardware`）、`-g`（`debug_info`・`debugger`）、wasm と host binding（`wasm_*`・`wasm64`・`net_wasm`・`bindings*`・`os-wasi-host`・`host_bindings`）、
+  Clang の呼び出し・cache・同梱物そのものを検査するもの（`cache`・`prebuilt_runtime`・`bundle_identity`・`llvm_handoff`・`handoff_tools`・`targets`・`size`・`benchmark_*`）、native の build が無いもの（`lsp_sessions`・`docgen`・`repl`・`script`・`packages`・`frontend_cache`・`parallel_frontend`）、
+  Phase 1 で E2000 にする組み合わせ（`trap_return*`・`--allocator small|counting`）。`stack_overflow`・`allocator`・`small_allocator` は経路 B の対象だが frame の大きさに敏感なので「監視」として結果を別に記録する。
+- Node: CI の `targets.yml` は全 job が Node 24。今回の 28 suite は Node 20.19.6 でも成功したが、BigInt を多用する `math.mjs`・`display_parse_exhaustive.mjs` は Node 24
+  （`npx --yes --package=node@24 node tests/<suite>.mjs …`）で実行する。native の parity に Node 24 が必須の suite は無い（`wasm64.mjs`・`wasm_heap.mjs wasm64` は wasm なので対象外）。
+
+**option の組み合わせ**（Phase 1 は `--backend fast` に対して。`E2000` の文言は「診断」の表の形式）:
+
+| 指定 | 現行 | Phase 1 | Phase 2 以降 |
+| --- | --- | --- | --- |
+| `-O` | build・run の既定は `-O3`、`test` は `-O0` | 省略は `-O0`。`-O0` だけ許し、`-O1`〜`-O3`・`-Os`・`-Oz` は E2000 | 同じ |
+| `run` | 常に `trap_info`。一時 dir に build して実行し、trap は E2005（位置つき） | 対応。E2005 のメッセージ（signal 名と位置）を LLVM 経路と一致させる | |
+| `--trap-info` | IR の計装と `<out>.trap.json` | 対応（IR のまま翻訳。numeric・math も IR で翻訳） | |
+| `-g`・`--debug-info` | IR の `!DI*`・macOS は `dsymutil --flat`・MSVC は CodeView と PDB | E2000 | WP12: 行情報（gimli）。macOS は dsymutil。MSVC は E2000 のまま |
+| `--cpu native` | Clang に `-mcpu=native`・`-march=native`、f16 の経路、cache の鍵に CPU の機能 | E2000（`generic` だけ） | 同じ（debug build に不要） |
+| `--allocator` | `system`・`host`・`counting`・`small` | `system`・`host` だけ。`counting`・`small` は E2000 | WP15: `allocator.mjs`・`small_allocator.mjs` が翻訳で通れば許す |
+| `--freestanding`・`--trap-mode return` | libc 不要の object、`trap.c` の境界 | E2000 | WP15 で評価（`--freestanding` は `memcpy`・`memset` の呼び出しが残るので、通らなければ E2000 のまま） |
+| `--target` | native・wasm32・wasm64・TRIPLE | host の native だけ。wasm と TRIPLE は E2000 | wasm32 は D13（Phase 3） |
+| `--emit` | 14 種 | `exe`・`object` だけ。ほかは E2000 | `shared` を WP15 で評価 |
+| `--strip`・`--link`・`-l`・`-L`・`--debug-output` | link 引数・IR の `tz.debug.write` | 対応（link は Clang のまま） | |
+| `--no-cache` | whole-build cache と runtime object cache を読み書きしない | 対応。`runtime_objects` は LLVM 経路と同じ条件（false）で、numeric・math は IR で翻訳。Clang を使うのは link だけ | |
+| `test`・`bench` | `src/test_runner.rs` が別に `clang -x ir` と `test-runner.c`。`test` の既定は `-O0` | `--backend` は build・run だけ（`test`・`bench` は E2000） | WP13: `test` に `--backend fast` |
+| `--wasm-*`・`--wasm-feature` | | E2000 | |
+| Windows、または aarch64・x86_64 以外の host | | E2000（`--backend fast is not available on …`） | WP14: x86_64 の Windows |
+| feature なしの build | | E2000（`rebuild with cargo build --release --features fast-backend`） | |
+
+**D13（直接の WASM 生成）の評価**:
+
+- 証拠: wasm32 `-O0` の edit→build で Clang は合成 200 module の total の 57〜60%（上）で、native の 50〜55% と同じ規模。hello では 約 18%（43〜55 ms／260〜280 ms）で小さい。`wasm-ld` は 2〜3% で残る。
+  wasm 用の runtime IR（`wasm.ll`・`heap-wasm.ll`・`heap-wasm64.ll`・`heap-wasm-threads.ll`・`task-wasm.ll`・`sync-wasm.ll`・`channel-wasm.ll`）は vector・`fastcc`・threads 以外の atomic を使わず、wasm 固有の intrinsic は
+  `llvm.wasm.memory.grow/size` と `cttz` だけ。string は `string_scalar.ll`（simd128 なし）で、native の前半（解析・layout・到達性・集約の分類・intrinsic の表）はそのまま共有できる。
+  一方で `object` crate の `write` に wasm は無く（`coff`・`elf`・`macho`・`pe`・`xcoff` だけ）、Cranelift は wasm を出力しない。`wasm-encoder` など新しい crate は、今回追加を許された範囲（Cranelift 系・`target-lexicon`・`gimli`・`object`）の外なので、wasm の binary 符号化と再配置可能な object
+  （`linking`・`reloc.CODE`・`reloc.DATA`）を自前で書く（形式は公開仕様で、`wasm-ld` が読む）。wasm には `run` が無いので利得は build→reload の待ちである。
+- 判断: 技術的には成立し、大きい project では native と同程度（total の約 50%）の利得が見込める。ただし Cranelift を使えず、構造化された制御構造への変換・wasm の object writer・再配置が丸ごと新規で、
+  利得は大きい project に偏る。native のゲート（WP9）を通らなければ前半の共有部分も意味がないので、**WP9 を通ってから着手し、WP16 で再確認する**（通らなければ D13 も取り下げて記録する）。
+- 設計（WP17〜WP20 の素案）: 入口は `--backend fast --target wasm32 [--emit wasm|object]`（`-O0` だけ。`--wasm-feature`・`--wasm-host`・wasm64・threads・jspi・webgpu・net は E2000 のまま）。
+  前半は共有する（`ir.rs`、wasm32 の DataLayout（ptr 4 byte・`i64:64`・`i128:128`）、到達性、集約の二層、intrinsic の表）。制御構造は、-O0 では任意の CFG を `loop { block … br_table }` の dispatch
+  （基本 block ごとに case、`$pc` の local、phi は辺で local へ代入）に写す（reducible な if/else の畳み込みは計測してから）。SSA 値は local（stackify しない）、alloca は shadow stack
+  （`__stack_pointer` を関数の入口で下げ出口で戻す）、集約は二層、`i128` は 2 つの `i64`（乗除は `wasm.ll` の `__multi3`・`__udivti3` …）、`llvm.*` は wasm 命令（`i64.clz`・`f64.sqrt`・`trunc_sat`・
+  `memory.copy`・`memory.fill`・`memory.size`・`memory.grow`）。object は type・import（未定義の関数・`__stack_pointer`・`__linear_memory`・`__indirect_function_table`）・function・code
+  （再配置の欄は 5 byte に pad した LEB128）・data・`linking`（symbol table・segment info・weak・hidden・undefined）・`reloc.CODE`・`reloc.DATA`
+  （`R_WASM_FUNCTION_INDEX_LEB`・`TABLE_INDEX_SLEB`（関数 pointer は table index）・`MEMORY_ADDR_LEB`・`MEMORY_ADDR_SLEB`・`MEMORY_ADDR_I32`・`TYPE_INDEX_LEB`・`GLOBAL_INDEX_LEB`）。
+  link は今と同じ `wasm-ld`（`--no-entry`・`--stack-first`・`--export=…`・`--max-memory`）、`numeric`・`math`・`wasi` は PB01 の object。検証は `WebAssembly.validate`、`WebAssembly.Module.imports(module)` が空（既定の import なし）、
+  経路 B と同じ考えの wrapper（wasm32 の `-x ir` の呼び出しを翻訳）で `features.mjs` の wasm32 `-O0` と `wasm_*`・`wasm_memory.mjs` を実行する。規模は新規 約 3,500〜4,500 行（約 3 週間相当）。
+  リスクは `wasm-ld` の再配置の細部、V8 の validate、dispatch 形式の実行速度（debug build なので許容し、計測だけ）。
+
+### 決定事項の更新
+
+- D1（Cranelift）: 維持。スパイクで、Cranelift 0.121.2 が `opt_level = none` で Clang の約 1/4 の命令あたりの時間で、関数単位に並列化でき、Mach-O・ELF・COFF の object を出せることを確かめた（back end だけの測定。ゲートは WP9）。
+- D2（入力は `-O0` の LLVM IR テキスト）: 維持。補足: IR は文字列のまま in-memory で渡し（`module.ll` を書かない）、解析は逐次の走査（type・global・declare・define の header と本体の範囲）と、worker での本体の解析に分ける（D16）。
+  `src/llvm*.rs` は変えない。`EmitOptions` に knob を足さず、f16 は既存の `F16Path::Soft`、vector は translator が lane に分けて扱う（PM03・PM04 が runtime の `.ll` を変えても追従できる）。
+- D3（crate と feature）: 変更。`cranelift-codegen`・`cranelift-frontend`・`cranelift-module`・`cranelift-object` を `=0.121.2` で固定し（codegen の features は `std`・`x86`・`arm64` で、既定の `timing`・`host-arch` は切る。`unwind` は
+  cranelift-object・module・frontend が必ず有効にする）、`target-lexicon` は 0.13（cranelift が要求する版）。`cranelift-native` は使わない（host の CPU の検出で出力が機械に依存する）。Phase 2 の `gimli` は、`unwind` が
+  `gimli` 0.31.1（`read`・`write`・`std`）を既に引いているので、同じ版を直接の依存に宣言するだけで増えない。`object` も `cranelift_object::object` の再 export を使い、直接の依存は足さない。
+  cargo feature `fast-backend`（既定は空）。MSRV の検証に `~/.cargo/bin/cargo +1.85.0 build --release --locked --features fast-backend` を手順に入れる（Homebrew の `cargo` は `+toolchain` を取らない）。`x86`・`arm64` を両方入れるのは、
+  別 arch の object を作る test（layout・ELF・COFF の smoke）を host に依らず実行するため。大きさの増加は WP2 で測り、大きすぎれば host の arch だけにする。
+- D4（CLI）: 変更。`--backend llvm|fast`、既定は `llvm`。`build`・`run` が受ける（WP13 で `test`）。E2000 の表は上の「option の組み合わせ」。`-O` 省略は `-O0`。
+- D5（Phase 1 の範囲）: 変更。範囲は上の表（`run` と `--trap-info` を含む。`-g`・`--cpu native`・`counting`・`small`・`--freestanding`・`--trap-mode return`・`--emit shared` は E2000）。
+- D6（翻訳規則）: 拡張。上の「実 IR の棚卸し」の表を D6 の表に足す。表にない構文は E2002（`the fast backend cannot translate {construct} in @{function}; …`）。停止条件 3 は、棚卸しの結果で個別の方針を決めたので止めない。
+- D7（ランタイム）: 変更。fast は LLVM 経路に渡る IR と同じ text を翻訳する（`runtime_objects` の条件は LLVM 経路と同じ）。numeric・math が IR に入る経路（`run`・`--no-cache`・`--emit object`・`--trap-info`）は翻訳し、
+  cache ありの native の実行ファイルは PB01 の object を使う。`native-c` は常に PB01 の object。
+- D8（集約値と ABI）: 変更。二層にする: leaf が `AGGREGATE_FLATTEN_LEAVES`（初期値 16。WP6 で frame の大きさと速さを見て決める）以下の SSA 値は scalar の列、超える値は stack slot 上の値で、
+  `load` は複写、`insertvalue` は複写してから更新、`phi`・`select`・call はその領域の ptr を渡す。module 内の定義は同じ規則で引数・戻りを決め、C との境界は scalar と ptr だけ（実 IR の 1,651 の signature で確認済み）。
+- D9（デバッグ情報）: 変更。Phase 2（WP12）で実装する。IR の `!DILocation`・`!DISubprogram`・`!DIFile` を読み、Cranelift の `SourceLoc` と `gimli::write` で `.debug_line` と `.debug_info`（CU と subprogram）を書く。
+  変数・型の DIE は書かない（G16 の `$tag`・LLDB・natvis の契約は LLVM 経路のままで、`-g` の fast の制限として文書化する）。Phase 1 は `-g` を E2000 にする（起票時のまま）。
+- D10（cache）: 維持。`build_key` は変えない。runtime object の cache は両バックエンドで共有する。
+- D11（意味の一致の検証）: 変更。2 経路の wrapper（`tests/fast_backend.mjs wrapper <dir>` が作る）。経路 A は `tsuzuri` の wrapper で、`build`・`run` の `-O0`（または `-O` なし）に `--backend fast` を足して `exec`、
+  経路 B は `TSUZURI_CLANG` の wrapper で、`.ll` を入力に持つ `-O0` の呼び出しを `tsuzuri __fast-object IN.ll -o OUT.o` で翻訳して `.o` に替え、ほかの引数を本物の clang に渡す（`-g`・`--target=`・`-fsanitize`・
+  `-mcpu`・`-march`・`-flto` を含む呼び出しは触らない）。wrapper の置き場に LLVM の各ツールの symlink を置く（suite が `dirname(clang)` から `llvm-objdump` などを探す）。E2002 は経路 B では本物の clang へ fall back して件数と理由を log に書く
+  （coverage の欠落として `docs/benchmarks.md` の PB05 節に報告し、suite の期待値は変えない）。経路 A は fall back しない（E2002 のまま失敗）。各 suite が翻訳した件数を表示し、0 件の suite は一覧から外す。
+- D12（既定のバックエンド）: 変更なし。`llvm` が既定で、自動選択もしない。
+- D13（直接の WASM 生成）: 評価の結果、ゲート（WP9）を通ってから WP17〜WP20 で実装する（上の評価）。
+- D14（新設。並列と決定性）: 関数単位の解析・lower・Cranelift の compile を `src/parallel.rs` の `ordered_for_each`（worker の stack は 8 MiB）で並列にし、`define_function_bytes` を関数の定義順に呼ぶ。
+  記号・data の順は IR に現れた順で、`HashMap` の反復順を使わない。同じ入力の object の SHA-256 は `TSUZURI_THREADS=1` と既定で一致する。段は `backend.scan`・`backend.compile`・`backend.object`。
+- D15（新設。Cranelift の設定と object の後処理）: ISA は `isa::lookup(triple)` の固定の flag で、host の CPU を検出しない（x86-64 は baseline）。`opt_level = none`、`is_pic = true`、`enable_verifier` は `debug_assertions` の build だけ、
+  `enable_nan_canonicalization = false`、`enable_probestack = true` と `probestack_strategy = inline`（`__cranelift_probestack` の外部記号を作らない）、`unwind_info = false`、`tls_model` は target の OS で決める。
+  `regalloc_algorithm` は `backtracking` と `single_pass` を WP9 で比べて決める。後処理: Mach-O の `LC_BUILD_VERSION`（platform macOS、minos は arch の最小）、weak・hidden の記号の scope、`.note.GNU-stack`（出力済み）。
+  Phase 1 は host の triple だけ。
+- D16（新設。翻訳の単位）: 外から見える define・アドレスが取られる関数・global の初期化子から参照される関数を root にして、届く関数と global だけを翻訳する（`-O0` の LLVM が出す未使用の `internal` 関数は出さない。
+  観測できる差は無く、object が小さくなる）。外から見える記号の集合は LLVM 経路と同じになる（生成コードの確認の条件）。
+
+### 作業の順序（WP）
+
+各 WP は小さな commit（`WP<n>: …`）で、それぞれの確認が通ってから次へ進む。`cargo test --locked <filter>` の `running N tests` の N を毎回見る。feature 付きの test は `--features fast-backend` を付けないと 0 件になる。
+
+| WP | 内容 | 確認 |
+| --- | --- | --- |
+| WP0 | この再検討（docs だけ） | `git diff --check` |
+| WP1 | 基準と棚卸し: `tests/fast_backend.mjs` の `inventory` mode（命令・intrinsic・型・属性・linkage の表を `target/perf/PB05/inventory.txt` に。compiler が出しうる `llvm.*` の静的な列挙つき）。既定の出力が変わらないことの比較 script（`examples/*`・`tests/fixtures/*` の `--emit llvm\|object`・実行ファイル・wasm を before と byte 比較。Mach-O の `LC_UUID`・署名は除く） | `node tests/fast_backend.mjs target/release/tsuzuri inventory` が成功し、表のすべての行に方針がある |
+| WP2 | crate と feature: `Cargo.toml`・`Cargo.lock`・`src/lib.rs`・`src/backend/mod.rs`（`compile` は E2002 の仮実装）。M5 | `cargo build --release --locked`（feature なし・あり）、`cargo +1.85.0 build --release --locked --features fast-backend`、`cargo test --locked`、`cargo tree` の依存に C を compile する `build.rs` が無い |
+| WP3 | CLI と `Backend`: `src/main.rs`・`src/driver.rs`（`Backend`・`BuildOptions::backend`・`validate`・`fast_backend_host`）、`F16Path::Soft` の指定、E2000 の単体テスト（`rejects_fast_backend_combinations`・`accepts_fast_backend_at_o0`） | `cargo test --locked --bin tsuzuri` と `--lib`。既定の IR・object が before と byte 同一 |
+| WP4 | IR の front end（`src/backend/ir.rs`）: 走査・本体の解析・metadata と属性の読み飛ばし・資源上限（深さ・大きさ） | `parses_emitted_ir_for_fixtures`（define・declare・global の数が一致）、`src/runtime/*.ll` の 30 ファイルと numeric・math が解析できる |
+| WP5 | layout と ABI の分類（`layout.rs`）。aarch64・x86_64 の DataLayout（`i128` は 16 byte） | `layout_matches_clang`（Clang で畳んだ定数と比較。別 arch は triple 指定） |
+| WP6 | 翻訳の核（`lower.rs`・`mod.rs`）: scalar・制御・memory・集約（二層）・call と ABI・data と再配置・定数式・linkage・intrinsic・atomic・TLS・trap・`i128`・到達性・object の書き出しと後処理 | `rejects_unsupported_constructs_with_e2002`・`object_is_deterministic`・`lowers_every_runtime_ll`（numeric・math を含む） |
+| WP7 | vector の lane scalar 化（`shufflevector`・`extractelement`・`insertelement`・`bitcast <N x i1> to iN`・`llvm.vector.reduce.*`）と残りの intrinsic | `string_v128.ll` を含む module と `fixtures/simd` が翻訳できる。vector の演算ごとの境界の test（独立の参照と比較） |
+| WP8 | driver への組み込み: in-memory で翻訳、`module.o` を作って同じ link コマンド、`--emit object` の結合、並列、段、trap の signal の一致、`__fast-object` | `target/release/tsuzuri run examples/hello --backend fast` の stdout が `--backend llvm -O0` と一致、trap の fixture で E2005 と位置が一致、stderr が空、SHA-256 が 2 回・`TSUZURI_THREADS=1` で一致 |
+| WP9 | ゲート: M1（合成 200・1,000 module の `build`・`build-edit-body`・`build-edit-signature`）と M2。fast が LLVM 以上なら停止条件 9 で止めて報告する | `target/perf/PB05/gate.txt` |
+| WP10 | parity: `tests/fast_backend.mjs` の既定 mode（CLI・trap・cache・決定性・不変）と `parity` mode（経路 A・B）。翻訳の誤りの修正（期待値は変えない） | `npx --yes --package=node@24 node tests/fast_backend.mjs target/release/tsuzuri parity` が成功し、suite ごとの翻訳件数を表示 |
+| WP11 | 生成コードの確認・M1〜M5 の記録・文書（`docs/architecture.md`・`docs/language.md`・`README.md`・`_tsuzuri/language-reference/compiler/` の `option.md`・`usage.md`・`debugging.md`・`platforms.md`・`docs/benchmarks.md` の PB05 の節） | `cargo fmt --check`、clippy（feature あり・なし）、`cargo test --locked`（あり・なし）、全 E2E、`node scripts/check-docs.mjs <変更したページ>` |
+| WP12 | Phase 2: `-g` の DWARF の行情報（`src/backend/debug.rs`、gimli） | `llvm-dwarfdump --debug-line` で file:line の対応が LLVM 経路と一致、lldb で file:line の breakpoint が止まる（macOS は dsymutil 経由） |
+| WP13 | Phase 2: `test` の `--backend fast`（`src/test_runner.rs` の 2 つの `clang -x ir` を置き換え） | `tests/test_runner.rs`・`tsuzuri test --backend fast` の fixture（失敗・trap・property） |
+| WP14 | Phase 2: Windows の x86_64（COFF・`CallConv::WindowsFastcall`・inline の probestack・`windows_abi` の IR）。aarch64 の Windows は E2000 | `cargo check --all-targets --features fast-backend --target x86_64-pc-windows-msvc`（この機械で実行できるのは型検査まで。実行は `windows.yml`） |
+| WP15 | Phase 2: `--allocator small\|counting`・`--trap-mode return`・`--freestanding`・`--emit shared` を parity の結果で許す、または E2000 のまま理由を文書化 | `allocator.mjs`・`small_allocator.mjs`・`trap_return*.mjs` の経路 B |
+| WP16 | Phase 3: D13 の判断（WP9 の結果と、wasm の build の実測で再確認）。実装する場合は WP17〜20 | 判断の記録 |
+| WP17〜20 | D13: wasm の object writer、本体の lowering、`wasm-ld` との結合と parity（wasm32 の経路 B）、文書と計測 | wasm の suite、`WebAssembly.validate`、import が空 |
+
+### 受け入れ条件の変更
+
+- Phase 1 の範囲は「option の組み合わせ」の表。`run`（trap-info と E2005 の位置を含む）と `--emit exe|object` が動き、範囲外は E2000・E2002。macOS・Linux の aarch64・x86_64 が対象だが、この機械で実行できるのは aarch64 の macOS だけ（別 arch は object の smoke と CI）。
+- `--features` なしの `cargo build --release --locked`・`cargo test --locked`・clippy・fmt が従来どおり成功する。`--features fast-backend` でも成功し、`cargo +1.85.0 build --release --locked --features fast-backend` が成功する。
+- `--backend fast` を指定しないビルドの IR・object・実行ファイル（wasm を含む）が before と byte 同一（Mach-O の `LC_UUID`・署名は除く）。
+- parity: 経路 A・B の両方が成功し、suite ごとの翻訳件数・fall back の件数と理由を `docs/benchmarks.md` の PB05 の節に書く。fall back は E2002 の構成要素（`half` など）だけで、suite の期待値・上限は変えない。`live == 0`。
+- 追加: Phase 2（`-g` の行情報・`test`・Windows の型検査・allocator など）の各 WP の確認、D13 の判断の記録（実装した場合は WP17〜20 の確認）。D12 は行わない。
+- 速さの数値は CI の合否にしない（共有機の参考値と、静かな機械での正式値を分ける）。
+
+### 停止条件の更新
+
+- 解消: 1（0.121.2 がある）、2（C を compile する `build.rs` は無い）、3（個別の方針を決めた）、4（境界の signature は scalar と ptr だけ。1,651 件で確認。新しい IR で崩れたら止める）、8（`LC_BUILD_VERSION` で消える。`tests/fast_backend.mjs` が stderr の空を検査）。
+- 維持: 5（`--backend fast` の結果が LLVM 経路と一つでも異なる）、6（既定の出力が変わる）、7（`unsafe`）、9（合成 1,000 module の `build-edit-body` の中央値が LLVM 経路以上。人間の判断に回す）、10（既存テストの期待値を変える）。
+- 追加: 11（ELF・COFF の TLS・atomic が CI のどれかの host で動かないとわかった: その構成要素を含む program は E2002 にして続け、報告に書く）、12（深い再帰の E2E が fast だけで SIGSEGV: stack の上限は上げず、
+  `AGGREGATE_FLATTEN_LEAVES`・`regalloc_algorithm`・frame の使い方を調べる）、13（`--backend fast` を既定にしたくなった: D12 は別の承認）。
+
+### 他チケットとの関係と衝突しやすい箇所
+
+- 衝突しやすい: `src/main.rs`（`parse_arguments` の `BuildOptions { … }` と `HELP`。PB06 の `cli(raw, out, err)`、PR07・PR08 の option）、`src/driver.rs`（`BuildOptions`・`validate`・`build_complete` の link の組み立て。PR07 の `build_profiled`、PR08 の `Emit::Bitcode`）、
+  `src/lib.rs`、`Cargo.toml`・`Cargo.lock`（crate を足すのは PB05 だけ）、`README.md`・`docs/architecture.md`・`docs/language.md`・`_tsuzuri/language-reference/compiler/option.md`・`usage.md`。新規の `src/backend/**`・`tests/fast_backend.*` は衝突しない。
+- PM02（`%tz.closure` の縮小）・PM03（Latin-1 の文字列、`string_v128.ll` などの変更）・PM04（list の chunk）は IR の形を変える。translator は構成要素ごとに汎用に作り、統合後に parity を再実行する。PM02 の静的 descriptor は global の初期化子の関数 address（再配置）で、
+  PM03 が runtime に vector を足しても lane scalar 化で通る。
+- PR07（PGO）・PR08（LTO・bitcode）は Clang の引数と出力の種類を増やす。`--backend fast` との組み合わせは E2000 にする（`--profile-generate`・`--profile-use`・`--emit bitcode`）。PB06（常駐サーバー）は `TargetIsa` や解析済みの runtime を保持できる（将来）。PB07 は関数単位の object cache の候補。
+
+### 測って決めること
+
+- ゲート（WP9）: 合成 200・1,000 module の `build-edit-body` の中央値（9 標本）。fast が LLVM 経路より短いこと。IR の解析（`backend.scan`・`backend.compile`）が fast の total の 10% を超えないこと。
+- `AGGREGATE_FLATTEN_LEAVES`（8・16・32）: 翻訳の時間と frame の大きさ（`stack_overflow.mjs` と深い再帰の E2E）。
+- `regalloc_algorithm`（`backtracking`・`single_pass`）: compile の時間・code の大きさ・frame。
+- 生成コードの実行時間（M3）と、deep recursion の frame（LLVM 経路との比）。
+- M5: `x86`+`arm64` と host だけの binary の大きさ・build の時間・依存の行数。
+- 機械で実行できない構成（x86_64・Linux・Windows）は、CI の job に載せる suite を報告に書く（`targets.yml` に parity、`windows.yml` に型検査と smoke）。
+- 偵察では測っていないもの: IR の解析と翻訳の時間、fast の build の total（M1〜M3 は WP9）、`x86`+`arm64` の本物の binary の大きさと build の時間（M5 は WP2）、x86_64・Linux・Windows での実行（CI）。上の数値はどれも共有機の参考値である。
 
 ## 着手条件と停止条件
 
