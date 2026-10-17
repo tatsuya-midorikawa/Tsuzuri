@@ -21,6 +21,10 @@ pub(crate) enum Niche {
     /// reference is null, but linear memory starts at address 0, where `--stack-first` can put a
     /// valid object, so WebAssembly has no such niche (see `webassembly`).
     NullPointer,
+    /// A function value or a task, `{ ptr, ptr }`: a null descriptor is the nullary case. Every
+    /// function value points to a static descriptor, which is never at address 0 whatever the
+    /// target (PM02).
+    NullDescriptor,
 }
 
 impl Niche {
@@ -29,6 +33,7 @@ impl Niche {
         match self {
             Niche::NegativeLength => "{ ptr null, i64 -1 }",
             Niche::NullPointer => "null",
+            Niche::NullDescriptor => "zeroinitializer",
         }
     }
 }
@@ -349,9 +354,9 @@ fn work_out_union_layout(id: usize, arguments: &[Type], module: &CheckedModule) 
 }
 
 /// The niche layout of union `id` at `arguments`, if it has one: exactly two cases, one nullary and
-/// one whose payload is a string, `utf8string`, array, or (outside WebAssembly) reference to one
-/// value, in a union that is neither recursive (its value is a node pointer) nor a Drop union (it
-/// keeps a live flag). `cases` are the payloads of its cases.
+/// one whose payload is a string, `utf8string`, array, function value, task, or (outside
+/// WebAssembly) reference to one value, in a union that is neither recursive (its value is a node
+/// pointer) nor a Drop union (it keeps a live flag). `cases` are the payloads of its cases.
 fn niche_layout(
     id: usize,
     arguments: &[Type],
@@ -369,6 +374,7 @@ fn niche_layout(
         Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
             Niche::NullPointer
         }
+        Type::Function(..) | Type::Task(_) => Niche::NullDescriptor,
         _ => return None,
     };
     if module.unions[id].user_drop || module.types().recursive(&Type::Union(id, arguments.into())) {
@@ -640,6 +646,9 @@ impl FunctionEmitter<'_, '_> {
                 }
                 // The union is its pointer.
                 Niche::NullPointer => union.to_owned(),
+                Niche::NullDescriptor => {
+                    self.value(format!("extractvalue {} {union}, 0", self.ty(ty)))
+                }
             };
             return self.niche_tag(niche, &field, none, some);
         }
@@ -670,7 +679,10 @@ impl FunctionEmitter<'_, '_> {
                     ));
                     self.value(format!("load i64, ptr {pointer}"))
                 }
-                Niche::NullPointer => self.value(format!("load ptr, ptr {slot}")),
+                // The descriptor is the first field, so the slot also points to it.
+                Niche::NullPointer | Niche::NullDescriptor => {
+                    self.value(format!("load ptr, ptr {slot}"))
+                }
             };
             return self.niche_tag(niche, &field, none, some);
         }
@@ -685,7 +697,9 @@ impl FunctionEmitter<'_, '_> {
     fn niche_tag(&mut self, niche: Niche, field: &str, none: usize, some: usize) -> String {
         let absent = match niche {
             Niche::NegativeLength => self.value(format!("icmp slt i64 {field}, 0")),
-            Niche::NullPointer => self.value(format!("icmp eq ptr {field}, null")),
+            Niche::NullPointer | Niche::NullDescriptor => {
+                self.value(format!("icmp eq ptr {field}, null"))
+            }
         };
         self.value(format!("select i1 {absent}, i32 {none}, i32 {some}"))
     }
@@ -1209,11 +1223,12 @@ fn use n =
             ("Result<Shape, Rich>", 32, 8),
             // A reference is a pointer, so an option of one is the pointer on a native target.
             ("Maybe<ref Mixed>", 8, 8),
-            // A function value is `CLOSURE_POINTERS` pointers; a union holds it like any payload
-            // (the bounds below allow for the narrower pointers of wasm32).
-            ("Choice", 24, 8),
+            // A function value is `CLOSURE_POINTERS` pointers. An option of one has no tag: a null
+            // descriptor is its nullary case. A union with two payloads keeps its tag. (The bounds
+            // below allow for the narrower pointers of wasm32.)
+            ("Choice", 16, 8),
             ("Callback", 24, 8),
-            ("Maybe<fn>", 24, 8),
+            ("Maybe<fn>", 16, 8),
             ("Result<fn, string>", 24, 8),
         ] {
             let ty = types(&module)
@@ -1306,7 +1321,8 @@ fn use n =
                     );
                 }
             }
-            // Two function values in a record, and one in a tagged union beside the tag.
+            // Two function values in a record, and an option of one: no tag, the null descriptor
+            // is `None`.
             let handlers = llvm_type(&find("Handlers"), &module);
             let maybe = llvm_type(&find("Maybe<fn>"), &module);
             for (machine_name, machine) in MACHINES
@@ -1321,7 +1337,7 @@ fn use n =
                 );
                 assert_eq!(
                     measure(&maybe, &named, *machine),
-                    (word + CLOSURE_POINTERS * word, word),
+                    (CLOSURE_POINTERS * word, word),
                     "Maybe<fn> on {machine_name}"
                 );
             }

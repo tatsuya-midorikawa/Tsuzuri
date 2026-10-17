@@ -788,7 +788,13 @@ impl DebugContext {
             ),
             // The union is its pointer, which is 8 bytes wherever the niche exists.
             Niche::NullPointer => (0, 0, Type::Integer(64, false)),
+            // The descriptor pointer starts the function value.
+            Niche::NullDescriptor => (0, 0, Type::Integer(8 * self.pointer() as u16, false)),
         };
+        let Type::Integer(bits, _) = integer else {
+            unreachable!("a niche is an integer")
+        };
+        let bits = usize::from(bits);
         self.ty(&integer, module, next, definitions);
         let base = self.bases[&integer];
         let enumerator = metadata(
@@ -804,7 +810,7 @@ impl DebugContext {
             next,
             definitions,
             format!(
-                "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: 64, align: 64, baseType: !{base}, elements: !{elements})",
+                "distinct !DICompositeType(tag: DW_TAG_enumeration_type, name: {}, size: {bits}, align: {bits}, baseType: !{base}, elements: !{elements})",
                 quote(&format!("{display}.$niche"))
             ),
         );
@@ -812,7 +818,7 @@ impl DebugContext {
         if let Some(payload) = payload {
             members.push((Member::new("$payload", payload, size, alignment), 0));
         }
-        members.push((Member::new("$niche", field, 8, 8), offset));
+        members.push((Member::new("$niche", field, bits / 8, bits / 8), offset));
         composite(
             "DW_TAG_structure_type",
             *self.types.get(ty).unwrap(),

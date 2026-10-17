@@ -509,6 +509,39 @@ fn debug_pointer_niches_overlay_the_null_pointer_on_native_targets_only() {
     assert!(!wasm.contains(&format!("name: \"{owner}.$niche\"")));
 }
 
+/// An option of a function value stores no tag (PM02): `$niche` is the descriptor pointer, which is
+/// null for `None`, on every target; the pointer is 4 bytes on wasm32.
+#[test]
+fn debug_function_value_niches_overlay_the_null_descriptor_on_every_target() {
+    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let callback: Maybe<i64 -> i64> = if n > 0 then Maybe.Some (\\x -> x + n) else Maybe.None\n    match callback with\n    | Some f -> f 1\n    | None -> -1\n";
+    let owner = "Maybe<i64 -> i64>";
+    for (wasm, bits) in [(false, 64), (true, 32)] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The union is the function value itself: two pointers.
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_structure_type, name: \"{owner}\", size: {}, align: {bits},",
+                2 * bits
+            )),
+            "{ir}"
+        );
+        assert_eq!(member_offset(&ir, owner, "$payload"), 0);
+        assert_eq!(member_offset(&ir, owner, "$niche"), 0);
+        assert_eq!(member_size(&ir, owner, "$niche"), bits);
+        assert!(
+            ir.contains("!DIEnumerator(name: \"None\", value: 0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_enumeration_type, name: \"{owner}.$niche\", size: {bits}, align: {bits},"
+            )),
+            "{ir}"
+        );
+        assert!(!ir.contains(&format!("name: \"{owner}.$tag\"")), "{ir}");
+    }
+}
+
 #[test]
 fn debug_codeview_flag_joins_the_module_flags_for_windows_objects() {
     let source = "export def answer :: i64 -> i64\nfn answer input =\n    let shape: Maybe<i64> = Maybe.Some input\n    Maybe.default_value 0 shape + 2\n";

@@ -215,6 +215,23 @@ fn curried_mixed_kinds seed =
     for f in copy do total = total + f 10
     total + functions[1] 0
 
+// An option of a function value stores no tag: a null descriptor is `None` (PM02). The copy clones
+// the environment, which owns a string.
+export def curried_optional :: bool -> i64 -> i64
+fn curried_optional flag seed =
+    let literal = "abcd"
+    let text = clone_string ref literal
+    let callback: Maybe<i64 -> i64> =
+        if flag then Maybe.Some (\x -> x + seed + text.length) else Maybe.None
+    let copy = callback
+    let first = match callback with
+        | Some f -> f 10
+        | None -> -1
+    let second = match copy with
+        | Some g -> g 100
+        | None -> -2
+    first * 1000 + second
+
 export def curried_dynamic_init :: bool -> i64 -> i64
 fn curried_dynamic_init flag count =
     let literal = "abcd"

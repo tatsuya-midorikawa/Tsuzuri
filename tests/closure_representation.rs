@@ -295,6 +295,42 @@ fn only_immediate_closures_have_an_environment_without_a_drop_entry() {
     }
 }
 
+/// An option of a function value stores no tag (PM02): it is the function value, `None` is the zero
+/// value, and the case is read from the descriptor, which only `None` leaves null. This holds on
+/// every target, because a descriptor is static data and never at address 0.
+#[test]
+fn an_option_of_a_function_value_is_the_function_value() {
+    let source = "export def optional :: i64 -> i64
+fn optional n =
+    let callback: Maybe<i64 -> i64> = if n > 0 then Maybe.Some (\\x -> x + n) else Maybe.None
+    match callback with
+    | Some f -> f 1
+    | None -> -1
+";
+    let module = analyze(source).unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let body = ir
+            .split("\n\n")
+            .flat_map(|block| block.split("\n}\n"))
+            .find(|block| block.contains("define internal i64 @tz.fn.Main.optional("))
+            .unwrap();
+        assert!(
+            body.contains("phi %tz.closure [") && body.contains("[ zeroinitializer, %"),
+            "wasm: {wasm}\n{body}"
+        );
+        assert!(
+            body.contains(" = icmp eq ptr ") && body.contains(", null"),
+            "{body}"
+        );
+        assert!(!body.contains("tz.union"), "{body}");
+        assert!(
+            !ir.contains("tz.union.Maybe.Maybe[fn["),
+            "no union type of its own"
+        );
+    }
+}
+
 /// A task is never cloned, and a function that borrows owned captures is not cloned either:
 /// neither descriptor names a clone function, which does not exist.
 #[test]
