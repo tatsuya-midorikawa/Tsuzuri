@@ -385,11 +385,22 @@ impl OptLevel {
     }
 }
 
+/// The code generator of a native build (`--backend`, PB05): Clang over the module's LLVM IR, or the
+/// built-in Cranelift translator of the `-O0` IR for a fast edit-build-run loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    Llvm,
+    Fast,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
     pub emit: Emit,
     pub optimization: OptLevel,
+    /// `--backend`: part of the build cache key through the `Debug` text of the options.
+    pub backend: Backend,
     pub cpu: Cpu,
     pub debug_output: bool,
     pub trap_info: bool,
@@ -433,6 +444,7 @@ impl Default for BuildOptions {
             target: Target::Native,
             emit: Emit::Executable,
             optimization: OptLevel::O3,
+            backend: Backend::Llvm,
             cpu: Cpu::Generic,
             debug_output: false,
             trap_info: false,
@@ -463,6 +475,9 @@ impl BuildOptions {
     }
 
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.backend == Backend::Fast {
+            self.validate_fast()?;
+        }
         if self.emit.is_kernel()
             && (self.target != Target::Native
                 || self.triple.is_some()
@@ -702,6 +717,128 @@ impl BuildOptions {
             ));
         }
         wasm_memory_limits(self.target, self.wasm_max_memory, self.wasm_stack_size)?;
+        Ok(())
+    }
+
+    /// What `--backend fast` accepts (PB05): native `-O0` executables and objects of the machine the
+    /// compiler runs on, with the options that do not change the code the translator sees. It names
+    /// every field and has no `..`, so that an option added later does not compile until someone
+    /// decides whether the fast backend supports it. The checks that depend on the build of
+    /// `tsuzuri` and on the host come last, so that the option errors do not depend on them.
+    fn validate_fast(self) -> Result<(), Diagnostic> {
+        let Self {
+            target,
+            emit,
+            optimization,
+            backend: _,
+            cpu,
+            debug_output: _,
+            trap_info: _,
+            debug_info,
+            wasm_simd,
+            wasm_threads,
+            wasm_jspi,
+            wasm_webgpu,
+            wasm_net,
+            wasm_host,
+            wasm_max_memory,
+            wasm_stack_size,
+            cache: _,
+            trap_return,
+            allocator,
+            freestanding,
+            strip: _,
+            wasm_opt,
+            triple,
+        } = self;
+        if optimization != OptLevel::O0 {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast supports only -O0; remove {} or use --backend llvm",
+                    optimization.flag()
+                ),
+            ));
+        }
+        if target.is_wasm()
+            || triple.is_some()
+            || wasm_simd
+            || wasm_threads
+            || wasm_jspi
+            || wasm_webgpu
+            || wasm_net
+            || wasm_host.is_some()
+            || wasm_max_memory.is_some()
+            || wasm_stack_size.is_some()
+            || wasm_opt
+        {
+            let other = match (target, triple) {
+                (_, Some(triple)) => format!("--target {}", triple.name()),
+                (Target::Wasm64, _) => "wasm64".to_owned(),
+                _ => "wasm32".to_owned(),
+            };
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast supports only the native target; use --backend llvm for {other}"
+                ),
+            ));
+        }
+        if !matches!(emit, Emit::Executable | Emit::Object) {
+            let kind = emit.bindings().map_or_else(
+                || match emit {
+                    Emit::WgslRelaxed => "wgsl-relaxed".to_owned(),
+                    Emit::SpirvRelaxed => "spirv-relaxed".to_owned(),
+                    other => format!("{other:?}").to_ascii_lowercase(),
+                },
+                |(kind, _)| kind.to_owned(),
+            );
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast produces only exe and object outputs; use --backend llvm for --emit {kind}"
+                ),
+            ));
+        }
+        let allocator_option = format!("--allocator {allocator:?}").to_ascii_lowercase();
+        for (set, option) in [
+            (debug_info, "-g"),
+            (cpu != Cpu::Generic, "--cpu native"),
+            (
+                !matches!(allocator, llvm::Allocator::System | llvm::Allocator::Host),
+                allocator_option.as_str(),
+            ),
+            (freestanding, "--freestanding"),
+            (trap_return, "--trap-mode return"),
+        ] {
+            if set {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "--backend fast does not support {option} yet; remove it or use --backend llvm"
+                    ),
+                ));
+            }
+        }
+        if !cfg!(all(
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast is not available on {}-{}; use --backend llvm",
+                    env::consts::OS,
+                    env::consts::ARCH
+                ),
+            ));
+        }
+        if !cfg!(feature = "fast-backend") {
+            return Err(driver_error(
+                "E2000",
+                "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
+            ));
+        }
         Ok(())
     }
 
@@ -6007,6 +6144,69 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    #[test]
+    fn validate_fast_allows_only_native_o0_executables_and_objects() {
+        let fast = BuildOptions {
+            backend: Backend::Fast,
+            optimization: OptLevel::O0,
+            ..BuildOptions::default()
+        };
+        // The host and the build of `tsuzuri` decide last, after every option has passed.
+        let available = cfg!(all(
+            feature = "fast-backend",
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ));
+        for emit in [Emit::Executable, Emit::Object] {
+            let result = BuildOptions { emit, ..fast }.validate();
+            assert_eq!(result.is_ok(), available, "{emit:?}: {result:?}");
+            if let Err(error) = result {
+                assert_eq!(error.code, "E2000");
+            }
+        }
+        // The programmatic default is -O3, which the fast backend does not translate.
+        let error = BuildOptions {
+            backend: Backend::Fast,
+            ..BuildOptions::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--backend fast supports only -O0; remove -O3 or use --backend llvm"
+        );
+        for emit in [
+            Emit::Llvm,
+            Emit::Header,
+            Emit::Wasm,
+            Emit::Wgsl,
+            Emit::WgslRelaxed,
+            Emit::Spirv,
+            Emit::SpirvRelaxed,
+            Emit::Shared,
+            Emit::BindingsJs,
+            Emit::BindingsCs,
+            Emit::BindingsPy,
+            Emit::BindingsCpp,
+        ] {
+            let error = BuildOptions { emit, ..fast }.validate().unwrap_err();
+            assert_eq!(error.code, "E2000", "{emit:?}");
+            assert!(
+                error.message.starts_with(
+                    "--backend fast produces only exe and object outputs; use --backend llvm for --emit "
+                ),
+                "{emit:?}: {}",
+                error.message
+            );
+        }
+        // The cache key hashes the `Debug` text of the options, so the backend changes the key.
+        let llvm = BuildOptions {
+            backend: Backend::Llvm,
+            ..fast
+        };
+        assert_ne!(format!("{fast:?}"), format!("{llvm:?}"));
     }
 
     #[test]
