@@ -145,7 +145,7 @@ add 20 22
 examples/hello/Main.tz:1:1: error[E2002]: cannot execute 'wasm-opt': No such file or directory (os error 2); --wasm-opt runs Binaryen's wasm-opt: install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable
 ```
 
-Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 3,817、`-O3` 6,709 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
+Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 3,905、`-O3` 6,833 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
 
 ## 診断とデバッグ
 

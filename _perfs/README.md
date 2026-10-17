@@ -72,6 +72,28 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 - 合成 1,000 モジュールでは、Clang の処理が `-O0` で 3.70 s、`-O3` で 7.62 s でした。フロントエンドは単一スレッドで、1 秒あたり約 5 万行です。
 - フロントエンドのサンプリング（1 ms 間隔）では、サンプルの 57% が malloc／free／memmove にありました。型付き IR の複製、所有権検査の 2 回の実行、IR 文字列の生成が主な処理です。
 
+## 第3フェーズ後の変化（2026-10-17）
+
+第3フェーズの 8 件を統合した compiler を、main（`6d15b437`）と、静かな機械（Apple M1 Max。1 分の load average の下限は 8〜13）で前後比較した値です。
+表・条件・測っていないことは [docs/benchmarks.md](../docs/benchmarks.md#第3フェーズ統合の最終比較2026-10-17) にあります。
+上の「現状（2026-09-29）」は、履歴としてそのまま残します。x86-64・Linux・Windows の測定と専用機の測定はありません。
+
+- 実行速度（PR03）: `std_option` の `Maybe<i64>` の連鎖が native で 5.22 → 4.47 ms（−14.4%、5 run とも改善、A/A 1.003）で、`ce` が `direct` と同じ時間になりました。
+  control の 16 種目と、computations のほかの 9 対は差がありません。
+- Task（PR06）: 起床の p50 が 0.22〜0.63 倍、CPU 時間が 0.11〜0.60 倍です。粗い粒度と `cpp/task_parallel` は差がありません。
+- メモリ（PM01・PM05）: `Color` 4 → 1、`Small` 32 → 2、`Maybe<string>` 24 → 16、`Result`・`Shape` 32 → 24 byte。`benchmarks/layout` の最大 RSS は −33.2%、時間は変わりません。
+  WASM の heap は小さい確保の churn が 0.16〜0.17 倍です。native の `--allocator small` は allocation の多い app で 0.39〜0.77 倍ですが、`closure_pipeline` は 1.06 倍で、既定は `system` のままです。
+- 成果物（PM08）: native の hello は 50,664 → 33,896 byte（`__text` 13,304 → 2,724）、`--emit object` は 72,032 → 5,024 byte、WASM の hello は 35,714 → 6,833 byte です。
+- ビルド（PB03・PB04）: `check` の total が 8 thread で 1.34〜1.61 倍（CPU 時間 +43%、RSS +3〜9%）。`-O0` の実行ファイルは実時間 −69%・CPU 時間 −54%、`-O3` は −45%・−32%。
+  同梱 toolchain の識別は 14.6 s → 0.2 s です。
+- 整数の範囲証明（PR02）: 旗を書いても生成コードに測れる利得はなく、既定は `off` です。
+
+悪化した点と、期待に届かなかった点:
+
+- 合成 1,000 module で特殊化の予算 1,024 を使い切ると、PR03 の 2 回目の出力が `emit` を 2 倍にします（`--emit llvm` の total が 8 thread で 3,272 → 3,588 ms、`build -O0` の CPU 時間は +25%）。200 module は影響を受けません。
+- WASM の `std_option` は 1.27 倍遅くなりました。PR03 が `ce` を `direct` と同じ `select` の形にしたためで、V8 は分岐の形を速く実行します。native は 14.4% 速くなっています。
+- `run-cpp.mjs` の `format_parse` は、統合時に main より 12% 遅くなりました（PM08 の `integer.ll` が 1 桁ずつ書くため）。`tz.integer.digits` を 2 桁ずつ書く形にして +2% に戻しました（`__text` は +120 byte）。
+
 ## 一覧
 
 ### PX. 計測基盤
@@ -219,7 +241,7 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
 - **PM08**（実装済み）: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げでした。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
   wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
   `tz_soft_format` と PR04 の表でした。主な成果は D2（整数の表示・書式指定・`Parse` を手書き IR の `src/runtime/integer.ll` に分け、`numeric.ll` に依存させない変更）で、
-  native の hello は 50,664 → 33,896 bytes（`__text` 13,304 → 2,604）、wasm の hello は 35,714 → 6,357 bytes（`-Oz` 2,587、`-Oz --wasm-opt` 2,156）になりました。
+  native の hello は 50,664 → 33,896 bytes（`__text` 13,304 → 2,724）、wasm の hello は 35,714 → 6,833 bytes（`-Oz` 3,905）になりました。これは第3フェーズの統合後の値で、PM08 の branch 単体では `__text` 2,604、wasm の hello は 6,357 bytes（`-Oz` 2,587、`-Oz --wasm-opt` 2,156）でした。差は PM05 の WASM ヒープと、統合時の `integer.ll` の 2 つの変更（128 bit の除算をやめた: Windows の x86-64 で桁が壊れたため。`digits` を 2 桁ずつにした: `format_parse` が 10〜18% 遅くなったため）です。
   `-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えず、`test`・`bench` は `E2000`）、`--strip` は opt-in、`wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、
   自動検出も同梱もせず、使えなければ `E2002` です。embedded 経路（`--no-cache`・`--trap-info`・`-g`）にもリンク時 GC を入れました。
   `numeric.c`・`numeric.ll`・`math.ll`・`numeric_tables.h` は変更せず、`integer.ll` は独立した Python の参照（format 47,029・spec 15,200・parse 71,235 件）と照合しています。

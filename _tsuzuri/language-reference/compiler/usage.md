@@ -682,8 +682,8 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 トップレベルの式の結果の表示と、整数の `Parse.parse` は、数値ランタイムを使いません。整数専用のテキスト生成と解析（`runtime/integer.ll`）を
 モジュールの IR に入れて処理し、最適化後には使った関数だけが残るので、整数だけを扱うプログラムには数値 object も、その表（約 10 KB の読み取り専用データ）も入りません。
 `Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。
-`examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,709 byte になりました。
-整数を `Parse` し書式指定する `benchmarks/size/parse` の wasm32 モジュールは 76,023 byte から 16,864 byte になります
+`examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,833 byte になりました。
+整数を `Parse` し書式指定する `benchmarks/size/parse` の wasm32 モジュールは 76,023 byte から 16,766 byte になります
 （macOS arm64 の `-O3`。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
 `f16`・`f32`・`f64`・`f128`・decimal の表示、精度つきの書式指定（`{x:.2}` など）、それらの `Parse` は、これまでどおり数値ランタイムを使います。
 どちらの処理も、出力の文字列と `Parse` が受け付ける構文・範囲は同じです。

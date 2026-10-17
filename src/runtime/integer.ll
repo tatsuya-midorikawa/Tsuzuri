@@ -18,15 +18,38 @@
 ; formatters, which the tests compare these functions with, give the same results.
 
 ; Writes the decimal digits of an unsigned number before `%end`, with leading zeros up to `%least`
-; digits (at least 1), and returns how many bytes it wrote. Once the number is used up, the
+; digits (at least 1), and returns how many bytes it wrote. Two digits at a time while the number
+; has more than two; the last one or two digits one at a time. Once the number is used up, the
 ; division yields zeros, which is the padding.
 define internal i32 @tz.integer.digits(ptr %end, i64 %value, i32 %least) noinline nounwind {
 entry:
-  br label %loop
+  br label %wide
+wide:
+  %big = phi i64 [ %value, %entry ], [ %big.rest, %wide.step ]
+  %big.at = phi ptr [ %end, %entry ], [ %big.slot, %wide.step ]
+  %big.count = phi i32 [ 0, %entry ], [ %big.count.next, %wide.step ]
+  %is.big = icmp uge i64 %big, 100
+  br i1 %is.big, label %wide.step, label %loop
+wide.step:
+  %big.rest = udiv i64 %big, 100
+  %big.times = mul i64 %big.rest, 100
+  %big.pair = sub i64 %big, %big.times
+  %pair = trunc i64 %big.pair to i32
+  %tens = udiv i32 %pair, 10
+  %tens.times = mul i32 %tens, 10
+  %ones = sub i32 %pair, %tens.times
+  %ones.shifted = shl i32 %ones, 8
+  %pack = or i32 %tens, %ones.shifted
+  %chars = add i32 %pack, 12336
+  %chars.small = trunc i32 %chars to i16
+  %big.slot = getelementptr inbounds i8, ptr %big.at, i32 -2
+  store i16 %chars.small, ptr %big.slot, align 1
+  %big.count.next = add i32 %big.count, 2
+  br label %wide
 loop:
-  %rest = phi i64 [ %value, %entry ], [ %quotient, %loop ]
-  %at = phi ptr [ %end, %entry ], [ %slot, %loop ]
-  %count = phi i32 [ 0, %entry ], [ %count.next, %loop ]
+  %rest = phi i64 [ %big, %wide ], [ %quotient, %loop ]
+  %at = phi ptr [ %big.at, %wide ], [ %slot, %loop ]
+  %count = phi i32 [ %big.count, %wide ], [ %count.next, %loop ]
   %quotient = udiv i64 %rest, 10
   %times = mul i64 %quotient, 10
   %digit = sub i64 %rest, %times

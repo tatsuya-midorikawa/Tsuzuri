@@ -6431,7 +6431,7 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 
 | `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
 | --- | ---: | ---: | ---: |
-| `computations` | 50,280 → 33,464 | 10,812 → 184 | — |
+| `computations` | 50,280 → 33,464 | 10,812 → 304 | — |
 | `control` | 51,064 → 34,248 | 11,348 → 720 | — |
 | `currying` | 50,616 → 33,848 | 13,296 → 2,596 | 35,686 → 6,326 |
 | `functional` | 51,656 → 34,872 | 14,448 → 3,888 | 41,444 → 12,086 |
@@ -6441,8 +6441,8 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 | `io` | 51,432 | 9,780 | 15,593 |
 | `point` | 50,344 | 10,844 | 74 |
 
-この表は PM08 の branch（PM05 の WASM ヒープを取り込む前）の値です。統合後の最終 commit では、wasm32 の module が PM05 のヒープの分だけ変わりました（hello 6,357 → 6,709、`currying` 6,326 → 6,678、`functional` 12,086 → 10,127、`io` 15,593 → 12,956 bytes）。
-`io` も変わります（native `__text` 9,780 → 9,716、wasm32 15,593 → 12,956 bytes）。`tasks` の native `__text` は 3,496 → 3,756 bytes です。統合後の全値は、最後の「第3フェーズ統合の最終比較」の表にあります。
+この表は PM08 の branch（PM05 の WASM ヒープを取り込む前）の値です。統合後の最終 commit では、wasm32 の module が PM05 のヒープと、統合時の `integer.ll` の変更（128 bit の除算をやめ、`tz.integer.digits` を 2 桁ずつにした）の分だけ変わりました（hello 6,357 → 6,833、`currying` 6,326 → 6,802、`functional` 12,086 → 10,251、`io` 15,593 → 12,956 bytes）。
+`io` も変わります（native `__text` 9,780 → 9,716、wasm32 15,593 → 12,956 bytes）。`tasks` の native `__text` は 3,496 → 3,876 bytes です。統合後の全値は、最後の「第3フェーズ統合の最終比較」の表にあります。
 `--wasm-opt`（Binaryen の `wasm-opt -Oz` を、リンク後の `.wasm` に通す）は、Binaryen 132（npm の `binaryen` パッケージの `wasm-opt`）で測りました。`wasm32`、cache あり、byte で、`wasm-opt` なしは同じレベルの値です:
 
 | プログラム | `-O3` | `-O3 --wasm-opt` | `-Oz` | `-Oz --wasm-opt` |
@@ -6473,7 +6473,7 @@ native の実行ファイルの大きさは macOS のページ境界（16 KiB）
 | wasm DATA | `-O3` | 20,603 | 20,603 | 218 |
 | wasm32 モジュール | `-Oz` | — | 66,355 | 8,121 |
 
-PM05 の WASM ヒープを取り込んだ統合後のコンパイラでは、`parse` の wasm32 は `-O3` が 16,864 bytes（code 16,386、data 228）、`-Oz` が 9,351 bytes、native の `__text` は `-O3` が 9,120、`-Oz` が 6,760 bytes です（最後の「第3フェーズ統合の最終比較」）。
+PM05 の WASM ヒープを取り込んだ統合後のコンパイラでは、`parse` の wasm32 は `-O3` が 16,766 bytes（code 16,282、data 228）、`-Oz` が 9,096 bytes、native の `__text` は `-O3` が 9,156、`-Oz` が 6,808 bytes です（最後の「第3フェーズ統合の最終比較」）。
 整数を表示するだけのプログラム（`examples/hello`）の `-O3`／`-Oz` の大きさは変わりません。`-O0` では、`format` が `sign` を別の関数として呼ぶ分だけ、`__text` が 10,232 から 10,300 byte、wasm が 8,094 から 8,126 byte に増えます。使わない `spec`・`parse` の関数は、`-O0` の IR と object には残りますが、リンク時に除去されます（`--emit object -O0` の `examples/hello` は 33,856 から 37,432 byte）。
 
 `integer.ll` のすべての関数のコードは、arm64 の `-O3` で 2,904 byte（`-Oz` 2,376）、wasm32 で 3,059 byte（`-Oz` 2,406）で、使う関数だけが最適化後に残ります。10 進の先頭 19 桁を範囲の検査なしで足す高速経路は、約 200 byte のコードです。これを外した版は、長い 10 進数の読み取りが `numeric.ll`（ASCII への複写と `tz_soft_parse`）より最大で約 40% 遅くなりました（`i32` の範囲は 17.6 から 25.8 ns／回、全幅の `u64` は 29.5 から 41.9 ns／回）。
@@ -7070,38 +7070,39 @@ after は実時間で 1/72、CPU 時間で 1/58 です（範囲は重なりま�
 
 | 成果物 | `hello` | `io` | `point` | `parse` |
 | --- | ---: | ---: | ---: | ---: |
-| native 実行ファイル | 50,664 → 33,896 | 51,432（同じ） | 50,344（同じ） | 84,168 → 34,120 |
-| native `__text` | 13,304 → 2,604 | 9,780 → 9,716 | 10,844（同じ） | 30,904 → 9,120 |
+| native 実行ファイル | 50,664 → 33,896 | 51,432（同じ） | 50,344（同じ） | 84,168 → 34,104 |
+| native `__text` | 13,304 → 2,724 | 9,780 → 9,716 | 10,844（同じ） | 30,904 → 9,156 |
 | native `__const`＋`__cstring` | 10,160 → 64 | 301（同じ） | 10,096（同じ） | 21,044 → 270 |
-| wasm32 モジュール | 35,714 → 6,709 | 15,593 → 12,956 | 74（同じ） | 76,023 → 16,864 |
-| wasm CODE | 25,564 → 6,467 | 15,320 → 12,695 | 16（同じ） | 55,092 → 16,386 |
+| wasm32 モジュール | 35,714 → 6,833 | 15,593 → 12,956 | 74（同じ） | 76,023 → 16,766 |
+| wasm CODE | 25,564 → 6,591 | 15,320 → 12,695 | 16（同じ） | 55,092 → 16,282 |
 | wasm DATA | 9,882 → 13 | 25 → 13 | 0（同じ） | 20,603 → 228 |
-| native 実行ファイル、`--no-cache` | 117,848 → 33,896 | 69,976 → 51,432 | 84,072 → 50,344 | 117,912 → 34,120 |
-| native `__text`、`--no-cache` | 43,496 → 2,604 | 27,316 → 9,716 | 40,552 → 10,844 | 48,040 → 9,120 |
-| `--emit object`（native） | 72,032 → 4,896 | 38,264 → 38,216 | 392（同じ） | 77,816 → 13,040 |
+| native 実行ファイル、`--no-cache` | 117,848 → 33,896 | 69,976 → 51,432 | 84,072 → 50,344 | 117,912 → 34,104 |
+| native `__text`、`--no-cache` | 43,496 → 2,724 | 27,316 → 9,716 | 40,552 → 10,844 | 48,040 → 9,156 |
+| `--emit object`（native） | 72,032 → 5,024 | 38,264 → 38,216 | 392（同じ） | 77,816 → 13,072 |
 
 `examples/` ごとの `-O3`、cache ありの before → after（byte。`—` は suite が wasm32 を取らない例）:
 
 | `examples/` | native 実行ファイル | native `__text` | wasm32 モジュール |
 | --- | ---: | ---: | ---: |
-| `computations` | 50,280 → 33,464 | 10,812 → 184 | — |
-| `control` | 51,064 → 34,248 | 11,348 → 720 | — |
-| `currying` | 50,616 → 33,848 | 13,296 → 2,596 | 35,686 → 6,678 |
-| `functional` | 51,656 → 34,872 | 14,448 → 3,888 | 41,444 → 10,127 |
-| `hello` | 50,664 → 33,896 | 13,304 → 2,604 | 35,714 → 6,709 |
-| `polymorphism` | 50,280 → 33,464 | 10,812 → 184 | — |
-| `tasks` | 68,680 → 51,864 | 14,084 → 3,756 | — |
+| `computations` | 50,280 → 33,464 | 10,812 → 304 | — |
+| `control` | 51,064 → 34,248 | 11,348 → 840 | — |
+| `currying` | 50,616 → 33,864 | 13,296 → 2,716 | 35,686 → 6,802 |
+| `functional` | 51,656 → 34,888 | 14,448 → 4,008 | 41,444 → 10,251 |
+| `hello` | 50,664 → 33,896 | 13,304 → 2,724 | 35,714 → 6,833 |
+| `polymorphism` | 50,280 → 33,464 | 10,812 → 304 | — |
+| `tasks` | 68,680 → 51,864 | 14,084 → 3,876 | — |
 | `io` | 51,432（同じ） | 9,780 → 9,716 | 15,593 → 12,956 |
 | `point` | 50,344（同じ） | 10,844（同じ） | 74（同じ） |
 
 9 つの `examples/` の全 variant 177 値のうち、小さくなったものが 144、同じものが 26、大きくなったものは 7 だけです（`io` の wasm32 `-O0` の module 18,332 → 18,893 bytes（code 17,824 → 18,391、data 51 → 63）が cache あり・なしの 2 variant に 3 値ずつ、`tasks` の native object `-O3` 16,072 → 16,544 bytes）。
-`-Os`・`-Oz` の before の値は suite が取らないので、after だけを書きます（hello の wasm32 は `-Os` 4,369、`-Oz` 3,817 bytes、native `__text` は `-Os` 2,680、`-Oz` 2,484。`parse` の wasm32 `-Oz` は 9,351、native `__text` の `-Oz` は 6,760）。
+`-Os`・`-Oz` の before の値は suite が取らないので、after だけを書きます（hello の wasm32 は `-Os` 4,493、`-Oz` 3,905 bytes、native `__text` は `-Os` 2,800、`-Oz` 2,588。`parse` の wasm32 `-Oz` は 9,096、native `__text` の `-Oz` は 6,808）。
 
-- **追認できたこと**: native の hello は 50,664 → 33,896 bytes、`__text` は 13,304 → 2,604、`__const`＋`__cstring` は 10,160 → 64、`--emit object` は 72,032 → 4,896 bytes で、PM08 の節の値とすべて一致します。`computations`・`control`・`currying`・`functional`・`polymorphism` の native 実行ファイルと `__text`（50,280 → 33,464 と 10,812 → 184 など）も一致します。
-  `--no-cache`（埋め込み形式）の native の実行ファイルは、リンク時の GC のあと cache ありと同じ大きさです（hello 33,896、`point` 50,344、`io` 51,432）。`parse` は native 34,120 bytes（PM08 の節と同じ）、`__text` 9,120 bytes（同 9,096）です。
-- **PM08 の節の値と食い違うもの（PM05 の WASM ヒープを取り込んだ後の値）**: hello の wasm32 module は `-O3` が 6,709 bytes（PM08 の節は 6,357。code 6,467、data 13）、`-Os` が 4,369（同 2,995）、`-Oz` が 3,817（同 2,587）です。
-  PM08 の節は PM05 の WASM ヒープを取り込む前の値で、ヒープの関数が各 module に入るぶん、確保の少ない hello・`currying` は約 350〜1,400 bytes 大きくなります（`currying` 6,326 → 6,678）。確保の多い `functional`・`io`・`parse` は新しいヒープでコードが小さくなり、module が縮みます（`functional` 12,086 → 10,127、`io` 15,593 → 12,956、`parse` 18,199 → 16,864 bytes）。
-  `tasks` の native `__text` は 3,496 → 3,756 bytes（PR06 の新しい task pool の分）です。PM08 の節は「`io` と `point` は変わりません」と書いていましたが、`io` は上のとおり変わります（native `__text` −64、wasm32 −2,637 bytes。`point` は native も wasm32 も変わりません）。
+- **追認できたこと**: native の hello は 50,664 → 33,896 bytes、`__const`＋`__cstring` は 10,160 → 64 bytes で、PM08 の節の値と一致します。`computations`・`control`・`currying`・`functional`・`polymorphism` の native 実行ファイルも、ほぼ一致します（50,280 → 33,464 など。`currying` と `functional` は PM08 の節より 16 bytes 大きい）。
+  `__text` と `--emit object` は、PM08 の節より 120〜128 bytes 大きくなりました（hello の `__text` は 13,304 → 2,724（PM08 の節は 2,604）、`--emit object` は 72,032 → 5,024（同 4,896）、`computations` の `__text` は 10,812 → 304（同 184））。この run の compiler は、PM08 の branch の後で `integer.ll` を 2 つ変えているためです。128 bit の除算をやめたこと（Windows の x86-64 で桁が壊れたため）は、`parse` の `__text` を 80 bytes 縮め、`tz.integer.digits` を 2 桁ずつにしたこと（`format_parse` の悪化への対処。下の C++ 比較の suite）は、整数を表示するすべてのプログラムの `__text` を 120 bytes（`-Oz` は 104、wasm32 は 124 bytes）増やします。
+  `--no-cache`（埋め込み形式）の native の実行ファイルは、リンク時の GC のあと cache ありと同じ大きさです（hello 33,896、`point` 50,344、`io` 51,432）。`parse` は native 34,104 bytes（PM08 の節は 34,120）、`__text` 9,156 bytes（同 9,096）です。
+- **PM08 の節の値と食い違うもの（PM05 の WASM ヒープを取り込んだ後の値）**: hello の wasm32 module は `-O3` が 6,833 bytes（PM08 の節は 6,357。code 6,591、data 13）、`-Os` が 4,493（同 2,995）、`-Oz` が 3,905（同 2,587）です。
+  PM08 の節は PM05 の WASM ヒープを取り込む前の値で、ヒープの関数が各 module に入るぶん、確保の少ない hello・`currying` は約 470〜1,500 bytes 大きくなります（`currying` 6,326 → 6,802）。確保の多い `functional`・`io`・`parse` は新しいヒープでコードが小さくなり、module が縮みます（`functional` 12,086 → 10,251、`io` 15,593 → 12,956、`parse` 18,199 → 16,766 bytes）。
+  `tasks` の native `__text` は 3,496 → 3,876 bytes（PR06 の新しい task pool の分と、上の `digits` の 120 bytes）です。PM08 の節は「`io` と `point` は変わりません」と書いていましたが、`io` は上のとおり変わります（native `__text` −64、wasm32 −2,637 bytes。`point` は native も wasm32 も変わりません）。
   PM08 の節の表と、[WebAssembly への出力](../_tsuzuri/language-reference/compiler/webassembly.md) などの数値は、この run の値に置き換えました。
 - wasm-opt（Binaryen 132）の値は、この機械に Binaryen が無いので再測定していません。PM08 の節の wasm-opt の割合（−11.5〜−21.9%）は、PM05 のヒープを取り込む前の module に対する値です。
 
@@ -7250,6 +7251,8 @@ PR06 の `cpp/task_parallel` のために `node benchmarks/run-cpp.mjs $COMPILER
 - **`format_parse` は統合後のコンパイラで 10〜18% 遅くなりました**（3 run とも範囲が重ならず、A/A は 0.95・1.02、C++ との比は 1.14 → 1.28）。`format_parse` は 64 bit の符号なし整数（最大 20 桁）の `to_string` と `Parse.parse` を繰り返す workload です。
   `-O3` の object で `tz_format_parse` を比べると、before は 116 命令で `tz_soft_format`・`tz_soft_parse`（`numeric.ll`）と `malloc`・`free` を呼び、after は 191 命令で `tz.integer.digits`（2 回）・`tz.integer.scan`（PM08 の `integer.ll`）と `malloc`・`free` を呼びます。
   経路が PM08 の整数の書式・読み取りに変わったことと同時に遅くなっているので、PM08 の変更が原因の候補ですが、この測定では PM08 の変更だけを外した版との比較をしていないので、原因は確定していません。PM08 の節の C の測定（`Parse` 全幅の `u64` 29.1 → 21.2 ns、`i64` の書式 26.3 → 24.8 ns）は、この workload の単位（確保を含む `to_string` と `Parse.parse` の往復）とは別の測定です。
+  **対処と再測定**: 20 桁の値では、`tz.integer.digits` が 1 桁ずつ書くこと（C の測定で `to_string` 相当が 25.0 ns。`numeric.ll` は 22.8 ns）が主な差でした。`Parse` は 20.5 ns と 19.8 ns でほぼ同じです。そこで `tz.integer.digits` を、100 以上の間は 2 桁ずつ書く形にしました（表は持たず、`/ 100` と `/ 10` の乗算で桁を作ります）。同じ値の列で 20 桁の値は 25.0 → 18.9 ns、5〜10 桁は 11.4 → 8.7 ns、0〜999 は 4.3 → 3.5 ns で（`numeric.ll` は 22.8・14.2・7.3 ns。Apple M1 Max、`-O3`、native、4,096 個の値を 9 回繰り返した最小値、1 回の測定）、`__text` が native の hello で 120 bytes（`-Oz` は 104、wasm32 の hello は 124 bytes）増えます。4 桁ずつ書く版は 20 桁で 14.6 ns まで速くなりますが、`__text` が 188 bytes（wasm32 の hello は 171 bytes）増えるので採りませんでした。
+  `run-cpp.mjs` を、main・統合時（`a5a6b3d8`）・変更後の 3 つで交互に 3 run ずつ（別 process、1 run に 12 標本。`with-lock.sh measure` の下）測り直しました。`format_parse` の cpu 時間の中央値（ms）は、main が 3.783・3.764・3.655、統合時が 4.212・4.239・4.218、変更後が 3.833・3.835・3.855 で、C++ との比は 1.14・1.14・1.11、1.28・1.28・1.28、1.16・1.17・1.17 です。悪化は +12% から +2% に戻りました（main との差が残る分は、この測定では切り分けていません）。ほかの 11 種目は、統合時も変更後も main の ±2% 以内です（最大は `utf16_compare` の 1.020 で、0.084 ms の種目）。この 3 run は、ほかの重い処理と重ならないようにしたうえでの値ですが、専用機ではありません（各 run の開始時の 1 分の load average は 7.9〜9.1。この機械の下限は 8〜10 です）。
 - 12 種目のうち `format_parse` 以外は差がありません（`array_sum` の 1.021・0.987・1.026 は 3 run とも範囲が重なる）。
 
 #### チケットごとの追認と、追認できなかったこと
@@ -7259,7 +7262,7 @@ PR06 の `cpp/task_parallel` のために `node benchmarks/run-cpp.mjs $COMPILER
 - **PM05**: 追認 — WASM のヒープの `small_churn`・`mixed_churn` が 0.17・0.16 倍（5 run）、native の `small` が tokenize・csv_aggregate・tree_transform・binary_trees・format_join で 0.39〜0.77 倍。追認できない — `vec_growth` の悪化（1.53 倍）は Node 24 で再現しない（0.92〜0.95 倍）、`record_sort` が 1.14〜1.17 倍、`closure_pipeline` が native で 1.06 倍（adverse が 1 つ）。
 - **PB04**: 追認 — `check` の total が hello 1.61 倍、200 module 1.49〜1.56 倍、1,000 module 1.34〜1.38 倍、`THREADS=1` は before と同じ、RSS +2.7〜8.7%、user+sys +43〜53%。追認できない — 1,000 module の LLVM 出力は before より 1.10 倍（1 thread は 1.27 倍）遅い（PR03 の Phase 2c の 2 回出力）。
 - **PB03**: 追認 — W2 の実時間が `-O0` で −69%、`-O3` で −45%、CPU 時間が −54%・−32%、`emit` 段が 1/4、同梱ツールチェーンの識別が 14.6 s → 0.2 s（`cache` 段 14.5 s → 79 ms）。追認できない — `-O0` の CPU 時間の短縮は −65% でなく −54%、すべての module を使う 1,000 module の `build` は CPU 時間が +25%（`emit` 2.13 倍）。
-- **PM08**: 追認 — native の hello 50,664 → 33,896 bytes（`__text` 13,304 → 2,604）、`--emit object` 72,032 → 4,896 など。追認できない — wasm32 の値は PM05 のヒープの後で変わった（hello `-O3` 6,709、`-Os` 4,369、`-Oz` 3,817。`io` は 15,593 → 12,956 で「変わらない」ではない）。`run-cpp.mjs` の `format_parse`（64 bit 符号なし整数の書式と読み取りの往復）は 10〜18% 遅い（3 run。経路が `integer.ll` に変わったことと同時だが、原因は確定していない）。
+- **PM08**: 追認 — native の hello 50,664 → 33,896 bytes（`__text` 13,304 → 2,724）、`--emit object` 72,032 → 5,024 など。追認できない — wasm32 の値は PM05 のヒープの後で変わった（hello `-O3` 6,833、`-Os` 4,493、`-Oz` 3,905。`io` は 15,593 → 12,956 で「変わらない」ではない）。`run-cpp.mjs` の `format_parse`（64 bit 符号なし整数の書式と読み取りの往復）は、統合時に 10〜18% 遅かった（`tz.integer.digits` が 1 桁ずつ書くため）。2 桁ずつ書く形に変え、main との差は +2% になった（上の C++ 比較の suite）。
 - **PR06**: 追認 — 眠った worker の起床の p50 が tiny・small で 0.22〜0.28 倍、bulk で 0.50〜0.63 倍、CPU が 0.11〜0.60 倍。coarse と `cpp/task_parallel` は変わらない。追認できない — WASM の「休んだ後」の tiny・small は Node 24 では改善と読めない。連続の tiny は改善と読めない。
 - **PR02**: 追認 — 12 の corpus のうち 10 は assembly・module が同じで、差は matrix と apps だけ（数命令）。旗は時間の根拠にならず、既定は `off`。control の整数の種目 16 種はすべて差なし。
 
