@@ -8,11 +8,11 @@
 | 規模 | M |
 | 依存 | (PB01), (E12) |
 | 関連 | E05, E06, E13, PR07 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 不要（Phase 2 の WASM は人間が求めた場合だけ着手する） |
+| 状態 | done |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD `9dd0fbbc` で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-17 の全フェーズ実装依頼で Phase 1・Phase 2（wasm32 の D10）を含む全フェーズと、D1〜D14（「着手時の再検討」で改訂した D1・D3〜D6・D8・D11・D13 と新規の D12・D14 を含む）を承認済み。`--emit bitcode` は新しい opt-in の出力で、既定の出力は変えない（測定で効果を確認できない既定の切り替えは行わない） |
 | 手本にする既存実装 | C ランタイムの IR 化と結合: `src/driver.rs` の `build_complete` の `merge_debug_ir` 経路（`task.c` などを `-S -emit-llvm` で IR にし、`tool("TSUZURI_LLVM_LINK", "llvm-link")` で `module.ll` と結合する）。emit の追加: `Emit::Wgsl`（`src/driver.rs` の `Emit`・`BuildOptions::validate`・`BuildOptions::output_path`、`src/main.rs` の `--emit` の match）。ホストとの往復テスト: `tests/host_abi.rs` の `host_buffers_and_records_roundtrip_on_native_and_wasm`（IR の `@malloc`／`@free` を `@tracked_alloc`／`@tracked_free` へ置換して `live == 0` を確かめる） |
-| 主な影響ファイル | `src/driver.rs`, `src/main.rs`, `src/cache.rs`（変更しないことの確認だけ）, `tests/lto.rs`（新規。ソースはテスト内に書き、fixture は作らない）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_docs/guides/native-interop.md` |
+| 主な影響ファイル | `src/driver.rs`, `src/main.rs`, `src/cache.rs`（変更しないことの確認だけ）, `tests/lto.rs`（新規。ソースはテスト内に書き、fixture は作らない）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_docs/guides/native-interop.md`（改訂後の一覧は「着手時の再検討」の「作業の順序」。新規の `src/driver/lto.rs`・`benchmarks/run-lto.mjs`、`scripts/toolchain/clang.rs`、`tests/bindings.mjs` の期待値が加わる） |
 | 計測対象 | ホストの C ループから小さな公開関数 `tz_add` を呼ぶ種目 `lto/small_call`（新規）。通常リンク（`--emit object`）・言語間 ThinLTO（`--emit bitcode`）・C だけの実装の 3 通りで、時間・ループ内の呼び出し命令の数・実行ファイルの大きさ |
 
 ## 目的
@@ -23,6 +23,126 @@ Tsuzuri の計算カーネルを C/C++/Rust のホストに組み込むとき、
 手段は新しい出力 `--emit bitcode`（新規）で、プログラムと必要なランタイムを一つの ThinLTO 用 LLVM bitcode として出す。
 ホストは同じ LLVM の版の Clang（または linker plugin）で `-flto=thin` の LTO リンクを行う。
 実装者は Phase 1（native）だけを実装する。Phase 2（wasm32 と `wasm-ld` の LTO）は人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-17）
+
+2026-10-17 の依頼で、Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の LTO）の両方を実装する。上の「目的」の最後の文（Phase 1 だけ）は取り下げる。
+以下の「着手条件と停止条件」「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」「決定事項」は起票時の記録で、このセクションと食い違う箇所はこのセクションが優先する
+（旧 `_docs/` のパスは GUIDE §8.1 の表で `_tsuzuri/language-reference/` に読み替える。作業場所の `/tmp/tz-pr08` は `target/perf/PR08/work`）。
+着手時の HEAD は `a2313d19`（main `9dd0fbbc` + 第4フェーズの docs の足場）。偵察は main `9dd0fbbc` の release コンパイラ（SHA-256 `5e1b9687…`）、Apple M1 Max、macOS 27.0.1、
+Apple clang 21.0.0（clang-2100.3.34.2）、Homebrew の LLVM 21.1.8・22.1.8・23.1.1 と LLD 23.1.1、rustc 1.98.1（LLVM 22.1.8）、配布物 toolchain（darwin arm64。`clang`・`llvm-link` 21.1.8、Zig 0.16.0）で行った。
+偵察のスクリプトと生データは `target/perf/PR08/`（Git に入れない）。第2・第3フェーズが入った後のコードと照合し、起票時の設計が通る部分と通らない部分を分けた。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| `Emit` は 6 つ。`--emit` は `exe`・`object`・`llvm`・`header`・`wasm`・`wgsl`、エラー文もその 6 語 | `Emit` は 14（`WgslRelaxed`・`Spirv`・`SpirvRelaxed`・`BindingsJs`・`Shared`・`BindingsCs`・`BindingsPy`・`BindingsCpp` が加わる）。文は `emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp` で、`src/main.rs` の parse と単体テスト、`tests/bindings.mjs` が 1 字違わず検査する | `bitcode` を `shared` の次に足す。変えてよいのは停止条件が認める「一覧だけ」。`tests/bindings.mjs` と単体テストの期待値を同じ変更で直す。`output_path` の網羅 match に `"bc"` |
+| `BuildOptions::validate` で見るのは `--cpu native` の検査だけ | emit ごとの規則が `validate_shared`・`validate_allocator`・`validate_triple` に分かれている。`--allocator host`・`counting` は `Executable` 以外なら通り、`--freestanding` は `Object`・`Llvm`・`Header` だけ、`--trap-mode return` は `Object`・`Llvm`・`Header`・`Shared`・`Bindings*` だけ、`--strip` は `Executable` だけ、リンク入力は `Executable`・`Shared` だけ、bare metal は `--freestanding` の `Object`・`Llvm`・`Header` だけ | `validate_bitcode`（局所の新規 1 つ）を足し、既存の規則には `--trap-mode return` の許可リストへ `Bitcode` を足すだけ（文は変えない。`Shared` の前例）。`--freestanding`・bare metal・`--strip`・リンク入力は既存の文のまま bitcode を拒否する |
+| `build_complete` の object 経路は `merge_debug_ir` と `-r -nostdlib` の結合。C は `task.c`・`cpu.c`・`io.c` | C ランタイムは `os.c`・`net.c`・`async.c`・GPU・`trap.c`・task・`cpu.c`・`io.c`・`arguments.c` を連結して `task.c` 1 つにし、`RuntimeSymbols` の接頭辞（`tsuzuri_cpu_`・`tsuzuri_io_` など）で選ぶ。`options.cache && !merge_debug_ir` のときは `compile_runtime_object("native-c")` の bundled／cache の object。`merge_debug_ir`（macOS・`-g`・C ランタイムあり・object）の 3 つのコマンドは実測で確認（`clang -std=c11 -c -fPIC -O3 -S -emit-llvm task.c`、`llvm-link module.ll task.o -S -o combined.ll`、`clang -x ir -Wno-override-module -O3 -g -fPIC -c combined.ll`） | 起票の「`merge_runtime_ir = merge_debug_ir \|\| Bitcode`」で足りる。C の IR 化は cache を通さない（bitcode では毎回 0.2 s 前後。D7） |
+| `trap.c` の扱いの記述なし | `trap_runtime = trap_return && matches!(emit, Object \| Shared)` のときだけ連結する（「LLVM 出力は host が `trap.c` を持つ」） | `Bitcode` を足す。足さないと `--trap-mode return` の bitcode に `tsuzuri_boundary_run` の定義がない |
+| 実行ファイルだけの剪定（PB03）は起票時にない | `emit_native_build` は `Entry::Console` だけ到達関数に絞る。`Entry::Library` の object・bitcode は全関数 | bitcode は object と同じ IR（剪定なし）。変更なし |
+| probe の flags は `native_compile_args` と `native_cpu_flag` | 実行系の引数は `compile_args(platform)`（`--target TRIPLE` の `--target=`・`-fPIC`）と `native_ir_cpu_args(arch, f16)`（`-mavx512fp16`・`-mf16c` を含む。D10 の f16 の経路）、`no_sdk_args` | probe は `compile_args` と、`--cpu native` なら `native_ir_cpu_args`。f16 の旗を落とすと `"target-features"` が実際のコンパイルと食い違う |
+| 外部定義は `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ。object の `nm -g` は 8 記号 | object の `nm -g` は 32 記号（`tsuzuri_cpu_*` の全種と `tsuzuri_trap_hooks`）。bitcode（C ランタイムを `--internalize` した後）の外部定義は `tz_*`、`tsuzuri_alloc`・`tsuzuri_free`（weak）、`tsuzuri_trap_hooks`（weak hidden）、`tz_soft_*`（numeric。weak hidden）、`--allocator small` の `tz_small_shared`・`tz_small_stats`（weak）に、条件つきで `tsuzuri_alloc_stats`・`tsuzuri_try_*`・`tsuzuri_async_*`・`tsuzuri_main`。`tsuzuri_cpu_*`・`tsuzuri_task_*` などの C の記号は、C ランタイムを持つ 13 構成すべてで internal | D5 と受け入れ条件・手順 6 の期待を差し替える（「ない」ものを検査する） |
+| D3: `target-cpu`・`target-features`・`tune-cpu` の 3 鍵を、取り除いた group の末尾か新しい group で足す | `llvm-as` は inline の `"target-features"` より group の鍵を優先する（順序に関係なく）。F08 の `@cpu` 版は inline の `"target-features"="+avx2"` などを持つ `define` で（`tests/fixtures/cpu_versions` で x86-64 Linux 42 個、AArch64 Linux 28 個。`Platform::cpu_levels` が macOS では 0 なので macOS の IR には版がない）、起票の規則だと全部の版が基底の feature に戻る | D3 を改訂（下）。`emit_native_build_for` が levels を取るので、どのホストでも x86-64・AArch64 Linux の版の IR を単体テストで作れる |
+| 3 鍵を写せば C のホストと互換になる | `target-features` を写すとホストの Clang との差で inline が外れる（Apple の probe を Homebrew の host へ: `+bti` などが多い。AArch64 Linux の Zig の host に Apple の probe: `-fmv` などが違う）。`target-cpu`（と `tune-cpu`）だけなら、Apple 21・Homebrew 21・22 の host で inline される。LLVM 23 は `tune-cpu=apple-m5` も要る | D3 改訂: 汎用は `target-cpu`・`tune-cpu` だけ、`--cpu native` だけ `target-features` も写す。「host は同じ Clang で作る」を規則にする（D14） |
+| 再現: ThinLTO で `bl <_tz_add>` が残り（`grep -c` 2）、full LTO の remark が `conflicting attributes` | 同じ結果を再現（`4999999950000000`、2、同じ remark）。Homebrew の LLVM 23 の remark は `conflicting target features`。x86-64 Linux と AArch64 Linux（Zig 同梱 lld、ELF）は属性なしでも inline される | 属性の付与は Mach-O の AArch64 で効き、ELF では無害。効果を測るのは macOS で、Linux は CI の host テストで確認する |
+| 「host が full LTO、Tsuzuri 側が ThinLTO は inline されない」 | Apple の `ld` は、付与後なら host・bitcode の ThinLTO と full LTO のどの組でも inline する。lld は host の full LTO + ThinLTO の bitcode が `linking module flags 'EnableSplitLTOUnit': IDs have conflicting values` で link エラー、host の ThinLTO + full LTO の bitcode は link できて inline されない | 文書は `-flto=thin` を必須にする（D2 のまま）。lld の誤用は黙らずエラーになる |
+| `-fuse-ld=lld`（Homebrew）は `Unsupported stack probing method` | 原因は lld ではなく Apple clang の関数属性 `"probe-stack"="__chkstk_darwin"`（C ランタイムの IR に 10 か所、host の C にも）。Homebrew の LLVM 21.1.8・22・23 の LTO はどれも同じ abort。Apple clang で作った C ランタイム入りの bitcode は Apple の clang でしか読めない。C ランタイムを含まない bitcode には出ない | 組み合わせの表（下）。D6: 版の検査はしないが、文書に書く |
+| `llvm-link` は Xcode になく `TSUZURI_LLVM_LINK=/opt/homebrew/opt/llvm@21/bin/llvm-link`（README の macOS debug object と同じ組） | README に `TSUZURI_LLVM_LINK` の説明はない（`compiler/option.md`・`compiler/usage.md` にある）。CI の `Rust tests` は `TSUZURI_CLANG=$LLVM_PREFIX/bin/clang` を設定するが `TSUZURI_LLVM_LINK` は設定せず、`llvm-link` は PATH にない（Homebrew は keg-only で確認。apt は版つきの名前の見込み）。`resolve_tool` は環境変数、同梱、PATH の順。`llvm-link` は macOS の配布物にだけ入り、Linux の配布物にはない。C ランタイムが要るプログラムは多い（`Array.sum` が `tsuzuri_cpu_sum_i64` を使う） | D4 改訂: bitcode だけ「環境変数、同梱、Clang の隣、PATH」の順で探す。`merge_debug_ir` の探し方は変えない |
+| （起票時にない）配布物の `tsuzuri-clang` | `scripts/toolchain/clang.rs` は `-x ir` の compile へ `-O*`・`-W*`・`-m*`・`-g`・`-fPIC`・`-ffunction-sections`・`-fdata-sections` だけを渡し、`*.ll` の入力を要する（PB03 の記録と同じ）。`-flto=thin` は黙って落ち、`file` は `Mach-O 64-bit object` を示す（bitcode ではない成果物を `.bc` と呼んでしまう）。C は `zig cc`（`-S -emit-llvm` は通り、IR の triple は `arm64-apple-macosx12.0.0-unknown`）。同梱の `clang`・`llvm-link` と組んだ模擬は同じ外部記号で bitcode になった | D12（新規）: launcher が `-flto*` を渡す変更と、成果物の magic の検査。PR07 も同じ filter を触る |
+| PB01 の事前ビルド object は bitcode に使わない | 同じ。`runtime_objects` は `(Native, Executable)`・`(Wasm32, Wasm)` だけで、bitcode は `numeric.ll`・`math.ll` を IR に含める。`numeric.ll`・`math.ll` の属性 group は起票時と同じ（`"tune-cpu"="generic"`・`"no-builtins"`・`"min-legal-vector-width"`・`"no-trapping-math"`。`target-cpu` はない） | 変更なし |
+| `define` はすべて 1 行で `{` で終わる、後置は `#N`・`!dbg` だけ | `examples/*`・`tests/fixtures/*` のうち `--emit llvm` を出せる 102 のディレクトリ（`--trap-mode return` は 96）× 通常・`-g`・`--trap-info`・`--trap-mode return`・`--allocator small` の IR と全ランタイム `.ll` で確認: 1 行・`{` 終わり、後置は inline の属性（`nounwind`・`alwaysinline`・`noinline`・`cold`・`memory(...)`・`allockind(...)`・`"alloc-family"=...`）・`unnamed_addr`・`#N`・`!dbg`・`unnamed_addr  {`（二重の空白）・属性なし。`section`・`align`・`comdat`・`personality` はない | 挿入規則（`!dbg` の前、なければ ` {` の前）は成り立つ。停止条件は「inline の `"target-features"`」と「上記以外の後置」に置き換える |
+| `ld -r` で結合した object は他言語 LTO に参加しない | 同じ。ただし `--emit bitcode` は Windows の COFF object で未対応の「C ランタイム入り object」（E2002）を迂回する経路でもある | Windows は D13 |
+| `lto/small_call` は PX01 が todo なら生データだけ | PX01 は done（`benchmarks/metrics.mjs`、`benchmarks/run-*.mjs`、`docs/benchmarks.md` の `phase4:PR08` の marker） | PX01 形式の JSONL（suite `lto`）と runner `benchmarks/run-lto.mjs` |
+
+### 偵察で測った事実（2026-10-17）
+
+- **属性なしの再現**: `tz_add` は ThinLTO のリンクで inline されず（`bl` が `main` の中に残る）、full LTO の remark は `conflicting attributes`。`stamp`（起票の D3）で全 `define` に `target-cpu`・`target-features` を付けると inline され、ループは定数 `4999999950000000` に畳まれる（Apple clang 21 の host、host と同じ probe）。
+- **どの stamp がどの host で inline されるか**（macOS arm64、`tz_add` の呼び出しが `main` に残る数、0 が inline。bitcode の作成と host のコンパイル・リンクは同じ列の Clang）:
+
+| Tsuzuri 側に付けた属性 | Apple 21.0.0 | Homebrew 21.1.8 | Homebrew 22.1.8 | Homebrew 23.1.1 |
+| --- | --- | --- | --- | --- |
+| なし | 1 | 1 | 1 | 1 |
+| Apple の probe の `target-cpu`・`target-features` | 0 | 1 | 1 | 1 |
+| Apple の probe の `target-cpu` だけ | 0 | 0 | 0 | 1 |
+| Homebrew 21 の probe の `target-cpu`・`target-features`（または `target-cpu` だけ） | 0 | 0 | 0 | 1 |
+| Homebrew 23 の probe の `target-cpu`・`tune-cpu`（`target-features` あり・なし） | 1 | 0 | 1 | 0 |
+| `target-cpu="generic"`（±基本の feature） | 1 | 1 | 1 | 1 |
+
+  読み: host の Clang と probe の Clang が同じ（`target-cpu`・`tune-cpu` が一致）なら inline される。features の全列を写すより `target-cpu` だけのほうが広い host で inline される。LLVM 23 だけ `tune-cpu` の一致も要る。別の CPU（`generic`）では tuning の bit が違うので inline されない。
+- **ELF（Zig 0.16.0 の `zig cc -flto=thin`、lld 21）**: x86-64 Linux・AArch64 Linux の `tz_add` は、属性なしでも `target-cpu` だけでも inline された（x86-64 では `main` が定数 `0x11c37934e58f80`（= 4999999950000000。起票の `0x11c379e5348f80` は誤記）を `printf` に渡すだけになった。実行はしていない）。Apple clang が `--target=aarch64-unknown-linux-gnu` で出した `target-features`（`+fp-armv8,+neon,+v8a,-fmv`）を AArch64 Linux の bitcode に写すと inline されない。host の full LTO + ThinLTO の bitcode は上のとおりエラー、ThinLTO の host + full の bitcode は inline されず、full + full は inline される。リンク時に `warning: overriding the module target triple with x86_64-unknown-linux5.10.0-gnu2.31.0 [-Woverride-module]`（Zig の triple の綴りの違い。害はない）。
+- **版の組（macOS、producer → consumer）**: `add`（C ランタイムなし）は、producer が Apple 21・Homebrew 21・22・23 の 16 の組のすべてで link でき（新しい producer の bitcode を古い consumer が読める場合がある）、inline は、producer が Apple・Homebrew 21・22 のとき consumer が Apple・Homebrew 21・22 で、producer が Homebrew 23 のとき consumer が Homebrew 21・23 で起きた（producer は自分の probe の `target-cpu`・`tune-cpu` を付けた）。C ランタイムを含む module は、LLVM 22・23 の bitcode を Apple 21・Homebrew 21 の LTO が `error: Unknown attribute kind (105) (Producer: 'LLVM23.1.1' Reader: 'LLVM APPLE_1_2100.3.34.2_0')` で拒否する。producer の識別は IDENTIFICATION に `APPLE_1_2100.3.34.2_0`（Apple）、`LLVM21.1.8`（Homebrew）。`llvm-link` が Clang より新しいと `-S` の出力を Apple clang が `error: unterminated attribute group`（`nocreateundeforpoison`）で読めず、binary 出力でも `Unknown attribute kind (105)`。Apple clang で作った C ランタイムの IR は `"probe-stack"="__chkstk_darwin"` を持ち、Homebrew の LLVM 21.1.8・22・23 の LTO が `LLVM ERROR: Unsupported stack probing method` で abort する。
+- **決定性**: 同じ IR を別の path に置いて Clang で bitcode にした結果は `cmp` で一致する（`SOURCE_FILENAME` は `tsuzuri`）。bitcode の strtab に triple（OS の版つき。`macosx27.0.0`）が入る点は object と同じ。
+- **C ランタイム結合の模擬**（`llvm-link --internalize`、14 構成。`ffi_extensions` を除く 13 が C ランタイムを持つ: `fix`（`add`・`sum`・`bytes`）の `-O0`・`-Oz`・`--trap-info`・`--allocator small`・`counting`・`--cpu native`、tasks・`--trap-mode return`・host_abi・ffi_extensions・cpu_kernels・async_reactor・io）は、すべて ThinLTO の bitcode になり、空の host と link できる。外部定義は上の表のとおり。`llvm.global_ctors`（`tz_sync_install`）が tasks・async・`--trap-mode return` に入る。`fix` の bitcode は 10,336 bytes（object 29,280 bytes）、C の host の実行ファイルは 50,560 bytes（object のリンクは 69,408 bytes）。冷えた状態の所要時間（M1 Max、共有機の参考値）は probe 0.03 s、C の IR 化 0.18〜0.20 s、`llvm-link` 0.05 s、bitcode 化 0.04〜0.14 s。`-g` も通る（host の DWARF 5 との `Dwarf Version` の警告が link で出る）。
+- **host の言語**: C++（Apple の `clang++`）は C と同じく inline された。Rust は macOS で `-C linker-plugin-lto` が Apple の `ld` と `ld64.lld` のどちらでも `-plugin-opt=O3` を拒否されて link できない。`-plugin-opt` を落とす wrapper と Homebrew の clang 22.1.8（rustc と同じ LLVM）なら link でき結果は正しいが、`tz_add` は inline されない（remark に `tz_add` は出ない。Rust の関数は `"target-cpu"="apple-m1"`・`"probe-stack"="inline-asm"`）。rustc の LLVM（22）は CI の LLVM 21 より新しいので、LTO する linker の LLVM が rustc 以上でないと Rust の bitcode を読めない。Linux の Rust は std がなく未確認。
+- **wasm32（Phase 2）**: LLVM の clang 21.1.8 で IR を `--target=wasm32-unknown-unknown -mbulk-memory -mno-simd128 -x ir -flto=thin -c` にし、host を `clang --target=wasm32-unknown-unknown -O3 -flto=thin -nostdlib -fuse-ld=lld -Wl,--no-entry -Wl,--export=tz_add` で `wasm-ld` の LTO にすると、import は空、export は `memory`・`run`・`tz_add`、`run(1000n)` は `499500n`、`tz_add` は inline された（ループは閉じた式になり `wasm.ll` の weak な `__multi3` を 1 回呼ぶ）。属性を付けても付けなくても同じ。Apple clang には wasm の backend がなく、LLVM の clang が要る（今の wasm ビルドと同じ条件）。（訂正: 実装で確かめると、Apple clang 21.0.0 の `clang --print-targets` に `wasm32`・`wasm64` があり、wasm32 の bitcode も作れた。「実装と検証」を参照）
+- **配布物**: `tsuzuri-clang -x ir -flto=thin -c` は Mach-O の object を作り、同梱の `clang`（21.1.8）に直接渡すと bitcode を作る。`tsuzuri-clang -S -emit-llvm`（C）→ 同梱の `llvm-link --internalize` → 同梱の `clang -flto=thin` は、LLVM の Clang の場合と同じ外部記号の bitcode になった。
+
+### 方針の見直し
+
+| 決定 | 起票 | 改訂 | 理由と根拠 |
+| --- | --- | --- | --- |
+| D1 | `--emit bitcode`、`bc`、native だけ | 名前・拡張子は維持。native（Phase 1）に wasm32（Phase 2）を加え、wasm64 は E2000。Windows の target は E2000（D13） | 上の wasm32 の確認。Phase 1 の WP は起票の文（`'--emit bitcode' requires '--target native'; wasm32 bitcode is not supported yet`）を使い、WP6 で wasm32 を許すときに wasm64 向けの文へ改める |
+| D2 | bitcode は `-flto=thin` | 維持 | lld は host の full LTO + ThinLTO の bitcode を、inline しないのではなく link エラーにする。full LTO の bitcode を選ぶ option は対象外のまま |
+| D3 | 3 鍵を全 `define` に付ける | **改訂**: probe の `target-cpu` と `tune-cpu`（ある場合）だけを、自分の `"target-features"` を持たない `define` に付ける。`--cpu native` のときだけ probe の `target-features` も付ける（machine の ISA を object と同じに保つ）。自分の `"target-features"` を持つ `define`（F08 の `@cpu` 版）には `"target-cpu"`・`"tune-cpu"` だけの group を付け、`target-features` は変えない。既存の group は 3 鍵を取り除いてから同じ規則で足す。probe の flags は `compile_args` と、`--cpu native` なら `native_ir_cpu_args` | 起票の規則は F08 の版を黙って壊す（42・28 個の feature が消える）。`target-features` を写すと host の Clang との違いで inline が外れ、`target-cpu` だけのほうが広く inline される（上の表）。`alwaysinline`・inline の閾値の変更は引き続き使わない |
+| D4 | C ランタイムは `-S -emit-llvm` → `llvm-link --internalize` | 維持。加えて `trap.c` を含める、`llvm-link` は「環境変数、同梱、Clang の隣、PATH」の順で探す（bitcode だけ）、`llvm-link` 実行後の Clang の失敗には llvm-link の版の hint を付ける、runtime の IR 化は cache しない | CI は `TSUZURI_LLVM_LINK` を設定せず llvm-link は PATH にないが、Clang の隣にはある（`$LLVM_PREFIX/bin`）。llvm-link が Clang より新しいと text IR が読めない（上の事実） |
+| D5 | 外部定義は `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ | **改訂**: 公開の集合は `--emit shared` の export（`shared_exports`）と同じ（`tz_*`、`tsuzuri_alloc`・`tsuzuri_free`、条件つきで `tsuzuri_alloc_stats`・`tsuzuri_try_*`・`tsuzuri_async_*`・`tsuzuri_main`）。object にも出る weak の runtime 記号（`tz_soft_*`・`tsuzuri_trap_hooks`・`tz_small_*`）は許す。検査は「C ランタイムの記号（`tsuzuri_cpu_*`・`tsuzuri_task_*`・`tsuzuri_io_*`・`tsuzuri_os_*`・`tsuzuri_net_*`・`tsuzuri_gpu_*` ほか）が外部にない」 | 実測した外部定義（上の表）。object が今出す記号以外は増やさない |
+| D6 | 版を検査しない | 維持。さらに成果物の先頭が bitcode の magic（`BC C0 DE` または Darwin の `DE C0 17 0B`）でなければ E2002（D12）。Apple clang の版数は LLVM の版と一致するとは限らないので `llvm-link --version` との突き合わせはしない。文書に producer の確認方法、実測した診断の文、組み合わせの表を書く | 版の不一致は host の LTO が `Unknown attribute kind` などで知らせる。launcher が黙って object を作る誤りは検査できる |
+| D7 | bitcode は cache しない | 維持（上の所要時間は 0.3〜0.45 s）。cache は、実測で冷えた時間が利用者の障害になると分かった場合だけ別の WP で（key に `llvm-link` の identity を足すだけで足りる） | `build_key` は emit の違いと Clang の identity を既に含む。今回は効果が測れない最適化を入れない |
+| D8 | `-O<n>`・`--cpu native`・`-g`・`--trap-info` は object と同じ意味 | 維持。加えて `--trap-mode return`・`--allocator system`・`small`・`host`・`counting` と `-Os`・`-Oz` も object と同じ意味で通す。`--freestanding`・bare metal・Windows・`--strip`・リンク入力は拒否 | `--freestanding` と bare metal は既存の文のまま拒否する（C ランタイムも llvm-link も使わない形で、対応するなら別の変更） |
+| D9 | llvm-link のないとき C ランタイムのテストは skip | 維持。ただし Clang の隣から探すので CI（macOS・Linux の LLVM 21）では実行される。skip の行は明示する | 偵察で macOS の Homebrew の layout（`clang`・`llvm-link`・`llvm-nm` が同じ `bin`）を確認。Linux の apt（`/usr/lib/llvm-21/bin`）は同じ形の見込みで、CI で確かめる |
+| D10 | Phase 2 は人間が求めた場合だけ | **承認済み**。上の確認で実現できる | wasm32 では C ランタイムも `llvm-link` も要らない。`--wasm-feature threads`・`jspi`・`webgpu`・`net`、`--wasm-host wasi`、wasm64 は Phase 2 でも対象外（E2000）。`simd128` は通す（probe の flags に `-msimd128`、feature の付与は Phase 2 で小さい matrix を測って決める） |
+| D11 | 新しい module は作らない | **改訂**: 子 module `src/driver/lto.rs`（`pub mod lto;`）に新規の関数を置き、`driver.rs` は呼び出しの数行だけにする | `driver.rs` は PR07・PB05・PB06 も同時に直す。子 module は親の private な `tool`・`run_tool`・`compile_args`・`driver_error` をそのまま使え、テストは `tsuzuri::driver::lto::...` で使える |
+| D12 | （なし） | **新規**: 配布物の launcher が `-x ir` の compile へ `-flto`・`-flto=thin` を渡すようにし（`scripts/toolchain/clang.rs`）、driver は Clang の後に成果物の magic を検査して、bitcode でなければ E2002 にする | 偵察の launcher の挙動。launcher を直しても、別の wrapper や古い launcher が同じ誤りを起こしうる |
+| D13 | Windows は未検証（拒否はしない） | **改訂**: `platform.windows()`（MSVC・MinGW）の target は E2000（`'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally`）。Windows の CI で確かめてから外す | `--emit shared` の前例。Windows の挙動は緑の Windows CI でしか確認できず、`windows_abi` の補助関数・COFF の LTO の規則（`lld-link`）をここでは試せない |
+| D14 | （なし） | **新規**: 文書の規則は「host は `TSUZURI_CLANG` と同じ Clang（同じ提供元・同じ LLVM の版）でコンパイルしリンクする。リンクは `-flto=thin`。linux は `-fuse-ld=lld`、タスクは `-pthread`、数学は `-lm`」。inline は保証せず、効果は host と probe の Clang の一致で決まることを表で示す | 上の表と版の組の実測 |
+
+### 作業の順序（コミット）
+
+| 作業 | 内容 | 確認 |
+| --- | --- | --- |
+| WP0 | この再検討の記録（このチケットだけ） | `git diff --check` |
+| WP1 | `Emit::Bitcode`・`output_path`・`validate_bitcode`・CLI（`--emit` の一覧と文、`--help`）・単体テスト、`tests/bindings.mjs` の文 | `cargo test --locked --bin tsuzuri`・`--lib`、`node tests/bindings.mjs`（N を記録） |
+| WP2 | `src/driver/lto.rs`: `stamp_target_attributes`（D3 改訂）・`probe_target_attributes`・magic の検査・`llvm-link` の探索。まだ配線しない。単体テストと、`emit_native_build_for` の x86-64・AArch64 Linux の levels を含む全 fixture の IR を通す検査 | `cargo test --locked --test lto`（N≥1） |
+| WP3 | `build_complete` の配線（C ランタイムなし、あり、`trap.c`、cache の除外、hint）と launcher の `-flto*`、`merge_debug_ir` の既存の挙動と既定の出力が不変であること | 手作業の模擬と同じ外部記号、`benchmarks/check-handoff-equivalence.mjs` と `shasum` で既定の出力が baseline と同じ、`node tests/handoff_tools.mjs`、配布物の smoke（`node scripts/toolchain/smoke.mjs <bundle>`）に bitcode の magic の検査を足す |
+| WP4 | host テスト（C・C++・tracked allocator の `live == 0`・runtime 結合・magic の拒否。fake の `TSUZURI_CLANG` は CLI の子 process で）。単体テストの件数を記録 | `cargo test --locked --test lto`、`TSUZURI_LLVM_LINK` なしでも通る |
+| WP5 | 計測 `benchmarks/run-lto.mjs`（suite `lto`、workload `small_call`、variant `object`・`bitcode`・`c_only`、9 回交互）と `docs/benchmarks.md` の `phase4:PR08` の節 | 3 通りが同じ出力、M1・M2・M3 |
+| WP6 | Phase 2: wasm32（validate、probe の flags、`wasm-ld`、import が空であることの node での検査、テスト。wasm64 の文） | Node 24、`cargo test --locked --test lto` |
+| WP7 | 文書（`compiler/native-interop.md`・`option.md`・`usage.md`、`docs/language.md`・`architecture.md`、`README.md`） | `node scripts/check-docs.mjs <変更したページ>` |
+| WP8 | 全 Rust テスト・関係する E2E・Windows の型検査（`cargo +stable check --all-targets --target x86_64-pc-windows-msvc`）・`## 実装と検証`・`_completed/` へ移動 | §5 の検証一覧 |
+
+### 受け入れ条件の変更
+
+- 「外部に定義される記号が `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ」→ D5 の集合（C ランタイムの記号が外部にない、公開の集合は `shared_exports` と同じ）。object の `nm -g` の期待（8 記号）は 32 記号に更新。
+- 「`tz_add` がホストのループに inline され、呼び出し命令 0」→ host と bitcode を同じ Clang で作る構成（macOS の Apple clang と、CI の LLVM 21）で 0。別の Clang の組は inline を保証せず、表に実測を書く。
+- 「`cargo test --locked --test lto` が `5 passed`」→ WP4 の件数（stamp の単体、全 fixture の IR、probe、inline、tracked allocator、runtime 結合、C++、拒否の検査、magic の拒否、Phase 2 の wasm32）。`llvm-link`・`llvm-nm`・wasm の backend のない環境の skip は明示の行つきで成功する。
+- 「`--target wasm32` は E2000」→ Phase 2 の後は wasm64・Windows が E2000 で、wasm32 は通る。
+- 追加: 配布物の launcher と、bitcode でない成果物の拒否（D12）。既定の出力（`--emit llvm`・`object`・`exe`・`header`・`shared`・`wasm`）は baseline と byte 単位で同じ（`benchmarks/check-handoff-equivalence.mjs`）。
+- 「未検証」の表に、Rust・Linux の実行・Windows・wasm64 を実測つきで書く（Rust の失敗は停止ではなく表に記録する）。
+
+### テスト計画の変更
+
+- 共通（`tests/lto.rs`。`tests/host_abi.rs` と同じく pid と時刻の一時ディレクトリ、`TSUZURI_CLANG` か `clang`）: host と bitcode は同じ Clang で作り、host のリンクは `-O3 -flto=thin`。Linux は `-fuse-ld=lld`（`ld.lld` が見つからなければ skip の行）、非 Windows は `-lm`、タスクを含む構成は `-pthread`。`llvm-link`・`llvm-nm` は環境変数、Clang の隣の順に探し、なければ skip の行を出して成功する。Windows は `cfg!(windows)` で E2000 の検査だけして成功する。期待値は C の意味と手計算（`n(n-1)/2`）から決める。`unsafe` を使わないので、環境変数を変える検査（fake の `TSUZURI_CLANG`）は CLI（`env!("CARGO_BIN_EXE_tsuzuri")`）の子 process で行う。
+- 起票の 5 テストに、次を足す・変える: (1) stamp の単体（inline の `"target-features"` を持つ `define` が変わらないこと、`!dbg`・`#N` の再利用・`unnamed_addr  {`・`define` のない入力、2 回で同じ結果、`--cpu native` の差）。(2) 全 fixture と `examples/*` の IR（x86-64・AArch64 Linux の levels を `emit_native_build_for` で作ったものを含む）を stamp して Clang が読めること。(3) probe（`#[cfg(unix)]`）。(4) C の host が `tz_add` を inline し（`-O0`・`-O3`、`nm` に `tz_add` がない、stdout `4999999950000000`）、2 回の bitcode が byte 一致し（`cache: false`）、先頭が magic。(5) tracked allocator の `live == 0`。(6) C ランタイムの結合（`sum`）で、外部に C の記号がないこと（`llvm-nm`）と `tz_sum` の結果。(7) C++ の host（`--driver-mode=g++`）。(8) 拒否の組み合わせ（Windows、`--link`、`--strip`、`--freestanding`、wasm64。Phase 1 の間は wasm32）と、`--trap-mode return`・`--allocator small` が通ること。(9) fake の Clang が object を書くと E2002（unix）。(10) Phase 2: wasm32 の bitcode と `wasm-ld` の LTO で、import が空・`tz_add` の結果・inline（LLVM の Clang と `wasm-ld` と Node 24 が要り、なければ skip の行）。
+- Rust の host は CI に入れない（macOS は `-plugin-opt` を拒否され、LLVM 21 の linker は rustc の LLVM 22 の bitcode を読めない）。手順と失敗の出力は文書の表に記録する。新しい `tests/*.mjs` は作らない。`src/main.rs` の単体テストと `tests/bindings.mjs` の `emit kind must be ...` の文は WP1 で更新する。
+
+### 停止条件の更新
+
+- 取り下げ: 「`#<n>` と `!dbg` 以外の後置要素を持つ `define`」（inline の属性は通る。`section`・`align` などは 0 個）、「`tz_add` が inline されない（`conflicting attributes` 以外の理由）」（host と probe の Clang が違うと inline されないことが分かっているので、同じ Clang の構成で見る）。
+- 追加: 自分の `"target-features"` を持つ `define` の feature が、stamp の後で変わった。`llvm-link --internalize` の後に C ランタイムの記号が外部に残った。既定の出力（object・exe・llvm・header・shared・wasm）の byte が変わった。launcher を直した後も `-flto=thin` の成果物が bitcode でない。
+
+### 未検証・非対応の見込み（実装後に確定して `docs/benchmarks.md` と native-interop に書く）
+
+| 組み合わせ | 偵察の結果 | 扱い |
+| --- | --- | --- |
+| macOS、host と Tsuzuri が同じ Apple clang 21 または Homebrew の LLVM 21（`-flto=thin`、Apple の `ld`） | 確認済み（C・C++ で inline） | テストで固定 |
+| macOS、host と bitcode の Clang が違う（Apple と Homebrew、LLVM 22・23） | link はするが inline は保証しない（表） | 文書に表。Apple で作った C ランタイム入りの bitcode は Homebrew の LTO で abort |
+| macOS の `-fuse-ld=lld` | Apple clang の `probe-stack` の属性で abort（Homebrew の LTO 全般） | 非対応と理由を書く |
+| Linux x86-64・AArch64（lld） | Zig 0.16.0 で ELF を cross-link し inline を確認（実行は未確認） | Linux の CI の host テストで確認する。確認前は「リンクと inline を確認、実行は未確認」 |
+| Rust の `-C linker-plugin-lto` | macOS は `-plugin-opt` を拒否され link できない。wrapper なら link できるが inline されない。LLVM 21 の linker では rustc（LLVM 22）の bitcode を読めない | 手順を未検証と書き、失敗の出力を記録。CI には入れない |
+| Windows（MSVC・MinGW） | 試せない | E2000（D13）。Windows の CI で確かめてから外す |
+| wasm32 + `wasm-ld`（Phase 2） | 手作業で確認（import 空、inline） | Phase 2 でテストに固定。wasm64・threads・jspi・webgpu・net・WASI は対象外 |
 
 ## 着手条件と停止条件
 
@@ -571,15 +691,15 @@ RUSTFLAGS="-C linker-plugin-lto -C linker=clang -L native=target/tz -l static=tz
 
 ## 受け入れ条件
 
-- [ ] `tsuzuri build <dir> --emit bitcode` が native で ThinLTO の要約を持つ bitcode を出し、`--target wasm32` は診断の表の E2000 になる。
-- [ ] bitcode のすべての `define` が probe した target 属性を持ち、外部に定義される記号が `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ（手順 6）。
-- [ ] 同じ入力・同じ Clang で bitcode が byte 単位で一致する。
-- [ ] 手順 7 で `tz_add` がホストのループに inline され（呼び出し命令 0）、出力が `4999999950000000`。
-- [ ] `TSUZURI_LLVM_LINK` ありで `cargo test --locked --test lto` が `5 passed`、`cargo test --locked` が成功する。
-- [ ] 手順 9 の `shasum -a 256 -c` がすべて `OK`（他の出力が不変）。
-- [ ] `lto/small_call` の 3 通りを計測し、環境とともに `docs/benchmarks.md` に記録している。測っていない速さを主張していない。
-- [ ] 「ドキュメント」の各ファイルを更新し、未検証の組み合わせ（Rust・Linux・Windows）をそう書いている。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] `tsuzuri build <dir> --emit bitcode` が native で ThinLTO の要約を持つ bitcode を出し（`GLOBALVAL_SUMMARY_BLOCK` が 1 つ）、wasm64 と Windows は診断の表の E2000 になる（wasm32 は Phase 2 で通る）。
+- [x] bitcode のすべての `define` が probe した target 属性を持ち（`tests/lto.rs` の stamp の単体と全 fixture の IR）、外部に定義される記号が export と、弱い runtime 記号だけ（`the_c_runtime_is_merged_into_the_bitcode_and_hidden`）。
+- [x] 同じ入力・同じ Clang で bitcode が byte 単位で一致する（`bitcode_is_the_same_bytes_every_time`。C ランタイムを含む場合と wasm32 も）。
+- [x] `tz_add` がホストのループに inline され（`main` の中の `tz_add` を指す命令が 0）、出力が正しい（`a_c_host_inlines_the_bitcode_but_not_an_object`、`lto/small_call`）。
+- [x] `cargo test --locked --test lto` が `17 passed`、`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast` が 1473 passed・0 failed。
+- [x] 既定の出力が変わらない（baseline の `tsuzuri-before` との比較。「検証」）。
+- [x] `lto/small_call` の 3 通りを計測し、環境とともに `docs/benchmarks.md` に記録している。測っていない速さを主張していない。
+- [x] 「ドキュメント」の各ファイルを更新し、未検証の組み合わせ（Rust の native・Linux の実行・Windows）をそう書いている。
+- [x] GUIDE §10 の完了の定義を満たす（fmt・clippy 1.99・Windows の型検査・回帰テスト 4 つ・文書の検査）。
 
 ## 落とし穴
 
@@ -612,62 +732,137 @@ RUSTFLAGS="-C linker-plugin-lto -C linker=clang -L native=target/tz -l static=tz
 
 - 決定: `--emit bitcode`、拡張子 `bc`、`--target native` だけ。
 - 理由: 既存の値は小文字 1 語（`llvm` がテキスト IR）で、`llvm-bc`（rustc）の形は既存の命名と合わない。WASM は export・import の検査が別に要る。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D1 のとおり。native と `--target wasm32`、wasm64 と Windows は E2000）
 
 ### D2: ThinLTO
 
 - 決定: bitcode は `-flto=thin` で作り、ThinLTO の要約を持たせる。ホストにも `-flto=thin` を求める。
 - 理由: full LTO のホストと ThinLTO の module の組では inline されないことを確認した。Rust の linker-plugin LTO も ThinLTO の module を出す。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`-flto=thin`。ThinLTO の要約は `llvm-bcanalyzer` で 1 つ確認）
 
 ### D3: target 属性の付与
 
 - 決定: 設定された Clang で空の C 関数を IR にし、その `"target-cpu"`・`"target-features"`・`"tune-cpu"` を bitcode の全 `define` に付ける（アルゴリズム）。
 - 理由: 属性がないことが inline されない原因だと確認し、付けると inline された。値は同じ Clang・同じ flags で C に付く値と同じなので、C のホストと
   互換で、通常の object の codegen が使う既定 CPU とも一致する。新しい crate や LLVM の API が要らない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D3 のとおり: `target-cpu`・`tune-cpu` を付け、`--cpu native` と wasm32 の `simd128` だけ `target-features` も付ける。F08 の `@cpu` 版は自分の features を保つ）
 
 ### D4: ランタイムの扱い
 
 - 決定: 埋め込みの `.ll` は IR に含まれたまま。C のランタイムは必要なときだけ `-S -emit-llvm` で IR にし、`llvm-link --internalize`
   （`TSUZURI_LLVM_LINK`）で一つにしてから bitcode にする。
 - 理由: 旧「未決事項」の既定案（一つの bitcode）を保つ。既存の `merge_debug_ir` の経路を再利用でき、ランタイムの記号が外へ出ない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D4 のとおり。`llvm-link` は環境変数・配布物・Clang の隣・PATH の順で探す。`merge_debug_ir` の経路は `merge_runtime_ir` に広げた）
 
 ### D5: 公開する記号
 
 - 決定: 「生成 IR とランタイム」の表のとおり。外部の定義は `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ。新しい外部記号を足さない。
 - 理由: C header・object と同じ公開 ABI を保つ。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D5 のとおり。強い定義は export だけで、`tests/lto.rs` が `llvm-nm` で `tasks` の 37 個の export と一致することを確かめる）
 
 ### D6: LLVM の版
 
 - 決定: コンパイラは版を検査しない。版は bitcode の IDENTIFICATION に入り、文書で確認方法と規則（リンカーの LLVM ≥ 全 producer）を示す。
 - 理由: 読めるかどうかを決めるのはホストのリンカーで、コンパイラはそれを知らない。rustc の LLVM 22.1.8 の bitcode を Apple の `ld` が読めた例のように、
   版の数字だけでは判定できない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D6 のとおり。版は検査せず、出力の先頭の magic だけを検査して E2002）
 
 ### D7: キャッシュ
 
 - 決定: bitcode はビルドキャッシュを使わない。
 - 理由: key に `llvm-link` と probe の結果を足す必要があり、bitcode は頻繁に作る出力ではない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（cache の key にも store にも入れない。`clang_identity` も取らない）
 
 ### D8: option の意味
 
 - 決定: `-O<n>` は pre-link の最適化の段。`--cpu native`・`--debug-info`・`--trap-info` は object と同じ意味で使える。`--cpu native` の既存の
   診断文は変えない。
 - 理由: IR を object と同じ `llvm::emit_native_build` で作るので、意味を分ける理由がない。既存の文を変えるとテストの期待値が変わる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂した D8 のとおり。`-Os`・`-Oz`・`--trap-mode return`・`--allocator system|small|host|counting` も通る。`--freestanding`・`--strip`・リンク入力・bare metal・Windows は拒否）
 
 ### D9: `llvm-link` のないテスト環境
 
 - 決定: `bitcode_merges_c_runtime_and_internalizes_it` は `TSUZURI_LLVM_LINK` がなければ skip の行を出して成功する。他の 4 テストは Clang だけで動く。
 - 理由: Xcode に `llvm-link` がなく、既存のテストも `llvm-link` を要求していない。実装手順の確認コマンドは必ず `TSUZURI_LLVM_LINK` を付けて実行する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更あり。`llvm-link` は Clang の隣からも探すので、CI の LLVM 21 では見つかる。道具（`llvm-link`・`llvm-nm`・`clang++`・ThinLTO のリンク・`wasm-ld`・Node）がないとき、手元は skip の行を出して成功し、環境変数 `CI` があるときは失敗にする）
 
 ### D10: Phase 2（WASM）
 
 - 決定: 「Phase 分割」の設計方針で、人間が求めた場合だけ着手する。
 - 理由: `wasm-ld` の LTO と export の組み合わせ、node での import の検査が別に要り、Phase 1 の目的（C/C++/Rust のホスト）には不要。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（2026-10-17 に人間が求めた。改訂した D10 のとおり。wasm32 だけ。`simd128` は小さな matrix で測り、属性を付けることにした）
+
+## 実装と検証
+
+Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の LTO）のすべてを、ブランチ `perf/p4-PR08` に実装した。
+
+### コミット
+
+| 作業 | コミット | 内容 |
+| --- | --- | --- |
+| WP0 | `21f88486` | 着手時の再検討（このチケットだけ） |
+| WP1 | `d1b67272` | `Emit::Bitcode`、`output_path`、`validate_bitcode`、CLI（`--emit` の一覧と文、`--help`）、単体テスト、`tests/bindings.mjs` の文 |
+| WP2 | `2d0f11b4` | `src/driver/lto.rs`（target 属性の probe と stamp、magic の検査、`llvm-link` の探索）と `tests/lto.rs` の最初の 6 件 |
+| WP3 | `099f6b64` | `build_complete` への配線（IR への属性、C ランタイムの `-S -emit-llvm` と `llvm-link --internalize`、`-flto=thin`、cache の対象外）、`scripts/toolchain/clang.rs` の `-flto*` の転送 |
+| WP4 | `be261d9e` | `tests/lto.rs` の host のテスト（C・C++ の inline、C ランタイムの結合と隠蔽、CPU kernel・allocator・trap return の往復、決定性、Clang と `llvm-link` の失敗） |
+| WP5 | `10551c9d` | `benchmarks/run-lto.mjs`、`benchmarks/lto/small_call.c` |
+| WP6 | `d832fe24` | wasm32（`validate_bitcode`、simd128 の属性、`wasm-ld` の LTO と Node のテスト） |
+| WP7 | `b29d161e` | 文書（言語リファレンス、`docs/language.md`・`architecture.md`・`benchmarks.md`、README） |
+| WP8 | このコミット | チケットの完了と検証の記録 |
+
+### 実装したこと
+
+- `--emit bitcode`（拡張子 `.bc`）: native（`--target native` と Windows 以外の `--target TRIPLE`）と `--target wasm32`。IR に target 属性を付け、C ランタイムは IR にして `llvm-link --internalize` で 1 つにまとめ、`clang -x ir -flto=thin -c` で ThinLTO の要約つきの bitcode にする。出力の先頭の magic を検査し、LTO の指定を落とす Clang や launcher は `E2002`。
+- 属性: probe（小さな C を同じ Clang で `-S -emit-llvm`）から `target-cpu`・`tune-cpu` を読み、全 `define` に付ける。`--cpu native` と wasm32 の `simd128` は `target-features` も付ける。F08 の `@cpu` 版（自分の `"target-features"` を持つ `define`）は features を保つ。stamp は決定的で冪等。
+- 配布物の launcher（`scripts/toolchain/clang.rs`）の `-x ir` の経路が `-flto*` を同梱の Clang に渡す。
+- wasm32: C ランタイムも `llvm-link` も使わない。`--wasm-max-memory` は通し、threads・jspi・webgpu・net・WASI・`--wasm-stack-size`・wasm64 は `E2000`。
+- 測定の runner `benchmarks/run-lto.mjs`（PX01 の suite `lto`）と、その C のホスト。
+
+### 実装しなかったこと、対象外のまま残したこと
+
+- Windows（`E2000`。緑の Windows CI で確かめてから外す）、wasm64、full LTO の bitcode を選ぶ option、コンパイラによる LLVM の版の検査、ビルドキャッシュ、PB01 の事前ビルド済みランタイムの使用、`run`・`test` での bitcode。
+- `scripts/toolchain/smoke.mjs` への bitcode の検査（実行するには配布物全体を作る必要があり、ここでは試せなかった）。`.github/workflows/*` は触っていない。
+- `tsuzuri toolchain info` に、Clang の隣の `llvm-link` の探索は出さない（文書に書いた）。
+
+### 測定（`lto/small_call`、n = 10 億、9 標本、4 回）
+
+| 構成 | `object` | `bitcode` | `c-only` |
+| --- | --- | --- | --- |
+| 中央値の範囲（4 回、ms） | 1020.9〜1163.1 | 548.8〜674.1 | 533.7〜676.0 |
+| `main` の中の `tz_add` の命令 | 1 | 0 | 0 |
+
+`object` の最小（991.7〜998.7 ms）は `bitcode` の最大（687.4〜732.5 ms）より大きく、4 回とも範囲が重ならない。`bitcode` と `c-only` は 4 回とも範囲が重なり、差なし。M1 Max、macOS 27.0.1、load average 12〜18 の共有機の目安で、x86-64・Linux・Windows は測っていない（詳細は `docs/benchmarks.md` の `phase4:PR08`）。ビルドは、C ランタイムを使わない `add` で約 50 ms 長く、C ランタイムを使うプログラムでは object より短かった。
+
+### 検証
+
+| 確認 | 結果 |
+| --- | --- |
+| `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`（`TSUZURI_CLANG` は Homebrew LLVM 21.1.8、`TSUZURI_WASM_LD` は LLD 23.1.1） | 1473 passed、0 failed、1 ignored（測定用）。105 の test binary、29 分 24 秒。うち `tests/lto.rs` が 17 passed、lib が 313、bin が 22 |
+| GUIDE §3.1 の回帰テスト 4 つ（既定の stack） | それぞれ `running 1 test`、ok |
+| `cargo +1.99.0 fmt --all -- --check`、`cargo +1.99.0 clippy --all-targets --locked -- -D warnings` | 問題なし |
+| `cargo +stable check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 警告 0 |
+| node の E2E（`target/release/tsuzuri`）: `wasm_memory`、`bindings`、`handoff_tools`、`cache`、`llvm_handoff`、`trap_boundary`、`e2e`、`targets` | すべて exit 0 |
+| 既定の出力が変わらない: `benchmarks/check-handoff-equivalence.mjs`（baseline の `tsuzuri-before` と比較） | `--quick` が 139 件、全 project の header・llvm・object・shared・wasm が 705 件で、すべて合格（587 件が完全に一致、118 件は両方とも同じ診断で失敗） |
+| 同じく、`target/perf/PR08/work/same-outputs2.sh` の byte 比較（`-O0`・`-Oz`・`-g`・`--trap-mode return`・`--allocator small`・`--cpu native`・`--freestanding` の object、shared、cache ありの object、llvm、header、wasm。7 project） | 98 件が byte 一致、差 0 |
+| `node scripts/check-docs.mjs`（native-interop・option・usage・webassembly）、`git diff --check` | 138 links、17 examples、12 native runs。問題なし |
+| 同梱の launcher（`scripts/toolchain/clang.rs` を build し、配布物の clang・zig・llvm-link で） | bitcode の magic を確認。Linux の x86-64（glibc）と AArch64（musl）のホストを `zig cc -flto=thin` でリンクして inline を確認（実行はしていない）。macOS のホストは `error: LTO requires using LLD` |
+| wasm32 と Rust（rustc 1.96.1、LLVM 22.1.2、`-C linker-plugin-lto`、`rust-lld`） | 手で確認。結果が正しく、import が空で、inline された |
+
+### 起票・再検討との違いと訂正
+
+- Phase 0 の記録の「Apple clang には wasm の backend がなく」は誤りだった。Apple clang 21.0.0 は `wasm32`・`wasm64` の backend を持ち、`tests/lto.rs` の wasm のテストは Apple clang でも通る（`wasm-ld` は LLD 23）。
+- wasm32 の `--wasm-feature simd128` は、属性を付けないと `wasm-ld` の LTO が SIMD の命令を落とす（`wasm_simd` の fixture で 0 命令。付けると regular の `--emit wasm` と同じく SIMD が残る）ので、付ける。付けなくても結果は同じ。
+- テストの skip: 起票の D9 は skip だけだったが、道具がないとき CI（環境変数 `CI`）では失敗にする。道具の探索は Clang の隣を含む。
+- PX01 の variant 名は `[a-z0-9-]+` なので、`c_only` は `c-only`。M1（呼び出し命令の数）は PX01 の指標にないので、`samples.json` と `docs/benchmarks.md` に書いた。
+- `--wasm-max-memory` の診断の文に `bitcode` を足した（`src/driver.rs`・`src/main.rs`・`tests/wasm_memory.mjs` の期待値）。
+- 同梱の Zig の `zig cc` が `-S` に足す `-c` の警告（`argument unused during compilation: '-c'`）を、IR へ併合する runtime のコンパイルで抑えた（macOS の `-g` の object の経路にも効く。成果物は変わらない）。
+- wasm の bitcode の検査は Node.js 20 でも通る（起票は 24）。
+
+### 既知の制限
+
+- Linux・x86-64・Windows は実行していない。Linux の `tests/lto.rs` は書いてあり、CI の LLVM 21（`-fuse-ld=lld`）で動く見込みだが、このマシンでは Docker のコンテナが起動せず（`Created` のまま）、確かめられなかった。
+- native の Rust のホスト（macOS）は inline されない。Linux の Rust は未確認。
+- 同梱の Zig の macOS のホストは LTO をリンクできない。Linux の bundle には `llvm-link` がなく、C ランタイムを使うプログラムの bitcode には別の `llvm-link` が要る。
+- bitcode を読む LLVM は、書いた LLVM と同じか新しくなければならない。コンパイラは検査しない。
+- `-g` の bitcode は、既定の DWARF 5 のホストとのリンクで `Dwarf Version` の警告が出る（ホストに `-gdwarf-4` で消える）。
+- PR07（`--profile-*`）と PB05（`--backend fast`）は、`--emit bitcode` を allow-list で拒否する。統合後に組み合わせを確かめる。
