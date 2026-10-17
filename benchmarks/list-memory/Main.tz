@@ -1,0 +1,68 @@
+// List kernels for PM04 (benchmarks/run-list-memory.mjs); benchmarks/list-memory/reference.mjs checks them.
+// Each export returns a checksum that has a closed form in n, so a run that builds the wrong list cannot pass.
+
+// `values = List.cons i values` in a loop, in its own function. A function that also walks `values` with `for`
+// makes the last-use analysis (A17) copy the list at every cons, which would measure that and not the list.
+def build :: i64 -> [|i64|]
+fn build n =
+    let mut values: [|i64|] = [||]
+    for i in 0 .. n - 1 do values = List.cons i values
+    values
+
+// `new [|i64|](n, f)` and a sum: n (n - 1) / 2.
+export def bulk_new :: i64 -> i64
+fn bulk_new n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let mut total = 0i64
+    for value in values do total = total + value
+    total
+
+// A list grown by `List.cons`, then a sum: n (n - 1) / 2.
+export def cons_build :: i64 -> i64
+fn cons_build n =
+    assert (n >= 0 && n <= 100000000)
+    let values = build n
+    let mut total = 0i64
+    for value in values do total = total + value
+    total
+
+// A `new` list taken apart by `List.tail` while its head is summed: n (n - 1) / 2.
+export def tail_consume :: i64 -> i64
+fn tail_consume n =
+    assert (n >= 0 && n <= 100000000)
+    let mut values = new [|i64|](n, \i -> i)
+    let mut total = 0i64
+    for _ in 0 .. n - 1 do
+        total = total + values[0]
+        values = List.tail values
+    total
+
+// An explicit copy of a Copy list, and the sum of both: n (n - 1).
+export def clone_list :: i64 -> i64
+fn clone_list n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let copy = List.copy (ref values)
+    let mut total = 0i64
+    for value in values do total = total + value
+    for value in copy do total = total + value
+    total
+
+// `values[i]` for every i: n (n - 1) / 2. Indexing a node list walks from the head, so it is quadratic there.
+export def index_walk :: i64 -> i64
+fn index_walk n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let mut total = 0i64
+    for i in 0 .. n - 1 do total = total + values[i]
+    total
+
+// A list of n strings that each own a heap buffer, and the sum of their lengths: 3 n.
+export def string_list :: i64 -> i64
+fn string_list n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|string|](n, \_i -> "ab" + "c")
+    let mut total = 0i64
+    for value in values do total = total + value.length
+    total
