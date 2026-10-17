@@ -471,7 +471,7 @@ impl FunctionEmitter<'_, '_> {
         let mut frames = Vec::with_capacity(elements.len());
         for (index, value) in elements.iter().enumerate() {
             let (value, element_frames) = self.frame_inner(value);
-            self.list_stack_store(element, &storage, index, elements.len(), &value);
+            self.list_stack_store(element, &storage, index, &value);
             frames.push(element_frames);
         }
         let list = self.list_stack_descriptor(&storage, elements.len());

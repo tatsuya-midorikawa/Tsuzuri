@@ -4832,12 +4832,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             (TypedExprKind::List(elements), Type::List(element)) => {
                 let length = elements.len().to_string();
-                let builder = self.list_builder(element, &length);
+                let mut builder = self.list_builder(element, &length);
                 let temporary_base = self.temporaries.len();
                 let tracking = !self.loop_targets.is_empty();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
-                        let prefix = self.list_prefix(element, &builder, index);
+                        let prefix = self.list_prefix(element, &mut builder, index);
                         self.temporaries.truncate(temporary_base);
                         self.remember_temporary(&expression.ty, &prefix, &[]);
                     }

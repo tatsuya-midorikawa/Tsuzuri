@@ -255,7 +255,16 @@ const STRUCTURAL: &[(&str, &[&str])] = &[
     ("narrow_unsigned", &["add i64 %, %", "add nuw nsw i64 %, 1"]),
     ("stepped", &["add i64 %, %"]),
     ("each_array", &["add i64 %, %", "add nuw i64 %, 1"]),
-    ("each_list", &["add i64 %, %", "add nuw i64 %, 1"]),
+    (
+        "each_list",
+        &[
+            "add i64 %, %",
+            "add i64 %, 1",
+            "add nuw i64 %, 1",
+            "sub i64 %, %",
+            "sub i64 %, %",
+        ],
+    ),
     ("each_text", &["add i64 %, %", "add nuw i64 %, 1"]),
     (
         "arithmetic",
@@ -683,13 +692,31 @@ fn compare_loop(source: &str, wasm: bool, flags: RangeFlags) -> String {
 
 #[test]
 fn structural_comparison_loops_count_with_an_unsigned_index() {
-    for source in [ARRAY_COMPARE, LIST_COMPARE] {
+    // The cursor of a list adds the step of two slots and the first slots of both lists, which no
+    // proof covers (the chunk of a list is not an index).
+    let cursors = ["sub i64 %, %"; 4];
+    let cases: [(&str, Vec<&str>, Vec<&str>); 2] = [
+        (
+            ARRAY_COMPARE,
+            vec!["add i64 %, 1"],
+            vec!["add nuw i64 %, 1"],
+        ),
+        (
+            LIST_COMPARE,
+            ["add i64 %, 1"; 3].into_iter().chain(cursors).collect(),
+            ["add i64 %, 1", "add i64 %, 1", "add nuw i64 %, 1"]
+                .into_iter()
+                .chain(cursors)
+                .collect(),
+        ),
+    ];
+    for (source, expected_off, expected_proven) in cases {
         for wasm in [false, true] {
             let off = compare_loop(source, wasm, RangeFlags::Off);
             let proven = compare_loop(source, wasm, RangeFlags::Proven);
             let audit = compare_loop(source, wasm, RangeFlags::Audit);
-            assert_eq!(arithmetic(&off), ["add i64 %, 1"], "{off}");
-            assert_eq!(arithmetic(&proven), ["add nuw i64 %, 1"], "{proven}");
+            assert_eq!(arithmetic(&off), expected_off, "{off}");
+            assert_eq!(arithmetic(&proven), expected_proven, "{proven}");
             assert_eq!(without_flags(&proven), without_flags(&off));
             assert!(!has_flag(&audit), "{audit}");
             assert_eq!(count(&audit, "@llvm.uadd.with.overflow.i64("), 1, "{audit}");

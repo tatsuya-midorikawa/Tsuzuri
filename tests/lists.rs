@@ -216,12 +216,13 @@ fn lists_specialize_across_modules_and_type_classes() {
 }
 
 #[test]
-fn runtime_fixture_uses_linked_nodes_and_entry_allocas() {
+fn runtime_fixture_uses_list_chunks_and_entry_allocas() {
     let module = analyze(include_str!("fixtures/lists/Lists.tz")).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(ir.contains("%tz.list = type { ptr, i64 }"));
-        assert!(ir.contains("getelementptr inbounds { ptr, i64 }"));
+        assert!(ir.contains("getelementptr inbounds { ptr, i64, i64, [0 x i64] }"));
+        assert!(!ir.contains("getelementptr inbounds { ptr, i64 },"));
         assert!(ir.contains("phi ptr"));
         for body in ir.split("define ").skip(1) {
             let body = body.split("\n}").next().unwrap();
