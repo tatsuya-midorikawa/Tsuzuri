@@ -1,12 +1,33 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
 use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
+
+/// `eprintln!` to `err`. A failed write panics with the message that `eprintln!` has.
+macro_rules! errln {
+    ($err:expr) => {
+        if let Err(error) = writeln!($err) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+    ($err:expr, $($arg:tt)*) => {
+        if let Err(error) = writeln!($err, $($arg)*) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+}
+
+/// The exit codes of the commands that `cli` runs. `ExitCode` cannot be read back, and the build
+/// server hands the number to its client.
+const EXIT_SUCCESS: u8 = 0;
+const EXIT_FAILURE: u8 = 1;
+const EXIT_USAGE: u8 = 2;
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -956,27 +977,47 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
 
 /// An invalid `TSUZURI_THREADS` is a command-line error, reported before the command reads a
 /// source (exit code 2, like the other invalid settings).
-fn invalid_thread_setting(json: bool) -> Option<ExitCode> {
+fn invalid_thread_setting(err: &mut dyn Write, json: bool) -> Option<u8> {
     let error = tsuzuri::validate_thread_setting().err()?;
-    print_diagnostic(&error, Path::new("<command line>"), "", json);
-    Some(ExitCode::from(2))
+    write_diagnostic(err, &error, Path::new("<command line>"), "", json);
+    Some(EXIT_USAGE)
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
-    print_with_severity(error.severity.as_str(), error, input, source, json);
+    write_diagnostic(&mut io::stderr(), error, input, source, json);
 }
 
 fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Project, json: bool) {
+    write_diagnostics(&mut io::stderr(), errors, project, json);
+}
+
+fn write_diagnostic(
+    err: &mut dyn Write,
+    error: &Diagnostic,
+    input: &Path,
+    source: &str,
+    json: bool,
+) {
+    write_with_severity(err, error.severity.as_str(), error, input, source, json);
+}
+
+fn write_diagnostics(
+    err: &mut dyn Write,
+    errors: &tsuzuri::diagnostic::DiagnosticSet,
+    project: &Project,
+    json: bool,
+) {
     for (index, error) in errors.diagnostics.iter().enumerate() {
         if index != 0 && !json {
-            eprintln!();
+            errln!(err);
         }
         let source = project.source_for(error);
-        print_diagnostic(error, &source.path, &source.text, json);
+        write_diagnostic(err, error, &source.path, &source.text, json);
     }
     if let Some(note) = errors.omission_note() {
         if json {
-            eprintln!(
+            errln!(
+                err,
                 "{{\"severity\":\"note\",\"message\":{}}}",
                 json_string(&note)
             );
@@ -990,12 +1031,13 @@ fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Proj
             } else {
                 "warning"
             };
-            eprintln!("\n{severity}: {note}");
+            errln!(err, "\n{severity}: {note}");
         }
     }
 }
 
-fn print_with_severity(
+fn write_with_severity(
+    err: &mut dyn Write,
     severity: &str,
     diagnostic: &Diagnostic,
     input: &Path,
@@ -1003,7 +1045,8 @@ fn print_with_severity(
     json: bool,
 ) {
     let path = input.to_string_lossy();
-    eprintln!(
+    errln!(
+        err,
         "{}",
         if json {
             diagnostic.json_with_severity(severity, &path, source)
@@ -1011,6 +1054,21 @@ fn print_with_severity(
             diagnostic.render_with_severity(severity, &path, source)
         }
     );
+}
+
+/// The tool messages of a build (W2001 as JSON) that follow a successful command.
+fn write_messages(err: &mut dyn Write, messages: &[String], json: bool) {
+    for message in messages {
+        if json {
+            errln!(
+                err,
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            errln!(err, "{}", message.trim());
+        }
+    }
 }
 
 fn run_action(
@@ -1051,7 +1109,7 @@ fn run_action(
     }
 }
 
-fn run_formatter(arguments: &Arguments) -> ExitCode {
+fn run_formatter(arguments: &Arguments) -> u8 {
     match driver::format_sources(&arguments.input, arguments.format_check) {
         Ok(changed) => {
             if arguments.format_check {
@@ -1066,15 +1124,15 @@ fn run_formatter(arguments: &Arguments) -> ExitCode {
                     }
                 }
                 if !changed.is_empty() {
-                    return ExitCode::FAILURE;
+                    return EXIT_FAILURE;
                 }
             }
-            ExitCode::SUCCESS
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = driver::read_source(&error.path).unwrap_or_default();
             print_diagnostic(&error.diagnostic, &error.path, &source, arguments.json);
-            ExitCode::FAILURE
+            EXIT_FAILURE
         }
     }
 }
@@ -1091,7 +1149,7 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::TestOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1118,7 +1176,7 @@ fn run_test_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.options.debug_info {
         return debug_test(arguments, project, module, &options, links);
@@ -1148,20 +1206,20 @@ fn run_test_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     if let Some(output) = &arguments.coverage
         && let Err(error) = driver::check_coverage_output(project, output)
     {
         print_diagnostic(&error, output, "", arguments.json);
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1254,11 +1312,11 @@ fn run_test_action(
         );
         let source = project.source_for(&diagnostic);
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else if coverage_failed {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     }
 }
 
@@ -1269,7 +1327,7 @@ fn debug_test(
     module: &tsuzuri::check::CheckedModule,
     options: &driver::TestOptions,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let output = arguments
         .output
         .as_ref()
@@ -1279,7 +1337,7 @@ fn debug_test(
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &runner.messages {
@@ -1311,7 +1369,7 @@ fn debug_test(
             runner.arguments.join(" ")
         );
     }
-    ExitCode::SUCCESS
+    EXIT_SUCCESS
 }
 
 /// `tsuzuri bench`: measures each selected bench in its own process, one at a time, and prints
@@ -1321,7 +1379,7 @@ fn run_bench_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::BenchOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1347,7 +1405,7 @@ fn run_bench_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.test_list {
         for case in module.benches.iter().filter(|case| options.includes(case)) {
@@ -1374,14 +1432,14 @@ fn run_bench_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     let report = match driver::run_benches_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1491,9 +1549,9 @@ fn run_bench_action(
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
     }
     if failed.is_empty() {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     } else {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     }
 }
 
@@ -2138,35 +2196,54 @@ fn main() -> ExitCode {
         return bindgen_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "repl") {
-        if let Some(code) = invalid_thread_setting(false) {
-            return code;
+        if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+            return ExitCode::from(code);
         }
         return repl_command(&raw[1..]);
     }
-    let json = flags.iter().any(|argument| *argument == "--json");
-    let arguments = match parse_arguments(&raw) {
+    ExitCode::from(cli(
+        &raw,
+        program_arguments.as_deref(),
+        &mut io::stdout(),
+        &mut io::stderr(),
+    ))
+}
+
+/// Runs the command line `raw` that is a project command: everything after the commands that need
+/// no project (`--help`, `new`, `repl`, ...), from `parse_arguments` on. Its diagnostics and
+/// warnings go to `err`. `out` is the stream of the result that a command prints: `check` and
+/// `build` print none, and `test`, `bench`, `fmt`, and `run` write to the process's own standard
+/// output, so a caller that captures `out` serves `check` and `build` only.
+fn cli(
+    raw: &[OsString],
+    program_arguments: Option<&[OsString]>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
+    let json = raw
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match parse_arguments(raw) {
         Ok(arguments) => arguments,
         Err(message) => {
-            print_diagnostic(
+            write_diagnostic(
+                err,
                 &Diagnostic::new("E2000", message, Span::default()),
                 Path::new("<command line>"),
                 "",
                 json,
             );
-            return ExitCode::from(2);
+            return EXIT_USAGE;
         }
     };
     if arguments.action != Action::Fmt
-        && let Some(code) = invalid_thread_setting(json)
+        && let Some(code) = invalid_thread_setting(err, json)
     {
         return code;
     }
     if arguments.action == Action::Lsp {
-        return ExitCode::from(tsuzuri::lsp::serve(
-            std::io::stdin(),
-            std::io::stdout().lock(),
-            std::io::stderr().lock(),
-        ) as u8);
+        return tsuzuri::lsp::serve(io::stdin(), out, err) as u8;
     }
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
@@ -2185,15 +2262,16 @@ fn main() -> ExitCode {
     let project = match loaded {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+            return EXIT_FAILURE;
         }
     };
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
     // Command-line values were validated during parsing, so only manifest values can fail here.
     if let Err(error) = arguments.options.validate() {
-        print_diagnostic(
+        write_diagnostic(
+            err,
             &Diagnostic::new(
                 error.code,
                 format!(
@@ -2206,7 +2284,7 @@ fn main() -> ExitCode {
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let kind = match arguments.action {
         // bench loads the same sources as test (`Project::load_for_tests`).
@@ -2218,8 +2296,8 @@ fn main() -> ExitCode {
     let module = match project.analyze_cached(arguments.options.cache, kind) {
         Ok(module) => module,
         Err(errors) => {
-            print_diagnostics(&errors, &project, arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostics(err, &errors, &project, arguments.json);
+            return EXIT_FAILURE;
         }
     };
     // The manifest's [native] inputs come first and apply only where the command line's would.
@@ -2237,9 +2315,9 @@ fn main() -> ExitCode {
         module.warnings.iter().cloned().chain(copies),
         0,
     );
-    print_diagnostics(&warnings, &project, arguments.json);
+    write_diagnostics(err, &warnings, &project, arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links);
@@ -2252,26 +2330,17 @@ fn main() -> ExitCode {
         &project,
         &module,
         &links,
-        program_arguments.as_deref().unwrap_or_default(),
+        program_arguments.unwrap_or_default(),
     );
     match result {
         Ok(messages) => {
-            for message in messages {
-                if arguments.json {
-                    eprintln!(
-                        "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                        json_string(message.trim())
-                    );
-                } else {
-                    eprintln!("{}", message.trim());
-                }
-            }
-            ExitCode::SUCCESS
+            write_messages(err, &messages, arguments.json);
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = project.source_for(&error);
-            print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            ExitCode::FAILURE
+            write_diagnostic(err, &error, &source.path, &source.text, arguments.json);
+            EXIT_FAILURE
         }
     }
 }
