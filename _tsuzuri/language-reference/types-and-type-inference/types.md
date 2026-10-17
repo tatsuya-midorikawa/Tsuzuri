@@ -47,7 +47,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 | タプル | `i64 * string` | 条件付き | 複数の型の値を名前なしでまとめる不変の直積（要素がすべて Copy なら Copy） | [Tuple](../built-in-types-and-modules/tuple.md) |
 | 固定長配列 | `[f64; 3]` | 条件付き | 長さ N を型に含み、値の中に要素を置く配列（要素が Copy なら Copy） | [Array](../built-in-types-and-modules/array.md) |
 | 配列 | `[i32]` | 条件付き | 長さは実行時に決まり、生成後は変わらない。記述子は 16 バイト（要素が Copy なら Copy） | [Array](../built-in-types-and-modules/array.md) |
-| 連結リスト | `[|i32|]` | 条件付き | 不変の単方向連結リスト（要素が Copy ならリストも Copy） | [List](../built-in-types-and-modules/list.md) |
+| 連結リスト | `[|i32|]` | 条件付き | 不変のリスト（要素が Copy ならリストも Copy。要素は連続した領域に並ぶ） | [List](../built-in-types-and-modules/list.md) |
 | レコード | `record Point { ... }` | 条件付き | 名前付きフィールドを持つ積型。全フィールドが Copy ならレコードも Copy | [Record](../built-in-types-and-modules/record.md) |
 | 共用体 | `union Shape = ...` | 条件付き | 直和型。いずれか 1 つのケースの値を保持 | [Union](../built-in-types-and-modules/union.md) |
 | 関数型 | `i64 -> string` | ○ | カリー化された第一級の関数値。複製すると捕捉した値もコピーされる | [関数](../values-and-functions/functions.md) |
@@ -107,7 +107,7 @@ result
 i64 * string          // 2 要素のタプル型
 [f64]                 // 長さを型に持たない通常の配列
 [f64; 3]              // 長さ 3 を型に含み、値を直接保持する固定長配列
-[|string|]            // 不変の単方向連結リスト
+[|string|]            // 不変のリスト
 ```
 
 タプルの中身は `match pair with | (a, b) -> ...` で取り出します。`pair.0` のような添字アクセスはなく、書くと構文エラー `E0002` です。
