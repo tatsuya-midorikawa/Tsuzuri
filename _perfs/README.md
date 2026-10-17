@@ -241,6 +241,15 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   切り替えます。P2-c（E1010 の見積もりと `stack_size` を 16 に）は、`docs/language.md` が 32 を保守的な上限と書き、PM01 の D4 が受理される program を変える変更を禁じ、効果が測れないため取り下げます。
   P2-a（`!invariant.load`）は WP7 の測定で決め、`Maybe<fn>` を null の記述子で表す niche（24 → 16 bytes）は任意の作業（WP9）です。この機械では `lldb` が `run` で応答せず（基準でも `tests/debugger.mjs` が ETIMEDOUT）、
   x86-64・Linux・Windows の記述子の再配置と実コンパイラでの実行ファイルの大きさは未測定です。
+- **PB05**（計画。全フェーズを実装する）: 起票時の `f8dc655` から、`runtime_objects`（numeric と math）、`compile_runtime_object`、`run` が常に `trap_info`（計装は IR の書き換えなので fast でも使える）、
+  runtime IR の SIMD・atomic・TLS・`weak`・`fastcc`・`byval` が増えていました。IR の棚卸し（命令 51 種・intrinsic 47 種・vector 型 23 種）で D6 に無い構成要素に個別の方針を決め、
+  停止条件 1・2・3・8 は解消しました。Cranelift は `rust-version` 1.85 以下の最新の 0.121.2（31 package、C を compile する `build.rs` なし）を `=` で固定し、feature `fast-backend`（`x86`・`arm64`）に入れます。
+  `cranelift-native` は使わず、出力は host の CPU に依りません。スパイクでは、Cranelift の back end は LLVM の命令あたり約 1/4 の時間で関数単位に並列化でき、Mach-O は `LC_BUILD_VERSION` を足せば
+  warning なしで link でき、TLS と trap の signal（SIGTRAP）が LLVM 経路と合うことを確認しました。計測は back end だけで、ゲート（合成 1,000 module の `build-edit-body`）は WP9 で測ります。
+  検証の wrapper は 2 経路（`tsuzuri` の `build`/`run` と、`TSUZURI_CLANG` の `.ll` の `-O0`）で、suite の多くは `--emit llvm` の IR を自分で clang に渡すので後者が主（約 410 件、前者は約 190 件）です。
+  `half` は駆動側が `F16Path::Soft`、vector は lane の scalar 化、集約値は 2 層（小さいものは平らに、大きいものは参照）で扱います。`-g` の行情報（Phase 2）は IR の `!DILocation` から gimli で作り、
+  変数・型の DIE は作りません。wasm の直接生成（D13）は、wasm32 `-O0` の Clang が 57〜60%（合成 200 module）と確かめましたが、`object` に wasm の writer がなく Cranelift も wasm を出さないので
+  （手書きの relocatable wasm の writer が約 3.5〜4.5K 行）、ゲートを通った後に WP16 で再確認して WP17〜20 で実装します。D12（既定の切り替え）は行わず `llvm` が既定のままです。
 
 ### 第3フェーズ8件の実装方針（2026-10-16）
 
