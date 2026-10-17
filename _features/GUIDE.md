@@ -365,7 +365,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 - パターン: `control.rs` の `pattern_alternatives` が `Alternative { steps: Vec<PatternStep>, bindings }` を返す。
   `PatternStep::Test(bool 式)` は順に評価され、false なら次の節へ。OR は alternatives を増やす。
 - LLVM 表現: `%tz.string = { ptr, i64 }`、`%tz.array = { ptr, i64 }`、`%tz.list = { ptr, i64 }`（先頭ノード・長さ）、
-  リストのノード `{ ptr next, T }`、`%tz.closure = { ptr, ptr, ptr, ptr }`（code/environment/clone/drop）、
+  リストのノード `{ ptr next, T }`、`%tz.closure = { ptr, ptr }`（静的記述子 `@tz.desc.*`（`%tz.closure.desc = { code, clone, drop }`）/environment。PM02）、
   レコード `%tz.record.<Module.Name> = type { fields... }`（利用者のレコードは、フィールドをアライメントの降順に並べると小さくなるときだけその順に格納する（PM01）。
   評価・drop・`deriving`・DWARF のメンバー・公開 ABI の C の構造体は宣言順のまま。フィールドの読み書きは `field_slot` を通す）、タプルはリテラル構造体（宣言順）、`bool` は `i1`、`unit` は `i8`、
   参照は `ptr`。値は SSA の集約値（`extractvalue`／`insertvalue`）、借用可能な場所は entry block の `alloca`。
