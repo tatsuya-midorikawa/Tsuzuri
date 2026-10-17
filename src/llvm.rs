@@ -2069,8 +2069,9 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
 
 /// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
 /// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
-/// copy, a task is never cloned, and a function that borrows owned captures is not cloned either
-/// (B07).
+/// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
+/// not cloned either (B07). A closure with an environment and a `null` drop is therefore an
+/// immediate one, which `@tz.closure.clone` and `@tz.closure.drop` leave alone.
 fn closure_slots(
     module: &CheckedModule,
     function: &CheckedFunction,
@@ -2078,13 +2079,8 @@ fn closure_slots(
     immediate: bool,
 ) -> (String, String) {
     let name = function.qualified_name();
-    if count == 0 {
+    if count == 0 || immediate {
         ("null".to_owned(), "null".to_owned())
-    } else if immediate {
-        (
-            "@tz.closure.immediate.clone".to_owned(),
-            "@tz.closure.immediate.drop".to_owned(),
-        )
     } else if !function.is_task
         && !function.owned_captures
         && function.signature.parameters[..count]

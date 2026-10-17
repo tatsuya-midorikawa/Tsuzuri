@@ -193,13 +193,9 @@ fn closure_descriptors_name_what_each_kind_of_closure_needs() {
     // A function used as a value owns nothing.
     expect(&native, "Mix.inc.0", "null", "null");
     expect(&wasm, "Mix.inc.0", "null", "null");
-    // One captured `i64` is its own copy on a 64-bit target and a heap environment on wasm32.
-    expect(
-        &native,
-        "Mix.add3.1",
-        "@tz.closure.immediate.clone",
-        "@tz.closure.immediate.drop",
-    );
+    // One captured `i64` is its own copy on a 64-bit target, which owns nothing, and a heap
+    // environment on wasm32.
+    expect(&native, "Mix.add3.1", "null", "null");
     expect(
         &wasm,
         "Mix.add3.1",
@@ -214,6 +210,60 @@ fn closure_descriptors_name_what_each_kind_of_closure_needs() {
             "@tz.env.clone.Mix.add3.2",
             "@tz.env.drop.Mix.add3.2",
         );
+    }
+}
+
+/// The number of closures built with a capture stored in the environment slot itself, and with an
+/// environment on the heap, in `ir`. A closure whose descriptor has no drop entry is left alone by
+/// `@tz.closure.clone` and `@tz.closure.drop` (PM02 P2-b), so it must own nothing: the only ones
+/// without a drop entry are a closure with no captures (its environment is null) and a capture
+/// stored in the slot.
+fn closures_built(ir: &str) -> (usize, usize) {
+    let lines: Vec<&str> = ir.lines().collect();
+    let (mut immediate, mut owned) = (0, 0);
+    for (position, line) in lines.iter().enumerate() {
+        let Some((_, target)) =
+            line.split_once("insertvalue %tz.closure zeroinitializer, ptr @tz.desc.")
+        else {
+            continue;
+        };
+        let name = target.split(',').next().unwrap();
+        let count: usize = name.rsplit('.').next().unwrap().parse().unwrap();
+        let without_drop = descriptor(ir, name).unwrap().ends_with(", ptr null }");
+        let environment = lines[position + 1]
+            .split(", ptr ")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .unwrap_or_else(|| panic!("{}", lines[position + 1]));
+        if count == 0 {
+            assert_eq!(environment, "null", "{line}");
+            assert!(without_drop, "{name}");
+            continue;
+        }
+        let made = lines[..position]
+            .iter()
+            .rev()
+            .take_while(|line| !line.starts_with("define "))
+            .find(|line| line.trim_start().starts_with(&format!("{environment} = ")))
+            .unwrap_or_else(|| panic!("{environment} in {line}"));
+        let stored_in_the_slot = made.contains(" = inttoptr ");
+        assert_eq!(stored_in_the_slot, without_drop, "{name}: {made}");
+        if without_drop {
+            immediate += 1;
+        } else {
+            owned += 1;
+        }
+    }
+    (immediate, owned)
+}
+
+#[test]
+fn only_immediate_closures_have_an_environment_without_a_drop_entry() {
+    for wasm in [false, true] {
+        let (immediate, owned) = closures_built(&mix_ir(wasm));
+        assert!(owned > 0, "wasm: {wasm}");
+        // A 64-bit capture fits the environment slot of a native pointer, not of wasm32's.
+        assert_eq!(immediate > 0, !wasm, "wasm: {wasm}");
     }
 }
 
@@ -236,6 +286,8 @@ fn owned n =
         analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let (_, owned) = closures_built(&ir);
+        assert!(owned > 0, "wasm: {wasm}");
         assert!(!ir.contains("@tz.env.clone.$task."), "{ir}");
         assert!(!ir.contains("@tz.env.clone.$lambda."), "{ir}");
         let mut seen = (false, false);
