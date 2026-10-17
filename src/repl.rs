@@ -63,6 +63,10 @@ pub fn run(
         session: Session::default(),
         messages: BTreeSet::new(),
     };
+    // Every input builds a program, and a build key hashes the compiler's own file: the digest of a
+    // file whose `stat` is the same is remembered (PB06).
+    let mut resident = crate::resident::ResidentState::new();
+    let _resident = crate::resident::Scope::enter(&mut resident);
     let mut reader = Reader { input };
     if interactive {
         writeln!(
