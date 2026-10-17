@@ -731,14 +731,14 @@ WASM は Phase 1 で拒否するのでケース 7 だけで扱う。Tsuzuri の 
 - 決定: `build` だけに `--profile-generate <dir>` と `--profile-use <path>` を足す。両者は排他で、native の `--emit exe`・`object` だけで使える。
   組み合わせの誤りは `E2000`（設計の表）。`--emit object` の利用者は最終の link に `-fprofile-generate` を渡す。
 - 理由: Clang・GCC と同じ名前で、C/C++ の利用者がそのまま使える。`run` へ広げると計装版の実行ファイルの置き場所と訓練の入力を決める必要がある。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（2026-10-17 の再検討で変更: `build` に加えて `run` も受け付ける（`run --profile-generate DIR` は計装して実行し DIR に書き、正常に終了したのに書かれなければ `W2001`）。許す出力は native の `exe`・`object` と wasm32 の `wasm`（D7）。診断の文面と許可リストは「着手時の再検討」の D1 のとおり）
 
 ### D2: 計装の方式
 
 - 決定: clang の IR レベルの PGO（`-x ir` に `-fprofile-generate=<dir>`・`-fprofile-use=<file>`）を使う。`-fprofile-instr-generate`、`opt -passes=pgo-instr-gen`、G18 の自前の計装は使わない。
 - 理由: 2026-09-30 の probe で Apple clang 21 が `.ll` に対して計装・適用とも行い、`-fprofile-instr-generate` は何もしないことを確かめた。`opt` を
   使うと新しいツールの発見と版合わせが要る。G18 のカバレッジは目的（行の網羅）も出力も違うので共有しない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし）
 
 ### D3: profile の入力と `llvm-profdata`
 
@@ -746,7 +746,7 @@ WASM は Phase 1 で拒否するのでケース 7 だけで扱う。Tsuzuri の 
   `llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、clang の実体と同じディレクトリ、macOS の `xcrun --find llvm-profdata` の順で探し、PATH は探さない。版番号は比べない。
 - 理由: 訓練の dir をそのまま渡せる。raw profile は書いた runtime と同じ系列の `llvm-profdata` でしか確実に読めず、Apple clang の版番号は LLVM と
   対応しないので、clang と対になる場所を優先し、不一致は clang の読み込みの失敗（`E2002`）として報告する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（2026-10-17 の再検討で変更: `xcrun` ではなく `clang -print-resource-dir` の 3 階層上の `bin/`。`src/profile.rs` の `find_profdata`）
 
 ### D4: 型の置き場所と cache の鍵
 
@@ -754,45 +754,45 @@ WASM は Phase 1 で拒否するのでケース 7 だけで扱う。Tsuzuri の 
   一時ディレクトリへ複製・merge した indexed profile の SHA-256 を、`Some` のときだけ足す。
 - 理由: `BuildOptions` は `Copy` で、`Debug` 表現が鍵に入る。外に置けば PGO なしの鍵と `driver::build` の signature が変わらない。path ではなく
   内容で鍵を作るので、profile を移動しても hit し、中身を替えれば miss する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（2026-10-17 の再検討で変更: 入口は `build_profiled`、型は `src/profile.rs`、鍵の field は `ir-and-embedded-runtime` の直後で、`TSUZURI_LLVM_PROFDATA`・`LLVM_PROFILE_FILE` は鍵に入れない）
 
 ### D5: 古い profile の警告
 
 - 決定: clang の `(hash mismatch)` の行を数えて除き、`W2001` の既存の経路で 1 行の要約を出す。build は成功させる。新しいコードは割り当てない。
 - 理由: docs/language.md が「ツールの警告は `W2001`」と定めており、driver の `messages` は既にこの経路で出る。関数ごとの行をそのまま出すと大きい
   プログラムで数千行になる。`--deny-warnings` は codegen 前の検査の警告だけが対象なので、この警告では失敗しない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし。3 つの Clang で同じ文面を確認）
 
 ### D6: ランタイムの範囲
 
 - 決定: Phase 1 で計装・PGO の対象にするのは、clang に渡す 1 つの IR module（利用者のコードと連結された `src/runtime/*.ll`）だけ。C ランタイム
   （`task.c`）と PB01 の事前ビルド object には旗を渡さない。
 - 理由: C ランタイムの compile に旗を足すと link と cache の経路が増え、PB01 の object の鍵にも profile が入る。分岐の多い利用者のコードが主な対象である。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（Phase 1 の範囲のまま取り下げ。2026-10-17 の測定で、数学のランタイムを埋め込んで計装しても差が測れず、PGO のビルドだけ埋め込む案はプロファイルの効果でない差を混ぜるので採らない。docs/benchmarks.md の PR07）
 
 ### D7: WASM
 
 - 決定: Phase 1 は `--target wasm32` との組み合わせを `E2000` で拒否する。native で取った profile を WASM の build に使わない。
 - 理由: WASM には `.profraw` を書き出す runtime がなく、host 側の仕組みは既定の import を増やす（D-18）。target が違うと inline と layout の判断も
   変わる。Phase 2 で扱う場合は新しい host の機能として別途承認を得る。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装済み（2026-10-17 の承認: 試作で counts が native と一致し、測れる効果（apps の `csv_aggregate` −14% など）が出たので、opt-in の wasm32 として出した。module の隣の `app.wasm.profile.mjs` の `writeProfile(instance)` が raw profile を書く。wasm64・threads・`--emit wasm` 以外・generate と `--wasm-opt` は `E2000`、Clang 21 だけ、間接呼び出しの値 profile なし。効果は workload と JavaScript エンジンで変わる）
 
 ### D8: 計測の方式
 
 - 決定: `benchmarks/run-control.mjs` に `--pgo` を足し、`--quick`（大きさ 1024、seed 42）を訓練の入力にする。PX01 の記録の欄は変えず、run_id で
   PGO の有無を分ける。C/C++ の参照実装への PGO は Phase 2 とする。
 - 理由: 訓練と計測の入力の大きさを分けつつ、runner の checks で計装版の正しさも確かめられる。記録の欄を変えると PX01 の schema に触れる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装済み（`--pgo` は 1 run に plain と PGO の host を交互に実行し、PGO の列を `variant` の `pgo` で記録する（schema は変えない）。C・C++ も同じ profile で PGO にし、Rust は `--pgo-rust-llvm DIR` を付けたときだけ rustc の LLVM で PGO にする。`benchmarks/run-control.mjs`）
 
 ### D9: trap の分岐への `!prof`
 
 - 決定: Phase 1 では Tsuzuri の IR に `!prof` を足さない。Phase 2 で、PGO なしの機械語で trap の block が hot path の間に置かれている例を
   「生成コードの確認」の方法で見つけた場合だけ、`llvm.expect` 相当の重みを検討する。
 - 理由: trap の block は `llvm.trap` と `unreachable` で終わり、LLVM は既に冷たいと推定する。IR を変えると PGO なしの成果物が変わり、G2 に反する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 取り下げ（2026-10-17。21 の corpus の `-O3` の asm 177 個の trap のうち、hot path が飛び越える形は失敗の経路の中の 1 つだけで、`control` と `computations` は全部 out of line。`benchmarks/run-trap-layout.mjs`、docs/benchmarks.md の PR07。IR は変えていない）
 
 ### D10: 決定性
 
 - 決定: directory の `.profraw` はファイル名の順で merge に渡す。file の profile も一時ディレクトリへ複製してから digest と clang に使う。
 - 理由: 2026-09-30 に、merge と `-fprofile-use` の出力が同じ入力で byte 一致することを確かめた。順序と複製で、入力の列挙順と読み込み中の差し替えに左右されない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし。ディレクトリを渡した build と merge 済みの file を渡した build の object は byte 同一、`tests/pgo.mjs` と M3 の `cmp`）
