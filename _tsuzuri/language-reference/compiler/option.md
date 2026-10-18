@@ -246,11 +246,11 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | target | ビルド機の native（macOS と Linux の AArch64・x86-64）と `wasm32` です（[fast の WebAssembly](#fast-の-webassemblywasm32)）。`wasm64`・`--target TRIPLE` は `llvm` |
 | `--emit` | native は `exe` と `object` だけです。wasm32 は `wasm` と `object` だけです。`llvm`・`header`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
 | 付けられるもの | `--trap-info`、`--strip`（native）、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host\|small\|counting`、`--freestanding`、`--trap-mode return`、`--coverage`（`test`）、`-g`（native。関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)）、`--wasm-max-memory`・`--wasm-stack-size`（wasm32） |
-| `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use`、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net）・`--wasm-host wasi`・`--wasm-opt`・`-g` |
+| `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use`、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net）・`--wasm-host wasi`・`--wasm-opt`・`-g`、WebAssembly の target の `test` |
 
 `tsuzuri` に Cranelift は既定で入りません。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが `--backend fast` を受け付け、入っていない `tsuzuri` は再ビルドの方法を `E2000` で示します。Windows とビルド機が上の表にないものは、`E2000` です。
 
-Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれると、翻訳は `E2002` で止まり、構成要素と関数の名前を示します。別の意味のコードを出すことはありません。そのときは `--backend llvm` で作り直してください。このリポジトリの `examples/` と `tests/fixtures/` のうち `llvm` でビルドできる 102 個は、`fast` でもすべてビルドでき、実行ファイルは同じ出力と終了状態になり、ライブラリは同じ symbol を export します。
+Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれると、翻訳は `E2002` で止まり、構成要素と関数の名前を示します。別の意味のコードを出すことはありません。そのときは `--backend llvm` で作り直してください。止まるものには、`half`・`x86_fp80`、インラインアセンブリ、`invoke`、`musttail` の呼び出し、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、可変引数の関数の呼び出し、表にない `llvm.*` などがあります。16 byte を超える alignment の `alloca`（256 bit の vector など）は止まらず、native は stack の slot を余分に取ってアドレスを切り上げ、wasm32 は frame を切り下げて、要求どおりに揃えます。このリポジトリの `examples/` と `tests/fixtures/` のうち `llvm` でビルドできる 102 個には、そのどれも現れず、すべて `fast` でもビルドでき、実行ファイルは同じ出力と終了状態になり、ライブラリは同じ symbol を export します。
 
 ```text
 <command line>:1:1: error[E2000]: --backend fast supports only -O0; remove -O3 or use --backend llvm
@@ -268,9 +268,10 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 
 `--backend fast --target wasm32 -O0` は、wasm32 の `-O0` のビルドでも、Tsuzuri の出した LLVM IR を Clang に渡さずに、コンパイラ自身が WebAssembly の object にします。object は、`numeric`・`math` の runtime の object（Clang が作ったものか、同梱のもの）と一緒に、今までどおり `wasm-ld` でリンクします。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。`--emit wasm`（既定）と `--emit object` が使え、`--wasm-max-memory`・`--wasm-stack-size`・`--trap-info`・`--allocator`・`--no-cache` も `llvm` のときと同じです。付けると `E2000` になるのは、`--wasm-feature simd128|threads|jspi|webgpu|net`、`--wasm-host wasi`、`--wasm-opt`、`-g`（wasm の DWARF は `llvm` だけです）、`wasm64`、`wasm` と `object` 以外の `--emit` です。
 
-- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 780 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造）は、Clang の object と同じ結果になります。
+- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 970 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造。33〜63 bit の幅の overflow の演算と、ポインタ越しの呼び出しの narrow な結果を含みます）は、Clang の object と同じ結果になります。
 - 違うもの: module は `llvm` の `-O0` のものより大きくなります（`examples/` と `tests/fixtures/` の 94 個の合計で 1.10 倍、合成プロジェクトで 1.40〜1.43 倍。最適化せず、命令を定型で並べるためで、`llvm` と同じ runtime の object は変わりません）。NaN の符号と payload は、WebAssembly が決めていないので、同じ入力でも `llvm` と一致するとは限りません（`NaN` かどうかは同じです）。暴走する再帰は、`llvm` ではシャドウスタックの境界か V8 のスタックのどちらかで止まりますが、止まる深さと報告の種類（`RuntimeError` か `RangeError`）が `fast` では変わることがあります。
-- `E2002` になるもの: `llvm.fma`、128 bit の積の overflow（`llvm.smul.with.overflow.i128`・`llvm.umul.with.overflow.i128`）、1 関数に 40,000 を超える値がある関数です。
+- `E2002` になるもの（翻訳器のコードで確かめた一覧です）: `llvm.fma`（WebAssembly に fused の命令がありません。`llvm.fmuladd` は積と和に分けて翻訳します）、128 bit の積の overflow（`llvm.smul.with.overflow.i128`・`llvm.umul.with.overflow.i128`）、翻訳器の表にない `llvm.*`（`llvm.round`・`llvm.minnum`・`llvm.maxnum`、`llvm.sin` などの数学関数）、整数の load と store で 1〜16・32・64・128 bit 以外の幅（`i24`・`i48`・`i96` など）、可変引数の関数の呼び出し、基本ブロックが 65,521 個を超える関数（V8 が `br_table` の 65,520 個を超える対象を持つ module を拒否するので、翻訳を止めます）、local が 40,000 個を超える関数（数えるのは値の数ではなく、最後の使用のあとで別の値が使い回したあとの local の数です。値が 100,000 個ある連鎖は翻訳できますが、同時に生きている値が 40,010 個ある関数は止まります（39,990 個なら翻訳できます））、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、`musttail` の呼び出し、runtime の object が 128 bit の結果を 2 つの値で返すと決めたときの、pointer 越しの 128 bit の結果の呼び出しです。
+- 128 bit の整数を返す runtime の関数（`__multi3`・`__ashlti3`・`__udivti3` など）の型は、リンクする runtime の object が import する型で決めます。Clang 21 は `-mmultivalue` を付けても、先頭の pointer に結果を書く型にするので、そのような object が決めなければ（`--emit object` のように runtime の object を渡さないときを含みます）pointer の型にします。`tests/fast_backend.mjs` が、`--emit object` の module を、`__int128` を使う Clang の object とリンクして、`wasm-ld` が型の食い違いの warning を出さず、Clang の呼び出しが正しい結果を得ることを確かめています。
 - `fast` の module は、`tsuzuri build` のほかに、`tests/fast_backend.mjs wasm` と `tests/fast_backend_ops.rs` が Clang の module と比べています。Windows のホストでは、`--backend fast` 自体が `E2000` です。
 
 **wasm32 の性能の目安**（同じ条件と合成プロジェクトの、`--target wasm32`）。
@@ -412,6 +413,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--backend fast` に `exe`・`object` 以外の `--emit`（native） | `--backend fast produces only exe and object outputs; use --backend llvm for --emit llvm` |
 | `--backend fast --target wasm32` に `wasm`・`object` 以外の `--emit` | `--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit llvm` |
 | `--backend fast --target wasm32` に SIMD・threads・jspi・webgpu・net・`--wasm-host`・`--wasm-opt`・`-g` | `--backend fast does not support --wasm-feature simd128 for wasm32; remove it or use --backend llvm` |
+| `--backend fast` の `test` に `--target wasm32`（wasm64 も） | `--backend fast tests only the native target; use --backend llvm to test a WebAssembly target` |
+| `--backend fast` に、`--target` が出せない `--emit`（`--target wasm32 --emit exe`、native の `--emit wasm`、`--target wasm32 --emit shared`、native の `--emit bindings-js` など。どのバックエンドでも誤りです） | `llvm` のときと同じ（`'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'` など）。`--backend llvm` を勧めることはありません |
 | `--backend fast` に `--cpu native` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm` |
 | `--backend fast` に `--profile-generate`・`--profile-use` | `--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use` |
 | macOS で `--backend fast -g --emit object`、C のランタイムが要るプログラム | `--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm`（`E2002`） |

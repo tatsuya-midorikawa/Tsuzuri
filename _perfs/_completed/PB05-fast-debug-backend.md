@@ -35,7 +35,7 @@ Go や Zig の自前のバックエンド、Rust の Cranelift によるデバ�
 `要承認` の注記は今回の依頼には適用せず、意味の保持・既定を変えない・測定で決める条件は維持する。以下の「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」
 「決定事項」は起票時の記録で、このセクションと食い違う箇所はこのセクションが優先する（旧 `_docs/` のパスは `_tsuzuri/language-reference/` に読み替える。GUIDE §8.1）。
 着手時の HEAD は `a2313d19`（main `9dd0fbbc` + 第4フェーズの計測の足場）。偵察は、保存した release コンパイラ（`target/perf/phase4-baseline/tsuzuri-before`、SHA-256 `5e1b9687…`）、
-Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1（MSRV の確認は rustup の 1.85.0）、Node 20.19.6、LLVM 21 の単体ツールで行った。
+Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1（Homebrew。MSRV の確認は rustup の 1.85.0 で行ったつもりだったが、`rustc` が PATH の Homebrew のものになっていた。2026-10-19 の訂正は「レビューの指摘と修正」の N3）、Node 20.19.6、LLVM 21 の単体ツールで行った。
 共有機で 1 分の load average は 4〜30 だったので、時間は参考値である。生データと script は `target/perf/PB05/`（git 管理外）。
 
 ### 起票時の記述と現行のコード
@@ -59,7 +59,7 @@ Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1�
 | 「Phase 2（DWARF・`--trap-info`・`test`）と D13 は人間が求めた場合だけ」 | 全フェーズの実装を依頼された | Phase 2・3 も実装・判断する（下の WP） |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl`、`--target native\|wasm32`、`-O0`〜`-O3` | `--emit` は 14 種（`shared`・`bindings-js\|cs\|py\|cpp`・`spirv`・`spirv-relaxed`・`wgsl-relaxed` を含む）、`--target` は native・wasm32・wasm64・TRIPLE（G15）、`-Os`・`-Oz`、`--cpu native`・`--freestanding`・`--allocator system\|host\|counting\|small`・`--trap-mode return`・`--strip`・`--wasm-opt`・`--link`・`-l`・`-L` | E2000 の表を作り直す（下の表） |
 | 段名 `backend.parse`・`backend.lower`・`backend.object` | `TSUZURI_TIME_PASSES` は JSON 1 行（`load`・`cache`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`tool.<名>`）。worker thread は timings に触れず、並列の段は呼び出し側 thread の実時間で測る（`src/parallel.rs` の規約）。`tests/time_passes.rs` は「段の和 ≤ total」を検査する | 段は `backend.scan`（逐次）・`backend.compile`（並列の解析 + lower + Cranelift）・`backend.object` にする |
-| 停止条件 1・2: `rust-version = "1.85"` で build できる Cranelift が無い、C/C++ を compile する `build.rs` がある | 0.121.2（`rust-version` 1.85.0）が 1.85 以下の最新（0.122.0 は 1.86.0 を要求）。rustc 1.85.0 で `cargo check` が通り（21 s）、依存は 31 package（30 crate 名）で、C/C++ を compile する `build.rs` も network を使う `build.rs` もない | 停止条件 1・2 は解消 |
+| 停止条件 1・2: `rust-version = "1.85"` で build できる Cranelift が無い、C/C++ を compile する `build.rs` がある | 0.121.2（`rust-version` 1.85.0）が 1.85 以下の最新（0.122.0 は 1.86.0 を要求）。cargo 1.85.0 の `cargo check` が通り（21 s。ただし rustc は Homebrew の 1.98.1 だった。本物の rustc 1.85.0 でも依存が build できることは、N3 で確かめ直した）、依存は 31 package（30 crate 名）で、C/C++ を compile する `build.rs` も network を使う `build.rs` もない | 停止条件 1・2 は解消 |
 | 停止条件 8: Cranelift の object を Clang で link して linker の warning が設定で消せないなら止める | Mach-O の object には `LC_BUILD_VERSION` がなく、`ld: warning: no platform load command found in '…', assuming: macOS` が出る。`object::write::Object::set_macho_build_version` を呼べば消える（スパイクで確認）。`.note.GNU-stack` は `cranelift-object` が出す | 停止条件 8 は解消した形で組み込み、`tests/fast_backend.mjs` が stderr が空であることを検査する |
 
 ### 実 IR の棚卸し（D6 に無い構成要素と処理方針）
@@ -111,7 +111,7 @@ alloca はすべて `align 16`（53,016）か `align 8`（23）で、Cranelift �
 - `run`・`--no-cache`・`-g` で numeric.ll・math.ll が IR に入る program の Clang `-O0` は、numeric.ll の compile だけで 180〜330 ms、math.ll で 220〜300 ms。
   `run -O0 --no-cache` の hello は total 0.82〜1.0 s（`tool.clang` 0.40〜0.43 s。C ランタイムの compile と module の 2 回の Clang）。
 
-**Cranelift の入手性とスパイク**（`target/perf/PB05/proto/`、git 管理外。rustc 1.85.0 で build）:
+**Cranelift の入手性とスパイク**（`target/perf/PB05/proto/`、git 管理外。cargo 1.85.0 で build。rustc は Homebrew の 1.98.1 だった。N3 参照）:
 
 - `rust-version` が 1.85 以下の最新は `cranelift-{codegen,frontend,module,object}` 0.121.2（`cargo info` で 0.121.x が 1.85.0、0.122・0.123 が 1.86.0、0.124 が 1.87.0、…、0.136 が 1.96.0）。
   MSRV 対応の resolver は `target-lexicon` 0.13.5・`gimli` 0.31.1・`object` 0.36.7・`regalloc2` 0.12.2 を選び、`cargo tree -e normal` は 31 package（30 crate 名。`hashbrown` が 2 版）で、いまの `tsuzuri` の 9 行に足される。
@@ -192,7 +192,7 @@ features 9/138（58 suite・15,385 case）。合計は A が約 190 件、B が�
 - D3（crate と feature）: 変更。`cranelift-codegen`・`cranelift-frontend`・`cranelift-module`・`cranelift-object` を `=0.121.2` で固定し（codegen の features は `std`・`x86`・`arm64` で、既定の `timing`・`host-arch` は切る。`unwind` は
   cranelift-object・module・frontend が必ず有効にする）、`target-lexicon` は 0.13（cranelift が要求する版）。`cranelift-native` は使わない（host の CPU の検出で出力が機械に依存する）。Phase 2 の `gimli` は、`unwind` が
   `gimli` 0.31.1（`read`・`write`・`std`）を既に引いているので、同じ版を直接の依存に宣言するだけで増えない。`object` も `cranelift_object::object` の再 export を使い、直接の依存は足さない。
-  cargo feature `fast-backend`（既定は空）。MSRV の検証に `~/.cargo/bin/cargo +1.85.0 build --release --locked --features fast-backend` を手順に入れる（Homebrew の `cargo` は `+toolchain` を取らない）。`x86`・`arm64` を両方入れるのは、
+  cargo feature `fast-backend`（既定は空）。MSRV の検証に `~/.cargo/bin/cargo +1.85.0 build --release --locked --features fast-backend` を手順に入れる（Homebrew の `cargo` は `+toolchain` を取らない。ただし、この機械では `cargo +1.85.0` が呼ぶ `rustc` は PATH の Homebrew のものなので、`RUSTC` も指定する。N3）。`x86`・`arm64` を両方入れるのは、
   別 arch の object を作る test（layout・ELF・COFF の smoke）を host に依らず実行するため。大きさの増加は WP2 で測り、大きすぎれば host の arch だけにする。
 - D4（CLI）: 変更。`--backend llvm|fast`、既定は `llvm`。`build`・`run` が受ける（WP13 で `test`）。E2000 の表は上の「option の組み合わせ」。`-O` 省略は `-O0`。
 - D5（Phase 1 の範囲）: 変更。範囲は上の表（`run` と `--trap-info` を含む。`-g`・`--cpu native`・`counting`・`small`・`--freestanding`・`--trap-mode return`・`--emit shared` は E2000）。
@@ -247,7 +247,7 @@ features 9/138（58 suite・15,385 case）。合計は A が約 190 件、B が�
 ### 受け入れ条件の変更
 
 - Phase 1 の範囲は「option の組み合わせ」の表。`run`（trap-info と E2005 の位置を含む）と `--emit exe|object` が動き、範囲外は E2000・E2002。macOS・Linux の aarch64・x86_64 が対象だが、この機械で実行できるのは aarch64 の macOS だけ（別 arch は object の smoke と CI）。
-- `--features` なしの `cargo build --release --locked`・`cargo test --locked`・clippy・fmt が従来どおり成功する。`--features fast-backend` でも成功し、`cargo +1.85.0 build --release --locked --features fast-backend` が成功する。
+- `--features` なしの `cargo build --release --locked`・`cargo test --locked`・clippy・fmt が従来どおり成功する。`--features fast-backend` でも成功する（`cargo +1.85.0 build --release --locked --features fast-backend` が成功する、という条件は満たせない。N3）。
 - `--backend fast` を指定しないビルドの IR・object・実行ファイル（wasm を含む）が before と byte 同一（Mach-O の `LC_UUID`・署名は除く）。
 - parity: 経路 A・B の両方が成功し、suite ごとの翻訳件数・fall back の件数と理由を `docs/benchmarks.md` の PB05 の節に書く。fall back は E2002 の構成要素（`half` など）だけで、suite の期待値・上限は変えない。`live == 0`。
 - 追加: Phase 2（`-g` の行情報・`test`・Windows の型検査・allocator など）の各 WP の確認、D13 の判断の記録（実装した場合は WP17〜20 の確認）。D12 は行わない。
@@ -850,7 +850,7 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 | WP | 結果 |
 | --- | --- |
 | WP1 | `tests/fast_backend.mjs` の `inventory` mode: 102 project の IR と runtime の `.ll` に 51 種の命令・47 種の intrinsic・23 種の vector 型があり、D6 に無い構成要素の方針（翻訳する・E2002 で拒む）を表にした |
-| WP2 | feature と crate（`cranelift-codegen`・`frontend`・`module`・`object` の `=0.121.2`、`target-lexicon` 0.13、WP12 の `gimli` `=0.31.1`）。rustc 1.85.0（MSRV）でも 1.93.1・1.98.1・1.99.0 でも build が通り、依存に C を compile する `build.rs` は無い。Cranelift は 0.121.2 が `rust-version` 1.85 以下の最新（0.122 は 1.86 を要する） |
+| WP2 | feature と crate（`cranelift-codegen`・`frontend`・`module`・`object` の `=0.121.2`、`target-lexicon` 0.13、WP12 の `gimli` `=0.31.1`）。rustc 1.93.1・1.98.1・1.99.0 で build が通り、依存は本物の rustc 1.85.0 でも build できる（`tsuzuri` 自身は 1.85.0 では build できない。base が let chain を使うため。N3）。依存に C を compile する `build.rs` は無い。Cranelift は 0.121.2 が `rust-version` 1.85 以下の最新（0.122 は 1.86 を要する） |
 | WP3 | CLI。範囲外の組み合わせは build に入る前に E2000（`--cpu native`、`-O1` 以上、`--emit` の `llvm`・`header`・`shared`・`bitcode` など、`--profile-*`、`--target TRIPLE`、Windows のホスト、feature なしの build） |
 | WP4〜7 | 翻訳。`module::scan`（型・global・declare・define の header と本体の範囲）、worker での本体の parse、到達できる関数だけを翻訳（D16）、集約は 16 leaf まで scalar（`FLATTEN_LEAVES`）、超えると frame 上、`i128`・atomic・TLS・weak・`fastcc`・`byval`・`sret`・overflow と saturation の intrinsic・vector の lane 分けを実装 |
 | WP8 | driver。object は 1 つの `Vec<u8>`（`module.ll` は書かない）、翻訳は関数ごとに `TSUZURI_THREADS` の worker で並列で、object のバイト列は thread 数に依らず同じ。route B の helper は、隠し subcommand ではなく、feature つきの `[[bin]] tz-fast-cc`（`required-features = ["fast-backend"]`）にした |
@@ -868,7 +868,7 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 
 - D12（既定の切り替え）。`llvm` が既定のまま。
 - 範囲外で E2000: `--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm|header`、`--profile-*`、`--target TRIPLE`、Windows のホスト、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net）・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64。
-- 翻訳器が E2002 で拒むもの: `half`（driver は `F16Path::Soft` なので実際には出ない）、128 bit の `smul.with.overflow`・`umul.with.overflow`、wasm32 の `llvm.fma`（命令が無い）、署名に `i128` を持つ外部の関数（Windows の `windows_abi` の helper）、1 関数に 40,000 を超える値がある関数（wasm の engine の locals の上限）、aarch64 の Windows。拒むたびに構成要素と関数の名前を表示する。
+- 翻訳器が E2002 で拒むもの: `half`（driver は `F16Path::Soft` なので実際には出ない）、128 bit の `smul.with.overflow`・`umul.with.overflow`、wasm32 の `llvm.fma`（命令が無い）、表にない `llvm.*`（`llvm.round`・`llvm.minnum`・`llvm.maxnum` など）、署名に `i128` を持つ外部の関数（native。Windows の `windows_abi` の helper）、外から見える関数の `byval`・`sret` の引数とその呼び出し、`musttail`、wasm32 の 1〜16・32・64・128 bit 以外の幅の整数の load と store、基本ブロックが 65,521 個を超える関数と local が 40,000 個を超える関数（wasm の engine の上限。local は値の数ではなく、使い回したあとの数）、aarch64 の Windows。拒むたびに構成要素と関数の名前を表示する。
 - `AGGREGATE_FLATTEN_LEAVES`（16）と Cranelift の `regalloc_algorithm`（既定）の調整: ゲートを通ったので行わなかった（翻訳器は native の `fast` の total の 9〜12%）。
 - wasm32 の loop は、前向きの分岐は構造化した `br` で、後ろ向きの分岐は dispatch の loop（`pc` の local と `br_table`）を通る。配列と list の loop は `llvm` の `-O0` の 1.3〜1.5 倍の時間になる（構造化した loop への変換は行っていない）。
 - 速度の正式な測定（静かな機械）、Windows での実行、Intel の macOS での実行。
@@ -904,7 +904,7 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 | `cargo fmt --all -- --check`、clippy 1.99（`--all-targets --locked -- -D warnings`、feature あり・なし） | 成功（最初の clippy が wasm の object writer の 2 件を指摘し、直した） |
 | `RUST_MIN_STACK=4194304 cargo +1.99.0 test --locked --features fast-backend --no-fail-fast`（全体） | 成功: 112 target、1,622 件成功、0 失敗、1 件 ignored（lib 407、bin 32、`fast_backend` 7、`fast_backend_ops` 2） |
 | `RUST_MIN_STACK=4194304 cargo +1.99.0 test --locked --no-fail-fast`（feature なし、全体） | 成功: 111 target、1,603 件成功、0 失敗、1 件 ignored（lib 397、bin 32）。feature ありとの差は feature つきの test の 19 件 |
-| `cargo +1.85.0 check --locked --features fast-backend`（MSRV） | 成功（rustc 1.85.0） |
+| MSRV: `cargo +1.85.0 check --locked --features fast-backend` | **誤りだった**（2026-10-19 に訂正）。成功と報告したが、その実行の `rustc` は PATH の Homebrew の 1.98.1 で、1.85.0 は cargo だけだった。本物の rustc 1.85.0 では 196 件の `E0658`（let chain）で失敗する（N3） |
 | Windows の型検査（`cargo check --all-targets --locked --features fast-backend --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`） | 成功（2 target とも。stable 1.96.1。Windows での実行は未確認） |
 | `node tests/fast_backend.mjs`（既定の 11 段）、`programs`（同じ出力 21・同じ export 85・差 0・比べないもの 12）、`debug`（21 project の 1,393 関数、行の欠けなし）、`wasm`（同じ挙動 96・差 0・比べないもの 22、module は 1.10 倍） | 成功。`programs`・`wasm` は `TSUZURI_STRINGS=compact` でも成功 |
 | `node tests/fast_backend.mjs parity …`（`FAST_FORCE=1`、Node 24） | 成功: native 18 suite と wasm32 を含む 9 suite（Node 24）、`TSUZURI_STRINGS=compact` の 7 suite。fall back は `half`（7 件）と 1 行に複数の命令を書いた手書きの IR（1 件）だけで、suite の期待値は変えていない |
