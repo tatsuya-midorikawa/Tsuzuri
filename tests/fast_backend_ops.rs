@@ -881,6 +881,11 @@ fn control_cases(suite: &mut Suite) {
         vec![],
         "entry:\n  %n = and i64 %a, 7\n  br label %loop\nloop:\n  %p = phi i64 [ %a, %entry ], [ %q, %loop ]\n  %q = phi i64 [ %b, %entry ], [ %p, %loop ]\n  %i = phi i64 [ 0, %entry ], [ %i2, %loop ]\n  %i2 = add i64 %i, 1\n  %c = icmp ult i64 %i2, %n\n  br i1 %c, label %loop, label %done\ndone:\n  %m = mul i64 %p, 1000003\n  %o = add i64 %m, %q\n  ret i64 %o\n".to_owned(),
     );
+    add(
+        "an irreducible loop with two entries",
+        vec![],
+        "entry:\n  %n = and i64 %a, 15\n  %s = icmp ult i64 %b, 1000\n  br i1 %s, label %p, label %q\np:\n  %i = phi i64 [ 0, %entry ], [ %j2, %q ]\n  %x = phi i64 [ %b, %entry ], [ %y2, %q ]\n  %i2 = add i64 %i, 1\n  %x2 = mul i64 %x, 31\n  %c = icmp ult i64 %i2, %n\n  br i1 %c, label %q, label %done\nq:\n  %j = phi i64 [ 0, %entry ], [ %i2, %p ]\n  %y = phi i64 [ %a, %entry ], [ %x2, %p ]\n  %j2 = add i64 %j, 2\n  %y2 = add i64 %y, %j2\n  %c2 = icmp ult i64 %j2, %n\n  br i1 %c2, label %p, label %done\ndone:\n  %r = phi i64 [ %x2, %p ], [ %y2, %q ]\n  ret i64 %r\n".to_owned(),
+    );
     let mut large = String::from("entry:\n");
     for index in 0..20 {
         let _ = writeln!(large, "  %xa{index} = add i64 %a, {index}");
