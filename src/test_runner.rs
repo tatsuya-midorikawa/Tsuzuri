@@ -461,7 +461,7 @@ pub fn build_debug_runner(
             llvm::TestRunnerOptions {
                 seed: options.seed,
                 debug: Some((sources, options.optimization != 0)),
-                f16: platform_f16_path(platform, options.target, Cpu::Generic),
+                f16: f16_path_for(options.backend, platform, options.target, Cpu::Generic),
                 ..llvm::TestRunnerOptions::default()
             },
         )
@@ -704,11 +704,12 @@ fn build_runner(
             seed: options.seed,
             debug_output,
             debug: None,
-            f16: if options.backend == Backend::Fast {
-                llvm::F16Path::Soft
-            } else {
-                platform_f16_path(options.platform(), options.target, Cpu::Generic)
-            },
+            f16: f16_path_for(
+                options.backend,
+                options.platform(),
+                options.target,
+                Cpu::Generic,
+            ),
         },
     )?;
     if !wasm {

@@ -539,6 +539,39 @@ def main :: unit -> i32 = \\() ->
       assert.ok(lcov("llvm").equals(lcov("fast")), "the coverage report depends on the backend");
     });
 
+    step("tsuzuri test --index N -g builds the runner of a test with half arithmetic, as the ordinary runner is", () => {
+      // The runner for a debugger took the hardware half of an AArch64 machine for its IR, which the fast backend does not
+      // translate (E2002), where the runner of `test` used the integer routines of the runtime.
+      const project = join(work, "half-test");
+      mkdirSync(project, { recursive: true });
+      writeFileSync(join(project, "Main.tz"), [
+        "def half_add :: f32 -> f32 -> f32",
+        "fn half_add x y = ((x as f16) + (y as f16)) as f32",
+        "",
+        'test "half sum" = Test.is_true (half_add 1.5 2.25 == 3.75)',
+        'test "half fails" = Test.is_true (half_add 1.5 2.25 == 3.0)',
+        "",
+      ].join("\n"));
+      const ordinary = (backend) => observe(execute(compiler, ["test", project, "--backend", backend]));
+      const [fastTests, llvmTests] = [ordinary("fast"), ordinary("llvm")];
+      assert.match(fastTests.stdout, /^ok 1 - Main half sum$/m);
+      assert.match(fastTests.stdout, /^not ok 2 - Main half fails$/m);
+      assert.deepEqual(fastTests, llvmTests);
+      // The runner of one test, which a debugger starts: it runs the test as `test` does.
+      const runner = (backend, index) => {
+        const output = join(work, `half-${backend}-${index}`);
+        const built = cli(["test", project, "--backend", backend, "--index", String(index), "-g", "-o", output, "--json"]);
+        const { program, arguments: runnerArguments } = JSON.parse(built.stdout.trim().split("\n").pop());
+        return observe(execute(program, runnerArguments));
+      };
+      const passes = runner("fast", 0);
+      assert.equal(passes.status, 0, `${passes.signal} ${passes.stderr}`);
+      assert.deepEqual(passes, runner("llvm", 0));
+      const fails = runner("fast", 1);
+      assert.ok(fails.status !== 0, "a failing test ends the runner with a failure");
+      assert.deepEqual(fails, runner("llvm", 1));
+    });
+
     step("-g gives the functions of the fast backend the lines of the LLVM backend", () => {
       const tool = dwarfdumpTool();
       for (const project of [hello, functional]) {
