@@ -1193,13 +1193,20 @@ impl<'w, 'a> Lower<'w, 'a> {
         }
     }
 
-    /// Goes to a block; with `fall` the next block's code, which follows, needs no branch.
+    /// Goes to a block; with `fall` the next block's code, which follows, needs no branch. A later
+    /// block starts where an open block ends, so the branch to it leaves the blocks in between and
+    /// skips the dispatch; only a branch back to an earlier block goes through the dispatch loop.
     fn goto(&mut self, target: u32, fall: bool) -> Res<()> {
         let position = self.position[target as usize];
         if position == u32::MAX {
             bail!("a branch to a block that cannot be reached");
         }
         if fall && position == self.current + 1 {
+            return Ok(());
+        }
+        if position > self.current && self.n_blocks > 1 {
+            self.op(op::BR);
+            self.uleb(u64::from(position - self.current - 1 + self.depth));
             return Ok(());
         }
         self.i32_const(position as i32);
