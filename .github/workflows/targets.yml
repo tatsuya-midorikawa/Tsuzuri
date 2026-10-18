@@ -9,10 +9,14 @@ name: Tsuzuri targets
 #   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;
 #   - "object only":                    the triples without a C library in the bundle.
 # Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.
+# These four hosts run after every merge to main that changes the compiler and, on a pull request, with the label `ci:full`
+# (ci.yml is the gate of every pull request).
 
 on:
   workflow_dispatch:
-  pull_request:
+  push:
+    branches:
+      - main
     paths:
       - src/**
       - std/**
@@ -21,16 +25,21 @@ on:
       - Cargo.*
       - scripts/toolchain/**
       - .github/workflows/targets.yml
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   contents: read
 
+# The group keeps the label in it: a pull request event without the label starts a run whose jobs are skipped, and it must not
+# cancel the run that has the label.
 concurrency:
-  group: targets-${{ github.ref }}
+  group: targets-${{ github.ref }}-${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   targets:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
     name: targets (${{ matrix.host }})
     strategy:
       fail-fast: false
@@ -49,7 +58,8 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # macos-15-intel takes about 85 minutes (the Rust tests alone 62), the other hosts 35 to 55.
+    # macos-15-intel took about 85 minutes (the Rust tests alone 62), the other hosts 35 to 55, before the dev profile of
+    # Cargo.toml used opt-level 1.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
@@ -273,7 +283,9 @@ jobs:
       # thread. How far over depends on the target and rustc release: on linux-arm64 (rustc 1.99) two of them
       # overflow on main too and pass from 2.2 MB, and an overflow aborts the whole test binary. The full run
       # takes 4 MiB per test thread (RUST_MIN_STACK, as in GUIDE §9 and the earlier PRs), so that it does not
-      # depend on the toolchain; each test still checks that its limit is reported as a diagnostic.
+      # depend on the toolchain; each test still checks that its limit is reported as a diagnostic. (Those frames are
+      # from opt-level 0; the dev profile of Cargo.toml has used opt-level 1 since, which makes them smaller, and the
+      # 4 MiB stays for the same reason.)
       - name: Rust tests
         if: ${{ !cancelled() }}
         env:
