@@ -48,7 +48,8 @@ function binary(name, variable) {
 // A compile that the translator may take: only -O0 (or no level) of the host's own target, without
 // the options that ask Clang for something the IR text does not carry.
 const REFUSED = [/^-O[123sz]$/, /^-Ofast$/, /^--target/, /^-target$/, /^-fsanitize/, /^-mcpu/, /^-march/,
-  /^-mavx/, /^-msse/, /^-flto/, /^-emit-llvm$/, /^-S$/, /^-E$/, /^-fprofile/, /^-mf16c/, /^-mfma/, /^-mavx512fp16/];
+  /^-mavx/, /^-msse/, /^-flto/, /^-emit-llvm$/, /^-S$/, /^-E$/, /^-fprofile/, /^-mf16c/, /^-mfma/, /^-mavx512fp16/,
+  /^-fstack-usage$/, /^-save-temps/];
 
 function log(event) {
   if (process.env.FAST_LOG) appendFileSync(process.env.FAST_LOG, `${JSON.stringify(event)}\n`);

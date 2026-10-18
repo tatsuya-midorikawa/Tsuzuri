@@ -141,11 +141,59 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
         })
         .count() as u32;
 
+    // The imports are numbered, and listed in the symbol table, in the order that the code first
+    // refers to them (then the data, then those that nothing refers to), as Clang does; the
+    // module that the link makes lists its imports in that order.
+    let is_import = |id: usize| {
+        needed[id]
+            && matches!(
+                module.syms[id].kind,
+                SymKind::Function { body_end: None, .. }
+            )
+    };
+    let mut rank: FxMap<u32, u32> = FxMap::default();
+    let mut note = |name: &str| {
+        if let Some(&id) = module.by_name.get(name)
+            && is_import(id as usize)
+        {
+            let next = rank.len() as u32;
+            rank.entry(id).or_insert(next);
+        }
+    };
+    for defined_functions in [true, false] {
+        for (id, sym) in module.syms.iter().enumerate() {
+            let defined = matches!(
+                sym.kind,
+                SymKind::Function {
+                    body_end: Some(_),
+                    ..
+                }
+            );
+            let global = matches!(sym.kind, SymKind::Global { init: Some(_), .. });
+            if needed[id]
+                && (if defined_functions { defined } else { global })
+                && let Some((start, end)) = module.extent(sym)
+            {
+                module::for_each_reference(ir, start, end, &mut note);
+            }
+        }
+    }
+    for id in 0..module.syms.len() {
+        if is_import(id) {
+            let next = rank.len() as u32;
+            rank.entry(id as u32).or_insert(next);
+        }
+    }
+    let needed_symbols = needed.iter().filter(|&&needed| needed).count();
+    let mut symbols: Vec<Option<Symbol>> = (0..needed_symbols).map(|_| None).collect();
+    let mut import_list: Vec<Option<Import>> = (0..imports).map(|_| None).collect();
+    let non_imports = needed_symbols as u32 - imports;
+
     let mut object = Object::default();
     let mut infos: Vec<WInfo> = Vec::with_capacity(module.syms.len());
     let mut work: Vec<u32> = Vec::new();
     let mut globals: Vec<u32> = Vec::new();
-    let (mut next_import, mut next_defined, mut next_segment) = (0u32, 0u32, 0u32);
+    let (mut next_defined, mut next_segment, mut next_symbol) = (0u32, 0u32, 0u32);
     for (id, sym) in module.syms.iter().enumerate() {
         if !needed[id] {
             infos.push(WInfo::Skip);
@@ -155,7 +203,12 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
             .object_name()
             .map_err(|failure| failure.in_function(sym.name))?
             .into_owned();
-        let symbol = object.symbols.len() as u32;
+        let symbol = if is_import(id) {
+            non_imports + rank[&(id as u32)]
+        } else {
+            next_symbol += 1;
+            next_symbol - 1
+        };
         match &sym.kind {
             SymKind::Function {
                 sig,
@@ -180,8 +233,7 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                     next_defined += 1;
                     work.push(id as u32);
                 } else {
-                    index = next_import;
-                    next_import += 1;
+                    index = rank[&(id as u32)];
                     let (from, field) = import_of(ir, *header);
                     // A declaration that names its import is an import that the link does not
                     // look for in another object: Clang marks its symbol as explicitly named.
@@ -190,13 +242,13 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                     }
                     let field = field.unwrap_or(&name).to_owned();
                     flags |= UNDEFINED;
-                    object.imports.push(Import {
+                    import_list[index as usize] = Some(Import {
                         module: from.unwrap_or("env").to_owned(),
                         field,
                         signature: (abi.wasm_params.clone(), abi.wasm_results.clone()),
                     });
                 }
-                object.symbols.push(Symbol::Function { name, flags, index });
+                symbols[symbol as usize] = Some(Symbol::Function { name, flags, index });
                 infos.push(WInfo::Func(FnInfo { abi, symbol, index }));
             }
             // A thread-local global is a plain one: a module without threads has the one thread.
@@ -213,7 +265,7 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                     flags |= UNDEFINED;
                     (0, 0)
                 };
-                object.symbols.push(Symbol::Data {
+                symbols[symbol as usize] = Some(Symbol::Data {
                     name,
                     flags,
                     segment,
@@ -224,6 +276,8 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
             SymKind::Unsupported(what) => bail!("{what} (@{})", sym.name),
         }
     }
+    object.symbols = symbols.into_iter().flatten().collect();
+    object.imports = import_list.into_iter().flatten().collect();
     drop(scan);
 
     // Lower the bodies on the workers; take them back in the order of the IR.
@@ -344,69 +398,6 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                 Kind::GlobalIndex => uses_stack_pointer = true,
                 Kind::TableNumber => uses_table = true,
                 _ => {}
-            }
-        }
-    }
-    // The imports are numbered in the order that the code first refers to them, as Clang numbers
-    // them (and as the module that the link makes lists them).
-    let is_import: Vec<bool> = object
-        .symbols
-        .iter()
-        .map(|symbol| matches!(symbol, Symbol::Function { flags, .. } if flags & UNDEFINED != 0))
-        .collect();
-    let mut order: Vec<u32> = Vec::new();
-    let mut seen = vec![false; object.symbols.len()];
-    let references = bodies.iter().flat_map(|body| body.relocs.iter()).chain(
-        object
-            .segments
-            .iter()
-            .flat_map(|segment| segment.relocs.iter()),
-    );
-    for reloc in references {
-        let symbol = reloc.index as usize;
-        if matches!(
-            reloc.kind,
-            Kind::FunctionIndex | Kind::TableIndexSleb | Kind::TableIndexI32
-        ) && is_import.get(symbol) == Some(&true)
-            && !seen[symbol]
-        {
-            seen[symbol] = true;
-            order.push(symbol as u32);
-        }
-    }
-    for symbol in 0..object.symbols.len() {
-        if is_import[symbol] && !seen[symbol] {
-            order.push(symbol as u32);
-        }
-    }
-    // The imports were listed in the order of the module, which is also the order of their symbols.
-    let module_order: Vec<u32> = (0..object.symbols.len() as u32)
-        .filter(|&symbol| is_import[symbol as usize])
-        .collect();
-    let mut by_symbol: FxMap<u32, Import> = module_order
-        .iter()
-        .copied()
-        .zip(std::mem::take(&mut object.imports))
-        .collect();
-    let mut new_index: FxMap<u32, u32> = FxMap::default();
-    for (index, &symbol) in order.iter().enumerate() {
-        new_index.insert(symbol, index as u32);
-        if let Some(import) = by_symbol.remove(&symbol) {
-            object.imports.push(import);
-        }
-        if let Symbol::Function { index: slot, .. } = &mut object.symbols[symbol as usize] {
-            *slot = index as u32;
-        }
-    }
-    for body in &mut bodies {
-        for reloc in &body.relocs {
-            if reloc.kind == Kind::FunctionIndex
-                && let Some(&index) = new_index.get(&reloc.index)
-            {
-                let mut placeholder = Vec::with_capacity(5);
-                bin::uleb_padded(&mut placeholder, index);
-                let at = reloc.offset as usize;
-                body.code[at..at + 5].copy_from_slice(&placeholder);
             }
         }
     }

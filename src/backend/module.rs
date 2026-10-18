@@ -742,7 +742,12 @@ fn has_variable_shift(text: &str, operation: &str) -> bool {
 
 /// Calls `visit` with the name of every `@symbol` spelled in `text[start..end]`. A name inside a
 /// string literal is visited too; a symbol that does not exist is not an error for the caller.
-fn for_each_reference<'a>(text: &'a str, start: usize, end: usize, mut visit: impl FnMut(&'a str)) {
+pub(crate) fn for_each_reference<'a>(
+    text: &'a str,
+    start: usize,
+    end: usize,
+    mut visit: impl FnMut(&'a str),
+) {
     let bytes = text.as_bytes();
     let mut pos = start;
     while let Some(offset) = text[pos..end].find('@') {
