@@ -7394,7 +7394,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 - 変種の測定（WP5 の IR に属性を後から付け、同じ clang で `-O3`。hello／currying／functional）: 属性なし 3,052／3,044／3,624（基準 2,604／2,596／3,352）、adapter だけ 3,052／3,044／3,624（io と fixtures の currying が小さくなる）、adapter と worker 2,704／2,696／3,388（+3.8%／+3.9%／+1.1%）、worker に `inlinehint` は効かない。
 - x86-64 Linux の代理（native の IR を `--target=x86_64-unknown-linux-gnu` で `.text` に）: hello 3,284 → 3,380（+2.9%）、currying +2.9%、functional −0.4%、io −8.2%、fixtures の currying −5.4%・computations −1.3%・tasks +0.3%、probe は 6 bytes のまま。
 - **WebAssembly には付けません**。付けた変種は wasm32 の `-O3` で hello の CODE が 8,574 → 11,990（+40%）、functional +29%、io +31% になりました（残った adapter が worker の複製を持つため）。付けない after は hello 6,833 → 6,860（+0.4%）、currying +0.4%、functional +1.4%、io +0.4%、fixtures の computations +0.6%・currying（`curried_mixed_kinds`・`curried_optional` を足したもの）+1.4%・**tasks +3.6%**（`.wasm` 全体）です。
-- **代償（既知）**: `-Os`・`-Oz` では小さなプログラムが大きくなります。native の `-Oz`（clang で IR に属性を付けた変種）で hello 2,484 → 3,240（+30%）、functional +18%、io +19% で、fixtures は +1〜3%。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%。サイズ最適化の水準ごとに方針を替える案（ドライバーが adapter と worker の属性を外す）は未実施です。
+- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +4.1%、実行ファイル +0.1%）。`-Os`・`-Oz` では小さなプログラムが大きくなります。native の `-Oz`（clang で IR に属性を付けた変種）で hello 2,484 → 3,240（+30%）、functional +18%、io +19% で、fixtures は +1〜3%。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%。サイズ最適化の水準ごとに方針を替える案（ドライバーが adapter と worker の属性を外す）は未実施です。
 
 #### 生成物の大きさ（バイト。基準 → after）
 
@@ -7405,7 +7405,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 | wasm32 hello `-O0`／`-O3` | 9,770／6,833 | 9,010／6,860 |
 | `examples/point` の object `-O3` | 392 | 392 |
 
-関数値を持たない小さな library（record・union・配列だけ）は、IR が型定義の 1 行（`%tz.closure`）だけ違い、`-O0`・`-O3` の object がバイト一致でした。
+関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `define` の `alwaysinline` だけです。
 
 #### P2-a `!invariant.load`（取り下げ）
 

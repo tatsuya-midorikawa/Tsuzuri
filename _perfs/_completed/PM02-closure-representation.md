@@ -886,13 +886,14 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 - **Rust**: `cargo test --locked --no-fail-fast`（`RUST_MIN_STACK=4194304`。105 の test binary と doc-test、1,500 件が通り、失敗 0、ignored 1）。内訳の一部は `--lib` 325、`--bin tsuzuri` 25、`lto`（PR08）17、`closure_representation` 9、`debug_info` 16、`param_facts` 9、`integer_ranges` 16、`call_specialization` 13、`tasks` 13、`user_drop` 26、`llvm_handoff` 13、`storage` 21、`local_recursion` 14、`ffi_extensions` 10、`concurrency` 19、`iteration_protocol` 5、`deriving` 8、`trap_locations` 8、`generic_records` 16、`frontend` 4。GUIDE §3.1 の 4 つの単独の回帰テストは既定の stack で `running 1 test` が通る。
 - **静的な検査**: `cargo fmt --all -- --check`（1.99.0）、`cargo clippy --all-targets --locked -- -D warnings`（1.99.0。WP1 のテストの `&[closure.clone()]` が `cloned_ref_to_slice_refs` に当たったので `std::slice::from_ref` にした）、`sh scripts/check-runtime-includes.sh`、`node scripts/check-docs.mjs`（変更した 3 ページ。42 リンク、20 例、40 の native 実行）、`cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（`stable`（1.96.1）。型検査だけで、Windows の実行は未検証）。
 - **E2E**（`target/release/tsuzuri`。`tests/` の node のスクリプト。結果は最終報告に添える）: `primitives.mjs`（`curried_mixed_kinds`・`curried_optional` を含む。native の C ホストで `live == 0` と二重解放の検査、wasm32、`-O0`/`-O3`。基準のコンパイラでも同じ期待値で通る）、`tasks.mjs`、`features.mjs`、`computations.mjs`、`control.mjs`、`e2e.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_boundary.mjs`・`trap_return.mjs`・`trap_return_sync.mjs`、`llvm_handoff.mjs`、`debug_info.mjs`、`debugger_static.mjs`（新規）、`size.mjs`、`prebuilt_runtime.mjs`、`local_recursion_fuzz.mjs`（120 プログラム）、`wasm64.mjs`（Node 24）、`pgo.mjs`（PR07。14 section）。
-- 受け入れ条件の grep（`extractvalue %tz.closure … , [23]` と `insertvalue %tz.closure … , [23]"`）は出力なし。関数値を持たない小さな library の object は `-O0`・`-O3` でバイト一致。
+- 受け入れ条件の grep（`extractvalue %tz.closure … , [23]` と `insertvalue %tz.closure … , [23]"`）は出力なし。関数値を作らない小さな library 4 本を基準のコンパイラと比べると、`-O3` の object（native・wasm32）はバイト一致。`-O0` の object は 0.2〜1.8% 大きい（使われない静的記述子が残る。起票時の「IR は型定義の行だけ違う」という見込みは、アダプタごとの `@tz.desc.*` の定義があるので正しくなかった）。
 - 関数値を含む fixture の PGO の往復（`--profile-generate`・`--profile-use`）と、`mix`・`closures` の probe の `--profile-generate` の実行は動く。
 
 ### 既知の限界と未検証
 
 - **LLDB の実行つきの検査は走らせられていない**: この環境の `lldb` は基準のコンパイラでも `run` で固まる。formatter は、型の形と判定（`tests/debugger_static.mjs`、プロセスなし）と DWARF（`tests/debug_info.rs`）で確かめ、`tests/debugger.mjs` の `Descriptive`（ブレークポイントは 23 行目。静的に解決を確認）は未実行。静的に読み込んだ実行ファイルでは、`<fn …>` の名前の解決（chained fixups が残る）までは確かめられない。
 - **Windows の natvis**: `Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる（`Maybe<[T]>`・`Maybe<ref T>` と同じ）。未実機。
+- **`-O0` の大きさ**: 静的記述子はアダプタごとに出し、使われなくても `-O0` の object に残る（hello の object +4.1%、実行ファイルは +0.1%）。使われる `(関数, 捕捉数)` の記述子だけを出す案（`closure_descriptor` が参照を数え、最後に出す）は未実施。
 - **サイズ最適化**: `-Os`・`-Oz` の小さなプログラムの text が大きくなる。水準ごとに adapter と worker の属性を替える（ドライバーが外す）案は未実施。
 - **x86-64 Linux・Windows の実機**は未検証。x86-64 は IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。
 - **静かな機械での再測定**は未実施（`task_parallel` の実時間）。
