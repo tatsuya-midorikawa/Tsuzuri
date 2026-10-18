@@ -4,7 +4,7 @@
 // none, unless TSUZURI_PGO_STRICT=1 or LLVM_PREFIX (a toolchain that CI installs on purpose) turns a skip into a failure.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -46,10 +46,17 @@ const files = (directory) => profraws(directory).map((file) => join(directory, f
 function wrapper(path, name, real) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `#!${process.execPath}
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 if (process.env.PGO_LOG) appendFileSync(process.env.PGO_LOG, JSON.stringify([${JSON.stringify(name)}, ...args]) + "\\n");
+// The raw profiles that llvm-profdata merges are in a file that the build deletes, so the log keeps its lines.
+for (const argument of args) {
+  if (process.env.PGO_LOG && argument.startsWith("--input-files=")) {
+    const lines = readFileSync(argument.slice("--input-files=".length), "utf8").split("\\n").filter(Boolean);
+    appendFileSync(process.env.PGO_LOG, JSON.stringify(["input-files", ...lines]) + "\\n");
+  }
+}
 if (${JSON.stringify(name)} === "clang" && process.env.PGO_RESOURCE && args[0] === "-print-resource-dir") {
   console.log(process.env.PGO_RESOURCE);
   process.exit(0);
@@ -407,6 +414,33 @@ section("a directory of raw profiles and its merge build the same program", () =
   assert.equal(artifactFingerprint(again), artifactFingerprint(fromDirectory));
 });
 
+section("a directory of thousands of raw profiles is merged through a list", () => {
+  const { directory } = trained();
+  needProfdata();
+  // Together the paths are longer than the arguments of a process (1 MiB on macOS, 2 MiB on Linux). The name of the
+  // directory has a comma and a space, which a plain list of paths would misread.
+  const many = join(root, "many, raw profiles");
+  mkdirSync(many, { recursive: true });
+  const [raw] = files(directory);
+  let place = linkSync;
+  for (let index = 0; index < 10_000; index += 1) {
+    const target = join(many, `${String(index).padStart(5, "0")}-${"x".repeat(230)}.profraw`);
+    try {
+      place(raw, target);
+    } catch {
+      place = copyFileSync;
+      place(raw, target);
+    }
+  }
+  const paths = files(many);
+  assert.equal(paths.length, 10_000);
+  assert.ok(paths.reduce((size, path) => size + path.length + 1, 0) > 2 ** 21, "the paths are longer than any limit of arguments");
+  const exe = executable("many");
+  const built = build("branch", ["--profile-use", many, "--no-cache"], exe);
+  assert.equal(built.stderr, "");
+  assert.equal(execute(exe, []).stdout, total);
+});
+
 section("the cache keys follow the profile", () => {
   const { directory } = trained();
   const profdata = needProfdata();
@@ -512,9 +546,12 @@ section("llvm-profdata is found beside Clang or in its toolchain, and never on P
   const named = wrapper(join(root, "named", "llvm-profdata"), "llvm-profdata", real);
   use([], { env: { ...env, TSUZURI_LLVM_PROFDATA: named } });
   assert.equal(merges(log).length, 1);
-  const [, command, flag, output, ...inputs] = merges(log)[0];
+  const [, command, flag, output, ...rest] = merges(log)[0];
   assert.deepEqual([command, flag, basename(output)], ["merge", "-o", "profile.profdata"]);
-  assert.deepEqual(inputs, files(directory), "the raw profiles are merged in the order of their names");
+  assert.equal(rest.length, 1, "the raw profiles are not arguments of the merge");
+  assert.ok(rest[0].startsWith("--input-files="), rest[0]);
+  const [, ...listed] = logged(log).find(([name]) => name === "input-files");
+  assert.deepEqual(listed, files(directory).map((file) => `1,${file}`), "the raw profiles are merged in the order of their names");
   const broken = use([], { env: { ...env, TSUZURI_LLVM_PROFDATA: join(root, "no-such-profdata") }, status: 1 });
   assert.ok(broken.stderr.includes("error[E2002]: cannot execute"), broken.stderr);
   assert.ok(broken.stderr.includes("llvm-profdata must come from the same LLVM as the Clang that built the instrumented program; set TSUZURI_LLVM_PROFDATA"), broken.stderr);
