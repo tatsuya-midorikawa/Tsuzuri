@@ -7947,7 +7947,7 @@ Node 24 の apps は 4 種目が 5〜14% 速く、`binary_trees`・`closure_pipe
 
 ### 測っていないもの
 
-- Linux（ELF の `--gc-sections` が `__llvm_prf_*` を残すか、`libclang_rt.profile` の置き場所）、x86-64、Windows は測っていません。Windows は拒否します。
+- 速度は、Linux・x86-64・Windows で測っていません。Windows は拒否します。CI の `tests/pgo.mjs`（動作だけを確かめ、速度は測りません）は、macOS の arm64 と Linux の x86_64・arm64 で通りました（Linux の ELF が `--gc-sections` でプロファイルの section を残すことを含みます）。macOS の x86_64 では、Apple 以外の Clang が計装のリンクに足す `-sectalign … 0x4000` に Apple の `ld` が警告を 3 行出し、「run builds with the profile options」の節が失敗していました。Tsuzuri がその 3 行だけを表示しないことで直しました（[option.md](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。
 - `--emit bitcode`（PR08 の ThinLTO）との併用は確かめていません。許可リスト（native は `exe`・`object`、wasm32 は `wasm`）に入れていないので `E2000` です（`src/main.rs` の拒否の表と `tests/pgo.mjs` がこの拒否を確かめます）。許すには、`Profile::validate` に `Emit::Bitcode` を足し、計装と使用が bitcode の compile に届くことと、`llvm-link` で併合した C ランタイムを含む module の profile が合うことを、host を含めて確かめる必要があります。
 - 速度の閾値は共有 CI に置きません。`node tests/pgo.mjs` は動作だけを確かめ、時間は測りません。
 
