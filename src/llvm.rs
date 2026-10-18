@@ -24,6 +24,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
@@ -425,6 +426,8 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_strings.rs"]
+mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
 #[path = "llvm_task.rs"]
@@ -502,6 +505,32 @@ pub fn emit_with_range_flags(
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
             range_flags: Some(flags),
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the string form that `form` names, instead of that of
+/// `TSUZURI_STRINGS` or the default (PM03).
+pub fn emit_with_strings(
+    module: &CheckedModule,
+    options: EmitOptions,
+    form: StringForm,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            strings: Some(form),
             ..Instrumentation::default()
         },
     )
@@ -840,6 +869,7 @@ pub(crate) fn emit_wasm_build(
             coverage: None,
             seed: None,
             range_flags: None,
+            strings: None,
             executable_roots: false,
         },
     )?;
@@ -1011,6 +1041,8 @@ struct Instrumentation<'a> {
     seed: Option<u64>,
     /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
     range_flags: Option<RangeFlags>,
+    /// The form of the strings that the program makes (PM03); `None` takes `TSUZURI_STRINGS` or the default.
+    strings: Option<StringForm>,
     /// A native executable emits only what its entry and exports reach (PB03 D1).
     executable_roots: bool,
 }
@@ -1088,6 +1120,10 @@ fn emit_program_in(
     let range_flags = match instrumentation.range_flags {
         Some(flags) => flags,
         None => RangeFlags::from_environment()?,
+    };
+    let string_form = match instrumentation.strings {
+        Some(form) => form,
+        None => StringForm::from_environment()?,
     };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
@@ -1255,6 +1291,7 @@ fn emit_program_in(
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
         range_flags,
+        strings: string_form,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1599,14 +1636,23 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, include_str!("runtime/debug.ll"));
     }
     if runtime_symbols.prefix("tz.display.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/display.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.display_runtime(include_str!("runtime/display.ll"))?,
+        );
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.format_runtime(include_str!("runtime/format.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.integer.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.integer_runtime(include_str!("runtime/integer.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
@@ -1654,7 +1700,10 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, DYN_CLONE);
     }
     if runtime_symbols.prefix("tz.character.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/character.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.character_runtime(include_str!("runtime/character.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.unicode.") {
         runtime_symbols.append(&mut output, include_str!("runtime/unicode.ll"));
@@ -1673,6 +1722,7 @@ fn emit_program_in(
         || runtime_symbols.prefix("tz.alloc")
         || runtime_symbols.prefix("tz.realloc")
     {
+        let string_runtime = output.len();
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
         let cpu_utf16 = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
@@ -1708,6 +1758,12 @@ fn emit_program_in(
             } else {
                 include_str!("runtime/string_scalar.ll")
             });
+        }
+        if string_form == StringForm::Compact {
+            let utf16 = output.split_off(string_runtime);
+            output.push_str(
+                &string_form.string_runtime(&utf16, !wasm || instrumentation.wasm_simd128)?,
+            );
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
@@ -1990,6 +2046,8 @@ struct Globals {
     recursive_functions: Vec<bool>,
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
+    /// The form of the strings that the program makes (PM03).
+    strings: StringForm,
 }
 
 impl Default for Globals {
@@ -2033,6 +2091,7 @@ impl Default for Globals {
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
+            strings: StringForm::DEFAULT,
         }
     }
 }
@@ -3761,7 +3820,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let length = self.value("extractvalue %tz.array %p0, 1");
             let value = self.value(format!("call {result} @{symbol}(ptr {data}, i64 {length})"));
             self.instruction(format!("ret {result} {value}"));
-        } else {
+        } else if !self.compact_body() {
             self.tail(&self.function.body);
         }
     }
@@ -4470,12 +4529,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.match_expression(local, value, arms, &expression.ty, false, None)
             }
             TypedExprKind::String(text) => {
-                let name = self.string_constant(text);
+                let (name, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {name}, i64 {})",
-                    &ty[1..],
-                    text.len()
+                    "call {ty} @{}.new(ptr {name}, i64 {word})",
+                    &ty[1..]
                 ))
             }
             TypedExprKind::Local(_)
@@ -4811,13 +4869,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let ty = self.ty(&string.ty);
                 let element = self.ty(&expression.ty);
                 let data = self.value(format!("extractvalue {ty} {value}, 0"));
-                let length = self.value(format!("extractvalue {ty} {value}, 1"));
+                let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                let length = self.string_count(&string.ty, &word);
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid, TrapKind::BoundsCheck);
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {element}, ptr {data}, i64 {index}"
-                ));
-                let unit = self.value(format!("load {element}, ptr {pointer}"));
+                let unit = if self.marks_length(&string.ty) {
+                    self.string_unit(&data, &word, &index)
+                } else {
+                    let pointer = self.value(format!(
+                        "getelementptr inbounds {element}, ptr {data}, i64 {index}"
+                    ));
+                    self.value(format!("load {element}, ptr {pointer}"))
+                };
                 self.release_operand(string, &value, &frames);
                 unit
             }
@@ -4886,7 +4949,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     return length;
                 }
                 let (value, frames) = self.read_operand(string);
-                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
+                let length = self.string_length(&string.ty, &value);
                 self.release_operand(string, &value, &frames);
                 length
             }
@@ -6976,7 +7039,7 @@ fn emit_builtin(
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
-        Builtin::Parse => emit_parse(instance, ty, module),
+        Builtin::Parse => emit_parse(instance, ty, module, globals.strings),
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
@@ -7039,6 +7102,7 @@ fn emit_typed_builtin(
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
+        strings: shared_globals.strings,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -8133,7 +8197,12 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     )
 }
 
-fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> String {
+fn emit_parse(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    module: &CheckedModule,
+    form: StringForm,
+) -> String {
     let symbol = builtin_symbol(instance, module);
     let payload = &instance.types[0];
     let value_type = llvm_type(payload, module);
@@ -8206,6 +8275,14 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                br i1 %ok, label %some, label %none\nsome:\n{load}"
         );
     } else {
+        // The numeric parser reads the ASCII bytes that `to_ascii` wrote, and counts them.
+        let (count, count_operand) = match form {
+            StringForm::Utf16 => (String::new(), "%length"),
+            StringForm::Compact => (
+                format!("  %count = and i64 %length, {}\n", strings::MASK),
+                "%count",
+            ),
+        };
         let _ = writeln!(
             body,
             "  %data = extractvalue %tz.string %text, 0\n\
@@ -8214,7 +8291,8 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %buffer = alloca [4096 x i8], align 16\n\
                %ascii = call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)\n\
                br i1 %ascii, label %parse, label %none\nparse:\n\
-               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length, i32 {})\n\
+               {count}\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 {count_operand}, i32 {})\n\
                %ok = icmp ne i32 %parsed, 0\n\
                br i1 %ok, label %some, label %none\nsome:\n\
                %value = load {value_type}, ptr %slot",
@@ -8559,6 +8637,28 @@ mod tests {
         ir
     }
 
+    /// `library` in the UTF-16 form of `string`, for a test that pins the text of that form's IR
+    /// whatever `TSUZURI_STRINGS` says.
+    fn library_utf16(source: &str) -> String {
+        let module = checked(source);
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            wasm_simd128: false,
+            debug_output: false,
+            runtime_objects: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let ir = emit_with_strings(&module, options, StringForm::Utf16).unwrap();
+        assert_eq!(
+            ir,
+            emit_with_strings(&module, options, StringForm::Utf16).unwrap(),
+            "{source}"
+        );
+        ir
+    }
+
     #[test]
     fn emits_distinct_string_literals_and_indexing() {
         let ir = library(
@@ -8591,7 +8691,7 @@ mod tests {
 
     #[test]
     fn emits_utf16_display_and_ascii_parse() {
-        let ir = library(
+        let ir = library_utf16(
             "let bytes = u8\"42\"\n\
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
@@ -8825,7 +8925,7 @@ mod tests {
 
     #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
-        let ir = library(
+        let ir = library_utf16(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
              def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
              def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\

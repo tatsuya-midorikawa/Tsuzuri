@@ -748,7 +748,7 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 整数（`i8`〜`i128`、`i8u`〜`i128u`）の `to_string`、`Display`、文字列補間（書式指定の `{n:+}`、`{n:x}`、`{n:X}`、`{n:o}`、`{n:b}` を含む）、
 トップレベルの式の結果の表示と、整数の `Parse.parse` は、数値ランタイムを使いません。整数専用のテキスト生成と解析（`runtime/integer.ll`）を
 モジュールの IR に入れて処理し、最適化後には使った関数だけが残るので、整数だけを扱うプログラムには数値 object も、その表（約 10 KB の読み取り専用データ）も入りません。
-`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません。
+`Parse.parse` は UTF-16 の文字列を直接読むので、ASCII への複写も 4 KiB の一時バッファも使いません（`TSUZURI_STRINGS=compact` の Latin-1 の文字列は、同じ手続きの byte を読む版が読みます）。
 `examples/hello` の native 実行ファイルは 50,664 byte から 33,896 byte に、wasm32 は 35,714 byte から 6,833 byte になりました。
 整数を `Parse` し書式指定する `benchmarks/size/parse` の wasm32 モジュールは 76,023 byte から 16,766 byte になります
 （macOS arm64 の `-O3`。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
