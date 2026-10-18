@@ -55,8 +55,11 @@ for (const name of latin1Names) latin1Reference = latin1Reference.replaceAll(`@$
 const generated = join(scratch, "generated");
 mkdirSync(generated, { recursive: true });
 run(process.env.TSUZURI_PYTHON ?? "python3", [join(root, "src/runtime/generate_utf.py"), generated]);
-for (const file of ["string_v128.ll", "string_latin1_v128.ll"])
-  assert.equal(readFileSync(join(generated, file), "utf8"), read(file), `${file} is what generate_utf.py writes`);
+for (const file of ["string_v128.ll", "string_latin1_v128.ll"]) {
+  const text = readFileSync(join(generated, file), "utf8");
+  assert.ok(!text.includes("\r"), `${file} is written with LF on every host`);
+  assert.equal(text, read(file), `${file} is what generate_utf.py writes`);
+}
 const latin1Bridges = (prefix, namespace) => `
 define i32 @${prefix}_latin1_units(ptr %p, i64 %n) {
   %r = call i1 @${namespace}.string.is_latin1_units(ptr %p, i64 %n)
