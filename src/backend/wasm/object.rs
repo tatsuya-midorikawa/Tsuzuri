@@ -390,9 +390,180 @@ impl Object {
     }
 }
 
+/// The routines of the compiler runtime that return a 128-bit integer.
+const I128_ROUTINES: [&str; 9] = [
+    "__multi3",
+    "__udivti3",
+    "__divti3",
+    "__umodti3",
+    "__modti3",
+    "__ashlti3",
+    "__lshrti3",
+    "__ashrti3",
+    "__udivmodti4",
+];
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn byte(&mut self) -> Option<u8> {
+        let byte = *self.bytes.get(self.at)?;
+        self.at += 1;
+        Some(byte)
+    }
+
+    fn uleb(&mut self) -> Option<u64> {
+        let (mut value, mut shift) = (0u64, 0u32);
+        loop {
+            let byte = self.byte()?;
+            value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+            if byte & 0x80 == 0 {
+                return Some(value);
+            }
+            shift += 7;
+        }
+    }
+
+    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
+        let slice = self.bytes.get(self.at..self.at.checked_add(length)?)?;
+        self.at += length;
+        Some(slice)
+    }
+
+    fn name(&mut self) -> Option<&'a [u8]> {
+        let length = self.uleb()? as usize;
+        self.take(length)
+    }
+}
+
+/// How a WebAssembly object that another compiler built passes the 128-bit results of the compiler
+/// runtime (`__ashlti3` and the like) that it calls: `Some(true)` as two results (multi-value),
+/// `Some(false)` through a pointer that is the first parameter, and `None` if it does not call one
+/// or is not an object this reader understands.
+pub(crate) fn i128_results_are_multivalue(object: &[u8]) -> Option<bool> {
+    let mut reader = Reader {
+        bytes: object.get(8..)?,
+        at: 0,
+    };
+    if object.get(..8)? != b"\0asm\x01\0\0\0" {
+        return None;
+    }
+    // The number of parameters and results of each type, and the imports.
+    let (mut types, mut imports): (Vec<(u64, u64)>, Option<&[u8]>) = (Vec::new(), None);
+    while reader.at < reader.bytes.len() {
+        let id = reader.byte()?;
+        let length = reader.uleb()? as usize;
+        let payload = reader.take(length)?;
+        let mut section = Reader {
+            bytes: payload,
+            at: 0,
+        };
+        match id {
+            1 => {
+                for _ in 0..section.uleb()? {
+                    if section.byte()? != 0x60 {
+                        return None;
+                    }
+                    let params = section.uleb()?;
+                    section.take(params as usize)?;
+                    let results = section.uleb()?;
+                    section.take(results as usize)?;
+                    types.push((params, results));
+                }
+            }
+            2 => imports = Some(payload),
+            _ => {}
+        }
+    }
+    let mut section = Reader {
+        bytes: imports?,
+        at: 0,
+    };
+    for _ in 0..section.uleb()? {
+        section.name()?;
+        let field = section.name()?;
+        let found = match section.byte()? {
+            0 => {
+                let (_, results) = *types.get(section.uleb()? as usize)?;
+                I128_ROUTINES
+                    .iter()
+                    .any(|routine| routine.as_bytes() == field)
+                    .then_some(results)
+            }
+            // A table: the element type, then limits.
+            1 => {
+                section.byte()?;
+                let flags = section.uleb()?;
+                section.uleb()?;
+                if flags & 1 != 0 {
+                    section.uleb()?;
+                }
+                None
+            }
+            // A memory: limits.
+            2 => {
+                let flags = section.uleb()?;
+                section.uleb()?;
+                if flags & 1 != 0 {
+                    section.uleb()?;
+                }
+                None
+            }
+            // A global: its type and mutability.
+            3 => {
+                section.take(2)?;
+                None
+            }
+            // A tag: an attribute and a type.
+            4 => {
+                section.byte()?;
+                section.uleb()?;
+                None
+            }
+            _ => return None,
+        };
+        match found {
+            Some(2) => return Some(true),
+            Some(0) => return Some(false),
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn object_importing(routine: &str, signature: (Vec<Vt>, Vec<Vt>)) -> Vec<u8> {
+        let mut object = Object::default();
+        object.imports.push(Import {
+            module: "env".into(),
+            field: routine.into(),
+            signature,
+        });
+        object.finish()
+    }
+
+    #[test]
+    fn finds_how_the_runtime_returns_a_128_bit_integer() {
+        let pair = object_importing(
+            "__ashlti3",
+            (vec![Vt::I64, Vt::I64, Vt::I32], vec![Vt::I64, Vt::I64]),
+        );
+        assert_eq!(i128_results_are_multivalue(&pair), Some(true));
+        let through_a_pointer = object_importing(
+            "__lshrti3",
+            (vec![Vt::I32, Vt::I64, Vt::I64, Vt::I32], vec![]),
+        );
+        assert_eq!(i128_results_are_multivalue(&through_a_pointer), Some(false));
+        let other = object_importing("memcpy", (vec![Vt::I32; 3], vec![Vt::I32]));
+        assert_eq!(i128_results_are_multivalue(&other), None);
+        assert_eq!(i128_results_are_multivalue(b"not wasm"), None);
+    }
 
     #[test]
     fn writes_the_sections_in_the_order_of_the_conventions() {

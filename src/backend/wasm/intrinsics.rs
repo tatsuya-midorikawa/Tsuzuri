@@ -485,6 +485,98 @@ impl<'w, 'a> Lower<'w, 'a> {
         Ok(vec![self.save(width.vt())])
     }
 
+    /// The sum or difference of two 128-bit integers with its overflow flag. A product that
+    /// overflows needs 256 bits, which this lowering does not compute.
+    fn with_overflow128(
+        &mut self,
+        kind: Overflow,
+        a: &[Atom],
+        b: &[Atom],
+    ) -> Res<(Vec<Atom>, Atom)> {
+        let (Some(a_lo), Some(a_hi), Some(b_lo), Some(b_hi)) =
+            (a.first(), a.get(1), b.first(), b.get(1))
+        else {
+            bail!("a 128-bit operand that is not two words");
+        };
+        let (subtract, signed) = match kind {
+            Overflow::SAdd => (false, true),
+            Overflow::UAdd => (false, false),
+            Overflow::SSub => (true, true),
+            Overflow::USub => (true, false),
+            Overflow::SMul | Overflow::UMul => bail!("an overflow check of a 128-bit product"),
+        };
+        let arithmetic = if subtract { op::I64_SUB } else { op::I64_ADD };
+        self.push(a_lo)?;
+        self.push(b_lo)?;
+        self.op(arithmetic);
+        let lo = self.save(Vt::I64);
+        // The carry out of the low word of a sum, the borrow from the high word of a difference.
+        if subtract {
+            self.push(a_lo)?;
+            self.push(b_lo)?;
+        } else {
+            self.push(&lo)?;
+            self.push(a_lo)?;
+        }
+        self.op(op::I64_LT_U);
+        self.op(op::I64_EXTEND_I32_U);
+        let carry = self.save(Vt::I64);
+        self.push(a_hi)?;
+        self.push(b_hi)?;
+        self.op(arithmetic);
+        let partial = self.save(Vt::I64);
+        self.push(&partial)?;
+        self.push(&carry)?;
+        self.op(arithmetic);
+        let hi = self.save(Vt::I64);
+        match (signed, subtract) {
+            (false, false) => {
+                self.push(&partial)?;
+                self.push(a_hi)?;
+                self.op(op::I64_LT_U);
+                self.push(&hi)?;
+                self.push(&partial)?;
+                self.op(op::I64_LT_U);
+                self.op(op::I32_OR);
+            }
+            (false, true) => {
+                self.push(a_hi)?;
+                self.push(b_hi)?;
+                self.op(op::I64_LT_U);
+                self.push(&partial)?;
+                self.push(&carry)?;
+                self.op(op::I64_LT_U);
+                self.op(op::I32_OR);
+            }
+            // The operands have the same sign and the result another (a sum), or the operands have
+            // different signs and the result is not the first one's (a difference).
+            (true, false) => {
+                self.push(a_hi)?;
+                self.push(&hi)?;
+                self.op(op::I64_XOR);
+                self.push(b_hi)?;
+                self.push(&hi)?;
+                self.op(op::I64_XOR);
+                self.op(op::I64_AND);
+                self.i64_const(0);
+                self.op(op::I64_LT_S);
+            }
+            (true, true) => {
+                self.push(a_hi)?;
+                self.push(b_hi)?;
+                self.op(op::I64_XOR);
+                self.push(a_hi)?;
+                self.push(&hi)?;
+                self.op(op::I64_XOR);
+                self.op(op::I64_AND);
+                self.i64_const(0);
+                self.op(op::I64_LT_S);
+            }
+        }
+        let flag = self.save(Vt::I32);
+        Ok((vec![lo, hi], flag))
+    }
+
     fn with_overflow(
         &mut self,
         kind: Overflow,
@@ -493,10 +585,13 @@ impl<'w, 'a> Lower<'w, 'a> {
         b: &[Atom],
     ) -> Res<(Vec<Atom>, Atom)> {
         let width = self.width(ty)?;
+        if width == Width::W128 {
+            return self.with_overflow128(kind, a, b);
+        }
         let (bits, wide) = match width {
             Width::W32(bits) => (bits, false),
             Width::W64(bits) => (bits, true),
-            Width::W128 => bail!("an overflow check on a 128-bit integer"),
+            Width::W128 => unreachable!("handled above"),
         };
         let container: u16 = if wide { 64 } else { 32 };
         let signed = matches!(kind, Overflow::SAdd | Overflow::SSub | Overflow::SMul);

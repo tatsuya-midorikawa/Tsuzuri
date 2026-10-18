@@ -298,6 +298,11 @@ impl<'w, 'a> Lower<'w, 'a> {
                 Ok(vec![lo, hi])
             }
             BinOp::Shl | BinOp::LShr | BinOp::AShr => {
+                // A constant count is a few word operations. The routines of the runtime that a
+                // variable count calls are written with such shifts, so this is also what ends their recursion.
+                if let (Atom::I64(count), Atom::I64(0)) = (b_lo, b_hi) {
+                    return self.shift128_constant(bop, a_lo, a_hi, (*count & 127) as u32);
+                }
                 let name = match bop {
                     BinOp::Shl => "__ashlti3",
                     BinOp::LShr => "__lshrti3",
@@ -328,6 +333,64 @@ impl<'w, 'a> Lower<'w, 'a> {
             }
             other => bail!("the operation {other:?} on a 128-bit integer"),
         }
+    }
+
+    /// `x << n`, `x >> n` of the 128-bit integer (`lo`, `hi`) by the constant `n` below 128.
+    fn shift128_constant(&mut self, bop: BinOp, lo: &Atom, hi: &Atom, n: u32) -> Res<Vec<Atom>> {
+        if n == 0 {
+            return Ok(vec![lo.clone(), hi.clone()]);
+        }
+        let arithmetic = bop == BinOp::AShr;
+        let shr = if arithmetic {
+            op::I64_SHR_S
+        } else {
+            op::I64_SHR_U
+        };
+        // `value op by` of one word, saved.
+        let word = |lower: &mut Self, value: &Atom, opcode: u8, by: u32| -> Res<Atom> {
+            lower.push(value)?;
+            lower.i64_const(i64::from(by));
+            lower.op(opcode);
+            Ok(lower.save(Vt::I64))
+        };
+        Ok(match (bop, n) {
+            (BinOp::Shl, 1..=63) => {
+                let carried = word(self, lo, op::I64_SHR_U, 64 - n)?;
+                let high = word(self, hi, op::I64_SHL, n)?;
+                self.push(&high)?;
+                self.push(&carried)?;
+                self.op(op::I64_OR);
+                let high = self.save(Vt::I64);
+                vec![word(self, lo, op::I64_SHL, n)?, high]
+            }
+            (BinOp::Shl, 64) => vec![Atom::I64(0), lo.clone()],
+            (BinOp::Shl, _) => vec![Atom::I64(0), word(self, lo, op::I64_SHL, n - 64)?],
+            (_, 1..=63) => {
+                let carried = word(self, hi, op::I64_SHL, 64 - n)?;
+                let low = word(self, lo, op::I64_SHR_U, n)?;
+                self.push(&low)?;
+                self.push(&carried)?;
+                self.op(op::I64_OR);
+                let low = self.save(Vt::I64);
+                vec![low, word(self, hi, shr, n)?]
+            }
+            (_, 64) => vec![
+                hi.clone(),
+                if arithmetic {
+                    word(self, hi, shr, 63)?
+                } else {
+                    Atom::I64(0)
+                },
+            ],
+            (_, _) => vec![
+                word(self, hi, shr, n - 64)?,
+                if arithmetic {
+                    word(self, hi, shr, 63)?
+                } else {
+                    Atom::I64(0)
+                },
+            ],
+        })
     }
 
     fn library_scalar(&mut self, name: &str, arguments: Vec<(Ty, Val)>, ret: Ty) -> Res<Vec<Atom>> {

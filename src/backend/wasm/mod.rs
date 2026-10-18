@@ -81,6 +81,16 @@ pub(crate) fn translate(
     run(ir, parallelism, multivalue).map_err(Failure::into_diagnostic)
 }
 
+/// Whether the runtime objects that are already compiled, with the compiler that built them, return a
+/// 128-bit integer as two results: the first of them that calls a routine of the compiler runtime
+/// says; with none that does, the choice is free, and two results (the default of a recent Clang) it is.
+pub(crate) fn multivalue_of_objects<'a>(objects: impl IntoIterator<Item = &'a [u8]>) -> bool {
+    objects
+        .into_iter()
+        .find_map(object::i128_results_are_multivalue)
+        .unwrap_or(true)
+}
+
 fn flags_of(linkage: Linkage, hidden: bool) -> u32 {
     let mut flags = match linkage {
         Linkage::Local => BINDING_LOCAL,
@@ -173,11 +183,13 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                     index = next_import;
                     next_import += 1;
                     let (from, field) = import_of(ir, *header);
-                    let field = field.unwrap_or(&name).to_owned();
-                    flags |= UNDEFINED;
-                    if field != name {
+                    // A declaration that names its import is an import that the link does not
+                    // look for in another object: Clang marks its symbol as explicitly named.
+                    if field.is_some() {
                         flags |= EXPLICIT_NAME;
                     }
+                    let field = field.unwrap_or(&name).to_owned();
+                    flags |= UNDEFINED;
                     object.imports.push(Import {
                         module: from.unwrap_or("env").to_owned(),
                         field,

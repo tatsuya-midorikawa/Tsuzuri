@@ -63,6 +63,8 @@ pub(super) struct Lower<'w, 'a> {
     pub local_vts: Vec<Vt>,
     pub vals: Vec<Option<Val>>,
     pub frame: u32,
+    /// The alignment that the frame's address has: 16, or that of the most aligned slot.
+    pub max_align: u32,
     pub fp: Option<u32>,
     pub pc: u32,
     /// The number of blocks of the dispatch loop, and the position of each block in it.
@@ -93,6 +95,7 @@ pub(super) fn lower_function<'a>(
         local_vts: info.abi.wasm_params.clone(),
         vals: vec![None; func.n_locals as usize],
         frame: 0,
+        max_align: 16,
         fp: None,
         pc: 0,
         n_blocks: 0,
@@ -108,6 +111,9 @@ pub(super) fn lower_function<'a>(
 fn align_up(value: u32, align: u32) -> u32 {
     value.div_ceil(align) * align
 }
+
+/// The largest alignment of a slot of the frame; the prologue aligns the frame to it.
+const MAX_SLOT_ALIGN: u32 = 128;
 
 impl<'w, 'a> Lower<'w, 'a> {
     // ---- emission ----
@@ -174,7 +180,8 @@ impl<'w, 'a> Lower<'w, 'a> {
 
     /// A slot of `size` bytes in the frame.
     pub(super) fn slot(&mut self, size: u64, align: u32) -> Res<u32> {
-        let align = align.clamp(1, 16);
+        let align = align.clamp(1, MAX_SLOT_ALIGN);
+        self.max_align = self.max_align.max(align);
         let size = u32::try_from(size).map_err(|_| Failure::new("a frame this large"))?;
         self.frame = align_up(self.frame, align);
         let offset = self.frame;
@@ -673,6 +680,10 @@ impl<'w, 'a> Lower<'w, 'a> {
         let mut prologue_relocs = Vec::new();
         let frame = align_up(self.frame, 16);
         let sp = self.shared.sp_symbol;
+        // A frame that has a slot more aligned than the stack pointer is, is rounded down to that
+        // alignment, and the stack pointer that was there is kept to be put back.
+        let original = (self.fp.is_some() && frame > 0 && self.max_align > 16)
+            .then(|| self.new_local(Vt::I32));
         if self.fp.is_some() && frame > 0 {
             let fp = self.fp.unwrap_or(0);
             prologue.push(op::GLOBAL_GET);
@@ -683,9 +694,18 @@ impl<'w, 'a> Lower<'w, 'a> {
                 addend: 0,
             });
             bin::uleb_padded(&mut prologue, 0);
+            if let Some(original) = original {
+                prologue.push(op::LOCAL_TEE);
+                bin::uleb(&mut prologue, u64::from(original));
+            }
             prologue.push(op::I32_CONST);
             bin::sleb(&mut prologue, i64::from(frame));
             prologue.push(op::I32_SUB);
+            if original.is_some() {
+                prologue.push(op::I32_CONST);
+                bin::sleb(&mut prologue, -i64::from(self.max_align));
+                prologue.push(op::I32_AND);
+            }
             prologue.push(op::LOCAL_TEE);
             bin::uleb(&mut prologue, u64::from(fp));
             prologue.push(op::GLOBAL_SET);
@@ -702,11 +722,16 @@ impl<'w, 'a> Lower<'w, 'a> {
         let mut epilogue_relocs = Vec::new();
         if self.fp.is_some() && frame > 0 {
             let fp = self.fp.unwrap_or(0);
-            epilogue.push(op::LOCAL_GET);
-            bin::uleb(&mut epilogue, u64::from(fp));
-            epilogue.push(op::I32_CONST);
-            bin::sleb(&mut epilogue, i64::from(frame));
-            epilogue.push(op::I32_ADD);
+            if let Some(original) = original {
+                epilogue.push(op::LOCAL_GET);
+                bin::uleb(&mut epilogue, u64::from(original));
+            } else {
+                epilogue.push(op::LOCAL_GET);
+                bin::uleb(&mut epilogue, u64::from(fp));
+                epilogue.push(op::I32_CONST);
+                bin::sleb(&mut epilogue, i64::from(frame));
+                epilogue.push(op::I32_ADD);
+            }
             epilogue.push(op::GLOBAL_SET);
             epilogue_relocs.push(Reloc {
                 offset: epilogue.len() as u32,
@@ -1086,7 +1111,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let size = self.types.size_of(ty)?.saturating_mul(count);
                 let natural = self.types.align_of(ty)?;
                 let wanted = align.max(natural);
-                if wanted > 16 {
+                if wanted > MAX_SLOT_ALIGN {
                     bail!("an alloca aligned to {wanted} bytes");
                 }
                 let offset = self.slot(size, wanted)?;

@@ -168,6 +168,11 @@ pub fn compile_wasm(ir: &str, threads: usize, multivalue: bool) -> Result<Vec<u8
     translate_wasm(ir, Parallelism::fixed(threads.max(1)), multivalue)
 }
 
+/// See `wasm::multivalue_of_objects`.
+pub(crate) fn wasm_multivalue<'a>(objects: impl IntoIterator<Item = &'a [u8]>) -> bool {
+    wasm::multivalue_of_objects(objects)
+}
+
 /// The function bodies that a worker needs to see, shared by every worker.
 struct Shared<'a> {
     module: &'a Module<'a>,

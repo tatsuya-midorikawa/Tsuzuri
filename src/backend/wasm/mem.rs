@@ -325,24 +325,67 @@ impl<'w, 'a> Lower<'w, 'a> {
         }
     }
 
-    fn lane_index(&self, index: &Val, lanes: u32) -> Res<usize> {
+    /// The lane that an index names when it is a constant; `None` when it is a value.
+    fn lane_index(&self, index: &Val, lanes: u32) -> Res<Option<usize>> {
         let atom = self.single(index)?;
         let value = match atom {
             Atom::I32(value) => i64::from(value as u32),
             Atom::I64(value) => value,
-            _ => bail!("a vector element chosen by a variable"),
+            _ => return Ok(None),
         };
         match usize::try_from(value) {
-            Ok(lane) if lane < lanes as usize => Ok(lane),
+            Ok(lane) if lane < lanes as usize => Ok(Some(lane)),
             _ => bail!("a vector element out of range"),
         }
+    }
+
+    /// The vector in a slot of the frame, and the address of the element that the value `index`
+    /// names there, kept inside the vector: an index past the end is poison, so any lane will do.
+    fn spill_vector(
+        &mut self,
+        ty: Ty,
+        vec: &Val,
+        index: &Val,
+        lanes: u32,
+        elem: Ty,
+    ) -> Res<(Atom, Atom)> {
+        let size = self.types.size_of(ty)?;
+        let align = self.types.align_of(ty)?;
+        let slot = Atom::Frame(self.slot(size, align)?);
+        self.store_value(&slot, 0, ty, vec)?;
+        let stride = self.types.size_of(elem)?;
+        let index = self.single(index)?;
+        let last = lanes as i32 - 1;
+        self.push(&index)?;
+        if self.atom_vt(&index) == Vt::I64 {
+            self.op(op::I32_WRAP_I64);
+        }
+        let position = self.save(Vt::I32);
+        // `select(last, position, position > last)`: the position, or the last lane past the end.
+        self.i32_const(last);
+        self.push(&position)?;
+        self.push(&position)?;
+        self.i32_const(last);
+        self.op(op::I32_GT_U);
+        self.op(op::SELECT);
+        let position = self.save(Vt::I32);
+        self.push(&slot)?;
+        self.push(&position)?;
+        self.i32_const(stride as i32);
+        self.op(op::I32_MUL);
+        self.op(op::I32_ADD);
+        let address = self.save(Vt::I32);
+        Ok((slot, address))
     }
 
     pub(super) fn extract_element(&mut self, ty: Ty, vec: Val, index: Val) -> Res<Val> {
         let Some((lanes, elem)) = self.vector_shape(ty) else {
             bail!("an extractelement on {}", self.types.describe(ty));
         };
-        let lane = self.lane_index(&index, lanes)?;
+        let Some(lane) = self.lane_index(&index, lanes)? else {
+            let (_, address) = self.spill_vector(ty, &vec, &index, lanes, elem)?;
+            return self.load_value(&address, 0, elem);
+        };
         let width = self.flat(elem)?.len();
         let atoms = self.atoms(&vec)?;
         Ok(Val::Atoms(atoms[lane * width..(lane + 1) * width].to_vec()))
@@ -352,7 +395,11 @@ impl<'w, 'a> Lower<'w, 'a> {
         let Some((lanes, element)) = self.vector_shape(ty) else {
             bail!("an insertelement on {}", self.types.describe(ty));
         };
-        let lane = self.lane_index(&index, lanes)?;
+        let Some(lane) = self.lane_index(&index, lanes)? else {
+            let (slot, address) = self.spill_vector(ty, &vec, &index, lanes, element)?;
+            self.store_value(&address, 0, element, &elem)?;
+            return self.load_value(&slot, 0, ty);
+        };
         let width = self.flat(element)?.len();
         let mut atoms = self.atoms(&vec)?;
         let new = self.atoms(&elem)?;
