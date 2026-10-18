@@ -266,11 +266,15 @@ impl FunctionEmitter<'_, '_> {
         let length = self.string_count(&source.ty, &word);
         self.borrowed_locals.insert(local.id);
         if let Type::List(element) = &source.ty {
-            self.list_loop_control(&data, &length, |emitter, node, exit, advance| {
-                let pointer = emitter.list_element_pointer(element, node);
-                emitter.locals.insert(local.id, pointer);
-                emitter.loop_body(body, exit, advance);
-            });
+            self.list_loop_control(
+                element,
+                &data,
+                &length,
+                |emitter, pointer, exit, advance| {
+                    emitter.locals.insert(local.id, pointer.to_owned());
+                    emitter.loop_body(body, exit, advance);
+                },
+            );
         } else if self.marks_length(&source.ty) {
             // A unit of a Latin-1 string is a byte: the loop variable points at a widened copy.
             let latin1 = self.string_is_latin1(&word);

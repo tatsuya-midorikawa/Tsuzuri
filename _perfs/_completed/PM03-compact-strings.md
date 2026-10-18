@@ -883,7 +883,8 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
 | — | `053ad410` | 統合ブランチ（PM02）の merge |
 | WP11 | `03184c13` | compact の全体実行で崩れた 4 本の試験を UTF-16 の形に固定 |
 | — | `516b8780` | 統合ブランチ（PR08・PB06 の review fix まで。`ba746981`）の merge |
-| WP11 | この commit | 最終の検証の記録、この節、`docs/benchmarks.md` の最終の判断、`_perfs/_completed/` への移動 |
+| WP11 | `4e13b11c` | 最終の検証の記録、この節、`docs/benchmarks.md` の最終の判断、`_perfs/_completed/` への移動 |
+| fix | `4c789a88`・`6bd4d0ee`・`2c931c87`・`75e80c1c`・`9a8bcfd0` | 独立した静的レビューの F1〜F6（「レビュー後の修正」）。統合ブランチ `e4025531` の上 |
 
 ### 実装したもの
 
@@ -926,6 +927,7 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
   malloc の返却の時機の差である（`--allocator small` では同じ）。判断の根拠にしない。
 - 命令数（`instructions retired`、`-O3`）: `ascii_words` −3%、`latin1_csv` −14%（`-O0` は −24%・`cjk_lines` −22%）。
 - M4（悪化が続く）: runtime の IR が約 61 KB 増え（hello の native の `--emit llvm` +42%）、wasm32 の hello が 6,833 → 7,866 B（+15%）、`--emit object` +8.6%、clang を含む hello のビルド時間が +23%。
+  統合後の再測定（F2 の後）は、wasm32 の hello が 6,860 → 8,058 B（+17.5%）、`--emit object` が 5,184 → 7,944 B（統合ブランチの変更による。`docs/benchmarks.md`）。
   host へ短い文字列を返す呼び出しは `to_utf16` の確保と widen のぶん 56 → 108 ns（約 2 倍）、1,000 単位の `repeat_text` は 798 → 616 ns。
 - 判断（D11）: M1・M2・M3 は基準を満たすが、M4 を満たさないので、**既定は `utf16` のまま、`compact` は opt-in**。既定にする前に: 使われない kernel と dispatcher を生成しない（`RuntimeSymbols` で層を選ぶ）、
   host へ返す結果を最初から UTF-16 で作る、Linux・Windows の allocator で `cjk_lines` の RSS を測り直す。
@@ -941,6 +943,7 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
 | D13（Phase 2 の vector と `utf8_scan`） | 実装済み（上の差 1） |
 | D14（文書の契約） | 実装済み |
 | D15（新: compact の `String.slice`・`String.join` は runtime の 1 回の確保） | 実装済み。WP4 の時点で apps の確保の calls が +43〜50% 退行していたのを、この置き換えで 0% にした |
+| D16（新: wasm の heap の上限は Latin-1 でも UTF-16 の大きさで数える） | 実装済み（「レビュー後の修正」の F2） |
 
 ### 検証
 
@@ -976,6 +979,28 @@ Homebrew の LLVM を PATH の先頭に置いた）で行った。生データ�
   層の分（約 61 KB）は毎回のビルドで clang が読む。
 - `replace`・`repeat`・`to_ascii_*`・Json・Regex は `from_code_units` の narrow と `realloc` を払い続ける（`slice`・`join` だけが 1 回の確保）。
 - 混在の連結（UTF-16 と Latin-1）は UTF-16 を作るので、非 Latin-1 の文字列に短い ASCII を足した結果は UTF-16 のまま。
+- 確保の失敗は、起きる大きさが形式で少し違う。WebAssembly の heap の 1 block の上限は、Latin-1 でも UTF-16 の大きさで数える（D16）ので、上限を超える長さは同じ呼び出しで同じ trap になるが、
+  上限を超えない長さで heap の空きや malloc が足りるかは、半分の bytes で済む `compact` のほうが大きな文字列を作れる。`--allocator host` の WebAssembly は host の allocator が決める。
+
+### レビュー後の修正（2026-10-18。独立した静的レビューの F1〜F6）
+
+統合ブランチ `71365e0c` の独立した静的レビューは、重大な欠陥（長さの語の読み手・trap・`utf16` の同一性・kernel）を見つけず、次の 6 件を指摘した。すべて `perf/p4-PM03` の `fix:` commit で直した。
+
+| 指摘 | 内容 | 修正 |
+| --- | --- | --- |
+| F1（中） | `generate_utf.py` が `Path.write_text` で書くので Windows では CRLF になり、LF の生成物と byte 比較する `tests/utf_simd.mjs` が windows-2022 で落ちる | `4c789a88`: `open(..., newline="\n")` と明示した encoding で書く。テストは書かれたものに CR がないことも検査する。ほかに私が足した generator はない |
+| F2（低） | wasm32 で UTF-16 の文字列は 8,388,592 単位を超えられないが、Latin-1 は 16,777,184 単位まで作れ、`to_utf16`・`borrow_utf16`・UTF-16 の `append` が 2 倍を求めて trap した | `2c931c87`: D16 |
+| F3（低） | `disassemble()` が `llvm-objdump` の不在で "" を返し、「vector 命令は simd128 のときだけ」の検査が黙って飛ぶ | `6bd4d0ee`: 不在は失敗。`TSUZURI_SKIP_OBJDUMP=1` で、CI・`LLVM_PREFIX` がないときだけ、メッセージつきで飛ばせる |
+| F4（低） | host の import の経路（`borrow_utf16` と呼び出し後の `@tz.free`）に `cargo test` の IR の検査がない | `75e80c1c`: `extern def host_note :: ref string -> i64` の program と、native・wasm32・simd128 の wrapper の順序の検査 |
+| F5（低） | 文書が `to_code_units` を「新しいバッファへコピー」と書くが、`to_utf16` は `realloc` で 2 倍にして、その場で広げる | `9a8bcfd0`: `docs/language.md`・`string.md`・`strings.md`・`option.md` |
+| F6（低） | raw-word の lint が、任意の `@tz.string.*`／`@tz.utf8string.*` の呼び出しに語を渡すことを許していた（`allocate`・`copy` は count を取る） | `75e80c1c`: 語を取る 12 個の関数と、語の位置（`WORD_PARAMETERS`）だけを許し、count の位置と別の位置を見つける試験を足した |
+
+- **D16（新: wasm の heap の上限は Latin-1 でも UTF-16 の大きさで数える）**: WebAssembly の heap がモジュールのもの（`--allocator host` でない）とき、`allocate_latin1` と Latin-1 の `append` は先に
+  `@tz.string.latin1_fits` を呼ぶ。長さの 2 倍を heap の上限（既定 16,777,184 bytes。`--wasm-max-memory` で `with_wasm_heap_limit` が heap の 3 行と一緒に書き換える）と比べ、超えるときは heap 自身の `@tz.alloc` を 2 倍の大きさで呼んで、
+  `utf16` と同じ呼び出しで同じ確保の失敗（`AllocationFailure`）の trap にする。native と host の allocator では中身のない関数で、`utf16` の IR は変わらない。
+  却下した案: 文書だけにする（形式で長さの上限が違うと「トラップは同じ」が成り立たない）、`allocate_latin1` に定数を直接書く（`--wasm-max-memory` で動く heap の行との二重管理になる）。
+  確かめたこと: raw harness が 8,388,592 単位と、その 1 つ上・10,000,000・2^40・2^53 − 1 で、refuse された要求が 2n bytes であることと `append` の経路を検査し、`tests/compact_strings.mjs` が
+  `tests/fixtures/compact_strings_limit` を両形式で作って結果と trap が同じことを既定と `--wasm-max-memory 64MiB` で比べる。この修正の前のコンパイラでは `grown(9000000)` で失敗する（compact だけが 9,000,000 を返す）。
 
 ### 次にやること
 

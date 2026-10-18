@@ -188,7 +188,7 @@ dashed=-a-b- once=- rep=hahaha
 
 > [!NOTE]
 > 「ポインタを移すだけ」は、既定の `TSUZURI_STRINGS=utf16` の契約です。`compact`（opt-in。[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)）では、
-> Latin-1 で持っている文字列の `to_code_units` は 1 byte の列を新しい 2 byte の単位のバッファへ広げ（コピー）、`from_code_units` は全単位が 0xFF 以下なら 1 byte へその場で狭めてバッファを縮めるので、どちらも O(n) です。
+> Latin-1 で持っている文字列の `to_code_units` は、バッファを `realloc` で 2 倍にして 1 byte の列をその場で 2 byte の単位へ広げ（伸ばせなければ新しいバッファへ移る）、`from_code_units` は全単位が 0xFF 以下なら 1 byte へその場で狭めて `realloc` でバッファを縮めるので、どちらも O(n) です。
 > 結果の値、孤立サロゲートが残ること、失敗の条件は変わりません。UTF-16 の文字列では上のとおり、コピーなしです。
 
 ## エンコーディング

@@ -158,7 +158,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 所有権、借用、複数 region、排他借用フィールド、`Drop` | 実装済み | A09、A12、A13、B07。region 間の outlives はない |
 | 借用・型から導く LLVM の最適化情報 | 限定した証明済みの範囲で実装済み | 通常の内部関数の pointer 属性、scalar `noundef`、限定した memory effects、scoped alias、scalar TBAA。集約値全体や runtime の byte copy は対象外。速度は別途測る |
 | 整数の範囲証明と `nsw`／`nuw` の旗 | オプトインで実装済み（既定は `off`） | PR02。`TSUZURI_RANGE_FLAGS=off\|proven\|audit`。ループの形と区間から証明できた整数の `+ - *` だけ。`let mut`・呼び出しの結果・128-bit は対象外。旗が変えた assembly は、Matrix と `String.split`／`String.join` の関数ごとに 1〜8 命令、utf の wasm32 `-O3`（7 bytes 増）、旗の候補を集めた `range_flags` の arm64 `-O1`（24 行。命令数は同じ）だけで、速度の向上は主張しない（[整数の範囲証明の旗](../compiler/option.md#整数の範囲証明の旗)） |
-| 内部の文字列表現（コンパクト文字列） | オプトインで実装済み（既定は `utf16`） | PM03。`TSUZURI_STRINGS=utf16\|compact`。`compact` は全単位が 0xFF 以下の `string` を 1 単位 1 byte（Latin-1）で保存し、ASCII・Latin-1 の確保量を約半分にする。値・順序・hash・host との ABI（常に UTF-16）は変えない。runtime の IR（31〜49%）・小さな WebAssembly（hello で 15%）・ビルド時間（約 23%）が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のまま（[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)） |
+| 内部の文字列表現（コンパクト文字列） | オプトインで実装済み（既定は `utf16`） | PM03。`TSUZURI_STRINGS=utf16\|compact`。`compact` は全単位が 0xFF 以下の `string` を 1 単位 1 byte（Latin-1）で保存し、ASCII・Latin-1 の確保量を約半分にする。値・順序・hash・host との ABI（常に UTF-16）は変えない。runtime の IR（31〜49%）・小さな WebAssembly（hello で約 17%）・ビルド時間（約 23%）が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のまま（[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)） |
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
 | `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |

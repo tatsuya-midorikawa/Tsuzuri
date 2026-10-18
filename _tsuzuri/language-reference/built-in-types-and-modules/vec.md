@@ -327,7 +327,7 @@ total=2
 ## 関連項目
 
 - [Array](./array.md) — 固定長の連続メモリ配列
-- [List](./list.md) — 不変な単方向連結リスト
+- [List](./list.md) — 不変なリスト
 - [Seq](./seq.md) — 遅延シーケンス
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語リファレンスの目次](../index.md)

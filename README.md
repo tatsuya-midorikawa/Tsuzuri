@@ -165,7 +165,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 #### 配列・リスト・コレクション
 
 - **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。
-- **連結リスト (`[|T|]`)**: 単方向の不変連結リストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。要素への添字アクセスは $O(n)$ となります。
+- **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.reverse`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。
 - **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。
 - **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: 平衡二分探索木による不変コレクションです。キーの順序を保持し、検索は $O(\log n)$、挿入および削除は $O(n)$ で動作します。
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
@@ -947,13 +947,15 @@ node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照�
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成、Latin-1 の kernel（PM03）と生成物の再生成の一致。--asan／--exhaustive は拡張検証
 node tests/compact_strings.mjs target/release/tsuzuri --quick   # コンパクト文字列（PM03）。fixture を TSUZURI_STRINGS=utf16／compact × native／wasm32（simd128 も）× O0／O3 で作り、すべての出力が同じで、呼び出しごとに確保が残らないことを確かめる
-node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）
+node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）。vector 命令の有無の検査に llvm-objdump が要る（TSUZURI_OBJDUMP。無いと失敗し、CI でなければ TSUZURI_SKIP_OBJDUMP=1 でその検査だけを省ける）
 node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16   # 既存の文字列に関わる node の suite を TSUZURI_STRINGS=compact と utf16 の両方で実行する（full は到達しうる suite すべて）
 python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
 node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
+node tests/features.mjs target/release/tsuzuri list_chunks   # リストの chunk（PM04）。chunk の境界（i64 は 1〜4093 個、16 bytes の slot は 1〜2046 個、unit は 8〜32744 個）の前後で、cons・添字・tail・パターン・比較・hash・display・複製・配列との変換・スタックのリテラルの移送を、native／WASM の -O0／-O3 で照合する。TSUZURI_ASAN=1・TSUZURI_TEST_ALLOCATOR=small・TSUZURI_RANGE_FLAGS=audit でも回す
+node tests/benchmark_list_memory.mjs target/release/tsuzuri   # PM04 の list-memory benchmark の参照式・引数と、quick の実行（checksum・確保の回数・wasm32 の heap）
 TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri   # 同じスイートを --allocator small で。追跡する malloc の代わりに tz_small_stats（切り出したブロックが全部キャッシュか中央に戻ったか）で解放漏れを検査する（PM05）
 node tests/small_allocator.mjs target/release/tsuzuri   # --allocator small（PM05）。heap-small.c の C のユニットテスト（通常・ASan+UBSan・TSan）、拒否、IR、LLVM が確保と解放の組を取り除くこと、object と C のホストでの解放漏れ・複数スレッド・複数オブジェクト・共有ライブラリの検査。--unit は compiler なしでユニットテストだけ。TSUZURI_NO_SANITIZERS=1 で ASan+UBSan と TSan のユニットテストを省く（空のプログラムが起動しない clang、Homebrew の LLVM 21 の macOS でも、自動で省いて理由を出す。通常と -O3 は必ず走る。macOS の CI はこれを付ける）
 node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカルな let rec の差分テスト（B09）。乱数で作った入れ子のグループ・クロージャ・借用の捕捉のプログラムを、独立した JS の評価器と照合する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。リフト（src/closures_rec.rs）を変えたときに回す
@@ -1040,6 +1042,7 @@ node benchmarks/run-apps.mjs target/release/tsuzuri --allocator small   # 時間
 node benchmarks/run-small.mjs target/release/tsuzuri --rounds 5 --rss-runs 9   # PX02 の app の --allocator system と small を同じコンパイラで交互に走らせ、CPU 時間と peak RSS を比べる（Tsuzuri だけ。macOS と Linux。PM05）
 node benchmarks/run-lto.mjs target/release/tsuzuri --metrics target/perf/PR08-after/lto   # C のループが Tsuzuri の tz_add を呼ぶ時間を、--emit object のリンク・--emit bitcode の ThinLTO のリンク（同じ Clang）・C で書いた add の 3 通りで比べる（9 回、順序を回す。--quick は正しさだけ。PR08）
 node benchmarks/run-heap.mjs target/release/tsuzuri --baseline OLDER_COMPILER --capacity   # WASM の heap（PM05）。確保の多い kernel と PX02 の app を wasm32 で走らせ、時間とメモリの大きさ、上限までに収まる最大のサイズを比べる。--quick は動作確認だけ
+node benchmarks/run-list-memory.mjs target/release/tsuzuri --baseline OLDER_COMPILER --wasm   # リスト（PM04）。12 の kernel の確保の回数と要求 bytes（決定的）、時間、peak RSS、wasm32 の heap の高水位を、2 つのコンパイラを交互に測って比べる。--opt O0 は -O0 の build、--only で kernel を選ぶ
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Task.parallel の native の時間。--runtime・--baseline-runtime で pool の C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る（PR06）
 node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick   # 同じ kernel を WASM threads の pool（Node の worker_threads）で測る。2 つのコンパイラを比べて 2 つの pool を比べる（PR06）

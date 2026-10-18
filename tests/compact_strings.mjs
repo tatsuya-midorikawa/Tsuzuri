@@ -109,6 +109,44 @@ ${calls}
   results.set(label, values);
 }
 
+// The longest string of a WebAssembly module (tests/fixtures/compact_strings_limit). The heap of a wasm32 module refuses a
+// block above its limit, 16,777,184 bytes by default, and a Latin-1 string is refused at the length that the UTF-16 string
+// is, so both forms trap at the same calls and return the same values below them. --wasm-max-memory moves both limits.
+function limits() {
+  const project = join(root, "tests/fixtures/compact_strings_limit");
+  const exportsOf = (form, ...options) => {
+    const wasm = join(scratch, `limit-${form}-${options.join("")}.wasm`);
+    execute(compiler, ["build", project, "--target", "wasm32", "-O0", "--no-cache", ...options, "-o", wasm], { env: { TSUZURI_STRINGS: form } });
+    const module = new WebAssembly.Module(readFileSync(wasm));
+    return () => new WebAssembly.Instance(module).exports;
+  };
+  const outcome = (fresh, name, n) => {
+    try {
+      return String(fresh()[`tz_${name}`](BigInt(n)));
+    } catch (error) {
+      assert.ok(error instanceof WebAssembly.RuntimeError, `${name}(${n}): ${error}`);
+      return "trap";
+    }
+  };
+  let compared = 0;
+  // doubled and joined need twice their length in memory, so they are refused at 4,500,000; grown at 9,000,000 units.
+  const sizes = { doubled: [0, 1000, 1_000_000, 4_500_000], joined: [0, 1000, 1_000_000, 4_500_000], grown: [0, 1000, 1_000_000, 9_000_000] };
+  for (const [options, refused] of [[[], true], [["--wasm-max-memory", "64MiB"], false]]) {
+    const fresh = { utf16: exportsOf("utf16", ...options), compact: exportsOf("compact", ...options) };
+    for (const [name, lengths] of Object.entries(sizes)) {
+      for (const n of lengths) {
+        const utf16 = outcome(fresh.utf16, name, n);
+        const compact = outcome(fresh.compact, name, n);
+        assert.equal(compact, utf16, `${name}(${n}) ${options.join(" ")}: both forms give the same`);
+        const expected = n === lengths.at(-1) && refused ? "trap" : String(name === "grown" ? n : 2 * n);
+        assert.equal(utf16, expected, `${name}(${n}) ${options.join(" ")}`);
+        compared += 1;
+      }
+    }
+  }
+  console.log(`compact strings limits: ${compared} calls trap or return the same in both forms at the default and a 64 MiB heap`);
+}
+
 try {
   const builds = [];
   for (const form of ["utf16", "compact"]) {
@@ -138,6 +176,7 @@ try {
   const traps = [...reference.values()].filter((value) => value === "trap").length;
   const distinct = new Set(reference.values()).size;
   assert.ok(distinct > reference.size / 4, `the matrix must tell its cases apart: ${distinct} values in ${reference.size}`);
+  limits();
   console.log(`compact strings matrix: ${probes.length} probes x ${pairs.length} pairs, ${results.size} builds (${[...results.keys()].join(", ")}) agree; ${traps} traps; ${distinct} distinct values; no allocation left`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });

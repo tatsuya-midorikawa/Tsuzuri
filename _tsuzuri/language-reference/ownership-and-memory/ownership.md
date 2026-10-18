@@ -170,7 +170,7 @@ match pair 3 with
 
 注意が必要なのは、Copy 型の要素のみで構成された配列 `[T]` や連結リスト `[|T|]` です。これらも「全要素が Copy なのでコレクション自体も Copy」と判定されます。
 
-ただし、配列やリストの Copy はポインタのコピーではありません。新しいバッファやノードを確保し、要素をすべて複製するディープコピーです。コストは要素数に比例します。固定長配列 `[T; N]` はここに含まれません。
+ただし、配列やリストの Copy はポインタのコピーではありません。新しいバッファや chunk を確保し、要素をすべて複製するディープコピーです。コストは要素数に比例します。固定長配列 `[T; N]` はここに含まれません。
 
 ```tsuzuri run=6
 let first = [1, 2, 3]
@@ -213,7 +213,7 @@ tsuzuri check --warn implicit-copy Main.tz
 
 ```text
 warning[W1006]: implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit
-warning[W1006]: implicit copy of a list allocates a new node for every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit
+warning[W1006]: implicit copy of a list allocates and copies every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit
 ```
 
 意図して複製を行いたい場合は、標準ライブラリの関数を明示的に呼び出します。

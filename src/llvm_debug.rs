@@ -408,10 +408,10 @@ impl DebugContext {
         } else {
             let members = match ty {
                 Type::List(element) => {
-                    let node = self.list_node(&display, element, module, next, definitions);
+                    let chunk = self.list_chunk(&display, element, module, next, definitions);
                     let length = self.ty(&Type::I64, module, next, definitions);
                     vec![
-                        Member::new("head", node, pointer, pointer),
+                        Member::new("head", chunk, pointer, pointer),
                         Member::new("length", length, 8, 8),
                     ]
                 }
@@ -561,45 +561,55 @@ impl DebugContext {
         id
     }
 
-    /// The pointer to the node `{ ptr next, T value }` of the list `[|T|]` named `list`, as
-    /// `FunctionEmitter::list_node_type` stores it.
-    fn list_node(
+    /// The pointer to the chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }` of the list
+    /// `[|T|]` named `name`, as `src/llvm_list.rs` lays it out: a header of 24 bytes on every
+    /// target, then the slots aligned like `T`.
+    fn list_chunk(
         &mut self,
-        list: &str,
+        name: &str,
         element: &Type,
         module: &CheckedModule,
         next: &mut usize,
         definitions: &mut Vec<String>,
     ) -> usize {
-        let node = *next;
-        let link = node + 1;
+        let chunk = *next;
+        let link = chunk + 1;
         *next += 2;
         let pointer = self.pointer();
         definitions.push(format!(
-            "!{link} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{node}, size: {})",
+            "!{link} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{chunk}, size: {})",
             pointer * 8
         ));
-        let (value_size, value_alignment) = layout(element, module, self.wasm);
+        let (_, value_alignment) = layout(element, module, self.wasm);
         let value = self.ty(element, module, next, definitions);
-        let offset = pointer.next_multiple_of(value_alignment);
-        let alignment = pointer.max(value_alignment);
+        let count = self.ty(&Type::I64, module, next, definitions);
+        let range = metadata(next, definitions, "!DISubrange(count: 0)".into());
+        let ranges = list(&[range], next, definitions);
+        let slots = metadata(
+            next,
+            definitions,
+            format!(
+                "!DICompositeType(tag: DW_TAG_array_type, baseType: !{value}, size: 0, elements: !{ranges})"
+            ),
+        );
+        let offset = 24usize.next_multiple_of(value_alignment);
+        let alignment = 8.max(value_alignment);
         let members = vec![
             (Member::new("next", link, pointer, pointer), 0),
-            (
-                Member::new("value", value, value_size, value_alignment),
-                offset,
-            ),
+            (Member::new("rest", count, 8, 8), 8),
+            (Member::new("capacity", count, 8, 8), 16),
+            (Member::new("slots", slots, 0, value_alignment), offset),
         ];
         let definition = composite(
             "DW_TAG_structure_type",
-            node,
-            &quote(&format!("{list}.node")),
-            ((offset + value_size).next_multiple_of(alignment), alignment),
+            chunk,
+            &quote(&format!("{name}.chunk")),
+            (offset.next_multiple_of(alignment), alignment),
             members,
             next,
             definitions,
         );
-        definitions.push(format!("!{node} = {definition}"));
+        definitions.push(format!("!{chunk} = {definition}"));
         link
     }
 

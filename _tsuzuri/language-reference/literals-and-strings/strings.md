@@ -163,7 +163,7 @@ broken=false restored=true text=あ
 | `Utf8String.from_bytes : [ubyte] -> Maybe<utf8string>` | UTF-8 を検査して所有権を移す | 不正なら解放して `None` |
 
 所有権を移す関数は、ヒープ上のバッファならポインタを移すだけです。定数領域やスタック上の値は、先にヒープへコピーされます。検索や切り出しは [String](../built-in-types-and-modules/string.md) と [Utf8String](../built-in-types-and-modules/utf8string.md) にまとめてあります。
-ただし `TSUZURI_STRINGS=compact` のとき、Latin-1 で持っている文字列の `String.to_code_units` と、全単位が 0xFF 以下の配列の `String.from_code_units` は、全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換です。
+ただし `TSUZURI_STRINGS=compact` のとき、Latin-1 で持っている文字列の `String.to_code_units` と、全単位が 0xFF 以下の配列の `String.from_code_units` は、全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）O(n) の変換です。
 
 ### メモリ上の表現
 

@@ -151,6 +151,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Last-use failed: $LASTEXITCODE" }
           node tests/features.mjs target/release/tsuzuri.exe param_facts
           if ($LASTEXITCODE -ne 0) { throw "Ownership facts failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe list_chunks
+          if ($LASTEXITCODE -ne 0) { throw "List chunks failed: $LASTEXITCODE" }
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/last_use_fuzz.mjs target/release/tsuzuri.exe 40 1 4
@@ -159,6 +161,21 @@ jobs:
         env:
           TSUZURI_OBJDUMP: llvm-objdump.exe
         run: node tests/utf_simd.mjs --quick
+      # PM03: how the LLDB formatter reads a string of either form (a stub of the lldb module, so no LLDB is needed).
+      - name: Compact string LLDB formatter (PM03)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          python3 tests/lldb_strings.py
+          if ($LASTEXITCODE -ne 0) { throw "LLDB string formatter failed: $LASTEXITCODE" }
+      # PB06: tsuzuri watch runs the commands again when a source changes. tsuzuri serve needs Unix domain sockets, so on Windows
+      # tests/server.mjs checks its E2000 and that --no-server is accepted.
+      - name: Watch mode and the build server (PB06)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/watch.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "Watch failed: $LASTEXITCODE" }
+          node tests/server.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "Build server failed: $LASTEXITCODE" }
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/prebuilt_runtime.mjs target/release/tsuzuri.exe

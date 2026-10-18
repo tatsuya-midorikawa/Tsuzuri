@@ -101,6 +101,8 @@ try {
     '(Result<i64, string>) outcome = Error("bad")',
     "([i64]) values = length=3 {\n  [0] = 1\n  [1] = 2\n  [2] = 3\n}",
     "([|i32|]) chain = length=2 {\n  [0] = 4\n  [1] = 5\n}",
+    // Built by List.cons, whose chunks hold 2 and then 3 of the elements.
+    "([|i32|]) grown = length=5 {\n  [0] = 1\n  [1] = 2\n  [2] = 3\n  [3] = 4\n  [4] = 5\n}",
     "(Vec<i32>) growing = length=1 capacity=4 {\n  [0] = 7\n}",
     "(Map<i32, i32>) table = size=1 {",
     "(i64 -> i64) add = <fn Main.show.lambda@22:15>",

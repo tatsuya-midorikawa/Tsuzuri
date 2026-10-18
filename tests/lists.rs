@@ -216,12 +216,13 @@ fn lists_specialize_across_modules_and_type_classes() {
 }
 
 #[test]
-fn runtime_fixture_uses_linked_nodes_and_entry_allocas() {
+fn runtime_fixture_uses_list_chunks_and_entry_allocas() {
     let module = analyze(include_str!("fixtures/lists/Lists.tz")).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(ir.contains("%tz.list = type { ptr, i64 }"));
-        assert!(ir.contains("getelementptr inbounds { ptr, i64 }"));
+        assert!(ir.contains("getelementptr inbounds { ptr, i64, i64, [0 x i64] }"));
+        assert!(!ir.contains("getelementptr inbounds { ptr, i64 },"));
         assert!(ir.contains("phi ptr"));
         for body in ir.split("define ").skip(1) {
             let body = body.split("\n}").next().unwrap();
@@ -229,5 +230,206 @@ fn runtime_fixture_uses_linked_nodes_and_entry_allocas() {
                 assert!(!after_loop.contains(" alloca "), "{body}");
             }
         }
+    }
+}
+
+/// The text of the definition that starts with `header`, up to its closing brace.
+fn definition<'a>(ir: &'a str, header: &str) -> &'a str {
+    let start = ir
+        .find(header)
+        .unwrap_or_else(|| panic!("missing {header}\n{ir}"));
+    let body = &ir[start..];
+    &body[..body.find("\n}\n").unwrap()]
+}
+
+fn emit_library(source: &str, wasm: bool) -> String {
+    let module = analyze(source)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+    );
+    ir
+}
+
+#[test]
+fn consed_chunks_grow_by_half_up_to_32_kib() {
+    // The first chunk fits 32 bytes with its 24-byte header and a later one at most 32 KiB, in slots
+    // of the element, with the slots aligned like it: 16-byte slots start at offset 32.
+    let source = "export def i :: i64 -> i64\nfn i x = (List.cons x [||]).length
+export def s :: i64 -> i64\nfn s x = (List.cons (\"a\" + \"b\") [||]).length + x
+export def u :: i64 -> i64\nfn u x = (List.cons () [||]).length + x
+export def w :: i64 -> i64\nfn w x = (List.cons (x as i128) [||]).length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        for (symbol, chunk, first, largest) in [
+            ("i64", "{ ptr, i64, i64, [0 x i64] }", 1, 4093),
+            ("string", "{ ptr, i64, i64, [0 x %tz.string] }", 1, 2046),
+            ("i128", "{ ptr, i64, i64, [0 x i128] }", 1, 2046),
+            ("unit", "{ ptr, i64, i64, [0 x i8] }", 8, 32744),
+        ] {
+            let header = format!("define internal %tz.list @tz.builtin.List.cons.{symbol}(");
+            let body = definition(&ir, &header);
+            assert!(body.contains(chunk), "{symbol}\n{body}");
+            assert!(
+                body.contains("icmp ugt i64 %v") && body.contains(&format!(", {largest}\n")),
+                "{symbol} caps a chunk at {largest} slots\n{body}"
+            );
+            assert!(
+                body.contains(&format!("i64 {first}, i64 %v")),
+                "{symbol} starts with {first} slots\n{body}"
+            );
+            assert_eq!(body.matches("@tz.alloc(").count(), 1, "{symbol}\n{body}");
+        }
+    }
+}
+
+#[test]
+fn a_list_built_at_once_is_one_chunk_and_the_empty_list_has_none() {
+    let source = "export def literal :: i64 -> i64\nfn literal x = (new [|x, 2, 3|]).length
+export def empty :: i64 -> i64\nfn empty x = { let values: [|i64|] = [||]; values.length + x }
+export def generated :: i64 -> i64\nfn generated n = (new [|i64|](n, i -> i)).length
+export def copied :: i64 -> i64\nfn copied n = { let values = new [|i64|](n, i -> i); let borrowed = &values; let copy = *borrowed; copy.length + values.length }";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let function = |name: &str| definition(&ir, &format!(" @tz.fn.Main.{name}("));
+        assert_eq!(function("literal").matches("@tz.alloc(").count(), 1);
+        assert_eq!(function("empty").matches("@tz.alloc(").count(), 0);
+        // The length check of the allocation size comes before the chunk is allocated.
+        let generated = function("generated");
+        assert_eq!(generated.matches("@tz.alloc(").count(), 1, "{generated}");
+        assert!(
+            generated.find("udiv i64 9223372036854775807").unwrap()
+                < generated.find("@tz.alloc(").unwrap(),
+            "{generated}"
+        );
+        // A copy allocates its chunk once, not once per element.
+        let copied = function("copied");
+        assert_eq!(copied.matches("@tz.alloc(").count(), 2, "{copied}");
+    }
+}
+
+#[test]
+fn a_list_walk_counts_the_slots_of_each_chunk_in_an_inner_loop() {
+    // The walk of a borrowed list is an outer loop over chunks around a counted loop over the live
+    // slots of a chunk from a base address, the shape of a loop over an array, which LLVM
+    // vectorizes. The chunk is the only pointer that the outer loop carries, its link is read once
+    // after the slots, and no `select` makes the address of an element wait for a load.
+    let source = "def each :: ref [|i64|] -> i64
+fn each values = { let mut total = 0i64; for value in values do total = total + value; total }
+export def run :: i64 -> i64
+fn run n = { let values = new [|i64|](n, i -> i); each (ref values) }";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let body = definition(&ir, " @tz.fn.Main.each(");
+        // The position, the first slot and the counter of the inner loop.
+        assert_eq!(body.matches(" = phi i64 [").count(), 3, "{body}");
+        assert_eq!(body.matches(" = phi ptr [ %v").count(), 1, "{body}");
+        let chunk = body
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .split_once(" = phi ptr [ %v")
+                    .map(|(name, _)| name)
+            })
+            .unwrap();
+        assert_eq!(
+            body.matches(&format!(" = load ptr, ptr {chunk}\n")).count(),
+            1,
+            "{body}"
+        );
+        assert!(!body.contains("select"), "{body}");
+        // The element is addressed from the base by the counter, and not from the chunk.
+        assert_eq!(
+            body.matches("getelementptr inbounds i64, ptr").count(),
+            1,
+            "{body}"
+        );
+    }
+}
+
+/// The text of every definition whose name starts with `prefix`, up to its closing brace.
+fn definitions_named<'a>(ir: &'a str, prefix: &str) -> Vec<&'a str> {
+    ir.split("\ndefine ")
+        .skip(1)
+        .filter(|text| {
+            text.split('(')
+                .next()
+                .is_some_and(|header| header.contains(prefix))
+        })
+        .map(|text| text.split("\n}").next().unwrap())
+        .collect()
+}
+
+#[test]
+fn copies_of_elements_that_own_nothing_move_whole_chunks_as_bytes() {
+    // `List.copy`, `List.to_array` and `Array.to_list` copy the slots of `i64` as bytes, one
+    // `llvm.memcpy` per chunk, of the width of the pointer: `i32` on wasm32. A list of lists still
+    // clones its elements one by one.
+    let source = "export def run :: i64 -> i64
+fn run n =
+    let values = new [|i64|](n, i -> i)
+    let copy = List.copy (ref values)
+    let array = List.to_array (ref copy)
+    let back = Array.to_list (ref array)
+    let nested = new [|[|i64|]|](n, i -> [|i|])
+    let nested_copy = List.copy (ref nested)
+    back.length + nested_copy.length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let width = if wasm { "i32" } else { "i64" };
+        let call = format!("call void @llvm.memcpy.p0.p0.{width}(");
+        let declaration = format!("declare void @llvm.memcpy.p0.p0.{width}(");
+        assert_eq!(ir.matches(&declaration).count(), 1, "{wasm}");
+        // The integers that a body carries from one iteration to the next: the position and the
+        // first slot of a chunk, and the counter of a loop over its slots.
+        let integers = |body: &str| body.matches(" = phi i64 [").count();
+        for (prefix, carried) in [
+            ("@tz.builtin.List.to_array.i64", 2),
+            ("@tz.builtin.Array.to_list.i64", 0),
+        ] {
+            let bodies = definitions_named(&ir, prefix);
+            let [body] = bodies.as_slice() else {
+                panic!("{prefix}\n{ir}")
+            };
+            assert_eq!(body.matches(&call).count(), 1, "{prefix}\n{body}");
+            assert_eq!(integers(body), carried, "{prefix}\n{body}");
+        }
+        // `List.copy` of `i64` is a loop over chunks that copies each as bytes, and of lists a
+        // loop over the slots of a chunk that clones the list of each.
+        let copies = definitions_named(&ir, "@tz.fn.List.copy.");
+        assert!(
+            copies.iter().any(|body| body.contains("[0 x i64] }, ptr")
+                && body.matches(&call).count() == 1
+                && integers(body) == 2),
+            "{wasm}\n{}",
+            copies.join("\n}\n")
+        );
+        assert!(
+            copies
+                .iter()
+                .any(|body| body.contains("getelementptr inbounds %tz.list, ptr")
+                    && integers(body) > 2),
+            "{wasm}\n{}",
+            copies.join("\n}\n")
+        );
+    }
+}
+
+#[test]
+fn the_first_chunk_of_a_list_that_owns_nothing_is_freed_before_the_loop_over_the_others() {
+    // LLVM reads the link of a chunk that was just made from the stores that wrote it, so the loop
+    // and the allocation of a list that one function builds and drops go away.
+    let source = "export def numbers :: i64 -> i64
+fn numbers n = (new [|i64|](n, i -> i)).length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let numbers = definition(&ir, " @tz.fn.Main.numbers(");
+        let free = "call void @tz.free(";
+        assert_eq!(numbers.matches(free).count(), 2, "{numbers}");
+        assert_eq!(numbers.matches(" = phi ptr [ %v").count(), 1, "{numbers}");
+        let loop_chunk = numbers.find(" = phi ptr [ %v").unwrap();
+        assert!(numbers.find(free).unwrap() < loop_chunk, "{numbers}");
     }
 }

@@ -276,7 +276,8 @@ pub(crate) fn with_net_imports(ir: &str) -> String {
     output
 }
 
-/// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
+/// Sets the WASM heap limit in the heap runtime's three comparisons, and in the one of
+/// `@tz.string.latin1_fits` (PM03: the same limit on the UTF-16 size of a Latin-1 string). Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
     if limit == crate::driver::DEFAULT_WASM_MAX_MEMORY {
@@ -288,7 +289,8 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
         let ending = &line[body.len()..];
         let _ = match body {
             "  %fits = icmp ule i64 %size, 16777184"
-            | "  %fits = icmp ule i64 %new_size, 16777184" => {
+            | "  %fits = icmp ule i64 %new_size, 16777184"
+            | "  %latin1_fits = icmp ule i64 %size, 16777184" => {
                 let (prefix, _) = body
                     .rsplit_once(' ')
                     .expect("heap limit lines end with a constant");
@@ -414,6 +416,8 @@ pub(crate) mod host_abi;
 mod imports;
 #[path = "llvm_io.rs"]
 mod io;
+#[path = "llvm_list.rs"]
+mod list;
 #[path = "llvm_math.rs"]
 mod math;
 #[path = "llvm_parallel.rs"]
@@ -1761,9 +1765,14 @@ fn emit_program_in(
         }
         if string_form == StringForm::Compact {
             let utf16 = output.split_off(string_runtime);
-            output.push_str(
-                &string_form.string_runtime(&utf16, !wasm || instrumentation.wasm_simd128)?,
-            );
+            // The heap of a WebAssembly module refuses a block above a limit, unless the host's allocator
+            // is the module's: a Latin-1 string has to fit as UTF-16 (@tz.string.latin1_fits).
+            let limited = wasm && allocator != Allocator::Host;
+            output.push_str(&string_form.string_runtime(
+                &utf16,
+                !wasm || instrumentation.wasm_simd128,
+                limited,
+            )?);
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
@@ -4890,8 +4899,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let Type::List(element) = &expression.ty else {
                     unreachable!()
                 };
-                self.allocation_size(&self.list_node_type(element), &length);
-                let (head, tail) = self.list_builder();
+                self.list_guard_length(element, &length);
+                let builder = self.list_builder(element, &length);
                 self.array_loop(&length, |emitter, index| {
                     let value = if let Some(call) = &direct {
                         emitter.emit_borrowed_call(call, &[index.to_owned()])
@@ -4905,14 +4914,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                             )
                             .0
                     };
-                    emitter.append_list(element, &tail, &value);
+                    emitter.list_append(element, &builder, index, &value);
                 });
                 if let Some(call) = &direct {
                     self.finish_borrowed_call(call);
                 } else {
                     self.drop_value(&initializer.ty, callee.as_ref().unwrap());
                 }
-                self.finish_list(&head, &length)
+                self.list_finish(element, &builder, &length)
             }
             TypedExprKind::Field(record, index) => {
                 let value = self.expression(record);
@@ -5060,22 +5069,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 array
             }
             (TypedExprKind::List(elements), Type::List(element)) => {
-                let (head, tail) = self.list_builder();
+                let length = elements.len().to_string();
+                let mut builder = self.list_builder(element, &length);
                 let temporary_base = self.temporaries.len();
                 let tracking = !self.loop_targets.is_empty();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
-                        let prefix = self.finish_list(&head, &index.to_string());
+                        let prefix = self.list_prefix(element, &mut builder, index);
                         self.temporaries.truncate(temporary_base);
                         self.remember_temporary(&expression.ty, &prefix, &[]);
                     }
                     let value = self.expression(value);
-                    self.append_list(element, &tail, &value);
+                    self.list_append(element, &builder, &index.to_string(), &value);
                     if tracking {
                         self.temporaries.truncate(temporary_base + 1);
                     }
                 }
-                self.finish_list(&head, &elements.len().to_string())
+                self.list_finish(element, &builder, &length)
             }
             _ => unreachable!("'new' literals are array or list literals"),
         }
@@ -5127,14 +5137,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let valid = self.value(format!("icmp uge i64 {length}, {count}"));
                 self.guard(&valid, TrapKind::PatternMismatch);
                 let head = self.value(format!("extractvalue %tz.list {list}, 0"));
-                let tail = self.list_loop(&head, &count.to_string(), |_, _| {});
-                let length = self.value(format!("sub i64 {length}, {count}"));
-                let descriptor = self.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {tail}, 0"
-                ));
-                let descriptor = self.value(format!(
-                    "insertvalue %tz.list {descriptor}, i64 {length}, 1"
-                ));
+                let Type::List(element) = &value.ty else {
+                    unreachable!("a list tail pattern matches a list")
+                };
+                let descriptor = self.list_skip(element, &head, &length, *count);
                 let slot = self.slot(&value.ty);
                 self.instruction(format!("store %tz.list {descriptor}, ptr {slot}"));
                 slot
@@ -5251,19 +5257,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     emitter.drop_value(element, &extracted);
                 });
             }
-            Type::List(element) => {
-                let head = self.value(format!("extractvalue %tz.list {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
-                self.list_loop(&head, &length, |emitter, node| {
-                    if element.needs_drop(&emitter.module.types()) {
-                        let pointer = emitter.list_element_pointer(element, node);
-                        let value =
-                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                        emitter.drop_value(element, &value);
-                    }
-                    emitter.instruction(format!("call void @tz.free(ptr {node})"));
-                });
-            }
+            Type::List(element) => self.list_drop(element, value),
             _ => {}
         }
     }
@@ -5433,19 +5427,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 });
                 self.value(format!("load {}, ptr {target}", self.ty(ty)))
             }
-            Type::List(element) => {
-                let source = self.value(format!("extractvalue %tz.list {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
-                let (head, tail) = self.list_builder();
-                self.list_loop(&source, &length, |emitter, node| {
-                    let pointer = emitter.list_element_pointer(element, node);
-                    let value =
-                        emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                    let copy = emitter.clone_value(element, &value);
-                    emitter.append_list(element, &tail, &copy);
-                });
-                self.finish_list(&head, &length)
-            }
+            Type::List(element) => self.list_clone(element, value),
             _ => value.to_owned(),
         }
     }
@@ -5629,10 +5611,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Array(element) | Type::Vec(element) => {
                 self.element_pointer(element, &data, index)
             }
-            Type::List(element) => {
-                let node = self.list_loop(&data, index, |_, _| {});
-                self.list_element_pointer(element, &node)
-            }
+            Type::List(element) => self.list_locate(element, &data, &length, index),
             _ => unreachable!("indexing requires a collection"),
         }
     }
@@ -5654,98 +5633,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.proven_reads += 1;
         let data = self.value(format!("extractvalue {} {collection}, 0", self.ty(ty)));
         self.element_pointer(element, &data, index)
-    }
-
-    fn list_node_type(&self, element: &Type) -> String {
-        format!("{{ ptr, {} }}", self.ty(element))
-    }
-
-    fn list_element_pointer(&mut self, element: &Type, node: &str) -> String {
-        self.value(format!(
-            "getelementptr inbounds {}, ptr {node}, i32 0, i32 1",
-            self.list_node_type(element)
-        ))
-    }
-
-    fn list_builder(&mut self) -> (String, String) {
-        let pointer = Type::Reference(Box::new(Type::Unit), false);
-        let head = self.slot(&pointer);
-        let tail = self.slot(&pointer);
-        self.instruction(format!("store ptr null, ptr {head}"));
-        self.instruction(format!("store ptr {head}, ptr {tail}"));
-        (head, tail)
-    }
-
-    fn append_list(&mut self, element: &Type, tail: &str, value: &str) {
-        let node = self.value(format!(
-            "call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64))",
-            self.list_node_type(element)
-        ));
-        self.instruction(format!("store ptr null, ptr {node}"));
-        let pointer = self.list_element_pointer(element, &node);
-        self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
-        let previous = self.value(format!("load ptr, ptr {tail}"));
-        self.instruction(format!("store ptr {node}, ptr {previous}"));
-        // The first field of each node is the next pointer, also used as the builder's tail slot.
-        self.instruction(format!("store ptr {node}, ptr {tail}"));
-    }
-
-    fn finish_list(&mut self, head: &str, length: &str) -> String {
-        let head = self.value(format!("load ptr, ptr {head}"));
-        let list = self.value(format!(
-            "insertvalue %tz.list zeroinitializer, ptr {head}, 0"
-        ));
-        self.value(format!("insertvalue %tz.list {list}, i64 {length}, 1"))
-    }
-
-    fn list_loop(
-        &mut self,
-        head: &str,
-        length: &str,
-        body: impl FnOnce(&mut Self, &str),
-    ) -> String {
-        self.list_loop_control(head, length, |emitter, node, _, _| body(emitter, node))
-    }
-
-    fn list_loop_control(
-        &mut self,
-        head: &str,
-        length: &str,
-        body: impl FnOnce(&mut Self, &str, &str, &str),
-    ) -> String {
-        let entry = self.block.clone();
-        let condition = self.label();
-        let element = self.label();
-        let advance = self.label();
-        let step = self.increment_block(&advance);
-        let exit = self.label();
-        let index = self.fresh();
-        let next_index = self.fresh();
-        let node = self.fresh();
-        let next_node = self.fresh();
-        self.jump(&condition);
-        self.begin(&condition);
-        self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{step} ]"
-        ));
-        self.instruction(format!(
-            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{step} ]"
-        ));
-        let more = self.value(format!("icmp ult i64 {index}, {length}"));
-        self.branch(&more, &element, &exit);
-        self.begin(&element);
-        // Read the link before the callback, which may free this node.
-        self.instruction(format!("{next_node} = load ptr, ptr {node}"));
-        body(self, &node, &exit, &advance);
-        self.jump(&advance);
-        self.begin(&advance);
-        // `index < length` as unsigned numbers: the step cannot wrap (R4).
-        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
-        let words = self.flag_text(Flags::UNSIGNED);
-        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
-        self.jump(&condition);
-        self.begin(&exit);
-        node
     }
 
     fn array_loop(&mut self, length: &str, body: impl FnOnce(&mut Self, &str)) {
@@ -7434,32 +7321,14 @@ fn emit_typed_builtin(
                 let valid = emitter.value(format!("icmp ult i64 {length}, 9223372036854775807"));
                 emitter.guard(&valid, TrapKind::AllocationSize);
                 let head = emitter.value("extractvalue %tz.list %arg1, 0");
-                let node_type = emitter.list_node_type(element);
-                let node = emitter.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({node_type}, ptr null, i32 1) to i64))"));
-                emitter.instruction(format!("store ptr {head}, ptr {node}"));
-                let slot = emitter.list_element_pointer(element, &node);
-                emitter.instruction(format!("store {element_type} %arg0, ptr {slot}"));
-                let length = emitter.value(format!("add i64 {length}, 1"));
-                let value = emitter.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {node}, 0"
-                ));
-                emitter.value(format!("insertvalue %tz.list {value}, i64 {length}, 1"))
+                emitter.list_push_front(element, &head, &length, "%arg0")
             }
             Builtin::ListTail => {
                 let length = emitter.value("extractvalue %tz.list %arg0, 1");
                 let valid = emitter.value(format!("icmp ugt i64 {length}, 0"));
                 emitter.guard(&valid, TrapKind::BoundsCheck);
                 let head = emitter.value("extractvalue %tz.list %arg0, 0");
-                let next = emitter.value(format!("load ptr, ptr {head}"));
-                let slot = emitter.list_element_pointer(element, &head);
-                let previous = emitter.value(format!("load {element_type}, ptr {slot}"));
-                emitter.drop_value(element, &previous);
-                emitter.instruction(format!("call void @tz.free(ptr {head})"));
-                let length = emitter.value(format!("sub i64 {length}, 1"));
-                let value = emitter.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {next}, 0"
-                ));
-                emitter.value(format!("insertvalue %tz.list {value}, i64 {length}, 1"))
+                emitter.list_pop_front(element, &head, &length)
             }
             _ => emitter.bulk_collection_builtin(instance, ty),
         }

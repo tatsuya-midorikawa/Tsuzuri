@@ -578,21 +578,19 @@ impl FunctionEmitter<'_, '_> {
             let data = self.value(format!("extractvalue {aggregate} {input}, 0"));
             let length = self.value(format!("extractvalue {aggregate} {input}, 1"));
             let (parts, target) = self.allocate_array(&Type::String, &length);
-            let cursor =
-                linked.then(|| self.spill(&Type::Reference(Box::new(Type::Unit), false), &data));
-            self.array_loop(&length, |emitter, index| {
-                let pointer = if let Some(cursor) = &cursor {
-                    let node = emitter.value(format!("load ptr, ptr {cursor}"));
-                    let next = emitter.value(format!("load ptr, ptr {node}"));
-                    emitter.instruction(format!("store ptr {next}, ptr {cursor}"));
-                    emitter.list_element_pointer(element, &node)
-                } else {
-                    emitter.element_pointer(element, &data, index)
-                };
-                let text = emitter.display_element(&methods[0], &pointer);
+            let step = |emitter: &mut Self, pointer: &str, index: &str| {
+                let text = emitter.display_element(&methods[0], pointer);
                 let output = emitter.element_pointer(&Type::String, &target, index);
                 emitter.instruction(format!("store %tz.string {text}, ptr {output}"));
-            });
+            };
+            if linked {
+                self.list_loop(element, &data, &length, step);
+            } else {
+                self.array_loop(&length, |emitter, index| {
+                    let pointer = emitter.element_pointer(element, &data, index);
+                    step(emitter, &pointer, index);
+                });
+            }
             (parts, if linked { 2 } else { 1 })
         };
         self.value(format!(

@@ -610,7 +610,7 @@ assembly と wasm32 の module は `off` と同じでした（[整数の範囲�
 
 `TSUZURI_STRINGS=compact tsuzuri build Main.tz` のように指定します。CLI のフラグではありません（PM03）。
 `string` が観測できる意味は、どちらのモードでも変わりません。コード単位の列としての値・長さ・添字・順序・等しさ・hash・表示・
-`Maybe<string>` の表現・host との ABI（常に UTF-16）は同じで、変わるのは内部表現と、それを読み書きするコードだけです。
+`Maybe<string>` の表現・host との ABI（常に UTF-16）は同じで、変わるのは内部表現と、それを読み書きするコードだけです（確保に失敗する大きさだけが、下の規則のとおり少し違います）。
 
 | 値 | 表現 | 使いどころ |
 | --- | --- | --- |
@@ -630,13 +630,17 @@ assembly と wasm32 の module は `off` と同じでした（[整数の範囲�
   `==`・`<`・`hash`・`HashMap` の key・連結の結果で同じ値になります（形式が混ざった連結は、Latin-1 の側を広げて UTF-16 を作ります）。
 - host との境界は UTF-16 のままです。`export` の `string` の結果は host へ返す前に UTF-16 へ広げ（`realloc` と widen）、host から受けた `ref string` は UTF-16 の文字列として扱い、host の import へ渡す
   引数は UTF-16 の複製（呼び出し後に解放）を渡します。短い文字列を頻繁に返すと、この変換が目立ちます（[測定](../../../docs/benchmarks.md#pm03-コンパクト文字列)）。
-- `String.to_code_units`・`String.from_code_units` は、UTF-16 の値ではバッファの所有権を移すだけですが、Latin-1 の値では全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換になります。
+- `String.to_code_units`・`String.from_code_units` は、UTF-16 の値ではバッファの所有権を移すだけですが、Latin-1 の値では全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）O(n) の変換になります。
   結果の値は変わりません。
 - 確保量は Latin-1 の文字列で半分になります。native と `--wasm-feature simd128` を付けた WebAssembly は、Latin-1 の走査・比較・変換に 128-bit の vector の kernel を使い、
   simd128 なしの WebAssembly は scalar の kernel を使います（PR05 の UTF の kernel と同じ選び方です）。
+- 確保の失敗は、起きる大きさが形式で少し違います。WebAssembly の heap は 1 つの block に上限があり（`--wasm-max-memory`。既定では 16,777,184 bytes）、Latin-1 の文字列もその上限を
+  UTF-16 の大きさ（1 単位 2 bytes）で数えるので、上限を超える長さは `utf16` と同じ呼び出しで確保の失敗（`AllocationFailure`）の trap になります（1 つの block が 8,388,592 単位まで）。
+  上限を超えない長さで heap の空きや native の malloc が足りるかは、Latin-1 の文字列が半分の bytes で済むぶん、`compact` のほうが大きな文字列を作れる状況があります。
+  `--allocator host` の WebAssembly は、host の allocator が決めます。
 - LLDB の formatter と natvis は、両方の形式の文字列を読みます。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けします（[デバッグ](debugging.md)）。
 
-代償として、runtime の IR が約 60 KB（native の hello で 145 KB から 206 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,833 から 7,866 bytes）が増えます。
+代償として、runtime の IR が約 60 KB（native の hello で 148 KB から 210 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,860 から 8,058 bytes）が増えます。
 既定を `utf16` のままにしているのは、この代償と、host へ短い文字列を返す呼び出しが 2 倍近くになる場合があるためです。測定と判断の理由は
 [PM03 コンパクト文字列](../../../docs/benchmarks.md#pm03-コンパクト文字列)にあります。
 
