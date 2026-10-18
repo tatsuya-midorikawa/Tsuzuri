@@ -737,8 +737,9 @@ Phase 1（WP1〜WP6）、Phase 2a（WP7）、Phase 2b（WP8）をブランチ `p
 | WP6 | `d0bdfe33`・`0f9f16af`・`cdfc03e5` | `walk_list`、cursor の slot を `select` でなく `phi` に、文書と Phase 1 の測定 |
 | WP7 | `a85856eb` | Phase 2a: chunk ごとの二重 loop、compare の run の loop、`fold_list`・`compare_list`、pin の更新 |
 | WP8 | `156bd043` | Phase 2b: `llvm.memcpy`（clone・`List.to_array`・`Array.to_list`）、runner の `--opt O0\|O3`、`list_to_array`・`array_to_list`・`escape_list`、`list_chunks` の複製・変換の 504 件 |
-| 統合 | `fa362764`・`52104c86`・`cccea74e`・`ee00e255`・`d6a1df4a` | PR07・PR08、PB06、PM02 の merge と、それぞれの review fix の取り込み。衝突は PM02 の `src/llvm_debug.rs`（`descriptor_pointer` と `list_chunk` の並び）と `docs/architecture.md` の 2 件で、両方の意図を残した。ほかは衝突なし |
-| WP9 | `80b418fa`・`1c16cbfe`・`96a1e19a`・`cad51a27`・`506ee1af`・このコミット | README の検証コマンド、決定の状態、`list_free_chunks`（最初の chunk の解放を loop の前に出して、`escape_list` の確保を消す）、最終の測定と `benchmark_list_memory` の検査の修正、小さい定数サイズのリストの悪化の明記（`list.md`・`docs/language.md`・`docs/architecture.md`・`README.md`）、チケットの完了と検証の記録 |
+| 統合 | `fa362764`・`52104c86`・`cccea74e`・`ee00e255`・`d6a1df4a`・`4194f716`・`4e4bc4c0` | PR07・PR08、PB06、PM02、PM03 の merge と、それぞれの review fix の取り込み。衝突は PM02 の `src/llvm_debug.rs`（`descriptor_pointer` と `list_chunk` の並び）と `docs/architecture.md` の 2 件、PM03 の `src/llvm_control.rs`（`for_each`。list の arm は `list_loop_control` のまま、PM03 の Latin-1 の arm を続けた）と `src/llvm_frame.rs`（`frame_test`。`Frame::List { storage, elements }` と `Frame::String { data, word }`、長さは `u64`）の 2 件で、両方の意図を残した。ほかは衝突なし |
+| 修正 | `0cb1c5e5` | `tests/server.mjs`: PB06 の review fix（節 8b）と PM03（節 11）が同じ block で `const build` を宣言し、統合ブランチの先頭（`71365e0c`・`e4025531`）では SyntaxError で suite が始まらなかった。PM03 の helper を `stringsBuild` に改名した |
+| WP9 | `80b418fa`・`1c16cbfe`・`96a1e19a`・`cad51a27`・`506ee1af`・`9a983158`・最後のコミット | README の検証コマンド、決定の状態、`list_free_chunks`（最初の chunk の解放を loop の前に出して、`escape_list` の確保を消す）、最終の測定と `benchmark_list_memory` の検査の修正、小さい定数サイズのリストの悪化の明記（`list.md`・`docs/language.md`・`docs/architecture.md`・`README.md`）、チケットの完了と検証の記録 |
 
 ### 実装したこと
 
@@ -800,7 +801,7 @@ Phase 1（WP1〜WP6）、Phase 2a（WP7）、Phase 2b（WP8）をブランチ `p
 - WASM（wasm32、既定の 16 MiB の heap）: `i64` のリストが収まる上限は 400,000 個（600,000 個で trap）から 1,000,000 個（2,000,000 個で trap）になった。`string_list` は文字列が heap の大半を使うので 400,000 個で trap のまま。
 - **報告する悪化（要素が数個のリスト）**: 要求 bytes は `i64` の 1 個で 16 → 32（2.0 倍）、`cons_build` の 2 個で 32 → 72（2.25 倍）、4 個で 64 → 128（2.0 倍）、16 個で 256 → 320（1.25 倍）、1,000 個で 0.72 倍、1,000,000 個で 0.50 倍。一度に作るリストは 2 個で 1.25 倍、3 個で同じ、4 個以上で小さい。malloc の丸めを入れた footprint は 257 個以上のすべての `i64` で node 以下（モデル）。
 - **報告する悪化（同じ関数で作って使って捨てる、要素数が定数の小さなリスト）**: node の連結では LLVM が確保を全部消して 1 回約 1 ns だった。chunk では `new` のリテラルの走査だけが消え（約 1 ns）、`List.map`・`List.reverse` が約 25 ns、`List.copy` が約 45 ns、`List.cons` の 3 回の連鎖が約 55〜65 ns、文字列 2 個の `new` が約 75〜80 ns（3 要素、1〜3 個の chunk の確保が残る）。要素数が実行時に決まるリストは逆に速い（上の表）。2026-10-18 の判断で受け入れ、`list.md`・`docs/language.md`・`docs/architecture.md`・`README.md`・`docs/benchmarks.md` に数値と原因を書いた。直す方法は下の「実装しなかったこと、取り下げたこと」に書いた。
-- **生成コードの同一性**: list を使わないプロジェクトの IR は、PM04 を含まない統合ブランチ（`8942b297` を `git archive` で展開して build）と byte 単位で同一。`--emit llvm -O0` で native は 94 件が同一、wasm32 は 89 件が同一で、違う 25 件（`tests/fixtures` の 23 件、`benchmarks/control`、`benchmarks/list-memory`）はすべて list を使う（基準が build できない native の 8 件と wasm32 の 13 件は除く。比較の道具は `target/perf/PM04/ir-compare.mjs`）。PM04 だけの段階では、main に対して list を使わない 94 件が同一だった。
+- **生成コードの同一性**: list を使わないプロジェクトの IR は、PM04 を含まない統合ブランチ（`e4025531` を `git archive` で展開して build。PM02・PM03 までの review fix を含む）と byte 単位で同一。`--emit llvm` の `-O0` と `-O3` で native は 96 件が同一、wasm32 も `-O0` と `-O3` で 91 件が同一で、違う 25 件（`tests/fixtures` の 23 件、`benchmarks/control`、`benchmarks/list-memory`）はすべて list を使う（基準が build できない native の 8 件と wasm32 の 13 件は除く。比較の道具は `target/perf/PM04/ir-compare.mjs`）。PM04 だけの段階では、main に対して list を使わない 94 件が同一だった。
 
 ### 検証
 
