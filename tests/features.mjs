@@ -1161,8 +1161,16 @@ const suites = {
     ]);
     const deep = (n) => call("deep_ops", n, 1000000n + weightedSum(descending(n)) % 1000n);
     // An exception that an element of a heap literal raises frees what the literal held so far (the host checks `live == 0`).
-    const raises = ["raise_list_numbers", "raise_list_words", "raise_array_numbers", "raise_array_words"].flatMap((name) =>
-      [-1n, 0n, 1n, 2n].map((at) => [name, [at], at < 0n ? (name.endsWith("words") ? 111n : 321n) : -1n - at]));
+    const raises = [
+      ...["raise_list_numbers", "raise_list_words", "raise_array_numbers", "raise_array_words"].flatMap((name) =>
+        [-1n, 0n, 1n, 2n].map((at) => [name, [at], at < 0n ? (name.endsWith("words") ? 111n : 321n) : -1n - at])),
+      // A literal that is complete when a later element of the enclosing expression raises, literals in literals, a try in a loop.
+      ...[-1n, 0n, 1n, 2n].flatMap((at) => [
+        ["after_literal_list", [at], at === 0n ? -1n : 21n], ["after_literal_array", [at], at === 0n ? -1n : 21n],
+        ["nested_literals", [at], at === 0n ? -1n : at === 1n ? -2n : 2n],
+      ]),
+      ...[[-1n, 8n], [1n, 106n], [3n, 106n]].map(([at, expected]) => ["loop_in_try", [at], expected]),
+    ];
     // Elements with a user Drop that folds its id into a digest: the drops happen in list order across the chunks (the elements are 16
     // bytes, so the chunks grow like those of `owned`), List.tail drops the head at once, and no owner of the shared cell is left.
     const mix = (ids) => ids.reduce((digest, id) => BigInt.asIntN(64, digest * 1000003n + BigInt(id)), 0n);

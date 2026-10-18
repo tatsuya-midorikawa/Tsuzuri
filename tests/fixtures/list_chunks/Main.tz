@@ -445,6 +445,43 @@ fn tail_index_at n pops index =
     for _ in 1 .. pops do values = List.tail values
     values[index]
 
+/// A literal that is complete when a later element of the enclosing expression raises is dropped once; a literal inside
+/// a literal, and a literal in a loop that the try is in, are freed whichever element raises.
+export def after_literal_list :: i64 -> i64
+fn after_literal_list at =
+    let huge = 9223372036854775807i64
+    let made = try (new [|to_string (1 + at), to_string (2 + at)|], to_string (@checked (1 + (if at == 0 then huge else 0)))) with | e -> e
+    match made with
+    | Ok (words, last) -> words.length * 10 + last.length
+    | Error _ -> -1 - at
+
+export def after_literal_array :: i64 -> i64
+fn after_literal_array at =
+    let huge = 9223372036854775807i64
+    let made = try (new [to_string (1 + at), to_string (2 + at)], to_string (@checked (1 + (if at == 0 then huge else 0)))) with | e -> e
+    match made with
+    | Ok (words, last) -> words.length * 10 + last.length
+    | Error _ -> -1 - at
+
+export def nested_literals :: i64 -> i64
+fn nested_literals at =
+    let huge = 9223372036854775807i64
+    let made = try new [|new [|to_string 1, to_string (@checked (2 + (if at == 0 then huge else 0)))|], new [|to_string (@checked (3 + (if at == 1 then huge else 0)))|]|] with | e -> e
+    match made with
+    | Ok lists -> lists.length
+    | Error _ -> -1 - at
+
+export def loop_in_try :: i64 -> i64
+fn loop_in_try at =
+    let huge = 9223372036854775807i64
+    let mut total = 0
+    for i in 0 .. 3 do
+        let made = try new [|to_string i, to_string (@checked (i + (if i == at then huge else 0)))|] with | e -> e
+        match made with
+        | Ok words -> total = total + words.length
+        | Error _ -> total = total + 100
+    total
+
 /// An exception that an element of a heap literal raises leaves the literal half made: the elements
 /// stored so far and the chunk (or the array) are freed, and the host checks that nothing stays live.
 /// `at` is the element that raises; -1 raises nowhere.

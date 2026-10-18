@@ -942,7 +942,7 @@ node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の nativ
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
-node tests/features.mjs target/release/tsuzuri list_chunks   # リストの chunk（PM04）。chunk の境界（i64 は 1〜4093 個、16 bytes の slot は 1〜2046 個、unit は 8〜32744 個）の前後で、cons・添字・tail・パターン・比較・hash・display・複製・配列との変換・スタックのリテラルの移送を、native／WASM の -O0／-O3 で照合する。TSUZURI_ASAN=1・TSUZURI_TEST_ALLOCATOR=small・TSUZURI_RANGE_FLAGS=audit でも回す
+node tests/features.mjs target/release/tsuzuri list_chunks   # リストの chunk（PM04）。chunk の境界（i64 は 1〜4093 個、16 bytes の slot は 1〜2046 個、unit は 8〜32744 個）の前後で、cons・添字（範囲外は trap）・tail・パターン・比較・hash・display・複製・配列との変換・スタックのリテラルの移送・user Drop を持つ要素の drop の順序・heap のリテラルの途中の例外で何も漏れないこと（host が live == 0 を確かめる）を、native／WASM の -O0／-O3 で照合する。TSUZURI_ASAN=1・TSUZURI_TEST_ALLOCATOR=small・TSUZURI_RANGE_FLAGS=audit でも回す
 node tests/benchmark_list_memory.mjs target/release/tsuzuri   # PM04 の list-memory benchmark の参照式・引数と、quick の実行（checksum・確保の回数・wasm32 の heap）
 TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri   # 同じスイートを --allocator small で。追跡する malloc の代わりに tz_small_stats（切り出したブロックが全部キャッシュか中央に戻ったか）で解放漏れを検査する（PM05）
 node tests/small_allocator.mjs target/release/tsuzuri   # --allocator small（PM05）。heap-small.c の C のユニットテスト（通常・ASan+UBSan・TSan）、拒否、IR、LLVM が確保と解放の組を取り除くこと、object と C のホストでの解放漏れ・複数スレッド・複数オブジェクト・共有ライブラリの検査。--unit は compiler なしでユニットテストだけ。TSUZURI_NO_SANITIZERS=1 で ASan+UBSan と TSan のユニットテストを省く（空のプログラムが起動しない clang、Homebrew の LLVM 21 の macOS でも、自動で省いて理由を出す。通常と -O3 は必ず走る。macOS の CI はこれを付ける）
