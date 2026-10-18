@@ -273,6 +273,11 @@ int main(int argc, char **argv) {
     assert(tz_curried_class() == 45 && live == 0);
     assert(tz_curried_higher() == 42 && live == 0);
     assert(tz_curried_churn(40000) == 2160054 && live == 0);
+    assert(tz_curried_mixed_kinds(5) == 61 && live == 0);
+    assert(tz_curried_mixed_kinds(0) == 46 && live == 0);
+    assert(tz_curried_mixed_kinds(-1) == 43 && live == 0);
+    assert(tz_curried_optional(1, 5) == 19109 && live == 0);
+    assert(tz_curried_optional(0, 5) == -1002 && live == 0);
     for (int flag = 0; flag < 2; ++flag) {
       const uint64_t integers[] = {0, 1, UINT64_MAX, UINT64_C(1) << 63, UINT64_C(0xabcdef0123456789)};
       for (unsigned index = 0; index < sizeof(integers) / sizeof(integers[0]); ++index) {
@@ -421,6 +426,11 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_curried_class(), 45);
     assert.equal(api.tz_curried_higher(), 42);
     assert.equal(api.tz_curried_churn(40000n), 2160054n);
+    assert.equal(api.tz_curried_mixed_kinds(5n), 61n);
+    assert.equal(api.tz_curried_mixed_kinds(0n), 46n);
+    assert.equal(api.tz_curried_mixed_kinds(-1n), 43n);
+    assert.equal(api.tz_curried_optional(1, 5n), 19109n);
+    assert.equal(api.tz_curried_optional(0, 5n), -1002n);
     for (const flag of [0, 1]) {
       for (const value of [0n, 1n, (1n << 64n) - 1n, 1n << 63n, 0xabcdef0123456789n]) {
         assert.equal(BigInt.asUintN(64, api.tz_curried_inline_integer(flag, value)), flag ? value : BigInt.asUintN(64, ~value));

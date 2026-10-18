@@ -8,17 +8,166 @@
 | 規模 | M |
 | 依存 | PX01 |
 | 関連 | PR03, PM07, B06 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（関数値の内部表現を `{ 静的記述子, 環境 }` に変える。起票時の「環境の先頭のヘッダー」案からの変更を含む） |
+| 状態 | done |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD `9dd0fbbc` で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-17 の全フェーズ実装依頼で、D1（関数値の内部表現）・D5・D7・D8 と Phase 2（P2-a・P2-b・P2-c）を含む全フェーズを承認済み（測定で効果を確認できない既定の切り替えは行わない。D1 は WP6 のゲート、P2-a は WP7 の測定で確かめ、P2-c は証拠を添えて取り下げ。「着手時の再検討」） |
 | 手本にする既存実装 | `src/llvm.rs` の `closure_wrappers`（`(関数, 捕捉数)` ごとに `@tz.apply.*`・`@tz.env.clone.*`・`@tz.env.drop.*` を出す）と `FunctionEmitter::closure_descriptor`（関数値の組み立て）。immediate capture の導入（docs/benchmarks.md の「単一の小さなスカラー捕捉を関数記述子の環境欄へ直接格納」の節）は、生成・スタック関数値・adapter・借用読み出し・clone／drop を一度にそろえた前例 |
-| 主な影響ファイル | 変更: `src/llvm.rs`, `src/runtime/closure.ll`, `src/llvm_task.rs`, `src/llvm_io.rs`, `src/llvm_debug.rs`, `tests/call_specialization.rs`, `tests/tasks.rs`, `tests/fixtures/currying/Functions.tz`, `tests/primitives.mjs`, `docs/architecture.md`, `docs/benchmarks.md`, `_perfs/README.md`。確認のみ: `src/llvm_parallel.rs`, `src/llvm_frame.rs`, `src/check.rs`, `src/closures.rs`, `src/call_specialization.rs`, `src/llvm_traps.rs`, `src/llvm_abi.rs`, `tests/tasks.mjs`, `tests/features.mjs`, `tests/computations.mjs` |
-| 計測対象 | 値の大きさ（`%tz.closure`、関数値を含む union・レコード・配列の要素）。`control/closure_capture`・`control/closure_churn`（`benchmarks/control/Main.tz`、`node benchmarks/run-control.mjs`）と `cpp/task_sequential`・`cpp/task_parallel`（`benchmarks/cpp/Kernels.tz`、`node benchmarks/run-cpp.mjs`）の時間と確保回数・確保量 |
+| 主な影響ファイル | 変更: `src/llvm.rs`, `src/llvm_layout.rs`（`layout_bound`。起票時は `llvm.rs` の `storage_layout`）, `src/runtime/closure.ll`, `src/llvm_task.rs`, `src/llvm_io.rs`, `src/llvm_debug.rs`, `scripts/lldb/tsuzuri_lldb.py`, `tests/call_specialization.rs`, `tests/tasks.rs`, `tests/param_facts.rs`, `tests/integer_ranges.rs`, `tests/debugger.mjs`, `tests/fixtures/currying/Functions.tz`, `tests/primitives.mjs`, `docs/architecture.md`, `docs/language.md`, `docs/benchmarks.md`（`phase4:PM02` の記録欄）, `_perfs/README.md`（統合担当が更新）。確認のみ: `src/llvm_parallel.rs`, `src/llvm_frame.rs`, `src/check.rs`, `src/closures.rs`, `src/call_specialization.rs`, `src/llvm_traps.rs`, `src/llvm_abi.rs`, `src/llvm_imports.rs`, `tests/tasks.mjs`, `tests/features.mjs`, `tests/computations.mjs` |
+| 計測対象 | 値の大きさ（`%tz.closure`、関数値を含む union・レコード・配列の要素）。`control/closure_capture`・`control/closure_churn`（`benchmarks/control/Main.tz`、`node benchmarks/run-control.mjs`）と `cpp/task_sequential`・`cpp/task_parallel`（`benchmarks/cpp/Kernels.tz`、`node benchmarks/run-cpp.mjs`。Node 24 が要る）の時間と確保回数・確保量。再検討で `cpp/task_sequence`（Task を作る唯一の種目）と `apps/closure_pipeline`（未知の関数値を呼ぶ種目。`node benchmarks/run-apps.mjs`）を足した |
 
 ## 目的
 
 関数値（クロージャー）と Task の値を 4 ポインター（native 32 bytes、wasm32 16 bytes）から 2 ポインター（native 16 bytes、wasm32 8 bytes）に縮め、関数値を格納する配列・レコード・union のメモリ量と、関数値の複製・受け渡しで動くバイト数を半分にする。
 関数値の意味（複製・解放・呼び出し・借用）、捕捉のない関数値と immediate capture の関数値が確保しない性質、Task の実行 ABI は変えない。
+
+## 着手時の再検討（2026-10-17）
+
+2026-10-17 の依頼で、Phase 1 と Phase 2（P2-a・P2-b・P2-c）の全部を実装する。以下の「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」「決定事項」は起票時の記録で、
+このセクションと食い違う箇所はこのセクションが優先する（旧 `_docs/` のパスは `_tsuzuri/language-reference/`、GUIDE §8.1）。
+着手時の HEAD は `a2313d19`（main `9dd0fbbc` ＋ 第4フェーズの測定用の足場）、偵察は main `9dd0fbbc` の release コンパイラ（SHA-256 `5e1b9687…`。
+`target/perf/PM02/baseline-tsuzuri` に写した）、M1 Max、macOS 27.0.1、Apple clang 21.0.0（LLVM 21.1.8 の単体ツール）、Node 20.19.6（`run-cpp.mjs`・`run-apps.mjs` は Node 24.21.0）で行った。
+共有機で、測定中の 1 分の load average は 8〜21（他の作業が並行している）。数値は共有機の参考値で、静かな機械での正式な前後比較は統合後にまとめて記録する。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| 棚卸しの grep は 23 行（`src/llvm.rs` 13・`closure.ll` 5・`llvm_task.rs` 2・`llvm_io.rs` 2・`llvm_parallel.rs` 1） | 25 行。PM06 の `src/llvm_frame.rs` が 2 行増やした（`frame_test` の `extractvalue … , 1` と `heap_copy` の `insertvalue … , 1`）。どちらも環境欄（欄 1）だけを読み書きし、欄 1 の位置は変わらない | 停止条件 1 に文字どおりに当たる箇所が 1 つあるが、停止しない。`heap_copy` は `insertvalue %tz.closure … , 1`（`closure_descriptor` と `closure.ll` 以外）で環境欄だけを差し替え、欄 0・2・3 の意味に依存しない。期待の件数を 25 に直す |
+| 欄 0（コード）を読む箇所は 5 つ。欄 2・3 を読むのは `closure.ll` だけ | 同じ（`apply_value`・Task の実行・`parallel_tasks` の文字列・`parallel_result_tasks`・`llvm_io.rs`）。`llvm_bulk.rs`・`llvm_sync.rs`・`llvm_compare.rs`・`llvm_parallel.rs`・B07 の `Owned.call`・B08 の `AsyncResume` はすべて `apply_value` を通る | 変更は 5 か所に閉じる。`closure.ll` は起票後に 1 行も変わっていない |
+| 関数値を作る経路は `make_closure`・`stack_closure` | PM06 の `llvm_frame.rs::frame_closure`（入口の `alloca` の環境）も `closure_descriptor` を通る。`Frame::Environment` は環境欄の値と `alloca` の番地を比べて、スタック上かを判定する。`heap_copy` は環境欄だけを差し替える | 記述子（欄 0）はそのまま運ばれるので、スタック環境の判定・ヒープへの移送は変わらない。ただしスタック環境に `@tz.env.drop.*` を渡すと壊れるので、`drop_framed` の経路（判定してから drop）を保つ |
+| `closure_wrappers` の clone の条件は「Task でない・全捕捉が `can_capture`」 | B07 の `!function.owned_captures` が条件に入っている。所有する捕捉を借用で読む関数（`Owned.function`）は clone が無く、`@tz.apply.*` の形も別（`%borrow` が偽のときだけ `@tz.env.drop.*` を呼ぶ） | 設計の「データ構造」の Rust をそのまま使うと、存在しない `@tz.env.clone.*` を指す記述子を出して LLVM の検証が落ちる。記述子の clone 欄も同じ条件にする（`tests/user_drop.rs` が `@tz.env.clone.$lambda.` の不在を検査している） |
+| `immediate_capture` は native でポインター幅以下、wasm32 では 32 bit 以下 | wasm64（`memory64`）の分岐が増えた（64 bit 以下） | 記述子の中身は target ごとに違う（wasm32 の `i64` はヒープ環境）。wasm64 も E2E に入れる（`tests/wasm64.mjs`） |
+| 大きさの見積もりは 4 か所（`storage_layout`・DWARF の `layout`・`check.rs`・`stack_size`） | `storage_layout` は `src/llvm_layout.rs` の `layout_bound(…, lower: false)` で、**下限 `layout_bound(…, lower: true)` が別にある**（関数値は `(32, 8)`／`(16, 4)`。PR01 が `ref` 引数の `dereferenceable(N)` に使う）。ほかは `llvm_debug.rs` の `layout` と `fields`、`check.rs` の `Layouts`、`llvm_frame.rs` の `stack_size` | D7 は上限と下限の 2 本を変える。**下限を変えずに表現だけ変えると、wasm32 で 8 bytes の関数値に `dereferenceable(16)` を付ける（誤った属性）。** 表現と同じコミットで変える。`tests/param_facts.rs` の `function_pointer` の期待は `dereferenceable(16)` → `dereferenceable(8)` に変わる（意図した変更） |
+| M2: `Result<i64 -> i64, string>` は `{ i32, [K x i128] }` で 48 → 32 | PM01 の General は `{ i8, [U 個の整数] }`（タグは 1・2・4 bytes、領域の単位は最大アラインメント）。実測は native・wasm32 とも `{ i8, [4 x i64] }` = 40 bytes（wasm32 でも領域は native の上限で決まる）→ 表現後は `{ i8, [2 x i64] }` = 24 bytes。`Maybe<fn>` は `{ i8, %tz.closure }` で 40 → 24（native）・20 → 12（wasm32）。関数値 2 個のレコードは 64 → 32 | M2 の期待値を直す（下の表） |
+| M3: 関数値・Task を格納する配列は 1 要素あたり 16 bytes 減る | `cpp/task_parallel` は 18 回・1,024 bytes で、そのうち 16 個の Task の配列が 512 bytes。表現後は 18 回・768 bytes を見込む | 確保「回数」は変わらず、「量」が 256 bytes（−25%）減る |
+| `cpp/task_sequential`・`cpp/task_parallel` を測る | `task_sequential` は Task も関数値も作らない（`task_mix` を 16 回呼ぶ対照）。Task を繰り返し作る種目は `cpp/task_sequence`（500,000 回で 0.80 ms。LLVM が確保ごと畳む）。未知の関数値を呼ぶ種目は `apps/closure_pipeline` | 計測対象に `task_sequence`・`closure_pipeline` を足す |
+| PX01 の確保計数が種目ごとに出る | `run-control.mjs`・`run-cpp.mjs`・`run-apps.mjs` の `--metrics <dir>` が `alloc_calls`・`alloc_bytes` を JSONL で出す。`run-control.mjs --baseline <compiler>` は同じ process で基準と after を交互に測る。`run-cpp.mjs`・`run-apps.mjs` は Node 24 が要る（`npx --yes --package=node@24 node …`） | 手順 1 の「前提」は満たされている。`TMPDIR` を worktree 内に向けて使う |
+| 公開 ABI・ホスト境界に `%tz.closure` が出ていないか（停止条件 2） | E12 の callback は `ptr @tz.callback.<名前>`（関数ごとの C ABI wrapper の番地）を渡し、callback extern 自体の本体も関数値も作らない（`src/llvm_imports.rs`、`docs/architecture.md`）。`src/llvm_abi.rs` に `%tz.closure` は無い。`--emit header`・`tz_*` に関数値は出ない | 停止条件 2 は発動しない。callback の ABI は変えない |
+| `src/llvm_traps.rs` は `@tz.apply.` の名前で呼び出しを識別する | 実際は `Marks::source` が **`define` の名前**の接頭辞（`@tz.apply.`・`@tz.env.`）で「呼び出し元の trap 位置を引き継ぐ」印を付ける。`llvm_abi.rs::has_recursion` は直接呼び出しだけを追う。`--trap-info` の計装は `define`・`call` の行だけを書き換え、間接呼び出し（`%` の名前）にも文脈引数を足す | 名前は変えない。`@tz.desc.*` は `define` でも `call` でもないので計装に触れない。間接呼び出しは今も文脈つきなので、記述子から読んだ `%code` の呼び出しも同じ |
+| デバッグ情報は `src/llvm_debug.rs` の `fields`・`layout` だけ | DWARF のメンバー `code`・`environment`・`clone`・`drop` を読む **LLDB の formatter** `scripts/lldb/tsuzuri_lldb.py`（`is_function` が欄名と「`code` が関数ポインター」を検査し、`function_summary` が `code` を読む）と、`tests/debugger.mjs` の `Lookalike`（同名の欄を持つレコードが関数値と誤認されないこと）、`tests/debug_info.rs` の `DW_TAG_member, name: "code"` と `!DISubroutineType(types: !{null})` の期待がある。natvis（`src/runtime/tsuzuri.natvis`）は `Task<*>` の表示文字列だけで欄名に依存しない | 型付きの記述子（メンバー `code`・`clone`・`drop` を持つ構造体）を DWARF に出し、関数値のメンバーを `descriptor`・`environment` にする。`debug_info.rs` の 2 つの期待は記述子の構造体の中で満たされる。formatter と `debugger.mjs` の `Lookalike` を直す |
+| 「既存テストへの影響: なし（見込み）」 | 構築行の `@tz.apply.` を読むテストが 2 つある（`tests/call_specialization.rs` の 104 行付近、`tests/integer_ranges.rs` の 462・463 行）。`tests/param_facts.rs` の 80 行は下限の `dereferenceable(16)`。`tests/debugger.mjs` の `Lookalike` | 下の「期待値が変わる既存テスト」に宣言する。それ以外の変更は停止条件 4 |
+| テスト・文書の IR の確認は「行ごと」 | `tests/call_specialization.rs` の `body()` は IR を空行（`\n\n`）で区切り、`define ` で始まるブロックだけを関数として読む。`auxiliary()` は関数の後に空行を足す | 記述子の行は **単独の（空行で区切られた）ブロック**として出す。関数の直後に 1 行だけ足すと、次の関数が記述子のブロックに入って読めなくなる |
+| `docs/architecture.md` の `ptr, ptr, ptr, ptr`（手順 11 の grep） | その文字列は文書に無い（IR の型定義は `src/llvm.rs` の 1 行だけ）。関数値の欄を述べる箇所は 484 行（DWARF）・1000 行（`{ code, environment, clone, drop }`）・1122 行（Task）・90 行（`closure.ll`）。`docs/language.md` の 1498 行付近は E1010 の見積もりを「関数値記述子・Task は 32 バイト」と書く | 4 か所を直す。`language.md` は見積もりを変えない（P2-c の取り下げ）ので、用語だけ「関数値記述子」→「関数値」に直す（新しい静的記述子との混同を避ける） |
+| `docs/benchmarks.md` に PM02 の節を足す | 第4フェーズの足場の `<!-- phase4:PM02 -->` と `<!-- /phase4:PM02 -->` の間にだけ書く | 記録欄の外を触らない |
+| `benchmarks/control` を直接 `build` できるかは未確認 | `build --emit object -O3`・`--emit llvm` ともできる（基準の機械語を `target/perf/PM02/before/control.s` に保存した） | 手順 9 の機械語の確認は `control` のまま行える |
+| `/tmp/tz-work-PM02/…` | `/tmp` は使わない。`target/perf/PM02/work/`（`closures`・`mix`・`sizes`・`hot`）に置く。`closures` は 51、`mix` は 61（5）・46（0）・43（-1）で、基準・descriptor 案の両方が一致する | 再現のコマンドは `target/perf/PM02/work/…` に読み替える |
+
+### 偵察で測ったこと（2026-10-17）
+
+**基準（before。基準のコンパイラ。`target/perf/PM02/before/`）**
+
+- 大きさ（`benchmarks/layout/sizes.mjs`、clang が測る。native／wasm32／x86_64-linux）: `%tz.closure` 32／16／32 bytes、関数値 2 個のレコード 64／32／64、`Maybe<fn>`・`Choice`・`Job`（Common）40／20／40、`Result<fn, string>`・`Mixed`（General）40／40／40。
+- 時間（CPU ms、5 trial、基準どうし（A/A）の比 0.994〜1.009）: `control/closure_capture` 1.936〜1.988、`closure_churn` 6.484〜6.600、`cpp/task_sequence` 0.796〜0.826、`task_sequential` 12.72〜13.15、`task_parallel` の CPU 13.72〜14.09（実時間は 2.15〜3.20 で他の作業に左右される）、`apps/closure_pipeline` 2.855〜2.988。
+- 確保（回数／bytes）: closure_capture 0／0、closure_churn 0／0、task_sequence 0／0、task_sequential 0／0、task_parallel 18／1,024、closure_pipeline 7／16,000,192（最大 RSS 約 17.8 MB）。
+- 成果物（native `-O3` の実行ファイル／object、`-O0` の同、wasm32 `-O3`／`-O0`）: hello 33,896／5,024、35,800／37,432、6,833／9,770（PM08 の記録と一致）。
+
+**descriptor 案の手作業の IR 書き換え（実コンパイラは変えていない）。** 基準の `--emit llvm` の出力を `target/perf/PM02/bin/proto_ir.py` で 2 ポインター化し（型・構築・コードの読み出し・`closure.ll`・`@tz.desc.*`）、
+基準の `before` と同じ clang の旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off`）でコンパイルして、`run-control.mjs --baseline`・`run-cpp.mjs`・`run-apps.mjs` に通した。
+
+| 観点 | 結果 | 読み |
+| --- | --- | --- |
+| 正しさ | `closures` 51（native）、`mix` 61・46・43（native・wasm32）が `-O0`・`-O3` で基準と一致。wasm32 は import なしで `wasm-ld` を通る。control の 16 種目・cpp の 12 種目の checksum が一致 | 記述子の設計（clone／drop の分岐、ヒープ環境、immediate、Task）は成り立つ |
+| `closure_capture` | 内側のループの機械語は基準と同一（記述子からの読み込みは `csel` に畳まれる）。時間比 0.996（P1 のみ）・1.000（P1 ＋ P2-b） | 起票時の見込みどおり |
+| **`closure_churn`** | **P1 のみは 1.281〜1.289（+28.7%、5 trial とも。範囲も重ならない）。** 機械語に反復ごとの記述子の読み込み 2 回と `immediate.drop` の間接呼び出しが残る。**P2-b（immediate の clone／drop を null にする）を足すと 0.994〜1.005、機械語は基準と同一** | 停止条件 7 に当たる。P2-b は Phase 2 の任意の手段ではなく、Phase 1 に要る |
+| `cpp`（task_sequence・task_sequential・task_parallel）、`apps`（10 種目） | 時間は差なし（3〜4 trial を交互。`closure_pipeline` の比 1.007）。`graph_bfs` だけ中央値 +4.2%（比 1.048・1.048・0.985・1.037）で、4 trial では決められない。`task_parallel` の確保量は 1,024 → 768 bytes（−25%）、回数は 18 のまま | 時間の悪化は無い。`graph_bfs` は WP6・WP10 で 9 trial 測る |
+| 大きな単独使用の lambda を LLVM が解決する hot loop（本体 48 段、2,000 万回） | 反復あたり 1 回の呼び出しが残る（基準は全部 inline）。時間は 1.558〜1.598 s で基準の 1.560〜1.583 s と同じ（呼び出し ≈ 1 ns が本体 ≈ 78 ns の 1%） | 時間では見えない |
+| **`-O3` の text の大きさ（`__text`、bytes）** | **hello 2,668 → 3,116（+17%）、functional 3,416 → 3,688（+8%）、currying 2,660 → 3,108（+17%）、io 7,036 → 7,152（+1.6%）、control 3,792 → 3,784、apps 17,538 → 17,514。`closures` の probe は基準が定数 51 に畳むのに（8 bytes）、404 bytes と `malloc` が残る** | **記述子が `@tz.apply.*` を指すため、LLVM の inline の「呼び出しが 1 回だけの内部関数」の加点（last call to static）が、記述子が GlobalDCE で消えるまで効かない。** 単独使用の lambda 本体が out-of-line に残る（hello の `tz.fn.$lambda.15`） |
+| 緩和の試み | apply wrapper に `alwaysinline`: `closures` は 8 bytes に戻り、`io` は 7,036 → 6,356（−9.7%）。hello・functional・currying は変わらない。さらに lambda の worker（`@tz.fn.$lambda.*`）にも `alwaysinline`: hello +3.7%、functional +1.0%、currying +3.8%、io −9.7%、closures 8 | 完全には戻らない。worker の `alwaysinline` は「唯一の参照が closure の生成だけ」の lambda に限らないと大きな本体を複製しうる |
+| 代替案 `{ code, environment, vtable }`（24 bytes） | コードは値に残り、clone／drop だけが静的な vtable（所有する環境の関数値だけが持つ。immediate・捕捉なしは null）。**`-O3` の text は基準と同じ（hello 2,668、currying 2,660、functional 3,396、closures 8）**、closure_capture 0.999・closure_churn 1.003。task_parallel の確保は 1,024 → 896 | 時間・text とも基準と同じで、値は 32 → 24 bytes（−25%）にとどまる |
+| object の大きさ（`-O0`） | 記述子は 24 bytes ずつ `.data` に載る（hello 40 → 736、control 0 → 1,688）。object 全体は hello +3.3%、control +9.7%。実行ファイルでは `-dead_strip` が参照されない記述子を落とす | 実コンパイラの経路（`--no-cache` の埋め込み・`-g` を含む）で実行ファイルの大きさを測り直す |
+| `-O0` の IR | `insertvalue` が 1 個の関数値あたり 4 → 2 に減る。wasm32 の `-O0` の `.wasm` は mix で 6,646 → 6,133 bytes | 良い方向 |
+
+結論: **時間の悪化は測れなかったが、記述子案には「LLVM が既知の関数値の生涯（生成・呼び出し・解放）を畳む力が落ちる」という測れた代償がある**（text +8〜17%、probe の確保が残る）。
+P2-b は Phase 1 に要る。`alwaysinline` の緩和は有望だが、完全ではない。D1 は維持し、WP6 のゲートで確かめ、通らなければ 24 bytes の代替案へ切り替える。
+
+### 改めた方針
+
+| 項目 | 起票時 | 方針 | 理由・証拠 |
+| --- | --- | --- | --- |
+| D1 表現 | `{ 静的記述子, 環境 }`（16／8 bytes） | **維持。ただし WP6 のゲート（G-inline: 下）に通ることを条件にする。通らなければ `{ code, environment, vtable }`（24／12 bytes）へ切り替える** | 上の表。時間・確保は条件を満たすが、text と畳み込みに代償がある |
+| D2 記述子の欄 | コード・clone・drop | 維持 | – |
+| D3 名前と場所 | `closure_wrappers` の直後に出す | 維持。ただし clone の条件に `!owned_captures` を含め、**単独のブロック（空行で区切る）**として出す | `tests/user_drop.rs`・`tests/call_specialization.rs` の `body()` |
+| D4 捕捉なし・空の関数値 | clone／drop は null、環境は null | 維持 | – |
+| D5 immediate | clone／drop は `@tz.closure.immediate.*` | **変更**: immediate と捕捉なしの記述子は clone／drop とも `null`。`closure.clone` は「環境が null、または記述子の drop が null」なら値をそのまま返し、`closure.drop` も同じ条件で何もしない。`@tz.closure.immediate.*` を削除する（P2-b を Phase 1 に入れる） | `closure_churn` +28.7% → 0.2%。安全の根拠: **環境が null でなく drop が null なのは immediate だけ**（`closure_descriptor` は捕捉のある非 immediate の記述子に必ず drop を入れる。Task も `$task` の drop を持つ）。WP5 で記述子の全件にこの不変条件を検査する |
+| D6 Task | clone は null、drop は捕捉があれば | 維持 | – |
+| D7 大きさ | `storage_layout` を `(16, 8)`、DWARF、`check.rs`・`stack_size` は変えない | **変更**: `layout_bound` の上限 `(16, 8)` と下限 `(8, 4)`、DWARF の `layout`・メンバー（型付きの記述子）、LLDB の formatter。`check.rs` の `Layouts` と `stack_size` は 32 のまま | 下限を変えないと wasm32 で誤った `dereferenceable`。E1010 の見積もりは下の P2-c |
+| D8 記述子の読み込み | 普通の `load` | Phase 1 は普通の `load`。`!invariant.load` は WP7 で測って決める | – |
+| P2-a `!invariant.load` | 人間の依頼があれば | WP7: 未知の関数値を呼ぶ hot loop（`apps/closure_pipeline` と専用の probe）の機械語に記述子の読み込みの巻き上げが現れ、時間が悪化しないなら既定にする。現れなければ取り下げて結果を記録する | 既存の前例: `src/llvm.rs` に `!invariant.load !{}` を inline で書く箇所がある（`FIRST_METADATA` の番号は要らない） |
+| P2-b immediate の null 化 | 同上 | **Phase 1 に移す**（D5） | 上 |
+| P2-c `check.rs`・`stack_size` を 16 | 別途承認 | **取り下げ（既定の見積もりは 32 のまま）。** 証拠: (1) `docs/language.md` が E1010 の見積もりを「関数値記述子・Task は 32 バイト。実際の LLVM 上のレイアウトを下回らない上限」と書き、PM01 の D4 が「受理される program を変える見積もりの変更はしない」と定めた。(2) 変わる program は、関数値を 2,049 個以上インラインで持つレコードや、`[[i64 -> i64; 1024]; 3]` のような入れ子の固定長配列だけ（基準で実測: 関数値 2,048 個の欄を持つレコードは受理、2,049 個は E1010。`[[i64 -> i64; 1024]; 3]` も E1010）。(3) 時間・確保・成果物への効果は無い。`stack_size` はスタックに置くリテラル木の大きさが 64 KiB を超えるかの判定（`frame_bytes`）にだけ使われ、保守的な上限のままでよい。(4) 「実際の大きさ ≤ 見積もり」を WP1 のテストで固定する（関数値は native 16 ≤ 32） | 効果が測れない既定の切り替えは行わない |
+| P2-d（新規・任意）null 記述子の niche | – | WP9: `Maybe<fn>` のような 2 case の union を、記述子の null で表す（`{ i8, %tz.closure }` 24 → 16 bytes。wasm32 12 → 8）。**null の記述子は静的な番地なので wasm32 でも使える**（`ref` の null niche は `--stack-first` のために native だけ）。空の関数値（`zeroinitializer`）は null の記述子なので、移動後のスロットは `None` になり drop は何もしない。サイズの表・PM01 の niche のテスト・DWARF の `$niche` を通れば入れ、PM03・PM04 と `llvm_layout.rs` が衝突するなら見送る | 今の `Maybe<fn>` は `Common`（タグ付き）で、niche の対象は文字列・配列・`ref` だけ（`niche_layout`） |
+| 新 D9 inline の品質 | – | apply wrapper に `alwaysinline` を付ける案と、lambda の worker の方針（唯一の参照が closure の生成だけの lifted lambda に限る）を WP6 で測って決める。ゲート **G-inline**: `-O3` の `__text` が hello・functional・currying・io・benchmarks の各 object で基準の +2% 以内、`closures` の probe が `ret 51` に畳まれる、時間は停止条件 7 の範囲 | 上の表 |
+| 新 D10 DWARF と formatter | – | 型付きの記述子。formatter の `is_function` は欄名 `["descriptor", "environment"]` と「記述子の指す型に関数ポインター `code` がある」を検査し、`function_summary` は `descriptor->code` を読む。**`lldb` はこの機械では `run` が応答せず（基準でも `tests/debugger.mjs` が ETIMEDOUT）、実行を伴う確認ができない。** 静的な確認（`lldb -b` の `target create` と型の照会）と DWARF の Rust テストで代える。CI の job は無い（どの workflow も `debugger.mjs` を呼んでいない） | 確かめられない項目として報告する |
+
+### 作業の順序（コミット）
+
+| 作業 | 内容 | 確認 |
+| --- | --- | --- |
+| WP0 | この再検討の記録（このチケットだけ。`_perfs/README.md` は統合担当が更新する） | `git diff --check` |
+| WP1 | 大きさの模型のテストを先に足す（IR は変えない）: `src/llvm_layout.rs` の `layout_bounds_cover_actual_sizes` に関数値・Task・`Maybe<fn>`・`Result<fn, string>`・関数値 2 個のレコード・関数値の配列の行を足し、現行の 32／16 で通ることを確かめる | `cargo test --locked --lib layout`（`running N tests`） |
+| WP2 | `closure_wrappers` が `@tz.desc.*` を単独のブロックで出す（まだ使わない）。clone の条件は `!owned_captures` を含む。1 対 1・決定性のテスト | `cargo test --locked`、`mix` の IR の記述子数と `@tz.apply.*` の数が等しい |
+| WP3 | コードの読み出しを `closure_code` に集める（IR は変えない。`parallel_tasks` の文字列も同じ 2 命令の形にそろえる準備） | 手順 3 と同じ（IR の diff が一致） |
+| WP4 | 表現を切り替える: 型定義、`closure_descriptor`、`closure_code` の `load`、`parallel_tasks` の本文、`closure.ll`、`layout_bound` の 2 本、DWARF、formatter。宣言した既存テストの期待値の変更 | `tests/call_specialization.rs`・`tasks.rs`・`param_facts.rs`・`integer_ranges.rs`・`user_drop.rs`・`debug_info.rs`、`tests/primitives.mjs`、native・wasm32（`-O0`・`-O3`）。関数値を使わない program の IR は型定義の 2 行以外が基準と同一、object・実行ファイルは同一 |
+| WP5 | D5（P2-b）: immediate と捕捉なしの clone／drop を null、`@tz.closure.immediate.*` の削除、`closure.ll` の条件。不変条件のテスト | `closure_churn` の機械語が基準と同一、時間が A/A の範囲、`live == 0` |
+| WP6 | G-inline: apply wrapper の `alwaysinline`、lambda の worker の方針、`-O3` の text・`closures` の probe・時間。通らなければ 24 bytes の代替案へ切り替える | 偵察の表の再現（実コンパイラで）、停止条件 7 |
+| WP7 | P2-a: `!invariant.load` | 機械語・時間で既定にするか取り下げるか決める |
+| WP8 | E2E とテスト: `curried_mixed_kinds`、記述子の Rust テスト、trap-info・wasm64・`debugger.mjs` の `Lookalike`、全 suite | 受け入れ条件 |
+| WP9 | 任意: P2-d（null 記述子の niche） | サイズの表、`tests/value_layout.rs`・`layout_bounds_cover_actual_sizes`、DWARF |
+| WP10 | 測定（`phase4:PM02` の記録欄）、`docs/architecture.md`・`docs/language.md`・言語リファレンス、この節の更新、`_completed/` へ移動 | `node scripts/check-docs.mjs`、`git diff --check` |
+
+### 期待値が変わる既存テスト（先に宣言する）
+
+意図（関数値の IR の形・大きさの下限・DWARF の欄）は保ち、表現の変更に追従させる。それ以外の変更は停止条件 4。
+
+- `tests/param_facts.rs` の `pointer_attributes_and_portable_layout_bounds`: `function_pointer` の `align 4 dereferenceable(16)` → `align 4 dereferenceable(8)`（native・wasm32 とも下限 `(8, 4)`）。
+- `tests/integer_ranges.rs` の `builtin_calls_that_are_not_two_number_operands_stay_calls`: 部分適用・関数値の構築が `@tz.apply.$intrinsic.Add.add` を含む検査 → `@tz.desc.$intrinsic.Add.add`（意図: 部分適用・関数値は生成した wrapper を使い、算術に展開しない）。
+- `tests/call_specialization.rs` の `owned_captures_and_dynamic_effectful_cases_use_their_correct_paths`: 構築行の `ptr @tz.apply.…` から wrapper を探す箇所を、`@tz.desc.…` の定義を引いて `ptr @tz.apply.…` を得る形にする（意図: 捕捉のある関数値の wrapper が `@tz.env.clone.` を呼ぶ）。
+- `tests/debugger.mjs` の `Lookalike`: 旧欄名のレコードに加え、新しい欄名（`descriptor`・`environment`）のレコードも関数値と誤認されないことを検査する（足すだけで弱めない）。LLDB が動かない機械では実行できない。
+- 追従で通るはずのもの（確かめる）: `tests/debug_info.rs`（記述子の構造体のメンバー `code` と `DISubroutineType` が残る）、`tests/tasks.rs`（記述子の clone 欄が `null`）、`tests/user_drop.rs`・`tests/llvm_handoff.rs`・`tests/frontend.rs`・`tests/generic_records.rs`・`tests/features.mjs`（名前だけに依存）。
+- 新規: `src/llvm_layout.rs` の大きさのテストの行（WP1）、`tests/closure_representation.rs`（記述子の対応・決定性・target ごとの中身・`@tz.apply.` を読む箇所の不在）、`curried_mixed_kinds`（native・wasm32）。
+
+### 決定事項の更新
+
+- D1: 維持（G-inline のゲートつき）。**文書化した代替案**: `{ code, environment, vtable }`（24／12 bytes）。コード（欄 0）と環境（欄 1）は今のまま、clone／drop は所有する環境の関数値だけが持つ静的な vtable（欄 2、他は null）。`closure.clone`／`closure.drop` と記述子の組み立てだけが変わり、コードの読み出し 5 か所・Task・`llvm_io.rs`・`llvm_task.rs` は変わらない。偵察では text・時間とも基準と同じだった。切り替えるときは WP4〜WP6 のコミット範囲を revert して代替案を実装し、この節に結果を書く。
+- D3・D5・D7・D8: 上の表のとおり。D2・D4・D6 は維持。
+- P2-c は取り下げ（証拠は上の表）。`docs/language.md` の見積もりの数値は変えない。
+- 既定の切り替えの条件（`_perfs/README.md`）: D1 は「時間が悪化しない（停止条件 7）」「確保量が減る」「G-inline」を測って満たしたときだけ既定にする。
+
+### 着手条件と停止条件の更新
+
+- 着手条件: PX01 は `done`。D1・Phase 2 を含む全フェーズは 2026-10-17 の依頼で承認済み（「行うのは Phase 1 だけ」は適用しない）。WP1 の前に、`cargo build --release --locked` と関連テストが通ることを確かめる。
+- 停止条件 1: 期待を 25 行に直す。欄 0・2・3 に触れる箇所が、記載した 5 か所と `closure.ll` 以外に増えた場合に停止する。
+- 条件 2: 検査済み（発動しない）。callback は C ABI wrapper の番地で、`%tz.closure` は境界に出ない。
+- 条件 4: 上の「期待値が変わる既存テスト」以外で期待値を変える必要が出たとき。
+- 条件 7: 発動の実例は「P1 のみの `closure_churn` +28.7%」（偵察）。P2-b で解消済みの形を実コンパイラで再現し、時間が基準の範囲に入ることを WP5 で確かめる。
+- 追加 A: G-inline に通らず、緩和（`alwaysinline`）でも +2% 以内に入らないとき: 24 bytes の代替案へ切り替え、記録する（停止して報告するのは、代替案も条件 7 に当たるときだけ）。
+- 追加 B: `layout_bounds_cover_actual_sizes` が関数値の行で落ちる（表現と大きさの模型がずれた）。
+- 追加 C: 記述子の不変条件（環境が null でなく drop が null なのは immediate だけ）が全記述子で成り立たない。
+
+### 受け入れ条件の更新
+
+- 手順 1 の件数は 25。手順 5 の「`grep -cE 'name: "(code|clone|drop)"'` が 0」は、型付きの記述子の構造体にメンバー `code`・`clone`・`drop` があるので、「関数値の構造体のメンバーが `descriptor`・`environment`」の確認に直す。
+- M1〜M4 に、`cpp/task_sequence`・`apps/closure_pipeline`・`-O3` の text（G-inline）・object の大きさ（hello の `--emit object`・実行ファイル `-O0`/`-O3`・wasm32）を足す。M3 の期待は「`task_parallel` が 18 回のまま 1,024 → 768 bytes」。M2 の期待は上の表の値。
+- 前後の比較は `run-control.mjs --baseline`（同じ process で交互）を主にし、cpp・apps は基準と after を交互に 9 回ずつ測る。`TMPDIR` は worktree 内に向ける。
+- 関数値を使わない program は、IR が `%tz.closure` の型定義の行（と、記述子の型定義の行）以外で基準と同一で、object・実行ファイルも同一（`examples/*`・`tests/fixtures/*` を基準と比べて確かめる）。
+
+### 他チケットとの関係
+
+- PM03・PM04: `src/llvm.rs` の型定義の文字列は 1 行に全部の型（`%tz.string`・`%tz.list`・`%tz.closure`）が入っているので、3 件が同じ行を触る。`src/llvm_layout.rs` の `layout_bound`、`src/llvm_debug.rs` の `layout`、`src/llvm_frame.rs` の `stack_size` は `String`・`List` と `Function`・`Task` の腕が隣り合う（PM02 は `stack_size` と `check.rs` を触らない）。P2-d は `Niche` の列挙型・`tag_value`・`load_tag` を触るので、PM03 の `Maybe<string>` の niche と衝突する。
+- PB05: 新しい IR の構文は、名前つきの構造体型 `%tz.closure.desc`、関数のアドレスを含む `internal constant` の初期化子、定数から読む `load ptr, ptr %x`（P2-a が確定すれば `, !invariant.load !{}`）。vtable（A14）に前例がある。
+- PR07・PR08: 影響なし（記述子は `internal`。間接呼び出しは `call ptr %code(…)` のまま）。
+
+### 未測定・未確認（着手時点。WP で測る）
+
+- 実コンパイラでの before／after: 記述子案は手作業の IR 書き換えで測っただけで、実コンパイラの経路の実行ファイルの大きさ（hello の `-O0`・`-O3`・`--no-cache`・`-g`、wasm32）、`-dead_strip` 後の記述子、起動時の再配置（PIE の rebase）の費用は WP4・WP6・WP10 で測る。
+- `apps/graph_bfs`（+4.2%、4 trial では決まらない）と全種目の 9 trial の交互測定は WP6・WP10。P2-a（`!invariant.load`）の効果は WP7。
+- wasm64 での記述子（関数のアドレスを含む定数の再配置）は WP8。x86-64・Linux・Windows（MSVC の COFF）の定数の再配置と大きさは、この機械では確かめられない（CI に任せる）。
+- LLDB の `run` を伴う確認（`tests/debugger.mjs`）は、この機械では `lldb` が応答せず基準でも通らないので確かめられない（静的な確認で代える）。
+- 24 bytes の代替案（`{ code, environment, vtable }`）は偵察の IR 書き換えで測っただけで、実装していない（G-inline に通らないときだけ実装する）。
+
+### 証拠の保存先
+
+`target/perf/PM02/`（コミットしない）: `before/`（control・cpp・apps の JSON、`metrics-*`、`artifact-sizes.txt`、`sizes/`、`control.s`、`proto*`）、`bin/`（`proto_ir.py`・`proto-tsuzuri`・測定の script）、`work/`（probe と `hot`）、`NOTES.md`。
 
 ## 着手条件と停止条件
 
@@ -645,46 +794,114 @@ for name in &descriptors {
 - 決定: `%tz.closure = type { ptr, ptr }`（欄 0: 静的記述子へのポインター、欄 1: 環境）とし、`%tz.closure.desc = type { ptr, ptr, ptr }`（コード、clone、drop）を `(関数, 捕捉数)` ごとの `internal constant` にする。環境の表現（null・immediate のビット列・ヒープ・スタック）は変えず、環境にヘッダーを足さない。
 - 理由: (1) 2 ポインターで immediate capture を保てる形はこれだけである。immediate の環境の欄はビット列で、native の `i64`・`f64` と wasm32 の `i32`・`f32` はポインターの全ビットを使うため、ヘッダーを持つ環境と区別するビットが残らない。コードポインターにタグを付ける案は WASM の関数ポインターが table の添字なので成り立たず、型から決める案は関数値の型が捕捉の形を含まないので成り立たない。immediate capture をやめる案は `closure_capture`・`closure_churn` の環境の確保を戻す。(2) 環境の配置、`environment_type` の添字、`@tz.apply.*`・`@tz.env.*` の本体が変わらず、変更は組み立て・5 か所の読み出し・ランタイムの 2 関数に閉じる。(3) ヒープ環境が 8 bytes 増えず、スタック関数値へのヘッダーの書き込みも要らない。代償は、未知の関数値の呼び出しごとに記述子の読み込みが 1 回増えること（C++ の仮想呼び出しや Rust の `dyn Fn` と同じ形）。記述子が定数と分かる場合は LLVM が読み込みを畳み込む見込みで、生成コードの確認と計測で確かめる。
 - 起票時の案との関係: 起票時の既定案「静的な記述子へのポインター 1 個（clone／drop を直接 2 個置く案より小さい）」の中身は保ち、置き場所を環境の先頭から関数値の欄 0 へ移す。「ヘッダーを持たないことをコードポインター側の情報で区別する」という起票時の考えは、コードの欄を記述子にすることで実現する。
-- 状態: 要承認（内部表現と既定の出力を変えるため。承認前は実装手順の手順 2 以降に着手しない）
+- 状態: 承認済み・実装済み（G-inline に通った。native は adapter と lambda の worker に `alwaysinline` を付ける。24 bytes の代替案は使わなかった。「実装と検証」）
 
 ### D2: 記述子の中身
 
 - 決定: 欄は（コード、clone、drop）の 3 個だけで、この順に置く。呼び出しは GEP なしの `load ptr, ptr <記述子>` でコードを読む。環境の大きさ・整列は持たない。
 - 理由: `@tz.env.clone.*`・`@tz.env.drop.*` は `(関数, 捕捉数)` ごとに特殊化されて環境の大きさを知っており、`@tz.free` も大きさを取らない。読み手のない欄は記述子を大きくするだけである。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（既定案どおり）
 
 ### D3: 記述子の名前と出す場所
 
 - 決定: `@tz.desc.{name}.{count} = internal constant %tz.closure.desc { ptr @tz.apply.{name}.{count}, ptr <clone>, ptr <drop> }` を、`closure_wrappers` が `@tz.apply.{name}.{count}` を出した直後に出す。clone／drop の選び方は現在の `closure_descriptor` の分岐を移す。`closure_descriptor` の名前は変えない。
 - 理由: `@tz.apply.*` と 1 対 1 に対応し、出力順が `closure_wrappers` の順で決まる（決定的）。接頭辞を `@tz.closure.` にしないので、ランタイムの連結の判定を記述子の名前で変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`closure_wrappers` の中で `@tz.apply.*` の直後に、単独のブロックとして出す。clone の条件に `!owned_captures` を含めた）
 
 ### D4: 捕捉のない関数値と空の関数値
 
 - 決定: 捕捉のない関数値も記述子を持ち（clone／drop は null）、環境は null。clone／drop は環境が null なら記述子を読まずに戻る。`zeroinitializer` の関数値（記述子も null）は呼び出さない（現在と同じ不変条件）。
 - 理由: 呼び出しの経路を 1 通りにし、捕捉のない関数値の生成・複製・解放で確保しない性質を保つ。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（既定案どおり）
 
 ### D5: immediate capture
 
 - 決定: `immediate_capture` の条件、ビット列の作り方（`make_closure`）と読み方（`closure_capture_value`）は変えない。immediate の記述子の clone／drop は `@tz.closure.immediate.clone`・`@tz.closure.immediate.drop` にする。環境の欄のビットをタグに使わない。
 - 理由: immediate かどうかは関数値を作る時点で `(関数, 捕捉数, target)` から静的に決まり、記述子がその結果を運ぶ。clone／drop は環境のビットを解釈しないので、`-1` や NaN の payload を含む全ビットのパターンで正しい。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装済み（P2-b を Phase 1 に入れた。immediate と捕捉なしの記述子は clone／drop とも null で、`@tz.closure.immediate.*` を削除した）
 
 ### D6: Task
 
 - 決定: Task も `%tz.closure` を使う。記述子の clone は null、drop は捕捉があれば `@tz.env.drop.{name}.{count}`、なければ null。Task の実行は記述子からコードを読んで `code(ptr env)` を呼ぶ。`tsuzuri_task_parallel`・`tsuzuri_task_parallel_results` と B06 の解放経路は変えない。
 - 理由: Task は複製されない（`clone_value` が `unreachable!`）。実行関数の引数が環境だけという ABI を保てば、ランタイムの変更が要らない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（既定案どおり）
 
 ### D7: 大きさの見積もり
 
 - 決定: `storage_layout` を `(16, 8)`、`src/llvm_debug.rs` の `layout` を `(2 * pointer, pointer)`、`fields` を `["descriptor", "environment"]` にする。`src/check.rs` の見積もり（32）と `src/llvm_frame.rs` の `stack_size`（32）は変えない。
 - 理由: `storage_layout` は General union の payload の大きさを決め、実際より大きいとメモリを無駄にする（16 は native の実際の大きさで、wasm32 の 8 より大きいので安全）。DWARF は実際の配置と一致させる。`check.rs` の見積もりは `MAX_VALUE_BYTES` による受理・拒否を決める言語上の上限で、下げると受理されるプログラムが変わる。`stack_size` も大きい側に外れて安全な見積もりである。
-- 状態: 既定案（実装者はこの案に従う）。`check.rs` と `stack_size` の変更は Phase 2（P2-c）で別途承認を得る
+- 状態: 変更して実装済み（`layout_bound` の上限 `(16, 8)` と下限 `(8, 4)`、DWARF の `descriptor`・`environment`、LLDB の formatter。`check.rs` の見積もりと `stack_size` は 32 のまま。P2-c は取り下げ）
 
 ### D8: 記述子の読み込みの最適化
 
 - 決定: Phase 1 では記述子を普通の `load` で読み、`!invariant.load` などのメタデータや、immediate の clone／drop を null にする近道を入れない。
 - 理由: 既知の関数値では定数の畳み込みで足りる見込みで、未知の関数値の費用は計測してから判断する。メタデータは `Globals::FIRST_METADATA` の番号の規則に関わり、Phase 1 の差分を大きくする。
-- 状態: 既定案（実装者はこの案に従う）。Phase 2 は人間の依頼で行う
+- 状態: 実装済み（普通の `load`。P2-a の `!invariant.load` は測って取り下げた）
+
+## 実装と検証（2026-10-18）
+
+ブランチ `perf/p4-PM02`（基準 `a2313d19` = main `9dd0fbbc` + 第 4 フェーズの計測の足場）。統合ブランチ `perf/phase4-compiler-performance`（PR07・PR08 の merge を含む `acb5caa9`）を取り込んだ（merge `3738e375`、衝突なし）。
+Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に入れて実装、P2-d（`Maybe<関数値>` の null 記述子の niche）を実装、P2-a（`!invariant.load`）は測って取り下げ、P2-c（E1010 の見積もり・`stack_size` を 16 にする案）は合意の上で取り下げた。
+
+### コミット
+
+| 作業 | commit | 内容 |
+| --- | --- | --- |
+| WP0 | `3e51668d` | 着手時の再検討（このチケットだけ） |
+| WP1 | `cdb76649` | 大きさの模型のテストを先に足す（layout の行、E1010 の境界。IR は変えない） |
+| WP2 | `babda8e2` | `closure_wrappers` が静的記述子 `@tz.desc.*` を出す（まだ読まない。`closure_slots` に clone／drop の選び方を集める） |
+| WP3 | `e1fb6a08` | コードと環境の読み出しを `FunctionEmitter::closure_parts` に集める。IR は変えない（119 プログラム × native・wasm32 で、WP2 のコンパイラと IR 227 個がバイト一致、失敗 11 件も出力まで一致） |
+| WP4 | `e6d7e13c` | `%tz.closure = { ptr, ptr }`、記述子は欄 0。`closure.ll`、`layout_bound`（`(16, 8)`／`(8, 4)`）、DWARF（`descriptor`・`closure.descriptor`）、LLDB の formatter、宣言した既存テストの期待値 |
+| WP5 | `00a7997d` | P2-b: 即値と捕捉なしの記述子の clone／drop を null、`@tz.closure.immediate.*` を削除、`closures_built` で不変条件を確かめる |
+| WP6 | `5163528b` | G-inline: native の `@tz.apply.*` と `$lambda` の worker（`-g -O0` を除く）に `alwaysinline`。WebAssembly には付けない |
+| WP7 | （コードなし） | P2-a: `!invariant.load` を測り、機械語が変わらないので取り下げた（証拠は docs/benchmarks.md） |
+| WP8 | `d97f9844` | `curried_mixed_kinds`（4 種類の関数値）、`tests/debugger_static.mjs`（新規）、`tests/debugger.mjs` の `Descriptive` |
+| WP9 | `e787499d` | P2-d: `Niche::NullDescriptor`、DWARF の `$niche` を pointer 幅に、`curried_optional` |
+| WP10 | `d84a462c` ほか | 文書と測定の記録（docs/architecture.md・language.md・README.md・GUIDE.md・言語リファレンス 3 ページ・docs/benchmarks.md の PM02 の欄）。このチケットの完了（`_perfs/_completed` へ移動） |
+
+### 決定事項の結果
+
+| 決定 | 結果 |
+| --- | --- |
+| D1 表現 | `{ 静的記述子, 環境 }`（16／8 bytes）を採用。G-inline は native に `alwaysinline` を付けて通り、wasm32 は付けずに基準と同じ大きさ（+0.4〜1.4%、tasks の fixture だけ +3.6%）。24 bytes の代替案（`{ code, environment, vtable }`）は実装しなかった（偵察で text・時間が基準と同じだったが、必要にならなかった） |
+| D2〜D4・D6 | 既定案どおり。D3 は clone の条件に `!owned_captures` を含め、記述子を空行で区切った単独のブロックにした |
+| D5 / P2-b | 変更して Phase 1 に入れた。付けないと `closure_churn` が +28.7%（試作）で、付けると機械語が基準と同一 |
+| D7 | `layout_bound` の上限・下限、DWARF、LLDB を変えた。`check.rs` の見積もりと `llvm_frame.rs` の `stack_size` は 32 のまま（P2-c を取り下げ。PM01 D4 の前例どおり、見積もりを下げると受理するプログラムが変わるため） |
+| D8 / P2-a | 普通の `load` のまま。`!invariant.load` は apps・control・examples・fixtures の `-O3` の object で機械語が変わらないので入れない |
+| D9 inline の品質 | native の `@tz.apply.*` と `$lambda` の worker（`@tz.fn.` のものだけ。`-g -O0` と `@tz.specialized.*` を除く）に `alwaysinline`。WebAssembly には付けない（残った adapter が worker の複製を持って +30〜50%） |
+| P2-d | 実装。`Maybe<関数値>`・`Maybe<Task>` はタグなしで 16 bytes（wasm32 は 8）。null の記述子が `None` で、記述子は静的データなので WebAssembly でも使う |
+
+### ゲートと測定（要点。表は docs/benchmarks.md の「PM02」）
+
+- **G-inline**: 属性なしの native は hello +14.0%・currying +14.0%・functional +6.9%、`closures` の probe が `ret 51` に畳まれない（8 → 404 bytes）。緩和後は hello +100 bytes（+3.1%）・currying +3.1%・functional +0.9%・io −2.6%・fixtures −4.0〜+1.0%・benchmarks −0.2%、probe は 8 bytes（`mov w0, #51; ret`）。x86-64 Linux の代理（IR を ELF の `.text` に）も同じ向き。
+- **M1 大きさ**: 関数値 32 → 16（wasm32 16 → 8）、関数値 2 つの record 64 → 32、`Maybe<fn>` 40 → 16（wasm32 20 → 8）、`Result<fn, string>` 40 → 24。
+- **M2・M3 確保**: `cpp/task_parallel` の確保量 1,024 → 768 bytes（回数は 18 のまま）、`apps/closure_pipeline` の確保量 16,000,192 → 16,000,128 bytes。それ以外の種目は同じ。
+- **M4 時間**: 停止条件 7 の 4 種目（`closure_capture` 1.000、`closure_churn` 0.999、`task_sequential` 1.003、`task_parallel` の CPU 時間 1.001）はどれも広がりの内。`apps/closure_pipeline` は +1.7%（未知の関数値の呼び出しごとに記述子から `code` を読む 1 回の load）。機械語が変わった関数は control 1、cpp 3、apps 1 で、ほかは同一。測定中の load average は 34〜103 で、`task_parallel` の実時間は判断できない。
+- **代償（既知）**: `-Os`・`-Oz` の小さなプログラムは大きくなる（native の `-Oz` の hello +30%、wasm32 の `-Oz` の hello +7.8%）。wasm32 の tasks の fixture は `-O3` で +3.6%。
+
+### 検証
+
+次を merge 後の木（`3738e375` と、その上の clippy の指摘の修正）で実行した。
+
+- **Rust**: `cargo test --locked --no-fail-fast`（`RUST_MIN_STACK=4194304`。105 の test binary と doc-test、1,500 件が通り、失敗 0、ignored 1）。内訳の一部は `--lib` 325、`--bin tsuzuri` 25、`lto`（PR08）17、`closure_representation` 9、`debug_info` 16、`param_facts` 9、`integer_ranges` 16、`call_specialization` 13、`tasks` 13、`user_drop` 26、`llvm_handoff` 13、`storage` 21、`local_recursion` 14、`ffi_extensions` 10、`concurrency` 19、`iteration_protocol` 5、`deriving` 8、`trap_locations` 8、`generic_records` 16、`frontend` 4。GUIDE §3.1 の 4 つの単独の回帰テストは既定の stack で `running 1 test` が通る。
+- **静的な検査**: `cargo fmt --all -- --check`（1.99.0）、`cargo clippy --all-targets --locked -- -D warnings`（1.99.0。WP1 のテストの `&[closure.clone()]` が `cloned_ref_to_slice_refs` に当たったので `std::slice::from_ref` にした）、`sh scripts/check-runtime-includes.sh`、`node scripts/check-docs.mjs`（変更した 3 ページ。42 リンク、20 例、40 の native 実行）、`cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（`stable`（1.96.1）。型検査だけで、Windows の実行は未検証）。
+- **E2E**（`target/release/tsuzuri`。`tests/` の node のスクリプト。結果は最終報告に添える）: `primitives.mjs`（`curried_mixed_kinds`・`curried_optional` を含む。native の C ホストで `live == 0` と二重解放の検査、wasm32、`-O0`/`-O3`。基準のコンパイラでも同じ期待値で通る）、`tasks.mjs`、`features.mjs`、`computations.mjs`、`control.mjs`、`e2e.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_boundary.mjs`・`trap_return.mjs`・`trap_return_sync.mjs`、`llvm_handoff.mjs`、`debug_info.mjs`、`debugger_static.mjs`（新規）、`size.mjs`、`prebuilt_runtime.mjs`、`local_recursion_fuzz.mjs`（120 プログラム）、`wasm64.mjs`（Node 24）、`pgo.mjs`（PR07。14 section）。
+- 受け入れ条件の grep（`extractvalue %tz.closure … , [23]` と `insertvalue %tz.closure … , [23]"`）は出力なし。関数値を作らない小さな library 4 本を基準のコンパイラと比べると、`-O3` の object（native・wasm32）はバイト一致。`-O0` の object は 0.2〜1.8% 大きい（使われない静的記述子が残る。起票時の「IR は型定義の行だけ違う」という見込みは、アダプタごとの `@tz.desc.*` の定義があるので正しくなかった）。
+- 関数値を含む fixture の PGO の往復（`--profile-generate`・`--profile-use`）と、`mix`・`closures` の probe の `--profile-generate` の実行は動く。
+
+### 既知の限界と未検証
+
+- **LLDB の実行つきの検査は走らせられていない**: この環境の `lldb` は基準のコンパイラでも `run` で固まる。formatter は、型の形と判定（`tests/debugger_static.mjs`、プロセスなし）と DWARF（`tests/debug_info.rs`）で確かめ、`tests/debugger.mjs` の `Descriptive`（ブレークポイントは 23 行目。静的に解決を確認）は未実行。静的に読み込んだ実行ファイルでは、`<fn …>` の名前の解決（chained fixups が残る）までは確かめられない。
+- **Windows の natvis**: `Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる（`Maybe<[T]>`・`Maybe<ref T>` と同じ）。未実機。
+- **`-O0` の大きさ**: 静的記述子はアダプタごとに出し、使われなくても `-O0` の object に残る（hello の object +4.1%、実行ファイルは +0.1%）。使われる `(関数, 捕捉数)` の記述子だけを出す案（`closure_descriptor` が参照を数え、最後に出す）は未実施。
+- **サイズ最適化**: `-Os`・`-Oz` の小さなプログラムの text が大きくなる。水準ごとに adapter と worker の属性を替える（ドライバーが外す）案は未実施。
+- **x86-64 Linux・Windows の実機**は未検証。x86-64 は IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。
+- **静かな機械での再測定**は未実施（`task_parallel` の実時間）。
+- `closure_pipeline` の +1.7% は、未知の関数値の呼び出しの 1 load の分と読める。`!invariant.load` では消えなかった（要素ごとに記述子が変わるため）。
+
+### 他チケットとの接点
+
+- 統合時に編集が隣り合う場所: `src/llvm.rs` のモジュール先頭の型定義（`%tz.closure`・`%tz.closure.desc`）、`src/llvm_layout.rs` の `layout_bound`・`Niche`・`niche_layout`・`tag_value`・`load_tag`・`niche_tag`、`src/llvm_debug.rs` の関数値のメンバーと `niche_union_type`（`$niche` の大きさを整数型から決める）、`scripts/lldb/tsuzuri_lldb.py` の `is_function`。
+- PM03（文字列）の `-1` の長さの niche は触っていない。`niche_union_type` の `size: 64` を整数型の幅から求めるようにしたので、PM03 が `NegativeLength` の幅を変えるならこの行を見る。
+- `--backend fast`（PB05）が関数値を扱うときは、IR の形が変わる: `%tz.closure.desc` の定数と、定数のデータからの `load ptr`（記述子の欄 0）。
+- PR07・PR08: 取り込み後の `lto`・`pgo` のテストは通る。関数値を含む fixture の PGO の往復（`--profile-generate`・`--profile-use`）も動く。

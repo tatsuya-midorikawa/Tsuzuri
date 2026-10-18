@@ -187,9 +187,11 @@ profile data does not match 1 function(s) in this build; they are optimized with
 
 `--emit object` を計装すると、オブジェクトはプロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます。付けないと、macOS では `___llvm_profile_runtime` が未定義です。
 
+**並列に動くプログラムの回数は少なく数えます。** 計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single` と同じです）。`Task` や `Parallel` が複数のスレッドで同じ関数を動かすと、更新が重なって失われ、回数が実際より少なくなります（実行ごとに変わります）。4 つの Task が同じ 1 億回のループを回す例では、ループの回数は 4 億ではなく 1 億でした（関数に入った回数は正確に 4）。プログラムの結果とプロファイルの形（`W2001`）には影響しませんが、`--profile-use` は少ない回数をそのまま使います。正確な回数が要るときは、`-fprofile-update=atomic` を足して Clang を呼ぶスクリプトを `TSUZURI_CLANG` に指定して計装してください。その例では回数が 4 億になり、そのプロファイルは通常の Clang の `--profile-use` でそのまま使えました。ただし、計装したプログラムは 0.1 秒から 6 秒へ約 60 倍遅くなったので、Tsuzuri は原子的な更新を付けません（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
+
 **使えない組み合わせ**は、`E2000` か `E2002` です（[組み合わせがエラーになる場合](#組み合わせがエラーになる場合)）。`--emit` は native の `exe` と `object`、wasm32 の `wasm` だけです。Windows と、ビルド機と違う `--target TRIPLE`（その機械でプログラムを訓練できない）は拒否し、`--profile-generate` と `--freestanding`（ランタイムが C ライブラリを要る）は一緒に使えません。ほかの出力が増えても、許可リストにない形は拒否します。
 
-**速くなるとは限りません。** プロファイルは、Clang の分岐の見積もりを実測に替えるだけで、速くなる種目も遅くなる種目もあります。`benchmarks/control` では、`closure_capture` と `closure_churn` が 13〜17% 速くなり、`tail_mix` 系が約 20%、`match_dispatch` が約 60% 遅くなりました。ほかは ±3% です。C と C++ に同じ手順の PGO を使うと、`closure_churn` は約 44% 速くなり、`tail_mix` 系は変わりません。測定の条件と生データは [性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo) にあります。使うときは、自分のプログラムで前後を測ってください。
+**速くなるとは限りません。** プロファイルは、Clang の分岐の見積もりを実測に替えるだけで、速くなる種目も遅くなる種目もあります。`benchmarks/control` では、`closure_capture` と `closure_churn` が 12〜17% 速くなり、`tail_mix` 系が約 20%、`match_dispatch` が約 63% 遅くなりました。ほかの種目は −4〜+6% の範囲で、host の配置の揺れの大きさです（`array_*` は C・C++・Rust の同じコードも同じ向きに動きました）。C と C++ に同じ手順の PGO を使うと、`closure_churn` は 43〜44% 速くなり、`tail_mix` 系は変わりません。測定の条件と生データは [性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo) にあります。使うときは、自分のプログラムで前後を測ってください。
 
 ### WebAssembly の module
 

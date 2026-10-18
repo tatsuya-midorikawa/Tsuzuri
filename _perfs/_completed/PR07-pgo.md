@@ -797,7 +797,7 @@ WASM は Phase 1 で拒否するのでケース 7 だけで扱う。Tsuzuri の 
 - 理由: 2026-09-30 に、merge と `-fprofile-use` の出力が同じ入力で byte 一致することを確かめた。順序と複製で、入力の列挙順と読み込み中の差し替えに左右されない。
 - 状態: 実装済み（変更なし。ディレクトリを渡した build と merge 済みの file を渡した build の object は byte 同一、`tests/pgo.mjs` と M3 の `cmp`）
 
-### D11〜D17（2026-10-17 の再検討で新設）の最終状態
+### D11〜D18（2026-10-17 の再検討で D11〜D17 を新設。D18 はレビューの指摘で追加）の最終状態
 
 - **D11（launcher は `E2002`）**: 実装済み。`src/profile.rs` の `bundled_launcher`（file stem が `tsuzuri-clang`）と `require_llvm_clang`。単体テスト `refuses_the_bundled_launcher`、`tests/pgo.mjs` の「the bundled launcher is refused」（偽の launcher が実行されないことも確かめる）。PR08 が `scripts/toolchain/clang.rs` に足した `-flto*` の転送の後も、配布物の launcher を `rustc` で作って `build`・`run` の両方の旗が `E2002` になることを確かめた（launcher は `-fprofile-*` を転送しないまま）。
 - **D12（Windows・別の machine の target は `E2000`）**: 実装済み。Windows の host では `src/main.rs` の `rejects_profile_options_on_windows` が走る（実行は緑の Windows CI で確かめる。ここでは `x86_64`・`aarch64` の `pc-windows-msvc` の型検査だけ）。
@@ -806,6 +806,7 @@ WASM は Phase 1 で拒否するのでケース 7 だけで扱う。Tsuzuri の 
 - **D15（PGO は opt-in）**: 実装済み。docs と `docs/benchmarks.md` に、速くなる種目（`closure_*`）と遅くなる種目（`tail_*`・`match_dispatch`）の両方を記録し、「PGO を使えば速くなる」とは書いていない。
 - **D16（併用）**: 実装済み。`-O0`〜`-O3`・`-Os`・`-Oz`・`--cpu native`・`--allocator small`・`--strip`・`--trap-info`・`-g`・`--no-cache` の 12 通りで、計装版が通常版と同じ出力を返し `.profraw` を 1 つ書くこと、使う build の出力が同じことを `tests/pgo.mjs` で確かめた。`TSUZURI_LINKER=lld`（PB03）とも組める（Homebrew LLVM 21.1.8 と `lld` で手で確かめた。テストにはしていない）。
 - **D17（`toolchain info` は変えない）**: 実装済み（変更なし。`tests/toolchain.rs` が通る）。
+- **D18（カウンターは原子的にしない）**: 決定（2026-10-18。コードは変えない）。計装のカウンターは Clang の既定の `-fprofile-update=single` のままにする。4 つの Task が同じ 1 億回のループを回す例（`docs/benchmarks.md` の「並列に動くプログラムのカウンター」）で、`single` はループの回数が 1 億（正しくは 4 億。ループのカウンターはレジスタへ読んで書き戻されるので、最後に書いた 1 つだけが残る）、`atomic` と `prefer-atomic` は 4 億で、計装したプログラムの実時間は 0.08〜0.13 秒から 6.09〜6.39 秒（約 60 倍。CPU 時間は 22〜24 秒）になった。結果とプロファイルの hash には影響せず、どちらのプロファイルも通常の Clang の `--profile-use` が `W2001` なしで受け取り、使った成果物の時間は計装しない場合と同じ（0.09〜0.11 秒）だったので、正確な回数の利益は測れなかった。Task を使うプログラムにだけ付ける案も、同じ計装の費用がかかるので採らない。制限は `option.md`（「並列に動くプログラムの回数は少なく数えます」）と `--help` に書き、正確な回数が要る利用者は `TSUZURI_CLANG` に `-fprofile-update=atomic` を足す wrapper を指定する（その計装版のプロファイルを通常の Clang で使えることを確かめた）。
 
 ## 実装と検証
 
@@ -826,23 +827,28 @@ Phase 1（native の計装・適用・cache・診断・計測）と Phase 2（`r
 | WP7 | `e556bc14` | 文書（言語リファレンス、`docs/*`、README）、`benchmarks/run-wasm-pgo.mjs`、`docs/benchmarks.md` の PR07 の測定（WP10 の D6 の判断の記録を含む） |
 | WP13 | `e9ab1e06` | 決定事項 D1〜D10 の最終状態 |
 | 統合 | `e851b6a4`、`a6893724` | `perf/phase4-compiler-performance`（PR08）のマージ、`--emit bitcode` と profile の旗の併用が `E2000` であることのテスト（`profile.rs`・`main.rs`・`tests/pgo.mjs`）、`--help` と文書の文面 |
-| 完了 | このコミット | チケットの完了と検証の記録、`_completed/` への移動 |
+| 完了 | `a3686d05` | チケットの完了と検証の記録、`_completed/` への移動 |
+| レビュー対応 | `86f82731` | `llvm-profdata merge` に raw profile の path を引数でなく `--input-files` の一覧（`1,<path>` の行）で渡す（数万のファイルで ARG_MAX を超え、E2002 の誤解を招く hint が出ていた） |
+| レビュー対応 | `d7daf099` | `tests/pgo.mjs`: `llvm-profdata` がないとき merge の節を失敗でなく skip にする、trap の fixture を通常・generate・use で比べる節 |
+| レビュー対応 | `451ff2e4` | Windows の host で、`--freestanding` と `%` の行が Windows の `E2000` を先に受ける単体テストの修正 |
+| レビュー対応 | `1090c439` | 原子的でないカウンターの制限と測定（D18）、文書の数字を測定の表にそろえる、`--help` の順序 |
+| レビュー対応 | このコミット | チケットの記録（D18、検証） |
 
 ### 実装したこと
 
 - `--profile-generate DIR`・`--profile-use PATH`（`build` と `run`。排他、どちらも 1 回）。許す出力は native の `--emit exe`・`object`（この機械の target）と `--target wasm32` の `--emit wasm` だけの許可リストで、新しい出力（PR08 の `bitcode`、PB05 の `--backend fast` など）は既定で `E2000`。診断は既存の `E2000`・`E2001`・`E2002`・`W2001` だけ。
 - 計装と適用は Clang の IR PGO。Tsuzuri の LLVM IR は変えず、本体の `clang -x ir` の `-O<n>` の直後に `-fprofile-generate=<絶対パス>` か `-fprofile-use=<複製した profile>` を足す（macOS の `-g` の別リンクにも計装の旗を渡す）。旗を付けない build の成果物と cache の鍵は変わらない。
-- `--profile-use`: indexed の `.profdata`（magic を確かめて複製し SHA-256 を鍵にする）か、`.profraw` のディレクトリ（`llvm-profdata merge` をファイル名の順に実行）。`llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、Clang の隣、`clang -print-resource-dir` の 3 階層上の順で探し、PATH は見ない。合わない関数は `W2001` の 1 行にまとめ、build は成功する。
+- `--profile-use`: indexed の `.profdata`（magic を確かめて複製し SHA-256 を鍵にする）か、`.profraw` のディレクトリ（`llvm-profdata merge` をファイル名の順に実行。path は引数でなく一時ディレクトリの一覧のファイルで渡す）。`llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、Clang の隣、`clang -print-resource-dir` の 3 階層上の順で探し、PATH は見ない。合わない関数は `W2001` の 1 行にまとめ、build は成功する。
 - `run --profile-generate`: `--trap-info` の IR で計装して実行し、正常終了なのに profile が書かれなかったときは `W2001`（`LLVM_PROFILE_FILE` があれば出さない）。
 - wasm32: module に profile runtime はない。計装した module の隣に `<out>.profile.mjs` を書き、host が `writeProfile(instance)` を呼ぶと Clang 21 の raw profile（version 10、32 bit）が書かれ、`llvm-profdata` が読む。`wasm-ld` が `__start/__stop___llvm_prf_*` を export し、既定の import は増えない。
 - 測定: `benchmarks/run-control.mjs --pgo`（Tsuzuri・C・C++・任意で Rust）、`benchmarks/run-wasm-pgo.mjs`、`benchmarks/run-trap-layout.mjs`。PX01 の schema は変えず、PGO の列は `variant` の `pgo`。
-- テスト: `src/profile.rs` の単体 11 件、`src/main.rs` の 3 件（拒否の表を含む）、`src/cache.rs` の成果物名、`tests/pgo.mjs`（14 節。Clang の profile runtime か `llvm-profdata` がなければ理由を出して skip し、`LLVM_PREFIX` か `TSUZURI_PGO_STRICT=1` があれば skip を失敗にする）。
+- テスト: `src/profile.rs` の単体 14 件（`.profraw` が 1 万ファイルでも merge できること、一覧の形を含む）、`src/main.rs` の 3 件（拒否の表を含む。Windows の host では別に 1 件）、`src/cache.rs` の成果物名、`tests/pgo.mjs`（16 節。Clang の profile runtime か `llvm-profdata` がなければ理由を出して skip し、`LLVM_PREFIX` か `TSUZURI_PGO_STRICT=1` があれば skip を失敗にする）。
 
 ### 実装しなかったこと、取り下げたこと
 
 - D6（C ランタイム・PB01 の object・数値ランタイムの計装）と D9（trap の分岐の `!prof`）は、測定で効果の根拠がなく取り下げた（上の D6・D9、`docs/benchmarks.md` の PR07）。
 - Windows（`E2000`。Windows CI で確かめてから外す）、別の machine の `--target TRIPLE`、wasm64、wasm の threads、`--freestanding` の計装、`--emit bitcode`（PR08）などの出力は `E2000`。`llvm-profdata` と profile runtime は配布物に入れていない（launcher は `E2002`）。
-- 原子的なカウンター、サンプリングの PGO（AutoFDO・BOLT）、context-sensitive PGO、`test`・`bench` での PGO。
+- 原子的なカウンター（D18。測定して付けないと決めた）、サンプリングの PGO（AutoFDO・BOLT）、context-sensitive PGO、`test`・`bench` での PGO。
 - `.github/workflows/*` は触っていない。`tests/pgo.mjs` の CI への配線は統合担当が行う。
 
 ### 測定（`benchmarks/control`、native `-O3`、`--cpu generic`、M1 Max、macOS 27.0.1、load average 15〜50 の共有機）
@@ -855,7 +861,7 @@ PGO あり／なしの時間比（1 未満は PGO のほうが短い。plain と
 | `closure_churn` | 0.877 | 0.569 | 0.563 | 0.395 |
 | `tail_mix`・`tail_if_mix`・`tail_builtin_mix` | 1.20〜1.21 | 1.01 | 1.00〜1.01 | 1.00〜1.01 |
 | `match_dispatch` | 1.639 | 1.004 | 1.006 | 1.011 |
-| ほかの 10 種目 | 0.99〜1.06（host の配置の揺れ。C・C++・Rust も同じ向き） | | | |
+| ほかの 10 種目 | 0.996〜1.061（3 回の run では 0.965〜1.061。host の配置の揺れ。`array_*` は C・C++・Rust も同じ向き） | | | |
 
 - PGO は一律には速くならない。速くなる種目は 2 つ（`closure_*`）で、遅くなる種目は 4 つ（`tail_*`、`match_dispatch`）。C・C++・Rust が PGO で変わらない `tail_*`・`match_dispatch` を Tsuzuri だけが悪化させる原因は、Clang の観察（`tail_*` は PGO で inline の threshold が 75 になり、`match_dispatch` は vectorizer の fallback loop の重みで unroll されない）までで、Tsuzuri の IR の形を直す課題として残る（このチケットの範囲外）。全員が PGO を使うと Tsuzuri は `tail_*` で C の約 1.20 倍、`closure_churn` で C の 1.57 倍、`match_dispatch` で Rust の 1.61 倍の時間になる。
 - 費用（Apple clang／Homebrew LLVM）: object は 5,392 B → 計装 17,144／16,064 B（約 3 倍）、PGO 5,848／5,808 B（+8%）。ビルド全体の中央値は 140／146 ms → `--profile-use file` 157／179 ms、`--profile-use dir`（merge 込み）193／178 ms。Clang の compile に約 10 ms、merge に約 20 ms。`.profraw` は 6.5 KB。
@@ -878,6 +884,7 @@ PGO あり／なしの時間比（1 未満は PGO のほうが短い。plain と
 | 統合後の確認: `--profile-generate`・`--profile-use` と `--emit bitcode` | native は `needs --emit exe or object`、wasm32 は `needs --emit wasm for WebAssembly` の `E2000`（`profile.rs`・`main.rs`・`tests/pgo.mjs`） |
 | 同梱の launcher（`scripts/toolchain/clang.rs` を `rustc` で build） | PR08 の `-flto*` の転送の後も、`build`・`run` の両方の旗が `E2002` |
 | `node scripts/check-docs.mjs`（option・usage・diagnostics・platforms・native-interop・webassembly・index）、`sh scripts/check-runtime-includes.sh`、`git diff --check` | 7 pages、298 links、17 examples、12 native runs。runtime の include は 51 files。問題なし |
+| レビュー対応（2026-10-18。統合ブランチ `acb5caa9` の上）の再確認 | `cargo test --locked --lib --bin tsuzuri`（`RUST_MIN_STACK=4194304`）が lib 327 passed（`profile` が 14）・bin 25 passed。`tests/pgo.mjs` が Apple clang 21.0.0 と Homebrew LLVM 21.1.8（strict）の両方で 16 節とも成功。`llvm-profdata` のない Clang（wrapper で `-print-resource-dir` を偽る）では 5 節が成功、11 節が理由つきで skip、失敗 0。fmt・clippy 1.99・Windows の型検査（x86_64・aarch64）は問題なし。`tests/cache.mjs`、`check-docs`（option・native-interop・usage・index。235 links、13 examples、10 native runs）は成功。全 suite（1487 passed）はこの修正の前の結果で、修正後は再実行していない（変更は `src/profile.rs` の merge、`src/main.rs` の `--help` とテスト、`tests/pgo.mjs`、文書）。Windows の host のテスト（`src/main.rs` の 2 行の修正）は実行していない |
 
 ### 起票・再検討との違いと訂正
 
@@ -892,6 +899,6 @@ PGO あり／なしの時間比（1 未満は PGO のほうが短い。plain と
 - Linux（ELF の `--gc-sections` が `__llvm_prf_*` を残すか、`libclang-rt-21-dev` の `libclang_rt.profile`）、x86-64、Windows は実行していない。`tests/pgo.mjs` は CI の LLVM 21（`llvm-21`・`libclang-rt-21-dev`）で動く見込みだが、確かめていない。Windows は `E2000`。
 - `--emit bitcode`（ThinLTO）との併用は確かめていないので `E2000`。許すには `Profile::validate` の許可リストに足し、`llvm-link` で併合した C ランタイムを含む module の profile が合うことを host を含めて確かめる必要がある。
 - profile は IR・Clang・option に結び付く（D14）。コンパイラの IR を変える変更（PM02〜PM04 など）の後は、訓練をやり直す。
-- 並列 Task の計装のカウンターは原子的でなく、回数は近似になる（結果には影響しない）。
+- 並列 Task の計装のカウンターは原子的でなく、回数は少なく数える（結果と `W2001` には影響しない）。4 つの Task が 1 億回ずつ回す例でループの回数が 4 億でなく 1 億になった。`atomic` なら 4 億になるが、計装版が約 60 倍遅くなるので付けない（D18）。
 - wasm32 の効果は workload と JavaScript エンジンで変わる（Node 20 の `closure_capture` の悪化を含む）ので、opt-in のままにする。
 - 同梱の toolchain には `llvm-profdata` と profile runtime がなく、launcher では使えない（`E2002`）。`TSUZURI_CLANG` に LLVM 21 の Clang を指す必要がある。

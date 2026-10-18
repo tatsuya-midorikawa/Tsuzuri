@@ -99,14 +99,24 @@ fn owned_captures_and_dynamic_effectful_cases_use_their_correct_paths() {
         let worker = body(&ir, &format!("tz.fn.Optimization.{name}"));
         assert!(worker.contains("i1 true)"), "{name}");
         assert!(!worker.contains("@tz.specialized."), "{name}");
-        let wrapper = worker
+        // The closure points to a static descriptor, which names the apply wrapper.
+        let descriptor = worker
             .lines()
             .find_map(|line| {
                 let (_, target) = line.split_once("ptr @")?;
                 let target = target.split(',').next()?;
-                target.starts_with("tz.apply.").then_some(target)
+                target.starts_with("tz.desc.").then_some(target)
             })
-            .expect("a captured closure has an apply wrapper");
+            .expect("a captured closure has a descriptor");
+        let definition = ir
+            .lines()
+            .find(|line| line.starts_with(&format!("@{descriptor} = ")))
+            .expect("the descriptor is defined");
+        let wrapper = definition
+            .split_once("ptr @")
+            .and_then(|(_, target)| target.split(',').next())
+            .filter(|target| target.starts_with("tz.apply."))
+            .expect("a descriptor starts with its apply wrapper");
         assert!(
             body(&ir, wrapper).contains("call ptr @tz.env.clone."),
             "{name}"

@@ -4,7 +4,7 @@
 // none, unless TSUZURI_PGO_STRICT=1 or LLVM_PREFIX (a toolchain that CI installs on purpose) turns a skip into a failure.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -46,10 +46,17 @@ const files = (directory) => profraws(directory).map((file) => join(directory, f
 function wrapper(path, name, real) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `#!${process.execPath}
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 if (process.env.PGO_LOG) appendFileSync(process.env.PGO_LOG, JSON.stringify([${JSON.stringify(name)}, ...args]) + "\\n");
+// The raw profiles that llvm-profdata merges are in a file that the build deletes, so the log keeps its lines.
+for (const argument of args) {
+  if (process.env.PGO_LOG && argument.startsWith("--input-files=")) {
+    const lines = readFileSync(argument.slice("--input-files=".length), "utf8").split("\\n").filter(Boolean);
+    appendFileSync(process.env.PGO_LOG, JSON.stringify(["input-files", ...lines]) + "\\n");
+  }
+}
 if (${JSON.stringify(name)} === "clang" && process.env.PGO_RESOURCE && args[0] === "-print-resource-dir") {
   console.log(process.env.PGO_RESOURCE);
   process.exit(0);
@@ -235,15 +242,19 @@ section("an instrumented program writes a raw profile when it exits", () => {
 section("the options that change a build instrument and use it", () => {
   const { directory } = trained();
   const variants = [["-O0"], ["-O1"], ["-O2"], ["-O3"], ["-Os"], ["-Oz"], ["--cpu", "native"], ["--allocator", "small"], ["--strip"], ["--trap-info"], ["-g"], ["--no-cache"]];
+  const named = (flags) => flags.join("").replaceAll("-", "");
   for (const flags of variants) {
-    const name = flags.join("").replaceAll("-", "");
-    const profile = join(root, `matrix-profile-${name}`);
-    const exe = executable(`matrix-${name}`);
+    const profile = join(root, `matrix-profile-${named(flags)}`);
+    const exe = executable(`matrix-${named(flags)}`);
     build("branch", ["--profile-generate", profile, ...flags], exe);
     assert.equal(execute(exe, []).stdout, total, flags.join(" "));
     assert.equal(profraws(profile).length, 1, flags.join(" "));
-    // The profile of the default build is a profile of this program too; a flag that changes the IR may leave functions unmatched.
-    const used = executable(`matrix-use-${name}`);
+  }
+  // The profile of the default build is a profile of this program too; a flag that changes the IR may leave functions
+  // unmatched. Its directory of raw profiles is merged, which the half above does without llvm-profdata.
+  needProfdata();
+  for (const flags of variants) {
+    const used = executable(`matrix-use-${named(flags)}`);
     build("branch", ["--profile-use", directory, ...flags], used);
     assert.equal(execute(used, []).stdout, total, flags.join(" "));
   }
@@ -261,6 +272,43 @@ section("a trapped run writes no profile", () => {
   assert.equal(profraws(profile).length, 1);
 });
 
+section("a program that traps reports the same trap with and without a profile", () => {
+  trained();
+  const common = ["-O3", "--trap-info", "--no-cache"];
+  const profile = join(root, "trap-compare-profile");
+  const trap = (name, extra) => {
+    const exe = executable(`trap-${name}`);
+    const built = build("trap", [...common, ...extra], exe);
+    const result = execute(exe, [], { status: null });
+    assert.ok(result.signal, `${name} ends with a signal`);
+    return { exe, built, result, sidecar: readFileSync(`${exe}.trap.json`) };
+  };
+  const plain = trap("plain", []);
+  assert.ok(plain.result.stderr.includes("trap: integer division by zero at"), plain.result.stderr);
+  assert.ok(plain.result.stderr.includes("Main.tz:1:43"), plain.result.stderr);
+  const generated = trap("generate", ["--profile-generate", profile]);
+  assert.equal(generated.result.signal, plain.result.signal);
+  assert.equal(generated.result.stderr, plain.result.stderr, "the same message at the same place");
+  assert.deepEqual(generated.sidecar, plain.sidecar, "the trap table is byte-identical");
+  // With an argument the program divides by one and ends normally, which writes the profile of this program.
+  execute(generated.exe, ["argument"]);
+  assert.equal(profraws(profile).length, 1);
+  // `run` reports the trap with its location and the source line, whatever the profile option.
+  const reported = (extra) => tz(["run", project("trap"), "-O3", ...extra], { status: 1 }).stderr;
+  const expected = reported([]);
+  assert.ok(expected.includes("error[E2005]: program terminated with signal"), expected);
+  assert.ok(expected.includes("Main.tz:1:43"), expected);
+  assert.equal(reported(["--profile-generate", join(root, "trap-run-profile")]), expected);
+  // Using the profile merges it, which needs llvm-profdata.
+  needProfdata();
+  const used = trap("use", ["--profile-use", profile]);
+  assert.equal(used.built.stderr, "", "the profile matches the program");
+  assert.equal(used.result.signal, plain.result.signal);
+  assert.equal(used.result.stderr, plain.result.stderr, "the same message at the same place");
+  assert.deepEqual(used.sidecar, plain.sidecar, "the trap table is byte-identical");
+  assert.equal(reported(["--profile-use", profile]), expected);
+});
+
 section("run builds with the profile options and runs the program", () => {
   trained();
   const profile = join(root, "run-profile");
@@ -269,11 +317,6 @@ section("run builds with the profile options and runs the program", () => {
   assert.equal(generated.stdout, total);
   assert.equal(generated.stderr, "");
   assert.equal(profraws(profile).length, 1);
-  // A profile of a run is a profile of a run: the same build applies it without a warning.
-  needProfdata();
-  const used = tz(["run", project("branch"), "--profile-use", profile]);
-  assert.equal(used.stdout, total);
-  assert.equal(used.stderr, "");
   // A trap ends the run before the profile is written, and the trap is reported as usual.
   const trapProfile = join(root, "run-trap-profile");
   const trapped = tz(["run", project("trap"), "--profile-generate", trapProfile], { status: 1 });
@@ -296,6 +339,11 @@ section("run builds with the profile options and runs the program", () => {
   const redirected = tz(["run", project("branch"), "--profile-generate", sub], { env: { ...baseEnv, LLVM_PROFILE_FILE: chosen } });
   assert.equal(redirected.stderr, "");
   assert.ok(existsSync(chosen));
+  // A profile of a run is a profile of a run: the same build applies it without a warning. Merging it needs llvm-profdata.
+  needProfdata();
+  const used = tz(["run", project("branch"), "--profile-use", profile]);
+  assert.equal(used.stdout, total);
+  assert.equal(used.stderr, "");
 });
 
 section("an object takes the profile runtime from the final link", () => {
@@ -407,6 +455,33 @@ section("a directory of raw profiles and its merge build the same program", () =
   assert.equal(artifactFingerprint(again), artifactFingerprint(fromDirectory));
 });
 
+section("a directory of thousands of raw profiles is merged through a list", () => {
+  const { directory } = trained();
+  needProfdata();
+  // Together the paths are longer than the arguments of a process (1 MiB on macOS, 2 MiB on Linux). The name of the
+  // directory has a comma and a space, which a plain list of paths would misread.
+  const many = join(root, "many, raw profiles");
+  mkdirSync(many, { recursive: true });
+  const [raw] = files(directory);
+  let place = linkSync;
+  for (let index = 0; index < 10_000; index += 1) {
+    const target = join(many, `${String(index).padStart(5, "0")}-${"x".repeat(230)}.profraw`);
+    try {
+      place(raw, target);
+    } catch {
+      place = copyFileSync;
+      place(raw, target);
+    }
+  }
+  const paths = files(many);
+  assert.equal(paths.length, 10_000);
+  assert.ok(paths.reduce((size, path) => size + path.length + 1, 0) > 2 ** 21, "the paths are longer than any limit of arguments");
+  const exe = executable("many");
+  const built = build("branch", ["--profile-use", many, "--no-cache"], exe);
+  assert.equal(built.stderr, "");
+  assert.equal(execute(exe, []).stdout, total);
+});
+
 section("the cache keys follow the profile", () => {
   const { directory } = trained();
   const profdata = needProfdata();
@@ -512,9 +587,12 @@ section("llvm-profdata is found beside Clang or in its toolchain, and never on P
   const named = wrapper(join(root, "named", "llvm-profdata"), "llvm-profdata", real);
   use([], { env: { ...env, TSUZURI_LLVM_PROFDATA: named } });
   assert.equal(merges(log).length, 1);
-  const [, command, flag, output, ...inputs] = merges(log)[0];
+  const [, command, flag, output, ...rest] = merges(log)[0];
   assert.deepEqual([command, flag, basename(output)], ["merge", "-o", "profile.profdata"]);
-  assert.deepEqual(inputs, files(directory), "the raw profiles are merged in the order of their names");
+  assert.equal(rest.length, 1, "the raw profiles are not arguments of the merge");
+  assert.ok(rest[0].startsWith("--input-files="), rest[0]);
+  const [, ...listed] = logged(log).find(([name]) => name === "input-files");
+  assert.deepEqual(listed, files(directory).map((file) => `1,${file}`), "the raw profiles are merged in the order of their names");
   const broken = use([], { env: { ...env, TSUZURI_LLVM_PROFDATA: join(root, "no-such-profdata") }, status: 1 });
   assert.ok(broken.stderr.includes("error[E2002]: cannot execute"), broken.stderr);
   assert.ok(broken.stderr.includes("llvm-profdata must come from the same LLVM as the Clang that built the instrumented program; set TSUZURI_LLVM_PROFDATA"), broken.stderr);
