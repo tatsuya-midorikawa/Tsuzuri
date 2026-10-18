@@ -705,7 +705,10 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
             ("lshr", "__lshrti3"),
             ("ashr", "__ashrti3"),
         ] {
-            if has_variable_shift(text, operation) {
+            if has_variable_shift(text, operation)
+                || text.contains("@llvm.fshl.i128(")
+                || text.contains("@llvm.fshr.i128(")
+            {
                 want(name, wide, &[wide, Ty::Int(32)]);
             }
         }

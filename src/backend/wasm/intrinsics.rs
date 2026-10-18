@@ -539,7 +539,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         let (bits, wide) = match width {
             Width::W32(bits) => (i64::from(bits), false),
             Width::W64(bits) => (i64::from(bits), true),
-            Width::W128 => bail!("a funnel shift of {}", self.types.describe(ty)),
+            Width::W128 => return self.funnel128(left, a, b, c),
         };
         let full = bits == 32 || bits == 64;
         if a == b && full {
@@ -615,6 +615,56 @@ impl<'w, 'a> Lower<'w, 'a> {
         self.op(ne);
         self.op(op::SELECT);
         Ok(vec![self.save(width.vt())])
+    }
+
+    /// The funnel shift of two 128-bit integers, with the shifts of the runtime: the amount is taken
+    /// modulo 128, and an amount of zero leaves the operand that is not shifted.
+    fn funnel128(&mut self, left: bool, a: &[Atom], b: &[Atom], c: &[Atom]) -> Res<Vec<Atom>> {
+        let Some(amount) = c.first() else {
+            bail!("a 128-bit operand that is not two words");
+        };
+        self.push(amount)?;
+        self.op(op::I32_WRAP_I64);
+        self.i32_const(127);
+        self.op(op::I32_AND);
+        let k = self.save(Vt::I32);
+        self.i32_const(128);
+        self.push(&k)?;
+        self.op(op::I32_SUB);
+        let rest = self.save(Vt::I32);
+        // fshl: (a << k) | (b >> (128 - k)); fshr: (a << (128 - k)) | (b >> k).
+        let (up_by, down_by, unshifted) = if left { (&k, &rest, a) } else { (&rest, &k, b) };
+        let wide = Ty::Int(128);
+        let up = self.library_scalar(
+            "__ashlti3",
+            vec![
+                (wide, Val::Atoms(a.to_vec())),
+                (Ty::Int(32), Val::Atoms(vec![up_by.clone()])),
+            ],
+            wide,
+        )?;
+        let down = self.library_scalar(
+            "__lshrti3",
+            vec![
+                (wide, Val::Atoms(b.to_vec())),
+                (Ty::Int(32), Val::Atoms(vec![down_by.clone()])),
+            ],
+            wide,
+        )?;
+        let mut words = Vec::with_capacity(2);
+        for ((up, down), kept) in up.iter().zip(&down).zip(unshifted) {
+            self.push(up)?;
+            self.push(down)?;
+            self.op(op::I64_OR);
+            self.push(kept)?;
+            // `select(x, y, cond)` is x when cond: the combined value when k is not zero.
+            self.push(&k)?;
+            self.i32_const(0);
+            self.op(op::I32_NE);
+            self.op(op::SELECT);
+            words.push(self.save(Vt::I64));
+        }
+        Ok(words)
     }
 
     pub(super) fn int_const(&mut self, wide: bool, value: i64) {

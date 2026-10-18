@@ -393,7 +393,12 @@ impl<'w, 'a> Lower<'w, 'a> {
         })
     }
 
-    fn library_scalar(&mut self, name: &str, arguments: Vec<(Ty, Val)>, ret: Ty) -> Res<Vec<Atom>> {
+    pub(super) fn library_scalar(
+        &mut self,
+        name: &str,
+        arguments: Vec<(Ty, Val)>,
+        ret: Ty,
+    ) -> Res<Vec<Atom>> {
         match self.call_library(name, arguments, ret)? {
             Val::Atoms(atoms) => Ok(atoms),
             _ => bail!("{name} does not return a scalar"),

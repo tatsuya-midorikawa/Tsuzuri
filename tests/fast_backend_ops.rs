@@ -1664,8 +1664,6 @@ console.log(JSON.stringify({ compared, mismatches }));
 const KNOWN_WASM_REFUSALS: &[&str] = &[
     "i128 smul.with.overflow",
     "i128 umul.with.overflow",
-    "i128 fshl",
-    "i128 fshr",
     "float fma",
     "double fma",
     "<4 x float> fma",
