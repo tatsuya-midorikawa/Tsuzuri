@@ -2527,6 +2527,23 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
     };
     let mut run = 0_u64;
     loop {
+        // A rebuilt compiler is not the one that this process runs. Nothing starts with the old one
+        // once the file was replaced: its run would show the result of the old compiler to somebody
+        // who waits for the new one's. The wait below ends at once for the same reason.
+        if resident.compiler_changed() {
+            if json {
+                errln!(
+                    io::stderr(),
+                    "{{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}}"
+                );
+            } else {
+                errln!(
+                    io::stderr(),
+                    "watch: the compiler binary changed; stopping (start tsuzuri watch again)"
+                );
+            }
+            return ExitCode::from(EXIT_FAILURE);
+        }
         run += 1;
         let code = {
             let _scope = tsuzuri::resident::Scope::enter(&mut resident);
@@ -2543,21 +2560,6 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
                 io::stderr(),
                 "watch: run {run} finished with exit code {code}"
             );
-        }
-        // A rebuilt compiler is not the one that this process runs: stop, and start the new one.
-        if resident.compiler_changed() {
-            if json {
-                errln!(
-                    io::stderr(),
-                    "{{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}}"
-                );
-            } else {
-                errln!(
-                    io::stderr(),
-                    "watch: the compiler binary changed; stopping (start tsuzuri watch again)"
-                );
-            }
-            return ExitCode::from(EXIT_FAILURE);
         }
         resident.trim();
         let _scope = tsuzuri::resident::Scope::enter(&mut resident);
@@ -2645,6 +2647,36 @@ struct CommandServer {
     root: PathBuf,
 }
 
+impl CommandServer {
+    /// Runs `command` with the state of the process, what it writes to `out` and to the standard
+    /// error that a server collects (with the report of `TSUZURI_TIME_PASSES`). `None` when it
+    /// panicked: what it left in the state cannot be trusted, so the state forgets what it read
+    /// and keeps the compiler that it pinned (a new state would pin whichever file is there now).
+    fn guarded(
+        &mut self,
+        command: impl FnOnce(&mut Vec<u8>, &mut tsuzuri::resident::Captured) -> u8,
+    ) -> Option<(u8, Vec<u8>, Vec<u8>)> {
+        let state = &mut self.state;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = Vec::new();
+            let started = tsuzuri::timings::begin_command();
+            let (code, mut err) = {
+                let _scope = tsuzuri::resident::Scope::enter(state);
+                // What the command writes and what its drops warn are one text, in order.
+                tsuzuri::resident::capture(|err| command(&mut out, err))
+            };
+            if let Some(report) = tsuzuri::timings::take_report(started) {
+                errln!(&mut err, "{report}");
+            }
+            (code, out, err)
+        }));
+        if outcome.is_err() {
+            self.state.reset();
+        }
+        outcome.ok()
+    }
+}
+
 impl server::Handler for CommandServer {
     fn run(
         &mut self,
@@ -2675,23 +2707,7 @@ impl server::Handler for CommandServer {
                 ),
             ));
         }
-        let state = &mut self.state;
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut out = Vec::new();
-            let started = tsuzuri::timings::begin_command();
-            let (code, mut err) = {
-                let _scope = tsuzuri::resident::Scope::enter(state);
-                // What the command writes and what its drops warn are one text, in order.
-                tsuzuri::resident::capture(|err| cli(&raw, None, &mut out, err))
-            };
-            if let Some(report) = tsuzuri::timings::take_report(started) {
-                errln!(&mut err, "{report}");
-            }
-            (code, out, err)
-        }));
-        let Ok((code, out, err)) = outcome else {
-            // What the command left in the state cannot be trusted; the panic message is in the log.
-            self.state = tsuzuri::resident::ResidentState::new();
+        let Some((code, out, err)) = self.guarded(|out, err| cli(&raw, None, out, err)) else {
             let _ = writeln!(log, "serve: the command panicked; resident state dropped");
             return Err(Refused::new(
                 Refusal::Internal,
@@ -5639,5 +5655,38 @@ mod tests {
             "write through the `out` and `err` of `cli` in whatever `check` and `build` reach; \
              list a function here only if a server refuses its command"
         );
+    }
+
+    #[test]
+    fn a_command_that_panics_is_not_trusted_and_the_state_keeps_the_compiler_it_pinned() {
+        let directory = env::temp_dir().join(format!("tz-panic-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("Main.tz"), "42\n").unwrap();
+        let mut server = CommandServer {
+            state: tsuzuri::resident::ResidentState::new(),
+            root: directory.clone(),
+        };
+        let pinned = server.state.compiler_identity();
+        assert!(pinned.is_some());
+        // A command that read the project leaves its sources in the state.
+        let (code, out, _) = server
+            .guarded(|out, _| {
+                out.extend_from_slice(b"read\n");
+                u8::from(tsuzuri::driver::Project::load(&directory).is_err())
+            })
+            .unwrap();
+        assert_eq!((code, out.as_slice()), (0, b"read\n".as_slice()));
+        if cfg!(unix) {
+            assert!(server.state.bytes() > 0);
+        }
+        // A panic gives no result; the state forgets what it held, and it is still the state of
+        // the compiler that the process started from.
+        let outcome = server.guarded(|_, _| panic!("a command that panics"));
+        assert!(outcome.is_none());
+        assert_eq!(server.state.bytes(), 0);
+        assert_eq!(server.state.compiler_identity(), pinned);
+        // The state works after it.
+        assert!(server.guarded(|_, _| 0).is_some());
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }
