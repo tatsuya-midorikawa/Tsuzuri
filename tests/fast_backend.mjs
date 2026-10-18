@@ -63,7 +63,10 @@ function clangWrapper(args) {
   };
   const inputs = args.filter((arg, index) => arg.endsWith(".ll") && args[index - 1] !== "-o" && existsSync(arg));
   if (inputs.length === 0) return passthrough("no IR input");
-  const refused = args.find((arg) => REFUSED.some((pattern) => pattern.test(arg)));
+  // A compile for wasm32 (D13) is the translator's too, unless it asks for threads, SIMD or debug information.
+  const wasm = args.includes("--target=wasm32-unknown-unknown");
+  const refused = args.find((arg) => REFUSED.some((pattern) => pattern.test(arg)) && !(wasm && arg === "--target=wasm32-unknown-unknown"))
+    ?? (wasm ? args.find((arg) => ["-matomics", "-msimd128", "-g"].includes(arg)) : undefined);
   if (refused) return passthrough(`option ${refused}`);
   if (args.some((arg) => /^-O[0-9]$/.test(arg) && arg !== "-O0")) return passthrough("optimized");
   const work = join(process.env.FAST_WORK ?? dirname(self), `fast-wrapper-${process.pid}`);
@@ -73,7 +76,7 @@ function clangWrapper(args) {
   for (const input of inputs) {
     const object = join(work, `${translated.size}-${basename(input, ".ll")}.o`);
     const started = process.hrtime.bigint();
-    const result = spawnSync(process.env.FAST_CC, [input, "-o", object], { encoding: "utf8" });
+    const result = spawnSync(process.env.FAST_CC, [input, "-o", object, ...(wasm ? ["--target", "wasm32"] : [])], { encoding: "utf8" });
     const ms = Number((process.hrtime.bigint() - started) / 1_000_000n);
     if (result.status !== 0) {
       const reason = (result.stderr || String(result.error)).trim().split("\n")[0];
@@ -113,12 +116,16 @@ function compilerWrapper(args) {
   const others = ["check", "doc", "fmt", "test", "bench", "lsp", "repl", "script", "new", "fetch", "publish", "api-diff", "bindgen", "toolchain"];
   const action = ["build", "run"].includes(args[0]) ? args[0]
     : args[0] && !args[0].startsWith("-") && !others.includes(args[0]) ? "build" : undefined;
-  // The build is one that the fast backend takes, whatever its optimization level.
-  const takes = (list) => action !== undefined && !list.includes("--backend") && !list.some((arg) => REFUSED.some((pattern) => pattern.test(arg)))
+  // The build is one that the fast backend takes, whatever its optimization level: a native executable or object,
+  // or a wasm32 module or object without SIMD, threads, WASI or debug information.
+  const targets = (list) => list.flatMap((arg, index) => (arg === "--target" ? [list[index + 1]] : []));
+  const takes = (list) => action !== undefined && !list.includes("--backend")
+    && !list.some((arg) => REFUSED.some((pattern) => pattern.test(arg) && arg !== "--target"))
     && !list.includes("--version") && !list.includes("--help") && !list.includes("-h")
-    && !list.some((arg, index) => arg === "--emit" && !["exe", "object"].includes(list[index + 1]))
-    && !list.some((arg) => ["--cpu", "--wasm-feature", "--wasm-host", "--profile"].includes(arg))
-    && !list.some((arg, index) => arg === "--target" && list[index + 1] !== "native");
+    && !list.some((arg) => ["--cpu", "--wasm-feature", "--wasm-host", "--wasm-opt", "--profile"].includes(arg))
+    && targets(list).every((target) => target === "native" || target === "wasm32")
+    && !(targets(list).includes("wasm32") && list.some((arg) => ["-g", "--debug-info"].includes(arg)))
+    && !list.some((arg, index) => arg === "--emit" && !(targets(list).includes("wasm32") ? ["wasm", "object"] : ["exe", "object"]).includes(list[index + 1]));
   const optimized = args.some((arg) => /^-O[123sz]$/.test(arg)) || !args.includes("-O0");
   const eligible = !optimized && takes(args);
   // FAST_FORCE=1 also runs the optimized builds of a suite on the fast backend, at -O0, to see that its
@@ -242,13 +249,21 @@ function checks(compilerArgument) {
       for (const flag of ["-O1", "-O2", "-O3", "-Os", "-Oz"]) {
         rejects([...fast, flag], `--backend fast supports only -O0; remove ${flag} or use --backend llvm`);
       }
-      const native = "--backend fast supports only the native target; use --backend llvm for";
-      rejects([...fast, "--target", "wasm32"], `${native} wasm32`);
+      const native = "--backend fast supports only the native target and wasm32; use --backend llvm for";
       rejects([...fast, "--target", "wasm64"], `${native} wasm64`);
       rejects([...fast, "--target", "x86_64-pc-windows-msvc"], `${native} --target x86_64-pc-windows-msvc`);
       for (const emit of ["llvm", "header", "wgsl", "wgsl-relaxed", "spirv", "spirv-relaxed", "shared", "bitcode", "bindings-js"]) {
         rejects([...fast, "--emit", emit], `--backend fast produces only exe and object outputs; use --backend llvm for --emit ${emit}`);
       }
+      // wasm32 modules and objects are translated too (D13); what changes the code or the link beyond that is refused.
+      const wasm = [...fast, "--target", "wasm32"];
+      const wasmOption = (option) => `--backend fast does not support ${option} for wasm32; remove it or use --backend llvm`;
+      rejects([...wasm, "--emit", "llvm"], "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit llvm");
+      rejects([...wasm, "--wasm-feature", "simd128"], wasmOption("--wasm-feature simd128"));
+      rejects([...wasm, "--wasm-feature", "threads"], wasmOption("--wasm-feature threads"));
+      rejects([...wasm, "--wasm-host", "wasi"], wasmOption("--wasm-host"));
+      rejects([...wasm, "--wasm-opt"], wasmOption("--wasm-opt"));
+      rejects([...wasm, "-g"], wasmOption("-g"));
       const unsupported = (option) => `--backend fast does not support ${option} yet; remove it or use --backend llvm`;
       rejects([...fast, "--cpu", "native"], unsupported("--cpu native"));
       const profile = "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use";
@@ -403,6 +418,33 @@ def main :: unit -> i32 = \\() ->
       assert.ok(build("fast", "fast-2").equals(fast), "a second fast build hits the cache");
       assert.equal(entries().length, before + 2);
       assert.equal(execute(join(work, "cache-fast-2"), []).stdout, "4950\n");
+    });
+
+    step("wasm32 modules and objects: the same behavior, imports and exports, whatever the threads", () => {
+      const output = (backend, label, extra = [], env = {}) => {
+        const file = join(work, `wasm-${label}.wasm`);
+        cli(["build", hello, "--target", "wasm32", "-O0", ...(backend ? ["--backend", backend] : []), ...extra, "-o", file], { env });
+        return file;
+      };
+      const behavior = (file) => {
+        const result = spawnSync(process.execPath, [self, "__wasmrun", file], { encoding: "utf8", timeout: 60_000 });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout;
+      };
+      const llvm = output(undefined, "llvm");
+      const fast = output("fast", "fast");
+      assert.equal(behavior(fast), behavior(llvm));
+      assert.ok(behavior(fast).includes("write 1 5050"), behavior(fast));
+      // The same module whatever the number of threads, with the runtime in the IR or as objects.
+      for (const extra of [[], ["--no-cache"], ["--emit", "object"]]) {
+        const one = output("fast", `one${extra.join("")}`, extra, { TSUZURI_THREADS: "1" });
+        const eight = output("fast", `eight${extra.join("")}`, extra, { TSUZURI_THREADS: "8" });
+        assert.ok(readFileSync(one).equals(readFileSync(eight)), `${extra.join(" ")}: 1 and 8 threads`);
+      }
+      // The cache keeps the backends apart for wasm32 too.
+      assert.ok(!readFileSync(fast).equals(readFileSync(llvm)), "the fast module is not the LLVM artifact");
+      assert.ok(readFileSync(output("fast", "fast-again")).equals(readFileSync(fast)), "a second fast build");
+      assert.ok(readFileSync(output("llvm", "llvm-again")).equals(readFileSync(llvm)), "--backend llvm is the default");
     });
 
     step("tsuzuri test reports the same on both backends", () => {

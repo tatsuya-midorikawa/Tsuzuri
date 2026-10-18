@@ -1432,8 +1432,9 @@ fn run(command: &mut Command) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-fn work_directory() -> PathBuf {
-    let directory = std::env::temp_dir().join(format!("tsuzuri-fast-ops-{}", std::process::id()));
+fn work_directory(label: &str) -> PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-fast-ops-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     directory
@@ -1495,7 +1496,7 @@ fn operations_agree_with_clang() {
         "the operations that the translator refuses changed"
     );
 
-    let directory = work_directory();
+    let directory = work_directory("native");
     let host_source = directory.join("host.c");
     std::fs::write(&host_source, host_program(&kept)).unwrap();
     let host = directory.join("host.o");
@@ -1558,6 +1559,242 @@ fn operations_agree_with_clang() {
         "{} of {compared} operations differ from Clang:\n{}",
         mismatches.len(),
         mismatches.join("\n")
+    );
+    assert!(compared > 500, "only {compared} operations were compared");
+}
+
+// ---- WebAssembly (D13) ----
+
+fn tool(variable: &str, default: &str) -> String {
+    std::env::var(variable).unwrap_or_else(|_| default.to_owned())
+}
+
+/// Runs both modules of every case in Node and compares what each returns for the same inputs.
+const WASM_HOST: &str = r#"
+const fs = require('fs');
+const [llvmFile, fastFile, specFile] = process.argv.slice(2);
+const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
+const load = (file) => {
+  let instance;
+  const env = {
+    fmod: (a, b) => a % b,
+    fmodf: (a, b) => Math.fround(a % b),
+    // The C library's qsort, which some cases call with a comparison function of the module.
+    qsort: (base, count, size, cmp) => {
+      const memory = new Uint8Array(instance.exports.memory.buffer);
+      const compare = instance.exports.__indirect_function_table.get(cmp);
+      const order = Array.from({ length: count }, (_, index) => index)
+        .sort((a, b) => compare(base + a * size, base + b * size));
+      const copy = memory.slice(base, base + count * size);
+      order.forEach((from, to) => memory.set(copy.subarray(from * size, (from + 1) * size), base + to * size));
+    },
+  };
+  // The other functions of the C library are the host's: the same for both modules, so that they agree.
+  const library = new Proxy(env, {
+    get: (target, name) => {
+      if (name in target) return target[name];
+      const single = name.endsWith('f') && typeof Math[name.slice(0, -1)] === 'function';
+      const base = Math[single ? name.slice(0, -1) : name];
+      if (typeof base !== 'function') throw new Error('unexpected import ' + String(name));
+      return single ? (...values) => Math.fround(base(...values)) : base;
+    },
+  });
+  instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), { env: library });
+  return instance.exports;
+};
+const [clang, fast] = [load(llvmFile), load(fastFile)];
+const mismatches = [];
+let compared = 0;
+// The payload and the sign of a NaN are not specified by WebAssembly, and an engine's tiers differ in them,
+// so the NaNs of a float result are all one value.
+const quiet = (value) => {
+  const unsigned = BigInt.asUintN(64, value);
+  if (((unsigned >> 52n) & 0x7ffn) === 0x7ffn && (unsigned & 0xfffffffffffffn) !== 0n) return 'nan64';
+  if (unsigned >> 32n === 0n && ((unsigned >> 23n) & 0xffn) === 0xffn && (unsigned & 0x7fffffn) !== 0n) return 'nan32';
+  return String(value);
+};
+const outcome = (instance, name, x, y, float) => {
+  try {
+    const value = instance[name](x, y);
+    return float ? quiet(value) : String(value);
+  } catch (error) {
+    return 'trap: ' + String(error.message).split('\n')[0];
+  }
+};
+for (const c of spec.cases) {
+  const table = (c.kind ? spec.flt : spec.int).map((hex) => BigInt.asIntN(64, BigInt('0x' + hex)));
+  let first = null;
+  for (const x of table) {
+    for (const y of table) {
+      const [want, got] = [outcome(clang, c.name, x, y, c.kind), outcome(fast, c.name, x, y, c.kind)];
+      if (want !== got && first === null) first = `${x.toString(16)} ${y.toString(16)} -> clang ${want} / fast ${got}`;
+    }
+  }
+  compared++;
+  if (first !== null) mismatches.push(`${c.label}: ${first}`);
+}
+console.log(JSON.stringify({ compared, mismatches }));
+"#;
+
+/// The operations that the wasm translator does not take yet, by label (E2002 each).
+const KNOWN_WASM_REFUSALS: &[&str] = &[
+    "i128 smul.with.overflow",
+    "i128 umul.with.overflow",
+    "i128 fshl",
+    "i128 fshr",
+    "float fma",
+    "double fma",
+    "<4 x float> fma",
+    "<2 x double> fma",
+];
+
+#[test]
+fn wasm_operations_agree_with_clang() {
+    let (clang, wasm_ld) = (clang(), tool("TSUZURI_WASM_LD", "wasm-ld"));
+    let usable = |program: &str, flag: &str| Command::new(program).arg(flag).output().is_ok();
+    let node = tool("TSUZURI_NODE", "node");
+    if !usable(&clang, "--version") || !usable(&wasm_ld, "--version") || !usable(&node, "--version")
+    {
+        return;
+    }
+    // The runtime that a program has (the routines of the compiler runtime for 128-bit integers) is part of
+    // each module, as it is in a build.
+    let runtime = include_str!("../src/runtime/wasm.ll");
+    let suite = generate();
+    let mut groups: Vec<String> = Vec::new();
+    for case in &suite.cases {
+        if !groups.contains(&case.group) {
+            groups.push(case.group.clone());
+        }
+    }
+    let directory = work_directory("wasm");
+    let mut dropped: BTreeSet<String> = BTreeSet::new();
+    let mut reasons: BTreeSet<String> = BTreeSet::new();
+    let mut kept: Vec<&Case> = Vec::new();
+    let (mut llvm_objects, mut fast_objects): (Vec<PathBuf>, Vec<PathBuf>) =
+        (Vec::new(), Vec::new());
+    for (index, group) in groups.iter().enumerate() {
+        let mut members: Vec<&Case> = suite
+            .cases
+            .iter()
+            .filter(|case| &case.group == group)
+            .collect();
+        let (object, text) = loop {
+            let text = format!("{}\n{runtime}", render(&members));
+            match backend::compile_wasm(&text, 2, true) {
+                Ok(object) => break (object, text),
+                Err(error) => {
+                    let id = refused_case(&error.message)
+                        .unwrap_or_else(|| panic!("{group}: {}", error.message));
+                    assert_eq!(error.code, "E2002", "{}", error.message);
+                    let position = members.iter().position(|case| case.id == id).unwrap();
+                    dropped.insert(members[position].label.clone());
+                    reasons.insert(
+                        error
+                            .message
+                            .split(" in @c")
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
+                    members.remove(position);
+                }
+            }
+        };
+        kept.extend(members);
+        let source = directory.join(format!("g{index}.ll"));
+        std::fs::write(&source, &text).unwrap();
+        let llvm_object = directory.join(format!("g{index}.llvm.o"));
+        run(Command::new(&clang)
+            .args([
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-mno-simd128",
+            ])
+            .args(["-x", "ir", "-O0", "-c", "-Wno-override-module"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&llvm_object));
+        llvm_objects.push(llvm_object);
+        let fast_object = directory.join(format!("g{index}.fast.o"));
+        std::fs::write(&fast_object, object).unwrap();
+        fast_objects.push(fast_object);
+    }
+    let known: BTreeSet<String> = KNOWN_WASM_REFUSALS
+        .iter()
+        .map(|label| (*label).to_owned())
+        .collect();
+    assert_eq!(
+        dropped,
+        known,
+        "the operations that the wasm translator refuses changed; the reasons:\n{}",
+        reasons.iter().cloned().collect::<Vec<_>>().join("\n")
+    );
+    let link = |objects: &[PathBuf], output: &Path| {
+        run(Command::new(&wasm_ld)
+            .args([
+                "--no-entry",
+                "--export-all",
+                "--export-table",
+                "--allow-undefined",
+                "-z",
+                "stack-size=1048576",
+            ])
+            .args(objects)
+            .arg("-o")
+            .arg(output));
+    };
+    let (llvm_module, fast_module) = (directory.join("llvm.wasm"), directory.join("fast.wasm"));
+    link(&llvm_objects, &llvm_module);
+    link(&fast_objects, &fast_module);
+
+    let table = |values: &[u64]| {
+        values
+            .iter()
+            .map(|value| format!("\"{value:x}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let cases = kept
+        .iter()
+        .map(|case| {
+            format!(
+                "{{\"name\":\"c{}\",\"label\":\"{}\",\"kind\":{}}}",
+                case.id,
+                case.label,
+                i32::from(case.kind == Kind::Float)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let spec = directory.join("spec.json");
+    std::fs::write(
+        &spec,
+        format!(
+            "{{\"int\":[{}],\"flt\":[{}],\"cases\":[{cases}]}}",
+            table(&INTEGERS),
+            table(&floats())
+        ),
+    )
+    .unwrap();
+    let host = directory.join("host.js");
+    std::fs::write(&host, WASM_HOST).unwrap();
+    let report = run(Command::new(&node)
+        .arg(&host)
+        .arg(&llvm_module)
+        .arg(&fast_module)
+        .arg(&spec));
+    let _ = std::fs::remove_dir_all(&directory);
+    let compared = report
+        .split("\"compared\":")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|number| number.parse::<usize>().ok())
+        .unwrap_or(0);
+    assert!(
+        report.contains("\"mismatches\":[]"),
+        "operations differ from Clang on wasm32:\n{}",
+        report.replace("\",\"", "\"\n\"")
     );
     assert!(compared > 500, "only {compared} operations were compared");
 }
