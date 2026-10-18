@@ -7531,6 +7531,22 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 **撤回: `heap_copy`（スタックのリテラルがヒープに移るとき）.** frame 候補がすべて空のとき、スタックの chunk の slot を 1 回の `memcpy` でヒープの chunk に複写する版を作りましたが、効果を測れないので取りやめました（コードは Phase 2a の loop のままです）。`-O3` では `escape_list` の asm が Phase 2a と同一で（LLVM がスタックのリテラルを SROA して、ヒープへの store に直接つなげます）、`-O0` の差は A/A の幅の中でした（1,000,000 回で 103.4 ms と 101.7 ms、同じコンパイラーどうしの A/A は 106.6 ms と 107.9 ms）。
 
+**同じ関数で作って捨てるリスト（`escape_list`）.** 32 要素のリストのリテラルを返す関数を n 回呼び、受け取ったリストを走査して捨てる workload です。基準（node の連結）では、LLVM が確保を全部消して総和を閉じた式に畳みます（`-O3`、1,000,000 回で 0.001 ms、確保 0 回）。最初の chunk 版は、`list_drop` の loop が chunk を free する前に次の chunk を読む形で、LLVM が作ったばかりの chunk の `next` を知れず、確保と解放が残りました（1,000,000 回で 29.2 ms、確保 1,000,000 回・280,000,000 bytes。この workload は WP8 で足したので、WP6 の gate では測っていませんでした）。要素が drop 不要のリストで最初の chunk の解放を loop の前に出すと（`list_free_chunks`）確保が消え（確保 0 回）、3.46 ms になります。総和を閉じた式に畳む変換までは起きないので、基準の 0.001 ms には届きません（同じ結果を 1 回あたり約 3.5 ns の算術で出します）。要素が drop を要するリストと `-O0` では、確保は残ります。
+
+**定数の大きさの小さいリスト（同じ関数で作って使って捨てる）.** 基準の node の連結では、リストの大きさが定数で、作る・走査する・捨てるが 1 つの関数に収まると、LLVM が走査と解放の loop を完全に展開して確保を全部消します（下の 7 つの kernel は `-O3` で 1 回 0.96〜1.08 ns、確保 0 回）。chunk では、`new` のリテラルを走査するだけの `heap_literal`・`pattern_sum` は、最初の chunk の解放を loop の前に出した後は同じく消えます（その前は 24.7 ns と 25.1 ns）が、次の 5 つは 1〜3 個の chunk の確保と解放が残り、1 回あたり数十 ns かかります。
+
+| kernel（3 要素。`words` は 2 個の文字列） | 基準 ns | Phase 2b ns | 最初の chunk の解放を前に出した後 ns | 残る `malloc` |
+| --- | ---: | ---: | ---: | ---: |
+| `heap_literal`（`new [\|n, n + 1, n + 2\|]` の総和） | 0.97 | 24.7 | 0.97 | 0 |
+| `pattern_sum`（`a :: b :: c :: _` で分解） | 1.01 | 25.1 | 1.01 | 0 |
+| `mapped`（`List.map`） | 0.99 | 40.1 | 24.5 | 1 |
+| `reversed`（`List.reverse`） | 0.99 | 39.8 | 25.0 | 1 |
+| `copied`（`List.copy`） | 1.00 | 44.9 | 45.5 | 2 |
+| `cons_three`（`List.cons` を 3 回） | 1.0〜1.3 | 53.1 | 54〜66 | 2 |
+| `words`（文字列 2 個の `new`） | 1.1〜2.5 | 68.3 | 74〜82 | 3 |
+
+20,000,000 回呼んだ 1 回あたりの時間です（`target/perf/PM04/small`。load average 20〜40 の共有機）。残る理由で確認できたものは 2 つです。`List.map`・`List.reverse` は、並んだ slot への store が `store <2 x i64>` にまとめられ、chunk の scalar の load が store から取れません。`List.copy` は、元の chunk が `llvm.memcpy` の source になって残ります（Phase 1・2a の loop の版も 45 ns で、memcpy が原因ではありません）。`List.cons` の連鎖は、2 つの chunk をたどる外側の loop の回数が chunk の header から load した値で決まるので展開できません（node の連結の loop は、記述子の長さで数えるので展開できました）。要素が文字列のリストは、要素の drop の loop を持つので最初の chunk の解放を前に出していません。リストの大きさが実行時に決まる場合は node の連結が要素ごとに確保するので、chunk の方が速くなります（`bulk_new` の 16 個で 11 倍）。実際の benchmark（`control`）の list の kernel は大きさが定数ではないので、この影響は受けません。
+
 **追認できないこと・限界.**
 - 1 要素ごとに node を確保していた表現より、要素が数個のリストと、`List.cons` で伸ばした 256 要素以下のリストは確保の bytes が大きくなります（上の表）。
 - `control` の `list_sum` の C・C++・Rust の参照は変えていません（node ごとの確保の連結リストで、matched な比較ではありません）。

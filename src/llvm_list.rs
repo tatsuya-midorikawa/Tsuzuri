@@ -402,7 +402,7 @@ impl FunctionEmitter<'_, '_> {
     /// A run is the pairs that lie in one chunk of each list: as many as the smaller of the slots
     /// that the two current chunks have left, and of the pairs that `length` has left. The outer
     /// loop goes from run to run, and the inner loop is a counted loop over a run, as in
-    /// `list_loop_control`. Only a cursor whose chunk the run used up moves on to the next chunk.
+    /// `list_walk`. Only a cursor whose chunk the run used up moves on to the next chunk.
     pub(super) fn list_lockstep_loop(
         &mut self,
         element: &Type,
@@ -705,8 +705,10 @@ impl FunctionEmitter<'_, '_> {
     /// freed.
     pub(super) fn list_drop(&mut self, element: &Type, value: &str) {
         let head = self.value(format!("extractvalue %tz.list {value}, 0"));
+        if !element.needs_drop(&self.module.types()) {
+            return self.list_free_chunks(&head);
+        }
         let length = self.value(format!("extractvalue %tz.list {value}, 1"));
-        let drops = element.needs_drop(&self.module.types());
         let entry = self.block.clone();
         let condition = self.label();
         let release = self.label();
@@ -721,32 +723,56 @@ impl FunctionEmitter<'_, '_> {
         self.instruction(format!(
             "{chunk} = phi ptr [ {head}, %{entry} ], [ {next_chunk}, %{latch} ]"
         ));
-        if drops {
-            self.instruction(format!(
-                "{remaining} = phi i64 [ {length}, %{entry} ], [ {rest}, %{latch} ]"
-            ));
-        }
+        self.instruction(format!(
+            "{remaining} = phi i64 [ {length}, %{entry} ], [ {rest}, %{latch} ]"
+        ));
         let present = self.value(format!("icmp ne ptr {chunk}, null"));
         self.branch(&present, &release, &exit);
         self.begin(&release);
         self.instruction(format!("{next_chunk} = load ptr, ptr {chunk}"));
         let pointer = self.list_field(element, &chunk, 1);
         self.instruction(format!("{rest} = load i64, ptr {pointer}"));
-        if drops {
-            let capacity = self.list_load_field(element, &chunk, 2);
-            let live = self.value(format!("sub i64 {remaining}, {rest}"));
-            let first = self.value(format!("sub i64 {capacity}, {live}"));
-            self.array_loop(&live, |emitter, index| {
-                let slot = emitter.value(format!("add i64 {first}, {index}"));
-                let pointer = emitter.list_slot(element, &chunk, &slot);
-                let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                emitter.drop_value(element, &value);
-            });
-        }
+        let capacity = self.list_load_field(element, &chunk, 2);
+        let live = self.value(format!("sub i64 {remaining}, {rest}"));
+        let first = self.value(format!("sub i64 {capacity}, {live}"));
+        self.array_loop(&live, |emitter, index| {
+            let slot = emitter.value(format!("add i64 {first}, {index}"));
+            let pointer = emitter.list_slot(element, &chunk, &slot);
+            let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+            emitter.drop_value(element, &value);
+        });
         self.instruction(format!("call void @tz.free(ptr {chunk})"));
         self.jump(&latch);
         self.begin(&latch);
         self.jump(&condition);
+        self.begin(&exit);
+    }
+
+    /// Frees the chunks of a list whose elements own nothing. The first chunk is freed before the
+    /// loop over the others: LLVM then reads its link from the stores that made it, and the loop
+    /// and the allocation of a list that one function builds and drops go away. A loop that tests
+    /// the chunk before it frees it cannot be peeled that way.
+    fn list_free_chunks(&mut self, head: &str) {
+        let first = self.label();
+        let more = self.label();
+        let exit = self.label();
+        let chunk = self.fresh();
+        let following = self.fresh();
+        let present = self.value(format!("icmp ne ptr {head}, null"));
+        self.branch(&present, &first, &exit);
+        self.begin(&first);
+        let next = self.value(format!("load ptr, ptr {head}"));
+        self.instruction(format!("call void @tz.free(ptr {head})"));
+        let continues = self.value(format!("icmp ne ptr {next}, null"));
+        self.branch(&continues, &more, &exit);
+        self.begin(&more);
+        self.instruction(format!(
+            "{chunk} = phi ptr [ {next}, %{first} ], [ {following}, %{more} ]"
+        ));
+        self.instruction(format!("{following} = load ptr, ptr {chunk}"));
+        self.instruction(format!("call void @tz.free(ptr {chunk})"));
+        let again = self.value(format!("icmp ne ptr {following}, null"));
+        self.branch(&again, &more, &exit);
         self.begin(&exit);
     }
 

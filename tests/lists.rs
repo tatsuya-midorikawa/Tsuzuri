@@ -416,3 +416,20 @@ fn run n =
         );
     }
 }
+
+#[test]
+fn the_first_chunk_of_a_list_that_owns_nothing_is_freed_before_the_loop_over_the_others() {
+    // LLVM reads the link of a chunk that was just made from the stores that wrote it, so the loop
+    // and the allocation of a list that one function builds and drops go away.
+    let source = "export def numbers :: i64 -> i64
+fn numbers n = (new [|i64|](n, i -> i)).length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let numbers = definition(&ir, " @tz.fn.Main.numbers(");
+        let free = "call void @tz.free(";
+        assert_eq!(numbers.matches(free).count(), 2, "{numbers}");
+        assert_eq!(numbers.matches(" = phi ptr [ %v").count(), 1, "{numbers}");
+        let loop_chunk = numbers.find(" = phi ptr [ %v").unwrap();
+        assert!(numbers.find(free).unwrap() < loop_chunk, "{numbers}");
+    }
+}

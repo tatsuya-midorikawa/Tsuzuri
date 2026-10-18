@@ -719,3 +719,52 @@ list_chunks: {
 - 決定: Phase 1 は表現の切り替え全体（「Phase 分割」）。Phase 2 は人間が求めた場合だけ着手する。
 - 理由: 表現は全経路で同時に切り替える必要があり、Phase 1 をさらに分けると二つの表現が混在する。高速経路は計測と生成コードの確認を個別に要する。
 - 状態: 変更して実装（D11'。Phase 1 の後に 2a と 2b も実装した。2b の `heap_copy` は効果が測れず取り下げ）
+
+## 実装と検証
+
+Phase 1（WP1〜WP6）、Phase 2a（WP7）、Phase 2b（WP8）をブランチ `perf/p4-PM04` に実装した。Phase 2b の 4 件のうち `heap_copy` の `memcpy` だけは、効果が測れないので取り下げた（下）。
+
+### コミット
+
+| 作業 | コミット | 内容 |
+| --- | --- | --- |
+| WP0 | `ae070af7` | 着手時の再検討（このチケットだけ） |
+| WP1 | `5683911d` | `benchmarks/list-memory`（最初は 6 種目）・`benchmarks/run-list-memory.mjs`・参照式・`tests/benchmark_list_memory.mjs`、before の記録 |
+| WP2 | `32f08c73` | 表現の知識を `src/llvm_list.rs` に集める（node のまま。list を使わないコーパスの IR は基準と同一、list を使う 1 件は hash・display の走査が helper 経由になる差だけ） |
+| WP3 | `53815eb5` | chunk 表現への切り替え（D1・D3'・D4〜D9）と、宣言した pin の更新 |
+| WP5 | `a39434ce` | E2E suite `list_chunks`（最初は 3,224 件）、`tests/lists.rs` の chunk の形のテスト、W1006 の文言（D13） |
+| WP4 | `fb7def50` | デバッガ（D12）: DWARF の `<list>.chunk`、LLDB の `ListProvider`、3 つのテスト |
+| WP6 | `d0bdfe33`・`0f9f16af`・`cdfc03e5` | `walk_list`、cursor の slot を `select` でなく `phi` に、文書と Phase 1 の測定 |
+| WP7 | `a85856eb` | Phase 2a: chunk ごとの二重 loop、compare の run の loop、`fold_list`・`compare_list`、pin の更新 |
+| WP8 | `156bd043` | Phase 2b: `llvm.memcpy`（clone・`List.to_array`・`Array.to_list`）、runner の `--opt O0\|O3`、`list_to_array`・`array_to_list`・`escape_list`、`list_chunks` の複製・変換の 504 件 |
+| 統合 | `fa362764`・`52104c86`・`cccea74e` | PR07・PR08、PB06、PM02 の merge。衝突は PM02 の `src/llvm_debug.rs`（`descriptor_pointer` と `list_chunk` の並び）と `docs/architecture.md` の 2 件で、両方の意図を残した |
+| WP9 | `80b418fa`・`1c16cbfe`・このコミット | README の検証コマンド、決定の状態、チケットの完了と検証の記録 |
+
+### 実装したこと
+
+- 表現（`src/llvm_list.rs`）: `%tz.list = { ptr, i64 }` はそのまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes は native・wasm32・wasm64 で同じ）。リストの表現を知るのはこのファイルだけで、ほかの emitter は helper（`list_builder`・`list_loop`・`list_each`・`list_loop_control`・`list_lockstep_loop`・`list_locate`・`list_skip`・`list_push_front`・`list_pop_front`・`list_drop`・`list_clone`・`list_stack_*`）を呼ぶ。一度に作るリストは要素数ちょうどの 1 つの chunk（空は確保しない）、`List.cons` は先頭の chunk の空き slot に書き、満杯なら 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足す。`List.tail` とパターンの tail は同じ chunk に短い長さを組み合わせた view。長さの検査（D5）は旧 node の stride のまま callback の前。
+- 走査: Phase 1 は `(chunk, slot)` の分岐の cursor、Phase 2a で chunk ごとの二重 loop（外側が chunk、内側が `run` 個の slot を数える loop）。`for`・`List.fold_ref`・clone・hash・display・`List.to_array` が通る。比較は左右の run（現在の chunk に残る slot の数と残りの組数の最小）の loop。位置が要らない本体は位置を計算しない（`list_each`・`list_loop_control`）。
+- Phase 2b: 要素が drop 不要なら、`List.copy`・`List.to_array`・`Array.to_list` は chunk ごとの `llvm.memcpy.p0.p0.i64`（wasm32 は `.i32`）。宣言は `intrinsics` に 1 回だけ。
+- drop: 要素が drop 不要のリストは、最初の chunk の解放を chunk をたどる loop の前に出す（`list_free_chunks`）。LLVM は作ったばかりの chunk の `next` をそれを書いた store から知るので、同じ関数で作って捨てるリスト（`new` のリテラル、小さいリテラルを返す関数の結果）の確保が `-O3` で消える（`escape_list` は 1,000,000 回で 29.2 ms・確保 1,000,000 回が 3.46 ms・確保 0 回に）。
+- デバッガ（D12）: DWARF の `<list>.chunk`（`slots` は長さ 0 の配列）、LLDB の `ListProvider` が chunk をたどる（`tests/debug_info.rs`・`tests/debug_info.mjs`・`tests/debugger.mjs` の期待）。
+- W1006 の文言（D13）、文書（`docs/language.md`・`docs/architecture.md`・`README.md`・LR の 8 ページ）、`docs/benchmarks.md` の PM04 の節。
+- 道具: `benchmarks/list-memory`（12 種目）と `benchmarks/run-list-memory.mjs`（`--baseline`・`--wasm`・`--opt O0|O3`・`--metrics`・`--json`）、`tests/benchmark_list_memory.mjs`、E2E suite `list_chunks`（chunk の境界の前後 ±2 を JS で計算。native・wasm32 × `-O0`・`-O3`。`TSUZURI_ASAN=1`・`TSUZURI_TEST_ALLOCATOR=small`・`TSUZURI_RANGE_FLAGS=audit|proven`・`TSUZURI_TEST_WASM_TARGET=wasm64` でも通る）。
+
+### 実装しなかったこと、取り下げたこと
+
+- Phase 2b の `heap_copy`（frame 候補が空のとき、スタックの chunk を 1 回の `memcpy` でヒープへ）: `-O3` では `escape_list` の asm が Phase 2a と同一（LLVM が SROA でスタックのリテラルをヒープへの store につなぐ）、`-O0` の差は A/A の幅の中（1,000,000 回で 103.4 ms と 101.7 ms、A/A は 106.6 ms と 107.9 ms）。D14 の gate 2 を満たさないので、コードは Phase 2a の loop のまま（`docs/benchmarks.md`）。
+- 比較のベクトル化: 比較は要素ごとに早く抜けるので、内側の loop は scalar（`ldr`・`ldr`・`cmp`・`b.ne`）のまま。Phase 1 の cursor の 2 倍速いが、整数の `==` を run ごとの分岐なしの reduction にする案（配列の比較にも効く）は、PM04 の範囲を越えるので入れていない。
+- `tests/debugger.mjs` の実機の LLDB での実行: この機械は macOS の Developer mode が無効で、`lldb` の `run` が戻らない（hello world の C でも）。DWARF は `llvm-dwarfdump --verify`、provider は実際の DWARF の型と模擬の process（`target/perf/PM04/provider_test.py`）で検査した。CI の LLDB で実行して確かめる必要がある。
+- Windows・Linux・x86-64 の測定（型の検査は `cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` で警告 0）。wasm32 の `memory.copy` の速度は測っていない。
+- A17 の last-use 解析の制約（範囲外。下の「訂正」）。
+- 定数の大きさの小さいリストの確保の除去: 基準の node の連結では、リストの大きさが定数で、作る・走査する・捨てるが 1 つの関数に収まると、LLVM が確保を全部消した（1 回約 1 ns）。chunk では `new` のリテラルの走査だけが消え（最初の chunk の解放を loop の前に出した後）、`List.map`・`List.reverse`・`List.copy`・`List.cons` の連鎖・文字列のリストでは 1〜3 個の chunk の確保が残り、1 回あたり 25〜80 ns かかる（表は `docs/benchmarks.md`）。大きさが実行時に決まるリストでは chunk の方が速い。直すには、複数の chunk をたどる loop の回数を LLVM に見せる、または小さい定数の結果を stack の chunk にする（PM06 の escape 解析の拡張）必要があり、PM04 の範囲を越えるので入れていない。
+
+### 起票・再検討との違いと訂正
+
+- D3: 起票の「容量は倍々」は、Phase 0 で 1.5 倍・header 込みの 32 KiB に改めた（D3'）。実装でさらに、一括生成は上限のない 1 つの chunk とし、上限 `K` は `List.cons` が足す chunk だけを縛る。
+- D7: Phase 1 の cursor で slot を `select` で進めると、`add`・`cmp`・`csinc` の 3 cycle が slot の再帰に入り、総和が node の連結と同じ約 1 ns/要素になった（C の試作の分岐の cursor は 0.53 ns）。slot を分岐の合流点の `phi` に改めると約 0.58 ns/要素（`walk_list` から `bulk_new` を引いた 15 回分）で、Phase 2a の二重 loop は約 0.12 ns/要素。
+- features `typeclasses` の `inspect`（Phase 0 は「Phase 1 では変えない」）: compare の cursor の `phi ptr` が各リスト 2 つ（chunk と、chunk の合流点の chunk）になるので、WP3 で 2 → 4 に変えた。Phase 2a の run の loop も 4 のままなので、文を「run ごとに左右が lockstep」に直しただけ。
+- 宣言し損ねた pin: `tests/array_bulk.rs` の `list_fold_ref_reads_elements_with_the_list_node_layout` は node の型 `{ ptr, i64 }` を読んでいたが、WP7 で全体の `cargo test` の一部を走らせるまで気づかなかった。`..._chunk_layout` に改名し、`{ ptr, i64, i64, [0 x T] }` を読む検査にした（意味は同じ）。この種の pin は、早い段階で `cargo test` を全部走らせると見つかる。
+- D10: 6 種目の `benchmarks/list-memory` に、`walk_list`（`for` の総和 16 回。build を引くと 1 要素の走査の時間になる）・`fold_list`・`compare_list`・`list_to_array`・`array_to_list`・`escape_list` を足して 12 種目にした。Phase 2 の各 item に、別の workload で before・after と生成コードを付けるため。runner に `--opt O0|O3` を足した（Phase 2b は `-O0` でだけ効く）。
+- 起票の「Phase 2 は人間が求めた場合だけ」は、全フェーズ実装の依頼（2026-10-17）で実装した。Phase 2b の `-O3` では、clone と `Array.to_list` の asm が Phase 2a と同一（LLVM の loop idiom の変換が先に `memcpy` にしていた）なので、効くのは `-O0`（REPL の既定、PB05 の Cranelift のような LLVM の最適化を持たない backend の入力）と `List.to_array` の `-O3` だけ。
+- A17 の制約（範囲外のまま）: last-use 解析が `for` の source の局所変数を丸ごと除外するので、同じ関数で `values = List.cons i values` の loop と `for v in values` を書くと、`List.cons` のたびにリストが複製されて $O(n^2)$ になる。`--warn implicit-copy` の `W1006` で見える。再現: `let mut values: [|i64|] = [||]`、`for i in 0 .. n - 1 do values = List.cons i values`、`for v in values do total = total + v` を 1 つの関数に書く。`benchmarks/list-memory` は cons の loop を別関数 `build` に出している。
