@@ -114,17 +114,17 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PR04 | [数値の表示・解析の高速化](_completed/PR04-number-formatting.md) | P1 | M | PX01 | done |
 | PR05 | [UTF 変換・比較・検証の SIMD 化](_completed/PR05-utf-simd.md) | P1 | M | PX01, (F08) | done |
 | PR06 | [Task プールの低遅延化と work stealing](_completed/PR06-task-scheduler.md) | P2 | L | PX01 | done |
-| PR07 | [プロファイル誘導最適化（PGO）](PR07-pgo.md) | P2 | M | PX01, (PB01) | doing |
-| PR08 | [言語間 LTO と bitcode 出力](PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | doing |
+| PR07 | [プロファイル誘導最適化（PGO）](_completed/PR07-pgo.md) | P2 | M | PX01, (PB01) | done |
+| PR08 | [言語間 LTO と bitcode 出力](_completed/PR08-cross-language-lto.md) | P2 | M | (PB01), (E12) | done |
 
 ### PM. メモリと成果物サイズ
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | PM01 | [値のレイアウトの最適化（union・niche・フィールド順）](_completed/PM01-value-layout.md) | P1 | L | PX01 | done |
-| PM02 | [関数値の表現の縮小](PM02-closure-representation.md) | P2 | M | PX01 | doing |
-| PM03 | [コンパクト文字列（Latin-1 の内部表現）](PM03-compact-strings.md) | P2 | XL | PX01, PR05 | doing |
-| PM04 | [連結リストの連続表現](PM04-list-representation.md) | P2 | L | PX01 | doing |
+| PM02 | [関数値の表現の縮小](_completed/PM02-closure-representation.md) | P2 | M | PX01 | done |
+| PM03 | [コンパクト文字列（Latin-1 の内部表現）](_completed/PM03-compact-strings.md) | P2 | XL | PX01, PR05 | done |
+| PM04 | [連結リストの連続表現](_completed/PM04-list-representation.md) | P2 | L | PX01 | done |
 | PM05 | [小さい確保のための size-class allocator](_completed/PM05-small-allocator.md) | P1 | L | PX01, (F13) | done |
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
@@ -140,7 +140,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | done |
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | doing |
-| PB06 | [常駐ビルドサーバーと watch モード](PB06-build-server.md) | P2 | L | PB02, (G17) | doing |
+| PB06 | [常駐ビルドサーバーと watch モード](_completed/PB06-build-server.md) | P2 | L | PB02, (G17) | done |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
 
 ## `_features` との関係
