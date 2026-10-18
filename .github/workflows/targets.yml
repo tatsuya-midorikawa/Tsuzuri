@@ -345,6 +345,7 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
+          export TSUZURI_BIN="$PWD/target/fast/release/tsuzuri"
           node tests/fast_backend.mjs wasm target/fast/release/tsuzuri
           node tests/fast_backend.mjs parity control primitives numeric_casts integer_intrinsics strings user_drop examples e2e
       - uses: actions/upload-artifact@v7
