@@ -40,7 +40,8 @@ if (compiler && existsSync(compiler)) {
   const { results, wasm } = runListMemory(parseArguments([compiler, "--quick", "--wasm"]));
   for (const { workload, size, variants } of results) {
     const { allocations, wall_ms } = variants.default;
-    assert.ok(allocations.calls >= 1 || size === 0, `${workload}(${size}) allocates`);
+    // `escape_list` builds and drops its lists in one function, and LLVM may remove the allocation of each (it does with Clang 21).
+    assert.ok(allocations.calls >= 1 || size === 0 || workload === "escape_list", `${workload}(${size}) allocates`);
     // A list that is built at once is one chunk; `List.cons` adds one per step of the growth rule.
     if (workload === "cons_build") assert.equal(allocations.calls, consChunks(size), `${workload}(${size}) chunks`);
     if (workload === "compare_list") assert.equal(allocations.calls, consChunks(size) + (size === 0 ? 0 : 1), `${workload}(${size}) chunks`);
