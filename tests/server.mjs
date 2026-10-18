@@ -658,9 +658,9 @@ try {
     mkdirSync(strings);
     save(join(strings, "Main.tz"), `"caf\\u00e9".length + "abc".length\n`);
     const compact = { env: { TSUZURI_STRINGS: "compact" } };
-    const build = (name) => ["build", strings, "--emit", "llvm", "-O0", "-o", join(out, name)];
-    const coldUtf16 = run([...build("strings-utf16.ll"), "--no-server"]);
-    const coldCompact = run([...build("strings-cold.ll"), "--no-server"], compact);
+    const stringsBuild = (name) => ["build", strings, "--emit", "llvm", "-O0", "-o", join(out, name)];
+    const coldUtf16 = run([...stringsBuild("strings-utf16.ll"), "--no-server"]);
+    const coldCompact = run([...stringsBuild("strings-cold.ll"), "--no-server"], compact);
     assert.deepEqual([coldUtf16.status, coldCompact.status], [0, 0], `${coldUtf16.stderr}${coldCompact.stderr}`);
     const utf16Ir = readFileSync(join(out, "strings-utf16.ll"), "utf8");
     const compactIr = readFileSync(join(out, "strings-cold.ll"), "utf8");
@@ -669,7 +669,7 @@ try {
     await ready(compactServer, strings, compact);
     const requested = (options, name) => {
       const before = status(strings, compact);
-      const result = run(build(name), options);
+      const result = run(stringsBuild(name), options);
       const after = status(strings, compact);
       return { result, served: after.served - before.served, refused: refusalsSince(before, after) };
     };
