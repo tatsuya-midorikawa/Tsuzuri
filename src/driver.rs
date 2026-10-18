@@ -761,9 +761,9 @@ impl BuildOptions {
             wasm_max_memory,
             wasm_stack_size,
             cache: _,
-            trap_return,
-            allocator,
-            freestanding,
+            trap_return: _,
+            allocator: _,
+            freestanding: _,
             strip: _,
             wasm_opt,
             triple,
@@ -817,24 +817,11 @@ impl BuildOptions {
                 ),
             ));
         }
-        let allocator_option = format!("--allocator {allocator:?}").to_ascii_lowercase();
-        for (set, option) in [
-            (cpu != Cpu::Generic, "--cpu native"),
-            (
-                !matches!(allocator, llvm::Allocator::System | llvm::Allocator::Host),
-                allocator_option.as_str(),
-            ),
-            (freestanding, "--freestanding"),
-            (trap_return, "--trap-mode return"),
-        ] {
-            if set {
-                return Err(driver_error(
-                    "E2000",
-                    format!(
-                        "--backend fast does not support {option} yet; remove it or use --backend llvm"
-                    ),
-                ));
-            }
+        if cpu != Cpu::Generic {
+            return Err(driver_error(
+                "E2000",
+                "--backend fast does not support --cpu native yet; remove it or use --backend llvm",
+            ));
         }
         if !cfg!(all(
             any(target_os = "macos", target_os = "linux"),

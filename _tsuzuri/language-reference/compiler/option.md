@@ -229,8 +229,8 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | 最適化 | `-O0` だけです。付けないと `-O0` になります（`test` の既定も `-O0`）。`-O1` 以上、`-Os`、`-Oz` は `llvm` |
 | target | ビルド機の native だけです（macOS と Linux の AArch64・x86-64）。`wasm32`・`wasm64`・`--target TRIPLE` は `llvm` |
 | `--emit` | `exe` と `object` だけです。`llvm`・`header`・`wasm`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
-| 付けられるもの | `--trap-info`、`--strip`、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host`、`--coverage`（`test`）、`-g`（関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)） |
-| `llvm` に残るもの | `--cpu native`、`--allocator small\|counting`、`--freestanding`、`--trap-mode return`、`--profile-generate`・`--profile-use` |
+| 付けられるもの | `--trap-info`、`--strip`、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host\|small\|counting`、`--freestanding`、`--trap-mode return`、`--coverage`（`test`）、`-g`（関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)） |
+| `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use` |
 
 `tsuzuri` に Cranelift は既定で入りません。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが `--backend fast` を受け付け、入っていない `tsuzuri` は再ビルドの方法を `E2000` で示します。Windows とビルド機が上の表にないものは、`E2000` です。
 
@@ -379,7 +379,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--backend fast` に `-O1` 以上・`-Os`・`-Oz` | `--backend fast supports only -O0; remove -O3 or use --backend llvm` |
 | `--backend fast` に wasm32・wasm64・`--target TRIPLE` | `--backend fast supports only the native target; use --backend llvm for wasm32` |
 | `--backend fast` に `exe`・`object` 以外の `--emit` | `--backend fast produces only exe and object outputs; use --backend llvm for --emit llvm` |
-| `--backend fast` に `--cpu native`・`--allocator small`・`counting`・`--freestanding`・`--trap-mode return` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm`（各オプション名で同じ形） |
+| `--backend fast` に `--cpu native` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm` |
 | `--backend fast` に `--profile-generate`・`--profile-use` | `--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use` |
 | macOS で `--backend fast -g --emit object`、C のランタイムが要るプログラム | `--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm`（`E2002`） |
 | `--backend fast` で、ビルド機が macOS・Linux の AArch64・x86-64 でない | `--backend fast is not available on windows-x86_64; use --backend llvm` |

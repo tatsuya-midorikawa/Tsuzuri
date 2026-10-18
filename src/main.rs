@@ -187,9 +187,8 @@ Build options:
                          Clang on it, for a quicker edit-build-run loop; the code runs like -O0
                          code. It takes -O0 (its default, and test's), native exe and object
                          output, --trap-info, --strip, -g (function and line information, not
-                         variables), and --allocator system|host; --cpu native, --allocator
-                         small|counting, --freestanding, --trap-mode return, and WebAssembly stay
-                         with llvm. It needs a tsuzuri built with
+                         variables), --allocator, --freestanding, and --trap-mode return; --cpu
+                         native and WebAssembly stay with llvm. It needs a tsuzuri built with
                          --features fast-backend on a macOS or Linux host with an AArch64 or
                          x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
@@ -3224,19 +3223,6 @@ mod tests {
             (fast(&["--emit", "bindings-py"]), output("bindings-py")),
             (fast(&["--emit", "bindings-cpp"]), output("bindings-cpp")),
             (fast(&["--cpu", "native"]), option("--cpu native")),
-            (fast(&["--allocator", "small"]), option("--allocator small")),
-            (
-                fast(&["--allocator", "counting", "--emit", "object"]),
-                option("--allocator counting"),
-            ),
-            (
-                fast(&["--trap-mode", "return", "--emit", "object"]),
-                option("--trap-mode return"),
-            ),
-            (
-                fast(&["--freestanding", "--allocator", "host", "--emit", "object"]),
-                option("--freestanding"),
-            ),
         ]);
         for (values, message) in cases {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
@@ -3284,6 +3270,45 @@ mod tests {
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "object"],
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "exe"],
             vec!["build", "Main.tz", "--backend", "fast", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "counting",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--trap-mode",
+                "return",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--freestanding",
+                "--allocator",
+                "host",
+                "--emit",
+                "object",
+            ],
             vec![
                 "build",
                 "Main.tz",

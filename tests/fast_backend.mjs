@@ -46,7 +46,7 @@ function binary(name, variable) {
 
 // A compile that the translator may take: only -O0 (or no level) of the host's own target, without
 // the options that ask Clang for something the IR text does not carry.
-const REFUSED = [/^-O[123sz]$/, /^-Ofast$/, /^-g/, /^--target/, /^-target$/, /^-fsanitize/, /^-mcpu/, /^-march/,
+const REFUSED = [/^-O[123sz]$/, /^-Ofast$/, /^--target/, /^-target$/, /^-fsanitize/, /^-mcpu/, /^-march/,
   /^-mavx/, /^-msse/, /^-flto/, /^-emit-llvm$/, /^-S$/, /^-E$/, /^-fprofile/, /^-mf16c/, /^-mfma/, /^-mavx512fp16/];
 
 function log(event) {
@@ -112,14 +112,20 @@ function compilerWrapper(args) {
   const others = ["check", "doc", "fmt", "test", "bench", "lsp", "repl", "script", "new", "fetch", "publish", "api-diff", "bindgen", "toolchain"];
   const action = ["build", "run"].includes(args[0]) ? args[0]
     : args[0] && !args[0].startsWith("-") && !others.includes(args[0]) ? "build" : undefined;
+  // The build is one that the fast backend takes, whatever its optimization level.
+  const takes = (list) => action !== undefined && !list.includes("--backend") && !list.some((arg) => REFUSED.some((pattern) => pattern.test(arg)))
+    && !list.includes("--version") && !list.includes("--help") && !list.includes("-h")
+    && !list.some((arg, index) => arg === "--emit" && !["exe", "object"].includes(list[index + 1]))
+    && !list.some((arg) => ["--cpu", "--wasm-feature", "--wasm-host", "--profile"].includes(arg))
+    && !list.some((arg, index) => arg === "--target" && list[index + 1] !== "native");
   const optimized = args.some((arg) => /^-O[123sz]$/.test(arg)) || !args.includes("-O0");
-  const eligible = action !== undefined && !optimized && !args.includes("--backend") && !args.some((arg) => REFUSED.some((pattern) => pattern.test(arg)))
-    && !args.includes("--version") && !args.includes("--help") && !args.includes("-h")
-    && !args.some((arg, index) => arg === "--emit" && !["exe", "object"].includes(args[index + 1]))
-    && !args.some((arg) => ["--cpu", "--allocator", "--freestanding", "--trap-mode", "--wasm-feature", "--wasm-host", "--profile"].includes(arg))
-    && !args.some((arg, index) => arg === "--target" && args[index + 1] !== "native");
-  const forwarded = eligible ? [...args, "--backend", "fast"] : args;
-  log({ event: eligible ? "fast-build" : "llvm-build", args: args.join(" ") });
+  const eligible = !optimized && takes(args);
+  // FAST_FORCE=1 also runs the optimized builds of a suite on the fast backend, at -O0, to see that its
+  // programs still do what the suite expects. A suite that asserts on the optimized code then fails.
+  const without = args.filter((arg) => !/^-O([0-3sz]|fast)$/.test(arg));
+  const forced = !eligible && Boolean(process.env.FAST_FORCE) && takes(without);
+  const forwarded = eligible ? [...args, "--backend", "fast"] : forced ? [...without, "-O0", "--backend", "fast"] : args;
+  log({ event: eligible || forced ? "fast-build" : "llvm-build", args: args.join(" ") });
   const result = spawnSync(real, forwarded, { stdio: "inherit" });
   process.exit(result.status ?? 1);
 }
@@ -244,10 +250,6 @@ function checks(compilerArgument) {
       }
       const unsupported = (option) => `--backend fast does not support ${option} yet; remove it or use --backend llvm`;
       rejects([...fast, "--cpu", "native"], unsupported("--cpu native"));
-      rejects([...fast, "--allocator", "small"], unsupported("--allocator small"));
-      rejects([...fast, "--emit", "object", "--allocator", "counting"], unsupported("--allocator counting"));
-      rejects([...fast, "--emit", "object", "--allocator", "host", "--freestanding"], unsupported("--freestanding"));
-      rejects([...fast, "--emit", "object", "--trap-mode", "return"], unsupported("--trap-mode return"));
       const profile = "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use";
       rejects([...fast, "--profile-generate", join(work, "profiles")], profile);
       rejects([...fast, "--profile-use", join(work, "none.profdata")], profile);
@@ -347,6 +349,27 @@ def main :: unit -> i32 = \\() ->
       const expected = names("llvm");
       assert.ok(expected.length >= 5, expected.join(" "));
       assert.deepEqual(names("fast"), expected);
+    });
+
+    step("the allocators, freestanding objects and trap-mode return build what the LLVM backend builds", () => {
+      const exports = (args) => {
+        const object = join(work, `options-${args.join("")}.o`);
+        cli(["build", join(root, "tests", "fixtures", "host_abi"), "-O0", ...args, "--emit", "object", "-o", object]);
+        const listed = execute("nm", ["-g", "-U", object]);
+        assert.equal(listed.status, 0, listed.stderr);
+        return listed.stdout.split("\n").map((line) => line.trim().split(/\s+/)).filter((fields) => fields.length >= 2)
+          .map((fields) => fields.at(-1)).sort();
+      };
+      for (const options of [["--allocator", "small"], ["--allocator", "counting"], ["--freestanding", "--allocator", "host"], ["--trap-mode", "return"]]) {
+        const expected = exports(options);
+        assert.ok(expected.length >= 5, options.join(" "));
+        assert.deepEqual(exports([...options, "--backend", "fast"]), expected, options.join(" "));
+      }
+      const llvm = join(work, "small.llvm");
+      const fast = join(work, "small.fast");
+      cli(["build", hello, "-O0", "--allocator", "small", "-o", llvm]);
+      cli(["build", hello, "-O0", "--allocator", "small", "--backend", "fast", "-o", fast]);
+      assert.deepEqual(observe(execute(fast, [], { cwd: hello })), observe(execute(llvm, [], { cwd: hello })));
     });
 
     step("the cache keeps the backends apart", () => {
