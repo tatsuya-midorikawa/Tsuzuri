@@ -81,6 +81,7 @@ function acquire() {
 }
 
 let slot;
+// ponytail: polling every 2 seconds, no queue: waiting jobs are not served in arrival order; add a ticket queue if that matters.
 for (let waited = 0; !(slot = acquire()); waited += 2) {
     if (waited % 30 === 0) console.error(`slot: all ${slots} slots are busy, waiting (TSUZURI_SLOTS=${slots})`);
     await new Promise(resolve => setTimeout(resolve, 2000));
