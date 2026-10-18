@@ -737,8 +737,8 @@ Phase 1（WP1〜WP6）、Phase 2a（WP7）、Phase 2b（WP8）をブランチ `p
 | WP6 | `d0bdfe33`・`0f9f16af`・`cdfc03e5` | `walk_list`、cursor の slot を `select` でなく `phi` に、文書と Phase 1 の測定 |
 | WP7 | `a85856eb` | Phase 2a: chunk ごとの二重 loop、compare の run の loop、`fold_list`・`compare_list`、pin の更新 |
 | WP8 | `156bd043` | Phase 2b: `llvm.memcpy`（clone・`List.to_array`・`Array.to_list`）、runner の `--opt O0\|O3`、`list_to_array`・`array_to_list`・`escape_list`、`list_chunks` の複製・変換の 504 件 |
-| 統合 | `fa362764`・`52104c86`・`cccea74e` | PR07・PR08、PB06、PM02 の merge。衝突は PM02 の `src/llvm_debug.rs`（`descriptor_pointer` と `list_chunk` の並び）と `docs/architecture.md` の 2 件で、両方の意図を残した |
-| WP9 | `80b418fa`・`1c16cbfe`・このコミット | README の検証コマンド、決定の状態、チケットの完了と検証の記録 |
+| 統合 | `fa362764`・`52104c86`・`cccea74e`・`ee00e255`・`d6a1df4a` | PR07・PR08、PB06、PM02 の merge と、それぞれの review fix の取り込み。衝突は PM02 の `src/llvm_debug.rs`（`descriptor_pointer` と `list_chunk` の並び）と `docs/architecture.md` の 2 件で、両方の意図を残した。ほかは衝突なし |
+| WP9 | `80b418fa`・`1c16cbfe`・`96a1e19a`・`cad51a27`・`506ee1af`・このコミット | README の検証コマンド、決定の状態、`list_free_chunks`（最初の chunk の解放を loop の前に出して、`escape_list` の確保を消す）、最終の測定と `benchmark_list_memory` の検査の修正、小さい定数サイズのリストの悪化の明記（`list.md`・`docs/language.md`・`docs/architecture.md`・`README.md`）、チケットの完了と検証の記録 |
 
 ### 実装したこと
 
@@ -758,6 +758,58 @@ Phase 1（WP1〜WP6）、Phase 2a（WP7）、Phase 2b（WP8）をブランチ `p
 - Windows・Linux・x86-64 の測定（型の検査は `cargo check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` で警告 0）。wasm32 の `memory.copy` の速度は測っていない。
 - A17 の last-use 解析の制約（範囲外。下の「訂正」）。
 - 定数の大きさの小さいリストの確保の除去: 基準の node の連結では、リストの大きさが定数で、作る・走査する・捨てるが 1 つの関数に収まると、LLVM が確保を全部消した（1 回約 1 ns）。chunk では `new` のリテラルの走査だけが消え（最初の chunk の解放を loop の前に出した後）、`List.map`・`List.reverse`・`List.copy`・`List.cons` の連鎖・文字列のリストでは 1〜3 個の chunk の確保が残り、1 回あたり 25〜80 ns かかる（表は `docs/benchmarks.md`）。大きさが実行時に決まるリストでは chunk の方が速い。直すには、複数の chunk をたどる loop の回数を LLVM に見せる、または小さい定数の結果を stack の chunk にする（PM06 の escape 解析の拡張）必要があり、PM04 の範囲を越えるので入れていない。
+
+### 測定
+
+基準は main `9dd0fbbc` の release コンパイラー（SHA-256 `5e1b9687…`）。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6、rustc 1.98.1、native `-O3` と wasm32 `-O3`。確保の回数と bytes は決定的（要求量で、allocator の丸めは含まない）で、時間と peak RSS は他の作業と並行する共有機の値（1 分の load average は 8〜65）。`node benchmarks/run-list-memory.mjs $AFTER --baseline $BEFORE --samples 9 --wasm`（2 つの build を交互に、標本ごとに 1 回の warm-up の後、中央値。同じコンパイラーどうしの A/A の差は 0.1〜1.2%、最大 4.7%）。時間は参考値で、速度の合否の閾値は置いていない。表、生成コードの確認（asm・IR）、WASM の heap の高水位の全体は `docs/benchmarks.md` の PM04 の節、生データは `target/perf/PM04-before/`・`PM04-after*/`（git の管理外）。
+
+**gate（D14）の判定.**
+
+| gate | 判定 | 値 |
+| --- | --- | --- |
+| 1-① 意味のテスト | 満たした | 下の「検証」 |
+| 1-② 1,000 個以上の一括生成が `size(T) + 1` bytes/要素以下 | 満たした | 1,000 個で 8,024 bytes、1,000,000 個で 8,000,024 bytes（8.02 bytes/要素） |
+| 1-③ n = 1,000,000 の peak RSS が 0.6 倍以下 | 満たした | `bulk_new` 0.546、`cons_build` 0.552、`tail_consume` 0.546、`clone_list` 0.523 |
+| 1-④ `for` の総和の ns/要素が before 以下 | 満たした（`select` の cursor は node と同じ約 1 ns で満たせず、`phi` に改めた） | 約 1.20 → 約 0.58 ns（Phase 2a の後は約 0.12 ns） |
+| 1-⑤ `control/list_sum` が before の最大値を超えない | 満たした | 1.903 → 0.0916 ms（20.8 倍。Phase 2a の後は下の 40.4 倍） |
+| 1-⑥ 小さい n の悪化が D3' の範囲 | 満たした | 下 |
+| 2a `for`・`List.fold_ref`・clone の二重 loop | 満たした | 内側の loop が `ldp q`・`add.2d`（`i64` を 8 個ずつ）。Phase 1 比で `walk_list` 0.24 倍、`fold_list` 0.25 倍（n = 1,000,000） |
+| 2a compare の run の loop | 満たしたが、ベクトル化はしない | 要素ごとの早期脱出が残るので scalar（`ldr`・`ldr`・`cmp`・`b.ne`）。Phase 1 比 0.51 倍。ベクトル化は対象外（下） |
+| 2b `llvm.memcpy`（clone・`List.to_array`・`Array.to_list`） | 満たした（`-O0` と、`-O3` の `List.to_array`） | `-O0` で 0.74〜0.90 倍（A/A は 0.3〜2.9%）、`-O3` の `List.to_array` は 0.84 倍。`-O3` の clone・`Array.to_list` は asm が同一（loop idiom の変換がすでに `memcpy` にしていた） |
+| 2b `heap_copy` の `memcpy` | 取り下げ | `-O3` の asm が同一、`-O0` の差は A/A の幅の中 |
+
+**最終の測定（全フェーズ、n = 1,000,000）.** 変更後は PM02・PR07・PR08・PB06 を取り込んだ merge 後の tree（`ee00e255`）の release コンパイラー（SHA-256 `e92ced7a…`）、基準は main。9 標本の中央値。
+
+| workload | before ms | after ms | 比 | before RSS MB | after RSS MB | 確保 before → after（回） |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `bulk_new` | 19.69 | 0.545 | 0.028 | 16.97 | 9.28 | 1,000,000 → 1 |
+| `cons_build` | 19.48 | 1.139 | 0.058 | 16.97 | 9.39 | 1,000,000 → 261 |
+| `tail_consume` | 17.75 | 1.095 | 0.062 | 16.97 | 9.28 | 1,000,000 → 1 |
+| `clone_list` | 38.62 | 1.084 | 0.028 | 32.30 | 16.94 | 2,000,000 → 2 |
+| `string_list` | 41.44 | 18.42 | 0.445 | 47.67 | 32.25 | 2,000,000 → 1,000,001 |
+| `walk_list` | 34.74 | 2.480 | 0.071 | 16.97 | 9.28 | 1,000,000 → 1 |
+| `fold_list` | 34.54 | 2.122 | 0.061 | 16.98 | 9.28 | 1,000,000 → 1 |
+| `compare_list` | 62.29 | 7.689 | 0.123 | 32.31 | 17.05 | 2,000,000 → 262 |
+| `list_to_array` | 18.95 | 0.811 | 0.043 | 24.64 | 16.94 | 1,000,001 → 2 |
+| `array_to_list` | 19.39 | 0.863 | 0.045 | 24.63 | 16.94 | 1,000,001 → 2 |
+| `index_walk`（n = 10,000） | 50.38 | 0.0157 | 0.0003 | 1.80 | 1.69 | 10,000 → 1 |
+| `escape_list` | 0.001 | 3.243 | （下） | 1.59 | 1.61 | 0 → 0 |
+
+- `control/list_sum`（100,000 個）: 1.808 → 0.0447 ms（40.4 倍。C の参照は 1.844 ms で、node ごとに `malloc` する連結リストなので同じデータ構造の比較ではない）。ほかの 15 種目は 0.991〜1.005 倍。
+- `escape_list`（32 要素のリストを返す関数を n 回）: 基準では LLVM が確保を全部消し、総和を閉じた式に畳む（0.001 ms）。最初の chunk 版は確保が残って 29.2 ms だったが、`list_free_chunks` で消え 3.24〜3.46 ms になった（確保 0 回）。閉じた式までは畳まれないので基準の 0.001 ms には届かない。この workload は WP8 で足したので、WP6 の gate では測っていなかった。
+- WASM（wasm32、既定の 16 MiB の heap）: `i64` のリストが収まる上限は 400,000 個（600,000 個で trap）から 1,000,000 個（2,000,000 個で trap）になった。`string_list` は文字列が heap の大半を使うので 400,000 個で trap のまま。
+- **報告する悪化（要素が数個のリスト）**: 要求 bytes は `i64` の 1 個で 16 → 32（2.0 倍）、`cons_build` の 2 個で 32 → 72（2.25 倍）、4 個で 64 → 128（2.0 倍）、16 個で 256 → 320（1.25 倍）、1,000 個で 0.72 倍、1,000,000 個で 0.50 倍。一度に作るリストは 2 個で 1.25 倍、3 個で同じ、4 個以上で小さい。malloc の丸めを入れた footprint は 257 個以上のすべての `i64` で node 以下（モデル）。
+- **報告する悪化（同じ関数で作って使って捨てる、要素数が定数の小さなリスト）**: node の連結では LLVM が確保を全部消して 1 回約 1 ns だった。chunk では `new` のリテラルの走査だけが消え（約 1 ns）、`List.map`・`List.reverse` が約 25 ns、`List.copy` が約 45 ns、`List.cons` の 3 回の連鎖が約 55〜65 ns、文字列 2 個の `new` が約 75〜80 ns（3 要素、1〜3 個の chunk の確保が残る）。要素数が実行時に決まるリストは逆に速い（上の表）。2026-10-18 の判断で受け入れ、`list.md`・`docs/language.md`・`docs/architecture.md`・`README.md`・`docs/benchmarks.md` に数値と原因を書いた。直す方法は下の「実装しなかったこと、取り下げたこと」に書いた。
+- **生成コードの同一性**: list を使わないプロジェクトの IR は、PM04 を含まない統合ブランチ（`8942b297` を `git archive` で展開して build）と byte 単位で同一。`--emit llvm -O0` で native は 94 件が同一、wasm32 は 89 件が同一で、違う 25 件（`tests/fixtures` の 23 件、`benchmarks/control`、`benchmarks/list-memory`）はすべて list を使う（基準が build できない native の 8 件と wasm32 の 13 件は除く。比較の道具は `target/perf/PM04/ir-compare.mjs`）。PM04 だけの段階では、main に対して list を使わない 94 件が同一だった。
+
+### 検証
+
+- 静的: `cargo +1.99.0 fmt --check`、`clippy --all-targets --locked -- -D warnings`、`cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（いずれも警告 0。Windows の実行は CI の Windows のジョブで確かめる）、`git diff --check`、`sh scripts/check-runtime-includes.sh`、`node scripts/check-docs.mjs`（LR の 8 ページ。122 link、66 個の例、native の `-O0`・`-O3` の実行 132 回）。
+- Rust（全体）: `cargo test --locked --no-fail-fast`（`ee00e255`。PM02・PR07・PR08・PB06 を取り込んだ tree）は 108 binary で 1,563 件が通り、失敗 0、無視 1（26 分）。§3.1 の 4 つの回帰テストは各 1 件が通る。
+- Rust（最後の merge `d6a1df4a` の後）: `--lib` 386 件と `--bin tsuzuri` 30 件（PB06 の guard を含む。`RUST_MIN_STACK=4194304`）、`lists` 12、`integer_ranges` 16、`array_bulk` 3、`debug_info` 16、`lto` 21、`storage` 21、`copy_cost` 16、`closure_representation` 9。§3.1 の 4 つの回帰テストも各 1 件が通る。
+- Node（全体、`ee00e255`）: `primitives`、`e2e`、`control`（470）、`computations`、`json`、`tasks`、`wasm_threads`、`stack_overflow`、`last_use_fuzz`（300）、`allocator`、`small_allocator`、`user_drop`、`trap_boundary`、`debug_info`、`examples`、`features` の全 suite（19,113 件）。`list_chunks`（3,728 件。native・WASM × `-O0`・`-O3`）は `TSUZURI_TEST_ALLOCATOR=small`、`TSUZURI_ASAN=1`、`TSUZURI_RANGE_FLAGS=audit`・`proven`、`TSUZURI_TEST_WASM_TARGET=wasm64`（Node 24）でも通り、`storage` は small と ASan で通る。`benchmark_list_memory` は、`escape_list` の確保が 0 回になったのに合わせて「すべての workload が確保する」の検査を直して通した。
+- Node（最後の merge の後）: `benchmark_list_memory`、`pgo`（16 節）、`server`、`watch`、`debug_info`（native・WASM の `-O0`・`-O3`、`llvm-dwarfdump --verify`）、`features list_chunks`（3,728 件。system と small の allocator）、`features storage`、`primitives`、`e2e`、`examples` が通る。
+- 確認できていないこと: 実機の LLDB での `tests/debugger.mjs`、Windows・Linux・x86-64 の実行と時間、wasm32 の `memory.copy` の速度（上の「実装しなかったこと、取り下げたこと」）。wasm64 は `list_chunks` だけで確かめた。
 
 ### 起票・再検討との違いと訂正
 
