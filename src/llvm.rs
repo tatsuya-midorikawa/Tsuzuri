@@ -8637,6 +8637,28 @@ mod tests {
         ir
     }
 
+    /// `library` in the UTF-16 form of `string`, for a test that pins the text of that form's IR
+    /// whatever `TSUZURI_STRINGS` says.
+    fn library_utf16(source: &str) -> String {
+        let module = checked(source);
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            wasm_simd128: false,
+            debug_output: false,
+            runtime_objects: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let ir = emit_with_strings(&module, options, StringForm::Utf16).unwrap();
+        assert_eq!(
+            ir,
+            emit_with_strings(&module, options, StringForm::Utf16).unwrap(),
+            "{source}"
+        );
+        ir
+    }
+
     #[test]
     fn emits_distinct_string_literals_and_indexing() {
         let ir = library(
@@ -8669,7 +8691,7 @@ mod tests {
 
     #[test]
     fn emits_utf16_display_and_ascii_parse() {
-        let ir = library(
+        let ir = library_utf16(
             "let bytes = u8\"42\"\n\
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
@@ -8903,7 +8925,7 @@ mod tests {
 
     #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
-        let ir = library(
+        let ir = library_utf16(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
              def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
              def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\

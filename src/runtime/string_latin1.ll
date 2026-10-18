@@ -292,7 +292,7 @@ invalid:
 ; Reads `%byte_length` bytes of UTF-8 as text of which every scalar is at most U+00FF. When the text is valid
 ; UTF-8 and has no scalar above 0xFF, the result is the number of scalars, which is the number of Latin-1
 ; bytes and of UTF-16 units, and the largest scalar. Otherwise it is { -1, 0 }: the text is invalid or has
-; a scalar above 0xFF, and the caller decodes it as UTF-16, which reports an invalid text as it always did.
+; a scalar above 0xFF, and the caller decodes it as UTF-16, which treats an invalid text as it always did.
 ; Text of that kind is ASCII bytes and pairs of a lead byte 0xC2 or 0xC3 and a continuation byte 0x80 to 0xBF.
 define internal { i64, i32 } @tz.string.utf8_scan(ptr %source, i64 %byte_length) nounwind {
 entry:
