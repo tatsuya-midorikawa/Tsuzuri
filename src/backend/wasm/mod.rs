@@ -113,7 +113,7 @@ fn string_attribute<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// The module and the name that an undefined function is imported by: `wasm-import-module` and
 /// `wasm-import-name` of the declaration, else the module `env` and the symbol's own name.
-fn import_of<'a>(text: &'a str, header: usize) -> (Option<&'a str>, Option<&'a str>) {
+fn import_of(text: &str, header: usize) -> (Option<&str>, Option<&str>) {
     if header == module::SYNTHETIC {
         return (None, None);
     }

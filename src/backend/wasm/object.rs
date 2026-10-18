@@ -102,7 +102,7 @@ pub(crate) struct Import {
 pub(crate) struct Object {
     pub imports: Vec<Import>,
     /// The signature of each defined function, and its body.
-    pub functions: Vec<((Vec<Vt>, Vec<Vt>), Body)>,
+    pub functions: Vec<(Signature, Body)>,
     pub segments: Vec<Segment>,
     pub symbols: Vec<Symbol>,
     /// The functions (by index) whose address is taken: they get the slots 1, 2, ... of the table.
