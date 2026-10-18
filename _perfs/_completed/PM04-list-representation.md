@@ -114,7 +114,7 @@ Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 20.19.6�
 - D1（表現）: 維持。`%tz.list = { ptr, i64 }` はそのまま、field 0 は先頭 chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] }`（header 24 bytes は native・wasm32・wasm64 で同じ。slot は `round_up(24, align(T))` から）。不変条件 I1〜I5 は維持する。**表現の切り替えに opt-out の flag は置かない**（D14）。
 - D2（計算量）: 維持。`values[index]` は $O(先行する chunk 数)$（bulk なら $O(1)$）。`values[0]` と `head :: tail` の head は chunk の数によらず $O(1)$。
 - D3'（容量の伸ばし方）: 改める。`LIST_CHUNK_MAX_BYTES = 32768` は **header を含む chunk 全体**の上限で、`K = max(1, (32768 − slot の offset) / max(1, size(T)))`。最初の chunk は 32 bytes に収まる容量 `c0 = max(1, (32 − slot の offset) / max(1, size(T)))`（i64 は 1、i32 は 2、i8 は 8、string・24 bytes の record は 1）、先頭 chunk が満杯のときの次の容量は `min(c + c / 2 + 1, K)`（約 1.5 倍）。size は `layout_bound(T, module, false)`（両 target で同じ値）で足りる（容量は性能の定数で、意味に関わらない）。上の定数は測って再調整できるよう Rust の定数 3 つ（上限・最初の bytes・header）にする。**報告する悪化**: 一括生成は native の i64 で n = 1 が node の 2.0 倍（32 bytes）、n = 2 が 1.5 倍、n = 3・4 で同じ、n ≥ 5 で小さい（string は n = 1 が 1.5 倍、n = 2 で同じ、n ≥ 3 で小さい。WASM の i64 は n = 1 が 1.5 倍、n = 2 で同じ）。cons で伸ばすリストは n = 1〜4 が 2.0 / 2.5 / 1.7 / 2.25 倍、n = 8 が 1.75 倍、n = 16 が 1.31 倍、n = 17〜256 で最大 1.24 倍、n = 257〜100,000 では最大 0.87 倍で、それより大きい n は 0.5 倍へ収束する（native の `system`・`small` の i64。モデル。WP6 で実測して確かめる）。WASM の i64 は n ≤ 4 が最大 1.75 倍、n = 17〜256 が最大 0.76 倍、n ≥ 257 が最大 0.44 倍。G2 の「1,000 要素以上では記憶量を HEAD 以下」は「257 要素以上のすべての n で」に改める。
-- D4（一括生成）: 維持。builder は長さを先に受け取り、`list_builder(element, length)` は長さ 0 で確保せず null を返す（`append_list` は slot の番号で格納）。heap のリテラルの prefix（`tracking`。loop の中のリテラルが途中で `break`・`continue` で抜ける場合）は、prefix を登録する前に `capacity = index` を store し、最後に `capacity = n` にする（I5 と prefix の drop を保つ）。
+- D4（一括生成）: 維持。builder は長さを先に受け取り、`list_builder(element, length)` は長さ 0 で確保せず null を返す（`append_list` は slot の番号で格納）。heap のリテラルの prefix（`tracking`。loop の中のリテラルが途中で `break`・`continue` で抜ける場合と、`try` の中で例外が出る場合。後者は 2026-10-18 の review で足した）は、prefix を登録する前に `capacity = index` を store し、最後に `capacity = n` にする（I5 と prefix の drop を保つ）。
 - D5（トラップの境界）: 維持。`new [|T|](n, f)` の長さの検査は `allocation_size(list_node_type(T), n)` のまま、callback の前。chunk の bytes（`offset + n × size`）は D5 の上限の内側で溢れない。
 - D6（drop・clone の順序と反復）: 維持。外側は chunk、内側は生きた slot。`next` を読んでから free する。再帰しない。
 - D7'（走査の形）: 改める。Phase 1 の単一リストの走査（`for`・`List.fold_ref`・`map`・`map_ref`・`reverse` と `to_array` と clone の source・hash・display）は、状態 `(chunk, slot, index)` を持ち、chunk の終わりを **分岐**（`br`）で次へ進める cursor にする（`select` の cursor は node の連結より遅いので採らない）。`phi ptr` は各リストに 1 つ、添字の phi を header の先頭に置き増分の block を header へ戻す形を保ち、PR02 の R4・R5 の pin に合う。helper の API は `list_loop_control(list, |emitter, 要素の pointer, 添字, exit, advance|)` に固定し、Phase 2（D11）は helper の中身だけを二重 loop に替える。compare は左右の cursor を lockstep で進める（`phi ptr` が 2 つ）。
@@ -676,7 +676,7 @@ list_chunks: {
 
 - 決定: リテラル・`new`・`Array.to_list`・`List.map`・`List.map_ref`・`List.reverse`・複製・`heap_copy` は非空なら chunk 一つ（capacity = 長さ）を 1 回で確保し、空なら確保しない。ヒープのリテラルは最初の要素の評価後に確保し、loop 内の prefix は `capacity` を途中の長さにして登録する。
 - 理由: 確保回数を 1 にし、I1 と prefix の drop を保つ。
-- 状態: 実装済み（`heap_copy` は frame 候補が空のとき loop のまま。Phase 2b の `memcpy` は取り下げ）
+- 状態: 実装済み（`heap_copy` は frame 候補が空のとき loop のまま。Phase 2b の `memcpy` は取り下げ）。ヒープのリテラルは最初の要素の評価後でなく前に確保し、loop と `try` の中では要素ごとに prefix（`capacity` を途中の長さにした chunk。最初の要素の前に抜けるときは長さ 0 で chunk だけ）を一時値に登録する。最初の版は `tracking` が loop だけで、`try` の中の最初の要素が例外を出すと chunk が漏れた（配列のリテラルは以前から、どの要素でも漏れた）。2026-10-18 の review で見つかり、`tracking` に `try` を加えて直した（`list_chunks` の `raise_list_*`・`raise_array_*`）
 
 ### D5: トラップの境界とメモリ不足
 

@@ -4488,10 +4488,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
+    /// True where a jump can leave an expression before it ends: in a loop (`break`, `continue`)
+    /// or a `try` (a raise). What such an expression holds then has to be registered to be dropped.
+    fn can_jump_out(&self) -> bool {
+        !self.loop_targets.is_empty() || !self.try_targets.is_empty()
+    }
+
     fn remember_temporary(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
-        if (!self.loop_targets.is_empty() || !self.try_targets.is_empty())
-            && ty.needs_drop(&self.module.types())
-        {
+        if self.can_jump_out() && ty.needs_drop(&self.module.types()) {
             self.temporaries
                 .push((ty.clone(), value.to_owned(), frames.to_vec()));
         }
@@ -5051,7 +5055,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             (TypedExprKind::Array(elements), Type::Array(element)) => {
                 let (array, data) = self.allocate_array(element, &elements.len().to_string());
                 let temporary_base = self.temporaries.len();
-                let tracking = !self.loop_targets.is_empty();
+                let tracking = self.can_jump_out();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
                         let prefix =
@@ -5072,7 +5076,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let length = elements.len().to_string();
                 let mut builder = self.list_builder(element, &length);
                 let temporary_base = self.temporaries.len();
-                let tracking = !self.loop_targets.is_empty();
+                let tracking = self.can_jump_out();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
                         let prefix = self.list_prefix(element, &mut builder, index);

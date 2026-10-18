@@ -366,3 +366,38 @@ fn deep_ops n =
     let mut rest = copy
     for _ in 1 .. n do rest = List.tail rest
     same * 1000000 + weighted (ref values) % 1000 + rest.length
+
+/// An exception that an element of a heap literal raises leaves the literal half made: the elements
+/// stored so far and the chunk (or the array) are freed, and the host checks that nothing stays live.
+/// `at` is the element that raises; -1 raises nowhere.
+export def raise_list_numbers :: i64 -> i64
+fn raise_list_numbers at =
+    let huge = 9223372036854775807i64
+    let made = try new [|@checked (1 + (if at == 0 then huge else 0)), @checked (2 + (if at == 1 then huge else 0)), @checked (3 + (if at == 2 then huge else 0))|] with | e -> e
+    match made with
+    | Ok values -> values[0] + values[1] * 10 + values[2] * 100
+    | Error _ -> -1 - at
+
+export def raise_list_words :: i64 -> i64
+fn raise_list_words at =
+    let huge = 9223372036854775807i64
+    let made = try new [|to_string (@checked (1 + (if at == 0 then huge else 0))), to_string (@checked (2 + (if at == 1 then huge else 0))), to_string (@checked (3 + (if at == 2 then huge else 0)))|] with | e -> e
+    match made with
+    | Ok words -> words[0].length + words[1].length * 10 + words[2].length * 100
+    | Error _ -> -1 - at
+
+export def raise_array_numbers :: i64 -> i64
+fn raise_array_numbers at =
+    let huge = 9223372036854775807i64
+    let made = try new [@checked (1 + (if at == 0 then huge else 0)), @checked (2 + (if at == 1 then huge else 0)), @checked (3 + (if at == 2 then huge else 0))] with | e -> e
+    match made with
+    | Ok values -> values[0] + values[1] * 10 + values[2] * 100
+    | Error _ -> -1 - at
+
+export def raise_array_words :: i64 -> i64
+fn raise_array_words at =
+    let huge = 9223372036854775807i64
+    let made = try new [to_string (@checked (1 + (if at == 0 then huge else 0))), to_string (@checked (2 + (if at == 1 then huge else 0))), to_string (@checked (3 + (if at == 2 then huge else 0)))] with | e -> e
+    match made with
+    | Ok words -> words[0].length + words[1].length * 10 + words[2].length * 100
+    | Error _ -> -1 - at

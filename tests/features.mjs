@@ -1160,8 +1160,11 @@ const suites = {
       call("units_walk", n, BigInt(n) * 1000003n + BigInt(n - Math.floor(n / 2))), call("units_copy", n, BigInt(n) * 1000011n),
     ]);
     const deep = (n) => call("deep_ops", n, 1000000n + weightedSum(descending(n)) % 1000n);
+    // An exception that an element of a heap literal raises frees what the literal held so far (the host checks `live == 0`).
+    const raises = ["raise_list_numbers", "raise_list_words", "raise_array_numbers", "raise_array_words"].flatMap((name) =>
+      [-1n, 0n, 1n, 2n].map((at) => [name, [at], at < 0n ? (name.endsWith("words") ? 111n : 321n) : -1n - at]));
     return {
-      cases: [...numbers, ...owned, ...units],
+      cases: [...numbers, ...owned, ...units, ...raises],
       nativeCases: [deep(250000), deep(1000000)],
       inspect(ir) {
         assert.ok(ir.includes("{ ptr, i64, i64, [0 x i64] }"), "the lists are chunks");
