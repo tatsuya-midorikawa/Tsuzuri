@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -122,6 +122,21 @@ async function session(encoding) {
     notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
     assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result, null);
     writeFileSync(join(root, "Shapes.tz"), "record Point { x: i64 }");
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
+    assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
+    // The server remembers a file that it has read, while its `stat` says it is the same (PB06). Past the
+    // window of 2 s in which a `stat` can miss a write, a file that changes without a change of its size
+    // or modification time is read again all the same.
+    await new Promise((done) => setTimeout(done, 2_500));
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
+    assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
+    const stamped = statSync(join(root, "Shapes.tz"));
+    writeFileSync(join(root, "Shapes.tz"), "record Point { x: f64 }");
+    utimesSync(join(root, "Shapes.tz"), stamped.atime, stamped.mtime);
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
+    assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result, null);
+    writeFileSync(join(root, "Shapes.tz"), "record Point { x: i64 }");
+    utimesSync(join(root, "Shapes.tz"), stamped.atime, stamped.mtime);
     notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
     assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
     notify("textDocument/didOpen", { textDocument: { uri: nestedUri, languageId: "tsuzuri", version: 1, text: "fn nested() -> i64 { true }" } });

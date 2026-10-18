@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { allocatorVariants, captureRun, inProcessRecords, instrumentAllocations,
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--allocator system|small] [--baseline compiler] [--artifacts directory] [--metrics directory]";
+const usage = "Usage: node benchmarks/run-control.mjs [compiler] [--quick] [--scale number] [--cpu generic|native] [--allocator system|small] [--baseline compiler] [--pgo [--pgo-runs n] [--pgo-rust-llvm directory]] [--artifacts directory] [--metrics directory]";
 const take = (flag, fallback) => {
   const index = args.indexOf(flag);
   if (index < 0) return fallback;
@@ -27,24 +27,38 @@ const metrics = take("--metrics", null);
 const baselineArgument = take("--baseline", null);
 const baseline = baselineArgument && resolve(baselineArgument);
 const quick = args.includes("--quick");
-const positional = args.filter((arg) => arg !== "--quick");
+// PR07: with --pgo the control object is also built with the profile of a --quick training run, and the host that links it runs
+// alternately with the host of the plain object, --pgo-runs times (a --quick run once). The C and C++ references get a profile of
+// the same run. rustc has its own LLVM, so Rust gets one only from --pgo-rust-llvm DIR, the bin directory of the LLVM that rustc
+// uses (clang and llvm-profdata of that version); without it the Rust object is the same in both hosts, which makes it a control.
+const pgo = args.includes("--pgo");
+const pgoRunsArgument = take("--pgo-runs", null);
+const rustLlvmArgument = take("--pgo-rust-llvm", null);
+const rustLlvm = rustLlvmArgument && resolve(rustLlvmArgument);
+const pgoRuns = Number(pgoRunsArgument ?? (quick ? 1 : 5));
+const positional = args.filter((arg) => arg !== "--quick" && arg !== "--pgo");
 if (!["generic", "native"].includes(cpu) || !["system", "small"].includes(allocator) || !Number.isFinite(scale) || scale <= 0 || scale > 10
   || (quick && scale !== 1) || positional.length > 1
-    || positional.some((arg) => arg.startsWith("-")) || args.filter((arg) => arg === "--quick").length > 1) {
+    || positional.some((arg) => arg.startsWith("-")) || args.filter((arg) => arg === "--quick").length > 1 || args.filter((arg) => arg === "--pgo").length > 1
+    || !Number.isInteger(pgoRuns) || pgoRuns < 1 || pgoRuns > 21 || (!pgo && (pgoRunsArgument !== null || rustLlvmArgument !== null))) {
   throw new Error(usage);
 }
 const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
 const { timing: tsuzuriVariant, allocation: allocationVariant } = allocatorVariants(allocator);
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const rustc = process.env.TSUZURI_RUSTC ?? "rustc";
-const run = (program, arguments_) => execFileSync(program, arguments_, {
+const run = (program, arguments_, env = process.env) => execFileSync(program, arguments_, {
   cwd: root, encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"],
-  env: metrics ? { ...process.env, TSUZURI_CACHE_DIR: join(temporary, "cache") } : process.env,
+  env: metrics ? { ...env, TSUZURI_CACHE_DIR: join(temporary, "cache") } : env,
 });
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
 };
+// The llvm-profdata of the Clang that is measured: three directories above its resource directory, as the compiler finds it when
+// nothing is beside Clang.
+const findProfdata = () => process.env.TSUZURI_LLVM_PROFDATA
+  ?? join(dirname(dirname(dirname(run(clang, ["-print-resource-dir"]).trim()))), "bin", "llvm-profdata");
 const wrap = (n) => BigInt.asUintN(64, n);
 const hex = (n) => wrap(n).toString(16).padStart(16, "0");
 const factors = [17n, 3n, 29n, 7n, 61n, 11n, 83n, 5n, 47n, 19n, 101n, 31n, 53n, 23n, 97n, 13n];
@@ -97,6 +111,7 @@ if (cpu === "native") {
   rustFlags.push("-C", "target-cpu=native");
 }
 const tsuzuriFlags = ["-O3", "--cpu", cpu];
+const objectFlags = [...tsuzuriFlags, ...(allocator === "system" ? [] : ["--allocator", allocator])];
 const context = metrics ? captureRun(metrics, { compiler, clang, rustc, mode: quick ? "quick" : "benchmark" }) : null;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-control-benchmark-"));
 
@@ -105,14 +120,16 @@ try {
   const generated = [];
   for (const [emit, extension] of [["object", "o"], ["header", "h"], ["llvm", "ll"]]) {
     const path = join(temporary, `control.${extension}`);
-    run(compiler, ["build", fixture, "--emit", emit, ...(emit === "object" ? [...tsuzuriFlags, ...(allocator === "system" ? [] : ["--allocator", allocator])] : []), "-o", path]);
+    run(compiler, ["build", fixture, "--emit", emit, ...(emit === "object" ? objectFlags : []), "-o", path]);
     generated.push(`control.${extension}`);
   }
   run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", join(temporary, "control.ll"), "-o", join(temporary, "control.optimized.ll")]);
   run(clang, [...flags, "-Wno-override-module", "-S", join(temporary, "control.ll"), "-o", join(temporary, "control.s")]);
   generated.push("control.optimized.ll", "control.s");
-  for (const [name, mode, standard] of [["c", "c", "c11"], ["cpp", "c++", "c++20"]]) {
-    const common = ["-x", mode, `-std=${standard}`, ...flags, "-Wall", "-Wextra", "-Werror", `-DPREFIX=${name}_`, `${fixture}/reference.c`];
+  const references = [["c", "c", "c11"], ["cpp", "c++", "c++20"]];
+  const referenceArguments = (name, mode, standard) => ["-x", mode, `-std=${standard}`, ...flags, "-Wall", "-Wextra", "-Werror", `-DPREFIX=${name}_`, `${fixture}/reference.c`];
+  for (const [name, mode, standard] of references) {
+    const common = referenceArguments(name, mode, standard);
     run(clang, [...common, "-c", "-o", join(temporary, `${name}.o`)]);
     run(clang, [...common, "-S", "-o", join(temporary, `${name}.s`)]);
     run(clang, [...common, "-S", "-emit-llvm", "-o", join(temporary, `${name}.ll`)]);
@@ -132,43 +149,173 @@ try {
     run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", ir, "-o", join(temporary, "before.optimized.ll")]);
     generated.push("before.ll", "before.h", "before.o", "before.s", "before.optimized.ll");
   }
+  const hostFlags = ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : [])];
+  const hostObjects = (control, c, cpp, rust = "control_reference.o") => [control, c, cpp, rust, ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name));
+  const linkHost = (output, control, c, cpp, rust) => run(clang, [...hostFlags, `${fixture}/host.c`, "-I", temporary, ...hostObjects(control, c, cpp, rust), "-lm", "-o", output]);
   const native = join(temporary, "benchmark");
-  run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", ...(baseline ? ["-DBASELINE"] : []),
-    `${fixture}/host.c`, "-I", temporary,
-    ...["control.o", "c.o", "cpp.o", "control_reference.o", ...(baseline ? ["before.o"] : [])].map((name) => join(temporary, name)), "-lm", "-o", native]);
-  const result = JSON.parse(run(native, quick ? ["--quick"] : ["--scale", String(scale)]));
-  const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
-  assert.equal(result.samples, variants.length * (quick ? 1 : 3));
-  assert.deepEqual(result.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum",
-    "array_index_sum", "array_copy", "list_sum", "closure_capture", "closure_churn", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
-  for (const work of result.workloads) {
-    assert.equal(work.checks.length, 25);
-    for (const check of work.checks) {
-      assert.equal(check.checksum, hex(reference(work.name, BigInt(check.size), BigInt(check.seed))), work.name);
+  linkHost(native, "control.o", "c.o", "cpp.o");
+  // PR07: the instrumented objects (Tsuzuri, C and C++ alike), linked into a host that a --quick run exercises, write the profile
+  // that builds the PGO objects. Rust has its own LLVM, so its profile comes from a run of its own (--pgo-rust-llvm).
+  const profile = join(temporary, "profile");
+  const merged = join(temporary, "control.profdata");
+  const hosts = [{ binary: native, runs: [] }];
+  let profdata = null;
+  let rawProfiles = [];
+  let rustObject = "control_reference.o";
+  if (pgo) {
+    profdata = findProfdata();
+    run(compiler, ["build", fixture, "--emit", "object", ...objectFlags, "--profile-generate", profile, "-o", join(temporary, "control.gen.o")]);
+    for (const [name, mode, standard] of references) {
+      run(clang, [...referenceArguments(name, mode, standard), `-fprofile-generate=${profile}`, "-c", "-o", join(temporary, `${name}.gen.o`)]);
     }
-    assert.equal(work.raw.length, result.samples);
-    for (const variant of variants) {
-      const times = work.raw.map((sample) => sample[`${variant}_ms`]);
-      assert.ok(times.every((time) => Number.isFinite(time) && (quick ? time >= 0 : time > 0)));
-      work[`${variant}_median_ms`] = median(times);
-      const wallTimes = work.raw.map((sample) => sample[`${variant}_wall_ms`]);
-      assert.ok(wallTimes.every((time) => Number.isFinite(time) && time >= 0));
-      work[`${variant}_wall_median_ms`] = median(wallTimes);
+    run(clang, [...hostFlags, "-c", `${fixture}/host.c`, "-I", temporary, "-o", join(temporary, "host.o")]);
+    const train = join(temporary, "benchmark-train");
+    run(clang, [...flags, join(temporary, "host.o"), ...hostObjects("control.gen.o", "c.gen.o", "cpp.gen.o"), `-fprofile-generate=${profile}`, "-lm", "-o", train]);
+    const environment = { ...process.env };
+    delete environment.LLVM_PROFILE_FILE;
+    run(train, ["--quick"], environment);
+    rawProfiles = readdirSync(profile).filter((name) => name.endsWith(".profraw")).sort();
+    assert.ok(rawProfiles.length > 0, "the training run wrote no profile");
+    run(profdata, ["merge", "-o", merged, ...rawProfiles.map((name) => join(profile, name))]);
+    run(compiler, ["build", fixture, "--emit", "object", ...objectFlags, "--profile-use", profile, "-o", join(temporary, "control.pgo.o")]);
+    for (const [name, mode, standard] of references) {
+      const used = [...referenceArguments(name, mode, standard), `-fprofile-use=${merged}`];
+      run(clang, [...used, "-c", "-o", join(temporary, `${name}.pgo.o`)]);
+      run(clang, [...used, "-S", "-o", join(temporary, `${name}.pgo.s`)]);
+      run(clang, [...used, "-S", "-emit-llvm", "-o", join(temporary, `${name}.pgo.ll`)]);
+      generated.push(`${name}.gen.o`, `${name}.pgo.o`, `${name}.pgo.s`, `${name}.pgo.ll`);
     }
-    for (const variant of ["c", "cpp", "rust"]) {
-      work[`tsuzuri_over_${variant}`] = work[`${variant}_median_ms`] > 0
-        ? work.tsuzuri_median_ms / work[`${variant}_median_ms`] : null;
+    generated.push("control.gen.o", "control.pgo.o", "control.profdata");
+    if (rustLlvm) {
+      // The instrumented Rust object counts in the runtime of the LLVM that rustc has, so that LLVM's clang links the host that trains
+      // it and its llvm-profdata merges the result; the other objects are the plain ones.
+      const rustProfile = join(temporary, "rust-profile");
+      const rustMerged = join(temporary, "rust.profdata");
+      const generating = join(temporary, "rust-generate");
+      const using = join(temporary, "rust-use");
+      assert.equal(run(join(rustLlvm, "llvm-profdata"), ["--version"]).match(/LLVM version (\d+)/)?.[1], run(rustc, ["-vV"]).match(/LLVM version: (\d+)/)?.[1],
+        "--pgo-rust-llvm must be the LLVM that rustc uses");
+      run(rustc, [...rustFlags, "-C", `profile-generate=${rustProfile}`, "--emit=obj", `${fixture}/reference.rs`, "--out-dir", generating]);
+      run(join(rustLlvm, "clang"), [...flags, join(temporary, "host.o"), ...hostObjects("control.o", "c.o", "cpp.o", join("rust-generate", "control_reference.o")),
+        `-fprofile-generate=${rustProfile}`, "-lm", "-o", join(temporary, "benchmark-train-rust")], environment);
+      run(join(temporary, "benchmark-train-rust"), ["--quick"], environment);
+      run(join(rustLlvm, "llvm-profdata"), ["merge", "-o", rustMerged, ...readdirSync(rustProfile).filter((name) => name.endsWith(".profraw")).map((name) => join(rustProfile, name))]);
+      run(rustc, [...rustFlags, "-C", `profile-use=${rustMerged}`, "--emit=obj,asm,llvm-ir", `${fixture}/reference.rs`, "--out-dir", using]);
+      rustObject = join("rust-use", "control_reference.o");
+      for (const [from, to] of [["control_reference.o", "rust.pgo.o"], ["control_reference.s", "rust.pgo.s"], ["control_reference.ll", "rust.pgo.ll"]]) {
+        copyFileSync(join(using, from), join(temporary, to));
+        generated.push(to);
+      }
+      copyFileSync(rustMerged, join(temporary, "rust.profdata"));
+      generated.push("rust.profdata");
     }
-    if (baseline) {
-      work.speedup = work.tsuzuri_median_ms > 0 ? work.before_median_ms / work.tsuzuri_median_ms : null;
-    }
+    hosts.push({ binary: join(temporary, "benchmark-pgo"), runs: [] });
+    linkHost(hosts[1].binary, "control.pgo.o", "c.pgo.o", "cpp.pgo.o", rustObject);
   }
+  // The plain and the PGO host run alternately, so that a change of the machine's load reaches both.
+  const rounds = pgo ? pgoRuns : 1;
+  for (let round = 0; round < rounds; ++round) {
+    for (const host of round % 2 === 0 ? hosts : [...hosts].reverse()) host.runs.push(JSON.parse(run(host.binary, quick ? ["--quick"] : ["--scale", String(scale)])));
+  }
+  const combine = (runs) => {
+    for (const other of runs.slice(1)) {
+      assert.deepEqual(other.workloads.map(({ name, size, checks }) => [name, size, checks]), runs[0].workloads.map(({ name, size, checks }) => [name, size, checks]));
+    }
+    return { ...runs[0], samples: runs[0].samples * runs.length, workloads: runs[0].workloads.map((work, index) => ({ ...work, raw: runs.flatMap((one) => one.workloads[index].raw) })) };
+  };
+  const result = combine(hosts[0].runs);
+  const pgoResult = pgo ? combine(hosts[1].runs) : null;
+  const variants = ["c", "cpp", "rust", "tsuzuri", ...(baseline ? ["before"] : [])];
+  const analyze = (data) => {
+    assert.equal(data.samples, variants.length * (quick ? 1 : 3) * rounds);
+    assert.deepEqual(data.workloads.map((work) => work.name), ["while_mix", "for_mix", "tail_mix", "tail_if_mix", "tail_builtin_mix", "match_dispatch", "array_sum",
+      "array_index_sum", "array_copy", "list_sum", "closure_capture", "closure_churn", "record_pipeline", "integer128_mix", "float32_mix", "float64_mix"]);
+    for (const work of data.workloads) {
+      assert.equal(work.checks.length, 25);
+      for (const check of work.checks) {
+        assert.equal(check.checksum, hex(reference(work.name, BigInt(check.size), BigInt(check.seed))), work.name);
+      }
+      assert.equal(work.raw.length, data.samples);
+      for (const variant of variants) {
+        const times = work.raw.map((sample) => sample[`${variant}_ms`]);
+        assert.ok(times.every((time) => Number.isFinite(time) && (quick ? time >= 0 : time > 0)));
+        work[`${variant}_median_ms`] = median(times);
+        const wallTimes = work.raw.map((sample) => sample[`${variant}_wall_ms`]);
+        assert.ok(wallTimes.every((time) => Number.isFinite(time) && time >= 0));
+        work[`${variant}_wall_median_ms`] = median(wallTimes);
+      }
+      for (const variant of ["c", "cpp", "rust"]) {
+        work[`tsuzuri_over_${variant}`] = work[`${variant}_median_ms`] > 0
+          ? work.tsuzuri_median_ms / work[`${variant}_median_ms`] : null;
+      }
+      if (baseline) {
+        work.speedup = work.tsuzuri_median_ms > 0 ? work.before_median_ms / work.tsuzuri_median_ms : null;
+      }
+    }
+  };
+  analyze(result);
+  if (pgo) analyze(pgoResult);
   const optimized = readFileSync(join(temporary, "control.optimized.ll"), "utf8");
   const inspection = {
     source_switch_count: (readFileSync(join(temporary, "control.ll"), "utf8").match(/\bswitch /g) ?? []).length,
     optimized_vector_instructions: (optimized.match(/(?:add|mul|load|store|xor) <\d+ x i\d+>/g) ?? []).length,
     array_allocator_calls: (optimized.match(/call .*@malloc\(/g) ?? []).length,
   };
+  let pgoReport = null;
+  if (pgo) {
+    // The IR that Tsuzuri wrote, optimized by Clang with and without the profile, shows what the profile changes: `!prof` metadata
+    // on branches and entries, and no fast-math flag that the plain build lacks. The C and C++ objects are read the same way.
+    const count = (text, pattern) => (text.match(pattern) ?? []).length;
+    const describe = (text) => ({
+      functions_with_entry_count: count(text, /^define .*!prof /gm),
+      weighted_instructions: count(text, /^\s.*!prof /gm),
+      branch_weight_nodes: count(text, /branch_weights/g),
+      fast_math_flags: count(text, / (?:fast|reassoc|nnan|ninf|nsz|arcp|contract|afn) /g),
+    });
+    const text = (name) => readFileSync(join(temporary, name), "utf8");
+    const source = join(temporary, "control.ll");
+    const irFlags = [...flags, "-Wno-override-module"];
+    run(clang, [...irFlags, `-fprofile-use=${merged}`, "-S", "-emit-llvm", source, "-o", join(temporary, "control.pgo.ll")]);
+    run(clang, [...irFlags, `-fprofile-use=${merged}`, "-S", source, "-o", join(temporary, "control.pgo.s")]);
+    run(clang, [...irFlags, `-fprofile-generate=${profile}`, "-S", "-emit-llvm", source, "-o", join(temporary, "control.gen.ll")]);
+    generated.push("control.pgo.ll", "control.pgo.s", "control.gen.ll");
+    const size = (name) => statSync(join(temporary, name)).size;
+    const entry = (plain, used, variant) => ({
+      plain_median_ms: plain[`${variant}_median_ms`], pgo_median_ms: used[`${variant}_median_ms`],
+      pgo_over_plain: plain[`${variant}_median_ms`] > 0 ? used[`${variant}_median_ms`] / plain[`${variant}_median_ms`] : null,
+    });
+    pgoReport = {
+      runs: rounds,
+      training: "one --quick run of the instrumented Tsuzuri, C and C++ objects, linked with -fprofile-generate"
+        + (rustLlvm ? "; Rust has a run of its own with the LLVM of rustc" : ""),
+      llvm_profdata: run(profdata, ["--version"]).trim().split("\n")[0],
+      rust_pgo: Boolean(rustLlvm),
+      raw_profiles: rawProfiles.length,
+      raw_profile_bytes: rawProfiles.reduce((sum, name) => sum + statSync(join(profile, name)).size, 0),
+      merged_profile_bytes: statSync(merged).size,
+      object_bytes: { plain: size("control.o"), instrumented: size("control.gen.o"), pgo: size("control.pgo.o") },
+      inspection: {
+        tsuzuri: { plain: describe(optimized), pgo: describe(text("control.pgo.ll")) },
+        c: { plain: describe(text("c.ll")), pgo: describe(text("c.pgo.ll")) },
+        cpp: { plain: describe(text("cpp.ll")), pgo: describe(text("cpp.pgo.ll")) },
+        ...(rustLlvm ? { rust: { plain: describe(text("control_reference.ll")), pgo: describe(text("rust.pgo.ll")) } } : {}),
+        instrumented_tsuzuri_counters: count(text("control.gen.ll"), /@__profc_/g),
+      },
+      // Without --pgo-rust-llvm, Rust is the same object in both hosts, so its ratio says how far the machine moved between the two.
+      workloads: result.workloads.map((plain, index) => {
+        const used = pgoResult.workloads[index];
+        assert.deepEqual([used.name, used.size], [plain.name, plain.size]);
+        return {
+          name: plain.name, size: plain.size,
+          tsuzuri: entry(plain, used, "tsuzuri"), c: entry(plain, used, "c"), cpp: entry(plain, used, "cpp"), rust: entry(plain, used, "rust"),
+          tsuzuri_over_c: { plain: plain.tsuzuri_over_c, pgo: used.tsuzuri_over_c },
+          tsuzuri_over_cpp: { plain: plain.tsuzuri_over_cpp, pgo: used.tsuzuri_over_cpp },
+          tsuzuri_over_rust: { plain: plain.tsuzuri_over_rust, pgo: used.tsuzuri_over_rust },
+        };
+      }),
+      host: pgoResult,
+    };
+  }
   if (metrics) {
     const trackedIr = join(temporary, "control.tracked.ll");
     writeFileSync(trackedIr, instrumentAllocations(optimized));
@@ -184,6 +331,12 @@ try {
     const records = inProcessRecords(context, "control", result.workloads,
       [...["c", "cpp", "rust", "tsuzuri"].map((name) => [name, name, name === "tsuzuri" ? tsuzuriVariant : "default"]),
         ...(baseline ? [["before", "tsuzuri", "before"]] : [])], { cpu });
+    // A PGO object is another variant of the same workload, so that the records of a run without --pgo are never mistaken for it.
+    if (pgo) {
+      records.push(...inProcessRecords(context, "control", pgoResult.workloads,
+        [["tsuzuri", "tsuzuri", tsuzuriVariant === "default" ? "pgo" : `${tsuzuriVariant}-pgo`], ["c", "c", "pgo"], ["cpp", "cpp", "pgo"],
+          ...(rustLlvm ? [["rust", "rust", "pgo"]] : [])], { cpu }));
+    }
     for (const work of tracking.workloads) for (const [metric, field] of [["alloc_calls", "calls"], ["alloc_bytes", "bytes"]]) {
       records.push(makeRecord(context, { suite: "control", workload: work.name, size: work.size, language: "tsuzuri",
         variant: allocationVariant, opt: "O3", cpu_mode: cpu, metric, samples: [work[field]] }));
@@ -194,6 +347,8 @@ try {
   if (artifacts) {
     mkdirSync(resolve(artifacts), { recursive: true });
     for (const name of generated) copyFileSync(join(temporary, name), join(resolve(artifacts), name));
+    if (pgo) cpSync(profile, join(resolve(artifacts), "profile"), { recursive: true });
+    if (rustLlvm) cpSync(join(temporary, "rust-profile"), join(resolve(artifacts), "rust-profile"), { recursive: true });
   }
   console.log(JSON.stringify({
     environment: {
@@ -209,6 +364,7 @@ try {
     mode: quick ? "correctness-smoke" : "benchmark",
     cpu, scale, wall_clock: "CLOCK_MONOTONIC", c_cpp_flags: flags, rust_flags: rustFlags, tsuzuri_flags: tsuzuriFlags, tsuzuri_allocator: allocator,
     inspection, ...result,
+    ...(pgoReport ? { pgo: pgoReport } : {}),
     note: "Native CPU time; two warmups per variant; rotating/reversed order; no LTO. Array workloads include allocation, initialization, traversal and free. C/C++ share a C-compatible baseline; Rust uses the same system allocation with safe slice traversal. Ratios below 1 favor Tsuzuri; microbenchmarks are not a general language ranking.",
   }, null, 2));
 } finally {

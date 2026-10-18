@@ -42,8 +42,15 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 名前付きレコードと union の型定義は、剪定しない場合のプログラムと同じ集合を出力します。
 その関数だけが使う OS API・定義のない `extern` のシンボル・C ランタイムはプラットフォームの検査にもリンクにも現れないので、
 以前は `E2002` やリンクの失敗だったビルドが通ります。入口か `export def` から到達するなら今までどおり失敗します。
-`--emit object`・`llvm`・`header`・`wasm`・`shared` は公開関数をすべて出力します。
+`--emit object`・`llvm`・`header`・`wasm`・`shared`・`bitcode` は公開関数をすべて出力します。
 詳細は [出力とターゲット](../_tsuzuri/language-reference/compiler/option.md#出力とターゲット) にあります。
+
+プロファイル誘導最適化（PR07）の `--profile-generate DIR` と `--profile-use PATH` は、native の `exe`・`object` と wasm32 の module で、Clang が IR を機械語にするときの旗（`-fprofile-generate`・`-fprofile-use`）を足すだけです。
+Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない方針、整数の折り返し・NaN・符号付きゼロ・トラップは、プロファイルの有無で変わらず、旗を付けないビルドの成果物とキャッシュのキーも変わりません。
+プロファイルは IR の関数ごとの制御フローに結び付くので、計装と使用は同じコンパイラ・ソース・Clang・オプションで行います。合わない関数はプロファイルなしで最適化され、`W2001` の 1 行で知らされます。
+`.profraw` のディレクトリは `llvm-profdata`（`TSUZURI_LLVM_PROFDATA`、Clang の隣、Clang の toolchain の順）で merge し、中身がキャッシュのキーに入ります。Windows、ビルド機と違う `--target`、同梱の `tsuzuri-clang` は受け付けません。
+速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 13〜17% 速く、4 種目が 20〜60% 遅い）。
+詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
 
 ## ソースと宣言
 
@@ -54,10 +61,21 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 [コンパイラのスレッド数](../_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
 診断の順序・件数・上限、IR、キャッシュの内容はスレッド数で変わりません。
 
+`tsuzuri watch check|build|test` は、そのコマンドを同じプロセスで実行し、読むファイル（ユーザーのソースとマニフェスト）が変わるたびにもう一度実行します（PB06）。
+各回の診断・警告・IR・終了コードは、同じ引数の単独のコマンドと同じです。変更は `stat`（Unix では状態変更時刻を含みます）で見つけ、
+本文が同じ保存では実行しません。プロセスは、読んだソースの本文と内容ハッシュを `stat` つきで覚え、書き換えられていないファイルは開き直さず、
+起動したコンパイラのファイルが差し替えられると、その回のあとで止まります（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#watch)）。
+
+`tsuzuri serve DIR`（macOS と Linux。PB06）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラのファイル・作業ディレクトリ・
+コンパイラとそのツールが読む環境変数（`PATH`、`TSUZURI_*` など）で起動した `check` と `build` は、サーバーが実行して出力を返し、
+サーバーがなければ（断られても）黙って自分で実行します。標準出力・標準エラー・終了コード・成果物は、サーバーの有無と `--no-server` の有無で変わりません。
+ソケットは、`TSUZURI_SERVER_DIR`（空ならサーバーを使わない）の `0700` のディレクトリにあり、同じ利用者だけを信頼します
+（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。
+
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
-`1` 以外では無効です。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
+`1` 以外では無効です。`watch` では 1 回ごとに、その回の分だけを 1 行出します。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
 `emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、外部ツールの時間とは分けます。
 
 コンパイラの環境変数 `TSUZURI_RANGE_FLAGS`（PR02）は、整数の `+ - *` に LLVM の `nsw`／`nuw` を書くかを選びます。
@@ -3994,6 +4012,8 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 - スレッド: `--wasm-feature threads` を付けると、同じ表から、ブラウザの Web Worker でスレッドプールを作るグルーを出します。`load` は `crossOriginIsolated` と `SharedArrayBuffer` を確かめ、満たさなければワーカーを起動せずに `Error` を投げます（逐次実行へは切り替えません）。共有メモリと、補助ワーカーの起動、スタックの割り当て、失敗時の poison は `src/runtime/wasm-threads.mjs` と同じ手順です。export は調整役のワーカーで動いて `Promise` を返し、ホスト関数は各ワーカーで `importsModule` の `createImports({ workerId, data })` から作ります。トラップやホストの例外はプール全体を止め、作り直しは `load` からです。
 
 `tsuzuri build <path> --emit shared` は、`tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_<name>` だけを export する共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出します。実行ファイルと同じくリンク入力を受け、未解決のシンボルは `E2002` です。Windows（DLL の出力は未対応です。[G10](../_features/_completed/G10-windows.md) の後続の作業です）、`--allocator host`、native 以外のターゲットは `E2000` です。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じ表から C#（`[LibraryImport]`、`SafeHandle` で所有する結果、`ReadOnlySpan<T>` の借用入力、blittable な struct のレコード）、Python（`ctypes`、結果は複製して `tsuzuri_free`）、C++20（C ヘッダーの上の RAII。`std::span`、`std::u16string_view`、`tsuzuri_free` を呼ぶ所有型）のバインディングを出します。どれも引数を C ABI の前に検査し（不正な UTF-8 は呼ぶ前に例外）、`--trap-mode return` を付けると `tsuzuri_try_<name>` を呼んでトラップを各言語の例外にします。付けないと、トラップはプロセスを終わらせます。
+
+`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`）だけで、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*` は弱い定義です。C ランタイムの関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 
 ### ホスト提供の allocator
 

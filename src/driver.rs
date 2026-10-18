@@ -27,6 +27,13 @@ pub use test_runner::{
 mod bindgen_driver;
 pub use bindgen_driver::bindgen;
 
+#[path = "profile.rs"]
+mod profile;
+pub use profile::Profile;
+
+/// The target attributes and the checks of `--emit bitcode` (PR08).
+pub mod lto;
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
@@ -277,6 +284,9 @@ pub enum Emit {
     BindingsJs,
     /// `--emit shared` (E13 Phase 2): a native shared library that exports the public C ABI.
     Shared,
+    /// `--emit bitcode` (PR08): one ThinLTO bitcode file of the program and the runtime it needs, which a
+    /// host links with `-flto=thin` so that its calls into the program can inline.
+    Bitcode,
     /// `--emit bindings-cs` (E13 Phase 2): C# `LibraryImport` bindings of the shared library.
     BindingsCs,
     /// `--emit bindings-py` (E13 Phase 2): a Python `ctypes` module for the shared library.
@@ -494,6 +504,9 @@ impl BuildOptions {
         if self.emit == Emit::Shared {
             self.validate_shared()?;
         }
+        if self.emit == Emit::Bitcode {
+            self.validate_bitcode()?;
+        }
         if self.wasm_threads
             && (self.target != Target::Wasm32
                 || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::BindingsJs))
@@ -606,6 +619,7 @@ impl BuildOptions {
                         | Emit::Llvm
                         | Emit::Header
                         | Emit::Shared
+                        | Emit::Bitcode
                         | Emit::BindingsCs
                         | Emit::BindingsPy
                         | Emit::BindingsCpp
@@ -688,11 +702,14 @@ impl BuildOptions {
         }
         if self.wasm_max_memory.is_some()
             && (!self.target.is_wasm()
-                || !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm))
+                || !matches!(
+                    self.emit,
+                    Emit::Object | Emit::Llvm | Emit::Wasm | Emit::Bitcode
+                ))
         {
             return Err(driver_error(
                 "E2000",
-                "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+                "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output",
             ));
         }
         if self.wasm_stack_size.is_some() && (!self.target.is_wasm() || self.emit != Emit::Wasm) {
@@ -779,6 +796,24 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The options of `--emit bitcode` (PR08): bitcode that a host's LTO link reads, from a native
+    /// target or from wasm32. The other options of an object apply to it unchanged.
+    fn validate_bitcode(self) -> Result<(), Diagnostic> {
+        if !matches!(self.target, Target::Native | Target::Wasm32) {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
+            ));
+        }
+        if self.target == Target::Native && self.platform().windows() {
+            return Err(driver_error(
+                "E2000",
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
             ));
         }
         Ok(())
@@ -901,7 +936,12 @@ impl BuildOptions {
     /// Fills options the command line left unset from the root manifest's
     /// `[wasm]`, for the outputs where each option applies.
     pub fn with_manifest_wasm(mut self, wasm: crate::package::WasmSettings) -> Self {
-        if self.target.is_wasm() && matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Wasm) {
+        if self.target.is_wasm()
+            && matches!(
+                self.emit,
+                Emit::Object | Emit::Llvm | Emit::Wasm | Emit::Bitcode
+            )
+        {
             self.wasm_max_memory = self.wasm_max_memory.or(wasm.max_memory);
         }
         if self.target.is_wasm() && self.emit == Emit::Wasm {
@@ -921,6 +961,7 @@ impl BuildOptions {
             Emit::Wgsl | Emit::WgslRelaxed => "wgsl",
             Emit::Spirv | Emit::SpirvRelaxed => "spv",
             Emit::Shared => platform.shared_extension(),
+            Emit::Bitcode => "bc",
             Emit::BindingsJs => "mjs",
             Emit::BindingsCs => "cs",
             Emit::BindingsPy => "py",
@@ -2825,18 +2866,25 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
 }
 
 pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
+    // A resident process remembers a text while the stamp of its file is the same, and then does not open the file.
+    let started = crate::resident::clock();
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
     }
+    if started.is_some()
+        && let Some(text) = crate::resident::cached_source(path, &metadata)
+    {
+        return Ok(text);
+    }
     let file = fs::File::open(path).map_err(|error| io_error("read source", path, error))?;
-    let metadata = file
+    let opened = file
         .metadata()
         .map_err(|error| io_error("inspect source", path, error))?;
-    if !metadata.is_file() {
+    if !opened.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
     }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if opened.len() > MAX_SOURCE_BYTES as u64 {
         return Err(driver_error(
             "E0003",
             format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
@@ -2846,6 +2894,9 @@ pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     file.take(MAX_SOURCE_BYTES as u64 + 1)
         .read_to_string(&mut source)
         .map_err(|error| io_error("read UTF-8 source", path, error))?;
+    if let Some(started) = started {
+        crate::resident::remember_source(path, &metadata, started, &source);
+    }
     Ok(source)
 }
 
@@ -2997,7 +3048,20 @@ pub fn build_linked(
     options: BuildOptions,
     links: &LinkInputs,
 ) -> Result<Vec<String>, Diagnostic> {
-    build_complete(module, project, output, options, links, "build").map(|(messages, _)| messages)
+    build_profiled(module, project, output, options, links, &Profile::None)
+}
+
+/// Like [`build_linked`], instrumenting the program or optimizing it with a profile (PR07).
+pub fn build_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
+    build_complete(module, project, output, options, links, "build", profile)
+        .map(|(messages, _)| messages)
 }
 
 fn build_complete(
@@ -3007,8 +3071,11 @@ fn build_complete(
     options: BuildOptions,
     links: &LinkInputs,
     action: &str,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
     options.validate()?;
+    profile.validate(options)?;
+    profile.require_llvm_clang()?;
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
@@ -3172,7 +3239,7 @@ fn build_complete(
                     options
                         .debug_info
                         .then_some(options.optimization != OptLevel::O0),
-                    matches!(options.emit, Emit::Object | Emit::Shared),
+                    matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode),
                 )
             })?;
             if output.ir.contains("@tz.callback.") {
@@ -3184,7 +3251,10 @@ fn build_complete(
             trap_sites = output.trap_sites;
             output.ir
         } else if options.target == Target::Native
-            && matches!(options.emit, Emit::Executable | Emit::Object | Emit::Shared)
+            && matches!(
+                options.emit,
+                Emit::Executable | Emit::Object | Emit::Shared | Emit::Bitcode
+            )
             // A freestanding object has no CPU dispatch: its runtime reads the CPU through the C library.
             && !options.freestanding
         {
@@ -3355,9 +3425,9 @@ fn build_complete(
     // src/runtime/os-wasi.c.
     let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
         && (io_runtime || os_runtime || arguments_runtime || wasi_command);
-    // Only objects embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
+    // Only objects, libraries and bitcode embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
     let trap_runtime = options.trap_return
-        && matches!(options.emit, Emit::Object | Emit::Shared)
+        && matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode)
         && [
             "tsuzuri_trap_raise",
             "tsuzuri_boundary_run",
@@ -3433,6 +3503,9 @@ fn build_complete(
     protect_sources(project, output)?;
     protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    // An instrumented WebAssembly module comes with the writer that its host runs to save the counters.
+    let profile_writer = (options.target.is_wasm() && matches!(profile, Profile::Generate(_)))
+        .then(|| profile::wasm_writer_path(output));
     let dwarf_sidecar = (platform.mach_o()
         && options.debug_info
         && matches!(options.emit, Emit::Executable | Emit::Shared))
@@ -3442,6 +3515,10 @@ fn build_complete(
         PathBuf::from(path)
     });
     if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
+    }
+    if let Some(sidecar) = &profile_writer {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
@@ -3473,9 +3550,21 @@ fn build_complete(
             "artifact"
         });
     let mut messages = Vec::new();
+    // The merge of a profile comes first: the cache key records the bytes that Clang will read.
+    let staged_profile = profile::prepare_profile(
+        profile,
+        options.target.is_wasm(),
+        &temporary.path,
+        &mut messages,
+    )?;
     let staged_sidecar = temporary.path.join("sites.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
     let staged_pdb = temporary.path.join("artifact.pdb");
+    let staged_writer = temporary.path.join("profile.mjs");
+    if let (Profile::Generate(directory), Some(_)) = (profile, &profile_writer) {
+        fs::write(&staged_writer, profile::wasm_writer(directory))
+            .map_err(|error| io_error("write profile writer", &staged_writer, error))?;
+    }
     if sidecar.is_some() {
         let table =
             project.with_trap_sources(|sources| crate::trap::side_table(&trap_sites, sources))?;
@@ -3487,6 +3576,9 @@ fn build_complete(
     if sidecar.is_some() {
         cache_paths.insert("traps".into(), staged_sidecar.clone());
     }
+    if profile_writer.is_some() {
+        cache_paths.insert("profile".into(), staged_writer.clone());
+    }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
     }
@@ -3495,9 +3587,11 @@ fn build_complete(
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
     // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    // Bitcode is not cached (PR08 D7): it runs `llvm-link`, whose identity the key does not hold, and its
+    // C runtime is merged as IR, which the runtime object cache does not hold.
     let cache_time = crate::timings::Phase::start("cache");
     let clang_identity = if options.cache
-        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+        && !matches!(options.emit, Emit::Llvm | Emit::Header | Emit::Bitcode)
         && !options.emit.is_kernel()
     {
         match crate::cache::tool_identity("TSUZURI_CLANG", "clang", options.cpu) {
@@ -3511,7 +3605,7 @@ fn build_complete(
         None
     };
     let cache = if options.cache
-        && options.emit != Emit::Header
+        && !matches!(options.emit, Emit::Header | Emit::Bitcode)
         && !options.emit.is_spirv()
         && links.is_empty()
     {
@@ -3525,6 +3619,9 @@ fn build_complete(
                 &text,
                 output,
                 clang_identity.as_ref(),
+                staged_profile
+                    .as_ref()
+                    .map(profile::PreparedProfile::cache_field),
             )?;
             let cache = crate::cache::BuildCache::open(&root)?;
             Ok((cache, key))
@@ -3636,12 +3733,24 @@ fn build_complete(
                 }
             }
         }
+        // The attributes make a host's inliner accept the functions, and for `+simd128` keep the SIMD of a function
+        // through the link. A WebAssembly function without SIMD carries none: it inlines without them.
+        if options.emit == Emit::Bitcode && (options.target == Target::Native || options.wasm_simd)
+        {
+            text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
+        }
+        let text = match &staged_profile {
+            Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
+            _ => text,
+        };
         fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         let runtime_object = temporary.path.join("task.o");
         let merge_debug_ir = platform.mach_o()
             && options.debug_info
             && native_runtime
             && options.emit == Emit::Object;
+        // Bitcode is one file, so its C runtime is merged as IR too (PR08 D4).
+        let merge_runtime_ir = merge_debug_ir || options.emit == Emit::Bitcode;
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
             let source = format!(
@@ -3693,8 +3802,12 @@ fn build_complete(
             fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            // `-S -emit-llvm` writes the IR; `-c` beside it is an unused argument that Clang warns about.
+            runtime.arg("-std=c11");
+            if !merge_runtime_ir {
+                runtime.arg("-c");
+            }
             runtime
-                .args(["-std=c11", "-c"])
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
@@ -3712,8 +3825,9 @@ fn build_complete(
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
             // runtime unit at Clang's default (DWARF 5) would otherwise raise when merged (G16).
-            if merge_debug_ir {
-                runtime.args(["-S", "-emit-llvm"]);
+            if merge_runtime_ir {
+                // `zig cc` adds its own `-c` to a `-S` compile, and then reports it as unused.
+                runtime.args(["-S", "-emit-llvm", "-Wno-unused-command-line-argument"]);
             }
             if options.cpu == Cpu::Native {
                 runtime.arg(native_cpu_flag(platform.arch_name())?);
@@ -3721,7 +3835,7 @@ fn build_complete(
             if gc_sections {
                 runtime.args(["-ffunction-sections", "-fdata-sections"]);
             }
-            if options.cache && !merge_debug_ir {
+            if options.cache && !merge_runtime_ir {
                 let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
                 let cached = compile_runtime_object(
                     "native-c",
@@ -3747,20 +3861,30 @@ fn build_complete(
                     )?,
                 );
             }
-            if merge_debug_ir {
+            if merge_runtime_ir {
                 let combined = temporary.path.join("combined.ll");
-                let mut linker = Command::new(tool("TSUZURI_LLVM_LINK", "llvm-link"));
-                linker
-                    .arg(&ir)
-                    .arg(&runtime_object)
-                    .arg("-S")
-                    .arg("-o")
-                    .arg(&combined);
+                let bitcode = options.emit == Emit::Bitcode;
+                let mut linker = Command::new(if bitcode {
+                    lto::llvm_link_tool()
+                } else {
+                    tool("TSUZURI_LLVM_LINK", "llvm-link")
+                });
+                // The program's own file comes first: `--internalize` leaves its symbols alone and hides
+                // the runtime's, so only the program's public ABI stays visible to a host.
+                linker.arg(&ir).arg(&runtime_object);
+                if bitcode {
+                    linker.arg("--internalize");
+                }
+                linker.arg("-S").arg("-o").arg(&combined);
                 collect_message(
                     &mut messages,
                     run_tool(
                         &mut linker,
-                        "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK",
+                        if bitcode {
+                            "bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang"
+                        } else {
+                            "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK"
+                        },
                     )?,
                 );
                 ir = combined;
@@ -3892,6 +4016,9 @@ fn build_complete(
             .arg("ir")
             .arg("-Wno-override-module")
             .arg(options.optimization.flag());
+        if let Some(staged) = &staged_profile {
+            clang.args(staged.args());
+        }
         if options.debug_info {
             clang.arg("-g");
         }
@@ -3930,6 +4057,10 @@ fn build_complete(
         }
         if options.emit != Emit::Executable || dwarf_sidecar.is_some() {
             clang.arg("-c");
+        }
+        // The bitcode carries the summary that a host's ThinLTO link imports from (PR08 D2).
+        if options.emit == Emit::Bitcode {
+            clang.arg("-flto=thin");
         }
         let object = temporary.path.join("module.o");
         clang.arg(&ir).arg("-o").arg(
@@ -3992,16 +4123,33 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
+        let mut clang_hint = linker_hint(cross_hint(
+            platform,
+            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+        ));
+        if merge_runtime_ir && options.emit == Emit::Bitcode {
+            // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
+            clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
+        }
+        let clang_hint = match &staged_profile {
+            Some(staged) => staged.hint(clang_hint),
+            None => clang_hint,
+        };
+        let clang_output =
+            run_tool(&mut clang, &clang_hint).map_err(|error| match &staged_profile {
+                Some(staged) => staged.clang_error(error),
+                None => error,
+            })?;
         collect_message(
             &mut messages,
-            run_tool(
-                &mut clang,
-                &linker_hint(cross_hint(
-                    platform,
-                    "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-                )),
-            )?,
+            match &staged_profile {
+                Some(staged) => staged.clang_output(clang_output),
+                None => clang_output,
+            },
         );
+        if options.emit == Emit::Bitcode {
+            lto::check_bitcode(&artifact, &tool("TSUZURI_CLANG", "clang"))?;
+        }
         if let Some(symbols) = &shared_symbols {
             link_shared(
                 symbols,
@@ -4035,6 +4183,13 @@ fn build_complete(
                 .args(final_link_args(platform)?)
                 .arg(&object)
                 .args(["-g", "-lm"]);
+            // The link of an instrumented program reads Clang's profile runtime, which the compile did not.
+            if let Some(staged) = staged_profile
+                .as_ref()
+                .filter(|staged| staged.instruments())
+            {
+                linker.arg(staged.flag());
+            }
             if native_runtime {
                 linker.arg(&runtime_object);
                 if task_runtime || net_runtime {
@@ -4198,6 +4353,12 @@ fn build_complete(
             for (symbol, _) in llvm::host_entries(module) {
                 linker.arg(format!("--export={symbol}"));
             }
+            if staged_profile
+                .as_ref()
+                .is_some_and(profile::PreparedProfile::instruments_wasm)
+            {
+                linker.args(profile::WASM_LINK_ARGS);
+            }
             if !llvm::host_entries(module).is_empty() {
                 linker.arg("--export=tsuzuri_async_set_epoch");
             }
@@ -4224,6 +4385,7 @@ fn build_complete(
         .into_iter()
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
+        .chain(profile_writer.as_ref().map(|path| (&staged_writer, path)))
         .collect();
     if !cache_hit && let Some((cache, key)) = &cache {
         let _cache_time = crate::timings::Phase::start("cache");
@@ -4606,12 +4768,37 @@ pub fn run_with_arguments(
     json: bool,
     arguments: &[OsString],
 ) -> Result<Vec<String>, Diagnostic> {
+    run_profiled(
+        module,
+        project,
+        options,
+        links,
+        json,
+        arguments,
+        &Profile::None,
+    )
+}
+
+/// [`run_with_arguments`] with a profile (PR07): `--profile-generate` runs the instrumented
+/// program, which writes its raw profile when it exits, and `--profile-use` runs the program
+/// that the profile optimized. `run` builds with `--trap-info`, so a profile of a `run` matches
+/// a `build --trap-info` best.
+pub fn run_profiled(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    json: bool,
+    arguments: &[OsString],
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
     run_process(
         module,
         project,
         options,
         links,
         RunStdio::Inherit { json, arguments },
+        profile,
     )
     .map(|(messages, _)| messages)
 }
@@ -4638,6 +4825,7 @@ pub fn run_captured(
             timeout,
             limit: MAX_CAPTURED_OUTPUT,
         },
+        &Profile::None,
     )
 }
 
@@ -4665,6 +4853,7 @@ fn run_process(
     options: BuildOptions,
     links: &LinkInputs,
     stdio: RunStdio<'_>,
+    profile: &Profile,
 ) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
         return Err(driver_error(
@@ -4682,7 +4871,7 @@ fn run_process(
     } else {
         "program"
     });
-    let (messages, sites) = build_complete(
+    let (mut messages, sites) = build_complete(
         module,
         project,
         &output,
@@ -4692,7 +4881,9 @@ fn run_process(
         },
         links,
         "run",
+        profile,
     )?;
+    let started = std::time::SystemTime::now();
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
     let (status, stderr, stdout) = match stdio {
         RunStdio::Inherit { json, arguments } => {
@@ -4765,6 +4956,11 @@ fn run_process(
         io::stderr()
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
+    }
+    if let Profile::Generate(directory) = profile
+        && let Some(message) = profile::unwritten_profile(directory, started)
+    {
+        messages.push(message);
     }
     Ok((messages, stdout))
 }
@@ -5010,6 +5206,47 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 /// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
+
+/// The IR of a `--emit bitcode` build with the target attributes that a C function compiled with the same flags has
+/// (PR08 D3): the CPU and its tuning, and for `--cpu native` the features too. A WebAssembly function keeps its
+/// features as well, because `+simd128` is what lets the link's code generator use SIMD for it.
+fn bitcode_ir(
+    ir: &str,
+    options: BuildOptions,
+    platform: Platform,
+    f16: llvm::F16Path,
+    directory: &Path,
+) -> Result<String, Diagnostic> {
+    let wasm = options.target.is_wasm();
+    let mut flags = if wasm {
+        [
+            "--target=wasm32-unknown-unknown",
+            "-mbulk-memory",
+            "-msimd128",
+        ]
+        .map(OsString::from)
+        .to_vec()
+    } else {
+        let mut flags = compile_args(platform);
+        flags.extend(no_sdk_args(platform));
+        flags
+    };
+    if options.cpu == Cpu::Native {
+        flags.extend(
+            native_ir_cpu_args(platform.arch_name(), f16)?
+                .into_iter()
+                .map(OsString::from),
+        );
+    }
+    let attributes =
+        lto::probe_target_attributes(&tool("TSUZURI_CLANG", "clang"), &flags, directory)?;
+    let attributes = if wasm || options.cpu == Cpu::Native {
+        attributes
+    } else {
+        attributes.without_features()
+    };
+    lto::stamp_target_attributes(ir, &attributes)
+}
 
 /// The object of `source`, compiled with `args` for `unit`: the bundled one, the one in the runtime cache, or a
 /// fresh compile of `input` in `directory` (which a failure reports with `hint`) that is then stored.
@@ -5338,7 +5575,10 @@ impl Drop for TemporaryDirectory {
         if !self.removed {
             if let Err(error) = fs::remove_dir_all(&self.path) {
                 if error.kind() != io::ErrorKind::NotFound {
-                    eprintln!("warning: cannot remove '{}': {error}", self.path.display());
+                    crate::resident::warn(&format!(
+                        "warning: cannot remove '{}': {error}",
+                        self.path.display()
+                    ));
                 }
             }
         }
@@ -5761,6 +6001,164 @@ mod tests {
     }
 
     #[test]
+    fn validates_bitcode_output() {
+        let bitcode = BuildOptions {
+            emit: Emit::Bitcode,
+            ..BuildOptions::default()
+        };
+        assert_eq!(
+            bitcode.output_path(Path::new("dir/Main.tz")),
+            Path::new("dir/Main.bc")
+        );
+        // WebAssembly: wasm32 on every host, with the options that an object of it has.
+        let wasm = BuildOptions {
+            target: Target::Wasm32,
+            ..bitcode
+        };
+        for options in [
+            wasm,
+            BuildOptions {
+                optimization: OptLevel::Oz,
+                debug_info: true,
+                wasm_simd: true,
+                wasm_max_memory: Some(64 << 20),
+                ..wasm
+            },
+        ] {
+            assert!(options.validate().is_ok(), "{options:?}");
+        }
+        for (options, message) in [
+            (
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..bitcode
+                },
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
+            ),
+            (
+                BuildOptions {
+                    wasm_threads: true,
+                    ..wasm
+                },
+                "--wasm-feature threads requires wasm32 object or WASM output",
+            ),
+            (
+                BuildOptions {
+                    wasm_jspi: true,
+                    ..wasm
+                },
+                "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
+            ),
+            (
+                BuildOptions {
+                    wasm_host: Some(WasmHost::Wasi),
+                    ..wasm
+                },
+                "--wasm-host wasi requires wasm32 object or WASM output",
+            ),
+            (
+                BuildOptions {
+                    wasm_stack_size: Some(1 << 20),
+                    ..wasm
+                },
+                "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size",
+            ),
+            (
+                BuildOptions {
+                    trap_return: true,
+                    ..wasm
+                },
+                "--trap-mode return is only valid for native object, llvm or header output",
+            ),
+        ] {
+            assert_eq!(
+                options.validate().unwrap_err().message,
+                message,
+                "{options:?}"
+            );
+        }
+        if cfg!(windows) {
+            assert_eq!(
+                bitcode.validate().unwrap_err().message,
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally"
+            );
+            return;
+        }
+        assert!(bitcode.validate().is_ok());
+        // The options of an object keep their meaning for bitcode.
+        for options in [
+            BuildOptions {
+                optimization: OptLevel::Oz,
+                debug_info: true,
+                ..bitcode
+            },
+            BuildOptions {
+                trap_return: true,
+                trap_info: true,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Small,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Host,
+                ..bitcode
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Counting,
+                ..bitcode
+            },
+            BuildOptions {
+                triple: Some(Triple::X86_64LinuxGnu),
+                ..bitcode
+            },
+        ] {
+            assert!(options.validate().is_ok(), "{options:?}");
+        }
+        if native_cpu_flag(env::consts::ARCH).is_ok() {
+            assert!(
+                BuildOptions {
+                    cpu: Cpu::Native,
+                    ..bitcode
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for (options, message) in [
+            (
+                BuildOptions {
+                    triple: Some(Triple::X86_64WindowsMsvc),
+                    ..bitcode
+                },
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
+            ),
+            (
+                BuildOptions {
+                    strip: true,
+                    ..bitcode
+                },
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                BuildOptions {
+                    freestanding: true,
+                    allocator: llvm::Allocator::Host,
+                    ..bitcode
+                },
+                "--freestanding requires object, LLVM IR, or header output",
+            ),
+        ] {
+            assert_eq!(
+                options.validate().unwrap_err().message,
+                message,
+                "{options:?}"
+            );
+        }
+    }
+
+    #[test]
     fn shared_libraries_export_the_public_entry_points_the_ir_defines() {
         let (directory, project) = project(
             &[(
@@ -5914,7 +6312,8 @@ mod tests {
             wasm_threads,
             ..BuildOptions::default()
         };
-        let limit = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let limit =
+            "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output";
         let size = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
         for (target, emit, max, stack, message) in [
             (Target::Native, Emit::Executable, memory, None, limit),

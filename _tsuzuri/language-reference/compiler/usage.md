@@ -11,7 +11,10 @@
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。`build` は `--target` で、ビルド機とは別の OS や CPU 向けの成果物も作れます（[対応プラットフォーム](platforms.md)）。
 - `repl` は、宣言と式を 1 つずつ受け取り、入力ごとにプログラムを作り直して検査し、実行します。
 - `script` は、名前を問わない 1 つのファイルを `Main.tz` として `run` と同じように実行し、後ろの引数をプログラムへ渡します。先頭の `#!` 行で、ファイル自体を実行できます。
+- `watch` は、`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は、そのコマンドを単独で実行したときと同じです。
+- `serve`（macOS と Linux）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラ・作業ディレクトリ・環境で起動した `check` と `build` は、サーバーが実行して出力を返し、サーバーがなければ（断られても）黙って自分で実行します。出力はサーバーがなくても同じです。`--no-server` でサーバーを使わずに実行できます。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
+- 実行時の分岐の頻度で最適化するには、`build` と `run` に `--profile-generate DIR` を付けて計装し、動かして集めたプロファイルを `--profile-use` で渡して作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。速くなる種目と遅くなる種目があるので、前後を測ります。
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
@@ -19,7 +22,7 @@
 
 ## コマンドの流れ
 
-`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`watch` は、次の語（`check`・`build`・`test`）以降をそのコマンドの引数として読み、そのコマンドの流れを繰り返します。`serve` は、自分の引数（ディレクトリ、`--idle-timeout`、`--status`、`--stop`）を読み、要求を待つか、動いているサーバーに問い合わせます。`check` と `build` は、引数の検査のあと、プロジェクトを読む前に、そのプロジェクトのサーバーがあれば要求を渡します。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
 
 ```mermaid
 flowchart TD
@@ -33,12 +36,17 @@ flowchart TD
   kind -->|toolchain info| tools["解決したツールを表示"]
   kind -->|bindgen| bind["C ヘッダーから extern を生成"]
   kind -->|lsp| server["stdio の言語サーバー"]
+  kind -->|watch| watching["check・build・test を実行し、読むファイルが変わるたびに繰り返す"]
+  watching --> load
+  kind -->|serve| serving["プロジェクトのサーバー。要求を待ち、check と build を実行して出力を返す"]
   kind -->|repl| interactive["入力ごとに Main.tz を作って検査し実行"]
   kind -->|script| single["1 つのファイルを Main.tz として読む"]
   single --> typed
   kind -->|fmt| format["その場で整形する"]
   kind -->|check doc test build run| load["入力を 1 つ解決する"]
-  load --> read["ルート以下のソースを再帰的に読む"]
+  load --> ask{"check か build で、サーバーがあるか"}
+  ask -->|引き受けた| served["サーバーが実行した出力と終了コードを返す"]
+  ask -->|ない、断られた| read["ルート以下のソースを再帰的に読む"]
   read --> typed{"構文と型は通るか"}
   typed -->|いいえ| report["診断を出して終了コード 1"]
   typed -->|はい| act["検査、生成、実行、テスト、文書化"]
@@ -62,7 +70,7 @@ tsuzuri-0.1.0-darwin-arm64/
   licenses/
 ```
 
-Linux の `bin/` には `llvm-link` と `dsymutil` はありません。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
+Linux の `bin/` には `llvm-link` と `dsymutil` はありません。C ランタイムを使うプログラムの `--emit bitcode` は、ランタイムを `llvm-link` で 1 つにまとめるので、Linux の配布物では `llvm-link` を別に入れます（Clang と同じ LLVM のもの。C ランタイムを使わないプログラムと wasm32 には要りません。[言語間 LTO と bitcode](native-interop.md#言語間-lto-と-bitcode)）。Windows の共有ライブラリは `bin/` にあります。`share/lldb/tsuzuri_lldb.py` は LLDB に Tsuzuri の値を表示させる formatter です（[デバッグ](debugging.md#lldb-で-tsuzuri-の値を表示する)）。`share/natvis/tsuzuri.natvis` は、`-g` の object を MSVC のリンカーでリンクするときに `/NATVIS` で PDB へ埋め込む Visual Studio 用の表示です（[Windows（PDB と natvis）](debugging.md#windowspdb-と-natvis)）。
 
 同じディレクトリに置いた `<archive>.sha256` は、`shasum -a 256 -c`（Linux は `sha256sum -c`）で読めます。これはダウンロード時の破損を検査するものです。配布元そのものの真正性の検証は別の手段で行います。
 
@@ -101,7 +109,7 @@ TSUZURI_WASM_OPT: path wasm-opt (not found)
 node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ```
 
-各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。
+各行の `env` / `bundled` / `path` は、ツールが環境変数、配布物の同梱バイナリ、PATH のどれによって解決されたかを示します。見つからないツールは `(not found)`、`--version` の取得に失敗したツールは `(unavailable)` と表示されます。このコマンド自体はツールの場所を確認するだけでビルドは行わず、終了コード 0 で完了します。`--emit bitcode` は、`llvm-link` を PATH より前に、Clang と同じディレクトリでも探します。この探索はここには出ないので、`TSUZURI_LLVM_LINK: path llvm-link (not found)` でも、`llvm-link` が Clang の隣にあれば bitcode は作れます。
 
 ## ソースからビルドする
 
@@ -250,6 +258,8 @@ tsuzuri check demo
 
 `run` は `--target TRIPLE` も受け付けます（native の target だけで、WebAssembly は `E2000`）。ビルド機で動かせない target は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ、その実行器を通して実行します。指定がなければ、ビルドの前に `E2000` です（[ほかの target の実行ファイルを動かす](platforms.md#ほかの-target-の実行ファイルを動かす)）。
 
+`run` に `--profile-generate DIR` を付けると、計装したプログラムを実行し、正常に終了したときに `DIR` へ LLVM の raw profile を書きます。トラップした実行は書きません。`--profile-use PATH` を付けると、プロファイルで最適化したプログラムを実行します。`run` は `--trap-info` でビルドするので、その IR に合うプロファイルは `run` か `build --trap-info` で作ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
+
 ### repl
 
 宣言、トップレベルの `let`、式を 1 つずつ入力して、型と値をすぐ確かめます。F# の `dotnet fsi` に近い使い方ですが、JIT はありません。入力ごとに、それまでに受け付けた宣言と `let` の後ろへ入力を足した `Main.tz` を作り、`run` と同じ経路（解析、LLVM IR、Clang、実行）で検査して実行します。数値の意味やトラップは `run` と同じで、最適化レベルは時間だけを変えます。
@@ -351,7 +361,7 @@ let word = (
 | 1 回の評価の実行時間（Clang は含まない） | `--timeout`。既定は 10 秒、`0` は無制限、最大 3600 | プログラムを止めて `E2005` |
 | 評価するプログラムの標準出力 | 16 MiB | プログラムを止めて `E2005` |
 
-評価のたびに Clang でコンパイルしてリンクし、新しい実行ファイルを起動するので、1 回の評価は `-O0` の新しい式で 0.5〜0.7 秒ほどかかります（Apple M1 Max の macOS で計測。macOS が新しい実行ファイルを初めて起動するときの検査の約 0.2 秒を含みます。[性能測定](../../../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）。同じプログラムをもう一度評価するときは whole-build cache が当たり、約 0.25 秒です。`:type` と宣言だけの入力は検査だけで、約 0.05 秒です。
+評価のたびに Clang でコンパイルしてリンクし、新しい実行ファイルを起動するので、1 回の評価は `-O0` の新しい式で 0.5〜0.7 秒ほどかかります（Apple M1 Max の macOS で計測。macOS が新しい実行ファイルを初めて起動するときの検査の約 0.2 秒を含みます。[性能測定](../../../docs/benchmarks.md#repl-の-1-入力の待ち時間g13)）。同じプログラムをもう一度評価するときは whole-build cache が当たり、`-O0` で約 0.2 秒です。REPL のプロセスは、キャッシュ鍵のためのコンパイラ自身の SHA-256（9 MB。約 45 ms）を、ファイルの `stat` が前と同じ間は覚えているので、2 回目の評価から計算しません（Unix。`stat` が変われば計算し直します）。`:type` と宣言だけの入力は検査だけで、約 0.05 秒です。
 
 既定の最適化は `-O0` です。ターゲットは native だけで、`--target`、パス、ほかのビルドオプションは終了コード 2 の `E2000` です。入力のエラーでは終了せず、`:quit` か標準入力の終わりで終了コード 0 です。標準入力が端末のときだけ、見出しと `> `（続きの行は `. `）のプロンプトを出します。標準出力は入力だけで決まるので、入力をファイルから流せばテストにも使えます。行の編集と履歴はありません。
 
@@ -397,6 +407,16 @@ scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point c
 ```
 
 成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。
+
+実行時の分岐の頻度で最適化するには、`--profile-generate DIR` で計装した実行ファイルを代表的な仕事で動かし、`DIR` を `--profile-use` に渡して作り直します。`DIR` の `.profraw` は `llvm-profdata` で merge されます（merge 済みの `.profdata` も渡せます）。
+
+```sh
+tsuzuri build demo/Main.tz -o demo/hello.gen --profile-generate demo/prof
+demo/hello.gen
+tsuzuri build demo/Main.tz -o demo/hello --profile-use demo/prof
+```
+
+native の `exe` と `object`、wasm32 の module だけで、Windows と別の機械の `--target` は `E2000` です。プロファイルの中身（merge したバイト列）が成果物キャッシュのキーに入ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
 ### test
 
@@ -581,9 +601,56 @@ C の ABI が Tsuzuri のホスト ABI と一致すると確かめられた宣�
 
 ### lsp
 
-`tsuzuri lsp` は、標準入出力の言語サーバーです。パスもビルドオプションも取りません。エディターは未保存のバッファを渡し、診断、ホバー、定義、補完、参照、リネームを受け取ります。`shutdown` のあと入力が終わると終了コード 0、`shutdown` なしで入力が閉じるかプロトコルに失敗すると 1 です。
+`tsuzuri lsp` は、標準入出力の言語サーバーです。パスもビルドオプションも取りません。エディターは未保存のバッファを渡し、診断、ホバー、定義、補完、参照、リネームを受け取ります。`shutdown` のあと入力が終わると終了コード 0、`shutdown` なしで入力が閉じるかプロトコルに失敗すると 1 です。変更のたびにプロジェクトを読み直しますが、ディスク上のソースは、`stat` が前に読んだときと同じなら、開き直さずにメモリの本文を使います（Unix。[watch](#watch) と同じ規則で、書き換えられたファイルは必ず読み直します。それ以外のプラットフォームでは毎回読みます）。1,000 module のプロジェクトで、1 回の変更の応答の最小は 4.1〜4.2 秒から 3.6〜3.7 秒になりました（Apple M1 Max の macOS、ほかの作業と共有する機械で 12 回の変更の最小。ファイルを開く費用はこの機械のセキュリティ agent の性質で、環境によって大きく違います。[ベンチマーク](../../../docs/benchmarks.md)の PB06 の節）。
 
 診断の見た目は [診断メッセージとエラーコード](diagnostics.md) に分けています。
+
+### watch
+
+`tsuzuri watch` は、`check`・`build`・`test` のどれかを 1 回実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。保存してから結果を見るまでの手間を省くコマンドで、1 回ごとの仕事は、新しく `tsuzuri check` などを実行するのと同じです。
+
+```sh
+tsuzuri watch check demo
+tsuzuri watch build demo -O0 -o demo/hello
+tsuzuri watch test demo --filter parse
+```
+
+- コマンド名は必須です。`tsuzuri watch` だけ、`run`・`fmt`・`lsp` などほかのコマンド、コマンド名のない入力（`tsuzuri watch demo`）は、終了コード 2 の `E2000`（`watch runs check, build, or test; use tsuzuri watch check <path>`）です。引数の検査はそのコマンドと同じなので、`tsuzuri watch check demo --no-cache` も `check` と同じ `E2000` です。`watch` という名前のディレクトリは、`tsuzuri build watch` のようにサブコマンドを書いて渡します。
+- 各回の診断、警告、テストの結果、成果物は、同じ引数で単独のコマンドを実行したときと同じです。各回の終わりに、標準エラーへ `watch: run N finished with exit code C` を書きます。`--json` を付けると、同じ行が `{"type":"watch","run":N,"exit":C}` の 1 行の JSON になります。
+- 失敗しても止まりません。止めるのは Ctrl-C などで、後片付けは要りません（ファイルを作らず、socket も開きません）。実行は同じプロセスの中なので、環境変数と作業ディレクトリは最初から最後まで同じです。`TSUZURI_THREADS` が不正なときは、監視を始める前に終了コード 2 です。
+- 見るのは、その回の読み込みが開いたファイルです。ユーザーのソース（`.tz`・`.tt`・`.tc`）、`Tsuzuri.toml`、`Tsuzuri.lock`、パス依存のパッケージのファイルが入り、標準ライブラリと成果物は入りません。隠しファイルや、ほかの拡張子のファイルを足しても実行されません。入力が読めないとき（ディレクトリがまだない、など）は、その診断を出して待ち、直ったら実行します。
+- ファイルの追加と削除、新しいディレクトリは 1 秒以内、書き換えは 100 ms ほどで見つかります。実行中に保存すると、その回が終わったあとにもう一度実行します。
+
+見つけ方は、ファイルを開かずに `stat` で見る方法です。100 ms ごとに、読んだファイルの大きさと更新時刻を比べます（Unix では、これに inode と状態変更時刻を足します。状態変更時刻はカーネルが書き込み・名前の付け替え・`utimes` のたびに更新し、プログラムからは戻せないので、同じ長さで更新時刻を元に戻した書き換えも見つかります）。1 秒ごとに、ディレクトリを探し直して追加と削除を調べます。`stat` が変わったファイルだけを読み直し、本文が同じなら実行しません。`touch` や、内容を変えない保存で実行が走らないのはこのためです。更新時刻の粒度に収まるほど新しいファイル（2 秒以内に書かれたもの）は、その時間が過ぎたあとにもう一度だけ読み直して確かめます。Unix 以外では状態変更時刻を使えないので、1 秒ごとにすべてのファイルを読み直して比べます。
+
+`watch` のプロセスは、実行のあいだに読んだものを覚えています。ソースの本文と、`build` のキャッシュ鍵が使うファイルの内容ハッシュ（コンパイラ自身の実行ファイルを含みます）を、読んだ時点の `stat` といっしょに持ち、次の回で `stat` が同じなら、ファイルを開かずに使います。開くのは、書き換えられたファイルだけです。覚えたものを使うのは、読み始めたのが `stat` の時刻から 2 秒以上あとのときだけで、それより新しいファイルは次の回でもう一度読みます。読みに失敗したものは覚えません。Unix 以外では `stat` が書き込みをすべて示さないので、何も覚えず、毎回すべて読みます。覚えたものの合計が 1 GiB を超えたら、すべて捨てて読み直します。200 module のプロジェクトで 1 module の本文を書き換えた `check` は、`load` が 17〜26 ms から 2.2 ms になり、段の total が 292〜297 ms から 264〜267 ms になりました（Apple M1 Max の macOS、`TSUZURI_TIME_PASSES=1`。[ベンチマーク](../../../docs/benchmarks.md)の PB06 の節）。結果と出力は、覚えていないときと同じです。
+
+`watch` を始めたコンパイラのファイルが、動いているあいだに差し替えられた（再ビルドされた）ときは、その回が終わったあとで `watch: the compiler binary changed; stopping (start tsuzuri watch again)`（`--json` では `{"type":"watch","stopped":"compiler-changed"}`）を標準エラーに書き、終了コード 1 で止まります。新しいコンパイラは、もう一度 `tsuzuri watch` を始めて使います。止めるのは、再ビルドしたコンパイラの結果を待っている利用者に、古いコンパイラの結果を出し続けないためです。キャッシュは差し替えのあとも、動いているコンパイラ自身の識別で書くので、差し替え後のファイルの識別で古いコンパイラの結果が残ることはありません。`TSUZURI_TIME_PASSES=1` の報告は、`watch` では 1 回ごとに、その回の分だけを標準エラーに 1 行書きます。
+
+1,000 module のプロジェクトで何もしていないときの CPU は、Apple M1 Max の macOS で 1 core の約 2% でした（`stat` が 1 秒に 10 回、1,000 ファイルです）。
+
+### serve
+
+`tsuzuri serve` は、1 つのプロジェクトの常駐ビルドサーバーです（macOS と Linux。Windows では終了コード 2 の `E2000` です）。前面で動き続け、`check` と `build` の要求を待ちます。コンパイラの起動、ファイルの読み込み、`build` のキャッシュ鍵のためのコンパイラ自身のハッシュ計算を、要求ごとに繰り返さないための常駐プロセスです。
+
+```sh
+tsuzuri serve demo &
+tsuzuri check demo
+tsuzuri build demo -O0 -o demo/hello
+tsuzuri build demo -O0 -o demo/hello --no-server
+tsuzuri serve --status demo
+tsuzuri serve --stop demo
+```
+
+- 要求を出すのは `check` と `build` だけです。オプションは、`--emit bitcode`・`--profile-generate`・`--profile-use` を含めて、要求の引数としてそのままサーバーに渡り、サーバーが同じ引数の解析で解釈します。サーバーが引き受けた要求の標準出力・標準エラー・終了コード・成果物は、`--no-server` を付けて単独で実行したときと同じです。サーバーがなければ、ソケットが残っているだけなら、サーバーでないものが答えたなら、応答が壊れているなら、`check` と `build` は何も表示せずに自分で実行します（サーバーの有無で出力は変わりません）。`--no-server` は、`check` と `build` でサーバーに尋ねずに実行します（ほかのコマンドでは終了コード 2 の `E2000` です）。`watch` と `serve` の中の実行は、サーバーに尋ねません。
+- サーバーは、次のすべてが同じ要求だけを実行します。違うときは断り、クライアントが自分で実行します。(1) コンパイラのファイル（正規化したパス）。(2) 作業ディレクトリ。(3) コンパイラとそのツールが読む環境変数: `PATH`、`TSUZURI_*`（あとで増える設定も含みます）、`SDKROOT`・`DEVELOPER_DIR`・`*_DEPLOYMENT_TARGET`、`HOME`・`XDG_CACHE_HOME`・`TMPDIR` などのキャッシュと一時ディレクトリ、`LANG`・`LC_*`、`LD_*`・`DYLD_*`・`CLANG_*`・`ZIG_*`・`LLVM_*` など。端末のセッションを表す変数のように、何も読まない変数は比べません。サーバーと要求で、片方にしかない変数、値が違う変数があれば `env` で断ります。(4) プロジェクトのルート（ルートが違うサーバーには届きません）。(5) コマンドが `check` か `build` で、`--no-server` がないこと。ほかに、待っている要求が 16 件を超えたとき（`busy`）、出力が 16 MiB を超えるとき（`too-large`）、要求が読めないとき（`protocol`）、サーバーの中で panic したとき（`internal`。状態を捨てます）も断ります。断った回数は `serve --status` の `refusals` と、サーバーの標準エラーのログに出ます。
+- サーバーは要求を 1 つずつ、起動したスレッドで実行します。1 つの接続が 1 つの要求で、要求の行は 1 MiB まで、2 秒以内に届く必要があります。待っているクライアントは、前の要求が終わるまで待ちます。サーバーが `umask`・資源の上限など、プロセスの属性を持つので、成果物の権限はサーバーを起動した環境のものです。
+- 要求のあいだに、読んだソースの本文と、`build` のキャッシュ鍵のためのファイルの内容ハッシュを覚えます（`watch` と同じ規則です。[watch](#watch)）。`stat` が同じファイルは開き直さないので、数百のファイルを持つプロジェクトの `load` の時間が減ります。結果は、覚えていないときと同じです。覚えた量が 1 GiB を超えるとすべて捨てます。`TSUZURI_TIME_PASSES=1` のときは、1 要求ごとの報告が応答の標準エラーの最後に付き、クライアントは自分の報告を出しません。サーバーとクライアントで `TSUZURI_TIME_PASSES` が違うときは `env` で断ります。
+- 終わり方: `--idle-timeout SECONDS`（1〜86400、既定 1800）のあいだ要求がないと、`serve: idle for N s; stopping` を書いて終了コード 0 で終わります。`tsuzuri serve --stop DIR` も終了コード 0 で終わらせ、ソケットがなくなるまで待ちます。コンパイラのファイルが差し替えられたあと、次の要求を `compiler-changed` で断って、`serve: the compiler binary changed; stopping (start tsuzuri serve again)` を書いて終了コード 1 で終わります。終了するとソケットは消えます。強制終了（SIGKILL）で残ったソケットは、答えるプロセスがなければ、次の `serve` が引き取ります。同じプロジェクトのサーバーは 1 つで、2 つ目は終了コード 1 の `E2001`（`a build server is already running for this project`）です。
+- `tsuzuri serve --status DIR` は、サーバーの状態を JSON で標準出力に書きます（`pid`・`root`・`compiler`・`compiler_sha256`・`idle_seconds`・`uptime_seconds`・`requests`・`served`・`refused`・`refusals`・`resident_bytes`・`source_hits`・`source_reads`・`digest_hits`・`digest_reads`）。サーバーがなければ終了コード 1 の `E2001`（`no build server is running for ...`）です。`DIR` はプロジェクトのディレクトリか、そのファイルです。
+- ソケットの置き場所は `TSUZURI_SERVER_DIR`（絶対パス）で決まります。空にするとサーバーを使いません（`serve` は `E2000`）。既定は、macOS では `$HOME/Library/Caches/tsuzuri/server`、Linux では `$XDG_RUNTIME_DIR/tsuzuri`（なければ `$XDG_CACHE_HOME` か `$HOME/.cache` の下の `tsuzuri/server`）です。ディレクトリは `0700` で作られ、すでにあるものは、シンボリックリンクでなく、グループにも他人にも開かれておらず、自分のものでなければ `E2001` です。ソケットは `0600` で、名前はプロジェクトのルートの SHA-256 の先頭 16 桁と `.sock` です。クライアントは、ディレクトリがこの条件を満たさなければ尋ねません。サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめません（`0700` のディレクトリが唯一の防御です）。ソケットのパスが長すぎる（macOS で 103 byte、Linux で 107 byte を超える）ときは `E2000` で、より短いディレクトリを `TSUZURI_SERVER_DIR` に指定します。
+- 速さは、`TSUZURI_TIME_PASSES` の段で見ると、サーバーが減らすのは起動と `load`（ファイルを開く）と `cache` の一部だけで、型検査・単相化・所有権の検査は 1 要求ごとに全体をやり直します。1 module の本文を書き換えた `check` の実時間は、Apple M1 Max の macOS（ほかの作業と共有する機械）で、200 module が 0.87〜0.89 倍、1,000 module が 0.62〜0.70 倍、`build -O0` が 200 module で 0.95〜1.00 倍、1,000 module で 0.86〜0.87 倍でした（Clang の時間は減りません）。サーバー自身の RSS は、1,000 module で約 0.7 GiB です。条件と生の値は [ベンチマーク](../../../docs/benchmarks.md)の PB06 の節にあります。
+- `serve` という名前のディレクトリは、`tsuzuri build serve` のようにサブコマンドを書いて渡します。引数は `serve DIR [--idle-timeout SECONDS]`、`serve --status DIR`、`serve --stop DIR` で、それ以外は終了コード 2 の `E2000` です。
 
 ### toolchain info
 
@@ -627,7 +694,7 @@ Price.price()
 
 ## ビルドキャッシュ
 
-`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）をまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。
+`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）、`--profile-use` のプロファイルの中身、`--profile-generate` のディレクトリをまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。プロファイルの旗を付けないビルドのキーは、旗がなかったときと同じです。`TSUZURI_LLVM_PROFDATA` と `LLVM_PROFILE_FILE` はキーに入りません（前者の結果はプロファイルの中身に、後者は実行時だけに効きます）。
 
 保存先は `TSUZURI_CACHE_DIR` です。空でなければそのパスを使います。未設定のときは次です。
 
