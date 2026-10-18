@@ -125,6 +125,18 @@ jobs:
           node tests/features.mjs target/release/tsuzuri storage
           node tests/features.mjs target/release/tsuzuri last_use
           node tests/features.mjs target/release/tsuzuri param_facts
+      # PM02: a function value or a Task is { descriptor, environment }. primitives.mjs runs the four kinds of function value
+      # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
+      # without running a process (LLDB is on the macOS runners only).
+      - name: Function values and tasks (PM02)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/primitives.mjs target/release/tsuzuri
+          node tests/tasks.mjs target/release/tsuzuri
+          if [ "$RUNNER_OS" = macOS ]; then node tests/debugger_static.mjs target/release/tsuzuri; fi
       # PM05: the WASM heap alone, the unit tests of the size-class allocator (plain, ASan+UBSan, TSan), --allocator small end
       # to end, and the vec and storage suites with every block of the size classes accounted for.
       - name: WASM heap and size-class allocator
@@ -161,6 +173,20 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
           node tests/utf_simd.mjs --quick
+      # PM03: the compact (Latin-1) string form, which TSUZURI_STRINGS=compact selects, against independent references: the raw
+      # runtime functions, every form pair of every string operation compiled in both modes, the LLDB formatter without a
+      # live session, and the existing string suites run in both modes.
+      - name: Compact strings (PM03)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 40
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          node tests/compact_strings_raw.mjs target/release/tsuzuri --quick
+          node tests/compact_strings.mjs target/release/tsuzuri --quick
+          python3 tests/lldb_strings.py
+          node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
@@ -187,6 +213,15 @@ jobs:
           node tests/llvm_handoff.mjs target/release/tsuzuri
           node tests/handoff_tools.mjs target/release/tsuzuri
           node tests/bundle_identity.mjs target/release/tsuzuri
+      # PR07: --profile-generate and --profile-use. LLVM_PREFIX turns every skip of tests/pgo.mjs into a failure, so the Clang here
+      # must have its profile runtime (libclang-rt-21-dev on Linux) and sit next to llvm-profdata.
+      - name: Profile-guided optimization (PR07)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/pgo.mjs target/release/tsuzuri
       - name: Numeric display and parse references
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
@@ -235,6 +270,7 @@ jobs:
           node benchmarks/run-dispatch.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-build.mjs target/release/tsuzuri --quick --out target/perf/ci-build
+          node benchmarks/run-lto.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-apps.mjs target/release/tsuzuri --quick --metrics target/perf/ci-apps
           node benchmarks/metrics.mjs report target/perf/ci-core target/perf/ci-build target/perf/ci-apps
       - name: Frontend benchmark record smoke
@@ -257,6 +293,18 @@ jobs:
           LC_ALL: C
           TSUZURI_CACHE_DIR: ""
         run: node tests/parallel_frontend.mjs target/release/tsuzuri
+      # PB06: tsuzuri watch and the resident build server. A request must give the same output, exit code and artifacts as the command
+      # alone; the socket path of the server must fit sun_path, so TMPDIR is the short runner temp directory.
+      - name: Watch mode and the resident build server (PB06)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/watch.mjs target/release/tsuzuri
+          node tests/server.mjs target/release/tsuzuri
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:
@@ -278,6 +326,17 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           RUST_MIN_STACK: "4194304"
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          cargo test --locked --no-fail-fast
+      # PM03: the whole Rust suite with every program compiled in the compact string form (about 27 minutes), on one host, so that the
+      # opt-in mode stays as correct as the default. The tests that pin the UTF-16 IR text fix their form explicitly.
+      - name: Rust tests with compact strings (PM03)
+        if: ${{ !cancelled() && matrix.host == 'linux-x64' }}
+        env:
+          RUST_MIN_STACK: "4194304"
+          TSUZURI_STRINGS: compact
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
