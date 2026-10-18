@@ -6,7 +6,7 @@
 //! LLVM IR that this compiler writes, so the IR gets the attributes that Clang gives a C function compiled
 //! with the same flags ([`probe_target_attributes`], [`stamp_target_attributes`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -374,6 +374,114 @@ pub fn check_bitcode(artifact: &Path, clang: &OsStr) -> Result<(), Diagnostic> {
     ))
 }
 
+/// The name of the function that a `define` or `declare` line (from its keyword) names.
+fn function_name(line: &str) -> Option<&str> {
+    let rest = &line[line.find('@')? + 1..];
+    Some(rest[..rest.find('(')?].trim_matches('"'))
+}
+
+/// Which of `names` the functions of `ir` define and which they declare.
+fn functions_among<'a>(
+    ir: &str,
+    names: &BTreeSet<&'a str>,
+) -> (BTreeSet<&'a str>, BTreeSet<&'a str>) {
+    let (mut defined, mut declared) = (BTreeSet::new(), BTreeSet::new());
+    for line in ir.lines() {
+        let (set, start) = if let Some(start) = definition_start(line) {
+            (&mut defined, start)
+        } else if line.starts_with("declare ") {
+            (&mut declared, 0)
+        } else {
+            continue;
+        };
+        if let Some(name) = function_name(&line[start..]).and_then(|name| names.get(name)) {
+            set.insert(*name);
+        }
+    }
+    (defined, declared)
+}
+
+/// Keeps the public entry points that only the C runtime defines external through the merge of the runtime into
+/// the bitcode (D5). `llvm-link --internalize` makes every symbol that the second file alone defines internal,
+/// except those on `@llvm.used`. `exports` are the names a host may call (the ones of a shared library), and those
+/// that `ir` does not define come from the runtime (`tsuzuri_async_post` does): `ir` gets a declaration of each
+/// and an `@llvm.used` list of them, so the runtime's definition stays external, as it is in an object.
+///
+/// The result is the names it kept, for [`check_kept_exports`].
+pub fn keep_runtime_exports(
+    ir: &mut String,
+    exports: &[String],
+) -> Result<Vec<String>, Diagnostic> {
+    let names: BTreeSet<&str> = exports.iter().map(String::as_str).collect();
+    let (defined, declared) = functions_among(ir, &names);
+    let kept: Vec<String> = names
+        .difference(&defined)
+        .map(|name| (*name).to_owned())
+        .collect();
+    if kept.is_empty() {
+        return Ok(kept);
+    }
+    if ir.contains("@llvm.used") {
+        return Err(driver_error(
+            "E2002",
+            "cannot keep the C runtime's entry points in the bitcode: the LLVM IR already has an @llvm.used list",
+        ));
+    }
+    if !ir.ends_with('\n') {
+        ir.push('\n');
+    }
+    for name in kept.iter().filter(|name| !declared.contains(name.as_str())) {
+        ir.push_str(&format!("declare void @{name}()\n"));
+    }
+    let entries: Vec<String> = kept.iter().map(|name| format!("ptr @{name}")).collect();
+    ir.push_str(&format!(
+        "@llvm.used = appending global [{} x ptr] [{}], section \"llvm.metadata\"\n",
+        kept.len(),
+        entries.join(", ")
+    ));
+    Ok(kept)
+}
+
+/// Fails unless the IR in `merged`, which `llvm-link --internalize` wrote, still defines each of `kept` with
+/// external linkage and default visibility. An `llvm-link` that does not honour `@llvm.used` would hide the entry
+/// points that [`keep_runtime_exports`] named, and a host's link would not find them.
+pub fn check_kept_exports(merged: &Path, kept: &[String]) -> Result<(), Diagnostic> {
+    if kept.is_empty() {
+        return Ok(());
+    }
+    let ir =
+        fs::read_to_string(merged).map_err(|error| io_error("read merged IR", merged, error))?;
+    let names: BTreeSet<&str> = kept.iter().map(String::as_str).collect();
+    let mut external = BTreeSet::new();
+    for line in ir.lines() {
+        let Some(start) = definition_start(line) else {
+            continue;
+        };
+        let line = &line[start..];
+        let Some(name) = function_name(line).and_then(|name| names.get(name)) else {
+            continue;
+        };
+        let head = &line[..line.find('@').unwrap_or_default()];
+        if !head
+            .split_whitespace()
+            .any(|word| matches!(word, "internal" | "private" | "hidden"))
+        {
+            external.insert(*name);
+        }
+    }
+    let lost: Vec<&str> = names.difference(&external).copied().collect();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    Err(driver_error(
+        "E2002",
+        format!(
+            "llvm-link did not keep {} as a public symbol of the bitcode, so a host could not call it; llvm-link must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK",
+            lost.join(", ")
+        ),
+    ))
+}
+
 /// The `llvm-link` that merges the C runtime into the bitcode: `TSUZURI_LLVM_LINK`, a distribution's `bin/`,
 /// the directory of the Clang (the LLVM it belongs to, so the IR that llvm-link writes is one Clang reads),
 /// then `PATH`.
@@ -513,6 +621,106 @@ mod tests {
         );
         fs::write(&artifact, b"").unwrap();
         assert!(check_bitcode(&artifact, OsStr::new("clang")).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn keeps_what_the_runtime_alone_defines() {
+        let mut ir = "define i32 @tz_add(i32 %a, i32 %b) {\n  ret i32 0\n}define weak void @tsuzuri_free(ptr %p) {\n  ret void\n}\ndeclare void @tsuzuri_alloc_stats()\n".to_owned();
+        let exports = names(&["tsuzuri_async_post", "tsuzuri_free", "tz_add"]);
+        let kept = keep_runtime_exports(&mut ir, &exports).unwrap();
+        assert_eq!(kept, ["tsuzuri_async_post"]);
+        assert!(
+            ir.ends_with(
+                "declare void @tsuzuri_async_post()\n@llvm.used = appending global [1 x ptr] [ptr @tsuzuri_async_post], section \"llvm.metadata\"\n"
+            ),
+            "{ir}"
+        );
+        // A definition of the program, even one that follows a `}`, is not the runtime's to keep.
+        assert_eq!(ir.matches("@tsuzuri_free").count(), 1);
+    }
+
+    #[test]
+    fn keeps_a_declared_function_without_declaring_it_again() {
+        let mut ir = "declare i32 @tsuzuri_async_post(i64, i64)\ndefine void @f() {\n  ret void\n}"
+            .to_owned();
+        let exports = names(&["tsuzuri_async_post", "tsuzuri_cpu_x", "tsuzuri_async_post"]);
+        let kept = keep_runtime_exports(&mut ir, &exports).unwrap();
+        assert_eq!(kept, ["tsuzuri_async_post", "tsuzuri_cpu_x"]);
+        assert_eq!(ir.matches("declare i32 @tsuzuri_async_post").count(), 1);
+        assert!(!ir.contains("declare void @tsuzuri_async_post"), "{ir}");
+        assert!(ir.contains("declare void @tsuzuri_cpu_x()\n"), "{ir}");
+        assert!(
+            ir.ends_with("@llvm.used = appending global [2 x ptr] [ptr @tsuzuri_async_post, ptr @tsuzuri_cpu_x], section \"llvm.metadata\"\n"),
+            "{ir}"
+        );
+        // Between the end of the definition and the new text there is a line break.
+        assert!(ir.contains("}\ndeclare void @tsuzuri_cpu_x()"), "{ir}");
+    }
+
+    #[test]
+    fn leaves_an_ir_alone_that_defines_every_export() {
+        let original = "define i32 @tz_add(i32 %a, i32 %b) {\n  ret i32 0\n}\n";
+        let mut ir = original.to_owned();
+        assert!(
+            keep_runtime_exports(&mut ir, &names(&["tz_add"]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(keep_runtime_exports(&mut ir, &[]).unwrap().is_empty());
+        assert_eq!(ir, original);
+    }
+
+    #[test]
+    fn refuses_an_ir_that_has_its_own_used_list() {
+        let mut ir =
+            "@llvm.used = appending global [0 x ptr] [], section \"llvm.metadata\"\n".to_owned();
+        let error = keep_runtime_exports(&mut ir, &names(&["tsuzuri_async_post"])).unwrap_err();
+        assert_eq!(error.code, "E2002");
+        assert!(error.message.contains("@llvm.used"), "{}", error.message);
+        // Nothing to keep needs no list, so the IR's own stays.
+        assert!(keep_runtime_exports(&mut ir, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn finds_a_kept_function_that_the_merge_hid() {
+        let directory = scratch("merged");
+        let merged = directory.join("combined.ll");
+        let kept = names(&["tsuzuri_async_post"]);
+        let check = |text: &str| {
+            fs::write(&merged, text).unwrap();
+            check_kept_exports(&merged, &kept)
+        };
+        assert!(check("define weak i32 @tsuzuri_async_post(i64 %0, i64 %1) local_unnamed_addr #3 {\n  ret i32 0\n}\n").is_ok());
+        assert!(
+            check(
+                "define dso_local i32 @\"tsuzuri_async_post\"(i64 %0, i64 %1) {\n  ret i32 0\n}\n"
+            )
+            .is_ok()
+        );
+        for hidden in [
+            "define internal i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "define private i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "define weak hidden i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "declare i32 @tsuzuri_async_post(i64, i64)\n",
+            "define i32 @tsuzuri_async_posted() {\n  ret i32 0\n}\n",
+            "",
+        ] {
+            let error = check(hidden).unwrap_err();
+            assert_eq!(error.code, "E2002");
+            assert!(
+                error.message.contains("tsuzuri_async_post")
+                    && error.message.contains("TSUZURI_LLVM_LINK"),
+                "{}",
+                error.message
+            );
+        }
+        // Nothing kept, nothing to read.
+        assert!(check_kept_exports(&directory.join("missing.ll"), &[]).is_ok());
         fs::remove_dir_all(directory).unwrap();
     }
 }
