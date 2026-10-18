@@ -10,6 +10,7 @@ use cranelift_codegen::ir::{self, InstBuilder, Value, types};
 use super::error::{Res, bail};
 use super::func::{CallArg, Const, Op};
 use super::lower::{Lower, Val};
+use super::target::Arch;
 use super::types::Ty;
 
 /// The name without `llvm.`, if it is `base` or `base.<suffix>`.
@@ -153,9 +154,17 @@ impl<'w, 'a> Lower<'w, 'a> {
         if is(name, "fma") || is(name, "fmuladd") {
             let (a, b, c) = (arg(self, 0)?, arg(self, 1)?, arg(self, 2)?);
             let (la, lb, lc) = (self.leaves(a)?, self.leaves(b)?, self.leaves(c)?);
+            // `fmuladd` may be fused or not; LLVM fuses it only where the baseline of the
+            // instruction set has a fused instruction, which x86-64 has not.
+            let fused = is(name, "fma") || self.target.arch != Arch::X86_64;
             let mut out = Vec::with_capacity(la.len());
             for index in 0..la.len() {
-                out.push(self.b.ins().fma(la[index], lb[index], lc[index]));
+                out.push(if fused {
+                    self.b.ins().fma(la[index], lb[index], lc[index])
+                } else {
+                    let product = self.b.ins().fmul(la[index], lb[index]);
+                    self.b.ins().fadd(product, lc[index])
+                });
             }
             return Ok(if self.vector_shape(args[0].ty).is_some() {
                 self.multi(&out)

@@ -397,12 +397,22 @@ fn float_cases(suite: &mut Suite, ty: &str) {
         );
     }
     for name in ["copysign", "minimum", "maximum"] {
+        // The payload and sign of a NaN that `minimum` or `maximum` returns differ between code
+        // generators (the language only promises that a NaN propagates), so those results are
+        // compared as one NaN.
+        let canonical = if name == "copysign" {
+            String::new()
+        } else {
+            format!(
+                "  %nan = fcmp uno {ty} %r, %r\n  %q = select i1 %nan, {ty} 0x7FF8000000000000, {ty} %r\n"
+            )
+        };
         add(
             suite,
             name,
             vec![format!("declare {ty} @llvm.{name}.{suffix}({ty}, {ty})")],
-            format!("  %r = call {ty} @llvm.{name}.{suffix}({ty} %x, {ty} %y)\n"),
-            "%r",
+            format!("  %r = call {ty} @llvm.{name}.{suffix}({ty} %x, {ty} %y)\n{canonical}"),
+            if name == "copysign" { "%r" } else { "%q" },
         );
     }
     for name in ["fma", "fmuladd"] {
@@ -808,14 +818,26 @@ fn float_vector_cases(suite: &mut Suite, lanes: u32, ty: &str) {
         );
     }
     for name in ["copysign", "minimum", "maximum"] {
+        // See float_cases: a NaN that `minimum` or `maximum` returns is compared as one NaN.
+        let canonical = if name == "copysign" {
+            String::new()
+        } else {
+            let nan = format!("{ty} 0x7FF8000000000000");
+            let nans = vec![nan; lanes as usize].join(", ");
+            format!(
+                "  %nan = fcmp uno {vector} %r, %r\n  %q = select {mask} %nan, {vector} <{nans}>, {vector} %r\n"
+            )
+        };
         add(
             suite,
             name,
             vec![format!(
                 "declare {vector} @llvm.{name}.{intrinsic}({vector}, {vector})"
             )],
-            format!("  %r = call {vector} @llvm.{name}.{intrinsic}({vector} %x, {vector} %y)\n"),
-            "%r",
+            format!(
+                "  %r = call {vector} @llvm.{name}.{intrinsic}({vector} %x, {vector} %y)\n{canonical}"
+            ),
+            if name == "copysign" { "%r" } else { "%q" },
         );
     }
     add(
@@ -1468,6 +1490,36 @@ fn work_directory(label: &str) -> PathBuf {
 /// the translator reports; none of them may change a result silently.
 const KNOWN_REFUSALS: &[&str] = &["i128 smul.with.overflow", "i128 umul.with.overflow"];
 
+/// `TSUZURI_FAST_OPS_EXPORT=DIR` stops the test after the translation and writes what a comparison on
+/// another machine needs (a Linux container, say): the C host, the IR of each group, and the object the
+/// translator makes for the machine `TSUZURI_FAST_OPS_TARGET=TRIPLE` names (this machine if unset).
+/// There, Clang compiles `host.c` and the `g*.ll`, the two programs are linked from `host.o` and the
+/// `g*.llvm.o` or the `g*.fast.o`, and their outputs are compared.
+fn export_for_another_machine(
+    directory: &Path,
+    kept: &[&Case],
+    objects: &[(String, Vec<u8>, String)],
+) {
+    use tsuzuri::target::{Platform, parse_target};
+    let platform = match std::env::var("TSUZURI_FAST_OPS_TARGET") {
+        Ok(name) => Platform::new(parse_target(&name).expect("a target").1),
+        Err(_) => Platform::HOST,
+    };
+    let options = Options {
+        platform,
+        threads: 2,
+        verify: true,
+    };
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::write(directory.join("host.c"), host_program(kept)).unwrap();
+    for (index, (_, _, text)) in objects.iter().enumerate() {
+        std::fs::write(directory.join(format!("g{index}.ll")), text).unwrap();
+        let object = backend::compile(text, &options)
+            .unwrap_or_else(|error| panic!("g{index} for the other machine: {}", error.message));
+        std::fs::write(directory.join(format!("g{index}.fast.o")), object).unwrap();
+    }
+}
+
 #[test]
 fn operations_agree_with_clang() {
     if Command::new(clang()).arg("--version").output().is_err() {
@@ -1519,6 +1571,11 @@ fn operations_agree_with_clang() {
         dropped, known,
         "the operations that the translator refuses changed"
     );
+
+    if let Some(export) = std::env::var_os("TSUZURI_FAST_OPS_EXPORT") {
+        export_for_another_machine(Path::new(&export), &kept, &objects);
+        return;
+    }
 
     let directory = work_directory("native");
     let host_source = directory.join("host.c");
