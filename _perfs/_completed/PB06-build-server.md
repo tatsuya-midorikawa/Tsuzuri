@@ -849,7 +849,11 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 | `0a21ba08` | WP7 警告の sink（`resident::capture`・`warn`）と、プロセスの標準出力・標準エラーへ直接書く箇所の drift test |
 | `0038c72a` | WP8・WP9 PX03 の variant（`check-edit-body-server`・`build-edit-body-server`・`watch-edit-body`・`--variants`）、`lsp::serve`・`repl::run` の `Scope`、`tests/lsp_sessions.mjs` の追加 |
 | `31baa6fc` | `bind` の小さな修正（保護できない socket を消す） |
-| この commit | docs/benchmarks.md の PB06 の節、strategy.md、この節、チケットを `_completed/` へ |
+| `342b8715` | WP10 docs/benchmarks.md の PB06 の節、strategy.md、この節、チケットを `_completed/` へ |
+| `78e10979` | WP10 `src/main.rs` の単体テスト: 直接出力する関数の一覧を固定する（server が引き受ける関数に `println!` が入ると失敗する） |
+| `dfaabc81` | 統合 branch（PR07・PR08）の merge。conflict なし |
+| `0b738480` | WP10 `tests/server.mjs` に `--emit bitcode`・`--profile-generate`・`--profile-use` の case、環境の drift test が新しい読み取りを見つけることの確認、usage.md の一文 |
+| この commit | merge した木での検証の記録（この節） |
 
 実装したもの:
 
@@ -878,11 +882,29 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 
 ### 確認
 
-- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,494 passed、0 failed、1 ignored（全 106 の test binary）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。PB06 の新しいテスト: `cargo test --lib -- resident:: watch:: server::` が 42 件（resident 10、watch 10、server 22）、`cargo test --bin tsuzuri` が 25 件（`watch`・`serve`・`--no-server` の引数と、直接出力する関数の一覧の guard を含む）。
+- （統合 branch を merge する前、`31baa6fc` で）`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,494 passed、0 failed、1 ignored（103 の test binary と doc-test）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。PB06 の新しいテスト: `cargo test --lib -- resident:: watch:: server::` が 42 件（resident 10、watch 10、server 22）、`cargo test --bin tsuzuri` が 25 件（`watch`・`serve`・`--no-server` の引数と、直接出力する関数の一覧の guard を含む）。
 - E2E（`target/release/tsuzuri`）: `tests/watch.mjs`（差し替えたコンパイラで止まる・回ごとの報告を追加）、`tests/server.mjs`（5 回連続で成功。負荷の平均 42 のときを含む）、`tests/lsp_sessions.mjs`（常駐状態のあとで、同じ長さ・同じ更新時刻のファイルを読み直す scenario を追加）、`tests/repl.mjs`、`tests/script.mjs`、`tests/cache.mjs`、`tests/parallel_frontend.mjs`、`tests/e2e.mjs`、`tests/prebuilt_runtime.mjs`、`tests/bundle_identity.mjs`、`tests/handoff_tools.mjs`、`tests/llvm_handoff.mjs`、`tests/frontend_cache.mjs`、`tests/benchmark_report.mjs`。14 の suite を 1 つずつ順に実行し、すべて終了コード 0（`parallel_frontend` が 136 s、ほかは 5〜49 s）。
 - 既定の出力が変わらないこと: `target/perf/PB06/compare.mjs`（51 のコマンド。終了コード・stdout・stderr・ファイル。`--help` と引数なしのヘルプの 2 つだけが違う）と `examples-compare.mjs`（`examples/*` と `tests/fixtures/*` の 114 project の `check` と `--emit llvm` の `-O0`・`-O3`、342 のコマンドで 0 件の差）を、基準の `9dd0fbbc` のコンパイラと最終のコンパイラで比べた（scratch。`target/perf/PB06/` に置いた）。
 - `cargo +1.99.0 fmt --all -- --check`、`cargo +1.99.0 clippy --all-targets --locked -- -D warnings`、`cargo check --locked --all-targets --target x86_64-pc-windows-msvc`、`--target x86_64-unknown-freebsd`（Linux と同じ cfg の経路の型検査）が通る。`node scripts/check-docs.mjs`（usage・option・diagnostics・strategy）と `git diff --check` が通る。新しい crate と `unsafe` はない。
 - 計測は docs/benchmarks.md の PB06 の節。生のレコードは `target/perf/PB06-after-1`・`PB06-after-2`（commit しない）。
+
+### 統合 branch（PR07・PR08）との merge
+
+統合 branch `perf/phase4-compiler-performance`（`acb5caa9`。PR08 の `--emit bitcode` と PR07 の `--profile-generate`／`--profile-use`）を merge した（`dfaabc81`）。文面の conflict はなかった。読んで確かめたこと:
+
+- `--profile-generate DIR` は相対パスを `std::path::absolute`（プロセスの作業ディレクトリ）で絶対にする。server は自分と同じ作業ディレクトリの要求だけを実行するので、結果は単独の実行と同じ。
+- `--profile-use` は profile を一時ディレクトリへ写し、`cache::file_digest` でその内容を hash する。写したばかりのファイルは更新時刻から 2 s 以内なので、DigestMemo は記憶せず、毎回読む（racy の規則）。
+- `src/profile.rs` と `src/driver/lto.rs` にプロセス全体の状態（`static`・`OnceLock`・`thread_local!`）はない。
+- 新しい環境変数は `TSUZURI_LLVM_PROFDATA`・`TSUZURI_LLVM_LINK`（どちらも `TSUZURI_*`）と `LLVM_PROFILE_FILE`（接頭辞 `LLVM_`。意味があるのは server が実行しない `run` だけだが、比べる集合には入るので、違えば断って自分で実行するだけ）。drift test は、この 3 つと、サブディレクトリの `driver/lto.rs` を走査していることを確かめるようにした。
+- 直接出力する箇所は増えていない。ライブラリ側の期待の表は変えずに通り、`src/main.rs` には「直接出力する関数の一覧」を固定する単体テスト（`only_functions_that_a_server_never_runs_print_directly`）を足した。merge 後に check／build の経路へ `println!`・`eprintln!` が入ると、このテストが失敗する。
+- `tests/server.mjs` に、`build --emit bitcode`、`--profile-generate DIR`、ない profile の `--profile-use` を足した。server 経由と `--no-server` が、すべての状態で同じ出力・成果物になる（最初の 2 つは、有効なプログラムで単独の実行が失敗するホストでは外し、その旨を 1 行書く）。
+
+merge した木での結果（最終の commit で）:
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,533 passed、0 failed、1 ignored（104 の test binary と doc-test。`tests/lto.rs` の 17 件を含む）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。`cargo test --bin tsuzuri` 29 件、PB06 の lib テスト 42 件。
+- E2E 17 本（上の 14 本と `tests/pgo.mjs`〔14 sections passed、0 skipped、0 failed〕・`tests/bindings.mjs`・`tests/wasm_memory.mjs`）がすべて終了コード 0。
+- 既定の出力: 51 のコマンドのうち 48 が基準（`9dd0fbbc`）と同じで、違うのは `--help`・引数なしのヘルプ（PB06 と PR07・PR08 の行）と、`--emit nonsense` のエラー文（PR08 の `bitcode` が一覧に入った）の 3 つ。`examples/*` と `tests/fixtures/*` の 115 project、345 のコマンドは 0 件の差。
+- `node scripts/check-docs.mjs`（変更した 8 ページ）、`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets` の `x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`、`sh scripts/check-runtime-includes.sh`、`git diff --check` が通る。
 
 ### 目標と指標の結果
 
