@@ -118,7 +118,7 @@ function compilerWrapper(args) {
     : args[0] && !args[0].startsWith("-") && !others.includes(args[0]) ? "build" : undefined;
   // The build is one that the fast backend takes, whatever its optimization level: a native executable or object,
   // or a wasm32 module or object without SIMD, threads, WASI or debug information.
-  const targets = (list) => list.flatMap((arg, index) => (arg === "--target" ? [list[index + 1]] : []));
+  const targets = (list) => list.flatMap((arg, index) => (arg === "--target" ? [list[index + 1] === "wasm32-unknown-unknown" ? "wasm32" : list[index + 1]] : []));
   const takes = (list) => action !== undefined && !list.includes("--backend")
     && !list.some((arg) => REFUSED.some((pattern) => pattern.test(arg) && arg !== "--target"))
     && !list.includes("--version") && !list.includes("--help") && !list.includes("-h")

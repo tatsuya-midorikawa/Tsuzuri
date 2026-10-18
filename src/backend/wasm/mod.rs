@@ -29,7 +29,7 @@ use self::object::{
     UNDEFINED, VISIBILITY_HIDDEN,
 };
 use super::data::{self, Init};
-use super::error::{Failure, Res, bail};
+use super::error::{Failure, FxMap, Res, bail};
 use super::func;
 use super::module::{self, Linkage, Module, SymKind};
 use super::parse;
@@ -347,11 +347,74 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
             }
         }
     }
+    // The imports are numbered in the order that the code first refers to them, as Clang numbers
+    // them (and as the module that the link makes lists them).
+    let is_import: Vec<bool> = object
+        .symbols
+        .iter()
+        .map(|symbol| matches!(symbol, Symbol::Function { flags, .. } if flags & UNDEFINED != 0))
+        .collect();
+    let mut order: Vec<u32> = Vec::new();
+    let mut seen = vec![false; object.symbols.len()];
+    let references = bodies.iter().flat_map(|body| body.relocs.iter()).chain(
+        object
+            .segments
+            .iter()
+            .flat_map(|segment| segment.relocs.iter()),
+    );
+    for reloc in references {
+        let symbol = reloc.index as usize;
+        if matches!(
+            reloc.kind,
+            Kind::FunctionIndex | Kind::TableIndexSleb | Kind::TableIndexI32
+        ) && is_import.get(symbol) == Some(&true)
+            && !seen[symbol]
+        {
+            seen[symbol] = true;
+            order.push(symbol as u32);
+        }
+    }
+    for symbol in 0..object.symbols.len() {
+        if is_import[symbol] && !seen[symbol] {
+            order.push(symbol as u32);
+        }
+    }
+    // The imports were listed in the order of the module, which is also the order of their symbols.
+    let module_order: Vec<u32> = (0..object.symbols.len() as u32)
+        .filter(|&symbol| is_import[symbol as usize])
+        .collect();
+    let mut by_symbol: FxMap<u32, Import> = module_order
+        .iter()
+        .copied()
+        .zip(std::mem::take(&mut object.imports))
+        .collect();
+    let mut new_index: FxMap<u32, u32> = FxMap::default();
+    for (index, &symbol) in order.iter().enumerate() {
+        new_index.insert(symbol, index as u32);
+        if let Some(import) = by_symbol.remove(&symbol) {
+            object.imports.push(import);
+        }
+        if let Symbol::Function { index: slot, .. } = &mut object.symbols[symbol as usize] {
+            *slot = index as u32;
+        }
+    }
+    for body in &mut bodies {
+        for reloc in &body.relocs {
+            if reloc.kind == Kind::FunctionIndex
+                && let Some(&index) = new_index.get(&reloc.index)
+            {
+                let mut placeholder = Vec::with_capacity(5);
+                bin::uleb_padded(&mut placeholder, index);
+                let at = reloc.offset as usize;
+                body.code[at..at + 5].copy_from_slice(&placeholder);
+            }
+        }
+    }
     // The functions whose address is taken take the slots of the table, in the order of the object.
     let mut function_of_symbol: Vec<Option<u32>> = vec![None; object.symbols.len()];
-    for info in &infos {
-        if let WInfo::Func(info) = info {
-            function_of_symbol[info.symbol as usize] = Some(info.index);
+    for (symbol, entry) in object.symbols.iter().enumerate() {
+        if let Symbol::Function { index, .. } = entry {
+            function_of_symbol[symbol] = Some(*index);
         }
     }
     let mut address_taken: Vec<u32> = Vec::new();
@@ -467,6 +530,20 @@ mod tests {
             object::i128_results_are_multivalue(&object_of(&constant, true)),
             None
         );
+    }
+
+    #[test]
+    fn imports_are_numbered_in_the_order_the_code_first_uses_them() {
+        let ir = "declare i64 @aaa(i64)\ndeclare i64 @bbb(i64)\ndeclare i64 @ccc(i64)\ndefine i64 @g(i64 %x) {\n  %a = call i64 @ccc(i64 %x)\n  %b = call i64 @aaa(i64 %a)\n  %c = call i64 @bbb(i64 %b)\n  ret i64 %c\n}\n";
+        let bytes = object_of(ir, true);
+        let at = |name: &[u8]| {
+            bytes
+                .windows(name.len())
+                .position(|window| window == name)
+                .expect("the import is named")
+        };
+        // The import section comes before the symbol table, so the first mention is the import's.
+        assert!(at(b"ccc") < at(b"aaa") && at(b"aaa") < at(b"bbb"));
     }
 
     #[test]
