@@ -68,6 +68,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/llvm_cpu.rs` | `@cpu` 関数の level ごとの版、版を選ぶ stub、256-bit ベクトルを渡す呼び出し先の版（F08 Phase 3）。x86-64 の版の `target-features` には、f16 の経路が要る `+f16c`・`+avx512fp16` も足す（D10） |
 | `src/llvm_control.rs` | 直接反復・switch・定数テーブル生成、パターンマッチ手順の分岐展開と全経路での解放処理 |
 | `src/llvm_bulk.rs` | 配列連結・リストの一括走査・安定なマージソート（merge sort）の型付き builtin lowering |
+| `src/llvm_list.rs` | リストの表現（PM04）。chunk の構造、一括生成・`List.cons`・`List.tail`・走査・索引・tail の view・複製・解放・スタックのリテラルの helper。リストの配置を知るのはこの module だけです |
 | `src/llvm_compare.rs` | 配列・リスト・タプルの借用構造比較、短絡評価と段階的な比較メソッド適用 |
 | `src/derive.rs` / `src/llvm_hash.rs` / `src/llvm_display.rs` | 導出（derive）instance の AST 合成、canonical Hash、引用符・コレクション表示、文字列補間（`Interpolated`）の一括結合 |
 | `src/llvm_math.rs` / `src/runtime/math.c` / `src/runtime/musl/` | Float 基本数学演算と型別 Elementary 関数、固定バージョンの移植可能な数学関数実装。f16 を LLVM の `half` 命令で計算する経路の生成（`half_binary`・`half_sqrt`・`half_cast`、D10） |
@@ -495,7 +496,7 @@ POSIX 環境では argv[1..] の UTF-8 文字列をデコードして格納し�
 DWARF の形は、formatter を読み込まないデバッガーでも Tsuzuri の名前が見え、`scripts/lldb/tsuzuri_lldb.py` が値を復元できるように決めています（G16）。命令列は変えず、`-g` なしの IR は同一です。
 
 - 型名は `Type::display`（`i64`、`[|i64|]`、`Maybe<i64>`、`Main.Shape`）です。`bool` 以外のスカラーは同名の基本型への `DW_TAG_typedef` です（デバッガーは基本型には C の名前を、typedef には typedef の名前を表示するため）。`char`・`utf8char` の基本型は 16・32 bit の `DW_ATE_UTF`、2進浮動小数点は `DW_ATE_float`、decimal 型は BID のストレージとして `DW_ATE_unsigned` です。名前の付くポインター（参照、ハンドル、`Rc`・`Arc`、再帰 union）も、名前のないポインターへの typedef です。
-- リストの `head` はノード構造体 `<型名>.node`（`next` と `value`。`FunctionEmitter::list_node_type` の `{ ptr, T }`）へのポインターです。関数値と Task は `descriptor`（構造体 `closure.descriptor` へのポインター。`code` は関数型へのポインター、`clone`・`drop` は型のないポインター）と `environment`（型のないポインター）の 2 メンバー、dyn 値の `data`・`vtable` は型のないポインターです。
+- リストの `head` は chunk 構造体 `<型名>.chunk`（`next`・`rest`・`capacity` と、要素型の長さ 0 の配列 `slots`。`src/llvm_list.rs` の `{ ptr, i64, i64, [0 x T] }`）へのポインターです。header は 24 bytes で、`slots` の offset は header を要素のアライメントに切り上げた位置です。formatter は `head` から `next` を辿り、chunk ごとに最後の `length - rest` 個の slot を読みます。関数値と Task は `descriptor`（構造体 `closure.descriptor` へのポインター。`code` は関数型へのポインター、`clone`・`drop` は型のないポインター）と `environment`（型のないポインター）の 2 メンバー、dyn 値の `data`・`vtable` は型のないポインターです。
 - record は構造体で、メンバーは宣言の順に並びます。メンバーの offset は `physical_fields` が返す格納の順で畳んだ位置です（アライメントの大きい順に格納する record では、宣言の順と offset の順が違います）。`tests/debugger.mjs` が LLDB で並べ替えた record の値を読み、DWARF の offset が実際のメモリと合うことを確かめます。
 - union はすべての case が値を持たなければ `DW_TAG_enumeration_type` です。そうでなければ構造体で、メンバー `$tag`（列挙型 `<型名>.$tag`）と `$payload`（値を持つ case ごとに case 名のメンバーを持つ `DW_TAG_union_type` `<型名>.$payload`）を持ちます。`$payload` の offset は、`union_layout` が `Common(T)` なら（タグの幅を `T` の align に切り上げた値）、`General { unit, units }` なら（タグの幅を `unit` に切り上げた値）です。メンバー `$tag` と列挙型 `<型名>.$tag` の大きさはタグの格納幅（1・2・4 バイト）で、再帰 union のノードだけは `i32`（4 バイト）です。再帰 union はノード構造体 `<型名>.node`（`next`・`drop`・`clone`・`$tag`・`$payload`。`emit_program` の `{ ptr, ptr, ptr, i32, payload }`）へのポインターの typedef で、空ポインターは最初の値を持たない case です。タグを持たない union（`Niche`。`Maybe<string>` など）は、構造体 `<型名>` が `$payload`（offset 0、ペイロードの case をメンバーとする `DW_TAG_union_type`）と `$niche`（長さの位置にある 64 bit の列挙型 `<型名>.$niche`。関数値・`Task` のペイロードではポインター幅の列挙型）を持ち、列挙子はペイロードなしの case を `-1`（負の長さ）として 1 つだけ持ちます。`$niche` の値がその列挙子と等しければその case で、そうでなければペイロードの case です（`$tag` は持ちません）。`$` は Tsuzuri の識別子に使えないので、record のフィールドと衝突しません。
 - `DISubprogram` には `linkageName` がなく、`name` は `CheckedFunction::qualified_name` から単相化の `.$mono.<N>` を除いた名前（`Main.show`、全実体が `Array.sum`）です。ラムダ式と Task は `<外側の関数>.lambda@<行>:<列>`・`.task@<行>:<列>`、callback の特殊化は元の関数と同じ名前です。`export` の `@tz_<name>`、`@tsuzuri_main`、`@main` などのラッパーは、シンボル名と `DIFlagArtificial` を持ちます。組み込み関数・組み込みメソッド・case のコンストラクター・export の bridge（モジュール `$builtin`・`$intrinsic`・`$case`・`$export`）は自分のソースを持たないので、`DISubprogram` を付けません。
@@ -754,7 +755,7 @@ occurs check（出現検査）および型のネスト深度・構成要素数�
 
 条件付きの `Eq` および `Ord` インスタンスは、通常の単相化済み関数の内部に `StructuralCompare` ノードを保持します。
 子要素には左右の共有借用参照と各要素型の具体的な比較メソッド参照を保持し、通常の到達可能性解析および型走査の仕組みを共有します。
-LLVM では、配列の添字アクセス、リスト走査用の 2 本の phi ノード、およびタプルのフィールド GEP 命令を用いてコード生成を行い、最初の不一致を検出した時点で短絡評価して高速に終了します。
+LLVM では、配列の添字アクセス、リストの走査（左右の現在の chunk に残る slot の数と残りの組数の最小を run として、run を数える内側の loop を run ごとに回す二重 loop）、およびタプルのフィールド GEP 命令を用いてコード生成を行い、最初の不一致を検出した時点で短絡評価して高速に終了します。
 各要素の比較には既存の借用 ABI が用いられ、部分適用された比較メソッドに対しても残りの引数が順次適用されます。型辞書、汎用 boxing、要素の不要なコピーは一切発生しません。
 
 **導出（deriving）:**
@@ -800,7 +801,7 @@ LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から�
 既存の組み込みラッパーおよび emitter の境界検査、drop、関数適用の仕組みを共有し、個別の専用フック関数は持ちません。
 呼び出し側の Copy／move およびスタックフレームからのヒープ移送が完了した所有バッファに対してインプレース更新を行うため、組み込み関数内部でコレクション全体を不必要に再複製することはありません。
 `update` における更新前の旧要素および関数のクロージャ環境は、所有権を持つクロージャ呼び出しへと安全に引き渡されるため、適用完了後に二重解放されることはありません。
-`tail` は後続のリンクを読み出す前にリストの空判定を行い、先頭ノードのみを安全に解放します。確保・解放の回数は、E2E テストにおいて単一使用、旧バッファの再利用、およびスタック移送の各ケースで厳密に検証されています。
+`tail` は空リストを検査（`BoundsCheck`）したうえで先頭要素を drop し、先頭の chunk はその最後の要素と一緒に解放します（chunk ごとの縮小や再配置はしません）。確保・解放の回数は、E2E テストにおいて単一使用、旧バッファの再利用、およびスタック移送の各ケースで厳密に検証されています。
 
 **遅延反復（Seq）:** `Seq` は標準ライブラリの不透明な record 型として定義され、常に非 Copy（所有型）となります。`head` は `Maybe` の要素値、`step` は `Maybe` のクロージャを保持し、空シーケンスや 1 要素シーケンス（once）の生成ではクロージャ環境の動的確保を必要としません。
 `Seq.next` のみが型付きの組み込み関数として内部表現を直接検証し、`head` を取り出すか、`step` クロージャを所有モードで 1 回だけ呼び出します。反復のたびにクロージャ環境全体をディープコピーすることはありません。
@@ -1212,12 +1213,12 @@ macOS における再配置可能リンクでは `-keep_private_externs` を指�
 長さの取得、インデックス読み出し、およびスライス借用において配列全体が無駄に複製されることはなく、要素の読み出しに必要な最小限の複製と一時値の解放のみが行われます。
 単相化や型クラスのインスタンス選択に配列の長さは関与しません。再帰 union の要素配列は、前述のスタックレス反復走査機構へと登録されます。
 
-**連結リスト:** `Type::List` は構文上の `[|T|]` に対応し、LLVM 上ではリスト記述子 `%tz.list = { ptr, i64 }`（先頭ノードポインタと長さ）およびノード構造体 `{ ptr, T }`（次ノードポインタと要素値）として表現されます。
-`new [|...|]` および `new [|T|](length, initializer)` は評価順序に従って各ノードをヒープ上に確保しますが、`new` を伴わずに束縛された `[|...|]` はスタックフレーム上の連続したノード配列を連結して構築されます。構築完了後にリストの内容を変更することはできません。
-空リストの先頭ポインタは NULL であり、ノードのメモリ確保は発生しません。`.length` プロパティの取得は $O(1)$、添字アクセスは範囲検査の後にリンクを順次辿る動作となります。
-構造的な Copy やクロージャ環境の複製時にはノードおよび要素が独立してディープコピーされ、すべてのリスト型において `needs_drop` は真となります。
-clone、drop、および添字走査は反復ループによってスタックレスに処理され、デストラクタではノードを解放する前に次のノードポインタを確実に先読みします。
-リスト構築用の一時スロットもエントリーブロックに配置され、非常に長いリストの生成や末尾再帰の実行時にもコールスタックを累積消費しないように最適化されています。
+**連結リスト:** `Type::List` は構文上の `[|T|]` に対応し、LLVM 上ではリスト記述子 `%tz.list = { ptr, i64 }`（先頭の chunk へのポインターと長さ。空リストは `zeroinitializer`）として表現されます（PM04）。chunk は要素ごとの構造体 `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }` を 1 回で確保したもので、header は native・wasm32・wasm64 のどれでも 24 bytes、`slots` はその後ろに `T` のアライメントで並びます。この配置を知るのは `src/llvm_list.rs` だけで、ほかの emitter はその helper（一括生成の `list_builder`、走査の `list_loop`、索引の `list_locate`、tail の `list_skip`、`List.cons`・`List.tail` の `list_push_front`・`list_pop_front`、解放と複製、スタックのリテラル）を呼びます。
+リスト `(c, len)` の順は、chunk の中ではアドレスの順で、chunk は先頭から順につながります。不変条件は次のとおりです。`len == 0` と `c == null` は同値です。先頭の chunk が持つ要素は `live = len - c.rest` 個で、最後の `live` 個の slot（最初の要素は slot `c.capacity - live`）です。それより前の slot は空きで、`List.cons` が下へ向かって埋めます。先頭以外の chunk はすべて満杯で、次の chunk の最初の要素は slot 0 です。`next` と `rest` は chunk を作った後は変わらず、`capacity` が変わるのはループの中のリテラルの組み立て中だけです（下）。リストの suffix（`List.tail` の結果とパターンの tail）は同じ chunk に短い長さを組み合わせたものなので、chunk の中で進めるのに費用はかかりません。
+`new [|...|]`、`new [|T|](length, initializer)`、`Array.to_list`、`List.map`・`map_ref`・`reverse`、複製、スタックからヒープへの移送のように一度に作るリストは、要素数ちょうどの 1 つの chunk です（確保は 1 回で、空リストは確保しません）。`new [|T|](length, initializer)` の長さの検査は、要素を計算する前に、要素と次のポインターを持つ従来のノード `{ ptr, T }` の大きさで行うので、`AllocationSize` の trap の境界は変わりません。`List.cons` は、先頭の chunk に空きがあればその slot に書き、満杯のときは新しい先頭の chunk を足します。その容量は、最初が header 込みで 32 bytes に収まる数（`i64` は 1、`i32` は 2、`i8` は 8、16 bytes の要素は 1）、次からは今の先頭の容量の 1.5 倍に 1 を足した数で、header 込みで 32 KiB（`i64` は 4,093 slot）が上限です。`List.tail` は先頭要素を drop し、先頭の chunk は最後の要素と一緒に解放します。
+空リストの先頭ポインターは NULL であり、確保は発生しません。`.length` の取得は $O(1)$ で、添字アクセスは範囲検査の後に、その添字より前の chunk の数だけ `next` を辿ります（一度に作ったリストは $O(1)$、`List.cons` で伸ばしたリストは 100 万要素で約 260 chunk）。走査（`for`、`List.fold_ref`、複製、hash、表示など）は chunk ごとの二重 loop です。外側の loop は chunk を順にたどり（`next` を読むのは、その chunk の live な slot を数え終えて、まだ要素が残っているときだけです）、内側の loop は chunk の最初の live な slot から `run` 個の slot を 0 から数える loop で、要素のアドレスは `getelementptr inbounds T, ptr base, i64 offset` です。内側の loop は配列の loop と同じ形なので、LLVM が unroll とベクトル化をします（`for` の総和は、node の連結の約 1.2 ns / 要素に対して約 0.12 ns / 要素。値は `docs/benchmarks.md`）。2 つのリストの構造比較は、左右の現在の chunk に残る slot の数と残りの組数の最小を run として、run ごとに内側の loop を回し、run で chunk を使い切った側だけが次の chunk に進みます。比較は要素ごとに早く抜けるので、内側の loop はベクトル化されません。
+構造的な Copy やクロージャ環境の複製では、要素が元の順に clone されて 1 つの chunk に入り（要素が drop 不要のときは、clone も `List.to_array` と `Array.to_list` も、元の chunk の live な slot ごとの `llvm.memcpy` です。intrinsic は `llvm.memcpy.p0.p0.i64`、wasm32 は `.i32`）、すべてのリスト型において `needs_drop` は真となります。drop は chunk ごとの外側の loop と、その chunk の live な slot を順に drop する内側の loop で、chunk の `next` を読んでから free します。要素が drop 不要のリストは slot を drop せず、最初の chunk の解放を loop の前に出します（LLVM は作ったばかりの chunk の `next` をそれを書いた store から知るので、同じ関数で作って捨てるリストの確保と解放が消えます）。ただし、要素数が定数の小さなリストを同じ関数の中で作って使って捨てるとき、node の連結では LLVM が確保を全部消した（1 回約 1 ns）のに対し、chunk では `new` のリテラルを走査するだけの場合を除き、`List.map`・`List.reverse`・`List.copy`・`List.cons` の連鎖・要素が文字列のリストに 1〜3 個の chunk の確保が残り、1 回約 25〜80 ns かかります（既知の制限。要素数が実行時に決まるリストは速くなります。数値と原因は `docs/benchmarks.md`）。clone、drop、および走査は反復ループによってスタックレスに処理されます。ループの中で評価されるリテラルが途中の `break`・`continue` で抜ける場合は、それまでに格納した要素の数まで `capacity` を縮めた chunk を一時値に登録して drop し、組み立てが終わると `capacity` を要素数に戻します（空きの slot が先頭側にあるので、縮めた chunk の live な slot は slot 0 から始まります）。
+リストのリテラルのスタック上の形は、header を持つ 1 つの `alloca { ptr, i64, i64, [n x T] }`（`align 16`。header は `next = null`、`rest = 0`、`capacity = n`）で、エントリーブロックに置かれるので、非常に長いリストの生成や末尾再帰の実行時にもコールスタックを累積消費しません。
 配列と同様の多相化、所有権、借用追跡、および ABI の制限が適用されます。
 
 **記憶域（スタックとヒープ）:** `new [...]` や `new [|...|]` は構文 AST および型付き IR において `NewLiteral` でラップされますが、型および所有権の規則は内側のリテラルと完全に同一です。
@@ -1250,7 +1251,7 @@ clone、drop、および添字走査は反復ループによってスタック�
 例外が関数やラムダ式の境界を越えて自動伝播することはありません。外側を囲む `try` ブロックが存在しない場合は `TrapKind::Overflow` として安全にトラップします。`finally` ブロックは、ハンドラ内部から送出された例外を含むすべての実行経路で確実に 1 回実行されます。
 i8〜i64／i8u〜i64u から f32／f64 への変換には LLVM の `sitofp`／`uitofp` を用い、f32 と f64 の相互変換には `fpext`／`fptrunc` を使用します。i128、f128、および decimal 型を含む変換と、整数と f16 の間の変換は正確なソフトウェア演算経路を維持し、f64 を経由することで二重丸め誤差を生じさせることはありません。f16 と f32／f64 の間の変換は、f16 の経路が `Conversions` か `Hardware` のとき（後述）だけ、`half` への `fpext`／`fptrunc` になります。
 intrinsic の外部宣言は組み込み関数と通常の式で共通化され、重複なく決定論的な順序で出力されます。連結したランタイム IR（`numeric.ll`・`math.ll` など）が同じ関数を宣言するときも、`emit_program` の最後の `unique_declarations` が、シンボル名ごとに最初の `declare` だけを残します。LLVM は属性グループだけが違う 2 つ目の `declare` も `invalid redefinition of function` として拒否するので、行全体ではなくシンボル名（`@` から `(` まで）で比べます。生成コードの宣言はランタイム IR の本文より前に書かれるため生成コードの宣言が残り、重複の無い IR は入力のまま（byte 単位で同一）です。`numeric.ll` の宣言と重なる `llvm.smin.i32`・`llvm.smax.i32`・`llvm.ctlz.i32` がその例です。`llvm::duplicate_declarations` は 2 回以上宣言されたシンボルを返し、テストの IR 補助関数と、debug build の driver が書き出す前に行う `debug_assert!` が、重複の無いことを確かめます。
-負の添字アクセスを含め、配列やリストの境界検査は要素の GEP／load やリンク走査よりも前に先行して実行されます。
+負の添字アクセスを含め、配列やリストの境界検査は要素の GEP／load や chunk の走査よりも前に先行して実行されます。
 浮動小数点演算に対して fast-math フラグを安易に付与することはありません。
 借用可能な値のメモリ領域は関数のエントリーブロックに集約して配置されます。所有値を move すると移動元のメモリ領域は即座にゼロクリアされ、スコープ終了時に残存する文字列、配列、リスト、およびクロージャ環境が確実に解放されます（レコードの部分 move も同一の機構に従います）。
 スタックフレームの領域を指している可能性のあるスロットの解放や、再代入前の解放処理においては、前述のアドレス判定ロジックによりフレーム領域を誤って `free` しないよう保護されています。
@@ -1410,7 +1411,7 @@ Node.js による E2E テストスイートは、本物の Clang／LLD ツール
 また、巨大メモリを確保しないシミュレーション用アロケータにより、$2^{53} - 1$ の文字長上限およびコード単位あたり 2 バイトのメモリ消費量を照合します。WASM においては累積確保量がメモリ上限を超えるような反復処理を実行し、解放された空き領域が正しく再利用されることを検証します。
 カリー化のテストでは `tests/currying.rs` が型、捕捉、生存期間を検証し、`tests/fixtures/currying` を `tests/primitives.mjs` から C および WASM の双方で実行します。匿名関数、途中段階での副作用、関数を含む集約値、入れ子の所有文字列、ならびに 40,000 回に及ぶ環境の生成・複製・解放を追跡し、公開関数の各呼び出し完了後にネイティブメモリの未解放バイト数が完全に 0 に復帰することを確認します。
 配列のテストでは `tests/arrays.rs` と `tests/fixtures/arrays` を用い、型情報から配列長が独立していること、実行時の動的生成、異なる長さを持つ入れ子配列、空配列、不変性、および借用参照の生存期間を検証します。`tests/primitives.mjs` では 1024 要素を超える生成、確保サイズ計算時のオーバーフロー検出、所有要素や関数要素の複製と解放、100,000 回の末尾再帰、ならびにトラップ挙動を確認します。
-連結リストのテストでは `tests/lists.rs` と `tests/fixtures/lists` を用い、配列と同様の検証項目に加え、区切り記号と演算子の共存、型クラスの適用、配列との混在、および可変参照による不変性の迂回防止を検証します。`tests/primitives.mjs` は、ノードの確保数、100,000 ノードのスタックレス反復解放、100,000 回の末尾再帰、複製および所有要素・クロージャ環境の解放、ならびに WASM のヒープ再利用を検証します。
+連結リストのテストでは `tests/lists.rs` と `tests/fixtures/lists` を用い、配列と同様の検証項目に加え、区切り記号と演算子の共存、型クラスの適用、配列との混在、可変参照による不変性の迂回防止、chunk の型と `List.cons` の容量の定数、一括で作るリストの確保が 1 回であることを検証します。`tests/fixtures/list_chunks` の E2E suite は、`List.cons` で伸ばしたリストの chunk の境界（要素 1 個の最初の chunk から 4,093 slot の上限まで。16 bytes の slot と、大きさのない要素も）とその前後の長さで、走査・添字・`List.tail`・比較・複製・変換・パターン・表示と hash・スタックのリテラルを native と WASM の `-O0`・`-O3` で検証し、native では 100 万要素の clone・比較・`List.tail` も行います。`tests/primitives.mjs` は、chunk の確保数（100,000 要素のリストの確保が 1 回）、複製および所有要素・クロージャ環境の解放、100,000 回の末尾再帰、ならびに WASM のヒープ再利用と、100 万要素のリストが既定の 16 MiB のヒープに収まることを検証します。
 記憶域のテストでは `tests/storage.rs` が `new` 構文のパース、束縛変数や一時値リテラルのエントリーブロック `alloca` 配置、`new` やメモリ移動・`&mut` に伴うヒープ確保の位置、64 KiB 上限の境界判定、および末尾ループのエントリー配置を LLVM IR レベルで検査します。`tests/fixtures/storage` は `tests/primitives.mjs` からネイティブおよび WASM の `-O0`／`-O3` で実行され、ネイティブでは各呼び出しにおけるヒープ確保回数（スタックに束縛されたリテラルは 0 回、`new` やスコープ外への移動・Copy による複製は各 1 回以上）とメモリリーク 0 を厳密に照合します。
 
 数値ランタイムを変更する際は、`src/runtime/numeric.c` を編集した後に `python3 src/runtime/generate.py` を実行して `numeric.ll` を再生成します。

@@ -394,7 +394,7 @@ fn debug_unions_expose_cases_and_payloads() {
             "DW_TAG_structure_type, name: \"Main.Tree.node\"",
             "DW_TAG_typedef, name: \"Main.Tree\"",
             "DW_TAG_union_type, name: \"Maybe<i64>.$payload\"",
-            "DW_TAG_structure_type, name: \"[|i64|].node\"",
+            "DW_TAG_structure_type, name: \"[|i64|].chunk\"",
         ] {
             assert!(ir.contains(expected), "{expected}\n{ir}");
         }
@@ -422,8 +422,10 @@ fn debug_union_offsets_match_storage() {
         assert_eq!(member_offset(&ir, "Main.Tree.node", "next"), 0);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "$tag"), tag);
         assert_eq!(member_offset(&ir, "Main.Tree.node", "$payload"), payload);
-        // The list node `{ ptr, i64 }`.
-        assert_eq!(member_offset(&ir, "[|i64|].node", "value"), 64);
+        // The list chunk `{ ptr, i64, i64, [0 x i64] }`: a header of 24 bytes on both targets.
+        for (member, offset) in [("next", 0), ("rest", 64), ("capacity", 128), ("slots", 192)] {
+            assert_eq!(member_offset(&ir, "[|i64|].chunk", member), offset);
+        }
     }
 }
 

@@ -156,13 +156,13 @@ const storage = [
   ["branch_stack(0)", "11233", 1, (api) => api.tz_branch_stack(0), 11233n],
   ["large_stack()", "16383", 0, (api) => api.tz_large_stack(), 16383n],
   ["large_heap()", "16385", 1, (api) => api.tz_large_heap(), 16385n],
-  ["heap_literals()", "3053", 4, (api) => api.tz_heap_literals(), 3053n],
+  ["heap_literals()", "3053", 3, (api) => api.tz_heap_literals(), 3053n],
   ["escape_return()", "1210", 1, (api) => api.tz_escape_return(), 1210n],
   ["escape_argument()", "35", 1, (api) => api.tz_escape_argument(), 35n],
   ["escape_nested()", "3043", 3, (api) => api.tz_escape_nested(), 3043n],
   ["escape_record()", "642", 2, (api) => api.tz_escape_record(), 642n],
   ["escape_strings()", "3032", 3, (api) => api.tz_escape_strings(), 3032n],
-  ["escape_list()", "397", 3, (api) => api.tz_escape_list(), 397n],
+  ["escape_list()", "397", 1, (api) => api.tz_escape_list(), 397n],
   ["mutable_borrow()", "63", 7, (api) => api.tz_mutable_borrow(), 63n],
   ["assign_stack()", "2352", 4, (api) => api.tz_assign_stack(), 2352n],
   ["partial_move()", "905078", 5, (api) => api.tz_partial_move(), 905078n],
@@ -384,7 +384,8 @@ int main(int argc, char **argv) {
     assert(peak < 131072);
     uint64_t before = allocations;
     assert(tz_list_length(100000) == 100000 && live == 0);
-    assert(allocations - before == 100000);
+    // A list that is built at once is one chunk.
+    assert(allocations - before == 1);
     before = allocations;
     assert(tz_list_length(0) == 0 && live == 0 && allocations == before);
     // Literals without 'new' live in the stack frame; heap work is only 'new', escapes, and copies.
@@ -563,8 +564,12 @@ int main(int argc, char **argv) {
     assert.throws(() => exhausted.tz_allocation_limit(), WebAssembly.RuntimeError);
     assert.ok(exhausted.memory.buffer.byteLength <= 16 * 1024 * 1024);
     const exhaustedList = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
-    assert.throws(() => exhaustedList.tz_list_length(1024n * 1024n), WebAssembly.RuntimeError);
+    assert.throws(() => exhaustedList.tz_list_length(3n * 1024n * 1024n), WebAssembly.RuntimeError);
     assert.ok(exhaustedList.memory.buffer.byteLength <= 16 * 1024 * 1024);
+    // A list is a chunk of its elements, 8 bytes each: a million of them fit the default heap.
+    const largeList = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
+    assert.equal(largeList.tz_list_length(1024n * 1024n), 1024n * 1024n);
+    assert.ok(largeList.memory.buffer.byteLength <= 16 * 1024 * 1024);
     assert.equal(cli(["run", input, `-O${optimization}`]).stdout, "UTF-8: 日本語 😀\n");
     console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, curried closures, runtime arrays and linked lists, ${storage.length} stack/heap storage cases, UTF-8, borrows, bounded heap, no WASM imports`);
   }

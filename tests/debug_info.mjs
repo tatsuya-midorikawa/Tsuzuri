@@ -66,7 +66,7 @@ try {
     const viewWasm = join(root, `view${optimization}.wasm`);
     execute(compiler, ["build", view, "--target", "wasm32", optimization, "-g", "-o", viewWasm]);
     assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(viewWasm))), []);
-    const shapes = ["DW_TAG_typedef", "DW_TAG_enumeration_type", "DW_TAG_union_type", '"$tag"', '"$payload"', '"Main.Tree.node"', '"[|i32|].node"', '"Main.show.lambda@22:15"'];
+    const shapes = ["DW_TAG_typedef", "DW_TAG_enumeration_type", "DW_TAG_union_type", '"$tag"', '"$payload"', '"Main.Tree.node"', '"[|i32|].chunk"', '"Main.show.lambda@22:15"'];
     for (const file of [viewObject, viewWasm]) {
       execute(dwarf, ["--verify", file]);
       const info = execute(dwarf, ["--debug-info", file]);
