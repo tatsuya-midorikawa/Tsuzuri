@@ -4136,7 +4136,7 @@ fn build_complete(
             platform,
             "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
         ));
-        if merge_runtime_ir && options.emit == Emit::Bitcode {
+        if native_runtime && options.emit == Emit::Bitcode {
             // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
             clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
         }

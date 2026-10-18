@@ -1112,16 +1112,22 @@ fn bitcode_is_the_same_bytes_every_time() {
     fs::remove_dir_all(directory).unwrap();
 }
 
-/// Runs `tsuzuri build --emit bitcode` on `source` with `environment`, which must fail, and returns its stderr. The
-/// failed build leaves no output behind.
+/// Runs `tsuzuri build --emit bitcode` on `source` with `arguments` and `environment`, which must fail, and returns its
+/// stderr. The failed build leaves no output behind.
 #[cfg(unix)]
-fn build_failure(source: &Path, output: &Path, environment: &[(&str, &OsStr)]) -> String {
+fn build_failure(
+    source: &Path,
+    output: &Path,
+    arguments: &[&str],
+    environment: &[(&str, &OsStr)],
+) -> String {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
     command
         .arg("build")
         .arg(source)
         .args(["--emit", "bitcode", "--no-cache", "-o"])
-        .arg(output);
+        .arg(output)
+        .args(arguments);
     for (name, value) in environment {
         command.env(name, value);
     }
@@ -1134,20 +1140,19 @@ fn build_failure(source: &Path, output: &Path, environment: &[(&str, &OsStr)]) -
 #[test]
 #[cfg(unix)]
 fn a_clang_that_drops_lto_is_an_error() {
-    use std::os::unix::fs::PermissionsExt;
     let directory = scratch("without-lto");
     // The bundled launcher compiled IR without `-flto=thin` for a while: it wrote a native object instead.
-    let wrapper = write(
+    let wrapper = script(
         &directory,
         "clang-without-lto",
-        "#!/bin/sh\nn=$#\nwhile [ $n -gt 0 ]; do a=$1; shift; n=$((n - 1)); [ \"$a\" = -flto=thin ] || set -- \"$@\" \"$a\"; done\nexec \"$REAL_CLANG\" \"$@\"\n",
+        "n=$#\nwhile [ $n -gt 0 ]; do a=$1; shift; n=$((n - 1)); [ \"$a\" = -flto=thin ] || set -- \"$@\" \"$a\"; done\nexec \"$REAL_CLANG\" \"$@\"",
     );
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let source = write(&directory, "Main.tz", ADD);
     let real = clang();
     let message = build_failure(
         &source,
         &directory.join("add.bc"),
+        &[],
         &[
             ("TSUZURI_CLANG", wrapper.as_os_str()),
             ("REAL_CLANG", real.as_os_str()),
@@ -1169,6 +1174,7 @@ fn a_missing_llvm_link_names_the_variable() {
     let message = build_failure(
         &root().join("tests/fixtures/tasks/Main.tz"),
         &directory.join("tasks.bc"),
+        &[],
         &[("TSUZURI_LLVM_LINK", missing.as_os_str())],
     );
     assert!(
@@ -1552,5 +1558,64 @@ fn the_bitcode_defines_every_symbol_that_a_shared_library_exports() {
         let lost: Vec<_> = exported.difference(&kept).collect();
         assert!(lost.is_empty(), "{name}: the bitcode lost {lost:?}");
     }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// A script that `tsuzuri` runs as Clang: `text` is the body of a `sh` script.
+#[cfg(unix)]
+fn script(directory: &Path, name: &str, text: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = write(directory, name, &format!("#!/bin/sh\n{text}\n"));
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+#[cfg(unix)]
+fn a_failed_final_compile_names_llvm_link_only_when_it_ran() {
+    let directory = scratch("final-compile");
+    // Every run of Clang goes to the real one, except the compile that writes the bitcode (the one with -flto=thin).
+    let wrapper = script(
+        &directory,
+        "clang-fails-final",
+        "for a in \"$@\"; do\n  if [ \"$a\" = -flto=thin ]; then echo 'fake clang: the final compile fails' >&2; exit 1; fi\ndone\nexec \"$REAL_CLANG\" \"$@\"",
+    );
+    let real = clang();
+    let mut environment = vec![
+        ("TSUZURI_CLANG", wrapper.as_os_str()),
+        ("REAL_CLANG", real.as_os_str()),
+    ];
+    let hint = "the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK";
+    // llvm-link merges the C runtime of a native program only: a program without one and WebAssembly never run it.
+    let source = write(&directory, "Main.tz", ADD);
+    for (name, arguments) in [("native", &[][..]), ("wasm32", &["--target", "wasm32"][..])] {
+        let message = build_failure(
+            &source,
+            &directory.join(format!("{name}.bc")),
+            arguments,
+            &environment,
+        );
+        assert!(message.contains("error[E2002]"), "{name}: {message}");
+        assert!(
+            message.contains("fake clang: the final compile fails"),
+            "{name}: {message}"
+        );
+        assert!(!message.contains("llvm-link"), "{name}: {message}");
+    }
+    let Some(link) = llvm_tool("llvm-link") else {
+        return;
+    };
+    environment.push(("TSUZURI_LLVM_LINK", link.as_os_str()));
+    let message = build_failure(
+        &root().join("tests/fixtures/tasks/Main.tz"),
+        &directory.join("tasks.bc"),
+        &[],
+        &environment,
+    );
+    assert!(
+        message.contains("fake clang: the final compile fails"),
+        "{message}"
+    );
+    assert!(message.contains(hint), "{message}");
     fs::remove_dir_all(directory).unwrap();
 }
