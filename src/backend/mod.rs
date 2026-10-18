@@ -153,8 +153,8 @@ pub(crate) fn translate(
 }
 
 /// Translates the textual LLVM IR of a `wasm32` `-O0` build into the bytes of a relocatable
-/// WebAssembly object (`wasm-ld` links it). `multivalue` says whether the C ABI of the compiler that
-/// builds the runtime returns a 128-bit integer as two results.
+/// WebAssembly object (`wasm-ld` links it). `multivalue` says whether the compiler that builds the
+/// runtime returns a 128-bit integer as two results (Clang 21 returns it through a pointer).
 pub(crate) fn translate_wasm(
     ir: &str,
     parallelism: Parallelism,
@@ -258,6 +258,12 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
                 // What the translator adds calls the C ABI of the platform with 128-bit integers.
                 let external =
                     *header != module::SYNTHETIC && (sym.linkage != Linkage::Local || !defined);
+                if external && sig.indirect {
+                    return Err(
+                        Failure::new("a byval or sret parameter of an external function")
+                            .in_function(sym.name),
+                    );
+                }
                 let abi = abi::plan(&types, &target, sig.ret, sig.ret_ext, &sig.params, external)
                     .map_err(|failure| failure.in_function(sym.name))?;
                 let function = object

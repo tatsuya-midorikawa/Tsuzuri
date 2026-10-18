@@ -60,6 +60,10 @@ impl<'w, 'a> Lower<'w, 'a> {
                 if variadic {
                     bail!("a call of a variadic function through a pointer");
                 }
+                // The callee may be a function that other objects define, whose convention for these is the platform's.
+                if args.iter().any(|arg| arg.byval.is_some() || arg.sret) {
+                    bail!("a call through a pointer with a byval or sret argument");
+                }
                 let params: Vec<(Ty, Ext)> = args.iter().map(|arg| (arg.ty, arg.ext)).collect();
                 let abi = abi::plan(self.types, self.target, ret, Ext::None, &params, false)?;
                 let pointer = self.scalar_op(op, Ty::Ptr)?;
@@ -70,6 +74,9 @@ impl<'w, 'a> Lower<'w, 'a> {
     }
 
     fn emit_call(&mut self, target: Target, abi: &Abi, ret: Ty, args: &[CallArg]) -> Res<Val> {
+        if abi.external && args.iter().any(|arg| arg.byval.is_some() || arg.sret) {
+            bail!("a byval or sret argument of a call of an external function");
+        }
         let pointer = self.target.pointer;
         let mut values: Vec<Value> = Vec::new();
         let mut result_address = None;

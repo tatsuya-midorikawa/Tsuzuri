@@ -183,14 +183,17 @@ Build options:
                          take -O0 to -O3. Language semantics, traps, and debug information do
                          not change; the code is usually slower than at -O3
   --backend llvm|fast    Code generator of build, run, and test (default: llvm). fast translates
-                         the -O0 IR to machine code in the compiler itself instead of running
-                         Clang on it, for a quicker edit-build-run loop; the code runs like -O0
-                         code. It takes -O0 (its default, and test's), native exe and object
-                         output, --trap-info, --strip, -g (function and line information, not
-                         variables), --allocator, --freestanding, and --trap-mode return; --cpu
-                         native and WebAssembly stay with llvm. It needs a tsuzuri built with
-                         --features fast-backend on a macOS or Linux host with an AArch64 or
-                         x86-64 CPU
+                         the -O0 IR in the compiler itself instead of running Clang on it, for a
+                         quicker edit-build-run loop; the code runs like -O0 code. It takes -O0
+                         (its default, and test's) and two targets: native with --emit exe|object
+                         (--trap-info, --strip, -g for function and line information, not
+                         variables, --allocator, --freestanding, --trap-mode return), and wasm32
+                         with --emit wasm|object (--trap-info, --allocator, --wasm-max-memory,
+                         --wasm-stack-size). Stay with llvm: --cpu native, --profile-generate,
+                         --profile-use, wasm64, other targets and --emit kinds, and for wasm32
+                         --wasm-feature, --wasm-host, --wasm-opt, and -g; test runs the native
+                         target only. It needs a tsuzuri built with --features fast-backend on a
+                         macOS or Linux host with an AArch64 or x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -3159,6 +3162,25 @@ mod tests {
         assert!(HELP.contains("--strip"));
     }
 
+    /// What `validate_fast` says last, to options that pass all of its own checks: a host that has no
+    /// translator (checked first), then a `tsuzuri` built without it. None where the backend is there.
+    fn fast_unavailable() -> Option<String> {
+        if !cfg!(all(
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
+            Some(format!(
+                "--backend fast is not available on {}-{}; use --backend llvm",
+                env::consts::OS,
+                env::consts::ARCH
+            ))
+        } else if !cfg!(feature = "fast-backend") {
+            Some("this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned())
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn rejects_fast_backend_combinations() {
         let level = |flag: &str| {
@@ -3187,13 +3209,12 @@ mod tests {
         let option = |name: &str| {
             format!("--backend fast does not support {name} yet; remove it or use --backend llvm")
         };
+        let emit_target = "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'".to_owned();
         // The message does not name which profile option was given. The profile options are checked
-        // after the others, so a build without the fast backend says that first.
-        let profile = if cfg!(feature = "fast-backend") {
+        // after the others, so a host without the fast backend and a build without it say that first.
+        let profile = fast_unavailable().unwrap_or_else(|| {
             "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned()
-        } else {
-            "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned()
-        };
+        });
         let fast = |extra: &[&'static str]| {
             let mut values = vec!["build", "Main.tz", "--backend", "fast"];
             values.extend_from_slice(extra);
@@ -3274,7 +3295,6 @@ mod tests {
             ),
             (fast(&["--emit", "llvm"]), output("llvm")),
             (fast(&["--emit", "header"]), output("header")),
-            (fast(&["--emit", "wasm"]), output("wasm")),
             (fast(&["--emit", "wgsl"]), output("wgsl")),
             (fast(&["--emit", "wgsl-relaxed"]), output("wgsl-relaxed")),
             (fast(&["--emit", "spirv"]), output("spirv")),
@@ -3283,11 +3303,25 @@ mod tests {
             (fast(&["--emit", "bitcode"]), output("bitcode")),
             (fast(&["--profile-generate", "prof"]), profile.clone()),
             (fast(&["--profile-use", "p.profdata"]), profile.clone()),
-            (fast(&["--emit", "bindings-js"]), output("bindings-js")),
             (fast(&["--emit", "bindings-cs"]), output("bindings-cs")),
             (fast(&["--emit", "bindings-py"]), output("bindings-py")),
             (fast(&["--emit", "bindings-cpp"]), output("bindings-cpp")),
             (fast(&["--cpu", "native"]), option("--cpu native")),
+            // An `--emit` that its `--target` cannot give is an error for every backend, on every
+            // host, and it is reported as the LLVM backend does: `--backend llvm` is no way out.
+            (fast(&["--emit", "wasm"]), emit_target.clone()),
+            (
+                fast(&["--target", "wasm32", "--emit", "exe"]),
+                emit_target.clone(),
+            ),
+            (
+                fast(&["--emit", "bindings-js"]),
+                "'--emit bindings-js' requires '--target wasm32'".to_owned(),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "shared"]),
+                "'--emit shared' requires '--target native'".to_owned(),
+            ),
         ]);
         for (values, message) in cases {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
@@ -3310,24 +3344,15 @@ mod tests {
             assert_eq!(options.backend, Backend::Llvm, "{values:?}");
         }
         assert!(HELP.contains("--backend llvm|fast"));
+        // fast translates wasm32 too: the help says what it takes and what stays with llvm.
+        assert!(HELP.contains("--emit wasm|object"));
+        assert!(HELP.contains("--wasm-feature, --wasm-host, --wasm-opt, and -g"));
+        assert!(!HELP.contains("WebAssembly stay with llvm"));
     }
 
     #[test]
     fn accepts_fast_backend_at_o0() {
-        let unavailable = if !cfg!(all(
-            any(target_os = "macos", target_os = "linux"),
-            any(target_arch = "aarch64", target_arch = "x86_64")
-        )) {
-            Some(format!(
-                "--backend fast is not available on {}-{}; use --backend llvm",
-                env::consts::OS,
-                env::consts::ARCH
-            ))
-        } else if !cfg!(feature = "fast-backend") {
-            Some("this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned())
-        } else {
-            None
-        };
+        let unavailable = fast_unavailable();
         for values in [
             vec!["build", "Main.tz", "--backend", "fast"],
             vec!["run", "Main.tz", "--backend", "fast"],

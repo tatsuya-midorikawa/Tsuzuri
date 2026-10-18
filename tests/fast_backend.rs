@@ -1,7 +1,8 @@
-#![cfg(feature = "fast-backend")]
+#![cfg(all(feature = "fast-backend", unix))]
 
 //! The translator of the fast debug backend (PB05): what it reads, how it lays out types, and what it
-//! refuses. Behavior of the programs it builds is checked by `tests/fast_backend.mjs`.
+//! refuses. Behavior of the programs it builds is checked by `tests/fast_backend.mjs`. The tests build
+//! for the machine they run on, and `--backend fast` is for macOS and Linux hosts only.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -250,6 +251,71 @@ fn rejects_unsupported_constructs_with_e2002() {
         "define void @f() {\n  %x = frobnicate i32 1\n  ret void\n}\n",
         "the instruction 'frobnicate' in @f",
     );
+}
+
+fn expect_wasm_refusal(ir: &str, construct: &str) {
+    let error = backend::compile_wasm(ir, 1, false).expect_err(construct);
+    assert_eq!(error.code, "E2002", "{construct}: {}", error.message);
+    assert!(
+        error.message.contains(construct),
+        "expected {construct:?} in {:?}",
+        error.message
+    );
+}
+
+/// What the translators do not implement is refused, and not turned into a call that means something
+/// else: `byval` and `sret` follow the platform's convention for a function that other objects see,
+/// and a call is a plain call whatever a `musttail` asks for. What they do implement stays: the
+/// internal `byval` and `sret` of the runtime, and an `alloca` aligned beyond the stack's 16 bytes.
+#[test]
+fn refuses_the_conventions_that_it_would_not_implement() {
+    let sret = "declare void @g(ptr sret(i64) %p)\ndefine void @f(ptr %p) {\n  call void @g(ptr sret(i64) %p)\n  ret void\n}\n";
+    let byval = "declare void @g(ptr byval(i64) %p)\ndefine void @f(ptr %p) {\n  call void @g(ptr byval(i64) %p)\n  ret void\n}\n";
+    let exported = "define void @f(ptr byval(i64) %p) {\n  ret void\n}\n";
+    let call_only = "declare void @g(ptr)\ndefine void @f(ptr %p) {\n  call void @g(ptr byval(i64) %p)\n  ret void\n}\n";
+    let indirect =
+        "define void @f(ptr %fn, ptr %p) {\n  call void %fn(ptr sret(i64) %p)\n  ret void\n}\n";
+    let musttail = "declare i32 @g(i32)\ndefine i32 @f(i32 %x) {\n  %r = musttail call i32 @g(i32 %x)\n  ret i32 %r\n}\n";
+    let refusals = [
+        (
+            sret,
+            "a byval or sret parameter of an external function in @g",
+        ),
+        (
+            byval,
+            "a byval or sret parameter of an external function in @g",
+        ),
+        (
+            exported,
+            "a byval or sret parameter of an external function in @f",
+        ),
+        (
+            call_only,
+            "a byval or sret argument of a call of an external function in @f",
+        ),
+        (
+            indirect,
+            "a call through a pointer with a byval or sret argument in @f",
+        ),
+        (musttail, "a musttail call in @f"),
+    ];
+    for (ir, construct) in refusals {
+        expect_refusal(ir, construct);
+        expect_wasm_refusal(ir, construct);
+    }
+    // A function of the module's own passes them as the translators do, as the runtime's does.
+    let internal = "%S = type { i64, i64 }\ndefine internal fastcc void @inner(ptr noalias sret(%S) align 8 %out, ptr byval(%S) align 8 %in) {\n  %a = load i64, ptr %in, align 8\n  store i64 %a, ptr %out, align 8\n  ret void\n}\ndefine i64 @f(ptr %p) {\n  %r = alloca %S, align 8\n  call fastcc void @inner(ptr sret(%S) align 8 %r, ptr byval(%S) align 8 %p)\n  %v = load i64, ptr %r, align 8\n  ret i64 %v\n}\n";
+    backend::compile(internal, &options(1)).expect("native");
+    backend::compile_wasm(internal, 1, false).expect("wasm");
+    // The stack of the native code keeps 16 bytes of alignment, and an `alloca` that asks for more gets
+    // it from an address that is rounded up (the front end asks for 32 for a 256-bit vector); a
+    // WebAssembly frame is rounded down to the largest alignment that a slot asks for. The operations
+    // test runs both and compares the address with Clang's.
+    let aligned = "define i64 @f() {\n  %p = alloca i64, align 32\n  %v = ptrtoint ptr %p to i64\n  %m = and i64 %v, 31\n  ret i64 %m\n}\n";
+    backend::compile(aligned, &options(1)).expect("native keeps the alignment");
+    backend::compile_wasm(aligned, 1, false).expect("wasm keeps the alignment");
+    let natural = "define i64 @f() {\n  %p = alloca <8 x float>\n  ret i64 0\n}\n";
+    backend::compile(natural, &options(1)).expect("native keeps the natural alignment");
 }
 
 /// A program with strings, closures, records, a union, loops and a 128-bit integer, as the compiler

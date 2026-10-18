@@ -37,6 +37,8 @@ pub(crate) struct Abi {
     pub params: Vec<ParamPlan>,
     pub ret: RetPlan,
     pub sig: Signature,
+    /// Whether other object files can see or call the function: it follows the C convention.
+    pub external: bool,
 }
 
 /// The Cranelift type of a scalar; an integer is kept in the smallest type that holds it.
@@ -172,5 +174,6 @@ pub(crate) fn plan(
         params: plans,
         ret: return_plan,
         sig,
+        external,
     })
 }
