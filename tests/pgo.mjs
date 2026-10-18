@@ -130,6 +130,9 @@ function needProfdata() {
   if (!tool) skip("no llvm-profdata beside this Clang or in its toolchain");
   return tool;
 }
+// The counts of `tz_total`, the function of the library fixture that the tests of the wasm32 writer read back, in a raw or an indexed profile.
+const functionCounts = (profdata, file) =>
+  execute(profdata, ["show", "--all-functions", "--counts", file]).stdout.match(/tz_total:\n\s+Hash: \S+\n\s+Counters: \d+\n\s+Block counts: (\[[^\]]*\])/)?.[1];
 
 if (windows) {
   section("Windows rejects the profile options", () => {
@@ -430,17 +433,21 @@ try { profileBytes(await open(${JSON.stringify(plain)})); } catch (error) { cons
 
   // Several writers that save into one directory keep every profile: each call makes a file of its own and replaces none.
   // The writer imported under two query strings is two module instances, as the writers of two modules and of two worker
-  // threads are: each counts its files from 0, and all of them have the id of this process.
+  // threads are: each counts its files from 0, and all of them have the id of this process. A call starts the counters of its
+  // instance again, so that each call has an instance of its own, which counted the same workload.
   const href = pathToFileURL(writer).href;
   const several = join(root, "wasm-several");
   const [sequential, concurrent] = JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { readFileSync } from "node:fs";
 const writers = [await import(${JSON.stringify(`${href}?a`)}), await import(${JSON.stringify(`${href}?b`)})];
 const open = async () => (await WebAssembly.instantiate(readFileSync(${JSON.stringify(generated)}), {})).instance;
-const instances = [await open(), await open()];
-for (const instance of instances) instance.exports.tz_total(100000n);
-const save = (index) => writers[index % 2].writeProfile(instances[index % 2], ${JSON.stringify(several)});
+const instances = [];
+for (let index = 0; index < 6; index++) {
+  instances.push(await open());
+  instances[index].exports.tz_total(100000n);
+}
+const save = (index) => writers[index % 2].writeProfile(instances[index], ${JSON.stringify(several)});
 const sequential = [await save(0), await save(1)];
-const concurrent = await Promise.all([0, 1, 2, 3].map(save));
+const concurrent = await Promise.all([2, 3, 4, 5].map(save));
 console.log(JSON.stringify([sequential, concurrent]));
 `]).stdout.trim());
   const saved = [...sequential, ...concurrent];
@@ -474,7 +481,7 @@ console.log(JSON.stringify(await Promise.all([start(), start(), start(), start()
   for (const path of threads) assert.deepEqual(readFileSync(path), readFileSync(threads[0]));
 
   // The counts of the module are the counts of the native program of the same source.
-  const counts = (file) => execute(profdata, ["show", "--all-functions", "--counts", file]).stdout.match(/tz_total:\n\s+Hash: \S+\n\s+Counters: \d+\n\s+Block counts: (\[[^\]]*\])/)?.[1];
+  const counts = (file) => functionCounts(profdata, file);
   const nativeDirectory = join(root, "wasm-oracle-profile");
   const object = join(root, "wasm-oracle.o");
   build("library", ["--emit", "object", "--profile-generate", nativeDirectory], object);
@@ -483,6 +490,81 @@ console.log(JSON.stringify(await Promise.all([start(), start(), start(), start()
   execute(oracle, []);
   assert.equal(counts(trained_.written), "[100000, 1, 33333, 33334]");
   assert.equal(counts(trained_.written), counts(files(nativeDirectory)[0]));
+
+  // A call starts the counters of its instance again, so the files of one instance hold what it counted between the calls, and
+  // the merge of a directory is what it counted in all: no iteration is counted twice, and none is lost.
+  const merged = (directory) => {
+    const output = `${directory}.profdata`;
+    execute(profdata, ["merge", "-o", output, ...files(directory)]);
+    return counts(output);
+  };
+  const deltas = join(root, "wasm-deltas");
+  const scenes = JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { readFileSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { join } from "node:path";
+import { profileBytes, writeProfile } from ${JSON.stringify(href)};
+const into = (name) => join(${JSON.stringify(deltas)}, name);
+const instance = (await WebAssembly.instantiate(readFileSync(${JSON.stringify(generated)}), {})).instance;
+const work = () => instance.exports.tz_total(1000n);
+const bytes = () => Buffer.from(profileBytes(instance)).toString("base64");
+// The writer puts the bytes in the file with this method, which the scenes that follow replace to make a write fail or take time.
+const handle = await open(process.execPath);
+const prototype = Object.getPrototypeOf(handle);
+await handle.close();
+const original = prototype.writeFile;
+const replacing = async (replacement, body) => {
+  prototype.writeFile = replacement;
+  try {
+    return await body();
+  } finally {
+    prototype.writeFile = original;
+  }
+};
+const scenes = {};
+
+// One instance, the workload twice, and a call after each. Reading the profile does not start the counters again.
+work();
+scenes.reads = bytes() === bytes();
+const first = await writeProfile(instance, into("twice"));
+work();
+scenes.twice = [first, await writeProfile(instance, into("twice"))];
+
+// Two calls that overlap on one instance: what it counted is in one of the two files.
+work();
+scenes.overlap = await Promise.all([writeProfile(instance, into("overlap")), writeProfile(instance, into("overlap"))]);
+
+// A write that fails leaves no file, and the counters hold what they held.
+work();
+const before = bytes();
+scenes.failure = await replacing(async () => { throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); }, () => writeProfile(instance, into("failure")).then(() => "written", (error) => error.code));
+scenes.kept = bytes() === before;
+scenes.retried = await writeProfile(instance, into("failure"));
+
+// The module counts while a file is written: that is in the next file, and neither lost nor in both.
+work();
+let counting = true;
+scenes.window = [await replacing(function (...args) {
+  if (counting) {
+    counting = false;
+    work();
+  }
+  return original.apply(this, args);
+}, () => writeProfile(instance, into("window")))];
+scenes.window.push(await writeProfile(instance, into("window")));
+console.log(JSON.stringify(scenes));
+`]).stdout.trim());
+  const thousand = "[1000, 1, 333, 334]";
+  assert.equal(scenes.reads, true, "profileBytes only reads");
+  assert.equal(new Set(scenes.twice).size, 2);
+  assert.deepEqual(scenes.twice.map(counts), [thousand, thousand], "each file holds what was counted since the call before");
+  assert.equal(merged(join(deltas, "twice")), "[2000, 2, 666, 668]");
+  assert.equal(new Set(scenes.overlap).size, 2);
+  assert.equal(merged(join(deltas, "overlap")), thousand, "calls that overlap count the workload once");
+  assert.deepEqual([scenes.failure, scenes.kept], ["ENOSPC", true], "a write that failed gives the counts back");
+  assert.equal(profraws(join(deltas, "failure")).length, 1, "a write that failed leaves no file");
+  assert.equal(counts(scenes.retried), thousand);
+  assert.deepEqual(scenes.window.map(counts), [thousand, thousand], "what is counted while a file is written is in the next one");
+  assert.equal(merged(join(deltas, "window")), "[2000, 2, 666, 668]");
 
   // The cache returns the module and its writer.
   const again = join(root, "library-generate-again.wasm");
@@ -504,6 +586,131 @@ console.log(String(new WebAssembly.Instance(module, {}).exports.tz_total(100000n
   const stale = tz(["build", changed, "--target", "wasm32", "--profile-use", directory, "-o", join(root, "library-stale.wasm")]);
   assert.match(stale.stderr.trim(), /^profile data does not match \d+ function\(s\) in this build; they are optimized without profile data\./);
   assert.equal(evaluate(join(root, "library-stale.wasm")), "3699964");
+});
+
+// A module whose stack is 2 GiB or more has its profile sections at or above 2^31, where the i32 global that holds an address
+// reads as a negative number. The writer is tried on an instance made by hand in a memory of more than 2.5 GiB, and on real modules.
+section("a profile that lies above 2 GiB of memory is written as one below it", () => {
+  trained();
+  const profdata = needProfdata();
+  const counts = (file) => functionCounts(profdata, file);
+  const probe = build("library", ["--target", "wasm32"], join(root, "library-plain-again.wasm"), { status: null });
+  if (probe.status !== 0) skip(`no WebAssembly toolchain: ${probe.stderr.split("\n")[0]}`);
+  // The real modules have a stack of 2 GiB, which puts every section above 2^31, and a little less, which puts the counters across
+  // it. A memory limit of almost 4 GiB, which they need, changes the code of `tz_total`, so the oracle has the same limit and the
+  // default stack: the same program, with its sections far below 2^31.
+  const make = (name, extra) => {
+    const module = join(root, `library-${name}.wasm`);
+    build("library", ["--target", "wasm32", "--wasm-max-memory", "4294901760", ...extra, "--profile-generate", join(root, `wasm-${name}`)], module);
+    return module;
+  };
+  const oracle = make("limit", []);
+  const stacks = [2147483648, 2147483520];
+  const modules = stacks.map((stack) => make(`stack-${stack}`, ["--wasm-stack-size", String(stack)]));
+  const href = pathToFileURL(`${modules[0]}.profile.mjs`).href;
+
+  // The same profile at four addresses: below 2^31; with the counters across it; with every section from it on; above it.
+  const places = [0x1000, 0x7ffffff0, 0x7ffffff8, 0xa0000000];
+  const top = places.at(-1);
+  const version = (1n << 56n) | 10n;
+  const data = Buffer.from(Array.from({ length: 96 }, (_, index) => 1 + (index % 250)));
+  const names = Buffer.from("ABCDEFGHIJKLM");
+  // The raw profile of that layout: a header of 16 words, the data records, the counters, and the names padded to 8 bytes.
+  // The counters lie 24 bytes before the data records, so their difference is a 32-bit number; the names start at their address.
+  const expected = (base, counters = [7n, 8n, 9n]) => {
+    const bytes = Buffer.alloc(128 + 96 + 24 + 16);
+    [0xff6c70726f665281n, version, 0n, 2n, 0n, 3n, 0n, 0n, 0n, 13n, 2n ** 32n - 24n, 0n, BigInt(base + 128), 0n, 0n, 2n].forEach((word, index) => bytes.writeBigUInt64LE(word, index * 8));
+    data.copy(bytes, 128);
+    counters.forEach((count, index) => bytes.writeBigUInt64LE(count, 224 + index * 8));
+    names.copy(bytes, 248);
+    return bytes;
+  };
+  const directory = join(root, "wasm-above");
+  const given = JSON.stringify({ places, version: String(version), data: data.toString("base64"), names: names.toString("base64"), directory });
+  const made = JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { profileBytes, writeProfile } from ${JSON.stringify(href)};
+const { places, version, data, names, directory } = ${given};
+const result = await (async () => {
+  let memory;
+  try {
+    memory = new WebAssembly.Memory({ initial: 40976 });
+  } catch (error) {
+    if (error instanceof RangeError) return { unsupported: error.message };
+    throw error;
+  }
+  const bytes = new Uint8Array(memory.buffer);
+  const view = new DataView(memory.buffer);
+  const address = (value) => new WebAssembly.Global({ value: "i32" }, value | 0);
+  const place = (base) => {
+    view.setBigUint64(base, BigInt(version), true);
+    [7n, 8n, 9n].forEach((count, index) => view.setBigUint64(base + 8 + index * 8, count, true));
+    bytes.set(Buffer.from(data, "base64"), base + 32);
+    bytes.set(Buffer.from(names, "base64"), base + 128);
+    return { exports: { memory, __llvm_profile_raw_version: address(base),
+      __start___llvm_prf_cnts: address(base + 8), __stop___llvm_prf_cnts: address(base + 32),
+      __start___llvm_prf_data: address(base + 32), __stop___llvm_prf_data: address(base + 128),
+      __start___llvm_prf_names: address(base + 128), __stop___llvm_prf_names: address(base + 141) } };
+  };
+  const attempt = async (body) => {
+    try {
+      return await body();
+    } catch (error) {
+      return { error: error.name + ": " + error.message };
+    }
+  };
+  const read = {};
+  for (const base of places) read[base] = await attempt(() => Buffer.from(profileBytes(place(base))).toString("base64"));
+  // Sections that are not inside the memory are refused, whatever the number reads as.
+  const size = memory.buffer.byteLength;
+  const beyond = place(0x1000);
+  beyond.exports.__stop___llvm_prf_names = address(size + 64);
+  const lost = place(0x1000);
+  lost.exports.__llvm_profile_raw_version = address(size);
+  const refused = [await attempt(() => profileBytes(beyond)), await attempt(() => profileBytes(lost))];
+  const top = places.at(-1);
+  const instance = place(top);
+  const saved = await attempt(async () => [await writeProfile(instance, directory), await writeProfile(instance, directory)]);
+  const after = (from, to) => Buffer.from(bytes.subarray(top + from, top + to)).toString("base64");
+  return { read, refused, saved, counters: after(8, 32), kept: after(32, 141) };
+})();
+console.log(JSON.stringify(result));
+`]).stdout.trim());
+  if (made.unsupported) skip(`this host cannot make a WebAssembly memory of 2.5 GiB: ${made.unsupported}`);
+  for (const base of places) {
+    const where = `a profile at 0x${base.toString(16)}`;
+    assert.equal(typeof made.read[base], "string", `profileBytes of ${where}: ${made.read[base]?.error}`);
+    assert.deepEqual(Buffer.from(made.read[base], "base64"), expected(base), `profileBytes of ${where}`);
+  }
+  assert.ok(Array.isArray(made.saved), `writeProfile of a profile at 0x${top.toString(16)}: ${made.saved?.error}`);
+  assert.deepEqual(made.saved.map((path) => readFileSync(path)), [expected(top), expected(top, [0n, 0n, 0n])]);
+  assert.equal(made.counters, Buffer.alloc(24).toString("base64"), "the counters start from zero again");
+  assert.equal(made.kept, Buffer.concat([data, names]).toString("base64"), "the data records and the names stay");
+  for (const entry of made.refused) assert.match(entry.error ?? "profile bytes", /not inside its memory/);
+
+  // The module counts `tz_total(1000n)` and its writer saves the profile, as it does for any module.
+  const train = (module) => JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { readFileSync } from "node:fs";
+import { writeProfile } from ${JSON.stringify(pathToFileURL(`${module}.profile.mjs`).href)};
+const result = await (async () => {
+  let instance;
+  try {
+    instance = (await WebAssembly.instantiate(readFileSync(${JSON.stringify(module)}), {})).instance;
+  } catch (error) {
+    if (error instanceof RangeError) return { unsupported: error.message };
+    throw error;
+  }
+  instance.exports.tz_total(1000n);
+  return { path: await writeProfile(instance) };
+})();
+console.log(JSON.stringify(result));
+`]).stdout.trim());
+  const reference = train(oracle);
+  assert.ok(reference.path, `the oracle runs: ${reference.unsupported}`);
+  const counted = counts(reference.path);
+  assert.match(counted, /^\[1000, 1, /, "the oracle counts the loop");
+  for (const [index, stack] of stacks.entries()) {
+    const saved = train(modules[index]);
+    if (saved.unsupported) skip(`this host cannot run a WebAssembly module with a stack of ${stack} bytes: ${saved.unsupported}`);
+    assert.equal(counts(saved.path), counted, `a module with a stack of ${stack} bytes counts what the oracle counts`);
+  }
 });
 
 section("a directory of raw profiles and its merge build the same program", () => {
