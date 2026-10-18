@@ -847,7 +847,7 @@ Phase 1（native の計装・適用・cache・診断・計測）と Phase 2（`r
 | CI の指摘 | `41465479` | Intel の macOS の CI の `tests/pgo.mjs` の失敗: 計装のリンクで `ld` が出す `__llvm_prf_*` の整列の警告 3 行を表示しない（D19）。単体テスト、`tests/pgo.mjs` の新しい節、文書 |
 | CI の指摘 | `483d8c21` | チケットの記録（D19、検証） |
 | レビュー対応（PR #28） | `e65408ab` | wasm32 の `writeProfile` が別の writer の profile を上書きしていた: 各 writer の `written` は 0 から数え、pid は同じなので、2 つの module（Worker）が同じ `default_wasm_<pid>_0.profraw` に書いた。ファイルを `wx` で排他的に作り、`EEXIST` だけ次の番号へ飛ばす。`tests/pgo.mjs` の wasm の節に回帰（query で 2 つの writer、`Promise.all`、4 つの Worker）、文書、チケットの記録 |
-| レビュー対応（PR #28 の再レビュー） | このコミット | wasm32 の writer の 2 つの欠陥: ① i32 の export global を符号つきで読むので、スタックが 2 GiB 以上の module（section が 2^31 以上）で `RangeError` か、counters が全部 0 のファイルになる（`>>> 0`、memory の外の section の拒否）。② 呼ぶたびに累積を書くので、1 つの instance の何個ものファイルを merge すると前の分が 2 回数えられる（書くとカウンターを 0 に戻す。D20）。`tests/pgo.mjs` の wasm の節に場面、新しい節（2.5 GiB の memory の手作りの instance と、スタックが 2 GiB 前後の実際の module）、文書、チケットの記録 |
+| レビュー対応（PR #28 の再レビュー） | `4b22af2b` | wasm32 の writer の 2 つの欠陥: ① i32 の export global を符号つきで読むので、スタックが 2 GiB 以上の module（section が 2^31 以上）で `RangeError` か、counters が全部 0 のファイルになる（`>>> 0`、memory の外の section の拒否）。② 呼ぶたびに累積を書くので、1 つの instance の何個ものファイルを merge すると前の分が 2 回数えられる（書くとカウンターを 0 に戻す。D20）。`tests/pgo.mjs` の wasm の節に場面、新しい節（2.5 GiB の memory の手作りの instance と、スタックが 2 GiB 前後の実際の module）、文書、チケットの記録 |
 
 ### 実装したこと
 
