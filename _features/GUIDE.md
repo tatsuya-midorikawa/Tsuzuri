@@ -1026,7 +1026,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | サブコマンド | `tsuzuri api-diff <old> <new> [--json]` | G19 | いいえ（承認済み・実装済み。D-45） |
 | CLI | `--target TRIPLE`（22 個の native の triple。`run --target` は実行器が要る） | G15 | いいえ（承認済み・実装済み。D-45） |
 | std | `Bench.now`・`Bench.consume`・`Bench.with_input`・`Bench.of`（`with` は予約語なので `Bench.with` は `Bench.with_input`） | G18 | いいえ（承認済み・実装済み。D-41） |
-| サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
+| サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | いいえ（承認済み・実装済み。`serve` は PB06 の D2） |
 | サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri bench` | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
@@ -1041,10 +1041,10 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
 | CLI | `--backend llvm\|fast` | PB05 | はい |
 | CLI | `--samples`（bench）・`--coverage`・`--seed`（test）、`test --index N -g -o PATH`（G16） | G18・G16 | いいえ（承認済み・実装済み。D-41） |
-| CLI | `--no-server`・`--idle-timeout` | PB06 | はい（Phase 2） |
+| CLI | `--no-server`（check・build）・`--idle-timeout`（serve） | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
 | 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
-| 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | はい（Phase 2） |
+| 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_RUNNER`、`TSUZURI_CROSS_LINK`・`TSUZURI_CROSS_CLANG`・`TSUZURI_CROSS_EXECUTE`（テスト用） | G15 | いいえ（承認済み・実装済み。D-45） |
 | 環境変数 | `TSUZURI_F16_EXPECT`（テスト用。`tests/f16_hardware.mjs` だけが読み、コンパイラは読まない） | D10 | いいえ（実装済み。D-45） |
 | 環境変数 | `TSUZURI_LLVM_PROFDATA` | PR07 | いいえ |
