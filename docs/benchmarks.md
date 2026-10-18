@@ -7337,6 +7337,86 @@ LSP は 1,000 module で最小が約 455〜480 ms 短く（3 組とも）、条�
 ### PM02 関数値の表現の縮小
 
 <!-- phase4:PM02 -->
+
+関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `alwaysinline`、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
+
+**条件**: 基準 = main `9dd0fbbc` のコンパイラ（sha256 `5e1b9687…`）、after = ブランチ `perf/p4-PM02` の `e787499d`（sha256 `9c656038…`）。Apple M1 Max（10 コア、他の作業と共有）、clang 21.0.0、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`）と 20.19.6（`run-control.mjs`）。native `-O3 --cpu generic`。時間は基準と after を交互に（奇数 trial は基準が先、偶数は after が先）6 trial ずつ、1 trial に 12〜15 標本。**測定中の load average は 1 分値で 34〜103（中央値 59）**で、別の作業と CPU を取り合っているため、時間の絶対値は参考で、基準との比と、機械語が同じかどうかを主な根拠にしました。A/A（基準どうし）の control の比は 0.994〜1.009。再現: `target/perf/PM02/bin/measure-ab.sh <after のコンパイラ> <名前> <trial 数> control cpp apps`。
+
+#### M1 値の大きさ（`benchmarks/layout/sizes.mjs`、clang が測った値。native と x86-64 Linux は同じ。wasm32）
+
+| 型 | 基準（native／wasm32） | after（native／wasm32） |
+| --- | --- | --- |
+| `%tz.closure`（関数値・`Task`） | 32 ／ 16 | 16 ／ 8 |
+| 関数値 2 つの record | 64 ／ 32 | 32 ／ 16 |
+| `Maybe<i64 -> i64>`・関数値 1 つの 2 case の union（`Choice`・`Job`） | 40 ／ 20 | 16 ／ 8（タグなし。関数値そのもの） |
+| `Result<i64 -> i64, string>`・ペイロードが 2 種の union | 40 ／ 40 | 24 ／ 24 |
+
+E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes のままにしたので、受理するプログラムは変わりません（`tests/closure_representation.rs` が 2,048 個で受理・2,049 個で E1010 を固定します）。
+
+#### M2・M3 確保（`--metrics` の `alloc_calls`・`alloc_bytes`。基準 → after）
+
+| workload | 確保回数 | 確保量 |
+| --- | --- | --- |
+| `cpp/task_parallel` | 18 → 18 | 1,024 → 768 bytes（16 Task の配列が 512 → 256） |
+| `apps/closure_pipeline` | 7 → 7 | 16,000,192 → 16,000,128 bytes（関数値 4 つの配列が 128 → 64） |
+| control の `closure_capture`・`closure_churn`、cpp の `task_sequence`・`task_sequential`、ほかの apps | 同じ | 同じ（確保 0 の種目は 0 のまま） |
+
+#### M4 時間（native `-O3`、6 trial の中央値。CPU 時間 ms、基準 → after。停止条件 7 の 4 種目と、機械語が変わった 2 種目）
+
+| workload | 基準 | after | after/基準 | trial ごとの比 | 最良の標本どうしの比 | 広がり（最大−最小）基準／after |
+| --- | --- | --- | --- | --- | --- | --- |
+| `control/closure_capture` | 1.984 | 1.984 | 1.000 | 0.986〜1.012 | 0.994 | 0.081／0.070 |
+| `control/closure_churn` | 6.659 | 6.654 | 0.999 | 0.981〜1.008 | 1.006 | 0.235／0.069 |
+| `cpp/task_sequential` | 13.171 | 13.212 | 1.003 | 0.989〜1.021 | 0.998 | 0.120／0.372 |
+| `cpp/task_parallel`（CPU） | 14.133 | 14.151 | 1.001 | 0.988〜1.112 | 1.002 | 0.714／1.507 |
+| `cpp/task_sequence` | 0.827 | 0.826 | 0.999 | 0.986〜1.017 | 0.991 | 0.008／0.029 |
+| `apps/closure_pipeline` | 2.952 | 3.002 | 1.017 | 0.996〜1.031 | 1.015 | 0.097／0.045 |
+
+どの種目でも after と基準の差は広がりより小さく、停止条件 7 には当たりません（`closure_pipeline` は条件の種目ではありませんが、+1.7% は未知の関数値の呼び出しごとに記述子から `code` を読む 1 回の load の分と読めます。後述の機械語の比較）。`task_parallel` の実時間は 3.69 → 4.48 ms と大きく動きましたが、基準どうし（2.54〜4.40 ms）・after どうし（3.53〜6.36 ms）の trial 間の幅が差より大きく、CPU 時間が同じです。worker が他の作業と取り合うため、この共有機では実時間を測れません。静かな機械での再測定は未実施です。
+
+**機械語が変わった関数の数**（`-O3` の object を関数ごとに命令列で比べた。`adrp` の行き先はレイアウトで動くので除く）: control は共通の 20 関数中 19 が同一で、`closure_capture` は命令数が同じで `cbz` の位置だけ違い、`closure_churn` は同一です（P2-b の前の WP4 は 78 行違い、反復ごとに記述子の load 2 回と `@tz.closure.immediate.drop` の間接呼び出しが残りました。同じ形の試作では +28.7% でした）。`@tz.closure.immediate.clone`・`drop` の 2 関数は消えました。cpp の `Kernels` は 96 関数中 93 が同一で、違うのは `task_sequence`（ループの展開）・`task_parallel`・Task 1 件を実行する `tz.task.item.i64`（Task の添字が `lsl #5` → `lsl #4`、`code` を記述子から読む `ldr` が 1 つ増えた）。apps は 31 関数中 30 が同一で、違うのは `closure_pipeline`（関数値の配列の確保が `128` → `64` bytes）だけです。つまり apps の `record_sort`・`binary_trees` などで見えた ±4% は、機械語が同一なので測定の揺れです（交互に走らせても、負荷の高い間は同じ機械語で ±4% 動きました）。
+
+#### G-inline（`-O3` の object の `__text` bytes。基準 → after）
+
+静的記述子は adapter（`@tz.apply.*`）を参照し続けるので、既知の関数値の呼び出しが畳み込まれたあとも、LLVM は adapter を「ローカル関数の最後の呼び出し」として inline せず、worker も inline しません。そのまま（`alwaysinline` なし）の native は、hello +14.0%、currying +14.0%、functional +6.9%、`closures` の probe は `ret 51` に畳まれず 8 → 404 bytes でした。native では `@tz.apply.*` と `$lambda` の worker（`-g -O0` を除く）に `alwaysinline` を付けます。
+
+| プログラム | 基準 | after | 差 |
+| --- | --- | --- | --- |
+| `examples/hello` | 3,208 | 3,308 | +100（+3.1%） |
+| `examples/currying` | 3,200 | 3,300 | +100（+3.1%） |
+| `examples/functional` | 3,956 | 3,992 | +0.9% |
+| `examples/io` | 27,252 | 26,548 | −2.6% |
+| `examples/tasks` | 5,712 | 5,712 | 0 |
+| `benchmarks/control`・`benchmarks/apps` | 3,664・17,424 | 3,656・17,400 | −0.2%・−0.1% |
+| `tests/fixtures` の currying・computations・control・tasks | 46,380・46,052・48,136・82,344 | 44,516・45,292・46,612・83,176 | −4.0%・−1.7%・−3.2%・+1.0% |
+| `closures` の probe | 8 | 8（`mov w0, #51; ret`） | 畳まれる |
+
+- 変種の測定（WP5 の IR に属性を後から付け、同じ clang で `-O3`。hello／currying／functional）: 属性なし 3,052／3,044／3,624（基準 2,604／2,596／3,352）、adapter だけ 3,052／3,044／3,624（io と fixtures の currying が小さくなる）、adapter と worker 2,704／2,696／3,388（+3.8%／+3.9%／+1.1%）、worker に `inlinehint` は効かない。
+- x86-64 Linux の代理（native の IR を `--target=x86_64-unknown-linux-gnu` で `.text` に）: hello 3,284 → 3,380（+2.9%）、currying +2.9%、functional −0.4%、io −8.2%、fixtures の currying −5.4%・computations −1.3%・tasks +0.3%、probe は 6 bytes のまま。
+- **WebAssembly には付けません**。付けた変種は wasm32 の `-O3` で hello の CODE が 8,574 → 11,990（+40%）、functional +29%、io +31% になりました（残った adapter が worker の複製を持つため）。付けない after は hello 6,833 → 6,860（+0.4%）、currying +0.4%、functional +1.4%、io +0.4%、fixtures の computations +0.6%・currying（`curried_mixed_kinds`・`curried_optional` を足したもの）+1.4%・**tasks +3.6%**（`.wasm` 全体）です。
+- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +4.1%、実行ファイル +0.1%）。`-Os`・`-Oz` では小さなプログラムが大きくなります。native の `-Oz`（clang で IR に属性を付けた変種）で hello 2,484 → 3,240（+30%）、functional +18%、io +19% で、fixtures は +1〜3%。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%。サイズ最適化の水準ごとに方針を替える案（ドライバーが adapter と worker の属性を外す）は未実施です。
+
+#### 生成物の大きさ（バイト。基準 → after）
+
+| 生成物 | 基準 | after |
+| --- | --- | --- |
+| native の実行ファイル hello `-O0`／`-O3` | 35,800／33,896 | 35,848／33,960 |
+| `--emit object` hello `-O3`／`-O0` | 5,024／37,432 | 5,184／38,968 |
+| wasm32 hello `-O0`／`-O3` | 9,770／6,833 | 9,010／6,860 |
+| `examples/point` の object `-O3` | 392 | 392 |
+
+関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `define` の `alwaysinline` だけです。
+
+#### P2-a `!invariant.load`（取り下げ）
+
+記述子の `code`・`clone`・`drop` の load に `!invariant.load !{}` を付けた版を作り、WP6 の版と `-O3` の object を関数ごとに比べました。apps の 31 関数、control の 20、`examples` の hello・functional・io、fixtures の computations・tasks はすべて同一で、currying の fixture は 74 関数中 1 つ（`curried_dynamic_init`）がレジスターの割り当てだけ違いました。既知の関数値は定数の記述子の load として畳まれ、未知の関数値の呼び出し（`closure_pipeline`）は要素ごとに記述子が変わるので、ループ不変にならないためです。効果がないので入れていません。
+
+#### 測っていないこと
+
+- 静かな機械での時間の再測定（上の load 34〜103 のため、`task_parallel` の実時間は判断できない）。
+- x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ）。
+- LLDB の実行つきの検査（この環境では `lldb` の `run` が基準のコンパイラでも固まる）。型の形と整形の判定は `tests/debugger_static.mjs`（プロセスなし）と `tests/debug_info.rs` で確かめた。
+- Windows の natvis（`Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる。`Maybe<[T]>`・`Maybe<ref T>` と同じ扱い）。
 <!-- /phase4:PM02 -->
 
 ### PM03 コンパクト文字列
