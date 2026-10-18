@@ -7,6 +7,7 @@
 ## この記事のポイント
 
 - 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を、`build` の native 実行ファイルに `--strip` を、`build` の WebAssembly に（Binaryen を入れた機械で）`--wasm-opt` を付けます（[成果物を小さくする](#成果物を小さくする)）。
+- 実行時の分岐の頻度で最適化するときは、`build` か `run` に `--profile-generate DIR` を付けて計装し、代表的な仕事で動かしてから、`--profile-use PATH` を付けて作り直します。速くなる種目も遅くなる種目もあるので、自分のプログラムで測ってください（[プロファイル誘導最適化](#プロファイル誘導最適化)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -37,6 +38,7 @@
 | `--freestanding` | | ○ | | | | | | | |
 | `--strip` | | ○ | | | | | | | |
 | `--wasm-opt` | | ○ | | | | | | | |
+| `--profile-generate DIR` / `--profile-use PATH` | | ○（native の `exe`・`object` と、wasm32 の `wasm`） | ○（native の target だけ） | | | | | | |
 | `--wasm-feature` | | ○ | | | | | | | |
 | `--wasm-host` | | ○ | | | | | | | |
 | `--wasm-max-memory` | | ○ | | ○ | | | | | |
@@ -61,13 +63,15 @@
 | --- | --- | --- |
 | `-o` / `--output PATH` | 入力の拡張子を差し替えたパス | 成果物、または `doc` のディレクトリ。親は作られます |
 | `--target native\|wasm32\|wasm64\|TRIPLE` | `native` | `wasm64` は 64-bit の線形メモリです。`TRIPLE` は、`aarch64-apple-darwin` や `x86_64-unknown-linux-musl` のような 22 個の native の名前で、`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です（[一覧](platforms.md#target-の一覧と-tier)）。`native` と違い、Clang に `--target` を渡します |
-| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
+| `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bitcode\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
 
-拡張子は、native の実行ファイルが Windows の target で `.exe`、ほかで空、オブジェクトが Windows の target で `.obj`、ほかで `.o`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、SPIR-V が `.spv`、共有ライブラリが Mach-O の target（macOS、iOS）で `.dylib`、ほかで `.so`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。`--target native` の target は、ビルド機です。
+拡張子は、native の実行ファイルが Windows の target で `.exe`、ほかで空、オブジェクトが Windows の target で `.obj`、ほかで `.o`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、SPIR-V が `.spv`、共有ライブラリが Mach-O の target（macOS、iOS）で `.dylib`、ほかで `.so`、bitcode が `.bc`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。`--target native` の target は、ビルド機です。
 
 `--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。`--wasm-feature threads` を付けると、Web Worker のスレッドプールを作るグルーになります。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
 
 `--emit shared` は native の共有ライブラリです。Windows の target ではまだ使えません（`E2000`）。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は native の target（`--target native` か `TRIPLE`）だけで使え、`-o` の拡張子を除いたファイル名がライブラリの名前です。バインディングの中身は target で変わりません。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--allocator`、`--freestanding` は共有ライブラリのビルドに付けるよう `E2000` で求めます。`--trap-mode return` は、ライブラリとバインディングの両方に付けます。使い方は [ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング) にあります。
+
+`--emit bitcode` は、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）です。C・C++ のホストが、bitcode を書いた Clang と同じ Clang の `-flto=thin` でリンクすると、小さな公開関数をホストへ inline できます。native の target（Windows を除く。`--target native` か `TRIPLE`）と `--target wasm32` で使え、`wasm64` と Windows の target は `E2000` です。`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator`、`--cpu native` は object と同じ意味で通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、`--wasm-feature` の `threads`・`jspi`・`webgpu`・`net`、`--wasm-host`、`--wasm-stack-size` は受けません。ビルドキャッシュは使いません。C ランタイムを使うプログラムは、ランタイムを IR のままで 1 つにまとめるために `llvm-link` が要ります（`TSUZURI_LLVM_LINK`）。使い方は [ネイティブ連携](native-interop.md#言語間-lto-と-bitcode) にあります。
 
 `--emit exe` は `--target native`、`--emit wasm` は `wasm32` か `wasm64` が必要です。逆にすると、次の 1 文で止まります。
 
@@ -103,7 +107,7 @@
 <command line>:1:1: error[E2000]: test supports -O0 to -O3; use -Os or -Oz with build or run
 ```
 
-`--cpu native` は、native の `exe` と `object` だけです。`llvm`、`header`、WASM では `E2000` です。対応するホストは x86、x86_64、arm、aarch64 です。`--target` で別の target を名指しすると、ビルド機の命令セットは別の機械のものなので `E2000` です。その target には `--cpu generic` を使います。
+`--cpu native` は、native の `exe`、`object`、`bitcode` だけです。`llvm`、`header`、WASM では `E2000` です。`bitcode` では、probe の `target-features` も IR の全関数に付けます。対応するホストは x86、x86_64、arm、aarch64 です。`--target` で別の target を名指しすると、ビルド機の命令セットは別の機械のものなので `E2000` です。その target には `--cpu generic` を使います。
 
 整数の折り返し、NaN、符号付きゼロは、`-O3` でも変えません。次の関数は `-O0` でも `-O3` でも 42 です。
 
@@ -147,6 +151,66 @@ examples/hello/Main.tz:1:1: error[E2002]: cannot execute 'wasm-opt': No such fil
 
 Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 3,905、`-O3` 6,833 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
 
+## プロファイル誘導最適化
+
+| オプション | 既定 | 意味 |
+| --- | --- | --- |
+| `--profile-generate DIR` | オフ | プログラムを計装する。正常に終了したとき、LLVM の raw profile（`.profraw`）を `DIR` に書く。`build` と `run` |
+| `--profile-use PATH` | オフ | プロファイルを使って最適化する。`PATH` は merge 済みの `.profdata` ファイルか、`.profraw` を入れたディレクトリ。`build` と `run` |
+
+2 つは同時に指定できず、どちらも 1 回だけです（`E2000`）。Tsuzuri が出す LLVM IR は、プロファイルの有無で変わりません。Clang が IR を機械語にするときに、計装の旗（`-fprofile-generate`）か使用の旗（`-fprofile-use`）を足すだけで、旗を付けないビルドの成果物とキャッシュのキーは変わりません。
+
+手順は、計装して作る、代表的な仕事で動かす、プロファイルを渡して作り直す、の 3 つです。
+
+```sh
+tsuzuri build app -o app.gen --profile-generate prof   # 計装した実行ファイル
+./app.gen                                              # 代表的な仕事。正常に終了すると prof/default_*.profraw ができる
+tsuzuri build app -o app --profile-use prof            # prof の .profraw を merge して、最適化に使う
+```
+
+`prof` には `.profraw` を何回分でも置けます。ディレクトリを渡すと、Tsuzuri が `llvm-profdata merge` をファイル名の順に実行して 1 つにし、その中身をキャッシュのキーに入れます。同じ内容なら、ディレクトリでも merge 済みの `.profdata` でも同じ成果物で、2 回目以降のビルドはキャッシュから返ります。`.profraw` を 1 つだけ直接渡すと `E2000` です。`run` に付けると、同じ旗でビルドしたプログラムをそのまま実行します（`run --profile-generate prof` は計装して実行し、`prof` に書きます）。
+
+**同じ条件でそろえます。** プロファイルは、IR の関数ごとの制御フローに結び付いています。計装と使用は、同じコンパイラ、同じソース、同じ Clang、同じオプション（`-O`、`--cpu`、`--allocator`、`--trap-info`、`-g`、`--no-cache` の有無）で行ってください。違うと、制御フローが変わった関数は合わなくなり、その関数だけがプロファイルなしで最適化されます。ビルドは成功し、合わなかった関数の数を `W2001` の 1 行で知らせます。
+
+```text
+profile data does not match 1 function(s) in this build; they are optimized without profile data. Rebuild with --profile-generate and rerun the training workload
+```
+
+`run` は `--trap-info` を付けてビルドするので、`run --profile-generate` のプロファイルは `build --trap-info --profile-use` に合います。Apple の Clang と Homebrew の Clang のように、LLVM が違う Clang どうしでは、プロファイルが合わない関数が出ることがあります。コンパイラ、Clang、ソースを替えたら、プロファイルを作り直してください。
+
+**何が対象か。** 対象は、Tsuzuri が出したモジュールの IR です。`--no-cache`、`--emit object`、`--trap-info`、`-g` のビルドと `run` では、数値と数学のランタイムも IR のままモジュールに入るので、その関数もプロファイルに入ります。ほかの既定のビルドでは、これらは別の object で、プロファイルの対象外です。C のランタイム（タスク、IO など）は、どのビルドでも対象外です。数学関数を呼ぶ例（`Math.sin`・`Math.exp` を 3,000 万回）では、数学のランタイムを埋め込んで計装しても、プロファイルを使った成果物は使わないものと差がありませんでした（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
+
+**`llvm-profdata` と Clang。** ディレクトリを渡すとき、`llvm-profdata` は、環境変数 `TSUZURI_LLVM_PROFDATA`、`TSUZURI_CLANG` の Clang の実行ファイルと同じディレクトリ、Clang が報告する toolchain の `bin/` の順で探します。PATH は探しません。別の LLVM の `llvm-profdata` が、この Clang のプロファイルを読めるのは偶然だからです。見つからないと `E2002` で、使う Clang と同じ LLVM のものを `TSUZURI_LLVM_PROFDATA` に指定します。merge 済みの `.profdata` を渡すときは、このツールを使いません。LLVM 22 以降が作った `.profdata` は、LLVM 21 の Clang が読めません（`E2002`）。`TSUZURI_CLANG` は LLVM の Clang（17 以降）で、同梱の `tsuzuri-clang` は旗を渡さず、プロファイルのランタイムも持たないので、両方の旗を `E2002` で拒否します。計装した実行ファイルのリンクはプロファイルのランタイム（`libclang_rt.profile`。Linux の apt では `libclang-rt-21-dev` など）を読みます。
+
+**実行時。** プログラムは、正常に終了したときだけプロファイルを書きます。トラップやシグナルで終わると、書きません。書き先は環境変数 `LLVM_PROFILE_FILE`（LLVM の規則。`%p` はプロセス ID）で、実行のたびに上書きできます。`DIR` に `%` は使えません（`E2000`）。`run --profile-generate` で、プログラムが正常に終了したのにプロファイルが書かれなかったとき（ディレクトリに書けないなど）は、`W2001` の警告を 1 行出します。
+
+`--emit object` を計装すると、オブジェクトはプロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます。付けないと、macOS では `___llvm_profile_runtime` が未定義です。
+
+**使えない組み合わせ**は、`E2000` か `E2002` です（[組み合わせがエラーになる場合](#組み合わせがエラーになる場合)）。`--emit` は native の `exe` と `object`、wasm32 の `wasm` だけです。Windows と、ビルド機と違う `--target TRIPLE`（その機械でプログラムを訓練できない）は拒否し、`--profile-generate` と `--freestanding`（ランタイムが C ライブラリを要る）は一緒に使えません。ほかの出力が増えても、許可リストにない形は拒否します。
+
+**速くなるとは限りません。** プロファイルは、Clang の分岐の見積もりを実測に替えるだけで、速くなる種目も遅くなる種目もあります。`benchmarks/control` では、`closure_capture` と `closure_churn` が 13〜17% 速くなり、`tail_mix` 系が約 20%、`match_dispatch` が約 60% 遅くなりました。ほかは ±3% です。C と C++ に同じ手順の PGO を使うと、`closure_churn` は約 44% 速くなり、`tail_mix` 系は変わりません。測定の条件と生データは [性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo) にあります。使うときは、自分のプログラムで前後を測ってください。
+
+### WebAssembly の module
+
+`--target wasm32`（`--emit wasm`）にも付けられます。WebAssembly の module はプロファイルのランタイムを持たず、ファイルも書けないので、計装した module は数えるだけです。`--profile-generate DIR` は、`app.wasm` の隣に書き出し役の `app.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に raw profile が書かれます（Node。ブラウザでは `profileBytes(instance)` のバイト列を保存します）。
+
+```sh
+tsuzuri build app --target wasm32 -o app.wasm --profile-generate prof
+node train.mjs                                           # app.wasm を動かし、writeProfile(instance) を呼ぶ
+tsuzuri build app --target wasm32 -o app.wasm --profile-use prof
+```
+
+```js
+// train.mjs
+import { readFileSync } from "node:fs";
+import { writeProfile } from "./app.wasm.profile.mjs";
+const { instance } = await WebAssembly.instantiate(readFileSync("app.wasm"), {});
+instance.exports.tz_run(1000n); // 最適化したい仕事
+console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profraw
+```
+
+書き出し役は Clang 21 の raw profile（version 10、32 bit）だけを書き、別の版で計装した module は拒否します。WebAssembly には間接呼び出しの対象を数えるランタイムがないので、`-mllvm -disable-vp` を計装と使用の両方に付け、間接呼び出しは最適化の根拠に入りません。`--wasm-feature threads`（カウンターが atomic でない）、`wasm64`、`--emit wasm` 以外、計装と `--wasm-opt` の併用は `E2000` です。`benchmarks/apps` は Node 24 で、`csv_aggregate` が約 14%、`tokenize`・`format_join`・`tree_transform` が 5〜8% 速くなり、`closure_pipeline` が約 5% 遅くなりました。`benchmarks/control` は差がありませんでした。Node 20 では `closure_capture` が約 50% 遅くなったので、使う JavaScript エンジンで測ってください。
+
 ## 診断とデバッグ
 
 | オプション | 既定 | 意味 |
@@ -157,9 +221,9 @@ Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュ
 | `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。Windows の MSVC のリンカーでは CodeView も出し、実行ファイルの隣に PDB を書く。表示とステップ実行は [デバッグ](debugging.md) |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
-| `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
+| `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` / `bitcode` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
 
-`--trap-mode return` は、`object`、`llvm`、`shared` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
+`--trap-mode return` は、`object`、`llvm`、`shared`、`bitcode` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
 
 `--json` のフィールドは [診断メッセージとエラーコード](diagnostics.md) にあります。引数エラーも同じコードで、パスは `<command line>` です。
 
@@ -203,7 +267,7 @@ Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュ
 | `--link PATH` | なし | ホストのオブジェクトか静的ライブラリ。繰り返せる |
 | `-l NAME` | なし | システムライブラリ名。例は `-l sqlite3`。`lib` や拡張子は付けない |
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
-| `--allocator system\|host\|counting\|small` | `system` | `object`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`small` は native の 64-bit のサイズ区分で、実行ファイルにも付けられる |
+| `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`small` は native の 64-bit のサイズ区分で、実行ファイルにも付けられる |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 
@@ -215,7 +279,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 
 `--allocator host` は、ホストが定義する `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` を呼びます。WASM ではモジュール `tsuzuri_heap` の `alloc`、`free`、`realloc` として import します。`counting` は `tsuzuri_alloc_stats` で回数を読めます。どちらも `--emit exe`、`wgsl`、`spirv`、`--trap-mode return` とは排他です。`host` は `--wasm-feature threads` とも排他です。
 
-`--allocator small` は、native の 64-bit で 0〜512 バイトの確保を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリの `malloc` に任せます。実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared` に付けられます。WASM、`wgsl`、`spirv`、`--trap-mode return`、`--freestanding` とは排他です（いずれも `E2000`）。既定ではありません。設計と制限は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。`run`・`check`・`test` は付けられません（`build` だけです）。
+`--allocator small` は、native の 64-bit で 0〜512 バイトの確保を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリの `malloc` に任せます。実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared`、`bitcode` に付けられます。WASM、`wgsl`、`spirv`、`--trap-mode return`、`--freestanding` とは排他です（いずれも `E2000`）。既定ではありません。設計と制限は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。`run`・`check`・`test` は付けられません（`build` だけです）。
 
 `--freestanding` は IO、OS API、タスク、`Debug`、プログラム引数、`Gpu.WebGpu`・`Gpu.Vulkan`・`Gpu.Auto` のデバイスを `E2000` で拒否します。`--trap-info` と `--debug-output` とも一緒には使えません。トラップは `llvm.trap` だけです。
 
@@ -254,6 +318,10 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--emit shared` や `bindings-cs` などが native の target でない（`wasm32`、`wasm64`） | `'--emit shared' requires '--target native'`（`bindings-cs` などは各名前で同じ形） |
 | Windows の target で `--emit shared` | `'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL` |
 | `--emit shared` と `--allocator host` | `--allocator host cannot be combined with --emit shared: ...` |
+| `--emit bitcode` が native でも wasm32 でもない（`wasm64`） | `'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported` |
+| Windows の target で `--emit bitcode` | `'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally` |
+| C ランタイムを使うプログラムの `--emit bitcode` で `llvm-link` が動かない | `E2002`: `cannot execute '<llvm-link>': ...; bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang` |
+| Clang が `-x ir -flto=thin -c` で bitcode を書かない | `E2002`: `'<clang>' did not write LLVM bitcode for --emit bitcode; compiling LLVM IR with -x ir -flto=thin -c must give bitcode, so set TSUZURI_CLANG to a Clang that does` |
 | `--allocator small` が wasm32 / wasm64 | `--allocator small requires a native target; WebAssembly modules keep their own heap` |
 | `--allocator small` が `wgsl` / `spirv` などのカーネル出力 | `--allocator small requires executable, object, shared library, LLVM IR, or header output` |
 | `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |
@@ -284,6 +352,21 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
 | WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
 | `TSUZURI_LINKER` が `default`・`lld` 以外（ネイティブ実行ファイルと共有ライブラリ） | `TSUZURI_LINKER must be 'default' or 'lld', not '<value>'` |
+| `--profile-generate` と `--profile-use` を両方付ける、または重複させる | `--profile-generate and --profile-use cannot be combined; build once with each` / `profile generation specified more than once` / `profile use specified more than once`。終了コード 2 |
+| `--profile-generate`・`--profile-use` に値がない、空 | `--profile-generate needs a value`（`--profile-use` も同じ形） |
+| `--profile-generate`・`--profile-use` を `build`・`run` 以外に付ける | `--profile-generate and --profile-use are only valid with build or run` |
+| プロファイルの旗が `exe`・`object`（native）と `wasm`（wasm32）以外の出力（`--emit bitcode`・`llvm`・`shared` など） | `profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds`（WebAssembly は `... needs --emit wasm for WebAssembly; ...`） |
+| プロファイルの旗が `wasm64` | `profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option` |
+| プロファイルの旗と `--wasm-feature threads` | `--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic` |
+| `--profile-generate` と、wasm32 の `--wasm-opt` | `--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads` |
+| Windows の host か target にプロファイルの旗 | `--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux` |
+| ビルド機と違う `--target TRIPLE` にプロファイルの旗 | `--profile-generate and --profile-use apply to the machine that builds; remove --target <triple> for another machine` |
+| `--profile-generate` と `--freestanding` | `--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library` |
+| `--profile-generate` のディレクトリに `%` | `--profile-generate directory must not contain '%'; choose another directory` |
+| `--profile-use` が `.profraw` 1 つ、または profile でないファイル | `'<path>' is a raw profile; pass its directory to --profile-use or merge it with llvm-profdata` / `--profile-use expects an indexed .profdata file or a directory of .profraw files; '<path>' is neither`。終了コード 1 |
+| `--profile-use` のディレクトリに `.profraw` がない | `--profile-use directory '<path>' has no .profraw files; run the program built with --profile-generate first` |
+| 同梱の `tsuzuri-clang` にプロファイルの旗（`E2002`） | `profile options need an LLVM Clang: the bundled Clang launcher (tsuzuri-clang) passes no profile options to LLVM Clang and has no profile runtime or llvm-profdata; set TSUZURI_CLANG to an LLVM 21 Clang` |
+| `llvm-profdata` が見つからない（`E2002`） | `cannot find llvm-profdata; set TSUZURI_LLVM_PROFDATA to the llvm-profdata that belongs to the Clang in TSUZURI_CLANG` |
 | Windows の target で `TSUZURI_LINKER=lld` | `TSUZURI_LINKER=lld is not supported for Windows targets; unset it` |
 | Mach-O の target で `TSUZURI_LINKER=lld` と `-Os`／`-Oz` | `TSUZURI_LINKER=lld cannot be combined with -Os for a Mach-O target (Clang passes the size level to ld64.lld, which rejects it); use -O2 or unset TSUZURI_LINKER` |
 
@@ -309,9 +392,10 @@ flowchart TD
 | --- | --- | --- | --- |
 | `TSUZURI_CLANG` | `clang` | `tsuzuri-clang` | コンパイルとリンク、`bindgen` のヘッダー解析。LLVM 17 以降 |
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
-| `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link` | macOS で、タスクを含むデバッグ用オブジェクト |
+| `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link`（macOS の配布物だけ） | macOS で、タスクを含むデバッグ用オブジェクト。`--emit bitcode` で、C ランタイムを IR のまま 1 つにまとめる（探す順は環境変数、配布物、Clang と同じディレクトリ、PATH）。Clang と同じ LLVM のものを使う |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
 | `TSUZURI_WASM_OPT` | `wasm-opt` | なし（同梱しない） | `--wasm-opt` が実行する Binaryen の `wasm-opt`。この変数だけでは何も実行しない |
+| `TSUZURI_LLVM_PROFDATA` | Clang の隣、Clang の toolchain の `llvm-profdata`（PATH は探さない） | なし（同梱しない） | `--profile-use` にディレクトリを渡すとき、`.profraw` を merge する `llvm-profdata`。`TSUZURI_CLANG` の Clang と同じ LLVM のものを使う |
 | `TSUZURI_LINKER` | 未設定（Clang の既定のリンカー） | なし | ネイティブ実行ファイルと共有ライブラリの最終リンクのリンカー。`lld` は Clang に `-fuse-ld=lld` を渡す（下記）。`default`・空・未設定は Clang に任せる |
 | `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
