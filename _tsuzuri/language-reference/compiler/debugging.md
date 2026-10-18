@@ -124,6 +124,8 @@ LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読�
 Latin-1 は byte、そうでなければ 2 byte をコード単位として読むので、どちらの形式の文字列も `"héllo"` と表示し、長さは低位 62 bit の byte 数です。bit 63 の立った語は `<invalid length N>` になります。
 `tests/lldb_strings.py` は、LLDB の値の代役でこの読み方（両方の形式、エスケープ、1,024 での切り詰め、空文字列、−1・bit 63・大きすぎる長さ）を、デバッガーを起動せずに確かめます。
 
+リストの要素は、`head` の chunk から `next` の連鎖をたどって読みます。chunk の `slots` のうち、後ろの `length - rest` 個が生きた要素です（`rest` はその chunk より後ろの要素の数で、`List.cons` で伸ばしたリストの先頭の chunk は、前の側に空き slot を持ちます）。`List.tail` の結果やパターンの tail は、同じ chunk に短い長さを組み合わせたものとして読めます。`tests/lldb_lists.py` は、LLDB の値の代役でこのたどり方（先頭側の空き slot、短い長さの view、alignment 16 の要素の slot の offset、chunk の二分探索、壊れたメモリ）を、デバッガーを起動せずに確かめます。
+
 ## 関数の名前
 
 デバッグ情報の関数名は、リンカーのシンボル名（`tz.fn.Main.show`）ではなく Tsuzuri の名前です。呼び出し履歴にこの名前が出て、`breakpoint set -n Main.show` で止められます。シンボル名でも止められます。

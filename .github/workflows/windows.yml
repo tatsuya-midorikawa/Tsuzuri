@@ -161,12 +161,14 @@ jobs:
         env:
           TSUZURI_OBJDUMP: llvm-objdump.exe
         run: node tests/utf_simd.mjs --quick
-      # PM03: how the LLDB formatter reads a string of either form (a stub of the lldb module, so no LLDB is needed).
-      - name: Compact string LLDB formatter (PM03)
+      # PM03 and PM04: how the LLDB formatter reads a string of either form and a list of chunks (a stub of the lldb module, so no LLDB is needed).
+      - name: LLDB formatters of strings and lists (PM03, PM04)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           python3 tests/lldb_strings.py
           if ($LASTEXITCODE -ne 0) { throw "LLDB string formatter failed: $LASTEXITCODE" }
+          python3 tests/lldb_lists.py
+          if ($LASTEXITCODE -ne 0) { throw "LLDB list formatter failed: $LASTEXITCODE" }
       # PB06: tsuzuri watch runs the commands again when a source changes. tsuzuri serve needs Unix domain sockets, so on Windows
       # tests/server.mjs checks its E2000 and that --no-server is accepted.
       - name: Watch mode and the build server (PB06)
