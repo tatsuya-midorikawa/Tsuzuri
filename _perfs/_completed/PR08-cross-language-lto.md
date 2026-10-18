@@ -489,7 +489,7 @@ $T build $W/lib --emit bitcode --target wasm32 -o $W/x.bc; echo "exit=$?"
 
 - 変更: なし。
 - 内容: 「再現」のホスト `host.c` を `$W/host.c` に置き、`--emit bitcode` の出力で LTO リンクする。
-- 確認: 出力が `4999999950000000`、`grep -c` が 0。
+- 確認: 出力が `4999999950000000`、`grep -c` が 0（macOS。ELF では、残った定義のラベルの 1 行を数える。「Linux の CI の指摘への修正」）。
 
 ```sh
 W=/tmp/tz-pr08; B=/opt/homebrew/opt/llvm@21/bin
@@ -648,7 +648,7 @@ $B/llvm-nm --defined-only --extern-only $W/fix.bc
 | --- | --- |
 | `stamps_every_definition_and_existing_groups` | 入力は `declare void @llvm.trap()`、`define internal i64 @f(i64 %x) nounwind {`、`define i64 @tz_f(i64 %x) nounwind !dbg !7 {`、`define internal void @g(ptr %p) local_unnamed_addr #0 {`（本体つき）と `attributes #0 = { nounwind "no-trapping-math"="true" "tune-cpu"="generic" }`。属性 `"target-cpu"="cpu-x" "target-features"="+a,+b"` で、`@f` の行は `nounwind #1 {`、`@tz_f` の行は `nounwind #1 !dbg !7 {`、`@g` の行と `declare` は不変、`#0` は `{ nounwind "no-trapping-math"="true" "target-cpu"="cpu-x" "target-features"="+a,+b" }`、末尾に `attributes #1 = { "target-cpu"="cpu-x" "target-features"="+a,+b" }`。期待する全文を文字列で書いて `assert_eq!`。2 回呼んで同じ結果。`define` のない入力は不変 |
 | `probes_clang_target_attributes` | `#[cfg(unix)]`。`probe_target_attributes(&clang, &["-fPIC"], &root)` が `"target-cpu"="` で始まり ` "target-features"="` を含む。2 回の結果が同じ |
-| `bitcode_inlines_small_exports_into_c_host` | `add` だけのソース（「再現」）。`-O0`・`-O3` で `Emit::Bitcode` を `tsuzuri::driver::build` し、2 回の出力が byte 一致、先頭 4 byte が `BC\xC0\xDE` か `\xDE\xC0\x17\x0B`（Darwin の wrapper）。「再現」の `host.c` と `clang -O3 -flto=thin host.c <out.bc> -o <exe>` でリンクして実行し、stdout が `4999999950000000\n`（`n(n-1)/2`、`n = 10^8`）。`nm <exe>` の出力に `tz_add` がない。`--target wasm32` の `BuildOptions::validate` が E2000 |
+| `bitcode_inlines_small_exports_into_c_host` | `add` だけのソース（「再現」）。`-O0`・`-O3` で `Emit::Bitcode` を `tsuzuri::driver::build` し、2 回の出力が byte 一致、先頭 4 byte が `BC\xC0\xDE` か `\xDE\xC0\x17\x0B`（Darwin の wrapper）。「再現」の `host.c` と `clang -O3 -flto=thin host.c <out.bc> -o <exe>` でリンクして実行し、stdout が `4999999950000000\n`（`n(n-1)/2`、`n = 10^8`）。`nm <exe>` の出力に `tz_add` がない（macOS だけで成り立つ。ELF は残すので、実装は、実行ファイルに `tz_add` を指す命令がないことで見る。「Linux の CI の指摘への修正」）。`--target wasm32` の `BuildOptions::validate` が E2000 |
 | `bitcode_keeps_owned_results_balanced` | `add` と `bytes`（手順 1 の 2 関数）。`tsuzuri::llvm::header` で `api.h`、`tsuzuri::llvm::emit_target(&module, Entry::Library, false)` の IR の `@malloc`／`@free` を `@tracked_alloc`／`@tracked_free` に置換し（`tests/host_abi.rs` と同じ）、`probe_target_attributes` と `stamp_target_attributes` を通して `clang -x ir -Wno-override-module -O3 -flto=thin -c` で `module.o` にする。ホストは `tests/host_abi.rs` の `tracked_alloc`・`tracked_free` を写し、`tz_bytes(&out, 5)` の中身が `0 1 2 3 4`、`tsuzuri_free(out.ptr)` と `tsuzuri_free(tsuzuri_alloc(0))` の後に `live == 0`、`tz_add(40, 2) == 42` を assert する。リンクは `-O0` と `-O3`（ともに `-flto=thin`）。同じホストを置換済みの `.ll` と LTO なしでリンクした結果と stdout が一致する。バッファ型の名前は生成 header のもの（`tsuzuri_ubyte_buffer` の想定。header で確かめる） |
 | `bitcode_merges_c_runtime_and_internalizes_it` | `sum`（`Array.sum`。native では `tsuzuri_cpu_sum_i64` を使う）。`TSUZURI_LLVM_LINK` がなければ `skipped: set TSUZURI_LLVM_LINK to llvm-link matching Clang` を出して成功する（D9）。あれば bitcode を作り、`int64_t v[] = {1, 2, 3}` の `tz_sum(v, 3)` が `6`。`llvm-link` と同じディレクトリに `llvm-nm` があれば、`llvm-nm --defined-only --extern-only` の名前が `tz_sum`・`tsuzuri_alloc`・`tsuzuri_free` の部分集合 |
 
@@ -812,7 +812,9 @@ Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の L
 | レビュー 1 | `e2501638` | `--emit bitcode` が `tsuzuri_async_post` を内部にする誤りの修正（`keep_runtime_exports`・`check_kept_exports`）、host のスレッドからの post と `--emit shared` の export との一致のテスト、`docs/language.md`・`native-interop.md`・`architecture.md` の記号の一覧の統一 |
 | レビュー 2 | `8557d896` | llvm-link の hint を、C ランタイムを併合したときだけ付ける。wasm32 と C ランタイムのない native のテスト |
 | レビュー 3 | `409200bc` | bitcode が object のオプション（`-g`・`--cpu native`・`-O0`・`-Oz`・`--trap-info`）を取ることのテスト |
-| レビュー 4 | このコミット | 上の修正の記録 |
+| レビュー 4 | `47f14422` | 上の修正の記録 |
+| CI の指摘 1 | `77d5b44a` | Linux の CI で落ちた C・C++ のホストのテストを、記号表でなく呼び出し命令で見るように直す。`native-interop.md` の更新 |
+| CI の指摘 2 | このコミット | 上の修正の記録 |
 
 ### 実装したこと
 
@@ -864,8 +866,8 @@ Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の L
 
 ### 既知の制限
 
-- Linux・x86-64・Windows は実行していない。Linux の `tests/lto.rs` は書いてあり、CI の LLVM 21（`-fuse-ld=lld`）で動く見込みだが、このマシンでは Docker のコンテナが起動せず（`Created` のまま）、確かめられなかった。
-- native の Rust のホスト（macOS）は inline されない。Linux の Rust は未確認。
+- Windows は実行していない（`E2000`）。Linux は、このマシンの Docker のコンテナが起動しなかった時点では実行できなかったが、その後の CI（x86-64）と AArch64 のコンテナで実行した（「Linux の CI の指摘への修正」）。x86-64 の `cargo test` をこのマシンで実行する手段はない（エミュレーションが約 14 倍遅い）。
+- native の Rust のホスト（macOS）は inline されない。Linux の Rust（AArch64・x86-64）は inline された（「Linux の CI の指摘への修正」）。
 - 同梱の Zig の macOS のホストは LTO をリンクできない。Linux の bundle には `llvm-link` がなく、C ランタイムを使うプログラムの bitcode には別の `llvm-link` が要る。
 - bitcode を読む LLVM は、書いた LLVM と同じか新しくなければならない。コンパイラは検査しない。
 - `-g` の bitcode は、既定の DWARF 5 のホストとのリンクで `Dwarf Version` の警告が出る（ホストに `-gdwarf-4` で消える）。
@@ -905,3 +907,26 @@ Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の L
 | `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md`、`git diff --check` | 28 links、7 examples、4 native runs。問題なし |
 
 Linux・Windows は、ここでも実行していない。
+
+### Linux の CI の指摘への修正（2026-10-19）
+
+統合ブランチの最初の CI（x86-64 Linux、ubuntu-24.04、apt.llvm.org の clang・lld・llvm 21）で、`tests/lto.rs` の 2 件が落ちた。ほかの 19 件は通った。
+
+- 症状: `a_c_host_inlines_the_bitcode_but_not_an_object`（`tests/lto.rs:846`）と `a_cpp_host_inlines_the_bitcode_too`（`:885`）が `!symbols(&nm, &inlined).iter().any(|(_, name)| name == "tz_add")` で失敗した。リンクと実行（`4999950000`）はその前の assert を通っている。
+- 再現: Docker の AArch64 のコンテナ（Ubuntu の clang・lld・llvm 21.1.8、rustc 1.93.1）で、直す前のテストが同じ 2 か所で同じ assert により失敗した（記号表に `T tz_add`）。x86-64 は、エミュレーションのコンテナで、x86-64 向けに作った bitcode を同じ Clang・lld でリンクして同じ結果を得た（`T tz_add`）。
+- 原因: テストの前提が誤りだった。起票のテスト計画は「`nm <exe>` に `tz_add` がない」を inline の証拠にしたが、これは macOS のリンカーの振る舞いである。ELF の lld は、`main` から呼び出しが消えても、呼ばれなくなった `tz_add` を `GLOBAL DEFAULT` の関数として実行ファイルに残す（`llvm-readelf -s`）。`-Wl,--gc-sections` を付けると消える（AArch64 と x86-64 で確認）。macOS は LTO の段階で落とす（`-Wl,-object_path_lto` で取った LTO のオブジェクトに `tz_add` がない）。ホストの呼び出しは両方で消えている。AArch64 の `main` は `mov`・`movk` で定数を作って `bl printf` だけ、x86-64 の `main` は `movabsq $0x12a052eb0` と `printf` の呼び出しだけである。object のリンクは `bl 0x7fc <tz_add>`・`callq 0x1180 <tz_add>` を持つ。
+- コンパイラは直さない: 公開関数は default visibility の外部定義で、実行ファイルの記号表に残すかどうかは、ホストのリンクの選択（`--gc-sections`、`-dead_strip`、version script）である。bitcode の内容に誤りはない。
+- 直し方（`tests/lto.rs` だけ）: 2 件とも、`llvm-objdump -d` の出力で `tz_add` を指す命令（定義の先頭の行 `<tz_add>:` を除く）を数える `instructions_naming` を足し、object のリンクは 1 行以上、bitcode のリンクは 0 行を assert する（残った行を失敗の文に出す）。C のホストのテストには、リンカーが呼ばれない定義を落とす option（ELF は `-Wl,--gc-sections`、Mach-O は `-Wl,-dead_strip`）を付けたリンクで記号表に `tz_add` がないことも足し、文書の「消える」を CI で支える。wasm のテストは、これまでどおり `disassembly_matches`（変えていない）。`benchmarks/run-lto.mjs` の `main` の中の `tz_add` を数える検査は、もともと呼び出し命令で見ていて、Linux の AArch64 でも object 1・bitcode 0・c-only 0 になる（変更なし）。
+- 文書: `native-interop.md` の「`llvm-nm host` に `tz_add` がなく」を、`main` に呼び出しがないこと（`llvm-objdump -d host`）と、記号表の違い（macOS は消え、Linux の lld は残り、`--gc-sections` で消える）に直した。「確かめた範囲」の Linux の行を、CI（x86-64）と AArch64 のコンテナの結果に更新した。
+- 見つけたこと（直していない）: Ubuntu の Clang 21 の x86-64 は既定の triple が `x86_64-pc-linux-gnu` で、bitcode は `x86_64-unknown-linux-gnu` なので、ホストのビルドごとに `warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]` が出る（結果は正しい。`-Wno-override-module` で消える）。`.bc` を `-flto=thin` で渡すと Clang のドライバーがもう一度フロントエンドを通すのが原因である。macOS と AArch64 の Ubuntu では綴りが同じなので出ない。文書の「ホストのビルド」に書いた。コンパイラが Clang の既定の triple を IR に書く案は、別の変更にする。
+- native の Rust（Linux）を確かめた（手で、テストにはしていない）: AArch64 と x86-64 のコンテナ（rustc 1.93.1 の LLVM 21.1.8 と、同じ Clang・lld 21.1.8）で、`rustc -O -C linker-plugin-lto -C linker=clang -C link-arg=-fuse-ld=lld -C link-arg=-flto=thin -C link-arg=add.bc` が、ホストの `main` のループを定数にした（`4999950000`）。`-flto=thin` を外すと、リンクはできて inline されない。x86-64 の Rust の object のリンクは、外部関数を GOT 経由で呼ぶので、`tz_add` を名指す命令がない（C のホストの `callq 0x1180 <tz_add>` とは違う）。そのため Rust には、命令の有無でなく `main` の形で見た。
+
+| 確認（CI の指摘の修正後） | 結果 |
+| --- | --- |
+| AArch64 の Linux のコンテナ（`docker run … tz-pb05-linux-arm64-dev cargo test --locked --test lto -- --nocapture`、`RUST_MIN_STACK=4194304`） | 21 passed、skip なし（ビルド 49 秒、テスト 88 秒）。直す前のテスト（`git archive HEAD`）は同じコンテナで 2 件が失敗 |
+| 同じコンテナで `node benchmarks/run-lto.mjs /target/debug/tsuzuri --quick`（GNU time は apt で足した） | `tz_add in main` が object 1、bitcode 0、c-only 0 |
+| x86-64 のコンテナ（`--platform linux/amd64`、エミュレーション）で、x86-64 向けの bitcode と object を C・C++ のホストとリンク | 新しいテストと同じ判定: object は 1 行（`callq 0x1180 <tz_add>`）、bitcode は C・C++ とも 0 行（記号表には `T tz_add`）、`--gc-sections` で 0 行・記号なし。出力は `4999950000`。x86-64 の `cargo test` 自体は、エミュレーションが約 14 倍遅く（C の compile の測定）、実行していない |
+| macOS（Homebrew LLVM 21.1.8）`cargo test --locked --test lto` | 21 passed（74 秒） |
+| `node benchmarks/run-lto.mjs target/debug/tsuzuri --quick`（macOS） | object 1、bitcode 0、c-only 0 |
+| `cargo +1.99.0 fmt --all -- --check`、`clippy --all-targets --locked -- -D warnings`、`cargo +stable check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 問題なし、警告 0 |
+| `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md`、`git diff --check` | 29 links、7 examples、4 native runs。問題なし |

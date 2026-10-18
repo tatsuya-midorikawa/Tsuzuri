@@ -62,6 +62,9 @@ if (${JSON.stringify(name)} === "clang" && process.env.PGO_RESOURCE && args[0] =
   process.exit(0);
 }
 const result = spawnSync(${JSON.stringify(real)}, args, { stdio: "inherit" });
+// PGO_NOISE is what a linker of another machine prints for the link of an instrumented program, which this one does not.
+const linking = args.some((argument) => argument.startsWith("-fprofile-generate")) && !args.includes("-c") && !args.includes("-S");
+if (process.env.PGO_NOISE && linking) process.stderr.write(JSON.parse(process.env.PGO_NOISE).join("\\n") + "\\n");
 process.exitCode = result.status ?? 1;
 `);
   chmodSync(path, 0o755);
@@ -344,6 +347,31 @@ section("run builds with the profile options and runs the program", () => {
   const used = tz(["run", project("branch"), "--profile-use", profile]);
   assert.equal(used.stdout, total);
   assert.equal(used.stderr, "");
+});
+
+section("the linker's note on the alignment of the profile sections is not shown, and no other linker warning is hidden", () => {
+  trained();
+  // Clang 21 links the profile runtime with 16 KiB sections, which a link for x86_64 macOS may not give: Apple's linker
+  // says so on three lines, and the Intel runner printed exactly these for every instrumented link.
+  const note = (section, from = "0x4000") => `ld: warning: reducing alignment of section ${section} from ${from} to 0x1000 because it exceeds segment maximum alignment`;
+  const [counters, data, bits] = ["cnts", "data", "bits"].map((kind) => note(`__DATA,__llvm_prf_${kind}`));
+  // What stays: another warning of the link, and the same words for a section that is not one of the profile's.
+  const others = ["ld: warning: some other warning of the link", note("__DATA,__other_section"), note("__DATA,__llvm_prf_cnts", "0x8000")];
+  const spy = wrapper(join(root, "noisy-tools", "clang"), "clang", realClang);
+  const env = { ...baseEnv, TSUZURI_CACHE_DIR: join(root, "cache-noisy"), TSUZURI_CLANG: spy, PGO_NOISE: JSON.stringify([counters, data, others[0], bits, others[1], others[2]]) };
+  const expected = `${others.join("\n")}\n`;
+  const profiles = join(root, "noisy-profiles");
+  const exe = executable("noisy");
+  const built = tz(["build", project("branch"), "--profile-generate", profiles, "-o", exe], { env });
+  assert.equal(built.stderr, expected);
+  assert.equal(execute(exe, []).stdout, total);
+  // The cache keeps what was shown, so a hit shows the same.
+  assert.equal(tz(["build", project("branch"), "--profile-generate", profiles, "-o", exe], { env }).stderr, expected);
+  assert.equal(tz(["run", project("branch"), "--profile-generate", profiles], { env }).stderr, expected);
+  if (process.platform === "darwin") {
+    // A debug build links in a second Clang run, which is where the note comes from.
+    assert.equal(tz(["build", project("branch"), "--profile-generate", profiles, "-g", "-o", executable("noisy-g")], { env }).stderr, expected);
+  }
 });
 
 section("an object takes the profile runtime from the final link", () => {

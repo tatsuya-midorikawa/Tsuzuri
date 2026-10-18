@@ -801,7 +801,7 @@ fn externals(nm: &OsStr, file: &Path) -> BTreeSet<String> {
 #[test]
 #[cfg(unix)]
 fn a_c_host_inlines_the_bitcode_but_not_an_object() {
-    let Some(nm) = llvm_tool("llvm-nm") else {
+    let (Some(objdump), Some(nm)) = (llvm_tool("llvm-objdump"), llvm_tool("llvm-nm")) else {
         return;
     };
     if !thinlto_link_works() {
@@ -841,14 +841,33 @@ fn a_c_host_inlines_the_bitcode_but_not_an_object() {
     );
     assert_eq!(run(&called), ADD_TOTAL);
     assert_eq!(run(&inlined), ADD_TOTAL);
-    // The host's loop calls `tz_add` through the object, and has no call left after ThinLTO imported it.
-    assert!(defined(&nm, &called, "Tt").contains("tz_add"));
+    // The host's loop calls `tz_add` through the object, and has no call left after ThinLTO imported it. The symbol
+    // table is no evidence either way: the linker of macOS drops the definition that nothing calls, and lld keeps it
+    // in an ELF executable.
+    assert!(!instructions_naming(&objdump, &called, "tz_add").is_empty());
+    let calls = instructions_naming(&objdump, &inlined, "tz_add");
+    assert!(calls.is_empty(), "the host still names tz_add: {calls:?}");
+    // The definition that is left is what the linker's own option for unused code removes.
+    let collect = if cfg!(target_vendor = "apple") {
+        "-Wl,-dead_strip"
+    } else {
+        "-Wl,--gc-sections"
+    };
+    let collected = link(
+        &clang(),
+        &directory,
+        "collected",
+        &[&host, &bitcode],
+        true,
+        &[collect],
+    );
+    assert_eq!(run(&collected), ADD_TOTAL);
     assert!(
-        !symbols(&nm, &inlined)
+        !symbols(&nm, &collected)
             .iter()
             .any(|(_, name)| name == "tz_add"),
         "{:?}",
-        symbols(&nm, &inlined)
+        symbols(&nm, &collected)
     );
     fs::remove_dir_all(directory).unwrap();
 }
@@ -856,7 +875,7 @@ fn a_c_host_inlines_the_bitcode_but_not_an_object() {
 #[test]
 #[cfg(unix)]
 fn a_cpp_host_inlines_the_bitcode_too() {
-    let Some(nm) = llvm_tool("llvm-nm") else {
+    let Some(objdump) = llvm_tool("llvm-objdump") else {
         return;
     };
     if !thinlto_link_works() {
@@ -882,11 +901,8 @@ fn a_cpp_host_inlines_the_bitcode_too() {
         &[],
     );
     assert_eq!(run(&inlined), ADD_TOTAL);
-    assert!(
-        !symbols(&nm, &inlined)
-            .iter()
-            .any(|(_, name)| name == "tz_add")
-    );
+    let calls = instructions_naming(&objdump, &inlined, "tz_add");
+    assert!(calls.is_empty(), "the host still names tz_add: {calls:?}");
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1316,12 +1332,12 @@ fn run_wasm(module: &Path, n: u64) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-/// The lines of the disassembly of `module` that contain one of `needles`.
+/// The disassembly of `file` (`llvm-objdump -d`).
 #[cfg(unix)]
-fn disassembly_matches(objdump: &OsStr, module: &Path, needles: &[&str]) -> usize {
+fn disassembly(objdump: &OsStr, file: &Path) -> String {
     let output = Command::new(objdump)
         .args(["-d", "--no-show-raw-insn"])
-        .arg(module)
+        .arg(file)
         .output()
         .unwrap();
     assert!(
@@ -1329,10 +1345,28 @@ fn disassembly_matches(objdump: &OsStr, module: &Path, needles: &[&str]) -> usiz
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The lines of the disassembly of `module` that contain one of `needles`.
+#[cfg(unix)]
+fn disassembly_matches(objdump: &OsStr, module: &Path, needles: &[&str]) -> usize {
+    disassembly(objdump, module)
         .lines()
         .filter(|line| needles.iter().any(|needle| line.contains(needle)))
         .count()
+}
+
+/// The instructions of the native `executable` that name `symbol`: a call, a branch, or a jump to it. The line that
+/// starts its own definition (`<symbol>:`) is not one: what a link leaves in the symbol table says nothing about
+/// calls, because lld keeps the definition that nothing calls any more in an ELF executable.
+#[cfg(unix)]
+fn instructions_naming(objdump: &OsStr, executable: &Path, symbol: &str) -> Vec<String> {
+    disassembly(objdump, executable)
+        .lines()
+        .filter(|line| line.contains(symbol) && !line.trim_end().ends_with(">:"))
+        .map(str::to_owned)
+        .collect()
 }
 
 #[test]

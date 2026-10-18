@@ -410,7 +410,7 @@ clang -O3 -flto=thin host.c add.bc -o host
 4999950000
 ```
 
-`--emit object` の `add.o` とリンクした実行ファイルには `tz_add` のシンボルが残り、`main` はそれを呼びます。bitcode とリンクした実行ファイルには、`llvm-nm host` に `tz_add` がなく、呼び出しの命令も残りません。C++ のホストも同じです（`extern "C"` で宣言します）。
+`--emit object` の `add.o` とリンクした実行ファイルでは、`main` が `tz_add` を呼びます。bitcode とリンクした実行ファイルの `main` には、`tz_add` を指す命令が残りません（`llvm-objdump -d host` で確かめます）。呼ばれなくなった `tz_add` の定義は、macOS ではリンクで消えますが、Linux（lld、ELF）では実行ファイルに残り、`llvm-nm host` にも出ます。`-Wl,--gc-sections` を付けると消えます。C++ のホストも同じです（`extern "C"` で宣言します）。
 
 この小さなループを 10 億回呼ぶ測定（M1 Max、macOS）では、bitcode のリンクは `--emit object` のリンクの約 0.5〜0.6 倍の時間で、同じ関数を C で書いた場合と区別できませんでした。1 つの関数と 1 つの負荷だけの値で、共有機での目安です（[測定](../../../docs/benchmarks.md#pr08-言語間-lto-と-bitcode-出力)）。
 
@@ -421,6 +421,7 @@ clang -O3 -flto=thin host.c add.bc -o host
 - Linux では `-fuse-ld=lld` を付けます。GNU ld は、LLVM のプラグインなしでは bitcode を読めません。macOS の Apple の `ld` は、そのまま読みます。
 - C ランタイムを使うプログラムのホストには、実行ファイルのときと同じ `-pthread` と `-lm` が要ります。
 - `-g` の bitcode は、DWARF 4 のデバッグ情報を持ちます（G16）。ホストが既定の DWARF 5 だと、リンクで `warning: linking module flags 'Dwarf Version': IDs have conflicting values` が出ます（結果は正しいままです）。ホストに `-gdwarf-4` を付けると出ません。
+- bitcode の triple と Clang の既定の triple の綴りが違うと、ホストのビルドで `warning: overriding the module target triple with ... [-Woverride-module]` が出ます。Ubuntu の Clang 21 の x86-64 は、bitcode の `x86_64-unknown-linux-gnu` に対して既定が `x86_64-pc-linux-gnu` なので出ます（結果は正しいままです）。ホストに `-Wno-override-module` を付けると出ません。
 - ホストの `-flto`（full LTO）と ThinLTO の bitcode の組は、lld ではリンクエラーです。どちらも `-flto=thin` にします。
 
 ### 同じ Clang で書き、同じ Clang で読む
@@ -483,11 +484,13 @@ clang --target=wasm32-unknown-unknown -O3 -flto=thin -nostdlib -fuse-ld=lld \
 | macOS arm64、C・C++ のホスト、同じ Clang（Apple clang 21、Homebrew LLVM 21） | inline と実行を確認 |
 | macOS から同梱の Zig（`tsuzuri-clang`）で Linux の x86-64（glibc）と AArch64（musl）のホストをリンク | `tz_add` が inline されることを確認。実行はしていません |
 | macOS で、同梱の Zig のホスト（`tsuzuri-clang`） | `error: LTO requires using LLD` でリンクできません（Zig 0.16.0 の Mach-O）。macOS のホストはシステムの Clang で作ります |
-| Linux（x86-64、AArch64）での実行 | ホストのテスト（`tests/lto.rs`、LLD でリンク）は書きましたが、このマシンでは動かしていません（Docker のコンテナが起動しませんでした） |
+| Linux x86-64（CI の Ubuntu 24.04、apt.llvm.org の clang・lld 21） | C・C++ のホストのリンクと実行を確認（CI）。inline は、`tz_add` を指す命令が実行ファイルにないことで確かめます。`tz_add` の定義は記号表に残ります |
+| Linux AArch64（Ubuntu の Clang・lld 21.1.8、Docker のコンテナ） | `tests/lto.rs` が通ります。x86-64 のコンテナ（エミュレーション）でも、同じリンクと `llvm-objdump` の確認をしました |
 | wasm32 と `wasm-ld`（C のホスト、Node.js 20） | import なし、結果、inline、`simd128` の保持を確認 |
 | wasm32 と Rust（`-C linker-plugin-lto`、rustc 1.96.1 の LLVM 22.1.2 の `rust-lld`） | 手で確認（結果が正しく、inline）。テストにはしていません |
 | native の Rust（macOS） | `-C linker-plugin-lto` の `-plugin-opt` を Apple の `ld` と `ld64.lld` が拒否してリンクできません。`-plugin-opt` を落とすと、リンクできても `tz_add` は inline されません |
-| native の Rust（Linux）、macOS の `-fuse-ld=lld` | 未確認 |
+| native の Rust（Linux の AArch64 と x86-64。rustc 1.93.1 の LLVM 21.1.8 と同じ Clang・lld 21.1.8、Docker のコンテナ） | `rustc -O -C linker-plugin-lto -C linker=clang -C link-arg=-fuse-ld=lld -C link-arg=-flto=thin -C link-arg=add.bc` で、ホストの `main` のループが定数になり、inline を確認（手で確認。テストにはしていません）。`-flto=thin` を渡さないと、リンクはできても inline されません |
+| macOS の `-fuse-ld=lld` | 未確認 |
 | Windows | 未対応です。`E2000` |
 
 ## ホスト提供の allocator
