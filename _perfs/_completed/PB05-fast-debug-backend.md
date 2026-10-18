@@ -1,5 +1,7 @@
 # PB05: デバッグビルド用の高速バックエンド
 
+本文の起票時の設計（Phase 1 だけ、D13 は行わない、など）と手順は調査履歴です。現行の方針・決定事項・範囲・停止条件・テストコマンドは「着手時の再検討（2026-10-17）」と末尾の「実装と検証」を優先します。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PB05 |
@@ -8,7 +10,7 @@
 | 規模 | XL |
 | 依存 | PB01, PB02 |
 | 関連 | PB03, PB04, PB07, G08, G04 |
-| 状態 | doing |
+| 状態 | done（全フェーズ実装・検証済み。D12 は行わず、既定は `llvm`。速度は共有機の参考値で、Windows のホストでは `--backend fast` が `E2000`） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD `9dd0fbbc` で再検討（「着手時の再検討」） |
 | 承認 | 2026-10-17 の全フェーズ実装依頼で D1（第二のバックエンドとして Cranelift を採る。チケット全体）、D2（入力を Tsuzuri が出す `-O0` の LLVM IR テキストにする）、D3（Cranelift 系 crate・`target-lexicon`・Phase 2 の `gimli`/`object` の追加と cargo feature `fast-backend`）、D9（DWARF の行情報）、D13（直接の WASM 生成の評価と、ゲートを通った場合の実装）を含む全フェーズを承認済み（測定で効果を確認できない既定の切り替えは行わない）。D12（既定のバックエンドの変更）は本チケットでは行わず、既定は `llvm` のまま |
 | 手本にする既存実装 | LLVM 以外の出力と対応外の早期拒否: `src/gpu.rs` の `extract_kernel`・`GpuKernel::wgsl`・`wgsl_type`。外部ツールの起動と一時ディレクトリ: `src/driver.rs` の `build_complete`・`tool`・`TemporaryDirectory`。CLI の値付きオプション: `src/main.rs` の `--cpu` の分岐と `BuildOptions::cpu`。cache の鍵: `src/cache.rs` の `build_key`。trap の E2E: `tests/e2e.mjs` の `traps`（SIGILL・SIGTRAP を `_Exit(86)` にする C harness） |
@@ -738,14 +740,14 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 - 決定: 第二のバックエンドは Cranelift で native の object を作る。直接の WASM 生成（(C)・(D)）と自前の機械語生成は採らない。
 - 理由: 計測済みの待ち時間は native `-O0` の Clang（3.70 s）で、`run` は native だけ。WASM の直接生成は `run` に効かず、ランタイムの `.ll` が
   `internal` で `%tz.*` に依存するため wasm32 object に事前 compile できない。自前の機械語生成は aarch64・x86_64 の命令選択とレジスタ割り当てを抱える。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-17）・実装済み（native は Cranelift。WASM の直接生成は D13 として別に実装した）
 
 ### D2: 入力
 
 - 決定: Tsuzuri が出す `-O0` の LLVM IR テキスト（連結したランタイムを含む）を構文解析して翻訳する。`src/llvm*.rs` は変えない（PB01 の `external_numeric` を除く）。
 - 理由: 10,888 行の lowering を二重に持たず、所有・trap・評価順序の一致を構成で保つ。IR の生成（2.58 s に含まれる）は残るが、Clang の compile 分を置き換える。
 - 見直し提案: 起票時の目的は「型付き IR から直接」だった。IR テキストの生成と構文解析が支配的になったら、Phase 2 以降で `src/llvm.rs` の出力を構造化する案を別チケットで検討する。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-17）・実装済み（IR テキストを in-memory で読む。`src/llvm*.rs` は変えていない）
 
 ### D3: crate と feature
 
@@ -753,50 +755,50 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
   cargo feature `fast-backend`（新規）だけで有効にする。cranelift の 4 crate は同じ版を `=` で固定し、`cargo info cranelift-codegen@<版>` の
   `rust-version` が 1.85 以下の最新版を選ぶ。`target-lexicon` は cranelift が要求する版に合わせる。
 - 理由: 既定の build 時間・binary の大きさ・依存を変えずに評価できる。依存 crate の内部の `unsafe` は自分の crate の `forbid` に触れない。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み（2026-10-17）・実装済み（Cranelift 系 4 crate `=0.121.2`、`target-lexicon` 0.13、Phase 2 の `gimli` `=0.31.1`）
 
 ### D4: CLI
 
 - 決定: `--backend llvm|fast`（新規）。既定は `llvm`。`build`・`run` だけが受ける。`--backend fast` で `-O` を省略すると `-O0`。
 - 理由: 明示の選択だけにし、既存のコマンドの意味を変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`build`・`run`・`test` が受ける。2026-10-17 の再検討で `test` を足した。許す組み合わせは option.md の表）
 
 ### D5: Phase 1 の範囲
 
 - 決定: 「Phase 分割」の Phase 1 のとおり。範囲外の option は E2000、翻訳できない IR は E2002 で、LLVM 経路への黙った fallback をしない。
 - 理由: 明示した backend が使えないときは報告する（AGENTS.md）。fallback は計測と差分テストを曖昧にする。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（範囲は再検討で広げた: 全フェーズ。『実装と検証』の範囲）
 
 ### D6: 翻訳規則
 
 - 決定: 「翻訳規則」の表のとおり。表にない構文は E2002 で、手順 2 で見つかったものは停止条件 3。
 - 理由: 観測できる差がない写し方だけを選んだ（`_sat`、trap のシグナル、compiler-rt の `i128` 除算、NaN 正規化なし）。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（棚卸しで足した構成要素を含む。表にない構文は E2002）
 
 ### D7: ランタイム
 
 - 決定: 手書きの `.ll` と `math.ll` は IR と一緒に翻訳する。`numeric` と C ランタイムは PB01 の object を link する。
 - 理由: `.ll` は `internal` で型を利用者 IR に頼るので分けられない。`numeric.ll` は `sret`・`byval`・`fastcc` を内部で使い（確認済み）、翻訳の対象を増やすだけで得がない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（再検討で変更: fast は LLVM 経路に渡る IR と同じ text を翻訳し、runtime の object は同じ関数・同じ引数で作る）
 
 ### D8: 集約値と ABI
 
 - 決定: SSA の集約値は scalar の列に平らにする。module 内の定義は列をそのまま引数・戻り値にする。宣言だけの関数と外から呼ばれる定義は、
   scalar・`ptr` と、2 語以下の集約の戻り値だけを受け、`signext`・`zeroext` を写す。それ以外は停止条件 4。
 - 理由: 棚卸しの範囲では境界の signature は scalar が中心で、aggregate の C ABI を一般に実装する必要がない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（再検討で二層に変更: leaf が 16 以下は scalar の列、超えると frame 上）
 
 ### D9: デバッグ情報
 
 - 決定: Phase 1 は DWARF を出さず、`-g` を E2000 にする。Phase 2 で行情報を足す場合は `gimli` の追加として別に承認を得る。G16 のデバッガー体験は LLVM 経路のまま。
 - 理由: 行情報なしで `-g` を受けると、利用者が期待するデバッグができないのに成功に見える。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（Phase 2: 行情報だけの DWARF。変数と型は `llvm` だけ。`gimli` の追加は 2026-10-17 に承認済み）
 
 ### D10: cache
 
 - 決定: `build_key` は変えず、`BuildOptions` の `Debug` 表示に入る `backend` で鍵を分ける。E2E で llvm と fast の成果物が混ざらないことを確かめる。
 - 理由: 既存の鍵の作り方がすでに option 全体を含む。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`build_key` は変えず、test で 2 つの backend の成果物が混ざらないことを確認）
 
 ### D11: 意味の一致の検証
 
@@ -804,13 +806,13 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
   `-g`・`--debug-info`・`--trap-info`・`--wasm-feature`・`--backend`・`wasm32`・`llvm`・`header`・`wasm`・`wgsl`・`native` のどれも含まないときだけ
   `--backend fast` を足して log に 1 行書き、`exec` する。suite の source は変えない。
 - 理由: 既存の独立の参照と harness をそのまま使え、suite ごとの改修が要らない。除外の判定は保守的（`native` を含むと `--target native` も除く）。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（経路 A・B と `programs`・`wasm`・`debug`・`parity` の mode。wasm32 の wrapper を足した）
 
 ### D12: 既定の選択
 
 - 決定: 本チケットでは既定を変えず、自動選択もしない。差分 suite が一定期間一致した記録を添えて、別の承認で判断する。
 - 理由: 意味の一致が長期に確認されるまで、利用者の成果物を変えない。
-- 状態: 要承認（承認前は既定の変更に着手しない）
+- 状態: 未実施（本チケットの範囲外。`llvm` が既定のまま。別の承認と、静かな機械での測定・長期の差分の記録が要る）
 
 ### D13: 直接の WASM 生成
 
@@ -824,7 +826,7 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 ### 実装した範囲
 
 全フェーズを実装した（D1・D2・D3・D9・D13 は 2026-10-17 の依頼で承認済み）。**D12（既定の切り替え）は行っていない**: 既定は `llvm` のままで、`--backend` を付けないビルドの出力は変わらない（旗なしの IR は `tests/fast_backend.mjs` の既定 mode が `--backend llvm` と byte 比較し、保存した基準の compiler とも `TSUZURI_BASELINE` で比べられる）。
-基準は `a2313d19`（main `9dd0fbbc` + 第4フェーズの足場）、branch `perf/p4-PB05`。TBD-COMMITS
+基準は `a2313d19`（main `9dd0fbbc` + 第4フェーズの足場）、branch `perf/p4-PB05`。merge を除く 32 commit と、この文書の commit（下の表）。最後の統合 merge は `37a28528`（統合 branch `perf/phase4-compiler-performance` の `63a12d4a`）。
 
 | commit | 内容 |
 | --- | --- |
@@ -839,8 +841,9 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 | `77bb5582`・`34ea4b2e` | WP12 `-g` の DWARF（`!dbg` の位置を Cranelift の source location に、gimli で行表と関数の DIE） |
 | `127a6e75` | WP15 `--allocator small\|counting`・`--freestanding`・`--trap-mode return` |
 | `506d5c9f`〜`9250638a`（WP17 の 12 commit）、`3858bdff`（WP18）、`62799906`（WP20） | 直接の wasm32 生成（D13）: object writer、lowering、driver、差分テストと wrapper、locals の共有 |
-| `315b5808`・`c16dbc7a` | WP14 の確認で見つけた x86-64 の誤り、別の機械向けの object の test |
-| 統合の merge | `4b315242`・`2beef865`・`7f0071f2`（PR07・PR08・PB06 など）、`e0508729`（`e4025531`）、TBD-MERGE |
+| `315b5808`・`c16dbc7a`・`fbdc3702` | WP14 の確認で見つけた x86-64 の誤り（`i128` の署名、`fmuladd`）、別の機械向けの object の test と操作の書き出し、reducible でない loop の case |
+| `4284f393`・`467e0149`・`3d47c701`・`92402c32`・`e0a98fd6` | wasm32 の前向きの分岐、`benchmarks/run-backend-kernels.mjs`、文書と測定の記録、clippy 1.99 の指摘、feature なしの build の test と README の `--backend` |
+| 統合の merge | `4b315242`・`2beef865`・`7f0071f2`（PR07・PR08・PB06 など）、`e0508729`（`e4025531`）、`ce980025`（`0df672e7`。PM04 など）、`37a28528`（`63a12d4a`。PM04 の review fix、CI の配線） |
 
 ### 作業ごとの結果
 
@@ -894,11 +897,27 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 
 ### 確認
 
-TBD-VERIFICATION
+統合後の木（統合 branch の `63a12d4a` を merge した `37a28528` 以降）で確かめた。速度を除いて、すべての確認を実行した。
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、clippy 1.99（`--all-targets --locked -- -D warnings`、feature あり・なし） | 成功（最初の clippy が wasm の object writer の 2 件を指摘し、直した） |
+| `RUST_MIN_STACK=4194304 cargo +1.99.0 test --locked --features fast-backend --no-fail-fast`（全体） | 成功: 112 target、1,622 件成功、0 失敗、1 件 ignored（lib 407、bin 32、`fast_backend` 7、`fast_backend_ops` 2） |
+| `RUST_MIN_STACK=4194304 cargo +1.99.0 test --locked --no-fail-fast`（feature なし、全体） | 成功: 111 target、1,603 件成功、0 失敗、1 件 ignored（lib 397、bin 32）。feature ありとの差は feature つきの test の 19 件 |
+| `cargo +1.85.0 check --locked --features fast-backend`（MSRV） | 成功（rustc 1.85.0） |
+| Windows の型検査（`cargo check --all-targets --locked --features fast-backend --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`） | 成功（2 target とも。stable 1.96.1。Windows での実行は未確認） |
+| `node tests/fast_backend.mjs`（既定の 11 段）、`programs`（同じ出力 21・同じ export 85・差 0・比べないもの 12）、`debug`（21 project の 1,393 関数、行の欠けなし）、`wasm`（同じ挙動 96・差 0・比べないもの 22、module は 1.10 倍） | 成功。`programs`・`wasm` は `TSUZURI_STRINGS=compact` でも成功 |
+| `node tests/fast_backend.mjs parity …`（`FAST_FORCE=1`、Node 24） | TBD-PARITY |
+| Linux のコンテナ（AArch64 は native、x86-64 は Rosetta）: 実際の driver と、翻訳器の object だけの経路 | 成功（docs/benchmarks.md の測定 4）。x86-64 の driver の確認は最後の merge の前の木 |
+| `node tests/server.mjs`（`--backend fast` を含む）、`cargo test --test lto`、`node tests/pgo.mjs` | 成功（`server.mjs`: `--backend fast` の 3 つの command がサーバー経由と単独で同じ結果。`pgo.mjs`: 16 節成功。`lto` は全体の cargo test に含まれ 21 件成功） |
+| `node scripts/check-docs.mjs`（変更した 4 ページ）、`git diff --check` | 成功（`debugging.md`・`option.md`・`platforms.md`・`usage.md`・`webassembly.md` の 5 ページ、178 リンク、11 例、native 10 回） |
+| 旗なしの出力の不変: `src/llvm*.rs`・`src/runtime/` は統合 branch と差がない。統合 branch の `63a12d4a` を `git archive` から build した compiler と、この branch の compiler（feature あり・なし）で、`examples/`・`tests/fixtures/` の 118 project の `--emit llvm`（`-O0`・`-O3`）と、13 の example の `--emit object`・wasm32 の module（`-O0`・`-O3`）を作って比べた | 576 件すべてで、終了状態・stderr・成果物の byte が一致（差 0）。`tests/fast_backend.mjs` の既定 mode も `--backend llvm` を付けた IR と付けない IR を byte 比較する |
+
+確認で見つけて直したこと（commit 済み）: clippy の 2 件（wasm の object writer）、feature なしの build で profile の option のエラーより先に「この `tsuzuri` に fast は入っていない」が出る（test の期待値を、feature の有無で決まるものにした）、`tests/server.mjs` の wasm32 の fast の command が成功を要求していた（エントリのない `42` の project では E2004 になるので、同じエラーを比べる）、`tests/fast_backend.mjs` が trap の signal を SIGTRAP と決めていた（x86-64 は SIGILL）、x86-64 の `i128` の署名の panic と `fmuladd`（WP14）。
 
 ### 計測
 
-docs/benchmarks.md の PB05 の節（native と wasm32 のゲート、生成コードの速さ、大きさ、Linux・x86-64、生成コードの確認）。要点: ゲート（1,000 module の `build-edit-body`）は native 0.56 倍、wasm32 0.48 倍。ビルドの残りは frontend が大半で、翻訳器は native で total の 9〜12%。TBD-SIZES
+docs/benchmarks.md の PB05 の節（native と wasm32 のゲート、生成コードの速さ、大きさ、feature の費用、Linux・x86-64、生成コードの確認）。要点: ゲート（1,000 module の `build-edit-body`）は native 0.56 倍、wasm32 0.47 倍（200 module は 0.53 倍と 0.42 倍）。ビルドの残りは frontend が大半（81〜93%）で、翻訳器は native で total の 9〜12%、wasm32 で 6〜8%。生成コードの実行時間は `llvm -O0` の native 0.81 倍・wasm32 1.05 倍。成果物は native の実行ファイルが 15〜17%、wasm32 の module が 40〜43% 大きい。feature の費用（M5）は、`tsuzuri` が 9.47 MiB から 13.5 MiB（+43%）、依存が 9 から 46、`Cargo.lock` が 162 行から 473 行で、既定の build には入らない。測定は共有機の参考値（load average 10〜55）で、静かな機械での正式な比較は統合担当が行う。
 
 ### 見つけた問題・残作業
 
