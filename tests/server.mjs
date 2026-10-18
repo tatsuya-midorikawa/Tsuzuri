@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -50,14 +50,17 @@ function save(path, text) {
 
 const socketOf = (project) => join(srv, `${createHash("sha256").update(realpathSync(project)).digest("hex").slice(0, 16)}.sock`);
 
-// Starts `tsuzuri serve ARGS`; `log` is what it writes to standard error.
+// Starts `tsuzuri serve ARGS`; `log` is what it writes to standard error. The log is a file, not a pipe: a client is run with
+// spawnSync, which keeps this process from reading a pipe while it waits, and a server whose standard error is full stops in the
+// middle of a write (on Linux a few hundred small writes fill a socket pair, which is what a pipe to a child is).
 function startServer(args, options = {}) {
-  const child = spawn(options.program ?? compiler, ["serve", ...args], { cwd: options.cwd ?? root, env: { ...env, ...options.env }, stdio: ["ignore", "pipe", "pipe"] });
+  const file = join(root, `server-${logs.length}.log`);
+  const descriptor = openSync(file, "w");
+  const child = spawn(options.program ?? compiler, ["serve", ...args], { cwd: options.cwd ?? root, env: { ...env, ...options.env }, stdio: ["ignore", "ignore", descriptor] });
+  closeSync(descriptor);
   servers.add(child);
-  const state = { child, log: "", exit: null };
+  const state = { child, exit: null, get log() { return readFileSync(file, "utf8"); } };
   logs.push(state);
-  child.stderr.setEncoding("utf8").on("data", (chunk) => { state.log += chunk; });
-  child.stdout.resume();
   state.exited = new Promise((done) => child.on("close", (code, signal) => { state.exit = { code, signal }; servers.delete(child); done(state.exit); }));
   return state;
 }

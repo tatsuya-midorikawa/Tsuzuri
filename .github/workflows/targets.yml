@@ -313,9 +313,10 @@ jobs:
       # PB05: --backend fast (Cranelift, and the direct WebAssembly writer) exists only in a build with --features fast-backend, which goes
       # to its own target directory so that target/release/tsuzuri, the binary every step above tested, stays the default one.
       # tests/fast_backend.mjs checks the option table, traps, determinism, object symbols and the cache; "programs" builds every example
-      # and fixture with both backends at -O0 and compares output and exit status; "wasm" does that for wasm32 and validates the modules;
+      # and fixture with both backends at -O0 and compares output and exit status; "debug" has llvm-dwarfdump verify the -g line tables;
       # server.mjs sends --backend fast through the resident server (TMPDIR is the short runner temp directory for its socket).
       - name: Fast backend (PB05)
+        id: fast
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 45
         env:
@@ -324,12 +325,29 @@ jobs:
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_DWARFDUMP="$LLVM_PREFIX/bin/llvm-dwarfdump"
           cargo build --release --locked --features fast-backend
           export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
           node tests/fast_backend.mjs target/fast/release/tsuzuri
           node tests/fast_backend.mjs programs target/fast/release/tsuzuri
-          node tests/fast_backend.mjs wasm target/fast/release/tsuzuri
+          node tests/fast_backend.mjs debug target/fast/release/tsuzuri
           node tests/server.mjs target/fast/release/tsuzuri
+      # The wasm32 half does not depend on the host's architecture, and the Intel runner is the slowest, so it is left out there.
+      # "wasm" builds every project to a module with both backends, validates it and compares imports, exports and behavior in V8;
+      # "parity" runs existing suites with every -O0 build forced onto the fast backend (FAST_FORCE=1) and fails on any difference.
+      - name: Fast backend, wasm32 and suite parity (PB05)
+        if: ${{ !cancelled() && steps.fast.outcome == 'success' && matrix.host != 'darwin-x64' }}
+        timeout-minutes: 60
+        env:
+          TMPDIR: ${{ runner.temp }}
+          FAST_FORCE: "1"
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
+          export TSUZURI_BIN="$PWD/target/fast/release/tsuzuri"
+          node tests/fast_backend.mjs wasm target/fast/release/tsuzuri
+          node tests/fast_backend.mjs parity control primitives numeric_casts integer_intrinsics strings user_drop examples e2e
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:
