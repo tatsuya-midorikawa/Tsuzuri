@@ -55,6 +55,12 @@ static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// running executable file, or `None` when that is unknown, which disables the cache. Hashing
 /// the whole executable, as the build cache does, would cost more than parsing a small project.
 pub(crate) fn compiler_identity() -> Option<[u8; 32]> {
+    crate::resident::pinned_compiler().or_else(running_compiler)
+}
+
+/// The identity of the compiler file at the path that is running, as that file is now: not the
+/// pinned one (`ResidentState`), which a process that stays compares it with.
+pub(crate) fn running_compiler() -> Option<[u8; 32]> {
     executable_identity(&std::env::current_exe().ok()?)
 }
 

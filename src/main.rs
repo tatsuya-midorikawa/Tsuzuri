@@ -1,12 +1,34 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
 use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
 use tsuzuri::llvm::Allocator;
+use tsuzuri::server;
+
+/// `eprintln!` to `err`. A failed write panics with the message that `eprintln!` has.
+macro_rules! errln {
+    ($err:expr) => {
+        if let Err(error) = writeln!($err) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+    ($err:expr, $($arg:tt)*) => {
+        if let Err(error) = writeln!($err, $($arg)*) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+}
+
+/// The exit codes of the commands that `cli` runs. `ExitCode` cannot be read back, and the build
+/// server hands the number to its client.
+const EXIT_SUCCESS: u8 = 0;
+const EXIT_FAILURE: u8 = 1;
+const EXIT_USAGE: u8 = 2;
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -24,6 +46,11 @@ Usage:
                              a debugger starts PATH with the printed argument 0
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
+    tsuzuri watch check|build|test source.tz|directory [options of that command]
+                             Run it again each time a source or manifest that it reads changes
+    tsuzuri serve directory [--idle-timeout SECONDS]
+    tsuzuri serve --status directory | --stop directory
+                             A build server (Unix) that runs check and build for that project
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
   tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native]
                     [--profile-generate DIR|--profile-use PATH] [--json]
@@ -59,6 +86,23 @@ nanoseconds; see Bench.with_input and Bench.of) in its own native process, one a
 doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
 median, minimum, and maximum time per iteration of --samples samples (default 11, at most 1000)
 at -O3 by default. It has no pass or fail threshold.
+`tsuzuri watch check|build|test PATH [options]` runs that command, then again each time a source
+or manifest that it reads changes: it polls every 100 ms, and a save that leaves the text as it
+was does not count. After each run it writes `watch: run N finished with exit code C` (with --json,
+the object {\"type\":\"watch\",\"run\":N,\"exit\":C}) to standard error. It runs in this process and
+ends only when it is stopped, for example with Ctrl-C. A directory named watch is built with
+`tsuzuri build watch`.
+`tsuzuri serve DIR` (macOS and Linux) is a build server for the project at DIR, in the foreground:
+`tsuzuri check` and `tsuzuri build` of that project, started with the same compiler, working
+directory, and environment variables that the compiler and its tools read (PATH, TSUZURI_*, the
+SDK and locale variables, ...), ask it to run the command and print what it printed, and run the
+command themselves, without a word, when no server is there or it refuses; --no-server skips the
+asking. It keeps what it read between commands, and stops after --idle-timeout seconds (1 to
+86400, default 1800) without a request, with `tsuzuri serve --stop DIR`, or when the compiler file
+is replaced. `tsuzuri serve --status DIR` prints its counters. The sockets are in
+TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the user's cache
+(macOS) or runtime (Linux) directory, which only its owner can enter. A directory named serve is
+built with `tsuzuri build serve`.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -146,6 +190,8 @@ Build options:
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable cache reads and writes: artifacts and parsed sources for
                            build/run/script, artifacts for repl
+    --no-server            Run check or build in this process even where tsuzuri serve runs
+                           for the project
     -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
@@ -263,6 +309,8 @@ struct Arguments {
     bench_samples: Option<usize>,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
+    /// `--no-server`: `check` and `build` run in this process even where a build server runs.
+    no_server: bool,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -287,6 +335,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             coverage: None,
             bench_samples: None,
             test_seed: None,
+            no_server: false,
         });
     }
     let mut position = 0;
@@ -357,6 +406,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
     let mut no_cache = false;
+    let mut no_server = false;
     let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
@@ -377,6 +427,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("no-cache specified more than once".into());
                     }
                     no_cache = true;
+                    continue;
+                }
+                Some("--no-server") => {
+                    if no_server {
+                        return Err("no-server specified more than once".into());
+                    }
+                    no_server = true;
                     continue;
                 }
                 Some("--deny-warnings") => {
@@ -741,6 +798,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
+    if no_server && !matches!(action, Action::Check | Action::Build) {
+        return Err("--no-server is only valid with check or build".into());
+    }
     if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
     {
@@ -977,6 +1037,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         coverage,
         bench_samples,
         test_seed,
+        no_server,
     })
 }
 
@@ -1032,27 +1093,47 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
 
 /// An invalid `TSUZURI_THREADS` is a command-line error, reported before the command reads a
 /// source (exit code 2, like the other invalid settings).
-fn invalid_thread_setting(json: bool) -> Option<ExitCode> {
+fn invalid_thread_setting(err: &mut dyn Write, json: bool) -> Option<u8> {
     let error = tsuzuri::validate_thread_setting().err()?;
-    print_diagnostic(&error, Path::new("<command line>"), "", json);
-    Some(ExitCode::from(2))
+    write_diagnostic(err, &error, Path::new("<command line>"), "", json);
+    Some(EXIT_USAGE)
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
-    print_with_severity(error.severity.as_str(), error, input, source, json);
+    write_diagnostic(&mut io::stderr(), error, input, source, json);
 }
 
 fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Project, json: bool) {
+    write_diagnostics(&mut io::stderr(), errors, project, json);
+}
+
+fn write_diagnostic(
+    err: &mut dyn Write,
+    error: &Diagnostic,
+    input: &Path,
+    source: &str,
+    json: bool,
+) {
+    write_with_severity(err, error.severity.as_str(), error, input, source, json);
+}
+
+fn write_diagnostics(
+    err: &mut dyn Write,
+    errors: &tsuzuri::diagnostic::DiagnosticSet,
+    project: &Project,
+    json: bool,
+) {
     for (index, error) in errors.diagnostics.iter().enumerate() {
         if index != 0 && !json {
-            eprintln!();
+            errln!(err);
         }
         let source = project.source_for(error);
-        print_diagnostic(error, &source.path, &source.text, json);
+        write_diagnostic(err, error, &source.path, &source.text, json);
     }
     if let Some(note) = errors.omission_note() {
         if json {
-            eprintln!(
+            errln!(
+                err,
                 "{{\"severity\":\"note\",\"message\":{}}}",
                 json_string(&note)
             );
@@ -1066,12 +1147,13 @@ fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Proj
             } else {
                 "warning"
             };
-            eprintln!("\n{severity}: {note}");
+            errln!(err, "\n{severity}: {note}");
         }
     }
 }
 
-fn print_with_severity(
+fn write_with_severity(
+    err: &mut dyn Write,
     severity: &str,
     diagnostic: &Diagnostic,
     input: &Path,
@@ -1079,7 +1161,8 @@ fn print_with_severity(
     json: bool,
 ) {
     let path = input.to_string_lossy();
-    eprintln!(
+    errln!(
+        err,
         "{}",
         if json {
             diagnostic.json_with_severity(severity, &path, source)
@@ -1087,6 +1170,21 @@ fn print_with_severity(
             diagnostic.render_with_severity(severity, &path, source)
         }
     );
+}
+
+/// The tool messages of a build (W2001 as JSON) that follow a successful command.
+fn write_messages(err: &mut dyn Write, messages: &[String], json: bool) {
+    for message in messages {
+        if json {
+            errln!(
+                err,
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            errln!(err, "{}", message.trim());
+        }
+    }
 }
 
 fn run_action(
@@ -1129,7 +1227,7 @@ fn run_action(
     }
 }
 
-fn run_formatter(arguments: &Arguments) -> ExitCode {
+fn run_formatter(arguments: &Arguments) -> u8 {
     match driver::format_sources(&arguments.input, arguments.format_check) {
         Ok(changed) => {
             if arguments.format_check {
@@ -1144,15 +1242,15 @@ fn run_formatter(arguments: &Arguments) -> ExitCode {
                     }
                 }
                 if !changed.is_empty() {
-                    return ExitCode::FAILURE;
+                    return EXIT_FAILURE;
                 }
             }
-            ExitCode::SUCCESS
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = driver::read_source(&error.path).unwrap_or_default();
             print_diagnostic(&error.diagnostic, &error.path, &source, arguments.json);
-            ExitCode::FAILURE
+            EXIT_FAILURE
         }
     }
 }
@@ -1169,7 +1267,7 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::TestOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1196,7 +1294,7 @@ fn run_test_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.options.debug_info {
         return debug_test(arguments, project, module, &options, links);
@@ -1226,20 +1324,20 @@ fn run_test_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     if let Some(output) = &arguments.coverage
         && let Err(error) = driver::check_coverage_output(project, output)
     {
         print_diagnostic(&error, output, "", arguments.json);
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1332,11 +1430,11 @@ fn run_test_action(
         );
         let source = project.source_for(&diagnostic);
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else if coverage_failed {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     }
 }
 
@@ -1347,7 +1445,7 @@ fn debug_test(
     module: &tsuzuri::check::CheckedModule,
     options: &driver::TestOptions,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let output = arguments
         .output
         .as_ref()
@@ -1357,7 +1455,7 @@ fn debug_test(
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &runner.messages {
@@ -1389,7 +1487,7 @@ fn debug_test(
             runner.arguments.join(" ")
         );
     }
-    ExitCode::SUCCESS
+    EXIT_SUCCESS
 }
 
 /// `tsuzuri bench`: measures each selected bench in its own process, one at a time, and prints
@@ -1399,7 +1497,7 @@ fn run_bench_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::BenchOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1425,7 +1523,7 @@ fn run_bench_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.test_list {
         for case in module.benches.iter().filter(|case| options.includes(case)) {
@@ -1452,14 +1550,14 @@ fn run_bench_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     let report = match driver::run_benches_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1569,9 +1667,9 @@ fn run_bench_action(
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
     }
     if failed.is_empty() {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     } else {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     }
 }
 
@@ -2158,7 +2256,7 @@ fn help() -> String {
 }
 
 fn main() -> ExitCode {
-    let _time_passes = tsuzuri::timings::Report::start();
+    let mut time_passes = tsuzuri::timings::Report::start();
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{}", help());
@@ -2216,38 +2314,77 @@ fn main() -> ExitCode {
         return bindgen_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "repl") {
-        if let Some(code) = invalid_thread_setting(false) {
-            return code;
+        if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+            return ExitCode::from(code);
         }
         return repl_command(&raw[1..]);
     }
-    let json = flags.iter().any(|argument| *argument == "--json");
-    let arguments = match parse_arguments(&raw) {
+    if raw.first().is_some_and(|command| *command == "watch") {
+        time_passes.disarm();
+        return watch_main(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "serve") {
+        time_passes.disarm();
+        return serve_main(&raw[1..]);
+    }
+    ExitCode::from(cli(
+        &raw,
+        program_arguments.as_deref(),
+        &mut io::stdout(),
+        &mut io::stderr(),
+    ))
+}
+
+/// Runs the command line `raw` that is a project command: everything after the commands that need
+/// no project (`--help`, `new`, `repl`, ...), from `parse_arguments` on. Its diagnostics and
+/// warnings go to `err`. `out` is the stream of the result that a command prints: `check` and
+/// `build` print none, and `test`, `bench`, `fmt`, and `run` write to the process's own standard
+/// output, so a caller that captures `out` serves `check` and `build` only.
+fn cli(
+    raw: &[OsString],
+    program_arguments: Option<&[OsString]>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
+    let json = raw
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match parse_arguments(raw) {
         Ok(arguments) => arguments,
         Err(message) => {
-            print_diagnostic(
+            write_diagnostic(
+                err,
                 &Diagnostic::new("E2000", message, Span::default()),
                 Path::new("<command line>"),
                 "",
                 json,
             );
-            return ExitCode::from(2);
+            return EXIT_USAGE;
         }
     };
     if arguments.action != Action::Fmt
-        && let Some(code) = invalid_thread_setting(json)
+        && let Some(code) = invalid_thread_setting(err, json)
     {
         return code;
     }
     if arguments.action == Action::Lsp {
-        return ExitCode::from(tsuzuri::lsp::serve(
-            std::io::stdin(),
-            std::io::stdout().lock(),
-            std::io::stderr().lock(),
-        ) as u8);
+        return tsuzuri::lsp::serve(io::stdin(), out, err) as u8;
     }
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
+    }
+    // A build server that runs this project takes the command, and gives back what it printed.
+    // A process that is one itself (`watch`, `serve`) never asks.
+    if !arguments.no_server
+        && matches!(arguments.action, Action::Check | Action::Build)
+        && !tsuzuri::resident::is_active()
+        && let Some(response) = tsuzuri::server::request(&arguments.input, raw)
+    {
+        tsuzuri::timings::silence_report();
+        let _ = out.write_all(response.stdout.as_bytes());
+        let _ = err.write_all(response.stderr.as_bytes());
+        return response.exit;
     }
     let load_time = tsuzuri::timings::Phase::start("load");
     let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
@@ -2263,15 +2400,16 @@ fn main() -> ExitCode {
     let project = match loaded {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+            return EXIT_FAILURE;
         }
     };
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
     // Command-line values were validated during parsing, so only manifest values can fail here.
     if let Err(error) = arguments.options.validate() {
-        print_diagnostic(
+        write_diagnostic(
+            err,
             &Diagnostic::new(
                 error.code,
                 format!(
@@ -2284,7 +2422,7 @@ fn main() -> ExitCode {
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let kind = match arguments.action {
         // bench loads the same sources as test (`Project::load_for_tests`).
@@ -2296,8 +2434,8 @@ fn main() -> ExitCode {
     let module = match project.analyze_cached(arguments.options.cache, kind) {
         Ok(module) => module,
         Err(errors) => {
-            print_diagnostics(&errors, &project, arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostics(err, &errors, &project, arguments.json);
+            return EXIT_FAILURE;
         }
     };
     // The manifest's [native] inputs come first and apply only where the command line's would.
@@ -2315,9 +2453,9 @@ fn main() -> ExitCode {
         module.warnings.iter().cloned().chain(copies),
         0,
     );
-    print_diagnostics(&warnings, &project, arguments.json);
+    write_diagnostics(err, &warnings, &project, arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links);
@@ -2330,26 +2468,387 @@ fn main() -> ExitCode {
         &project,
         &module,
         &links,
-        program_arguments.as_deref().unwrap_or_default(),
+        program_arguments.unwrap_or_default(),
     );
     match result {
         Ok(messages) => {
-            for message in messages {
-                if arguments.json {
-                    eprintln!(
-                        "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                        json_string(message.trim())
-                    );
-                } else {
-                    eprintln!("{}", message.trim());
-                }
-            }
-            ExitCode::SUCCESS
+            write_messages(err, &messages, arguments.json);
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = project.source_for(&error);
-            print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            ExitCode::FAILURE
+            write_diagnostic(err, &error, &source.path, &source.text, arguments.json);
+            EXIT_FAILURE
+        }
+    }
+}
+
+/// The arguments of `tsuzuri watch ARGS`, `ARGS` being those of `check`, `build` or `test`. The
+/// command is named, so that `watch app` is not read as a build of `app`.
+fn parse_watch_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+    match arguments.first().and_then(|command| command.to_str()) {
+        Some("check" | "build" | "test") => parse_arguments(arguments),
+        _ => Err("watch runs check, build, or test; use tsuzuri watch check <path>".into()),
+    }
+}
+
+/// `tsuzuri watch ARGS`: runs `ARGS` (a `check`, `build` or `test` command) and again each time
+/// that a file it reads changes. After each run it writes a status line to standard error. It
+/// ends only when it is stopped.
+fn watch_main(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let parsed = match parse_watch_arguments(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    // Every run would report the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
+    // The snapshot comes before the run: a save during the run starts another run. The state
+    // remembers the sources that the runs and the snapshots read, so that a run opens only the
+    // files that changed, and pins the compiler that started the watch.
+    let mut resident = tsuzuri::resident::ResidentState::new();
+    let mut watcher = {
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+        tsuzuri::watch::Watcher::new(&parsed.input, parsed.action == Action::Test)
+    };
+    let mut run = 0_u64;
+    loop {
+        run += 1;
+        let code = {
+            let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+            let _report = tsuzuri::timings::Report::start();
+            cli(arguments, None, &mut io::stdout(), &mut io::stderr())
+        };
+        if json {
+            errln!(
+                io::stderr(),
+                "{{\"type\":\"watch\",\"run\":{run},\"exit\":{code}}}"
+            );
+        } else {
+            errln!(
+                io::stderr(),
+                "watch: run {run} finished with exit code {code}"
+            );
+        }
+        // A rebuilt compiler is not the one that this process runs: stop, and start the new one.
+        if resident.compiler_changed() {
+            if json {
+                errln!(
+                    io::stderr(),
+                    "{{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}}"
+                );
+            } else {
+                errln!(
+                    io::stderr(),
+                    "watch: the compiler binary changed; stopping (start tsuzuri watch again)"
+                );
+            }
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        resident.trim();
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+        watcher.wait_for_change();
+    }
+}
+
+const SERVE_USAGE: &str = "serve takes one project directory: tsuzuri serve DIR [--idle-timeout SECONDS], tsuzuri serve --status DIR, or tsuzuri serve --stop DIR";
+
+/// What `tsuzuri serve` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+enum ServeMode {
+    Run { input: PathBuf, idle: u64 },
+    Status(PathBuf),
+    Stop(PathBuf),
+}
+
+fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
+    let mut input = None;
+    let mut idle = None;
+    let (mut status, mut stop) = (false, false);
+    let mut position = 0;
+    while position < arguments.len() {
+        let argument = &arguments[position];
+        position += 1;
+        match argument.to_str() {
+            Some("--idle-timeout") => {
+                if idle.is_some() {
+                    return Err("idle-timeout specified more than once".into());
+                }
+                let value = arguments
+                    .get(position)
+                    .and_then(|value| value.to_str())
+                    .ok_or("--idle-timeout requires a number of seconds")?;
+                position += 1;
+                let invalid = || {
+                    format!(
+                        "--idle-timeout must be an integer from 1 to {}, not '{value}'",
+                        server::MAX_IDLE_SECONDS
+                    )
+                };
+                let seconds: u64 = value.parse().map_err(|_| invalid())?;
+                if !(1..=server::MAX_IDLE_SECONDS).contains(&seconds) {
+                    return Err(invalid());
+                }
+                idle = Some(seconds);
+            }
+            Some("--status") => {
+                if std::mem::replace(&mut status, true) {
+                    return Err("status specified more than once".into());
+                }
+            }
+            Some("--stop") => {
+                if std::mem::replace(&mut stop, true) {
+                    return Err("stop specified more than once".into());
+                }
+            }
+            Some(value) if value.starts_with('-') => {
+                return Err(format!("unknown option '{value}' for serve; {SERVE_USAGE}"));
+            }
+            _ => {
+                if input.replace(PathBuf::from(argument)).is_some() {
+                    return Err(SERVE_USAGE.into());
+                }
+            }
+        }
+    }
+    let input = input.ok_or(SERVE_USAGE)?;
+    match (status, stop, idle) {
+        (false, false, idle) => Ok(ServeMode::Run {
+            input,
+            idle: idle.unwrap_or(server::DEFAULT_IDLE_SECONDS),
+        }),
+        (true, true, _) => Err("--status and --stop cannot be used together".into()),
+        (_, _, Some(_)) => Err("--idle-timeout applies to starting a server".into()),
+        (true, false, None) => Ok(ServeMode::Status(input)),
+        (false, true, None) => Ok(ServeMode::Stop(input)),
+    }
+}
+
+/// The server's commands: `check` and `build` of the project at `root`, through [`cli`] with the
+/// state that a process that stays keeps between them.
+struct CommandServer {
+    state: tsuzuri::resident::ResidentState,
+    root: PathBuf,
+}
+
+impl server::Handler for CommandServer {
+    fn run(
+        &mut self,
+        request: &server::Request,
+        log: &mut dyn Write,
+    ) -> Result<server::Response, server::Refused> {
+        use server::{Refusal, Refused};
+        let raw: Vec<OsString> = request.args.iter().map(OsString::from).collect();
+        let arguments = parse_arguments(&raw).map_err(|message| {
+            Refused::new(
+                Refusal::Unsupported,
+                format!("the command line is not valid ({message})"),
+            )
+        })?;
+        if !matches!(arguments.action, Action::Check | Action::Build) || arguments.no_server {
+            return Err(Refused::new(
+                Refusal::Unsupported,
+                "a server runs check and build, without --no-server",
+            ));
+        }
+        if server::project_root(&arguments.input).as_deref() != Some(self.root.as_path()) {
+            return Err(Refused::new(
+                Refusal::Root,
+                format!(
+                    "{} is not in the project that this server runs ({})",
+                    arguments.input.display(),
+                    self.root.display()
+                ),
+            ));
+        }
+        let state = &mut self.state;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = Vec::new();
+            let started = tsuzuri::timings::begin_command();
+            let (code, mut err) = {
+                let _scope = tsuzuri::resident::Scope::enter(state);
+                // What the command writes and what its drops warn are one text, in order.
+                tsuzuri::resident::capture(|err| cli(&raw, None, &mut out, err))
+            };
+            if let Some(report) = tsuzuri::timings::take_report(started) {
+                errln!(&mut err, "{report}");
+            }
+            (code, out, err)
+        }));
+        let Ok((code, out, err)) = outcome else {
+            // What the command left in the state cannot be trusted; the panic message is in the log.
+            self.state = tsuzuri::resident::ResidentState::new();
+            let _ = writeln!(log, "serve: the command panicked; resident state dropped");
+            return Err(Refused::new(
+                Refusal::Internal,
+                "the command panicked; see the server's standard error",
+            ));
+        };
+        if self.state.trim() {
+            let _ = writeln!(
+                log,
+                "serve: resident state dropped (over {} bytes)",
+                tsuzuri::resident::MAX_RESIDENT_BYTES
+            );
+        }
+        match (String::from_utf8(out), String::from_utf8(err)) {
+            (Ok(stdout), Ok(stderr)) => Ok(server::Response {
+                exit: code,
+                stdout,
+                stderr,
+            }),
+            _ => Err(Refused::new(
+                Refusal::Internal,
+                "the output of the command is not valid UTF-8",
+            )),
+        }
+    }
+
+    fn compiler_changed(&self) -> bool {
+        self.state.compiler_changed()
+    }
+
+    fn status(&self) -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        vec![
+            ("resident_bytes", json!(self.state.bytes())),
+            (
+                "resident_limit_bytes",
+                json!(tsuzuri::resident::MAX_RESIDENT_BYTES),
+            ),
+            ("source_hits", json!(self.state.source_hits)),
+            ("source_reads", json!(self.state.source_reads)),
+            ("digest_hits", json!(self.state.digest_hits)),
+            ("digest_reads", json!(self.state.digest_reads)),
+        ]
+    }
+}
+
+fn serve_failure(code: &'static str, message: String, exit: u8) -> ExitCode {
+    print_diagnostic(
+        &Diagnostic::new(code, message, Span::default()),
+        Path::new("<command line>"),
+        "",
+        false,
+    );
+    ExitCode::from(exit)
+}
+
+/// `tsuzuri serve DIR [--idle-timeout SECONDS]`, `serve --status DIR`, and `serve --stop DIR`.
+fn serve_main(arguments: &[OsString]) -> ExitCode {
+    let mode = match parse_serve_arguments(arguments) {
+        Ok(mode) => mode,
+        Err(message) => return serve_failure("E2000", message, EXIT_USAGE),
+    };
+    if !cfg!(unix) {
+        return serve_failure(
+            "E2000",
+            "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server".into(),
+            EXIT_USAGE,
+        );
+    }
+    match mode {
+        ServeMode::Status(input) => match server::control(&input, &server::Operation::Status) {
+            Ok(reply) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&reply).expect("a status is serializable")
+                );
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Stop(input) => match server::control(&input, &server::Operation::Shutdown) {
+            Ok(_) => {
+                let root = server::project_root(&input).unwrap_or(input);
+                println!("stopped the build server for {}", root.display());
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Run { input, idle } => start_server(&input, idle),
+    }
+}
+
+fn start_server(input: &Path, idle: u64) -> ExitCode {
+    // Every request would find the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+        return ExitCode::from(code);
+    }
+    let directory = match server::server_directory() {
+        Ok(directory) => directory,
+        Err(error) => return serve_failure("E2000", error.to_string(), EXIT_USAGE),
+    };
+    let Some(root) = server::project_root(input).filter(|root| root.to_str().is_some()) else {
+        return serve_failure(
+            "E2001",
+            format!(
+                "cannot find the project of {}: it must be an existing project directory or file with a UTF-8 path, not a symbolic link",
+                input.display()
+            ),
+            EXIT_FAILURE,
+        );
+    };
+    if let Err(message) = server::ensure_private_directory(&directory) {
+        return serve_failure("E2001", message, EXIT_FAILURE);
+    }
+    let compiler = env::current_exe().and_then(std::fs::canonicalize);
+    let cwd = env::current_dir();
+    let (Ok(compiler), Ok(cwd)) = (compiler, cwd) else {
+        return serve_failure(
+            "E2001",
+            "cannot find the compiler file or the working directory".into(),
+            EXIT_FAILURE,
+        );
+    };
+    let environment = match server::current_environment() {
+        Ok(environment) => environment,
+        Err(name) => {
+            return serve_failure(
+                "E2000",
+                format!(
+                    "the environment variable {} is not valid UTF-8; the build server compares it with its clients'",
+                    name.to_string_lossy()
+                ),
+                EXIT_USAGE,
+            );
+        }
+    };
+    let config = server::Config::new(
+        directory,
+        root.clone(),
+        std::time::Duration::from_secs(idle),
+        compiler,
+        cwd,
+        environment,
+    );
+    let mut handler = CommandServer {
+        state: tsuzuri::resident::ResidentState::new(),
+        root,
+    };
+    match server::serve(&config, &mut handler, &mut io::stderr()) {
+        Ok(server::Stop::Idle | server::Stop::Shutdown) => ExitCode::SUCCESS,
+        Ok(server::Stop::CompilerChanged) => ExitCode::from(EXIT_FAILURE),
+        Err(error) => {
+            let exit = if error.code == "E2000" {
+                EXIT_USAGE
+            } else {
+                EXIT_FAILURE
+            };
+            serve_failure(error.code, error.message, exit)
         }
     }
 }
@@ -4947,5 +5446,189 @@ mod tests {
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
+    }
+
+    #[test]
+    fn watch_arguments_accept_check_build_test_only() {
+        let watch = |values: &[&str]| {
+            parse_watch_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        for (values, action, input) in [
+            (vec!["check", "Main.tz"], Action::Check, "Main.tz"),
+            (
+                vec!["build", "Main.tz", "-O0", "-o", "out"],
+                Action::Build,
+                "Main.tz",
+            ),
+            (
+                vec!["test", "Specs.tz", "--filter", "x"],
+                Action::Test,
+                "Specs.tz",
+            ),
+            (vec!["check", "app", "--json"], Action::Check, "app"),
+            // A directory named `watch` or `check` is a path after the command.
+            (vec!["check", "watch"], Action::Check, "watch"),
+            (vec!["build", "--", "check"], Action::Build, "check"),
+        ] {
+            let parsed = watch(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            assert_eq!(parsed.action, action, "{values:?}");
+            assert_eq!(parsed.input, PathBuf::from(input), "{values:?}");
+        }
+        let usage = "watch runs check, build, or test; use tsuzuri watch check <path>";
+        for values in [
+            vec![],
+            vec!["run", "Main.tz"],
+            vec!["fmt", "Main.tz"],
+            vec!["lsp"],
+            vec!["doc", "app", "-o", "out"],
+            vec!["bench", "Specs.tz"],
+            vec!["watch", "check", "Main.tz"],
+            // An input without a command is not a build: the command is always named.
+            vec!["Main.tz"],
+            vec!["--json", "check", "Main.tz"],
+        ] {
+            assert_eq!(watch(&values).unwrap_err(), usage, "{values:?}");
+        }
+        // The command's own rules apply.
+        assert_eq!(
+            watch(&["check", "Main.tz", "--no-cache"]).unwrap_err(),
+            "--no-cache is only valid with build, run, script, or repl"
+        );
+        assert!(watch(&["check"]).is_err());
+        assert!(watch(&["check", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn serve_arguments_need_one_directory_and_valid_timeout() {
+        let serve = |values: &[&str]| {
+            parse_serve_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        let run = |input: &str, idle| ServeMode::Run {
+            input: PathBuf::from(input),
+            idle,
+        };
+        assert_eq!(serve(&["app"]), Ok(run("app", 1800)));
+        assert_eq!(serve(&["app", "--idle-timeout", "1"]), Ok(run("app", 1)));
+        assert_eq!(
+            serve(&["--idle-timeout", "86400", "app"]),
+            Ok(run("app", 86400))
+        );
+        assert_eq!(serve(&["app/Main.tz"]), Ok(run("app/Main.tz", 1800)));
+        assert_eq!(
+            serve(&["--status", "app"]),
+            Ok(ServeMode::Status(PathBuf::from("app")))
+        );
+        assert_eq!(
+            serve(&["app", "--stop"]),
+            Ok(ServeMode::Stop(PathBuf::from("app")))
+        );
+        for values in [
+            vec![],
+            vec!["a", "b"],
+            vec!["--status"],
+            vec!["--idle-timeout", "5"],
+            vec!["app", "--idle-timeout"],
+            vec!["app", "--idle-timeout", "0"],
+            vec!["app", "--idle-timeout", "86401"],
+            vec!["app", "--idle-timeout", "x"],
+            vec!["app", "--idle-timeout", "-1"],
+            vec!["app", "--idle-timeout", "1", "--idle-timeout", "2"],
+            vec!["app", "-O0"],
+            vec!["app", "--json"],
+            vec!["--status", "--stop", "app"],
+            vec!["--status", "--status", "app"],
+            vec!["--stop", "--stop", "app"],
+            vec!["--status", "app", "--idle-timeout", "5"],
+            vec!["--stop", "app", "--idle-timeout", "5"],
+        ] {
+            assert!(serve(&values).is_err(), "{values:?}");
+        }
+        assert_eq!(
+            serve(&["app", "--idle-timeout", "0"]).unwrap_err(),
+            "--idle-timeout must be an integer from 1 to 86400, not '0'"
+        );
+        assert_eq!(serve(&[]).unwrap_err(), SERVE_USAGE);
+    }
+
+    #[test]
+    fn no_server_is_only_valid_with_check_or_build() {
+        for values in [
+            vec!["check", "Main.tz", "--no-server"],
+            vec!["build", "Main.tz", "--no-server", "-O0"],
+            vec!["--no-server", "Main.tz"],
+        ] {
+            assert!(parse(&values).unwrap().no_server, "{values:?}");
+        }
+        assert!(!parse(&["check", "Main.tz"]).unwrap().no_server);
+        for values in [
+            vec!["run", "Main.tz", "--no-server"],
+            vec!["test", "Main.tz", "--no-server"],
+            vec!["bench", "Main.tz", "--no-server"],
+            vec!["doc", "Main.tz", "-o", "out", "--no-server"],
+            vec!["fmt", "Main.tz", "--no-server"],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap_err(),
+                "--no-server is only valid with check or build",
+                "{values:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["check", "Main.tz", "--no-server", "--no-server"]).unwrap_err(),
+            "no-server specified more than once"
+        );
+        assert!(parse(&["lsp", "--no-server"]).is_err());
+    }
+
+    /// A server hands a command's `out` and `err` to the client. A print that bypasses them in a
+    /// function that `check` or `build` reach would appear on the server's terminal instead.
+    #[test]
+    fn only_functions_that_a_server_never_runs_print_directly() {
+        let source = include_str!("main.rs");
+        let source = &source[..source.find("#[cfg(test)]").unwrap()];
+        let mut function = "";
+        let mut found = std::collections::BTreeSet::new();
+        for line in source.lines() {
+            let line = line.trim_start();
+            let declared = ["pub fn ", "async fn ", "fn "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(rest) = declared {
+                function = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap();
+            }
+            let prints = ["println!(", "print!(", "io::stdout()", "io::stderr()"]
+                .iter()
+                .any(|site| line.contains(site));
+            if prints && !line.starts_with("//") {
+                found.insert(function);
+            }
+        }
+        let expected = std::collections::BTreeSet::from([
+            "api_diff_command",
+            "bindgen_command",
+            "debug_test",
+            "main",
+            "new_project",
+            "print_coverage",
+            "print_diagnostic",
+            "print_diagnostics",
+            "print_output",
+            "publish_package",
+            "repl_command",
+            "run_bench_action",
+            "run_formatter",
+            "run_test_action",
+            "serve_main",
+            "start_server",
+            "watch_main",
+        ]);
+        assert_eq!(
+            found, expected,
+            "write through the `out` and `err` of `cli` in whatever `check` and `build` reach; \
+             list a function here only if a server refuses its command"
+        );
     }
 }
