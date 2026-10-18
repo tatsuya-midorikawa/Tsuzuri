@@ -87,7 +87,7 @@ Apple clang 21.0.0（clang-2100.3.34.2）、Homebrew の LLVM 21.1.8・22.1.8・
 | D2 | bitcode は `-flto=thin` | 維持 | lld は host の full LTO + ThinLTO の bitcode を、inline しないのではなく link エラーにする。full LTO の bitcode を選ぶ option は対象外のまま |
 | D3 | 3 鍵を全 `define` に付ける | **改訂**: probe の `target-cpu` と `tune-cpu`（ある場合）だけを、自分の `"target-features"` を持たない `define` に付ける。`--cpu native` のときだけ probe の `target-features` も付ける（machine の ISA を object と同じに保つ）。自分の `"target-features"` を持つ `define`（F08 の `@cpu` 版）には `"target-cpu"`・`"tune-cpu"` だけの group を付け、`target-features` は変えない。既存の group は 3 鍵を取り除いてから同じ規則で足す。probe の flags は `compile_args` と、`--cpu native` なら `native_ir_cpu_args` | 起票の規則は F08 の版を黙って壊す（42・28 個の feature が消える）。`target-features` を写すと host の Clang との違いで inline が外れ、`target-cpu` だけのほうが広く inline される（上の表）。`alwaysinline`・inline の閾値の変更は引き続き使わない |
 | D4 | C ランタイムは `-S -emit-llvm` → `llvm-link --internalize` | 維持。加えて `trap.c` を含める、`llvm-link` は「環境変数、同梱、Clang の隣、PATH」の順で探す（bitcode だけ）、`llvm-link` 実行後の Clang の失敗には llvm-link の版の hint を付ける、runtime の IR 化は cache しない | CI は `TSUZURI_LLVM_LINK` を設定せず llvm-link は PATH にないが、Clang の隣にはある（`$LLVM_PREFIX/bin`）。llvm-link が Clang より新しいと text IR が読めない（上の事実） |
-| D5 | 外部定義は `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ | **改訂**: 公開の集合は `--emit shared` の export（`shared_exports`）と同じ（`tz_*`、`tsuzuri_alloc`・`tsuzuri_free`、条件つきで `tsuzuri_alloc_stats`・`tsuzuri_try_*`・`tsuzuri_async_*`・`tsuzuri_main`）。object にも出る weak の runtime 記号（`tz_soft_*`・`tsuzuri_trap_hooks`・`tz_small_*`）は許す。検査は「C ランタイムの記号（`tsuzuri_cpu_*`・`tsuzuri_task_*`・`tsuzuri_io_*`・`tsuzuri_os_*`・`tsuzuri_net_*`・`tsuzuri_gpu_*` ほか）が外部にない」 | 実測した外部定義（上の表）。object が今出す記号以外は増やさない |
+| D5 | 外部定義は `tz_*`・`tsuzuri_alloc`・`tsuzuri_free` だけ | **改訂**: 公開の集合は `--emit shared` の export（`shared_exports`）と同じ（`tz_*`、`tsuzuri_alloc`・`tsuzuri_free`、条件つきで `tsuzuri_alloc_stats`・`tsuzuri_try_*`・`tsuzuri_async_*`・`tsuzuri_main`）。object にも出る weak の runtime 記号（`tz_soft_*`・`tsuzuri_trap_hooks`・`tz_small_*`）は許す。検査は「C ランタイムの記号（`tsuzuri_cpu_*`・`tsuzuri_task_*`・`tsuzuri_io_*`・`tsuzuri_os_*`・`tsuzuri_net_*`・`tsuzuri_gpu_*` ほか）が外部にない」。**訂正**: 公開の記号のうち C ランタイムだけが定義する `tsuzuri_async_post` は、外部に残す（「実装と検証」の「レビューの指摘への修正」） | 実測した外部定義（上の表）。object が今出す記号以外は増やさない |
 | D6 | 版を検査しない | 維持。さらに成果物の先頭が bitcode の magic（`BC C0 DE` または Darwin の `DE C0 17 0B`）でなければ E2002（D12）。Apple clang の版数は LLVM の版と一致するとは限らないので `llvm-link --version` との突き合わせはしない。文書に producer の確認方法、実測した診断の文、組み合わせの表を書く | 版の不一致は host の LTO が `Unknown attribute kind` などで知らせる。launcher が黙って object を作る誤りは検査できる |
 | D7 | bitcode は cache しない | 維持（上の所要時間は 0.3〜0.45 s）。cache は、実測で冷えた時間が利用者の障害になると分かった場合だけ別の WP で（key に `llvm-link` の identity を足すだけで足りる） | `build_key` は emit の違いと Clang の identity を既に含む。今回は効果が測れない最適化を入れない |
 | D8 | `-O<n>`・`--cpu native`・`-g`・`--trap-info` は object と同じ意味 | 維持。加えて `--trap-mode return`・`--allocator system`・`small`・`host`・`counting` と `-Os`・`-Oz` も object と同じ意味で通す。`--freestanding`・bare metal・Windows・`--strip`・リンク入力は拒否 | `--freestanding` と bare metal は既存の文のまま拒否する（C ランタイムも llvm-link も使わない形で、対応するなら別の変更） |
@@ -808,7 +808,11 @@ Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の L
 | WP5 | `10551c9d` | `benchmarks/run-lto.mjs`、`benchmarks/lto/small_call.c` |
 | WP6 | `d832fe24` | wasm32（`validate_bitcode`、simd128 の属性、`wasm-ld` の LTO と Node のテスト） |
 | WP7 | `b29d161e` | 文書（言語リファレンス、`docs/language.md`・`architecture.md`・`benchmarks.md`、README） |
-| WP8 | このコミット | チケットの完了と検証の記録 |
+| WP8 | `54f9db5c` | チケットの完了と検証の記録 |
+| レビュー 1 | `e2501638` | `--emit bitcode` が `tsuzuri_async_post` を内部にする誤りの修正（`keep_runtime_exports`・`check_kept_exports`）、host のスレッドからの post と `--emit shared` の export との一致のテスト、`docs/language.md`・`native-interop.md`・`architecture.md` の記号の一覧の統一 |
+| レビュー 2 | `8557d896` | llvm-link の hint を、C ランタイムを併合したときだけ付ける。wasm32 と C ランタイムのない native のテスト |
+| レビュー 3 | `409200bc` | bitcode が object のオプション（`-g`・`--cpu native`・`-O0`・`-Oz`・`--trap-info`）を取ることのテスト |
+| レビュー 4 | このコミット | 上の修正の記録 |
 
 ### 実装したこと
 
@@ -866,3 +870,38 @@ Phase 1（native の `--emit bitcode`）と Phase 2（wasm32 と `wasm-ld` の L
 - bitcode を読む LLVM は、書いた LLVM と同じか新しくなければならない。コンパイラは検査しない。
 - `-g` の bitcode は、既定の DWARF 5 のホストとのリンクで `Dwarf Version` の警告が出る（ホストに `-gdwarf-4` で消える）。
 - PR07（`--profile-*`）と PB05（`--backend fast`）は、`--emit bitcode` を allow-list で拒否する。統合後に組み合わせを確かめる。
+
+### レビューの指摘への修正（2026-10-17）
+
+統合ブランチ（PR07・PB06 を含む）を取り込んだ後の独立したコードレビューが、2 件を指摘した。どちらも直し、網羅の穴の 1 件も埋めた。
+
+**1. `tsuzuri_async_post` が内部になっていた（中）**
+
+- 再現: `tests/fixtures/async_reactor` を `--emit object` と `--emit bitcode` にして `llvm-nm` で比べた。object と `--emit shared` は `tsuzuri_async_post` を外部に出し、bitcode は出さなかった。bitcode の外部は `tz_*`、`tsuzuri_alloc`・`tsuzuri_free`・`tsuzuri_trap_hooks`（W）、`tsuzuri_async_poll`・`tsuzuri_async_complete`（T）だけだった。
+- 原因: `tsuzuri_async_post` は C ランタイム（`async.c`、`weak`、default visibility）だけが定義する。`llvm-link <module.ll> <task.o> --internalize` は、2 つ目のファイルだけが定義する記号をすべて内部にする。D5 は公開の集合を `shared_exports` と同じにしたが、そのうち C ランタイムが定義する記号を数えなかった。
+- 直し方: 公開 ABI の記号のうち IR が定義しないもの（`shared_exports` の一覧から求める）に、まとめる前の IR で `declare`（すでに宣言があれば足さない）と `@llvm.used` の一覧を足す（`lto::keep_runtime_exports`）。`llvm-link --internalize` が残す名前の一覧は `@llvm.used` だけで（`llvm.compiler.used` は読まれない）、配布物に `opt` がないので `opt -passes=internalize` は選べない。`async.c` を変えると既定の object・事前ビルドの runtime・cache の key が変わるので選ばない。`llvm-link` の後に `lto::check_kept_exports` が、まとめた IR でそれらが外部・default visibility の定義のままか検査し、違えば `E2002`（`@llvm.used` を読まない `llvm-link` への備え）。
+- 全部の記号を調べた: C ランタイム（`os.c`・`net.c`・`async.c`・`gpu.c`・`trap.c`・`task.c`・`cpu.c`・`io.c`・`arguments.c` をドライバーと同じく 1 つにして、`-DTZ_TRAP_BOUNDARY -pthread` で IR にした）で、internal でも hidden でもない定義は、`tsuzuri_async_post`（`weak`）と、生成された `main` が呼ぶ内部の hook の `tsuzuri_arguments` だけだった。ほかは `weak hidden` か `static`。`shared_exports` の一覧は、IR が定義する `tz_*`・`tsuzuri_try_*`・`tsuzuri_alloc`・`tsuzuri_alloc_stats`・`tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_free`・`tsuzuri_main` と、C ランタイムが定義する `tsuzuri_async_post` だから、失われていたのは `tsuzuri_async_post` だけである。`tsuzuri_arguments` は ABI ではないので内部のまま。
+- 見えなかった理由: 全 project の `--emit shared` と `--emit bitcode` の突き合わせ（直す前）は、80 件が一致、35 件は共有ライブラリを作れず、欠けは 0 件だった。reactor を使う project は共有ライブラリにならない。object と比べて初めて見えた。直した後は、114 project のうち object を作れる 102 件のすべてが bitcode も作れる。
+- 代償: `@llvm.used` に載るので、ホストのリンクの `--gc-sections`・`-dead_strip` でも `tsuzuri_async_post`（数百バイト）は残る。
+- テスト（`tests/lto.rs`）: `a_host_thread_posts_to_the_reactor_of_the_bitcode`（`tsuzuri_async_post`・`poll`・`complete` が外部で `tsuzuri_async_wait` が内部。C のホストの別スレッドが post して、object と bitcode のどちらでも `40050 0`）と、`the_bitcode_defines_every_symbol_that_a_shared_library_exports`（async・hello・counting allocator・trap return の 4 通りで、`--emit shared` の export がすべて bitcode の外部定義にある）。直す前に失敗することを確かめた。単体は `driver::lto::tests` に 5 件。
+- 文書: `docs/language.md`、`native-interop.md` の「何が入るか」、`architecture.md` の手順 (3) が、同じ一覧を書く。強い定義は `tz_*`・`tsuzuri_try_*`・`tsuzuri_alloc_stats`・`tsuzuri_main`・`tsuzuri_async_poll`・`tsuzuri_async_complete`、弱い定義は `tsuzuri_alloc`・`tsuzuri_free`・`tsuzuri_trap_hooks`・`tz_soft_*`・`tz_small_*`・`tsuzuri_async_post`、C ランタイムのそれ以外は内部。
+
+**2. llvm-link の hint（低）**
+
+- 最後の Clang の失敗に「IR を llvm-link がまとめた…」の hint を、`merge_runtime_ir && options.emit == Emit::Bitcode` で足していた。bitcode では `merge_runtime_ir` がいつも真なので、`llvm-link` が走らない wasm32 と、C ランタイムのない native にも出ていた。`native_runtime && options.emit == Emit::Bitcode` にした。
+- テスト: `a_failed_final_compile_names_llvm_link_only_when_it_ran`。`-flto=thin` の compile だけを失敗させる Clang の wrapper を `TSUZURI_CLANG` にして、native の `add` と wasm32 の `add` は `llvm-link` を名指さず、`tests/fixtures/tasks`（C ランタイムあり）は名指すことを確かめる。
+
+**3. object と同じオプション（網羅）**
+
+- `bitcode_takes_the_options_of_an_object`: `-g`・`--cpu native`・`-O0`・`-Oz`・`--trap-info` の 5 通りの bitcode を C のホストと `-flto=thin` でリンクして、結果（`100 42 6`）を確かめる。どれも最初から通り、直す必要はなかった。
+
+| 確認（修正後） | 結果 |
+| --- | --- |
+| `cargo test --locked --test lto` | 21 passed（debug build、約 100 秒）。直す前は新しい 3 件が失敗 |
+| `cargo test --locked --lib driver::`、`--bins` | 65 passed（うち `driver::lto::tests` が 10）、29 passed |
+| `cargo +1.99.0 fmt --all -- --check`、`clippy --all-targets --locked -- -D warnings`（各コミットの tree でも）、`cargo +stable check --all-targets --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 問題なし、警告 0 |
+| node の E2E（release build）: `wasm_memory`、`bindings`、`handoff_tools`、`cache`、`llvm_handoff`、`trap_boundary`、`e2e`、`targets`、`pgo`（14 sections）、`server` | すべて exit 0 |
+| `node benchmarks/run-lto.mjs target/release/tsuzuri --quick` | exit 0（`tz_add` の測定の正しさ） |
+| `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md`、`git diff --check` | 28 links、7 examples、4 native runs。問題なし |
+
+Linux・Windows は、ここでも実行していない。
