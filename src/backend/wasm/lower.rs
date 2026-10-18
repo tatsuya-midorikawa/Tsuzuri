@@ -75,7 +75,30 @@ pub(super) struct Lower<'w, 'a> {
     pub depth: u32,
     pub sret: Option<u32>,
     pub result_locals: Option<Vec<u32>>,
+    /// Which locals are free to hold another value once the one they held is dead.
+    pub reuse: Option<Reuse>,
 }
+
+/// The lifetimes of the locals of a function. A value is dead after its last use, in the order in
+/// which the blocks are written, with a value that a loop reads staying alive to the end of the loop;
+/// its local then holds the next value of the same type. A function whose blocks do not form
+/// reducible loops gives each value a local of its own.
+pub(super) struct Reuse {
+    /// The step of the last use of each value of the function.
+    last_use: Vec<u32>,
+    /// The last step that each local is needed at. `PINNED` for a local that never holds another
+    /// value, `FREE` for one that waits in `free`.
+    needed_until: Vec<u32>,
+    /// The free locals of each kind of value (`Vt::index`).
+    free: [Vec<u32>; 4],
+    /// The locals whose last step is at the index.
+    expiring: Vec<Vec<u32>>,
+    /// The step of the instruction being lowered.
+    step: u32,
+}
+
+const PINNED: u32 = u32::MAX;
+const FREE: u32 = u32::MAX - 1;
 
 pub(super) fn lower_function<'a>(
     shared: &Shared<'a>,
@@ -104,6 +127,7 @@ pub(super) fn lower_function<'a>(
         depth: 0,
         sret: None,
         result_locals: None,
+        reuse: None,
     };
     lower.run()
 }
@@ -149,9 +173,50 @@ impl<'w, 'a> Lower<'w, 'a> {
         self.uleb(u64::from(index));
     }
 
+    /// A local for a value that is alive until the end of the instruction being lowered, or longer
+    /// if `set` binds it to a value that is used later.
     pub(super) fn new_local(&mut self, vt: Vt) -> u32 {
+        let Some(reuse) = &mut self.reuse else {
+            self.local_vts.push(vt);
+            return (self.local_vts.len() - 1) as u32;
+        };
+        let step = reuse.step;
+        let local = match reuse.free[vt.index()].pop() {
+            Some(local) => {
+                reuse.needed_until[local as usize] = step;
+                local
+            }
+            None => {
+                self.local_vts.push(vt);
+                reuse.needed_until.push(step);
+                (self.local_vts.len() - 1) as u32
+            }
+        };
+        reuse.expiring[step as usize].push(local);
+        local
+    }
+
+    /// A local that no other value will ever share: a phi, the frame pointer, a result.
+    pub(super) fn new_pinned_local(&mut self, vt: Vt) -> u32 {
         self.local_vts.push(vt);
+        if let Some(reuse) = &mut self.reuse {
+            reuse.needed_until.push(PINNED);
+        }
         (self.local_vts.len() - 1) as u32
+    }
+
+    /// The locals that the instruction of this step was the last to need are free for the next one.
+    fn release(&mut self) {
+        let Some(reuse) = &mut self.reuse else {
+            return;
+        };
+        let step = reuse.step;
+        for local in std::mem::take(&mut reuse.expiring[step as usize]) {
+            if reuse.needed_until[local as usize] == step {
+                reuse.needed_until[local as usize] = FREE;
+                reuse.free[self.local_vts[local as usize].index()].push(local);
+            }
+        }
     }
 
     /// Stores the value on the top of the stack in a new local.
@@ -174,7 +239,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         match self.fp {
             Some(fp) => fp,
             None => {
-                let fp = self.new_local(Vt::I32);
+                let fp = self.new_pinned_local(Vt::I32);
                 self.fp = Some(fp);
                 fp
             }
@@ -536,6 +601,25 @@ impl<'w, 'a> Lower<'w, 'a> {
     }
 
     pub(super) fn set(&mut self, dst: u32, value: Val) {
+        // The locals that the value is made of are needed as long as the value is: an `extractvalue`
+        // or an `insertvalue` renames the locals of the values it is made from.
+        if let Some(reuse) = &mut self.reuse {
+            let last = reuse.last_use.get(dst as usize).copied().unwrap_or(0);
+            let atoms: &[Atom] = match &value {
+                Val::Atoms(atoms) => atoms,
+                Val::Ref(atom) => std::slice::from_ref(atom),
+                Val::Void => &[],
+            };
+            for atom in atoms {
+                if let Atom::Local(local) = atom {
+                    let needed = &mut reuse.needed_until[*local as usize];
+                    if *needed != PINNED && *needed < last {
+                        *needed = last;
+                        reuse.expiring[last as usize].push(*local);
+                    }
+                }
+            }
+        }
         self.vals[dst as usize] = Some(value);
     }
 
@@ -603,6 +687,252 @@ impl<'w, 'a> Lower<'w, 'a> {
             .collect()
     }
 
+    /// The values that an instruction reads.
+    fn for_each_use(&self, inst: Inst<'a>, mut visit: impl FnMut(u32)) {
+        let func = self.func;
+        let mut op = |operand: Op| {
+            if let Op::Local(id) = operand {
+                visit(id);
+            }
+        };
+        match inst {
+            Inst::Bin { a, b, .. }
+            | Inst::ICmp { a, b, .. }
+            | Inst::FCmp { a, b, .. }
+            | Inst::ShuffleVector { a, b, .. } => {
+                op(a);
+                op(b);
+            }
+            Inst::FNeg { a, .. } | Inst::Cast { a, .. } | Inst::Freeze { a, .. } => op(a),
+            Inst::Select { cond, a, b, .. } => {
+                op(cond);
+                op(a);
+                op(b);
+            }
+            Inst::Load { ptr, .. } => op(ptr),
+            Inst::Store { val, ptr, .. } | Inst::AtomicRmw { val, ptr, .. } => {
+                op(val);
+                op(ptr);
+            }
+            Inst::Gep {
+                base, start, len, ..
+            } => {
+                op(base);
+                for &(_, index) in &func.gep_idx[start as usize..(start + len) as usize] {
+                    op(index);
+                }
+            }
+            Inst::ExtractValue { agg, .. } => op(agg),
+            Inst::InsertValue { agg, val, .. } => {
+                op(agg);
+                op(val);
+            }
+            Inst::ExtractElement { vec, idx, .. } => {
+                op(vec);
+                op(idx);
+            }
+            Inst::InsertElement { vec, elem, idx, .. } => {
+                op(vec);
+                op(elem);
+                op(idx);
+            }
+            Inst::Call {
+                callee, start, len, ..
+            } => {
+                if let Callee::Indirect(pointer) = callee {
+                    op(pointer);
+                }
+                for argument in &func.call_args[start as usize..(start + len) as usize] {
+                    op(argument.op);
+                }
+            }
+            Inst::CmpXchg { ptr, cmp, new, .. } => {
+                op(ptr);
+                op(cmp);
+                op(new);
+            }
+            Inst::Ret { val, .. } => op(val),
+            Inst::CondBr { cond, .. } | Inst::Switch { cond, .. } => op(cond),
+            // A phi reads its values on the edges that enter it.
+            Inst::Phi { .. }
+            | Inst::Alloca { .. }
+            | Inst::Fence
+            | Inst::Unreachable
+            | Inst::Br { .. } => {}
+        }
+    }
+
+    /// The value that an instruction defines.
+    fn defined_value(inst: Inst<'a>) -> Option<u32> {
+        match inst {
+            Inst::Bin { dst, .. }
+            | Inst::FNeg { dst, .. }
+            | Inst::ICmp { dst, .. }
+            | Inst::FCmp { dst, .. }
+            | Inst::Cast { dst, .. }
+            | Inst::Select { dst, .. }
+            | Inst::Phi { dst, .. }
+            | Inst::Alloca { dst, .. }
+            | Inst::Load { dst, .. }
+            | Inst::Gep { dst, .. }
+            | Inst::ExtractValue { dst, .. }
+            | Inst::InsertValue { dst, .. }
+            | Inst::ExtractElement { dst, .. }
+            | Inst::InsertElement { dst, .. }
+            | Inst::ShuffleVector { dst, .. }
+            | Inst::Call { dst, .. }
+            | Inst::AtomicRmw { dst, .. }
+            | Inst::CmpXchg { dst, .. }
+            | Inst::Freeze { dst, .. } => (dst != NONE).then_some(dst),
+            _ => None,
+        }
+    }
+
+    /// Whether every retreating edge of the blocks (in the order they are written) enters a block
+    /// that dominates the one it leaves, so that the lifetimes of values in that order are sound.
+    fn loops_are_reducible(&self, order: &[u32]) -> bool {
+        let count = order.len();
+        let mut index = vec![usize::MAX; self.func.blocks.len()];
+        for (at, &block) in order.iter().enumerate() {
+            index[block as usize] = at;
+        }
+        let mut predecessors = vec![Vec::new(); count];
+        for (at, &block) in order.iter().enumerate() {
+            for successor in self.successors(block) {
+                let target = index[successor as usize];
+                if target != usize::MAX {
+                    predecessors[target].push(at);
+                }
+            }
+        }
+        let mut dominator = vec![usize::MAX; count];
+        dominator[0] = 0;
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for at in 1..count {
+                let mut chosen = usize::MAX;
+                for &predecessor in &predecessors[at] {
+                    if dominator[predecessor] == usize::MAX {
+                        continue;
+                    }
+                    chosen = if chosen == usize::MAX {
+                        predecessor
+                    } else {
+                        let (mut a, mut b) = (predecessor, chosen);
+                        while a != b {
+                            while a > b {
+                                a = dominator[a];
+                            }
+                            while b > a {
+                                b = dominator[b];
+                            }
+                        }
+                        a
+                    };
+                }
+                if chosen != dominator[at] {
+                    dominator[at] = chosen;
+                    changed = true;
+                }
+            }
+        }
+        for (at, &block) in order.iter().enumerate() {
+            for successor in self.successors(block) {
+                let target = index[successor as usize];
+                if target != usize::MAX && target <= at {
+                    let mut walk = at;
+                    while walk != target && walk != 0 {
+                        walk = dominator[walk];
+                    }
+                    if walk != target {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// The step of the last use of every value, for locals that are shared by values with disjoint
+    /// lifetimes (`None` when the function's loops are not reducible).
+    fn analyze_lifetimes(&mut self, order: &[u32]) -> Option<Reuse> {
+        let func = self.func;
+        if !self.loops_are_reducible(order) {
+            return None;
+        }
+        let values = func.n_locals as usize;
+        let mut defined = vec![0u32; values];
+        let mut last_use = vec![0u32; values];
+        let mut first_step = vec![0u32; func.blocks.len()];
+        let mut end_step = vec![0u32; func.blocks.len()];
+        let mut step = 0u32;
+        let mut phis: Vec<Inst<'a>> = Vec::new();
+        for &id in order {
+            let block = &func.blocks[id as usize];
+            first_step[id as usize] = step + 1;
+            for index in block.first..block.last {
+                let inst = func.insts[index as usize];
+                step += 1;
+                self.for_each_use(inst, |value| {
+                    if let Some(slot) = last_use.get_mut(value as usize) {
+                        *slot = (*slot).max(step);
+                    }
+                });
+                if let Some(value) = Self::defined_value(inst)
+                    && let Some(slot) = defined.get_mut(value as usize)
+                {
+                    *slot = step;
+                    // A value that nothing reads is dead after its definition.
+                    last_use[value as usize] = last_use[value as usize].max(step);
+                }
+                if matches!(inst, Inst::Phi { .. }) {
+                    phis.push(inst);
+                }
+            }
+            end_step[id as usize] = step;
+        }
+        // A phi reads each of its values at the end of the block that the value comes from.
+        for phi in phis {
+            if let Inst::Phi { start, len, .. } = phi {
+                for &(operand, from) in &func.phi_in[start as usize..(start + len) as usize] {
+                    if let Op::Local(value) = operand
+                        && let Some(slot) = last_use.get_mut(value as usize)
+                    {
+                        *slot = (*slot).max(end_step[from as usize]);
+                    }
+                }
+            }
+        }
+        // A value that a loop reads and that was defined before the loop stays alive to its end.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &block in order {
+                for target in self.successors(block) {
+                    if self.position[target as usize] > self.position[block as usize] {
+                        continue;
+                    }
+                    let (head, end) = (first_step[target as usize], end_step[block as usize]);
+                    for value in 0..values {
+                        if defined[value] < head && last_use[value] >= head && last_use[value] < end
+                        {
+                            last_use[value] = end;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        Some(Reuse {
+            last_use,
+            needed_until: vec![PINNED; self.local_vts.len()],
+            free: Default::default(),
+            expiring: vec![Vec::new(); step as usize + 2],
+            step: 0,
+        })
+    }
+
     fn run(mut self) -> Res<Body> {
         let func = self.func;
         let order = self.reverse_postorder();
@@ -610,8 +940,9 @@ impl<'w, 'a> Lower<'w, 'a> {
         for (position, &id) in order.iter().enumerate() {
             self.position[id as usize] = position as u32;
         }
+        self.reuse = self.analyze_lifetimes(&order);
         if self.n_blocks > 1 {
-            self.pc = self.new_local(Vt::I32);
+            self.pc = self.new_pinned_local(Vt::I32);
         }
         self.bind_params()?;
         // The phis are locals before any block runs, because an edge assigns them.
@@ -629,7 +960,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                     let locals: Vec<Atom> = self
                         .flat(ty)?
                         .into_iter()
-                        .map(|vt| Atom::Local(self.new_local(vt)))
+                        .map(|vt| Atom::Local(self.new_pinned_local(vt)))
                         .collect();
                     self.set(dst, Val::Atoms(locals));
                 }
@@ -637,6 +968,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         }
 
         // The body: an exit block around the dispatch loop.
+        let mut step = 0u32;
         self.op(op::BLOCK);
         self.code.push(0x40);
         if self.n_blocks > 1 {
@@ -664,10 +996,15 @@ impl<'w, 'a> Lower<'w, 'a> {
             let block = &func.blocks[id as usize];
             for index in block.first..block.last {
                 let inst = func.insts[index as usize];
+                step += 1;
                 if matches!(inst, Inst::Phi { .. }) {
                     continue;
                 }
+                if let Some(reuse) = &mut self.reuse {
+                    reuse.step = step;
+                }
                 self.inst(inst, id)?;
+                self.release();
             }
         }
         if self.n_blocks > 1 {
@@ -694,7 +1031,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         // A frame that has a slot more aligned than the stack pointer is, is rounded down to that
         // alignment, and the stack pointer that was there is kept to be put back.
         let original = (self.fp.is_some() && frame > 0 && self.max_align > 16)
-            .then(|| self.new_local(Vt::I32));
+            .then(|| self.new_pinned_local(Vt::I32));
         if self.fp.is_some() && frame > 0 {
             let fp = self.fp.unwrap_or(0);
             prologue.push(op::GLOBAL_GET);
@@ -1053,7 +1390,8 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let locals = match &self.result_locals {
                     Some(locals) => locals.clone(),
                     None => {
-                        let locals: Vec<u32> = vts.iter().map(|&vt| self.new_local(vt)).collect();
+                        let locals: Vec<u32> =
+                            vts.iter().map(|&vt| self.new_pinned_local(vt)).collect();
                         self.result_locals = Some(locals.clone());
                         locals
                     }

@@ -133,11 +133,12 @@ function compilerWrapper(args) {
   const without = args.filter((arg) => !/^-O([0-3sz]|fast)$/.test(arg));
   const forced = !eligible && Boolean(process.env.FAST_FORCE) && takes(without);
   // The option goes before a `--` that ends the options.
-  const withBackend = (list) => {
+  const withBackend = (list, added) => {
     const separator = list.indexOf("--");
-    return separator < 0 ? [...list, "--backend", "fast"] : [...list.slice(0, separator), "--backend", "fast", ...list.slice(separator)];
+    const options = [...added, "--backend", "fast"];
+    return separator < 0 ? [...list, ...options] : [...list.slice(0, separator), ...options, ...list.slice(separator)];
   };
-  const forwarded = eligible ? withBackend(args) : forced ? withBackend([...without, "-O0"]) : args;
+  const forwarded = eligible ? withBackend(args, []) : forced ? withBackend(without, ["-O0"]) : args;
   log({ event: eligible || forced ? "fast-build" : "llvm-build", args: args.join(" ") });
   const result = spawnSync(real, forwarded, { stdio: "inherit" });
   process.exit(result.status ?? 1);

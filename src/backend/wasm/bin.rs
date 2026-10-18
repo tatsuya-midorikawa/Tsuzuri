@@ -11,6 +11,16 @@ pub(crate) enum Vt {
 }
 
 impl Vt {
+    /// A position of the value type among the four, for a table of them.
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Vt::I32 => 0,
+            Vt::I64 => 1,
+            Vt::F32 => 2,
+            Vt::F64 => 3,
+        }
+    }
+
     pub(crate) fn byte(self) -> u8 {
         match self {
             Vt::I32 => 0x7f,
