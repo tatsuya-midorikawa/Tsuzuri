@@ -25,11 +25,15 @@ extern int64_t tz_string_list(int64_t);
 extern int64_t tz_walk_list(int64_t);
 extern int64_t tz_fold_list(int64_t);
 extern int64_t tz_compare_list(int64_t);
+extern int64_t tz_list_to_array(int64_t);
+extern int64_t tz_array_to_list(int64_t);
+extern int64_t tz_escape_list(int64_t);
 
 static const struct { const char *name; int64_t (*kernel)(int64_t); } workloads[] = {
     {"bulk_new", tz_bulk_new}, {"cons_build", tz_cons_build}, {"tail_consume", tz_tail_consume},
     {"clone_list", tz_clone_list}, {"index_walk", tz_index_walk}, {"string_list", tz_string_list},
     {"walk_list", tz_walk_list}, {"fold_list", tz_fold_list}, {"compare_list", tz_compare_list},
+    {"list_to_array", tz_list_to_array}, {"array_to_list", tz_array_to_list}, {"escape_list", tz_escape_list},
 };
 
 #ifndef TRACKING

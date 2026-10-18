@@ -468,13 +468,17 @@ impl FunctionEmitter<'_, '_> {
                 let data = self.value("extractvalue %tz.array %arg0, 0");
                 let length = self.value("extractvalue %tz.array %arg0, 1");
                 let builder = self.list_builder(element, &length);
-                self.array_loop(&length, |emitter, index| {
-                    let pointer = emitter.element_pointer(element, &data, index);
-                    let value =
-                        emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                    let value = emitter.clone_value(element, &value);
-                    emitter.list_append(element, &builder, index, &value);
-                });
+                if element.needs_drop(&self.module.types()) {
+                    self.array_loop(&length, |emitter, index| {
+                        let pointer = emitter.element_pointer(element, &data, index);
+                        let value =
+                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                        let value = emitter.clone_value(element, &value);
+                        emitter.list_append(element, &builder, index, &value);
+                    });
+                } else {
+                    self.list_copy_in(element, &builder, &data, &length);
+                }
                 self.list_finish(element, &builder, &length)
             }
             Builtin::ArraySortBy => self.stable_array_sort(element, &parameters[0]),
@@ -494,20 +498,24 @@ impl FunctionEmitter<'_, '_> {
                 let length = self.value(format!("extractvalue %tz.list {list}, 1"));
                 if instance.builtin == Builtin::ListToArray {
                     let (array, data) = self.allocate_array(element, &length);
-                    let index = self.spill(&Type::I64, "0");
-                    self.list_each(element, &head, &length, |emitter, pointer| {
-                        let value =
-                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                        let value = emitter.clone_value(element, &value);
-                        let offset = emitter.value(format!("load i64, ptr {index}"));
-                        let output = emitter.element_pointer(element, &data, &offset);
-                        emitter.instruction(format!(
-                            "store {} {value}, ptr {output}",
-                            emitter.ty(element)
-                        ));
-                        let next = emitter.value(format!("add i64 {offset}, 1"));
-                        emitter.instruction(format!("store i64 {next}, ptr {index}"));
-                    });
+                    if element.needs_drop(&self.module.types()) {
+                        let index = self.spill(&Type::I64, "0");
+                        self.list_each(element, &head, &length, |emitter, pointer| {
+                            let value = emitter
+                                .value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                            let value = emitter.clone_value(element, &value);
+                            let offset = emitter.value(format!("load i64, ptr {index}"));
+                            let output = emitter.element_pointer(element, &data, &offset);
+                            emitter.instruction(format!(
+                                "store {} {value}, ptr {output}",
+                                emitter.ty(element)
+                            ));
+                            let next = emitter.value(format!("add i64 {offset}, 1"));
+                            emitter.instruction(format!("store i64 {next}, ptr {index}"));
+                        });
+                    } else {
+                        self.list_copy_out(element, &head, &length, &data);
+                    }
                     return array;
                 }
                 if instance.builtin == Builtin::ListFoldRef {

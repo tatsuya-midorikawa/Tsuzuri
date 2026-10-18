@@ -96,3 +96,37 @@ fn compare_list n =
     let mut same = 0i64
     for _ in 1 .. 16 do same = same + (if consed == made then 1 else 0)
     same
+
+// `List.to_array` of a `new` list, and the sum of the array: n (n - 1) / 2.
+export def list_to_array :: i64 -> i64
+fn list_to_array n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [|i64|](n, \i -> i)
+    let array = List.to_array (ref values)
+    let mut total = 0i64
+    for value in array do total = total + value
+    total
+
+// `Array.to_list` of a `new` array, and the sum of the list: n (n - 1) / 2.
+export def array_to_list :: i64 -> i64
+fn array_to_list n =
+    assert (n >= 0 && n <= 100000000)
+    let values = new [i64](n, \i -> i)
+    let list = Array.to_list (ref values)
+    let mut total = 0i64
+    for value in list do total = total + value
+    total
+
+// A list literal of 32 elements that leaves its function, so that it moves from the stack to the heap: its elements are i, i + 1, ... i + 31.
+def block :: i64 -> [|i64|]
+fn block i = [|i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16, i + 17, i + 18, i + 19, i + 20, i + 21, i + 22, i + 23, i + 24, i + 25, i + 26, i + 27, i + 28, i + 29, i + 30, i + 31|]
+
+// `block i` for each i below n, summed: 16 n (n - 1) + 496 n.
+export def escape_list :: i64 -> i64
+fn escape_list n =
+    assert (n >= 0 && n <= 100000000)
+    let mut total = 0i64
+    for i in 0 .. n - 1 do
+        let values = block i
+        for value in values do total = total + value
+    total

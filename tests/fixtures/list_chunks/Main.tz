@@ -277,8 +277,10 @@ fn build_nested n =
     values
 
 export def nested_walk :: i64 -> i64
-fn nested_walk n =
-    let values = build_nested n
+fn nested_walk n = nested_total (ref (build_nested n))
+
+def nested_total :: ref [|[|i64|]|] -> i64
+fn nested_total values =
     let mut total = 0i64
     let mut position = 0i64
     for inner in values do
@@ -291,6 +293,69 @@ fn nested_tail n =
     let mut values = build_nested n
     for _ in 1 .. n / 3 do values = List.tail values
     values.length
+
+/// Copies and conversions: the slots of elements that own nothing are copied as bytes, a chunk at a
+/// time; the elements that own memory are cloned one by one.
+export def wide_copy :: i64 -> i64
+fn wide_copy n =
+    let values = build_wide n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    let mut total = 0i128
+    let mut position = 0i128
+    for value in back do
+        position = position + 1
+        total = total + value * position
+    (total >>> 70) as i64 + (if back == values then 1000000 else 0)
+
+export def units_copy :: i64 -> i64
+fn units_copy n =
+    let values = build_units n
+    let copy = List.copy (ref values)
+    let array = List.to_array (ref copy)
+    let back = Array.to_list (ref array)
+    back.length * 1000003 + array.length * 7 + copy.length
+
+export def nested_copy :: i64 -> i64
+fn nested_copy n =
+    let values = build_nested n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    nested_total (ref back) + nested_total (ref values) + (if back == values then 100000000000 else 0)
+
+/// A pair has 7 bytes of padding, which a byte copy takes along.
+def build_pairs :: i64 -> [|i64 * i8|]
+fn build_pairs n =
+    let mut values: [|i64 * i8|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (i, (i % 100) as i8) values
+    values
+
+def weighted_pairs :: ref [|i64 * i8|] -> i64
+fn weighted_pairs values =
+    let mut total = 0i64
+    let mut position = 0i64
+    for pair in values do
+        position = position + 1
+        total = total + (match pair with | (a, b) -> a + (b as i64) * 1000) * position
+    total
+
+export def pairs_copy :: i64 -> i64
+fn pairs_copy n =
+    let values = build_pairs n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    weighted_pairs (ref back) + (if back == values then 1000000000000 else 0)
+
+/// A stack literal of strings that escapes moves its elements to the heap with the chunk.
+def make_words :: unit -> [|string|]
+fn make_words _unit =
+    let values = [|"a" + "b", clone_string "ccc", "d" + "e" + "f" + "g"|]
+    values
+
+export def words_escape :: i64 -> i64
+fn words_escape n =
+    let values = List.cons ("x" + "yy") (make_words ())
+    weighted_words (ref values) + weighted_words (ref (make_words ())) * 100 + n
 
 /// A million elements: build by cons, copy, compare, pop, drop; nothing recurses.
 export def deep_ops :: i64 -> i64

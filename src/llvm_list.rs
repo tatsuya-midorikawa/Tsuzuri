@@ -300,13 +300,66 @@ impl FunctionEmitter<'_, '_> {
         length: &str,
         body: impl FnOnce(&mut Self, &ListStep),
     ) {
+        self.list_runs(
+            element,
+            head,
+            length,
+            |emitter, base, run, position, exit| {
+                let before = emitter.block.clone();
+                let slots = emitter.label();
+                let current = emitter.label();
+                let advance = emitter.label();
+                let step = emitter.increment_block(&advance);
+                let after = emitter.label();
+                let offset = emitter.fresh();
+                let next_offset = emitter.fresh();
+                emitter.jump(&slots);
+                emitter.begin(&slots);
+                emitter.instruction(format!(
+                    "{offset} = phi i64 [ 0, %{before} ], [ {next_offset}, %{step} ]"
+                ));
+                let more = emitter.value(format!("icmp ult i64 {offset}, {run}"));
+                emitter.branch(&more, &current, &after);
+                emitter.begin(&current);
+                let pointer = emitter.value(format!(
+                    "getelementptr inbounds {}, ptr {base}, i64 {offset}",
+                    emitter.ty(element)
+                ));
+                body(
+                    emitter,
+                    &ListStep {
+                        pointer,
+                        position: position.to_owned(),
+                        offset: offset.clone(),
+                        exit: exit.to_owned(),
+                        advance: advance.clone(),
+                    },
+                );
+                emitter.jump(&advance);
+                emitter.begin(&advance);
+                // `offset < run` as unsigned numbers: the step cannot wrap (R4).
+                emitter.audit_increment(&step, 64, &offset, "1", Flags::UNSIGNED);
+                let words = emitter.flag_text(Flags::UNSIGNED);
+                emitter.instruction(format!("{next_offset} = add {words}i64 {offset}, 1"));
+                emitter.jump(&slots);
+                emitter.begin(&after);
+            },
+        );
+    }
+
+    /// Runs `body` once per chunk of the list `(head, length)`, in order, with the address of the
+    /// first live slot of the chunk, the number of live slots and the number of elements before
+    /// them, and the label that leaves the loop. The body ends in the block that goes on to the
+    /// next chunk.
+    fn list_runs(
+        &mut self,
+        element: &Type,
+        head: &str,
+        length: &str,
+        body: impl FnOnce(&mut Self, &str, &str, &str, &str),
+    ) {
         let first = self.label();
         let chunks = self.label();
-        let slots = self.label();
-        let current = self.label();
-        let advance = self.label();
-        let step = self.increment_block(&advance);
-        let after = self.label();
         let hop = self.label();
         let exit = self.label();
         let chunk = self.fresh();
@@ -314,8 +367,6 @@ impl FunctionEmitter<'_, '_> {
         let position = self.fresh();
         let next_position = self.fresh();
         let start = self.fresh();
-        let offset = self.fresh();
-        let next_offset = self.fresh();
         let nonempty = self.value(format!("icmp ne i64 {length}, 0"));
         self.branch(&nonempty, &first, &exit);
         self.begin(&first);
@@ -334,36 +385,7 @@ impl FunctionEmitter<'_, '_> {
         let capacity = self.list_load_field(element, &chunk, 2);
         let run = self.value(format!("sub i64 {capacity}, {start}"));
         let base = self.list_slot(element, &chunk, &start);
-        self.jump(&slots);
-        self.begin(&slots);
-        self.instruction(format!(
-            "{offset} = phi i64 [ 0, %{chunks} ], [ {next_offset}, %{step} ]"
-        ));
-        let more = self.value(format!("icmp ult i64 {offset}, {run}"));
-        self.branch(&more, &current, &after);
-        self.begin(&current);
-        let pointer = self.value(format!(
-            "getelementptr inbounds {}, ptr {base}, i64 {offset}",
-            self.ty(element)
-        ));
-        body(
-            self,
-            &ListStep {
-                pointer,
-                position: position.clone(),
-                offset: offset.clone(),
-                exit: exit.clone(),
-                advance: advance.clone(),
-            },
-        );
-        self.jump(&advance);
-        self.begin(&advance);
-        // `offset < run` as unsigned numbers: the step cannot wrap (R4).
-        self.audit_increment(&step, 64, &offset, "1", Flags::UNSIGNED);
-        let words = self.flag_text(Flags::UNSIGNED);
-        self.instruction(format!("{next_offset} = add {words}i64 {offset}, 1"));
-        self.jump(&slots);
-        self.begin(&after);
+        body(self, &base, &run, &position, &exit);
         self.instruction(format!("{next_position} = add i64 {position}, {run}"));
         let remaining = self.value(format!("icmp ult i64 {next_position}, {length}"));
         self.branch(&remaining, &hop, &exit);
@@ -728,17 +750,81 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&exit);
     }
 
-    /// A new list whose elements are the clones of those of the list `value`, in one chunk.
+    /// A new list whose elements are the clones of those of the list `value`, in one chunk. The
+    /// slots of elements that own nothing are copied as bytes, a chunk at a time.
     pub(super) fn list_clone(&mut self, element: &Type, value: &str) -> String {
         let source = self.value(format!("extractvalue %tz.list {value}, 0"));
         let length = self.value(format!("extractvalue %tz.list {value}, 1"));
         let builder = self.list_builder(element, &length);
-        self.list_loop(element, &source, &length, |emitter, pointer, index| {
-            let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-            let copy = emitter.clone_value(element, &value);
-            emitter.list_append(element, &builder, index, &copy);
-        });
+        if element.needs_drop(&self.module.types()) {
+            self.list_loop(element, &source, &length, |emitter, pointer, index| {
+                let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                let copy = emitter.clone_value(element, &value);
+                emitter.list_append(element, &builder, index, &copy);
+            });
+        } else {
+            self.list_runs(
+                element,
+                &source,
+                &length,
+                |emitter, base, run, position, _| {
+                    let target = emitter.list_slot(element, &builder.chunk, position);
+                    emitter.list_copy_slots(element, &target, base, run);
+                },
+            );
+        }
         self.list_finish(element, &builder, &length)
+    }
+
+    /// Copies the elements of the list `(head, length)` as bytes, a chunk at a time, into the
+    /// array storage `data`: `List.to_array` of elements that own nothing.
+    pub(super) fn list_copy_out(&mut self, element: &Type, head: &str, length: &str, data: &str) {
+        self.list_runs(element, head, length, |emitter, base, run, position, _| {
+            let target = emitter.element_pointer(element, data, position);
+            emitter.list_copy_slots(element, &target, base, run);
+        });
+    }
+
+    /// Copies `count` elements at `source` as bytes into the first slots of the only chunk of
+    /// `builder`: `Array.to_list` of elements that own nothing. The count may be zero, and the
+    /// builder has no chunk then.
+    pub(super) fn list_copy_in(
+        &mut self,
+        element: &Type,
+        builder: &ListBuilder,
+        source: &str,
+        count: &str,
+    ) {
+        let copy = self.label();
+        let done = self.label();
+        let nonempty = self.value(format!("icmp ne i64 {count}, 0"));
+        self.branch(&nonempty, &copy, &done);
+        self.begin(&copy);
+        let target = self.list_slot(element, &builder.chunk, "0");
+        self.list_copy_slots(element, &target, source, count);
+        self.jump(&done);
+        self.begin(&done);
+    }
+
+    /// Copies `count` slots of `element` from `source` to `target` as bytes. The two do not
+    /// overlap, and the allocation of the bigger of them succeeded, so the byte count fits the
+    /// pointer width of a 32-bit target.
+    fn list_copy_slots(&mut self, element: &Type, target: &str, source: &str, count: &str) {
+        let ty = self.ty(element);
+        let bytes = self.value(format!(
+            "mul i64 {count}, ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64)"
+        ));
+        let (width, bytes) = if self.globals.wasm && !self.globals.memory64 {
+            ("i32", self.value(format!("trunc i64 {bytes} to i32")))
+        } else {
+            ("i64", bytes)
+        };
+        self.intrinsics.insert(format!(
+            "declare void @llvm.memcpy.p0.p0.{width}(ptr noalias writeonly, ptr noalias readonly, {width}, i1 immarg)"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memcpy.p0.p0.{width}(ptr {target}, ptr {source}, {width} {bytes}, i1 false)"
+        ));
     }
 
     /// Reserves in the entry block the storage of a list literal of `count` elements, which

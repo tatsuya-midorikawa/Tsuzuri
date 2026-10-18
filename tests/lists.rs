@@ -348,3 +348,71 @@ fn run n = { let values = new [|i64|](n, i -> i); each (ref values) }";
         );
     }
 }
+
+/// The text of every definition whose name starts with `prefix`, up to its closing brace.
+fn definitions_named<'a>(ir: &'a str, prefix: &str) -> Vec<&'a str> {
+    ir.split("\ndefine ")
+        .skip(1)
+        .filter(|text| {
+            text.split('(')
+                .next()
+                .is_some_and(|header| header.contains(prefix))
+        })
+        .map(|text| text.split("\n}").next().unwrap())
+        .collect()
+}
+
+#[test]
+fn copies_of_elements_that_own_nothing_move_whole_chunks_as_bytes() {
+    // `List.copy`, `List.to_array` and `Array.to_list` copy the slots of `i64` as bytes, one
+    // `llvm.memcpy` per chunk, of the width of the pointer: `i32` on wasm32. A list of lists still
+    // clones its elements one by one.
+    let source = "export def run :: i64 -> i64
+fn run n =
+    let values = new [|i64|](n, i -> i)
+    let copy = List.copy (ref values)
+    let array = List.to_array (ref copy)
+    let back = Array.to_list (ref array)
+    let nested = new [|[|i64|]|](n, i -> [|i|])
+    let nested_copy = List.copy (ref nested)
+    back.length + nested_copy.length";
+    for wasm in [false, true] {
+        let ir = emit_library(source, wasm);
+        let width = if wasm { "i32" } else { "i64" };
+        let call = format!("call void @llvm.memcpy.p0.p0.{width}(");
+        let declaration = format!("declare void @llvm.memcpy.p0.p0.{width}(");
+        assert_eq!(ir.matches(&declaration).count(), 1, "{wasm}");
+        // The integers that a body carries from one iteration to the next: the position and the
+        // first slot of a chunk, and the counter of a loop over its slots.
+        let integers = |body: &str| body.matches(" = phi i64 [").count();
+        for (prefix, carried) in [
+            ("@tz.builtin.List.to_array.i64", 2),
+            ("@tz.builtin.Array.to_list.i64", 0),
+        ] {
+            let bodies = definitions_named(&ir, prefix);
+            let [body] = bodies.as_slice() else {
+                panic!("{prefix}\n{ir}")
+            };
+            assert_eq!(body.matches(&call).count(), 1, "{prefix}\n{body}");
+            assert_eq!(integers(body), carried, "{prefix}\n{body}");
+        }
+        // `List.copy` of `i64` is a loop over chunks that copies each as bytes, and of lists a
+        // loop over the slots of a chunk that clones the list of each.
+        let copies = definitions_named(&ir, "@tz.fn.List.copy.");
+        assert!(
+            copies.iter().any(|body| body.contains("[0 x i64] }, ptr")
+                && body.matches(&call).count() == 1
+                && integers(body) == 2),
+            "{wasm}\n{}",
+            copies.join("\n}\n")
+        );
+        assert!(
+            copies
+                .iter()
+                .any(|body| body.contains("getelementptr inbounds %tz.list, ptr")
+                    && integers(body) > 2),
+            "{wasm}\n{}",
+            copies.join("\n}\n")
+        );
+    }
+}

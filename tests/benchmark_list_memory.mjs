@@ -8,24 +8,29 @@ import { consChunks, reference, repeats, sizes, workloads } from "../benchmarks/
 for (const name of workloads) {
   for (const n of [0, 1, 2, 3, 10, 1000]) {
     let total = 0n;
-    for (let i = 0n; i < BigInt(n); ++i) total += name === "clone_list" ? 2n * i : name === "walk_list" || name === "fold_list" ? 16n * i : name === "string_list" ? 3n : i;
+    for (let i = 0n; i < BigInt(n); ++i) {
+      total += name === "clone_list" ? 2n * i : name === "walk_list" || name === "fold_list" ? 16n * i
+        : name === "escape_list" ? 32n * i + 496n : name === "string_list" ? 3n : i;
+    }
     // The comparison counts the 16 times that two equal lists are equal, however long they are.
     if (name === "compare_list") total = 16n;
     assert.equal(reference(name, n), total, `${name}(${n})`);
   }
 }
 assert.throws(() => reference("missing", 1), /unknown list-memory workload/);
-assert.equal(workloads.length, 9);
+assert.equal(workloads.length, 12);
 for (const grid of Object.values(sizes)) assert.ok(grid.every((size, index) => Number.isSafeInteger(size) && size > 0 && (index === 0 || size > grid[index - 1])));
 assert.ok(repeats("bulk_new", 1, false) > repeats("bulk_new", 1000000, false), "small sizes repeat more");
 assert.ok(repeats("index_walk", 10000, false) <= 3, "the quadratic size runs few times");
 
-const options = parseArguments(["--quick", "--only", "bulk_new,cons_build", "--wasm"]);
+const options = parseArguments(["--quick", "--only", "bulk_new,cons_build", "--wasm", "--opt", "O0"]);
 assert.equal(options.quick, true);
 assert.equal(options.samples, 1);
+assert.equal(options.opt, "O0");
+assert.equal(parseArguments([]).opt, "O3");
 assert.deepEqual(options.only, ["bulk_new", "cons_build"]);
 assert.equal(parseArguments(["--samples", "9", "/some/compiler", "--baseline", "/older"]).baseline, resolve("/older"));
-for (const bad of [["--samples", "0"], ["--only", "missing"], ["--unknown"], ["a", "b"], ["--baseline"], ["--samples", "3", "--metrics", "somewhere"]]) {
+for (const bad of [["--samples", "0"], ["--only", "missing"], ["--unknown"], ["a", "b"], ["--baseline"], ["--opt", "O2"], ["--samples", "3", "--metrics", "somewhere"]]) {
   assert.throws(() => parseArguments(bad), /Usage:|unknown|invalid|missing|unexpected/, bad.join(" "));
 }
 
@@ -39,6 +44,8 @@ if (compiler && existsSync(compiler)) {
     // A list that is built at once is one chunk; `List.cons` adds one per step of the growth rule.
     if (workload === "cons_build") assert.equal(allocations.calls, consChunks(size), `${workload}(${size}) chunks`);
     if (workload === "compare_list") assert.equal(allocations.calls, consChunks(size) + (size === 0 ? 0 : 1), `${workload}(${size}) chunks`);
+    if (["list_to_array", "array_to_list"].includes(workload)) assert.equal(allocations.calls, 2, `${workload}(${size}) is a chunk and an array`);
+    if (workload === "escape_list") assert.ok(allocations.calls <= size, `${workload}(${size}) moves at most one chunk per call to the heap`);
     if (["bulk_new", "tail_consume", "index_walk", "walk_list", "fold_list"].includes(workload)) assert.equal(allocations.calls, 1, `${workload}(${size}) is one chunk`);
     assert.ok(wall_ms.length === 1 && wall_ms[0] > 0, `${workload}(${size}) is timed`);
   }

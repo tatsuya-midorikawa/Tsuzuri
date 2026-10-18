@@ -1143,15 +1143,22 @@ const suites = {
         : n === 1 ? lengths[0] : 0n;
       const down = descending(n);
       const nested = down.map((value) => (value + (value + 1n) * 2n));
+      // The pair at position p (from 1) is (n - p, (n - p) % 100); the second element weighs 1000.
+      const pairs = down.map((value) => value + (value % 100n) * 1000n);
       return [
         call("words_walk", n, weightedSum(lengths)), call("words_index", n, weightedSum(lengths)),
         call("words_tail", n, weightedSum(lengths.slice(half)) * 10n + BigInt(n - half)),
         call("words_map", n, 3n * weightedSum(lengths)), call("words_drop", n, BigInt(n)), call("words_view", n, view),
         call("wide_walk", n, weightedSum(down)), call("wide_index_tail", n, BigInt(n) * BigInt(n - 1) / 2n),
         call("nested_walk", n, weightedSum(nested)), call("nested_tail", n, BigInt(n - Math.floor(n / 3))),
+        // Copies and conversions: bytes for the elements that own nothing, clones for lists of lists.
+        call("wide_copy", n, weightedSum(down) + 1000000n), call("nested_copy", n, weightedSum(nested) * 2n + 100000000000n),
+        call("pairs_copy", n, weightedSum(pairs) + 1000000000000n), call("words_escape", n, 2032n + BigInt(n)),
       ];
     });
-    const units = chunkLengths(8, 32744, 15000).map((n) => call("units_walk", n, BigInt(n) * 1000003n + BigInt(n - Math.floor(n / 2))));
+    const units = chunkLengths(8, 32744, 15000).flatMap((n) => [
+      call("units_walk", n, BigInt(n) * 1000003n + BigInt(n - Math.floor(n / 2))), call("units_copy", n, BigInt(n) * 1000011n),
+    ]);
     const deep = (n) => call("deep_ops", n, 1000000n + weightedSum(descending(n)) % 1000n);
     return {
       cases: [...numbers, ...owned, ...units],

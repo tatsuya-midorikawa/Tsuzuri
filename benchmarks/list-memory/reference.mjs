@@ -1,5 +1,5 @@
 // The checksums of benchmarks/list-memory/Main.tz, from closed forms in n (BigInt, independent of the compiler).
-export const workloads = ["bulk_new", "cons_build", "tail_consume", "clone_list", "index_walk", "string_list", "walk_list", "fold_list", "compare_list"];
+export const workloads = ["bulk_new", "cons_build", "tail_consume", "clone_list", "index_walk", "string_list", "walk_list", "fold_list", "compare_list", "list_to_array", "array_to_list", "escape_list"];
 
 // The sizes the runner measures. index_walk is quadratic on a node list, so it stops at 10,000.
 export const sizes = {
@@ -14,11 +14,12 @@ export const sizes = {
 export function reference(name, size) {
   const n = BigInt(size);
   switch (name) {
-    case "bulk_new": case "cons_build": case "tail_consume": case "index_walk": return n * (n - 1n) / 2n;
+    case "bulk_new": case "cons_build": case "tail_consume": case "index_walk": case "list_to_array": case "array_to_list": return n * (n - 1n) / 2n;
     case "clone_list": return n * (n - 1n);
     case "string_list": return 3n * n;
     case "walk_list": case "fold_list": return 16n * n * (n - 1n) / 2n;
     case "compare_list": return 16n;
+    case "escape_list": return 16n * n * (n - 1n) + 496n * n;
     default: throw new Error(`unknown list-memory workload: ${name}`);
   }
 }

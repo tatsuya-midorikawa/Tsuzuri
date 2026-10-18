@@ -8,16 +8,16 @@ import { fileURLToPath } from "node:url";
 import { captureRun, instrumentAllocations, makeRecord, measureProcess, median, writeRecords } from "./metrics.mjs";
 import { reference, repeats, sizes, workloads } from "./list-memory/reference.mjs";
 
-// PM04: what a list costs, measured from outside. benchmarks/list-memory is built with the compiler as a native library at -O3 in two
-// ways: its IR with the allocator calls replaced by benchmarks/tracked_alloc.c, which counts calls and requested bytes (deterministic, one
-// call per size), and the object that Tsuzuri produces, which times the workloads and gives the peak RSS of a process that runs one of them.
+// PM04: what a list costs, measured from outside. benchmarks/list-memory is built with the compiler as a native library at -O3 (--opt
+// chooses another level) in two ways: its IR with the allocator calls replaced by benchmarks/tracked_alloc.c, which counts calls and
+// requested bytes (deterministic, one call per size), and the object that Tsuzuri produces, which times the workloads and gives the peak RSS of a process that runs one of them.
 // With --baseline the same is done for an older compiler (variant `before`) and the samples alternate between the two. --wasm adds the heap
 // high-water mark of each workload as wasm32 (the size of the module's memory after the run). No threshold: it records what was measured.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const usage = "Usage: node benchmarks/run-list-memory.mjs [compiler] [--baseline compiler] [--quick] [--samples n] [--only name,...] [--wasm] [--metrics directory] [--json file]";
+const usage = "Usage: node benchmarks/run-list-memory.mjs [compiler] [--baseline compiler] [--quick] [--samples n] [--only name,...] [--opt O0|O3] [--wasm] [--metrics directory] [--json file]";
 
 export function parseArguments(args) {
-  const options = { compiler: join(root, "target/release/tsuzuri"), baseline: null, quick: false, samples: 9, only: [], wasm: false, metrics: null, json: null };
+  const options = { compiler: join(root, "target/release/tsuzuri"), baseline: null, quick: false, samples: 9, only: [], opt: "O3", wasm: false, metrics: null, json: null };
   let positional = false, samplesGiven = false;
   const value = (index, flag) => {
     if (index + 1 >= args.length || args[index + 1].startsWith("--")) throw new Error(`missing value for ${flag}\n${usage}`);
@@ -42,6 +42,9 @@ export function parseArguments(args) {
     } else if (flag === "--only") {
       options.only = value(index++, flag).split(",").filter(Boolean);
       for (const name of options.only) if (!workloads.includes(name)) throw new Error(`unknown workload: ${name}\n${usage}`);
+    } else if (flag === "--opt") {
+      options.opt = value(index++, flag);
+      if (!["O0", "O3"].includes(options.opt)) throw new Error(`invalid --opt: ${options.opt}\n${usage}`);
     } else throw new Error(`unknown flag: ${flag}\n${usage}`);
   }
   if (options.quick && !samplesGiven) options.samples = 1;
@@ -58,15 +61,15 @@ function run(program, programArguments) {
 
 const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-// The native library of the fixture at -O3: the object that runs, and the tracked build whose IR was optimized first and instrumented after.
-function buildNative(compiler, label, directory, clang, tracker) {
+// The native library of the fixture at `opt`: the object that runs, and the tracked build whose IR was optimized first and instrumented after.
+function buildNative(compiler, label, directory, clang, tracker, opt) {
   const work = join(directory, label);
   mkdirSync(work);
   const fixture = join(root, "benchmarks/list-memory");
-  const flags = ["-O3", "-fPIC", "-fno-fast-math", "-ffp-contract=off"];
+  const flags = [`-${opt}`, "-fPIC", "-fno-fast-math", "-ffp-contract=off"];
   const ir = join(work, "list-memory.ll"), object = join(work, "list-memory.o");
-  run(compiler, ["build", fixture, "--emit", "llvm", "-O3", "-o", ir]);
-  run(compiler, ["build", fixture, "--emit", "object", "-O3", "--cpu", "generic", "-o", object]);
+  run(compiler, ["build", fixture, "--emit", "llvm", `-${opt}`, "-o", ir]);
+  run(compiler, ["build", fixture, "--emit", "object", `-${opt}`, "--cpu", "generic", "-o", object]);
   const optimized = join(work, "list-memory.optimized.ll"), trackedIr = join(work, "list-memory.tracked.ll"), trackedObject = join(work, "list-memory.tracked.o");
   run(clang, [...flags, "-Wno-override-module", "-S", "-emit-llvm", ir, "-o", optimized]);
   writeFileSync(trackedIr, instrumentAllocations(readFileSync(optimized, "utf8")));
@@ -93,9 +96,9 @@ function sample(timed, name, size, quick) {
 }
 
 // wasm32: the memory of the instance after one call is the high-water mark of the heap, which is never given back; a trap is an out-of-memory.
-function wasmHeap(compiler, label, directory, grid, quick) {
+function wasmHeap(compiler, label, directory, grid, quick, opt) {
   const output = join(directory, `${label}.wasm`);
-  run(compiler, ["build", join(root, "benchmarks/list-memory"), "--target", "wasm32", "-O3", "-o", output]);
+  run(compiler, ["build", join(root, "benchmarks/list-memory"), "--target", "wasm32", `-${opt}`, "-o", output]);
   const module = new WebAssembly.Module(readFileSync(output));
   assert.deepEqual(WebAssembly.Module.imports(module), [], "standalone WASM");
   const initial = new WebAssembly.Instance(module, {}).exports.memory.buffer.byteLength;
@@ -118,7 +121,7 @@ const fixed = (value) => (value >= 100 ? value.toFixed(1) : value >= 1 ? value.t
 const mebibytes = (bytes) => (bytes / 1048576).toFixed(2);
 
 export function runListMemory(options) {
-  const { compiler, baseline, quick, samples, only, metrics } = options;
+  const { compiler, baseline, quick, samples, only, metrics, opt } = options;
   const clang = process.env.TSUZURI_CLANG ?? "clang";
   const names = only.length ? only : workloads;
   const variants = [["default", compiler], ...(baseline ? [["before", baseline]] : [])];
@@ -126,7 +129,7 @@ export function runListMemory(options) {
   try {
     const tracker = join(directory, "tracked_alloc.o");
     run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", join(root, "benchmarks/tracked_alloc.c"), "-o", tracker]);
-    const builds = Object.fromEntries(variants.map(([variant, path]) => [variant, buildNative(path, variant, directory, clang, tracker)]));
+    const builds = Object.fromEntries(variants.map(([variant, path]) => [variant, buildNative(path, variant, directory, clang, tracker, opt)]));
     const grids = (name) => ({
       counted: quick ? sizes.quick : name === "index_walk" ? sizes.indexAllocations : sizes.allocations,
       timed: quick ? sizes.quick : name === "index_walk" ? sizes.indexMeasured : sizes.measured,
@@ -155,7 +158,7 @@ export function runListMemory(options) {
         results.push(entry);
       }
     }
-    const wasm = options.wasm ? Object.fromEntries(variants.map(([variant, path]) => [variant, wasmHeap(path, variant, directory, { names, sizes: sizes.wasm }, quick)])) : null;
+    const wasm = options.wasm ? Object.fromEntries(variants.map(([variant, path]) => [variant, wasmHeap(path, variant, directory, { names, sizes: sizes.wasm }, quick, opt)])) : null;
     const endLoad = loadavg();
 
     if (metrics) {
@@ -164,7 +167,7 @@ export function runListMemory(options) {
       for (const { workload, size, variants: measured } of results) {
         for (const [variant] of variants) {
           const data = measured[variant];
-          const fields = { suite: "list-memory", workload, size, language: "tsuzuri", variant, opt: "O3" };
+          const fields = { suite: "list-memory", workload, size, language: "tsuzuri", variant, opt };
           if (data.allocations) {
             records.push(makeRecord(context, { ...fields, metric: "alloc_calls", samples: [data.allocations.calls] }));
             records.push(makeRecord(context, { ...fields, metric: "alloc_bytes", samples: [data.allocations.bytes] }));
@@ -195,11 +198,11 @@ export function runListMemory(options) {
         for (const row of rows) console.log(`  ${row.workload}(${row.size}) ${row.trapped ? "trap" : row.heap_bytes}`);
       }
     }
-    console.log(`\nsamples: ${quick ? "quick" : samples} per size (${quick ? "no warm-up" : "after one warm-up"}), alternating builds; load average ${startLoad.map((x) => x.toFixed(2)).join(" ")} -> ${endLoad.map((x) => x.toFixed(2)).join(" ")}`);
+    console.log(`\nsamples: ${quick ? "quick" : samples} per size (${quick ? "no warm-up" : "after one warm-up"}), alternating builds, ${opt}; load average ${startLoad.map((x) => x.toFixed(2)).join(" ")} -> ${endLoad.map((x) => x.toFixed(2)).join(" ")}`);
 
     if (options.json) {
       writeFileSync(options.json, `${JSON.stringify({
-        schema: 1, date: new Date().toISOString(), quick, samples, load_average: [startLoad, endLoad],
+        schema: 1, date: new Date().toISOString(), quick, samples, opt, load_average: [startLoad, endLoad],
         host: { os: `${platform()} ${release()}`, arch: arch(), cpu: cpus()[0]?.model, cores: cpus().length, node: process.version },
         compilers: Object.fromEntries(variants.map(([variant, path]) => [variant, sha256(path)])),
         results, wasm,

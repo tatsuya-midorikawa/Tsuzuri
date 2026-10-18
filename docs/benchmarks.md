@@ -7295,7 +7295,7 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 ### PM04 連結リストの連続表現
 
 <!-- phase4:PM04 -->
-**状態（Phase 1・Phase 2a）:** chunk の表現（`src/llvm_list.rs`）に切り替えました。リストは `%tz.list = { ptr, i64 }` のまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes）と長さを持ちます。一度に作るリストは要素数ちょうどの 1 つの chunk、`List.cons` は先頭の chunk の空き slot を埋め、満杯なら容量 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足します。走査は、Phase 1 では `(chunk, slot)` の cursor で chunk の終わりだけ分岐するループでしたが、Phase 2a で chunk ごとの二重 loop（外側が chunk、内側が chunk の live な slot を数える loop）に替えました。表現を変える flag はありません（PM01・PM06 と同じ）。Phase 2b（`llvm.memcpy`）の測定は、この節の後ろに足します。
+**状態（Phase 1・Phase 2a・Phase 2b）:** chunk の表現（`src/llvm_list.rs`）に切り替えました。リストは `%tz.list = { ptr, i64 }` のまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes）と長さを持ちます。一度に作るリストは要素数ちょうどの 1 つの chunk、`List.cons` は先頭の chunk の空き slot を埋め、満杯なら容量 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足します。走査は、Phase 1 では `(chunk, slot)` の cursor で chunk の終わりだけ分岐するループでしたが、Phase 2a で chunk ごとの二重 loop（外側が chunk、内側が chunk の live な slot を数える loop）に替えました。Phase 2b で、drop が要らない要素の clone・`List.to_array`・`Array.to_list` は chunk ごとの `llvm.memcpy` になりました（`heap_copy` は効果が測れず撤回）。表現を変える flag はありません（PM01・PM06 と同じ）。
 
 **条件.** 基準は main `9dd0fbbc` の release コンパイラー（SHA-256 `5e1b9687…`）、変更後は Phase 1 のコンパイラー（SHA-256 `78eb5882…`、`0f9f16af`）です。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6、native `-O3` と wasm32 `-O3`。確保の回数と bytes は決定的です（`benchmarks/tracked_alloc.c` が数える要求量で、allocator の丸めは含みません）。時間と peak RSS は `node benchmarks/run-list-memory.mjs $COMPILER --baseline $BEFORE --samples 9 --wasm`（before と after の build を交互に、標本ごとに 1 回の warm-up の後、中央値）で、他の作業が並行して動く共有機の値です（開始時の 1 分の load average は 22〜65）。同じコンパイラーどうしを交互に測る A/A の差は 0.1〜1.2%（after の `bulk_new` 1,000,000 個が 4.7%、`walk_list` 1,000 個が 3.8%）でした。時間は参考値で、速度の合否の閾値は置きません。
 
@@ -7381,6 +7381,23 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 `tail_consume`・`string_list`・`index_walk` は走査が時間の大半ではなく（`List.tail` の連続、要素ごとの文字列の確保、添字）、差は雑音の範囲です。n = 1 の差も雑音の範囲です。基準（main `9dd0fbbc`）との比は、別の run で `walk_list` が 38.51 → 2.74 ms、`fold_list` が 37.17 → 2.32 ms、`compare_list` が 66.98 → 8.90 ms（n = 1,000,000）、n = 1,000 では 0.0359 → 0.00161 ms、0.0359 → 0.00137 ms、0.0575 → 0.00932 ms でした。build を引いた 1 要素あたりの総和（`walk_list` と `bulk_new` の差 ÷ 15,000,000）は、before 約 1.20 ns、Phase 1 約 0.58 ns、Phase 2a 約 0.12 ns です。
 
 生成コード（`clang -O3`、arm64）の確認です。`bulk_new`・`walk_list` の内側の総和は `ldp q4, q5, [x9, #-48]`・`ldp q6, q7, [x9, #-16]`・`add.2d` が 4 本・`add x9, x9, #64`・`subs x10, x10, #8`・`b.ne` で、`i64` を 8 個ずつ 4 本の accumulator で足します。余りの要素は同じ chunk の scalar の loop（`ldr x13, [x12], #8`・`add`・`adds`・`b.lo`）です。`List.cons` で作ったリストの `cons_build` も、各 chunk の run が同じ `vector.body` で、chunk の終わりに `next`（`ldr x9, [x9]`）と容量（`ldr x10, [x9, #16]`）を読みます。比較の内側の loop は `ldr x5, [x2], #8`・`ldr x6, [x3], #8`・`cmp x5, x6`・`b.ne`（不一致で抜ける）・回数の `b.ne` で、要素ごとに早く抜けるのでベクトル化されません（Phase 1 の cursor の 2 倍速い）。
+
+**Phase 2b（`llvm.memcpy`）.** 要素が drop 不要（`needs_drop` が偽。clone がビットの複写と同じ）のとき、`List.copy`・`List.to_array`・`Array.to_list` は要素ごとの load と store の loop ではなく、chunk ごとに 1 回の `llvm.memcpy` で複写します。`List.copy` と `List.to_array` は、元のリストの run（chunk の live な slot）ごとに、宛先の chunk または配列の `position` 番目から `run` 個を複写します。`Array.to_list` は 1 つの chunk に配列全体を 1 回で複写します（長さ 0 のときは chunk がないので分岐で飛ばします）。intrinsic は `llvm.memcpy.p0.p0.i64`（native と wasm64）か `.i32`（wasm32。長さは確保に成功した大きさなので `trunc` で足ります）で、`intrinsics` に 1 回だけ宣言します（runtime の IR の宣言は `unique_declarations` が落とします）。plain な型付き IR（`getelementptr`・`mul`・`call void @llvm.memcpy…, i1 false`）だけです。要素が drop を要するリスト（リストのリスト）は従来どおり要素ごとの clone です。測定の workload に `list_to_array`・`array_to_list`・`escape_list`（32 要素のリストのリテラルを返す関数を n 回。`heap_copy` を通る）を足しました（全 12 種目）。
+
+`-O3` と `-O0` の両方で、Phase 2a のコンパイラーと Phase 2b のコンパイラーを `node benchmarks/run-list-memory.mjs $PHASE2B --baseline $PHASE2A --samples 9 --opt O0|O3` で交互に測りました（中央値の比。load average は 110〜150 で、時間は参考値です）。`-O0` の測定は REPL の既定の最適化レベルで、PB05 の Cranelift のように LLVM の loop idiom の変換を持たない backend が翻訳する IR でもあります。同じコンパイラーどうしの A/A の差は `-O0` で 0.3〜2.9% でした。
+
+| workload | n | `-O0` Phase 2a ms | `-O0` Phase 2b ms | 比 | `-O3` の比 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `clone_list` | 1,000,000 | 8.867 | 7.984 | 0.90 | asm が同一（比は雑音） |
+| | 1,000 | 0.00804 | 0.00650 | 0.81 | |
+| `list_to_array` | 1,000,000 | 7.381 | 5.865 | 0.79 | 0.84（asm が違う） |
+| | 1,000 | 0.00657 | 0.00490 | 0.75 | 1.01 |
+| `array_to_list` | 1,000,000 | 6.536 | 5.082 | 0.78 | asm が同一（比は雑音） |
+| | 1,000 | 0.00598 | 0.00444 | 0.74 | |
+
+`-O3` では、`clone_list` と `array_to_list` の asm（`clang -O3`、arm64）が Phase 2a と 1 行も違いません（`bl _memcpy` が 1 回）。Phase 2a の要素ごとの loop を、LLVM の loop idiom の変換がすでに 1 つの `memcpy` にしていたからです。この 2 つの 1,000,000 個の時間は 0.91 倍でしたが、asm が同一なので雑音です。`list_to_array` だけは Phase 2a の loop が `memcpy` にならず（asm にベクトルの複写の loop）、Phase 2b は `bl _memcpy` を持ちます（1,000,000 個で 0.84 倍、1,000 個は同じ）。`-O0` では 3 つとも、ワークロード全体（build と総和を含む）で 10〜26% 速く、A/A の幅を超えます。wasm32 の `memory.copy`（`llvm.memcpy.p0.p0.i32`）の速度は測っていません。
+
+**撤回: `heap_copy`（スタックのリテラルがヒープに移るとき）.** frame 候補がすべて空のとき、スタックの chunk の slot を 1 回の `memcpy` でヒープの chunk に複写する版を作りましたが、効果を測れないので取りやめました（コードは Phase 2a の loop のままです）。`-O3` では `escape_list` の asm が Phase 2a と同一で（LLVM がスタックのリテラルを SROA して、ヒープへの store に直接つなげます）、`-O0` の差は A/A の幅の中でした（1,000,000 回で 103.4 ms と 101.7 ms、同じコンパイラーどうしの A/A は 106.6 ms と 107.9 ms）。
 
 **追認できないこと・限界.**
 - 1 要素ごとに node を確保していた表現より、要素が数個のリストと、`List.cons` で伸ばした 256 要素以下のリストは確保の bytes が大きくなります（上の表）。
