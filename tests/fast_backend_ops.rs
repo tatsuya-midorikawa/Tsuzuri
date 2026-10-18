@@ -1125,6 +1125,7 @@ fn memory_cases(suite: &mut Suite) {
         vec![],
         "entry:\n  %p = alloca [64 x i8], align 64\n  %q = alloca i64, align 32\n  %r = alloca <8 x float>\n  %s = alloca i8, align 1\n  %pi = ptrtoint ptr %p to i64\n  %qi = ptrtoint ptr %q to i64\n  %ri = ptrtoint ptr %r to i64\n  %m1 = and i64 %pi, 63\n  %m2 = and i64 %qi, 31\n  %m3 = and i64 %ri, 31\n  store i64 %a, ptr %p, align 8\n  store i64 %b, ptr %q, align 8\n  store i8 7, ptr %s, align 1\n  %x = load i64, ptr %p, align 8\n  %y = load i64, ptr %q, align 8\n  %z = load i8, ptr %s, align 1\n  %zz = zext i8 %z to i64\n  %t1 = add i64 %x, %y\n  %t2 = add i64 %m1, %m2\n  %t3 = add i64 %t2, %m3\n  %t4 = add i64 %t1, %t3\n  %o = add i64 %t4, %zz\n  ret i64 %o\n".to_owned(),
     );
+    // Undefined in LLVM IR, so compared on wasm32 only (see `wasm_only`).
     add(
         "an i1 loaded from a byte with more bits set".to_owned(),
         vec![],
@@ -1540,13 +1541,18 @@ fn work_directory(label: &str) -> PathBuf {
 /// the translator reports; none of them may change a result silently.
 const KNOWN_REFUSALS: &[&str] = &["i128 smul.with.overflow", "i128 umul.with.overflow"];
 
-/// What only the wasm translator takes: the native one refuses a 128-bit integer in the signature of a
-/// function that other objects can call, and the overflow intrinsics on the widths between those of the
-/// machine (the compiler's IR uses none of them).
+/// What only the wasm translator is compared on: the native one refuses a 128-bit integer in the
+/// signature of a function that other objects can call, and the overflow intrinsics on the widths
+/// between those of the machine (the compiler's IR uses none of them); and the load of an `i1` from a
+/// byte that holds more than one bit is undefined, so that the Clang of x86-64 does not keep the low
+/// bit as that of AArch64 and `wasm32` do (both translators keep it).
 fn wasm_only(case: &Case) -> bool {
-    case.label == "an indirect call of a function that returns 128 bits"
-        || (case.label.ends_with(".with.overflow")
-            && !matches!(case.group.as_str(), "i8" | "i16" | "i32" | "i64" | "i128"))
+    matches!(
+        case.label.as_str(),
+        "an indirect call of a function that returns 128 bits"
+            | "an i1 loaded from a byte with more bits set"
+    ) || (case.label.ends_with(".with.overflow")
+        && !matches!(case.group.as_str(), "i8" | "i16" | "i32" | "i64" | "i128"))
 }
 
 /// `TSUZURI_FAST_OPS_EXPORT=DIR` stops the test after the translation and writes what a comparison on
