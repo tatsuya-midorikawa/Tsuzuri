@@ -596,6 +596,14 @@ pub(super) fn wrapper(
         values.join(", ")
     ));
     if Buffer::of(result).is_some() {
+        // The host reads UTF-16 units: the buffer of a Latin-1 string is widened, and the host takes it.
+        let value = if *result == Type::String && emitter.globals.strings == StringForm::Compact {
+            emitter.value(format!(
+                "call %tz.string @tz.string.to_utf16(%tz.string {value})"
+            ))
+        } else {
+            value
+        };
         let data = emitter.value(format!("extractvalue {} {value}, 0", emitter.ty(result)));
         let length = emitter.value(format!("extractvalue {} {value}, 1", emitter.ty(result)));
         emitter.instruction(format!("store ptr {data}, ptr %out"));

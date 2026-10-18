@@ -361,7 +361,7 @@ section("integer Parse and format specs print the same at every level and match 
   tsuzuri(["build", project, "--emit", "llvm", "-o", ir]);
   const emitted = readFileSync(ir, "utf8");
   assert.ok(!emitted.includes("tz_soft_"), "no numeric runtime");
-  assert.ok(!emitted.includes("call i1 @tz.string.to_ascii"), "no ASCII copy of the text");
+  assert.ok(!emitted.includes("call i1 @tz.string.to_ascii("), "no ASCII copy of the text");
 });
 
 section("a float still uses the numeric runtime to parse, with the ASCII copy", () => {

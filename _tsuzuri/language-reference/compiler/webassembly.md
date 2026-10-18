@@ -164,7 +164,7 @@ trap (site 0) trap
 | `bool` | `boolean` | `boolean` だけ。`0` や `1` は `TypeError` |
 | `unit`（戻り値） | `void` | — |
 | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | `BigInt64Array` / `Float64Array` / `Uint8Array` か `Borrowed<…>` | 型付き配列だけ。通常の配列は `TypeError` |
-| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る |
+| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る（`TSUZURI_STRINGS=compact` でも境界は UTF-16 で、内部が Latin-1 の `string` は渡す前に広げる） |
 | `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError`。先頭の U+FEFF も文字として渡り、結果でも保たれる |
 | `[i64]` などの所有結果 | 型付き配列 | 複製して返し、すぐ `tsuzuri_free` する |
 | `string` / `utf8string` の所有結果 | `string` | 同上 |
@@ -329,7 +329,7 @@ api.tsuzuri_free(pointer);
 api.tsuzuri_free(out);
 ```
 
-`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。
+`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。`TSUZURI_STRINGS=compact` でも、host が見る `string` は UTF-16 です。Latin-1 で持っている文字列は、結果として返す前と host の import へ渡す前に広げます（[コンパクト文字列の旗](option.md#コンパクト文字列の旗)）。
 
 ## SIMD とスレッド
 

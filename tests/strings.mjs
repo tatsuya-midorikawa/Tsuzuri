@@ -118,19 +118,25 @@ try {
   writeFileSync(ir, sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free")
     .replaceAll("@realloc", "@tracked_realloc"));
 
+  // With TSUZURI_STRINGS=compact, UTF-8 text of Latin-1 scalars decodes to a Latin-1 string; the C harness reads
+  // UTF-16 units, so the decode bridge widens that result (tests/compact_strings_raw.mjs checks the Latin-1 form).
+  const compactStrings = environment.TSUZURI_STRINGS === "compact";
   const runtimeBridges = [
     ["decode", "string", "tz.string.from_utf8"],
     ["encode", "utf8string", "tz.utf8string.from_string"],
     ["repair", "string", "tz.string.to_well_formed"],
-  ].map(([name, type, implementation]) => `
+  ].map(([name, type, implementation]) => {
+    const widen = compactStrings && name === "decode";
+    return `
 define i64 @test_${name}(ptr %input, i64 %length, ptr %output) {
   %value = call %tz.${type} @${implementation}(ptr %input, i64 %length)
-  %data = extractvalue %tz.${type} %value, 0
-  %size = extractvalue %tz.${type} %value, 1
+${widen ? "  %wide = call %tz.string @tz.string.to_utf16(%tz.string %value)\n" : ""}  %data = extractvalue %tz.${type} %${widen ? "wide" : "value"}, 0
+  %size = extractvalue %tz.${type} %${widen ? "wide" : "value"}, 1
   store ptr %data, ptr %output
   ret i64 %size
 }
-`).join("") + `
+`;
+  }).join("") + `
 define i32 @test_well_formed(ptr %input, i64 %length) {
   %valid = call i1 @tz.string.is_well_formed(ptr %input, i64 %length)
   %result = zext i1 %valid to i32
@@ -176,10 +182,13 @@ define void @test_concat(i64 %left, i64 %right) {
     ["guard_concat", [-1n, 1n]],
   ];
   const guardIr = join(scratch, "length-guards.ll");
+  // With TSUZURI_STRINGS=compact, `concat` is the dispatcher and the UTF-16 function is `concat.utf16`;
+  // this test is about that one, and tests/compact_strings_raw.mjs does the guards of the Latin-1 paths.
   const runtimeGuards = ["allocate", "concat"].map((name) => {
-    const definition = sourceIr.match(new RegExp(`^define internal %tz\\.string @tz\\.string\\.${name}\\([\\s\\S]*?^}`, "m"));
+    const symbol = compactStrings && name === "concat" ? "concat\\.utf16" : name;
+    const definition = sourceIr.match(new RegExp(`^define internal %tz\\.string @tz\\.string\\.${symbol}\\([\\s\\S]*?^}`, "m"));
     assert.ok(definition, `missing string ${name} runtime`);
-    return definition[0];
+    return definition[0].replace("@tz.string.concat.utf16(", "@tz.string.concat(");
   }).join("\n");
   writeFileSync(guardIr, `%tz.string = type { ptr, i64 }
 @recorded_bytes = internal global i64 0
