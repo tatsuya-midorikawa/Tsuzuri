@@ -762,5 +762,6 @@ try {
   }
 } finally {
   for (const child of servers) child.kill("SIGKILL");
-  rmSync(root, { recursive: true, force: true });
+  // Windows ends a killed process after kill() returns, and a directory it still uses cannot be removed (EPERM, EBUSY).
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

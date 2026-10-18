@@ -259,5 +259,6 @@ try {
   console.log(`Watch: runs equal the commands alone, same-length same-time edits, additions, removals, new directories, touches, JSON status lines, build, test, usage errors${process.platform === "win32" ? "" : " and a replaced compiler"} passed`);
 } finally {
   for (const child of children) child.kill("SIGTERM");
-  rmSync(root, { recursive: true, force: true });
+  // Windows ends a killed process after kill() returns, and a directory it still uses cannot be removed (EPERM, EBUSY).
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }

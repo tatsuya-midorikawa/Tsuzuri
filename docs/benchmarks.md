@@ -7274,7 +7274,6 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 
 ### PB05 デバッグビルド用の高速バックエンド
 
-<!-- phase4:PB05 -->
 **実装した経路と、していないこと**: 実装済みは、`--backend fast`（既定は `llvm` のままで、既定の切り替え D12 は行っていません）の次の範囲です。native の `--emit exe|object`（macOS と Linux の AArch64・x86-64、`-O0` だけ。Cranelift 0.121.2）、wasm32 の `--emit wasm|object`（`-O0` だけ。Clang を使わずにコンパイラが WebAssembly の object を書き、`wasm-ld` でリンクする。D13）、`build`・`run`・`test`、`--trap-info`、`-g`（native。DWARF の行情報）、`--allocator small|counting`、`--freestanding`、`--trap-mode return`、`--strip`。計画のまま実装していないのは、Windows のホストで `--backend fast` を使うこと（`E2000`。理由は下の「測っていないこと」）、`--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm`、`--profile-*`、`--target TRIPLE`、wasm32 の SIMD・threads・jspi・webgpu・net・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64 です（いずれも `E2000`）。
 
 **環境と条件**: Apple M1 Max（10 core）、macOS 27.0、Apple clang 21.0.0、Node.js 20.19.6、LLVM 21 の単体ツール、`cargo +1.99.0 build --release --features fast-backend --locked` の `target/release/tsuzuri`（native のゲートと、`examples/hello` は `9250638a`、SHA-256 の先頭 `7fc4266f…`。wasm32 のゲートと、カーネルは、前向きの分岐を構造化した `4284f393`）。ほかの 6 つの作業と共有する機械で、1 分の load average は wasm32 のゲートが 10〜17（開始）から 49（終了）、native のゲートが 33（開始）〜20（終了）、native のカーネルが 9〜10、wasm32 のカーネルが 11〜13 でした。数値は参考値で、`llvm` と `fast` を交互に（先に走るほうも交互に）測った 7 標本の中央値と最小〜最大です。生のレコードは `target/perf/PB05/bench-wasm2`・`bench-native`・`kernels-native`・`kernels-wasm2` です（commit しません）。
@@ -7349,11 +7348,9 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 - x86-64 の macOS（Intel）: object の形式と、`ld64` でのリンクまでは確かめました（実行は不可）。Linux の x86-64 は、下の測定 4 のとおりです。
 - wasm32 の実行は V8（Node.js 20）だけで確かめました。ほかのエンジン（SpiderMonkey・JavaScriptCore）と Node.js 24 は測っていません。
 - `AGGREGATE_FLATTEN_LEAVES`（16）と Cranelift の `regalloc_algorithm`（既定の `backtracking`）は、チケットの計画した調整をしていません（ゲートを通ったので、翻訳の時間の約 10% の調整を後回しにしました）。
-<!-- /phase4:PB05 -->
 
 ### PB06 常駐ビルドサーバーと watch モード
 
-<!-- phase4:PB06 -->
 **実装した経路と、していないこと**: 実装済みは、`tsuzuri watch check|build|test`（Phase 1）、`tsuzuri serve`・`--no-server`・`serve --status／--stop`（Phase 2。Unix だけ）、常駐状態（読んだソースの本文と、ファイルの SHA-256 を、`stat` つきで覚える。`watch`・`serve`・`lsp`・`repl` が使う）です。計画のまま実装していないのは、frontend の pack を要求のあいだメモリに残すこと（下の「ゲート」）、Windows の named pipe、LSP・REPL が socket でサーバーと話すこと、`build_key` のツールの問い合わせの memo です。**G1（1 module の本体を変えた後の `check` が 100 ms 級）は取り下げました**: `check` の結果の再利用（G17 が先送りした）は実装していないので、常駐で減るのは、プロセスの起動、`load`（ファイルを開く）、`cache` の一部だけで、型検査・単相化・所有権の段は 1 回ごとに全体をやり直します。
 
 **環境と条件**: Apple M1 Max（10 core）、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6。コンパイラは `cargo build --release --locked` の `target/release/tsuzuri`（SHA-256 の先頭 `d71c5429…`、コミット `31baa6fc`）で、基準は同じ binary の `--no-server`（サーバーなしの実行）です。ほかの 6 つの作業と共有する機械で、1 分の load average は run 1 が 19（開始）〜35（終了）、run 2 が 26〜41、既定の経路の比較が 40〜48 でした。数値は参考値で、標本は各 9 件（warm-up 1 件を別に捨てる）の中央値と最小〜最大です。この機械のセキュリティ agent は、新しいプロセスの最初の `open()`（およそ 256 ファイルを超えると毎回）と、書き換えた直後のファイルの最初の `open()` を遅くするので、`load` の段の絶対値と減り方は環境によって大きく違います（Linux x86-64 と Windows は測っていません）。生のレコードは `target/perf/PB06-after-1`・`PB06-after-2` の `build.jsonl`・`projects.json` です（commit しません）。
@@ -7406,11 +7403,8 @@ LSP は 1,000 module で最小が約 455〜480 ms 短く（3 組とも）、条�
 **再現**: `node benchmarks/run-build.mjs target/release/tsuzuri --languages tsuzuri --sizes 200,1000 --variants check-edit-body-server,build-edit-body-server,watch-edit-body --out target/perf/PB06-after-1`（TMPDIR は短くする: ソケットのパスが macOS で 103 byte までです）。LSP は `tsuzuri lsp` に 1,000 module のプロジェクトの真ん中の module を `didChange` で書き換えさせた応答（commit しない scratch の driver）、REPL は `node benchmarks/run-repl.mjs <compiler> --samples 9` の `repl: repeated expression (cache hit)` です。
 
 **測っていないこと**: Linux・x86-64・Windows（Windows に server はありません）、エディターに組み込んだ実際の使い方、サーバーを起動するまでの費用（常駐しないので、`serve` を起動してから最初の要求までは速くなりません）、`TSUZURI_THREADS` が `1` のときの差、frontend の pack の常駐（実装していません）。
-<!-- /phase4:PB06 -->
 
 ### PM02 関数値の表現の縮小
-
-<!-- phase4:PM02 -->
 
 関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `-O1`〜`-O3` の `alwaysinline`（worker は adapter 以外の呼び出しが 1 か所以下のものだけ）、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
 
@@ -7526,11 +7520,9 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 - x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。`-O0`・`-Os`・`-Oz` と、属性の方針の測定は Apple Silicon だけ）。
 - LLDB の実行つきの検査（この環境では `lldb` の `run` が基準のコンパイラでも固まる）。型の形と整形の判定は `tests/debugger_static.mjs`（プロセスなし）と `tests/debug_info.rs` で確かめた。
 - Windows の natvis（`Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる。`Maybe<[T]>`・`Maybe<ref T>` と同じ扱い）。
-<!-- /phase4:PM02 -->
 
 ### PM03 コンパクト文字列
 
-<!-- phase4:PM03 -->
 実装の記録は WP1〜WP11 の順に、この region に足しました（完了）。ticket は [PM03](../_perfs/_completed/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
 
 #### baseline（PM03 の前。WP1）
@@ -7650,11 +7642,9 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
   既定を切り替える前に直すこと: 使われない kernel・dispatcher を生成しない（`RuntimeSymbols` で層を選ぶ）ことで IR・wasm・ビルド時間の増加を減らす、host へ返す結果を最初から UTF-16 で作る（結果が export へ流れる場合）、
   Linux・Windows の allocator で `cjk_lines` の RSS を測り直す。それまでは `TSUZURI_STRINGS=compact` を、ASCII・Latin-1 中心で host との往復が少ない文字列処理（ログ・CSV・トークン化・整形）に勧めます。
-<!-- /phase4:PM03 -->
 
 ### PM04 連結リストの連続表現
 
-<!-- phase4:PM04 -->
 **状態（Phase 1・Phase 2a・Phase 2b）:** chunk の表現（`src/llvm_list.rs`）に切り替えました。リストは `%tz.list = { ptr, i64 }` のまま、先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（header 24 bytes）と長さを持ちます。一度に作るリストは要素数ちょうどの 1 つの chunk、`List.cons` は先頭の chunk の空き slot を埋め、満杯なら容量 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes。32 bytes に収まるのは要素が 8 bytes 以下のときで、`string` の chunk は 40 bytes、`i128` と 24 bytes の record は 48 bytes）の chunk を足します。走査は、Phase 1 では `(chunk, slot)` の cursor で chunk の終わりだけ分岐するループでしたが、Phase 2a で chunk ごとの二重 loop（外側が chunk、内側が chunk の live な slot を数える loop）に替えました。Phase 2b で、drop が要らない要素の clone・`List.to_array`・`Array.to_list` は chunk ごとの `llvm.memcpy` になりました（`heap_copy` は効果が測れず撤回）。表現を変える flag はありません（PM01・PM06 と同じ）。
 
 **条件.** 基準は main `9dd0fbbc` の release コンパイラー（SHA-256 `5e1b9687…`）、変更後は Phase 1 のコンパイラー（SHA-256 `78eb5882…`、`0f9f16af`）です。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6、native `-O3` と wasm32 `-O3`。確保の回数と bytes は決定的です（`benchmarks/tracked_alloc.c` が数える要求量で、allocator の丸めは含みません）。時間と peak RSS は `node benchmarks/run-list-memory.mjs $COMPILER --baseline $BEFORE --samples 9 --wasm`（before と after の build を交互に、標本ごとに 1 回の warm-up の後、中央値）で、他の作業が並行して動く共有機の値です（開始時の 1 分の load average は 22〜65）。同じコンパイラーどうしを交互に測る A/A の差は 0.1〜1.2%（after の `bulk_new` 1,000,000 個が 4.7%、`walk_list` 1,000 個が 3.8%）でした。時間は参考値で、速度の合否の閾値は置きません。
@@ -7821,11 +7811,9 @@ n = 1,000 では 0.002〜0.48 倍（`string_list` が 0.48、`compare_list` が 
 - native の `alloc_bytes` は要求量なので、macOS の丸めは見えません。footprint は peak RSS と上のモデルで見ています。
 - `tests/debugger.mjs`（LLDB の実行）は、この機械で macOS の Developer mode が無効のため `run` が戻らず、実行できていません。DWARF は `llvm-dwarfdump --verify`、LLDB の provider は実際の DWARF の型と模擬の process で検査しました。
 - A17 の last-use 解析が `for` の source の局所変数を除外するため、同じ関数で `values = List.cons i values` と `for v in values` を使うと、`List.cons` のたびにリストが複製されます（`--warn implicit-copy` の `W1006` で見えます）。PM04 の範囲外で、`cons_build` の workload は cons の loop を別の関数に出しています。
-<!-- /phase4:PM04 -->
 
 ### PR07 プロファイル誘導最適化（PGO）
 
-<!-- phase4:PR07 -->
 `--profile-generate DIR` と `--profile-use PATH`（PR07）の測定と、生成コードの確認の記録です。主張は測った範囲に限ります。
 
 **条件**: Apple M1 Max（10 core）、macOS 27.0.1、Node v20.19.6（wasm は Node v24.21.0 も）、rustc 1.98.1（LLVM 22.1.8）。Tsuzuri は release build で、run `apple-1`・`brew-1` が commit `a9105ace`（作業ツリーはクリーン、SHA-256 `09a47c15…`）、`apple-2` が `46800137` ＋ docs（SHA-256 `9f52d022…`）です。Clang は Apple clang 21.0.0（`/usr/bin/clang`。`apple-1`・`apple-2`）と Homebrew LLVM 21.1.8（`brew-1`）で、`llvm-profdata` は各 Clang と対のものです。run は他の作業が並行する共有機で、1 分の load average は開始時に 15〜35、実行中に最大 50 でした。電源は AC です。生データ（`control.jsonl`、`--artifacts` の object・IR・asm・profile）は `target/perf/PR07/`（コミットしない）にあります。
@@ -7980,11 +7968,9 @@ node benchmarks/run-wasm-pgo.mjs target/release/tsuzuri --suite apps     # contr
 node benchmarks/run-trap-layout.mjs target/release/tsuzuri
 node tests/pgo.mjs target/release/tsuzuri
 ```
-<!-- /phase4:PR07 -->
 
 ### PR08 言語間 LTO と bitcode 出力
 
-<!-- phase4:PR08 -->
 `--emit bitcode`（PR08）は、プログラムと、それが使う C ランタイムを 1 つの ThinLTO の bitcode にします。C・C++ のホストが `-flto=thin` でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--emit object` のリンクでは、その呼び出しは呼び出しのまま残ります。使い方は [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) にあります。この節は、その効果を測った記録です。速さは、同じ Clang でビルドとリンクをした構成だけで述べます。
 
 #### 種目 `lto/small_call`
@@ -8040,7 +8026,6 @@ C ランタイムを使わないプログラムでは、bitcode は属性を読�
 - x86-64 と Linux、Windows の時間は測っていません。1 つの関数、1 つのループだけの測定で、ホストの規模が大きいときの時間、ホストのリンク時間（ThinLTO のリンクと通常のリンクの差）、ほかの関数の inline の効果は測っていません。
 - 閾値は置きません（共有 CI の揺れが大きいため）。`benchmarks/run-lto.mjs` は値を出すだけで、合否の判定をしません。
 - 生データ（`*.jsonl`、実行ファイル、`samples.json`）は `target/perf/PR08-after/` に残しました（Git には入れません）。
-<!-- /phase4:PR08 -->
 
 ### 第4フェーズ統合の最終比較（2026-10-19）
 
@@ -8316,8 +8301,6 @@ PB05 の節の値は、ほかの作業と共有する機械（load average 10〜
   wasm32 の配列・リストの loop の構造化（1.3〜1.5 倍の差）は PB05 の節のとおり未対応です。
 - x86-64 の Linux と Intel の macOS では、CI（targets.yml）が `tests/fast_backend.mjs` の default・`programs`・`debug` を実行します（Linux x86-64 の runner で、21 実行ファイルの出力・85 library の export の一致、1,393 関数の行情報の検証、`parity` の 8 suite が通ることを確認済み）。時間は測っていません。
 
-<!-- /phase4-final:PB05GATE -->
-
 #### チケットごとの追認と、追認できなかったこと
 
 - **PM04**: 追認 — `control/list_sum` は 40.4 倍（9/9 run）、n = 1,000,000 の構築 18.4 → 0.46 ms、`List.cons` の構築 18.7 → 1.02 ms（確保 1,000,000 → 261 回）、複製 38.5 → 1.00 ms、比較 56.8 → 7.28 ms、最大 RSS は 17.8 → 9.7 MB、
@@ -8327,8 +8310,6 @@ PB05 の節の値は、ほかの作業と共有する機械（load average 10〜
   代償は PM02 の節のとおりで、hello の `--emit object`（`-O3`）は 5,024 → 5,184 bytes（+160）、既定の IR の text は全 project で +2〜3%（使われない記述子）です。
 - **PM03**: 追認 — 既定が `utf16` のままなので、文字列系の時間・確保は変わりません（C++ の suite の `utf16_*`・`format_parse`、実アプリの `tokenize`・`format_join`・`csv_aggregate` が 0.96〜1.01 倍）。`TSUZURI_STRINGS=compact` はこの比較では測っていません（PM03 の節）。
 - **PB06・PR07・PR08**: 既定のコンパイラの `check` に差はなく（上のフロントエンドの表）、`watch`・`serve`・`--profile-*`・`--emit bitcode` は opt-in で、値は各 subsection にあります。
-
-<!-- /phase4-final -->
 
 ## 現実的な次の指標
 
