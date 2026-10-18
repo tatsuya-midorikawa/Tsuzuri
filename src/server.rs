@@ -12,7 +12,11 @@
 //!
 //! The protocol is one JSON object per line and one request per connection: the server sends a
 //! hello (`protocol`, `server`, `version`, `pid`, `root`) when it accepts, the client sends a
-//! request and closes its write side, and the server answers with one reply and closes.
+//! request and keeps its end open until it has the reply, and the server answers with one reply
+//! and closes. One thread accepts the connections and reads the requests; it answers `status` and
+//! `shutdown` itself, at once, and queues a request to run for the thread that runs the commands,
+//! which skips a queued request whose client has closed its end (it was interrupted while it
+//! waited).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -30,7 +34,7 @@ pub const PROTOCOL: u64 = 1;
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// The longest reply line, as long as a message of the language server.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-/// How many accepted connections wait for the thread that runs the commands.
+/// How many requests wait for the thread that runs the commands (the one that runs is not counted).
 pub const QUEUE: usize = 16;
 /// The whole time that a client has to send its request line, from the moment the server reads.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(2);
@@ -42,6 +46,9 @@ pub const DEFAULT_IDLE_SECONDS: u64 = 1800;
 pub const MAX_IDLE_SECONDS: u64 = 86400;
 #[cfg(unix)]
 const HELLO_LIMIT: usize = 4096;
+/// How long `serve --status` and `--stop` wait for a reply, which the server makes at once.
+#[cfg(unix)]
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `serve --stop` waits for the socket of the server that it stopped to go away.
 #[cfg(unix)]
 const STOP_WAIT: Duration = Duration::from_secs(5);
@@ -596,7 +603,8 @@ pub trait Handler {
     fn run(&mut self, request: &Request, log: &mut dyn Write) -> Result<Response, Refused>;
     /// Whether the compiler file that started the server was replaced since.
     fn compiler_changed(&self) -> bool;
-    /// More fields for the reply to `status` (what the process remembers).
+    /// More fields for the reply to `status` (what the process remembers). The server asks after
+    /// every request, so that `status` can answer while the next one runs.
     fn status(&self) -> Vec<(&'static str, Value)>;
 }
 
@@ -694,11 +702,12 @@ pub fn control(_input: &Path, _operation: &Operation) -> Result<Map<String, Valu
 mod sockets {
     use super::*;
     use std::collections::BTreeMap;
-    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    use std::fs::{File, OpenOptions, TryLockError};
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
     use std::time::Instant;
 
@@ -724,15 +733,49 @@ mod sockets {
             .map(|metadata| (metadata.dev(), metadata.ino()))
     }
 
-    /// Takes the socket at `socket`: a socket that nobody answers is the leftover of a server that
-    /// was killed, and goes; one that answers is a server that runs.
-    fn bind(socket: &Path) -> Result<UnixListener, ServeError> {
-        SocketAddr::from_pathname(socket).map_err(|error| {
+    /// Whether a socket can have the path `socket` (`sun_path` holds 104 bytes on macOS).
+    fn check_path(socket: &Path) -> Result<(), ServeError> {
+        SocketAddr::from_pathname(socket).map(drop).map_err(|error| {
             usage(format!(
                 "the socket path {} is too long for this system ({error}); set TSUZURI_SERVER_DIR to a shorter directory",
                 socket.display()
             ))
-        })?;
+        })
+    }
+
+    /// The lock that a server holds for as long as it lives, in a file beside its socket. The
+    /// system gives a lock up when its process ends, however it ends, so a lock that is held is a
+    /// server that runs, and what a killed server left is free to take. It makes two servers that
+    /// start together one: without it both could remove the same stale socket and bind, and one of
+    /// them would end up with a socket that nobody can reach. `None` where the file system has no
+    /// locks; `bind` then finds out what it can.
+    // `File::try_lock` is stable since Rust 1.89, newer than the `rust-version` of the package (which
+    // let chains, stable since 1.88, have passed already), and `std` has no other lock.
+    #[allow(clippy::incompatible_msrv)]
+    pub(super) fn take_lock(socket: &Path) -> Result<Option<File>, ServeError> {
+        let path = socket.with_extension("lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| {
+                failure(format!("cannot open the lock {}: {error}", path.display()))
+            })?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Err(failure(format!(
+                "a build server is already running for this project ({})",
+                socket.display()
+            ))),
+            Err(TryLockError::Error(_)) => Ok(None),
+        }
+    }
+
+    /// Takes the socket at `socket`: a socket that nobody answers is the leftover of a server that
+    /// was killed, and goes; one that answers is a server that runs.
+    fn bind(socket: &Path) -> Result<UnixListener, ServeError> {
         for _ in 0..2 {
             match UnixListener::bind(socket) {
                 Ok(listener) => {
@@ -790,10 +833,12 @@ mod sockets {
         )))
     }
 
-    /// Removes the socket at the end of the server if it is still the one that this server made.
+    /// Removes the socket at the end of the server if it is still the one that this server made, and
+    /// then lets go of the lock (the field is dropped after `drop` has run).
     struct Cleanup {
         socket: PathBuf,
         made: Option<(u64, u64)>,
+        _lock: Option<File>,
     }
 
     impl Drop for Cleanup {
@@ -804,40 +849,303 @@ mod sockets {
         }
     }
 
+    fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// What `status` reports, and what the accept thread and the thread that runs the commands
+    /// both change.
+    struct Counters {
+        started: Instant,
+        requests: u64,
+        served: u64,
+        /// Queued requests whose client had gone when their turn came.
+        abandoned: u64,
+        refusals: BTreeMap<&'static str, u64>,
+        /// The request that runs, and since when.
+        running: Option<(u64, Instant)>,
+        /// The last connection, or the end of the last request: the idle time counts from here.
+        activity: Instant,
+        /// What the handler said about the process after the last request that ended.
+        handler: Vec<(&'static str, Value)>,
+    }
+
+    /// What the two threads of a server share. The accept thread answers a `status` or a
+    /// `shutdown` itself, so that they do not wait for the commands that run.
+    struct Shared {
+        counters: Mutex<Counters>,
+        /// Requests that wait for the thread that runs the commands (the one that runs is not here).
+        queued: AtomicUsize,
+        /// Connections that were refused because the queue was full.
+        busy: AtomicU64,
+        /// `shutdown` was asked: the server ends when the request that runs ends.
+        shutdown: AtomicBool,
+        /// The server has ended: the accept thread ends at its next connection.
+        stop: AtomicBool,
+    }
+
+    impl Shared {
+        fn new(handler: Vec<(&'static str, Value)>) -> Self {
+            let now = Instant::now();
+            Self {
+                counters: Mutex::new(Counters {
+                    started: now,
+                    requests: 0,
+                    served: 0,
+                    abandoned: 0,
+                    refusals: BTreeMap::new(),
+                    running: None,
+                    activity: now,
+                    handler,
+                }),
+                queued: AtomicUsize::new(0),
+                busy: AtomicU64::new(0),
+                shutdown: AtomicBool::new(false),
+                stop: AtomicBool::new(false),
+            }
+        }
+
+        fn counters(&self) -> MutexGuard<'_, Counters> {
+            locked(&self.counters)
+        }
+
+        /// The number of the request that has just been read.
+        fn next_request(&self) -> u64 {
+            let mut counters = self.counters();
+            counters.requests += 1;
+            counters.requests
+        }
+
+        /// Counts a refusal, and gives the line for the log.
+        fn refused(&self, number: u64, refused: &Refused) -> String {
+            *self
+                .counters()
+                .refusals
+                .entry(refused.reason.name())
+                .or_default() += 1;
+            format!(
+                "serve: request {number} refused: {} ({})",
+                refused.reason.name(),
+                refused.message
+            )
+        }
+
+        /// The reply to `status` (the fields that the handler reports are those of the last request
+        /// that ended).
+        fn status(&self, info: &Acceptor) -> String {
+            let busy = self.busy.load(Ordering::Acquire);
+            let counters = self.counters();
+            let mut refusals: Map<String, Value> = counters
+                .refusals
+                .iter()
+                .map(|(name, count)| ((*name).to_owned(), json!(count)))
+                .collect();
+            if busy > 0 {
+                refusals.insert("busy".to_owned(), json!(busy));
+            }
+            let refused: u64 = counters.refusals.values().sum::<u64>() + busy;
+            let mut object = Map::new();
+            for (key, value) in [
+                ("protocol", json!(PROTOCOL)),
+                ("ok", json!(true)),
+                ("server", json!("tsuzuri")),
+                ("version", json!(env!("CARGO_PKG_VERSION"))),
+                ("pid", json!(std::process::id())),
+                ("root", json!(info.root)),
+                ("compiler", json!(info.compiler)),
+                ("compiler_sha256", json!(info.compiler_sha256)),
+                ("idle_seconds", json!(info.idle.as_secs())),
+                (
+                    "uptime_seconds",
+                    json!(counters.started.elapsed().as_secs()),
+                ),
+                ("requests", json!(counters.requests)),
+                ("served", json!(counters.served)),
+                ("abandoned", json!(counters.abandoned)),
+                ("refused", json!(refused)),
+                ("refusals", Value::Object(refusals)),
+                ("running", running_json(counters.running)),
+                ("queued", json!(self.queued.load(Ordering::Acquire))),
+            ] {
+                object.insert(key.to_owned(), value);
+            }
+            for (key, value) in &counters.handler {
+                object.insert((*key).to_owned(), value.clone());
+            }
+            super::line(&Value::Object(object))
+        }
+    }
+
+    /// The request that runs, for a reply: its number and for how long, or `null`.
+    fn running_json(running: Option<(u64, Instant)>) -> Value {
+        running.map_or(
+            Value::Null,
+            |(request, since)| json!({"request": request, "seconds": since.elapsed().as_secs()}),
+        )
+    }
+
+    /// A request for the thread that runs the commands.
+    struct Job {
+        stream: UnixStream,
+        request: Request,
+        number: u64,
+    }
+
+    /// What the accept thread passes to the thread that runs the commands.
+    enum Message {
+        Run(Job),
+        /// A line for the log, which belongs to the other thread.
+        Log(String),
+        /// `shutdown` was asked.
+        Shutdown,
+    }
+
+    /// What the accept thread knows of the server, so that it can answer without the other thread.
+    struct Acceptor {
+        hello: String,
+        root: String,
+        compiler: String,
+        compiler_sha256: String,
+        idle: Duration,
+        request_deadline: Duration,
+    }
+
     /// Accepts connections, says hello at once (so that a client that waits in the queue is not
-    /// timed out by a command that runs), and queues them for the thread that runs the commands.
+    /// timed out by a command that runs), reads the request, and answers what does not need the
+    /// thread that runs the commands; a request to run goes into the queue for that thread.
     fn accept_loop(
         listener: UnixListener,
-        sender: SyncSender<UnixStream>,
-        stop: &AtomicBool,
-        busy: &AtomicU64,
-        hello: &str,
+        sender: &Sender<Message>,
+        shared: &Shared,
+        info: &Acceptor,
     ) {
         for incoming in listener.incoming() {
-            if stop.load(Ordering::Acquire) {
+            if shared.stop.load(Ordering::Acquire) {
                 break;
             }
             let Ok(mut stream) = incoming else {
                 thread::sleep(Duration::from_millis(10));
                 continue;
             };
+            shared.counters().activity = Instant::now();
             let _ = stream.set_write_timeout(Some(RESPONSE_DEADLINE));
-            if stream.write_all(hello.as_bytes()).is_err() {
+            if stream.write_all(info.hello.as_bytes()).is_err() {
                 continue;
             }
-            match sender.try_send(stream) {
-                Ok(()) => {}
-                Err(TrySendError::Full(mut stream)) => {
-                    busy.fetch_add(1, Ordering::AcqRel);
+            if !receive(stream, sender, shared, info) {
+                break;
+            }
+        }
+    }
+
+    /// Writes `text` to the client of request `number`. A client that went away is not an error of
+    /// the server.
+    fn reply(stream: &mut UnixStream, text: &str, number: u64, sender: &Sender<Message>) {
+        if let Err(error) = stream.write_all(text.as_bytes()) {
+            let _ = sender.send(Message::Log(format!(
+                "serve: request {number}: the reply could not be written ({error})"
+            )));
+        }
+    }
+
+    /// Reads one request. `false` when the thread that runs the commands has ended.
+    fn receive(
+        mut stream: UnixStream,
+        sender: &Sender<Message>,
+        shared: &Shared,
+        info: &Acceptor,
+    ) -> bool {
+        let read = read_line_limited(
+            &mut DeadlineReader {
+                stream: &stream,
+                deadline: Instant::now() + info.request_deadline,
+            },
+            MAX_REQUEST_BYTES,
+        );
+        let refuse = |stream: &mut UnixStream, number: u64, refused: &Refused| {
+            let _ = sender.send(Message::Log(shared.refused(number, refused)));
+            reply(stream, &encode_refusal(refused), number, sender);
+        };
+        let line = match read {
+            Ok(line) => line,
+            // A client that connected to see whether a server runs, or gave up.
+            Err(LineError::Closed) => return true,
+            Err(LineError::TooLong) => {
+                let refused = Refused::new(
+                    Refusal::TooLarge,
+                    format!("the request is longer than {MAX_REQUEST_BYTES} bytes"),
+                );
+                refuse(&mut stream, shared.next_request(), &refused);
+                drain(&stream);
+                return true;
+            }
+            Err(LineError::Io(error)) => {
+                let _ = sender.send(Message::Log(format!(
+                    "serve: a request could not be read ({error})"
+                )));
+                return true;
+            }
+        };
+        let number = shared.next_request();
+        match decode_operation(&line) {
+            Err(message) => refuse(
+                &mut stream,
+                number,
+                &Refused::new(Refusal::Protocol, message),
+            ),
+            Ok(Operation::Status) => reply(&mut stream, &shared.status(info), number, sender),
+            Ok(Operation::Shutdown) => {
+                shared.shutdown.store(true, Ordering::Release);
+                let running = running_json(shared.counters().running);
+                let text = super::line(
+                    &json!({"protocol": PROTOCOL, "ok": true, "pid": std::process::id(), "running": running}),
+                );
+                reply(&mut stream, &text, number, sender);
+                return sender.send(Message::Shutdown).is_ok();
+            }
+            Ok(Operation::Run(request)) => {
+                if shared.queued.load(Ordering::Acquire) >= QUEUE {
+                    shared.busy.fetch_add(1, Ordering::AcqRel);
                     let refused = Refused::new(
                         Refusal::Busy,
                         format!("{QUEUE} requests are waiting for the server"),
                     );
-                    let _ = stream.write_all(encode_refusal(&refused).as_bytes());
+                    reply(&mut stream, &encode_refusal(&refused), number, sender);
+                } else {
+                    shared.queued.fetch_add(1, Ordering::AcqRel);
+                    let job = Job {
+                        stream,
+                        request,
+                        number,
+                    };
+                    return sender.send(Message::Run(job)).is_ok();
                 }
-                Err(TrySendError::Disconnected(_)) => break,
             }
         }
+        true
+    }
+
+    /// Whether the client has closed its end of the connection. A client keeps its end open until
+    /// it has read the reply, so a request that waited and finds it closed was left by a client that
+    /// has gone (it was interrupted while it waited), and nobody would read what it makes.
+    fn client_gone(stream: &UnixStream) -> bool {
+        if stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let mut byte = [0_u8; 1];
+        let mut reader = stream;
+        let gone = match reader.read(&mut byte) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => !matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ),
+        };
+        let _ = stream.set_nonblocking(false);
+        gone
     }
 
     /// A reader of the request line that gives up when the client is slow: the deadline is for the
@@ -874,14 +1182,16 @@ mod sockets {
         }
     }
 
-    /// Reads and drops, for a moment, what a client that sent too much is still sending: a socket
-    /// closed with unread data resets the connection, and the client may lose the refusal.
+    /// Reads and drops, for a moment (a second at most), what a client that sent too much is still
+    /// sending: a socket closed with unread data resets the connection, and the client may lose the
+    /// refusal.
     fn drain(stream: &UnixStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
         let mut sink = [0_u8; 65536];
         let mut reader = stream;
         let mut total = 0;
-        while total < 4 * MAX_REQUEST_BYTES {
+        let started = Instant::now();
+        while total < 4 * MAX_REQUEST_BYTES && started.elapsed() < Duration::from_secs(1) {
             match reader.read(&mut sink) {
                 Ok(0) | Err(_) => break,
                 Ok(count) => total += count,
@@ -889,22 +1199,13 @@ mod sockets {
         }
     }
 
-    /// What `status` reports of the loop.
-    struct Counters {
-        started: Instant,
-        requests: u64,
-        served: u64,
-        refusals: BTreeMap<&'static str, u64>,
-    }
-
+    /// The thread that runs the commands.
     struct Loop<'a> {
         config: &'a Config,
         handler: &'a mut dyn Handler,
         log: &'a mut dyn Write,
-        counters: Counters,
-        busy: &'a AtomicU64,
+        shared: &'a Shared,
         busy_logged: u64,
-        compiler_sha256: String,
     }
 
     pub fn serve(
@@ -913,10 +1214,15 @@ mod sockets {
         log: &mut dyn Write,
     ) -> Result<Stop, ServeError> {
         let socket = socket_path(&config.directory, &config.root);
+        check_path(&socket)?;
+        let lock = take_lock(&socket)?;
         let listener = bind(&socket)?;
+        let made = identity(&socket);
+        let locks = lock.is_some();
         let _cleanup = Cleanup {
-            made: identity(&socket),
+            made,
             socket: socket.clone(),
+            _lock: lock,
         };
         let compiler_sha256 = crate::cache::file_digest(&config.compiler).map_or_else(
             |_| "unknown".to_owned(),
@@ -928,71 +1234,116 @@ mod sockets {
             socket.display(),
             config.root.display()
         );
-        let (sender, receiver) = mpsc::sync_channel(QUEUE);
-        let stop = Arc::new(AtomicBool::new(false));
-        let busy = Arc::new(AtomicU64::new(0));
-        let hello = encode_hello(&config.root);
+        if !locks {
+            let _ = writeln!(
+                log,
+                "serve: the file system of {} has no locks; two servers that start together could both run",
+                config.directory.display()
+            );
+        }
+        let (sender, receiver) = mpsc::channel();
+        let shared = Arc::new(Shared::new(handler.status()));
+        let info = Acceptor {
+            hello: encode_hello(&config.root),
+            root: config.root.to_string_lossy().into_owned(),
+            compiler: config.compiler.to_string_lossy().into_owned(),
+            compiler_sha256,
+            idle: config.idle,
+            request_deadline: config.request_deadline,
+        };
         let acceptor = {
-            let (stop, busy) = (Arc::clone(&stop), Arc::clone(&busy));
+            let shared = Arc::clone(&shared);
             thread::Builder::new()
                 .name("tsuzuri-serve-accept".to_owned())
-                .spawn(move || accept_loop(listener, sender, &stop, &busy, &hello))
+                .spawn(move || accept_loop(listener, &sender, &shared, &info))
                 .map_err(|error| failure(format!("cannot start the accept thread: {error}")))?
         };
         let mut running = Loop {
             config,
             handler,
             log,
-            counters: Counters {
-                started: Instant::now(),
-                requests: 0,
-                served: 0,
-                refusals: BTreeMap::new(),
-            },
-            busy: &busy,
+            shared: &shared,
             busy_logged: 0,
-            compiler_sha256,
         };
         let outcome = running.run(&receiver);
-        // The accept thread waits in `accept`: a connection to the socket wakes it. If that
-        // fails it is left to end with the process.
-        stop.store(true, Ordering::Release);
-        if UnixStream::connect(&socket).is_ok() {
+        // The accept thread waits in `accept`: a connection to the socket wakes it. If the socket
+        // is not this server's any more, a connection would wake somebody else's: the thread is left
+        // to end with the process.
+        shared.stop.store(true, Ordering::Release);
+        if identity(&socket) == made && UnixStream::connect(&socket).is_ok() {
             let _ = acceptor.join();
         }
         outcome
     }
 
     impl Loop<'_> {
-        fn run(&mut self, receiver: &Receiver<UnixStream>) -> Result<Stop, ServeError> {
-            let mut deadline = Instant::now() + self.config.idle;
+        fn run(&mut self, receiver: &Receiver<Message>) -> Result<Stop, ServeError> {
+            let outcome = self.messages(receiver);
+            // What the accept thread logged last is not lost with the requests that were queued.
+            while let Ok(message) = receiver.try_recv() {
+                if let Message::Log(line) = message {
+                    let _ = writeln!(self.log, "{line}");
+                }
+            }
+            outcome
+        }
+
+        fn messages(&mut self, receiver: &Receiver<Message>) -> Result<Stop, ServeError> {
             loop {
-                let wait = deadline.saturating_duration_since(Instant::now());
-                let stream = match receiver.recv_timeout(wait) {
-                    Ok(stream) => stream,
+                if self.shared.shutdown.load(Ordering::Acquire) {
+                    return Ok(self.shutdown());
+                }
+                let activity = self.shared.counters().activity;
+                let wait = (activity + self.config.idle).saturating_duration_since(Instant::now());
+                match receiver.recv_timeout(wait) {
+                    Ok(Message::Log(line)) => {
+                        let _ = writeln!(self.log, "{line}");
+                    }
+                    Ok(Message::Shutdown) => return Ok(self.shutdown()),
+                    Ok(Message::Run(job)) => {
+                        self.shared.queued.fetch_sub(1, Ordering::AcqRel);
+                        self.log_busy();
+                        let stop = self.job(job);
+                        self.log_busy();
+                        if let Some(stop) = stop {
+                            return Ok(stop);
+                        }
+                        self.shared.counters().activity = Instant::now();
+                    }
+                    // A connection since then moved the end of the idle time.
                     Err(RecvTimeoutError::Timeout) => {
-                        let _ = writeln!(
-                            self.log,
-                            "serve: idle for {} s; stopping",
-                            self.config.idle.as_secs()
-                        );
-                        return Ok(Stop::Idle);
+                        let activity = self.shared.counters().activity;
+                        if activity + self.config.idle <= Instant::now() {
+                            let _ = writeln!(
+                                self.log,
+                                "serve: idle for {} s; stopping",
+                                self.config.idle.as_secs()
+                            );
+                            return Ok(Stop::Idle);
+                        }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         return Err(failure("the accept thread ended".to_owned()));
                     }
-                };
-                self.log_busy();
-                if let Some(stop) = self.connection(stream) {
-                    self.log_busy();
-                    return Ok(stop);
                 }
-                deadline = Instant::now() + self.config.idle;
             }
         }
 
+        /// `shutdown` was asked: the request that ran has ended, and the ones that wait do not run.
+        fn shutdown(&mut self) -> Stop {
+            let _ = writeln!(self.log, "serve: shutdown requested; stopping");
+            let waiting = self.shared.queued.load(Ordering::Acquire);
+            if waiting > 0 {
+                let _ = writeln!(
+                    self.log,
+                    "serve: {waiting} waiting request(s) dropped; their clients run the command themselves"
+                );
+            }
+            Stop::Shutdown
+        }
+
         fn log_busy(&mut self) {
-            let busy = self.busy.load(Ordering::Acquire);
+            let busy = self.shared.busy.load(Ordering::Acquire);
             if busy > self.busy_logged {
                 let _ = writeln!(
                     self.log,
@@ -1004,92 +1355,50 @@ mod sockets {
         }
 
         /// Writes `text` to the client. A client that went away is not an error of the server.
-        fn send(&mut self, stream: &mut UnixStream, text: &str) {
+        fn send(&mut self, stream: &mut UnixStream, text: &str, number: u64) {
             if let Err(error) = stream.write_all(text.as_bytes()) {
                 let _ = writeln!(
                     self.log,
-                    "serve: request {}: the reply could not be written ({error})",
-                    self.counters.requests
+                    "serve: request {number}: the reply could not be written ({error})"
                 );
             }
         }
 
-        fn refuse(&mut self, stream: &mut UnixStream, refused: &Refused) {
-            *self
-                .counters
-                .refusals
-                .entry(refused.reason.name())
-                .or_default() += 1;
-            let _ = writeln!(
-                self.log,
-                "serve: request {} refused: {} ({})",
-                self.counters.requests,
-                refused.reason.name(),
-                refused.message
-            );
-            self.send(stream, &encode_refusal(refused));
+        fn refuse(&mut self, stream: &mut UnixStream, number: u64, refused: &Refused) {
+            let _ = writeln!(self.log, "{}", self.shared.refused(number, refused));
+            self.send(stream, &encode_refusal(refused), number);
         }
 
-        /// One request. `Some` ends the server.
-        fn connection(&mut self, mut stream: UnixStream) -> Option<Stop> {
-            let _ = stream.set_write_timeout(Some(RESPONSE_DEADLINE));
-            let read = read_line_limited(
-                &mut DeadlineReader {
-                    stream: &stream,
-                    deadline: Instant::now() + self.config.request_deadline,
-                },
-                MAX_REQUEST_BYTES,
-            );
-            let line = match read {
-                Ok(line) => line,
-                // A client that connected to see whether a server runs, or gave up.
-                Err(LineError::Closed) => return None,
-                Err(LineError::TooLong) => {
-                    self.counters.requests += 1;
-                    let refused = Refused::new(
-                        Refusal::TooLarge,
-                        format!("the request is longer than {MAX_REQUEST_BYTES} bytes"),
-                    );
-                    self.refuse(&mut stream, &refused);
-                    drain(&stream);
-                    return None;
-                }
-                Err(LineError::Io(error)) => {
-                    let _ = writeln!(self.log, "serve: a request could not be read ({error})");
-                    return None;
-                }
-            };
-            self.counters.requests += 1;
-            match decode_operation(&line) {
-                Err(message) => {
-                    self.refuse(&mut stream, &Refused::new(Refusal::Protocol, message));
-                    None
-                }
-                Ok(Operation::Status) => {
-                    let reply = self.status_reply();
-                    self.send(&mut stream, &reply);
-                    None
-                }
-                Ok(Operation::Shutdown) => {
-                    self.send(
-                        &mut stream,
-                        &super::line(&json!({"protocol": PROTOCOL, "ok": true})),
-                    );
-                    let _ = writeln!(self.log, "serve: shutdown requested; stopping");
-                    Some(Stop::Shutdown)
-                }
-                Ok(Operation::Run(request)) => self.command(&mut stream, &request),
+        /// One request that was queued. `Some` ends the server.
+        fn job(&mut self, job: Job) -> Option<Stop> {
+            let Job {
+                mut stream,
+                request,
+                number,
+            } = job;
+            if client_gone(&stream) {
+                self.shared.counters().abandoned += 1;
+                let _ = writeln!(
+                    self.log,
+                    "serve: request {number} skipped: its client went away while it waited"
+                );
+                return None;
             }
+            self.command(&mut stream, &request, number)
         }
 
-        fn command(&mut self, stream: &mut UnixStream, request: &Request) -> Option<Stop> {
-            let number = self.counters.requests;
+        fn command(
+            &mut self,
+            stream: &mut UnixStream,
+            request: &Request,
+            number: u64,
+        ) -> Option<Stop> {
             if self.handler.compiler_changed() {
                 let refused = Refused::new(
                     Refusal::CompilerChanged,
                     "the compiler file was replaced since the server started",
                 );
-                self.refuse(stream, &refused);
+                self.refuse(stream, number, &refused);
                 let _ = writeln!(
                     self.log,
                     "serve: the compiler binary changed; stopping (start tsuzuri serve again)"
@@ -1119,10 +1428,20 @@ mod sockets {
                     .map(|message| Refused::new(Refusal::Env, message))
             };
             if let Some(refused) = mismatch {
-                self.refuse(stream, &refused);
+                self.refuse(stream, number, &refused);
                 return None;
             }
-            match self.handler.run(request, self.log) {
+            self.shared.counters().running = Some((number, Instant::now()));
+            let result = self.handler.run(request, self.log);
+            // What `status` says is up to date when the client has its reply, so it is written
+            // before the reply is sent.
+            let remembered = self.handler.status();
+            {
+                let mut counters = self.shared.counters();
+                counters.running = None;
+                counters.handler = remembered;
+            }
+            match result {
                 Ok(response) => {
                     let reply = encode_response(&response);
                     if reply.len() > MAX_RESPONSE_BYTES {
@@ -1130,10 +1449,10 @@ mod sockets {
                             Refusal::TooLarge,
                             format!("the output is longer than {MAX_RESPONSE_BYTES} bytes"),
                         );
-                        self.refuse(stream, &refused);
+                        self.refuse(stream, number, &refused);
                     } else {
-                        self.send(stream, &reply);
-                        self.counters.served += 1;
+                        self.shared.counters().served += 1;
+                        self.send(stream, &reply, number);
                         let _ = writeln!(
                             self.log,
                             "serve: request {number} served (exit {})",
@@ -1141,60 +1460,34 @@ mod sockets {
                         );
                     }
                 }
-                Err(refused) => self.refuse(stream, &refused),
+                Err(refused) => self.refuse(stream, number, &refused),
             }
             None
-        }
-
-        fn status_reply(&self) -> String {
-            let busy = self.busy.load(Ordering::Acquire);
-            let mut refusals: Map<String, Value> = self
-                .counters
-                .refusals
-                .iter()
-                .map(|(name, count)| ((*name).to_owned(), json!(count)))
-                .collect();
-            if busy > 0 {
-                refusals.insert("busy".to_owned(), json!(busy));
-            }
-            let refused: u64 = self.counters.refusals.values().sum::<u64>() + busy;
-            let mut object = Map::new();
-            for (key, value) in [
-                ("protocol", json!(PROTOCOL)),
-                ("ok", json!(true)),
-                ("server", json!("tsuzuri")),
-                ("version", json!(env!("CARGO_PKG_VERSION"))),
-                ("pid", json!(std::process::id())),
-                ("root", json!(self.config.root.to_string_lossy())),
-                ("compiler", json!(self.config.compiler.to_string_lossy())),
-                ("compiler_sha256", json!(self.compiler_sha256)),
-                ("idle_seconds", json!(self.config.idle.as_secs())),
-                (
-                    "uptime_seconds",
-                    json!(self.counters.started.elapsed().as_secs()),
-                ),
-                ("requests", json!(self.counters.requests)),
-                ("served", json!(self.counters.served)),
-                ("refused", json!(refused)),
-                ("refusals", Value::Object(refusals)),
-            ] {
-                object.insert(key.to_owned(), value);
-            }
-            for (key, value) in self.handler.status() {
-                object.insert(key.to_owned(), value);
-            }
-            super::line(&Value::Object(object))
         }
     }
 
     /// Connects, checks the hello, sends `operation`, and reads the reply line. `Err` says which step
-    /// failed. The request ends with a newline, which is all that the server waits for, so the write
-    /// side stays open (a server that has answered and closed makes `shutdown` fail on macOS).
+    /// failed. The request ends with a newline, which is all that the server waits for, and the
+    /// client keeps its end of the connection open until it has the reply: a server takes a request
+    /// whose client has closed its end for one that was abandoned while it waited (and a server that
+    /// has answered and closed makes `shutdown` of the write side fail on macOS). A `status` and a
+    /// `shutdown` are answered at once, so they wait [`CONTROL_TIMEOUT`] for the reply; a command
+    /// waits for the commands before it, and for itself, as long as that takes.
     pub(super) fn exchange(
         socket: &Path,
         root: &Path,
         operation: &Operation,
         limit: usize,
+    ) -> Result<Vec<u8>, String> {
+        exchange_within(socket, root, operation, limit, CONTROL_TIMEOUT)
+    }
+
+    pub(super) fn exchange_within(
+        socket: &Path,
+        root: &Path,
+        operation: &Operation,
+        limit: usize,
+        control_timeout: Duration,
     ) -> Result<Vec<u8>, String> {
         let mut stream = UnixStream::connect(socket)
             .map_err(|error| format!("cannot connect to {} ({error})", socket.display()))?;
@@ -1206,15 +1499,30 @@ mod sockets {
         if !check_hello(&hello, root) {
             return Err("the hello is not that of a build server for this project".to_owned());
         }
-        // The reply to a command comes when the commands before it are done.
+        let wait = match operation {
+            Operation::Run(_) => None,
+            Operation::Status | Operation::Shutdown => Some(control_timeout),
+        };
         stream
-            .set_read_timeout(None)
+            .set_read_timeout(wait)
             .map_err(|error| format!("cannot wait for the reply ({error})"))?;
         stream
             .write_all(encode_operation(operation).as_bytes())
             .map_err(|error| format!("the server did not take the request ({error})"))?;
-        read_line_limited(&mut &stream, limit)
-            .map_err(|error| format!("the server did not reply ({error})"))
+        read_line_limited(&mut &stream, limit).map_err(|error| match error {
+            LineError::Io(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                format!(
+                    "the server did not reply within {} s",
+                    control_timeout.as_secs_f32()
+                )
+            }
+            other => format!("the server did not reply ({other})"),
+        })
     }
 
     /// The socket of the server for the project at `input`, if there is one to try: the cheapest
@@ -1275,6 +1583,18 @@ mod sockets {
             )
         })?;
         if *operation == Operation::Shutdown {
+            // A server that runs a request stops when that request ends, which can be long: the
+            // reply says so, and there is no point in waiting for the socket to go.
+            if let Some(running) = reply.get("running").filter(|running| !running.is_null()) {
+                let field = |name: &str| running.get(name).and_then(Value::as_u64).unwrap_or(0);
+                return Err(format!(
+                    "the build server for {} (pid {}) is running request {} (for {} s) and stops when it ends",
+                    root.display(),
+                    reply.get("pid").and_then(Value::as_u64).unwrap_or(0),
+                    field("request"),
+                    field("seconds")
+                ));
+            }
             let started = Instant::now();
             while std::fs::symlink_metadata(&socket).is_ok() {
                 if started.elapsed() > STOP_WAIT {
@@ -2233,12 +2553,11 @@ mod serve_tests {
     #[test]
     fn a_request_resets_the_idle_time() {
         let scratch = Scratch::new();
-        let server = Server::start(
-            config(&scratch, Duration::from_millis(1500)),
-            Probe::default(),
-        );
+        // Three pauses of 1 s add up to the idle time of 3 s, and each stays 2 s short of it: only
+        // the reset makes the server last through all of them, and a slow runner has room.
+        let server = Server::start(config(&scratch, Duration::from_secs(3)), Probe::default());
         for _ in 0..3 {
-            thread::sleep(Duration::from_millis(600));
+            thread::sleep(Duration::from_secs(1));
             assert!(
                 server.ask(&Operation::Status).is_some(),
                 "the server is still there"
@@ -2246,6 +2565,228 @@ mod serve_tests {
         }
         let (outcome, _) = server.thread.join().unwrap();
         assert_eq!(outcome, Ok(Stop::Idle));
+    }
+
+    /// Waits until the handler has been given `count` requests.
+    fn wait_until_run(probe: &Probe, count: usize) {
+        let started = Instant::now();
+        while probe.seen.lock().unwrap().len() < count {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no request ran"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn check(name: &str) -> Operation {
+        Operation::Run(Request {
+            args: vec!["check".to_owned(), name.to_owned()],
+            ..matching()
+        })
+    }
+
+    #[test]
+    fn status_and_shutdown_answer_while_a_request_runs_and_the_server_ends_after_it() {
+        let scratch = Scratch::new();
+        let (probe, gate) = Probe::gated();
+        let server = Server::start(config(&scratch, Duration::from_secs(60)), probe.clone());
+        // One request runs and waits at the gate, and two wait behind it.
+        let mut running = begin(&server, &check("first"));
+        wait_until_run(&probe, 1);
+        let waiting = [
+            begin(&server, &check("second")),
+            begin(&server, &check("third")),
+        ];
+        // A `status` is answered at once (a client that is not answered fails after 10 s), and says
+        // what runs and what waits.
+        let status = server.status();
+        assert_eq!(status["running"]["request"], json!(1));
+        assert_eq!(status["queued"], json!(2));
+        assert_eq!(status["served"], json!(0));
+        assert_eq!(
+            status["resident_bytes"],
+            json!(7),
+            "what the handler said after the last request"
+        );
+        // So is a `shutdown`: the reply says that a request runs, and the server goes on until it ends.
+        let reply = decode_reply(&server.ask(&Operation::Shutdown).unwrap()).unwrap();
+        assert_eq!(reply["running"]["request"], json!(1));
+        assert!(reply["pid"].as_u64().unwrap() > 0);
+        assert!(
+            !server.thread.is_finished(),
+            "the request that runs is not cut off"
+        );
+        open(&gate);
+        let mut text = String::new();
+        running.read_to_string(&mut text).unwrap();
+        assert!(
+            decode_response(text.trim_end().as_bytes()).is_some(),
+            "{text}"
+        );
+        // The requests that waited do not run: their clients see the connection close.
+        for mut stream in waiting {
+            let mut text = String::new();
+            let _ = stream.read_to_string(&mut text);
+            assert_eq!(text, "");
+        }
+        let (outcome, log) = server.thread.join().unwrap();
+        assert_eq!(outcome, Ok(Stop::Shutdown));
+        assert_eq!(*probe.seen.lock().unwrap(), [vec!["check", "first"]]);
+        assert!(log.contains("serve: shutdown requested; stopping"), "{log}");
+        assert!(log.contains("serve: 2 waiting request(s) dropped"), "{log}");
+    }
+
+    #[test]
+    fn a_queued_request_whose_client_went_away_is_not_run() {
+        let scratch = Scratch::new();
+        let (probe, gate) = Probe::gated();
+        let server = Server::start(config(&scratch, Duration::from_secs(60)), probe.clone());
+        let mut first = begin(&server, &check("first"));
+        wait_until_run(&probe, 1);
+        let gone = begin(&server, &check("gone"));
+        let mut live = begin(&server, &check("live"));
+        // The second client is interrupted while it waits.
+        drop(gone);
+        assert_eq!(server.status()["queued"], json!(2));
+        open(&gate);
+        for stream in [&mut first, &mut live] {
+            let mut text = String::new();
+            stream.read_to_string(&mut text).unwrap();
+            assert!(
+                decode_response(text.trim_end().as_bytes()).is_some(),
+                "{text}"
+            );
+        }
+        let status = server.status();
+        assert_eq!(status["abandoned"], json!(1));
+        assert_eq!(status["served"], json!(2));
+        assert_eq!(
+            *probe.seen.lock().unwrap(),
+            [vec!["check", "first"], vec!["check", "live"]],
+            "the request of the client that went away did not run"
+        );
+        let (_, log) = server.stop();
+        assert!(
+            log.contains("serve: request 2 skipped: its client went away while it waited"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_client_waits_for_the_reply_to_a_status_only_so_long() {
+        let scratch = Scratch::new();
+        let root = Path::new("/work/app");
+        let hello = encode_hello(root);
+        let ok = "{\"protocol\":1,\"ok\":true,\"exit\":0,\"stdout\":\"\",\"stderr\":\"\"}\n";
+        let slow = |reply: &'static str| {
+            let hello = hello.clone();
+            move |mut stream: UnixStream| {
+                let _ = stream.write_all(hello.as_bytes());
+                let mut request = String::new();
+                let _ = std::io::BufRead::read_line(
+                    &mut std::io::BufReader::new(&stream),
+                    &mut request,
+                );
+                thread::sleep(Duration::from_millis(600));
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        };
+        let within = |operation: &Operation, script: Box<dyn FnOnce(UnixStream) + Send>| {
+            let (socket, handle) = fake_server(&scratch, script);
+            let reply = sockets::exchange_within(
+                &socket,
+                root,
+                operation,
+                MAX_RESPONSE_BYTES,
+                Duration::from_millis(200),
+            );
+            handle.join().unwrap();
+            std::fs::remove_file(&socket).unwrap();
+            reply
+        };
+        // A status that is not answered in time is an error, which names the time.
+        let error = within(&Operation::Status, Box::new(slow(ok))).unwrap_err();
+        assert!(error.contains("did not reply within 0.2 s"), "{error}");
+        // A command is waited for as long as it takes.
+        let reply = within(&Operation::Run(matching()), Box::new(slow(ok))).unwrap();
+        assert!(decode_response(&reply).is_some());
+    }
+
+    #[test]
+    fn servers_that_start_together_are_one_server() {
+        let scratch = Scratch::new();
+        let root = PathBuf::from("/work/app");
+        let socket = socket_path(&scratch.0, &root);
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        let starts: Vec<_> = (0..4)
+            .map(|_| {
+                let config = config(&scratch, Duration::from_secs(60));
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    serve(&config, &mut Probe::default(), &mut Vec::new())
+                })
+            })
+            .collect();
+        // Three of them end at once; the fourth runs, and its socket is the one that is there.
+        let started = Instant::now();
+        while starts.iter().filter(|start| start.is_finished()).count() < 3 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "three servers should have ended"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let status = exchange_line(&socket, &root, &Operation::Status);
+        assert!(status.is_some(), "the server that runs can be reached");
+        assert!(exchange_line(&socket, &root, &Operation::Shutdown).is_some());
+        let outcomes: Vec<_> = starts
+            .into_iter()
+            .map(|start| start.join().unwrap())
+            .collect();
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "{outcomes:?}"
+        );
+        for error in outcomes.iter().filter_map(|outcome| outcome.as_ref().err()) {
+            assert_eq!(error.code, "E2001");
+            assert!(
+                error.message.contains("a build server is already running"),
+                "{}",
+                error.message
+            );
+        }
+        assert!(!socket.exists(), "the server that ended removed its socket");
+    }
+
+    #[test]
+    fn a_held_lock_is_a_running_server_and_a_free_one_is_not() {
+        let scratch = Scratch::new();
+        let config_for = || config(&scratch, Duration::from_secs(60));
+        let socket = socket_path(&scratch.0, &config_for().root);
+        // What a server that was killed leaves is a lock file that nobody holds.
+        std::fs::write(socket.with_extension("lock"), "").unwrap();
+        let server = Server::start(config_for(), Probe::default());
+        let _ = server.stop();
+        assert!(
+            socket.with_extension("lock").exists(),
+            "the file stays; only the hold ends"
+        );
+        // A server that holds it, and has not made its socket yet, is not run over.
+        let held = sockets::take_lock(&socket).unwrap();
+        assert!(held.is_some());
+        let error = serve(&config_for(), &mut Probe::default(), &mut Vec::new()).unwrap_err();
+        assert!(
+            error.message.contains("a build server is already running"),
+            "{}",
+            error.message
+        );
+        assert!(!socket.exists(), "the socket was not touched");
+        drop(held);
+        let server = Server::start(config_for(), Probe::default());
+        let _ = server.stop();
     }
 
     #[test]

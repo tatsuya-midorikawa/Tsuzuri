@@ -12,6 +12,9 @@
 //! - A file that was written in the last [`RACY`](crate::resident::RACY) before it was read could
 //!   be written again with the same stamp, because timestamps have a granularity. It is read
 //!   again once, after the window has passed.
+//! - A compiler file that was replaced (rebuilt) ends the wait at once, without a change in the
+//!   project: the process runs an image that is no longer on disk, and a run now would show the
+//!   result of the old compiler to somebody who waits for the new one's.
 //!
 //! Opening a file is the expensive part of loading a project on some machines (an on-access scan
 //! makes it 0.3 to 0.7 ms), and a stamp is a `stat`, so a project of a thousand modules costs a
@@ -55,6 +58,15 @@ struct Observation {
     failure: Option<String>,
 }
 
+/// Why [`Watcher::wait_for_change`] returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// A file that a run reads changed, and the snapshot for the next run is taken.
+    Changed,
+    /// The compiler file that the active state pinned was replaced.
+    CompilerReplaced,
+}
+
 /// Watches the project at `input` (the path that `check`, `build` or `test` takes).
 pub struct Watcher {
     input: PathBuf,
@@ -77,14 +89,18 @@ impl Watcher {
     }
 
     /// Returns when something that a run reads has changed since the last snapshot, and takes the
-    /// snapshot for the next run.
-    pub fn wait_for_change(&mut self) {
+    /// snapshot for the next run; or when the compiler file that the active state pinned was
+    /// replaced, which is looked at first at every poll.
+    pub fn wait_for_change(&mut self) -> Wait {
         loop {
             std::thread::sleep(POLL);
+            if crate::resident::pinned_compiler_replaced() {
+                return Wait::CompilerReplaced;
+            }
             if self.poll(SystemTime::now()) {
                 self.observation = observe(&self.input, self.tests, Some(&self.observation));
                 self.polls = 0;
-                return;
+                return Wait::Changed;
             }
         }
     }
@@ -513,6 +529,42 @@ mod tests {
                 .observation
                 .files
                 .contains_key(&root.join("Specs.tz"))
+        );
+    }
+
+    #[test]
+    fn a_replaced_compiler_ends_the_wait_without_a_change_in_the_project() {
+        use crate::resident::{ResidentState, Scope};
+        let (_temporary, root) = project();
+        let mut watcher = Watcher::new(&root, false);
+        // The state started from a compiler that is not the file on disk.
+        let mut state = ResidentState::pinned_to([9; 32]);
+        let started = std::time::Instant::now();
+        let waited = {
+            let _scope = Scope::enter(&mut state);
+            watcher.wait_for_change()
+        };
+        assert_eq!(waited, Wait::CompilerReplaced);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_change_of_the_project_ends_the_wait_while_the_compiler_is_the_one_that_runs() {
+        use crate::resident::{ResidentState, Scope};
+        let (_temporary, root) = project();
+        let mut watcher = Watcher::new(&root, false);
+        // Another length: the stamp shows it whatever the granularity of the file system.
+        fs::write(root.join("Main.tz"), "4242\n").unwrap();
+        let mut state = ResidentState::new();
+        let waited = {
+            let _scope = Scope::enter(&mut state);
+            watcher.wait_for_change()
+        };
+        assert_eq!(waited, Wait::Changed);
+        assert_eq!(
+            watcher.observation.files[&root.join("Main.tz")].text,
+            "4242\n",
+            "the snapshot for the next run is taken"
         );
     }
 }

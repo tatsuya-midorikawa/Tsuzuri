@@ -6,8 +6,9 @@
 //! remembers the text of each source file with the [`FileStamp`] taken before it was read, and
 //! gives the text back while the stamp is the same: a `stat` instead of an `open`. It remembers
 //! the SHA-256 of a file the same way (every build key hashes the compiler's own binary, 9 MB).
-//! It also pins the identity of the compiler that started the process, so that the cache files
-//! of the frontend are never written under the identity of a binary that replaced it.
+//! It also pins the compiler that started the process (its identity, and the SHA-256 of its file
+//! that a build key holds), so that the cache files of the frontend and of a build are never
+//! written under the identity of a binary that replaced it.
 //!
 //! The state is installed on the thread that runs a command by a [`Scope`], as a platform is
 //! (`PlatformScope`): the code that reads a file asks here, and does what it always did when no
@@ -21,6 +22,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -125,6 +127,10 @@ pub struct ResidentState {
     digests: BTreeMap<PathBuf, Remembered<[u8; 32]>>,
     /// The identity of the compiler file that started the process (see `frontend_cache`).
     compiler: Option<[u8; 32]>,
+    /// The SHA-256 of that file, which the key of a build holds. It is taken the first time that
+    /// a key asks, while the file is still the one that started the process, and kept: the path
+    /// holds another file once the compiler is rebuilt.
+    compiler_digest: Option<[u8; 32]>,
     /// The texts that were given back without opening the file, and the files that were read.
     pub source_hits: u64,
     pub source_reads: u64,
@@ -142,9 +148,36 @@ impl ResidentState {
         }
     }
 
+    /// A state that pinned `identity` as the compiler that it started from.
+    #[cfg(test)]
+    pub(crate) fn pinned_to(identity: [u8; 32]) -> Self {
+        Self {
+            compiler: Some(identity),
+            ..Self::default()
+        }
+    }
+
+    /// The same state, with the SHA-256 of the compiler that it pinned already taken.
+    #[cfg(test)]
+    pub(crate) fn with_compiler_digest(mut self, digest: [u8; 32]) -> Self {
+        self.compiler_digest = Some(digest);
+        self
+    }
+
     /// What the state holds, in bytes (the texts and the digests).
     pub fn bytes(&self) -> u64 {
         self.source_bytes + 32 * self.digests.len() as u64
+    }
+
+    /// Forgets what the process read (the texts, the digests, the counters), and keeps what the
+    /// process is: the compiler that it started from. A state that is made again would pin
+    /// whatever file is at the compiler's path now.
+    pub fn reset(&mut self) {
+        *self = Self {
+            compiler: self.compiler,
+            compiler_digest: self.compiler_digest,
+            ..Self::default()
+        };
     }
 
     /// Drops everything when the state holds more than `MAX_RESIDENT_BYTES`; the pinned compiler
@@ -163,8 +196,7 @@ impl ResidentState {
     /// replaced, rebuilt, or removed. A process that went on would write its caches and keys for
     /// a binary that it is not.
     pub fn compiler_changed(&self) -> bool {
-        self.compiler
-            .is_some_and(|pinned| crate::frontend_cache::running_compiler() != Some(pinned))
+        replaced(self.compiler)
     }
 
     /// The identity of the compiler that started the process, hex-encoded.
@@ -176,6 +208,12 @@ impl ResidentState {
                 .collect::<String>()
         })
     }
+}
+
+/// Whether the compiler file is not the one that `pinned` is the identity of (nothing pinned:
+/// nothing to compare with).
+fn replaced(pinned: Option<[u8; 32]>) -> bool {
+    pinned.is_some_and(|pinned| crate::frontend_cache::running_compiler() != Some(pinned))
 }
 
 thread_local! {
@@ -282,6 +320,41 @@ pub(crate) fn clock() -> Option<SystemTime> {
 /// The identity of the compiler that the active state pinned, if it pinned one.
 pub(crate) fn pinned_compiler() -> Option<[u8; 32]> {
     with(|state| state.compiler).flatten()
+}
+
+/// Whether the compiler file is no longer the one that the active state pinned: what
+/// `ResidentState::compiler_changed` says, for code that runs inside the scope, where the state
+/// is not at hand.
+pub(crate) fn pinned_compiler_replaced() -> bool {
+    replaced(pinned_compiler())
+}
+
+/// The SHA-256 of the compiler binary, for the key of a build (`hash` reads the file at the path
+/// of the running binary). A process that stays gives the digest of the file that it started
+/// from: the key then names the image that makes the artifact, also when the file was rebuilt
+/// since. Hashing happens once, while the file is still that one (it is checked before and after
+/// the read); a process that finds the file replaced before the first key has no digest of its
+/// image, and its build goes without a cache.
+pub(crate) fn compiler_digest(hash: impl FnOnce() -> io::Result<[u8; 32]>) -> io::Result<[u8; 32]> {
+    let Some((Some(identity), known)) = with(|state| (state.compiler, state.compiler_digest))
+    else {
+        return hash();
+    };
+    if let Some(digest) = known {
+        return Ok(digest);
+    }
+    let gone =
+        || io::Error::other("the compiler binary was replaced while this process was running");
+    let unchanged = || crate::frontend_cache::running_compiler() == Some(identity);
+    if !unchanged() {
+        return Err(gone());
+    }
+    let digest = hash()?;
+    if !unchanged() {
+        return Err(gone());
+    }
+    with(|state| state.compiler_digest = Some(digest));
+    Ok(digest)
 }
 
 /// The text that the active state remembers for the file at `path` whose `stat` is `metadata`,
@@ -598,5 +671,97 @@ mod tests {
         assert_ne!(crate::frontend_cache::compiler_identity(), Some([3; 32]));
         // The pinned identity is not the running one, so the compiler counts as changed.
         assert!(state.compiler_changed());
+    }
+
+    #[test]
+    fn a_reset_forgets_what_was_read_and_keeps_the_compiler_that_started_the_process() {
+        let (_temporary, path) = file("text\n");
+        let metadata = fs::metadata(&path).unwrap();
+        // An identity that no file on disk has: the state started from another compiler.
+        let mut state = ResidentState::pinned_to([9; 32]);
+        state.compiler_digest = Some([4; 32]);
+        {
+            let _scope = Scope::enter(&mut state);
+            remember_source(&path, &metadata, SystemTime::now(), "text\n");
+            let stamp = FileStamp::from_metadata(&metadata);
+            remember_digest(&path, stamp, SystemTime::now(), [1; 32]);
+        }
+        assert!(state.bytes() > 0);
+        assert_eq!((state.source_reads, state.digest_reads), (1, 1));
+        state.reset();
+        assert_eq!(state.bytes(), 0);
+        assert_eq!((state.source_reads, state.digest_reads), (0, 0));
+        assert_eq!(state.compiler, Some([9; 32]));
+        assert_eq!(state.compiler_digest, Some([4; 32]));
+        assert!(
+            state.compiler_changed(),
+            "the file on disk is still not the one that started the process"
+        );
+    }
+
+    #[test]
+    fn a_pinned_compiler_that_is_not_on_disk_counts_as_replaced_inside_the_scope() {
+        assert!(
+            !pinned_compiler_replaced(),
+            "nothing is pinned outside a scope"
+        );
+        let mut running = ResidentState::new();
+        {
+            let _scope = Scope::enter(&mut running);
+            assert!(!pinned_compiler_replaced());
+        }
+        let mut replaced = ResidentState::pinned_to([9; 32]);
+        let _scope = Scope::enter(&mut replaced);
+        assert!(pinned_compiler_replaced());
+    }
+
+    #[test]
+    fn the_digest_of_the_compiler_is_taken_once_from_the_file_that_started_the_process() {
+        let calls = std::cell::Cell::new(0);
+        let hashing = |digest: [u8; 32]| {
+            let calls = &calls;
+            move || {
+                calls.set(calls.get() + 1);
+                Ok(digest)
+            }
+        };
+        // Outside a scope nothing is kept.
+        assert_eq!(compiler_digest(hashing([1; 32])).unwrap(), [1; 32]);
+        assert_eq!(compiler_digest(hashing([2; 32])).unwrap(), [2; 32]);
+        assert_eq!(calls.get(), 2);
+
+        // A state that pinned the file that is running: hashed once, then kept.
+        let mut state = ResidentState::new();
+        {
+            let _scope = Scope::enter(&mut state);
+            assert_eq!(compiler_digest(hashing([3; 32])).unwrap(), [3; 32]);
+            assert_eq!(compiler_digest(hashing([4; 32])).unwrap(), [3; 32]);
+        }
+        assert_eq!(calls.get(), 3);
+        assert_eq!(state.compiler_digest, Some([3; 32]));
+
+        // A failure of the read is the caller's, and nothing is kept.
+        let mut failing = ResidentState::new();
+        {
+            let _scope = Scope::enter(&mut failing);
+            let error = compiler_digest(|| Err(io::Error::other("unreadable"))).unwrap_err();
+            assert_eq!(error.to_string(), "unreadable");
+            assert_eq!(compiler_digest(hashing([5; 32])).unwrap(), [5; 32]);
+        }
+
+        // A state that started from a file that is not on disk any more has no digest to give
+        // when none was taken: the file at the path is another binary, and is not read.
+        let mut replaced = ResidentState::pinned_to([9; 32]);
+        {
+            let _scope = Scope::enter(&mut replaced);
+            let error = compiler_digest(hashing([6; 32])).unwrap_err();
+            assert!(error.to_string().contains("was replaced"), "{error}");
+        }
+        assert_eq!(calls.get(), 4, "the replaced file was not hashed");
+        // One that took it before the file was replaced gives it also then.
+        replaced.compiler_digest = Some([7; 32]);
+        let _scope = Scope::enter(&mut replaced);
+        assert_eq!(compiler_digest(hashing([8; 32])).unwrap(), [7; 32]);
+        assert_eq!(calls.get(), 4);
     }
 }

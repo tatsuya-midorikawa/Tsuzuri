@@ -412,6 +412,13 @@ fn hash_output_path(
     Ok(())
 }
 
+/// The SHA-256 of the compiler binary that is running; a process that stays keeps the digest of the
+/// file that it started from, which the path may no longer hold (see `resident::compiler_digest`).
+fn compiler_digest() -> io::Result<[u8; 32]> {
+    let executable = std::env::current_exe()?;
+    crate::resident::compiler_digest(|| file_digest(&executable))
+}
+
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -425,7 +432,7 @@ pub(crate) fn build_key(
     let mut hash = Sha256::new();
     hash.field("format", &FORMAT.to_le_bytes());
     hash.field("compiler-version", env!("CARGO_PKG_VERSION").as_bytes());
-    hash.field("compiler-binary", &file_digest(&std::env::current_exe()?)?);
+    hash.field("compiler-binary", &compiler_digest()?);
     hash.field("host-os", std::env::consts::OS.as_bytes());
     hash.field("host-arch", std::env::consts::ARCH.as_bytes());
     hash.field("options", format!("{options:?}").as_bytes());
@@ -997,6 +1004,23 @@ pub fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_that_stays_keys_its_builds_by_the_compiler_that_it_started_from() {
+        use crate::resident::{ResidentState, Scope};
+        // The digest that was taken before the file was replaced is the one that goes into a key.
+        let mut state = ResidentState::pinned_to([9; 32]).with_compiler_digest([7; 32]);
+        {
+            let _scope = Scope::enter(&mut state);
+            assert_eq!(compiler_digest().unwrap(), [7; 32]);
+        }
+        // A process whose file was replaced before the first key has no digest of its image, and
+        // the file at the path is not hashed in its place.
+        let mut state = ResidentState::pinned_to([9; 32]);
+        let _scope = Scope::enter(&mut state);
+        let error = compiler_digest().unwrap_err();
+        assert!(error.to_string().contains("was replaced"), "{error}");
+    }
 
     #[test]
     fn plain_path_removes_the_verbatim_prefix_of_drive_and_share_paths() {

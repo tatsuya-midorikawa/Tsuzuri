@@ -805,7 +805,7 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 - 決定: 要求は main thread が 1 つずつ実行する（プロジェクトごとに同時に 1 ビルド）。accept thread は hello を書いて `sync_channel(QUEUE)` に
   入れるだけ。`stack_size` は使わない。
 - 理由: HEAD の解析は CLI・LSP とも main thread で動き（8 MiB）、同じ条件を保てる。LSP の `serve` と同じ形で idle も `recv_timeout` で書ける。
-- 状態: 実装済み（維持。PB04 の worker は段ごとの scope で、常駐しない。`serve` は `Handler` を受け取り、`cli` を知らない。要求は `catch_unwind` で守る）
+- 状態: 実装済み（維持。PB04 の worker は段ごとの scope で、常駐しない。`serve` は `Handler` を受け取り、`cli` を知らない。要求は `catch_unwind` で守り、panic のあとは `ResidentState::reset` で読んだものだけを捨て、固定したコンパイラは残す。レビュー対応で、accept thread が要求の行を読んで `status`・`shutdown` に答え、主ループは実行する要求だけを受ける形にした）
 
 ### D9: ファイル監視
 
@@ -853,7 +853,10 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 | `78e10979` | WP10 `src/main.rs` の単体テスト: 直接出力する関数の一覧を固定する（server が引き受ける関数に `println!` が入ると失敗する） |
 | `dfaabc81` | 統合 branch（PR07・PR08）の merge。conflict なし |
 | `0b738480` | WP10 `tests/server.mjs` に `--emit bitcode`・`--profile-generate`・`--profile-use` の case、環境の drift test が新しい読み取りを見つけることの確認、usage.md の一文 |
-| この commit | merge した木での検証の記録（この節） |
+| `ce45bcb7` | merge した木での検証の記録（この節） |
+| `922c0976` | レビュー対応 1・4・5（watch・build key・panic・Windows の guard） |
+| `bd6fdfbd` | レビュー対応 2・3・5（status・--stop・去ったクライアント・ロック・テスト） |
+| この commit | レビュー対応の記録（この節） |
 
 実装したもの:
 
@@ -872,10 +875,10 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 
 - `serve` は `Handler`（trait）を受け取り、`cli` を知らない（起票時は `handle: impl FnMut(&Request) -> Result<Response, Refusal>`）。`status` の返すものを handler が足せるため。
 - クライアントは `shutdown(Write)` をしない。macOS では、相手がすでに閉じたソケットへの `shutdown` が `ENOTCONN` で失敗し、`status` のように速い要求が fallback してしまった（`tests/server.mjs` の `served` の数えで見つけた）。サーバーは `set_read_timeout` の `EINVAL`（相手が閉じたソケット。macOS）でも読みを続ける。
-- accept thread は接続の直後に hello を書き、`QUEUE`（16）が満杯なら `busy` を書いて閉じる。待っているクライアントが、実行中のビルドのあいだ hello の待ちで諦めないため。
+- accept thread は接続の直後に hello を書く。待っているクライアントが、実行中のビルドのあいだ hello の待ちで諦めないため。要求の行も accept thread が読み、`status`・`shutdown` と protocol・too-large の断りをその場で答え、実行する要求だけを待ち行列（16 件。満杯なら `busy`）へ渡す（レビュー対応。最初は主ループが読み、`status` と `--stop` が実行中の要求の後ろで待った）。
 - 環境の比較の集合は起票時の `IGNORED_ENV` の補集合ではなく、許可リスト（`cache::KEY_ENVIRONMENT`、`TSUZURI_*`、キャッシュ・一時・ロケール・SDK の変数と接頭辞）にした。ほかのチケットが足す `TSUZURI_*` は自動で入る。drift test（`every_environment_variable_that_the_compiler_reads_is_compared`）は、`src/` の `env::var`／`var_os`／`resolve_tool` の名前がこの集合に入ることを確かめ、名前が文字列でない読みと環境全体の読みは数と場所を固定する。
 - `TSUZURI_SERVER_DIR` は絶対パスだけ（相対は `serve` が `E2000`、client は使わない）。
-- `watch` は、起動したコンパイラのファイルが差し替えられると、その回のあとで終了コード 1 で止まる（起票時にない。`serve` と同じ規則）。
+- `watch` は、起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも 100 ms ごとに見て）終了コード 1 で止まる（起票時にない。`serve` と同じ規則。最初の実装は「その回のあとで」止まり、待っているあいだは見ず、次の保存で古い image の回が走った。レビュー対応で直した）。
 - `timings::Report::start()` は前の報告の段を捨て、`watch` と `serve` は回ごと・要求ごとの報告を出す（D15）。`main` の `Report` は `disarm()` と `silence_report()` で、`watch`・`serve`・サーバーが引き受けた `check`／`build` では何も出さない。
 - PX03 の runner に `--variants` を足した（1 つの測定だけを選べる）。`measureServerPair` は server と `--no-server` を同じ runner の中で交互に測る。
 - 文書: 起票時の `_docs/tools/*.md` は `_tsuzuri/language-reference/compiler/` の各ページ（usage・option・diagnostics）に書いた。
@@ -906,6 +909,20 @@ merge した木での結果（最終の commit で）:
 - 既定の出力: 51 のコマンドのうち 48 が基準（`9dd0fbbc`）と同じで、違うのは `--help`・引数なしのヘルプ（PB06 と PR07・PR08 の行）と、`--emit nonsense` のエラー文（PR08 の `bitcode` が一覧に入った）の 3 つ。`examples/*` と `tests/fixtures/*` の 115 project、345 のコマンドは 0 件の差。
 - `node scripts/check-docs.mjs`（変更した 8 ページ）、`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets` の `x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`、`sh scripts/check-runtime-includes.sh`、`git diff --check` が通る。
 
+### レビュー対応（2026-10-18）
+
+統合 branch（`ee6c45c8` で PB06 を取り込んだもの）への独立したコードレビューの指摘を直した。先に統合 branch（PM02 とレビュー修正を含む）の先頭へ branch を進めた。
+
+| 指摘 | 直したこと | 確認 |
+| --- | --- | --- |
+| 1 差し替えたコンパイラで、`watch` が古い image の回を 1 回走らせ、その `build_key` が新しいファイルのハッシュを持った（macOS では、直したコンパイラの結果がキャッシュを消すまで出ない。Linux では `(deleted)` で `build cache disabled` の行が出る） | 回の始めと、待っているあいだの 100 ms ごとに固定したコンパイラを見て、差し替えられていればその回を始めずに止まる（編集の有無によらない）。`build_key` のコンパイラのハッシュは、固定した識別と同じファイルを読んだ最初の 1 回（読む前と後に識別を確かめる）で決めて `ResidentState` が持つ。最初の鍵より前に差し替えられたプロセスは、ハッシュを作らずキャッシュなしで進む | `resident`・`watch`・`cache` の単体テスト、`tests/watch.mjs` の場面 12（待機中の差し替えと、差し替えに続く編集。どちらも 2 回目の実行がない。直す前の binary では `the watch did not stop after 60 s` で失敗する） |
+| 2 `status` と `--stop` が実行中の要求の後ろで待ち、時間制限もない。去ったクライアントの要求が後から実行される | accept thread が要求の行を読み、`status`・`shutdown`・protocol の断りをその場で答える（`running`・`queued`・`abandoned` を足した）。実行中の `--stop` は、番号と秒を言って終了コード 1 で返り、要求は止めず、終わったあとに止まる。`status`・`--stop` のクライアントは 10 s で諦める。待っているあいだに自分の側を閉じたクライアントの要求は、非ブロッキングの `read` の EOF で見つけて実行しない | `src/server.rs` の単体テスト 3 つ（実行中の `status`・`shutdown`、去ったクライアント、時間切れ）、`tests/server.mjs` の場面 8b（Clang を止めて、実際のプロセスで確かめる） |
+| 3 古いソケットの引き取りの競合（同時に始めた 2 つのサーバーが、同じ古いソケットを消して `bind` し、片方が届かなくなる） | サーバーが生きているあいだ、ソケットの隣の `<名前>.lock` に OS のロック（`File::try_lock`）を持つ。取れなければ二重起動の `E2001` | 4 つを同時に始める単体テスト（1 つだけが走る）、ロックの残りと保持の単体テスト |
+| 4 panic のあと `ResidentState::new()` が、そのとき手元にあるファイルを固定し直す | `ResidentState::reset` が、読んだものと数だけを捨て、固定したコンパイラ（識別とハッシュ）を残す。panic を包む部分を `CommandServer::guarded` にした | `resident` の単体テストと、panic するコマンドで `guarded` を動かす `main.rs` の単体テスト |
+| 5 テスト: Windows の差し替え、skip が本物の失敗を隠す、idle の余裕 | 差し替えの場面は Windows では行わず、理由を書く。bitcode と `--profile-generate` は、単独の実行が E2002（道具がない）で失敗し、CI・`LLVM_PREFIX`・`TSUZURI_PGO_STRICT=1` がないときだけ外す（ほかの失敗はテストの失敗）。`a_request_resets_the_idle_time` は idle 3 s・待ち 1 s（余裕 2 s） | 上のとおり |
+
+確認: `cargo test --lib`（381 件）、`cargo test --bin tsuzuri`（30 件）、`tests/watch.mjs`・`tests/server.mjs`・`tests/lsp_sessions.mjs`・`tests/repl.mjs`・`tests/cache.mjs`・`tests/e2e.mjs`・`tests/script.mjs` が通る。`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets`（`x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`）、`node scripts/check-docs.mjs`（usage・diagnostics）が通る。
+
 ### 目標と指標の結果
 
 - G1（100 ms 級）は取り下げた（実装しなかったものの先頭）。代わりの記録: 1 module の本体を書き換えた後の `check` は、200 module で 391〜426 → 347〜370 ms、1,000 module で 1,884〜1,975 → 1,223〜1,317 ms（server の段の total は 262・242 ms と 1,223・1,173 ms）。
@@ -918,9 +935,9 @@ merge した木での結果（最終の commit で）:
 
 - Linux・x86-64・Windows の実機では動かしていない（Linux 相当の cfg の経路は FreeBSD の型検査だけ）。Windows に server はない（`serve` は `E2000`、`--no-server` は受け付けて何もしない）。
 - 速度はほかの作業と共有する機械（1 分の load average 19〜48）の参考値で、`open()` の費用はこの機械のセキュリティ agent の性質に強く依存する。正式な測定は統合担当が静かな機械で行う。
-- サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめない（`0700` のディレクトリが唯一の防御）。umask・資源の上限などはサーバーのもの。待っているクライアントは時間制限なしで待つ。
+- サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめない（`0700` のディレクトリが唯一の防御）。umask・資源の上限などはサーバーのもの。`check`・`build` のクライアントは応答を時間制限なしで待つ（`status`・`--stop` は 10 s）。実行中の要求は止められず、止まらない要求は `status` の `pid` で終わらせる。クライアントが返事を読み終わる前に自分の側を閉じると、待っている要求は捨てられる。ロックは `File::try_lock`（Rust 1.89 から）で、パッケージの `rust-version = "1.85"` はすでに let chain（1.88）で満たされていない。
 - 3 つの drift test（環境変数の読み取り、`src/` の直接出力、`src/main.rs` で直接出力する関数の一覧）は、ほかのチケットが統合されたあとで、新しい読み取り・出力があれば失敗する。失敗は、その名前を比べる集合に入れるか、出力を書き込み先へ流すかの判断を求めるもので、期待の表を見直して更新する。`main.rs` の一覧に足してよいのは、server が断るコマンドの関数だけ。
-- `tests/server.mjs` はソケットのパスのために短い `TMPDIR` を要する（macOS は 103 byte まで）。panic の経路（`internal`）は E2E で起こせず、`catch_unwind` の単体の確認はない。
+- `tests/server.mjs` はソケットのパスのために短い `TMPDIR` を要する（macOS は 103 byte まで）。panic の経路は、`CommandServer::guarded` を panic するコマンドで動かす単体テストで確かめる（`Handler::run` の `internal` への対応づけは、E2E では起こせない）。
 
 ### 決定事項の最終状態（D13〜D16。D1〜D12 は各決定の「状態」）
 
