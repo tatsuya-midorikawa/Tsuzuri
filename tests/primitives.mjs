@@ -8,6 +8,9 @@ import { spawnSync } from "node:child_process";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+// PM03: with TSUZURI_STRINGS=compact a literal of Latin-1 text is made of bytes, so a concatenation reaches
+// the 128-unit stack buffer's capacity of 256 bytes before it needs the heap.
+const compactStrings = process.env.TSUZURI_STRINGS === "compact";
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-primitives-"));
 function execute(program, args, success = true) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
@@ -121,7 +124,7 @@ const storage = [
   ["utf8_buffer_concat(1)", "598", 0, (api) => api.tz_utf8_buffer_concat(1n), 598n],
   ["buffer_escape(1)", "5", 1, (api) => api.tz_buffer_escape(1n), 5n],
   ["boundary_concat(0)", "128", 1, (api) => api.tz_boundary_concat(0n), 128n],
-  ["boundary_concat(1)", "129", 2, (api) => api.tz_boundary_concat(1n), 129n],
+  ["boundary_concat(1)", "129", compactStrings ? 1 : 2, (api) => api.tz_boundary_concat(1n), 129n],
   ["local_closure(10)", "65", 0, (api) => api.tz_local_closure(10n), 65n],
   ["field_take()", "4", 1, (api) => api.tz_field_take(), 4n],
   ["field_take_nested()", "4", 1, (api) => api.tz_field_take_nested(), 4n],

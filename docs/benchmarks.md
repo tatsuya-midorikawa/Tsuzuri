@@ -7422,6 +7422,121 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 ### PM03 コンパクト文字列
 
 <!-- phase4:PM03 -->
+実装の記録は WP1〜WP11 の順に、この region に足しました（完了）。ticket は [PM03](../_perfs/_completed/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
+
+#### baseline（PM03 の前。WP1）
+
+- 条件: 2026-10-17 夜〜18 未明、Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`・`metrics.mjs` は Node 24 が必須）。
+  基準の compiler は main `9dd0fbbc` の release build（SHA-256 `5e1b9687…`）で、計測した worktree の commit は `8cc8359b`（計画の文書だけの差）。1 分の load average は 11〜15（他の作業が並行する共有機）なので、時間は参考値です。
+  確保量（calls・bytes）は決定的な値です。生データは worktree の `target/perf/PM03-before/`（Git の外。`cpp.jsonl`・`utf.jsonl`・`apps.jsonl`・`process.jsonl`・`environment.txt`）。
+  runner は `sh target/perf/PM03/run-bench.sh <label> <compiler>`（`run-cpp.mjs`・`run-utf.mjs`・`run-apps.mjs`・`metrics.mjs process` を順に 1 回ずつ。PX01 形式）。
+- M1（決定的な確保量。tracked。baseline）:
+
+  | 種目 | 大きさ | 確保 calls | 確保 bytes |
+  | --- | ---: | ---: | ---: |
+  | `cpp/utf16_scan` | 262,144 | 30 | 1,572,816 |
+  | `cpp/utf16_compare` | 262,144 | 33 | 3,145,684 |
+  | `cpp/utf16_validate` | 262,144 | 32 | 2,621,396 |
+  | `cpp/utf8_roundtrip` | 262,144 | 32 | 2,359,248 |
+  | `cpp/format_parse` | 50,000 | 50,000 | 1,939,624 |
+  | `apps/tokenize` | 200,000 | 400,003 | 12,500,022 |
+  | `apps/format_join` | 100,000 | 200,003 | 15,038,726 |
+  | `apps/csv_aggregate` | 100,000 | 700,005 | 13,405,744 |
+  | `apps/map_count` | 200,000 | 16 | 36,768 |
+  | `apps/record_sort` | 200,000 | 3 | 9,600,000 |
+
+- M2（`execute` の最大 RSS。9 標本の中央値、最小〜最大。baseline）:
+
+  | project | `-O0` | `-O3` |
+  | --- | ---: | ---: |
+  | `ascii_words` | 11,354,112（11,337,728〜11,370,496） | 11,370,496（11,354,112〜11,386,880） |
+  | `latin1_csv` | 41,467,904（41,451,520〜41,484,288） | 49,643,520（49,577,984〜49,676,288） |
+  | `cjk_lines` | 37,879,808（37,847,040〜37,912,576） | 37,896,192（37,830,656〜44,302,336） |
+
+  3 project の出力は `2088890`・`2888890`・`1888890`（Python の参照 `sum(len(f"word-{i}"))` ほかと一致）です。
+- M4（baseline の大きさ）: native の hello の実行ファイル 33,896 bytes（`-O3`）・35,800 bytes（`-O0`）、`--emit object` 5,024 bytes、WASM の hello 6,833 bytes（`-O3`）。
+  3 project の実行ファイルは `-O3` で 33,640・33,720・33,720 bytes です。
+- M3（時間。参考値。baseline の cpu 時間の中央値）: `cpp/utf16_scan` 0.0404 ms、`utf16_compare` 0.0863 ms、`utf16_validate` 0.2638 ms、`utf8_roundtrip` 0.8812 ms、`format_parse` 3.857 ms。
+  `utf` の 90 行と apps の時間は raw data にあります。after・before2 との比較は WP9 で書きます。
+
+#### after と既定の判断（Phase 2 まで。WP9・WP10）
+
+- 条件: 2026-10-18、同じ機械。after は WP8 の commit `07f1bf3f` の release build（SHA-256 `56aec96e…`）を `TSUZURI_STRINGS=compact` で、before2・before3 は baseline compiler（`5e1b9687…`）。
+  `before2` → `after1` → `before3` → `after2` の順に交互に走らせた（`sh target/perf/PM03/run-bench.sh <label> <compiler>`。生データは `target/perf/PM03-before2`・`-after1`・`-before3`・`-after2`、Git の外）。
+  1 分の load average は 32〜65（他の作業が並行する共有機）なので、時間は参考値で、判断は決定的な量（確保量・命令数）と PX01 の判定
+  （`node benchmarks/metrics.mjs report --baseline <before> <after>`。広がり = 両側の最大 − 最小）に置きます。
+  別に、3 project と hello を `/usr/bin/time -l` で 9 回ずつ交互に走らせた（`instructions retired` と `peak memory footprint` は負荷に左右されない）。
+  3 project と hello の native の実行ファイルは、`TSUZURI_STRINGS` なしの新しい compiler（`utf16`）が baseline の compiler と byte 単位で同じでした。
+- M1（決定的な確保量。tracked。after は `compact`）。確保の calls は全種目で同じです。
+
+  | 種目 | before bytes | after bytes | 比 |
+  | --- | ---: | ---: | ---: |
+  | `cpp/utf16_scan` | 1,572,816 | 786,408 | 0.500 |
+  | `cpp/utf16_compare` | 3,145,684 | 1,572,842 | 0.500 |
+  | `cpp/utf16_validate` | 2,621,396 | 1,834,988 | 0.700 |
+  | `cpp/utf8_roundtrip` | 2,359,248 | 1,310,696 | 0.556 |
+  | `cpp/format_parse` | 1,939,624 | 969,812 | 0.500 |
+  | `apps/tokenize` | 12,500,022 | 9,450,011 | 0.756 |
+  | `apps/format_join` | 15,038,726 | 9,119,363 | 0.606 |
+  | `apps/csv_aggregate` | 13,405,744 | 9,903,000 | 0.739 |
+  | `apps/map_count`・`apps/record_sort` | 36,768・9,600,000 | 同じ | 1.000 |
+
+  `apps` の 3 種目は、std の `String.slice`・`String.join`（`Vec<i16u>` を作って `from_code_units` へ渡す）を、compact のときだけ runtime の `tz.string.slice`・`tz.string.join`
+  の 1 回の確保に置き換えた後の値です。置き換え前（WP4 の commit）は確保の calls が +43〜50% でした。`split`・`trim` は `slice` を使うので同じ恩恵を受け、
+  `replace`・`repeat`・`to_ascii_*`・Json・Regex は `from_code_units` の narrow と `realloc` を払い続けます。
+- M2（`execute` の最大 RSS。9 標本の中央値。before2 → after1）と、`/usr/bin/time -l` の命令数・footprint（9 回交互、`-O3`／`-O0`）:
+
+  | project | `-O3` の RSS | `-O3` の footprint | `-O3` の命令数 | `-O0` の RSS | `-O0` の命令数 |
+  | --- | --- | --- | --- | --- | --- |
+  | `ascii_words` | 11,370,496 → 8,159,232（0.718） | 10,895,720 → 7,700,840（0.707） | 0.969 | 11,337,728 → 8,159,232（0.720） | 0.989 |
+  | `latin1_csv` | 49,643,520 → 34,832,384（0.702） | 49,152,408 → 34,357,656（0.699） | 0.856 | 41,484,288 → 34,783,232（0.838） | 0.756 |
+  | `cjk_lines` | 37,896,192 → 44,335,104（1.170。下を参照） | 37,388,696 → 43,860,376（1.173） | 0.909 | 37,863,424 → 37,879,808（1.000） | 0.783 |
+
+  `execute` の cpu 時間の中央値は `latin1_csv` が 70 → 60 ms（`-O3`）・360 → 250 ms（`-O0`）、`cjk_lines` が 60 → 50 ms・290 → 210 ms、`ascii_words` は同じ（10 ms・20 ms の粒度）です。
+  半分にならないのは、短い文字列が malloc の 16 byte 刻みで縮まず、配列の要素（16 byte の記述子）・Vec の余りが残るためです（ticket の予告どおり）。
+- `cjk_lines` の `-O3` の最大 RSS は、`compact` が 44.3 MB で baseline の中央値より 17% 高いのに、確保の列は同じです。調べたこと（`target/perf/PM03/probe/`）:
+  `DYLD_INSERT_LIBRARIES` の interposer で 200 万回の malloc・free を記録すると、両者の呼び出し数（2,000,078）・生存 byte の最大値（40,973,504 を 16 byte に丸めた値）・大きなブロックの確保と解放の列・
+  400 万の操作を 16／32／48／それ以上の区分に直した列がすべて一致します（要求した byte の合計だけが、`to_string` の桁が 1 byte になる分、compact で 1.09 MB 少ない）。
+  差は最後の 180 万回の `free` の間に、macOS 27 の malloc の「Malloc Small (empty)」（空になったが戻されていない領域）が 6 MB 残るかどうかで決まります。
+  同じ baseline の実行ファイル（`utf16` の build と cmp で一致）でも、44.3 MB になる標本が 24 回に 2 回あり、PX01 の baseline の 9 標本にも 44.35 MB が 1 つ入ります（WP1 の baseline にも 44.30 MB があった）。
+  最適化水準を変えると向きが逆になります（最大 RSS を MB で）: `-O1` は両方 44.3、`-O2` は baseline が 44.3 で compact が 37.9／44.3 の混在、`-Os` は baseline が 44.3 で compact が 37.9、
+  `-O3` は baseline が 92% で 37.9（残りが 44.3）、compact が 100% で 44.3 です。
+  `--allocator small`（PM05。決定的な size 区分の allocator）では両者とも 37.0〜38.1 MB で同じです。つまりコードの配置で変わる malloc の返却の時機の差であって、compact の表現のせいではありません。
+  ただし PX01 の判定は baseline の標本の広がりに 44.35 MB を含むので `差なし` ですが、compact で毎回 44.3 MB になるのは事実なので、この種目は `-O3` の RSS を判断の根拠にしません。
+- M3（時間。参考値）: cpp の 5 種目・`utf/*` の 90 行・apps の string の 3 種目の時間は、4 つの組（before2→after1、before3→after2、before2→after2、before3→after1）のどれでも `悪化` が続きません
+  （`utf/compare/ascii (64)`・`utf/compare/mixed (64)`・`(8)` が 0.0001 ms 台で組によって `悪化` になるだけで、4 つ全部では出ない）。点推定は apps の `tokenize` 16.0 → 12.5 ms、`format_join` 19.6 → 15.1 ms、
+  `csv_aggregate` 25.4 → 23.3 ms、`utf/from_utf8/ascii (65536)` 0.011 → 0.003 ms（Latin-1 の copy）、`utf/from_utf8/latin (65536)` 0.196 → 0.067 ms（非 ASCII の Latin-1 も 1 回の確保）などで下がり、`utf/equal/ascii` は約 0.4 倍です。
+- M4（大きさとビルド。**悪化が続く行**。4 つの組すべてで `悪化` と判定されたもの）:
+
+  | 指標 | before | after |
+  | --- | ---: | ---: |
+  | `examples/hello` の `--emit object`（`-O3`） | 5,024 B | 5,456 B（+8.6%） |
+  | `examples/hello` の wasm32（`-O3`） | 6,833 B | 7,866 B（+15.1%） |
+  | `examples/hello` の実行ファイル（`-O0`） | 35,800 B | 36,184 B（+1.1%） |
+  | `ascii_words` の実行ファイル（`-O0`） | 34,424 B | 34,632 B（+0.6%） |
+  | `examples/hello` の `--emit object` の cpu 時間（clang を含む。`-O3`） | 220 ms | 270 ms（+23%） |
+  | `--emit llvm`（native。hello／ascii_words／latin1_csv） | 144,926／124,989／189,115 B | 206,229／186,311／247,792 B（+42%／+49%／+31%） |
+  | `--emit llvm`（wasm32 simd128。hello） | 174,487 B | 235,790 B（+35%） |
+  | 段階 `emit` の時間（hello。`-O0`） | 2.19 ms | 3.17 ms（+0.98 ms） |
+
+  runtime の IR が 61 KB 増える（Latin-1 の kernel・vector 版・dispatcher・補間の層）のが、clang の時間と IR の大きさに出ます。`-O3` の hello の実行ファイルは 33,896 → 33,848 B で、これは減ります。
+  ほかの `悪化` は、コンパイラ自身の最大 RSS（`build-object` で +0.3〜0.7 MB）と、文字列を使わない apps の最大 RSS の 16〜64 KB（`closure_pipeline`・`spectral_norm`。ページ 1〜4 枚）です。
+- host との境界（native の C ホスト、`-O3`、7 回の最小。`target/perf/PM03/probe/boundary`）: compact は文字列の結果を host へ返すとき `to_utf16`（`realloc` と widen）を 1 回払います。
+  `repeat_text`（std の `String.repeat` で 1,000 単位）は 798 ns → 616 ns に速くなり、約 30 単位の短い文字列を作って返す `concat_text` は 56 ns → 108 ns（+93%）に遅くなります。
+  host から受ける文字列（`copy_text`）と `text_length` は 55 ns・1.3 ns で同じです。短い文字列を頻繁に host へ返すプログラムは、compact で遅くなり得ます。
+- 判断（WP10。D11）: **既定は `utf16` のまま、`compact` は opt-in で出荷します。** D11 の条件の結果は次のとおりです。
+
+  | 条件 | 結果 |
+  | --- | --- |
+  | `utf16` の IR が baseline と byte 同一 | 満たす。WP9 の時点は baseline（`9dd0fbbc`）と、examples・fixtures・benchmarks の 115 project × 5 variants = 575 build（同一 530 + 同じ失敗 45）。統合後（PR07・PR08・PB06・PM02 を merge した `516b8780`）は、PM03 を含まない統合ブランチのコンパイラ（`37030b6b`）と 116 project × 5 variants = 580 build（同一 535 + 同じ失敗 45）。3 project と hello の native の実行ファイルも cmp で一致 |
+  | 既存の文字列の suite が両方の形式で通る | 満たす（WP11。統合後の tree で、`cargo test --locked --no-fail-fast` は `utf16` が 1564 件成功・0 失敗。`TSUZURI_STRINGS=compact` は、UTF-16 の形の IR を固定していた 4 本の試験を形式の明示に直した後に全件成功。node の suite は `compact` で 35 本（native／WASM × `-O0`／`-O3`）、`utf16` で文字列に関わる 14 本が成功。`bindgen` は PATH の先頭が Homebrew の clang 23 だと golden が違うので、Apple clang で両形式の成功を確かめた。live の LLDB の `tests/debugger.mjs` はこの機械で baseline でも戻らないので未実施で、`tests/lldb_strings.py` が formatter を固定する） |
+  | M1: 確保量が下がる | 満たす（cpp の 5 種目が −30〜−50%、apps の string の 3 種目が −24〜−39%、calls は同じ） |
+  | M2: `ascii_words`・`latin1_csv` の RSS が下がる | 満たす（−28%・−30%）。`cjk_lines` は `-O3` で +17% だが、上のとおり PX01 の判定は `差なし` で、原因は malloc の返却の時機 |
+  | M3: 時間に `悪化` が続かない | cpp・utf・apps の時間は満たす。3 project と hello の build 側（M4）に `悪化` が続く |
+  | M4: 大きさとビルド | 満たさない: wasm32 の hello +15%、clang を含むビルド時間 +23%、IR +31〜49%。host へ短い文字列を返す呼び出しは 2 倍近い |
+
+  既定を切り替える前に直すこと: 使われない kernel・dispatcher を生成しない（`RuntimeSymbols` で層を選ぶ）ことで IR・wasm・ビルド時間の増加を減らす、host へ返す結果を最初から UTF-16 で作る（結果が export へ流れる場合）、
+  Linux・Windows の allocator で `cjk_lines` の RSS を測り直す。それまでは `TSUZURI_STRINGS=compact` を、ASCII・Latin-1 中心で host との往復が少ない文字列処理（ログ・CSV・トークン化・整形）に勧めます。
 <!-- /phase4:PM03 -->
 
 ### PM04 連結リストの連続表現

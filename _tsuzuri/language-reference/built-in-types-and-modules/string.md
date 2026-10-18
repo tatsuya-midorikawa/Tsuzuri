@@ -91,6 +91,12 @@ AVX2 の実行時選択は対応する x86 のネイティブ環境で使いま�
 WASM は既定でスカラーです。`build --target wasm32 --wasm-feature simd128` の明示指定時だけ
 128 bit 版を使い、新しい import は不要です。検索 API の SIMD 化、すべての入力の高速化は保証しません。
 
+`TSUZURI_STRINGS=compact`（[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)）では、Latin-1 の文字列のための kernel が加わり、選び方は上と同じです
+（native は常に 128 bit 版、WASM は `simd128` のときだけ）。Latin-1 の走査・UTF-16 との混在の等値と順序比較・広げる（Latin-1 を UTF-16 の単位にする）・狭める・
+Latin-1 から UTF-8 への変換・`to_ascii` の複写が対象です。`String.from_utf8` は、UTF-8 を ASCII と「`0xC2`／`0xC3` に継続バイトが続く対」として 16 bytes ずつ分類する 1 回の走査で、
+全 scalar が U+00FF 以下かを調べ、そうなら 1 回の確保で Latin-1 の文字列にします（`é` を含む文章も 1 byte になります）。それ以外の入力と不正な入力は、上の UTF-16 の経路へ渡すので、
+トラップの種類と条件は変わりません。非 ASCII の Latin-1 の書き込みは、ASCII だけの 16 bytes を一括で複写し、そうでない 16 bytes はスカラーで復号します。
+
 ## 切り出し
 
 | 関数 | シグネチャ | 失敗 | 計算量 |
@@ -179,6 +185,11 @@ dashed=-a-b- once=- rep=hahaha
 | `clone_string` | `ref string -> string` | しない。O(n) のコピー。入力は残る |
 
 `clone_string` はモジュール名が付きません。`Utf8String.clone` と対になる組み込み関数です。
+
+> [!NOTE]
+> 「ポインタを移すだけ」は、既定の `TSUZURI_STRINGS=utf16` の契約です。`compact`（opt-in。[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)）では、
+> Latin-1 で持っている文字列の `to_code_units` は 1 byte の列を新しい 2 byte の単位のバッファへ広げ（コピー）、`from_code_units` は全単位が 0xFF 以下なら 1 byte へその場で狭めてバッファを縮めるので、どちらも O(n) です。
+> 結果の値、孤立サロゲートが残ること、失敗の条件は変わりません。UTF-16 の文字列では上のとおり、コピーなしです。
 
 ## エンコーディング
 

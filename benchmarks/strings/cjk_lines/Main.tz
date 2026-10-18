@@ -1,0 +1,21 @@
+def rows :: i64 -> [string]
+fn rows count = new [string](count, index -> "\u6771\u4eac," + to_string index + ",\u5927\u962a")
+
+def fields :: ref [string] -> Vec<string>
+fn fields lines =
+    let mut output: Vec<string> = Vec.empty()
+    for line in lines do
+        let parts = String.split "," line
+        for part in parts do output = Vec.push output (clone_string (ref part))
+    output
+
+def total :: ref [string] -> i64
+fn total items =
+    let mut sum = 0
+    for item in items do sum = sum + item.length
+    sum
+
+let text = String.join "\n" (ref (rows 200000))
+let lines = String.split "\n" (ref text)
+let all = Vec.to_array (fields (ref lines))
+total (ref all)

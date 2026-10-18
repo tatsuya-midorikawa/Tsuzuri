@@ -22,7 +22,7 @@ portable 符号化は 16 単位未満、または最初の窓にサロゲート�
 順序比較は UTF-16 の 16 単位未満／UTF-8 の 32 bytes 未満なら従来の 64-bit/scalar 経路を使います。これらは入力の長さと内容に基づく内部選択であり、種目名による切り替えではありません。
 WASM は既定 scalar で、`--wasm-feature simd128` を付けた場合だけ vector IR を選びます。
 UTF-16 の検証と修復の SIMD 経路では、サロゲートを含まない prefix を一括処理した後、最初のサロゲートを含む窓から残りを一度だけ scalar 処理へ渡します。変換・計数の経路とは分けます。変換・計数と UTF-8 検証も、それぞれの一括経路が使えなくなった窓から残りを scalar 処理へ一度だけ渡し、混在入力の各位置で SIMD を試し直しません。その後に長い ASCII 区間があっても、その呼び出しでは scalar のままです。すべての Unicode 入力を SIMD で処理するという保証ではありません。
-変換は全入力の検証・計数後に一度だけ確保し、文字列表現、符号なしコード単位の比較、置換とトラップ、ABI、WASM import は変わりません。
+変換は全入力の検証・計数後に一度だけ確保し、文字列表現（`TSUZURI_STRINGS=compact` の内部表現は別）、符号なしコード単位の比較、置換とトラップ、ABI、WASM import は変わりません。
 詳細は [String の UTF 処理の実装](../_tsuzuri/language-reference/built-in-types-and-modules/string.md#utf-処理の実装) を参照してください。
 
 内部 LLVM lowering は、所有権と借用から証明できる正サイズの参照に属性と別名情報を付けます。
@@ -86,6 +86,18 @@ stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"tot
 証明の規則、限界、検証は [コンパイラ構成](architecture.md) の「整数の範囲証明（PR02）」にあります。
 成果物の検査は、既存の Mach-O UUID／署名と native Windows Clang の COFF object の時刻 4 bytes だけを
 比較対象から除きます。生成物や compiler flags を変える処理ではありません。
+
+コンパイラの環境変数 `TSUZURI_STRINGS`（PM03）は、`string` の内部表現を選びます。
+`utf16`（既定）は、すべての文字列を 1 コード単位 2 bytes の UTF-16 で持ち、IR と成果物は PM03 より前と同じです。
+`compact`（opt-in）は、全コード単位が 0xFF 以下（ASCII と Latin-1）の文字列を 1 単位 1 byte で持ち、そうでない文字列は UTF-16 のまま持ちます。
+`{ ptr, i64 }` の長さの語の bit 62 が Latin-1 の印で、bit 63 は常に 0 なので `Maybe<string>` の niche（長さ −1）は変わりません。
+空は既定で、ほかの値は IR を出すコマンドで `E2000` です（`check` と `lsp` は読みません）。値はビルドキャッシュのキーに入ります。
+値・長さ・添字・順序・等しさ・hash・表示・孤立サロゲート・トラップ・所有権・host との ABI（常に UTF-16。`export` の結果は UTF-16 へ広げ、import へ渡す引数は UTF-16 の複製）は、どちらのモードでも同じです。
+`String.to_code_units`／`from_code_units` は、Latin-1 の値では全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換になり、結果の値は変わりません。
+native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比較・変換に 128-bit vector の kernel を使い、simd128 なしの WebAssembly は scalar の kernel を使います。
+確保量は ASCII・Latin-1 の文字列で約半分になりますが、runtime の IR と小さな WebAssembly の大きさとビルド時間が増え、host へ短い文字列を返す呼び出しは遅くなるので、既定は `utf16` のままです
+（測定と判断は [ベンチマーク](benchmarks.md)、実装は [コンパイラ構成](architecture.md) の「コンパクト文字列（PM03）」、使い方は
+[コンパクト文字列の旗](../_tsuzuri/language-reference/compiler/option.md#コンパクト文字列の旗) にあります）。
 
 - ソースファイル拡張子は `.tz`（通常のプログラムコード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）です。
   ファイルエンコーディングは UTF-8（先頭 BOM の有無を許容）、改行コードは LF または CRLF に対応します。識別子は ASCII 英字またはアンダースコア `_` で始まり、英数字または `_` が後続します。
@@ -1933,6 +1945,7 @@ UTF-8 バイト順序は Unicode スカラー値の昇順と完全に一致し�
 
 これらの所有権移送 API は入力引数の所有権を消費します。すでにヒープ領域上に確保されている所有バッファを渡した場合は、余分なメモリコピーや新規確保を発生させることなく、バッファポインタをそのまま $O(1)$ で安全に移送します。
 スタック上や静的バイナリ領域に配置されたデータに対して適用する場合は、事前に通常のヒープ昇格処理が行われます。なお、これらはデータ構造の表現を変換するのみであり、内部の文字エンコーディング変換を行うものではありません。
+ただし `TSUZURI_STRINGS=compact` で内部が Latin-1 の文字列を `String.to_code_units` へ渡す場合と、全要素が 0xFF 以下の配列を `String.from_code_units` へ渡す場合は、全単位を広げる（新しいバッファへコピー）・狭める（その場で）$O(n)$ の変換になります（結果の値は変わりません）。
 
 | エンコーディング相互変換・検証 API | 型シグネチャおよび仕様契約 |
 |---|---|

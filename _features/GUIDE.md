@@ -1053,6 +1053,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | 環境変数 | `TSUZURI_TEST_ALLOCATOR`（テスト用） | F13 | いいえ |
 | 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ（実装済み） |
 | 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
+| 環境変数 | `TSUZURI_STRINGS=utf16\|compact`（`string` の内部表現。既定は `utf16`） | PM03 | いいえ（承認済み・実装済み。`compact` は opt-in で、既定にする段は PM03 D11 の条件を満たしたときだけ） |
 | 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
 | 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc`（WASM は `tsuzuri_heap` の `alloc`・`free`・`realloc`）、`tsuzuri_alloc_stats` と `tsuzuri_allocation_stats` | F13 | いいえ（実装済み） |
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`）、`@cpu` 関数の stub が呼ぶ `tsuzuri_cpu_pick` | F08・PR05 | いいえ（F08 は実装済み） |

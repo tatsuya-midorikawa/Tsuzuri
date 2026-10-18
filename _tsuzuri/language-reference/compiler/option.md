@@ -406,6 +406,7 @@ flowchart TD
 | `TSUZURI_SERVER_DIR` | macOS は `$HOME/Library/Caches/tsuzuri/server`、Linux は `$XDG_RUNTIME_DIR/tsuzuri` | なし | `tsuzuri serve` のソケットのディレクトリ（絶対パス。`0700`）。空なら、サーバーを使わない（`serve` は `E2000`）。相対パスは、`serve` では `E2000`、`check`・`build` では使わない（[serve](usage.md#serve)） |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
+| `TSUZURI_STRINGS` | `utf16` | なし | `utf16`・`compact`。`string` の内部表現を選ぶ。`compact` は、全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存する。空は既定、ほかの値は `E2000`。値・順序・hash・出力・host との ABI は変わらない。ビルドキャッシュのキーに入る（[コンパクト文字列の旗](#コンパクト文字列の旗)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
 
 ### コンパイラのスレッド数
@@ -492,7 +493,7 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 
 `Gpu.Vulkan` か `Gpu.Auto` を使う native のプログラムは、実行時にさらに `TSUZURI_VULKAN_LIBRARY`（読み込む Vulkan のローダーのパス。設定すればそれだけを書いたとおりに試し、空なら Vulkan を無効にする。設定がなければ、システムの場所の絶対パスだけを探し、作業ディレクトリは探さない）と `TSUZURI_GPU_AUTO_MIN_WORK`（`Gpu.Auto` の規則を「lane 数 × カーネルの重みが指定の数以上」に置き換える。`0` は、デバイスが使えるなら常に Vulkan）を読みます。ローダーが見つけるドライバは、Vulkan のローダー自身の変数（`VK_DRIVER_FILES` など）に従います。どれも、コンパイル時のオプションでもキャッシュのキーでもありません。詳しくは [Gpu](../built-in-types-and-modules/gpu.md#native-vulkan-のローダーを実行時に読み込む) と [Gpu.Auto](../built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ) にあります。
 
-キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT`、`TSUZURI_RANGE_FLAGS` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
+キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT`、`TSUZURI_RANGE_FLAGS`、`TSUZURI_STRINGS` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
 
 ### 整数の範囲証明の旗
 
@@ -516,6 +517,43 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 既定が `off` なのは、旗が LLVM の出力を変えたかを `benchmarks/run-range-flags.mjs` で測った結果によります。12 の corpus の多くで、`-O1`〜`-O3` の arm64 と x86_64 の
 assembly と wasm32 の module は `off` と同じでした（[整数の範囲証明と overflow フラグ](../../../docs/benchmarks.md#整数の範囲証明と-overflow-フラグpr02)）。
 `audit` で既存のテストを通すと、証明が誤っていればその場で trap します。
+
+### コンパクト文字列の旗
+
+`TSUZURI_STRINGS=compact tsuzuri build Main.tz` のように指定します。CLI のフラグではありません（PM03）。
+`string` が観測できる意味は、どちらのモードでも変わりません。コード単位の列としての値・長さ・添字・順序・等しさ・hash・表示・
+`Maybe<string>` の表現・host との ABI（常に UTF-16）は同じで、変わるのは内部表現と、それを読み書きするコードだけです。
+
+| 値 | 表現 | 使いどころ |
+| --- | --- | --- |
+| `utf16`（既定。空と未設定も同じ） | すべての `string` が 1 単位 2 bytes の UTF-16。IR は PM03 より前と byte 単位で同じ | 通常のビルド |
+| `compact` | 全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存し、そうでない文字列は UTF-16 のまま | ASCII・Latin-1 が中心で、host へ短い文字列を頻繁に返さない文字列処理 |
+
+ほかの値は、IR を出すコマンドで `E2000` です（`check` と `lsp` は IR を出さないので読みません）。値はビルドキャッシュのキーに入り、
+`tsuzuri serve` は、server と client で値が違う要求を断ります（[serve](usage.md#serve)）。
+
+`compact` のときの規則:
+
+- `string` は `{ ptr, i64 }` のままで、長さの語の bit 62 が立っていれば Latin-1（低位 62 bit が byte 数）、立っていなければ UTF-16（語が単位数）です。bit 63 は常に 0 なので、
+  `Maybe<string>` の「なし」を表す長さ −1 は変わりません。空の文字列は語が 0 で、どちらの形式でもありません。
+- Latin-1 を作るのは、0xFF 以下の単位だけのリテラル、その形式同士の連結・`append`・`slice`・`join`・補間、整数・浮動小数点数・`char` の表示（`to_string`）、`to_ascii_*`・`repeat`・`replace` などが
+  `from_code_units` で作る結果、全 scalar が U+00FF 以下の UTF-8 から作る `String.from_utf8`（ASCII だけでなく、`é` のような Latin-1 の文字も 1 byte になります）です。
+  UTF-16 の文字列を切り出したものは、全単位が 0xFF 以下でも UTF-16 のままです。形式に正準形はなく、同じ単位の列はどちらの形式でも
+  `==`・`<`・`hash`・`HashMap` の key・連結の結果で同じ値になります（形式が混ざった連結は、Latin-1 の側を広げて UTF-16 を作ります）。
+- host との境界は UTF-16 のままです。`export` の `string` の結果は host へ返す前に UTF-16 へ広げ（`realloc` と widen）、host から受けた `ref string` は UTF-16 の文字列として扱い、host の import へ渡す
+  引数は UTF-16 の複製（呼び出し後に解放）を渡します。短い文字列を頻繁に返すと、この変換が目立ちます（[測定](../../../docs/benchmarks.md#pm03-コンパクト文字列)）。
+- `String.to_code_units`・`String.from_code_units` は、UTF-16 の値ではバッファの所有権を移すだけですが、Latin-1 の値では全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換になります。
+  結果の値は変わりません。
+- 確保量は Latin-1 の文字列で半分になります。native と `--wasm-feature simd128` を付けた WebAssembly は、Latin-1 の走査・比較・変換に 128-bit の vector の kernel を使い、
+  simd128 なしの WebAssembly は scalar の kernel を使います（PR05 の UTF の kernel と同じ選び方です）。
+- LLDB の formatter と natvis は、両方の形式の文字列を読みます。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けします（[デバッグ](debugging.md)）。
+
+代償として、runtime の IR が約 60 KB（native の hello で 145 KB から 206 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,833 から 7,866 bytes）が増えます。
+既定を `utf16` のままにしているのは、この代償と、host へ短い文字列を返す呼び出しが 2 倍近くになる場合があるためです。測定と判断の理由は
+[PM03 コンパクト文字列](../../../docs/benchmarks.md#pm03-コンパクト文字列)にあります。
+
+`tests/compact_strings_modes.mjs`（既存の node のテストを両方の形式で実行する）と、`TSUZURI_STRINGS=compact cargo test --locked`（IR を出す Rust のテスト全体を `compact` で）で、
+プログラムが文字列の表現に依存していないことを確かめられます。IR の形そのものを固定するテストは、形式を自分で選びます。
 
 ## まとめ
 

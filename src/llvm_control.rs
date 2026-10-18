@@ -262,10 +262,8 @@ impl FunctionEmitter<'_, '_> {
             "extractvalue {} {collection}, 0",
             self.ty(&source.ty)
         ));
-        let length = self.value(format!(
-            "extractvalue {} {collection}, 1",
-            self.ty(&source.ty)
-        ));
+        let word = self.string_word(&source.ty, &collection);
+        let length = self.string_count(&source.ty, &word);
         self.borrowed_locals.insert(local.id);
         if let Type::List(element) = &source.ty {
             self.list_loop_control(
@@ -277,6 +275,15 @@ impl FunctionEmitter<'_, '_> {
                     emitter.loop_body(body, exit, advance);
                 },
             );
+        } else if self.marks_length(&source.ty) {
+            // A unit of a Latin-1 string is a byte: the loop variable points at a widened copy.
+            let latin1 = self.string_is_latin1(&word);
+            let slot = self.slot(&local.ty);
+            self.array_loop_control(&length, |emitter, index, exit, advance| {
+                let pointer = emitter.string_unit_pointer(&latin1, &data, index, &slot);
+                emitter.locals.insert(local.id, pointer);
+                emitter.loop_body(body, exit, advance);
+            });
         } else {
             self.array_loop_control(&length, |emitter, index, exit, advance| {
                 let pointer = emitter.element_pointer(&local.ty, &data, index);

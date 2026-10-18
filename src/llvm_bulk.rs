@@ -33,11 +33,22 @@ impl FunctionEmitter<'_, '_> {
             return self.value(format!("call {{ i32, i64 }} @tz.string.decode_utf8(ptr {data}, i64 {length}, i64 %arg1, i1 false)"));
         }
         let input_type = self.ty(&parameters[0]);
-        let data = self.value(format!("extractvalue {input_type} %arg0, 0"));
-        let length = self.value(format!("extractvalue {input_type} %arg0, 1"));
+        let mut input = "%arg0".to_owned();
+        if instance.builtin == StringToCodeUnits && self.globals.strings == StringForm::Compact {
+            // The array of units owns UTF-16 units: a Latin-1 string is widened first.
+            input = self.value("call %tz.string @tz.string.to_utf16(%tz.string %arg0)");
+        }
+        let data = self.value(format!("extractvalue {input_type} {input}, 0"));
+        let length = self.value(format!("extractvalue {input_type} {input}, 1"));
         if instance.builtin == StringFromCodeUnits {
             let valid = self.value(format!("icmp ule i64 {length}, 9007199254740991"));
             self.guard(&valid, TrapKind::AllocationSize);
+            if self.globals.strings == StringForm::Compact {
+                // Units that are all at most 0xFF become a Latin-1 string.
+                return self.value(format!(
+                    "call %tz.string @tz.string.from_units(ptr {data}, i64 {length})"
+                ));
+            }
         }
         if instance.builtin == Utf8StringFromBytes {
             let index_slot = self.spill(&Type::I64, "0");
