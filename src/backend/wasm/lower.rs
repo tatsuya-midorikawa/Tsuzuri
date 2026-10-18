@@ -161,7 +161,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         Atom::Local(local)
     }
 
-    fn reloc(&mut self, kind: Kind, index: u32, addend: i32) {
+    pub(super) fn reloc(&mut self, kind: Kind, index: u32, addend: i32) {
         self.relocs.push(Reloc {
             offset: self.code.len() as u32,
             kind,

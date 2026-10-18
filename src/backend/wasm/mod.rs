@@ -440,3 +440,40 @@ fn lower_function(shared: &Shared<'_>, id: u32) -> Res<Body> {
     });
     result.map_err(|failure| failure.in_function(sym.name))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object_of(ir: &str, multivalue: bool) -> Vec<u8> {
+        translate(ir, Parallelism::fixed(1), multivalue).expect("a translation")
+    }
+
+    #[test]
+    fn a_variable_shift_of_128_bits_calls_the_routine_of_the_runtime() {
+        let variable = "define i64 @f(i64 %a, i64 %b) {\n  %x = zext i64 %a to i128\n  %n = zext i64 %b to i128\n  %r = shl i128 %x, %n\n  %t = trunc i128 %r to i64\n  ret i64 %t\n}\n";
+        // The routine is imported, with the results the way the runtime objects return them.
+        assert_eq!(
+            object::i128_results_are_multivalue(&object_of(variable, true)),
+            Some(true)
+        );
+        assert_eq!(
+            object::i128_results_are_multivalue(&object_of(variable, false)),
+            Some(false)
+        );
+        // A constant amount is a few word operations and calls nothing.
+        let constant = variable.replace("shl i128 %x, %n", "shl i128 %x, 64");
+        assert_eq!(
+            object::i128_results_are_multivalue(&object_of(&constant, true)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_object_starts_with_the_magic_and_has_the_linking_section() {
+        let bytes = object_of("define i32 @f(i32 %a) {\n  ret i32 %a\n}\n", true);
+        assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+        assert!(bytes.windows(7).any(|window| window == b"linking"));
+        assert!(bytes.windows(10).any(|window| window == b"reloc.CODE"));
+    }
+}

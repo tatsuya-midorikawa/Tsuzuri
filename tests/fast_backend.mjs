@@ -14,7 +14,7 @@
 //                                                   translates the -O0 LLVM IR it is asked to compile (route B)
 //                                                   and DIR/tsuzuri, a stand-in for the compiler that adds
 //                                                   --backend fast to -O0 builds (route A)
-//   node tests/fast_backend.mjs parity SUITE...     runs tests/SUITE.mjs with both wrappers and reports how many
+//   node tests/fast_backend.mjs parity SUITE[=ARG,..]... runs tests/SUITE.mjs with both wrappers and reports how many
 //                                                   compiles were translated, which fell back, and why
 //
 // The binaries come from `cargo build --release --features fast-backend`: target/release/tsuzuri and
@@ -132,7 +132,12 @@ function compilerWrapper(args) {
   // programs still do what the suite expects. A suite that asserts on the optimized code then fails.
   const without = args.filter((arg) => !/^-O([0-3sz]|fast)$/.test(arg));
   const forced = !eligible && Boolean(process.env.FAST_FORCE) && takes(without);
-  const forwarded = eligible ? [...args, "--backend", "fast"] : forced ? [...without, "-O0", "--backend", "fast"] : args;
+  // The option goes before a `--` that ends the options.
+  const withBackend = (list) => {
+    const separator = list.indexOf("--");
+    return separator < 0 ? [...list, "--backend", "fast"] : [...list.slice(0, separator), "--backend", "fast", ...list.slice(separator)];
+  };
+  const forwarded = eligible ? withBackend(args) : forced ? withBackend([...without, "-O0"]) : args;
   log({ event: eligible || forced ? "fast-build" : "llvm-build", args: args.join(" ") });
   const result = spawnSync(real, forwarded, { stdio: "inherit" });
   process.exit(result.status ?? 1);
@@ -184,11 +189,13 @@ function parity(suites) {
   rmSync(directory, { recursive: true, force: true });
   writeWrappers(directory);
   let failed = 0;
-  for (const suite of suites) {
+  for (const entry of suites) {
+    // `suite=arg,arg` passes those arguments instead of the compiler, to a suite that builds with Clang alone.
+    const [suite, given] = entry.split("=");
     const logFile = join(directory, "wrapper.log");
     rmSync(logFile, { force: true });
     const started = Date.now();
-    const result = spawnSync("node", [join(root, "tests", `${suite}.mjs`), join(directory, "tsuzuri")], {
+    const result = spawnSync("node", [join(root, "tests", `${suite}.mjs`), ...(given === undefined ? [join(directory, "tsuzuri")] : given.split(","))], {
       cwd: root, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 1 << 28,
       env: { ...process.env, TSUZURI_CLANG: join(directory, "clang") },
     });

@@ -7,8 +7,9 @@
 use super::super::error::{Res, bail};
 use super::super::func::{BinOp, CallArg, IPred};
 use super::super::types::Ty;
-use super::bin::{Vt, op};
+use super::bin::{self, Vt, op};
 use super::lower::{Atom, Lower, Val};
+use super::object::Kind;
 use super::ops::Width;
 
 /// The name without `llvm.`, if it is `base` or `base.<suffix>`.
@@ -44,6 +45,19 @@ impl<'w, 'a> Lower<'w, 'a> {
                 None => bail!("the intrinsic {full} with too few arguments"),
             }
         };
+        if is(name, "frameaddress") {
+            // The stack pointer after the static frame, which the stack checks compare with the
+            // bounds of the stack; only the current frame has one.
+            let depth = arg(self, 0)?;
+            if !matches!(self.atoms(&depth)?.as_slice(), [Atom::I32(0)]) {
+                bail!("llvm.frameaddress of a frame other than the current one");
+            }
+            self.op(op::GLOBAL_GET);
+            let sp = self.shared.sp_symbol;
+            self.reloc(Kind::GlobalIndex, sp, 0);
+            bin::uleb_padded(&mut self.code, 0);
+            return Ok(Val::Atoms(vec![self.save(Vt::I32)]));
+        }
         if is(name, "memcpy") || is(name, "memmove") {
             let (dst, src) = (arg(self, 0)?, arg(self, 1)?);
             let length = arg(self, 2)?;

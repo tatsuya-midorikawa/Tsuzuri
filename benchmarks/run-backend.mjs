@@ -2,7 +2,7 @@
 // translator of --backend fast) on the synthetic projects of benchmarks/build/generate.mjs.
 //
 //   node benchmarks/run-backend.mjs [COMPILER] --out DIR [--sizes 200,1000] [--samples 9]
-//        [--scenarios build,build-edit-body,build-edit-signature]
+//        [--scenarios build,build-edit-body,build-edit-signature] [--target native|wasm32]
 //
 // COMPILER is a tsuzuri built with `cargo build --release --features fast-backend`
 // (default target/release/tsuzuri). Each sample builds with one backend and then with the other (the
@@ -10,7 +10,8 @@
 // `build` is a cold `--no-cache` build; the two edit scenarios keep a cache of their own per backend and
 // change one module in the middle of the project: its function bodies (`build-edit-body`) or its list of
 // exports (`build-edit-signature`). The last build of every scenario is run and its output is compared
-// with the reference of the generator. Wall time, CPU time (user + system, children included), peak
+// with the reference of the generator (a wasm32 module is run in this process, with a host that reads one
+// line and writes to a buffer). Wall time, CPU time (user + system, children included), peak
 // memory and the compiler's own phases are written to DIR/backend.jsonl and summarized on stdout.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -52,13 +53,41 @@ function verify(compiler, app, modules, edited, label) {
   }
 }
 
-function run({ compiler, out, sizes, samples, scenarios }) {
+// The same check for a wasm32 module: the host of tests/io.mjs, reading one line and then the end of the input.
+function verifyWasm(file, modules, edited, label) {
+  for (const line of ["", "12345", "綴り😀"]) {
+    let instance;
+    let reads = 0;
+    let output = "";
+    instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(file)), { tsuzuri_io: {
+      read_line(out) {
+        const bytes = reads++ === 0 ? Buffer.from(line) : null;
+        const length = bytes?.length ?? 0;
+        const pointer = length ? instance.exports.tsuzuri_alloc(BigInt(length)) : 0;
+        if (length) new Uint8Array(instance.exports.memory.buffer, pointer, length).set(bytes);
+        const view = new DataView(instance.exports.memory.buffer);
+        view.setUint32(out, pointer, true);
+        view.setBigInt64(out + 8, BigInt(length), true);
+        return bytes ? 0 : 1;
+      },
+      write(destination, pointer, length) {
+        assert.ok(destination === 1 || destination === 2);
+        if (destination === 1) output += Buffer.from(new Uint8Array(instance.exports.memory.buffer, pointer, Number(length))).toString();
+        return 0;
+      },
+    } });
+    instance.exports.tsuzuri_main();
+    assert.equal(output, expectedOutput(modules, line, edited), `${label}: the module prints another result for ${JSON.stringify(line)}`);
+  }
+}
+
+function run({ compiler, out, sizes, samples, scenarios, target }) {
   assert.ok(["darwin", "linux"].includes(platform()), "the measurement needs macOS or Linux");
   const jsonl = join(out, "backend.jsonl");
   assert.ok(!existsSync(jsonl), `${jsonl} exists`);
   mkdirSync(out, { recursive: true });
   const version = spawnSync(compiler, ["--version"], { encoding: "utf8" }).stdout.trim();
-  const environment = { compiler, version, platform: `${platform()} ${release()}`, cpus: cpus().length, model: cpus()[0]?.model,
+  const environment = { compiler, version, target, platform: `${platform()} ${release()}`, cpus: cpus().length, model: cpus()[0]?.model,
     load_before: loadavg(), date: new Date().toISOString(), samples };
   writeFileSync(join(out, "environment.json"), `${JSON.stringify(environment, null, 2)}\n`);
   const summaries = [];
@@ -68,11 +97,12 @@ function run({ compiler, out, sizes, samples, scenarios }) {
     mkdirSync(work, { recursive: true });
     const project = join(work, "project");
     writeProject(project, modules);
-    const apps = { llvm: join(work, "app-llvm"), fast: join(work, "app-fast") };
+    const suffix = target === "wasm32" ? ".wasm" : "";
+    const apps = { llvm: join(work, `app-llvm${suffix}`), fast: join(work, `app-fast${suffix}`) };
     const caches = { llvm: join(work, "cache-llvm"), fast: join(work, "cache-fast") };
     const command = (backend, scenario) => ({
       program: compiler,
-      args: ["build", project, "-O0", "--cpu", "generic", ...(scenario === "build" ? ["--no-cache"] : []), "--backend", backend, "-o", apps[backend]],
+      args: ["build", project, "-O0", ...(target === "wasm32" ? ["--target", "wasm32"] : ["--cpu", "generic"]), ...(scenario === "build" ? ["--no-cache"] : []), "--backend", backend, "-o", apps[backend]],
       env: { ...process.env, TSUZURI_TIME_PASSES: "1", TSUZURI_CACHE_DIR: caches[backend] },
     });
     const measure = (backend, scenario) => {
@@ -97,7 +127,11 @@ function run({ compiler, out, sizes, samples, scenarios }) {
           appendFileSync(jsonl, `${JSON.stringify(row)}\n`);
         }
       }
-      for (const backend of BACKENDS) verify(compiler, apps[backend], modules, edited, `${modules} modules, ${scenario}, ${backend}`);
+      for (const backend of BACKENDS) {
+        const label = `${modules} modules, ${scenario}, ${backend}`;
+        if (target === "wasm32") verifyWasm(apps[backend], modules, edited, label);
+        else verify(compiler, apps[backend], modules, edited, label);
+      }
       const median = (backend, pick) => summarize(rows[backend].map(pick)).median;
       const summary = { modules, scenario };
       for (const backend of BACKENDS) {
@@ -127,10 +161,10 @@ function run({ compiler, out, sizes, samples, scenarios }) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const usage = "usage: node benchmarks/run-backend.mjs [COMPILER] --out DIR [--sizes 200,1000] [--samples 9] [--scenarios build,build-edit-body,build-edit-signature]";
+  const usage = "usage: node benchmarks/run-backend.mjs [COMPILER] --out DIR [--sizes 200,1000] [--samples 9] [--scenarios build,build-edit-body,build-edit-signature] [--target native|wasm32]";
   const args = process.argv.slice(2), options = {}, positional = [];
   for (let index = 0; index < args.length; index++) {
-    if (["--out", "--sizes", "--samples", "--scenarios"].includes(args[index]) && options[args[index]] === undefined) options[args[index]] = args[++index];
+    if (["--out", "--sizes", "--samples", "--scenarios", "--target"].includes(args[index]) && options[args[index]] === undefined) options[args[index]] = args[++index];
     else if (args[index].startsWith("--")) assert.fail(usage);
     else positional.push(args[index]);
   }
@@ -141,5 +175,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   assert.ok(Number.isSafeInteger(samples) && samples > 0, usage);
   const scenarios = (options["--scenarios"] ?? SCENARIOS.join(",")).split(",");
   assert.ok(scenarios.every((scenario) => SCENARIOS.includes(scenario)), usage);
-  run({ compiler: resolve(positional[0] ?? join(root, "target/release/tsuzuri")), out: resolve(options["--out"]), sizes, samples, scenarios });
+  const target = options["--target"] ?? "native";
+  assert.ok(["native", "wasm32"].includes(target), usage);
+  run({ compiler: resolve(positional[0] ?? join(root, "target/release/tsuzuri")), out: resolve(options["--out"]), sizes, samples, scenarios, target });
 }

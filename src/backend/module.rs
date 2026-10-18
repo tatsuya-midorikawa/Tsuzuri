@@ -644,7 +644,7 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
     // What the lowering calls without the module naming it: the C library for `frem`, and the
     // routines of the compiler runtime for the division of 128-bit integers, which no CPU divides.
     let mut libcalls = Vec::new();
-    let mut want = |name: &'static str, ty: Ty, parameters: usize| {
+    let mut want = |name: &'static str, ret: Ty, params: &[Ty]| {
         let id = match by_name.get(name) {
             Some(&id) => id,
             None => {
@@ -655,9 +655,9 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
                     hidden: false,
                     kind: SymKind::Function {
                         sig: Sig {
-                            ret: ty,
+                            ret,
                             ret_ext: Ext::None,
-                            params: vec![(ty, Ext::None); parameters],
+                            params: params.iter().map(|&ty| (ty, Ext::None)).collect(),
                             variadic: false,
                         },
                         header: SYNTHETIC,
@@ -671,9 +671,10 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
         libcalls.push(id);
     };
     if text.contains(" frem ") {
-        want("fmod", Ty::Double, 2);
-        want("fmodf", Ty::Float, 2);
+        want("fmod", Ty::Double, &[Ty::Double, Ty::Double]);
+        want("fmodf", Ty::Float, &[Ty::Float, Ty::Float]);
     }
+    let wide = Ty::Int(128);
     for (pattern, name) in [
         (" udiv i128 ", "__udivti3"),
         (" sdiv i128 ", "__divti3"),
@@ -681,7 +682,32 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
         (" srem i128 ", "__modti3"),
     ] {
         if text.contains(pattern) {
-            want(name, Ty::Int(128), 2);
+            want(name, wide, &[wide, wide]);
+        }
+    }
+    if pointer == 4 {
+        // WebAssembly has no 128-bit product and no shift by a variable amount either; a module that
+        // does not define the routines (a runtime object compiled alone) leaves them to the link.
+        if [
+            " mul i128 ",
+            " mul nuw i128 ",
+            " mul nsw i128 ",
+            " mul nuw nsw i128 ",
+            "mul.with.overflow.i",
+        ]
+        .iter()
+        .any(|pattern| text.contains(pattern))
+        {
+            want("__multi3", wide, &[wide, wide]);
+        }
+        for (operation, name) in [
+            ("shl", "__ashlti3"),
+            ("lshr", "__lshrti3"),
+            ("ashr", "__ashrti3"),
+        ] {
+            if has_variable_shift(text, operation) {
+                want(name, wide, &[wide, Ty::Int(32)]);
+            }
         }
     }
     Ok(Module {
@@ -691,6 +717,23 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
         by_name,
         libcalls,
         debug: text.contains("!DICompileUnit("),
+    })
+}
+
+/// Whether the module shifts a 128-bit integer with `operation` by an amount that is a value.
+fn has_variable_shift(text: &str, operation: &str) -> bool {
+    let pattern = format!(" {operation} ");
+    text.match_indices(&pattern).any(|(at, _)| {
+        let mut rest = text[at + pattern.len()..].lines().next().unwrap_or("");
+        while let Some(after) = ["nuw ", "nsw ", "exact "]
+            .iter()
+            .find_map(|modifier| rest.strip_prefix(modifier))
+        {
+            rest = after;
+        }
+        rest.strip_prefix("i128 ")
+            .and_then(|operands| operands.split_once(','))
+            .is_some_and(|(_, count)| count.trim_start().starts_with('%'))
     })
 }
 
