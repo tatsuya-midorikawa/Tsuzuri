@@ -207,6 +207,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - Windows の x86-64 の `i128`・`i128u` の `/` と `%` は、正しい値になりません。LLVM が `__udivti3` の系列を、オペランドをポインターで渡して XMM0 で返す規約で呼ぶのに対し、Windows のビルドに連結する `runtime/wasm.ll` の定義は `i128` を 2 つのレジスタで受けるからです（assembly の読解による結論で、Windows の実機では確かめていません）。`to_string`・補間・`Parse` の整数は `i128` の除算を使わないので、影響を受けません。
 - bare-metal の x86-64 は、`noredzone` を IR の関数に付けるだけで、`-mcmodel` や割り込みの規約までは扱いません。RISC-V の bare-metal は `rv64gc`、`lp64d` に固定です。
 - クロスコンパイルで C ライブラリや sysroot を自動で取得することはありません。同梱ツールチェーンか、`TSUZURI_SYSROOT` だけです。
+- プロファイル誘導最適化（`--profile-generate`・`--profile-use`）は、ビルド機の native の `exe` と `object`、wasm32 の module だけです。Windows の host と target、ビルド機と違う `--target TRIPLE` は `E2000` です。プログラムをその機械で動かして訓練できないからで、Windows は Windows の CI で確かめられるまで受け付けません。同梱の `tsuzuri-clang` はプロファイルの旗を渡さないので `E2002` で、LLVM の Clang を `TSUZURI_CLANG` に指定します。macOS の arm64 で、Apple の Clang 21 と Homebrew の LLVM 21.1.8 で確かめ、Linux（ELF の `--gc-sections` がプロファイルの section を残すか）と x86 では確かめていません（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
 ## 確かめた範囲
 

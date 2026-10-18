@@ -25,7 +25,8 @@ Usage:
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native]
+                    [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -112,8 +113,8 @@ Build options:
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
     --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv,
-                         spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or
-                         bindings-cpp
+                         spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py,
+                         or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
                          wgsl writes the strict WebGPU compute shader of the one exported kernel
                          (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
@@ -123,6 +124,10 @@ Build options:
                          device must report the strict float controls); spirv-relaxed also
                          allows f32 division and follows the device's floating-point rules
                          shared links a native .dylib or .so that exports the C ABI
+                         bitcode writes one ThinLTO LLVM bitcode file of the program and the
+                         runtime it needs, for a host that links with -flto=thin and the same
+                         Clang (native, where llvm-link is needed when the program uses the C
+                         runtime, or --target wasm32, which links with wasm-ld)
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
@@ -165,6 +170,20 @@ Build options:
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
+    --profile-generate DIR Native executable or object output, run, and a wasm32 module: instrument the
+                         program so that it writes LLVM raw profiles (.profraw) under DIR when it exits
+                         normally (a run that traps or is killed writes none). Run it on a typical
+                         workload, then build again with --profile-use. An object needs
+                         -fprofile-generate at its final link. A wasm32 module has no runtime: its host
+                         calls writeProfile(instance) of the app.wasm.profile.mjs that the build writes
+                         beside it (Clang 21; no indirect-call profile)
+    --profile-use PATH     Native executable or object output, run, and a wasm32 module: optimize with the
+                         profile PATH, an indexed .profdata file or a directory of .profraw files that
+                         llvm-profdata merges. Build both times with the same Clang and options; a profile
+                         that no longer matches is one W2001 warning. Both profile options need an LLVM
+                         Clang in TSUZURI_CLANG, not the bundled launcher; they are not available on
+                         Windows, for another machine's --target, with wasm64, or with another --emit
+                         kind such as bitcode, llvm, or shared
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -177,10 +196,13 @@ Threads:
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
-  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
+  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects and for --emit bitcode with the
+                         C runtime (default: llvm-link; --emit bitcode also tries the directory of Clang)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
                          does not run anything
+  TSUZURI_LLVM_PROFDATA  llvm-profdata that --profile-use runs to merge a directory of .profraw files
+                         (default: the one beside Clang or in Clang's toolchain; PATH is not searched)
   Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
@@ -226,6 +248,8 @@ struct Arguments {
     output: Option<PathBuf>,
     options: BuildOptions,
     links: driver::LinkInputs,
+    /// `--profile-generate` or `--profile-use` (PR07).
+    profile: driver::Profile,
     json: bool,
     deny_warnings: bool,
     warn_implicit_copy: bool,
@@ -252,6 +276,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             output: None,
             options: BuildOptions::default(),
             links: driver::LinkInputs::default(),
+            profile: driver::Profile::None,
             json: false,
             deny_warnings: false,
             warn_implicit_copy: false,
@@ -320,6 +345,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut freestanding = false;
     let mut strip = false;
     let mut wasm_opt = false;
+    let mut profile_generate = None;
+    let mut profile_use = None;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -525,6 +552,26 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     wasm_opt = true;
                     continue;
                 }
+                Some("--profile-generate") => {
+                    if profile_generate.is_some() {
+                        return Err("profile generation specified more than once".into());
+                    }
+                    profile_generate = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-generate")?,
+                        "--profile-generate",
+                    )?);
+                    continue;
+                }
+                Some("--profile-use") => {
+                    if profile_use.is_some() {
+                        return Err("profile use specified more than once".into());
+                    }
+                    profile_use = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-use")?,
+                        "--profile-use",
+                    )?);
+                    continue;
+                }
                 Some("-g" | "--debug-info") => {
                     if debug_info {
                         return Err("debug information specified more than once".into());
@@ -619,13 +666,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("spirv") => Emit::Spirv,
                             Some("spirv-relaxed") => Emit::SpirvRelaxed,
                             Some("shared") => Emit::Shared,
+                            Some("bitcode") => Emit::Bitcode,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
                             Some("bindings-py") => Emit::BindingsPy,
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -761,6 +809,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if wasm_opt && action != Action::Build {
         return Err("--wasm-opt is only valid with build".into());
     }
+    if (profile_generate.is_some() || profile_use.is_some())
+        && !matches!(action, Action::Build | Action::Run)
+    {
+        return Err("--profile-generate and --profile-use are only valid with build or run".into());
+    }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
     }
@@ -883,6 +936,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         triple,
     };
     options.validate().map_err(|error| error.message)?;
+    let profile = match (profile_generate, profile_use) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "--profile-generate and --profile-use cannot be combined; build once with each"
+                    .into(),
+            );
+        }
+        (Some(directory), None) => {
+            driver::Profile::generate(&directory).map_err(|error| error.message)?
+        }
+        (None, Some(path)) => driver::Profile::Use(path),
+        (None, None) => driver::Profile::None,
+    };
+    profile.validate(options).map_err(|error| error.message)?;
     if let Some(error) = output
         .as_deref()
         .and_then(|output| driver::bindings_output_error(options.emit, output))
@@ -899,6 +966,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         output,
         options,
         links,
+        profile,
         json,
         deny_warnings,
         warn_implicit_copy,
@@ -910,6 +978,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         bench_samples,
         test_seed,
     })
+}
+
+/// The value of `--profile-generate` or `--profile-use`: a path that is not empty.
+fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err(format!("{option} needs a value"));
+    }
+    Ok(PathBuf::from(value))
 }
 
 /// Whether the action links a native executable, the only output that takes host link inputs.
@@ -1030,7 +1106,7 @@ fn run_action(
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
         Action::Bench => unreachable!("benchmarks use an isolated runner"),
-        Action::Build => driver::build_linked(
+        Action::Build => driver::build_profiled(
             module,
             project,
             &arguments
@@ -1039,14 +1115,16 @@ fn run_action(
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
             links,
+            &arguments.profile,
         ),
-        Action::Run => driver::run_with_arguments(
+        Action::Run => driver::run_profiled(
             module,
             project,
             arguments.options,
             links,
             arguments.json,
             program_arguments,
+            &arguments.profile,
         ),
     }
 }
@@ -3175,7 +3253,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],
@@ -3716,7 +3794,8 @@ mod tests {
         );
         let untargeted =
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64";
-        let output = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let output =
+            "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output";
         let stack_output = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
         let memory_range =
             "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32";
@@ -4140,6 +4219,137 @@ mod tests {
     }
 
     #[test]
+    fn parses_bitcode_output() {
+        let wasm = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--target",
+            "wasm32",
+        ]);
+        assert_eq!(wasm.unwrap().options.emit, Emit::Bitcode);
+        if cfg!(windows) {
+            assert_eq!(
+                parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap_err(),
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally"
+            );
+            return;
+        }
+        let bitcode = parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap();
+        assert_eq!(bitcode.options.emit, Emit::Bitcode);
+        assert_eq!(
+            bitcode.options.output_path(Path::new("dir/Kernel.tz")),
+            Path::new("dir/Kernel.bc")
+        );
+        // The options of an object keep their meaning for bitcode.
+        for values in [
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-O0"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-Oz", "-g"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--trap-info"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "host",
+            ],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--no-cache"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-max-memory",
+                "64MiB",
+            ],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap().options.emit,
+                Emit::Bitcode,
+                "{values:?}"
+            );
+        }
+        let returning = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--trap-mode",
+            "return",
+        ])
+        .unwrap();
+        assert!(returning.options.trap_return && returning.options.trap_info);
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--target",
+                    "wasm64",
+                ],
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--link",
+                    "host.o",
+                ],
+                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            ),
+            (
+                vec!["build", "Kernel.tz", "--emit", "bitcode", "--strip"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--freestanding",
+                    "--allocator",
+                    "host",
+                ],
+                "--freestanding requires object, LLVM IR, or header output",
+            ),
+            (
+                vec!["run", "Kernel.tz", "--emit", "bitcode"],
+                "--output requires build or doc; --target and --emit require a supported build/test action",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
     fn parses_trap_mode_return() {
         let object = parse(&[
             "build",
@@ -4197,6 +4407,308 @@ mod tests {
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn parses_profile_options() {
+        use tsuzuri::driver::Profile;
+        assert_eq!(parse(&["build", "Main.tz"]).unwrap().profile, Profile::None);
+        // The directory that an instrumented program writes to is absolute: the program decides where it runs.
+        let generate = parse(&["build", "Main.tz", "--profile-generate", "prof"]).unwrap();
+        assert_eq!(
+            generate.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let used = parse(&[
+            "build",
+            "Main.tz",
+            "--profile-use",
+            "p.profdata",
+            "--emit",
+            "object",
+            "-O2",
+        ])
+        .unwrap();
+        assert_eq!(used.profile, Profile::Use(PathBuf::from("p.profdata")));
+        // `run` takes both options too: it builds the program with them and runs it.
+        let run = parse(&["run", "Main.tz", "--profile-generate", "prof", "-O2"]).unwrap();
+        assert_eq!(run.action, Action::Run);
+        assert_eq!(
+            run.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let run = parse(&["run", "Main.tz", "--profile-use", "p.profdata"]).unwrap();
+        assert_eq!(run.profile, Profile::Use(PathBuf::from("p.profdata")));
+        assert_eq!(
+            parse(&[
+                "run",
+                "Main.tz",
+                "--profile-use",
+                "p",
+                "--profile-generate",
+                "q"
+            ])
+            .unwrap_err(),
+            "--profile-generate and --profile-use cannot be combined; build once with each"
+        );
+        // A `wasm32` module is instrumented, and trained by its host.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                let wasm = parse(&["build", "Main.tz", "--target", "wasm32", option, "prof"]);
+                assert!(wasm.is_ok(), "{option}: {:?}", wasm.err());
+            }
+        }
+        for text in [
+            "--profile-generate DIR",
+            "--profile-use PATH",
+            "TSUZURI_LLVM_PROFDATA",
+            "writeProfile(instance)",
+            "W2001",
+        ] {
+            assert!(HELP.contains(text), "{text}");
+        }
+        // Nothing else of the build is a reason to refuse a profile (D16).
+        for extra in [
+            &["-O0"][..],
+            &["-Os"],
+            &["-Oz"],
+            &["--no-cache"],
+            &["--strip"],
+            &["-g"],
+            &["--trap-info"],
+            &["--cpu", "native"],
+            &["--allocator", "small"],
+        ] {
+            for option in ["--profile-generate", "--profile-use"] {
+                let mut values = vec!["build", "Main.tz", option, "prof"];
+                values.extend_from_slice(extra);
+                parse(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_profile_combinations() {
+        let wasm64 = "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option";
+        let wasm_emit = "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds";
+        let threads = "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic";
+        let emit = "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds";
+        let only_build_or_run =
+            "--profile-generate and --profile-use are only valid with build or run";
+        for (values, expected) in [
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-generate",
+                    "b",
+                ][..],
+                "profile generation specified more than once",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-use",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "profile use specified more than once",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate"],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use"],
+                "--profile-use needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate", ""],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use", ""],
+                "--profile-use needs a value",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "--profile-generate and --profile-use cannot be combined; build once with each",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "object",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm_emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bitcode",
+                    "--profile-generate",
+                    "p",
+                ],
+                wasm_emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "threads",
+                    "--profile-generate",
+                    "p",
+                ],
+                threads,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-opt",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm64,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "llvm", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "header",
+                    "--profile-generate",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "wgsl", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "bindings-py",
+                    "--profile-use",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate", "/tmp/100%/prof"],
+                "--profile-generate directory must not contain '%'; choose another directory",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
+            ),
+            (
+                &["check", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["test", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["bench", "Main.tz", "--profile-generate", "p"],
+                only_build_or_run,
+            ),
+            (&["fmt", "Main.tz", "--profile-use", "p"], only_build_or_run),
+            (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
+        ] {
+            assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+        // The bitcode of --emit bitcode (PR08) is not instrumented or trained: a host's own link would do that.
+        // A Windows host refuses --emit bitcode for itself before this check.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                assert_eq!(
+                    parse(&["build", "Main.tz", "--emit", "bitcode", option, "p"]).unwrap_err(),
+                    emit,
+                    "{option}"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_profile_options_on_windows() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(
+                parse(&["build", "Main.tz", option, "p"]).unwrap_err(),
+                "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn repl_and_script_do_not_take_profile_options() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(parse_repl(&[option, "p"]).unwrap_err(), REPL_USAGE);
+            let split = script_arguments(
+                &[option, "p", "a.tz"]
+                    .iter()
+                    .map(OsString::from)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(split.unwrap_err(), SCRIPT_OPTIONS);
         }
     }
 

@@ -176,6 +176,8 @@ fn main() -> ExitCode {
                 || text.starts_with("-m")
                 || text == "-g"
                 || text == "-fPIC"
+                // `-flto=thin` makes this compile write bitcode with the ThinLTO summary (PR08).
+                || text.starts_with("-flto")
                 || text == "-ffunction-sections"
                 || text == "-fdata-sections"
             {

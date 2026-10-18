@@ -419,6 +419,7 @@ pub(crate) fn build_key(
     ir: &str,
     output: &Path,
     clang: Option<&ToolIdentity>,
+    profile: Option<(&str, &[u8])>,
 ) -> io::Result<String> {
     use crate::driver::{Emit, Target};
     let mut hash = Sha256::new();
@@ -431,6 +432,11 @@ pub(crate) fn build_key(
     hash.field("action", action.as_bytes());
     hash_output_path(&mut hash, options, output)?;
     hash.field("ir-and-embedded-runtime", ir.as_bytes());
+    // The profile that Clang reads, or the directory that an instrumented program writes to (PR07). A
+    // build without one adds nothing, so its key is the one that there was before.
+    if let Some((tag, bytes)) = profile {
+        hash.field(tag, bytes);
+    }
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
         hash.field(
@@ -627,7 +633,10 @@ impl BuildCache {
             let mut remaining = MAX_ENTRY_BYTES;
             let mut result = BTreeMap::new();
             for (name, fields) in files {
-                if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+                if !matches!(
+                    name.as_str(),
+                    "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+                ) {
                     return Err(invalid("invalid cache artifact name"));
                 }
                 let size = fields["size"]
@@ -717,7 +726,10 @@ impl BuildCache {
         let mut remaining = MAX_ENTRY_BYTES;
         let mut files = serde_json::Map::new();
         for (name, source) in paths {
-            if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+            if !matches!(
+                name.as_str(),
+                "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+            ) {
                 return Err(invalid("invalid cache artifact name"));
             }
             let bytes = read_regular(source, remaining)?;
@@ -1065,8 +1077,9 @@ mod tests {
             fs::write(&path, name).unwrap();
             path
         };
-        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF.
-        for sidecars in [["traps", "dwarf"], ["traps", "pdb"]] {
+        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF, and an
+        // instrumented WebAssembly module caches its profile writer (PR07).
+        for sidecars in [["traps", "dwarf"], ["traps", "pdb"], ["traps", "profile"]] {
             let mut hash = Sha256::new();
             hash.field("sidecars", sidecars.join(",").as_bytes());
             let key = hash.hex();
