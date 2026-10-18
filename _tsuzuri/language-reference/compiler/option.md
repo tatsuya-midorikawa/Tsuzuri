@@ -100,7 +100,21 @@
 
 `check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O0`〜`-O3` を受け、`--cpu` は拒否します。
 
-`-Os` と `-Oz` は、LLVM のサイズ最適化です。`-Os` は大きさと速さの釣り合いを取り、`-Oz` は大きさを優先します。どちらも Tsuzuri が出す LLVM IR を変えません。`--emit llvm` の出力は、`-O0` から `-Oz` まで同じです。変わるのは、IR を機械語にする Clang に渡す最適化レベルだけです。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表、`-g` のデバッグ情報、WebAssembly の import は、`-O3` と同じです。代わりに、速度は落ちることがあります。数値と数学のランタイムの object も同じレベルでコンパイルします。配布物の `share/runtime/` には `-O0`〜`-O3` の object だけがあるので、`-Os` と `-Oz` の最初のビルドは Clang でランタイムをコンパイルし、結果を `runtime/` のキャッシュに保存します。`--no-cache` のときはランタイムを IR のままモジュールに埋め込み、毎回いっしょにコンパイルします。
+`-Os` と `-Oz` は、LLVM のサイズ最適化です。`-Os` は大きさと速さの釣り合いを取り、`-Oz` は大きさを優先します。どちらもプログラムの意味を変えません。`-g` を付けない `--emit llvm` の出力は、WebAssembly では `-O0` から `-Oz` まで同じです。native では `-O1`〜`-O3` が同じで、`-O0`・`-Os`・`-Oz` は、関数値の adapter（`@tz.apply.*`）とラムダの worker（`@tz.fn.$lambda.*`）の `alwaysinline` が外れる点だけが違います。この属性は、既知の関数値の呼び出しへ必ず inline させるためのもので、サイズ最適化と `-O0` では外して、inline を LLVM に任せます。変わるのは、この属性と、IR を機械語にする Clang に渡す最適化レベルだけです。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表、`-g` のデバッグ情報、WebAssembly の import は、`-O3` と同じです。代わりに、速度は落ちることがあります。数値と数学のランタイムの object も同じレベルでコンパイルします。配布物の `share/runtime/` には `-O0`〜`-O3` の object だけがあるので、`-Os` と `-Oz` の最初のビルドは Clang でランタイムをコンパイルし、結果を `runtime/` のキャッシュに保存します。`--no-cache` のときはランタイムを IR のままモジュールに埋め込み、毎回いっしょにコンパイルします。
+
+関数値は静的な記述子と環境の 2 ポインターで、記述子が adapter を参照し続けます（[ラムダ式](../values-and-functions/lambda-expressions.md)）。そのためサイズ最適化は、既知の関数値の呼び出しを adapter ごと inline しきれず、関数値を使う小さなプログラムでは adapter と worker が別の関数として残り、コードが大きくなります。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は変わりません。関数値が 4 ポインターだったコンパイラとの比較は次のとおりです（macOS arm64。native は `--emit object` の `__text`、wasm32 は `.wasm` 全体）。
+
+| 測ったもの | `-Os` | `-Oz` |
+| --- | --- | --- |
+| native `examples/hello` の `__text` | +15%（3,220 → 3,712） | +21%（3,004 → 3,636） |
+| native `examples/functional` | +14%（4,228 → 4,840） | +13%（4,272 → 4,844） |
+| native `examples/io` | −1%（20,108 → 19,916） | +2%（17,112 → 17,496） |
+| native `tests/fixtures` の 4 本 | +1.5〜3.7% | +1.1〜3.8% |
+| wasm32 `examples/hello` | +0.9%（4,493 → 4,534） | +7.8%（3,905 → 4,208） |
+| wasm32 `examples/functional` | +8.7%（6,283 → 6,828） | +9.1%（5,278 → 5,758） |
+| wasm32 `examples/io` | +0.1%（7,939 → 7,949） | +5.3%（6,878 → 7,244） |
+
+増えるのは native の `hello` で 500〜600 バイト、wasm32 の `hello` で 40〜300 バイトです。native の実行ファイル全体では、`-Oz` の `hello` が 34,008 → 34,376 バイト（+1.1%）です。`-O3` の増えは、native が `hello` で +3.1%（3,208 → 3,308 バイト）、`functional` で +0.9%、wasm32 の `examples` が +1.4% 以内で、`-O0` では使われない記述子が残り、native の `hello` の object が +2.9% です。測定と再現の手順は [性能測定](../../../docs/benchmarks.md#pm02-関数値の表現の縮小) です。
 
 `test` と `bench` は `-O0`〜`-O3` だけを受け付け、`-Os` と `-Oz` は `E2000` です。`repl` と `script` も、`-O0`〜`-O3` だけです。`--emit bindings-js` などの `-O` を無視する出力は、`-Os` と `-Oz` も無視します。
 
@@ -133,7 +147,7 @@ add 20 22
 | `--strip` | オフ | native の実行ファイルのリンクで、ローカルシンボルを除く。`build` の `--emit exe` だけ |
 | `--wasm-opt` | オフ | wasm32 の `.wasm` のリンク後に、Binaryen の `wasm-opt -Oz` を実行する。`build` の `--emit wasm` だけ。同梱せず、明示したときだけ使う |
 
-`--strip` はリンカーに `-Wl,-x` を渡します。ローカルシンボルだけが消え、グローバルシンボルは残ります。プログラムの動作と `--trap-info` の位置表（`.trap.json`）は変わらず、macOS のコード署名も有効なままです。小さくなるのはシンボル表の分だけで、`examples/hello` の既定のビルドは 33,896 バイトから 33,784 バイト（macOS arm64 で測定）です。`-g` とは組み合わせられず（デバッガーがシンボルを使うため）、`--emit object`・`llvm`・`header`・`shared`、バインディング、WASM は `E2000` です。WASM の出力は `--debug-info` を付けない限り、すでにシンボルを持ちません。Windows のリンクは変えないので、`--strip` を付けても成果物は同じです。`build` 以外のサブコマンドは `--strip` を拒否します。
+`--strip` はリンカーに `-Wl,-x` を渡します。ローカルシンボルだけが消え、グローバルシンボルは残ります。プログラムの動作と `--trap-info` の位置表（`.trap.json`）は変わらず、macOS のコード署名も有効なままです。小さくなるのはシンボル表の分だけで、`examples/hello` の既定のビルドは 33,960 バイトから 33,784 バイト（macOS arm64 で測定）です。`-g` とは組み合わせられず（デバッガーがシンボルを使うため）、`--emit object`・`llvm`・`header`・`shared`、バインディング、WASM は `E2000` です。WASM の出力は `--debug-info` を付けない限り、すでにシンボルを持ちません。Windows のリンクは変えないので、`--strip` を付けても成果物は同じです。`build` 以外のサブコマンドは `--strip` を拒否します。
 
 ```text
 <command line>:1:1: error[E2000]: --strip cannot be combined with --debug-info: a debugger needs the symbols
@@ -150,7 +164,7 @@ add 20 22
 examples/hello/Main.tz:1:1: error[E2002]: cannot execute 'wasm-opt': No such file or directory (os error 2); --wasm-opt runs Binaryen's wasm-opt: install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable
 ```
 
-Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 3,905、`-O3` 6,833 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
+Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 4,208、`-O3` 6,860 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
 
 ## プロファイル誘導最適化
 

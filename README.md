@@ -871,7 +871,7 @@ tsuzuri lsp
 | `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は `aarch64-apple-darwin` や `x86_64-unknown-linux-musl` など 22 個の native の名前で、`tsuzuri --help` に一覧が出ます。32-bit は対象外）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bitcode\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bitcode` は C・C++ のホストが `-flto=thin` で小さな公開関数を inline できる ThinLTO の LLVM bitcode（native と wasm32。同じ Clang でリンクする。C ランタイムを使うプログラムには `llvm-link` が要る）、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
-| `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
+| `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで（native の関数値の inline 属性 `alwaysinline` だけは、`-O0`・`-Os`・`-Oz` で外れます）、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
@@ -924,7 +924,7 @@ cargo build --release --locked
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
-node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、埋め込み形式のリンク時 GC、--strip（nm・codesign・トラップ表）、整数の表示・書式指定・Parse（全型の境界値・参照との照合・IR・WASM）、--wasm-opt（偽の wasm-opt での呼び出し・キャッシュ・E2002。TSUZURI_TEST_WASM_OPT に本物があれば実行）とオプション誤り（TSUZURI_TEST_SECTION=名前の一部 で節を選べる）
+node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・水準ごとの IR（native の関数値の inline 属性だけが違う）・キャッシュ・WASM の大きさ、埋め込み形式のリンク時 GC、--strip（nm・codesign・トラップ表）、整数の表示・書式指定・Parse（全型の境界値・参照との照合・IR・WASM）、--wasm-opt（偽の wasm-opt での呼び出し・キャッシュ・E2002。TSUZURI_TEST_WASM_OPT に本物があれば実行）とオプション誤り（TSUZURI_TEST_SECTION=名前の一部 で節を選べる）
 node tests/integer_format.mjs   # 整数の表示・書式指定・Parse（integer.ll）を Python の独立した参照、8／16 bit の全値、numeric.ll の tz_soft_* と照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）
 node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到達する関数だけを Clang へ渡す（PB03 D1）。vtable・closure・export・trap 位置・型定義・剪定で通るようになるビルド・`run` の trap 計装
 node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）
@@ -966,6 +966,7 @@ node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
+node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値と Task（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
 node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで次の回を始めずに止まること（待っているあいだも。Windows は実行中のファイルを差し替えられないので除く）、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）

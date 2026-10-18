@@ -7338,9 +7338,9 @@ LSP は 1,000 module で最小が約 455〜480 ms 短く（3 組とも）、条�
 
 <!-- phase4:PM02 -->
 
-関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `alwaysinline`、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
+関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `-O1`〜`-O3` の `alwaysinline`（worker は adapter 以外の呼び出しが 1 か所以下のものだけ）、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
 
-**条件**: 基準 = main `9dd0fbbc` のコンパイラ（sha256 `5e1b9687…`）、after = ブランチ `perf/p4-PM02` の `e787499d`（sha256 `9c656038…`）。Apple M1 Max（10 コア、他の作業と共有）、clang 21.0.0、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`）と 20.19.6（`run-control.mjs`）。native `-O3 --cpu generic`。時間は基準と after を交互に（奇数 trial は基準が先、偶数は after が先）6 trial ずつ、1 trial に 12〜15 標本。**測定中の load average は 1 分値で 34〜103（中央値 59）**で、別の作業と CPU を取り合っているため、時間の絶対値は参考で、基準との比と、機械語が同じかどうかを主な根拠にしました。A/A（基準どうし）の control の比は 0.994〜1.009。再現: `target/perf/PM02/bin/measure-ab.sh <after のコンパイラ> <名前> <trial 数> control cpp apps`。
+**条件**: 基準 = main `9dd0fbbc` のコンパイラ（sha256 `5e1b9687…`）、after = ブランチ `perf/p4-PM02` の `e787499d`（sha256 `9c656038…`）。Apple M1 Max（10 コア、他の作業と共有）、clang 21.0.0、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`）と 20.19.6（`run-control.mjs`）。native `-O3 --cpu generic`。時間は基準と after を交互に（奇数 trial は基準が先、偶数は after が先）6 trial ずつ、1 trial に 12〜15 標本。**測定中の load average は 1 分値で 34〜103（中央値 59）**で、別の作業と CPU を取り合っているため、時間の絶対値は参考で、基準との比と、機械語が同じかどうかを主な根拠にしました。A/A（基準どうし）の control の比は 0.994〜1.009。再現: `target/perf/PM02/bin/measure-ab.sh <after のコンパイラ> <名前> <trial 数> control cpp apps`。コードレビュー後の方針（下の「レビュー後の方針」）の測定は `b4e1eeee` のコードのコンパイラ（sha256 `8b7de470…`）で、基準・機械・手順は同じです。
 
 #### M1 値の大きさ（`benchmarks/layout/sizes.mjs`、clang が測った値。native と x86-64 Linux は同じ。wasm32）
 
@@ -7378,7 +7378,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 #### G-inline（`-O3` の object の `__text` bytes。基準 → after）
 
-静的記述子は adapter（`@tz.apply.*`）を参照し続けるので、既知の関数値の呼び出しが畳み込まれたあとも、LLVM は adapter を「ローカル関数の最後の呼び出し」として inline せず、worker も inline しません。そのまま（`alwaysinline` なし）の native は、hello +14.0%、currying +14.0%、functional +6.9%、`closures` の probe は `ret 51` に畳まれず 8 → 404 bytes でした。native では `@tz.apply.*` と `$lambda` の worker（`-g -O0` を除く）に `alwaysinline` を付けます。
+静的記述子は adapter（`@tz.apply.*`）を参照し続けるので、既知の関数値の呼び出しが畳み込まれたあとも、LLVM は adapter を「ローカル関数の最後の呼び出し」として inline せず、worker も inline しません。そのまま（`alwaysinline` なし）の native は、hello +14.0%、currying +14.0%、functional +6.9%、`closures` の probe は `ret 51` に畳まれず 8 → 404 bytes でした。native の `-O1`〜`-O3` では `@tz.apply.*` と、adapter 以外の呼び出しが 1 か所以下の `$lambda` の worker（`-g -O0` を除く）に `alwaysinline` を付けます（下の表は `-O3` で、この方針でも同じ値です）。
 
 | プログラム | 基準 | after | 差 |
 | --- | --- | --- | --- |
@@ -7394,18 +7394,53 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 - 変種の測定（WP5 の IR に属性を後から付け、同じ clang で `-O3`。hello／currying／functional）: 属性なし 3,052／3,044／3,624（基準 2,604／2,596／3,352）、adapter だけ 3,052／3,044／3,624（io と fixtures の currying が小さくなる）、adapter と worker 2,704／2,696／3,388（+3.8%／+3.9%／+1.1%）、worker に `inlinehint` は効かない。
 - x86-64 Linux の代理（native の IR を `--target=x86_64-unknown-linux-gnu` で `.text` に）: hello 3,284 → 3,380（+2.9%）、currying +2.9%、functional −0.4%、io −8.2%、fixtures の currying −5.4%・computations −1.3%・tasks +0.3%、probe は 6 bytes のまま。
 - **WebAssembly には付けません**。付けた変種は wasm32 の `-O3` で hello の CODE が 8,574 → 11,990（+40%）、functional +29%、io +31% になりました（残った adapter が worker の複製を持つため）。付けない after は hello 6,833 → 6,860（+0.4%）、currying +0.4%、functional +1.4%、io +0.4%、fixtures の computations +0.6%・currying（`curried_mixed_kinds`・`curried_optional` を足したもの）+1.4%・**tasks +3.6%**（`.wasm` 全体）です。
-- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +4.1%、実行ファイル +0.1%）。`-Os`・`-Oz` では小さなプログラムが大きくなります。native の `-Oz`（clang で IR に属性を付けた変種）で hello 2,484 → 3,240（+30%）、functional +18%、io +19% で、fixtures は +1〜3%。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%。サイズ最適化の水準ごとに方針を替える案（ドライバーが adapter と worker の属性を外す）は未実施です。
+- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +2.9%、実行ファイル +0.3%）。`-Os`・`-Oz` では小さなプログラムが大きくなります（下の「レビュー後の方針」の表。属性を外したあとの値）。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%（wasm32 には属性がないので、この増えは記述子と、inline されずに残る adapter・worker によります）。
+
+#### レビュー後の方針: 属性は `-O1`〜`-O3` と、呼び出しが 1 か所以下の worker だけ
+
+独立したコードレビューが、`alwaysinline` が無条件なことの問題を 2 つ見つけました。(1) IR が `-O0`〜`-Oz` で同じなので、`-Os`・`-Oz` でも inline を強制し、小さなプログラムが大きくなる（native の `-Oz` で hello +25%、functional +16%）。(2) 捕捉のないラムダは、関数値が既知なら `@tz.fn.$lambda.N` を名前で直接呼ぶので、属性は大きな本体を呼び出しの数だけ複製する（`-O0` でも）。
+
+- `llvm::limit_worker_inlining`（`emit_program_in` の最後）: `$lambda` の worker は、自分の adapter（`@tz.apply.$lambda.N.*`）以外の呼び出し（再帰を含む）が 2 か所以上あれば `alwaysinline` を外します。adapter は本体を持たないので付けたままです。本体の大きさで切る案は、150 行の worker が 1 か所だけで使われる hello が +17% になるので採りませんでした。
+- `llvm::without_closure_inlining`（ドライバー。native の `-O0`・`-Os`・`-Oz`。`--emit header` と GPU カーネルは除く）: `@tz.apply.*` と `$lambda` の worker から外します。IR が水準で変わるのは、native のこの属性だけです（`tests/size.mjs` が、`-O1`・`-O2` は `-O3` と同じ、`-O0`・`-Os`・`-Oz` は属性を外しただけと確かめます。wasm32 は全水準で同じ）。adapter だけに付ける案は、`-Oz` で hello +17%・functional +10%・io +19%（clang で IR に属性を付けた変種。外す案は +25.5%・+15.3%・+5.9%、無条件は +30.5%・+18.4%・+19.2%）で、一貫した勝ちがないので、単純に外しました。
+
+**呼び出しの数でコードが増えないこと**（捕捉のない 40 ステップのラムダを呼ぶ。本体は引数での除算なので LLVM が畳めない。native の `__text` bytes、基準／属性が無条件／この方針）:
+
+| 呼び出し | `-O0` | `-O3` | `-Oz` |
+| --- | --- | --- | --- |
+| 1 か所 | 8,808／17,220／8,792 | 2,696／2,692／2,692 | 2,696／2,692／2,696 |
+| 2 か所 | 8,836／25,700／8,820 | 2,736／5,320／2,736 | 2,736／5,320／2,736 |
+| 24 か所 | 9,372／295,452／9,356 | 3,032／59,144／3,032 | 3,032／59,144／3,032 |
+
+本体が足し算と掛け算だけの 40 ステップを 24 か所から呼ぶ probe は、`-O0` が 2,308／37,060／2,292、`-O3`・`-Oz` が 1,016／4,608／1,016 でした。捕捉のあるラムダは、既知の呼び出しが `@tz.specialized.*` を呼ぶので属性の影響を受けず、24 か所でも基準と同じです。関数値を配列に入れて呼ぶ probe（捕捉あり・なし。記述子は object に残ります）は、`-O1`〜`-Oz` で基準と ±12 bytes、`-O0` では 100 bytes 前後小さくなりました。`tests/closure_representation.rs` の 3 つのテスト（`a_lambda_that_several_calls_name_is_not_forced_inline`・`closures_are_forced_inline_at_the_speed_levels_of_a_native_build_only`・`the_object_of_a_lambda_called_from_many_places_grows_with_the_calls_only`）が、IR・水準ごとの属性・object の大きさ（2 か所と 24 か所の差が 4 KiB 未満）を固定します。方針を外すと 3 つとも失敗します。
+
+**`-O3` は変わりません**: hello・functional・currying・io・control・apps・fixtures 4 本・`closures`・`mix` の 12 の object を関数ごとに比べると、無条件の版と全関数が同一です（`closures` の probe は 8 bytes の `mov w0, #51; ret` のまま）。機械語が同じなので時間も同じで、基準と交互に 5 trial 測った `control` の最良の標本どうしの比は、`closure_capture` 0.978、`closure_churn` 0.990（広がり 0.03〜0.17 ms）でした。ほかの種目も 0.98〜1.00 で、この測定は after 側が系統的に低く出ています。`-O1`・`-O2` の基準比は、hello −12.7%・+2.1%、functional −13.1%・+3.6%、io −5.3%・−3.6%、`tests/fixtures` の tasks +0.5%・+1.5% で、`-O3` と同じ向きです。
+
+**`-O0`・`-Os`・`-Oz` の `__text`**（`--emit object`。基準 → 属性が無条件 → この方針）:
+
+| プログラム | `-O0` | `-Os` | `-Oz` |
+| --- | --- | --- | --- |
+| `examples/hello` | 28,856 → 28,660 → 28,204（−2.3%） | 3,220 → 3,996 → 3,712（+15.3%） | 3,004 → 3,760 → 3,636（+21.0%） |
+| `examples/currying` | 30,028 → 29,520 → 29,120（−3.0%） | 3,212 → 3,984 → 3,704（+15.3%） | 2,996 → 3,752 → 3,628（+21.1%） |
+| `examples/functional` | 35,316 → 34,164 → 33,776（−4.4%） | 4,228 → 5,112 → 4,840（+14.5%） | 4,272 → 4,960 → 4,844（+13.4%） |
+| `examples/io` | 59,116 → 57,516 → 57,836（−2.2%） | 20,108 → 20,812 → 19,916（−1.0%） | 17,112 → 17,752 → 17,496（+2.2%） |
+| `benchmarks/apps` | 79,380 → 77,040 → 77,440（−2.4%） | 13,816 → 13,800 → 13,800（−0.1%） | 11,892 → 11,880 → 12,080（+1.6%） |
+| fixtures の currying | 133,088 → 128,600 → 130,064（−2.3%） | 47,284 → 48,036 → 48,012（+1.5%） | 42,200 → 43,328 → 43,312（+2.6%） |
+| fixtures の tasks | 209,656 → 205,368 → 205,816（−1.8%） | 71,496 → 73,416 → 74,120（+3.7%） | 65,192 → 66,600 → 67,688（+3.8%） |
+| fixtures の computations | 188,864 → 175,412 → 179,320（−5.1%） | 45,028 → 45,996 → 46,528（+3.3%） | 43,336 → 44,164 → 44,444（+2.6%） |
+| fixtures の control | 156,216 → 153,932 → 154,464（−1.1%） | 47,972 → 48,964 → 48,680（+1.5%） | 43,792 → 44,148 → 44,280（+1.1%） |
+
+属性を外すと、小さなプログラムの増えは縮みます（hello の `-Oz` は +25.2% → +21.0%、`-Os` は +24.1% → +15.3%）。一方、大きなプログラムは少し増えます（tasks の fixture の `-Oz` は +2.2% → +3.8%）。残る増えは、記述子が adapter を参照し続けて、`-Os`・`-Oz` の inline が既知の呼び出しを adapter ごと畳まないためです。hello の `-Oz` では、adapter・worker・環境の clone と drop が別の関数として残り、記述子が `__const` に残ります（`_tsuzuri_main` が環境を確保し、`@tz.apply.*` を呼んで解放する形）。実行ファイル全体では、`-Oz` の hello が 34,008 → 34,376（+1.1%）、`-Os` が 33,896 → 34,232（+1.0%）、functional の `-Oz` が 35,208 → 35,672（+1.3%）、io の `-Oz` が 52,360 → 52,776（+0.8%）です。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は、基準とバイト一致です。ユーザー向けの説明は [`option.md`](../_tsuzuri/language-reference/compiler/option.md#最適化と-cpu) にあります。
 
 #### 生成物の大きさ（バイト。基準 → after）
 
 | 生成物 | 基準 | after |
 | --- | --- | --- |
-| native の実行ファイル hello `-O0`／`-O3` | 35,800／33,896 | 35,848／33,960 |
-| `--emit object` hello `-O3`／`-O0` | 5,024／37,432 | 5,184／38,968 |
+| native の実行ファイル hello `-O0`／`-O3` | 35,800／33,896 | 35,912／33,960 |
+| `--emit object` hello `-O3`／`-O0` | 5,024／37,432 | 5,184／38,504 |
 | wasm32 hello `-O0`／`-O3` | 9,770／6,833 | 9,010／6,860 |
 | `examples/point` の object `-O3` | 392 | 392 |
 
-関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `define` の `alwaysinline` だけです。
+関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `-O1`〜`-O3` の `define` の `alwaysinline` だけです。
 
 #### P2-a `!invariant.load`（取り下げ）
 
@@ -7414,7 +7449,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 #### 測っていないこと
 
 - 静かな機械での時間の再測定（上の load 34〜103 のため、`task_parallel` の実時間は判断できない）。
-- x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ）。
+- x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。`-O0`・`-Os`・`-Oz` と、属性の方針の測定は Apple Silicon だけ）。
 - LLDB の実行つきの検査（この環境では `lldb` の `run` が基準のコンパイラでも固まる）。型の形と整形の判定は `tests/debugger_static.mjs`（プロセスなし）と `tests/debug_info.rs` で確かめた。
 - Windows の natvis（`Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる。`Maybe<[T]>`・`Maybe<ref T>` と同じ扱い）。
 <!-- /phase4:PM02 -->
