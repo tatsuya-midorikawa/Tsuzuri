@@ -242,15 +242,19 @@ section("an instrumented program writes a raw profile when it exits", () => {
 section("the options that change a build instrument and use it", () => {
   const { directory } = trained();
   const variants = [["-O0"], ["-O1"], ["-O2"], ["-O3"], ["-Os"], ["-Oz"], ["--cpu", "native"], ["--allocator", "small"], ["--strip"], ["--trap-info"], ["-g"], ["--no-cache"]];
+  const named = (flags) => flags.join("").replaceAll("-", "");
   for (const flags of variants) {
-    const name = flags.join("").replaceAll("-", "");
-    const profile = join(root, `matrix-profile-${name}`);
-    const exe = executable(`matrix-${name}`);
+    const profile = join(root, `matrix-profile-${named(flags)}`);
+    const exe = executable(`matrix-${named(flags)}`);
     build("branch", ["--profile-generate", profile, ...flags], exe);
     assert.equal(execute(exe, []).stdout, total, flags.join(" "));
     assert.equal(profraws(profile).length, 1, flags.join(" "));
-    // The profile of the default build is a profile of this program too; a flag that changes the IR may leave functions unmatched.
-    const used = executable(`matrix-use-${name}`);
+  }
+  // The profile of the default build is a profile of this program too; a flag that changes the IR may leave functions
+  // unmatched. Its directory of raw profiles is merged, which the half above does without llvm-profdata.
+  needProfdata();
+  for (const flags of variants) {
+    const used = executable(`matrix-use-${named(flags)}`);
     build("branch", ["--profile-use", directory, ...flags], used);
     assert.equal(execute(used, []).stdout, total, flags.join(" "));
   }
@@ -268,6 +272,43 @@ section("a trapped run writes no profile", () => {
   assert.equal(profraws(profile).length, 1);
 });
 
+section("a program that traps reports the same trap with and without a profile", () => {
+  trained();
+  const common = ["-O3", "--trap-info", "--no-cache"];
+  const profile = join(root, "trap-compare-profile");
+  const trap = (name, extra) => {
+    const exe = executable(`trap-${name}`);
+    const built = build("trap", [...common, ...extra], exe);
+    const result = execute(exe, [], { status: null });
+    assert.ok(result.signal, `${name} ends with a signal`);
+    return { exe, built, result, sidecar: readFileSync(`${exe}.trap.json`) };
+  };
+  const plain = trap("plain", []);
+  assert.ok(plain.result.stderr.includes("trap: integer division by zero at"), plain.result.stderr);
+  assert.ok(plain.result.stderr.includes("Main.tz:1:43"), plain.result.stderr);
+  const generated = trap("generate", ["--profile-generate", profile]);
+  assert.equal(generated.result.signal, plain.result.signal);
+  assert.equal(generated.result.stderr, plain.result.stderr, "the same message at the same place");
+  assert.deepEqual(generated.sidecar, plain.sidecar, "the trap table is byte-identical");
+  // With an argument the program divides by one and ends normally, which writes the profile of this program.
+  execute(generated.exe, ["argument"]);
+  assert.equal(profraws(profile).length, 1);
+  // `run` reports the trap with its location and the source line, whatever the profile option.
+  const reported = (extra) => tz(["run", project("trap"), "-O3", ...extra], { status: 1 }).stderr;
+  const expected = reported([]);
+  assert.ok(expected.includes("error[E2005]: program terminated with signal"), expected);
+  assert.ok(expected.includes("Main.tz:1:43"), expected);
+  assert.equal(reported(["--profile-generate", join(root, "trap-run-profile")]), expected);
+  // Using the profile merges it, which needs llvm-profdata.
+  needProfdata();
+  const used = trap("use", ["--profile-use", profile]);
+  assert.equal(used.built.stderr, "", "the profile matches the program");
+  assert.equal(used.result.signal, plain.result.signal);
+  assert.equal(used.result.stderr, plain.result.stderr, "the same message at the same place");
+  assert.deepEqual(used.sidecar, plain.sidecar, "the trap table is byte-identical");
+  assert.equal(reported(["--profile-use", profile]), expected);
+});
+
 section("run builds with the profile options and runs the program", () => {
   trained();
   const profile = join(root, "run-profile");
@@ -276,11 +317,6 @@ section("run builds with the profile options and runs the program", () => {
   assert.equal(generated.stdout, total);
   assert.equal(generated.stderr, "");
   assert.equal(profraws(profile).length, 1);
-  // A profile of a run is a profile of a run: the same build applies it without a warning.
-  needProfdata();
-  const used = tz(["run", project("branch"), "--profile-use", profile]);
-  assert.equal(used.stdout, total);
-  assert.equal(used.stderr, "");
   // A trap ends the run before the profile is written, and the trap is reported as usual.
   const trapProfile = join(root, "run-trap-profile");
   const trapped = tz(["run", project("trap"), "--profile-generate", trapProfile], { status: 1 });
@@ -303,6 +339,11 @@ section("run builds with the profile options and runs the program", () => {
   const redirected = tz(["run", project("branch"), "--profile-generate", sub], { env: { ...baseEnv, LLVM_PROFILE_FILE: chosen } });
   assert.equal(redirected.stderr, "");
   assert.ok(existsSync(chosen));
+  // A profile of a run is a profile of a run: the same build applies it without a warning. Merging it needs llvm-profdata.
+  needProfdata();
+  const used = tz(["run", project("branch"), "--profile-use", profile]);
+  assert.equal(used.stdout, total);
+  assert.equal(used.stderr, "");
 });
 
 section("an object takes the profile runtime from the final link", () => {
