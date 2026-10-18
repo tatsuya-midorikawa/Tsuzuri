@@ -77,7 +77,7 @@ def function_pointer :: ref (i64 -> i64) -> i64 = \value -> 0
         assert!(header(&ir, "huge").contains("align 8 dereferenceable(24)"));
         assert!(header(&ir, "lanes").contains("align 8 dereferenceable(40)"));
         assert!(header(&ir, "dyn_pointer").contains("align 4 dereferenceable(8)"));
-        assert!(header(&ir, "function_pointer").contains("align 4 dereferenceable(16)"));
+        assert!(header(&ir, "function_pointer").contains("align 4 dereferenceable(8)"));
     }
 }
 

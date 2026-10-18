@@ -64,8 +64,7 @@ impl FunctionEmitter<'_, '_> {
             "getelementptr %tz.closure, ptr {source_value}, i64 %index"
         ));
         let task_value = emitter.value(format!("load %tz.closure, ptr {task_pointer}"));
-        let code = emitter.value(format!("extractvalue %tz.closure {task_value}, 0"));
-        let environment = emitter.value(format!("extractvalue %tz.closure {task_value}, 1"));
+        let (code, environment) = emitter.closure_parts(&task_value);
         let value = emitter.value(format!(
             "call {} {code}(ptr {environment})",
             emitter.ty(item)

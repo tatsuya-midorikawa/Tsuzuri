@@ -469,8 +469,8 @@ fn builtin_calls_that_are_not_two_number_operands_stay_calls() {
         def join :: string -> string -> string\nfn join a b = Add.add a b\n";
     for wasm in [false, true] {
         let ir = emit(source, wasm);
-        assert!(function_ir(&ir, "partial").contains("@tz.apply.$intrinsic.Add.add"));
-        assert!(function_ir(&ir, "value").contains("@tz.apply.$intrinsic.Add.add"));
+        assert!(function_ir(&ir, "partial").contains("@tz.desc.$intrinsic.Add.add"));
+        assert!(function_ir(&ir, "value").contains("@tz.desc.$intrinsic.Add.add"));
         assert!(function_ir(&ir, "join").contains("call "));
     }
     // A user module named `Add` is not the generated one: whatever its `add` does, it is called, so
