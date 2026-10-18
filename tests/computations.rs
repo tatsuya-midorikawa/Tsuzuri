@@ -1016,6 +1016,7 @@ fn runtime_fixture_lowers_deterministically_for_both_targets() {
 #[test]
 fn deterministic_computation_mutations_do_not_panic() {
     let mut seed = 0x1428_5714_u32;
+    let mut mutated = Vec::new();
     for original in [
         "Identity { let! value: i64 = 20; do! (); return value + 22 }",
         "Flow { for n in [1, 2] { yield n }; while false { yield 3 }; return 4 }",
@@ -1035,10 +1036,23 @@ fn deterministic_computation_mutations_do_not_panic() {
                     _ => bytes[position] = (32 + seed % 95) as u8,
                 }
             }
-            let source = String::from_utf8(bytes).unwrap();
-            if let Ok(module) = analyze_modules(&sources(&source)) {
-                llvm::emit(&module, llvm::Entry::Library).unwrap();
-            }
+            mutated.push(String::from_utf8(bytes).unwrap());
         }
     }
+    // The inputs are generated in order above, so the set is the same on every run; only the analysis is spread over threads.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(8);
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let mutated = &mutated;
+            scope.spawn(move || {
+                for source in mutated.iter().skip(worker).step_by(workers) {
+                    if let Ok(module) = analyze_modules(&sources(source)) {
+                        llvm::emit(&module, llvm::Entry::Library).unwrap();
+                    }
+                }
+            });
+        }
+    });
 }
