@@ -49,7 +49,7 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない方針、整数の折り返し・NaN・符号付きゼロ・トラップは、プロファイルの有無で変わらず、旗を付けないビルドの成果物とキャッシュのキーも変わりません。
 プロファイルは IR の関数ごとの制御フローに結び付くので、計装と使用は同じコンパイラ・ソース・Clang・オプションで行います。合わない関数はプロファイルなしで最適化され、`W2001` の 1 行で知らされます。
 `.profraw` のディレクトリは `llvm-profdata`（`TSUZURI_LLVM_PROFDATA`、Clang の隣、Clang の toolchain の順）で merge し、中身がキャッシュのキーに入ります。Windows、ビルド機と違う `--target`、同梱の `tsuzuri-clang` は受け付けません。
-速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 13〜17% 速く、4 種目が 20〜60% 遅い）。
+速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 12〜17% 速く、4 種目が 20〜63% 遅い）。
 詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
 
 ## ソースと宣言
