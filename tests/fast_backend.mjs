@@ -28,6 +28,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const self = fileURLToPath(import.meta.url);
@@ -709,13 +710,172 @@ function debugLines(compilerArgument) {
   process.exit(problems.length === 0 && different.length === 0 ? 0 : 1);
 }
 
+// ---- WebAssembly (wasm32) ----
+
+// The body of a worker: a fresh instance of the module with a host that records what the program writes, then
+// every attempt at calling one export. A hung export is cut off by the parent, not here.
+function wasmWorker() {
+  const { workerData, parentPort } = require("node:worker_threads");
+  const { readFileSync } = require("node:fs");
+  const module = new WebAssembly.Module(readFileSync(workerData.file));
+  const log = [];
+  let memory;
+  let stub = false;
+  const imports = {};
+  for (const { module: from, name, kind } of WebAssembly.Module.imports(module)) {
+    imports[from] ??= {};
+    if (kind !== "function") continue;
+    imports[from][name] = from === "tsuzuri_io" && name === "write"
+      ? (fd, pointer, length) => {
+        log.push(`write ${fd} ${Buffer.from(memory.buffer, pointer, Number(length)).toString("latin1")}`);
+        return 0;
+      }
+      : () => {
+        stub = true;
+        return 0;
+      };
+  }
+  const outcome = (call) => {
+    try {
+      const value = call();
+      return typeof value === "bigint" ? `${value}n` : String(value);
+    } catch (error) {
+      const text = `${error.constructor.name}: ${String(error.message).split("\n")[0]}`;
+      // A runaway recursion ends in whichever limit comes first: V8's stack, whose frames are larger in the fast
+      // backend's code, or the shadow stack, which a wasm-ld layout puts at the bottom of the memory.
+      return /Maximum call stack size exceeded|memory access out of bounds/.test(text) ? "stack exhausted" : text;
+    }
+  };
+  let instance;
+  try {
+    instance = new WebAssembly.Instance(module, imports);
+  } catch (error) {
+    parentPort.postMessage({ instantiate: String(error.message).split("\n")[0] });
+    return;
+  }
+  memory = instance.exports.memory;
+  const value = instance.exports[workerData.name];
+  // The parameter types are not visible from JavaScript: try BigInts, then numbers, with the same inputs for both modules.
+  const attempts = [];
+  for (const make of [(n) => BigInt(n), (n) => n]) {
+    for (const seed of [0, 1, 7, -3]) {
+      attempts.push(outcome(() => value(...Array.from({ length: value.length }, (_, index) => make(seed + index)))));
+    }
+  }
+  parentPort.postMessage({ attempts, log, stub });
+}
+
+// `node tests/fast_backend.mjs __wasmrun FILE.wasm`: calls every exported function (the entry first, the rest by
+// name) in a fresh instance with a few inputs, and prints what happened as JSON. The two backends' modules must
+// print the same.
+async function wasmRun(file) {
+  const module = new WebAssembly.Module(readFileSync(file));
+  const names = WebAssembly.Module.exports(module)
+    .filter(({ kind, name }) => kind === "function" && !/^(tsuzuri_(alloc|free|thread|async)|__)/.test(name))
+    .map(({ name }) => name).sort()
+    .sort((a, b) => Number(b === "tsuzuri_main") - Number(a === "tsuzuri_main"));
+  const results = {};
+  let stub = false;
+  for (const name of names) {
+    const worker = new Worker(`(${wasmWorker})()`, { eval: true, workerData: { file, name } });
+    results[name] = await new Promise((done) => {
+      const timer = setTimeout(() => done({ timeout: true }), 5_000);
+      worker.once("message", (message) => {
+        clearTimeout(timer);
+        done(message);
+      });
+      worker.once("error", (error) => {
+        clearTimeout(timer);
+        done({ error: String(error.message).split("\n")[0] });
+      });
+    });
+    await worker.terminate();
+    stub ||= Boolean(results[name].stub);
+    delete results[name].stub;
+  }
+  console.log(JSON.stringify({ results, stub }));
+}
+
+function wasmPrograms(compilerArgument) {
+  const { compiler, work, execute } = session(compilerArgument);
+  // What differs first between the two runs' JSON: the output, or the results of an export.
+  const firstDifference = (expected, actual) => {
+    try {
+      const [a, b] = [JSON.parse(expected), JSON.parse(actual)];
+      for (const key of new Set([...Object.keys(a.results ?? {}), ...Object.keys(b.results ?? {})])) {
+        if (JSON.stringify(a.results?.[key]) !== JSON.stringify(b.results?.[key])) {
+          return `${key}: llvm ${JSON.stringify(a.results?.[key]).slice(0, 200)} fast ${JSON.stringify(b.results?.[key]).slice(0, 200)}`;
+        }
+      }
+      return `llvm ${expected.slice(0, 100)} fast ${actual.slice(0, 100)}`;
+    } catch {
+      return `llvm ${expected.slice(0, 120)} | fast ${actual.slice(0, 120)}`;
+    }
+  };
+  const describe = (file) => {
+    const result = spawnSync(process.execPath, [self, "__wasmrun", file], { encoding: "utf8", timeout: 120_000, maxBuffer: 1 << 26 });
+    return result.status === 0 && result.stdout ? result.stdout.trim() : `run failed: ${result.error?.code ?? result.status} ${result.stderr.trim().split("\n")[0]}`;
+  };
+  const shape = (file) => spawnSync(process.execPath, ["-e", `
+    const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));
+    const key = (entry) => JSON.stringify(entry);
+    console.log(JSON.stringify([WebAssembly.Module.imports(m).map(key).sort(), WebAssembly.Module.exports(m).map(key).sort()]));`, file], { encoding: "utf8" }).stdout.trim();
+  const validate = (file) => spawnSync(process.execPath, ["-e", `process.exit(WebAssembly.validate(require("fs").readFileSync(process.argv[1])) ? 0 : 1)`, file]).status === 0;
+  let same = 0;
+  let stubbed = 0;
+  const differ = [];
+  const skipped = [];
+  const extra = process.env.FAST_WASM_ARGS ? process.env.FAST_WASM_ARGS.split(" ") : [];
+  try {
+    for (const { name, directory } of projects()) {
+      const label = name.replace("/", "-");
+      const llvm = join(work, `${label}.llvm.wasm`);
+      const fast = join(work, `${label}.fast.wasm`);
+      const reference = execute(compiler, ["build", directory, "--target", "wasm32", "-O0", ...extra, "-o", llvm]);
+      if (reference.status !== 0) {
+        skipped.push(`${name}: the LLVM build fails`);
+        continue;
+      }
+      const built = execute(compiler, ["build", directory, "--target", "wasm32", "-O0", ...extra, "--backend", "fast", "-o", fast]);
+      if (built.status !== 0) {
+        differ.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
+        continue;
+      }
+      if (!validate(fast)) {
+        differ.push(`${name}: the module does not validate`);
+        continue;
+      }
+      if (shape(llvm) !== shape(fast)) {
+        differ.push(`${name}: the imports or exports differ`);
+        continue;
+      }
+      const expected = describe(llvm);
+      const actual = describe(fast);
+      if (expected !== actual) {
+        differ.push(`${name}: ${firstDifference(expected, actual)}`);
+        continue;
+      }
+      same++;
+      if (expected.includes('"stub":true')) stubbed++;
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+  console.log(`same-behavior=${same} (with host imports stubbed: ${stubbed}) differ=${differ.length} skipped=${skipped.length}`);
+  for (const line of differ) console.log(`DIFFER ${line}`);
+  for (const line of skipped) console.log(`skipped ${line}`);
+  process.exit(differ.length === 0 ? 0 : 1);
+}
+
 const [mode, ...rest] = process.argv.slice(2);
 switch (mode) {
   case "__clang": clangWrapper(rest); break;
   case "__tsuzuri": compilerWrapper(rest); break;
+  case "__wasmrun": await wasmRun(rest[0]); break;
   case "wrapper": console.log(writeWrappers(resolve(rest[0] ?? join(root, "target", "fast-wrapper")))); break;
   case "parity": parity(rest); break;
   case "programs": programs(rest[0]); break;
+  case "wasm": wasmPrograms(rest[0]); break;
   case "inventory": inventory(rest[0]); break;
   case "debug": debugLines(rest[0]); break;
   case undefined: checks(); break;

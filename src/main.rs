@@ -3145,7 +3145,17 @@ mod tests {
         };
         let native = |other: &str| {
             format!(
-                "--backend fast supports only the native target; use --backend llvm for {other}"
+                "--backend fast supports only the native target and wasm32; use --backend llvm for {other}"
+            )
+        };
+        let wasm_option = |name: &str| {
+            format!(
+                "--backend fast does not support {name} for wasm32; remove it or use --backend llvm"
+            )
+        };
+        let wasm_output = |kind: &str| {
+            format!(
+                "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit {kind}"
             )
         };
         let output = |kind: &str| {
@@ -3193,7 +3203,6 @@ mod tests {
             cases.push((fast(&[flag]), level(flag)));
         }
         cases.extend([
-            (fast(&["--target", "wasm32"]), native("wasm32")),
             (fast(&["--target", "wasm64"]), native("wasm64")),
             (fast(&["--target", "wasm32", "-O3"]), level("-O3")),
             (
@@ -3202,11 +3211,41 @@ mod tests {
             ),
             (
                 fast(&["--target", "wasm32", "--wasm-feature", "simd128"]),
-                native("wasm32"),
+                wasm_option("--wasm-feature simd128"),
             ),
-            (fast(&["--wasm-host", "wasi"]), native("wasm32")),
-            (fast(&["--wasm-max-memory", "64MiB"]), native("wasm32")),
-            (fast(&["--wasm-feature", "threads"]), native("wasm32")),
+            (
+                fast(&["--target", "wasm32", "--wasm-host", "wasi"]),
+                wasm_option("--wasm-host"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "threads"]),
+                wasm_option("--wasm-feature threads"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "jspi"]),
+                wasm_option("--wasm-feature jspi"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "webgpu"]),
+                wasm_option("--wasm-feature webgpu"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "net"]),
+                wasm_option("--wasm-feature net"),
+            ),
+            (fast(&["--target", "wasm32", "-g"]), wasm_option("-g")),
+            (
+                fast(&["--target", "wasm32", "--wasm-opt"]),
+                wasm_option("--wasm-opt"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "llvm"]),
+                wasm_output("llvm"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "bindings-js"]),
+                wasm_output("bindings-js"),
+            ),
             (fast(&["--emit", "llvm"]), output("llvm")),
             (fast(&["--emit", "header"]), output("header")),
             (fast(&["--emit", "wasm"]), output("wasm")),
@@ -3270,6 +3309,47 @@ mod tests {
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "object"],
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "exe"],
             vec!["build", "Main.tz", "--backend", "fast", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory",
+                "64MiB",
+                "--wasm-stack-size",
+                "128KiB",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--trap-info",
+                "--allocator",
+                "counting",
+            ],
             vec![
                 "build",
                 "Main.tz",
