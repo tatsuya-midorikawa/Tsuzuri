@@ -13,6 +13,7 @@ checkempty:
 zero:
   ret %tz.string zeroinitializer
 allocate:
+  call void @tz.string.latin1_fits(i64 %length)
   %data = call ptr @tz.alloc(i64 %length)
   %word = or i64 %length, 4611686018427387904
   %a = insertvalue %tz.string zeroinitializer, ptr %data, 0
