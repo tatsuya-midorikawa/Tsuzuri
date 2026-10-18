@@ -18,7 +18,7 @@ cranelift-module = { version = "=0.121.2", optional = true }
 cranelift-object = { version = "=0.121.2", optional = true }
 target-lexicon = { version = "0.13", optional = true }
 # PB05 Phase 2: the DWARF line table of `-g` is written with gimli, in the version that Cranelift already uses.
-gimli = { version = "=0.31.1", default-features = false, features = ["std", "write"], optional = true }
+gimli = { version = "=0.31.1", default-features = false, features = ["std", "read", "write"], optional = true }
 
 [features]
 fast-backend = [

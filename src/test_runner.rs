@@ -474,25 +474,30 @@ pub fn build_debug_runner(
     } else {
         "tests"
     });
-    fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
     let mut messages = Vec::new();
     let optimization = format!("-O{}", options.optimization);
-    let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
-    compile
-        .args(["-x", "ir", "-Wno-override-module", "-g", "-c"])
-        .arg(&optimization)
-        .args(compile_args(platform))
-        .args(no_sdk_args(platform))
-        .arg(&ir)
-        .arg("-o")
-        .arg(&object);
-    collect_message(
-        &mut messages,
-        run_tool(
-            &mut compile,
-            &cross_hint(platform, "tests require LLVM/Clang 17+ or TSUZURI_CLANG"),
-        )?,
-    );
+    if options.backend == Backend::Fast {
+        // The runner's IR is translated in memory; only the C runtimes and the link run Clang.
+        crate::driver::translate_fast(&text, platform, &object)?;
+    } else {
+        fs::write(&ir, text).map_err(|error| io_error("write test IR", &ir, error))?;
+        let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
+        compile
+            .args(["-x", "ir", "-Wno-override-module", "-g", "-c"])
+            .arg(&optimization)
+            .args(compile_args(platform))
+            .args(no_sdk_args(platform))
+            .arg(&ir)
+            .arg("-o")
+            .arg(&object);
+        collect_message(
+            &mut messages,
+            run_tool(
+                &mut compile,
+                &cross_hint(platform, "tests require LLVM/Clang 17+ or TSUZURI_CLANG"),
+            )?,
+        );
+    }
     // The entry and the runtime have no debug information; `-g` only makes the link keep the
     // program's (and on Windows write the PDB).
     let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));

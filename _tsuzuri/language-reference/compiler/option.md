@@ -229,8 +229,8 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | 最適化 | `-O0` だけです。付けないと `-O0` になります（`test` の既定も `-O0`）。`-O1` 以上、`-Os`、`-Oz` は `llvm` |
 | target | ビルド機の native だけです（macOS と Linux の AArch64・x86-64）。`wasm32`・`wasm64`・`--target TRIPLE` は `llvm` |
 | `--emit` | `exe` と `object` だけです。`llvm`・`header`・`wasm`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
-| 付けられるもの | `--trap-info`、`--strip`、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host`、`--coverage`（`test`） |
-| `llvm` に残るもの | `-g`、`--cpu native`、`--allocator small\|counting`、`--freestanding`、`--trap-mode return`、`--profile-generate`・`--profile-use` |
+| 付けられるもの | `--trap-info`、`--strip`、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host`、`--coverage`（`test`）、`-g`（関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)） |
+| `llvm` に残るもの | `--cpu native`、`--allocator small\|counting`、`--freestanding`、`--trap-mode return`、`--profile-generate`・`--profile-use` |
 
 `tsuzuri` に Cranelift は既定で入りません。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが `--backend fast` を受け付け、入っていない `tsuzuri` は再ビルドの方法を `E2000` で示します。Windows とビルド機が上の表にないものは、`E2000` です。
 
@@ -248,6 +248,17 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 - 生成したコードの速さ: `benchmarks/control` の 16 種目の中央値の合計は、`-O0` の Clang の 0.85 倍で、`-O3` の約 3.5 倍です。`float32`・`float64` の 2 種目は約 20% 遅くなりました。結果の checksum は 3 つのビルドで一致しました。
 - 大きさ: 合成プロジェクトの実行ファイルは、`-O0` の Clang のものより約 18% 大きくなります。`--emit object` は、使われない関数を翻訳しないので、`-O0` の Clang のものより小さくなります。
 
+### fast のデバッグ情報
+
+`--backend fast -g` は、関数の名前と、機械語とソースの行・列の対応を DWARF で書きます。`llvm` の `-g` と同じ DWARF 4 で、`.debug_line` の行表と、関数ごとの `DW_TAG_subprogram`（名前、宣言のファイルと行、アドレス範囲）を持つ 1 つのコンパイル単位です。macOS で `dsymutil --flat` が `<出力>.dwarf` を作ることも、Linux で実行ファイルが DWARF を持つことも、`llvm` と同じです。
+
+- 使えるもの: `file:line` のブレークポイント、関数名のブレークポイント（本体の最初の行で止まります）、バックトレースとステップ実行の行表示。`lldb` の `breakpoint set -f Main.tz -l 5` と `breakpoint set -n Main.sum` は、`llvm` と `fast` のビルドで同じ行に解決します。
+- 無いもの: 変数・引数・型の情報と、LLDB の整形表示が読む型。変数を表示して調べるときは `--backend llvm` を使います。
+- 行の対応は、`examples/` と `tests/fixtures/` の 21 個の実行ファイルにある 1,393 個の関数で、`llvm` のビルドにある行をすべて持ち、`llvm-dwarfdump --verify` が通ります。`fast` だけにある行が 4 関数にあります（文字列リテラルやクロージャの記述子のアドレスのような定数の組み立てに、Clang はその使い手の行を付けますが、`fast` は組み立てる命令の行を付けます）。`fast` は呼ばれない関数を翻訳しないので、その関数にはデバッグ情報もありません。
+- `tsuzuri test --index N -g -o PATH --backend fast` も、同じ DWARF の runner を作ります。
+
+使えない組み合わせは 2 つあります。macOS で C のランタイムが要るプログラムの `--emit object -g` は `E2002` です。`ld -r` が DWARF を捨てるためで、`llvm` はランタイムを IR のまま結合しています。実行ファイルの `-g` は使えます。Windows は、`--backend fast` 自体が `E2000` です（CodeView と PDB は `llvm` だけです）。Linux の x86-64 と AArch64 の object は、`llvm-dwarfdump --verify` が通り、`ld.lld` でリンクした共有ライブラリの行表が正しいアドレスになるところまで確かめました。Linux で実行して、デバッガーで止めてはいません。
+
 ## 診断とデバッグ
 
 | オプション | 既定 | 意味 |
@@ -255,7 +266,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 | `--json` | オフ | 診断を stderr の 1 行 1 JSON にする |
 | `--deny-warnings` | オフ | 警告があれば、コード生成や実行の前に終了コード 1 |
 | `--warn implicit-copy` | オフ | 配列とリストの暗黙コピー `W1006` を出す。生成コードは変わらない |
-| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。Windows の MSVC のリンカーでは CodeView も出し、実行ファイルの隣に PDB を書く。表示とステップ実行は [デバッグ](debugging.md) |
+| `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。Windows の MSVC のリンカーでは CodeView も出し、実行ファイルの隣に PDB を書く。表示とステップ実行は [デバッグ](debugging.md)。`--backend fast` では関数と行だけ（[fast のデバッグ情報](#fast-のデバッグ情報)） |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
 | `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` / `bitcode` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
@@ -368,8 +379,9 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--backend fast` に `-O1` 以上・`-Os`・`-Oz` | `--backend fast supports only -O0; remove -O3 or use --backend llvm` |
 | `--backend fast` に wasm32・wasm64・`--target TRIPLE` | `--backend fast supports only the native target; use --backend llvm for wasm32` |
 | `--backend fast` に `exe`・`object` 以外の `--emit` | `--backend fast produces only exe and object outputs; use --backend llvm for --emit llvm` |
-| `--backend fast` に `-g`・`--cpu native`・`--allocator small`・`counting`・`--freestanding`・`--trap-mode return` | `--backend fast does not support -g yet; remove it or use --backend llvm`（各オプション名で同じ形） |
+| `--backend fast` に `--cpu native`・`--allocator small`・`counting`・`--freestanding`・`--trap-mode return` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm`（各オプション名で同じ形） |
 | `--backend fast` に `--profile-generate`・`--profile-use` | `--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use` |
+| macOS で `--backend fast -g --emit object`、C のランタイムが要るプログラム | `--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm`（`E2002`） |
 | `--backend fast` で、ビルド機が macOS・Linux の AArch64・x86-64 でない | `--backend fast is not available on windows-x86_64; use --backend llvm` |
 | `--backend fast` を、feature なしでビルドした `tsuzuri` に | `this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm` |
 | `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |

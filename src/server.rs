@@ -1616,8 +1616,12 @@ mod tests {
         let mut paths = Vec::new();
         walk(&root, &mut paths);
         paths.sort();
+        // The other executables of the package, such as the test helper of the fast backend, are
+        // processes of their own: a server never runs them.
+        let helpers = root.join("bin");
         paths
             .into_iter()
+            .filter(|path| !path.starts_with(&helpers))
             .map(|path| {
                 let name = path
                     .strip_prefix(&root)

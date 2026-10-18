@@ -595,6 +595,11 @@ impl<'a> Parser<'a, '_> {
             if !self.lex.eat(b',') {
                 break;
             }
+            // The attachments follow the last entry: `, !dbg !12`.
+            self.lex.skip_ws();
+            if self.lex.peek() == b'!' {
+                break;
+            }
         }
         let len = self.func.phi_in.len() as u32 - start;
         self.define(dst, ty);

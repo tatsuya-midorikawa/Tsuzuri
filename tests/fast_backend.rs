@@ -310,6 +310,68 @@ fn object_is_deterministic() {
     }
 }
 
+/// The IR of a `-g` build, as `tsuzuri build -g` has it.
+fn debug_program_ir(source: &str) -> String {
+    let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    let sources = [tsuzuri::trap::TrapSource {
+        path: "proj/Main.tz",
+        text: source,
+    }];
+    llvm::emit_with_debug_info(
+        &module,
+        EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: llvm::F16Path::Soft,
+        },
+        &sources,
+        false,
+        false,
+    )
+    .unwrap()
+    .ir
+}
+
+/// WP12: `-g` IR gives an object with a line table and the program's functions, the same whatever
+/// the number of threads, and IR without debug information gives none.
+#[test]
+fn debug_information_adds_a_line_table() {
+    let contains =
+        |bytes: &[u8], needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+    for source in PROGRAMS {
+        let ir = debug_program_ir(source);
+        assert!(ir.contains("!DICompileUnit("), "{source}");
+        let object = backend::compile(&ir, &options(1))
+            .unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+        for needle in [
+            &b"debug_line"[..],
+            b"debug_info",
+            b"debug_ranges",
+            b"Main.tz",
+            b"Main.main",
+        ] {
+            assert!(
+                contains(&object, needle),
+                "{:?} is not in the object of {source}",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        for threads in [3, 8] {
+            assert!(
+                object == backend::compile(&ir, &options(threads)).unwrap(),
+                "{threads} threads change the -g object of {source}"
+            );
+        }
+        let plain = backend::compile(&program_ir(source), &options(1)).unwrap();
+        assert!(!contains(&plain, b"debug_line"), "{source}");
+        assert!(!contains(&plain, b"Main.tz"), "{source}");
+    }
+}
+
 /// `tsuzuri test --backend fast` (the test runner of the library): the same cases pass, fail and
 /// trap, with the same failure text and counterexamples.
 #[test]

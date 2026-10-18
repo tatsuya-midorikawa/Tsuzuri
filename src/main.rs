@@ -186,9 +186,10 @@ Build options:
                          the -O0 IR to machine code in the compiler itself instead of running
                          Clang on it, for a quicker edit-build-run loop; the code runs like -O0
                          code. It takes -O0 (its default, and test's), native exe and object
-                         output, --trap-info, --strip, and --allocator system|host; -g, --cpu
-                         native, --allocator small|counting, --freestanding, --trap-mode return,
-                         and WebAssembly stay with llvm. It needs a tsuzuri built with
+                         output, --trap-info, --strip, -g (function and line information, not
+                         variables), and --allocator system|host; --cpu native, --allocator
+                         small|counting, --freestanding, --trap-mode return, and WebAssembly stay
+                         with llvm. It needs a tsuzuri built with
                          --features fast-backend on a macOS or Linux host with an AArch64 or
                          x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
@@ -3222,8 +3223,6 @@ mod tests {
             (fast(&["--emit", "bindings-cs"]), output("bindings-cs")),
             (fast(&["--emit", "bindings-py"]), output("bindings-py")),
             (fast(&["--emit", "bindings-cpp"]), output("bindings-cpp")),
-            (fast(&["-g"]), option("-g")),
-            (fast(&["--debug-info"]), option("-g")),
             (fast(&["--cpu", "native"]), option("--cpu native")),
             (fast(&["--allocator", "small"]), option("--allocator small")),
             (
@@ -3284,6 +3283,27 @@ mod tests {
             vec!["Main.tz", "--backend", "fast", "-O0"],
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "object"],
             vec!["build", "Main.tz", "--backend", "fast", "--emit", "exe"],
+            vec!["build", "Main.tz", "--backend", "fast", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--debug-info",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "test",
+                "Main.tz",
+                "--index",
+                "0",
+                "-g",
+                "-o",
+                "tests",
+                "--backend",
+                "fast",
+            ],
             vec![
                 "build",
                 "Main.tz",

@@ -751,7 +751,7 @@ impl BuildOptions {
             cpu,
             debug_output: _,
             trap_info: _,
-            debug_info,
+            debug_info: _,
             wasm_simd,
             wasm_threads,
             wasm_jspi,
@@ -819,7 +819,6 @@ impl BuildOptions {
         }
         let allocator_option = format!("--allocator {allocator:?}").to_ascii_lowercase();
         for (set, option) in [
-            (debug_info, "-g"),
             (cpu != Cpu::Generic, "--cpu native"),
             (
                 !matches!(allocator, llvm::Allocator::System | llvm::Allocator::Host),
@@ -3894,6 +3893,19 @@ fn build_complete(
             fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
         }
         let runtime_object = temporary.path.join("task.o");
+        // The fast backend writes no IR to merge: its object joins the C runtime in the relocatable link below,
+        // which on macOS leaves a debug map in place of the DWARF.
+        if fast
+            && platform.mach_o()
+            && options.debug_info
+            && native_runtime
+            && options.emit == Emit::Object
+        {
+            return Err(driver_error(
+                "E2002",
+                "--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm",
+            ));
+        }
         let merge_debug_ir = platform.mach_o()
             && options.debug_info
             && native_runtime
@@ -4273,9 +4285,10 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
-        if fast && options.emit == Emit::Object {
-            // The translated object is the output; with the C runtime it is merged below.
-            if !native_runtime {
+        if fast && (options.emit == Emit::Object || dwarf_sidecar.is_some()) {
+            // The translated object is the output, and with the C runtime it is merged below; or it is
+            // what the debug link below reads, so that no compile of it remains.
+            if options.emit == Emit::Object && !native_runtime {
                 fs::rename(&object, &artifact)
                     .map_err(|error| io_error("write object", &artifact, error))?;
             }
@@ -6605,6 +6618,14 @@ mod tests {
             if let Err(error) = result {
                 assert_eq!(error.code, "E2000");
             }
+            // `-g` adds the line table and the functions of the program (WP12).
+            let result = BuildOptions {
+                emit,
+                debug_info: true,
+                ..fast
+            }
+            .validate();
+            assert_eq!(result.is_ok(), available, "{emit:?} -g: {result:?}");
         }
         // The programmatic default is -O3, which the fast backend does not translate.
         let error = BuildOptions {

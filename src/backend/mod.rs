@@ -11,6 +11,7 @@
 mod abi;
 mod call;
 mod data;
+mod debug;
 mod error;
 mod func;
 mod intrinsics;
@@ -44,6 +45,7 @@ use crate::target::Platform;
 use crate::timings::Phase;
 
 use self::error::{Failure, Res, bail};
+use self::func::NONE;
 use self::lower::{SymClass, SymInfo};
 use self::module::{Linkage, Module, SymKind};
 use self::target::{Format, Target};
@@ -163,6 +165,8 @@ struct Compiled {
     bytes: Vec<u8>,
     alignment: u64,
     relocs: Vec<ModuleReloc>,
+    /// With `-g`: where the code came from, for a function that has a `!dbg` subprogram.
+    lines: Option<debug::FunctionLines>,
 }
 
 struct State {
@@ -284,6 +288,7 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
     };
     let workers = parallelism.workers(work.len(), 8);
     let mut failure: Option<Failure> = None;
+    let mut lines: Vec<debug::FunctionLines> = Vec::new();
     ordered_for_each(
         work.len(),
         workers,
@@ -299,7 +304,10 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
                     &compiled.bytes,
                     &compiled.relocs,
                 ) {
-                    Ok(()) => ControlFlow::Continue(()),
+                    Ok(()) => {
+                        lines.extend(compiled.lines);
+                        ControlFlow::Continue(())
+                    }
                     Err(error) => {
                         failure = Some(Failure::new(format!("the object writer: {error}")));
                         ControlFlow::Break(())
@@ -413,6 +421,10 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
         version.sdk = minimum;
         product.object.set_macho_build_version(version);
     }
+    if module.debug {
+        let _debug_phase = Phase::start("backend.debug");
+        debug::write(&mut product, module.text, &lines, target.format)?;
+    }
     let bytes = product
         .emit()
         .map_err(|error| Failure::new(format!("the object writer: {error}")))?;
@@ -501,9 +513,22 @@ fn compile_in(shared: &Shared<'_>, state: &mut State, id: u32) -> Res<Compiled> 
         .iter()
         .map(|reloc| ModuleReloc::from_mach_reloc(reloc, &state.context.func, function))
         .collect();
+    let lines = (module.debug && parsed.subprogram != NONE).then(|| debug::FunctionLines {
+        function,
+        subprogram: parsed.subprogram,
+        size: code.buffer.total_size(),
+        runs: code
+            .buffer
+            .get_srclocs_sorted()
+            .iter()
+            .filter(|run| !run.loc.is_default())
+            .map(|run| (run.start, run.loc.bits()))
+            .collect(),
+    });
     Ok(Compiled {
         bytes,
         alignment,
         relocs,
+        lines,
     })
 }

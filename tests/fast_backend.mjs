@@ -6,6 +6,10 @@
 //                                                   backends at -O0, runs them, and compares output and status
 //   node tests/fast_backend.mjs inventory [COMPILER] translates the -O0 IR of the same projects and groups the
 //                                                   constructs the translator rejects (E2002) by reason
+//   node tests/fast_backend.mjs debug [COMPILER]    builds the same projects with -g on both backends, has
+//                                                   llvm-dwarfdump verify the fast one and compares the source
+//                                                   lines of each function with the LLVM backend's
+//   (FAST_DEBUG=1 makes the programs and inventory modes build with -g too.)
 //   node tests/fast_backend.mjs wrapper DIR         writes DIR/clang, a stand-in for TSUZURI_CLANG that
 //                                                   translates the -O0 LLVM IR it is asked to compile (route B)
 //                                                   and DIR/tsuzuri, a stand-in for the compiler that adds
@@ -239,7 +243,6 @@ function checks(compilerArgument) {
         rejects([...fast, "--emit", emit], `--backend fast produces only exe and object outputs; use --backend llvm for --emit ${emit}`);
       }
       const unsupported = (option) => `--backend fast does not support ${option} yet; remove it or use --backend llvm`;
-      rejects([...fast, "-g"], unsupported("-g"));
       rejects([...fast, "--cpu", "native"], unsupported("--cpu native"));
       rejects([...fast, "--allocator", "small"], unsupported("--allocator small"));
       rejects([...fast, "--emit", "object", "--allocator", "counting"], unsupported("--allocator counting"));
@@ -395,6 +398,32 @@ def main :: unit -> i32 = \\() ->
       assert.ok(lcov("llvm").equals(lcov("fast")), "the coverage report depends on the backend");
     });
 
+    step("-g gives the functions of the fast backend the lines of the LLVM backend", () => {
+      const tool = dwarfdumpTool();
+      for (const project of [hello, functional]) {
+        const llvm = join(work, "debug-llvm");
+        const fast = join(work, "debug-fast");
+        cli(["build", project, "-O0", "-g", "-o", llvm]);
+        cli(["build", project, "-O0", "-g", "--backend", "fast", "-o", fast]);
+        assert.deepEqual(observe(execute(fast, [], { cwd: project })), observe(execute(llvm, [], { cwd: project })));
+        if (!tool) continue;
+        const verified = execute(tool, ["--verify", debugFile(fast)]);
+        assert.match(verified.stdout, /No errors\./, verified.stdout + verified.stderr);
+        const expected = linesByFunction(tool, debugFile(llvm));
+        const actual = linesByFunction(tool, debugFile(fast));
+        assert.ok(actual.has("Main.main"), "the fast build has no Main.main");
+        for (const [name, lines] of expected) {
+          // Only what an entry or an export reaches is translated.
+          if (!actual.has(name)) continue;
+          for (const line of lines) assert.ok(actual.get(name).has(line), `${name} lacks ${line}`);
+        }
+      }
+      // A build without -g has no debug sections at all.
+      const plain = join(work, "plain.o");
+      cli(["build", hello, "-O0", "--backend", "fast", "--emit", "object", "-o", plain]);
+      assert.ok(!readFileSync(plain).includes("debug_line"), "an object without -g has a line table");
+    });
+
     step("without the flag the LLVM output is unchanged", () => {
       for (const level of ["-O0", "-O3"]) {
         const plain = join(work, `plain${level}.ll`);
@@ -430,6 +459,8 @@ function projects() {
 
 function programs(compilerArgument) {
   const { compiler, work, execute } = session(compilerArgument);
+  // FAST_DEBUG=1 builds every project with -g, so that the line tables are made and the programs still agree.
+  const debug = process.env.FAST_DEBUG ? ["-g"] : [];
   // The software half-precision helpers are exported by an object that uses `f16` under the soft
   // path, which the fast backend always takes; the LLVM backend takes it only where the host has no
   // half-precision hardware.
@@ -444,15 +475,15 @@ function programs(compilerArgument) {
       const label = name.replace("/", "-");
       const llvm = join(work, `${label}.llvm`);
       const fast = join(work, `${label}.fast`);
-      const reference = execute(compiler, ["build", directory, "-O0", "-o", llvm]);
+      const reference = execute(compiler, ["build", directory, "-O0", ...debug, "-o", llvm]);
       if (reference.status !== 0) {
         // A library has no entry point: what its object exports must be the same.
         const object = join(work, `${label}.llvm.o`);
-        if (!/E2004/.test(reference.stderr) || execute(compiler, ["build", directory, "-O0", "--emit", "object", "-o", object]).status !== 0) {
+        if (!/E2004/.test(reference.stderr) || execute(compiler, ["build", directory, "-O0", ...debug, "--emit", "object", "-o", object]).status !== 0) {
           skipped.push(`${name}: the LLVM build fails`);
           continue;
         }
-        const built = execute(compiler, ["build", directory, "-O0", "--backend", "fast", "--emit", "object", "-o", join(work, `${label}.fast.o`)]);
+        const built = execute(compiler, ["build", directory, "-O0", ...debug, "--backend", "fast", "--emit", "object", "-o", join(work, `${label}.fast.o`)]);
         if (built.status !== 0) {
           differ.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
         } else if (exported(object).join(" ") !== exported(join(work, `${label}.fast.o`)).join(" ")) {
@@ -462,7 +493,7 @@ function programs(compilerArgument) {
         }
         continue;
       }
-      const built = execute(compiler, ["build", directory, "-O0", "--backend", "fast", "-o", fast]);
+      const built = execute(compiler, ["build", directory, "-O0", ...debug, "--backend", "fast", "-o", fast]);
       if (built.status !== 0) {
         differ.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
         continue;
@@ -493,6 +524,7 @@ function programs(compilerArgument) {
 
 function inventory(compilerArgument) {
   const { compiler, work, execute } = session(compilerArgument);
+  const debug = process.env.FAST_DEBUG ? ["-g"] : [];
   const translator = binary("tz-fast-cc", "TSUZURI_FAST_CC");
   let translated = 0;
   const reasons = new Map();
@@ -501,7 +533,7 @@ function inventory(compilerArgument) {
     for (const { name, directory } of projects()) {
       const label = name.replace("/", "-");
       const ir = join(work, `${label}.ll`);
-      if (execute(compiler, ["build", directory, "--emit", "llvm", "-O0", "-o", ir]).status !== 0) {
+      if (execute(compiler, ["build", directory, "--emit", "llvm", "-O0", ...debug, "-o", ir]).status !== 0) {
         noIr.push(name);
         continue;
       }
@@ -525,6 +557,135 @@ function inventory(compilerArgument) {
   process.exit(gaps.length === 0 ? 0 : 1);
 }
 
+// ---- line tables (-g) ----
+
+// llvm-dwarfdump: TSUZURI_DWARFDUMP, the PATH, the Xcode tools or Homebrew's LLVM.
+function dwarfdumpTool() {
+  const candidates = [process.env.TSUZURI_DWARFDUMP, "llvm-dwarfdump", "/Library/Developer/CommandLineTools/usr/bin/llvm-dwarfdump",
+    "/opt/homebrew/opt/llvm/bin/llvm-dwarfdump", "/opt/homebrew/opt/llvm@21/bin/llvm-dwarfdump", "/usr/local/opt/llvm/bin/llvm-dwarfdump"];
+  return candidates.find((tool) => tool && spawnSync(tool, ["--version"], { stdio: "ignore" }).status === 0);
+}
+
+// The file that holds the DWARF of a `-g` build: macOS keeps it beside the executable, in a flat dSYM.
+const debugFile = (output) => (process.platform === "darwin" ? `${output}.dwarf` : output);
+
+// The source lines of every function in a debug file, as { function name -> Set of "file:line" }, with the
+// rows and the subprograms read from llvm-dwarfdump's text. Line 0 is "no line" and an end of sequence is no code.
+function linesByFunction(tool, file) {
+  const run = (flag) => {
+    const result = spawnSync(tool, [flag, file], { encoding: "utf8", maxBuffer: 1 << 28 });
+    assert.equal(result.status, 0, `${tool} ${flag} ${file}\n${result.stderr}`);
+    return result.stdout;
+  };
+  const functions = [];
+  let current;
+  for (const line of run("--debug-info").split("\n")) {
+    if (/DW_TAG_/.test(line)) {
+      if (current?.name !== undefined && current.low !== undefined) functions.push(current);
+      current = /DW_TAG_subprogram/.test(line) ? {} : undefined;
+      continue;
+    }
+    if (!current) continue;
+    let found;
+    if ((found = /DW_AT_name\s+\("(.*)"\)/.exec(line))) current.name = found[1];
+    else if ((found = /DW_AT_low_pc\s+\(0x([0-9a-f]+)\)/.exec(line))) current.low = BigInt(`0x${found[1]}`);
+    else if ((found = /DW_AT_high_pc\s+\(0x([0-9a-f]+)\)/.exec(line))) current.high = BigInt(`0x${found[1]}`);
+  }
+  if (current?.name !== undefined && current.low !== undefined) functions.push(current);
+  const directories = new Map();
+  const files = new Map();
+  const rows = [];
+  let lastFile;
+  for (const line of run("--debug-line").split("\n")) {
+    let found;
+    if (/^debug_line\[/.test(line)) {
+      directories.clear();
+      files.clear();
+    } else if ((found = /include_directories\[\s*(\d+)\]\s*=\s*"(.*)"/.exec(line))) directories.set(Number(found[1]), found[2]);
+    else if ((found = /file_names\[\s*(\d+)\]:/.exec(line))) lastFile = Number(found[1]);
+    else if ((found = /^\s+name:\s+"(.*)"/.exec(line))) files.set(lastFile, { name: found[1] });
+    else if ((found = /^\s+dir_index:\s+(\d+)/.exec(line))) files.get(lastFile).directory = Number(found[1]);
+    else if ((found = /^0x([0-9a-f]+)\s+(\d+)\s+\d+\s+(\d+)\s+\d+\s+\d+\s+\d+\s*(.*)$/.exec(line))) {
+      const file = files.get(Number(found[3]));
+      const directory = file && file.directory ? `${directories.get(file.directory)}/` : "";
+      rows.push({ address: BigInt(`0x${found[1]}`), line: Number(found[2]), file: file ? directory + file.name : "?", end: /end_sequence/.test(found[4]) });
+    }
+  }
+  const table = new Map();
+  for (const { name, low, high } of functions) {
+    const lines = table.get(name) ?? new Set();
+    for (const row of rows) {
+      if (row.end || row.line === 0 || row.address < low || row.address >= (high < low ? low + high : high)) continue;
+      lines.add(`${row.file}:${row.line}`);
+    }
+    table.set(name, lines);
+  }
+  return table;
+}
+
+// `-g` builds of every project with both backends: llvm-dwarfdump accepts the debug file of the fast one, and its
+// functions have the lines that the LLVM backend's have.
+function debugLines(compilerArgument) {
+  const { compiler, work, execute } = session(compilerArgument);
+  const tool = dwarfdumpTool();
+  if (!tool) {
+    console.log("skipped: llvm-dwarfdump is not available (set TSUZURI_DWARFDUMP)");
+    return;
+  }
+  let projectsChecked = 0;
+  let functionsChecked = 0;
+  let identical = 0;
+  let extras = 0;
+  let unreached = 0;
+  const problems = [];
+  const different = [];
+  try {
+    for (const { name, directory } of projects()) {
+      const label = name.replace("/", "-");
+      const llvm = join(work, `${label}.llvm`);
+      const fast = join(work, `${label}.fast`);
+      const reference = execute(compiler, ["build", directory, "-O0", "-g", "-o", llvm]);
+      if (reference.status !== 0) continue;
+      const built = execute(compiler, ["build", directory, "-O0", "-g", "--backend", "fast", "-o", fast]);
+      if (built.status !== 0) {
+        problems.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
+        continue;
+      }
+      const verified = execute(tool, ["--verify", debugFile(fast)]);
+      if (verified.status !== 0 || !/No errors\./.test(verified.stdout)) {
+        problems.push(`${name}: llvm-dwarfdump --verify: ${(verified.stdout + verified.stderr).trim().split("\n").slice(-3).join(" | ").slice(0, 300)}`);
+        continue;
+      }
+      projectsChecked++;
+      const expected = linesByFunction(tool, debugFile(llvm));
+      const actual = linesByFunction(tool, debugFile(fast));
+      for (const [functionName, lines] of expected) {
+        // The fast backend translates only what an entry or an export reaches; the LLVM backend's -O0 object keeps
+        // the other functions too.
+        if (!actual.has(functionName)) {
+          unreached++;
+          continue;
+        }
+        functionsChecked++;
+        const got = actual.get(functionName);
+        const missing = [...lines].filter((line) => !got.has(line));
+        const extra = [...got].filter((line) => !lines.has(line));
+        // A line that only the fast backend has comes from code that Clang's FastISel folds into its user, such as the
+        // address of a constant.
+        if (extra.length > 0) extras++;
+        if (missing.length === 0) identical++;
+        else different.push(`${name}: ${functionName} missing ${missing.slice(0, 4).join(",")}`);
+      }
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+  console.log(`projects=${projectsChecked} functions=${functionsChecked} with-every-line=${identical} missing-lines=${different.length} with-extra-lines=${extras} unreached=${unreached} problems=${problems.length}`);
+  for (const line of problems) console.log(`PROBLEM ${line}`);
+  for (const line of different.slice(0, 40)) console.log(`MISSING ${line}`);
+  process.exit(problems.length === 0 && different.length === 0 ? 0 : 1);
+}
+
 const [mode, ...rest] = process.argv.slice(2);
 switch (mode) {
   case "__clang": clangWrapper(rest); break;
@@ -533,6 +694,7 @@ switch (mode) {
   case "parity": parity(rest); break;
   case "programs": programs(rest[0]); break;
   case "inventory": inventory(rest[0]); break;
+  case "debug": debugLines(rest[0]); break;
   case undefined: checks(); break;
   default: checks(mode);
 }
