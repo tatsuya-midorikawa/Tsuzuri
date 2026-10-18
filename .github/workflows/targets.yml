@@ -310,6 +310,26 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/watch.mjs target/release/tsuzuri
           node tests/server.mjs target/release/tsuzuri
+      # PB05: --backend fast (Cranelift, and the direct WebAssembly writer) exists only in a build with --features fast-backend, which goes
+      # to its own target directory so that target/release/tsuzuri, the binary every step above tested, stays the default one.
+      # tests/fast_backend.mjs checks the option table, traps, determinism, object symbols and the cache; "programs" builds every example
+      # and fixture with both backends at -O0 and compares output and exit status; "wasm" does that for wasm32 and validates the modules;
+      # server.mjs sends --backend fast through the resident server (TMPDIR is the short runner temp directory for its socket).
+      - name: Fast backend (PB05)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 45
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/fast
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          cargo build --release --locked --features fast-backend
+          export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
+          node tests/fast_backend.mjs target/fast/release/tsuzuri
+          node tests/fast_backend.mjs programs target/fast/release/tsuzuri
+          node tests/fast_backend.mjs wasm target/fast/release/tsuzuri
+          node tests/server.mjs target/fast/release/tsuzuri
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         with:
@@ -346,3 +366,14 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           cargo test --locked --no-fail-fast
+      # PB05: the unit tests of the library and the binaries and the two integration tests of the fast backend, built with the feature (the
+      # run above does not compile src/backend). On the four hosts, because the translator emits x86-64 on two of them and AArch64 on the
+      # other two, and only a run on the host's own architecture executes what it emits.
+      - name: Rust tests of the fast backend (PB05)
+        if: ${{ !cancelled() }}
+        env:
+          RUST_MIN_STACK: "4194304"
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          cargo test --locked --no-fail-fast --features fast-backend --lib --bins --test fast_backend --test fast_backend_ops
