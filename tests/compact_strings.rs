@@ -213,6 +213,13 @@ fn shape i =
     let utf8 = Utf8String.from_string (ref shown)
     shown.length + Utf8String.length (ref utf8) + i
 "#,
+    r#"extern def host_note :: ref string -> i64
+
+export def shape :: i64 -> i64
+fn shape i =
+    let text = "caf\u00e9 " + to_string i
+    host_note (&text) + i
+"#,
 ];
 
 #[test]
@@ -334,18 +341,66 @@ fn raw_word_uses(ir: &str) -> Vec<String> {
                     .strip_prefix(&format!("icmp eq i64 {word}, "))
                     .is_some_and(|constant| constant.parse::<u64>().is_ok())
                 || operation.starts_with("store i64")
-                || operation.contains("@tz.string.")
-                || operation.contains("@tz.utf8string.")
-                || operation.contains("@tz.integer.parse")
-                || operation.contains("@tz.display.quote")
-                || operation.contains("@tz.format.put")
-                || operation.contains("@tz.format.scalars(");
+                || takes_the_word(operation, word);
             if !allowed {
                 found.push(format!("{name}: {line}"));
             }
         }
     }
     found
+}
+
+/// The runtime functions that take the length word of a string whole, and take it apart themselves, with
+/// the positions of their parameters that are such a word. The other parameters are counts: the word of a
+/// string must never be passed as `allocate`, `copy`, `widen` and the like take it.
+const WORD_PARAMETERS: &[(&str, &[usize])] = &[
+    ("tz.string.new", &[1]),
+    ("tz.string.to_ascii", &[2]),
+    ("tz.string.is_well_formed", &[1]),
+    ("tz.string.to_well_formed", &[1]),
+    ("tz.string.slice", &[1]),
+    ("tz.string.join", &[1]),
+    ("tz.utf8string.from_string", &[1]),
+    ("tz.integer.parse", &[1]),
+    ("tz.integer.parse128", &[1]),
+    ("tz.display.quote", &[1]),
+    ("tz.format.put", &[3]),
+    ("tz.format.scalars", &[1]),
+];
+
+/// Whether `operation` calls a function of `WORD_PARAMETERS` and passes `word` only as an argument that is a word.
+fn takes_the_word(operation: &str, word: &str) -> bool {
+    let Some(call) = operation
+        .strip_prefix("call ")
+        .or_else(|| operation.strip_prefix("tail call "))
+    else {
+        return false;
+    };
+    let Some((name, arguments)) = call
+        .split_once('@')
+        .and_then(|(_, rest)| rest.split_once('('))
+    else {
+        return false;
+    };
+    let Some((_, positions)) = WORD_PARAMETERS
+        .iter()
+        .find(|(function, _)| *function == name)
+    else {
+        return false;
+    };
+    let arguments = arguments
+        .rsplit_once(')')
+        .map_or(arguments, |(list, _)| list);
+    let mut passed = false;
+    for (index, argument) in arguments.split(", ").enumerate() {
+        if argument.ends_with(&format!(" {word}")) {
+            if !positions.contains(&index) {
+                return false;
+            }
+            passed = true;
+        }
+    }
+    passed
 }
 
 fn mentions(line: &str, word: &str) -> bool {
@@ -372,6 +427,20 @@ fn the_lint_finds_a_word_that_is_used_as_a_count() {
     assert_eq!(
         raw_word_uses(ir),
         ["tz.fn.Main.f: %v2 = add i64 %v1, 1".to_owned()]
+    );
+}
+
+#[test]
+fn the_lint_lets_a_word_go_only_to_the_parameter_that_takes_it() {
+    let ir = "\ndefine internal i64 @tz.fn.Main.g(%tz.string %s, ptr %p) {\n  %v1 = extractvalue %tz.string %s, 1\n  %v2 = call %tz.string @tz.string.allocate(i64 %v1)\n  %v3 = call %tz.string @tz.string.slice(ptr %p, i64 %v1, i64 %v1, i64 0)\n  %v4 = call %tz.string @tz.string.slice(ptr %p, i64 %v1, i64 0, i64 1)\n  %v5 = call i1 @tz.string.to_ascii(ptr %p, ptr %p, i64 %v1)\n  %v6 = call i64 @tz.string.copy(ptr %p, ptr %p, i64 %v1)\n  ret i64 0\n}\n";
+    assert_eq!(
+        raw_word_uses(ir),
+        [
+            "tz.fn.Main.g: %v2 = call %tz.string @tz.string.allocate(i64 %v1)".to_owned(),
+            "tz.fn.Main.g: %v3 = call %tz.string @tz.string.slice(ptr %p, i64 %v1, i64 %v1, i64 0)"
+                .to_owned(),
+            "tz.fn.Main.g: %v6 = call i64 @tz.string.copy(ptr %p, ptr %p, i64 %v1)".to_owned(),
+        ]
     );
 }
 
@@ -415,6 +484,60 @@ fn program_functions(ir: &str) -> String {
         .filter(|function| function.contains("@tz.fn.") && !function.contains("@tz.fn.tz."))
         .collect::<Vec<_>>()
         .join("\ndefine ")
+}
+
+/// The text of the function `name` (without the `@`), from its `define` line to its closing brace.
+fn function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let head = format!(" @{name}(");
+    let start = ir
+        .match_indices("\ndefine ")
+        .map(|(at, _)| at + 1)
+        .find(|at| {
+            ir[*at..]
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains(&head))
+        })
+        .unwrap_or_else(|| panic!("{name} is defined"));
+    let rest = &ir[start..];
+    &rest[..rest.find("\n}\n").map_or(rest.len(), |end| end + 3)]
+}
+
+#[test]
+fn a_host_import_gets_a_utf16_copy_that_is_freed_after_the_call() {
+    let source = PROGRAMS[PROGRAMS.len() - 1];
+    assert!(source.starts_with("extern def host_note :: ref string -> i64"));
+    for (wasm, simd) in [(false, false), (true, false), (true, true)] {
+        let compact = emit(source, StringForm::Compact, wasm, simd);
+        let wrapper = function_body(&compact, "tz.fn.Main.host_note");
+        let borrow = wrapper
+            .find("call %tz.string @tz.string.borrow_utf16(")
+            .unwrap_or_else(|| panic!("the import borrows UTF-16 text\n{wrapper}"));
+        let call = wrapper
+            .find("call i64 @tsuzuri_host_Main_host_note(")
+            .unwrap_or_else(|| panic!("the import is called\n{wrapper}"));
+        let free = wrapper
+            .rfind("call void @tz.free(ptr ")
+            .unwrap_or_else(|| panic!("the copy is freed\n{wrapper}"));
+        assert!(borrow < call && call < free, "{wrapper}");
+        // Only a copy is freed: the pointer is the copy for a string with the mark, null for the original.
+        let freed = wrapper[free..]
+            .split_once("ptr ")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(value, _)| value.to_owned())
+            .unwrap();
+        assert!(
+            wrapper.contains(&format!("{freed} = select i1 ")) && wrapper.contains(", ptr null"),
+            "{wrapper}"
+        );
+        // The UTF-16 form passes the string as it is and frees nothing.
+        let utf16 = emit(source, StringForm::Utf16, wasm, simd);
+        let wrapper = function_body(&utf16, "tz.fn.Main.host_note");
+        assert!(
+            !wrapper.contains("borrow_utf16") && !wrapper.contains("@tz.free"),
+            "{wrapper}"
+        );
+    }
 }
 
 #[test]
