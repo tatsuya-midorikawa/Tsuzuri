@@ -701,13 +701,13 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 
 ## 受け入れ条件
 
-- [ ] D1・D2・D3 が承認されている。
-- [ ] `--backend fast` が Phase 1 の範囲で動き、範囲外は診断の表のとおり E2000・E2002 になる。
-- [ ] `--backend fast` を指定しないビルドの IR・成果物が byte 単位で変わらない。`--features` なしの build と全テストが成功する。
-- [ ] `tests/fast_backend.rs` と `tests/fast_backend.mjs` の既定 mode・`parity` mode が成功する。
-- [ ] 「生成コードの確認」をすべて満たす。
-- [ ] M1〜M5 を計測して docs/benchmarks.md に記録し、計測していない数値を書いていない。
-- [ ] GUIDE §10 の完了の定義を満たす。
+- [x] D1・D2・D3 が承認されている（2026-10-17）。
+- [x] `--backend fast` が Phase 1 の範囲で動き、範囲外は診断の表のとおり E2000・E2002 になる（Phase 2・D13 の範囲まで広げた）。
+- [x] `--backend fast` を指定しないビルドの IR・成果物が byte 単位で変わらない（統合 branch の compiler との 576 件の比較で差 0）。`--features` なしの build と全テストが成功する（111 target、1,603 件）。
+- [x] `tests/fast_backend.rs` と `tests/fast_backend.mjs` の既定 mode・`parity` mode が成功する。
+- [x] 「生成コードの確認」をすべて満たす（hello の 2 つの object の SHA-256 が同じ、定義する symbol が同じ、未定義の symbol は LLVM 経路の部分集合、trap は `brk`、stderr が空）。
+- [x] M1〜M5 を計測して docs/benchmarks.md に記録し、計測していない数値を書いていない（標本は 7 件。共有機の参考値）。
+- [x] GUIDE §10 の完了の定義を満たす（静かな機械での正式な比較は統合担当）。
 
 ## 落とし穴
 
@@ -907,8 +907,8 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 | `cargo +1.85.0 check --locked --features fast-backend`（MSRV） | 成功（rustc 1.85.0） |
 | Windows の型検査（`cargo check --all-targets --locked --features fast-backend --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`） | 成功（2 target とも。stable 1.96.1。Windows での実行は未確認） |
 | `node tests/fast_backend.mjs`（既定の 11 段）、`programs`（同じ出力 21・同じ export 85・差 0・比べないもの 12）、`debug`（21 project の 1,393 関数、行の欠けなし）、`wasm`（同じ挙動 96・差 0・比べないもの 22、module は 1.10 倍） | 成功。`programs`・`wasm` は `TSUZURI_STRINGS=compact` でも成功 |
-| `node tests/fast_backend.mjs parity …`（`FAST_FORCE=1`、Node 24） | TBD-PARITY |
-| Linux のコンテナ（AArch64 は native、x86-64 は Rosetta）: 実際の driver と、翻訳器の object だけの経路 | 成功（docs/benchmarks.md の測定 4）。x86-64 の driver の確認は最後の merge の前の木 |
+| `node tests/fast_backend.mjs parity …`（`FAST_FORCE=1`、Node 24） | 成功: native 18 suite と wasm32 を含む 9 suite（Node 24）、`TSUZURI_STRINGS=compact` の 7 suite。fall back は `half`（7 件）と 1 行に複数の命令を書いた手書きの IR（1 件）だけで、suite の期待値は変えていない |
+| Linux のコンテナ（AArch64 は native、x86-64 は Rosetta）: 実際の driver と、翻訳器の object だけの経路 | 成功（docs/benchmarks.md の測定 4。AArch64 は既定の mode・`programs`・`wasm`・cargo test、x86-64 は既定の mode・`programs`・cargo test を、統合後の木で） |
 | `node tests/server.mjs`（`--backend fast` を含む）、`cargo test --test lto`、`node tests/pgo.mjs` | 成功（`server.mjs`: `--backend fast` の 3 つの command がサーバー経由と単独で同じ結果。`pgo.mjs`: 16 節成功。`lto` は全体の cargo test に含まれ 21 件成功） |
 | `node scripts/check-docs.mjs`（変更した 4 ページ）、`git diff --check` | 成功（`debugging.md`・`option.md`・`platforms.md`・`usage.md`・`webassembly.md` の 5 ページ、178 リンク、11 例、native 10 回） |
 | 旗なしの出力の不変: `src/llvm*.rs`・`src/runtime/` は統合 branch と差がない。統合 branch の `63a12d4a` を `git archive` から build した compiler と、この branch の compiler（feature あり・なし）で、`examples/`・`tests/fixtures/` の 118 project の `--emit llvm`（`-O0`・`-O3`）と、13 の example の `--emit object`・wasm32 の module（`-O0`・`-O3`）を作って比べた | 576 件すべてで、終了状態・stderr・成果物の byte が一致（差 0）。`tests/fast_backend.mjs` の既定 mode も `--backend llvm` を付けた IR と付けない IR を byte 比較する |
