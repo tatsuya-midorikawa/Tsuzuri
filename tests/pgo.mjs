@@ -428,6 +428,51 @@ try { profileBytes(await open(${JSON.stringify(plain)})); } catch (error) { cons
   assert.equal(profraws(directory).length, 1);
   assert.match(refused.refused, /does not export __llvm_profile_raw_version/);
 
+  // Several writers that save into one directory keep every profile: each call makes a file of its own and replaces none.
+  // The writer imported under two query strings is two module instances, as the writers of two modules and of two worker
+  // threads are: each counts its files from 0, and all of them have the id of this process.
+  const href = pathToFileURL(writer).href;
+  const several = join(root, "wasm-several");
+  const [sequential, concurrent] = JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { readFileSync } from "node:fs";
+const writers = [await import(${JSON.stringify(`${href}?a`)}), await import(${JSON.stringify(`${href}?b`)})];
+const open = async () => (await WebAssembly.instantiate(readFileSync(${JSON.stringify(generated)}), {})).instance;
+const instances = [await open(), await open()];
+for (const instance of instances) instance.exports.tz_total(100000n);
+const save = (index) => writers[index % 2].writeProfile(instances[index % 2], ${JSON.stringify(several)});
+const sequential = [await save(0), await save(1)];
+const concurrent = await Promise.all([0, 1, 2, 3].map(save));
+console.log(JSON.stringify([sequential, concurrent]));
+`]).stdout.trim());
+  const saved = [...sequential, ...concurrent];
+  assert.equal(new Set(saved).size, 6, `a file for every call: ${saved.join(" ")}`);
+  assert.deepEqual(profraws(several), saved.map((path) => basename(path)).sort());
+  for (const path of saved) {
+    assert.match(basename(path), /^default_wasm_\d+_\d+\.profraw$/);
+    assert.ok(readFileSync(path).length > 0);
+    assert.deepEqual(readFileSync(path), readFileSync(saved[0]), "the same workload counted the same");
+  }
+  // Worker threads load a copy of the writer each, and write at the same time.
+  const workers = join(root, "wasm-workers");
+  const workerFile = join(root, "train-worker.mjs");
+  writeFileSync(workerFile, `import { readFileSync } from "node:fs";
+import { parentPort, workerData } from "node:worker_threads";
+const { writeProfile } = await import(workerData.writer);
+const { instance } = await WebAssembly.instantiate(readFileSync(workerData.module), {});
+instance.exports.tz_total(100000n);
+parentPort.postMessage(await writeProfile(instance, workerData.directory));
+`);
+  const threads = JSON.parse(execute(process.execPath, ["--input-type=module", "-e", `import { Worker } from "node:worker_threads";
+const start = () => new Promise((resolve, reject) => {
+  const worker = new Worker(new URL(${JSON.stringify(pathToFileURL(workerFile).href)}), { execArgv: [], workerData: { writer: ${JSON.stringify(href)}, module: ${JSON.stringify(generated)}, directory: ${JSON.stringify(workers)} } });
+  worker.once("message", resolve);
+  worker.once("error", reject);
+});
+console.log(JSON.stringify(await Promise.all([start(), start(), start(), start()])));
+`]).stdout.trim());
+  assert.equal(new Set(threads).size, 4, `a file for every thread: ${threads.join(" ")}`);
+  assert.equal(profraws(workers).length, 4);
+  for (const path of threads) assert.deepEqual(readFileSync(path), readFileSync(threads[0]));
+
   // The counts of the module are the counts of the native program of the same source.
   const counts = (file) => execute(profdata, ["show", "--all-functions", "--counts", file]).stdout.match(/tz_total:\n\s+Hash: \S+\n\s+Counters: \d+\n\s+Block counts: (\[[^\]]*\])/)?.[1];
   const nativeDirectory = join(root, "wasm-oracle-profile");

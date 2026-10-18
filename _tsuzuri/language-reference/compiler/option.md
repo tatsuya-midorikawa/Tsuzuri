@@ -236,6 +236,8 @@ instance.exports.tz_run(1000n); // 最適化したい仕事
 console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profraw
 ```
 
+`writeProfile` は、呼ぶたびに新しいファイルを作り、すでにあるファイルを上書きしません。`<n>` は、そのプロセスですでに使われている番号を飛ばした番号です。同じ Node のプロセスで何回呼んでも、いくつの module や Worker から呼んでも、書いたプロファイルは全部残り、`--profile-use prof` がまとめて merge します。
+
 書き出し役は Clang 21 の raw profile（version 10、32 bit）だけを書き、別の版で計装した module は拒否します。WebAssembly には間接呼び出しの対象を数えるランタイムがないので、`-mllvm -disable-vp` を計装と使用の両方に付け、間接呼び出しは最適化の根拠に入りません。`--wasm-feature threads`（カウンターが atomic でない）、`wasm64`、`--emit wasm` 以外、計装と `--wasm-opt` の併用は `E2000` です。`benchmarks/apps` は Node 24 で、`csv_aggregate` が約 14%、`tokenize`・`format_join`・`tree_transform` が 5〜8% 速くなり、`closure_pipeline` が約 5% 遅くなりました。`benchmarks/control` は差がありませんでした。Node 20 では `closure_capture` が約 50% 遅くなったので、使う JavaScript エンジンで測ってください。
 
 ## コード生成器
