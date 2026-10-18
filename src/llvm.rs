@@ -1803,6 +1803,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
+    let output = limit_worker_inlining(output);
     Ok((
         simd::with_vector_alignment(unique_declarations(output)),
         globals.traps,
@@ -2128,15 +2129,94 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
-/// Whether the adapters of closures and the workers of lambdas inline into the calls of known closures
-/// whatever their size (PM02). A static descriptor keeps the adapter in the program for as long as the
-/// descriptor exists, so LLVM no longer sees the sole call of a known closure's adapter as the last
-/// call of a local function, and a tiny program that built its closures inline grew by 11 to 17 % of
-/// its code. Native code measures better with the attribute. On WebAssembly the adapter that the
-/// descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
+/// Whether the adapters of closures and the workers of lambdas carry `alwaysinline`, so that they inline
+/// into the calls of known closures whatever their size (PM02). A static descriptor keeps the adapter
+/// in the program for as long as the descriptor exists, so LLVM no longer sees the sole call of a known
+/// closure's adapter as the last call of a local function, and a tiny program that built its closures
+/// inline grew by 11 to 17 % of its code. Native code measures better with the attribute at `-O1` to
+/// `-O3`. `limit_worker_inlining` keeps it off a worker that several calls name, and
+/// `without_closure_inlining` takes it off at `-O0`, `-Os` and `-Oz`. On WebAssembly the adapter that
+/// the descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
 /// without the attribute they are as large as before (`docs/benchmarks.md`, PM02).
 fn inline_closures(globals: &Globals) -> bool {
     !globals.wasm
+}
+
+const ALWAYS_INLINE: &str = " alwaysinline";
+
+/// `ir` without the `alwaysinline` of the functions that `strip` selects by symbol, or `None` when it
+/// has no such function.
+fn without_always_inline(ir: &str, mut strip: impl FnMut(&str) -> bool) -> Option<String> {
+    let mut offsets = Vec::new();
+    let mut start = 0;
+    for line in ir.split_inclusive('\n') {
+        if line.starts_with("define ")
+            && let Some(position) = line.find(ALWAYS_INLINE)
+            && traps::callable(line, true).is_some_and(|call| strip(call.name))
+        {
+            offsets.push(start + position);
+        }
+        start += line.len();
+    }
+    if offsets.is_empty() {
+        return None;
+    }
+    let mut output = String::with_capacity(ir.len());
+    let mut copied = 0;
+    for offset in offsets {
+        output.push_str(&ir[copied..offset]);
+        copied = offset + ALWAYS_INLINE.len();
+    }
+    output.push_str(&ir[copied..]);
+    Some(output)
+}
+
+/// A lambda's worker keeps `alwaysinline` only while at most one call names it besides its adapters.
+/// A lambda without captures is called by name where its closure is known, and the attribute would
+/// copy a large body into each of those calls, at every optimization level.
+fn limit_worker_inlining(ir: String) -> String {
+    const WORKER: &str = "@tz.fn.$lambda.";
+    if !ir.contains(WORKER) {
+        return ir;
+    }
+    let mut references = BTreeMap::<&str, usize>::new();
+    let mut owner = "";
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            owner = traps::callable(line, true).map_or("", |call| call.name);
+            continue;
+        }
+        for (start, _) in line.match_indices(WORKER) {
+            let digits = line[start + WORKER.len()..]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            let worker = &line[start..start + WORKER.len() + digits];
+            // The adapters of a lambda are `@tz.apply.$lambda.N.<captures>`; they call its worker.
+            let own_adapter = owner
+                .strip_prefix("@tz.apply.$lambda.")
+                .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+                .is_some_and(|rest| rest.starts_with('.'));
+            if !own_adapter {
+                *references.entry(worker).or_default() += 1;
+            }
+        }
+    }
+    without_always_inline(&ir, |symbol| {
+        references.get(symbol).is_some_and(|&count| count > 1)
+    })
+    .unwrap_or(ir)
+}
+
+/// `ir` without the `alwaysinline` that `inline_closures` gives the adapters and the workers of
+/// lambdas. `-O0` and the size levels leave their inlining to the compiler: the attribute copies a
+/// worker into the adapter that a descriptor keeps and into every call, which made a small program
+/// 5 to 30 % larger at `-Os` and `-Oz` (`docs/benchmarks.md`, PM02).
+pub fn without_closure_inlining(ir: String) -> String {
+    without_always_inline(&ir, |symbol| {
+        symbol.starts_with("@tz.apply.") || symbol.starts_with("@tz.fn.$lambda.")
+    })
+    .unwrap_or(ir)
 }
 
 fn apply_attributes(globals: &Globals) -> &'static str {
@@ -8394,6 +8474,86 @@ mod tests {
         ));
         assert_eq!(lowered.matches("wasm-import-module").count(), 2);
         assert_eq!(with_net_imports("no declarations\n"), "no declarations\n");
+    }
+
+    /// Workers 1 and 12 are called once, 2 twice, 3 only by itself and 4 by itself and by another
+    /// function; 1 and 12 differ only in their last digit.
+    const CLOSURE_FUNCTIONS: &str = "\
+define internal i64 @tz.fn.$lambda.1(i64 %arg0) nounwind memory(none) alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.1.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.2.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.2(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.3(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.3(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.4(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.12(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.12.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.12(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %a = call i64 @tz.fn.$lambda.1(i64 %x)\n  %b = call i64 @tz.fn.$lambda.2(i64 %a)\n  %c = call i64 @tz.fn.$lambda.2(i64 %b)\n  %d = call i64 @tz.fn.$lambda.12(i64 %c)\n  %e = call i64 @tz.fn.$lambda.4(i64 %d)\n  ret i64 %e\n}\n";
+
+    #[test]
+    fn a_lambda_worker_named_by_several_calls_is_not_forced_inline() {
+        let limited = limit_worker_inlining(CLOSURE_FUNCTIONS.to_owned());
+        let inlined = |ir: &str| {
+            ir.lines()
+                .filter(|line| line.starts_with("define ") && line.contains(" alwaysinline"))
+                .map(|line| line.split('(').next().unwrap().rsplit(' ').next().unwrap())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            inlined(&limited),
+            [
+                "@tz.fn.$lambda.1",
+                "@tz.apply.$lambda.1.0",
+                "@tz.apply.$lambda.2.0",
+                "@tz.fn.$lambda.3",
+                "@tz.fn.$lambda.12",
+                "@tz.apply.$lambda.12.0",
+                "@tz.fn.Main.named",
+            ]
+        );
+        // Only the attribute of the two workers goes: the rest of the text is the same.
+        assert_eq!(
+            limited,
+            CLOSURE_FUNCTIONS
+                .replacen(
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind",
+                    1
+                )
+                .replacen(
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind",
+                    1
+                )
+        );
+        assert_eq!(limit_worker_inlining(limited.clone()), limited);
+        let plain =
+            "define internal i64 @tz.fn.Main.f(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\n";
+        assert_eq!(limit_worker_inlining(plain.to_owned()), plain);
+        // The adapter of lambda 10 is not an adapter of lambda 1.
+        let other = "define internal i64 @tz.fn.$lambda.1(i64 %x) nounwind alwaysinline {\nentry:\n  ret i64 %x\n}\n\n\
+define internal i64 @tz.apply.$lambda.10.0(i64 %a, ptr %env, i1 %borrow) nounwind {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %a)\n  ret i64 %v\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %x)\n  ret i64 %v\n}\n";
+        assert!(!limit_worker_inlining(other.to_owned()).contains(" alwaysinline"));
+    }
+
+    #[test]
+    fn closure_inlining_is_removed_from_adapters_and_lambda_workers_only() {
+        let stripped = without_closure_inlining(CLOSURE_FUNCTIONS.to_owned());
+        for line in stripped.lines().filter(|line| {
+            line.starts_with("define ")
+                && (line.contains("@tz.apply.") || line.contains("@tz.fn.$lambda."))
+        }) {
+            assert!(!line.contains(" alwaysinline"), "{line}");
+        }
+        assert_eq!(stripped.matches(" alwaysinline").count(), 1);
+        assert!(stripped.contains("@tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {"));
+        assert_eq!(
+            stripped.len() + 8 * " alwaysinline".len(),
+            CLOSURE_FUNCTIONS.len()
+        );
+        assert_eq!(without_closure_inlining(stripped.clone()), stripped);
     }
 
     #[test]

@@ -448,6 +448,14 @@ fn callbacks_lower_to_internal_c_wrappers() {
                 "{callback}"
             );
         }
+        // Nothing in the program builds, copies, or drops a function value, so the closure runtime
+        // (`closure.ll`) is not linked in, and no function builds a closure outside the adapters.
+        assert!(!ir.contains("@tz.closure."), "closure.ll is not needed");
+        let outside_adapters = ir
+            .split("\n\n")
+            .filter(|block| !block.contains("define internal ") || !block.contains("@tz.apply."))
+            .any(|block| block.contains("insertvalue %tz.closure"));
+        assert!(!outside_adapters, "a function value is built");
         // Wrappers are internal and take C scalars. A lone unit input has no C parameter,
         // and a borrowed handle is a pointer to a slot holding the host's handle.
         assert_eq!(
