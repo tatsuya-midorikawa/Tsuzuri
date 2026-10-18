@@ -24,6 +24,8 @@ pub const LATIN1: u64 = 1 << 62;
 pub const MASK: u64 = LATIN1 - 1;
 
 const KERNELS: &str = include_str!("runtime/string_latin1.ll");
+/// The same kernels with a 128-bit vector form where they have one (generate_utf.py writes it).
+const KERNELS_V128: &str = include_str!("runtime/string_latin1_v128.ll");
 const STRING_LAYER: &str = include_str!("runtime/string_compact.ll");
 const DISPLAY_LAYER: &str = include_str!("runtime/display_compact.ll");
 const CHARACTER_LAYER: &str = include_str!("runtime/character_compact.ll");
@@ -102,15 +104,21 @@ impl StringForm {
     }
 
     /// The string runtime for this form: `string.ll`, `utf8string.ll`, and the UTF-16 kernels that
-    /// follow them, up to the heap. `utf16` is that text for the UTF-16 form.
-    pub(crate) fn string_runtime<'a>(self, utf16: &'a str) -> Result<Cow<'a, str>, Diagnostic> {
+    /// follow them, up to the heap. `utf16` is that text for the UTF-16 form. The Latin-1 kernels are
+    /// the vector ones when `vector` is set, which is when the UTF-16 runtime is the vector one too:
+    /// native, and WebAssembly with `simd128`.
+    pub(crate) fn string_runtime<'a>(
+        self,
+        utf16: &'a str,
+        vector: bool,
+    ) -> Result<Cow<'a, str>, Diagnostic> {
         match self {
             Self::Utf16 => Ok(Cow::Borrowed(utf16)),
             Self::Compact => layered(
                 utf16,
                 STRING_TAKEN,
                 STRING_DROPPED,
-                &[KERNELS, STRING_LAYER],
+                &[if vector { KERNELS_V128 } else { KERNELS }, STRING_LAYER],
             )
             .map(Cow::Owned),
         }
@@ -578,14 +586,56 @@ mod tests {
     #[test]
     fn the_string_layer_takes_over_exactly_one_definition_of_each_name() {
         for (shape, utf16) in string_runtimes() {
-            let compact = StringForm::Compact.string_runtime(&utf16).unwrap();
-            assert_layer(&utf16, &compact, STRING_TAKEN, STRING_DROPPED, STRING_LAYER);
-            assert!(compact.contains(KERNELS), "{shape}");
-            let borrowed = StringForm::Utf16.string_runtime(&utf16).unwrap();
+            for vector in [false, true] {
+                let compact = StringForm::Compact.string_runtime(&utf16, vector).unwrap();
+                assert_layer(&utf16, &compact, STRING_TAKEN, STRING_DROPPED, STRING_LAYER);
+                assert!(
+                    compact.contains(if vector { KERNELS_V128 } else { KERNELS }),
+                    "{shape} {vector}"
+                );
+                assert!(
+                    !compact.contains(if vector { KERNELS } else { KERNELS_V128 }),
+                    "{shape} {vector}"
+                );
+            }
+            let borrowed = StringForm::Utf16.string_runtime(&utf16, true).unwrap();
             assert!(
                 matches!(borrowed, Cow::Borrowed(text) if text == utf16),
                 "{shape}"
             );
+        }
+    }
+
+    #[test]
+    fn the_vector_kernels_define_every_scalar_kernel_and_only_the_helpers_more() {
+        let scalar = defined(KERNELS);
+        let vector = defined(KERNELS_V128);
+        for name in &scalar {
+            assert!(
+                vector.contains(name),
+                "{name} is missing from the vector kernels"
+            );
+        }
+        let scalar_tails = vector
+            .iter()
+            .filter(|name| name.ends_with(".scalar"))
+            .count();
+        let helpers: Vec<_> = vector
+            .iter()
+            .filter(|name| !scalar.contains(name) && !name.ends_with(".scalar"))
+            .collect();
+        assert_eq!(
+            helpers,
+            [
+                &"tz.utf8string.encode_latin1_run",
+                &"tz.string.utf8_to_latin1_run"
+            ]
+        );
+        assert!(scalar_tails >= 6, "{scalar_tails}");
+        for name in &vector {
+            if let Some(original) = name.strip_suffix(".scalar") {
+                assert!(scalar.contains(&original), "{name} has no reference");
+            }
         }
     }
 

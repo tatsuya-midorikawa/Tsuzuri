@@ -47,7 +47,7 @@ const results = new Map();
 
 async function wasmResults(label, build) {
   const wasm = join(scratch, `${label}.wasm`);
-  execute(build.compiler, ["build", fixture, "--target", "wasm32", `-O${build.optimization}`, "--allocator", "counting", "--no-cache", "-o", wasm], { env: build.env });
+  execute(build.compiler, ["build", fixture, "--target", "wasm32", `-O${build.optimization}`, ...(build.simd ? ["--wasm-feature", "simd128"] : []), "--allocator", "counting", "--no-cache", "-o", wasm], { env: build.env });
   const module = new WebAssembly.Module(readFileSync(wasm));
   assert.deepEqual(WebAssembly.Module.imports(module), [], `${label} has no imports`);
   const fresh = () => {
@@ -120,6 +120,12 @@ try {
   for (const build of builds) {
     await wasmResults(`wasm-${build.label}`, build);
     nativeResults(`native-${build.label}`, build);
+  }
+  // WebAssembly with simd128 selects the vector kernels (native always has them).
+  for (const form of ["utf16", "compact"]) {
+    for (const optimization of [0, 3]) {
+      await wasmResults(`wasm-simd128-${form}-O${optimization}`, { compiler, optimization, simd: true, env: { TSUZURI_STRINGS: form } });
+    }
   }
   const reference = results.get("wasm-utf16-O0");
   assert.equal(reference.size, probes.length * pairs.length);

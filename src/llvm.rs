@@ -1761,7 +1761,9 @@ fn emit_program_in(
         }
         if string_form == StringForm::Compact {
             let utf16 = output.split_off(string_runtime);
-            output.push_str(&string_form.string_runtime(&utf16)?);
+            output.push_str(
+                &string_form.string_runtime(&utf16, !wasm || instrumentation.wasm_simd128)?,
+            );
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")

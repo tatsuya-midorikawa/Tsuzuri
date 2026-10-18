@@ -328,9 +328,10 @@ right_bytes_first:
   ret i32 %reversed
 }
 
-; UTF-8 text that is all ASCII becomes a Latin-1 string, copied once; any other text is decoded by
-; the UTF-16 function, and so is every invalid one. A length that no text of UTF-16 units could have
-; is a trap before anything is read, as in the UTF-16 function.
+; UTF-8 text of which every scalar is at most U+00FF (ASCII and the Latin-1 letters) becomes a Latin-1 string,
+; counted by one scan and written once; any other text is decoded by the UTF-16 function, and so is every
+; invalid one. A length that no text of UTF-16 units could have is a trap before anything is read, as in
+; the UTF-16 function.
 define internal %tz.string @tz.string.from_utf8(ptr %source, i64 %byte_length) nounwind {
 entry:
   %fits = icmp ule i64 %byte_length, 27021597764222973
@@ -339,10 +340,20 @@ fail:
   call void @llvm.trap()
   unreachable
 scan:
-  %ascii = call i1 @tz.string.is_ascii(ptr %source, i64 %byte_length)
-  br i1 %ascii, label %latin1, label %utf16
-latin1:
-  %result = call %tz.string @tz.string.from_ascii(ptr %source, i64 %byte_length)
+  %scanned = call { i64, i32 } @tz.string.utf8_scan(ptr %source, i64 %byte_length)
+  %units = extractvalue { i64, i32 } %scanned, 0
+  %latin1 = icmp sge i64 %units, 0
+  br i1 %latin1, label %make, label %utf16
+make:
+  %result = call %tz.string @tz.string.allocate_latin1(i64 %units)
+  %data = extractvalue %tz.string %result, 0
+  %ascii = icmp eq i64 %units, %byte_length
+  br i1 %ascii, label %copy, label %transcode
+copy:
+  call void @tz.string.copy_bytes(ptr %data, ptr %source, i64 %units)
+  ret %tz.string %result
+transcode:
+  call void @tz.string.utf8_to_latin1(ptr %source, i64 %byte_length, ptr %data)
   ret %tz.string %result
 utf16:
   %legacy = call %tz.string @tz.string.from_utf8.utf16(ptr %source, i64 %byte_length)

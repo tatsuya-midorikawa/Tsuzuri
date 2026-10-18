@@ -1,7 +1,8 @@
 // PM03: the string runtime of `TSUZURI_STRINGS=compact`, called directly with raw length words.
 //
-// The compiler writes the IR of tests/fixtures/compact_strings_raw for wasm32; the IR has the whole
-// runtime, because the runtime files are appended whole. This test adds bridges that pass a pointer
+// The compiler writes the IR of tests/fixtures/compact_strings_raw for wasm32, with and without
+// `--wasm-feature simd128` (which selects the 128-bit vector kernels of the Latin-1 runtime); the IR has
+// the whole runtime, because the runtime files are appended whole. This test adds bridges that pass a pointer
 // and a length word, with bit 62 set for a Latin-1 string, to every function that takes over a
 // UTF-16 one, and to the kernels under them. Each result is compared with a JavaScript reference,
 // each buffer must be freed (the allocator is counted), and the length guards, which a program could
@@ -60,7 +61,8 @@ const bridges = [
   `define i32 @t_char_parse(ptr %src, i64 %w, i32 %scalar) {\n  %slot = alloca %tz.string, align 8\n  %t0 = insertvalue %tz.string zeroinitializer, ptr %src, 0\n  %ts = insertvalue %tz.string %t0, i64 %w, 1\n  store %tz.string %ts, ptr %slot\n  %s = trunc i32 %scalar to i1\n  %r = call i32 @tz.character.parse(ptr %slot, i1 %s)\n  ret i32 %r\n}\n`,
   `define i64 @t_join(ptr %parts, i64 %count, i32 %kind, ptr %out) {\n  %p0 = insertvalue %tz.array zeroinitializer, ptr %parts, 0\n  %p1 = insertvalue %tz.array %p0, i64 %count, 1\n${stringResult("call %tz.string @tz.display.join(%tz.array %p1, i32 %kind)")}`,
   `define i64 @t_quote(ptr %src, i64 %w, i32 %kind, ptr %out) {\n${stringResult("call %tz.string @tz.display.quote(ptr %src, i64 %w, i32 %kind)")}`,
-  `define i32 @t_is_ascii(ptr %p, i64 %n) {\n${flag("call i1 @tz.string.is_ascii(ptr %p, i64 %n)")}`,
+  `define i64 @t_utf8_scan(ptr %p, i64 %n, ptr %max) {\n  %r = call { i64, i32 } @tz.string.utf8_scan(ptr %p, i64 %n)\n  %u = extractvalue { i64, i32 } %r, 0\n  %m = extractvalue { i64, i32 } %r, 1\n  store i32 %m, ptr %max\n  ret i64 %u\n}\n`,
+  `define void @t_utf8_to_latin1(ptr %p, i64 %n, ptr %data) {\n  call void @tz.string.utf8_to_latin1(ptr %p, i64 %n, ptr %data)\n  ret void\n}\n`,
   `define i64 @t_slice(ptr %data, i64 %w, i64 %first, i64 %last, ptr %out) {\n${stringResult("call %tz.string @tz.string.slice(ptr %data, i64 %w, i64 %first, i64 %last)")}`,
   `define i64 @t_string_join(ptr %separator, i64 %sw, ptr %parts, i64 %count, ptr %out) {\n${stringResult("call %tz.string @tz.string.join(ptr %separator, i64 %sw, ptr %parts, i64 %count)")}`,
   `define i32 @t_is_latin1_units(ptr %p, i64 %n) {\n${flag("call i1 @tz.string.is_latin1_units(ptr %p, i64 %n)")}`,
@@ -115,9 +117,10 @@ define internal ptr @tz.realloc(ptr %old, i64 %o, i64 %n) nounwind {
 }
 `;
 
-function compile(optimization) {
-  const ir = join(scratch, `raw-O${optimization}.ll`);
-  execute(compiler, ["build", fixture, "--target", "wasm32", `-O${optimization}`, "--emit", "llvm", "-o", ir]);
+function compile(optimization, simd) {
+  const tag = `${simd ? "simd-" : ""}O${optimization}`;
+  const ir = join(scratch, `raw-${tag}.ll`);
+  execute(compiler, ["build", fixture, "--target", "wasm32", `-O${optimization}`, ...(simd ? ["--wasm-feature", "simd128"] : []), "--emit", "llvm", "-o", ir]);
   let text = readFileSync(ir, "utf8");
   for (const [name, type] of [["alloc", "ptr"], ["free", "void"], ["realloc", "ptr"]]) {
     const head = `define internal ${type} @tz.${name}(`;
@@ -125,15 +128,26 @@ function compile(optimization) {
     text = text.replace(head, `define internal ${type} @test.base_${name}(`);
   }
   writeFileSync(ir, text + counting + bridges);
-  const wasm = join(scratch, `raw-O${optimization}.wasm`);
+  const wasm = join(scratch, `raw-${tag}.wasm`);
   execute(clang, [
     "--target=wasm32-unknown-unknown", `-O${optimization}`, "-ffreestanding", "-fno-builtin", "-Wno-override-module",
-    "-mbulk-memory", "-nostdlib", ir, "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=1048576",
+    "-mbulk-memory", simd ? "-msimd128" : "-mno-simd128", "-nostdlib", ir, "-Wl,--no-entry", "-Wl,--export-memory", "-Wl,-z,stack-size=1048576",
     "-Wl,--max-memory=67108864", ...exported.map((name) => `-Wl,--export=${name}`), "-o", wasm,
   ]);
   const module = new WebAssembly.Module(readFileSync(wasm));
   assert.deepEqual(WebAssembly.Module.imports(module), [], "the runtime needs no imports");
+  // The vector kernels are in the module exactly when the build asks for simd128.
+  const instructions = disassemble(wasm);
+  if (instructions) assert.equal(/\bv128\./.test(instructions), simd, `${tag}: vector instructions iff simd128`);
   return { module, text };
+}
+
+// The text of the module's instructions, from llvm-objdump (TSUZURI_OBJDUMP, or next to clang); null when there is none.
+function disassemble(wasm) {
+  const objdump = process.env.TSUZURI_OBJDUMP ?? join(dirname(clang), "llvm-objdump");
+  const result = spawnSync(objdump, ["-d", wasm], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  if (result.error || result.status !== 0) return "";
+  return result.stdout;
 }
 
 // ---- the JavaScript side -------------------------------------------------------------------
@@ -284,7 +298,7 @@ function run(module, label) {
     const input = api.t_alloc(BigInt(Math.max(encoded.length, 1)));
     bytes().set(encoded, input);
     const decoded = output(api.t_from_utf8(input, BigInt(encoded.length), OUT));
-    const expectLatin = encoded.every((byte) => byte < 128);
+    const expectLatin = Array.from(text).every((character) => character.codePointAt(0) <= 0xff);
     same([decoded.form, decoded.units], [text.length === 0 ? "E" : expectLatin ? "L" : "U", unitsOf(text)], `from_utf8 ${JSON.stringify(text)}`);
     api.t_free(input);
     drop(decoded);
@@ -308,6 +322,83 @@ function run(module, label) {
     drop(source);
   }
   noLeaks(`${label}: utf8`);
+
+  // utf8_scan and utf8_to_latin1: ASCII and the pairs 0xC2/0xC3 + continuation make Latin-1; any other text, valid or not, is { -1, 0 }
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const scanned = (encoded) => {
+    let text;
+    try {
+      text = decoder.decode(encoded);
+    } catch {
+      return { units: -1n, max: 0, latin1: null };
+    }
+    let max = 0;
+    for (const character of text) {
+      const code = character.codePointAt(0);
+      if (code > 0xff) return { units: -1n, max: 0, latin1: null };
+      max = Math.max(max, code);
+    }
+    return { units: BigInt(text.length), max, latin1: Array.from(text, (character) => character.charCodeAt(0)) };
+  };
+  const scanCase = (encoded) => {
+    const input = api.t_alloc(BigInt(encoded.length + 40));
+    bytes().fill(0xc2, input, input + encoded.length + 40);
+    bytes().set(encoded, input);
+    const units = api.t_utf8_scan(input, BigInt(encoded.length), OUT + 16);
+    const max = view().getInt32(OUT + 16, true);
+    const expected = scanned(encoded);
+    same([units, max], [expected.units, expected.max], `utf8_scan ${Array.from(encoded)}`);
+    if (expected.latin1) {
+      const target = api.t_alloc(BigInt(expected.latin1.length + 8));
+      bytes().fill(0x5a, target, target + expected.latin1.length + 8);
+      api.t_utf8_to_latin1(input, BigInt(encoded.length), target);
+      same(Array.from(bytes().subarray(target, target + expected.latin1.length + 8)), [...expected.latin1, ...Array(8).fill(0x5a)], `utf8_to_latin1 ${Array.from(encoded)}`);
+      api.t_free(target);
+    }
+    api.t_free(input);
+  };
+  const pairs = [[0xc2, 0x80], [0xc3, 0xa9], [0xc3, 0xbf], [0xc2, 0xbf], [0xc3, 0x80], [0xc2, 0xa0]];
+  const invalid = [[0xc2], [0xc3], [0x80], [0xbf], [0xc0, 0x80], [0xc1, 0xbf], [0xc4, 0x80], [0xdf, 0xbf], [0xe2, 0x82, 0xac], [0xf0, 0x9f, 0x98, 0x80],
+    [0xed, 0xa0, 0x80], [0xff], [0xc2, 0x41], [0xc3, 0xc3, 0x80], [0xc2, 0x80, 0x80], [0xef, 0xbb, 0xbf], [0xe0, 0x80, 0x80], [0xf4, 0x90, 0x80, 0x80]];
+  const step = quick ? 5 : 1;
+  for (let length = 0; length <= 70; ++length) {
+    scanCase(Uint8Array.from(ascii(length)));
+    for (let at = 0; at < length; at += at < 40 ? step : 1) {
+      for (const pair of pairs) {
+        if (at + 2 > length) continue;
+        const text = ascii(length);
+        text.splice(at, 2, ...pair);
+        scanCase(Uint8Array.from(text));
+      }
+      for (const bad of invalid) {
+        if (at + bad.length > length) continue;
+        const text = ascii(length);
+        text.splice(at, bad.length, ...bad);
+        scanCase(Uint8Array.from(text));
+      }
+    }
+  }
+  // text that is all pairs, pairs that touch every block boundary, and random mutations of such text
+  let state = 0x2545f491;
+  const random = (limit) => {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    return (state >>> 8) % limit;
+  };
+  for (let round = 0; round < (quick ? 400 : 3000); ++round) {
+    const encoded = [];
+    const target = random(100);
+    while (encoded.length < target) {
+      if (random(3) === 0 && encoded.length + 2 <= target) encoded.push(...pairs[random(pairs.length)]);
+      else encoded.push(0x20 + random(95));
+    }
+    scanCase(Uint8Array.from(encoded));
+    if (encoded.length) {
+      const mutated = [...encoded];
+      mutated[random(mutated.length)] = random(256);
+      scanCase(Uint8Array.from(mutated));
+    }
+  }
+  noLeaks(`${label}: utf8 scan`);
 
   // is_well_formed
   for (const units of unitSamples) for (const form of formsOf(units)) {
@@ -338,15 +429,6 @@ function run(module, label) {
 
   // the kernels, around every size that a word or a vector would split
   for (let length = 0; length <= 70; ++length) {
-    const units = ascii(length);
-    const text = make(units, "L");
-    if (length) same(api.t_is_ascii(text.ptr, BigInt(length)), 1, `is_ascii ${length}`);
-    for (let at = 0; at < length; ++at) {
-      bytes()[text.ptr + at] = 0x80 + (at % 128);
-      same(api.t_is_ascii(text.ptr, BigInt(length)), 0, `is_ascii ${length} with a high byte at ${at}`);
-      bytes()[text.ptr + at] = units[at];
-    }
-    drop(text);
     const unitText = make(latin(length), "U");
     if (length) same(api.t_is_latin1_units(unitText.ptr, BigInt(length)), 1, `is_latin1_units ${length}`);
     for (let at = 0; at < length; ++at) {
@@ -661,13 +743,15 @@ function trapping(module) {
 }
 
 try {
-  for (const optimization of [0, 3]) {
-    const { module, text } = compile(optimization);
-    checks = 0;
-    run(module, `O${optimization}`);
-    const limits = guards(text, optimization);
-    trapping(module);
-    console.log(`compact strings raw O${optimization}: ${checks} checks of the Latin-1 kernels and dispatchers against references, ${limits.accepted} length-guard cases accepted and ${limits.traps} trapped`);
+  for (const simd of [false, true]) {
+    for (const optimization of [0, 3]) {
+      const { module, text } = compile(optimization, simd);
+      checks = 0;
+      run(module, `${simd ? "simd128 " : ""}O${optimization}`);
+      const limits = guards(text, optimization);
+      trapping(module);
+      console.log(`compact strings raw ${simd ? "wasm simd128" : "wasm scalar"} O${optimization}: ${checks} checks of the Latin-1 kernels and dispatchers against references, ${limits.accepted} length-guard cases accepted and ${limits.traps} trapped`);
+    }
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

@@ -114,37 +114,6 @@ exit:
   ret void
 }
 
-; Whether every byte is below 0x80, eight at a time.
-define internal i1 @tz.string.is_ascii(ptr %data, i64 %length) nounwind {
-entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %wide_next, %wide ], [ %next, %scalar ]
-  %remaining = sub i64 %length, %i
-  %enough = icmp uge i64 %remaining, 8
-  br i1 %enough, label %wide, label %tail
-wide:
-  %wide_pointer = getelementptr inbounds i8, ptr %data, i64 %i
-  %wide_word = load i64, ptr %wide_pointer, align 1
-  %wide_high = and i64 %wide_word, -9187201950435737472
-  %wide_clean = icmp eq i64 %wide_high, 0
-  %wide_next = add i64 %i, 8
-  br i1 %wide_clean, label %loop, label %no
-tail:
-  %done = icmp eq i64 %i, %length
-  br i1 %done, label %yes, label %scalar
-scalar:
-  %pointer = getelementptr inbounds i8, ptr %data, i64 %i
-  %byte = load i8, ptr %pointer
-  %ascii = icmp sge i8 %byte, 0
-  %next = add i64 %i, 1
-  br i1 %ascii, label %loop, label %no
-yes:
-  ret i1 true
-no:
-  ret i1 false
-}
-
 ; Whether every UTF-16 unit is at most 0xFF, four at a time.
 define internal i1 @tz.string.is_latin1_units(ptr %data, i64 %length) nounwind {
 entry:
@@ -318,4 +287,104 @@ valid:
   ret i1 true
 invalid:
   ret i1 false
+}
+
+; Reads `%byte_length` bytes of UTF-8 as text of which every scalar is at most U+00FF. When the text is valid
+; UTF-8 and has no scalar above 0xFF, the result is the number of scalars, which is the number of Latin-1
+; bytes and of UTF-16 units, and the largest scalar. Otherwise it is { -1, 0 }: the text is invalid or has
+; a scalar above 0xFF, and the caller decodes it as UTF-16, which reports an invalid text as it always did.
+; Text of that kind is ASCII bytes and pairs of a lead byte 0xC2 or 0xC3 and a continuation byte 0x80 to 0xBF.
+define internal { i64, i32 } @tz.string.utf8_scan(ptr %source, i64 %byte_length) nounwind {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %units = phi i64 [ 0, %entry ], [ %units_next, %advance ]
+  %max = phi i32 [ 0, %entry ], [ %max_next, %advance ]
+  %done = icmp eq i64 %i, %byte_length
+  br i1 %done, label %success, label %read
+read:
+  %pointer = getelementptr inbounds i8, ptr %source, i64 %i
+  %byte = load i8, ptr %pointer
+  %ascii = icmp sge i8 %byte, 0
+  br i1 %ascii, label %single, label %lead_test
+single:
+  %single_value = zext i8 %byte to i32
+  %single_next = add i64 %i, 1
+  br label %advance
+lead_test:
+  %lead_bits = and i8 %byte, -2
+  %is_lead = icmp eq i8 %lead_bits, -62
+  br i1 %is_lead, label %pair, label %fail
+pair:
+  %follow_index = add i64 %i, 1
+  %has_follow = icmp ult i64 %follow_index, %byte_length
+  br i1 %has_follow, label %follow, label %fail
+follow:
+  %follow_pointer = getelementptr inbounds i8, ptr %source, i64 %follow_index
+  %follow_byte = load i8, ptr %follow_pointer
+  %follow_bits = and i8 %follow_byte, -64
+  %is_continuation = icmp eq i8 %follow_bits, -128
+  br i1 %is_continuation, label %decoded, label %fail
+decoded:
+  %high_bits = and i8 %byte, 3
+  %high_wide = zext i8 %high_bits to i32
+  %high_shifted = shl i32 %high_wide, 6
+  %low_bits = and i8 %follow_byte, 63
+  %low_wide = zext i8 %low_bits to i32
+  %pair_value = or i32 %high_shifted, %low_wide
+  %pair_next = add i64 %i, 2
+  br label %advance
+advance:
+  %value = phi i32 [ %single_value, %single ], [ %pair_value, %decoded ]
+  %next = phi i64 [ %single_next, %single ], [ %pair_next, %decoded ]
+  %units_next = add i64 %units, 1
+  %greater = icmp ugt i32 %value, %max
+  %max_next = select i1 %greater, i32 %value, i32 %max
+  br label %loop
+success:
+  %result_units = insertvalue { i64, i32 } zeroinitializer, i64 %units, 0
+  %result = insertvalue { i64, i32 } %result_units, i32 %max, 1
+  ret { i64, i32 } %result
+fail:
+  ret { i64, i32 } { i64 -1, i32 0 }
+}
+
+; Writes the Latin-1 bytes of `%byte_length` bytes of UTF-8 that @tz.string.utf8_scan accepted. The
+; buffer holds the number of bytes that the scan counted.
+define internal void @tz.string.utf8_to_latin1(ptr %source, i64 %byte_length, ptr %data) nounwind {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %o = phi i64 [ 0, %entry ], [ %o_next, %advance ]
+  %done = icmp eq i64 %i, %byte_length
+  br i1 %done, label %exit, label %read
+read:
+  %pointer = getelementptr inbounds i8, ptr %source, i64 %i
+  %byte = load i8, ptr %pointer
+  %ascii = icmp sge i8 %byte, 0
+  br i1 %ascii, label %single, label %pair
+single:
+  %single_next = add i64 %i, 1
+  br label %advance
+pair:
+  %follow_index = add i64 %i, 1
+  %follow_pointer = getelementptr inbounds i8, ptr %source, i64 %follow_index
+  %follow_byte = load i8, ptr %follow_pointer
+  %high_bits = and i8 %byte, 3
+  %high_shifted = shl i8 %high_bits, 6
+  %low_bits = and i8 %follow_byte, 63
+  %pair_value = or i8 %high_shifted, %low_bits
+  %pair_next = add i64 %i, 2
+  br label %advance
+advance:
+  %value = phi i8 [ %byte, %single ], [ %pair_value, %pair ]
+  %next = phi i64 [ %single_next, %single ], [ %pair_next, %pair ]
+  %destination = getelementptr inbounds i8, ptr %data, i64 %o
+  store i8 %value, ptr %destination
+  %o_next = add i64 %o, 1
+  br label %loop
+exit:
+  ret void
 }
