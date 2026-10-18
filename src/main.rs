@@ -3187,8 +3187,13 @@ mod tests {
         let option = |name: &str| {
             format!("--backend fast does not support {name} yet; remove it or use --backend llvm")
         };
-        // The message does not name which profile option was given.
-        let profile = "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned();
+        // The message does not name which profile option was given. The profile options are checked
+        // after the others, so a build without the fast backend says that first.
+        let profile = if cfg!(feature = "fast-backend") {
+            "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned()
+        } else {
+            "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned()
+        };
         let fast = |extra: &[&'static str]| {
             let mut values = vec!["build", "Main.tz", "--backend", "fast"];
             values.extend_from_slice(extra);
