@@ -139,7 +139,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB02 | [フロントエンドの確保削減と高速化](_completed/PB02-frontend-allocation.md) | P0 | L | PX03 | done |
 | PB03 | [LLVM とリンカーへの受け渡しの高速化](_completed/PB03-llvm-handoff.md) | P1 | M | PX03 | done |
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
-| PB05 | [デバッグビルド用の高速バックエンド](PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | doing |
+| PB05 | [デバッグビルド用の高速バックエンド](_completed/PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | done |
 | PB06 | [常駐ビルドサーバーと watch モード](_completed/PB06-build-server.md) | P2 | L | PB02, (G17) | done |
 | PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
 
@@ -181,15 +181,16 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   生成 IR と runtime の PM02 → PM04 → PM03、生成 IR を読むため最後に PB05 の順で、統合のたびに全 suite を確認し、既定の出力が変わる箇所をチケットごとに宣言したものと照合します。
   共有機で並行して進めるため、時間の測定は負荷を記録した参考値とし、静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
 
-- **PB05**（計画。全フェーズを実装する）: 起票時の `f8dc655` から、`runtime_objects`（numeric と math）、`compile_runtime_object`、`run` が常に `trap_info`（計装は IR の書き換えなので fast でも使える）、
-  runtime IR の SIMD・atomic・TLS・`weak`・`fastcc`・`byval` が増えていました。IR の棚卸し（命令 51 種・intrinsic 47 種・vector 型 23 種）で D6 に無い構成要素に個別の方針を決め、
-  停止条件 1・2・3・8 は解消しました。Cranelift は `rust-version` 1.85 以下の最新の 0.121.2（31 package、C を compile する `build.rs` なし）を `=` で固定し、feature `fast-backend`（`x86`・`arm64`）に入れます。
-  `cranelift-native` は使わず、出力は host の CPU に依りません。スパイクでは、Cranelift の back end は LLVM の命令あたり約 1/4 の時間で関数単位に並列化でき、Mach-O は `LC_BUILD_VERSION` を足せば
-  warning なしで link でき、TLS と trap の signal（SIGTRAP）が LLVM 経路と合うことを確認しました。計測は back end だけで、ゲート（合成 1,000 module の `build-edit-body`）は WP9 で測ります。
-  検証の wrapper は 2 経路（`tsuzuri` の `build`/`run` と、`TSUZURI_CLANG` の `.ll` の `-O0`）で、suite の多くは `--emit llvm` の IR を自分で clang に渡すので後者が主（約 410 件、前者は約 190 件）です。
-  `half` は駆動側が `F16Path::Soft`、vector は lane の scalar 化、集約値は 2 層（小さいものは平らに、大きいものは参照）で扱います。`-g` の行情報（Phase 2）は IR の `!DILocation` から gimli で作り、
-  変数・型の DIE は作りません。wasm の直接生成（D13）は、wasm32 `-O0` の Clang が 57〜60%（合成 200 module）と確かめましたが、`object` に wasm の writer がなく Cranelift も wasm を出さないので
-  （手書きの relocatable wasm の writer が約 3.5〜4.5K 行）、ゲートを通った後に WP16 で再確認して WP17〜20 で実装します。D12（既定の切り替え）は行わず `llvm` が既定のままです。
+- **PB05**（実装済み。全フェーズ。D12 は行わず、既定は `llvm`）: `--backend fast`（cargo feature `fast-backend`、Cranelift 0.121.2。`=` で固定）が、`-O0` の native（`--emit exe|object`、macOS・Linux の AArch64・x86-64）と
+  wasm32（`--emit wasm|object`。D13: Clang を使わず再配置可能な wasm の object を書き、`wasm-ld` でリンク）で、Tsuzuri の出す LLVM IR を Clang に渡さずに翻訳します。
+  `build`・`run`・`test`、`--trap-info`、`-g`（行の DWARF。gimli）、`--allocator small|counting`、`--freestanding`、`--trap-mode return` に対応し、範囲外は `E2000`、翻訳できない構成要素は `E2002` です。
+  Windows のホストでは `E2000` のままです（実行できる機械がなく、Windows の IR の `__multi3` などの 128 bit の署名を翻訳器が拒むため。MSVC の 2 target は型検査だけ）。
+  合成 1,000 module の `build-edit-body` は `llvm` の 0.56 倍（native）・0.47 倍（wasm32）、200 module は 0.53 倍と 0.42 倍（共有機の参考値）で、短くなるのは Clang の時間だけです（残りは frontend が 81〜93%）。
+  生成コードの実行時間は `llvm -O0` の 0.81 倍（native）・1.05 倍（wasm32）、成果物は 15〜17%・40〜43% 大きく、feature つきの `tsuzuri` は 9.47 → 13.5 MiB です（既定の build には入りません）。
+  意味の一致: `examples/`・`tests/fixtures/` の実行ファイル 21 個・library 85 個、wasm32 の 96 module、約 820 の演算（Clang と bit 単位。NaN の payload を除く）、既存の 27 suite（compact の 7 suite を含む）が `llvm` と一致し、
+  旗なしの出力は PB05 を入れる前の統合 branch（`63a12d4a`）と byte 単位で同じです（576 件）。macOS の AArch64 で全部、Linux は AArch64・x86-64 の Docker コンテナで driver と test を実行しました。
+  確認で見つけたこと: Cranelift の x86-64 は署名に `i128` があると panic する、`llvm.fmuladd` は x86-64 で融合しない、Windows 向けの IR の `__multi3` は翻訳器が `E2002` で拒む。
+  実装していないこと: D12、Windows のホストでの有効化、`-O1` 以上・`--cpu native`・`--emit shared|bitcode`・`--profile-*`・wasm32 の SIMD・threads などの `E2000`、wasm32 の配列・list の loop の構造化（1.3〜1.5 倍の差が残る）。
 - **PB06**（実装済み）: `tsuzuri watch check|build|test` と、プロジェクトごとの常駐サーバー `tsuzuri serve DIR`（Unix のソケット）、client の `--no-server` を実装しました。
   `main.rs` は `cli(raw, program_arguments, out, err)` に分け、サーバーは `check` と `build` だけを実行して出力・終了コード・成果物を `--no-server` と同じに返します
   （51 のコマンドと 115 project・345 コマンドで基準と一致）。コンパイラのパス・作業ディレクトリ・環境（`KEY_ENVIRONMENT`・`TSUZURI_*`・ツールとロケールの変数。
