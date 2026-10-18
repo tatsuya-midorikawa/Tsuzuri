@@ -934,7 +934,7 @@ node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照�
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成、Latin-1 の kernel（PM03）と生成物の再生成の一致。--asan／--exhaustive は拡張検証
 node tests/compact_strings.mjs target/release/tsuzuri --quick   # コンパクト文字列（PM03）。fixture を TSUZURI_STRINGS=utf16／compact × native／wasm32（simd128 も）× O0／O3 で作り、すべての出力が同じで、呼び出しごとに確保が残らないことを確かめる
-node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）
+node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）。vector 命令の有無の検査に llvm-objdump が要る（TSUZURI_OBJDUMP。無いと失敗し、CI でなければ TSUZURI_SKIP_OBJDUMP=1 でその検査だけを省ける）
 node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16   # 既存の文字列に関わる node の suite を TSUZURI_STRINGS=compact と utf16 の両方で実行する（full は到達しうる suite すべて）
 python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
 node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も

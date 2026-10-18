@@ -142,12 +142,19 @@ function compile(optimization, simd) {
   return { module, text };
 }
 
-// The text of the module's instructions, from llvm-objdump (TSUZURI_OBJDUMP, or next to clang); null when there is none.
+// The text of the module's instructions, from llvm-objdump (TSUZURI_OBJDUMP, or next to clang). A missing or failing
+// llvm-objdump fails the test, as in utf_simd.mjs and wasm_simd.mjs; TSUZURI_SKIP_OBJDUMP=1 skips the vector-instruction
+// check with a message (returns null), except where CI or LLVM_PREFIX says that the host has LLVM on purpose.
 function disassemble(wasm) {
   const objdump = process.env.TSUZURI_OBJDUMP ?? join(dirname(clang), "llvm-objdump");
   const result = spawnSync(objdump, ["-d", wasm], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (result.error || result.status !== 0) return "";
-  return result.stdout;
+  if (!result.error && result.status === 0) return result.stdout;
+  const detail = result.error ? result.error.message : `exit ${result.status}: ${result.stderr}`;
+  if (process.env.TSUZURI_SKIP_OBJDUMP === "1" && !process.env.CI && !process.env.LLVM_PREFIX) {
+    console.log(`compact strings raw: the vector-instruction check is skipped, ${objdump} did not run (${detail})`);
+    return null;
+  }
+  assert.fail(`${objdump} did not run (${detail}); set TSUZURI_OBJDUMP to llvm-objdump, or TSUZURI_SKIP_OBJDUMP=1 to skip the vector-instruction check where CI is not set`);
 }
 
 // ---- the JavaScript side -------------------------------------------------------------------
@@ -643,6 +650,9 @@ define internal void @tz.string.widen(ptr %to, ptr %from, i64 %length) {
   ret void
 }
 define internal void @tz.string.widen_in_place(ptr %data, i64 %length) {
+  ret void
+}
+define internal void @tz.string.latin1_fits(i64 %length) {
   ret void
 }
 ${names.map(definition).join("\n")}
