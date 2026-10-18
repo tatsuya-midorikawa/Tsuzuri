@@ -92,8 +92,11 @@ stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"tot
 `compact`（opt-in）は、全コード単位が 0xFF 以下（ASCII と Latin-1）の文字列を 1 単位 1 byte で持ち、そうでない文字列は UTF-16 のまま持ちます。
 `{ ptr, i64 }` の長さの語の bit 62 が Latin-1 の印で、bit 63 は常に 0 なので `Maybe<string>` の niche（長さ −1）は変わりません。
 空は既定で、ほかの値は IR を出すコマンドで `E2000` です（`check` と `lsp` は読みません）。値はビルドキャッシュのキーに入ります。
-値・長さ・添字・順序・等しさ・hash・表示・孤立サロゲート・トラップ・所有権・host との ABI（常に UTF-16。`export` の結果は UTF-16 へ広げ、import へ渡す引数は UTF-16 の複製）は、どちらのモードでも同じです。
-`String.to_code_units`／`from_code_units` は、Latin-1 の値では全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換になり、結果の値は変わりません。
+値・長さ・添字・順序・等しさ・hash・表示・孤立サロゲート・所有権・host との ABI（常に UTF-16。`export` の結果は UTF-16 へ広げ、import へ渡す引数は UTF-16 の複製）は、どちらのモードでも同じです。
+トラップも、長さの上限・孤立サロゲート・不正な入力の条件は同じ呼び出しで起きます。WebAssembly の heap（`--wasm-max-memory`。既定では 1 つの block が 16,777,184 bytes まで）の上限は、Latin-1 の文字列も UTF-16 の大きさ（1 単位 2 bytes）で数えるので、
+上限を超える長さは形式によらず同じ呼び出しで確保の失敗（`AllocationFailure`）の trap になります。heap の空きや native の malloc が実際に出せるかは形式で違い、ASCII・Latin-1 の文字列は半分の bytes で済むぶん、`compact` のほうが大きな文字列を作れる状況があります
+（`--allocator host` の WebAssembly は host の allocator が決めます）。
+`String.to_code_units`／`from_code_units` は、Latin-1 の値では全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）O(n) の変換になり、結果の値は変わりません。
 native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比較・変換に 128-bit vector の kernel を使い、simd128 なしの WebAssembly は scalar の kernel を使います。
 確保量は ASCII・Latin-1 の文字列で約半分になりますが、runtime の IR と小さな WebAssembly の大きさとビルド時間が増え、host へ短い文字列を返す呼び出しは遅くなるので、既定は `utf16` のままです
 （測定と判断は [ベンチマーク](benchmarks.md)、実装は [コンパイラ構成](architecture.md) の「コンパクト文字列（PM03）」、使い方は
@@ -1945,7 +1948,7 @@ UTF-8 バイト順序は Unicode スカラー値の昇順と完全に一致し�
 
 これらの所有権移送 API は入力引数の所有権を消費します。すでにヒープ領域上に確保されている所有バッファを渡した場合は、余分なメモリコピーや新規確保を発生させることなく、バッファポインタをそのまま $O(1)$ で安全に移送します。
 スタック上や静的バイナリ領域に配置されたデータに対して適用する場合は、事前に通常のヒープ昇格処理が行われます。なお、これらはデータ構造の表現を変換するのみであり、内部の文字エンコーディング変換を行うものではありません。
-ただし `TSUZURI_STRINGS=compact` で内部が Latin-1 の文字列を `String.to_code_units` へ渡す場合と、全要素が 0xFF 以下の配列を `String.from_code_units` へ渡す場合は、全単位を広げる（新しいバッファへコピー）・狭める（その場で）$O(n)$ の変換になります（結果の値は変わりません）。
+ただし `TSUZURI_STRINGS=compact` で内部が Latin-1 の文字列を `String.to_code_units` へ渡す場合と、全要素が 0xFF 以下の配列を `String.from_code_units` へ渡す場合は、全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）$O(n)$ の変換になります（結果の値は変わりません）。
 
 | エンコーディング相互変換・検証 API | 型シグネチャおよび仕様契約 |
 |---|---|

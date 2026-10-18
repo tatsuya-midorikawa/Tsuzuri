@@ -12,7 +12,8 @@
 ; that loads a vector of units.
 
 ; A Latin-1 string of `%length` units, with nothing written. 0 gives the empty string. Like
-; @tz.string.allocate, a length above 2^53 - 1 is a trap.
+; @tz.string.allocate, a length above 2^53 - 1 is a trap; so is, where the heap refuses a block above a
+; limit (WebAssembly), a length that the UTF-16 string of the same units would be refused (@tz.string.latin1_fits).
 define internal %tz.string @tz.string.allocate_latin1(i64 %length) nounwind {
 entry:
   %fits = icmp ule i64 %length, 9007199254740991
@@ -26,6 +27,7 @@ checkempty:
 zero:
   ret %tz.string zeroinitializer
 allocate:
+  call void @tz.string.latin1_fits(i64 %length)
   %data = call ptr @tz.alloc(i64 %length)
   %word = or i64 %length, 4611686018427387904
   %a = insertvalue %tz.string zeroinitializer, ptr %data, 0

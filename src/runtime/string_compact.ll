@@ -133,6 +133,7 @@ form:
   %any_utf16 = or i1 %a_utf16, %b_utf16
   br i1 %any_utf16, label %widen, label %bytes
 bytes:
+  call void @tz.string.latin1_fits(i64 %length)
   %latin1_data = call ptr @tz.realloc(ptr %a, i64 %an, i64 %length)
   %latin1_second = getelementptr i8, ptr %latin1_data, i64 %an
   call void @tz.string.copy_bytes(ptr %latin1_second, ptr %b, i64 %bn)

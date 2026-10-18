@@ -7556,6 +7556,10 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
   runtime の IR が 61 KB 増える（Latin-1 の kernel・vector 版・dispatcher・補間の層）のが、clang の時間と IR の大きさに出ます。`-O3` の hello の実行ファイルは 33,896 → 33,848 B で、これは減ります。
   ほかの `悪化` は、コンパイラ自身の最大 RSS（`build-object` で +0.3〜0.7 MB）と、文字列を使わない apps の最大 RSS の 16〜64 KB（`closure_pipeline`・`spectral_norm`。ページ 1〜4 枚）です。
+- 統合後の再測定（2026-10-18。統合ブランチ `e4025531`（PM02 とその review fix を含む）と、その上の F2 の修正 `2c931c87`。`examples/hello`、`-O3`、`TSUZURI_STRINGS=utf16` → `compact`、決定的な大きさ）:
+  native の `--emit llvm` 148,025 → 209,525 B（+41.5%）、wasm32 6,860 → 8,058 B（+17.5%。F2 の `latin1_fits` が +165 B）、native の実行ファイルは 33,960 B で同じ。
+  `--emit object` は 5,184 → 7,944 B です（WP9 の測定は 5,024 → 5,456 B）。差は統合ブランチの側で生じ（`e4025531` の時点で 7,944 B。F2 の前後で同じ）、compact の object に
+  `_tz.fn.$builtin.Utf8String.from_string` と `_tz.utf8string.from_string.bulk` が余分に残ります（`nm`。原因は調べていません）。リンクした実行ファイルでは未使用の関数が消えるので、大きさに出ません。
 - host との境界（native の C ホスト、`-O3`、7 回の最小。`target/perf/PM03/probe/boundary`）: compact は文字列の結果を host へ返すとき `to_utf16`（`realloc` と widen）を 1 回払います。
   `repeat_text`（std の `String.repeat` で 1,000 単位）は 798 ns → 616 ns に速くなり、約 30 単位の短い文字列を作って返す `concat_text` は 56 ns → 108 ns（+93%）に遅くなります。
   host から受ける文字列（`copy_text`）と `text_length` は 55 ns・1.3 ns で同じです。短い文字列を頻繁に host へ返すプログラムは、compact で遅くなり得ます。
