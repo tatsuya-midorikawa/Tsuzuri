@@ -18,6 +18,8 @@ use tsuzuri::driver::lto::{TargetAttributes, stamp_target_attributes};
 #[cfg(unix)]
 use tsuzuri::driver::lto::{is_bitcode, llvm_link_tool, probe_target_attributes};
 use tsuzuri::driver::{self, BuildOptions, Emit, Project};
+#[cfg(unix)]
+use tsuzuri::driver::{Cpu, OptLevel};
 use tsuzuri::llvm::{Allocator, EmitOptions, Entry, F16Path};
 
 fn clang() -> OsString {
@@ -1617,5 +1619,70 @@ fn a_failed_final_compile_names_llvm_link_only_when_it_ran() {
         "{message}"
     );
     assert!(message.contains(hint), "{message}");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn bitcode_takes_the_options_of_an_object() {
+    if llvm_tool("llvm-link").is_none() || !thinlto_link_works() {
+        return;
+    }
+    let directory = scratch("options");
+    let source = write(&directory, "Main.tz", BUFFERS);
+    let host = write(&directory, "host.c", BUFFERS_HOST);
+    // `-g` is linked with the host's default DWARF 5, which only warns (see native-interop.md).
+    let cases = [
+        (
+            "debug",
+            BuildOptions {
+                debug_info: true,
+                ..bitcode_options()
+            },
+        ),
+        (
+            "native",
+            BuildOptions {
+                cpu: Cpu::Native,
+                ..bitcode_options()
+            },
+        ),
+        (
+            "O0",
+            BuildOptions {
+                optimization: OptLevel::O0,
+                ..bitcode_options()
+            },
+        ),
+        (
+            "Oz",
+            BuildOptions {
+                optimization: OptLevel::Oz,
+                ..bitcode_options()
+            },
+        ),
+        (
+            "trap-info",
+            BuildOptions {
+                trap_info: true,
+                ..bitcode_options()
+            },
+        ),
+    ];
+    for (name, options) in cases {
+        let bitcode = directory.join(format!("{name}.bc"));
+        build(&source, &bitcode, options)
+            .unwrap_or_else(|error| panic!("{name}: {}", error.message));
+        assert!(is_bitcode(&fs::read(&bitcode).unwrap()), "{name}");
+        let program = link(
+            &clang(),
+            &directory,
+            name,
+            &[&host, &bitcode],
+            true,
+            &["-pthread"],
+        );
+        assert_eq!(run(&program), "100 42 6\n", "{name}");
+    }
     fs::remove_dir_all(directory).unwrap();
 }
