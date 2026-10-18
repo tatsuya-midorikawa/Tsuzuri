@@ -420,6 +420,7 @@ dependencies = [
  "cranelift-frontend",
  "cranelift-module",
  "cranelift-object",
+ "gimli",
  "rustc_apfloat",
  "same-file",
  "serde_json",

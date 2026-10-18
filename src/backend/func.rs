@@ -330,6 +330,10 @@ pub(crate) struct Func<'a> {
     pub indices: Vec<u32>,
     pub cases: Vec<(i128, u32)>,
     pub masks: Vec<i32>,
+    /// With `-g`: the metadata id of the `!dbg` location of each instruction, `NONE` where it has none.
+    pub dbg: Vec<u32>,
+    /// With `-g`: the metadata id of the function's `!dbg` subprogram, or `NONE`.
+    pub subprogram: u32,
 }
 
 /// What a constant needs to be read: the module's symbols and the thread's types.
@@ -756,6 +760,8 @@ impl<'a> Func<'a> {
             indices: Vec::new(),
             cases: Vec::new(),
             masks: Vec::new(),
+            dbg: Vec::new(),
+            subprogram: NONE,
         }
     }
 }

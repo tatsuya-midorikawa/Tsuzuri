@@ -9,7 +9,8 @@
 use cranelift_codegen::ir::immediates::Imm64;
 use cranelift_codegen::ir::{
     self, BlockArg, ExtFuncData, ExternalName, FuncRef, GlobalValue, GlobalValueData, InstBuilder,
-    MemFlags, StackSlot, StackSlotData, StackSlotKind, TrapCode, UserExternalName, Value, types,
+    MemFlags, SourceLoc, StackSlot, StackSlotData, StackSlotKind, TrapCode, UserExternalName,
+    Value, types,
 };
 use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::{FunctionBuilder, Switch};
@@ -100,6 +101,10 @@ pub(crate) fn lower_function<'a>(
     func: &Func<'a>,
     abi: &Abi,
 ) -> Res<()> {
+    if module.debug {
+        // Relative to a fixed base, a location is its metadata id whatever the first one is.
+        function.params.ensure_base_srcloc(SourceLoc::new(0));
+    }
     let b = FunctionBuilder::new(function, context);
     let mut lower = Lower {
         b,
@@ -149,6 +154,13 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let inst = func.insts[index as usize];
                 if matches!(inst, Inst::Phi { .. }) {
                     continue;
+                }
+                if let Some(&location) = func.dbg.get(index as usize) {
+                    self.b.set_srcloc(if location == NONE {
+                        SourceLoc::default()
+                    } else {
+                        SourceLoc::new(location)
+                    });
                 }
                 self.inst(inst, id)?;
             }

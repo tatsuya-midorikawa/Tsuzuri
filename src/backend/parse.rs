@@ -31,6 +31,16 @@ const SKIPPED_INTRINSICS: [&str; 8] = [
     "llvm.invariant.",
 ];
 
+/// The metadata id of the `!dbg !N` attachment in the tail of an instruction's line, or `NONE`.
+fn dbg_location(tail: &str) -> u32 {
+    let Some(at) = tail.find("!dbg !") else {
+        return NONE;
+    };
+    let digits = &tail[at + "!dbg !".len()..];
+    let end = digits.bytes().take_while(u8::is_ascii_digit).count();
+    digits[..end].parse().unwrap_or(NONE)
+}
+
 /// Words that start a constant, so that an argument attribute is not mistaken for one.
 fn starts_value(word: &str) -> bool {
     super::func::is_value_word(word)
@@ -40,7 +50,7 @@ fn starts_value(word: &str) -> bool {
 pub(crate) fn parse_function<'a>(cx: &mut Cx<'a>, header_pos: usize) -> Res<Func<'a>> {
     let mut lex = Lexer::new(cx.module.text, header_pos);
     let header = parse_header(&mut lex, &mut cx.types)?;
-    skip_function_attributes(&mut lex)?;
+    let subprogram = skip_function_attributes(&mut lex)?;
     lex.expect(b'{')?;
     let mut parser = Parser {
         cx,
@@ -51,6 +61,7 @@ pub(crate) fn parse_function<'a>(cx: &mut Cx<'a>, header_pos: usize) -> Res<Func
         unnamed_entry: None,
         in_entry: true,
     };
+    parser.func.subprogram = subprogram;
     parser.run()?;
     Ok(parser.func)
 }
@@ -95,7 +106,7 @@ impl<'a> Parser<'a, '_> {
             }
             let before = self.func.insts.len();
             self.instruction()?;
-            self.end_of_instruction()?;
+            let location = self.end_of_instruction()?;
             if closed {
                 self.func.insts.truncate(before);
             } else if let Some(inst) = self.func.insts[before..].last() {
@@ -107,6 +118,9 @@ impl<'a> Parser<'a, '_> {
                         | Inst::CondBr { .. }
                         | Inst::Switch { .. }
                 );
+            }
+            if self.cx.module.debug {
+                self.func.dbg.resize(self.func.insts.len(), location);
             }
         }
         self.func.blocks[current as usize].last = self.func.insts.len() as u32;
@@ -132,8 +146,9 @@ impl<'a> Parser<'a, '_> {
     }
 
     /// Only attachments, a comment or the closing brace may follow an instruction on its line. A
-    /// second instruction is not read, so it is refused rather than dropped.
-    fn end_of_instruction(&mut self) -> Res<()> {
+    /// second instruction is not read, so it is refused rather than dropped. Returns the metadata
+    /// id of the `!dbg` location of the instruction, or `NONE`.
+    fn end_of_instruction(&mut self) -> Res<u32> {
         self.lex.skip_ws();
         let next = self.lex.peek();
         if next == b'%'
@@ -155,8 +170,14 @@ impl<'a> Parser<'a, '_> {
                 self.lex.context()
             );
         }
+        let start = self.lex.pos;
         self.lex.skip_to_eol();
-        Ok(())
+        if !self.cx.module.debug {
+            return Ok(NONE);
+        }
+        let rest = &self.lex.text[start..self.lex.pos];
+        let rest = &rest[..rest.find(';').unwrap_or(rest.len())];
+        Ok(dbg_location(rest))
     }
 
     fn begin_block(&mut self, label: Option<&'a str>) -> Res<u32> {

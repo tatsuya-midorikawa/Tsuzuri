@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 
 use super::error::{Failure, FxMap, Res, bail};
+use super::func::NONE;
 use super::lex::Lexer;
 use super::types::{Ty, TypeTable, Types};
 
@@ -131,6 +132,8 @@ pub(crate) struct Module<'a> {
     pub by_name: FxMap<&'a str, u32>,
     /// The functions that the lowering calls though the text does not name them.
     pub libcalls: Vec<u32>,
+    /// Whether the IR carries debug information (`-g`): its instructions have `!dbg` locations.
+    pub debug: bool,
 }
 
 /// The `header` of a function that the translator adds: there is no text to read.
@@ -397,13 +400,15 @@ pub(crate) fn parse_header<'a>(lex: &mut Lexer<'a>, types: &mut Types<'a>) -> Re
 }
 
 /// Skips the function attributes between the parameter list and the `{` or the line end, and
-/// refuses the ones that change what the code means.
-pub(crate) fn skip_function_attributes(lex: &mut Lexer<'_>) -> Res<()> {
+/// refuses the ones that change what the code means. Returns the metadata id of the function's
+/// `!dbg` subprogram, or `NONE`.
+pub(crate) fn skip_function_attributes(lex: &mut Lexer<'_>) -> Res<u32> {
+    let mut subprogram = NONE;
     loop {
         lex.skip_ws();
         match lex.peek() {
-            b'{' | b'\n' | b';' => return Ok(()),
-            0 if lex.eof() => return Ok(()),
+            b'{' | b'\n' | b';' => return Ok(subprogram),
+            0 if lex.eof() => return Ok(subprogram),
             b'#' => {
                 lex.bump();
                 lex.uint()?;
@@ -418,11 +423,14 @@ pub(crate) fn skip_function_attributes(lex: &mut Lexer<'_>) -> Res<()> {
             b'!' => {
                 // Metadata attachments: `!dbg !12`.
                 lex.bump();
-                let _ = lex.word();
+                let kind = lex.word();
                 lex.skip_ws();
                 if lex.peek() == b'!' {
                     lex.bump();
-                    let _ = lex.word();
+                    let id = lex.word();
+                    if kind == "dbg" {
+                        subprogram = id.parse().unwrap_or(NONE);
+                    }
                 }
             }
             _ => {
@@ -677,6 +685,7 @@ pub(crate) fn scan(text: &str) -> Res<Module<'_>> {
         syms,
         by_name,
         libcalls,
+        debug: text.contains("!DICompileUnit("),
     })
 }
 
