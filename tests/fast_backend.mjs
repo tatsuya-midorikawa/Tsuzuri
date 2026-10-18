@@ -337,7 +337,8 @@ def main :: unit -> i32 = \\() ->
       const viaRun = (backend) => observe(execute(compiler, ["run", project, "-O0", "--backend", backend]));
       const reported = viaRun("llvm");
       assert.equal(reported.status, 1);
-      assert.match(reported.stderr, /error\[E2005\]: program terminated with signal: 5 \(SIGTRAP\)/);
+      // The signal of a trap is SIGTRAP on AArch64 (`brk`) and SIGILL on x86-64 (`ud2`).
+      assert.match(reported.stderr, /error\[E2005\]: program terminated with signal: \d+ \((SIGTRAP|SIGILL)\)/);
       assert.deepEqual(viaRun("fast"), reported);
     });
 
@@ -874,6 +875,7 @@ function wasmPrograms(compilerArgument) {
   const validate = (file) => spawnSync(process.execPath, ["-e", `process.exit(WebAssembly.validate(require("fs").readFileSync(process.argv[1])) ? 0 : 1)`, file]).status === 0;
   let same = 0;
   let stubbed = 0;
+  const sizes = { llvm: 0, fast: 0 };
   const differ = [];
   const skipped = [];
   const extra = process.env.FAST_WASM_ARGS ? process.env.FAST_WASM_ARGS.split(" ") : [];
@@ -907,12 +909,15 @@ function wasmPrograms(compilerArgument) {
         continue;
       }
       same++;
+      sizes.llvm += statSync(llvm).size;
+      sizes.fast += statSync(fast).size;
       if (expected.includes('"stub":true')) stubbed++;
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
   console.log(`same-behavior=${same} (with host imports stubbed: ${stubbed}) differ=${differ.length} skipped=${skipped.length}`);
+  console.log(`module bytes: llvm ${sizes.llvm}, fast ${sizes.fast} (${(sizes.fast / sizes.llvm).toFixed(2)}x)`);
   for (const line of differ) console.log(`DIFFER ${line}`);
   for (const line of skipped) console.log(`skipped ${line}`);
   process.exit(differ.length === 0 ? 0 : 1);
