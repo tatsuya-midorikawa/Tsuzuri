@@ -1073,26 +1073,35 @@ fn emit_program(
         Drain::InRequestOrder,
         &mut exhausted,
     )?;
-    if !exhausted {
-        return Ok(first);
-    }
-    // The worker budget ran out. Request order spreads it over every chain and cuts each of them
-    // part-way. This pass emits each function right before the functions it names and the workers
-    // of each function right after it, so the chains of as many functions as the budget allows are
-    // complete and the others keep the generic path.
-    emit_program_in(
-        module,
-        entry,
-        wasm,
-        tests,
-        debug_output,
-        instrumentation,
-        Drain::DepthFirst,
-        &mut exhausted,
-    )
+    let (output, marks) = if !exhausted {
+        first
+    } else {
+        // The worker budget ran out. Request order spreads it over every chain and cuts each of them
+        // part-way. This pass emits each function right before the functions it names and the workers
+        // of each function right after it, so the chains of as many functions as the budget allows are
+        // complete and the others keep the generic path.
+        emit_program_in(
+            module,
+            entry,
+            wasm,
+            tests,
+            debug_output,
+            instrumentation,
+            Drain::DepthFirst,
+            &mut exhausted,
+        )?
+    };
+    // The passes over the whole text run once, on the program that is kept: the text of a large
+    // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
+    // thrown away.
+    Ok((
+        simd::with_vector_alignment(unique_declarations(limit_worker_inlining(output))),
+        marks,
+    ))
 }
 
-/// Emits the program once. `exhausted` tells whether a worker request found the budget spent.
+/// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
+/// request found the budget spent.
 #[allow(clippy::too_many_arguments)]
 fn emit_program_in(
     module: &CheckedModule,
@@ -1810,11 +1819,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    let output = limit_worker_inlining(output);
-    Ok((
-        simd::with_vector_alignment(unique_declarations(output)),
-        globals.traps,
-    ))
+    Ok((output, globals.traps))
 }
 
 /// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
@@ -2152,18 +2157,24 @@ fn inline_closures(globals: &Globals) -> bool {
 const ALWAYS_INLINE: &str = " alwaysinline";
 
 /// `ir` without the `alwaysinline` of the functions that `strip` selects by symbol, or `None` when it
-/// has no such function.
+/// has no such function. The text is searched for the attribute, which few lines have, and only the
+/// line of a hit is looked at: a pass over the lines takes 5 ms for the 287,000 lines of a program of
+/// 200 modules.
 fn without_always_inline(ir: &str, mut strip: impl FnMut(&str) -> bool) -> Option<String> {
     let mut offsets = Vec::new();
-    let mut start = 0;
-    for line in ir.split_inclusive('\n') {
+    let mut next_line = 0;
+    for (hit, _) in ir.match_indices(ALWAYS_INLINE) {
+        if hit < next_line {
+            continue;
+        }
+        let start = ir[..hit].rfind('\n').map_or(0, |at| at + 1);
+        next_line = ir[hit..].find('\n').map_or(ir.len(), |at| hit + at + 1);
+        let line = &ir[start..next_line];
         if line.starts_with("define ")
-            && let Some(position) = line.find(ALWAYS_INLINE)
             && traps::callable(line, true).is_some_and(|call| strip(call.name))
         {
-            offsets.push(start + position);
+            offsets.push(hit);
         }
-        start += line.len();
     }
     if offsets.is_empty() {
         return None;
@@ -2178,36 +2189,78 @@ fn without_always_inline(ir: &str, mut strip: impl FnMut(&str) -> bool) -> Optio
     Some(output)
 }
 
+/// The start of a lambda's worker symbol, and the offset of the only `$` in it.
+const WORKER: &str = "@tz.fn.$lambda.";
+const WORKER_DOLLAR: usize = 7;
+
+/// The last `define` line of `lines`, which hold whole lines, without its line end.
+fn last_define_line(lines: &str) -> Option<&str> {
+    let start = match lines.rfind("\ndefine ") {
+        Some(at) => at + 1,
+        None if lines.starts_with("define ") => 0,
+        None => return None,
+    };
+    let rest = &lines[start..];
+    Some(&rest[..rest.find('\n').unwrap_or(rest.len())])
+}
+
 /// A lambda's worker keeps `alwaysinline` only while at most one call names it besides its adapters.
 /// A lambda without captures is called by name where its closure is known, and the attribute would
 /// copy a large body into each of those calls, at every optimization level.
+///
+/// The text is searched for the `$` of a worker's symbol, which few lines have, and only the line of
+/// a hit is looked at: a pass over the 287,000 lines of a program of 200 modules takes 8 ms.
 fn limit_worker_inlining(ir: String) -> String {
-    const WORKER: &str = "@tz.fn.$lambda.";
-    if !ir.contains(WORKER) {
-        return ir;
-    }
     let mut references = BTreeMap::<&str, usize>::new();
-    let mut owner = "";
-    for line in ir.lines() {
-        if line.starts_with("define ") {
-            owner = traps::callable(line, true).map_or("", |call| call.name);
+    // The lines before `next_line` have been looked at, and `define` is the last `define` line among
+    // them. `owner` is its symbol, which a reference asks for and which is then parsed once.
+    let mut next_line = 0;
+    let mut define = "";
+    let mut owner = None;
+    let mut in_define = false;
+    for (dollar, _) in ir.match_indices('$') {
+        let Some(start) = dollar.checked_sub(WORKER_DOLLAR) else {
+            continue;
+        };
+        if !ir.as_bytes()[start..].starts_with(WORKER.as_bytes()) {
             continue;
         }
-        for (start, _) in line.match_indices(WORKER) {
-            let digits = line[start + WORKER.len()..]
-                .bytes()
-                .take_while(u8::is_ascii_digit)
-                .count();
-            let worker = &line[start..start + WORKER.len() + digits];
-            // The adapters of a lambda are `@tz.apply.$lambda.N.<captures>`; they call its worker.
-            let own_adapter = owner
-                .strip_prefix("@tz.apply.$lambda.")
-                .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
-                .is_some_and(|rest| rest.starts_with('.'));
-            if !own_adapter {
-                *references.entry(worker).or_default() += 1;
+        if start >= next_line {
+            let line_start = ir[..start].rfind('\n').map_or(0, |at| at + 1);
+            if let Some(last) = last_define_line(&ir[next_line..line_start]) {
+                define = last;
+                owner = None;
+            }
+            let line_end = ir[start..].find('\n').map_or(ir.len(), |at| start + at);
+            next_line = ir.len().min(line_end + 1);
+            in_define = ir[line_start..line_end].starts_with("define ");
+            if in_define {
+                define = &ir[line_start..line_end];
+                owner = None;
             }
         }
+        if in_define {
+            continue;
+        }
+        let digits = ir[start + WORKER.len()..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        let worker = &ir[start..start + WORKER.len() + digits];
+        let symbol = *owner
+            .get_or_insert_with(|| traps::callable(define, true).map_or("", |call| call.name));
+        // The adapters of a lambda are `@tz.apply.$lambda.N.<captures>`; they call its worker.
+        let own_adapter = symbol
+            .strip_prefix("@tz.apply.$lambda.")
+            .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+            .is_some_and(|rest| rest.starts_with('.'));
+        if !own_adapter {
+            *references.entry(worker).or_default() += 1;
+        }
+    }
+    // Most programs have no worker that several calls name, and then there is no attribute to take off.
+    if references.values().all(|&count| count <= 1) {
+        return ir;
     }
     without_always_inline(&ir, |symbol| {
         references.get(symbol).is_some_and(|&count| count > 1)
@@ -8565,6 +8618,227 @@ define i64 @tz_user(i64 %x) {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %x)\
             CLOSURE_FUNCTIONS.len()
         );
         assert_eq!(without_closure_inlining(stripped.clone()), stripped);
+    }
+
+    /// `without_always_inline` as it was first written: it looked at every line.
+    fn without_always_inline_line_by_line(
+        ir: &str,
+        mut strip: impl FnMut(&str) -> bool,
+    ) -> Option<String> {
+        let mut offsets = Vec::new();
+        let mut start = 0;
+        for line in ir.split_inclusive('\n') {
+            if line.starts_with("define ")
+                && let Some(position) = line.find(ALWAYS_INLINE)
+                && traps::callable(line, true).is_some_and(|call| strip(call.name))
+            {
+                offsets.push(start + position);
+            }
+            start += line.len();
+        }
+        if offsets.is_empty() {
+            return None;
+        }
+        let mut output = String::with_capacity(ir.len());
+        let mut copied = 0;
+        for offset in offsets {
+            output.push_str(&ir[copied..offset]);
+            copied = offset + ALWAYS_INLINE.len();
+        }
+        output.push_str(&ir[copied..]);
+        Some(output)
+    }
+
+    /// `limit_worker_inlining` as it was first written: it looked at every line and searched it for
+    /// the worker.
+    fn limit_worker_inlining_line_by_line(ir: String) -> String {
+        if !ir.contains(WORKER) {
+            return ir;
+        }
+        let mut references = BTreeMap::<&str, usize>::new();
+        let mut owner = "";
+        for line in ir.lines() {
+            if line.starts_with("define ") {
+                owner = traps::callable(line, true).map_or("", |call| call.name);
+                continue;
+            }
+            for (start, _) in line.match_indices(WORKER) {
+                let digits = line[start + WORKER.len()..]
+                    .bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .count();
+                let worker = &line[start..start + WORKER.len() + digits];
+                let own_adapter = owner
+                    .strip_prefix("@tz.apply.$lambda.")
+                    .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+                    .is_some_and(|rest| rest.starts_with('.'));
+                if !own_adapter {
+                    *references.entry(worker).or_default() += 1;
+                }
+            }
+        }
+        without_always_inline_line_by_line(&ir, |symbol| {
+            references.get(symbol).is_some_and(|&count| count > 1)
+        })
+        .unwrap_or(ir)
+    }
+
+    #[test]
+    fn the_search_of_the_text_for_workers_finds_what_a_pass_over_the_lines_finds() {
+        // The only `$` of the symbol is at the offset that the search subtracts.
+        assert_eq!(WORKER.matches('$').count(), 1);
+        assert_eq!(WORKER.find('$'), Some(WORKER_DOLLAR));
+        for text in [
+            CLOSURE_FUNCTIONS,
+            "",
+            "define i64 @tz.fn.$lambda.1() alwaysinline {\n}\n",
+            // Several references in a line, one at the start of a line, `$` too near the start, and
+            // text that is not ASCII in front of a `$`.
+            "define internal i64 @tz.fn.$lambda.7(i64 %a) alwaysinline {\n}\n\
+define i64 @tz_user(i64 %x) {\n  %p = select i1 %c, ptr @tz.fn.$lambda.7, ptr @tz.fn.$lambda.7\n\
+@tz.fn.$lambda.7\n$lambda.7\n.$lambda.7 @tz.fn$lambda.7\néé$lambda.7 ééé@tz.fn.$lambda.7(\n\
+  %q = call i64 @tz.fn.$lambda.(i64 %x) @tz.fn.$lambda.x @tz.fn.$lambda.7x\n}\n",
+            "define internal i64 @tz.fn.$lambda.1(i64 %a) alwaysinline {\r\n}\r\n\
+define i64 @f() {\r\n  call @tz.fn.$lambda.1()\r\n  call @tz.fn.$lambda.1()\r\n}\r\n",
+            // The first line is a `define` line, the last has no line end, and the adapter is the
+            // owner of the references that follow it up to the next `define`.
+            "define internal i64 @tz.apply.$lambda.1.0(i64 %a) alwaysinline {\n  call @tz.fn.$lambda.1()\n\
+}\n  call @tz.fn.$lambda.1()\ndefine i64 @f() {\n  call @tz.fn.$lambda.1()",
+            "define i64 @f() {\n  call @tz.fn.$lambda.1() ; @tz.fn.$lambda.1",
+        ] {
+            assert_eq!(
+                limit_worker_inlining(text.to_owned()),
+                limit_worker_inlining_line_by_line(text.to_owned()),
+                "{text}"
+            );
+        }
+        // Text that is made of the lines that the emitter writes around workers, in any order.
+        let lines = [
+            "define internal i64 @tz.fn.$lambda.{n}(i64 %arg0) nounwind alwaysinline {",
+            "define internal i64 @tz.apply.$lambda.{n}.{k}(i64 %a, ptr %env, i1 %b) nounwind alwaysinline {",
+            "define internal i64 @\"tz.apply.$lambda.{n}.{k}\"(i64 %a) nounwind alwaysinline {",
+            "define internal i64 @tz.fn.Main.f$mono.{n}(i64 %x) nounwind alwaysinline {",
+            "define i64 @tz_user(i64 %x) {",
+            "define i64 @tz_other(ptr %p) personality ptr @tz.fn.$lambda.{n} {",
+            "  %v = call i64 @tz.fn.$lambda.{n}(i64 %x)",
+            "  %p = select i1 %c, ptr @tz.fn.$lambda.{n}, ptr @tz.fn.$lambda.{k}",
+            "  store ptr @tz.fn.$lambda.{n}, ptr %slot",
+            "  %w = call i64 @tz.fn.Main.f$mono.{n}(i64 %x)",
+            "  %é = call i64 @tz.apply.$lambda.{n}.0(i64 %x) ; é$lambda.{k}",
+            "@tz.fn.$lambda.{n}",
+            "  ret i64 %v",
+            "}",
+            "",
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap() % bound
+        };
+        let mut changed = 0;
+        for _ in 0..4000 {
+            let mut text = String::new();
+            for _ in 0..5 + next(36) {
+                let line = lines[next(lines.len())]
+                    .replace("{n}", &(1 + next(4)).to_string())
+                    .replace("{k}", &next(2).to_string());
+                text.push_str(&line);
+                text.push('\n');
+            }
+            if next(4) == 0 {
+                text.pop();
+            }
+            let limited = limit_worker_inlining(text.clone());
+            assert_eq!(
+                limited,
+                limit_worker_inlining_line_by_line(text.clone()),
+                "{text}"
+            );
+            changed += usize::from(limited != text);
+        }
+        assert!(changed > 100, "{changed} of the texts lose an attribute");
+    }
+
+    #[test]
+    fn the_search_of_the_text_for_the_attribute_finds_what_a_pass_over_the_lines_finds() {
+        type Selection = fn(&str) -> bool;
+        let selections: [(&str, Selection); 4] = [
+            ("closures", |symbol| {
+                symbol.starts_with("@tz.apply.") || symbol.starts_with("@tz.fn.$lambda.")
+            }),
+            ("ending in 1 or 3", |symbol| symbol.ends_with(['1', '3'])),
+            ("all", |_| true),
+            ("none", |_| false),
+        ];
+        // The stripped text and the symbols that were asked about, in order, are the same.
+        let check = |text: &str| {
+            for (name, strip) in selections {
+                let (mut asked, mut asked_in_lines) = (Vec::new(), Vec::new());
+                let stripped = without_always_inline(text, |symbol| {
+                    asked.push(symbol.to_owned());
+                    strip(symbol)
+                });
+                let in_lines = without_always_inline_line_by_line(text, |symbol| {
+                    asked_in_lines.push(symbol.to_owned());
+                    strip(symbol)
+                });
+                assert_eq!(stripped, in_lines, "{name}: {text}");
+                assert_eq!(asked, asked_in_lines, "{name}: {text}");
+            }
+        };
+        for text in [
+            CLOSURE_FUNCTIONS,
+            "",
+            " alwaysinline",
+            "\n alwaysinline\n",
+            "define i64 @f1() alwaysinline {\n}",
+            "define i64 @f1() alwaysinline alwaysinline {\n}\n",
+            // Lines that are not definitions, a quoted name with parentheses, text that is not ASCII
+            // and the line ends of Windows.
+            "attributes #0 = { alwaysinline }\ndeclare i64 @g1() alwaysinline\n  call i64 @f1() alwaysinline\n\
+define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) alwaysinline é {\r\n}\r\n",
+            "define i64 @f3(i64 %x) alwaysinline {\r\n  %é = add i64 %x, 1 ; alwaysinline\r\n}\r\n",
+        ] {
+            check(text);
+        }
+        let lines = [
+            "define internal i64 @tz.fn.Main.f{n}(i64 %x) nounwind alwaysinline {",
+            "define internal i64 @tz.fn.$lambda.{n}(i64 %x) nounwind alwaysinline {",
+            "define internal i64 @tz.apply.$lambda.{n}.0(i64 %a) nounwind alwaysinline alwaysinline {",
+            "define i64 @tz_user{n}(i64 %x) alwaysinline {",
+            "define i64 @\"q (r){n}\"(i64 %x) nounwind alwaysinline {",
+            "define i64 @tz_plain{n}(i64 %x) {",
+            "declare i64 @tz_declared{n}() alwaysinline",
+            "attributes #0 = { alwaysinline nounwind }",
+            "  call i64 @tz.fn.Main.f{n}(i64 %x) alwaysinline",
+            "  ret i64 %v ; é alwaysinline é",
+            " alwaysinline",
+            "}",
+            "",
+        ];
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap() % bound
+        };
+        let mut changed = 0;
+        for _ in 0..3000 {
+            let mut text = String::new();
+            for _ in 0..3 + next(30) {
+                text.push_str(&lines[next(lines.len())].replace("{n}", &(1 + next(4)).to_string()));
+                text.push('\n');
+            }
+            if next(4) == 0 {
+                text.pop();
+            }
+            check(&text);
+            changed += usize::from(without_always_inline(&text, |_| true).is_some());
+        }
+        assert!(changed > 1000, "{changed} of the texts lose an attribute");
     }
 
     #[test]

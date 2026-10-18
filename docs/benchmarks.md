@@ -7474,7 +7474,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 独立したコードレビューが、`alwaysinline` が無条件なことの問題を 2 つ見つけました。(1) IR が `-O0`〜`-Oz` で同じなので、`-Os`・`-Oz` でも inline を強制し、小さなプログラムが大きくなる（native の `-Oz` で hello +25%、functional +16%）。(2) 捕捉のないラムダは、関数値が既知なら `@tz.fn.$lambda.N` を名前で直接呼ぶので、属性は大きな本体を呼び出しの数だけ複製する（`-O0` でも）。
 
-- `llvm::limit_worker_inlining`（`emit_program_in` の最後）: `$lambda` の worker は、自分の adapter（`@tz.apply.$lambda.N.*`）以外の呼び出し（再帰を含む）が 2 か所以上あれば `alwaysinline` を外します。adapter は本体を持たないので付けたままです。本体の大きさで切る案は、150 行の worker が 1 か所だけで使われる hello が +17% になるので採りませんでした。
+- `llvm::limit_worker_inlining`（`emit_program` で、残す pass の text に 1 回）: `$lambda` の worker は、自分の adapter（`@tz.apply.$lambda.N.*`）以外の呼び出し（再帰を含む）が 2 か所以上あれば `alwaysinline` を外します。adapter は本体を持たないので付けたままです。本体の大きさで切る案は、150 行の worker が 1 か所だけで使われる hello が +17% になるので採りませんでした。
 - `llvm::without_closure_inlining`（ドライバー。native の `-O0`・`-Os`・`-Oz`。`--emit header` と GPU カーネルは除く）: `@tz.apply.*` と `$lambda` の worker から外します。IR が水準で変わるのは、native のこの属性だけです（`tests/size.mjs` が、`-O1`・`-O2` は `-O3` と同じ、`-O0`・`-Os`・`-Oz` は属性を外しただけと確かめます。wasm32 は全水準で同じ）。adapter だけに付ける案は、`-Oz` で hello +17%・functional +10%・io +19%（clang で IR に属性を付けた変種。外す案は +25.5%・+15.3%・+5.9%、無条件は +30.5%・+18.4%・+19.2%）で、一貫した勝ちがないので、単純に外しました。
 
 **呼び出しの数でコードが増えないこと**（捕捉のない 40 ステップのラムダを呼ぶ。本体は引数での除算なので LLVM が畳めない。native の `__text` bytes、基準／属性が無条件／この方針）:
@@ -7793,6 +7793,27 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 | `escape_list` | 1,000,000 | 0.001 | 3.243 | （下） | 1.59 | 1.61 | 0 → 0 |
 
 n = 1,000 では 0.002〜0.48 倍（`string_list` が 0.48、`compare_list` が 0.17、ほかは 0.002〜0.07）、n = 16 では 0.09〜0.54 倍で、n = 1 は雑音の範囲です。`escape_list` は、基準では LLVM が総和を閉じた式に畳み、chunk 版では畳みません（同じ結果で、確保は両方とも 0 回。上の節）。`control/list_sum`（100,000 個）は before 1.808 ms → after 0.0447 ms（40.4 倍。Phase 1 の 20.8 倍から、Phase 2a のベクトル化で伸びました。C の参照は 1.844 ms）で、ほかの 15 種目は 0.991〜1.005 です。
+
+**コンパイル時間（`emit`）の悪化の調査（2026-10-19）.** 統合後の測定で、list を使わない合成プロジェクト（`benchmarks/build/generate.mjs`。200 個の module）の `--emit llvm` の `emit` 段階が、PM04 の merge（`9fb83ad9`）で 214.2 → 256.9 ms に伸びたと報告されました（1,000 個の module で 2,100 → 2,553 ms）。原因は PM04 ではなく、PM02 の review fix（`b4e1eeee`）が足した `limit_worker_inlining` の行ごとの検索です。PM04 を含まない統合ブランチの build（`e4025531`）がすでに同じ値で、PM04 は list を使わないプログラムの IR を変えません（byte 単位で同一）。200 個の module の `-O3` では、PM03 の merge `71365e0c` が 204.9 ms、`e4025531` が 244.2 ms、PM04 を含む `8a0df770` が 241.6 ms でした（下の表）。
+
+`/usr/bin/sample`（strip しない release build、1,000 個の module）の最上位は `core::str::pattern::StrSearcher::new`（268 標本）で、`limit_worker_inlining` が 287,082 行のそれぞれで `line.match_indices("@tz.fn.$lambda.")` の検索機を作っていました。実際の IR（200 個の module で 8.3 MB）での 1 回の pass の時間は、`limit_worker_inlining` が 37.5 ms、`with_vector_alignment` が 28.9 ms、`without_closure_inlining` が 5.5 ms、`unique_declarations` が 5.1 ms です。1,000 個の module では worker の予算が尽きて `emit_program` が最初の pass を捨てて出し直しますが（PR03）、捨てる pass の text にも、text 全体にかけるこれらの後処理（1 回の pass で `limit_worker_inlining` 41 ms、`unique_declarations` 25 ms、`with_vector_alignment` 148〜154 ms）をかけていました。
+
+直し方は 2 つです（`src/llvm.rs`。生成 IR は変わりません）。(1) `limit_worker_inlining` と `without_always_inline` は、行ごとに見るのをやめ、text 全体から worker の symbol にただ 1 つある `$` と ` alwaysinline` を探して、見つけた所の行だけを見ます。参照の持ち主（直前の `define` の行）は、参照から後ろ向きに探して 1 回だけ parse します。8.3 MB の実 IR で `limit_worker_inlining` が 7.3 → 0.7 ms、`without_always_inline` が 5.7 → 2.5 ms です（同じ算法の試作を `rustc -O` で測った値。行ごとに `$` を探す途中の版は 8.0 ms でした）。(2) `limit_worker_inlining`・`unique_declarations`・`with_vector_alignment` を、`emit_program_in` の最後ではなく `emit_program` で、残す pass の text にだけ 1 回かけます。
+
+生成 IR は、修正前の統合ブランチの先頭（`8a0df770` の release build）と byte 単位で同一です。`benchmarks/layout/ir-diff.mjs` で、corpus の native（`-O0`・`-O3`）の 216 件、native と wasm32 の 422 件が同一（どちらも同じ診断で失敗する 24 件と 58 件を除いて違い 0）、200・1,000 個の module のプロジェクトの native と wasm32 の `-O0`・`-O3`・`-Os`・`-Oz` の 16 件が同一でした。1,000 個の module のプロジェクトを 3 回出した IR も一致します。旧実装（行ごと）と新実装を比べる differential test を 2 つ足しました（端の場合と、固定 seed の 7,000 個の乱数の text）。
+
+`emit` 段階の中央値 ms（`time.mjs` が 5 つの build を交互に、`--cpu generic --no-cache` で出します。200 個の module は 21 回、1,000 個は 9 回。load average は 200 個で 6.4〜7.6、1,000 個で 6.4〜13.7）:
+
+| プロジェクトと最適化 | main `9dd0fbbc` | `71365e0c`（PM03 の merge） | `e4025531`（PM02・PM03 の review fix まで。PM04 なし） | `8a0df770`（PM04 を含む、修正前） | 修正後 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 200 個の module、`-O3` | 194.5 | 204.9 | 244.2 | 241.6 | 203.2 |
+| 200 個の module、`-O0` | 191.7 | 200.7 | 247.1 | 247.5 | 207.7 |
+| 1,000 個の module、`-O3` | 2,000.7 | 2,114.3 | 2,486.9 | 2,471.8 | 1,916.5 |
+| 1,000 個の module、`-O0` | 2,044.6 | 2,122.0 | 2,573.5 | 2,532.8 | 1,994.9 |
+
+報告の `bisect-time.mjs`（200 個の module は 9 回、load average 6〜10）では、`71365e0c` 206.1 ms、修正前 251.2 ms、修正後 208.5 ms で、1,000 個の module（5 回）は 2,171.8・2,524.0・2,002.4 ms でした。
+
+修正後は、200 個の module で `71365e0c` に近い値（`-O3` は 1.7 ms 速く、`-O0` は 7.0 ms 遅い）に戻り、1,000 個の module では PM02・PM03 の review fix の前より速くなりました（後処理を残す pass にだけかけるため）。残る `with_vector_alignment`（1 回の pass で約 29 ms、200 個の module の `emit` の約 14%）は main にも昔からあり、悪化ではありません（埋め込みの `numeric.ll` が 256 bit ベクトルを持つので、全プログラムで行ごとの処理が走ります。PB03 の D8 の試作は、事前判定を 1 回の `<` の検索にしても 1.4% で、採否の基準の 2% を下回りました。今回も同じ事前判定を試して効かないと確かめ、入れていません）。native の `-O0`・`-Os`・`-Oz` では、ドライバーの `without_closure_inlining` が約 2.5 ms 残ります。属性を emission のときに決めれば（最適化レベルを emit に渡す）後処理ごと消せますが、emit の入口が 10 か所あり、PM02 の方針を変えるので入れていません。
 
 **追認できないこと・限界.**
 - 1 要素ごとに node を確保していた表現より、要素が数個のリストと、`List.cons` で伸ばした 256 要素以下のリストは確保の bytes が大きくなります（上の表）。
