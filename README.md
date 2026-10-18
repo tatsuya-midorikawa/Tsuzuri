@@ -937,6 +937,7 @@ node tests/compact_strings.mjs target/release/tsuzuri --quick   # コンパク�
 node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）。vector 命令の有無の検査に llvm-objdump が要る（TSUZURI_OBJDUMP。無いと失敗し、CI でなければ TSUZURI_SKIP_OBJDUMP=1 でその検査だけを省ける）
 node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16   # 既存の文字列に関わる node の suite を TSUZURI_STRINGS=compact と utf16 の両方で実行する（full は到達しうる suite すべて）
 python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
+python3 tests/lldb_lists.py   # PM04: 同じ formatter の `ListProvider` が、`head` から `next` の連鎖をたどって各要素の address を返すこと（先頭側の空き slot、短い length の view、alignment 16 の要素の slot の offset 32）、chunk を二分探索で見つけて読んだ chunk を覚えていること、壊れたメモリ（範囲外の head、循環する `next`、合わない header、不正な長さ）で例外にならないことを、LLDB のセッションなしで確かめる（python3 だけで動く）
 node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
