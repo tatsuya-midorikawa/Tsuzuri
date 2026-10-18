@@ -433,6 +433,7 @@ pub fn request(root: &Path, args: &[String]) -> Option<Response>; // （新規�
 - server のログ（server の stderr、1 要求 1 行）: `serve: listening on <socket> for <root>`、`serve: request <n> served (exit <code>)`、
   `serve: request <n> refused: <error> (<message>)`、`serve: idle for <s> s; stopping`、
   `serve: the compiler binary changed; stopping (start tsuzuri serve again)`。
+  標準エラーに書くのは専用のスレッドだけで、ほかのスレッドは行を有限の queue に入れるだけで待たない（入らなければ捨てて数え、`serve: N log lines dropped`・`status` の `log_dropped` で知らせる。「CI 指摘」）。
 
 ### 常駐状態（Phase 2、`src/driver.rs`）
 
@@ -805,7 +806,7 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 - 決定: 要求は main thread が 1 つずつ実行する（プロジェクトごとに同時に 1 ビルド）。accept thread は hello を書いて `sync_channel(QUEUE)` に
   入れるだけ。`stack_size` は使わない。
 - 理由: HEAD の解析は CLI・LSP とも main thread で動き（8 MiB）、同じ条件を保てる。LSP の `serve` と同じ形で idle も `recv_timeout` で書ける。
-- 状態: 実装済み（維持。PB04 の worker は段ごとの scope で、常駐しない。`serve` は `Handler` を受け取り、`cli` を知らない。要求は `catch_unwind` で守り、panic のあとは `ResidentState::reset` で読んだものだけを捨て、固定したコンパイラは残す。レビュー対応で、accept thread が要求の行を読んで `status`・`shutdown` に答え、主ループは実行する要求だけを受ける形にした）
+- 状態: 実装済み（維持。PB04 の worker は段ごとの scope で、常駐しない。`serve` は `Handler` を受け取り、`cli` を知らない。要求は `catch_unwind` で守り、panic のあとは `ResidentState::reset` で読んだものだけを捨て、固定したコンパイラは残す。レビュー対応で、accept thread が要求の行を読んで `status`・`shutdown` に答え、主ループは実行する要求だけを受ける形にした。CI 指摘の対応で、ログは専用のスレッドが書く形にし、要求を実行するスレッドは標準エラーを待たない）
 
 ### D9: ファイル監視
 
@@ -856,7 +857,9 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 | `ce45bcb7` | merge した木での検証の記録（この節） |
 | `922c0976` | レビュー対応 1・4・5（watch・build key・panic・Windows の guard） |
 | `bd6fdfbd` | レビュー対応 2・3・5（status・--stop・去ったクライアント・ロック・テスト） |
-| この commit | レビュー対応の記録（この節） |
+| `a6545cf9` | レビュー対応の記録 |
+| `02ba6d50` | CI 指摘: サーバーのログを専用のスレッドが書く（読まれない標準エラーが要求・`status`・`--stop` を止めない）。単体テスト・`tests/server.mjs` の場面 12・文書 |
+| この commit | CI 指摘の記録（この節）|
 
 実装したもの:
 
@@ -869,11 +872,12 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 - **G1（100 ms 級）の取り下げ**。`check` の結果の再利用（G17 が先送りした）は実装していない。常駐で減るのは起動・`load`・`cache` の一部だけで、実測は 200 module で 0.87〜0.89 倍、1,000 module で 0.62〜0.70 倍（`check`）。
 - frontend の pack の常駐: `parse`＋`cache` の段が `check` の 10% を超えるときだけ、というゲートを満たさなかった（4.9〜8.0%）。
 - Windows の named pipe（std に server 側の API がなく、`unsafe` か crate が要る）。LSP・REPL が socket で server と話すこと。`build_key` のツールの問い合わせの memo。`RuntimeObjects` の memo（約 1%）。いずれも D16 のとおり採らなかった。
-- Linux の実機、x86-64、Windows の実機での確認はない。
+- x86-64 と Windows の実機での確認はない。Linux は arm64 の container で `tests/server.mjs`・`tests/watch.mjs` と単体テストを確かめた（「CI 指摘」）。
 
 ### 偏差
 
 - `serve` は `Handler`（trait）を受け取り、`cli` を知らない（起票時は `handle: impl FnMut(&Request) -> Result<Response, Refusal>`）。`status` の返すものを handler が足せるため。
+- `serve` の `log` は `impl Write + Send + 'static` を値で受け取る（起票時は `&mut impl Write`）。専用のスレッドが書き込み先を持つため（CI 指摘）。
 - クライアントは `shutdown(Write)` をしない。macOS では、相手がすでに閉じたソケットへの `shutdown` が `ENOTCONN` で失敗し、`status` のように速い要求が fallback してしまった（`tests/server.mjs` の `served` の数えで見つけた）。サーバーは `set_read_timeout` の `EINVAL`（相手が閉じたソケット。macOS）でも読みを続ける。
 - accept thread は接続の直後に hello を書く。待っているクライアントが、実行中のビルドのあいだ hello の待ちで諦めないため。要求の行も accept thread が読み、`status`・`shutdown` と protocol・too-large の断りをその場で答え、実行する要求だけを待ち行列（16 件。満杯なら `busy`）へ渡す（レビュー対応。最初は主ループが読み、`status` と `--stop` が実行中の要求の後ろで待った）。
 - 環境の比較の集合は起票時の `IGNORED_ENV` の補集合ではなく、許可リスト（`cache::KEY_ENVIRONMENT`、`TSUZURI_*`、キャッシュ・一時・ロケール・SDK の変数と接頭辞）にした。ほかのチケットが足す `TSUZURI_*` は自動で入る。drift test（`every_environment_variable_that_the_compiler_reads_is_compared`）は、`src/` の `env::var`／`var_os`／`resolve_tool` の名前がこの集合に入ることを確かめ、名前が文字列でない読みと環境全体の読みは数と場所を固定する。
@@ -923,6 +927,17 @@ merge した木での結果（最終の commit で）:
 
 確認: `cargo test --lib`（381 件）、`cargo test --bin tsuzuri`（30 件）、`tests/watch.mjs`・`tests/server.mjs`・`tests/lsp_sessions.mjs`・`tests/repl.mjs`・`tests/cache.mjs`・`tests/e2e.mjs`・`tests/script.mjs` が通る。`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets`（`x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`）、`node scripts/check-docs.mjs`（usage・diagnostics）が通る。
 
+### CI 指摘: 標準エラーが読まれないサーバー（2026-10-19）
+
+統合 branch の最初の CI で、Linux の 2 つの job が `tests/server.mjs` の 180 s の時間切れまで止まった（止まる要求は毎回違った）。
+
+- **原因**: サーバーは、要求を実行するスレッドが、バッファのない `io::Stderr` へ自分でログを書いていた（1 行が複数の `write(2)`）。テストは標準エラーを pipe にして、クライアントを `spawnSync` で待つので、誰も読まない。Linux の Node の stdio は socketpair で、小さな書き込みが数百回で満杯になり（skb ごとの管理の分も数える）、スレッドが `write(2)` で止まって、クライアントは返事を待ち続けた。テストは統合 branch の `79928423` で、サーバーのログをファイルにして直した。サーバーの側は、標準エラーを読まない監視者・CI の step・エディタ・止められた端末でも同じ止まり方をする。
+- **再現（macOS、直す前の binary）**: 読まれない pipe の標準エラーのサーバーに、protocol の断りを 3,000 回送ると、断りは全部答える（accept thread が答え、ログは待たない channel に積むだけだった）が、そのあとの `check` は 10 s 待っても実行されない（`served=0`）。直したあとは、同じ手順で 3,000 回とも答え、`log_dropped` は 2,652〜2,656、`check` は終了コード 0、`served=1` になる（scratch の `target/perf/PB06/flood.mjs`。commit しない）。
+- **直し方**（`src/server.rs`）: 標準エラーに書くのは、専用のスレッド `tsuzuri-serve-log` だけにした。ほかのスレッド（accept・要求の実行）は、行を `Log::line` で長さ 256 の `sync_channel` に `try_send` し、入らなければ捨てて数える（待たない）。捨てた行の数は、次に積める行が運び、書くスレッドが `serve: N log lines dropped` の行にして、捨てた場所に書く（終わりに残った数も書く）。`status` は合計を `log_dropped` で言う。1 行は 4096 byte に切り（`...`）、改行を `\n` と書いて（クライアントが送る cwd などが行を偽造しない）、`write_all` 1 回で書く。Handler の `log` は `HandlerLog` が行に組み立てる。終わるときは、ソケットとロックを消してから、`Close` を積んで 1 s まで待つ（`--stop` はログを待たない）。スレッドは join しないので、止まった書き込み先がプロセスの終了を妨げない。`serve` の `log` は `impl Write + Send + 'static` を値で受け取る（`main.rs` は `io::stderr()` を渡す）。
+- **テスト**: 単体テスト 2 つ。`a_log_that_blocks_holds_nothing_but_its_own_thread`（止まった書き込み先で、断り 512 回・コマンド 1 つ・`status` に答え、`log_dropped` が 256 以上、サーバーが止まる。書き込み先を放すと、行は 1 行ずつ・順番どおりで、捨てた数が行になって出る）と `every_line_of_the_log_is_one_write_and_a_line_of_its_own`（書き込みごとに 1 行。Handler の分けた書き込みが 1 行になり、改行を含む cwd が行を偽造せず、長さが切られる）。`tests/server.mjs` の場面 12: 標準エラーが、読まれない pipe（`readable` の listener だけで、読まない）のサーバーに、約 1 KiB の行になる断りを 3,000 回（30 並行）送り、すべてに答えが来ること、`log_dropped` が 0 より大きいこと（pipe が満杯だった証拠）、そのあとの `check` が単独と同じ出力で終わり `served` が 1 増えること、`serve --stop` が終了コード 0 でサーバーを止め（pipe は満杯のまま）、ソケットが消えること、サーバーが終わったあとに pipe に残る行が、行の途中で切れた最後の 1 行を除いて完全で、要求の番号が増える順であることを確かめる。待ちはすべて時間切れで失敗する（`spawnSync` で待たない）。
+- **確認**: macOS で `cargo test --lib -- server::`（29 件）・`--bin tsuzuri`（32 件）、`tests/server.mjs`・`tests/watch.mjs` が通る。Linux arm64（`tz-pb05-linux-arm64-dev`、rustc 1.93、node 22）で、`cargo build --release --locked`・`tests/server.mjs`・`tests/watch.mjs`・`cargo test --lib -- server:: resident::`（42 件）が通る（その環境では `--profile-generate` の case は、単独の実行が `E2002`（`clang` の失敗）になるので、外れる。場面 12 の `log_dropped > 0` は、Linux でも pipe が満杯になったことを示す）。`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets`（`x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`）、`node scripts/check-docs.mjs`（usage）、`git diff --check` が通る。
+- **残る危険**: コマンドが panic したときの標準のメッセージ（既定の panic hook）は、panic したスレッドが標準エラーに直接書くので、標準エラーが満杯ならそこで待つ（panic と読まれない標準エラーが重なったときだけ。プロセス全体の hook をサーバーの内側から差し替えると、同じプロセスの単体テストが互いに干渉するので、しなかった）。起動に失敗して `Err` で終わるときの診断は `main` が標準エラーに直接書くが、そのときサーバーはすでに終わっていて（ソケットを消し、ログの終了を 1 s だけ待った）、クライアントを待たせるものはない。
+
 ### 目標と指標の結果
 
 - G1（100 ms 級）は取り下げた（実装しなかったものの先頭）。代わりの記録: 1 module の本体を書き換えた後の `check` は、200 module で 391〜426 → 347〜370 ms、1,000 module で 1,884〜1,975 → 1,223〜1,317 ms（server の段の total は 262・242 ms と 1,223・1,173 ms）。
@@ -933,15 +948,16 @@ merge した木での結果（最終の commit で）:
 
 ### 既知の制限・未確認
 
-- Linux・x86-64・Windows の実機では動かしていない（Linux 相当の cfg の経路は FreeBSD の型検査だけ）。Windows に server はない（`serve` は `E2000`、`--no-server` は受け付けて何もしない）。
+- x86-64 と Windows の実機では動かしていない（Linux は arm64 の container で動かした。「CI 指摘」）。Windows に server はない（`serve` は `E2000`、`--no-server` は受け付けて何もしない）。
 - 速度はほかの作業と共有する機械（1 分の load average 19〜48）の参考値で、`open()` の費用はこの機械のセキュリティ agent の性質に強く依存する。正式な測定は統合担当が静かな機械で行う。
 - サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめない（`0700` のディレクトリが唯一の防御）。umask・資源の上限などはサーバーのもの。`check`・`build` のクライアントは応答を時間制限なしで待つ（`status`・`--stop` は 10 s）。実行中の要求は止められず、止まらない要求は `status` の `pid` で終わらせる。クライアントが返事を読み終わる前に自分の側を閉じると、待っている要求は捨てられる。ロックは `File::try_lock`（Rust 1.89 から）で、パッケージの `rust-version = "1.85"` はすでに let chain（1.88）で満たされていない。
+- サーバーのログは標準エラーに書く。標準エラーが満杯のあいだ（読む人のいないパイプ、止められた端末）、書けなかった行は捨てて数え（`serve: N log lines dropped`、`status` の `log_dropped`）、要求・`status`・`--stop` は待たない。コマンドの panic の標準のメッセージだけは、panic したスレッドが標準エラーに直接書くので、満杯なら待つ。
 - 3 つの drift test（環境変数の読み取り、`src/` の直接出力、`src/main.rs` で直接出力する関数の一覧）は、ほかのチケットが統合されたあとで、新しい読み取り・出力があれば失敗する。失敗は、その名前を比べる集合に入れるか、出力を書き込み先へ流すかの判断を求めるもので、期待の表を見直して更新する。`main.rs` の一覧に足してよいのは、server が断るコマンドの関数だけ。
 - `tests/server.mjs` はソケットのパスのために短い `TMPDIR` を要する（macOS は 103 byte まで）。panic の経路は、`CommandServer::guarded` を panic するコマンドで動かす単体テストで確かめる（`Handler::run` の `internal` への対応づけは、E2E では起こせない）。
 
 ### 決定事項の最終状態（D13〜D16。D1〜D12 は各決定の「状態」）
 
-- D13: 実装済み。`status` は `pid`・`root`・`compiler`・`compiler_sha256`・`idle_seconds`・`uptime_seconds`・`requests`・`served`・`refused`・`refusals`・`resident_bytes`・`resident_limit_bytes`・`source_hits`・`source_reads`・`digest_hits`・`digest_reads` などの JSON で、`--stop` はソケットが消えるまで（最大 5 s）待つ。サーバーがなければ終了コード 1 の `E2001`。非 Unix は `E2000`。
+- D13: 実装済み。`status` は `pid`・`root`・`compiler`・`compiler_sha256`・`idle_seconds`・`uptime_seconds`・`requests`・`served`・`refused`・`refusals`・`log_dropped`・`resident_bytes`・`resident_limit_bytes`・`source_hits`・`source_reads`・`digest_hits`・`digest_reads` などの JSON で、`--stop` はソケットが消えるまで（最大 5 s）待つ。サーバーがなければ終了コード 1 の `E2001`。非 Unix は `E2000`。
 - D14: 実装済み。`resident::Scope`（thread-local。入れ子と panic に対して安全）が差し込み、`Project::load*`・`build_complete` の引数は増えていない。
 - D15: 実装済み。`resident::capture`（`Captured`）と `warn`、`timings::begin_command`・`take_report`・`silence_report`、`Report::disarm`。
 - D16: ① socket での LSP・REPL との共有は採らない。② LSP・REPL が自分のプロセスの中で常駐状態を使うことは、測定の条件を満たしたので採用（REPL の cache hit が `-O0` で約 7〜9%、`-O3` で約 30%、LSP の 1,000 module の最小が約 455〜480 ms）。③ Windows の named pipe は採らない。④ `build_key` のツールの問い合わせの memo は取り下げ（ファイルの digest だけ memo する）。

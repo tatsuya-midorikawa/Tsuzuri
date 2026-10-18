@@ -72,7 +72,7 @@ Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない
 コンパイラとそのツールが読む環境変数（`PATH`、`TSUZURI_*` など）で起動した `check` と `build` は、サーバーが実行して出力を返し、
 サーバーがなければ（断られても）黙って自分で実行します。標準出力・標準エラー・終了コード・成果物は、サーバーの有無と `--no-server` の有無で変わりません。
 ソケットは、`TSUZURI_SERVER_DIR`（空ならサーバーを使わない）の `0700` のディレクトリにあり、同じ利用者だけを信頼します
-（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。
+（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。サーバーのログ（標準エラー）は専用のスレッドが書くので、標準エラーが詰まっても要求・`status`・`--stop` は待たず、書けなかった行は捨てて `status` の `log_dropped` に数えます。
 
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。

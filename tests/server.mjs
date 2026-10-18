@@ -698,7 +698,67 @@ try {
     assert.equal(readFileSync(join(out, "strings-refused.ll"), "utf8"), utf16Ir, "and gets its own build");
     await stop(compactServer, strings, compact);
 
-    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports, the form of the strings (TSUZURI_STRINGS) and usage errors passed");
+    // 12: a standard error that nobody reads. A server writes its log from a thread of its own, one write per line, and drops
+    // what does not fit, so a pipe that is full never holds a client, a status or a stop. (The thread that runs the commands
+    // wrote to it itself, and then waited in `write` until the clients gave up: both Linux jobs of CI hung, at a different
+    // request each time.) This server's standard error is a pipe that the test does not read until the server is gone, and
+    // every wait here is one that fails after a time: the test must not hang with the server.
+    const within = (promise, milliseconds, what) => {
+      let timer;
+      const late = new Promise((_, fail) => { timer = setTimeout(() => fail(new Error(`${what} did not finish within ${milliseconds} ms`)), milliseconds); });
+      return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+    };
+    const silent = spawn(compiler, ["serve", app], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    // A listener for `readable` keeps the pipe unread, and keeps what Node holds of it: Node resumes a stream of a process
+    // that has ended and has no reader, and then throws away what the stream holds.
+    silent.stderr.on("readable", () => {});
+    servers.add(silent);
+    const quietExit = new Promise((done) => silent.on("exit", (code, signal) => { servers.delete(silent); done({ code, signal }); }));
+    const quietAsk = async (line) => JSON.parse((await talk(socketOf(app), line)).reply);
+    const statusLine = `${JSON.stringify({ protocol: 1, op: "status" })}\n`;
+    let quietStatus = null;
+    for (let waited = 0; waited < 30_000 && quietStatus === null; waited += 20) {
+      try { quietStatus = await quietAsk(statusLine); } catch { await pause(20); }
+    }
+    assert.ok(quietStatus !== null, "the server whose standard error is not read did not start");
+    assert.equal(quietStatus.log_dropped, 0);
+    // Three thousand refusals, a line of the log of about a kilobyte each: far more than a pipe holds (64 KiB on macOS, a few
+    // hundred writes of a socket pair on Linux) and than the queue of the log does. Every client has its answer.
+    const refusing = `${JSON.stringify({ protocol: 1, op: "x".repeat(1000) })}\n`;
+    for (let sent = 0; sent < 3_000; sent += 30) {
+      const replies = await within(Promise.all(Array.from({ length: 30 }, () => talk(socketOf(app), refusing))), 60_000, `the refusals from ${sent}`);
+      for (const { reply } of replies) assert.equal(JSON.parse(reply).error, "protocol");
+    }
+    // The lines that did not fit are dropped and counted, and a command that is asked now is run by the server.
+    const flooded = await within(quietAsk(statusLine), 30_000, "a status after the refusals");
+    assert.ok(flooded.log_dropped > 0, `the pipe was full, so lines were dropped: ${JSON.stringify(flooded)}`);
+    assert.equal(flooded.refusals.protocol, 3_000);
+    const quietCheck = await within(runAsync(["check", app]), 60_000, "a check after the refusals");
+    assert.deepEqual(quietCheck, expected);
+    assert.equal((await within(quietAsk(statusLine), 30_000, "a status after the check")).served, flooded.served + 1, "the server ran it");
+    // And it stops when it is asked to, with the pipe still full.
+    const quietStop = await within(runAsync(["serve", "--stop", app]), 60_000, "serve --stop");
+    assert.equal(quietStop.status, 0, quietStop.stderr);
+    assert.deepEqual(await within(quietExit, 30_000, "the exit of the server"), { code: 0, signal: null });
+    assert.ok(!existsSync(socketOf(app)), "the socket is gone");
+    // What the pipe holds is whole lines, in the order of the requests; the last one may be cut where the writer stopped.
+    const piped = await within(new Promise((done) => {
+      const chunks = [];
+      const drain = () => { for (let chunk; (chunk = silent.stderr.read()) !== null;) chunks.push(chunk); };
+      silent.stderr.setEncoding("utf8").on("end", () => done(chunks.join(""))).on("readable", drain);
+      drain();
+    }), 30_000, "reading what the server wrote");
+    const written = piped.split("\n").slice(0, -1);
+    assert.ok(written.length > 10, `${written.length} lines in the pipe`);
+    assert.match(written[0], /^serve: listening on /);
+    let previous = 0;
+    for (const line of written) {
+      assert.match(line, /^serve: /, `a whole line: ${line.slice(0, 120)}`);
+      const request = /^serve: request (\d+) /.exec(line);
+      if (request) { assert.ok(Number(request[1]) > previous, `in order: ${line.slice(0, 60)}`); previous = Number(request[1]); }
+    }
+
+    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports, the form of the strings (TSUZURI_STRINGS), a standard error that nobody reads and usage errors passed");
   }
 } finally {
   for (const child of servers) child.kill("SIGKILL");

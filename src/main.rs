@@ -2897,7 +2897,7 @@ fn start_server(input: &Path, idle: u64) -> ExitCode {
         state: tsuzuri::resident::ResidentState::new(),
         root,
     };
-    match server::serve(&config, &mut handler, &mut io::stderr()) {
+    match server::serve(&config, &mut handler, io::stderr()) {
         Ok(server::Stop::Idle | server::Stop::Shutdown) => ExitCode::SUCCESS,
         Ok(server::Stop::CompilerChanged) => ExitCode::from(EXIT_FAILURE),
         Err(error) => {
