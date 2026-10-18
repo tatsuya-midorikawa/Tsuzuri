@@ -861,6 +861,7 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 | レビュー 1 | `edc8ccca` | lambda の記述子の表の説明、`ffi_extensions` の関数値なしの検査の強化、`tests/debugger_static.mjs` を README と docs/architecture.md の検証の一覧へ |
 | レビュー 2 | `b4e1eeee` | `alwaysinline` の方針: worker は adapter 以外の呼び出しが 1 か所以下のときだけ（`limit_worker_inlining`）、native の `-O0`・`-Os`・`-Oz` では adapter と worker から外す（`without_closure_inlining`）。テスト 5 本 |
 | レビュー 3 | `8f0a5a43` | 文書と数値（言語リファレンスの option.md・webassembly.md、docs/benchmarks.md・architecture.md・language.md、README.md、このチケット）、`tests/size.mjs` の IR の検査 |
+| レビュー 4 | `d9404194`・`7da3d595` | このチケットへの merge と検証の記録。`usage.md`・`architecture.md` の hello と parse の大きさ |
 
 ### 決定事項の結果
 
