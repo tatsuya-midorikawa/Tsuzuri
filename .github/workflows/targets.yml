@@ -188,6 +188,7 @@ jobs:
           node tests/compact_strings_raw.mjs target/release/tsuzuri --quick
           node tests/compact_strings.mjs target/release/tsuzuri --quick
           python3 tests/lldb_strings.py
+          python3 tests/lldb_lists.py
           node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
