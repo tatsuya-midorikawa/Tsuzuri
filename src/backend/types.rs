@@ -79,6 +79,8 @@ pub(crate) struct TypeTable<'a> {
     entries: Vec<Entry>,
     map: FxMap<Compound, u32>,
     named: FxMap<&'a str, Ty>,
+    /// The size of a pointer in bytes: 8, or 4 for WebAssembly's 32-bit memory. Zero is 8.
+    pointer: u8,
 }
 
 /// The type table of one thread: the shared module table, if any, plus what this thread added.
@@ -111,12 +113,16 @@ pub(crate) fn int_align(bits: u16) -> u32 {
 }
 
 impl<'a> Types<'a> {
-    /// The builder of the module's table; `text` is the module the named types are read from.
-    pub(crate) fn builder(text: &'a str) -> Self {
+    /// The builder of the module's table for a target whose pointers are `pointer` bytes; `text` is
+    /// the module the named types are read from.
+    pub(crate) fn builder_with(text: &'a str, pointer: u8) -> Self {
         Self {
             base: None,
             base_len: 0,
-            own: TypeTable::default(),
+            own: TypeTable {
+                pointer,
+                ..TypeTable::default()
+            },
             pending: FxMap::default(),
             in_progress: Vec::new(),
             text,
@@ -128,10 +134,21 @@ impl<'a> Types<'a> {
         Self {
             base: Some(base),
             base_len: u32::try_from(base.entries.len()).expect("type table size"),
-            own: TypeTable::default(),
+            own: TypeTable {
+                pointer: base.pointer,
+                ..TypeTable::default()
+            },
             pending: FxMap::default(),
             in_progress: Vec::new(),
             text,
+        }
+    }
+
+    /// The size and alignment of a pointer in bytes.
+    pub(crate) fn pointer_bytes(&self) -> u64 {
+        match self.own.pointer {
+            0 => 8,
+            bytes => u64::from(bytes),
         }
     }
 
@@ -203,7 +220,8 @@ impl<'a> Types<'a> {
                     Ty::Int(bits) => u64::from(bits),
                     Ty::Half => 16,
                     Ty::Float => 32,
-                    Ty::Double | Ty::Ptr => 64,
+                    Ty::Double => 64,
+                    Ty::Ptr => self.pointer_bytes() * 8,
                     other => bail!("a vector of {}", self.describe(other)),
                 };
                 let store = (bits * u64::from(*len)).div_ceil(8);
@@ -265,7 +283,8 @@ impl<'a> Types<'a> {
             Ty::Int(bits) => round_up(int_store_size(bits), u64::from(int_align(bits))),
             Ty::Half => 2,
             Ty::Float => 4,
-            Ty::Double | Ty::Ptr => 8,
+            Ty::Double => 8,
+            Ty::Ptr => self.pointer_bytes(),
             Ty::Compound(id) => self.entry(id).size,
             other => bail!("the size of {}", self.describe(other)),
         })
@@ -285,7 +304,8 @@ impl<'a> Types<'a> {
             Ty::Int(bits) => int_align(bits),
             Ty::Half => 2,
             Ty::Float => 4,
-            Ty::Double | Ty::Ptr => 8,
+            Ty::Double => 8,
+            Ty::Ptr => self.pointer_bytes() as u32,
             Ty::Compound(id) => self.entry(id).align,
             other => bail!("the alignment of {}", self.describe(other)),
         })

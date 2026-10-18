@@ -76,15 +76,30 @@ fn write<'a>(
                 sym: None,
                 offset: address,
             },
-            Ty::Ptr | Ty::Int(64),
+            Ty::Int(64),
         ) => put(bytes, at, &(*address as u64).to_le_bytes()),
-        (Const::Int(value), Ty::Ptr) => put(bytes, at, &(*value as u64).to_le_bytes()),
+        (
+            Const::Addr {
+                sym: None,
+                offset: address,
+            },
+            Ty::Ptr,
+        ) => put(
+            bytes,
+            at,
+            &(*address as u64).to_le_bytes()[..cx.types.pointer_bytes() as usize],
+        ),
+        (Const::Int(value), Ty::Ptr) => put(
+            bytes,
+            at,
+            &(*value as u64).to_le_bytes()[..cx.types.pointer_bytes() as usize],
+        ),
         (
             Const::Addr {
                 sym: Some(sym),
                 offset: addend,
             },
-            Ty::Ptr | Ty::Int(64),
+            Ty::Ptr | Ty::Int(32) | Ty::Int(64),
         ) => {
             relocs.push(DataReloc {
                 offset,

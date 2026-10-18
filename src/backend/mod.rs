@@ -23,7 +23,7 @@ mod ops;
 mod parse;
 mod target;
 mod types;
-
+mod wasm;
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -152,6 +152,22 @@ pub(crate) fn translate(
     run(ir, platform, parallelism, verify).map_err(Failure::into_diagnostic)
 }
 
+/// Translates the textual LLVM IR of a `wasm32` `-O0` build into the bytes of a relocatable
+/// WebAssembly object (`wasm-ld` links it). `multivalue` says whether the C ABI of the compiler that
+/// builds the runtime returns a 128-bit integer as two results.
+pub(crate) fn translate_wasm(
+    ir: &str,
+    parallelism: Parallelism,
+    multivalue: bool,
+) -> Result<Vec<u8>, Diagnostic> {
+    wasm::translate(ir, parallelism, multivalue)
+}
+
+/// `translate_wasm` for the tests and the helper that stands in for `clang`.
+pub fn compile_wasm(ir: &str, threads: usize, multivalue: bool) -> Result<Vec<u8>, Diagnostic> {
+    translate_wasm(ir, Parallelism::fixed(threads.max(1)), multivalue)
+}
+
 /// The function bodies that a worker needs to see, shared by every worker.
 struct Shared<'a> {
     module: &'a Module<'a>,
@@ -245,7 +261,7 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
                 infos.push(SymInfo {
                     class: SymClass::Function(Box::new(abi)),
                     id: function.as_u32(),
-                    colocated: defined && !(sym.linkage == Linkage::Weak && !sym.hidden),
+                    colocated: defined && (sym.linkage != Linkage::Weak || sym.hidden),
                 });
                 if defined {
                     work.push(id as u32);
@@ -264,7 +280,7 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
                 infos.push(SymInfo {
                     class: SymClass::Data { tls: *tls },
                     id: data.as_u32(),
-                    colocated: defined && !(sym.linkage == Linkage::Weak && !sym.hidden),
+                    colocated: defined && (sym.linkage != Linkage::Weak || sym.hidden),
                 });
                 if defined {
                     globals.push(id as u32);

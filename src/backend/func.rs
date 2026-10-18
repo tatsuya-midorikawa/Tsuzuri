@@ -580,7 +580,9 @@ impl<'a> Cx<'a> {
         match (word, value) {
             ("ptrtoint", Const::Addr { sym: None, offset }) => Ok(Const::Int(i128::from(offset))),
             ("ptrtoint", value @ Const::Addr { .. }) => {
-                if to != Ty::Int(64) {
+                // To the integer of the width of a pointer, or one that a pointer extends to.
+                let pointer_bits = (self.types.pointer_bytes() * 8) as u16;
+                if to != Ty::Int(64) && to != Ty::Int(pointer_bits) {
                     bail!("a constant ptrtoint to {}", self.types.describe(to));
                 }
                 Ok(value)

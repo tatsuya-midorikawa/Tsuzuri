@@ -36,19 +36,32 @@ fn main() -> ExitCode {
     if arguments.first().is_some_and(|flag| flag == "--read") {
         return read_only(&arguments[1..]);
     }
-    // `--target TRIPLE` translates for another machine, to look at its code without running it.
+    // `--target TRIPLE` translates for another machine, to look at its code without running it;
+    // `--target wasm32` writes a relocatable WebAssembly object (`--no-multivalue` for a runtime
+    // whose compiler returns a 128-bit integer through a pointer).
     let mut platform = tsuzuri::target::Platform::HOST;
+    let mut wasm = false;
+    let multivalue = if let Some(position) = arguments
+        .iter()
+        .position(|argument| argument == "--no-multivalue")
+    {
+        arguments.remove(position);
+        false
+    } else {
+        true
+    };
     if let Some(position) = arguments.iter().position(|argument| argument == "--target") {
         let Some(name) = arguments.get(position + 1).cloned() else {
-            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE]");
+            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE|wasm32]");
             return ExitCode::from(2);
         };
         match tsuzuri::target::parse_target(&name) {
             Ok((tsuzuri::driver::Target::Native, triple)) => {
                 platform = tsuzuri::target::Platform::new(triple);
             }
+            Ok((tsuzuri::driver::Target::Wasm32, _)) => wasm = true,
             _ => {
-                eprintln!("tz-fast-cc: --target takes a native target");
+                eprintln!("tz-fast-cc: --target takes a native target or wasm32");
                 return ExitCode::from(2);
             }
         }
@@ -57,7 +70,7 @@ fn main() -> ExitCode {
     let (input, output) = match arguments.as_slice() {
         [input, flag, output] if flag == "-o" => (input, output),
         _ => {
-            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE]");
+            eprintln!("usage: tz-fast-cc IN.ll -o OUT.o [--target TRIPLE|wasm32]");
             return ExitCode::from(2);
         }
     };
@@ -80,7 +93,12 @@ fn main() -> ExitCode {
         platform,
         ..tsuzuri::backend::Options::host(threads)
     };
-    match tsuzuri::backend::compile(&text, &options) {
+    let result = if wasm {
+        tsuzuri::backend::compile_wasm(&text, threads, multivalue)
+    } else {
+        tsuzuri::backend::compile(&text, &options)
+    };
+    match result {
         Ok(object) => match std::fs::write(output, object) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {

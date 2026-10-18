@@ -564,7 +564,12 @@ fn add_symbol<'a>(syms: &mut Vec<Sym<'a>>, by_name: &mut FxMap<&'a str, u32>, sy
 
 /// Splits the module into its types and symbols.
 pub(crate) fn scan(text: &str) -> Res<Module<'_>> {
-    let mut types = Types::builder(text);
+    scan_with(text, 8)
+}
+
+/// `scan` for a target whose pointers are `pointer` bytes wide.
+pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
+    let mut types = Types::builder_with(text, pointer);
     // First every named type, because a use may come before its definition.
     let mut order = Vec::new();
     let mut pos = 0;
