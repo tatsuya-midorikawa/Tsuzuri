@@ -242,9 +242,9 @@ function checks(compilerArgument) {
   const { compiler, work, execute, cli, entries } = session(compilerArgument);
   const hello = join(root, "examples", "hello");
   const functional = join(root, "examples", "functional");
-  const rejects = (args, message) => {
+  const rejects = (args, message, status = 2) => {
     const result = execute(compiler, args);
-    assert.equal(result.status, 2, `${args.join(" ")}\n${result.stderr}`);
+    assert.equal(result.status, status, `${args.join(" ")}\n${result.stderr}`);
     assert.match(result.stderr, /error\[E2000\]/, args.join(" "));
     assert.ok(result.stderr.includes(message), `${args.join(" ")}\n${result.stderr}`);
   };
@@ -261,9 +261,13 @@ function checks(compilerArgument) {
       const native = "--backend fast supports only the native target and wasm32; use --backend llvm for";
       rejects([...fast, "--target", "wasm64"], `${native} wasm64`);
       rejects([...fast, "--target", "x86_64-pc-windows-msvc"], `${native} --target x86_64-pc-windows-msvc`);
-      for (const emit of ["llvm", "header", "wgsl", "wgsl-relaxed", "spirv", "spirv-relaxed", "shared", "bitcode", "bindings-js"]) {
+      for (const emit of ["llvm", "header", "wgsl", "wgsl-relaxed", "spirv", "spirv-relaxed", "shared", "bitcode"]) {
         rejects([...fast, "--emit", emit], `--backend fast produces only exe and object outputs; use --backend llvm for --emit ${emit}`);
       }
+      // A combination that the LLVM backend rejects too is reported as it does: `--backend llvm` is no way out of it.
+      rejects([...fast, "--emit", "bindings-js"], "'--emit bindings-js' requires '--target wasm32'");
+      rejects([...fast, "--emit", "wasm"], "'--emit wasm' requires '--target wasm32'");
+      rejects([...fast, "--target", "wasm32", "--emit", "exe"], "'--emit exe' requires '--target native'");
       // wasm32 modules and objects are translated too (D13); what changes the code or the link beyond that is refused.
       const wasm = [...fast, "--target", "wasm32"];
       const wasmOption = (option) => `--backend fast does not support ${option} for wasm32; remove it or use --backend llvm`;
@@ -284,6 +288,9 @@ function checks(compilerArgument) {
       for (const action of ["check", "doc", "fmt"]) {
         rejects([action, hello, "--backend", "fast"], "--backend applies only to build, run, and test");
       }
+      // `tsuzuri test` runs the native tests with the fast backend, and the wasm32 tests only with Clang (it exits 1 like
+      // the other errors of the test runner).
+      rejects(["test", hello, "--target", "wasm32", "--backend", "fast"], "--backend fast tests only the native target; use --backend llvm to test a WebAssembly target", 1);
     });
 
     const probe = execute(compiler, ["build", hello, "--backend", "fast", "-o", join(work, "probe")]);
@@ -455,6 +462,64 @@ def main :: unit -> i32 = \\() ->
       assert.ok(!readFileSync(fast).equals(readFileSync(llvm)), "the fast module is not the LLVM artifact");
       assert.ok(readFileSync(output("fast", "fast-again")).equals(readFileSync(fast)), "a second fast build");
       assert.ok(readFileSync(output("llvm", "llvm-again")).equals(readFileSync(llvm)), "--backend llvm is the default");
+    });
+
+    step("a wasm32 object and the Clang object that does 128-bit arithmetic agree on the compiler runtime", () => {
+      // Clang returns a 128-bit integer through a pointer, and the weak routines (`__multi3`, ...) that an object of
+      // the fast backend defines must have the signatures of the calls in Clang's objects.
+      const clang = process.env.TSUZURI_CLANG ?? "clang";
+      const linker = process.env.TSUZURI_WASM_LD ?? "wasm-ld";
+      const source = join(work, "int128.c");
+      writeFileSync(source, [
+        "typedef unsigned __int128 u128; typedef __int128 i128;",
+        "void mul128(const u128 *a, const u128 *b, u128 *r) { *r = *a * *b; }",
+        "void shl128(const u128 *a, int n, u128 *r) { *r = *a << n; }",
+        "void udiv128(const u128 *a, const u128 *b, u128 *r) { *r = *a / *b; }",
+        "void sdiv128(const i128 *a, const i128 *b, i128 *r) { *r = *a / *b; }",
+        "",
+      ].join("\n"));
+      const run = (program, args) => {
+        const result = spawnSync(program, args, { encoding: "utf8" });
+        assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stderr}`);
+        return result;
+      };
+      const user = join(work, "int128.o");
+      run(clang, ["--target=wasm32-unknown-unknown", "-mbulk-memory", "-mno-simd128", "-O0", "-c", source, "-o", user]);
+      const object = join(work, "hello-for-int128.o");
+      cli(["build", hello, "--target", "wasm32", "-O0", "--backend", "fast", "--emit", "object", "-o", object]);
+      const module = join(work, "int128.wasm");
+      const linked = run(linker, ["--no-entry", "--allow-undefined", "--export-all", object, user, "-o", module]);
+      assert.equal(linked.stderr, "", "wasm-ld warns about the routines of the compiler runtime");
+      // Clang's code calls the routines of the object, so what it computes shows that they take its signatures.
+      const compiled = new WebAssembly.Module(readFileSync(module));
+      const env = {};
+      for (const entry of WebAssembly.Module.imports(compiled)) {
+        assert.equal(entry.kind, "function", `${entry.module}.${entry.name}`);
+        (env[entry.module] ??= {})[entry.name] = () => 0;
+      }
+      const { exports } = new WebAssembly.Instance(compiled, env);
+      const [a, b, r] = [4096, 4112, 4128];
+      const view = () => new DataView(exports.memory.buffer);
+      const store = (at, value) => {
+        view().setBigUint64(at, BigInt.asUintN(64, value), true);
+        view().setBigUint64(at + 8, BigInt.asUintN(64, value >> 64n), true);
+      };
+      const load = () => view().getBigUint64(r, true) | (view().getBigUint64(r + 8, true) << 64n);
+      const wrap = (value) => BigInt.asUintN(128, value);
+      for (const [x, y] of [[3n, 5n], [0xffffffffffffffffn, 0x10000000000n], [(1n << 100n) + 12345n, 977n], [(1n << 127n) + 7n, 3n]]) {
+        store(a, x);
+        store(b, y);
+        exports.mul128(a, b, r);
+        assert.equal(load(), wrap(x * y), `${x} * ${y}`);
+        exports.udiv128(a, b, r);
+        assert.equal(load(), x / y, `${x} / ${y} unsigned`);
+        exports.sdiv128(a, b, r);
+        assert.equal(load(), wrap(BigInt.asIntN(128, x) / BigInt.asIntN(128, y)), `${x} / ${y} signed`);
+        for (const n of [0, 1, 63, 64, 100]) {
+          exports.shl128(a, n, r);
+          assert.equal(load(), wrap(x << BigInt(n)), `${x} << ${n}`);
+        }
+      }
     });
 
     step("tsuzuri test reports the same on both backends", () => {

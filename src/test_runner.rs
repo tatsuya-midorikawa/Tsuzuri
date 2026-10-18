@@ -133,6 +133,12 @@ fn run_with_timeout(
             "test coverage supports only the native target",
         ));
     }
+    if options.backend == Backend::Fast && options.target.is_wasm() {
+        return Err(driver_error(
+            "E2000",
+            "--backend fast tests only the native target; use --backend llvm to test a WebAssembly target",
+        ));
+    }
     let platform = options.platform();
     if let Some(triple) = options.triple {
         if options.target != Target::Native {
