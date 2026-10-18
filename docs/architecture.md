@@ -506,7 +506,7 @@ DWARF の形は、formatter を読み込まないデバッガーでも Tsuzuri �
 Clang には `-g` フラグが渡され、WASM リンク時の `--strip-all` は解除されます。macOS におけるデバッグタスクオブジェクトの生成では、対応する `llvm-link` を用いて事前に IR を結合してから単一オブジェクトとして生成することで、`ld -r` による DWARF 情報の脱落問題を回避しています。
 また macOS のデバッグ実行ファイルは、保持された `module.o` からリンクを行い、一時ファイルを削除する前に `dsymutil --flat` を実行して隣接する `output.dwarf` を生成します。
 DWARF メタデータとトラップ情報テーブルは、共通のソースファイル保護、バックアップ、および公開失敗時のロールバック機構を利用して安全に出力されます。
-なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset、テストランナーの `tsuzuri_test_run` の subprogram）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行と `-O2` のテストランナーのブレークポイントを確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）によって行われています。
+なお、Cargo の release プロファイルにおける strip 設定はコンパイラ自身のバイナリにのみ適用され、生成対象のバイナリには干渉しません。検証は `tests/debug_info.rs`（名前、束縛の位置、スカラーとポインター、union の形と offset、テストランナーの `tsuzuri_test_run` の subprogram）、`tests/debug_info.mjs` によるネイティブおよび WASM の `-O0`／`-O3` テストと `llvm-dwarfdump --verify`、ならびに LLDB の batch で表示・名前・ステップ実行と `-O2` のテストランナーのブレークポイントを確かめる `tests/debugger.mjs`（LLDB が必要なので共有 CI では実行しません）、プロセスを起動せずに関数値と `Task` の型の形と formatter の `is_function` の判定を確かめる `tests/debugger_static.mjs`（これも LLDB が必要）によって行われています。
 
 **言語サーバー:** `tsuzuri lsp` は、LSP 3.17 仕様に準拠した stdio フレームプロトコルと `serde_json` を使用し、最大メッセージサイズ 16 MiB、ヘッダー長 8 KiB、JSON 再帰深度 128 を上限として安全に動作します。
 文字位置のエンコーディングはクライアントとのネゴシエーションによって決定され（デフォルトは UTF-16）、バイト位置（byte span）からの相互変換には改行テーブルと文字境界判定を用いて、CRLF 改行やサロゲートペア・異体字セレクタ等の補助平面文字を正しく取り扱います。

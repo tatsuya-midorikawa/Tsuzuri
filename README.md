@@ -960,6 +960,7 @@ node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
+node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値と Task（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
 node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで止まること、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
