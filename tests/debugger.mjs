@@ -136,6 +136,7 @@ try {
     "union Nest = Stop | Wrap of Nest",
     "record Holder { name: string, tags: [string] }",
     "record Lookalike { code: i64, environment: i64, clone: i64, drop: i64 }",
+    "record Descriptive { descriptor: i64, environment: i64 }",
     "",
     "def inspect :: i64 -> i64",
     "fn inspect seed =",
@@ -152,13 +153,14 @@ try {
     '    let holder = Holder { name: "h", tags: ["t"] }',
     "    let label = ref holder.name",
     "    let lookalike = Lookalike { code: 1, environment: 2, clone: 3, drop: 4 }",
+    "    let descriptive = Descriptive { descriptor: 5, environment: 6 }",
     "    let total = Array.length window + long.length + escaped.length + Task.run job",
-    "    total + (if wide == u8'\\u{e9}' then 1 else 0) + label.length - seed + lookalike.code - 1",
+    "    total + (if wide == u8'\\u{e9}' then 1 else 0) + label.length - seed + lookalike.code - 1 + descriptive.descriptor - 5",
     "",
     "inspect 5",
     "",
   ].join("\n"));
-  const edge = sections(session(extras, ["breakpoint set -f Main.tz -l 21", "run", "frame variable", "kill"]))
+  const edge = sections(session(extras, ["breakpoint set -f Main.tz -l 23", "run", "frame variable", "kill"]))
     .find(part => part.command === "frame variable").text;
   for (const line of [
     "(Main.Nest) nest = Wrap(Wrap(Wrap(Wrap(...))))",
@@ -173,8 +175,10 @@ try {
     "(i64) total = 1222",
   ]) assert.ok(edge.includes(line), `${line}\n${edge}`);
   assert.match(edge, /^\(ref string\) label = 0x[0-9a-f]+ "h"$/m);
-  // A record with the field names of a function value keeps the default record display.
+  // A record with the field names of a function value keeps the default record display: the old
+  // names (code, environment, clone, drop) and the current ones (descriptor, environment) alike.
   assert.match(edge, /^\(Main\.Lookalike\) lookalike = (?:\(code = 1, environment = 2, clone = 3, drop = 4\)|\{\n  code = 1\n  environment = 2\n  clone = 3\n  drop = 4\n\})$/m);
+  assert.match(edge, /^\(Main\.Descriptive\) descriptive = (?:\(descriptor = 5, environment = 6\)|\{\n  descriptor = 5\n  environment = 6\n\})$/m);
 
   // PM01: a union of a nullary case and a string or array payload stores no tag. `$niche` holds
   // the length -1 for the nullary case, and the formatter reads the case from it, whichever case

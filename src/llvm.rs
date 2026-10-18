@@ -1112,7 +1112,7 @@ fn emit_program_in(
         ));
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr }\n%tz.closure.desc = type { ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
@@ -2067,6 +2067,70 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
+/// Whether the adapters of closures and the workers of lambdas inline into the calls of known closures
+/// whatever their size (PM02). A static descriptor keeps the adapter in the program for as long as the
+/// descriptor exists, so LLVM no longer sees the sole call of a known closure's adapter as the last
+/// call of a local function, and a tiny program that built its closures inline grew by 11 to 17 % of
+/// its code. Native code measures better with the attribute. On WebAssembly the adapter that the
+/// descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
+/// without the attribute they are as large as before (`docs/benchmarks.md`, PM02).
+fn inline_closures(globals: &Globals) -> bool {
+    !globals.wasm
+}
+
+fn apply_attributes(globals: &Globals) -> &'static str {
+    if inline_closures(globals) {
+        "nounwind alwaysinline"
+    } else {
+        "nounwind"
+    }
+}
+
+/// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
+/// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
+/// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
+/// not cloned either (B07). A closure with an environment and a `null` drop is therefore an
+/// immediate one, which `@tz.closure.clone` and `@tz.closure.drop` leave alone.
+fn closure_slots(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> (String, String) {
+    let name = function.qualified_name();
+    if count == 0 || immediate {
+        ("null".to_owned(), "null".to_owned())
+    } else if !function.is_task
+        && !function.owned_captures
+        && function.signature.parameters[..count]
+            .iter()
+            .all(|ty| ty.can_capture(&module.types()))
+    {
+        (
+            format!("@tz.env.clone.{name}.{count}"),
+            format!("@tz.env.drop.{name}.{count}"),
+        )
+    } else {
+        ("null".to_owned(), format!("@tz.env.drop.{name}.{count}"))
+    }
+}
+
+/// The static descriptor of the closure of `function` with `count` captures: its code and how to
+/// clone and drop its environment. It stands alone in its block, so that a reader that splits the
+/// IR at blank lines finds every function at the start of its own block.
+fn closure_descriptor_definition(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> String {
+    let name = function.qualified_name();
+    let (clone, drop) = closure_slots(module, function, count, immediate);
+    format!(
+        "@tz.desc.{name}.{count} = internal unnamed_addr constant %tz.closure.desc {{ ptr @tz.apply.{name}.{count}, ptr {clone}, ptr {drop} }}\n\n"
+    )
+}
+
 fn closure_wrappers(
     module: &CheckedModule,
     function: &CheckedFunction,
@@ -2079,6 +2143,7 @@ fn closure_wrappers(
     let mut output = String::new();
     let name = function.qualified_name();
     let arity = function.parameters.len();
+    let attributes = apply_attributes(globals);
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
         let immediate = immediate_capture(function, count, globals);
@@ -2172,9 +2237,15 @@ fn closure_wrappers(
             apply.begin(&done);
             apply.instruction(format!("ret {result} {value}"));
             let argument = apply.ty(&function.signature.parameters[count]);
-            output.push_str(&apply.auxiliary(&format!(
-                "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
-            )));
+            output.push_str(&apply.auxiliary_with(
+                &format!(
+                    "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
+                ),
+                attributes,
+            ));
+            output.push_str(&closure_descriptor_definition(
+                module, function, count, immediate,
+            ));
             continue;
         }
         let mut apply = FunctionEmitter::new(
@@ -2290,10 +2361,16 @@ fn closure_wrappers(
             String::new()
         };
         let borrow = if function.is_task { "" } else { ", i1 %borrow" };
-        output.push_str(&apply.auxiliary(&format!(
-            "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
-            llvm_type(&result, module)
-        )));
+        output.push_str(&apply.auxiliary_with(
+            &format!(
+                "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
+                llvm_type(&result, module)
+            ),
+            attributes,
+        ));
+        output.push_str(&closure_descriptor_definition(
+            module, function, count, immediate,
+        ));
     }
     output
 }
@@ -3532,7 +3609,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn auxiliary(self, signature: &str) -> String {
-        let mut output = format!("define internal {signature} nounwind {{\nentry:\n");
+        self.auxiliary_with(signature, "nounwind")
+    }
+
+    fn auxiliary_with(self, signature: &str, attributes: &str) -> String {
+        let mut output = format!("define internal {signature} {attributes} {{\nentry:\n");
         for line in self.allocas {
             let _ = writeln!(output, "  {line}");
         }
@@ -3617,9 +3698,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         // the table number is constant and keeps only the tables that a program reads (D09).
         // Resuming a continuation inlines too, so even at -O0 a chain of suspended computations
         // costs no extra frames per level (B08).
+        // The worker of a lambda is called by its adapter, which inlines into the call of a known
+        // closure (`inline_closures`); the adapter that stays for the descriptor would otherwise keep
+        // the worker from being the last call of a local function. A debugger still steps into the
+        // worker of an unoptimized build.
         let inline = if self.function.module == "$builtin"
             && (self.function.name.starts_with("Unicode.__table_")
                 || self.function.name.starts_with("Async.__resume"))
+            || self.function.module == "$lambda"
+                && self.symbol.starts_with("@tz.fn.")
+                && inline_closures(self.globals)
+                && !self.globals.debug_unoptimized()
         {
             " alwaysinline"
         } else {
@@ -4531,8 +4620,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
             TypedExprKind::TaskRun(task) => {
                 let task = self.expression(task);
-                let code = self.value(format!("extractvalue %tz.closure {task}, 0"));
-                let environment = self.value(format!("extractvalue %tz.closure {task}, 1"));
+                let (code, environment) = self.closure_parts(&task);
                 self.value(format!(
                     "call {} {code}(ptr {environment})",
                     self.ty(&expression.ty)
@@ -5624,39 +5712,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn closure_descriptor(&mut self, id: usize, count: usize, environment: &str) -> String {
-        let function = &self.module.functions[id];
-        let name = function.qualified_name();
+        let name = self.module.functions[id].qualified_name();
         let value = self.value(format!(
-            "insertvalue %tz.closure zeroinitializer, ptr @tz.apply.{name}.{count}, 0"
+            "insertvalue %tz.closure zeroinitializer, ptr @tz.desc.{name}.{count}, 0"
         ));
-        let value = self.value(format!(
-            "insertvalue %tz.closure {value}, ptr {environment}, 1"
-        ));
-        if count == 0 {
-            return value;
-        }
-        if immediate_capture(function, count, self.globals) {
-            let value = self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.clone, 2"
-            ));
-            return self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.drop, 3"
-            ));
-        }
-        let value = if !function.is_task
-            && !function.owned_captures
-            && function.signature.parameters[..count]
-                .iter()
-                .all(|ty| ty.can_capture(&self.module.types()))
-        {
-            self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
-            ))
-        } else {
-            value
-        };
         self.value(format!(
-            "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
+            "insertvalue %tz.closure {value}, ptr {environment}, 1"
         ))
     }
 
@@ -5708,7 +5769,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                %target = load ptr, ptr %target.slot\n\
                %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
                %task = load %tz.closure, ptr %slot\n\
-               %code = extractvalue %tz.closure %task, 0\n\
+               %descriptor = extractvalue %tz.closure %task, 0\n\
+               %code = load ptr, ptr %descriptor\n\
                %env = extractvalue %tz.closure %task, 1\n\
                %result = call {ty} %code(ptr %env)\n\
                %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
@@ -5731,6 +5793,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         array
     }
 
+    /// The code pointer and the environment of the function value `closure`. The code is the first
+    /// entry of the static descriptor that the value points to.
+    fn closure_parts(&mut self, closure: &str) -> (String, String) {
+        let descriptor = self.value(format!("extractvalue %tz.closure {closure}, 0"));
+        let code = self.value(format!("load ptr, ptr {descriptor}"));
+        let environment = self.value(format!("extractvalue %tz.closure {closure}, 1"));
+        (code, environment)
+    }
+
     fn apply_value(
         &mut self,
         callee: &str,
@@ -5738,8 +5809,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         argument: Option<(&Type, &str)>,
         borrowed: bool,
     ) -> (String, Type) {
-        let code = self.value(format!("extractvalue %tz.closure {callee}, 0"));
-        let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
+        let (code, environment) = self.closure_parts(callee);
         let result = ty.after_arguments(usize::from(argument.is_some()));
         let argument = argument.map_or_else(String::new, |(ty, value)| {
             format!("{} {value}, ", self.ty(ty))

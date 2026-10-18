@@ -198,6 +198,94 @@ fn debug_scalars_and_pointers_use_tsuzuri_shapes() {
     }
 }
 
+/// A function value is a pointer to its static descriptor and its environment (PM02), and the
+/// descriptor holds the code that it calls and the entries that clone and drop its environment.
+#[test]
+fn debug_function_values_show_their_descriptor_and_environment() {
+    let source = "export def answer :: i64 -> i64\nfn answer input =\n    let add = \\offset -> input + offset\n    add 2\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        let pointer = if wasm { 32 } else { 64 };
+        let owner = "i64 -> i64";
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_structure_type, name: \"{owner}\", size: {}, align: {pointer},",
+                2 * pointer
+            )),
+            "{ir}"
+        );
+        assert_eq!(member_names(&ir, owner), ["descriptor", "environment"]);
+        assert_eq!(member_offset(&ir, owner, "descriptor"), 0);
+        assert_eq!(member_offset(&ir, owner, "environment"), pointer);
+        let entries = "closure.descriptor";
+        assert_eq!(member_names(&ir, entries), ["code", "clone", "drop"]);
+        for (index, member) in ["code", "clone", "drop"].into_iter().enumerate() {
+            assert_eq!(member_offset(&ir, entries, member), index * pointer);
+        }
+        // The `descriptor` member points to that structure, and `code` to a function type.
+        let marker = format!("!DICompositeType(tag: DW_TAG_structure_type, name: \"{entries}\",");
+        let id = ir
+            .lines()
+            .find(|line| line.contains(&marker))
+            .and_then(|line| line.split(' ').next())
+            .unwrap();
+        assert!(
+            ir.contains(&format!(
+                "!DIDerivedType(tag: DW_TAG_pointer_type, baseType: {id}, size: {pointer})"
+            )),
+            "{ir}"
+        );
+        assert_eq!(ir.matches(&marker).count(), 1, "one descriptor type: {ir}");
+    }
+}
+
+/// Native code inlines a lambda's worker into the calls of a known closure when the build is optimized
+/// (PM02), but a debugger still steps into the worker of an unoptimized build; the adapters, which
+/// carry no debug information, inline in both. WebAssembly inlines none of them by attribute.
+#[test]
+fn debug_builds_without_optimization_keep_lambda_workers_out_of_line() {
+    use tsuzuri::{analyze, llvm, trap::TrapSource};
+    let source = "export def answer :: i64 -> i64\nfn answer input =\n    let add = \\offset -> input + offset\n    add 2\n";
+    let module = analyze(source).unwrap();
+    let sources = [TrapSource {
+        path: "sources/Main.tz",
+        text: source,
+    }];
+    for wasm in [false, true] {
+        let options = llvm::EmitOptions {
+            entry: llvm::Entry::Library,
+            wasm,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: llvm::Allocator::System,
+            f16: llvm::F16Path::Soft,
+        };
+        for optimized in [false, true] {
+            let ir = llvm::emit_with_debug_info(&module, options, &sources, optimized, false)
+                .unwrap()
+                .ir;
+            let defined = |marker: &str| {
+                ir.lines()
+                    .filter(|line| line.starts_with("define internal ") && line.contains(marker))
+                    .collect::<Vec<_>>()
+            };
+            let workers = defined("@tz.fn.$lambda.");
+            assert_eq!(workers.len(), 1, "{ir}");
+            assert_eq!(
+                workers[0].contains(" alwaysinline"),
+                optimized && !wasm,
+                "{ir}"
+            );
+            let adapters = defined("@tz.apply.");
+            assert!(!adapters.is_empty());
+            for line in adapters {
+                assert_eq!(line.contains(" nounwind alwaysinline "), !wasm, "{line}");
+            }
+        }
+    }
+}
+
 /// The `offset:` in bits of member `member` of the composite type named `owner`.
 fn member_offset(ir: &str, owner: &str, member: &str) -> usize {
     member_field(ir, owner, member, "offset: ")
@@ -419,6 +507,39 @@ fn debug_pointer_niches_overlay_the_null_pointer_on_native_targets_only() {
     assert_eq!(member_offset(&wasm, owner, "$tag"), 0);
     assert!(wasm.contains(&format!("name: \"{owner}.$tag\"")));
     assert!(!wasm.contains(&format!("name: \"{owner}.$niche\"")));
+}
+
+/// An option of a function value stores no tag (PM02): `$niche` is the descriptor pointer, which is
+/// null for `None`, on every target; the pointer is 4 bytes on wasm32.
+#[test]
+fn debug_function_value_niches_overlay_the_null_descriptor_on_every_target() {
+    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let callback: Maybe<i64 -> i64> = if n > 0 then Maybe.Some (\\x -> x + n) else Maybe.None\n    match callback with\n    | Some f -> f 1\n    | None -> -1\n";
+    let owner = "Maybe<i64 -> i64>";
+    for (wasm, bits) in [(false, 64), (true, 32)] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        // The union is the function value itself: two pointers.
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_structure_type, name: \"{owner}\", size: {}, align: {bits},",
+                2 * bits
+            )),
+            "{ir}"
+        );
+        assert_eq!(member_offset(&ir, owner, "$payload"), 0);
+        assert_eq!(member_offset(&ir, owner, "$niche"), 0);
+        assert_eq!(member_size(&ir, owner, "$niche"), bits);
+        assert!(
+            ir.contains("!DIEnumerator(name: \"None\", value: 0)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(&format!(
+                "DW_TAG_enumeration_type, name: \"{owner}.$niche\", size: {bits}, align: {bits},"
+            )),
+            "{ir}"
+        );
+        assert!(!ir.contains(&format!("name: \"{owner}.$tag\"")), "{ir}");
+    }
 }
 
 #[test]
