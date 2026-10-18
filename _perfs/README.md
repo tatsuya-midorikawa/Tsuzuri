@@ -94,6 +94,27 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 - WASM の `std_option` は 1.27 倍遅くなりました。PR03 が `ce` を `direct` と同じ `select` の形にしたためで、V8 は分岐の形を速く実行します。native は 14.4% 速くなっています。
 - `run-cpp.mjs` の `format_parse` は、統合時に main より 12% 遅くなりました（PM08 の `integer.ll` が 1 桁ずつ書くため）。`tz.integer.digits` を 2 桁ずつ書く形にして +2% に戻しました（`__text` は +120 byte）。
 
+## 第4フェーズ後の変化（2026-10-19）
+
+第4フェーズの 7 件を統合した compiler を、main（`9dd0fbbc`）と、静かな機械（Apple M1 Max。1 分の load average の下限は 6〜13）で前後比較した値です。
+表・条件・測っていないことは [docs/benchmarks.md](../docs/benchmarks.md#第4フェーズ統合の最終比較2026-10-19) にあります。
+上の「現状（2026-09-29）」と「第3フェーズ後の変化」は、履歴としてそのまま残します。x86-64・Linux・Windows の測定と専用機の測定はありません。
+
+- 連結リスト（PM04）: `control/list_sum` が 1.842 → 0.0456 ms（40 倍。9 run とも）。長さ 1,000,000 のリストの構築 18.4 → 0.46 ms、複製 38.5 → 1.0 ms、`for` の走査 34.4 → 2.1 ms、
+  最大 RSS 17.8 → 9.7 MB（確保 1,000,000 回 → 1〜261 回）。WASM の既定の 16 MiB の heap に入るリストは 400,000 個 → 1,000,000 個です。control の残り 15 種目と、computations・C++ の suite・実アプリは差がありません。
+- 関数値（PM02）: 関数値 32 → 16 bytes、`Maybe<関数値>` 40 → 16 bytes（`closure_pipeline` の配列の確保 128 → 64 bytes）。時間は control・computations・実アプリのどれも変わりません。
+- 文字列（PM03、opt-in の `TSUZURI_STRINGS=compact`。既定は `utf16`）: cpp の 5 種目の確保 bytes が −30〜−50%、最大 RSS が −28〜−30%。runtime の IR が +31〜49%、hello の wasm32 が +15% なので、既定にはしていません。
+- ビルド（PB05・PB06、opt-in）: `--backend fast` の `-O0` の再ビルド（合成 1,000 module で 1 module の本体を変えた後）は `llvm` の 0.56 倍（native）・0.47 倍（wasm32）。`tsuzuri serve`・`watch` は、
+  1 module を変えた後の `check` が 1,000 module で 0.62〜0.70 倍です。
+- PGO・LTO（PR07・PR08、opt-in）: `--profile-use` で `closure_*` が 0.83〜0.88 倍の時間（`tail_*` は約 1.20 倍、`match_dispatch` は約 1.64 倍で悪化する種目もあります）、
+  `--emit bitcode` の ThinLTO で `tz_add` のような小さな公開関数が host のループへ inline され、リンクは 0.5〜0.6 倍の時間です。
+
+悪化した点と、期待に届かなかった点:
+
+- 既定の IR が全 project で変わります（PM02 の関数値の記述子。IR の text が `-O0` で +2.4%、`-O3` で +2.7%）。hello の `--emit object` は +160 bytes、実行ファイルは +64 bytes です。
+- `escape_list`（確保 0 回のリストを作って捨てる処理）は、before が LLVM の閉じた式への畳み込みで 1,000,000 回 0.67 µs だったのに対し、after は 3.29 ms です（確保は 0 回のまま）。小さいリスト（n = 1）は 1.04〜1.18 倍（+2〜10 ns）です。
+- `<!-- フロントエンドの項 -->`
+
 ## 一覧
 
 ### PX. 計測基盤
