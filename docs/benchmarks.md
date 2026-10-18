@@ -8053,6 +8053,9 @@ rustc 1.96.1（runner が参照実装を build する rustc）です。
 before は main `9dd0fbbc`（第 3 フェーズの PR #27 の後）の release（SHA-256 `5e1b968719212217f91ddeb776057953cb9bd6aa43983bacaa0197acb4d3908c`）、
 after は統合 branch の `8a0df77090d72ade915d34c49d8c0f21669e05f2`（7 件と各レビューの修正を取り込んだ、PB05 のレビューと PM04 の修正の前の tree。`cargo +1.99.0 build --release --locked`。
 SHA-256 `37c1b762cce814ab7891d3305d1160a4324c513e9fe7b815b7ed8254cb87b4d5`）です。どちらも `Cargo.toml` の release（thin LTO、CGU 1、strip）で、測定の間コンパイラは再ビルドしていません。
+この測定のあとに統合 branch へ入った commit（PB05 のレビューの修正と CLI の診断、PB06 の log thread、PR07 の x86_64 macOS の linker の警告の filter、PR08 の Linux の host の test、PM04 の `emit` の修正、CI の修正）は、既定の IR を変えていません。
+`8a0df770` を同じ command で作り直したコンパイラと最終の tree のコンパイラで、120 project の `--emit llvm` を native と wasm32 の `-O0`・`-O3` で比べると、同一 422、同じ診断で失敗 58、差 0 でした。
+runtime の表（control・computations・リスト・C++ の suite・実アプリ）は同じ IR から Clang が作るコードの時間なので最終の tree にも当てはまり、コンパイラ自身の時間（フロントエンドの表）だけを最終の tree で測り直しました。
 runner の定義した旗（`-O3 -fPIC -fno-fast-math -ffp-contract=off` など）は変えておらず、fast-math・再結合・暗黙の FMA は使っていません。
 
 **機械の状態。** 各測定の前に 1 分平均の load average が 14 未満であることを確かめ、満たすまで待ちました（各 run の開始時と終了時の `uptime` を記録）。
@@ -8245,9 +8248,75 @@ time は µs/回（`index_walk` は 1 回に n 回の添字参照）、確保は
   IR の text は全 project の合計で `-O0` が 84,149,316 → 86,178,356 bytes（+2.4%）、`-O3` が 86,435,925 bytes（+2.7%）、hello の `-O0` が 144,926 → 147,713 bytes（+1.9%）です。
   差の主な原因は PM02 の関数値の記述子（関数ごとに `@tz.desc.<名前>.<捕捉数>` の定数）で、リストを使う project では PM04 の chunk の操作も入ります。意味・診断・公開 ABI は変わりません。
 
-<!-- phase4-final:FRONTEND -->
+#### フロントエンド（`run-frontend.mjs`。`check` と `--emit llvm -O0`）
 
-<!-- phase4-final:PB05GATE -->
+コンパイラ自身の時間は build に使った rustc で変わるので、この表だけ、before も after と同じ `cargo +1.99.0 build --release --locked` で作りました（before は main `9dd0fbbc`、after は最終の統合 branch の `038e032a`。
+以降の commit は文書だけを変えています）。上の runtime の表の before（rustc 1.98.1 の build）とは別のバイナリです。
+`node benchmarks/run-frontend.mjs COMPILER --out DIR`（hello・合成 200 module・合成 1,000 module。1 場面に 9 標本。cache なし、`TSUZURI_THREADS` は既定）を、before と after を 1 組ごとに先に走るほうを交互に 5 組測りました（開始時の load average は 3.8〜12.5）。
+
+| workload | 場面 | 指標 | before（run の中央値の中央値、run の範囲） | after | 比 after/before（5 組の中央値、範囲） | 判定 |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| hello | check | wall ms | 33.342（31.774〜47.495） | 32.545（31.113〜40.268） | 0.979（0.846〜1.021） | 差なし |
+| hello | check | 最大 RSS MB | 23.790（23.527〜23.937） | 24.068（23.790〜24.101） | 1.011（1.005〜1.022） | 差なし |
+| hello | emit-llvm | wall ms | 35.284（34.270〜40.450） | 35.719（34.603〜36.743） | 1.004（0.885〜1.042） | 差なし |
+| hello | emit-llvm | 最大 RSS MB | 25.477（25.379〜25.575） | 25.870（25.641〜25.985） | 1.013（1.006〜1.020） | **悪化** 5/5 |
+| hello | emit-llvm | emit 段 ms | 2.046（2.034〜2.108） | 2.182（2.167〜2.191） | 1.066（1.028〜1.073） | **悪化** 5/5 |
+| synthetic-200 | check | wall ms | 208.6（205.5〜245.2） | 209.7（205.4〜220.9） | 0.985（0.901〜1.073） | 差なし |
+| synthetic-200 | check | CPU ms | 480.0（470.0〜540.0） | 500.0（490.0〜520.0） | 1.021（0.963〜1.064） | 差なし |
+| synthetic-200 | check | 最大 RSS MB | 156.4（155.9〜157.9） | 157.6（156.6〜158.2） | 1.009（0.992〜1.012） | 差なし |
+| synthetic-200 | emit-llvm | wall ms | 415.7（412.1〜491.4） | 434.4（421.2〜438.9） | 1.022（0.893〜1.052） | 差なし |
+| synthetic-200 | emit-llvm | CPU ms | 680.0（680.0〜780.0） | 700.0（700.0〜730.0） | 1.029（0.936〜1.044） | 差なし |
+| synthetic-200 | emit-llvm | 最大 RSS MB | 166.5（166.0〜167.5） | 169.0（168.1〜169.6） | 1.013（1.010〜1.015） | **悪化** 5/5 |
+| synthetic-200 | emit-llvm | emit 段 ms | 187.9（186.2〜212.1） | 197.8（195.9〜207.8） | 1.046（0.980〜1.069） | 差なし |
+| synthetic-1000 | check | wall ms | 1171.9（1156.5〜1357.3） | 1164.9（1159.1〜1191.3） | 0.989（0.878〜1.010） | 差なし |
+| synthetic-1000 | check | CPU ms | 2320.0（2300.0〜2410.0） | 2360.0（2330.0〜2380.0） | 1.009（0.979〜1.030） | 差なし |
+| synthetic-1000 | check | 最大 RSS MB | 671.2（670.3〜675.5） | 674.4（670.8〜675.6） | 1.000（0.997〜1.008） | 差なし |
+| synthetic-1000 | emit-llvm | wall ms | 3152.9（3147.2〜3304.4） | 3108.5（3071.6〜3317.8） | 0.987（0.930〜1.019） | 差なし |
+| synthetic-1000 | emit-llvm | CPU ms | 4300.0（4270.0〜4410.0） | 4280.0（4270.0〜4550.0） | 0.995（0.968〜1.039） | 差なし |
+| synthetic-1000 | emit-llvm | 最大 RSS MB | 743.1（742.2〜745.3） | 759.4（758.0〜759.8） | 1.020（1.019〜1.023） | **悪化** 5/5 |
+| synthetic-1000 | emit-llvm | emit 段 ms | 1930.4（1918.4〜2008.2） | 1858.3（1842.4〜1983.5） | 0.967（0.917〜1.003） | 差なし |
+
+- `check` は 0.97〜1.02 倍で差がありません（CPU 時間・最大 RSS も同じ）。`--emit llvm` の wall は 200 module で 1.022 倍（run の範囲 0.893〜1.052）、1,000 module で 0.987 倍で、どちらも差と読めません。
+- 差が出るのは最大 RSS（`--emit llvm` で +1.3%（200 module）・+2.0%（1,000 module）、5 組とも）と、hello の `emit` 段（2.046 → 2.182 ms、+0.14 ms）です。IR の text が +2〜3% 大きくなる（PM02 の記述子）ことの結果です。
+- **統合後の最初の測定で見つかった悪化と、その修正**: 上の測定の前の tree（`8a0df770`）では、`--emit llvm` の `emit` 段が 200 module で 209.3 → 258.7 ms（+24%）、1,000 module で 2,115.7 → 2,553.3 ms（+21%）、wall が +10〜12% でした（`check` は同じ。
+  rustc 1.98.1 の before との測定で、同じ toolchain で作った二分では、PR07・PR08・PB06・PM02・PM03 の merge の `ee6c45c8`〜`71365e0c` が main と同じ 204〜214 ms で、PM02 のレビューの修正の `e4025531` から 244 ms でした）。
+  原因は、そのレビューの修正で入った `limit_worker_inlining` が、IR の全行（200 module で 287,082 行）に対して部分文字列 `@tz.fn.$lambda.` を探していたことで、`sample` の profile では検索の準備が `emit` 段の先頭の関数でした。
+  1,000 module では特殊化の予算を使い切って最初の出力を捨てて作り直すので、捨てる出力にも全体の text の pass を掛けていました。
+  PM04 の修正（`b50e419a`、`src/llvm.rs`）は、text 全体から worker の `$` と ` alwaysinline` を探して該当する行だけを見ること（実際の 8.3 MB の IR で 7.3 → 0.7 ms、5.7 → 2.5 ms）と、全体の text の 3 つの pass を採用した出力に 1 回だけ掛けることです。
+  IR は修正前と byte 同一で（120 project × `-O0`・`-O3` の native と wasm32 の 480 build、200・1,000 module の合成 project の 16 組）、PM04 の測定（200 module `-O3`: main 194.5・修正前 241.6・修正後 203.2 ms、1,000 module `-O3`: 2,000.7・2,471.8・1,916.5 ms）と、上の表（0.987〜1.046 倍）で戻りました。
+  残りの `-O0` の約 7 ms は主に PM02 の `without_closure_inlining`（2.5 ms）です。
+
+#### 高速バックエンド（PB05。`--backend fast`、opt-in）のゲートの測り直し
+
+PB05 の節の値は、ほかの作業と共有する機械（load average 10〜49）の参考値でした。ここは静かな機械で測り直した値で、feature つきのコンパイラ（`cargo +1.99.0 build --release --locked --features fast-backend`。最終の tree `038e032a` のコード。SHA-256 `015e1846428abaf4d05c3dd1fbefde839859d1aac11938a0a82cab637fc7d3aa`）が
+`--backend llvm`（Clang の `-O0`）と `--backend fast` を、同じ編集の後に 1 標本の中で交互に（先に走るほうも交互に）9 標本ずつ測ったものです（`node benchmarks/run-backend.mjs COMPILER --out DIR --sizes 200,1000 --samples 9`。
+開始時の load average は native が 4.7、wasm32 が 5.6）。合成プロジェクトは 1 module に 20 関数、`build` は cache なしの全体のビルド、`build-edit-body` は真ん中の 1 module の本体を変えた後、`build-edit-signature` はその module の export を変えた後のビルドです。
+最後のビルドの成果物は、実行して期待する出力になることを確かめています。「tools」は Clang（`fast` ではリンクだけ。wasm32 は `wasm-ld`）、「翻訳」は `backend.*` の段です。
+
+| target | module 数 | 場面 | wall ms `llvm`（中央値、最小〜最大） | wall ms `fast` | fast／llvm | cpu ms（`llvm` → `fast`） | tools ms | 翻訳 ms | 最大 RSS MB | 成果物 KB |
+| --- | ---: | --- | ---: | ---: | ---: | --- | --- | ---: | --- | --- |
+| native | 200 | `build` | 1,342（1,327〜1,460） | 729（635〜1,393） | 0.54 | 1,650 → 1,330 | 888 → 115 | 77 | 162 → 175 | 1,303 → 1,526 |
+| native | 200 | `build-edit-body` | 1,539（1,460〜1,626） | 818（758〜925） | 0.53 | 1,730 → 1,380 | 846 → 52 | 73 | 165 → 178 | 同上 |
+| native | 200 | `build-edit-signature` | 1,498（1,467〜1,627） | 790（754〜892） | 0.53 | 1,730 → 1,390 | 842 → 53 | 73 | 165 → 179 | 同上 |
+| native | 1,000 | `build` | 7,232（7,192〜7,413） | 3,729（3,700〜3,841） | 0.52 | 8,430 → 6,710 | 3,991 → 134 | 350 | 725 → 787 | 6,564 → 7,564 |
+| native | 1,000 | `build-edit-body` | 7,705（7,663〜8,018） | 4,086（4,019〜4,353） | 0.53 | 8,820 → 6,910 | 4,012 → 67 | 354 | 745 → 804 | 同上 |
+| native | 1,000 | `build-edit-signature` | 7,769（7,611〜7,940） | 4,119（4,038〜7,030） | 0.53 | 8,680 → 6,940 | 3,989 → 64 | 363 | 749 → 803 | 同上 |
+| wasm32 | 200 | `build` | 1,500（1,481〜1,544） | 532（522〜587） | 0.35 | 1,740 → 910 | 1,068 → 47 | 46 | 531 → 167 | 1,091 → 1,557 |
+| wasm32 | 200 | `build-edit-body` | 1,729（1,686〜1,942） | 739（718〜844） | 0.43 | 1,910 → 1,050 | 1,077 → 45 | 47 | 531 → 171 | 同上 |
+| wasm32 | 200 | `build-edit-signature` | 1,722（1,703〜1,806） | 719（704〜853） | 0.42 | 1,910 → 1,040 | 1,079 → 43 | 46 | 531 → 171 | 同上 |
+| wasm32 | 1,000 | `build` | 8,524（8,454〜8,686） | 3,507（3,478〜3,654） | 0.41 | 9,630 → 5,190 | 5,340 → 58 | 236 | 2,468 → 756 | 5,655 → 7,917 |
+| wasm32 | 1,000 | `build-edit-body` | 8,897（8,824〜9,062） | 4,054（3,928〜4,113） | 0.46 | 9,920 → 5,560 | 5,270 → 71 | 241 | 2,467 → 778 | 同上 |
+| wasm32 | 1,000 | `build-edit-signature` | 8,995（8,849〜9,161） | 4,038（3,924〜4,104） | 0.45 | 9,920 → 5,560 | 5,248 → 74 | 241 | 2,469 → 780 | 同上 |
+
+- ゲート（合成 1,000 module の `build-edit-body` が `llvm` 以下）は、native が 0.53 倍（7,705 → 4,086 ms）、wasm32 が 0.46 倍（8,897 → 4,054 ms）で、PB05 の節の参考値（0.56・0.47）と同じです。
+  短くなるのは Clang の時間（tools: 4,012 → 67 ms、wasm32 は 5,270 → 71 ms）だけで、残りの約 9 割は frontend、翻訳は 354 ms（native）・241 ms（wasm32）です。CPU 時間は native が 0.78〜0.81 倍、wasm32 が 0.52〜0.56 倍、
+  wasm32 の最大 RSS は 2,468 → 756 MB（Clang と wasm-ld の分が無くなる）、native は +8%（725 → 787 MB）です。成果物は native が +15〜17%、wasm32 が +40〜43% 大きくなります。
+- 生成コードの実行時間（`benchmarks/control` の 16 kernel。`node benchmarks/run-backend-kernels.mjs COMPILER --out DIR [--target wasm32]`。3 round の中央値の中央値）: native は `llvm -O0` の合計 482.1 ms に対し `fast -O0` が 390.5 ms（0.81 倍。参考に `llvm -O3` は 112.9 ms）、
+  object は 40,224 → 11,080 bytes。wasm32 は 411.9 ms に対し 454.4 ms（1.10 倍。`llvm -O3` は 157.9 ms）で、`closure_churn` 1.19 倍・`integer128_mix` 1.25 倍が遅く、module は 11,278 → 15,517 bytes です。16 kernel の checksum は 3 つの build で同じでした。
+  wasm32 の配列・リストの loop の構造化（1.3〜1.5 倍の差）は PB05 の節のとおり未対応です。
+- x86-64 の Linux と Intel の macOS では、CI（targets.yml）が `tests/fast_backend.mjs` の default・`programs`・`debug` を実行します（Linux x86-64 の runner で、21 実行ファイルの出力・85 library の export の一致、1,393 関数の行情報の検証、`parity` の 8 suite が通ることを確認済み）。時間は測っていません。
+
+<!-- /phase4-final:PB05GATE -->
 
 #### チケットごとの追認と、追認できなかったこと
 

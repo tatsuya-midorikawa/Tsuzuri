@@ -104,7 +104,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
   最大 RSS 17.8 → 9.7 MB（確保 1,000,000 回 → 1〜261 回）。WASM の既定の 16 MiB の heap に入るリストは 400,000 個 → 1,000,000 個です。control の残り 15 種目と、computations・C++ の suite・実アプリは差がありません。
 - 関数値（PM02）: 関数値 32 → 16 bytes、`Maybe<関数値>` 40 → 16 bytes（`closure_pipeline` の配列の確保 128 → 64 bytes）。時間は control・computations・実アプリのどれも変わりません。
 - 文字列（PM03、opt-in の `TSUZURI_STRINGS=compact`。既定は `utf16`）: cpp の 5 種目の確保 bytes が −30〜−50%、最大 RSS が −28〜−30%。runtime の IR が +31〜49%、hello の wasm32 が +15% なので、既定にはしていません。
-- ビルド（PB05・PB06、opt-in）: `--backend fast` の `-O0` の再ビルド（合成 1,000 module で 1 module の本体を変えた後）は `llvm` の 0.56 倍（native）・0.47 倍（wasm32）。`tsuzuri serve`・`watch` は、
+- ビルド（PB05・PB06、opt-in）: `--backend fast` の `-O0` の再ビルド（合成 1,000 module で 1 module の本体を変えた後）は `llvm` の 0.53 倍（native）・0.46 倍（wasm32）。`tsuzuri serve`・`watch` は、
   1 module を変えた後の `check` が 1,000 module で 0.62〜0.70 倍です。
 - PGO・LTO（PR07・PR08、opt-in）: `--profile-use` で `closure_*` が 0.83〜0.88 倍の時間（`tail_*` は約 1.20 倍、`match_dispatch` は約 1.64 倍で悪化する種目もあります）、
   `--emit bitcode` の ThinLTO で `tz_add` のような小さな公開関数が host のループへ inline され、リンクは 0.5〜0.6 倍の時間です。
@@ -113,7 +113,8 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 
 - 既定の IR が全 project で変わります（PM02 の関数値の記述子。IR の text が `-O0` で +2.4%、`-O3` で +2.7%）。hello の `--emit object` は +160 bytes、実行ファイルは +64 bytes です。
 - `escape_list`（確保 0 回のリストを作って捨てる処理）は、before が LLVM の閉じた式への畳み込みで 1,000,000 回 0.67 µs だったのに対し、after は 3.29 ms です（確保は 0 回のまま）。小さいリスト（n = 1）は 1.04〜1.18 倍（+2〜10 ns）です。
-- `<!-- フロントエンドの項 -->`
+- `--emit llvm` のフロントエンドは、統合後の最初の測定で `emit` 段が +21〜24%（wall が +10〜12%）でした。PM02 のレビューの修正の `limit_worker_inlining` が IR の全行を検索していたためで、PM04 の修正で戻り、最終の tree の `--emit llvm` の wall は
+  main の 0.987 倍（1,000 module）・1.022 倍（200 module）で、差と読めません（`check` も同じ）。最大 RSS は +1.3〜2.0% です（IR の text が +2〜3%）。
 
 ## 一覧
 
@@ -206,8 +207,8 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   wasm32（`--emit wasm|object`。D13: Clang を使わず再配置可能な wasm の object を書き、`wasm-ld` でリンク）で、Tsuzuri の出す LLVM IR を Clang に渡さずに翻訳します。
   `build`・`run`・`test`、`--trap-info`、`-g`（行の DWARF。gimli）、`--allocator small|counting`、`--freestanding`、`--trap-mode return` に対応し、範囲外は `E2000`、翻訳できない構成要素は `E2002` です。
   Windows のホストでは `E2000` のままです（実行できる機械がなく、Windows の IR の `__multi3` などの 128 bit の署名を翻訳器が拒むため。MSVC の 2 target は型検査だけ）。
-  合成 1,000 module の `build-edit-body` は `llvm` の 0.56 倍（native）・0.47 倍（wasm32）、200 module は 0.53 倍と 0.42 倍（共有機の参考値）で、短くなるのは Clang の時間だけです（残りは frontend が 81〜93%）。
-  生成コードの実行時間は `llvm -O0` の 0.81 倍（native）・1.05 倍（wasm32）、成果物は 15〜17%・40〜43% 大きく、feature つきの `tsuzuri` は 9.47 → 13.5 MiB です（既定の build には入りません）。
+  合成 1,000 module の `build-edit-body` は `llvm` の 0.53 倍（native）・0.46 倍（wasm32）、200 module は 0.53 倍と 0.43 倍（静かな機械での測り直し。共有機の参考値は 0.56・0.47）で、短くなるのは Clang の時間だけです（残りは frontend が約 9 割）。
+  生成コードの実行時間は `llvm -O0` の 0.81 倍（native）・1.10 倍（wasm32）、成果物は 15〜17%・40〜43% 大きく、feature つきの `tsuzuri` は 9.47 → 13.5 MiB です（既定の build には入りません）。
   意味の一致: `examples/`・`tests/fixtures/` の実行ファイル 21 個・library 85 個、wasm32 の 96 module、約 820 の演算（Clang と bit 単位。NaN の payload を除く）、既存の 27 suite（compact の 7 suite を含む）が `llvm` と一致し、
   旗なしの出力は PB05 を入れる前の統合 branch（`63a12d4a`）と byte 単位で同じです（576 件）。macOS の AArch64 で全部、Linux は AArch64・x86-64 の Docker コンテナで driver と test を実行しました。
   確認で見つけたこと: Cranelift の x86-64 は署名に `i128` があると panic する、`llvm.fmuladd` は x86-64 で融合しない、Windows 向けの IR の `__multi3` は翻訳器が `E2002` で拒む。
