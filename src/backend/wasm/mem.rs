@@ -413,21 +413,23 @@ impl<'w, 'a> Lower<'w, 'a> {
         }
     }
 
-    /// The vector in a slot of the frame, and the address of the element that the value `index`
-    /// names there, kept inside the vector: an index past the end is poison, so any lane will do.
-    fn spill_vector(
-        &mut self,
-        ty: Ty,
-        vec: &Val,
-        index: &Val,
-        lanes: u32,
-        elem: Ty,
-    ) -> Res<(Atom, Atom)> {
-        let size = self.types.size_of(ty)?;
-        let align = self.types.align_of(ty)?;
-        let slot = Atom::Frame(self.slot(size, align)?);
-        self.store_value(&slot, 0, ty, vec)?;
+    /// The lanes of a vector, one element each, in a slot of the frame (a mask vector's lanes are a byte
+    /// each here, not the bits that memory keeps), and the address of the element that the value
+    /// `index` names there, kept inside the vector: an index past the end is poison, so any lane will do.
+    fn spill_vector(&mut self, vec: &Val, index: &Val, lanes: u32, elem: Ty) -> Res<(Atom, Atom)> {
         let stride = self.types.size_of(elem)?;
+        let align = self.types.align_of(elem)?;
+        let slot = Atom::Frame(self.slot(stride * u64::from(lanes), align)?);
+        let atoms = self.atoms(vec)?;
+        let width = self.flat(elem)?.len();
+        for lane in 0..lanes as usize {
+            self.store_scalar(
+                &slot,
+                lane as u64 * stride,
+                elem,
+                &atoms[lane * width..(lane + 1) * width],
+            )?;
+        }
         let index = self.single(index)?;
         let last = lanes as i32 - 1;
         self.push(&index)?;
@@ -457,7 +459,7 @@ impl<'w, 'a> Lower<'w, 'a> {
             bail!("an extractelement on {}", self.types.describe(ty));
         };
         let Some(lane) = self.lane_index(&index, lanes)? else {
-            let (_, address) = self.spill_vector(ty, &vec, &index, lanes, elem)?;
+            let (_, address) = self.spill_vector(&vec, &index, lanes, elem)?;
             return self.load_value(&address, 0, elem);
         };
         let width = self.flat(elem)?.len();
@@ -470,9 +472,14 @@ impl<'w, 'a> Lower<'w, 'a> {
             bail!("an insertelement on {}", self.types.describe(ty));
         };
         let Some(lane) = self.lane_index(&index, lanes)? else {
-            let (slot, address) = self.spill_vector(ty, &vec, &index, lanes, element)?;
+            let (slot, address) = self.spill_vector(&vec, &index, lanes, element)?;
             self.store_value(&address, 0, element, &elem)?;
-            return self.load_value(&slot, 0, ty);
+            let stride = self.types.size_of(element)?;
+            let mut atoms = Vec::new();
+            for lane in 0..u64::from(lanes) {
+                atoms.extend(self.load_scalar(&slot, lane * stride, element)?);
+            }
+            return Ok(Val::Atoms(atoms));
         };
         let width = self.flat(element)?.len();
         let mut atoms = self.atoms(&vec)?;

@@ -695,18 +695,42 @@ fn int_vector_cases(suite: &mut Suite, lanes: u32, bits: u32) {
         ),
         "%r",
     );
-    suite.add(
-        &group,
-        format!("{vector} vector.reduce.add"),
-        Kind::Int,
-        vec![format!(
-            "declare {lane} @llvm.vector.reduce.add.{suffix}({vector})"
-        )],
+    // A mask vector in memory is its bits in one integer; a variable index reads and writes one lane.
+    add(
+        suite,
+        "mask store load",
+        vec![],
         format!(
-            "{prelude}  %r = call {lane} @llvm.vector.reduce.add.{suffix}({vector} %x)\n{}  ret i64 %o\n",
-            int_fold(bits, "%r")
+            "  %c = icmp ugt {vector} %x, %y\n  %p = alloca {mask}, align 8\n  store {mask} %c, ptr %p\n  %d = load {mask}, ptr %p\n  %r = select {mask} %d, {vector} %x, {vector} %y\n"
         ),
+        "%r",
     );
+    add(
+        suite,
+        "mask extractelement insertelement variable",
+        vec![],
+        format!(
+            "  %c = icmp ult {vector} %x, %y\n  %i = and i64 %b, {last}\n  %e = extractelement {mask} %c, i64 %i\n  %f = xor i1 %e, true\n  %j = and i64 %a, {last}\n  %d = insertelement {mask} %c, i1 %f, i64 %j\n  %r = select {mask} %d, {vector} %x, {vector} %y\n",
+            last = lanes - 1
+        ),
+        "%r",
+    );
+    for reduction in [
+        "add", "mul", "and", "or", "xor", "smax", "smin", "umax", "umin",
+    ] {
+        suite.add(
+            &group,
+            format!("{vector} vector.reduce.{reduction}"),
+            Kind::Int,
+            vec![format!(
+                "declare {lane} @llvm.vector.reduce.{reduction}.{suffix}({vector})"
+            )],
+            format!(
+                "{prelude}  %r = call {lane} @llvm.vector.reduce.{reduction}.{suffix}({vector} %x)\n{}  ret i64 %o\n",
+                int_fold(bits, "%r")
+            ),
+        );
+    }
 }
 
 fn float_vector_cases(suite: &mut Suite, lanes: u32, ty: &str) {
