@@ -839,7 +839,8 @@ Phase 1（native の計装・適用・cache・診断・計測）と Phase 2（`r
 | レビュー対応 | `1090c439` | 原子的でないカウンターの制限と測定（D18）、文書の数字を測定の表にそろえる、`--help` の順序 |
 | レビュー対応 | `fea4cee4` | チケットの記録（D18、検証） |
 | CI の指摘 | `41465479` | Intel の macOS の CI の `tests/pgo.mjs` の失敗: 計装のリンクで `ld` が出す `__llvm_prf_*` の整列の警告 3 行を表示しない（D19）。単体テスト、`tests/pgo.mjs` の新しい節、文書 |
-| CI の指摘 | このコミット | チケットの記録（D19、検証） |
+| CI の指摘 | `483d8c21` | チケットの記録（D19、検証） |
+| レビュー対応（PR #28） | このコミット | wasm32 の `writeProfile` が別の writer の profile を上書きしていた: 各 writer の `written` は 0 から数え、pid は同じなので、2 つの module（Worker）が同じ `default_wasm_<pid>_0.profraw` に書いた。ファイルを `wx` で排他的に作り、`EEXIST` だけ次の番号へ飛ばす。`tests/pgo.mjs` の wasm の節に回帰（query で 2 つの writer、`Promise.all`、4 つの Worker）、文書、チケットの記録 |
 
 ### 実装したこと
 
@@ -847,7 +848,7 @@ Phase 1（native の計装・適用・cache・診断・計測）と Phase 2（`r
 - 計装と適用は Clang の IR PGO。Tsuzuri の LLVM IR は変えず、本体の `clang -x ir` の `-O<n>` の直後に `-fprofile-generate=<絶対パス>` か `-fprofile-use=<複製した profile>` を足す（macOS の `-g` の別リンクにも計装の旗を渡す）。旗を付けない build の成果物と cache の鍵は変わらない。計装の link で x86_64 の macOS の `ld` が出す整列の警告 3 行（Apple 以外の Clang の `-sectalign … 0x4000` による）は表示しない（D19）。
 - `--profile-use`: indexed の `.profdata`（magic を確かめて複製し SHA-256 を鍵にする）か、`.profraw` のディレクトリ（`llvm-profdata merge` をファイル名の順に実行。path は引数でなく一時ディレクトリの一覧のファイルで渡す）。`llvm-profdata` は `TSUZURI_LLVM_PROFDATA`、Clang の隣、`clang -print-resource-dir` の 3 階層上の順で探し、PATH は見ない。合わない関数は `W2001` の 1 行にまとめ、build は成功する。
 - `run --profile-generate`: `--trap-info` の IR で計装して実行し、正常終了なのに profile が書かれなかったときは `W2001`（`LLVM_PROFILE_FILE` があれば出さない）。
-- wasm32: module に profile runtime はない。計装した module の隣に `<out>.profile.mjs` を書き、host が `writeProfile(instance)` を呼ぶと Clang 21 の raw profile（version 10、32 bit）が書かれ、`llvm-profdata` が読む。`wasm-ld` が `__start/__stop___llvm_prf_*` を export し、既定の import は増えない。
+- wasm32: module に profile runtime はない。計装した module の隣に `<out>.profile.mjs` を書き、host が `writeProfile(instance)` を呼ぶと Clang 21 の raw profile（version 10、32 bit）が `DIR/default_wasm_<pid>_<n>.profraw` に書かれ、`llvm-profdata` が読む。`writeProfile` はファイルを排他的に作り（`open` の `wx`）、使われている名前（同じ process の別の module・Worker の writer、pid が同じ別の process）は次の番号へ飛ばすので、何回呼んでも既存の profile を上書きしない。書き込みに失敗したら、できかけのファイルは消す。`wasm-ld` が `__start/__stop___llvm_prf_*` を export し、既定の import は増えない。
 - 測定: `benchmarks/run-control.mjs --pgo`（Tsuzuri・C・C++・任意で Rust）、`benchmarks/run-wasm-pgo.mjs`、`benchmarks/run-trap-layout.mjs`。PX01 の schema は変えず、PGO の列は `variant` の `pgo`。
 - テスト: `src/profile.rs` の単体 16 件（`.profraw` が 1 万ファイルでも merge できること、一覧の形、`ld` の整列の警告 3 行の除去を含む）、`src/main.rs` の 3 件（拒否の表を含む。Windows の host では別に 1 件）、`src/cache.rs` の成果物名、`tests/pgo.mjs`（17 節。Clang の profile runtime か `llvm-profdata` がなければ理由を出して skip し、`LLVM_PREFIX` か `TSUZURI_PGO_STRICT=1` があれば skip を失敗にする）。
 
@@ -893,6 +894,7 @@ PGO あり／なしの時間比（1 未満は PGO のほうが短い。plain と
 | `node scripts/check-docs.mjs`（option・usage・diagnostics・platforms・native-interop・webassembly・index）、`sh scripts/check-runtime-includes.sh`、`git diff --check` | 7 pages、298 links、17 examples、12 native runs。runtime の include は 51 files。問題なし |
 | レビュー対応（2026-10-18。統合ブランチ `acb5caa9` の上）の再確認 | `cargo test --locked --lib --bin tsuzuri`（`RUST_MIN_STACK=4194304`）が lib 327 passed（`profile` が 14）・bin 25 passed。`tests/pgo.mjs` が Apple clang 21.0.0 と Homebrew LLVM 21.1.8（strict）の両方で 16 節とも成功。`llvm-profdata` のない Clang（wrapper で `-print-resource-dir` を偽る）では 5 節が成功、11 節が理由つきで skip、失敗 0。fmt・clippy 1.99・Windows の型検査（x86_64・aarch64）は問題なし。`tests/cache.mjs`、`check-docs`（option・native-interop・usage・index。235 links、13 examples、10 native runs）は成功。全 suite（1487 passed）はこの修正の前の結果で、修正後は再実行していない（変更は `src/profile.rs` の merge、`src/main.rs` の `--help` とテスト、`tests/pgo.mjs`、文書）。Windows の host のテスト（`src/main.rs` の 2 行の修正）は実行していない |
 | CI の指摘（2026-10-19。統合ブランチ `a6ab136d` の上）の再確認 | Intel の macOS（`macos-15-intel`、Homebrew LLVM 21）の CI で `tests/pgo.mjs` が 15 節成功・1 節失敗（stderr に `__llvm_prf_*` の整列の警告 3 行）。arm64 の macOS と Linux の x64・arm64 では通った。arm64 の Mac で: x86_64 向けの Homebrew の Clang 21.1.8 と実際の `ld` で再現し（`build --profile-generate`・`-g` とも 3 行）、修正の binary は 0 行（別の実際の警告 `ignoring duplicate libraries: '-lm'` は残る）。`cargo test --locked --lib --bin tsuzuri -- profile` が lib 16 passed・bin 3 passed。`tests/pgo.mjs` が Apple clang 21.0.0 と Homebrew LLVM 21.1.8（strict）の両方で 17 節とも成功（新しい節は修正の前の binary では失敗する）。fmt・clippy 1.99・Windows の型検査（x86_64・aarch64）は問題なし。`check-docs`（option・platforms・index）は成功。Intel の macOS で実行して確かめてはいない（Rosetta がない）。CI の再実行で確かめる |
+| レビュー対応（PR #28。2026-10-19。統合ブランチ `1ec4a42e` の上）: wasm32 の profile の writer | 修正の前の writer では、回帰が失敗する（query で作った 2 つの writer の 6 回の呼び出しが 3 つのファイルになり、profile が 3 つ消える。4 つの Worker は 1 つのファイルに書き、3 つ消える）。修正後は、6 回の呼び出しが 6 つ、4 つの Worker が 4 つのファイルを作り、どれも同じ中身で空でない。`node tests/pgo.mjs` が 17 節とも成功（Apple clang 21.0.0（Node 20）、Homebrew LLVM 21.1.8 の strict（Node 20 と Node 24））。`check-docs`（option・webassembly）、`cargo fmt --check`、`cargo test --lib -- driver::profile`（16 件）は成功。writer は `include_str!` されるので、release の binary を作り直してから試した |
 
 ### 起票・再検討との違いと訂正
 

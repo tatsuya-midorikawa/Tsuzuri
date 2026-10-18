@@ -271,7 +271,7 @@ tsuzuri build Main.tz --target wasm32 -O0 --backend fast -o app.wasm
 
 ## プロファイルで最適化する
 
-wasm32 の module も、実行時の分岐の頻度で最適化できます。module はプロファイルのランタイムを持たないので、`--profile-generate DIR` は計装した `shop.wasm` と、その隣に書き出し役の `shop.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に LLVM の raw profile ができ、`--profile-use DIR` で作り直します（手順と制限は [プロファイル誘導最適化](option.md#webassembly-の-module)）。
+wasm32 の module も、実行時の分岐の頻度で最適化できます。module はプロファイルのランタイムを持たないので、`--profile-generate DIR` は計装した `shop.wasm` と、その隣に書き出し役の `shop.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に LLVM の raw profile が、上書きせず新しいファイルとして書かれ、`--profile-use DIR` で作り直します（手順と制限は [プロファイル誘導最適化](option.md#webassembly-の-module)）。
 
 ```sh
 tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-generate prof

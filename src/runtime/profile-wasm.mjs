@@ -3,7 +3,11 @@
 //   import { writeProfile } from "./app.wasm.profile.mjs";
 //   const { instance } = await WebAssembly.instantiate(await readFile("app.wasm"));
 //   instance.exports.tz_run(1000n);   // the workload that the program should be tuned for
-//   await writeProfile(instance);     // DIR/default_wasm_<pid>_<n>.profraw
+//   await writeProfile(instance);     // a new file, DIR/default_wasm_<pid>_<n>.profraw
+//
+// Every call writes a file of its own and never replaces one. Each module has a writer of its own, each worker thread loads a copy
+// of it, and all of them count their files from 0 and share the process id, so a name that is taken is skipped: no profile is
+// lost, and `tsuzuri build --target wasm32 --profile-use DIR` merges them all.
 //
 // A WebAssembly module has no profile runtime, so it only counts in its memory. This file turns those counters into an LLVM
 // raw profile (version 10, a 32-bit program), which `tsuzuri build --target wasm32 --profile-use DIR` merges with
@@ -68,12 +72,32 @@ export function profileBytes(instance) {
   return bytes;
 }
 
-/** Saves the profile of `instance` in `directory` (which is made if it is not there) and returns the path of the file. Node only. */
+/**
+ * Saves the profile of `instance` in `directory` (which is made if it is not there) and returns the path of the file. Node only.
+ * The file is created exclusively: a name that exists is skipped for the next number, so that the profile of another module, of
+ * a worker thread, or of an earlier process with the same id is never replaced. A write that fails leaves no half of a profile.
+ */
 export async function writeProfile(instance, directory = defaultDirectory) {
   const bytes = profileBytes(instance);
-  const [{ mkdir, writeFile }, { join }] = await Promise.all([import("node:fs/promises"), import("node:path")]);
+  const [{ mkdir, open, unlink }, { join }] = await Promise.all([import("node:fs/promises"), import("node:path")]);
   await mkdir(directory, { recursive: true });
-  const path = join(directory, `default_wasm_${process.pid}_${written++}.profraw`);
-  await writeFile(path, bytes);
-  return path;
+  for (;;) {
+    const path = join(directory, `default_wasm_${process.pid}_${written++}.profraw`);
+    let file;
+    try {
+      file = await open(path, "wx");
+    } catch (error) {
+      if (error.code === "EEXIST") continue;
+      throw error;
+    }
+    try {
+      await file.writeFile(bytes);
+      await file.close();
+    } catch (error) {
+      await file.close().catch(() => {});
+      await unlink(path).catch(() => {});
+      throw error;
+    }
+    return path;
+  }
 }
