@@ -1,12 +1,14 @@
 # 実装チケット共通ガイド
 
 このガイドは `_features/` の全チケット（完了済みは `_features/_completed/`）と `_perfs/` の性能チケットに共通する前提・手順・設計決定をまとめたものです。
-**チケットに着手する前に、このファイル全体と対象チケット、`AGENTS.md`、`docs/language.md`、
-`docs/architecture.md` の関連節を必ず読んでください。** チケットとこのガイドが矛盾する場合は、
+**着手前に読むのは、[GUIDE-LITE.md](GUIDE-LITE.md)（約 16 KB の抜粋）、対象チケット、`AGENTS.md` です。** このファイル（約 280 KB）は参照用で、全文は読みません。
+読むのは、チケットが指す節と台帳の D-n、§0・§1・§13、変更の種類に合う §6 のチェックリストだけです（§9 は約 1,250 行の台帳なので、
+引かれた D-n だけを読みます）。`docs/language.md`（約 700 KB）と `docs/architecture.md`（約 500 KB）も全文は読まず、
+`grep -n '^#' <ファイル>` で見出しを出して、関連する節だけを読みます。チケットとこのガイドが矛盾する場合は、
 このガイドの「9. 設計決定台帳」を優先し、矛盾をチケットの「決定事項」（旧いチケットでは「未決事項」）に追記して人間に報告します。
 
-**第3期のチケット（[D-50](#d-50-第3期計画ai堅牢性性能27-チケットの起票)。G21–G36・A20–A23・B10・C12・D13–D14・E15・F14–F15）は、全文を読む代わりに [GUIDE-LITE.md](GUIDE-LITE.md)（約 7,500 字の抜粋）とそのチケットだけで着手できます。**
-GUIDE のほかの節は、チケットが指定したときだけ読みます。小さいモデルに渡す文脈は、G32 の `ticket-brief`（チケットごとの文脈パックの自動生成）が作ります。
+**第3期のチケット（[D-50](#d-50-第3期計画ai堅牢性性能27-チケットの起票)。G21–G36・A20–A23・B10・C12・D13–D14・E15・F14–F15）は、GUIDE-LITE.md とそのチケットだけで着手できるように書いてあります。**
+第1・2期のチケットも、まず GUIDE-LITE.md とチケットを読み、チケットが指す GUIDE の節だけを足します。小さいモデルに渡す文脈は、G32 の `ticket-brief`（チケットごとの文脈パックの自動生成）が作ります。
 
 調査時点のコミットは `19d8cdd`（2026-09-23）です。行番号は変わりやすいため、コード参照は
 「ファイル + 関数名／型名」で書いています。見つからない場合は `grep` で関数名を探してください。
@@ -124,52 +126,44 @@ XL と大きい L のチケットは Phase に分かれています。**人間�
 
 ### 2.3 ベースラインの確認
 
-```sh
-cargo build --release --locked
-cargo test --locked
-```
-
-変更前にテストが通ることを確認し、失敗があれば自分の変更と無関係であることを記録してから着手します。
+着手前に全テストは回しません。基準は `main` の最新の `ci.yml` の結果です（`gh run list --branch main --workflow ci.yml --limit 1`）。それが緑なら、`main` が通る検査を自分の変更で落としたときは自分の変更の影響です。赤のときだけ、赤い検査を手元で再現し、自分の変更と無関係であることを記録してから着手します。
 
 ---
 
 ## 3. 検証コマンド
 
-小さい範囲から実行し、最後に全体を実行します。
+回す範囲は [README の「検証と性能測定」](../README.md#検証と性能測定)の T0〜T3 に従います。T0 は編集のたび（fmt・clippy・該当するテスト）、T1 は手順の 1 段ごと（全 Rust テスト）、T2 は完了の報告の前（T1・該当する E2E・変更した `_tsuzuri/` のページの `check-docs`）で、T3 は CI です。
 
 ```sh
-# 最小: 変更した Rust テストだけ（--test <ファイル名> を使う）
+# T0: 形式・lint と、変更した Rust テストだけ（--test <ファイル名> を使う）
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 cargo test --locked --test <ファイル名から .rs を除いたもの>
 cargo test --locked <テスト関数名の一部>
+
+# T1: 全 Rust テスト（LLVM 不要）。cargo-nextest があれば速い
+cargo nextest run --locked    # 無ければ cargo test --locked
+
+# T2: E2E（LLVM/Clang/LLD/Node が必要）。内側のループは dev バイナリで足りる
+cargo build
+node tests/e2e.mjs target/debug/tsuzuri
+node tests/primitives.mjs target/debug/tsuzuri
+node tests/tasks.mjs target/debug/tsuzuri
+node tests/computations.mjs target/debug/tsuzuri
+node tests/control.mjs target/debug/tsuzuri
+node tests/numeric_casts.mjs target/debug/tsuzuri
+node tests/examples.mjs target/debug/tsuzuri
+
+# 追加のメモリ検査（ASan が使える環境）
+TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/control.mjs target/debug/tsuzuri
+TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/computations.mjs target/debug/tsuzuri
 ```
 
 > **注意:** 名前フィルターだけの `cargo test --locked <pattern>` は、一致するテストが 0 件でも成功します。
 > 出力の `running N tests` の N が 0 でないことを必ず確認してください。
-> Node の E2E は `target/release/tsuzuri` を使うため、**Node テストの直前に毎回 `cargo build --release --locked`** を実行し、
-> 古いバイナリで検証しないでください。
-
-```sh
-# 形式・lint
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-
-# 全 Rust テスト（LLVM 不要）
-cargo test --locked
-
-# E2E（LLVM/Clang/LLD/Node が必要。release ビルドを使う）
-cargo build --release --locked
-node tests/e2e.mjs target/release/tsuzuri
-node tests/primitives.mjs target/release/tsuzuri
-node tests/tasks.mjs target/release/tsuzuri
-node tests/computations.mjs target/release/tsuzuri
-node tests/control.mjs target/release/tsuzuri
-node tests/numeric_casts.mjs target/release/tsuzuri
-node tests/examples.mjs target/release/tsuzuri
-
-# 追加のメモリ検査（ASan が使える環境）
-TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/control.mjs target/release/tsuzuri
-TSUZURI_ASAN=1 ASAN_OPTIONS=detect_stack_use_after_return=1 node tests/computations.mjs target/release/tsuzuri
-```
+> Node の E2E には、`cargo build` が作る `target/debug/tsuzuri`（dev profile は opt-level 1）か、`cargo build --release --locked` が作る
+> `target/release/tsuzuri` を渡します。**どちらでも、Node テストの直前にそのビルドを実行し、古いバイナリで検証しないでください。**
+> 性能や大きさを見る検査と、チケットが release と指定した検査は release で回します。
 
 性能測定（合否条件にしない）: `node benchmarks/run.mjs`、`run-cpp.mjs`、`run-computations.mjs`、`run-control.mjs`
 （いずれも第 1 引数に `target/release/tsuzuri`）。手順と限界は `docs/benchmarks.md`。
@@ -187,43 +181,7 @@ target/release/tsuzuri build /tmp/tz-try --emit llvm -O0 -o /tmp/tz-try/Main.ll
 
 ### 3.1 テスト選択表と必ず実行する回帰テスト
 
-`cargo test --locked <pattern>` は一致するテストが 0 件でも成功する。**出力の `running N tests` の N が 0 でなく、期待した数であることを毎回見る。**
-Node の E2E は `target/release/tsuzuri` を使うので、直前に `cargo build --release --locked` を実行する。
-
-どの変更でも、最後に次の回帰テストを実行する。上限や stack の大きさを上げて通してはいけない（§11.1）。
-
-```sh
-cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
-cargo test --locked --lib bounds_recursive_and_flat_expression_depth
-cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax
-cargo test --locked honors_the_exact_specialization_limit
-```
-
-| 変更の種類 | Rust テスト（手本のファイル） | E2E（`node tests/<名前>.mjs target/release/tsuzuri`） |
-| --- | --- | --- |
-| 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
-| 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
-| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs` |
-| 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
-| 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
-| コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
-| 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
-| 数値・数学 | `tests/integers.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
-| コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
-| 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
-| Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
-| SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
-| 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
-| ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
-| host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
-| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
-| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む） | — |
-| LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
-| 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
-| `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
-
-表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行する。
-最終確認は §3 の全体（fmt・clippy・`cargo test --locked`・関係する E2E）と `sh scripts/check-runtime-includes.sh`。
+「変更の種類 → 回す Rust テストと E2E」の表と、どの変更でも通す回帰テストは、[README の「変更の種類別」](../README.md#変更の種類別)にあります（旧版はこの節に表を持っていました）。`cargo test --locked <pattern>` は一致するテストが 0 件でも成功する。**出力の `running N tests` の N が 0 でなく、期待した数であることを毎回見る。** 回帰テストの 4 件は T1（全 Rust テスト）に含まれる。上限や stack の大きさを上げて通してはいけない（§11.1）。
 
 ---
 
@@ -564,7 +522,7 @@ fn rejects(source: &str, code: &str) {
 
 ## 8. ドキュメント更新規約
 
-機能を追加・変更・修正・削除したら、**同じコミットかプルリクエストで** `_tsuzuri/language-reference/`（目次は `index.md`）の
+機能を追加・変更・修正・削除したら、**同じプルリクエストで**（動作が固まったところで一度）`_tsuzuri/language-reference/`（目次は `index.md`）の
 関連ページを最新にする。チケットを Phase ごとの PR に分けるときは PR ごとに行い、チケットのない修正にも適用する
 （`AGENTS.md` の「Language reference」と同じ規則）。対象は、利用者から見えるすべての振る舞い（構文・意味・型・組み込み関数・
 std の API・診断コードとメッセージ・CLI オプション・ターゲット・ホスト連携・文書に書いた性能特性・既知の制限と不具合）である。
@@ -584,7 +542,8 @@ std の API・診断コードとメッセージ・CLI オプション・ター�
 
 - 文書は日本語、コード識別子と診断メッセージは英語。言語リファレンスは、周りのページと同じ文体（です・ます）と構成で書く。
 - 利用者向けの仕様は `docs/language.md`、コンパイラ内部の不変条件は `docs/architecture.md`、
-  概要と実行例は `README.md`、性能は `docs/benchmarks.md`。言語リファレンスと同じ変更で食い違いを残さない。
+  概要と実行例は `README.md`、性能は `docs/benchmarks.md`。`docs/language.md` は言語リファレンスと同じ PR で食い違いを残さない。
+  README は、書いてあること（クイックスタート・特徴の一覧・CLI の概要・検証手順）が変更で誤りになるときだけ直す。
 - 「未実装」「未対応」と書かれている箇所（例: `docs/architecture.md`「初版の次に必要な設計」、
   `docs/language.md` の各節末尾の未対応一覧、README 冒頭の未実装一覧）を実装に合わせて更新する。
 - 実装していない最適化や将来計画を、実装済みのように書かない。
@@ -1908,7 +1867,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
 ### 11.1 既知の落とし穴（過去の実装から）
 
-- **stack の深さ。** debug ビルドのテストは 2 MiB の stack で動く。`syntax` の enum の variant を小さく保ち（大きい field は `Box`）、
+- **stack の深さ。** テストのスレッドは既定で 2 MiB の stack で動く（dev profile は opt-level 1 で frame が小さくなったが、再帰の深さに注意する点は変わらない。CI は 4 MiB を付ける）。`syntax` の enum の variant を小さく保ち（大きい field は `Box`）、
   `Parser::primary` の分岐を小さく保ち、引数の検査の入口は小さな振り分けにして重い処理は再帰しない補助関数へ出す。
   parser の再帰する補助関数は入れ子の数を必ず増減する（減らし忘れて深さ 128 の前に溢れた例がある）。
   上限や stack の大きさを上げてテストを通してはいけない。回帰テストは §3.1 の 3 つ（`bounds_type_growing_polymorphic_recursion`、
@@ -2033,7 +1992,7 @@ describe (Value 10) + first (5, 6) + classify (-3) + sum_to 4 + text.length + sh
 - 計測した場合は計測条件と結果の保存先（§14）。性能を主張しない場合はそう書く。
 - チケットから外れた判断（決定事項への追記）と、見つけた問題・残作業。
 - 更新した `_tsuzuri/language-reference/` のページ（§8）。更新が不要なら、その理由。
-- 変更したファイルの一覧。コミットは人間の指示があるまで作らない。
+- 変更したファイルの一覧。コミットは自分のブランチに作ってよい（1 チケット 1 ブランチ・1 PR。`main` にはコミットも push もしない。`AGENTS.md`）。
 
 ## 14. 性能チケットの共通手順
 
