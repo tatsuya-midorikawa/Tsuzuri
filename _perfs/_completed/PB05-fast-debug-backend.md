@@ -982,6 +982,8 @@ docs/benchmarks.md の PB05 の節（native と wasm32 のゲート、生成コ�
 - pointer 越しの呼び出しで、外部の C の関数が `signext` の引数を期待する場合（呼ぶ側が符号拡張した値を渡す約束）は、呼ぶ側が拡張しない。Tsuzuri が出す pointer 越しの呼び出しは自分の関数（closure）だけを呼ぶ。直接の呼び出しは、前から宣言の属性どおりに拡張する。
 - x86-64 での実行（Linux のコンテナ。Rosetta）と Windows での実行は、下の確認のとおり。Windows は型検査と clippy だけで、実行は確かめていない。
 
+**PR #28 の Copilot の review（2026-10-19）**: `tsuzuri test --index N -g -o PATH --backend fast`（debugger 用の runner）が、f16 の演算を含む test で E2002（`fptrunc from float to half in …`）になった。`tsuzuri test` の runner（`build_runner`）と `build`・`run` は、`fast` のとき `F16Path::Soft`（runtime の整数の routine）を IR に渡すが、debugger 用の runner（`build_debug_runner`）は機械の経路（AArch64 は `Hardware`）を渡していたため、翻訳器が拒む `half` が IR に入った。3 か所に分かれていた選択を 1 つの関数 `f16_path_for(backend, platform, target, cpu)`（`src/driver.rs`）にまとめ、`build`・`build_runner`・`build_debug_runner` が使う。`fast` の IR を出す場所はほかに無い（`bench` は `--backend` を受けず、runner は常に `llvm`。`serve`・`watch` は driver の build を呼ぶ。wasm32 の `test` は E2000）。test は `tests/fast_backend.mjs` の既定 mode の段で、f16 の演算を含む project の `test --index N -g -o PATH --json` を `fast` と `llvm` で作り、runner の出力と終了状態が同じであること（通る test は 0、通らない test は同じ signal）を確かめる。直す前の `tsuzuri` では E2002 で失敗し、直したあとは通ることを、この macOS の AArch64（`Hardware` の経路）で確かめた。`f16_path_for` の単体 test もある。
+
 ### 更新したドキュメント
 
 `README.md`（検証コマンド）、`docs/architecture.md`（図・module の表・翻訳器の節）、`docs/language.md`（`--backend`）、`docs/benchmarks.md`（PB05 の節）、`_tsuzuri/language-reference/compiler/option.md`（コード生成器・fast の WebAssembly・fast のデバッグ情報）、`usage.md`、`platforms.md`、`webassembly.md`、`debugging.md`。

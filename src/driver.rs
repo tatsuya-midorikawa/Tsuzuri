@@ -1344,6 +1344,23 @@ pub(crate) fn platform_f16_path(platform: Platform, target: Target, cpu: Cpu) ->
     )
 }
 
+/// [`platform_f16_path`] for a build by `backend`. The fast backend has no `half`: it computes f16
+/// with the bit-exact integer routines of the runtime (`Soft`), whatever the machine could do. Every
+/// emission of IR that the backend translates takes its path from here (the build, and the runners of
+/// `test`), so that none of them hands it a `half` operation (PB05).
+pub(crate) fn f16_path_for(
+    backend: Backend,
+    platform: Platform,
+    target: Target,
+    cpu: Cpu,
+) -> llvm::F16Path {
+    if backend == Backend::Fast {
+        llvm::F16Path::Soft
+    } else {
+        platform_f16_path(platform, target, cpu)
+    }
+}
+
 /// The Clang options that give `path` its instructions in a `--cpu native` build. `-march=native`
 /// lets Clang detect the CPU itself, and these make it use the instructions that the compiler
 /// detected, so a `half` operation never becomes a libcall (`__extendhfsf2`, `__truncsfhf2`,
@@ -3336,12 +3353,7 @@ fn build_complete(
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
     let fast = options.backend == Backend::Fast;
-    // The fast backend has no `half`: it uses the bit-exact integer routines of the runtime.
-    let f16 = if fast {
-        llvm::F16Path::Soft
-    } else {
-        platform_f16_path(platform, options.target, options.cpu)
-    };
+    let f16 = f16_path_for(options.backend, platform, options.target, options.cpu);
     let runtime_objects = options.cache
         && !options.debug_info
         && !options.trap_info
@@ -7620,6 +7632,26 @@ mod tests {
                 assert_eq!(
                     platform_f16_path(Platform::HOST, Target::Native, cpu),
                     Hardware
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fast_backend_computes_f16_in_the_runtime_whatever_the_machine_can_do() {
+        use llvm::F16Path::Soft;
+        // The IR that the fast backend translates has no `half`, on a machine with hardware half too.
+        for target in [Target::Native, Target::Wasm32, Target::Wasm64] {
+            for cpu in [Cpu::Generic, Cpu::Native] {
+                assert_eq!(
+                    f16_path_for(Backend::Fast, Platform::HOST, target, cpu),
+                    Soft,
+                    "{target:?} {cpu:?}"
+                );
+                assert_eq!(
+                    f16_path_for(Backend::Llvm, Platform::HOST, target, cpu),
+                    platform_f16_path(Platform::HOST, target, cpu),
+                    "{target:?} {cpu:?}"
                 );
             }
         }
