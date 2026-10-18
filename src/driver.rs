@@ -3739,6 +3739,14 @@ fn build_complete(
         {
             text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
         }
+        // The merge of the C runtime hides every symbol that only the runtime defines, so the ones a host calls are
+        // named to keep (PR08 D5).
+        let kept_exports = if options.emit == Emit::Bitcode && native_runtime {
+            let exports = shared_exports(&text, module, options.trap_return);
+            lto::keep_runtime_exports(&mut text, &exports)?
+        } else {
+            Vec::new()
+        };
         let text = match &staged_profile {
             Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
             _ => text,
@@ -3887,6 +3895,7 @@ fn build_complete(
                         },
                     )?,
                 );
+                lto::check_kept_exports(&combined, &kept_exports)?;
                 ir = combined;
             }
         }
