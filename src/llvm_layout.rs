@@ -1144,7 +1144,10 @@ fn use n =
             ("Handlers", record("Main.Handlers")),
             ("Choice", union("Main.Choice", &[])),
             ("Callback", union("Main.Callback", &[])),
-            ("Maybe<fn>", union("Maybe.Maybe", &[closure.clone()])),
+            (
+                "Maybe<fn>",
+                union("Maybe.Maybe", std::slice::from_ref(&closure)),
+            ),
             (
                 "Result<fn, string>",
                 union("Result.Result", &[closure, Type::String]),
