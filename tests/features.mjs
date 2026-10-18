@@ -1163,8 +1163,37 @@ const suites = {
     // An exception that an element of a heap literal raises frees what the literal held so far (the host checks `live == 0`).
     const raises = ["raise_list_numbers", "raise_list_words", "raise_array_numbers", "raise_array_words"].flatMap((name) =>
       [-1n, 0n, 1n, 2n].map((at) => [name, [at], at < 0n ? (name.endsWith("words") ? 111n : 321n) : -1n - at]));
+    // Elements with a user Drop that folds its id into a digest: the drops happen in list order across the chunks (the elements are 16
+    // bytes, so the chunks grow like those of `owned`), List.tail drops the head at once, and no owner of the shared cell is left.
+    const mix = (ids) => ids.reduce((digest, id) => BigInt.asIntN(64, digest * 1000003n + BigInt(id)), 0n);
+    const tracked = chunkLengths(1, 2046, 15000).flatMap((n) => {
+      const ids = Array.from({ length: n }, (_, position) => n - position);
+      return [
+        call("tracked_drop", n, mix(ids)), call("tracked_tail_dropped", n, mix(ids.slice(0, Math.floor(n / 3)))),
+        call("tracked_tail_all", n, mix(ids)), call("tracked_owners", n, 1n),
+      ];
+    });
+    // Indexing a cons-grown list: the 8-byte elements start a new chunk after 1, 3, 7, 14, 25, 42, 68, 108 and 169 elements, the 1-byte
+    // elements (one chunk of 8 slots with free slots in front, then 13, 20, ...) after 8, 21, 41, 72 and 119. One past the end, and
+    // before the start, trap wherever the free slots are; so do the same indexes after List.tail pops the head.
+    const around = (limits) => [...new Set(limits.flatMap((limit) => [limit - 1, limit, limit + 1]).filter((n) => n >= 1))].sort((a, b) => a - b);
+    const wide = around([1, 3, 7, 14, 25, 42, 68, 108, 169]);
+    const bytes = around([8, 21, 41, 72, 119]);
+    const popped = [[5, 1], [5, 2], [7, 3], [8, 1], [14, 6], [15, 7], [26, 10], [43, 20], [69, 33]];
+    const reads = [
+      ...wide.flatMap((n) => [["index_at", [BigInt(n), 0n], BigInt(n - 1)], ["index_at", [BigInt(n), BigInt(n - 1)], 0n]]),
+      ...bytes.flatMap((n) => [["bytes_at", [BigInt(n), 0n], BigInt.asIntN(8, BigInt(n - 1))], ["bytes_at", [BigInt(n), BigInt(n - 1)], 0n]]),
+      ...popped.flatMap(([n, pops]) => [["tail_index_at", [BigInt(n), BigInt(pops), 0n], BigInt(n - 1 - pops)], ["tail_index_at", [BigInt(n), BigInt(pops), BigInt(n - 1 - pops)], 0n]]),
+    ];
+    const outside = [
+      ...wide.flatMap((n) => [n, n + 1, -1].map((index) => ["index_at", [BigInt(n), BigInt(index)]])),
+      ...bytes.flatMap((n) => [n, n + 1, -1].map((index) => ["bytes_at", [BigInt(n), BigInt(index)]])),
+      ...popped.flatMap(([n, pops]) => [n - pops, n - pops + 1, -1].map((index) => ["tail_index_at", [BigInt(n), BigInt(pops), BigInt(index)]])),
+    ];
     return {
-      cases: [...numbers, ...owned, ...units, ...raises],
+      cases: [...numbers, ...owned, ...units, ...raises, ...tracked, ...reads],
+      traps: outside,
+      trapKind: "index out of bounds",
       nativeCases: [deep(250000), deep(1000000)],
       inspect(ir) {
         assert.ok(ir.includes("{ ptr, i64, i64, [0 x i64] }"), "the lists are chunks");

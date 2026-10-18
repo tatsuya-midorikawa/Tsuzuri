@@ -367,6 +367,84 @@ fn deep_ops n =
     for _ in 1 .. n do rest = List.tail rest
     same * 1000000 + weighted (ref values) % 1000 + rest.length
 
+/// Elements with a user Drop that logs its order: each drop folds the element's id into a digest that depends on
+/// the order, in a cell that all the elements share (an `Arc`).
+record Tracked { id: i64, log: Arc<Atomic<i64>> }
+
+def note :: ref Tracked -> unit
+fn note value =
+    let cell = Arc.get (ref value.log)
+    Atomic.store cell (Atomic.load cell * 1000003 + value.id)
+
+instance Drop<Tracked> {
+    fn drop value = note value
+}
+
+/// The ids are n, n - 1, ..., 1 from the head: the elements are 16 bytes, so every cons that fills a free slot or adds a chunk.
+def build_tracked :: ref Arc<Atomic<i64>> -> i64 -> [|Tracked|]
+fn build_tracked log n =
+    let mut values: [|Tracked|] = [||]
+    for i in 1 .. n do values = List.cons (Tracked { id: i, log: Arc.share log }) values
+    values
+
+def consume :: [|Tracked|] -> unit
+fn consume _values = ()
+
+/// The elements are dropped in list order when the list is, across every chunk boundary.
+export def tracked_drop :: i64 -> i64
+fn tracked_drop n =
+    let log = Arc.new (Atomic.create 0i64)
+    consume (build_tracked (ref log) n)
+    Atomic.load (Arc.get (ref log))
+
+/// List.tail drops the head at once, from a first chunk that has free slots in front.
+export def tracked_tail_dropped :: i64 -> i64
+fn tracked_tail_dropped n =
+    let log = Arc.new (Atomic.create 0i64)
+    let mut values = build_tracked (ref log) n
+    for _ in 1 .. n / 3 do values = List.tail values
+    let seen = Atomic.load (Arc.get (ref log))
+    consume values
+    seen
+
+/// What the pops dropped, then the rest in list order: the same order as dropping the whole list.
+export def tracked_tail_all :: i64 -> i64
+fn tracked_tail_all n =
+    let log = Arc.new (Atomic.create 0i64)
+    let mut values = build_tracked (ref log) n
+    for _ in 1 .. n / 3 do values = List.tail values
+    consume values
+    Atomic.load (Arc.get (ref log))
+
+/// Every element dropped once: no owner of the shared cell is left but this one.
+export def tracked_owners :: i64 -> i64
+fn tracked_owners n =
+    let log = Arc.new (Atomic.create 0i64)
+    consume (build_tracked (ref log) n)
+    Arc.strong_count (ref log)
+
+/// values[index] of a list that List.cons grew: one past the last element, or before the first, traps however many
+/// chunks the list has and wherever its free slots are.
+export def index_at :: i64 -> i64 -> i64
+fn index_at n index = (build n)[index]
+
+/// A list of 1-byte elements is one chunk of 8 slots with free slots in front; it grows by chunks of 13, 20, ...
+def build_bytes :: i64 -> [|i8|]
+fn build_bytes n =
+    let mut values: [|i8|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (i as i8) values
+    values
+
+export def bytes_at :: i64 -> i64 -> i64
+fn bytes_at n index = (build_bytes n)[index] as i64
+
+/// The same after List.tail: the pops leave free slots in front of the first chunk.
+export def tail_index_at :: i64 -> i64 -> i64 -> i64
+fn tail_index_at n pops index =
+    let mut values = build n
+    for _ in 1 .. pops do values = List.tail values
+    values[index]
+
 /// An exception that an element of a heap literal raises leaves the literal half made: the elements
 /// stored so far and the chunk (or the array) are freed, and the host checks that nothing stays live.
 /// `at` is the element that raises; -1 raises nowhere.
