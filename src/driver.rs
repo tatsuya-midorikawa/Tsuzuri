@@ -2866,18 +2866,25 @@ pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
 }
 
 pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
+    // A resident process remembers a text while the stamp of its file is the same, and then does not open the file.
+    let started = crate::resident::clock();
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
     }
+    if started.is_some()
+        && let Some(text) = crate::resident::cached_source(path, &metadata)
+    {
+        return Ok(text);
+    }
     let file = fs::File::open(path).map_err(|error| io_error("read source", path, error))?;
-    let metadata = file
+    let opened = file
         .metadata()
         .map_err(|error| io_error("inspect source", path, error))?;
-    if !metadata.is_file() {
+    if !opened.is_file() {
         return Err(driver_error("E2001", "the source must be a regular file"));
     }
-    if metadata.len() > MAX_SOURCE_BYTES as u64 {
+    if opened.len() > MAX_SOURCE_BYTES as u64 {
         return Err(driver_error(
             "E0003",
             format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
@@ -2887,6 +2894,9 @@ pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     file.take(MAX_SOURCE_BYTES as u64 + 1)
         .read_to_string(&mut source)
         .map_err(|error| io_error("read UTF-8 source", path, error))?;
+    if let Some(started) = started {
+        crate::resident::remember_source(path, &metadata, started, &source);
+    }
     Ok(source)
 }
 
@@ -5565,7 +5575,10 @@ impl Drop for TemporaryDirectory {
         if !self.removed {
             if let Err(error) = fs::remove_dir_all(&self.path) {
                 if error.kind() != io::ErrorKind::NotFound {
-                    eprintln!("warning: cannot remove '{}': {error}", self.path.display());
+                    crate::resident::warn(&format!(
+                        "warning: cannot remove '{}': {error}",
+                        self.path.display()
+                    ));
                 }
             }
         }
