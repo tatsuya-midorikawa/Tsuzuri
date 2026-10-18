@@ -239,7 +239,10 @@ try {
       ["--backend fast --target wasm32", { args: ["build", app, "--target", "wasm32", "-O0", "--backend", "fast", "-o", join(out, "f.wasm")], artifact: join(out, "f.wasm") }],
     ]) {
       const result = alone(command.args);
-      if (result.status === 0) {
+      // A wasm32 module needs an entry point or an export, which the `42` of this test is not: the command fails alone
+      // with E2004 like the LLVM one above, and the server must report the same error.
+      const noEntry = label.endsWith("wasm32") && /error\[E2004\]/.test(result.stderr);
+      if (result.status === 0 || noEntry) {
         commands.push(command);
         continue;
       }
