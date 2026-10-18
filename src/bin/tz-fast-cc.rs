@@ -37,18 +37,18 @@ fn main() -> ExitCode {
         return read_only(&arguments[1..]);
     }
     // `--target TRIPLE` translates for another machine, to look at its code without running it;
-    // `--target wasm32` writes a relocatable WebAssembly object (`--no-multivalue` for a runtime
-    // whose compiler returns a 128-bit integer through a pointer).
+    // `--target wasm32` writes a relocatable WebAssembly object (`--multivalue` for a runtime whose
+    // compiler returns a 128-bit integer as two results; Clang 21 returns it through a pointer).
     let mut platform = tsuzuri::target::Platform::HOST;
     let mut wasm = false;
     let multivalue = if let Some(position) = arguments
         .iter()
-        .position(|argument| argument == "--no-multivalue")
+        .position(|argument| argument == "--multivalue")
     {
         arguments.remove(position);
-        false
-    } else {
         true
+    } else {
+        false
     };
     if let Some(position) = arguments.iter().position(|argument| argument == "--target") {
         let Some(name) = arguments.get(position + 1).cloned() else {

@@ -486,8 +486,33 @@ impl BuildOptions {
         Platform::new(self.triple)
     }
 
+    /// An `--emit` that its `--target` cannot give, with any backend and on any host: `exe`,
+    /// `shared` and the bindings of a library need the native target, `wasm` and `bindings-js` a
+    /// WebAssembly one. These are the first checks of the validation of each of them.
+    fn emit_needs_another_target(self) -> bool {
+        match self.emit {
+            Emit::Executable
+            | Emit::Shared
+            | Emit::BindingsCs
+            | Emit::BindingsPy
+            | Emit::BindingsCpp => self.target != Target::Native,
+            Emit::Wasm => !self.target.is_wasm(),
+            Emit::BindingsJs => self.target != Target::Wasm32,
+            _ => false,
+        }
+    }
+
     pub fn validate(self) -> Result<(), Diagnostic> {
         if self.backend == Backend::Fast {
+            // The advice of the fast backend's errors is `--backend llvm`, which would give the error
+            // of a combination that no backend builds, so that error is the one reported.
+            if self.emit_needs_another_target() {
+                Self {
+                    backend: Backend::Llvm,
+                    ..self
+                }
+                .validate()?;
+            }
             self.validate_fast()?;
         }
         if self.emit.is_kernel()
@@ -784,6 +809,7 @@ impl BuildOptions {
         let output_kind = || {
             emit.bindings().map_or_else(
                 || match emit {
+                    Emit::Executable => "exe".to_owned(),
                     Emit::WgslRelaxed => "wgsl-relaxed".to_owned(),
                     Emit::SpirvRelaxed => "spirv-relaxed".to_owned(),
                     other => format!("{other:?}").to_ascii_lowercase(),
@@ -5479,7 +5505,7 @@ fn wasm_multivalue(objects: &[PathBuf]) -> Result<bool, Diagnostic> {
 
 #[cfg(not(feature = "fast-backend"))]
 fn wasm_multivalue(_: &[PathBuf]) -> Result<bool, Diagnostic> {
-    Ok(true)
+    Ok(false)
 }
 
 /// The IR of a `--emit bitcode` build with the target attributes that a C function compiled with the same flags has
@@ -6725,13 +6751,11 @@ mod tests {
         for emit in [
             Emit::Llvm,
             Emit::Header,
-            Emit::Wasm,
             Emit::Wgsl,
             Emit::WgslRelaxed,
             Emit::Spirv,
             Emit::SpirvRelaxed,
             Emit::Shared,
-            Emit::BindingsJs,
             Emit::BindingsCs,
             Emit::BindingsPy,
             Emit::BindingsCpp,
@@ -6745,6 +6769,32 @@ mod tests {
                 "{emit:?}: {}",
                 error.message
             );
+        }
+        // An `--emit` that its `--target` cannot give is an error for every backend, on every host: the
+        // error is the one of the LLVM backend, because `--backend llvm` is no way out.
+        let emit_target = "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'";
+        for (emit, target, message) in [
+            (Emit::Wasm, Target::Native, emit_target),
+            (Emit::Executable, Target::Wasm32, emit_target),
+            (
+                Emit::BindingsJs,
+                Target::Native,
+                "'--emit bindings-js' requires '--target wasm32'",
+            ),
+            (
+                Emit::Shared,
+                Target::Wasm32,
+                "'--emit shared' requires '--target native'",
+            ),
+        ] {
+            let error = BuildOptions {
+                emit,
+                target,
+                ..fast
+            }
+            .validate()
+            .unwrap_err();
+            assert_eq!(error.message, message, "{emit:?} for {target:?}");
         }
         // The cache key hashes the `Debug` text of the options, so the backend changes the key.
         let llvm = BuildOptions {

@@ -5,9 +5,9 @@
 //! `wasm32`. A function of the module's own passes a small aggregate as one value per scalar and a
 //! large one by the address of the caller's copy, and returns anything of more than one value
 //! through a pointer the caller passes first. A function that other object files can see or call
-//! has scalar parameters and results only; a 128-bit result of one is the pair of values that the
-//! compiler runtime of Clang uses when its target has multi-value results, and a pointer first
-//! when it has not.
+//! has scalar parameters and results only; a 128-bit result of one is a pointer first, as the
+//! compiler runtime of Clang 21 returns it, and only when the runtime objects of the build say
+//! that their compiler returns it as a pair of values is it that pair.
 
 use super::super::error::{Res, bail};
 use super::super::module::Ext;
@@ -106,7 +106,8 @@ fn is_scalar(ty: Ty) -> bool {
 }
 
 /// Plans a signature. `external` is true for what other object files can see or call;
-/// `multivalue` says that the C ABI of the target returns a 128-bit integer as two results.
+/// `multivalue` says that the compiler runtime that they are built with returns a 128-bit integer
+/// as two results (and not through a pointer).
 pub(crate) fn plan(
     types: &Types<'_>,
     ret: Ty,

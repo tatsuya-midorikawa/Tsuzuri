@@ -34,6 +34,8 @@ pub(crate) struct Param<'a> {
     pub ext: Ext,
     /// `byval(T)`: the callee gets a private copy of the pointed-to `T`.
     pub byval: Option<Ty>,
+    /// `sret(T)`: the pointer is where the function puts its result.
+    pub sret: bool,
 }
 
 /// What a function header says.
@@ -55,6 +57,9 @@ pub(crate) struct Sig {
     pub ret_ext: Ext,
     pub params: Vec<(Ty, Ext)>,
     pub variadic: bool,
+    /// A parameter is `byval` or `sret`: the convention of the platform for those is not one that
+    /// the translator implements, so only a function that other objects cannot see may have one.
+    pub indirect: bool,
 }
 
 #[derive(Debug)]
@@ -292,7 +297,13 @@ fn parse_param_attributes<'a>(
                 param.byval = Some(types.parse_type(lex)?);
                 lex.expect(b')')?;
             }
-            "sret" | "elementtype" | "inalloca" | "preallocated" | "byref" => {
+            "sret" => {
+                param.sret = true;
+                lex.expect(b'(')?;
+                types.parse_type(lex)?;
+                lex.expect(b')')?;
+            }
+            "elementtype" | "inalloca" | "preallocated" | "byref" => {
                 lex.expect(b'(')?;
                 types.parse_type(lex)?;
                 lex.expect(b')')?;
@@ -377,6 +388,7 @@ pub(crate) fn parse_header<'a>(lex: &mut Lexer<'a>, types: &mut Types<'a>) -> Re
                 name: None,
                 ext: Ext::None,
                 byval: None,
+                sret: false,
             };
             parse_param_attributes(lex, types, &mut param)?;
             params.push(param);
@@ -614,6 +626,10 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
                             .map(|param| (param.ty, param.ext))
                             .collect(),
                         variadic: header.variadic,
+                        indirect: header
+                            .params
+                            .iter()
+                            .any(|param| param.byval.is_some() || param.sret),
                     };
                     add_symbol(
                         &mut syms,
@@ -659,6 +675,7 @@ pub(crate) fn scan_with(text: &str, pointer: u8) -> Res<Module<'_>> {
                             ret_ext: Ext::None,
                             params: params.iter().map(|&ty| (ty, Ext::None)).collect(),
                             variadic: false,
+                            indirect: false,
                         },
                         header: SYNTHETIC,
                         body_end: None,

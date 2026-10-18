@@ -993,7 +993,7 @@ impl<'w, 'a> Lower<'w, 'a> {
             let (low, high): (i64, i64) = if signed {
                 (-(1i64 << (target - 1)), (1i64 << (target - 1)) - 1)
             } else {
-                (0, (1i64 << target) - 1)
+                (0, ((1u64 << target) - 1) as i64)
             };
             let (lt, gt) = match (wide, signed) {
                 (false, true) => (op::I32_LT_S, op::I32_GT_S),
@@ -1288,7 +1288,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         if bits >= 33 {
             self.push(low)?;
             value = self.save(Vt::I64);
-            // 64 bits: the high word must be the extension of the low one.
+            // The high word must be the extension of the low one: the product fits 64 bits.
             self.push(high)?;
             if signed {
                 self.push(low)?;
@@ -1298,6 +1298,19 @@ impl<'w, 'a> Lower<'w, 'a> {
                 self.i64_const(0);
             }
             self.op(op::I64_NE);
+            if bits < 64 {
+                // Below 64 bits the low word must also fit the type.
+                self.push(low)?;
+                if signed {
+                    self.push(low)?;
+                    self.sext64(bits);
+                    self.op(op::I64_NE);
+                } else {
+                    self.i64_const(((1u64 << bits) - 1) as i64);
+                    self.op(op::I64_GT_U);
+                }
+                self.op(op::I32_OR);
+            }
             flag = self.save(Vt::I32);
             let width = Width::W64(bits);
             self.push(&value)?;

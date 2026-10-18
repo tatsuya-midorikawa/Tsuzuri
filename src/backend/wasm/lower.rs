@@ -19,6 +19,7 @@ use super::super::types::{Compound, Ty, Types};
 use super::abi::{self, Abi, ParamPlan, RetPlan};
 use super::bin::{self, Vt, op};
 use super::object::{Body, Kind, Reloc};
+use super::ops::Width;
 use super::{FnInfo, Shared, WInfo};
 
 /// A value that is pushed on the stack where it is used.
@@ -141,6 +142,10 @@ const MAX_SLOT_ALIGN: u32 = 128;
 
 /// The most locals that a function may have here: V8 accepts 50,000 and other engines fewer or more.
 const MAX_LOCALS: usize = 40_000;
+
+/// The most blocks that a function may have here: the dispatch is a `br_table` with a target for each
+/// block but the last (its default), and V8 accepts 65,520 targets.
+const MAX_BLOCKS: usize = 65_521;
 
 impl<'w, 'a> Lower<'w, 'a> {
     // ---- emission ----
@@ -936,6 +941,12 @@ impl<'w, 'a> Lower<'w, 'a> {
     fn run(mut self) -> Res<Body> {
         let func = self.func;
         let order = self.reverse_postorder();
+        if order.len() > MAX_BLOCKS {
+            bail!(
+                "a function with {} basic blocks, more than the {MAX_BLOCKS} that the dispatch table of an engine accepts",
+                order.len()
+            );
+        }
         self.n_blocks = order.len() as u32;
         for (position, &id) in order.iter().enumerate() {
             self.position[id as usize] = position as u32;
@@ -1016,11 +1027,11 @@ impl<'w, 'a> Lower<'w, 'a> {
 
     /// The prologue, the exit and the relocations of the body that was written.
     fn finish(mut self) -> Res<Body> {
-        // The engines limit the locals of a function (50,000 in V8): a function that has more values
-        // than that is left to the LLVM backend, which colors them.
+        // The engines limit the locals of a function (50,000 in V8): a function that needs more than
+        // that, after a local is reused once its value is dead, is left to the LLVM backend.
         if self.local_vts.len() > MAX_LOCALS {
             bail!(
-                "a function with {} values, more than the {MAX_LOCALS} locals that an engine accepts",
+                "a function that needs {} locals, more than the {MAX_LOCALS} that an engine accepts",
                 self.local_vts.len()
             );
         }
@@ -1167,8 +1178,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                         && let [Atom::Local(local)] = atoms[..]
                     {
                         self.local_get(local);
-                        self.i32_const((1i64 << bits) as i32 - 1);
-                        self.op(op::I32_AND);
+                        self.canon(Width::W32(bits));
                         atoms[0] = self.save(Vt::I32);
                     }
                     self.set(index as u32, Val::Atoms(atoms));
@@ -1693,6 +1703,14 @@ impl<'w, 'a> Lower<'w, 'a> {
                 if variadic {
                     bail!("a call of a variadic function through a pointer");
                 }
+                // The callee may be a function that other objects define, whose convention for these is the platform's.
+                if args.iter().any(|arg| arg.byval.is_some() || arg.sret) {
+                    bail!("a call through a pointer with a byval or sret argument");
+                }
+                if ret == Ty::Int(128) && self.shared.multivalue {
+                    // A function that other objects can call returns two values and one that they cannot, a pointer.
+                    bail!("an indirect call that returns a 128-bit integer as two results");
+                }
                 let params: Vec<(Ty, Ext)> = args.iter().map(|arg| (arg.ty, arg.ext)).collect();
                 let abi = abi::plan(
                     self.types,
@@ -1706,7 +1724,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let pointer = self.single(&pointer)?;
                 let table = self.shared.table_symbol;
                 let signature = (abi.wasm_params.clone(), abi.wasm_results.clone());
-                self.emit_call(&abi.clone(), ret, args, move |lower| {
+                let result = self.emit_call(&abi.clone(), ret, args, move |lower| {
                     lower.push(&pointer)?;
                     lower.op(op::CALL_INDIRECT);
                     let local = lower.call_types.len() as u32;
@@ -1716,7 +1734,18 @@ impl<'w, 'a> Lower<'w, 'a> {
                     lower.reloc(Kind::TableNumber, table, 0);
                     bin::uleb_padded(&mut lower.code, 0);
                     Ok(())
-                })
+                })?;
+                // The callee may be a function that other objects can call, which returns a narrow
+                // integer extended as its attribute says; the bits above the width are zero here.
+                match (ret, result) {
+                    (Ty::Int(bits @ 1..=31), Val::Atoms(mut atoms)) if atoms.len() == 1 => {
+                        self.push(&atoms[0])?;
+                        self.canon(Width::W32(bits));
+                        atoms[0] = self.save(Vt::I32);
+                        Ok(Val::Atoms(atoms))
+                    }
+                    (_, result) => Ok(result),
+                }
             }
         }
     }
@@ -1728,6 +1757,9 @@ impl<'w, 'a> Lower<'w, 'a> {
         args: &[CallArg],
         finish: impl FnOnce(&mut Self) -> Res<()>,
     ) -> Res<Val> {
+        if abi.external && args.iter().any(|arg| arg.byval.is_some() || arg.sret) {
+            bail!("a byval or sret argument of a call of an external function");
+        }
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
             let mut value = self.val(arg.op, arg.ty)?;
@@ -1822,8 +1854,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 if let (Ty::Int(bits @ 1..=31), true) = (ret, abi.external) {
                     // The callee extended the value as its attribute says; the bits above the width are zero here.
                     self.push(&atoms[0])?;
-                    self.i32_const((1i64 << bits) as i32 - 1);
-                    self.op(op::I32_AND);
+                    self.canon(Width::W32(bits));
                     atoms[0] = self.save(Vt::I32);
                 }
                 Val::Atoms(atoms)

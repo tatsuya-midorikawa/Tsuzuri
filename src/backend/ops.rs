@@ -38,7 +38,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         if u32::from(bits) >= kind.bits() || kind == types::I128 {
             return value;
         }
-        self.b.ins().band_imm(value, (1i64 << bits) - 1)
+        self.b.ins().band_imm(value, ((1u64 << bits) - 1) as i64)
     }
 
     /// Extends an integer from its sign bit to the width of its type.

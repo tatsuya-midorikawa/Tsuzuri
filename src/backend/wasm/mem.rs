@@ -6,6 +6,7 @@ use super::super::func::{BinOp, IPred, RmwOp};
 use super::super::types::{Compound, Ty};
 use super::bin::{Vt, op};
 use super::lower::{Atom, Lower, Val};
+use super::ops::Width;
 
 impl<'w, 'a> Lower<'w, 'a> {
     // ---- loads and stores ----
@@ -33,6 +34,10 @@ impl<'w, 'a> Lower<'w, 'a> {
         let at = self.push_base(base, offset)?;
         self.op(opcode);
         self.memarg(align, at);
+        // A byte or halfword holds more bits than an `i1`..`i7` or `i9`..`i15`; the value is the low bits.
+        if let Ty::Int(bits @ (1..=7 | 9..=15)) = ty {
+            self.canon(Width::W32(bits));
+        }
         Ok(vec![self.save(vt)])
     }
 

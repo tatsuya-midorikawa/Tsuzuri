@@ -225,6 +225,9 @@ fn int_cases(suite: &mut Suite, width: u32) {
     }
     // Intrinsics: only on the widths of the machine, the ones that the compiler's IR uses.
     if !matches!(width, 8 | 16 | 32 | 64 | 128) {
+        if width > 1 {
+            overflow_cases(suite, width);
+        }
         return;
     }
     let unary = |name: &str| format!("declare {ty} @llvm.{name}.{ty}({ty})");
@@ -288,9 +291,17 @@ fn int_cases(suite: &mut Suite, width: u32) {
             format!("{prelude}  %r = call i8 @llvm.{name}.i8.{ty}({ty} %x, {ty} %y)\n  %o = zext i8 %r to i64\n  ret i64 %o\n"),
         );
     }
+    overflow_cases(suite, width);
+}
+
+/// The overflow intrinsics, which LLVM defines on every width; the widths between those of the
+/// machine count too, and a translator must not get them wrong.
+fn overflow_cases(suite: &mut Suite, width: u32) {
+    let ty = format!("i{width}");
+    let prelude = int_prelude(width);
     for name in ["sadd", "uadd", "ssub", "usub", "smul", "umul"] {
         suite.add(
-            &group,
+            &ty,
             format!("{ty} {name}.with.overflow"),
             Kind::Int,
             vec![format!(
@@ -997,6 +1008,22 @@ fn call_cases(suite: &mut Suite) {
         vec!["define internal { double, i32, i8 } @agg_mix(double %d, { double, i32, i8 } %s, i8 %t) {\n  %f = extractvalue { double, i32, i8 } %s, 0\n  %i = extractvalue { double, i32, i8 } %s, 1\n  %c = extractvalue { double, i32, i8 } %s, 2\n  %f2 = fadd double %f, %d\n  %i2 = add i32 %i, 7\n  %c2 = xor i8 %c, %t\n  %r0 = insertvalue { double, i32, i8 } undef, double %f2, 0\n  %r1 = insertvalue { double, i32, i8 } %r0, i32 %i2, 1\n  %r2 = insertvalue { double, i32, i8 } %r1, i8 %c2, 2\n  ret { double, i32, i8 } %r2\n}".to_owned()],
         "entry:\n  %d = sitofp i64 %a to double\n  %i = trunc i64 %b to i32\n  %c = trunc i64 %a to i8\n  %t = trunc i64 %b to i8\n  %s0 = insertvalue { double, i32, i8 } undef, double %d, 0\n  %s1 = insertvalue { double, i32, i8 } %s0, i32 %i, 1\n  %s2 = insertvalue { double, i32, i8 } %s1, i8 %c, 2\n  %r = call { double, i32, i8 } @agg_mix(double %d, { double, i32, i8 } %s2, i8 %t)\n  %f = extractvalue { double, i32, i8 } %r, 0\n  %j = extractvalue { double, i32, i8 } %r, 1\n  %k = extractvalue { double, i32, i8 } %r, 2\n  %fb = bitcast double %f to i64\n  %jz = zext i32 %j to i64\n  %kz = zext i8 %k to i64\n  %m = mul i64 %fb, 31\n  %n = add i64 %m, %jz\n  %p = mul i64 %n, 31\n  %o = add i64 %p, %kz\n  ret i64 %o\n".to_owned(),
     );
+    // A function that other objects can call returns a narrow integer as its attribute says, and one
+    // that is called through a pointer is not known to be such a function.
+    add(
+        "an indirect call of a function with a signext result",
+        vec!["define signext i8 @ext_signext(i8 signext %v) {\n  %r = sub i8 %v, 100\n  ret i8 %r\n}".to_owned()],
+        "entry:\n  %slot = alloca ptr, align 8\n  store ptr @ext_signext, ptr %slot, align 8\n  %p = load ptr, ptr %slot, align 8\n  %t = trunc i64 %a to i8\n  %r = call signext i8 %p(i8 signext %t)\n  %z = zext i8 %r to i64\n  %c = icmp ult i8 %r, 100\n  %w = zext i1 %c to i64\n  %m = mul i64 %z, 31\n  %o = add i64 %m, %w\n  ret i64 %o\n".to_owned(),
+    );
+    add(
+        "an indirect call of a function that returns 128 bits",
+        vec!["define i128 @ext_wide(i128 %x, i64 %k) {\n  %kk = zext i64 %k to i128\n  %r = add i128 %x, %kk\n  ret i128 %r\n}".to_owned()],
+        format!(
+            "{}  %slot = alloca ptr, align 8\n  store ptr @ext_wide, ptr %slot, align 8\n  %p = load ptr, ptr %slot, align 8\n  %r = call i128 %p(i128 %x, i64 %a)\n{}  ret i64 %o\n",
+            int_prelude(128),
+            int_fold(128, "%r")
+        ),
+    );
 }
 
 fn memory_cases(suite: &mut Suite) {
@@ -1091,6 +1118,18 @@ fn memory_cases(suite: &mut Suite) {
         "fields of a record in an array".to_owned(),
         vec![record],
         "entry:\n  %p = alloca [4 x %t.rec], align 16\n  %i = urem i64 %a, 4\n  %f0 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 0\n  %t0 = trunc i64 %b to i8\n  store i8 %t0, ptr %f0\n  %f1 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 1\n  %t1 = trunc i64 %a to i32\n  store i32 %t1, ptr %f1\n  %f2 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 2\n  store i64 %b, ptr %f2\n  %g0 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 3, i64 0\n  %t3 = trunc i64 %a to i16\n  store i16 %t3, ptr %g0\n  %g1 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 3, i64 1\n  %t5 = trunc i64 %b to i16\n  store i16 %t5, ptr %g1\n  %g2 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 3, i64 2\n  store i16 %t3, ptr %g2\n  %j0 = and i64 %b, 1\n  %j = add i64 %j0, 1\n  %gj = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 3, i64 %j\n  %t6 = lshr i64 %a, 16\n  %t7 = trunc i64 %t6 to i16\n  store i16 %t7, ptr %gj\n  %f4 = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i, i32 4\n  %t4 = sitofp i64 %a to double\n  store double %t4, ptr %f4\n  %q = getelementptr [4 x %t.rec], ptr %p, i64 0, i64 %i\n  %s = load %t.rec, ptr %q\n  %e0 = extractvalue %t.rec %s, 0\n  %e1 = extractvalue %t.rec %s, 1\n  %e2 = extractvalue %t.rec %s, 2\n  %e3 = extractvalue %t.rec %s, 3\n  %e3a = extractvalue [3 x i16] %e3, 0\n  %e3b = extractvalue [3 x i16] %e3, 1\n  %e3c = extractvalue [3 x i16] %e3, 2\n  %e4 = extractvalue %t.rec %s, 4\n  %z0 = zext i8 %e0 to i64\n  %z1 = zext i32 %e1 to i64\n  %z2 = zext i16 %e3a to i64\n  %z3 = zext i16 %e3b to i64\n  %z4 = zext i16 %e3c to i64\n  %z5 = bitcast double %e4 to i64\n  %h0 = mul i64 %z0, 31\n  %h1 = add i64 %h0, %z1\n  %h2 = mul i64 %h1, 31\n  %h3 = add i64 %h2, %e2\n  %h4 = mul i64 %h3, 31\n  %h5 = add i64 %h4, %z2\n  %h6 = mul i64 %h5, 31\n  %h7 = add i64 %h6, %z3\n  %h8 = mul i64 %h7, 31\n  %h9 = add i64 %h8, %z4\n  %ha = mul i64 %h9, 31\n  %o = add i64 %ha, %z5\n  ret i64 %o\n".to_owned(),
+    );
+    // The address of a stack object is as aligned as it asks (the front end asks for 32 for a 256-bit vector).
+    add(
+        "stack objects aligned to 32 and 64 bytes".to_owned(),
+        vec![],
+        "entry:\n  %p = alloca [64 x i8], align 64\n  %q = alloca i64, align 32\n  %r = alloca <8 x float>\n  %s = alloca i8, align 1\n  %pi = ptrtoint ptr %p to i64\n  %qi = ptrtoint ptr %q to i64\n  %ri = ptrtoint ptr %r to i64\n  %m1 = and i64 %pi, 63\n  %m2 = and i64 %qi, 31\n  %m3 = and i64 %ri, 31\n  store i64 %a, ptr %p, align 8\n  store i64 %b, ptr %q, align 8\n  store i8 7, ptr %s, align 1\n  %x = load i64, ptr %p, align 8\n  %y = load i64, ptr %q, align 8\n  %z = load i8, ptr %s, align 1\n  %zz = zext i8 %z to i64\n  %t1 = add i64 %x, %y\n  %t2 = add i64 %m1, %m2\n  %t3 = add i64 %t2, %m3\n  %t4 = add i64 %t1, %t3\n  %o = add i64 %t4, %zz\n  ret i64 %o\n".to_owned(),
+    );
+    // Undefined in LLVM IR, so compared on wasm32 only (see `wasm_only`).
+    add(
+        "an i1 loaded from a byte with more bits set".to_owned(),
+        vec![],
+        "entry:\n  %buf = alloca i8, align 1\n  %v = trunc i64 %a to i8\n  store i8 %v, ptr %buf, align 1\n  %l = load i1, ptr %buf, align 1\n  %z = zext i1 %l to i64\n  %c = icmp eq i1 %l, true\n  %w = zext i1 %c to i64\n  %s = select i1 %l, i64 %b, i64 7\n  %m = mul i64 %z, 31\n  %n = add i64 %m, %w\n  %o = add i64 %n, %s\n  ret i64 %o\n".to_owned(),
     );
     add(
         "unaligned loads and stores".to_owned(),
@@ -1290,7 +1329,7 @@ fn generate() -> Suite {
     call_cases(&mut suite);
     memory_cases(&mut suite);
     atomic_cases(&mut suite);
-    for width in [1, 7, 8, 16, 24, 32, 48, 64, 128] {
+    for width in [1, 7, 8, 16, 24, 32, 33, 40, 48, 57, 63, 64, 128] {
         int_cases(&mut suite, width);
     }
     float_cases(&mut suite, "float");
@@ -1305,7 +1344,7 @@ fn generate() -> Suite {
 
 // ---- the harness ----
 
-const INTEGERS: [u64; 30] = [
+const INTEGERS: [u64; 36] = [
     0,
     1,
     u64::MAX,
@@ -1336,6 +1375,13 @@ const INTEGERS: [u64; 30] = [
     127,
     128,
     0x5555_5555_5555_5555,
+    // The edges of the widths between 33 and 63 bits.
+    0x80_0000_0000,
+    0x7fff_ffff_ffff,
+    0x8000_0000_0000,
+    0xffff_ffff_ffff,
+    0x100_0000_0000_0000,
+    0x4000_0000_0000_0000,
 ];
 
 fn floats() -> Vec<u64> {
@@ -1495,6 +1541,20 @@ fn work_directory(label: &str) -> PathBuf {
 /// the translator reports; none of them may change a result silently.
 const KNOWN_REFUSALS: &[&str] = &["i128 smul.with.overflow", "i128 umul.with.overflow"];
 
+/// What only the wasm translator is compared on: the native one refuses a 128-bit integer in the
+/// signature of a function that other objects can call, and the overflow intrinsics on the widths
+/// between those of the machine (the compiler's IR uses none of them); and the load of an `i1` from a
+/// byte that holds more than one bit is undefined, so that the Clang of x86-64 does not keep the low
+/// bit as that of AArch64 and `wasm32` do (both translators keep it).
+fn wasm_only(case: &Case) -> bool {
+    matches!(
+        case.label.as_str(),
+        "an indirect call of a function that returns 128 bits"
+            | "an i1 loaded from a byte with more bits set"
+    ) || (case.label.ends_with(".with.overflow")
+        && !matches!(case.group.as_str(), "i8" | "i16" | "i32" | "i64" | "i128"))
+}
+
 /// `TSUZURI_FAST_OPS_EXPORT=DIR` stops the test after the translation and writes what a comparison on
 /// another machine needs (a Linux container, say): the C host, the IR of each group, and the object the
 /// translator makes for the machine `TSUZURI_FAST_OPS_TARGET=TRIPLE` names (this machine if unset).
@@ -1530,7 +1590,8 @@ fn operations_agree_with_clang() {
     if Command::new(clang()).arg("--version").output().is_err() {
         return;
     }
-    let suite = generate();
+    let mut suite = generate();
+    suite.cases.retain(|case| !wasm_only(case));
     let options = Options {
         verify: true,
         ..Options::host(2)
@@ -1646,6 +1707,7 @@ fn operations_agree_with_clang() {
         mismatches.len(),
         mismatches.join("\n")
     );
+    println!("native: {compared} operations compared");
     assert!(compared > 500, "only {compared} operations were compared");
 }
 
@@ -1734,6 +1796,35 @@ const KNOWN_WASM_REFUSALS: &[&str] = &[
 
 #[test]
 fn wasm_operations_agree_with_clang() {
+    wasm_operations_agree("wasm", false, None, KNOWN_WASM_REFUSALS, 500);
+}
+
+/// The two-value result of a 128-bit integer is what a compiler with multi-value results, or the
+/// runtime objects it built, uses: the groups that call the routines of the compiler runtime or
+/// pass 128 bits must agree with Clang there too, and a call through a pointer, whose callee may
+/// or may not be seen by other objects, is refused.
+#[test]
+fn wasm_operations_with_two_value_i128_results_agree_with_clang() {
+    wasm_operations_agree(
+        "wasm-multivalue",
+        true,
+        Some(&["i128", "calls"]),
+        &[
+            "i128 smul.with.overflow",
+            "i128 umul.with.overflow",
+            "an indirect call of a function that returns 128 bits",
+        ],
+        50,
+    );
+}
+
+fn wasm_operations_agree(
+    label: &str,
+    multivalue: bool,
+    only: Option<&[&str]>,
+    known: &[&str],
+    at_least: usize,
+) {
     let (clang, wasm_ld) = (clang(), tool("TSUZURI_WASM_LD", "wasm-ld"));
     let usable = |program: &str, flag: &str| Command::new(program).arg(flag).output().is_ok();
     let node = tool("TSUZURI_NODE", "node");
@@ -1747,11 +1838,13 @@ fn wasm_operations_agree_with_clang() {
     let suite = generate();
     let mut groups: Vec<String> = Vec::new();
     for case in &suite.cases {
-        if !groups.contains(&case.group) {
+        if !groups.contains(&case.group)
+            && only.is_none_or(|only| only.contains(&case.group.as_str()))
+        {
             groups.push(case.group.clone());
         }
     }
-    let directory = work_directory("wasm");
+    let directory = work_directory(label);
     let mut dropped: BTreeSet<String> = BTreeSet::new();
     let mut reasons: BTreeSet<String> = BTreeSet::new();
     let mut kept: Vec<&Case> = Vec::new();
@@ -1765,7 +1858,7 @@ fn wasm_operations_agree_with_clang() {
             .collect();
         let (object, text) = loop {
             let text = format!("{}\n{runtime}", render(&members));
-            match backend::compile_wasm(&text, 2, true) {
+            match backend::compile_wasm(&text, 2, multivalue) {
                 Ok(object) => break (object, text),
                 Err(error) => {
                     let id = refused_case(&error.message)
@@ -1804,10 +1897,7 @@ fn wasm_operations_agree_with_clang() {
         std::fs::write(&fast_object, object).unwrap();
         fast_objects.push(fast_object);
     }
-    let known: BTreeSet<String> = KNOWN_WASM_REFUSALS
-        .iter()
-        .map(|label| (*label).to_owned())
-        .collect();
+    let known: BTreeSet<String> = known.iter().map(|label| (*label).to_owned()).collect();
     assert_eq!(
         dropped,
         known,
@@ -1880,5 +1970,9 @@ fn wasm_operations_agree_with_clang() {
         "operations differ from Clang on wasm32:\n{}",
         report.replace("\",\"", "\"\n\"")
     );
-    assert!(compared > 500, "only {compared} operations were compared");
+    println!("{label}: {compared} operations compared");
+    assert!(
+        compared > at_least,
+        "only {compared} operations were compared"
+    );
 }

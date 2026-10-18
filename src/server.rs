@@ -670,13 +670,30 @@ pub struct ServeError {
 const NO_SOCKETS: &str = "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server";
 
 #[cfg(unix)]
-pub use sockets::{control, request, serve};
+pub use sockets::{control, request};
+
+/// Serves the project of `config` until it has been idle for `config.idle`, `shutdown` is asked,
+/// or the compiler file is replaced. What the server wants in its log, and what the handler writes
+/// to the `log` that it is given, are whole lines that a thread of their own writes to `log`, one
+/// write for each. A writer that blocks (a standard error that nobody reads, a terminal that was
+/// stopped) holds that thread and nothing else: no request, `status` or `shutdown` waits for it. A
+/// line that does not fit in the queue (256 lines) is dropped and counted (`log_dropped` of
+/// `status`, and a line `serve: N log lines dropped` where the writer takes it), and the end of a
+/// server waits at most a second for the lines that are queued.
+#[cfg(unix)]
+pub fn serve(
+    config: &Config,
+    handler: &mut dyn Handler,
+    log: impl Write + Send + 'static,
+) -> Result<Stop, ServeError> {
+    sockets::serve(config, handler, Box::new(log))
+}
 
 #[cfg(not(unix))]
 pub fn serve(
     _config: &Config,
     _handler: &mut dyn Handler,
-    _log: &mut dyn Write,
+    _log: impl Write + Send + 'static,
 ) -> Result<Stop, ServeError> {
     Err(ServeError {
         code: "E2000",
@@ -706,7 +723,7 @@ mod sockets {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
     use std::time::Instant;
@@ -855,6 +872,196 @@ mod sockets {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// How many lines of the log wait for the thread that writes them. A write to the standard
+    /// error can block for ever (a pipe that nobody reads, a terminal that was stopped), and nothing
+    /// that serves a client may wait for it: a line that does not fit is dropped and counted.
+    pub(super) const LOG_QUEUE: usize = 256;
+    /// The longest line of the log, so that what a client sends cannot make the queue large.
+    pub(super) const LOG_LINE: usize = 4096;
+    /// How long the end of a server waits for the thread of the log to write what is queued.
+    const LOG_FLUSH: Duration = Duration::from_secs(1);
+
+    enum Entry {
+        /// A line, and how many lines were dropped just before it.
+        Line { missed: u64, text: String },
+        /// The server has ended: write what is before this, and stop.
+        Close,
+    }
+
+    #[derive(Default)]
+    struct LogCounts {
+        /// Dropped since the last line that was queued: the next one carries the number.
+        missed: AtomicU64,
+        /// Dropped altogether, for `status`.
+        total: AtomicU64,
+    }
+
+    /// The server's log, for the threads that serve. It never blocks.
+    #[derive(Clone)]
+    struct Log {
+        sender: SyncSender<Entry>,
+        counts: Arc<LogCounts>,
+    }
+
+    impl Log {
+        /// Queues one line, or drops it when the queue is full.
+        fn line(&self, text: impl Into<String>) {
+            let text = clip(text.into());
+            let missed = self.counts.missed.swap(0, Ordering::AcqRel);
+            if self.sender.try_send(Entry::Line { missed, text }).is_err() {
+                self.counts.missed.fetch_add(missed + 1, Ordering::AcqRel);
+                self.counts.total.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        fn dropped(&self) -> u64 {
+            self.counts.total.load(Ordering::Acquire)
+        }
+    }
+
+    /// `text` as one line of at most [`LOG_LINE`] bytes. A newline in it (a client sends the paths
+    /// and names that a line quotes) is written as `\n`, so that it cannot make a line of its own.
+    fn clip(text: String) -> String {
+        let mut text = if text.contains(['\n', '\r']) {
+            text.replace('\n', "\\n").replace('\r', "\\r")
+        } else {
+            text
+        };
+        if text.len() > LOG_LINE {
+            let mut end = LOG_LINE;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push_str("...");
+        }
+        text
+    }
+
+    /// The thread that writes the log, and what the end of a server needs of it.
+    struct LogThread {
+        log: Log,
+        done: Option<Receiver<()>>,
+    }
+
+    impl LogThread {
+        fn start(writer: Box<dyn Write + Send>) -> io::Result<Self> {
+            let (sender, receiver) = mpsc::sync_channel(LOG_QUEUE);
+            let (finished, done) = mpsc::channel();
+            let counts = Arc::new(LogCounts::default());
+            let written = Arc::clone(&counts);
+            // It is not joined: a writer that is stuck must not keep the process.
+            thread::Builder::new()
+                .name("tsuzuri-serve-log".to_owned())
+                .spawn(move || {
+                    write_log(writer, &receiver, &written);
+                    let _ = finished.send(());
+                })?;
+            Ok(Self {
+                log: Log { sender, counts },
+                done: Some(done),
+            })
+        }
+
+        /// Asks the thread to write what is queued and stop, and waits at most `wait` for it. A
+        /// queue that is full (a writer that is behind, or stuck) takes the request when it has room.
+        fn finish(&mut self, wait: Duration) {
+            let Some(done) = self.done.take() else {
+                return;
+            };
+            let deadline = Instant::now() + wait;
+            loop {
+                match self.log.sender.try_send(Entry::Close) {
+                    Ok(()) => break,
+                    Err(TrySendError::Disconnected(_)) => return,
+                    Err(TrySendError::Full(_)) => {
+                        if Instant::now() >= deadline {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+            let _ = done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+    }
+
+    impl Drop for LogThread {
+        fn drop(&mut self) {
+            self.finish(LOG_FLUSH);
+        }
+    }
+
+    /// Writes the log: each line in one write, and the number of the lines that were dropped before
+    /// one as a line of its own, in the order that all of it was queued in. Ends at `Close`, or when
+    /// nothing can send any more.
+    fn write_log(
+        mut writer: Box<dyn Write + Send>,
+        receiver: &Receiver<Entry>,
+        counts: &LogCounts,
+    ) {
+        let mut put = |text: &str| {
+            let mut line = Vec::with_capacity(text.len() + 1);
+            line.extend_from_slice(text.as_bytes());
+            line.push(b'\n');
+            let _ = writer.write_all(&line);
+            let _ = writer.flush();
+        };
+        while let Ok(Entry::Line { missed, text }) = receiver.recv() {
+            if missed > 0 {
+                put(&format!("serve: {missed} log lines dropped"));
+            }
+            put(&text);
+        }
+        let missed = counts.missed.swap(0, Ordering::AcqRel);
+        if missed > 0 {
+            put(&format!("serve: {missed} log lines dropped"));
+        }
+    }
+
+    /// What a handler writes to the `log` that it is given: its lines, whole, for the log of the server.
+    struct HandlerLog<'a> {
+        log: &'a Log,
+        pending: Vec<u8>,
+    }
+
+    impl<'a> HandlerLog<'a> {
+        fn new(log: &'a Log) -> Self {
+            Self {
+                log,
+                pending: Vec::new(),
+            }
+        }
+
+        fn line(&self, bytes: &[u8]) {
+            self.log.line(String::from_utf8_lossy(bytes).into_owned());
+        }
+    }
+
+    impl Write for HandlerLog<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(bytes);
+            while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+                let rest = self.pending.split_off(end + 1);
+                let line = std::mem::replace(&mut self.pending, rest);
+                self.line(&line[..end]);
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for HandlerLog<'_> {
+        fn drop(&mut self) {
+            if !self.pending.is_empty() {
+                self.line(&self.pending);
+            }
+        }
+    }
+
     /// What `status` reports, and what the accept thread and the thread that runs the commands
     /// both change.
     struct Counters {
@@ -968,6 +1175,7 @@ mod sockets {
                 ("refusals", Value::Object(refusals)),
                 ("running", running_json(counters.running)),
                 ("queued", json!(self.queued.load(Ordering::Acquire))),
+                ("log_dropped", json!(info.log.dropped())),
             ] {
                 object.insert(key.to_owned(), value);
             }
@@ -996,8 +1204,6 @@ mod sockets {
     /// What the accept thread passes to the thread that runs the commands.
     enum Message {
         Run(Job),
-        /// A line for the log, which belongs to the other thread.
-        Log(String),
         /// `shutdown` was asked.
         Shutdown,
     }
@@ -1010,6 +1216,7 @@ mod sockets {
         compiler_sha256: String,
         idle: Duration,
         request_deadline: Duration,
+        log: Log,
     }
 
     /// Accepts connections, says hello at once (so that a client that waits in the queue is not
@@ -1042,11 +1249,11 @@ mod sockets {
 
     /// Writes `text` to the client of request `number`. A client that went away is not an error of
     /// the server.
-    fn reply(stream: &mut UnixStream, text: &str, number: u64, sender: &Sender<Message>) {
+    fn reply(stream: &mut UnixStream, text: &str, number: u64, log: &Log) {
         if let Err(error) = stream.write_all(text.as_bytes()) {
-            let _ = sender.send(Message::Log(format!(
+            log.line(format!(
                 "serve: request {number}: the reply could not be written ({error})"
-            )));
+            ));
         }
     }
 
@@ -1065,8 +1272,8 @@ mod sockets {
             MAX_REQUEST_BYTES,
         );
         let refuse = |stream: &mut UnixStream, number: u64, refused: &Refused| {
-            let _ = sender.send(Message::Log(shared.refused(number, refused)));
-            reply(stream, &encode_refusal(refused), number, sender);
+            info.log.line(shared.refused(number, refused));
+            reply(stream, &encode_refusal(refused), number, &info.log);
         };
         let line = match read {
             Ok(line) => line,
@@ -1082,9 +1289,8 @@ mod sockets {
                 return true;
             }
             Err(LineError::Io(error)) => {
-                let _ = sender.send(Message::Log(format!(
-                    "serve: a request could not be read ({error})"
-                )));
+                info.log
+                    .line(format!("serve: a request could not be read ({error})"));
                 return true;
             }
         };
@@ -1095,14 +1301,16 @@ mod sockets {
                 number,
                 &Refused::new(Refusal::Protocol, message),
             ),
-            Ok(Operation::Status) => reply(&mut stream, &shared.status(info), number, sender),
+            Ok(Operation::Status) => {
+                reply(&mut stream, &shared.status(info), number, &info.log);
+            }
             Ok(Operation::Shutdown) => {
                 shared.shutdown.store(true, Ordering::Release);
                 let running = running_json(shared.counters().running);
                 let text = super::line(
                     &json!({"protocol": PROTOCOL, "ok": true, "pid": std::process::id(), "running": running}),
                 );
-                reply(&mut stream, &text, number, sender);
+                reply(&mut stream, &text, number, &info.log);
                 return sender.send(Message::Shutdown).is_ok();
             }
             Ok(Operation::Run(request)) => {
@@ -1112,7 +1320,7 @@ mod sockets {
                         Refusal::Busy,
                         format!("{QUEUE} requests are waiting for the server"),
                     );
-                    reply(&mut stream, &encode_refusal(&refused), number, sender);
+                    reply(&mut stream, &encode_refusal(&refused), number, &info.log);
                 } else {
                     shared.queued.fetch_add(1, Ordering::AcqRel);
                     let job = Job {
@@ -1203,7 +1411,7 @@ mod sockets {
     struct Loop<'a> {
         config: &'a Config,
         handler: &'a mut dyn Handler,
-        log: &'a mut dyn Write,
+        log: &'a Log,
         shared: &'a Shared,
         busy_logged: u64,
     }
@@ -1211,7 +1419,7 @@ mod sockets {
     pub fn serve(
         config: &Config,
         handler: &mut dyn Handler,
-        log: &mut dyn Write,
+        writer: Box<dyn Write + Send>,
     ) -> Result<Stop, ServeError> {
         let socket = socket_path(&config.directory, &config.root);
         check_path(&socket)?;
@@ -1219,7 +1427,7 @@ mod sockets {
         let listener = bind(&socket)?;
         let made = identity(&socket);
         let locks = lock.is_some();
-        let _cleanup = Cleanup {
+        let cleanup = Cleanup {
             made,
             socket: socket.clone(),
             _lock: lock,
@@ -1228,18 +1436,19 @@ mod sockets {
             |_| "unknown".to_owned(),
             |digest| digest.iter().map(|byte| format!("{byte:02x}")).collect(),
         );
-        let _ = writeln!(
-            log,
+        let mut logger = LogThread::start(writer)
+            .map_err(|error| failure(format!("cannot start the thread of the log: {error}")))?;
+        let log = logger.log.clone();
+        log.line(format!(
             "serve: listening on {} for {}",
             socket.display(),
             config.root.display()
-        );
+        ));
         if !locks {
-            let _ = writeln!(
-                log,
+            log.line(format!(
                 "serve: the file system of {} has no locks; two servers that start together could both run",
                 config.directory.display()
-            );
+            ));
         }
         let (sender, receiver) = mpsc::channel();
         let shared = Arc::new(Shared::new(handler.status()));
@@ -1250,6 +1459,7 @@ mod sockets {
             compiler_sha256,
             idle: config.idle,
             request_deadline: config.request_deadline,
+            log: log.clone(),
         };
         let acceptor = {
             let shared = Arc::clone(&shared);
@@ -1261,7 +1471,7 @@ mod sockets {
         let mut running = Loop {
             config,
             handler,
-            log,
+            log: &log,
             shared: &shared,
             busy_logged: 0,
         };
@@ -1273,19 +1483,16 @@ mod sockets {
         if identity(&socket) == made && UnixStream::connect(&socket).is_ok() {
             let _ = acceptor.join();
         }
+        // The socket and the lock go first, so that nobody who waits for the server to stop waits
+        // for its log, which a writer that is stuck can hold for as long as it likes.
+        drop(cleanup);
+        logger.finish(LOG_FLUSH);
         outcome
     }
 
     impl Loop<'_> {
         fn run(&mut self, receiver: &Receiver<Message>) -> Result<Stop, ServeError> {
-            let outcome = self.messages(receiver);
-            // What the accept thread logged last is not lost with the requests that were queued.
-            while let Ok(message) = receiver.try_recv() {
-                if let Message::Log(line) = message {
-                    let _ = writeln!(self.log, "{line}");
-                }
-            }
-            outcome
+            self.messages(receiver)
         }
 
         fn messages(&mut self, receiver: &Receiver<Message>) -> Result<Stop, ServeError> {
@@ -1296,9 +1503,6 @@ mod sockets {
                 let activity = self.shared.counters().activity;
                 let wait = (activity + self.config.idle).saturating_duration_since(Instant::now());
                 match receiver.recv_timeout(wait) {
-                    Ok(Message::Log(line)) => {
-                        let _ = writeln!(self.log, "{line}");
-                    }
                     Ok(Message::Shutdown) => return Ok(self.shutdown()),
                     Ok(Message::Run(job)) => {
                         self.shared.queued.fetch_sub(1, Ordering::AcqRel);
@@ -1314,11 +1518,10 @@ mod sockets {
                     Err(RecvTimeoutError::Timeout) => {
                         let activity = self.shared.counters().activity;
                         if activity + self.config.idle <= Instant::now() {
-                            let _ = writeln!(
-                                self.log,
+                            self.log.line(format!(
                                 "serve: idle for {} s; stopping",
                                 self.config.idle.as_secs()
-                            );
+                            ));
                             return Ok(Stop::Idle);
                         }
                     }
@@ -1331,13 +1534,12 @@ mod sockets {
 
         /// `shutdown` was asked: the request that ran has ended, and the ones that wait do not run.
         fn shutdown(&mut self) -> Stop {
-            let _ = writeln!(self.log, "serve: shutdown requested; stopping");
+            self.log.line("serve: shutdown requested; stopping");
             let waiting = self.shared.queued.load(Ordering::Acquire);
             if waiting > 0 {
-                let _ = writeln!(
-                    self.log,
+                self.log.line(format!(
                     "serve: {waiting} waiting request(s) dropped; their clients run the command themselves"
-                );
+                ));
             }
             Stop::Shutdown
         }
@@ -1345,27 +1547,21 @@ mod sockets {
         fn log_busy(&mut self) {
             let busy = self.shared.busy.load(Ordering::Acquire);
             if busy > self.busy_logged {
-                let _ = writeln!(
-                    self.log,
+                self.log.line(format!(
                     "serve: {} connection(s) refused: busy ({QUEUE} requests were waiting)",
                     busy - self.busy_logged
-                );
+                ));
                 self.busy_logged = busy;
             }
         }
 
         /// Writes `text` to the client. A client that went away is not an error of the server.
         fn send(&mut self, stream: &mut UnixStream, text: &str, number: u64) {
-            if let Err(error) = stream.write_all(text.as_bytes()) {
-                let _ = writeln!(
-                    self.log,
-                    "serve: request {number}: the reply could not be written ({error})"
-                );
-            }
+            reply(stream, text, number, self.log);
         }
 
         fn refuse(&mut self, stream: &mut UnixStream, number: u64, refused: &Refused) {
-            let _ = writeln!(self.log, "{}", self.shared.refused(number, refused));
+            self.log.line(self.shared.refused(number, refused));
             self.send(stream, &encode_refusal(refused), number);
         }
 
@@ -1378,10 +1574,9 @@ mod sockets {
             } = job;
             if client_gone(&stream) {
                 self.shared.counters().abandoned += 1;
-                let _ = writeln!(
-                    self.log,
+                self.log.line(format!(
                     "serve: request {number} skipped: its client went away while it waited"
-                );
+                ));
                 return None;
             }
             self.command(&mut stream, &request, number)
@@ -1399,9 +1594,8 @@ mod sockets {
                     "the compiler file was replaced since the server started",
                 );
                 self.refuse(stream, number, &refused);
-                let _ = writeln!(
-                    self.log,
-                    "serve: the compiler binary changed; stopping (start tsuzuri serve again)"
+                self.log.line(
+                    "serve: the compiler binary changed; stopping (start tsuzuri serve again)",
                 );
                 return Some(Stop::CompilerChanged);
             }
@@ -1432,7 +1626,9 @@ mod sockets {
                 return None;
             }
             self.shared.counters().running = Some((number, Instant::now()));
-            let result = self.handler.run(request, self.log);
+            let mut handler_log = HandlerLog::new(self.log);
+            let result = self.handler.run(request, &mut handler_log);
+            drop(handler_log);
             // What `status` says is up to date when the client has its reply, so it is written
             // before the reply is sent.
             let remembered = self.handler.status();
@@ -1453,11 +1649,10 @@ mod sockets {
                     } else {
                         self.shared.counters().served += 1;
                         self.send(stream, &reply, number);
-                        let _ = writeln!(
-                            self.log,
+                        self.log.line(format!(
                             "serve: request {number} served (exit {})",
                             response.exit
-                        );
+                        ));
                     }
                 }
                 Err(refused) => self.refuse(stream, number, &refused),
@@ -2192,6 +2387,81 @@ mod serve_tests {
         gate.1.notify_all();
     }
 
+    /// A log that the test reads: what the server wrote to it, as text.
+    #[derive(Clone, Default)]
+    struct SharedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedLog {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl Write for SharedLog {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A log that keeps each write that it is given, and that blocks in a write while its gate is
+    /// closed (as a pipe that nobody reads does).
+    #[derive(Clone)]
+    struct StuckLog {
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
+        gate: Gate,
+    }
+
+    impl StuckLog {
+        fn new(open: bool) -> Self {
+            Self {
+                writes: Arc::default(),
+                gate: Arc::new((Mutex::new(open), Condvar::new())),
+            }
+        }
+
+        fn open(&self) {
+            open(&self.gate);
+        }
+
+        /// What was written, one write at a time, each of which has to be one whole line.
+        fn lines(&self) -> Vec<String> {
+            self.writes
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|bytes| {
+                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    assert!(
+                        text.ends_with('\n') && text.matches('\n').count() == 1,
+                        "a write is one line: {text:?}"
+                    );
+                    text.trim_end().to_owned()
+                })
+                .collect()
+        }
+    }
+
+    impl Write for StuckLog {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut opened = self.gate.0.lock().unwrap();
+            while !*opened {
+                opened = self.gate.1.wait(opened).unwrap();
+            }
+            drop(opened);
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Handler for Probe {
         fn run(&mut self, request: &Request, log: &mut dyn Write) -> Result<Response, Refused> {
             self.seen.lock().unwrap().push(request.args.clone());
@@ -2258,13 +2528,24 @@ mod serve_tests {
     }
 
     impl Server {
-        fn start(config: Config, mut probe: Probe) -> Self {
+        fn start(config: Config, probe: Probe) -> Self {
+            let log = SharedLog::default();
+            Self::start_logging(config, probe, log.clone(), move || log.text())
+        }
+
+        /// Starts a server that writes its log to `writer`; `text` gives what the thread hands back
+        /// when the server has ended.
+        fn start_logging(
+            config: Config,
+            mut probe: Probe,
+            writer: impl Write + Send + 'static,
+            text: impl FnOnce() -> String + Send + 'static,
+        ) -> Self {
             let socket = socket_path(&config.directory, &config.root);
             let root = config.root.clone();
             let thread = thread::spawn(move || {
-                let mut log = Vec::new();
-                let outcome = serve(&config, &mut probe, &mut log);
-                (outcome, String::from_utf8(log).unwrap())
+                let outcome = serve(&config, &mut probe, writer);
+                (outcome, text())
             });
             let deadline = Instant::now() + Duration::from_secs(10);
             while UnixStream::connect(&socket).is_err() {
@@ -2351,6 +2632,7 @@ mod serve_tests {
         );
         assert_eq!(status["served"], json!(1));
         assert_eq!(status["refused"], json!(0));
+        assert_eq!(status["log_dropped"], json!(0));
         assert_eq!(
             status["resident_bytes"],
             json!(7),
@@ -2537,14 +2819,157 @@ mod serve_tests {
     }
 
     #[test]
+    fn a_log_that_blocks_holds_nothing_but_its_own_thread() {
+        let scratch = Scratch::new();
+        let stuck = StuckLog::new(false);
+        let probe = Probe::default();
+        let server = Server::start_logging(
+            config(&scratch, Duration::from_secs(60)),
+            probe.clone(),
+            stuck.clone(),
+            String::new,
+        );
+        // Every refusal is a line of the log, and the writer is stuck in the first: far more lines
+        // than the queue holds. Every client has its answer.
+        let sent = 2 * sockets::LOG_QUEUE;
+        for _ in 0..sent {
+            assert_eq!(reason(&server.raw(b"not json\n")), "protocol");
+        }
+        // A command is run, and `status` says what was dropped.
+        let reply = server.ask(&Operation::Run(matching())).unwrap();
+        assert!(decode_response(&reply).is_some());
+        let status = server.status();
+        assert_eq!(status["served"], json!(1));
+        let dropped = status["log_dropped"].as_u64().unwrap();
+        assert!(
+            dropped >= (sent - sockets::LOG_QUEUE) as u64,
+            "{dropped} lines were dropped"
+        );
+        assert!(stuck.lines().is_empty(), "the writer has not been let go");
+        // And the server stops with its log still stuck, a second at most after the stop.
+        assert!(server.ask(&Operation::Shutdown).is_some());
+        let stopped = Instant::now();
+        while !server.thread.is_finished() {
+            assert!(
+                stopped.elapsed() < Duration::from_secs(10),
+                "the server did not stop while its log was stuck"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let (outcome, _) = server.thread.join().unwrap();
+        assert_eq!(outcome, Ok(Stop::Shutdown));
+        // The writer is let go: the lines that were queued come out whole and in order, and the
+        // lines that were dropped are counted, in a line where they were dropped and at the end.
+        stuck.open();
+        let started = Instant::now();
+        let lines = loop {
+            let lines = stuck.lines();
+            if lines
+                .last()
+                .is_some_and(|line| line.contains("log lines dropped"))
+            {
+                break lines;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the lines were not written: {lines:?}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(lines[0].starts_with("serve: listening on "), "{lines:?}");
+        let mut previous = 0;
+        let mut counted = 0;
+        for line in &lines {
+            assert!(line.starts_with("serve: "), "{line}");
+            if let Some(number) = line.strip_prefix("serve: request ") {
+                let number: u64 = number.split(' ').next().unwrap().parse().unwrap();
+                assert!(number > previous, "in order: {line}");
+                previous = number;
+            }
+            if let Some(count) = line
+                .strip_prefix("serve: ")
+                .and_then(|rest| rest.strip_suffix(" log lines dropped"))
+            {
+                counted += count.parse::<u64>().unwrap();
+            }
+        }
+        assert!(counted >= dropped, "{counted} counted, {dropped} dropped");
+        assert!(
+            lines.len() <= sockets::LOG_QUEUE + 3,
+            "{} lines",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn every_line_of_the_log_is_one_write_and_a_line_of_its_own() {
+        let scratch = Scratch::new();
+        let log = StuckLog::new(true);
+        let probe = Probe::default();
+        let server = Server::start_logging(
+            config(&scratch, Duration::from_secs(60)),
+            probe.clone(),
+            log.clone(),
+            String::new,
+        );
+        assert!(decode_response(&server.ask(&Operation::Run(matching())).unwrap()).is_some());
+        assert_eq!(reason(&server.raw(b"not json\n")), "protocol");
+        // What a client sends goes into the lines that quote it: not as a line of its own, and not
+        // beyond the length that a line has.
+        let mut forged = matching();
+        forged.cwd = PathBuf::from(format!(
+            "/a\nserve: request 99 served (exit 0)\r{}",
+            "y".repeat(10_000)
+        ));
+        let reply = String::from_utf8(server.ask(&Operation::Run(forged)).unwrap()).unwrap();
+        assert_eq!(reason(&reply), "cwd");
+        assert!(server.ask(&Operation::Shutdown).is_some());
+        let (outcome, _) = server.thread.join().unwrap();
+        assert_eq!(outcome, Ok(Stop::Shutdown));
+        let lines = log.lines();
+        assert!(lines[0].starts_with("serve: listening on "), "{lines:?}");
+        // The handler writes with `writeln!`, in pieces; the server writes it as the line that it is.
+        assert!(
+            lines.contains(&"handler: [\"check\", \"app\"]".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "serve: request 1 served (exit 3)"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("request 99 served") && !line.contains("refused")),
+            "a line of a client's own: {lines:?}"
+        );
+        let refused = lines
+            .iter()
+            .find(|line| line.starts_with("serve: request 3 refused: cwd"))
+            .unwrap();
+        assert!(
+            refused.contains("\\n") && refused.contains("\\r"),
+            "{refused}"
+        );
+        assert!(
+            refused.len() <= sockets::LOG_LINE + 3,
+            "{} bytes",
+            refused.len()
+        );
+        assert!(refused.ends_with("..."));
+    }
+
+    #[test]
     fn an_idle_server_stops_and_removes_its_socket() {
         let scratch = Scratch::new();
         let config = config(&scratch, Duration::from_millis(300));
         let socket = socket_path(&config.directory, &config.root);
         let (outcome, log) = thread::spawn(move || {
-            let mut log = Vec::new();
-            let outcome = serve(&config, &mut Probe::default(), &mut log);
-            (outcome, String::from_utf8(log).unwrap())
+            let log = SharedLog::default();
+            let outcome = serve(&config, &mut Probe::default(), log.clone());
+            (outcome, log.text())
         })
         .join()
         .unwrap();
@@ -2729,7 +3154,7 @@ mod serve_tests {
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
                     barrier.wait();
-                    serve(&config, &mut Probe::default(), &mut Vec::new())
+                    serve(&config, &mut Probe::default(), Vec::new())
                 })
             })
             .collect();
@@ -2781,7 +3206,7 @@ mod serve_tests {
         // A server that holds it, and has not made its socket yet, is not run over.
         let held = sockets::take_lock(&socket).unwrap();
         assert!(held.is_some());
-        let error = serve(&config_for(), &mut Probe::default(), &mut Vec::new()).unwrap_err();
+        let error = serve(&config_for(), &mut Probe::default(), Vec::new()).unwrap_err();
         assert!(
             error.message.contains("a build server is already running"),
             "{}",
@@ -2841,7 +3266,7 @@ mod serve_tests {
         drop(UnixListener::bind(&socket).unwrap());
         assert!(socket.exists());
         let server = Server::start(config_for(), Probe::default());
-        let again = serve(&config_for(), &mut Probe::default(), &mut Vec::new());
+        let again = serve(&config_for(), &mut Probe::default(), Vec::new());
         let error = again.unwrap_err();
         assert_eq!(error.code, "E2001");
         assert!(
@@ -2856,7 +3281,7 @@ mod serve_tests {
         let _ = server.stop();
 
         std::fs::write(&socket, "not a socket").unwrap();
-        let error = serve(&config_for(), &mut Probe::default(), &mut Vec::new()).unwrap_err();
+        let error = serve(&config_for(), &mut Probe::default(), Vec::new()).unwrap_err();
         assert!(
             error.message.contains("exists and is not a socket"),
             "{}",
@@ -2873,7 +3298,7 @@ mod serve_tests {
     fn a_socket_path_beyond_the_system_limit_is_a_usage_error() {
         let mut long = config(&Scratch::new(), Duration::from_secs(1));
         long.directory = PathBuf::from("/").join("d".repeat(200));
-        let error = serve(&long, &mut Probe::default(), &mut Vec::new()).unwrap_err();
+        let error = serve(&long, &mut Probe::default(), Vec::new()).unwrap_err();
         assert_eq!(error.code, "E2000");
         assert!(error.message.contains("too long"), "{}", error.message);
     }

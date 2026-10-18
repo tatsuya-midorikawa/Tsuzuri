@@ -46,7 +46,8 @@ struct Shared<'a> {
     infos: &'a [WInfo],
     sp_symbol: u32,
     table_symbol: u32,
-    /// Whether the C ABI of the linked runtime returns a 128-bit integer as two results.
+    /// Whether the compiler runtime that is linked returns a 128-bit integer as two results (and not
+    /// through a pointer).
     multivalue: bool,
 }
 
@@ -71,8 +72,9 @@ enum WInfo {
 
 /// Translates the textual LLVM IR of a `wasm32` `-O0` build into the bytes of a relocatable object.
 /// `multivalue` is whether the compiler that builds the rest of the program returns a 128-bit
-/// integer from a function with two results (its `wasm32` generic CPU does, `-mno-multivalue` does
-/// not); the routines of the runtime that the IR defines and the runtime objects must agree on it.
+/// integer from a function with two results or through a pointer that the caller passes first (Clang
+/// 21 does the latter, with the multivalue feature on or off); the routines of the runtime that the IR
+/// defines and the runtime objects must agree on it.
 pub(crate) fn translate(
     ir: &str,
     parallelism: Parallelism,
@@ -83,12 +85,14 @@ pub(crate) fn translate(
 
 /// Whether the runtime objects that are already compiled, with the compiler that built them, return a
 /// 128-bit integer as two results: the first of them that calls a routine of the compiler runtime
-/// says; with none that does, the choice is free, and two results (the default of a recent Clang) it is.
+/// says; with none that does, the choice is free, and the pointer it is, as the Clang that the build
+/// uses does it (an object that this translator writes alone, with `--emit object`, links with
+/// objects of that Clang, whose routines of the compiler runtime must have the same signatures).
 pub(crate) fn multivalue_of_objects<'a>(objects: impl IntoIterator<Item = &'a [u8]>) -> bool {
     objects
         .into_iter()
         .find_map(object::i128_results_are_multivalue)
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn flags_of(linkage: Linkage, hidden: bool) -> u32 {
@@ -217,6 +221,12 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
             } => {
                 let defined = body_end.is_some();
                 let external = sym.linkage != Linkage::Local || !defined;
+                if external && sig.indirect {
+                    return Err(
+                        Failure::new("a byval or sret parameter of an external function")
+                            .in_function(sym.name),
+                    );
+                }
                 let abi = abi::plan(
                     &types,
                     sig.ret,
@@ -543,5 +553,93 @@ mod tests {
         assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
         assert!(bytes.windows(7).any(|window| window == b"linking"));
         assert!(bytes.windows(10).any(|window| window == b"reloc.CODE"));
+    }
+
+    /// A function of `blocks` blocks, each branching to the next.
+    fn chain(blocks: usize) -> String {
+        let mut ir = String::from("define i64 @f(i64 %a) {\nentry:\n  br label %b1\n");
+        for index in 1..blocks - 1 {
+            ir.push_str(&format!("b{index}:\n  br label %b{}\n", index + 1));
+        }
+        ir.push_str(&format!("b{}:\n  ret i64 %a\n}}\n", blocks - 1));
+        ir
+    }
+
+    #[test]
+    fn a_function_has_no_more_blocks_than_the_dispatch_table_of_an_engine_takes() {
+        // V8 accepts 65,520 targets in a `br_table`, and the dispatch has one for each block but the last.
+        assert!(translate(&chain(65_521), Parallelism::fixed(1), false).is_ok());
+        let refused = translate(&chain(65_522), Parallelism::fixed(1), false).unwrap_err();
+        assert_eq!(refused.code, "E2002");
+        assert!(
+            refused.message.contains(
+                "a function with 65522 basic blocks, more than the 65521 that the dispatch table of an engine accepts in @f"
+            ),
+            "{}",
+            refused.message
+        );
+    }
+
+    /// A function of `count` additions, each of the one before.
+    fn long_chain(count: usize) -> String {
+        let mut ir = String::from("define i64 @f(i64 %a) {\nentry:\n");
+        let mut previous = "%a".to_owned();
+        for index in 0..count {
+            ir.push_str(&format!(
+                "  %v{index} = add i64 {previous}, {}\n",
+                index + 1
+            ));
+            previous = format!("%v{index}");
+        }
+        ir.push_str(&format!("  ret i64 {previous}\n}}\n"));
+        ir
+    }
+
+    /// A function of `count` values that are all alive until their sum at the end.
+    fn live_values(count: usize) -> String {
+        let mut ir = String::from("define i64 @f(i64 %a) {\nentry:\n");
+        for index in 0..count {
+            ir.push_str(&format!("  %v{index} = add i64 %a, {}\n", index + 1));
+        }
+        let mut sum = "%v0".to_owned();
+        for index in 1..count {
+            ir.push_str(&format!("  %s{index} = add i64 {sum}, %v{index}\n"));
+            sum = format!("%s{index}");
+        }
+        ir.push_str(&format!("  ret i64 {sum}\n}}\n"));
+        ir
+    }
+
+    #[test]
+    fn the_limit_on_locals_counts_them_after_the_locals_of_dead_values_are_reused() {
+        let build = |ir: &str| translate(ir, Parallelism::fixed(1), false);
+        assert!(build(&long_chain(100_000)).is_ok());
+        assert!(build(&live_values(39_990)).is_ok());
+        let refused = build(&live_values(40_010)).unwrap_err();
+        assert_eq!(refused.code, "E2002");
+        assert!(
+            refused
+                .message
+                .contains("more than the 40000 that an engine accepts in @f"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
+    fn an_indirect_call_that_returns_128_bits_is_refused_when_the_result_is_two_values() {
+        // With a pointer first, a function that other objects can call and one that they cannot agree;
+        // with two results they do not, and the callee of a call through a pointer is not known.
+        let ir = "define i64 @f(ptr %p, i64 %a) {\n  %r = call i128 %p(i64 %a)\n  %t = trunc i128 %r to i64\n  ret i64 %t\n}\n";
+        assert!(translate(ir, Parallelism::fixed(1), false).is_ok());
+        let refused = translate(ir, Parallelism::fixed(1), true).unwrap_err();
+        assert_eq!(refused.code, "E2002");
+        assert!(
+            refused
+                .message
+                .contains("an indirect call that returns a 128-bit integer as two results in @f"),
+            "{}",
+            refused.message
+        );
     }
 }
