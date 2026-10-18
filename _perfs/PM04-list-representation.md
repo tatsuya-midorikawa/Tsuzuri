@@ -8,12 +8,12 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | C07, PM05 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD 9dd0fbbc で再検討（「着手時の再検討」） |
 | 承認 | 2026-10-17 の全フェーズ実装依頼で D1（記憶域を chunk 列へ変え、docs/language.md の記憶域・計算量の記述を変える）と、改めた D3・D7・D10・D11、新設の D12〜D15、Phase 2（連続領域の高速経路）を承認済み（測定で効果を確認できない既定の切り替えは行わない。D14） |
 | 手本にする既存実装 | 置き換える経路: `src/llvm.rs` の `list_node_type`・`list_element_pointer`・`list_builder`・`append_list`・`finish_list`・`list_loop`・`list_loop_control`。連続領域の手本: `src/llvm.rs` の `allocate_array`・`element_pointer`・`allocation_size`・`array_loop`、`src/llvm_frame.rs` の `frame_array` と、`heap_copy`・`drop_frame_contents` の `Frame::Array` の arm。反復 drop の手本: `src/llvm.rs` の `drop_value` の `Type::List` の arm（次を読んでから free する） |
 | 主な影響ファイル | `src/llvm.rs`, `src/llvm_bulk.rs`, `src/llvm_control.rs`, `src/llvm_frame.rs`, `src/llvm_compare.rs`, `src/llvm_display.rs`, `src/llvm_hash.rs`, `tests/lists.rs`, `tests/primitives.mjs`, `tests/features.mjs`, `tests/fixtures/list_chunks/Main.tz`（新規）, `benchmarks/list-memory/Main.tz`（新規）, `benchmarks/run-list-memory.mjs`（新規）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`, `_docs/library-reference/arrays-and-lists.md`, `_docs/language-reference/ownership.md`, `_docs/language-reference/patterns.md`, `_docs/language-reference/types.md`。着手時に足したもの（「着手時の再検討」。`_docs/` は `_tsuzuri/language-reference/` に読み替える）: `src/llvm_debug.rs`, `scripts/lldb/tsuzuri_lldb.py`, `src/copies.rs`, `tests/storage.rs`, `tests/integer_ranges.rs`, `tests/debug_info.rs`, `tests/debug_info.mjs`, `tests/debugger.mjs`, `tests/copy_cost.rs`, `benchmarks/list-memory/host.c`（新規）, `_tsuzuri/language-reference/` の `list.md`・`stack-and-heap.md`・`array.md`・`vec.md`・`for-in.md`・`compiler/debugging.md` |
-| 計測対象 | `benchmarks/list-memory`（新規、6 種目）の `alloc_calls`・`alloc_bytes`・`wall_time`・`peak_rss`、`control/list_sum` の `wall_time`、`tests/primitives.mjs` の確保回数（決定的） |
+| 計測対象 | `benchmarks/list-memory`（新規、実装後は 12 種目）の `alloc_calls`・`alloc_bytes`・`wall_time`・`peak_rss`、`control/list_sum` の `wall_time`、`tests/primitives.mjs` の確保回数（決定的） |
 
 ## 目的
 
@@ -658,64 +658,64 @@ list_chunks: {
 
 - 決定: `%tz.list = { ptr, i64 }` はそのまま、field 0 は先頭 chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] }`。chunk の中はリストの順とアドレスの順が同じ。不変条件は「表現」の I1〜I5。
 - 理由: 伸縮する単一バッファ（旧案）は `List.cons` が償却 O(1) になり、最悪 O(n) の複製と一時的な 2 倍の記憶が要る。unrolled list に `rest` を持たせると cons・tail・分解が最悪 O(1) のまま、一括生成は配列と同じ連続領域になり、記述子の大きさも変わらない。
-- 状態: 要承認（承認前はどの手順にも着手しない。小さい `cons_build` の記憶量の悪化を含めて承認を得る）
+- 状態: 承認済み（2026-10-17）。実装済み（opt-out の flag なし。D14 の gate を満たした。「実装と検証」）
 
 ### D2: 計算量の保証
 
 - 決定: `.length`・`List.cons`・`List.tail` は最悪 O(1)、`head :: tail` の分解は最悪 O(count)（chunk 内なら O(1)）、索引は O(先行する chunk 数)（一括生成なら O(1)）、走査・複製・解放は O(n)。
 - 理由: docs の保証を弱めず、索引だけを改善する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`tests/lists.rs`・`list_chunks` の `index_walk`・`bulk_new` の確保の回数で確認）
 
 ### D3: 容量の伸ばし方
 
 - 決定: 先頭 chunk が満杯（または空リスト）のときだけ新しい chunk を作る。容量は空リストなら 1、それ以外は `min(2 × 先頭 chunk の capacity, K)`、`K = max(1, LIST_CHUNK_MAX_BYTES / max(1, storage_layout(T) の大きさ))`、`LIST_CHUNK_MAX_BYTES = 32768`。
 - 理由: 1 要素のリストを最小（native 32 bytes）にし、確保回数を O(log n + n/K) にする。上限で最大の空きを 32 KiB に抑える。容量 1 だけで足す段階は要素あたり 16 → 32 bytes に悪化するので作らない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装（D3'。1.5 倍・header 込みの 32 KiB。一括生成は上限なしの 1 つの chunk）
 
 ### D4: 一括生成
 
 - 決定: リテラル・`new`・`Array.to_list`・`List.map`・`List.map_ref`・`List.reverse`・複製・`heap_copy` は非空なら chunk 一つ（capacity = 長さ）を 1 回で確保し、空なら確保しない。ヒープのリテラルは最初の要素の評価後に確保し、loop 内の prefix は `capacity` を途中の長さにして登録する。
 - 理由: 確保回数を 1 にし、I1 と prefix の drop を保つ。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`heap_copy` は frame 候補が空のとき loop のまま。Phase 2b の `memcpy` は取り下げ）
 
 ### D5: トラップの境界とメモリ不足
 
 - 決定: `new [|T|](n, f)` の長さの検査は `allocation_size(list_node_type(T), n)`（旧ノードの stride）のまま行う。`List.cons` の `i64::MAX`、BoundsCheck、PatternMismatch も変えない。メモリ不足の `llvm.trap` は、一括生成では callback の前の 1 回の確保で起きるようになる。
 - 理由: 実行できる長さの境界（大きさ 0 の要素を含む）を byte 単位で保つ。メモリ不足の時点は環境に依存し、種類は同じ。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`list_guard_length`。`tests/primitives.mjs` の WASM の trap の境界で確認）
 
 ### D6: drop・clone の順序と反復
 
 - 決定: drop は chunk ポインタが null になるまでの外側の loop と、生きた slot をリストの順に drop する内側の loop。`next` を読んでから free する。clone は chunk 一つへリストの順に clone する。
 - 理由: 要素の順序を HEAD と同じにし、スタックを使わない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`deep_ops` の 1,000,000 要素、`tests/stack_overflow.mjs`）
 
 ### D7: 走査の形
 
 - 決定: 状態は `(chunk, slot, index)`。前進は分岐なしの `select`（「アルゴリズム」の `cursor_advance`）で、`phi ptr` は各リストに 1 つ。
 - 理由: 比較 helper の既存の IR 検査（`phi ptr` 2 つ、`@tz.alloc` なし）を保ち、loop の形を HEAD に近く保つ。二重 loop は Phase 2。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装（D7'。Phase 1 は分岐の cursor、slot は分岐の合流点の `phi`。Phase 2a で chunk ごとの二重 loop。`select` の cursor は node の連結と同じ約 1 ns で採らなかった）
 
 ### D8: スタックのリテラル
 
 - 決定: alloca は `{ ptr, i64, i64, [n x T] }` align 16（header は null・0・n）。`frame_test`・`relocate` は変えない。`frame_bytes` の式は据え置く（n ≥ 2 では上界、n = 1 で 16-byte 整列の要素だけ 16 bytes 下回る）。
 - 理由: スタックとヒープの配置と確保回数の観測値を変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（alloca は `{ ptr, i64, i64, [n x T] }`。`tests/storage.rs` と `stack_escape`・`words_escape` で確認）
 
 ### D9: `List.tail` の解放の粒度
 
 - 決定: 先頭要素はその場で drop し、chunk は空になった時点で free する。縮小・再配置はしない。
 - 理由: O(1) を保つ。保持する記憶は一括生成の元の大きさを超えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`tail_consume`・`list_chunks` の `tail_walk`・`words_tail`）
 
 ### D10: 計測の workload
 
 - 決定: `benchmarks/list-memory/Main.tz` に `bulk_new`（`new` の 0..n−1 の和、n(n−1)/2）、`cons_build`（cons の 0..n−1 の和、n(n−1)/2）、`tail_consume`（`new` を `List.tail` で空にしながら先頭の和、n(n−1)/2）、`clone_list`（Copy の複製と元の和、n(n−1)）、`index_walk`（`values[i]` の和、n(n−1)/2）、`string_list`（`"ab" + "c"` の n 個の長さの和、3n）。runner は `benchmarks/run-list-memory.mjs`。
 - 理由: 一括生成・cons・tail・複製・索引・非 Copy 要素を分けて測る。`control` 系列は他言語の実装が要るので増やさない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装（D10'。`walk_list`・`fold_list`・`compare_list`・`list_to_array`・`array_to_list`・`escape_list` を足して 12 種目、runner に `--opt O0|O3`）
 
 ### D11: Phase 分割
 
 - 決定: Phase 1 は表現の切り替え全体（「Phase 分割」）。Phase 2 は人間が求めた場合だけ着手する。
 - 理由: 表現は全経路で同時に切り替える必要があり、Phase 1 をさらに分けると二つの表現が混在する。高速経路は計測と生成コードの確認を個別に要する。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 変更して実装（D11'。Phase 1 の後に 2a と 2b も実装した。2b の `heap_copy` は効果が測れず取り下げ）
