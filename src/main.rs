@@ -4640,7 +4640,27 @@ mod tests {
                 emit,
             ),
             (
-                &["build", "Main.tz", "--profile-generate", "/tmp/100%/prof"],
+                &["check", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["test", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["bench", "Main.tz", "--profile-generate", "p"],
+                only_build_or_run,
+            ),
+            (&["fmt", "Main.tz", "--profile-use", "p"], only_build_or_run),
+            (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
+        ] {
+            assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+        // The directory and --freestanding are looked at after the host: a Windows host refuses the options before that.
+        let windows = "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux";
+        for (values, expected) in [
+            (
+                &["build", "Main.tz", "--profile-generate", "/tmp/100%/prof"][..],
                 "--profile-generate directory must not contain '%'; choose another directory",
             ),
             (
@@ -4657,21 +4677,8 @@ mod tests {
                 ],
                 "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
             ),
-            (
-                &["check", "Main.tz", "--profile-use", "p"],
-                only_build_or_run,
-            ),
-            (
-                &["test", "Main.tz", "--profile-use", "p"],
-                only_build_or_run,
-            ),
-            (
-                &["bench", "Main.tz", "--profile-generate", "p"],
-                only_build_or_run,
-            ),
-            (&["fmt", "Main.tz", "--profile-use", "p"], only_build_or_run),
-            (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
         ] {
+            let expected = if cfg!(windows) { windows } else { expected };
             assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
         }
         // The bitcode of --emit bitcode (PR08) is not instrumented or trained: a host's own link would do that.
