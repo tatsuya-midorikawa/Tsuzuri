@@ -5,6 +5,9 @@
 `docs/architecture.md` の関連節を必ず読んでください。** チケットとこのガイドが矛盾する場合は、
 このガイドの「9. 設計決定台帳」を優先し、矛盾をチケットの「決定事項」（旧いチケットでは「未決事項」）に追記して人間に報告します。
 
+**第3期のチケット（[D-50](#d-50-第3期計画ai堅牢性性能27-チケットの起票)。G21–G36・A20–A23・B10・C12・D13–D14・E15・F14–F15）は、全文を読む代わりに [GUIDE-LITE.md](GUIDE-LITE.md)（約 7,500 字の抜粋）とそのチケットだけで着手できます。**
+GUIDE のほかの節は、チケットが指定したときだけ読みます。小さいモデルに渡す文脈は、G32 の `ticket-brief`（チケットごとの文脈パックの自動生成）が作ります。
+
 調査時点のコミットは `19d8cdd`（2026-09-23）です。行番号は変わりやすいため、コード参照は
 「ファイル + 関数名／型名」で書いています。見つからない場合は `grep` で関数名を探してください。
 第2期（A12–G20）と `_perfs/` のチケットは 2026-09-29 に HEAD `f8dc655` で実装担当者向けに詳細化し、このガイドに
@@ -462,7 +465,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 ### 6.8 新しい CLI オプション
 
 - `src/main.rs` の引数解析（`--target` などの分岐と、`rejects_ambiguous_or_unused_arguments` テスト）、
-  `driver.rs` の `Options`（`validate` で不正な組み合わせを `E2000` にする）、README の CLI 表を更新する。
+  `driver.rs` の `BuildOptions`（`validate` で不正な組み合わせを `E2000` にする）、README の CLI 表を更新する。
 - 使えない組み合わせは黙って無視せずエラーにする（`--cpu native` と WASM の組み合わせの扱いが手本）。
 
 ### 6.9 P2 以降に増えた走査箇所
@@ -1632,6 +1635,247 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   `aarch64-pc-windows-msvc` と MinGW は Windows のホストで実行していないので 2 のまま。
 - 後続の作業は G10 のチケットの末尾に一覧した（Windows の OS API、DLL、トラップの報告の改善、LLP64 の bindgen、COFF の object のランタイム、ARM64 の実行）。診断のメッセージにある `(G10)` は、その作業を指す印として残し、
   メッセージと既存のテストは変えていない。
+
+### D-50 第3期計画（AI・堅牢性・性能。27 チケット）の起票
+
+- 2026-10-18、「AI と人間が、少ない暗黙ルールで堅牢かつ高パフォーマンスなプログラムを書ける」という言語の目標に対する、現状の不足と妨げの洗い出し（調査時点 HEAD `a2313d19`）と、
+  指示「すべての改善案の設計を詰めて。複数フェーズある場合にはすべてのフェーズを完了させること。判断が必要なものは最高の選択肢を採択してよい。設計は `_features` にチケットとして出力し、
+  あとから小さいモデルが実装しても大きいモデルと遜色ない結果になる内容にすること」から起票した。コンパイラ本体は変えていない（チケットと台帳だけ）。
+- 調査の結論（根拠は各チケットの「現状」）:
+  (1) コンパイラは移動・借用・コピー・確保・トラップ・整数の範囲の事実を内部で持つが、診断にもツールにも出さない（診断は主スパン 1 個で、移動元も借用元も示さない。KB・MCP・図・`explain`・`fix` がない）。
+  (2) 署名の契約として固定できない（効果の型付けは `IO`・`Async`・`Task` だけ。`pure def` は A19 で計画中。確保・トラップ・複製・停止性を表す手段がない）。
+  (3) 同じ意味に複数の書き方があり、同じ記号の意味が文脈で違う（`..` は `for` で両端を含みスライスで半開。接尾辞は `l`=i64・`L`=i128 と大小で幅が変わる。`&mut r` と `ref mut r` は別の意味）。
+  (4) 文書が 1,000 万字を超え、規則 ID も規則とテストの対応もなく、食い違いを機械で検出できない（README の `Map` の説明は平衡木だが実装はソート済み `Vec`、`_specs` の `try` の説明は現行の仕様と違う）。
+- 骨子は 3 つの動詞: **引く**（Knowledge: G21・G26〜G32）、**縛る**（Contracts: A20・A21・A23・E15・F14）、**直す**（Diagnostics: G22〜G25）。
+  加えて、edition 2027 の正準形（A22）、性能の構造的な保証（C12・D13・D14・F14・F15）、仕様の単一情報源（G33〜G36）、失敗の可観測性（B10）。
+- 承認: 人間の包括許可（2026-10-18）で、各チケットの決定事項（D1…）はすべて承認済みとして記録した。
+  **A18 の D1〜D4（無印の引数を読み取りにする。言語の意味の変更）は、この承認に含めない**（A18 は独立に判断する。A22 は A18 に依存せず、edition `2027` の足場だけを共有する。D-54）。
+- 守る方針: 「採用しない改善」（GC、例外の巻き戻しと `?`、`unsafe`、境界検査の無効化、暗黙の fast-math）は変えない。AGENTS.md の規則（暗黙の変換・既定値を入れない、native と WASM の `-O0`／`-O3` を保つ、
+  共有 CI に速度の合否の閾値を置かない）に従う。新しい crate・`unsafe`・既定の WASM の import・予約語は足さない（使ってよい crate は既存の `serde_json` と標準ライブラリだけ）。
+- 実装の単位: 全 Phase の設計を各チケットに書いた。各 Phase は独立に実装・検証・マージできる。**着手する Phase は人間が指示する（指示がなければ Phase 1 だけ）。**
+  小さいモデルは [GUIDE-LITE.md](GUIDE-LITE.md) とそのチケットだけを読めば着手できる（GUIDE のほかの節は、チケットが指定したときだけ読む）。
+- 生成物の置き場: チケットは `_features/<ID>-<slug>.md`（`todo` の間。完了したら `_completed/`）。README の一覧は [追加チケット（2026-10-18）](README.md#追加チケット2026-10-18) にある。
+
+| ID | 題名 | 優先度 | 規模 | 依存 |
+| --- | --- | --- | --- | --- |
+| G32 | 開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成） | P0 | M | なし |
+| G22 | 診断 v2 の基盤（関連位置・help・fix・expected/found。所有権の移動元・借用元） | P0 | L | G20（done） |
+| G21 | AI ガイドパック（`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`） | P1 | L | なし（Phase 4 は G23 のヒント DB があれば使う） |
+| G23 | 診断の kind・`tsuzuri explain`・ヒント DB | P1 | L | G22 |
+| G24 | `tsuzuri fix`（機械的な修正の適用と edition の移行基盤） | P1 | L | G22 Phase 1 |
+| G26 | Facts モデル（コンパイラの事実の機械可読な定義と exporter） | P1 | XL | Phase 1〜4・6 は なし（A15・PM01 は done）。Phase 5 だけ G22。Phase 3 の `effects` を完全にするのは A20（なくても縮退版で出荷できる） |
+| G27 | ビルド時の KB（`target/tz/kb`、brief カード、増分、鮮度） | P1 | L | G26 Phase 1（graph・facts・layout・tests の書き手は G26 の後続の Phase があれば使う） |
+| G28 | `tsuzuri kb` の照会と `impact`（facts の差分） | P1 | L | G27 Phase 2、G26 |
+| G31 | AI 作業コスト指標（入力量と往復数を決定的に測る） | P1 | M（L 寄り） | なし（G22・G24・G27 があれば、その方式も測る） |
+| A20 | 効果の要約と検査付き関数属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`） | P1 | XL | A19（未実装なら経路 B で本チケットが `pure` の基盤を先に作る）、G22（弱い） |
+| A22 | edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行 | P1 | L | なし（Phase 3 の fix の付与は G22 Phase 1、統合試験は G24 Phase 3 が要る） |
+| C12 | `Map`／`Set` の更新を対数時間に近づける（チャンク化したソート配列） | P1 | M | なし |
+| D13 | 補間の穴の一時値（`{s.length}` の `E1013` の解消） | P1 | S | なし |
+| F14 | 構造的な性能表明（確保数のテスト用 API と `bench` の確保数） | P1 | L | F13（done）、G18（done） |
+| G25 | 型つき穴 `?` と `tsuzuri find`（型でのシグネチャ検索）、未解決名の候補 | P2 | L | G22 |
+| G29 | `tsuzuri mcp`（MCP サーバー） | P2 | L | Phase 1 は なし。Phase 2 以降のツールごとに G21・G23・G26〜G28（あるものだけ公開する） |
+| G30 | 図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移） | P2 | L | G26、G27 |
+| G33 | 仕様の規則 ID と適合性スイート | P2 | L | なし |
+| G34 | doc-test（`///` の例を実行する）と std の例 | P2 | M | なし |
+| G35 | 生成物による文書の単一情報源化（診断コード表・std 索引・benchmarks の JSON 化） | P2 | L | なし（G23 があれば診断コード表の検査が `explain --catalog` を使う） |
+| G36 | 言語全体の差分ファズ（プログラム生成型。コンパイル時評価を参照実装に） | P2 | L | D11（done） |
+| A21 | 契約 `@requires`／`@ensures`（off／check／test／prove） | P2 | XL | A19 Phase 1（done が前提）。A20・G22 は任意（F14 は使わない） |
+| A23 | 整数の折り返しの意図（`Int.wrapping_*`・オーバーフロー報告・lint） | P2 | L | PR02（done）。G22 は弱い |
+| B10 | トラップのバックトレースとクラッシュレポート、純粋関数の失敗の閉じ込め（`Domain`） | P2 | XL | E14（done）。Phase 2 だけ A19 Phase 1 |
+| E15 | 信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`） | P2 | L | Phase 1〜3 は なし。Phase 4 だけ A20（G26 は使わない） |
+| D14 | `Text` クラス（`String`／`Utf8String` の API の統一） | P2 | L | なし |
+| F15 | 逐次と同一の結果を保証するデータ並列（`Monoid` の還元・純粋性・提案だけの自動化） | P3 | L | Phase 1・2 は なし。Phase 3 は A19 Phase 1。Phase 4 は G26 Phase 1 |
+
+実装の推奨順（依存を満たす範囲で並行してよい）: ① G32・D13・C12・F14・G31（基準値）→ ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。
+
+### D-51 診断 v2 の共通仕様（G22・G23・G24・G25 と、診断を出すすべてのチケット）
+
+- **互換性**: [docs/stability.md](../docs/stability.md) の「診断のコード・重要度・JSON のキー」に従う。`--json` の既存の 5 キー（`severity`・`code`・`message`・`path`・`span`）は消さず・改名せず、
+  キーを**足すだけ**にする。足したキーは、値があるときだけ出す。**足すキーを一つも持たない診断の JSON は 1 byte も変わらない**（既存のテストと文書の例が壊れない）。
+  メッセージの文言は保証の対象外なので直してよいが、コードと位置の意味は保つ。
+- **Rust の型**（`src/diagnostic.rs`。名前と型を変えない）:
+  `Diagnostic { severity, code: &'static str, message: String, span: Span, kind: Option<&'static str>, related: Vec<Related>, help: Option<String>, fixes: Vec<Fix>, detail: Detail }`、
+  `Related { role: RelatedRole, message: String, span: Span }`、`Fix { title: String, applicability: Applicability, edits: Vec<Edit> }`、`Edit { span: Span, text: String }`、
+  `Detail { expected: Option<String>, found: Option<String>, candidates: Vec<Candidate>, scope: Vec<ScopeEntry> }`（`Default`）、`Candidate { name: String, signature: String, how: String }`、`ScopeEntry { name: String, ty: String }`。
+  `Applicability` は `Certain`・`Likely`・`Maybe`。`RelatedRole` の語彙は閉じている: `MovedHere`・`BorrowedHere`・`BorrowUsedHere`・`DeclaredHere`・`ExpectedBecause`・`FirstDefinedHere`・`ViaCall`・`RequiredBy`・`Note`。
+  構築は `Diagnostic::new`／`warning`（既存。拡張フィールドは空）に、ビルダー `.with_kind(&'static str)`・`.related(RelatedRole, impl Into<String>, Span)`・`.with_help(impl Into<String>)`・`.fix(title, Applicability, Vec<Edit>)`・`.expected_found(expected, found)`・`.with_candidates(Vec<Candidate>)`・`.with_scope(Vec<ScopeEntry>)` をつなぐ形。
+  重複除去のキーは変えない（source・start・end・severity・code・message）。`related`・`fixes`・`detail` は同じキーの診断の間で先に入った方が残る。
+- **G22 での具体化**（G22 の D1・D2・D4・D14。台帳の型は読み手の見え方で、置き場所だけ変わる）: `Diagnostic` は `pub struct Diagnostic(Box<DiagnosticData>)`（8 bytes。264 bytes にすると GUIDE §3.1 の stack の回帰テストがすべて溢れたため）で、
+  上のフィールドはすべて `DiagnosticData` にあり、`Deref`・`DerefMut` で `d.code`・`d.span = ..` のように読み書きする。フィールドを move するときは `into_data()`、`Diagnostic { span, ..e }` の更新構文は使えない。
+  別ファイルの `related` と edit は `SourceLookup<'a> = dyn Fn(usize) -> Option<(&'a str, &'a str)> + 'a`（source の番号 → (path, text)）で引き、解決できない `related` と、edit が 1 つでも解決できない fix は出さない。
+  `apply_edits(text: &str, edits: &[&Edit]) -> Option<String>`（`src/diagnostic.rs`）は LSP と G24 が共有する（`(start, end)` の安定整列で、範囲外・文字境界でない・重なりなら `None`）。
+  JSON の `role` の値は variant 名の `snake_case`（`moved_here`・`borrowed_here`・`borrow_used_here`・`declared_here`・`expected_because`・`first_defined_here`・`via_call`・`required_by`・`note`。キーも値も安定として扱う）。
+  fix の `title` は先頭大文字の命令形の英語（`Add the arm '..'`。LSP の既存の `Prefix 'spare' with '_'` と同じ）。メッセージと `help` は小文字始まり。
+- **JSON のキーの順序**（値があるものだけ）: 既存の 5 キー → `kind` → `related` → `help` → `expected` → `found` → `candidates` → `scope` → `fixes` → `trap`（`E2005` だけ。B10）。
+  `related` の要素は `{"role","message","path","span"}`（`span` は主スパンと同じ 6 キーの形）。`candidates` の要素は `{"name","signature","how"}`（`how` は `call`・`value`・`type`・`module`）。`scope` の要素は `{"name","type"}`。
+  `fixes` の要素は `{"title","applicability","edits":[{"path","span","text"}]}`。`applicability` は `certain`・`likely`・`maybe`。`edits` の `span` は `start`・`end` の UTF-8 バイトオフセット（`end` は排他）を必ず含め、行・列も付ける。
+- **applicability**: `certain` は意味を保つ機械的な書き換えで、`tsuzuri fix` が既定で適用する。`likely` はほぼ正しいが人が確かめるもので、`--applicability likely` のときだけ適用する。`maybe` は提案で、自動では適用しない。
+- **kind**: 診断の原因を一意に表す安定した識別子（ASCII の `snake_case`、48 文字以内、コンパイラ全体で一意、別の意味に再利用しない）。`code` はそのまま（粗い分類）で、1 つの kind は 1 つの `code` に属す。
+  kind の登録簿と移行は G23。G23 が移行するまで `kind` を持たない診断がある（その間は `kind` キーを出さない）。
+  G23 のあとは、kind は enum `DiagnosticKind`（登録簿。HEAD では 47 コード・653 kind。マクロで定義）で、診断は `Diagnostic::of(DiagnosticKind, ..)` でしか作れず（旧 `new`／`warning` は削除）、`kind` は**常に `Some`**（型は D-51 のまま `Option<&'static str>`。G23 の D1・D5・D7）。
+  **新しい診断の kind は、その診断を足すチケット自身が付ける**（G23 が後のチケットの kind を代わりに足すことはない）。木の状態で 3 通り: ① G23 がある（`Diagnostic::of` がある）: 出す前に、自分の kind を G23 の S1「新しい kind を足す手順」で登録簿へ足し、`of` で出す。② G22 Phase 1 だけある（`with_kind` がある）: `with_kind("…")` で直接付ける。G23 があとで登録簿へ移す（名前は変えない）。③ どちらもない: kind を付けない（コード・位置・メッセージは同じにし、あとで G22／G23 が付ける）。kind の文字列はチケットの表のとおりで、どの場合も同じ。
+  `E2005` だけが持つ JSON の `trap`（B10）は、`fixes` の**後ろ**の最後のキーで、型は `Option<Box<TrapReport>>`。G22 のあとは `DiagnosticData.trap`（`Detail` に入れない）にし、`render_with`・`json_with` が出す（人間向けは引用の直後、`related` の前に `trap.lines()`）。B10 が G22 より先に入るなら `Diagnostic` に直接足し（`trap: None` のリテラルは `docgen.rs`・`repl.rs`）、G22 の実装者が `DiagnosticData` へ移して `render_with`・`json_with` に通す。`trap` が `None` の出力は 1 byte も変わらない。
+- **メッセージ**: 英語、小文字始まり、末尾にピリオドなし、修正方法を含める（§6.7）。`help` は命令形の 1 文（例: `borrow the value with 'ref text' or move it last`）。`related` の `message` は名詞句か短い文（例: `value moved here`）。
+- **人間向けの表示**: 主の位置の引用に続けて、`related` を 1 件ずつ `  note: <message>` と `    --> path:line:column`、その行の引用の順に出し、`  help: <help>`、`  fix (certain): <title>` を出す。別ファイルの `related` はそのファイルのソースを引く。
+- **LSP**: `related` は `relatedInformation`、`fixes` は `quickfix` の code action（`certain` は `isPreferred: true`）にする。`kind` は `data.kind`。
+- **上限**: 診断 1 件の `related` は 16 件、`fixes` は 8 件、`edits` は 1 つの fix で 64 件、`candidates` は 10 件、`scope` は 32 件。超えた分は黙って切り捨て、メッセージには影響させない。
+  **ただし 1 つの fix の `edits` が 0 件または 65 件以上なら、fix を丸ごと捨てる**（途中で切ると半分だけ適用される fix になる。G22 の D3）。
+
+### D-52 Facts と KB の共通仕様（G26・G27・G28・G29・G30・G31・E15・A20）
+
+- **用語**: *facts* は、コンパイラが解析で得た事実（シンボル・呼び出し・効果・トラップ箇所・確保箇所・複製箇所・所有権の出来事・型のレイアウト）の機械可読な表。*KB* は、facts と、そこから決定的に作る要約（brief カード）と図（Mermaid）を置いた
+  ディレクトリ。**KB に LLM が書いた文章・日時・絶対パスは入れない。** 同じソースと同じコンパイラからは byte 単位で同じ内容ができる。
+- **schema の名前**: KB は `tz-kb/1`（`manifest.json` の `schema`）、facts の各行は `tz-facts/1`。互換のない変更は番号を上げ、足すだけの変更は番号を保つ（読み手は知らないキーを無視する）。
+- **置き場**: プロジェクト（`Tsuzuri.toml` か `Main.tz` のあるディレクトリ）の `target/tz/kb/`。環境変数 `TSUZURI_KB_DIR` か `--kb-dir DIR` で変える。プロジェクトでない単独のファイルは、`check`・`build`・`run`・`test` では既定で作らない（`--kb` で作る）。
+  `doc`・`fmt`・`bench`・`script`・`repl`・`lsp` は KB を作らず、`--kb`・`--no-kb`・`--kb-dir` も受け付けない（単独のファイルや `script` の入力は `tsuzuri kb build FILE` で作る。G27）。`tsuzuri mcp` は環境変数を読まない（G29）ので、`TSUZURI_KB_DIR` を使う環境では `mcp --kb-dir DIR` を明示する（KB が見つからなければ MCP はメモリ上に作る）。
+- **既定**: `check`・`build`・`run`・`test` は、プロジェクトの入力なら KB を作る（`--no-kb` か環境変数 `TSUZURI_KB=0` で作らない）。書き込めない・失敗した場合は、警告（`W2001` と同じ扱いのスパンのない通知）を 1 回出すだけで、終了コードと診断を変えない。
+  入力（`.tz`・`.tt`・`.tc`・`Tsuzuri.toml`）の SHA-256・schema・`manifest.json` の `compiler`（`tsuzuri <版>`。機械によらず同じ文字列）が前回と同じで、マーカーの stamp（機械ごとのコンパイラの識別。`frontend_cache::compiler_identity()` に KB の版を足した値。G27 D3）も同じなら何も書き換えない。stamp は決定性のため `manifest.json` に入れない。
+- **置換**: 一時ディレクトリへ書いてから rename する。マーカーファイル `.tsuzuri-kb`（`tsuzuri doc` の `.tsuzuri-docs` と同じ作法）のないディレクトリは上書きしない（`E2009`）。
+- **ファイル**（JSON Lines は 1 行 1 オブジェクト、キーの順序は固定、数値は整数、文字列は `diagnostic::json_string` と同じエスケープ、行は ID・位置の順に整列）:
+  `manifest.json`・`symbols.jsonl`・`graph.jsonl`・`facts/<Module>.jsonl`・`layout/<Module>.jsonl`・`diag.jsonl`（診断 v2 の JSON 行。`path` は根からの相対パスで、`--warn implicit-copy` の `W1006` は入れない。同じソースから同じ byte にするため。G27）・`brief/L0.md`・`brief/L1/<Module>.md`・`brief/L2/<Module>.<name>.md`・`views/*.mmd`・`tests.jsonl`。
+  名前が `.` で始まるファイル（`.tsuzuri-kb`＝マーカーと stamp、`.tsuzuri-reuse.json`＝増分の鍵）は機械ごとのもので、`manifest.json` の `files` に入れず、上の byte の同一性の対象にしない。
+  プロジェクトの KB に std は含めない（std の KB はコンパイラの識別で決まるキャッシュに 1 つ持ち、`kb` の照会が両方を合わせて見る。G27 の Phase 4）。
+- **ID**: 関数・定数・型・クラス・テストの ID は、名前空間とモジュールを `::` でつなぎ、項目の前だけ `.` にする（`MyCompany::MyProject::Main.sum_to`、std は `Array.map`）。
+  フィールドは `Main.Point.x`、union の case は `Main.Shape.Circle`、型クラスのメソッドは `Main.Show.show`、instance は `instance:Main.Show<Main.Point>`、テストは `test:Main.<名前>`（名前はテスト宣言の文字列）。
+  ID は位置に依存せず、同じ宣言なら編集で行が動いても変わらない。位置は別のキーに持つ。
+- **`symbols.jsonl` の行のキー（順序）**: `id`・`kind`・`module`・`name`・`signature`・`params`・`result`・`public`・`export`・`pure`・`doc`・`deprecated`・`origin`・`span`。
+  `kind` は `module`・`def`・`const`・`record`・`union`・`case`・`field`・`class`・`method`・`instance`・`alias`・`test`・`bench`・`extern`・`handle`。
+  `params` は `[{"name","type","conv"}]`、`conv` は `own`（所有権を受け取る）・`ref`・`ref_mut`・`copy`（Copy の値渡し）。`origin` は `project`・`dependency:<name>`。`span` は `{"path","start","end","line","column"}`（`path` はプロジェクトの根からの相対で `/` 区切り）。
+- **`graph.jsonl` の行のキー**: `rel`・`from`・`to`・`args`（`calls` だけ。各実引数の `conv`）・`span`。`rel` は `calls`・`uses_type`・`implements`・`imports`・`tested_by`・`instance_of`。
+- **`facts/<Module>.jsonl` の行のキー**: `id`・`effects`・`effect_sites`・`effects_complete`・`copy_sites`・`alloc_sites`・`alloc_complete`・`trap_sites`・`ownership`・`recursion`・`loops`・`specializations`・`truncated`
+  （`effects_complete`・`alloc_complete` は G26 が足した真偽値。A20 が 14 個の効果をすべて計算するまでは `false`。キーは G26 の Phase が出荷したものだけを出し、出すキーは常に出す（値がなければ `[]`・`null`・`false`・`{}`）。F15 の Phase 4 は `parallel`（`[]` か要素の配列）を `specializations` の次・`truncated` の直前に足す）。
+  `effects` は D-53 の語彙の名前を辞書順に並べた配列（推論した要約）。`ownership` の要素は `{"var","event","span"}`（`event` は `move`・`borrow`・`borrow_mut`・`reborrow`・`drop`・`copy`。`move`・`borrow` は `to`（呼び先の ID）を持てる）。
+  1 つのキーの配列が 100 件を超えたら切り捨てて `truncated` に切り捨てた件数を足す。詳細な定義は G26。
+- **brief カードの上限**（文字数。超えたら優先度の低い項目から `…N more` に置き換える）: L0（プロジェクト全体）2,400、L1（モジュール）1,600、L2（関数・型）700。上限の検査はテストで強制する。
+- **freshness**: `tsuzuri kb verify` は入力の SHA-256 を計算し直して `manifest.json` と比べ、違えば `E2009`（`stale`）。`kb` の照会コマンドは、古ければ自動で作り直す（`--no-refresh` で止める）。
+
+### D-53 効果の語彙と検査付き属性の共通仕様（A19・A20・A21・A23・E15・F15・G26・B10）
+
+- **効果の名前**（`effects` の値。小文字の ASCII。この 14 個で閉じている）: `io`（コンソール・`IO`・`Async`）、`os`（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`・`Os.__*`）、`net`、`task`（`Task`・`Parallel`、および失敗の領域を作る `Domain.run`（B10）。`Domain.run` は `alloc` も持つ）、`atomic`（`Atomic`・`Mutex`・`Channel`）、
+  `rc`（`Rc`・`Arc` の参照カウントの観測）、`extern`、`debug`（`Debug.print`・`Debug.trace`）、`user_drop`（利用者の `Drop` を持つ型の解放）、`gpu`、`alloc`（ヒープの確保をしうる）、`trap`（プログラムの論理によるトラップをしうる）、`copy`（長さに比例する暗黙の複製をしうる）、`diverge`（停止しないかもしれない）。
+  最初の 10 個は A19 の効果の源（`pure` が禁じる集合）と同じ分類を使い、`alloc`・`trap`・`copy`・`diverge` を A20 が足す。
+- **要約**: 関数ごとの `EffectSet`（上の 14 個のビット集合）を、型付き IR の効果の源の走査と、呼び出しグラフの強連結成分の不動点で求める。組み込み関数は表（`match` に wildcard を置かず、新しい組み込み関数に分類を強制する）、`extern` は `extern` を持つ。
+  関数値の呼び出しは、呼び先が分からなければ「未知の呼び出し」で、検査付き属性の違反になる（A20 の Phase 4 が関数型の引数を条件付きにする）。
+  **純粋性の問い合わせの窓口**（B10・F15 が使う。`check::pure_rules`、`pub(crate)`）: `what(ty, types) -> &'static str`、`Impurity { reason: String, chain: String, span: Span }` と `impurity_of_roots(module, roots: &[usize]) -> BTreeMap<usize, Impurity>`、`reachable_effect(module, root: usize) -> Result<Option<Effect>, LimitExceeded>`、`builtin_impure(builtin: Builtin) -> bool`（組み込み関数を関数値として渡したときの判定）。A19 Phase 1 の走査から作る（B10・F15 の手順が足りない分を足す）。**A20 の経路 A のあとも名前と形を変えず**、`pure_rules.rs` の薄い関数として残し、中身は `effects::summarize`（`Options::new(Scope::Reachable, PURE_FORBIDDEN)`）の `Witness` から作る（`Effect::Builtin` の名前は `Builtin::name()`）。B10・F15 は `builtin_effect`・`Category` を直接は呼ばない。
+- **属性**（`@cpu` と同じ位置の、トップレベル `def` の直前の属性。ユーザー定義の属性はない）: `@no_alloc` は `alloc` を、`@no_copy` は `copy` を、`@no_trap` は `trap` を、`@terminates` は `diverge` を要約に持たないことを表明する。`pure`（A19）は A19 の集合を禁じる。
+  **宣言の前の属性の文法**（A19・A20・E15 の共通。読み込み口は `parser.rs` の `program_all` の 1 か所）: `@cpu(..)`・`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`・`@trusted(..)` を**任意の順序で**書ける（同じ属性の重複は `E1032`。`@trusted` は `E1037`）。`@no_*` と `pure def` は併用できる（`@no_alloc pure def`）。`@cpu` と `pure def` の併用だけが `E0002`（A19 D12）。`@trusted` は `extern` だけ（それ以外は `E1037`）、効果の属性は `def` だけ（`extern` の前は `E1032`）。
+  **読み込み口は先に入ったチケットが作り、後のチケットはその口に属性を足す**（置き換えない）: A20 が先なら `attributes()`（`@cpu` と 4 属性）に E15 が `@trusted` を足す。E15 が先なら `cpu_attribute` の次の `trusted_attribute()` を、A20 が `cpu_attribute()` を `attributes()` にするときに取り込む。符号化は `Program` の `cpu_attributes` → `effect_attributes` → `trusted` の順。
+  **属性は表明であり、意味も生成 IR も変えない**（検査だけ。違反は診断 `E1031`、属性の置き場の誤りは `E1032`）。属性は要約の推論を置き換えず、推論した要約が表明を満たすかを検査する。要約は属性がなくても全関数について facts に出る。
+- **`trap` の範囲**: 論理によるトラップ（`assert`、範囲外の添字・スライス、ゼロ除算、符号付きの除算の溢れ、`unreachable`、`range` のステップ 0、負の長さ・負の指数、`Checked`・`Reraise`、契約違反。A20 の T1〜T13 が正）。網羅されない `match` は `E1021` でコンパイル時に拒否されるので、`Match` は `trap` の源ではない。メモリの確保失敗とスタックの枯渇（資源の枯渇）は含めない。
+  範囲の証明（`ranges.rs` と F12 の境界検査の省略）で除けるものは除く。
+- **`alloc` の範囲**: 最適化の水準に依らない言語の規則で決める（`-O0` と `-O3` で表明の結果を変えない）。`new`、確保をする std・組み込み関数、環境を持つクロージャの生成、
+  関数の外へ出る（返す・`own` の引数へ渡す・捕捉される・ヒープへ格納される）`new` のない集成値（昇格しうるため）を `alloc` とする。精密な表は A20。
+- **api-diff**: 属性を足すのは互換、外すのは互換のない変更として報告する（A20）。
+- **A20 での具体化**（A20 の D1・D3・D6・D8・D10・D18・D19）: 属性は `Program.effect_attributes`（`@cpu` と同じ脇のリスト。`FunctionDecl` には足さない）に持つ。要約は、属性か `pure` があるとき、または消費者（facts など）が呼ぶときだけ計算する（常には計算しない）。
+  `Match` は `trap` の源ではない（`Checked`・`Reraise` は `trap`）。`for`・`ForEach` は有界で `diverge` ではなく、`while`・再帰・ブロッキングの組み込み関数が `diverge`。`extern` は `@no_alloc`・`@no_trap`・`@terminates` を破り（E15 の `@trusted` が緩める）、未知の呼び出しは全属性を破る。
+  `E1031` は kind で 6 種に分け（属性ごとにコードを作らない）、要約が計算できない属性（`SUPPORTED` に含まれない効果）は `E1032` の `effect_attribute_unavailable` で拒否する（Phase を単独で出荷しても、検査されない保証を受理しない）。
+- **契約（A21）**: `@requires`・`@ensures` は本体の先頭の文としての属性。検査の方式は `off`・`check`・`test`・`prove`。**契約を最適化の前提（assume）に使うモードは作らない**（未定義動作を作らないため）。
+  契約は `FunctionDecl.contracts` に持ち、型検査器が `Block`・`Call`・`Local` だけで織り込む。実行時検査は組み込み関数 `$requires`・`$ensures` と末尾に足す 2 つの `TrapKind`（`ContractRequires`・`ContractEnsures`）。`off` は特殊化の直前に契約を剥がし、IR は契約なしと 1 byte 一致する。
+  既定は `build`・`bench` が `off`、`run`・`test`・`repl` が `check`（`check`・`doc` は何も生成せず、契約を常に型検査する）。`prove` は `QF_BV` の SSA の台本を外部ソルバー（環境変数 `TSUZURI_SMT`。同梱しない）に渡し、`proved` 以外は `E1034`。
+
+### D-54 edition 2027 の正準形の方針（A22・G24・A18）
+
+- 方針は [docs/stability.md](../docs/stability.md) の範囲に収める。edition の差として許されるのは「予約語を増やす」「前の edition で非推奨にした構文を削除する」「警告の既定を変える」の 3 つだけで、両方の edition が受理するプログラムの意味は同じ。
+  したがって edition `2027` は、**2026 で非推奨にした表記を拒否する**ことだけを変え、意味は変えない。正準形（`..<`・`..=`、型名の接尾辞、`ref`／`ref mut`／`deref`）は**全 edition が受理する**（受理を増やす拡張は常に許される）。
+- 手順: ① 全 edition が正準形を受理する。② 2026 では、非正準な表記に警告 `W1007`（既定は無効。`--warn canonical` で有効）を出し、`fixes` に正準形への書き換え（`certain`）を付ける。③ edition `2027` は、非正準な表記を `E0004`（kind で表記を区別する）で拒否する。④ `tsuzuri fix --edition 2027`（G24）が `W1007` の `certain` の fix だけを適用する（`likely` と fix のない形は適用せず、`E0004` のまま残るので人が直す）。適用後に 2027 で再検査して**誤りがなければ**、最後に manifest の `edition` を `2027` にする（誤りが残るなら、ソースは書くが manifest は変えず `E2008` で止める）。
+- `Edition::LATEST` と `MANIFEST_DEFAULT` は `2026` のまま、標準ライブラリも `2026` のまま（A18 の D3・D4 と同じ。**A22 と A18 は独立で、先に実装した方が `Edition::E2027` の定数・`SUPPORTED`・`docs/stability.md` の表・`tests/editions.rs` を足し、後の方は足さない**）。
+  理由: マニフェストのない入力（単独のファイル・`script`・`repl`）と std は `LATEST` で読まれるので、`LATEST` を `2027` にすると既存の単独ファイルが `E0004` になる。`docs/stability.md` の「edition を追加するとき」は `LATEST` の更新を求めているので、**A22（または先に入る A18）がその一文を「`LATEST` は、新しい edition が受理を減らす間は動かさない。マニフェストのない入力は `--edition` で選ぶ」に改める**（`SUPPORTED`・`EDITION_KEYWORDS` は規則どおり更新する）。
+  マニフェストのない入力（単独のファイル・`script`）で 2027 を使うときは `--edition 2027` を渡す（A22。`--edition` は `check`・`build`・`run`・`test`・`script`・`new` だけで受理し、`Tsuzuri.toml` のあるプロジェクトでは `E2000`）。
+  `tsuzuri new` は A22 の Phase 5 で `edition = "2027"` のマニフェストを書く（`Edition::NEW_PROJECT`。`tsuzuri new --edition 2026|2027` で選ぶ）。A22 が足す新しい名前: `Edition::{E2027, NEW_PROJECT, rejects_noncanonical}`、`W1007`、`E0004`（12 個の kind）、`src/canonical.rs`。
+- A22 の対象（HEAD で存在を確かめたものだけ）: `for` の範囲の素の `..`（`..<` と `..=` に）、短い数値接尾辞（型名の接尾辞に）、記号の借用（`&x`・`&mut x`・`*r`・`&T`・`&mut T`）、旧ラムダ `x -> e`。**A22 は `..` の意味を edition で変えない**（`2026` の `for i in a .. b` は両端を含むまま。`2027` では拒否）。
+
+### D-55 識別子の割り当て（診断コード・サブコマンド・フラグ・環境変数・std）
+
+| 種別 | 名前 | チケット | 用途 |
+| --- | --- | --- | --- |
+| 診断コード | `E0004` | A22 | edition で拒否する表記（kind で区別） |
+| 診断コード | `E1030` | G25 | 型つき穴 |
+| 診断コード | `E1031`・`E1032` | A20 | 効果の表明の違反・属性の置き場の誤り（A21 の `@no_*` に似た誤りは `E1033`） |
+| 診断コード | `E1033`・`E1034` | A21 | 契約の節の誤り・検証の失敗（`prove`） |
+| 診断コード | `E1036`・`E1037` | E15 | 権限の違反・`@trusted` の誤り |
+| 診断コード | `E1038` | B10 | `Domain` の使い方の誤り |
+| 診断コード | `E1039` | F15 | `Monoid` の還元・並列 API の使い方の誤り |
+| 診断コード | `E2008` | G24 | `tsuzuri fix` の中止（新しい誤りが出る、競合、書き込めない） |
+| 診断コード | `E2009` | G27・G28 | KB の欠落・古い・壊れた・上書きできない |
+| 診断コード | `E2010` | G29 | MCP の致命的な誤り |
+| 診断コード | `E2011` | G34 | `tsuzuri test --doc` の例の記法の誤り（閉じのない・字下げした・空の `tsuzuri` のフェンス） |
+| 警告 | `W1007` | A22 | 非正準な表記（既定は無効） |
+| 警告 | `W1008` | A20 | 効果の属性が冗長・効かない |
+| 警告 | `W1009` | A21 | 契約が常に真・使わない束縛など |
+| 警告 | `W1010` | E15 | 信頼を表明していない `extern` の使用（`audit` が既定で警告に格上げ） |
+| 予約（未割り当て） | `E1035`・`E1040`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
+| サブコマンド | `guide` | G21 | AI 向けの案内の出力 |
+| サブコマンド | `explain` | G23 | 診断コード・kind の説明 |
+| サブコマンド | `fix` | G24 | 機械的な修正の適用 |
+| サブコマンド | `find` | G25 | 型での検索（`kb find` も同じ実装） |
+| サブコマンド | `kb`（`build`・`verify`・`clean`・`export`・`brief`・`show`・`callers`・`callees`・`uses`・`search`・`find`・`tests-for`・`impact`・`diagram`） | G27・G28・G30 | KB の作成と照会 |
+| サブコマンド | `mcp` | G29 | stdio の MCP サーバー |
+| サブコマンド | `audit` | E15 | 信頼境界と権限の報告 |
+| サブコマンド | `prove` | A21 | 契約の静的検証（`--contracts prove` と同じ） |
+| CLI | `--kb`・`--no-kb`・`--kb-dir DIR` | G27 | KB の作成の制御 |
+| CLI | `--warn canonical` | A22 | `W1007` を有効にする（既存の `--warn implicit-copy` と同じ形） |
+| CLI | `--edition 2026\|2027` | A22 | マニフェストのない入力の edition の指定（`check`・`build`・`run`・`test`・`script`） |
+| CLI | `--applicability certain\|likely\|maybe`・`--dry-run` | G24 | `fix` の適用範囲と差分の表示 |
+| CLI | `--contracts off\|check\|test\|prove` | A21 | 契約の扱い（既定は `build` が `off`、`run`・`test`・`repl` が `check`。`check`・`doc` は何も生成せず常に型検査だけ。`--prove-timeout`・`--function` は `prove` のときだけ） |
+| CLI | `--overflow-report` | A23 | 折り返しの報告の計装（`test` は既定で有効） |
+| CLI | `--allocator counting` の `test` への対応 | F14 | 確保数の計装 |
+| 環境変数 | `TSUZURI_KB`（`0` で作らない）・`TSUZURI_KB_DIR` | G27 | KB |
+| 環境変数 | `TSUZURI_GUIDE_EXAMPLES`（テスト用） | G21 | ガイドの例の検証の対象の切り替え |
+| std | `Text`（型クラスとモジュール） | D14 | 文字列の API の統一 |
+| std | `Alloc` | F14 | 確保数の測定（テスト用） |
+| std | `Domain` | B10 | 純粋関数の失敗の閉じ込め |
+| std | `Monoid`（クラス）と `Parallel.fold` など | F15 | 還元の保証 |
+| 属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` | A20 | D-53 |
+| 属性 | `@requires`・`@ensures`（本体の先頭の文） | A21 | 契約 |
+| 属性 | `@trusted` | E15 | `extern` の信頼の表明 |
+| 予約語 | なし | — | 第3期は予約語を足さない（文脈キーワードと属性だけ） |
+
+**D-55 の追補（各チケットの確定。2026-10-18）**: 次は、チケットを書く間に決まった名前。**診断コードの kind・`E2000` の kind はチケットが G23 の登録簿へ足す**（コード自体は上の表だけ）。同じサブコマンドのフラグの名前が衝突しないように、ここに集める。
+
+| 種別 | 名前 | チケット | 用途 |
+| --- | --- | --- | --- |
+| CLI（`guide`・`new`） | `--level`・`--topic`・`--list`・`--agents`・`--llms-txt`・`--edition`（`guide` の中だけ）・`--no-agent-files`（`new` の中だけ） | G21 | AI 向けの案内。JSON の schema は `tz-guide/1` |
+| CLI（`find`・`kb find`） | `--project`・`--result`・`--takes`・`--module`・`--limit` | G25 | 型でのシグネチャ検索 |
+| CLI（`kb build`・`kb clean`） | `--std`・`--force` | G27 | std の KB・古くなくても作り直す |
+| CLI（`kb` の照会・`impact`） | `--path`・`--depth`・`--budget`・`--no-refresh`・`--git`・`--from`・`--to`・`--affected` | G28 | 照会の範囲・文字数の上限・差分の指定 |
+| CLI（`kb diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kb diagram` の中だけ。`--kb-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限 |
+| CLI（`mcp`） | `--root DIR`・`--kb-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KB_DIR` は効かず、置き場は `--kb-dir` か `<root>/target/tz/kb`） |
+| CLI（`fix`） | `--applicability`・`--dry-run`・`--edition`（移行先の edition） | G24 | `--applicability maybe` は `--dry-run` のときだけ受理する。`--yes` は作らない（提案の自動適用をしない） |
+| CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |
+| CLI（`--contracts prove`・`prove`） | `--prove-timeout SECONDS`（1〜3600）・`--function NAME` | A21 | 契約の静的検証（`prove` のときだけ使える） |
+| CLI（`--warn` の値） | `untrusted-extern` | E15 | `W1010` を有効にする。**`--warn` の値の一覧とエラー文の `supported:` は、実装済みの値だけを固定の順序 `implicit-copy, canonical, untrusted-extern` で並べる**（`main.rs` の 1 つの定数から解析・`--help`・エラー文を作る。先に入ったチケットが作り、後のチケットは順序の位置に足す） |
+| CLI（`test`） | `--doc`（`--list`・`--filter`・`--index`・`--json` と併用できる。`test` 以外・`--coverage`・`--seed`・`-g`・`-o` との併用は `E2000`） | G34 | `///` の例の検査。`E2011` を出す |
+| 終了コード | `E2000` | 全チケット | コマンドラインの語だけで決まる誤りは 2。入力（マニフェスト・ソース）を読んだあとに分かる誤り（A22 の `--edition` とマニフェストの衝突など）は 1（既存の読み込みの誤りと同じ） |
+| CLI（`bench`） | `--allocs` | F14 | bench ごとの確保数 |
+| CLI（`check`） | `--report parallel`（`check` だけ。ほかのサブコマンドは引数エラー。`--json` と併用できる。報告は stdout、提案だけで自動では適用しない） | F15 | 並列化の提案と、既存の `Parallel.*` の呼び出しの純粋さ。JSON の schema は `tz-report-parallel/1`。付けない `check` の出力は 1 byte も変わらない |
+| 診断コード | `E2011` | G34 | 上の表。予約は `E2012`〜`E2015` に縮む |
+| 環境変数 | `TSUZURI_SMT` | A21 | `prove` のソルバー（名前か経路。なければ PATH の `z3`、なければ `cvc5`。同梱しない） |
+| 環境変数 | `TSUZURI_TRAP_REPORT`・`TSUZURI_LLVM_SYMBOLIZER` | B10 | クラッシュレポートの出力先・`llvm-symbolizer` の場所 |
+| 環境変数 | `TSUZURI_PROGFUZZ_*`（`KIND`・`PATHS`・`BUDGET`・`DIR`・`JOBS`・`KEEP`・`MINIMIZE`・`MUTANT`・`INJECT_LEAK`） | G36 | 差分ファズ（`tests/`・`scripts/` だけが読む。コンパイラは読まない） |
+| std | `Arbitrary`（組み込みクラス）・`Gen.for_all_where`・`Gen.check_where` | A21 | 契約の性質テスト |
+| std | `Int.wrapping_*` | A23 | 折り返しの意図（`Int` は組み込みモジュール） |
+| std | `Text`（常に読み込む型クラス）・`RegexText` | D14 | 文字列の API の統一。`RESERVED_MODULES` の数は現在値から増やす |
+| std | `Monoid`（型クラス。常に読み込む）・`Monoids`（opt-in の newtype 群。`Monoids.Sum` のように修飾して書く）・`Array.fold_monoid`・`Parallel.fold` | F15 | 還元の保証。浮動小数点を含む型の `Monoid` は `E1039`（kind `monoid_float_instance`）。`RESERVED_MODULES` へ `Monoid`・`Monoids`（現在値から 2 増やす） |
+| std | `Map.chunk_count`・`Map.invariants_hold`・`Set.chunk_count`・`Set.invariants_hold` | C12 | 診断・テスト用の公開関数（チャンクの数と不変条件の検査）。`Map`／`Set` の計算量の表は C12 の仕様 §5 が正（G35 が `@complexity` を生成するときに合わせる） |
+| 生成物 | `target/tz/kb/`・`target/progfuzz/`・`target/ai-cost/` | G27・G36・G31 | すべて `target/` の下（コミットしない） |
+
+### D-56 AI 向け成果物（ガイド・AGENTS.md・llms.txt・brief カード）の言語とサイズ
+
+- 言語は**英語**にする（トークン数が少なく、モデルの習熟度が高い。診断のメッセージも英語）。利用者向けの文書（言語リファレンス・README）は日本語のままで、この規則の対象外。ここでいう brief カードは G27 の KB のカード。**G32 の `repo-kb brief`（開発リポジトリの文脈パック）は別物**: 見出しと案内は英語、取り込んだ本文（チケット・GUIDE-LITE の抜粋）は原文のまま（日本語）で、サイズの上限（16,000〜24,000 字）は G32 が決める。
+- サイズの上限（文字数。テストで強制する）: ガイド L0 6,000、L1 20,000、std の 1 モジュールのページ 6,000、std 全体の 1 行索引 45,000、`AGENTS.md` のひな形 3,500、`llms.txt` 1,500。
+- 内容は、コンパイラの表・std のソース・検証済みの例から生成するか、検証済みの例（`tsuzuri check`／`run` を通る）だけを置く。**実行を通らない例を置かない。** 落とし穴の表は 1 か所（G23 のヒント DB）に置き、ガイドはそこから生成する。
+- ガイドと brief カードは互換性の保証の対象外（文言は直してよい）。`tsuzuri guide --json` と KB のキーは D-52 に従う。
+
+### D-57 権限（capabilities）の語彙（E15・G26）
+
+- 名前（閉じている）: `stdio`（`IO` のコンソール・`Debug`）、`fs`（`File`・`Dir`）、`env`（`Env`）、`time`（`Time`）、`random`（`Random`）、`process`（`Process`）、`net`（`Net`）、`gpu`（`Gpu`）、`ffi`（`extern`）。
+  `Path` は文字列の操作だけなら権限を要らない（OS に触れる関数があれば `fs`。E15 が確定する）。`Task`・`Parallel`・`Atomic`・`Mutex`・`Channel` は CPU の資源であって権限ではない。
+- 既定: ルートのパッケージは全権限を持つ。依存パッケージは `Tsuzuri.toml` の `[dependencies]` の `capabilities = [...]` で許可された範囲だけ（既定は空）。実効の権限は、ルートが許した範囲と、各依存が自分の依存へ許した範囲の積。
+
+### D-58 仕様の規則 ID の形式（G33・G35）
+
+- 形式は `AREA-NNN`（大文字 3 字・ハイフン・数字 3 桁）。AREA は `LEX`（字句）・`SYN`（構文）・`TYP`（型）・`OWN`（所有権と借用）・`EVL`（評価順序）・`NUM`（数値）・`STR`（文字列）・`CTL`（制御とパターン）・`MOD`（モジュールとパッケージ）・`TSK`（タスクと並行）・`DIA`（診断）・`CLI`・`ABI`・`STD`・`EDN`（edition）。
+- 文書の規則の文の直前に HTML コメント `<!-- rule: OWN-012 -->` を置く（表示に出ない）。規則の本体は `spec/rules/<AREA>.md` の表（ID・規則の 1 文・文書の節へのリンク・適合性テストの一覧）。ID は再利用しない。廃止は `retired` にする。
 
 ## 10. 完了の定義（全チケット共通）
 
