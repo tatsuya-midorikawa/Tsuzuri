@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus, platform } from "node:os";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpus, platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactFingerprint, captureRun, makeRecord, measureProcess, parseTimePasses, processRecords, summarize, unsupportedReason, writeRecords } from "./metrics.mjs";
@@ -14,6 +14,10 @@ export const VARIANTS = Object.freeze([
   ["check", "native", "none"], ["emit-llvm", "native", "O0"], ["build", "native", "O0"], ["build", "native", "O3"],
   ["build-wasm", "wasm32", "O0"], ["build-wasm", "wasm32", "O3"], ["build-warm", "native", "O0"],
   ["build-edit-body", "native", "O0"], ["build-edit-signature", "native", "O0"],
+  // PB06: the command after an edit of a module's body, by a process of its own and by a resident one
+  // (`check-edit-body-server` and `build-edit-body-server` measure both, one sample of each in turn;
+  // `watch-edit-body` is the time from the save to the end of the run of `tsuzuri watch check`).
+  ["check-edit-body-server", "native", "none"], ["build-edit-body-server", "native", "O0"], ["watch-edit-body", "native", "none"],
   ...["build-runtime-cold", "build-runtime-warm"].flatMap(variant =>
     ["native", "wasm32"].flatMap(target => ["O0", "O3"].map(opt => [variant, target, opt]))),
 ]);
@@ -181,7 +185,148 @@ export function measureVariant(context, fields, command, { cwd, env, quick, befo
     linker_variation: deterministic && knownLinkVariation && new Set(fingerprints).size > 1 ? fingerprints : null };
 }
 
-function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
+const sleep = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+
+// The CPU time and the resident size of a running process, as `ps` (macOS) or /proc (Linux) say: the
+// resolution is 10 ms.
+function processUsage(pid) {
+  if (platform() === "linux") {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return { user_ms: Number(fields[11]) * 10, sys_ms: Number(fields[12]) * 10, rss_bytes: Number(fields[21]) * 4096 };
+  }
+  const [user, sys, rss] = execFileSync("ps", ["-o", "utime=,stime=,rss=", "-p", String(pid)], { encoding: "utf8" }).trim().split(/\s+/);
+  const clock = (text) => text.split(":").reduce((total, part) => total * 60 + Number(part), 0) * 1000;
+  return { user_ms: clock(user), sys_ms: clock(sys), rss_bytes: Number(rss) * 1024 };
+}
+
+// PB06: a `tsuzuri serve` of the project, with the environment of the clients that are measured (and a
+// directory for its socket that is short enough for a socket path).
+function startServer(compiler, project, env) {
+  const directory = mkdtempSync(join(tmpdir(), "tzb-"));
+  // `measureProcess` runs the clients with LC_ALL=C, which a server compares with its own environment.
+  const serverEnv = { ...env, LC_ALL: "C", TSUZURI_SERVER_DIR: join(directory, "s") };
+  const log = join(directory, "server.log");
+  const descriptor = openSync(log, "w");
+  const child = spawn(compiler, ["serve", project, "--idle-timeout", "3600"], { cwd: project, env: serverEnv, stdio: ["ignore", "ignore", descriptor] });
+  closeSync(descriptor);
+  const ask = (operation) => spawnSync(compiler, ["serve", operation, project], { cwd: project, env: serverEnv, encoding: "utf8" });
+  for (const started = Date.now(); ask("--status").status !== 0; sleep(20)) {
+    assert.ok(Date.now() - started < 60_000, `the build server did not start:\n${readFileSync(log, "utf8")}`);
+  }
+  return {
+    env: serverEnv, pid: child.pid, status: () => JSON.parse(ask("--status").stdout),
+    stop() {
+      ask("--stop");
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+// PB06: the same command after the same kind of edit (the body of the module in the middle), run by a
+// process of its own (--no-server) and by a build server, one sample of each in turn, the one that goes
+// first alternating. Each sample is a different text, so every request is a miss of the artifact cache.
+function measureServerPair(context, fields, { compiler, project, env, modules, kind, quick, work }) {
+  const output = join(work, `app-${kind}-server`);
+  const args = kind === "check" ? ["check", project] : ["build", project, "-O0", "--cpu", "generic", "-o", output];
+  const arms = [
+    { variant: `${kind}-edit-body-no-server`, served: false, args: [...args, "--no-server"], measured: { wall_ms: [], user_ms: [], sys_ms: [], peak_rss_bytes: [], stdout: [], stderr: [] } },
+    { variant: `${kind}-edit-body-server`, served: true, args, measured: { wall_ms: [], user_ms: [], sys_ms: [], peak_rss_bytes: [], stdout: [], stderr: [] } },
+  ];
+  rmSync(env.TSUZURI_CACHE_DIR, { recursive: true, force: true });
+  const server = startServer(compiler, project, env);
+  const runs = quick ? 1 : 9, warmups = quick ? 0 : 1;
+  const serverCpu = [];
+  let salt = 2;
+  try {
+    // The caches (the runtime objects, the parsed sources) are warm, and so is the server.
+    execute(compiler, [...args, "--no-server"], { cwd: project, env: server.env });
+    for (let sample = -warmups; sample < runs; sample++) {
+      for (const arm of (sample % 2 === 0 ? arms : [...arms].reverse())) {
+        editModule(project, modules, "tsuzuri", "build-edit-body", salt++);
+        const served = arm.served;
+        const before = served ? server.status() : null;
+        const cpuBefore = served ? processUsage(server.pid) : null;
+        const result = measureProcess(compiler, arm.args, { cwd: project, env: server.env, runs: 1, warmups: 0 });
+        if (served) {
+          const cpuAfter = processUsage(server.pid);
+          assert.equal(server.status().served, before.served + 1, `${arm.variant}: the server did not run the request`);
+          if (sample >= 0) serverCpu.push(cpuAfter.user_ms + cpuAfter.sys_ms - cpuBefore.user_ms - cpuBefore.sys_ms);
+        }
+        if (kind === "build") {
+          verifyOutput({ output, program: compiler, args: arm.args }, server.env, project, modules, { index: Math.floor(modules / 2), salt: salt - 1 });
+        }
+        if (sample < 0) continue;
+        for (const field of Object.keys(arm.measured)) arm.measured[field].push(...result[field]);
+      }
+    }
+    const final = server.status();
+    const usage = processUsage(server.pid);
+    return {
+      arms: arms.map((arm) => {
+        const phases = arm.measured.stderr.map((text) => breakdown(parseTimePasses(text)));
+        return {
+          records: processRecords(context, { ...fields, variant: arm.variant }, arm.measured),
+          summary: { ...fields, variant: arm.variant, wall: summarize(arm.measured.wall_ms).median, peak_rss: summarize(arm.measured.peak_rss_bytes).median,
+            ...Object.fromEntries(["frontend", "cache", "tools", "other"].map((name) => [name, summarize(phases.map((phase) => phase[name])).median])) },
+        };
+      }),
+      server: { rss_bytes: usage.rss_bytes, resident_bytes: final.resident_bytes, served: final.served, source_hits: final.source_hits,
+        source_reads: final.source_reads, digest_hits: final.digest_hits, digest_reads: final.digest_reads, refusals: final.refusals,
+        cpu_ms_per_request: serverCpu.length ? summarize(serverCpu).median : null },
+    };
+  } finally {
+    server.stop();
+  }
+}
+
+// PB06: the time from the save of an edited module to the end of the run of `tsuzuri watch check`, and
+// what the run reports (TSUZURI_TIME_PASSES). The 100 ms poll is in it.
+function measureWatch(context, fields, { compiler, project, env, modules, quick, work }) {
+  const log = join(work, "watch.log");
+  const descriptor = openSync(log, "w");
+  const child = spawn(compiler, ["watch", "check", project], { cwd: project, env, stdio: ["ignore", "ignore", descriptor] });
+  closeSync(descriptor);
+  const runsOf = () => [...readFileSync(log, "utf8").matchAll(/^watch: run (\d+) finished with exit code (\d+)$/gm)];
+  const waitFor = (count) => {
+    for (const started = Date.now(); runsOf().length < count; sleep(1)) assert.ok(Date.now() - started < 120_000, `no watch run ${count}:\n${readFileSync(log, "utf8")}`);
+  };
+  const measured = { wall_ms: [], user_ms: [], sys_ms: [], peak_rss_bytes: [], stdout: [], stderr: [] };
+  const runs = quick ? 1 : 9, warmups = quick ? 0 : 1;
+  try {
+    waitFor(1);
+    for (let sample = -warmups; sample < runs; sample++) {
+      // The text of the run that is waited for is what the log has after the status line of the one before.
+      const finished = runsOf().length;
+      const before = readFileSync(log, "utf8");
+      const usage = processUsage(child.pid);
+      editModule(project, modules, "tsuzuri", "build-edit-body", sample + 3);
+      const started = process.hrtime.bigint();
+      waitFor(finished + 1);
+      const wall = Number(process.hrtime.bigint() - started) / 1e6;
+      const after = processUsage(child.pid);
+      if (sample < 0) continue;
+      const text = readFileSync(log, "utf8").slice(before.length);
+      assert.match(text, /watch: run \d+ finished with exit code 0/, `a watch run failed:\n${text}`);
+      measured.wall_ms.push(wall);
+      measured.user_ms.push(after.user_ms - usage.user_ms);
+      measured.sys_ms.push(after.sys_ms - usage.sys_ms);
+      measured.peak_rss_bytes.push(after.rss_bytes);
+      measured.stdout.push("");
+      measured.stderr.push(text);
+    }
+    const phases = measured.stderr.map((text) => breakdown(parseTimePasses(text)));
+    return {
+      records: processRecords(context, fields, measured),
+      summary: { ...fields, wall: summarize(measured.wall_ms).median, peak_rss: summarize(measured.peak_rss_bytes).median,
+        ...Object.fromEntries(["frontend", "cache", "tools", "other"].map((name) => [name, summarize(phases.map((phase) => phase[name])).median])) },
+    };
+  } finally {
+    child.kill("SIGTERM");
+  }
+}
+
+function runBuild({ compiler, out, quick, sizes, selected, largeWasm, only = null }) {
   assert.ok(["darwin", "linux"].includes(platform()), "build metrics require macOS or Linux");
   assert.ok(!existsSync(join(out, "build.jsonl")) && !existsSync(join(out, "projects.json")), `EEXIST: ${out}`);
   const context = captureRun(out, { compiler, mode: quick ? "quick" : "benchmark" });
@@ -230,9 +375,33 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
         }
       }
       const variants = language === "tsuzuri" ? VARIANTS : VARIANTS.filter(([name, target]) =>
-        target === "native" && name.startsWith("build") && !name.startsWith("build-runtime"));
+        target === "native" && name.startsWith("build") && !name.startsWith("build-runtime") && !name.endsWith("-server"));
       for (const [variant, target, opt] of variants) {
+        if (only !== null && !only.includes(variant)) continue;
         if (modules === null && variant.startsWith("build-edit")) continue;
+        if (variant === "check-edit-body-server" || variant === "build-edit-body-server" || variant === "watch-edit-body") {
+          // PB06: a resident process, on the synthetic projects (an edit of the module in the middle).
+          if (modules === null) continue;
+          const fieldsOf = (name) => ({ suite: "build", workload: workload.workload, size: modules, language: options.language, variant: name, target, opt });
+          try {
+            if (variant === "watch-edit-body") {
+              const measured = measureWatch(context, fieldsOf(variant), { compiler, project, env, modules, quick, work });
+              records.push(...measured.records);
+              summaries.push({ ...measured.summary, lines: descriptor.lines });
+            } else {
+              const kind = variant.startsWith("check") ? "check" : "build";
+              const measured = measureServerPair(context, fieldsOf(variant), { compiler, project, env, modules, kind, quick, work });
+              for (const arm of measured.arms) {
+                records.push(...arm.records);
+                summaries.push({ ...arm.summary, lines: descriptor.lines });
+              }
+              (descriptor.servers ??= []).push({ kind, ...measured.server });
+            }
+          } finally {
+            editModule(project, modules, "tsuzuri", "original", 0);
+          }
+          continue;
+        }
         if (skipLargeWasm(modules, target, opt, largeWasm)) {
           const reason = "LLVM 21 exceeds the 600000ms process budget for large synthetic WASM -O3; use --large-wasm to require it";
           console.error(`skip synthetic ${modules} ${variant} O3: ${reason}`);
@@ -328,20 +497,25 @@ function runBuild({ compiler, out, quick, sizes, selected, largeWasm }) {
     console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     const ms = (value) => value === null ? "-" : value.toFixed(3);
     for (const row of summaries) console.log(`| ${row.workload} | ${row.size ?? "-"} | ${row.language} / ${row.variant} | ${row.target} | ${row.opt} | ${ms(row.wall)} | ${ms(row.frontend)} | ${ms(row.cache)} | ${ms(row.tools)} | ${ms(row.other)} | ${(row.peak_rss / 1048576).toFixed(3)} | ${row.variant === "check" && row.wall > 0 ? Math.round(row.lines * 1000 / row.wall) : "-"} |`);
+    // PB06: what the build servers held, and what they cost (the peak RSS of the table is the client's).
+    for (const project of projects) for (const server of project.servers ?? []) {
+      console.log(`server (${project.workload} ${project.size} ${server.kind}): RSS ${(server.rss_bytes / 1048576).toFixed(1)} MiB, resident ${(server.resident_bytes / 1048576).toFixed(2)} MiB, `
+        + `${server.served} requests, CPU ${server.cpu_ms_per_request === null ? "-" : server.cpu_ms_per_request.toFixed(0)} ms per request, source hits/reads ${server.source_hits}/${server.source_reads}, digest hits/reads ${server.digest_hits}/${server.digest_reads}`);
+    }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const usage = "Usage: node benchmarks/run-build.mjs [compiler] --out dir [--quick] [--large-wasm] [--sizes N[,N...]] [--languages tsuzuri,c,cpp,rust,rust-workspace,go,zig]";
+  const usage = "Usage: node benchmarks/run-build.mjs [compiler] --out dir [--quick] [--large-wasm] [--sizes N[,N...]] [--languages tsuzuri,c,cpp,rust,rust-workspace,go,zig] [--variants NAME[,NAME...]]";
   const args = process.argv.slice(2), options = {}, positional = [];
   let quick = false, largeWasm = false;
   for (let index = 0; index < args.length; index++) {
     const flag = args[index];
     if (flag === "--quick" && !quick) quick = true;
     else if (flag === "--large-wasm" && !largeWasm) largeWasm = true;
-    else if (["--out", "--sizes", "--languages"].includes(flag) && options[flag] === undefined) {
+    else if (["--out", "--sizes", "--languages", "--variants"].includes(flag) && options[flag] === undefined) {
       const value = args[++index];
       assert.ok(value && !value.startsWith("-"), usage);
       options[flag] = value;
@@ -357,5 +531,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   assert.ok(sizes.every((size) => Number.isSafeInteger(size) && size >= 1 && size <= 5000) && new Set(sizes).size === sizes.length, usage);
   const selected = (options["--languages"] ?? languages.join(",")).split(",");
   assert.ok(selected.length > 0 && selected.every((language) => languages.includes(language)) && new Set(selected).size === selected.length, usage);
-  runBuild({ compiler: resolve(positional[0] ?? join(root, "target/release/tsuzuri")), out: resolve(options["--out"]), quick, sizes, selected, largeWasm });
+  // Only these variants (by name), for a measurement of one thing; all of them when there is no option.
+  const only = options["--variants"]?.split(",") ?? null;
+  assert.ok(only === null || only.every((name) => VARIANTS.some(([variant]) => variant === name)), `unknown variant in --variants; ${VARIANTS.map(([variant]) => variant).filter((name, at, names) => names.indexOf(name) === at).join(", ")}`);
+  runBuild({ compiler: resolve(positional[0] ?? join(root, "target/release/tsuzuri")), out: resolve(options["--out"]), quick, sizes, selected, largeWasm, only });
 }

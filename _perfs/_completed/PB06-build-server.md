@@ -1,5 +1,8 @@
 # PB06: 常駐ビルドサーバーと watch モード
 
+本文の起票時の設計（Phase 1 だけを実装する、`ResidentState` が G17 の `FrontendCache` と PB01 の `RuntimeObjects` を持つ、100 ms 級の目標など）と手順は調査履歴です。
+現行の方針・決定事項・目標・停止条件は「着手時の再検討（2026-10-17）」と末尾の「実装と検証」を優先します。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PB06 |
@@ -8,9 +11,9 @@
 | 規模 | L |
 | 依存 | PB02, (G17) |
 | 関連 | G07, G12, G13, PB07 |
-| 状態 | todo |
-| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D2（Phase 2 の着手。ローカル IPC の常駐サーバー） |
+| 状態 | done（全 Phase 実装・出力の同値性検証済み。速度は共有機械での目安で、正式な測定は統合担当） |
+| 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD 9dd0fbbc で再検討（「着手時の再検討」） |
+| 承認 | 2026-10-17 の全フェーズ実装依頼で、D2（Phase 2 の着手。ローカル IPC の常駐サーバー）、D3〜D12 の既定案（「着手時の再検討」で改めた分を含む）、新設の D13〜D16 を含む全フェーズを承認済み（測定で効果を確認できない既定の切り替えは行わない。server は利用者が `tsuzuri serve` を起動したときだけ存在する opt-in で、server がなければ出力も挙動も今と同じ） |
 | 手本にする既存実装 | 入力スレッド・`mpsc::sync_channel`・`recv_timeout` の主ループ: `src/lsp.rs` の `serve`。遅延実行: `Session::schedule`（200 ms）。上限つきの読み込み: `read_message`。私用ディレクトリ: `src/driver.rs` の `TemporaryDirectory::new`（`DirBuilderExt::mode(0o700)`）と `src/cache.rs` の `BuildCache::open`（`PermissionsExt`）。環境変数による置き場所の上書き: `cache::default_root`（`TSUZURI_CACHE_DIR`）。hash: `cache::Sha256`・`cache::file_digest`。オプションの検査: `src/main.rs` の `parse_arguments` の `--no-cache`。E2E: `tests/cache.mjs`（`cli`・`concurrent`）、`tests/lsp_sessions.mjs`（常駐プロセスとの対話） |
 | 主な影響ファイル | `src/main.rs`, `src/lib.rs`, `src/watch.rs`（新規。Phase 1）, `src/server.rs`（新規。Phase 2）, `src/driver.rs`（Phase 2。常駐状態の受け渡し）, `src/cache.rs`（変更なし。`Sha256` を使う）, `src/lsp.rs`（変更なし。手本）, `tests/watch.mjs`（新規）, `tests/server.mjs`（新規）, `benchmarks/run-build.mjs`（PX03 が新規に作る。variant を足す）, `README.md`, `_docs/tools/command-line.md`, `_docs/tools/build-and-cache.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_perfs/README.md` |
 | 計測対象 | 1 モジュールの本体を変えた後の `check` と `build -O0` の時間（server 経由と `--no-server`）、watch の変更検出から完了までの時間、server の RSS と常駐 bytes |
@@ -28,6 +31,119 @@ PB06 はそれと PB01 の事前ビルド済みランタイム object を常駐�
 プロセス内のビルドに戻る。LSP（G12）と REPL（G13）が server を使うかは各チケットで決める（対象外）。
 
 実装者は Phase 1（`tsuzuri watch`）だけを実装する。Phase 2（`tsuzuri serve` と CLI の接続）は D2 の承認後、人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-17）
+
+2026-10-17 の依頼で、全フェーズ（Phase 1 の `tsuzuri watch`、Phase 2 の `tsuzuri serve`・client・`--no-server`・常駐状態・PX03 の variant と計測、Phase 3 の各項目の採否）を実装する。上の「目的」の最後の段落（Phase 1 だけを実装する）は、この依頼で全フェーズに変わった。以降の「着手条件と停止条件」から「決定事項」までは起票時（HEAD `f8dc655`）の記録で、この節と食い違う箇所はこの節が優先する（旧 `_docs/tools/*.md` は `_tsuzuri/language-reference/compiler/` の各ページ。GUIDE §8.1）。
+
+着手時の HEAD は `a2313d19`（main `9dd0fbbc` に計測の足場を足した commit）。偵察は `9dd0fbbc` の release compiler（`target/perf/phase4-baseline/tsuzuri-before`。9,465,008 bytes、SHA-256 `5e1b9687…`）と、同じ commit の strip しない build（`sample` 用）で、Apple M1 Max・macOS 27.0.1・Apple clang 21.0.0・rustc 1.98.1・Node 20.19.6、ほかの 6 つの作業と共有する機械（1 分の load average 9〜20）で行った。数値はどれも共有機の参考値で、標本数を併記する。生データと手順は `target/perf/PB06/`（commit しない）。静かな機械での正式な前後比較は統合後に行う。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| `src/main.rs` の出力は 20 か所。`Action` は 7 種。`run_formatter`・`run_test_action` の戻り値を `u8` にする | 4,439 行。`mod tests` の外に `println!`・`print!`・`eprintln!` が 44 か所（`eprintln!` 18、`println!`・`print!` 26）。`Action` は `Bench` が増えて 8 種（`Lsp`・`Check`・`Doc`・`Build`・`Run`・`Fmt`・`Test`・`Bench`）。`Action` の外に `script`・`toolchain info`・`new`・`fetch`・`publish`・`api-diff`・`bindgen`・`repl` の分岐がある。`ExitCode` は値を取り出せない | `cli` に移すのは `parse_arguments` より後だけ。`print_diagnostic`・`print_diagnostics`・`print_with_severity` は `write_*(err, …)` を新設し、既存の名前は標準エラーへ書く薄い wrapper にして `new` などの呼び出しを変えない。`cli` から呼ぶ `run_formatter`・`run_test_action`・`debug_test`・`run_bench_action`・`invalid_thread_setting` の戻り値を `u8` にする（約 40 か所の `ExitCode::SUCCESS／FAILURE`）。`script` の引数は `cli` の引数にする。server が実行するのは check と build だけで、ほかの action は parse の後に refusal する（D10 のまま） |
+| `main` は `Project::load` → `analyze_all` → `print_diagnostics` → `run_action` を 1 回 | `Report::start`（TIME_PASSES）・`script` の引数の取り分け・`invalid_thread_setting`（`TSUZURI_THREADS`）の後、`Project::load`（`Test`・`Bench` は `load_for_tests`、`Doc` は `load_for_docs`、`script` は `load_script`）→ `with_manifest_wasm`・`validate` → `Project::analyze_cached(cache, kind)`（G17。`AnalysisKind::Program`・`Tests`・`Docs`）→ `links_apply` → `--warn implicit-copy`（W1006）→ 警告の表示と `--deny-warnings` → `run_test_action`／`run_bench_action`／`run_action`（`driver::build_linked`・`run_with_arguments`・`document`）→ `messages`（W2001） | `cli` の本体はこの全部。入口は `analyze_all` ではなく `analyze_cached` なので、常駐状態の差し込みは `analyze_cached` と `driver` の関数になる |
+| `--no-cache is only valid with build or run` | `--no-cache is only valid with build, run, script, or repl`（check・test・doc は拒否）。`--no-server` は今 `unknown option` の E2000。`watch check hello`・`serve hello` は今も終了コード 2 の E2000（再現を更新済み） | `--no-server` の文面は `--no-server is only valid with check or build`、重複は `no-server specified more than once`。`src/main.rs` の `parse` のテスト（`mod tests` の `#[test]` は 21 件）は変えない |
+| lib が標準エラーへ直接書くのは `TemporaryDirectory` の `Drop` と `run` の中継の 2 か所 | ① `TemporaryDirectory::drop`（`warning: cannot remove`。build で起こる）② `run_process`・`relay` の `io::stderr()`（run だけ）③ `timings::Report::drop`（TIME_PASSES。`main` が持つ）。`type_arena.rs` の `println!` はテスト。tool の出力は `run_tool` が `Command::output` で集めて `messages`（W2001）にする | check・build の経路に新しい直接出力はない（停止条件 3 は発火しない）。① は thread_local の sink で捕まえて `err` に流し、③ は要求ごとに `reset`／`take` して応答に載せる（D15）。panic の message は hook が server の標準エラーへ書くので、panic は `internal` で refusal して client が cold で再現する |
+| `src/` に `Builder`・`stack_size` はなく、解析は main thread（8 MiB）。`thread::scope` は test_runner と cache のテストだけ | PB04 の `src/parallel.rs`: `ordered_for_each` は `std::thread::scope` ＋ `Builder::stack_size(8 MiB)` の worker を段ごとに起こして join する。CLI は `min(コア数, 8)`、library・LSP・REPL・`publish` は 1、`TSUZURI_THREADS` は呼び出しのたびに環境から読む（不正値は E2000、終了コード 2）。ほかに `bundle_identity`・`recursive`・`fetch` が scope、`capture` が `thread::spawn`。常駐する worker はない | D8（main thread が要求を 1 つずつ実行）は維持できる。worker は段ごとに作って捨てるので常駐に影響せず、`src/parallel.rs` は変えずに使える。`TSUZURI_THREADS` は関連する環境に入れる（D5） |
+| 可変の `static` は `TEMP_COUNTER` だけ | `timings::PHASES`（Mutex。TIME_PASSES のときだけ貯まり、`Report` が最後に 1 回出す）と `ENABLED: OnceLock`、`frontend_cache::TEMPORARY_COUNTER`・`bundle_identity` の COUNTER（一時名の通し番号）、thread_local の `llvm_layout::{WEBASSEMBLY, MEMO}`・`target::CURRENT`（どちらも RAII の scope で戻る）、埋め込み runtime から決まる定数の `OnceLock`（`llvm.rs`・`runtime_cache.rs`）。型検査の interner は解析ごとの値 | 要求をまたいで無効化が要る cache 型の static はない。要求ごとに戻す必要があるのは TIME_PASSES の累積だけ |
+| compiler の SHA-256（4,509,744 bytes。`shasum` 0.04 s）と環境変数 17 個。server は要求のたびに compiler を hash しない（D6） | compiler は 9,465,008 bytes。`cache::Sha256` は純 Rust（実測で約 200 MB/s）で、`build_key` は毎回 `file_digest(current_exe())` を呼び約 45 ms（`sample` で 44〜45）。`KEY_ENVIRONMENT` は 21 個（`TSUZURI_SYSROOT`・`TSUZURI_ZIG`・`TSUZURI_LLVM_CLANG`・`TSUZURI_RANGE_FLAGS` が増え、`TSUZURI_LINKER` は条件つき）。compiler が読む `TSUZURI_*` は 15 個 | server が自己点検で hash しないだけでは足りない。`build_key` の `file_digest` が同じ約 45 ms を毎回払うので、`file_digest` の stat 署名による memo が常駐状態に要る（D11） |
+| G17 の `FrontendCache` は (1) プロセスで一度作って `&mut` で渡せる (2) key が compiler の同一性を含む (3) bytes を返す (4) 壊れていれば計算し直す | (2)(4) は成り立つ。(1) は成り立たない: `Project::analyze_cached` が解析のたびに `FrontendCache::open`（pack の読み込み）→ `lookup`／`commit` → `finish`（pack と manifest の書き込み。内部を空にする）を 1 回だけ行う単発の値。(3) はない。compiler の同一性は `open` のたびに `current_exe` の stat（len・mtime・dev・ino・ctime）から作る。`FrontendDelta::must_recheck` は `dead_code`（「PB06 と PB07 の再利用規則」）で、check 結果の再利用は G17 の D10 が先送りした | 「startup の identity を固定して `open_with` する」と「pack を要求の間メモリに残す」を別々に考える。pack の保持は効果が小さい見込みなので測ってから決める（gated。D11）。`FrontendCache` は process 全体の static ではないので停止条件 5 は発火しない |
+| PB01 Phase 1 の `RuntimeObjects`（事前ビルド済み object を返す値）を常駐に含める | そういう値はない。object は `compile_runtime_object(unit, source, …)` がディスクの cache から復元する。build の miss の経路の `sample` では `compile_runtime_object` が約 12 ms（1 要求の約 1%）。同梱 toolchain の識別は PB03 が `bundle_identity` でディスクに memo 済み（14.6 s → 0.2 s） | `RuntimeObjects` は常駐させない（取り下げ。D11） |
+| hello の `check` は 0.02〜0.03 s。200 module は 0.39 s、1,000 module は 2.12 s（RSS 237 MB・1.12 GB） | （baseline、`TSUZURI_TIME_PASSES=1`、中央値）process の起動（`--version`）は 3.6 ms、hello の `check` は 27.4 ms（25 標本）で、うち標準ライブラリの解析が約 21 ms。200 module の `check` は cold 237 ms、編集後（frontend cache あり。9 標本）268 ms（259〜303）。1,000 module は cold 1,599 ms、編集後 1,368 ms（3 標本） | 比較の基準はこの値。hello は server があっても標準ライブラリの解析（約 21 ms）が残る |
+| G1「1,000 module で 1 module の本体を変えた後の server 経由の `check` を 100 ms 以下」 | 達成できない。編集後の 200 module の内訳は load 19、cache 19、parse 6.5、check 125、specialize 53、closures 9、ownership 8 ms（合計 262）。全体を通す段（check・specialize・closures・ownership）は約 195 ms で、1,000 module では約 865 ms 残る。G17 は parse と interface 要約だけで、check 結果の再利用は先送りした（`must_recheck` は未使用）。D11 も `CheckedModule` を常駐させない | G1 を取り下げる。常駐で消せるのは load・cache・parse・compiler の hash・process の起動で、見込みは 200 module で約 12〜16%、1,000 module で約 27〜34%（後者は下の `open()` の費用による。いずれも未検証の見込み）。「100 ms 級」は check 結果の再利用（G17 Phase 2・PB07）が要る |
+| `Project::load` の費用は問題にしていない。watch は 1 s ごとに全ファイルを読み直す（CPU 5% を超えたら directory の mtime に変える。`ponytail`） | この機械（セキュリティ agent の on-access scan とみられる）で、新しい process の `open()` は 1 file 0.3〜0.7 ms、1 process あたり 400 file 程度を超えると同じ file を繰り返し開いても 0.17〜0.5 ms。`load` の段は 100・200 module で 4.7・8.5 ms（47・43 µs/file）、400 以上で 198〜283 ms（280〜496 µs/file）。1,000 module の `check` の約 45% が `read_source_text` の `open`（`sample` で 646/1,438 samples のうち 622）。`lstat` は 2〜4 µs/file で、署名が同じなら開き直す必要がない。`frontend_cache.rs` の冒頭も同じ現象を書いている | 常駐の主な利得は `open()` を避ける SourceMemo（新設。D11）。watch は 400 module 超で毎秒の全体読み直しが CPU 約 20〜60% になり、起票時の自分の条件（5%）を超える → D9 を stat 署名中心に改める。効果は環境依存（Linux の開発機では 1,000 file で約 25 ms）なので、結果は環境つきで記録する |
+| 環境は `IGNORED_ENV`（`_`・`OLDPWD`・`SHLVL`）を除いて完全一致のときだけ受ける（D5） | この shell の環境は 52 変数で、`SSH_AUTH_SOCK`・`MACH_PORT_RENDEZVOUS_PEER_VALDATION`・`__CFBundleIdentifier`・`COPILOT_AGENT_SESSION_ID`・`XPC_SERVICE_NAME`・`PWD` のようにセッションやアプリごとに違うものが多い。server は前面の別の端末で起動する前提（D3）なので、完全一致では別の端末やエディターの task からの要求がほとんど断られる | D5 の比較を「コンパイラと tool が読む変数」に絞る。`std::env::set_var` が `unsafe` で環境を要求ごとに差し替えられない点は同じ |
+| LSP は変更のたびに全体を再解析し、増分の状態を持たない | 同じ。解析は `analyze_inputs_semantic`（frontend cache を使わず、`Parallelism::library()` で 1 thread）。`Session::refresh` は `Project::load_with_overlays` で、開いていないファイルを毎回開く | LSP と server は cache も解析の経路も共有しない。LSP が得をするのは SourceMemo だけ（D16） |
+| PX03 の `VARIANTS`・`measureVariant` に 5 variant を足す。env から `TSUZURI_TIME_PASSES` を除く | `VARIANTS` は `check`・`emit-llvm`・`build`・`build-warm`・`build-edit-body`・`build-edit-signature`・`build-runtime-*`。`check-edit-body` はない。env は `TSUZURI_TIME_PASSES=1`・`TSUZURI_CACHE_DIR` を持ち、`parseTimePasses` が最後の `time_passes` 行を読む | server の応答に要求ごとの `time_passes` の行を載せれば（D15）env を変えずに段別の時間が取れる。`check-edit-body-{server,no-server}`・`build-edit-body-{server,no-server}`・`watch-edit-body` を足す |
+| `_docs/tools/command-line.md`・`build-and-cache.md` を更新する | `_tsuzuri/language-reference/compiler/usage.md`（`### check`・`### build`・`### lsp`・「ビルドキャッシュ」）・`option.md`・`diagnostics.md`（E2000・E2001 の行）。ほかに `README.md` の「CLI リファレンス」と「検証と性能測定」、`docs/architecture.md`、`_features/GUIDE.md` の D-30 の台帳（`tsuzuri watch`・`serve`、`--no-server`・`--idle-timeout`、`TSUZURI_SERVER_DIR` が仮の名前のまま） | 文書の対象をこの一覧に改める。D-30 の 3 行は「承認済み・実装済み」に更新する |
+| 手本は `tests/cache.mjs`・`tests/lsp_sessions.mjs` | 加えて `tests/parallel_frontend.mjs`（PB04。`targets.yml` が実行する）と `tests/frontend_cache.mjs`（G17）が環境と cache を扱う手本。Windows CI は `tests/cache.mjs` を実行する。`rust-version` は 1.85、CI は 1.99.0 の lint。Windows の target は rustup の stable（1.96.1）にだけあり（1.99.0 にはない）、`rustup run stable cargo check --all-targets --target x86_64-pc-windows-msvc` で型検査する | `tests/watch.mjs` は Windows でも動く形（CRLF 安全）にして `windows.yml` と `targets.yml` に、`tests/server.mjs` は Unix だけ（Windows は理由つきの skip）で `targets.yml` に配線する案を最終報告に書く |
+
+### 偵察で測った事実（2026-10-17、baseline compiler。生データは `target/perf/PB06/`）
+
+- 200 module の `check`（`TSUZURI_THREADS` 未設定、9 標本、中央値と最小〜最大）: 編集後 268 ms（259〜303）。内訳は load 19.2、cache 19.4、parse 6.5、check 124.7、specialize 52.9、closures 8.8、ownership 8.3 ms。`TSUZURI_THREADS=1` は 397 ms（check 206、parse 24.7、ownership 28.9）。cold（cache なし）237 ms、編集なしの warm 229 ms（5 標本）。
+- 200 module の `build -O0 --cpu generic`（5 標本）: cold の cache で 1,921 ms、artifact cache の hit が 644 ms（cache 144、emit 217）、編集後の miss が 1,639 ms（tool.clang 922、cache 184、emit 218）。1,000 module（3 標本）は hit 3,932 ms、編集後 8,153 ms（tool.clang 4,209、emit 2,096、cache 392）。
+- `build` の `sample`（200 module、1 ms 間隔、PID 指定）: hit は `emit_program` 179、`build_key` の closure 79（`file_digest` 44、`Sha256::field` 35、`tool_identity` 22）、`BuildCache::load` 77（うち `rename` 67）、`evict` 24。miss は `run_tool` 808、`emit_program` 187、`build_key` 83（`file_digest` 45、`tool_identity` 36）、`BuildCache::store` 42、`compile_runtime_object` 12。
+- `load` の段の規模依存（`check`、frontend cache あり、5 標本の中央値）: 100 module 4.7 ms、200 は 8.5、400 は 198、600 は 228、800 は 283、1,000 は 280 ms。400 を境に 1 file あたりが約 10 倍になる。
+- `open()` の単体測定（C の小さな program、新しい process）: 200 file の最初の走査が 145 ms（722 µs/file）で、2 回目以降は 5 ms（26 µs/file）。400 file は最初が 163 ms、以降も毎回 70 ms。1,000 file は毎回 175〜182 ms。信頼された Node の `readFileSync`（1,000 file）は 30 ms、`lstat` は 2〜4 µs/file。新しく build した compiler の最初の実行では、200 module の `load` が `sample` つきで 933 ms だった（process の識別ごとに判定が貯まるように見える。原因の確認はしていない）。cold の CLI は 400 file を超えると毎回払い、常駐 process は署名が変わらない file を開かない。
+- 1,000 module の `check` の `sample`（1 ms 間隔、1,438 samples）: `Project::load` 646、`analyze_cached` 792。
+- 起動の床: `--version` 3.6 ms（25 標本）、hello の `check` 27.4 ms。
+
+### 方針の改訂
+
+**Phase 1（実装する）**: 設計のとおり `cli(raw, program_arguments, out, err)` と `tsuzuri watch check|build|test` を作る。状態行は起票時のまま（text: `watch: run <n> finished with exit code <code>`、`--json`: `{"type":"watch","run":<n>,"exit":<code>}`、どちらも標準エラー）。snapshot は `cli` の前に取り、`Project::load` の失敗（エラーの本文）も snapshot の一部にする（本文が変わる・直るで再実行する）。変える点は検出の方式だけ（D9）。Phase 1 だけでは解析を使い回さない点は同じで、`ResidentState` を受け取る口は WP3 で足す。
+
+**Phase 2（実装する。D2 承認済み）**: 構成は起票時のまま（accept 側＋main thread、protocol v1、1 接続 1 要求、`status`・`shutdown`、client の黙った fallback）。変える点は D4〜D6・D11・D13〜D15。常駐状態は `src/resident.rs` に置き、`driver.rs` の関数は増やさず thread_local の scope で差し込む（D14）。server は opt-in で、既定の出力と挙動は server がなければ今と同じなので、既定の切り替えの条件（測定と fallback）は問題にならない。速さは測って記録するだけで、G1 は取り下げる。
+
+**Phase 3（判断）**: D16 のとおり。socket での LSP・REPL との共有、Windows の named pipe、tool の問い合わせの memo は採らない。LSP・REPL が自分の process の中で `ResidentState` を使う案だけ、測って決める（WP9）。
+
+### 決定事項の更新
+
+- D1（Phase 分割）: 変更。Phase 1 と Phase 2 の両方を実装する。Phase 1（WP1〜WP2）を先に完成させて commit し、Phase 2 はその後。`watch` は WP3 で `ResidentState` を引数に取る形へ拡張する。
+- D2（Phase 2 の着手）: 承認済み。server は opt-in で、client が接続するのは socket が `FileTypeExt::is_socket` のときだけ（G3）。server がなければ出力も挙動も今と同じ。
+- D3（起動方式）: 維持（前面で起動、CLI は起動しない。起動の失敗は終了コード 1、引数の誤りは 2）。追加は D13。
+- D4（通信路と protocol）: 維持（UDS・改行区切りの JSON・`PROTOCOL = 1`・要求 1 MiB・応答 16 MiB・1 接続 1 要求）。変更: ① socket 名は `<SHA-256(canonical root) の先頭 16 桁>.sock`（32 桁から短縮して `sun_path` の余裕を 16 bytes 増やす。hello に `root` を足し、client が照合するので衝突しても別 project には繋がらない）② 要求の読み取りに合計 2 s、応答の書き込みに 10 s の期限を設ける（止まった client が server を塞がない。client の応答待ちは起票時のとおり期限なし）③ `--no-server` は非 Unix でも受理する（何もしない）。非 Unix の `serve` は E2000。
+- D5（置き場所と安全性）: 変更。ディレクトリの既定と 0700・symlink でない・probe の作成は起票時のまま。追加・変更: ① `TSUZURI_SERVER_DIR=`（空）は server を使わない意味にする（`TSUZURI_CACHE_DIR=` と同じ。client は接続せず、`serve` は E2000）② 私用の判定に「ディレクトリの `uid()` が probe ファイルの `uid()` と同じ」を足す（std の `MetadataExt::uid` だけで自分の uid が分かる）③ 環境の比較を、コンパイラと tool が読む変数に絞る: `cache::KEY_ENVIRONMENT`・`TSUZURI_*`・`HOME`・`XDG_CACHE_HOME`・`LOCALAPPDATA`・`TMPDIR`・`TEMP`・`TMP`・`LD_*`・`DYLD_*`・`CLANG_*`・`CCC_*`・`ZIG_*`・`TOOLCHAINS`。`src/` の `env::var`／`var_os` の名前がこの集合に含まれることを確かめる drift test（`src/` の文字列を走査する Rust テスト）を置く。client は関連する変数だけを要求に載せ、server が比べる ④ `cwd`・compiler の canonical パス・project root は完全一致のまま ⑤ umask・rlimit など process の属性は server のものになる（文書に書く）。
+- D6（寿命）: 維持（idle 既定 1800 s、`--idle-timeout` は 1〜86400、常駐 1 GiB）。変更: compiler の自己点検は G17 の identity と同じ stat 署名（len・mtime・dev・ino・ctime）を起動時の値と要求ごとに比べる（違えば `compiler-changed` を返して終わる）。`FrontendCache` には起動時の identity を渡す（途中で差し替わった binary の identity で pack を書かない）。SHA-256 は起動時に 1 回だけ計算して `status` に出す。
+- D7（正しさと fallback）: 維持（server の問題は client の黙った fallback。verify mode は作らない）。client は理由を表示せず、server のログと `serve --status` の `refused` で見る。
+- D8（並行性と stack）: 維持。理由を PB04 後に読み替える（要求は main thread が実行し、worker は段ごとの scope で 8 MiB）。要求の処理は `catch_unwind` で守り、panic したら `internal` を返して `ResidentState` を捨てる。
+- D9（ファイル監視）: 変更。検出は stat 署名（Unix: dev・ino・len・mtime・ctime。非 Unix: len・mtime）。100 ms ごとに既知の file の署名を比べ、1 s ごとに発見（追加・削除）をやり直す。署名が変わった file と racy な file（署名の時刻が読んだ時刻の 2 s 以内）だけ内容を読み、同じなら再実行しない（touch の吸収）。非 Unix は ctime がないので、起票時の「10 周期ごとの全体の内容比較」を残す。周期は 100 ms のまま、PX03 で CPU を測って 5% を超えたら file 数で伸ばす。新しい crate は使わない。
+- D10（watch の CLI と server の対象）: 維持（`watch check|build|test`、server は check と build だけ）。
+- D11（常駐状態の中身）: 変更。常駐する: ① SourceMemo（path → 署名と本文。`read_source_text` が `stat` した直後に引く。成功した読みだけを覚え、エラーは毎回本物の読みで出す）② DigestMemo（`file_digest` の署名つき memo。compiler と tool の binary）③（gated）frontend の pack。取り下げ: `RuntimeObjects`（約 1%）、tool の `--version`・`-mcpu=native` の問い合わせの memo（`/usr/bin/clang` のような shim は file の署名では中身の変更が見えず、価値は約 2%）。常駐させない: `CheckedModule`・IR・成果物。
+- D12（計測）: 変更。variant は `check-edit-body-{server,no-server}`・`build-edit-body-{server,no-server}`・`watch-edit-body`。env は PX03 のまま（`TSUZURI_TIME_PASSES` を外さない。D15）。M4・M5 は `target/perf/PB06/`。
+- D13（新設）: `tsuzuri serve --status DIR`・`--stop DIR`。protocol の `status`・`shutdown` を client として送る（DIR は project directory）。raw protocol を話せない利用者が server の状態を見て止められる。非 Unix は E2000。
+- D14（新設）: 常駐状態の差し込みは `src/resident.rs` の thread_local の scope（`PlatformScope`・`target_scope` と同じ RAII）で行い、`build_complete`・`Project::load*` など他チケットが編集する関数の引数を増やさない。cold の CLI は scope に入らないので、処理も出力も今と同じ。
+- D15（新設）: server の出力を cold と exact にする 2 つの手当て。① `TemporaryDirectory::drop` の警告を thread_local の sink へ流し、scope があれば `err` へ書く。② `TSUZURI_TIME_PASSES` は要求ごとに `timings` を reset／take し、応答の標準エラーの最後に `time_passes` の 1 行を足す。client は応答を使うとき自分の `Report` を出さない（server と client の両方が `=1` のときだけ。違えば `env` で refusal）。
+- D16（新設。Phase 3 の採否）: ① LSP・REPL が server と socket で話す: 対象外のまま ② LSP・REPL が自分の process の中で同じ `ResidentState`（SourceMemo・DigestMemo）を使う: gated（WP9。REPL の cache hit の再評価で 5% 以上、または LSP の 1,000 file の `load` が 100 ms 以上減るなら採用し、そうでなければ理由を記録する）③ Windows の named pipe: 採らない（std に server 側の API がなく、Win32 の FFI か crate が要る。`unsafe` と新しい crate の禁止に反する）④ `build_key` の tool の問い合わせの memo: D11 で取り下げ（file の digest だけ memo する）。
+
+### 作業の順序（コミット）
+
+| 作業 | 内容 | 確認 |
+| --- | --- | --- |
+| WP0 | この再検討（このチケットだけ。`_perfs/README.md` は統合担当が更新する） | `git diff --check` |
+| WP1 | `cli(raw, program_arguments, out, err)`・`write_*`・`u8`（出力は変えない） | `cargo test --locked --bin tsuzuri` の件数が同じ。baseline との出力比較（check・build の成功・失敗・`--json`・`--deny-warnings`・`--warn implicit-copy`、`test`・`bench`・`fmt`・`doc` の代表）の diff が空。`node tests/cache.mjs`・`tests/e2e.mjs` |
+| WP2 | `FileStamp`・`src/watch.rs`・`tsuzuri watch`・`tests/watch.mjs`・文書（Phase 1 の完了） | `cargo test --locked --lib watch::`・`--bin tsuzuri watch_arguments`・`node tests/watch.mjs`・`cmp` |
+| WP3 | `src/resident.rs`（`ResidentState`・`Scope`・SourceMemo・DigestMemo）と hook（`read_source_text`・`file_digest`）。`watch` へ接続 | 単体（racy の署名、同じ長さで時刻を戻した書き換え、エラーの文面が同じ）、`tests/watch.mjs`、`load` の段の前後 |
+| WP4 | `src/server.rs`: protocol・私用ディレクトリ・socket 名・環境の比較（drift test）。非 Unix の分岐 | `cargo test --locked --lib server::` |
+| WP5 | `serve` の主ループ・`status`／`shutdown`・client `request`・`--no-server`・`serve --status／--stop` | 偽の handler で主ループを動かす単体（queue・busy・期限・idle・stale socket） |
+| WP6 | `tests/server.mjs`（一致・拒否・protocol・偽の server・stale・二重起動・権限・寿命・並行・常駐状態） | `node tests/server.mjs target/release/tsuzuri` |
+| WP7 | D15（TIME_PASSES の要求ごとの report、`TemporaryDirectory` の警告の sink）。gated: frontend の pack の保持 | 単体と `tests/server.mjs` の追加 |
+| WP8 | PX03 の variant・計測・`docs/benchmarks.md`（`phase4:PB06` の区間） | 9 標本の交互計測、M1〜M6 |
+| WP9 | gated: REPL・LSP が自分の process で `ResidentState` を使う。または採らない理由の記録 | `benchmarks/run-repl.mjs`・`tests/lsp_sessions.mjs` |
+| WP10 | 文書（言語リファレンス・README・architecture・HELP・GUIDE の D-30）、全体の確認、`_completed/` への移動 | `node scripts/check-docs.mjs`、`cargo test --locked`、各 suite |
+
+### 他チケットとの重なり（統合の順は PR07 → PR08 → PB06 → PM02 → PM04 → PM03 → PB05）
+
+- `src/main.rs`: PR07（`--profile-generate／--profile-use`）・PR08（`--emit bitcode`）・PB05（`--backend`）・PM08 の続きが `parse_arguments`・`Arguments`・`HELP`・`run_action` を編集する。PB06 は `main` の本体を `cli` へ移し、`Arguments` に `no_server` を足す。移すのは文面を変えない範囲にとどめ、他の関数の整形・並べ替えはしない。衝突は textual で、意味の衝突はない（server は `driver::build_linked` が返すものをそのまま使う）。
+- `src/driver.rs`: PR07 の `build_profiled`・PR08 の `Emit::Bitcode`・PB05 の `Backend` は `build_complete` の中。PB06 の変更は `read_source_text` の hook、`TemporaryDirectory::drop` の 1 行、`Project::analyze_cached` の identity で、`build_complete` には触れない。`src/cache.rs`（PR07 が key に触る）では `file_digest` の hook だけ。
+- `src/lib.rs`: `mod` の行を足す（衝突は自明）。`docs/benchmarks.md` は `phase4:PB06` の区間だけ。
+- PB05 が足す環境変数・tool は `TSUZURI_*` の接頭辞か `KEY_ENVIRONMENT` に入るので、server の「関連する環境」の比較に自動で含まれる（drift test が見張る）。PM02・PM03・PM04 は IR の中身だけで、server の経路と無関係。
+
+### 受け入れ条件の変更
+
+- 取り下げ: G1（100 ms 以下）。代わりに、server と `--no-server` の `check`・`build -O0` を同じ編集で交互に測り、段ごとの差と、残る全体の段（check・specialize・closures・ownership）の時間を記録する。
+- 追加 G5: 400 module 以上で、server と watch の `load` の段が署名の比較だけになること（SourceMemo。環境つきで記録）。
+- G2（watch の検出）は、Unix は 1 周期（100 ms）以内、追加・削除は 1 s 以内。非 Unix は内容の比較が 1 s ごと。
+- 「出力が byte で同じ」は、IR・object・wasm・`.trap.json` は exact、実行ファイルは PX03 の `artifactFingerprint` と実行結果（Mach-O の既知の差を除く）で確かめる。stdout・stderr・終了コード・診断は exact。
+- Phase 2 の受け入れに、環境の drift test、`TSUZURI_TIME_PASSES` を通した応答、警告の sink の単体テストを足す。
+
+### 停止条件の更新
+
+- 3 は再確認して発火しない（上の表）。5 は発火しない（`FrontendCache` は static ではなく単発の値）。7 は socket 名を 16 桁にして余裕を作った（この利用者の既定は `/Users/<name>/Library/Caches/tsuzuri/server/` の 49 文字＋21 文字で合計 70 文字。利用者名が 44 文字までなら macOS の上限 103 文字に収まる）。超えるときは起票時のとおり E2000。
+- 追加: SourceMemo が cold と違う本文や診断を返すテストが 1 件でも作れたとき（署名が同じで内容が違う、エラーの文面が違う）は SourceMemo を外し、証拠を記録する。`SourceFile::read`・`read_source_text` のエラーの文面と path は 1 byte も変えない。
+- 読み替え: 起票時の 4 のうち「main thread 以外で動かす必要」は、PB04 の worker があるので「要求を処理する thread の stack が 8 MiB 未満になる」と読む（D8 は main thread のまま）。
+
+### 実装中に測って決めること（gated）
+
+1. frontend の pack を要求の間メモリに残すか（D11 ③）: SourceMemo・DigestMemo の後の server の `check` で `parse`＋`cache` が 10% を超えるときだけ実装する。書き込みの遅延は行わない（ディスクの状態を cold と同じに保つ）。
+2. racy の窓の長さ（2 s で始め、HFS+ など 1 s 粒度の file system を想定）と watch の周期（CPU 5% 超なら file 数に応じて伸ばす）。
+3. REPL・LSP の採用（D16 ②）。
+4. `-mcpu=native`・tool の `--version` の問い合わせの費用が `--cpu native`（既定）で無視できないとき（WP8 の測定）は、memo ではなく別チケットとして記録する。
+
+### 未検証・制約
+
+Linux・x86-64・Windows は実機がなく、Windows は `watch` の型検査（`x86_64-pc-windows-msvc`）と非 Unix の分岐の単体テストだけ。`open()` の費用はこの機械の環境（セキュリティ agent）の性質なので、一般化せず環境つきで記録する。server は同じ OS 利用者だけを信頼する（0700 のディレクトリが唯一の防御。peer の資格は libc なしでは確かめられない）。umask・rlimit などの process の属性は server のものになる。
 
 ## 着手条件と停止条件
 
@@ -598,12 +714,12 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 
 ## 受け入れ条件
 
-- [ ] Phase 1: `tsuzuri watch` が check・build・test を受け、run・引数なしを `E2000` で拒否する。
-- [ ] Phase 1: 各 run の出力が cold の CLI とバイト単位で同じ（`tests/watch.mjs`）。同じ長さ・同じ時刻の編集、追加、削除を検出し、touch では再実行しない。
-- [ ] Phase 1: `cargo test --locked` と既存の suite が成功し、新しい crate と `unsafe` がない。「生成コードの確認」の `cmp` が一致する。
-- [ ] Phase 2: `tests/server.mjs` の一致・拒否・fallback・protocol・権限・寿命・並行のテストが成功する。
-- [ ] Phase 2: M1〜M6 を計測し、生データの場所とともに `docs/benchmarks.md` に記録している。
-- [ ] 「ドキュメント」の該当部分を更新している。GUIDE §10 の完了の定義を満たす。
+- [x] Phase 1: `tsuzuri watch` が check・build・test を受け、run・引数なしを `E2000` で拒否する。
+- [x] Phase 1: 各 run の出力が cold の CLI とバイト単位で同じ（`tests/watch.mjs`）。同じ長さ・同じ時刻の編集、追加、削除を検出し、touch では再実行しない。
+- [x] Phase 1: `cargo test --locked` と既存の suite が成功し、新しい crate と `unsafe` がない。「生成コードの確認」の `cmp` が一致する（`examples/*`・`tests/fixtures/*` の 114 project の IR が基準と同じ）。
+- [x] Phase 2: `tests/server.mjs` の一致・拒否・fallback・protocol・権限・寿命・並行のテストが成功する。
+- [x] Phase 2: M1〜M6 を計測し、生データの場所とともに `docs/benchmarks.md` に記録している（G1 は取り下げ。G5 は満たした）。
+- [x] 「ドキュメント」の該当部分を更新している。GUIDE §10 の完了の定義を満たす。
 
 ## 落とし穴
 
@@ -637,27 +753,27 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 
 - 決定: Phase 1 は `tsuzuri watch`（プロセス内。server なし）、Phase 2 は `tsuzuri serve`・client・常駐状態。実装者は Phase 1 だけを行う。
 - 理由: watch は socket も権限の面も持たずに単独で出せ、出力先の差し替え（`cli`）は Phase 2 の土台になる。速さは G17 待ちである。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（2026-10-18。Phase 1 と Phase 2 の両方。「着手時の再検討」の D1 と「実装と検証」）
 
 ### D2: Phase 2 の着手
 
 - 決定: 常駐サーバー（ローカル IPC、常駐プロセス、要求の受理）を作るかを人間が決める。
 - 理由: 同じ利用者に限っても新しい攻撃面と運用（古い socket、二重起動、寿命）を持ち込む。効果は G17 の cache が done になるまで出ない。
-- 状態: 要承認（承認前は Phase 2（手順 8〜13）に着手しない）
+- 状態: 承認済み・実装済み（2026-10-17 の全フェーズ実装依頼。server は opt-in で、なければ出力も挙動も今と同じ）
 
 ### D3: 起動方式
 
 - 決定: `tsuzuri serve <directory> [--idle-timeout SECONDS]` で明示的に前面で起動する。CLI は server を起動しない。check・build は socket が
   あれば接続し、`--no-server` で避けられる。起動の失敗は終了コード 1、引数の誤りは 2。
 - 理由: 起票時の既定案（自動起動しない）を保つ。std だけでは daemon 化（fork）ができず、前面なら寿命とログが利用者に見える。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（維持。`serve DIR [--idle-timeout S]`、`--status DIR`・`--stop DIR` を足した（D13））
 
 ### D4: 通信路と protocol
 
 - 決定: Unix domain socket（`std::os::unix::net`）、改行区切りの JSON（`serde_json`）、`PROTOCOL = 1`、要求 1 MiB・応答 16 MiB、1 接続 1 要求。
   非 Unix では `serve` が `E2000`、client は使わない。
 - 理由: 新しい crate と `unsafe` が要らない。1 接続 1 要求は状態機械を持たない。上限は LSP の `read_message` にそろえる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（「着手時の再検討」の変更どおり: socket 名は 16 桁、hello に `root`、要求の読み取り 2 s・応答の書き込み 10 s の期限。accept thread は hello を接続の直後に書く。クライアントは半閉じをしない（macOS の `shutdown` が `ENOTCONN` で失敗するため））
 
 ### D5: 置き場所と安全性
 
@@ -667,14 +783,14 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
   canonical なルート・`cwd`・compiler のパス・環境（`IGNORED_ENV` を除く）が server と同じときだけ受ける。
 - 理由: libc なしで自分の uid を得られないが、0o700 で書き込めることは所有者である証拠になる。環境と作業ディレクトリをそろえれば
   `build_key`・ツールの起動・DWARF の `PWD` まで cold と同じになる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更どおり: `TSUZURI_SERVER_DIR` は絶対パスだけで、空は使わない・相対は `serve` が `E2000`、環境の比較は `cache::KEY_ENVIRONMENT`・`TSUZURI_*`・キャッシュ・一時・ロケール・SDK の変数と接頭辞。`src/` の読み取りを走査する drift test がある。ディレクトリの所有者は probe ファイルの `uid` と比べる）
 
 ### D6: 寿命
 
 - 決定: idle は既定 1800 s（`--idle-timeout` は 1〜86400）。compiler は起動時の canonical パスと `len`・`modified`・`ino` を要求ごとに比べ、違えば
   `compiler-changed` を返して終わる（SHA-256 は起動時に 1 回だけ計算し `status` に出す）。常駐 bytes が 1 GiB を超えたら全部捨てる。
 - 理由: 4.5 MB の hash を要求ごとに計算すると目標の 100 ms を食う。LRU は計測で必要と分かるまで作らない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更どおり: 自己点検は stat の識別。起動時の識別を `ResidentState` が固定し、`frontend_cache` はそれで鍵を作る。SHA-256 は起動時に 1 回だけ計算して `status` に出す。常駐 bytes の上限を超えたら全部捨てる）
 
 ### D7: 正しさと fallback
 
@@ -682,36 +798,133 @@ socket は `T/srv/` + `sha256(realpathSync(P))` の先頭 32 桁 + `.sock`。pro
 - 理由: 常駐状態は G17 の content key の cache だけで、cold と比べるには G17 のディスク層も止める必要がある。一致は `tests/server.mjs` と
   `--no-server` で確かめる。
 - 見直し提案: 起票時の検査モードを削った。必要なら G17 の API が固まった後に `serve --verify` として足す。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（維持。server の問題は client の黙った fallback。`tests/server.mjs` が偽のサーバー 13 種・古い socket・共有ディレクトリなどで確かめる）
 
 ### D8: 並行性と stack
 
 - 決定: 要求は main thread が 1 つずつ実行する（プロジェクトごとに同時に 1 ビルド）。accept thread は hello を書いて `sync_channel(QUEUE)` に
   入れるだけ。`stack_size` は使わない。
 - 理由: HEAD の解析は CLI・LSP とも main thread で動き（8 MiB）、同じ条件を保てる。LSP の `serve` と同じ形で idle も `recv_timeout` で書ける。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（維持。PB04 の worker は段ごとの scope で、常駐しない。`serve` は `Handler` を受け取り、`cli` を知らない。要求は `catch_unwind` で守る）
 
 ### D9: ファイル監視
 
 - 決定: std だけの polling。100 ms ごとに stat、1 s ごとと stat の変化時に `Project::load` で内容を比べる。
 - 理由: 発見の規則を `Project::load` と共有でき、新しい crate が要らない。`notify` などの crate を使う場合は要承認（新しい crate）。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（「着手時の再検討」の変更どおり: stat の署名（Unix は inode と状態変更時刻を含む）、racy な窓 2 s、Unix 以外は 1 s ごとに全ファイルを読む）
 
 ### D10: watch の CLI と server の対象
 
 - 決定: `tsuzuri watch check|build|test ...`。起票時の `tsuzuri build --watch` は採らない。server が実行するのは check と build だけ。
 - 理由: 一つの前置きで 3 つの action を扱え、各 action のオプション検査に手を入れずに済む。`run` と `test` は子プロセスの stdin・stdout・
   終了コードを client 側で扱う必要がある。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（維持。server は check・build 以外の action、解釈できない引数、`--no-server`、別のルートを `unsupported`・`root` で断る）
 
 ### D11: 常駐状態の中身
 
 - 決定: G17 の前段 cache の値と PB01 の object の値だけを保つ。`CheckedModule`・IR・成果物は保たない。
 - 理由: どちらも content key で自分を検証するので、PB06 が無効化の規則を持たずに済む（起票時の「G11 と同じ入力の規則」は各 cache の key が担う）。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（「着手時の再検討」で改めた中身: SourceMemo と DigestMemo を `src/resident.rs` に作った。frontend の pack の常駐は、測定のゲート（`parse`＋`cache` が 10% 超）を満たさず実装しなかった。`RuntimeObjects`・ツールの問い合わせの memo は取り下げ）
 
 ### D12: 計測
 
 - 決定: PX03 の `benchmarks/run-build.mjs` に 5 variant を足す。M4・M5 は `target/perf/PB06/` に置き、PX01 形式を広げない。
 - 理由: 編集の手順・標本数・記録を PX03 と共有でき、PX01 の schema を変えない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（`check-edit-body-server`・`build-edit-body-server`（server と `--no-server` を 1 標本ずつ交互に測り、`...-no-server` の record も出す）・`watch-edit-body`。`--variants` で variant を選べる）
+
+## 実装と検証（2026-10-18）
+
+### 実装した範囲
+
+全 Phase を実装した（D2 は承認済み）。基準は `a2313d19`（main `9dd0fbbc` に計測の足場を足した commit）、branch `perf/p4-PB06`。
+
+| commit | 内容 |
+| --- | --- |
+| `805bca5a` | WP0 着手時の再検討（文書だけ） |
+| `b8809a9c` | WP1 `cli(raw, program_arguments, out, err)`・`write_*(err, …)`・`errln!`・終了コードの `u8`（出力は変えない。51 のコマンドの終了コード・stdout・stderr・ファイルが基準と同じ） |
+| `72b44507` | WP2 Phase 1: `FileStamp`・`src/watch.rs`・`tsuzuri watch check\|build\|test`・`tests/watch.mjs`・文書 |
+| `1676f300` | WP3 `src/resident.rs`（`ResidentState`・`Scope`・SourceMemo・DigestMemo・起動したコンパイラの固定）、`read_source_text`・`file_digest`・`frontend_cache::compiler_identity` の hook、`watch` の接続（差し替えたコンパイラで止まる、`TSUZURI_TIME_PASSES` の回ごとの報告） |
+| `12b82438` | WP4 `src/server.rs` の protocol v1・私用ディレクトリ・ソケット名・環境の比較と、`src/` を走査する drift test |
+| `65bbb967` | WP5・WP6 `serve` の主ループ・`request`・`control`・`--no-server`・`serve --status／--stop`・`tests/server.mjs`・文書 |
+| `0a21ba08` | WP7 警告の sink（`resident::capture`・`warn`）と、プロセスの標準出力・標準エラーへ直接書く箇所の drift test |
+| `0038c72a` | WP8・WP9 PX03 の variant（`check-edit-body-server`・`build-edit-body-server`・`watch-edit-body`・`--variants`）、`lsp::serve`・`repl::run` の `Scope`、`tests/lsp_sessions.mjs` の追加 |
+| `31baa6fc` | `bind` の小さな修正（保護できない socket を消す） |
+| `342b8715` | WP10 docs/benchmarks.md の PB06 の節、strategy.md、この節、チケットを `_completed/` へ |
+| `78e10979` | WP10 `src/main.rs` の単体テスト: 直接出力する関数の一覧を固定する（server が引き受ける関数に `println!` が入ると失敗する） |
+| `dfaabc81` | 統合 branch（PR07・PR08）の merge。conflict なし |
+| `0b738480` | WP10 `tests/server.mjs` に `--emit bitcode`・`--profile-generate`・`--profile-use` の case、環境の drift test が新しい読み取りを見つけることの確認、usage.md の一文 |
+| この commit | merge した木での検証の記録（この節） |
+
+実装したもの:
+
+- **Phase 1**: `tsuzuri watch check|build|test`（`cli` を同じプロセスで繰り返す。100 ms ごとの `stat`、1 s ごとの発見、同じ長さ・同じ更新時刻の書き換えは状態変更時刻で見つける、racy な窓 2 s、touch では実行しない。Unix 以外は 1 s ごとに全ファイルを読む）。
+- **Phase 2**: `tsuzuri serve DIR [--idle-timeout S]`・`serve --status DIR`・`serve --stop DIR`・`--no-server`・`TSUZURI_SERVER_DIR`。server は check と build だけを実行し、コンパイラのパス・作業ディレクトリ・環境（drift test が守る集合）・プロジェクトのルートが同じ要求だけを受け、ほかは `unsupported`・`env`・`cwd`・`compiler`・`root`・`busy`・`too-large`・`protocol`・`internal`・`compiler-changed` で断り、client が黙って自分で実行する。常駐状態は SourceMemo と DigestMemo と、起動したコンパイラの識別の固定。
+- **Phase 3 のうち採用した 1 つ**: LSP と REPL が自分のプロセスの中で同じ `ResidentState` を使う（条件の測定は docs/benchmarks.md の PB06 の節）。
+
+### 実装しなかったもの
+
+- **G1（100 ms 級）の取り下げ**。`check` の結果の再利用（G17 が先送りした）は実装していない。常駐で減るのは起動・`load`・`cache` の一部だけで、実測は 200 module で 0.87〜0.89 倍、1,000 module で 0.62〜0.70 倍（`check`）。
+- frontend の pack の常駐: `parse`＋`cache` の段が `check` の 10% を超えるときだけ、というゲートを満たさなかった（4.9〜8.0%）。
+- Windows の named pipe（std に server 側の API がなく、`unsafe` か crate が要る）。LSP・REPL が socket で server と話すこと。`build_key` のツールの問い合わせの memo。`RuntimeObjects` の memo（約 1%）。いずれも D16 のとおり採らなかった。
+- Linux の実機、x86-64、Windows の実機での確認はない。
+
+### 偏差
+
+- `serve` は `Handler`（trait）を受け取り、`cli` を知らない（起票時は `handle: impl FnMut(&Request) -> Result<Response, Refusal>`）。`status` の返すものを handler が足せるため。
+- クライアントは `shutdown(Write)` をしない。macOS では、相手がすでに閉じたソケットへの `shutdown` が `ENOTCONN` で失敗し、`status` のように速い要求が fallback してしまった（`tests/server.mjs` の `served` の数えで見つけた）。サーバーは `set_read_timeout` の `EINVAL`（相手が閉じたソケット。macOS）でも読みを続ける。
+- accept thread は接続の直後に hello を書き、`QUEUE`（16）が満杯なら `busy` を書いて閉じる。待っているクライアントが、実行中のビルドのあいだ hello の待ちで諦めないため。
+- 環境の比較の集合は起票時の `IGNORED_ENV` の補集合ではなく、許可リスト（`cache::KEY_ENVIRONMENT`、`TSUZURI_*`、キャッシュ・一時・ロケール・SDK の変数と接頭辞）にした。ほかのチケットが足す `TSUZURI_*` は自動で入る。drift test（`every_environment_variable_that_the_compiler_reads_is_compared`）は、`src/` の `env::var`／`var_os`／`resolve_tool` の名前がこの集合に入ることを確かめ、名前が文字列でない読みと環境全体の読みは数と場所を固定する。
+- `TSUZURI_SERVER_DIR` は絶対パスだけ（相対は `serve` が `E2000`、client は使わない）。
+- `watch` は、起動したコンパイラのファイルが差し替えられると、その回のあとで終了コード 1 で止まる（起票時にない。`serve` と同じ規則）。
+- `timings::Report::start()` は前の報告の段を捨て、`watch` と `serve` は回ごと・要求ごとの報告を出す（D15）。`main` の `Report` は `disarm()` と `silence_report()` で、`watch`・`serve`・サーバーが引き受けた `check`／`build` では何も出さない。
+- PX03 の runner に `--variants` を足した（1 つの測定だけを選べる）。`measureServerPair` は server と `--no-server` を同じ runner の中で交互に測る。
+- 文書: 起票時の `_docs/tools/*.md` は `_tsuzuri/language-reference/compiler/` の各ページ（usage・option・diagnostics）に書いた。
+
+### 確認
+
+- （統合 branch を merge する前、`31baa6fc` で）`RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,494 passed、0 failed、1 ignored（103 の test binary と doc-test）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。PB06 の新しいテスト: `cargo test --lib -- resident:: watch:: server::` が 42 件（resident 10、watch 10、server 22）、`cargo test --bin tsuzuri` が 25 件（`watch`・`serve`・`--no-server` の引数と、直接出力する関数の一覧の guard を含む）。
+- E2E（`target/release/tsuzuri`）: `tests/watch.mjs`（差し替えたコンパイラで止まる・回ごとの報告を追加）、`tests/server.mjs`（5 回連続で成功。負荷の平均 42 のときを含む）、`tests/lsp_sessions.mjs`（常駐状態のあとで、同じ長さ・同じ更新時刻のファイルを読み直す scenario を追加）、`tests/repl.mjs`、`tests/script.mjs`、`tests/cache.mjs`、`tests/parallel_frontend.mjs`、`tests/e2e.mjs`、`tests/prebuilt_runtime.mjs`、`tests/bundle_identity.mjs`、`tests/handoff_tools.mjs`、`tests/llvm_handoff.mjs`、`tests/frontend_cache.mjs`、`tests/benchmark_report.mjs`。14 の suite を 1 つずつ順に実行し、すべて終了コード 0（`parallel_frontend` が 136 s、ほかは 5〜49 s）。
+- 既定の出力が変わらないこと: `target/perf/PB06/compare.mjs`（51 のコマンド。終了コード・stdout・stderr・ファイル。`--help` と引数なしのヘルプの 2 つだけが違う）と `examples-compare.mjs`（`examples/*` と `tests/fixtures/*` の 114 project の `check` と `--emit llvm` の `-O0`・`-O3`、342 のコマンドで 0 件の差）を、基準の `9dd0fbbc` のコンパイラと最終のコンパイラで比べた（scratch。`target/perf/PB06/` に置いた）。
+- `cargo +1.99.0 fmt --all -- --check`、`cargo +1.99.0 clippy --all-targets --locked -- -D warnings`、`cargo check --locked --all-targets --target x86_64-pc-windows-msvc`、`--target x86_64-unknown-freebsd`（Linux と同じ cfg の経路の型検査）が通る。`node scripts/check-docs.mjs`（usage・option・diagnostics・strategy）と `git diff --check` が通る。新しい crate と `unsafe` はない。
+- 計測は docs/benchmarks.md の PB06 の節。生のレコードは `target/perf/PB06-after-1`・`PB06-after-2`（commit しない）。
+
+### 統合 branch（PR07・PR08）との merge
+
+統合 branch `perf/phase4-compiler-performance`（`acb5caa9`。PR08 の `--emit bitcode` と PR07 の `--profile-generate`／`--profile-use`）を merge した（`dfaabc81`）。文面の conflict はなかった。読んで確かめたこと:
+
+- `--profile-generate DIR` は相対パスを `std::path::absolute`（プロセスの作業ディレクトリ）で絶対にする。server は自分と同じ作業ディレクトリの要求だけを実行するので、結果は単独の実行と同じ。
+- `--profile-use` は profile を一時ディレクトリへ写し、`cache::file_digest` でその内容を hash する。写したばかりのファイルは更新時刻から 2 s 以内なので、DigestMemo は記憶せず、毎回読む（racy の規則）。
+- `src/profile.rs` と `src/driver/lto.rs` にプロセス全体の状態（`static`・`OnceLock`・`thread_local!`）はない。
+- 新しい環境変数は `TSUZURI_LLVM_PROFDATA`・`TSUZURI_LLVM_LINK`（どちらも `TSUZURI_*`）と `LLVM_PROFILE_FILE`（接頭辞 `LLVM_`。意味があるのは server が実行しない `run` だけだが、比べる集合には入るので、違えば断って自分で実行するだけ）。drift test は、この 3 つと、サブディレクトリの `driver/lto.rs` を走査していることを確かめるようにした。
+- 直接出力する箇所は増えていない。ライブラリ側の期待の表は変えずに通り、`src/main.rs` には「直接出力する関数の一覧」を固定する単体テスト（`only_functions_that_a_server_never_runs_print_directly`）を足した。merge 後に check／build の経路へ `println!`・`eprintln!` が入ると、このテストが失敗する。
+- `tests/server.mjs` に、`build --emit bitcode`、`--profile-generate DIR`、ない profile の `--profile-use` を足した。server 経由と `--no-server` が、すべての状態で同じ出力・成果物になる（最初の 2 つは、有効なプログラムで単独の実行が失敗するホストでは外し、その旨を 1 行書く）。
+
+merge した木での結果（最終の commit で）:
+
+- `RUST_MIN_STACK=4194304 cargo test --locked --no-fail-fast`: 1,533 passed、0 failed、1 ignored（104 の test binary と doc-test。`tests/lto.rs` の 17 件を含む）。GUIDE §3.1 の回帰テスト 4 つは既定の stack で通る（各 `running 1 test`）。`cargo test --bin tsuzuri` 29 件、PB06 の lib テスト 42 件。
+- E2E 17 本（上の 14 本と `tests/pgo.mjs`〔14 sections passed、0 skipped、0 failed〕・`tests/bindings.mjs`・`tests/wasm_memory.mjs`）がすべて終了コード 0。
+- 既定の出力: 51 のコマンドのうち 48 が基準（`9dd0fbbc`）と同じで、違うのは `--help`・引数なしのヘルプ（PB06 と PR07・PR08 の行）と、`--emit nonsense` のエラー文（PR08 の `bitcode` が一覧に入った）の 3 つ。`examples/*` と `tests/fixtures/*` の 115 project、345 のコマンドは 0 件の差。
+- `node scripts/check-docs.mjs`（変更した 8 ページ）、`cargo +1.99.0 fmt`・`clippy -D warnings`、`cargo check --all-targets` の `x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-freebsd`、`sh scripts/check-runtime-includes.sh`、`git diff --check` が通る。
+
+### 目標と指標の結果
+
+- G1（100 ms 級）は取り下げた（実装しなかったものの先頭）。代わりの記録: 1 module の本体を書き換えた後の `check` は、200 module で 391〜426 → 347〜370 ms、1,000 module で 1,884〜1,975 → 1,223〜1,317 ms（server の段の total は 262・242 ms と 1,223・1,173 ms）。
+- G2: 周期 100 ms の設計で、検出だけの遅延は測っていない（E2E は時間を assert しない）。M3 の全体は、200 module で 367〜369 ms、1,000 module で 1,159〜1,546 ms。
+- G3: server を起動していない CLI は遅くならない（client の確認は、ソケットのディレクトリの `lstat` 1 回）。`check examples/hello` を基準と交互に 31 組・101 組で測って wall の中央値の差は +1.8%・+2.7%（最小は +1.1 ms・−1.5 ms）、user+sys は同じで、負荷の揺れの範囲。
+- G4: 常駐 bytes は 0.69 MiB（200 module）・3.48 MiB（1,000 module）で上限 1 GiB に遠い。server の RSS は 1,000 module の `check` で 671〜681 MiB。
+- G5: 1,000 module で server の `load` が 18〜29 ms（server なしは 476〜642 ms）、`watch` の `load` は 11〜13 ms。
+
+### 既知の制限・未確認
+
+- Linux・x86-64・Windows の実機では動かしていない（Linux 相当の cfg の経路は FreeBSD の型検査だけ）。Windows に server はない（`serve` は `E2000`、`--no-server` は受け付けて何もしない）。
+- 速度はほかの作業と共有する機械（1 分の load average 19〜48）の参考値で、`open()` の費用はこの機械のセキュリティ agent の性質に強く依存する。正式な測定は統合担当が静かな機械で行う。
+- サーバーが信頼するのは同じ利用者だけで、相手の資格は確かめない（`0700` のディレクトリが唯一の防御）。umask・資源の上限などはサーバーのもの。待っているクライアントは時間制限なしで待つ。
+- 3 つの drift test（環境変数の読み取り、`src/` の直接出力、`src/main.rs` で直接出力する関数の一覧）は、ほかのチケットが統合されたあとで、新しい読み取り・出力があれば失敗する。失敗は、その名前を比べる集合に入れるか、出力を書き込み先へ流すかの判断を求めるもので、期待の表を見直して更新する。`main.rs` の一覧に足してよいのは、server が断るコマンドの関数だけ。
+- `tests/server.mjs` はソケットのパスのために短い `TMPDIR` を要する（macOS は 103 byte まで）。panic の経路（`internal`）は E2E で起こせず、`catch_unwind` の単体の確認はない。
+
+### 決定事項の最終状態（D13〜D16。D1〜D12 は各決定の「状態」）
+
+- D13: 実装済み。`status` は `pid`・`root`・`compiler`・`compiler_sha256`・`idle_seconds`・`uptime_seconds`・`requests`・`served`・`refused`・`refusals`・`resident_bytes`・`resident_limit_bytes`・`source_hits`・`source_reads`・`digest_hits`・`digest_reads` などの JSON で、`--stop` はソケットが消えるまで（最大 5 s）待つ。サーバーがなければ終了コード 1 の `E2001`。非 Unix は `E2000`。
+- D14: 実装済み。`resident::Scope`（thread-local。入れ子と panic に対して安全）が差し込み、`Project::load*`・`build_complete` の引数は増えていない。
+- D15: 実装済み。`resident::capture`（`Captured`）と `warn`、`timings::begin_command`・`take_report`・`silence_report`、`Report::disarm`。
+- D16: ① socket での LSP・REPL との共有は採らない。② LSP・REPL が自分のプロセスの中で常駐状態を使うことは、測定の条件を満たしたので採用（REPL の cache hit が `-O0` で約 7〜9%、`-O3` で約 30%、LSP の 1,000 module の最小が約 455〜480 ms）。③ Windows の named pipe は採らない。④ `build_key` のツールの問い合わせの memo は取り下げ（ファイルの digest だけ memo する）。

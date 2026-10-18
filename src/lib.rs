@@ -28,7 +28,9 @@ mod parallel;
 pub mod parser;
 mod ranges;
 pub mod repl;
+pub mod resident;
 mod runtime_cache;
+pub mod server;
 pub mod simd;
 pub mod stdlib;
 pub mod syntax;
@@ -36,6 +38,7 @@ pub(crate) mod syntax_codec;
 pub mod target;
 pub mod timings;
 pub mod trap;
+pub mod watch;
 
 use check::{ModuleInput, ModuleOrigin};
 use diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};

@@ -17,7 +17,7 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`api-diff` は古い版と新しい版の入力 2 つと、`--json` だけを受け付けます。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json` だけを受け付けます。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
 | オプション | check | build | run | test | bench | doc | fmt | repl | script |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -32,6 +32,7 @@
 | `--backend` | | ○ | ○ | ○ | | | | | |
 | `--cpu` | | ○ | ○ | | | | | ○ | ○ |
 | `--no-cache` | | ○ | ○ | | | | | ○ | ○ |
+| `--no-server` | ○ | ○ | | | | | | | |
 | `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
 | `--debug-output` | | ○ | ○ | | | | | | |
 | `--trap-info` | | ○ | ○ | | | | | | |
@@ -306,6 +307,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 | `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`small` は native の 64-bit のサイズ区分で、実行ファイルにも付けられる |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
+| `--no-server` | サーバーに尋ねる | `check` と `build` で、`tsuzuri serve` が動いていても、その要求を出さずにこのプロセスで実行する。出力は変わらない。ほかのコマンドでは `E2000`（`--no-server is only valid with check or build`）。2 回書くと `no-server specified more than once`（[serve](usage.md#serve)） |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
@@ -326,6 +328,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | 条件 | メッセージの要点 |
 | --- | --- |
 | `--no-cache` を `check` などに付ける | `--no-cache is only valid with build, run, script, or repl` |
+| `--no-server` を `check`・`build` 以外に付ける | `--no-server is only valid with check or build` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |
@@ -443,6 +446,7 @@ flowchart TD
 | `TSUZURI_LLVM_PROFDATA` | Clang の隣、Clang の toolchain の `llvm-profdata`（PATH は探さない） | なし（同梱しない） | `--profile-use` にディレクトリを渡すとき、`.profraw` を merge する `llvm-profdata`。`TSUZURI_CLANG` の Clang と同じ LLVM のものを使う |
 | `TSUZURI_LINKER` | 未設定（Clang の既定のリンカー） | なし | ネイティブ実行ファイルと共有ライブラリの最終リンクのリンカー。`lld` は Clang に `-fuse-ld=lld` を渡す（下記）。`default`・空・未設定は Clang に任せる |
 | `TSUZURI_CACHE_DIR` | OS ごとのキャッシュ | なし | ビルドキャッシュと構文解析の結果のキャッシュ（`frontend/`）のルート。空ならどちらも使わない |
+| `TSUZURI_SERVER_DIR` | macOS は `$HOME/Library/Caches/tsuzuri/server`、Linux は `$XDG_RUNTIME_DIR/tsuzuri` | なし | `tsuzuri serve` のソケットのディレクトリ（絶対パス。`0700`）。空なら、サーバーを使わない（`serve` は `E2000`）。相対パスは、`serve` では `E2000`、`check`・`build` では使わない（[serve](usage.md#serve)） |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
@@ -508,7 +512,7 @@ WASM の heap／host／runtime の IR 変換と、freestanding header の IR の
 Clang・リンカーの実行は `emit` に含めず、それぞれの `tool.*` に分けます。
 `total_ms` は引数解析、成果物の書き出し、`run` の実行先など、個別の段に入れない時間も含みます。
 
-失敗したコマンドでも、元の診断と終了コードを保ったまま最後に出します。LSP ではサーバーの終了時です。
+失敗したコマンドでも、元の診断と終了コードを保ったまま最後に出します。LSP ではサーバーの終了時です。`watch` は 1 回ごとに（状態行の前に）、`serve` が引き受けた要求は 1 要求ごとに（応答の標準エラーの最後に付き、クライアントが書きます）、その回の分だけを出します。サーバーとクライアントで `TSUZURI_TIME_PASSES` が違うと、サーバーは断ります。
 IR・header・object・WASM の生成には作用しません。macOS の実行ファイルで毎回変わる UUID と署名は、
 計測を付ける前からあるリンカーの性質です。native Windows の標準 COFF object には Clang が現在時刻を
 `TimeDateStamp` として書きます。成果物の比較は、この header の 4 bytes だけを除き、ほかの byte とサイズを厳密に照合します。

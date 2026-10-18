@@ -63,10 +63,21 @@ Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない
 [コンパイラのスレッド数](../_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
 診断の順序・件数・上限、IR、キャッシュの内容はスレッド数で変わりません。
 
+`tsuzuri watch check|build|test` は、そのコマンドを同じプロセスで実行し、読むファイル（ユーザーのソースとマニフェスト）が変わるたびにもう一度実行します（PB06）。
+各回の診断・警告・IR・終了コードは、同じ引数の単独のコマンドと同じです。変更は `stat`（Unix では状態変更時刻を含みます）で見つけ、
+本文が同じ保存では実行しません。プロセスは、読んだソースの本文と内容ハッシュを `stat` つきで覚え、書き換えられていないファイルは開き直さず、
+起動したコンパイラのファイルが差し替えられると、その回のあとで止まります（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#watch)）。
+
+`tsuzuri serve DIR`（macOS と Linux。PB06）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラのファイル・作業ディレクトリ・
+コンパイラとそのツールが読む環境変数（`PATH`、`TSUZURI_*` など）で起動した `check` と `build` は、サーバーが実行して出力を返し、
+サーバーがなければ（断られても）黙って自分で実行します。標準出力・標準エラー・終了コード・成果物は、サーバーの有無と `--no-server` の有無で変わりません。
+ソケットは、`TSUZURI_SERVER_DIR`（空ならサーバーを使わない）の `0700` のディレクトリにあり、同じ利用者だけを信頼します
+（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。
+
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
 成功・失敗の終了コード、診断、生成コードには作用せず、`--json` の診断とは別の JSON です。
-`1` 以外では無効です。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
+`1` 以外では無効です。`watch` では 1 回ごとに、その回の分だけを 1 行出します。段の定義は [コンパイラ構成](architecture.md#コンパイルの段階別時間) にあります。
 `emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、外部ツールの時間とは分けます。
 
 コンパイラの環境変数 `TSUZURI_RANGE_FLAGS`（PR02）は、整数の `+ - *` に LLVM の `nsw`／`nuw` を書くかを選びます。

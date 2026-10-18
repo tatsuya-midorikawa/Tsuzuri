@@ -631,6 +631,31 @@ VS Code や Neovim など、LSP 対応のエディタから利用可能な標準
 - **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、未使用ローカル変数のクイックフィックス。
 - **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md) を参照してください。
 
+### 変更の監視 (`tsuzuri watch`)
+
+`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は単独のコマンドと同じで、回の終わりに `watch: run N finished with exit code C` を標準エラーへ書きます（`--json` では `{"type":"watch","run":N,"exit":C}`）。
+
+```sh
+tsuzuri watch check app/
+tsuzuri watch test app/ --filter parse
+```
+
+変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。1 回ごとの仕事は新しいコマンドと同じですが、読んだソースの本文と内容ハッシュを `stat` つきで覚えているので、変わっていないファイルは開き直しません。起動したコンパイラのファイルが差し替えられると、その回のあとで止まります。Ctrl-C で止めます。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#watch) を参照してください。
+
+### 常駐ビルドサーバー (`tsuzuri serve`)
+
+1 つのプロジェクトのビルドサーバーを前面で動かします（macOS と Linux）。同じコンパイラ・作業ディレクトリ・環境変数で起動した `check` と `build` は、サーバーが実行して出力を返し、サーバーがなければ（断られても）黙って自分で実行します。出力（標準出力・標準エラー・終了コード・成果物）は、サーバーがあってもなくても同じです。
+
+```sh
+tsuzuri serve app/ &
+tsuzuri check app/
+tsuzuri build app/ -O0 -o app/hello --no-server   # サーバーを使わない
+tsuzuri serve --status app/
+tsuzuri serve --stop app/
+```
+
+サーバーは読んだソースの本文と内容ハッシュを覚えます。要求は 1 つずつ実行し、`--idle-timeout`（既定 1800 秒）のあいだ要求がなければ終わります。ソケットは `TSUZURI_SERVER_DIR`（既定は macOS が `~/Library/Caches/tsuzuri/server`、Linux が `$XDG_RUNTIME_DIR/tsuzuri`）の中の `0700` のディレクトリに作り、同じ利用者だけを信頼します。空の `TSUZURI_SERVER_DIR=` はサーバーを使いません。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#serve) を参照してください。
+
 ### REPL (`tsuzuri repl`)
 
 宣言・トップレベルの `let`・式を 1 つずつ入力し、型と値を確かめる対話環境です。JIT は使わず、入力ごとにそれまでに受け付けた宣言と `let` を含む `Main.tz` を作り直し、`tsuzuri run` と同じ経路で検査・実行します（既定 `-O0`）。
@@ -824,6 +849,10 @@ tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SE
 tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 tsuzuri test source.tz|directory [options]
 tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3]
+tsuzuri watch check|build|test source.tz|directory [options of that command]
+tsuzuri serve directory [--idle-timeout SECONDS]
+tsuzuri serve --status directory | --stop directory
+tsuzuri check|build ... [--no-server]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
@@ -870,7 +899,7 @@ tsuzuri lsp
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
 - **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
 - **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
-- **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
+- **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します（`watch` は 1 回ごと、`serve` が引き受けた要求は 1 要求ごとに、その回の分だけです）。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 
 ---
 
@@ -942,6 +971,8 @@ node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
+node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで止まること、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
+node tests/server.mjs target/release/tsuzuri   # PB06: tsuzuri serve（Unix だけ。Windows では serve が E2000 であることの確認）。サーバーが実行した check・build の出力と成果物が --no-server と同じこと（ソースの状態ごと、覚えたあとの編集を含む）、環境・作業ディレクトリ・コンパイラ・ルート・未対応のコマンド・protocol の断り、並行する要求、サーバーでないもの・残った socket・共有されたディレクトリでの黙った fallback、二重起動、idle・差し替えたコンパイラでの終了、TSUZURI_TIME_PASSES、serve の引数の E2000。ソケットのパス長のため TMPDIR は短くする（macOS で 103 byte まで）
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri

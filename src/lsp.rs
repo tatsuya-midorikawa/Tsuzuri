@@ -2449,6 +2449,10 @@ pub fn serve(
         }
     });
     let mut session = Session::default();
+    // The sources that the project loads again at every change are read from memory while their
+    // `stat` says that they are the same (PB06).
+    let mut resident = crate::resident::ResidentState::new();
+    let _resident = crate::resident::Scope::enter(&mut resident);
     loop {
         let event = if let Some(deadline) = session
             .pending
