@@ -255,8 +255,9 @@ fn emit_library(source: &str, wasm: bool) -> String {
 
 #[test]
 fn consed_chunks_grow_by_half_up_to_32_kib() {
-    // The first chunk fits 32 bytes with its 24-byte header and a later one at most 32 KiB, in slots
-    // of the element, with the slots aligned like it: 16-byte slots start at offset 32.
+    // The first chunk has the slots that fit 32 bytes with its 24-byte header, and one slot at least (so
+    // the chunk of a `string` is 40 bytes, that of an `i128` 48), and a later one at most 32 KiB, in
+    // slots of the element, with the slots aligned like it: 16-byte slots start at offset 32.
     let source = "export def i :: i64 -> i64\nfn i x = (List.cons x [||]).length
 export def s :: i64 -> i64\nfn s x = (List.cons (\"a\" + \"b\") [||]).length + x
 export def u :: i64 -> i64\nfn u x = (List.cons () [||]).length + x

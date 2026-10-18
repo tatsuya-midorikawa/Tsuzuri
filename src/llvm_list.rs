@@ -25,9 +25,12 @@ use super::*;
 /// The bytes of a chunk header: the next pointer, `rest` and `capacity`.
 const LIST_HEADER_BYTES: usize = 24;
 /// The most bytes, header included, of a chunk that `List.cons` adds. A chunk that is built at
-/// once has no limit but the allocation size.
+/// once has no limit but the allocation size. A chunk has one slot at least, so an element of more
+/// than `LIST_CHUNK_MAX_BYTES - LIST_HEADER_BYTES` bytes gets a chunk that is larger.
 const LIST_CHUNK_MAX_BYTES: usize = 32_768;
-/// The bytes, header included, that the first chunk of a list built by `List.cons` fits.
+/// The bytes, header included, that the first chunk of a list built by `List.cons` fits, with one
+/// slot at least: that holds for an element of 8 bytes or less, and the chunk of an element of
+/// more bytes is larger (40 bytes for a `string`, 48 for an `i128` or a 24-byte record).
 const LIST_FIRST_CHUNK_BYTES: usize = 32;
 
 /// A list under construction. `list_builder` allocates its only chunk, `list_append` or
