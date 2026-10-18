@@ -125,6 +125,7 @@ jobs:
           node tests/features.mjs target/release/tsuzuri storage
           node tests/features.mjs target/release/tsuzuri last_use
           node tests/features.mjs target/release/tsuzuri param_facts
+          node tests/features.mjs target/release/tsuzuri list_chunks
       # PM02: a function value or a Task is { descriptor, environment }. primitives.mjs runs the four kinds of function value
       # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
       # without running a process (LLDB is on the macOS runners only).
@@ -154,6 +155,7 @@ jobs:
           node tests/small_allocator.mjs target/release/tsuzuri
           TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri vec
           TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri storage
+          TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri list_chunks
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         run: |
@@ -271,6 +273,8 @@ jobs:
           node benchmarks/run.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-build.mjs target/release/tsuzuri --quick --out target/perf/ci-build
           node benchmarks/run-lto.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node tests/benchmark_list_memory.mjs target/release/tsuzuri
+          node benchmarks/run-list-memory.mjs target/release/tsuzuri --quick --wasm --metrics target/perf/ci-core
           node benchmarks/run-apps.mjs target/release/tsuzuri --quick --metrics target/perf/ci-apps
           node benchmarks/metrics.mjs report target/perf/ci-core target/perf/ci-build target/perf/ci-apps
       - name: Frontend benchmark record smoke

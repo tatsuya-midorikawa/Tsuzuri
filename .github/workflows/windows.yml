@@ -151,6 +151,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Last-use failed: $LASTEXITCODE" }
           node tests/features.mjs target/release/tsuzuri.exe param_facts
           if ($LASTEXITCODE -ne 0) { throw "Ownership facts failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe list_chunks
+          if ($LASTEXITCODE -ne 0) { throw "List chunks failed: $LASTEXITCODE" }
       - name: Last-use differential fuzz smoke
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/last_use_fuzz.mjs target/release/tsuzuri.exe 40 1 4
