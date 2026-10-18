@@ -52,7 +52,8 @@ for (const { workload, size, variants } of results) {
   if (["list_to_array", "array_to_list"].includes(workload)) assert.equal(allocations.calls, 2, `${workload}(${size}) is a chunk and an array`);
   if (workload === "escape_list") assert.ok(allocations.calls <= size, `${workload}(${size}) moves at most one chunk per call to the heap`);
   if (["bulk_new", "tail_consume", "index_walk", "walk_list", "fold_list"].includes(workload)) assert.equal(allocations.calls, 1, `${workload}(${size}) is one chunk`);
-  assert.ok(wall_ms.length === 1 && wall_ms[0] > 0, `${workload}(${size}) is timed`);
+  // A run that LLVM folds into a constant (`escape_list` of 1) can read 0 on a coarse clock, so a time is a number that is not negative.
+  assert.ok(wall_ms.length === 1 && Number.isFinite(wall_ms[0]) && wall_ms[0] >= 0, `${workload}(${size}) is timed`);
 }
 assert.equal(wasm.default.rows.length, workloads.length);
 console.log("list-memory benchmark: references, arguments and a quick run verified");
