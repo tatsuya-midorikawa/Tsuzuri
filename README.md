@@ -885,6 +885,7 @@ tsuzuri lsp
 | `--wasm-feature simd128\|threads\|jspi\|webgpu\|net` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。`small`（PM05）は native の 64-bit のサイズ区分 allocator で、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリに任せます（実行ファイル・object・共有ライブラリ・LLVM IR・header。WASM・`--trap-mode return`・`--freestanding` とは排他）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
+| `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](_tsuzuri/language-reference/compiler/option.md#コード生成器)）。 |
 | `--strip` | native の実行ファイルのリンクでローカルシンボルを除きます（`build` の `--emit exe` だけ。`-g`・WASM とは組み合わせられず、Windows のリンクは変わりません）。 |
 | `--wasm-opt` | wasm32 の `.wasm` のリンク後に Binaryen の `wasm-opt -Oz` を実行します（`build` の `--emit wasm` だけ。`-g`・threads・wasm64 とは組み合わせられません）。Binaryen は同梱せず、`--wasm-opt` を付けたときだけ使います。見つからない・失敗したときは `E2002` です。場所は環境変数 `TSUZURI_WASM_OPT`（この変数だけでは何も実行しません）。 |
 | `--profile-generate DIR` / `--profile-use PATH` | プロファイル誘導最適化（`build` と `run`）。`--profile-generate` は、native の実行ファイルとオブジェクトを計装し、正常に終了したときに LLVM の raw profile（`.profraw`）を `DIR` に書きます。`--profile-use` は、merge 済みの `.profdata` か `.profraw` のディレクトリ（`llvm-profdata` で merge）で最適化します。wasm32 の module も使え、その host は module の隣の `app.wasm.profile.mjs` の `writeProfile(instance)` で書きます。LLVM の Clang が要り（同梱の `tsuzuri-clang` は `E2002`）、Windows と別の機械の `--target` は `E2000` です。速くなる種目も遅くなる種目もあります（[詳細](./_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。 |
@@ -919,6 +920,19 @@ RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテ�
 TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
 TSUZURI_STRINGS=compact RUST_MIN_STACK=4194304 cargo test --locked   # IR を出すテスト全体をコンパクト文字列で。IR の形そのものを固定するテストは、形式を自分で選ぶ（PM03）
 cargo build --release --locked
+
+# 高速デバッグバックエンド（PB05。`--backend fast`）。feature なしのビルドと検証は上のとおりで、変わらない
+cargo clippy --all-targets --features fast-backend -- -D warnings
+RUST_MIN_STACK=4194304 cargo test --locked --features fast-backend --test fast_backend --test fast_backend_ops   # 翻訳器: layout を Clang と照合、E2002 の表、IR の翻訳と決定性、test の runner、約 780 の演算を Clang の object と native では bit 単位で、wasm32 では Node で（NaN の payload を除いて）比較
+cargo build --release --locked --features fast-backend
+node tests/fast_backend.mjs target/release/tsuzuri   # option の表（E2000）、hello・trap・--trap-info・run、thread 数の決定性、export する symbol、cache の鍵、test、-g の行表、旗なしの IR の不変
+node tests/fast_backend.mjs programs target/release/tsuzuri   # examples と fixtures を llvm と fast の両方で動かして出力と終了状態を比べる（library は export する symbol）。FAST_DEBUG=1 で -g も付ける
+node tests/fast_backend.mjs debug target/release/tsuzuri   # 同じ projects を -g で作り、fast の DWARF を llvm-dwarfdump --verify で検証し、関数ごとの行を llvm のものと比べる
+node tests/fast_backend.mjs wasm target/release/tsuzuri   # wasm32: 同じ projects を llvm と fast で作り、fast の module が validate を通ること、import・export が同じことを確かめ、すべての export を同じ入力で Node から呼んで結果を比べる。FAST_WASM_ARGS="--allocator small" などで option を足せる
+node tests/fast_backend.mjs parity e2e strings tasks features   # 既存の suite を、tsuzuri と clang の wrapper の下で fast に流す（wasm32 の build も）。翻訳した件数と fall back の理由を suite ごとに表示。FAST_FORCE=1 で最適化つきの build も -O0 の fast にする。clang しか使わない suite は wasm_heap=wasm32 のように引数を渡す
+node benchmarks/run-backend.mjs --out target/perf/backend   # llvm と fast の build 時間・CPU 時間・メモリ（合成 200・1,000 モジュール。docs/benchmarks.md の PB05）。--target wasm32 で wasm32
+node benchmarks/run-backend-kernels.mjs --out target/perf/kernels   # benchmarks/control の 16 種目を、llvm の -O0、fast の -O0、llvm の -O3 で作って実行時間を比べる（checksum が同じことも確かめる）。--target wasm32 で Node の中で動かす
+TSUZURI_FAST_OPS_EXPORT=DIR TSUZURI_FAST_OPS_TARGET=x86_64-unknown-linux-gnu cargo test --locked --features fast-backend --test fast_backend_ops operations_agree_with_clang   # 比較の材料（host.c、IR、別の機械向けの object）を DIR に書いて止まる。Linux のコンテナで clang と比べる（x86-64 の Linux など、この機械で動かせない target の確認）
 
 # 統合 E2E テスト・言語機能テスト
 node tests/e2e.mjs target/release/tsuzuri

@@ -69,6 +69,13 @@ impl Profile {
         if self.is_none() {
             return Ok(());
         }
+        // Instrumentation and the use of a profile are Clang's work on the IR (PB05 does not make them).
+        if options.backend == Backend::Fast {
+            return Err(driver_error(
+                "E2000",
+                "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use",
+            ));
+        }
         if options.target.is_wasm() {
             return self.validate_wasm(options);
         }

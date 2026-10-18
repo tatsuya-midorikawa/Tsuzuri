@@ -224,19 +224,30 @@ try {
       { args: ["build", app, "-O0", "--cpu", "generic", "-o", join(out, "a")], executable: join(out, "a") },
     ];
     // Options that other tickets added travel in the request like any other: bitcode (PR08), an instrumented
-    // build and a profile that is not there (PR07). The first two need what a host may not have, an LLVM tool or
-    // the profile runtime of Clang, and then fail alone with E2002 (LLVM or the linker failed): such a command is
-    // left out, with a line that says why. It is not when CI, LLVM_PREFIX or TSUZURI_PGO_STRICT=1 say that the
-    // toolchain is there on purpose, and a failure of any other kind is a failure of this test.
+    // build and a profile that is not there (PR07), the fast backend (PB05). The first two need what a host may not
+    // have, an LLVM tool or the profile runtime of Clang, and then fail alone with E2002 (LLVM or the linker failed):
+    // such a command is left out, with a line that says why. It is not when CI, LLVM_PREFIX or TSUZURI_PGO_STRICT=1
+    // say that the toolchain is there on purpose, and a failure of any other kind is a failure of this test. The
+    // fast backend is left out when this tsuzuri was built without it, whatever the environment says.
     const strict = Boolean(process.env.CI || process.env.LLVM_PREFIX) || process.env.TSUZURI_PGO_STRICT === "1";
     save(main, "42\n");
     for (const [label, command] of [
       ["--emit bitcode", { args: ["build", app, "--emit", "bitcode", "-O0", "-o", join(out, "a.bc")], artifact: join(out, "a.bc") }],
       ["--profile-generate", { args: ["build", app, "--profile-generate", join(out, "prof"), "-O0", "-o", join(out, "p")], executable: join(out, "p") }],
+      ["--backend fast", { args: ["build", app, "-O0", "--backend", "fast", "-o", join(out, "f")], executable: join(out, "f") }],
+      ["--backend fast --emit object", { args: ["build", app, "-O0", "--backend", "fast", "--emit", "object", "-o", join(out, "f.o")], artifact: join(out, "f.o") }],
+      ["--backend fast --target wasm32", { args: ["build", app, "--target", "wasm32", "-O0", "--backend", "fast", "-o", join(out, "f.wasm")], artifact: join(out, "f.wasm") }],
     ]) {
       const result = alone(command.args);
-      if (result.status === 0) {
+      // A wasm32 module needs an entry point or an export, which the `42` of this test is not: the command fails alone
+      // with E2004 like the LLVM one above, and the server must report the same error.
+      const noEntry = label.endsWith("wasm32") && /error\[E2004\]/.test(result.stderr);
+      if (result.status === 0 || noEntry) {
         commands.push(command);
+        continue;
+      }
+      if (label.startsWith("--backend fast") && /built without the fast backend/.test(result.stderr)) {
+        console.log(`Server: ${label} is not tested: this tsuzuri was built without the fast backend`);
         continue;
       }
       assert.ok(!strict && /error\[E2002\]/.test(result.stderr), `${label} fails alone${strict ? " where the toolchain is meant to be there" : ""}:\n${result.stderr}`);

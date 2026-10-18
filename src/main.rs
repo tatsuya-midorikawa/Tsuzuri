@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
+use tsuzuri::driver::{
+    self, Backend, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost,
+};
 use tsuzuri::llvm::Allocator;
 use tsuzuri::server;
 
@@ -180,6 +182,15 @@ Build options:
   -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
                          take -O0 to -O3. Language semantics, traps, and debug information do
                          not change; the code is usually slower than at -O3
+  --backend llvm|fast    Code generator of build, run, and test (default: llvm). fast translates
+                         the -O0 IR to machine code in the compiler itself instead of running
+                         Clang on it, for a quicker edit-build-run loop; the code runs like -O0
+                         code. It takes -O0 (its default, and test's), native exe and object
+                         output, --trap-info, --strip, -g (function and line information, not
+                         variables), --allocator, --freestanding, and --trap-mode return; --cpu
+                         native and WebAssembly stay with llvm. It needs a tsuzuri built with
+                         --features fast-backend on a macOS or Linux host with an AArch64 or
+                         x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -381,6 +392,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut triple = None;
     let mut emit = None;
     let mut optimization = None;
+    let mut backend = None;
     let mut cpu = None;
     let mut json = false;
     let mut deny_warnings = false;
@@ -750,6 +762,19 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     optimization = OptLevel::from_flag(level);
                     continue;
                 }
+                Some("--backend") => {
+                    if backend.is_some() {
+                        return Err("backend specified more than once".into());
+                    }
+                    backend = Some(
+                        match next_value(arguments, &mut position, "--backend")?.to_str() {
+                            Some("llvm") => Backend::Llvm,
+                            Some("fast") => Backend::Fast,
+                            _ => return Err("backend must be 'llvm' or 'fast'".into()),
+                        },
+                    );
+                    continue;
+                }
                 Some("--cpu") => {
                     if cpu.is_some() {
                         return Err("CPU tuning specified more than once".into());
@@ -802,6 +827,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
+    }
+    if backend.is_some() && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err("--backend applies only to build, run, and test".into());
     }
     if no_server && !matches!(action, Action::Check | Action::Build) {
         return Err("--no-server is only valid with check or build".into());
@@ -965,6 +993,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         return Err("check does not use CPU tuning".into());
     }
     let target = target.unwrap_or(Target::Native);
+    let backend = backend.unwrap_or_default();
     let options = BuildOptions {
         target,
         emit: emit.unwrap_or(if target.is_wasm() {
@@ -972,11 +1001,15 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             Emit::Executable
         }),
-        optimization: optimization.unwrap_or(if action == Action::Test {
-            OptLevel::O0
-        } else {
-            OptLevel::O3
-        }),
+        // The fast backend translates -O0 IR, so -O0 is its default.
+        optimization: optimization.unwrap_or(
+            if action == Action::Test || backend == Backend::Fast {
+                OptLevel::O0
+            } else {
+                OptLevel::O3
+            },
+        ),
+        backend,
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
         trap_info: trap_info
@@ -1283,6 +1316,7 @@ fn run_test_action(
         coverage: arguments.coverage.is_some(),
         seed: arguments.test_seed,
         triple: arguments.options.triple,
+        backend: arguments.options.backend,
     };
     if options
         .indices
@@ -3123,6 +3157,337 @@ mod tests {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
         assert!(HELP.contains("--strip"));
+    }
+
+    #[test]
+    fn rejects_fast_backend_combinations() {
+        let level = |flag: &str| {
+            format!("--backend fast supports only -O0; remove {flag} or use --backend llvm")
+        };
+        let native = |other: &str| {
+            format!(
+                "--backend fast supports only the native target and wasm32; use --backend llvm for {other}"
+            )
+        };
+        let wasm_option = |name: &str| {
+            format!(
+                "--backend fast does not support {name} for wasm32; remove it or use --backend llvm"
+            )
+        };
+        let wasm_output = |kind: &str| {
+            format!(
+                "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit {kind}"
+            )
+        };
+        let output = |kind: &str| {
+            format!(
+                "--backend fast produces only exe and object outputs; use --backend llvm for --emit {kind}"
+            )
+        };
+        let option = |name: &str| {
+            format!("--backend fast does not support {name} yet; remove it or use --backend llvm")
+        };
+        // The message does not name which profile option was given. The profile options are checked
+        // after the others, so a build without the fast backend says that first.
+        let profile = if cfg!(feature = "fast-backend") {
+            "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned()
+        } else {
+            "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned()
+        };
+        let fast = |extra: &[&'static str]| {
+            let mut values = vec!["build", "Main.tz", "--backend", "fast"];
+            values.extend_from_slice(extra);
+            values
+        };
+        let mut cases = vec![
+            (
+                vec!["build", "Main.tz", "--backend", "gcc"],
+                "backend must be 'llvm' or 'fast'".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend"],
+                "--backend needs a value".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend", "fast", "--backend", "fast"],
+                "backend specified more than once".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend", "fast", "--backend", "llvm"],
+                "backend specified more than once".to_owned(),
+            ),
+        ];
+        for action in ["check", "fmt", "doc", "bench"] {
+            for backend in ["fast", "llvm"] {
+                cases.push((
+                    vec![action, "Main.tz", "--backend", backend],
+                    "--backend applies only to build, run, and test".to_owned(),
+                ));
+            }
+        }
+        for flag in ["-O1", "-O2", "-O3", "-Os", "-Oz"] {
+            cases.push((fast(&[flag]), level(flag)));
+        }
+        cases.extend([
+            (fast(&["--target", "wasm64"]), native("wasm64")),
+            (fast(&["--target", "wasm32", "-O3"]), level("-O3")),
+            (
+                fast(&["--target", "x86_64-unknown-linux-gnu"]),
+                native("--target x86_64-unknown-linux-gnu"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "simd128"]),
+                wasm_option("--wasm-feature simd128"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-host", "wasi"]),
+                wasm_option("--wasm-host"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "threads"]),
+                wasm_option("--wasm-feature threads"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "jspi"]),
+                wasm_option("--wasm-feature jspi"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "webgpu"]),
+                wasm_option("--wasm-feature webgpu"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "net"]),
+                wasm_option("--wasm-feature net"),
+            ),
+            (fast(&["--target", "wasm32", "-g"]), wasm_option("-g")),
+            (
+                fast(&["--target", "wasm32", "--wasm-opt"]),
+                wasm_option("--wasm-opt"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "llvm"]),
+                wasm_output("llvm"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "bindings-js"]),
+                wasm_output("bindings-js"),
+            ),
+            (fast(&["--emit", "llvm"]), output("llvm")),
+            (fast(&["--emit", "header"]), output("header")),
+            (fast(&["--emit", "wasm"]), output("wasm")),
+            (fast(&["--emit", "wgsl"]), output("wgsl")),
+            (fast(&["--emit", "wgsl-relaxed"]), output("wgsl-relaxed")),
+            (fast(&["--emit", "spirv"]), output("spirv")),
+            (fast(&["--emit", "spirv-relaxed"]), output("spirv-relaxed")),
+            (fast(&["--emit", "shared"]), output("shared")),
+            (fast(&["--emit", "bitcode"]), output("bitcode")),
+            (fast(&["--profile-generate", "prof"]), profile.clone()),
+            (fast(&["--profile-use", "p.profdata"]), profile.clone()),
+            (fast(&["--emit", "bindings-js"]), output("bindings-js")),
+            (fast(&["--emit", "bindings-cs"]), output("bindings-cs")),
+            (fast(&["--emit", "bindings-py"]), output("bindings-py")),
+            (fast(&["--emit", "bindings-cpp"]), output("bindings-cpp")),
+            (fast(&["--cpu", "native"]), option("--cpu native")),
+        ]);
+        for (values, message) in cases {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        // The default code generator keeps every option it had.
+        for values in [
+            vec!["build", "Main.tz", "--backend", "llvm", "-O2", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "llvm",
+                "--target",
+                "wasm32",
+            ],
+            vec!["build", "Main.tz", "--backend", "llvm", "--cpu", "native"],
+            vec!["run", "Main.tz", "--backend", "llvm", "-Oz"],
+        ] {
+            let options = parse(&values).unwrap().options;
+            assert_eq!(options.backend, Backend::Llvm, "{values:?}");
+        }
+        assert!(HELP.contains("--backend llvm|fast"));
+    }
+
+    #[test]
+    fn accepts_fast_backend_at_o0() {
+        let unavailable = if !cfg!(all(
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
+            Some(format!(
+                "--backend fast is not available on {}-{}; use --backend llvm",
+                env::consts::OS,
+                env::consts::ARCH
+            ))
+        } else if !cfg!(feature = "fast-backend") {
+            Some("this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned())
+        } else {
+            None
+        };
+        for values in [
+            vec!["build", "Main.tz", "--backend", "fast"],
+            vec!["run", "Main.tz", "--backend", "fast"],
+            vec!["Main.tz", "--backend", "fast", "-O0"],
+            vec!["build", "Main.tz", "--backend", "fast", "--emit", "object"],
+            vec!["build", "Main.tz", "--backend", "fast", "--emit", "exe"],
+            vec!["build", "Main.tz", "--backend", "fast", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory",
+                "64MiB",
+                "--wasm-stack-size",
+                "128KiB",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--trap-info",
+                "--allocator",
+                "counting",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "counting",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--trap-mode",
+                "return",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--freestanding",
+                "--allocator",
+                "host",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--debug-info",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "test",
+                "Main.tz",
+                "--index",
+                "0",
+                "-g",
+                "-o",
+                "tests",
+                "--backend",
+                "fast",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--trap-info",
+                "--strip",
+                "--no-cache",
+                "--debug-output",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "host",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "system",
+                "-l",
+                "m",
+                "-L",
+                ".",
+            ],
+        ] {
+            match (parse(&values), &unavailable) {
+                (Ok(arguments), None) => {
+                    assert_eq!(arguments.options.backend, Backend::Fast, "{values:?}");
+                    assert_eq!(arguments.options.optimization, OptLevel::O0, "{values:?}");
+                }
+                (Err(message), Some(expected)) => assert_eq!(&message, expected, "{values:?}"),
+                (result, _) => panic!("{values:?}: {:?}", result.map(|_| ())),
+            }
+        }
+        // Without the option, the options are the ones of the default code generator.
+        for action in ["build", "run"] {
+            let options = parse(&[action, "Main.tz"]).unwrap().options;
+            assert_eq!(options.backend, Backend::Llvm);
+            assert_eq!(options.optimization, OptLevel::O3);
+        }
+        let llvm = parse(&["build", "Main.tz", "--backend", "llvm"])
+            .unwrap()
+            .options;
+        assert_eq!(llvm.backend, Backend::Llvm);
+        assert_eq!(llvm.optimization, OptLevel::O3);
     }
 
     #[test]

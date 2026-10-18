@@ -397,11 +397,22 @@ impl OptLevel {
     }
 }
 
+/// The code generator of a native build (`--backend`, PB05): Clang over the module's LLVM IR, or the
+/// built-in Cranelift translator of the `-O0` IR for a fast edit-build-run loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    Llvm,
+    Fast,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
     pub emit: Emit,
     pub optimization: OptLevel,
+    /// `--backend`: part of the build cache key through the `Debug` text of the options.
+    pub backend: Backend,
     pub cpu: Cpu,
     pub debug_output: bool,
     pub trap_info: bool,
@@ -445,6 +456,7 @@ impl Default for BuildOptions {
             target: Target::Native,
             emit: Emit::Executable,
             optimization: OptLevel::O3,
+            backend: Backend::Llvm,
             cpu: Cpu::Generic,
             debug_output: false,
             trap_info: false,
@@ -475,6 +487,9 @@ impl BuildOptions {
     }
 
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.backend == Backend::Fast {
+            self.validate_fast()?;
+        }
         if self.emit.is_kernel()
             && (self.target != Target::Native
                 || self.triple.is_some()
@@ -721,6 +736,139 @@ impl BuildOptions {
             ));
         }
         wasm_memory_limits(self.target, self.wasm_max_memory, self.wasm_stack_size)?;
+        Ok(())
+    }
+
+    /// What `--backend fast` accepts (PB05): `-O0` executables and objects of the machine the compiler
+    /// runs on, and `-O0` `wasm32` modules and objects, with the options that do not change the code
+    /// the translator sees. It names every field and has no `..`, so that an option added later does
+    /// not compile until someone decides whether the fast backend supports it. The checks that
+    /// depend on the build of `tsuzuri` and on the host come last, so that the option errors do not
+    /// depend on them.
+    fn validate_fast(self) -> Result<(), Diagnostic> {
+        let Self {
+            target,
+            emit,
+            optimization,
+            backend: _,
+            cpu,
+            debug_output: _,
+            trap_info: _,
+            debug_info,
+            wasm_simd,
+            wasm_threads,
+            wasm_jspi,
+            wasm_webgpu,
+            wasm_net,
+            wasm_host,
+            wasm_max_memory: _,
+            wasm_stack_size: _,
+            cache: _,
+            trap_return: _,
+            allocator: _,
+            freestanding: _,
+            strip: _,
+            wasm_opt,
+            triple,
+        } = self;
+        if optimization != OptLevel::O0 {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast supports only -O0; remove {} or use --backend llvm",
+                    optimization.flag()
+                ),
+            ));
+        }
+        // The name of the output kind as the command line spells it.
+        let output_kind = || {
+            emit.bindings().map_or_else(
+                || match emit {
+                    Emit::WgslRelaxed => "wgsl-relaxed".to_owned(),
+                    Emit::SpirvRelaxed => "spirv-relaxed".to_owned(),
+                    other => format!("{other:?}").to_ascii_lowercase(),
+                },
+                |(kind, _)| kind.to_owned(),
+            )
+        };
+        if target == Target::Wasm64 || triple.is_some() {
+            let other = match (target, triple) {
+                (_, Some(triple)) => format!("--target {}", triple.name()),
+                _ => "wasm64".to_owned(),
+            };
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast supports only the native target and wasm32; use --backend llvm for {other}"
+                ),
+            ));
+        }
+        if target == Target::Wasm32 {
+            // Nothing else of a WebAssembly build changes the IR or the objects that the translator
+            // sees, apart from what the line table of `-g` would need.
+            let unsupported = [
+                (wasm_simd, "--wasm-feature simd128"),
+                (wasm_threads, "--wasm-feature threads"),
+                (wasm_jspi, "--wasm-feature jspi"),
+                (wasm_webgpu, "--wasm-feature webgpu"),
+                (wasm_net, "--wasm-feature net"),
+                (wasm_host.is_some(), "--wasm-host"),
+                (wasm_opt, "--wasm-opt"),
+                (debug_info, "-g"),
+            ]
+            .into_iter()
+            .find_map(|(set, option)| set.then_some(option));
+            if let Some(option) = unsupported {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "--backend fast does not support {option} for wasm32; remove it or use --backend llvm"
+                    ),
+                ));
+            }
+            if !matches!(emit, Emit::Wasm | Emit::Object) {
+                return Err(driver_error(
+                    "E2000",
+                    format!(
+                        "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit {}",
+                        output_kind()
+                    ),
+                ));
+            }
+        } else if !matches!(emit, Emit::Executable | Emit::Object) {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast produces only exe and object outputs; use --backend llvm for --emit {}",
+                    output_kind()
+                ),
+            ));
+        }
+        if cpu != Cpu::Generic {
+            return Err(driver_error(
+                "E2000",
+                "--backend fast does not support --cpu native yet; remove it or use --backend llvm",
+            ));
+        }
+        if !cfg!(all(
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--backend fast is not available on {}-{}; use --backend llvm",
+                    env::consts::OS,
+                    env::consts::ARCH
+                ),
+            ));
+        }
+        if !cfg!(feature = "fast-backend") {
+            return Err(driver_error(
+                "E2000",
+                "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
+            ));
+        }
         Ok(())
     }
 
@@ -3161,7 +3309,13 @@ fn build_complete(
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
-    let f16 = platform_f16_path(platform, options.target, options.cpu);
+    let fast = options.backend == Backend::Fast;
+    // The fast backend has no `half`: it uses the bit-exact integer routines of the runtime.
+    let f16 = if fast {
+        llvm::F16Path::Soft
+    } else {
+        platform_f16_path(platform, options.target, options.cpu)
+    };
     let runtime_objects = options.cache
         && !options.debug_info
         && !options.trap_info
@@ -3764,8 +3918,32 @@ fn build_complete(
             Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
             _ => text,
         };
-        fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+        let object = temporary.path.join("module.o");
+        if fast && options.target == Target::Wasm32 {
+            // The runtime objects that Clang built decide how a 128-bit result is returned, and the
+            // routines of the runtime that this IR defines must agree with them.
+            let multivalue = wasm_multivalue(&numeric_objects)?;
+            translate_fast_wasm(&text, multivalue, &object)?;
+        } else if fast {
+            // The IR is translated in memory and never written.
+            translate_fast(&text, platform, &object)?;
+        } else {
+            fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+        }
         let runtime_object = temporary.path.join("task.o");
+        // The fast backend writes no IR to merge: its object joins the C runtime in the relocatable link below,
+        // which on macOS leaves a debug map in place of the DWARF.
+        if fast
+            && platform.mach_o()
+            && options.debug_info
+            && native_runtime
+            && options.emit == Emit::Object
+        {
+            return Err(driver_error(
+                "E2002",
+                "--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm",
+            ));
+        }
         let merge_debug_ir = platform.mach_o()
             && options.debug_info
             && native_runtime
@@ -4033,11 +4211,13 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
-        clang
-            .arg("-x")
-            .arg("ir")
-            .arg("-Wno-override-module")
-            .arg(options.optimization.flag());
+        if !fast {
+            clang
+                .arg("-x")
+                .arg("ir")
+                .arg("-Wno-override-module")
+                .arg(options.optimization.flag());
+        }
         if let Some(staged) = &staged_profile {
             clang.args(staged.args());
         }
@@ -4084,8 +4264,7 @@ fn build_complete(
         if options.emit == Emit::Bitcode {
             clang.arg("-flto=thin");
         }
-        let object = temporary.path.join("module.o");
-        clang.arg(&ir).arg("-o").arg(
+        clang.arg(if fast { &object } else { &ir }).arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
                 || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
@@ -4145,32 +4324,43 @@ fn build_complete(
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
-        let mut clang_hint = linker_hint(cross_hint(
-            platform,
-            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
-        ));
-        if native_runtime && options.emit == Emit::Bitcode {
-            // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
-            clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
-        }
-        let clang_hint = match &staged_profile {
-            Some(staged) => staged.hint(clang_hint),
-            None => clang_hint,
-        };
-        let clang_output =
-            run_tool(&mut clang, &clang_hint).map_err(|error| match &staged_profile {
-                Some(staged) => staged.clang_error(error),
-                None => error,
-            })?;
-        collect_message(
-            &mut messages,
-            match &staged_profile {
-                Some(staged) => staged.clang_output(clang_output),
-                None => clang_output,
-            },
-        );
-        if options.emit == Emit::Bitcode {
-            lto::check_bitcode(&artifact, &tool("TSUZURI_CLANG", "clang"))?;
+        if fast
+            && (options.emit == Emit::Object || options.target.is_wasm() || dwarf_sidecar.is_some())
+        {
+            // The translated object is the output, and with the C runtime it is merged below; or it is
+            // what the debug link below or the link of the module reads, so that no compile of it remains.
+            if options.emit == Emit::Object && !native_runtime {
+                fs::rename(&object, &artifact)
+                    .map_err(|error| io_error("write object", &artifact, error))?;
+            }
+        } else {
+            let mut clang_hint = linker_hint(cross_hint(
+                platform,
+                "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+            ));
+            if native_runtime && options.emit == Emit::Bitcode {
+                // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
+                clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
+            }
+            let clang_hint = match &staged_profile {
+                Some(staged) => staged.hint(clang_hint),
+                None => clang_hint,
+            };
+            let clang_output =
+                run_tool(&mut clang, &clang_hint).map_err(|error| match &staged_profile {
+                    Some(staged) => staged.clang_error(error),
+                    None => error,
+                })?;
+            collect_message(
+                &mut messages,
+                match &staged_profile {
+                    Some(staged) => staged.clang_output(clang_output),
+                    None => clang_output,
+                },
+            );
+            if options.emit == Emit::Bitcode {
+                lto::check_bitcode(&artifact, &tool("TSUZURI_CLANG", "clang"))?;
+            }
         }
         if let Some(symbols) = &shared_symbols {
             link_shared(
@@ -5228,6 +5418,64 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 /// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
+
+/// Translates the module's IR with the fast backend and writes the object (PB05).
+#[cfg(feature = "fast-backend")]
+fn translate_fast(text: &str, platform: Platform, object: &Path) -> Result<(), Diagnostic> {
+    let bytes = crate::backend::translate(
+        text,
+        platform,
+        crate::parallel::Parallelism::command_line(),
+        cfg!(debug_assertions),
+    )?;
+    fs::write(object, bytes).map_err(|error| io_error("write object", object, error))
+}
+
+#[cfg(not(feature = "fast-backend"))]
+fn translate_fast(_: &str, _: Platform, _: &Path) -> Result<(), Diagnostic> {
+    Err(driver_error(
+        "E2000",
+        "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
+    ))
+}
+
+/// Translates the module's IR with the fast backend to a `wasm32` object (PB05, D13).
+#[cfg(feature = "fast-backend")]
+fn translate_fast_wasm(text: &str, multivalue: bool, object: &Path) -> Result<(), Diagnostic> {
+    let bytes = crate::backend::translate_wasm(
+        text,
+        crate::parallel::Parallelism::command_line(),
+        multivalue,
+    )?;
+    fs::write(object, bytes).map_err(|error| io_error("write object", object, error))
+}
+
+#[cfg(not(feature = "fast-backend"))]
+fn translate_fast_wasm(_: &str, _: bool, _: &Path) -> Result<(), Diagnostic> {
+    Err(driver_error(
+        "E2000",
+        "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
+    ))
+}
+
+/// Whether a 128-bit result is returned as two WebAssembly results, as the runtime objects that are
+/// already compiled say (see `backend::wasm_multivalue`).
+#[cfg(feature = "fast-backend")]
+fn wasm_multivalue(objects: &[PathBuf]) -> Result<bool, Diagnostic> {
+    let mut contents = Vec::with_capacity(objects.len());
+    for path in objects {
+        contents
+            .push(fs::read(path).map_err(|error| io_error("read runtime object", path, error))?);
+    }
+    Ok(crate::backend::wasm_multivalue(
+        contents.iter().map(Vec::as_slice),
+    ))
+}
+
+#[cfg(not(feature = "fast-backend"))]
+fn wasm_multivalue(_: &[PathBuf]) -> Result<bool, Diagnostic> {
+    Ok(true)
+}
 
 /// The IR of a `--emit bitcode` build with the target attributes that a C function compiled with the same flags has
 /// (PR08 D3): the CPU and its tuning, and for `--cpu native` the features too. A WebAssembly function keeps its
@@ -6428,6 +6676,204 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    #[test]
+    fn validate_fast_allows_only_native_o0_executables_and_objects() {
+        let fast = BuildOptions {
+            backend: Backend::Fast,
+            optimization: OptLevel::O0,
+            ..BuildOptions::default()
+        };
+        // The host and the build of `tsuzuri` decide last, after every option has passed.
+        let available = cfg!(all(
+            feature = "fast-backend",
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ));
+        for emit in [Emit::Executable, Emit::Object] {
+            let result = BuildOptions { emit, ..fast }.validate();
+            assert_eq!(result.is_ok(), available, "{emit:?}: {result:?}");
+            if let Err(error) = result {
+                assert_eq!(error.code, "E2000");
+            }
+            // `-g` adds the line table and the functions of the program (WP12).
+            let result = BuildOptions {
+                emit,
+                debug_info: true,
+                ..fast
+            }
+            .validate();
+            assert_eq!(result.is_ok(), available, "{emit:?} -g: {result:?}");
+        }
+        // The programmatic default is -O3, which the fast backend does not translate.
+        let error = BuildOptions {
+            backend: Backend::Fast,
+            ..BuildOptions::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--backend fast supports only -O0; remove -O3 or use --backend llvm"
+        );
+        for emit in [
+            Emit::Llvm,
+            Emit::Header,
+            Emit::Wasm,
+            Emit::Wgsl,
+            Emit::WgslRelaxed,
+            Emit::Spirv,
+            Emit::SpirvRelaxed,
+            Emit::Shared,
+            Emit::BindingsJs,
+            Emit::BindingsCs,
+            Emit::BindingsPy,
+            Emit::BindingsCpp,
+        ] {
+            let error = BuildOptions { emit, ..fast }.validate().unwrap_err();
+            assert_eq!(error.code, "E2000", "{emit:?}");
+            assert!(
+                error.message.starts_with(
+                    "--backend fast produces only exe and object outputs; use --backend llvm for --emit "
+                ),
+                "{emit:?}: {}",
+                error.message
+            );
+        }
+        // The cache key hashes the `Debug` text of the options, so the backend changes the key.
+        let llvm = BuildOptions {
+            backend: Backend::Llvm,
+            ..fast
+        };
+        assert_ne!(format!("{fast:?}"), format!("{llvm:?}"));
+    }
+
+    #[test]
+    fn validate_fast_allows_wasm32_modules_and_objects_at_o0() {
+        let wasm = BuildOptions {
+            backend: Backend::Fast,
+            optimization: OptLevel::O0,
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..BuildOptions::default()
+        };
+        let available = cfg!(all(
+            feature = "fast-backend",
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        ));
+        for emit in [Emit::Wasm, Emit::Object] {
+            let result = BuildOptions { emit, ..wasm }.validate();
+            assert_eq!(result.is_ok(), available, "{emit:?}: {result:?}");
+        }
+        // What only changes the link, the IR or the checks stays allowed.
+        for options in [
+            BuildOptions {
+                wasm_max_memory: Some(64 << 20),
+                wasm_stack_size: Some(128 << 10),
+                ..wasm
+            },
+            BuildOptions {
+                trap_info: true,
+                allocator: llvm::Allocator::Counting,
+                ..wasm
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Host,
+                ..wasm
+            },
+        ] {
+            let result = options.validate();
+            assert_eq!(result.is_ok(), available, "{options:?}: {result:?}");
+        }
+        for (options, option) in [
+            (
+                BuildOptions {
+                    wasm_simd: true,
+                    ..wasm
+                },
+                "--wasm-feature simd128",
+            ),
+            (
+                BuildOptions {
+                    wasm_threads: true,
+                    ..wasm
+                },
+                "--wasm-feature threads",
+            ),
+            (
+                BuildOptions {
+                    wasm_jspi: true,
+                    ..wasm
+                },
+                "--wasm-feature jspi",
+            ),
+            (
+                BuildOptions {
+                    wasm_webgpu: true,
+                    ..wasm
+                },
+                "--wasm-feature webgpu",
+            ),
+            (
+                BuildOptions {
+                    wasm_net: true,
+                    ..wasm
+                },
+                "--wasm-feature net",
+            ),
+            (
+                BuildOptions {
+                    wasm_host: Some(WasmHost::Wasi),
+                    ..wasm
+                },
+                "--wasm-host",
+            ),
+            (
+                BuildOptions {
+                    wasm_opt: true,
+                    ..wasm
+                },
+                "--wasm-opt",
+            ),
+            (
+                BuildOptions {
+                    debug_info: true,
+                    ..wasm
+                },
+                "-g",
+            ),
+        ] {
+            let error = options.validate().unwrap_err();
+            assert_eq!(error.code, "E2000", "{option}");
+            assert_eq!(
+                error.message,
+                format!(
+                    "--backend fast does not support {option} for wasm32; remove it or use --backend llvm"
+                )
+            );
+        }
+        let error = BuildOptions {
+            target: Target::Wasm64,
+            ..wasm
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--backend fast supports only the native target and wasm32; use --backend llvm for wasm64"
+        );
+        let error = BuildOptions {
+            emit: Emit::Llvm,
+            ..wasm
+        }
+        .validate()
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit llvm"
+        );
     }
 
     #[test]

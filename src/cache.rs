@@ -487,7 +487,11 @@ pub(crate) fn build_key(
             if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
             }
-            if options.emit == Emit::Object && ir.contains("@tsuzuri_task_parallel(") {
+            // The fast backend never gets here: it refuses a macOS debug object that needs the C runtime.
+            if options.emit == Emit::Object
+                && options.backend == crate::driver::Backend::Llvm
+                && ir.contains("@tsuzuri_task_parallel(")
+            {
                 tools.push(("TSUZURI_LLVM_LINK", "llvm-link"));
             }
         }
