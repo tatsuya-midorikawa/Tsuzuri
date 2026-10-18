@@ -840,7 +840,7 @@ for name in &descriptors {
 
 ## 実装と検証（2026-10-18）
 
-ブランチ `perf/p4-PM02`（基準 `a2313d19` = main `9dd0fbbc` + 第 4 フェーズの計測の足場）。統合ブランチ `perf/phase4-compiler-performance`（PR07・PR08 の merge を含む `acb5caa9`）を取り込んだ（merge `3738e375`、衝突なし）。
+ブランチ `perf/p4-PM02`（基準 `a2313d19` = main `9dd0fbbc` + 第 4 フェーズの計測の足場）。統合ブランチ `perf/phase4-compiler-performance`（PR07・PR08 の merge を含む `acb5caa9`）を取り込んだ（merge `3738e375`、衝突なし）。コードレビューの後に、PR07・PR08 の修正（`a556f5e5`）、PB06 の修正（`d66f41da`）、PM03 の merge（`4727c015`）を取り込んだ（いずれも衝突なし）。
 Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に入れて実装、P2-d（`Maybe<関数値>` の null 記述子の niche）を実装、P2-a（`!invariant.load`）は測って取り下げ、P2-c（E1010 の見積もり・`stack_size` を 16 にする案）は合意の上で取り下げた。
 
 ### コミット
@@ -860,7 +860,7 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 | WP10 | `d84a462c` ほか | 文書と測定の記録（docs/architecture.md・language.md・README.md・GUIDE.md・言語リファレンス 3 ページ・docs/benchmarks.md の PM02 の欄）。このチケットの完了（`_perfs/_completed` へ移動） |
 | レビュー 1 | `edc8ccca` | lambda の記述子の表の説明、`ffi_extensions` の関数値なしの検査の強化、`tests/debugger_static.mjs` を README と docs/architecture.md の検証の一覧へ |
 | レビュー 2 | `b4e1eeee` | `alwaysinline` の方針: worker は adapter 以外の呼び出しが 1 か所以下のときだけ（`limit_worker_inlining`）、native の `-O0`・`-Os`・`-Oz` では adapter と worker から外す（`without_closure_inlining`）。テスト 5 本 |
-| レビュー 3 | 次のコミット | 文書と数値（言語リファレンスの option.md・webassembly.md、docs/benchmarks.md・architecture.md・language.md、README.md、このチケット）、`tests/size.mjs` の IR の検査 |
+| レビュー 3 | `8f0a5a43` | 文書と数値（言語リファレンスの option.md・webassembly.md、docs/benchmarks.md・architecture.md・language.md、README.md、このチケット）、`tests/size.mjs` の IR の検査 |
 
 ### 決定事項の結果
 
@@ -916,6 +916,8 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 2. **言語リファレンスなどの古い数値**（低〜中）。`webassembly.md` の hello／io／functional の `-O3`・`-Oz`（6,833／12,956／10,251、3,905／6,878／5,278）と `benchmarks/size/parse`、`option.md` の hello の `--strip`（33,896 → 33,784）と wasm の hello の数値を、いまのコンパイラの測定（6,860／13,012／10,390、4,208／7,244／5,758、parse 16,762、`--strip` は 33,960 → 33,784、hello の wasm `-Oz` 4,208・`-O3` 6,860）にした。docs/benchmarks.md の PM05・PM08 の節は、その時点の記録なので変えていない。
 3. **「プログラムに 1 つだけある静的な表」**（低）: `lambda-expressions.md` を「関数と捕捉の数ごとに 1 つ」にした。
 4. **テスト**（低）: `tests/ffi_extensions.rs` の `callbacks_lower_to_internal_c_wrappers` が `@tz.closure.` の記号と `insertvalue %tz.closure` も禁じる。`tests/debugger_static.mjs` を README の検証の一覧と docs/architecture.md の検証の文に足した。
+
+**レビュー後の検証**: `8f0a5a43`（`d66f41da` を取り込んだ木）で `cargo test --locked --no-fail-fast` を実行した（105 の test binary と doc-test で 1,561 件が通った。`--lib` の `server::serve_tests` の 14 件は、TMPDIR が長いと Unix ドメインソケットの `SUN_LEN` を超えて失敗し、短い TMPDIR では 27 件が通る）。fmt・clippy（1.99.0）、Windows 2 target の型検査、`node scripts/check-docs.mjs`（`option.md`・`webassembly.md`・`lambda-expressions.md`。97 リンク、15 例）も通った。PM03 の merge `4727c015` の上では、`closure_representation`（既定と `TSUZURI_STRINGS=compact` の両方）・`debug_info`・`call_specialization`・`ffi_extensions`・`lto`・`--lib llvm::`・`--bin tsuzuri` と、node の `size`（19 節）・`primitives`・`tasks`・`control`・`computations`・`e2e`・`debug_info`・`debugger_static`・`llvm_handoff`・`prebuilt_runtime`・`local_recursion_fuzz`・`pgo`（16 節）を実行し、すべて通った。この環境では `lldb` の `run` が固まるので、formatter は静的な検査だけで確かめた。
 
 ### 他チケットとの接点
 
