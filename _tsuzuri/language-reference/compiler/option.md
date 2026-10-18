@@ -8,6 +8,7 @@
 
 - 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を、`build` の native 実行ファイルに `--strip` を、`build` の WebAssembly に（Binaryen を入れた機械で）`--wasm-opt` を付けます（[成果物を小さくする](#成果物を小さくする)）。
 - 実行時の分岐の頻度で最適化するときは、`build` か `run` に `--profile-generate DIR` を付けて計装し、代表的な仕事で動かしてから、`--profile-use PATH` を付けて作り直します。速くなる種目も遅くなる種目もあるので、自分のプログラムで測ってください（[プロファイル誘導最適化](#プロファイル誘導最適化)）。
+- `-O0` の native `build`・`run`・`test` の待ち時間を短くするときは、`--backend fast` を付けます。LLVM IR を Clang に渡さず、コンパイラ自身が機械語にします。既定は `llvm` のままで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます（[コード生成器](#コード生成器)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -28,6 +29,7 @@
 | `--emit` | | ○ | | | | | | | |
 | `-O0`〜`-O3` | | ○ | ○ | ○ | ○ | | | ○ | ○ |
 | `-Os` / `-Oz` | | ○ | ○ | | | | | | |
+| `--backend` | | ○ | ○ | ○ | | | | | |
 | `--cpu` | | ○ | ○ | | | | | ○ | ○ |
 | `--no-cache` | | ○ | ○ | | | | | ○ | ○ |
 | `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
@@ -93,7 +95,7 @@
 
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
-| `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` / `bench` は `-O3`、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
+| `-O0` `-O1` `-O2` `-O3` | `build` / `run` / `script` / `bench` は `-O3`（`--backend fast` を付けると `-O0`）、`test` と `repl` は `-O0` | LLVM の最適化。fast-math や再結合は使いません |
 | `-Os` `-Oz` | `-O3`（付けない場合） | 成果物の大きさを優先する LLVM の最適化。`build` と `run` だけ |
 | `--cpu generic\|native` | `generic` | native の実行ファイルとオブジェクト。`native` はこの機械の命令セットで、古い CPU では動きません。x86-64 の `native` は、`f16` の変換と演算に F16C と AVX512-FP16 も使います（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)） |
 
@@ -211,6 +213,40 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 
 書き出し役は Clang 21 の raw profile（version 10、32 bit）だけを書き、別の版で計装した module は拒否します。WebAssembly には間接呼び出しの対象を数えるランタイムがないので、`-mllvm -disable-vp` を計装と使用の両方に付け、間接呼び出しは最適化の根拠に入りません。`--wasm-feature threads`（カウンターが atomic でない）、`wasm64`、`--emit wasm` 以外、計装と `--wasm-opt` の併用は `E2000` です。`benchmarks/apps` は Node 24 で、`csv_aggregate` が約 14%、`tokenize`・`format_join`・`tree_transform` が 5〜8% 速くなり、`closure_pipeline` が約 5% 遅くなりました。`benchmarks/control` は差がありませんでした。Node 20 では `closure_capture` が約 50% 遅くなったので、使う JavaScript エンジンで測ってください。
 
+## コード生成器
+
+| オプション | 既定 | 意味 |
+| --- | --- | --- |
+| `--backend llvm\|fast` | `llvm` | `build`・`run`・`test` が、Tsuzuri の出した LLVM IR を機械語にする道具。`llvm` は Clang、`fast` はコンパイラに組み込んだ Cranelift による翻訳です |
+
+`--backend fast` は、`-O0` の編集とビルドの待ち時間を短くするためのものです。Tsuzuri が `-O0` で出す LLVM IR（`--emit llvm -O0` と同じテキスト）を、Clang に渡さずにコンパイラの中で機械語の object にし、リンクだけを今までどおり Clang で行います。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表と `run` の `E2005` の報告、`Drop` の順序は `llvm` のビルドと同じで、変わるのは機械語だけです。`--backend` を付けないビルドの IR・object・実行ファイルは、この機能がなかったときと同じです。
+
+使える組み合わせは次のとおりです。これ以外は、ビルドに入る前に `E2000` で、`--backend llvm` を使うよう伝えます。
+
+| | `--backend fast` |
+| --- | --- |
+| 最適化 | `-O0` だけです。付けないと `-O0` になります（`test` の既定も `-O0`）。`-O1` 以上、`-Os`、`-Oz` は `llvm` |
+| target | ビルド機の native だけです（macOS と Linux の AArch64・x86-64）。`wasm32`・`wasm64`・`--target TRIPLE` は `llvm` |
+| `--emit` | `exe` と `object` だけです。`llvm`・`header`・`wasm`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
+| 付けられるもの | `--trap-info`、`--strip`、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host`、`--coverage`（`test`） |
+| `llvm` に残るもの | `-g`、`--cpu native`、`--allocator small\|counting`、`--freestanding`、`--trap-mode return`、`--profile-generate`・`--profile-use` |
+
+`tsuzuri` に Cranelift は既定で入りません。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが `--backend fast` を受け付け、入っていない `tsuzuri` は再ビルドの方法を `E2000` で示します。Windows とビルド機が上の表にないものは、`E2000` です。
+
+Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれると、翻訳は `E2002` で止まり、構成要素と関数の名前を示します。別の意味のコードを出すことはありません。そのときは `--backend llvm` で作り直してください。このリポジトリの `examples/` と `tests/fixtures/` のうち `llvm` でビルドできる 102 個は、`fast` でもすべてビルドでき、実行ファイルは同じ出力と終了状態になり、ライブラリは同じ symbol を export します。
+
+```text
+<command line>:1:1: error[E2000]: --backend fast supports only -O0; remove -O3 or use --backend llvm
+```
+
+同じソースを `llvm` と `fast` の両方で作っても、成果物のキャッシュは取り違えません。`--backend` はキャッシュのキーに入ります（`--backend llvm` は付けないときと同じキーです）。`fast` の object は、並列の worker の数（`TSUZURI_THREADS`）によらず同じバイト列になります。
+
+**性能の目安**（Apple M1 Max の macOS、他の作業が動く共有機での、交互に動かした 9 標本の中央値の比です。条件と生の数値は [性能測定](../../../docs/benchmarks.md#pb05-デバッグビルド用の高速バックエンド)）。
+
+- 待ち時間: 合成プロジェクト（1 モジュール 20 関数）の `-O0` のビルドは、200 モジュールで `llvm` の 0.50〜0.65 倍、1,000 モジュールで 0.54〜0.67 倍でした（`build`、1 モジュールの本体の編集、1 モジュールの export の編集）。短くなるのは Clang の時間（コンパイルとリンク）だけです。200 モジュールで約 1.1 秒だったものが翻訳の約 0.1 秒とリンクに、1,000 モジュールで約 5 秒だったものが翻訳の約 0.5 秒とリンクになり、リンクは 0.1〜0.3 秒です。構文解析・型検査・IR の生成は同じで、`examples/hello` のような小さいプログラムでは、リンクと新しい実行ファイルの初回起動の固定のコストが大きく、差は測れません。
+- 生成したコードの速さ: `benchmarks/control` の 16 種目の中央値の合計は、`-O0` の Clang の 0.85 倍で、`-O3` の約 3.5 倍です。`float32`・`float64` の 2 種目は約 20% 遅くなりました。結果の checksum は 3 つのビルドで一致しました。
+- 大きさ: 合成プロジェクトの実行ファイルは、`-O0` の Clang のものより約 18% 大きくなります。`--emit object` は、使われない関数を翻訳しないので、`-O0` の Clang のものより小さくなります。
+
 ## 診断とデバッグ
 
 | オプション | 既定 | 意味 |
@@ -324,6 +360,15 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | Clang が `-x ir -flto=thin -c` で bitcode を書かない | `E2002`: `'<clang>' did not write LLVM bitcode for --emit bitcode; compiling LLVM IR with -x ir -flto=thin -c must give bitcode, so set TSUZURI_CLANG to a Clang that does` |
 | `--allocator small` が wasm32 / wasm64 | `--allocator small requires a native target; WebAssembly modules keep their own heap` |
 | `--allocator small` が `wgsl` / `spirv` などのカーネル出力 | `--allocator small requires executable, object, shared library, LLVM IR, or header output` |
+| `--backend` を `check`・`bench`・`doc`・`fmt` などに付ける | `--backend applies only to build, run, and test`（終了コード 2） |
+| `--backend` が `llvm`・`fast` でない、または 2 回 | `backend must be 'llvm' or 'fast'`、`backend specified more than once` |
+| `--backend fast` に `-O1` 以上・`-Os`・`-Oz` | `--backend fast supports only -O0; remove -O3 or use --backend llvm` |
+| `--backend fast` に wasm32・wasm64・`--target TRIPLE` | `--backend fast supports only the native target; use --backend llvm for wasm32` |
+| `--backend fast` に `exe`・`object` 以外の `--emit` | `--backend fast produces only exe and object outputs; use --backend llvm for --emit llvm` |
+| `--backend fast` に `-g`・`--cpu native`・`--allocator small`・`counting`・`--freestanding`・`--trap-mode return` | `--backend fast does not support -g yet; remove it or use --backend llvm`（各オプション名で同じ形） |
+| `--backend fast` に `--profile-generate`・`--profile-use` | `--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use` |
+| `--backend fast` で、ビルド機が macOS・Linux の AArch64・x86-64 でない | `--backend fast is not available on windows-x86_64; use --backend llvm` |
+| `--backend fast` を、feature なしでビルドした `tsuzuri` に | `this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm` |
 | `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |
 | `bindings-cs` などの `-o` の拡張子が違う | `bindings output must end with '.cs'; its file name, without the extension, names the shared library`（`.py`、`.hpp` も同じ形） |
 | `--freestanding` が exe | `--freestanding requires object, LLVM IR, or header output` |

@@ -889,6 +889,15 @@ RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテ�
 TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
 cargo build --release --locked
 
+# 高速デバッグバックエンド（PB05。`--backend fast`）。feature なしのビルドと検証は上のとおりで、変わらない
+cargo clippy --all-targets --features fast-backend -- -D warnings
+RUST_MIN_STACK=4194304 cargo test --locked --features fast-backend --test fast_backend --test fast_backend_ops   # 翻訳器: layout を Clang と照合、E2002 の表、IR の翻訳と決定性、test の runner、約 760 の演算を Clang の object と bit 単位で比較
+cargo build --release --locked --features fast-backend
+node tests/fast_backend.mjs target/release/tsuzuri   # option の表（E2000）、hello・trap・--trap-info・run、thread 数の決定性、export する symbol、cache の鍵、test、旗なしの IR の不変
+node tests/fast_backend.mjs programs target/release/tsuzuri   # examples と fixtures を llvm と fast の両方で動かして出力と終了状態を比べる（library は export する symbol）
+node tests/fast_backend.mjs parity e2e strings tasks features   # 既存の suite を、tsuzuri と clang の wrapper の下で fast に流す。翻訳した件数と fall back の理由を suite ごとに表示
+node benchmarks/run-backend.mjs --out target/perf/backend   # llvm と fast の build 時間・CPU 時間・メモリ（合成 200・1,000 モジュール。docs/benchmarks.md の PB05）
+
 # 統合 E2E テスト・言語機能テスト
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri

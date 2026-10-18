@@ -14,6 +14,7 @@
 - `tsuzuri test --index N -g -o PATH` で 1 件のテストをデバッグ用にビルドできます。VS Code では Testing ビューの **Debug** です。
 - Windows で MSVC のリンカーを使うビルドは、実行ファイルの隣に PDB を書き、Visual Studio の natvis の表示を埋め込みます。
 - 表示を保証するのは `-O0` のネイティブだけです。`-O3` では変数が消えることがあり、WebAssembly は DWARF を保持するだけです。
+- `--backend fast`（`-O0` を速く作るコード生成器）のビルドも、`--trap-info` の位置表と `run` の `E2005` の報告は同じです。`-g` はまだ使えず、`E2000` です（[コード生成器](option.md#コード生成器)）。
 
 ## デバッグ情報付きでビルドする
 

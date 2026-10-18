@@ -245,7 +245,7 @@ tsuzuri check demo
 
 `Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
-`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。成果物の大きさを優先するときは `-Os` と `-Oz` も付けられます（[最適化と CPU](option.md#最適化と-cpu)）。
+`run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。成果物の大きさを優先するときは `-Os` と `-Oz` も付けられます（[最適化と CPU](option.md#最適化と-cpu)）。編集と実行を繰り返すときは `--backend fast` を付けると、`-O0` の LLVM IR を Clang に渡さずコンパイラの中で機械語にします。トラップの `E2005`（signal と位置）は同じです（[コード生成器](option.md#コード生成器)）。
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
 
@@ -399,7 +399,7 @@ tsuzuri build demo/Main.tz -o demo/hello
 scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library
 ```
 
-成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。
+成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。`-O0` のビルドを速くするには `--backend fast` を付けます。Tsuzuri の IR を Clang ではなくコンパイラ自身が機械語にし、リンクだけを Clang に任せます。`--emit exe` と `--emit object` の native だけで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要ります（[コード生成器](option.md#コード生成器)）。
 
 実行時の分岐の頻度で最適化するには、`--profile-generate DIR` で計装した実行ファイルを代表的な仕事で動かし、`DIR` を `--profile-use` に渡して作り直します。`DIR` の `.profraw` は `llvm-profdata` で merge されます（merge 済みの `.profdata` も渡せます）。
 
@@ -413,7 +413,7 @@ native の `exe` と `object`、wasm32 の module だけで、Windows と別の�
 
 ### test
 
-`test "名前" = 式` を、別プロセスで実行します。通常の実行ファイルにはテストは入りません。既定の最適化は `-O0` です。1 件の上限は 30 秒で、並列度は論理 CPU 数と 32 の小さい方までです。
+`test "名前" = 式` を、別プロセスで実行します。通常の実行ファイルにはテストは入りません。既定の最適化は `-O0` です。1 件の上限は 30 秒で、並列度は論理 CPU 数と 32 の小さい方までです。`--backend fast` を付けると、テストの runner の IR を Clang に渡さずコンパイラの中で機械語にします（結果、失敗の本文、property テストの反例、`--coverage` の報告は `llvm` と同じです。[コード生成器](option.md#コード生成器)）。
 
 ```text
 ok 1 - Main adds numbers
@@ -640,7 +640,7 @@ Price.price()
 
 ## ビルドキャッシュ
 
-`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）、`--profile-use` のプロファイルの中身、`--profile-generate` のディレクトリをまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。プロファイルの旗を付けないビルドのキーは、旗がなかったときと同じです。`TSUZURI_LLVM_PROFDATA` と `LLVM_PROFILE_FILE` はキーに入りません（前者の結果はプロファイルの中身に、後者は実行時だけに効きます）。
+`build` と `run` は、成果物を既定でキャッシュします。キーはソース、コンパイラのバイナリ、オプション（`--target` の名前を含む）、ツールのパスと `--version`、リンクに効く環境変数（`TSUZURI_SYSROOT` を含む）、`--profile-use` のプロファイルの中身、`--profile-generate` のディレクトリをまとめた SHA-256 です。同じキーなら、LLVM からやり直さずキャッシュを返します。target や sysroot が違えば、キーも違います。`--backend fast` もオプションの 1 つとしてキーに入るので、同じソースを `llvm` と `fast` で作っても成果物を取り違えません（`--backend llvm` は付けないときと同じキーです）。プロファイルの旗を付けないビルドのキーは、旗がなかったときと同じです。`TSUZURI_LLVM_PROFDATA` と `LLVM_PROFILE_FILE` はキーに入りません（前者の結果はプロファイルの中身に、後者は実行時だけに効きます）。
 
 保存先は `TSUZURI_CACHE_DIR` です。空でなければそのパスを使います。未設定のときは次です。
 

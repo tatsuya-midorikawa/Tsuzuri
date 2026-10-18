@@ -48,6 +48,8 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 プロファイル誘導最適化（PR07）の `--profile-generate DIR` と `--profile-use PATH` は、native の `exe`・`object` と wasm32 の module で、Clang が IR を機械語にするときの旗（`-fprofile-generate`・`-fprofile-use`）を足すだけです。
 Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない方針、整数の折り返し・NaN・符号付きゼロ・トラップは、プロファイルの有無で変わらず、旗を付けないビルドの成果物とキャッシュのキーも変わりません。
 プロファイルは IR の関数ごとの制御フローに結び付くので、計装と使用は同じコンパイラ・ソース・Clang・オプションで行います。合わない関数はプロファイルなしで最適化され、`W2001` の 1 行で知らされます。
+
+高速バックエンド（PB05）の `--backend fast` は、`-O0` の native `build`・`run`・`test` で、Tsuzuri が出す `-O0` の LLVM IR を Clang に渡さずに翻訳器（Cranelift）で native の object にし、リンクだけを Clang に任せます。既定は `--backend llvm` です。IR・診断・終了コード、整数の折り返し・NaN・符号付きゼロ・トラップ・`E2005` の報告・`--trap-info` の位置表は `llvm` と同じで、旗を付けないビルドの IR・object・実行ファイルは変わりません（キャッシュのキーには入ります）。`-O0` 以外、native 以外の target、`exe`・`object` 以外の `--emit`、`-g`・`--cpu native`・`--allocator small|counting`・`--freestanding`・`--trap-mode return`・`--profile-generate`・`--profile-use` は `E2000` で、`--backend llvm` を使います。翻訳できない構成要素は `E2002` です。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます。詳細は [コード生成器](../_tsuzuri/language-reference/compiler/option.md#コード生成器) にあります。
 `.profraw` のディレクトリは `llvm-profdata`（`TSUZURI_LLVM_PROFDATA`、Clang の隣、Clang の toolchain の順）で merge し、中身がキャッシュのキーに入ります。Windows、ビルド機と違う `--target`、同梱の `tsuzuri-clang` は受け付けません。
 速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 13〜17% 速く、4 種目が 20〜60% 遅い）。
 詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
