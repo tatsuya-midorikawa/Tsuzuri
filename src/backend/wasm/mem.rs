@@ -88,13 +88,52 @@ impl<'w, 'a> Lower<'w, 'a> {
         let mut leaves = Vec::new();
         self.types.leaf_layout(ty, 0, &mut leaves)?;
         let mut atoms = Vec::with_capacity(leaves.len());
-        for leaf in leaves {
-            if leaf.packed.is_some() {
-                bail!("a vector of booleans in memory");
+        let mut index = 0;
+        while index < leaves.len() {
+            let leaf = leaves[index];
+            match leaf.packed {
+                None => {
+                    atoms.extend(self.load_scalar(base, offset + leaf.offset, leaf.ty)?);
+                    index += 1;
+                }
+                // The lanes of a mask vector are the bits of one integer.
+                Some((0, lanes)) => {
+                    let lanes = usize::from(lanes);
+                    let word_ty = Self::mask_word(lanes)?;
+                    let word = self.load_scalar(base, offset + leaf.offset, word_ty)?[0].clone();
+                    for bit in 0..lanes as i64 {
+                        self.push(&word)?;
+                        if word_ty == Ty::Int(64) {
+                            self.i64_const(bit);
+                            self.op(op::I64_SHR_U);
+                            self.i64_const(1);
+                            self.op(op::I64_AND);
+                            self.op(op::I32_WRAP_I64);
+                        } else {
+                            self.i32_const(bit as i32);
+                            self.op(op::I32_SHR_U);
+                            self.i32_const(1);
+                            self.op(op::I32_AND);
+                        }
+                        atoms.push(self.save(Vt::I32));
+                    }
+                    index += lanes;
+                }
+                Some(_) => bail!("a mask lane that does not start its vector"),
             }
-            atoms.extend(self.load_scalar(base, offset + leaf.offset, leaf.ty)?);
         }
         Ok(Val::Atoms(atoms))
+    }
+
+    /// The integer that holds the bits of a mask vector of `lanes` lanes in memory.
+    fn mask_word(lanes: usize) -> Res<Ty> {
+        Ok(match lanes.div_ceil(8) {
+            1 => Ty::Int(8),
+            2 => Ty::Int(16),
+            4 => Ty::Int(32),
+            8 => Ty::Int(64),
+            bytes => bail!("a mask vector of {lanes} lanes ({bytes} bytes) in memory"),
+        })
     }
 
     pub(super) fn store_value(&mut self, base: &Atom, offset: u64, ty: Ty, value: &Val) -> Res<()> {
@@ -112,16 +151,51 @@ impl<'w, 'a> Lower<'w, 'a> {
         let mut leaves = Vec::new();
         self.types.leaf_layout(ty, 0, &mut leaves)?;
         let mut next = 0usize;
-        for leaf in leaves {
-            if leaf.packed.is_some() {
-                bail!("a vector of booleans in memory");
+        let mut index = 0;
+        while index < leaves.len() {
+            let leaf = leaves[index];
+            match leaf.packed {
+                None => {
+                    let count = self.flat(leaf.ty)?.len();
+                    let Some(part) = atoms.get(next..next + count) else {
+                        bail!("a value with fewer scalars than its type");
+                    };
+                    self.store_scalar(base, offset + leaf.offset, leaf.ty, part)?;
+                    next += count;
+                    index += 1;
+                }
+                // The lanes of a mask vector are the bits of one integer.
+                Some((0, lanes)) => {
+                    let lanes = usize::from(lanes);
+                    let word_ty = Self::mask_word(lanes)?;
+                    let wide = word_ty == Ty::Int(64);
+                    let Some(part) = atoms.get(next..next + lanes) else {
+                        bail!("a value with fewer scalars than its type");
+                    };
+                    for (bit, lane) in part.iter().enumerate() {
+                        self.push(lane)?;
+                        if wide {
+                            self.op(op::I64_EXTEND_I32_U);
+                        }
+                        if bit > 0 {
+                            if wide {
+                                self.i64_const(bit as i64);
+                                self.op(op::I64_SHL);
+                                self.op(op::I64_OR);
+                            } else {
+                                self.i32_const(bit as i32);
+                                self.op(op::I32_SHL);
+                                self.op(op::I32_OR);
+                            }
+                        }
+                    }
+                    let word = self.save(if wide { Vt::I64 } else { Vt::I32 });
+                    self.store_scalar(base, offset + leaf.offset, word_ty, &[word])?;
+                    next += lanes;
+                    index += lanes;
+                }
+                Some(_) => bail!("a mask lane that does not start its vector"),
             }
-            let count = self.flat(leaf.ty)?.len();
-            let Some(part) = atoms.get(next..next + count) else {
-                bail!("a value with fewer scalars than its type");
-            };
-            self.store_scalar(base, offset + leaf.offset, leaf.ty, part)?;
-            next += count;
         }
         Ok(())
     }

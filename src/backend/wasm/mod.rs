@@ -199,10 +199,8 @@ fn run(ir: &str, parallelism: Parallelism, multivalue: bool) -> Res<Vec<u8>> {
                 object.symbols.push(Symbol::Function { name, flags, index });
                 infos.push(WInfo::Func(FnInfo { abi, symbol, index }));
             }
-            SymKind::Global { ty, tls, init, .. } => {
-                if *tls {
-                    bail!("a thread-local global (@{})", sym.name);
-                }
+            // A thread-local global is a plain one: a module without threads has the one thread.
+            SymKind::Global { ty, init, .. } => {
                 let mut flags = flags_of(sym.linkage, sym.hidden);
                 let (segment, size) = if init.is_some() {
                     let size = types

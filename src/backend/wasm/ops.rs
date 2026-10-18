@@ -240,7 +240,7 @@ impl<'w, 'a> Lower<'w, 'a> {
     }
 
     /// A 128-bit integer operation: the two words of each operand, low first.
-    fn binary128(&mut self, bop: BinOp, a: &[Atom], b: &[Atom]) -> Res<Vec<Atom>> {
+    pub(super) fn binary128(&mut self, bop: BinOp, a: &[Atom], b: &[Atom]) -> Res<Vec<Atom>> {
         let (Some(a_lo), Some(a_hi), Some(b_lo), Some(b_hi)) =
             (a.first(), a.get(1), b.first(), b.get(1))
         else {
@@ -626,6 +626,21 @@ impl<'w, 'a> Lower<'w, 'a> {
     // ---- conversions ----
 
     pub(super) fn cast(&mut self, cop: CastOp, from: Ty, to: Ty, a: Val) -> Res<Val> {
+        // A bitcast that changes the shape of a vector, or between a vector and an integer, reads the
+        // bytes of the value in another type: through memory, which has the layout of both.
+        if cop == CastOp::BitCast
+            && from != to
+            && (self.vector_shape(from).is_some() || self.vector_shape(to).is_some())
+        {
+            let size = self.types.size_of(from)?;
+            if size != self.types.size_of(to)? {
+                bail!("a bitcast between types of different sizes");
+            }
+            let align = self.types.align_of(from)?.max(self.types.align_of(to)?);
+            let slot = Atom::Frame(self.slot(size, align)?);
+            self.store_value(&slot, 0, from, &a)?;
+            return self.load_value(&slot, 0, to);
+        }
         let a = self.atoms(&a)?;
         if let (Some((lanes_from, elem_from)), Some((lanes_to, elem_to))) =
             (self.vector_shape(from), self.vector_shape(to))

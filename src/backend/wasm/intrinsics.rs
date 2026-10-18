@@ -5,7 +5,7 @@
 //! is never approximated.
 
 use super::super::error::{Res, bail};
-use super::super::func::{CallArg, IPred};
+use super::super::func::{BinOp, CallArg, IPred};
 use super::super::types::Ty;
 use super::bin::{Vt, op};
 use super::lower::{Atom, Lower, Val};
@@ -15,6 +15,14 @@ use super::ops::Width;
 fn is(name: &str, base: &str) -> bool {
     name.strip_prefix(base)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// One step of a reduction of the lanes of a vector.
+#[derive(Clone, Copy)]
+enum Reduction {
+    Binary(BinOp),
+    /// The lane that the comparison says is better replaces the one that is kept.
+    Pick(IPred),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -123,7 +131,9 @@ impl<'w, 'a> Lower<'w, 'a> {
             if is(name, base) {
                 let (a, b) = (arg(self, 0)?, arg(self, 1)?);
                 let (a, b) = (self.atoms(&a)?, self.atoms(&b)?);
-                let atoms = self.saturating(kind, args[0].ty, &a, &b)?;
+                let atoms = self.lanes(args[0].ty, &[a, b], |lower, ty, parts| {
+                    lower.saturating(kind, ty, &parts[0], &parts[1])
+                })?;
                 return Ok(Val::Atoms(atoms));
             }
         }
@@ -172,8 +182,15 @@ impl<'w, 'a> Lower<'w, 'a> {
                     (false, true) => IPred::Ugt,
                     (false, false) => IPred::Ult,
                 };
-                let condition = self.icmp(pred, args[0].ty, a.clone(), b.clone())?;
-                return self.select(super::super::types::I1, condition, args[0].ty, a, b);
+                // The choice is made for each lane of a vector.
+                let (x, y) = (self.atoms(&a)?, self.atoms(&b)?);
+                let atoms = self.lanes(args[0].ty, &[x, y], |lower, ty, parts| {
+                    let (x, y) = (Val::Atoms(parts[0].clone()), Val::Atoms(parts[1].clone()));
+                    let better = lower.icmp(pred, ty, x.clone(), y.clone())?;
+                    let picked = lower.select(super::super::types::I1, better, ty, x, y)?;
+                    lower.atoms(&picked)
+                })?;
+                return Ok(Val::Atoms(atoms));
             }
         }
         if is(name, "abs") {
@@ -183,6 +200,51 @@ impl<'w, 'a> Lower<'w, 'a> {
                 lower.abs(ty, &parts[0])
             })?;
             return Ok(Val::Atoms(atoms));
+        }
+        // The reductions of the lanes of a vector of integers, folded from the first lane.
+        for (base, step) in [
+            ("vector.reduce.add", Reduction::Binary(BinOp::Add)),
+            ("vector.reduce.mul", Reduction::Binary(BinOp::Mul)),
+            ("vector.reduce.and", Reduction::Binary(BinOp::And)),
+            ("vector.reduce.or", Reduction::Binary(BinOp::Or)),
+            ("vector.reduce.xor", Reduction::Binary(BinOp::Xor)),
+            ("vector.reduce.smax", Reduction::Pick(IPred::Sgt)),
+            ("vector.reduce.smin", Reduction::Pick(IPred::Slt)),
+            ("vector.reduce.umax", Reduction::Pick(IPred::Ugt)),
+            ("vector.reduce.umin", Reduction::Pick(IPred::Ult)),
+        ] {
+            if is(name, base) {
+                let a = arg(self, 0)?;
+                let Some((count, elem)) = self.vector_shape(args[0].ty) else {
+                    bail!("the intrinsic {full} of a value that is not a vector");
+                };
+                let atoms = self.atoms(&a)?;
+                let width = self.flat(elem)?.len();
+                let mut folded = atoms[..width].to_vec();
+                for lane in 1..count as usize {
+                    let next = atoms[lane * width..(lane + 1) * width].to_vec();
+                    folded = match step {
+                        Reduction::Binary(bop) => self.scalar_binary(bop, elem, &folded, &next)?,
+                        Reduction::Pick(pred) => {
+                            let better = self.icmp(
+                                pred,
+                                elem,
+                                Val::Atoms(folded.clone()),
+                                Val::Atoms(next.clone()),
+                            )?;
+                            let picked = self.select(
+                                super::super::types::I1,
+                                better,
+                                elem,
+                                Val::Atoms(folded),
+                                Val::Atoms(next),
+                            )?;
+                            self.atoms(&picked)?
+                        }
+                    };
+                }
+                return Ok(Val::Atoms(folded));
+            }
         }
         for base in ["ctpop", "ctlz", "cttz"] {
             if is(name, base) {
@@ -215,6 +277,71 @@ impl<'w, 'a> Lower<'w, 'a> {
                 })?;
                 return Ok(Val::Atoms(atoms));
             }
+        }
+        for (base, f32_op, f64_op) in [
+            ("maximum", op::F32_MAX, op::F64_MAX),
+            ("minimum", op::F32_MIN, op::F64_MIN),
+        ] {
+            // The `fmax` and `fmin` of WebAssembly are the IEEE 754-2019 operations that these are:
+            // a NaN operand gives a NaN, and -0 is less than +0.
+            if is(name, base) {
+                let (a, b) = (arg(self, 0)?, arg(self, 1)?);
+                let (a, b) = (self.atoms(&a)?, self.atoms(&b)?);
+                let atoms = self.lanes(args[0].ty, &[a, b], |lower, ty, parts| {
+                    let single = ty == Ty::Float;
+                    lower.push_all(&parts[0])?;
+                    lower.push_all(&parts[1])?;
+                    lower.op(if single { f32_op } else { f64_op });
+                    Ok(vec![lower.save(if single { Vt::F32 } else { Vt::F64 })])
+                })?;
+                return Ok(Val::Atoms(atoms));
+            }
+        }
+        if is(name, "fmuladd") {
+            // The product and the sum may be fused or not; the instruction set has no fused one.
+            let (a, b, c) = (arg(self, 0)?, arg(self, 1)?, arg(self, 2)?);
+            let (a, b, c) = (self.atoms(&a)?, self.atoms(&b)?, self.atoms(&c)?);
+            let atoms = self.lanes(args[0].ty, &[a, b, c], |lower, ty, parts| {
+                let single = ty == Ty::Float;
+                lower.push_all(&parts[0])?;
+                lower.push_all(&parts[1])?;
+                lower.op(if single { op::F32_MUL } else { op::F64_MUL });
+                lower.push_all(&parts[2])?;
+                lower.op(if single { op::F32_ADD } else { op::F64_ADD });
+                Ok(vec![lower.save(if single { Vt::F32 } else { Vt::F64 })])
+            })?;
+            return Ok(Val::Atoms(atoms));
+        }
+        if is(name, "bswap") {
+            let a = arg(self, 0)?;
+            let value = self.atoms(&a)?;
+            let atoms = self.lanes(args[0].ty, &[value], |lower, ty, parts| {
+                lower.bswap(ty, &parts[0])
+            })?;
+            return Ok(Val::Atoms(atoms));
+        }
+        if is(name, "bitreverse") {
+            let a = arg(self, 0)?;
+            let value = self.atoms(&a)?;
+            let atoms = self.lanes(args[0].ty, &[value], |lower, ty, parts| {
+                lower.bitreverse(ty, &parts[0])
+            })?;
+            return Ok(Val::Atoms(atoms));
+        }
+        if is(name, "is.fpclass") {
+            let a = arg(self, 0)?;
+            let mask = match arg(self, 1)? {
+                Val::Atoms(atoms) => match atoms.as_slice() {
+                    [Atom::I32(mask)] => *mask as u32,
+                    _ => bail!("llvm.is.fpclass with a mask that is not a constant"),
+                },
+                _ => bail!("llvm.is.fpclass with a mask that is not a constant"),
+            };
+            let value = self.atoms(&a)?;
+            let atoms = self.lanes(args[0].ty, &[value], |lower, ty, parts| {
+                lower.fpclass(ty, &parts[0], mask)
+            })?;
+            return Ok(Val::Atoms(atoms));
         }
         if is(name, "copysign") {
             let (a, b) = (arg(self, 0)?, arg(self, 1)?);
@@ -261,7 +388,24 @@ impl<'w, 'a> Lower<'w, 'a> {
     fn abs(&mut self, ty: Ty, a: &[Atom]) -> Res<Vec<Atom>> {
         let width = self.width(ty)?;
         if width == Width::W128 {
-            bail!("the absolute value of a 128-bit integer");
+            let (Some(lo), Some(hi)) = (a.first(), a.get(1)) else {
+                bail!("a 128-bit operand that is not two words");
+            };
+            // The negation, taken when the sign bit is set; the minimum value stays as it is.
+            let negated = self.binary128(BinOp::Sub, &[Atom::I64(0), Atom::I64(0)], a)?;
+            self.push(hi)?;
+            self.i64_const(0);
+            self.op(op::I64_LT_S);
+            let negative = self.save(Vt::I32);
+            let mut words = Vec::with_capacity(2);
+            for (kept, flipped) in [(lo, &negated[0]), (hi, &negated[1])] {
+                self.push(flipped)?;
+                self.push(kept)?;
+                self.push(&negative)?;
+                self.op(op::SELECT);
+                words.push(self.save(Vt::I64));
+            }
+            return Ok(words);
         }
         let wide = width.vt() == Vt::I64;
         let (sub, lt_s) = if wide {
@@ -297,7 +441,49 @@ impl<'w, 'a> Lower<'w, 'a> {
         let (bits, wide) = match width {
             Width::W32(bits) => (bits, false),
             Width::W64(bits) => (bits, true),
-            Width::W128 => bail!("{which} of a 128-bit integer"),
+            Width::W128 => {
+                let (Some(lo), Some(hi)) = (a.first(), a.get(1)) else {
+                    bail!("a 128-bit operand that is not two words");
+                };
+                let count = |lower: &mut Self, word: &Atom, opcode: u8| -> Res<Atom> {
+                    lower.push(word)?;
+                    lower.op(opcode);
+                    Ok(lower.save(Vt::I64))
+                };
+                let total = match which {
+                    "ctpop" => {
+                        let (low, high) = (
+                            count(self, lo, op::I64_POPCNT)?,
+                            count(self, hi, op::I64_POPCNT)?,
+                        );
+                        self.push(&low)?;
+                        self.push(&high)?;
+                        self.op(op::I64_ADD);
+                        self.save(Vt::I64)
+                    }
+                    // The count of the high word when it has a bit set, else 64 and the low word's:
+                    // the count of a word of zeros is 64.
+                    _ => {
+                        let (first, second, opcode) = if which == "ctlz" {
+                            (hi, lo, op::I64_CLZ)
+                        } else {
+                            (lo, hi, op::I64_CTZ)
+                        };
+                        let near = count(self, first, opcode)?;
+                        let far = count(self, second, opcode)?;
+                        self.push(&near)?;
+                        self.push(&far)?;
+                        self.i64_const(64);
+                        self.op(op::I64_ADD);
+                        self.push(first)?;
+                        self.i64_const(0);
+                        self.op(op::I64_NE);
+                        self.op(op::SELECT);
+                        self.save(Vt::I64)
+                    }
+                };
+                return Ok(vec![total, Atom::I64(0)]);
+            }
         };
         let container = if wide { 64 } else { 32 };
         self.push_all(a)?;
@@ -337,11 +523,12 @@ impl<'w, 'a> Lower<'w, 'a> {
     fn funnel(&mut self, left: bool, ty: Ty, a: &[Atom], b: &[Atom], c: &[Atom]) -> Res<Vec<Atom>> {
         let width = self.width(ty)?;
         let (bits, wide) = match width {
-            Width::W32(32) => (32i64, false),
-            Width::W64(64) => (64i64, true),
-            _ => bail!("a funnel shift of {}", self.types.describe(ty)),
+            Width::W32(bits) => (i64::from(bits), false),
+            Width::W64(bits) => (i64::from(bits), true),
+            Width::W128 => bail!("a funnel shift of {}", self.types.describe(ty)),
         };
-        if a == b {
+        let full = bits == 32 || bits == 64;
+        if a == b && full {
             self.push_all(a)?;
             self.push_all(c)?;
             self.op(match (left, wide) {
@@ -373,8 +560,13 @@ impl<'w, 'a> Lower<'w, 'a> {
         };
         // k = c mod bits.
         self.push_all(c)?;
-        self.int_const(wide, bits - 1);
-        self.op(and);
+        if bits & (bits - 1) == 0 {
+            self.int_const(wide, bits - 1);
+            self.op(and);
+        } else {
+            self.int_const(wide, bits);
+            self.op(if wide { op::I64_REM_U } else { op::I32_REM_U });
+        }
         let k = self.save(width.vt());
         // fshl: k == 0 ? a : (a << k) | (b >> (bits - k)).
         // fshr: k == 0 ? b : (a << (bits - k)) | (b >> k).
@@ -400,6 +592,8 @@ impl<'w, 'a> Lower<'w, 'a> {
         self.push(&up)?;
         self.push(&down)?;
         self.op(or);
+        // What is shifted above the width is not part of the result.
+        self.canon(width);
         self.push_all(unshifted)?;
         // `select(x, y, cond)` is x when cond: the combined value when k is not zero.
         self.push(&k)?;
@@ -415,6 +609,291 @@ impl<'w, 'a> Lower<'w, 'a> {
         } else {
             self.i32_const(value as i32);
         }
+    }
+
+    /// `x` of 32 bits with its bytes in the other order.
+    fn bswap32(&mut self, x: &Atom) -> Res<Atom> {
+        // The bytes 1 and 3 come from the rotation to the left, the bytes 0 and 2 from the one to the right.
+        self.push(x)?;
+        self.i32_const(8);
+        self.op(op::I32_ROTL);
+        self.i32_const(0x00ff_00ff);
+        self.op(op::I32_AND);
+        self.push(x)?;
+        self.i32_const(8);
+        self.op(op::I32_ROTR);
+        self.i32_const(0xff00_ff00u32 as i32);
+        self.op(op::I32_AND);
+        self.op(op::I32_OR);
+        Ok(self.save(Vt::I32))
+    }
+
+    /// `x` of 64 bits with its bytes in the other order: each half swapped, and the halves exchanged.
+    fn bswap64(&mut self, x: &Atom) -> Res<Atom> {
+        self.push(x)?;
+        self.op(op::I32_WRAP_I64);
+        let low = self.save(Vt::I32);
+        self.push(x)?;
+        self.i64_const(32);
+        self.op(op::I64_SHR_U);
+        self.op(op::I32_WRAP_I64);
+        let high = self.save(Vt::I32);
+        let (swapped_low, swapped_high) = (self.bswap32(&low)?, self.bswap32(&high)?);
+        self.push(&swapped_low)?;
+        self.op(op::I64_EXTEND_I32_U);
+        self.i64_const(32);
+        self.op(op::I64_SHL);
+        self.push(&swapped_high)?;
+        self.op(op::I64_EXTEND_I32_U);
+        self.op(op::I64_OR);
+        Ok(self.save(Vt::I64))
+    }
+
+    fn bswap(&mut self, ty: Ty, a: &[Atom]) -> Res<Vec<Atom>> {
+        Ok(match self.width(ty)? {
+            Width::W32(8) => a.to_vec(),
+            Width::W32(16) => {
+                self.push_all(a)?;
+                self.i32_const(0xff);
+                self.op(op::I32_AND);
+                self.i32_const(8);
+                self.op(op::I32_SHL);
+                self.push_all(a)?;
+                self.i32_const(8);
+                self.op(op::I32_SHR_U);
+                self.op(op::I32_OR);
+                vec![self.save(Vt::I32)]
+            }
+            Width::W32(32) => vec![self.bswap32(&a[0])?],
+            Width::W64(64) => vec![self.bswap64(&a[0])?],
+            Width::W128 => {
+                let (Some(lo), Some(hi)) = (a.first(), a.get(1)) else {
+                    bail!("a 128-bit operand that is not two words");
+                };
+                vec![self.bswap64(hi)?, self.bswap64(lo)?]
+            }
+            _ => bail!("a byte swap of {}", self.types.describe(ty)),
+        })
+    }
+
+    /// The bits of the 32 or 64 of `x` in the other order.
+    fn reverse_bits(&mut self, x: &Atom, wide: bool) -> Res<Atom> {
+        let mut value = x.clone();
+        for (shift, mask) in [
+            (1, 0x5555_5555_5555_5555u64),
+            (2, 0x3333_3333_3333_3333),
+            (4, 0x0f0f_0f0f_0f0f_0f0f),
+        ] {
+            // The groups of `shift` bits swap places with their neighbors.
+            let mask = if wide {
+                mask as i64
+            } else {
+                i64::from(mask as u32)
+            };
+            self.push(&value)?;
+            self.int_const(wide, shift);
+            self.op(if wide { op::I64_SHR_U } else { op::I32_SHR_U });
+            self.int_const(wide, mask);
+            self.op(if wide { op::I64_AND } else { op::I32_AND });
+            self.push(&value)?;
+            self.int_const(wide, mask);
+            self.op(if wide { op::I64_AND } else { op::I32_AND });
+            self.int_const(wide, shift);
+            self.op(if wide { op::I64_SHL } else { op::I32_SHL });
+            self.op(if wide { op::I64_OR } else { op::I32_OR });
+            value = self.save(if wide { Vt::I64 } else { Vt::I32 });
+        }
+        if wide {
+            self.bswap64(&value)
+        } else {
+            self.bswap32(&value)
+        }
+    }
+
+    fn bitreverse(&mut self, ty: Ty, a: &[Atom]) -> Res<Vec<Atom>> {
+        Ok(match self.width(ty)? {
+            Width::W128 => {
+                let (Some(lo), Some(hi)) = (a.first(), a.get(1)) else {
+                    bail!("a 128-bit operand that is not two words");
+                };
+                vec![self.reverse_bits(hi, true)?, self.reverse_bits(lo, true)?]
+            }
+            Width::W32(bits) => {
+                let reversed = self.reverse_bits(&a[0], false)?;
+                if bits == 32 {
+                    vec![reversed]
+                } else {
+                    // The bits of the narrow value went to the top of the register.
+                    self.push(&reversed)?;
+                    self.i32_const(i32::from(32 - bits));
+                    self.op(op::I32_SHR_U);
+                    vec![self.save(Vt::I32)]
+                }
+            }
+            Width::W64(bits) => {
+                let reversed = self.reverse_bits(&a[0], true)?;
+                if bits == 64 {
+                    vec![reversed]
+                } else {
+                    self.push(&reversed)?;
+                    self.i64_const(i64::from(64 - bits));
+                    self.op(op::I64_SHR_U);
+                    vec![self.save(Vt::I64)]
+                }
+            }
+        })
+    }
+
+    /// `llvm.is.fpclass`: whether the float is in one of the classes of `mask` (1 signaling NaN,
+    /// 2 quiet NaN, 4 -infinity, 8 -normal, 16 -subnormal, 32 -zero, 64 +zero, 128 +subnormal,
+    /// 256 +normal, 512 +infinity), from its bits.
+    fn fpclass(&mut self, ty: Ty, x: &[Atom], mask: u32) -> Res<Vec<Atom>> {
+        let single = match ty {
+            Ty::Float => true,
+            Ty::Double => false,
+            other => bail!("is.fpclass of {}", self.types.describe(other)),
+        };
+        // The fields of the format, in the width of its integer.
+        let (exponent_shift, exponent_all, fraction_all, quiet): (i64, i64, i64, i64) = if single {
+            (23, 0xff, 0x7f_ffff, 0x40_0000)
+        } else {
+            (52, 0x7ff, (1 << 52) - 1, 1 << 51)
+        };
+        self.push_all(x)?;
+        self.op(if single {
+            op::I32_REINTERPRET_F32
+        } else {
+            op::I64_REINTERPRET_F64
+        });
+        let bits = self.save(if single { Vt::I32 } else { Vt::I64 });
+        let wide = !single;
+        let (and, eq, shr) = if wide {
+            (op::I64_AND, op::I64_EQ, op::I64_SHR_U)
+        } else {
+            (op::I32_AND, op::I32_EQ, op::I32_SHR_U)
+        };
+        // Each of these is an `i32` that is 1 or 0.
+        self.push(&bits)?;
+        self.int_const(wide, if single { 31 } else { 63 });
+        self.op(shr);
+        if wide {
+            self.op(op::I32_WRAP_I64);
+        }
+        let negative = self.save(Vt::I32);
+        self.push(&bits)?;
+        self.int_const(wide, exponent_shift);
+        self.op(shr);
+        self.int_const(wide, exponent_all);
+        self.op(and);
+        let exponent = self.save(if wide { Vt::I64 } else { Vt::I32 });
+        self.push(&bits)?;
+        self.int_const(wide, fraction_all);
+        self.op(and);
+        let fraction = self.save(if wide { Vt::I64 } else { Vt::I32 });
+        let test = |lower: &mut Self, value: &Atom, constant: i64| -> Res<Atom> {
+            lower.push(value)?;
+            lower.int_const(wide, constant);
+            lower.op(eq);
+            Ok(lower.save(Vt::I32))
+        };
+        let exponent_is_all = test(self, &exponent, exponent_all)?;
+        let exponent_is_zero = test(self, &exponent, 0)?;
+        let fraction_is_zero = test(self, &fraction, 0)?;
+        // `a & b` of two flags, or `a & !b`.
+        let both = |lower: &mut Self, a: &Atom, b: &Atom, not_b: bool| -> Res<Atom> {
+            lower.push(a)?;
+            lower.push(b)?;
+            if not_b {
+                lower.op(op::I32_EQZ);
+            }
+            lower.op(op::I32_AND);
+            Ok(lower.save(Vt::I32))
+        };
+        let nan = both(self, &exponent_is_all, &fraction_is_zero, true)?;
+        let infinite = both(self, &exponent_is_all, &fraction_is_zero, false)?;
+        let zero = both(self, &exponent_is_zero, &fraction_is_zero, false)?;
+        let subnormal = both(self, &exponent_is_zero, &fraction_is_zero, true)?;
+        // Neither all ones nor zero in the exponent.
+        self.push(&exponent_is_all)?;
+        self.push(&exponent_is_zero)?;
+        self.op(op::I32_OR);
+        self.op(op::I32_EQZ);
+        let normal = self.save(Vt::I32);
+        // The fraction has its top bit set: a quiet NaN.
+        self.push(&fraction)?;
+        self.int_const(wide, quiet);
+        self.op(and);
+        self.int_const(wide, 0);
+        self.op(if wide { op::I64_NE } else { op::I32_NE });
+        let quiet_bit = self.save(Vt::I32);
+        let signaling = both(self, &nan, &quiet_bit, true)?;
+        let quiet_nan = both(self, &nan, &quiet_bit, false)?;
+        let mut result = Atom::I32(0);
+        for (class_mask, class, sign) in [
+            (1u32, &signaling, None),
+            (2, &quiet_nan, None),
+            (4, &infinite, Some(true)),
+            (8, &normal, Some(true)),
+            (16, &subnormal, Some(true)),
+            (32, &zero, Some(true)),
+            (64, &zero, Some(false)),
+            (128, &subnormal, Some(false)),
+            (256, &normal, Some(false)),
+            (512, &infinite, Some(false)),
+        ] {
+            if mask & class_mask == 0 {
+                continue;
+            }
+            self.push(&result)?;
+            self.push(class)?;
+            if let Some(wanted) = sign {
+                self.push(&negative)?;
+                if !wanted {
+                    self.op(op::I32_EQZ);
+                }
+                self.op(op::I32_AND);
+            }
+            self.op(op::I32_OR);
+            result = self.save(Vt::I32);
+        }
+        Ok(vec![result])
+    }
+
+    /// The saturating sum or difference of two 128-bit integers.
+    fn saturating128(&mut self, kind: Overflow, a: &[Atom], b: &[Atom]) -> Res<Vec<Atom>> {
+        let (Some(a_hi), Some(_)) = (a.get(1), a.first()) else {
+            bail!("a 128-bit operand that is not two words");
+        };
+        let (value, flag) = self.with_overflow128(kind, a, b)?;
+        // The limit that an overflow gives: the bounds of the type, the one on the side of the first
+        // operand's sign for a signed operation.
+        let (limit_low, limit_high) = match kind {
+            Overflow::UAdd => (Atom::I64(-1), Atom::I64(-1)),
+            Overflow::USub => (Atom::I64(0), Atom::I64(0)),
+            _ => {
+                self.push(a_hi)?;
+                self.i64_const(0);
+                self.op(op::I64_LT_S);
+                let negative = self.save(Vt::I32);
+                let limit = |lower: &mut Self, below: i64, above: i64| -> Res<Atom> {
+                    lower.i64_const(below);
+                    lower.i64_const(above);
+                    lower.push(&negative)?;
+                    lower.op(op::SELECT);
+                    Ok(lower.save(Vt::I64))
+                };
+                (limit(self, 0, -1)?, limit(self, i64::MIN, i64::MAX)?)
+            }
+        };
+        let mut words = Vec::with_capacity(2);
+        for (limit, kept) in [(&limit_low, &value[0]), (&limit_high, &value[1])] {
+            self.push(limit)?;
+            self.push(kept)?;
+            self.push(&flag)?;
+            self.op(op::SELECT);
+            words.push(self.save(Vt::I64));
+        }
+        Ok(words)
     }
 
     /// A conversion of a float to an integer of `target` bits that saturates.
@@ -786,7 +1265,7 @@ impl<'w, 'a> Lower<'w, 'a> {
         let (bits, wide) = match width {
             Width::W32(bits) => (bits, false),
             Width::W64(bits) => (bits, true),
-            Width::W128 => bail!("a saturating operation on a 128-bit integer"),
+            Width::W128 => return self.saturating128(kind, a, b),
         };
         let (value, flag) = self.with_overflow(kind, ty, a, b)?;
         let mask = if bits >= 64 {

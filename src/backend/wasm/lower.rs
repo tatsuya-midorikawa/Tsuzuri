@@ -115,6 +115,9 @@ fn align_up(value: u32, align: u32) -> u32 {
 /// The largest alignment of a slot of the frame; the prologue aligns the frame to it.
 const MAX_SLOT_ALIGN: u32 = 128;
 
+/// The most locals that a function may have here: V8 accepts 50,000 and other engines fewer or more.
+const MAX_LOCALS: usize = 40_000;
+
 impl<'w, 'a> Lower<'w, 'a> {
     // ---- emission ----
 
@@ -676,6 +679,14 @@ impl<'w, 'a> Lower<'w, 'a> {
 
     /// The prologue, the exit and the relocations of the body that was written.
     fn finish(mut self) -> Res<Body> {
+        // The engines limit the locals of a function (50,000 in V8): a function that has more values
+        // than that is left to the LLVM backend, which colors them.
+        if self.local_vts.len() > MAX_LOCALS {
+            bail!(
+                "a function with {} values, more than the {MAX_LOCALS} locals that an engine accepts",
+                self.local_vts.len()
+            );
+        }
         let mut prologue = Vec::new();
         let mut prologue_relocs = Vec::new();
         let frame = align_up(self.frame, 16);
@@ -870,7 +881,7 @@ impl<'w, 'a> Lower<'w, 'a> {
             return Ok(());
         }
         let mut targets: Vec<u32> = Vec::new();
-        let mut large: Vec<(Atom, Atom, u64)> = Vec::new();
+        let mut large: Vec<(Atom, Atom, u64, u32)> = Vec::new();
         for phi in phis {
             let Inst::Phi {
                 dst,
@@ -902,13 +913,38 @@ impl<'w, 'a> Lower<'w, 'a> {
             let Val::Ref(source) = value else {
                 bail!("a large aggregate phi with a value that is not in memory");
             };
-            large.push((slot, source, self.types.size_of(ty)?));
+            large.push((
+                slot,
+                source,
+                self.types.size_of(ty)?,
+                self.types.align_of(ty)?,
+            ));
         }
         for local in targets.into_iter().rev() {
             self.local_set(local);
         }
-        for (slot, source, size) in large {
-            self.copy_memory(&slot, 0, &source, 0, size)?;
+        // The phis of a block change together: when one takes the value that another is about to
+        // overwrite, every incoming value is copied away first.
+        let slots: Vec<Atom> = large.iter().map(|(slot, ..)| slot.clone()).collect();
+        let overlapping = large
+            .iter()
+            .any(|(slot, source, ..)| source != slot && slots.contains(source));
+        if overlapping {
+            let mut staged = Vec::with_capacity(large.len());
+            for (slot, source, size, align) in large {
+                let copy = Atom::Frame(self.slot(size, align)?);
+                self.copy_memory(&copy, 0, &source, 0, size)?;
+                staged.push((slot, copy, size));
+            }
+            for (slot, copy, size) in staged {
+                self.copy_memory(&slot, 0, &copy, 0, size)?;
+            }
+        } else {
+            for (slot, source, size, _) in large {
+                if slot != source {
+                    self.copy_memory(&slot, 0, &source, 0, size)?;
+                }
+            }
         }
         Ok(())
     }

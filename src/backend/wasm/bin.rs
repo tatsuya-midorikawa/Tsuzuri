@@ -188,6 +188,8 @@ pub(crate) mod op {
     pub const F32_SUB: u8 = 0x93;
     pub const F32_MUL: u8 = 0x94;
     pub const F32_DIV: u8 = 0x95;
+    pub const F32_MIN: u8 = 0x96;
+    pub const F32_MAX: u8 = 0x97;
     pub const F32_COPYSIGN: u8 = 0x98;
     pub const F64_ABS: u8 = 0x99;
     pub const F64_NEG: u8 = 0x9a;
@@ -200,6 +202,8 @@ pub(crate) mod op {
     pub const F64_SUB: u8 = 0xa1;
     pub const F64_MUL: u8 = 0xa2;
     pub const F64_DIV: u8 = 0xa3;
+    pub const F64_MIN: u8 = 0xa4;
+    pub const F64_MAX: u8 = 0xa5;
     pub const F64_COPYSIGN: u8 = 0xa6;
     pub const I32_WRAP_I64: u8 = 0xa7;
     pub const I64_EXTEND_I32_S: u8 = 0xac;

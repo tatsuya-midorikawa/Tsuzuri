@@ -210,6 +210,47 @@ impl<'w, 'a> Lower<'w, 'a> {
             }
             return Ok(Val::S(sum));
         }
+        // The other reductions of integer lanes, folded from the first lane.
+        for (base, kind) in [
+            ("vector.reduce.smax", MinMax::SMax),
+            ("vector.reduce.smin", MinMax::SMin),
+            ("vector.reduce.umax", MinMax::UMax),
+            ("vector.reduce.umin", MinMax::UMin),
+        ] {
+            if is(name, base) {
+                let a = arg(self, 0)?;
+                let Some((_, elem)) = self.vector_shape(args[0].ty) else {
+                    bail!("the intrinsic {full} of a value that is not a vector");
+                };
+                let lanes = self.leaves(a)?;
+                let mut best = lanes[0];
+                for &lane in &lanes[1..] {
+                    best = self.min_max(kind, elem, best, lane)?;
+                }
+                return Ok(Val::S(best));
+            }
+        }
+        for base in [
+            "vector.reduce.and",
+            "vector.reduce.or",
+            "vector.reduce.xor",
+            "vector.reduce.mul",
+        ] {
+            if is(name, base) {
+                let a = arg(self, 0)?;
+                let lanes = self.leaves(a)?;
+                let mut folded = lanes[0];
+                for &lane in &lanes[1..] {
+                    folded = match base {
+                        "vector.reduce.and" => self.b.ins().band(folded, lane),
+                        "vector.reduce.or" => self.b.ins().bor(folded, lane),
+                        "vector.reduce.xor" => self.b.ins().bxor(folded, lane),
+                        _ => self.b.ins().imul(folded, lane),
+                    };
+                }
+                return Ok(Val::S(folded));
+            }
+        }
         bail!("the intrinsic {full}")
     }
 
