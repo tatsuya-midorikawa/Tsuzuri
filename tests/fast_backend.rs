@@ -310,6 +310,57 @@ fn object_is_deterministic() {
     }
 }
 
+/// The object format and machine of a relocatable object, read from its header.
+fn object_kind(bytes: &[u8]) -> String {
+    match bytes {
+        [0x7f, b'E', b'L', b'F', 2, 1, ..] => {
+            format!("elf {:#x}", u16::from_le_bytes([bytes[18], bytes[19]]))
+        }
+        [0xcf, 0xfa, 0xed, 0xfe, ..] => format!(
+            "macho {:#x}",
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+        ),
+        _ => format!("coff {:#x}", u16::from_le_bytes([bytes[0], bytes[1]])),
+    }
+}
+
+/// WP14: the object has the format of the machine it is for, whatever machine the compiler runs on,
+/// and the one target that cranelift-object cannot write (aarch64 Windows) is refused with E2002.
+#[test]
+fn objects_for_other_machines_have_their_formats() {
+    use tsuzuri::target::{Platform, parse_target};
+    let platform = |name: &str| Platform::new(parse_target(name).unwrap().1);
+    for (target, expected) in [
+        ("x86_64-unknown-linux-gnu", "elf 0x3e"),
+        ("aarch64-unknown-linux-gnu", "elf 0xb7"),
+        ("x86_64-apple-darwin", "macho 0x1000007"),
+        ("aarch64-apple-darwin", "macho 0x100000c"),
+        ("x86_64-pc-windows-msvc", "coff 0x8664"),
+    ] {
+        // The program with a 128-bit division needs the helpers that `windows_abi` adds on Windows.
+        for source in [PROGRAMS[0], PROGRAMS[1], PROGRAMS[3]] {
+            let options = Options {
+                platform: platform(target),
+                ..options(2)
+            };
+            let object = backend::compile(&program_ir(source), &options)
+                .unwrap_or_else(|error| panic!("{target}: {}", error.message));
+            assert_eq!(object_kind(&object), expected, "{target}");
+        }
+    }
+    let options = Options {
+        platform: platform("aarch64-pc-windows-msvc"),
+        ..options(1)
+    };
+    let error = backend::compile(&program_ir(PROGRAMS[0]), &options).unwrap_err();
+    assert_eq!(error.code, "E2002");
+    assert!(
+        error.message.contains("aarch64 on Windows"),
+        "{}",
+        error.message
+    );
+}
+
 /// The IR of a `-g` build, as `tsuzuri build -g` has it.
 fn debug_program_ir(source: &str) -> String {
     let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));

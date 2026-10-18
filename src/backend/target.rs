@@ -57,6 +57,10 @@ impl Target {
         } else {
             bail!("the operating system {}", platform.os_name());
         };
+        // cranelift-object writes COFF for x86-64 only.
+        if arch == Arch::Aarch64 && format == Format::Coff {
+            bail!("the architecture aarch64 on Windows");
+        }
         let triple = Self::triple_of(arch, format);
         let call_conv = CallConv::triple_default(&triple);
         Ok(Self {
@@ -102,6 +106,11 @@ impl Target {
         set("probestack_strategy", "inline")?;
         set("unwind_info", "false")?;
         set("preserve_frame_pointers", "true")?;
+        if self.arch == Arch::X86_64 {
+            // Without this, Cranelift's x86-64 code generator panics at an i128 in a signature;
+            // with it the value is split into two registers, as LLVM does.
+            set("enable_llvm_abi_extensions", "true")?;
+        }
         set(
             "tls_model",
             match self.format {
