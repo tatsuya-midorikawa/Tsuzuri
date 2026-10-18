@@ -566,7 +566,7 @@ assembly と wasm32 の module は `off` と同じでした（[整数の範囲�
   `--allocator host` の WebAssembly は、host の allocator が決めます。
 - LLDB の formatter と natvis は、両方の形式の文字列を読みます。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けします（[デバッグ](debugging.md)）。
 
-代償として、runtime の IR が約 60 KB（native の hello で 145 KB から 206 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,833 から 7,866 bytes）が増えます。
+代償として、runtime の IR が約 60 KB（native の hello で 148 KB から 210 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,860 から 8,058 bytes）が増えます。
 既定を `utf16` のままにしているのは、この代償と、host へ短い文字列を返す呼び出しが 2 倍近くになる場合があるためです。測定と判断の理由は
 [PM03 コンパクト文字列](../../../docs/benchmarks.md#pm03-コンパクト文字列)にあります。
 
