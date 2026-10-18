@@ -63,16 +63,43 @@ section("-Os and -Oz executables and run print what -O3 prints", () => {
   }
 });
 
-section("-O3, -Os, and -Oz emit the same LLVM IR (the level selects the optimizer, not the program)", () => {
+section("-O3, -Os, and -Oz emit the same LLVM IR but for the inline attribute of closure functions (the level selects the optimizer, not the program)", () => {
   const emit = (level) => {
     const output = join(directory, `ir${counter++}.ll`);
     tsuzuri(["build", example("point"), level, "--emit", "llvm", "-o", output]);
     return readFileSync(output, "utf8");
   };
   const reference = emit("-O3");
-  assert.equal(emit("-Os"), reference);
-  assert.equal(emit("-Oz"), reference);
+  // PM02: a native build forces known closures inline at -O1 to -O3 only (the next section).
+  const plain = reference.replace(/^(define internal [^\n]*@tz\.(?:apply\.|fn\.\$lambda\.)[^\n]*?) alwaysinline/gm, "$1");
+  assert.equal(emit("-Os"), plain);
+  assert.equal(emit("-Oz"), plain);
   assert.ok(!/\boptsize\b|\bminsize\b/.test(reference), "no optsize or minsize attributes are emitted");
+});
+
+section("the level changes only the inline attribute of the closure functions of a native build (PM02)", () => {
+  const emit = (level, extra = []) => {
+    const output = join(directory, `ir${counter++}.ll`);
+    tsuzuri(["build", example("hello"), level, ...extra, "--emit", "llvm", "-o", output]);
+    return readFileSync(output, "utf8");
+  };
+  const closureDefine = /^define internal [^\n]*@tz\.(?:apply\.|fn\.\$lambda\.)[^\n]*$/gm;
+  const forced = (ir) => (ir.match(closureDefine) ?? []).filter((line) => line.includes(" alwaysinline"));
+  const speed = emit("-O3");
+  assert.ok(forced(speed).length > 0, "-O3 forces the adapters of closures inline");
+  for (const level of ["-O1", "-O2"]) assert.equal(emit(level), speed, `${level} emits what -O3 emits`);
+  // -O0 and the size levels leave the inlining of closures to the compiler.
+  const plain = speed.replace(closureDefine, (line) => line.replace(" alwaysinline", ""));
+  for (const level of ["-O0", "-Os", "-Oz"]) {
+    const ir = emit(level);
+    assert.equal(forced(ir).length, 0, `${level} leaves the inlining of closures to the compiler`);
+    assert.equal(ir, plain, `${level}: nothing else differs from -O3`);
+  }
+  // WebAssembly never has the attribute, so its IR is the same at every level.
+  const wasm = ["--target", "wasm32"];
+  const reference = emit("-O3", wasm);
+  assert.equal(forced(reference).length, 0, "WebAssembly never forces closures inline");
+  for (const level of ["-O0", "-Os", "-Oz"]) assert.equal(emit(level, wasm), reference, `wasm32 ${level}`);
 });
 
 section("size builds are deterministic and the cache keeps the levels apart", () => {
@@ -334,7 +361,7 @@ section("integer Parse and format specs print the same at every level and match 
   tsuzuri(["build", project, "--emit", "llvm", "-o", ir]);
   const emitted = readFileSync(ir, "utf8");
   assert.ok(!emitted.includes("tz_soft_"), "no numeric runtime");
-  assert.ok(!emitted.includes("call i1 @tz.string.to_ascii"), "no ASCII copy of the text");
+  assert.ok(!emitted.includes("call i1 @tz.string.to_ascii("), "no ASCII copy of the text");
 });
 
 section("a float still uses the numeric runtime to parse, with the ASCII copy", () => {

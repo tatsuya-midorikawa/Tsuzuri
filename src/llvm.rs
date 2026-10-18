@@ -24,6 +24,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
@@ -425,6 +426,8 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_strings.rs"]
+mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
 #[path = "llvm_task.rs"]
@@ -502,6 +505,32 @@ pub fn emit_with_range_flags(
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
             range_flags: Some(flags),
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the string form that `form` names, instead of that of
+/// `TSUZURI_STRINGS` or the default (PM03).
+pub fn emit_with_strings(
+    module: &CheckedModule,
+    options: EmitOptions,
+    form: StringForm,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            strings: Some(form),
             ..Instrumentation::default()
         },
     )
@@ -840,6 +869,7 @@ pub(crate) fn emit_wasm_build(
             coverage: None,
             seed: None,
             range_flags: None,
+            strings: None,
             executable_roots: false,
         },
     )?;
@@ -1011,6 +1041,8 @@ struct Instrumentation<'a> {
     seed: Option<u64>,
     /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
     range_flags: Option<RangeFlags>,
+    /// The form of the strings that the program makes (PM03); `None` takes `TSUZURI_STRINGS` or the default.
+    strings: Option<StringForm>,
     /// A native executable emits only what its entry and exports reach (PB03 D1).
     executable_roots: bool,
 }
@@ -1088,6 +1120,10 @@ fn emit_program_in(
     let range_flags = match instrumentation.range_flags {
         Some(flags) => flags,
         None => RangeFlags::from_environment()?,
+    };
+    let string_form = match instrumentation.strings {
+        Some(form) => form,
+        None => StringForm::from_environment()?,
     };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
@@ -1255,6 +1291,7 @@ fn emit_program_in(
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
         range_flags,
+        strings: string_form,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1599,14 +1636,23 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, include_str!("runtime/debug.ll"));
     }
     if runtime_symbols.prefix("tz.display.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/display.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.display_runtime(include_str!("runtime/display.ll"))?,
+        );
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.format_runtime(include_str!("runtime/format.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.integer.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.integer_runtime(include_str!("runtime/integer.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
@@ -1654,7 +1700,10 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, DYN_CLONE);
     }
     if runtime_symbols.prefix("tz.character.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/character.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.character_runtime(include_str!("runtime/character.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.unicode.") {
         runtime_symbols.append(&mut output, include_str!("runtime/unicode.ll"));
@@ -1673,6 +1722,7 @@ fn emit_program_in(
         || runtime_symbols.prefix("tz.alloc")
         || runtime_symbols.prefix("tz.realloc")
     {
+        let string_runtime = output.len();
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
         let cpu_utf16 = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
@@ -1708,6 +1758,12 @@ fn emit_program_in(
             } else {
                 include_str!("runtime/string_scalar.ll")
             });
+        }
+        if string_form == StringForm::Compact {
+            let utf16 = output.split_off(string_runtime);
+            output.push_str(
+                &string_form.string_runtime(&utf16, !wasm || instrumentation.wasm_simd128)?,
+            );
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
@@ -1745,6 +1801,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
+    let output = limit_worker_inlining(output);
     Ok((
         simd::with_vector_alignment(unique_declarations(output)),
         globals.traps,
@@ -1990,6 +2047,8 @@ struct Globals {
     recursive_functions: Vec<bool>,
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
+    /// The form of the strings that the program makes (PM03).
+    strings: StringForm,
 }
 
 impl Default for Globals {
@@ -2033,6 +2092,7 @@ impl Default for Globals {
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
+            strings: StringForm::DEFAULT,
         }
     }
 }
@@ -2067,15 +2127,94 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
-/// Whether the adapters of closures and the workers of lambdas inline into the calls of known closures
-/// whatever their size (PM02). A static descriptor keeps the adapter in the program for as long as the
-/// descriptor exists, so LLVM no longer sees the sole call of a known closure's adapter as the last
-/// call of a local function, and a tiny program that built its closures inline grew by 11 to 17 % of
-/// its code. Native code measures better with the attribute. On WebAssembly the adapter that the
-/// descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
+/// Whether the adapters of closures and the workers of lambdas carry `alwaysinline`, so that they inline
+/// into the calls of known closures whatever their size (PM02). A static descriptor keeps the adapter
+/// in the program for as long as the descriptor exists, so LLVM no longer sees the sole call of a known
+/// closure's adapter as the last call of a local function, and a tiny program that built its closures
+/// inline grew by 11 to 17 % of its code. Native code measures better with the attribute at `-O1` to
+/// `-O3`. `limit_worker_inlining` keeps it off a worker that several calls name, and
+/// `without_closure_inlining` takes it off at `-O0`, `-Os` and `-Oz`. On WebAssembly the adapter that
+/// the descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
 /// without the attribute they are as large as before (`docs/benchmarks.md`, PM02).
 fn inline_closures(globals: &Globals) -> bool {
     !globals.wasm
+}
+
+const ALWAYS_INLINE: &str = " alwaysinline";
+
+/// `ir` without the `alwaysinline` of the functions that `strip` selects by symbol, or `None` when it
+/// has no such function.
+fn without_always_inline(ir: &str, mut strip: impl FnMut(&str) -> bool) -> Option<String> {
+    let mut offsets = Vec::new();
+    let mut start = 0;
+    for line in ir.split_inclusive('\n') {
+        if line.starts_with("define ")
+            && let Some(position) = line.find(ALWAYS_INLINE)
+            && traps::callable(line, true).is_some_and(|call| strip(call.name))
+        {
+            offsets.push(start + position);
+        }
+        start += line.len();
+    }
+    if offsets.is_empty() {
+        return None;
+    }
+    let mut output = String::with_capacity(ir.len());
+    let mut copied = 0;
+    for offset in offsets {
+        output.push_str(&ir[copied..offset]);
+        copied = offset + ALWAYS_INLINE.len();
+    }
+    output.push_str(&ir[copied..]);
+    Some(output)
+}
+
+/// A lambda's worker keeps `alwaysinline` only while at most one call names it besides its adapters.
+/// A lambda without captures is called by name where its closure is known, and the attribute would
+/// copy a large body into each of those calls, at every optimization level.
+fn limit_worker_inlining(ir: String) -> String {
+    const WORKER: &str = "@tz.fn.$lambda.";
+    if !ir.contains(WORKER) {
+        return ir;
+    }
+    let mut references = BTreeMap::<&str, usize>::new();
+    let mut owner = "";
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            owner = traps::callable(line, true).map_or("", |call| call.name);
+            continue;
+        }
+        for (start, _) in line.match_indices(WORKER) {
+            let digits = line[start + WORKER.len()..]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            let worker = &line[start..start + WORKER.len() + digits];
+            // The adapters of a lambda are `@tz.apply.$lambda.N.<captures>`; they call its worker.
+            let own_adapter = owner
+                .strip_prefix("@tz.apply.$lambda.")
+                .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+                .is_some_and(|rest| rest.starts_with('.'));
+            if !own_adapter {
+                *references.entry(worker).or_default() += 1;
+            }
+        }
+    }
+    without_always_inline(&ir, |symbol| {
+        references.get(symbol).is_some_and(|&count| count > 1)
+    })
+    .unwrap_or(ir)
+}
+
+/// `ir` without the `alwaysinline` that `inline_closures` gives the adapters and the workers of
+/// lambdas. `-O0` and the size levels leave their inlining to the compiler: the attribute copies a
+/// worker into the adapter that a descriptor keeps and into every call, which made a small program
+/// 5 to 30 % larger at `-Os` and `-Oz` (`docs/benchmarks.md`, PM02).
+pub fn without_closure_inlining(ir: String) -> String {
+    without_always_inline(&ir, |symbol| {
+        symbol.starts_with("@tz.apply.") || symbol.starts_with("@tz.fn.$lambda.")
+    })
+    .unwrap_or(ir)
 }
 
 fn apply_attributes(globals: &Globals) -> &'static str {
@@ -3761,7 +3900,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let length = self.value("extractvalue %tz.array %p0, 1");
             let value = self.value(format!("call {result} @{symbol}(ptr {data}, i64 {length})"));
             self.instruction(format!("ret {result} {value}"));
-        } else {
+        } else if !self.compact_body() {
             self.tail(&self.function.body);
         }
     }
@@ -4470,12 +4609,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.match_expression(local, value, arms, &expression.ty, false, None)
             }
             TypedExprKind::String(text) => {
-                let name = self.string_constant(text);
+                let (name, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {name}, i64 {})",
-                    &ty[1..],
-                    text.len()
+                    "call {ty} @{}.new(ptr {name}, i64 {word})",
+                    &ty[1..]
                 ))
             }
             TypedExprKind::Local(_)
@@ -4811,13 +4949,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let ty = self.ty(&string.ty);
                 let element = self.ty(&expression.ty);
                 let data = self.value(format!("extractvalue {ty} {value}, 0"));
-                let length = self.value(format!("extractvalue {ty} {value}, 1"));
+                let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                let length = self.string_count(&string.ty, &word);
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid, TrapKind::BoundsCheck);
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {element}, ptr {data}, i64 {index}"
-                ));
-                let unit = self.value(format!("load {element}, ptr {pointer}"));
+                let unit = if self.marks_length(&string.ty) {
+                    self.string_unit(&data, &word, &index)
+                } else {
+                    let pointer = self.value(format!(
+                        "getelementptr inbounds {element}, ptr {data}, i64 {index}"
+                    ));
+                    self.value(format!("load {element}, ptr {pointer}"))
+                };
                 self.release_operand(string, &value, &frames);
                 unit
             }
@@ -4886,7 +5029,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     return length;
                 }
                 let (value, frames) = self.read_operand(string);
-                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
+                let length = self.string_length(&string.ty, &value);
                 self.release_operand(string, &value, &frames);
                 length
             }
@@ -6976,7 +7119,7 @@ fn emit_builtin(
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
-        Builtin::Parse => emit_parse(instance, ty, module),
+        Builtin::Parse => emit_parse(instance, ty, module, globals.strings),
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
@@ -7039,6 +7182,7 @@ fn emit_typed_builtin(
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
+        strings: shared_globals.strings,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -8133,7 +8277,12 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     )
 }
 
-fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> String {
+fn emit_parse(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    module: &CheckedModule,
+    form: StringForm,
+) -> String {
     let symbol = builtin_symbol(instance, module);
     let payload = &instance.types[0];
     let value_type = llvm_type(payload, module);
@@ -8206,6 +8355,14 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                br i1 %ok, label %some, label %none\nsome:\n{load}"
         );
     } else {
+        // The numeric parser reads the ASCII bytes that `to_ascii` wrote, and counts them.
+        let (count, count_operand) = match form {
+            StringForm::Utf16 => (String::new(), "%length"),
+            StringForm::Compact => (
+                format!("  %count = and i64 %length, {}\n", strings::MASK),
+                "%count",
+            ),
+        };
         let _ = writeln!(
             body,
             "  %data = extractvalue %tz.string %text, 0\n\
@@ -8214,7 +8371,8 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %buffer = alloca [4096 x i8], align 16\n\
                %ascii = call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)\n\
                br i1 %ascii, label %parse, label %none\nparse:\n\
-               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length, i32 {})\n\
+               {count}\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 {count_operand}, i32 {})\n\
                %ok = icmp ne i32 %parsed, 0\n\
                br i1 %ok, label %some, label %none\nsome:\n\
                %value = load {value_type}, ptr %slot",
@@ -8456,6 +8614,86 @@ mod tests {
         assert_eq!(with_net_imports("no declarations\n"), "no declarations\n");
     }
 
+    /// Workers 1 and 12 are called once, 2 twice, 3 only by itself and 4 by itself and by another
+    /// function; 1 and 12 differ only in their last digit.
+    const CLOSURE_FUNCTIONS: &str = "\
+define internal i64 @tz.fn.$lambda.1(i64 %arg0) nounwind memory(none) alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.1.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.2.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.2(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.3(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.3(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.4(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.12(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.12.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.12(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %a = call i64 @tz.fn.$lambda.1(i64 %x)\n  %b = call i64 @tz.fn.$lambda.2(i64 %a)\n  %c = call i64 @tz.fn.$lambda.2(i64 %b)\n  %d = call i64 @tz.fn.$lambda.12(i64 %c)\n  %e = call i64 @tz.fn.$lambda.4(i64 %d)\n  ret i64 %e\n}\n";
+
+    #[test]
+    fn a_lambda_worker_named_by_several_calls_is_not_forced_inline() {
+        let limited = limit_worker_inlining(CLOSURE_FUNCTIONS.to_owned());
+        let inlined = |ir: &str| {
+            ir.lines()
+                .filter(|line| line.starts_with("define ") && line.contains(" alwaysinline"))
+                .map(|line| line.split('(').next().unwrap().rsplit(' ').next().unwrap())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            inlined(&limited),
+            [
+                "@tz.fn.$lambda.1",
+                "@tz.apply.$lambda.1.0",
+                "@tz.apply.$lambda.2.0",
+                "@tz.fn.$lambda.3",
+                "@tz.fn.$lambda.12",
+                "@tz.apply.$lambda.12.0",
+                "@tz.fn.Main.named",
+            ]
+        );
+        // Only the attribute of the two workers goes: the rest of the text is the same.
+        assert_eq!(
+            limited,
+            CLOSURE_FUNCTIONS
+                .replacen(
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind",
+                    1
+                )
+                .replacen(
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind",
+                    1
+                )
+        );
+        assert_eq!(limit_worker_inlining(limited.clone()), limited);
+        let plain =
+            "define internal i64 @tz.fn.Main.f(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\n";
+        assert_eq!(limit_worker_inlining(plain.to_owned()), plain);
+        // The adapter of lambda 10 is not an adapter of lambda 1.
+        let other = "define internal i64 @tz.fn.$lambda.1(i64 %x) nounwind alwaysinline {\nentry:\n  ret i64 %x\n}\n\n\
+define internal i64 @tz.apply.$lambda.10.0(i64 %a, ptr %env, i1 %borrow) nounwind {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %a)\n  ret i64 %v\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %x)\n  ret i64 %v\n}\n";
+        assert!(!limit_worker_inlining(other.to_owned()).contains(" alwaysinline"));
+    }
+
+    #[test]
+    fn closure_inlining_is_removed_from_adapters_and_lambda_workers_only() {
+        let stripped = without_closure_inlining(CLOSURE_FUNCTIONS.to_owned());
+        for line in stripped.lines().filter(|line| {
+            line.starts_with("define ")
+                && (line.contains("@tz.apply.") || line.contains("@tz.fn.$lambda."))
+        }) {
+            assert!(!line.contains(" alwaysinline"), "{line}");
+        }
+        assert_eq!(stripped.matches(" alwaysinline").count(), 1);
+        assert!(stripped.contains("@tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {"));
+        assert_eq!(
+            stripped.len() + 8 * " alwaysinline".len(),
+            CLOSURE_FUNCTIONS.len()
+        );
+        assert_eq!(without_closure_inlining(stripped.clone()), stripped);
+    }
+
     #[test]
     fn emits_explicit_tail_loop_and_checked_arithmetic() {
         let module = analyze(
@@ -8559,6 +8797,28 @@ mod tests {
         ir
     }
 
+    /// `library` in the UTF-16 form of `string`, for a test that pins the text of that form's IR
+    /// whatever `TSUZURI_STRINGS` says.
+    fn library_utf16(source: &str) -> String {
+        let module = checked(source);
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            wasm_simd128: false,
+            debug_output: false,
+            runtime_objects: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let ir = emit_with_strings(&module, options, StringForm::Utf16).unwrap();
+        assert_eq!(
+            ir,
+            emit_with_strings(&module, options, StringForm::Utf16).unwrap(),
+            "{source}"
+        );
+        ir
+    }
+
     #[test]
     fn emits_distinct_string_literals_and_indexing() {
         let ir = library(
@@ -8591,7 +8851,7 @@ mod tests {
 
     #[test]
     fn emits_utf16_display_and_ascii_parse() {
-        let ir = library(
+        let ir = library_utf16(
             "let bytes = u8\"42\"\n\
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
@@ -8825,7 +9085,7 @@ mod tests {
 
     #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
-        let ir = library(
+        let ir = library_utf16(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
              def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
              def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\

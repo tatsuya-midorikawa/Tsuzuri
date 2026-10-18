@@ -1,5 +1,6 @@
 //! Function values (PM02): the shape of their IR and the size model behind the layout limit.
 use std::collections::BTreeSet;
+use tsuzuri::driver::{BuildOptions, Emit, OptLevel, Project, Target};
 use tsuzuri::{analyze, analyze_modules, llvm};
 
 /// Four kinds of function values: a function used as a value, a capture that fits a pointer, an
@@ -181,6 +182,7 @@ fn closure_values_are_a_descriptor_and_an_environment() {
 /// local function; so that a known closure still folds, native code inlines the adapter and the worker
 /// of a lambda into the call (PM02). Specialized workers, tasks, and ordinary functions are left to
 /// LLVM, and so is every function on WebAssembly, where the attribute made programs 30 to 50 % larger.
+/// A worker that several calls name is left to LLVM too (`a_lambda_that_several_calls_name_...`).
 #[test]
 fn native_adapters_and_lambda_workers_inline_into_known_calls() {
     for wasm in [false, true] {
@@ -374,4 +376,175 @@ fn owned n =
         }
         assert_eq!(seen, (true, true), "wasm: {wasm}\n{ir}");
     }
+}
+
+/// A lambda without captures and a body that LLVM cannot fold (each step divides by the argument),
+/// called from `calls` places: a known closure of that kind is called by name.
+fn many_calls(calls: usize) -> String {
+    let mut body = String::from("    let f: i64 -> i64 = \\x ->\n        let v0 = x * 3 + 1\n");
+    for index in 1..40 {
+        body += &format!(
+            "        let v{index} = v{} / (x + {}) + v{} % (x + {})\n",
+            index - 1,
+            index + 1,
+            index - 1,
+            index + 4
+        );
+    }
+    body += "        v39\n";
+    let sum = (0..calls)
+        .map(|call| format!("f (seed + {call})"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    format!("export def many :: i64 -> i64\nfn many seed =\n{body}    {sum}\n")
+}
+
+/// The `define` lines of the closure functions: adapters and the workers of lambdas.
+fn closure_definitions(ir: &str) -> Vec<&str> {
+    ir.lines()
+        .filter(|line| {
+            line.starts_with("define internal ")
+                && (line.contains("@tz.apply.") || line.contains("@tz.fn.$lambda."))
+        })
+        .collect()
+}
+
+/// `alwaysinline` copies the body of a worker into every call that names it. A lambda that the program
+/// calls from several places keeps its worker out of that rule, so that the code does not grow with the
+/// number of calls; the adapters, which hold no body, keep it.
+#[test]
+fn a_lambda_that_several_calls_name_is_not_forced_inline() {
+    for wasm in [false, true] {
+        for (calls, forced) in [(1, true), (2, false), (24, false)] {
+            let module = analyze(&many_calls(calls))
+                .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+            let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+            let definitions = closure_definitions(&ir);
+            let (workers, adapters): (Vec<&str>, Vec<&str>) = definitions
+                .into_iter()
+                .partition(|line| line.contains("@tz.fn.$lambda."));
+            let context = format!("wasm: {wasm}, calls: {calls}");
+            assert_eq!(workers.len(), 1, "{context}\n{ir}");
+            assert!(!adapters.is_empty(), "{context}");
+            assert_eq!(
+                workers[0].contains(" alwaysinline"),
+                forced && !wasm,
+                "{context}: {}",
+                workers[0]
+            );
+            for adapter in adapters {
+                assert_eq!(
+                    adapter.contains(" alwaysinline"),
+                    !wasm,
+                    "{context}: {adapter}"
+                );
+            }
+        }
+    }
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-closure-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+fn build_with(
+    project: &Project,
+    output: &std::path::Path,
+    target: Target,
+    emit: Emit,
+    level: OptLevel,
+) {
+    let module = project.analyze().unwrap();
+    tsuzuri::driver::build(
+        &module,
+        project,
+        output,
+        BuildOptions {
+            target,
+            emit,
+            optimization: level,
+            cache: false,
+            ..BuildOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+}
+
+/// The attribute belongs to the speed levels `-O1` to `-O3` of a native build: `-O0` and the size
+/// levels leave the inlining of known closures to the compiler (PM02), and WebAssembly never has it.
+#[test]
+fn closures_are_forced_inline_at_the_speed_levels_of_a_native_build_only() {
+    let directory = scratch("levels");
+    std::fs::write(directory.join("Main.tz"), many_calls(2)).unwrap();
+    let project = Project::load(&directory).unwrap();
+    for target in [Target::Native, Target::Wasm32] {
+        for level in [
+            OptLevel::O0,
+            OptLevel::O1,
+            OptLevel::O2,
+            OptLevel::O3,
+            OptLevel::Os,
+            OptLevel::Oz,
+        ] {
+            let output = directory.join("levels.ll");
+            build_with(&project, &output, target, Emit::Llvm, level);
+            let ir = std::fs::read_to_string(&output).unwrap();
+            let definitions = closure_definitions(&ir);
+            assert!(definitions.len() >= 2, "{ir}");
+            let forced = definitions
+                .iter()
+                .filter(|line| line.contains(" alwaysinline"))
+                .count();
+            let expected = target == Target::Native
+                && matches!(level, OptLevel::O1 | OptLevel::O2 | OptLevel::O3);
+            // The adapters keep it; the worker of this lambda has two calls and loses it.
+            assert_eq!(
+                forced,
+                if expected { definitions.len() - 1 } else { 0 },
+                "{target:?} {level:?}\n{definitions:#?}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// What the attribute cost: a lambda of 40 steps called from 24 places was 24 copies of the body, 4.5 times
+/// the code at `-O3` and `-Oz` and 16 times at `-O0`. The object must grow with the calls only, whichever
+/// the level.
+#[test]
+fn the_object_of_a_lambda_called_from_many_places_grows_with_the_calls_only() {
+    let directory = scratch("growth");
+    let mut sizes = Vec::new();
+    for (calls, name) in [(2, "few"), (24, "many")] {
+        let source = directory.join(name);
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("Main.tz"), many_calls(calls)).unwrap();
+        let project = Project::load(&source).unwrap();
+        for level in [OptLevel::O0, OptLevel::O3, OptLevel::Oz] {
+            let object = source.join(format!("{level:?}.o"));
+            build_with(&project, &object, Target::Native, Emit::Object, level);
+            sizes.push((calls, level, std::fs::metadata(&object).unwrap().len()));
+        }
+    }
+    for level in [OptLevel::O0, OptLevel::O3, OptLevel::Oz] {
+        let size = |calls: usize| {
+            sizes
+                .iter()
+                .find(|(c, l, _)| *c == calls && *l == level)
+                .unwrap()
+                .2
+        };
+        // Twenty-two more calls cost a call and its relocation each, not a copy of the body.
+        assert!(
+            size(24) < size(2) + 4096,
+            "{level:?}: {} bytes with 2 calls, {} with 24",
+            size(2),
+            size(24)
+        );
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
 }

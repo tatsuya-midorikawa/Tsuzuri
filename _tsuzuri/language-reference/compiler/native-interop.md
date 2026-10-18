@@ -252,7 +252,7 @@ ABC
 
 借用で渡した入力は、呼び出しのあいだだけ読まれます。Tsuzuri はそれを複製して所有したり、解放したりしません。負の長さ、null と正の長さ、整列違反は、本体の前にトラップします。null と長さ 0 は空です。ネイティブでは、ポインタが本当に確保済みかをコンパイラは検査できません。正しい領域を渡すのはホストの責任です。
 
-`string` は `uint16_t` の列、`utf8string` は検証済みの `uint8_t` です。不正な UTF-8 はトラップし、暗黙の文字コード変換はしません。
+`string` は `uint16_t` の列、`utf8string` は検証済みの `uint8_t` です。不正な UTF-8 はトラップし、暗黙の文字コード変換はしません。`TSUZURI_STRINGS=compact` でも ABI は同じで、Latin-1 で持っている `string` は、返す前と host の関数へ渡す前に `uint16_t` の列へ広げます（[コンパクト文字列の旗](option.md#コンパクト文字列の旗)）。
 
 ## 共有ライブラリと各言語のバインディング
 
@@ -438,7 +438,7 @@ llvm-bcanalyzer -dump add.bc | grep -m1 "record string"
 
 ### 何が入るか
 
-bitcode の外から見える記号は、`--emit object` と同じ公開 C ABI です。通常（強い）の定義は `tz_<名前>` だけで、`--trap-mode return` では `tsuzuri_try_<名前>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`、`Async` を使うプログラムでは `tsuzuri_async_*` が加わります。`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、f16 などのソフトウェア実装 `tz_soft_*`、`--allocator small` の `tz_small_*` は、弱い定義です。C ランタイムの関数は、この bitcode の中の内部関数で、ホストの名前と衝突しません。
+bitcode の外から見える記号は、`--emit object` と同じ公開 C ABI（`--emit shared` が書き出す一覧）です。強い定義は、`tz_<名前>`、`--trap-mode return` の `tsuzuri_try_<名前>`、`--allocator counting` の `tsuzuri_alloc_stats`、標準入出力の入口の `tsuzuri_main`、`Async.start` の `tsuzuri_async_poll` と `tsuzuri_async_complete` です。弱い定義は、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、f16 などのソフトウェア実装 `tz_soft_*`、`--allocator small` の `tz_small_*`、そして `Async.block_on` に届くプログラムで、ほかのスレッドが呼ぶ `tsuzuri_async_post` です。`tsuzuri_async_post` は C ランタイムが定義するので、まとめるときに内部にならないよう名前を残します（下の `llvm-link` の項）。C ランタイムのそれ以外の関数は、この bitcode の中の内部関数で、ホストの名前と衝突しません。
 
 LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含むときだけ、関数を inline します。Clang は C の関数に `"target-cpu"`、`"tune-cpu"`、`"target-features"` を付けますが、このコンパイラの IR は付けません。そこで `--emit bitcode` は、小さな C のファイルを同じ Clang で `-S -emit-llvm` にして読み、その Clang が C の関数に付ける `target-cpu` と `tune-cpu` を、IR の全関数に付けます。既定で `target-features` を写さないのは、同じ CPU でも feature の列が少し違うホストで inline されなくなるからです。`--cpu native` は features も写します。F08 の `@cpu` 版のように、関数が自分の `target-features` を持つときは、それを保ちます。
 
@@ -446,7 +446,7 @@ LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含�
 
 `--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、bare-metal の target、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
 
-C ランタイムを使うプログラム（タスク、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
+C ランタイムを使うプログラム（タスク、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号（`tsuzuri_async_post`）は、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残します。まとめた後に、それが外部の定義のままかを検査し、そうでなければ `E2002` です。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
 
 Clang が bitcode を書かないとき（`-x ir -flto=thin -c` の `-flto=thin` を落とすランチャーなど）は、出力の先頭が bitcode でないので `E2002` で止めます。配布物の `tsuzuri-clang` は `-flto` を同梱の LLVM Clang に渡します。
 

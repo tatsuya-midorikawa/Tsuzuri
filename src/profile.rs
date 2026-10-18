@@ -17,6 +17,8 @@ const INDEXED_MAGIC: [u8; 8] = *b"\xfflprofi\x81";
 const RAW_MAGICS: [[u8; 8]; 2] = [*b"\x81rforpl\xff", *b"\x81Rforpl\xff"];
 /// The staged profile that Clang reads, in the build's temporary directory.
 const STAGED: &str = "profile.profdata";
+/// What `llvm-profdata merge --input-files` reads the raw profiles from, in the same directory.
+const INPUT_LIST: &str = "profile-inputs.txt";
 
 const MERGE_HINT: &str = "llvm-profdata must come from the same LLVM as the Clang that built the instrumented program; set TSUZURI_LLVM_PROFDATA";
 const READ_HINT: &str = "the profile must be merged by the llvm-profdata that matches this Clang; regenerate it with --profile-generate";
@@ -221,7 +223,7 @@ fn prepare_for(
             let metadata =
                 fs::metadata(path).map_err(|error| io_error("read profile", path, error))?;
             if metadata.is_dir() {
-                merge_directory(path, &staged, messages, profdata)?;
+                merge_directory(path, temporary, &staged, messages, profdata)?;
             } else {
                 // Copying freezes what Clang reads and what the cache key hashes.
                 fs::copy(path, &staged).map_err(|error| io_error("read profile", path, error))?;
@@ -242,9 +244,34 @@ fn prepare_for(
     }
 }
 
-/// Merges the raw profiles of `directory`, in the order of their names, into `staged`.
+/// The input list of `llvm-profdata merge --input-files` for `files`: one `1,<path>` line each. The
+/// weight in front keeps a comma in a path from being read as the end of a weight, which a plain
+/// path would be; only a line break cannot be carried.
+fn input_list(files: &[PathBuf]) -> Result<Vec<u8>, Diagnostic> {
+    let mut list = Vec::new();
+    for file in files {
+        let bytes = file.as_os_str().as_encoded_bytes();
+        if bytes.contains(&b'\n') {
+            return Err(driver_error(
+                "E2000",
+                format!(
+                    "--profile-use cannot merge {file:?}: the name of a file has a line break; rename it"
+                ),
+            ));
+        }
+        list.extend_from_slice(b"1,");
+        list.extend_from_slice(bytes);
+        list.push(b'\n');
+    }
+    Ok(list)
+}
+
+/// Merges the raw profiles of `directory`, in the order of their names, into `staged`. The paths go to
+/// `llvm-profdata` in a file of `temporary`: a directory may hold more raw profiles than the arguments
+/// of a process can name.
 fn merge_directory(
     directory: &Path,
+    temporary: &Path,
     staged: &Path,
     messages: &mut Vec<String>,
     profdata: &dyn Fn() -> Result<OsString, Diagnostic>,
@@ -272,8 +299,14 @@ fn merge_directory(
         ));
     }
     files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-    let mut command = Command::new(profdata()?);
-    command.arg("merge").arg("-o").arg(staged).args(&files);
+    let list = input_list(&files)?;
+    let tool = profdata()?;
+    let path = temporary.join(INPUT_LIST);
+    fs::write(&path, list).map_err(|error| io_error("write profile list", &path, error))?;
+    let mut input_files = OsString::from("--input-files=");
+    input_files.push(&path);
+    let mut command = Command::new(tool);
+    command.arg("merge").arg("-o").arg(staged).arg(input_files);
     collect_message(messages, run_tool(&mut command, MERGE_HINT)?);
     Ok(())
 }
@@ -889,20 +922,27 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// A stand-in for llvm-profdata: it records its arguments in `merge.log` and the file that it is
+    /// given with `--input-files` in `merge-list.log`, then writes an indexed profile.
+    #[cfg(unix)]
+    fn recording_profdata(directory: &Path) -> PathBuf {
+        let tool = directory.join("fake-profdata");
+        script(
+            &tool,
+            &format!(
+                "#!/bin/sh\necho \"$@\" > '{log}'\nwhile [ $# -gt 0 ]; do\n  [ \"$1\" = -o ] && out=$2\n  case \"$1\" in --input-files=*) cp \"${{1#--input-files=}}\" '{list}' ;; esac\n  shift\ndone\nprintf '\\377lprofi\\201merged' > \"$out\"\necho 'warning: from the merge' >&2\n",
+                log = directory.join("merge.log").display(),
+                list = directory.join("merge-list.log").display()
+            ),
+        );
+        tool
+    }
+
     #[cfg(unix)]
     #[test]
     fn merges_a_directory_of_raw_profiles_in_name_order() {
         let directory = scratch();
-        let log = directory.path.join("merge.log");
-        // A stand-in for llvm-profdata: it records its arguments and writes an indexed profile.
-        let tool = directory.path.join("fake-profdata");
-        script(
-            &tool,
-            &format!(
-                "#!/bin/sh\necho \"$@\" > '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done\nprintf '\\377lprofi\\201merged' > \"$out\"\necho 'warning: from the merge' >&2\n",
-                log.display()
-            ),
-        );
+        let tool = recording_profdata(&directory.path);
         let raw = directory.path.join("raw");
         fs::create_dir(&raw).unwrap();
         for name in ["b.profraw", "a.profraw", "c.txt", "d.PROFRAW"] {
@@ -921,11 +961,21 @@ mod tests {
         .unwrap()
         .unwrap();
         let copy = work.path.join(STAGED);
+        // The paths are not arguments: a directory may hold more raw profiles than a process can be given.
         assert_eq!(
-            fs::read_to_string(&log).unwrap().trim(),
+            fs::read_to_string(directory.path.join("merge.log"))
+                .unwrap()
+                .trim(),
             format!(
-                "merge -o {} {} {}",
+                "merge -o {} --input-files={}",
                 copy.display(),
+                work.path.join(INPUT_LIST).display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path.join("merge-list.log")).unwrap(),
+            format!(
+                "1,{}\n1,{}\n",
                 raw.join("a.profraw").display(),
                 raw.join("b.profraw").display()
             )
@@ -954,6 +1004,90 @@ mod tests {
         assert!(text.starts_with("E2002: "), "{text}");
         assert!(text.contains("error: no profile can be merged"), "{text}");
         assert!(text.ends_with(MERGE_HINT), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn merges_more_raw_profiles_than_a_process_can_be_given_as_arguments() {
+        let directory = scratch();
+        let tool = recording_profdata(&directory.path);
+        let raw = directory.path.join("raw");
+        fs::create_dir(&raw).unwrap();
+        // Long names make the paths exceed ARG_MAX (1 MiB on macOS, 2 MiB on Linux) with a few thousand files.
+        let names: Vec<String> = (0..10_000)
+            .map(|index| format!("{index:05}-{}.profraw", "x".repeat(230)))
+            .collect();
+        for name in &names {
+            fs::write(raw.join(name), "").unwrap();
+        }
+        let paths: usize = names
+            .iter()
+            .map(|name| raw.join(name).as_os_str().len() + 1)
+            .sum();
+        assert!(paths > 2 << 20, "{paths} bytes of paths");
+        let work = scratch();
+        let profdata = || Ok(tool.clone().into_os_string());
+        prepare_with(
+            &Profile::Use(raw.clone()),
+            &work.path,
+            &mut Vec::new(),
+            &profdata,
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
+        .unwrap();
+        let arguments = fs::read_to_string(directory.path.join("merge.log")).unwrap();
+        assert!(arguments.len() < 1024, "{} bytes", arguments.len());
+        let list = fs::read_to_string(directory.path.join("merge-list.log")).unwrap();
+        let expected: Vec<String> = names
+            .iter()
+            .map(|name| format!("1,{}", raw.join(name).display()))
+            .collect();
+        assert_eq!(list.lines().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn lists_raw_profiles_for_llvm_profdata_whatever_their_paths_hold() {
+        // A path with a comma would be read as a weight without the "1," that every entry starts with.
+        let files = [
+            PathBuf::from("/work/a,b dir/x.profraw"),
+            PathBuf::from("#odd/ y .profraw"),
+            PathBuf::from("plain.profraw"),
+        ];
+        assert_eq!(
+            input_list(&files).unwrap(),
+            b"1,/work/a,b dir/x.profraw\n1,#odd/ y .profraw\n1,plain.profraw\n"
+        );
+        // A line break would split the entry in two, and no form of the list can carry it.
+        let error = input_list(&[PathBuf::from("dir/a\nb.profraw")]).unwrap_err();
+        assert_eq!(error.code, "E2000");
+        assert_eq!(
+            error.message,
+            "--profile-use cannot merge \"dir/a\\nb.profraw\": the name of a file has a line break; rename it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_directory_with_a_raw_profile_whose_name_has_a_line_break() {
+        let directory = scratch();
+        let raw = directory.path.join("raw");
+        fs::create_dir(&raw).unwrap();
+        fs::write(raw.join("a\nb.profraw"), "").unwrap();
+        let work = scratch();
+        let text = message(prepare_with(
+            &Profile::Use(raw),
+            &work.path,
+            &mut Vec::new(),
+            &no_profdata,
+        ));
+        assert!(
+            text.starts_with("E2000: --profile-use cannot merge \""),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("a\\nb.profraw\": the name of a file has a line break; rename it"),
+            "{text}"
+        );
     }
 
     #[cfg(unix)]

@@ -7338,9 +7338,9 @@ LSP は 1,000 module で最小が約 455〜480 ms 短く（3 組とも）、条�
 
 <!-- phase4:PM02 -->
 
-関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `alwaysinline`、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
+関数値と `Task` を、4 ポインター `{ code, environment, clone, drop }` から `{ 静的記述子, 環境 }` の 2 ポインターにした（`%tz.closure`、ネイティブ 32 → 16 bytes、wasm32 16 → 8 bytes）変更の記録です。実装した経路は、記述子の clone／drop を null にする即値・捕捉なしの関数値（P2-b）、ネイティブの `-O1`〜`-O3` の `alwaysinline`（worker は adapter 以外の呼び出しが 1 か所以下のものだけ）、`Maybe<fn>` の null 記述子 niche（P2-d）です。`!invariant.load`（P2-a）は測って取り下げ、E1010 の見積もりを 16 に下げる案（P2-c）は取り下げました（見積もりは 32 bytes のまま）。
 
-**条件**: 基準 = main `9dd0fbbc` のコンパイラ（sha256 `5e1b9687…`）、after = ブランチ `perf/p4-PM02` の `e787499d`（sha256 `9c656038…`）。Apple M1 Max（10 コア、他の作業と共有）、clang 21.0.0、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`）と 20.19.6（`run-control.mjs`）。native `-O3 --cpu generic`。時間は基準と after を交互に（奇数 trial は基準が先、偶数は after が先）6 trial ずつ、1 trial に 12〜15 標本。**測定中の load average は 1 分値で 34〜103（中央値 59）**で、別の作業と CPU を取り合っているため、時間の絶対値は参考で、基準との比と、機械語が同じかどうかを主な根拠にしました。A/A（基準どうし）の control の比は 0.994〜1.009。再現: `target/perf/PM02/bin/measure-ab.sh <after のコンパイラ> <名前> <trial 数> control cpp apps`。
+**条件**: 基準 = main `9dd0fbbc` のコンパイラ（sha256 `5e1b9687…`）、after = ブランチ `perf/p4-PM02` の `e787499d`（sha256 `9c656038…`）。Apple M1 Max（10 コア、他の作業と共有）、clang 21.0.0、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`）と 20.19.6（`run-control.mjs`）。native `-O3 --cpu generic`。時間は基準と after を交互に（奇数 trial は基準が先、偶数は after が先）6 trial ずつ、1 trial に 12〜15 標本。**測定中の load average は 1 分値で 34〜103（中央値 59）**で、別の作業と CPU を取り合っているため、時間の絶対値は参考で、基準との比と、機械語が同じかどうかを主な根拠にしました。A/A（基準どうし）の control の比は 0.994〜1.009。再現: `target/perf/PM02/bin/measure-ab.sh <after のコンパイラ> <名前> <trial 数> control cpp apps`。コードレビュー後の方針（下の「レビュー後の方針」）の測定は `b4e1eeee` のコードのコンパイラ（sha256 `8b7de470…`）で、基準・機械・手順は同じです。
 
 #### M1 値の大きさ（`benchmarks/layout/sizes.mjs`、clang が測った値。native と x86-64 Linux は同じ。wasm32）
 
@@ -7378,7 +7378,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 #### G-inline（`-O3` の object の `__text` bytes。基準 → after）
 
-静的記述子は adapter（`@tz.apply.*`）を参照し続けるので、既知の関数値の呼び出しが畳み込まれたあとも、LLVM は adapter を「ローカル関数の最後の呼び出し」として inline せず、worker も inline しません。そのまま（`alwaysinline` なし）の native は、hello +14.0%、currying +14.0%、functional +6.9%、`closures` の probe は `ret 51` に畳まれず 8 → 404 bytes でした。native では `@tz.apply.*` と `$lambda` の worker（`-g -O0` を除く）に `alwaysinline` を付けます。
+静的記述子は adapter（`@tz.apply.*`）を参照し続けるので、既知の関数値の呼び出しが畳み込まれたあとも、LLVM は adapter を「ローカル関数の最後の呼び出し」として inline せず、worker も inline しません。そのまま（`alwaysinline` なし）の native は、hello +14.0%、currying +14.0%、functional +6.9%、`closures` の probe は `ret 51` に畳まれず 8 → 404 bytes でした。native の `-O1`〜`-O3` では `@tz.apply.*` と、adapter 以外の呼び出しが 1 か所以下の `$lambda` の worker（`-g -O0` を除く）に `alwaysinline` を付けます（下の表は `-O3` で、この方針でも同じ値です）。
 
 | プログラム | 基準 | after | 差 |
 | --- | --- | --- | --- |
@@ -7394,18 +7394,53 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 - 変種の測定（WP5 の IR に属性を後から付け、同じ clang で `-O3`。hello／currying／functional）: 属性なし 3,052／3,044／3,624（基準 2,604／2,596／3,352）、adapter だけ 3,052／3,044／3,624（io と fixtures の currying が小さくなる）、adapter と worker 2,704／2,696／3,388（+3.8%／+3.9%／+1.1%）、worker に `inlinehint` は効かない。
 - x86-64 Linux の代理（native の IR を `--target=x86_64-unknown-linux-gnu` で `.text` に）: hello 3,284 → 3,380（+2.9%）、currying +2.9%、functional −0.4%、io −8.2%、fixtures の currying −5.4%・computations −1.3%・tasks +0.3%、probe は 6 bytes のまま。
 - **WebAssembly には付けません**。付けた変種は wasm32 の `-O3` で hello の CODE が 8,574 → 11,990（+40%）、functional +29%、io +31% になりました（残った adapter が worker の複製を持つため）。付けない after は hello 6,833 → 6,860（+0.4%）、currying +0.4%、functional +1.4%、io +0.4%、fixtures の computations +0.6%・currying（`curried_mixed_kinds`・`curried_optional` を足したもの）+1.4%・**tasks +3.6%**（`.wasm` 全体）です。
-- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +4.1%、実行ファイル +0.1%）。`-Os`・`-Oz` では小さなプログラムが大きくなります。native の `-Oz`（clang で IR に属性を付けた変種）で hello 2,484 → 3,240（+30%）、functional +18%、io +19% で、fixtures は +1〜3%。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%。サイズ最適化の水準ごとに方針を替える案（ドライバーが adapter と worker の属性を外す）は未実施です。
+- **代償（既知）**: `-O0` では、使われない静的記述子が object に残ります（hello の object +2.9%、実行ファイル +0.3%）。`-Os`・`-Oz` では小さなプログラムが大きくなります（下の「レビュー後の方針」の表。属性を外したあとの値）。wasm32 の `.wasm` は `-Os` で hello +0.9%・functional +8.7%・tasks +9.1%、`-Oz` で hello +7.8%・functional +9.1%・io +5.3%・tasks +7.8%（wasm32 には属性がないので、この増えは記述子と、inline されずに残る adapter・worker によります）。
+
+#### レビュー後の方針: 属性は `-O1`〜`-O3` と、呼び出しが 1 か所以下の worker だけ
+
+独立したコードレビューが、`alwaysinline` が無条件なことの問題を 2 つ見つけました。(1) IR が `-O0`〜`-Oz` で同じなので、`-Os`・`-Oz` でも inline を強制し、小さなプログラムが大きくなる（native の `-Oz` で hello +25%、functional +16%）。(2) 捕捉のないラムダは、関数値が既知なら `@tz.fn.$lambda.N` を名前で直接呼ぶので、属性は大きな本体を呼び出しの数だけ複製する（`-O0` でも）。
+
+- `llvm::limit_worker_inlining`（`emit_program_in` の最後）: `$lambda` の worker は、自分の adapter（`@tz.apply.$lambda.N.*`）以外の呼び出し（再帰を含む）が 2 か所以上あれば `alwaysinline` を外します。adapter は本体を持たないので付けたままです。本体の大きさで切る案は、150 行の worker が 1 か所だけで使われる hello が +17% になるので採りませんでした。
+- `llvm::without_closure_inlining`（ドライバー。native の `-O0`・`-Os`・`-Oz`。`--emit header` と GPU カーネルは除く）: `@tz.apply.*` と `$lambda` の worker から外します。IR が水準で変わるのは、native のこの属性だけです（`tests/size.mjs` が、`-O1`・`-O2` は `-O3` と同じ、`-O0`・`-Os`・`-Oz` は属性を外しただけと確かめます。wasm32 は全水準で同じ）。adapter だけに付ける案は、`-Oz` で hello +17%・functional +10%・io +19%（clang で IR に属性を付けた変種。外す案は +25.5%・+15.3%・+5.9%、無条件は +30.5%・+18.4%・+19.2%）で、一貫した勝ちがないので、単純に外しました。
+
+**呼び出しの数でコードが増えないこと**（捕捉のない 40 ステップのラムダを呼ぶ。本体は引数での除算なので LLVM が畳めない。native の `__text` bytes、基準／属性が無条件／この方針）:
+
+| 呼び出し | `-O0` | `-O3` | `-Oz` |
+| --- | --- | --- | --- |
+| 1 か所 | 8,808／17,220／8,792 | 2,696／2,692／2,692 | 2,696／2,692／2,696 |
+| 2 か所 | 8,836／25,700／8,820 | 2,736／5,320／2,736 | 2,736／5,320／2,736 |
+| 24 か所 | 9,372／295,452／9,356 | 3,032／59,144／3,032 | 3,032／59,144／3,032 |
+
+本体が足し算と掛け算だけの 40 ステップを 24 か所から呼ぶ probe は、`-O0` が 2,308／37,060／2,292、`-O3`・`-Oz` が 1,016／4,608／1,016 でした。捕捉のあるラムダは、既知の呼び出しが `@tz.specialized.*` を呼ぶので属性の影響を受けず、24 か所でも基準と同じです。関数値を配列に入れて呼ぶ probe（捕捉あり・なし。記述子は object に残ります）は、`-O1`〜`-Oz` で基準と ±12 bytes、`-O0` では 100 bytes 前後小さくなりました。`tests/closure_representation.rs` の 3 つのテスト（`a_lambda_that_several_calls_name_is_not_forced_inline`・`closures_are_forced_inline_at_the_speed_levels_of_a_native_build_only`・`the_object_of_a_lambda_called_from_many_places_grows_with_the_calls_only`）が、IR・水準ごとの属性・object の大きさ（2 か所と 24 か所の差が 4 KiB 未満）を固定します。方針を外すと 3 つとも失敗します。
+
+**`-O3` は変わりません**: hello・functional・currying・io・control・apps・fixtures 4 本・`closures`・`mix` の 12 の object を関数ごとに比べると、無条件の版と全関数が同一です（`closures` の probe は 8 bytes の `mov w0, #51; ret` のまま）。機械語が同じなので時間も同じで、基準と交互に 5 trial 測った `control` の最良の標本どうしの比は、`closure_capture` 0.978、`closure_churn` 0.990（広がり 0.03〜0.17 ms）でした。ほかの種目も 0.98〜1.00 で、この測定は after 側が系統的に低く出ています。`-O1`・`-O2` の基準比は、hello −12.7%・+2.1%、functional −13.1%・+3.6%、io −5.3%・−3.6%、`tests/fixtures` の tasks +0.5%・+1.5% で、`-O3` と同じ向きです。
+
+**`-O0`・`-Os`・`-Oz` の `__text`**（`--emit object`。基準 → 属性が無条件 → この方針）:
+
+| プログラム | `-O0` | `-Os` | `-Oz` |
+| --- | --- | --- | --- |
+| `examples/hello` | 28,856 → 28,660 → 28,204（−2.3%） | 3,220 → 3,996 → 3,712（+15.3%） | 3,004 → 3,760 → 3,636（+21.0%） |
+| `examples/currying` | 30,028 → 29,520 → 29,120（−3.0%） | 3,212 → 3,984 → 3,704（+15.3%） | 2,996 → 3,752 → 3,628（+21.1%） |
+| `examples/functional` | 35,316 → 34,164 → 33,776（−4.4%） | 4,228 → 5,112 → 4,840（+14.5%） | 4,272 → 4,960 → 4,844（+13.4%） |
+| `examples/io` | 59,116 → 57,516 → 57,836（−2.2%） | 20,108 → 20,812 → 19,916（−1.0%） | 17,112 → 17,752 → 17,496（+2.2%） |
+| `benchmarks/apps` | 79,380 → 77,040 → 77,440（−2.4%） | 13,816 → 13,800 → 13,800（−0.1%） | 11,892 → 11,880 → 12,080（+1.6%） |
+| fixtures の currying | 133,088 → 128,600 → 130,064（−2.3%） | 47,284 → 48,036 → 48,012（+1.5%） | 42,200 → 43,328 → 43,312（+2.6%） |
+| fixtures の tasks | 209,656 → 205,368 → 205,816（−1.8%） | 71,496 → 73,416 → 74,120（+3.7%） | 65,192 → 66,600 → 67,688（+3.8%） |
+| fixtures の computations | 188,864 → 175,412 → 179,320（−5.1%） | 45,028 → 45,996 → 46,528（+3.3%） | 43,336 → 44,164 → 44,444（+2.6%） |
+| fixtures の control | 156,216 → 153,932 → 154,464（−1.1%） | 47,972 → 48,964 → 48,680（+1.5%） | 43,792 → 44,148 → 44,280（+1.1%） |
+
+属性を外すと、小さなプログラムの増えは縮みます（hello の `-Oz` は +25.2% → +21.0%、`-Os` は +24.1% → +15.3%）。一方、大きなプログラムは少し増えます（tasks の fixture の `-Oz` は +2.2% → +3.8%）。残る増えは、記述子が adapter を参照し続けて、`-Os`・`-Oz` の inline が既知の呼び出しを adapter ごと畳まないためです。hello の `-Oz` では、adapter・worker・環境の clone と drop が別の関数として残り、記述子が `__const` に残ります（`_tsuzuri_main` が環境を確保し、`@tz.apply.*` を呼んで解放する形）。実行ファイル全体では、`-Oz` の hello が 34,008 → 34,376（+1.1%）、`-Os` が 33,896 → 34,232（+1.0%）、functional の `-Oz` が 35,208 → 35,672（+1.3%）、io の `-Oz` が 52,360 → 52,776（+0.8%）です。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は、基準とバイト一致です。ユーザー向けの説明は [`option.md`](../_tsuzuri/language-reference/compiler/option.md#最適化と-cpu) にあります。
 
 #### 生成物の大きさ（バイト。基準 → after）
 
 | 生成物 | 基準 | after |
 | --- | --- | --- |
-| native の実行ファイル hello `-O0`／`-O3` | 35,800／33,896 | 35,848／33,960 |
-| `--emit object` hello `-O3`／`-O0` | 5,024／37,432 | 5,184／38,968 |
+| native の実行ファイル hello `-O0`／`-O3` | 35,800／33,896 | 35,912／33,960 |
+| `--emit object` hello `-O3`／`-O0` | 5,024／37,432 | 5,184／38,504 |
 | wasm32 hello `-O0`／`-O3` | 9,770／6,833 | 9,010／6,860 |
 | `examples/point` の object `-O3` | 392 | 392 |
 
-関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `define` の `alwaysinline` だけです。
+関数値を作らない小さな library 4 本（record・union・再帰 union・文字列と `Maybe`・`Result`・タプル・`i128`・`f32`。native と wasm32）を基準のコンパイラと比べると、`-O3` の object は**バイト一致**でした。`-O0` の object は 0.2〜1.8%（+200〜410 bytes）大きくなります。使われない静的記述子（アダプタごとに 1 つ。native は 24 bytes）が残るためで、アダプタ自体が `-O0` でも残るのと同じ理由です。IR の違いは、型定義 2 行、アダプタごとの `@tz.desc.*` の定義、native の `-O1`〜`-O3` の `define` の `alwaysinline` だけです。
 
 #### P2-a `!invariant.load`（取り下げ）
 
@@ -7414,7 +7449,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 #### 測っていないこと
 
 - 静かな機械での時間の再測定（上の load 34〜103 のため、`task_parallel` の実時間は判断できない）。
-- x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ）。
+- x86-64 Linux・Windows の実機（IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。`-O0`・`-Os`・`-Oz` と、属性の方針の測定は Apple Silicon だけ）。
 - LLDB の実行つきの検査（この環境では `lldb` の `run` が基準のコンパイラでも固まる）。型の形と整形の判定は `tests/debugger_static.mjs`（プロセスなし）と `tests/debug_info.rs` で確かめた。
 - Windows の natvis（`Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる。`Maybe<[T]>`・`Maybe<ref T>` と同じ扱い）。
 <!-- /phase4:PM02 -->
@@ -7422,6 +7457,121 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 ### PM03 コンパクト文字列
 
 <!-- phase4:PM03 -->
+実装の記録は WP1〜WP11 の順に、この region に足しました（完了）。ticket は [PM03](../_perfs/_completed/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
+
+#### baseline（PM03 の前。WP1）
+
+- 条件: 2026-10-17 夜〜18 未明、Apple M1 Max（10 コア）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 24.21.0（`run-cpp.mjs`・`run-apps.mjs`・`metrics.mjs` は Node 24 が必須）。
+  基準の compiler は main `9dd0fbbc` の release build（SHA-256 `5e1b9687…`）で、計測した worktree の commit は `8cc8359b`（計画の文書だけの差）。1 分の load average は 11〜15（他の作業が並行する共有機）なので、時間は参考値です。
+  確保量（calls・bytes）は決定的な値です。生データは worktree の `target/perf/PM03-before/`（Git の外。`cpp.jsonl`・`utf.jsonl`・`apps.jsonl`・`process.jsonl`・`environment.txt`）。
+  runner は `sh target/perf/PM03/run-bench.sh <label> <compiler>`（`run-cpp.mjs`・`run-utf.mjs`・`run-apps.mjs`・`metrics.mjs process` を順に 1 回ずつ。PX01 形式）。
+- M1（決定的な確保量。tracked。baseline）:
+
+  | 種目 | 大きさ | 確保 calls | 確保 bytes |
+  | --- | ---: | ---: | ---: |
+  | `cpp/utf16_scan` | 262,144 | 30 | 1,572,816 |
+  | `cpp/utf16_compare` | 262,144 | 33 | 3,145,684 |
+  | `cpp/utf16_validate` | 262,144 | 32 | 2,621,396 |
+  | `cpp/utf8_roundtrip` | 262,144 | 32 | 2,359,248 |
+  | `cpp/format_parse` | 50,000 | 50,000 | 1,939,624 |
+  | `apps/tokenize` | 200,000 | 400,003 | 12,500,022 |
+  | `apps/format_join` | 100,000 | 200,003 | 15,038,726 |
+  | `apps/csv_aggregate` | 100,000 | 700,005 | 13,405,744 |
+  | `apps/map_count` | 200,000 | 16 | 36,768 |
+  | `apps/record_sort` | 200,000 | 3 | 9,600,000 |
+
+- M2（`execute` の最大 RSS。9 標本の中央値、最小〜最大。baseline）:
+
+  | project | `-O0` | `-O3` |
+  | --- | ---: | ---: |
+  | `ascii_words` | 11,354,112（11,337,728〜11,370,496） | 11,370,496（11,354,112〜11,386,880） |
+  | `latin1_csv` | 41,467,904（41,451,520〜41,484,288） | 49,643,520（49,577,984〜49,676,288） |
+  | `cjk_lines` | 37,879,808（37,847,040〜37,912,576） | 37,896,192（37,830,656〜44,302,336） |
+
+  3 project の出力は `2088890`・`2888890`・`1888890`（Python の参照 `sum(len(f"word-{i}"))` ほかと一致）です。
+- M4（baseline の大きさ）: native の hello の実行ファイル 33,896 bytes（`-O3`）・35,800 bytes（`-O0`）、`--emit object` 5,024 bytes、WASM の hello 6,833 bytes（`-O3`）。
+  3 project の実行ファイルは `-O3` で 33,640・33,720・33,720 bytes です。
+- M3（時間。参考値。baseline の cpu 時間の中央値）: `cpp/utf16_scan` 0.0404 ms、`utf16_compare` 0.0863 ms、`utf16_validate` 0.2638 ms、`utf8_roundtrip` 0.8812 ms、`format_parse` 3.857 ms。
+  `utf` の 90 行と apps の時間は raw data にあります。after・before2 との比較は WP9 で書きます。
+
+#### after と既定の判断（Phase 2 まで。WP9・WP10）
+
+- 条件: 2026-10-18、同じ機械。after は WP8 の commit `07f1bf3f` の release build（SHA-256 `56aec96e…`）を `TSUZURI_STRINGS=compact` で、before2・before3 は baseline compiler（`5e1b9687…`）。
+  `before2` → `after1` → `before3` → `after2` の順に交互に走らせた（`sh target/perf/PM03/run-bench.sh <label> <compiler>`。生データは `target/perf/PM03-before2`・`-after1`・`-before3`・`-after2`、Git の外）。
+  1 分の load average は 32〜65（他の作業が並行する共有機）なので、時間は参考値で、判断は決定的な量（確保量・命令数）と PX01 の判定
+  （`node benchmarks/metrics.mjs report --baseline <before> <after>`。広がり = 両側の最大 − 最小）に置きます。
+  別に、3 project と hello を `/usr/bin/time -l` で 9 回ずつ交互に走らせた（`instructions retired` と `peak memory footprint` は負荷に左右されない）。
+  3 project と hello の native の実行ファイルは、`TSUZURI_STRINGS` なしの新しい compiler（`utf16`）が baseline の compiler と byte 単位で同じでした。
+- M1（決定的な確保量。tracked。after は `compact`）。確保の calls は全種目で同じです。
+
+  | 種目 | before bytes | after bytes | 比 |
+  | --- | ---: | ---: | ---: |
+  | `cpp/utf16_scan` | 1,572,816 | 786,408 | 0.500 |
+  | `cpp/utf16_compare` | 3,145,684 | 1,572,842 | 0.500 |
+  | `cpp/utf16_validate` | 2,621,396 | 1,834,988 | 0.700 |
+  | `cpp/utf8_roundtrip` | 2,359,248 | 1,310,696 | 0.556 |
+  | `cpp/format_parse` | 1,939,624 | 969,812 | 0.500 |
+  | `apps/tokenize` | 12,500,022 | 9,450,011 | 0.756 |
+  | `apps/format_join` | 15,038,726 | 9,119,363 | 0.606 |
+  | `apps/csv_aggregate` | 13,405,744 | 9,903,000 | 0.739 |
+  | `apps/map_count`・`apps/record_sort` | 36,768・9,600,000 | 同じ | 1.000 |
+
+  `apps` の 3 種目は、std の `String.slice`・`String.join`（`Vec<i16u>` を作って `from_code_units` へ渡す）を、compact のときだけ runtime の `tz.string.slice`・`tz.string.join`
+  の 1 回の確保に置き換えた後の値です。置き換え前（WP4 の commit）は確保の calls が +43〜50% でした。`split`・`trim` は `slice` を使うので同じ恩恵を受け、
+  `replace`・`repeat`・`to_ascii_*`・Json・Regex は `from_code_units` の narrow と `realloc` を払い続けます。
+- M2（`execute` の最大 RSS。9 標本の中央値。before2 → after1）と、`/usr/bin/time -l` の命令数・footprint（9 回交互、`-O3`／`-O0`）:
+
+  | project | `-O3` の RSS | `-O3` の footprint | `-O3` の命令数 | `-O0` の RSS | `-O0` の命令数 |
+  | --- | --- | --- | --- | --- | --- |
+  | `ascii_words` | 11,370,496 → 8,159,232（0.718） | 10,895,720 → 7,700,840（0.707） | 0.969 | 11,337,728 → 8,159,232（0.720） | 0.989 |
+  | `latin1_csv` | 49,643,520 → 34,832,384（0.702） | 49,152,408 → 34,357,656（0.699） | 0.856 | 41,484,288 → 34,783,232（0.838） | 0.756 |
+  | `cjk_lines` | 37,896,192 → 44,335,104（1.170。下を参照） | 37,388,696 → 43,860,376（1.173） | 0.909 | 37,863,424 → 37,879,808（1.000） | 0.783 |
+
+  `execute` の cpu 時間の中央値は `latin1_csv` が 70 → 60 ms（`-O3`）・360 → 250 ms（`-O0`）、`cjk_lines` が 60 → 50 ms・290 → 210 ms、`ascii_words` は同じ（10 ms・20 ms の粒度）です。
+  半分にならないのは、短い文字列が malloc の 16 byte 刻みで縮まず、配列の要素（16 byte の記述子）・Vec の余りが残るためです（ticket の予告どおり）。
+- `cjk_lines` の `-O3` の最大 RSS は、`compact` が 44.3 MB で baseline の中央値より 17% 高いのに、確保の列は同じです。調べたこと（`target/perf/PM03/probe/`）:
+  `DYLD_INSERT_LIBRARIES` の interposer で 200 万回の malloc・free を記録すると、両者の呼び出し数（2,000,078）・生存 byte の最大値（40,973,504 を 16 byte に丸めた値）・大きなブロックの確保と解放の列・
+  400 万の操作を 16／32／48／それ以上の区分に直した列がすべて一致します（要求した byte の合計だけが、`to_string` の桁が 1 byte になる分、compact で 1.09 MB 少ない）。
+  差は最後の 180 万回の `free` の間に、macOS 27 の malloc の「Malloc Small (empty)」（空になったが戻されていない領域）が 6 MB 残るかどうかで決まります。
+  同じ baseline の実行ファイル（`utf16` の build と cmp で一致）でも、44.3 MB になる標本が 24 回に 2 回あり、PX01 の baseline の 9 標本にも 44.35 MB が 1 つ入ります（WP1 の baseline にも 44.30 MB があった）。
+  最適化水準を変えると向きが逆になります（最大 RSS を MB で）: `-O1` は両方 44.3、`-O2` は baseline が 44.3 で compact が 37.9／44.3 の混在、`-Os` は baseline が 44.3 で compact が 37.9、
+  `-O3` は baseline が 92% で 37.9（残りが 44.3）、compact が 100% で 44.3 です。
+  `--allocator small`（PM05。決定的な size 区分の allocator）では両者とも 37.0〜38.1 MB で同じです。つまりコードの配置で変わる malloc の返却の時機の差であって、compact の表現のせいではありません。
+  ただし PX01 の判定は baseline の標本の広がりに 44.35 MB を含むので `差なし` ですが、compact で毎回 44.3 MB になるのは事実なので、この種目は `-O3` の RSS を判断の根拠にしません。
+- M3（時間。参考値）: cpp の 5 種目・`utf/*` の 90 行・apps の string の 3 種目の時間は、4 つの組（before2→after1、before3→after2、before2→after2、before3→after1）のどれでも `悪化` が続きません
+  （`utf/compare/ascii (64)`・`utf/compare/mixed (64)`・`(8)` が 0.0001 ms 台で組によって `悪化` になるだけで、4 つ全部では出ない）。点推定は apps の `tokenize` 16.0 → 12.5 ms、`format_join` 19.6 → 15.1 ms、
+  `csv_aggregate` 25.4 → 23.3 ms、`utf/from_utf8/ascii (65536)` 0.011 → 0.003 ms（Latin-1 の copy）、`utf/from_utf8/latin (65536)` 0.196 → 0.067 ms（非 ASCII の Latin-1 も 1 回の確保）などで下がり、`utf/equal/ascii` は約 0.4 倍です。
+- M4（大きさとビルド。**悪化が続く行**。4 つの組すべてで `悪化` と判定されたもの）:
+
+  | 指標 | before | after |
+  | --- | ---: | ---: |
+  | `examples/hello` の `--emit object`（`-O3`） | 5,024 B | 5,456 B（+8.6%） |
+  | `examples/hello` の wasm32（`-O3`） | 6,833 B | 7,866 B（+15.1%） |
+  | `examples/hello` の実行ファイル（`-O0`） | 35,800 B | 36,184 B（+1.1%） |
+  | `ascii_words` の実行ファイル（`-O0`） | 34,424 B | 34,632 B（+0.6%） |
+  | `examples/hello` の `--emit object` の cpu 時間（clang を含む。`-O3`） | 220 ms | 270 ms（+23%） |
+  | `--emit llvm`（native。hello／ascii_words／latin1_csv） | 144,926／124,989／189,115 B | 206,229／186,311／247,792 B（+42%／+49%／+31%） |
+  | `--emit llvm`（wasm32 simd128。hello） | 174,487 B | 235,790 B（+35%） |
+  | 段階 `emit` の時間（hello。`-O0`） | 2.19 ms | 3.17 ms（+0.98 ms） |
+
+  runtime の IR が 61 KB 増える（Latin-1 の kernel・vector 版・dispatcher・補間の層）のが、clang の時間と IR の大きさに出ます。`-O3` の hello の実行ファイルは 33,896 → 33,848 B で、これは減ります。
+  ほかの `悪化` は、コンパイラ自身の最大 RSS（`build-object` で +0.3〜0.7 MB）と、文字列を使わない apps の最大 RSS の 16〜64 KB（`closure_pipeline`・`spectral_norm`。ページ 1〜4 枚）です。
+- host との境界（native の C ホスト、`-O3`、7 回の最小。`target/perf/PM03/probe/boundary`）: compact は文字列の結果を host へ返すとき `to_utf16`（`realloc` と widen）を 1 回払います。
+  `repeat_text`（std の `String.repeat` で 1,000 単位）は 798 ns → 616 ns に速くなり、約 30 単位の短い文字列を作って返す `concat_text` は 56 ns → 108 ns（+93%）に遅くなります。
+  host から受ける文字列（`copy_text`）と `text_length` は 55 ns・1.3 ns で同じです。短い文字列を頻繁に host へ返すプログラムは、compact で遅くなり得ます。
+- 判断（WP10。D11）: **既定は `utf16` のまま、`compact` は opt-in で出荷します。** D11 の条件の結果は次のとおりです。
+
+  | 条件 | 結果 |
+  | --- | --- |
+  | `utf16` の IR が baseline と byte 同一 | 満たす。WP9 の時点は baseline（`9dd0fbbc`）と、examples・fixtures・benchmarks の 115 project × 5 variants = 575 build（同一 530 + 同じ失敗 45）。統合後（PR07・PR08・PB06・PM02 を merge した `516b8780`）は、PM03 を含まない統合ブランチのコンパイラ（`37030b6b`）と 116 project × 5 variants = 580 build（同一 535 + 同じ失敗 45）。3 project と hello の native の実行ファイルも cmp で一致 |
+  | 既存の文字列の suite が両方の形式で通る | 満たす（WP11。統合後の tree で、`cargo test --locked --no-fail-fast` は `utf16` が 1564 件成功・0 失敗。`TSUZURI_STRINGS=compact` は、UTF-16 の形の IR を固定していた 4 本の試験を形式の明示に直した後に全件成功。node の suite は `compact` で 35 本（native／WASM × `-O0`／`-O3`）、`utf16` で文字列に関わる 14 本が成功。`bindgen` は PATH の先頭が Homebrew の clang 23 だと golden が違うので、Apple clang で両形式の成功を確かめた。live の LLDB の `tests/debugger.mjs` はこの機械で baseline でも戻らないので未実施で、`tests/lldb_strings.py` が formatter を固定する） |
+  | M1: 確保量が下がる | 満たす（cpp の 5 種目が −30〜−50%、apps の string の 3 種目が −24〜−39%、calls は同じ） |
+  | M2: `ascii_words`・`latin1_csv` の RSS が下がる | 満たす（−28%・−30%）。`cjk_lines` は `-O3` で +17% だが、上のとおり PX01 の判定は `差なし` で、原因は malloc の返却の時機 |
+  | M3: 時間に `悪化` が続かない | cpp・utf・apps の時間は満たす。3 project と hello の build 側（M4）に `悪化` が続く |
+  | M4: 大きさとビルド | 満たさない: wasm32 の hello +15%、clang を含むビルド時間 +23%、IR +31〜49%。host へ短い文字列を返す呼び出しは 2 倍近い |
+
+  既定を切り替える前に直すこと: 使われない kernel・dispatcher を生成しない（`RuntimeSymbols` で層を選ぶ）ことで IR・wasm・ビルド時間の増加を減らす、host へ返す結果を最初から UTF-16 で作る（結果が export へ流れる場合）、
+  Linux・Windows の allocator で `cjk_lines` の RSS を測り直す。それまでは `TSUZURI_STRINGS=compact` を、ASCII・Latin-1 中心で host との往復が少ない文字列処理（ログ・CSV・トークン化・整形）に勧めます。
 <!-- /phase4:PM03 -->
 
 ### PM04 連結リストの連続表現
@@ -7461,7 +7611,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 読み取りは次のとおりです（3 つの run が同じ向きで、2 つの Clang で同じです）。
 
-- 速くなる種目は 2 つで、`closure_capture` が約 17%、`closure_churn` が 12〜14% です。遅くなる種目は 4 つで、`tail_mix`・`tail_if_mix`・`tail_builtin_mix` が約 20%、`match_dispatch` が約 63% です。ほかの 10 種目は ±3% で、`array_*` の動きは C・C++・Rust の同じコードも同じ向きに動いたので、host の配置の揺れです。**PGO を使えば速くなる、とは言えません。**
+- 速くなる種目は 2 つで、`closure_capture` が約 17%、`closure_churn` が 12〜14% です。遅くなる種目は 4 つで、`tail_mix`・`tail_if_mix`・`tail_builtin_mix` が約 20%、`match_dispatch` が約 63% です。ほかの 10 種目は 3 つの run で −3.5〜+6.1% の範囲で、`array_*` の動きは C・C++・Rust の同じコードも同じ向きに動いたので、host の配置の揺れです。**PGO を使えば速くなる、とは言えません。**
 - C・C++・Rust にも PGO を掛けると、`closure_churn` は C 0.57、C++ 0.56、Rust 0.40 まで短くなり、Tsuzuri の 0.87 は追いつきません。`tail_*` と `match_dispatch` は、C・C++・Rust が変わらないのに Tsuzuri だけが遅くなります。
 - 原因の観察（Phase 0。IR・asm・remark）: `closure_*` は profile が間接呼び出しの対象を記録し、呼び出しが特殊化されます（Tsuzuri の `tz_closure_capture` の `$lambda.28.1` 50.45%・`$lambda.29.1` 49.55%）。`tail_*` は PGO のビルドで `tz_tail_mix` の呼び出し先の inline の threshold が 75（PGO なしは 250）になり、ループの依存の鎖が 1 段長くなります。`match_dispatch` は PGO なしが `loop-unroll`（実行時の trip count × 8）なのに、PGO は vectorizer の fallback の scalar loop に `branch_weights 119, 119` が付いて unroll されません。
 
@@ -7521,6 +7671,34 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 - **数値・数学のランタイム（D6）は PGO の対象にしません。** `Math.sin`・`Math.exp`・`Math.sqrt` を 3,000 万回呼ぶ例を、既定（数学のランタイムは別の prebuilt object）と `--no-cache`（IR のまま埋め込む）で、それぞれ plain と PGO で作り、15 回交互に実行しました（最小／中央値 ms）。既定: 284.9／302.0 → PGO 285.8／309.4。埋め込み: 262.9／288.7 → PGO 266.7／291.3（既定のビルドの profile を埋め込みのビルドに使っても 266.1／276.3）。埋め込みは PGO と無関係に約 8% 速く（呼び出しに inline されるため）、プロファイルは `tz_math_sin_f64`・`tz_math_exp_f64` の分岐を数えても、使った成果物に差が出ません。PGO のビルドだけ埋め込む案は、プロファイルの効果ではない差を混ぜ、コンパイルが約 0.4 秒増えるので取り下げました。C のランタイム（task など）は計装していません。
 - **trap の分岐への `!prof`・`llvm.expect`（D9）は足しません。** `node benchmarks/run-trap-layout.mjs target/release/tsuzuri` は 21 の corpus（`benchmarks/` の 11、`tests/fixtures/control`、`examples/` の 9）の `-O3` の asm で、trap の命令 177 個（arm64 と x86-64 で同じ数）を分類します。arm64 では out of line（直前が無条件の jump か return）132、関数の末尾で条件分岐の直後 9、失敗の経路の連鎖（`free` の後など）14、ループが尽きたときの fall-through（ループの back edge の直後）21、hot path が飛び越える形は 1（`examples/functional` の失敗の経路の中）です。x86-64 は 129・10・16・21・1。`control` と `computations` は全部 out of line です。hot path が trap の block を飛び越す形はなく、重みを足す根拠がありません。
+
+### 並列に動くプログラムのカウンター
+
+計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single`）。4 つの Task が同じ関数の 1 億回のループを回す次のプログラムで、`llvm-profdata show --all-functions --counts` の Task の本体（`tz.apply.$task.2.1`）の回数を、更新の方法を替えて比べました（M1 Max、Apple clang 21.0.0、load average 30〜50 の共有機。`clang` を呼ぶ wrapper が `-fprofile-update=…` を足しました）。
+
+```text
+def rec spin :: i64 -> i64 -> i64 = \n total ->
+    if n == 0 { total }
+    else { spin (n - 1) (total + n % 7) }
+
+let computation = task {
+    let jobs = new [Task<i64>](4, chunk -> task { return spin 100000000 chunk })
+    let! totals = Task.parallel jobs
+    return totals[0] + totals[1] + totals[2] + totals[3]
+}
+Task.run computation
+```
+
+| 更新の方法 | ループの回数（正しくは 400,000,000） | 関数に入った回数（正しくは 4） | 計装したプログラムの実時間（3 回） |
+| --- | ---: | ---: | ---: |
+| `single`（Tsuzuri の既定） | 100,000,000 | 4 | 0.08〜0.13 秒 |
+| `atomic` | 400,000,000 | 4 | 6.09〜6.39 秒（CPU 時間は 22〜24 秒） |
+| `prefer-atomic` | 400,000,000 | 4 | 5.7 秒（1 回） |
+| 計装しない | | | 0.08〜0.12 秒 |
+
+- 更新が失われるのは、Task が同じカウンターを同時に増やすときです。ループのカウンターは、ループの前にレジスタへ読み、後ろで書き戻されます（計装した実行ファイルの逆アセンブルで確認）。4 つのスレッドが 0 から数えて書き戻すので、最後に書いた 1 つの 1 億だけが残ります。関数に入る回数は更新が短い間隔の 1 回で、この例では正確でした。
+- 結果（1199999994）と、プロファイルの形（hash）には影響しません。どちらのプロファイルも、通常の Clang の `--profile-use` が `W2001` なしで受け取り、使った成果物の実行時間は計装しない場合と同じでした（0.09〜0.11 秒）。この例では、更新の方法による差は測れませんでした。
+- 原子的な更新は、ループのカウンターを 4 つのスレッドが同じキャッシュ行へ書き続ける形になり、計装したプログラムは約 60 倍遅くなります。回数を正確にする利益が測れないので、Tsuzuri は原子的な更新を付けません。正確な回数が要る利用者は、`TSUZURI_CLANG` に `-fprofile-update=atomic` を足す wrapper を指定します（[option.md](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。
 
 ### WebAssembly（wasm32）
 

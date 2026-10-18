@@ -16,6 +16,7 @@ TEXT_LIMIT = 1024
 LENGTH_LIMIT = 1 << 32
 ADDRESS_LIMIT = 1 << 64
 NEST_LIMIT = 3
+LATIN1 = 1 << 62
 CATEGORY = "tsuzuri"
 ESCAPES = {0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 0x5C: "\\\\"}
 
@@ -114,6 +115,16 @@ def length_of(value, name="length"):
     return length
 
 
+def string_length(value):
+    """The number of units of a `string` and whether they are bytes: bit 62 of its length word marks
+    Latin-1 text (`TSUZURI_STRINGS=compact`), and bit 63 is never set."""
+    word = member(value, "length").GetValueAsSigned()
+    length = word & (LATIN1 - 1)
+    if word < 0 or length >= LENGTH_LIMIT:
+        raise Unreadable(f"<invalid length {word}>")
+    return length, bool(word & LATIN1)
+
+
 def read(valobj, address, size):
     if size == 0:
         return b""
@@ -161,10 +172,14 @@ def utf16(units):
 @guarded
 def string_summary(valobj):
     value = target(valobj)
-    length = length_of(value)
+    length, latin1 = string_length(value)
     count = min(length, TEXT_LIMIT)
-    data = read(valobj, member(value, "data").GetValueAsUnsigned(), 2 * count)
-    units = [data[index] | data[index + 1] << 8 for index in range(0, len(data), 2)]
+    address = member(value, "data").GetValueAsUnsigned()
+    if latin1:
+        units = list(read(valobj, address, count))
+    else:
+        data = read(valobj, address, 2 * count)
+        units = [data[index] | data[index + 1] << 8 for index in range(0, len(data), 2)]
     return '"' + text(utf16(units), '"', length > count) + '"'
 
 

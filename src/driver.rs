@@ -340,8 +340,10 @@ pub const MAX_WASM32_MEMORY: u64 = (1 << 32) - 65536;
 pub const MAX_WASM64_MEMORY: u64 = 1 << 34;
 
 /// The LLVM optimization level of a build: `-O0` to `-O3` and the size levels `-Os` and `-Oz`.
-/// None of them enables fast-math or any other change of the language's meaning; the size levels
-/// only change what Clang does with the same IR (`build` and `run` accept them).
+/// None of them enables fast-math or any other change of the language's meaning. The size levels
+/// change what Clang does with the IR, and `-O0`, `-Os` and `-Oz` leave out the one attribute that
+/// forces the inlining of known closures on native targets (`llvm::without_closure_inlining`);
+/// `build` and `run` accept them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptLevel {
     O0,
@@ -3464,6 +3466,17 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
+    // The attribute that forces known closures to inline (PM02) is for `-O1` to `-O3`; the other levels
+    // leave the inlining to the compiler.
+    if options.target == Target::Native
+        && !(options.emit == Emit::Header || options.emit.is_kernel())
+        && !matches!(
+            options.optimization,
+            OptLevel::O1 | OptLevel::O2 | OptLevel::O3
+        )
+    {
+        text = llvm::without_closure_inlining(text);
+    }
     if platform.windows()
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
@@ -3893,6 +3906,14 @@ fn build_complete(
         {
             text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
         }
+        // The merge of the C runtime hides every symbol that only the runtime defines, so the ones a host calls are
+        // named to keep (PR08 D5).
+        let kept_exports = if options.emit == Emit::Bitcode && native_runtime {
+            let exports = shared_exports(&text, module, options.trap_return);
+            lto::keep_runtime_exports(&mut text, &exports)?
+        } else {
+            Vec::new()
+        };
         let text = match &staged_profile {
             Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
             _ => text,
@@ -4065,6 +4086,7 @@ fn build_complete(
                         },
                     )?,
                 );
+                lto::check_kept_exports(&combined, &kept_exports)?;
                 ir = combined;
             }
         }
@@ -4316,7 +4338,7 @@ fn build_complete(
                 platform,
                 "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
             ));
-            if merge_runtime_ir && options.emit == Emit::Bitcode {
+            if native_runtime && options.emit == Emit::Bitcode {
                 // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
                 clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
             }

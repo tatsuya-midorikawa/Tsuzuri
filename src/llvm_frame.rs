@@ -27,10 +27,11 @@ pub(super) enum Frame {
         nodes: String,
         elements: Vec<Vec<Frame>>,
     },
-    /// String code units that stay in the literal constant `data`.
+    /// String code units that stay in the literal constant `data`; `word` is the length word of
+    /// the string that holds them.
     String {
         data: String,
-        length: usize,
+        word: u64,
     },
     Buffer {
         buffer: String,
@@ -256,12 +257,11 @@ impl FunctionEmitter<'_, '_> {
                 self.frame_list(expression, elements)
             }
             TypedExprKind::String(text) if !text.is_empty() => {
-                let data = self.string_constant(text);
+                let (data, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 let value = self.value(format!("insertvalue {ty} zeroinitializer, ptr {data}, 0"));
-                let value = self.value(format!("insertvalue {ty} {value}, i64 {}, 1", text.len()));
-                let length = text.len();
-                (value, vec![Frame::String { data, length }])
+                let value = self.value(format!("insertvalue {ty} {value}, i64 {word}, 1"));
+                (value, vec![Frame::String { data, word }])
             }
             TypedExprKind::Record(fields) => {
                 let fields: Vec<_> = fields
@@ -373,9 +373,8 @@ impl FunctionEmitter<'_, '_> {
     pub(super) fn concat_length(&mut self, left: &TypedExpr, right: &TypedExpr) -> String {
         let (lhs, left_frames) = self.take_operand(left);
         let (rhs, right_frames) = self.take_operand(right);
-        let ty = self.ty(&left.ty);
-        let a = self.value(format!("extractvalue {ty} {lhs}, 1"));
-        let b = self.value(format!("extractvalue {ty} {rhs}, 1"));
+        let a = self.string_length(&left.ty, &lhs);
+        let b = self.string_length(&left.ty, &rhs);
         let length = self.value(format!("add i64 {a}, {b}"));
         let overflow = self.value(format!("icmp ult i64 {length}, {a}"));
         let valid = self.value(format!("xor i1 {overflow}, 1"));
@@ -662,9 +661,9 @@ impl FunctionEmitter<'_, '_> {
             _ => {}
         }
         let (address, length) = match frame {
-            Frame::Array { buffer, elements } => (buffer.as_str(), elements.len()),
-            Frame::List { nodes, elements } => (nodes.as_str(), elements.len()),
-            Frame::String { data, length } => (data.as_str(), *length),
+            Frame::Array { buffer, elements } => (buffer.as_str(), elements.len() as u64),
+            Frame::List { nodes, elements } => (nodes.as_str(), elements.len() as u64),
+            Frame::String { data, word } => (data.as_str(), *word),
             Frame::Aggregate(_) => unreachable!("aggregates are tested field by field"),
             Frame::Buffer { .. } | Frame::Environment { .. } => unreachable!(),
         };
@@ -751,10 +750,10 @@ impl FunctionEmitter<'_, '_> {
                 self.instruction(format!("store {ty} {captures}, ptr {heap}"));
                 self.value(format!("insertvalue %tz.closure {value}, ptr {heap}, 1"))
             }
-            (Type::String | Type::Utf8String, Frame::String { data, length }) => {
+            (Type::String | Type::Utf8String, Frame::String { data, word }) => {
                 let ty = self.ty(ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {data}, i64 {length})",
+                    "call {ty} @{}.new(ptr {data}, i64 {word})",
                     &ty[1..]
                 ))
             }

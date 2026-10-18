@@ -170,7 +170,18 @@ assert (Simd.all mask && Simd.sum_lanes singles == 4.0f32 && Simd.sum_lanes halv
 fn utf16_vector_copies_preserve_code_unit_alignment() {
     let source = "export def widen :: ref utf8string -> string\nfn widen text = String.from_utf8 text\nexport def narrow :: ref string -> utf8string\nfn narrow text = Utf8String.from_string text";
     let module = analyze(source).unwrap();
-    let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    // The UTF-16 form, whatever TSUZURI_STRINGS says: `compact` writes ASCII text as Latin-1 bytes,
+    // which are not widened by a vector copy.
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let ir = llvm::emit_with_strings(&module, options, llvm::StringForm::Utf16).unwrap();
     assert!(ir.contains("load <16 x i16>, ptr %vp, align 2"));
     assert!(ir.contains("store <16 x i16> %converted, ptr %vq, align 2"));
 }

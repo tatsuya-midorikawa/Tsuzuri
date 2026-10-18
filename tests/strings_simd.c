@@ -342,7 +342,246 @@ static int validation_cases(void) {
     return 0;
 }
 
+/* PM03: the Latin-1 kernels of the compact string form (string_latin1.ll, or string_latin1_v128.ll where the
+ * vector kernels are selected) against the scalar reference. The inputs are Latin-1 bytes, UTF-16 units of at
+ * most 0xFF, and UTF-8 text of ASCII and the pairs 0xC2/0xC3 + continuation, with one unit or byte that
+ * breaks the pattern at every position, and the same inputs end at a guard page (or the end of the memory). */
+#define LATIN1_DECLARE(P) \
+    extern int P##_latin1_units(const void *, uint64_t); \
+    extern void P##_latin1_widen(void *, const void *, uint64_t); \
+    extern void P##_latin1_widen_in_place(void *, uint64_t); \
+    extern void P##_latin1_narrow_in_place(void *, uint64_t); \
+    extern int P##_latin1_equal_mixed(const void *, const void *, uint64_t); \
+    extern int P##_latin1_compare_mixed(const void *, uint64_t, const void *, uint64_t); \
+    extern uint64_t P##_latin1_utf8(const void *, uint64_t, void **); \
+    extern int P##_latin1_to_ascii(void *, const void *, uint64_t); \
+    extern int64_t P##_latin1_scan(const void *, uint64_t, int32_t *); \
+    extern void P##_latin1_decode(const void *, uint64_t, void *)
+LATIN1_DECLARE(v);
+LATIN1_DECLARE(r);
+
+#define L1_MAX 320
+static uint8_t l1_bytes[L1_MAX + 64], l1_text[L1_MAX + 64];
+static uint16_t l1_units[L1_MAX + 64];
+static uint32_t l1_state = 0x9e3779b9u;
+static uint32_t l1_random(void) { l1_state = l1_state * 1664525u + 1013904223u; return l1_state >> 8; }
+static const uint16_t l1_high[] = {0x100, 0x3042, 0xd800, 0xff00, 0x8000, 0x1ff};
+
+/* UTF-8 of `n` bytes: ASCII and pairs of a lead 0xC2 or 0xC3 and a continuation, at random. */
+static void l1_utf8(uint8_t *text, unsigned n, unsigned density) {
+    for (unsigned i = 0; i < n; ++i) {
+        if (i + 1 < n && density && l1_random() % density == 0) {
+            text[i] = (uint8_t)(0xc2 + l1_random() % 2);
+            text[++i] = (uint8_t)(0x80 + l1_random() % 64);
+        } else text[i] = (uint8_t)(0x20 + l1_random() % 95);
+    }
+}
+
+static int l1_scan(const uint8_t *text, unsigned n) {
+    int32_t max_v = -1, max_r = -1;
+    int64_t units_v = v_latin1_scan(text, n, &max_v), units_r = r_latin1_scan(text, n, &max_r);
+    if (units_v != units_r || max_v != max_r) return 230;
+    if (units_v < 0) return max_v == 0 ? 0 : 232;
+    uint8_t a[L1_MAX + 16], b[L1_MAX + 16];
+    for (unsigned i = 0; i < L1_MAX + 16; ++i) a[i] = b[i] = 0xa5;
+    v_latin1_decode(text, n, a);
+    r_latin1_decode(text, n, b);
+    return equal_bytes(a, b, (uint64_t)units_v + 8) ? 0 : 231;
+}
+
+static int l1_from_latin1(const uint8_t *bytes, unsigned n) {
+    void *a, *b;
+    uint64_t calls = test_calls(), size = test_bytes();
+    uint64_t an = v_latin1_utf8(bytes, n, &a);
+    uint64_t vcalls = test_calls() - calls, vbytes = test_bytes() - size;
+    calls = test_calls(); size = test_bytes();
+    uint64_t bn = r_latin1_utf8(bytes, n, &b);
+    if (test_calls() - calls != vcalls || test_bytes() - size != vbytes) return 241;
+    int equal = an == bn && equal_bytes(a, b, an);
+    test_drop(a); test_drop(b);
+    return equal ? 0 : 242;
+}
+
+static int l1_to_ascii(const uint8_t *bytes, unsigned n) {
+    uint8_t a[L1_MAX + 16], b[L1_MAX + 16];
+    for (unsigned i = 0; i < L1_MAX + 16; ++i) a[i] = b[i] = 0xa5;
+    int x = v_latin1_to_ascii(a, bytes, n), y = r_latin1_to_ascii(b, bytes, n);
+    if (x != y) return 250;
+    return x && !equal_bytes(a, b, n + 8) ? 251 : 0;
+}
+
+static int l1_widen(const uint8_t *bytes, unsigned n) {
+    uint16_t a[L1_MAX + 16], b[L1_MAX + 16];
+    for (unsigned i = 0; i < n + 8; ++i) a[i] = b[i] = 0xa5a5;
+    v_latin1_widen(a, bytes, n);
+    r_latin1_widen(b, bytes, n);
+    if (!equal_bytes(a, b, (n + 8) * 2)) return 260;
+    uint8_t c[2 * L1_MAX + 32], d[2 * L1_MAX + 32];
+    for (unsigned i = 0; i < 2 * n + 16; ++i) c[i] = d[i] = 0xa5;
+    for (unsigned i = 0; i < n; ++i) c[i] = d[i] = bytes[i];
+    v_latin1_widen_in_place(c, n);
+    r_latin1_widen_in_place(d, n);
+    return equal_bytes(c, d, 2 * n + 16) ? 0 : 261;
+}
+
+static int l1_narrow(const uint16_t *units, unsigned n) {
+    uint16_t a[L1_MAX + 16], b[L1_MAX + 16];
+    for (unsigned i = 0; i < n + 8; ++i) a[i] = b[i] = i < n ? units[i] : 0xa5a5;
+    v_latin1_narrow_in_place(a, n);
+    r_latin1_narrow_in_place(b, n);
+    return equal_bytes(a, b, (n + 8) * 2) ? 0 : 270;
+}
+
+static int l1_mixed(const uint8_t *bytes, const uint16_t *units, unsigned n) {
+    if (v_latin1_units(units, n) != r_latin1_units(units, n)) return 280;
+    if (v_latin1_equal_mixed(bytes, units, n) != r_latin1_equal_mixed(bytes, units, n)) return 281;
+    const unsigned lengths[][2] = {{n, n}, {n, n + 1}, {n + 1, n}, {n, 0}, {0, n}, {n ? n - 1 : 0, n}};
+    for (unsigned k = 0; k < 6; ++k)
+        if (v_latin1_compare_mixed(bytes, lengths[k][0], units, lengths[k][1]) !=
+            r_latin1_compare_mixed(bytes, lengths[k][0], units, lengths[k][1])) return 282;
+    return 0;
+}
+
+/* Every position near the start and the end of a text, and every fifth one between: all the lanes of a block. */
+static unsigned l1_next(unsigned at, unsigned n) {
+    return at + (n > 70 && at >= 24 && at + 24 < n ? 5 : 1);
+}
+
+static int latin1_one(unsigned n, unsigned offset, int sweep) {
+    uint8_t *bytes = l1_bytes + offset;
+    uint16_t *units = l1_units + offset / 2;
+    uint8_t *text = l1_text + offset;
+    int failure;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (unsigned i = 0; i < n + 8; ++i) {
+            bytes[i] = (uint8_t)(pass && l1_random() % 3 == 0 ? 0x80 + l1_random() % 128 : 0x20 + l1_random() % 95);
+            units[i] = bytes[i];
+        }
+        if ((failure = l1_from_latin1(bytes, n)) || (failure = l1_to_ascii(bytes, n)) ||
+            (failure = l1_widen(bytes, n)) || (failure = l1_narrow(units, n)) ||
+            (failure = l1_mixed(bytes, units, n))) return failure;
+        if (!pass && (v_latin1_units(units, n) != 1 || v_latin1_equal_mixed(bytes, units, n) != 1 ||
+            v_latin1_compare_mixed(bytes, n, units, n) != 0)) return 283;
+        for (unsigned at = 0; sweep && at < n; at = l1_next(at, n)) {
+            const uint16_t saved = units[at];
+            for (unsigned k = 0; k < sizeof l1_high / sizeof l1_high[0]; ++k) {
+                units[at] = l1_high[k];
+                if ((failure = l1_mixed(bytes, units, n))) return failure;
+                if (v_latin1_units(units, n) != 0 || v_latin1_equal_mixed(bytes, units, n) != 0 ||
+                    v_latin1_compare_mixed(bytes, n, units, n) != -1) return 284;
+            }
+            units[at] = (uint16_t)(saved ^ 1);
+            if ((failure = l1_mixed(bytes, units, n))) return failure;
+            units[at] = saved ? (uint16_t)(saved - 1) : 1;
+            if ((failure = l1_mixed(bytes, units, n))) return failure;
+            units[at] = saved;
+            const uint8_t byte = bytes[at];
+            bytes[at] = (uint8_t)(byte | 0x80);
+            if ((failure = l1_to_ascii(bytes, n)) || (failure = l1_from_latin1(bytes, n)) ||
+                (failure = l1_mixed(bytes, units, n))) return failure;
+            bytes[at] = byte;
+        }
+    }
+    /* UTF-8: valid Latin-1 text of several densities, and one byte replaced at each position */
+    const unsigned densities[] = {0, 5, 2, 1};
+    const uint8_t replacements[] = {0x00, 0x41, 0x80, 0xa9, 0xbf, 0xc0, 0xc2, 0xc3, 0xc4, 0xe2, 0xf0, 0xff};
+    for (unsigned density = 0; density < 4; ++density) {
+        l1_utf8(text, n, densities[density]);
+        for (unsigned i = n; i < n + 40; ++i) text[i] = 0xc2;
+        if ((failure = l1_scan(text, n))) return failure;
+        for (unsigned at = 0; at < n; at = sweep ? l1_next(at, n) : at + 1 + n / 4) {
+            const uint8_t byte = text[at];
+            for (unsigned k = 0; k < sizeof replacements; ++k) {
+                text[at] = replacements[k];
+                if ((failure = l1_scan(text, n))) return failure;
+            }
+            text[at] = byte;
+        }
+    }
+    return 0;
+}
+
+static int latin1_cases(void) {
+#ifdef UTF_QUICK
+    const unsigned limit = 67, offsets = 3, sweeps = 2;
+#else
+    const unsigned limit = 200, offsets = 16, sweeps = 4;
+#endif
+    for (unsigned offset = 0; offset < offsets; ++offset)
+        for (unsigned n = 0; n <= limit; ++n) {
+            int failure = latin1_one(n, offset, offset < sweeps);
+            if (failure) return failure;
+        }
+    return 0;
+}
+
+/* The same kernels with each input or output ending where the memory ends. */
+static int latin1_guard(uint8_t *end) {
+    static uint8_t source[200], expected[400], actual[400];
+    static uint16_t wide[200];
+    for (unsigned n = 0; n <= 80; ++n) {
+        for (unsigned kind = 0; kind < 4; ++kind) {
+            if (kind == 0) for (unsigned i = 0; i < n; ++i) source[i] = (uint8_t)(65 + i % 26);
+            else if (kind == 1) for (unsigned i = 0; i < n; ++i) source[i] = (uint8_t)(0x80 + i % 128);
+            else l1_utf8(source, n, kind == 2 ? 3 : 1);
+            uint8_t *edge = end - n;
+            for (unsigned i = 0; i < n; ++i) edge[i] = source[i];
+            /* inputs at the end */
+            int32_t max_v = -1, max_r = -1;
+            if (v_latin1_scan(edge, n, &max_v) != r_latin1_scan(source, n, &max_r) || max_v != max_r) return 290;
+            const int64_t counted = r_latin1_scan(source, n, &max_r);
+            if (counted >= 0) {
+                v_latin1_decode(edge, n, actual);
+                r_latin1_decode(source, n, expected);
+                if (!equal_bytes(actual, expected, (uint64_t)counted)) return 291;
+            }
+            void *a, *b;
+            uint64_t an = v_latin1_utf8(edge, n, &a), bn = r_latin1_utf8(source, n, &b);
+            int same = an == bn && equal_bytes(a, b, an);
+            test_drop(a); test_drop(b);
+            if (!same) return 292;
+            if (v_latin1_to_ascii(actual, edge, n) != r_latin1_to_ascii(expected, source, n)) return 293;
+            v_latin1_widen(actual, edge, n);
+            r_latin1_widen(expected, source, n);
+            if (!equal_bytes(actual, expected, 2 * n)) return 294;
+            for (unsigned i = 0; i < n; ++i) wide[i] = source[i];
+            if (v_latin1_equal_mixed(edge, wide, n) != r_latin1_equal_mixed(source, wide, n) ||
+                v_latin1_compare_mixed(edge, n, wide, n) != r_latin1_compare_mixed(source, n, wide, n)) return 295;
+            /* outputs and in-place buffers at the end */
+            uint16_t *units = (uint16_t *)(end - 2 * n);
+            v_latin1_widen(units, source, n);
+            r_latin1_widen(expected, source, n);
+            if (!equal_bytes(units, expected, 2 * n)) return 296;
+            for (unsigned i = 0; i < n; ++i) ((uint8_t *)units)[i] = source[i];
+            v_latin1_widen_in_place(units, n);
+            if (!equal_bytes(units, expected, 2 * n)) return 297;
+            v_latin1_narrow_in_place(units, n);
+            if (!equal_bytes(units, source, n)) return 298;
+            for (unsigned i = 0; i < n; ++i) units[i] = source[i];
+            if (v_latin1_units(units, n) != 1) return 299;
+            if (v_latin1_equal_mixed(source, units, n) != 1 || v_latin1_compare_mixed(source, n, units, n) != 0) return 300;
+            if (n) {
+                units[n - 1] = 0x100;
+                if (v_latin1_units(units, n) != 0 || v_latin1_equal_mixed(source, units, n) != 0 ||
+                    v_latin1_compare_mixed(source, n, units, n) != r_latin1_compare_mixed(source, n, units, n)) return 301;
+            }
+            int accepted = r_latin1_to_ascii(expected, source, n);
+            if (v_latin1_to_ascii(end - n, source, n) != accepted) return 302;
+            if (accepted && !equal_bytes(end - n, source, n)) return 303;
+            if (r_latin1_scan(source, n, &max_r) >= 0) {
+                int64_t units_count = r_latin1_scan(source, n, &max_r);
+                v_latin1_decode(source, n, end - units_count);
+                r_latin1_decode(source, n, expected);
+                if (!equal_bytes(end - units_count, expected, (uint64_t)units_count)) return 304;
+            }
+        }
+    }
+    return 0;
+}
+
 int differential(void) {
+    int latin1 = latin1_cases();
+    if (latin1) return latin1;
     int conversions = conversion_cases();
     if (conversions) return conversions;
     int validation = validation_cases();
@@ -505,6 +744,8 @@ int guard_pages(void) {
             if (check16(u,n)) return 36;
         }
     }
+    int latin1 = latin1_guard(memory + page);
+    if (latin1) return latin1;
 #ifdef _WIN32
     assert(VirtualFree(memory,0,MEM_RELEASE));
 #else
@@ -529,6 +770,7 @@ int guard_pages(void) {
             if (v_well(u,n) || r_well(u,n)) return 53;
         }
     }
+    return latin1_guard((uint8_t *)end);
 #endif
     return 0;
 }

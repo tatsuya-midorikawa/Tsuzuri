@@ -102,7 +102,21 @@
 
 `check` は最適化も CPU も見ません。型が通れば、どの `-O` でも同じ診断です。`doc` と `fmt` も最適化を受け付けません。`test` は `-O0`〜`-O3` を受け、`--cpu` は拒否します。
 
-`-Os` と `-Oz` は、LLVM のサイズ最適化です。`-Os` は大きさと速さの釣り合いを取り、`-Oz` は大きさを優先します。どちらも Tsuzuri が出す LLVM IR を変えません。`--emit llvm` の出力は、`-O0` から `-Oz` まで同じです。変わるのは、IR を機械語にする Clang に渡す最適化レベルだけです。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表、`-g` のデバッグ情報、WebAssembly の import は、`-O3` と同じです。代わりに、速度は落ちることがあります。数値と数学のランタイムの object も同じレベルでコンパイルします。配布物の `share/runtime/` には `-O0`〜`-O3` の object だけがあるので、`-Os` と `-Oz` の最初のビルドは Clang でランタイムをコンパイルし、結果を `runtime/` のキャッシュに保存します。`--no-cache` のときはランタイムを IR のままモジュールに埋め込み、毎回いっしょにコンパイルします。
+`-Os` と `-Oz` は、LLVM のサイズ最適化です。`-Os` は大きさと速さの釣り合いを取り、`-Oz` は大きさを優先します。どちらもプログラムの意味を変えません。`-g` を付けない `--emit llvm` の出力は、WebAssembly では `-O0` から `-Oz` まで同じです。native では `-O1`〜`-O3` が同じで、`-O0`・`-Os`・`-Oz` は、関数値の adapter（`@tz.apply.*`）とラムダの worker（`@tz.fn.$lambda.*`）の `alwaysinline` が外れる点だけが違います。この属性は、既知の関数値の呼び出しへ必ず inline させるためのもので、サイズ最適化と `-O0` では外して、inline を LLVM に任せます。変わるのは、この属性と、IR を機械語にする Clang に渡す最適化レベルだけです。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表、`-g` のデバッグ情報、WebAssembly の import は、`-O3` と同じです。代わりに、速度は落ちることがあります。数値と数学のランタイムの object も同じレベルでコンパイルします。配布物の `share/runtime/` には `-O0`〜`-O3` の object だけがあるので、`-Os` と `-Oz` の最初のビルドは Clang でランタイムをコンパイルし、結果を `runtime/` のキャッシュに保存します。`--no-cache` のときはランタイムを IR のままモジュールに埋め込み、毎回いっしょにコンパイルします。
+
+関数値は静的な記述子と環境の 2 ポインターで、記述子が adapter を参照し続けます（[ラムダ式](../values-and-functions/lambda-expressions.md)）。そのためサイズ最適化は、既知の関数値の呼び出しを adapter ごと inline しきれず、関数値を使う小さなプログラムでは adapter と worker が別の関数として残り、コードが大きくなります。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は変わりません。関数値が 4 ポインターだったコンパイラとの比較は次のとおりです（macOS arm64。native は `--emit object` の `__text`、wasm32 は `.wasm` 全体）。
+
+| 測ったもの | `-Os` | `-Oz` |
+| --- | --- | --- |
+| native `examples/hello` の `__text` | +15%（3,220 → 3,712） | +21%（3,004 → 3,636） |
+| native `examples/functional` | +14%（4,228 → 4,840） | +13%（4,272 → 4,844） |
+| native `examples/io` | −1%（20,108 → 19,916） | +2%（17,112 → 17,496） |
+| native `tests/fixtures` の 4 本 | +1.5〜3.7% | +1.1〜3.8% |
+| wasm32 `examples/hello` | +0.9%（4,493 → 4,534） | +7.8%（3,905 → 4,208） |
+| wasm32 `examples/functional` | +8.7%（6,283 → 6,828） | +9.1%（5,278 → 5,758） |
+| wasm32 `examples/io` | +0.1%（7,939 → 7,949） | +5.3%（6,878 → 7,244） |
+
+増えるのは native の `hello` で 500〜600 バイト、wasm32 の `hello` で 40〜300 バイトです。native の実行ファイル全体では、`-Oz` の `hello` が 34,008 → 34,376 バイト（+1.1%）です。`-O3` の増えは、native が `hello` で +3.1%（3,208 → 3,308 バイト）、`functional` で +0.9%、wasm32 の `examples` が +1.4% 以内で、`-O0` では使われない記述子が残り、native の `hello` の object が +2.9% です。測定と再現の手順は [性能測定](../../../docs/benchmarks.md#pm02-関数値の表現の縮小) です。
 
 `test` と `bench` は `-O0`〜`-O3` だけを受け付け、`-Os` と `-Oz` は `E2000` です。`repl` と `script` も、`-O0`〜`-O3` だけです。`--emit bindings-js` などの `-O` を無視する出力は、`-Os` と `-Oz` も無視します。
 
@@ -135,7 +149,7 @@ add 20 22
 | `--strip` | オフ | native の実行ファイルのリンクで、ローカルシンボルを除く。`build` の `--emit exe` だけ |
 | `--wasm-opt` | オフ | wasm32 の `.wasm` のリンク後に、Binaryen の `wasm-opt -Oz` を実行する。`build` の `--emit wasm` だけ。同梱せず、明示したときだけ使う |
 
-`--strip` はリンカーに `-Wl,-x` を渡します。ローカルシンボルだけが消え、グローバルシンボルは残ります。プログラムの動作と `--trap-info` の位置表（`.trap.json`）は変わらず、macOS のコード署名も有効なままです。小さくなるのはシンボル表の分だけで、`examples/hello` の既定のビルドは 33,896 バイトから 33,784 バイト（macOS arm64 で測定）です。`-g` とは組み合わせられず（デバッガーがシンボルを使うため）、`--emit object`・`llvm`・`header`・`shared`、バインディング、WASM は `E2000` です。WASM の出力は `--debug-info` を付けない限り、すでにシンボルを持ちません。Windows のリンクは変えないので、`--strip` を付けても成果物は同じです。`build` 以外のサブコマンドは `--strip` を拒否します。
+`--strip` はリンカーに `-Wl,-x` を渡します。ローカルシンボルだけが消え、グローバルシンボルは残ります。プログラムの動作と `--trap-info` の位置表（`.trap.json`）は変わらず、macOS のコード署名も有効なままです。小さくなるのはシンボル表の分だけで、`examples/hello` の既定のビルドは 33,960 バイトから 33,784 バイト（macOS arm64 で測定）です。`-g` とは組み合わせられず（デバッガーがシンボルを使うため）、`--emit object`・`llvm`・`header`・`shared`、バインディング、WASM は `E2000` です。WASM の出力は `--debug-info` を付けない限り、すでにシンボルを持ちません。Windows のリンクは変えないので、`--strip` を付けても成果物は同じです。`build` 以外のサブコマンドは `--strip` を拒否します。
 
 ```text
 <command line>:1:1: error[E2000]: --strip cannot be combined with --debug-info: a debugger needs the symbols
@@ -152,7 +166,7 @@ add 20 22
 examples/hello/Main.tz:1:1: error[E2002]: cannot execute 'wasm-opt': No such file or directory (os error 2); --wasm-opt runs Binaryen's wasm-opt: install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable
 ```
 
-Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 3,905、`-O3` 6,833 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
+Binaryen 132 の `wasm-opt -Oz` で、`examples/hello` の WebAssembly モジュールは `-Oz` で 2,587 バイトから 2,156 バイト（−16.7%）、`-O3` で 6,357 バイトから 5,196 バイト（−18.3%）になりました。`examples/io` は `-Oz` で 5,734 から 4,583 バイト、`examples/functional` は 3,960 から 3,094 バイトです（WebAssembly のヒープを作り直す前のモジュールでの値で、いまのモジュール（hello は `-Oz` 4,208、`-O3` 6,860 バイト）では測っていません。測定は [性能測定](../../../docs/benchmarks.md#成果物のサイズ)）。
 
 ## プロファイル誘導最適化
 
@@ -189,9 +203,11 @@ profile data does not match 1 function(s) in this build; they are optimized with
 
 `--emit object` を計装すると、オブジェクトはプロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます。付けないと、macOS では `___llvm_profile_runtime` が未定義です。
 
+**並列に動くプログラムの回数は少なく数えます。** 計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single` と同じです）。`Task` や `Parallel` が複数のスレッドで同じ関数を動かすと、更新が重なって失われ、回数が実際より少なくなります（実行ごとに変わります）。4 つの Task が同じ 1 億回のループを回す例では、ループの回数は 4 億ではなく 1 億でした（関数に入った回数は正確に 4）。プログラムの結果とプロファイルの形（`W2001`）には影響しませんが、`--profile-use` は少ない回数をそのまま使います。正確な回数が要るときは、`-fprofile-update=atomic` を足して Clang を呼ぶスクリプトを `TSUZURI_CLANG` に指定して計装してください。その例では回数が 4 億になり、そのプロファイルは通常の Clang の `--profile-use` でそのまま使えました。ただし、計装したプログラムは 0.1 秒から 6 秒へ約 60 倍遅くなったので、Tsuzuri は原子的な更新を付けません（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
+
 **使えない組み合わせ**は、`E2000` か `E2002` です（[組み合わせがエラーになる場合](#組み合わせがエラーになる場合)）。`--emit` は native の `exe` と `object`、wasm32 の `wasm` だけです。Windows と、ビルド機と違う `--target TRIPLE`（その機械でプログラムを訓練できない）は拒否し、`--profile-generate` と `--freestanding`（ランタイムが C ライブラリを要る）は一緒に使えません。ほかの出力が増えても、許可リストにない形は拒否します。
 
-**速くなるとは限りません。** プロファイルは、Clang の分岐の見積もりを実測に替えるだけで、速くなる種目も遅くなる種目もあります。`benchmarks/control` では、`closure_capture` と `closure_churn` が 13〜17% 速くなり、`tail_mix` 系が約 20%、`match_dispatch` が約 60% 遅くなりました。ほかは ±3% です。C と C++ に同じ手順の PGO を使うと、`closure_churn` は約 44% 速くなり、`tail_mix` 系は変わりません。測定の条件と生データは [性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo) にあります。使うときは、自分のプログラムで前後を測ってください。
+**速くなるとは限りません。** プロファイルは、Clang の分岐の見積もりを実測に替えるだけで、速くなる種目も遅くなる種目もあります。`benchmarks/control` では、`closure_capture` と `closure_churn` が 12〜17% 速くなり、`tail_mix` 系が約 20%、`match_dispatch` が約 63% 遅くなりました。ほかの種目は −4〜+6% の範囲で、host の配置の揺れの大きさです（`array_*` は C・C++・Rust の同じコードも同じ向きに動きました）。C と C++ に同じ手順の PGO を使うと、`closure_churn` は 43〜44% 速くなり、`tail_mix` 系は変わりません。測定の条件と生データは [性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo) にあります。使うときは、自分のプログラムで前後を測ってください。
 
 ### WebAssembly の module
 
@@ -461,6 +477,7 @@ flowchart TD
 | `TSUZURI_SERVER_DIR` | macOS は `$HOME/Library/Caches/tsuzuri/server`、Linux は `$XDG_RUNTIME_DIR/tsuzuri` | なし | `tsuzuri serve` のソケットのディレクトリ（絶対パス。`0700`）。空なら、サーバーを使わない（`serve` は `E2000`）。相対パスは、`serve` では `E2000`、`check`・`build` では使わない（[serve](usage.md#serve)） |
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
+| `TSUZURI_STRINGS` | `utf16` | なし | `utf16`・`compact`。`string` の内部表現を選ぶ。`compact` は、全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存する。空は既定、ほかの値は `E2000`。値・順序・hash・出力・host との ABI は変わらない。ビルドキャッシュのキーに入る（[コンパクト文字列の旗](#コンパクト文字列の旗)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
 
 ### コンパイラのスレッド数
@@ -547,7 +564,7 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 
 `Gpu.Vulkan` か `Gpu.Auto` を使う native のプログラムは、実行時にさらに `TSUZURI_VULKAN_LIBRARY`（読み込む Vulkan のローダーのパス。設定すればそれだけを書いたとおりに試し、空なら Vulkan を無効にする。設定がなければ、システムの場所の絶対パスだけを探し、作業ディレクトリは探さない）と `TSUZURI_GPU_AUTO_MIN_WORK`（`Gpu.Auto` の規則を「lane 数 × カーネルの重みが指定の数以上」に置き換える。`0` は、デバイスが使えるなら常に Vulkan）を読みます。ローダーが見つけるドライバは、Vulkan のローダー自身の変数（`VK_DRIVER_FILES` など）に従います。どれも、コンパイル時のオプションでもキャッシュのキーでもありません。詳しくは [Gpu](../built-in-types-and-modules/gpu.md#native-vulkan-のローダーを実行時に読み込む) と [Gpu.Auto](../built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ) にあります。
 
-キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT`、`TSUZURI_RANGE_FLAGS` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
+キャッシュのキーには、上の 4 つのツール変数に加えて `PATH`、`SDKROOT`、`MACOSX_DEPLOYMENT_TARGET`、Windows の `INCLUDE` / `LIB`、`SOURCE_DATE_EPOCH`、`DEVELOPER_DIR`、`TSUZURI_SYSROOT`、`TSUZURI_RANGE_FLAGS`、`TSUZURI_STRINGS` などが入り、`--target` の名前もオプションとして入ります。同じソースでも、ツールや target や sysroot を替えるとキャッシュは別エントリになります。
 
 ### 整数の範囲証明の旗
 
@@ -571,6 +588,43 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 既定が `off` なのは、旗が LLVM の出力を変えたかを `benchmarks/run-range-flags.mjs` で測った結果によります。12 の corpus の多くで、`-O1`〜`-O3` の arm64 と x86_64 の
 assembly と wasm32 の module は `off` と同じでした（[整数の範囲証明と overflow フラグ](../../../docs/benchmarks.md#整数の範囲証明と-overflow-フラグpr02)）。
 `audit` で既存のテストを通すと、証明が誤っていればその場で trap します。
+
+### コンパクト文字列の旗
+
+`TSUZURI_STRINGS=compact tsuzuri build Main.tz` のように指定します。CLI のフラグではありません（PM03）。
+`string` が観測できる意味は、どちらのモードでも変わりません。コード単位の列としての値・長さ・添字・順序・等しさ・hash・表示・
+`Maybe<string>` の表現・host との ABI（常に UTF-16）は同じで、変わるのは内部表現と、それを読み書きするコードだけです。
+
+| 値 | 表現 | 使いどころ |
+| --- | --- | --- |
+| `utf16`（既定。空と未設定も同じ） | すべての `string` が 1 単位 2 bytes の UTF-16。IR は PM03 より前と byte 単位で同じ | 通常のビルド |
+| `compact` | 全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存し、そうでない文字列は UTF-16 のまま | ASCII・Latin-1 が中心で、host へ短い文字列を頻繁に返さない文字列処理 |
+
+ほかの値は、IR を出すコマンドで `E2000` です（`check` と `lsp` は IR を出さないので読みません）。値はビルドキャッシュのキーに入り、
+`tsuzuri serve` は、server と client で値が違う要求を断ります（[serve](usage.md#serve)）。
+
+`compact` のときの規則:
+
+- `string` は `{ ptr, i64 }` のままで、長さの語の bit 62 が立っていれば Latin-1（低位 62 bit が byte 数）、立っていなければ UTF-16（語が単位数）です。bit 63 は常に 0 なので、
+  `Maybe<string>` の「なし」を表す長さ −1 は変わりません。空の文字列は語が 0 で、どちらの形式でもありません。
+- Latin-1 を作るのは、0xFF 以下の単位だけのリテラル、その形式同士の連結・`append`・`slice`・`join`・補間、整数・浮動小数点数・`char` の表示（`to_string`）、`to_ascii_*`・`repeat`・`replace` などが
+  `from_code_units` で作る結果、全 scalar が U+00FF 以下の UTF-8 から作る `String.from_utf8`（ASCII だけでなく、`é` のような Latin-1 の文字も 1 byte になります）です。
+  UTF-16 の文字列を切り出したものは、全単位が 0xFF 以下でも UTF-16 のままです。形式に正準形はなく、同じ単位の列はどちらの形式でも
+  `==`・`<`・`hash`・`HashMap` の key・連結の結果で同じ値になります（形式が混ざった連結は、Latin-1 の側を広げて UTF-16 を作ります）。
+- host との境界は UTF-16 のままです。`export` の `string` の結果は host へ返す前に UTF-16 へ広げ（`realloc` と widen）、host から受けた `ref string` は UTF-16 の文字列として扱い、host の import へ渡す
+  引数は UTF-16 の複製（呼び出し後に解放）を渡します。短い文字列を頻繁に返すと、この変換が目立ちます（[測定](../../../docs/benchmarks.md#pm03-コンパクト文字列)）。
+- `String.to_code_units`・`String.from_code_units` は、UTF-16 の値ではバッファの所有権を移すだけですが、Latin-1 の値では全単位を広げる（新しいバッファへコピー）・狭める（その場で）O(n) の変換になります。
+  結果の値は変わりません。
+- 確保量は Latin-1 の文字列で半分になります。native と `--wasm-feature simd128` を付けた WebAssembly は、Latin-1 の走査・比較・変換に 128-bit の vector の kernel を使い、
+  simd128 なしの WebAssembly は scalar の kernel を使います（PR05 の UTF の kernel と同じ選び方です）。
+- LLDB の formatter と natvis は、両方の形式の文字列を読みます。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けします（[デバッグ](debugging.md)）。
+
+代償として、runtime の IR が約 60 KB（native の hello で 145 KB から 206 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,833 から 7,866 bytes）が増えます。
+既定を `utf16` のままにしているのは、この代償と、host へ短い文字列を返す呼び出しが 2 倍近くになる場合があるためです。測定と判断の理由は
+[PM03 コンパクト文字列](../../../docs/benchmarks.md#pm03-コンパクト文字列)にあります。
+
+`tests/compact_strings_modes.mjs`（既存の node のテストを両方の形式で実行する）と、`TSUZURI_STRINGS=compact cargo test --locked`（IR を出す Rust のテスト全体を `compact` で）で、
+プログラムが文字列の表現に依存していないことを確かめられます。IR の形そのものを固定するテストは、形式を自分で選びます。
 
 ## まとめ
 

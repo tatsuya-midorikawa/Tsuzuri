@@ -11,7 +11,7 @@ const scratch = join(root, "target", `utf-simd-${process.pid}`);
 mkdirSync(scratch, { recursive: true });
 const env = { ...process.env, TMPDIR: scratch };
 function run(program, args) {
-  const r = spawnSync(program, args, { cwd: root, env, encoding: "utf8", timeout: 600_000 });
+  const r = spawnSync(program, args, { cwd: root, env, encoding: "utf8", timeout: 600_000, maxBuffer: 256 * 1024 * 1024 });
   assert.equal(r.status, 0, `${program} ${args.join(" ")}\n${r.error ?? ""}\n${r.stdout}\n${r.stderr}`);
   return r.stdout;
 }
@@ -46,6 +46,68 @@ const scalar = read("string_scalar.ll");
 const names = [...scalar.matchAll(/^define internal .* @([\w.]+)\(/gm)].map((m) => m[1]);
 let reference = scalar;
 for (const name of names) reference = reference.replaceAll(`@${name}(`, `@ref.${name.slice(3)}(`);
+// PM03: the Latin-1 kernels of the compact string form have the same shape: a scalar reference and, where the
+// vector runtime is selected, a generated vector file. The generator must reproduce both files exactly.
+const latin1Scalar = read("string_latin1.ll");
+const latin1Names = [...latin1Scalar.matchAll(/^define internal .* @([\w.]+)\(/gm)].map((m) => m[1]);
+let latin1Reference = latin1Scalar;
+for (const name of latin1Names) latin1Reference = latin1Reference.replaceAll(`@${name}(`, `@ref.${name.slice(3)}(`);
+const generated = join(scratch, "generated");
+mkdirSync(generated, { recursive: true });
+run(process.env.TSUZURI_PYTHON ?? "python3", [join(root, "src/runtime/generate_utf.py"), generated]);
+for (const file of ["string_v128.ll", "string_latin1_v128.ll"])
+  assert.equal(readFileSync(join(generated, file), "utf8"), read(file), `${file} is what generate_utf.py writes`);
+const latin1Bridges = (prefix, namespace) => `
+define i32 @${prefix}_latin1_units(ptr %p, i64 %n) {
+  %r = call i1 @${namespace}.string.is_latin1_units(ptr %p, i64 %n)
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+define void @${prefix}_latin1_widen(ptr %to, ptr %from, i64 %n) {
+  call void @${namespace}.string.widen(ptr %to, ptr %from, i64 %n)
+  ret void
+}
+define void @${prefix}_latin1_widen_in_place(ptr %p, i64 %n) {
+  call void @${namespace}.string.widen_in_place(ptr %p, i64 %n)
+  ret void
+}
+define void @${prefix}_latin1_narrow_in_place(ptr %p, i64 %n) {
+  call void @${namespace}.string.narrow_in_place(ptr %p, i64 %n)
+  ret void
+}
+define i32 @${prefix}_latin1_equal_mixed(ptr %bytes, ptr %units, i64 %n) {
+  %r = call i1 @${namespace}.string.equal_mixed(ptr %bytes, ptr %units, i64 %n)
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+define i32 @${prefix}_latin1_compare_mixed(ptr %bytes, i64 %bn, ptr %units, i64 %un) {
+  %r = call i32 @${namespace}.string.compare_mixed(ptr %bytes, i64 %bn, ptr %units, i64 %un)
+  ret i32 %r
+}
+define i64 @${prefix}_latin1_utf8(ptr %p, i64 %n, ptr %out) {
+  %r = call %tz.utf8string @${namespace}.utf8string.from_latin1(ptr %p, i64 %n)
+  %d = extractvalue %tz.utf8string %r, 0
+  %m = extractvalue %tz.utf8string %r, 1
+  store ptr %d, ptr %out
+  ret i64 %m
+}
+define i32 @${prefix}_latin1_to_ascii(ptr %to, ptr %from, i64 %n) {
+  %r = call i1 @${namespace}.string.to_ascii_latin1(ptr %to, ptr %from, i64 %n)
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+define i64 @${prefix}_latin1_scan(ptr %p, i64 %n, ptr %max) {
+  %r = call { i64, i32 } @${namespace}.string.utf8_scan(ptr %p, i64 %n)
+  %u = extractvalue { i64, i32 } %r, 0
+  %m = extractvalue { i64, i32 } %r, 1
+  store i32 %m, ptr %max
+  ret i64 %u
+}
+define void @${prefix}_latin1_decode(ptr %p, i64 %n, ptr %data) {
+  call void @${namespace}.string.utf8_to_latin1(ptr %p, i64 %n, ptr %data)
+  ret void
+}
+`;
 const bridges = (prefix, namespace) => {
   let ir = "";
   ir += `define i32 @${prefix}_valid8(ptr %p, i64 %n) {\n %value = call i1 @${namespace}.string.validate_utf8(ptr %p, i64 %n)\n %result = zext i1 %value to i32\n ret i32 %result\n}\n`;
@@ -98,6 +160,8 @@ try {
     let ir = "%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\ndeclare void @llvm.trap()\n" +
       read("string.ll") + read("utf8string.ll") + selected +
       reference + bridges("v", "tz") + bridges("r", "ref") +
+      read(simd ? "string_latin1_v128.ll" : "string_latin1.ll") + latin1Reference +
+      latin1Bridges("v", "tz") + latin1Bridges("r", "ref") +
       "define void @test_drop(ptr %p) {\n call void @tz.free(ptr %p)\n ret void\n}\n" +
       read(wasm ? "heap-wasm.ll" : "heap-native.ll") + storageBridges();
     for (const [operation, type, implementation] of [["decode", "string", "string.from_utf8"], ["encode", "utf8string", "utf8string.from_string"]]) {

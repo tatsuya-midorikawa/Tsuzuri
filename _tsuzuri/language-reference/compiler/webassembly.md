@@ -164,7 +164,7 @@ trap (site 0) trap
 | `bool` | `boolean` | `boolean` だけ。`0` や `1` は `TypeError` |
 | `unit`（戻り値） | `void` | — |
 | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | `BigInt64Array` / `Float64Array` / `Uint8Array` か `Borrowed<…>` | 型付き配列だけ。通常の配列は `TypeError` |
-| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る |
+| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る（`TSUZURI_STRINGS=compact` でも境界は UTF-16 で、内部が Latin-1 の `string` は渡す前に広げる） |
 | `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError`。先頭の U+FEFF も文字として渡り、結果でも保たれる |
 | `[i64]` などの所有結果 | 型付き配列 | 複製して返し、すぐ `tsuzuri_free` する |
 | `string` / `utf8string` の所有結果 | `string` | 同上 |
@@ -248,12 +248,12 @@ console.log(api.tz_is_positive(0n));
 
 ## 成果物の大きさ
 
-WebAssembly のモジュールは、内容のほとんどがコードです。整数だけを表示・書式指定・`Parse` するプログラムは数値ランタイム（約 10 KB の表と約 20 KB のコード）を持たないので、`examples/hello` の `-O3` のモジュールは 6,833 バイトです（整数の表示を専用の小さな関数に分ける前は 35,714 バイトでした）。整数を `Parse` するモジュールも同じで、`Parse.parse` と書式指定を使う `benchmarks/size/parse` の `-O3` のモジュールは 76,023 バイトから 16,766 バイトになりました。さらに小さくする方法は 2 つあります。どちらもモジュールの意味は変わりません。
+WebAssembly のモジュールは、内容のほとんどがコードです。整数だけを表示・書式指定・`Parse` するプログラムは数値ランタイム（約 10 KB の表と約 20 KB のコード）を持たないので、`examples/hello` の `-O3` のモジュールは 6,860 バイトです（整数の表示を専用の小さな関数に分ける前は 35,714 バイトでした）。整数を `Parse` するモジュールも同じで、`Parse.parse` と書式指定を使う `benchmarks/size/parse` の `-O3` のモジュールは 76,023 バイトから 16,762 バイトになりました。さらに小さくする方法は 2 つあります。どちらもモジュールの意味は変わりません。
 
 | 方法 | `examples/hello` | `examples/io` | `examples/functional` |
 | --- | ---: | ---: | ---: |
-| `-O3`（既定） | 6,833 | 12,956 | 10,251 |
-| `-Oz` | 3,905 | 6,878 | 5,278 |
+| `-O3`（既定） | 6,860 | 13,012 | 10,390 |
+| `-Oz` | 4,208 | 7,244 | 5,758 |
 
 バイト数です（macOS arm64、統合後のコンパイラ）。`-Oz` は LLVM の最適化レベルで、IR は `-O3` と同じです。`--wasm-opt` は、リンクが終わった `.wasm` を Binaryen の `wasm-opt -Oz` に通し、`-Oz` のモジュールをさらに 17〜22% 小さくしました（Binaryen 132。hello は 2,587 バイトから 2,156、`io` は 5,734 から 4,583、`functional` は 3,960 から 3,094 バイトで、上の表より前の、WASM のヒープを作り直す前のモジュールでの値です。いまのモジュールでは測っていません）。Binaryen は同梱しないので、入れた機械で明示したときだけ働き、見つからなければ `E2002` で止まります（[成果物を小さくする](option.md#成果物を小さくする)）。どちらも import と export、メモリの上限は変わりません。`--debug-info` を付けると名前の情報が残るため、`--wasm-opt` とは組み合わせられません。
 
@@ -329,7 +329,7 @@ api.tsuzuri_free(pointer);
 api.tsuzuri_free(out);
 ```
 
-`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。
+`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。`TSUZURI_STRINGS=compact` でも、host が見る `string` は UTF-16 です。Latin-1 で持っている文字列は、結果として返す前と host の import へ渡す前に広げます（[コンパクト文字列の旗](option.md#コンパクト文字列の旗)）。
 
 ## SIMD とスレッド
 

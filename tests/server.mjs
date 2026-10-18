@@ -98,7 +98,9 @@ async function stop(server, project, options = {}) {
   assert.ok(!existsSync(socketOf(project)), "the socket is gone");
 }
 
-// One connection by hand: the hello, and what follows it.
+// One connection by hand: the hello, and what follows it. The connection stays open until the server has
+// answered and closed it, as a client's does: a server takes a request whose client closed its end for one
+// that was abandoned (only a connection that sends nothing is closed at once).
 function talk(socketPath, send) {
   return new Promise((done, fail) => {
     const socket = net.createConnection(socketPath);
@@ -108,7 +110,7 @@ function talk(socketPath, send) {
     socket.on("data", (chunk) => { data += chunk; });
     socket.on("error", (error) => { if (error.code !== "ECONNRESET" && error.code !== "EPIPE") { clearTimeout(timer); fail(error); } });
     socket.on("close", () => { clearTimeout(timer); const [hello, ...rest] = data.split("\n"); done({ hello, reply: rest.join("\n").trim() }); });
-    socket.on("connect", () => { if (send !== null) socket.write(send); socket.end(); });
+    socket.on("connect", () => { if (send !== null) socket.write(send); else socket.end(); });
   });
 }
 
@@ -222,17 +224,31 @@ try {
       { args: ["build", app, "-O0", "--cpu", "generic", "-o", join(out, "a")], executable: join(out, "a") },
     ];
     // Options that other tickets added travel in the request like any other: bitcode (PR08), an instrumented
-    // build and a profile that is not there (PR07), the fast backend (PB05). The ones that need LLVM tools or a
-    // feature that a host may lack are left out when they fail alone with a valid program.
+    // build and a profile that is not there (PR07), the fast backend (PB05). The first two need what a host may not
+    // have, an LLVM tool or the profile runtime of Clang, and then fail alone with E2002 (LLVM or the linker failed):
+    // such a command is left out, with a line that says why. It is not when CI, LLVM_PREFIX or TSUZURI_PGO_STRICT=1
+    // say that the toolchain is there on purpose, and a failure of any other kind is a failure of this test. The
+    // fast backend is left out when this tsuzuri was built without it, whatever the environment says.
+    const strict = Boolean(process.env.CI || process.env.LLVM_PREFIX) || process.env.TSUZURI_PGO_STRICT === "1";
     save(main, "42\n");
-    for (const command of [
-      { args: ["build", app, "--emit", "bitcode", "-O0", "-o", join(out, "a.bc")], artifact: join(out, "a.bc") },
-      { args: ["build", app, "--profile-generate", join(out, "prof"), "-O0", "-o", join(out, "p")], executable: join(out, "p") },
-      { args: ["build", app, "-O0", "--backend", "fast", "-o", join(out, "f")], executable: join(out, "f") },
-      { args: ["build", app, "-O0", "--backend", "fast", "--emit", "object", "-o", join(out, "f.o")], artifact: join(out, "f.o") },
+    for (const [label, command] of [
+      ["--emit bitcode", { args: ["build", app, "--emit", "bitcode", "-O0", "-o", join(out, "a.bc")], artifact: join(out, "a.bc") }],
+      ["--profile-generate", { args: ["build", app, "--profile-generate", join(out, "prof"), "-O0", "-o", join(out, "p")], executable: join(out, "p") }],
+      ["--backend fast", { args: ["build", app, "-O0", "--backend", "fast", "-o", join(out, "f")], executable: join(out, "f") }],
+      ["--backend fast --emit object", { args: ["build", app, "-O0", "--backend", "fast", "--emit", "object", "-o", join(out, "f.o")], artifact: join(out, "f.o") }],
+      ["--backend fast --target wasm32", { args: ["build", app, "--target", "wasm32", "-O0", "--backend", "fast", "-o", join(out, "f.wasm")], artifact: join(out, "f.wasm") }],
     ]) {
-      if (alone(command.args).status === 0) commands.push(command);
-      else console.log(`Server: ${command.args[2]} is not tested: it fails alone on this host`);
+      const result = alone(command.args);
+      if (result.status === 0) {
+        commands.push(command);
+        continue;
+      }
+      if (label.startsWith("--backend fast") && /built without the fast backend/.test(result.stderr)) {
+        console.log(`Server: ${label} is not tested: this tsuzuri was built without the fast backend`);
+        continue;
+      }
+      assert.ok(!strict && /error\[E2002\]/.test(result.stderr), `${label} fails alone${strict ? " where the toolchain is meant to be there" : ""}:\n${result.stderr}`);
+      console.log(`Server: ${label} is not tested: it fails alone on this host (${result.stderr.split("\n")[0]})`);
     }
     commands.push({ args: ["build", app, "--profile-use", join(out, "none.profdata"), "-O0", "-o", join(out, "q")], executable: join(out, "q") });
     const hold = join(root, "Main.tz.hold");
@@ -533,6 +549,66 @@ try {
     assert.ok(!existsSync(socketOf(app)));
     assert.deepEqual(run(["check", app], withCopy), expected, "and then nothing answers");
 
+    // 8b: a server that runs a command still answers `status` and `--stop`, does not run what a client that
+    // went away left in its queue, and ends when the command that runs ends. A Clang that waits for a file
+    // holds a build in the middle (the identity of the tool is read on every build, so every build waits).
+    const gate = join(root, "gate");
+    mkdirSync(gate);
+    const opened = join(gate, "open");
+    const holding = join(gate, "clang");
+    const realClang = process.env.TSUZURI_CLANG ?? spawnSync("sh", ["-c", "command -v clang"], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(holding, `#!/bin/sh\nwhile [ ! -e "$TZ_GATE" ]; do sleep 0.05; done\nexec "$TZ_REAL_CLANG" "$@"\n`);
+    chmodSync(holding, 0o755);
+    // Only TSUZURI_CLANG is compared; the others belong to the script, and are given to every process, so that
+    // a client that runs a build itself waits at the gate too.
+    const held = { env: { TSUZURI_CLANG: holding, TZ_GATE: opened, TZ_REAL_CLANG: realClang } };
+    server = startServer([app], held);
+    await ready(server, app, held);
+    const waitFor = async (what, done) => {
+      for (let waited = 0; waited < 30_000; waited += 25) {
+        const current = status(app, held);
+        if (done(current)) return current;
+        await pause(25);
+      }
+      throw new Error(`${what} did not happen\n${server.log}`);
+    };
+    const build = (name) => runAsync(["build", app, "-O0", "--cpu", "generic", "-o", join(out, name)], held);
+    const beforeHeld = status(app, held);
+    const slowBuild = build("held");
+    const running = await waitFor("a request that runs", (current) => current.running !== null);
+    assert.equal(running.queued, 0);
+    assert.equal(typeof running.running.request, "number");
+    // One client waits and is interrupted; another waits.
+    const doomed = spawn(compiler, ["check", app], { cwd: root, env: { ...env, ...held.env }, stdio: "ignore" });
+    await waitFor("a request that waits", (current) => current.queued === 1);
+    doomed.kill("SIGKILL");
+    await new Promise((done) => doomed.on("exit", done));
+    const patient = runAsync(["check", app], held);
+    await waitFor("two requests that wait", (current) => current.queued === 2);
+    writeFileSync(opened, "");
+    assert.deepEqual(await slowBuild, { status: 0, stdout: "", stderr: "" });
+    assert.deepEqual(await patient, expected);
+    const afterHeld = status(app, held);
+    assert.equal(afterHeld.abandoned, 1, "the request of the client that went away was not run");
+    assert.equal(afterHeld.served - beforeHeld.served, 2, "the build and the check that waited");
+    assert.equal(afterHeld.running, null);
+    assert.equal(afterHeld.queued, 0);
+    assert.match(server.log, /serve: request \d+ skipped: its client went away while it waited/);
+    // `--stop` while a build runs: the answer is at once, and says what the server waits for; the build is not
+    // cut off, and the server ends when it has ended.
+    rmSync(opened);
+    const lastBuild = build("held-again");
+    await waitFor("a request that runs", (current) => current.running !== null);
+    const stopping = run(["serve", "--stop", app], held);
+    assert.equal(stopping.status, 1, stopping.stdout);
+    assert.match(stopping.stderr, /error\[E2001\]: the build server for .* \(pid \d+\) is running request \d+ \(for \d+ s\) and stops when it ends/);
+    assert.equal(server.exit, null, "the server goes on while the request runs");
+    assert.notEqual(status(app, held).running, null);
+    writeFileSync(opened, "");
+    assert.deepEqual(await lastBuild, { status: 0, stdout: "", stderr: "" });
+    assert.deepEqual(await exits(server), { code: 0, signal: null }, server.log);
+    assert.match(server.log, /serve: shutdown requested; stopping/);
+    assert.ok(!existsSync(socketOf(app)));
     // 9: TSUZURI_TIME_PASSES: the server's report is the report of the command, once, at the end.
     const timed = { env: { TSUZURI_TIME_PASSES: "1" } };
     server = startServer([app], timed);
@@ -583,7 +659,40 @@ try {
     }
     assert.match(run(["check", app, "--no-server", "--no-server"]).stderr, /no-server specified more than once/);
 
-    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports and usage errors passed");
+    // 11: the form of the strings (PM03). `TSUZURI_STRINGS` is read by the compiler, so the server compares it: a
+    // server that has `compact` makes the Latin-1 form that a cold build with it makes, and a client that has
+    // another form is refused and gets the build that it asked for.
+    const strings = join(root, "strings");
+    mkdirSync(strings);
+    save(join(strings, "Main.tz"), `"caf\\u00e9".length + "abc".length\n`);
+    const compact = { env: { TSUZURI_STRINGS: "compact" } };
+    const build = (name) => ["build", strings, "--emit", "llvm", "-O0", "-o", join(out, name)];
+    const coldUtf16 = run([...build("strings-utf16.ll"), "--no-server"]);
+    const coldCompact = run([...build("strings-cold.ll"), "--no-server"], compact);
+    assert.deepEqual([coldUtf16.status, coldCompact.status], [0, 0], `${coldUtf16.stderr}${coldCompact.stderr}`);
+    const utf16Ir = readFileSync(join(out, "strings-utf16.ll"), "utf8");
+    const compactIr = readFileSync(join(out, "strings-cold.ll"), "utf8");
+    assert.ok(compactIr.includes("@tz.string.allocate_latin1(") && !utf16Ir.includes("@tz.string.allocate_latin1("), "the form changes the IR");
+    const compactServer = startServer([strings], compact);
+    await ready(compactServer, strings, compact);
+    const requested = (options, name) => {
+      const before = status(strings, compact);
+      const result = run(build(name), options);
+      const after = status(strings, compact);
+      return { result, served: after.served - before.served, refused: refusalsSince(before, after) };
+    };
+    const served = requested(compact, "strings-served.ll");
+    assert.equal(served.served, 1, "the server that has the form ran the request");
+    assert.deepEqual(served.result, coldCompact);
+    assert.equal(readFileSync(join(out, "strings-served.ll"), "utf8"), compactIr, "and made the IR of a cold build with that form");
+    const other = requested({}, "strings-refused.ll");
+    assert.equal(other.served, 0, "a client with the default form is not served by it");
+    assert.deepEqual(other.refused, { env: 1 });
+    assert.deepEqual(other.result, coldUtf16);
+    assert.equal(readFileSync(join(out, "strings-refused.ll"), "utf8"), utf16Ir, "and gets its own build");
+    await stop(compactServer, strings, compact);
+
+    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports, the form of the strings (TSUZURI_STRINGS) and usage errors passed");
   }
 } finally {
   for (const child of servers) child.kill("SIGKILL");

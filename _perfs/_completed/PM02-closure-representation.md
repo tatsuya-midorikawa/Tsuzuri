@@ -794,7 +794,7 @@ for name in &descriptors {
 - 決定: `%tz.closure = type { ptr, ptr }`（欄 0: 静的記述子へのポインター、欄 1: 環境）とし、`%tz.closure.desc = type { ptr, ptr, ptr }`（コード、clone、drop）を `(関数, 捕捉数)` ごとの `internal constant` にする。環境の表現（null・immediate のビット列・ヒープ・スタック）は変えず、環境にヘッダーを足さない。
 - 理由: (1) 2 ポインターで immediate capture を保てる形はこれだけである。immediate の環境の欄はビット列で、native の `i64`・`f64` と wasm32 の `i32`・`f32` はポインターの全ビットを使うため、ヘッダーを持つ環境と区別するビットが残らない。コードポインターにタグを付ける案は WASM の関数ポインターが table の添字なので成り立たず、型から決める案は関数値の型が捕捉の形を含まないので成り立たない。immediate capture をやめる案は `closure_capture`・`closure_churn` の環境の確保を戻す。(2) 環境の配置、`environment_type` の添字、`@tz.apply.*`・`@tz.env.*` の本体が変わらず、変更は組み立て・5 か所の読み出し・ランタイムの 2 関数に閉じる。(3) ヒープ環境が 8 bytes 増えず、スタック関数値へのヘッダーの書き込みも要らない。代償は、未知の関数値の呼び出しごとに記述子の読み込みが 1 回増えること（C++ の仮想呼び出しや Rust の `dyn Fn` と同じ形）。記述子が定数と分かる場合は LLVM が読み込みを畳み込む見込みで、生成コードの確認と計測で確かめる。
 - 起票時の案との関係: 起票時の既定案「静的な記述子へのポインター 1 個（clone／drop を直接 2 個置く案より小さい）」の中身は保ち、置き場所を環境の先頭から関数値の欄 0 へ移す。「ヘッダーを持たないことをコードポインター側の情報で区別する」という起票時の考えは、コードの欄を記述子にすることで実現する。
-- 状態: 承認済み・実装済み（G-inline に通った。native は adapter と lambda の worker に `alwaysinline` を付ける。24 bytes の代替案は使わなかった。「実装と検証」）
+- 状態: 承認済み・実装済み（G-inline に通った。native は `-O1`〜`-O3` で adapter と、adapter 以外の呼び出しが 1 か所以下の lambda の worker に `alwaysinline` を付ける。24 bytes の代替案は使わなかった。「実装と検証」「コードレビュー後の修正」）
 
 ### D2: 記述子の中身
 
@@ -840,7 +840,7 @@ for name in &descriptors {
 
 ## 実装と検証（2026-10-18）
 
-ブランチ `perf/p4-PM02`（基準 `a2313d19` = main `9dd0fbbc` + 第 4 フェーズの計測の足場）。統合ブランチ `perf/phase4-compiler-performance`（PR07・PR08 の merge を含む `acb5caa9`）を取り込んだ（merge `3738e375`、衝突なし）。
+ブランチ `perf/p4-PM02`（基準 `a2313d19` = main `9dd0fbbc` + 第 4 フェーズの計測の足場）。統合ブランチ `perf/phase4-compiler-performance`（PR07・PR08 の merge を含む `acb5caa9`）を取り込んだ（merge `3738e375`、衝突なし）。コードレビューの後に、PR07・PR08 の修正（`a556f5e5`）、PB06 の修正（`d66f41da`）、PM03 の merge（`4727c015`）を取り込んだ（いずれも衝突なし）。
 Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に入れて実装、P2-d（`Maybe<関数値>` の null 記述子の niche）を実装、P2-a（`!invariant.load`）は測って取り下げ、P2-c（E1010 の見積もり・`stack_size` を 16 にする案）は合意の上で取り下げた。
 
 ### コミット
@@ -858,6 +858,10 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 | WP8 | `d97f9844` | `curried_mixed_kinds`（4 種類の関数値）、`tests/debugger_static.mjs`（新規）、`tests/debugger.mjs` の `Descriptive` |
 | WP9 | `e787499d` | P2-d: `Niche::NullDescriptor`、DWARF の `$niche` を pointer 幅に、`curried_optional` |
 | WP10 | `d84a462c` ほか | 文書と測定の記録（docs/architecture.md・language.md・README.md・GUIDE.md・言語リファレンス 3 ページ・docs/benchmarks.md の PM02 の欄）。このチケットの完了（`_perfs/_completed` へ移動） |
+| レビュー 1 | `edc8ccca` | lambda の記述子の表の説明、`ffi_extensions` の関数値なしの検査の強化、`tests/debugger_static.mjs` を README と docs/architecture.md の検証の一覧へ |
+| レビュー 2 | `b4e1eeee` | `alwaysinline` の方針: worker は adapter 以外の呼び出しが 1 か所以下のときだけ（`limit_worker_inlining`）、native の `-O0`・`-Os`・`-Oz` では adapter と worker から外す（`without_closure_inlining`）。テスト 5 本 |
+| レビュー 3 | `8f0a5a43` | 文書と数値（言語リファレンスの option.md・webassembly.md、docs/benchmarks.md・architecture.md・language.md、README.md、このチケット）、`tests/size.mjs` の IR の検査 |
+| レビュー 4 | `d9404194`・`7da3d595` | このチケットへの merge と検証の記録。`usage.md`・`architecture.md` の hello と parse の大きさ |
 
 ### 決定事項の結果
 
@@ -868,7 +872,7 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 | D5 / P2-b | 変更して Phase 1 に入れた。付けないと `closure_churn` が +28.7%（試作）で、付けると機械語が基準と同一 |
 | D7 | `layout_bound` の上限・下限、DWARF、LLDB を変えた。`check.rs` の見積もりと `llvm_frame.rs` の `stack_size` は 32 のまま（P2-c を取り下げ。PM01 D4 の前例どおり、見積もりを下げると受理するプログラムが変わるため） |
 | D8 / P2-a | 普通の `load` のまま。`!invariant.load` は apps・control・examples・fixtures の `-O3` の object で機械語が変わらないので入れない |
-| D9 inline の品質 | native の `@tz.apply.*` と `$lambda` の worker（`@tz.fn.` のものだけ。`-g -O0` と `@tz.specialized.*` を除く）に `alwaysinline`。WebAssembly には付けない（残った adapter が worker の複製を持って +30〜50%） |
+| D9 inline の品質 | native の `-O1`〜`-O3` で、`@tz.apply.*` と、adapter 以外の呼び出しが 1 か所以下の `$lambda` の worker（`@tz.fn.` のものだけ。`-g -O0` と `@tz.specialized.*` を除く）に `alwaysinline`。native の `-O0`・`-Os`・`-Oz` と WebAssembly には付けない（WebAssembly は、残った adapter が worker の複製を持って +30〜50%）。「コードレビュー後の修正」 |
 | P2-d | 実装。`Maybe<関数値>`・`Maybe<Task>` はタグなしで 16 bytes（wasm32 は 8）。null の記述子が `None` で、記述子は静的データなので WebAssembly でも使う |
 
 ### ゲートと測定（要点。表は docs/benchmarks.md の「PM02」）
@@ -877,7 +881,7 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 - **M1 大きさ**: 関数値 32 → 16（wasm32 16 → 8）、関数値 2 つの record 64 → 32、`Maybe<fn>` 40 → 16（wasm32 20 → 8）、`Result<fn, string>` 40 → 24。
 - **M2・M3 確保**: `cpp/task_parallel` の確保量 1,024 → 768 bytes（回数は 18 のまま）、`apps/closure_pipeline` の確保量 16,000,192 → 16,000,128 bytes。それ以外の種目は同じ。
 - **M4 時間**: 停止条件 7 の 4 種目（`closure_capture` 1.000、`closure_churn` 0.999、`task_sequential` 1.003、`task_parallel` の CPU 時間 1.001）はどれも広がりの内。`apps/closure_pipeline` は +1.7%（未知の関数値の呼び出しごとに記述子から `code` を読む 1 回の load）。機械語が変わった関数は control 1、cpp 3、apps 1 で、ほかは同一。測定中の load average は 34〜103 で、`task_parallel` の実時間は判断できない。
-- **代償（既知）**: `-Os`・`-Oz` の小さなプログラムは大きくなる（native の `-Oz` の hello +30%、wasm32 の `-Oz` の hello +7.8%）。wasm32 の tasks の fixture は `-O3` で +3.6%。
+- **代償（既知）**: `-Os`・`-Oz` の小さなプログラムは大きくなる（属性を外したあとで、native の `-Oz` の hello +21%、`-Os` の hello +15%、wasm32 の `-Oz` の hello +7.8%）。wasm32 の tasks の fixture は `-O3` で +3.6%。
 
 ### 検証
 
@@ -893,11 +897,28 @@ Phase 1（D1〜D8）と Phase 2 のすべてを扱った。P2-b は Phase 1 に�
 
 - **LLDB の実行つきの検査は走らせられていない**: この環境の `lldb` は基準のコンパイラでも `run` で固まる。formatter は、型の形と判定（`tests/debugger_static.mjs`、プロセスなし）と DWARF（`tests/debug_info.rs`）で確かめ、`tests/debugger.mjs` の `Descriptive`（ブレークポイントは 23 行目。静的に解決を確認）は未実行。静的に読み込んだ実行ファイルでは、`<fn …>` の名前の解決（chained fixups が残る）までは確かめられない。
 - **Windows の natvis**: `Maybe<*>` の定義は `$tag` を読むので、タグのない `Maybe<関数値>` は既定の表示になる（`Maybe<[T]>`・`Maybe<ref T>` と同じ）。未実機。
-- **`-O0` の大きさ**: 静的記述子はアダプタごとに出し、使われなくても `-O0` の object に残る（hello の object +4.1%、実行ファイルは +0.1%）。使われる `(関数, 捕捉数)` の記述子だけを出す案（`closure_descriptor` が参照を数え、最後に出す）は未実施。
-- **サイズ最適化**: `-Os`・`-Oz` の小さなプログラムの text が大きくなる。水準ごとに adapter と worker の属性を替える（ドライバーが外す）案は未実施。
+- **`-O0` の大きさ**: 静的記述子はアダプタごとに出し、使われなくても `-O0` の object に残る（hello の object +2.9%、実行ファイルは +0.3%）。使われる `(関数, 捕捉数)` の記述子だけを出す案（`closure_descriptor` が参照を数え、最後に出す）は未実施。
+- **サイズ最適化**: `-Os`・`-Oz` の小さなプログラムの text が大きくなる（native の `__text` が `-Oz` で hello +21%・functional +13%・io +2%・fixtures +1.1〜3.8%、`-Os` で hello +15%・functional +14%・io −1%・fixtures +1.5〜3.7%。wasm32 の `.wasm` は `-Oz` で hello +7.8%・functional +9.1%・io +5.3%）。原因は、記述子が adapter を参照し続けるので、既知の呼び出しを adapter ごと畳めず、adapter・worker・環境の clone／drop が別の関数として残ること（hello の `-Oz` の object で確認）。水準ごとに属性を替える案は実装した（native の `-O0`・`-Os`・`-Oz` で外す）が、残る増えを消す案は未実施。言語リファレンスの `option.md` に数値を書いた。
 - **x86-64 Linux・Windows の実機**は未検証。x86-64 は IR を `x86_64-unknown-linux-gnu` の `.text` にした代理の測定だけ。
 - **静かな機械での再測定**は未実施（`task_parallel` の実時間）。
 - `closure_pipeline` の +1.7% は、未知の関数値の呼び出しの 1 load の分と読める。`!invariant.load` では消えなかった（要素ごとに記述子が変わるため）。
+
+
+### コードレビュー後の修正（2026-10-18）
+
+独立したレビューが、設計の欠陥はないとしたうえで次を指摘した。いずれも直した（commit は「コミット」の表）。
+
+1. **`alwaysinline` が無条件**（中）。IR が `-O0`〜`-Oz` で同じなので `-Os`・`-Oz` も inline を強制し、捕捉のないラムダを多くの場所から呼ぶと、`@tz.fn.$lambda.N` が名前で直接呼ばれ、`-O0` でも本体が呼び出しの数だけ複製される。
+   - 方針: (a) `limit_worker_inlining`（`emit_program_in` の最後）が、adapter 以外の呼び出し（再帰を含む）が 2 か所以上の `$lambda` の worker から属性を外す。adapter は本体を持たないので付けたまま。本体の大きさで切る案は、150 行の worker を 1 か所だけで使う hello が +17% になるので採らなかった。(b) ドライバーが native の `-O0`・`-Os`・`-Oz` で、`@tz.apply.*` と `$lambda` の worker から属性を外す（`without_closure_inlining`。ヘッダーと GPU カーネルは除く）。IR が水準で変わるのは native のこの属性だけ。
+   - 証拠: 40 ステップのラムダ（本体は引数での除算）を 24 か所から呼ぶと、native の `__text` は `-O0` が 9,372 → 295,452（無条件）→ 9,356（この方針）、`-O3`・`-Oz` が 3,032 → 59,144 → 3,032。1 か所は `-O3` で 2,696／2,692／2,692、`-O0` は 8,808／17,220／8,792（無条件では 1 か所でも `-O0` が 2 倍）。捕捉のあるラムダは既知の呼び出しが `@tz.specialized.*` を呼ぶので影響を受けない。関数値を配列に入れて呼ぶ probe は `-O1`〜`-Oz` で基準と ±12 bytes。
+   - G-inline の再測定: `-O3` の機械語は、hello・functional・currying・io・control・apps・fixtures 4 本・probe 2 つの 12 の object で、無条件の版と全関数が同一（hello +3.1%・currying +3.1%・functional +0.9%・io −2.6%・tasks の fixture +1.0%、`closures` の probe は 8 bytes のまま）。`control` を基準と交互に 5 trial 測った最良の標本どうしの比は `closure_capture` 0.978、`closure_churn` 0.990（ほかの種目も 0.98〜1.00 で、広がりの内）。`-O1`・`-O2` は hello −12.7%・+2.1%、functional −13.1%・+3.6%、io −5.3%・−3.6%（基準比）。
+   - 属性を外した `-Os`・`-Oz`（`__text`、基準比。括弧は無条件だったとき）: `-Oz` で hello +21.0%（+25.2%）・functional +13.4%（+16.1%）・io +2.2%（+3.7%）・tasks の fixture +3.8%（+2.2%）、`-Os` で hello +15.3%（+24.1%）・functional +14.5%（+20.9%）・io −1.0%（+3.5%）・tasks の fixture +3.7%（+2.7%）。`-O0` は基準以下（測った 20 のうち、ほとんどが −1〜−5%）。adapter だけに付ける案も測ったが、`-Oz` で hello は縮む（+17%）一方 io が +19% になり、一貫した勝ちがなかった。残る増えは言語リファレンスの `option.md` と docs/benchmarks.md に書いた。
+   - テスト: `tests/closure_representation.rs` に 3 本（`a_lambda_that_several_calls_name_is_not_forced_inline`、`closures_are_forced_inline_at_the_speed_levels_of_a_native_build_only`、`the_object_of_a_lambda_called_from_many_places_grows_with_the_calls_only`。方針を外すと 3 本とも失敗することを確かめた）、`src/llvm.rs` の単体テスト 2 本、`tests/size.mjs` の IR の検査（`-O1`・`-O2` は `-O3` と同じ、`-O0`・`-Os`・`-Oz` は属性を外しただけ、wasm32 は全水準で同じ）。
+2. **言語リファレンスなどの古い数値**（低〜中）。`webassembly.md` の hello／io／functional の `-O3`・`-Oz`（6,833／12,956／10,251、3,905／6,878／5,278）と `benchmarks/size/parse`、`option.md` の hello の `--strip`（33,896 → 33,784）と wasm の hello の数値を、いまのコンパイラの測定（6,860／13,012／10,390、4,208／7,244／5,758、parse 16,762、`--strip` は 33,960 → 33,784、hello の wasm `-Oz` 4,208・`-O3` 6,860）にした。docs/benchmarks.md の PM05・PM08 の節は、その時点の記録なので変えていない。
+3. **「プログラムに 1 つだけある静的な表」**（低）: `lambda-expressions.md` を「関数と捕捉の数ごとに 1 つ」にした。
+4. **テスト**（低）: `tests/ffi_extensions.rs` の `callbacks_lower_to_internal_c_wrappers` が `@tz.closure.` の記号と `insertvalue %tz.closure` も禁じる。`tests/debugger_static.mjs` を README の検証の一覧と docs/architecture.md の検証の文に足した。
+
+**レビュー後の検証**: `8f0a5a43`（`d66f41da` を取り込んだ木）で `cargo test --locked --no-fail-fast` を実行した（105 の test binary と doc-test で 1,561 件が通った。`--lib` の `server::serve_tests` の 14 件は、TMPDIR が長いと Unix ドメインソケットの `SUN_LEN` を超えて失敗し、短い TMPDIR では 27 件が通る）。fmt・clippy（1.99.0）、Windows 2 target の型検査、`node scripts/check-docs.mjs`（`option.md`・`webassembly.md`・`lambda-expressions.md`。97 リンク、15 例）も通った。PM03 の merge `4727c015` の上では、`closure_representation`（既定と `TSUZURI_STRINGS=compact` の両方）・`debug_info`・`call_specialization`・`ffi_extensions`・`lto`・`--lib llvm::`・`--bin tsuzuri` と、node の `size`（19 節）・`primitives`・`tasks`・`control`・`computations`・`e2e`・`debug_info`・`debugger_static`・`llvm_handoff`・`prebuilt_runtime`・`local_recursion_fuzz`・`pgo`（16 節）を実行し、すべて通った。この環境では `lldb` の `run` が固まるので、formatter は静的な検査だけで確かめた。
 
 ### 他チケットとの接点
 

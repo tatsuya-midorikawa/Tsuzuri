@@ -1,0 +1,14 @@
+def words :: i64 -> Vec<string>
+fn words count =
+    let mut output: Vec<string> = Vec.with_capacity count
+    for index in 0 .. (count - 1) do output = Vec.push output ("word-" + to_string index)
+    output
+
+def total :: ref [string] -> i64
+fn total items =
+    let mut sum = 0
+    for item in items do sum = sum + item.length
+    sum
+
+let all = Vec.to_array (words 200000)
+total (ref all)
