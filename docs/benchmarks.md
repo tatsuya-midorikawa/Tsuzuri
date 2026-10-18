@@ -7422,7 +7422,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 ### PM03 コンパクト文字列
 
 <!-- phase4:PM03 -->
-実装の記録（WP1〜WP11）は、実装の進行に合わせてこの region に足します。ticket は [PM03](../_perfs/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
+実装の記録は WP1〜WP11 の順に、この region に足しました（完了）。ticket は [PM03](../_perfs/_completed/PM03-compact-strings.md)、既定の判断の基準は同 ticket の D11 です。
 
 #### baseline（PM03 の前。WP1）
 
@@ -7528,8 +7528,8 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
   | 条件 | 結果 |
   | --- | --- |
-  | `utf16` の IR が baseline と byte 同一 | 満たす（examples・fixtures・benchmarks の 115 project × 5 variants = 575 build で、同一 530 + 同じ失敗 45）。3 project と hello の native の実行ファイルも cmp で一致 |
-  | 既存の文字列の suite が両方の形式で通る | 満たす（WP11 の最終の実行に記録） |
+  | `utf16` の IR が baseline と byte 同一 | 満たす。WP9 の時点は baseline（`9dd0fbbc`）と、examples・fixtures・benchmarks の 115 project × 5 variants = 575 build（同一 530 + 同じ失敗 45）。統合後（PR07・PR08・PB06・PM02 を merge した `516b8780`）は、PM03 を含まない統合ブランチのコンパイラ（`37030b6b`）と 116 project × 5 variants = 580 build（同一 535 + 同じ失敗 45）。3 project と hello の native の実行ファイルも cmp で一致 |
+  | 既存の文字列の suite が両方の形式で通る | 満たす（WP11。統合後の tree で、`cargo test --locked --no-fail-fast` は `utf16` が 1564 件成功・0 失敗。`TSUZURI_STRINGS=compact` は、UTF-16 の形の IR を固定していた 4 本の試験を形式の明示に直した後に全件成功。node の suite は `compact` で 35 本（native／WASM × `-O0`／`-O3`）、`utf16` で文字列に関わる 14 本が成功。`bindgen` は PATH の先頭が Homebrew の clang 23 だと golden が違うので、Apple clang で両形式の成功を確かめた。live の LLDB の `tests/debugger.mjs` はこの機械で baseline でも戻らないので未実施で、`tests/lldb_strings.py` が formatter を固定する） |
   | M1: 確保量が下がる | 満たす（cpp の 5 種目が −30〜−50%、apps の string の 3 種目が −24〜−39%、calls は同じ） |
   | M2: `ascii_words`・`latin1_csv` の RSS が下がる | 満たす（−28%・−30%）。`cjk_lines` は `-O3` で +17% だが、上のとおり PX01 の判定は `差なし` で、原因は malloc の返却の時機 |
   | M3: 時間に `悪化` が続かない | cpp・utf・apps の時間は満たす。3 project と hello の build 側（M4）に `悪化` が続く |

@@ -8,7 +8,7 @@
 | 規模 | XL |
 | 依存 | PX01, PR05 |
 | 関連 | A08, D02, E05, E13 |
-| 状態 | doing |
+| 状態 | done（Phase 1・Phase 2。`compact` は opt-in で、既定は `utf16` のまま。「実装と検証」） |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`）。2026-10-17 に HEAD 9dd0fbbc で再検討（「着手時の再検討」） |
 | 承認 | 2026-10-17 の全フェーズ実装依頼で、D1（`%tz.string` の内部表現。印は bit 62 に改訂）・D2〜D10 の改訂と新設の D11〜D14 を含む全フェーズ（Phase 1・Phase 2）を承認済み。測定で効果を確認できない既定の切り替えは行わない（D11） |
 | 手本にする既存実装 | 内容で形式を選ぶ生成: `src/runtime/string.ll` の `@tz.string.from_utf8` の `ascii_only` 分岐。単位の幅による読み分け: `src/llvm_hash.rs` の `hash_primitive`（`bits` が 16 か 8）。runtime 関数を抜き出す試験: `tests/strings.mjs` の guard harness（`runtimeGuards`）。確保の計数と `live == 0`: `tests/strings_runtime.c`、`tests/strings.mjs` の host の `tracked_alloc` |
@@ -21,8 +21,8 @@
 ASCII 中心のテキストの文字列バッファを半分にする。JVM の Compact Strings、V8 の one-byte string と同じ方式である。
 比較・連結・変換は Latin-1 同士なら読む byte 数が半分になり、速くなる見込みがある（計測で確かめるまで主張しない）。
 
-Phase 1（表現と、runtime・生成の全操作のスカラー実装）だけを実装する。Phase 2（PR05 の 128-bit ベクトル版に Latin-1 の kernel を足す）は
-人間が求めた場合だけ着手する。
+Phase 1（表現と、runtime・生成の全操作のスカラー実装）と Phase 2（PR05 の 128-bit ベクトル版に Latin-1 の kernel を足す）を、2026-10-17 の依頼で実装した
+（結果は末尾の「実装と検証」。起票時は Phase 2 を人間が求めた場合だけ着手するとしていた）。
 
 ## 着手時の再検討（2026-10-17）
 
@@ -747,13 +747,14 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
 
 ## 受け入れ条件
 
-- [ ] D1 が承認されている。
-- [ ] 消費側だけの段（手順 4・5）で、既存の全 suite の出力が HEAD と同じだった。
-- [ ] `tests/compact_strings.mjs` が native/WASM × `-O0`/`-O3` で成功し、`live == 0`、WASM の import が空。基準コンパイラとの差分も成功。
-- [ ] 「生成コードの確認」の期待がすべて成り立ち、IR が決定的。
-- [ ] 公開 ABI・`src/abi.rs`・E13 の表が変わっていない。
-- [ ] M1〜M4 の before／after を PX01 形式で記録し、`report` の表を報告した。改善は計測したものだけを主張している。
-- [ ] 「ドキュメント」の更新を終え、GUIDE §10 の完了の定義を満たす。
+- [x] D1 が承認されている。（承認済み。bit 62 に改訂）
+- [x] 消費側だけの段（手順 4・5）で、既存の全 suite の出力が HEAD と同じだった。（WP4 の時点で `TSUZURI_STRINGS=compact` の node の suite が成功した。最終の実行は「実装と検証」の「検証」）
+- [x] `tests/compact_strings.mjs` が native/WASM × `-O0`/`-O3` で成功し、`live == 0`、WASM の import が空。基準コンパイラとの差分も成功。（simd128 の wasm32 も含む 14 build が一致）
+- [x] 「生成コードの確認」の期待がすべて成り立ち、IR が決定的。（リテラルの形・`allocate_latin1` の定義が 1 つ・決定性は成り立つ。`@memcpy`／`llvm.memcpy` の行は `utf16` と同じ 3 行（PM05 の heap の `memory.copy` の intrinsic）で、
+  ticket の「0」は PM05 より前の記述なので、「compact が増やさない」と読み替えた。`String.find` の loop は `opt -O3` で形式の分岐が外へ出る）
+- [x] 公開 ABI・`src/abi.rs`・E13 の表が変わっていない。（`src/abi.rs` は未変更。`src/llvm_abi.rs` は compact のときだけ `to_utf16` を呼ぶ 8 行）
+- [x] M1〜M4 の before／after を PX01 形式で記録し、`report` の表を報告した。改善は計測したものだけを主張している。（`docs/benchmarks.md` の PM03 の region）
+- [x] 「ドキュメント」の更新を終え、GUIDE §10 の完了の定義を満たす。（`docs/language.md`・`docs/architecture.md`・`README.md`・言語リファレンス 12 ページ・`_features/GUIDE.md`・`docs/benchmarks.md`）
 
 ## 落とし穴
 
@@ -781,7 +782,7 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
 - UTF-8 を既定の文字列にする変更、rope などの遅延連結、文字列の intern、読み出し時に UTF-16 を狭める正規化。
 - ポインターの下位 bit・別欄・確保の header による印（D1 で不採用）。`utf8string` の表現の変更。
 - 公開 ABI に 1 byte の文字列を足すこと（E13 の新しい記述子を含む）。debugger の pretty printer（G16）。
-- Phase 2 のベクトル化（人間が求めた場合だけ）。
+- Phase 2 のベクトル化（起票時は人間が求めた場合だけとしていた。2026-10-17 の依頼で実装した。「実装と検証」）。
 
 ## 決定事項
 
@@ -793,7 +794,7 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
   `[i16u]` から移したバッファ・HEAD の記述子が変換なしに正しい値のままになり、消費側だけを先に変える段階的導入（手順 4・5）ができる。
   ポインターの下位 bit は `[N x i8]` の定数の align 1 と衝突し、`@tz.free` と全 load に復元が要り、LLVM の別名解析を妨げる。別欄は
   文字列とそれを含む全ての値を 16 → 24 bytes にし、確保の header は host の借用入力と定数に付けられない。
-- 状態: 要承認（承認前はどの手順にも着手しない）
+- 状態: 承認済み・実装済み（bit 62 に改訂。「着手時の再検討」の D1。Phase 1・Phase 2 とも）
 
 ### D2: runtime の規約
 
@@ -801,7 +802,7 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
   新しい kernel は `src/runtime/string_latin1.ll`。`@tz.string.allocate` は UTF-16 のまま。
 - 理由: 生成側の呼び出し（`binary`、`clone_value`、builtin の表、console、`Debug.print`、`display_quoted`）が変わらず、変更箇所が runtime に集まる。
   PR05 の本文と選択規則をそのまま使える。`allocate` を保つと guard harness の期待値（`expected * 2n`）が変わらない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（追加層と include 時の改名に改訂。「着手時の再検討」の D2）
 
 ### D3: Latin-1 を作る場所
 
@@ -810,50 +811,173 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
   それ以外（host の入力と結果、`Bool`・`Unit` の Display、非 ASCII を含む `from_utf8`）は UTF-16 を作る。
 - 理由: 追加の走査なしに形式が分かる場所だけで狭め、最も多い ASCII の経路（リテラル、数値、入力の UTF-8、std の分割）を覆う。
   非 ASCII の `from_utf8` は PR05 の計数関数の変更が要るので Phase 2。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂版の D3 に従う。非 ASCII の `from_utf8` は Phase 2 の `utf8_scan`）
 
 ### D4: 正準形を要求しない
 
 - 決定: 0xFF 以下だけの UTF-16 形式も正しい値とする。等価・順序・Hash は内容で決め、形式を比べない。
 - 理由: host の借用入力を複製せずに正準化できない。正準形を前提にした等価の近道（形式が違えば不等）は誤りになる。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし）
 
 ### D5: 混在の扱い
 
 - 決定: 混在の比較は確保せずに byte を `zext` して比べる。UTF-16 と Latin-1 の連結は UTF-16。索引は形式の分岐と phi で、loop の外への
   分岐の移動は LLVM に任せる（手で loop を複製しない）。
 - 理由: 混在のために確保すると非 Latin-1 のテキストが遅くなる（G2）。手の loop 複製は std の Tsuzuri コードでは不可能。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（混在の `equal`／`compare` は byte を広げて比べる scalar と 128-bit vector の kernel。形式の分岐は LLVM に任せ、手で loop を複製していない）
 
 ### D6: `String.from_code_units` と `String.to_code_units`
 
 - 決定: `from_code_units` は全単位が 0xFF 以下なら Latin-1 に狭め、元の配列を解放する。`to_code_units` は Latin-1 を UTF-16 に広げる。
 - 理由: std の `slice`・`split`・`join`・`trim`・`replace`・`repeat` は `Vec<i16u>` を作って `from_code_units` する。狭めなければ CSV の分割の
   結果が全て UTF-16 になり G1 に届かない。走査と1 回の確保が増える時間は M3 で計測する。`to_code_units` の結果の型は `[i16u]` なので広げるほかない。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂版。`from_units` は走査してその場で狭め `realloc` で縮める。`to_code_units` は広げた新しい buffer を作る。`slice`・`join` は別の決定 D15）
 
 ### D7: 公開 ABI と E13
 
 - 決定: 公開 ABI は UTF-16 のまま。export の `string` の結果は `to_utf16`、型付き import の `ref string` の引数は `borrow_utf16` で変換する。
   host の入力と結果は UTF-16 形式のまま使う。E13 に 1 byte の記述子を足さない。
 - 理由: C・JavaScript の利用者と E13 の生成物を壊さない。変換の確保は Latin-1 の値が境界を越えるときだけで、文書に記す。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし。`tests/compact_strings.rs` の `the_host_boundary_stays_utf16` と、`tests/host_imports.mjs`・`host_bindings.mjs` を両形式で通した）
 
 ### D8: `Bool`・`Unit` の定数
 
 - 決定: `emit_display` と `emit_parse` の `[4 x i16]`・`[5 x i16]`・`[2 x i16]` は UTF-16 のままにする。
 - 理由: `src/llvm.rs` の既存の IR テストがこの定数を検査している。値は小さく、正準形を要求しない（D4）ので正しい。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（変更なし。書式指定の定数も UTF-16 のまま）
 
 ### D9: DWARF
 
 - 決定: `src/llvm_debug.rs` の `string` の記述は変えない。Latin-1 の値が debugger で正しく見えないことを docs/architecture.md に書き、G16 に委ねる。
 - 理由: DWARF では印による形式の切り替えを表せず、debugger ごとの pretty printer が要る。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 取り下げ（`src/llvm_debug.rs` は変えず、LLDB の formatter と natvis を印に対応させた。WP6）
 
 ### D10: 計測の workload
 
 - 決定: 最大 RSS は `benchmarks/strings/` の 3 project（ASCII、Latin-1、CJK）を PX01 の process suite で、確保量は既存の cpp 5 種目を
   PX01 の tracked で測る。他言語の対応種目は足さない。
 - 理由: 文字列を持ち続ける workload は既存の種目になく、RSS で差が見えない。比較の種目を足すと C++・Rust・C#・JavaScript の実装が要る。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 実装済み（改訂版。workload は `benchmarks/strings/` の 3 project。測定は docs/benchmarks.md の PM03 の region）
+
+## 実装と検証
+
+2026-10-18 に WP0〜WP11（Phase 1・Phase 2）を完了した。ブランチは `perf/p4-PM03`。`TSUZURI_STRINGS=compact` は opt-in で出荷し、既定は `utf16` のままにした
+（D11 の M4 を満たさないため。「測定と既定の判断」）。`utf16` の IR は、統合ブランチ（PM03 を含まない）と byte 単位で同じである。
+
+### コミット
+
+| WP | commit | 内容 |
+| --- | --- | --- |
+| WP0 | `8cc8359b` | 着手時の再検討（D1 を bit 62 に改訂、D11〜D14 を新設、WP の順序、基準） |
+| WP1 | `1a5256b9` | `benchmarks/strings/{ascii_words,latin1_csv,cjk_lines}` と baseline の記録 |
+| WP2 | `7f6b7927` | `src/llvm_strings.rs`（`StringForm`・`TSUZURI_STRINGS`・`E2000`）、`Instrumentation.strings`、`llvm::emit_with_strings`、キャッシュの鍵、`--help`。`utf16` の IR は変わらない |
+| WP3 | `c105c046` | runtime の層: `string_latin1.ll`・`string_compact.ll`・`display_compact.ll`・`character_compact.ll`・`format_compact.ll`・`integer_compact.ll` と、include 時の改名（`layered`） |
+| WP4 | `bc72443e` | 生成コードが両形式を読み（`Index`・`StringLength`・`for`・`hash`・`Parse`・補間・`to_code_units`・ABI・import・`Frame`）、Latin-1 を作る（リテラル・連結・表示・`from_code_units`・補間） |
+| WP5 | `a5a0c606` | compact の `String.slice`・`String.join`（確保 1 回。`compact_body`）と `tests/compact_strings.rs` |
+| WP6 | `4b148a1b` | LLDB の formatter と natvis、`tests/lldb_strings.py` |
+| WP7 | `e1153f74` | `tests/compact_strings.mjs`（形式の行列）、`tests/compact_strings_raw.mjs`、`tests/compact_strings_modes.mjs`、fixture |
+| WP8 | `07f1bf3f` | Phase 2: `generate_utf.py` の `latin1_v128()` と `string_latin1_v128.ll`、`utf8_scan`／`utf8_to_latin1`、非 ASCII の Latin-1 の `from_utf8`、`utf_simd.mjs`・`strings_simd.c` の拡張 |
+| WP9 | `763bf401` | after の測定と既定の判断を `docs/benchmarks.md` に記録 |
+| — | `38afee53` | 統合ブランチ（PR07・PR08・PB06）の merge |
+| WP10 | `5048c3a0` | 文書（言語リファレンス・`docs/language.md`・`docs/architecture.md`・README・GUIDE）と `tests/server.mjs` の節 11 |
+| — | `053ad410` | 統合ブランチ（PM02）の merge |
+| WP11 | `03184c13` | compact の全体実行で崩れた 4 本の試験を UTF-16 の形に固定 |
+| — | `516b8780` | 統合ブランチ（PR08・PB06 の review fix まで。`ba746981`）の merge |
+| WP11 | この commit | 最終の検証の記録、この節、`docs/benchmarks.md` の最終の判断、`_perfs/_completed/` への移動 |
+
+### 実装したもの
+
+- **表現（D1）**: `%tz.string = { ptr, i64 }` のまま、長さの語の bit 62 が Latin-1 の印（低位 62 bit が byte 数）。UTF-16 は語が単位数（HEAD と同じ）。bit 63 は常に 0 で、PM01 の `Maybe<string>` の
+  niche（長さ −1、`icmp slt i64 len, 0`）と衝突しない。空は語 0。正準形はなく、全単位が 0xFF 以下の UTF-16 の文字列も正しい値で、`==`・順序・`hash` は形式によらない。
+- **形式の選択（D11）**: `TSUZURI_STRINGS=utf16|compact`（空・未設定は `utf16`、ほかは IR を出す命令で `E2000`）。ビルドキャッシュの鍵、`tsuzuri serve` の環境の比較（`TSUZURI_*` は自動で比べる）、`--help`、
+  `llvm::emit_with_strings`。`utf16` のときは runtime の include も生成も変わらない。
+- **runtime（D2）**: 追加層。HEAD の runtime の関数のうち、取り直す 17 個（string 11・display 2・character 2・整数の parse 2）の `define` 行だけを `.utf16` へ改名して残し、層が元の名前を定義し直して語の bit 62 で振り分ける。
+  置き換える 1 個（`from_ascii`）は Latin-1 を作る。整数の parse は、byte を読む複製を `integer.ll` から作る。HEAD の runtime の文書と raw harness は変えていない。
+- **生成（D3・D12）**: 語は `string_length`／`string_count`／`string_is_latin1`／`string_unit`／`string_unit_pointer` だけを通して読む。Latin-1 を作る場所は、リテラル（byte の定数と印のついた語）、Latin-1 同士の連結・`append`・`concat_into`、
+  数・`char` の表示（`from_ascii`）、`display.join`／`quote`、`from_code_units`（その場で狭める）、`slice`・`join`、補間（結果の形式を実行時に決め、確保 1 回）、全 scalar が U+00FF 以下の `from_utf8`。
+  host の入力と結果、`Bool`・`Unit` の定数、書式指定の定数、`main` の引数は UTF-16。raw-word の lint（`tests/compact_strings.rs`）が、印を外さずに語を数として使う箇所を見つける。
+- **host の境界（D7）**: `export` の結果は `to_utf16`、host の import へ渡す `string` は `borrow_utf16`（呼び出しの後に解放）。ABI・`--emit header`・host の binding は変わらない。
+- **Phase 2（D13）**: `string_latin1.ll`（scalar の参照。WASM の既定）と、`generate_utf.py` が書く `string_latin1_v128.ll`（128-bit。native と `--wasm-feature simd128`）。`utf8_scan` と `utf8_to_latin1`、
+  `widen`・`narrow`・`is_latin1_units`・混在の `equal`／`compare`・`to_ascii`・Latin-1 → UTF-8 の vector 版。`cpu.c`・`string_scalar.ll`・`string_v128.ll` は変えていない。
+- **デバッガ（D9 の取り下げ）**: `scripts/lldb/tsuzuri_lldb.py` と `src/runtime/tsuzuri.natvis` が両形式を読む。`src/llvm_debug.rs` の記述は変えていない。
+- **文書の契約（D14）**: `String.to_code_units`／`from_code_units` の「ポインターを移すだけ」は UTF-16 の値だけで、Latin-1 の値は O(n) の変換になることを、`docs/language.md`・`string.md`・`strings.md`・`option.md` に書いた。
+
+### 起票時・「着手時の再検討」との差
+
+1. `utf8_scan` は、UTF-8 が ASCII と U+0080〜U+00FF の scalar だけのとき `{ 単位数, 最大の scalar }` を返し、それ以外（不正な列と U+0100 以上の scalar を含む）は `{ -1, 0 }` を返す
+   （D13 の「最大が 0xFF を超えた時点で打ち切ってよい」と「不正は units = −1」を 1 つにした）。呼び出し側は `-1` のとき `from_utf8.utf16` へ渡すので、不正な入力の trap と診断は変わらない。
+   WP3 の `is_ascii` は、`from_utf8` が `utf8_scan` を 1 回だけ呼ぶ形にしたので WP8 で削除した。
+2. std の `slice`・`join` の退行（D6 が別の決定として残したもの）は、native の builtin ではなく、compact のときだけ std の本体を runtime の呼び出しに置き換える方式にした（D15）。`split`・`trim` は `slice` を通る。
+3. `character_compact.ll`・`format_compact.ll` を足した（WP3 の表は `display_compact.ll`・`integer_compact.ll` まで）。
+4. WP6 の「`TSUZURI_STRINGS=compact node tests/debugger.mjs` が baseline と同じ表示で成功」は、この機械では確かめられない。macOS 27 beta の debugserver で、live の LLDB のセッションの `run` が戻らない
+   （baseline の compiler でも同じ）。代わりに formatter を LLDB なしで読む `tests/lldb_strings.py`（`debugger.mjs` が最初に実行する）で固定した。
+5. 既定は `utf16` のまま（D11。「測定と既定の判断」）。
+6. `tests/server.mjs` に節 11（`TSUZURI_STRINGS=compact` の serve と cold の出力の一致）を足した（PB06 の環境の比較との相互作用）。
+7. 統合後の compact の全体実行（`TSUZURI_STRINGS=compact cargo test --locked`）で、UTF-16 の形の IR を固定している 4 本の試験が崩れたので、形式を明示して固定した（`src/llvm.rs` の 2 本は `library_utf16`、`tests/simd.rs` は
+   `emit_with_strings(.., Utf16)`、`tests/compact_strings.rs` の「既定と明示の `utf16` が同じ」は環境が `compact` のとき飛ばす）。`tests/bench.rs` は IR に `report` の語がないことを検査するので、
+   runtime の層の注釈の 1 語を言い換えた。期待値は緩めていない。
+
+### 測定と既定の判断
+
+数値と条件は [docs/benchmarks.md](../../docs/benchmarks.md#pm03-コンパクト文字列) の PM03 の region にある（Apple M1 Max、load average 11〜65 の共有機。時間は参考値で、確保量と命令数は決定的）。
+
+- M1（確保 bytes。calls は同じ）: cpp の 5 種目が −30〜−50%、apps の `tokenize` −24%・`format_join` −39%・`csv_aggregate` −26%。
+- M2（最大 RSS）: `ascii_words` −28%、`latin1_csv` −30%（`-O3`）。`cjk_lines` は `-O3` で +17% だが、確保の列・生存 byte の最大値が baseline と同じで、同じ baseline の実行ファイルも 24 回に 2 回 44.3 MB になる
+  malloc の返却の時機の差である（`--allocator small` では同じ）。判断の根拠にしない。
+- 命令数（`instructions retired`、`-O3`）: `ascii_words` −3%、`latin1_csv` −14%（`-O0` は −24%・`cjk_lines` −22%）。
+- M4（悪化が続く）: runtime の IR が約 61 KB 増え（hello の native の `--emit llvm` +42%）、wasm32 の hello が 6,833 → 7,866 B（+15%）、`--emit object` +8.6%、clang を含む hello のビルド時間が +23%。
+  host へ短い文字列を返す呼び出しは `to_utf16` の確保と widen のぶん 56 → 108 ns（約 2 倍）、1,000 単位の `repeat_text` は 798 → 616 ns。
+- 判断（D11）: M1・M2・M3 は基準を満たすが、M4 を満たさないので、**既定は `utf16` のまま、`compact` は opt-in**。既定にする前に: 使われない kernel と dispatcher を生成しない（`RuntimeSymbols` で層を選ぶ）、
+  host へ返す結果を最初から UTF-16 で作る、Linux・Windows の allocator で `cjk_lines` の RSS を測り直す。
+
+### 決定の状態
+
+| 決定 | 状態 |
+| --- | --- |
+| D1（印は bit 62） | 実装済み。PM01 の niche と衝突しない（`tests/compact_strings.rs` の `the_niche_of_a_maybe_string_is_the_sign_of_the_word_and_a_latin1_word_is_positive`、`tests/fixtures/compact_strings` の `Maybe<string>`・`Maybe<Maybe<string>>` の probe を両形式・native／WASM で比べる） |
+| D2〜D10 | 上の各 D の「状態」のとおり（D9 は取り下げ） |
+| D11（`TSUZURI_STRINGS`・既定の判断） | 実装済み。既定は `utf16`、`compact` は opt-in |
+| D12（語の分解は helper だけ・raw-word lint） | 実装済み（lint が 0 件。lint 自身は `the_lint_finds_a_word_that_is_used_as_a_count` で、見つけるべき使い方を見つけることを確かめている） |
+| D13（Phase 2 の vector と `utf8_scan`） | 実装済み（上の差 1） |
+| D14（文書の契約） | 実装済み |
+| D15（新: compact の `String.slice`・`String.join` は runtime の 1 回の確保） | 実装済み。WP4 の時点で apps の確保の calls が +43〜50% 退行していたのを、この置き換えで 0% にした |
+
+### 検証
+
+最終の実行は、統合ブランチ（`ba746981`）を merge した tree（`516b8780`）で、Apple M1 Max・load average 20〜40 の共有機（Node 24.21.0、Apple clang 21.0.0。`debug_info`・`wasm_simd`・raw harness は
+Homebrew の LLVM を PATH の先頭に置いた）で行った。生データは worktree の `target/perf/PM03/`（Git の外）。
+
+- **`utf16` の IR**: PM03 を含まない統合ブランチのコンパイラ（`37030b6b`。`git archive` からビルド）と byte 単位で同じ。examples・tests/fixtures・benchmarks の 116 project × 5 variants
+  （native `-O0`／`-O3`、wasm32 `-O0`／`-O3`、wasm32 simd128 `-O3`）= 580 build で、同一 535 + 同じ失敗 45（`target/perf/PM03/ir-identity.mjs`）。`ba746981` と `37030b6b` の差は driver と `--emit bitcode` だけ。
+  WP9 の時点は baseline（`9dd0fbbc`）と 575 build（同一 530 + 同じ失敗 45）で、3 project と hello の native の実行ファイルも cmp で一致した。
+- **`cargo test --locked --no-fail-fast`**: `utf16`（既定）が 1564 件成功・0 失敗・1 ignored（25 分 41 秒。`053ad410` に WP11 を足した tree）。`TSUZURI_STRINGS=compact` は 1560 件成功・4 件失敗（UTF-16 の形の IR を固定していた試験。
+  差 7）で、直した後に 4 つの target（lib 376・bench 9・simd 4・compact_strings 9）を compact で再実行して全件成功した。最終の merge の後は `--lib --bins` が 381 + 29 件、`--test lto` が 21 件成功。
+- **GUIDE §3.1 の回帰テスト 4 本**: 各 1 件が成功。`cargo +1.99.0 fmt --all -- --check` と `clippy --all-targets --locked -- -D warnings`（1.99）は警告 0。`sh scripts/check-runtime-includes.sh` は 58 files。
+  `node scripts/check-docs.mjs`（変更した 12 ページ）は 316 links・47 examples・72 native runs で成功。Windows の型検査（`cargo +stable check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`）は警告 0
+  （PATH の先頭に `~/.cargo/bin` が要る。Homebrew の rustc が先だと `core` が見つからない）。
+- **node の suite**（`tests/compact_strings_modes.mjs` の full の一覧から、この機械で動かない live の LLDB の `debugger` を除いたもの）: `compact` で 35 本が成功した（compact_strings_raw・compact_strings・strings・display_parse・
+  integer_format・primitives・size・json・host_imports・host_bindings・io・e2e・examples・bindings・features・os・script・repl・targets・packages・wasm_memory・wasm64・ffi_extensions・bindings_threads・docgen・user_drop・
+  trap_boundary・trap_return・trap_return_sync・tasks・async・computations・control・debug_info・wasm_simd）。`bindgen` は PATH の先頭が Homebrew の clang 23 だと golden が違い（`utf16` でも同じ）、Apple clang では `utf16`・`compact` とも成功する。
+  `utf16` では文字列に関わる 14 本（compact_strings_raw・compact_strings・strings・display_parse・integer_format・primitives・size・json・host_imports・host_bindings・io・e2e・examples・bindings）が成功した。
+- **Phase 2 の harness と基準との差分**: `node tests/utf_simd.mjs`（full。5 分）は、native の CPU baseline／auto と WASM の scalar／simd128 × `-O0`／`-O3` の 6 構成で成功し、`generate_utf.py` が書く 2 つの生成物がコミットと byte 単位で一致する。
+  `node tests/compact_strings.mjs`（`TSUZURI_BASELINE` に baseline と統合ブランチの先頭を 1 つずつ）は 12 probe × 900 組・14 build がすべて一致し、確保が残らない。`tests/server.mjs`（節 11 を含む）、
+  `tests/pgo.mjs`（16 節）、`python3 tests/lldb_strings.py`（11 の読み取り・長い文字列・空・不正な語 3）が成功。
+- **生成コードの確認**: compact の IR で `"hello"` と `"h\u00e9llo"` は `[5 x i8]` の定数（各 1）、`"h\u3042llo"` は `[5 x i16]` のまま、`utf16` の IR にはバイトの定数がない。`@tz.string.allocate_latin1` の定義は 1 つで、
+  同じコマンドの 2 回の IR は `cmp` で同一。wasm32 `-O3` の `@memcpy`／`llvm.memcpy` を含む行は `utf16` と同じ 3 行で、wasm のモジュールの import は空（`tests/compact_strings.mjs` が検査）。
+  `String.find`（引数の形式が実行時に決まる。`to_string` と連結の結果）を `opt -O3` にかけると、形式の判定（`and i64 %word, 4611686018427387904`）は loop の外へ出て、loop は形式の組ごとに 4 つの版
+  （`load i16`／`load i8` の組み合わせ）に分かれ、loop の中に形式の分岐は残らない（D5。合否にしない）。export の関数の引数は host の UTF-16 の語で、長さの上限 2^53 − 1 の検査が印の bit の立った語を trap させるので、Latin-1 の枝は消える。
+- **未実施**: `tests/debugger.mjs` の live の LLDB（この機械では baseline でも `run` が戻らない）、`bindings` の `tsc` と browser の節（`npm ci` と Chrome がない）、Windows・Linux・x86-64（natvis を含む）。
+
+### 既知の制約・未検証
+
+- Windows（natvis を含む）・Linux・x86-64 は、この機械で実行できないので未検証。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けする。
+- live の LLDB のセッションは、この機械では動かない（上の差 4）。formatter は `tests/lldb_strings.py` の読み取りだけで確かめた。
+- `compact` は runtime の IR とビルド時間を増やし、host へ短い文字列を返す呼び出しを遅くする（M4）。文字列の runtime は PB01 の事前ビルドの対象外（module ごとに連結される）なので、
+  層の分（約 61 KB）は毎回のビルドで clang が読む。
+- `replace`・`repeat`・`to_ascii_*`・Json・Regex は `from_code_units` の narrow と `realloc` を払い続ける（`slice`・`join` だけが 1 回の確保）。
+- 混在の連結（UTF-16 と Latin-1）は UTF-16 を作るので、非 Latin-1 の文字列に短い ASCII を足した結果は UTF-16 のまま。
+
+### 次にやること
+
+- 既定を `compact` にする判断は、M4 を直した後に、静かな機械で M3 を取り直して行う（上の前提）。
+- PB05 の parity は `TSUZURI_STRINGS=compact` でも回す（統合後）。
