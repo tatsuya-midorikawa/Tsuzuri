@@ -5,9 +5,13 @@
 //   instance.exports.tz_run(1000n);   // the workload that the program should be tuned for
 //   await writeProfile(instance);     // a new file, DIR/default_wasm_<pid>_<n>.profraw
 //
-// Every call writes a file of its own and never replaces one. Each module has a writer of its own, each worker thread loads a copy
-// of it, and all of them count their files from 0 and share the process id, so a name that is taken is skipped: no profile is
-// lost, and `tsuzuri build --target wasm32 --profile-use DIR` merges them all.
+// A file holds what the module counted since the call before: once it is written, the counters of that instance start from zero
+// again (a write that fails gives them back). Every call writes a file of its own and never replaces one. Each module has a
+// writer of its own, each worker thread loads a copy of it, and all of them count their files from 0 and share the process id, so
+// a name that is taken is skipped. Any number of calls, modules and threads therefore leave files that
+// `tsuzuri build --target wasm32 --profile-use DIR` merges into exactly what was counted. `profileBytes(instance)` only reads: it
+// holds everything counted since the last file and does not start the counters again, so a host that saves it more than once
+// (a browser has no `writeProfile`) must keep the last bytes only, or the earlier counts are merged twice.
 //
 // A WebAssembly module has no profile runtime, so it only counts in its memory. This file turns those counters into an LLVM
 // raw profile (version 10, a 32-bit program), which `tsuzuri build --target wasm32 --profile-use DIR` merges with
@@ -19,22 +23,24 @@ export const defaultDirectory = __TSUZURI_PROFILE_DIRECTORY__;
 const RAW_VERSION = 10n;
 const RECORD_BYTES = 48;
 const HEADER_BYTES = 16 * 8;
+const OUTSIDE = "the profile sections of the module are not inside its memory";
 let written = 0;
 
-/** The bytes of the raw profile that the counters of `instance` hold now. */
-export function profileBytes(instance) {
-  const { exports } = instance;
+/** Where the profile sections of a module are, after checking that they have the layout that this writer reads. */
+function locate(exports) {
+  const { memory } = exports;
+  if (!(memory instanceof WebAssembly.Memory)) throw new Error("the module does not export its memory");
   const address = (name) => {
     const symbol = exports[name];
     if (!(symbol instanceof WebAssembly.Global)) {
       throw new Error(`the module does not export ${name}: build it with tsuzuri build --target wasm32 --profile-generate`);
     }
-    return symbol.value;
+    // An i32 global reads as a signed number, and the sections of a module whose stack is 2 GiB or more are above 2^31.
+    return symbol.value >>> 0;
   };
-  if (!(exports.memory instanceof WebAssembly.Memory)) throw new Error("the module does not export its memory");
-  const memory = new Uint8Array(exports.memory.buffer);
-  const view = new DataView(exports.memory.buffer);
-  const version = view.getBigUint64(address("__llvm_profile_raw_version"), true);
+  const versionAt = address("__llvm_profile_raw_version");
+  if (versionAt + 8 > memory.buffer.byteLength) throw new Error(OUTSIDE);
+  const version = new DataView(memory.buffer).getBigUint64(versionAt, true);
   if ((version & 0xffffffffn) !== RAW_VERSION) {
     throw new Error(`the module counts in raw profile version ${version & 0xffffffffn}; this writer supports version 10 (Clang 21)`);
   }
@@ -43,6 +49,16 @@ export function profileBytes(instance) {
   if ((data[1] - data[0]) % RECORD_BYTES !== 0 || (counters[1] - counters[0]) % 8 !== 0) {
     throw new Error("the profile sections of the module do not have the layout of raw profile version 10 with 32-bit pointers");
   }
+  if ([counters, data, names].some(([start, end]) => end < start || end > memory.buffer.byteLength)) throw new Error(OUTSIDE);
+  return { memory, version, counters, data, names };
+}
+
+/** The bytes of the raw profile that the counters of `instance` hold now. It only reads; `writeProfile` starts the counters again. */
+export function profileBytes(instance) {
+  return copy(locate(instance.exports));
+}
+
+function copy({ memory, version, counters, data, names }) {
   const padding = (8 - ((names[1] - names[0]) % 8)) % 8;
   const bytes = new Uint8Array(HEADER_BYTES + (data[1] - data[0]) + (counters[1] - counters[0]) + (names[1] - names[0]) + padding);
   const header = new DataView(bytes.buffer);
@@ -64,21 +80,33 @@ export function profileBytes(instance) {
     0n, // their names
     2n, // the last kind of value profile
   ].forEach((field, index) => header.setBigUint64(index * 8, field, true));
+  const source = new Uint8Array(memory.buffer);
   let at = HEADER_BYTES;
   for (const [start, end] of [data, counters, names]) {
-    bytes.set(memory.subarray(start, end), at);
+    bytes.set(source.subarray(start, end), at);
     at += end - start;
   }
   return bytes;
 }
 
+/** Adds the counts of a profile that could not be saved back to the counters, which have gone on counting since. */
+function giveBack({ memory, counters, data }, bytes) {
+  const saved = new DataView(bytes.buffer, HEADER_BYTES + (data[1] - data[0]), counters[1] - counters[0]);
+  const view = new DataView(memory.buffer);
+  for (let offset = 0; offset < saved.byteLength; offset += 8) {
+    const at = counters[0] + offset;
+    view.setBigUint64(at, view.getBigUint64(at, true) + saved.getBigUint64(offset, true), true);
+  }
+}
+
 /**
  * Saves the profile of `instance` in `directory` (which is made if it is not there) and returns the path of the file. Node only.
  * The file is created exclusively: a name that exists is skipped for the next number, so that the profile of another module, of
- * a worker thread, or of an earlier process with the same id is never replaced. A write that fails leaves no half of a profile.
+ * a worker thread, or of an earlier process with the same id is never replaced. It holds what the module counted since the call
+ * before, and the counters start from zero again. A write that fails leaves no half of a profile and gives the counts back.
  */
 export async function writeProfile(instance, directory = defaultDirectory) {
-  const bytes = profileBytes(instance);
+  const found = locate(instance.exports);
   const [{ mkdir, open, unlink }, { join }] = await Promise.all([import("node:fs/promises"), import("node:path")]);
   await mkdir(directory, { recursive: true });
   for (;;) {
@@ -90,10 +118,16 @@ export async function writeProfile(instance, directory = defaultDirectory) {
       if (error.code === "EEXIST") continue;
       throw error;
     }
+    // The counts are taken and the counters cleared in one step, so that what the module counts while the file is written, or
+    // in a call that overlaps this one, is neither lost nor in two files.
+    let bytes;
     try {
+      bytes = copy(found);
+      new Uint8Array(found.memory.buffer).fill(0, found.counters[0], found.counters[1]);
       await file.writeFile(bytes);
       await file.close();
     } catch (error) {
+      if (bytes) giveBack(found, bytes);
       await file.close().catch(() => {});
       await unlink(path).catch(() => {});
       throw error;
