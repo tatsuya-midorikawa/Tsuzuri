@@ -340,8 +340,10 @@ pub const MAX_WASM32_MEMORY: u64 = (1 << 32) - 65536;
 pub const MAX_WASM64_MEMORY: u64 = 1 << 34;
 
 /// The LLVM optimization level of a build: `-O0` to `-O3` and the size levels `-Os` and `-Oz`.
-/// None of them enables fast-math or any other change of the language's meaning; the size levels
-/// only change what Clang does with the same IR (`build` and `run` accept them).
+/// None of them enables fast-math or any other change of the language's meaning. The size levels
+/// change what Clang does with the IR, and `-O0`, `-Os` and `-Oz` leave out the one attribute that
+/// forces the inlining of known closures on native targets (`llvm::without_closure_inlining`);
+/// `build` and `run` accept them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptLevel {
     O0,
@@ -3310,6 +3312,17 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
+    // The attribute that forces known closures to inline (PM02) is for `-O1` to `-O3`; the other levels
+    // leave the inlining to the compiler.
+    if options.target == Target::Native
+        && !(options.emit == Emit::Header || options.emit.is_kernel())
+        && !matches!(
+            options.optimization,
+            OptLevel::O1 | OptLevel::O2 | OptLevel::O3
+        )
+    {
+        text = llvm::without_closure_inlining(text);
+    }
     if platform.windows()
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
