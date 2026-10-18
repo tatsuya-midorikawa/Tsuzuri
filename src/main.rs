@@ -176,7 +176,8 @@ Build options:
                          workload, then build again with --profile-use. An object needs
                          -fprofile-generate at its final link. A wasm32 module has no runtime: its host
                          calls writeProfile(instance) of the app.wasm.profile.mjs that the build writes
-                         beside it (Clang 21; no indirect-call profile)
+                         beside it (Clang 21; no indirect-call profile). The counters are not atomic:
+                         Tasks that run in parallel are counted too low
     --profile-use PATH     Native executable or object output, run, and a wasm32 module: optimize with the
                          profile PATH, an indexed .profdata file or a directory of .profraw files that
                          llvm-profdata merges. Build both times with the same Clang and options; a profile
@@ -201,9 +202,9 @@ Toolchain:
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
                          does not run anything
+  Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LLVM_PROFDATA  llvm-profdata that --profile-use runs to merge a directory of .profraw files
                          (default: the one beside Clang or in Clang's toolchain; PATH is not searched)
-  Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
                          'default' or unset leaves it to Clang. Windows targets reject 'lld'.
@@ -4465,6 +4466,7 @@ mod tests {
             "--profile-use PATH",
             "TSUZURI_LLVM_PROFDATA",
             "writeProfile(instance)",
+            "The counters are not atomic",
             "W2001",
         ] {
             assert!(HELP.contains(text), "{text}");

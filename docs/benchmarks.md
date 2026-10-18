@@ -7329,7 +7329,7 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 
 読み取りは次のとおりです（3 つの run が同じ向きで、2 つの Clang で同じです）。
 
-- 速くなる種目は 2 つで、`closure_capture` が約 17%、`closure_churn` が 12〜14% です。遅くなる種目は 4 つで、`tail_mix`・`tail_if_mix`・`tail_builtin_mix` が約 20%、`match_dispatch` が約 63% です。ほかの 10 種目は ±3% で、`array_*` の動きは C・C++・Rust の同じコードも同じ向きに動いたので、host の配置の揺れです。**PGO を使えば速くなる、とは言えません。**
+- 速くなる種目は 2 つで、`closure_capture` が約 17%、`closure_churn` が 12〜14% です。遅くなる種目は 4 つで、`tail_mix`・`tail_if_mix`・`tail_builtin_mix` が約 20%、`match_dispatch` が約 63% です。ほかの 10 種目は 3 つの run で −3.5〜+6.1% の範囲で、`array_*` の動きは C・C++・Rust の同じコードも同じ向きに動いたので、host の配置の揺れです。**PGO を使えば速くなる、とは言えません。**
 - C・C++・Rust にも PGO を掛けると、`closure_churn` は C 0.57、C++ 0.56、Rust 0.40 まで短くなり、Tsuzuri の 0.87 は追いつきません。`tail_*` と `match_dispatch` は、C・C++・Rust が変わらないのに Tsuzuri だけが遅くなります。
 - 原因の観察（Phase 0。IR・asm・remark）: `closure_*` は profile が間接呼び出しの対象を記録し、呼び出しが特殊化されます（Tsuzuri の `tz_closure_capture` の `$lambda.28.1` 50.45%・`$lambda.29.1` 49.55%）。`tail_*` は PGO のビルドで `tz_tail_mix` の呼び出し先の inline の threshold が 75（PGO なしは 250）になり、ループの依存の鎖が 1 段長くなります。`match_dispatch` は PGO なしが `loop-unroll`（実行時の trip count × 8）なのに、PGO は vectorizer の fallback の scalar loop に `branch_weights 119, 119` が付いて unroll されません。
 
@@ -7389,6 +7389,34 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 
 - **数値・数学のランタイム（D6）は PGO の対象にしません。** `Math.sin`・`Math.exp`・`Math.sqrt` を 3,000 万回呼ぶ例を、既定（数学のランタイムは別の prebuilt object）と `--no-cache`（IR のまま埋め込む）で、それぞれ plain と PGO で作り、15 回交互に実行しました（最小／中央値 ms）。既定: 284.9／302.0 → PGO 285.8／309.4。埋め込み: 262.9／288.7 → PGO 266.7／291.3（既定のビルドの profile を埋め込みのビルドに使っても 266.1／276.3）。埋め込みは PGO と無関係に約 8% 速く（呼び出しに inline されるため）、プロファイルは `tz_math_sin_f64`・`tz_math_exp_f64` の分岐を数えても、使った成果物に差が出ません。PGO のビルドだけ埋め込む案は、プロファイルの効果ではない差を混ぜ、コンパイルが約 0.4 秒増えるので取り下げました。C のランタイム（task など）は計装していません。
 - **trap の分岐への `!prof`・`llvm.expect`（D9）は足しません。** `node benchmarks/run-trap-layout.mjs target/release/tsuzuri` は 21 の corpus（`benchmarks/` の 11、`tests/fixtures/control`、`examples/` の 9）の `-O3` の asm で、trap の命令 177 個（arm64 と x86-64 で同じ数）を分類します。arm64 では out of line（直前が無条件の jump か return）132、関数の末尾で条件分岐の直後 9、失敗の経路の連鎖（`free` の後など）14、ループが尽きたときの fall-through（ループの back edge の直後）21、hot path が飛び越える形は 1（`examples/functional` の失敗の経路の中）です。x86-64 は 129・10・16・21・1。`control` と `computations` は全部 out of line です。hot path が trap の block を飛び越す形はなく、重みを足す根拠がありません。
+
+### 並列に動くプログラムのカウンター
+
+計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single`）。4 つの Task が同じ関数の 1 億回のループを回す次のプログラムで、`llvm-profdata show --all-functions --counts` の Task の本体（`tz.apply.$task.2.1`）の回数を、更新の方法を替えて比べました（M1 Max、Apple clang 21.0.0、load average 30〜50 の共有機。`clang` を呼ぶ wrapper が `-fprofile-update=…` を足しました）。
+
+```text
+def rec spin :: i64 -> i64 -> i64 = \n total ->
+    if n == 0 { total }
+    else { spin (n - 1) (total + n % 7) }
+
+let computation = task {
+    let jobs = new [Task<i64>](4, chunk -> task { return spin 100000000 chunk })
+    let! totals = Task.parallel jobs
+    return totals[0] + totals[1] + totals[2] + totals[3]
+}
+Task.run computation
+```
+
+| 更新の方法 | ループの回数（正しくは 400,000,000） | 関数に入った回数（正しくは 4） | 計装したプログラムの実時間（3 回） |
+| --- | ---: | ---: | ---: |
+| `single`（Tsuzuri の既定） | 100,000,000 | 4 | 0.08〜0.13 秒 |
+| `atomic` | 400,000,000 | 4 | 6.09〜6.39 秒（CPU 時間は 22〜24 秒） |
+| `prefer-atomic` | 400,000,000 | 4 | 5.7 秒（1 回） |
+| 計装しない | | | 0.08〜0.12 秒 |
+
+- 更新が失われるのは、Task が同じカウンターを同時に増やすときです。ループのカウンターは、ループの前にレジスタへ読み、後ろで書き戻されます（計装した実行ファイルの逆アセンブルで確認）。4 つのスレッドが 0 から数えて書き戻すので、最後に書いた 1 つの 1 億だけが残ります。関数に入る回数は更新が短い間隔の 1 回で、この例では正確でした。
+- 結果（1199999994）と、プロファイルの形（hash）には影響しません。どちらのプロファイルも、通常の Clang の `--profile-use` が `W2001` なしで受け取り、使った成果物の実行時間は計装しない場合と同じでした（0.09〜0.11 秒）。この例では、更新の方法による差は測れませんでした。
+- 原子的な更新は、ループのカウンターを 4 つのスレッドが同じキャッシュ行へ書き続ける形になり、計装したプログラムは約 60 倍遅くなります。回数を正確にする利益が測れないので、Tsuzuri は原子的な更新を付けません。正確な回数が要る利用者は、`TSUZURI_CLANG` に `-fprofile-update=atomic` を足す wrapper を指定します（[option.md](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。
 
 ### WebAssembly（wasm32）
 
