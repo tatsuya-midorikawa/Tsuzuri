@@ -367,10 +367,12 @@ impl<'a> Parser<'a, '_> {
             "load" => self.load(dst),
             "store" => self.store(),
             "call" => self.call(dst),
-            "tail" | "musttail" | "notail" => {
+            "tail" | "notail" => {
                 self.lex.expect_word("call")?;
                 self.call(dst)
             }
+            // A guaranteed tail call keeps the stack from growing; a plain call would not.
+            "musttail" => bail!("a musttail call"),
             "br" => self.branch(),
             "icmp" => self.icmp(dst),
             "getelementptr" => self.gep(dst),
@@ -1015,19 +1017,20 @@ impl<'a> Parser<'a, '_> {
         Ok(())
     }
 
-    /// Attributes between an argument's type and its value; the extension and the `byval` type.
-    fn argument_attributes(&mut self) -> Res<(Ext, Option<Ty>)> {
+    /// Attributes between an argument's type and its value; the extension, the `byval` type and `sret`.
+    fn argument_attributes(&mut self) -> Res<(Ext, Option<Ty>, bool)> {
         let mut ext = Ext::None;
         let mut byval = None;
+        let mut sret = false;
         loop {
             self.lex.skip_ws();
             let byte = self.lex.peek();
             if !byte.is_ascii_alphabetic() {
-                return Ok((ext, byval));
+                return Ok((ext, byval, sret));
             }
             let word = self.lex.peek_word();
             if (word == "c" && self.lex.peek_at(1) == b'"') || starts_value(word) {
-                return Ok((ext, byval));
+                return Ok((ext, byval, sret));
             }
             self.lex.word();
             match word {
@@ -1038,7 +1041,13 @@ impl<'a> Parser<'a, '_> {
                     byval = Some(self.ty()?);
                     self.lex.expect(b')')?;
                 }
-                "sret" | "elementtype" | "inalloca" | "preallocated" | "byref" => {
+                "sret" => {
+                    sret = true;
+                    self.lex.expect(b'(')?;
+                    self.ty()?;
+                    self.lex.expect(b')')?;
+                }
+                "elementtype" | "inalloca" | "preallocated" | "byref" => {
                     self.lex.expect(b'(')?;
                     self.ty()?;
                     self.lex.expect(b')')?;
@@ -1162,9 +1171,15 @@ impl<'a> Parser<'a, '_> {
                 if ty == Ty::Metadata {
                     bail!("a metadata argument");
                 }
-                let (ext, byval) = self.argument_attributes()?;
+                let (ext, byval, sret) = self.argument_attributes()?;
                 let op = self.operand(ty)?;
-                self.func.call_args.push(CallArg { ty, op, byval, ext });
+                self.func.call_args.push(CallArg {
+                    ty,
+                    op,
+                    byval,
+                    sret,
+                    ext,
+                });
                 if self.lex.eat(b',') {
                     continue;
                 }

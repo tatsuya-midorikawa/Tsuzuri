@@ -142,6 +142,8 @@ pub(crate) struct CallArg {
     pub ty: Ty,
     pub op: Op,
     pub byval: Option<Ty>,
+    /// `sret(T)`: the pointer is where the callee puts its result.
+    pub sret: bool,
     pub ext: Ext,
 }
 

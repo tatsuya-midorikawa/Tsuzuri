@@ -819,13 +819,12 @@ impl<'w, 'a> Lower<'w, 'a> {
         } else {
             (1u128 << bits) - 1
         };
-        let mut seen: Vec<u128> = Vec::new();
+        let mut seen: std::collections::HashSet<u128> = std::collections::HashSet::new();
         for &(case, block) in cases {
             let key = (case as u128) & mask;
-            if seen.contains(&key) {
+            if !seen.insert(key) {
                 continue;
             }
-            seen.push(key);
             let target = target_of(self, block)?;
             switch.set_entry(key, target);
         }
@@ -989,8 +988,18 @@ impl<'w, 'a> Lower<'w, 'a> {
                     .checked_mul(count)
                     .ok_or_else(|| Failure::new("an alloca this large"))?;
                 let align = align.max(self.types.align_of(ty)?);
-                let slot = self.new_slot(size, align)?;
-                self.vals[dst as usize] = Some(Val::Slot { slot, off: 0 });
+                if align > 16 {
+                    // The stack keeps 16 bytes of alignment, so the slot holds the bytes that an
+                    // address of the alignment may skip, and the address is rounded up to it.
+                    let slot = self.new_slot(size + u64::from(align - 16), 16)?;
+                    let base = self.b.ins().stack_addr(self.target.pointer, slot, 0);
+                    let up = self.b.ins().iadd_imm(base, i64::from(align - 1));
+                    let aligned = self.b.ins().band_imm(up, -i64::from(align));
+                    self.vals[dst as usize] = Some(Val::S(aligned));
+                } else {
+                    let slot = self.new_slot(size, align)?;
+                    self.vals[dst as usize] = Some(Val::Slot { slot, off: 0 });
+                }
             }
             Inst::Bin { dst, op, ty, a, b } => {
                 let (x, y) = (self.val(a, ty)?, self.val(b, ty)?);
