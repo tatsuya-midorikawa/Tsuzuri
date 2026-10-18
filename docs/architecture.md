@@ -259,7 +259,7 @@ task／cpu／io の 7 組 × O0〜O3 の 28 個、合計 52 object を含めま�
 LLVM／header／object／shared、debug／trap 計装、WASM threads・memory64・stack-check の numeric／math は埋め込みを維持します。
 外部 runtime は section 単位で未使用部分を除去し、公開 export は保持します。native の実行ファイルは、ランタイムを埋め込む形式（`--no-cache`・`--trap-info`）でも同じ除去を行います（`-g` は除く。PM08）。generic 数値 dispatch の到達する枝は残ります。
 整数の表示（`to_string`・`Display`・補間・トップレベルの式の結果）、書式指定付きの補間（`{n:x}`・`{n:X}`・`{n:o}`・`{n:b}`・`{n:+}`）、整数の `Parse.parse` は `numeric.ll` ではなく、モジュールに連結する `runtime/integer.ll` が書き・読みます。
-整数だけを扱うプログラムは数値 object を連結せず、native の `examples/hello` は 50,664 から 33,896 byte に、wasm32 の同じプログラムは 35,714 から 6,833 byte になりました（PM08 と PM05 の WASM ヒープの後。測定は `docs/benchmarks.md`）。整数を `Parse` し書式指定する `benchmarks/size/parse` は、native の `__text` が 30,904 から 9,156 byte に、wasm32 のモジュールが 76,023 から 16,766 byte になります。
+整数だけを扱うプログラムは数値 object を連結せず、native の `examples/hello` は 50,664 から 33,960 byte に、wasm32 の同じプログラムは 35,714 から 6,860 byte になりました（PM08・PM05 の WASM ヒープと PM02 の関数値の表現の後。測定は `docs/benchmarks.md`）。整数を `Parse` し書式指定する `benchmarks/size/parse` は、native の `__text` が 30,904 から 9,156 byte に、wasm32 のモジュールが 76,023 から 16,762 byte になります。
 float・decimal の表示・精度つきの書式指定・`Parse` は `numeric.ll` のままです。`runtime/` の掃除は成果物／frontend cache と独立します。
 `scripts/toolchain/runtime.mjs` と bundle／archive／smoke は生成・manifest・移設後の消費・破損 fallback を検証します。
 
