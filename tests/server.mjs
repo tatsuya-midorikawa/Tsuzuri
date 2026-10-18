@@ -222,12 +222,14 @@ try {
       { args: ["build", app, "-O0", "--cpu", "generic", "-o", join(out, "a")], executable: join(out, "a") },
     ];
     // Options that other tickets added travel in the request like any other: bitcode (PR08), an instrumented
-    // build and a profile that is not there (PR07). The first two need LLVM tools that a host may lack, so one
-    // that fails alone with a valid program is left out.
+    // build and a profile that is not there (PR07), the fast backend (PB05). The ones that need LLVM tools or a
+    // feature that a host may lack are left out when they fail alone with a valid program.
     save(main, "42\n");
     for (const command of [
       { args: ["build", app, "--emit", "bitcode", "-O0", "-o", join(out, "a.bc")], artifact: join(out, "a.bc") },
       { args: ["build", app, "--profile-generate", join(out, "prof"), "-O0", "-o", join(out, "p")], executable: join(out, "p") },
+      { args: ["build", app, "-O0", "--backend", "fast", "-o", join(out, "f")], executable: join(out, "f") },
+      { args: ["build", app, "-O0", "--backend", "fast", "--emit", "object", "-o", join(out, "f.o")], artifact: join(out, "f.o") },
     ]) {
       if (alone(command.args).status === 0) commands.push(command);
       else console.log(`Server: ${command.args[2]} is not tested: it fails alone on this host`);
