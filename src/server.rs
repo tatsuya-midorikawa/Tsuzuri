@@ -1749,6 +1749,15 @@ mod tests {
                 && names.contains("PATH"),
             "the scan finds the variables: {names:?}"
         );
+        // Reads that arrived with other tickets: through a constant (`profile.rs`), through
+        // `resolve_tool` in a subdirectory (`driver/lto.rs`) and by a literal (`profile.rs`).
+        assert!(
+            sources.iter().any(|(file, _)| file.contains('/'))
+                && names.contains("TSUZURI_LLVM_PROFDATA")
+                && names.contains("TSUZURI_LLVM_LINK")
+                && names.contains("LLVM_PROFILE_FILE"),
+            "the scan reaches the subdirectories and the constants: {names:?}"
+        );
         let missing: Vec<_> = names
             .iter()
             .filter(|name| !is_relevant_variable(name))
