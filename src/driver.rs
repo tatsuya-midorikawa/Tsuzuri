@@ -4442,15 +4442,20 @@ fn build_complete(
             }
             links.add_to(&mut linker);
             linker.arg("-o").arg(&artifact);
+            let linked = run_tool(
+                &mut linker,
+                &linker_hint(cross_hint(
+                    platform,
+                    "native debug executables require the Clang linker",
+                )),
+            )?;
+            // The link of an instrumented program is where Apple's linker notes the alignment of the profile sections.
             collect_message(
                 &mut messages,
-                run_tool(
-                    &mut linker,
-                    &linker_hint(cross_hint(
-                        platform,
-                        "native debug executables require the Clang linker",
-                    )),
-                )?,
+                match &staged_profile {
+                    Some(staged) => staged.clang_output(linked),
+                    None => linked,
+                },
             );
             let mut symbols = Command::new(tool("TSUZURI_DSYMUTIL", "dsymutil"));
             symbols

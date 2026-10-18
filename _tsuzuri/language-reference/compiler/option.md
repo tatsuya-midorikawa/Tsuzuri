@@ -203,6 +203,14 @@ profile data does not match 1 function(s) in this build; they are optimized with
 
 `--emit object` を計装すると、オブジェクトはプロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます。付けないと、macOS では `___llvm_profile_runtime` が未定義です。
 
+**x86_64 の macOS。** Apple 以外の Clang（Homebrew の `llvm` など。LLVM 21 で確かめました）は、計装したプログラムのリンクに `-sectalign __DATA __llvm_prf_cnts 0x4000`（`__llvm_prf_data`・`__llvm_prf_bits` も）を足します。カウンターをファイルに対応づける連続同期モードのために、arm64 のページ（16 KiB）に合わせた整列です。x86_64 の macOS は 4 KiB までしか許さないので、Apple の `ld` が次の 3 行を出します（Apple の Clang は x86_64 に 0x1000 を渡すので出ません）。プログラムはプロファイルを終了時に書くだけで、4 KiB で足りるので、Tsuzuri は計装したビルドと `run` の出力からこの 3 行だけを表示しません。ほかのリンカーの警告は表示します。`--emit object` を自分でリンクするときは、その `clang` が同じ 3 行を出します。
+
+```text
+ld: warning: reducing alignment of section __DATA,__llvm_prf_cnts from 0x4000 to 0x1000 because it exceeds segment maximum alignment
+ld: warning: reducing alignment of section __DATA,__llvm_prf_data from 0x4000 to 0x1000 because it exceeds segment maximum alignment
+ld: warning: reducing alignment of section __DATA,__llvm_prf_bits from 0x4000 to 0x1000 because it exceeds segment maximum alignment
+```
+
 **並列に動くプログラムの回数は少なく数えます。** 計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single` と同じです）。`Task` や `Parallel` が複数のスレッドで同じ関数を動かすと、更新が重なって失われ、回数が実際より少なくなります（実行ごとに変わります）。4 つの Task が同じ 1 億回のループを回す例では、ループの回数は 4 億ではなく 1 億でした（関数に入った回数は正確に 4）。プログラムの結果とプロファイルの形（`W2001`）には影響しませんが、`--profile-use` は少ない回数をそのまま使います。正確な回数が要るときは、`-fprofile-update=atomic` を足して Clang を呼ぶスクリプトを `TSUZURI_CLANG` に指定して計装してください。その例では回数が 4 億になり、そのプロファイルは通常の Clang の `--profile-use` でそのまま使えました。ただし、計装したプログラムは 0.1 秒から 6 秒へ約 60 倍遅くなったので、Tsuzuri は原子的な更新を付けません（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
 
 **使えない組み合わせ**は、`E2000` か `E2002` です（[組み合わせがエラーになる場合](#組み合わせがエラーになる場合)）。`--emit` は native の `exe` と `object`、wasm32 の `wasm` だけです。Windows と、ビルド機と違う `--target TRIPLE`（その機械でプログラムを訓練できない）は拒否し、`--profile-generate` と `--freestanding`（ランタイムが C ライブラリを要る）は一緒に使えません。ほかの出力が増えても、許可リストにない形は拒否します。

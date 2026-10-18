@@ -431,10 +431,12 @@ impl PreparedProfile {
         }
     }
 
-    /// What Clang printed, with the warnings of a profile that no longer matches summarized.
+    /// What Clang printed. A build that uses a profile has the warnings of the functions that no
+    /// longer match summarized; an instrumented one has the linker's note about the alignment of the
+    /// profile sections left out (and no other warning).
     pub(crate) fn clang_output(&self, text: String) -> String {
         if self.generate {
-            text
+            without_profile_alignment_warnings(text)
         } else {
             summarize_profile_warnings(self.shown(text))
         }
@@ -555,6 +557,31 @@ fn is_warning_count(line: &str) -> bool {
         .is_some_and(|count| !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+/// Clang's driver links the profile runtime with `-sectalign __DATA __llvm_prf_{cnts,bits,data}
+/// 0x4000`, the page size of arm64, so that a program can map its counters to a file (continuous
+/// mode). A segment of x86_64 is aligned to 4 KiB at most, which is all that a program that writes
+/// its profile when it ends needs, and Apple's linker says so once per section.
+fn is_profile_alignment_warning(line: &str) -> bool {
+    line.strip_prefix("ld: warning: reducing alignment of section __DATA,__llvm_prf_")
+        .and_then(|rest| {
+            rest.strip_suffix(" from 0x4000 to 0x1000 because it exceeds segment maximum alignment")
+        })
+        .is_some_and(|section| {
+            !section.is_empty() && section.bytes().all(|byte| byte.is_ascii_lowercase())
+        })
+}
+
+/// `text` without the warnings of `is_profile_alignment_warning`: the output of an instrumented link
+/// on x86_64 macOS would never be empty otherwise. Every other line, linker warnings included, stays.
+fn without_profile_alignment_warnings(text: String) -> String {
+    if !text.lines().any(is_profile_alignment_warning) {
+        return text;
+    }
+    text.split_inclusive('\n')
+        .filter(|line| !is_profile_alignment_warning(line.trim_end_matches(['\n', '\r'])))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +643,82 @@ mod tests {
         ] {
             assert!(!is_warning_count(line), "{line}");
         }
+    }
+
+    #[test]
+    fn drops_the_linker_notes_on_the_alignment_of_the_profile_sections_and_nothing_else() {
+        let note = |section: &str, from: &str| {
+            format!(
+                "ld: warning: reducing alignment of section {section} from {from} to 0x1000 because it exceeds segment maximum alignment\n"
+            )
+        };
+        // The Intel runner printed exactly these three lines for an instrumented link, and nothing else.
+        let profile = ["cnts", "data", "bits"]
+            .map(|kind| note(&format!("__DATA,__llvm_prf_{kind}"), "0x4000"));
+        assert_eq!(without_profile_alignment_warnings(profile.concat()), "");
+        // Anything else stays, in its place: another linker warning, the same words for another section, segment or
+        // alignment, a longer message, and what Clang says.
+        let others = [
+            "ld: warning: object file (a.o) was built for newer 'macOS' version (15.0) than being linked (14.0)\n".to_owned(),
+            note("__DATA,__other", "0x4000"),
+            note("__TEXT,__llvm_prf_cnts", "0x4000"),
+            note("__DATA,__llvm_prf_cnts", "0x8000"),
+            note("__DATA,__llvm_prf_", "0x4000"),
+            note("__DATA,__llvm_prf_Cnts", "0x4000"),
+            "ld: warning: reducing alignment of section __DATA,__llvm_prf_cnts from 0x4000 to 0x1000 because it exceeds segment maximum alignment of the segment\n".to_owned(),
+            "warning: unrelated\n".to_owned(),
+        ];
+        let mut mixed = String::new();
+        for (index, other) in others.iter().enumerate() {
+            mixed.push_str(other);
+            mixed.push_str(&profile[index % profile.len()]);
+        }
+        assert_eq!(without_profile_alignment_warnings(mixed), others.concat());
+        // A last line without its break and lines that end in a carriage return are matched too.
+        let bare = profile[0].trim_end();
+        assert_eq!(
+            without_profile_alignment_warnings(format!("a\n{bare}")),
+            "a\n"
+        );
+        assert_eq!(
+            without_profile_alignment_warnings(format!("a\r\n{bare}\r\nb\r\n")),
+            "a\r\nb\r\n"
+        );
+        // With nothing to drop the text is returned as it is.
+        for text in ["", "warning: unrelated\n", "no break at the end"] {
+            assert_eq!(without_profile_alignment_warnings(text.to_owned()), text);
+        }
+    }
+
+    #[test]
+    fn only_the_output_of_an_instrumented_build_loses_the_alignment_notes() {
+        let note = "ld: warning: reducing alignment of section __DATA,__llvm_prf_cnts from 0x4000 to 0x1000 because it exceeds segment maximum alignment\n";
+        let directory = scratch();
+        let generate = prepare_with(
+            &Profile::Generate(directory.path.join("a")),
+            &directory.path,
+            &mut Vec::new(),
+            &no_profdata,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(generate.clang_output(note.to_owned()), "");
+        assert_eq!(
+            generate.clang_output(format!("{note}warning: unrelated\n")),
+            "warning: unrelated\n"
+        );
+        // A build that only uses a profile never links the profile runtime: those words there are not this note.
+        let indexed = directory.path.join("p.profdata");
+        fs::write(&indexed, INDEXED_MAGIC).unwrap();
+        let used = prepare_with(
+            &Profile::Use(indexed),
+            &directory.path,
+            &mut Vec::new(),
+            &no_profdata,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(used.clang_output(note.to_owned()), note);
     }
 
     #[test]
