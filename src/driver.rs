@@ -3739,6 +3739,14 @@ fn build_complete(
         {
             text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
         }
+        // The merge of the C runtime hides every symbol that only the runtime defines, so the ones a host calls are
+        // named to keep (PR08 D5).
+        let kept_exports = if options.emit == Emit::Bitcode && native_runtime {
+            let exports = shared_exports(&text, module, options.trap_return);
+            lto::keep_runtime_exports(&mut text, &exports)?
+        } else {
+            Vec::new()
+        };
         let text = match &staged_profile {
             Some(staged) if staged.instruments_wasm() => profile::wasm_instrumented_ir(text),
             _ => text,
@@ -3887,6 +3895,7 @@ fn build_complete(
                         },
                     )?,
                 );
+                lto::check_kept_exports(&combined, &kept_exports)?;
                 ir = combined;
             }
         }
@@ -4127,7 +4136,7 @@ fn build_complete(
             platform,
             "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
         ));
-        if merge_runtime_ir && options.emit == Emit::Bitcode {
+        if native_runtime && options.emit == Emit::Bitcode {
             // A Clang that cannot read the IR that llvm-link wrote belongs to another LLVM than llvm-link does.
             clang_hint.push_str("; the IR was merged by llvm-link, which must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK");
         }
