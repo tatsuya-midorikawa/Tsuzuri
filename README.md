@@ -640,7 +640,7 @@ tsuzuri watch check app/
 tsuzuri watch test app/ --filter parse
 ```
 
-変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。1 回ごとの仕事は新しいコマンドと同じですが、読んだソースの本文と内容ハッシュを `stat` つきで覚えているので、変わっていないファイルは開き直しません。起動したコンパイラのファイルが差し替えられると、その回のあとで止まります。Ctrl-C で止めます。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#watch) を参照してください。
+変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。1 回ごとの仕事は新しいコマンドと同じですが、読んだソースの本文と内容ハッシュを `stat` つきで覚えているので、変わっていないファイルは開き直しません。起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも）止まります。Ctrl-C で止めます。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#watch) を参照してください。
 
 ### 常駐ビルドサーバー (`tsuzuri serve`)
 
@@ -962,7 +962,7 @@ node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
-node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで止まること、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
+node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで次の回を始めずに止まること（待っているあいだも。Windows は実行中のファイルを差し替えられないので除く）、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
 node tests/server.mjs target/release/tsuzuri   # PB06: tsuzuri serve（Unix だけ。Windows では serve が E2000 であることの確認）。サーバーが実行した check・build の出力と成果物が --no-server と同じこと（ソースの状態ごと、覚えたあとの編集を含む）、環境・作業ディレクトリ・コンパイラ・ルート・未対応のコマンド・protocol の断り、並行する要求、サーバーでないもの・残った socket・共有されたディレクトリでの黙った fallback、二重起動、idle・差し替えたコンパイラでの終了、TSUZURI_TIME_PASSES、serve の引数の E2000。ソケットのパス長のため TMPDIR は短くする（macOS で 103 byte まで）
 
 # WebAssembly & GPU テスト

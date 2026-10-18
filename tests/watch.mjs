@@ -216,22 +216,31 @@ try {
   assert.equal(threads.status, 2);
   assert.match(threads.stderr, /TSUZURI_THREADS must be an integer from 1 to 32/);
 
-  // 12: a compiler that is replaced while it watches (a rebuild) ends the watch after the run that
-  // follows, so that no cache is written under the identity of a file that is no longer there.
-  save(main, "42\n");
-  for (const [name, extra, last] of [["text", [], "watch: the compiler binary changed; stopping (start tsuzuri watch again)\n"], ["json", ["--json"], "{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}\n"]]) {
-    const copy = join(root, `compiler-${name}`);
-    copyFileSync(compiler, copy);
-    chmodSync(copy, 0o755);
-    const replaced = watch(["check", "app", ...extra], copy);
-    assert.equal((await replaced.run(1)).exit, 0);
-    copyFileSync(compiler, `${copy}.next`);
-    chmodSync(`${copy}.next`, 0o755);
-    renameSync(`${copy}.next`, copy);
-    save(main, `${46 + extra.length}\n`);
-    assert.equal((await replaced.run(2)).exit, 0);
-    assert.equal(await replaced.exited(), 1, name);
-    assert.ok(replaced.stderr.endsWith(last), replaced.stderr);
+  // 12: a compiler that is replaced while it watches (a rebuild) ends the watch before another run starts with it,
+  // whether the project is edited or not: a run of the old image would show its result to somebody who waits for the
+  // new one's, and its build cache would be written under the key of the new file. Windows cannot replace an image
+  // that is running, so there is nothing to test there.
+  if (process.platform === "win32") {
+    console.log("Watch: a replaced compiler is not tested on Windows, which cannot replace a running executable");
+  } else {
+    save(main, "42\n");
+    for (const [name, extra, last] of [["text", [], "watch: the compiler binary changed; stopping (start tsuzuri watch again)\n"], ["json", ["--json"], "{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}\n"]]) {
+      for (const [when, edits] of [["while it is idle", false], ["with an edit that follows", true]]) {
+        const label = `${name}, ${when}`;
+        const copy = join(root, `compiler-${name}`);
+        copyFileSync(compiler, copy);
+        chmodSync(copy, 0o755);
+        const replaced = watch(["check", "app", ...extra], copy);
+        assert.equal((await replaced.run(1)).exit, 0, label);
+        copyFileSync(compiler, `${copy}.next`);
+        chmodSync(`${copy}.next`, 0o755);
+        renameSync(`${copy}.next`, copy);
+        if (edits) save(main, `${46 + extra.length}\n`);
+        assert.equal(await replaced.exited(), 1, label);
+        assert.equal(replaced.runs.length, 1, `no run starts with the replaced compiler (${label}): ${replaced.stderr}`);
+        assert.ok(replaced.stderr.endsWith(last), `${label}: ${replaced.stderr}`);
+      }
+    }
   }
 
   // 13: TSUZURI_TIME_PASSES reports each run alone: the phases of an earlier run are not summed in.
@@ -247,7 +256,7 @@ try {
   assert.ok(!JSON.parse(reports(timedSecond)[0]).phases.some((phase) => phase.name === "specialize"), "a failed run has no specialize phase");
   timed.stop();
 
-  console.log("Watch: runs equal the commands alone, same-length same-time edits, additions, removals, new directories, touches, JSON status lines, build, test, usage errors and a replaced compiler passed");
+  console.log(`Watch: runs equal the commands alone, same-length same-time edits, additions, removals, new directories, touches, JSON status lines, build, test, usage errors${process.platform === "win32" ? "" : " and a replaced compiler"} passed`);
 } finally {
   for (const child of children) child.kill("SIGTERM");
   rmSync(root, { recursive: true, force: true });
