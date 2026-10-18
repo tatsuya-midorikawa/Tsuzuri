@@ -581,7 +581,40 @@ try {
     }
     assert.match(run(["check", app, "--no-server", "--no-server"]).stderr, /no-server specified more than once/);
 
-    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports and usage errors passed");
+    // 11: the form of the strings (PM03). `TSUZURI_STRINGS` is read by the compiler, so the server compares it: a
+    // server that has `compact` makes the Latin-1 form that a cold build with it makes, and a client that has
+    // another form is refused and gets the build that it asked for.
+    const strings = join(root, "strings");
+    mkdirSync(strings);
+    save(join(strings, "Main.tz"), `"caf\\u00e9".length + "abc".length\n`);
+    const compact = { env: { TSUZURI_STRINGS: "compact" } };
+    const build = (name) => ["build", strings, "--emit", "llvm", "-O0", "-o", join(out, name)];
+    const coldUtf16 = run([...build("strings-utf16.ll"), "--no-server"]);
+    const coldCompact = run([...build("strings-cold.ll"), "--no-server"], compact);
+    assert.deepEqual([coldUtf16.status, coldCompact.status], [0, 0], `${coldUtf16.stderr}${coldCompact.stderr}`);
+    const utf16Ir = readFileSync(join(out, "strings-utf16.ll"), "utf8");
+    const compactIr = readFileSync(join(out, "strings-cold.ll"), "utf8");
+    assert.ok(compactIr.includes("@tz.string.allocate_latin1(") && !utf16Ir.includes("@tz.string.allocate_latin1("), "the form changes the IR");
+    const compactServer = startServer([strings], compact);
+    await ready(compactServer, strings, compact);
+    const requested = (options, name) => {
+      const before = status(strings, compact);
+      const result = run(build(name), options);
+      const after = status(strings, compact);
+      return { result, served: after.served - before.served, refused: refusalsSince(before, after) };
+    };
+    const served = requested(compact, "strings-served.ll");
+    assert.equal(served.served, 1, "the server that has the form ran the request");
+    assert.deepEqual(served.result, coldCompact);
+    assert.equal(readFileSync(join(out, "strings-served.ll"), "utf8"), compactIr, "and made the IR of a cold build with that form");
+    const other = requested({}, "strings-refused.ll");
+    assert.equal(other.served, 0, "a client with the default form is not served by it");
+    assert.deepEqual(other.refused, { env: 1 });
+    assert.deepEqual(other.result, coldUtf16);
+    assert.equal(readFileSync(join(out, "strings-refused.ll"), "utf8"), utf16Ir, "and gets its own build");
+    await stop(compactServer, strings, compact);
+
+    console.log("Server: runs equal the commands alone for every state of the sources and the memory that changes under them, refusals (env, cwd, compiler, root, unsupported, protocol), concurrent clients, impostors, stale sockets, private directories, idle and replaced compiler, time-pass reports, the form of the strings (TSUZURI_STRINGS) and usage errors passed");
   }
 } finally {
   for (const child of servers) child.kill("SIGKILL");

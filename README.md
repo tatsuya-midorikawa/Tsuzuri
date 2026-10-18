@@ -898,6 +898,7 @@ tsuzuri lsp
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。同梱ツールチェーンの識別（配布物の全ファイルの SHA-256 など）は最初のビルドで計算して `bundle/` に控え、配布物の署名が変わるまで読み直しません（信頼の範囲は `_tsuzuri/language-reference/compiler/usage.md` の「ランタイム object」）。
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
 - **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
+- **コンパクト文字列（opt-in）**: `TSUZURI_STRINGS=compact` は、全コード単位が 0xFF 以下（ASCII と Latin-1）の `string` を 1 単位 1 byte で保存し、そうでない文字列は UTF-16 のままにします（長さの語の bit 62 が印で、`Maybe<string>` の niche は変わりません）。ASCII・Latin-1 の文字列の確保量は約半分になり、native と `--wasm-feature simd128` の WebAssembly では Latin-1 の走査・比較・変換に 128-bit vector の kernel を使います。長さ・添字・順序・hash・表示・host との ABI（常に UTF-16）は変わりません。既定の `utf16` は PM03 より前と byte 単位で同じ IR を出し、ほかの値は `E2000` です。runtime の IR・小さな WebAssembly・ビルド時間が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のままです（[測定と判断](./docs/benchmarks.md#pm03-コンパクト文字列)、[使い方](./_tsuzuri/language-reference/compiler/option.md#コンパクト文字列の旗)）。
 - **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
 - **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します（`watch` は 1 回ごと、`serve` が引き受けた要求は 1 要求ごとに、その回の分だけです）。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 
@@ -916,6 +917,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテストスレッド。PowerShell は先に $env:RUST_MIN_STACK='4194304'
 TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
+TSUZURI_STRINGS=compact RUST_MIN_STACK=4194304 cargo test --locked   # IR を出すテスト全体をコンパクト文字列で。IR の形そのものを固定するテストは、形式を自分で選ぶ（PM03）
 cargo build --release --locked
 
 # 統合 E2E テスト・言語機能テスト
@@ -930,7 +932,11 @@ node tests/bundle_identity.mjs target/release/tsuzuri   # 同梱ツールチェ�
 node tests/pgo.mjs target/release/tsuzuri   # PGO（PR07）: 計装した実行ファイル・object・run の raw profile、--profile-use の directory と merge 済みの file、cache の鍵、古い profile の W2001、llvm-profdata の探索、wasm32 の writer（counts を native と照合）。LLVM の Clang と llvm-profdata が無いと skip（LLVM_PREFIX か TSUZURI_PGO_STRICT=1 では失敗）
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
-node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成。--asan／--exhaustive は拡張検証
+node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成、Latin-1 の kernel（PM03）と生成物の再生成の一致。--asan／--exhaustive は拡張検証
+node tests/compact_strings.mjs target/release/tsuzuri --quick   # コンパクト文字列（PM03）。fixture を TSUZURI_STRINGS=utf16／compact × native／wasm32（simd128 も）× O0／O3 で作り、すべての出力が同じで、呼び出しごとに確保が残らないことを確かめる
+node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact の string の runtime を生の長さの語（bit 62）で直接呼び、JavaScript の参照と照合する（wasm32 の scalar／simd128 × O0／O3）
+node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16   # 既存の文字列に関わる node の suite を TSUZURI_STRINGS=compact と utf16 の両方で実行する（full は到達しうる suite すべて）
+python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
 node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
