@@ -138,14 +138,15 @@ Build options:
   -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
                          take -O0 to -O3. Language semantics, traps, and debug information do
                          not change; the code is usually slower than at -O3
-  --backend llvm|fast    Code generator of build and run (default: llvm). fast translates the -O0
-                         IR to machine code in the compiler itself instead of running Clang on it,
-                         for a quicker edit-build-run loop; the code runs like -O0 code. It takes
-                         -O0 (its default), native exe and object output, --trap-info, --strip,
-                         and --allocator system|host; -g, --cpu native, --allocator small|counting,
-                         --freestanding, --trap-mode return, and WebAssembly stay with llvm. It
-                         needs a tsuzuri built with --features fast-backend on a macOS or Linux
-                         host with an AArch64 or x86-64 CPU
+  --backend llvm|fast    Code generator of build, run, and test (default: llvm). fast translates
+                         the -O0 IR to machine code in the compiler itself instead of running
+                         Clang on it, for a quicker edit-build-run loop; the code runs like -O0
+                         code. It takes -O0 (its default, and test's), native exe and object
+                         output, --trap-info, --strip, and --allocator system|host; -g, --cpu
+                         native, --allocator small|counting, --freestanding, --trap-mode return,
+                         and WebAssembly stay with llvm. It needs a tsuzuri built with
+                         --features fast-backend on a macOS or Linux host with an AArch64 or
+                         x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -765,8 +766,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
     }
-    if backend.is_some() && !matches!(action, Action::Build | Action::Run) {
-        return Err("--backend applies only to build and run".into());
+    if backend.is_some() && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err("--backend applies only to build, run, and test".into());
     }
     if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
@@ -1212,6 +1213,7 @@ fn run_test_action(
         coverage: arguments.coverage.is_some(),
         seed: arguments.test_seed,
         triple: arguments.options.triple,
+        backend: arguments.options.backend,
     };
     if options
         .indices
@@ -2655,6 +2657,8 @@ mod tests {
         let option = |name: &str| {
             format!("--backend fast does not support {name} yet; remove it or use --backend llvm")
         };
+        // The message does not name which profile option was given.
+        let profile = "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned();
         let fast = |extra: &[&'static str]| {
             let mut values = vec!["build", "Main.tz", "--backend", "fast"];
             values.extend_from_slice(extra);
@@ -2678,11 +2682,11 @@ mod tests {
                 "backend specified more than once".to_owned(),
             ),
         ];
-        for action in ["check", "fmt", "doc", "test", "bench"] {
+        for action in ["check", "fmt", "doc", "bench"] {
             for backend in ["fast", "llvm"] {
                 cases.push((
                     vec![action, "Main.tz", "--backend", backend],
-                    "--backend applies only to build and run".to_owned(),
+                    "--backend applies only to build, run, and test".to_owned(),
                 ));
             }
         }
@@ -2712,6 +2716,9 @@ mod tests {
             (fast(&["--emit", "spirv"]), output("spirv")),
             (fast(&["--emit", "spirv-relaxed"]), output("spirv-relaxed")),
             (fast(&["--emit", "shared"]), output("shared")),
+            (fast(&["--emit", "bitcode"]), output("bitcode")),
+            (fast(&["--profile-generate", "prof"]), profile.clone()),
+            (fast(&["--profile-use", "p.profdata"]), profile.clone()),
             (fast(&["--emit", "bindings-js"]), output("bindings-js")),
             (fast(&["--emit", "bindings-cs"]), output("bindings-cs")),
             (fast(&["--emit", "bindings-py"]), output("bindings-py")),

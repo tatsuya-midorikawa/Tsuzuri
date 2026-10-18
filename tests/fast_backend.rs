@@ -309,3 +309,43 @@ fn object_is_deterministic() {
         }
     }
 }
+
+/// `tsuzuri test --backend fast` (the test runner of the library): the same cases pass, fail and
+/// trap, with the same failure text and counterexamples.
+#[test]
+fn test_runner_reports_the_same_on_both_backends() {
+    use tsuzuri::driver::{Backend, TestOptions, run_tests};
+    let sources = [
+        "test \"passes\" = assert true\ntest \"traps\" = assert false\ntest \"passes after trap\" = assert (2 + 2 == 4)",
+        include_str!("fixtures/property/Props.tz"),
+        include_str!("fixtures/coverage/Calc.tz"),
+    ];
+    for source in sources {
+        let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{error:?}"));
+        let report = |backend| {
+            let report = run_tests(
+                &module,
+                &TestOptions {
+                    backend,
+                    ..TestOptions::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{backend:?}: {}", error.message));
+            let results: Vec<_> = report
+                .results
+                .iter()
+                .map(|result| {
+                    (
+                        result.case.index,
+                        result.failure.clone(),
+                        result.output.clone(),
+                    )
+                })
+                .collect();
+            (results, report.ignored)
+        };
+        let expected = report(Backend::Llvm);
+        assert!(!expected.0.is_empty());
+        assert_eq!(report(Backend::Fast), expected, "{source}");
+    }
+}

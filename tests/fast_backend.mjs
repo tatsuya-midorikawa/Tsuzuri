@@ -235,7 +235,7 @@ function checks(compilerArgument) {
       rejects([...fast, "--target", "wasm32"], `${native} wasm32`);
       rejects([...fast, "--target", "wasm64"], `${native} wasm64`);
       rejects([...fast, "--target", "x86_64-pc-windows-msvc"], `${native} --target x86_64-pc-windows-msvc`);
-      for (const emit of ["llvm", "header", "wgsl", "wgsl-relaxed", "spirv", "spirv-relaxed", "shared", "bindings-js"]) {
+      for (const emit of ["llvm", "header", "wgsl", "wgsl-relaxed", "spirv", "spirv-relaxed", "shared", "bitcode", "bindings-js"]) {
         rejects([...fast, "--emit", emit], `--backend fast produces only exe and object outputs; use --backend llvm for --emit ${emit}`);
       }
       const unsupported = (option) => `--backend fast does not support ${option} yet; remove it or use --backend llvm`;
@@ -245,11 +245,14 @@ function checks(compilerArgument) {
       rejects([...fast, "--emit", "object", "--allocator", "counting"], unsupported("--allocator counting"));
       rejects([...fast, "--emit", "object", "--allocator", "host", "--freestanding"], unsupported("--freestanding"));
       rejects([...fast, "--emit", "object", "--trap-mode", "return"], unsupported("--trap-mode return"));
+      const profile = "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use";
+      rejects([...fast, "--profile-generate", join(work, "profiles")], profile);
+      rejects([...fast, "--profile-use", join(work, "none.profdata")], profile);
       rejects(["build", hello, "--backend", "gcc"], "backend must be 'llvm' or 'fast'");
       rejects(["build", hello, "--backend"], "--backend needs a value");
       rejects(["build", hello, "--backend", "fast", "--backend", "llvm"], "backend specified more than once");
       for (const action of ["check", "doc", "fmt"]) {
-        rejects([action, hello, "--backend", "fast"], "--backend applies only to build and run");
+        rejects([action, hello, "--backend", "fast"], "--backend applies only to build, run, and test");
       }
     });
 
@@ -300,6 +303,12 @@ def main :: unit -> i32 = \\() ->
       assert.equal(expected.stdout, "2\n");
       assert.deepEqual(observe(execute(programs.fast, [], { cwd: project })), expected);
       assert.deepEqual(readFileSync(`${programs.fast}.trap.json`), readFileSync(`${programs.llvm}.trap.json`));
+      // `run` reports the same E2005 with the signal and the source location.
+      const viaRun = (backend) => observe(execute(compiler, ["run", project, "-O0", "--backend", backend]));
+      const reported = viaRun("llvm");
+      assert.equal(reported.status, 1);
+      assert.match(reported.stderr, /error\[E2005\]: program terminated with signal: 5 \(SIGTRAP\)/);
+      assert.deepEqual(viaRun("fast"), reported);
     });
 
     step("the object does not depend on the number of threads", () => {
@@ -314,6 +323,13 @@ def main :: unit -> i32 = \\() ->
         assert.ok(single.equals(build("eight", "8")), `${name}: 1 and 8 threads`);
         assert.ok(single.equals(build("again", "1")), `${name}: the same threads twice`);
       }
+      // The linked program is the same too.
+      const link = (label, threads) => {
+        const output = join(work, `hello-${label}`);
+        cli(["build", hello, "-O0", "--backend", "fast", "--no-cache", "-o", output], { env: { TSUZURI_THREADS: threads } });
+        return readFileSync(output);
+      };
+      assert.ok(link("exe-1", "1").equals(link("exe-8", "8")), "the executable depends on the threads");
     });
 
     step("the object exports the symbols of the LLVM object", () => {
@@ -360,6 +376,23 @@ def main :: unit -> i32 = \\() ->
       assert.ok(build("fast", "fast-2").equals(fast), "a second fast build hits the cache");
       assert.equal(entries().length, before + 2);
       assert.equal(execute(join(work, "cache-fast-2"), []).stdout, "4950\n");
+    });
+
+    step("tsuzuri test reports the same on both backends", () => {
+      for (const fixture of ["property", "coverage"]) {
+        const directory = join(root, "tests", "fixtures", fixture);
+        const run = (backend) => observe(execute(compiler, ["test", directory, "-O0", "--backend", backend]));
+        const expected = run("llvm");
+        assert.match(expected.stdout, /^(not )?ok 1 - /m, fixture);
+        assert.deepEqual(run("fast"), expected, fixture);
+      }
+      const directory = join(root, "tests", "fixtures", "coverage");
+      const lcov = (backend) => {
+        const file = join(work, `coverage-${backend}.lcov`);
+        execute(compiler, ["test", directory, "-O0", "--backend", backend, "--coverage", file]);
+        return readFileSync(file);
+      };
+      assert.ok(lcov("llvm").equals(lcov("fast")), "the coverage report depends on the backend");
     });
 
     step("without the flag the LLVM output is unchanged", () => {

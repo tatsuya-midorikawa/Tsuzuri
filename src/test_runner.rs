@@ -20,6 +20,8 @@ pub struct TestOptions {
     /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
     /// every non-native target. A target this machine cannot run needs `TSUZURI_RUNNER`.
     pub triple: Option<Triple>,
+    /// Who turns the runner's IR into an object: Clang, or the fast backend (PB05).
+    pub backend: Backend,
 }
 
 impl Default for TestOptions {
@@ -34,6 +36,7 @@ impl Default for TestOptions {
             coverage: false,
             seed: None,
             triple: None,
+            backend: Backend::Llvm,
         }
     }
 }
@@ -690,7 +693,11 @@ fn build_runner(
             seed: options.seed,
             debug_output,
             debug: None,
-            f16: platform_f16_path(options.platform(), options.target, Cpu::Generic),
+            f16: if options.backend == Backend::Fast {
+                llvm::F16Path::Soft
+            } else {
+                platform_f16_path(options.platform(), options.target, Cpu::Generic)
+            },
         },
     )?;
     if !wasm {
@@ -709,6 +716,7 @@ fn build_runner(
                 },
                 optimization: options.optimization,
                 platform: options.platform(),
+                backend: options.backend,
             },
             links,
             directory,
@@ -813,6 +821,8 @@ struct NativeRunner<'a> {
     optimization: u8,
     /// Where the runner executable runs.
     platform: Platform,
+    /// Who turns the IR into an object: Clang, or the fast backend (PB05).
+    backend: Backend,
 }
 
 /// Compiles the runner IR `text` with its C entry, the runtimes the IR declares, and the host
@@ -866,12 +876,23 @@ fn compile_native_runner(
     } else {
         runner.stem.to_owned()
     });
-    fs::write(&ir, text).map_err(|error| io_error(&format!("write {kind} IR"), &ir, error))?;
+    let fast = runner.backend == Backend::Fast;
+    let object = directory.join(format!("{}.o", runner.stem));
+    if fast {
+        crate::driver::translate_fast(&text, platform, &object)?;
+    } else {
+        fs::write(&ir, text).map_err(|error| io_error(&format!("write {kind} IR"), &ir, error))?;
+    }
     let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
-    clang
-        .args(["-x", "ir", "-Wno-override-module"])
-        .arg(format!("-O{}", runner.optimization))
-        .arg(&ir);
+    if fast {
+        // The object is the translated IR; the C entry and the runtimes compile and link with it.
+        clang.arg(format!("-O{}", runner.optimization)).arg(&object);
+    } else {
+        clang
+            .args(["-x", "ir", "-Wno-override-module"])
+            .arg(format!("-O{}", runner.optimization))
+            .arg(&ir);
+    }
     let main = directory.join("main.c");
     clang
         .args(compile_args(platform))
@@ -1108,6 +1129,7 @@ pub fn run_benches_linked(
             defines: &[],
             optimization: options.optimization,
             platform,
+            backend: Backend::Llvm,
         },
         links,
         &temporary.path,
@@ -1450,6 +1472,7 @@ mod tests {
                 defines: &[],
                 optimization: 0,
                 platform: Platform::HOST,
+                backend: Backend::Llvm,
             },
             &LinkInputs::default(),
             &temporary.path,
