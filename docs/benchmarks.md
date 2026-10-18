@@ -7275,6 +7275,79 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 ### PB05 デバッグビルド用の高速バックエンド
 
 <!-- phase4:PB05 -->
+**実装した経路と、していないこと**: 実装済みは、`--backend fast`（既定は `llvm` のままで、既定の切り替え D12 は行っていません）の次の範囲です。native の `--emit exe|object`（macOS と Linux の AArch64・x86-64、`-O0` だけ。Cranelift 0.121.2）、wasm32 の `--emit wasm|object`（`-O0` だけ。Clang を使わずにコンパイラが WebAssembly の object を書き、`wasm-ld` でリンクする。D13）、`build`・`run`・`test`、`--trap-info`、`-g`（native。DWARF の行情報）、`--allocator small|counting`、`--freestanding`、`--trap-mode return`、`--strip`。計画のまま実装していないのは、Windows のホストで `--backend fast` を使うこと（`E2000`。理由は下の「測っていないこと」）、`--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm`、`--profile-*`、`--target TRIPLE`、wasm32 の SIMD・threads・jspi・webgpu・net・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64 です（いずれも `E2000`）。
+
+**環境と条件**: Apple M1 Max（10 core）、macOS 27.0、Apple clang 21.0.0、Node.js 20.19.6、LLVM 21 の単体ツール、`cargo +1.99.0 build --release --features fast-backend --locked` の `target/release/tsuzuri`（SHA-256 の先頭 `7fc4266f…`、コミット `9250638a`）。ほかの 6 つの作業と共有する機械で、1 分の load average は wasm32 の run が 16（開始）〜17（終了）、native の run が 33（開始）〜20（終了）、カーネルの run が 9〜10 でした。数値は参考値で、`llvm` と `fast` を交互に（先に走るほうも交互に）測った 7 標本の中央値と最小〜最大です。生のレコードは `target/perf/PB05/bench-wasm`・`bench-native`・`kernels-native`・`kernels-wasm` です（commit しません）。
+
+**測定 1: ビルドの待ち時間（`benchmarks/build/generate.mjs` の合成プロジェクト、1 module 20 関数、`benchmarks/run-backend.mjs`）**。`build` は cache なしの全体のビルド、`build-edit-body` は真ん中の 1 module の関数の本体を、`build-edit-signature` はその module の export の一覧を変えた後のビルド（どちらも成果物の cache が温かい）です。各行の最後のビルドの成果物を実行（wasm32 は同じ process の中で）して、期待する出力になることを確かめています。「tools」は Clang（コンパイルとリンク）か、`fast` ではリンクだけ（wasm32 は `wasm-ld`）、「翻訳」は `backend.*` の段、「frontend」は残りの段（読み込み・構文解析・型検査・単相化・IR の生成など）です。
+
+| target | module 数 | 場面 | wall ms（`llvm`） | wall ms（`fast`） | fast／llvm | cpu ms（`llvm` → `fast`） | tools ms | 翻訳 ms | frontend ms（`llvm` → `fast`） | 最大 RSS MB | 成果物 KB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| native | 200 | `build` | 1,706（1,545〜2,587） | 849（768〜1,488） | 0.50 | 1,880 → 1,480 | 1,070 → 135 | 98 | 590 → 587 | 163 → 177 | 1,303 → 1,526 |
+| native | 200 | `build-edit-body` | 1,781（1,651〜2,115） | 940（858〜1,105） | 0.53 | 1,970 → 1,550 | 971 → 63 | 92 | 560 → 586 | 167 → 180 | 同上 |
+| native | 200 | `build-edit-signature` | 1,685（1,629〜1,786） | 924（855〜1,013） | 0.55 | 1,940 → 1,520 | 938 → 51 | 87 | 542 → 539 | 167 → 178 | 同上 |
+| native | 1,000 | `build` | 9,166（8,691〜10,231） | 5,084（4,682〜28,901） | 0.55 | 9,780 → 7,780 | 4,577 → 152 | 499 | 4,484 → 4,419 | 730 → 788 | 6,564 → 7,564 |
+| native | 1,000 | `build-edit-body` | 9,070（8,792〜10,168） | 5,122（4,900〜5,649） | 0.56 | 9,950 → 8,090 | 4,480 → 79 | 448 | 4,252 → 4,128 | 747 → 806 | 同上 |
+| native | 1,000 | `build-edit-signature` | 9,288（8,958〜9,395） | 5,289（5,095〜5,659） | 0.57 | 10,160 → 8,120 | 4,486 → 66 | 502 | 4,301 → 4,380 | 749 → 814 | 同上 |
+| wasm32 | 200 | `build` | 1,789（1,763〜2,029） | 637（616〜763） | 0.36 | 2,050 → 1,030 | 1,238 → 32 | 52 | 537 → 540 | 533 → 166 | 1,091 → 1,557 |
+| wasm32 | 200 | `build-edit-body` | 1,996（1,946〜2,179） | 832（816〜937） | 0.42 | 2,180 → 1,180 | 1,217 → 31 | 52 | 536 → 533 | 532 → 170 | 同上 |
+| wasm32 | 200 | `build-edit-signature` | 1,956（1,942〜2,923） | 820（816〜952） | 0.42 | 2,170 → 1,180 | 1,217 → 31 | 51 | 538 → 532 | 532 → 171 | 同上 |
+| wasm32 | 1,000 | `build` | 10,196（9,924〜11,061） | 4,570（4,324〜7,237） | 0.45 | 11,140 → 6,110 | 5,999 → 65 | 268 | 4,246 → 4,221 | 2,471 → 763 | 5,655 → 7,917 |
+| wasm32 | 1,000 | `build-edit-body` | 10,707（10,209〜11,133） | 5,015（4,887〜5,511） | 0.47 | 11,330 → 6,380 | 6,281 → 68 | 284 | 4,051 → 4,180 | 2,471 → 783 | 同上 |
+| wasm32 | 1,000 | `build-edit-signature` | 11,053（10,316〜12,148） | 4,995（4,784〜5,360） | 0.45 | 11,420 → 6,370 | 6,250 → 68 | 280 | 4,055 → 4,038 | 2,471 → 774 | 同上 |
+
+- **ゲート（停止条件 9）は通りました**。1,000 module の `build-edit-body` は、native で 0.56 倍、wasm32 で 0.47 倍です（`fast` が速い）。短くなるのは Clang の時間（コンパイルとリンク）だけで、frontend の段は同じです（`llvm` と `fast` で ±5%）。そのため、`fast` のビルドの残りは frontend が大半です（1,000 module の native で 4,130〜4,480 ms、`fast` の total の 81〜87%、wasm32 で 4,040〜4,220 ms の 81〜93%）。これ以上の短縮は frontend の仕事（PB04 の並列化の先）です。
+- 翻訳の段は、200 module の native で 87〜98 ms（`fast` の total の 10.6〜11.9%、計画した 10% をわずかに超えます）、1,000 module の native で 448〜502 ms（8.9〜9.5%）、wasm32 で 51〜52 ms と 268〜284 ms（6〜8% と約 6%）です。関数ごとに worker へ配り、worker の数は `TSUZURI_THREADS` に従います。リンクは native が 51〜152 ms、`wasm-ld` が 31〜68 ms です。
+- CPU 時間（process 全体の user と sys）の減りは待ち時間より小さく、native で 0.78〜0.81 倍、wasm32 で 0.50〜0.56 倍です（native は、翻訳器が関数ごとの worker で並列に動くためと推測していますが、確かめていません）。最大 RSS は 1 つの process の最大値です。native では tsuzuri 自身が最大で、`fast` は翻訳器の分が加わり 8〜9% 大きく、wasm32 では `llvm` の最大が Clang の process（532 MB と 2,471 MB）で、`fast` は tsuzuri 自身（166〜171 MB と 763〜783 MB）です。
+- 成果物は、native の実行ファイルが 15〜17% 大きく（1,303 → 1,526 KB、6,564 → 7,564 KB）、wasm32 の module が 40〜43% 大きく（1,091 → 1,557 KB、5,655 → 7,917 KB）なります（最適化しないためです）。`examples/` と `tests/fixtures/` の 94 個の wasm32 module の合計では 7,109,151 → 7,835,004 bytes（1.10 倍）で、小さな project では、`llvm` と同じ runtime の object の割合が大きく、増え方は小さくなります。
+- `examples/hello` の 1 か所（定数）を変えた後のビルド（native、runtime の object は温かい。`llvm` と `fast` を 11 回ずつ交互に、load average 14〜16）: 中央値は `llvm` が 285 ms（249〜400）、`fast` が 251 ms（221〜369）で、0.88 倍です。構文解析・型検査・IR の生成・リンクが残るので、差は小さくなります。
+
+**測定 2: 生成したコードの実行時間（`benchmarks/run-backend-kernels.mjs`）**。`benchmarks/control` の 16 種目を、`llvm` の `-O0`（Clang）、`fast` の `-O0`、参考の `llvm` の `-O3` で `--emit object`（wasm32 は module）に作り、native は `benchmarks/control/kernels.c`、wasm32 は同じ process の Node.js から、7 回ずつ呼んで中央値を取り、3 round の中央値を表にしました。checksum は 3 つのビルドと 16 種目で一致しました。
+
+| 種目 | native `llvm -O0` ms | native `fast -O0` ms | native `llvm -O3` ms | fast／llvm |
+| --- | --- | --- | --- | --- |
+| `while_mix` | 52.23 | 43.04 | 13.19 | 0.82 |
+| `for_mix` | 45.21 | 43.13 | 13.19 | 0.95 |
+| `tail_mix` | 56.08 | 46.07 | 13.21 | 0.82 |
+| `match_dispatch` | 32.30 | 22.10 | 2.66 | 0.68 |
+| `array_sum` | 22.02 | 15.92 | 2.00 | 0.72 |
+| `array_copy` | 18.51 | 13.91 | 1.91 | 0.75 |
+| `closure_churn` | 24.72 | 23.25 | 6.67 | 0.94 |
+| `record_pipeline` | 54.52 | 42.56 | 13.31 | 0.78 |
+| `integer128_mix` | 22.48 | 12.37 | 5.25 | 0.55 |
+| `float32_mix` | 19.98 | 19.58 | 9.29 | 0.98 |
+| `float64_mix` | 19.93 | 19.81 | 9.35 | 0.99 |
+| 16 種目の合計 | 515.0 | 417.1 | 122.3 | 0.81 |
+
+- native では、`fast` の実行時間は `llvm -O0` の 0.81 倍で、`-O3` の約 3.4 倍です。`float32_mix`・`float64_mix` は同じ（0.98〜0.99 倍）、`integer128_mix` は 0.55 倍です。object の大きさは、`llvm -O0` が 40,040 bytes、`fast -O0` が 10,984 bytes（呼ばれない関数を翻訳しない）、`llvm -O3` が 5,304 bytes です。
+- wasm32（V8、Node.js 20。9 回ずつ 5 round、load average 11〜13）: 16 種目の合計は `llvm -O0` が 482.5 ms、`fast` が 506.1 ms（1.05 倍）、`llvm -O3` が 164.9 ms（`fast` は 3.1 倍）です。scalar の loop（`while_mix`・`for_mix`・`tail_*`）、`match_dispatch`、`record_pipeline`、`closure_churn`、`integer128_mix`、`float32_mix`、`float64_mix` は 0.98〜1.04 倍で、`closure_capture` が 1.24 倍、`array_sum`・`array_index_sum`・`list_sum` が 1.29〜1.31 倍、`array_copy` が 1.52 倍です。後ろ向きの分岐が dispatch の loop（`$pc` の local と `br_table`）を通るためと考えています（前向きの分岐を構造化した `br` にする前は、合計が 531.2 ms で 1.10 倍、`array_copy` が 2.19 倍、`array_sum` が 1.68 倍、`match_dispatch` が 1.24 倍でした）。module の大きさは `llvm -O0` が 11,095 bytes、`fast` が 15,221 bytes（前向きの分岐の変更前は 15,709 bytes）、`llvm -O3` が 11,498 bytes です。checksum は 3 つのビルドと 16 種目で一致しました。
+
+**測定 3: 意味の一致（差分テスト）**。数は 2026-10-18 の統合後の木で、native は macOS の AArch64、Linux はコンテナ（次の測定）です。
+
+| 確認 | 結果 |
+| --- | --- |
+| `tests/fast_backend.mjs`（既定）: option の表、hello、trap と `E2005` の位置、thread 数の決定性、export する symbol、allocator、cache の鍵、wasm32、`test`、`-g` の行、旗なしの出力の不変 | 11 段すべて成功 |
+| `programs`: `examples/` と `tests/fixtures/` の 116 project を `llvm` と `fast` で作って動かす | 同じ出力 21、同じ export 83（library）、差 0、`llvm` が作れず比べないもの 12 |
+| `wasm`: 同じ project の wasm32 module を `llvm` と `fast` で作り、validate、import・export、すべての export の呼び出しを比べる | 同じ挙動 94（host の import を仮実装したもの 9）、差 0、比べないもの 22 |
+| `tests/fast_backend_ops.rs`: 演算ごとの関数を Clang と翻訳器で作り、同じ境界の入力で呼ぶ | native 821 演算を bit 単位で一致、wasm32 は約 780 演算を一致（NaN の符号と payload を除く） |
+| `parity`: 既存の suite を `tsuzuri` と `clang` の wrapper の下で `fast` に流す（`FAST_FORCE=1`） | TBD-PARITY |
+
+**測定 4: Linux と x86-64（コンテナ）**。この機械は macOS の AArch64 で、そのままでは x86-64 の実行ファイルも Linux の実行ファイルも動かせません。そこで Docker Desktop の Ubuntu 26.04 のコンテナ（clang 21.1.8、rustc 1.93.1、Node.js 22.22.1。AArch64 は VM の中で native の速さ、x86-64 は Rosetta の emulation）で確かめました。2 つの経路があります。
+
+1. 実際の driver: コンテナの中で `cargo build --release --locked --features fast-backend` を行い（AArch64 が 4 分 22 秒、x86-64 が 8 分 29 秒。rustc 1.93.1 でも feature つきのビルドが通ります）、`tsuzuri build --backend fast` を `tests/fast_backend.mjs` で確かめました。AArch64 の Linux は、既定の mode の 11 段、`programs`（同じ出力 21、同じ export 83、差 0、比べないもの 12。macOS と同じ数）、`wasm`（同じ挙動 94、差 0。module の大きさの合計は macOS と同じ 7,109,151 → 8,143,766 bytes）、`cargo test --features fast-backend --test fast_backend --test fast_backend_ops`（7 件と 2 件）がすべて成功しました。x86-64 の Linux は、既定の mode の 11 段、`programs`（同じ数）、`cargo test` の同じ 2 つ（7 件と 2 件。native の 821 演算は x86-64 の機械語で Clang と bit 単位で一致）が成功しました（`wasm` mode は module が host に依らないので、x86-64 では行っていません）。
+2. 翻訳器の object だけ（macOS で `tz-fast-cc --target …` が Linux 向けの IR を ELF の object にし、コンテナの clang 21 が C の runtime を作ってリンクする）: 両方の Linux で、実行できる 21 個の project が macOS の `llvm` のビルドと同じ stdout・stderr・終了状態になりました（既定の allocator と `--allocator small`、後者は TLS（`elf_gd`）を通ります）。`tests/fixtures/bounds_checks` の 10 個の export と 5 つの trap は、AArch64 が SIGTRAP（5）、x86-64 が SIGILL（4）で、値と trap の有無が同じでした。`tests/fast_backend_ops.rs` の 821 演算（`TSUZURI_FAST_OPS_EXPORT`）は、同じコンテナの Clang 21 の `-O0` と bit 単位で一致しました。`-g` の x86-64 と AArch64 の ELF の object は `llvm-dwarfdump --verify` が通ります。
+
+この確認で見つかった x86-64 だけの問題は 2 つです（どちらも直して、test に入れました）。Cranelift の x86-64 は、署名に `i128` があると `enable_llvm_abi_extensions` がなければ panic します（AArch64 の機械では出ません）。`llvm.fmuladd` は、Clang が baseline に FMA のない x86-64 では融合しないので、翻訳器も乗算と加算に分けます。`llvm.minimum`・`llvm.maximum` の NaN の payload と符号は x86-64 で Clang と違いましたが、言語は NaN の伝播だけを約束するので（`min` と `max`）、test は NaN を 1 つの値として比べます（NaN 以外の値と符号付きゼロの結果は一致しました）。
+
+**生成コードの確認**: `examples/hello` の `sum`（引数 2 つの末尾再帰）の AArch64 の命令数は、関数全体で `fast` が 25、`llvm -O0` が 23 です（`llvm-objdump -d`）。loop 1 周は、`llvm -O0` が 15 命令（load 6、store 4。phi の値を slot にコピーして読み直す）、`fast` が 17 命令（load 4、store 2）で、`fast` は slot のアドレスを `mov x3, sp`・`add x4, sp, #0x10` のように毎回作ります（`opt_level = none` の Cranelift は `stack_addr` のオフセットを `[sp, #n]` に畳みません）。同じ IR を x86-64 に翻訳した命令は、Linux の x86-64 のコンテナで、`llvm -O0` と 821 演算を bit 単位で比べて確かめました（測定 4）。
+
+**測っていないこと・限界**:
+
+- 速度は、共有機（load average 9〜33）の参考値です。静かな機械での正式な比較は統合担当が行います。
+- Windows: `--backend fast` はホストが Windows のとき `E2000` です。翻訳器の COFF の書き出し（x86-64。`CallConv::WindowsFastcall`、inline の probestack、`.refptr` の PIC）は 2 つの MSVC target で型検査を通り、macOS で作った x86-64 の COFF の object を `llvm-readobj` が読めますが、Windows では 1 度も実行していません。さらに、Windows 向けの IR（`windows_abi` が足す `__multi3` などの 128 bit の helper を `weak hidden` で定義する）は、128 bit の整数を引数に持つ外部の関数の C の呼び出し規約を、LLVM の libcall の規約と合わせられるか確かめられないので、翻訳器は `E2002` で拒みます。有効にするには、Windows で `windows.yml` の job の実行結果を見ながら、その規約を決める必要があります。AArch64 の Windows は、`cranelift-object` が COFF を書けないので `E2002` です。
+- x86-64 の macOS（Intel）: object の形式と、`ld64` でのリンクまでは確かめました（実行は不可）。Linux の x86-64 は、下の測定 4 のとおりです。
+- wasm32 の実行は V8（Node.js 20）だけで確かめました。ほかのエンジン（SpiderMonkey・JavaScriptCore）と Node.js 24 は測っていません。
+- `AGGREGATE_FLATTEN_LEAVES`（16）と Cranelift の `regalloc_algorithm`（既定の `backtracking`）は、チケットの計画した調整をしていません（ゲートを通ったので、翻訳の時間の約 10% の調整を後回しにしました）。
 <!-- /phase4:PB05 -->
 
 ### PB06 常駐ビルドサーバーと watch モード

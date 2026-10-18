@@ -406,7 +406,7 @@ tsuzuri build demo/Main.tz -o demo/hello
 scalar/Main.tz:1:1: error[E2004]: an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library
 ```
 
-成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。`-O0` のビルドを速くするには `--backend fast` を付けます。Tsuzuri の IR を Clang ではなくコンパイラ自身が機械語にし、リンクだけを Clang に任せます。`--emit exe` と `--emit object` の native だけで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要ります（[コード生成器](option.md#コード生成器)）。
+成果物を小さくするには、`-Os` か `-Oz` を付け、native の実行ファイルでは `--strip` も付けます。どちらもプログラムの動作は変わりません（[成果物を小さくする](option.md#成果物を小さくする)）。`-O0` のビルドを速くするには `--backend fast` を付けます。Tsuzuri の IR を Clang ではなくコンパイラ自身が機械語にし、リンクだけを Clang に任せます。native の `--emit exe` と `--emit object`、wasm32 の `--emit wasm` と `--emit object` で、`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要ります（[コード生成器](option.md#コード生成器)）。wasm32 では、Clang の代わりにコンパイラが wasm の命令を直接書き、リンクだけを `wasm-ld` に任せます（[fast の WebAssembly](option.md#fast-の-webassemblywasm32)）。
 
 実行時の分岐の頻度で最適化するには、`--profile-generate DIR` で計装した実行ファイルを代表的な仕事で動かし、`DIR` を `--profile-use` に渡して作り直します。`DIR` の `.profraw` は `llvm-profdata` で merge されます（merge 済みの `.profdata` も渡せます）。
 

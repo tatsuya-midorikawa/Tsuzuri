@@ -261,6 +261,14 @@ WebAssembly のモジュールは、内容のほとんどがコードです。�
 tsuzuri build Main.tz --target wasm32 -Oz --wasm-opt -o shop.wasm
 ```
 
+## 編集とビルドを速くする（`--backend fast`）
+
+`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
+
+```sh
+tsuzuri build Main.tz --target wasm32 -O0 --backend fast -o app.wasm
+```
+
 ## プロファイルで最適化する
 
 wasm32 の module も、実行時の分岐の頻度で最適化できます。module はプロファイルのランタイムを持たないので、`--profile-generate DIR` は計装した `shop.wasm` と、その隣に書き出し役の `shop.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に LLVM の raw profile ができ、`--profile-use DIR` で作り直します（手順と制限は [プロファイル誘導最適化](option.md#webassembly-の-module)）。

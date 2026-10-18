@@ -817,4 +817,102 @@ shasum -a 256 $T/hello-fast.o $T/hello-fast2.o
 - 決定: 本チケットでは行わない。将来行う場合は、再配置可能な wasm object（`linking`・`reloc.*` section）を書き、ランタイムの `.ll` の linkage を変えて
   wasm32 object に事前 compile し、`wasm-ld` で link する設計を別チケットで承認を得て進める。
 - 理由: WASM のビルドは `run` の繰り返しになく、ランタイムの linkage の変更は LLVM 経路の IR を変える。
-- 状態: 既定案（実装者はこの案に従う）
+- 状態: 既定案（実装者はこの案に従う）。**2026-10-17 の依頼と WP16 の判断で、直接の WASM 生成を実装した**（下の「WP16 の判断」）。LLVM 経路の IR は変えていない。
+
+## 実装と検証（2026-10-18）
+
+### 実装した範囲
+
+全フェーズを実装した（D1・D2・D3・D9・D13 は 2026-10-17 の依頼で承認済み）。**D12（既定の切り替え）は行っていない**: 既定は `llvm` のままで、`--backend` を付けないビルドの出力は変わらない（旗なしの IR は `tests/fast_backend.mjs` の既定 mode が `--backend llvm` と byte 比較し、保存した基準の compiler とも `TSUZURI_BASELINE` で比べられる）。
+基準は `a2313d19`（main `9dd0fbbc` + 第4フェーズの足場）、branch `perf/p4-PB05`。TBD-COMMITS
+
+| commit | 内容 |
+| --- | --- |
+| `359550e1` | WP0 着手時の再検討（文書だけ） |
+| `35be7e49` | WP2 cargo feature `fast-backend`（Cranelift 0.121.2 を `=` で固定。feature なしのビルドは変わらない） |
+| `f80e0675` | WP3 `--backend llvm\|fast`、`BuildOptions::validate_fast`（allow-list。`BuildOptions` の全欄を destructure するので、欄を足すと決めるまで compile が通らない） |
+| `369af842`・`ee9a0125` | WP4〜7 IR の読み取りと翻訳（layout・ABI・lowering・intrinsic・global data・object）。vector は lane に分ける |
+| `3a0174f0` | WP8 driver: module の IR を in-process で翻訳して `module.o` を作り、同じ link コマンドを使う。`tz-fast-cc`（feature つきの test 用 helper binary）と route A・B の wrapper |
+| `c16cba7c` | WP10 Clang との照合の test（`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`）と、それが見つけた誤りの修正 |
+| `394b16f3` | WP13 `tsuzuri test --backend fast` |
+| `4fe000ef`・`b6ea5d87` | WP9・WP11 ゲートの計測 script（`benchmarks/run-backend.mjs`）、文書、常駐サーバーの test への組み込み |
+| `77bb5582`・`34ea4b2e` | WP12 `-g` の DWARF（`!dbg` の位置を Cranelift の source location に、gimli で行表と関数の DIE） |
+| `127a6e75` | WP15 `--allocator small\|counting`・`--freestanding`・`--trap-mode return` |
+| `506d5c9f`〜`9250638a`（WP17 の 12 commit）、`3858bdff`（WP18）、`62799906`（WP20） | 直接の wasm32 生成（D13）: object writer、lowering、driver、差分テストと wrapper、locals の共有 |
+| `315b5808`・`c16dbc7a` | WP14 の確認で見つけた x86-64 の誤り、別の機械向けの object の test |
+| 統合の merge | `4b315242`・`2beef865`・`7f0071f2`（PR07・PR08・PB06 など）、`e0508729`（`e4025531`）、TBD-MERGE |
+
+### 作業ごとの結果
+
+| WP | 結果 |
+| --- | --- |
+| WP1 | `tests/fast_backend.mjs` の `inventory` mode: 102 project の IR と runtime の `.ll` に 51 種の命令・47 種の intrinsic・23 種の vector 型があり、D6 に無い構成要素の方針（翻訳する・E2002 で拒む）を表にした |
+| WP2 | feature と crate（`cranelift-codegen`・`frontend`・`module`・`object` の `=0.121.2`、`target-lexicon` 0.13、WP12 の `gimli` `=0.31.1`）。rustc 1.85.0（MSRV）でも 1.93.1・1.98.1・1.99.0 でも build が通り、依存に C を compile する `build.rs` は無い。Cranelift は 0.121.2 が `rust-version` 1.85 以下の最新（0.122 は 1.86 を要する） |
+| WP3 | CLI。範囲外の組み合わせは build に入る前に E2000（`--cpu native`、`-O1` 以上、`--emit` の `llvm`・`header`・`shared`・`bitcode` など、`--profile-*`、`--target TRIPLE`、Windows のホスト、feature なしの build） |
+| WP4〜7 | 翻訳。`module::scan`（型・global・declare・define の header と本体の範囲）、worker での本体の parse、到達できる関数だけを翻訳（D16）、集約は 16 leaf まで scalar（`FLATTEN_LEAVES`）、超えると frame 上、`i128`・atomic・TLS・weak・`fastcc`・`byval`・`sret`・overflow と saturation の intrinsic・vector の lane 分けを実装 |
+| WP8 | driver。object は 1 つの `Vec<u8>`（`module.ll` は書かない）、翻訳は関数ごとに `TSUZURI_THREADS` の worker で並列で、object のバイト列は thread 数に依らず同じ。route B の helper は、隠し subcommand ではなく、feature つきの `[[bin]] tz-fast-cc`（`required-features = ["fast-backend"]`）にした |
+| WP9 | ゲート: 通った（docs/benchmarks.md の PB05 の節）。native 0.50〜0.57 倍、wasm32 0.36〜0.47 倍。停止条件 9 は発動しなかった |
+| WP10 | parity: route A（`tsuzuri` の wrapper）と route B（`clang` の wrapper）。fall back は `half` だけ（driver は `F16Path::Soft` を渡すので、`fast` のビルドでは出ない） |
+| WP11 | 文書と測定の記録 |
+| WP12 | `-g`: `.debug_line` の行表と関数ごとの `DW_TAG_subprogram`（DWARF 4）。`llvm-dwarfdump --verify` が通り、21 個の実行ファイルの 1,393 関数が `llvm` の行をすべて持つ。変数と型の情報は書かない（`llvm` だけ）。Linux の x86-64・AArch64 の ELF の object も `--verify` が通る。macOS で C の runtime が要る `--emit object -g` は E2002（`ld -r` が DWARF を捨てる） |
+| WP13 | `test` の 2 つの `clang -x ir` を置き換えた。`--index N -g -o PATH` も同じ runner |
+| WP14 | **Windows は、ホストでは E2000 のまま**（型検査だけで実行できないため）。翻訳器の x86-64 COFF の書き出し（`CallConv::WindowsFastcall`・inline の probestack・`tls_model = coff`）は 2 つの MSVC target で型検査を通る。確認で見つけたこと: (1) Cranelift の x86-64 は署名に `i128` があると panic する（`enable_llvm_abi_extensions` で直した。AArch64 の機械では出ない）、(2) aarch64 の Windows は `cranelift-object` が panic するので E2002 にした、(3) Windows 向けの IR は `windows_abi` が `__multi3` などを `weak hidden` の `i128` の署名で定義し、他の object が LLVM の libcall の規約で呼ぶので、翻訳器は E2002 で拒む（Windows で規約を確かめるまで有効にしない）。test `objects_for_other_machines_have_their_formats` が 5 つの target の object の形式を確かめる |
+| WP15 | `--allocator small\|counting`・`--freestanding`・`--trap-mode return` は parity で一致し、許した。`--emit shared`・`--cpu native` は E2000 のまま（理由は文書） |
+| WP16 | D13 を実装すると判断（下） |
+| WP17〜20 | 直接の wasm32 生成。再配置可能な wasm object（`linking`・`reloc.CODE`・`reloc.DATA`・`target_features`）を自前で書き、`wasm-ld` でリンクする。`WebAssembly.validate` が通り、import は Clang の object と同じ順序、export も同じ |
+
+### 実装しなかったもの
+
+- D12（既定の切り替え）。`llvm` が既定のまま。
+- 範囲外で E2000: `--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm|header`、`--profile-*`、`--target TRIPLE`、Windows のホスト、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net）・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64。
+- 翻訳器が E2002 で拒むもの: `half`（driver は `F16Path::Soft` なので実際には出ない）、128 bit の `smul.with.overflow`・`umul.with.overflow`、wasm32 の `llvm.fma`（命令が無い）、署名に `i128` を持つ外部の関数（Windows の `windows_abi` の helper）、1 関数に 40,000 を超える値がある関数（wasm の engine の locals の上限）、aarch64 の Windows。拒むたびに構成要素と関数の名前を表示する。
+- `AGGREGATE_FLATTEN_LEAVES`（16）と Cranelift の `regalloc_algorithm`（既定）の調整: ゲートを通ったので行わなかった（翻訳器は native の `fast` の total の 9〜12%）。
+- wasm32 の loop は、前向きの分岐は構造化した `br` で、後ろ向きの分岐は dispatch の loop（`pc` の local と `br_table`）を通る。配列と list の loop は `llvm` の `-O0` の 1.3〜1.5 倍の時間になる（構造化した loop への変換は行っていない）。
+- 速度の正式な測定（静かな機械）、Windows での実行、Intel の macOS での実行。
+
+### 決定事項の追記
+
+- D1・D2: 維持。入力は `-O0` の LLVM IR テキスト、in-memory、`src/llvm*.rs` は変えていない（native も wasm32 も、LLVM 経路の IR は byte 同一）。
+- D3: crate は上のとおり。`object` は `cranelift_object::object` の再 export を使い、直接の依存は足していない。`cranelift-native` は使わない（出力が機械に依らない）。feature なしの build は従来どおり。
+- D4・D5: `--backend llvm|fast`、`build`・`run`・`test`。範囲は option.md の表のとおり。
+- D6: 表にない構文は E2002。vector は lane に分け、`llvm.vector.reduce.*`・`shufflevector`・mask vector を含む。
+- D7: fast は LLVM 経路に渡る IR と同じ text を翻訳し、runtime の object は同じ関数・同じ引数で作る（cache は共有される）。
+- D8: 二層の集約値。leaf が 16 以下は scalar の列、超えると frame 上。
+- D9: 行情報だけ（WP12）。
+- D10: `backend` は `build_key` に入る（`BuildOptions` の全欄が鍵になる）。test「the cache keeps the backends apart」が、2 つの backend の成果物を取り違えないことを確かめる。
+- D11: wrapper は経路 A（`tsuzuri build\|run` に `--backend fast` を足す）と経路 B（`clang -x ir` の呼び出しを `tz-fast-cc` に）。経路 B は E2002 になったときだけ clang に戻り、件数と理由を数えて表示する。
+- D12: 行わない。
+- D13: 実装した（下）。D14〜D16（並列と決定性、Cranelift の設定、翻訳の単位）は計画のとおり。
+- 追加（D17）: 翻訳器は host の CPU を検出せず、x86-64 は baseline とする。このため `llvm.fmuladd` は x86-64 で乗算と加算に分け（Clang が融合しない構成に合わせる）、AArch64 では融合する。`llvm.minimum`・`llvm.maximum` の NaN の payload と符号は、Clang と一致しないことがある（言語は NaN の伝播だけを約束する）。
+
+### WP16 の判断（D13）
+
+- 証拠: wasm32 の `-O0` の `llvm` のビルドは、Clang と `wasm-ld` が total の 55〜70%（200 module で 61〜70%、1,000 module で 55〜59%。docs/benchmarks.md の測定 1）を占め、native の Clang（48〜63%）と同じ規模である。wasm 用の runtime IR は vector と threads の atomic 以外の特別な命令を使わず、native の前半（解析・layout・到達性・集約の分類・intrinsic の表）をそのまま共有できる。
+- 判断: **実装する**。実装して、200 module で 0.36〜0.42 倍、1,000 module で 0.45〜0.47 倍になった（`llvm` のビルド比）。止める理由になる blocker は無かった。
+- 実装は計画の素案から変えた点がある: (1) 制御構造は dispatch の `loop`＋`br_table` のままで、前向きの分岐は構造化した `br`（`pc` を通らない）。(2) SSA 値は local で、生存期間が重ならない値は local を共有する（深い再帰の関数の local が 2,031 から 12 に）。(3) object writer・lowering・`i128`・vector・intrinsic・`wasm-ld` が読む再配置を自前で書いた（新しい crate は足していない）。(4) import は Clang と同じく最初に使われた順に番号を付ける（`tests/async.mjs` がその順序を観測する）。規模は計画の 3,500〜4,500 行に対して、実装は 約 6,300 行（`src/backend/wasm/`）だった。
+- 結果: module は `llvm` の `-O0` より大きい（合成プロジェクトで 1.40〜1.43 倍、`examples/` と `tests/fixtures/` の 94 個の合計で 1.10 倍）。V8 での実行時間は、scalar の loop が `llvm` の `-O0` と同じ、配列と list の loop が 1.3〜1.5 倍、全体で 1.05 倍（`-O3` の 3.1 倍）。
+
+### 確認
+
+TBD-VERIFICATION
+
+### 計測
+
+docs/benchmarks.md の PB05 の節（native と wasm32 のゲート、生成コードの速さ、大きさ、Linux・x86-64、生成コードの確認）。要点: ゲート（1,000 module の `build-edit-body`）は native 0.56 倍、wasm32 0.48 倍。ビルドの残りは frontend が大半で、翻訳器は native で total の 9〜12%。TBD-SIZES
+
+### 見つけた問題・残作業
+
+- Windows のホストで `--backend fast` を有効にするには、Windows で `windows_abi` の `__multi3` などの 128 bit の規約を確かめる必要がある（WP14）。有効にするときは `validate_fast` の `cfg!` を変え、`windows.yml` で `tests/fast_backend.mjs` を動かす。
+- 配列と list の loop の wasm32 の速度（dispatch の loop を通る後ろ向きの分岐）。loop ごとに構造化した `loop` を置く変換をすれば、1.3〜1.5 倍の差は縮むはずだが、行っていない。
+- Cranelift 0.122 以降は rust-version 1.86 以上が要る。MSRV を上げるときに、crate の版を上げて x86-64 の `enable_llvm_abi_extensions` などの設定を確かめる。
+- 常駐サーバー（PB06）の `serve`・`watch` は `--backend` を要求の引数として運ぶ（`tests/server.mjs` が `--backend fast` を一度ずつ、サーバー経由と単独で比べる）。
+- CI: `targets.yml` の 4 つの host に、feature つきの `cargo test --features fast-backend --test fast_backend --test fast_backend_ops` と `node tests/fast_backend.mjs`（既定・`programs`・`wasm`）を載せる。`windows.yml` は、有効にするまで型検査（`cargo check --all-targets --features fast-backend --target x86_64-pc-windows-msvc`）だけ。
+
+### 更新したドキュメント
+
+`README.md`（検証コマンド）、`docs/architecture.md`（図・module の表・翻訳器の節）、`docs/language.md`（`--backend`）、`docs/benchmarks.md`（PB05 の節）、`_tsuzuri/language-reference/compiler/option.md`（コード生成器・fast の WebAssembly・fast のデバッグ情報）、`usage.md`、`platforms.md`、`webassembly.md`、`debugging.md`。
+
+### 変更したファイル
+
+新規: `src/backend/`（`mod`・`module`・`parse`・`lex`・`func`・`types`・`abi`・`call`・`lower`・`ops`・`mem`・`intrinsics`・`data`・`debug`・`target`・`error`、`wasm/` の 8 ファイル）、`src/bin/tz-fast-cc.rs`、`tests/fast_backend.rs`・`fast_backend_ops.rs`・`fast_backend.mjs`、`benchmarks/run-backend.mjs`・`run-backend-kernels.mjs`・`control/kernels.c`。
+変更: `Cargo.toml`・`Cargo.lock`（feature と crate）、`src/lib.rs`、`src/main.rs`（`--backend`）、`src/driver.rs`（`Backend`・`validate_fast`・build の flow）、`src/test_runner.rs`、`src/server.rs`（`sources()` が `src/bin/` を読み飛ばす）、`tests/server.mjs`。

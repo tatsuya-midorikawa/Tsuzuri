@@ -219,7 +219,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - リンクして、ヘッダーを検査した（実行はしていない）: 同梱ツールチェーンで Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows。macOS の job では、もう一方の Apple の CPU と、iOS の 3 target（Xcode の SDK を `TSUZURI_SYSROOT` に渡します）。
 - オブジェクトまで作った: MSVC の Windows、Android、bare-metal（4 つの job）、iOS（Linux の 2 つの job）。
 - 実行器のフック（`TSUZURI_RUNNER`）は、偽の実行器のスクリプト、qemu-user、Rosetta で確かめました。Wine を使った実行は確かめていません。
-- `--backend fast`（[コード生成器](option.md#コード生成器)）は、ビルド機の native だけを受け付けます。macOS と Linux の AArch64・x86-64 が対象で、実行して確かめたのは Apple M1 Max の macOS（AArch64）だけです。x86-64 の macOS、AArch64 と x86-64 の Linux は、同じ翻訳で別の triple の object を作り、`llvm-objdump` でトラップ命令（AArch64 は `brk`、x86-64 は `ud2`）と section を読んだだけで、実行はしていません。Windows と、`--target TRIPLE` の名前を付けた target は `E2000` です。
+- `--backend fast`（[コード生成器](option.md#コード生成器)）は、ビルド機の native と `wasm32` を受け付けます。ビルド機は macOS と Linux の AArch64・x86-64 が対象です。Apple M1 Max の macOS（AArch64）で、すべてのテストを実行しました。Linux は、Docker Desktop の Ubuntu 26.04 のコンテナ（AArch64 は VM の中で native の速さ、x86-64 は Rosetta の emulation）で、feature つきの `tsuzuri` をビルドして `build --backend fast` の差分テスト（`examples/` と `tests/fixtures/` の実行ファイル 21 個の出力と、library 83 個の export）と、約 820 の演算の Clang との照合を実行しました。x86-64 の macOS（Intel）は、object を作って `ld64` でリンクしただけで、実行していません。wasm32 の module は、Node.js（V8）で `WebAssembly.validate` が通り、`llvm` の module と同じ結果になることを確かめました。ほかの engine では確かめていません。Windows のビルド機と、`--target TRIPLE` の名前を付けた target と、`wasm64` は `E2000` です。
 
 確かめていないのは、`aarch64-pc-windows-msvc` と MinGW の target を Windows のホストで実行すること、MSVC の実行ファイルを Windows 以外のホストでリンクすること、FreeBSD・Android・iOS の実行（実機とシミュレーター）です。
 

@@ -922,13 +922,16 @@ cargo build --release --locked
 
 # 高速デバッグバックエンド（PB05。`--backend fast`）。feature なしのビルドと検証は上のとおりで、変わらない
 cargo clippy --all-targets --features fast-backend -- -D warnings
-RUST_MIN_STACK=4194304 cargo test --locked --features fast-backend --test fast_backend --test fast_backend_ops   # 翻訳器: layout を Clang と照合、E2002 の表、IR の翻訳と決定性、test の runner、約 760 の演算を Clang の object と bit 単位で比較
+RUST_MIN_STACK=4194304 cargo test --locked --features fast-backend --test fast_backend --test fast_backend_ops   # 翻訳器: layout を Clang と照合、E2002 の表、IR の翻訳と決定性、test の runner、約 780 の演算を Clang の object と native では bit 単位で、wasm32 では Node で（NaN の payload を除いて）比較
 cargo build --release --locked --features fast-backend
 node tests/fast_backend.mjs target/release/tsuzuri   # option の表（E2000）、hello・trap・--trap-info・run、thread 数の決定性、export する symbol、cache の鍵、test、-g の行表、旗なしの IR の不変
 node tests/fast_backend.mjs programs target/release/tsuzuri   # examples と fixtures を llvm と fast の両方で動かして出力と終了状態を比べる（library は export する symbol）。FAST_DEBUG=1 で -g も付ける
 node tests/fast_backend.mjs debug target/release/tsuzuri   # 同じ projects を -g で作り、fast の DWARF を llvm-dwarfdump --verify で検証し、関数ごとの行を llvm のものと比べる
-node tests/fast_backend.mjs parity e2e strings tasks features   # 既存の suite を、tsuzuri と clang の wrapper の下で fast に流す。翻訳した件数と fall back の理由を suite ごとに表示
-node benchmarks/run-backend.mjs --out target/perf/backend   # llvm と fast の build 時間・CPU 時間・メモリ（合成 200・1,000 モジュール。docs/benchmarks.md の PB05）
+node tests/fast_backend.mjs wasm target/release/tsuzuri   # wasm32: 同じ projects を llvm と fast で作り、fast の module が validate を通ること、import・export が同じことを確かめ、すべての export を同じ入力で Node から呼んで結果を比べる。FAST_WASM_ARGS="--allocator small" などで option を足せる
+node tests/fast_backend.mjs parity e2e strings tasks features   # 既存の suite を、tsuzuri と clang の wrapper の下で fast に流す（wasm32 の build も）。翻訳した件数と fall back の理由を suite ごとに表示。FAST_FORCE=1 で最適化つきの build も -O0 の fast にする。clang しか使わない suite は wasm_heap=wasm32 のように引数を渡す
+node benchmarks/run-backend.mjs --out target/perf/backend   # llvm と fast の build 時間・CPU 時間・メモリ（合成 200・1,000 モジュール。docs/benchmarks.md の PB05）。--target wasm32 で wasm32
+node benchmarks/run-backend-kernels.mjs --out target/perf/kernels   # benchmarks/control の 16 種目を、llvm の -O0、fast の -O0、llvm の -O3 で作って実行時間を比べる（checksum が同じことも確かめる）。--target wasm32 で Node の中で動かす
+TSUZURI_FAST_OPS_EXPORT=DIR TSUZURI_FAST_OPS_TARGET=x86_64-unknown-linux-gnu cargo test --locked --features fast-backend --test fast_backend_ops operations_agree_with_clang   # 比較の材料（host.c、IR、別の機械向けの object）を DIR に書いて止まる。Linux のコンテナで clang と比べる（x86-64 の Linux など、この機械で動かせない target の確認）
 
 # 統合 E2E テスト・言語機能テスト
 node tests/e2e.mjs target/release/tsuzuri
