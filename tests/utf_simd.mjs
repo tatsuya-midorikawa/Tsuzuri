@@ -163,6 +163,8 @@ try {
     let ir = "%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\ndeclare void @llvm.trap()\n" +
       read("string.ll") + read("utf8string.ll") + selected +
       reference + bridges("v", "tz") + bridges("r", "ref") +
+      // The kernels call it before they allocate; the limit of a module's heap is tested with the compiler's IR.
+      "define internal void @tz.string.latin1_fits(i64 %length) nounwind {\n ret void\n}\n" +
       read(simd ? "string_latin1_v128.ll" : "string_latin1.ll") + latin1Reference +
       latin1Bridges("v", "tz") + latin1Bridges("r", "ref") +
       "define void @test_drop(ptr %p) {\n call void @tz.free(ptr %p)\n ret void\n}\n" +

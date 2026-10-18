@@ -55,6 +55,36 @@ const INTEGER_TAKEN: &[&str] = &["tz.integer.parse", "tz.integer.parse128"];
 /// The integer parsers that get a copy that reads Latin-1 bytes, in the order that the copies are written.
 const INTEGER_COPIED: &[&str] = &["tz.integer.scan", "tz.integer.parse", "tz.integer.parse128"];
 
+/// `@tz.string.latin1_fits`, which `allocate_latin1` and the Latin-1 `append` call before they ask the heap
+/// for a block. Where the heap refuses a block above a limit (WebAssembly, whose heap is part of the module),
+/// a Latin-1 string must not be longer than the UTF-16 string of the same units could be: the length that
+/// traps in the UTF-16 form traps here too, in the same call and as the same failure of the heap (the refused
+/// request is the UTF-16 one), and `to_utf16` and `borrow_utf16` are never refused for the limit. The limit
+/// is the heap's, on twice the length; `with_wasm_heap_limit` rewrites this line with the heap's three
+/// (`--wasm-max-memory`), so the text of the line is the one that it matches.
+const LATIN1_FITS_LIMITED: &str = "\
+define internal void @tz.string.latin1_fits(i64 %length) nounwind {
+entry:
+  %size = shl i64 %length, 1
+  %latin1_fits = icmp ule i64 %size, 16777184
+  br i1 %latin1_fits, label %done, label %refuse
+refuse:
+  %block = call ptr @tz.alloc(i64 %size)
+  call void @llvm.trap()
+  unreachable
+done:
+  ret void
+}
+";
+/// Without such a limit (native, and a WebAssembly module whose allocator is the host's) there is nothing
+/// to check: the allocator gives what it can, and a Latin-1 string takes half of the bytes of a UTF-16 one.
+const LATIN1_FITS_UNLIMITED: &str = "\
+define internal void @tz.string.latin1_fits(i64 %length) nounwind alwaysinline {
+entry:
+  ret void
+}
+";
+
 /// The environment variable that chooses the form of the compiler's commands and test suites.
 pub const ENVIRONMENT_VARIABLE: &str = "TSUZURI_STRINGS";
 
@@ -106,11 +136,13 @@ impl StringForm {
     /// The string runtime for this form: `string.ll`, `utf8string.ll`, and the UTF-16 kernels that
     /// follow them, up to the heap. `utf16` is that text for the UTF-16 form. The Latin-1 kernels are
     /// the vector ones when `vector` is set, which is when the UTF-16 runtime is the vector one too:
-    /// native, and WebAssembly with `simd128`.
+    /// native, and WebAssembly with `simd128`. `limited` says that the heap refuses a block above a
+    /// limit that the module has (WebAssembly, unless the allocator is the host's).
     pub(crate) fn string_runtime<'a>(
         self,
         utf16: &'a str,
         vector: bool,
+        limited: bool,
     ) -> Result<Cow<'a, str>, Diagnostic> {
         match self {
             Self::Utf16 => Ok(Cow::Borrowed(utf16)),
@@ -118,7 +150,15 @@ impl StringForm {
                 utf16,
                 STRING_TAKEN,
                 STRING_DROPPED,
-                &[if vector { KERNELS_V128 } else { KERNELS }, STRING_LAYER],
+                &[
+                    if vector { KERNELS_V128 } else { KERNELS },
+                    if limited {
+                        LATIN1_FITS_LIMITED
+                    } else {
+                        LATIN1_FITS_UNLIMITED
+                    },
+                    STRING_LAYER,
+                ],
             )
             .map(Cow::Owned),
         }
@@ -587,22 +627,73 @@ mod tests {
     fn the_string_layer_takes_over_exactly_one_definition_of_each_name() {
         for (shape, utf16) in string_runtimes() {
             for vector in [false, true] {
-                let compact = StringForm::Compact.string_runtime(&utf16, vector).unwrap();
-                assert_layer(&utf16, &compact, STRING_TAKEN, STRING_DROPPED, STRING_LAYER);
-                assert!(
-                    compact.contains(if vector { KERNELS_V128 } else { KERNELS }),
-                    "{shape} {vector}"
-                );
-                assert!(
-                    !compact.contains(if vector { KERNELS } else { KERNELS_V128 }),
-                    "{shape} {vector}"
-                );
+                for limited in [false, true] {
+                    let compact = StringForm::Compact
+                        .string_runtime(&utf16, vector, limited)
+                        .unwrap();
+                    assert_layer(&utf16, &compact, STRING_TAKEN, STRING_DROPPED, STRING_LAYER);
+                    assert!(
+                        compact.contains(if vector { KERNELS_V128 } else { KERNELS }),
+                        "{shape} {vector}"
+                    );
+                    assert!(
+                        !compact.contains(if vector { KERNELS } else { KERNELS_V128 }),
+                        "{shape} {vector}"
+                    );
+                    // Exactly one `latin1_fits`, the one that the heap's limit asks for.
+                    assert_eq!(
+                        defined(&compact)
+                            .iter()
+                            .filter(|name| **name == "tz.string.latin1_fits")
+                            .count(),
+                        1,
+                        "{shape} {vector} {limited}"
+                    );
+                    assert_eq!(
+                        compact.contains(LATIN1_FITS_LIMITED),
+                        limited,
+                        "{shape} {vector} {limited}"
+                    );
+                    assert_eq!(
+                        compact.contains(LATIN1_FITS_UNLIMITED),
+                        !limited,
+                        "{shape} {vector} {limited}"
+                    );
+                }
             }
-            let borrowed = StringForm::Utf16.string_runtime(&utf16, true).unwrap();
+            let borrowed = StringForm::Utf16
+                .string_runtime(&utf16, true, true)
+                .unwrap();
             assert!(
                 matches!(borrowed, Cow::Borrowed(text) if text == utf16),
                 "{shape}"
             );
+        }
+    }
+
+    #[test]
+    fn the_limit_of_a_latin1_string_follows_the_heap_limit_of_the_module() {
+        // `--wasm-max-memory` rewrites the line of the limit with the heap's, and the default leaves it.
+        let rewritten = with_wasm_heap_limit(LATIN1_FITS_LIMITED.to_owned(), 64 << 20);
+        assert!(rewritten.contains("  %latin1_fits = icmp ule i64 %size, 67108832\n"));
+        assert!(!rewritten.contains("16777184"));
+        assert_eq!(
+            with_wasm_heap_limit(
+                LATIN1_FITS_LIMITED.to_owned(),
+                crate::driver::DEFAULT_WASM_MAX_MEMORY
+            ),
+            LATIN1_FITS_LIMITED
+        );
+        // The heap's own limit is what the line copies.
+        let heap = include_str!("runtime/heap-wasm.ll");
+        assert!(
+            heap.lines()
+                .any(|line| line == "  %fits = icmp ule i64 %size, 16777184")
+        );
+        // The kernels and the layer call it and none of them defines it: the form of the module chooses.
+        for text in [KERNELS, KERNELS_V128, STRING_LAYER] {
+            assert!(text.contains("call void @tz.string.latin1_fits(i64 %length)"));
+            assert!(!text.contains("define internal void @tz.string.latin1_fits("));
         }
     }
 

@@ -72,6 +72,8 @@ const bridges = [
   `define i32 @t_compare_mixed(ptr %a, i64 %an, ptr %b, i64 %bn) {\n  %r = call i32 @tz.string.compare_mixed(ptr %a, i64 %an, ptr %b, i64 %bn)\n  ret i32 %r\n}\n`,
   `define i64 @t_from_latin1(ptr %src, i64 %n, ptr %out) {\n  %r = call %tz.utf8string @tz.utf8string.from_latin1(ptr %src, i64 %n)\n  %d = extractvalue %tz.utf8string %r, 0\n  %m = extractvalue %tz.utf8string %r, 1\n  store ptr %d, ptr %out\n  ret i64 %m\n}\n`,
   `define ptr @t_alloc(i64 %n) {\n  %p = call ptr @tz.alloc(i64 %n)\n  ret ptr %p\n}\n`,
+  `define void @t_latin1_fits(i64 %n) {\n  call void @tz.string.latin1_fits(i64 %n)\n  ret void\n}\n`,
+  `define i64 @t_allocate_latin1(i64 %length, ptr %out) {\n${stringResult("call %tz.string @tz.string.allocate_latin1(i64 %length)")}`,
   `define void @t_free(ptr %p) {\n  call void @tz.free(ptr %p)\n  ret void\n}\n`,
   ...["live", "calls", "bytes", "reallocs"].map((name) => `define i64 @t_${name}() {\n  %v = load i64, ptr @test.${name}\n  ret i64 %v\n}\n`),
   `define void @t_reset() {\n  store i64 0, ptr @test.calls\n  store i64 0, ptr @test.bytes\n  store i64 0, ptr @test.reallocs\n  ret void\n}\n`,
@@ -731,6 +733,42 @@ define i64 @g_recorded() {
   return { accepted: accepted.length, traps: traps.length };
 }
 
+// The heap of a WebAssembly module refuses a block above 16,777,184 bytes, and a Latin-1 string is refused at the length that
+// the UTF-16 string of the same units is (8,388,592): the request that is refused is the UTF-16 one, the heap's own.
+function heapLimit(module) {
+  const units = 8_388_592n;
+  const isolated = () => {
+    api = new WebAssembly.Instance(module).exports;
+    OUT = api.t_alloc(64n);
+    api.t_reset();
+  };
+  isolated();
+  api.t_latin1_fits(units);
+  assert.equal(api.t_calls(), 0n, "a length that fits asks the heap for nothing");
+  api.t_latin1_fits(0n);
+  assert.equal(api.t_allocate_latin1(units, OUT), units | LATIN1, "a Latin-1 string of the longest length is made");
+  api.t_free(view().getUint32(OUT, true));
+  assert.equal(api.t_live(), 1n, "and freed");
+  for (const n of [units + 1n, 10_000_000n, 1n << 40n, MAX]) {
+    isolated();
+    assert.throws(() => api.t_latin1_fits(n), WebAssembly.RuntimeError, `${n} units do not fit as UTF-16`);
+    assert.equal(api.t_bytes(), 2n * n, `the refused request is the UTF-16 one (${n})`);
+    isolated();
+    assert.throws(() => api.t_allocate_latin1(n, OUT), WebAssembly.RuntimeError, `allocate_latin1(${n}) must trap`);
+    checks += 2;
+  }
+  // append asks for the length of the result, as concat and the others do through allocate_latin1.
+  isolated();
+  const first = api.t_alloc(8_388_000n);
+  bytes().fill(97, first, first + 8_388_000);
+  const second = api.t_alloc(1_000n);
+  bytes().fill(98, second, second + 1_000);
+  api.t_reset();
+  assert.throws(() => api.t_append(first, 8_388_000n | LATIN1, second, 1_000n | LATIN1, OUT), WebAssembly.RuntimeError, "append of 8,389,000 units must trap");
+  assert.equal(api.t_bytes(), 2n * 8_389_000n, "and the request that is refused is the UTF-16 one");
+  checks += 3;
+}
+
 // Invalid input traps, and a trap leaves the module that it happened in unusable but nothing else.
 function trapping(module) {
   const isolated = () => {
@@ -760,6 +798,7 @@ try {
       run(module, `${simd ? "simd128 " : ""}O${optimization}`);
       const limits = guards(text, optimization);
       trapping(module);
+      heapLimit(module);
       console.log(`compact strings raw ${simd ? "wasm simd128" : "wasm scalar"} O${optimization}: ${checks} checks of the Latin-1 kernels and dispatchers against references, ${limits.accepted} length-guard cases accepted and ${limits.traps} trapped`);
     }
   }

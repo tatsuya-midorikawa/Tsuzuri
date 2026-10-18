@@ -76,6 +76,64 @@ fn the_environment_chooses_the_form_and_a_wrong_name_is_an_error() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn a_latin1_string_has_the_length_limit_of_the_heap_of_its_wasm_module_and_none_elsewhere() {
+    let root = std::env::temp_dir().join(format!("tsuzuri-strings-limit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Main.tz"), "let text = \"hello\"\ntext.length\n").unwrap();
+    let build = |form: &str, arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["build", "--emit", "llvm", "-O0", "-o"])
+            .arg(root.join("out.ll"))
+            .arg(root.join("Main.tz"))
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", root.join("cache"))
+            .env("TSUZURI_STRINGS", form)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::read_to_string(root.join("out.ll")).unwrap()
+    };
+    // Native: the allocator gives what it can, so there is nothing to check.
+    let native = build("compact", &[]);
+    assert!(native.contains(
+        "define internal void @tz.string.latin1_fits(i64 %length) nounwind alwaysinline"
+    ));
+    assert!(!native.contains("%latin1_fits = icmp"));
+    // WebAssembly: the heap's limit, on twice the length, as the UTF-16 string would be asked.
+    let wasm = build("compact", &["--target", "wasm32"]);
+    assert!(
+        wasm.contains(
+            "  %size = shl i64 %length, 1\n  %latin1_fits = icmp ule i64 %size, 16777184\n"
+        )
+    );
+    assert!(wasm.contains("  %fits = icmp ule i64 %size, 16777184\n"));
+    // --wasm-max-memory moves the limit of the heap and the one of the Latin-1 strings together.
+    let large = build(
+        "compact",
+        &["--target", "wasm32", "--wasm-max-memory", "64MiB"],
+    );
+    assert!(large.contains("  %latin1_fits = icmp ule i64 %size, 67108832\n"));
+    assert!(large.contains("  %fits = icmp ule i64 %size, 67108832\n"));
+    assert!(!large.contains("16777184"));
+    // The host's allocator has no limit that the module knows.
+    let host = build("compact", &["--target", "wasm32", "--allocator", "host"]);
+    assert!(!host.contains("%latin1_fits = icmp"));
+    assert!(host.contains(
+        "define internal void @tz.string.latin1_fits(i64 %length) nounwind alwaysinline"
+    ));
+    // The UTF-16 form has no such function.
+    for arguments in [&[][..], &["--target", "wasm32"][..]] {
+        assert!(!build("utf16", arguments).contains("latin1_fits"));
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 fn options(wasm: bool, wasm_simd128: bool) -> EmitOptions {
     EmitOptions {
         entry: Entry::Library,

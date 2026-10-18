@@ -276,7 +276,8 @@ pub(crate) fn with_net_imports(ir: &str) -> String {
     output
 }
 
-/// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
+/// Sets the WASM heap limit in the heap runtime's three comparisons, and in the one of
+/// `@tz.string.latin1_fits` (PM03: the same limit on the UTF-16 size of a Latin-1 string). Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
     if limit == crate::driver::DEFAULT_WASM_MAX_MEMORY {
@@ -288,7 +289,8 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
         let ending = &line[body.len()..];
         let _ = match body {
             "  %fits = icmp ule i64 %size, 16777184"
-            | "  %fits = icmp ule i64 %new_size, 16777184" => {
+            | "  %fits = icmp ule i64 %new_size, 16777184"
+            | "  %latin1_fits = icmp ule i64 %size, 16777184" => {
                 let (prefix, _) = body
                     .rsplit_once(' ')
                     .expect("heap limit lines end with a constant");
@@ -1761,9 +1763,14 @@ fn emit_program_in(
         }
         if string_form == StringForm::Compact {
             let utf16 = output.split_off(string_runtime);
-            output.push_str(
-                &string_form.string_runtime(&utf16, !wasm || instrumentation.wasm_simd128)?,
-            );
+            // The heap of a WebAssembly module refuses a block above a limit, unless the host's allocator
+            // is the module's: a Latin-1 string has to fit as UTF-16 (@tz.string.latin1_fits).
+            let limited = wasm && allocator != Allocator::Host;
+            output.push_str(&string_form.string_runtime(
+                &utf16,
+                !wasm || instrumentation.wasm_simd128,
+                limited,
+            )?);
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
