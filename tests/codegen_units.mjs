@@ -567,6 +567,30 @@ test("C12 native object with the runtime", () => {
   }
 });
 
+// C13: the programs of examples/ behave the same from units and from one module: output, error output and exit status.
+test("C13 examples", () => {
+  const examples = resolve("examples");
+  const out = join(root, "examples");
+  mkdirSync(out);
+  const space = workspace(0, { "Main.tz": "def main :: unit -> i32 = \\() -> 0\n" });
+  let compared = 0;
+  for (const name of readdirSync(examples).sort()) {
+    const project = join(examples, name);
+    if (!existsSync(join(project, "Main.tz"))) continue;
+    const results = ["split", "single"].map((mode) => {
+      const program = join(out, `${name}-${mode}`);
+      const built = spawnSync(compiler, ["build", project, "-O0", "--no-cache", "-o", program], { encoding: "utf8", timeout: 300_000, env: { ...process.env, ...space.env, TSUZURI_CODEGEN_UNITS: mode } });
+      assert.ifError(built.error);
+      if (built.status !== 0) return { built: built.status, error: /error\[(E\d+)\]/.exec(built.stderr)?.[1] };
+      const ran = spawnSync(program, [], { encoding: "utf8", timeout: 60_000, input: "" });
+      return { built: 0, stdout: ran.stdout, stderr: ran.stderr, status: ran.status, signal: ran.signal };
+    });
+    assert.deepEqual(results[0], results[1], `examples/${name}`);
+    if (results[0].built === 0) compared++;
+  }
+  assert.ok(compared >= 6, `${compared} examples built and ran`);
+});
+
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.
 test("time passes", () => {
   const space = workspace(3);

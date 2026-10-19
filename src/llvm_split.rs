@@ -2070,49 +2070,6 @@ entry:
         assert!(found.is_empty(), "{}", found.join("\n"));
     }
 
-    /// A development aid: the strongly connected components of the functions whose names hold serial numbers.
-    #[test]
-    #[ignore]
-    fn scc_report() {
-        let Some(path) = std::env::var_os("PB07_IR") else {
-            return;
-        };
-        let ir = std::fs::read_to_string(path).unwrap();
-        let parsed = parse(&ir).unwrap();
-        let modules: FastSet<&str> = ["Main"].into_iter().collect();
-        let unstable: Vec<usize> = (0..parsed.functions.len())
-            .filter(|id| classify(parsed.functions[*id].name, &modules) == Naming::Unstable)
-            .collect();
-        let nodes: FastMap<usize, usize> = unstable
-            .iter()
-            .enumerate()
-            .map(|(node, id)| (*id, node))
-            .collect();
-        let edges: Vec<Vec<usize>> = unstable
-            .iter()
-            .map(|id| function_edges(&parsed, parsed.functions[*id].text, &nodes))
-            .collect();
-        let components = strongly_connected(&edges);
-        let mut sizes: Vec<usize> = components.iter().map(Vec::len).collect();
-        sizes.sort_unstable();
-        println!(
-            "{} unstable functions, SCC sizes {:?}",
-            unstable.len(),
-            sizes
-        );
-        if let Some(big) = components.iter().max_by_key(|component| component.len()) {
-            for node in big.iter().take(40) {
-                let name = parsed.functions[unstable[*node]].name;
-                let targets: Vec<&str> = edges[*node]
-                    .iter()
-                    .filter(|target| big.contains(target))
-                    .map(|target| parsed.functions[unstable[*target]].name)
-                    .collect();
-                println!("{name} -> {targets:?}");
-            }
-        }
-    }
-
     /// A development aid: `PB07_CORPUS=<directory of .ll files> cargo test --lib split_corpus -- --ignored`.
     #[test]
     #[ignore]
@@ -2149,24 +2106,6 @@ entry:
                 .collect();
             let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
             let started = std::time::Instant::now();
-            let parse_time = {
-                let started = std::time::Instant::now();
-                let parsed = parse(&ir).unwrap();
-                let parse_time = started.elapsed();
-                let set: FastSet<&str> = modules.iter().copied().collect();
-                let started = std::time::Instant::now();
-                let plan = plan(&parsed, &set);
-                let largest = plan.renamed.iter().flatten().count();
-                println!(
-                    "    parse {:?}, plan {:?}, {} renamed of {}",
-                    parse_time,
-                    started.elapsed(),
-                    largest,
-                    parsed.functions.len()
-                );
-                parse_time
-            };
-            let _ = parse_time;
             let units = split(&SplitInput {
                 ir: &ir,
                 modules: &modules,
@@ -2197,6 +2136,83 @@ entry:
             }
         }
         assert_eq!(failures, 0);
+    }
+
+    /// Every program of `examples/`, `benchmarks/` and `tests/fixtures/` that is one directory of sources, built for
+    /// `-O0` with and without trap information (stable numbers), is cut into units that define every function and
+    /// variable once and name nothing that no unit defines or declares.
+    #[test]
+    fn splits_the_programs_of_the_repository() {
+        use crate::llvm::TrapNumbering;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut programs = 0;
+        let mut units_made = 0;
+        for parent in ["examples", "benchmarks", "tests/fixtures"] {
+            let mut directories: Vec<_> = std::fs::read_dir(root.join(parent))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_dir())
+                .collect();
+            directories.sort();
+            for directory in directories {
+                let mut files = Vec::new();
+                let mut flat = true;
+                for entry in std::fs::read_dir(&directory).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        flat = false;
+                    } else if path.extension().is_some_and(|extension| extension == "tz") {
+                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                        files.push((name, std::fs::read_to_string(&path).unwrap()));
+                    }
+                }
+                files.sort();
+                if !flat || !files.iter().any(|(name, _)| name == "Main.tz") {
+                    continue;
+                }
+                let sources: Vec<(&str, &str)> = files
+                    .iter()
+                    .map(|(name, text)| (name.as_str(), text.as_str()))
+                    .collect();
+                // A directory that does not check as a program on its own (an example of an error) is left out.
+                let Ok(module) = crate::analyze_modules(&sources) else {
+                    continue;
+                };
+                // A program with an entry is built for an executable with and without trap information; the others
+                // are libraries (an object of exports) and are cut without.
+                let numberings: &[Option<TrapNumbering>] = if module.entry.is_some() {
+                    &[None, Some(TrapNumbering::Stable)]
+                } else {
+                    &[None]
+                };
+                for &numbering in numberings {
+                    let (ir, modules, _) = executable_ir_with(&sources, numbering);
+                    let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+                    let units = split(&SplitInput {
+                        ir: &ir,
+                        modules: &modules,
+                    })
+                    .unwrap_or_else(|error| panic!("{}: {error}", directory.display()));
+                    let found = check(&ir, &modules, &units);
+                    assert!(
+                        found.is_empty(),
+                        "{} ({numbering:?}): {}",
+                        directory.display(),
+                        found.join("\n")
+                    );
+                    let again = split(&SplitInput {
+                        ir: &ir,
+                        modules: &modules,
+                    })
+                    .unwrap();
+                    assert_eq!(units, again, "{} is deterministic", directory.display());
+                    units_made += units.len();
+                }
+                programs += 1;
+            }
+        }
+        assert!(programs > 60, "{programs} programs");
+        assert!(units_made > 1000, "{units_made} units");
     }
 
     #[test]
@@ -2737,7 +2753,11 @@ entry:
         let module = crate::analyze_modules(sources)
             .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
         let options = EmitOptions {
-            entry: Entry::Console,
+            entry: if module.entry.is_some() {
+                Entry::Console
+            } else {
+                Entry::Library
+            },
             wasm: false,
             wasm_simd128: false,
             debug_output: false,

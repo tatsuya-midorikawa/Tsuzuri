@@ -8398,7 +8398,8 @@ fn test_builtin(
     let Type::Function(parameters, _) = ty else {
         unreachable!("a builtin is a function")
     };
-    let parameter = llvm_type(&parameters[0], module);
+    // A builtin without a parameter (`unit -> T`) is not one of the test builtins.
+    let parameter = llvm_type(parameters.first()?, module);
     let body = match instance.builtin {
         Builtin::TestAdd => {
             return Some(format!(
