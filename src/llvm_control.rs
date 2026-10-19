@@ -276,7 +276,9 @@ impl FunctionEmitter<'_, '_> {
                 },
             );
         } else if self.marks_length(&source.ty) {
-            // A unit of a Latin-1 string is a byte: the loop variable points at a widened copy.
+            // A unit of a Latin-1 string is a byte: the loop variable points at a widened copy in one slot that
+            // each iteration overwrites. That is sound because the checker ends a borrow of the variable with its
+            // iteration (`ForEach` in ownership_control.rs).
             let latin1 = self.string_is_latin1(&word);
             let slot = self.slot(&local.ty);
             self.array_loop_control(&length, |emitter, index, exit, advance| {
