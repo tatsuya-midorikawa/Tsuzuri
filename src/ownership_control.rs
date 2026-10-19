@@ -392,11 +392,17 @@ impl<'a> Checker<'a, '_> {
                     ty: owner.ty.clone(),
                     span: source.span,
                 };
-                let mut places = self.place(&subject, &during)?;
-                for (place, _) in &mut places {
-                    place.fields.push(ELEMENT);
+                // A code unit of a string is a value of its own, not a place in the string: a borrow of
+                // `local` ends with the iteration, like one of a range variable or of a pattern variable
+                // (the loans of the owner below keep the string shared meanwhile). The units of a string
+                // of `TSUZURI_STRINGS=compact` may be bytes, which have no 16-bit unit in memory to refer to.
+                if owner.ty != Type::String {
+                    let mut places = self.place(&subject, &during)?;
+                    for (place, _) in &mut places {
+                        place.fields.push(ELEMENT);
+                    }
+                    self.state.aliases.insert(local.id, places);
                 }
-                self.state.aliases.insert(local.id, places);
                 let loans = self.state.locals[&owner.id].1.clone();
                 self.state
                     .locals
