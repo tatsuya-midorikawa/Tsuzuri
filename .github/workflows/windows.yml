@@ -15,6 +15,9 @@ name: Windows MSVC
 # an image refresh that drops either of them fails the job instead of changing what the gate checks.
 # tests/lsp_sessions.mjs, tests/async.mjs, tests/net.mjs and the PDB and natvis checks run on Windows in
 # vscode.yml. The Linux and macOS hosts, and the targets that they cross-compile, are in targets.yml.
+# tests/stack.mjs (PM09, guaranteed tail calls) is not a step of this gate: its native half runs a mutual recursion of ten million
+# calls, which no Windows run has checked, so targets.yml runs it on the four Linux and macOS hosts and platforms.md claims it for no
+# Windows target. cargo test (W3) does run the Rust tests of the IR (tests/tail_recursion.rs, tests/stack_frames.rs).
 # This gate runs after every merge to main and, on a pull request, with the label `ci:full` (ci.yml is the gate of every
 # pull request). `workflow_dispatch` with `fast` set skips W3, so that a branch reads every other step in about 10 minutes.
 

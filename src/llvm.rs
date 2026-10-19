@@ -840,7 +840,7 @@ fn heap_host_wasm() -> String {
     heap
 }
 
-/// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
+/// Emits a WASM build with shared-memory threads, 64-bit memory, stack checks, or tail calls.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_wasm_build(
     module: &CheckedModule,
@@ -851,6 +851,7 @@ pub(crate) fn emit_wasm_build(
     threads: bool,
     memory64: bool,
     stack_checks: bool,
+    tail_call: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     let (ir, marks) = emit_program(
         module,
@@ -864,7 +865,7 @@ pub(crate) fn emit_wasm_build(
             cpu_dispatch: false,
             runtime_objects: options.runtime_objects,
             wasm_simd128: options.wasm_simd128,
-            wasm_tail_call: false,
+            wasm_tail_call: tail_call,
             wasm_threads: threads,
             memory64,
             trap_return: false,
@@ -9466,8 +9467,10 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             allocator: Allocator::System,
             f16: F16Path::Soft,
         };
-        let output =
-            emit_wasm_build(&module, options, &sources, None, true, true, false, false).unwrap();
+        let output = emit_wasm_build(
+            &module, options, &sources, None, true, true, false, false, false,
+        )
+        .unwrap();
         // The wrappers of the threads runtime and the unlocked heap define each entry point once.
         for name in [
             "tz.alloc",
