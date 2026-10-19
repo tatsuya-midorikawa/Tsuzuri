@@ -944,6 +944,8 @@ native（生成した C host、`tracked_alloc` で各 case の後 `live == 0`）
 | D14（文書の契約） | 実装済み |
 | D15（新: compact の `String.slice`・`String.join` は runtime の 1 回の確保） | 実装済み。WP4 の時点で apps の確保の calls が +43〜50% 退行していたのを、この置き換えで 0% にした |
 | D16（新: wasm の heap の上限は Latin-1 でも UTF-16 の大きさで数える） | 実装済み（「レビュー後の修正」の F2） |
+| D17（新: `string` の反復変数は反復ごとの値で、場所ではない） | 実装済み（「レビュー後の修正 2」の指摘 1。言語仕様の縮小） |
+| D18（新: `ref string` の複製は、すべての引数を評価し終えてから作る） | 実装済み（「レビュー後の修正 2」の指摘 2） |
 
 ### 検証
 
@@ -1001,6 +1003,36 @@ Homebrew の LLVM を PATH の先頭に置いた）で行った。生データ�
   却下した案: 文書だけにする（形式で長さの上限が違うと「トラップは同じ」が成り立たない）、`allocate_latin1` に定数を直接書く（`--wasm-max-memory` で動く heap の行との二重管理になる）。
   確かめたこと: raw harness が 8,388,592 単位と、その 1 つ上・10,000,000・2^40・2^53 − 1 で、refuse された要求が 2n bytes であることと `append` の経路を検査し、`tests/compact_strings.mjs` が
   `tests/fixtures/compact_strings_limit` を両形式で作って結果と trap が同じことを既定と `--wasm-max-memory 64MiB` で比べる。この修正の前のコンパイラでは `grown(9000000)` で失敗する（compact だけが 9,000,000 を返す）。
+
+### レビュー後の修正 2（2026-10-19。Copilot の PR #28 の 3 回目のレビュー）
+
+統合ブランチ `8c67d2c8` へのレビューは、`TSUZURI_STRINGS=compact` だけに関わる次の 2 件を指摘した。どちらも再現した（`compact` はどのプログラムでも `utf16` と同じに動くべきなので、opt-in でも直す）。
+
+| 指摘 | 再現 | 修正 |
+| --- | --- | --- |
+| 1: `for unit in text` の要素への参照が、反復のたびに上書きされるスタックの slot を指し、反復のあとまで残れる | `let mut saved = ref zero` へ `if unit == 97i16u then saved = ref unit` を代入し、ループのあとに読むと、`utf16` は 97、`compact` は 98。`ref unit` を返す関数では `compact` の `-O0` が 98、`-O3` が 0（終わった呼び出しの frame への dangling pointer）。ownership の検査が反復変数を元の文字列の要素の別名にしていたので、どれも受け入れられた（範囲の `for` の変数は `E1013`） | D17 |
+| 2: コールバックを取る import の呼び出しで、先の `ref string` 引数を広げた複製が、あとの引数（`@checked (n + 1)`）の例外で解放されない | `tests/fixtures/compact_strings_import` を `--allocator counting` で作り、`caught 9223372036854775807` のあとの生存 bytes を数えると、native の `compact` が 10 bytes（"héllo" の複製）を残した。`utf16` は広げないので残らない。コールバックを取らない import は wrapper が parameter を読むだけなので起きない | D18 |
+
+- **D17（新: `string` の反復変数は反復ごとの値で、文字列の中の場所ではない）**: ownership の検査（`ownership_control.rs` の `ForEach`）は、`for` の変数を元のコレクションの要素の別名にしていたが、`string` についてはやめた。
+  変数への借用は、範囲の `for` の変数やパターンの変数と同じく、変数自身を根にして反復で終わり、反復のあとまで持ち越すと `E1013` になる。`utf16` と `compact` で同じなので、2 つのモードが受け入れるプログラムは同じである。
+  配列・`utf8string` の要素はメモリ上の場所なので変わらない。コード単位を残したいときは `let kept = unit` で値として複製する。
+  理由: Latin-1 の文字列には 16 bit のコード単位がメモリ上になく、ループは広げた値を 1 つの slot に書いて反復ごとに上書きする。持ち越した参照は、反復のあとも、関数が戻ったあとも、その slot（や終わった frame）を指す。
+  却下した案: (a) 反復ごとに別の slot — 反復の中の参照しか守れず、関数の戻り値にした参照は終わった frame を指す。(b) ループごとに広げた複製を確保し、終わりに解放 — 参照をループのあとへ、関数の外へ持ち出せるので解放後を指し、`break`・`raise`・trap の出口にも解放が要る。
+  (c) 借用した文字列をその場で UTF-16 に広げる — ほかの借用者が data の pointer を持っているので成り立たない。(d) `compact` だけ拒否する — 「どのプログラムでも `utf16` と同じ」に反する。
+  影響: `utf16` で受け入れていた「文字列の反復変数への参照を反復のあとまで持ち越す」プログラムが `E1013` になる。examples・tests/fixtures・benchmarks・標準ライブラリを含む 119 project の IR は変わらず、そのようなコードはなかった。言語仕様の縮小なので `for-in.md`・`string.md`・`strings.md`・`option.md`・`docs/language.md`・`docs/architecture.md` に書いた。
+- **D18（新: `ref string` の複製は、すべての引数を評価し終えてから、呼び出しの直前に作る）**: コールバックを取る import は呼び出しの場所に展開され、引数を順に評価する。`compact` の `ref string` 引数は、評価した時点で `borrow_utf16` の複製を作り、呼び出しのあとに解放していたので、
+  あとの引数が `try` の中で例外を投げると、`raise` の飛び先が `free_copies` を通らず複製が残った。`host_call`（`llvm_imports.rs`）は、引数の評価の間は記述子を読むだけにして（評価の順序と値は同じ）、評価し終えてから `borrow_utf16` を呼ぶ。
+  複製を作ってから解放するまでの間に jump する式はないので、例外の出口で解放する登録は要らず、例外のない経路の命令の数も同じである（順序が後ろになるだけ）。`utf16` の IR は変わらない。
+  却下した案: 複製を `temporaries` に登録する — 複製を表す型がなく、`string` として登録すると Latin-1 でない元の buffer も解放し、例外のない経路にも登録と取り消しが要る。
+  ほかの広げる箇所は、複製を持ったまま別の引数を評価しないので同じ問題がない: `export` の結果の `to_utf16`（関数の最後）、`String.to_code_units` の `to_utf16`（関数本体の parameter）、runtime の中の広げ（1 回の呼び出しの中で確保して解放する）、
+  補間（`compact_interpolation` は広げず、表示の結果は `remember_temporary` に登録済み）。`number_piece` の heap の buffer（容量が 512 bytes を超えるときだけ）が `temporaries` に登録されない点は `utf16` でも同じで、`compact` だけの経路ではないので直していない。
+- 確かめたこと:
+  指摘 1 — `tests/compact_strings.rs` の `a_borrow_of_the_code_unit_of_a_string_loop_ends_with_its_iteration` が、保持と返却を `E1013`、配列の保持を受け入れ、反復の中の参照が両形式で IR を出せることを検査する。
+  `tests/fixtures/compact_strings` の `probe_unit_refs`（反復の中の `ref unit`）が、native・WASM・`-O0`／`-O3`・両形式・simd128 で一致し、確保が残らない。この修正の前のコンパイラは、保持するプログラムを受け入れて `compact` で 98 を返した。
+  指摘 2 — `tests/compact_strings.mjs` の `imports()` が、`tests/fixtures/compact_strings_import` を両形式 × `-O0`／`-O3` × native／wasm32 の 8 build で作り、host（C と JS）が UTF-16 のコード単位を読んで同じ値を返すことと、
+  正常な呼び出しと捕まえたオーバーフローの両方で、呼び出しごとの生存 bytes が 0 であることを確かめる。この修正の前のコンパイラでは native の `compact` が `LEAK caught 9223372036854775807 live=10` で失敗する。
+  `tests/compact_strings.rs` の `a_callback_host_call_makes_its_utf16_copies_after_every_argument_is_evaluated` が、IR で `borrow_utf16` が `@llvm.sadd.with.overflow`（最後の引数）より後ろ、呼び出しより前にあり、複製ごとに解放が 1 つ呼び出しの後ろにあることを検査する。
+  `utf16` の IR は、`8c67d2c8` のコンパイラと 119 project × 5 variants = 595 build で byte 単位で同じ（同一 550 + 同じ失敗 45）。`compact` の IR は、同じ 595 build のうち 15（`ref string` の import を持つ 3 project）だけが、複製の順序の分だけ違う。
 
 ### 次にやること
 

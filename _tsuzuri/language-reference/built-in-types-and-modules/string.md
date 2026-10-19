@@ -42,7 +42,7 @@ decoded=[A]1 chars=['\uD83D', '\uDE00'] units=2
 
 `😀` は 2 コード単位なので、`chars` も 2 要素です。配列の表示は文字を引用符で囲み、サロゲートは `\uXXXX` と出します。
 
-`for unit in text` が返すのも `char` ではなく `i16u` です。文字が欲しいときは `Char.of_u16 unit` にします。
+`for unit in text` が返すのも `char` ではなく `i16u` です。文字が欲しいときは `Char.of_u16 unit` にします。`unit` は文字列の中の場所ではなく反復ごとの値なので、`ref unit` を反復のあとまで持ち越すことはできません（`E1013`。[for ... in](../loops-and-conditionals/for-in.md#所有権と借用ルール)）。
 
 ## 検索と比較
 

@@ -199,6 +199,35 @@ fn probe_units a b =
     let chars = String.chars (ref text)
     sum + equal * 3 + well * 5 + digest (ref repaired) * 7 + encoded * 11 + count * 13 + chars.length * 17
 
+def unit_value :: ref i16u -> i64
+fn unit_value unit = (deref unit) as i64
+
+// A borrow of the unit of a string loop ends with its iteration: the unit of a Latin-1 string is widened into a slot that
+// the next iteration overwrites, so the borrow checker does not let a borrow outlive it (E1013).
+export def probe_unit_refs :: i64 -> i64 -> i64
+fn probe_unit_refs a b =
+    let text = variant a 0 + variant b 1
+    let mut sum = 0
+    for unit in text do
+        let seen = ref unit
+        sum = (sum * 31 + unit_value seen) % 1000000007
+    let mut wide = 0
+    for unit in text do
+        let view = ref unit
+        if unit_value view > 255 then wide = wide + 1
+    sum * 32 + wide
+
+// The elements of an array are places in the array, so a borrow of one can be kept after its iteration (the units of a
+// string are not, above). The array is the same in both forms: a Latin-1 string is widened to make it.
+export def probe_kept_refs :: i64 -> i64 -> i64
+fn probe_kept_refs a b =
+    let units = String.to_code_units (variant a 0 + variant b 1)
+    let zero = 0i16u
+    let mut widest = ref zero
+    for unit in units do
+        if unit > (deref widest) then widest = ref unit
+    unit_value widest * 100 + units.length
+
 def check :: i64 -> Result<i64, string>
 fn check n = if n % 3 == 0 then Result.Error (variant n 2) else Result.Ok (n * 2)
 

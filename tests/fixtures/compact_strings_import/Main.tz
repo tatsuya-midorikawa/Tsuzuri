@@ -1,0 +1,25 @@
+// PM03: a host import that takes a callback is lowered at its call site, and in TSUZURI_STRINGS=compact a `ref string`
+// argument is widened into a UTF-16 copy for the host. The copy must not be left behind when an argument that is
+// evaluated after it raises. tests/compact_strings.mjs builds this project in both forms and counts the allocations
+// after every call; the host adds callback(both lengths), the units of both texts and the number.
+
+extern "pm03_apply" def apply :: (i64 -> i64) -> ref string -> ref string -> i64 -> i64
+
+private def triple :: i64 -> i64
+fn triple value = value * 3
+
+// 21 = triple 7 (the lengths 5 and 2), 664 = the units of "héllo" (Latin-1 in the compact form), 52497 = the units of
+// "日本" (UTF-16 in both forms).
+export def applied :: i64 -> i64
+fn applied extra =
+    let latin = "héllo"
+    let wide = "日本"
+    apply triple (ref latin) (ref wide) extra
+
+export def caught :: i64 -> i64
+fn caught n =
+    let latin = "héllo"
+    let wide = "日本"
+    match try (apply triple (ref latin) (ref wide) (@checked n + 1)) with | e -> e with
+    | Ok value -> value
+    | Error _ -> -1
