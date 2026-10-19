@@ -258,8 +258,40 @@ total
 
 - **コレクションの保護**: ループの途中で元の値をムーブしたり、上書きしたり、排他借用したりすると拒否されます。
 - **要素**: Copy 型は値が複製されます。非 Copy な要素は読み取り専用ビューで、`item.length` のような読み取りはできますが、所有値として持ち出せません（`E1012`）。`Vec.iter` の要素は `ref 'a` なので、読むときは `deref` します。
+- **文字列のコード単位**: `for unit in text do ...` の `unit`（`i16u`）は、文字列の中の場所ではなく、反復ごとの値です。`ref unit` はその反復の中で使えます。外側の `ref` 変数へ代入したり、関数の戻り値にしたりして反復のあとまで持ち越すと、範囲の `for` の変数と同じ `E1013` です。配列の要素は配列の中の場所なので、配列が生きているあいだは `ref` を持ち越せます。残したいコード単位は `let kept = unit` で値として複製します。この規則は `TSUZURI_STRINGS` の値によって変わりません（`compact` の Latin-1 の文字列には、16 ビットのコード単位の場所がメモリ上にありません）。
 - **一時値**: `for x in [1, 2, 3] do ...` のような一時コレクションは、ループが終わるまで生きています。
 - **`Seq`**: 共有借用ではなく、所有権を 1 回消費します。ループのあとで同じ変数を使うと `E1012` です。
+
+文字列のコード単位への `ref` は、反復の中で読めます。
+
+```tsuzuri run=195
+let text = "ab"
+let mut total = 0
+for unit in text do
+    let seen = ref unit
+    total = total + ((deref seen) as i64)
+total
+```
+
+実行結果:
+
+```text
+195
+```
+
+反復のあとまで持ち越すと拒否されます。
+
+```text
+let text = "ab"
+let zero = 0i16u
+let mut saved = ref zero
+for unit in text do
+    if unit == 97i16u then saved = ref unit
+```
+
+```text
+error[E1013]: a borrowed value cannot outlive its pattern or iteration binding
+```
 
 ## break と continue
 

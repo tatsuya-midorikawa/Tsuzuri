@@ -642,7 +642,7 @@ assembly と wasm32 の module は `off` と同じでした（[整数の範囲�
   UTF-16 の文字列を切り出したものは、全単位が 0xFF 以下でも UTF-16 のままです。形式に正準形はなく、同じ単位の列はどちらの形式でも
   `==`・`<`・`hash`・`HashMap` の key・連結の結果で同じ値になります（形式が混ざった連結は、Latin-1 の側を広げて UTF-16 を作ります）。
 - host との境界は UTF-16 のままです。`export` の `string` の結果は host へ返す前に UTF-16 へ広げ（`realloc` と widen）、host から受けた `ref string` は UTF-16 の文字列として扱い、host の import へ渡す
-  引数は UTF-16 の複製（呼び出し後に解放）を渡します。短い文字列を頻繁に返すと、この変換が目立ちます（[測定](../../../docs/benchmarks.md#pm03-コンパクト文字列)）。
+  引数は UTF-16 の複製（呼び出し後に解放）を渡します。複製は、残りの引数をすべて評価し終えてから呼び出しの直前に作るので、コールバックを取る import の、あとの引数が `try` の中で例外を投げても残りません。短い文字列を頻繁に返すと、この変換が目立ちます（[測定](../../../docs/benchmarks.md#pm03-コンパクト文字列)）。
 - `String.to_code_units`・`String.from_code_units` は、UTF-16 の値ではバッファの所有権を移すだけですが、Latin-1 の値では全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）O(n) の変換になります。
   結果の値は変わりません。
 - 確保量は Latin-1 の文字列で半分になります。native と `--wasm-feature simd128` を付けた WebAssembly は、Latin-1 の走査・比較・変換に 128-bit の vector の kernel を使い、
@@ -651,6 +651,8 @@ assembly と wasm32 の module は `off` と同じでした（[整数の範囲�
   UTF-16 の大きさ（1 単位 2 bytes）で数えるので、上限を超える長さは `utf16` と同じ呼び出しで確保の失敗（`AllocationFailure`）の trap になります（1 つの block が 8,388,592 単位まで）。
   上限を超えない長さで heap の空きや native の malloc が足りるかは、Latin-1 の文字列が半分の bytes で済むぶん、`compact` のほうが大きな文字列を作れる状況があります。
   `--allocator host` の WebAssembly は、host の allocator が決めます。
+- `for unit in text` の `unit` は、文字列の中の場所ではなく反復ごとの値です。Latin-1 の文字列には 16 ビットのコード単位がメモリ上にないので、`ref unit` を反復のあとまで持ち越すことは `E1013` です。
+  この規則は `utf16` にも同じに適用され、2 つのモードで受け入れるプログラムは同じです（[for ... in](../loops-and-conditionals/for-in.md#所有権と借用ルール)）。
 - LLDB の formatter と natvis は、両方の形式の文字列を読みます。natvis は Latin-1 を UTF-8 として表示するので、ASCII でない Latin-1 の文字は文字化けします（[デバッグ](debugging.md)）。
 
 代償として、runtime の IR が約 60 KB（native の hello で 148 KB から 210 KB）増え、clang の時間と、WebAssembly の小さなモジュールの大きさ（hello の wasm32 は 6,860 から 8,058 bytes）が増えます。
