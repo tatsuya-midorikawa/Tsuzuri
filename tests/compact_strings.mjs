@@ -147,7 +147,76 @@ function limits() {
   console.log(`compact strings limits: ${compared} calls trap or return the same in both forms at the default and a 64 MiB heap`);
 }
 
+// A host import that takes a callback is lowered at its call site (tests/fixtures/compact_strings_import), and the
+// compact form widens its `ref string` arguments for the host there. A copy must be gone when an argument that follows it
+// raises inside a `try`, as when the call ends: the host sees the same units in both forms, and no allocation is left.
+function imports() {
+  const project = join(root, "tests/fixtures/compact_strings_import");
+  // 21 = triple (5 + 2), 664 and 52497 = the units of "héllo" and "日本"; the overflow of n + 1 is caught as -1.
+  const calls = [["applied", 5n, 53187n], ["caught", 5n, 53188n], ["caught", 9223372036854775807n, -1n], ["applied", 0n, 53182n], ["caught", -3n, 53180n]];
+  const units = (memory, pointer, length) => new Uint16Array(memory.buffer, pointer, Number(length)).reduce((sum, unit) => sum + BigInt(unit), 0n);
+  const header = join(scratch, "import.h");
+  execute(compiler, ["build", project, "--emit", "header", "--allocator", "counting", "-o", header]);
+  const host = join(scratch, "import.c");
+  writeFileSync(host, `#include <stdint.h>
+#include <stdio.h>
+#include "import.h"
+int64_t pm03_apply(int64_t (*callback)(int64_t), const uint16_t *first, int64_t first_length, const uint16_t *second, int64_t second_length, int64_t extra) {
+    int64_t total = callback(first_length + second_length) + extra;
+    for (int64_t i = 0; i < first_length; ++i) total += first[i];
+    for (int64_t i = 0; i < second_length; ++i) total += second[i];
+    return total;
+}
+static const struct { const char *name; int64_t (*run)(int64_t); int64_t argument; } calls[] = {${calls.map(([name, argument]) => `{"${name}", tz_${name}, ${argument}LL}`).join(", ")}};
+int main(void) {
+    tsuzuri_allocation_stats stats;
+    for (size_t i = 0; i < sizeof calls / sizeof calls[0]; ++i) {
+        int64_t value = calls[i].run(calls[i].argument);
+        tsuzuri_alloc_stats(&stats);
+        if (stats.live_bytes != 0 || stats.allocations != stats.frees) { printf("LEAK %s %lld live=%llu\\n", calls[i].name, (long long)calls[i].argument, (unsigned long long)stats.live_bytes); return 1; }
+        printf("%s %lld %lld\\n", calls[i].name, (long long)calls[i].argument, (long long)value);
+    }
+    return 0;
+}
+`);
+  const expected = `${calls.map(([name, argument, value]) => `${name} ${argument} ${value}`).join("\n")}\n`;
+  let builds = 0;
+  for (const form of ["utf16", "compact"]) {
+    for (const optimization of [0, 3]) {
+      const label = `${form}-O${optimization}`;
+      const env = { TSUZURI_STRINGS: form };
+      const object = join(scratch, `import-${label}.o`);
+      execute(compiler, ["build", project, "--emit", "object", "--allocator", "counting", `-O${optimization}`, "--no-cache", "-o", object], { env });
+      const binary = join(scratch, `import-${label}`);
+      execute(clang, ["-std=c11", "-O1", `-I${scratch}`, host, object, "-lm", "-o", binary]);
+      assert.equal(execute(binary, []).stdout, expected, `native ${label}`);
+
+      const wasm = join(scratch, `import-${label}.wasm`);
+      execute(compiler, ["build", project, "--target", "wasm32", `-O${optimization}`, "--allocator", "counting", "--no-cache", "-o", wasm], { env });
+      const module = new WebAssembly.Module(readFileSync(wasm));
+      assert.deepEqual(WebAssembly.Module.imports(module).map(({ module, name }) => `${module}.${name}`), ["tsuzuri.pm03_apply"], `wasm ${label}`);
+      let api;
+      const imported = { tsuzuri: { pm03_apply: (callback, first, firstLength, second, secondLength, extra) =>
+        api.__indirect_function_table.get(callback)(firstLength + secondLength) + units(api.memory, first, firstLength) + units(api.memory, second, secondLength) + extra } };
+      api = new WebAssembly.Instance(module, imported).exports;
+      const record = api.tsuzuri_alloc(32n);
+      for (const [name, argument, value] of calls) {
+        assert.equal(api[`tz_${name}`](argument), value, `wasm ${label}: ${name} ${argument}`);
+        api.tsuzuri_alloc_stats(record);
+        const [allocations, frees, live] = new BigUint64Array(api.memory.buffer, record, 4);
+        assert.equal(live, 32n, `wasm ${label}: ${name} ${argument} leaves ${live - 32n} bytes`);
+        assert.equal(allocations, frees + 1n, `wasm ${label}: ${name} ${argument} allocations ${allocations} frees ${frees}`);
+      }
+      builds += 2;
+    }
+  }
+  console.log(`compact strings imports: ${builds} builds give the host the same units, and a caught overflow leaves no widened copy`);
+}
+
 try {
+  // The sections that need no matrix come first: they are short and fail fast.
+  limits();
+  imports();
   const builds = [];
   for (const form of ["utf16", "compact"]) {
     for (const optimization of [0, 3]) {
@@ -176,7 +245,6 @@ try {
   const traps = [...reference.values()].filter((value) => value === "trap").length;
   const distinct = new Set(reference.values()).size;
   assert.ok(distinct > reference.size / 4, `the matrix must tell its cases apart: ${distinct} values in ${reference.size}`);
-  limits();
   console.log(`compact strings matrix: ${probes.length} probes x ${pairs.length} pairs, ${results.size} builds (${[...results.keys()].join(", ")}) agree; ${traps} traps; ${distinct} distinct values; no allocation left`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });

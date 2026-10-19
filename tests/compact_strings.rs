@@ -540,6 +540,150 @@ fn a_host_import_gets_a_utf16_copy_that_is_freed_after_the_call() {
     }
 }
 
+/// A host import that takes a callback is lowered at its call site, so that an argument that raises leaves the call
+/// there. The UTF-16 copies of its strings are made after the last argument: before it, the raise would skip the
+/// `free` that follows the call and the copies would be left behind (tests/compact_strings.mjs counts them).
+#[test]
+fn a_callback_host_call_makes_its_utf16_copies_after_every_argument_is_evaluated() {
+    let source = include_str!("fixtures/compact_strings_import/Main.tz");
+    for (wasm, simd) in [(false, false), (true, false), (true, true)] {
+        let compact = emit(source, StringForm::Compact, wasm, simd);
+        let caught = function_body(&compact, "tz.fn.Main.caught");
+        let borrow = "call %tz.string @tz.string.borrow_utf16(";
+        assert_eq!(caught.matches(borrow).count(), 2, "{caught}");
+        let overflow = caught
+            .find("@llvm.sadd.with.overflow.i64(")
+            .unwrap_or_else(|| panic!("n + 1 is checked\n{caught}"));
+        let first = caught.find(borrow).unwrap();
+        let call = caught
+            .find("call i64 @pm03_apply(")
+            .unwrap_or_else(|| panic!("the import is called\n{caught}"));
+        assert!(
+            overflow < first && first < call,
+            "wasm {wasm}, simd {simd}\n{caught}"
+        );
+        // Nothing is made between the copies and the call: only their pointers and lengths are read.
+        let between = &caught[first..call];
+        assert!(
+            !between.contains("@llvm.sadd") && !between.contains("store i32"),
+            "{between}"
+        );
+        // Each copy is freed after the call, and a string that is the original is not (null).
+        let selects = |text: &str| {
+            text.lines()
+                .filter(|line| line.contains("= select i1 ") && line.ends_with(", ptr null"))
+                .count()
+        };
+        assert_eq!((selects(&caught[..call]), selects(&caught[call..])), (0, 2));
+        let utf16 = emit(source, StringForm::Utf16, wasm, simd);
+        let caught = function_body(&utf16, "tz.fn.Main.caught");
+        assert!(!caught.contains("borrow_utf16"), "{caught}");
+    }
+}
+
+/// The code unit that `for unit in text` binds is a value of its own, not a place in the string: a Latin-1 string has no
+/// 16-bit unit in memory to refer to, and the loop widens the unit into a slot that the next iteration overwrites. A
+/// borrow of it ends with its iteration in both forms alike (the checker does not know the form), while the elements of
+/// an array and the bytes of a `utf8string` stay places in memory.
+#[test]
+fn a_borrow_of_the_code_unit_of_a_string_loop_ends_with_its_iteration() {
+    const KEPT: &str = r#"export def shape :: i64 -> i64
+fn shape i =
+    let text = "ab"
+    let zero = 0i16u
+    let mut saved = ref zero
+    for unit in text do
+        if unit == 97i16u then saved = ref unit
+    ((deref saved) as i64) + i
+"#;
+    const RETURNED: &str = r#"def pick :: ref string -> ref i16u -> ref i16u
+fn pick text fallback =
+    let mut result = fallback
+    for unit in text do
+        if unit == 97i16u then result = ref unit
+    result
+
+export def shape :: i64 -> i64
+fn shape i =
+    let zero = 0i16u
+    let found = pick (ref "ab") (ref zero)
+    ((deref found) as i64) + i
+"#;
+    const THROUGH_A_FUNCTION: &str = r#"def same :: ref i16u -> ref i16u
+fn same unit = unit
+
+export def shape :: i64 -> i64
+fn shape i =
+    let text = "ab"
+    let zero = 0i16u
+    let mut saved = ref zero
+    for unit in text do
+        if unit == 97i16u then saved = same (ref unit)
+    ((deref saved) as i64) + i
+"#;
+    const SCOPED: &str = r#"export def shape :: i64 -> i64
+fn shape i =
+    let text = "caf\u00e9"
+    let mut sum = 0
+    for unit in text do
+        let seen = ref unit
+        let again = ref unit
+        sum = sum + ((deref seen) as i64) + ((deref again) as i64)
+    sum + i
+"#;
+    const BYTES: &str = r#"export def shape :: i64 -> i64
+fn shape i =
+    let bytes = u8"ab"
+    let first = bytes[0]
+    let mut saved = ref first
+    for byte in bytes do
+        if byte == bytes[0] then saved = ref byte
+    ((deref saved) as i64) + i
+"#;
+    for source in [KEPT, RETURNED, THROUGH_A_FUNCTION] {
+        let error = analyze(source).err().unwrap_or_else(|| {
+            panic!("a borrow that outlives its iteration is accepted:\n{source}")
+        });
+        assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
+        assert!(error.message.contains("iteration binding"), "{error:?}");
+    }
+    // The command line refuses it the same way in both forms.
+    let root = std::env::temp_dir().join(format!("tsuzuri-strings-unit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Main.tz"), KEPT).unwrap();
+    let diagnostics: Vec<String> = ["utf16", "compact"]
+        .iter()
+        .map(|form| {
+            let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+                .args(["build", "--emit", "llvm", "-O0", "-o"])
+                .arg(root.join("out.ll"))
+                .arg(root.join("Main.tz"))
+                .env("TSUZURI_CACHE_DIR", root.join("cache"))
+                .env("TSUZURI_STRINGS", form)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{form}");
+            String::from_utf8(output.stderr).unwrap()
+        })
+        .collect();
+    assert!(
+        diagnostics[0].contains("error[E1013]"),
+        "{}",
+        diagnostics[0]
+    );
+    assert_eq!(diagnostics[0], diagnostics[1]);
+    std::fs::remove_dir_all(&root).unwrap();
+    // The elements of an array are places in the array, and a borrow of one may outlive the iteration.
+    analyze(&KEPT.replace("\"ab\"", "[97i16u, 98i16u]"))
+        .expect("an element of an array can be kept");
+    analyze(BYTES).expect("a byte of a utf8string can be kept");
+    // A borrow that ends in its iteration is fine, in both forms.
+    for form in [StringForm::Utf16, StringForm::Compact] {
+        emit(SCOPED, form, false, false);
+    }
+}
+
 #[test]
 fn interpolation_allocates_once_through_the_format_helpers() {
     let source = "export def shape :: i64 -> i64\nfn shape i =\n    let name = \"tsuzuri\"\n    let text = $\"a {name} b {i}\"\n    text.length\n";
