@@ -322,11 +322,14 @@ for (const n of [-1n, 0n, 1n, 2n, 3n, 4n, 5n, 9n, max]) {
 // valid UTF-8, -1 for the rest.
 const validateArms = [[], [0], [128], [192, 128], [237, 160, 128], [244, 143, 191, 191], [244, 144, 128, 128],
   [239, 187, 191], [240, 159, 152], [65, 0, 66]];
-for (const [which, bytes] of validateArms.entries()) {
-  let expected = -1n;
-  try { new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); expected = BigInt(bytes.length); } catch {}
-  cases.push(["frames_validate", [which], expected]);
-}
+const utf8Length = (bytes) => {
+  try { new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); return BigInt(bytes.length); } catch { return -1n; }
+};
+for (const [which, bytes] of validateArms.entries()) cases.push(["frames_validate", [which], utf8Length(bytes)]);
+// Four locals of the same length that an `if` chooses between keep their markers (all four start before the
+// `if`, so LLVM gives them four slots); a miss would show as the bytes of another local.
+const localBytes = [[0], [128], [65], [200]];
+for (let which = 0; which < 6; which++) cases.push(["frames_locals", [which], utf8Length(localBytes[Math.min(which, 3)])]);
 // PM09: guaranteed tail calls between the functions of a recursion (TailCalls.tz), at depths that every build
 // can run: tests/stack.mjs runs them at depth 10,000,000. The expected values are simulated with BigInt.
 function tailLists(n) {

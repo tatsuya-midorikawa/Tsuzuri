@@ -258,6 +258,30 @@ fn leaves_the_frames_that_one_value_may_hold_without_markers() {
 }
 
 #[test]
+fn keeps_the_markers_of_locals_that_an_if_chooses_between() {
+    // Both locals start before the `if` and neither ends before it, so LLVM keeps them apart.
+    let body = function_ir(
+        "def f :: i64 -> i64
+         fn f n = {
+             let a = [|n, n|];
+             let b = [|1, n|];
+             let c = if n > 0 then a else b;
+             List.length c
+         }",
+        "f",
+    );
+    let found = allocas(&body, "{ ptr, i64, i64, [2 x i64] }");
+    assert_eq!(found.len(), 2, "{body}");
+    for address in &found {
+        assert_eq!(
+            body.matches(&marker("start", 24 + 2 * 8, address)).count(),
+            1,
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn leaves_buffers_and_environments_without_markers_and_skips_unsettled_layouts() {
     for wasm in [false, true] {
         let ir = emit(
