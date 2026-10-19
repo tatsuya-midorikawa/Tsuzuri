@@ -1499,7 +1499,21 @@ fn harness_binary() -> &'static Result<PathBuf, HarnessError> {
             .unwrap_or_else(|| PathBuf::from("clang"));
         let path = scratch("harness").join("gpu_vulkan_harness");
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/gpu_vulkan_runtime.c");
-        compile_harness(&clang, &source, &path)?;
+        // Under cargo-nextest every test is its own process, so several of them build the harness at once. Each builds its
+        // own file and renames it into place, which replaces `path` atomically: no process ever runs a half-written one.
+        let partial = path.with_extension(format!("{}.tmp", std::process::id()));
+        compile_harness(&clang, &source, &partial)?;
+        // Apple's clang leaves a `.dSYM` next to what `-g` links; nothing reads it, and the name is this process's.
+        let mut symbols = partial.clone().into_os_string();
+        symbols.push(".dSYM");
+        let _ = fs::remove_dir_all(symbols);
+        fs::rename(&partial, &path).map_err(|error| {
+            HarnessError::Build(format!(
+                "cannot move {} to {}: {error}",
+                partial.display(),
+                path.display()
+            ))
+        })?;
         Ok(path)
     })
 }

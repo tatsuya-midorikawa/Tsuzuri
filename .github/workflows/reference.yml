@@ -2,7 +2,7 @@ name: Language reference
 
 # scripts/check-docs.mjs on the dev binary: links and anchors, a type check of every example, the `run=` examples run natively
 # at -O0 and -O3, and the examples that contain tests. A pull request or a push is checked on the pages it changes (all pages
-# when the script itself changes); every night, and on request, all pages are checked, which takes about 40 minutes.
+# when the script itself changes); every night, and on request, all pages are checked, which took 48 minutes on an M1 Max under load.
 
 on:
   workflow_dispatch:
