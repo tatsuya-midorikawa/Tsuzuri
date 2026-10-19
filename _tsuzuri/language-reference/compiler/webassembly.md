@@ -264,7 +264,7 @@ tsuzuri build Main.tz --target wasm32 -Oz --wasm-opt -o shop.wasm
 
 ## 編集とビルドを速くする（`--backend fast`）
 
-`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
+`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net・tail-call）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
 
 ```sh
 tsuzuri build Main.tz --target wasm32 -O0 --backend fast -o app.wasm
@@ -598,6 +598,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - 計算だけのモジュールは import なしで instantiate できます。OS API は WASI か native です。
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
+- `--wasm-feature tail-call` は、相互再帰の末尾呼び出しを `return_call` にして定数スタックにします。実行環境が tail-call 提案を持つときだけ使えます（[末尾呼び出し](#末尾呼び出しtail-call)）。
 - `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
 - `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
