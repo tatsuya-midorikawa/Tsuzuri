@@ -1,0 +1,2367 @@
+//! Codegen units (PB07): the final LLVM IR text of a native `-O0` build is cut into deterministic units that the
+//! driver compiles to objects independently and caches by content. The IR text is the only input, so the emitter
+//! does not change, and an edit to one module leaves the text of the other units alone as far as the text can be
+//! arranged to say so:
+//!
+//! - A function `@tz.fn.<module>.<name>` (and its `tz.apply.`/`tz.env.` helpers) lives in the unit `m.<module>`.
+//!   Everything else (the runtime, the helpers that the emitter names after a type, the generated functions) lives in
+//!   one of 16 buckets `g.<hex digit>` chosen by a hash of the name.
+//! - A name that holds a serial number (`$lambda.10`, `$mono.3`, `tz.specialized.4`) shifts when some other part of the
+//!   program changes. Such a function is renamed by the hash of its own text, with the callee names it calls
+//!   replaced by their own new names first (strongly connected components, callees first), so the name changes only
+//!   when the function or something it calls changes.
+//! - A constant that is private to the module and has no significant address (string literals, closure descriptors,
+//!   trap messages) is copied into every unit that uses it, named `@tz.unit.<k>` by the order of first use in that
+//!   unit; metadata nodes and attribute groups are copied and renumbered the same way. A global that is not such a
+//!   constant (a variable, a `weak` definition) has one owner unit and is declared `external hidden` elsewhere.
+//! - A definition that was `internal` becomes `hidden`, so the other units can call it and it still leaves no
+//!   public symbol.
+//!
+//! A text with a top-level form that is not listed in [`parse`] is not split (`SplitError`): the driver builds one
+//! unit instead, which is always correct.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::ops::Range;
+use std::sync::OnceLock;
+
+use crate::cache::Sha256;
+
+/// A fast, fixed hash for the tables of names: the text is hashed once per token, millions of times.
+#[derive(Default, Clone, Copy)]
+struct Fx(u64);
+
+impl Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write_u64(u64::from(value));
+    }
+}
+
+type FastState = BuildHasherDefault<Fx>;
+type FastMap<K, V> = HashMap<K, V, FastState>;
+type FastSet<K> = HashSet<K, FastState>;
+
+/// How many units hold what no module owns. A new generated function changes one bucket.
+pub const BUCKETS: u64 = 16;
+
+pub struct SplitInput<'a> {
+    pub ir: &'a str,
+    /// The modules whose functions are named `@tz.fn.<module>.<name>` (`CheckedFunction::module`).
+    pub modules: &'a [&'a str],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unit {
+    pub name: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitError {
+    /// A top-level line that none of the listed forms matches.
+    UnknownLine {
+        line: usize,
+        text: String,
+    },
+    /// A form that is known but that a unit cannot hold (an alias, an `appending` global, `linkonce`).
+    Unsupported {
+        line: usize,
+        what: &'static str,
+    },
+    Malformed {
+        line: usize,
+        what: &'static str,
+    },
+}
+
+impl fmt::Display for SplitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownLine { line, text } => write!(f, "unknown top-level line {line}: {text}"),
+            Self::Unsupported { line, what } => write!(f, "unsupported {what} at line {line}"),
+            Self::Malformed { line, what } => write!(f, "malformed {what} at line {line}"),
+        }
+    }
+}
+
+impl std::error::Error for SplitError {}
+
+// ---------------------------------------------------------------------------------------------------------
+// The lexer. Names and numbers are found without reading strings, comments, or the names inside them.
+// ---------------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Class {
+    /// `@name`, `@"name"`
+    Symbol,
+    /// `%name`, `%"name"`: a type or a local value.
+    Local,
+    /// `#12`
+    Attribute,
+    /// `!12`
+    Metadata,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Token<'a> {
+    class: Class,
+    /// The token with its sigil and quotes.
+    start: usize,
+    end: usize,
+    /// The name without sigil and quotes, or the digits.
+    name: &'a str,
+}
+
+const PLAIN: u8 = 0;
+const QUOTE: u8 = 1;
+const COMMENT: u8 = 2;
+const AT: u8 = 3;
+const PERCENT: u8 = 4;
+const HASH: u8 = 5;
+const BANG: u8 = 6;
+
+const fn byte_classes() -> [u8; 256] {
+    let mut table = [PLAIN; 256];
+    table[b'"' as usize] = QUOTE;
+    table[b';' as usize] = COMMENT;
+    table[b'@' as usize] = AT;
+    table[b'%' as usize] = PERCENT;
+    table[b'#' as usize] = HASH;
+    table[b'!' as usize] = BANG;
+    table
+}
+
+static CLASSES: [u8; 256] = byte_classes();
+
+fn identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'$' | b'-')
+}
+
+fn identifier_end(bytes: &[u8], mut cursor: usize) -> usize {
+    while cursor < bytes.len() && identifier_byte(bytes[cursor]) {
+        cursor += 1;
+    }
+    cursor
+}
+
+/// The index after the string that opens at `open`; a string with no end runs to the end of the text.
+fn string_end(bytes: &[u8], open: usize) -> usize {
+    let mut cursor = open + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => return cursor + 1,
+            b'\\' => cursor += 2,
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn digits_end(bytes: &[u8], mut cursor: usize) -> usize {
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        cursor += 1;
+    }
+    cursor
+}
+
+/// Calls `visit` for each name and number of `text`, in order, and for nothing inside a string (`"..."`, `c"..."`,
+/// `!"..."`) or a `;` comment. A quoted name (`@"..."`, `%"..."`) is one token.
+fn scan<'a>(text: &'a str, mut visit: impl FnMut(Token<'a>)) {
+    let bytes = text.as_bytes();
+    let length = bytes.len();
+    let mut cursor = 0;
+    while cursor < length {
+        let byte = bytes[cursor];
+        match CLASSES[byte as usize] {
+            PLAIN => cursor += 1,
+            QUOTE => cursor = string_end(bytes, cursor),
+            COMMENT => {
+                while cursor < length && bytes[cursor] != b'\n' {
+                    cursor += 1;
+                }
+            }
+            AT | PERCENT => {
+                let class = if byte == b'@' {
+                    Class::Symbol
+                } else {
+                    Class::Local
+                };
+                let start = cursor;
+                cursor += 1;
+                if bytes.get(cursor) == Some(&b'"') {
+                    let end = string_end(bytes, cursor);
+                    let inner_end = if end > cursor + 1 && bytes[end - 1] == b'"' {
+                        end - 1
+                    } else {
+                        end
+                    };
+                    visit(Token {
+                        class,
+                        start,
+                        end,
+                        name: &text[cursor + 1..inner_end],
+                    });
+                    cursor = end;
+                } else {
+                    let end = identifier_end(bytes, cursor);
+                    if end > cursor {
+                        visit(Token {
+                            class,
+                            start,
+                            end,
+                            name: &text[cursor..end],
+                        });
+                    }
+                    cursor = end;
+                }
+            }
+            HASH | BANG => {
+                let start = cursor;
+                cursor += 1;
+                let end = digits_end(bytes, cursor);
+                if end > cursor {
+                    visit(Token {
+                        class: if byte == b'#' {
+                            Class::Attribute
+                        } else {
+                            Class::Metadata
+                        },
+                        start,
+                        end,
+                        name: &text[cursor..end],
+                    });
+                    cursor = end;
+                }
+            }
+            _ => unreachable!("the table has no other class"),
+        }
+    }
+}
+
+/// How much `line` opens more brackets than it closes, ignoring strings and comments.
+fn bracket_depth(line: &str) -> i32 {
+    let bytes = line.as_bytes();
+    let mut depth = 0;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                cursor = string_end(bytes, cursor);
+                continue;
+            }
+            b';' => break,
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            _ => {}
+        }
+        cursor += 1;
+    }
+    depth
+}
+
+/// `name` as it follows an `@` or a `%`: quoted when it holds a character that an unquoted name cannot.
+fn push_name(out: &mut String, sigil: char, name: &str) {
+    out.push(sigil);
+    if !name.is_empty() && name.bytes().all(identifier_byte) {
+        out.push_str(name);
+    } else {
+        out.push('"');
+        out.push_str(name);
+        out.push('"');
+    }
+}
+
+/// The length of the type that starts `text` (`i64`, `ptr`, `[5 x ptr]`, `{ i32, i32 }`, `<4 x i32>`, `%tz.string`,
+/// `%"tz.record.A"`), if it is one.
+fn type_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    match *bytes.first()? {
+        b'[' | b'{' | b'<' => {
+            let mut depth = 0i32;
+            let mut cursor = 0;
+            while cursor < bytes.len() {
+                match bytes[cursor] {
+                    b'"' => {
+                        cursor = string_end(bytes, cursor);
+                        continue;
+                    }
+                    b'[' | b'{' | b'<' | b'(' => depth += 1,
+                    b']' | b'}' | b'>' | b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(cursor + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            None
+        }
+        b'%' => {
+            if bytes.get(1) == Some(&b'"') {
+                Some(string_end(bytes, 1))
+            } else {
+                Some(identifier_end(bytes, 1))
+            }
+        }
+        byte if byte.is_ascii_alphanumeric() || byte == b'_' => {
+            let mut cursor = 1;
+            while cursor < bytes.len()
+                && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+            {
+                cursor += 1;
+            }
+            Some(cursor)
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The top-level forms.
+// ---------------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Symbol {
+    Function(usize),
+    Global(usize),
+    Declare(usize),
+}
+
+#[derive(Debug)]
+struct TypeDef<'a> {
+    name: &'a str,
+    text: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unnamed {
+    No,
+    Global,
+    Local,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum GlobalForm {
+    /// A `private` or `internal` constant with no significant address: copied into every unit that uses it.
+    Copyable,
+    /// A declaration that the text already holds (`@x = external global i32`): copied as it is.
+    External,
+    /// One owner unit; the other units declare it `external hidden`.
+    Single,
+}
+
+#[derive(Debug)]
+struct Global<'a> {
+    name: &'a str,
+    text: &'a str,
+    form: GlobalForm,
+    unnamed: Unnamed,
+    /// The `internal` or `private` word, which a definition that other units use turns into `hidden`.
+    linkage: Option<Range<usize>>,
+    /// Where the type and the initializer start (after `global` or `constant`).
+    body: usize,
+    /// What another unit declares for a global with one owner.
+    declaration: String,
+}
+
+#[derive(Debug)]
+struct Declare<'a> {
+    name: &'a str,
+    text: &'a str,
+}
+
+#[derive(Debug, Default)]
+struct Linkage {
+    local: bool,
+    hidden: bool,
+    weak: bool,
+    word: Option<Range<usize>>,
+}
+
+#[derive(Debug)]
+struct Function<'a> {
+    name: &'a str,
+    text: &'a str,
+    head_end: usize,
+    linkage: Linkage,
+    declaration: OnceLock<Declaration>,
+}
+
+/// What another unit declares for a function: `before` up to the name and `after` from it, with the parameter
+/// names and everything after the parameters removed.
+#[derive(Debug)]
+struct Declaration {
+    before: String,
+    after: String,
+}
+
+#[derive(Debug, Default)]
+struct Parsed<'a> {
+    header: Vec<&'a str>,
+    types: Vec<TypeDef<'a>>,
+    type_ids: FastMap<&'a str, usize>,
+    type_first: Vec<bool>,
+    globals: Vec<Global<'a>>,
+    declares: Vec<Declare<'a>>,
+    functions: Vec<Function<'a>>,
+    symbols: FastMap<&'a str, Symbol>,
+    attributes: Vec<Option<&'a str>>,
+    metadata: Vec<Option<&'a str>>,
+    named_metadata: Vec<&'a str>,
+}
+
+/// The line that holds `offset`.
+fn line_number(ir: &str, offset: usize) -> usize {
+    ir.as_bytes()[..offset.min(ir.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1
+}
+
+impl SplitError {
+    /// The error with the line numbers that the parser recorded as byte offsets (counting the lines of every
+    /// entity while parsing would read the text once for each).
+    fn locate(self, ir: &str) -> Self {
+        match self {
+            Self::UnknownLine { line, text } => Self::UnknownLine {
+                line: line_number(ir, line),
+                text,
+            },
+            Self::Unsupported { line, what } => Self::Unsupported {
+                line: line_number(ir, line),
+                what,
+            },
+            Self::Malformed { line, what } => Self::Malformed {
+                line: line_number(ir, line),
+                what,
+            },
+        }
+    }
+}
+
+fn next_line(ir: &str, from: usize) -> usize {
+    match ir[from..].find('\n') {
+        Some(index) => from + index + 1,
+        None => ir.len(),
+    }
+}
+
+fn line_end(ir: &str, from: usize) -> usize {
+    ir[from..].find('\n').map_or(ir.len(), |index| from + index)
+}
+
+/// The end (before the line break) of the entity that starts at `start`, which goes on until its brackets close.
+fn entity_end(ir: &str, start: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut cursor = start;
+    loop {
+        let end = line_end(ir, cursor);
+        depth += bracket_depth(&ir[cursor..end]);
+        if depth <= 0 {
+            return Some(end);
+        }
+        if end >= ir.len() {
+            return None;
+        }
+        cursor = end + 1;
+    }
+}
+
+fn first_symbol(text: &str) -> Option<Token<'_>> {
+    let mut found = None;
+    let mut done = false;
+    scan(text, |token| {
+        if !done && token.class == Class::Symbol {
+            found = Some(token);
+            done = true;
+        }
+    });
+    found
+}
+
+/// The linkage words of a definition, from `from`, up to the first word that is not one. A linkage that a unit
+/// cannot hold is an error.
+fn linkage_words(
+    text: &str,
+    from: usize,
+    line: usize,
+    global: bool,
+) -> Result<(Linkage, bool, Unnamed, usize), SplitError> {
+    let mut linkage = Linkage::default();
+    let mut thread_local = false;
+    let mut unnamed = Unnamed::No;
+    let mut cursor = from;
+    loop {
+        let rest = &text[cursor..];
+        let length = rest.find([' ', '\n']).unwrap_or(rest.len());
+        let word = &rest[..length];
+        let known = match word {
+            "private" | "internal" => {
+                linkage.local = true;
+                linkage.word = Some(cursor..cursor + length);
+                true
+            }
+            "hidden" => {
+                linkage.hidden = true;
+                true
+            }
+            "weak" => {
+                linkage.weak = true;
+                true
+            }
+            "external" | "default" | "dso_local" | "dso_preemptable" => true,
+            "unnamed_addr" if global => {
+                unnamed = Unnamed::Global;
+                true
+            }
+            "local_unnamed_addr" if global => {
+                unnamed = Unnamed::Local;
+                true
+            }
+            "thread_local" if global => {
+                thread_local = true;
+                true
+            }
+            word if global && word.starts_with("thread_local(") => {
+                thread_local = true;
+                true
+            }
+            "linkonce"
+            | "linkonce_odr"
+            | "weak_odr"
+            | "common"
+            | "appending"
+            | "extern_weak"
+            | "available_externally" => {
+                return Err(SplitError::Unsupported {
+                    line,
+                    what: "linkage",
+                });
+            }
+            _ => false,
+        };
+        if !known {
+            return Ok((linkage, thread_local, unnamed, cursor));
+        }
+        cursor += length + 1;
+        if cursor >= text.len() {
+            return Err(SplitError::Malformed {
+                line,
+                what: "definition",
+            });
+        }
+    }
+}
+
+fn parse_global<'a>(text: &'a str, line: usize) -> Result<Global<'a>, SplitError> {
+    let name = first_symbol(text).ok_or(SplitError::Malformed {
+        line,
+        what: "global",
+    })?;
+    let equals = text.find(" = ").ok_or(SplitError::Malformed {
+        line,
+        what: "global",
+    })?;
+    let (linkage, thread_local, unnamed, cursor) = linkage_words(text, equals + 3, line, true)?;
+    let rest = &text[cursor..];
+    let length = rest.find([' ', '\n']).unwrap_or(rest.len());
+    let constant = match &rest[..length] {
+        "global" => false,
+        "constant" => true,
+        "alias" | "ifunc" => {
+            return Err(SplitError::Unsupported {
+                line,
+                what: "alias or ifunc",
+            });
+        }
+        _ => {
+            return Err(SplitError::Unsupported {
+                line,
+                what: "global form",
+            });
+        }
+    };
+    let external = text[equals + 3..cursor]
+        .split(' ')
+        .any(|word| word == "external");
+    let form = if external {
+        GlobalForm::External
+    } else if linkage.local && constant && unnamed != Unnamed::No && !thread_local {
+        GlobalForm::Copyable
+    } else {
+        GlobalForm::Single
+    };
+    let body = cursor + length;
+    let hidden = linkage.local || linkage.hidden;
+    let mut declaration = String::new();
+    if form == GlobalForm::Single {
+        let after = text[body..].trim_start();
+        let type_length = type_len(after).ok_or(SplitError::Malformed {
+            line,
+            what: "global type",
+        })?;
+        push_name(&mut declaration, '@', name.name);
+        declaration.push_str(" = external ");
+        if hidden {
+            declaration.push_str("hidden ");
+        }
+        if thread_local {
+            declaration.push_str("thread_local ");
+        }
+        declaration.push_str(match unnamed {
+            Unnamed::Global => "unnamed_addr ",
+            Unnamed::Local => "local_unnamed_addr ",
+            Unnamed::No => "",
+        });
+        declaration.push_str(if constant { "constant " } else { "global " });
+        declaration.push_str(&after[..type_length]);
+        if let Some(index) = text.rfind(", align ") {
+            let digits = text[index + 8..]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            declaration.push_str(&text[index..index + 8 + digits]);
+        }
+    }
+    Ok(Global {
+        name: name.name,
+        text,
+        form,
+        unnamed,
+        linkage: linkage.word,
+        body,
+        declaration,
+    })
+}
+
+fn parse_function<'a>(
+    ir: &'a str,
+    start: usize,
+    line: usize,
+) -> Result<(Function<'a>, usize), SplitError> {
+    let head_end = line_end(ir, start);
+    let head = &ir[start..head_end];
+    if !head.trim_end().ends_with('{') {
+        return Err(SplitError::Malformed {
+            line,
+            what: "function head",
+        });
+    }
+    let name = first_symbol(head).ok_or(SplitError::Malformed {
+        line,
+        what: "function name",
+    })?;
+    let (linkage, _, _, _) = linkage_words(head, "define ".len(), line, false)?;
+    let mut cursor = next_line(ir, start);
+    loop {
+        if cursor >= ir.len() {
+            return Err(SplitError::Malformed {
+                line,
+                what: "function without a closing brace",
+            });
+        }
+        if ir.as_bytes()[cursor] == b'}' {
+            let end = cursor + 1;
+            let function = Function {
+                name: name.name,
+                text: &ir[start..end],
+                head_end: head_end - start,
+                linkage,
+                declaration: OnceLock::new(),
+            };
+            return Ok((function, end));
+        }
+        cursor = next_line(ir, cursor);
+    }
+}
+
+fn parse_type_name(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('%')?;
+    let (name, after) = if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        (&quoted[..end], &quoted[end + 1..])
+    } else {
+        let end = identifier_end(rest.as_bytes(), 0);
+        (&rest[..end], &rest[end..])
+    };
+    after.starts_with(" = type").then_some(name)
+}
+
+fn parse(ir: &str) -> Result<Parsed<'_>, SplitError> {
+    parse_entities(ir).map_err(|error| error.locate(ir))
+}
+
+/// [`parse`], with the byte offset of each entity where an error says its line.
+fn parse_entities(ir: &str) -> Result<Parsed<'_>, SplitError> {
+    let mut parsed = Parsed::default();
+    let mut cursor = 0;
+    while cursor < ir.len() {
+        let end = line_end(ir, cursor);
+        let line = &ir[cursor..end];
+        if line.is_empty() || line.starts_with(';') {
+            cursor = next_line(ir, cursor);
+            continue;
+        }
+        let number = cursor;
+        if line.starts_with("define ") {
+            let (function, after) = parse_function(ir, cursor, number)?;
+            parsed
+                .symbols
+                .insert(function.name, Symbol::Function(parsed.functions.len()));
+            parsed.functions.push(function);
+            cursor = after;
+            continue;
+        }
+        let end = entity_end(ir, cursor).ok_or(SplitError::Malformed {
+            line: number,
+            what: "unbalanced entity",
+        })?;
+        let text = &ir[cursor..end];
+        if line.starts_with("source_filename") || line.starts_with("target ") {
+            parsed.header.push(text);
+        } else if line.starts_with("declare ") {
+            let name = first_symbol(line).ok_or(SplitError::Malformed {
+                line: number,
+                what: "declaration",
+            })?;
+            parsed
+                .symbols
+                .insert(name.name, Symbol::Declare(parsed.declares.len()));
+            parsed.declares.push(Declare {
+                name: name.name,
+                text,
+            });
+        } else if line.starts_with('%') {
+            let name = parse_type_name(line).ok_or_else(|| SplitError::UnknownLine {
+                line: number,
+                text: line.chars().take(80).collect(),
+            })?;
+            parsed.type_ids.insert(name, parsed.types.len());
+            parsed.types.push(TypeDef { name, text });
+        } else if line.starts_with('@') {
+            let global = parse_global(text, number)?;
+            parsed
+                .symbols
+                .insert(global.name, Symbol::Global(parsed.globals.len()));
+            parsed.globals.push(global);
+        } else if let Some(rest) = line.strip_prefix("attributes #") {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            let group: usize = rest[..digits].parse().map_err(|_| SplitError::Malformed {
+                line: number,
+                what: "attribute group",
+            })?;
+            let body =
+                text.split_once(" = ")
+                    .map(|(_, body)| body)
+                    .ok_or(SplitError::Malformed {
+                        line: number,
+                        what: "attribute group",
+                    })?;
+            if parsed.attributes.len() <= group {
+                parsed.attributes.resize(group + 1, None);
+            }
+            parsed.attributes[group] = Some(body);
+        } else if let Some(rest) = line.strip_prefix('!') {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 {
+                let node: usize = rest[..digits].parse().map_err(|_| SplitError::Malformed {
+                    line: number,
+                    what: "metadata node",
+                })?;
+                let body =
+                    text.split_once(" = ")
+                        .map(|(_, body)| body)
+                        .ok_or(SplitError::Malformed {
+                            line: number,
+                            what: "metadata node",
+                        })?;
+                if parsed.metadata.len() <= node {
+                    parsed.metadata.resize(node + 1, None);
+                }
+                parsed.metadata[node] = Some(body);
+            } else if rest.contains(" = ") {
+                parsed.named_metadata.push(text);
+            } else {
+                return Err(SplitError::UnknownLine {
+                    line: number,
+                    text: line.chars().take(80).collect(),
+                });
+            }
+        } else {
+            return Err(SplitError::UnknownLine {
+                line: number,
+                text: line.chars().take(80).collect(),
+            });
+        }
+        cursor = if end >= ir.len() { ir.len() } else { end + 1 };
+    }
+    let mut first = vec![false; 256];
+    for definition in &parsed.types {
+        if let Some(byte) = definition.name.bytes().next() {
+            first[byte as usize] = true;
+        }
+    }
+    parsed.type_first = first;
+    Ok(parsed)
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Names. A serial number in a name is replaced by the hash of the text of the function that has it.
+// ---------------------------------------------------------------------------------------------------------
+
+fn all_digits(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// The ranges of the components of a name, which a dot outside brackets separates (a type name inside a symbol
+/// name holds dots of its own).
+fn component_ranges(name: &str) -> Vec<Range<usize>> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (index, byte) in name.bytes().enumerate() {
+        match byte {
+            b'[' | b'(' | b'<' => depth += 1,
+            b']' | b')' | b'>' => depth -= 1,
+            b'.' if depth == 0 => {
+                parts.push(start..index);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(start..name.len());
+    parts
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Naming<'a> {
+    /// The name holds no serial number. A user function and its helpers know the module they belong to.
+    Stable {
+        module: Option<&'a str>,
+    },
+    Unstable,
+}
+
+/// Whether `name` is the same in every build of the same code, and the module a function of the program belongs
+/// to. `tz.fn.<module>.<name>` and the helpers `tz.apply.`, `tz.env.clone.`, `tz.env.drop.` followed by the same
+/// and an index (`tz.apply.Main.divide.0`) are the names of a user function; a component of only digits
+/// anywhere else is a serial number.
+fn classify<'a>(name: &'a str, modules: &FastSet<&str>) -> Naming<'a> {
+    let mut qualified = None;
+    for (prefix, helper) in [
+        ("tz.fn.", false),
+        ("tz.apply.", true),
+        ("tz.env.clone.", true),
+        ("tz.env.drop.", true),
+    ] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            qualified = Some(if helper {
+                match rest.rsplit_once('.') {
+                    Some((owner, index)) if all_digits(index) => owner,
+                    _ => rest,
+                }
+            } else {
+                rest
+            });
+            break;
+        }
+    }
+    let checked = qualified.unwrap_or(name);
+    let parts = component_ranges(checked);
+    if parts.iter().any(|part| all_digits(&checked[part.clone()])) {
+        return Naming::Unstable;
+    }
+    let module = qualified.and_then(|owner| {
+        (1..parts.len())
+            .rev()
+            .map(|count| &owner[..parts[count - 1].end])
+            .find(|candidate| modules.contains(candidate))
+    });
+    Naming::Stable { module }
+}
+
+/// `name` without its components of only digits.
+fn without_serials(name: &str) -> String {
+    let mut kept = String::with_capacity(name.len());
+    for part in component_ranges(name) {
+        let text = &name[part];
+        if all_digits(text) {
+            continue;
+        }
+        if !kept.is_empty() {
+            kept.push('.');
+        }
+        kept.push_str(text);
+    }
+    kept
+}
+
+fn hex16(digest: &[u8; 32]) -> String {
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The strongly connected components of a graph, callees first (iterative Tarjan: a program has tens of
+/// thousands of functions).
+fn strongly_connected(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    const UNSEEN: usize = usize::MAX;
+    let count = edges.len();
+    let mut index = vec![UNSEEN; count];
+    let mut low = vec![0usize; count];
+    let mut on_stack = vec![false; count];
+    let mut stack = Vec::new();
+    let mut components = Vec::new();
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    let mut next = 0;
+    for root in 0..count {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        work.push((root, 0));
+        while let Some(top) = work.last_mut() {
+            let node = top.0;
+            if top.1 < edges[node].len() {
+                let target = edges[node][top.1];
+                top.1 += 1;
+                if index[target] == UNSEEN {
+                    index[target] = next;
+                    low[target] = next;
+                    next += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    work.push((target, 0));
+                } else if on_stack[target] {
+                    low[node] = low[node].min(index[target]);
+                }
+            } else {
+                work.pop();
+                if let Some(parent) = work.last() {
+                    low[parent.0] = low[parent.0].min(low[node]);
+                }
+                if low[node] == index[node] {
+                    let mut component = Vec::new();
+                    loop {
+                        let member = stack.pop().expect("a component member is on the stack");
+                        on_stack[member] = false;
+                        component.push(member);
+                        if member == node {
+                            break;
+                        }
+                    }
+                    component.sort_unstable();
+                    components.push(component);
+                }
+            }
+        }
+    }
+    components
+}
+
+/// The unstable functions that `text` refers to, directly or through the constants it copies.
+fn function_edges(parsed: &Parsed<'_>, text: &str, nodes: &FastMap<usize, usize>) -> Vec<usize> {
+    let mut targets = BTreeSet::new();
+    let mut seen = FastSet::default();
+    let mut pending = vec![text];
+    while let Some(text) = pending.pop() {
+        scan(text, |token| {
+            if token.class != Class::Symbol {
+                return;
+            }
+            match parsed.symbols.get(token.name) {
+                Some(Symbol::Function(id)) => {
+                    if let Some(node) = nodes.get(id) {
+                        targets.insert(*node);
+                    }
+                }
+                Some(Symbol::Global(id))
+                    if parsed.globals[*id].form == GlobalForm::Copyable && seen.insert(*id) =>
+                {
+                    pending.push(parsed.globals[*id].text);
+                }
+                _ => {}
+            }
+        });
+    }
+    targets.into_iter().collect()
+}
+
+struct Plan<'a> {
+    /// The new name of a function whose name holds a serial number.
+    renamed: Vec<Option<String>>,
+    /// The module that a user function belongs to.
+    modules: Vec<Option<&'a str>>,
+}
+
+fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
+    let count = parsed.functions.len();
+    let mut owners = Vec::with_capacity(count);
+    let mut unstable = Vec::new();
+    for (id, function) in parsed.functions.iter().enumerate() {
+        match classify(function.name, modules) {
+            Naming::Stable { module } => owners.push(module),
+            Naming::Unstable => {
+                owners.push(None);
+                unstable.push(id);
+            }
+        }
+    }
+    let mut renamed: Vec<Option<String>> = vec![None; count];
+    if !unstable.is_empty() {
+        let nodes: FastMap<usize, usize> = unstable
+            .iter()
+            .enumerate()
+            .map(|(node, id)| (*id, node))
+            .collect();
+        let edges: Vec<Vec<usize>> = unstable
+            .iter()
+            .map(|id| function_edges(parsed, parsed.functions[*id].text, &nodes))
+            .collect();
+        let mut used: FastSet<String> = FastSet::default();
+        for component in strongly_connected(&edges) {
+            let members: Vec<usize> = component.iter().map(|node| unstable[*node]).collect();
+            let placeholders: Vec<String> =
+                (0..members.len()).map(|n| format!("tz.scc.{n}")).collect();
+            let mut hash = Sha256::new();
+            for &member in &members {
+                let hashing = Hashing {
+                    members: &members,
+                    placeholders: &placeholders,
+                    current: member,
+                };
+                let mut builder = Builder::new(parsed, &renamed, Some(hashing), None);
+                let text = builder.hash_text(member);
+                hash.update(text.as_bytes());
+                hash.update(&[0]);
+            }
+            let digest = hex16(&hash.finalize());
+            for (position, &member) in members.iter().enumerate() {
+                let mut name = format!(
+                    "{}.h{digest}",
+                    without_serials(parsed.functions[member].name)
+                );
+                if members.len() > 1 {
+                    name.push_str(&format!(".{position}"));
+                }
+                // The same text under the same prefix (two equal lambdas) keeps two functions.
+                let mut candidate = name.clone();
+                let mut number = 1;
+                while !used.insert(candidate.clone()) {
+                    number += 1;
+                    candidate = format!("{name}.{number}");
+                }
+                renamed[member] = Some(candidate);
+            }
+        }
+    }
+    Plan {
+        renamed,
+        modules: owners,
+    }
+}
+
+fn bucket(name: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in name.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    (hash ^ (hash >> 32)) % BUCKETS
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// One unit's text.
+// ---------------------------------------------------------------------------------------------------------
+
+/// The function a hash text is for, and the names that stand for it and for its component.
+#[derive(Clone, Copy)]
+struct Hashing<'p> {
+    members: &'p [usize],
+    placeholders: &'p [String],
+    current: usize,
+}
+
+/// The unit of every function and of every global with one owner.
+struct Homes {
+    functions: Vec<usize>,
+    globals: Vec<usize>,
+}
+
+struct Builder<'p, 'a> {
+    parsed: &'p Parsed<'a>,
+    renamed: &'p [Option<String>],
+    hashing: Option<Hashing<'p>>,
+    homes: Option<&'p Homes>,
+    this: usize,
+    consts: Vec<usize>,
+    const_slots: FastMap<usize, usize>,
+    attrs: Vec<usize>,
+    attr_slots: FastMap<usize, usize>,
+    metas: Vec<usize>,
+    meta_slots: FastMap<usize, usize>,
+    type_seen: Vec<bool>,
+    type_list: Vec<usize>,
+    foreign_functions: FastSet<usize>,
+    foreign_globals: FastSet<usize>,
+    declares: FastSet<usize>,
+    copied_externals: FastSet<usize>,
+}
+
+fn slot(list: &mut Vec<usize>, slots: &mut FastMap<usize, usize>, old: usize) -> usize {
+    *slots.entry(old).or_insert_with(|| {
+        list.push(old);
+        list.len() - 1
+    })
+}
+
+fn function_name<'p>(
+    parsed: &'p Parsed<'_>,
+    renamed: &'p [Option<String>],
+    hashing: Option<Hashing<'p>>,
+    id: usize,
+) -> &'p str {
+    if let Some(hashing) = hashing {
+        if id == hashing.current {
+            return "tz.self";
+        }
+        if let Some(position) = hashing.members.iter().position(|member| *member == id) {
+            return &hashing.placeholders[position];
+        }
+    }
+    renamed[id].as_deref().unwrap_or(parsed.functions[id].name)
+}
+
+impl<'p, 'a> Builder<'p, 'a> {
+    fn new(
+        parsed: &'p Parsed<'a>,
+        renamed: &'p [Option<String>],
+        hashing: Option<Hashing<'p>>,
+        homes: Option<(&'p Homes, usize)>,
+    ) -> Self {
+        Self {
+            parsed,
+            renamed,
+            hashing,
+            homes: homes.map(|(homes, _)| homes),
+            this: homes.map_or(0, |(_, unit)| unit),
+            consts: Vec::new(),
+            const_slots: FastMap::default(),
+            attrs: Vec::new(),
+            attr_slots: FastMap::default(),
+            metas: Vec::new(),
+            meta_slots: FastMap::default(),
+            type_seen: vec![false; parsed.types.len()],
+            type_list: Vec::new(),
+            foreign_functions: FastSet::default(),
+            foreign_globals: FastSet::default(),
+            declares: FastSet::default(),
+            copied_externals: FastSet::default(),
+        }
+    }
+
+    fn owns_function(&self, id: usize) -> bool {
+        self.homes
+            .is_none_or(|homes| homes.functions[id] == self.this)
+    }
+
+    fn owns_global(&self, id: usize) -> bool {
+        self.homes
+            .is_none_or(|homes| homes.globals[id] == self.this)
+    }
+
+    fn type_used(&mut self, id: usize) {
+        if !self.type_seen[id] {
+            self.type_seen[id] = true;
+            self.type_list.push(id);
+        }
+    }
+
+    /// Writes `text` with the names, constants, attribute groups, and metadata nodes of the unit.
+    fn rewrite(&mut self, text: &str, out: &mut String) {
+        let parsed = self.parsed;
+        let renamed = self.renamed;
+        let hashing = self.hashing;
+        let mut last = 0;
+        scan(text, |token| match token.class {
+            Class::Symbol => match parsed.symbols.get(token.name) {
+                Some(&Symbol::Function(id)) => {
+                    if !self.owns_function(id) {
+                        self.foreign_functions.insert(id);
+                    }
+                    let name = function_name(parsed, renamed, hashing, id);
+                    if name != token.name {
+                        out.push_str(&text[last..token.start]);
+                        push_name(out, '@', name);
+                        last = token.end;
+                    }
+                }
+                Some(&Symbol::Global(id)) => match parsed.globals[id].form {
+                    GlobalForm::Copyable => {
+                        let number = slot(&mut self.consts, &mut self.const_slots, id);
+                        out.push_str(&text[last..token.start]);
+                        out.push_str("@tz.unit.");
+                        out.push_str(&number.to_string());
+                        last = token.end;
+                    }
+                    GlobalForm::Single => {
+                        if !self.owns_global(id) {
+                            self.foreign_globals.insert(id);
+                        }
+                    }
+                    GlobalForm::External => {
+                        self.copied_externals.insert(id);
+                    }
+                },
+                Some(&Symbol::Declare(id)) => {
+                    self.declares.insert(id);
+                }
+                None => {}
+            },
+            Class::Local => {
+                let first = token.name.as_bytes().first().copied().unwrap_or(0);
+                if parsed.type_first[first as usize]
+                    && let Some(&id) = parsed.type_ids.get(token.name)
+                {
+                    self.type_used(id);
+                }
+            }
+            Class::Attribute => {
+                if let Ok(old) = token.name.parse::<usize>() {
+                    let number = slot(&mut self.attrs, &mut self.attr_slots, old);
+                    out.push_str(&text[last..token.start]);
+                    out.push('#');
+                    out.push_str(&number.to_string());
+                    last = token.end;
+                }
+            }
+            Class::Metadata => {
+                if let Ok(old) = token.name.parse::<usize>() {
+                    let number = slot(&mut self.metas, &mut self.meta_slots, old);
+                    out.push_str(&text[last..token.start]);
+                    out.push('!');
+                    out.push_str(&number.to_string());
+                    last = token.end;
+                }
+            }
+        });
+        out.push_str(&text[last..]);
+    }
+
+    /// Notes the types that `text` names, without writing it.
+    fn note_types(&mut self, text: &str) {
+        let parsed = self.parsed;
+        scan(text, |token| {
+            if token.class == Class::Local {
+                let first = token.name.as_bytes().first().copied().unwrap_or(0);
+                if parsed.type_first[first as usize]
+                    && let Some(&id) = parsed.type_ids.get(token.name)
+                {
+                    self.type_used(id);
+                }
+            }
+        });
+    }
+
+    fn function(&mut self, id: usize, out: &mut String, hidden: bool) {
+        let parsed = self.parsed;
+        let function = &parsed.functions[id];
+        let text = function.text;
+        match &function.linkage.word {
+            Some(word) if hidden => {
+                let mut head = String::with_capacity(function.head_end);
+                head.push_str(&text[..word.start]);
+                head.push_str("hidden");
+                head.push_str(&text[word.end..function.head_end]);
+                self.rewrite(&head, out);
+                self.rewrite(&text[function.head_end..], out);
+            }
+            _ => self.rewrite(text, out),
+        }
+        out.push('\n');
+    }
+
+    fn global(&mut self, id: usize, out: &mut String) {
+        let parsed = self.parsed;
+        let global = &parsed.globals[id];
+        match &global.linkage {
+            Some(word) => {
+                let mut text = String::with_capacity(global.text.len());
+                text.push_str(&global.text[..word.start]);
+                text.push_str("hidden");
+                text.push_str(&global.text[word.end..]);
+                self.rewrite(&text, out);
+            }
+            None => self.rewrite(global.text, out),
+        }
+        out.push('\n');
+    }
+
+    /// The copied constants, in the order of their first use; one constant can bring more.
+    fn constants(&mut self, out: &mut String) {
+        let parsed = self.parsed;
+        let mut index = 0;
+        while index < self.consts.len() {
+            let global = &parsed.globals[self.consts[index]];
+            out.push_str("@tz.unit.");
+            out.push_str(&index.to_string());
+            out.push_str(" = private ");
+            if global.unnamed == Unnamed::Global {
+                out.push_str("unnamed_addr");
+            } else {
+                out.push_str("local_unnamed_addr");
+            }
+            out.push_str(" constant");
+            self.rewrite(&global.text[global.body..], out);
+            out.push('\n');
+            index += 1;
+        }
+    }
+
+    fn attribute_groups(&mut self, out: &mut String) {
+        let parsed = self.parsed;
+        let mut index = 0;
+        while index < self.attrs.len() {
+            if let Some(body) = parsed.attributes.get(self.attrs[index]).copied().flatten() {
+                out.push_str("attributes #");
+                out.push_str(&index.to_string());
+                out.push_str(" = ");
+                self.rewrite(body, out);
+                out.push('\n');
+            }
+            index += 1;
+        }
+    }
+
+    fn metadata_nodes(&mut self, out: &mut String) {
+        let parsed = self.parsed;
+        let mut index = 0;
+        while index < self.metas.len() {
+            if let Some(body) = parsed.metadata.get(self.metas[index]).copied().flatten() {
+                out.push('!');
+                out.push_str(&index.to_string());
+                out.push_str(" = ");
+                self.rewrite(body, out);
+                out.push('\n');
+            }
+            index += 1;
+        }
+    }
+
+    /// The text that names a function, its constants, its attribute groups, and its metadata: what the hash of a
+    /// renamed function is taken over.
+    fn hash_text(&mut self, id: usize) -> String {
+        let mut functions = String::new();
+        self.function(id, &mut functions, false);
+        let mut text = String::with_capacity(functions.len() + 256);
+        self.constants(&mut text);
+        text.push_str(&functions);
+        self.attribute_groups(&mut text);
+        self.metadata_nodes(&mut text);
+        text
+    }
+
+    /// The text of a unit that holds `functions` and the globals `globals`, in the order they are given.
+    fn unit(mut self, functions: &[usize], globals: &[usize]) -> String {
+        let parsed = self.parsed;
+        let mut global_text = String::new();
+        for &id in globals {
+            self.global(id, &mut global_text);
+        }
+        let mut function_text = String::new();
+        for &id in functions {
+            self.function(id, &mut function_text, true);
+        }
+        let mut const_text = String::new();
+        self.constants(&mut const_text);
+
+        // What the unit uses and does not define, by name.
+        let mut declarations: BTreeMap<String, String> = BTreeMap::new();
+        let mut foreign: Vec<usize> = self.foreign_functions.iter().copied().collect();
+        foreign.sort_unstable();
+        for id in foreign {
+            let name = function_name(parsed, self.renamed, None, id);
+            let declaration = parsed.functions[id]
+                .declaration
+                .get_or_init(|| declaration_of(&parsed.functions[id]));
+            let mut text = declaration.before.clone();
+            push_name(&mut text, '@', name);
+            text.push_str(&declaration.after);
+            self.note_types(&text);
+            text.push('\n');
+            declarations.insert(name.to_owned(), text);
+        }
+        let mut originals: Vec<usize> = self.declares.iter().copied().collect();
+        originals.sort_unstable();
+        for id in originals {
+            let declare = &parsed.declares[id];
+            let mut text = String::new();
+            self.rewrite(declare.text, &mut text);
+            text.push('\n');
+            declarations.insert(declare.name.to_owned(), text);
+        }
+        let mut external_text: BTreeMap<String, String> = BTreeMap::new();
+        let mut foreign: Vec<usize> = self.foreign_globals.iter().copied().collect();
+        foreign.sort_unstable();
+        for id in foreign {
+            let global = &parsed.globals[id];
+            let mut text = global.declaration.clone();
+            self.note_types(&text);
+            text.push('\n');
+            external_text.insert(global.name.to_owned(), text);
+        }
+        let mut copied: Vec<usize> = self.copied_externals.iter().copied().collect();
+        copied.sort_unstable();
+        for id in copied {
+            let global = &parsed.globals[id];
+            let mut text = String::new();
+            self.rewrite(global.text, &mut text);
+            text.push('\n');
+            external_text.insert(global.name.to_owned(), text);
+        }
+
+        // Named metadata names nodes of its own. The list of compile units goes with a unit only when one of its
+        // functions already uses a compile unit (through its debug information).
+        let mut named_text = String::new();
+        for line in &parsed.named_metadata {
+            if line.starts_with("!llvm.dbg.cu") {
+                let mut used = false;
+                scan(line, |token| {
+                    if token.class == Class::Metadata
+                        && token
+                            .name
+                            .parse::<usize>()
+                            .is_ok_and(|node| self.meta_slots.contains_key(&node))
+                    {
+                        used = true;
+                    }
+                });
+                if !used {
+                    continue;
+                }
+            }
+            self.rewrite(line, &mut named_text);
+            named_text.push('\n');
+        }
+        let mut attribute_text = String::new();
+        // The groups may name more metadata (never) and more types (rarely): types come last.
+        self.attribute_groups(&mut attribute_text);
+        let mut metadata_text = String::new();
+        self.metadata_nodes(&mut metadata_text);
+        // A type is defined with the types that its body names.
+        let mut cursor = 0;
+        while cursor < self.type_list.len() {
+            let text = parsed.types[self.type_list[cursor]].text;
+            self.note_types(text);
+            cursor += 1;
+        }
+        let mut types = self.type_list.clone();
+        types.sort_unstable();
+
+        let mut out = String::with_capacity(
+            function_text.len() + global_text.len() + const_text.len() + 4096,
+        );
+        for line in &parsed.header {
+            out.push_str(line);
+            out.push('\n');
+        }
+        for id in types {
+            out.push_str(parsed.types[id].text);
+            out.push('\n');
+        }
+        out.push_str(&const_text);
+        out.push_str(&global_text);
+        for text in external_text.values() {
+            out.push_str(text);
+        }
+        for text in declarations.values() {
+            out.push_str(text);
+        }
+        out.push_str(&function_text);
+        out.push_str(&attribute_text);
+        out.push_str(&metadata_text);
+        out.push_str(&named_text);
+        out
+    }
+}
+
+/// What another unit declares for `function`: its calling convention, result and parameter types with their ABI
+/// attributes (`sret`, `byval`, `signext`, `noundef`), without parameter names and function attributes.
+fn declaration_of(function: &Function<'_>) -> Declaration {
+    let head = &function.text[..function.head_end];
+    let (_, _, _, start) = linkage_words(head, "define ".len(), 0, false)
+        .expect("the linkage of a parsed function head is valid");
+    let name = first_symbol(head).expect("a parsed function head has a name");
+    let result = head[start..name.start].trim();
+    let rest = &head[name.end..];
+    let open = rest.find('(').unwrap_or(0);
+    let bytes = rest.as_bytes();
+    let mut depth = 0i32;
+    let mut parameters: Vec<&str> = Vec::new();
+    let mut piece = open + 1;
+    let mut cursor = open;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                cursor = string_end(bytes, cursor);
+                continue;
+            }
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => {
+                depth -= 1;
+                if depth == 0 {
+                    parameters.push(&rest[piece..cursor]);
+                    break;
+                }
+            }
+            b',' if depth == 1 => {
+                parameters.push(&rest[piece..cursor]);
+                piece = cursor + 1;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    let mut list = String::from("(");
+    let mut first = true;
+    for parameter in parameters {
+        let parameter = parameter.trim();
+        if parameter.is_empty() {
+            continue;
+        }
+        let kept = match parameter.rsplit_once(' ') {
+            Some((before, last)) if last.starts_with('%') => before.trim_end(),
+            _ => parameter,
+        };
+        if !first {
+            list.push_str(", ");
+        }
+        first = false;
+        list.push_str(kept);
+    }
+    list.push(')');
+    let mut before = String::from("declare ");
+    if function.linkage.local || function.linkage.hidden {
+        before.push_str("hidden ");
+    }
+    before.push_str(result);
+    before.push(' ');
+    Declaration {
+        before,
+        after: list,
+    }
+}
+
+/// Cuts `input.ir` into units, in a fixed order: the buckets `g.0` to `g.f`, then the modules by name. A unit that
+/// would hold nothing is not made.
+pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
+    let parsed = parse(input.ir)?;
+    let modules: FastSet<&str> = input.modules.iter().copied().collect();
+    let plan = plan(&parsed, &modules);
+
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum Home<'a> {
+        Bucket(u64),
+        Module(&'a str),
+    }
+
+    let mut members: BTreeMap<Home<'_>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+    for (id, function) in parsed.functions.iter().enumerate() {
+        let home = match plan.modules[id] {
+            Some(module) => Home::Module(module),
+            None => Home::Bucket(bucket(plan.renamed[id].as_deref().unwrap_or(function.name))),
+        };
+        members.entry(home).or_default().0.push(id);
+    }
+    for (id, global) in parsed.globals.iter().enumerate() {
+        if global.form == GlobalForm::Single {
+            members
+                .entry(Home::Bucket(bucket(global.name)))
+                .or_default()
+                .1
+                .push(id);
+        }
+    }
+    let mut homes = Homes {
+        functions: vec![0; parsed.functions.len()],
+        globals: vec![0; parsed.globals.len()],
+    };
+    for (unit, (functions, globals)) in members.values().enumerate() {
+        for &id in functions {
+            homes.functions[id] = unit;
+        }
+        for &id in globals {
+            homes.globals[id] = unit;
+        }
+    }
+    let mut units = Vec::with_capacity(members.len());
+    for (unit, (home, (functions, globals))) in members.iter().enumerate() {
+        let builder = Builder::new(&parsed, &plan.renamed, None, Some((&homes, unit)));
+        let text = builder.unit(functions, globals);
+        let name = match home {
+            Home::Bucket(bucket) => format!("g.{bucket:x}"),
+            Home::Module(module) => format!("m.{module}"),
+        };
+        units.push(Unit { name, text });
+    }
+    Ok(units)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"; Tsuzuri - deterministic LLVM IR
+source_filename = "tsuzuri"
+%tz.string = type { ptr, i64 }
+%"tz.union.Main.Color" = type i8
+%"tz.record.Main.Pair" = type { i64, %"tz.union.Main.Color" }
+%tz.closure = type { ptr, ptr }
+%tz.closure.desc = type { ptr, ptr, ptr }
+
+declare void @llvm.trap()
+declare i32 @putchar(i32)
+
+@tsuzuri_trap_hooks = weak hidden global [5 x ptr] zeroinitializer, align 8
+@tz.async.next_id = internal thread_local global i64 0, align 8
+@tz.literal.7 = private unnamed_addr constant [2 x i16] [i16 97, i16 98]
+@tz.table.0 = internal unnamed_addr constant [4 x i32] [
+  i32 1, i32 2,
+  i32 3, i32 4
+]
+@tz.desc.Main.f.0 = internal unnamed_addr constant %tz.closure.desc { ptr @tz.apply.Main.f.0, ptr null, ptr null }
+@tz.desc.$lambda.12.0 = internal unnamed_addr constant %tz.closure.desc { ptr @tz.apply.$lambda.12.0, ptr null, ptr null }
+
+define internal i64 @tz.fn.Helper.twice(i64 noundef %arg0) nounwind {
+entry:
+  %v0 = add i64 %arg0, %arg0
+  ret i64 %v0
+}
+
+define internal i64 @tz.fn.Main.f(i64 noundef %arg0) nounwind {
+entry:
+  %v0 = call i64 @tz.fn.Helper.twice(i64 %arg0)
+  %v1 = call i64 @tz.fn.$lambda.12(i64 %v0)
+  %v2 = load i64, ptr @tz.async.next_id
+  %v3 = getelementptr [2 x i16], ptr @tz.literal.7, i32 0, i32 1
+  %v4 = insertvalue %tz.closure zeroinitializer, ptr @tz.desc.$lambda.12.0, 0
+  %v5 = alloca %"tz.record.Main.Pair", align 16
+  call void @llvm.trap()
+  unreachable
+}
+
+define internal %tz.closure @tz.apply.Main.f.0(i64 %argument, ptr %env, i1 %borrow) nounwind {
+entry:
+  %v0 = insertvalue %tz.closure zeroinitializer, ptr @tz.desc.Main.f.0, 0
+  ret %tz.closure %v0
+}
+
+define internal i64 @tz.fn.$lambda.12(i64 %arg0) nounwind {
+entry:
+  %v0 = call i64 @tz.fn.Helper.twice(i64 %arg0)
+  ret i64 %v0
+}
+
+define internal i64 @tz.apply.$lambda.12.0(i64 %argument, ptr %env, i1 %borrow) nounwind {
+entry:
+  %v0 = call i64 @tz.fn.$lambda.12(i64 %argument)
+  ret i64 %v0
+}
+
+define weak ptr @tsuzuri_alloc(i64 %size) nounwind {
+entry:
+  %v0 = load [5 x ptr], ptr @tsuzuri_trap_hooks
+  ret ptr null
+}
+
+define i32 @main() {
+entry:
+  %v0 = call i64 @tz.fn.Main.f(i64 1)
+  ret i32 0
+}
+"#;
+
+    fn modules() -> &'static [&'static str] {
+        &["Main", "Helper"]
+    }
+
+    fn split_text(ir: &str) -> Vec<Unit> {
+        split(&SplitInput {
+            ir,
+            modules: modules(),
+        })
+        .expect("the IR can be split")
+    }
+
+    fn unit<'a>(units: &'a [Unit], name: &str) -> &'a Unit {
+        units
+            .iter()
+            .find(|unit| unit.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no unit {name} in {:?}",
+                    units.iter().map(|unit| &unit.name).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// What is wrong with a unit as a module of its own: a name, a type, an attribute group, or a metadata node
+    /// that it uses and does not define or declare.
+    fn problems(unit: &Unit, all_types: &FastSet<String>) -> Vec<String> {
+        let parsed = match parse(&unit.text) {
+            Ok(parsed) => parsed,
+            Err(error) => return vec![format!("{}: not parsed: {error}", unit.name)],
+        };
+        let mut problems = Vec::new();
+        let mut check = |text: &str| {
+            scan(text, |token| match token.class {
+                Class::Symbol => {
+                    if !parsed.symbols.contains_key(token.name) {
+                        problems.push(format!("{}: @{} is not defined", unit.name, token.name));
+                    }
+                }
+                Class::Local => {
+                    if all_types.contains(token.name) && !parsed.type_ids.contains_key(token.name) {
+                        problems.push(format!("{}: %{} is not defined", unit.name, token.name));
+                    }
+                }
+                Class::Attribute => {
+                    let group: usize = token.name.parse().unwrap();
+                    if parsed.attributes.get(group).copied().flatten().is_none() {
+                        problems.push(format!("{}: #{group} is not defined", unit.name));
+                    }
+                }
+                Class::Metadata => {
+                    let node: usize = token.name.parse().unwrap();
+                    if parsed.metadata.get(node).copied().flatten().is_none() {
+                        problems.push(format!("{}: !{node} is not defined", unit.name));
+                    }
+                }
+            });
+        };
+        for function in &parsed.functions {
+            check(function.text);
+        }
+        for global in &parsed.globals {
+            check(global.text);
+        }
+        for declare in &parsed.declares {
+            check(declare.text);
+        }
+        for node in parsed.metadata.iter().flatten() {
+            check(node);
+        }
+        for line in &parsed.named_metadata {
+            check(line);
+        }
+        problems
+    }
+
+    fn all_types(ir: &str) -> FastSet<String> {
+        parse(ir)
+            .expect("the IR parses")
+            .types
+            .iter()
+            .map(|definition| definition.name.to_owned())
+            .collect()
+    }
+
+    /// The units together define each name once, and each unit is a complete module.
+    fn check(ir: &str, units: &[Unit]) -> Vec<String> {
+        let types = all_types(ir);
+        let mut defined: BTreeMap<String, String> = BTreeMap::new();
+        let mut found = Vec::new();
+        for unit in units {
+            found.extend(problems(unit, &types));
+            let Ok(parsed) = parse(&unit.text) else {
+                continue;
+            };
+            let owners = parsed.functions.iter().map(|function| function.name).chain(
+                parsed
+                    .globals
+                    .iter()
+                    .filter(|global| global.form == GlobalForm::Single)
+                    .map(|global| global.name),
+            );
+            for name in owners {
+                if let Some(previous) = defined.insert(name.to_owned(), unit.name.clone()) {
+                    found.push(format!(
+                        "{name} is defined in {previous} and in {}",
+                        unit.name
+                    ));
+                }
+            }
+        }
+        let original = parse(ir).unwrap();
+        let count = original.functions.len()
+            + original
+                .globals
+                .iter()
+                .filter(|global| global.form == GlobalForm::Single)
+                .count();
+        if defined.len() != count {
+            found.push(format!(
+                "{} names are defined, the text has {count}: every function and variable has one owner",
+                defined.len()
+            ));
+        }
+        found
+    }
+
+    fn assert_self_contained(ir: &str, units: &[Unit]) {
+        let found = check(ir, units);
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    /// A development aid: `PB07_CORPUS=<directory of .ll files> cargo test --lib split_corpus -- --ignored`.
+    #[test]
+    #[ignore]
+    fn split_corpus() {
+        let Some(directory) = std::env::var_os("PB07_CORPUS") else {
+            return;
+        };
+        let output = std::env::var_os("PB07_CORPUS_OUT");
+        let mut files: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "ll"))
+            .collect();
+        files.sort();
+        let mut failures = 0;
+        for path in files {
+            let ir = std::fs::read_to_string(&path).unwrap();
+            let parsed = match parse(&ir) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    println!("{}: not split: {error}", path.display());
+                    failures += 1;
+                    continue;
+                }
+            };
+            let modules: BTreeSet<String> = parsed
+                .functions
+                .iter()
+                .filter_map(|function| {
+                    let rest = function.name.strip_prefix("tz.fn.")?;
+                    let first = rest.split('.').next()?;
+                    (!first.starts_with('$')).then(|| first.to_owned())
+                })
+                .collect();
+            let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+            let started = std::time::Instant::now();
+            let parse_time = {
+                let started = std::time::Instant::now();
+                let parsed = parse(&ir).unwrap();
+                let parse_time = started.elapsed();
+                let set: FastSet<&str> = modules.iter().copied().collect();
+                let started = std::time::Instant::now();
+                let plan = plan(&parsed, &set);
+                let largest = plan.renamed.iter().flatten().count();
+                println!(
+                    "    parse {:?}, plan {:?}, {} renamed of {}",
+                    parse_time,
+                    started.elapsed(),
+                    largest,
+                    parsed.functions.len()
+                );
+                parse_time
+            };
+            let _ = parse_time;
+            let units = split(&SplitInput {
+                ir: &ir,
+                modules: &modules,
+            })
+            .unwrap();
+            let elapsed = started.elapsed();
+            let found = check(&ir, &units);
+            println!(
+                "{}: {} units, {} bytes -> {} bytes, {:?}, {} problems",
+                path.file_name().unwrap().to_string_lossy(),
+                units.len(),
+                ir.len(),
+                units.iter().map(|unit| unit.text.len()).sum::<usize>(),
+                elapsed,
+                found.len()
+            );
+            for problem in found.iter().take(5) {
+                println!("    {problem}");
+            }
+            failures += usize::from(!found.is_empty());
+            if let Some(output) = &output {
+                let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+                let directory = std::path::Path::new(output).join(&stem);
+                std::fs::create_dir_all(&directory).unwrap();
+                for (index, unit) in units.iter().enumerate() {
+                    std::fs::write(directory.join(format!("u{index:05}.ll")), &unit.text).unwrap();
+                }
+            }
+        }
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn parses_every_top_level_form() {
+        let ir = format!(
+            "{}define internal void @tz.glue() {{\nentry:\n  ret void\n}}\n",
+            SAMPLE.trim_end()
+        );
+        let parsed = parse(&ir).unwrap();
+        assert_eq!(parsed.header, ["source_filename = \"tsuzuri\""]);
+        assert_eq!(parsed.types.len(), 5);
+        assert!(parsed.type_ids.contains_key("tz.union.Main.Color"));
+        assert_eq!(parsed.declares.len(), 2);
+        assert_eq!(parsed.globals.len(), 6);
+        let form = |name: &str| match parsed.symbols[name] {
+            Symbol::Global(id) => &parsed.globals[id].form,
+            other => panic!("{name} is {other:?}"),
+        };
+        assert_eq!(form("tsuzuri_trap_hooks"), &GlobalForm::Single);
+        assert_eq!(form("tz.async.next_id"), &GlobalForm::Single);
+        assert_eq!(form("tz.literal.7"), &GlobalForm::Copyable);
+        assert_eq!(form("tz.table.0"), &GlobalForm::Copyable);
+        assert_eq!(form("tz.desc.Main.f.0"), &GlobalForm::Copyable);
+        let Symbol::Global(id) = parsed.symbols["tz.table.0"] else {
+            unreachable!()
+        };
+        assert!(
+            parsed.globals[id].text.ends_with("\n]"),
+            "a constant of several lines is one entity"
+        );
+        assert_eq!(parsed.functions.len(), 8);
+        assert_eq!(parsed.functions.last().unwrap().name, "tz.glue");
+        assert!(parsed.functions[0].linkage.local);
+        assert!(parsed.functions[5].linkage.weak);
+    }
+
+    #[test]
+    fn parses_attributes_metadata_and_named_metadata() {
+        let ir = "attributes #3 = { nounwind }\n!0 = !{i32 1, !\"wchar_size\", i32 4}\n!1 = distinct !{!1, !0}\n!llvm.module.flags = !{!0}\ndefine void @f() #3 !dbg !1 {\nentry:\n  ret void\n}\n";
+        let parsed = parse(ir).unwrap();
+        assert_eq!(parsed.attributes[3], Some("{ nounwind }"));
+        assert_eq!(parsed.metadata[1], Some("distinct !{!1, !0}"));
+        assert_eq!(parsed.named_metadata, ["!llvm.module.flags = !{!0}"]);
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_line() {
+        for (text, expected) in [
+            ("module asm \"nop\"\n", "unknown"),
+            ("$c = comdat any\n", "unknown"),
+            ("uselistorder ptr @f, { 1, 0 }\n", "unknown"),
+            ("@a = alias i32, ptr @b\n", "alias"),
+            ("@a = ifunc void (), ptr @r\n", "alias"),
+            (
+                "@llvm.used = appending global [1 x ptr] [ptr @f]\n",
+                "linkage",
+            ),
+            ("@x = linkonce_odr global i32 0\n", "linkage"),
+            ("define void @f() {\nentry:\n  ret void\n", "closing brace"),
+            (
+                "define void @f()\n{\nentry:\n  ret void\n}\n",
+                "function head",
+            ),
+            ("@x = global i32 [\n", "unbalanced"),
+        ] {
+            let error = parse(text).expect_err(text);
+            assert!(
+                error.to_string().contains(expected),
+                "{text}: {error} should mention {expected}"
+            );
+        }
+        let error = split(&SplitInput {
+            ir: "source_filename = \"x\"\nmodule asm \"nop\"\n",
+            modules: &[],
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            SplitError::UnknownLine {
+                line: 2,
+                text: "module asm \"nop\"".into()
+            }
+        );
+    }
+
+    #[test]
+    fn skips_quoted_strings_when_scanning() {
+        let text = "@\"quoted name\" = c\"@x %y !12 #3 \\22 @z\" ; @comment %c !9\n%\"tz.record.A[i64]\" !5 #7 @plain, !\"@str !4\"";
+        let mut tokens = Vec::new();
+        scan(text, |token| {
+            tokens.push((token.class, token.name.to_owned()))
+        });
+        assert_eq!(
+            tokens,
+            [
+                (Class::Symbol, "quoted name".to_owned()),
+                (Class::Local, "tz.record.A[i64]".to_owned()),
+                (Class::Metadata, "5".to_owned()),
+                (Class::Attribute, "7".to_owned()),
+                (Class::Symbol, "plain".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn classifies_serial_numbers_by_component() {
+        let modules: FastSet<&str> = ["Main", "Geometry.Shapes"].into_iter().collect();
+        fn stable<'a>(name: &'a str, modules: &FastSet<&str>) -> Naming<'a> {
+            classify(name, modules)
+        }
+        let stable = |name| stable(name, &modules);
+        assert_eq!(
+            stable("tz.fn.Main.divide"),
+            Naming::Stable {
+                module: Some("Main")
+            }
+        );
+        assert_eq!(
+            stable("tz.apply.Main.divide.0"),
+            Naming::Stable {
+                module: Some("Main")
+            }
+        );
+        assert_eq!(
+            stable("tz.env.drop.Main.divide.1"),
+            Naming::Stable {
+                module: Some("Main")
+            }
+        );
+        assert_eq!(
+            stable("tz.fn.Geometry.Shapes.area"),
+            Naming::Stable {
+                module: Some("Geometry.Shapes")
+            }
+        );
+        assert_eq!(
+            stable("tz.fn.Main.$entry"),
+            Naming::Stable {
+                module: Some("Main")
+            }
+        );
+        assert_eq!(stable("tz.fn.Other.f"), Naming::Stable { module: None });
+        assert_eq!(stable("tz.string.concat"), Naming::Stable { module: None });
+        assert_eq!(
+            stable("tz.builtin.to_string.i64"),
+            Naming::Stable { module: None }
+        );
+        assert_eq!(
+            stable("tz.clone.step.rec.Result.Result[Main.E,string]"),
+            Naming::Stable { module: None }
+        );
+        for unstable in [
+            "tz.fn.$lambda.8",
+            "tz.apply.$lambda.8.1",
+            "tz.fn.Result.Run.$mono.2",
+            "tz.apply.Result.Run.$mono.2.0",
+            "tz.env.clone.Result.Bind.$mono.4.1",
+            "tz.specialized.3",
+            "tz.parallel.chunk.4",
+            "tz.dyn.slot.Main.$instance.3.area",
+            "tz.fn.$builtin.unreachable.11",
+        ] {
+            assert_eq!(stable(unstable), Naming::Unstable, "{unstable}");
+        }
+        assert_eq!(
+            without_serials("tz.apply.Result.Run.$mono.2.0"),
+            "tz.apply.Result.Run.$mono"
+        );
+        assert_eq!(
+            without_serials("tz.dyn.slot.Main.$instance.3.area"),
+            "tz.dyn.slot.Main.$instance.area"
+        );
+    }
+
+    #[test]
+    fn assigns_stable_functions_to_module_units() {
+        let units = split_text(SAMPLE);
+        assert_self_contained(SAMPLE, &units);
+        let names: Vec<_> = units.iter().map(|unit| unit.name.as_str()).collect();
+        assert!(names.contains(&"m.Main") && names.contains(&"m.Helper"));
+        let buckets: Vec<_> = names.iter().filter(|name| name.starts_with("g.")).collect();
+        assert!(!buckets.is_empty());
+        assert!(
+            names
+                .iter()
+                .position(|name| name.starts_with("g."))
+                .unwrap()
+                < names.iter().position(|name| *name == "m.Helper").unwrap(),
+            "buckets come before modules: {names:?}"
+        );
+        let main = unit(&units, "m.Main");
+        assert!(main.text.contains("define hidden i64 @tz.fn.Main.f("));
+        assert!(
+            main.text
+                .contains("define hidden %tz.closure @tz.apply.Main.f.0(")
+        );
+        assert!(!main.text.contains("define internal"));
+        assert!(
+            main.text
+                .contains("declare hidden i64 @tz.fn.Helper.twice(i64 noundef)")
+        );
+        assert!(
+            main.text
+                .lines()
+                .any(|line| line.starts_with("declare hidden i64 @tz.fn.$lambda.h")),
+            "{}",
+            main.text
+        );
+        let helper = unit(&units, "m.Helper");
+        assert!(
+            helper
+                .text
+                .contains("define hidden i64 @tz.fn.Helper.twice(")
+        );
+        assert!(!helper.text.contains("@tz.fn.Main"));
+    }
+
+    #[test]
+    fn copies_constants_and_declares_variables() {
+        let units = split_text(SAMPLE);
+        let main = unit(&units, "m.Main");
+        // The literal and the closure descriptor of the lambda are private copies, numbered by first use.
+        assert!(
+            main.text
+                .contains("@tz.unit.0 = private unnamed_addr constant [2 x i16] [i16 97, i16 98]")
+        );
+        assert!(
+            main.text.contains(
+                "= private unnamed_addr constant %tz.closure.desc { ptr @tz.apply.$lambda."
+            )
+        );
+        assert!(!main.text.contains("@tz.literal"));
+        // The thread-local variable has one owner and is declared `external hidden thread_local` here.
+        assert!(
+            main.text
+                .contains("@tz.async.next_id = external hidden thread_local global i64, align 8")
+        );
+        let owners: Vec<_> = units
+            .iter()
+            .filter(|unit| {
+                unit.text
+                    .contains("@tz.async.next_id = hidden thread_local global i64 0, align 8")
+            })
+            .collect();
+        assert_eq!(owners.len(), 1);
+        // A weak definition has one owner as well; the others declare it.
+        let weak: Vec<_> = units
+            .iter()
+            .filter(|unit| unit.text.contains("define weak ptr @tsuzuri_alloc("))
+            .collect();
+        assert_eq!(weak.len(), 1);
+        let hooks: Vec<_> = units
+            .iter()
+            .filter(|unit| {
+                unit.text.contains(
+                    "@tsuzuri_trap_hooks = weak hidden global [5 x ptr] zeroinitializer, align 8",
+                )
+            })
+            .collect();
+        assert_eq!(hooks.len(), 1);
+        // The multi-line table is copied whole where it is used (nowhere here).
+        assert!(units.iter().all(|unit| !unit.text.contains("tz.table")));
+    }
+
+    #[test]
+    fn keeps_type_definition_order() {
+        let units = split_text(SAMPLE);
+        let main = unit(&units, "m.Main");
+        let position = |needle: &str| main.text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        // The alias of the enum comes before the record that has it as a field, as it does in the whole program.
+        assert!(
+            position("%\"tz.union.Main.Color\" = type i8")
+                < position("%\"tz.record.Main.Pair\" = type")
+        );
+        assert!(position("%\"tz.record.Main.Pair\" = type") < position("%tz.closure = type"));
+        assert!(
+            !main.text.contains("%tz.string"),
+            "a unit holds only the types it uses:\n{}",
+            main.text
+        );
+        let helper = unit(&units, "m.Helper");
+        assert!(!helper.text.contains("%tz."), "{}", helper.text);
+    }
+
+    #[test]
+    fn declaration_keeps_abi_attributes() {
+        let ir = "%T = type { i64, i64 }\ndefine internal fastcc void @f(ptr noalias nonnull sret(%T) align 8 %out, i8 signext %x, ptr byval(%T) align 8 %p, ...) local_unnamed_addr nounwind #4 !dbg !5 {\nentry:\n  ret void\n}\ndefine internal noundef i1 @g(i32 %a) {\nentry:\n  ret i1 true\n}\n";
+        let parsed = parse(ir).unwrap();
+        let declaration = declaration_of(&parsed.functions[0]);
+        assert_eq!(declaration.before, "declare hidden fastcc void ");
+        assert_eq!(
+            declaration.after,
+            "(ptr noalias nonnull sret(%T) align 8, i8 signext, ptr byval(%T) align 8, ...)"
+        );
+        let declaration = declaration_of(&parsed.functions[1]);
+        assert_eq!(declaration.before, "declare hidden noundef i1 ");
+        assert_eq!(declaration.after, "(i32)");
+    }
+
+    #[test]
+    fn renumbers_constants_attributes_and_metadata() {
+        let ir = "source_filename = \"tsuzuri\"\n@tz.literal.40 = private unnamed_addr constant [1 x i8] c\"@\"\n@tz.literal.41 = private unnamed_addr constant [1 x i8] c\"!\"\nattributes #5 = { nounwind }\nattributes #9 = { cold }\n!7 = !{i32 1, !\"a\", i32 2}\n!8 = distinct !{!8, !7}\n!9 = !{!8}\n!11 = !{}\n!llvm.module.flags = !{!7}\n!llvm.dbg.cu = !{!11}\ndefine internal void @tz.fn.Main.f() #9 {\nentry:\n  %a = getelementptr i8, ptr @tz.literal.41, i32 0\n  %b = getelementptr i8, ptr @tz.literal.40, i32 0\n  call void @tz.fn.Main.f() #5, !llvm.loop !8\n  ret void\n}\n";
+        let units = split(&SplitInput {
+            ir,
+            modules: &["Main"],
+        })
+        .unwrap();
+        assert_eq!(units.len(), 1);
+        let text = &units[0].text;
+        // The literal that appears first gets the first number; the loop node is self-referential.
+        assert!(
+            text.contains("@tz.unit.0 = private unnamed_addr constant [1 x i8] c\"!\""),
+            "{text}"
+        );
+        assert!(text.contains("@tz.unit.1 = private unnamed_addr constant [1 x i8] c\"@\""));
+        assert!(text.contains("define hidden void @tz.fn.Main.f() #0 {"));
+        assert!(text.contains("call void @tz.fn.Main.f() #1, !llvm.loop !0"));
+        assert!(text.contains("attributes #0 = { cold }\nattributes #1 = { nounwind }\n"));
+        assert!(text.contains("!0 = distinct !{!0, !1}\n!1 = !{i32 1, !\"a\", i32 2}\n"));
+        assert!(text.contains("!llvm.module.flags = !{!1}"));
+        // Nothing here uses debug metadata, so the debug-info unit is left out.
+        assert!(!text.contains("llvm.dbg.cu"), "{text}");
+        assert_self_contained(ir, &units);
+    }
+
+    #[test]
+    fn split_is_deterministic_and_self_contained() {
+        let first = split_text(SAMPLE);
+        let second = split_text(SAMPLE);
+        assert_eq!(first, second);
+        assert_self_contained(SAMPLE, &first);
+    }
+
+    /// The text of a unit changes with its functions, not with serial numbers elsewhere.
+    #[test]
+    fn renames_counter_names_by_content() {
+        let build = |lambda: &str, mono: &str| {
+            format!(
+                "define internal i64 @tz.fn.$lambda.{lambda}(i64 %a) {{\nentry:\n  %r = call i64 @tz.fn.Util.id.$mono.{mono}(i64 %a)\n  ret i64 %r\n}}\n\
+                 define internal i64 @tz.fn.Util.id.$mono.{mono}(i64 %a) {{\nentry:\n  ret i64 %a\n}}\n\
+                 define internal i64 @tz.fn.Main.run(i64 %a) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{lambda}(i64 %a)\n  ret i64 %r\n}}\n"
+            )
+        };
+        let one = split(&SplitInput {
+            ir: &build("10", "3"),
+            modules: &["Main"],
+        })
+        .unwrap();
+        let two = split(&SplitInput {
+            ir: &build("77", "9"),
+            modules: &["Main"],
+        })
+        .unwrap();
+        assert_eq!(one, two, "only the serial numbers differ");
+        let main = unit(&one, "m.Main");
+        assert!(main.text.contains("@tz.fn.$lambda.h"), "{}", main.text);
+    }
+
+    #[test]
+    fn stable_names_ignore_unrelated_counters() {
+        let module = |extra: &str, lambda: u32| {
+            format!(
+                "{extra}define internal i64 @tz.fn.$lambda.{lambda}(i64 %a) {{\nentry:\n  %r = add i64 %a, 1\n  ret i64 %r\n}}\n\
+                 define internal i64 @tz.fn.Main.run(i64 %a) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{lambda}(i64 %a)\n  ret i64 %r\n}}\n"
+            )
+        };
+        let plain = split(&SplitInput {
+            ir: &module("", 4),
+            modules: &["Main"],
+        })
+        .unwrap();
+        // Another module gains a lambda before ours: every serial after it shifts by one.
+        let shifted = split(&SplitInput {
+            ir: &module(
+                "define internal i64 @tz.fn.$lambda.4(i64 %a) {\nentry:\n  ret i64 %a\n}\n",
+                5,
+            ),
+            modules: &["Main"],
+        })
+        .unwrap();
+        assert_eq!(unit(&plain, "m.Main"), unit(&shifted, "m.Main"));
+    }
+
+    #[test]
+    fn names_recursive_components_deterministically() {
+        let build = |a: u32, b: u32| {
+            format!(
+                "define internal i64 @tz.fn.$lambda.{a}(i64 %x) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{b}(i64 %x)\n  ret i64 %r\n}}\n\
+                 define internal i64 @tz.fn.$lambda.{b}(i64 %x) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{a}(i64 %x)\n  %q = add i64 %r, 1\n  ret i64 %q\n}}\n\
+                 define internal i64 @tz.fn.Main.run(i64 %x) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{a}(i64 %x)\n  ret i64 %r\n}}\n"
+            )
+        };
+        let first = split(&SplitInput {
+            ir: &build(3, 4),
+            modules: &["Main"],
+        })
+        .unwrap();
+        let second = split(&SplitInput {
+            ir: &build(30, 41),
+            modules: &["Main"],
+        })
+        .unwrap();
+        assert_eq!(first, second);
+        let all: String = first.iter().map(|unit| unit.text.as_str()).collect();
+        let names: BTreeSet<_> = all
+            .lines()
+            .filter_map(|line| line.strip_prefix("define hidden i64 @"))
+            .map(|rest| rest.split('(').next().unwrap())
+            .collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(
+            names.iter().any(|name| name.ends_with(".0"))
+                && names.iter().any(|name| name.ends_with(".1"))
+        );
+    }
+
+    #[test]
+    fn identical_bodies_keep_distinct_names() {
+        let build = |a: u32, b: u32| {
+            format!(
+                "define internal i64 @tz.fn.$lambda.{a}(i64 %x) {{\nentry:\n  ret i64 %x\n}}\n\
+                 define internal i64 @tz.fn.$lambda.{b}(i64 %x) {{\nentry:\n  ret i64 %x\n}}\n"
+            )
+        };
+        let units = split(&SplitInput {
+            ir: &build(5, 6),
+            modules: &[],
+        })
+        .unwrap();
+        let all: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let names: Vec<_> = all
+            .lines()
+            .filter_map(|line| line.strip_prefix("define hidden i64 @"))
+            .map(|rest| rest.split('(').next().unwrap().to_owned())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert_ne!(names[0], names[1]);
+        assert!(names.iter().any(|name| name.ends_with(".2")), "{names:?}");
+    }
+}

@@ -35,6 +35,8 @@ mod frame;
 mod layout;
 #[path = "llvm_return_slot.rs"]
 mod return_slot;
+#[path = "llvm_split.rs"]
+pub(crate) mod split;
 use call_specialization::{ClosureTarget, Drain, Specialization, Specializations};
 use frame::Frame;
 // The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.

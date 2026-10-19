@@ -34,6 +34,12 @@ pub use profile::Profile;
 /// The target attributes and the checks of `--emit bitcode` (PR08).
 pub mod lto;
 
+/// Native executables built from codegen units (PB07).
+mod units;
+
+/// The environment variable that chooses between one module and codegen units for a native `-O0` executable (PB07).
+pub(crate) const CODEGEN_UNITS_VARIABLE: &str = "TSUZURI_CODEGEN_UNITS";
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
@@ -3269,6 +3275,8 @@ fn build_complete(
     options.validate()?;
     profile.validate(options)?;
     profile.require_llvm_clang()?;
+    // A bad TSUZURI_CODEGEN_UNITS fails before any work, like a bad TSUZURI_LINKER below.
+    let codegen_mode = units::mode()?;
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
@@ -3957,6 +3965,9 @@ fn build_complete(
             _ => text,
         };
         let object = temporary.path.join("module.o");
+        // A native `-O0` executable is built from codegen units (PB07), unless the text has a form that a unit
+        // cannot hold.
+        let mut unit_objects: Option<Vec<PathBuf>> = None;
         if fast && options.target == Target::Wasm32 {
             // The runtime objects that Clang built decide how a 128-bit result is returned, and the
             // routines of the runtime that this IR defines must agree with them.
@@ -3966,7 +3977,50 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+            if units::eligible(options, platform, profile, codegen_mode) {
+                let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect();
+                args.push(options.optimization.flag().into());
+                args.extend(compile_args(platform));
+                if options.cpu == Cpu::Native {
+                    args.extend(
+                        native_ir_cpu_args(platform.arch_name(), f16)?
+                            .into_iter()
+                            .map(OsString::from),
+                    );
+                }
+                if gc_sections && !platform.mach_o() {
+                    args.extend(["-ffunction-sections", "-fdata-sections"].map(OsString::from));
+                }
+                args.extend(no_sdk_args(platform));
+                let names: BTreeSet<&str> = module
+                    .functions
+                    .iter()
+                    .map(|function| function.module.as_str())
+                    .filter(|name| !name.starts_with('$'))
+                    .collect();
+                let names: Vec<&str> = names.into_iter().collect();
+                unit_objects = units::build(
+                    &text,
+                    &names,
+                    &units::Config {
+                        clang: tool("TSUZURI_CLANG", "clang"),
+                        args,
+                        hint: cross_hint(
+                            platform,
+                            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+                        ),
+                        directory: &temporary.path,
+                        identity: clang_identity.as_ref(),
+                    },
+                    &mut messages,
+                )?;
+            }
+            if unit_objects.is_none() {
+                fs::write(&ir, &text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+            }
         }
         let runtime_object = temporary.path.join("task.o");
         // The fast backend writes no IR to merge: its object joins the C runtime in the relocatable link below,
@@ -4249,7 +4303,11 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
-        if !fast {
+        if unit_objects.is_some() {
+            // The units are compiled already: the link reads their objects, and the compile options that no object
+            // needs stay out of it.
+            clang.arg(options.optimization.flag());
+        } else if !fast {
             clang
                 .arg("-x")
                 .arg("ir")
@@ -4302,7 +4360,15 @@ fn build_complete(
         if options.emit == Emit::Bitcode {
             clang.arg("-flto=thin");
         }
-        clang.arg(if fast { &object } else { &ir }).arg("-o").arg(
+        match &unit_objects {
+            Some(objects) => {
+                clang.arg(units::response_file(objects, &temporary.path)?);
+            }
+            None => {
+                clang.arg(if fast { &object } else { &ir });
+            }
+        }
+        clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
                 || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
@@ -5690,6 +5756,21 @@ fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
             .to_string_lossy();
         crate::timings::finish(&format!("tool.{tool}"), started);
     }
+    tool_output(&name, output, hint)
+}
+
+/// [`run_tool`] that records no phase: the runs of codegen units go on worker threads, which never touch the
+/// timings, and the caller measures the wait for all of them (`units::build`).
+fn run_tool_untimed(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
+    let name = command.get_program().to_string_lossy().into_owned();
+    tool_output(&name, command.output(), hint)
+}
+
+fn tool_output(
+    name: &str,
+    output: io::Result<std::process::Output>,
+    hint: &str,
+) -> Result<String, Diagnostic> {
     let output = output.map_err(|error| {
         driver_error("E2002", format!("cannot execute '{name}': {error}; {hint}"))
     })?;

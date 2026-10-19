@@ -11,6 +11,13 @@ const FORMAT: u64 = 1;
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 const MARKER: &[u8] = b"tsuzuri whole-build cache v1\n";
 const RUNTIME_FORMAT: u64 = 2;
+const UNIT_FORMAT: u64 = 1;
+/// How long a unit object counts as used after a load (see `BuildCache::for_units`).
+const UNIT_TOUCH_MS: u64 = 10 * 60 * 1000;
+/// The shortest time between two cleanups of the unit cache.
+pub(crate) const UNIT_EVICT_INTERVAL_MS: u64 = 10 * 60 * 1000;
+/// The file whose time is that of the last cleanup of a cache (`BuildCache::evict_if_due`).
+const EVICTED: &str = ".evicted";
 
 pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
     "TSUZURI_CLANG",
@@ -298,6 +305,42 @@ pub(crate) fn runtime_key(
     Some(hash.hex())
 }
 
+/// What the object of every codegen unit of a build has in common (PB07): the Clang that compiles the units, the
+/// arguments of that compile, and the environment that Clang reads. The compiler itself is not part of it: an
+/// object is what that Clang makes of the text of the unit with those arguments.
+pub(crate) fn unit_key_prefix(
+    args: &[std::ffi::OsString],
+    clang: &ToolIdentity,
+) -> Option<[u8; 32]> {
+    let mut hash = Sha256::new();
+    hash.field("format", &UNIT_FORMAT.to_le_bytes());
+    hash.field("kind", b"codegen-unit");
+    hash.field("host-os", std::env::consts::OS.as_bytes());
+    hash.field("host-arch", std::env::consts::ARCH.as_bytes());
+    for arg in args {
+        hash.field("arg", arg.as_encoded_bytes());
+    }
+    for &variable in KEY_ENVIRONMENT {
+        let value = std::env::var_os(variable);
+        hash.field(
+            variable,
+            value.as_ref().map_or(&[], |value| value.as_encoded_bytes()),
+        );
+    }
+    if !clang.hash_into(&mut hash) {
+        return None;
+    }
+    Some(hash.finalize())
+}
+
+/// The key of the object of a unit whose text is `text`.
+pub(crate) fn unit_key(prefix: &[u8; 32], text: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(prefix);
+    hash.update(text.as_bytes());
+    hash.hex()
+}
+
 pub(crate) struct CachedFile {
     pub bytes: Vec<u8>,
     pub mode: u32,
@@ -312,6 +355,13 @@ pub(crate) struct BuildCache {
     root: PathBuf,
     max_bytes: u64,
     max_age_ms: u64,
+    /// How many entries a cleanup looks at, and how many it removes.
+    scan_entries: usize,
+    remove_entries: usize,
+    /// A load writes the last use of an entry again only when the one that is written is older than this.
+    touch_ms: u64,
+    /// A cleanup takes the time and the size of an entry from the file system, without reading its metadata.
+    file_system_stats: bool,
 }
 
 struct CacheLock(PathBuf);
@@ -473,6 +523,15 @@ pub(crate) fn build_key(
     {
         hash.field("linker", linker.as_encoded_bytes());
     }
+    // A native executable may be built from codegen units (PB07), which changes its bytes: `single`, `auto` and
+    // the unset variable keep apart what they make. A build that cannot split has the same bytes whatever it says,
+    // but the key has no need to know which those are.
+    if options.target == Target::Native
+        && options.emit == Emit::Executable
+        && let Some(units) = std::env::var_os(crate::driver::CODEGEN_UNITS_VARIABLE)
+    {
+        hash.field("codegen-units", units.as_encoded_bytes());
+    }
     let mut tools = Vec::new();
     if !(matches!(options.emit, Emit::Llvm | Emit::Header) || options.emit.is_kernel()) {
         tools.push(("TSUZURI_CLANG", "clang"));
@@ -601,7 +660,24 @@ impl BuildCache {
             root: fs::canonicalize(root)?,
             max_bytes: 2 * 1024 * 1024 * 1024,
             max_age_ms: 30 * 24 * 60 * 60 * 1000,
+            scan_entries: 4096,
+            remove_entries: 128,
+            touch_ms: 0,
+            file_system_stats: false,
         })
+    }
+
+    /// The same cache for the objects of codegen units (PB07), of which a build reads and writes thousands: the
+    /// last use of an entry is kept to ten minutes, a cleanup looks at 32,768 entries without reading their
+    /// metadata, and `evict_if_due` runs it at most once in ten minutes.
+    pub(crate) fn for_units(self) -> Self {
+        Self {
+            scan_entries: 32768,
+            remove_entries: 1024,
+            touch_ms: UNIT_TOUCH_MS,
+            file_system_stats: true,
+            ..self
+        }
     }
 
     fn metadata(&self, key: &str) -> io::Result<Value> {
@@ -701,11 +777,15 @@ impl BuildCache {
             }
             Err(error) => return Err(error),
         };
-        metadata["last_used_unix_ms"] = json!(now_ms());
-        let temporary = stage(&self.root)?;
-        let staged = temporary.path.join("metadata.json");
-        fs::write(&staged, serde_json::to_vec(&metadata)?)?;
-        fs::rename(staged, self.root.join(key).join("metadata.json"))?;
+        let now = now_ms();
+        let used = metadata["last_used_unix_ms"].as_u64().unwrap_or(0);
+        if self.touch_ms == 0 || now.saturating_sub(used) >= self.touch_ms {
+            metadata["last_used_unix_ms"] = json!(now);
+            let temporary = stage(&self.root)?;
+            let staged = temporary.path.join("metadata.json");
+            fs::write(&staged, serde_json::to_vec(&metadata)?)?;
+            fs::rename(staged, self.root.join(key).join("metadata.json"))?;
+        }
         Ok(Some(artifact))
     }
 
@@ -715,6 +795,21 @@ impl BuildCache {
         paths: &BTreeMap<String, PathBuf>,
         messages: &[String],
     ) -> io::Result<()> {
+        if self.store_entry(key, paths, messages)? {
+            self.evict()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// [`store`](Self::store) without the cleanup, which a caller that stores many entries runs once at the end.
+    /// `false` when another process holds the entry or it is there already.
+    pub(crate) fn store_entry(
+        &self,
+        key: &str,
+        paths: &BTreeMap<String, PathBuf>,
+        messages: &[String],
+    ) -> io::Result<bool> {
         if !key_name(key) {
             return Err(invalid("invalid build cache key"));
         }
@@ -725,12 +820,12 @@ impl BuildCache {
             .open(&lock)
         {
             Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
             Err(error) => return Err(error),
         }
         let _lock = CacheLock(lock);
         if self.load(key)?.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let temporary = stage(&self.root)?;
         let entry = temporary.path.join("entry");
@@ -780,13 +875,28 @@ impl BuildCache {
             Err(_) if self.load(key)?.is_some() => {}
             Err(error) => return Err(error),
         }
+        Ok(true)
+    }
+
+    /// [`evict`](Self::evict), unless a cleanup of this cache ran less than `interval_ms` ago.
+    pub(crate) fn evict_if_due(&self, interval_ms: u64) -> io::Result<()> {
+        let marker = self.root.join(EVICTED);
+        let due = fs::metadata(&marker)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_none_or(|age| age.as_millis() >= u128::from(interval_ms));
+        if !due {
+            return Ok(());
+        }
+        fs::write(&marker, b"")?;
         self.evict()
     }
 
     pub(crate) fn evict(&self) -> io::Result<()> {
         let mut entries = Vec::new();
         let mut total = 0u64;
-        for entry in fs::read_dir(&self.root)?.take(4096) {
+        for entry in fs::read_dir(&self.root)?.take(self.scan_entries) {
             let entry = entry?;
             let name = entry.file_name();
             let Some(key) = name.to_str().filter(|key| {
@@ -797,28 +907,41 @@ impl BuildCache {
             }) else {
                 continue;
             };
-            let (size, used) = match self.metadata(key) {
-                Ok(metadata) => (
-                    metadata["files"]
-                        .as_object()
-                        .map(|files| {
-                            files
-                                .values()
-                                .filter_map(|file| file["size"].as_u64())
-                                .fold(0u64, u64::saturating_add)
-                        })
-                        .unwrap_or(0),
-                    metadata["last_used_unix_ms"].as_u64().unwrap_or(0),
-                ),
-                Err(_) => {
-                    let metadata = fs::symlink_metadata(entry.path())?;
-                    let modified = metadata
-                        .modified()?
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis()
-                        .min(u128::from(u64::MAX)) as u64;
-                    (0, modified)
+            let from_file_system = |entry: &fs::DirEntry| -> io::Result<(u64, u64)> {
+                let metadata = fs::symlink_metadata(entry.path())?;
+                let modified = metadata
+                    .modified()?
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                let size = if metadata.is_dir() && key_name(key) {
+                    fs::metadata(entry.path().join("artifact")).map_or(0, |artifact| artifact.len())
+                } else {
+                    0
+                };
+                Ok((size, modified))
+            };
+            let (size, used) = if self.file_system_stats {
+                from_file_system(&entry)?
+            } else {
+                match self.metadata(key) {
+                    Ok(metadata) => (
+                        metadata["files"]
+                            .as_object()
+                            .map(|files| {
+                                files
+                                    .values()
+                                    .filter_map(|file| file["size"].as_u64())
+                                    .fold(0u64, u64::saturating_add)
+                            })
+                            .unwrap_or(0),
+                        metadata["last_used_unix_ms"].as_u64().unwrap_or(0),
+                    ),
+                    Err(_) => {
+                        let (_, modified) = from_file_system(&entry)?;
+                        (0, modified)
+                    }
                 }
             };
             total = total.saturating_add(size);
@@ -826,7 +949,7 @@ impl BuildCache {
         }
         entries.sort();
         let now = now_ms();
-        for (used, key, size) in entries.into_iter().take(128) {
+        for (used, key, size) in entries.into_iter().take(self.remove_entries) {
             if total <= self.max_bytes && now.saturating_sub(used) <= self.max_age_ms {
                 break;
             }
