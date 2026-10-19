@@ -50,23 +50,21 @@ impl FunctionEmitter<'_, '_> {
         let state = self.hash_word(OFFSET, if linked { "76" } else { "65" });
         let state = self.hash_word(&state, &length);
         let state_slot = self.spill(&Type::Integer(64, false), &state);
-        let cursor =
-            linked.then(|| self.spill(&Type::Reference(Box::new(Type::Unit), false), &data));
-        self.array_loop(&length, |emitter, index| {
-            let pointer = if let Some(cursor) = &cursor {
-                let node = emitter.value(format!("load ptr, ptr {cursor}"));
-                let next = emitter.value(format!("load ptr, ptr {node}"));
-                emitter.instruction(format!("store ptr {next}, ptr {cursor}"));
-                emitter.list_element_pointer(element, &node)
-            } else {
-                emitter.element_pointer(element, &data, index)
-            };
+        let step = |emitter: &mut Self, pointer: &str, index: &str| {
             let state = emitter.value(format!("load i64, ptr {state_slot}"));
             let state = emitter.hash_word(&state, index);
-            let hash = emitter.hash_element(&methods[0], &pointer);
+            let hash = emitter.hash_element(&methods[0], pointer);
             let state = emitter.hash_word(&state, &hash);
             emitter.instruction(format!("store i64 {state}, ptr {state_slot}"));
-        });
+        };
+        if linked {
+            self.list_loop(element, &data, &length, step);
+        } else {
+            self.array_loop(&length, |emitter, index| {
+                let pointer = emitter.element_pointer(element, &data, index);
+                step(emitter, &pointer, index);
+            });
+        }
         self.value(format!("load i64, ptr {state_slot}"))
     }
 
@@ -120,15 +118,23 @@ impl FunctionEmitter<'_, '_> {
         let mut value = self.value(format!("load {}, ptr %arg0", self.ty(ty)));
         if ty.is_string() {
             let data = self.value(format!("extractvalue {} {value}, 0", self.ty(ty)));
-            let length = self.value(format!("extractvalue {} {value}, 1", self.ty(ty)));
+            let word = self.string_word(ty, &value);
+            let length = self.string_count(ty, &word);
             state = self.hash_word(&state, &length);
             let state_slot = self.spill(&Type::Integer(64, false), &state);
             let bits = if *ty == Type::String { 16 } else { 8 };
+            // A Latin-1 string hashes as the UTF-16 string of the same units, so that equal strings
+            // have equal hashes.
+            let latin1 = self.marks_length(ty).then(|| self.string_is_latin1(&word));
             self.array_loop(&length, |emitter, index| {
-                let pointer = emitter.value(format!(
-                    "getelementptr inbounds i{bits}, ptr {data}, i64 {index}"
-                ));
-                let unit = emitter.value(format!("load i{bits}, ptr {pointer}"));
+                let unit = if let Some(latin1) = &latin1 {
+                    emitter.string_unit_with(latin1, &data, index)
+                } else {
+                    let pointer = emitter.value(format!(
+                        "getelementptr inbounds i{bits}, ptr {data}, i64 {index}"
+                    ));
+                    emitter.value(format!("load i{bits}, ptr {pointer}"))
+                };
                 let state = emitter.value(format!("load i64, ptr {state_slot}"));
                 let state = emitter.hash_bits(&state, &unit, bits, (bits / 8) as usize);
                 emitter.instruction(format!("store i64 {state}, ptr {state_slot}"));

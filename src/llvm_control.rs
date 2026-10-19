@@ -262,14 +262,27 @@ impl FunctionEmitter<'_, '_> {
             "extractvalue {} {collection}, 0",
             self.ty(&source.ty)
         ));
-        let length = self.value(format!(
-            "extractvalue {} {collection}, 1",
-            self.ty(&source.ty)
-        ));
+        let word = self.string_word(&source.ty, &collection);
+        let length = self.string_count(&source.ty, &word);
         self.borrowed_locals.insert(local.id);
         if let Type::List(element) = &source.ty {
-            self.list_loop_control(&data, &length, |emitter, node, exit, advance| {
-                let pointer = emitter.list_element_pointer(element, node);
+            self.list_loop_control(
+                element,
+                &data,
+                &length,
+                |emitter, pointer, exit, advance| {
+                    emitter.locals.insert(local.id, pointer.to_owned());
+                    emitter.loop_body(body, exit, advance);
+                },
+            );
+        } else if self.marks_length(&source.ty) {
+            // A unit of a Latin-1 string is a byte: the loop variable points at a widened copy in one slot that
+            // each iteration overwrites. That is sound because the checker ends a borrow of the variable with its
+            // iteration (`ForEach` in ownership_control.rs).
+            let latin1 = self.string_is_latin1(&word);
+            let slot = self.slot(&local.ty);
+            self.array_loop_control(&length, |emitter, index, exit, advance| {
+                let pointer = emitter.string_unit_pointer(&latin1, &data, index, &slot);
                 emitter.locals.insert(local.id, pointer);
                 emitter.loop_body(body, exit, advance);
             });

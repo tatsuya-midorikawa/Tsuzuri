@@ -45,6 +45,7 @@ AI が書いたコードも、人が書いたコードも、同じ検査を通�
 
 - 通常の整数の加減乗算は、型の幅で折り返します。未定義動作にはしません。LLVM の `nsw`／`nuw` は、範囲から証明できた演算にだけ、`TSUZURI_RANGE_FLAGS=proven` のときに書きます（既定は `off`）。
 - オーバーフローを失敗にしたい式には `@checked` を付けます。飽和などは `Int` の別 API です。
+- `string` は、どの内部表現でも 16 bit のコード単位の列で、長さ・添字・順序・等しさ・hash・表示・host との ABI（常に UTF-16）を保ちます。`TSUZURI_STRINGS=compact` の Latin-1（1 単位 1 byte）は、内部の表現だけを変えます。
 - 浮動小数点の丸め、NaN、符号付きゼロ、評価順序を保ちます。
 - fast-math、式の再結合、暗黙の FMA は有効にしません。`-O3` も同じです。
 - 境界検査を、利用者が無効にするオプションはありません。証明できた添字だけ、検査の分岐を省略します。
@@ -157,6 +158,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 所有権、借用、複数 region、排他借用フィールド、`Drop` | 実装済み | A09、A12、A13、B07。region 間の outlives はない |
 | 借用・型から導く LLVM の最適化情報 | 限定した証明済みの範囲で実装済み | 通常の内部関数の pointer 属性、scalar `noundef`、限定した memory effects、scoped alias、scalar TBAA。集約値全体や runtime の byte copy は対象外。速度は別途測る |
 | 整数の範囲証明と `nsw`／`nuw` の旗 | オプトインで実装済み（既定は `off`） | PR02。`TSUZURI_RANGE_FLAGS=off\|proven\|audit`。ループの形と区間から証明できた整数の `+ - *` だけ。`let mut`・呼び出しの結果・128-bit は対象外。旗が変えた assembly は、Matrix と `String.split`／`String.join` の関数ごとに 1〜8 命令、utf の wasm32 `-O3`（7 bytes 増）、旗の候補を集めた `range_flags` の arm64 `-O1`（24 行。命令数は同じ）だけで、速度の向上は主張しない（[整数の範囲証明の旗](../compiler/option.md#整数の範囲証明の旗)） |
+| 内部の文字列表現（コンパクト文字列） | オプトインで実装済み（既定は `utf16`） | PM03。`TSUZURI_STRINGS=utf16\|compact`。`compact` は全単位が 0xFF 以下の `string` を 1 単位 1 byte（Latin-1）で保存し、ASCII・Latin-1 の確保量を約半分にする。値・順序・hash・host との ABI（常に UTF-16）は変えない。runtime の IR（31〜49%）・小さな WebAssembly（hello で約 17%）・ビルド時間（約 23%）が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のまま（[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)） |
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
 | `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |
@@ -181,7 +183,8 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |
 | 言語版（`Tsuzuri.toml` の `edition`）、`@deprecated` と警告 `W1005`、公開 API の差分（`tsuzuri api-diff`） | 実装済み | G19。edition は `2026` だけで、差はまだない。保つものと非推奨の手順は [安定性と互換性の方針](../../../docs/stability.md) |
 | 追加の native ターゲットとクロスコンパイル（`--target` が 22 個の triple を名指しできる。`TSUZURI_SYSROOT`、ビルド機で動かせない target の実行器 `TSUZURI_RUNNER`） | 実装済み | G15。CI の 4 つの job が自分の triple を実行し、Linux の job が静的な musl の 3 つを、macOS arm64 の job が x86-64 の macOS（Rosetta）を実行して確かめた。ほかの target は link か object までの確認。対応の程度は CI が確かめるものだけを書いた表（[対応プラットフォーム](../compiler/platforms.md)） |
-| 型検査とコード生成の増分コンパイル | 計画中 | [PB06](../../../_perfs/PB06-build-server.md)、[PB07](../../../_perfs/PB07-incremental-codegen.md) |
+| 変更の監視（`tsuzuri watch`）と常駐ビルドサーバー（`tsuzuri serve`。macOS と Linux） | 実装済み | [PB06](../../../_perfs/_completed/PB06-build-server.md)。読んだソースの本文とファイルの内容ハッシュを覚えるだけで、型検査の結果は再利用しない（1 module の本文を変えた `check` が、200 module で約 11〜13%、1,000 module で約 30〜38% 短くなる）。Linux の実機と Windows の server はない。LSP と REPL は同じ常駐状態をプロセスの中で使う |
+| 型検査とコード生成の増分コンパイル | 計画中 | [PB07](../../../_perfs/PB07-incremental-codegen.md)。PB06 の常駐状態は型検査の結果を再利用しないので、これには含まれない |
 | `f16` の演算と変換（AArch64 は `half` 命令、x86-64 の `--cpu native` は F16C と AVX512-FP16、WASM はソフトウェア） | 実装済み | D10。速度を測ったのは macOS arm64 だけ。結果のビットの照合は、CI の runner（macOS arm64・Intel Mac・Linux x86-64・Linux arm64）で実行している。Linux x86-64 は runner の機能に応じ `native=conversions|hardware` を許容し、現時点で `conversions` を確認済み。AVX512-FP16 の `hardware` と Windows の実行は未確認。 |
 | コンパイル時評価 `const def`（ループ・再帰・`match` を含む関数を、定数の初期化式から評価する）と、平たいデータの定数の読み取り専用の静的データ | 実装済み | [D11](../../../_features/_completed/D11-const-evaluation.md)（Phase 1・2） |
 

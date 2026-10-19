@@ -10,6 +10,32 @@ repository = "https://github.com/tatsuya-midorikawa/Tsuzuri"
 [dependencies]
 rustc_apfloat = "0.2"
 serde_json = "1.0"
+# PB05: the fast debug backend (`--backend fast`) translates the -O0 LLVM IR text with Cranelift. The four
+# Cranelift crates are one release (the newest whose rust-version is 1.85) and are pinned with `=`.
+cranelift-codegen = { version = "=0.121.2", default-features = false, features = ["std", "x86", "arm64"], optional = true }
+cranelift-frontend = { version = "=0.121.2", optional = true }
+cranelift-module = { version = "=0.121.2", optional = true }
+cranelift-object = { version = "=0.121.2", optional = true }
+target-lexicon = { version = "0.13", optional = true }
+# PB05 Phase 2: the DWARF line table of `-g` is written with gimli, in the version that Cranelift already uses.
+gimli = { version = "=0.31.1", default-features = false, features = ["std", "read", "write"], optional = true }
+
+[features]
+fast-backend = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-module",
+    "dep:cranelift-object",
+    "dep:target-lexicon",
+    "dep:gimli",
+]
+
+# The test helper of `tests/fast_backend.mjs`: translates one textual IR file to an object, so a wrapper can
+# stand in for `clang` on `.ll` inputs.
+[[bin]]
+name = "tz-fast-cc"
+path = "src/bin/tz-fast-cc.rs"
+required-features = ["fast-backend"]
 
 [target.'cfg(windows)'.dependencies]
 same-file = "1.0.6"

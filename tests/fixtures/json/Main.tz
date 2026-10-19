@@ -125,9 +125,11 @@ fn number_value case =
     | Ok value -> value
     | Error _ -> 0.0 / 0.0
 
-/// 1 or -1 by the sign bit of `number_value case`.
+/// 1 or -1 by the sign bit of `number_value case`; 0 when that is NaN, whose sign a machine decides (the two backends and the hosts differ).
 export def number_sign :: i64 -> f64
-fn number_sign case = Math.copysign 1.0 (number_value case)
+fn number_sign case =
+    let value = number_value case
+    if Math.is_nan value then 0.0 else Math.copysign 1.0 value
 
 export def number_status :: i64 -> i64
 fn number_status case =

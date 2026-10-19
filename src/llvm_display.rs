@@ -81,6 +81,9 @@ impl FunctionEmitter<'_, '_> {
         result: &Type,
     ) -> String {
         let utf8 = *result == Type::Utf8String;
+        if !utf8 && self.globals.strings == StringForm::Compact {
+            return self.compact_interpolation(interpolation);
+        }
         let (ty, unit, copy, allocate) = if utf8 {
             (
                 "%tz.utf8string",
@@ -167,6 +170,130 @@ impl FunctionEmitter<'_, '_> {
         }
         self.release_operands(cleanup);
         allocated
+    }
+
+    /// `interpolation` for a `string` result of the compact form: the result is Latin-1 when every
+    /// piece is Latin-1 (or empty) and no fill is above U+00FF, which the generated code can only
+    /// tell at run time for the pieces that are strings, and UTF-16 otherwise. The runtime helpers
+    /// copy a piece in the form of the result, so that the code is the same for both.
+    fn compact_interpolation(&mut self, interpolation: &TypedInterpolation) -> String {
+        let mut cleanup = Vec::new();
+        let mut pieces = Vec::new();
+        for hole in &interpolation.holes {
+            pieces.push(self.hole_piece(hole, false, &mut cleanup));
+        }
+        // A piece is a pointer and a length word; the number text of a number is Latin-1.
+        let mut words = Vec::new();
+        let mut counts = Vec::new();
+        for piece in &pieces {
+            if piece.ascii {
+                words.push(self.value(format!("or i64 {}, {}", piece.length, strings::LATIN1)));
+                counts.push(piece.length.clone());
+            } else {
+                counts.push(self.value(format!("and i64 {}, {}", piece.length, strings::MASK)));
+                words.push(piece.length.clone());
+            }
+        }
+        let texts_fit = interpolation.texts.iter().all(|text| {
+            matches!(text, StringLiteral::Utf16(units) if units.iter().all(|unit| *unit <= 0xFF))
+        });
+        let fills_fit = pieces.iter().all(|piece| {
+            piece
+                .pad
+                .as_ref()
+                .is_none_or(|pad| pad.width == 1 && pad.packed <= 0xFF)
+        });
+        let wide = if !texts_fit || !fills_fit {
+            "true".to_owned()
+        } else {
+            let mut wide = "false".to_owned();
+            for (piece, word) in pieces.iter().zip(&words) {
+                if piece.ascii {
+                    continue;
+                }
+                // A UTF-16 piece that is not empty makes the result UTF-16.
+                let marked = self.value(format!("and i64 {word}, {}", strings::LATIN1));
+                let plain = self.value(format!("icmp eq i64 {marked}, 0"));
+                let full = self.value(format!("icmp ne i64 {word}, 0"));
+                let units = self.value(format!("and i1 {plain}, {full}"));
+                wide = if wide == "false" {
+                    units
+                } else {
+                    self.value(format!("or i1 {wide}, {units}"))
+                };
+            }
+            wide
+        };
+        let mut total = interpolation
+            .texts
+            .iter()
+            .map(StringLiteral::len)
+            .sum::<usize>()
+            .to_string();
+        for (piece, count) in pieces.iter().zip(&counts) {
+            total = self.value(format!("add i64 {total}, {count}"));
+            if let Some(pad) = &piece.pad {
+                for fills in [&pad.before, &pad.after] {
+                    let units = self.fill_units(fills, pad.width);
+                    total = self.value(format!("add i64 {total}, {units}"));
+                }
+            }
+        }
+        let allocated = self.value(format!(
+            "call %tz.string @tz.format.allocate(i64 {total}, i1 {wide})"
+        ));
+        let output = self.value(format!("extractvalue %tz.string {allocated}, 0"));
+        let mut offset = "0".to_string();
+        for (index, text) in interpolation.texts.iter().enumerate() {
+            if !text.is_empty() {
+                let (constant, word) = self.string_literal(text);
+                self.instruction(format!(
+                    "call void @tz.format.put(ptr {output}, i64 {offset}, ptr {constant}, i64 {word}, i1 {wide})"
+                ));
+                offset = self.value(format!("add i64 {offset}, {}", text.len()));
+            }
+            let Some(piece) = pieces.get(index) else {
+                continue;
+            };
+            if let Some(pad) = &piece.pad {
+                offset = self.compact_fill(&output, &offset, &pad.before, pad, &wide);
+            }
+            self.instruction(format!(
+                "call void @tz.format.put(ptr {output}, i64 {offset}, ptr {}, i64 {}, i1 {wide})",
+                piece.data, words[index]
+            ));
+            offset = self.value(format!("add i64 {offset}, {}", counts[index]));
+            if let Some(pad) = &piece.pad {
+                offset = self.compact_fill(&output, &offset, &pad.after, pad, &wide);
+            }
+        }
+        for piece in pieces {
+            match piece.owned {
+                Some(Owned::Value(ty, value)) => self.drop_value(&ty, &value),
+                Some(Owned::Buffer(buffer)) => {
+                    self.instruction(format!("call void @tz.free(ptr {buffer})"));
+                }
+                None => {}
+            }
+        }
+        self.release_operands(cleanup);
+        allocated
+    }
+
+    /// `write_fill` for a result that `wide` says is UTF-16 or Latin-1.
+    fn compact_fill(
+        &mut self,
+        output: &str,
+        offset: &str,
+        count: &str,
+        pad: &Pad,
+        wide: &str,
+    ) -> String {
+        let written = self.value(format!(
+            "call i64 @tz.format.fill(ptr {output}, i64 {offset}, i64 {count}, i32 {}, i64 {}, i1 {wide})",
+            pad.packed, pad.width
+        ));
+        self.value(format!("add i64 {offset}, {written}"))
     }
 
     fn fill_units(&mut self, count: &str, width: usize) -> String {
@@ -371,6 +498,8 @@ impl FunctionEmitter<'_, '_> {
         } else {
             let helper = if utf8 {
                 "@tz.format.scalars.utf8"
+            } else if self.globals.strings == StringForm::Compact {
+                "@tz.format.scalars"
             } else {
                 "@tz.format.scalars.utf16"
             };
@@ -449,21 +578,19 @@ impl FunctionEmitter<'_, '_> {
             let data = self.value(format!("extractvalue {aggregate} {input}, 0"));
             let length = self.value(format!("extractvalue {aggregate} {input}, 1"));
             let (parts, target) = self.allocate_array(&Type::String, &length);
-            let cursor =
-                linked.then(|| self.spill(&Type::Reference(Box::new(Type::Unit), false), &data));
-            self.array_loop(&length, |emitter, index| {
-                let pointer = if let Some(cursor) = &cursor {
-                    let node = emitter.value(format!("load ptr, ptr {cursor}"));
-                    let next = emitter.value(format!("load ptr, ptr {node}"));
-                    emitter.instruction(format!("store ptr {next}, ptr {cursor}"));
-                    emitter.list_element_pointer(element, &node)
-                } else {
-                    emitter.element_pointer(element, &data, index)
-                };
-                let text = emitter.display_element(&methods[0], &pointer);
+            let step = |emitter: &mut Self, pointer: &str, index: &str| {
+                let text = emitter.display_element(&methods[0], pointer);
                 let output = emitter.element_pointer(&Type::String, &target, index);
                 emitter.instruction(format!("store %tz.string {text}, ptr {output}"));
-            });
+            };
+            if linked {
+                self.list_loop(element, &data, &length, step);
+            } else {
+                self.array_loop(&length, |emitter, index| {
+                    let pointer = emitter.element_pointer(element, &data, index);
+                    step(emitter, &pointer, index);
+                });
+            }
             (parts, if linked { 2 } else { 1 })
         };
         self.value(format!(

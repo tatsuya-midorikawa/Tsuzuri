@@ -22,15 +22,16 @@ pub(super) enum Frame {
         buffer: String,
         elements: Vec<Vec<Frame>>,
     },
-    /// List nodes stored in the alloca `nodes`, linked in order.
+    /// The storage of a list literal in the alloca `storage`; see `list_stack_storage`.
     List {
-        nodes: String,
+        storage: String,
         elements: Vec<Vec<Frame>>,
     },
-    /// String code units that stay in the literal constant `data`.
+    /// String code units that stay in the literal constant `data`; `word` is the length word of
+    /// the string that holds them.
     String {
         data: String,
-        length: usize,
+        word: u64,
     },
     Buffer {
         buffer: String,
@@ -256,12 +257,11 @@ impl FunctionEmitter<'_, '_> {
                 self.frame_list(expression, elements)
             }
             TypedExprKind::String(text) if !text.is_empty() => {
-                let data = self.string_constant(text);
+                let (data, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 let value = self.value(format!("insertvalue {ty} zeroinitializer, ptr {data}, 0"));
-                let value = self.value(format!("insertvalue {ty} {value}, i64 {}, 1", text.len()));
-                let length = text.len();
-                (value, vec![Frame::String { data, length }])
+                let value = self.value(format!("insertvalue {ty} {value}, i64 {word}, 1"));
+                (value, vec![Frame::String { data, word }])
             }
             TypedExprKind::Record(fields) => {
                 let fields: Vec<_> = fields
@@ -373,9 +373,8 @@ impl FunctionEmitter<'_, '_> {
     pub(super) fn concat_length(&mut self, left: &TypedExpr, right: &TypedExpr) -> String {
         let (lhs, left_frames) = self.take_operand(left);
         let (rhs, right_frames) = self.take_operand(right);
-        let ty = self.ty(&left.ty);
-        let a = self.value(format!("extractvalue {ty} {lhs}, 1"));
-        let b = self.value(format!("extractvalue {ty} {rhs}, 1"));
+        let a = self.string_length(&left.ty, &lhs);
+        let b = self.string_length(&left.ty, &rhs);
         let length = self.value(format!("add i64 {a}, {b}"));
         let overflow = self.value(format!("icmp ult i64 {length}, {a}"));
         let valid = self.value(format!("xor i1 {overflow}, 1"));
@@ -467,48 +466,21 @@ impl FunctionEmitter<'_, '_> {
         let Type::List(element) = &expression.ty else {
             unreachable!()
         };
-        let node = self.list_node_type(element);
-        let nodes = self.fresh();
-        self.allocas.push(format!(
-            "{nodes} = alloca [{} x {node}], align 16",
-            elements.len()
-        ));
+        let storage = self.list_stack_storage(element, elements.len());
         let mut frames = Vec::with_capacity(elements.len());
         for (index, value) in elements.iter().enumerate() {
             let (value, element_frames) = self.frame_inner(value);
-            let current = self.frame_node(element, &nodes, index);
-            let next = if index + 1 == elements.len() {
-                "null".to_owned()
-            } else {
-                self.frame_node(element, &nodes, index + 1)
-            };
-            // The first field of each node is its link, matching heap-allocated nodes.
-            self.instruction(format!("store ptr {next}, ptr {current}"));
-            let pointer = self.list_element_pointer(element, &current);
-            self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
+            self.list_stack_store(element, &storage, index, &value);
             frames.push(element_frames);
         }
-        let list = self.value(format!(
-            "insertvalue %tz.list zeroinitializer, ptr {nodes}, 0"
-        ));
-        let list = self.value(format!(
-            "insertvalue %tz.list {list}, i64 {}, 1",
-            elements.len()
-        ));
+        let list = self.list_stack_descriptor(&storage, elements.len());
         (
             list,
             vec![Frame::List {
-                nodes,
+                storage,
                 elements: frames,
             }],
         )
-    }
-
-    fn frame_node(&mut self, element: &Type, nodes: &str, index: usize) -> String {
-        self.value(format!(
-            "getelementptr inbounds {}, ptr {nodes}, i64 {index}",
-            self.list_node_type(element)
-        ))
     }
 
     fn frame_aggregate(
@@ -662,9 +634,9 @@ impl FunctionEmitter<'_, '_> {
             _ => {}
         }
         let (address, length) = match frame {
-            Frame::Array { buffer, elements } => (buffer.as_str(), elements.len()),
-            Frame::List { nodes, elements } => (nodes.as_str(), elements.len()),
-            Frame::String { data, length } => (data.as_str(), *length),
+            Frame::Array { buffer, elements } => (buffer.as_str(), elements.len() as u64),
+            Frame::List { storage, elements } => (storage.as_str(), elements.len() as u64),
+            Frame::String { data, word } => (data.as_str(), *word),
             Frame::Aggregate(_) => unreachable!("aggregates are tested field by field"),
             Frame::Buffer { .. } | Frame::Environment { .. } => unreachable!(),
         };
@@ -751,10 +723,10 @@ impl FunctionEmitter<'_, '_> {
                 self.instruction(format!("store {ty} {captures}, ptr {heap}"));
                 self.value(format!("insertvalue %tz.closure {value}, ptr {heap}, 1"))
             }
-            (Type::String | Type::Utf8String, Frame::String { data, length }) => {
+            (Type::String | Type::Utf8String, Frame::String { data, word }) => {
                 let ty = self.ty(ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {data}, i64 {length})",
+                    "call {ty} @{}.new(ptr {data}, i64 {word})",
                     &ty[1..]
                 ))
             }
@@ -779,26 +751,24 @@ impl FunctionEmitter<'_, '_> {
                 }
                 array
             }
-            (Type::List(element), Frame::List { nodes, elements }) => {
+            (Type::List(element), Frame::List { storage, elements }) => {
                 let length = elements.len().to_string();
                 let llvm = self.ty(element);
-                let (head, tail) = self.list_builder();
+                let builder = self.list_builder(element, &length);
                 if elements.iter().all(Vec::is_empty) {
-                    self.list_loop(nodes, &length, |emitter, node| {
-                        let pointer = emitter.list_element_pointer(element, node);
+                    self.list_loop(element, storage, &length, |emitter, pointer, index| {
                         let value = emitter.value(format!("load {llvm}, ptr {pointer}"));
-                        emitter.append_list(element, &tail, &value);
+                        emitter.list_append(element, &builder, index, &value);
                     });
                 } else {
                     for (index, candidates) in elements.iter().enumerate() {
-                        let node = self.frame_node(element, nodes, index);
-                        let pointer = self.list_element_pointer(element, &node);
+                        let pointer = self.list_stack_slot(element, storage, index);
                         let value = self.value(format!("load {llvm}, ptr {pointer}"));
                         let moved = self.relocate(element, &value, candidates);
-                        self.append_list(element, &tail, &moved);
+                        self.list_append(element, &builder, &index.to_string(), &moved);
                     }
                 }
-                self.finish_list(&head, &length)
+                self.list_finish(element, &builder, &length)
             }
             _ => unreachable!("frame kinds follow their value types"),
         }
@@ -887,21 +857,24 @@ impl FunctionEmitter<'_, '_> {
                     }
                 }
             }
-            (Type::List(element), Frame::List { nodes, elements }) => {
+            (Type::List(element), Frame::List { storage, elements }) => {
                 if !element.needs_drop(&self.module.types()) {
                     return;
                 }
                 let llvm = self.ty(element);
                 if elements.iter().all(Vec::is_empty) {
-                    self.list_loop(nodes, &elements.len().to_string(), |emitter, node| {
-                        let pointer = emitter.list_element_pointer(element, node);
-                        let value = emitter.value(format!("load {llvm}, ptr {pointer}"));
-                        emitter.drop_value(element, &value);
-                    });
+                    self.list_each(
+                        element,
+                        storage,
+                        &elements.len().to_string(),
+                        |emitter, pointer| {
+                            let value = emitter.value(format!("load {llvm}, ptr {pointer}"));
+                            emitter.drop_value(element, &value);
+                        },
+                    );
                 } else {
                     for (index, candidates) in elements.iter().enumerate() {
-                        let node = self.frame_node(element, nodes, index);
-                        let pointer = self.list_element_pointer(element, &node);
+                        let pointer = self.list_stack_slot(element, storage, index);
                         let value = self.value(format!("load {llvm}, ptr {pointer}"));
                         self.drop_framed(element, &value, candidates);
                     }

@@ -1,12 +1,36 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
-use tsuzuri::driver::{self, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost};
+use tsuzuri::driver::{
+    self, Backend, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost,
+};
 use tsuzuri::llvm::Allocator;
+use tsuzuri::server;
+
+/// `eprintln!` to `err`. A failed write panics with the message that `eprintln!` has.
+macro_rules! errln {
+    ($err:expr) => {
+        if let Err(error) = writeln!($err) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+    ($err:expr, $($arg:tt)*) => {
+        if let Err(error) = writeln!($err, $($arg)*) {
+            panic!("failed printing to stderr: {error}");
+        }
+    };
+}
+
+/// The exit codes of the commands that `cli` runs. `ExitCode` cannot be read back, and the build
+/// server hands the number to its client.
+const EXIT_SUCCESS: u8 = 0;
+const EXIT_FAILURE: u8 = 1;
+const EXIT_USAGE: u8 = 2;
 
 const HELP: &str = "\
 Tsuzuri - a statically typed language with ownership, powered by LLVM
@@ -24,8 +48,14 @@ Usage:
                              a debugger starts PATH with the printed argument 0
     tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
+    tsuzuri watch check|build|test source.tz|directory [options of that command]
+                             Run it again each time a source or manifest that it reads changes
+    tsuzuri serve directory [--idle-timeout SECONDS]
+    tsuzuri serve --status directory | --stop directory
+                             A build server (Unix) that runs check and build for that project
   tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
-  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native] [--json]
+  tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--target native|TRIPLE] [--cpu generic|native]
+                    [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
   tsuzuri new directory [--namespace NAME]
@@ -58,6 +88,23 @@ nanoseconds; see Bench.with_input and Bench.of) in its own native process, one a
 doubles the iterations until a sample takes 10 ms, discards one warm-up sample, and prints the
 median, minimum, and maximum time per iteration of --samples samples (default 11, at most 1000)
 at -O3 by default. It has no pass or fail threshold.
+`tsuzuri watch check|build|test PATH [options]` runs that command, then again each time a source
+or manifest that it reads changes: it polls every 100 ms, and a save that leaves the text as it
+was does not count. After each run it writes `watch: run N finished with exit code C` (with --json,
+the object {\"type\":\"watch\",\"run\":N,\"exit\":C}) to standard error. It runs in this process and
+ends only when it is stopped, for example with Ctrl-C. A directory named watch is built with
+`tsuzuri build watch`.
+`tsuzuri serve DIR` (macOS and Linux) is a build server for the project at DIR, in the foreground:
+`tsuzuri check` and `tsuzuri build` of that project, started with the same compiler, working
+directory, and environment variables that the compiler and its tools read (PATH, TSUZURI_*, the
+SDK and locale variables, ...), ask it to run the command and print what it printed, and run the
+command themselves, without a word, when no server is there or it refuses; --no-server skips the
+asking. It keeps what it read between commands, and stops after --idle-timeout seconds (1 to
+86400, default 1800) without a request, with `tsuzuri serve --stop DIR`, or when the compiler file
+is replaced. `tsuzuri serve --status DIR` prints its counters. The sockets are in
+TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the user's cache
+(macOS) or runtime (Linux) directory, which only its owner can enter. A directory named serve is
+built with `tsuzuri build serve`.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
@@ -112,8 +159,8 @@ Build options:
     --wasm-stack-size SIZE  WASM main stack size (WASM output/test; default 1MiB)
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
     --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv,
-                         spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or
-                         bindings-cpp
+                         spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py,
+                         or bindings-cpp
                          Default: exe for native, wasm for wasm32 and wasm64
                          wgsl writes the strict WebGPU compute shader of the one exported kernel
                          (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
@@ -123,6 +170,10 @@ Build options:
                          device must report the strict float controls); spirv-relaxed also
                          allows f32 division and follows the device's floating-point rules
                          shared links a native .dylib or .so that exports the C ABI
+                         bitcode writes one ThinLTO LLVM bitcode file of the program and the
+                         runtime it needs, for a host that links with -flto=thin and the same
+                         Clang (native, where llvm-link is needed when the program uses the C
+                         runtime, or --target wasm32, which links with wasm-ld)
                          bindings-js (with --target wasm32) writes a JavaScript module
                          NAME.mjs and its TypeScript declarations NAME.d.mts
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
@@ -131,6 +182,18 @@ Build options:
   -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
                          take -O0 to -O3. Language semantics, traps, and debug information do
                          not change; the code is usually slower than at -O3
+  --backend llvm|fast    Code generator of build, run, and test (default: llvm). fast translates
+                         the -O0 IR in the compiler itself instead of running Clang on it, for a
+                         quicker edit-build-run loop; the code runs like -O0 code. It takes -O0
+                         (its default, and test's) and two targets: native with --emit exe|object
+                         (--trap-info, --strip, -g for function and line information, not
+                         variables, --allocator, --freestanding, --trap-mode return), and wasm32
+                         with --emit wasm|object (--trap-info, --allocator, --wasm-max-memory,
+                         --wasm-stack-size). Stay with llvm: --cpu native, --profile-generate,
+                         --profile-use, wasm64, other targets and --emit kinds, and for wasm32
+                         --wasm-feature, --wasm-host, --wasm-opt, and -g; test runs the native
+                         target only. It needs a tsuzuri built with --features fast-backend on a
+                         macOS or Linux host with an AArch64 or x86-64 CPU
   --cpu generic|native   CPU tuning for native build/run (default: generic)
                          native uses this machine's ISA; not portable to older CPUs
   --link PATH            Link a host object or static library into a native executable
@@ -141,6 +204,8 @@ Build options:
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable cache reads and writes: artifacts and parsed sources for
                            build/run/script, artifacts for repl
+    --no-server            Run check or build in this process even where tsuzuri serve runs
+                           for the project
     -g, --debug-info        Emit source-level DWARF debug information (Windows links with the
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
@@ -165,6 +230,21 @@ Build options:
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
+    --profile-generate DIR Native executable or object output, run, and a wasm32 module: instrument the
+                         program so that it writes LLVM raw profiles (.profraw) under DIR when it exits
+                         normally (a run that traps or is killed writes none). Run it on a typical
+                         workload, then build again with --profile-use. An object needs
+                         -fprofile-generate at its final link. A wasm32 module has no runtime: its host
+                         calls writeProfile(instance) of the app.wasm.profile.mjs that the build writes
+                         beside it (Clang 21; no indirect-call profile). The counters are not atomic:
+                         Tasks that run in parallel are counted too low
+    --profile-use PATH     Native executable or object output, run, and a wasm32 module: optimize with the
+                         profile PATH, an indexed .profdata file or a directory of .profraw files that
+                         llvm-profdata merges. Build both times with the same Clang and options; a profile
+                         that no longer matches is one W2001 warning. Both profile options need an LLVM
+                         Clang in TSUZURI_CLANG, not the bundled launcher; they are not available on
+                         Windows, for another machine's --target, with wasm64, or with another --emit
+                         kind such as bitcode, llvm, or shared
   --                     Treat remaining arguments as paths
   -h, --help             Show this help
   --version              Show the compiler version
@@ -177,11 +257,14 @@ Threads:
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
-  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects (default: llvm-link)
+  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects and for --emit bitcode with the
+                         C runtime (default: llvm-link; --emit bitcode also tries the directory of Clang)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone
                          does not run anything
   Each tool comes from its variable, then a distribution's bin/, then PATH.
+  TSUZURI_LLVM_PROFDATA  llvm-profdata that --profile-use runs to merge a directory of .profraw files
+                         (default: the one beside Clang or in Clang's toolchain; PATH is not searched)
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
                          'default' or unset leaves it to Clang. Windows targets reject 'lld'.
@@ -197,6 +280,10 @@ Code generation:
                          + - * and on loop counters that a range proof shows cannot overflow;
                          audit keeps the wrapping instruction and traps where a proof is wrong,
                          for tests. Any other value is an error.
+  TSUZURI_STRINGS        utf16 or compact (default: utf16). compact stores a string whose code
+                         units are all at most 0xFF with one byte per unit (Latin-1) and any other
+                         string as UTF-16. The values, the order, the hash, the output, and the
+                         host ABI (always UTF-16) do not change. Any other value is an error.
 
 Exports use the tz_ prefix in both C and WebAssembly. Native executables print
 the numeric, bool, or UTF-8 string result of Main.tz's top-level code; unit
@@ -226,6 +313,8 @@ struct Arguments {
     output: Option<PathBuf>,
     options: BuildOptions,
     links: driver::LinkInputs,
+    /// `--profile-generate` or `--profile-use` (PR07).
+    profile: driver::Profile,
     json: bool,
     deny_warnings: bool,
     warn_implicit_copy: bool,
@@ -239,6 +328,8 @@ struct Arguments {
     bench_samples: Option<usize>,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
+    /// `--no-server`: `check` and `build` run in this process even where a build server runs.
+    no_server: bool,
 }
 
 fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
@@ -252,6 +343,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             output: None,
             options: BuildOptions::default(),
             links: driver::LinkInputs::default(),
+            profile: driver::Profile::None,
             json: false,
             deny_warnings: false,
             warn_implicit_copy: false,
@@ -262,6 +354,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             coverage: None,
             bench_samples: None,
             test_seed: None,
+            no_server: false,
         });
     }
     let mut position = 0;
@@ -302,6 +395,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut triple = None;
     let mut emit = None;
     let mut optimization = None;
+    let mut backend = None;
     let mut cpu = None;
     let mut json = false;
     let mut deny_warnings = false;
@@ -320,6 +414,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut freestanding = false;
     let mut strip = false;
     let mut wasm_opt = false;
+    let mut profile_generate = None;
+    let mut profile_use = None;
     let mut debug_info = false;
     let mut wasm_simd = false;
     let mut wasm_threads = false;
@@ -330,6 +426,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
     let mut no_cache = false;
+    let mut no_server = false;
     let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
@@ -350,6 +447,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("no-cache specified more than once".into());
                     }
                     no_cache = true;
+                    continue;
+                }
+                Some("--no-server") => {
+                    if no_server {
+                        return Err("no-server specified more than once".into());
+                    }
+                    no_server = true;
                     continue;
                 }
                 Some("--deny-warnings") => {
@@ -525,6 +629,26 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     wasm_opt = true;
                     continue;
                 }
+                Some("--profile-generate") => {
+                    if profile_generate.is_some() {
+                        return Err("profile generation specified more than once".into());
+                    }
+                    profile_generate = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-generate")?,
+                        "--profile-generate",
+                    )?);
+                    continue;
+                }
+                Some("--profile-use") => {
+                    if profile_use.is_some() {
+                        return Err("profile use specified more than once".into());
+                    }
+                    profile_use = Some(profile_path(
+                        next_value(arguments, &mut position, "--profile-use")?,
+                        "--profile-use",
+                    )?);
+                    continue;
+                }
                 Some("-g" | "--debug-info") => {
                     if debug_info {
                         return Err("debug information specified more than once".into());
@@ -619,13 +743,14 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("spirv") => Emit::Spirv,
                             Some("spirv-relaxed") => Emit::SpirvRelaxed,
                             Some("shared") => Emit::Shared,
+                            Some("bitcode") => Emit::Bitcode,
                             Some("bindings-js") => Emit::BindingsJs,
                             Some("bindings-cs") => Emit::BindingsCs,
                             Some("bindings-py") => Emit::BindingsPy,
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
                                 return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
                                         .into(),
                                 );
                             }
@@ -638,6 +763,19 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         return Err("optimization specified more than once".into());
                     }
                     optimization = OptLevel::from_flag(level);
+                    continue;
+                }
+                Some("--backend") => {
+                    if backend.is_some() {
+                        return Err("backend specified more than once".into());
+                    }
+                    backend = Some(
+                        match next_value(arguments, &mut position, "--backend")?.to_str() {
+                            Some("llvm") => Backend::Llvm,
+                            Some("fast") => Backend::Fast,
+                            _ => return Err("backend must be 'llvm' or 'fast'".into()),
+                        },
+                    );
                     continue;
                 }
                 Some("--cpu") => {
@@ -692,6 +830,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
     if no_cache && !matches!(action, Action::Build | Action::Run) {
         return Err("--no-cache is only valid with build, run, script, or repl".into());
+    }
+    if backend.is_some() && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err("--backend applies only to build, run, and test".into());
+    }
+    if no_server && !matches!(action, Action::Check | Action::Build) {
+        return Err("--no-server is only valid with check or build".into());
     }
     if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
@@ -760,6 +904,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     }
     if wasm_opt && action != Action::Build {
         return Err("--wasm-opt is only valid with build".into());
+    }
+    if (profile_generate.is_some() || profile_use.is_some())
+        && !matches!(action, Action::Build | Action::Run)
+    {
+        return Err("--profile-generate and --profile-use are only valid with build or run".into());
     }
     if format_check && action != Action::Fmt {
         return Err("--check is only valid with fmt".into());
@@ -847,6 +996,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         return Err("check does not use CPU tuning".into());
     }
     let target = target.unwrap_or(Target::Native);
+    let backend = backend.unwrap_or_default();
     let options = BuildOptions {
         target,
         emit: emit.unwrap_or(if target.is_wasm() {
@@ -854,11 +1004,15 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             Emit::Executable
         }),
-        optimization: optimization.unwrap_or(if action == Action::Test {
-            OptLevel::O0
-        } else {
-            OptLevel::O3
-        }),
+        // The fast backend translates -O0 IR, so -O0 is its default.
+        optimization: optimization.unwrap_or(
+            if action == Action::Test || backend == Backend::Fast {
+                OptLevel::O0
+            } else {
+                OptLevel::O3
+            },
+        ),
+        backend,
         cpu: cpu.unwrap_or(Cpu::Generic),
         debug_output,
         trap_info: trap_info
@@ -883,6 +1037,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         triple,
     };
     options.validate().map_err(|error| error.message)?;
+    let profile = match (profile_generate, profile_use) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "--profile-generate and --profile-use cannot be combined; build once with each"
+                    .into(),
+            );
+        }
+        (Some(directory), None) => {
+            driver::Profile::generate(&directory).map_err(|error| error.message)?
+        }
+        (None, Some(path)) => driver::Profile::Use(path),
+        (None, None) => driver::Profile::None,
+    };
+    profile.validate(options).map_err(|error| error.message)?;
     if let Some(error) = output
         .as_deref()
         .and_then(|output| driver::bindings_output_error(options.emit, output))
@@ -899,6 +1067,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         output,
         options,
         links,
+        profile,
         json,
         deny_warnings,
         warn_implicit_copy,
@@ -909,7 +1078,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         coverage,
         bench_samples,
         test_seed,
+        no_server,
     })
+}
+
+/// The value of `--profile-generate` or `--profile-use`: a path that is not empty.
+fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err(format!("{option} needs a value"));
+    }
+    Ok(PathBuf::from(value))
 }
 
 /// Whether the action links a native executable, the only output that takes host link inputs.
@@ -956,27 +1134,47 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
 
 /// An invalid `TSUZURI_THREADS` is a command-line error, reported before the command reads a
 /// source (exit code 2, like the other invalid settings).
-fn invalid_thread_setting(json: bool) -> Option<ExitCode> {
+fn invalid_thread_setting(err: &mut dyn Write, json: bool) -> Option<u8> {
     let error = tsuzuri::validate_thread_setting().err()?;
-    print_diagnostic(&error, Path::new("<command line>"), "", json);
-    Some(ExitCode::from(2))
+    write_diagnostic(err, &error, Path::new("<command line>"), "", json);
+    Some(EXIT_USAGE)
 }
 
 fn print_diagnostic(error: &Diagnostic, input: &Path, source: &str, json: bool) {
-    print_with_severity(error.severity.as_str(), error, input, source, json);
+    write_diagnostic(&mut io::stderr(), error, input, source, json);
 }
 
 fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Project, json: bool) {
+    write_diagnostics(&mut io::stderr(), errors, project, json);
+}
+
+fn write_diagnostic(
+    err: &mut dyn Write,
+    error: &Diagnostic,
+    input: &Path,
+    source: &str,
+    json: bool,
+) {
+    write_with_severity(err, error.severity.as_str(), error, input, source, json);
+}
+
+fn write_diagnostics(
+    err: &mut dyn Write,
+    errors: &tsuzuri::diagnostic::DiagnosticSet,
+    project: &Project,
+    json: bool,
+) {
     for (index, error) in errors.diagnostics.iter().enumerate() {
         if index != 0 && !json {
-            eprintln!();
+            errln!(err);
         }
         let source = project.source_for(error);
-        print_diagnostic(error, &source.path, &source.text, json);
+        write_diagnostic(err, error, &source.path, &source.text, json);
     }
     if let Some(note) = errors.omission_note() {
         if json {
-            eprintln!(
+            errln!(
+                err,
                 "{{\"severity\":\"note\",\"message\":{}}}",
                 json_string(&note)
             );
@@ -990,12 +1188,13 @@ fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Proj
             } else {
                 "warning"
             };
-            eprintln!("\n{severity}: {note}");
+            errln!(err, "\n{severity}: {note}");
         }
     }
 }
 
-fn print_with_severity(
+fn write_with_severity(
+    err: &mut dyn Write,
     severity: &str,
     diagnostic: &Diagnostic,
     input: &Path,
@@ -1003,7 +1202,8 @@ fn print_with_severity(
     json: bool,
 ) {
     let path = input.to_string_lossy();
-    eprintln!(
+    errln!(
+        err,
         "{}",
         if json {
             diagnostic.json_with_severity(severity, &path, source)
@@ -1011,6 +1211,21 @@ fn print_with_severity(
             diagnostic.render_with_severity(severity, &path, source)
         }
     );
+}
+
+/// The tool messages of a build (W2001 as JSON) that follow a successful command.
+fn write_messages(err: &mut dyn Write, messages: &[String], json: bool) {
+    for message in messages {
+        if json {
+            errln!(
+                err,
+                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
+                json_string(message.trim())
+            );
+        } else {
+            errln!(err, "{}", message.trim());
+        }
+    }
 }
 
 fn run_action(
@@ -1030,7 +1245,7 @@ fn run_action(
         Action::Fmt => unreachable!("formatting runs before compilation"),
         Action::Test => unreachable!("tests use an isolated runner"),
         Action::Bench => unreachable!("benchmarks use an isolated runner"),
-        Action::Build => driver::build_linked(
+        Action::Build => driver::build_profiled(
             module,
             project,
             &arguments
@@ -1039,19 +1254,21 @@ fn run_action(
                 .unwrap_or_else(|| arguments.options.output_path(project.input())),
             arguments.options,
             links,
+            &arguments.profile,
         ),
-        Action::Run => driver::run_with_arguments(
+        Action::Run => driver::run_profiled(
             module,
             project,
             arguments.options,
             links,
             arguments.json,
             program_arguments,
+            &arguments.profile,
         ),
     }
 }
 
-fn run_formatter(arguments: &Arguments) -> ExitCode {
+fn run_formatter(arguments: &Arguments) -> u8 {
     match driver::format_sources(&arguments.input, arguments.format_check) {
         Ok(changed) => {
             if arguments.format_check {
@@ -1066,15 +1283,15 @@ fn run_formatter(arguments: &Arguments) -> ExitCode {
                     }
                 }
                 if !changed.is_empty() {
-                    return ExitCode::FAILURE;
+                    return EXIT_FAILURE;
                 }
             }
-            ExitCode::SUCCESS
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = driver::read_source(&error.path).unwrap_or_default();
             print_diagnostic(&error.diagnostic, &error.path, &source, arguments.json);
-            ExitCode::FAILURE
+            EXIT_FAILURE
         }
     }
 }
@@ -1091,7 +1308,7 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::TestOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1102,6 +1319,7 @@ fn run_test_action(
         coverage: arguments.coverage.is_some(),
         seed: arguments.test_seed,
         triple: arguments.options.triple,
+        backend: arguments.options.backend,
     };
     if options
         .indices
@@ -1118,7 +1336,7 @@ fn run_test_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.options.debug_info {
         return debug_test(arguments, project, module, &options, links);
@@ -1148,20 +1366,20 @@ fn run_test_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     if let Some(output) = &arguments.coverage
         && let Err(error) = driver::check_coverage_output(project, output)
     {
         print_diagnostic(&error, output, "", arguments.json);
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let report = match driver::run_tests_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1254,11 +1472,11 @@ fn run_test_action(
         );
         let source = project.source_for(&diagnostic);
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else if coverage_failed {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     } else {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     }
 }
 
@@ -1269,7 +1487,7 @@ fn debug_test(
     module: &tsuzuri::check::CheckedModule,
     options: &driver::TestOptions,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let output = arguments
         .output
         .as_ref()
@@ -1279,7 +1497,7 @@ fn debug_test(
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &runner.messages {
@@ -1311,7 +1529,7 @@ fn debug_test(
             runner.arguments.join(" ")
         );
     }
-    ExitCode::SUCCESS
+    EXIT_SUCCESS
 }
 
 /// `tsuzuri bench`: measures each selected bench in its own process, one at a time, and prints
@@ -1321,7 +1539,7 @@ fn run_bench_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
-) -> ExitCode {
+) -> u8 {
     let options = driver::BenchOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
@@ -1347,7 +1565,7 @@ fn run_bench_action(
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.test_list {
         for case in module.benches.iter().filter(|case| options.includes(case)) {
@@ -1374,14 +1592,14 @@ fn run_bench_action(
                 );
             }
         }
-        return ExitCode::SUCCESS;
+        return EXIT_SUCCESS;
     }
     let report = match driver::run_benches_linked(module, &options, links) {
         Ok(report) => report,
         Err(error) => {
             let source = project.source_for(&error);
             print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            return ExitCode::FAILURE;
+            return EXIT_FAILURE;
         }
     };
     for message in &report.messages {
@@ -1491,9 +1709,9 @@ fn run_bench_action(
         print_diagnostic(&diagnostic, &source.path, &source.text, arguments.json);
     }
     if failed.is_empty() {
-        ExitCode::SUCCESS
+        EXIT_SUCCESS
     } else {
-        ExitCode::FAILURE
+        EXIT_FAILURE
     }
 }
 
@@ -2080,7 +2298,7 @@ fn help() -> String {
 }
 
 fn main() -> ExitCode {
-    let _time_passes = tsuzuri::timings::Report::start();
+    let mut time_passes = tsuzuri::timings::Report::start();
     let raw: Vec<_> = env::args_os().skip(1).collect();
     if raw.is_empty() {
         eprintln!("{}", help());
@@ -2138,38 +2356,77 @@ fn main() -> ExitCode {
         return bindgen_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "repl") {
-        if let Some(code) = invalid_thread_setting(false) {
-            return code;
+        if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+            return ExitCode::from(code);
         }
         return repl_command(&raw[1..]);
     }
-    let json = flags.iter().any(|argument| *argument == "--json");
-    let arguments = match parse_arguments(&raw) {
+    if raw.first().is_some_and(|command| *command == "watch") {
+        time_passes.disarm();
+        return watch_main(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "serve") {
+        time_passes.disarm();
+        return serve_main(&raw[1..]);
+    }
+    ExitCode::from(cli(
+        &raw,
+        program_arguments.as_deref(),
+        &mut io::stdout(),
+        &mut io::stderr(),
+    ))
+}
+
+/// Runs the command line `raw` that is a project command: everything after the commands that need
+/// no project (`--help`, `new`, `repl`, ...), from `parse_arguments` on. Its diagnostics and
+/// warnings go to `err`. `out` is the stream of the result that a command prints: `check` and
+/// `build` print none, and `test`, `bench`, `fmt`, and `run` write to the process's own standard
+/// output, so a caller that captures `out` serves `check` and `build` only.
+fn cli(
+    raw: &[OsString],
+    program_arguments: Option<&[OsString]>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
+    let json = raw
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match parse_arguments(raw) {
         Ok(arguments) => arguments,
         Err(message) => {
-            print_diagnostic(
+            write_diagnostic(
+                err,
                 &Diagnostic::new("E2000", message, Span::default()),
                 Path::new("<command line>"),
                 "",
                 json,
             );
-            return ExitCode::from(2);
+            return EXIT_USAGE;
         }
     };
     if arguments.action != Action::Fmt
-        && let Some(code) = invalid_thread_setting(json)
+        && let Some(code) = invalid_thread_setting(err, json)
     {
         return code;
     }
     if arguments.action == Action::Lsp {
-        return ExitCode::from(tsuzuri::lsp::serve(
-            std::io::stdin(),
-            std::io::stdout().lock(),
-            std::io::stderr().lock(),
-        ) as u8);
+        return tsuzuri::lsp::serve(io::stdin(), out, err) as u8;
     }
     if arguments.action == Action::Fmt {
         return run_formatter(&arguments);
+    }
+    // A build server that runs this project takes the command, and gives back what it printed.
+    // A process that is one itself (`watch`, `serve`) never asks.
+    if !arguments.no_server
+        && matches!(arguments.action, Action::Check | Action::Build)
+        && !tsuzuri::resident::is_active()
+        && let Some(response) = tsuzuri::server::request(&arguments.input, raw)
+    {
+        tsuzuri::timings::silence_report();
+        let _ = out.write_all(response.stdout.as_bytes());
+        let _ = err.write_all(response.stderr.as_bytes());
+        return response.exit;
     }
     let load_time = tsuzuri::timings::Phase::start("load");
     let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
@@ -2185,15 +2442,16 @@ fn main() -> ExitCode {
     let project = match loaded {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+            return EXIT_FAILURE;
         }
     };
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
     // Command-line values were validated during parsing, so only manifest values can fail here.
     if let Err(error) = arguments.options.validate() {
-        print_diagnostic(
+        write_diagnostic(
+            err,
             &Diagnostic::new(
                 error.code,
                 format!(
@@ -2206,7 +2464,7 @@ fn main() -> ExitCode {
             "",
             arguments.json,
         );
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     let kind = match arguments.action {
         // bench loads the same sources as test (`Project::load_for_tests`).
@@ -2218,8 +2476,8 @@ fn main() -> ExitCode {
     let module = match project.analyze_cached(arguments.options.cache, kind) {
         Ok(module) => module,
         Err(errors) => {
-            print_diagnostics(&errors, &project, arguments.json);
-            return ExitCode::FAILURE;
+            write_diagnostics(err, &errors, &project, arguments.json);
+            return EXIT_FAILURE;
         }
     };
     // The manifest's [native] inputs come first and apply only where the command line's would.
@@ -2237,9 +2495,9 @@ fn main() -> ExitCode {
         module.warnings.iter().cloned().chain(copies),
         0,
     );
-    print_diagnostics(&warnings, &project, arguments.json);
+    write_diagnostics(err, &warnings, &project, arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
-        return ExitCode::FAILURE;
+        return EXIT_FAILURE;
     }
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links);
@@ -2252,26 +2510,403 @@ fn main() -> ExitCode {
         &project,
         &module,
         &links,
-        program_arguments.as_deref().unwrap_or_default(),
+        program_arguments.unwrap_or_default(),
     );
     match result {
         Ok(messages) => {
-            for message in messages {
-                if arguments.json {
-                    eprintln!(
-                        "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                        json_string(message.trim())
-                    );
-                } else {
-                    eprintln!("{}", message.trim());
-                }
-            }
-            ExitCode::SUCCESS
+            write_messages(err, &messages, arguments.json);
+            EXIT_SUCCESS
         }
         Err(error) => {
             let source = project.source_for(&error);
-            print_diagnostic(&error, &source.path, &source.text, arguments.json);
-            ExitCode::FAILURE
+            write_diagnostic(err, &error, &source.path, &source.text, arguments.json);
+            EXIT_FAILURE
+        }
+    }
+}
+
+/// The arguments of `tsuzuri watch ARGS`, `ARGS` being those of `check`, `build` or `test`. The
+/// command is named, so that `watch app` is not read as a build of `app`.
+fn parse_watch_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+    match arguments.first().and_then(|command| command.to_str()) {
+        Some("check" | "build" | "test") => parse_arguments(arguments),
+        _ => Err("watch runs check, build, or test; use tsuzuri watch check <path>".into()),
+    }
+}
+
+/// `tsuzuri watch ARGS`: runs `ARGS` (a `check`, `build` or `test` command) and again each time
+/// that a file it reads changes. After each run it writes a status line to standard error. It
+/// ends only when it is stopped.
+fn watch_main(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let parsed = match parse_watch_arguments(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(EXIT_USAGE);
+        }
+    };
+    // Every run would report the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
+    // The snapshot comes before the run: a save during the run starts another run. The state
+    // remembers the sources that the runs and the snapshots read, so that a run opens only the
+    // files that changed, and pins the compiler that started the watch.
+    let mut resident = tsuzuri::resident::ResidentState::new();
+    let mut watcher = {
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+        tsuzuri::watch::Watcher::new(&parsed.input, parsed.action == Action::Test)
+    };
+    let mut run = 0_u64;
+    loop {
+        // A rebuilt compiler is not the one that this process runs. Nothing starts with the old one
+        // once the file was replaced: its run would show the result of the old compiler to somebody
+        // who waits for the new one's. The wait below ends at once for the same reason.
+        if resident.compiler_changed() {
+            if json {
+                errln!(
+                    io::stderr(),
+                    "{{\"type\":\"watch\",\"stopped\":\"compiler-changed\"}}"
+                );
+            } else {
+                errln!(
+                    io::stderr(),
+                    "watch: the compiler binary changed; stopping (start tsuzuri watch again)"
+                );
+            }
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        run += 1;
+        let code = {
+            let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+            let _report = tsuzuri::timings::Report::start();
+            cli(arguments, None, &mut io::stdout(), &mut io::stderr())
+        };
+        if json {
+            errln!(
+                io::stderr(),
+                "{{\"type\":\"watch\",\"run\":{run},\"exit\":{code}}}"
+            );
+        } else {
+            errln!(
+                io::stderr(),
+                "watch: run {run} finished with exit code {code}"
+            );
+        }
+        resident.trim();
+        let _scope = tsuzuri::resident::Scope::enter(&mut resident);
+        watcher.wait_for_change();
+    }
+}
+
+const SERVE_USAGE: &str = "serve takes one project directory: tsuzuri serve DIR [--idle-timeout SECONDS], tsuzuri serve --status DIR, or tsuzuri serve --stop DIR";
+
+/// What `tsuzuri serve` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+enum ServeMode {
+    Run { input: PathBuf, idle: u64 },
+    Status(PathBuf),
+    Stop(PathBuf),
+}
+
+fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
+    let mut input = None;
+    let mut idle = None;
+    let (mut status, mut stop) = (false, false);
+    let mut position = 0;
+    while position < arguments.len() {
+        let argument = &arguments[position];
+        position += 1;
+        match argument.to_str() {
+            Some("--idle-timeout") => {
+                if idle.is_some() {
+                    return Err("idle-timeout specified more than once".into());
+                }
+                let value = arguments
+                    .get(position)
+                    .and_then(|value| value.to_str())
+                    .ok_or("--idle-timeout requires a number of seconds")?;
+                position += 1;
+                let invalid = || {
+                    format!(
+                        "--idle-timeout must be an integer from 1 to {}, not '{value}'",
+                        server::MAX_IDLE_SECONDS
+                    )
+                };
+                let seconds: u64 = value.parse().map_err(|_| invalid())?;
+                if !(1..=server::MAX_IDLE_SECONDS).contains(&seconds) {
+                    return Err(invalid());
+                }
+                idle = Some(seconds);
+            }
+            Some("--status") => {
+                if std::mem::replace(&mut status, true) {
+                    return Err("status specified more than once".into());
+                }
+            }
+            Some("--stop") => {
+                if std::mem::replace(&mut stop, true) {
+                    return Err("stop specified more than once".into());
+                }
+            }
+            Some(value) if value.starts_with('-') => {
+                return Err(format!("unknown option '{value}' for serve; {SERVE_USAGE}"));
+            }
+            _ => {
+                if input.replace(PathBuf::from(argument)).is_some() {
+                    return Err(SERVE_USAGE.into());
+                }
+            }
+        }
+    }
+    let input = input.ok_or(SERVE_USAGE)?;
+    match (status, stop, idle) {
+        (false, false, idle) => Ok(ServeMode::Run {
+            input,
+            idle: idle.unwrap_or(server::DEFAULT_IDLE_SECONDS),
+        }),
+        (true, true, _) => Err("--status and --stop cannot be used together".into()),
+        (_, _, Some(_)) => Err("--idle-timeout applies to starting a server".into()),
+        (true, false, None) => Ok(ServeMode::Status(input)),
+        (false, true, None) => Ok(ServeMode::Stop(input)),
+    }
+}
+
+/// The server's commands: `check` and `build` of the project at `root`, through [`cli`] with the
+/// state that a process that stays keeps between them.
+struct CommandServer {
+    state: tsuzuri::resident::ResidentState,
+    root: PathBuf,
+}
+
+impl CommandServer {
+    /// Runs `command` with the state of the process, what it writes to `out` and to the standard
+    /// error that a server collects (with the report of `TSUZURI_TIME_PASSES`). `None` when it
+    /// panicked: what it left in the state cannot be trusted, so the state forgets what it read
+    /// and keeps the compiler that it pinned (a new state would pin whichever file is there now).
+    fn guarded(
+        &mut self,
+        command: impl FnOnce(&mut Vec<u8>, &mut tsuzuri::resident::Captured) -> u8,
+    ) -> Option<(u8, Vec<u8>, Vec<u8>)> {
+        let state = &mut self.state;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut out = Vec::new();
+            let started = tsuzuri::timings::begin_command();
+            let (code, mut err) = {
+                let _scope = tsuzuri::resident::Scope::enter(state);
+                // What the command writes and what its drops warn are one text, in order.
+                tsuzuri::resident::capture(|err| command(&mut out, err))
+            };
+            if let Some(report) = tsuzuri::timings::take_report(started) {
+                errln!(&mut err, "{report}");
+            }
+            (code, out, err)
+        }));
+        if outcome.is_err() {
+            self.state.reset();
+        }
+        outcome.ok()
+    }
+}
+
+impl server::Handler for CommandServer {
+    fn run(
+        &mut self,
+        request: &server::Request,
+        log: &mut dyn Write,
+    ) -> Result<server::Response, server::Refused> {
+        use server::{Refusal, Refused};
+        let raw: Vec<OsString> = request.args.iter().map(OsString::from).collect();
+        let arguments = parse_arguments(&raw).map_err(|message| {
+            Refused::new(
+                Refusal::Unsupported,
+                format!("the command line is not valid ({message})"),
+            )
+        })?;
+        if !matches!(arguments.action, Action::Check | Action::Build) || arguments.no_server {
+            return Err(Refused::new(
+                Refusal::Unsupported,
+                "a server runs check and build, without --no-server",
+            ));
+        }
+        if server::project_root(&arguments.input).as_deref() != Some(self.root.as_path()) {
+            return Err(Refused::new(
+                Refusal::Root,
+                format!(
+                    "{} is not in the project that this server runs ({})",
+                    arguments.input.display(),
+                    self.root.display()
+                ),
+            ));
+        }
+        let Some((code, out, err)) = self.guarded(|out, err| cli(&raw, None, out, err)) else {
+            let _ = writeln!(log, "serve: the command panicked; resident state dropped");
+            return Err(Refused::new(
+                Refusal::Internal,
+                "the command panicked; see the server's standard error",
+            ));
+        };
+        if self.state.trim() {
+            let _ = writeln!(
+                log,
+                "serve: resident state dropped (over {} bytes)",
+                tsuzuri::resident::MAX_RESIDENT_BYTES
+            );
+        }
+        match (String::from_utf8(out), String::from_utf8(err)) {
+            (Ok(stdout), Ok(stderr)) => Ok(server::Response {
+                exit: code,
+                stdout,
+                stderr,
+            }),
+            _ => Err(Refused::new(
+                Refusal::Internal,
+                "the output of the command is not valid UTF-8",
+            )),
+        }
+    }
+
+    fn compiler_changed(&self) -> bool {
+        self.state.compiler_changed()
+    }
+
+    fn status(&self) -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        vec![
+            ("resident_bytes", json!(self.state.bytes())),
+            (
+                "resident_limit_bytes",
+                json!(tsuzuri::resident::MAX_RESIDENT_BYTES),
+            ),
+            ("source_hits", json!(self.state.source_hits)),
+            ("source_reads", json!(self.state.source_reads)),
+            ("digest_hits", json!(self.state.digest_hits)),
+            ("digest_reads", json!(self.state.digest_reads)),
+        ]
+    }
+}
+
+fn serve_failure(code: &'static str, message: String, exit: u8) -> ExitCode {
+    print_diagnostic(
+        &Diagnostic::new(code, message, Span::default()),
+        Path::new("<command line>"),
+        "",
+        false,
+    );
+    ExitCode::from(exit)
+}
+
+/// `tsuzuri serve DIR [--idle-timeout SECONDS]`, `serve --status DIR`, and `serve --stop DIR`.
+fn serve_main(arguments: &[OsString]) -> ExitCode {
+    let mode = match parse_serve_arguments(arguments) {
+        Ok(mode) => mode,
+        Err(message) => return serve_failure("E2000", message, EXIT_USAGE),
+    };
+    if !cfg!(unix) {
+        return serve_failure(
+            "E2000",
+            "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server".into(),
+            EXIT_USAGE,
+        );
+    }
+    match mode {
+        ServeMode::Status(input) => match server::control(&input, &server::Operation::Status) {
+            Ok(reply) => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&reply).expect("a status is serializable")
+                );
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Stop(input) => match server::control(&input, &server::Operation::Shutdown) {
+            Ok(_) => {
+                let root = server::project_root(&input).unwrap_or(input);
+                println!("stopped the build server for {}", root.display());
+                ExitCode::SUCCESS
+            }
+            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+        },
+        ServeMode::Run { input, idle } => start_server(&input, idle),
+    }
+}
+
+fn start_server(input: &Path, idle: u64) -> ExitCode {
+    // Every request would find the same invalid setting.
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+        return ExitCode::from(code);
+    }
+    let directory = match server::server_directory() {
+        Ok(directory) => directory,
+        Err(error) => return serve_failure("E2000", error.to_string(), EXIT_USAGE),
+    };
+    let Some(root) = server::project_root(input).filter(|root| root.to_str().is_some()) else {
+        return serve_failure(
+            "E2001",
+            format!(
+                "cannot find the project of {}: it must be an existing project directory or file with a UTF-8 path, not a symbolic link",
+                input.display()
+            ),
+            EXIT_FAILURE,
+        );
+    };
+    if let Err(message) = server::ensure_private_directory(&directory) {
+        return serve_failure("E2001", message, EXIT_FAILURE);
+    }
+    let compiler = env::current_exe().and_then(std::fs::canonicalize);
+    let cwd = env::current_dir();
+    let (Ok(compiler), Ok(cwd)) = (compiler, cwd) else {
+        return serve_failure(
+            "E2001",
+            "cannot find the compiler file or the working directory".into(),
+            EXIT_FAILURE,
+        );
+    };
+    let environment = match server::current_environment() {
+        Ok(environment) => environment,
+        Err(name) => {
+            return serve_failure(
+                "E2000",
+                format!(
+                    "the environment variable {} is not valid UTF-8; the build server compares it with its clients'",
+                    name.to_string_lossy()
+                ),
+                EXIT_USAGE,
+            );
+        }
+    };
+    let config = server::Config::new(
+        directory,
+        root.clone(),
+        std::time::Duration::from_secs(idle),
+        compiler,
+        cwd,
+        environment,
+    );
+    let mut handler = CommandServer {
+        state: tsuzuri::resident::ResidentState::new(),
+        root,
+    };
+    match server::serve(&config, &mut handler, io::stderr()) {
+        Ok(server::Stop::Idle | server::Stop::Shutdown) => ExitCode::SUCCESS,
+        Ok(server::Stop::CompilerChanged) => ExitCode::from(EXIT_FAILURE),
+        Err(error) => {
+            let exit = if error.code == "E2000" {
+                EXIT_USAGE
+            } else {
+                EXIT_FAILURE
+            };
+            serve_failure(error.code, error.message, exit)
         }
     }
 }
@@ -2525,6 +3160,359 @@ mod tests {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
         assert!(HELP.contains("--strip"));
+    }
+
+    /// What `validate_fast` says last, to options that pass all of its own checks: a host that has no
+    /// translator (checked first), then a `tsuzuri` built without it. None where the backend is there.
+    fn fast_unavailable() -> Option<String> {
+        if !cfg!(all(
+            any(target_os = "macos", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64")
+        )) {
+            Some(format!(
+                "--backend fast is not available on {}-{}; use --backend llvm",
+                env::consts::OS,
+                env::consts::ARCH
+            ))
+        } else if !cfg!(feature = "fast-backend") {
+            Some("this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm".to_owned())
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn rejects_fast_backend_combinations() {
+        let level = |flag: &str| {
+            format!("--backend fast supports only -O0; remove {flag} or use --backend llvm")
+        };
+        let native = |other: &str| {
+            format!(
+                "--backend fast supports only the native target and wasm32; use --backend llvm for {other}"
+            )
+        };
+        let wasm_option = |name: &str| {
+            format!(
+                "--backend fast does not support {name} for wasm32; remove it or use --backend llvm"
+            )
+        };
+        let wasm_output = |kind: &str| {
+            format!(
+                "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit {kind}"
+            )
+        };
+        let output = |kind: &str| {
+            format!(
+                "--backend fast produces only exe and object outputs; use --backend llvm for --emit {kind}"
+            )
+        };
+        let option = |name: &str| {
+            format!("--backend fast does not support {name} yet; remove it or use --backend llvm")
+        };
+        let emit_target = "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'".to_owned();
+        // The message does not name which profile option was given. The profile options are checked
+        // after the others, so a host without the fast backend and a build without it say that first.
+        let profile = fast_unavailable().unwrap_or_else(|| {
+            "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use".to_owned()
+        });
+        let fast = |extra: &[&'static str]| {
+            let mut values = vec!["build", "Main.tz", "--backend", "fast"];
+            values.extend_from_slice(extra);
+            values
+        };
+        let mut cases = vec![
+            (
+                vec!["build", "Main.tz", "--backend", "gcc"],
+                "backend must be 'llvm' or 'fast'".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend"],
+                "--backend needs a value".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend", "fast", "--backend", "fast"],
+                "backend specified more than once".to_owned(),
+            ),
+            (
+                vec!["build", "Main.tz", "--backend", "fast", "--backend", "llvm"],
+                "backend specified more than once".to_owned(),
+            ),
+        ];
+        for action in ["check", "fmt", "doc", "bench"] {
+            for backend in ["fast", "llvm"] {
+                cases.push((
+                    vec![action, "Main.tz", "--backend", backend],
+                    "--backend applies only to build, run, and test".to_owned(),
+                ));
+            }
+        }
+        for flag in ["-O1", "-O2", "-O3", "-Os", "-Oz"] {
+            cases.push((fast(&[flag]), level(flag)));
+        }
+        cases.extend([
+            (fast(&["--target", "wasm64"]), native("wasm64")),
+            (fast(&["--target", "wasm32", "-O3"]), level("-O3")),
+            (
+                fast(&["--target", "x86_64-unknown-linux-gnu"]),
+                native("--target x86_64-unknown-linux-gnu"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "simd128"]),
+                wasm_option("--wasm-feature simd128"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-host", "wasi"]),
+                wasm_option("--wasm-host"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "threads"]),
+                wasm_option("--wasm-feature threads"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "jspi"]),
+                wasm_option("--wasm-feature jspi"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "webgpu"]),
+                wasm_option("--wasm-feature webgpu"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "net"]),
+                wasm_option("--wasm-feature net"),
+            ),
+            (fast(&["--target", "wasm32", "-g"]), wasm_option("-g")),
+            (
+                fast(&["--target", "wasm32", "--wasm-opt"]),
+                wasm_option("--wasm-opt"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "llvm"]),
+                wasm_output("llvm"),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "bindings-js"]),
+                wasm_output("bindings-js"),
+            ),
+            (fast(&["--emit", "llvm"]), output("llvm")),
+            (fast(&["--emit", "header"]), output("header")),
+            (fast(&["--emit", "wgsl"]), output("wgsl")),
+            (fast(&["--emit", "wgsl-relaxed"]), output("wgsl-relaxed")),
+            (fast(&["--emit", "spirv"]), output("spirv")),
+            (fast(&["--emit", "spirv-relaxed"]), output("spirv-relaxed")),
+            (fast(&["--emit", "shared"]), output("shared")),
+            (fast(&["--emit", "bitcode"]), output("bitcode")),
+            (fast(&["--profile-generate", "prof"]), profile.clone()),
+            (fast(&["--profile-use", "p.profdata"]), profile.clone()),
+            (fast(&["--emit", "bindings-cs"]), output("bindings-cs")),
+            (fast(&["--emit", "bindings-py"]), output("bindings-py")),
+            (fast(&["--emit", "bindings-cpp"]), output("bindings-cpp")),
+            (fast(&["--cpu", "native"]), option("--cpu native")),
+            // An `--emit` that its `--target` cannot give is an error for every backend, on every
+            // host, and it is reported as the LLVM backend does: `--backend llvm` is no way out.
+            (fast(&["--emit", "wasm"]), emit_target.clone()),
+            (
+                fast(&["--target", "wasm32", "--emit", "exe"]),
+                emit_target.clone(),
+            ),
+            (
+                fast(&["--emit", "bindings-js"]),
+                "'--emit bindings-js' requires '--target wasm32'".to_owned(),
+            ),
+            (
+                fast(&["--target", "wasm32", "--emit", "shared"]),
+                "'--emit shared' requires '--target native'".to_owned(),
+            ),
+        ]);
+        for (values, message) in cases {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        // The default code generator keeps every option it had.
+        for values in [
+            vec!["build", "Main.tz", "--backend", "llvm", "-O2", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "llvm",
+                "--target",
+                "wasm32",
+            ],
+            vec!["build", "Main.tz", "--backend", "llvm", "--cpu", "native"],
+            vec!["run", "Main.tz", "--backend", "llvm", "-Oz"],
+        ] {
+            let options = parse(&values).unwrap().options;
+            assert_eq!(options.backend, Backend::Llvm, "{values:?}");
+        }
+        assert!(HELP.contains("--backend llvm|fast"));
+        // fast translates wasm32 too: the help says what it takes and what stays with llvm.
+        assert!(HELP.contains("--emit wasm|object"));
+        assert!(HELP.contains("--wasm-feature, --wasm-host, --wasm-opt, and -g"));
+        assert!(!HELP.contains("WebAssembly stay with llvm"));
+    }
+
+    #[test]
+    fn accepts_fast_backend_at_o0() {
+        let unavailable = fast_unavailable();
+        for values in [
+            vec!["build", "Main.tz", "--backend", "fast"],
+            vec!["run", "Main.tz", "--backend", "fast"],
+            vec!["Main.tz", "--backend", "fast", "-O0"],
+            vec!["build", "Main.tz", "--backend", "fast", "--emit", "object"],
+            vec!["build", "Main.tz", "--backend", "fast", "--emit", "exe"],
+            vec!["build", "Main.tz", "--backend", "fast", "-g"],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--wasm-max-memory",
+                "64MiB",
+                "--wasm-stack-size",
+                "128KiB",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--target",
+                "wasm32",
+                "--trap-info",
+                "--allocator",
+                "counting",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "counting",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--trap-mode",
+                "return",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--freestanding",
+                "--allocator",
+                "host",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--debug-info",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "test",
+                "Main.tz",
+                "--index",
+                "0",
+                "-g",
+                "-o",
+                "tests",
+                "--backend",
+                "fast",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--trap-info",
+                "--strip",
+                "--no-cache",
+                "--debug-output",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "host",
+                "--emit",
+                "object",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--backend",
+                "fast",
+                "--allocator",
+                "system",
+                "-l",
+                "m",
+                "-L",
+                ".",
+            ],
+        ] {
+            match (parse(&values), &unavailable) {
+                (Ok(arguments), None) => {
+                    assert_eq!(arguments.options.backend, Backend::Fast, "{values:?}");
+                    assert_eq!(arguments.options.optimization, OptLevel::O0, "{values:?}");
+                }
+                (Err(message), Some(expected)) => assert_eq!(&message, expected, "{values:?}"),
+                (result, _) => panic!("{values:?}: {:?}", result.map(|_| ())),
+            }
+        }
+        // Without the option, the options are the ones of the default code generator.
+        for action in ["build", "run"] {
+            let options = parse(&[action, "Main.tz"]).unwrap().options;
+            assert_eq!(options.backend, Backend::Llvm);
+            assert_eq!(options.optimization, OptLevel::O3);
+        }
+        let llvm = parse(&["build", "Main.tz", "--backend", "llvm"])
+            .unwrap()
+            .options;
+        assert_eq!(llvm.backend, Backend::Llvm);
+        assert_eq!(llvm.optimization, OptLevel::O3);
     }
 
     #[test]
@@ -3175,7 +4163,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],
@@ -3716,7 +4704,8 @@ mod tests {
         );
         let untargeted =
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64";
-        let output = "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, or WASM output";
+        let output =
+            "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output";
         let stack_output = "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size";
         let memory_range =
             "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32";
@@ -4140,6 +5129,137 @@ mod tests {
     }
 
     #[test]
+    fn parses_bitcode_output() {
+        let wasm = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--target",
+            "wasm32",
+        ]);
+        assert_eq!(wasm.unwrap().options.emit, Emit::Bitcode);
+        if cfg!(windows) {
+            assert_eq!(
+                parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap_err(),
+                "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally"
+            );
+            return;
+        }
+        let bitcode = parse(&["build", "Kernel.tz", "--emit", "bitcode"]).unwrap();
+        assert_eq!(bitcode.options.emit, Emit::Bitcode);
+        assert_eq!(
+            bitcode.options.output_path(Path::new("dir/Kernel.tz")),
+            Path::new("dir/Kernel.bc")
+        );
+        // The options of an object keep their meaning for bitcode.
+        for values in [
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-O0"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "-Oz", "-g"],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--trap-info"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "small",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--allocator",
+                "host",
+            ],
+            vec!["build", "Kernel.tz", "--emit", "bitcode", "--no-cache"],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+            ],
+            vec![
+                "build",
+                "Kernel.tz",
+                "--emit",
+                "bitcode",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-max-memory",
+                "64MiB",
+            ],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap().options.emit,
+                Emit::Bitcode,
+                "{values:?}"
+            );
+        }
+        let returning = parse(&[
+            "build",
+            "Kernel.tz",
+            "--emit",
+            "bitcode",
+            "--trap-mode",
+            "return",
+        ])
+        .unwrap();
+        assert!(returning.options.trap_return && returning.options.trap_info);
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--target",
+                    "wasm64",
+                ],
+                "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--link",
+                    "host.o",
+                ],
+                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            ),
+            (
+                vec!["build", "Kernel.tz", "--emit", "bitcode", "--strip"],
+                "--strip requires native executable output (--emit exe)",
+            ),
+            (
+                vec![
+                    "build",
+                    "Kernel.tz",
+                    "--emit",
+                    "bitcode",
+                    "--freestanding",
+                    "--allocator",
+                    "host",
+                ],
+                "--freestanding requires object, LLVM IR, or header output",
+            ),
+            (
+                vec!["run", "Kernel.tz", "--emit", "bitcode"],
+                "--output requires build or doc; --target and --emit require a supported build/test action",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
     fn parses_trap_mode_return() {
         let object = parse(&[
             "build",
@@ -4197,6 +5317,316 @@ mod tests {
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn parses_profile_options() {
+        use tsuzuri::driver::Profile;
+        assert_eq!(parse(&["build", "Main.tz"]).unwrap().profile, Profile::None);
+        // The directory that an instrumented program writes to is absolute: the program decides where it runs.
+        let generate = parse(&["build", "Main.tz", "--profile-generate", "prof"]).unwrap();
+        assert_eq!(
+            generate.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let used = parse(&[
+            "build",
+            "Main.tz",
+            "--profile-use",
+            "p.profdata",
+            "--emit",
+            "object",
+            "-O2",
+        ])
+        .unwrap();
+        assert_eq!(used.profile, Profile::Use(PathBuf::from("p.profdata")));
+        // `run` takes both options too: it builds the program with them and runs it.
+        let run = parse(&["run", "Main.tz", "--profile-generate", "prof", "-O2"]).unwrap();
+        assert_eq!(run.action, Action::Run);
+        assert_eq!(
+            run.profile,
+            Profile::Generate(std::path::absolute("prof").unwrap())
+        );
+        let run = parse(&["run", "Main.tz", "--profile-use", "p.profdata"]).unwrap();
+        assert_eq!(run.profile, Profile::Use(PathBuf::from("p.profdata")));
+        assert_eq!(
+            parse(&[
+                "run",
+                "Main.tz",
+                "--profile-use",
+                "p",
+                "--profile-generate",
+                "q"
+            ])
+            .unwrap_err(),
+            "--profile-generate and --profile-use cannot be combined; build once with each"
+        );
+        // A `wasm32` module is instrumented, and trained by its host.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                let wasm = parse(&["build", "Main.tz", "--target", "wasm32", option, "prof"]);
+                assert!(wasm.is_ok(), "{option}: {:?}", wasm.err());
+            }
+        }
+        for text in [
+            "--profile-generate DIR",
+            "--profile-use PATH",
+            "TSUZURI_LLVM_PROFDATA",
+            "writeProfile(instance)",
+            "The counters are not atomic",
+            "W2001",
+        ] {
+            assert!(HELP.contains(text), "{text}");
+        }
+        // Nothing else of the build is a reason to refuse a profile (D16).
+        for extra in [
+            &["-O0"][..],
+            &["-Os"],
+            &["-Oz"],
+            &["--no-cache"],
+            &["--strip"],
+            &["-g"],
+            &["--trap-info"],
+            &["--cpu", "native"],
+            &["--allocator", "small"],
+        ] {
+            for option in ["--profile-generate", "--profile-use"] {
+                let mut values = vec!["build", "Main.tz", option, "prof"];
+                values.extend_from_slice(extra);
+                parse(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_profile_combinations() {
+        let wasm64 = "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option";
+        let wasm_emit = "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds";
+        let threads = "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic";
+        let emit = "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds";
+        let only_build_or_run =
+            "--profile-generate and --profile-use are only valid with build or run";
+        for (values, expected) in [
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-generate",
+                    "b",
+                ][..],
+                "profile generation specified more than once",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-use",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "profile use specified more than once",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate"],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use"],
+                "--profile-use needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-generate", ""],
+                "--profile-generate needs a value",
+            ),
+            (
+                &["build", "Main.tz", "--profile-use", ""],
+                "--profile-use needs a value",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--profile-generate",
+                    "a",
+                    "--profile-use",
+                    "b",
+                ],
+                "--profile-generate and --profile-use cannot be combined; build once with each",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "object",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm_emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bitcode",
+                    "--profile-generate",
+                    "p",
+                ],
+                wasm_emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "threads",
+                    "--profile-generate",
+                    "p",
+                ],
+                threads,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-opt",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm64",
+                    "--profile-use",
+                    "p",
+                ],
+                wasm64,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "llvm", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "header",
+                    "--profile-generate",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["build", "Main.tz", "--emit", "wgsl", "--profile-use", "p"],
+                emit,
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "bindings-py",
+                    "--profile-use",
+                    "p",
+                ],
+                emit,
+            ),
+            (
+                &["check", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["test", "Main.tz", "--profile-use", "p"],
+                only_build_or_run,
+            ),
+            (
+                &["bench", "Main.tz", "--profile-generate", "p"],
+                only_build_or_run,
+            ),
+            (&["fmt", "Main.tz", "--profile-use", "p"], only_build_or_run),
+            (&["doc", "Main.tz", "--profile-use", "p"], only_build_or_run),
+        ] {
+            assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+        // The directory and --freestanding are looked at after the host: a Windows host refuses the options before that.
+        let windows = "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux";
+        for (values, expected) in [
+            (
+                &["build", "Main.tz", "--profile-generate", "/tmp/100%/prof"][..],
+                "--profile-generate directory must not contain '%'; choose another directory",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "object",
+                    "--allocator",
+                    "host",
+                    "--freestanding",
+                    "--profile-generate",
+                    "p",
+                ],
+                "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
+            ),
+        ] {
+            let expected = if cfg!(windows) { windows } else { expected };
+            assert_eq!(parse(values).unwrap_err(), expected, "{values:?}");
+        }
+        // The bitcode of --emit bitcode (PR08) is not instrumented or trained: a host's own link would do that.
+        // A Windows host refuses --emit bitcode for itself before this check.
+        if !cfg!(windows) {
+            for option in ["--profile-generate", "--profile-use"] {
+                assert_eq!(
+                    parse(&["build", "Main.tz", "--emit", "bitcode", option, "p"]).unwrap_err(),
+                    emit,
+                    "{option}"
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_profile_options_on_windows() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(
+                parse(&["build", "Main.tz", option, "p"]).unwrap_err(),
+                "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux"
+            );
+        }
+    }
+
+    #[test]
+    fn repl_and_script_do_not_take_profile_options() {
+        for option in ["--profile-generate", "--profile-use"] {
+            assert_eq!(parse_repl(&[option, "p"]).unwrap_err(), REPL_USAGE);
+            let split = script_arguments(
+                &[option, "p", "a.tz"]
+                    .iter()
+                    .map(OsString::from)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(split.unwrap_err(), SCRIPT_OPTIONS);
         }
     }
 
@@ -4435,5 +5865,222 @@ mod tests {
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
+    }
+
+    #[test]
+    fn watch_arguments_accept_check_build_test_only() {
+        let watch = |values: &[&str]| {
+            parse_watch_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        for (values, action, input) in [
+            (vec!["check", "Main.tz"], Action::Check, "Main.tz"),
+            (
+                vec!["build", "Main.tz", "-O0", "-o", "out"],
+                Action::Build,
+                "Main.tz",
+            ),
+            (
+                vec!["test", "Specs.tz", "--filter", "x"],
+                Action::Test,
+                "Specs.tz",
+            ),
+            (vec!["check", "app", "--json"], Action::Check, "app"),
+            // A directory named `watch` or `check` is a path after the command.
+            (vec!["check", "watch"], Action::Check, "watch"),
+            (vec!["build", "--", "check"], Action::Build, "check"),
+        ] {
+            let parsed = watch(&values).unwrap_or_else(|error| panic!("{values:?}: {error}"));
+            assert_eq!(parsed.action, action, "{values:?}");
+            assert_eq!(parsed.input, PathBuf::from(input), "{values:?}");
+        }
+        let usage = "watch runs check, build, or test; use tsuzuri watch check <path>";
+        for values in [
+            vec![],
+            vec!["run", "Main.tz"],
+            vec!["fmt", "Main.tz"],
+            vec!["lsp"],
+            vec!["doc", "app", "-o", "out"],
+            vec!["bench", "Specs.tz"],
+            vec!["watch", "check", "Main.tz"],
+            // An input without a command is not a build: the command is always named.
+            vec!["Main.tz"],
+            vec!["--json", "check", "Main.tz"],
+        ] {
+            assert_eq!(watch(&values).unwrap_err(), usage, "{values:?}");
+        }
+        // The command's own rules apply.
+        assert_eq!(
+            watch(&["check", "Main.tz", "--no-cache"]).unwrap_err(),
+            "--no-cache is only valid with build, run, script, or repl"
+        );
+        assert!(watch(&["check"]).is_err());
+        assert!(watch(&["check", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn serve_arguments_need_one_directory_and_valid_timeout() {
+        let serve = |values: &[&str]| {
+            parse_serve_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        let run = |input: &str, idle| ServeMode::Run {
+            input: PathBuf::from(input),
+            idle,
+        };
+        assert_eq!(serve(&["app"]), Ok(run("app", 1800)));
+        assert_eq!(serve(&["app", "--idle-timeout", "1"]), Ok(run("app", 1)));
+        assert_eq!(
+            serve(&["--idle-timeout", "86400", "app"]),
+            Ok(run("app", 86400))
+        );
+        assert_eq!(serve(&["app/Main.tz"]), Ok(run("app/Main.tz", 1800)));
+        assert_eq!(
+            serve(&["--status", "app"]),
+            Ok(ServeMode::Status(PathBuf::from("app")))
+        );
+        assert_eq!(
+            serve(&["app", "--stop"]),
+            Ok(ServeMode::Stop(PathBuf::from("app")))
+        );
+        for values in [
+            vec![],
+            vec!["a", "b"],
+            vec!["--status"],
+            vec!["--idle-timeout", "5"],
+            vec!["app", "--idle-timeout"],
+            vec!["app", "--idle-timeout", "0"],
+            vec!["app", "--idle-timeout", "86401"],
+            vec!["app", "--idle-timeout", "x"],
+            vec!["app", "--idle-timeout", "-1"],
+            vec!["app", "--idle-timeout", "1", "--idle-timeout", "2"],
+            vec!["app", "-O0"],
+            vec!["app", "--json"],
+            vec!["--status", "--stop", "app"],
+            vec!["--status", "--status", "app"],
+            vec!["--stop", "--stop", "app"],
+            vec!["--status", "app", "--idle-timeout", "5"],
+            vec!["--stop", "app", "--idle-timeout", "5"],
+        ] {
+            assert!(serve(&values).is_err(), "{values:?}");
+        }
+        assert_eq!(
+            serve(&["app", "--idle-timeout", "0"]).unwrap_err(),
+            "--idle-timeout must be an integer from 1 to 86400, not '0'"
+        );
+        assert_eq!(serve(&[]).unwrap_err(), SERVE_USAGE);
+    }
+
+    #[test]
+    fn no_server_is_only_valid_with_check_or_build() {
+        for values in [
+            vec!["check", "Main.tz", "--no-server"],
+            vec!["build", "Main.tz", "--no-server", "-O0"],
+            vec!["--no-server", "Main.tz"],
+        ] {
+            assert!(parse(&values).unwrap().no_server, "{values:?}");
+        }
+        assert!(!parse(&["check", "Main.tz"]).unwrap().no_server);
+        for values in [
+            vec!["run", "Main.tz", "--no-server"],
+            vec!["test", "Main.tz", "--no-server"],
+            vec!["bench", "Main.tz", "--no-server"],
+            vec!["doc", "Main.tz", "-o", "out", "--no-server"],
+            vec!["fmt", "Main.tz", "--no-server"],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap_err(),
+                "--no-server is only valid with check or build",
+                "{values:?}"
+            );
+        }
+        assert_eq!(
+            parse(&["check", "Main.tz", "--no-server", "--no-server"]).unwrap_err(),
+            "no-server specified more than once"
+        );
+        assert!(parse(&["lsp", "--no-server"]).is_err());
+    }
+
+    /// A server hands a command's `out` and `err` to the client. A print that bypasses them in a
+    /// function that `check` or `build` reach would appear on the server's terminal instead.
+    #[test]
+    fn only_functions_that_a_server_never_runs_print_directly() {
+        let source = include_str!("main.rs");
+        let source = &source[..source.find("#[cfg(test)]").unwrap()];
+        let mut function = "";
+        let mut found = std::collections::BTreeSet::new();
+        for line in source.lines() {
+            let line = line.trim_start();
+            let declared = ["pub fn ", "async fn ", "fn "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(rest) = declared {
+                function = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap();
+            }
+            let prints = ["println!(", "print!(", "io::stdout()", "io::stderr()"]
+                .iter()
+                .any(|site| line.contains(site));
+            if prints && !line.starts_with("//") {
+                found.insert(function);
+            }
+        }
+        let expected = std::collections::BTreeSet::from([
+            "api_diff_command",
+            "bindgen_command",
+            "debug_test",
+            "main",
+            "new_project",
+            "print_coverage",
+            "print_diagnostic",
+            "print_diagnostics",
+            "print_output",
+            "publish_package",
+            "repl_command",
+            "run_bench_action",
+            "run_formatter",
+            "run_test_action",
+            "serve_main",
+            "start_server",
+            "watch_main",
+        ]);
+        assert_eq!(
+            found, expected,
+            "write through the `out` and `err` of `cli` in whatever `check` and `build` reach; \
+             list a function here only if a server refuses its command"
+        );
+    }
+
+    #[test]
+    fn a_command_that_panics_is_not_trusted_and_the_state_keeps_the_compiler_it_pinned() {
+        let directory = env::temp_dir().join(format!("tz-panic-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("Main.tz"), "42\n").unwrap();
+        let mut server = CommandServer {
+            state: tsuzuri::resident::ResidentState::new(),
+            root: directory.clone(),
+        };
+        let pinned = server.state.compiler_identity();
+        assert!(pinned.is_some());
+        // A command that read the project leaves its sources in the state.
+        let (code, out, _) = server
+            .guarded(|out, _| {
+                out.extend_from_slice(b"read\n");
+                u8::from(tsuzuri::driver::Project::load(&directory).is_err())
+            })
+            .unwrap();
+        assert_eq!((code, out.as_slice()), (0, b"read\n".as_slice()));
+        if cfg!(unix) {
+            assert!(server.state.bytes() > 0);
+        }
+        // A panic gives no result; the state forgets what it held, and it is still the state of
+        // the compiler that the process started from.
+        let outcome = server.guarded(|_, _| panic!("a command that panics"));
+        assert!(outcome.is_none());
+        assert_eq!(server.state.bytes(), 0);
+        assert_eq!(server.state.compiler_identity(), pinned);
+        // The state works after it.
+        assert!(server.guarded(|_, _| 0).is_some());
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }

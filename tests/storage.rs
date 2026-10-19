@@ -88,7 +88,7 @@ fn bound_literals_use_stack_storage() {
         let body = function(&ir, "f");
         for storage in [
             "alloca [3 x i64]",
-            "alloca [2 x { ptr, i64 }]",
+            "alloca { ptr, i64, i64, [2 x i64] }",
             "alloca [2 x %tz.array]",
             "alloca [2 x i64]",
         ] {
@@ -221,7 +221,7 @@ fn stack_literals_stay_in_the_entry_block_of_tail_loops() {
         let (before, after) = body.split_once("\nloop:\n").unwrap();
         assert!(before.contains("alloca [2 x i64]"), "{body}");
         assert!(
-            before.contains("alloca [2 x { ptr, %tz.string }]"),
+            before.contains("alloca { ptr, i64, i64, [2 x %tz.string] }"),
             "{body}"
         );
         assert!(!after.contains(" alloca "), "{body}");

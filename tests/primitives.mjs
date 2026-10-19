@@ -8,6 +8,9 @@ import { spawnSync } from "node:child_process";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target/debug/tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+// PM03: with TSUZURI_STRINGS=compact a literal of Latin-1 text is made of bytes, so a concatenation reaches
+// the 128-unit stack buffer's capacity of 256 bytes before it needs the heap.
+const compactStrings = process.env.TSUZURI_STRINGS === "compact";
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-primitives-"));
 function execute(program, args, success = true) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
@@ -121,7 +124,7 @@ const storage = [
   ["utf8_buffer_concat(1)", "598", 0, (api) => api.tz_utf8_buffer_concat(1n), 598n],
   ["buffer_escape(1)", "5", 1, (api) => api.tz_buffer_escape(1n), 5n],
   ["boundary_concat(0)", "128", 1, (api) => api.tz_boundary_concat(0n), 128n],
-  ["boundary_concat(1)", "129", 2, (api) => api.tz_boundary_concat(1n), 129n],
+  ["boundary_concat(1)", "129", compactStrings ? 1 : 2, (api) => api.tz_boundary_concat(1n), 129n],
   ["local_closure(10)", "65", 0, (api) => api.tz_local_closure(10n), 65n],
   ["field_take()", "4", 1, (api) => api.tz_field_take(), 4n],
   ["field_take_nested()", "4", 1, (api) => api.tz_field_take_nested(), 4n],
@@ -153,13 +156,13 @@ const storage = [
   ["branch_stack(0)", "11233", 1, (api) => api.tz_branch_stack(0), 11233n],
   ["large_stack()", "16383", 0, (api) => api.tz_large_stack(), 16383n],
   ["large_heap()", "16385", 1, (api) => api.tz_large_heap(), 16385n],
-  ["heap_literals()", "3053", 4, (api) => api.tz_heap_literals(), 3053n],
+  ["heap_literals()", "3053", 3, (api) => api.tz_heap_literals(), 3053n],
   ["escape_return()", "1210", 1, (api) => api.tz_escape_return(), 1210n],
   ["escape_argument()", "35", 1, (api) => api.tz_escape_argument(), 35n],
   ["escape_nested()", "3043", 3, (api) => api.tz_escape_nested(), 3043n],
   ["escape_record()", "642", 2, (api) => api.tz_escape_record(), 642n],
   ["escape_strings()", "3032", 3, (api) => api.tz_escape_strings(), 3032n],
-  ["escape_list()", "397", 3, (api) => api.tz_escape_list(), 397n],
+  ["escape_list()", "397", 1, (api) => api.tz_escape_list(), 397n],
   ["mutable_borrow()", "63", 7, (api) => api.tz_mutable_borrow(), 63n],
   ["assign_stack()", "2352", 4, (api) => api.tz_assign_stack(), 2352n],
   ["partial_move()", "905078", 5, (api) => api.tz_partial_move(), 905078n],
@@ -270,6 +273,11 @@ int main(int argc, char **argv) {
     assert(tz_curried_class() == 45 && live == 0);
     assert(tz_curried_higher() == 42 && live == 0);
     assert(tz_curried_churn(40000) == 2160054 && live == 0);
+    assert(tz_curried_mixed_kinds(5) == 61 && live == 0);
+    assert(tz_curried_mixed_kinds(0) == 46 && live == 0);
+    assert(tz_curried_mixed_kinds(-1) == 43 && live == 0);
+    assert(tz_curried_optional(1, 5) == 19109 && live == 0);
+    assert(tz_curried_optional(0, 5) == -1002 && live == 0);
     for (int flag = 0; flag < 2; ++flag) {
       const uint64_t integers[] = {0, 1, UINT64_MAX, UINT64_C(1) << 63, UINT64_C(0xabcdef0123456789)};
       for (unsigned index = 0; index < sizeof(integers) / sizeof(integers[0]); ++index) {
@@ -376,7 +384,8 @@ int main(int argc, char **argv) {
     assert(peak < 131072);
     uint64_t before = allocations;
     assert(tz_list_length(100000) == 100000 && live == 0);
-    assert(allocations - before == 100000);
+    // A list that is built at once is one chunk.
+    assert(allocations - before == 1);
     before = allocations;
     assert(tz_list_length(0) == 0 && live == 0 && allocations == before);
     // Literals without 'new' live in the stack frame; heap work is only 'new', escapes, and copies.
@@ -418,6 +427,11 @@ int main(int argc, char **argv) {
     assert.equal(api.tz_curried_class(), 45);
     assert.equal(api.tz_curried_higher(), 42);
     assert.equal(api.tz_curried_churn(40000n), 2160054n);
+    assert.equal(api.tz_curried_mixed_kinds(5n), 61n);
+    assert.equal(api.tz_curried_mixed_kinds(0n), 46n);
+    assert.equal(api.tz_curried_mixed_kinds(-1n), 43n);
+    assert.equal(api.tz_curried_optional(1, 5n), 19109n);
+    assert.equal(api.tz_curried_optional(0, 5n), -1002n);
     for (const flag of [0, 1]) {
       for (const value of [0n, 1n, (1n << 64n) - 1n, 1n << 63n, 0xabcdef0123456789n]) {
         assert.equal(BigInt.asUintN(64, api.tz_curried_inline_integer(flag, value)), flag ? value : BigInt.asUintN(64, ~value));
@@ -550,8 +564,12 @@ int main(int argc, char **argv) {
     assert.throws(() => exhausted.tz_allocation_limit(), WebAssembly.RuntimeError);
     assert.ok(exhausted.memory.buffer.byteLength <= 16 * 1024 * 1024);
     const exhaustedList = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
-    assert.throws(() => exhaustedList.tz_list_length(1024n * 1024n), WebAssembly.RuntimeError);
+    assert.throws(() => exhaustedList.tz_list_length(3n * 1024n * 1024n), WebAssembly.RuntimeError);
     assert.ok(exhaustedList.memory.buffer.byteLength <= 16 * 1024 * 1024);
+    // A list is a chunk of its elements, 8 bytes each: a million of them fit the default heap.
+    const largeList = (await WebAssembly.instantiate(readFileSync(wasm))).instance.exports;
+    assert.equal(largeList.tz_list_length(1024n * 1024n), 1024n * 1024n);
+    assert.ok(largeList.memory.buffer.byteLength <= 16 * 1024 * 1024);
     assert.equal(cli(["run", input, `-O${optimization}`]).stdout, "UTF-8: 日本語 😀\n");
     console.log(`-O${optimization}: primitive widths, ${reference.length} decimal / ${binaryReference.length} binary128 reference cases, curried closures, runtime arrays and linked lists, ${storage.length} stack/heap storage cases, UTF-8, borrows, bounded heap, no WASM imports`);
   }

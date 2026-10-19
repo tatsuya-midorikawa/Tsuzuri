@@ -147,60 +147,54 @@ impl FunctionEmitter<'_, '_> {
                 let length = self.value(format!(
                     "select i1 {shorter}, i64 {left_length}, i64 {right_length}"
                 ));
-                let start = self.block.clone();
-                let test = self.label();
-                let body = self.label();
-                let advance = self.label();
-                let step = self.increment_block(&advance);
-                let finish = self.label();
-                let index = self.fresh();
-                let increment = self.fresh();
-                let left_node = self.fresh();
-                let right_node = self.fresh();
-                let left_next = self.fresh();
-                let right_next = self.fresh();
-                self.jump(&test);
-                self.begin(&test);
-                self.instruction(format!(
-                    "{index} = phi i64 [ 0, %{start} ], [ {increment}, %{step} ]"
-                ));
                 if linked {
+                    self.list_lockstep_loop(
+                        element,
+                        (&left_data, &left_length),
+                        (&right_data, &right_length),
+                        &length,
+                        |emitter, left, right| {
+                            emitter.comparison_field(
+                                operator,
+                                methods,
+                                [left, right],
+                                &result,
+                                &done,
+                            );
+                        },
+                    );
+                } else {
+                    let start = self.block.clone();
+                    let test = self.label();
+                    let body = self.label();
+                    let advance = self.label();
+                    let step = self.increment_block(&advance);
+                    let finish = self.label();
+                    let index = self.fresh();
+                    let increment = self.fresh();
+                    // The four values that the node cursors of a list took here keep the numbers
+                    // of the values after them in the IR of an array comparison.
+                    let _ = [self.fresh(), self.fresh(), self.fresh(), self.fresh()];
+                    self.jump(&test);
+                    self.begin(&test);
                     self.instruction(format!(
-                        "{left_node} = phi ptr [ {left_data}, %{start} ], [ {left_next}, %{step} ]"
+                        "{index} = phi i64 [ 0, %{start} ], [ {increment}, %{step} ]"
                     ));
-                    self.instruction(format!("{right_node} = phi ptr [ {right_data}, %{start} ], [ {right_next}, %{step} ]"));
+                    let more = self.value(format!("icmp ult i64 {index}, {length}"));
+                    self.branch(&more, &body, &finish);
+                    self.begin(&body);
+                    let left = self.element_pointer(element, &left_data, &index);
+                    let right = self.element_pointer(element, &right_data, &index);
+                    self.comparison_field(operator, methods, [&left, &right], &result, &done);
+                    self.jump(&advance);
+                    self.begin(&advance);
+                    // `index < length` as unsigned numbers: the step cannot wrap (R5).
+                    self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
+                    let words = self.flag_text(Flags::UNSIGNED);
+                    self.instruction(format!("{increment} = add {words}i64 {index}, 1"));
+                    self.jump(&test);
+                    self.begin(&finish);
                 }
-                let more = self.value(format!("icmp ult i64 {index}, {length}"));
-                self.branch(&more, &body, &finish);
-                self.begin(&body);
-                let node_type = format!("{{ ptr, {} }}", self.ty(element));
-                let left = if linked {
-                    self.value(format!(
-                        "getelementptr inbounds {node_type}, ptr {left_node}, i32 0, i32 1"
-                    ))
-                } else {
-                    self.element_pointer(element, &left_data, &index)
-                };
-                let right = if linked {
-                    self.value(format!(
-                        "getelementptr inbounds {node_type}, ptr {right_node}, i32 0, i32 1"
-                    ))
-                } else {
-                    self.element_pointer(element, &right_data, &index)
-                };
-                self.comparison_field(operator, methods, [&left, &right], &result, &done);
-                self.jump(&advance);
-                self.begin(&advance);
-                // `index < length` as unsigned numbers: the step cannot wrap (R5).
-                self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
-                if linked {
-                    self.instruction(format!("{left_next} = load ptr, ptr {left_node}"));
-                    self.instruction(format!("{right_next} = load ptr, ptr {right_node}"));
-                }
-                let words = self.flag_text(Flags::UNSIGNED);
-                self.instruction(format!("{increment} = add {words}i64 {index}, 1"));
-                self.jump(&test);
-                self.begin(&finish);
                 if !equality {
                     let predicate = match operator {
                         BinaryOp::Less => "ult",

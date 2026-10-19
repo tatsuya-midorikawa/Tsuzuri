@@ -12,8 +12,7 @@ pub(super) fn entry(mut emitter: FunctionEmitter<'_, '_>) -> String {
         main.qualified_name()
     ));
     let work = emitter.value(format!("extractvalue {result_type} {action}, 0"));
-    let code = emitter.value(format!("extractvalue %tz.closure {work}, 0"));
-    let environment = emitter.value(format!("extractvalue %tz.closure {work}, 1"));
+    let (code, environment) = emitter.closure_parts(&work);
     let result = emitter.value(format!(
         "call {} {code}(i8 0, ptr {environment}, i1 false)",
         emitter.ty(payload)

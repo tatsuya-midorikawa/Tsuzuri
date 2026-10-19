@@ -1,0 +1,18 @@
+// PM03: a library that only names the parts of the string runtime that tests/compact_strings_raw.mjs
+// calls directly, so that the compiler's IR for it has every one of them: Display of a collection
+// (tz.display.join) and of a string in it (tz.display.quote), the integer and character parsers,
+// and the string functions. The raw harness never runs these definitions.
+
+export def carrier :: i64
+fn carrier =
+    let shown = to_string ["a", "é", "\u3042"]
+    let numbers = to_string [1, 2, 3]
+    let text = "42"
+    let _small: Maybe<i8> = Parse.parse (ref text)
+    let wide: Maybe<i128> = Parse.parse (ref text)
+    let _unit: Maybe<char> = Parse.parse (ref text)
+    let _scalar: Maybe<utf8char> = Parse.parse (ref text)
+    let _real: Maybe<f64> = Parse.parse (ref text)
+    let encoded = Utf8String.from_string (ref text)
+    let decoded = String.from_utf8 (ref encoded)
+    shown.length + numbers.length + (to_string 'x').length + decoded.length + (Maybe.get wide as i64)

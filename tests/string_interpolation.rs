@@ -1,6 +1,8 @@
+use tsuzuri::check::CheckedModule;
 use tsuzuri::diagnostic::{Diagnostic, Span};
 use tsuzuri::formatter::format_source;
 use tsuzuri::lexer;
+use tsuzuri::llvm::{Allocator, EmitOptions, Entry, F16Path, StringForm};
 use tsuzuri::parser::parse;
 use tsuzuri::syntax::{
     Edition, FormatAlign, FormatKind, FormatSpec, InterpolationPiece, SourceKind, StringLiteral,
@@ -15,6 +17,20 @@ fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
 
 fn lex_all(source: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     lexer::lex_all(source, Edition::LATEST)
+}
+
+/// The IR of the UTF-16 form, whatever `TSUZURI_STRINGS` says: the tests that call this pin that form.
+fn emit_utf16(module: &CheckedModule, wasm: bool) -> String {
+    let options = EmitOptions {
+        entry: Entry::Library,
+        wasm,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: Allocator::System,
+        f16: F16Path::Soft,
+    };
+    llvm::emit_with_strings(module, options, StringForm::Utf16).unwrap()
 }
 
 fn accepts(source: &str) {
@@ -219,7 +235,7 @@ fn emits_one_allocation_and_deterministic_ir() {
     let source = "def f :: &string -> i64 -> string\nfn f s n = $\"a{s}b{n}c\"\nlet text = \"q\"\n(f (&text) 1).length";
     let module = analyze(source).unwrap();
     for wasm in [false, true] {
-        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let ir = emit_utf16(&module, wasm);
         let start = ir
             .find("define internal %tz.string @tz.fn.Main.f(")
             .expect("f is emitted");
@@ -227,10 +243,7 @@ fn emits_one_allocation_and_deterministic_ir() {
         assert_eq!(body.matches("@tz.string.allocate(").count(), 1, "{body}");
         assert!(!body.contains("@tz.string.concat"), "{body}");
         assert!(!body.contains("@tz.string.new"), "{body}");
-        assert_eq!(
-            ir,
-            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
-        );
+        assert_eq!(ir, emit_utf16(&module, wasm));
     }
 }
 
@@ -499,7 +512,7 @@ fn routes_specs_to_format_instances() {
 fn format_holes_pass_the_spec_text_and_leave_padding_to_the_instance() {
     let module = analyze(&format!("{POINT_FORMAT}$\"{{p:>8.2}}\"")).unwrap();
     for wasm in [false, true] {
-        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        let ir = emit_utf16(&module, wasm);
         // ">8.2" as UTF-16 units, borrowed by the instance and never copied.
         assert!(
             ir.contains("[4 x i16] [i16 62, i16 56, i16 46, i16 50]"),
@@ -508,16 +521,13 @@ fn format_holes_pass_the_spec_text_and_leave_padding_to_the_instance() {
         // The runtime defines these helpers; the hole must not call them.
         assert!(!ir.contains("call i32 @tz_soft_format_spec("), "{ir}");
         assert!(!ir.contains("call i64 @tz.format.fill."), "{ir}");
-        assert_eq!(
-            ir,
-            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
-        );
+        assert_eq!(ir, emit_utf16(&module, wasm));
     }
     // A type with only `Display` is still padded by the compiler.
     let padded = analyze(
         "record Tagged { id: i64 } deriving (Display)\nlet t = Tagged { id: 7 }\n$\"{t:>20}\"",
     )
     .unwrap();
-    let ir = llvm::emit_target(&padded, llvm::Entry::Library, false).unwrap();
+    let ir = emit_utf16(&padded, false);
     assert!(ir.contains("call i64 @tz.format.fill."), "{ir}");
 }

@@ -1,0 +1,259 @@
+// PM03: strings of both forms through every producer and consumer. The exports give the same values for
+// TSUZURI_STRINGS=utf16 (every string is UTF-16) and compact (a string is Latin-1 when its producer can tell),
+// and they leave no allocation behind. tests/compact_strings.mjs compares the two builds.
+
+def digest :: ref string -> i64
+fn digest text =
+    let mut hash = 7
+    for unit in text do hash = (hash * 131 + (unit as i64)) % 1000000007
+    hash * 1000 + text.length
+
+// Ten texts: empty, ASCII, Latin-1 with and without ASCII, the first unit above Latin-1, BMP text, a surrogate pair,
+// one unit, a lone surrogate, and padding with a no-break space (U+00A0 is not trimmed).
+def piece :: i64 -> string
+fn piece which =
+    match which % 10 with
+    | 0 -> ""
+    | 1 -> "abc"
+    | 2 -> "caf\u00e9"
+    | 3 -> "\u00ff\u00fe\u0080"
+    | 4 -> "\u3042\u3044"
+    | 5 -> "\u0100"
+    | 6 -> "\uD83D\uDE00"
+    | 7 -> "x"
+    | 8 -> "\uD800"
+    | _ -> " \u00a0padded\t "
+
+def cut :: ref string -> i64 -> i64 -> string
+fn cut text first last =
+    match String.slice text first last with
+    | Some part -> part
+    | None -> ""
+
+// The text of `piece which` made four ways. In the compact form the first three are Latin-1 when the text is, the
+// third is UTF-16 whatever the text is (it is a slice of a string that has a CJK unit), and the fourth narrows.
+def variant :: i64 -> i64 -> string
+fn variant which how =
+    let text = piece which
+    let count = text.length
+    match how % 4 with
+    | 0 -> text
+    | 1 -> cut (ref text) 0 (count / 2) + cut (ref text) (count / 2) count
+    | 2 ->
+        let wide = "\u3042" + text + "\u3042"
+        cut (ref wide) 1 (1 + count)
+    | _ -> String.from_code_units (String.to_code_units text)
+
+export def probe_concat :: i64 -> i64 -> i64
+fn probe_concat a b =
+    let pair = variant a 0 + variant b 1
+    let triple = variant a 2 + variant b 3 + variant a 1
+    let mut grown = variant b 0
+    let mut step = 0
+    while step < 5 do
+        grown = grown + variant a step
+        step = step + 1
+    let mut long = variant a 3
+    while long.length < 300 do long = long + variant b 2 + "-"
+    digest (ref pair) * 3 + digest (ref triple) * 5 + digest (ref grown) * 7 + digest (ref long)
+
+export def probe_compare :: i64 -> i64 -> i64
+fn probe_compare a b =
+    let mut total = 0
+    let mut x = 0
+    while x < 4 do
+        let left = variant a x
+        let mut y = 0
+        while y < 4 do
+            let right = variant b y
+            let bits = (if left == right then 1 else 0) + (if left < right then 2 else 0) + (if left > right then 4 else 0)
+            total = total * 17 + bits
+            y = y + 1
+        x = x + 1
+    total
+
+export def probe_hash :: i64 -> i64 -> i64
+fn probe_hash a b =
+    let mut map: HashMap<string, i64> = HashMap.empty()
+    map = HashMap.insert map (variant a 0) 1
+    map = HashMap.insert map (variant b 1) 2
+    map = HashMap.insert map (variant a 2) 3
+    let mut set: HashSet<string> = HashSet.empty()
+    set = HashSet.insert set (variant a 3)
+    set = HashSet.insert set (variant b 0)
+    let mut total = HashMap.length (ref map) * 1000 + HashSet.length (ref set)
+    let mut x = 0
+    while x < 4 do
+        let key = variant a x
+        let other = variant b x
+        total = total * 7 + (if HashMap.contains_key_ref (ref map) (ref key) then 1 else 0)
+        total = total * 7 + (if HashMap.contains_key_ref (ref map) (ref other) then 1 else 0)
+        total = total * 7 + (if HashSet.contains_ref (ref set) (ref key) then 1 else 0)
+        total = total * 7 + (match HashMap.get_ref (ref map) (ref key) with | Some value -> value | None -> 0 - 1)
+        x = x + 1
+    total
+
+export def probe_slice :: i64 -> i64 -> i64
+fn probe_slice a b =
+    let text = variant a 0 + variant b 1 + variant a 2
+    let needle = variant b 3
+    let mut total = text.length
+    let mut first = 0
+    while first <= text.length + 1 do
+        let mut last = first
+        while last <= text.length + 1 do
+            let part = match String.slice (ref text) first last with | Some part -> digest (ref part) | None -> 0 - 1
+            total = (total * 31 + part) % 1000000007
+            last = last + 1
+        first = first + 1
+    total = total * 3 + (match String.find (ref needle) (ref text) with | Some at -> at | None -> 0 - 1)
+    total = total * 3 + (match String.rfind (ref needle) (ref text) with | Some at -> at | None -> 0 - 1)
+    total = total * 3 + (if String.contains (ref needle) (ref text) then 1 else 0)
+    total = total * 3 + (if String.starts_with (ref needle) (ref text) then 1 else 0)
+    total = total * 3 + (if String.ends_with (ref needle) (ref text) then 1 else 0)
+    total
+
+def digests :: ref [string] -> i64
+fn digests parts =
+    let mut total = parts.length
+    for part in parts do total = (total * 31 + digest (ref part)) % 1000000007
+    total
+
+export def probe_split :: i64 -> i64 -> i64
+fn probe_split a b =
+    let separator = variant b 2
+    let text = variant a 0 + variant b 1 + variant a 3 + variant b 0 + variant a 2
+    let parts = String.split (ref separator) (ref text)
+    let joined = String.join (ref separator) (ref parts)
+    let dashed = String.join (ref "-") (ref parts)
+    let pieces = [variant a 0, variant b 1, variant a 2]
+    let glued = String.concat (ref pieces)
+    let wide = String.join (ref "\u3042") (ref pieces)
+    digests (ref parts) * 7 + digest (ref joined) * 5 + digest (ref dashed) * 3 + digest (ref glued) + digest (ref wide)
+
+export def probe_edit :: i64 -> i64 -> i64
+fn probe_edit a b =
+    let text = variant a 1 + variant b 2
+    let pattern = variant b 0
+    let replacement = variant a 3
+    let replaced = if pattern.length == 0 then clone_string (ref text) else String.replace (ref text) (ref pattern) (ref replacement)
+    let repeated = String.repeat (ref text) 3
+    let trimmed = String.trim (ref text)
+    let start = String.trim_start (ref text)
+    let finish = String.trim_end (ref text)
+    let lower = String.to_ascii_lower (ref text)
+    let upper = String.to_ascii_upper (ref text)
+    let first = digest (ref replaced) + digest (ref repeated) * 3 + digest (ref trimmed) * 5 + digest (ref start) * 7 + digest (ref finish) * 11
+    let second = digest (ref lower) * 13 + digest (ref upper) * 17
+    first + second
+
+export def probe_interpolate :: i64 -> i64 -> i64
+fn probe_interpolate a b =
+    let left = variant a 0
+    let right = variant b 1
+    let number = a * 1000 + b
+    let plain = $"<{left}|{right}|{number}>"
+    let padded = $"[{left:>12}][{right:<9}][{number:0>8}]"
+    let filled = $"[{left:*^11}][{right:é>7}][{number:あ<9}]"
+    let nested = $"{plain}/{padded}/{filled}"
+    digest (ref plain) + digest (ref padded) * 3 + digest (ref filled) * 5 + digest (ref nested) * 7
+
+export def probe_display :: i64 -> i64 -> i64
+fn probe_display a b =
+    let items = [variant a 0, variant b 1]
+    let shown = to_string items
+    let maybe: Maybe<string> = if a % 2 == 0 then Maybe.Some (variant b 2) else Maybe.None
+    let maybe_shown = to_string [match maybe with | Some text -> text | None -> variant b 3]
+    let pair = (variant a 3, b)
+    let pair_shown = to_string pair
+    let number = to_string (a * 100 - b)
+    let decimal = to_string (3.5 + (a as f64))
+    digest (ref shown) + digest (ref maybe_shown) * 3 + digest (ref pair_shown) * 5 + digest (ref number) * 7 + digest (ref decimal) * 11
+
+export def probe_parse :: i64 -> i64 -> i64
+fn probe_parse a b =
+    let digits = "12" + variant a 0 + "7"
+    let integer: Maybe<i64> = Parse.parse (ref digits)
+    let small: Maybe<i8> = Parse.parse (ref (to_string (a * 7 - b)))
+    let wide: Maybe<i128> = Parse.parse (ref ("-" + to_string (a * 1000003 + b)))
+    let real: Maybe<f64> = Parse.parse (ref ("1" + variant b 0 + ".5"))
+    let signed: Maybe<f64> = Parse.parse (ref (to_string (a as f64 * 1.25 - 3.0)))
+    let character: Maybe<char> = Parse.parse (ref (variant a 1))
+    let first = (match integer with | Some value -> value | None -> 0 - 1) + (match small with | Some value -> value as i64 | None -> 0 - 2) * 3
+    let second = (match wide with | Some value -> value as i64 | None -> 0 - 3) * 5 + (match real with | Some value -> value as i64 | None -> 0 - 4) * 7
+    let third = (match signed with | Some value -> value as i64 | None -> 0 - 5) * 11 + (match character with | Some _ -> 1 | None -> 0 - 6) * 13
+    first + second + third
+
+export def probe_units :: i64 -> i64 -> i64
+fn probe_units a b =
+    let text = variant a 0 + variant b 1
+    let units = String.to_code_units (clone_string (ref text))
+    let mut sum = units.length
+    for unit in units do sum = sum * 31 + (unit as i64)
+    let back = String.from_code_units units
+    let equal = if back == text then 1 else 0
+    let well = if String.is_well_formed (ref text) then 1 else 0
+    let repaired = String.to_well_formed (ref text)
+    let encoded = if well == 1 then Utf8String.length (ref (Utf8String.from_string (ref text))) else 0 - 1
+    let count = String.char_count (ref text)
+    let chars = String.chars (ref text)
+    sum + equal * 3 + well * 5 + digest (ref repaired) * 7 + encoded * 11 + count * 13 + chars.length * 17
+
+def unit_value :: ref i16u -> i64
+fn unit_value unit = (deref unit) as i64
+
+// A borrow of the unit of a string loop ends with its iteration: the unit of a Latin-1 string is widened into a slot that
+// the next iteration overwrites, so the borrow checker does not let a borrow outlive it (E1013).
+export def probe_unit_refs :: i64 -> i64 -> i64
+fn probe_unit_refs a b =
+    let text = variant a 0 + variant b 1
+    let mut sum = 0
+    for unit in text do
+        let seen = ref unit
+        sum = (sum * 31 + unit_value seen) % 1000000007
+    let mut wide = 0
+    for unit in text do
+        let view = ref unit
+        if unit_value view > 255 then wide = wide + 1
+    sum * 32 + wide
+
+// The elements of an array are places in the array, so a borrow of one can be kept after its iteration (the units of a
+// string are not, above). The array is the same in both forms: a Latin-1 string is widened to make it.
+export def probe_kept_refs :: i64 -> i64 -> i64
+fn probe_kept_refs a b =
+    let units = String.to_code_units (variant a 0 + variant b 1)
+    let zero = 0i16u
+    let mut widest = ref zero
+    for unit in units do
+        if unit > (deref widest) then widest = ref unit
+    unit_value widest * 100 + units.length
+
+def check :: i64 -> Result<i64, string>
+fn check n = if n % 3 == 0 then Result.Error (variant n 2) else Result.Ok (n * 2)
+
+export def probe_union :: i64 -> i64 -> i64
+fn probe_union a b =
+    let maybe: Maybe<string> = if a % 2 == 0 then Maybe.Some (variant b 0) else Maybe.None
+    let nested: Maybe<Maybe<string>> = if b % 3 == 0 then Maybe.Some (Maybe.Some (variant a 2)) else if b % 3 == 1 then Maybe.Some Maybe.None else Maybe.None
+    let results = [check a, check b, check (a + b)]
+    let mut total = 0
+    total = total * 13 + (match maybe with | Some text -> digest (ref text) | None -> 0 - 1)
+    total = total * 13 + (match nested with | Some (Some text) -> digest (ref text) | Some None -> 0 - 2 | None -> 0 - 3)
+    for result in results do
+        total = total * 13 + (match result with | Result.Ok value -> value | Result.Error text -> digest (ref text))
+    total % 1000000007
+
+export def probe_collections :: i64 -> i64 -> i64
+fn probe_collections a b =
+    let mut items: Vec<string> = Vec.empty()
+    let mut index = 0
+    while index < 6 do
+        items = Vec.push items (variant (a + index) index + variant (b + index) 1)
+        index = index + 1
+    let array = Vec.to_array items
+    let mut order = 0
+    for item in array do order = order * 31 + digest (ref item)
+    let mut least = clone_string (ref array[0])
+    for item in array do
+        if item < least then least = clone_string (ref item)
+    order + digest (ref least) * 3

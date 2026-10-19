@@ -325,8 +325,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
   組み込みインスタンスの判定は `Classes::intrinsic`。制約の検査は `Classes::validate`。
 - パターン: `control.rs` の `pattern_alternatives` が `Alternative { steps: Vec<PatternStep>, bindings }` を返す。
   `PatternStep::Test(bool 式)` は順に評価され、false なら次の節へ。OR は alternatives を増やす。
-- LLVM 表現: `%tz.string = { ptr, i64 }`、`%tz.array = { ptr, i64 }`、`%tz.list = { ptr, i64 }`（先頭ノード・長さ）、
-  リストのノード `{ ptr next, T }`、`%tz.closure = { ptr, ptr, ptr, ptr }`（code/environment/clone/drop）、
+- LLVM 表現: `%tz.string = { ptr, i64 }`、`%tz.array = { ptr, i64 }`、`%tz.list = { ptr, i64 }`（先頭の chunk・長さ。空は `zeroinitializer`）、
+  リストの chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] slots }`（1 回の確保。header は 24 bytes で、要素は連続して並ぶ。一度に作るリストは 1 chunk、`List.cons` は chunk を足す。PM04、`src/llvm_list.rs`）、`%tz.closure = { ptr, ptr }`（静的記述子 `@tz.desc.*`（`%tz.closure.desc = { code, clone, drop }`）/environment。PM02）、
   レコード `%tz.record.<Module.Name> = type { fields... }`（利用者のレコードは、フィールドをアライメントの降順に並べると小さくなるときだけその順に格納する（PM01）。
   評価・drop・`deriving`・DWARF のメンバー・公開 ABI の C の構造体は宣言順のまま。フィールドの読み書きは `field_slot` を通す）、タプルはリテラル構造体（宣言順）、`bool` は `i1`、`unit` は `i8`、
   参照は `ptr`。値は SSA の集約値（`extractvalue`／`insertvalue`）、借用可能な場所は entry block の `alloca`。
@@ -988,7 +988,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | サブコマンド | `tsuzuri api-diff <old> <new> [--json]` | G19 | いいえ（承認済み・実装済み。D-45） |
 | CLI | `--target TRIPLE`（22 個の native の triple。`run --target` は実行器が要る） | G15 | いいえ（承認済み・実装済み。D-45） |
 | std | `Bench.now`・`Bench.consume`・`Bench.with_input`・`Bench.of`（`with` は予約語なので `Bench.with` は `Bench.with_input`） | G18 | いいえ（承認済み・実装済み。D-41） |
-| サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | `serve` だけ |
+| サブコマンド | `tsuzuri watch`・`tsuzuri serve` | PB06 | いいえ（承認済み・実装済み。`serve` は PB06 の D2） |
 | サブコマンド | `tsuzuri repl`・`tsuzuri script`（CLI の `--timeout` は repl だけ） | G13 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri bench` | G18 | いいえ（承認済み・実装済み。D-41） |
 | サブコマンド | `tsuzuri toolchain info` | G14 | いいえ |
@@ -1003,10 +1003,10 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | CLI | `-Os`・`-Oz`・`--strip` | PM08 | いいえ |
 | CLI | `--backend llvm\|fast` | PB05 | はい |
 | CLI | `--samples`（bench）・`--coverage`・`--seed`（test）、`test --index N -g -o PATH`（G16） | G18・G16 | いいえ（承認済み・実装済み。D-41） |
-| CLI | `--no-server`・`--idle-timeout` | PB06 | はい（Phase 2） |
+| CLI | `--no-server`（check・build）・`--idle-timeout`（serve） | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
 | 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
-| 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | はい（Phase 2） |
+| 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_RUNNER`、`TSUZURI_CROSS_LINK`・`TSUZURI_CROSS_CLANG`・`TSUZURI_CROSS_EXECUTE`（テスト用） | G15 | いいえ（承認済み・実装済み。D-45） |
 | 環境変数 | `TSUZURI_F16_EXPECT`（テスト用。`tests/f16_hardware.mjs` だけが読み、コンパイラは読まない） | D10 | いいえ（実装済み。D-45） |
 | 環境変数 | `TSUZURI_LLVM_PROFDATA` | PR07 | いいえ |
@@ -1015,6 +1015,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | 環境変数 | `TSUZURI_TEST_ALLOCATOR`（テスト用） | F13 | いいえ |
 | 環境変数 | `TSUZURI_LLDB`（テスト用） | G16 | いいえ（実装済み） |
 | 環境変数 | `TSUZURI_BASELINE`（テスト用） | PM03 | はい（PM03 全体） |
+| 環境変数 | `TSUZURI_STRINGS=utf16\|compact`（`string` の内部表現。既定は `utf16`） | PM03 | いいえ（承認済み・実装済み。`compact` は opt-in で、既定にする段は PM03 D11 の条件を満たしたときだけ） |
 | 環境変数 | `TSUZURI_TEST_WASM_TARGET`（テスト用。`tests/features.mjs` の WASM を `wasm64` で実行） | F11 | いいえ |
 | 公開記号 | `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc`（WASM は `tsuzuri_heap` の `alloc`・`free`・`realloc`）、`tsuzuri_alloc_stats` と `tsuzuri_allocation_stats` | F13 | いいえ（実装済み） |
 | 公開記号 | `tsuzuri_cpu_<op>_<type>`（`tz_cpu_level`・`TZ_CPU_PICK`・`CPU_KERNELS`）、`@cpu` 関数の stub が呼ぶ `tsuzuri_cpu_pick` | F08・PR05 | いいえ（F08 は実装済み） |
@@ -1238,7 +1239,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   決定事項すべての承認として扱った。詳細は各チケットの「実装と検証」にある。
 - G16（デバッガー）: DWARF の型名は `Type::display`。`bool` 以外のスカラーは同名の typedef、`char`・`utf8char` は `DW_ATE_UTF`。payload を持つ union は
   `$tag`（enumeration。大きさは格納するタグの幅）と `$payload`（case 名を member にする union）、タグを持たない union（niche。PM01）は `$tag` の代わりに `$payload` に重なる
-  列挙型 `$niche`（`None` は長さの `-1`、ポインターの `0`）を持つ。record の member は宣言順で、offset は格納の位置。再帰する union とリストはノードの struct への pointer で、
+  列挙型 `$niche`（`None` は長さの `-1`、ポインターの `0`）を持つ。record の member は宣言順で、offset は格納の位置。再帰する union はノードの struct への pointer、リストは先頭の chunk の struct（`next`・`rest`・`capacity`・要素型の長さ 0 の配列 `slots`。PM04）への pointer で、
   offset は生成 IR の格納位置から
   計算する。`DISubprogram` は `linkageName` を出さず、単相化の実体は元の名前、ラムダ・task・テストは `<親>.lambda@行:列` などの名前にする。束縛の `store` は
   宣言の位置、引数の束縛は prologue（行 0）。C のランタイムはデバッグ情報なしでコンパイルする（G08 を改めた。step-in がランタイムに入らず、DWARF 5 の

@@ -23,7 +23,7 @@ tsuzuri build Main.tz --target wasm32 -o shop.wasm
 tsuzuri build Main.tz --target wasm64 -o shop64.wasm
 ```
 
-既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
+既定の `--emit` は `wasm` です。オブジェクトや LLVM IR が欲しいときは `--emit object` か `--emit llvm` を足します。`--emit bitcode` は、`wasm-ld` の LTO でホストの C へ小さな関数を inline するための bitcode を出します（`wasm32` だけ。[言語間 LTO と bitcode](native-interop.md#webassembly)）。`wasm32` のポインタは 32 bit、`wasm64` は 64 bit です。JavaScript から見ると、wasm64 のポインタは `BigInt` です。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名で、同じバイト列を出します。ネイティブの OS や CPU を名指しする `--target` は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 
 次の関数は、ネイティブでも WASM でも同じ計算です。ネイティブの `run` は 42 を出します。
 
@@ -164,7 +164,7 @@ trap (site 0) trap
 | `bool` | `boolean` | `boolean` だけ。`0` や `1` は `TypeError` |
 | `unit`（戻り値） | `void` | — |
 | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | `BigInt64Array` / `Float64Array` / `Uint8Array` か `Borrowed<…>` | 型付き配列だけ。通常の配列は `TypeError` |
-| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る |
+| `ref string` | `string` | UTF-16 のコード単位のまま。孤立サロゲートも通る（`TSUZURI_STRINGS=compact` でも境界は UTF-16 で、内部が Latin-1 の `string` は渡す前に広げる） |
 | `ref utf8string` | `string` | `isWellFormed()` でない文字列は `TypeError`。先頭の U+FEFF も文字として渡り、結果でも保たれる |
 | `[i64]` などの所有結果 | 型付き配列 | 複製して返し、すぐ `tsuzuri_free` する |
 | `string` / `utf8string` の所有結果 | `string` | 同上 |
@@ -248,18 +248,38 @@ console.log(api.tz_is_positive(0n));
 
 ## 成果物の大きさ
 
-WebAssembly のモジュールは、内容のほとんどがコードです。整数だけを表示・書式指定・`Parse` するプログラムは数値ランタイム（約 10 KB の表と約 20 KB のコード）を持たないので、`examples/hello` の `-O3` のモジュールは 6,833 バイトです（整数の表示を専用の小さな関数に分ける前は 35,714 バイトでした）。整数を `Parse` するモジュールも同じで、`Parse.parse` と書式指定を使う `benchmarks/size/parse` の `-O3` のモジュールは 76,023 バイトから 16,766 バイトになりました。さらに小さくする方法は 2 つあります。どちらもモジュールの意味は変わりません。
+WebAssembly のモジュールは、内容のほとんどがコードです。整数だけを表示・書式指定・`Parse` するプログラムは数値ランタイム（約 10 KB の表と約 20 KB のコード）を持たないので、`examples/hello` の `-O3` のモジュールは 6,860 バイトです（整数の表示を専用の小さな関数に分ける前は 35,714 バイトでした）。整数を `Parse` するモジュールも同じで、`Parse.parse` と書式指定を使う `benchmarks/size/parse` の `-O3` のモジュールは 76,023 バイトから 16,762 バイトになりました。さらに小さくする方法は 2 つあります。どちらもモジュールの意味は変わりません。
 
 | 方法 | `examples/hello` | `examples/io` | `examples/functional` |
 | --- | ---: | ---: | ---: |
-| `-O3`（既定） | 6,833 | 12,956 | 10,251 |
-| `-Oz` | 3,905 | 6,878 | 5,278 |
+| `-O3`（既定） | 6,860 | 13,012 | 10,390 |
+| `-Oz` | 4,208 | 7,244 | 5,758 |
 
 バイト数です（macOS arm64、統合後のコンパイラ）。`-Oz` は LLVM の最適化レベルで、IR は `-O3` と同じです。`--wasm-opt` は、リンクが終わった `.wasm` を Binaryen の `wasm-opt -Oz` に通し、`-Oz` のモジュールをさらに 17〜22% 小さくしました（Binaryen 132。hello は 2,587 バイトから 2,156、`io` は 5,734 から 4,583、`functional` は 3,960 から 3,094 バイトで、上の表より前の、WASM のヒープを作り直す前のモジュールでの値です。いまのモジュールでは測っていません）。Binaryen は同梱しないので、入れた機械で明示したときだけ働き、見つからなければ `E2002` で止まります（[成果物を小さくする](option.md#成果物を小さくする)）。どちらも import と export、メモリの上限は変わりません。`--debug-info` を付けると名前の情報が残るため、`--wasm-opt` とは組み合わせられません。
 
 ```sh
 tsuzuri build Main.tz --target wasm32 -Oz --wasm-opt -o shop.wasm
 ```
+
+## 編集とビルドを速くする（`--backend fast`）
+
+`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
+
+```sh
+tsuzuri build Main.tz --target wasm32 -O0 --backend fast -o app.wasm
+```
+
+## プロファイルで最適化する
+
+wasm32 の module も、実行時の分岐の頻度で最適化できます。module はプロファイルのランタイムを持たないので、`--profile-generate DIR` は計装した `shop.wasm` と、その隣に書き出し役の `shop.wasm.profile.mjs` を出します。host が仕事を動かしたあとで `writeProfile(instance)` を呼ぶと、`DIR` に LLVM の raw profile が、上書きせず新しいファイルとして書かれ（ファイルに入るのは前に呼んだあとの分だけで、書き終えるとカウンターは 0 に戻ります）、`--profile-use DIR` で作り直します（手順と制限は [プロファイル誘導最適化](option.md#webassembly-の-module)）。
+
+```sh
+tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-generate prof
+node train.mjs                      # shop.wasm を動かして writeProfile(instance) を呼ぶ
+tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-use prof
+```
+
+書き出し役は Clang 21 の raw profile だけを書き、間接呼び出しの対象は数えません。測ると、効果は workload と JavaScript エンジンで変わります。`benchmarks/apps` は Node 24 で 4 種目が 5〜14% 速く、2 種目が 2〜5% 遅くなり、`benchmarks/control` は差がありません。Node 20 では `benchmarks/control` の `closure_capture` が約 50% 遅くなりました（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。使う前に、自分の host で前後を測ってください。
 
 ## 線形メモリとスタック
 
@@ -277,7 +297,7 @@ max-memory = "64MiB"
 stack-size = "1MiB"
 ```
 
-オブジェクトを自分で `wasm-ld` するときは、スタックを `-z stack-size` で渡します。`--wasm-stack-size` が効くのは、コンパイラが WASM までリンクするときだけです。
+オブジェクトを自分で `wasm-ld` するときは、スタックを `-z stack-size` で渡します。`--wasm-stack-size` が効くのは、コンパイラが WASM までリンクするときだけです。`--emit bitcode` も、リンクはホストの側なので同じです。
 
 `memory` を export するモジュールでは、呼び出しのあと線形メモリが伸びることがあります。`DataView` や `TypedArray` は、呼び出しのたびに `api.memory.buffer` から取り直してください。伸びる前に握ったビューは無効です。
 
@@ -317,7 +337,7 @@ api.tsuzuri_free(pointer);
 api.tsuzuri_free(out);
 ```
 
-`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。
+`>>> 0` は、wasm32 で 2 GiB 以上のアドレスが負の `Number` になるのを避けるためです。記述子と中身の両方を解放します。`utf8string` に不正な UTF-8 を渡すとトラップします。`string` は UTF-16 のコード単位で、孤立サロゲートもそのまま通ります。`TSUZURI_STRINGS=compact` でも、host が見る `string` は UTF-16 です。Latin-1 で持っている文字列は、結果として返す前と host の import へ渡す前に広げます（[コンパクト文字列の旗](option.md#コンパクト文字列の旗)）。
 
 ## SIMD とスレッド
 

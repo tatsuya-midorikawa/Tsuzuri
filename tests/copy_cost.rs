@@ -4,7 +4,7 @@ use tsuzuri::diagnostic::{Diagnostic, Severity, Span};
 use tsuzuri::llvm;
 
 const ARRAY: &str = "implicit copy of an array allocates and copies every element; borrow it with 'ref', or call 'Array.copy' to make the copy explicit";
-const LIST: &str = "implicit copy of a list allocates a new node for every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit";
+const LIST: &str = "implicit copy of a list allocates and copies every element; borrow it with 'ref', or call 'List.copy' to make the copy explicit";
 const AGGREGATE: &str = "implicit copy of a value that contains arrays or lists copies all of them; borrow it with 'ref', or use the value only once so that it moves";
 
 const REUSED: &str = "let a = [1, 2, 3]\nlet b = a\nArray.length (ref a) + Array.length (ref b)";

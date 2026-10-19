@@ -98,6 +98,8 @@ jobs:
       - run: npm ci
       - run: cargo fmt --manifest-path ../Cargo.toml --check
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
+      # PB05: the fast backend is compiled only with its feature. Windows does not run it yet, so this is where its Windows code is checked.
+      - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets --features fast-backend -- -D warnings
       - name: Async compiler contracts
         run: cargo test --manifest-path ../Cargo.toml --locked --test async
       - run: npm run test:unit

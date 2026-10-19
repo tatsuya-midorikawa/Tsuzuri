@@ -34,6 +34,7 @@ pub(crate) const KEY_ENVIRONMENT: &[&str] = &[
     "TSUZURI_ZIG",
     "TSUZURI_LLVM_CLANG",
     crate::llvm::RANGE_FLAGS_VARIABLE,
+    crate::llvm::STRINGS_VARIABLE,
 ];
 
 pub(crate) struct ToolIdentity {
@@ -412,6 +413,13 @@ fn hash_output_path(
     Ok(())
 }
 
+/// The SHA-256 of the compiler binary that is running; a process that stays keeps the digest of the
+/// file that it started from, which the path may no longer hold (see `resident::compiler_digest`).
+fn compiler_digest() -> io::Result<[u8; 32]> {
+    let executable = std::env::current_exe()?;
+    crate::resident::compiler_digest(|| file_digest(&executable))
+}
+
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -419,18 +427,24 @@ pub(crate) fn build_key(
     ir: &str,
     output: &Path,
     clang: Option<&ToolIdentity>,
+    profile: Option<(&str, &[u8])>,
 ) -> io::Result<String> {
     use crate::driver::{Emit, Target};
     let mut hash = Sha256::new();
     hash.field("format", &FORMAT.to_le_bytes());
     hash.field("compiler-version", env!("CARGO_PKG_VERSION").as_bytes());
-    hash.field("compiler-binary", &file_digest(&std::env::current_exe()?)?);
+    hash.field("compiler-binary", &compiler_digest()?);
     hash.field("host-os", std::env::consts::OS.as_bytes());
     hash.field("host-arch", std::env::consts::ARCH.as_bytes());
     hash.field("options", format!("{options:?}").as_bytes());
     hash.field("action", action.as_bytes());
     hash_output_path(&mut hash, options, output)?;
     hash.field("ir-and-embedded-runtime", ir.as_bytes());
+    // The profile that Clang reads, or the directory that an instrumented program writes to (PR07). A
+    // build without one adds nothing, so its key is the one that there was before.
+    if let Some((tag, bytes)) = profile {
+        hash.field(tag, bytes);
+    }
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
         hash.field(
@@ -473,7 +487,11 @@ pub(crate) fn build_key(
             if matches!(options.emit, Emit::Executable | Emit::Shared) {
                 tools.push(("TSUZURI_DSYMUTIL", "dsymutil"));
             }
-            if options.emit == Emit::Object && ir.contains("@tsuzuri_task_parallel(") {
+            // The fast backend never gets here: it refuses a macOS debug object that needs the C runtime.
+            if options.emit == Emit::Object
+                && options.backend == crate::driver::Backend::Llvm
+                && ir.contains("@tsuzuri_task_parallel(")
+            {
                 tools.push(("TSUZURI_LLVM_LINK", "llvm-link"));
             }
         }
@@ -627,7 +645,10 @@ impl BuildCache {
             let mut remaining = MAX_ENTRY_BYTES;
             let mut result = BTreeMap::new();
             for (name, fields) in files {
-                if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+                if !matches!(
+                    name.as_str(),
+                    "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+                ) {
                     return Err(invalid("invalid cache artifact name"));
                 }
                 let size = fields["size"]
@@ -717,7 +738,10 @@ impl BuildCache {
         let mut remaining = MAX_ENTRY_BYTES;
         let mut files = serde_json::Map::new();
         for (name, source) in paths {
-            if !matches!(name.as_str(), "artifact" | "traps" | "dwarf" | "pdb") {
+            if !matches!(
+                name.as_str(),
+                "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+            ) {
                 return Err(invalid("invalid cache artifact name"));
             }
             let bytes = read_regular(source, remaining)?;
@@ -956,21 +980,52 @@ impl Sha256 {
 }
 
 pub fn file_digest(path: &Path) -> io::Result<[u8; 32]> {
+    // A resident process remembers a digest while the stamp of its file is the same, and then does not open the file.
+    let started = crate::resident::clock();
+    let stamp = started
+        .and_then(|_| std::fs::metadata(path).ok())
+        .map(|metadata| crate::resident::FileStamp::from_metadata(&metadata));
+    if let Some(stamp) = &stamp
+        && let Some(digest) = crate::resident::cached_digest(path, stamp)
+    {
+        return Ok(digest);
+    }
     let mut file = std::fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
-    loop {
+    let digest = loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
-            return Ok(hash.finalize());
+            break hash.finalize();
         }
         hash.update(&buffer[..count]);
+    };
+    if let (Some(started), Some(stamp)) = (started, stamp) {
+        crate::resident::remember_digest(path, stamp, started, digest);
     }
+    Ok(digest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_that_stays_keys_its_builds_by_the_compiler_that_it_started_from() {
+        use crate::resident::{ResidentState, Scope};
+        // The digest that was taken before the file was replaced is the one that goes into a key.
+        let mut state = ResidentState::pinned_to([9; 32]).with_compiler_digest([7; 32]);
+        {
+            let _scope = Scope::enter(&mut state);
+            assert_eq!(compiler_digest().unwrap(), [7; 32]);
+        }
+        // A process whose file was replaced before the first key has no digest of its image, and
+        // the file at the path is not hashed in its place.
+        let mut state = ResidentState::pinned_to([9; 32]);
+        let _scope = Scope::enter(&mut state);
+        let error = compiler_digest().unwrap_err();
+        assert!(error.to_string().contains("was replaced"), "{error}");
+    }
 
     #[test]
     fn plain_path_removes_the_verbatim_prefix_of_drive_and_share_paths() {
@@ -1065,8 +1120,9 @@ mod tests {
             fs::write(&path, name).unwrap();
             path
         };
-        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF.
-        for sidecars in [["traps", "dwarf"], ["traps", "pdb"]] {
+        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF, and an
+        // instrumented WebAssembly module caches its profile writer (PR07).
+        for sidecars in [["traps", "dwarf"], ["traps", "pdb"], ["traps", "profile"]] {
             let mut hash = Sha256::new();
             hash.field("sidecars", sidecars.join(",").as_bytes());
             let key = hash.hex();

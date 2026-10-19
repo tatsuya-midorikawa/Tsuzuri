@@ -24,6 +24,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
 #[path = "llvm_facts.rs"]
@@ -275,7 +276,8 @@ pub(crate) fn with_net_imports(ir: &str) -> String {
     output
 }
 
-/// Sets the WASM heap limit in the heap runtime's three comparisons. Only whole
+/// Sets the WASM heap limit in the heap runtime's three comparisons, and in the one of
+/// `@tz.string.latin1_fits` (PM03: the same limit on the UTF-16 size of a Latin-1 string). Only whole
 /// lines match, so string constants containing the same text stay unchanged.
 pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
     if limit == crate::driver::DEFAULT_WASM_MAX_MEMORY {
@@ -287,7 +289,8 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
         let ending = &line[body.len()..];
         let _ = match body {
             "  %fits = icmp ule i64 %size, 16777184"
-            | "  %fits = icmp ule i64 %new_size, 16777184" => {
+            | "  %fits = icmp ule i64 %new_size, 16777184"
+            | "  %latin1_fits = icmp ule i64 %size, 16777184" => {
                 let (prefix, _) = body
                     .rsplit_once(' ')
                     .expect("heap limit lines end with a constant");
@@ -413,6 +416,8 @@ pub(crate) mod host_abi;
 mod imports;
 #[path = "llvm_io.rs"]
 mod io;
+#[path = "llvm_list.rs"]
+mod list;
 #[path = "llvm_math.rs"]
 mod math;
 #[path = "llvm_parallel.rs"]
@@ -425,6 +430,8 @@ mod recursive;
 mod shared;
 #[path = "llvm_simd.rs"]
 mod simd;
+#[path = "llvm_strings.rs"]
+mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
 #[path = "llvm_task.rs"]
@@ -502,6 +509,32 @@ pub fn emit_with_range_flags(
             wasm_simd128: options.wasm_simd128,
             f16: options.f16,
             range_flags: Some(flags),
+            ..Instrumentation::default()
+        },
+    )
+    .map(|(ir, _)| ir)
+}
+
+/// `emit_with_options` with the string form that `form` names, instead of that of
+/// `TSUZURI_STRINGS` or the default (PM03).
+pub fn emit_with_strings(
+    module: &CheckedModule,
+    options: EmitOptions,
+    form: StringForm,
+) -> Result<String, Diagnostic> {
+    let tests = runner_selection(module, options.entry);
+    emit_program(
+        module,
+        options.entry,
+        options.wasm,
+        tests.as_deref(),
+        options.debug_output,
+        Instrumentation {
+            allocator: options.allocator,
+            runtime_objects: options.runtime_objects,
+            wasm_simd128: options.wasm_simd128,
+            f16: options.f16,
+            strings: Some(form),
             ..Instrumentation::default()
         },
     )
@@ -840,6 +873,7 @@ pub(crate) fn emit_wasm_build(
             coverage: None,
             seed: None,
             range_flags: None,
+            strings: None,
             executable_roots: false,
         },
     )?;
@@ -1011,6 +1045,8 @@ struct Instrumentation<'a> {
     seed: Option<u64>,
     /// The overflow flags of range proofs (PR02); `None` takes `TSUZURI_RANGE_FLAGS` or the default.
     range_flags: Option<RangeFlags>,
+    /// The form of the strings that the program makes (PM03); `None` takes `TSUZURI_STRINGS` or the default.
+    strings: Option<StringForm>,
     /// A native executable emits only what its entry and exports reach (PB03 D1).
     executable_roots: bool,
 }
@@ -1037,26 +1073,35 @@ fn emit_program(
         Drain::InRequestOrder,
         &mut exhausted,
     )?;
-    if !exhausted {
-        return Ok(first);
-    }
-    // The worker budget ran out. Request order spreads it over every chain and cuts each of them
-    // part-way. This pass emits each function right before the functions it names and the workers
-    // of each function right after it, so the chains of as many functions as the budget allows are
-    // complete and the others keep the generic path.
-    emit_program_in(
-        module,
-        entry,
-        wasm,
-        tests,
-        debug_output,
-        instrumentation,
-        Drain::DepthFirst,
-        &mut exhausted,
-    )
+    let (output, marks) = if !exhausted {
+        first
+    } else {
+        // The worker budget ran out. Request order spreads it over every chain and cuts each of them
+        // part-way. This pass emits each function right before the functions it names and the workers
+        // of each function right after it, so the chains of as many functions as the budget allows are
+        // complete and the others keep the generic path.
+        emit_program_in(
+            module,
+            entry,
+            wasm,
+            tests,
+            debug_output,
+            instrumentation,
+            Drain::DepthFirst,
+            &mut exhausted,
+        )?
+    };
+    // The passes over the whole text run once, on the program that is kept: the text of a large
+    // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
+    // thrown away.
+    Ok((
+        simd::with_vector_alignment(unique_declarations(limit_worker_inlining(output))),
+        marks,
+    ))
 }
 
-/// Emits the program once. `exhausted` tells whether a worker request found the budget spent.
+/// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
+/// request found the budget spent.
 #[allow(clippy::too_many_arguments)]
 fn emit_program_in(
     module: &CheckedModule,
@@ -1089,6 +1134,10 @@ fn emit_program_in(
         Some(flags) => flags,
         None => RangeFlags::from_environment()?,
     };
+    let string_form = match instrumentation.strings {
+        Some(form) => form,
+        None => StringForm::from_environment()?,
+    };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
         return Err(Diagnostic::new(
@@ -1112,7 +1161,7 @@ fn emit_program_in(
         ));
     }
     let mut output = String::from(
-        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
+        "; Tsuzuri - deterministic LLVM IR\nsource_filename = \"tsuzuri\"\n%tz.string = type { ptr, i64 }\n%tz.utf8string = type { ptr, i64 }\n%tz.array = type { ptr, i64 }\n%tz.list = type { ptr, i64 }\n%tz.vec = type { ptr, i64, i64 }\n%tz.closure = type { ptr, ptr }\n%tz.closure.desc = type { ptr, ptr, ptr }\n%tz.abi.buffer = type { ptr, i64 }\n",
     );
     // A14: only a program that writes `dyn` defines the dyn value type.
     if module.uses_dyn {
@@ -1255,6 +1304,7 @@ fn emit_program_in(
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
         range_flags,
+        strings: string_form,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1599,14 +1649,23 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, include_str!("runtime/debug.ll"));
     }
     if runtime_symbols.prefix("tz.display.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/display.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.display_runtime(include_str!("runtime/display.ll"))?,
+        );
     }
     // Interpolation padding calls string functions, so append it before the string runtime below.
     if runtime_symbols.prefix("tz.format.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/format.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.format_runtime(include_str!("runtime/format.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.integer.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/integer.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.integer_runtime(include_str!("runtime/integer.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz_soft_") {
         if instrumentation.runtime_objects {
@@ -1654,7 +1713,10 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, DYN_CLONE);
     }
     if runtime_symbols.prefix("tz.character.") {
-        runtime_symbols.append(&mut output, include_str!("runtime/character.ll"));
+        runtime_symbols.append(
+            &mut output,
+            &string_form.character_runtime(include_str!("runtime/character.ll"))?,
+        );
     }
     if runtime_symbols.prefix("tz.unicode.") {
         runtime_symbols.append(&mut output, include_str!("runtime/unicode.ll"));
@@ -1673,6 +1735,7 @@ fn emit_program_in(
         || runtime_symbols.prefix("tz.alloc")
         || runtime_symbols.prefix("tz.realloc")
     {
+        let string_runtime = output.len();
         output.push_str(include_str!("runtime/string.ll"));
         output.push_str(include_str!("runtime/utf8string.ll"));
         let cpu_utf16 = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
@@ -1708,6 +1771,17 @@ fn emit_program_in(
             } else {
                 include_str!("runtime/string_scalar.ll")
             });
+        }
+        if string_form == StringForm::Compact {
+            let utf16 = output.split_off(string_runtime);
+            // The heap of a WebAssembly module refuses a block above a limit, unless the host's allocator
+            // is the module's: a Latin-1 string has to fit as UTF-16 (@tz.string.latin1_fits).
+            let limited = wasm && allocator != Allocator::Host;
+            output.push_str(&string_form.string_runtime(
+                &utf16,
+                !wasm || instrumentation.wasm_simd128,
+                limited,
+            )?);
         }
         let heap: std::borrow::Cow<'static, str> = if instrumentation.wasm_threads {
             include_str!("runtime/heap-wasm.ll")
@@ -1745,10 +1819,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    Ok((
-        simd::with_vector_alignment(unique_declarations(output)),
-        globals.traps,
-    ))
+    Ok((output, globals.traps))
 }
 
 /// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
@@ -1990,6 +2061,8 @@ struct Globals {
     recursive_functions: Vec<bool>,
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
+    /// The form of the strings that the program makes (PM03).
+    strings: StringForm,
 }
 
 impl Default for Globals {
@@ -2033,6 +2106,7 @@ impl Default for Globals {
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
+            strings: StringForm::DEFAULT,
         }
     }
 }
@@ -2067,6 +2141,197 @@ fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals
         }
 }
 
+/// Whether the adapters of closures and the workers of lambdas carry `alwaysinline`, so that they inline
+/// into the calls of known closures whatever their size (PM02). A static descriptor keeps the adapter
+/// in the program for as long as the descriptor exists, so LLVM no longer sees the sole call of a known
+/// closure's adapter as the last call of a local function, and a tiny program that built its closures
+/// inline grew by 11 to 17 % of its code. Native code measures better with the attribute at `-O1` to
+/// `-O3`. `limit_worker_inlining` keeps it off a worker that several calls name, and
+/// `without_closure_inlining` takes it off at `-O0`, `-Os` and `-Oz`. On WebAssembly the adapter that
+/// the descriptor keeps carries a second copy of the worker, and the same programs grew by 30 to 50 %;
+/// without the attribute they are as large as before (`docs/benchmarks.md`, PM02).
+fn inline_closures(globals: &Globals) -> bool {
+    !globals.wasm
+}
+
+const ALWAYS_INLINE: &str = " alwaysinline";
+
+/// `ir` without the `alwaysinline` of the functions that `strip` selects by symbol, or `None` when it
+/// has no such function. The text is searched for the attribute, which few lines have, and only the
+/// line of a hit is looked at: a pass over the lines takes 5 ms for the 287,000 lines of a program of
+/// 200 modules.
+fn without_always_inline(ir: &str, mut strip: impl FnMut(&str) -> bool) -> Option<String> {
+    let mut offsets = Vec::new();
+    let mut next_line = 0;
+    for (hit, _) in ir.match_indices(ALWAYS_INLINE) {
+        if hit < next_line {
+            continue;
+        }
+        let start = ir[..hit].rfind('\n').map_or(0, |at| at + 1);
+        next_line = ir[hit..].find('\n').map_or(ir.len(), |at| hit + at + 1);
+        let line = &ir[start..next_line];
+        if line.starts_with("define ")
+            && traps::callable(line, true).is_some_and(|call| strip(call.name))
+        {
+            offsets.push(hit);
+        }
+    }
+    if offsets.is_empty() {
+        return None;
+    }
+    let mut output = String::with_capacity(ir.len());
+    let mut copied = 0;
+    for offset in offsets {
+        output.push_str(&ir[copied..offset]);
+        copied = offset + ALWAYS_INLINE.len();
+    }
+    output.push_str(&ir[copied..]);
+    Some(output)
+}
+
+/// The start of a lambda's worker symbol, and the offset of the only `$` in it.
+const WORKER: &str = "@tz.fn.$lambda.";
+const WORKER_DOLLAR: usize = 7;
+
+/// The last `define` line of `lines`, which hold whole lines, without its line end.
+fn last_define_line(lines: &str) -> Option<&str> {
+    let start = match lines.rfind("\ndefine ") {
+        Some(at) => at + 1,
+        None if lines.starts_with("define ") => 0,
+        None => return None,
+    };
+    let rest = &lines[start..];
+    Some(&rest[..rest.find('\n').unwrap_or(rest.len())])
+}
+
+/// A lambda's worker keeps `alwaysinline` only while at most one call names it besides its adapters.
+/// A lambda without captures is called by name where its closure is known, and the attribute would
+/// copy a large body into each of those calls, at every optimization level.
+///
+/// The text is searched for the `$` of a worker's symbol, which few lines have, and only the line of
+/// a hit is looked at: a pass over the 287,000 lines of a program of 200 modules takes 8 ms.
+fn limit_worker_inlining(ir: String) -> String {
+    let mut references = BTreeMap::<&str, usize>::new();
+    // The lines before `next_line` have been looked at, and `define` is the last `define` line among
+    // them. `owner` is its symbol, which a reference asks for and which is then parsed once.
+    let mut next_line = 0;
+    let mut define = "";
+    let mut owner = None;
+    let mut in_define = false;
+    for (dollar, _) in ir.match_indices('$') {
+        let Some(start) = dollar.checked_sub(WORKER_DOLLAR) else {
+            continue;
+        };
+        if !ir.as_bytes()[start..].starts_with(WORKER.as_bytes()) {
+            continue;
+        }
+        if start >= next_line {
+            let line_start = ir[..start].rfind('\n').map_or(0, |at| at + 1);
+            if let Some(last) = last_define_line(&ir[next_line..line_start]) {
+                define = last;
+                owner = None;
+            }
+            let line_end = ir[start..].find('\n').map_or(ir.len(), |at| start + at);
+            next_line = ir.len().min(line_end + 1);
+            in_define = ir[line_start..line_end].starts_with("define ");
+            if in_define {
+                define = &ir[line_start..line_end];
+                owner = None;
+            }
+        }
+        if in_define {
+            continue;
+        }
+        let digits = ir[start + WORKER.len()..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        let worker = &ir[start..start + WORKER.len() + digits];
+        let symbol = *owner
+            .get_or_insert_with(|| traps::callable(define, true).map_or("", |call| call.name));
+        // The adapters of a lambda are `@tz.apply.$lambda.N.<captures>`; they call its worker.
+        let own_adapter = symbol
+            .strip_prefix("@tz.apply.$lambda.")
+            .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+            .is_some_and(|rest| rest.starts_with('.'));
+        if !own_adapter {
+            *references.entry(worker).or_default() += 1;
+        }
+    }
+    // Most programs have no worker that several calls name, and then there is no attribute to take off.
+    if references.values().all(|&count| count <= 1) {
+        return ir;
+    }
+    without_always_inline(&ir, |symbol| {
+        references.get(symbol).is_some_and(|&count| count > 1)
+    })
+    .unwrap_or(ir)
+}
+
+/// `ir` without the `alwaysinline` that `inline_closures` gives the adapters and the workers of
+/// lambdas. `-O0` and the size levels leave their inlining to the compiler: the attribute copies a
+/// worker into the adapter that a descriptor keeps and into every call, which made a small program
+/// 5 to 30 % larger at `-Os` and `-Oz` (`docs/benchmarks.md`, PM02).
+pub fn without_closure_inlining(ir: String) -> String {
+    without_always_inline(&ir, |symbol| {
+        symbol.starts_with("@tz.apply.") || symbol.starts_with("@tz.fn.$lambda.")
+    })
+    .unwrap_or(ir)
+}
+
+fn apply_attributes(globals: &Globals) -> &'static str {
+    if inline_closures(globals) {
+        "nounwind alwaysinline"
+    } else {
+        "nounwind"
+    }
+}
+
+/// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
+/// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
+/// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
+/// not cloned either (B07). A closure with an environment and a `null` drop is therefore an
+/// immediate one, which `@tz.closure.clone` and `@tz.closure.drop` leave alone.
+fn closure_slots(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> (String, String) {
+    let name = function.qualified_name();
+    if count == 0 || immediate {
+        ("null".to_owned(), "null".to_owned())
+    } else if !function.is_task
+        && !function.owned_captures
+        && function.signature.parameters[..count]
+            .iter()
+            .all(|ty| ty.can_capture(&module.types()))
+    {
+        (
+            format!("@tz.env.clone.{name}.{count}"),
+            format!("@tz.env.drop.{name}.{count}"),
+        )
+    } else {
+        ("null".to_owned(), format!("@tz.env.drop.{name}.{count}"))
+    }
+}
+
+/// The static descriptor of the closure of `function` with `count` captures: its code and how to
+/// clone and drop its environment. It stands alone in its block, so that a reader that splits the
+/// IR at blank lines finds every function at the start of its own block.
+fn closure_descriptor_definition(
+    module: &CheckedModule,
+    function: &CheckedFunction,
+    count: usize,
+    immediate: bool,
+) -> String {
+    let name = function.qualified_name();
+    let (clone, drop) = closure_slots(module, function, count, immediate);
+    format!(
+        "@tz.desc.{name}.{count} = internal unnamed_addr constant %tz.closure.desc {{ ptr @tz.apply.{name}.{count}, ptr {clone}, ptr {drop} }}\n\n"
+    )
+}
+
 fn closure_wrappers(
     module: &CheckedModule,
     function: &CheckedFunction,
@@ -2079,6 +2344,7 @@ fn closure_wrappers(
     let mut output = String::new();
     let name = function.qualified_name();
     let arity = function.parameters.len();
+    let attributes = apply_attributes(globals);
     for count in function.capture_count..arity.max(function.capture_count + 1) {
         let environment = environment_type(function, count, module);
         let immediate = immediate_capture(function, count, globals);
@@ -2172,9 +2438,15 @@ fn closure_wrappers(
             apply.begin(&done);
             apply.instruction(format!("ret {result} {value}"));
             let argument = apply.ty(&function.signature.parameters[count]);
-            output.push_str(&apply.auxiliary(&format!(
-                "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
-            )));
+            output.push_str(&apply.auxiliary_with(
+                &format!(
+                    "{result} @tz.apply.{name}.{count}({argument} %argument, ptr %env, i1 %borrow)"
+                ),
+                attributes,
+            ));
+            output.push_str(&closure_descriptor_definition(
+                module, function, count, immediate,
+            ));
             continue;
         }
         let mut apply = FunctionEmitter::new(
@@ -2290,10 +2562,16 @@ fn closure_wrappers(
             String::new()
         };
         let borrow = if function.is_task { "" } else { ", i1 %borrow" };
-        output.push_str(&apply.auxiliary(&format!(
-            "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
-            llvm_type(&result, module)
-        )));
+        output.push_str(&apply.auxiliary_with(
+            &format!(
+                "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
+                llvm_type(&result, module)
+            ),
+            attributes,
+        ));
+        output.push_str(&closure_descriptor_definition(
+            module, function, count, immediate,
+        ));
     }
     output
 }
@@ -3532,7 +3810,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn auxiliary(self, signature: &str) -> String {
-        let mut output = format!("define internal {signature} nounwind {{\nentry:\n");
+        self.auxiliary_with(signature, "nounwind")
+    }
+
+    fn auxiliary_with(self, signature: &str, attributes: &str) -> String {
+        let mut output = format!("define internal {signature} {attributes} {{\nentry:\n");
         for line in self.allocas {
             let _ = writeln!(output, "  {line}");
         }
@@ -3617,9 +3899,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         // the table number is constant and keeps only the tables that a program reads (D09).
         // Resuming a continuation inlines too, so even at -O0 a chain of suspended computations
         // costs no extra frames per level (B08).
+        // The worker of a lambda is called by its adapter, which inlines into the call of a known
+        // closure (`inline_closures`); the adapter that stays for the descriptor would otherwise keep
+        // the worker from being the last call of a local function. A debugger still steps into the
+        // worker of an unoptimized build.
         let inline = if self.function.module == "$builtin"
             && (self.function.name.starts_with("Unicode.__table_")
                 || self.function.name.starts_with("Async.__resume"))
+            || self.function.module == "$lambda"
+                && self.symbol.starts_with("@tz.fn.")
+                && inline_closures(self.globals)
+                && !self.globals.debug_unoptimized()
         {
             " alwaysinline"
         } else {
@@ -3672,7 +3962,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let length = self.value("extractvalue %tz.array %p0, 1");
             let value = self.value(format!("call {result} @{symbol}(ptr {data}, i64 {length})"));
             self.instruction(format!("ret {result} {value}"));
-        } else {
+        } else if !self.compact_body() {
             self.tail(&self.function.body);
         }
     }
@@ -4251,10 +4541,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
     }
 
+    /// True where a jump can leave an expression before it ends: in a loop (`break`, `continue`)
+    /// or a `try` (a raise). What such an expression holds then has to be registered to be dropped.
+    fn can_jump_out(&self) -> bool {
+        !self.loop_targets.is_empty() || !self.try_targets.is_empty()
+    }
+
     fn remember_temporary(&mut self, ty: &Type, value: &str, frames: &[Frame]) {
-        if (!self.loop_targets.is_empty() || !self.try_targets.is_empty())
-            && ty.needs_drop(&self.module.types())
-        {
+        if self.can_jump_out() && ty.needs_drop(&self.module.types()) {
             self.temporaries
                 .push((ty.clone(), value.to_owned(), frames.to_vec()));
         }
@@ -4381,12 +4675,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.match_expression(local, value, arms, &expression.ty, false, None)
             }
             TypedExprKind::String(text) => {
-                let name = self.string_constant(text);
+                let (name, word) = self.string_literal(text);
                 let ty = self.ty(&expression.ty);
                 self.value(format!(
-                    "call {ty} @{}.new(ptr {name}, i64 {})",
-                    &ty[1..],
-                    text.len()
+                    "call {ty} @{}.new(ptr {name}, i64 {word})",
+                    &ty[1..]
                 ))
             }
             TypedExprKind::Local(_)
@@ -4531,8 +4824,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
             TypedExprKind::TaskRun(task) => {
                 let task = self.expression(task);
-                let code = self.value(format!("extractvalue %tz.closure {task}, 0"));
-                let environment = self.value(format!("extractvalue %tz.closure {task}, 1"));
+                let (code, environment) = self.closure_parts(&task);
                 self.value(format!(
                     "call {} {code}(ptr {environment})",
                     self.ty(&expression.ty)
@@ -4664,8 +4956,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let Type::List(element) = &expression.ty else {
                     unreachable!()
                 };
-                self.allocation_size(&self.list_node_type(element), &length);
-                let (head, tail) = self.list_builder();
+                self.list_guard_length(element, &length);
+                let builder = self.list_builder(element, &length);
                 self.array_loop(&length, |emitter, index| {
                     let value = if let Some(call) = &direct {
                         emitter.emit_borrowed_call(call, &[index.to_owned()])
@@ -4679,14 +4971,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                             )
                             .0
                     };
-                    emitter.append_list(element, &tail, &value);
+                    emitter.list_append(element, &builder, index, &value);
                 });
                 if let Some(call) = &direct {
                     self.finish_borrowed_call(call);
                 } else {
                     self.drop_value(&initializer.ty, callee.as_ref().unwrap());
                 }
-                self.finish_list(&head, &length)
+                self.list_finish(element, &builder, &length)
             }
             TypedExprKind::Field(record, index) => {
                 let value = self.expression(record);
@@ -4723,13 +5015,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let ty = self.ty(&string.ty);
                 let element = self.ty(&expression.ty);
                 let data = self.value(format!("extractvalue {ty} {value}, 0"));
-                let length = self.value(format!("extractvalue {ty} {value}, 1"));
+                let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                let length = self.string_count(&string.ty, &word);
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid, TrapKind::BoundsCheck);
-                let pointer = self.value(format!(
-                    "getelementptr inbounds {element}, ptr {data}, i64 {index}"
-                ));
-                let unit = self.value(format!("load {element}, ptr {pointer}"));
+                let unit = if self.marks_length(&string.ty) {
+                    self.string_unit(&data, &word, &index)
+                } else {
+                    let pointer = self.value(format!(
+                        "getelementptr inbounds {element}, ptr {data}, i64 {index}"
+                    ));
+                    self.value(format!("load {element}, ptr {pointer}"))
+                };
                 self.release_operand(string, &value, &frames);
                 unit
             }
@@ -4798,7 +5095,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     return length;
                 }
                 let (value, frames) = self.read_operand(string);
-                let length = self.value(format!("extractvalue {} {value}, 1", self.ty(&string.ty)));
+                let length = self.string_length(&string.ty, &value);
                 self.release_operand(string, &value, &frames);
                 length
             }
@@ -4811,7 +5108,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             (TypedExprKind::Array(elements), Type::Array(element)) => {
                 let (array, data) = self.allocate_array(element, &elements.len().to_string());
                 let temporary_base = self.temporaries.len();
-                let tracking = !self.loop_targets.is_empty();
+                let tracking = self.can_jump_out();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
                         let prefix =
@@ -4829,22 +5126,23 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 array
             }
             (TypedExprKind::List(elements), Type::List(element)) => {
-                let (head, tail) = self.list_builder();
+                let length = elements.len().to_string();
+                let mut builder = self.list_builder(element, &length);
                 let temporary_base = self.temporaries.len();
-                let tracking = !self.loop_targets.is_empty();
+                let tracking = self.can_jump_out();
                 for (index, value) in elements.iter().enumerate() {
                     if tracking {
-                        let prefix = self.finish_list(&head, &index.to_string());
+                        let prefix = self.list_prefix(element, &mut builder, index);
                         self.temporaries.truncate(temporary_base);
                         self.remember_temporary(&expression.ty, &prefix, &[]);
                     }
                     let value = self.expression(value);
-                    self.append_list(element, &tail, &value);
+                    self.list_append(element, &builder, &index.to_string(), &value);
                     if tracking {
                         self.temporaries.truncate(temporary_base + 1);
                     }
                 }
-                self.finish_list(&head, &elements.len().to_string())
+                self.list_finish(element, &builder, &length)
             }
             _ => unreachable!("'new' literals are array or list literals"),
         }
@@ -4896,14 +5194,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 let valid = self.value(format!("icmp uge i64 {length}, {count}"));
                 self.guard(&valid, TrapKind::PatternMismatch);
                 let head = self.value(format!("extractvalue %tz.list {list}, 0"));
-                let tail = self.list_loop(&head, &count.to_string(), |_, _| {});
-                let length = self.value(format!("sub i64 {length}, {count}"));
-                let descriptor = self.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {tail}, 0"
-                ));
-                let descriptor = self.value(format!(
-                    "insertvalue %tz.list {descriptor}, i64 {length}, 1"
-                ));
+                let Type::List(element) = &value.ty else {
+                    unreachable!("a list tail pattern matches a list")
+                };
+                let descriptor = self.list_skip(element, &head, &length, *count);
                 let slot = self.slot(&value.ty);
                 self.instruction(format!("store %tz.list {descriptor}, ptr {slot}"));
                 slot
@@ -5020,19 +5314,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     emitter.drop_value(element, &extracted);
                 });
             }
-            Type::List(element) => {
-                let head = self.value(format!("extractvalue %tz.list {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
-                self.list_loop(&head, &length, |emitter, node| {
-                    if element.needs_drop(&emitter.module.types()) {
-                        let pointer = emitter.list_element_pointer(element, node);
-                        let value =
-                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                        emitter.drop_value(element, &value);
-                    }
-                    emitter.instruction(format!("call void @tz.free(ptr {node})"));
-                });
-            }
+            Type::List(element) => self.list_drop(element, value),
             _ => {}
         }
     }
@@ -5202,19 +5484,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 });
                 self.value(format!("load {}, ptr {target}", self.ty(ty)))
             }
-            Type::List(element) => {
-                let source = self.value(format!("extractvalue %tz.list {value}, 0"));
-                let length = self.value(format!("extractvalue %tz.list {value}, 1"));
-                let (head, tail) = self.list_builder();
-                self.list_loop(&source, &length, |emitter, node| {
-                    let pointer = emitter.list_element_pointer(element, node);
-                    let value =
-                        emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
-                    let copy = emitter.clone_value(element, &value);
-                    emitter.append_list(element, &tail, &copy);
-                });
-                self.finish_list(&head, &length)
-            }
+            Type::List(element) => self.list_clone(element, value),
             _ => value.to_owned(),
         }
     }
@@ -5398,10 +5668,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Array(element) | Type::Vec(element) => {
                 self.element_pointer(element, &data, index)
             }
-            Type::List(element) => {
-                let node = self.list_loop(&data, index, |_, _| {});
-                self.list_element_pointer(element, &node)
-            }
+            Type::List(element) => self.list_locate(element, &data, &length, index),
             _ => unreachable!("indexing requires a collection"),
         }
     }
@@ -5423,98 +5690,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.proven_reads += 1;
         let data = self.value(format!("extractvalue {} {collection}, 0", self.ty(ty)));
         self.element_pointer(element, &data, index)
-    }
-
-    fn list_node_type(&self, element: &Type) -> String {
-        format!("{{ ptr, {} }}", self.ty(element))
-    }
-
-    fn list_element_pointer(&mut self, element: &Type, node: &str) -> String {
-        self.value(format!(
-            "getelementptr inbounds {}, ptr {node}, i32 0, i32 1",
-            self.list_node_type(element)
-        ))
-    }
-
-    fn list_builder(&mut self) -> (String, String) {
-        let pointer = Type::Reference(Box::new(Type::Unit), false);
-        let head = self.slot(&pointer);
-        let tail = self.slot(&pointer);
-        self.instruction(format!("store ptr null, ptr {head}"));
-        self.instruction(format!("store ptr {head}, ptr {tail}"));
-        (head, tail)
-    }
-
-    fn append_list(&mut self, element: &Type, tail: &str, value: &str) {
-        let node = self.value(format!(
-            "call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({}, ptr null, i32 1) to i64))",
-            self.list_node_type(element)
-        ));
-        self.instruction(format!("store ptr null, ptr {node}"));
-        let pointer = self.list_element_pointer(element, &node);
-        self.instruction(format!("store {} {value}, ptr {pointer}", self.ty(element)));
-        let previous = self.value(format!("load ptr, ptr {tail}"));
-        self.instruction(format!("store ptr {node}, ptr {previous}"));
-        // The first field of each node is the next pointer, also used as the builder's tail slot.
-        self.instruction(format!("store ptr {node}, ptr {tail}"));
-    }
-
-    fn finish_list(&mut self, head: &str, length: &str) -> String {
-        let head = self.value(format!("load ptr, ptr {head}"));
-        let list = self.value(format!(
-            "insertvalue %tz.list zeroinitializer, ptr {head}, 0"
-        ));
-        self.value(format!("insertvalue %tz.list {list}, i64 {length}, 1"))
-    }
-
-    fn list_loop(
-        &mut self,
-        head: &str,
-        length: &str,
-        body: impl FnOnce(&mut Self, &str),
-    ) -> String {
-        self.list_loop_control(head, length, |emitter, node, _, _| body(emitter, node))
-    }
-
-    fn list_loop_control(
-        &mut self,
-        head: &str,
-        length: &str,
-        body: impl FnOnce(&mut Self, &str, &str, &str),
-    ) -> String {
-        let entry = self.block.clone();
-        let condition = self.label();
-        let element = self.label();
-        let advance = self.label();
-        let step = self.increment_block(&advance);
-        let exit = self.label();
-        let index = self.fresh();
-        let next_index = self.fresh();
-        let node = self.fresh();
-        let next_node = self.fresh();
-        self.jump(&condition);
-        self.begin(&condition);
-        self.instruction(format!(
-            "{index} = phi i64 [ 0, %{entry} ], [ {next_index}, %{step} ]"
-        ));
-        self.instruction(format!(
-            "{node} = phi ptr [ {head}, %{entry} ], [ {next_node}, %{step} ]"
-        ));
-        let more = self.value(format!("icmp ult i64 {index}, {length}"));
-        self.branch(&more, &element, &exit);
-        self.begin(&element);
-        // Read the link before the callback, which may free this node.
-        self.instruction(format!("{next_node} = load ptr, ptr {node}"));
-        body(self, &node, &exit, &advance);
-        self.jump(&advance);
-        self.begin(&advance);
-        // `index < length` as unsigned numbers: the step cannot wrap (R4).
-        self.audit_increment(&step, 64, &index, "1", Flags::UNSIGNED);
-        let words = self.flag_text(Flags::UNSIGNED);
-        self.instruction(format!("{next_index} = add {words}i64 {index}, 1"));
-        self.jump(&condition);
-        self.begin(&exit);
-        node
     }
 
     fn array_loop(&mut self, length: &str, body: impl FnOnce(&mut Self, &str)) {
@@ -5624,39 +5799,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn closure_descriptor(&mut self, id: usize, count: usize, environment: &str) -> String {
-        let function = &self.module.functions[id];
-        let name = function.qualified_name();
+        let name = self.module.functions[id].qualified_name();
         let value = self.value(format!(
-            "insertvalue %tz.closure zeroinitializer, ptr @tz.apply.{name}.{count}, 0"
+            "insertvalue %tz.closure zeroinitializer, ptr @tz.desc.{name}.{count}, 0"
         ));
-        let value = self.value(format!(
-            "insertvalue %tz.closure {value}, ptr {environment}, 1"
-        ));
-        if count == 0 {
-            return value;
-        }
-        if immediate_capture(function, count, self.globals) {
-            let value = self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.clone, 2"
-            ));
-            return self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.closure.immediate.drop, 3"
-            ));
-        }
-        let value = if !function.is_task
-            && !function.owned_captures
-            && function.signature.parameters[..count]
-                .iter()
-                .all(|ty| ty.can_capture(&self.module.types()))
-        {
-            self.value(format!(
-                "insertvalue %tz.closure {value}, ptr @tz.env.clone.{name}.{count}, 2"
-            ))
-        } else {
-            value
-        };
         self.value(format!(
-            "insertvalue %tz.closure {value}, ptr @tz.env.drop.{name}.{count}, 3"
+            "insertvalue %tz.closure {value}, ptr {environment}, 1"
         ))
     }
 
@@ -5708,7 +5856,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                %target = load ptr, ptr %target.slot\n\
                %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
                %task = load %tz.closure, ptr %slot\n\
-               %code = extractvalue %tz.closure %task, 0\n\
+               %descriptor = extractvalue %tz.closure %task, 0\n\
+               %code = load ptr, ptr %descriptor\n\
                %env = extractvalue %tz.closure %task, 1\n\
                %result = call {ty} %code(ptr %env)\n\
                %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
@@ -5731,6 +5880,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         array
     }
 
+    /// The code pointer and the environment of the function value `closure`. The code is the first
+    /// entry of the static descriptor that the value points to.
+    fn closure_parts(&mut self, closure: &str) -> (String, String) {
+        let descriptor = self.value(format!("extractvalue %tz.closure {closure}, 0"));
+        let code = self.value(format!("load ptr, ptr {descriptor}"));
+        let environment = self.value(format!("extractvalue %tz.closure {closure}, 1"));
+        (code, environment)
+    }
+
     fn apply_value(
         &mut self,
         callee: &str,
@@ -5738,8 +5896,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         argument: Option<(&Type, &str)>,
         borrowed: bool,
     ) -> (String, Type) {
-        let code = self.value(format!("extractvalue %tz.closure {callee}, 0"));
-        let environment = self.value(format!("extractvalue %tz.closure {callee}, 1"));
+        let (code, environment) = self.closure_parts(callee);
         let result = ty.after_arguments(usize::from(argument.is_some()));
         let argument = argument.map_or_else(String::new, |(ty, value)| {
             format!("{} {value}, ", self.ty(ty))
@@ -6906,7 +7063,7 @@ fn emit_builtin(
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         Builtin::Display | Builtin::ToString => emit_display(instance, module),
-        Builtin::Parse => emit_parse(instance, ty, module),
+        Builtin::Parse => emit_parse(instance, ty, module, globals.strings),
         Builtin::ToFloat => format!(
             "define internal double @tz.builtin.{name}(i64 %x) nounwind {{\n\
              entry:\n  %r = sitofp i64 %x to double\n  ret double %r\n}}\n\n"
@@ -6969,6 +7126,7 @@ fn emit_typed_builtin(
         wasm: shared_globals.wasm,
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
+        strings: shared_globals.strings,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -7220,32 +7378,14 @@ fn emit_typed_builtin(
                 let valid = emitter.value(format!("icmp ult i64 {length}, 9223372036854775807"));
                 emitter.guard(&valid, TrapKind::AllocationSize);
                 let head = emitter.value("extractvalue %tz.list %arg1, 0");
-                let node_type = emitter.list_node_type(element);
-                let node = emitter.value(format!("call ptr @tz.alloc(i64 ptrtoint (ptr getelementptr ({node_type}, ptr null, i32 1) to i64))"));
-                emitter.instruction(format!("store ptr {head}, ptr {node}"));
-                let slot = emitter.list_element_pointer(element, &node);
-                emitter.instruction(format!("store {element_type} %arg0, ptr {slot}"));
-                let length = emitter.value(format!("add i64 {length}, 1"));
-                let value = emitter.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {node}, 0"
-                ));
-                emitter.value(format!("insertvalue %tz.list {value}, i64 {length}, 1"))
+                emitter.list_push_front(element, &head, &length, "%arg0")
             }
             Builtin::ListTail => {
                 let length = emitter.value("extractvalue %tz.list %arg0, 1");
                 let valid = emitter.value(format!("icmp ugt i64 {length}, 0"));
                 emitter.guard(&valid, TrapKind::BoundsCheck);
                 let head = emitter.value("extractvalue %tz.list %arg0, 0");
-                let next = emitter.value(format!("load ptr, ptr {head}"));
-                let slot = emitter.list_element_pointer(element, &head);
-                let previous = emitter.value(format!("load {element_type}, ptr {slot}"));
-                emitter.drop_value(element, &previous);
-                emitter.instruction(format!("call void @tz.free(ptr {head})"));
-                let length = emitter.value(format!("sub i64 {length}, 1"));
-                let value = emitter.value(format!(
-                    "insertvalue %tz.list zeroinitializer, ptr {next}, 0"
-                ));
-                emitter.value(format!("insertvalue %tz.list {value}, i64 {length}, 1"))
+                emitter.list_pop_front(element, &head, &length)
             }
             _ => emitter.bulk_collection_builtin(instance, ty),
         }
@@ -8063,7 +8203,12 @@ fn emit_display(instance: &BuiltinInstance, module: &CheckedModule) -> String {
     )
 }
 
-fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> String {
+fn emit_parse(
+    instance: &BuiltinInstance,
+    ty: &Type,
+    module: &CheckedModule,
+    form: StringForm,
+) -> String {
     let symbol = builtin_symbol(instance, module);
     let payload = &instance.types[0];
     let value_type = llvm_type(payload, module);
@@ -8136,6 +8281,14 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                br i1 %ok, label %some, label %none\nsome:\n{load}"
         );
     } else {
+        // The numeric parser reads the ASCII bytes that `to_ascii` wrote, and counts them.
+        let (count, count_operand) = match form {
+            StringForm::Utf16 => (String::new(), "%length"),
+            StringForm::Compact => (
+                format!("  %count = and i64 %length, {}\n", strings::MASK),
+                "%count",
+            ),
+        };
         let _ = writeln!(
             body,
             "  %data = extractvalue %tz.string %text, 0\n\
@@ -8144,7 +8297,8 @@ fn emit_parse(instance: &BuiltinInstance, ty: &Type, module: &CheckedModule) -> 
                %buffer = alloca [4096 x i8], align 16\n\
                %ascii = call i1 @tz.string.to_ascii(ptr %buffer, ptr %data, i64 %length)\n\
                br i1 %ascii, label %parse, label %none\nparse:\n\
-               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 %length, i32 {})\n\
+               {count}\
+               %parsed = call i32 @tz_soft_parse(ptr %slot, ptr %buffer, i64 {count_operand}, i32 {})\n\
                %ok = icmp ne i32 %parsed, 0\n\
                br i1 %ok, label %some, label %none\nsome:\n\
                %value = load {value_type}, ptr %slot",
@@ -8386,6 +8540,307 @@ mod tests {
         assert_eq!(with_net_imports("no declarations\n"), "no declarations\n");
     }
 
+    /// Workers 1 and 12 are called once, 2 twice, 3 only by itself and 4 by itself and by another
+    /// function; 1 and 12 differ only in their last digit.
+    const CLOSURE_FUNCTIONS: &str = "\
+define internal i64 @tz.fn.$lambda.1(i64 %arg0) nounwind memory(none) alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.1.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.2.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.2(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.3(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.3(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.4(i64 %arg0)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.$lambda.12(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define internal i64 @tz.apply.$lambda.12.0(i64 %argument, ptr %env, i1 %borrow) nounwind alwaysinline {\nentry:\n  %v = call i64 @tz.fn.$lambda.12(i64 %argument)\n  ret i64 %v\n}\n\n\
+define internal i64 @tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {\nentry:\n  ret i64 %arg0\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %a = call i64 @tz.fn.$lambda.1(i64 %x)\n  %b = call i64 @tz.fn.$lambda.2(i64 %a)\n  %c = call i64 @tz.fn.$lambda.2(i64 %b)\n  %d = call i64 @tz.fn.$lambda.12(i64 %c)\n  %e = call i64 @tz.fn.$lambda.4(i64 %d)\n  ret i64 %e\n}\n";
+
+    #[test]
+    fn a_lambda_worker_named_by_several_calls_is_not_forced_inline() {
+        let limited = limit_worker_inlining(CLOSURE_FUNCTIONS.to_owned());
+        let inlined = |ir: &str| {
+            ir.lines()
+                .filter(|line| line.starts_with("define ") && line.contains(" alwaysinline"))
+                .map(|line| line.split('(').next().unwrap().rsplit(' ').next().unwrap())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            inlined(&limited),
+            [
+                "@tz.fn.$lambda.1",
+                "@tz.apply.$lambda.1.0",
+                "@tz.apply.$lambda.2.0",
+                "@tz.fn.$lambda.3",
+                "@tz.fn.$lambda.12",
+                "@tz.apply.$lambda.12.0",
+                "@tz.fn.Main.named",
+            ]
+        );
+        // Only the attribute of the two workers goes: the rest of the text is the same.
+        assert_eq!(
+            limited,
+            CLOSURE_FUNCTIONS
+                .replacen(
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.2(i64 %arg0) nounwind",
+                    1
+                )
+                .replacen(
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind alwaysinline",
+                    "@tz.fn.$lambda.4(i64 %arg0) nounwind",
+                    1
+                )
+        );
+        assert_eq!(limit_worker_inlining(limited.clone()), limited);
+        let plain =
+            "define internal i64 @tz.fn.Main.f(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\n";
+        assert_eq!(limit_worker_inlining(plain.to_owned()), plain);
+        // The adapter of lambda 10 is not an adapter of lambda 1.
+        let other = "define internal i64 @tz.fn.$lambda.1(i64 %x) nounwind alwaysinline {\nentry:\n  ret i64 %x\n}\n\n\
+define internal i64 @tz.apply.$lambda.10.0(i64 %a, ptr %env, i1 %borrow) nounwind {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %a)\n  ret i64 %v\n}\n\n\
+define i64 @tz_user(i64 %x) {\nentry:\n  %v = call i64 @tz.fn.$lambda.1(i64 %x)\n  ret i64 %v\n}\n";
+        assert!(!limit_worker_inlining(other.to_owned()).contains(" alwaysinline"));
+    }
+
+    #[test]
+    fn closure_inlining_is_removed_from_adapters_and_lambda_workers_only() {
+        let stripped = without_closure_inlining(CLOSURE_FUNCTIONS.to_owned());
+        for line in stripped.lines().filter(|line| {
+            line.starts_with("define ")
+                && (line.contains("@tz.apply.") || line.contains("@tz.fn.$lambda."))
+        }) {
+            assert!(!line.contains(" alwaysinline"), "{line}");
+        }
+        assert_eq!(stripped.matches(" alwaysinline").count(), 1);
+        assert!(stripped.contains("@tz.fn.Main.named(i64 %arg0) nounwind alwaysinline {"));
+        assert_eq!(
+            stripped.len() + 8 * " alwaysinline".len(),
+            CLOSURE_FUNCTIONS.len()
+        );
+        assert_eq!(without_closure_inlining(stripped.clone()), stripped);
+    }
+
+    /// `without_always_inline` as it was first written: it looked at every line.
+    fn without_always_inline_line_by_line(
+        ir: &str,
+        mut strip: impl FnMut(&str) -> bool,
+    ) -> Option<String> {
+        let mut offsets = Vec::new();
+        let mut start = 0;
+        for line in ir.split_inclusive('\n') {
+            if line.starts_with("define ")
+                && let Some(position) = line.find(ALWAYS_INLINE)
+                && traps::callable(line, true).is_some_and(|call| strip(call.name))
+            {
+                offsets.push(start + position);
+            }
+            start += line.len();
+        }
+        if offsets.is_empty() {
+            return None;
+        }
+        let mut output = String::with_capacity(ir.len());
+        let mut copied = 0;
+        for offset in offsets {
+            output.push_str(&ir[copied..offset]);
+            copied = offset + ALWAYS_INLINE.len();
+        }
+        output.push_str(&ir[copied..]);
+        Some(output)
+    }
+
+    /// `limit_worker_inlining` as it was first written: it looked at every line and searched it for
+    /// the worker.
+    fn limit_worker_inlining_line_by_line(ir: String) -> String {
+        if !ir.contains(WORKER) {
+            return ir;
+        }
+        let mut references = BTreeMap::<&str, usize>::new();
+        let mut owner = "";
+        for line in ir.lines() {
+            if line.starts_with("define ") {
+                owner = traps::callable(line, true).map_or("", |call| call.name);
+                continue;
+            }
+            for (start, _) in line.match_indices(WORKER) {
+                let digits = line[start + WORKER.len()..]
+                    .bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .count();
+                let worker = &line[start..start + WORKER.len() + digits];
+                let own_adapter = owner
+                    .strip_prefix("@tz.apply.$lambda.")
+                    .and_then(|rest| rest.strip_prefix(&worker[WORKER.len()..]))
+                    .is_some_and(|rest| rest.starts_with('.'));
+                if !own_adapter {
+                    *references.entry(worker).or_default() += 1;
+                }
+            }
+        }
+        without_always_inline_line_by_line(&ir, |symbol| {
+            references.get(symbol).is_some_and(|&count| count > 1)
+        })
+        .unwrap_or(ir)
+    }
+
+    #[test]
+    fn the_search_of_the_text_for_workers_finds_what_a_pass_over_the_lines_finds() {
+        // The only `$` of the symbol is at the offset that the search subtracts.
+        assert_eq!(WORKER.matches('$').count(), 1);
+        assert_eq!(WORKER.find('$'), Some(WORKER_DOLLAR));
+        for text in [
+            CLOSURE_FUNCTIONS,
+            "",
+            "define i64 @tz.fn.$lambda.1() alwaysinline {\n}\n",
+            // Several references in a line, one at the start of a line, `$` too near the start, and
+            // text that is not ASCII in front of a `$`.
+            "define internal i64 @tz.fn.$lambda.7(i64 %a) alwaysinline {\n}\n\
+define i64 @tz_user(i64 %x) {\n  %p = select i1 %c, ptr @tz.fn.$lambda.7, ptr @tz.fn.$lambda.7\n\
+@tz.fn.$lambda.7\n$lambda.7\n.$lambda.7 @tz.fn$lambda.7\néé$lambda.7 ééé@tz.fn.$lambda.7(\n\
+  %q = call i64 @tz.fn.$lambda.(i64 %x) @tz.fn.$lambda.x @tz.fn.$lambda.7x\n}\n",
+            "define internal i64 @tz.fn.$lambda.1(i64 %a) alwaysinline {\r\n}\r\n\
+define i64 @f() {\r\n  call @tz.fn.$lambda.1()\r\n  call @tz.fn.$lambda.1()\r\n}\r\n",
+            // The first line is a `define` line, the last has no line end, and the adapter is the
+            // owner of the references that follow it up to the next `define`.
+            "define internal i64 @tz.apply.$lambda.1.0(i64 %a) alwaysinline {\n  call @tz.fn.$lambda.1()\n\
+}\n  call @tz.fn.$lambda.1()\ndefine i64 @f() {\n  call @tz.fn.$lambda.1()",
+            "define i64 @f() {\n  call @tz.fn.$lambda.1() ; @tz.fn.$lambda.1",
+        ] {
+            assert_eq!(
+                limit_worker_inlining(text.to_owned()),
+                limit_worker_inlining_line_by_line(text.to_owned()),
+                "{text}"
+            );
+        }
+        // Text that is made of the lines that the emitter writes around workers, in any order.
+        let lines = [
+            "define internal i64 @tz.fn.$lambda.{n}(i64 %arg0) nounwind alwaysinline {",
+            "define internal i64 @tz.apply.$lambda.{n}.{k}(i64 %a, ptr %env, i1 %b) nounwind alwaysinline {",
+            "define internal i64 @\"tz.apply.$lambda.{n}.{k}\"(i64 %a) nounwind alwaysinline {",
+            "define internal i64 @tz.fn.Main.f$mono.{n}(i64 %x) nounwind alwaysinline {",
+            "define i64 @tz_user(i64 %x) {",
+            "define i64 @tz_other(ptr %p) personality ptr @tz.fn.$lambda.{n} {",
+            "  %v = call i64 @tz.fn.$lambda.{n}(i64 %x)",
+            "  %p = select i1 %c, ptr @tz.fn.$lambda.{n}, ptr @tz.fn.$lambda.{k}",
+            "  store ptr @tz.fn.$lambda.{n}, ptr %slot",
+            "  %w = call i64 @tz.fn.Main.f$mono.{n}(i64 %x)",
+            "  %é = call i64 @tz.apply.$lambda.{n}.0(i64 %x) ; é$lambda.{k}",
+            "@tz.fn.$lambda.{n}",
+            "  ret i64 %v",
+            "}",
+            "",
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap() % bound
+        };
+        let mut changed = 0;
+        for _ in 0..4000 {
+            let mut text = String::new();
+            for _ in 0..5 + next(36) {
+                let line = lines[next(lines.len())]
+                    .replace("{n}", &(1 + next(4)).to_string())
+                    .replace("{k}", &next(2).to_string());
+                text.push_str(&line);
+                text.push('\n');
+            }
+            if next(4) == 0 {
+                text.pop();
+            }
+            let limited = limit_worker_inlining(text.clone());
+            assert_eq!(
+                limited,
+                limit_worker_inlining_line_by_line(text.clone()),
+                "{text}"
+            );
+            changed += usize::from(limited != text);
+        }
+        assert!(changed > 100, "{changed} of the texts lose an attribute");
+    }
+
+    #[test]
+    fn the_search_of_the_text_for_the_attribute_finds_what_a_pass_over_the_lines_finds() {
+        type Selection = fn(&str) -> bool;
+        let selections: [(&str, Selection); 4] = [
+            ("closures", |symbol| {
+                symbol.starts_with("@tz.apply.") || symbol.starts_with("@tz.fn.$lambda.")
+            }),
+            ("ending in 1 or 3", |symbol| symbol.ends_with(['1', '3'])),
+            ("all", |_| true),
+            ("none", |_| false),
+        ];
+        // The stripped text and the symbols that were asked about, in order, are the same.
+        let check = |text: &str| {
+            for (name, strip) in selections {
+                let (mut asked, mut asked_in_lines) = (Vec::new(), Vec::new());
+                let stripped = without_always_inline(text, |symbol| {
+                    asked.push(symbol.to_owned());
+                    strip(symbol)
+                });
+                let in_lines = without_always_inline_line_by_line(text, |symbol| {
+                    asked_in_lines.push(symbol.to_owned());
+                    strip(symbol)
+                });
+                assert_eq!(stripped, in_lines, "{name}: {text}");
+                assert_eq!(asked, asked_in_lines, "{name}: {text}");
+            }
+        };
+        for text in [
+            CLOSURE_FUNCTIONS,
+            "",
+            " alwaysinline",
+            "\n alwaysinline\n",
+            "define i64 @f1() alwaysinline {\n}",
+            "define i64 @f1() alwaysinline alwaysinline {\n}\n",
+            // Lines that are not definitions, a quoted name with parentheses, text that is not ASCII
+            // and the line ends of Windows.
+            "attributes #0 = { alwaysinline }\ndeclare i64 @g1() alwaysinline\n  call i64 @f1() alwaysinline\n\
+define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) alwaysinline é {\r\n}\r\n",
+            "define i64 @f3(i64 %x) alwaysinline {\r\n  %é = add i64 %x, 1 ; alwaysinline\r\n}\r\n",
+        ] {
+            check(text);
+        }
+        let lines = [
+            "define internal i64 @tz.fn.Main.f{n}(i64 %x) nounwind alwaysinline {",
+            "define internal i64 @tz.fn.$lambda.{n}(i64 %x) nounwind alwaysinline {",
+            "define internal i64 @tz.apply.$lambda.{n}.0(i64 %a) nounwind alwaysinline alwaysinline {",
+            "define i64 @tz_user{n}(i64 %x) alwaysinline {",
+            "define i64 @\"q (r){n}\"(i64 %x) nounwind alwaysinline {",
+            "define i64 @tz_plain{n}(i64 %x) {",
+            "declare i64 @tz_declared{n}() alwaysinline",
+            "attributes #0 = { alwaysinline nounwind }",
+            "  call i64 @tz.fn.Main.f{n}(i64 %x) alwaysinline",
+            "  ret i64 %v ; é alwaysinline é",
+            " alwaysinline",
+            "}",
+            "",
+        ];
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap() % bound
+        };
+        let mut changed = 0;
+        for _ in 0..3000 {
+            let mut text = String::new();
+            for _ in 0..3 + next(30) {
+                text.push_str(&lines[next(lines.len())].replace("{n}", &(1 + next(4)).to_string()));
+                text.push('\n');
+            }
+            if next(4) == 0 {
+                text.pop();
+            }
+            check(&text);
+            changed += usize::from(without_always_inline(&text, |_| true).is_some());
+        }
+        assert!(changed > 1000, "{changed} of the texts lose an attribute");
+    }
+
     #[test]
     fn emits_explicit_tail_loop_and_checked_arithmetic() {
         let module = analyze(
@@ -8489,6 +8944,28 @@ mod tests {
         ir
     }
 
+    /// `library` in the UTF-16 form of `string`, for a test that pins the text of that form's IR
+    /// whatever `TSUZURI_STRINGS` says.
+    fn library_utf16(source: &str) -> String {
+        let module = checked(source);
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            wasm_simd128: false,
+            debug_output: false,
+            runtime_objects: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let ir = emit_with_strings(&module, options, StringForm::Utf16).unwrap();
+        assert_eq!(
+            ir,
+            emit_with_strings(&module, options, StringForm::Utf16).unwrap(),
+            "{source}"
+        );
+        ir
+    }
+
     #[test]
     fn emits_distinct_string_literals_and_indexing() {
         let ir = library(
@@ -8521,7 +8998,7 @@ mod tests {
 
     #[test]
     fn emits_utf16_display_and_ascii_parse() {
-        let ir = library(
+        let ir = library_utf16(
             "let bytes = u8\"42\"\n\
              let text = Display.display ref bytes\n\
              let consumed = to_string bytes\n\
@@ -8755,7 +9232,7 @@ mod tests {
 
     #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
-        let ir = library(
+        let ir = library_utf16(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
              def unsigned :: &string -> Maybe<i32u>\nfn unsigned text = Parse.parse text\n\
              def whole :: &string -> Maybe<i64>\nfn whole text = Parse.parse text\n\

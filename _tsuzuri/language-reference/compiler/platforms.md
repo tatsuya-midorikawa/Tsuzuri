@@ -207,6 +207,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - Windows の x86-64 の `i128`・`i128u` の `/` と `%` は、正しい値になりません。LLVM が `__udivti3` の系列を、オペランドをポインターで渡して XMM0 で返す規約で呼ぶのに対し、Windows のビルドに連結する `runtime/wasm.ll` の定義は `i128` を 2 つのレジスタで受けるからです（assembly の読解による結論で、Windows の実機では確かめていません）。`to_string`・補間・`Parse` の整数は `i128` の除算を使わないので、影響を受けません。
 - bare-metal の x86-64 は、`noredzone` を IR の関数に付けるだけで、`-mcmodel` や割り込みの規約までは扱いません。RISC-V の bare-metal は `rv64gc`、`lp64d` に固定です。
 - クロスコンパイルで C ライブラリや sysroot を自動で取得することはありません。同梱ツールチェーンか、`TSUZURI_SYSROOT` だけです。
+- プロファイル誘導最適化（`--profile-generate`・`--profile-use`）は、ビルド機の native の `exe` と `object`、wasm32 の module だけです。Windows の host と target、ビルド機と違う `--target TRIPLE` は `E2000` です。プログラムをその機械で動かして訓練できないからで、Windows は Windows の CI で確かめられるまで受け付けません。同梱の `tsuzuri-clang` はプロファイルの旗を渡さないので `E2002` で、LLVM の Clang を `TSUZURI_CLANG` に指定します。macOS の arm64 で、Apple の Clang 21 と Homebrew の LLVM 21.1.8 を確かめ、CI の macOS の arm64 と Linux の x86_64・arm64 でも `tests/pgo.mjs` が通ります。macOS の x86_64 では、Apple 以外の Clang が計装のリンクで出す `ld` の警告 3 行を表示しません（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
 ## 確かめた範囲
 
@@ -218,6 +219,7 @@ TSUZURI_RUNNER="arch -x86_64" tsuzuri test tests --target x86_64-apple-darwin
 - リンクして、ヘッダーを検査した（実行はしていない）: 同梱ツールチェーンで Linux の glibc と musl、RISC-V Linux、FreeBSD、MinGW の Windows。macOS の job では、もう一方の Apple の CPU と、iOS の 3 target（Xcode の SDK を `TSUZURI_SYSROOT` に渡します）。
 - オブジェクトまで作った: MSVC の Windows、Android、bare-metal（4 つの job）、iOS（Linux の 2 つの job）。
 - 実行器のフック（`TSUZURI_RUNNER`）は、偽の実行器のスクリプト、qemu-user、Rosetta で確かめました。Wine を使った実行は確かめていません。
+- `--backend fast`（[コード生成器](option.md#コード生成器)）は、ビルド機の native と `wasm32` を受け付けます。ビルド機は macOS と Linux の AArch64・x86-64 が対象です。Apple M1 Max の macOS（AArch64）で、すべてのテストを実行しました。Linux は、Docker Desktop の Ubuntu 26.04 のコンテナ（AArch64 は VM の中で native の速さ、x86-64 は Rosetta の emulation）で、feature つきの `tsuzuri` をビルドして `build --backend fast` の差分テスト（`examples/` と `tests/fixtures/` の実行ファイル 21 個の出力と、library 83 個の export）と、約 820 の演算の Clang との照合を実行しました。x86-64 の macOS（Intel）は、object を作って `ld64` でリンクしただけで、実行していません。wasm32 の module は、Node.js（V8）で `WebAssembly.validate` が通り、`llvm` の module と同じ結果になることを確かめました。ほかの engine では確かめていません。Windows のビルド機と、`--target TRIPLE` の名前を付けた target と、`wasm64` は `E2000` です。
 
 確かめていないのは、`aarch64-pc-windows-msvc` と MinGW の target を Windows のホストで実行すること、MSVC の実行ファイルを Windows 以外のホストでリンクすること、FreeBSD・Android・iOS の実行（実機とシミュレーター）です。
 

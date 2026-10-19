@@ -44,6 +44,11 @@ impl FunctionEmitter<'_, '_> {
         } else {
             None
         };
+        // Compact strings that the host reads as UTF-16: where the pointer of each is in `values` (its
+        // length follows) and its descriptor.
+        let mut widen: Vec<(usize, String)> = Vec::new();
+        // The widened copies of Latin-1 strings, with the length words that say which are copies.
+        let mut copies: Vec<(String, String)> = Vec::new();
         for argument in arguments {
             if matches!(argument.ty, Type::Function(..)) {
                 // A callback reaches the host as the address of its C-ABI wrapper.
@@ -73,6 +78,14 @@ impl FunctionEmitter<'_, '_> {
                 } else {
                     self.value(format!("load {}, ptr {value}", self.ty(inner)))
                 };
+                if *inner == Type::String && self.globals.strings == StringForm::Compact {
+                    // The copy is made once every argument is evaluated: an argument that raises
+                    // (`@checked`) leaves the call, and a copy made before it would be left behind.
+                    widen.push((values.len(), descriptor));
+                    types.extend(["ptr".into(), "i64".into()]);
+                    values.extend([String::new(), String::new()]);
+                    continue;
+                }
                 let pointer =
                     self.value(format!("extractvalue {} {descriptor}, 0", self.ty(inner)));
                 let length = self.value(format!("extractvalue {} {descriptor}, 1", self.ty(inner)));
@@ -111,6 +124,19 @@ impl FunctionEmitter<'_, '_> {
             types.push(abi.clone());
             values.push(format!("{abi} {value}"));
         }
+        // The host reads UTF-16 units; a Latin-1 string is widened into a copy that is freed after the
+        // call. No argument is evaluated between a copy and the call that frees it.
+        for (position, descriptor) in widen {
+            let word = self.string_word(&Type::String, &descriptor);
+            let widened = self.value(format!(
+                "call %tz.string @tz.string.borrow_utf16(%tz.string {descriptor})"
+            ));
+            let copy = self.value(format!("extractvalue %tz.string {widened}, 0"));
+            let length = self.value(format!("extractvalue %tz.string {widened}, 1"));
+            values[position] = format!("ptr {copy}");
+            values[position + 1] = format!("i64 {length}");
+            copies.push((copy, word));
+        }
         let output = if *result == Type::Unit || out.is_some() {
             "void".to_owned()
         } else {
@@ -136,6 +162,7 @@ impl FunctionEmitter<'_, '_> {
         );
         if *result == Type::Unit || out.is_some() {
             self.instruction(call);
+            self.free_copies(&copies);
             return if let Some(slot) = out {
                 self.read_host_result(result, &slot)
             } else {
@@ -143,12 +170,23 @@ impl FunctionEmitter<'_, '_> {
             };
         }
         let value = self.value(call);
+        self.free_copies(&copies);
         match result {
             Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
             Type::Integer(8 | 16, _) => {
                 self.value(format!("trunc i32 {value} to {}", self.ty(result)))
             }
             _ => value,
+        }
+    }
+
+    /// Frees the widened copies that `host_call` made of Latin-1 strings: a string that was UTF-16 is
+    /// the original, and its buffer stays.
+    fn free_copies(&mut self, copies: &[(String, String)]) {
+        for (copy, word) in copies {
+            let latin1 = self.string_is_latin1(word);
+            let target = self.value(format!("select i1 {latin1}, ptr {copy}, ptr null"));
+            self.instruction(format!("call void @tz.free(ptr {target})"));
         }
     }
 

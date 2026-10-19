@@ -51,7 +51,7 @@ $"units={units} bytes={count} unit0={unit0} byte0={byte0} len={len16}/{len8}"
 units=3 bytes=5 unit0=65 byte0=65 len=3/5
 ```
 
-`A` はどちらの長さにも 1 を足します。`😀` は UTF-16 では 2、UTF-8 では 4 です。反復の単位は添字と同じで、コードポイント単位でも書記素単位でもありません。
+`A` はどちらの長さにも 1 を足します。`😀` は UTF-16 では 2、UTF-8 では 4 です。反復の単位は添字と同じで、コードポイント単位でも書記素単位でもありません。`string` の反復変数は文字列の中の場所ではなく反復ごとの値なので、`ref _unit` を反復のあとまで持ち越すと `E1013` です（[for ... in](../loops-and-conditionals/for-in.md#所有権と借用ルール)）。
 
 範囲外や負の添字はトラップします。`Maybe` にはなりません。添字や `.length` を補間の穴へ直接書くと、一時値を借用できず `E1013` になることがあります。先に `let` で束縛してください。
 
@@ -163,6 +163,14 @@ broken=false restored=true text=あ
 | `Utf8String.from_bytes : [ubyte] -> Maybe<utf8string>` | UTF-8 を検査して所有権を移す | 不正なら解放して `None` |
 
 所有権を移す関数は、ヒープ上のバッファならポインタを移すだけです。定数領域やスタック上の値は、先にヒープへコピーされます。検索や切り出しは [String](../built-in-types-and-modules/string.md) と [Utf8String](../built-in-types-and-modules/utf8string.md) にまとめてあります。
+ただし `TSUZURI_STRINGS=compact` のとき、Latin-1 で持っている文字列の `String.to_code_units` と、全単位が 0xFF 以下の配列の `String.from_code_units` は、全単位を広げる（バッファを `realloc` で 2 倍にして、その場で広げる。伸ばせなければ新しいバッファへ移る）・狭める（その場で詰めて `realloc` で縮める）O(n) の変換です。
+
+### メモリ上の表現
+
+`string` はどのコード単位も 16 bit の値として持つ、というのが観測できる意味です。内部の表現は、既定の `TSUZURI_STRINGS=utf16` では 1 単位 2 bytes の UTF-16 です。
+opt-in の `TSUZURI_STRINGS=compact` は、全単位が 0xFF 以下（ASCII と Latin-1）の文字列を 1 単位 1 byte で持ち、文字列のバッファを約半分にします。
+長さ・添字・順序・等しさ・hash・表示・孤立サロゲートの扱い・host との ABI（常に UTF-16）は、どちらのモードでも同じです。詳しくは
+[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗) と、測定の [PM03 コンパクト文字列](../../../docs/benchmarks.md#pm03-コンパクト文字列) にあります。
 
 ## どちらを選ぶか
 

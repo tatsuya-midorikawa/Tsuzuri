@@ -255,7 +255,17 @@ const STRUCTURAL: &[(&str, &[&str])] = &[
     ("narrow_unsigned", &["add i64 %, %", "add nuw nsw i64 %, 1"]),
     ("stepped", &["add i64 %, %"]),
     ("each_array", &["add i64 %, %", "add nuw i64 %, 1"]),
-    ("each_list", &["add i64 %, %", "add nuw i64 %, 1"]),
+    (
+        "each_list",
+        &[
+            "add i64 %, %",
+            "add i64 %, %",
+            "add nuw i64 %, 1",
+            "sub i64 %, %",
+            "sub i64 %, %",
+            "sub i64 %, %",
+        ],
+    ),
     ("each_text", &["add i64 %, %", "add nuw i64 %, 1"]),
     (
         "arithmetic",
@@ -459,8 +469,8 @@ fn builtin_calls_that_are_not_two_number_operands_stay_calls() {
         def join :: string -> string -> string\nfn join a b = Add.add a b\n";
     for wasm in [false, true] {
         let ir = emit(source, wasm);
-        assert!(function_ir(&ir, "partial").contains("@tz.apply.$intrinsic.Add.add"));
-        assert!(function_ir(&ir, "value").contains("@tz.apply.$intrinsic.Add.add"));
+        assert!(function_ir(&ir, "partial").contains("@tz.desc.$intrinsic.Add.add"));
+        assert!(function_ir(&ir, "value").contains("@tz.desc.$intrinsic.Add.add"));
         assert!(function_ir(&ir, "join").contains("call "));
     }
     // A user module named `Add` is not the generated one: whatever its `add` does, it is called, so
@@ -523,17 +533,26 @@ fn counter<'a>(blocks: &'a [Block], ty: &str) -> Counter<'a> {
         .flat_map(|block| block.lines.iter().map(move |line| (block, line)))
         .filter(|(_, line)| line.contains(&format!(" = phi {ty} [ ")) && incoming(line).len() == 2)
         .collect();
-    // The index of a list loop comes first; a function of these tests has one loop.
-    let (header, line) = phis[0];
-    let [(first, entry), (next, increment)] = incoming(line).try_into().unwrap();
-    Counter {
-        header,
-        current: line.split(" = ").next().unwrap().to_owned(),
-        first,
-        next,
-        entry: block(&entry),
-        increment: block(&increment),
-    }
+    // The index of a loop adds a constant to itself. A list loop has other `phi`s of two operands
+    // before it: the position of its chunk, which adds the length of a run, and the first slot.
+    let mut counters = phis.into_iter().filter_map(|(header, line)| {
+        let current = line.split(" = ").next().unwrap();
+        let [(first, entry), (next, increment)] = incoming(line).try_into().unwrap();
+        let steps = block(&increment).lines.iter().any(|line| {
+            line.strip_prefix(&format!("{next} = add "))
+                .and_then(|rest| rest.split_once(&format!(" {current}, ")))
+                .is_some_and(|(_, stride)| stride.parse::<i128>().is_ok())
+        });
+        steps.then(|| Counter {
+            header,
+            current: current.to_owned(),
+            first,
+            next,
+            entry: block(&entry),
+            increment: block(&increment),
+        })
+    });
+    counters.next().unwrap()
 }
 
 /// The two last lines of a block: a comparison and the branch on it.
@@ -683,13 +702,36 @@ fn compare_loop(source: &str, wasm: bool, flags: RangeFlags) -> String {
 
 #[test]
 fn structural_comparison_loops_count_with_an_unsigned_index() {
-    for source in [ARRAY_COMPARE, LIST_COMPARE] {
+    // A list comparison adds more: the end of each run, the first slots of both lists and the
+    // slots that a run uses up on each side. No proof covers them (the chunk of a list is not an
+    // index); the counter of the inner loop is the unsigned index.
+    let sums = ["add i64 %, %"; 3];
+    let differences = ["sub i64 %, %"; 7];
+    let cases: [(&str, Vec<&str>, Vec<&str>); 2] = [
+        (
+            ARRAY_COMPARE,
+            vec!["add i64 %, 1"],
+            vec!["add nuw i64 %, 1"],
+        ),
+        (
+            LIST_COMPARE,
+            sums.into_iter()
+                .chain(["add i64 %, 1"])
+                .chain(differences)
+                .collect(),
+            sums.into_iter()
+                .chain(["add nuw i64 %, 1"])
+                .chain(differences)
+                .collect(),
+        ),
+    ];
+    for (source, expected_off, expected_proven) in cases {
         for wasm in [false, true] {
             let off = compare_loop(source, wasm, RangeFlags::Off);
             let proven = compare_loop(source, wasm, RangeFlags::Proven);
             let audit = compare_loop(source, wasm, RangeFlags::Audit);
-            assert_eq!(arithmetic(&off), ["add i64 %, 1"], "{off}");
-            assert_eq!(arithmetic(&proven), ["add nuw i64 %, 1"], "{proven}");
+            assert_eq!(arithmetic(&off), expected_off, "{off}");
+            assert_eq!(arithmetic(&proven), expected_proven, "{proven}");
             assert_eq!(without_flags(&proven), without_flags(&off));
             assert!(!has_flag(&audit), "{audit}");
             assert_eq!(count(&audit, "@llvm.uadd.with.overflow.i64("), 1, "{audit}");

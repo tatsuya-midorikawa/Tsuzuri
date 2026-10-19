@@ -1,0 +1,518 @@
+// PM04: a list built at once is one chunk, and a list grown by List.cons is a chain of chunks that
+// grow with it. Every export works on lists around the chunk boundaries of tests/features.mjs
+// (suite list_chunks) and returns a checksum that the suite computes on a JavaScript array.
+
+/// The elements are n - 1, ..., 0: every cons that fills a free slot or adds a chunk.
+def build :: i64 -> [|i64|]
+fn build n =
+    let mut values: [|i64|] = [||]
+    for i in 0 .. n - 1 do values = List.cons i values
+    values
+
+/// The elements are 0, ..., n - 1, so that build_up n is a prefix of build_up (n + 1).
+def build_up :: i64 -> [|i64|]
+fn build_up n =
+    let mut values: [|i64|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (n - 1 - i) values
+    values
+
+/// Like build, with 100 instead of the last element 0, so that a comparison walks to the end.
+def build_last :: i64 -> [|i64|]
+fn build_last n =
+    let mut values: [|i64|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (if i == 0 then 100 else i) values
+    values
+
+/// The sum of every element times its position plus one: it knows the order of the elements.
+def weighted :: ref [|i64|] -> i64
+fn weighted values =
+    let mut total = 0i64
+    let mut position = 0i64
+    for value in values do
+        position = position + 1
+        total = total + value * position
+    total
+
+def weighted_array :: ref [i64] -> i64
+fn weighted_array values =
+    let mut total = 0i64
+    for i in 0 .. values.length - 1 do total = total + values[i] * (i + 1)
+    total
+
+/// for over the chunks, in list order.
+export def cons_walk :: i64 -> i64
+fn cons_walk n = weighted (ref (build n))
+
+export def cons_length :: i64 -> i64
+fn cons_length n = (build n).length
+
+/// values[i] for every i: the index walks over the chunks that precede it.
+export def index_walk :: i64 -> i64
+fn index_walk n =
+    let values = build n
+    let mut total = 0i64
+    for i in 0 .. n - 1 do total = total + values[i] * (i + 1)
+    total
+
+/// List.tail until the list is empty: the chunks are freed with their last element.
+export def tail_walk :: i64 -> i64
+fn tail_walk n =
+    let mut values = build n
+    let mut total = 0i64
+    for i in 0 .. n - 1 do
+        total = total + values[0] * (i + 1)
+        values = List.tail values
+    total + values.length
+
+/// Pops half of the elements and pushes as many others: the freed slots and chunks are reused.
+export def refill :: i64 -> i64
+fn refill n =
+    let mut values = build n
+    let half = n / 2
+    for _ in 1 .. half do values = List.tail values
+    for i in 1 .. half do values = List.cons (1000000 + i) values
+    weighted (ref values) * 1000 + values.length
+
+/// A list that List.cons grew, then a list that was built at once, compared in every way.
+def flags :: Ord<'a> => 'a -> 'a -> i64
+fn flags left right =
+    (if left == right then 1 else 0) +
+    (if left != right then 2 else 0) +
+    (if left < right then 4 else 0) +
+    (if left <= right then 8 else 0) +
+    (if left > right then 16 else 0) +
+    (if left >= right then 32 else 0)
+
+export def compare_prefix :: i64 -> i64
+fn compare_prefix n = flags (build_up n) (build_up (n + 1))
+
+export def compare_suffix :: i64 -> i64
+fn compare_suffix n = flags (build_up (n + 1)) (build_up n)
+
+export def compare_copy :: i64 -> i64
+fn compare_copy n =
+    let values = build n
+    flags (List.copy (ref values)) values
+
+export def compare_change :: i64 -> i64
+fn compare_change n = flags (build n) (build_last n)
+
+export def copy_weighted :: i64 -> i64
+fn copy_weighted n =
+    let values = build n
+    let copy = List.copy (ref values)
+    weighted (ref copy) * 3 + weighted (ref values)
+
+export def map_weighted :: i64 -> i64
+fn map_weighted n = weighted (ref (List.map (value -> value * 2 + 1) (ref (build n))))
+
+export def reverse_weighted :: i64 -> i64
+fn reverse_weighted n = weighted (ref (List.reverse (ref (build n))))
+
+export def to_array_weighted :: i64 -> i64
+fn to_array_weighted n = weighted_array (ref (List.to_array (ref (build n))))
+
+export def from_array_weighted :: i64 -> i64
+fn from_array_weighted n =
+    let array = new [i64](n, i -> i + 7)
+    let list = Array.to_list (ref array)
+    weighted (ref (List.cons 5 list)) * 10 + weighted (ref list)
+
+/// A list that was built at once is one chunk with no free slot: the first cons adds a chunk,
+/// the next ones fill it, and List.tail frees the chunks that it empties.
+export def bulk_grow :: i64 -> i64
+fn bulk_grow n =
+    let mut values = new [|i64|](n, i -> i + 100)
+    for i in 1 .. 30 do values = List.cons i values
+    for _ in 1 .. 10 do values = List.tail values
+    weighted (ref values) * 100 + values.length
+
+/// Patterns take the first elements and a copy of the rest, which starts in a later chunk if the
+/// first elements run out of one.
+export def pattern_rest :: i64 -> i64
+fn pattern_rest n =
+    let values = build n
+    match &values with
+    | a :: b :: c :: rest -> a + b * 10 + c * 100 + weighted (ref rest) * 1000
+    | a :: b :: rest -> a + b * 10 + weighted (ref rest) * 1000
+    | a :: rest -> a + weighted (ref rest) * 1000
+    | _ -> 0
+
+export def pattern_exact :: i64 -> i64
+fn pattern_exact n =
+    let values = build n
+    match &values with
+    | [|a, b|] -> a * 10 + b
+    | [|a|] -> a + 5
+    | [||] -> 7
+    | _ -> 99
+
+export def display_length :: i64 -> i64
+fn display_length n = (Display.display (ref (build n))).length
+
+/// The hash of a list does not depend on how its chunks are laid out.
+export def hash_layout :: i64 -> i64
+fn hash_layout n =
+    let values = build n
+    let copy = List.copy (ref values)
+    let other = build_last n
+    (if Hash.hash (ref values) == Hash.hash (ref copy) then 1 else 0) +
+    (if Hash.hash (ref values) != Hash.hash (ref other) then 10 else 0)
+
+/// A stack literal that List.cons consumes moves to the heap first.
+export def stack_cons :: i64 -> i64
+fn stack_cons n =
+    let values = [|n, n + 1, n + 2|]
+    weighted (ref (List.cons (n - 1) values))
+
+export def stack_tail :: i64 -> i64
+fn stack_tail n =
+    let values = [|n, n + 1, n + 2|]
+    weighted (ref (List.tail values))
+
+def make_three :: i64 -> [|i64|]
+fn make_three n =
+    let values = [|n, n + 1, n + 2|]
+    values
+
+export def stack_escape :: i64 -> i64
+fn stack_escape n =
+    let values = List.cons 1 (make_three n)
+    weighted (ref values) + weighted (ref (make_three (n + 1))) * 100
+
+/// Elements that own memory: the live slots of every chunk are dropped, in order.
+def build_words :: i64 -> [|string|]
+fn build_words n =
+    let words = ["a", "bb", "ccc", "dddd", "eeeee"]
+    let mut values: [|string|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (clone_string (&words[i % 5])) values
+    values
+
+def weighted_words :: ref [|string|] -> i64
+fn weighted_words values =
+    let mut total = 0i64
+    let mut position = 0i64
+    for value in values do
+        position = position + 1
+        total = total + value.length * position
+    total
+
+export def words_walk :: i64 -> i64
+fn words_walk n = weighted_words (ref (build_words n))
+
+export def words_index :: i64 -> i64
+fn words_index n =
+    let values = build_words n
+    let mut total = 0i64
+    for i in 0 .. n - 1 do total = total + values[i].length * (i + 1)
+    total
+
+export def words_tail :: i64 -> i64
+fn words_tail n =
+    let mut values = build_words n
+    for _ in 1 .. n / 2 do values = List.tail values
+    weighted_words (ref values) * 10 + values.length
+
+export def words_map :: i64 -> i64
+fn words_map n = weighted (ref (List.map_ref (word -> word.length * 3) (ref (build_words n))))
+
+export def words_drop :: i64 -> i64
+fn words_drop n = (build_words n).length
+
+/// The rest of a list of strings is a view of the same chunks.
+export def words_view :: i64 -> i64
+fn words_view n =
+    let values = build_words n
+    match &values with
+    | head :: second :: rest -> head.length + second.length * 10 + weighted_words rest * 100
+    | head :: rest -> head.length + weighted_words rest * 100
+    | _ -> 0
+
+/// Elements aligned to 16 bytes put the slots at offset 32 of a chunk.
+def build_wide :: i64 -> [|i128|]
+fn build_wide n =
+    let mut values: [|i128|] = [||]
+    for i in 0 .. n - 1 do values = List.cons ((i as i128) <<< 70) values
+    values
+
+export def wide_walk :: i64 -> i64
+fn wide_walk n =
+    let values = build_wide n
+    let mut total = 0i128
+    let mut position = 0i128
+    for value in values do
+        position = position + 1
+        total = total + value * position
+    (total >>> 70) as i64
+
+export def wide_index_tail :: i64 -> i64
+fn wide_index_tail n =
+    let mut values = build_wide n
+    let mut total = 0i128
+    for i in 0 .. n - 1 do
+        total = total + values[n - 1 - i] * 3i128 + values[0]
+        values = List.tail values
+    (total >>> 70) as i64
+
+/// Elements without a size: a chunk is only its header.
+def build_units :: i64 -> [|unit|]
+fn build_units n =
+    let mut values: [|unit|] = [||]
+    for _ in 0 .. n - 1 do values = List.cons () values
+    values
+
+export def units_walk :: i64 -> i64
+fn units_walk n =
+    let mut values = build_units n
+    let mut count = 0i64
+    for _ in values do count = count + 1
+    for _ in 1 .. n / 2 do values = List.tail values
+    count * 1000003 + values.length
+
+/// Lists of lists: dropping a chunk drops the lists in its live slots.
+def build_nested :: i64 -> [|[|i64|]|]
+fn build_nested n =
+    let mut values: [|[|i64|]|] = [||]
+    for i in 0 .. n - 1 do values = List.cons [|i, i + 1|] values
+    values
+
+export def nested_walk :: i64 -> i64
+fn nested_walk n = nested_total (ref (build_nested n))
+
+def nested_total :: ref [|[|i64|]|] -> i64
+fn nested_total values =
+    let mut total = 0i64
+    let mut position = 0i64
+    for inner in values do
+        position = position + 1
+        total = total + (inner[0] + inner[1] * 2) * position
+    total
+
+export def nested_tail :: i64 -> i64
+fn nested_tail n =
+    let mut values = build_nested n
+    for _ in 1 .. n / 3 do values = List.tail values
+    values.length
+
+/// Copies and conversions: the slots of elements that own nothing are copied as bytes, a chunk at a
+/// time; the elements that own memory are cloned one by one.
+export def wide_copy :: i64 -> i64
+fn wide_copy n =
+    let values = build_wide n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    let mut total = 0i128
+    let mut position = 0i128
+    for value in back do
+        position = position + 1
+        total = total + value * position
+    (total >>> 70) as i64 + (if back == values then 1000000 else 0)
+
+export def units_copy :: i64 -> i64
+fn units_copy n =
+    let values = build_units n
+    let copy = List.copy (ref values)
+    let array = List.to_array (ref copy)
+    let back = Array.to_list (ref array)
+    back.length * 1000003 + array.length * 7 + copy.length
+
+export def nested_copy :: i64 -> i64
+fn nested_copy n =
+    let values = build_nested n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    nested_total (ref back) + nested_total (ref values) + (if back == values then 100000000000 else 0)
+
+/// A pair has 7 bytes of padding, which a byte copy takes along.
+def build_pairs :: i64 -> [|i64 * i8|]
+fn build_pairs n =
+    let mut values: [|i64 * i8|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (i, (i % 100) as i8) values
+    values
+
+def weighted_pairs :: ref [|i64 * i8|] -> i64
+fn weighted_pairs values =
+    let mut total = 0i64
+    let mut position = 0i64
+    for pair in values do
+        position = position + 1
+        total = total + (match pair with | (a, b) -> a + (b as i64) * 1000) * position
+    total
+
+export def pairs_copy :: i64 -> i64
+fn pairs_copy n =
+    let values = build_pairs n
+    let copy = List.copy (ref values)
+    let back = Array.to_list (ref (List.to_array (ref copy)))
+    weighted_pairs (ref back) + (if back == values then 1000000000000 else 0)
+
+/// A stack literal of strings that escapes moves its elements to the heap with the chunk.
+def make_words :: unit -> [|string|]
+fn make_words _unit =
+    let values = [|"a" + "b", clone_string "ccc", "d" + "e" + "f" + "g"|]
+    values
+
+export def words_escape :: i64 -> i64
+fn words_escape n =
+    let values = List.cons ("x" + "yy") (make_words ())
+    weighted_words (ref values) + weighted_words (ref (make_words ())) * 100 + n
+
+/// A million elements: build by cons, copy, compare, pop, drop; nothing recurses.
+export def deep_ops :: i64 -> i64
+fn deep_ops n =
+    let values = build n
+    let copy = List.copy (ref values)
+    let same = if copy == values then 1 else 0
+    let mut rest = copy
+    for _ in 1 .. n do rest = List.tail rest
+    same * 1000000 + weighted (ref values) % 1000 + rest.length
+
+/// Elements with a user Drop that logs its order: each drop folds the element's id into a digest that depends on
+/// the order, in a cell that all the elements share (an `Arc`).
+record Tracked { id: i64, log: Arc<Atomic<i64>> }
+
+def note :: ref Tracked -> unit
+fn note value =
+    let cell = Arc.get (ref value.log)
+    Atomic.store cell (Atomic.load cell * 1000003 + value.id)
+
+instance Drop<Tracked> {
+    fn drop value = note value
+}
+
+/// The ids are n, n - 1, ..., 1 from the head: the elements are 16 bytes, so every cons that fills a free slot or adds a chunk.
+def build_tracked :: ref Arc<Atomic<i64>> -> i64 -> [|Tracked|]
+fn build_tracked log n =
+    let mut values: [|Tracked|] = [||]
+    for i in 1 .. n do values = List.cons (Tracked { id: i, log: Arc.share log }) values
+    values
+
+def consume :: [|Tracked|] -> unit
+fn consume _values = ()
+
+/// The elements are dropped in list order when the list is, across every chunk boundary.
+export def tracked_drop :: i64 -> i64
+fn tracked_drop n =
+    let log = Arc.new (Atomic.create 0i64)
+    consume (build_tracked (ref log) n)
+    Atomic.load (Arc.get (ref log))
+
+/// List.tail drops the head at once, from a first chunk that has free slots in front.
+export def tracked_tail_dropped :: i64 -> i64
+fn tracked_tail_dropped n =
+    let log = Arc.new (Atomic.create 0i64)
+    let mut values = build_tracked (ref log) n
+    for _ in 1 .. n / 3 do values = List.tail values
+    let seen = Atomic.load (Arc.get (ref log))
+    consume values
+    seen
+
+/// What the pops dropped, then the rest in list order: the same order as dropping the whole list.
+export def tracked_tail_all :: i64 -> i64
+fn tracked_tail_all n =
+    let log = Arc.new (Atomic.create 0i64)
+    let mut values = build_tracked (ref log) n
+    for _ in 1 .. n / 3 do values = List.tail values
+    consume values
+    Atomic.load (Arc.get (ref log))
+
+/// Every element dropped once: no owner of the shared cell is left but this one.
+export def tracked_owners :: i64 -> i64
+fn tracked_owners n =
+    let log = Arc.new (Atomic.create 0i64)
+    consume (build_tracked (ref log) n)
+    Arc.strong_count (ref log)
+
+/// values[index] of a list that List.cons grew: one past the last element, or before the first, traps however many
+/// chunks the list has and wherever its free slots are.
+export def index_at :: i64 -> i64 -> i64
+fn index_at n index = (build n)[index]
+
+/// A list of 1-byte elements is one chunk of 8 slots with free slots in front; it grows by chunks of 13, 20, ...
+def build_bytes :: i64 -> [|i8|]
+fn build_bytes n =
+    let mut values: [|i8|] = [||]
+    for i in 0 .. n - 1 do values = List.cons (i as i8) values
+    values
+
+export def bytes_at :: i64 -> i64 -> i64
+fn bytes_at n index = (build_bytes n)[index] as i64
+
+/// The same after List.tail: the pops leave free slots in front of the first chunk.
+export def tail_index_at :: i64 -> i64 -> i64 -> i64
+fn tail_index_at n pops index =
+    let mut values = build n
+    for _ in 1 .. pops do values = List.tail values
+    values[index]
+
+/// A literal that is complete when a later element of the enclosing expression raises is dropped once; a literal inside
+/// a literal, and a literal in a loop that the try is in, are freed whichever element raises.
+export def after_literal_list :: i64 -> i64
+fn after_literal_list at =
+    let huge = 9223372036854775807i64
+    let made = try (new [|to_string (1 + at), to_string (2 + at)|], to_string (@checked (1 + (if at == 0 then huge else 0)))) with | e -> e
+    match made with
+    | Ok (words, last) -> words.length * 10 + last.length
+    | Error _ -> -1 - at
+
+export def after_literal_array :: i64 -> i64
+fn after_literal_array at =
+    let huge = 9223372036854775807i64
+    let made = try (new [to_string (1 + at), to_string (2 + at)], to_string (@checked (1 + (if at == 0 then huge else 0)))) with | e -> e
+    match made with
+    | Ok (words, last) -> words.length * 10 + last.length
+    | Error _ -> -1 - at
+
+export def nested_literals :: i64 -> i64
+fn nested_literals at =
+    let huge = 9223372036854775807i64
+    let made = try new [|new [|to_string 1, to_string (@checked (2 + (if at == 0 then huge else 0)))|], new [|to_string (@checked (3 + (if at == 1 then huge else 0)))|]|] with | e -> e
+    match made with
+    | Ok lists -> lists.length
+    | Error _ -> -1 - at
+
+export def loop_in_try :: i64 -> i64
+fn loop_in_try at =
+    let huge = 9223372036854775807i64
+    let mut total = 0
+    for i in 0 .. 3 do
+        let made = try new [|to_string i, to_string (@checked (i + (if i == at then huge else 0)))|] with | e -> e
+        match made with
+        | Ok words -> total = total + words.length
+        | Error _ -> total = total + 100
+    total
+
+/// An exception that an element of a heap literal raises leaves the literal half made: the elements
+/// stored so far and the chunk (or the array) are freed, and the host checks that nothing stays live.
+/// `at` is the element that raises; -1 raises nowhere.
+export def raise_list_numbers :: i64 -> i64
+fn raise_list_numbers at =
+    let huge = 9223372036854775807i64
+    let made = try new [|@checked (1 + (if at == 0 then huge else 0)), @checked (2 + (if at == 1 then huge else 0)), @checked (3 + (if at == 2 then huge else 0))|] with | e -> e
+    match made with
+    | Ok values -> values[0] + values[1] * 10 + values[2] * 100
+    | Error _ -> -1 - at
+
+export def raise_list_words :: i64 -> i64
+fn raise_list_words at =
+    let huge = 9223372036854775807i64
+    let made = try new [|to_string (@checked (1 + (if at == 0 then huge else 0))), to_string (@checked (2 + (if at == 1 then huge else 0))), to_string (@checked (3 + (if at == 2 then huge else 0)))|] with | e -> e
+    match made with
+    | Ok words -> words[0].length + words[1].length * 10 + words[2].length * 100
+    | Error _ -> -1 - at
+
+export def raise_array_numbers :: i64 -> i64
+fn raise_array_numbers at =
+    let huge = 9223372036854775807i64
+    let made = try new [@checked (1 + (if at == 0 then huge else 0)), @checked (2 + (if at == 1 then huge else 0)), @checked (3 + (if at == 2 then huge else 0))] with | e -> e
+    match made with
+    | Ok values -> values[0] + values[1] * 10 + values[2] * 100
+    | Error _ -> -1 - at
+
+export def raise_array_words :: i64 -> i64
+fn raise_array_words at =
+    let huge = 9223372036854775807i64
+    let made = try new [to_string (@checked (1 + (if at == 0 then huge else 0))), to_string (@checked (2 + (if at == 1 then huge else 0))), to_string (@checked (3 + (if at == 2 then huge else 0)))] with | e -> e
+    match made with
+    | Ok words -> words[0].length + words[1].length * 10 + words[2].length * 100
+    | Error _ -> -1 - at

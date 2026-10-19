@@ -1,0 +1,530 @@
+#![cfg(all(feature = "fast-backend", unix))]
+
+//! The translator of the fast debug backend (PB05): what it reads, how it lays out types, and what it
+//! refuses. Behavior of the programs it builds is checked by `tests/fast_backend.mjs`. The tests build
+//! for the machine they run on, and `--backend fast` is for macOS and Linux hosts only.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+use tsuzuri::backend::{self, Options};
+use tsuzuri::llvm::{self, Allocator, EmitOptions, Entry};
+
+fn clang() -> String {
+    std::env::var("TSUZURI_CLANG").unwrap_or_else(|_| "clang".to_owned())
+}
+
+/// The constant that `expression` folds to when Clang compiles the module with `definitions`, or
+/// `None` where there is no Clang to ask.
+fn clang_constant(definitions: &str, expression: &str) -> Option<u64> {
+    let ir = format!("{definitions}\ndefine i64 @probe() {{\n  ret i64 {expression}\n}}\n");
+    let mut child = Command::new(clang())
+        .args([
+            "-x",
+            "ir",
+            "-O1",
+            "-S",
+            "-emit-llvm",
+            "-Wno-override-module",
+            "-",
+            "-o",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(ir.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    assert!(
+        output.status.success(),
+        "{ir}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("ret i64 "))?;
+    line.trim_start()
+        .strip_prefix("ret i64 ")?
+        .trim()
+        .parse()
+        .ok()
+}
+
+const DEFINITIONS: &str = "\
+%tz.string = type { ptr, i64 }
+%tz.closure = type { ptr, ptr, ptr, ptr }
+%tz.vec = type { ptr, i64, i64 }
+%\"tz.union.Result.Result[unit,IO.Error]\" = type { i8, [1 x i8] }
+%tz.alias = type i8
+%tz.record.Mixed = type { i8, i64, i8, i32, i16 }
+%tz.record.Nested = type { %tz.record.Mixed, [3 x %tz.string], i1, double }
+%tz.packed = type <{ i8, i32, i16 }>
+%tz.wide = type { i8, i128, i8 }
+%tz.mask = type { <4 x i1>, <4 x float>, i8 }
+%tz.tail = type { i64, [0 x i8] }
+%tz.forward = type { %tz.later, i32 }
+%tz.later = type { i8, i64 }
+";
+
+const TYPES: [&str; 33] = [
+    "i1",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "float",
+    "double",
+    "ptr",
+    "{ }",
+    "{ i8 }",
+    "{ i8, i64 }",
+    "{ i64, i8 }",
+    "{ i8, i16, i8, i32 }",
+    "[0 x i64]",
+    "[3 x i8]",
+    "[5 x i32]",
+    "[2 x { i8, i64 }]",
+    "<4 x i32>",
+    "<2 x double>",
+    "<16 x i8>",
+    "<8 x i16>",
+    "<32 x i8>",
+    "<3 x float>",
+    "<4 x i1>",
+    "%tz.string",
+    "%tz.closure",
+    "%tz.vec",
+    "%\"tz.union.Result.Result[unit,IO.Error]\"",
+    "%tz.record.Nested",
+    "%tz.packed",
+    "%tz.wide",
+    "%tz.mask",
+];
+
+#[test]
+fn layout_matches_clang() {
+    if Command::new(clang()).arg("--version").output().is_err() {
+        return;
+    }
+    let mut checked = 0;
+    for ty in
+        TYPES
+            .iter()
+            .copied()
+            .chain(["%tz.alias", "%tz.tail", "%tz.forward", "%tz.record.Mixed"])
+    {
+        let (size, align, offsets) = backend::layout_of(DEFINITIONS, ty)
+            .unwrap_or_else(|error| panic!("{ty}: {}", error.message));
+        let expected_size = clang_constant(
+            DEFINITIONS,
+            &format!("ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64)"),
+        )
+        .expect("clang folds the size");
+        let expected_align = clang_constant(
+            DEFINITIONS,
+            &format!(
+                "ptrtoint (ptr getelementptr ({{ i8, {ty} }}, ptr null, i32 0, i32 1) to i64)"
+            ),
+        )
+        .expect("clang folds the alignment");
+        assert_eq!(size, expected_size, "the size of {ty}");
+        assert_eq!(u64::from(align), expected_align, "the alignment of {ty}");
+        for (index, &offset) in offsets.iter().enumerate() {
+            let expected = clang_constant(
+                DEFINITIONS,
+                &format!(
+                    "ptrtoint (ptr getelementptr ({ty}, ptr null, i32 0, i32 {index}) to i64)"
+                ),
+            )
+            .expect("clang folds the offset");
+            assert_eq!(offset, expected, "the offset of field {index} of {ty}");
+        }
+        checked += 1;
+    }
+    assert!(checked >= 37);
+}
+
+fn options(threads: usize) -> Options {
+    Options {
+        verify: true,
+        ..Options::host(threads)
+    }
+}
+
+fn expect_refusal(ir: &str, construct: &str) {
+    let error = backend::compile(ir, &options(1)).expect_err(construct);
+    assert_eq!(error.code, "E2002", "{construct}: {}", error.message);
+    assert!(
+        error.message.contains(construct),
+        "expected {construct:?} in {:?}",
+        error.message
+    );
+    assert!(
+        error
+            .message
+            .ends_with("build with --backend llvm and report this program"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn rejects_unsupported_constructs_with_e2002() {
+    expect_refusal(
+        "define half @f(half %x) {\n  ret half %x\n}\n",
+        "the type half",
+    );
+    expect_refusal(
+        "define double @f(double %a, double %b) {\n  %r = fadd fast double %a, %b\n  ret double %r\n}\n",
+        "the fast-math flag 'fast' in @f",
+    );
+    expect_refusal(
+        "define void @f(ptr %p) {\n  %v = load <vscale x 4 x i32>, ptr %p\n  ret void\n}\n",
+        "a scalable vector",
+    );
+    expect_refusal(
+        "define void @f() {\n  call void asm sideeffect \"nop\", \"\"()\n  ret void\n}\n",
+        "inline assembly in @f",
+    );
+    expect_refusal(
+        "declare i32 @g()\ndeclare i32 @__gxx_personality_v0(...)\ndefine i32 @f() personality ptr @__gxx_personality_v0 {\n  ret i32 0\n}\n",
+        "the function attribute 'personality'",
+    );
+    expect_refusal(
+        "define i32 @f() {\n  %r = invoke i32 @g() to label %a unwind label %b\na:\n  ret i32 %r\nb:\n  ret i32 0\n}\ndeclare i32 @g()\n",
+        "the instruction 'invoke' in @f",
+    );
+    expect_refusal(
+        "@target = global i32 0\n@alias = alias i32, ptr @target\n",
+        "an alias (@alias)",
+    );
+    expect_refusal(
+        "declare i32 @printf(ptr, ...)\ndefine i32 @f(ptr %p) {\n  %r = call i32 (ptr, ...) @printf(ptr %p)\n  ret i32 %r\n}\n",
+        "a call of the variadic function @printf in @f",
+    );
+    expect_refusal(
+        "@g = global i32 0, section \"special\"\n",
+        "a section on @g",
+    );
+    expect_refusal(
+        "define i256 @f(i256 %x) {\n  ret i256 %x\n}\n",
+        "an integer wider than 128 bits",
+    );
+    expect_refusal(
+        "define void @f(i64 %n) {\n  %p = alloca i8, i64 %n\n  ret void\n}\n",
+        "an alloca with a variable count in @f",
+    );
+    expect_refusal(
+        "define void @f() {\nentry:\n  br label %next\nnext:\n  %p = alloca i64\n  ret void\n}\n",
+        "an alloca outside the entry block in @f",
+    );
+    expect_refusal(
+        "declare double @llvm.sin.f64(double)\ndefine double @f(double %x) {\n  %r = call double @llvm.sin.f64(double %x)\n  ret double %r\n}\n",
+        "the intrinsic llvm.sin.f64 in @f",
+    );
+    expect_refusal(
+        "define void @f(ptr addrspace(1) %p) {\n  ret void\n}\n",
+        "a pointer in address space 1",
+    );
+    expect_refusal(
+        "define x86_fp80 @f(x86_fp80 %x) {\n  ret x86_fp80 %x\n}\n",
+        "x86_fp80",
+    );
+    expect_refusal("@g = common global i32 0\n", "the linkage 'common'");
+    expect_refusal(
+        "define %tz.pair @f() {\n  ret %tz.pair zeroinitializer\n}\n%tz.pair = type { i64, i64 }\n",
+        "the result type { i64, i64 } of an external function",
+    );
+    expect_refusal(
+        "define void @f(i128 %x) {\n  ret void\n}\n",
+        "a 128-bit integer in the signature of an external function",
+    );
+    expect_refusal(
+        "define void @f() {\n  call void @missing()\n  ret void\n}\n",
+        "a call to the unknown function @missing in @f",
+    );
+    expect_refusal(
+        "define void @f() {\n  %x = frobnicate i32 1\n  ret void\n}\n",
+        "the instruction 'frobnicate' in @f",
+    );
+}
+
+fn expect_wasm_refusal(ir: &str, construct: &str) {
+    let error = backend::compile_wasm(ir, 1, false).expect_err(construct);
+    assert_eq!(error.code, "E2002", "{construct}: {}", error.message);
+    assert!(
+        error.message.contains(construct),
+        "expected {construct:?} in {:?}",
+        error.message
+    );
+}
+
+/// What the translators do not implement is refused, and not turned into a call that means something
+/// else: `byval` and `sret` follow the platform's convention for a function that other objects see,
+/// and a call is a plain call whatever a `musttail` asks for. What they do implement stays: the
+/// internal `byval` and `sret` of the runtime, and an `alloca` aligned beyond the stack's 16 bytes.
+#[test]
+fn refuses_the_conventions_that_it_would_not_implement() {
+    let sret = "declare void @g(ptr sret(i64) %p)\ndefine void @f(ptr %p) {\n  call void @g(ptr sret(i64) %p)\n  ret void\n}\n";
+    let byval = "declare void @g(ptr byval(i64) %p)\ndefine void @f(ptr %p) {\n  call void @g(ptr byval(i64) %p)\n  ret void\n}\n";
+    let exported = "define void @f(ptr byval(i64) %p) {\n  ret void\n}\n";
+    let call_only = "declare void @g(ptr)\ndefine void @f(ptr %p) {\n  call void @g(ptr byval(i64) %p)\n  ret void\n}\n";
+    let indirect =
+        "define void @f(ptr %fn, ptr %p) {\n  call void %fn(ptr sret(i64) %p)\n  ret void\n}\n";
+    let musttail = "declare i32 @g(i32)\ndefine i32 @f(i32 %x) {\n  %r = musttail call i32 @g(i32 %x)\n  ret i32 %r\n}\n";
+    let refusals = [
+        (
+            sret,
+            "a byval or sret parameter of an external function in @g",
+        ),
+        (
+            byval,
+            "a byval or sret parameter of an external function in @g",
+        ),
+        (
+            exported,
+            "a byval or sret parameter of an external function in @f",
+        ),
+        (
+            call_only,
+            "a byval or sret argument of a call of an external function in @f",
+        ),
+        (
+            indirect,
+            "a call through a pointer with a byval or sret argument in @f",
+        ),
+        (musttail, "a musttail call in @f"),
+    ];
+    for (ir, construct) in refusals {
+        expect_refusal(ir, construct);
+        expect_wasm_refusal(ir, construct);
+    }
+    // A function of the module's own passes them as the translators do, as the runtime's does.
+    let internal = "%S = type { i64, i64 }\ndefine internal fastcc void @inner(ptr noalias sret(%S) align 8 %out, ptr byval(%S) align 8 %in) {\n  %a = load i64, ptr %in, align 8\n  store i64 %a, ptr %out, align 8\n  ret void\n}\ndefine i64 @f(ptr %p) {\n  %r = alloca %S, align 8\n  call fastcc void @inner(ptr sret(%S) align 8 %r, ptr byval(%S) align 8 %p)\n  %v = load i64, ptr %r, align 8\n  ret i64 %v\n}\n";
+    backend::compile(internal, &options(1)).expect("native");
+    backend::compile_wasm(internal, 1, false).expect("wasm");
+    // The stack of the native code keeps 16 bytes of alignment, and an `alloca` that asks for more gets
+    // it from an address that is rounded up (the front end asks for 32 for a 256-bit vector); a
+    // WebAssembly frame is rounded down to the largest alignment that a slot asks for. The operations
+    // test runs both and compares the address with Clang's.
+    let aligned = "define i64 @f() {\n  %p = alloca i64, align 32\n  %v = ptrtoint ptr %p to i64\n  %m = and i64 %v, 31\n  ret i64 %m\n}\n";
+    backend::compile(aligned, &options(1)).expect("native keeps the alignment");
+    backend::compile_wasm(aligned, 1, false).expect("wasm keeps the alignment");
+    let natural = "define i64 @f() {\n  %p = alloca <8 x float>\n  ret i64 0\n}\n";
+    backend::compile(natural, &options(1)).expect("native keeps the natural alignment");
+}
+
+/// A program with strings, closures, records, a union, loops and a 128-bit integer, as the compiler
+/// emits it with the runtime in the module (numeric and math included).
+fn program_ir(source: &str) -> String {
+    let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    llvm::emit_with_options(
+        &module,
+        EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: llvm::F16Path::Soft,
+        },
+    )
+    .unwrap()
+}
+
+const PROGRAMS: [&str; 4] = [
+    "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"hello\"\n    0\n",
+    "record Point { x: i64, y: i64 }\ndef scale :: Point -> i64 -> Point = \\p k -> Point { x: p.x * k, y: p.y * k }\ndef main :: unit -> i32 = \\() ->\n    let q = scale (Point { x: 3, y: 4 }) 5\n    let words = [\"a\", \"bc\", \"def\"]\n    let total = Array.length (ref words) + (q.x as i64)\n    do! IO.write_line total\n    0\n",
+    "def main :: unit -> i32 = \\() ->\n    let a = 170141183460469231731687303715884105727i128\n    let b = a / 7i128 % 1000003i128\n    let f = 2.5 * (b as f64)\n    do! IO.write_line (f as i64)\n    0\n",
+    "union Shape = Circle of f64 | Square of f64\ndef area :: Shape -> f64 = \\s -> match s with\n    | Circle r -> 3.14159 * r * r\n    | Square w -> w * w\ndef main :: unit -> i32 = \\() ->\n    let offset = 10\n    let add = x -> x + offset\n    do! IO.write_line (add ((area (Square 4.0)) as i64))\n    do! IO.write_line (Display.display (area (Circle 1.0)))\n    0\n",
+];
+
+#[test]
+fn reads_and_translates_emitted_programs() {
+    for source in PROGRAMS {
+        let ir = program_ir(source);
+        let stats =
+            backend::read_module(&ir).unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+        assert!(
+            stats.functions > 20 && stats.instructions > 200,
+            "{stats:?}"
+        );
+        assert!(stats.reachable_functions <= stats.functions);
+        let object = backend::compile(&ir, &options(1))
+            .unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+        assert!(object.len() > 1000);
+    }
+}
+
+#[test]
+fn object_is_deterministic() {
+    for source in PROGRAMS {
+        let ir = program_ir(source);
+        let single = backend::compile(&ir, &options(1)).unwrap();
+        assert_eq!(single, backend::compile(&ir, &options(1)).unwrap());
+        for threads in [2, 5, 8] {
+            assert!(
+                single == backend::compile(&ir, &options(threads)).unwrap(),
+                "{threads} threads change the object of {source}"
+            );
+        }
+    }
+}
+
+/// The object format and machine of a relocatable object, read from its header.
+fn object_kind(bytes: &[u8]) -> String {
+    match bytes {
+        [0x7f, b'E', b'L', b'F', 2, 1, ..] => {
+            format!("elf {:#x}", u16::from_le_bytes([bytes[18], bytes[19]]))
+        }
+        [0xcf, 0xfa, 0xed, 0xfe, ..] => format!(
+            "macho {:#x}",
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+        ),
+        _ => format!("coff {:#x}", u16::from_le_bytes([bytes[0], bytes[1]])),
+    }
+}
+
+/// WP14: the object has the format of the machine it is for, whatever machine the compiler runs on,
+/// and the one target that cranelift-object cannot write (aarch64 Windows) is refused with E2002.
+#[test]
+fn objects_for_other_machines_have_their_formats() {
+    use tsuzuri::target::{Platform, parse_target};
+    let platform = |name: &str| Platform::new(parse_target(name).unwrap().1);
+    for (target, expected) in [
+        ("x86_64-unknown-linux-gnu", "elf 0x3e"),
+        ("aarch64-unknown-linux-gnu", "elf 0xb7"),
+        ("x86_64-apple-darwin", "macho 0x1000007"),
+        ("aarch64-apple-darwin", "macho 0x100000c"),
+        ("x86_64-pc-windows-msvc", "coff 0x8664"),
+    ] {
+        // The program with a 128-bit division needs the helpers that `windows_abi` adds on Windows.
+        for source in [PROGRAMS[0], PROGRAMS[1], PROGRAMS[3]] {
+            let options = Options {
+                platform: platform(target),
+                ..options(2)
+            };
+            let object = backend::compile(&program_ir(source), &options)
+                .unwrap_or_else(|error| panic!("{target}: {}", error.message));
+            assert_eq!(object_kind(&object), expected, "{target}");
+        }
+    }
+    let options = Options {
+        platform: platform("aarch64-pc-windows-msvc"),
+        ..options(1)
+    };
+    let error = backend::compile(&program_ir(PROGRAMS[0]), &options).unwrap_err();
+    assert_eq!(error.code, "E2002");
+    assert!(
+        error.message.contains("aarch64 on Windows"),
+        "{}",
+        error.message
+    );
+}
+
+/// The IR of a `-g` build, as `tsuzuri build -g` has it.
+fn debug_program_ir(source: &str) -> String {
+    let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    let sources = [tsuzuri::trap::TrapSource {
+        path: "proj/Main.tz",
+        text: source,
+    }];
+    llvm::emit_with_debug_info(
+        &module,
+        EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: llvm::F16Path::Soft,
+        },
+        &sources,
+        false,
+        false,
+    )
+    .unwrap()
+    .ir
+}
+
+/// WP12: `-g` IR gives an object with a line table and the program's functions, the same whatever
+/// the number of threads, and IR without debug information gives none.
+#[test]
+fn debug_information_adds_a_line_table() {
+    let contains =
+        |bytes: &[u8], needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+    for source in PROGRAMS {
+        let ir = debug_program_ir(source);
+        assert!(ir.contains("!DICompileUnit("), "{source}");
+        let object = backend::compile(&ir, &options(1))
+            .unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+        for needle in [
+            &b"debug_line"[..],
+            b"debug_info",
+            b"debug_ranges",
+            b"Main.tz",
+            b"Main.main",
+        ] {
+            assert!(
+                contains(&object, needle),
+                "{:?} is not in the object of {source}",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        for threads in [3, 8] {
+            assert!(
+                object == backend::compile(&ir, &options(threads)).unwrap(),
+                "{threads} threads change the -g object of {source}"
+            );
+        }
+        let plain = backend::compile(&program_ir(source), &options(1)).unwrap();
+        assert!(!contains(&plain, b"debug_line"), "{source}");
+        assert!(!contains(&plain, b"Main.tz"), "{source}");
+    }
+}
+
+/// `tsuzuri test --backend fast` (the test runner of the library): the same cases pass, fail and
+/// trap, with the same failure text and counterexamples.
+#[test]
+fn test_runner_reports_the_same_on_both_backends() {
+    use tsuzuri::driver::{Backend, TestOptions, run_tests};
+    let sources = [
+        "test \"passes\" = assert true\ntest \"traps\" = assert false\ntest \"passes after trap\" = assert (2 + 2 == 4)",
+        include_str!("fixtures/property/Props.tz"),
+        include_str!("fixtures/coverage/Calc.tz"),
+    ];
+    for source in sources {
+        let module = tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{error:?}"));
+        let report = |backend| {
+            let report = run_tests(
+                &module,
+                &TestOptions {
+                    backend,
+                    ..TestOptions::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{backend:?}: {}", error.message));
+            let results: Vec<_> = report
+                .results
+                .iter()
+                .map(|result| {
+                    (
+                        result.case.index,
+                        result.failure.clone(),
+                        result.output.clone(),
+                    )
+                })
+                .collect();
+            (results, report.ignored)
+        };
+        let expected = report(Backend::Llvm);
+        assert!(!expected.0.is_empty());
+        assert_eq!(report(Backend::Fast), expected, "{source}");
+    }
+}

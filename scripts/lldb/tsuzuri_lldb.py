@@ -11,11 +11,11 @@ past the address space gets no child, instead of an exception.
 """
 
 import lldb
-
 TEXT_LIMIT = 1024
 LENGTH_LIMIT = 1 << 32
 ADDRESS_LIMIT = 1 << 64
 NEST_LIMIT = 3
+LATIN1 = 1 << 62
 CATEGORY = "tsuzuri"
 ESCAPES = {0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 0x5C: "\\\\"}
 
@@ -114,6 +114,16 @@ def length_of(value, name="length"):
     return length
 
 
+def string_length(value):
+    """The number of units of a `string` and whether they are bytes: bit 62 of its length word marks
+    Latin-1 text (`TSUZURI_STRINGS=compact`), and bit 63 is never set."""
+    word = member(value, "length").GetValueAsSigned()
+    length = word & (LATIN1 - 1)
+    if word < 0 or length >= LENGTH_LIMIT:
+        raise Unreadable(f"<invalid length {word}>")
+    return length, bool(word & LATIN1)
+
+
 def read(valobj, address, size):
     if size == 0:
         return b""
@@ -161,10 +171,14 @@ def utf16(units):
 @guarded
 def string_summary(valobj):
     value = target(valobj)
-    length = length_of(value)
+    length, latin1 = string_length(value)
     count = min(length, TEXT_LIMIT)
-    data = read(valobj, member(value, "data").GetValueAsUnsigned(), 2 * count)
-    units = [data[index] | data[index + 1] << 8 for index in range(0, len(data), 2)]
+    address = member(value, "data").GetValueAsUnsigned()
+    if latin1:
+        units = list(read(valobj, address, count))
+    else:
+        data = read(valobj, address, 2 * count)
+        units = [data[index] | data[index + 1] << 8 for index in range(0, len(data), 2)]
     return '"' + text(utf16(units), '"', length > count) + '"'
 
 
@@ -275,7 +289,8 @@ def list_summary(valobj):
 
 
 class ListProvider:
-    """The elements of a list, in order along the `next` links of its nodes."""
+    """The elements of a list, in order. Its chunks follow the `next` links, and a chunk holds the
+    last `live` of its slots, `live` being the length from that chunk on, less its `rest`."""
 
     def __init__(self, valobj, _dict):
         self.valobj = valobj
@@ -283,35 +298,54 @@ class ListProvider:
 
     def update(self):
         self.count = 0
-        self.nodes = []
+        self.chunks = []
+        self.starts = []
         try:
             value = self.valobj.GetNonSyntheticValue()
             head = member(value, "head")
-            node = strip(head.GetType()).GetPointeeType()
-            field = node.GetFieldAtIndex(1)
-            self.offset = field.GetOffsetInBytes()
-            self.element = field.GetType()
+            chunk = strip(head.GetType()).GetPointeeType()
+            fields = {
+                chunk.GetFieldAtIndex(index).GetName(): chunk.GetFieldAtIndex(index)
+                for index in range(chunk.GetNumberOfFields())
+            }
+            self.rest = fields["rest"].GetOffsetInBytes()
+            self.capacity = fields["capacity"].GetOffsetInBytes()
+            self.slots = fields["slots"].GetOffsetInBytes()
+            self.element = fields["slots"].GetType().GetArrayElementType()
+            self.stride = self.element.GetByteSize()
             self.head = head.GetValueAsUnsigned()
             self.count = length_of(value)
         except Exception:
             self.count = 0
         return False
 
-    def node(self, index):
-        """The address of node `index`, following the links from the last node visited."""
-        process = self.valobj.GetProcess()
-        while len(self.nodes) <= index:
-            if self.nodes:
-                error = lldb.SBError()
-                address = process.ReadPointerFromMemory(self.nodes[-1], error)
-                if error.Fail():
-                    return 0
+    def word(self, address, size):
+        error = lldb.SBError()
+        value = self.valobj.GetProcess().ReadUnsignedFromMemory(address, size, error)
+        if error.Fail():
+            raise Unreadable()
+        return value
+
+    def chunk(self, number):
+        """The chunk `number` as `(address, position of its first element, its elements, its
+        first slot)`, found along the links from the last chunk visited."""
+        while len(self.chunks) <= number:
+            if self.chunks:
+                address, position, live, _ = self.chunks[-1]
+                position += live
+                address = self.word(address, self.valobj.GetProcess().GetAddressByteSize())
             else:
-                address = self.head
-            if address == 0:
-                return 0
-            self.nodes.append(address)
-        return self.nodes[index]
+                address, position = self.head, 0
+            if address == 0 or position >= self.count:
+                raise Unreadable()
+            rest = self.word(address + self.rest, 8)
+            capacity = self.word(address + self.capacity, 8)
+            live = self.count - position - rest
+            if not 0 < live <= capacity:
+                raise Unreadable()
+            self.chunks.append((address, position, live, capacity - live))
+            self.starts.append(position)
+        return self.chunks[number]
 
     def num_children(self, max_children=LENGTH_LIMIT):
         return min(self.count, max_children)
@@ -326,12 +360,23 @@ class ListProvider:
         if not 0 <= index < self.count:
             return None
         try:
-            address = self.node(index)
+            while not self.chunks or index >= self.starts[-1] + self.chunks[-1][2]:
+                self.chunk(len(self.chunks))
+            # The last chunk that starts at or before `index`.
+            low, high = 0, len(self.starts) - 1
+            while low < high:
+                middle = (low + high + 1) // 2
+                if self.starts[middle] <= index:
+                    low = middle
+                else:
+                    high = middle - 1
+            address, position, _, first = self.chunks[low]
+            slot = first + index - position
         except Exception:
             return None
-        if address == 0:
-            return None
-        return child_at(self.valobj, f"[{index}]", address + self.offset, self.element)
+        return child_at(
+            self.valobj, f"[{index}]", address + self.slots + slot * self.stride, self.element
+        )
 
 
 def is_collection(sbtype, _dict):
@@ -501,13 +546,20 @@ class UnionProvider:
 
 def is_function(sbtype, _dict):
     """Only the generated function value and `Task` types: a record may name its fields the same,
-    but its `code` is never a function pointer and its type name has no `->`."""
+    but its `descriptor` never points to a structure whose `code` is a function pointer, and its
+    type name has no `->`."""
     try:
         canonical = sbtype.GetCanonicalType()
-        if field_names(canonical) != ["code", "environment", "clone", "drop"]:
+        if field_names(canonical) != ["descriptor", "environment"]:
             return False
         name = strip(sbtype).GetName() or ""
-        code = canonical.GetFieldAtIndex(0).GetType().GetCanonicalType()
+        descriptor = canonical.GetFieldAtIndex(0).GetType().GetCanonicalType()
+        if not descriptor.IsPointerType():
+            return False
+        entries = descriptor.GetPointeeType().GetCanonicalType()
+        if entries.GetFieldAtIndex(0).GetName() != "code":
+            return False
+        code = entries.GetFieldAtIndex(0).GetType().GetCanonicalType()
         return (
             code.IsPointerType()
             and code.GetPointeeType().IsFunctionType()
@@ -522,7 +574,10 @@ def function_summary(valobj):
     value = target(valobj)
     if (strip(value.GetType()).GetName() or "").startswith("Task<"):
         return "<task>"
-    code = member(value, "code").GetValueAsUnsigned()
+    descriptor = member(value, "descriptor")
+    code = 0
+    if descriptor.GetValueAsUnsigned() != 0:
+        code = member(descriptor.Dereference(), "code").GetValueAsUnsigned()
     return f"<fn {function_name(valobj.GetTarget(), code)}>"
 
 
