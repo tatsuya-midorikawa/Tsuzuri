@@ -4,8 +4,9 @@
 //! arranged to say so:
 //!
 //! - A function `@tz.fn.<module>.<name>` (and its `tz.apply.`/`tz.env.` helpers) lives in the unit `m.<module>`.
-//!   Everything else (the runtime, the helpers that the emitter names after a type, the generated functions) lives in
-//!   one of 16 buckets `g.<hex digit>` chosen by a hash of the name.
+//!   The runtime and the helpers that the emitter names after a type live in one of 16 buckets `g.<hex digit>`
+//!   chosen by a hash of the name. A generated function (a lambda, an instance of a generic function) lives where the
+//!   functions that use it live when they are all in one unit, and in a bucket otherwise.
 //! - A name that holds a serial number (`$lambda.10`, `$mono.3`, `tz.specialized.4`) shifts when some other part of the
 //!   program changes. Such a function is renamed by the hash of its own text, with the callee names it calls
 //!   replaced by their own new names first (strongly connected components, callees first), so the name changes only
@@ -924,6 +925,18 @@ fn without_serials(name: &str) -> String {
     kept
 }
 
+/// For an adapter `tz.apply.<symbol>.<index>`: its index, its symbol, and the function `tz.fn.<symbol>` that it is for.
+fn adapter_function<'a>(parsed: &Parsed<'a>, name: &'a str) -> Option<(&'a str, &'a str, usize)> {
+    let (symbol, index) = name.strip_prefix("tz.apply.")?.rsplit_once('.')?;
+    if !all_digits(index) {
+        return None;
+    }
+    match parsed.symbols.get(format!("tz.fn.{symbol}").as_str()) {
+        Some(Symbol::Function(id)) => Some((index, symbol, *id)),
+        _ => None,
+    }
+}
+
 fn hex16(digest: &[u8; 32]) -> String {
     digest[..8]
         .iter()
@@ -1020,16 +1033,134 @@ fn function_edges(parsed: &Parsed<'_>, text: &str, nodes: &FastMap<usize, usize>
     targets.into_iter().collect()
 }
 
+/// The unit that a function is defined in: a module's, or one of the buckets.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Home<'a> {
+    Bucket(u64),
+    Module(&'a str),
+}
+
+/// The homes of the functions that refer to one generated function.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Users<'a> {
+    Nobody,
+    One(Home<'a>),
+    Several,
+}
+
+impl<'a> Users<'a> {
+    fn add(&mut self, home: Home<'a>) {
+        *self = match *self {
+            Users::Nobody => Users::One(home),
+            Users::One(other) if other == home => Users::One(home),
+            _ => Users::Several,
+        };
+    }
+
+    fn merge(&mut self, other: Users<'a>) {
+        match other {
+            Users::Nobody => {}
+            Users::One(home) => self.add(home),
+            Users::Several => *self = Users::Several,
+        }
+    }
+}
+
 struct Plan<'a> {
     /// The new name of a function whose name holds a serial number.
     renamed: Vec<Option<String>>,
-    /// The module that a user function belongs to.
-    modules: Vec<Option<&'a str>>,
+    /// The unit that defines each function that no other function defines.
+    homes: Vec<Home<'a>>,
     /// The function that defines each function: itself, or the first of the functions that have its new name and
     /// the same text (two equal lambdas in two modules are one function, as two equal functions are for the linker's
     /// identical-code folding; nothing in the language can tell them apart, because a function value cannot be
     /// compared).
     canonical: Vec<usize>,
+}
+
+/// The home of every function. A function with a stable name belongs to the module in its name, or, for the runtime
+/// and the helpers that the emitter names after a type, to the bucket that its name hashes to. A generated function
+/// (a lambda, an instance of a generic function, a specialization) has no name to say where it belongs, so it follows
+/// the functions that use it: when all of them are in one unit it goes there, so that an edit to a module changes the
+/// unit of that module alone however many lambdas it has; when they are in several it goes to the bucket that its
+/// name hashes to. The functions are placed users first, so a lambda inside a lambda follows the outer one.
+fn place<'a>(
+    parsed: &Parsed<'a>,
+    owners: &[Option<&'a str>],
+    renamed: &[Option<String>],
+    canonical: &[usize],
+    unstable: &[usize],
+    nodes: &FastMap<usize, usize>,
+    edges: &[Vec<usize>],
+) -> Vec<Home<'a>> {
+    let count = parsed.functions.len();
+    let by_name = |id: usize| {
+        Home::Bucket(bucket(
+            renamed[id].as_deref().unwrap_or(parsed.functions[id].name),
+        ))
+    };
+    let mut homes: Vec<Home<'a>> = (0..count)
+        .map(|id| match owners[id] {
+            Some(module) => Home::Module(module),
+            None => by_name(id),
+        })
+        .collect();
+    if unstable.is_empty() {
+        return homes;
+    }
+    // A function that is merged into another one is not defined, so it uses nothing; what it referred to is
+    // referred to by the function that defines it.
+    let representative = |node: usize| nodes[&canonical[unstable[node]]];
+    let mut users = vec![Users::Nobody; unstable.len()];
+    for id in 0..count {
+        if canonical[id] == id && !nodes.contains_key(&id) {
+            for &target in &edges[id] {
+                users[representative(target)].add(homes[id]);
+            }
+        }
+    }
+    let graph: Vec<Vec<usize>> = (0..unstable.len())
+        .map(|node| {
+            if canonical[unstable[node]] != unstable[node] {
+                return Vec::new();
+            }
+            let mut targets: Vec<usize> = edges[unstable[node]]
+                .iter()
+                .map(|&target| representative(target))
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            targets
+        })
+        .collect();
+    let mut component_of = vec![usize::MAX; unstable.len()];
+    // The components come callees first; the users of a function are placed before it when they run the other way.
+    for (number, component) in strongly_connected(&graph).into_iter().enumerate().rev() {
+        let members: Vec<usize> = component
+            .into_iter()
+            .filter(|&node| canonical[unstable[node]] == unstable[node])
+            .collect();
+        for &node in &members {
+            component_of[node] = number;
+        }
+        let mut together = Users::Nobody;
+        for &node in &members {
+            together.merge(users[node]);
+        }
+        for &node in &members {
+            if let Users::One(home) = together {
+                homes[unstable[node]] = home;
+            }
+        }
+        for &node in &members {
+            for &target in &graph[node] {
+                if component_of[target] != number {
+                    users[target].add(homes[unstable[node]]);
+                }
+            }
+        }
+    }
+    homes
 }
 
 fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
@@ -1047,16 +1178,23 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
     }
     let mut renamed: Vec<Option<String>> = vec![None; count];
     let mut canonical: Vec<usize> = (0..count).collect();
+    let nodes: FastMap<usize, usize> = unstable
+        .iter()
+        .enumerate()
+        .map(|(node, id)| (*id, node))
+        .collect();
+    // The generated functions that each function refers to. They name the generated functions (what a function
+    // calls decides its own name) and place them (who calls a function decides where it is defined).
+    let edges: Vec<Vec<usize>> = if unstable.is_empty() {
+        Vec::new()
+    } else {
+        (0..count)
+            .map(|id| function_edges(parsed, parsed.functions[id].text, &nodes))
+            .collect()
+    };
     if !unstable.is_empty() {
-        let nodes: FastMap<usize, usize> = unstable
-            .iter()
-            .enumerate()
-            .map(|(node, id)| (*id, node))
-            .collect();
-        let edges: Vec<Vec<usize>> = unstable
-            .iter()
-            .map(|id| function_edges(parsed, parsed.functions[*id].text, &nodes))
-            .collect();
+        let graph: Vec<Vec<usize>> = unstable.iter().map(|id| edges[*id].clone()).collect();
+        let edges = graph;
         // The names that are taken, with the digest of the text they stand for and the function that has it.
         let mut used: FastMap<String, ([u8; 32], usize)> = FastMap::default();
         for component in strongly_connected(&edges) {
@@ -1077,41 +1215,65 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
             }
             let full = hash.finalize();
             let digest = hex16(&full);
-            for (position, &member) in members.iter().enumerate() {
-                let mut name = format!(
-                    "{}.h{digest}",
-                    without_serials(parsed.functions[member].name)
-                );
-                if members.len() > 1 {
-                    name.push_str(&format!(".{position}"));
-                }
-                // The same name for the same text is one function; for another text (a collision of the
-                // 64 bits of the name) it is another name.
-                let mut candidate = name.clone();
-                let mut number = 1;
-                loop {
-                    match used.get(&candidate) {
-                        None => {
-                            used.insert(candidate.clone(), (full, member));
-                            break;
-                        }
-                        Some((other, first)) if *other == full => {
-                            canonical[member] = *first;
-                            break;
-                        }
-                        Some(_) => {
-                            number += 1;
-                            candidate = format!("{name}.{number}");
+            // An adapter `tz.apply.<symbol>.<index>` is named after the function `tz.fn.<symbol>` that it calls, as it
+            // was before: the debugger finds a function value's function by cutting the index off the adapter's name.
+            // The function is named first when both are in this component.
+            let callees: Vec<Option<(&str, &str, usize)>> = members
+                .iter()
+                .map(|&member| adapter_function(parsed, parsed.functions[member].name))
+                .collect();
+            let together = |callee: usize| members.contains(&callee);
+            for second in [false, true] {
+                for (position, &member) in members.iter().enumerate() {
+                    let adapter = callees[position];
+                    if adapter.is_some_and(|(_, _, callee)| together(callee)) != second {
+                        continue;
+                    }
+                    let mut name = format!(
+                        "{}.h{digest}",
+                        without_serials(parsed.functions[member].name)
+                    );
+                    if members.len() > 1 {
+                        name.push_str(&format!(".{position}"));
+                    }
+                    if let Some((index, _, callee)) = adapter
+                        && let Some(symbol) = renamed[callee]
+                            .as_deref()
+                            .and_then(|new| new.strip_prefix("tz.fn."))
+                    {
+                        name = format!("tz.apply.{symbol}.{index}");
+                    }
+                    // The same name for the same text is one function; for another text (a collision of the
+                    // 64 bits of the name) it is another name.
+                    let mut candidate = name.clone();
+                    let mut number = 1;
+                    loop {
+                        match used.get(&candidate) {
+                            None => {
+                                used.insert(candidate.clone(), (full, member));
+                                break;
+                            }
+                            Some((other, first)) if *other == full => {
+                                canonical[member] = *first;
+                                break;
+                            }
+                            Some(_) => {
+                                number += 1;
+                                candidate = format!("{name}.{number}");
+                            }
                         }
                     }
+                    renamed[member] = Some(candidate);
                 }
-                renamed[member] = Some(candidate);
             }
         }
     }
+    let homes = place(
+        parsed, &owners, &renamed, &canonical, &unstable, &nodes, &edges,
+    );
     Plan {
         renamed,
-        modules: owners,
+        homes,
         canonical,
     }
 }
@@ -1388,6 +1550,24 @@ impl<'p, 'a> Builder<'p, 'a> {
         }
     }
 
+    /// Notes the metadata nodes that the nodes in use refer to, without writing them.
+    fn close_metadata(&mut self) {
+        let parsed = self.parsed;
+        let mut index = 0;
+        while index < self.metas.len() {
+            if let Some(body) = parsed.metadata.get(self.metas[index]).copied().flatten() {
+                scan(body, |token| {
+                    if token.class == Class::Metadata
+                        && let Ok(old) = token.name.parse::<usize>()
+                    {
+                        slot(&mut self.metas, &mut self.meta_slots, old);
+                    }
+                });
+            }
+            index += 1;
+        }
+    }
+
     fn metadata_nodes(&mut self, out: &mut String) {
         let parsed = self.parsed;
         let mut index = 0;
@@ -1476,7 +1656,8 @@ impl<'p, 'a> Builder<'p, 'a> {
         }
 
         // Named metadata names nodes of its own. The list of compile units goes with a unit only when one of its
-        // functions already uses a compile unit (through its debug information).
+        // functions uses a compile unit, directly or through the nodes of its debug information.
+        self.close_metadata();
         let mut named_text = String::new();
         for line in &parsed.named_metadata {
             if line.starts_with("!llvm.dbg.cu") {
@@ -1614,23 +1795,13 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
     let modules: FastSet<&str> = input.modules.iter().copied().collect();
     let plan = plan(&parsed, &modules);
 
-    #[derive(PartialEq, Eq, PartialOrd, Ord)]
-    enum Home<'a> {
-        Bucket(u64),
-        Module(&'a str),
-    }
-
     let mut members: BTreeMap<Home<'_>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
-    for (id, function) in parsed.functions.iter().enumerate() {
+    for (id, _) in parsed.functions.iter().enumerate() {
         // A function that another one defines is not defined again.
         if plan.canonical[id] != id {
             continue;
         }
-        let home = match plan.modules[id] {
-            Some(module) => Home::Module(module),
-            None => Home::Bucket(bucket(plan.renamed[id].as_deref().unwrap_or(function.name))),
-        };
-        members.entry(home).or_default().0.push(id);
+        members.entry(plan.homes[id]).or_default().0.push(id);
     }
     for (id, global) in parsed.globals.iter().enumerate() {
         if global.form == GlobalForm::Single {
@@ -2208,13 +2379,17 @@ entry:
             main.text
                 .contains("declare hidden i64 @tz.fn.Helper.twice(i64 noundef)")
         );
-        assert!(
-            main.text
-                .lines()
-                .any(|line| line.starts_with("declare hidden i64 @tz.fn.$lambda.h")),
-            "{}",
-            main.text
-        );
+        // The lambda is used by `Main.f` alone: it is defined in the unit of `Main.f`, with its helper.
+        for definition in [
+            "define hidden i64 @tz.fn.$lambda.h",
+            "define hidden i64 @tz.apply.$lambda.h",
+        ] {
+            assert!(
+                main.text.lines().any(|line| line.starts_with(definition)),
+                "{}",
+                main.text
+            );
+        }
         let helper = unit(&units, "m.Helper");
         assert!(
             helper
@@ -2222,6 +2397,69 @@ entry:
                 .contains("define hidden i64 @tz.fn.Helper.twice(")
         );
         assert!(!helper.text.contains("@tz.fn.Main"));
+    }
+
+    /// A generated function is defined where the functions that use it are, when they are all in one unit: a lambda of
+    /// one module is in that module's unit, with the lambda it calls; a function that two modules use is in a bucket.
+    #[test]
+    fn generated_functions_follow_their_users() {
+        let lambda = |number: u32, body: &str| {
+            format!(
+                "define internal i64 @tz.fn.$lambda.{number}(i64 %x) {{\nentry:\n{body}  ret i64 %r\n}}\n"
+            )
+        };
+        let ir = format!(
+            "{}{}{}{}{}{}",
+            lambda(3, "  %r = add i64 %x, 3\n"),
+            lambda(1, "  %r = call i64 @tz.fn.$lambda.3(i64 %x)\n"),
+            lambda(2, "  %r = add i64 %x, 2\n"),
+            lambda(4, "  %r = add i64 %x, 4\n"),
+            "define internal i64 @tz.fn.Main.run(i64 %x) {\nentry:\n  %a = call i64 @tz.fn.$lambda.1(i64 %x)\n  %r = call i64 @tz.fn.$lambda.2(i64 %a)\n  ret i64 %r\n}\n",
+            "define internal i64 @tz.fn.Helper.run(i64 %x) {\nentry:\n  %r = call i64 @tz.fn.$lambda.2(i64 %x)\n  ret i64 %r\n}\n",
+        );
+        let units = split_text(&ir);
+        assert_self_contained(&ir, &units);
+        // The unit that holds the body of a function: a declaration in another unit has none.
+        let home = |number: u32| -> Vec<&str> {
+            let body = format!("%r = add i64 %x, {number}\n");
+            units
+                .iter()
+                .filter(|unit| unit.text.contains(&body))
+                .map(|unit| unit.name.as_str())
+                .collect()
+        };
+        // `$lambda.3` is called by `$lambda.1` alone, which `Main.run` alone calls: both are in `m.Main`.
+        assert_eq!(home(3), ["m.Main"]);
+        assert!(
+            unit(&units, "m.Main")
+                .text
+                .contains("define hidden i64 @tz.fn.$lambda.h")
+        );
+        // `$lambda.2` is used by two modules, and `$lambda.4` by none: they are in buckets.
+        for number in [2, 4] {
+            let homes = home(number);
+            assert!(
+                homes.len() == 1 && homes[0].starts_with("g."),
+                "$lambda.{number}: {homes:?}"
+            );
+        }
+    }
+
+    /// The debugger finds the function that a function value calls by cutting the index off the adapter's name
+    /// (`tz.apply.<symbol>.<index>` to `tz.fn.<symbol>`): a renamed adapter keeps that.
+    #[test]
+    fn an_adapter_is_named_after_its_function() {
+        let units = split_text(SAMPLE);
+        let main = unit(&units, "m.Main");
+        let symbol = main
+            .text
+            .lines()
+            .find_map(|line| line.strip_prefix("define hidden i64 @tz.fn.$lambda."))
+            .and_then(|rest| rest.split('(').next())
+            .unwrap();
+        assert!(symbol.starts_with('h'), "{symbol}");
+        let adapter = format!("define hidden i64 @tz.apply.$lambda.{symbol}.0(");
+        assert!(main.text.contains(&adapter), "{}", main.text);
     }
 
     #[test]

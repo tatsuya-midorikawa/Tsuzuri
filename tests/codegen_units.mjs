@@ -24,6 +24,14 @@ const realClang = spawnSync("which", [process.env.TSUZURI_CLANG ?? "clang"], { e
 const MODULES = 8;
 const cases = [];
 const test = (name, body) => cases.push([name, body]);
+// The checks that need an LLVM tool skip where it is missing, unless a CI toolchain (LLVM_PREFIX) turns a skip into a failure.
+const strict = process.env.TSUZURI_UNITS_STRICT === "1" || Boolean(process.env.LLVM_PREFIX);
+const dwarfdump = process.env.TSUZURI_DWARFDUMP ?? "llvm-dwarfdump";
+const available = (program) => spawnSync(program, ["--version"], { stdio: "ignore" }).status === 0;
+function skip(what, program) {
+  assert.ok(!strict, `${what}: ${program} is required`);
+  console.log(`codegen units: skipping ${what} (no ${program})`);
+}
 
 function execute(program, args, { env = {}, input = "", success = true, cwd } = {}) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 300_000, env: { ...process.env, ...env }, input, cwd, maxBuffer: 64 * 1024 * 1024 });
@@ -182,6 +190,7 @@ test("C6 eligibility", () => {
   assert.ok(units(["--cpu", "native"]) > 3, "--cpu native is split");
   assert.ok(units(["--allocator", "small"]) > 3, "--allocator small is split");
   assert.ok(units(["--trap-info"]) > 3, "--trap-info is split");
+  assert.ok(units(["-g"]) > 3, "-g is split");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "single" }), 0, "TSUZURI_CODEGEN_UNITS=single");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "auto" }), 0, "a small program stays one unit under auto");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "" }), 0, "an empty TSUZURI_CODEGEN_UNITS is auto");
@@ -369,6 +378,48 @@ test("C9 run -O0", () => {
   assert.match(trapped.stderr, trapMessage("C"));
   const reference = run("xy", { TSUZURI_CODEGEN_UNITS: "single" });
   assert.deepEqual({ status: trapped.status, stdout: trapped.stdout, stderr: trapped.stderr }, { status: reference.status, stdout: reference.stdout, stderr: reference.stderr });
+});
+
+// C10: `-g` is built from units too: every unit has the debug information of its functions, which together are the
+// functions of the single module, and an edit changes one unit.
+test("C10 debug information", () => {
+  const space = workspace();
+  const split = space.build(["-g", "--no-cache"], { output: "split" });
+  assert.ok(space.compiled().units.length > MODULES, "-g is split");
+  const single = space.build(["-g", "--no-cache"], { output: "single", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+  for (const out of [split.out, single.out]) assert.equal(run(out, "12345").stdout, expectedOutput(MODULES, "12345"));
+  // macOS keeps the DWARF in the file beside the executable, Linux in the executable.
+  const symbols = (out) => (process.platform === "darwin" ? `${out}.dwarf` : out);
+  if (available(dwarfdump)) {
+    const functions = (out) => {
+      const info = execute(dwarfdump, ["--debug-info", symbols(out)]).stdout;
+      return [...new Set(info.split("DW_TAG_subprogram").slice(1).map((part) => /DW_AT_name\s+\("([^"]*)"\)/.exec(part)?.[1]).filter(Boolean))].sort();
+    };
+    for (const out of [split.out, single.out]) execute(dwarfdump, ["--verify", symbols(out)]);
+    const names = functions(single.out);
+    assert.ok(names.some((name) => name.startsWith("Module0.")) && names.includes("Main.main"), names.join(" "));
+    assert.deepEqual(functions(split.out), names);
+  } else {
+    skip("DWARF verification", dwarfdump);
+  }
+  // The same debug information from the same text. (The UUID that Apple's linker gives an executable follows the objects'
+  // paths and times, so the bytes of a macOS debug build differ from build to build, a single module included.)
+  const again = space.build(["-g", "--no-cache"], { output: "again" });
+  if (available(dwarfdump)) {
+    // The first line of a dump names the file.
+    const dump = (out) => execute(dwarfdump, ["--debug-info", "--debug-line", symbols(out)]).stdout.split("\n").slice(1).join("\n");
+    assert.equal(dump(again.out), dump(split.out));
+  } else if (process.platform !== "darwin") {
+    sameBytes(split.out, again.out);
+  }
+  // An edit of one module changes the unit of that module, with its debug information, and nothing else.
+  const edited = workspace();
+  edited.build(["-g"], { output: "cold" });
+  edited.compiled();
+  for (const [name, text] of moduleFiles(2, { salt: 1 })) writeFileSync(join(edited.project, name), text);
+  const rebuilt = edited.build(["-g"], { output: "edited" });
+  assert.equal(edited.compiled().units.length, 1);
+  assert.equal(run(rebuilt.out, "12345").stdout, expectedOutput(MODULES, "12345", { index: 2, salt: 1 }));
 });
 
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.

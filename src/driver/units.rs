@@ -75,7 +75,6 @@ pub(super) fn eligible(
         && options.emit == Emit::Executable
         && options.optimization == OptLevel::O0
         && options.backend == Backend::Llvm
-        && !options.debug_info
         && (!options.trap_info || trap_sites_stable)
         && !options.trap_return
         && !options.freestanding
@@ -437,6 +436,10 @@ mod tests {
                 allocator: Allocator::Small,
                 ..base
             },
+            BuildOptions {
+                debug_info: true,
+                ..base
+            },
         ] {
             assert!(ok(options, host, &Profile::None), "{options:?}");
         }
@@ -517,13 +520,6 @@ mod tests {
                 "--backend fast",
                 BuildOptions {
                     backend: Backend::Fast,
-                    ..base
-                },
-            ),
-            (
-                "-g",
-                BuildOptions {
-                    debug_info: true,
                     ..base
                 },
             ),

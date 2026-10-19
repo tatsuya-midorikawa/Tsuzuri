@@ -3998,6 +3998,9 @@ fn build_complete(
                     .map(OsString::from)
                     .collect();
                 args.push(options.optimization.flag().into());
+                if options.debug_info {
+                    args.push("-g".into());
+                }
                 args.extend(compile_args(platform));
                 if options.cpu == Cpu::Native {
                     args.extend(
@@ -4038,6 +4041,14 @@ fn build_complete(
             }
         }
         let runtime_object = temporary.path.join("task.o");
+        // The Clang run that links the units reads their objects; a debug build on macOS links in a step of its own,
+        // after which dsymutil reads the objects again, so the objects stay where they are until the end of the build.
+        let units_linked_by_clang =
+            unit_objects.is_some() && options.emit == Emit::Executable && dwarf_sidecar.is_none();
+        let module_input: OsString = match &unit_objects {
+            Some(objects) => units::response_file(objects, &temporary.path)?,
+            None => object.clone().into_os_string(),
+        };
         // The fast backend writes no IR to merge: its object joins the C runtime in the relocatable link below,
         // which on macOS leaves a debug map in place of the DWARF.
         if fast
@@ -4375,13 +4386,10 @@ fn build_complete(
         if options.emit == Emit::Bitcode {
             clang.arg("-flto=thin");
         }
-        match &unit_objects {
-            Some(objects) => {
-                clang.arg(units::response_file(objects, &temporary.path)?);
-            }
-            None => {
-                clang.arg(if fast { &object } else { &ir });
-            }
+        if unit_objects.is_some() {
+            clang.arg(&module_input);
+        } else {
+            clang.arg(if fast { &object } else { &ir });
         }
         clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
@@ -4452,6 +4460,8 @@ fn build_complete(
                 fs::rename(&object, &artifact)
                     .map_err(|error| io_error("write object", &artifact, error))?;
             }
+        } else if unit_objects.is_some() && !units_linked_by_clang {
+            // The units are compiled; the step that follows links their objects.
         } else {
             let mut clang_hint = linker_hint(cross_hint(
                 platform,
@@ -4512,7 +4522,7 @@ fn build_complete(
                 .args(target_args(platform))
                 .args(sdk_args(platform)?)
                 .args(final_link_args(platform)?)
-                .arg(&object)
+                .arg(&module_input)
                 .args(["-g", "-lm"]);
             // The link of an instrumented program reads Clang's profile runtime, which the compile did not.
             if let Some(staged) = staged_profile
