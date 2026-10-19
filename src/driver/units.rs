@@ -6,9 +6,11 @@
 //! the files, on this thread's workers) and the wait for Clang as `tool.<clang>`. A worker never touches the
 //! timings, so the phases are wall-clock time and do not overlap.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -170,6 +172,19 @@ fn object_name(index: usize) -> String {
     format!("u{index:05}.o")
 }
 
+/// What the unit cache says about one unit.
+#[derive(Default)]
+struct Lookup {
+    key: Option<String>,
+    /// The cached object, until it is written for the linker.
+    object: Option<Vec<u8>>,
+    /// The unit is in the cache and its object is written for the linker.
+    hit: bool,
+    /// The metadata of the entry when its time of use is to be written.
+    touch: Option<serde_json::Value>,
+    message: Option<String>,
+}
+
 /// The response file that names the objects to link, one quoted path per line (a link of thousands of objects does not
 /// fit on a command line everywhere), as the argument `@<file>`.
 pub(super) fn response_file(objects: &[PathBuf], directory: &Path) -> Result<OsString, Diagnostic> {
@@ -258,40 +273,63 @@ pub(super) fn build(
         }
     });
 
-    // The keys and the cache reads, with the objects of the hits written for the linker.
+    // The keys and the cache reads come first and the files are written after them: on macOS the opens of a process
+    // are an order of magnitude slower while its other threads create files, so reading and writing in one pass cost
+    // more than compiling the units.
     let indices: Vec<usize> = (0..units.len()).collect();
-    let lookups = parallel(&indices, |&index| {
+    let mut lookups = parallel(&indices, |&index| {
         let Some((unit_cache, prefix)) = &cache else {
-            return (None, false, None);
+            return Lookup::default();
         };
         let key = cache::unit_key(prefix, &units[index].text);
-        match unit_cache.load(&key) {
-            Ok(Some(mut artifact)) if artifact.files.len() == 1 => {
-                let Some(file) = artifact.files.remove("artifact") else {
-                    return (Some(key), false, None);
-                };
-                match fs::write(&objects[index], file.bytes) {
-                    Ok(()) => (Some(key), true, None),
-                    Err(error) => (
-                        Some(key),
-                        false,
-                        Some(format!("unit cache read failed; rebuilding: {error}")),
-                    ),
-                }
-            }
-            Ok(_) => (Some(key), false, None),
-            Err(error) => (
-                Some(key),
-                false,
-                Some(format!("unit cache read failed; rebuilding: {error}")),
-            ),
+        match unit_cache.read(&key) {
+            Ok(Some((mut artifact, due))) if artifact.files.len() == 1 => Lookup {
+                object: artifact.files.remove("artifact").map(|file| file.bytes),
+                touch: due,
+                key: Some(key),
+                ..Lookup::default()
+            },
+            Ok(_) => Lookup {
+                key: Some(key),
+                ..Lookup::default()
+            },
+            Err(error) => Lookup {
+                key: Some(key),
+                message: Some(format!("unit cache read failed; rebuilding: {error}")),
+                ..Lookup::default()
+            },
         }
     });
-    if let Some(message) = lookups.iter().find_map(|(_, _, message)| message.clone()) {
+    // The objects of the hits, for the linker.
+    let hits: Vec<usize> = indices
+        .iter()
+        .copied()
+        .filter(|index| lookups[*index].object.is_some())
+        .collect();
+    let restored = parallel(&hits, |&index| {
+        fs::write(
+            &objects[index],
+            lookups[index].object.as_deref().unwrap_or_default(),
+        )
+    });
+    for (index, result) in hits.into_iter().zip(restored) {
+        let lookup = &mut lookups[index];
+        lookup.object = None;
+        match result {
+            Ok(()) => lookup.hit = true,
+            Err(error) => {
+                lookup.touch = None;
+                lookup.message = Some(format!("unit cache read failed; rebuilding: {error}"));
+            }
+        }
+    }
+    if let Some(message) = lookups.iter().find_map(|lookup| lookup.message.clone()) {
         messages.push(message);
     }
-    let misses: Vec<usize> = (0..units.len())
-        .filter(|index| !lookups[*index].1)
+    let misses: Vec<usize> = indices
+        .iter()
+        .copied()
+        .filter(|index| !lookups[*index].hit)
         .collect();
 
     // The files that Clang reads.
@@ -304,7 +342,6 @@ pub(super) fn build(
     }
     drop(units_time);
 
-    let mut stored_any = false;
     let mut compiled: Vec<(Vec<usize>, String)> = Vec::new();
     if !misses.is_empty() {
         let bundles = bundles(&units, &misses, jobs());
@@ -365,17 +402,24 @@ pub(super) fn build(
         }
         stores.sort_unstable();
         if let Some((unit_cache, _)) = &cache {
-            let results = parallel(&stores, |&index| {
-                let Some(key) = &lookups[index].0 else {
-                    return Ok(false);
-                };
-                let paths = std::collections::BTreeMap::from([(
+            // As with the reads of the cache, every object is read before the first entry is written.
+            let read = parallel(&stores, |&index| {
+                cache::read_files(&BTreeMap::from([(
                     "artifact".to_owned(),
                     objects[index].clone(),
-                )]);
-                unit_cache.store_entry(key, &paths, &[])
+                )]))
             });
-            stored_any = results.iter().any(|result| matches!(result, Ok(true)));
+            let prepared: Vec<_> = stores.iter().copied().zip(read).collect();
+            let results = parallel(&prepared, |(index, files)| {
+                let Some(key) = &lookups[*index].key else {
+                    return Ok(false);
+                };
+                match files {
+                    Ok(files) => unit_cache.store_files(key, files, &[]),
+                    Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+                }
+            });
+            let stored_any = results.iter().any(|result| matches!(result, Ok(true)));
             if let Some(Err(error)) = results.into_iter().find(Result::is_err) {
                 messages.push(format!("unit cache write failed: {error}"));
             }
@@ -386,7 +430,22 @@ pub(super) fn build(
         }
         drop(units_time);
     }
-    let _ = stored_any;
+    // The time of use of the entries that were read, written once all the reads are done. A failure only leaves the
+    // entry looking older than it is.
+    if let Some((unit_cache, _)) = &cache {
+        let touches: Vec<_> = lookups
+            .iter()
+            .filter(|lookup| lookup.hit)
+            .filter_map(|lookup| Some((lookup.key.as_ref()?, lookup.touch.as_ref()?)))
+            .collect();
+        if !touches.is_empty() {
+            let units_time = crate::timings::Phase::start("units");
+            parallel(&touches, |(key, metadata)| {
+                unit_cache.touch(key, (*metadata).clone())
+            });
+            drop(units_time);
+        }
+    }
     for (_, message) in compiled {
         collect_message(messages, message);
     }

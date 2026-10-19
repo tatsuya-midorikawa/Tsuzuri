@@ -247,7 +247,7 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | --- | --- | --- |
 | `--backend llvm\|fast` | `llvm` | `build`・`run`・`test` が、Tsuzuri の出した LLVM IR を機械語にする道具。`llvm` は Clang、`fast` はコンパイラに組み込んだ翻訳器です（native は Cranelift、wasm32 は wasm の命令を直接書きます） |
 
-`--backend fast` は、`-O0` の編集とビルドの待ち時間を短くするためのものです。Tsuzuri が `-O0` で出す LLVM IR（`--emit llvm -O0` と同じテキスト）を、Clang に渡さずにコンパイラの中で機械語の object にし、リンクだけを今までどおり Clang で行います。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表と `run` の `E2005` の報告、`Drop` の順序は `llvm` のビルドと同じで、変わるのは機械語だけです。`--backend` を付けないビルドの IR・object・実行ファイルは、この機能がなかったときと同じです。
+`--backend fast` は、`-O0` の編集とビルドの待ち時間を短くするためのものです。Tsuzuri が `-O0` で出す LLVM IR（`--emit llvm -O0` と同じテキスト）を、Clang に渡さずにコンパイラの中で機械語の object にし、リンクだけを今までどおり Clang で行います。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表と `run` の `E2005` の報告、`Drop` の順序は `llvm` のビルドと同じで（`llvm` のビルドを [codegen unit](#コード生成の単位codegen-unit) に分けたときは、位置表の `id` だけが違います）、変わるのは機械語だけです。`--backend` を付けないビルドの IR・object・実行ファイルは、この機能がなかったときと同じです（codegen unit に分けるビルドを除きます）。
 
 使える組み合わせは次のとおりです。これ以外は、ビルドに入る前に `E2000` で、`--backend llvm` を使うよう伝えます。
 
@@ -279,7 +279,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 
 `--backend fast --target wasm32 -O0` は、wasm32 の `-O0` のビルドでも、Tsuzuri の出した LLVM IR を Clang に渡さずに、コンパイラ自身が WebAssembly の object にします。object は、`numeric`・`math` の runtime の object（Clang が作ったものか、同梱のもの）と一緒に、今までどおり `wasm-ld` でリンクします。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。`--emit wasm`（既定）と `--emit object` が使え、`--wasm-max-memory`・`--wasm-stack-size`・`--trap-info`・`--allocator`・`--no-cache` も `llvm` のときと同じです。付けると `E2000` になるのは、`--wasm-feature simd128|threads|jspi|webgpu|net`、`--wasm-host wasi`、`--wasm-opt`、`-g`（wasm の DWARF は `llvm` だけです）、`wasm64`、`wasm` と `object` 以外の `--emit` です。
 
-- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 970 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造。33〜63 bit の幅の overflow の演算と、ポインタ越しの呼び出しの narrow な結果を含みます）は、Clang の object と同じ結果になります。
+- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です。`llvm` のビルドを [codegen unit](#コード生成の単位codegen-unit) に分けたときは、unit の object のリンクの順になります）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 970 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造。33〜63 bit の幅の overflow の演算と、ポインタ越しの呼び出しの narrow な結果を含みます）は、Clang の object と同じ結果になります。
 - 違うもの: module は `llvm` の `-O0` のものより大きくなります（`examples/` と `tests/fixtures/` の 94 個の合計で 1.10 倍、合成プロジェクトで 1.40〜1.43 倍。最適化せず、命令を定型で並べるためで、`llvm` と同じ runtime の object は変わりません）。NaN の符号と payload は、WebAssembly が決めていないので、同じ入力でも `llvm` と一致するとは限りません（`NaN` かどうかは同じです）。暴走する再帰は、`llvm` ではシャドウスタックの境界か V8 のスタックのどちらかで止まりますが、止まる深さと報告の種類（`RuntimeError` か `RangeError`）が `fast` では変わることがあります。
 - `E2002` になるもの（翻訳器のコードで確かめた一覧です）: `llvm.fma`（WebAssembly に fused の命令がありません。`llvm.fmuladd` は積と和に分けて翻訳します）、128 bit の積の overflow（`llvm.smul.with.overflow.i128`・`llvm.umul.with.overflow.i128`）、翻訳器の表にない `llvm.*`（`llvm.round`・`llvm.minnum`・`llvm.maxnum`、`llvm.sin` などの数学関数）、整数の load と store で 1〜16・32・64・128 bit 以外の幅（`i24`・`i48`・`i96` など）、可変引数の関数の呼び出し、基本ブロックが 65,521 個を超える関数（V8 が `br_table` の 65,520 個を超える対象を持つ module を拒否するので、翻訳を止めます）、local が 40,000 個を超える関数（数えるのは値の数ではなく、最後の使用のあとで別の値が使い回したあとの local の数です。値が 100,000 個ある連鎖は翻訳できますが、同時に生きている値が 40,010 個ある関数は止まります（39,990 個なら翻訳できます））、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、`musttail` の呼び出し、runtime の object が 128 bit の結果を 2 つの値で返すと決めたときの、pointer 越しの 128 bit の結果の呼び出しです。
 - 128 bit の整数を返す runtime の関数（`__multi3`・`__ashlti3`・`__udivti3` など）の型は、リンクする runtime の object が import する型で決めます。Clang 21 は `-mmultivalue` を付けても、先頭の pointer に結果を書く型にするので、そのような object が決めなければ（`--emit object` のように runtime の object を渡さないときを含みます）pointer の型にします。`tests/fast_backend.mjs` が、`--emit object` の module を、`__int128` を使う Clang の object とリンクして、`wasm-ld` が型の食い違いの warning を出さず、Clang の呼び出しが正しい結果を得ることを確かめています。
@@ -332,7 +332,7 @@ Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジ�
 error[E2000]: invalid TSUZURI_CODEGEN_UNITS value 'fast'; use 'auto', 'single' or 'split'
 ```
 
-IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。
+IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。
 
 `--trap-info` を付けた分けるビルドは、トラップの site の番号を、ソースファイルのパスとファイルの中の範囲から決めます（分けない `-O0` のビルドは、これまでどおり出現順の通し番号です）。`<出力>.trap.json` の位置表も、コードに書いた番号から作るので、`kind`・`path`・位置は同じで、`id` だけが違います。別のファイルを編集しても、ほかのファイルの番号は変わりません。
 

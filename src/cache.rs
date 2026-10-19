@@ -410,6 +410,27 @@ pub(crate) fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// The files that [`BuildCache::store_files`] writes, read from `paths` (name to source file).
+pub(crate) fn read_files(
+    paths: &BTreeMap<String, PathBuf>,
+) -> io::Result<BTreeMap<String, CachedFile>> {
+    let mut remaining = MAX_ENTRY_BYTES;
+    let mut files = BTreeMap::new();
+    for (name, source) in paths {
+        let bytes = read_regular(source, remaining)?;
+        remaining -= bytes.len() as u64;
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::metadata(source)?.permissions().mode() & 0o777
+        };
+        #[cfg(not(unix))]
+        let mode = 0;
+        files.insert(name.clone(), CachedFile { bytes, mode });
+    }
+    Ok(files)
+}
+
 pub(crate) fn default_root() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("TSUZURI_CACHE_DIR") {
         return (!root.is_empty()).then(|| PathBuf::from(root));
@@ -700,7 +721,21 @@ impl BuildCache {
     }
 
     pub(crate) fn load(&self, key: &str) -> io::Result<Option<CachedArtifact>> {
-        let mut metadata = match self.metadata(key) {
+        let Some((artifact, due)) = self.read(key)? else {
+            return Ok(None);
+        };
+        if let Some(metadata) = due {
+            self.touch(key, metadata)?;
+        }
+        Ok(Some(artifact))
+    }
+
+    /// [`load`](Self::load) without writing the time of use: the metadata comes back instead when that is due, for
+    /// [`touch`](Self::touch). A caller that reads thousands of entries reads them all in one pass and writes in the
+    /// next, because on macOS the opens of a process are an order of magnitude slower while its other threads create
+    /// files (measured with the unit cache, PB07).
+    pub(crate) fn read(&self, key: &str) -> io::Result<Option<(CachedArtifact, Option<Value>)>> {
+        let metadata = match self.metadata(key) {
             Ok(value) => value,
             Err(error)
                 if matches!(
@@ -778,16 +813,19 @@ impl BuildCache {
             }
             Err(error) => return Err(error),
         };
-        let now = now_ms();
         let used = metadata["last_used_unix_ms"].as_u64().unwrap_or(0);
-        if self.touch_ms == 0 || now.saturating_sub(used) >= self.touch_ms {
-            metadata["last_used_unix_ms"] = json!(now);
-            let temporary = stage(&self.root)?;
-            let staged = temporary.path.join("metadata.json");
-            fs::write(&staged, serde_json::to_vec(&metadata)?)?;
-            fs::rename(staged, self.root.join(key).join("metadata.json"))?;
-        }
-        Ok(Some(artifact))
+        let due = (self.touch_ms == 0 || now_ms().saturating_sub(used) >= self.touch_ms)
+            .then_some(metadata);
+        Ok(Some((artifact, due)))
+    }
+
+    /// Writes the time of use into the metadata that [`read`](Self::read) returned.
+    pub(crate) fn touch(&self, key: &str, mut metadata: Value) -> io::Result<()> {
+        metadata["last_used_unix_ms"] = json!(now_ms());
+        let temporary = stage(&self.root)?;
+        let staged = temporary.path.join("metadata.json");
+        fs::write(&staged, serde_json::to_vec(&metadata)?)?;
+        fs::rename(staged, self.root.join(key).join("metadata.json"))
     }
 
     pub(crate) fn store(
@@ -814,6 +852,19 @@ impl BuildCache {
         if !key_name(key) {
             return Err(invalid("invalid build cache key"));
         }
+        self.store_files(key, &read_files(paths)?, messages)
+    }
+
+    /// [`store_entry`](Self::store_entry) for files that [`read_files`] has read already.
+    pub(crate) fn store_files(
+        &self,
+        key: &str,
+        files: &BTreeMap<String, CachedFile>,
+        messages: &[String],
+    ) -> io::Result<bool> {
+        if !key_name(key) {
+            return Err(invalid("invalid build cache key"));
+        }
         let lock = self.root.join(format!(".lock-{key}"));
         match fs::OpenOptions::new()
             .write(true)
@@ -831,33 +882,23 @@ impl BuildCache {
         let temporary = stage(&self.root)?;
         let entry = temporary.path.join("entry");
         fs::create_dir(&entry)?;
-        let mut remaining = MAX_ENTRY_BYTES;
-        let mut files = serde_json::Map::new();
-        for (name, source) in paths {
+        let mut described = serde_json::Map::new();
+        for (name, file) in files {
             if !matches!(
                 name.as_str(),
                 "artifact" | "traps" | "dwarf" | "pdb" | "profile"
             ) {
                 return Err(invalid("invalid cache artifact name"));
             }
-            let bytes = read_regular(source, remaining)?;
-            remaining -= bytes.len() as u64;
             let mut hash = Sha256::new();
-            hash.update(&bytes);
-            #[cfg(unix)]
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                fs::metadata(source)?.permissions().mode() & 0o777
-            };
-            #[cfg(not(unix))]
-            let mode = 0;
-            files.insert(
+            hash.update(&file.bytes);
+            described.insert(
                 name.clone(),
-                json!({ "size": bytes.len(), "sha256": hash.hex(), "mode": mode }),
+                json!({ "size": file.bytes.len(), "sha256": hash.hex(), "mode": file.mode }),
             );
-            fs::write(entry.join(name), bytes)?;
+            fs::write(entry.join(name), &file.bytes)?;
         }
-        let metadata = json!({ "format": FORMAT, "key": key, "files": files, "messages": messages, "created_unix_ms": now_ms(), "last_used_unix_ms": now_ms() });
+        let metadata = json!({ "format": FORMAT, "key": key, "files": described, "messages": messages, "created_unix_ms": now_ms(), "last_used_unix_ms": now_ms() });
         let bytes = serde_json::to_vec(&metadata)?;
         if bytes.len() > 1024 * 1024 {
             return Err(invalid("cache metadata exceeds 1 MiB"));
