@@ -1,5 +1,8 @@
 # PB07: 関数単位の増分コード生成と増分リンク
 
+本文の起票時の設計（Phase 1 だけを実装する、unit `c.runtime`、`KEY_ENVIRONMENT` が 17 個、`$lambda` は bucket、本文が同じ関数も一つにまとめない、など）と手順は調査履歴です。
+現行の方針・決定事項・目標・停止条件は「着手時の再検討（2026-10-20）」と末尾の「実装と検証（2026-10-20）」を優先します。
+
 | 項目 | 内容 |
 | --- | --- |
 | ID | PB07 |
@@ -26,6 +29,86 @@ unit ごとの object を内容の hash で cache し、変わった unit だけ
 PB07 は IR 以降（unit への分割、unit の object cache、並列コンパイル、リンク）。PB07 は `CheckedModule` と IR テキストより前の段を変えない。
 
 実装者は Phase 1 だけを実装する。Phase 2 は人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-20）
+
+2026-10-20 の依頼で、全フェーズ（Phase 1 と、Phase 2 の (a) トラップ情報、(b) `-g`、(c) wasm32 の `--emit wasm`、(d) native の `--emit object`、(e) 生成関数の置き場所、(f) Windows）を実装する。上の「目的」の最後の段落（Phase 1 だけを実装する）は、この依頼で全フェーズに変わった。D1 と D10（Phase 2 を含む）は承認済みで、既定の切り替えは測定で決める。以降の「着手条件と停止条件」から「決定事項」までは起票時（HEAD `f8dc655`）の記録で、この節と食い違う箇所はこの節が優先する（旧 `_docs/` は `_tsuzuri/language-reference/`。GUIDE §8.1）。
+
+着手時の HEAD は `feaa5af3`（main `a8875f38` に第 5 フェーズの方針の commit を足したもの）。偵察は `a8875f38` の release compiler（`target/perf/tsuzuri-before`）と、worktree の dev build で、Apple M1 Max・macOS 27.0.1・Apple clang 21.0.0・Homebrew LLVM 21・rustc 1.98.1・Node 20.19.6、ほかの作業と共有する機械（1 分の load average 8〜70）で行った。数値はどれも共有機の参考値である（標本数と load を併記する）。生データと手順は `target/perf/PB07-before/`・`target/perf/PB07-after/`（commit しない）。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| 「`-O0` の native 実行ファイルの既定経路」を分ける（D1）。`build -O0` が B1 | 既定の最適化は `build`・`run` が `-O3`。`-O0` が既定なのは `test`・`repl` と `--backend fast` だけ。`run` は常に `--trap-info`。`test`・`bench` の runner は `build_complete` ではなく `src/test_runner.rs` の別の経路で作る | 既定の `build`・`run` は分けない（D2 のまま、分割は `-O0` だけ）。`run -O0` は `--trap-info` が付くので、Phase 2 (a) までは分けられない。`test`・`bench` の runner は 1 つのモジュールのままにする（`build_complete` の外） |
+| 設計「IR の最上位の行」の表に載せた形だけ | 実 IR（examples・benchmarks・tests/fixtures の 23 本の実行ファイルの `-O0`・`--no-cache`・`--trap-info`・`-g` と、123 本の `--emit llvm`）には表にない形がある: `@x = internal thread_local global`（Async の slot・lock・thread・next_id）、`@tz.async.threads = internal global i64 0`、`@tsuzuri_trap_hooks = weak hidden global [5 x ptr]`、`define weak void @tsuzuri_free`・`define weak ptr @tsuzuri_alloc`、`define weak hidden … @tz_soft_*`（ランタイムを埋め込むとき）、`define i32 @main()` と公開の `tz_*`・`tsuzuri_*`、`hidden local_unnamed_addr constant` の数学の表、複数行の定数（`@tz.unicode.table.N = … [` から `]`）、`attributes #N` の群（埋め込みの数値ランタイム。`#0`〜`#18`）、TBAA・scoped-noalias のメタデータ、`!llvm.dbg.cu`・`!llvm.module.flags`、`}define` のように前の関数の閉じ括弧と同じ行に連なる実行時の部品 | 停止条件 1・2 は発火した。この節の方針で解く（下の「方針の改訂」2）。未知の形は `SplitError`（D3）で単一 unit |
+| native の実行時 C を unit `c.runtime` にする（手順 7） | PB01 が C のランタイム（`task.c` など）と数値・数学の IR を object にして `<cache>/runtime/` に保存済み（`compile_runtime_object`、`crate::runtime_cache`、`runtime_objects` の旗）。`--no-cache`・`--trap-info`・`-g` では数値ランタイムの IR をモジュールに埋め込み、その関数は `weak hidden` | `c.runtime` は作らない。既存の object を単一 unit のときと同じに最終リンクへ足す。埋め込みの `weak hidden` の関数は `g.*` の unit に 1 つだけ置く（リンカーの weak の統合に頼らない） |
+| `build_complete` の IR をそのまま分ける | IR テキストは cache の鍵を作る前に `without_closure_inlining`・`windows_abi`・`with_no_red_zone`・wasm の `with_*` を通り、`runtime/wasm.ll` が足される | 分割はそれらの後、Clang を呼ぶ直前に行う。whole-build cache の照会は先のまま変えない（hit なら終わり） |
+| `KEY_ENVIRONMENT` は 17 個 | 22 個 | `TSUZURI_CODEGEN_UNITS` は一覧に入れない。設定されているときだけ、`build_key` に欄 `codegen-units`（値そのまま）を足す。未設定のビルドの鍵は変わらない |
+| unit の object を whole-build と同じ root に入れる（D7） | `BuildCache` は `artifact`・`traps`・`dwarf`・`pdb`・`profile` の 5 つのファイル名と 1 エントリ 3 ファイルまで。掃除の走査は 4,096 エントリ、1 回に 128 件 | 同じ `BuildCache` を使い（マーカー、`0700`、原子的な rename、SHA-256 の検証、掃除を保つ）、別の root `<cache>/units/` に入れる。数千個の小さい object が whole-build の成果物を押し出さない。unit の cache は走査 32,768・1 回 1,024 件・掃除は 10 分に 1 回まで・最終使用時刻の更新も 10 分に 1 回まで（`for_units`、`store_entry`、`evict_if_due`） |
+| 通し番号を含む名前は内容の hash で付け替え、同じ本文の関数も一つにまとめず `.2` で区別する（D6） | `$lambda.N`・`$mono.N`・`tz.specialized.hN`・`$builtin…N.N` のほか、`tz.apply.<記号>.<番号>`・`tz.env.clone.…`・`tz.env.drop.…`。LLDB の整形（`scripts/lldb/tsuzuri_lldb.py`）は、アダプタ `tz.apply.<記号>.<番号>` の名前から番号を切って `tz.fn.<記号>` を引く | 本文が同じ生成関数は 1 つの関数に統合する（関数値は比べられないので区別できない。`f == g` は `E1005`）。`.2` で区別すると、ラムダを 1 つ編集するだけで同じ本文のラムダの名前がずれ、22 個の unit が変わった。アダプタは関数の新しい名前に `.<番号>` を付けた名前にする（LLDB の整形が通る） |
+| `$lambda` などの生成関数は名前の hash の bucket に置く（D4）。Phase 2 で持ち主のモジュールへ | 1 つのモジュールのラムダの編集で、そのラムダと helper が散る bucket が複数変わる | 生成関数は、それを使う関数がすべて 1 つの unit にあるときはその unit に置く（Phase 2 (e) をここで入れる）。複数あるときは名前の hash の bucket のまま |
+| `Profile`・`--link`・`--strip`・`--cpu native`・`--allocator`・`--freestanding` の扱いは未記載 | すべて `build_complete` の中のオプション | `--link`・`--strip`・`--cpu native`・`--allocator small`・`--no-cache` は分ける（テストあり）。`Profile`（PGO）・`--freestanding`・`--trap-mode return` は単一 unit |
+
+### 偵察で測った事実（2026-10-20、参考値）
+
+- Clang の 1 回の仕事: `clang -x ir -O0 -c` は unit 1 つにつき約 8 ms の CPU 時間（cc1 のジョブの準備）と、プロセスの起動に約 7 ms かかる。複数の `.ll` を 1 プロセスに渡しても、cc1 は入力ごとに 1 ジョブである。小さいプログラムの初回のビルドは、分けると遅くなる（`examples/hello` 144 → 211 ms、`examples/computations` 106 → 196 ms、`examples/functional` 173 → 252 ms。`TSUZURI_CODEGEN_UNITS=split`）。損益の分かれ目は、合成プロジェクトで 60〜100 モジュール（IR が 2.5〜4.1 MB）だった。
+- 分割自体の費用: 合成 200 モジュール（IR 8.3 MB、219 unit）で、構文解析 14 ms・名前の付け替え（SCC と hash）26 ms・unit の組み立て 16 ms（計 56 ms、release のテスト build、load 約 20）。合成 1,000 モジュールで `split` 段 211 ms・`units` 段 99 ms。
+- unit の IR はすべて Clang を通る: native の 215 本（`-O0`・`-O0 --no-cache`・`--trap-info`・`-g` の実行ファイルと `--emit llvm`）から 3,801 個、wasm32 の 444 本（`-O0`・`--trap-info`・`-g`・SIMD）から 7,844 個の unit を作り、どれも警告なしに `clang -x ir -O0 -c` が通った。
+- macOS の `ld -r` は private extern（hidden）の定義をすべて局所にする（`weak` も）。`-Wl,-keep_private_externs` は逆にすべて残す。`nmedit -R <list>` は、リストの大域 symbol だけを局所にする。2 つの Tsuzuri の object を 1 つのプログラムにリンクすると、`-keep_private_externs` のままでは `duplicate symbol '_other'` になり、`nmedit -R` の後は通る（実験。`target/scratch/pb07/ldr/`）。
+- macOS のリンカーが実行ファイルに書く UUID は、デバッグ情報のある（`-g`）ビルドで、object の経路と時刻に従ってビルドごとに変わる（1 つのモジュールのビルドでも同じ）。`-g` のビルドの決定性は、DWARF の内容（`llvm-dwarfdump --debug-info --debug-line` の出力）で比べる。
+- Linux の GNU ld は、`hidden` の大域 symbol を実行ファイルの `.symtab` に `GLOBAL HIDDEN` のまま残す（lld は局所にする）。公開 symbol は、可視性が DEFAULT の大域 symbol と読む。
+
+### 方針の改訂
+
+1. 既定の最適化は `build`・`run` が `-O3`、`test` と `--backend fast` が `-O0`。`run` は常に `--trap-info`。分割は `-O0` だけ（D2）。
+2. 実 IR の形（上の表）を扱う規則: 非定数の global と `weak` の定義は持ち主の unit を 1 つにし、ほかの unit は `external hidden`（`thread_local` は保つ）で宣言する。番地の意味を持たない定数（`private`・`internal` の `unnamed_addr` の `constant`）は、使う unit ごとに複写する（`frame_test` などが同じ関数の中の番地しか比べないことと、`icmp eq ptr` が定数・関数の番地を比べないことを emitter の出力で確かめた）。名前の引用（`@"…"`・`%"…"`）は名前、そのほかの `"…"` と `c"…"` は読み飛ばす。実行時の `.ll` はインデントがなく、行頭の `%` は最上位の `%name = type` のときだけ型の定義である。`}define` のように連なる行は先に分ける。未知の最上位の行・global の形は `SplitError` にし、そのビルドは黙って単一 unit で作る（D3。拒否する形ごとにテスト）。
+3. C のランタイムの object は PB01 のものを再利用する（`c.runtime` は作らない）。
+4. 分割は `build_complete` の IR の変換がすべて終わった後、Clang を呼ぶ直前。whole-build cache の照会は先のまま。
+5. トラップ情報の番号（Phase 2 (a)）: 従来の番号は、プログラム全体で範囲が最初に現れる順（`1 + n × 種類数 + 種類`）で、1 つの編集がその後ろのすべての番号と、`@tz.trap.report` の `switch` を変える。分けるビルドだけ、番号をソースファイルのパスと範囲から決める（`TrapNumbering::Stable`。8,191 ファイル・1 ファイル 16,384 か所まで。超えたら従来の番号で単一 unit）。ファイルごとの報告関数をそのファイルの unit に入れ、番号の block で選ぶ小さい `@tz.trap.report` と `@tz.trap.write` だけを bucket に置く。ランタイムが使う「入口の関数の範囲」には固定の場所（そのファイルの最初の place）を与える（入口の関数の編集でランタイムの unit が変わらないように）。分けないビルドの IR は従来のまま。副表（`sites.json`・`<出力>.trap.json`）は、コードに書いた番号から作る。
+6. 既定の切り替え（D1）は測定で決める。`auto` は、分けられるビルドのうち IR が閾値以上のものだけを分ける（測定で決めた値。下の「実装と検証」）。分けると遅い小さいプログラムは単一 unit のままにする。`B1`（`build -O0 --no-cache`）が before の広がりを超えて遅くなるなら、既定は `single` にして `TSUZURI_CODEGEN_UNITS=split` を opt-in にする（停止条件 8）。
+7. 決定性: unit のテキスト・鍵・リンクの順・object は `BTreeMap`・`BTreeSet` だけで決める。unit のコンパイルの出力は組の順に集める。`std::thread::scope` だけを使い（新しい crate・`unsafe`・既定の WASM import なし）、速さの閾値を CI に入れない。
+8. 同値の証拠: 実行ファイルを作るすべての suite（e2e・features・examples・control・primitives・strings・tasks・io・computations・numeric_casts・math・integer_intrinsics・cache・debug_info・cpu_dispatch、トラップと `run` の suite、Phase 2 (c) の wasm の suite）を `TSUZURI_CODEGEN_UNITS=split` と `single` の両方で回す。
+
+### 決定事項の更新
+
+| 決定 | 更新 |
+| --- | --- |
+| D1 | 承認済み。分割の対象は `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g` を含む）。既定の切り替えは測定で決める |
+| D2 | そのまま（`-O1` 以上は単一 unit） |
+| D3 | そのまま。単一 unit の経路は常に正しい |
+| D4 | 更新: 生成関数（ラムダ・ジェネリック関数の具体化・特殊化）は、使う関数がすべて 1 つの unit にあるときはその unit、複数のときは名前の hash の bucket。使う側から先に置く（強連結成分の順） |
+| D5 | そのまま。分割ありと単一 unit は動作の一致を求め、同じ経路の中では unit のテキスト・鍵・object を byte 単位で決定的にする |
+| D6 | 更新: 本文が同じ生成関数は 1 つの関数に統合する。アダプタ `tz.apply.<記号>.<番号>` は、関数の新しい名前に番号を付けた名前 |
+| D7 | 更新: 別の root `<cache>/units/`（同じ `BuildCache`）。`--no-cache` は unit の cache も使わない |
+| D8 | そのまま。miss の unit を大きさでほぼ均等な組に分け、組ごとに Clang 1 プロセスで `-c`。リンクは response file（`objects.rsp`）で毎回 |
+| D9 | 更新: `internal` を `hidden` にする。`--emit object` は、リンクの後にその symbol だけを局所にする（macOS は `nmedit -R`、ほかは `objcopy --localize-symbols`） |
+| D10 | 承認済み。Phase 2 の (a)〜(f) を実装する（下の「Phase 2 の設計」） |
+| D11 | 更新: 値は `auto`・`single`・`split` の 3 つ。`E2000` の文面は `invalid TSUZURI_CODEGEN_UNITS value '<値>'; use 'auto', 'single' or 'split'`。`build_key` には、設定されているときだけ入る |
+
+### Phase 2 の設計
+
+| 項目 | 設計 | 受け入れ条件の確かめ方 |
+| --- | --- | --- |
+| (a) `--trap-info`（`run -O0` を含む） | 方針 5。分けるビルドだけ `Stable` の番号 | `tests/codegen_units.mjs` C9（トラップの出力・終了状態が `single` と同じ、副表が同じ位置の集合、`run -O0`、別のファイルの編集でそのファイルの unit だけが変わる）と Rust の `trap_sites_keep_their_numbers_across_edits` |
+| (b) `-g` | unit を `-g` でコンパイルし、unit ごとの `DICompileUnit` は使う節から決める。macOS は unit の object を一時ディレクトリに置いたまま、別のリンクの後に `dsymutil` が同じ object を読む。LLDB の整形が通るよう、アダプタの名前を保つ | C10、`tests/debug_info.mjs`・`tests/debugger.mjs` を両方の経路で |
+| (c) wasm32 の `--emit wasm` | 単一のモジュールと同じ wasm の旗（`--target=wasm32-unknown-unknown -mbulk-memory -m[no-]simd128`）で unit をコンパイルし、`wasm-ld` が runtime の object と unit の object をリンクする。トラップ情報も `Stable` の番号 | C11、`tests/trap_boundary.mjs`・`tests/debug_info.mjs` |
+| (d) native の `--emit object` | unit の object を `clang -r -nostdlib`（macOS は `-Wl,-keep_private_externs`）で 1 つにし、unit が `hidden` にした symbol だけを局所にする。macOS の `-g` の object（`ld -r` が DWARF を捨てる）と、局所にする道具がない機械は単一 unit | C12（ホストから見える symbol が単一と同じ、2 つの object を 1 つのプログラムにリンクできる、C ランタイム入り） |
+| (e) 生成関数の置き場所 | 上の D4 | C4（ラムダの編集で変わる unit は 1 つ）、Rust の `generated_functions_follow_their_users` |
+| (f) Windows | Windows のホストは単一 unit のまま。Windows の経路を実機なしで正しいと言えない（`link.exe` の response file の引用・`/INCREMENTAL`）。`cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` で型だけ確かめる。`/INCREMENTAL` の評価は未測定 | `eligible` の単体テスト（Windows のホストは偽） |
+
+### 停止条件の更新
+
+- 1・2: 発火した。この節の方針で解いた（未知の形は `SplitError`）。
+- 4: Phase 2 (a) で、emitter の出力（トラップの番号と、`%tz.trap.N` の一時名）がプログラム全体の順序に従うことが原因で unit が変わることを確かめた。人間が Phase 2 を承認しており、直す場所は emitter 本体ではなくトラップ計装の後処理（`src/llvm_traps.rs`）で、分けるビルドだけに効かせる。分けないビルドの IR は変えない。
+- 5: Phase 2 で、分けるビルドの成果物（トラップの番号、object、wasm の module）は、1 つのモジュールのものと byte 単位では違う（関数の並び、hidden な名前、分けたビルドのトラップの番号）。`-O1` 以上と `--emit llvm` の IR は変えない（`cmp` で確かめる。下の「実装と検証」）。
+- 8: 測定で判断する（方針 6）。
+
+### 未検証・制約
+
+- Windows は実機がない。`/INCREMENTAL` は測っていない。Windows のホストは常に単一 unit で、正しさは Windows の CI の緑でしか確かめられない。
+- `tsuzuri test`・`bench` の runner は分けない（別の経路。`src/test_runner.rs`）。
+- Linux x86-64 は動かしていない（AArch64 の Ubuntu 24.04 のコンテナだけ）。
 
 ## 着手条件と停止条件
 

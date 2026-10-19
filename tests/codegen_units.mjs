@@ -240,20 +240,33 @@ test("C6 auto threshold", () => {
   assert.equal(run(out, "12345").stdout, expectedOutput(110, "12345"));
 });
 
-// C7: the public symbols of the executable are the same.
+// C7: the public symbols of the executable are the same. A symbol is public when a link or a loader can see it: the global
+// symbols of a Mach-O executable (ld64 makes the hidden ones local), and the global symbols with default visibility of an ELF
+// executable (GNU ld keeps the units' hidden definitions in the symbol table as GLOBAL HIDDEN, and `strip` removes them).
 test("C7 public symbols", () => {
   const space = workspace();
   const split = space.build(["--no-cache"], { output: "split" });
   const single = space.build(["--no-cache"], { output: "single", env: { TSUZURI_CODEGEN_UNITS: "single" } });
-  const symbols = (program) => {
-    const args = process.platform === "darwin" ? ["-gU", program] : ["-g", "--defined-only", program];
-    const result = execute("nm", args);
-    return result.stdout.split("\n").filter(Boolean).map((line) => line.trim().split(/\s+/).at(-1)).sort();
+  const symbols = (program, visibility = "DEFAULT") => {
+    if (process.platform === "darwin") {
+      const result = execute("nm", ["-gU", program]);
+      return result.stdout.split("\n").filter(Boolean).map((line) => line.trim().split(/\s+/).at(-1)).sort();
+    }
+    return execute("readelf", ["-sW", program]).stdout.split("\n").map((line) => line.trim().split(/\s+/))
+      .filter((fields) => /^\d+:$/.test(fields[0]) && fields[4] !== "LOCAL" && fields[6] !== "UND" && fields[5] === visibility && fields[7])
+      .map((fields) => fields[7]).sort();
   };
   const expected = symbols(single.out);
   assert.ok(expected.length > 0);
   assert.deepEqual(symbols(split.out), expected);
   assert.ok(!symbols(split.out).some((name) => /tz\.(fn|unit|apply)/.test(name)), "no unit symbol is public");
+  if (process.platform !== "darwin") {
+    // What else the symbol table shows is hidden, and only what the units made global to the link.
+    const before = symbols(single.out, "HIDDEN");
+    const extra = symbols(split.out, "HIDDEN").filter((name) => !before.includes(name));
+    assert.ok(extra.every((name) => /^tz\./.test(name)), extra.join(" "));
+    assert.deepEqual(before.filter((name) => !symbols(split.out, "HIDDEN").includes(name)), []);
+  }
 });
 
 // The objects of the units: a function is private to the program, a constant is local to its unit.
@@ -279,8 +292,9 @@ test("C7 object symbols", () => {
       const lines = execute("readelf", ["-sW", object]).stdout.split("\n");
       for (const line of lines) {
         const fields = line.trim().split(/\s+/);
-        if (!/tz\./.test(fields.at(-1) ?? "") || fields.at(-1)?.startsWith("tz.unit")) continue;
-        if (fields[6] === "UND") continue;
+        // A symbol with a name of the program: a global one (not a section or a local of the unit) that the unit defines.
+        if (!/^\d+:$/.test(fields[0]) || fields[4] === "LOCAL" || fields[3] === "SECTION" || fields[6] === "UND") continue;
+        if (!/^tz\./.test(fields.at(-1) ?? "") || fields.at(-1).startsWith("tz.unit")) continue;
         assert.equal(fields[5], "HIDDEN", `${line} in ${object}`);
         functions++;
       }
