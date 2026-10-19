@@ -322,6 +322,19 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/watch.mjs target/release/tsuzuri
           node tests/server.mjs target/release/tsuzuri
+      # PB07: a native -O0 executable or object and a wasm32 module are built from codegen units (TSUZURI_CODEGEN_UNITS). The suite forces the
+      # split on small programs and compares it with the single module: behavior, public symbols, the same bytes from the same text, the
+      # units that an edit compiles again, and DWARF. LLVM_PREFIX turns its skips (no llvm-dwarfdump, no objcopy, no wasm-ld) into
+      # failures. Windows hosts always build one unit and the suite exits there (windows.yml).
+      - name: Codegen units (PB07)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_DWARFDUMP="$LLVM_PREFIX/bin/llvm-dwarfdump"
+          export TSUZURI_OBJCOPY="$LLVM_PREFIX/bin/llvm-objcopy"
+          node tests/codegen_units.mjs target/release/tsuzuri
       # PB05: --backend fast (Cranelift, and the direct WebAssembly writer) exists only in a build with --features fast-backend, which goes
       # to its own target directory so that target/release/tsuzuri, the binary every step above tested, stays the default one.
       # tests/fast_backend.mjs checks the option table, traps, determinism, object symbols and the cache; "programs" builds every example

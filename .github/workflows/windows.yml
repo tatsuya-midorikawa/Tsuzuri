@@ -182,6 +182,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Watch failed: $LASTEXITCODE" }
           node tests/server.mjs target/release/tsuzuri.exe
           if ($LASTEXITCODE -ne 0) { throw "Build server failed: $LASTEXITCODE" }
+      # PB07: tests/codegen_units.mjs (codegen units of -O0 builds) is not run here. A Windows host always builds one module: the units
+      # rely on hidden symbols and a POSIX link, and the suite exits at once on win32. targets.yml runs it on the other hosts.
       - name: Prebuilt runtime cache and fallback
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/prebuilt_runtime.mjs target/release/tsuzuri.exe

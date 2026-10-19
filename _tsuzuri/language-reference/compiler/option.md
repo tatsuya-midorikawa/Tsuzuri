@@ -9,6 +9,7 @@
 - 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を、`build` の native 実行ファイルに `--strip` を、`build` の WebAssembly に（Binaryen を入れた機械で）`--wasm-opt` を付けます（[成果物を小さくする](#成果物を小さくする)）。
 - 実行時の分岐の頻度で最適化するときは、`build` か `run` に `--profile-generate DIR` を付けて計装し、代表的な仕事で動かしてから、`--profile-use PATH` を付けて作り直します。速くなる種目も遅くなる種目もあるので、自分のプログラムで測ってください（[プロファイル誘導最適化](#プロファイル誘導最適化)）。
 - `-O0` の native `build`・`run`・`test` と、wasm32 の `build` の待ち時間を短くするときは、`--backend fast` を付けます。LLVM IR を Clang に渡さず、コンパイラ自身が機械語（wasm32 では wasm の命令）にします。既定は `llvm` のままで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます（[コード生成器](#コード生成器)）。
+- `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` の待ち時間は、IR を決める単位に分けて、変わらない部分の Clang を省くことでも短くなります。大きなプログラム（IR が 4 MiB 以上）では既定で分け、`TSUZURI_CODEGEN_UNITS=single|split` で選べます（[コード生成の単位](#コード生成の単位codegen-unit)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -301,6 +302,42 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 
 使えない組み合わせは 2 つあります。macOS で C のランタイムが要るプログラムの `--emit object -g` は `E2002` です。`ld -r` が DWARF を捨てるためで、`llvm` はランタイムを IR のまま結合しています。実行ファイルの `-g` は使えます。Windows は、`--backend fast` 自体が `E2000` です（CodeView と PDB は `llvm` だけです）。Linux の x86-64 と AArch64 の object は、`llvm-dwarfdump --verify` が通り、`ld.lld` でリンクした共有ライブラリの行表が正しいアドレスになるところまで確かめました。Linux で実行して、デバッガーで止めてはいません。
 
+## コード生成の単位（codegen unit）
+
+| 変数 | 既定 | 意味 |
+| --- | --- | --- |
+| `TSUZURI_CODEGEN_UNITS=auto\|single\|split` | `auto` | `-O0` のビルドが、生成した LLVM IR を codegen unit に分けるか |
+
+Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジュールとして Clang に渡すのが基本です。codegen unit に分けるビルドは、IR を決定的な unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に切り、unit ごとの object を [ビルドキャッシュ](usage.md#コード生成単位の-object)の `units/` に内容で保存し、保存していない unit だけを並列にコンパイルして、全 object を 1 回でリンクします。
+1 つのモジュールの本体を編集したあとのビルドで Clang がコンパイルし直すのは、そのモジュールの unit だけです。そのモジュールのラムダやジェネリック関数の具体化は同じ unit に入ります。ほかのモジュールの unit は、文字も、`--trap-info` の site の番号も変わりません。
+プログラムの意味、`--trap-info` と `run` の報告、`E2005`、公開 symbol（`nm` の大域で定義済みの symbol のうち hidden でないもの）は、分けても変わりません。変わるのは、関数の並びと、hidden な symbol の名前と、`-g` の DWARF の compile unit の数（unit ごとに 1 つ）です。
+
+分けるかどうかは、ビルドの種類と値で決まります。
+
+| ビルド | 分けるか |
+| --- | --- |
+| native の実行ファイル（`-O0`）。`run`、`--trap-info`、`-g`、`--strip`、`--cpu native`、`--allocator`、`--link` を付けたものを含む | 分ける |
+| native の `--emit object`（`-O0`） | 分ける。macOS の `-g` の object（`ld -r` が DWARF を捨てるため）と、局所化の道具（macOS は `nmedit`、ほかは `objcopy`）がない機械では分けない |
+| wasm32 の `--emit wasm`（`-O0`）。`--wasm-feature simd128`、`-g`、`--trap-info` を含む | 分ける |
+| `-O1` 以上、`-Os`、`-Oz` | 分けない |
+| `--backend fast` | 分けない（翻訳器が IR 全体を自分で翻訳します） |
+| `--emit llvm`・`header`・`shared`・`bitcode`、wasm32 の `--emit object`、`wasm64`、`--wasm-feature threads` | 分けない |
+| `test` と `bench` の runner | 分けない（`build` とは別の経路で、1 つのモジュールとして作ります） |
+| `--profile-generate`・`--profile-use`、`--trap-mode return`、`--freestanding` | 分けない |
+| Windows のホスト、ビルド機と違う `--target TRIPLE` | 分けない |
+
+`auto` は、分けられるビルドのうち、IR が 4 MiB 以上のものだけを分けます。unit 1 つにつき Clang のジョブが約 8 ms の CPU 時間かかるので、小さいプログラムは 1 つのモジュールのほうが速く、並列のコンパイルが効くのは IR が大きいときだけです。`split` は大きさによらず分けられるビルドをすべて分け、`single` は分けません。値は空なら `auto` で、ほかの値は `E2000` です。
+
+```text
+error[E2000]: invalid TSUZURI_CODEGEN_UNITS value 'fast'; use 'auto', 'single' or 'split'
+```
+
+IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。
+
+`--trap-info` を付けた分けるビルドは、トラップの site の番号を、ソースファイルのパスとファイルの中の範囲から決めます（分けない `-O0` のビルドは、これまでどおり出現順の通し番号です）。`<出力>.trap.json` の位置表も、コードに書いた番号から作るので、`kind`・`path`・位置は同じで、`id` だけが違います。別のファイルを編集しても、ほかのファイルの番号は変わりません。
+
+`TSUZURI_TIME_PASSES=1` は、分けるビルドに `split` と `units` の段を足し、unit のコンパイルの待ちを `tool.<Clang の名前>` に出します（[段階別時間](#コンパイルの段階別時間)）。
+
 ## 診断とデバッグ
 
 | オプション | 既定 | 意味 |
@@ -509,6 +546,8 @@ flowchart TD
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
 | `TSUZURI_STRINGS` | `utf16` | なし | `utf16`・`compact`。`string` の内部表現を選ぶ。`compact` は、全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存する。空は既定、ほかの値は `E2000`。値・順序・hash・出力・host との ABI は変わらない。ビルドキャッシュのキーに入る（[コンパクト文字列の旗](#コンパクト文字列の旗)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
+| `TSUZURI_CODEGEN_UNITS` | `auto` | なし | `auto`・`single`・`split`。`-O0` のビルドを codegen unit に分けるか（[コード生成の単位](#コード生成の単位codegen-unit)）。空は `auto`、ほかの値は `E2000`。成果物の意味は変わらない。設定したときだけ、whole-build キャッシュのキーに入る |
+| `TSUZURI_NMEDIT` / `TSUZURI_OBJCOPY` | `nmedit`（macOS）/ `llvm-objcopy`、なければ `objcopy` | なし | codegen unit に分けた `--emit object` が、unit が `hidden` にした定義を局所化する道具。macOS は Xcode の `nmedit`、ほかは `objcopy`（GNU でも LLVM でも）。見つからなければ、その `--emit object` は 1 つのモジュールで作る |
 
 ### コンパイラのスレッド数
 
@@ -561,7 +600,9 @@ Mach-O の target では `-Os`／`-Oz` と併用できません。最終リン�
 ```
 
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
-外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
+外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
+`units`（unit の鍵の計算、unit cache の読み書き、ファイルの書き出し）が入り、unit のコンパイルの待ちは `tool.<Clang の名前>` です。
+そのコマンドが通った段だけを、最初に通った順に出します。
 tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。
 同じ段は合算し、入れ子の二重計上はしません。並列に実行する段（[コンパイラのスレッド数](#コンパイラのスレッド数)）も、
 呼び出したスレッドの経過時間（wall-clock）を測るので、段の合計が `total_ms` を超えることはありません。`parse` は frontend cache からの復号も、

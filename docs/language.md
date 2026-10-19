@@ -54,6 +54,12 @@ Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない
 速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 12〜17% 速く、4 種目が 20〜63% 遅い）。
 詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
 
+codegen unit（PB07）は、`-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g` を含む）が、生成した LLVM IR を決定的な unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に分け、unit ごとの object を内容で保存して、変わった unit だけを Clang で並列にコンパイルし、全 object を 1 回でリンクする仕組みです。
+環境変数 `TSUZURI_CODEGEN_UNITS` が `auto`（既定。IR が 4 MiB 以上の対象のビルドだけを分ける）・`single`（分けない）・`split`（対象のビルドをすべて分ける）を選び、ほかの値は `E2000` です。`-O1` 以上、`--backend fast`、`--emit llvm`・`shared`・`bitcode`・`header`、PGO、`--trap-mode return`、`--freestanding`、Windows のホスト、ビルド機と違う `--target`、`test` と `bench` の runner は 1 つのモジュールのままです。
+プログラムの意味、診断、整数の折り返し・NaN・符号付きゼロ・トラップ、`--trap-info` の報告と位置表の内容（`kind`・`path`・位置）、公開 symbol は変わらず、unit の object は決定的で、同じ入力から同じ object になります。変わるのは、関数の並び、hidden な symbol の名前、分けたビルドの `--trap-info` の site の番号（ソースファイルのパスと範囲から決まります。分けないビルドは出現順の通し番号のままです）、`-g` の DWARF の compile unit の数です。
+1 つのモジュールの本体の編集で Clang がコンパイルし直すのは、そのモジュールの unit だけです。unit 1 つにつき約 8 ms の CPU 時間の Clang のジョブがかかるので、小さいプログラムの初回のビルドは分けないほうが速く、`auto` は大きいプログラムだけを分けます。
+詳細は [コード生成の単位](../_tsuzuri/language-reference/compiler/option.md#コード生成の単位codegen-unit)、[unit の object のキャッシュ](../_tsuzuri/language-reference/compiler/usage.md#コード生成単位の-object) と [性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド) にあります。
+
 ## ソースと宣言
 
 フロントエンドは不要な本体・局所値の複製と子列の確保を省き、型述語に private TypeId arena を使います。

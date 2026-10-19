@@ -253,6 +253,33 @@ GC（ガベージコレクション）は最大 4096 エントリまで走査し
 macOS のデバッグ実行ファイルとデバッグ共有ライブラリにおける DWARF は出力ファイル名に依存した情報を含むため、この場合に限って出力先パスもキャッシュキーに含めます。Windows のデバッグ実行ファイルは隣の PDB をファイル名で指すので、その名前もキーに含めます（G16）。`--emit shared` はファイル名を install name（macOS）か soname（Linux）として埋め込むので、出力のファイル名もキーに含めます（`hash_output_path`）。それ以外の場合における別出力先へのアーティファクト再利用性は維持されます。
 動作は `tests/cache.mjs` により、実際の CLI を用いたキャッシュヒット（ツール起動回数の削減確認）、ミス、破損時の回復、並行書き込み、no-cache 指定、実行権限の保持、トラップ情報／DWARF の整合性、依存関係変更時の無効化が検証されています。
 
+### コード生成単位の object cache（PB07）
+
+`-O0` のビルドは、Tsuzuri が出した最終の LLVM IR のテキストを決定的な codegen unit に分け、unit ごとの object を内容で cache し、cache に無い unit だけを Clang で並列にコンパイルして、全 object を 1 回でリンクします。
+対象は native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` で、`--trap-info` と `-g` を付けたものも含みます。`-O1` 以上、`--backend fast`、`--emit shared`・`bitcode`・`llvm`、`--profile-generate`・`--profile-use`、`--trap-mode return`、`--freestanding`、wasm の threads・wasm64・スタック検査、Windows のホスト、`--target TRIPLE` のクロスビルド、`test` と `bench` の runner（別の経路です）は、従来どおり 1 つのモジュールです。
+macOS の `-g` の object は、再配置可能リンクが DWARF を捨てるので 1 つのモジュールです。`--emit object` は、native の object を局所化する道具（macOS の `nmedit`、ほかは `objcopy`）がない機械でも 1 つのモジュールです。
+`TSUZURI_CODEGEN_UNITS` は `auto`（未設定と空も同じ）・`single`・`split` を取ります。`single` は分けず、`split` は対象のビルドをどれほど小さくても分け、`auto` は IR が 4 MiB 以上の対象のビルドだけを分けます。unit の数だけ Clang のジョブが増えるので、小さいプログラムは 1 つのモジュールのほうが速いためです（測定は [性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド)）。ほかの値は `E2000` です。
+この環境変数はコンパイラの動作を選ぶだけで、成果物の意味は変わりません。whole-build の cache の鍵には、設定されているときだけ `codegen-units` の欄（値そのまま）が入ります。
+
+分割は IR のテキストだけを入力にします（`src/llvm_split.rs`。emitter は変えません）。`build_complete` が IR に `without_closure_inlining`・`windows_abi`・`with_no_red_zone` と wasm の `with_*` を適用し、`runtime/wasm.ll` を足し終えたあと、whole-build の cache の照会（従来のまま。当たれば何も走りません）に外れたときに、Clang を呼ぶ直前で分けます。
+
+- `tz.fn.<module>.<name>` と、その `tz.apply.`・`tz.env.clone.`・`tz.env.drop.`、ファイルごとのトラップ報告 `tz.trap.report.<module>` は unit `m.<module>` に入ります。ランタイムと、型の名前で付く補助関数は、名前の hash で選ぶ 16 個の bucket `g.0`〜`g.f` に入ります。生成された関数（ラムダ、ジェネリック関数の具体化、特殊化）は、それを使う関数がすべて 1 つの unit にあるときはその unit に、複数にあるときは名前の hash の bucket に入ります。使う側から先に置くので、ラムダの中のラムダは外側に付いていきます。そのため、あるモジュールの本体の編集で変わる unit は、そのモジュールの 1 つです。
+- 通し番号を含む名前（`$lambda.12`、`$mono.3`、`tz.specialized.4`）は、ほかの部分の変更でずれるので、関数自身のテキストの hash で付け替えます。呼ぶ関数の名前を先に新しい名前にし（強連結成分の順、callee が先）、その名前で hash するので、名前が変わるのは関数か呼ぶ先が変わったときだけです。テキストが同じ生成関数は 1 つの関数に統合します（関数値は比べられないので区別できません）。アダプタ `tz.apply.<symbol>.<index>` は、LLDB の整形が名前から関数を引くため、関数の新しい名前に `.<index>` を付けた名前にします。
+- 番地の意味を持たない `private`・`internal` の定数（文字列リテラル、クロージャの記述子、トラップのメッセージ）は、使う unit ごとに `@tz.unit.<k>` としてコピーします。メタデータの節と属性グループもコピーして番号を付け直します（unit ごとの DWARF の compile unit は、使う節から決まります）。定数でないグローバル変数と `weak` の定義は所有する unit を 1 つにし、ほかの unit は `external hidden` で宣言します。`internal` だった定義は `hidden` にし、リンク内の呼び出しは通しつつ公開 symbol は増やしません。
+- 最上位に知らない形があると `SplitError` で、そのビルドは 1 つのモジュールで行います（常に正しい経路）。
+
+unit の鍵は、unit のテキスト、Clang の引数（target、最適化、`-g`、CPU・SDK の旗）、Clang の識別（実行ファイルの内容と版）の SHA-256 です。コンパイラ自身の識別は入りません（IR が変われば unit のテキストが変わるためです）。ソースのテキストやパスは、unit のテキストの中にあるもの（トラップのメッセージと DWARF）以外は鍵に入りません。
+object は同じ保存先の `units/` に、成果物の cache と同じ `BuildCache`（マーカー、`0o700`、原子的な rename、大きさと SHA-256 の検証）で入ります。保存先を分けるのは、小さい object が数千個になっても成果物の cache の掃除に影響しないためです。上限は 2 GiB・30 日で、走査は 32,768 エントリまで、1 回の掃除は 1,024 件までです。掃除は保存したビルドのあとに 10 分に 1 回まで、最後に使った時刻の更新も 10 分に 1 回までです。cache に入れるのは object だけで、構文解析・型検査・IR の途中の cache は作りません。
+
+cache に無い unit は、テキストの大きさが等しくなるように組み分けして、少数の Clang プロセスで並列にコンパイルします（`clang -c a.ll b.ll …`。プロセスの数は使える core 数で、`TSUZURI_THREADS` があればその値です）。Clang の出力は組の順に集め、警告のあるものは cache に入れません。リンクは `objects.rsp` の response file に unit の順で書いた object を、単一のモジュールと同じ最終リンクの引数（`dead_strip`、`-Wl,-u,_tz_<export>`、`--strip`、リンク入力、リンカーの選択、`-pthread`）で 1 回行います。ランタイムの object（PB01）は 1 つのモジュールのときと同じものを加えます。
+macOS の `-g` は、リンクのあとに `dsymutil` が同じ object を読むので、object は一時ディレクトリに置いたままにします。native の object は `clang -r -nostdlib [-Wl,-keep_private_externs]` で unit の object（と C ランタイム）を 1 つにしたあと、unit が `hidden` にした定義だけ（もとは `internal` のもの）を局所化します。複数の Tsuzuri の object を 1 つのプログラムにリンクしても名前が衝突せず、ホストから見える大域 symbol が 1 つのモジュールのものと同じになるようにするためです。wasm32 は同じ wasm の旗で unit をコンパイルし、`wasm-ld` が runtime の object と unit の object をリンクします。
+`TSUZURI_TIME_PASSES` の段は `split`（分割。呼び出しスレッド）、`units`（鍵・cache の読み書き・ファイルの書き出し）、`tool.<clang の stem>`（Clang の待ち）です。
+
+`--trap-info` は、分けるビルドだけ、トラップの site の番号を `1 + 16 * (block * 2^14 + place) + 種類` にします（`TrapNumbering::Stable`。分けないビルドの番号は従来の通し番号のままです）。block はソースファイルのパスの hash、place はファイルの中の範囲（開始と終了）の hash で、衝突は決まった順の線形探査で解きます。ファイルごとに報告の関数（と、そのファイルのメッセージ）を作ってそのファイルの unit に入れ、ブロックで選ぶ `@tz.trap.report` と `@tz.trap.write` だけが bucket に入ります。ランタイムのトラップの位置は、入口の関数の範囲に固定した場所（そのファイルの最初の place）です。別のファイルを編集しても、あるファイルの site の番号と unit のテキストは変わりません。範囲の数が 8,191 ファイルか 1 ファイル 16,384 か所を超えるときは従来の番号で、1 つのモジュールです。`<出力>.trap.json` の位置表は、コードに書いた番号と同じ番号から作ります。
+
+出力は決定的です。unit のテキスト、鍵、object、リンクの順は、`BTreeMap`・`BTreeSet` だけで決まり、同じ入力から同じ object になります（macOS のリンカーが実行ファイルに入れる UUID と、`-g` のときのデバッグマップの object のパスは、1 つのモジュールのビルドでもビルドごとに変わります）。
+`tests/codegen_units.mjs`（`TSUZURI_CODEGEN_UNITS=split` で、単一との差分、決定性、cache からの組み立て、編集で変わる unit の数、破損した項目、適用条件、公開 symbol、並行ビルド、`--trap-info`・`-g`・wasm32・object、`examples/`）と、`src/llvm_split.rs`・`src/driver/units.rs` の単体テスト（`examples/`・`benchmarks/`・`tests/fixtures/` のプログラムの分割を含む）が確かめます。
+
 ### 事前ビルドしたランタイム（PB01）
 
 通常の native 実行ファイル（Windows を含む）と wasm32 モジュールは、
@@ -1559,6 +1586,8 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
   `cache`: frontend cache の準備・保存と whole-build cache の鍵・読み込み・復元・保存・掃除。
 - `tool.<実行ファイルの stem>`: `run_tool` が待ち合わせる Clang・リンカーなど。stem の空白・日本語も保持し、
   性能レコードで同じ名前を使います。cache の内部での版の照会は `cache` に含みます。
+- `split`・`units`（PB07）: codegen unit に分けるビルドだけの段です。`split` は IR の分割、`units` は unit の鍵の計算・unit cache の読み書き・
+  ファイルの書き出しで、並列の worker が走る間も呼び出しスレッドだけが開閉します。unit のコンパイルの待ちは `tool.<clang の stem>` です。
 - 引数解析、生成後の GPU 検査、成果物の書き出し、`run` の子プロセスは `total_ms` にだけ含みます。
 
 成果物、診断、終了コードは変えません。`1` 以外は無効で、無効時は時計・記録用の文字列・mutex を使いません。

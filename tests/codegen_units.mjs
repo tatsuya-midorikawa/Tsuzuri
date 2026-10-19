@@ -32,6 +32,9 @@ function skip(what, program) {
   assert.ok(!strict, `${what}: ${program} is required`);
   console.log(`codegen units: skipping ${what} (no ${program})`);
 }
+// What makes the symbols of the units local in an object: nmedit of Xcode, or an objcopy (the compiler builds an object from
+// one module on a machine that has none).
+const canLocalize = process.platform === "darwin" || [process.env.TSUZURI_OBJCOPY, "llvm-objcopy", "objcopy"].some((program) => program && available(program));
 
 function execute(program, args, { env = {}, input = "", success = true, cwd } = {}) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 300_000, env: { ...process.env, ...env }, input, cwd, maxBuffer: 64 * 1024 * 1024 });
@@ -203,7 +206,7 @@ test("C6 eligibility", () => {
   // An object is cut where the machine can make symbols local again; the other outputs are one module.
   const object = join(space.directory, "output.o");
   execute(compiler, ["build", space.project, "-O0", "--emit", "object", "--no-cache", "-o", object], { env: space.env });
-  assert.ok(space.compiled().units.length > 3, "--emit object is split");
+  assert.equal(space.compiled().units.length > 3, canLocalize, "--emit object is split where symbols can be made local");
   execute(compiler, ["build", space.project, "-O3", "--emit", "object", "--no-cache", "-o", object], { env: space.env });
   assert.equal(space.compiled().units.length, 0, "--emit object -O3");
   for (const emit of ["llvm", "shared", "bitcode"]) {
@@ -512,8 +515,7 @@ function linkSymbols(object) {
 // C12: a native object is made of units that a relocatable link joins; what the host sees is what the single module shows,
 // and the names that were internal do not clash when two objects of two programs are linked into one program.
 test("C12 native object", () => {
-  const localizer = process.platform === "darwin" ? "nmedit" : "objcopy";
-  if (process.platform !== "darwin" && !available("llvm-objcopy") && !available(localizer)) return skip("object builds", localizer);
+  if (!canLocalize) return skip("object builds", "objcopy");
   const programs = {};
   for (const [name, files] of Object.entries(OBJECT_PROGRAMS)) {
     const space = workspace(0, files);
@@ -548,7 +550,7 @@ test("C12 native object", () => {
 
 // With the C runtime (tasks) merged in, and with trap information: the host sees the same, and runs the program.
 test("C12 native object with the runtime", () => {
-  if (process.platform !== "darwin" && !available("llvm-objcopy") && !available("objcopy")) return skip("object builds", "objcopy");
+  if (!canLocalize) return skip("object builds", "objcopy");
   const fixture = resolve("tests/fixtures/debug_info");
   const files = { "Main.tz": readFileSync(join(fixture, "Main.tz"), "utf8") };
   const space = workspace(0, files);
