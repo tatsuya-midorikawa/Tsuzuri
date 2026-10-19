@@ -9,7 +9,7 @@ on:
 
 # An event for some other label gets a group of its own, so that it cancels nothing; its job is skipped below.
 concurrency:
-  group: label-test-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  group: label-test2-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
