@@ -2083,6 +2083,7 @@ struct Globals {
     /// The group of each function for guaranteed tail calls, `escape::tail_groups`; empty unless
     /// `tail_calls`.
     tail_groups: Vec<usize>,
+    /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
     /// The form of the strings that the program makes (PM03).
     strings: StringForm,
