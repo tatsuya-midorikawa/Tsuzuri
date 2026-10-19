@@ -49,8 +49,10 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # macos-15-intel takes about 85 minutes (the Rust tests alone 62), the other hosts 35 to 55.
-    timeout-minutes: 150
+    # The phase-four steps (the fast backend on every host, the compact-string run of the Rust tests on linux-x64) made the hosts slower:
+    # linux-x64 takes about 185 minutes (the Rust tests 55, and the same run with compact strings 55), macos-15-intel about 220 (the
+    # Rust tests alone 75), the other two hosts 80 to 110. The steps that have a limit of their own keep it.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
