@@ -1771,17 +1771,18 @@ PM09（2026-10-20）。関数のフレームを小さくする施策（スタッ
 
 `tests/fixtures/stack` の `stack_even 10000000`（`bool` を返す 2 関数）と `stack_cycle 10000000`（3 関数の循環）を、完走して正しい値（`1`、`10000000`）を返したかで見ます（`node tests/stack.mjs` が、native・`--backend fast`・`--wasm-feature tail-call` の WASM について値を検査します）。
 
-| 構成 | before | after |
+| 構成 | before | after（最終版。4 回の範囲） |
 | --- | --- | --- |
-| native `-O0` | 失敗（`trap: stack overflow`、SIGABRT。`tsuzuri run` は `E2005`） | 完走（252 ms） |
-| native `-O3` | 完走（213 ms。LLVM が畳む） | 完走（241 ms） |
-| native `--backend fast` `-O0` | 未測定（基準の `fast` 付きの build を作っていない） | 完走（279 ms） |
+| native `-O0` | 失敗（`trap: stack overflow`、SIGABRT。`tsuzuri run` は `E2005`） | 完走（242〜402 ms） |
+| native `-O3` | 完走（213 ms。LLVM が畳む） | 完走（52〜190 ms） |
+| native `--backend fast` `-O0` | 未測定（基準の `fast` 付きの build を作っていない） | 完走（100〜143 ms） |
 | wasm32 `-O0`（既定） | `RangeError`（`Maximum call stack size exceeded`） | `RangeError`（変えていない） |
-| wasm32 `-O0` `--wasm-feature tail-call` | 指定できない | 完走（59 ms） |
-| wasm32 `-O3`（既定） | 完走（19 ms。LLVM が畳む） | 完走（18 ms） |
-| wasm32 `-O3` `--wasm-feature tail-call` | 指定できない | 完走（7 ms） |
+| wasm32 `-O0` `--wasm-feature tail-call` | 指定できない | 完走（56〜82 ms） |
+| wasm32 `-O3`（既定） | 完走（19 ms。LLVM が畳む） | 完走（18〜24 ms） |
+| wasm32 `-O3` `--wasm-feature tail-call` | 指定できない | 完走（7〜8 ms） |
 
-時間はプロセスの起動と出力を含む 1 回の値です。native `-O0` の 252 ms は、2,000 万回の末尾呼び出し（`b` の分岐）の時間で、再帰の深さには比例しません。
+時間はプロセスの起動と出力を含む値で、after は最終版（コード `6e943a47`）を 1 分の load average 約 15〜17（15 分の平均は約 32）の機械で 4 回測った範囲です（before は基準のコンパイラ（main `a8875f38`）の 1 回の値）。値の幅が大きいのは共有機の雑音で、改善や悪化の根拠にはなりません。
+native `-O0` の 250 ms 前後は、2,000 万回の末尾呼び出し（`b` の分岐）の時間で、再帰の深さには比例しません。完走するかどうかが、この表の結果です。
 
 ### M3: `control` suite の時間（退行がないことの確認）
 

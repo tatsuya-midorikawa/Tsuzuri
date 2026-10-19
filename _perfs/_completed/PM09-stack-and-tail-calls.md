@@ -8,9 +8,9 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PR01, PM06, E14, B08 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要。要承認: D1（Phase 2: 末尾呼び出しの保証。docs/language.md「再帰とスタック」の保証を広げる言語仕様の変更）, D6（Phase 2: CLI の値 `--wasm-feature tail-call` の追加）。2026-10-20 の全フェーズ実装の依頼で D1・D6 と Phase 2 を承認済み（[_perfs/README.md](README.md) の「第5フェーズ2件の実装方針」） |
+| 承認 | Phase 1 は不要。要承認: D1（Phase 2: 末尾呼び出しの保証。docs/language.md「再帰とスタック」の保証を広げる言語仕様の変更）, D6（Phase 2: CLI の値 `--wasm-feature tail-call` の追加）。2026-10-20 の全フェーズ実装の依頼で D1・D6 と Phase 2 を承認済み（[_perfs/README.md](../README.md) の「第5フェーズ2件の実装方針」） |
 | 手本にする既存実装 | 末尾位置の判定と「drop してから制御を移す」順序: `src/llvm.rs` の `FunctionEmitter::emit_tail`・`tail_arguments`・`is_self`・`drop_all`。フレーム領域の確保と解放の判定: `src/llvm_frame.rs` の `frame_array`・`frame_list`・`frame_value`・`release_operand`・`frame_test`。WASM の opt-in 機能: `src/main.rs` の `--wasm-feature`（`wasm_simd`・`wasm_threads`）と `src/driver.rs` の `-msimd128`／`-mno-simd128`。IR の形の検査: `tests/tail_recursion.rs` の `function_ir` |
 | 主な影響ファイル | `src/llvm.rs`, `src/llvm_frame.rs`, `src/check.rs`（`MAX_VALUE_BYTES` の隣に定数）, `src/main.rs`, `src/driver.rs`, `tests/tail_recursion.rs`, `tests/stack_frames.rs`（新規）, `tests/control.mjs`, `tests/fixtures/control/Frames.tz`（新規）, `tests/fixtures/control/TailCalls.tz`（新規、Phase 2）, `tests/stack.mjs`（新規、Phase 2）, `tests/fixtures/stack/Main.tz`（新規、Phase 2）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/language-reference/functions.md`, `_docs/guides/performance.md`, `_perfs/README.md` |
 | 計測対象 | 関数ごとのフレームの大きさ（clang `-fstack-usage` の `.su`、bytes）、深さ 10,000,000 の相互再帰が完走するか（native・WASM × `-O0`／`-O3`）、PX01 の `control` suite の時間（退行がないことの確認） |
@@ -28,6 +28,78 @@
   WASM は `--wasm-feature tail-call`（新規）を指定したときだけ使う。
 
 実装者は Phase 1 だけを実装する。Phase 2 は D1 と D6 が承認され、人間が求めた場合だけ着手する。
+
+## 着手時の再検討（2026-10-20）
+
+2026-10-20 の依頼で、全フェーズ（Phase 1a・1b・1c と Phase 2a・2b、D1〜D9 と下の D10〜D14）を実装する。D1 と D6 は依頼の時点で承認済みである。
+以下の「着手条件と停止条件」「現状と計測（HEAD `f8dc655`）」「設計」「実装手順」「決定事項」は起票時の記録で、このセクションと食い違う箇所はこのセクションが優先する
+（旧 `_docs/` のパスは GUIDE §8.1 で `_tsuzuri/language-reference/` に読み替える。`guides/performance.md` は存在せず、性能の記述は `docs/benchmarks.md` と `compiler/option.md` にある）。
+着手時の HEAD は `feaa5af3`（main `a8875f38` + 第5フェーズの方針）。偵察と測定は Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 20.19.6、
+1 分の load average 6〜41（ほかの作業と共有）で行った。時間は共有機の参考値で、フレームの大きさと完走の可否は load に依らない。
+基準のコンパイラは main `a8875f38` の release（SHA-256 `35508982…`）で、`target/perf/PM09-before/tsuzuri-before`。生データと scratch は `target/perf/PM09-before/`・`target/perf/PM09-after/`（git の管理外）。
+
+### 起票時の記述と現行のコード
+
+| 起票時 | 現行 | 影響 |
+| --- | --- | --- |
+| リストのスタック上の形は `[4 x { ptr, i64 }]`（16 bytes の node）。見積もりの式は「1 要素あたり 16 + `stack_size(要素)` を 16 の倍数へ」。Rust テスト 5・6 の数もこれで計算 | PM04 で、1 つの完全な chunk `alloca { ptr, i64, i64, [N x T] }`（header 24 bytes。`list_stack_storage`、`src/llvm_list.rs`）。見積もりの式は据え置き（実際の領域は `24 + N × size`。見積もりを上回るのは、要素が 16 の倍数の 1 要素のリテラルの最大 16 bytes だけ） | 印の大きさは chunk 全体（header と slot を要素の整列へ切り上げた値）。Rust テストの数は見積もりの式から計算し直した（`i64` のリストは 1 要素 32 bytes。600 要素は 19,200 bytes で 3 個までがスタック、4 個目は 76,800 > 65,536 でヒープ。境界は 1,024 要素 2 個の 65,536 がスタック、1,025 要素がヒープ）。IR の `alloca` の型でも確かめる |
+| 関数の追加領域は無い。`MAX_FRAME_BYTES` はリテラルの領域だけを数える | PM06 が、エントリーの `alloca` を 2 種類足した。文字列連結のバッファ（`Frame::Buffer`、256 bytes、`frame_concat`）と、局所の関数値の捕捉環境（`Frame::Environment`、`frame_closure`）で、`reserve_buffer` が合計 `MAX_FUNCTION_BUFFER_BYTES`（4 KiB）、環境 1 KiB、循環に入る関数・Task の本体・ヒープ初期化子への不使用の上限を守る。`Frame::String` は定数を指し、`alloca` を持たない | `MAX_FRAME_BYTES`（64 KiB）は関数ごとの合計で、リテラルの配列・リスト、バッファ、環境をすべて数える。4 KiB の上限と循環の除外はそのまま守る（`frame_bytes_left`・`reserve_buffer`）。文書は両方の規則を書く |
+| 寿命の印は、リテラルの領域の 2 種類（配列とリスト）に付ける | 上の 2 種類の追加領域にも付けられる（D2 の規則で正しいことは ASan で確かめた）。付けた版を 108 プロジェクトの `-O3` のフレームで測ると、合計が 23,872 bytes **増えた**（下の「偵察で測った事実」） | D11: 印は配列とリストだけに付ける。バッファと環境の `alloca` は印なしのまま。D15: さらに、同じ値が持ちうる複数のフレーム（`if` と複数の arm の `match` の枝）と `let mut` の束縛のフレームには付けない（実装の最初の版が wasm32 `-O3` で誤った値を返したため） |
+| native の枯渇は SIGSEGV。`E2005` は「signal: 11 (SIGSEGV)」 | E14 Phase 3 の `src/runtime/stack.c` が、再帰を含む実行ファイルに `sigaltstack` と SIGSEGV／SIGBUS のハンドラを置く。相互再帰の `-O0` は `trap: stack overflow` を標準エラーに出して `abort()` し、`E2005` は「signal: 6 (SIGABRT); stack overflow: ...」 | 起票時の再現の表の native `-O0` の欄は SIGABRT に読み替える。M2 の「完走か否か」の判定は変わらない |
+| `-O0` の `even`・`odd` のフレームは `.su` で 32 bytes、`total` は 352 bytes | `clang -Rpass-analysis=prologepilog` で `even`・`odd` は 48 bytes、`tz.fn.Main.total` は 320 bytes（測り方が違う）。`.su` は使わず、前後とも prologepilog で測る（D7） | M1 の前後比較は prologepilog の同じ測り方で行う |
+| fast backend（PB05）は無い | `--backend fast` は `musttail` を `E2002` で拒否する（`src/backend/parse.rs` の `bail!("a musttail call")`）。何もしないと、相互再帰を持つすべてのプログラムが `--backend fast` で作れなくなる | D10: `musttail` を Cranelift の `return_call` に翻訳する。保証は、内部で、アドレスを取られず、大きな集成体の引数を持たない関数どうしに限り、それ以外は意味の同じ通常の呼び出しにする。wasm32 の `--backend fast` は `--wasm-feature tail-call` を `E2000` で拒否する |
+| `--wasm-feature` の値は `simd128`・`threads`。誤りの message は `supported WASM features are 'simd128', 'threads', and 'tail-call'; ...` | 値は `simd128`・`threads`・`jspi`・`webgpu`・`net` の 5 つ。`BuildOptions::validate`・`validate_fast`・`validate_bindings`・WGSL/SPIR-V の拒否・`run_wasm_opt`・HELP・ビルドキャッシュの鍵（`{options:?}` の Debug 文字列で、場所を列挙する必要はない）が絡む | `tail-call` を 6 つ目として足し、message は 6 つを並べる。既存の CLI テストの `asyncify` の期待を、この message に変える（下で先に宣言） |
+| `EmitOptions` に `wasm_tail_call` を足す | `EmitOptions` の構造体リテラルは 20 ファイル・約 58 箇所（テストを含む）にあり、機能を足すたびに全部を直す形になる | `Instrumentation.wasm_tail_call` と `emit_wasm_build` の引数にする。driver は `--wasm-feature tail-call` のとき WASM のビルドを `emit_wasm_build` へ回す。`EmitOptions` は変えない |
+| `tail_groups` は `llvm.rs` の反復の Tarjan | `src/llvm_escape.rs` に、反復で、参照のグラフから再帰する関数を求める `references`・`recursive_functions` が既にある | D9': 新しい SCC を書かず、`edges(module, closures)`・`components(graph)`（反復の Kosaraju）へ一般化し、`recursive_functions` を `components` の上に書き直し、`tail_groups` は閉包の辺を除いた直接参照の成分にする |
+| WASM の clang 引数は、既定で `-mno-tail-call` を明示。ランタイムの object も同じ | 同梱ツールチェーンの事前ビルドのランタイム object（`scripts/toolchain/runtime.mjs`）は `-mbulk-memory -m[no-]simd128` で作られ、実行時の引数と**完全に一致**したときだけ使われる（`runtime_cache::prebuilt`）。`scripts/toolchain/smoke.mjs` が「実行時のコンパイラを呼ばずに同梱の object を使う」ことを検査する | D12: 明示の `-mno-tail-call` は、モジュール本体の clang の呼び出しだけに付ける（`-mtail-call` は指定時）。ランタイムの object の引数は変えず、`wasm-ld` が tail call を使う object と混ぜてリンクできることを実際に確かめた |
+| 浅い循環の E2E は `tests/control.mjs`、深い E2E は `tests/stack.mjs` の `tz_main()` | `export def` を持つ fixture は `tz_<name>` を export し、`main` は `tsuzuri_main` になる | `tests/fixtures/stack/Main.tz` に `stack_even`・`stack_cycle` の export と、native 用の `main` を置く |
+| Rust テストは 10 件 | 加えて fast backend のテスト（`tests/fast_backend.rs` の 3 件、`tests/fast_backend_ops.rs` の `tail calls` の group）、`src/main.rs`・`src/driver.rs` の CLI・validate のテスト、`tests/user_drop.mjs` の drop の順序 | 数は「実装と検証」に書く |
+
+### 偵察で測った事実（基準は main `a8875f38`）
+
+- `-O0` の相互再帰（`tests/fixtures/stack`、深さ 10,000,000）は、`trap: stack overflow` と SIGABRT で止まる。`-O3` は LLVM が畳んで完走する。WASM `-O0` は `RangeError`、`-O3` は完走する（M2 の before）。
+- `frames5`（`deep` の 1 つの非末尾再帰関数が、重ならない 2 つの 64 要素のリストのリテラルを持つ）のフレームは `-O0` で 1,552 bytes、`-O3` で 1,264 bytes。
+- 起票時の案の D2 の規則（`end` は `drop_framed` の `frame_test` が真の枝だけ）は、2 種類の追加領域では次の問題を持つ。印のある `alloca` を、LLVM のインライナーは自分では印づけしない（`opt -passes=always-inline` で確かめた）ので、
+  印のない関数が展開されるときに得られる「関数全体の `start`／`end`」を失う。値がヒープへ移った経路には `end` が無いので、展開された呼び出し元では領域が関数の終わりまで生きる。
+  `tests/fixtures/stack` の `-O3` の `tsuzuri_main` は 368 → 576 bytes（256 bytes のバッファ 2 つが重ならなくなった）。
+- 108 プロジェクト（`examples/` と `tests/fixtures/` のうち IR を作れるもの）の `-O3` のフレームの合計: 基準 5,853,344 bytes。印を 4 種類に付けた版は +23,872（大きくなったプロジェクト 6、小さくなったもの 11。`net_sockets` は 42,448 → 57,408）。
+  バッファに付けない版は −224（大きくなったもの 1: `currying` 295,824 → 296,192）。配列とリストだけの版は −592（大きくなったプロジェクトなし、小さくなったもの 3）。
+- fast backend: 基準の IR の `call` は通常の呼び出しなので、`musttail` を足すまでは翻訳に影響しない。`return_call` は Cranelift 0.121.2 の `CallConv::Tail` が必要で、呼び出し元・呼び出し先の署名を同じ規約にしなければならない。
+  内部関数の ABI（`src/backend/abi.rs`）は大きな集成体を呼び出し元のコピーのアドレスで渡す（末尾呼び出しの後は無効になる）ので、そういう引数を持つ関数は末尾規約にできない。
+
+### 決定事項の更新
+
+- D1（保証の範囲と解放の順序）: 維持。`guaranteed_tail` の条件は、ticket の「名前で直接呼ぶ・同じ rec グループ・全引数・末尾位置・借用なし・結果がスカラー」に加えて、両方の関数が `capture_count == 0`・Task の本体でなく、`@cpu` の版分けの対象でなく、
+  `@tz.specialized.` の関数の中でなく、引数の LLVM の型が同じであること（`musttail` は prototype の一致を求める）。結果の LLVM の型は `i1`・`i8`・`i16`・`i32`・`i64`・`float`・`double`・`ptr`。
+  順序は「引数を左から右へ 1 回ずつ評価、`drop_all`、`musttail call`、`ret`」で、間に別の行を置かない。**既定の WASM は変えない**（`tail_calls` が偽なら `guaranteed_tail` は常に `None`）ので、ネイティブと既定の WASM で `Drop` の副作用の順序が違う（文書に書き、`tests/user_drop.mjs` で固定する）。
+- D2（寿命の印の位置）: 規則は維持（`start` は最初の store の前、`end` は `drop_framed` の `frame_test` が真の枝だけ）。**D11（新設）**: 印は配列とリストの `alloca` だけに付ける。文字列連結のバッファと捕捉環境には付けない（上の測定）。
+  `end` を偽の枝や関数の出口へ足す案は、D2 の停止条件に当たるので採らない。
+  **D15（新設。実装の途中で見つけた欠陥の修正）**: D2 の規則だけでは足りなかった。`frame_test` は値のアドレスを候補のフレームのアドレスと比べるので、LLVM の `StackColoring` が寿命の重ならない 2 つの `alloca` に同じ場所を与えると、先の候補の比較が、後の候補を使う値でも真になる。
+  `match` の枝ごとのバイト列の配列（`string_library` の `validate_bytes`）で、wasm32 `-O3` の機械語は 9 つの枝の領域のうち 8 つを `sp+32` に重ね、IR の最適化が「アドレスが等しければ先の枝」と見て畳んだ内容（`[0]`）を読んだ（`validate_bytes(2)` が `-1` でなく `1`、`-mllvm -no-stack-coloring` で直る）。
+  最初の版は、Rust のテスト全件・`control`（ASan 込み）・fast backend の suite を通り、`tests/features.mjs` を実行して初めて分かった。決定: `unmarked_frames` が 0 でないあいだ（`emit_frame_inner` の `if` の両方の枝、複数の arm を持つ `match` の arm、`let mut` の束縛の初期化子）は `slots_bytes` が `None` を返し、`start` も `end` も出さない。
+  候補が 1 つの領域は付けたままにする（比べる相手がヒープかヌルだけ）。`let mut` を外すのは、代入が値を `drop_slot` で早く解放して `end` を出すので、あとから別の領域と同じ候補の組に入り得るため。
+  immutable なローカルの領域どうしが `if` で 1 つの値の候補になる場合は、START がその合流点を支配し、合流点までの経路に `end` がないので、LLVM の分析（合流点で生存集合の和を取る）で寿命が重なり、同じ場所にならない。D2 の `end` の位置は変えていない。
+  回帰テスト: `tests/control.mjs` の `frames_validate`（印を付ける版では WASM `-O3` で失敗することを確かめた）、`frames_arms`・`frames_branches`・`frames_reassigned`、`tests/stack_frames.rs` の `leaves_the_frames_that_one_value_may_hold_without_markers`（`unmarked_frames` の判定を外すと失敗することを確かめた）。
+- D3（関数あたりの上限）: 維持し、数える対象を広げる（上の表）。`frame_value` は見積もりを 1 回だけ計算し、スタックに置くときだけ足す。境界は「合計がちょうど 64 KiB まではスタック」。
+- D4（`musttail` だけ）・D5（保証できない呼び出しは今どおり、診断なし）: 維持。
+- D6（`--wasm-feature tail-call`）: 承認済み。値の受理・拒否の条件は `simd128` と同じ形（`build` だけ。wasm32 または wasm64 の object・LLVM IR・WASM 出力。header・native・bindings・WGSL・SPIR-V・bitcode は `E2000`）。他の機能と併用できる。
+- D7（計測）・D8（スタックの大きさ）・D9（rec グループ）: 維持（D9 は上の D9'）。
+- D10（新設。fast backend）: 上の表。保証できない形は、黙って通常の呼び出しにする代わりに、文書に書いた範囲（内部・アドレスを取られない・大きな集成体の引数なし）だけを保証し、wasm32 の `--backend fast` は `E2000` で拒否する。
+- D12（新設。`-mno-tail-call`）: 上の表。
+- D13（新設。Windows）: ネイティブの Windows は検証できないので、`tests/stack.mjs` を `windows.yml` の step にしない（`targets.yml` の 4 つの host で実行する）。Rust のテスト（IR の形）は Windows でも実行される。
+- D14（新設。drop の順序の文書）: `docs/language.md` の「再帰とスタック」、`ownership-and-memory/drop.md`、`values-and-functions/functions.md` に、保証された末尾呼び出しの前に所有値を解放することを書く。
+
+### 先に宣言する既存テストの期待値の変更
+
+- `tests/fast_backend.rs` の `refuses_the_conventions_that_it_would_not_implement`: `musttail` の呼び出しは `E2002` ではなくなる（ticket の予測の範囲。fast backend の翻訳を足すため）。`PROGRAMS` に相互再帰のプログラムを足す（4 → 5）。
+- `src/main.rs` の CLI テストの `--wasm-feature asyncify` の期待 message: 6 つの値を並べた文に変える。
+- それ以外の既存の期待は、変えない。変える必要が出たら、止めて理由を記録する。
+
+### 停止条件の更新
+
+起票時の停止条件のうち、次を確かめた。`end` を D2 の 2 つの場所以外に置く必要は出なかった（D11 は印を外す側の変更）。clang は生成 IR を `-O0`・`-O3`・native・wasm32 で受理した（`-mtail-call` なしの WASM に `musttail` を出さないので、`WebAssembly 'tail-call' feature not enabled` は出ない）。
+`wasm-ld` は、tail call を使うオブジェクトと、使わないランタイムのオブジェクト（`-mno-tail-call` の有無を問わず）の混在を受け入れた（Node 20.19.6 で実行まで確かめた）。stack-depth の 3 テストと `honors_the_exact_specialization_limit` は変えていない。
+`unsafe`・新しい crate・既定の WASM の import は足していない。
 
 ## 着手条件と停止条件
 
@@ -640,3 +712,122 @@ M3 の `control` suite の時間。CI に閾値は置かない。
   `src/recursion.rs` の検査結果（`recursion::check` の戻り値は `unused_private` 用の参照）は使わない。
 - 理由: 特殊化で関数 id が増えた後の本体に対して判定でき、`rec` の宣言と実際の循環が一致する。
 - 状態: 既定案（実装者はこの案に従う。着手は D1 の承認後）
+
+## 実装と検証（2026-10-20）
+
+全 Phase（1a・1b・1c・2a・2b）を、ブランチ `perf/p5-PM09`（基準 `feaa5af3` = main `a8875f38` + 第5フェーズの方針）に実装した。D1・D6 は依頼の時点で承認済み。
+実装の途中で、D2 の規則だけでは寿命の印が誤った値を返す場合があると分かり、D15 で直した（「決定の変更と、起票との違い」）。
+
+### 実装した範囲
+
+| Phase | 内容 | 主な場所 |
+| --- | --- | --- |
+| 1a | 配列とリストのリテラルのスタック領域に `llvm.lifetime.start`／`end`。`start` は最初の store の前、`end` は `drop_framed` の `frame_test` が真の枝だけ。大きさは対象のレイアウトの正確な値で、確定できない型（`i128`・`Decimal128`・`Binary128`・16 byte を超える SIMD に届く型）には付けない。`declare` は 1 組だけ（ランタイム IR の宣言は取り除く）。D11・D15 で付ける領域を絞った | `src/llvm_frame.rs`（`Frame::{Array,List}` の `bytes`、`lifetime`、`end_frame`、`slots_bytes`）、`src/llvm_list.rs`、`src/llvm.rs` |
+| 1b | 関数ごとの合計 `MAX_FRAME_BYTES`（64 KiB）。リテラル、文字列連結のバッファ、捕捉環境を数える。4 KiB のバッファ上限、環境 1 KiB、循環に入る関数・Task・ヒープ初期化子の除外は維持 | `src/check.rs`、`src/llvm_frame.rs`（`frame_bytes_used`・`frame_bytes_left`・`frame_value`・`reserve_buffer`） |
+| 1c | スタックの大きさと枯渇、フレームの測り方の文書。M1・M2・M3 | `docs/`、`_tsuzuri/language-reference/` |
+| 2a | 同じ直接呼び出しの SCC（rec グループ）の関数どうしの、末尾位置で全引数を渡す呼び出しを `musttail` にする。順序は「引数を左から右へ 1 回ずつ評価、`drop_all`、`musttail call`、`ret`」で、間に行を置かない。`tail_groups` は `llvm_escape.rs` の反復の SCC（`edges`・`components`）を一般化して求める。`--backend fast` は `musttail` を Cranelift の `return_call` に翻訳する（D10） | `src/llvm_escape.rs`、`src/llvm.rs`（`guaranteed_tail`・`guaranteed_call`・`emit_tail`）、`src/backend/*` |
+| 2b | `--wasm-feature tail-call`（6 つ目の値）。wasm32・wasm64 の object・LLVM IR・WASM だけ。`musttail` は指定したときだけ、モジュール本体の clang に `-mtail-call`（指定しないときは `-mno-tail-call` を明示）、`--emit llvm` の注記、`validate`、ビルドキャッシュの鍵（`{options:?}`）、`--wasm-opt` の `--enable-tail-call`、wasm32 の `--backend fast` の `E2000` | `src/main.rs`、`src/driver.rs`、`src/llvm.rs`（`emit_wasm_build`） |
+
+保証の条件（`guaranteed_tail`）: 呼び出し先が名前で呼ぶユーザー関数で、自分自身でなく同じ rec グループにあり、全引数が渡され、`tail_calls`（native は常に、wasm は `--wasm-feature tail-call` のときだけ）が真、借用 worker と `@tz.specialized.` の関数の中でなく、
+呼び出し元と先の引数の LLVM の型が同じで、どちらも捕捉なし・Task の本体でなく・`@cpu` の版分けの対象でなく、借用を運ばず、結果の LLVM の型が `i1`・`i8`・`i16`・`i32`・`i64`・`float`・`double`・`ptr` のどれか。
+捕捉のない局所の `let rec` の `$lambda` も対象。条件を外れた呼び出しは、今までどおりの通常の呼び出しで、診断は出ない（D5）。
+
+### コミット
+
+| 作業 | コミット | 内容 |
+| --- | --- | --- |
+| 1a・1b | `42fd60dc` | 寿命の印と関数ごとの上限、`tests/stack_frames.rs`、`tests/fixtures/control/Frames.tz` |
+| 2a | `c339b6b2` | `musttail`（`tail_groups`・`guaranteed_tail`）、fast backend の `return_call`、`tests/tail_recursion.rs`、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`、`TailCalls.tz`、`tests/user_drop.mjs` |
+| 2b | `d695a42d` | `--wasm-feature tail-call`、`tests/stack.mjs`・`tests/fixtures/stack/Main.tz`、CLI のテスト、`targets.yml`・`windows.yml` |
+| D11 | `6a538ece` | 印を配列とリストだけにする（108 プロジェクトの `-O3` のフレームの測定で決めた） |
+| 文書 | `5d495c4f` | `docs/`・`README.md`・言語リファレンスの 6 ページ、`docs/benchmarks.md` の新しい節 |
+| 修正 | `8b748643` | `Globals::range_flags` の doc comment を戻す |
+| 文書 | `708f3c0f` | `tail-call` を、WASM の機能を並べた 3 か所（`architecture.md`・`webassembly.md`・`diagnostics.md`）へ足す |
+| D15 | `6e943a47` | 同じ値が持ちうる複数のフレームと `let mut` のフレームに印を付けない。`frames_validate` ほか |
+| テスト | `25f75e6b` | 局所の値を `if` が選ぶ場合の `frames_locals`・IR の形のテスト |
+| 文書 | `4d77bd91` | 印の規則、M1 の訂正、Linux の確認 |
+| 完了 | このセクションを足したコミット | M2 の表の更新、チケットの完了と `_completed/` への移動 |
+
+### 既定の出力と挙動の変更（宣言）
+
+- Phase 1a: 配列・リストのリテラルをスタックに置く関数の IR に、`call void @llvm.lifetime.start.p0`・`end` と、`declare void @llvm.lifetime.{start,end}.p0(i64 immarg, ptr)` の 1 組が増える（native と wasm32。ランタイム IR の宣言と重ならない）。
+  `examples/` と `tests/fixtures/` で IR を作れた 108 プロジェクトのうち、native は 60 が基準と同一、48 が異なる。異なる 48 のうち 42 は `llvm.lifetime.*` の行だけの違いで、6 は `musttail` を持つ。wasm32 は 103 のうち 59 が同一、44 が異なり、いずれも `llvm.lifetime.*` の行だけの違い（`musttail` は 0）。`benchmarks/control` の IR は基準と byte 単位で同一。
+- Phase 2a: native の保証された末尾呼び出しだけが `musttail call` + `ret` になる。所有値を呼び出しの前に解放するので、ユーザーの `Drop` の副作用は、その呼び出しに限り呼び出し先の実行より前になる（native。既定の WASM では呼び出しの後のまま。`tests/user_drop.mjs` で固定した）。`-O0` の相互再帰が定数のスタックで走る。
+- Phase 2b: `--wasm-feature tail-call`（新規。`simd128` と同じ条件の opt-in）。既定の wasm32 に新しい import も tail call の命令も増えない（相互再帰のプログラムの既定の IR と `.wasm` が基準と byte 単位で同一であることを確かめた）。モジュール本体の clang の引数に `-mno-tail-call` が明示される（実行時の既定の WASM の出力は変わらない）。
+- 変えていないもの: 上限・スタックの大きさ・特殊化の上限、`EmitOptions`、ランタイム object を作る clang の引数、診断コードの意味。`unsafe`・新しい crate・既定の WASM の import は足していない。
+
+### 検証
+
+| コマンド | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 差分なし |
+| `cargo clippy --all-targets -- -D warnings`（既定と `--features fast-backend`） | 警告なし |
+| `node scripts/slot.mjs -- cargo nextest run --locked` | 1630 passed、1 skipped（`inventory_of_implicit_copies`。`#[ignore]`）。`TSUZURI_STRINGS=compact` も 1630 passed、1 skipped |
+| `cargo nextest run --locked --features fast-backend --test fast_backend --test fast_backend_ops` | 15 passed。`--lib --bins` は 451 passed |
+| `cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（rustup の stable 1.96.1。Homebrew の rustc 1.98.1 には Windows の std がない） | 成功 |
+| `node tests/control.mjs target/debug/tsuzuri`（`TSUZURI_ASAN=1` も） | 659 cases、native・WASM の `-O0`・`-O3` で成功 |
+| `node tests/features.mjs`（既定、`TSUZURI_TEST_ALLOCATOR=small`、`TSUZURI_STRINGS=compact`、`storage` の ASan） | 19,662 cases ×3、ASan は 24 cases、成功 |
+| `strings`・`primitives`・`e2e`・`examples`・`tasks`・`computations`・`stack`（新規）・`wasm_simd`・`wasm_threads`・`cache`・`user_drop`（ASan も） | 成功 |
+| `debug_info`（`TSUZURI_CLANG`・`TSUZURI_LLVM_LINK`・`TSUZURI_DWARFDUMP` を Homebrew の LLVM 21 にした） | 成功。環境変数なしでは `llvm-dwarfdump`・`llvm-link` がなく失敗する（この変更と無関係） |
+| `node tests/fast_backend.mjs`（`cargo build --features fast-backend` の binary）の既定・`programs`・`wasm`・`parity` | 既定は成功。`programs` は same-output 22・same-exports 86・differ 0・skipped 12（基準でも LLVM の build が失敗する fixture）。`wasm` は same-behavior 98・differ 0・skipped 22。`parity` は `control`・`primitives`（`fptrunc` から half を翻訳しない既存の fallback 1）・`numeric_casts`・`integer_intrinsics`・`strings`・`user_drop`・`examples`・`e2e` の 8 つが成功 |
+| `TSUZURI_STACK_FAST=1 node tests/stack.mjs`（fast backend 付きの binary） | 成功（`--backend fast` の native `-O0` が深さ 10,000,000 を完走）。基準のコンパイラでは native `-O0` がスタックを使い切って失敗する |
+| `node scripts/check-docs.mjs` を変えた言語リファレンスの 7 ページに | 202 links、35 examples、native 54 runs（`-O0`・`-O3`）が成功 |
+| Linux と x86-64（Docker Desktop の Ubuntu 24.04。clang 21、rustc 1.99.1、Node.js 24.11.0。arm64 は native、x86-64 は Rosetta） | 下 |
+
+Linux と x86-64（コンテナ）の確認: x86-64 では `cargo test --features fast-backend` の `tests/fast_backend.rs` 12・`tests/fast_backend_ops.rs` 3・`tests/stack_frames.rs` 10・`tests/tail_recursion.rs` 12 が通り、`tests/stack.mjs`（`TSUZURI_STACK_FAST=1`。Cranelift の x86-64 の `return_call` で `--backend fast` の native `-O0` が完走）、`tests/control.mjs` 659 cases、`tests/features.mjs` の `string_library`、`tests/fast_backend.mjs programs` が成功した。
+macOS で `--target {x86_64,aarch64}-unknown-linux-gnu --emit object` にした相互再帰（`tests/fixtures/stack` と同じ export）を、コンテナの `cc` で C のホストにリンクして深さ 10,000,000 で動かすと、arm64・x86-64 とも `-O0`・`-O3` で `1 10000000`。基準のコンパイラの `-O0` の object は SIGSEGV（終了 139）。`--target` の 22 個すべてで、相互再帰の object が `-O0`・`-O3` とも作れる（実行は上の 2 つだけ）。
+`wasm-ld` が tail call を使う object と、使わないランタイム object（`-mno-tail-call` の有無を問わず）を混ぜてリンクでき、Node.js 20.19.6 が `return_call` を実行することも確かめた（PB01 の事前ビルドの `numeric`・`math`・`wasi` object を使う driver 経由を含む）。
+
+テスト（新規 22 件 + 拡張）:
+
+- `tests/stack_frames.rs`（10 件。新規）: 寿命の印の位置（束縛・一時値・ループ）、トラップ地点を使わないこと、`declare` が 1 組であること、関数ごとの上限（境界を含む）、リテラル・バッファ・環境が 1 つの上限を分けること、バッファと環境に印がないこと、`i128` のリストに印がないこと、D15（`leaves_the_frames_that_one_value_may_hold_without_markers`、`keeps_the_markers_of_locals_that_an_if_chooses_between`）。リストの数は、現行の chunk の IR と式から計算し直した（600 要素の `i64` のリストは 19,200 bytes で 3 個まで、4 個目は 76,800 bytes で heap。1,024 要素 2 個の 65,536 bytes が境界）。
+- `tests/tail_recursion.rs`（+6 件）: `musttail` の位置と直後の `ret`、所有値を呼び出しの前に解放する順序、保証の対象外の形（文字列の結果・借用・型の違い・閉包・非末尾・引数の数が合わない呼び出し）、自己末尾再帰がループのままであること、`|>` の呼び出し、`--trap-info`・`-g` で prototype が一致すること。
+- `tests/fast_backend.rs`（+4 件、`PROGRAMS` を 4 → 5）・`tests/fast_backend_ops.rs`（`tail calls` の group、native）: 深さ 40,000,000 の `return_call`、スタックで渡す 12 個の整数の引数（Rust の参照式）、コンパイラ出力の相互再帰（10,000,000）、アドレスを取られた関数と大きな集成体の引数が通常の呼び出しになること。`return_call` への翻訳を外すと 3 つの深いテストが SIGSEGV で失敗することを確かめた。
+- `src/llvm_escape.rs`（+1 件）: `tail_groups` が名前の循環で、閉包の辺を含まないこと。`src/driver.rs`（+1 件）: `tail-call` の出力ごとの受理と拒否。`src/main.rs` の CLI テスト: 6 つ目の値、`build` 以外・header・native・bindings・doc の拒否、wasm32 の `--backend fast` の拒否、誤りの message（既存の `asyncify` の期待を、6 つの値を並べた文に変えた）。
+- `tests/control.mjs`（659 cases）・`tests/fixtures/control/Frames.tz`・`TailCalls.tz`: 期待値は BigInt の再計算と V8 の `TextDecoder` から求めた。`frames_validate` は、印を付けた版で WASM `-O3` で失敗する（`frames_validate(2)` が 1）ことを確かめた。
+- `tests/stack.mjs`・`tests/fixtures/stack/Main.tz`（新規。CI の `targets.yml` の 2 つの step）: native `-O0`・`-O3`、`--backend fast`、既定の WASM（`musttail`・`return_call` なし、`-O0` は `RangeError`）、`--wasm-feature tail-call`（`-O0`・`-O3`、`--trap-info`・`-g` の build も）、キャッシュの分離、誤用の拒否。
+- `tests/user_drop.mjs`: 保証された末尾呼び出しの `Drop` の順序（native は `[102,201,100]`、既定の WASM は `[100,201,102]`）。
+
+仕様の 4 つのテスト（`bounds_type_growing_polymorphic_recursion`、`bounds_recursive_and_flat_expression_depth`、`bounds_nested_builder_expansion_not_just_source_syntax`、`honors_the_exact_specialization_limit`）は、変えずに成功している（nextest の全件に含まれ、この 4 つだけを `-E` で動かしても `Starting 4 tests`・4 passed）。
+
+差分 fuzz（scratch。コミットしていない）: 基準のコンパイラと最終版で、`match`・`if` の枝のバイト列の配列、局所の値の move、`let mut` の代入、`for` の中の `continue`・`break`、タプルを組み合わせた 6,000 関数（18,000 回の比較。wasm32 の `-O0`・`-O3`）が、差 0 だった。同じ fuzz で、印を付けた最初の版は 200 関数中 1 件を取り違えた（D15 の欠陥）。
+
+### 測定
+
+条件、生データ、before／after の全部は [docs/benchmarks.md](../../docs/benchmarks.md#スタックとフレームの大きさ) にある。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node.js 20.19.6。load average は 6〜154（nextest の最中の最大値を含む。ほかの作業と共有）で、フレームの大きさと完走の可否は load に依らない。
+
+- M1（フレームの大きさ。prologepilog の remark）: `-O3` で、展開されない再帰関数 1 つが 1,264 → 736 bytes（−42%）。108 プロジェクトの `-O3` の合計は 5,853,600 → 5,853,136（−464、大きくなったプロジェクトなし、小さくなったもの 2）。`-O0` は 12,572,576 → 12,572,256（−320。いずれも末尾呼び出しの関数で、寿命の印の効果ではない）。`-O0` のフレームは印で縮まない（チケットの予測どおり）。`-O3` で大きくなる関数もある（`tz_tail_texts` 0 → 112、`tz_tail_lists` 32 → 64）が、原因は調べていない。
+- M2（深さ 10,000,000 の相互再帰）: native `-O0` は before が `trap: stack overflow`、after が完走（242〜402 ms）。`--backend fast` の `-O0` も完走（100〜143 ms。before は未測定）。wasm32 は既定のままだと `-O0` が `RangeError`、`--wasm-feature tail-call` なら完走（`-O0` が 56〜82 ms、`-O3` が 7〜8 ms）。
+- M3（`benchmarks/run-control.mjs`）: 16 種目すべてが ±0.8% の内側、合計 118.046 → 117.936 ms。この suite の IR は基準と同一なので、差は測定の雑音の幅で、改善の証拠ではない。
+
+### 決定の変更と、起票との違い
+
+- D10（fast backend）: 何もしないと、相互再帰を持つ全プログラムが `--backend fast` で `E2002` になる。`musttail` を Cranelift の `return_call` へ翻訳する。保証は、内部で、アドレスを取られず、大きな集成体の引数を持たない関数どうしに限り（`Module::tail_functions`、`abi::plan_tail`、`CallConv::Tail`）、それ以外は意味の同じ通常の呼び出しにする（文書に書いた）。wasm32 の `--backend fast` の WASM 書き出しは `musttail` を通常の呼び出しにしか翻訳できないので、`--wasm-feature tail-call` を `E2000` で拒否する。
+- D11（寿命の印は配列とリストだけ）: README の方針は「D2 の規則で正しいと示せる枠のすべてに付ける」だったが、バッファと環境は値がヒープへ移った経路に `end` がなく、付けると 108 プロジェクトの `-O3` のフレームが +23,872 bytes になるので付けない。
+- D12（`-mno-tail-call`）: 明示するのはモジュール本体の clang の呼び出しだけ。事前ビルドのランタイム object は引数が完全に一致したときだけ使われるので、ランタイム object の引数は変えない。
+- D13: ネイティブの Windows は検証できないので、`tests/stack.mjs` を `windows.yml` の step にしない（`targets.yml` の 4 つの host で実行する）。`windows.yml` は、Rust のテスト（IR の形）が Windows でも走ることを、冒頭の comment に書いただけ。
+- D14: 所有値を保証された末尾呼び出しの前に解放することを、`docs/language.md`・`drop.md`・`functions.md` に書いた。
+- D15（実装の途中で見つけた欠陥）: 上の D2 の節。最初の実装は、Rust のテスト全件・`control`（ASan 込み）・fast backend の suite に通り、`tests/features.mjs` の `string_library`（wasm32 `-O3` の `validate_bytes(2)`）だけが失敗した。検証の最後まで features を動かさなかったので、遅く見つかった。
+  修正は 1 つの規則（`unmarked_frames`）で、IR の形のテスト・`control` の `frames_validate`・差分 fuzz で守る。最終版の合計は −464 bytes（印を付けた最初の版は −720）で、`frames5` の −42% は変わらない。
+- `EmitOptions` は変えず、`Instrumentation.wasm_tail_call` と `emit_wasm_build` の引数にした（構造体リテラルが 20 ファイルに約 58 箇所ある）。
+- `tail_groups` は、新しい SCC を書かず、`llvm_escape.rs` の `references`・`recursive_functions` を `edges`・`components`（反復の Kosaraju）に一般化して求めた。結果は決定的で、Rust のスタックを使わない。
+- 変えた既存テストの期待は、チケットが予測した 2 つだけ: `refuses_the_conventions_that_it_would_not_implement`（`musttail` が `E2002` でなくなる）と、`--wasm-feature asyncify` の誤りの message（6 つの値を並べる）。
+
+### 変更した文書
+
+`docs/language.md`（「リソース上限」「再帰とスタック」「スタックとヒープ」）、`docs/architecture.md`（フレームの上限と印、「保証された末尾呼び出し（musttail、PM09）」、fast backend、WASM の機能）、`docs/benchmarks.md`（「スタックとフレームの大きさ」）、`README.md`（`--wasm-feature` の行、再帰、検証の表）、
+言語リファレンスの `compiler/option.md`・`webassembly.md`・`native-interop.md`・`diagnostics.md`、`ownership-and-memory/drop.md`・`stack-and-heap.md`、`values-and-functions/functions.md`。`_perfs/README.md` は PM09 の行だけ。
+
+### 変更したファイル
+
+`src/llvm.rs`・`llvm_frame.rs`・`llvm_escape.rs`・`llvm_list.rs`・`llvm_control.rs`・`check.rs`・`driver.rs`・`main.rs`・`backend/{abi,call,func,lower,mod,module,parse}.rs`・`backend/wasm/lower.rs`、
+`tests/stack_frames.rs`・`tail_recursion.rs`・`fast_backend.rs`・`fast_backend_ops.rs`・`control.mjs`・`stack.mjs`・`user_drop.mjs`・`user_drop_runtime.c`・`fixtures/control/{Frames,TailCalls}.tz`・`fixtures/stack/Main.tz`・`fixtures/user_drop/Main.tz`、
+`.github/workflows/targets.yml`・`windows.yml`、上の文書、このチケット。
+
+### 実装しなかったこと、確かめていないこと
+
+- ネイティブの Windows の実行（型検査と clippy だけ）、macOS の x86-64（Intel）の実行、Linux の実機（コンテナで確かめた）。`targets.yml` の 4 つの host で `tests/stack.mjs` と fast backend のテストが走る。
+- Binaryen の `wasm-opt`（`--enable-tail-call` を渡す実装だけで、実行は確かめていない）、wasm64 の実行（Node.js 20 は memory64 を既定で持たず、object の生成だけ）、ブラウザの WebAssembly エンジン、`Task.parallel` と WASM threads のワーカーのスタックの大きさ。
+- 基準のコンパイラの `--backend fast` での M2（基準の `fast` 付きの build を作っていない）、`-O3` で大きくなる関数（`tz_tail_texts`・`tz_tail_lists`）の原因。
+- Linux のコンテナでの ASan・TSan（`libclang-rt` を入れていない）。ASan は macOS の `control`・`user_drop`・`features storage` で動かした。
+- 結果が文字列・配列・リスト・タプル・レコード・union・`i128` の関数の間の末尾呼び出し、rec グループの外の関数、閉包を経由する呼び出しの保証（D1 の範囲外。通常の呼び出しのまま）。PB07 の分割器は、`llvm.lifetime.*` と `musttail` の行を読むので、これらが増えた IR で確かめる必要がある（このチケットでは PB07 の branch に触れていない）。
