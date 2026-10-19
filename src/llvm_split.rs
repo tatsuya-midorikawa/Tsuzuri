@@ -1020,6 +1020,11 @@ struct Plan<'a> {
     renamed: Vec<Option<String>>,
     /// The module that a user function belongs to.
     modules: Vec<Option<&'a str>>,
+    /// The function that defines each function: itself, or the first of the functions that have its new name and
+    /// the same text (two equal lambdas in two modules are one function, as two equal functions are for the linker's
+    /// identical-code folding; nothing in the language can tell them apart, because a function value cannot be
+    /// compared).
+    canonical: Vec<usize>,
 }
 
 fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
@@ -1036,6 +1041,7 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
         }
     }
     let mut renamed: Vec<Option<String>> = vec![None; count];
+    let mut canonical: Vec<usize> = (0..count).collect();
     if !unstable.is_empty() {
         let nodes: FastMap<usize, usize> = unstable
             .iter()
@@ -1046,7 +1052,8 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
             .iter()
             .map(|id| function_edges(parsed, parsed.functions[*id].text, &nodes))
             .collect();
-        let mut used: FastSet<String> = FastSet::default();
+        // The names that are taken, with the digest of the text they stand for and the function that has it.
+        let mut used: FastMap<String, ([u8; 32], usize)> = FastMap::default();
         for component in strongly_connected(&edges) {
             let members: Vec<usize> = component.iter().map(|node| unstable[*node]).collect();
             let placeholders: Vec<String> =
@@ -1063,7 +1070,8 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
                 hash.update(text.as_bytes());
                 hash.update(&[0]);
             }
-            let digest = hex16(&hash.finalize());
+            let full = hash.finalize();
+            let digest = hex16(&full);
             for (position, &member) in members.iter().enumerate() {
                 let mut name = format!(
                     "{}.h{digest}",
@@ -1072,12 +1080,25 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
                 if members.len() > 1 {
                     name.push_str(&format!(".{position}"));
                 }
-                // The same text under the same prefix (two equal lambdas) keeps two functions.
+                // The same name for the same text is one function; for another text (a collision of the
+                // 64 bits of the name) it is another name.
                 let mut candidate = name.clone();
                 let mut number = 1;
-                while !used.insert(candidate.clone()) {
-                    number += 1;
-                    candidate = format!("{name}.{number}");
+                loop {
+                    match used.get(&candidate) {
+                        None => {
+                            used.insert(candidate.clone(), (full, member));
+                            break;
+                        }
+                        Some((other, first)) if *other == full => {
+                            canonical[member] = *first;
+                            break;
+                        }
+                        Some(_) => {
+                            number += 1;
+                            candidate = format!("{name}.{number}");
+                        }
+                    }
                 }
                 renamed[member] = Some(candidate);
             }
@@ -1086,6 +1107,7 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
     Plan {
         renamed,
         modules: owners,
+        canonical,
     }
 }
 
@@ -1595,6 +1617,10 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
 
     let mut members: BTreeMap<Home<'_>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
     for (id, function) in parsed.functions.iter().enumerate() {
+        // A function that another one defines is not defined again.
+        if plan.canonical[id] != id {
+            continue;
+        }
         let home = match plan.modules[id] {
             Some(module) => Home::Module(module),
             None => Home::Bucket(bucket(plan.renamed[id].as_deref().unwrap_or(function.name))),
@@ -1621,6 +1647,9 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
         for &id in globals {
             homes.globals[id] = unit;
         }
+    }
+    for id in 0..parsed.functions.len() {
+        homes.functions[id] = homes.functions[plan.canonical[id]];
     }
     let mut units = Vec::with_capacity(members.len());
     for (unit, (home, (functions, globals))) in members.iter().enumerate() {
@@ -1795,7 +1824,7 @@ entry:
     }
 
     /// The units together define each name once, and each unit is a complete module.
-    fn check(ir: &str, units: &[Unit]) -> Vec<String> {
+    fn check(ir: &str, modules: &[&str], units: &[Unit]) -> Vec<String> {
         let types = all_types(ir);
         let mut defined: BTreeMap<String, String> = BTreeMap::new();
         let mut found = Vec::new();
@@ -1821,7 +1850,12 @@ entry:
             }
         }
         let original = parse(ir).unwrap();
-        let count = original.functions.len()
+        let modules: FastSet<&str> = modules.iter().copied().collect();
+        let plan = plan(&original, &modules);
+        let duplicates = (0..original.functions.len())
+            .filter(|id| plan.canonical[*id] != *id)
+            .count();
+        let count = original.functions.len() - duplicates
             + original
                 .globals
                 .iter()
@@ -1837,8 +1871,51 @@ entry:
     }
 
     fn assert_self_contained(ir: &str, units: &[Unit]) {
-        let found = check(ir, units);
+        let found = check(ir, modules(), units);
         assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    /// A development aid: the strongly connected components of the functions whose names hold serial numbers.
+    #[test]
+    #[ignore]
+    fn scc_report() {
+        let Some(path) = std::env::var_os("PB07_IR") else {
+            return;
+        };
+        let ir = std::fs::read_to_string(path).unwrap();
+        let parsed = parse(&ir).unwrap();
+        let modules: FastSet<&str> = ["Main"].into_iter().collect();
+        let unstable: Vec<usize> = (0..parsed.functions.len())
+            .filter(|id| classify(parsed.functions[*id].name, &modules) == Naming::Unstable)
+            .collect();
+        let nodes: FastMap<usize, usize> = unstable
+            .iter()
+            .enumerate()
+            .map(|(node, id)| (*id, node))
+            .collect();
+        let edges: Vec<Vec<usize>> = unstable
+            .iter()
+            .map(|id| function_edges(&parsed, parsed.functions[*id].text, &nodes))
+            .collect();
+        let components = strongly_connected(&edges);
+        let mut sizes: Vec<usize> = components.iter().map(Vec::len).collect();
+        sizes.sort_unstable();
+        println!(
+            "{} unstable functions, SCC sizes {:?}",
+            unstable.len(),
+            sizes
+        );
+        if let Some(big) = components.iter().max_by_key(|component| component.len()) {
+            for node in big.iter().take(40) {
+                let name = parsed.functions[unstable[*node]].name;
+                let targets: Vec<&str> = edges[*node]
+                    .iter()
+                    .filter(|target| big.contains(target))
+                    .map(|target| parsed.functions[unstable[*target]].name)
+                    .collect();
+                println!("{name} -> {targets:?}");
+            }
+        }
     }
 
     /// A development aid: `PB07_CORPUS=<directory of .ll files> cargo test --lib split_corpus -- --ignored`.
@@ -1901,7 +1978,7 @@ entry:
             })
             .unwrap();
             let elapsed = started.elapsed();
-            let found = check(&ir, &units);
+            let found = check(&ir, &modules, &units);
             println!(
                 "{}: {} units, {} bytes -> {} bytes, {:?}, {} problems",
                 path.file_name().unwrap().to_string_lossy(),
@@ -2341,27 +2418,148 @@ entry:
         );
     }
 
+    /// The IR that the driver hands to Clang for a project at `-O0`, and the modules of its functions.
+    fn executable_ir(sources: &[(&str, &str)]) -> (String, Vec<String>) {
+        use crate::llvm::{Allocator, EmitOptions, Entry, F16Path, emit_native_build};
+        let module = crate::analyze_modules(sources)
+            .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+        let options = EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            wasm_simd128: false,
+            debug_output: false,
+            runtime_objects: true,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let output = emit_native_build(&module, options, &[], None, false).unwrap();
+        let names: BTreeSet<String> = module
+            .functions
+            .iter()
+            .map(|function| function.module.clone())
+            .filter(|name| !name.starts_with('$'))
+            .collect();
+        (
+            crate::llvm::without_closure_inlining(output.ir),
+            names.into_iter().collect(),
+        )
+    }
+
+    const HELPER: &str = "def twice :: Add<'a> -> 'a = \\value -> value + value\n\ndef run :: i64u -> i64u = \\seed ->\n    let offset = seed % 7\n    let add = \\value -> value + offset\n    add (add (twice seed))\n";
+    const OTHER: &str = "def run :: i64u -> i64u = \\seed ->\n    let shift = seed % 3\n    let scale = \\value -> value * 2 + shift\n    scale (scale seed)\n";
+    const MAIN: &str = "def main :: unit -> i32 = \\() ->\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.write_line (to_string (a + b))\n    0\n";
+    /// `MAIN` with a lambda and an instance of a generic function added before everything else: every serial
+    /// number of the generated functions after them shifts.
+    const MAIN_WITH_NEW_CODE: &str = "def main :: unit -> i32 = \\() ->\n    let inc = \\value -> value + 1i32\n    do! IO.write_line (to_string (inc (Helper.twice 4i32)))\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.write_line (to_string (a + b))\n    0\n";
+
+    /// A change in `Main` that adds a lambda and an instance leaves the text of the other modules' units, and the
+    /// text and the names of the generated functions that did not change.
     #[test]
-    fn identical_bodies_keep_distinct_names() {
+    fn unrelated_edit_keeps_other_unit_texts() {
+        let project = |main: &str| {
+            let (ir, modules) = executable_ir(&[
+                ("Main.tz", main),
+                ("Helper.tz", HELPER),
+                ("Other.tz", OTHER),
+            ]);
+            let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+            let units = split(&SplitInput {
+                ir: &ir,
+                modules: &modules,
+            })
+            .unwrap();
+            let found = check(&ir, &modules, &units);
+            assert!(found.is_empty(), "{}", found.join("\n"));
+            units
+        };
+        let before = project(MAIN);
+        let after = project(MAIN_WITH_NEW_CODE);
+        for name in ["m.Helper", "m.Other"] {
+            assert_eq!(unit(&before, name), unit(&after, name), "{name}");
+        }
+        assert_ne!(unit(&before, "m.Main"), unit(&after, "m.Main"));
+        let defined = |units: &[Unit]| -> BTreeSet<String> {
+            units
+                .iter()
+                .filter(|unit| unit.name.starts_with("g."))
+                .flat_map(|unit| {
+                    unit.text
+                        .lines()
+                        .filter(|line| line.starts_with("define "))
+                        .map(|line| line[..line.find('(').unwrap()].to_owned())
+                })
+                .collect()
+        };
+        let kept = defined(&before);
+        let now = defined(&after);
+        assert!(
+            kept.len() > 20,
+            "the runtime and the helpers are in the buckets"
+        );
+        assert!(
+            kept.is_subset(&now),
+            "a generated function keeps its name: {:?}",
+            kept.difference(&now).collect::<Vec<_>>()
+        );
+        assert!(now.len() > kept.len(), "the edit added generated functions");
+        let changed = before
+            .iter()
+            .zip(&after)
+            .filter(|(old, new)| old.name.starts_with("g.") && old != new)
+            .count();
+        assert!(
+            changed <= 6,
+            "{changed} of the 16 buckets changed for a few new functions"
+        );
+    }
+
+    /// Two functions with the same text are one function: nothing in the language can tell them apart, and a name that
+    /// counted them would change whenever one of them is edited.
+    #[test]
+    fn identical_bodies_are_one_function() {
         let build = |a: u32, b: u32| {
             format!(
                 "define internal i64 @tz.fn.$lambda.{a}(i64 %x) {{\nentry:\n  ret i64 %x\n}}\n\
-                 define internal i64 @tz.fn.$lambda.{b}(i64 %x) {{\nentry:\n  ret i64 %x\n}}\n"
+                 define internal i64 @tz.fn.$lambda.{b}(i64 %x) {{\nentry:\n  ret i64 %x\n}}\n\
+                 define internal i64 @tz.fn.Main.one(i64 %x) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{a}(i64 %x)\n  ret i64 %r\n}}\n\
+                 define internal i64 @tz.fn.Main.two(i64 %x) {{\nentry:\n  %r = call i64 @tz.fn.$lambda.{b}(i64 %x)\n  ret i64 %r\n}}\n"
             )
         };
         let units = split(&SplitInput {
             ir: &build(5, 6),
-            modules: &[],
+            modules: &["Main"],
         })
         .unwrap();
         let all: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        let names: Vec<_> = all
+        let defined: Vec<_> = all
             .lines()
-            .filter_map(|line| line.strip_prefix("define hidden i64 @"))
-            .map(|rest| rest.split('(').next().unwrap().to_owned())
+            .filter_map(|line| line.strip_prefix("define hidden i64 @tz.fn.$lambda."))
             .collect();
-        assert_eq!(names.len(), 2);
-        assert_ne!(names[0], names[1]);
-        assert!(names.iter().any(|name| name.ends_with(".2")), "{names:?}");
+        assert_eq!(defined.len(), 1, "{all}");
+        let name = defined[0].split('(').next().unwrap();
+        assert_eq!(
+            all.matches(&format!("call i64 @tz.fn.$lambda.{name}("))
+                .count(),
+            2,
+            "both callers call it"
+        );
+        // Editing one of them separates them, and the name of the other does not change.
+        let edited = split(&SplitInput {
+            ir: &build(5, 6).replacen("ret i64 %x", "%y = add i64 %x, 1\n  ret i64 %y", 1),
+            modules: &["Main"],
+        })
+        .unwrap();
+        let all_edited: String = edited.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(
+            all_edited.contains(&format!("define hidden i64 @tz.fn.$lambda.{name}(")),
+            "{all_edited}"
+        );
+        assert_eq!(
+            all_edited
+                .lines()
+                .filter(|line| line.starts_with("define hidden i64 @tz.fn.$lambda."))
+                .count(),
+            2
+        );
     }
 }

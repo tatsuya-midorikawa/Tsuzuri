@@ -3977,7 +3977,9 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            if units::eligible(options, platform, profile, codegen_mode) {
+            if units::eligible(options, platform, profile)
+                && units::wanted(codegen_mode, text.len())
+            {
                 let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
                     .into_iter()
                     .map(OsString::from)

@@ -25,11 +25,19 @@ use crate::llvm::split::{SplitInput, Unit, split};
 /// `TSUZURI_CODEGEN_UNITS`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode {
-    /// The compiler decides: every eligible build is split.
+    /// The compiler decides: an eligible build of [`AUTO_MIN_BYTES`] of IR or more is split.
     Auto,
     /// Never: one module, as before PB07.
     Single,
+    /// Every eligible build, however small.
+    Split,
 }
+
+/// What an `auto` build needs to be cut into units: the IR text of at least this many bytes. A unit costs a Clang
+/// job of about 8 ms of CPU time whatever its size, so a small program is faster from one module; on the machine of
+/// the measurements (10 cores, `docs/benchmarks.md`) a cold build of 60 to 100 synthetic modules (2.5 to 4.1 MB of IR)
+/// is as fast either way, and the units are faster from there.
+pub(super) const AUTO_MIN_BYTES: usize = 4 << 20;
 
 pub(super) fn mode() -> Result<Mode, Diagnostic> {
     mode_of(env::var_os(CODEGEN_UNITS_VARIABLE).as_deref())
@@ -41,10 +49,11 @@ pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
         Some(value) => match value.to_str() {
             Some("" | "auto") => Ok(Mode::Auto),
             Some("single") => Ok(Mode::Single),
+            Some("split") => Ok(Mode::Split),
             _ => Err(driver_error(
                 "E2000",
                 format!(
-                    "invalid {CODEGEN_UNITS_VARIABLE} value '{}'; use 'auto' or 'single'",
+                    "invalid {CODEGEN_UNITS_VARIABLE} value '{}'; use 'auto', 'single' or 'split'",
                     value.to_string_lossy()
                 ),
             )),
@@ -54,14 +63,8 @@ pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
 
 /// Whether a build can be cut into units at all (the table of PB07): a native executable at `-O0` that Clang
 /// builds on a machine with POSIX linking, for the machine it runs on. Everything else is built from one module.
-pub(super) fn eligible(
-    options: BuildOptions,
-    platform: Platform,
-    profile: &Profile,
-    mode: Mode,
-) -> bool {
-    mode == Mode::Auto
-        && options.target == Target::Native
+pub(super) fn eligible(options: BuildOptions, platform: Platform, profile: &Profile) -> bool {
+    options.target == Target::Native
         && options.emit == Emit::Executable
         && options.optimization == OptLevel::O0
         && options.backend == Backend::Llvm
@@ -74,6 +77,15 @@ pub(super) fn eligible(
         && !platform.windows()
         && !platform.cross()
         && matches!(profile, Profile::None)
+}
+
+/// Whether `mode` cuts an eligible build whose IR text has `bytes` bytes.
+pub(super) fn wanted(mode: Mode, bytes: usize) -> bool {
+    match mode {
+        Mode::Single => false,
+        Mode::Split => true,
+        Mode::Auto => bytes >= AUTO_MIN_BYTES,
+    }
 }
 
 /// What compiling the units takes: the Clang, its arguments up to the inputs, and where the objects go.
@@ -355,23 +367,193 @@ pub(super) fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::{Cpu, Triple};
 
     #[test]
-    fn codegen_units_mode_accepts_auto_single_and_rejects_others() {
+    fn codegen_units_mode_accepts_auto_single_split_and_rejects_others() {
         assert_eq!(mode_of(None).unwrap(), Mode::Auto);
         assert_eq!(mode_of(Some(OsStr::new(""))).unwrap(), Mode::Auto);
         assert_eq!(mode_of(Some(OsStr::new("auto"))).unwrap(), Mode::Auto);
         assert_eq!(mode_of(Some(OsStr::new("single"))).unwrap(), Mode::Single);
+        assert_eq!(mode_of(Some(OsStr::new("split"))).unwrap(), Mode::Split);
         let error = mode_of(Some(OsStr::new("x"))).unwrap_err();
         assert_eq!(error.code, "E2000");
         assert_eq!(
             error.message,
-            "invalid TSUZURI_CODEGEN_UNITS value 'x'; use 'auto' or 'single'"
+            "invalid TSUZURI_CODEGEN_UNITS value 'x'; use 'auto', 'single' or 'split'"
         );
         assert_eq!(
             mode_of(Some(OsStr::new("Single"))).unwrap_err().code,
             "E2000"
         );
+    }
+
+    #[test]
+    fn auto_waits_for_enough_text() {
+        assert!(!wanted(Mode::Single, usize::MAX));
+        assert!(wanted(Mode::Split, 0));
+        assert!(!wanted(Mode::Auto, AUTO_MIN_BYTES - 1));
+        assert!(wanted(Mode::Auto, AUTO_MIN_BYTES));
+    }
+
+    #[test]
+    fn split_eligible_matches_the_table() {
+        use crate::llvm::Allocator;
+        let base = BuildOptions {
+            optimization: OptLevel::O0,
+            ..BuildOptions::default()
+        };
+        let host = Platform::new(None);
+        if cfg!(windows) {
+            assert!(
+                !eligible(base, host, &Profile::None),
+                "Windows builds one unit"
+            );
+            return;
+        }
+        assert!(eligible(base, host, &Profile::None));
+        // Options that only change the compile or the link are no reason not to cut.
+        for options in [
+            BuildOptions {
+                strip: true,
+                ..base
+            },
+            BuildOptions {
+                cpu: Cpu::Native,
+                ..base
+            },
+            BuildOptions {
+                cache: false,
+                ..base
+            },
+            BuildOptions {
+                allocator: Allocator::Small,
+                ..base
+            },
+        ] {
+            assert!(eligible(options, host, &Profile::None), "{options:?}");
+        }
+        // Each row of the table, made false by itself.
+        let ineligible = [
+            (
+                "-O1",
+                BuildOptions {
+                    optimization: OptLevel::O1,
+                    ..base
+                },
+            ),
+            (
+                "-O2",
+                BuildOptions {
+                    optimization: OptLevel::O2,
+                    ..base
+                },
+            ),
+            (
+                "-O3",
+                BuildOptions {
+                    optimization: OptLevel::O3,
+                    ..base
+                },
+            ),
+            (
+                "-Os",
+                BuildOptions {
+                    optimization: OptLevel::Os,
+                    ..base
+                },
+            ),
+            (
+                "--emit object",
+                BuildOptions {
+                    emit: Emit::Object,
+                    ..base
+                },
+            ),
+            (
+                "--emit llvm",
+                BuildOptions {
+                    emit: Emit::Llvm,
+                    ..base
+                },
+            ),
+            (
+                "--emit shared",
+                BuildOptions {
+                    emit: Emit::Shared,
+                    ..base
+                },
+            ),
+            (
+                "--emit bitcode",
+                BuildOptions {
+                    emit: Emit::Bitcode,
+                    ..base
+                },
+            ),
+            (
+                "--emit header",
+                BuildOptions {
+                    emit: Emit::Header,
+                    ..base
+                },
+            ),
+            (
+                "wasm32",
+                BuildOptions {
+                    target: Target::Wasm32,
+                    emit: Emit::Wasm,
+                    ..base
+                },
+            ),
+            (
+                "--backend fast",
+                BuildOptions {
+                    backend: Backend::Fast,
+                    ..base
+                },
+            ),
+            (
+                "-g",
+                BuildOptions {
+                    debug_info: true,
+                    ..base
+                },
+            ),
+            (
+                "--trap-info",
+                BuildOptions {
+                    trap_info: true,
+                    ..base
+                },
+            ),
+            (
+                "--trap-mode return",
+                BuildOptions {
+                    trap_return: true,
+                    ..base
+                },
+            ),
+            (
+                "--freestanding",
+                BuildOptions {
+                    freestanding: true,
+                    ..base
+                },
+            ),
+        ];
+        for (name, options) in ineligible {
+            assert!(!eligible(options, host, &Profile::None), "{name}");
+        }
+        assert!(!eligible(base, host, &Profile::Generate("profiles".into())));
+        assert!(!eligible(
+            base,
+            host,
+            &Profile::Use("merged.profdata".into())
+        ));
+        // A named target is built from one module, even the machine's own.
+        let named = Platform::new(Triple::parse("x86_64-pc-windows-msvc"));
+        assert!(!eligible(base, named, &Profile::None));
     }
 
     #[test]
