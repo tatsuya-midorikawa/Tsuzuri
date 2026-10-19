@@ -151,7 +151,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
-| PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
+| PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | doing |
 
 ### PB. ビルド速度
 
@@ -163,7 +163,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](_completed/PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | done |
 | PB06 | [常駐ビルドサーバーと watch モード](_completed/PB06-build-server.md) | P2 | L | PB02, (G17) | done |
-| PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
+| PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | doing |
 
 ## `_features` との関係
 
@@ -186,6 +186,58 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第5フェーズ2件の実装方針（2026-10-20）
+
+PB07・PM09 は、全フェーズの実装と判断を許可した 2026-10-20 の依頼に基づいて進めます。
+起票時の「Phase 1 だけを実装する」「承認前は着手しない」「要承認」の注記は今回の依頼には適用せず（PB07 は D1・D10、PM09 は D1・D6 を承認済み）、
+意味の保持と検証の条件は維持します。承認は実装の許可で、測定で効果を確認できない既定の切り替えの許可ではありません。
+変更前の基準は `a8875f38`（第4フェーズの PR #28 と dev-velocity の #29 の後）、保存したコンパイラは `target/perf/phase5-baseline/tsuzuri-before` です。
+2 チケットはどちらも起票時の `f8dc655` に対して書かれています。着手前に現行のコードと実測で照合し、食い違いを各チケットの
+「着手時の再検討（2026-10-20）」に記録して、次のとおり方針を改めました。
+
+共通:
+
+- 第2〜4フェーズ（PB01〜PB06・PM01〜PM08・PR01〜PR08 など）までは実装済みです。旧コードの行番号、未実装を前提とした停止条件、第4フェーズより前の測定値は使わず、
+  現行の型・ABI・生成 IR・配布形式を基準にします。チケット内の `_docs/...` は `_tsuzuri/language-reference/...` に読み替えます（GUIDE §8.1）。
+- 検証は [AGENTS.md](../AGENTS.md) の T0〜T2 です（`node scripts/slot.mjs -- cargo nextest run --locked`、dev binary での node suite、`node scripts/check-docs.mjs <変更したページ>`）。
+  チケットの `cargo test --locked ...` と `target/release/tsuzuri` の確認は、同じ範囲をこの手順で行います。
+- 2 チケットは別々の worktree（`perf/p5-PM09`・`perf/p5-PB07`）で並行して開発し、PM09 → PB07 の順に統合します。PB07 の分割器は PM09 が足す IR の行
+  （`llvm.lifetime.*`・`musttail`）を読むので、PB07 が後です。統合のたびに全 suite を確認し、既定の出力が変わる箇所を各チケットの宣言と照合します。
+- 共有機で並行して進めるため、時間の測定は負荷を記録した参考値とし、静かな機械での正式な前後比較は統合後にまとめて記録します（共有 CI に速度の合否閾値は置きません）。
+  実装済みの経路と計画を区別します。
+
+- **PM09**（全フェーズ。Phase 1a・1b・1c、Phase 2a・2b）。現行のコードとの食い違いと、改めた方針:
+  - 起票時の「リスト」の見積もりと IR の形は古くなっています。PM04 の後、リストのスタック領域は `alloca { ptr, i64, i64, [N x T] }`（1 chunk。`list_stack_storage`）で、
+    起票時の `[4 x { ptr, i64 }]` の例と `frame_bytes` の「要素ごとに `16 + stack_size`」は成り立ちません。テスト 1〜6 の期待値は現行の IR と式から導き直します。
+  - PM06 の後、文字列の連結 buffer と closure の環境も entry の alloca で、`MAX_FUNCTION_BUFFER_BYTES`（4 KiB。再帰する関数には置かない）の上限が既にあります。
+    `Frame::String` は alloca を持たず constant を指します。寿命の印（Phase 1a）は alloca を持つ frame に付け、関数あたりの上限（Phase 1b、`MAX_FRAME_BYTES`）は
+    literal・buffer・環境を合わせた合計に対する上限として、既存の 4 KiB の上限と整合させます。
+  - PB05 の fast backend は `llvm.lifetime.*` を読み飛ばしますが、`musttail` は `E2002` で拒否します。Phase 2a で何もしないと、相互再帰を持つ全 project の
+    `--backend fast` が壊れます。D1 の保証は `--backend fast` でも成り立たせます（Cranelift の `return_call` と `CallConv::Tail` への翻訳を、先に小さく試して決める）。
+    翻訳が成り立たない構成が見つかった場合に限り、その理由と範囲を記録して、`--backend fast` では `musttail` を出さない（保証の対象外として文書に書く）形に退きます。黙って `E2002` にはしません。
+  - `--wasm-feature` は `simd128`・`threads`・`jspi`・`webgpu`・`net` の 5 つです。`tail-call` は同じ場所（CLI の解析・help・`BuildOptions`・検証・clang の引数・
+    `--emit llvm` の注記・build cache の鍵・README と言語リファレンス）に足します。
+  - `tail_groups` は、`llvm_escape.rs` の `references`・`recursive_functions`（再帰を使わない強連結成分）を一般化して使い、2 つ目の SCC を書きません。
+  - 文書の置き場所は `_tsuzuri/language-reference/` と `docs/`（起票時の `_docs/language-reference/functions.md` などは旧構成）。
+- **PB07**（全フェーズ。Phase 1、Phase 2）。現行のコードとの食い違いと、改めた方針:
+  - 現行の既定の最適化は `-O3`（`build`・`run`）で、`-O0` は `test`・`--backend fast` の既定と、利用者の明示指定だけです。分割は D2 のとおり `-O0` だけで、
+    `run` は常に `--trap-info` を付けるので、Phase 1（トラップ情報なし）は `tsuzuri run` を対象にしません。`run -O0` の対象化は Phase 2 の trap-info 対応で行います。
+  - 起票時の IR にはなかった形が現行の IR にあり、停止条件 1・2 に当たっていました: `internal thread_local global`（Async の slot・lock・thread）、
+    `weak hidden global`（`@tsuzuri_trap_hooks`）、`define weak`（`@tsuzuri_alloc`・`@tsuzuri_free`。埋め込みの数値ランタイムの `@tz_soft_*` は `weak hidden`）、
+    PM02 の関数値の記述子（関数を指す `@tz.desc.*` の `unnamed_addr constant`）。方針: 定数でない global と `weak` の定義は、持ち主の unit に 1 つだけ置き
+    （リンカーの weak の統合に頼らない）、他の unit は `external hidden`（`thread_local` はそのまま）の宣言で参照します。`unnamed_addr` の constant は unit ごとの複写でよい
+    （アドレスの同一性を使う constant は複写しません）。実 IR の棚卸し（手順 1）で見つけた形は、設計の表に足してから実装します。
+  - 実行時 C と数値・数学ランタイムの別 object は、PB01 の runtime object cache（`compile_runtime_object`）が既に持っています。起票時の unit `c.runtime` は作りません。
+    `--no-cache`・`--trap-info`・`-g` では数値ランタイムの IR が module に埋め込まれ、その関数は `g.<x>` の unit に入ります。
+  - `--backend fast` は Clang を通らないので分割しません（常に単一 unit）。分割は、driver が IR に足す文面の加工（`without_closure_inlining`・`windows_abi`・`with_no_red_zone`・
+    WASM の加工）の後、IR を書く直前に行います。`KEY_ENVIRONMENT` は 22 個で、起票時の 17 個ではありません。
+  - 既定の切り替えは測定で決めます。B1 `O0 --no-cache` が悪化しないこと（G3。停止条件 8）が条件で、小さい project で遅くなるなら、測定で決めた大きさ以下は単一 unit にします。
+    満たせない場合は、既定を単一 unit にして `TSUZURI_CODEGEN_UNITS=split` の opt-in にし、証拠を残します。
+  - Phase 2（起票時は方針だけ）は項目ごとに実装し、どれも次の条件を満たす形で出荷します: 分割ありと `single` で既存の suite が同じ結果、無関係な module の編集で他の unit の
+    テキストと鍵が変わらない（トラップ地点の番号・metadata の番号を含む）、生成物が決定的、公開される記号の集合が不変。項目は trap-info（地点番号を unit の編集に対して安定にする）、
+    debug-info（unit ごとの compile unit）、WASM（`wasm-ld` に複数 object）、`--emit object`、`$lambda` の置き場所、Windows です。
+    Windows は実行できる機械がなく、型検査と `ci:full` の Windows job でだけ確かめられるので、通らず原因を解消できない場合は単一 unit のままにして理由を記録します。
 
 ### 第4フェーズ7件の実装方針（2026-10-17）
 
@@ -437,7 +489,7 @@ Go・Zig は計測用のローカルなツールとして扱い、既定の名�
 | 2. 即効性の高い改善 | 計測で判明した大きな無駄を除く | PB01、PB02、PR01、PM06、PM07、PR04、PR05 |
 | 3. 表現と実行基盤 | 値の表現・確保・並列実行を改善する | PM01、PM05、PR03、PB03、PB04、PR06、PM08、PR02 |
 | 4. 大型の施策 | 既定の表現や生成方式を変える | PB05、PB06、PM02、PM03、PM04、PR07、PR08 |
-| 5. 長期 | 研究開発を伴う施策 | PB07、PM09 |
+| 5. 長期 | 研究開発を伴う施策（2026-10-20 に全フェーズの実装を開始） | PB07、PM09 |
 
 ## 依存関係図
 
@@ -522,6 +574,6 @@ graph LR
 
 第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
 （PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で、第4フェーズの 7 件
-（PB05・PB06・PM02・PM03・PM04・PR07・PR08）の `要承認` は 2026-10-17 の全フェーズ実装の依頼で承認済みです。
+（PB05・PB06・PM02・PM03・PM04・PR07・PR08）の `要承認` は 2026-10-17 の全フェーズ実装の依頼で、第5フェーズの 2 件（PB07・PM09）の `要承認` は 2026-10-20 の全フェーズ実装の依頼で承認済みです。
 承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力、PB05 D12 の既定のバックエンド、
-PM03 の `TSUZURI_STRINGS` の既定など）を行うものではありません。残りのチケット（PB07・PM09）は未承認のままです。
+PM03 の `TSUZURI_STRINGS` の既定など）を行うものではありません。

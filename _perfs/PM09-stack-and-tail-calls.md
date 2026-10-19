@@ -8,9 +8,9 @@
 | 規模 | L |
 | 依存 | PX01 |
 | 関連 | PR01, PM06, E14, B08 |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | Phase 1 は不要。要承認: D1（Phase 2: 末尾呼び出しの保証。docs/language.md「再帰とスタック」の保証を広げる言語仕様の変更）, D6（Phase 2: CLI の値 `--wasm-feature tail-call` の追加） |
+| 承認 | Phase 1 は不要。要承認: D1（Phase 2: 末尾呼び出しの保証。docs/language.md「再帰とスタック」の保証を広げる言語仕様の変更）, D6（Phase 2: CLI の値 `--wasm-feature tail-call` の追加）。2026-10-20 の全フェーズ実装の依頼で D1・D6 と Phase 2 を承認済み（[_perfs/README.md](README.md) の「第5フェーズ2件の実装方針」） |
 | 手本にする既存実装 | 末尾位置の判定と「drop してから制御を移す」順序: `src/llvm.rs` の `FunctionEmitter::emit_tail`・`tail_arguments`・`is_self`・`drop_all`。フレーム領域の確保と解放の判定: `src/llvm_frame.rs` の `frame_array`・`frame_list`・`frame_value`・`release_operand`・`frame_test`。WASM の opt-in 機能: `src/main.rs` の `--wasm-feature`（`wasm_simd`・`wasm_threads`）と `src/driver.rs` の `-msimd128`／`-mno-simd128`。IR の形の検査: `tests/tail_recursion.rs` の `function_ir` |
 | 主な影響ファイル | `src/llvm.rs`, `src/llvm_frame.rs`, `src/check.rs`（`MAX_VALUE_BYTES` の隣に定数）, `src/main.rs`, `src/driver.rs`, `tests/tail_recursion.rs`, `tests/stack_frames.rs`（新規）, `tests/control.mjs`, `tests/fixtures/control/Frames.tz`（新規）, `tests/fixtures/control/TailCalls.tz`（新規、Phase 2）, `tests/stack.mjs`（新規、Phase 2）, `tests/fixtures/stack/Main.tz`（新規、Phase 2）, `docs/language.md`, `docs/architecture.md`, `docs/benchmarks.md`, `_docs/language-reference/functions.md`, `_docs/guides/performance.md`, `_perfs/README.md` |
 | 計測対象 | 関数ごとのフレームの大きさ（clang `-fstack-usage` の `.su`、bytes）、深さ 10,000,000 の相互再帰が完走するか（native・WASM × `-O0`／`-O3`）、PX01 の `control` suite の時間（退行がないことの確認） |

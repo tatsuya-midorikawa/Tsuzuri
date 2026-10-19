@@ -8,9 +8,9 @@
 | 規模 | XL |
 | 依存 | PB06, G17 |
 | 関連 | PB05, G11 |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（`-O0` の native 実行ファイルの既定経路を codegen unit に分ける。成果物の byte 列が変わり、利用者の cache に unit の項目が増える）、D10（Phase 2） |
+| 承認 | 要承認: D1（`-O0` の native 実行ファイルの既定経路を codegen unit に分ける。成果物の byte 列が変わり、利用者の cache に unit の項目が増える）、D10（Phase 2）。2026-10-20 の全フェーズ実装の依頼で D1・D10 と Phase 2 を承認済み。既定の切り替えは測定で決める（[_perfs/README.md](README.md) の「第5フェーズ2件の実装方針」） |
 | 手本にする既存実装 | IR テキストの行単位の後処理: `src/llvm.rs` の `emit_with_export_style`（`define internal i32 @tz.console.write(` を探して行を書き換える）と、実行時 IR を連結する箇所の `declare` の重複除去（`BTreeSet` の `declarations`）。linkage の書き換え: `src/llvm_abi.rs` の `.replacen("define internal ", "define ", 1)`。内容で決まる鍵と保護付きの保存: `src/cache.rs` の `build_key`・`Sha256`・`BuildCache::open`・`load`・`store`・`evict`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`。Clang の呼び出し回数を数える E2E: `tests/cache.mjs` の `clang-wrapper.mjs` |
 | 主な影響ファイル | `src/llvm_split.rs`（新規）, `src/llvm.rs`（`mod` 宣言、実行時 IR の定義名の一覧）, `src/driver.rs`（`build_complete` の分岐、`compile_units`・`link_units`（新規））, `src/cache.rs`（`unit_key`・`tool_fields`（新規）、`build_key` の環境変数の一覧）, `tests/codegen_units.mjs`（新規）, `tests/fixtures/codegen_units/`（新規）, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`（環境変数の一覧）, `_perfs/README.md`（状態）。旧版にあった `src/server.rs`（PB06）と `src/backend/`（PB05）は HEAD になく、Phase 1 では触らない |
 | 計測対象 | PX03 の合成 1,000 モジュール（約 135K 行。旧版の「124K 行」に相当）と 200 モジュール。variant は `build-edit-body`（B5）、`build` の `O0`・`O3`（B1）、`build-warm`（B4）。加えて unit cache の大きさ（bytes） |
