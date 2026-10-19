@@ -1,0 +1,13 @@
+# `cargo nextest run --locked` (install: `cargo install --locked cargo-nextest`) runs every test as its own process
+# and spreads all 100+ test binaries over the cores; `cargo test --locked` runs the binaries one after another.
+# `--profile ci` is what .github/workflows/ci.yml uses. A test that hangs is killed after 15 minutes there.
+# A test that builds a file for other tests must do it per process: with nextest two processes can build at once
+# (tests/gpu_spirv.rs builds its harness under the name of its process and renames it into place).
+[profile.default]
+fail-fast = false
+slow-timeout = "60s"
+
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 15 }
+failure-output = "immediate-final"

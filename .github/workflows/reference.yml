@@ -1,0 +1,93 @@
+name: Language reference
+
+# scripts/check-docs.mjs on the dev binary: links and anchors, a type check of every example, the `run=` examples run natively
+# at -O0 and -O3, and the examples that contain tests. A pull request or a push is checked on the pages it changes (all pages
+# when the script itself changes); every night, and on request, all pages are checked, which took 48 minutes on an M1 Max under load.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - _tsuzuri/**
+      - scripts/check-docs.mjs
+      - .github/workflows/reference.yml
+  push:
+    branches:
+      - main
+    paths:
+      - _tsuzuri/**
+      - scripts/check-docs.mjs
+      - .github/workflows/reference.yml
+  schedule:
+    - cron: "17 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reference-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TSUZURI_CLANG: /usr/lib/llvm-21/bin/clang
+      TSUZURI_WASM_LD: /usr/lib/llvm-21/bin/wasm-ld
+      TSUZURI_BIN: ${{ github.workspace }}/target/debug/tsuzuri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The pages that this run changes, or none for every page. A run that changes no page has nothing to check.
+      - name: Pages to check
+        id: pages
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          list=""
+          skip=false
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = push ]; then
+            if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ] && git diff --quiet "$BASE" HEAD -- scripts/check-docs.mjs; then
+              list=$(git diff --name-only --diff-filter=d "$BASE" HEAD -- '_tsuzuri/*.md' | tr '\n' ' ')
+              if [ -z "$list" ]; then skip=true; fi
+            fi
+          fi
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          if [ "$skip" = true ]; then echo "no page changed: nothing to check"; else echo "pages: ${list:-all}"; fi
+      - uses: actions/setup-node@v7
+        if: steps.pages.outputs.skip != 'true'
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.pages.outputs.skip != 'true'
+      - uses: actions/cache@v4
+        if: steps.pages.outputs.skip != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: reference-${{ runner.os }}-${{ runner.arch }}-
+      # LLVM 21 as in targets.yml: the system Clang that builds the programs of the examples.
+      - name: LLVM on Linux
+        if: steps.pages.outputs.skip != 'true'
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y ca-certificates wget gnupg
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo -n tee /usr/share/keyrings/llvm.gpg >/dev/null
+          printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main\n' | sudo -n tee /etc/apt/sources.list.d/llvm21.list >/dev/null
+          sudo -n apt-get update
+          sudo -n apt-get install -y clang-21 lld-21 llvm-21
+      - name: Dev binary
+        if: steps.pages.outputs.skip != 'true'
+        run: cargo build --locked
+      - name: Examples of the language reference
+        if: steps.pages.outputs.skip != 'true'
+        env:
+          PAGES: ${{ steps.pages.outputs.list }}
+        run: node scripts/check-docs.mjs $PAGES

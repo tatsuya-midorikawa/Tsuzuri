@@ -9,10 +9,14 @@ name: Tsuzuri targets
 #   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;
 #   - "object only":                    the triples without a C library in the bundle.
 # Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.
+# These four hosts run after every merge to main that changes the compiler and, on a pull request, with the label `ci:full`
+# (ci.yml is the gate of every pull request).
 
 on:
   workflow_dispatch:
-  pull_request:
+  push:
+    branches:
+      - main
     paths:
       - src/**
       - std/**
@@ -21,16 +25,21 @@ on:
       - Cargo.*
       - scripts/toolchain/**
       - .github/workflows/targets.yml
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   contents: read
 
+# An event for some other label gets a group of its own, so that it cancels nothing (a run with `ci:full` takes about two
+# hours); its job is skipped below. A pull request event without the label is skipped too, in the group of its own.
 concurrency:
-  group: targets-${{ github.ref }}
+  group: targets-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   targets:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
     name: targets (${{ matrix.host }})
     strategy:
       fail-fast: false
@@ -49,9 +58,10 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # The phase-four steps (the fast backend on every host, the compact-string run of the Rust tests on linux-x64) made the hosts slower:
-    # linux-x64 takes about 185 minutes (the Rust tests 55, and the same run with compact strings 55), macos-15-intel about 220 (the
-    # Rust tests alone 75), the other two hosts 80 to 110. The steps that have a limit of their own keep it.
+    # The phase-four steps (the fast backend on every host, the compact-string run of the Rust tests on linux-x64) made the hosts
+    # slower. Measured before the dev profile of Cargo.toml used opt-level 1, linux-x64 took about 185 minutes (the Rust tests 55,
+    # and the same run with compact strings 55) and macos-15-intel about 220 (the Rust tests alone 75), the other two hosts 80 to
+    # 110. The steps that have a limit of their own keep it.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
@@ -366,7 +376,9 @@ jobs:
       # thread. How far over depends on the target and rustc release: on linux-arm64 (rustc 1.99) two of them
       # overflow on main too and pass from 2.2 MB, and an overflow aborts the whole test binary. The full run
       # takes 4 MiB per test thread (RUST_MIN_STACK, as in GUIDE §9 and the earlier PRs), so that it does not
-      # depend on the toolchain; each test still checks that its limit is reported as a diagnostic.
+      # depend on the toolchain; each test still checks that its limit is reported as a diagnostic. (Those frames are
+      # from opt-level 0; the dev profile of Cargo.toml has used opt-level 1 since, which makes them smaller, and the
+      # 4 MiB stays for the same reason.)
       - name: Rust tests
         if: ${{ !cancelled() }}
         env:

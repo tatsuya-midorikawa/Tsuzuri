@@ -5,8 +5,9 @@ name: Windows MSVC
 # _features/_completed/G10-windows.md; the tier of x86_64-pc-windows-msvc in
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
-#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it takes
-#   40 to 50 minutes: every other step reports first. A step that fails does not hide the ones after it,
+#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it is the longest step
+#   (40 to 50 minutes before the dev profile of Cargo.toml used opt-level 1): every other step reports first. A step that
+#   fails does not hide the ones after it,
 #   except that W5-W8 and the numeric casts run the tsuzuri.exe of W4, so a failed W4 skips them.
 #   tests/numeric_casts.mjs, a reference record of G10 that passed on the first run, stays as a step.
 # The MSVC toolset and the Windows SDK are selected below and checked by Show tools, so the documents that
@@ -14,31 +15,34 @@ name: Windows MSVC
 # an image refresh that drops either of them fails the job instead of changing what the gate checks.
 # tests/lsp_sessions.mjs, tests/async.mjs, tests/net.mjs and the PDB and natvis checks run on Windows in
 # vscode.yml. The Linux and macOS hosts, and the targets that they cross-compile, are in targets.yml.
+# This gate runs after every merge to main and, on a pull request, with the label `ci:full` (ci.yml is the gate of every
+# pull request). `workflow_dispatch` with `fast` set skips W3, so that a branch reads every other step in about 10 minutes.
 
 on:
   workflow_dispatch:
+    inputs:
+      fast:
+        description: Skip W3 cargo test, which takes 40 to 50 minutes
+        type: boolean
+        default: false
   push:
     branches:
       - main
   pull_request:
-    paths:
-      - src/**
-      - std/**
-      - tests/**
-      - examples/**
-      - Cargo.*
-      - scripts/toolchain/**
-      - .github/workflows/windows.yml
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   contents: read
 
+# An event for some other label gets a group of its own, so that it cancels nothing (a run with `ci:full` takes over an
+# hour); its job is skipped below. A pull request event without the label is skipped too, in the group of its own.
 concurrency:
-  group: windows-${{ github.ref }}
+  group: windows-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -200,10 +204,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Display/Parse failed: $LASTEXITCODE" }
           node tests/display_parse_exhaustive.mjs --f32-samples 100000 --f64 100000 --jobs 2 --baseline-runtime target/numeric-ci/before.ll
           if ($LASTEXITCODE -ne 0) { throw "Numeric differential failed: $LASTEXITCODE" }
-      # The depth-limit tests feed 200 nested levels to a debug build whose frames are near the 2 MiB of a test
-      # thread (GUIDE D-45), so the whole run takes 4 MiB per test thread, as targets.yml does.
+      # The depth-limit tests feed 200 nested levels to a dev-profile build (opt-level 1 since the profile in Cargo.toml was
+      # tuned; its frames were near the 2 MiB of a test thread at opt-level 0, GUIDE D-45), so the whole run keeps 4 MiB per
+      # test thread, as targets.yml does.
       - name: W3 cargo test
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && !inputs.fast }}
         env:
           RUST_MIN_STACK: "4194304"
         run: cargo test --locked --no-fail-fast

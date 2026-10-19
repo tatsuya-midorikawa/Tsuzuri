@@ -1,25 +1,30 @@
 name: Tsuzuri IDE
 
+# The extension and its toolchain bundle on the six hosts. They run after every merge to main, on a `vsc-v*` tag and, on a
+# pull request, with the label `ci:full` (ci.yml is the gate of every pull request).
+
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - vsc/**
-      - scripts/toolchain/**
-      - src/**
-      - std/**
-      - tests/**
-      - Cargo.*
-      - .github/workflows/vscode.yml
+    types: [opened, reopened, synchronize, labeled]
   push:
+    branches:
+      - main
     tags:
       - vsc-v*
 
 permissions:
   contents: read
 
+# An event for some other label gets a group of its own, so that it cancels nothing (a run with `ci:full` takes up to an
+# hour); its jobs are skipped below. A pull request event without the label is skipped too, in the group of its own.
+concurrency:
+  group: vscode-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   package:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
     strategy:
       fail-fast: false
       matrix:

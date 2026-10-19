@@ -1,0 +1,5 @@
+# Read by ripgrep and by editors' search, not by Git. Completed tickets are history (5 MB, 114 files):
+# they stay in the repository but out of default searches. Name the directory on the command line to search them,
+# for example `rg E1005 _features/_completed`.
+_features/_completed/
+_perfs/_completed/
