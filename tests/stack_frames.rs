@@ -1,4 +1,4 @@
-//! PM09: stack frames of literals, string buffers and closure environments (lifetime markers, per-function budget).
+//! PM09: stack frames of literals, string buffers and closure environments (lifetime markers on literals, per-function budget).
 
 use tsuzuri::{analyze, llvm};
 
@@ -179,7 +179,7 @@ fn brackets_temporary_literals_and_loop_literals() {
 }
 
 #[test]
-fn brackets_buffers_and_environments_and_skips_unsettled_layouts() {
+fn leaves_buffers_and_environments_without_markers_and_skips_unsettled_layouts() {
     for wasm in [false, true] {
         let ir = emit(
             "def f :: string -> i64
@@ -190,17 +190,16 @@ fn brackets_buffers_and_environments_and_skips_unsettled_layouts() {
              fn wide n = { let values = [|n, n + 1|]; List.length values }",
             wasm,
         );
-        // The buffers and the environments are heap values on a Windows host.
+        // The buffers and the environments are heap values on a Windows host. They have allocas and
+        // no markers: an alloca that has them keeps LLVM's inliner from adding its own around the
+        // body of an inlined function, and these frames are released on paths that carry no `end`.
         if !(cfg!(windows) && !wasm) {
             let f = body_of(&ir, "f");
-            let buffers = allocas(f, "[256 x i8]");
-            assert_eq!(buffers.len(), 1, "{f}");
-            assert_bracketed(f, &buffers[0], 256);
-            // Two `i64` captures take 16 bytes on every target.
+            assert_eq!(allocas(f, "[256 x i8]").len(), 1, "{f}");
+            assert!(!f.contains("@llvm.lifetime."), "{f}");
             let g = body_of(&ir, "g");
-            let environments = allocas(g, "{ i64, i64 }");
-            assert_eq!(environments.len(), 1, "{g}");
-            assert_bracketed(g, &environments[0], 16);
+            assert_eq!(allocas(g, "{ i64, i64 }").len(), 1, "{g}");
+            assert!(!g.contains("@llvm.lifetime."), "{g}");
         }
         // LLVM versions disagree about the alignment of an `i128`, so its list has no markers.
         let wide = body_of(&ir, "wide");

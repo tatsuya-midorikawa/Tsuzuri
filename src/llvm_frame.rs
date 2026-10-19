@@ -33,16 +33,15 @@ pub(super) enum Frame {
     /// String code units that stay in the literal constant `data`; `word` is the length word of
     /// the string that holds them.
     String { data: String, word: u64 },
-    Buffer {
-        buffer: String,
-        bytes: Option<usize>,
-    },
+    /// A concatenation buffer and a closure environment have no lifetime markers: an alloca that
+    /// has them keeps LLVM's inliner from adding its own around the whole body of an inlined
+    /// function, and these two are released on paths that carry no `end` (PM09, `docs/benchmarks.md`).
+    Buffer { buffer: String },
     Environment {
         environment: String,
         ty: String,
         function: usize,
         count: usize,
-        bytes: Option<usize>,
     },
     /// Record or tuple fields with stack parts, by field index.
     Aggregate(BTreeMap<usize, Vec<Frame>>),
@@ -414,21 +413,13 @@ impl FunctionEmitter<'_, '_> {
         } else {
             STRING_BUFFER_BYTES
         };
-        // The call writes the buffer first; the operands do not use it.
-        self.lifetime(true, &buffer, Some(STRING_BUFFER_BYTES));
         let value = self.value(format!(
             "call {ty} @{}.concat_into(ptr {buffer}, i64 {capacity}, {ty} {lhs}, {ty} {rhs})",
             &ty[1..],
         ));
         self.drop_framed(&left.ty, &lhs, &left_frames);
         self.drop_framed(&right.ty, &rhs, &right_frames);
-        (
-            value,
-            vec![Frame::Buffer {
-                buffer,
-                bytes: Some(STRING_BUFFER_BYTES),
-            }],
-        )
+        (value, vec![Frame::Buffer { buffer }])
     }
 
     pub(super) fn concat_length(&mut self, left: &TypedExpr, right: &TypedExpr) -> String {
@@ -461,14 +452,6 @@ impl FunctionEmitter<'_, '_> {
         let environment = self.fresh();
         self.allocas
             .push(format!("{environment} = alloca {ty}, align 16"));
-        let captures_types = &self.module.functions[id].signature.parameters[..count];
-        let bytes = captures_types
-            .iter()
-            .all(|ty| self.layout_is_settled(ty))
-            .then(|| {
-                layout::aggregate(&mut captures_types.iter().map(|ty| self.target_layout(ty))).0
-            });
-        self.lifetime(true, &environment, bytes);
         for (index, value) in values.iter().enumerate() {
             let pointer = self.value(format!(
                 "getelementptr inbounds {ty}, ptr {environment}, i32 0, i32 {index}"
@@ -486,7 +469,6 @@ impl FunctionEmitter<'_, '_> {
                 ty,
                 function: id,
                 count,
-                bytes,
             }],
         )
     }
@@ -906,7 +888,7 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&done);
     }
 
-    /// Ends the lifetime of the stack storage of `frame`, if it has an alloca.
+    /// Ends the lifetime of the stack storage of `frame`, if it has markers (an array or a list).
     fn end_frame(&mut self, frame: &Frame) {
         match frame {
             Frame::Array {
@@ -918,17 +900,11 @@ impl FunctionEmitter<'_, '_> {
                 storage: address,
                 bytes,
                 ..
-            }
-            | Frame::Buffer {
-                buffer: address,
-                bytes,
-            }
-            | Frame::Environment {
-                environment: address,
-                bytes,
-                ..
             } => self.lifetime(false, address, *bytes),
-            Frame::String { .. } | Frame::Aggregate(_) => {}
+            Frame::String { .. }
+            | Frame::Buffer { .. }
+            | Frame::Environment { .. }
+            | Frame::Aggregate(_) => {}
         }
     }
 

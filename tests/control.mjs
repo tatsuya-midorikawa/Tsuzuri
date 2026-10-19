@@ -43,6 +43,8 @@ function checkMarkerSizes(ir, targetArguments) {
     sizes.get(type).add(BigInt(marker[1]));
   }
   assert.ok(sizes.size > 0, "the IR has lifetime markers");
+  // A string buffer and a closure environment have an alloca and no markers (llvm_frame.rs, Frame::Buffer).
+  assert.ok(!sizes.has("[256 x i8]"), "a string buffer has lifetime markers");
   const types = [...sizes.keys()];
   const probes = types.map((type, index) =>
     `define i64 @tz_probe_${index}() {\nentry:\n  ret i64 ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to i64)\n}\n`);
@@ -364,7 +366,7 @@ try {
   const declarations = sourceIr.match(/^declare .*$/gm);
   const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
   assert.equal(new Set(declaredNames).size, declaredNames.length, "intrinsic declarations are deduplicated");
-  // PM09: every stack frame of a literal, buffer or environment is bracketed by lifetime markers whose size is
+  // PM09: every stack frame of an array or list literal is bracketed by lifetime markers whose size is
   // the size of its alloca on the target, which a sanitizer reads as the extent of the marker.
   assert.match(sourceIr, /call void @llvm\.lifetime\.start\.p0\(i64 \d+, ptr %v\d+\)/);
   assert.match(sourceIr, /call void @llvm\.lifetime\.end\.p0\(i64 \d+, ptr %v\d+\)/);

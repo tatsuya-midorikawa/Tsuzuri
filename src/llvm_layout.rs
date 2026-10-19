@@ -206,7 +206,7 @@ pub(crate) fn storage_layout(ty: &Type, module: &CheckedModule) -> (usize, usize
 
 /// The size and alignment of a structure that stores `fields`, each a `(size, alignment)`, in this
 /// order.
-pub(super) fn aggregate(fields: &mut dyn Iterator<Item = (usize, usize)>) -> (usize, usize) {
+fn aggregate(fields: &mut dyn Iterator<Item = (usize, usize)>) -> (usize, usize) {
     let (size, align) = fields.fold((0usize, 1usize), |(size, align), (field, field_align)| {
         (
             size.next_multiple_of(field_align) + field,
