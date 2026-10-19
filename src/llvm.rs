@@ -1671,7 +1671,14 @@ fn emit_program_in(
         if instrumentation.runtime_objects {
             runtime_symbols.append(&mut output, crate::runtime_cache::numeric_declarations());
         } else {
-            output = output.replace("declare void @llvm.trap()\n", "");
+            // The runtime declares these intrinsics too, and a module cannot declare one twice.
+            for declaration in [
+                "declare void @llvm.trap()\n",
+                "declare void @llvm.lifetime.start.p0(i64 immarg, ptr)\n",
+                "declare void @llvm.lifetime.end.p0(i64 immarg, ptr)\n",
+            ] {
+                output = output.replace(declaration, "");
+            }
             runtime_symbols.append(&mut output, include_str!("runtime/numeric.ll"));
         }
     }
@@ -3676,6 +3683,8 @@ struct FunctionEmitter<'a, 'b> {
     moving_bindings: BTreeSet<usize>,
     staying: BTreeSet<usize>,
     buffer_bytes: usize,
+    /// The estimated bytes of the literals that `frame_value` has put on the stack so far.
+    frame_bytes_used: usize,
     heap_initializer: bool,
     ranges: crate::ranges::RangeFacts,
     /// Array reads emitted without a bounds check so far.
@@ -3758,6 +3767,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             moving_bindings: BTreeSet::new(),
             staying: BTreeSet::new(),
             buffer_bytes: 0,
+            frame_bytes_used: 0,
             heap_initializer: false,
             ranges: crate::ranges::RangeFacts::default(),
             proven_reads: 0,

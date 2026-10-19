@@ -23,7 +23,7 @@
 use super::*;
 
 /// The bytes of a chunk header: the next pointer, `rest` and `capacity`.
-const LIST_HEADER_BYTES: usize = 24;
+pub(super) const LIST_HEADER_BYTES: usize = 24;
 /// The most bytes, header included, of a chunk that `List.cons` adds. A chunk that is built at
 /// once has no limit but the allocation size. A chunk has one slot at least, so an element of more
 /// than `LIST_CHUNK_MAX_BYTES - LIST_HEADER_BYTES` bytes gets a chunk that is larger.
@@ -858,15 +858,23 @@ impl FunctionEmitter<'_, '_> {
 
     /// Reserves in the entry block the storage of a list literal of `count` elements, which
     /// outlives the expression, and returns the address that the list value holds. The literal is
-    /// one full chunk, whose header is written here.
+    /// one full chunk, whose header is written here, after its lifetime has started.
     pub(super) fn list_stack_storage(&mut self, element: &Type, count: usize) -> String {
         let storage = self.fresh();
         self.allocas.push(format!(
             "{storage} = alloca {{ ptr, i64, i64, [{count} x {}] }}, align 16",
             self.ty(element)
         ));
+        let bytes = self.list_stack_bytes(element, count);
+        self.lifetime(true, &storage, bytes);
         self.list_write_header(element, &storage, "null", "0", &count.to_string());
         storage
+    }
+
+    /// The size of the stack storage of a list literal: the header, then the slots from the
+    /// offset that their alignment gives (see `slots_bytes`).
+    pub(super) fn list_stack_bytes(&self, element: &Type, count: usize) -> Option<usize> {
+        self.slots_bytes((LIST_HEADER_BYTES, 8), element, count)
     }
 
     /// The address of element `index` of the stack storage of a list literal.

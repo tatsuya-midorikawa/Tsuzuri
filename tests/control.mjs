@@ -26,6 +26,36 @@ function execute(program, args, success = true) {
 }
 const cli = (args) => execute(compiler, args);
 
+// The size that clang gives each alloca type that a lifetime marker brackets, from a probe function per type that
+// LLVM folds to a constant, against the size in the marker.
+function checkMarkerSizes(ir, targetArguments) {
+  const sizes = new Map();
+  let allocas = new Map();
+  for (const line of ir.split("\n")) {
+    if (line.startsWith("define ")) allocas = new Map();
+    const alloca = line.match(/^\s*(%[\w.$]+) = alloca (.+), align 16$/);
+    if (alloca) allocas.set(alloca[1], alloca[2]);
+    const marker = line.match(/^\s*call void @llvm\.lifetime\.(?:start|end)\.p0\(i64 (\d+), ptr (%[\w.$]+)\)$/);
+    if (!marker) continue;
+    const type = allocas.get(marker[2]);
+    assert.ok(type, `a lifetime marker points at an alloca of its function: ${line}`);
+    if (!sizes.has(type)) sizes.set(type, new Set());
+    sizes.get(type).add(BigInt(marker[1]));
+  }
+  assert.ok(sizes.size > 0, "the IR has lifetime markers");
+  const types = [...sizes.keys()];
+  const probes = types.map((type, index) =>
+    `define i64 @tz_probe_${index}() {\nentry:\n  ret i64 ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to i64)\n}\n`);
+  const probe = join(temporary, "probe.ll");
+  writeFileSync(probe, `${ir}\n${probes.join("")}`);
+  const folded = execute(clang, ["-x", "ir", "-Wno-override-module", ...targetArguments, "-O1", "-S", "-emit-llvm", probe, "-o", "-"]).stdout;
+  types.forEach((type, index) => {
+    const body = folded.match(new RegExp(`define [^\\n]*@tz_probe_${index}\\(\\)[^\\n]*\\{\\n([\\s\\S]*?)\\n\\}`));
+    const size = BigInt(body?.[1].match(/ret i64 (\d+)/)?.[1] ?? -1);
+    assert.deepEqual([...sizes.get(type)], [size], `marker sizes of the alloca ${type}`);
+  });
+}
+
 function rangeReference(first, step, last, unsigned = false) {
   let total = 0n;
   for (let n = first; step > 0n ? n <= last : n >= last; n += step) {
@@ -244,6 +274,76 @@ const patternValues = new Map([[-3n, 17n], [-1n, 17n], [0n, 3n], [1n, 29n], [2n,
   [4n, 11n], [5n, 83n], [6n, 5n], [7n, 47n], [8n, 19n], [9n, 101n]]);
 for (let n = -5n; n <= 12n; n++) cases.push(["patterns", [n], patternValues.get(n) ?? 42n]);
 cases.push(["patterns", [142n], 42n], ["patterns", [max], max - 100n]);
+// PM09: stack frames of literals, string buffers and closure environments (Frames.tz). Each expected value is
+// computed from the definition in the fixture with BigInt, not from the compiler's output; `live == 0` after
+// each case checks that no frame is freed and no copy leaks, and the ASan run checks the lifetime markers.
+const framesFold = (seed, values, factor) => values.reduce((total, v) => wrap(total * factor + v), seed);
+for (const n of [-5n, -1n, 0n, 1n, 7n, 1n << 62n]) cases.push(["frames_disjoint", [n], n > 0n ? 4n + n : 4n - n]);
+for (const n of [0n, 1n, 1000n, 100000n]) cases.push(["frames_loop", [n], 3n * n]);
+for (const n of [-3n, 0n, 1n, 10n, max - 2n, min]) {
+  cases.push(["frames_moved", [n], wrap(framesFold(1n, [n, wrap(n + 1n), wrap(n + 2n)], 7n) + 2n)]);
+  cases.push(["frames_merge", [n], framesFold(0n, n > 0n ? [n, wrap(n + 1n)] : [wrap(n - 1n), wrap(n - 2n)], 10n)]);
+  const rows = [[n, wrap(n + 1n)], [wrap(n + 2n)], [wrap(n * 2n), wrap(n * 3n), wrap(n * 4n)]];
+  cases.push(["frames_nested", [n], wrap(framesFold(0n, rows.flat(), 3n) + 3n)]);
+}
+for (const n of [0n, 1n, 2n, 3n, 10n, 100n, 4096n]) {
+  let jumps = 0n, buffers = 0n, closures = 0n;
+  for (let i = 0n; i < n; i++) {
+    if (i % 3n !== 0n) {
+      if (jumps > 1000n) break;
+      jumps += 3n + i;
+    }
+  }
+  for (let i = 0n; i < n; i++) buffers += (i % 2n === 0n ? 3n : 4n) + 97n;
+  for (let i = 0n; i < n; i++) {
+    const a = i + 1n, b = i * 2n, add = (k) => k + a + b;
+    closures += add(1n) + add(2n);
+  }
+  cases.push(["frames_jumps", [n], jumps], ["frames_buffers", [n], buffers], ["frames_closures", [n], closures]);
+}
+function framesSpread(n) {
+  if (n <= 0n) return 0n;
+  let total = 0n;
+  if (n % 2n === 0n) for (let k = 0n; k < 64n; k++) total = wrap(total * 31n + n + k);
+  else for (let k = 2n; k < 64n; k++) total = wrap(total * 17n + n * k);
+  return wrap(total + framesSpread(n - 1n));
+}
+for (const n of [-1n, 0n, 1n, 2n, 3n, 40n, 101n]) cases.push(["frames_recursive", [n], framesSpread(n)]);
+// PM09: guaranteed tail calls between the functions of a recursion (TailCalls.tz), at depths that every build
+// can run: tests/stack.mjs runs them at depth 10,000,000. The expected values are simulated with BigInt.
+function tailLists(n) {
+  let xs = [1n, 2n], acc = 0n, ping = true;
+  for (let k = n; ; k--, ping = !ping) {
+    if (k === 0n) return wrap(acc + BigInt(xs.length));
+    const fold = (factor) => xs.reduce((s, v) => wrap(s * factor + v), 0n);
+    [acc, xs] = ping ? [wrap(acc + fold(3n)), [k, k + 1n]] : [wrap(acc + fold(5n)), [k * 2n, k, k + 3n]];
+  }
+}
+function tailTexts(n) {
+  let acc = 0n, even = true;
+  for (let k = n; ; k--, even = !even) {
+    const length = even ? (k % 2n === 0n ? 3n : 4n) : (k % 2n === 0n ? 5n : 2n);
+    if (k === 0n) return acc + length;
+    acc += length;
+  }
+}
+function tailSelfAndGroup(n) {
+  let acc = 0n, a = true;
+  for (let k = n; k !== 0n; k--) {
+    if (a) { if (k % 2n === 0n) acc += 1n; else { acc += 10n; a = false; } }
+    else { acc += 100n; a = true; }
+  }
+  return acc;
+}
+for (const n of [0n, 1n, 2n, 3n, 4n, 5n, 7n, 100n, 999n, 1000n]) {
+  let cycle = 0n;
+  for (let i = 0n; i < n; i++) cycle += [1n, 2n, 3n][Number(i % 3n)];
+  cases.push(["tail_cycle", [n], cycle], ["tail_lists", [n], tailLists(n)], ["tail_texts", [n], tailTexts(n)]);
+  cases.push(["tail_words", [n], n % 2n === 0n ? 4n : 3n]);
+  cases.push(["tail_self_and_group", [n], tailSelfAndGroup(n)]);
+  cases.push(["tail_pipe", [n], n % 2n === 0n ? 1 : 0]);
+  for (const value of [0n, 21n, -7n]) cases.push(["tail_lend", [value, n], n % 2n === 0n ? value : value * 2n]);
+}
 const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked", "break_traps_without_jump"];
 const cValue = (n) => typeof n !== "bigint" ? Number.isNaN(n) ? "NAN"
   : n === Infinity ? "INFINITY" : n === -Infinity ? "-INFINITY" : Object.is(n, -0) ? "-0.0" : String(n)
@@ -264,6 +364,14 @@ try {
   const declarations = sourceIr.match(/^declare .*$/gm);
   const declaredNames = declarations.map((line) => line.match(/@([^\s(]+)\(/)[1]);
   assert.equal(new Set(declaredNames).size, declaredNames.length, "intrinsic declarations are deduplicated");
+  // PM09: every stack frame of a literal, buffer or environment is bracketed by lifetime markers whose size is
+  // the size of its alloca on the target, which a sanitizer reads as the extent of the marker.
+  assert.match(sourceIr, /call void @llvm\.lifetime\.start\.p0\(i64 \d+, ptr %v\d+\)/);
+  assert.match(sourceIr, /call void @llvm\.lifetime\.end\.p0\(i64 \d+, ptr %v\d+\)/);
+  checkMarkerSizes(sourceIr, []);
+  const wasmIr = join(temporary, "control-wasm.ll");
+  cli(["build", fixture, "--target", "wasm32", "--emit", "llvm", "-o", wasmIr]);
+  checkMarkerSizes(readFileSync(wasmIr, "utf8"), ["--target=wasm32-unknown-unknown"]);
   let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
   if (sanitizer.length) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, " nounwind sanitize_address");
   writeFileSync(ir, trackedIr);

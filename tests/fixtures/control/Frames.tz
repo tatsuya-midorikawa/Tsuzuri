@@ -1,0 +1,93 @@
+export def frames_disjoint :: i64 -> i64
+fn frames_disjoint n =
+    if n > 0 then
+        let a = [|n, n, n, n|]
+        List.length a + n
+    else
+        let b = [|1, 2, 3, n|]
+        List.length b - n
+
+def rec count_frames :: i64 -> i64 -> i64
+fn rec count_frames n acc =
+    if n == 0 then acc
+    else
+        let xs = [|n, n, n|]
+        count_frames (n - 1) (acc + List.length xs)
+
+export def frames_loop :: i64 -> i64
+fn frames_loop n = count_frames n 0
+
+def fold_values :: i64 -> [|i64|] -> i64
+fn fold_values seed values =
+    let mut total = seed
+    for v in values do total = total * 7 + v
+    total
+
+export def frames_moved :: i64 -> i64
+fn frames_moved n =
+    let a = [|n, n + 1, n + 2|]
+    let b = [|n * 2, n * 3|]
+    fold_values 1 a + List.length b
+
+export def frames_merge :: i64 -> i64
+fn frames_merge n =
+    let xs = if n > 0 then [|n, n + 1|] else [|n - 1, n - 2|]
+    let mut total = 0
+    for v in xs do total = total * 10 + v
+    total
+
+export def frames_nested :: i64 -> i64
+fn frames_nested n =
+    let rows = [| [|n, n + 1|], [|n + 2|], [|n * 2, n * 3, n * 4|] |]
+    let mut total = 0
+    for row in rows do
+        for v in row do total = total * 3 + v
+    total + List.length rows
+
+export def frames_jumps :: i64 -> i64
+fn frames_jumps n =
+    let mut total = 0
+    for i in 0 .. n - 1 do
+        let xs = [|i, i + 1, i + 2|]
+        if i % 3 == 0 then continue
+        if total > 1000 then break
+        total = total + List.length xs + i
+    total
+
+export def frames_buffers :: i64 -> i64
+fn frames_buffers n =
+    let mut total = 0
+    for i in 0 .. n - 1 do
+        let joined = (if i % 2 == 0 then "ab" else "abc") + "x"
+        total = total + joined.length + joined[0] as i64
+    total
+
+export def frames_closures :: i64 -> i64
+fn frames_closures n =
+    let mut total = 0
+    for i in 0 .. n - 1 do
+        let a = i + 1
+        let b = i * 2
+        let add = \k -> k + a + b
+        total = total + add 1 + add 2
+    total
+
+// Two literals of 64 elements in branches that never run together, in a function that recurses
+// without a tail call: at -O3 its frame holds one literal if the lifetimes of the two are disjoint.
+def rec spread :: i64 -> i64
+fn rec spread n =
+    if n <= 0 then 0
+    else
+        if n % 2 == 0 then
+            let a = [|n, n + 1, n + 2, n + 3, n + 4, n + 5, n + 6, n + 7, n + 8, n + 9, n + 10, n + 11, n + 12, n + 13, n + 14, n + 15, n + 16, n + 17, n + 18, n + 19, n + 20, n + 21, n + 22, n + 23, n + 24, n + 25, n + 26, n + 27, n + 28, n + 29, n + 30, n + 31, n + 32, n + 33, n + 34, n + 35, n + 36, n + 37, n + 38, n + 39, n + 40, n + 41, n + 42, n + 43, n + 44, n + 45, n + 46, n + 47, n + 48, n + 49, n + 50, n + 51, n + 52, n + 53, n + 54, n + 55, n + 56, n + 57, n + 58, n + 59, n + 60, n + 61, n + 62, n + 63|]
+            let mut total = 0
+            for v in a do total = total * 31 + v
+            total + spread (n - 1)
+        else
+            let b = [|n * 2, n * 3, n * 4, n * 5, n * 6, n * 7, n * 8, n * 9, n * 10, n * 11, n * 12, n * 13, n * 14, n * 15, n * 16, n * 17, n * 18, n * 19, n * 20, n * 21, n * 22, n * 23, n * 24, n * 25, n * 26, n * 27, n * 28, n * 29, n * 30, n * 31, n * 32, n * 33, n * 34, n * 35, n * 36, n * 37, n * 38, n * 39, n * 40, n * 41, n * 42, n * 43, n * 44, n * 45, n * 46, n * 47, n * 48, n * 49, n * 50, n * 51, n * 52, n * 53, n * 54, n * 55, n * 56, n * 57, n * 58, n * 59, n * 60, n * 61, n * 62, n * 63|]
+            let mut total = 0
+            for v in b do total = total * 17 + v
+            total + spread (n - 1)
+
+export def frames_recursive :: i64 -> i64
+fn frames_recursive n = spread n
