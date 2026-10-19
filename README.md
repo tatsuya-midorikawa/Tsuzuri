@@ -894,7 +894,7 @@ Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため
 
 #### 変更の種類別
 
-`cargo test --locked <pattern>` と `cargo nextest run --locked <pattern>` は、一致するテストが 0 件でも成功します。**出力の `running N tests`（nextest は `Starting N tests`）の N が 0 でなく、期待した数であることを毎回見ます。** どの変更でも、次の回帰テストは通ります（上限や stack の大きさを上げて通してはいけません）。T1 に含まれます。
+`cargo test --locked <pattern>` は、一致するテストが 0 件でも成功します（`cargo nextest run` は 0 件を失敗にします）。**出力の `running N tests` の N が 0 でなく、期待した数であることを毎回見ます。** どの変更でも、次の回帰テストは通ります（上限や stack の大きさを上げて通してはいけません）。T1 に含まれます。
 
 ```sh
 cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
