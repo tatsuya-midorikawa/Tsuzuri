@@ -2621,6 +2621,71 @@ entry:
         assert_eq!(declaration.after, "(i32)");
     }
 
+    /// `llvm.lifetime.*` calls and `musttail` calls (PM09) go through the split as they are: each unit declares the
+    /// intrinsics it calls, and a `musttail` call stays directly before its `ret`.
+    #[test]
+    fn keeps_lifetime_intrinsics_and_musttail_calls() {
+        let ir = r#"source_filename = "tsuzuri"
+declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture)
+declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture)
+
+define internal i64 @tz.fn.Helper.count(i64 noundef %arg0, i64 noundef %arg1) nounwind {
+entry:
+  %slot = alloca i64, align 8
+  call void @llvm.lifetime.start.p0(i64 8, ptr %slot)
+  store i64 %arg0, ptr %slot, align 8
+  %v0 = load i64, ptr %slot, align 8
+  call void @llvm.lifetime.end.p0(i64 8, ptr %slot)
+  %v1 = icmp eq i64 %arg1, 0
+  br i1 %v1, label %done, label %again
+again:
+  %v2 = sub i64 %arg1, 1
+  %v3 = musttail call i64 @tz.fn.Helper.count(i64 %v0, i64 %v2)
+  ret i64 %v3
+done:
+  ret i64 %v0
+}
+
+define internal i64 @tz.fn.Main.run(i64 noundef %arg0, i64 noundef %arg1) nounwind {
+entry:
+  %slot = alloca i64, align 8
+  call void @llvm.lifetime.start.p0(i64 8, ptr %slot)
+  call void @llvm.lifetime.end.p0(i64 8, ptr %slot)
+  %v0 = musttail call i64 @tz.fn.Helper.count(i64 %arg0, i64 %arg1)
+  ret i64 %v0
+}
+
+define i32 @main() {
+entry:
+  %v0 = call i64 @tz.fn.Main.run(i64 1, i64 3)
+  ret i32 0
+}
+"#;
+        let units = split_text(ir);
+        assert_self_contained(ir, &units);
+        let mut tail_calls = 0;
+        for name in ["m.Main", "m.Helper"] {
+            let text = &unit(&units, name).text;
+            for intrinsic in ["start", "end"] {
+                let declaration = format!(
+                    "declare void @llvm.lifetime.{intrinsic}.p0(i64 immarg, ptr nocapture)"
+                );
+                assert_eq!(text.matches(&declaration).count(), 1, "{name}:\n{text}");
+            }
+            let lines: Vec<&str> = text.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if line.contains("musttail call") {
+                    tail_calls += 1;
+                    assert!(
+                        lines[index + 1].trim_start().starts_with("ret "),
+                        "{name}: {line}\n{text}"
+                    );
+                }
+            }
+        }
+        assert_eq!(tail_calls, 2);
+    }
+
     #[test]
     fn renumbers_constants_attributes_and_metadata() {
         let ir = "source_filename = \"tsuzuri\"\n@tz.literal.40 = private unnamed_addr constant [1 x i8] c\"@\"\n@tz.literal.41 = private unnamed_addr constant [1 x i8] c\"!\"\nattributes #5 = { nounwind }\nattributes #9 = { cold }\n!7 = !{i32 1, !\"a\", i32 2}\n!8 = distinct !{!8, !7}\n!9 = !{!8}\n!11 = !{}\n!llvm.module.flags = !{!7}\n!llvm.dbg.cu = !{!11}\ndefine internal void @tz.fn.Main.f() #9 {\nentry:\n  %a = getelementptr i8, ptr @tz.literal.41, i32 0\n  %b = getelementptr i8, ptr @tz.literal.40, i32 0\n  call void @tz.fn.Main.f() #5, !llvm.loop !8\n  ret void\n}\n";

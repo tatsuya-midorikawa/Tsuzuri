@@ -11,7 +11,8 @@ const directory = mkdtempSync(join(scratch, 'run-'));
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const cache = join(directory, 'cache'), log = join(directory, 'clang.log');
 const clang = process.env.TSUZURI_CLANG ?? 'clang';
-const env = { ...process.env, TSUZURI_CACHE_DIR: cache, PB01_LOG: log,
+// The checks count the compiler calls of the one-module pipeline; codegen units are tested by codegen_units.mjs.
+const env = { ...process.env, TSUZURI_CACHE_DIR: cache, PB01_LOG: log, TSUZURI_CODEGEN_UNITS: 'single',
   PB01_CLANG: /[\\/]/.test(clang) ? resolve(clang) : clang, TMPDIR: directory, TMP: directory, TEMP: directory };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function run(program, args, environment = env) {
