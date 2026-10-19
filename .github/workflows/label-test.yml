@@ -1,0 +1,22 @@
+name: Label gate test
+
+# Throwaway: the trigger, concurrency and `if` of targets.yml, windows.yml and vscode.yml with a job that only sleeps.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+
+concurrency:
+  group: label-test-${{ github.ref }}-${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  heavy:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "heavy job ran: event=${{ github.event_name }}"
+          sleep 60
