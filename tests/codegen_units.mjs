@@ -147,14 +147,13 @@ test("C4 recompiled units", () => {
   const edited = space.build([], { output: "edited" });
   assert.equal(space.compiled().units.length, 1);
   assert.equal(run(edited.out, "12345").stdout, expectedOutput(MODULES, "12345", { index: 4, salt: 1 }));
-  // The body of a lambda: its module, and what the compiler names after it, but nowhere near every unit.
+  // The body of a lambda: the lambda is defined in the unit of the module that uses it, so that unit alone.
   const file = join(space.project, "Module1.tz");
   const text = readFileSync(file, "utf8");
   assert.ok(text.includes("let add = \\value -> value + offset\n"));
   writeFileSync(file, text.replaceAll("let add = \\value -> value + offset\n", "let add = \\value -> value + offset + 0\n"));
   const lambda = space.build([], { output: "lambda" });
-  const { units } = space.compiled();
-  assert.ok(units.length >= 1 && units.length * 2 < total, `${units.length} of ${total} units for a lambda`);
+  assert.equal(space.compiled().units.length, 1, `of ${total} units for a lambda`);
   assert.equal(run(lambda.out, "12345").stdout, expectedOutput(MODULES, "12345", { index: 4, salt: 1 }));
 });
 
@@ -201,9 +200,17 @@ test("C6 eligibility", () => {
     assert.equal(space.compiled().units.length, 0, optimization);
     assert.equal(run(out, "12345").stdout, expectedOutput(3, "12345"));
   }
-  for (const emit of ["object", "llvm"]) {
-    execute(compiler, ["build", space.project, "-O0", "--emit", emit, "--no-cache", "-o", join(space.directory, `output.${emit}`)], { env: space.env });
-    assert.equal(space.compiled().units.length, 0, `--emit ${emit}`);
+  // An object is cut where the machine can make symbols local again; the other outputs are one module.
+  const object = join(space.directory, "output.o");
+  execute(compiler, ["build", space.project, "-O0", "--emit", "object", "--no-cache", "-o", object], { env: space.env });
+  assert.ok(space.compiled().units.length > 3, "--emit object is split");
+  execute(compiler, ["build", space.project, "-O3", "--emit", "object", "--no-cache", "-o", object], { env: space.env });
+  assert.equal(space.compiled().units.length, 0, "--emit object -O3");
+  for (const emit of ["llvm", "shared", "bitcode"]) {
+    // A shared library and bitcode need an export, which this project has not.
+    const exported = emit === "llvm" ? space : workspace(0, OBJECT_PROGRAMS.p1);
+    execute(compiler, ["build", exported.project, "-O0", "--emit", emit, "--no-cache", "-o", join(exported.directory, `output.${emit}`)], { env: exported.env });
+    assert.equal(exported.compiled().units.length, 0, `--emit ${emit}`);
   }
 });
 
@@ -420,6 +427,144 @@ test("C10 debug information", () => {
   const rebuilt = edited.build(["-g"], { output: "edited" });
   assert.equal(edited.compiled().units.length, 1);
   assert.equal(run(rebuilt.out, "12345").stdout, expectedOutput(MODULES, "12345", { index: 2, salt: 1 }));
+});
+
+// A wasm32 module with exports in three files: `tz_run` divides in `A` and in `B`, `tz_lam` uses a lambda.
+const WASM_FILES = {
+  "Main.tz": `export def run :: i64 -> i64 -> i64
+fn run a b = A.add_div a b + B.mul_div a b
+
+export def lam :: i64 -> i64
+fn lam n =
+    let offset = n % 7
+    let add = \\v -> v + offset
+    add (add n)
+`,
+  "A.tz": "def add_div :: i64 -> i64 -> i64\nfn add_div a b = (a + 1) / b\n",
+  "B.tz": "def mul_div :: i64 -> i64 -> i64\nfn mul_div a b = (a * 2) / b\n",
+};
+const wasmLd = process.env.TSUZURI_WASM_LD ?? "wasm-ld";
+const instantiate = (path) => {
+  const module = new WebAssembly.Module(readFileSync(path));
+  assert.deepEqual(WebAssembly.Module.imports(module), []);
+  return new WebAssembly.Instance(module).exports;
+};
+
+// C11: a wasm32 module at -O0 is built from units, linked by wasm-ld with the runtime objects, and behaves like the module
+// of a single unit, down to the site that a trap reports.
+test("C11 wasm32", () => {
+  if (!available(wasmLd)) return skip("wasm32 builds", wasmLd);
+  const space = workspace(0, WASM_FILES);
+  const build = (name, args = [], env = {}) => space.build(["--target", "wasm32", ...args], { output: `${name}.wasm`, env });
+  const check = (path, traps) => {
+    const exports = instantiate(path);
+    assert.equal(exports.tz_run(7n, 2n), 11n);
+    assert.equal(exports.tz_lam(10n), 16n);
+    assert.throws(() => exports.tz_run(7n, 0n), WebAssembly.RuntimeError);
+    if (!traps) return;
+    const sites = JSON.parse(readFileSync(`${path}.trap.json`, "utf8")).sites;
+    const site = sites.find((candidate) => candidate.id === exports.tsuzuri_trap_site());
+    assert.equal(site?.kind, "integer division by zero");
+    assert.match(site.path, /A\.tz$/);
+  };
+  for (const args of [[], ["--no-cache"], ["--trap-info"], ["--trap-info", "--no-cache"], ["--wasm-feature", "simd128"], ["-g"]]) {
+    const split = build("split", args);
+    assert.ok(space.compiled().units.length > 3, `${args.join(" ")} is split`);
+    const single = build("single", args, { TSUZURI_CODEGEN_UNITS: "single" });
+    assert.equal(space.compiled().units.length, 0);
+    for (const built of [split, single]) check(built.out, args.includes("--trap-info"));
+    if (args.includes("--trap-info")) {
+      const table = (out) => JSON.parse(readFileSync(`${out}.trap.json`, "utf8")).sites;
+      const key = (site) => `${site.path}|${site.span.start}|${site.span.end}|${site.kind}`;
+      assert.deepEqual(table(split.out).map(key).sort(), table(single.out).map(key).sort());
+    }
+    // The same text gives the same module.
+    const again = build("again", args);
+    assert.deepEqual(readFileSync(again.out), readFileSync(split.out), args.join(" "));
+  }
+  // An edit of one file: that file's unit alone is compiled again, and wasm-ld links the module.
+  const cached = workspace(0, WASM_FILES);
+  const cold = cached.build(["--target", "wasm32", "--trap-info"], { output: "cold.wasm" });
+  assert.ok(cached.compiled().units.length > 3);
+  writeFileSync(join(cached.project, "B.tz"), `def twice :: i64 -> i64\nfn twice x = x + x\n\n${WASM_FILES["B.tz"]}`);
+  const edited = cached.build(["--target", "wasm32", "--trap-info"], { output: "edited.wasm" });
+  assert.equal(cached.compiled().units.length, 1);
+  assert.equal(instantiate(edited.out).tz_run(7n, 2n), 11n);
+  assert.ok(readFileSync(cold.out).length > 0);
+});
+
+// Two programs that each have a `Main.helper` and a `Mod.bump` that no host may see, and one export.
+const OBJECT_PROGRAMS = {
+  p1: { "Main.tz": "def helper :: i64 -> i64\nfn helper x = x + Mod.bump x\n\nexport def f1 :: i64 -> i64\nfn f1 x = helper x * 2\n", "Mod.tz": "def bump :: i64 -> i64\nfn bump x = x + 1\n" },
+  p2: { "Main.tz": "def helper :: i64 -> i64\nfn helper x = x + Mod.bump x\n\nexport def f2 :: i64 -> i64\nfn f2 x = helper x * 3\n", "Mod.tz": "def bump :: i64 -> i64\nfn bump x = x + 2\n" },
+};
+// What an object makes visible to a link: its global symbols with their binding and visibility, without addresses.
+function linkSymbols(object) {
+  if (process.platform === "darwin") {
+    return execute("nm", ["-m", object]).stdout.split("\n").filter((line) => line && !/ non-external /.test(line))
+      .map((line) => line.replace(/^[0-9a-f]+ /, "")).sort();
+  }
+  return execute("readelf", ["-sW", object]).stdout.split("\n").map((line) => line.trim().split(/\s+/))
+    .filter((fields) => /^\d+:$/.test(fields[0]) && fields[4] !== "LOCAL" && fields[7])
+    .map((fields) => `${fields[4]} ${fields[5]} ${fields[6] === "UND" ? "UND" : "DEF"} ${fields[7]}`).sort();
+}
+
+// C12: a native object is made of units that a relocatable link joins; what the host sees is what the single module shows,
+// and the names that were internal do not clash when two objects of two programs are linked into one program.
+test("C12 native object", () => {
+  const localizer = process.platform === "darwin" ? "nmedit" : "objcopy";
+  if (process.platform !== "darwin" && !available("llvm-objcopy") && !available(localizer)) return skip("object builds", localizer);
+  const programs = {};
+  for (const [name, files] of Object.entries(OBJECT_PROGRAMS)) {
+    const space = workspace(0, files);
+    const build = (output, args = [], env = {}) => space.build(["--emit", "object", ...args], { output, env });
+    const split = build(`${name}-split.o`, ["--no-cache"]);
+    assert.ok(space.compiled().units.length > 2, `${name}: an object is split`);
+    const single = build(`${name}-single.o`, ["--no-cache"], { TSUZURI_CODEGEN_UNITS: "single" });
+    assert.equal(space.compiled().units.length, 0);
+    assert.deepEqual(linkSymbols(split.out), linkSymbols(single.out), `${name}: the symbols the host sees`);
+    for (const symbol of linkSymbols(split.out)) assert.ok(!/tz\.(fn|unit|apply)/.test(symbol), symbol);
+    sameBytes(split.out, build(`${name}-again.o`, ["--no-cache"]).out);
+    programs[name] = { space, split, single };
+  }
+  // Both objects define `tz.fn.Main.helper`: the units made it global to the link, and the object makes it local again.
+  const host = join(root, "objects-host.c");
+  writeFileSync(host, "#include <stdint.h>\nextern int64_t tz_f1(int64_t);\nextern int64_t tz_f2(int64_t);\nint main(void) { return tz_f1(1) == 6 && tz_f2(1) == 12 ? 0 : 1; }\n");
+  for (const mode of ["split", "single"]) {
+    const program = join(root, `objects-host-${mode}`);
+    execute(realClang, [host, programs.p1[mode].out, programs.p2[mode].out, "-o", program]);
+    execute(program, []);
+  }
+  // An edit of one file changes one unit, and the object still holds the same symbols.
+  const { space } = programs.p1;
+  writeFileSync(join(space.project, "Mod.tz"), "def bump :: i64 -> i64\nfn bump x = x + 3\n");
+  space.build(["--emit", "object"], { output: "p1-edit.o" });
+  space.compiled();
+  writeFileSync(join(space.project, "Mod.tz"), "def bump :: i64 -> i64\nfn bump x = x + 4\n");
+  const edited = space.build(["--emit", "object"], { output: "p1-edited.o" });
+  assert.equal(space.compiled().units.length, 1);
+  assert.deepEqual(linkSymbols(edited.out), linkSymbols(programs.p1.split.out));
+});
+
+// With the C runtime (tasks) merged in, and with trap information: the host sees the same, and runs the program.
+test("C12 native object with the runtime", () => {
+  if (process.platform !== "darwin" && !available("llvm-objcopy") && !available("objcopy")) return skip("object builds", "objcopy");
+  const fixture = resolve("tests/fixtures/debug_info");
+  const files = { "Main.tz": readFileSync(join(fixture, "Main.tz"), "utf8") };
+  const space = workspace(0, files);
+  for (const args of [[], ["--trap-info"], ["--no-cache"]]) {
+    const split = space.build(["--emit", "object", ...args], { output: "tasks-split.o" });
+    assert.ok(space.compiled().units.length > 2, `${args.join(" ")} is split`);
+    const single = space.build(["--emit", "object", ...args], { output: "tasks-single.o", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+    assert.deepEqual(linkSymbols(split.out), linkSymbols(single.out), args.join(" "));
+    const host = join(root, "tasks-host.c");
+    writeFileSync(host, "#include <stdint.h>\nextern int64_t tz_answer(int64_t);\nextern int64_t tz_parallel(void);\nint main(void) { return tz_answer(40) != 42 || tz_parallel() != 42; }\n");
+    for (const built of [split, single]) {
+      const program = join(root, "tasks-host");
+      execute(realClang, [host, built.out, "-pthread", "-lm", "-o", program]);
+      execute(program, []);
+    }
+  }
 });
 
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.

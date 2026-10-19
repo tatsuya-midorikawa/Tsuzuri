@@ -3361,6 +3361,33 @@ fn build_complete(
     let mut stable_traps = false;
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    // A relocatable object that is made of units needs a tool that makes symbols local; the probe is for builds that
+    // may be cut.
+    let can_localize = options.emit == Emit::Object
+        && codegen_mode != units::Mode::Single
+        && units::localizer(platform).is_some();
+    let facts = units::Facts {
+        stable_trap_sites: stable_traps,
+        stack_checks,
+        can_localize,
+    };
+    // The sites of a build from codegen units keep their numbers when another file is edited.
+    let numbering = |bytes: usize| {
+        if units::eligible(
+            options,
+            platform,
+            profile,
+            units::Facts {
+                stable_trap_sites: true,
+                ..facts
+            },
+        ) && units::wanted(codegen_mode, bytes)
+        {
+            llvm::TrapNumbering::Stable
+        } else {
+            llvm::TrapNumbering::Dense
+        }
+    };
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
     let fast = options.backend == Backend::Fast;
     let f16 = f16_path_for(options.backend, platform, options.target, options.cpu);
@@ -3471,16 +3498,7 @@ fn build_complete(
                         .debug_info
                         .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
-                    // The sites of a build from codegen units keep their numbers when another file is edited.
-                    &|bytes| {
-                        if units::eligible(options, platform, profile, true)
-                            && units::wanted(codegen_mode, bytes)
-                        {
-                            llvm::TrapNumbering::Stable
-                        } else {
-                            llvm::TrapNumbering::Dense
-                        }
-                    },
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
@@ -3505,21 +3523,24 @@ fn build_complete(
             output.ir
         } else if options.debug_info {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_with_debug_info(
+                llvm::emit_with_debug_info_numbered(
                     module,
                     emission,
                     sources,
                     options.optimization != OptLevel::O0,
                     options.trap_info,
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else if options.trap_info {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_with_trap_info(module, emission, sources)
+                llvm::emit_with_trap_info_numbered(module, emission, sources, &numbering)
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else {
             llvm::emit_with_options(module, emission)?
@@ -3978,9 +3999,11 @@ fn build_complete(
             _ => text,
         };
         let object = temporary.path.join("module.o");
-        // A native `-O0` executable is built from codegen units (PB07), unless the text has a form that a unit
-        // cannot hold.
+        // A native `-O0` executable or object, or a wasm32 module, is built from codegen units (PB07), unless the text
+        // has a form that a unit cannot hold.
         let mut unit_objects: Option<Vec<PathBuf>> = None;
+        // What a relocatable object of the units makes local again.
+        let mut unit_symbols: Vec<String> = Vec::new();
         if fast && options.target == Target::Wasm32 {
             // The runtime objects that Clang built decide how a 128-bit result is returned, and the
             // routines of the runtime that this IR defines must agree with them.
@@ -3990,8 +4013,15 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            if units::eligible(options, platform, profile, stable_traps)
-                && units::wanted(codegen_mode, text.len())
+            if units::eligible(
+                options,
+                platform,
+                profile,
+                units::Facts {
+                    stable_trap_sites: stable_traps,
+                    ..facts
+                },
+            ) && units::wanted(codegen_mode, text.len())
             {
                 let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
                     .into_iter()
@@ -4001,18 +4031,33 @@ fn build_complete(
                 if options.debug_info {
                     args.push("-g".into());
                 }
-                args.extend(compile_args(platform));
-                if options.cpu == Cpu::Native {
+                if options.target.is_wasm() {
                     args.extend(
-                        native_ir_cpu_args(platform.arch_name(), f16)?
-                            .into_iter()
-                            .map(OsString::from),
+                        [
+                            "--target=wasm32-unknown-unknown",
+                            "-mbulk-memory",
+                            if options.wasm_simd {
+                                "-msimd128"
+                            } else {
+                                "-mno-simd128"
+                            },
+                        ]
+                        .map(OsString::from),
                     );
+                } else {
+                    args.extend(compile_args(platform));
+                    if options.cpu == Cpu::Native {
+                        args.extend(
+                            native_ir_cpu_args(platform.arch_name(), f16)?
+                                .into_iter()
+                                .map(OsString::from),
+                        );
+                    }
+                    if gc_sections && !platform.mach_o() {
+                        args.extend(["-ffunction-sections", "-fdata-sections"].map(OsString::from));
+                    }
+                    args.extend(no_sdk_args(platform));
                 }
-                if gc_sections && !platform.mach_o() {
-                    args.extend(["-ffunction-sections", "-fdata-sections"].map(OsString::from));
-                }
-                args.extend(no_sdk_args(platform));
                 let names: BTreeSet<&str> = module
                     .functions
                     .iter()
@@ -4020,7 +4065,7 @@ fn build_complete(
                     .filter(|name| !name.starts_with('$'))
                     .collect();
                 let names: Vec<&str> = names.into_iter().collect();
-                unit_objects = units::build(
+                let built = units::build(
                     &text,
                     &names,
                     &units::Config {
@@ -4035,6 +4080,10 @@ fn build_complete(
                     },
                     &mut messages,
                 )?;
+                if let Some(built) = built {
+                    unit_symbols = built.localize;
+                    unit_objects = Some(built.objects);
+                }
             }
             if unit_objects.is_none() {
                 fs::write(&ir, &text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
@@ -4574,7 +4623,10 @@ fn build_complete(
                 )?,
             );
         }
-        if native_runtime && options.emit == Emit::Object && !merge_debug_ir {
+        if (native_runtime || unit_objects.is_some())
+            && options.emit == Emit::Object
+            && !merge_debug_ir
+        {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
                 .args(target_args(platform))
@@ -4587,11 +4639,11 @@ fn build_complete(
             if platform.linux_kernel() {
                 linker.arg("-no-pie");
             }
-            linker
-                .arg(&object)
-                .arg(&runtime_object)
-                .arg("-o")
-                .arg(&artifact);
+            linker.arg(&module_input);
+            if native_runtime {
+                linker.arg(&runtime_object);
+            }
+            linker.arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
                 run_tool(
@@ -4602,6 +4654,24 @@ fn build_complete(
                     ),
                 )?,
             );
+            // What was `internal` is `hidden` in the units, and `hidden` is for the link inside this object.
+            if unit_objects.is_some() {
+                let localizer = units::localizer(platform).ok_or_else(|| {
+                    driver_error(
+                        "E2002",
+                        "an object built from codegen units needs nmedit (macOS) or objcopy; set TSUZURI_NMEDIT or TSUZURI_OBJCOPY, or TSUZURI_CODEGEN_UNITS=single",
+                    )
+                })?;
+                units::localize(
+                    &localizer,
+                    platform,
+                    &unit_symbols,
+                    &artifact,
+                    &temporary.path,
+                    "making the symbols of the units local needs nmedit (macOS) or objcopy; set TSUZURI_NMEDIT or TSUZURI_OBJCOPY",
+                    &mut messages,
+                )?;
+            }
         }
         if (options.wasm_threads || wasi_runtime) && options.emit == Emit::Object {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
@@ -4708,7 +4778,7 @@ fn build_complete(
             if !llvm::host_entries(module).is_empty() {
                 linker.arg("--export=tsuzuri_async_set_epoch");
             }
-            linker.arg(&object).arg("-o").arg(&artifact);
+            linker.arg(&module_input).arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
                 run_tool(

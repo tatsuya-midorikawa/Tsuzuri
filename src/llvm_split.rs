@@ -74,6 +74,9 @@ pub struct SplitInput<'a> {
 pub struct Unit {
     pub name: String,
     pub text: String,
+    /// The symbols that this unit defines `hidden` and that were `internal` in the text: a relocatable object that
+    /// is made of the units makes them local again, so that two objects of two programs do not define the same name.
+    pub localize: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1835,7 +1838,23 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
             Home::Bucket(bucket) => format!("g.{bucket:x}"),
             Home::Module(module) => format!("m.{module}"),
         };
-        units.push(Unit { name, text });
+        let mut localize: Vec<String> = functions
+            .iter()
+            .filter(|&&id| parsed.functions[id].linkage.word.is_some())
+            .map(|&id| function_name(&parsed, &plan.renamed, None, id).to_owned())
+            .chain(
+                globals
+                    .iter()
+                    .filter(|&&id| parsed.globals[id].linkage.is_some())
+                    .map(|&id| parsed.globals[id].name.to_owned()),
+            )
+            .collect();
+        localize.sort_unstable();
+        units.push(Unit {
+            name,
+            text,
+            localize,
+        });
     }
     Ok(units)
 }
@@ -2460,6 +2479,48 @@ entry:
         assert!(symbol.starts_with('h'), "{symbol}");
         let adapter = format!("define hidden i64 @tz.apply.$lambda.{symbol}.0(");
         assert!(main.text.contains(&adapter), "{}", main.text);
+    }
+
+    /// A relocatable object of the units makes local again what was `internal`, and only that: a `weak` definition and the
+    /// public `main` stay as they are.
+    #[test]
+    fn units_list_the_symbols_that_were_internal() {
+        let units = split_text(SAMPLE);
+        let listed: BTreeSet<&str> = units
+            .iter()
+            .flat_map(|unit| unit.localize.iter().map(String::as_str))
+            .collect();
+        for name in [
+            "tz.fn.Main.f",
+            "tz.fn.Helper.twice",
+            "tz.apply.Main.f.0",
+            "tz.async.next_id",
+        ] {
+            assert!(listed.contains(name), "{name} in {listed:?}");
+        }
+        assert!(
+            listed
+                .iter()
+                .any(|name| name.starts_with("tz.fn.$lambda.h")),
+            "{listed:?}"
+        );
+        for name in ["tsuzuri_alloc", "main", "tsuzuri_trap_hooks"] {
+            assert!(!listed.contains(name), "{name} is not listed");
+        }
+        // Each listed name is defined, `hidden`, in the unit that lists it.
+        for unit in &units {
+            for name in &unit.localize {
+                let definition = format!("@{name}");
+                assert!(
+                    unit.text.lines().any(|line| {
+                        (line.starts_with("define hidden ") || line.contains(" = hidden "))
+                            && line.contains(&definition)
+                    }),
+                    "{name} is not defined in {}",
+                    unit.name
+                );
+            }
+        }
     }
 
     #[test]

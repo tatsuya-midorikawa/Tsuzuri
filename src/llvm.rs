@@ -548,6 +548,17 @@ pub fn emit_with_trap_info(
     options: EmitOptions,
     sources: &[TrapSource<'_>],
 ) -> Result<EmitOutput, Diagnostic> {
+    emit_with_trap_info_numbered(module, options, sources, &|_| TrapNumbering::Dense)
+}
+
+/// [`emit_with_trap_info`] where `numbering` chooses how the sites are numbered from the number of bytes of the
+/// program's IR before the instrumentation (PB07 Phase 2).
+pub fn emit_with_trap_info_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    numbering: &dyn Fn(usize) -> TrapNumbering,
+) -> Result<EmitOutput, Diagnostic> {
     let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
@@ -564,7 +575,16 @@ pub fn emit_with_trap_info(
             ..Instrumentation::default()
         },
     )?;
-    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm, false)
+    let numbering = numbering(ir.len());
+    traps::instrument_numbered(
+        ir,
+        module,
+        marks.unwrap(),
+        sources,
+        options.wasm,
+        false,
+        numbering,
+    )
 }
 
 pub fn emit_with_debug_info(
@@ -573,6 +593,20 @@ pub fn emit_with_debug_info(
     sources: &[TrapSource<'_>],
     optimized: bool,
     trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_with_debug_info_numbered(module, options, sources, optimized, trap_info, &|_| {
+        TrapNumbering::Dense
+    })
+}
+
+/// [`emit_with_debug_info`] with the numbering of [`emit_with_trap_info_numbered`].
+pub fn emit_with_debug_info_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    optimized: bool,
+    trap_info: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
         return Err(Diagnostic::new(
@@ -599,7 +633,8 @@ pub fn emit_with_debug_info(
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, options.wasm, false)
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, options.wasm, false, numbering)
     } else {
         Ok(EmitOutput {
             ir,

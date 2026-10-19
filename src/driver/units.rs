@@ -61,27 +61,44 @@ pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
     }
 }
 
-/// Whether a build can be cut into units at all (the table of PB07): a native executable at `-O0` that Clang
-/// builds on a machine with POSIX linking, for the machine it runs on. Everything else is built from one module.
-/// `trap_sites_stable` says that `--trap-info` numbered its sites so that an edit leaves the other files' numbers alone
-/// (`llvm::TrapNumbering::Stable`); a build that asks for trap information and has no such numbering is not cut.
+/// What a build knows about itself beyond its options when it decides whether to cut its module.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Facts {
+    /// `--trap-info` numbered its sites so that an edit leaves the other files' numbers alone
+    /// (`llvm::TrapNumbering::Stable`); a build that asks for trap information and has no such numbering is not cut.
+    pub stable_trap_sites: bool,
+    /// The wasm32 build checks its stack on entry, which `emit_wasm_build` makes.
+    pub stack_checks: bool,
+    /// The machine has a tool that makes symbols local (`localizer`), which an object that is made of units needs.
+    pub can_localize: bool,
+}
+
+/// Whether a build can be cut into units at all (the table of PB07): a native executable or relocatable object, or a
+/// wasm32 module that `wasm-ld` links, at `-O0`, that Clang builds on a machine with POSIX linking (for WebAssembly,
+/// any host that is not Windows), for the machine it runs on. Everything else is built from one module. A macOS
+/// object with debug information is one module as well: the relocatable link keeps a debug map of the unit objects
+/// and drops their DWARF.
 pub(super) fn eligible(
     options: BuildOptions,
     platform: Platform,
     profile: &Profile,
-    trap_sites_stable: bool,
+    facts: Facts,
 ) -> bool {
-    options.target == Target::Native
-        && options.emit == Emit::Executable
-        && options.optimization == OptLevel::O0
+    let native = platform.unix() && !platform.windows() && !platform.cross();
+    let kind = match (options.target, options.emit) {
+        (Target::Native, Emit::Executable) => native,
+        (Target::Native, Emit::Object) => {
+            native && facts.can_localize && !(platform.mach_o() && options.debug_info)
+        }
+        (Target::Wasm32, Emit::Wasm) => !platform.windows() && !facts.stack_checks,
+        _ => false,
+    };
+    kind && options.optimization == OptLevel::O0
         && options.backend == Backend::Llvm
-        && (!options.trap_info || trap_sites_stable)
+        && (!options.trap_info || facts.stable_trap_sites)
         && !options.trap_return
         && !options.freestanding
         && !options.wasm_threads
-        && platform.unix()
-        && !platform.windows()
-        && !platform.cross()
         && matches!(profile, Profile::None)
 }
 
@@ -200,6 +217,12 @@ fn bundles(units: &[Unit], misses: &[usize], count: usize) -> Vec<Vec<usize>> {
     bundles
 }
 
+/// The objects of the units, in the order of the units, and the symbols that a relocatable object made of them makes local.
+pub(super) struct Built {
+    pub objects: Vec<PathBuf>,
+    pub localize: Vec<String>,
+}
+
 /// Cuts `text` into units and returns the object of each, in the order of the units, or `None` when `text` has a
 /// form that a unit cannot hold (the caller builds one module instead, which is always correct).
 pub(super) fn build(
@@ -207,7 +230,7 @@ pub(super) fn build(
     modules: &[&str],
     config: &Config<'_>,
     messages: &mut Vec<String>,
-) -> Result<Option<Vec<PathBuf>>, Diagnostic> {
+) -> Result<Option<Built>, Diagnostic> {
     let split_time = crate::timings::Phase::start("split");
     let units = match split(&SplitInput { ir: text, modules }) {
         Ok(units) => units,
@@ -367,7 +390,74 @@ pub(super) fn build(
     for (_, message) in compiled {
         collect_message(messages, message);
     }
-    Ok(Some(objects))
+    let mut localize: Vec<String> = units
+        .iter()
+        .flat_map(|unit| unit.localize.iter().cloned())
+        .collect();
+    localize.sort_unstable();
+    localize.dedup();
+    Ok(Some(Built { objects, localize }))
+}
+
+/// The program that makes global symbols local in a relocatable object: Xcode's `nmedit` on macOS, an `objcopy` (GNU
+/// or LLVM) elsewhere; `None` when the machine has none, and then an object is built from one unit.
+pub(super) fn localizer(platform: Platform) -> Option<OsString> {
+    let candidates: Vec<OsString> = if platform.mach_o() {
+        vec![super::tool("TSUZURI_NMEDIT", "nmedit")]
+    } else if let Some(tool) = env::var_os("TSUZURI_OBJCOPY") {
+        vec![tool]
+    } else {
+        vec!["llvm-objcopy".into(), "objcopy".into()]
+    };
+    candidates.into_iter().find(|tool| {
+        Command::new(tool)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .is_ok()
+    })
+}
+
+/// Makes `names` local in the relocatable object `object`. The units define what was `internal` as `hidden`, which the
+/// link inside the object needs; left global, such a name would clash with the same name in another object of another
+/// program that the host links with this one. Weak and other hidden symbols, which the runtime merges across objects on
+/// purpose, are not touched.
+pub(super) fn localize(
+    tool: &OsStr,
+    platform: Platform,
+    names: &[String],
+    object: &Path,
+    directory: &Path,
+    hint: &str,
+    messages: &mut Vec<String>,
+) -> Result<(), Diagnostic> {
+    let mut list = String::new();
+    for name in names {
+        // A Mach-O symbol has the underscore that the C name does not.
+        if platform.mach_o() {
+            list.push('_');
+        }
+        list.push_str(name);
+        list.push('\n');
+    }
+    let path = directory.join("localize.txt");
+    fs::write(&path, list).map_err(|error| io_error("write the symbol list", &path, error))?;
+    let edited = directory.join("localized.o");
+    let mut command = Command::new(tool);
+    if platform.mach_o() {
+        command
+            .arg("-R")
+            .arg(&path)
+            .arg(object)
+            .arg("-o")
+            .arg(&edited);
+    } else {
+        let mut option = OsString::from("--localize-symbols=");
+        option.push(&path);
+        command.arg(option).arg(object).arg(&edited);
+    }
+    collect_message(messages, super::run_tool(&mut command, hint)?);
+    fs::rename(&edited, object).map_err(|error| io_error("replace the object", object, error))
 }
 
 #[cfg(test)]
@@ -411,7 +501,7 @@ mod tests {
         };
         let host = Platform::new(None);
         let ok = |options, platform: Platform, profile: &Profile| {
-            eligible(options, platform, profile, false)
+            eligible(options, platform, profile, Facts::default())
         };
         if cfg!(windows) {
             assert!(!ok(base, host, &Profile::None), "Windows builds one unit");
@@ -474,7 +564,7 @@ mod tests {
                 },
             ),
             (
-                "--emit object",
+                "--emit object without a localizer",
                 BuildOptions {
                     emit: Emit::Object,
                     ..base
@@ -505,14 +595,6 @@ mod tests {
                 "--emit header",
                 BuildOptions {
                     emit: Emit::Header,
-                    ..base
-                },
-            ),
-            (
-                "wasm32",
-                BuildOptions {
-                    target: Target::Wasm32,
-                    emit: Emit::Wasm,
                     ..base
                 },
             ),
@@ -551,9 +633,124 @@ mod tests {
             "--trap-info with dense sites"
         );
         assert!(
-            eligible(traps, host, &Profile::None, true),
+            eligible(
+                traps,
+                host,
+                &Profile::None,
+                Facts {
+                    stable_trap_sites: true,
+                    ..Facts::default()
+                }
+            ),
             "--trap-info with stable sites"
         );
+        // A wasm32 module that wasm-ld links is cut; the builds that `emit_wasm_build` makes, wasm64, threads and a
+        // module that is not linked are not.
+        let wasm = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..base
+        };
+        assert!(ok(wasm, host, &Profile::None), "wasm32");
+        assert!(
+            ok(
+                BuildOptions {
+                    wasm_simd: true,
+                    ..wasm
+                },
+                host,
+                &Profile::None
+            ),
+            "wasm32 with simd128"
+        );
+        assert!(
+            !eligible(
+                wasm,
+                host,
+                &Profile::None,
+                Facts {
+                    stack_checks: true,
+                    ..Facts::default()
+                }
+            ),
+            "wasm32 with stack checks"
+        );
+        // A native object is cut when the machine can make symbols local again, and a macOS object with debug
+        // information is not.
+        let object = BuildOptions {
+            emit: Emit::Object,
+            ..base
+        };
+        let localizing = Facts {
+            can_localize: true,
+            ..Facts::default()
+        };
+        assert!(
+            !ok(object, host, &Profile::None),
+            "object without a localizer"
+        );
+        assert!(eligible(object, host, &Profile::None, localizing), "object");
+        let debug_object = BuildOptions {
+            debug_info: true,
+            ..object
+        };
+        assert_eq!(
+            eligible(debug_object, host, &Profile::None, localizing),
+            !host.mach_o(),
+            "object with debug information"
+        );
+        assert!(
+            !eligible(
+                BuildOptions {
+                    emit: Emit::Shared,
+                    ..base
+                },
+                host,
+                &Profile::None,
+                localizing
+            ),
+            "shared library"
+        );
+        for (name, options) in [
+            (
+                "wasm32 threads",
+                BuildOptions {
+                    wasm_threads: true,
+                    ..wasm
+                },
+            ),
+            (
+                "wasm64",
+                BuildOptions {
+                    target: Target::Wasm64,
+                    ..wasm
+                },
+            ),
+            (
+                "wasm32 object",
+                BuildOptions {
+                    emit: Emit::Object,
+                    ..wasm
+                },
+            ),
+            (
+                "wasm32 -O3",
+                BuildOptions {
+                    optimization: OptLevel::O3,
+                    ..wasm
+                },
+            ),
+            (
+                "wasm32 fast backend",
+                BuildOptions {
+                    backend: Backend::Fast,
+                    ..wasm
+                },
+            ),
+        ] {
+            assert!(!ok(options, host, &Profile::None), "{name}");
+        }
+        assert!(!ok(wasm, host, &Profile::Generate("profiles".into())));
         assert!(!ok(base, host, &Profile::Generate("profiles".into())));
         assert!(!ok(base, host, &Profile::Use("merged.profdata".into())));
         // A named target is built from one module, even the machine's own.
@@ -566,6 +763,7 @@ mod tests {
         let unit = |size: usize| Unit {
             name: String::new(),
             text: "x".repeat(size),
+            localize: Vec::new(),
         };
         let units = vec![unit(10), unit(100), unit(1), unit(50), unit(60), unit(5)];
         let misses = [0, 1, 2, 3, 4, 5];
