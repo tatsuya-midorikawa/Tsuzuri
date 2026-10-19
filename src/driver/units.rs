@@ -63,13 +63,20 @@ pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
 
 /// Whether a build can be cut into units at all (the table of PB07): a native executable at `-O0` that Clang
 /// builds on a machine with POSIX linking, for the machine it runs on. Everything else is built from one module.
-pub(super) fn eligible(options: BuildOptions, platform: Platform, profile: &Profile) -> bool {
+/// `trap_sites_stable` says that `--trap-info` numbered its sites so that an edit leaves the other files' numbers alone
+/// (`llvm::TrapNumbering::Stable`); a build that asks for trap information and has no such numbering is not cut.
+pub(super) fn eligible(
+    options: BuildOptions,
+    platform: Platform,
+    profile: &Profile,
+    trap_sites_stable: bool,
+) -> bool {
     options.target == Target::Native
         && options.emit == Emit::Executable
         && options.optimization == OptLevel::O0
         && options.backend == Backend::Llvm
         && !options.debug_info
-        && !options.trap_info
+        && (!options.trap_info || trap_sites_stable)
         && !options.trap_return
         && !options.freestanding
         && !options.wasm_threads
@@ -404,14 +411,14 @@ mod tests {
             ..BuildOptions::default()
         };
         let host = Platform::new(None);
+        let ok = |options, platform: Platform, profile: &Profile| {
+            eligible(options, platform, profile, false)
+        };
         if cfg!(windows) {
-            assert!(
-                !eligible(base, host, &Profile::None),
-                "Windows builds one unit"
-            );
+            assert!(!ok(base, host, &Profile::None), "Windows builds one unit");
             return;
         }
-        assert!(eligible(base, host, &Profile::None));
+        assert!(ok(base, host, &Profile::None));
         // Options that only change the compile or the link are no reason not to cut.
         for options in [
             BuildOptions {
@@ -431,7 +438,7 @@ mod tests {
                 ..base
             },
         ] {
-            assert!(eligible(options, host, &Profile::None), "{options:?}");
+            assert!(ok(options, host, &Profile::None), "{options:?}");
         }
         // Each row of the table, made false by itself.
         let ineligible = [
@@ -521,13 +528,6 @@ mod tests {
                 },
             ),
             (
-                "--trap-info",
-                BuildOptions {
-                    trap_info: true,
-                    ..base
-                },
-            ),
-            (
                 "--trap-mode return",
                 BuildOptions {
                     trap_return: true,
@@ -543,17 +543,26 @@ mod tests {
             ),
         ];
         for (name, options) in ineligible {
-            assert!(!eligible(options, host, &Profile::None), "{name}");
+            assert!(!ok(options, host, &Profile::None), "{name}");
         }
-        assert!(!eligible(base, host, &Profile::Generate("profiles".into())));
-        assert!(!eligible(
-            base,
-            host,
-            &Profile::Use("merged.profdata".into())
-        ));
+        // `--trap-info` is cut only when its sites have the numbering that keeps them stable.
+        let traps = BuildOptions {
+            trap_info: true,
+            ..base
+        };
+        assert!(
+            !ok(traps, host, &Profile::None),
+            "--trap-info with dense sites"
+        );
+        assert!(
+            eligible(traps, host, &Profile::None, true),
+            "--trap-info with stable sites"
+        );
+        assert!(!ok(base, host, &Profile::Generate("profiles".into())));
+        assert!(!ok(base, host, &Profile::Use("merged.profdata".into())));
         // A named target is built from one module, even the machine's own.
         let named = Platform::new(Triple::parse("x86_64-pc-windows-msvc"));
-        assert!(!eligible(base, named, &Profile::None));
+        assert!(!ok(base, named, &Profile::None));
     }
 
     #[test]

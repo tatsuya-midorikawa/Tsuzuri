@@ -871,13 +871,17 @@ enum Naming<'a> {
 /// anywhere else is a serial number.
 fn classify<'a>(name: &'a str, modules: &FastSet<&str>) -> Naming<'a> {
     let mut qualified = None;
+    // `tz.trap.report.<module>` is the trap report of one file (`--trap-info`): the name is all module.
+    let mut whole = false;
     for (prefix, helper) in [
         ("tz.fn.", false),
         ("tz.apply.", true),
         ("tz.env.clone.", true),
         ("tz.env.drop.", true),
+        ("tz.trap.report.", false),
     ] {
         if let Some(rest) = name.strip_prefix(prefix) {
+            whole = prefix == "tz.trap.report.";
             qualified = Some(if helper {
                 match rest.rsplit_once('.') {
                     Some((owner, index)) if all_digits(index) => owner,
@@ -895,7 +899,8 @@ fn classify<'a>(name: &'a str, modules: &FastSet<&str>) -> Naming<'a> {
         return Naming::Unstable;
     }
     let module = qualified.and_then(|owner| {
-        (1..parts.len())
+        let longest = if whole { parts.len() } else { parts.len() - 1 };
+        (1..=longest)
             .rev()
             .map(|count| &owner[..parts[count - 1].end])
             .find(|candidate| modules.contains(candidate))
@@ -2420,7 +2425,16 @@ entry:
 
     /// The IR that the driver hands to Clang for a project at `-O0`, and the modules of its functions.
     fn executable_ir(sources: &[(&str, &str)]) -> (String, Vec<String>) {
-        use crate::llvm::{Allocator, EmitOptions, Entry, F16Path, emit_native_build};
+        let (ir, modules, _) = executable_ir_with(sources, None);
+        (ir, modules)
+    }
+
+    /// `executable_ir` with `--trap-info` when `numbering` says how to number the sites, and the sites.
+    fn executable_ir_with(
+        sources: &[(&str, &str)],
+        numbering: Option<crate::llvm::TrapNumbering>,
+    ) -> (String, Vec<String>, Vec<crate::trap::TrapSite>) {
+        use crate::llvm::{Allocator, EmitOptions, Entry, F16Path, emit_native_build_numbered};
         let module = crate::analyze_modules(sources)
             .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
         let options = EmitOptions {
@@ -2428,11 +2442,23 @@ entry:
             wasm: false,
             wasm_simd128: false,
             debug_output: false,
-            runtime_objects: true,
+            runtime_objects: numbering.is_none(),
             allocator: Allocator::System,
             f16: F16Path::Soft,
         };
-        let output = emit_native_build(&module, options, &[], None, false).unwrap();
+        let traps: Vec<_> = sources
+            .iter()
+            .map(|(path, text)| crate::trap::TrapSource { path, text })
+            .collect();
+        let output = emit_native_build_numbered(
+            &module,
+            options,
+            if numbering.is_some() { &traps } else { &[] },
+            None,
+            numbering.is_some(),
+            &|_| numbering.unwrap_or(crate::llvm::TrapNumbering::Dense),
+        )
+        .unwrap();
         let names: BTreeSet<String> = module
             .functions
             .iter()
@@ -2442,6 +2468,7 @@ entry:
         (
             crate::llvm::without_closure_inlining(output.ir),
             names.into_iter().collect(),
+            output.trap_sites,
         )
     }
 
@@ -2511,6 +2538,116 @@ entry:
             changed <= 6,
             "{changed} of the 16 buckets changed for a few new functions"
         );
+    }
+
+    const TRAP_MAIN: &str = "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (A.divide 100 5))\n    do! IO.write_line (to_string (B.divide 100 7))\n    0\n";
+    const TRAP_A: &str = "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n";
+    const TRAP_B: &str = "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n";
+
+    /// The units of a project with `--trap-info` and stable site numbers; the sites are the ones the emitter lists.
+    fn trap_units(sources: &[(&str, &str)]) -> (String, Vec<Unit>, Vec<crate::trap::TrapSite>) {
+        let (ir, modules, sites) =
+            executable_ir_with(sources, Some(crate::llvm::TrapNumbering::Stable));
+        let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+        let units = split(&SplitInput {
+            ir: &ir,
+            modules: &modules,
+        })
+        .unwrap();
+        let found = check(&ir, &modules, &units);
+        assert!(found.is_empty(), "{}", found.join("\n"));
+        (ir, units, sites)
+    }
+
+    /// With stable site numbers an edit that moves the sites of one file leaves the unit of every other file, and the
+    /// one function that names the files, as they were; the file's own unit holds its report.
+    #[test]
+    fn trap_sites_keep_their_numbers_across_edits() {
+        let project =
+            |a: &str| trap_units(&[("Main.tz", TRAP_MAIN), ("A.tz", a), ("B.tz", TRAP_B)]);
+        let (ir, before, sites) = project(TRAP_A);
+        let shifted = format!("def twice :: i64 -> i64 = \\x -> x + x\n\n{TRAP_A}");
+        let (_, after, moved) = project(&shifted);
+        for name in ["m.B", "m.Main"] {
+            assert_eq!(unit(&before, name), unit(&after, name), "{name}");
+        }
+        for (old, new) in before.iter().zip(&after) {
+            if old.name.starts_with("g.") {
+                assert_eq!(old, new, "{}", old.name);
+            }
+        }
+        assert_ne!(unit(&before, "m.A"), unit(&after, "m.A"));
+        assert!(unit(&before, "m.A").text.contains("@tz.trap.report.A("));
+        assert!(unit(&before, "m.B").text.contains("@tz.trap.report.B("));
+        assert!(
+            before
+                .iter()
+                .filter(|unit| unit.name.starts_with("g."))
+                .any(|unit| unit.text.contains("define hidden void @tz.trap.report("))
+        );
+        // The sites of B are the same in both, and the sites of A moved.
+        let of = |sites: &[crate::trap::TrapSite], source: usize| -> Vec<(u32, usize)> {
+            sites
+                .iter()
+                .filter(|site| site.span.source == Some(source))
+                .map(|site| (site.id, site.span.start))
+                .collect()
+        };
+        assert_eq!(of(&sites, 2), of(&moved, 2));
+        assert_ne!(of(&sites, 1), of(&moved, 1));
+        // The numbers in the code are the numbers of the side table.
+        let listed: BTreeSet<u32> = sites.iter().map(|site| site.id).collect();
+        let mut reported = 0;
+        for line in ir.lines() {
+            if let Some(rest) = line.trim().strip_prefix("call void @tz.trap.report(i32 ")
+                && let Ok(id) = rest.trim_end_matches(')').parse::<u32>()
+            {
+                assert!(listed.contains(&id), "site {id} is not in the table");
+                reported += 1;
+            }
+        }
+        assert!(reported >= 2, "{reported} reports");
+        let unique: BTreeSet<u32> = sites.iter().map(|site| site.id).collect();
+        assert_eq!(unique.len(), sites.len());
+        assert!(
+            sites
+                .iter()
+                .all(|site| site.id > 0 && site.id < i32::MAX as u32)
+        );
+        // Moving the entry function changes its file's unit and nothing else: the runtime's traps do not name the
+        // position of the entry function.
+        let (_, edited, _) = trap_units(&[
+            ("Main.tz", &format!("\n{TRAP_MAIN}")),
+            ("A.tz", TRAP_A),
+            ("B.tz", TRAP_B),
+        ]);
+        let changed: Vec<&str> = before
+            .iter()
+            .zip(&edited)
+            .filter(|(old, new)| old != new)
+            .map(|(old, _)| old.name.as_str())
+            .collect();
+        assert_eq!(changed, ["m.Main"]);
+    }
+
+    /// A project with more trap sites than the dense numbering gives one number to each keeps that numbering: the
+    /// numbers count the locations from 1, in the order that they appear.
+    #[test]
+    fn dense_trap_numbers_count_the_locations() {
+        let (ir, _, sites) = executable_ir_with(
+            &[("Main.tz", TRAP_MAIN), ("A.tz", TRAP_A), ("B.tz", TRAP_B)],
+            Some(crate::llvm::TrapNumbering::Dense),
+        );
+        let ids: BTreeSet<u32> = sites.iter().map(|site| site.id).collect();
+        let kinds = crate::trap::TrapKind::ALL.len() as u32;
+        let locations: BTreeSet<u32> = ids.iter().map(|id| (id - 1) / kinds).collect();
+        assert_eq!(
+            locations.iter().copied().collect::<Vec<_>>(),
+            (0..locations.len() as u32).collect::<Vec<_>>(),
+            "no gap in the numbers of the locations"
+        );
+        assert!(ir.contains("define internal void @tz.trap.report(i32 %site)"));
+        assert!(!ir.contains("@tz.trap.report."));
     }
 
     /// Two functions with the same text are one function: nothing in the language can tell them apart, and a name that

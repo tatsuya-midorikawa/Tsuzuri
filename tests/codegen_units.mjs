@@ -33,12 +33,18 @@ function execute(program, args, { env = {}, input = "", success = true, cwd } = 
 }
 
 let sequence = 0;
-// A fresh directory with a project of MODULES modules, a cache, and a Clang wrapper that logs the units it compiles.
-function workspace(modules = MODULES) {
+// A fresh directory with a project of MODULES modules (or the given files), a cache, and a Clang wrapper that logs the
+// units it compiles.
+function workspace(modules = MODULES, files = null) {
   const directory = join(root, `case-${++sequence}`);
   mkdirSync(directory);
   const project = join(directory, "project");
-  writeProject(project, modules);
+  if (files) {
+    mkdirSync(project);
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(project, name), text);
+  } else {
+    writeProject(project, modules);
+  }
   const log = join(directory, "units.log");
   const wrapper = join(directory, "clang-wrapper.mjs");
   writeFileSync(wrapper, `#!${process.execPath}
@@ -175,6 +181,7 @@ test("C6 eligibility", () => {
   assert.ok(units(["--strip"]) > 3, "--strip is split");
   assert.ok(units(["--cpu", "native"]) > 3, "--cpu native is split");
   assert.ok(units(["--allocator", "small"]) > 3, "--allocator small is split");
+  assert.ok(units(["--trap-info"]) > 3, "--trap-info is split");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "single" }), 0, "TSUZURI_CODEGEN_UNITS=single");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "auto" }), 0, "a small program stays one unit under auto");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "" }), 0, "an empty TSUZURI_CODEGEN_UNITS is auto");
@@ -277,6 +284,91 @@ test("C8 concurrent builds", async () => {
   const outputs = await Promise.all(builds);
   for (const out of outputs.slice(1)) sameBytes(outputs[0], out);
   assert.equal(run(outputs[0], "12345").stdout, expectedOutput(MODULES, "12345"));
+});
+
+// A program that traps in the module that its input names: a line of N characters makes `A.divide` divide by N,
+// `B.divide` by N - 1 and `C.divide` by N - 2.
+const TRAP_FILES = {
+  "Main.tz": `def main :: unit -> i32 = \\() ->
+    let! line = IO.read_line ()
+    let text = Maybe.default_value "" line
+    let n = String.length text as i64
+    do! IO.write_line (to_string (A.divide 100 n))
+    do! IO.write_line (to_string (B.divide 100 (n - 1)))
+    do! IO.write_line (to_string (C.divide 100 (n - 2)))
+    0
+`,
+  "A.tz": "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n",
+  "B.tz": "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n",
+  "C.tz": "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n",
+};
+const outcome = (program, line) => {
+  const result = spawnSync(program, [], { encoding: "utf8", input: `${line}\n` });
+  assert.ifError(result.error);
+  return { stdout: result.stdout, stderr: result.stderr, status: result.status, signal: result.signal };
+};
+const trapMessage = (module, line = 1, column = 43) => new RegExp(`^trap: integer division by zero at .*${module}\\.tz:${line}:${column}$`, "m");
+
+// C9: `--trap-info` is built from units too, with the same behavior and the same sites, and the numbers of the sites of
+// one file do not change when another file is edited.
+test("C9 trap information", () => {
+  const space = workspace(0, TRAP_FILES);
+  const split = space.build(["--trap-info", "--no-cache"], { output: "split" });
+  assert.ok(space.compiled().units.length > 3, "--trap-info is split");
+  const single = space.build(["--trap-info", "--no-cache"], { output: "single", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+  assert.equal(space.compiled().units.length, 0);
+  for (const [line, module] of [["", "A"], ["x", "B"], ["xy", "C"], ["xyz", null]]) {
+    const left = outcome(split.out, line);
+    assert.deepEqual(left, outcome(single.out, line), JSON.stringify(line));
+    if (module) {
+      assert.match(left.stderr, trapMessage(module));
+      assert.equal(left.signal === null, false, "a trap ends the program with a signal");
+    } else {
+      assert.equal(left.status, 0);
+    }
+  }
+  // The side tables name the same sites; only their numbers differ.
+  const table = (out) => JSON.parse(readFileSync(`${out}.trap.json`, "utf8")).sites;
+  const key = (site) => `${site.path}|${site.span.start}|${site.span.end}|${site.kind}`;
+  assert.deepEqual(table(split.out).map(key).sort(), table(single.out).map(key).sort());
+  assert.equal(new Set(table(split.out).map((site) => site.id)).size, table(split.out).length);
+  const repeated = space.build(["--trap-info", "--no-cache"], { output: "repeated" });
+  sameBytes(split.out, repeated.out);
+  assert.deepEqual(readFileSync(`${repeated.out}.trap.json`), readFileSync(`${split.out}.trap.json`));
+});
+
+test("C9 trap sites keep their numbers across edits", () => {
+  const space = workspace(0, TRAP_FILES);
+  space.build(["--trap-info"], { output: "cold" });
+  assert.ok(space.compiled().units.length > 3);
+  // A function above `divide` moves every site of B: B's unit alone is compiled again.
+  writeFileSync(join(space.project, "B.tz"), `def twice :: i64 -> i64 = \\x -> x + x\n\n${TRAP_FILES["B.tz"]}`);
+  const edited = space.build(["--trap-info"], { output: "edited" });
+  assert.equal(space.compiled().units.length, 1);
+  assert.match(outcome(edited.out, "x").stderr, trapMessage("B", 3));
+  assert.match(outcome(edited.out, "").stderr, trapMessage("A"));
+  // The same for the file that calls the others.
+  writeFileSync(join(space.project, "Main.tz"), `\n${TRAP_FILES["Main.tz"]}`);
+  const moved = space.build(["--trap-info"], { output: "moved" });
+  assert.equal(space.compiled().units.length, 1);
+  assert.match(outcome(moved.out, "xy").stderr, trapMessage("C"));
+  // What the cache gave is what a build of everything gives.
+  const fresh = space.build(["--trap-info", "--no-cache"], { output: "fresh" });
+  sameBytes(moved.out, fresh.out);
+});
+
+test("C9 run -O0", () => {
+  const space = workspace(0, TRAP_FILES);
+  const run = (line, env = {}) => execute(compiler, ["run", space.project, "-O0"], { env: { ...space.env, ...env }, input: `${line}\n`, success: false });
+  const split = run("xyz");
+  assert.equal(split.status, 0, split.stderr);
+  assert.equal(split.stdout, "33\n50\n100\n");
+  assert.ok(space.compiled().units.length > 3, "run -O0 is split");
+  const trapped = run("xy");
+  assert.equal(trapped.status, 1);
+  assert.match(trapped.stderr, trapMessage("C"));
+  const reference = run("xy", { TSUZURI_CODEGEN_UNITS: "single" });
+  assert.deepEqual({ status: trapped.status, stdout: trapped.stdout, stderr: trapped.stderr }, { status: reference.status, stdout: reference.stdout, stderr: reference.stderr });
 });
 
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.

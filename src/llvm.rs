@@ -12,7 +12,7 @@ use crate::trap::{TrapKind, TrapSource};
 
 #[path = "llvm_traps.rs"]
 mod traps;
-pub use traps::EmitOutput;
+pub use traps::{EmitOutput, TrapNumbering};
 
 #[path = "call_specialization.rs"]
 pub(crate) mod call_specialization;
@@ -604,6 +604,7 @@ pub fn emit_with_debug_info(
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         })
     }
 }
@@ -618,6 +619,21 @@ pub fn emit_native_build(
     debug: Option<bool>,
     trap_info: bool,
 ) -> Result<EmitOutput, Diagnostic> {
+    emit_native_build_numbered(module, options, sources, debug, trap_info, &|_| {
+        TrapNumbering::Dense
+    })
+}
+
+/// [`emit_native_build`] where `numbering` chooses how the trap sites are numbered from the number of bytes of the
+/// program's IR before the instrumentation (`--trap-info`; PB07 Phase 2).
+pub fn emit_native_build_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
+) -> Result<EmitOutput, Diagnostic> {
     emit_native(
         module,
         options,
@@ -626,6 +642,7 @@ pub fn emit_native_build(
         trap_info,
         cpu::host_levels(),
         options.entry == Entry::Console,
+        numbering,
     )
 }
 
@@ -640,9 +657,19 @@ pub fn emit_native_build_for(
     trap_info: bool,
     levels: u8,
 ) -> Result<EmitOutput, Diagnostic> {
-    emit_native(module, options, sources, debug, trap_info, levels, false)
+    emit_native(
+        module,
+        options,
+        sources,
+        debug,
+        trap_info,
+        levels,
+        false,
+        &|_| TrapNumbering::Dense,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_native(
     module: &CheckedModule,
     options: EmitOptions,
@@ -651,6 +678,7 @@ fn emit_native(
     trap_info: bool,
     levels: u8,
     executable_roots: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -682,11 +710,13 @@ fn emit_native(
         },
     )?;
     let mut output = if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, false, false)?
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, false, false, numbering)?
     } else {
         EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         }
     };
     output.ir = cpu::multiversion(output.ir, module, levels, options.f16)?;
@@ -891,6 +921,7 @@ pub(crate) fn emit_wasm_build(
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         })
     }
 }

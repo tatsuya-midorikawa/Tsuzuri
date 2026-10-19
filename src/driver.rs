@@ -3357,6 +3357,8 @@ fn build_complete(
         ));
     }
     let mut trap_sites = Vec::new();
+    // Whether the sites of the IR have the numbering that a build from codegen units needs.
+    let mut stable_traps = false;
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
@@ -3461,7 +3463,7 @@ fn build_complete(
             && !options.freestanding
         {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_native_build(
+                llvm::emit_native_build_numbered(
                     module,
                     emission,
                     sources,
@@ -3469,9 +3471,20 @@ fn build_complete(
                         .debug_info
                         .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
+                    // The sites of a build from codegen units keep their numbers when another file is edited.
+                    &|bytes| {
+                        if units::eligible(options, platform, profile, true)
+                            && units::wanted(codegen_mode, bytes)
+                        {
+                            llvm::TrapNumbering::Stable
+                        } else {
+                            llvm::TrapNumbering::Dense
+                        }
+                    },
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else if options.wasm_threads || options.target == Target::Wasm64 || stack_checks {
             let output = project.with_trap_sources(|sources| {
@@ -3977,7 +3990,7 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            if units::eligible(options, platform, profile)
+            if units::eligible(options, platform, profile, stable_traps)
                 && units::wanted(codegen_mode, text.len())
             {
                 let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
