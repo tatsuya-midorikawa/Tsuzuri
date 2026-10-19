@@ -607,6 +607,30 @@ test("C13 examples", () => {
   assert.ok(compared >= 6, `${compared} examples built and ran`);
 });
 
+// C14: the whole-build cache keeps the paths apart: a module that the units built is not what a build of one module is
+// given (its bytes differ, the semantics do not), for every kind of build that can be cut.
+test("C14 whole-build keys", () => {
+  const kinds = [
+    ["native executable", WASM_FILES, []],
+    ["wasm32 module", WASM_FILES, ["--target", "wasm32"]],
+    ...(canLocalize ? [["native object", OBJECT_PROGRAMS.p1, ["--emit", "object"]]] : []),
+  ];
+  for (const [name, files, args] of kinds) {
+    if (name === "wasm32 module" && !available(wasmLd)) { skip("the wasm32 key", wasmLd); continue; }
+    const project = name === "native executable" ? { "Main.tz": "def main :: unit -> i32 = \\() -> 0\n", "A.tz": files["A.tz"] } : files;
+    const space = workspace(0, project);
+    space.build(args, { output: "split.out" });
+    assert.ok(space.compiled().units.length > 1, `${name} is cut`);
+    space.build(args, { output: "single.out", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+    const { units, others } = space.compiled();
+    assert.equal(units.length, 0, name);
+    assert.ok(others.includes("module.ll"), `${name}: one module is compiled, not taken from the entry of the units`);
+    // And back: the entry of the units is still there, and answers the same setting without a tool.
+    space.build(args, { output: "again.out" });
+    assert.deepEqual(space.compiled(), { units: [], others: [] }, `${name}: the same setting is a whole-build hit`);
+  }
+});
+
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.
 test("time passes", () => {
   const space = workspace(3);
