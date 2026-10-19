@@ -31,15 +31,15 @@ on:
 permissions:
   contents: read
 
-# The group keeps the label in it: a pull request event without the label starts a run whose jobs are skipped, and it must not
-# cancel the run that has the label.
+# An event for some other label gets a group of its own, so that it cancels nothing (a run with `ci:full` takes about two
+# hours); its job is skipped below. A pull request event without the label is skipped too, in the group of its own.
 concurrency:
-  group: targets-${{ github.ref }}-${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  group: targets-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:full') && 'other-label' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   targets:
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
     name: targets (${{ matrix.host }})
     strategy:
       fail-fast: false
