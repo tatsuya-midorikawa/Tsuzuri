@@ -31,6 +31,7 @@ fn deterministic_source_mutations_do_not_panic() {
         "def bump :: ref mut i64 -> i64 -> unit\nfn bump r n = deref r = deref r + n\nlet mut x = 1\nbump (ref mut x) 2\nbump &mut x 3\nlet t = ref x\nlet u: &&i64 = &t\nderef t + *t",
     ];
     let mut seed = 0x1357_2468_u32;
+    let mut sources = Vec::new();
     for original in originals {
         for _ in 0..500 {
             let mut bytes = original.as_bytes().to_vec();
@@ -49,12 +50,25 @@ fn deterministic_source_mutations_do_not_panic() {
                     }
                 }
             }
-            let source = String::from_utf8(bytes).unwrap();
-            if let Ok(module) = analyze(&source) {
-                llvm::emit(&module, llvm::Entry::Library).unwrap();
-            }
+            sources.push(String::from_utf8(bytes).unwrap());
         }
     }
+    // The inputs are generated in order above, so the set is the same on every run; only the analysis is spread over threads.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(8);
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            let sources = &sources;
+            scope.spawn(move || {
+                for source in sources.iter().skip(worker).step_by(workers) {
+                    if let Ok(module) = analyze(source) {
+                        llvm::emit(&module, llvm::Entry::Library).unwrap();
+                    }
+                }
+            });
+        }
+    });
 }
 
 #[test]

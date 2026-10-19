@@ -796,7 +796,7 @@ cargo build --release
 
 `clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。
 
-x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
+x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
 #### クロスコンパイル
 
@@ -876,6 +876,58 @@ tsuzuri lsp
 
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
 
+### 何を回すか
+
+変更に見合う範囲だけを回します。作業中は T0 と T1 を繰り返し、完了を報告する前に T2 を 1 回回し、T3 は CI に任せます。
+
+| 段 | 回すもの | 目安 |
+| --- | --- | --- |
+| T0（編集のたび） | `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、下の表の「Rust テスト」のうち該当するもの | 数秒 |
+| T1（手順の 1 段ごと） | `cargo nextest run --locked`（導入は `cargo install --locked cargo-nextest`。無ければ `cargo test --locked`） | 2〜6 分 |
+| T2（完了の報告の前） | T1、下の表の「E2E」を dev バイナリ（`cargo build` が作る `target/debug/tsuzuri`）で、変更した `_tsuzuri/` のページの `node scripts/check-docs.mjs <ページ>`、`src/runtime/` を変えたときの `sh scripts/check-runtime-includes.sh` | 10〜20 分 |
+| T3（CI） | release ビルド、全 suite、全 platform、fuzz、sanitizer、ベンチマーク。PR は `ci.yml`（`_tsuzuri/` を変えたら `reference.yml` も）、main へのマージ後と `ci:full` ラベルの PR は `targets.yml`・`windows.yml`・`vscode.yml` | CI |
+
+- dev profile は `opt-level = 1`・行表だけのデバッグ情報です（[Cargo.toml](Cargo.toml)）。Rust のテストと dev バイナリは速く、Node の E2E も dev バイナリで足ります（時間は clang が決めるので release と同程度です。e2e・primitives・examples・control・tasks・computations・strings・json で確かめました）。release ビルドは、性能の主張、ベンチマーク、大きさや性能を見る検査に使います。lldb で Rust のコンパイラを追うときは `cargo build --profile debugging`（完全なデバッグ情報）を使います。
+- 実測（Apple M1 Max、ほかの作業と並行）: `cargo test --locked` は opt-level 0 の 22 分 19 秒から、opt-level 1 で 6 分 26 秒（再ビルド込み）、`cargo nextest run --locked` で 2〜3 分です。変異 fuzz の 2 本（`tests/frontend.rs`・`tests/computations.rs`）は、opt-level 1 と、入力を変えずに解析をスレッドへ分ける変更で、binary 全体が 377 秒と 138 秒から 18 秒と 9 秒になりました。
+- 複数のセッション（worktree）が重いコマンドを同時に走らせると、CPU を奪い合って全員が遅くなります。`node scripts/slot.mjs -- <コマンド>` は、共有のスロット（既定はコア数の 1/3、`TSUZURI_SLOTS` で変える）が空くまで待ってから実行します。
+- ウイルス対策のリアルタイム保護は、ビルドとテストが作る大量の小さなファイルを検査して CPU を 1〜2 コア分使うことがあります。リポジトリ、各 worktree の `target/`、`$TMPDIR`、`~/.cargo` を除外すると軽くなります（Microsoft Defender for Endpoint の macOS: `mdatp exclusion folder add --path <パス>`。管理された端末では管理者の承認が要ります）。古い成果物は `cargo sweep --time 7`（`cargo install cargo-sweep`）で消せます。
+
+#### 変更の種類別
+
+`cargo test --locked <pattern>` は、一致するテストが 0 件でも成功します（`cargo nextest run` は 0 件を失敗にします）。**出力の `running N tests` の N が 0 でなく、期待した数であることを毎回見ます。** どの変更でも、次の回帰テストは通ります（上限や stack の大きさを上げて通してはいけません）。T1 に含まれます。
+
+```sh
+cargo test --locked --test polymorphism bounds_type_growing_polymorphic_recursion
+cargo test --locked --lib bounds_recursive_and_flat_expression_depth
+cargo test --locked --test computations bounds_nested_builder_expansion_not_just_source_syntax
+cargo test --locked honors_the_exact_specialization_limit
+```
+
+| 変更の種類 | Rust テスト（手本のファイル） | E2E（`node tests/<名前>.mjs target/debug/tsuzuri`） |
+| --- | --- | --- |
+| 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
+| 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
+| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs` |
+| 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
+| 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
+| コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
+| 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
+| 数値・数学 | `tests/integers.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
+| コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
+| 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
+| Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
+| SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
+| 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
+| ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
+| host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
+| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
+| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む） | — |
+| LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
+| 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
+| `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+
+表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行します。
+
 ### テストスイートの実行
 
 ```sh
@@ -883,13 +935,18 @@ Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため
 sh scripts/check-runtime-includes.sh
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-RUST_MIN_STACK=4194304 cargo test --locked   # 既存 CI と同じ 4 MiB のテストスレッド。PowerShell は先に $env:RUST_MIN_STACK='4194304'
-TSUZURI_THREADS=8 RUST_MIN_STACK=4194304 cargo test --locked   # ライブラリの既定は 1 スレッドなので、フロントエンドの並列の経路を全テストで通すときに付ける（診断と出力は同じでなければならない）
-cargo build --release --locked
+cargo nextest run --locked   # 速い。無ければ cargo test --locked。CI は RUST_MIN_STACK=4194304（4 MiB のテストスレッド）を付けて toolchain に依存しないようにしている。opt-level 1 の dev profile では、macOS arm64 は付けなくても全件通る。深さの上限のテストが stack の溢れで binary ごと落ちる host では付ける（PowerShell は先に $env:RUST_MIN_STACK='4194304'）
+TSUZURI_THREADS=8 cargo nextest run --locked   # フロントエンドの並列（src/parallel.rs とその呼び出し）を変えたときだけ、全テストをこの経路で通す（診断と出力は同じでなければならない）。ライブラリの既定は 1 スレッド。ほかの変更では不要で、CI は tests/parallel_frontend.mjs で確かめる
+cargo build --release --locked   # CI と同じバイナリ。内側のループは cargo build（target/debug/tsuzuri）で足りる
 
-# 統合 E2E テスト・言語機能テスト
+# 統合 E2E テスト・言語機能テスト（target/release/tsuzuri は、内側のループでは target/debug/tsuzuri に読み替えてよい）
+node tests/slot.mjs   # scripts/slot.mjs：スロットの数を超えて同時に走らないこと、死んだ持ち主のスロットの引き継ぎ、終了コードの引き渡し（コンパイラは不要）
 node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
+node tests/numeric_casts.mjs target/release/tsuzuri   # 全ビット幅の整数・符号と f32／f64 の間の型変換を BigInt の参照と照合
+node tests/integer_intrinsics.mjs target/release/tsuzuri
+node tests/math.mjs target/release/tsuzuri   # 重い。Node 24
+npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri   # wasm64（memory64）。Node 24
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3
 node tests/size.mjs target/release/tsuzuri   # -Os／-Oz の出力一致・キャッシュ・WASM の大きさ、埋め込み形式のリンク時 GC、--strip（nm・codesign・トラップ表）、整数の表示・書式指定・Parse（全型の境界値・参照との照合・IR・WASM）、--wasm-opt（偽の wasm-opt での呼び出し・キャッシュ・E2002。TSUZURI_TEST_WASM_OPT に本物があれば実行）とオプション誤り（TSUZURI_TEST_SECTION=名前の一部 で節を選べる）
 node tests/integer_format.mjs   # 整数の表示・書式指定・Parse（integer.ll）を Python の独立した参照、8／16 bit の全値、numeric.ll の tz_soft_* と照合（native／WASM、O0／O3／Os／Oz。Clang と Python が必要でコンパイラは不要）

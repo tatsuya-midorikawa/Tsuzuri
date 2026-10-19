@@ -1,7 +1,7 @@
 # GUIDE-LITE: 小さいモデル向けの抜粋
 
 [GUIDE.md](GUIDE.md)（約 14 万字）の、実装担当が着手前に知っておく規則だけを集めた抜粋です。**正は GUIDE.md** で、食い違ったら GUIDE.md が優先です。
-第3期のチケット（[D-50](GUIDE.md#d-50-第3期計画ai堅牢性性能27-チケットの起票)）は、この文書とそのチケットだけを読めば着手できるように書いてあります。GUIDE.md のほかの節は、チケットが指定したときだけ読みます。
+第3期のチケット（[D-50](GUIDE.md#d-50-第3期計画ai堅牢性性能27-チケットの起票)）は、この文書とそのチケットだけを読めば着手できるように書いてあります。第1・2期のチケットも、まずこの文書とチケットを読み、チケットが指定した GUIDE.md の節だけを足します。GUIDE.md のほかの節は読みません。
 
 ## 1. 読む順序
 
@@ -20,38 +20,33 @@
 6. 新しい解析には資源上限と `E1017` を設ける（構文・式の深さ 128、特殊化 65,536 など。解析が最適化にすぎない場合は、上限超過で結果を捨てて保守的な経路へ戻してよい）。
 7. 型付き IR の不変条件は型検査で保証する。コード生成時のキャストや `unreachable!()` で辻褄を合わせない。
 8. `unsafe` は禁止（`Cargo.toml` の lint）。新しい crate を足さない（使えるのは `serde_json` と標準ライブラリだけ）。
-9. 同じ変更で `_tsuzuri/language-reference/` の関連ページ（と README・`docs/language.md`・`docs/architecture.md`）を最新にし、`node scripts/check-docs.mjs <変更したページ>` を通す。
+9. 同じ PR で `_tsuzuri/language-reference/` の関連ページと `docs/language.md` を（動作が固まったところで一度）最新にし、`node scripts/check-docs.mjs <変更したページ>` を通す。README と `docs/architecture.md` は、書いてあることが変更で誤りになるときだけ直す。
 10. テストの期待値は、独立した参照（JavaScript の BigInt・Python・C・手で書いた値）から作る。**コンパイラの現在の出力を期待値に写さない。** 通らないテストを、期待値の書き換えで通さない。
-11. コミットは人間の指示があるまで作らない。
+11. コミットは自分のブランチに段ごとに作ってよい（1 チケット 1 ブランチ・1 PR）。`main` にはコミットも push もしない（`AGENTS.md`）。
 
 ## 3. 作業環境と基準コマンド
 
 - 必要: Rust 1.85 以降、Clang／LLD 17 以降、Node.js 20 以降（BigInt を多用する suite は Node 24）、Python 3.9 以降。macOS は `brew install llvm lld` の後、`export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"`。
-- 着手前に必ず基準を取る（失敗があれば、自分の変更と無関係であることを記録してから着手する）:
-
-```sh
-cargo build --release --locked
-cargo test --locked
-```
-
-- 小さい範囲から実行し、最後に全体を実行する:
+- 着手前に全テストは回さない。基準は `main` の最新の `ci.yml` の結果（`gh run list --branch main --workflow ci.yml --limit 1`）で、`main` が通る検査を自分の変更で落としたら、それは自分の変更の影響。`main` が赤のときだけ、赤い検査を手元で再現し、自分の変更と無関係であることを記録してから着手する。
+- 回す範囲は README の「検証と性能測定」の T0〜T3（編集のたび／手順の 1 段ごと／完了の報告の前／CI）に従う。「変更の種類 → テスト」の表も README にある。小さい範囲から実行し、最後に全体を実行する:
 
 ```sh
 cargo test --locked --test <tests/ のファイル名から .rs を除いたもの>   # 1 ファイル
 cargo test --locked <テスト関数名の一部>                                # 注意: 0 件でも成功する。出力の `running N tests` の N を必ず確かめる
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo build --release --locked && node tests/features.mjs target/release/tsuzuri <suite 名>   # E2E は直前に release をビルドする
+cargo nextest run --locked                                                # 全 Rust テスト（T1）。無ければ cargo test --locked
+cargo build && node tests/features.mjs target/debug/tsuzuri <suite 名>    # E2E は直前にそのバイナリをビルドする。dev（opt-level 1）で足りる。release は性能や大きさを見る検査だけ
 node scripts/check-docs.mjs _tsuzuri/language-reference/<変更したページ>.md
 sh scripts/check-runtime-includes.sh                                      # src/runtime/ のファイルを足したとき
 ```
 
-- 手元の動作確認は、リポジトリの外の一時ディレクトリで行う: `mkdir -p /tmp/tz-try && printf 'let x = 40\nx + 2\n' > /tmp/tz-try/Main.tz && target/release/tsuzuri run /tmp/tz-try`。
+- 手元の動作確認は、リポジトリの外の一時ディレクトリで行う: `mkdir -p /tmp/tz-try && printf 'let x = 40\nx + 2\n' > /tmp/tz-try/Main.tz && target/debug/tsuzuri run /tmp/tz-try`。
 - コード生成や数値に触れる変更は、native と WASM の `-O0`／`-O3` をすべて確かめる（`tests/features.mjs` が確保の追跡 `live == 0` と WASM の import なしも検査する）。
 
 ## 4. 一段ずつ進める
 
-- チケットの手順は「変更 → 内容 → 確認」の順に**1 段ずつ**進める。複数段をまとめて書いてから一度にテストしない。段ごとに `cargo test --locked`（と、その段に書かれたテスト）を実行し、通った件数を控える（完了報告に使う）。
+- チケットの手順は「変更 → 内容 → 確認」の順に**1 段ずつ**進める。複数段をまとめて書いてから一度にテストしない。段ごとに T1（`cargo nextest run --locked`。無ければ `cargo test --locked`）と、その段に書かれたテストを実行し、通った件数を控える（完了報告に使う）。
 - 既存の似た機能（`NewLiteral`・`Task`・`ConstDef`・`W1006` など、チケットが「手本」に挙げたもの）を**必ず読み**、同じ形で書く。新しい抽象化を発明しない。
 - `match` の `_ =>` が新しい variant を黙って無視する箇所が多い。新しい variant や field を足したら、近い既存の名前で全体を `grep`（例: `grep -rn "ExprKind::RecordUpdate" src/`）し、出てきた match をすべて確かめる（GUIDE §6.9）。
 - 迷ったら、チケットの「決定事項」→ GUIDE の台帳 → 最も保守的な選択（拒否・何もしない）の順に従う。
@@ -117,7 +112,7 @@ fn rejects(source: &str, code: &str) {
 
 ## 10. よくある落とし穴（GUIDE §11.1・§12 から）
 
-- **stack の深さ**: debug ビルドのテストは 2 MiB の stack で動く。`syntax` の enum の variant を小さく保ち（大きい field は `Box`）、再帰する補助関数は入れ子の数を必ず増減する。
+- **stack の深さ**: テストのスレッドは既定で 2 MiB の stack で動く（dev profile は opt-level 1 で frame が小さくなったが、再帰の深さに注意する点は変わらない）。`syntax` の enum の variant を小さく保ち（大きい field は `Box`）、再帰する補助関数は入れ子の数を必ず増減する。
 - **特殊化の予算**: std の generic 関数を先に特殊化すると利用者の予算を消費する。std に API を足したら `honors_the_exact_specialization_limit`（`src/polymorph.rs`）を実行する。
 - **`cargo test <pattern>` は 0 件でも成功**。`running N tests` の N を確かめる。
 - **Node の版**: BigInt を多用する suite は Node 20 で異常終了することがある。`npx --yes --package=node@24 node tests/<suite>.mjs target/release/tsuzuri`。

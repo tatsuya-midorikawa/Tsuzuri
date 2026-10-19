@@ -2,7 +2,7 @@
 
 Tsuzuri aims for maximum practical performance as well as safety and clarity.
 This applies to the compiler, runtime, builtins, and every future standard-library API.
-Read `docs/architecture.md` and `docs/language.md` before changing their contracts.
+`docs/architecture.md` and `docs/language.md` define the contracts: read the sections you change (see Working agreement).
 
 - Prefer typed LLVM operations and intrinsics over generic software dispatch when
   they preserve the language semantics. Equivalent builtin and operator forms
@@ -24,14 +24,58 @@ Read `docs/architecture.md` and `docs/language.md` before changing their contrac
   parallel, or GPU acceleration. Report actual support separately from planned
   support. Do not add speed pass/fail thresholds to shared CI runners.
 
-Build and validation commands are in `README.md`. Reproducible performance
+Build and validation commands are in `README.md` (検証と性能測定). Reproducible performance
 comparisons and their limitations are in `docs/benchmarks.md`.
+
+## Working agreement
+
+- Read what the change needs. `docs/architecture.md` (500 KB) and `docs/language.md` (700 KB) are references: list the
+  headings with `grep -n '^#' <file>`, then read that range. A ticket in `_features/` or `_perfs/` starts from
+  `_features/GUIDE-LITE.md` and the ticket, and uses `_features/GUIDE.md` only for the sections the ticket cites.
+  `_features/_completed/` and `_perfs/_completed/` are history that `.ignore` keeps out of searches; name the directory
+  to search it (`rg E1005 _features/_completed`).
+- One ticket or fix per branch and per pull request. Commit on your branch as you go; never commit to or push `main`.
+  Push the branch when CI should see it, and no more often than that: a push cancels the running jobs of the PR.
+- Sessions in several worktrees share one machine. Wrap heavy commands in `node scripts/slot.mjs --` (for example
+  `node scripts/slot.mjs -- cargo nextest run --locked`): it waits for one of the shared slots. Run a linux/amd64
+  container only to check a change that needs one; CI has native x86-64 Linux.
+- Keep scratch output under `target/scratch/<name>/` and delete it when the work is done.
+
+## Verification
+
+Pick the cheapest tier that can show the change is right. Repeat T0 and T1 while you work and run T2 once before you
+report the work done; T3 is CI. Do not run the whole suite before you start: the latest `ci.yml` run on `main`
+(`gh run list --branch main --workflow ci.yml --limit 1`) is the baseline, and a failure that `main` does not have is yours.
+
+| Tier | Run | Takes |
+| --- | --- | --- |
+| T0, every edit | `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, the tests of the area (README, 変更の種類別) | seconds |
+| T1, every step | `cargo nextest run --locked` (`cargo install --locked cargo-nextest`; without it `cargo test --locked`) | 2 to 6 min |
+| T2, before done | T1, the node suites of the area on the dev binary (`cargo build`, then `node tests/<suite>.mjs target/debug/tsuzuri`), `node scripts/check-docs.mjs <changed pages>`, and `sh scripts/check-runtime-includes.sh` after a change in `src/runtime/` | 10 to 20 min |
+| T3, CI | the release build, every suite, every platform, fuzzers, sanitizers, benchmarks | CI |
+
+The dev profile is `opt-level = 1` (`Cargo.toml`), so the Rust tests and the dev binary are fast enough: build
+`--release` for a performance claim or a suite that needs it, not before every suite. `cargo test <name>` succeeds when
+it runs 0 tests: check `running N tests`.
+
+## CI
+
+- A pull request gets `ci.yml` (about 20 minutes: fmt, clippy, a type check of the Windows targets, the Rust tests, the core
+  end-to-end suites) and, when it changes the language reference, `reference.yml` (the changed pages). `targets.yml`,
+  `windows.yml` and `vscode.yml` run after every merge to `main` and on a pull request with the label `ci:full`; add it when
+  the change can behave differently per OS or toolchain (`src/runtime/`, `scripts/toolchain/`, caches, paths, child
+  processes, line endings, `vsc/`).
+- Read CI yourself: `gh run list --branch <branch>`, `gh run watch <id> --exit-status`, `gh run view <id> --log-failed`.
+  Do not ask a person to paste logs. A red job is blocking. Read `.github/instructions/ci.instructions.md` (the Windows,
+  toolchain-bundle and VS Code lessons; it also applies when you edit workflows, `scripts/toolchain/`, `vsc/`,
+  `tests/windows.*` or `src/cache.rs`) before you debug a CI failure.
 
 ## Language reference
 
 `_tsuzuri/language-reference/` (contents: `index.md`) is the user manual. Every
 change that adds, changes, fixes, or removes user-visible behavior updates the
-related pages in the same commit or PR. This covers syntax, semantics, types,
+related pages in the same pull request: once, when the behavior has settled, not
+after every step. This covers syntax, semantics, types,
 builtins, `std` APIs, diagnostic codes and messages, CLI options, targets, host
 interop, documented performance characteristics, and known limitations or bugs.
 
@@ -48,55 +92,10 @@ interop, documented performance characteristics, and known limitations or bugs.
   implementation and keep planned support separate.
 - Run `node scripts/check-docs.mjs <changed pages>`. It checks links and
   anchors, type-checks every example, runs `run=` examples natively at `-O0`
-  and `-O3`, and runs examples that contain tests.
-- Keep `docs/language.md` and `README.md` consistent in the same change. Pages
+  and `-O3`, and runs examples that contain tests. `reference.yml` runs it for the
+  pages a pull request changes, and every night for all pages.
+- Keep `docs/language.md` consistent in the same pull request. `README.md`
+  states the quickstart, the feature list, the CLI synopsis and the validation
+  commands: change it when the change makes one of those wrong. Pages
   are Japanese; see `_features/GUIDE.md` §8. If no page needs an update, say so
   in the PR description.
-
-## CI and toolchain distribution
-
-Lessons from the PR #3 and #4 VS Code workflow failures:
-
-- Treat a red CI job as blocking. A failed step skips every later step on that
-  runner, so PR #3's failing Windows archive smoke hid the Windows integration,
-  VSIX, and installed-extension steps. Compare with earlier runs (`gh run list`)
-  to separate inherited failures from new ones.
-- Fetch pinned third-party archives with `download()` in
-  `scripts/toolchain/bundle.mjs`: it tries each source in order, verifies the
-  pinned SHA-256, skips a source silent for 30 seconds, and makes up to three
-  passes because GitHub release downloads also return transient 5xx errors.
-  Do not depend on one origin with a total timeout; ziglang.org is a single
-  server, so Zig comes from shuffled community mirrors first. Refresh that
-  snapshot when bumping Zig.
-- `fs::canonicalize` returns verbatim `\\?\` paths on Windows. Use
-  `cache::real_path` for paths shown to users or passed to child tools, and
-  normalize expected paths in tests the same way.
-- Type-check Windows code from other hosts with
-  `cargo check --all-targets --target x86_64-pc-windows-msvc` (and
-  `aarch64-pc-windows-msvc`) using a rustup toolchain with those targets.
-  Windows behavior is verified only by a green Windows CI job.
-- `gh run view <run> --log-failed` shows failed steps. Logs of finished jobs in a
-  running workflow come from `gh api repos/<owner>/<repo>/actions/jobs/<job>/logs`.
-- The bundled Windows x64 toolchain compiles C with `zig cc`, which defines
-  `NDEBUG` from `-O1` up, unlike clang elsewhere. A C test host that calls the
-  code under test inside `assert(...)` then skips the call, and later steps see
-  a state that never happened (the Async host test died with `0xC000001D` at
-  `-O1` and passed at `-O0`). Start such hosts with `#undef NDEBUG`, and read a
-  pass of an optimized run as meaningful only if its checks were compiled in.
-- To debug a Windows-only failure without 25-minute loops, push a throwaway
-  branch whose workflow runs `on: push` for that branch only, cache
-  `vsc/toolchain` with `actions/cache` (about 4 minutes per loop once cached),
-  print what the failing program does (progress lines, an unhandled-exception
-  filter that prints the code and address), and delete the branch, its runs, and
-  its cache afterwards.
-- `windows.yml` is the Windows gate (G10). Its `cargo test --locked --no-fail-fast`
-  takes 40 to 50 minutes on `windows-2022` and comes last, so a failure of the
-  other steps can be read at once. The log of a running job cannot be read, and
-  the first Windows run of a step is rarely the last, so loop on a throwaway
-  branch that runs only the fast steps (about 10 minutes) and merge the fixes back.
-- A Rust test that runs clang or git must also pass with the MSVC toolchain: there
-  is no `-lm` (LNK1181) and no compiler-rt (`__udivti3`; append `src/runtime/wasm.ll`
-  as `windows_abi` does), `link.exe` writes its errors to stdout, a trap ends the
-  process with `0xC000001D` instead of a signal, a C stdout is in text mode (CRLF),
-  diagnostics spell paths with backslashes, and Git for Windows cannot read a
-  configuration file that a verbatim path (`\\?\`) names.
