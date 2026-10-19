@@ -3704,6 +3704,9 @@ struct FunctionEmitter<'a, 'b> {
     buffer_bytes: usize,
     /// The estimated bytes of the literals that `frame_value` has put on the stack so far.
     frame_bytes_used: usize,
+    /// Above zero while the frames being made may share a candidate list with others, or outlive
+    /// an assignment; they get no lifetime markers (see `slots_bytes`).
+    unmarked_frames: usize,
     heap_initializer: bool,
     ranges: crate::ranges::RangeFacts,
     /// Array reads emitted without a bounds check so far.
@@ -3787,6 +3790,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             staying: BTreeSet::new(),
             buffer_bytes: 0,
             frame_bytes_used: 0,
+            unmarked_frames: 0,
             heap_initializer: false,
             ranges: crate::ranges::RangeFacts::default(),
             proven_reads: 0,
@@ -4294,7 +4298,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 &mut self.heap_initializer,
                 !self.staying.contains(&local.id),
             );
+            // An assignment ends the lifetime of the frame before the binding is done with it.
+            self.unmarked_frames += usize::from(local.mutable);
             let (value, frames) = self.frame_value(expression);
+            self.unmarked_frames -= usize::from(local.mutable);
             self.heap_initializer = previous;
             self.bind_local(local, &value);
             self.ranges.bind(self.module, local, expression);

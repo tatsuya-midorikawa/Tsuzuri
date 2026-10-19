@@ -311,6 +311,22 @@ function framesSpread(n) {
   return wrap(total + framesSpread(n - 1n));
 }
 for (const n of [-1n, 0n, 1n, 2n, 3n, 40n, 101n]) cases.push(["frames_recursive", [n], framesSpread(n)]);
+// The frames of the arms of a match or an if hold one value: the test of one frame must not pass for another.
+const armValues = new Map([[0n, [1n]], [1n, [2n]], [2n, [4n]], [3n, [8n, 16n]], [4n, [32n, 64n]]]);
+for (const n of [-1n, 0n, 1n, 2n, 3n, 4n, 5n, 9n, max]) {
+  cases.push(["frames_arms", [n], framesFold(0n, armValues.get(n) ?? [3n, 5n], 7n)]);
+  cases.push(["frames_branches", [n], framesFold(0n, n > 0n ? [n, 100n] : [wrap(n + 1n), 200n], 7n)]);
+  cases.push(["frames_reassigned", [n], framesFold(0n, n > 0n ? [wrap(n * 2n), wrap(n * 3n)] : [wrap(n + 10n), wrap(n + 11n)], 7n)]);
+}
+// What `Utf8String.from_bytes` makes of the bytes of each arm of `frames_validate`, which V8 decides: the length of
+// valid UTF-8, -1 for the rest.
+const validateArms = [[], [0], [128], [192, 128], [237, 160, 128], [244, 143, 191, 191], [244, 144, 128, 128],
+  [239, 187, 191], [240, 159, 152], [65, 0, 66]];
+for (const [which, bytes] of validateArms.entries()) {
+  let expected = -1n;
+  try { new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); expected = BigInt(bytes.length); } catch {}
+  cases.push(["frames_validate", [which], expected]);
+}
 // PM09: guaranteed tail calls between the functions of a recursion (TailCalls.tz), at depths that every build
 // can run: tests/stack.mjs runs them at depth 10,000,000. The expected values are simulated with BigInt.
 function tailLists(n) {

@@ -303,6 +303,7 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&yes);
                 self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
+                self.unmarked_frames += 1;
                 let (then_value, mut frames) = self.frame_inner(then_branch);
                 self.ranges.leave_condition(facts);
                 let then_end = self.block.clone();
@@ -311,6 +312,7 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&no);
                 self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let (else_value, else_frames) = self.frame_inner(else_branch);
+                self.unmarked_frames -= 1;
                 let else_end = self.block.clone();
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
@@ -383,14 +385,21 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// The size of an alloca that holds a header, `(bytes, alignment)`, and `count` slots of
-    /// `element` after it, aligned like their type, or `None` if that size is not settled.
+    /// `element` after it, aligned like their type, or `None` if that size is not settled, or if
+    /// the frame must not have markers.
+    ///
+    /// A frame test compares a value's address with the addresses of the frames that it may
+    /// hold, and LLVM may give two allocas whose lifetimes do not overlap the same stack slot. So
+    /// two frames that one value may hold (the arms of an `if` or a `match`) have no markers
+    /// (`unmarked_frames`): after the merge the test of the first would also pass for a value in
+    /// the second, and the code that the test guards would read the wrong frame.
     pub(super) fn slots_bytes(
         &self,
         header: (usize, usize),
         element: &Type,
         count: usize,
     ) -> Option<usize> {
-        self.layout_is_settled(element).then(|| {
+        (self.unmarked_frames == 0 && self.layout_is_settled(element)).then(|| {
             let (size, align) = self.target_layout(element);
             header
                 .0

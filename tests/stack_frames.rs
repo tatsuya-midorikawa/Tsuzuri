@@ -179,6 +179,85 @@ fn brackets_temporary_literals_and_loop_literals() {
 }
 
 #[test]
+fn leaves_the_frames_that_one_value_may_hold_without_markers() {
+    // A frame test compares the address of a value with the address of each frame, and LLVM gives
+    // two allocas whose lifetimes are disjoint one slot: the test of the first frame would pass for a
+    // value in the second. So the frames of the arms of an `if` or a `match`, and the frames of a
+    // mutable binding, whose value an assignment drops early, have no markers.
+    for (source, ty, count) in [
+        (
+            "def f :: i64 -> i64
+             fn f n = {
+                 let a = if n > 0 then [|n, n|] else [|1, 2|];
+                 List.length a
+             }",
+            "{ ptr, i64, i64, [2 x i64] }",
+            2,
+        ),
+        (
+            "def f :: i64 -> i64
+             fn f n = {
+                 let a = match n with | 0 -> [|n, n|] | 1 -> [|1, 2|] | _ -> [|3, n|];
+                 List.length a
+             }",
+            "{ ptr, i64, i64, [2 x i64] }",
+            3,
+        ),
+        (
+            "def f :: i64 -> i64
+             fn f n = {
+                 let mut a = [|n, n|];
+                 a = [|1, n|];
+                 List.length a
+             }",
+            "{ ptr, i64, i64, [2 x i64] }",
+            1,
+        ),
+        (
+            "def f :: i64 -> i64
+             fn f n = {
+                 let a = if n > 0 then [n, n] else [1, 2];
+                 a.length
+             }",
+            "[2 x i64]",
+            2,
+        ),
+    ] {
+        let body = function_ir(source, "f");
+        assert_eq!(allocas(&body, ty).len(), count, "{body}");
+        assert!(!body.contains("@llvm.lifetime."), "{body}");
+    }
+    // The count of such frames returns to zero afterwards: the binding after them has its markers.
+    let body = function_ir(
+        "def f :: i64 -> i64
+         fn f n = {
+             let mut a = [|n, n|];
+             a = [|1, n|];
+             let b = if n > 0 then [|n, n|] else [|1, 2|];
+             let c = [|n, n, n|];
+             List.length a + List.length b + List.length c
+         }",
+        "f",
+    );
+    let found = allocas(&body, "{ ptr, i64, i64, [3 x i64] }");
+    assert_eq!(found.len(), 1, "{body}");
+    assert_bracketed(&body, &found[0], 24 + 3 * 8);
+    assert_eq!(body.matches("@llvm.lifetime.").count(), 2, "{body}");
+    // The one arm of a `match` is the one frame of its value.
+    let body = function_ir(
+        "def f :: i64 -> i64
+         fn f n = {
+             let a = match (n, n) with | (x, y) -> [|x, y|];
+             List.length a
+         }",
+        "f",
+    );
+    let found = allocas(&body, "{ ptr, i64, i64, [2 x i64] }");
+    assert_eq!(found.len(), 1, "{body}");
+    assert_bracketed(&body, &found[0], 24 + 2 * 8);
+}
+
+#[test]
 fn leaves_buffers_and_environments_without_markers_and_skips_unsettled_layouts() {
     for wasm in [false, true] {
         let ir = emit(

@@ -91,3 +91,57 @@ fn rec spread n =
 
 export def frames_recursive :: i64 -> i64
 fn frames_recursive n = spread n
+
+// The arms of a match, and the branches of an if, make frames for one value. When the value is moved
+// out, the code compares its address with each of the frames, so LLVM must not give two of them one
+// stack slot: the frames of the arms get no lifetime markers (PM09). The literals are as long as one
+// another, so that the length does not tell the frames apart.
+def fold_owned :: [i64] -> i64
+fn fold_owned values =
+    let mut total = 0
+    for v in values do total = total * 7 + v
+    total
+
+export def frames_arms :: i64 -> i64
+fn frames_arms which =
+    let values: [i64] = match which with
+        | 0 -> [1]
+        | 1 -> [2]
+        | 2 -> [4]
+        | 3 -> [8, 16]
+        | 4 -> [32, 64]
+        | _ -> [3, 5]
+    fold_owned values
+
+// Byte arrays in the arms of a match, which a function that owns its argument reads. The arms have
+// nine frames; with markers, LLVM gave eight of them one slot at -O3 (WebAssembly), the test of the
+// first passed for the arm that ran, and the code read the bytes of the first arm instead (V8 and
+// `string_library` in tests/features.mjs saw 1 for [128]).
+export def frames_validate :: i32 -> i64
+fn frames_validate which =
+    let bytes: [ubyte] = match which with
+        | 0 -> []
+        | 1 -> [0]
+        | 2 -> [128]
+        | 3 -> [192, 128]
+        | 4 -> [237, 160, 128]
+        | 5 -> [244, 143, 191, 191]
+        | 6 -> [244, 144, 128, 128]
+        | 7 -> [239, 187, 191]
+        | 8 -> [240, 159, 152]
+        | _ -> [65, 0, 66]
+    match Utf8String.from_bytes bytes with | Some text -> text.length | None -> -1
+
+export def frames_branches :: i64 -> i64
+fn frames_branches n =
+    let values = if n > 0 then [n, 100] else [n + 1, 200]
+    fold_owned values
+
+// The initializer of a mutable binding: an assignment drops its value before the binding is done.
+export def frames_reassigned :: i64 -> i64
+fn frames_reassigned n =
+    let mut first = [n, n + 1]
+    first = [n * 2, n * 3]
+    let second = [n + 10, n + 11]
+    let chosen = if n > 0 then first else second
+    fold_owned chosen
