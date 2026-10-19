@@ -44,6 +44,9 @@ impl FunctionEmitter<'_, '_> {
         } else {
             None
         };
+        // Compact strings that the host reads as UTF-16: where the pointer of each is in `values` (its
+        // length follows) and its descriptor.
+        let mut widen: Vec<(usize, String)> = Vec::new();
         // The widened copies of Latin-1 strings, with the length words that say which are copies.
         let mut copies: Vec<(String, String)> = Vec::new();
         for argument in arguments {
@@ -70,20 +73,18 @@ impl FunctionEmitter<'_, '_> {
                 &argument.ty
             };
             if Buffer::of(inner).is_some() {
-                let mut descriptor = if matches!(inner, Type::Array(_)) {
+                let descriptor = if matches!(inner, Type::Array(_)) {
                     value
                 } else {
                     self.value(format!("load {}, ptr {value}", self.ty(inner)))
                 };
                 if *inner == Type::String && self.globals.strings == StringForm::Compact {
-                    // The host reads UTF-16 units; a Latin-1 string is widened into a copy that is
-                    // freed after the call.
-                    let word = self.string_word(inner, &descriptor);
-                    descriptor = self.value(format!(
-                        "call %tz.string @tz.string.borrow_utf16(%tz.string {descriptor})"
-                    ));
-                    let copy = self.value(format!("extractvalue %tz.string {descriptor}, 0"));
-                    copies.push((copy, word));
+                    // The copy is made once every argument is evaluated: an argument that raises
+                    // (`@checked`) leaves the call, and a copy made before it would be left behind.
+                    widen.push((values.len(), descriptor));
+                    types.extend(["ptr".into(), "i64".into()]);
+                    values.extend([String::new(), String::new()]);
+                    continue;
                 }
                 let pointer =
                     self.value(format!("extractvalue {} {descriptor}, 0", self.ty(inner)));
@@ -122,6 +123,19 @@ impl FunctionEmitter<'_, '_> {
             };
             types.push(abi.clone());
             values.push(format!("{abi} {value}"));
+        }
+        // The host reads UTF-16 units; a Latin-1 string is widened into a copy that is freed after the
+        // call. No argument is evaluated between a copy and the call that frees it.
+        for (position, descriptor) in widen {
+            let word = self.string_word(&Type::String, &descriptor);
+            let widened = self.value(format!(
+                "call %tz.string @tz.string.borrow_utf16(%tz.string {descriptor})"
+            ));
+            let copy = self.value(format!("extractvalue %tz.string {widened}, 0"));
+            let length = self.value(format!("extractvalue %tz.string {widened}, 1"));
+            values[position] = format!("ptr {copy}");
+            values[position + 1] = format!("i64 {length}");
+            copies.push((copy, word));
         }
         let output = if *result == Type::Unit || out.is_some() {
             "void".to_owned()
