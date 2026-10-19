@@ -108,6 +108,8 @@ int main(int argc, char **argv) {
     reset(); assert(tz_packed_array() == 3); EXPECT(103, 204, 305);
     reset(); assert(tz_packed_temporary() == 6); EXPECT(609);
     reset(); assert(tz_packed_consume() == 7); EXPECT(702);
+    // The tail calls between `bounce` and `rebound` are guaranteed here: each releases its record first.
+    reset(); assert(tz_tail_drops() == 100); EXPECT(102, 201, 100);
     for (int index = 0; index < 1000; ++index) {
         reset();
         assert(tz_scopes() == 3);

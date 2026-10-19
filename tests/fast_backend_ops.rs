@@ -1026,6 +1026,174 @@ fn call_cases(suite: &mut Suite) {
     );
 }
 
+/// A function of twelve integers and ten doubles that passes them on, rotated, to `next` until `%n`
+/// is zero, and then folds them into one integer. Some of the arguments do not fit the registers, so
+/// the callee takes them from the frame of its caller.
+fn wide_tail_function(name: &str, next: &str, step: &str) -> String {
+    let mut params = String::from("i64 %n");
+    for index in 1..12 {
+        let _ = write!(params, ", i64 %a{index}");
+    }
+    for index in 0..10 {
+        let _ = write!(params, ", double %d{index}");
+    }
+    let mut text = format!(
+        "define internal i64 @{name}({params}) {{\nentry:\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  %s0 = add i64 %n, 0\n"
+    );
+    for index in 1..12 {
+        let _ = writeln!(text, "  %p{index} = mul i64 %a{index}, {}", 2 * index + 1);
+        let _ = writeln!(text, "  %s{index} = add i64 %s{}, %p{index}", index - 1);
+    }
+    for index in 0..10 {
+        let _ = writeln!(text, "  %q{index} = fmul double %d{index}, {}.0", index + 1);
+    }
+    text.push_str("  %g0 = fadd double %q0, %q1\n");
+    for index in 1..9 {
+        let _ = writeln!(
+            text,
+            "  %g{index} = fadd double %g{}, %q{}",
+            index - 1,
+            index + 1
+        );
+    }
+    text.push_str("  %gb = bitcast double %g8 to i64\n  %r = xor i64 %s11, %gb\n  ret i64 %r\n");
+    let mut arguments = String::from("i64 %m");
+    for index in 2..12 {
+        let _ = write!(arguments, ", i64 %a{index}");
+    }
+    arguments.push_str(", i64 %t");
+    for index in 1..10 {
+        let _ = write!(arguments, ", double %d{index}");
+    }
+    arguments.push_str(", double %e");
+    let _ = write!(
+        text,
+        "next:\n  %m = sub i64 %n, 1\n  %t = {step} i64 %a1, %n\n  %e = fadd double %d0, 1.5\n  %r2 = musttail call i64 @{next}({arguments})\n  ret i64 %r2\n}}"
+    );
+    text
+}
+
+/// `musttail` calls (PM09): the translator keeps the ones between functions that it can give the
+/// tail convention to as jumps, and the others as ordinary calls with the same meaning. Clang
+/// compiles the same IR with the guarantee, so a difference in what the functions return shows here.
+/// The depth is small: a program that keeps the stack flat at any depth is `tests/fast_backend.rs`.
+fn tail_call_cases(suite: &mut Suite) {
+    let group = "tail calls";
+    let mut add = |label: &str, declarations: Vec<String>, body: String| {
+        suite.add(group, label.to_owned(), Kind::Int, declarations, body);
+    };
+    let scalar = |name: &str, next: &str, factor: u32| {
+        format!(
+            "define internal i64 @{name}(i64 %n, i64 %acc) {{\nentry:\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  %x = xor i64 %acc, {factor}\n  ret i64 %x\nnext:\n  %m = sub i64 %n, 1\n  %w = mul i64 %acc, {factor}\n  %v = add i64 %w, %n\n  %r = musttail call i64 @{next}(i64 %m, i64 %v)\n  ret i64 %r\n}}"
+        )
+    };
+    let start = |name: &str| {
+        format!(
+            "entry:\n  %n = and i64 %a, 63\n  %r = call i64 @{name}(i64 %n, i64 %b)\n  ret i64 %r\n"
+        )
+    };
+    add(
+        "a cycle of two functions",
+        vec![
+            scalar("tc_even", "tc_odd", 31),
+            scalar("tc_odd", "tc_even", 37),
+        ],
+        start("tc_even"),
+    );
+    add(
+        "a function that calls itself",
+        vec![scalar("tc_self", "tc_self", 41)],
+        start("tc_self"),
+    );
+    let wide_arguments = "i64 %n, i64 %a, i64 %b, i64 %c2, i64 %c3, i64 %c4, i64 %c5, i64 %c6, i64 %c7, i64 %c8, i64 %c9, i64 %c10, double %f0, double %f1, double %f2, double %f3, double %f4, double %f5, double %f6, double %f7, double %f8, double %f9";
+    add(
+        "twelve integers and ten doubles",
+        vec![
+            wide_tail_function("tw_a", "tw_b", "add"),
+            wide_tail_function("tw_b", "tw_a", "xor"),
+        ],
+        format!(
+            "entry:\n  %n = and i64 %a, 15\n  %c2 = xor i64 %a, %b\n  %c3 = add i64 %a, %b\n  %c4 = mul i64 %a, 3\n  %c5 = sub i64 %b, %a\n  %c6 = shl i64 %a, 1\n  %c7 = lshr i64 %b, 1\n  %c8 = or i64 %a, 5\n  %c9 = and i64 %b, 255\n  %c10 = add i64 %c2, 17\n  %f0 = sitofp i64 %a to double\n  %f1 = sitofp i64 %b to double\n  %f2 = sitofp i64 %c2 to double\n  %f3 = sitofp i64 %c3 to double\n  %f4 = sitofp i64 %c4 to double\n  %f5 = sitofp i64 %c5 to double\n  %f6 = sitofp i64 %c6 to double\n  %f7 = sitofp i64 %c7 to double\n  %f8 = sitofp i64 %c8 to double\n  %f9 = sitofp i64 %c9 to double\n  %r = call i64 @tw_a({wide_arguments})\n  ret i64 %r\n"
+        ),
+    );
+    let record = |name: &str, next: &str, step: &str| {
+        format!(
+            "define internal {{ i64, i64 }} @{name}({{ double, i32, i8 }} %s, i64 %n) {{\nentry:\n  %f = extractvalue {{ double, i32, i8 }} %s, 0\n  %i = extractvalue {{ double, i32, i8 }} %s, 1\n  %c = extractvalue {{ double, i32, i8 }} %s, 2\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  %fb = bitcast double %f to i64\n  %iz = zext i32 %i to i64\n  %cz = zext i8 %c to i64\n  %k = add i64 %iz, %cz\n  %r0 = insertvalue {{ i64, i64 }} undef, i64 %fb, 0\n  %r1 = insertvalue {{ i64, i64 }} %r0, i64 %k, 1\n  ret {{ i64, i64 }} %r1\nnext:\n  %m = sub i64 %n, 1\n  %g = fadd double %f, 1.25\n  %j = {step} i32 %i, 7\n  %nt = trunc i64 %n to i8\n  %d = xor i8 %c, %nt\n  %s0 = insertvalue {{ double, i32, i8 }} undef, double %g, 0\n  %s1 = insertvalue {{ double, i32, i8 }} %s0, i32 %j, 1\n  %s2 = insertvalue {{ double, i32, i8 }} %s1, i8 %d, 2\n  %r = musttail call {{ i64, i64 }} @{next}({{ double, i32, i8 }} %s2, i64 %m)\n  ret {{ i64, i64 }} %r\n}}"
+        )
+    };
+    add(
+        "a record argument and a pair as result",
+        vec![
+            record("tr_a", "tr_b", "add"),
+            record("tr_b", "tr_a", "xor"),
+        ],
+        "entry:\n  %n = and i64 %a, 15\n  %d = sitofp i64 %a to double\n  %i = trunc i64 %b to i32\n  %c = trunc i64 %a to i8\n  %s0 = insertvalue { double, i32, i8 } undef, double %d, 0\n  %s1 = insertvalue { double, i32, i8 } %s0, i32 %i, 1\n  %s2 = insertvalue { double, i32, i8 } %s1, i8 %c, 2\n  %r = call { i64, i64 } @tr_a({ double, i32, i8 } %s2, i64 %n)\n  %x = extractvalue { i64, i64 } %r, 0\n  %y = extractvalue { i64, i64 } %r, 1\n  %m = mul i64 %x, 1000003\n  %o = add i64 %m, %y\n  ret i64 %o\n".to_owned(),
+    );
+    let vector = |name: &str, next: &str| {
+        format!(
+            "define internal <4 x i32> @{name}(<4 x i32> %v, i64 %n) {{\nentry:\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  ret <4 x i32> %v\nnext:\n  %m = sub i64 %n, 1\n  %k = trunc i64 %n to i32\n  %k0 = insertelement <4 x i32> undef, i32 %k, i32 0\n  %k1 = shufflevector <4 x i32> %k0, <4 x i32> undef, <4 x i32> zeroinitializer\n  %w = add <4 x i32> %v, %k1\n  %r = musttail call <4 x i32> @{next}(<4 x i32> %w, i64 %m)\n  ret <4 x i32> %r\n}}"
+        )
+    };
+    add(
+        "a vector argument and result",
+        vec![vector("tv_a", "tv_b"), vector("tv_b", "tv_a")],
+        format!(
+            "{}  %n = and i64 %b, 15\n  %r = call <4 x i32> @tv_a(<4 x i32> %x, i64 %n)\n{}  ret i64 %o\n",
+            vector_prelude("<4 x i32>"),
+            vector_fold("<4 x i32>", "%r")
+        ),
+    );
+    let wide = |name: &str, next: &str| {
+        format!(
+            "define internal i128 @{name}(i128 %x, i64 %n) {{\nentry:\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  ret i128 %x\nnext:\n  %m = sub i64 %n, 1\n  %k = zext i64 %n to i128\n  %w = xor i128 %x, %k\n  %u = add i128 %w, 5\n  %r = musttail call i128 @{next}(i128 %u, i64 %m)\n  ret i128 %r\n}}"
+        )
+    };
+    add(
+        "a 128-bit argument and result",
+        vec![wide("tq_a", "tq_b"), wide("tq_b", "tq_a")],
+        format!(
+            "{}  %n = and i64 %b, 15\n  %r = call i128 @tq_a(i128 %x, i64 %n)\n{}  ret i64 %o\n",
+            int_prelude(128),
+            int_fold(128, "%r")
+        ),
+    );
+    // Neither of these gets the tail convention, and each keeps working as an ordinary call.
+    add(
+        "a function whose address is taken",
+        vec![
+            scalar("ta_a", "ta_b", 43),
+            scalar("ta_b", "ta_a", 47),
+        ],
+        "entry:\n  %n = and i64 %a, 63\n  %slot = alloca ptr, align 8\n  store ptr @ta_a, ptr %slot, align 8\n  %p = load ptr, ptr %slot, align 8\n  %r = call i64 %p(i64 %n, i64 %b)\n  ret i64 %r\n".to_owned(),
+    );
+    let large = |name: &str, next: &str| {
+        format!(
+            "define internal i64 @{name}([20 x i64] %v, i64 %n) {{\nentry:\n  %e0 = extractvalue [20 x i64] %v, 0\n  %e19 = extractvalue [20 x i64] %v, 19\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %done, label %next\ndone:\n  %s = add i64 %e0, %e19\n  ret i64 %s\nnext:\n  %m = sub i64 %n, 1\n  %t = add i64 %e19, %n\n  %w = insertvalue [20 x i64] %v, i64 %t, 0\n  %r = musttail call i64 @{next}([20 x i64] %w, i64 %m)\n  ret i64 %r\n}}"
+        )
+    };
+    add(
+        "an array of twenty as argument",
+        vec![large("tl_a", "tl_b"), large("tl_b", "tl_a")],
+        {
+            let mut text = String::from("entry:\n  %n = and i64 %b, 15\n");
+            for index in 0..20 {
+                let from = if index == 0 {
+                    "undef".to_owned()
+                } else {
+                    format!("%v{}", index - 1)
+                };
+                let _ = writeln!(text, "  %t{index} = add i64 %a, {index}");
+                let _ = writeln!(
+                    text,
+                    "  %v{index} = insertvalue [20 x i64] {from}, i64 %t{index}, {index}"
+                );
+            }
+            text.push_str("  %r = call i64 @tl_a([20 x i64] %v19, i64 %n)\n  ret i64 %r\n");
+            text
+        },
+    );
+}
+
 fn memory_cases(suite: &mut Suite) {
     let group = "memory";
     let mut add = |label: String, declarations: Vec<String>, body: String| {
@@ -1327,6 +1495,7 @@ fn generate() -> Suite {
     value_cases(&mut suite);
     control_cases(&mut suite);
     call_cases(&mut suite);
+    tail_call_cases(&mut suite);
     memory_cases(&mut suite);
     atomic_cases(&mut suite);
     for width in [1, 7, 8, 16, 24, 32, 33, 40, 48, 57, 63, 64, 128] {
@@ -1835,7 +2004,10 @@ fn wasm_operations_agree(
     // The runtime that a program has (the routines of the compiler runtime for 128-bit integers) is part of
     // each module, as it is in a build.
     let runtime = include_str!("../src/runtime/wasm.ll");
-    let suite = generate();
+    let mut suite = generate();
+    // WebAssembly needs the tail-call feature of Clang and of the engine for a `musttail` call, and
+    // the wasm translator makes it an ordinary call.
+    suite.cases.retain(|case| case.group != "tail calls");
     let mut groups: Vec<String> = Vec::new();
     for case in &suite.cases {
         if !groups.contains(&case.group)

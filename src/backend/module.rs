@@ -765,11 +765,22 @@ pub(crate) fn for_each_reference<'a>(
     end: usize,
     mut visit: impl FnMut(&'a str),
 ) {
+    for_each_reference_at(text, start, end, |name, _| visit(name));
+}
+
+/// `for_each_reference` that also says where each name ends.
+pub(crate) fn for_each_reference_at<'a>(
+    text: &'a str,
+    start: usize,
+    end: usize,
+    mut visit: impl FnMut(&'a str, usize),
+) {
     let bytes = text.as_bytes();
     let mut pos = start;
     while let Some(offset) = text[pos..end].find('@') {
         let at = pos + offset + 1;
-        let (name_start, name_end) = if bytes.get(at) == Some(&b'"') {
+        let quoted = bytes.get(at) == Some(&b'"');
+        let (name_start, name_end) = if quoted {
             match text[at + 1..end].find('"') {
                 Some(length) => (at + 1, at + 1 + length),
                 None => return,
@@ -784,12 +795,73 @@ pub(crate) fn for_each_reference<'a>(
             }
             (at, index)
         };
-        visit(&text[name_start..name_end]);
+        visit(
+            &text[name_start..name_end],
+            if quoted { name_end + 1 } else { name_end },
+        );
         pos = name_end.max(at);
     }
 }
 
 impl<'a> Module<'a> {
+    /// The functions whose signature has the tail convention (PM09): the functions that a
+    /// `musttail call` leaves and enters. Only a function that this object defines for itself
+    /// (internal linkage, no `byval` or `sret` parameter), and whose address nothing takes, can
+    /// have it: a call through a pointer, or from another object, would use the convention of the
+    /// platform. A function left out only loses its guarantee: the calls of it are ordinary calls.
+    pub(crate) fn tail_functions(&self, needed: &[bool]) -> Vec<bool> {
+        let mut tail = vec![false; self.syms.len()];
+        if !self.text.contains("musttail ") {
+            return tail;
+        }
+        let eligible = |id: u32| {
+            let sym = &self.syms[id as usize];
+            needed[id as usize]
+                && sym.linkage == Linkage::Local
+                && matches!(
+                    &sym.kind,
+                    SymKind::Function { sig, body_end: Some(_), .. } if !sig.variadic && !sig.indirect
+                )
+        };
+        for (id, sym) in self.syms.iter().enumerate() {
+            let Some((start, end)) = self.extent(sym).filter(|_| needed[id]) else {
+                continue;
+            };
+            for (at, _) in self.text[start..end].match_indices("musttail call ") {
+                let line = start + at;
+                let line_end = self.text[line..end].find('\n').map_or(end, |n| line + n);
+                let mut callee = None;
+                for_each_reference_at(self.text, line, line_end, |name, _| {
+                    callee = callee.or(self.by_name.get(name).copied());
+                });
+                if let Some(callee) = callee
+                    && eligible(id as u32)
+                    && eligible(callee)
+                {
+                    tail[id] = true;
+                    tail[callee as usize] = true;
+                }
+            }
+        }
+        // A function that is named other than as the callee of a call can be called by pointer.
+        for (id, sym) in self.syms.iter().enumerate() {
+            let Some((start, end)) = self.extent(sym).filter(|_| needed[id]) else {
+                continue;
+            };
+            for_each_reference_at(self.text, start, end, |name, after| {
+                if let Some(&target) = self.by_name.get(name)
+                    && tail[target as usize]
+                    && !self.text[after..end]
+                        .trim_start_matches([' ', '\t'])
+                        .starts_with('(')
+                {
+                    tail[target as usize] = false;
+                }
+            });
+        }
+        tail
+    }
+
     /// The text a symbol's definition covers.
     pub(crate) fn extent(&self, sym: &Sym<'a>) -> Option<(usize, usize)> {
         match &sym.kind {

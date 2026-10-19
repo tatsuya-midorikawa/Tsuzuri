@@ -285,6 +285,20 @@ fn packed_consume =
     let packed = Packed { flag: true, id: 7, mark: 2, name: "x" }
     eat packed
 
+private def rec bounce :: i64 -> i64
+    def and rebound :: i64 -> i64
+fn rec bounce n =
+    let held = resource (100 + n)
+    if n == 0 then held.id else rebound (n - 1)
+and rebound n =
+    let held = resource (200 + n)
+    if n == 0 then held.id else bounce (n - 1)
+
+// A guaranteed tail call (PM09) releases what the caller owns before the callee runs; a call that
+// is not guaranteed (WebAssembly without `--wasm-feature tail-call`) releases it after.
+export def tail_drops :: i64
+fn tail_drops = bounce 2
+
 export def trap_after_create :: i64
 fn trap_after_create =
     let owned = resource 9

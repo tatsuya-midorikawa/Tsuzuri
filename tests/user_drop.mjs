@@ -90,6 +90,8 @@ try {
     assert.equal(call("packed_array"), 3n); values([103, 204, 305]);
     assert.equal(call("packed_temporary"), 6n); values([609]);
     assert.equal(call("packed_consume"), 7n); values([702]);
+    // WebAssembly without the tail-call feature calls and then releases: the order is the reverse of native.
+    assert.equal(call("tail_drops"), 100n); values([100, 201, 102]);
     for (let index = 0; index < 10000; index++) { assert.equal(call("scopes"), 3n); values([2, 1]); }
     assert.ok(instance.exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
     const trapped = instantiate(wasm);
