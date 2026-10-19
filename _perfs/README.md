@@ -213,6 +213,8 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   旗なしの出力は PB05 を入れる前の統合 branch（`63a12d4a`）と byte 単位で同じです（576 件）。macOS の AArch64 で全部、Linux は AArch64・x86-64 の Docker コンテナで driver と test を実行しました。
   確認で見つけたこと: Cranelift の x86-64 は署名に `i128` があると panic する、`llvm.fmuladd` は x86-64 で融合しない、Windows 向けの IR の `__multi3` は翻訳器が `E2002` で拒む。
   実装していないこと: D12、Windows のホストでの有効化、`-O1` 以上・`--cpu native`・`--emit shared|bitcode`・`--profile-*`・wasm32 の SIMD・threads などの `E2000`、wasm32 の配列・list の loop の構造化（1.3〜1.5 倍の差が残る）。
+  Copilot のレビュー（PR #28）の後、`test --index N -g -o PATH`（デバッガ用の runner）も、`build` と `test` の runner と同じく、fast backend には機械の f16 の経路ではなく `Soft` を渡します（`f16_path_for`。macOS の AArch64 では `half` 命令が `E2002` になっていました）。
+  また、x86-64 の Linux の wasm32 の比較で、`Math.copysign` が見せる NaN の符号（f64 の NaN の符号は機械が決めます）が LLVM と fast で食い違ったので、`tests/fixtures/json` の `number_sign` は NaN に 0 を返します。
 - **PB06**（実装済み）: `tsuzuri watch check|build|test` と、プロジェクトごとの常駐サーバー `tsuzuri serve DIR`（Unix のソケット）、client の `--no-server` を実装しました。
   `main.rs` は `cli(raw, program_arguments, out, err)` に分け、サーバーは `check` と `build` だけを実行して出力・終了コード・成果物を `--no-server` と同じに返します
   （51 のコマンドと 115 project・345 コマンドで基準と一致）。コンパイラのパス・作業ディレクトリ・環境（`KEY_ENVIRONMENT`・`TSUZURI_*`・ツールとロケールの変数。
@@ -244,6 +246,10 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   clang を含むビルドが +23% 増え、host へ短い文字列を返す呼び出しは約 2 倍になるため既定は `utf16` のままです（D11 の M4 を満たさない）。
   `cjk_lines` の `-O3` の RSS +17% は、確保の列が同じで、baseline でも 24 回に 2 回出る malloc の返却の時機の差でした。
   live の LLDB（この機械では baseline でも `run` が戻らない）・Windows・Linux・x86 は未検証です。
+  Copilot のレビュー（PR #28）で、`compact` が utf16 と食い違う 2 点が見つかり、直しました。`for unit in <string>` の loop 変数への参照を反復より長く持つと、Latin-1 の code unit は 16 bit の実体がなく、
+  反復ごとに上書きされる widen 用の slot を指します（`-O3` で関数から返すと dangling）。そこで `string` の走査の loop 変数への借用は、その反復で終わるものにしました（持ち越すと utf16・compact のどちらでも `E1013`。
+  配列・リスト・Vec と `utf8string` は従来どおり）。これは utf16 の既定にも及ぶ小さな言語の変更です。もう 1 点は、callback を取る host の呼び出しが `ref string` の UTF-16 の複製を引数の評価の途中で作り、
+  あとの引数が `raise` すると漏れることで、複製を最後の引数のあと、呼び出しの直前に作るようにしました。
 - **PM04**（実装済み。全フェーズ。Phase 2b の `heap_copy` の `memcpy` だけ取り下げ）: リスト `[|T|]` を、要素ごとのノードの連結から、要素を連続して並べた chunk の連結列にしました。`%tz.list = { ptr, i64 }` は据え置き、
   先頭の chunk `{ ptr next, i64 rest, i64 capacity, [0 x T] }`（header 24 bytes。native・wasm32・wasm64 で同じ）を持ちます。一度に作るリスト（`new`・リテラル・複製・`Array.to_list`・`List.map`・`reverse`）は要素数ちょうどの 1 つの chunk、
   `List.cons` は先頭の空き slot に書き、満杯なら 1.5 倍（header 込みで 32 KiB が上限、最初は 32 bytes）の chunk を足します。起票の「倍々」は、macOS の malloc の丸め（1 KiB 超で 23〜25%）と WASM heap の 16 bytes の header を踏まえて改めました（D3'）。
@@ -261,6 +267,8 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 は、全フェーズの実装と
   効果は一様ではなく、`closure_*` が 0.83〜0.88 倍、`tail_*` が約 1.20 倍、`match_dispatch` が約 1.64 倍の時間で、C・C++・Rust は後者 2 つが変わりません（悪化した種目も記録）。全員が PGO を使うと Tsuzuri は `tail_*` で C の約 1.20 倍、`closure_churn` で 1.57 倍です。
   wasm32 は host が raw profile（Clang 21、version 10）を書く opt-in で、counts は native と一致し、Node 24 の apps で 5〜14% 短く、Node 20 の `closure_capture` は 1.52 倍に悪化します。
   D6（ランタイム object の計装）と D9（trap への `!prof`）は、測定で根拠がなく取り下げました。Linux・x86-64・Windows と ThinLTO との併用は未確認です。
+  Copilot のレビュー（PR #28）の後、wasm32 の writer（`<out>.wasm.profile.mjs` の `writeProfile`）は、呼び出しごとに新しい file を排他的に作り（複数の writer や Worker が同じ directory へ書いても上書きしません）、
+  書いたあとにその instance の counter を 0 に戻します（各 file は前回からの差になり、`--profile-use DIR` の merge は数えた回数と一致します）。i32 の global は符号なしで読みます（stack が約 2 GiB 以上の module でも profile の section を読めます）。
 - **PR08**（実装済み。`--emit bitcode` は新しい opt-in の出力で、既定の出力は変えません）: プログラムと必要な C ランタイムを 1 つの ThinLTO の LLVM bitcode にします。
   native（Windows 以外）と `--target wasm32` で、C・C++ のホストが同じ Clang の `-flto=thin`（Linux は `-fuse-ld=lld`、wasm32 は `wasm-ld`）でリンクすると、
   `tz_add` のような小さな公開関数をホストのループへ inline できます。IR の全 `define` に、同じ Clang が C の関数に付ける `target-cpu`・`tune-cpu` を足します
