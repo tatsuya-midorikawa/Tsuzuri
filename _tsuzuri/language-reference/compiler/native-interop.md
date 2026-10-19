@@ -475,7 +475,7 @@ clang --target=wasm32-unknown-unknown -O3 -flto=thin -nostdlib -fuse-ld=lld \
 
 `wasm-ld` が Clang の隣か PATH にないときは、`--ld-path=/path/to/wasm-ld` を付けます。Node.js で `run(100000n)` を呼ぶと `4999950000n` で、import は空、`tz_add` は inline されて、モジュールに名前も残りません。
 
-`--wasm-feature simd128` のときは、`-msimd128` の probe の `target-cpu` と `target-features`（`+simd128` を含む）を全関数に付けます。付けないと、`wasm-ld` の LTO が SIMD を使わない命令へ落とします（結果は変わりません）。ホストが `-msimd128` でなくても、bitcode の関数は SIMD を保ちます。`--wasm-max-memory` は通ります。`--wasm-feature threads`・`jspi`・`webgpu`・`net`、`--wasm-host wasi`、`--wasm-stack-size`、`wasm64` は `E2000` です。
+`--wasm-feature simd128` のときは、`-msimd128` の probe の `target-cpu` と `target-features`（`+simd128` を含む）を全関数に付けます。付けないと、`wasm-ld` の LTO が SIMD を使わない命令へ落とします（結果は変わりません）。ホストが `-msimd128` でなくても、bitcode の関数は SIMD を保ちます。`--wasm-max-memory` は通ります。`--wasm-feature threads`・`jspi`・`webgpu`・`net`・`tail-call`、`--wasm-host wasi`、`--wasm-stack-size`、`wasm64` は `E2000` です。
 
 ### 確かめた範囲
 

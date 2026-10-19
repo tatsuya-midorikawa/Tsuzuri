@@ -95,7 +95,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | タスクと並列処理 | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して安全に並列実行。 |
 | モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。言語版（`Tsuzuri.toml` の `edition`）、非推奨の印（`@deprecated`、警告 `W1005`）、公開 API の差分（`tsuzuri api-diff`）と互換性の方針（[docs/stability.md](docs/stability.md)）。 |
 | メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。最後の使用と非重複の match 束縛でのコピー省略。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
-| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化。 |
+| 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化し、同じ再帰グループへの末尾呼び出しは native で保証された末尾呼び出し（`musttail`）。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、協調的な待ちは `Async`、UI やネットワークのイベントはホスト側に委譲。 |
 | 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
@@ -308,7 +308,7 @@ match add total 2 with
 - **条件分岐**: `if condition then expr1 else expr2`、`elif`、および `unit` を返す `else` 省略形をサポートします。従来の `{ ... }` ブロック表記も利用可能です。
 - **パターンマッチと網羅性検査**: 定数、変数、ワイルドカード（`_` / `otherwise`）、タプル、レコード、共用体ケース、配列、リスト、コンス（`head :: tail`）、OR / AND パターン、型注釈、`as` パターンに対応しています。コンパイラは `match` の網羅性を静的に検証し、漏れがある場合は不足しているパターンの具体例とともに `E1021` エラーを報告します。また、到達不能な重複節は `W1003` 警告を発行します（`when` ガード付きの節は網羅性の計算には含まれません）。
 - **アクティブパターン**: 入力値を任意の論理的ケースに変換・分解するアクティブパターンに対応しています。`Maybe` や `bool` を返す部分アクティブパターン（例: `def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text`）や、共用体と連動する完全アクティブパターンが利用可能です。
-- **再帰関数**: 再帰関数は `def rec name :: ...`、相互再帰は `and name :: ...` で繋いで記述します。関数の本体やブロックの中では、`let rec go = \n acc -> ...`（相互再帰は `and`）で補助関数を定義できます。外側のローカル値を捕捉したまま再帰でき、文字列や配列などの値は借用して読みます。直接の自己末尾再帰は、`-O0` であっても LLVM レベルでループ構造へと自動変換されます（`def rec` も `let rec` も同じです）。詳細は [言語仕様: 制御構文](docs/language.md#制御構文)、[言語仕様: ローカルな `let rec`](docs/language.md#ローカルな-let-rec)、および [制御構文のベンチマーク](docs/benchmarks.md#制御構文の比較) を参照してください。実行例は `tsuzuri run examples/control` で確認できます。
+- **再帰関数**: 再帰関数は `def rec name :: ...`、相互再帰は `and name :: ...` で繋いで記述します。関数の本体やブロックの中では、`let rec go = \n acc -> ...`（相互再帰は `and`）で補助関数を定義できます。外側のローカル値を捕捉したまま再帰でき、文字列や配列などの値は借用して読みます。直接の自己末尾再帰は、`-O0` であっても LLVM レベルでループ構造へと自動変換されます（`def rec` も `let rec` も同じです）。同じ再帰グループのほかの関数への末尾呼び出しは、条件を満たすと保証された末尾呼び出し（`musttail`）で、native では `-O0` でも相互再帰のスタックが増えません（WASM は `--wasm-feature tail-call` を付けたときだけです）。詳細は [言語仕様: 再帰とスタック](docs/language.md#再帰とスタック)、[言語仕様: 制御構文](docs/language.md#制御構文)、[言語仕様: ローカルな `let rec`](docs/language.md#ローカルな-let-rec)、および [制御構文のベンチマーク](docs/benchmarks.md#制御構文の比較) を参照してください。実行例は `tsuzuri run examples/control` で確認できます。
 
 ### ユーザー定義のコンピュテーション式
 
@@ -882,7 +882,7 @@ tsuzuri lsp
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
-| `--wasm-feature simd128\|threads\|jspi\|webgpu\|net` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`。`net` には `jspi` が必要）を有効化します。 |
+| `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。`small`（PM05）は native の 64-bit のサイズ区分 allocator で、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリに任せます（実行ファイル・object・共有ライブラリ・LLVM IR・header。WASM・`--trap-mode return`・`--freestanding` とは排他）。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます。`run` と `test` は native だけです）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](_tsuzuri/language-reference/compiler/option.md#コード生成器)）。 |
@@ -948,6 +948,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 数値・数学 | `tests/integers.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
 | コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite） |
+| スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
 | Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
@@ -1001,6 +1002,7 @@ node tests/llvm_handoff.mjs target/release/tsuzuri   # 実行ファイルの到�
 node tests/handoff_tools.mjs target/release/tsuzuri   # WASM threads／WASI／-g の C runtime の cache と失敗の hint、TSUZURI_LINKER（PB03）
 node tests/bundle_identity.mjs target/release/tsuzuri   # 同梱ツールチェーンの識別を控える memo の無効化・上書き・cache 保護（PB03 WP-F）
 node tests/pgo.mjs target/release/tsuzuri   # PGO（PR07）: 計装した実行ファイル・object・run の raw profile、--profile-use の directory と merge 済みの file、cache の鍵、古い profile の W2001、llvm-profdata の探索、wasm32 の writer（counts を native と照合）。LLVM の Clang と llvm-profdata が無いと skip（LLVM_PREFIX か TSUZURI_PGO_STRICT=1 では失敗）
+TSUZURI_OBJDUMP=llvm-objdump node tests/stack.mjs target/release/tsuzuri   # 保証された末尾呼び出し（PM09）: 深さ 10,000,000 の相互再帰を native の -O0／-O3（--trap-info・-g も）、--backend fast（その feature の build。TSUZURI_STACK_FAST=1 で無いと失敗）、wasm32 の --wasm-feature tail-call（V8）で実行し、既定の WASM の出力に musttail・return_call・tail-call の機能がないこと、cache の鍵、拒否を確かめる。llvm-objdump が要る
 node tests/display_parse.mjs target/release/tsuzuri   # Python の独立参照と native／WASM O0/O3 の表示・解析を照合
 node tests/strings.mjs target/release/tsuzuri
 node tests/utf_simd.mjs --quick   # scalar／SIMD の参照・境界・guard page・命令生成、Latin-1 の kernel（PM03）と生成物の再生成の一致。--asan／--exhaustive は拡張検証
