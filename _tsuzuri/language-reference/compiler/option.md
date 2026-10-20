@@ -310,7 +310,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 
 Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジュールとして Clang に渡すのが基本で、既定のビルドはこれまでと同じです。codegen unit に分けるビルド（`auto` か `split` を選んだもの）は、IR を決定的な unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に切り、unit ごとの object を [ビルドキャッシュ](usage.md#コード生成単位の-object)の `units/` に内容で保存し、保存していない unit だけを並列にコンパイルして、全 object を 1 回でリンクします。
 1 つのモジュールの本体を編集したあとのビルドで Clang がコンパイルし直すのは、そのモジュールの unit だけです。そのモジュールのラムダやジェネリック関数の具体化は同じ unit に入ります。ほかのモジュールの unit は、文字も、`--trap-info` の site の番号も変わりません。
-プログラムの意味、`--trap-info` と `run` の報告、`E2005`、公開 symbol（`nm` の大域で定義済みの symbol のうち hidden でないもの）は、分けても変わりません。変わるのは、関数の並びと、hidden な symbol の名前と、`-g` の DWARF の compile unit の数（unit ごとに 1 つ）、wasm32 の module の import の並び（unit の object のリンクの順に従います。import を名前で渡すホストには影響しません）です。
+プログラムの意味、`--trap-info` と `run` の報告、`E2005`、公開 symbol（`nm` の大域で定義済みの symbol のうち hidden でないもの）は、分けても変わりません。変わるのは、関数の並びと、hidden な symbol の名前と、`-g` の DWARF の compile unit の数（unit ごとに 1 つ）、wasm32 の module の import の並び（unit の object のリンクの順に従います。import を名前で渡すホストには影響しません）です。hidden な symbol は、1 つのモジュールでは local だった定義（`internal`・`private`）で、名前が `tz.` で始まらないもの（ランタイムを埋め込むビルドの数値ランタイムの補助関数 `power`・`decode`・`store` など）は、`tz.rt.` を付けた名前（`tz.rt.power`）になります。hidden でも object の大域 symbol なので、`--link` するホストの object やライブラリが同じ名前を定義していると、付けない名前はリンクで `duplicate symbol` になるからです。付けたあとは、ホストが `power` を定義していても、1 つのモジュールと同じようにリンクできます。
 
 `auto` か `split` を選んだときに分けるかどうかは、ビルドの種類で決まります。
 
@@ -332,7 +332,7 @@ Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジ�
 error[E2000]: invalid TSUZURI_CODEGEN_UNITS value 'fast'; use 'auto', 'single' or 'split'
 ```
 
-IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。
+IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。unit の Clang は unit の一時ディレクトリで動くので、`TSUZURI_CLANG` に `./clang` や `toolchain/bin/clang` のようにディレクトリを含む相対パスを指定したときは、コンパイラの作業ディレクトリからの相対パスとして絶対パスに直して起動します（名前だけのときは PATH で探します）。なお、C のランタイム（`IO` やタスクなど）が要るプログラムをキャッシュ有りでビルドするときの、ランタイムの object は、今も一時ディレクトリで Clang を起動するので、相対パスのままでは `E2002`（`cannot execute './clang'`）になります。その場合は絶対パスを指定してください。
 
 `--trap-info` を付けた分けるビルドは、トラップの site の番号を、ソースファイルのパスとファイルの中の範囲から決めます（分けない `-O0` のビルドは、これまでどおり出現順の通し番号です）。`<出力>.trap.json` の位置表も、コードに書いた番号から作るので、`kind`・`path`・位置は同じで、`id` だけが違います。別のファイルを編集しても、ほかのファイルの番号は変わりません。
 

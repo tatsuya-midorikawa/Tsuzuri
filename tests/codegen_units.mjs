@@ -6,7 +6,7 @@
 // compiled. The synthetic project of benchmarks/build/generate.mjs and its independent BigInt reference give the values.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expectedOutput, moduleFiles, writeProject } from "../benchmarks/build/generate.mjs";
@@ -640,6 +640,138 @@ test("C14 whole-build keys", () => {
   }
 });
 
+// A program that calls a function of a host object and needs the numeric runtime (a half-precision sum).
+const HOST_PROGRAM = {
+  "Main.tz": `extern def host_value :: i64 -> i64
+
+def half_sum :: i64 -> i64 -> f16
+fn half_sum left right = (left as f16) + (right as f16)
+
+def main :: unit -> i32 = \\() ->
+    do! IO.write_line (host_value 4)
+    do! IO.write_line (half_sum 3 0 as i64 + 1)
+    0
+`,
+};
+const HALF_LIBRARY = { "Main.tz": "export def total :: i64 -> i64 -> i64\nfn total left right = ((left as f16) + (right as f16)) as i64\n" };
+// The internal definitions of `ir` under names that are not the emitter's own (`tz.`): what one module has local and a unit would
+// have global. The helpers of the numeric runtime that a build without runtime objects embeds are such (`power`, `decode`, ...).
+function genericDefinitions(ir) {
+  const names = new Set();
+  for (const line of ir.split("\n")) {
+    const match = /^\}?define (?:internal|private)\b[^@]*@([A-Za-z_][A-Za-z0-9_]*)\(/.exec(line);
+    if (match) names.add(match[1]);
+  }
+  return [...names].sort();
+}
+const hostDefinitions = (names) => names.map((name, index) => `long ${name}(long value) { return value + ${index}; }`).join("\n");
+
+// C15: a host object that defines the generic names of the numeric runtime links with the units. A unit makes what was internal
+// hidden, and a hidden definition is still a global symbol of its object, where a name that a host or a library defines fails
+// the link with a duplicate symbol (one module has them local); so the units give them names of the reserved kind (`tz.rt.power`).
+test("C15 host symbols", () => {
+  const space = workspace(0, HOST_PROGRAM);
+  const ir = join(space.directory, "program.ll");
+  execute(compiler, ["build", space.project, "-O0", "--emit", "llvm", "--no-cache", "-o", ir], { env: space.env });
+  const generic = genericDefinitions(readFileSync(ir, "utf8"));
+  assert.ok(generic.includes("power") && generic.includes("decode") && generic.length >= 10, `the numeric runtime has generic names: ${generic}`);
+  const source = join(space.directory, "host.c");
+  writeFileSync(source, `long tsuzuri_host_Main_host_value(long value) { return value + 6; }\n${hostDefinitions(generic)}\n`);
+  const host = join(space.directory, "host.o");
+  execute(realClang, ["-c", source, "-o", host]);
+  space.compiled();
+  // The default build links the runtime objects; the others embed the numeric runtime, which is where the names are.
+  for (const args of [[], ["--no-cache"], ["--trap-info"], ["-g"]]) {
+    const label = args.join(" ") || "default";
+    const split = space.build([...args, "--link", host], { output: "split" });
+    assert.ok(space.compiled().units.length > 1, `${label} is split`);
+    const single = space.build([...args, "--link", host], { output: "single", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+    for (const built of [split, single]) assert.equal(execute(built.out, []).stdout, "10\n4\n", `${label}: ${built.out}`);
+  }
+  // An object of the units, linked with a host that defines the same names: they are local in it, as in one module.
+  if (canLocalize) {
+    const library = workspace(0, HALF_LIBRARY);
+    const main = join(library.directory, "host-main.c");
+    writeFileSync(main, `#include <stdint.h>\nextern int64_t tz_total(int64_t, int64_t);\n${hostDefinitions(generic)}\nint main(void) { return tz_total(3, 4) == 7 ? 0 : 1; }\n`);
+    const objects = {};
+    for (const mode of ["split", "single"]) {
+      objects[mode] = library.build(["--emit", "object", "--no-cache"], { output: `${mode}.o`, env: { TSUZURI_CODEGEN_UNITS: mode } }).out;
+      assert.equal(library.compiled().units.length > 2, mode === "split", `an object is ${mode}`);
+      const program = join(library.directory, `linked-${mode}`);
+      execute(realClang, [main, objects[mode], "-lm", "-pthread", "-o", program]);
+      execute(program, []);
+    }
+    assert.deepEqual(linkSymbols(objects.split), linkSymbols(objects.single), "the symbols the host sees");
+    for (const symbol of linkSymbols(objects.split)) assert.ok(!/tz\.rt\./.test(symbol), symbol);
+  } else {
+    skip("object builds", "objcopy");
+  }
+  // A module for WebAssembly has the same units and the same names; wasm-ld links them with the runtime objects.
+  if (available(wasmLd)) {
+    const wasm = workspace(0, HALF_LIBRARY);
+    for (const args of [["--no-cache"], ["--trap-info"]]) {
+      const split = wasm.build(["--target", "wasm32", ...args], { output: "split.wasm" });
+      assert.ok(wasm.compiled().units.length > 1, `${args} is split`);
+      const single = wasm.build(["--target", "wasm32", ...args], { output: "single.wasm", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+      for (const built of [split, single]) assert.equal(instantiate(built.out).tz_total(3n, 4n), 7n, `${args}: ${built.out}`);
+    }
+  } else {
+    skip("wasm32 builds", wasmLd);
+  }
+});
+
+// C16: a TSUZURI_CLANG with a directory part (`./clang`, `toolchain/bin/clang`) is relative to the directory that the compiler runs in.
+// The units are compiled in the directory of the units, so the path to the tool is made absolute first; one module never changes
+// directory, so it always worked. The wrapper is run from its own directory, from the one above, and from the one in between.
+test("C16 relative Clang", () => {
+  // The workspace's wrapper (it logs the units it compiles), copied to toolchain/bin/clang-rel of the workspace.
+  const withRelativeTool = (space) => {
+    const tools = join(space.directory, "toolchain", "bin");
+    mkdirSync(tools, { recursive: true });
+    copyFileSync(join(space.directory, "clang-wrapper.mjs"), join(tools, "clang-rel"));
+    chmodSync(join(tools, "clang-rel"), 0o755);
+    return [[tools, "./clang-rel"], [space.directory, "toolchain/bin/clang-rel"], [join(space.directory, "toolchain"), "bin/clang-rel"]];
+  };
+  const check = (space, kind, args, out, verify) => {
+    for (const [cwd, path] of withRelativeTool(space)) {
+      const label = `${kind} from ${cwd.slice(space.directory.length) || "."} with ${path}`;
+      const env = { ...space.env, TSUZURI_CLANG: path };
+      // One module never changed directory: this build shows that the tool is found from here.
+      execute(compiler, ["build", space.project, "-O0", ...args, "--no-cache", "-o", out], { cwd, env: { ...env, TSUZURI_CODEGEN_UNITS: "single" } });
+      assert.equal(space.compiled().units.length, 0, label);
+      execute(compiler, ["build", space.project, "-O0", ...args, "--no-cache", "-o", out], { cwd, env });
+      assert.ok(space.compiled().units.length > 2, `${label}: the units are compiled by the tool`);
+      verify(out, label);
+    }
+  };
+  const space = workspace(3);
+  const executable = (out, label) => assert.equal(run(out, "12345").stdout, expectedOutput(3, "12345"), label);
+  check(space, "native", [], join(space.directory, "relative"), executable);
+  check(space, "trap info", ["--trap-info"], join(space.directory, "relative"), executable);
+  check(space, "debug info", ["-g"], join(space.directory, "relative"), executable);
+  if (canLocalize) check(space, "object", ["--emit", "object"], join(space.directory, "relative.o"), (out, label) => assert.ok(linkSymbols(out).length > 0, label));
+  if (available(wasmLd)) {
+    const wasm = workspace(0, WASM_FILES);
+    check(wasm, "wasm32", ["--target", "wasm32"], join(wasm.directory, "relative.wasm"), (out) => assert.equal(instantiate(out).tz_run(7n, 2n), 11n));
+  } else {
+    skip("wasm32 builds", wasmLd);
+  }
+  // With the cache the tool is found as well, for the identity of the cache and for the compile of the units. This project needs no
+  // C runtime: the runtime objects of a build with the cache are compiled in their own directory by a code path that the units do
+  // not touch (it needs an absolute TSUZURI_CLANG, as it did before the units).
+  const small = workspace(0, { "Main.tz": "def main :: unit -> i32 = \\() -> 0\n", "A.tz": WASM_FILES["A.tz"] });
+  const tools = join(small.directory, "toolchain", "bin");
+  withRelativeTool(small);
+  const cached = join(small.directory, "cached");
+  const env = { ...small.env, TSUZURI_CLANG: "./clang-rel" };
+  execute(compiler, ["build", small.project, "-O0", "-o", cached], { cwd: tools, env });
+  const total = small.compiled().units.length;
+  assert.ok(total > 1, `${total} units`);
+  execute(compiler, ["build", small.project, "-O0", "--strip", "-o", cached], { cwd: tools, env });
+  assert.equal(small.compiled().units.length, 0, `every one of ${total} units comes from the cache`);
+  assert.equal(execute(cached, []).status, 0);
+});
+
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.
 test("time passes", () => {
   const space = workspace(3);
@@ -671,8 +803,11 @@ test("cache layout", () => {
 });
 
 let passed = 0;
+// TSUZURI_UNITS_ONLY=<regular expression> runs the cases whose names match (a development aid).
+const only = process.env.TSUZURI_UNITS_ONLY ? new RegExp(process.env.TSUZURI_UNITS_ONLY) : null;
 try {
   for (const [name, body] of cases) {
+    if (only && !only.test(name)) continue;
     try {
       await body();
       passed++;
