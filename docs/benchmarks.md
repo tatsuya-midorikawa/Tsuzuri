@@ -1820,7 +1820,7 @@ native `-O0` の 250 ms 前後は、2,000 万回の末尾呼び出し（`b` の�
 
 ### 測っていないもの
 
-- macOS の x86-64（Intel）と Windows の実行、Linux の実機（コンテナの Linux だけで確かめました。上の 5）。`targets.yml` の 4 つの host と `windows.yml` が、`tests/stack.mjs` と fast backend のテストを実行します（`windows.yml` は Rust のテストだけで、`tests/stack.mjs` は Windows で動かしていません）。
+- macOS の x86-64（Intel）の実行、Linux の arm64 の `--backend fast`（Linux のコンテナで確かめたのは x86-64 の `--backend fast` と、arm64・x86-64 の `llvm` の object だけです。上の 5）、ネイティブの Windows の実行。`targets.yml` の macOS と Linux の 4 つの host が、`tests/stack.mjs` と fast backend のテストを実行します。Windows の CI（`windows.yml`）が実行するのは Rust のテスト（IR の形の `tests/tail_recursion.rs`・`tests/stack_frames.rs`）だけで、`tests/stack.mjs` は実行せず、`--backend fast` はホストが Windows のとき `E2000` なので、その翻訳を実行する Windows の CI はありません。
 - `Task.parallel` と WASM threads のワーカーのスタックの大きさと、枯渇の挙動（前から文書にある値で、今回は測っていません）。
 - Binaryen の `wasm-opt`（`--enable-tail-call` を渡す実装だけで、実行は確かめていません）、wasm64 の実行（Node.js 20 は memory64 を既定で持ちません。wasm64 は object の生成だけを確かめました）。
 - ブラウザの WebAssembly エンジン（Node.js 20.19.6 の V8 だけで `return_call` を実行しました）。
