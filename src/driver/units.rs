@@ -255,6 +255,20 @@ pub(super) struct Built {
     pub localize: Vec<String>,
 }
 
+/// `program` as a child that starts in another directory finds it. A name with a directory part (`./clang`,
+/// `toolchain/bin/clang`) is relative to the directory of this process, and a command that has a `current_dir` looks
+/// for it there; a bare name is searched in `PATH`, which the directory of the child does not change.
+pub(super) fn anchored(program: &OsStr) -> OsString {
+    let path = Path::new(program);
+    if path.is_absolute() || path.components().count() < 2 {
+        return program.to_owned();
+    }
+    match env::current_dir() {
+        Ok(directory) => directory.join(path).into_os_string(),
+        Err(_) => program.to_owned(),
+    }
+}
+
 /// Cuts `text` into units and returns the object of each, in the order of the units, or `None` when `text` has a
 /// form that a unit cannot hold (the caller builds one module instead, which is always correct).
 pub(super) fn build(
@@ -364,14 +378,16 @@ pub(super) fn build(
         let bundles = bundles(&units, &misses, jobs());
         let working = cache::real_path(&directory)
             .map_err(|error| io_error("resolve the unit directory", &directory, error))?;
+        // The Clang runs in the unit directory, from where a relative path to it would not lead to it.
+        let clang = anchored(&config.clang);
         let started = crate::timings::start();
         let outcomes: Vec<Result<String, Diagnostic>> = thread::scope(|scope| {
             let workers: Vec<_> = bundles
                 .iter()
                 .map(|bundle| {
-                    let (config, working) = (config, &working);
+                    let (config, working, clang) = (config, &working, &clang);
                     scope.spawn(move || {
-                        let mut command = Command::new(&config.clang);
+                        let mut command = Command::new(clang);
                         command.current_dir(working).args(&config.args).arg("-c");
                         for index in bundle {
                             command.arg(source_name(*index));
@@ -879,5 +895,22 @@ mod tests {
             items.iter().map(|item| item * 2).collect::<Vec<_>>()
         );
         assert!(parallel::<usize, usize>(&[], |item| *item).is_empty());
+    }
+
+    /// The Clang of a unit runs in the unit directory, so a path to it with a directory part (`TSUZURI_CLANG=./clang`)
+    /// must not be left relative to the directory of the compiler; a bare name and an absolute path are as they are.
+    #[test]
+    fn a_tool_path_with_a_directory_is_anchored_to_the_directory_of_the_compiler() {
+        let here = env::current_dir().unwrap();
+        for relative in ["./clang-rel", "toolchain/bin/clang", "../clang"] {
+            let anchored = anchored(OsStr::new(relative));
+            assert_eq!(anchored, here.join(relative).into_os_string(), "{relative}");
+            assert!(Path::new(&anchored).is_absolute(), "{relative}");
+        }
+        for unchanged in ["clang", "clang-21", ""] {
+            assert_eq!(anchored(OsStr::new(unchanged)), OsString::from(unchanged));
+        }
+        let absolute = here.join("tools").join("clang");
+        assert_eq!(anchored(absolute.as_os_str()), absolute.into_os_string());
     }
 }
