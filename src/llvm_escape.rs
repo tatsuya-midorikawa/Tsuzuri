@@ -148,6 +148,20 @@ pub(super) fn tail_groups(module: &CheckedModule) -> Vec<usize> {
     components(&edges(module, false))
 }
 
+/// Whether a call of a function that returns `ty` can be a guaranteed tail call (PM09 D1): the
+/// language type is a `bool`, a character, `unit`, or a number of at most 64 bits (an integer, an
+/// `f16`, `f32`, `f64`, a `d32` or a `d64`). The type decides and not its representation, so that a
+/// user can tell from the type of a function whether its calls are guaranteed: a union is not, be it
+/// a tag, a pointer (a recursive union) or its payload itself (a niche), and neither is an `Rc`, an
+/// `Arc`, a handle, a function value, a vector, or a value that a target may return in memory.
+pub(super) fn guaranteed_result(ty: &Type) -> bool {
+    match ty {
+        Type::Bool | Type::Unit | Type::Char | Type::Utf8Char => true,
+        Type::Integer(bits, _) | Type::Binary(bits) | Type::Decimal(bits) => *bits <= 64,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +250,39 @@ mod tests {
         assert_eq!(groups[lambda], lambda);
         assert!(recursive_functions(&module)[lambda]);
         assert_eq!(groups, tail_groups(&module));
+    }
+
+    #[test]
+    fn guaranteed_results_are_named_by_the_language_type() {
+        for ty in [
+            Type::Bool,
+            Type::Unit,
+            Type::Char,
+            Type::Utf8Char,
+            Type::Integer(8, true),
+            Type::Integer(64, false),
+            Type::Binary(16),
+            Type::Binary(32),
+            Type::Binary(64),
+            Type::Decimal(32),
+            Type::Decimal(64),
+        ] {
+            assert!(guaranteed_result(&ty), "{ty:?}");
+        }
+        for ty in [
+            Type::Integer(128, true),
+            Type::Binary(128),
+            Type::Decimal(128),
+            Type::String,
+            Type::Utf8String,
+            Type::Array(Box::new(Type::Bool)),
+            Type::List(Box::new(Type::Bool)),
+            Type::Tuple(vec![Type::Bool, Type::Bool]),
+            Type::Handle("Host.Handle".into()),
+            Type::Shared(Box::new(Type::Bool), SharedKind::Arc),
+            Type::Function(vec![Type::Bool], Box::new(Type::Bool)),
+        ] {
+            assert!(!guaranteed_result(&ty), "{ty:?}");
+        }
     }
 }

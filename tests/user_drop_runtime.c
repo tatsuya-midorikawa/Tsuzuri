@@ -110,6 +110,8 @@ int main(int argc, char **argv) {
     reset(); assert(tz_packed_consume() == 7); EXPECT(702);
     // The tail calls between `bounce` and `rebound` are guaranteed here: each releases its record first.
     reset(); assert(tz_tail_drops() == 100); EXPECT(102, 201, 100);
+    // The result of these is a recursive union, so none of their calls is guaranteed: each function releases its record after the call returns.
+    reset(); assert(tz_outcome_drops() == 300); EXPECT(300, 401, 302);
     for (int index = 0; index < 1000; ++index) {
         reset();
         assert(tz_scopes() == 3);

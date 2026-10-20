@@ -382,6 +382,150 @@ fn keeps_ordinary_calls_outside_the_guarantee() {
     );
 }
 
+/// The mutual recursion `f`, `g` that returns `ty` from the two bases, with an owned heap string in each function that its base
+/// case reads.
+fn recursion_returning(ty: &str, prelude: &str, bases: [&str; 2]) -> String {
+    format!(
+        "{prelude}
+         def rec f :: i64 -> {ty}
+         def and g :: i64 -> {ty}
+         fn rec f n = {{
+             let s = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+             if s.length == 0 then {second} else if n == 0 then {first} else g (n - 1)
+         }}
+         and g n = {{
+             let s = (if n > 0 then \"cd\" else \"cde\") + \"y\";
+             if s.length == 0 then {first} else if n == 0 then {second} else f (n - 1)
+         }}",
+        first = bases[0],
+        second = bases[1],
+    )
+}
+
+#[test]
+fn guarantees_the_results_that_the_language_type_names_and_no_other() {
+    // The type of the result decides: a flag, a character, `unit`, or a number of at most 64 bits. The calls of
+    // these are `musttail` calls, and the strings that the functions own are freed before them.
+    for (ty, prelude, bases) in [
+        ("bool", "", ["true", "false"]),
+        ("unit", "", ["()", "()"]),
+        ("char", "", ["'a'", "'b'"]),
+        ("utf8char", "", ["u8'a'", "u8'b'"]),
+        ("i8", "", ["1i8", "2i8"]),
+        ("i8u", "", ["(1 as i8u)", "(2 as i8u)"]),
+        ("i16", "", ["1i16", "2i16"]),
+        ("i16u", "", ["(1 as i16u)", "(2 as i16u)"]),
+        ("i32", "", ["1i32", "2i32"]),
+        ("i32u", "", ["(1 as i32u)", "(2 as i32u)"]),
+        ("i64", "", ["1", "2"]),
+        ("i64u", "", ["(1 as i64u)", "(2 as i64u)"]),
+        ("f16", "", ["1.0f16", "2.0f16"]),
+        ("f32", "", ["1.0f32", "2.0f32"]),
+        ("f64", "", ["1.0", "2.0"]),
+        ("d32", "", ["1.5d32", "2.5d32"]),
+        ("d64", "", ["1.5d64", "2.5d64"]),
+    ] {
+        let ir = native(&recursion_returning(ty, prelude, bases));
+        for (name, other) in [("f", "g"), ("g", "f")] {
+            let body = definition(&ir, name);
+            let found = musttail_lines(&body);
+            assert_eq!(found.len(), 1, "{ty}\n{body}");
+            let (line, next) = &found[0];
+            assert!(
+                line.contains(&format!("@tz.fn.Main.{other}(i64")),
+                "{ty}\n{body}"
+            );
+            assert_eq!(
+                next.trim()
+                    .strip_prefix("ret ")
+                    .map(|rest| rest.split_once(' ').unwrap().1),
+                Some(defined(line)),
+                "{ty}\n{body}"
+            );
+            let lines: Vec<_> = body.lines().collect();
+            let call = lines
+                .iter()
+                .position(|line| line.contains("musttail call"))
+                .unwrap();
+            // The string is freed in the block of the call, before it.
+            let freed = lines[..call]
+                .iter()
+                .rposition(|line| line.contains("call void @tz.free("))
+                .unwrap_or_else(|| panic!("{ty}: no free before the call\n{body}"));
+            assert!(
+                lines[freed..call].iter().all(|line| !line.ends_with(':')),
+                "{ty}\n{body}"
+            );
+        }
+    }
+    // The type of any other result is not guaranteed, whatever its representation: a union is not, be it a tag, a
+    // payload, a niche or a pointer (a recursive union), and neither is a shared pointer or a number of more than
+    // 64 bits. The calls are ordinary calls: the string that the function owns is freed after the call returns.
+    for (ty, prelude, bases) in [
+        ("i128", "", ["1i128", "2i128"]),
+        ("f128", "", ["1.0f128", "2.0f128"]),
+        ("d128", "", ["1.5d128", "2.5d128"]),
+        ("string", "", ["\"x\"", "\"y\""]),
+        ("utf8string", "", ["u8\"x\"", "u8\"y\""]),
+        ("[i64]", "", ["[1, 2]", "[3, 4]"]),
+        ("[|i64|]", "", ["[|1, 2|]", "[|3, 4|]"]),
+        ("i64 * i64", "", ["(1, 2)", "(3, 4)"]),
+        ("i32x4", "", ["Simd.splat 1i32", "Simd.splat 2i32"]),
+        ("P", "record P { a: i64 }", ["P { a: 1 }", "P { a: 2 }"]),
+        ("Color", "union Color = Red | Green", ["Red", "Green"]),
+        (
+            "Pick",
+            "union Pick = Left of i64 | Right of i64 | Neither",
+            ["Left 1", "Neither"],
+        ),
+        (
+            "Maybe<i64>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some 1", "None"],
+        ),
+        (
+            "Maybe<string>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some \"x\"", "None"],
+        ),
+        (
+            "Nat",
+            "union Nat = Zero | Succ of Nat",
+            ["Zero", "Succ Zero"],
+        ),
+        ("Arc<i64>", "", ["Arc.new 1", "Arc.new 2"]),
+        (
+            "Maybe<Arc<i64>>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some (Arc.new 1)", "None"],
+        ),
+    ] {
+        let ir = native(&recursion_returning(ty, prelude, bases));
+        for (name, other) in [("f", "g"), ("g", "f")] {
+            let body = definition(&ir, name);
+            assert!(!body.contains("musttail"), "{ty}\n{body}");
+            let lines: Vec<_> = body.lines().collect();
+            let call = lines
+                .iter()
+                .position(|line| {
+                    line.contains("= call ") && line.contains(&format!("@tz.fn.Main.{other}("))
+                })
+                .unwrap_or_else(|| panic!("{ty}: no call of {other}\n{body}"));
+            let ret = call
+                + lines[call..]
+                    .iter()
+                    .position(|line| line.trim().starts_with("ret "))
+                    .unwrap();
+            assert!(
+                lines[call..ret]
+                    .iter()
+                    .any(|line| line.contains("call void @tz.free(")),
+                "{ty}\n{body}"
+            );
+        }
+    }
+}
+
 #[test]
 fn self_tail_calls_stay_loops() {
     // `f` calls itself and `g`: the call of itself is a jump to its loop, as it was, and the call of `g` is

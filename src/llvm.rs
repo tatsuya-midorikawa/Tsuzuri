@@ -4338,9 +4338,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     /// call (PM09 D1), or `None`. It is a full call of a function of the same direct-call group
     /// (the cycle of a mutual recursion), by name; neither function has captures or is a task body or
     /// takes a value that may hold a borrow, since the callee must not reach this frame; both take the
-    /// same parameters; and the result is a scalar that stays in a register on every target. Every call
-    /// that this does not cover is an ordinary call that returns here, and a call that it covers is
-    /// always a `musttail` call, never an ordinary one.
+    /// same parameters; and the result is, by its language type, a flag, a character, `unit` or a
+    /// number of at most 64 bits (`escape::guaranteed_result`), which stays in a register on every
+    /// target. Every call that this does not cover is an ordinary call that returns here, and a call
+    /// that it covers is always a `musttail` call, never an ordinary one.
     fn guaranteed_tail(&self, callee: &TypedExpr, count: usize) -> Option<usize> {
         let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
             return None;
@@ -4381,10 +4382,17 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .any(|ty| ty.carries_loans(&types))
             && !other.result.carries_loans(&types)
             && result == self.ty(&other.result)
-            && matches!(
-                result.as_str(),
-                "i1" | "i8" | "i16" | "i32" | "i64" | "float" | "double" | "ptr"
+            && escape::guaranteed_result(&own.result)
+            && escape::guaranteed_result(&other.result);
+        if ok {
+            debug_assert!(
+                matches!(
+                    result.as_str(),
+                    "i1" | "i8" | "i16" | "i32" | "i64" | "float" | "double"
+                ),
+                "a guaranteed result is a scalar: {result}"
             );
+        }
         ok.then_some(id)
     }
 
