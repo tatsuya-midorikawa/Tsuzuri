@@ -39,7 +39,7 @@ pub(super) enum Mode {
 /// job of about 8 ms of CPU time and about as much for the declarations that it repeats, so the units spend about
 /// three times the CPU time of one module, and a first build writes thousands of small files besides. On the machine
 /// of the measurements (10 cores shared with other work, `docs/benchmarks.md`) the first build of 400 synthetic
-/// modules (16.6 MB of IR) took 13% (without the cache) to 40% (with it) longer from units, and a rebuild after the
+/// modules (16.6 MB of IR) took 13% (without the cache) to 43% (with it) longer from units, and a rebuild after the
 /// edit of one module took 31% less, so that the units pay back within two rebuilds; below that size they take more.
 pub(super) const AUTO_MIN_BYTES: usize = 16_000_000;
 

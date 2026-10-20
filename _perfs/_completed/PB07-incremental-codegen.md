@@ -11,9 +11,9 @@
 | 規模 | XL |
 | 依存 | PB06, G17 |
 | 関連 | PB05, G11 |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-09-29。2026-09-29 実装者向けに詳細化（HEAD `f8dc655`） |
-| 承認 | 要承認: D1（`-O0` の native 実行ファイルの既定経路を codegen unit に分ける。成果物の byte 列が変わり、利用者の cache に unit の項目が増える）、D10（Phase 2）。2026-10-20 の全フェーズ実装の依頼で D1・D10 と Phase 2 を承認済み。既定の切り替えは測定で決める（[_perfs/README.md](README.md) の「第5フェーズ2件の実装方針」） |
+| 承認 | 要承認: D1（`-O0` の native 実行ファイルの既定経路を codegen unit に分ける。成果物の byte 列が変わり、利用者の cache に unit の項目が増える）、D10（Phase 2）。2026-10-20 の全フェーズ実装の依頼で D1・D10 と Phase 2 を承認済み。既定の切り替えは測定で決める（[_perfs/README.md](../README.md) の「第5フェーズ2件の実装方針」） |
 | 手本にする既存実装 | IR テキストの行単位の後処理: `src/llvm.rs` の `emit_with_export_style`（`define internal i32 @tz.console.write(` を探して行を書き換える）と、実行時 IR を連結する箇所の `declare` の重複除去（`BTreeSet` の `declarations`）。linkage の書き換え: `src/llvm_abi.rs` の `.replacen("define internal ", "define ", 1)`。内容で決まる鍵と保護付きの保存: `src/cache.rs` の `build_key`・`Sha256`・`BuildCache::open`・`load`・`store`・`evict`。外部ツールの起動: `src/driver.rs` の `tool`・`run_tool`。Clang の呼び出し回数を数える E2E: `tests/cache.mjs` の `clang-wrapper.mjs` |
 | 主な影響ファイル | `src/llvm_split.rs`（新規）, `src/llvm.rs`（`mod` 宣言、実行時 IR の定義名の一覧）, `src/driver.rs`（`build_complete` の分岐、`compile_units`・`link_units`（新規））, `src/cache.rs`（`unit_key`・`tool_fields`（新規）、`build_key` の環境変数の一覧）, `tests/codegen_units.mjs`（新規）, `tests/fixtures/codegen_units/`（新規）, `docs/architecture.md`, `docs/benchmarks.md`, `README.md`（環境変数の一覧）, `_perfs/README.md`（状態）。旧版にあった `src/server.rs`（PB06）と `src/backend/`（PB05）は HEAD になく、Phase 1 では触らない |
 | 計測対象 | PX03 の合成 1,000 モジュール（約 135K 行。旧版の「124K 行」に相当）と 200 モジュール。variant は `build-edit-body`（B5）、`build` の `O0`・`O3`（B1）、`build-warm`（B4）。加えて unit cache の大きさ（bytes） |
@@ -666,3 +666,102 @@ M1〜M6 を PX03 で記録するだけで、CI に閾値を入れない。
 - 決定: 環境変数 `TSUZURI_CODEGEN_UNITS`（`auto`・`single`）だけを足し、CLI のオプションは足さない。段階別時間の段は `split`・`units`。
 - 理由: 差分テストと不具合の切り分けに必要な最小の手段で、公開の CLI を増やさない。`build_key` に入れるので、経路の違う成果物を cache で取り違えない。
 - 状態: 既定案（実装者はこの案に従う）
+
+## 実装と検証（2026-10-20）
+
+### 実装した範囲
+
+Phase 1 と Phase 2 の (a)〜(f) をすべて実装した（D1・D10 は承認済み）。基準は `feaa5af3`（main `a8875f38` に第 5 フェーズの方針の commit を足したもの）、branch `perf/p5-PB07`。**既定は `single`（分けない）で、分割は opt-in**（`TSUZURI_CODEGEN_UNITS=auto|split`）。
+
+| commit | 内容 |
+| --- | --- |
+| `bdbacbe1` | Phase 1: 分割器 `src/llvm_split.rs`（構文解析・分類・割り当て・安定名・unit の組み立て）、unit cache（`src/cache.rs`）、駆動（`src/driver/units.rs`、`build_complete` の分岐）、`TSUZURI_CODEGEN_UNITS`、`TSUZURI_TIME_PASSES` の `split`・`units` |
+| `a7e70273` | 本文が同じ生成関数を 1 つに統合、値 `split`、E2E `tests/codegen_units.mjs` |
+| `407c46ae` | Phase 2 (a): `--trap-info`（`TrapNumbering::Stable`、ファイルごとの報告関数）。`run -O0` も分ける |
+| `0fbfb490` | Phase 2 (b)(e): `-g`（unit ごとの DICompileUnit、macOS は別のリンクのあと dsymutil）、生成関数は使う関数の unit へ、アダプタの名前 |
+| `1cc75987` | Phase 2 (c)(d): wasm32 の `--emit wasm`（`wasm-ld` が unit とランタイムの object をリンク）、native の `--emit object`（`clang -r` と局所化） |
+| `60303d04` | リポジトリの全プログラムの分割のテスト、`examples/` の differential |
+| `50855c9e`・`a7034be6`・`0d9de5f6` | 文書、CI の step（`targets.yml`）、`windows.yml` の注記、ticket の再検討の節 |
+| `6b81716f` | 修正: whole-build の鍵が、object と wasm32 の module でも unit 経由と単一を取り違えないようにする |
+| `55b320ae`・`959fa2e8` | 既存の suite の 2 つの検査を、分けたビルドで変わる並び・番号に依らないようにする。`musttail`・`llvm.lifetime.*` を含む IR の分割のテスト |
+| `eabf0566` | キャッシュの読みを書きより先に全部行う（macOS の `open` の遅さ。1,000 module の初回の `units` 14〜15 s → 2〜4 s） |
+| `1cefdb26` | **既定を `single` にする**（`auto` は 16 MB 以上）、unit の作業ディレクトリを並列に消す、wasm の旗を 1 つの関数に、benchmark の runner が段 `split`・`units` を受け付ける |
+| `7a3af3ef`・`4f6efe53` | 文書と測定、サーバーの環境変数の走査のテストの期待値 |
+
+Phase 1 の手順との対応: 手順 1（棚卸し）— examples・benchmarks・tests/fixtures の native 実行ファイル 23 本の 4 構成（`-O0`・`--no-cache`・`--trap-info`・`-g`）と `--emit llvm` の 123 本の IR を分割器のテストの入力にした。手順 2（`tool_fields`）— `cache::unit_key_prefix`・`unit_key`（Clang の識別と引数）。手順 3〜6 — `src/llvm_split.rs`（`parse`・`classify`・`plan`・名前の付け替え・`render`。`splits_the_programs_of_the_repository`・`unrelated_edit_keeps_other_unit_texts` ほか 23 の単体テストと、開発用の無視 1 件）。手順 7 — `src/driver/units.rs`（6 の単体テスト）と `build_complete`。手順 8 — `tests/codegen_units.mjs`（C1〜C14、22 件）。手順 9 — 下の「確認」。手順 10 — `docs/benchmarks.md`。手順 11 — 同じ節。手順 12 — 下の「文書」。
+
+### 実装しなかったもの
+
+- unit `c.runtime`（PB01 のランタイム object を再利用するので不要。方針 3）。
+- リンカーの増分リンク（ld64・GNU ld・LLD にない）。Windows のホストの分割と `/INCREMENTAL` の評価（実機がない。**未測定**）。
+- `test`・`bench` の runner の分割（`build_complete` の外の別の経路）。`-O1` 以上の分割（D2）。`--emit shared`・`bitcode`・`llvm`・`header`、`--backend fast`、PGO、`--trap-mode return`、`--freestanding`、wasm64・threads・スタック検査のある wasm の分割。
+- 既定の切り替え（測定の結果、行わなかった。下の「目標と指標の結果」）。
+
+### 偏差
+
+1. **既定は `single`**（ticket の D1・D11 は `auto` を既定にする案）。`B1`（`build -O0 --no-cache`）を悪化させない根拠が得られず（200 module で交互の測定が +9〜+20%、1,000 module は 0%〜+23%）、キャッシュを使う初回のビルドは 1,000 module で +52〜+58% になった。方針 6 に従い、既定を `single` にして `auto`（IR が 16 MB 以上）と `split` を opt-in にした。未設定・空・`single` の whole-build の鍵は PB07 より前と同じで、既定の出力は変わらない。
+2. 値は `auto`・`single` に `split` を足した 3 つ（E2000 の文面は 3 つを挙げる）。
+3. 生成関数: 本文が同じものは 1 つの関数に統合する（ticket は `.2` で区別）。`$lambda` などの置き場所の規則（(e)）は Phase 1 に入れた。アダプタの名前は関数の新しい名前に `.<番号>` を付ける（LLDB の整形のため）。
+4. unit の cache は別の root `<cache>/units/`（ticket D7 は同じ root）。走査 32,768・1 回 1,024 件・掃除と最終使用時刻の更新は 10 分に 1 回。キャッシュの読み書きは、macOS の `open` の遅さのため、読みを先に全部行ってから書く（`BuildCache::read`・`store_files`・`touch`）。
+5. `--trap-info`: 分けるビルドだけ site の番号を内容で決める（`TrapNumbering::Stable`）ので、`--backend fast` の位置表の `id` と違う。分けないビルドの IR・番号は変わらない。
+6. wasm32: module の import の並びは unit の object のリンクの順になる（名前で渡すホストには影響しない）。
+7. 既存の検査の変更（出力の意味ではなく、分けたビルドで変わる並び・番号・経路に依る検査だけ）: `tests/async.mjs`（JSPI の import の並びを集合で比べる）、`tests/fast_backend.mjs`（位置表の byte 一致の比較だけ `TSUZURI_CODEGEN_UNITS=single`）、`tests/llvm_handoff.mjs`・`prebuilt_runtime.mjs`・`bundle_identity.mjs`（1 つの module の `module.ll` と Clang の呼び出し回数を数えるので `single` に固定）、`src/server.rs` の走査テストの期待値（unit の鍵の `KEY_ENVIRONMENT` のループ）、`tests/benchmark_report.mjs`・`benchmarks/metrics.mjs`・`run-build.mjs`（段 `split`・`units`）。
+8. `-g` の macOS: リンクのあとに dsymutil が unit の object を読むので、object を一時 directory に残す。macOS の `-g` の `--emit object` は分けない（`ld -r` が DWARF を捨てる）。
+9. Windows のホストは単一 unit のまま（正しさを実機なしに言えない。`cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` が通る）。
+
+### 確認
+
+macOS（Apple M1 Max、ほかの作業と共有。load average 20〜90）。
+
+| コマンド | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 差分なし |
+| `cargo clippy --all-targets --locked -- -D warnings`（`--features fast-backend` も） | 警告なし |
+| `cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`（rustup の toolchain） | どちらも通る |
+| `node scripts/slot.mjs -- cargo nextest run --locked` | **1,641 件が通り、失敗 0、skip 2** |
+| `cargo test --lib -- llvm::split driver::units cache::` | 57 件が通る（無視 1 件は `PB07_CORPUS` の開発用の走査） |
+| `node tests/codegen_units.mjs target/debug/tsuzuri` | `codegen units: 22 cases passed`（macOS と Linux） |
+| `node tests/benchmark_report.mjs` | 通る |
+| T2: 既存の suite を `TSUZURI_CODEGEN_UNITS=split` で（macOS、dev binary、`TSUZURI_CACHE_DIR` を mode ごとに分ける） | 34 件がすべて通る: `codegen_units`・`cache`・`control`・`numeric_casts`・`examples`・`cpu_dispatch`・`trap_boundary`・`tasks`・`integer_intrinsics`・`primitives`・`strings`・`e2e`・`computations`・`io`・`math`・`debug_info`・`size`・`targets`・`wasm_memory`・`bindings`・`host_imports`・`async`（Node 24 の JSPI）・`ffi_extensions`・`allocator`・`watch`・`server`・`benchmark_report`・`llvm_handoff`・`bundle_identity`・`prebuilt_runtime`（この 3 つは `single` に固定した suite）と、`fast_backend` の default・`programs`・`debug`・`wasm` |
+| T2: 既存の suite を既定（変数なし = `single`）で | 23 件がすべて通る: `codegen_units`・`cache`・`examples`・`e2e`・`control`・`trap_boundary`・`debug_info`・`tasks`・`strings`・`wasm_memory`・`host_imports`・`bindings`・`server`・`watch`・`llvm_handoff`・`handoff_tools`・`bundle_identity`・`prebuilt_runtime`・`pgo`、`fast_backend` の 4 件 |
+| Linux（Ubuntu 24.04 aarch64 の container、LLVM 21.1.8、CI と同じ `LLVM_PREFIX`・`TSUZURI_OBJCOPY`）で、`codegen_units`・`cache`・`examples`・`trap_boundary`・`debug_info`・`control`・`tasks`・`e2e`・`primitives`・`strings`・`numeric_casts`・`integer_intrinsics`・`computations`・`io`・`cpu_dispatch`・`async`（JSPI は Node 22 で省く）・`wasm_memory`・`host_imports`・`bindings` を `split` と既定で | 38 件（19 suite × 2）がすべて通る。`cargo test --lib -- llvm::split driver::units cache::` も 57 件が通る |
+
+追加の suite（上の表の後の変更より前の dev binary で `split` を通したもの。その後の変更は unit cache の呼び出しの順序と既定の値だけで、上の表の suite と `tests/codegen_units.mjs` で確かめ直した）: `features`（631 s）・`trap_return`・`trap_return_sync`・`stack_overflow`・`user_drop`・`small_allocator`・`compact_strings`・`compact_strings_modes`・`cpu_kernels`・`utf_simd`・`integer_format`・`f16_hardware`・`bindgen`・`host_bindings`・`bindings_threads`・`net`・`os`・`wasm_heap`（compiler を取らない）・`simd`・`wasm_simd`・`json`・`script`・`packages`・`repl`・`frontend_cache`・`lsp_sessions`・`docgen`・`parallel_frontend`・`handoff_tools`・`pgo`（18 section。一度だけ負荷が高いときに 1 section が落ち、再実行で通った）。`net_wasm` の `accept_flood -O0` は、基準の compiler（main `a8875f38`）でも落ちる（この機械の負荷による。PB07 と無関係）。`fast_backend` は上の表のとおり、既定と `split` の両方で通る（位置表の byte 一致の比較だけ `single` に固定した）。
+
+生成コードの確認（`docs/benchmarks.md` の「生成コードの確認」）: 分けない経路の IR は基準と全件一致、unit の object の記号は `private external`/`non-external`、公開記号の集合は分割と `single` で一致、`examples/computations` の `_tz.fn.Main.divide`（46 命令）は番地を除いて一致、unit の IR は native 3,801 個・wasm32 7,844 個が `clang -x ir -O0 -c` を通る。単体テスト（`unrelated_edit_keeps_other_unit_texts`・`trap_sites_keep_their_numbers_across_edits` ほか）と E2E（C4・C9〜C12）で、1 つのモジュールの本体の編集が、そのモジュールの unit だけを変えることを確かめた（`--trap-info` の番号、`-g` の metadata の番号、wasm32、object を含む）。
+
+### 目標と指標の結果
+
+測定は `docs/benchmarks.md` の「PB07 codegen unit による増分ビルド」。数値は、ほかの作業と共有する機械の参考値（load average 14〜62）。
+
+| 指標 | 結果 |
+| --- | --- |
+| G1（B5 の `tool.clang` ≤ B1 `O0` の 15%） | 1,000 module で満たす（5%）。200 module は 14〜19% |
+| G2（B5 の wall が before より短い） | 満たす（200 module で −16〜−33%、1,000 module で −31〜−40%）。常駐サーバー経由は 1,665 → 1,357 ms（200 module）で、100 ms 級にはならない |
+| G3（B1 `O0 --no-cache` を悪化させない） | **満たせなかった**: 200 module で +9〜+21%、1,000 module で −1%〜+23%（交互の測定と PX03）。キャッシュを使う初回は 200 module で +70%、1,000 module で +52〜+58%。→ 既定を `single` にした |
+| G4（B1 `O3` と B4 は変化なし） | 変化なし（`-O3` は分けない。変更なしの再ビルドは whole-build の hit） |
+| G5（unit cache の大きさ） | 合成 1,000 module の初回のビルドの後に 31,876 KiB（32,641,024 bytes。whole-build とランタイムの object を含む）、2 回の編集の後に 44,068 KiB |
+| M3（コンパイルした unit の数） | 1,000 module で、本体の編集の後は 1 個（初回は 1,019 個）。Phase 2 の各経路（`--trap-info`・`-g`・wasm32・object、200 module）も 1 個 |
+
+### 既定の出力の変化
+
+既定（変数なし）の `-O0`・`-O1` 以上のビルドの IR・object・実行ファイル・whole-build の鍵・cache の配置は変わらない（分けない経路の IR は基準と全件一致）。`TSUZURI_CODEGEN_UNITS=auto|split` を選んだときだけ、対象のビルドの関数の並び・hidden な symbol の名前・`-g` の DWARF の compile unit の数・wasm32 の import の並び・`--trap-info` の site の番号が変わり、`<cache>/units/` ができる。公開 symbol の集合と動作は変わらない。
+
+### 既知の制限・未確認
+
+- Windows は実機がなく、ホストは常に単一 unit。`link.exe` の `/INCREMENTAL` は測っていない。Linux x86-64 は動かしていない（AArch64 の container だけ）。ほかの機械の初回の cache の書き込みの費用と、`auto` の閾値（16 MB。この機械の 400 module）は、core の数・負荷が違う機械では測っていない。
+- PM09 との統合: PM09 は `llvm.lifetime.*`・`musttail`・`--wasm-feature tail-call` を足す。分割は `musttail call` が `ret` の直前に残ることと、intrinsic の `declare` を unit ごとに複写することを単体テスト（`keeps_lifetime_intrinsics_and_musttail_calls`）で確かめた。wasm の旗は `wasm_target_args`（`src/driver.rs`）に集めたので、`-mtail-call` はここに足す。統合のあとに `tests/codegen_units.mjs` と PM09 の suite を回す。
+- macOS の GNU ld 以外のリンカーの挙動: GNU ld は unit の hidden の定義を実行ファイルの `.symtab` に `GLOBAL HIDDEN` で残す（公開記号は DEFAULT の大域 symbol と読む）。
+- `--backend fast` の `--trap-info` の位置表の `id` は、分けた llvm のビルドと違う（`kind`・`path`・位置は同じ）。
+
+### 決定事項の最終状態
+
+D1: 承認済み、既定は `single`（opt-in）。D2〜D3: そのまま。D4〜D7・D9: 上の偏差のとおり更新。D8: そのまま（組ごとに Clang 1 プロセス。同時に動く数は `TSUZURI_THREADS`、未設定なら使える core 数）。D10: 承認済み、(a)〜(f) を実装。D11: 値は 3 つ、未設定と空は `single`。
+
+### 文書
+
+`docs/architecture.md`（unit cache の節、段の一覧）、`docs/benchmarks.md`（PB07 の節）、`docs/language.md`、`README.md`、`_tsuzuri/language-reference/compiler/option.md`（「コード生成の単位」の節、環境変数の表、`--backend fast` の同値の記述）・`usage.md`（unit の object のキャッシュ）・`languages/strategy.md`（実装状況の表）。`node scripts/check-docs.mjs` を変えた 3 ページで実行した。CI: `.github/workflows/targets.yml` に `tests/codegen_units.mjs` の step、`windows.yml` に Windows では回さない旨の注記。
+
+### 変更したファイル
+
+`src/llvm_split.rs`（新規）、`src/driver/units.rs`（新規）、`src/driver.rs`、`src/cache.rs`、`src/llvm.rs`、`src/llvm_traps.rs`、`src/server.rs`（テストの期待値）、`tests/codegen_units.mjs`（新規）、`tests/async.mjs`・`fast_backend.mjs`・`llvm_handoff.mjs`・`prebuilt_runtime.mjs`・`bundle_identity.mjs`・`benchmark_report.mjs`、`benchmarks/metrics.mjs`・`run-build.mjs`、`.github/workflows/targets.yml`・`windows.yml`、`docs/architecture.md`・`benchmarks.md`・`language.md`、`README.md`、`_tsuzuri/language-reference/compiler/option.md`・`usage.md`・`languages/strategy.md`、このファイルと `_perfs/README.md`（PB07 の行）。
