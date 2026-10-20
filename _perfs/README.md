@@ -116,6 +116,28 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 - `--emit llvm` のフロントエンドは、統合後の最初の測定で `emit` 段が +21〜24%（wall が +10〜12%）でした。PM02 のレビューの修正の `limit_worker_inlining` が IR の全行を検索していたためで、PM04 の修正で戻り、最終の tree の `--emit llvm` の wall は
   main の 0.987 倍（1,000 module）・1.022 倍（200 module）で、差と読めません（`check` も同じ）。最大 RSS は +1.3〜2.0% です（IR の text が +2〜3%）。
 
+## 第5フェーズ後の変化（2026-10-20）
+
+第5フェーズの 2 件を統合した compiler（`a24b6d1f`）を、main（`a8875f38`）と、同じ機械（Apple M1 Max。常駐の作業で 1 分の load average の下限は 10〜19）で前後比較した値です。
+表・条件・測っていないことは [docs/benchmarks.md](../docs/benchmarks.md#第5フェーズ統合の最終比較2026-10-20) と、PM09 の [スタックとフレームの大きさ](../docs/benchmarks.md#スタックとフレームの大きさ) にあります。
+上の「現状（2026-09-29）」と「第3・第4フェーズ後の変化」は、履歴としてそのまま残します。x86-64・Linux・Windows の測定と専用機の測定はありません。
+
+- 末尾呼び出し（PM09）: 深さ 10,000,000 の相互再帰が、native の `-O0`・`-O3`、`--backend fast`、`--wasm-feature tail-call` 付きの WASM で完走します（before の native `-O0` は stack の枯渇 `E2005`。既定の WASM の `-O0` は `RangeError` のままで、既定の出力は変えていません）。
+- フレーム（PM09）: 重ならない 2 つの 64 要素のリストを持つ非末尾再帰の関数の `-O3` のフレームが 1,264 → 736 bytes（−42%）です。`-O0` は変わりません（末尾呼び出しにした関数は `bl` が `b` になって 16 bytes 小さくなります）。
+  108 project の全関数のフレームの合計は、`-O3` で 5,853,936 → 5,853,472 bytes（−464）です。`benchmarks/` の 16 project と `examples/` の 9 project の `--emit llvm` は 75 件中 69 件が byte 単位で同一で、違う `benchmarks/statics`（寿命の印の行だけ）の時間は 1.001・1.002・0.997 倍（9 run）で差が読めません。
+- ビルド（PB07。opt-in の `TSUZURI_CODEGEN_UNITS=auto|split`）: 合成 project の `-O0` で、1 つの module の関数の本体を編集した後のビルドが、400 module で 4,467 → 2,870 ms（−36%）、1,000 module で 8,836 → 6,596 ms（−25%）、`tool.clang` は 4,748 → 239 ms です。
+  キャッシュなしの初回は 200 module 以上で −9〜−13% です。変更なしの再ビルド（whole-build の hit）と、既定（分けない）の出力は変わりません。
+
+悪化した点と、期待に届かなかった点:
+
+- 既定の IR が、スタックに置く配列・リストのリテラルを持つ関数のある project で変わります（寿命の印の行。`examples/`・`tests/fixtures/` の 108 project のうち native は 48）。
+  保証された末尾呼び出しでは、`Drop` を実装した値のデストラクタが、呼ばれた関数が動く前に実行されます（言語の観測できる変更。文書に書きました）。
+- `-O3` で、使われない文字列の確保を含む相互再帰（`control` の fixture の `tz_tail_texts`）が、深さ 2,000,000 で 1.1 → 23〜26 ms に遅くなる形があります。D1 の順序で呼び出しが最初から末尾呼び出しになり、`TailCallElim` の前に確保が残るためです
+  （同じ 2 つの関数だけの project では起きません。ほかの形は調べていません）。`"disable-tail-calls"` を付ける案は、3 関数の循環を遅くするので採用していません。
+- PB07 の分割は、キャッシュありの初回のビルドがどの大きさでも遅れる（+8〜+23%。unit の cache の書き込み）うえ、100 module 以下ではキャッシュなしの初回も遅れる（+5〜+16%）ので、既定にしていません。
+  編集の後のビルドの大半はフロントエンドの時間で、「100 ms 級」の目標には届きません（1,000 module で 6.6 s）。リンカーの増分リンクはできません（ld64・GNU ld・LLD にありません）。
+- 保証された末尾呼び出しの対象は、結果が `bool`・`unit`・`char`・64 bit 以下の数の関数だけで、`string`・共用体・レコードなどを返す相互再帰、借用を受ける相互再帰、関数値を介した再帰には定数スタックの保証がありません。
+
 ## 一覧
 
 ### PX. 計測基盤
@@ -151,7 +173,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM06 | [確保の除去とスタック化](_completed/PM06-allocation-elimination.md) | P1 | L | PX01 | done |
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
-| PM09 | [スタック使用量の削減と末尾呼び出しの保証](PM09-stack-and-tail-calls.md) | P3 | L | PX01 | todo |
+| PM09 | [スタック使用量の削減と末尾呼び出しの保証](_completed/PM09-stack-and-tail-calls.md) | P3 | L | PX01 | done |
 
 ### PB. ビルド速度
 
@@ -163,7 +185,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB04 | [フロントエンドの並列化](_completed/PB04-parallel-frontend.md) | P2 | L | PB02 | done |
 | PB05 | [デバッグビルド用の高速バックエンド](_completed/PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | done |
 | PB06 | [常駐ビルドサーバーと watch モード](_completed/PB06-build-server.md) | P2 | L | PB02, (G17) | done |
-| PB07 | [関数単位の増分コード生成と増分リンク](PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | todo |
+| PB07 | [関数単位の増分コード生成と増分リンク](_completed/PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | done |
 
 ## `_features` との関係
 
@@ -186,6 +208,61 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
 ## 推奨フェーズ
+
+### 第5フェーズ2件の実装方針（2026-10-20）
+
+PB07・PM09 は、全フェーズの実装と判断を許可した 2026-10-20 の依頼に基づいて進めます。
+起票時の「Phase 1 だけを実装する」「承認前は着手しない」「要承認」の注記は今回の依頼には適用せず（PB07 は D1・D10、PM09 は D1・D6 を承認済み）、
+意味の保持と検証の条件は維持します。承認は実装の許可で、測定で効果を確認できない既定の切り替えの許可ではありません。
+変更前の基準は `a8875f38`（第4フェーズの PR #28 と dev-velocity の #29 の後）、保存したコンパイラは `target/perf/phase5-baseline/tsuzuri-before` です。
+2 チケットはどちらも起票時の `f8dc655` に対して書かれています。着手前に現行のコードと実測で照合し、食い違いを各チケットの
+「着手時の再検討（2026-10-20）」に記録して、次のとおり方針を改めました。
+
+共通:
+
+- 第2〜4フェーズ（PB01〜PB06・PM01〜PM08・PR01〜PR08 など）までは実装済みです。旧コードの行番号、未実装を前提とした停止条件、第4フェーズより前の測定値は使わず、
+  現行の型・ABI・生成 IR・配布形式を基準にします。チケット内の `_docs/...` は `_tsuzuri/language-reference/...` に読み替えます（GUIDE §8.1）。
+- 検証は [AGENTS.md](../AGENTS.md) の T0〜T2 です（`node scripts/slot.mjs -- cargo nextest run --locked`、dev binary での node suite、`node scripts/check-docs.mjs <変更したページ>`）。
+  チケットの `cargo test --locked ...` と `target/release/tsuzuri` の確認は、同じ範囲をこの手順で行います。
+- 2 チケットは別々の worktree（`perf/p5-PM09`・`perf/p5-PB07`）で並行して開発し、PM09 → PB07 の順に統合しました。PB07 の分割器は PM09 が足す IR の行
+  （`llvm.lifetime.*`・`musttail`）を読むので、PB07 が後です。統合のたびに全 suite を確認し、既定の出力が変わる箇所を各チケットの宣言と照合しました。
+  各チケットは、実装とは別の code-review agent の審査を受けています。
+- 共有機で並行して進めたので、各チケットの時間の測定は負荷を記録した参考値で、統合後に同じ機械で測り直しました（常駐の作業があり、静かな機械ではありません。負荷を記録した参考値です。共有 CI に速度の合否閾値は置きません）。
+  実装済みの経路と計画を区別して書きます。
+
+- **PM09**（実装済み。全フェーズ。Phase 1a・1b・1c、Phase 2a・2b）。着手時に見つけた食い違いと、実装した内容:
+  - 食い違い: PM04 の後、リストのスタック領域は `alloca { ptr, i64, i64, [N x T] }`（1 chunk。`list_stack_storage`）で、起票時の `[4 x { ptr, i64 }]` の例と `frame_bytes` の見積もりは古くなっていました。
+    PM06 の後、文字列の連結 buffer と closure の環境も entry の alloca で、`MAX_FUNCTION_BUFFER_BYTES`（4 KiB。再帰する関数には置かない）の上限が既にあります（`Frame::String` は alloca を持ちません）。
+    PB05 の fast backend は `llvm.lifetime.*` を読み飛ばしますが、`musttail` は `E2002` で拒否するので、何もしないと相互再帰を持つ全 project の `--backend fast` が壊れます。
+    `--wasm-feature` は `simd128`・`threads`・`jspi`・`webgpu`・`net` の 5 つで、`tail_groups` は `llvm_escape.rs` の強連結成分を一般化して使えます。文書は `_tsuzuri/language-reference/` と `docs/` です。
+  - 寿命の印（1a）: スタックに置く配列とリストのリテラルの領域に `llvm.lifetime.start`／`end`（`start` は最初の store の前、`end` は `drop_framed` の `frame_test` が真の枝だけ。大きさは対象のレイアウトの正確な値）。
+    実装の途中で、`if`・`match` の枝のように 1 つの値が複数の frame を持ち得る場合と `let mut` の初期化では、LLVM の stack coloring が寿命の重ならない領域に同じ slot を与え、アドレスの比較（`frame_test`）が誤った frame を選ぶと分かりました
+    （wasm32 `-O3` の `features` で検出し、差分 fuzz で再現）。その frame と SIMD を含む frame には印を付けません（D15・D17）。文字列の連結 buffer と closure の環境は、印を付けると `-O3` のフレームが 108 project の合計で +23,872 bytes 増えたので付けません。
+  - 上限（1b）: `MAX_FRAME_BYTES`（64 KiB）を、literal・連結 buffer・環境を合わせた関数あたりの合計の上限にしました（4 KiB の buffer の上限と、再帰する関数に置かない規則は維持）。
+  - 末尾呼び出し（2a）: 同じ直接呼び出しの強連結成分の関数への、末尾位置の完全適用の呼び出しを `musttail` にします。順序は、引数の評価 → 残りの所有値の解放（`drop_all`）→ `musttail call` → `ret` です。
+    保証の対象は関数の型だけで決まります（結果が `bool`・`unit`・`char`・64 bit 以下の数。D16。借用・捕捉・`task`・`@cpu` を含む関数は対象外）。`--backend fast` は `musttail` を Cranelift の `return_call`（`CallConv::Tail`、引数は全部値渡し）へ翻訳し、
+    翻訳できない形（アドレスを取られた関数、大きな集成体の引数）は通常の呼び出しにして、文書に書きました。
+  - `--wasm-feature tail-call`（2b）: wasm32・wasm64 だけ。clang に `-mtail-call`（指定なしは `-mno-tail-call` を明示）、`--emit llvm` の注記、検証、build cache の鍵。既定の WASM の出力は変わりません（相互再帰の program の IR と `.wasm` が baseline と byte 単位で同じ）。
+    wasm32 の `--backend fast` と併用すると `E2000` です。
+  - 既定の出力: `examples/`・`tests/fixtures/` の 108 project のうち、native の IR が baseline と違うのは 48（寿命の印の行だけが 42、`musttail` を含むのが 6）、wasm32 は 103 のうち 44（印の行だけ）です。
+    **観測できる変更**: `Drop` を実装した値のデストラクタは、保証された末尾呼び出しでは、呼ばれた関数が動く前に実行されます（文書に書きました）。
+  - 検証: Rust のテスト 1,669 件（`TSUZURI_STRINGS=compact` も）、`control`（659 件。`TSUZURI_ASAN=1` も）、`features`（19,662 件）、`stack`、`user_drop`、`--backend fast` の `programs`・`wasm`・`parity` が通りました。独立した reviewer の指摘（SIMD の印の大きさ、保証の結果の型の文書とコードの不一致、Windows の CI の文）はすべて直しました。
+  - 実装していないこと・確かめていないこと: Windows 実機（型検査だけ）、x86-64 と Linux の実行（Docker の Ubuntu で確かめた分を除き CI）、関数値を介した呼び出しと集成体を返す関数の保証（対象外のまま）。
+    `-O3` で、使われない確保を含む相互再帰（`control` の fixture の `tz_tail_texts`）が遅くなる形があります（`docs/benchmarks.md` の「スタックとフレームの大きさ」）。
+- **PB07**（実装済み。全フェーズ。分割は opt-in で、既定は単一 unit）。着手時に見つけた食い違いと、実装した内容:
+  - 食い違い: 現行の既定の最適化は `-O3`（`build`・`run`）で、`-O0` は `test`・`--backend fast` の既定と明示指定だけです。`run` は常に `--trap-info` を付けるので、Phase 1（トラップ情報なし）は `tsuzuri run` を対象にしません。
+    起票時の IR にない形が現行の IR にあり、停止条件 1・2 に当たっていました: `internal thread_local global`（Async）、`weak hidden global`（`@tsuzuri_trap_hooks`）、`define weak`（`@tsuzuri_alloc`・`@tsuzuri_free`・埋め込みの数値ランタイムの `@tz_soft_*`）、
+    PM02 の関数値の記述子（関数を指す `@tz.desc.*` の constant）。実行時 C と数値・数学ランタイムの別 object は PB01 の runtime object cache が既に持つので、起票時の unit `c.runtime` は作りません。`KEY_ENVIRONMENT` は 22 個です。
+  - 実装（Phase 1）: `src/llvm_split.rs`（IR の最上位の行の解析、unit の割り当て（module ごとに 1 つと 16 個の bucket）、内容で決める安定名、本文が同じ生成関数の統合、自己完結した unit の text の組み立て）、unit ごとの object の cache（`<キャッシュ>/units/`、`BuildCache` の保護を再利用）、
+    保存していない unit だけを少数の Clang で並列にコンパイルして 1 回でリンクする経路（`src/driver/units.rs`）、`TSUZURI_CODEGEN_UNITS=single|auto|split`（ほかの値は `E2000`）、`TSUZURI_TIME_PASSES` の段 `split`・`units`。非定数の global と `weak` の定義は持ち主の unit に 1 つだけ置きます。
+  - 実装（Phase 2）: `--trap-info`（分けるビルドだけ、site の番号をソースのパスと範囲から決めるので、別の module の編集で番号が動かない。`tsuzuri run -O0` も分ける）、`-g`（unit ごとの DICompileUnit。macOS は dsymutil が同じ object を読む）、wasm32 の `--emit wasm`（`--wasm-feature tail-call` を含む）、native の `--emit object`
+    （`clang -r` の後に、unit が hidden にした symbol を局所化）、生成関数を使う関数の unit に置く規則。Windows のホストは分けません（実機がなく、型検査だけ。`/INCREMENTAL` は未測定）。`--backend fast`・`--emit shared`・PGO・`--freestanding`・`--trap-mode return`・`test`/`bench` の runner と `-O1` 以上は常に 1 つの module です。
+  - **既定は `single`（分けない）**: 未設定・空・`single` のとき、IR・object・実行ファイル・whole-build の鍵は PB07 より前と byte 単位で同じです（105 構成で確認）。`auto` は IR が 16 MB 以上の対象だけを分け、`split` は対象をすべて分けます。
+    測定（1 分の load average 10〜25、`single` との差）: キャッシュなしの初回は 200 module 以上で −9〜−13%、100 module 以下では +5〜+16%。キャッシュありの初回はどの大きさでも +8〜+23%（unit の cache の書き込み）。
+    編集の後は −12〜−36% で、`tool.clang` は 1,000 module で 4,748 → 239 ms です。キャッシュありの初回が遅れるので、既定の切り替えは行わず、opt-in にしました。
+  - 検証: Rust のテスト 1,669 件、`tests/codegen_units.mjs`（26 件。macOS と Linux の AArch64 の container）、40 の suite を `single` と `split` の両方で実行。独立した reviewer の指摘（`--link` した host の object との symbol の衝突、相対パスの `TSUZURI_CLANG`）は直しました。
+  - 実装していないこと・確かめていないこと: リンカーの増分リンク（ld64・GNU ld・LLD にない）、Windows 実機と `/INCREMENTAL`、Linux の x86-64、`test`/`bench` の runner の分割、core の数や負荷が違う機械での `auto` の閾値。
+    `compile_runtime_object` が相対パスの `TSUZURI_CLANG` で失敗するのは、第5フェーズ前からの既存の制限です（変えていません）。
 
 ### 第4フェーズ7件の実装方針（2026-10-17）
 
@@ -437,7 +514,7 @@ Go・Zig は計測用のローカルなツールとして扱い、既定の名�
 | 2. 即効性の高い改善 | 計測で判明した大きな無駄を除く | PB01、PB02、PR01、PM06、PM07、PR04、PR05 |
 | 3. 表現と実行基盤 | 値の表現・確保・並列実行を改善する | PM01、PM05、PR03、PB03、PB04、PR06、PM08、PR02 |
 | 4. 大型の施策 | 既定の表現や生成方式を変える | PB05、PB06、PM02、PM03、PM04、PR07、PR08 |
-| 5. 長期 | 研究開発を伴う施策 | PB07、PM09 |
+| 5. 長期 | 研究開発を伴う施策（2026-10-20 に全フェーズを実装。PB07 の分割は opt-in） | PB07、PM09 |
 
 ## 依存関係図
 
@@ -522,6 +599,6 @@ graph LR
 
 第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
 （PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で、第4フェーズの 7 件
-（PB05・PB06・PM02・PM03・PM04・PR07・PR08）の `要承認` は 2026-10-17 の全フェーズ実装の依頼で承認済みです。
+（PB05・PB06・PM02・PM03・PM04・PR07・PR08）の `要承認` は 2026-10-17 の全フェーズ実装の依頼で、第5フェーズの 2 件（PB07・PM09）の `要承認` は 2026-10-20 の全フェーズ実装の依頼で承認済みです。
 承認は実装の許可で、測定で効果を確認できない既定の切り替え（PM05 D10 の native 既定、PB03 D6 の既定リンカー、PR02 の旗の既定出力、PB05 D12 の既定のバックエンド、
-PM03 の `TSUZURI_STRINGS` の既定など）を行うものではありません。残りのチケット（PB07・PM09）は未承認のままです。
+PM03 の `TSUZURI_STRINGS` の既定など）を行うものではありません。

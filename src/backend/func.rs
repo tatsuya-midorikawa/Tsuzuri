@@ -267,6 +267,9 @@ pub(crate) enum Inst<'a> {
         start: u32,
         len: u32,
         variadic: bool,
+        /// A `musttail call`: the `ret` of its value follows, and a translator that can must not
+        /// grow the stack by it (PM09).
+        must_tail: bool,
     },
     AtomicRmw {
         dst: u32,

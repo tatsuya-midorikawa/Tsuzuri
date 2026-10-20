@@ -7,6 +7,7 @@
 //! object files can see or call has scalar parameters and result only, which is the C convention.
 
 use cranelift_codegen::ir::{self, AbiParam, ArgumentExtension, Signature, types};
+use cranelift_codegen::isa::CallConv;
 
 use super::error::{Res, bail};
 use super::module::Ext;
@@ -94,7 +95,37 @@ pub(crate) fn plan(
     params: &[(Ty, Ext)],
     external: bool,
 ) -> Res<Abi> {
-    let mut sig = Signature::new(target.call_conv);
+    plan_in(types, target, ret, ret_ext, params, external, false)
+}
+
+/// The plan of a function that a `musttail` call enters or leaves (PM09): the tail convention of
+/// Cranelift, which lets the callee take the stack arguments of its caller's frame. Every parameter
+/// travels by value, and so does the result, which is never a pointer to the caller's frame:
+/// a large aggregate parameter or a result in memory has no such plan, and an error says so.
+pub(crate) fn plan_tail(
+    types: &Types<'_>,
+    target: &Target,
+    ret: Ty,
+    ret_ext: Ext,
+    params: &[(Ty, Ext)],
+) -> Res<Abi> {
+    plan_in(types, target, ret, ret_ext, params, false, true)
+}
+
+fn plan_in(
+    types: &Types<'_>,
+    target: &Target,
+    ret: Ty,
+    ret_ext: Ext,
+    params: &[(Ty, Ext)],
+    external: bool,
+    tail: bool,
+) -> Res<Abi> {
+    let mut sig = Signature::new(if tail {
+        CallConv::Tail
+    } else {
+        target.call_conv
+    });
     let mut plans = Vec::with_capacity(params.len());
     let mut return_plan = RetPlan::Void;
     if ret != Ty::Void {
@@ -118,6 +149,8 @@ pub(crate) fn plan(
                 let total: usize = kinds.iter().map(|&ty| words(ty)).sum();
                 return_plan = if !types.is_large(ret)? && total <= target.max_return_words {
                     RetPlan::Leaves(kinds)
+                } else if tail {
+                    bail!("a result in memory in the signature of a tail call");
                 } else {
                     RetPlan::Sret
                 };
@@ -159,6 +192,12 @@ pub(crate) fn plan(
             );
         } else {
             if types.is_large(ty)? {
+                if tail {
+                    bail!(
+                        "the large aggregate parameter {} in the signature of a tail call",
+                        types.describe(ty)
+                    );
+                }
                 sig.params.push(AbiParam::new(target.pointer));
                 plans.push(ParamPlan::Indirect);
             } else {

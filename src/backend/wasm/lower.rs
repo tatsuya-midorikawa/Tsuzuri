@@ -1605,6 +1605,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 start,
                 len,
                 variadic,
+                ..
             } => {
                 let value = self.call(ret, callee, start, len, variadic)?;
                 if dst != NONE {

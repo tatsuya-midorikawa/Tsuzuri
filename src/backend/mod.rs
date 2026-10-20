@@ -217,6 +217,7 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
     let scan = Phase::start("backend.scan");
     let module = module::scan(ir)?;
     let needed = module.reachable();
+    let tail = module.tail_functions(&needed);
     let types = Types::overlay(&module.types, ir);
     let mut builder = ObjectBuilder::new(
         isa.clone(),
@@ -264,8 +265,16 @@ fn run(ir: &str, platform: Platform, parallelism: Parallelism, verify: bool) -> 
                             .in_function(sym.name),
                     );
                 }
-                let abi = abi::plan(&types, &target, sig.ret, sig.ret_ext, &sig.params, external)
-                    .map_err(|failure| failure.in_function(sym.name))?;
+                let abi = tail[id]
+                    .then(|| abi::plan_tail(&types, &target, sig.ret, sig.ret_ext, &sig.params))
+                    .and_then(Result::ok);
+                // A function without a plan for the tail convention keeps the plain one: the calls
+                // of it, and its own, are ordinary calls.
+                let abi = match abi {
+                    Some(abi) => abi,
+                    None => abi::plan(&types, &target, sig.ret, sig.ret_ext, &sig.params, external)
+                        .map_err(|failure| failure.in_function(sym.name))?,
+                };
                 let function = object
                     .declare_function(&name, object_linkage(sym.linkage, defined), &abi.sig)
                     .map_err(|error| Failure::new(format!("the symbol @{}: {error}", sym.name)))?;

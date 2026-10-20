@@ -16,7 +16,8 @@ mkdirSync(scratch, { recursive: true });
 const directory = mkdtempSync(join(scratch, 'run-'));
 const cache = join(directory, 'cache'), log = join(directory, 'clang.log'), dist = join(directory, 'dist');
 const clang = process.env.TSUZURI_CLANG ?? 'clang';
-const env = { ...process.env, TSUZURI_CACHE_DIR: cache, PB03_LOG: log, TMPDIR: directory,
+// The checks count the compiler calls of the one-module pipeline; codegen units are tested by codegen_units.mjs.
+const env = { ...process.env, TSUZURI_CACHE_DIR: cache, PB03_LOG: log, TMPDIR: directory, TSUZURI_CODEGEN_UNITS: 'single',
   PB03_CLANG: /[\\/]/.test(clang) ? resolve(clang) : clang };
 delete env.TSUZURI_ZIG;
 delete env.TSUZURI_LLVM_CLANG;

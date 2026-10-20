@@ -42,7 +42,8 @@ process.exitCode = result.status ?? 1;
 }
 let copies = 0;
 function build(name, args, output, { capture = false } = {}) {
-  const env = { ...process.env, TSUZURI_CACHE_DIR: join(root, "cache") };
+  // The checks read the one module that reaches Clang, so a build from codegen units would have nothing to read.
+  const env = { ...process.env, TSUZURI_CACHE_DIR: join(root, "cache"), TSUZURI_CODEGEN_UNITS: "single" };
   let ir = null;
   if (capture) {
     ir = join(root, `ir-${++copies}.ll`);

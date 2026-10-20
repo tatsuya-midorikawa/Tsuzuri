@@ -162,6 +162,15 @@ impl<'w, 'a> Lower<'w, 'a> {
                         SourceLoc::new(location)
                     });
                 }
+                // A `musttail call` is one instruction with the `ret` after it.
+                if let Inst::Call {
+                    must_tail: true, ..
+                } = inst
+                    && index + 2 == block.last
+                    && self.tail_call(inst, func.insts[index as usize + 1])?
+                {
+                    break;
+                }
                 self.inst(inst, id)?;
             }
         }
@@ -932,6 +941,7 @@ impl<'w, 'a> Lower<'w, 'a> {
                 start,
                 len,
                 variadic,
+                ..
             } => {
                 let result = self.call(ret, callee, start, len, variadic)?;
                 if dst != NONE {

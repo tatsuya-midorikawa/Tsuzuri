@@ -9,6 +9,7 @@
 - 最適化の既定は `-O3` です。`test` と `repl` だけ既定が `-O0` です（`bench` は `-O3`）。fast-math は使いません。成果物を小さくするときは、`build` と `run` に `-Os` か `-Oz` を、`build` の native 実行ファイルに `--strip` を、`build` の WebAssembly に（Binaryen を入れた機械で）`--wasm-opt` を付けます（[成果物を小さくする](#成果物を小さくする)）。
 - 実行時の分岐の頻度で最適化するときは、`build` か `run` に `--profile-generate DIR` を付けて計装し、代表的な仕事で動かしてから、`--profile-use PATH` を付けて作り直します。速くなる種目も遅くなる種目もあるので、自分のプログラムで測ってください（[プロファイル誘導最適化](#プロファイル誘導最適化)）。
 - `-O0` の native `build`・`run`・`test` と、wasm32 の `build` の待ち時間を短くするときは、`--backend fast` を付けます。LLVM IR を Clang に渡さず、コンパイラ自身が機械語（wasm32 では wasm の命令）にします。既定は `llvm` のままで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます（[コード生成器](#コード生成器)）。
+- `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` の待ち時間は、IR を決める単位に分けて、変わらない部分の Clang を省くことでも短くなります。既定では分けません（初回のビルドが長くなるためです）。大きなプログラムで、本体を編集したあとのビルドを短くしたいときは、`TSUZURI_CODEGEN_UNITS=auto` か `split` で選びます（[コード生成の単位](#コード生成の単位codegen-unit)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
 - `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
@@ -70,7 +71,7 @@
 
 拡張子は、native の実行ファイルが Windows の target で `.exe`、ほかで空、オブジェクトが Windows の target で `.obj`、ほかで `.o`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、SPIR-V が `.spv`、共有ライブラリが Mach-O の target（macOS、iOS）で `.dylib`、ほかで `.so`、bitcode が `.bc`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。`--target native` の target は、ビルド機です。
 
-`--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。`--wasm-feature threads` を付けると、Web Worker のスレッドプールを作るグルーになります。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
+`--emit bindings-js` は `--target wasm32` だけで使え、`<name>.mjs` の隣に TypeScript 宣言 `<name>.d.mts` も書きます。`-o` は `.mjs` で終わる必要があります。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--wasm-feature simd128`、`--wasm-feature tail-call`、`--allocator` は `.wasm` のビルドに付けるよう `E2000` で求めます。`--wasm-feature threads` を付けると、Web Worker のスレッドプールを作るグルーになります。使い方は [WebAssembly への出力](webassembly.md#型付きのバインディングを生成する) にあります。
 
 `--emit shared` は native の共有ライブラリです。Windows の target ではまだ使えません（`E2000`）。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は native の target（`--target native` か `TRIPLE`）だけで使え、`-o` の拡張子を除いたファイル名がライブラリの名前です。バインディングの中身は target で変わりません。`-O` は受け付けて無視し、`--trap-info`、`--debug-info`、`--debug-output`、`--allocator`、`--freestanding` は共有ライブラリのビルドに付けるよう `E2000` で求めます。`--trap-mode return` は、ライブラリとバインディングの両方に付けます。使い方は [ネイティブ連携](native-interop.md#共有ライブラリと各言語のバインディング) にあります。
 
@@ -159,7 +160,7 @@ add 20 22
 
 - `wasm-opt` は同梱せず、`--wasm-opt` を付けたときだけ探します。`TSUZURI_WASM_OPT` は実行ファイルの場所で、この変数だけでは何も実行しません。PATH に `wasm-opt` があっても、付けなければ使いません。場所の探し方は他のツールと同じ（変数、配布物の `bin/`、PATH の順）です。
 - 要求したのに見つからない、または失敗したときは、ビルドが `E2002` で止まり、成果物は残りません。メッセージはツールの名前と、`install Binaryen or set TSUZURI_WASM_OPT to the wasm-opt executable` というヒントを含みます。黙って最適化なしの成果物を作ることはしません。
-- 渡す機能は、このコンパイラのモジュールが使う `bulk-memory`、`sign-ext`、`nontrapping-float-to-int`、`mutable-globals`、`multivalue`、`reference-types` と、`--wasm-feature simd128` のときの `simd` だけです。モジュールの import、export（`--trap-info` の `tsuzuri_trap_site` を含む）、メモリの上限は変わりません。
+- 渡す機能は、このコンパイラのモジュールが使う `bulk-memory`、`sign-ext`、`nontrapping-float-to-int`、`mutable-globals`、`multivalue`、`reference-types` と、`--wasm-feature simd128` のときの `simd`、`--wasm-feature tail-call` のときの `tail-call` だけです。モジュールの import、export（`--trap-info` の `tsuzuri_trap_site` を含む）、メモリの上限は変わりません。
 - 成果物キャッシュのキーに `wasm-opt` の実体（パス、内容、`--version`）を含めます。同じソースでも、`wasm-opt` を替えると別のエントリです。
 
 ```text
@@ -246,7 +247,7 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | --- | --- | --- |
 | `--backend llvm\|fast` | `llvm` | `build`・`run`・`test` が、Tsuzuri の出した LLVM IR を機械語にする道具。`llvm` は Clang、`fast` はコンパイラに組み込んだ翻訳器です（native は Cranelift、wasm32 は wasm の命令を直接書きます） |
 
-`--backend fast` は、`-O0` の編集とビルドの待ち時間を短くするためのものです。Tsuzuri が `-O0` で出す LLVM IR（`--emit llvm -O0` と同じテキスト）を、Clang に渡さずにコンパイラの中で機械語の object にし、リンクだけを今までどおり Clang で行います。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表と `run` の `E2005` の報告、`Drop` の順序は `llvm` のビルドと同じで、変わるのは機械語だけです。`--backend` を付けないビルドの IR・object・実行ファイルは、この機能がなかったときと同じです。
+`--backend fast` は、`-O0` の編集とビルドの待ち時間を短くするためのものです。Tsuzuri が `-O0` で出す LLVM IR（`--emit llvm -O0` と同じテキスト）を、Clang に渡さずにコンパイラの中で機械語の object にし、リンクだけを今までどおり Clang で行います。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。整数の折り返し、NaN、符号付きゼロ、トラップ、`--trap-info` の位置表と `run` の `E2005` の報告、`Drop` の順序は `llvm` のビルドと同じで（`llvm` のビルドを [codegen unit](#コード生成の単位codegen-unit) に分けたときは、位置表の `id` だけが違います）、変わるのは機械語だけです。`--backend` を付けないビルドの IR・object・実行ファイルは、この機能がなかったときと同じです（codegen unit に分けるビルドを除きます）。
 
 使える組み合わせは次のとおりです。これ以外は、ビルドに入る前に `E2000` で、`--backend llvm` を使うよう伝えます。
 
@@ -256,11 +257,11 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | target | ビルド機の native（macOS と Linux の AArch64・x86-64）と `wasm32` です（[fast の WebAssembly](#fast-の-webassemblywasm32)）。`wasm64`・`--target TRIPLE` は `llvm` |
 | `--emit` | native は `exe` と `object` だけです。wasm32 は `wasm` と `object` だけです。`llvm`・`header`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
 | 付けられるもの | `--trap-info`、`--strip`（native）、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host\|small\|counting`、`--freestanding`、`--trap-mode return`、`--coverage`（`test`）、`-g`（native。関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)）、`--wasm-max-memory`・`--wasm-stack-size`（wasm32） |
-| `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use`、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net）・`--wasm-host wasi`・`--wasm-opt`・`-g`、WebAssembly の target の `test` |
+| `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use`、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net・tail-call）・`--wasm-host wasi`・`--wasm-opt`・`-g`、WebAssembly の target の `test` |
 
 `tsuzuri` に Cranelift は既定で入りません。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが `--backend fast` を受け付け、入っていない `tsuzuri` は再ビルドの方法を `E2000` で示します。Windows とビルド機が上の表にないものは、`E2000` です。
 
-Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれると、翻訳は `E2002` で止まり、構成要素と関数の名前を示します。別の意味のコードを出すことはありません。そのときは `--backend llvm` で作り直してください。止まるものには、`half`・`x86_fp80`、インラインアセンブリ、`invoke`、`musttail` の呼び出し、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、可変引数の関数の呼び出し、表にない `llvm.*` などがあります。16 byte を超える alignment の `alloca`（256 bit の vector など）は止まらず、native は stack の slot を余分に取ってアドレスを切り上げ、wasm32 は frame を切り下げて、要求どおりに揃えます。このリポジトリの `examples/` と `tests/fixtures/` のうち `llvm` でビルドできる 102 個には、そのどれも現れず、すべて `fast` でもビルドでき、実行ファイルは同じ出力と終了状態になり、ライブラリは同じ symbol を export します。
+Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれると、翻訳は `E2002` で止まり、構成要素と関数の名前を示します。別の意味のコードを出すことはありません。そのときは `--backend llvm` で作り直してください。止まるものには、`half`・`x86_fp80`、インラインアセンブリ、`invoke`、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、可変引数の関数の呼び出し、表にない `llvm.*` などがあります。`musttail` の呼び出しは止まりません（[保証された末尾呼び出し](#保証された末尾呼び出しの翻訳)）。16 byte を超える alignment の `alloca`（256 bit の vector など）は止まらず、native は stack の slot を余分に取ってアドレスを切り上げ、wasm32 は frame を切り下げて、要求どおりに揃えます。このリポジトリの `examples/` と `tests/fixtures/` のうち `llvm` でビルドできる 102 個には、そのどれも現れず、すべて `fast` でもビルドでき、実行ファイルは同じ出力と終了状態になり、ライブラリは同じ symbol を export します。
 
 ```text
 <command line>:1:1: error[E2000]: --backend fast supports only -O0; remove -O3 or use --backend llvm
@@ -276,11 +277,11 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 
 ### fast の WebAssembly（wasm32）
 
-`--backend fast --target wasm32 -O0` は、wasm32 の `-O0` のビルドでも、Tsuzuri の出した LLVM IR を Clang に渡さずに、コンパイラ自身が WebAssembly の object にします。object は、`numeric`・`math` の runtime の object（Clang が作ったものか、同梱のもの）と一緒に、今までどおり `wasm-ld` でリンクします。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。`--emit wasm`（既定）と `--emit object` が使え、`--wasm-max-memory`・`--wasm-stack-size`・`--trap-info`・`--allocator`・`--no-cache` も `llvm` のときと同じです。付けると `E2000` になるのは、`--wasm-feature simd128|threads|jspi|webgpu|net`、`--wasm-host wasi`、`--wasm-opt`、`-g`（wasm の DWARF は `llvm` だけです）、`wasm64`、`wasm` と `object` 以外の `--emit` です。
+`--backend fast --target wasm32 -O0` は、wasm32 の `-O0` のビルドでも、Tsuzuri の出した LLVM IR を Clang に渡さずに、コンパイラ自身が WebAssembly の object にします。object は、`numeric`・`math` の runtime の object（Clang が作ったものか、同梱のもの）と一緒に、今までどおり `wasm-ld` でリンクします。IR を作る段階は `llvm` と同じなので、プログラムの意味は変わりません。`--emit wasm`（既定）と `--emit object` が使え、`--wasm-max-memory`・`--wasm-stack-size`・`--trap-info`・`--allocator`・`--no-cache` も `llvm` のときと同じです。付けると `E2000` になるのは、`--wasm-feature simd128|threads|jspi|webgpu|net|tail-call`、`--wasm-host wasi`、`--wasm-opt`、`-g`（wasm の DWARF は `llvm` だけです）、`wasm64`、`wasm` と `object` 以外の `--emit` です。
 
-- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 970 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造。33〜63 bit の幅の overflow の演算と、ポインタ越しの呼び出しの narrow な結果を含みます）は、Clang の object と同じ結果になります。
+- 同じになるもの: 出力、トラップ（`unreachable`）、整数の折り返し、`i128`、浮動小数点の結果、import と export の名前（import の並びも Clang の object と同じ、最初に使われた順です。`llvm` のビルドを [codegen unit](#コード生成の単位codegen-unit) に分けたときは、unit の object のリンクの順になります）。`examples/` と `tests/fixtures/` のうち `llvm` で wasm32 にできる 94 個は、`fast` でもすべてビルドでき、すべての export を同じ入力で呼ぶと同じ結果になります。約 970 の演算（整数・`i128`・浮動小数点・vector・メモリ・制御構造。33〜63 bit の幅の overflow の演算と、ポインタ越しの呼び出しの narrow な結果を含みます）は、Clang の object と同じ結果になります。
 - 違うもの: module は `llvm` の `-O0` のものより大きくなります（`examples/` と `tests/fixtures/` の 94 個の合計で 1.10 倍、合成プロジェクトで 1.40〜1.43 倍。最適化せず、命令を定型で並べるためで、`llvm` と同じ runtime の object は変わりません）。NaN の符号と payload は、WebAssembly が決めていないので、同じ入力でも `llvm` と一致するとは限りません（`NaN` かどうかは同じです）。暴走する再帰は、`llvm` ではシャドウスタックの境界か V8 のスタックのどちらかで止まりますが、止まる深さと報告の種類（`RuntimeError` か `RangeError`）が `fast` では変わることがあります。
-- `E2002` になるもの（翻訳器のコードで確かめた一覧です）: `llvm.fma`（WebAssembly に fused の命令がありません。`llvm.fmuladd` は積と和に分けて翻訳します）、128 bit の積の overflow（`llvm.smul.with.overflow.i128`・`llvm.umul.with.overflow.i128`）、翻訳器の表にない `llvm.*`（`llvm.round`・`llvm.minnum`・`llvm.maxnum`、`llvm.sin` などの数学関数）、整数の load と store で 1〜16・32・64・128 bit 以外の幅（`i24`・`i48`・`i96` など）、可変引数の関数の呼び出し、基本ブロックが 65,521 個を超える関数（V8 が `br_table` の 65,520 個を超える対象を持つ module を拒否するので、翻訳を止めます）、local が 40,000 個を超える関数（数えるのは値の数ではなく、最後の使用のあとで別の値が使い回したあとの local の数です。値が 100,000 個ある連鎖は翻訳できますが、同時に生きている値が 40,010 個ある関数は止まります（39,990 個なら翻訳できます））、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、`musttail` の呼び出し、runtime の object が 128 bit の結果を 2 つの値で返すと決めたときの、pointer 越しの 128 bit の結果の呼び出しです。
+- `E2002` になるもの（翻訳器のコードで確かめた一覧です）: `llvm.fma`（WebAssembly に fused の命令がありません。`llvm.fmuladd` は積と和に分けて翻訳します）、128 bit の積の overflow（`llvm.smul.with.overflow.i128`・`llvm.umul.with.overflow.i128`）、翻訳器の表にない `llvm.*`（`llvm.round`・`llvm.minnum`・`llvm.maxnum`、`llvm.sin` などの数学関数）、整数の load と store で 1〜16・32・64・128 bit 以外の幅（`i24`・`i48`・`i96` など）、可変引数の関数の呼び出し、基本ブロックが 65,521 個を超える関数（V8 が `br_table` の 65,520 個を超える対象を持つ module を拒否するので、翻訳を止めます）、local が 40,000 個を超える関数（数えるのは値の数ではなく、最後の使用のあとで別の値が使い回したあとの local の数です。値が 100,000 個ある連鎖は翻訳できますが、同時に生きている値が 40,010 個ある関数は止まります（39,990 個なら翻訳できます））、外から見える関数（`declare` と、external・weak の `define`）の `byval`・`sret` の引数とその呼び出し、runtime の object が 128 bit の結果を 2 つの値で返すと決めたときの、pointer 越しの 128 bit の結果の呼び出しです。
 - 128 bit の整数を返す runtime の関数（`__multi3`・`__ashlti3`・`__udivti3` など）の型は、リンクする runtime の object が import する型で決めます。Clang 21 は `-mmultivalue` を付けても、先頭の pointer に結果を書く型にするので、そのような object が決めなければ（`--emit object` のように runtime の object を渡さないときを含みます）pointer の型にします。`tests/fast_backend.mjs` が、`--emit object` の module を、`__int128` を使う Clang の object とリンクして、`wasm-ld` が型の食い違いの warning を出さず、Clang の呼び出しが正しい結果を得ることを確かめています。
 - `fast` の module は、`tsuzuri build` のほかに、`tests/fast_backend.mjs wasm` と `tests/fast_backend_ops.rs` が Clang の module と比べています。Windows のホストでは、`--backend fast` 自体が `E2000` です。
 
@@ -300,6 +301,54 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 - `tsuzuri test --index N -g -o PATH --backend fast` も、同じ DWARF の runner を作ります。
 
 使えない組み合わせは 2 つあります。macOS で C のランタイムが要るプログラムの `--emit object -g` は `E2002` です。`ld -r` が DWARF を捨てるためで、`llvm` はランタイムを IR のまま結合しています。実行ファイルの `-g` は使えます。Windows は、`--backend fast` 自体が `E2000` です（CodeView と PDB は `llvm` だけです）。Linux の x86-64 と AArch64 の object は、`llvm-dwarfdump --verify` が通り、`ld.lld` でリンクした共有ライブラリの行表が正しいアドレスになるところまで確かめました。Linux で実行して、デバッガーで止めてはいません。
+
+### 保証された末尾呼び出しの翻訳
+
+`llvm` の IR にある `musttail` 呼び出し（[保証された末尾呼び出し](../values-and-functions/functions.md#相互再帰の末尾呼び出し)）を、native の `fast` は Cranelift の `return_call` にします。次の条件をすべて満たす関数が対象です。
+
+- このオブジェクトが定義する内部の関数（internal リンケージ）で、外から見える関数ではありません。
+- 可変長引数でなく、`byval`・`sret` の引数を持たず、16 個を超える葉を持つ大きな集成体を引数に取らず、結果もメモリ越しではありません。
+- アドレスが、呼び出しの名前以外では取られていません。関数ポインタ越しの呼び出しは、プラットフォームの規約を使うためです。
+
+対象の関数は Cranelift の `tail` 呼び出し規約で定義され、その間の `musttail` 呼び出しと直後の `ret` は、1 つの `return_call` になります。macOS arm64 では、機械語が `bl` ではなく `b` で、深さ 10,000,000 の相互再帰がスタックを増やしません。x86-64 の Linux でも、Docker の Rosetta のエミュレーションで同じテストが通りました。x86-64 の macOS と Linux の arm64 は、`targets.yml` の CI（macOS と Linux の 4 つの host）が実行します（この環境では確かめていません）。ホストが Windows のときは `--backend fast` が `E2000` で、`windows.yml` に `tests/stack.mjs` の step もないので、この翻訳を実行する Windows の CI はありません。対象でない関数の間の `musttail` 呼び出しは、意味が同じ通常の呼び出しで、スタックは増えます。診断は出ません。
+
+wasm32 の `fast` は、WebAssembly の書き込みが `musttail` を通常の呼び出しにするので、`--wasm-feature tail-call` を `E2000` で拒否します。既定の wasm32 の IR には `musttail` が現れないので、拒否の対象は付けたときだけです。
+
+## コード生成の単位（codegen unit）
+
+| 変数 | 既定 | 意味 |
+| --- | --- | --- |
+| `TSUZURI_CODEGEN_UNITS=auto\|single\|split` | `single` | `-O0` のビルドが、生成した LLVM IR を codegen unit に分けるか。未設定と空も `single` |
+
+Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジュールとして Clang に渡すのが基本で、既定のビルドはこれまでと同じです。codegen unit に分けるビルド（`auto` か `split` を選んだもの）は、IR を決定的な unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に切り、unit ごとの object を [ビルドキャッシュ](usage.md#コード生成単位の-object)の `units/` に内容で保存し、保存していない unit だけを並列にコンパイルして、全 object を 1 回でリンクします。
+1 つのモジュールの本体を編集したあとのビルドで Clang がコンパイルし直すのは、そのモジュールの unit だけです。そのモジュールのラムダやジェネリック関数の具体化は同じ unit に入ります。ほかのモジュールの unit は、文字も、`--trap-info` の site の番号も変わりません。
+プログラムの意味、`--trap-info` と `run` の報告、`E2005`、公開 symbol（`nm` の大域で定義済みの symbol のうち hidden でないもの）は、分けても変わりません。変わるのは、関数の並びと、hidden な symbol の名前と、`-g` の DWARF の compile unit の数（unit ごとに 1 つ）、wasm32 の module の import の並び（unit の object のリンクの順に従います。import を名前で渡すホストには影響しません）です。hidden な symbol は、1 つのモジュールでは local だった定義（`internal`・`private`）で、名前が `tz.` で始まらないもの（ランタイムを埋め込むビルドの数値ランタイムの補助関数 `power`・`decode`・`store` など）は、`tz.rt.` を付けた名前（`tz.rt.power`）になります。hidden でも object の大域 symbol なので、`--link` するホストの object やライブラリが同じ名前を定義していると、付けない名前はリンクで `duplicate symbol` になるからです。付けたあとは、ホストが `power` を定義していても、1 つのモジュールと同じようにリンクできます。
+
+`auto` か `split` を選んだときに分けるかどうかは、ビルドの種類で決まります。
+
+| ビルド | 分けるか |
+| --- | --- |
+| native の実行ファイル（`-O0`）。`run`、`--trap-info`、`-g`、`--strip`、`--cpu native`、`--allocator`、`--link` を付けたものを含む | 分ける |
+| native の `--emit object`（`-O0`） | 分ける。macOS の `-g` の object（`ld -r` が DWARF を捨てるため）と、局所化の道具（macOS は `nmedit`、ほかは `objcopy`）がない機械では分けない |
+| wasm32 の `--emit wasm`（`-O0`）。`--wasm-feature simd128`・`tail-call`、`-g`、`--trap-info` を含む | 分ける |
+| `-O1` 以上、`-Os`、`-Oz` | 分けない |
+| `--backend fast` | 分けない（翻訳器が IR 全体を自分で翻訳します） |
+| `--emit llvm`・`header`・`shared`・`bitcode`、wasm32 の `--emit object`、`wasm64`、`--wasm-feature threads` | 分けない |
+| `test` と `bench` の runner | 分けない（`build` とは別の経路で、1 つのモジュールとして作ります） |
+| `--profile-generate`・`--profile-use`、`--trap-mode return`、`--freestanding` | 分けない |
+| Windows のホスト、ビルド機と違う `--target TRIPLE` | 分けない |
+
+`single`（既定。未設定と空も同じ）は分けません。`split` は分けられるビルドをすべて分け、`auto` は、分けられるビルドのうち IR が 16 MB 以上のものだけを分けます。ほかの値は `E2000` です。分けると、1 つのモジュールの本体を編集したあとのビルドは短くなりますが、初回のビルドは長くなるので、既定にはしていません。unit ごとに Clang のジョブ（約 8 ms の CPU 時間）と繰り返す宣言があり、unit 全体は 1 つのモジュールの 3 倍ほどの CPU 時間を使い、キャッシュには小さい object が数千個入るためです。10 core の機械で、ほかの処理と共有して測った値は [測定](../../../docs/benchmarks.md#pb07-codegen-unit-による増分ビルド) にあります。`auto` の 16 MB は、その機械で、編集後のビルドが短くなる分で初回の分を 2 回ほどのビルドで取り戻せる大きさ（合成 400 module）です。
+
+```text
+error[E2000]: invalid TSUZURI_CODEGEN_UNITS value 'fast'; use 'auto', 'single' or 'split'
+```
+
+IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。unit の Clang は unit の一時ディレクトリで動くので、`TSUZURI_CLANG` に `./clang` や `toolchain/bin/clang` のようにディレクトリを含む相対パスを指定したときは、コンパイラの作業ディレクトリからの相対パスとして絶対パスに直して起動します（名前だけのときは PATH で探します）。なお、C のランタイム（`IO` やタスクなど）が要るプログラムをキャッシュ有りでビルドするときの、ランタイムの object は、今も一時ディレクトリで Clang を起動するので、相対パスのままでは `E2002`（`cannot execute './clang'`）になります。その場合は絶対パスを指定してください。
+
+`--trap-info` を付けた分けるビルドは、トラップの site の番号を、ソースファイルのパスとファイルの中の範囲から決めます（分けない `-O0` のビルドは、これまでどおり出現順の通し番号です）。`<出力>.trap.json` の位置表も、コードに書いた番号から作るので、`kind`・`path`・位置は同じで、`id` だけが違います。別のファイルを編集しても、ほかのファイルの番号は変わりません。
+
+`TSUZURI_TIME_PASSES=1` は、分けるビルドに `split` と `units` の段を足し、unit のコンパイルの待ちを `tool.<Clang の名前>` に出します（[段階別時間](#コンパイルの段階別時間)）。
 
 ## 診断とデバッグ
 
@@ -334,6 +383,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 | `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。`Async.block_on` 用。threads / WASI とは排他 |
 | `--wasm-feature webgpu` | オフ | `wasm32` の `object`、`llvm`、`wasm`。`Gpu.request Gpu.WebGpu` 用。threads / WASI / `bindings-js` とは排他 |
 | `--wasm-feature net` | オフ | wasm32 の `object`、`llvm`、`wasm`、`bindings-js`。`jspi` が必要。`Net` のソケットを、Node.js 向けのグルーが実装する `tsuzuri_net` の import にする。threads / WASI / wasm64 とは排他 |
+| `--wasm-feature tail-call` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm`。保証された末尾呼び出しを `return_call` にする。ほかの機能と併用できる。`bindings-js` と `--backend fast` には付けられない |
 | `--wasm-host wasi` | オフ | `wasm32` の `object` か `wasm`。既定の wasm32 は OS API を拒否します |
 
 `SIZE` はバイト数か、`KiB` / `MiB` / `GiB` です。`64MB` のような 10 進の単位は受けません。`67108864` と `64MiB` は同じです。
@@ -345,6 +395,8 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 `--wasm-feature webgpu` は、`Gpu.request Gpu.WebGpu` を使うプログラムのモジュールに、`tsuzuri_gpu.open` と `tsuzuri_gpu.run` の 2 つの import を足します。付けなければ import は増えず、`Gpu.request Gpu.WebGpu` は `Unavailable` です。ホスト側は `src/runtime/webgpu.mjs` の `createGpuImports` が作ります（[WebAssembly への出力](webassembly.md#webgpu-デバイス)）。
 
 `Net` のソケットを使う wasm32 も同じで、`.wasm` と `--emit bindings-js` の両方に `--wasm-feature jspi --wasm-feature net` が要ります。`net` を省略したビルドは、ソケットに到達した時点で `E2000` です。グルーは Node.js 向けです（[WebAssembly への出力](webassembly.md#net-のソケットnodejs)）。
+
+`--wasm-feature tail-call` は、同じ再帰グループのほかの関数への末尾呼び出しで、保証の条件を満たすもの（[関数](../values-and-functions/functions.md#相互再帰の末尾呼び出し)）を、IR の `musttail` 呼び出しにし、Clang に `-mtail-call` を渡して WebAssembly の `return_call` 命令にします。相互再帰の呼び出しの深さが、WebAssembly のコールスタックの上限に届かなくなります。付けないビルドの IR と出力は今までと同じで、Clang には `-mno-tail-call` を明示して渡します。`--emit llvm` の先頭には `; wasm-feature: tail-call; compile this IR with -mtail-call` と書くので、IR を自分でコンパイルするときは `-mtail-call` を付けてください（付けないと Clang が `WebAssembly 'tail-call' feature not enabled` で止まります）。出力した module は、tail call 提案に対応した実行エンジンが必要です（Node.js 20.19.6 で確かめました）。同じプログラムは `--wasm-feature` なしでも WASM で動きますが、`-O0` の相互再帰は深さによっては V8 の `RangeError` になります。ランタイムの object（`numeric`・`math`・`wasi`）はこの機能なしでビルドしたものを使い、`wasm-ld` は混ぜてリンクします。`--wasm-opt` には `--enable-tail-call` を渡します（Binaryen は確かめていません）。キャッシュのキーに入るので、付けたビルドと付けないビルドは別のエントリです。
 
 `Tsuzuri.toml` の `[wasm]` は、コマンドラインが省略した値の既定になります。コマンドラインが優先です。マニフェストの値だけが不正なときは、終了コード 1 で、メッセージの末尾に `(after applying the root package's [wasm])` が付きます。
 
@@ -394,6 +446,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `net` と threads / WASI | `--wasm-feature net cannot be combined with --wasm-feature threads or --wasm-host` |
 | `net` なしの wasm32 で `Net` のソケットに到達 | `wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports` |
 | `simd128` が header や native | `--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output` |
+| `tail-call` が WASM の object / llvm / wasm でない（native、header、bitcode など） | `--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output` |
+| `tail-call` と `bindings-js` | `--wasm-feature is not valid for bindings output; pass it when building the .wasm` |
 | WASI と threads | `--wasm-host wasi cannot be combined with --wasm-feature threads` |
 | WASI が wasm32 の object / wasm でない | `--wasm-host wasi requires wasm32 object or WASM output` |
 | メモリ上限が 64 KiB の倍数でない、または上限超え | `at most 4 GiB - 64 KiB on wasm32` / `at most 16 GiB on wasm64` |
@@ -422,7 +476,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--backend fast` に wasm64・`--target TRIPLE` | `--backend fast supports only the native target and wasm32; use --backend llvm for wasm64` |
 | `--backend fast` に `exe`・`object` 以外の `--emit`（native） | `--backend fast produces only exe and object outputs; use --backend llvm for --emit llvm` |
 | `--backend fast --target wasm32` に `wasm`・`object` 以外の `--emit` | `--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit llvm` |
-| `--backend fast --target wasm32` に SIMD・threads・jspi・webgpu・net・`--wasm-host`・`--wasm-opt`・`-g` | `--backend fast does not support --wasm-feature simd128 for wasm32; remove it or use --backend llvm` |
+| `--backend fast --target wasm32` に SIMD・threads・jspi・webgpu・net・tail-call・`--wasm-host`・`--wasm-opt`・`-g` | `--backend fast does not support --wasm-feature simd128 for wasm32; remove it or use --backend llvm` |
 | `--backend fast` の `test` に `--target wasm32`（wasm64 も） | `--backend fast tests only the native target; use --backend llvm to test a WebAssembly target` |
 | `--backend fast` に、`--target` が出せない `--emit`（`--target wasm32 --emit exe`、native の `--emit wasm`、`--target wasm32 --emit shared`、native の `--emit bindings-js` など。どのバックエンドでも誤りです） | `llvm` のときと同じ（`'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'` など）。`--backend llvm` を勧めることはありません |
 | `--backend fast` に `--cpu native` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm` |
@@ -456,7 +510,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `test --coverage` と `--list` | `coverage cannot be combined with --list` |
 | `test --coverage` と `-g` | `coverage cannot be combined with -g; a debug runner only builds` |
 | 入力が 2 つ | `pass one .tz, .tt, or .tc file or project directory` |
-| WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128' and 'threads'; relaxed SIMD is not supported` |
+| WASM 機能名が `relaxed-simd` など | `supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', 'net', and 'tail-call'; relaxed SIMD is not supported` |
 | `TSUZURI_LINKER` が `default`・`lld` 以外（ネイティブ実行ファイルと共有ライブラリ） | `TSUZURI_LINKER must be 'default' or 'lld', not '<value>'` |
 | `--profile-generate` と `--profile-use` を両方付ける、または重複させる | `--profile-generate and --profile-use cannot be combined; build once with each` / `profile generation specified more than once` / `profile use specified more than once`。終了コード 2 |
 | `--profile-generate`・`--profile-use` に値がない、空 | `--profile-generate needs a value`（`--profile-use` も同じ形） |
@@ -509,6 +563,8 @@ flowchart TD
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
 | `TSUZURI_STRINGS` | `utf16` | なし | `utf16`・`compact`。`string` の内部表現を選ぶ。`compact` は、全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存する。空は既定、ほかの値は `E2000`。値・順序・hash・出力・host との ABI は変わらない。ビルドキャッシュのキーに入る（[コンパクト文字列の旗](#コンパクト文字列の旗)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
+| `TSUZURI_CODEGEN_UNITS` | `single` | なし | `auto`・`single`・`split`。`-O0` のビルドを codegen unit に分けるか（[コード生成の単位](#コード生成の単位codegen-unit)）。未設定と空は `single`、ほかの値は `E2000`。成果物の意味は変わらない。`auto` か `split` のときだけ、whole-build キャッシュのキーに入る |
+| `TSUZURI_NMEDIT` / `TSUZURI_OBJCOPY` | `nmedit`（macOS）/ `llvm-objcopy`、なければ `objcopy` | なし | codegen unit に分けた `--emit object` が、unit が `hidden` にした定義を局所化する道具。macOS は Xcode の `nmedit`、ほかは `objcopy`（GNU でも LLVM でも）。見つからなければ、その `--emit object` は 1 つのモジュールで作る |
 
 ### コンパイラのスレッド数
 
@@ -561,7 +617,9 @@ Mach-O の target では `-Os`／`-Oz` と併用できません。最終リン�
 ```
 
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
-外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。そのコマンドが通った段だけを、最初に通った順に出します。
+外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
+`units`（unit の鍵の計算、unit cache の読み書き、ファイルの書き出し）が入り、unit のコンパイルの待ちは `tool.<Clang の名前>` です。
+そのコマンドが通った段だけを、最初に通った順に出します。
 tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。
 同じ段は合算し、入れ子の二重計上はしません。並列に実行する段（[コンパイラのスレッド数](#コンパイラのスレッド数)）も、
 呼び出したスレッドの経過時間（wall-clock）を測るので、段の合計が `total_ms` を超えることはありません。`parse` は frontend cache からの復号も、

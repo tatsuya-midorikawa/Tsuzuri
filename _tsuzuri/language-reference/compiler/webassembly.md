@@ -13,6 +13,7 @@
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
 - 線形メモリの既定上限は 16 MiB、メインスタックは 1 MiB です。
+- `--wasm-feature tail-call` を足すと、同じ再帰グループへの保証された末尾呼び出しが `return_call` になり、`-O0` でも相互再帰のスタックが増えません。付けない出力に tail call の命令は入りません。
 - ホスト関数は、モジュール名 `tsuzuri`、関数名 `Main.tax_rate` のように import します。
 - トラップしたインスタンスは再利用しません。グルーは `TsuzuriTrap` を投げ、次の呼び出しで作り直します。位置は `<output>.trap.json` と照合します。
 
@@ -263,7 +264,7 @@ tsuzuri build Main.tz --target wasm32 -Oz --wasm-opt -o shop.wasm
 
 ## 編集とビルドを速くする（`--backend fast`）
 
-`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
+`-O0` の wasm32 の待ち時間を短くするときは、`--backend fast` を付けます。Clang の代わりにコンパイラ自身が WebAssembly の命令を書き、`wasm-ld` でのリンクだけが残ります。出力と import・export は `llvm` のモジュールと同じで、モジュールは大きくなります（`examples/` と `tests/fixtures/` で合計 10%、合成プロジェクトで約 40%。最適化しないためです）。`--wasm-feature`（SIMD・threads・jspi・webgpu・net・tail-call）、`--wasm-host wasi`、`--wasm-opt`、`-g` とは組み合わせられません（`E2000`）。条件と計測は [fast の WebAssembly](option.md#fast-の-webassemblywasm32) にあります。
 
 ```sh
 tsuzuri build Main.tz --target wasm32 -O0 --backend fast -o app.wasm
@@ -283,7 +284,7 @@ tsuzuri build Main.tz --target wasm32 -o shop.wasm --profile-use prof
 
 ## 線形メモリとスタック
 
-既定の上限は 16 MiB、メインスタックは 1 MiB です。どちらも 64 KiB ページに揃ったメモリ上限の内側に収まる必要があり、上限はスタックより少なくとも 64 KiB 大きくします。
+既定の上限は 16 MiB、メインスタックは 1 MiB です。どちらも 64 KiB ページに揃ったメモリ上限の内側に収まる必要があり、上限はスタックより少なくとも 64 KiB 大きくします。深い再帰でコールスタックが足りなくなると、V8 は `RangeError: Maximum call stack size exceeded` を投げます（`-O0` の相互再帰、深さ 10,000,000 で確かめました）。同じ再帰グループへの末尾呼び出しなら、[`--wasm-feature tail-call`](#末尾呼び出しtail-call) で避けられます。
 
 ```sh
 tsuzuri build Main.tz --target wasm32 --wasm-max-memory 64MiB --wasm-stack-size 1MiB -o shop.wasm
@@ -436,6 +437,18 @@ the WASM thread pool stopped after a failure; load the module again
 
 この例とリポジトリの `tests/bindings_threads.mjs` は、Chrome（headless）と、Playwright の Chromium、WebKit で、COOP / COEP 付きのページでは 3 スレッドが同時に動くこと、ヘッダーの無いページでは `Error` になることを確かめました。Firefox は未確認です。Node.js から使うときは、このグルーではなく `src/runtime/wasm-threads.mjs` を使います。
 
+## 末尾呼び出し（`tail-call`）
+
+同じ再帰グループのほかの関数への末尾呼び出しは、条件を満たすと[保証された末尾呼び出し](../values-and-functions/functions.md#相互再帰の末尾呼び出し)です。ネイティブはどの最適化レベルでも保証しますが、WebAssembly の既定のビルドは保証しません。tail call 命令に対応しない実行エンジンでは module を読み込めなくなるためです。既定の `-O0` の相互再帰は、深さに応じてコールスタックを使い、V8 は十分に深いと `RangeError: Maximum call stack size exceeded` を投げます（`-O3` では、LLVM が相互再帰をループにすることがあります）。
+
+`--wasm-feature tail-call` を付けると、保証された末尾呼び出しが `return_call` 命令になり、`-O0` でも深さによらずスタックが一定です。`wasm32` と `wasm64` の object、LLVM IR、WASM で使え、ほかの機能（simd128・threads・jspi など）、`--trap-info`、`-g` と併用できます。import は増えません。
+
+```sh
+tsuzuri build Main.tz --target wasm32 -O0 --wasm-feature tail-call -o even_odd.wasm
+```
+
+実行するエンジンは、tail call 提案に対応している必要があります。Node.js 20.19.6 の V8 で、深さ 10,000,000 の相互再帰が `-O0` と `-O3` で動くことを確かめました。ほかのエンジンは確かめていません。付けないビルドの IR には `musttail` が、module には `return_call` が現れません。`--emit llvm` の先頭の注記、Clang に渡す `-mtail-call`、ランタイムの object との結合は [WebAssembly の機能](option.md#webassembly) にあります。`--backend fast` の wasm32 には付けられません（`E2000`）。
+
 ## 非同期計算と JSPI
 
 [Async 式](../async-tasks-and-lazy/async.md) の実行器に到達するプログラム（`Async.start` か `Async.block_on` を使うもの）は、`tsuzuri_async_poll`（`(now: i64) => i64`）と `tsuzuri_async_complete`（`(operation: i64, value: i64) => void`）を export します。実行器に到達しないプログラムの export と import は変わりません。
@@ -585,6 +598,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - 計算だけのモジュールは import なしで instantiate できます。OS API は WASI か native です。
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
+- `--wasm-feature tail-call` は、相互再帰の末尾呼び出しを `return_call` にして定数スタックにします。実行環境が tail-call 提案を持つときだけ使えます（[末尾呼び出し](#末尾呼び出しtail-call)）。
 - `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
 - `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。

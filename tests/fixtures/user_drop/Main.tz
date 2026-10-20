@@ -285,6 +285,37 @@ fn packed_consume =
     let packed = Packed { flag: true, id: 7, mark: 2, name: "x" }
     eat packed
 
+private def rec bounce :: i64 -> i64
+    def and rebound :: i64 -> i64
+fn rec bounce n =
+    let held = resource (100 + n)
+    if n == 0 then held.id else rebound (n - 1)
+and rebound n =
+    let held = resource (200 + n)
+    if n == 0 then held.id else bounce (n - 1)
+
+// A guaranteed tail call (PM09) releases what the caller owns before the callee runs; a call that
+// is not guaranteed (WebAssembly without `--wasm-feature tail-call`) releases it after.
+export def tail_drops :: i64
+fn tail_drops = bounce 2
+
+// The result is a recursive union, which a target returns as a pointer: no call of this recursion is guaranteed, on any
+// target, because the guarantee names the type of the result (PM09), so each function releases its record after the call
+// that it makes has returned.
+union Outcome = Done of i64 | Wrapped of Outcome
+
+private def rec bounce_outcome :: i64 -> Outcome
+    def and rebound_outcome :: i64 -> Outcome
+fn rec bounce_outcome n =
+    let held = resource (300 + n)
+    if n == 0 then Done held.id else rebound_outcome (n - 1)
+and rebound_outcome n =
+    let held = resource (400 + n)
+    if n == 0 then Done held.id else bounce_outcome (n - 1)
+
+export def outcome_drops :: i64
+fn outcome_drops = match bounce_outcome 2 with | Done id -> id | Wrapped _ -> 0
+
 export def trap_after_create :: i64
 fn trap_after_create =
     let owned = resource 9

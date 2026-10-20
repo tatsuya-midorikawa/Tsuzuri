@@ -12,7 +12,7 @@ use crate::trap::{TrapKind, TrapSource};
 
 #[path = "llvm_traps.rs"]
 mod traps;
-pub use traps::EmitOutput;
+pub use traps::{EmitOutput, TrapNumbering};
 
 #[path = "call_specialization.rs"]
 pub(crate) mod call_specialization;
@@ -35,6 +35,8 @@ mod frame;
 mod layout;
 #[path = "llvm_return_slot.rs"]
 mod return_slot;
+#[path = "llvm_split.rs"]
+pub(crate) mod split;
 use call_specialization::{ClosureTarget, Drain, Specialization, Specializations};
 use frame::Frame;
 // The value layout lives in `llvm_layout.rs`; the old names stay reachable from here.
@@ -546,6 +548,17 @@ pub fn emit_with_trap_info(
     options: EmitOptions,
     sources: &[TrapSource<'_>],
 ) -> Result<EmitOutput, Diagnostic> {
+    emit_with_trap_info_numbered(module, options, sources, &|_| TrapNumbering::Dense)
+}
+
+/// [`emit_with_trap_info`] where `numbering` chooses how the sites are numbered from the number of bytes of the
+/// program's IR before the instrumentation (PB07 Phase 2).
+pub fn emit_with_trap_info_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    numbering: &dyn Fn(usize) -> TrapNumbering,
+) -> Result<EmitOutput, Diagnostic> {
     let tests = runner_selection(module, options.entry);
     let (ir, marks) = emit_program(
         module,
@@ -562,7 +575,16 @@ pub fn emit_with_trap_info(
             ..Instrumentation::default()
         },
     )?;
-    traps::instrument(ir, module, marks.unwrap(), sources, options.wasm, false)
+    let numbering = numbering(ir.len());
+    traps::instrument_numbered(
+        ir,
+        module,
+        marks.unwrap(),
+        sources,
+        options.wasm,
+        false,
+        numbering,
+    )
 }
 
 pub fn emit_with_debug_info(
@@ -571,6 +593,20 @@ pub fn emit_with_debug_info(
     sources: &[TrapSource<'_>],
     optimized: bool,
     trap_info: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    emit_with_debug_info_numbered(module, options, sources, optimized, trap_info, &|_| {
+        TrapNumbering::Dense
+    })
+}
+
+/// [`emit_with_debug_info`] with the numbering of [`emit_with_trap_info_numbered`].
+pub fn emit_with_debug_info_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    optimized: bool,
+    trap_info: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
         return Err(Diagnostic::new(
@@ -597,11 +633,13 @@ pub fn emit_with_debug_info(
         },
     )?;
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, options.wasm, false)
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, options.wasm, false, numbering)
     } else {
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         })
     }
 }
@@ -616,6 +654,21 @@ pub fn emit_native_build(
     debug: Option<bool>,
     trap_info: bool,
 ) -> Result<EmitOutput, Diagnostic> {
+    emit_native_build_numbered(module, options, sources, debug, trap_info, &|_| {
+        TrapNumbering::Dense
+    })
+}
+
+/// [`emit_native_build`] where `numbering` chooses how the trap sites are numbered from the number of bytes of the
+/// program's IR before the instrumentation (`--trap-info`; PB07 Phase 2).
+pub fn emit_native_build_numbered(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    trap_info: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
+) -> Result<EmitOutput, Diagnostic> {
     emit_native(
         module,
         options,
@@ -624,6 +677,7 @@ pub fn emit_native_build(
         trap_info,
         cpu::host_levels(),
         options.entry == Entry::Console,
+        numbering,
     )
 }
 
@@ -638,9 +692,19 @@ pub fn emit_native_build_for(
     trap_info: bool,
     levels: u8,
 ) -> Result<EmitOutput, Diagnostic> {
-    emit_native(module, options, sources, debug, trap_info, levels, false)
+    emit_native(
+        module,
+        options,
+        sources,
+        debug,
+        trap_info,
+        levels,
+        false,
+        &|_| TrapNumbering::Dense,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_native(
     module: &CheckedModule,
     options: EmitOptions,
@@ -649,6 +713,7 @@ fn emit_native(
     trap_info: bool,
     levels: u8,
     executable_roots: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
         return Err(Diagnostic::new(
@@ -680,11 +745,13 @@ fn emit_native(
         },
     )?;
     let mut output = if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, false, false)?
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, false, false, numbering)?
     } else {
         EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         }
     };
     output.ir = cpu::multiversion(output.ir, module, levels, options.f16)?;
@@ -840,7 +907,9 @@ fn heap_host_wasm() -> String {
     heap
 }
 
-/// Emits a WASM build with shared-memory threads, 64-bit memory, or stack checks.
+/// Emits a WASM build with shared-memory threads, 64-bit memory, stack checks, or tail calls. `numbering` chooses how the
+/// trap sites are numbered from the number of bytes of the program's IR before the instrumentation (`--trap-info`; a
+/// module of tail calls is cut into codegen units like any other wasm32 module, PB07 Phase 2).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_wasm_build(
     module: &CheckedModule,
@@ -851,6 +920,8 @@ pub(crate) fn emit_wasm_build(
     threads: bool,
     memory64: bool,
     stack_checks: bool,
+    tail_call: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     let (ir, marks) = emit_program(
         module,
@@ -864,6 +935,7 @@ pub(crate) fn emit_wasm_build(
             cpu_dispatch: false,
             runtime_objects: options.runtime_objects,
             wasm_simd128: options.wasm_simd128,
+            wasm_tail_call: tail_call,
             wasm_threads: threads,
             memory64,
             trap_return: false,
@@ -884,11 +956,13 @@ pub(crate) fn emit_wasm_build(
         ir
     };
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, true, false)
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, true, false, numbering)
     } else {
         Ok(EmitOutput {
             ir,
             trap_sites: Vec::new(),
+            stable_sites: false,
         })
     }
 }
@@ -1028,6 +1102,8 @@ pub fn emit_bench_runner_with(
 struct Instrumentation<'a> {
     runtime_objects: bool,
     wasm_simd128: bool,
+    /// The `--wasm-feature tail-call` of a WebAssembly build: guaranteed tail calls are `musttail` there too (PM09).
+    wasm_tail_call: bool,
     traps: bool,
     debug: Option<(&'a [TrapSource<'a>], bool)>,
     cpu_dispatch: bool,
@@ -1283,6 +1359,8 @@ fn emit_program_in(
     output.push_str("\ndeclare void @llvm.trap()\n\n");
     let mut builtins = Builtins::new();
     let mut intrinsics = BTreeSet::new();
+    // Native code always has guaranteed tail calls; WebAssembly only with its tail-call feature.
+    let tail_calls = !wasm || instrumentation.wasm_tail_call;
     let mut globals = Globals {
         wasm,
         async_reactor: module
@@ -1303,6 +1381,12 @@ fn emit_program_in(
         coverage: instrumentation.coverage.cloned(),
         seed: instrumentation.seed,
         recursive_functions: escape::recursive_functions(module),
+        tail_calls,
+        tail_groups: if tail_calls {
+            escape::tail_groups(module)
+        } else {
+            Vec::new()
+        },
         range_flags,
         strings: string_form,
         ..Globals::default()
@@ -1671,7 +1755,14 @@ fn emit_program_in(
         if instrumentation.runtime_objects {
             runtime_symbols.append(&mut output, crate::runtime_cache::numeric_declarations());
         } else {
-            output = output.replace("declare void @llvm.trap()\n", "");
+            // The runtime declares these intrinsics too, and a module cannot declare one twice.
+            for declaration in [
+                "declare void @llvm.trap()\n",
+                "declare void @llvm.lifetime.start.p0(i64 immarg, ptr)\n",
+                "declare void @llvm.lifetime.end.p0(i64 immarg, ptr)\n",
+            ] {
+                output = output.replace(declaration, "");
+            }
             runtime_symbols.append(&mut output, include_str!("runtime/numeric.ll"));
         }
     }
@@ -2059,6 +2150,11 @@ struct Globals {
     /// once, at its first use.
     statics: BTreeSet<usize>,
     recursive_functions: Vec<bool>,
+    /// Whether a call that the language guarantees to be a tail call is a `musttail` call (PM09).
+    tail_calls: bool,
+    /// The group of each function for guaranteed tail calls, `escape::tail_groups`; empty unless
+    /// `tail_calls`.
+    tail_groups: Vec<usize>,
     /// What the emitter writes where a range proof shows that an integer `+ - *` cannot overflow (PR02).
     range_flags: RangeFlags,
     /// The form of the strings that the program makes (PM03).
@@ -2105,6 +2201,8 @@ impl Default for Globals {
             emitted_copies: BTreeSet::new(),
             statics: BTreeSet::new(),
             recursive_functions: Vec::new(),
+            tail_calls: false,
+            tail_groups: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
             strings: StringForm::DEFAULT,
         }
@@ -3676,6 +3774,11 @@ struct FunctionEmitter<'a, 'b> {
     moving_bindings: BTreeSet<usize>,
     staying: BTreeSet<usize>,
     buffer_bytes: usize,
+    /// The estimated bytes of the literals that `frame_value` has put on the stack so far.
+    frame_bytes_used: usize,
+    /// Above zero while the frames being made may share a candidate list with others, or outlive
+    /// an assignment; they get no lifetime markers (see `slots_bytes`).
+    unmarked_frames: usize,
     heap_initializer: bool,
     ranges: crate::ranges::RangeFacts,
     /// Array reads emitted without a bounds check so far.
@@ -3758,6 +3861,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             moving_bindings: BTreeSet::new(),
             staying: BTreeSet::new(),
             buffer_bytes: 0,
+            frame_bytes_used: 0,
+            unmarked_frames: 0,
             heap_initializer: false,
             ranges: crate::ranges::RangeFacts::default(),
             proven_reads: 0,
@@ -4265,7 +4370,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 &mut self.heap_initializer,
                 !self.staying.contains(&local.id),
             );
+            // An assignment ends the lifetime of the frame before the binding is done with it.
+            self.unmarked_frames += usize::from(local.mutable);
             let (value, frames) = self.frame_value(expression);
+            self.unmarked_frames -= usize::from(local.mutable);
             self.heap_initializer = previous;
             self.bind_local(local, &value);
             self.ranges.bind(self.module, local, expression);
@@ -4296,6 +4404,94 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                                 if matches!(argument.kind, TypedExprKind::Local(id)
                                     if id == self.function.parameters[index].id)))
                 })
+    }
+
+    /// The callee of a call at the end of this function that the language guarantees to be a tail
+    /// call (PM09 D1), or `None`. It is a full call of a function of the same direct-call group
+    /// (the cycle of a mutual recursion), by name; neither function has captures or is a task body or
+    /// takes a value that may hold a borrow, since the callee must not reach this frame; both take the
+    /// same parameters; and the result is, by its language type, a flag, a character, `unit` or a
+    /// number of at most 64 bits (`escape::guaranteed_result`), which stays in a register on every
+    /// target. Every call that this does not cover is an ordinary call that returns here, and a call
+    /// that it covers is always a `musttail` call, never an ordinary one.
+    fn guaranteed_tail(&self, callee: &TypedExpr, count: usize) -> Option<usize> {
+        let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
+            return None;
+        };
+        // A call of the function itself is a jump to its loop, or an ordinary call if it holds a borrow.
+        if !self.globals.tail_calls
+            || self.borrowed_worker
+            || id == self.function_id
+            || self.symbol.starts_with("@tz.specialized.")
+        {
+            return None;
+        }
+        let target = &self.module.functions[id];
+        let types = self.module.types();
+        let (own, other) = (&self.function.signature, &target.signature);
+        let result = self.ty(&own.result);
+        let same_parameters = own.parameters.len() == other.parameters.len()
+            && own
+                .parameters
+                .iter()
+                .zip(&other.parameters)
+                .all(|(own, other)| self.ty(own) == self.ty(other));
+        // `@cpu` functions become stubs that call a version, which no `musttail` can reach through.
+        let dispatched =
+            self.globals.multiversion && (self.function.origin.cpu != 0 || target.origin.cpu != 0);
+        let ok = self.globals.tail_groups[id] == self.globals.tail_groups[self.function_id]
+            && count == target.parameters.len()
+            && same_parameters
+            && self.function.capture_count == 0
+            && target.capture_count == 0
+            && !self.function.is_task
+            && !target.is_task
+            && !dispatched
+            && !own
+                .parameters
+                .iter()
+                .chain(&other.parameters)
+                .any(|ty| ty.carries_loans(&types))
+            && !other.result.carries_loans(&types)
+            && result == self.ty(&other.result)
+            && escape::guaranteed_result(&own.result)
+            && escape::guaranteed_result(&other.result);
+        if ok {
+            debug_assert!(
+                matches!(
+                    result.as_str(),
+                    "i1" | "i8" | "i16" | "i32" | "i64" | "float" | "double"
+                ),
+                "a guaranteed result is a scalar: {result}"
+            );
+        }
+        ok.then_some(id)
+    }
+
+    /// Calls function `id`, which `guaranteed_tail` accepted, as the last thing that this function
+    /// does: the arguments are evaluated from left to right, what the function still owns is dropped,
+    /// and the `musttail` call and the `ret` follow without a line between them, so that the callee
+    /// takes the place of this frame. The drops come before the call, as they do before the jump of a
+    /// tail call to the function itself.
+    fn guaranteed_call(&mut self, id: usize, arguments: &[TypedExpr]) {
+        let values: Vec<_> = arguments
+            .iter()
+            .map(|argument| self.expression(argument))
+            .collect();
+        self.drop_all();
+        let target = &self.module.functions[id];
+        let result = self.ty(&target.signature.result);
+        let passed: Vec<_> = values
+            .iter()
+            .zip(&target.signature.parameters)
+            .map(|(value, ty)| format!("{} {value}", self.ty(ty)))
+            .collect();
+        let call = self.value(format!(
+            "musttail call {result} @tz.fn.{}({})",
+            target.qualified_name(),
+            passed.join(", ")
+        ));
+        self.instruction(format!("ret {result} {call}"));
     }
 
     fn tail_arguments(&mut self, arguments: &[TypedExpr]) -> Vec<String> {
@@ -4401,6 +4597,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.back_edges.push((self.block.clone(), values));
                 self.jump("loop");
                 self.hint_loop(&self.function.body, 0);
+            }
+            TypedExprKind::Call(callee, arguments)
+                if self.guaranteed_tail(callee, arguments.len()).is_some() =>
+            {
+                let id = self.guaranteed_tail(callee, arguments.len()).unwrap();
+                self.guaranteed_call(id, arguments);
+            }
+            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee)
+                if self.guaranteed_tail(callee, 1).is_some() =>
+            {
+                let id = self.guaranteed_tail(callee, 1).unwrap();
+                self.guaranteed_call(id, std::slice::from_ref(argument.as_ref()));
             }
             _ => {
                 let value = self.expression(expression);
@@ -8330,7 +8538,8 @@ fn test_builtin(
     let Type::Function(parameters, _) = ty else {
         unreachable!("a builtin is a function")
     };
-    let parameter = llvm_type(&parameters[0], module);
+    // A builtin without a parameter (`unit -> T`) is not one of the test builtins.
+    let parameter = llvm_type(parameters.first()?, module);
     let body = match instance.builtin {
         Builtin::TestAdd => {
             return Some(format!(
@@ -9347,8 +9556,19 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             allocator: Allocator::System,
             f16: F16Path::Soft,
         };
-        let output =
-            emit_wasm_build(&module, options, &sources, None, true, true, false, false).unwrap();
+        let output = emit_wasm_build(
+            &module,
+            options,
+            &sources,
+            None,
+            true,
+            true,
+            false,
+            false,
+            false,
+            &|_| TrapNumbering::Dense,
+        )
+        .unwrap();
         // The wrappers of the threads runtime and the unlocked heap define each entry point once.
         for name in [
             "tz.alloc",

@@ -480,8 +480,9 @@ async function jspi(directory) {
     const wasm = join(directory, `async_reactor-jspi-${target}-O${optimization}.wasm`);
     cli(["build", fixture, "--target", target, "--wasm-feature", "jspi", `-O${optimization}`, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
-    assert.deepEqual(WebAssembly.Module.imports(module).map(({ module, name }) => `${module}.${name}`),
-      ["tsuzuri.Main.start_operation", "tsuzuri.Main.cancel_operation", "tsuzuri.Main.report", "tsuzuri_async.clock", "tsuzuri_async.wait"]);
+    // The order of the imports is the order in which wasm-ld meets them, which a build from several codegen units changes.
+    assert.deepEqual(WebAssembly.Module.imports(module).map(({ module, name }) => `${module}.${name}`).sort(),
+      ["tsuzuri.Main.cancel_operation", "tsuzuri.Main.report", "tsuzuri.Main.start_operation", "tsuzuri_async.clock", "tsuzuri_async.wait"]);
     const log = { started: [], cancelled: [], reports: [] };
     let exports;
     let wake = null;

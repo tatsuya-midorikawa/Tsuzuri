@@ -29,6 +29,8 @@ impl Marks {
 pub struct EmitOutput {
     pub ir: String,
     pub trap_sites: Vec<TrapSite>,
+    /// Whether the sites have a stable numbering (`TrapNumbering::Stable`), which a build from codegen units needs.
+    pub stable_sites: bool,
 }
 
 pub(super) struct Callable<'a> {
@@ -199,21 +201,146 @@ struct Function {
     kinds: BTreeSet<TrapKind>,
 }
 
-#[derive(Default)]
+/// How the sites of a program are numbered. A site is `1 + n * kinds + kind` for the location `n`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrapNumbering {
+    /// `n` counts the distinct locations in the order that they first appear in the whole program.
+    Dense,
+    /// `n` is a number that the path of the source file and the position inside it give (PB07 Phase 2), so that an
+    /// edit in one file does not renumber the sites of another, and the report is one function for each module that
+    /// has sites, with one that dispatches on the module.
+    Stable,
+}
+
+/// The most files that a stable numbering gives sites to, and the most locations in each of them. A program with more
+/// is numbered densely (and built from one unit).
+const STABLE_SOURCES: u64 = 8191;
+const STABLE_LOCATIONS: u64 = 1 << 14;
+/// How many site numbers each file owns.
+const STABLE_SPAN: u32 = (TrapKind::ALL.len() as u32) * (STABLE_LOCATIONS as u32);
+
+fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash ^ (hash >> 32)
+}
+
+/// The base of every location of a stable numbering, and the file that owns each block of numbers.
+struct Assignment {
+    bases: BTreeMap<(usize, usize, usize), u32>,
+    owners: BTreeMap<u32, usize>,
+}
+
+/// Gives every location a base: its file takes the block of numbers that the hash of its path names (the next free one
+/// when two paths name the same, in the order of the paths), and the location the place in the block that the hash of
+/// its position names (the next free one, in the order of the positions). The numbers of a file then depend on
+/// the paths of the other files and on its own positions, and on nothing else. The `fallback` location, which the
+/// runtime's traps report, has the first place of its file whatever its position: an edit of the entry function
+/// must not change the code of the runtime.
+fn assign_stable(
+    locations: &BTreeSet<(usize, usize, usize)>,
+    sources: &[TrapSource<'_>],
+    fallback: (usize, usize, usize),
+) -> Option<Assignment> {
+    let mut by_source: BTreeMap<usize, BTreeSet<(usize, usize)>> = BTreeMap::new();
+    for &(source, start, end) in locations {
+        by_source.entry(source).or_default().insert((start, end));
+    }
+    if by_source.len() as u64 > STABLE_SOURCES {
+        return None;
+    }
+    let mut order: Vec<(&str, usize)> = by_source
+        .keys()
+        .map(|&index| (sources.get(index).map_or("", |source| source.path), index))
+        .collect();
+    order.sort_unstable();
+    let mut taken = BTreeSet::new();
+    let mut assignment = Assignment {
+        bases: BTreeMap::new(),
+        owners: BTreeMap::new(),
+    };
+    for (path, index) in order {
+        let mut block = fnv(path.bytes()) % STABLE_SOURCES;
+        while !taken.insert(block) {
+            block = (block + 1) % STABLE_SOURCES;
+        }
+        assignment.owners.insert(block as u32, index);
+        let spans = &by_source[&index];
+        if spans.len() as u64 > STABLE_LOCATIONS {
+            return None;
+        }
+        let mut used = BTreeSet::new();
+        if fallback.0 == index && spans.contains(&(fallback.1, fallback.2)) {
+            used.insert(0);
+        }
+        for &(start, end) in spans {
+            let place = if (index, start, end) == fallback {
+                0
+            } else {
+                let mut place = fnv((start as u64)
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain((end as u64).to_le_bytes()))
+                    % STABLE_LOCATIONS;
+                while !used.insert(place) {
+                    place = (place + 1) % STABLE_LOCATIONS;
+                }
+                place
+            };
+            let base = 1 + TrapKind::ALL.len() as u64 * (block * STABLE_LOCATIONS + place);
+            assignment
+                .bases
+                .insert((index, start, end), u32::try_from(base).ok()?);
+        }
+    }
+    Some(assignment)
+}
+
+enum SiteNumbers {
+    Dense,
+    /// The first pass of a stable numbering: it only notes the locations.
+    Collecting(BTreeSet<(usize, usize, usize)>),
+    Stable(Assignment),
+}
+
 struct Sites {
+    numbers: SiteNumbers,
     bases: BTreeMap<(usize, usize, usize), u32>,
     sites: BTreeMap<u32, TrapSite>,
 }
 
 impl Sites {
+    fn new(numbers: SiteNumbers) -> Self {
+        Self {
+            numbers,
+            bases: BTreeMap::new(),
+            sites: BTreeMap::new(),
+        }
+    }
+
     fn base(&mut self, span: Span, kinds: &BTreeSet<TrapKind>) -> Result<u32, Diagnostic> {
         let key = (span.source.unwrap_or(0), span.start, span.end);
-        let next = u32::try_from(self.bases.len())
-            .ok()
-            .and_then(|count| count.checked_mul(TrapKind::ALL.len() as u32))
-            .and_then(|base| base.checked_add(1))
-            .ok_or_else(|| Diagnostic::new("E1017", "too many trap locations", span))?;
-        let base = *self.bases.entry(key).or_insert(next);
+        let base = match &mut self.numbers {
+            SiteNumbers::Collecting(locations) => {
+                locations.insert(key);
+                return Ok(0);
+            }
+            SiteNumbers::Stable(assignment) => *assignment
+                .bases
+                .get(&key)
+                .expect("the first pass of a stable numbering saw every location"),
+            SiteNumbers::Dense => {
+                let next = u32::try_from(self.bases.len())
+                    .ok()
+                    .and_then(|count| count.checked_mul(TrapKind::ALL.len() as u32))
+                    .and_then(|base| base.checked_add(1))
+                    .ok_or_else(|| Diagnostic::new("E1017", "too many trap locations", span))?;
+                *self.bases.entry(key).or_insert(next)
+            }
+        };
         for kind in kinds {
             let id = base
                 .checked_add(*kind as u32)
@@ -248,6 +375,26 @@ pub(super) fn instrument(
     sources: &[TrapSource<'_>],
     wasm: bool,
     raise: bool,
+) -> Result<EmitOutput, Diagnostic> {
+    instrument_numbered(
+        ir,
+        module,
+        marks,
+        sources,
+        wasm,
+        raise,
+        TrapNumbering::Dense,
+    )
+}
+
+pub(super) fn instrument_numbered(
+    ir: String,
+    module: &CheckedModule,
+    marks: Marks,
+    sources: &[TrapSource<'_>],
+    wasm: bool,
+    raise: bool,
+    numbering: TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
         return Err(Diagnostic::new(
@@ -352,82 +499,186 @@ pub(super) fn instrument(
         .map(|id| module.functions[id].body.span)
         .or_else(|| module.functions.first().map(|function| function.span))
         .unwrap_or_default();
-    let mut sites = Sites::default();
-    let mut output = String::with_capacity(ir.len());
-    let mut function = String::new();
-    let mut sequence = 0usize;
-    for raw in ir_lines(&ir) {
-        let (line, marker) = marked(raw, &marks);
-        if line.starts_with('!')
-            && line
-                .split_once(" = ")
-                .and_then(|(id, _)| id.strip_prefix('!')?.parse::<usize>().ok())
-                .is_some_and(|id| marks.instructions.contains_key(&id))
-        {
-            continue;
-        }
-        if line.starts_with("define ") {
-            if let Some(call) = callable(line, true) {
-                function = call.name.into();
-                if managed.contains(call.name) {
-                    let _ = writeln!(output, "{}", append_context(line, &call, "%tz.context"));
+    let stable = numbering == TrapNumbering::Stable;
+    // The text with the sites of `sites` in it. A stable numbering reads the program twice: the first pass notes the
+    // locations, which decide the numbers, and the second writes them.
+    let rewrite = |sites: &mut Sites| -> Result<String, Diagnostic> {
+        let mut output = String::with_capacity(ir.len());
+        let mut function = String::new();
+        let mut sequence = 0usize;
+        for raw in ir_lines(&ir) {
+            let (line, marker) = marked(raw, &marks);
+            if line.starts_with('!')
+                && line
+                    .split_once(" = ")
+                    .and_then(|(id, _)| id.strip_prefix('!')?.parse::<usize>().ok())
+                    .is_some_and(|id| marks.instructions.contains_key(&id))
+            {
+                continue;
+            }
+            if line.starts_with("define ") {
+                // A local name only has to differ inside its function, and a count of the whole program would
+                // change in every function after an edit.
+                if stable {
+                    sequence = 0;
+                }
+                if let Some(call) = callable(line, true) {
+                    function = call.name.into();
+                    if managed.contains(call.name) {
+                        let _ = writeln!(output, "{}", append_context(line, &call, "%tz.context"));
+                        continue;
+                    }
+                }
+            } else if line == "}" {
+                function.clear();
+            }
+            if let Some(call) = callable(line, false) {
+                let source = marks.sources.get(&function);
+                let inherited =
+                    managed.contains(&function) && source.is_none_or(|(_, inherited)| *inherited);
+                let span = marker
+                    .map(|(span, _)| span)
+                    .or_else(|| source.map(|(span, _)| *span))
+                    .unwrap_or(fallback);
+                if call.name == "@llvm.trap" {
+                    let kind = marker
+                        .and_then(|(_, kind)| kind)
+                        .unwrap_or_else(|| runtime_kind(&function));
+                    let site = if inherited {
+                        let value = format!("%tz.trap.{sequence}");
+                        sequence += 1;
+                        let _ =
+                            writeln!(output, "  {value} = add i32 %tz.context, {}", kind as u32);
+                        value
+                    } else {
+                        (sites.base(span, &BTreeSet::from([kind]))? + kind as u32).to_string()
+                    };
+                    let _ = writeln!(output, "  call void @tz.trap.report(i32 {site})");
+                } else if managed.contains(call.name)
+                    || call.name.starts_with('%')
+                        && !matches!(
+                            function.as_str(),
+                            "@tsuzuri_task_parallel" | "@tsuzuri_task_parallel_results"
+                        )
+                {
+                    let context = if inherited {
+                        "%tz.context".into()
+                    } else {
+                        sites
+                            .base(
+                                span,
+                                functions
+                                    .get(call.name)
+                                    .map_or(&kinds, |function| &function.kinds),
+                            )?
+                            .to_string()
+                    };
+                    let _ = writeln!(output, "{}", append_context(line, &call, &context));
                     continue;
                 }
             }
-        } else if line == "}" {
-            function.clear();
+            output.push_str(line);
+            output.push('\n');
         }
-        if let Some(call) = callable(line, false) {
-            let source = marks.sources.get(&function);
-            let inherited =
-                managed.contains(&function) && source.is_none_or(|(_, inherited)| *inherited);
-            let span = marker
-                .map(|(span, _)| span)
-                .or_else(|| source.map(|(span, _)| *span))
-                .unwrap_or(fallback);
-            if call.name == "@llvm.trap" {
-                let kind = marker
-                    .and_then(|(_, kind)| kind)
-                    .unwrap_or_else(|| runtime_kind(&function));
-                let site = if inherited {
-                    let value = format!("%tz.trap.{sequence}");
-                    sequence += 1;
-                    let _ = writeln!(output, "  {value} = add i32 %tz.context, {}", kind as u32);
-                    value
-                } else {
-                    (sites.base(span, &BTreeSet::from([kind]))? + kind as u32).to_string()
-                };
-                let _ = writeln!(output, "  call void @tz.trap.report(i32 {site})");
-            } else if managed.contains(call.name)
-                || call.name.starts_with('%')
-                    && !matches!(
-                        function.as_str(),
-                        "@tsuzuri_task_parallel" | "@tsuzuri_task_parallel_results"
-                    )
-            {
-                let context = if inherited {
-                    "%tz.context".into()
-                } else {
-                    sites
-                        .base(
-                            span,
-                            functions
-                                .get(call.name)
-                                .map_or(&kinds, |function| &function.kinds),
-                        )?
-                        .to_string()
-                };
-                let _ = writeln!(output, "{}", append_context(line, &call, &context));
-                continue;
-            }
-        }
-        output.push_str(line);
-        output.push('\n');
-    }
+        Ok(output)
+    };
+    let assignment = if stable {
+        let mut collecting = Sites::new(SiteNumbers::Collecting(BTreeSet::new()));
+        rewrite(&mut collecting)?;
+        let SiteNumbers::Collecting(locations) = collecting.numbers else {
+            unreachable!("the first pass collects");
+        };
+        assign_stable(
+            &locations,
+            sources,
+            (fallback.source.unwrap_or(0), fallback.start, fallback.end),
+        )
+    } else {
+        None
+    };
+    // A program with more files or locations than a stable numbering holds is numbered densely.
+    let stable = assignment.is_some();
+    let owners = assignment
+        .as_ref()
+        .map(|assignment| assignment.owners.clone());
+    let mut sites = Sites::new(match assignment {
+        Some(assignment) => SiteNumbers::Stable(assignment),
+        None => SiteNumbers::Dense,
+    });
+    let mut output = rewrite(&mut sites)?;
     let trap_sites: Vec<_> = sites.sites.into_values().collect();
     if wasm {
         output.push_str("\n@tz.trap.latest = internal global i32 0\ndefine internal void @tz.trap.report(i32 %site) cold nounwind {\nentry:\n  store volatile i32 %site, ptr @tz.trap.latest\n  ret void\n}\ndefine i32 @tsuzuri_trap_site() {\nentry:\n  %site = load volatile i32, ptr @tz.trap.latest\n  ret i32 %site\n}\n");
         crate::trap::side_table(&trap_sites, sources)?;
+    } else if stable && !raise {
+        if !output.contains("declare i64 @write(") {
+            output.push_str("\ndeclare i64 @write(i32, ptr, i64)\n");
+        }
+        // The report of a file is a function of its own, which goes with the file's other functions, and the
+        // report that the code calls picks the file's function by the block of numbers the site is in.
+        let file_modules = source_modules(module);
+        let owners = owners.expect("a stable numbering has its blocks");
+        let mut blocks: BTreeMap<u32, Vec<&TrapSite>> = BTreeMap::new();
+        for site in &trap_sites {
+            blocks
+                .entry((site.id - 1) / STABLE_SPAN)
+                .or_default()
+                .push(site);
+        }
+        let mut names = BTreeMap::new();
+        for (block, group) in &blocks {
+            let name = match file_modules.get(&owners[block]) {
+                Some(module) => module.clone(),
+                None => format!("s{block:x}"),
+            };
+            for site in group {
+                let text = format!("{}\n", site.message(sources)?);
+                let bytes = text
+                    .bytes()
+                    .map(|byte| format!("\\{byte:02X}"))
+                    .collect::<String>();
+                let _ = writeln!(
+                    output,
+                    "@tz.trap.message.{} = private unnamed_addr constant [{} x i8] c\"{bytes}\"",
+                    site.id,
+                    text.len()
+                );
+            }
+            let _ = write!(
+                output,
+                "define internal void @tz.trap.report.{name}(i32 %site) cold nounwind {{\nentry:\n  switch i32 %site, label %done [\n"
+            );
+            for site in group {
+                let _ = writeln!(output, "    i32 {}, label %site{}", site.id, site.id);
+            }
+            output.push_str("  ]\n");
+            for site in group {
+                let length = site.message(sources)?.len() + 1;
+                let _ = writeln!(
+                    output,
+                    "site{}:\n  call void @tz.trap.write(ptr @tz.trap.message.{}, i64 {length})\n  br label %done",
+                    site.id, site.id
+                );
+            }
+            output.push_str("done:\n  ret void\n}\n");
+            names.insert(*block, name);
+        }
+        let _ = write!(
+            output,
+            "define internal void @tz.trap.report(i32 %site) cold nounwind {{\nentry:\n  %offset = sub i32 %site, 1\n  %block = udiv i32 %offset, {STABLE_SPAN}\n  switch i32 %block, label %done [\n"
+        );
+        for block in names.keys() {
+            let _ = writeln!(output, "    i32 {block}, label %block{block}");
+        }
+        output.push_str("  ]\n");
+        for (block, name) in &names {
+            let _ = writeln!(
+                output,
+                "block{block}:\n  call void @tz.trap.report.{name}(i32 %site)\n  br label %done"
+            );
+        }
+        output.push_str("done:\n  ret void\n}\n");
+        output.push_str(TRAP_WRITE);
     } else {
         if !output.contains("declare i64 @write(") {
             output.push_str("\ndeclare i64 @write(i32, ptr, i64)\n");
@@ -471,10 +722,30 @@ pub(super) fn instrument(
                 site.id, site.id
             );
         }
-        output.push_str("done:\n  ret void\n}\ndefine internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  %done = icmp eq i64 %offset, %length\n  br i1 %done, label %exit, label %write\nwrite:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  %remaining = sub i64 %length, %offset\n  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\nadvance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}\n");
+        output.push_str("done:\n  ret void\n}\n");
+        output.push_str(TRAP_WRITE);
     }
     Ok(EmitOutput {
         ir: output,
         trap_sites,
+        stable_sites: stable && !raise,
     })
+}
+
+/// The function that writes a site's message to the standard error, one `write` after another.
+const TRAP_WRITE: &str = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  %done = icmp eq i64 %offset, %length\n  br i1 %done, label %exit, label %write\nwrite:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  %remaining = sub i64 %length, %offset\n  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\nadvance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}\n";
+
+/// The module of each source file that has functions, by the index of the file.
+fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {
+    let mut modules = BTreeMap::new();
+    for function in &module.functions {
+        if let Some(source) = function.span.source
+            && !function.module.starts_with('$')
+        {
+            modules
+                .entry(source)
+                .or_insert_with(|| function.module.clone());
+        }
+    }
+    modules
 }

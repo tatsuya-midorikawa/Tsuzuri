@@ -34,6 +34,12 @@ pub use profile::Profile;
 /// The target attributes and the checks of `--emit bitcode` (PR08).
 pub mod lto;
 
+/// Native executables built from codegen units (PB07).
+mod units;
+
+/// The environment variable that chooses between one module and codegen units for a native `-O0` executable (PB07).
+pub(crate) const CODEGEN_UNITS_VARIABLE: &str = "TSUZURI_CODEGEN_UNITS";
+
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
@@ -427,6 +433,10 @@ pub struct BuildOptions {
     /// `--wasm-feature net`: the Net sockets are imports of `tsuzuri_net`, which the generated
     /// JavaScript bindings implement on Node.js (E09 Phase 3).
     pub wasm_net: bool,
+    /// `--wasm-feature tail-call`: the calls that the language guarantees to be tail calls are
+    /// WebAssembly `return_call` instructions, so a recursion of several functions runs in the
+    /// stack of one call (PM09). Part of the build cache key through the `Debug` text.
+    pub wasm_tail_call: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -466,6 +476,7 @@ impl Default for BuildOptions {
             wasm_jspi: false,
             wasm_webgpu: false,
             wasm_net: false,
+            wasm_tail_call: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -526,7 +537,8 @@ impl BuildOptions {
                 || self.wasm_threads
                 || self.wasm_jspi
                 || self.wasm_webgpu
-                || self.wasm_net)
+                || self.wasm_net
+                || self.wasm_tail_call)
         {
             return Err(driver_error(
                 "E2000",
@@ -619,6 +631,15 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.wasm_tail_call
+            && (!self.target.is_wasm()
+                || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
             ));
         }
         if self.wasm_host.is_some()
@@ -785,6 +806,7 @@ impl BuildOptions {
             wasm_jspi,
             wasm_webgpu,
             wasm_net,
+            wasm_tail_call,
             wasm_host,
             wasm_max_memory: _,
             wasm_stack_size: _,
@@ -831,13 +853,16 @@ impl BuildOptions {
         }
         if target == Target::Wasm32 {
             // Nothing else of a WebAssembly build changes the IR or the objects that the translator
-            // sees, apart from what the line table of `-g` would need.
+            // sees, apart from what the line table of `-g` would need. The translator makes an
+            // ordinary call of a `musttail` call, so it cannot give the tail-call feature its
+            // guarantee, and the request is an error and not a silent downgrade (PM09).
             let unsupported = [
                 (wasm_simd, "--wasm-feature simd128"),
                 (wasm_threads, "--wasm-feature threads"),
                 (wasm_jspi, "--wasm-feature jspi"),
                 (wasm_webgpu, "--wasm-feature webgpu"),
                 (wasm_net, "--wasm-feature net"),
+                (wasm_tail_call, "--wasm-feature tail-call"),
                 (wasm_host.is_some(), "--wasm-host"),
                 (wasm_opt, "--wasm-opt"),
                 (debug_info, "-g"),
@@ -938,8 +963,8 @@ impl BuildOptions {
             (self.debug_info, "--debug-info"),
             (self.debug_output, "--debug-output"),
             // `threads` selects the glue of a thread pool and `jspi` the Promise-returning glue;
-            // SIMD does not change the glue.
-            (self.wasm_simd, "--wasm-feature"),
+            // SIMD and tail calls do not change the glue.
+            (self.wasm_simd || self.wasm_tail_call, "--wasm-feature"),
             (self.allocator != llvm::Allocator::System, "--allocator"),
         ] {
             if set {
@@ -1426,6 +1451,44 @@ fn compile_args(platform: Platform) -> Vec<OsString> {
     if !platform.windows() {
         arguments.push("-fPIC".into());
     }
+    arguments
+}
+
+/// The Clang arguments that choose the WebAssembly target and its features for the body of a module or of a unit of
+/// IR, shared by the compile of one module and of the units (a feature that is added here reaches both). The runtime
+/// objects are compiled with arguments of their own (and prebuilt ones are matched by exactly those), so a feature
+/// that only the IR of the program needs, as `musttail` needs tail calls, stays out of them.
+fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec![
+        if options.target == Target::Wasm64 {
+            "--target=wasm64-unknown-unknown"
+        } else {
+            "--target=wasm32-unknown-unknown"
+        }
+        .into(),
+        "-mbulk-memory".into(),
+    ];
+    if options.wasm_threads {
+        arguments.push("-matomics".into());
+    }
+    arguments.push(
+        if options.wasm_simd {
+            "-msimd128"
+        } else {
+            "-mno-simd128"
+        }
+        .into(),
+    );
+    // The default is explicit, so that a Clang whose generic WebAssembly CPU has the feature still makes the same
+    // code (PM09). The runtime objects have no `musttail` and link with either.
+    arguments.push(
+        if options.wasm_tail_call {
+            "-mtail-call"
+        } else {
+            "-mno-tail-call"
+        }
+        .into(),
+    );
     arguments
 }
 
@@ -3269,6 +3332,8 @@ fn build_complete(
     options.validate()?;
     profile.validate(options)?;
     profile.require_llvm_clang()?;
+    // A bad TSUZURI_CODEGEN_UNITS fails before any work, like a bad TSUZURI_LINKER below.
+    let codegen_mode = units::mode()?;
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
@@ -3349,8 +3414,37 @@ fn build_complete(
         ));
     }
     let mut trap_sites = Vec::new();
+    // Whether the sites of the IR have the numbering that a build from codegen units needs.
+    let mut stable_traps = false;
     let stack_checks = options.emit != Emit::Header
         && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+    // A relocatable object that is made of units needs a tool that makes symbols local; the probe is for builds that
+    // may be cut.
+    let can_localize = options.emit == Emit::Object
+        && codegen_mode != units::Mode::Single
+        && units::localizer(platform).is_some();
+    let facts = units::Facts {
+        stable_trap_sites: stable_traps,
+        stack_checks,
+        can_localize,
+    };
+    // The sites of a build from codegen units keep their numbers when another file is edited.
+    let numbering = |bytes: usize| {
+        if units::eligible(
+            options,
+            platform,
+            profile,
+            units::Facts {
+                stable_trap_sites: true,
+                ..facts
+            },
+        ) && units::wanted(codegen_mode, bytes)
+        {
+            llvm::TrapNumbering::Stable
+        } else {
+            llvm::TrapNumbering::Dense
+        }
+    };
     // How the native code computes f16 (D10); the IR and the Clang options of this build agree on it.
     let fast = options.backend == Backend::Fast;
     let f16 = f16_path_for(options.backend, platform, options.target, options.cpu);
@@ -3453,7 +3547,7 @@ fn build_complete(
             && !options.freestanding
         {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_native_build(
+                llvm::emit_native_build_numbered(
                     module,
                     emission,
                     sources,
@@ -3461,11 +3555,17 @@ fn build_complete(
                         .debug_info
                         .then_some(options.optimization != OptLevel::O0),
                     options.trap_info,
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
-        } else if options.wasm_threads || options.target == Target::Wasm64 || stack_checks {
+        } else if options.wasm_threads
+            || options.target == Target::Wasm64
+            || stack_checks
+            || options.wasm_tail_call
+        {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_wasm_build(
                     module,
@@ -3478,27 +3578,33 @@ fn build_complete(
                     options.wasm_threads,
                     options.target == Target::Wasm64,
                     stack_checks,
+                    options.wasm_tail_call,
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else if options.debug_info {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_with_debug_info(
+                llvm::emit_with_debug_info_numbered(
                     module,
                     emission,
                     sources,
                     options.optimization != OptLevel::O0,
                     options.trap_info,
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else if options.trap_info {
             let output = project.with_trap_sources(|sources| {
-                llvm::emit_with_trap_info(module, emission, sources)
+                llvm::emit_with_trap_info_numbered(module, emission, sources, &numbering)
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else {
             llvm::emit_with_options(module, emission)?
@@ -3537,6 +3643,13 @@ fn build_complete(
         }
         if options.wasm_net {
             text = llvm::with_net_imports(&text);
+        }
+        // The notes tell whoever compiles the IR by hand which flags its instructions need.
+        if options.wasm_tail_call {
+            text.insert_str(
+                0,
+                "; wasm-feature: tail-call; compile this IR with -mtail-call\n",
+            );
         }
         if options.wasm_simd {
             text.insert_str(
@@ -3957,6 +4070,11 @@ fn build_complete(
             _ => text,
         };
         let object = temporary.path.join("module.o");
+        // A native `-O0` executable or object, or a wasm32 module, is built from codegen units (PB07), unless the text
+        // has a form that a unit cannot hold.
+        let mut unit_objects: Option<Vec<PathBuf>> = None;
+        // What a relocatable object of the units makes local again.
+        let mut unit_symbols: Vec<String> = Vec::new();
         if fast && options.target == Target::Wasm32 {
             // The runtime objects that Clang built decide how a 128-bit result is returned, and the
             // routines of the runtime that this IR defines must agree with them.
@@ -3966,9 +4084,80 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            fs::write(&ir, text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+            if units::eligible(
+                options,
+                platform,
+                profile,
+                units::Facts {
+                    stable_trap_sites: stable_traps,
+                    ..facts
+                },
+            ) && units::wanted(codegen_mode, text.len())
+            {
+                let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect();
+                args.push(options.optimization.flag().into());
+                if options.debug_info {
+                    args.push("-g".into());
+                }
+                if options.target.is_wasm() {
+                    args.extend(wasm_target_args(&options));
+                } else {
+                    args.extend(compile_args(platform));
+                    if options.cpu == Cpu::Native {
+                        args.extend(
+                            native_ir_cpu_args(platform.arch_name(), f16)?
+                                .into_iter()
+                                .map(OsString::from),
+                        );
+                    }
+                    if gc_sections && !platform.mach_o() {
+                        args.extend(["-ffunction-sections", "-fdata-sections"].map(OsString::from));
+                    }
+                    args.extend(no_sdk_args(platform));
+                }
+                let names: BTreeSet<&str> = module
+                    .functions
+                    .iter()
+                    .map(|function| function.module.as_str())
+                    .filter(|name| !name.starts_with('$'))
+                    .collect();
+                let names: Vec<&str> = names.into_iter().collect();
+                let built = units::build(
+                    &text,
+                    &names,
+                    &units::Config {
+                        clang: tool("TSUZURI_CLANG", "clang"),
+                        args,
+                        hint: cross_hint(
+                            platform,
+                            "install LLVM/Clang 17+ or set TSUZURI_CLANG to its executable",
+                        ),
+                        directory: &temporary.path,
+                        identity: clang_identity.as_ref(),
+                    },
+                    &mut messages,
+                )?;
+                if let Some(built) = built {
+                    unit_symbols = built.localize;
+                    unit_objects = Some(built.objects);
+                }
+            }
+            if unit_objects.is_none() {
+                fs::write(&ir, &text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
+            }
         }
         let runtime_object = temporary.path.join("task.o");
+        // The Clang run that links the units reads their objects; a debug build on macOS links in a step of its own,
+        // after which dsymutil reads the objects again, so the objects stay where they are until the end of the build.
+        let units_linked_by_clang =
+            unit_objects.is_some() && options.emit == Emit::Executable && dwarf_sidecar.is_none();
+        let module_input: OsString = match &unit_objects {
+            Some(objects) => units::response_file(objects, &temporary.path)?,
+            None => object.clone().into_os_string(),
+        };
         // The fast backend writes no IR to merge: its object joins the C runtime in the relocatable link below,
         // which on macOS leaves a debug map in place of the DWARF.
         if fast
@@ -4249,7 +4438,11 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
-        if !fast {
+        if unit_objects.is_some() {
+            // The units are compiled already: the link reads their objects, and the compile options that no object
+            // needs stay out of it.
+            clang.arg(options.optimization.flag());
+        } else if !fast {
             clang
                 .arg("-x")
                 .arg("ir")
@@ -4263,21 +4456,7 @@ fn build_complete(
             clang.arg("-g");
         }
         if options.target.is_wasm() {
-            clang
-                .arg(if options.target == Target::Wasm64 {
-                    "--target=wasm64-unknown-unknown"
-                } else {
-                    "--target=wasm32-unknown-unknown"
-                })
-                .arg("-mbulk-memory");
-            if options.wasm_threads {
-                clang.arg("-matomics");
-            }
-            clang.arg(if options.wasm_simd {
-                "-msimd128"
-            } else {
-                "-mno-simd128"
-            });
+            clang.args(wasm_target_args(&options));
         } else {
             clang.args(compile_args(platform));
             if options.cpu == Cpu::Native {
@@ -4302,7 +4481,12 @@ fn build_complete(
         if options.emit == Emit::Bitcode {
             clang.arg("-flto=thin");
         }
-        clang.arg(if fast { &object } else { &ir }).arg("-o").arg(
+        if unit_objects.is_some() {
+            clang.arg(&module_input);
+        } else {
+            clang.arg(if fast { &object } else { &ir });
+        }
+        clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
                 || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
@@ -4371,6 +4555,8 @@ fn build_complete(
                 fs::rename(&object, &artifact)
                     .map_err(|error| io_error("write object", &artifact, error))?;
             }
+        } else if unit_objects.is_some() && !units_linked_by_clang {
+            // The units are compiled; the step that follows links their objects.
         } else {
             let mut clang_hint = linker_hint(cross_hint(
                 platform,
@@ -4431,7 +4617,7 @@ fn build_complete(
                 .args(target_args(platform))
                 .args(sdk_args(platform)?)
                 .args(final_link_args(platform)?)
-                .arg(&object)
+                .arg(&module_input)
                 .args(["-g", "-lm"]);
             // The link of an instrumented program reads Clang's profile runtime, which the compile did not.
             if let Some(staged) = staged_profile
@@ -4483,7 +4669,10 @@ fn build_complete(
                 )?,
             );
         }
-        if native_runtime && options.emit == Emit::Object && !merge_debug_ir {
+        if (native_runtime || unit_objects.is_some())
+            && options.emit == Emit::Object
+            && !merge_debug_ir
+        {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
                 .args(target_args(platform))
@@ -4496,11 +4685,11 @@ fn build_complete(
             if platform.linux_kernel() {
                 linker.arg("-no-pie");
             }
-            linker
-                .arg(&object)
-                .arg(&runtime_object)
-                .arg("-o")
-                .arg(&artifact);
+            linker.arg(&module_input);
+            if native_runtime {
+                linker.arg(&runtime_object);
+            }
+            linker.arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
                 run_tool(
@@ -4511,6 +4700,24 @@ fn build_complete(
                     ),
                 )?,
             );
+            // What was `internal` is `hidden` in the units, and `hidden` is for the link inside this object.
+            if unit_objects.is_some() {
+                let localizer = units::localizer(platform).ok_or_else(|| {
+                    driver_error(
+                        "E2002",
+                        "an object built from codegen units needs nmedit (macOS) or objcopy; set TSUZURI_NMEDIT or TSUZURI_OBJCOPY, or TSUZURI_CODEGEN_UNITS=single",
+                    )
+                })?;
+                units::localize(
+                    &localizer,
+                    platform,
+                    &unit_symbols,
+                    &artifact,
+                    &temporary.path,
+                    "making the symbols of the units local needs nmedit (macOS) or objcopy; set TSUZURI_NMEDIT or TSUZURI_OBJCOPY",
+                    &mut messages,
+                )?;
+            }
         }
         if (options.wasm_threads || wasi_runtime) && options.emit == Emit::Object {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
@@ -4617,7 +4824,7 @@ fn build_complete(
             if !llvm::host_entries(module).is_empty() {
                 linker.arg("--export=tsuzuri_async_set_epoch");
             }
-            linker.arg(&object).arg("-o").arg(&artifact);
+            linker.arg(&module_input).arg("-o").arg(&artifact);
             collect_message(
                 &mut messages,
                 run_tool(
@@ -4630,7 +4837,13 @@ fn build_complete(
                 )?,
             );
             if options.wasm_opt {
-                run_wasm_opt(&artifact, &temporary.path, options.wasm_simd, &mut messages)?;
+                run_wasm_opt(
+                    &artifact,
+                    &temporary.path,
+                    options.wasm_simd,
+                    options.wasm_tail_call,
+                    &mut messages,
+                )?;
             }
         }
     }
@@ -4649,6 +4862,7 @@ fn build_complete(
         }
     }
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
+    units::remove_files(&temporary.path.join("units"));
     temporary.close()?;
     Ok((messages, trap_sites))
 }
@@ -5690,6 +5904,21 @@ fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
             .to_string_lossy();
         crate::timings::finish(&format!("tool.{tool}"), started);
     }
+    tool_output(&name, output, hint)
+}
+
+/// [`run_tool`] that records no phase: the runs of codegen units go on worker threads, which never touch the
+/// timings, and the caller measures the wait for all of them (`units::build`).
+fn run_tool_untimed(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
+    let name = command.get_program().to_string_lossy().into_owned();
+    tool_output(&name, command.output(), hint)
+}
+
+fn tool_output(
+    name: &str,
+    output: io::Result<std::process::Output>,
+    hint: &str,
+) -> Result<String, Diagnostic> {
     let output = output.map_err(|error| {
         driver_error("E2002", format!("cannot execute '{name}': {error}; {hint}"))
     })?;
@@ -5725,6 +5954,7 @@ fn run_wasm_opt(
     artifact: &Path,
     directory: &Path,
     simd: bool,
+    tail_call: bool,
     messages: &mut Vec<String>,
 ) -> Result<(), Diagnostic> {
     let optimized = directory.join("optimized.wasm");
@@ -5742,6 +5972,10 @@ fn run_wasm_opt(
     }
     if simd {
         command.arg("--enable-simd");
+    }
+    // A module with `return_call` does not validate in Binaryen without the feature.
+    if tail_call {
+        command.arg("--enable-tail-call");
     }
     collect_message(
         messages,
@@ -6157,6 +6391,13 @@ mod tests {
             ),
             (
                 BuildOptions {
+                    wasm_tail_call: true,
+                    ..bindings
+                },
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
                     allocator: llvm::Allocator::Counting,
                     ..bindings
                 },
@@ -6183,6 +6424,112 @@ mod tests {
         assert!(bindings_output_error(Emit::BindingsJs, Path::new(".mjs")).is_some());
         assert!(bindings_output_error(Emit::Wasm, Path::new("f.js")).is_none());
         directory.close().unwrap();
+    }
+
+    #[test]
+    fn validates_the_tail_call_feature_for_the_outputs_with_webassembly_instructions() {
+        let tail = |target, emit| BuildOptions {
+            target,
+            emit,
+            wasm_tail_call: true,
+            ..BuildOptions::default()
+        };
+        assert!(!BuildOptions::default().wasm_tail_call);
+        for (target, emit) in [
+            (Target::Wasm32, Emit::Wasm),
+            (Target::Wasm32, Emit::Object),
+            (Target::Wasm32, Emit::Llvm),
+            (Target::Wasm64, Emit::Wasm),
+            (Target::Wasm64, Emit::Object),
+            (Target::Wasm64, Emit::Llvm),
+        ] {
+            let result = tail(target, emit).validate();
+            assert!(result.is_ok(), "{target:?} {emit:?}: {result:?}");
+        }
+        for (target, emit) in [
+            (Target::Native, Emit::Executable),
+            (Target::Native, Emit::Llvm),
+            (Target::Wasm32, Emit::Header),
+        ] {
+            assert_eq!(
+                tail(target, emit).validate().unwrap_err().message,
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+                "{target:?} {emit:?}"
+            );
+        }
+        // The option is part of the text that the build cache hashes.
+        let text = |options: BuildOptions| format!("{options:?}");
+        let off = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..BuildOptions::default()
+        };
+        assert_ne!(text(off), text(tail(Target::Wasm32, Emit::Wasm)));
+    }
+
+    /// The compile of one module and the compile of a unit of it get the same WebAssembly flags from one function, with
+    /// the tail-call flag spelled out either way (PM09), so that the units are what the module would have been.
+    #[test]
+    fn webassembly_compiles_get_the_target_and_feature_flags_of_one_function() {
+        let flags = |options: BuildOptions| -> Vec<String> {
+            wasm_target_args(&options)
+                .iter()
+                .map(|flag| flag.to_string_lossy().into_owned())
+                .collect()
+        };
+        let wasm = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..BuildOptions::default()
+        };
+        assert_eq!(
+            flags(wasm),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-mno-simd128",
+                "-mno-tail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                wasm_tail_call: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-mno-simd128",
+                "-mtail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                wasm_simd: true,
+                wasm_tail_call: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-msimd128",
+                "-mtail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                target: Target::Wasm64,
+                wasm_threads: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm64-unknown-unknown",
+                "-mbulk-memory",
+                "-matomics",
+                "-mno-simd128",
+                "-mno-tail-call"
+            ]
+        );
     }
 
     #[test]
@@ -6889,6 +7236,13 @@ mod tests {
                     ..wasm
                 },
                 "--wasm-feature net",
+            ),
+            (
+                BuildOptions {
+                    wasm_tail_call: true,
+                    ..wasm
+                },
+                "--wasm-feature tail-call",
             ),
             (
                 BuildOptions {

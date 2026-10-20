@@ -331,7 +331,8 @@ def main :: unit -> i32 = \\() ->
       const programs = {};
       for (const backend of ["llvm", "fast"]) {
         const output = join(work, `trap.${backend}`);
-        cli(["build", project, "-O0", "--backend", backend, "--trap-info", "-o", output]);
+        // A build from several codegen units numbers the trap sites by content, not densely as the fast backend does.
+        cli(["build", project, "-O0", "--backend", backend, "--trap-info", "-o", output], { env: { TSUZURI_CODEGEN_UNITS: "single" } });
         programs[backend] = output;
       }
       const expected = observe(execute(programs.llvm, [], { cwd: project }));
