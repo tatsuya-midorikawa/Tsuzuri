@@ -2294,6 +2294,8 @@ mod tests {
         assert_eq!(
             dynamic,
             [
+                // The loops over `KEY_ENVIRONMENT`: the key of a build, of a tool, and of the units of a build.
+                ("cache.rs", "var_os(", "variable"),
                 ("cache.rs", "var_os(", "variable"),
                 ("cache.rs", "var_os(", "variable"),
                 ("driver.rs", "var_os(", "variable"),
