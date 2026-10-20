@@ -195,7 +195,9 @@ test("C6 eligibility", () => {
   assert.ok(units(["-g"]) > 3, "-g is split");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "single" }), 0, "TSUZURI_CODEGEN_UNITS=single");
   assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "auto" }), 0, "a small program stays one unit under auto");
-  assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "" }), 0, "an empty TSUZURI_CODEGEN_UNITS is auto");
+  // The default is one module: unset and empty (`env` overrides the `split` of the workspace; undefined removes it).
+  assert.equal(units([], { TSUZURI_CODEGEN_UNITS: "" }), 0, "an empty TSUZURI_CODEGEN_UNITS is the default, one module");
+  assert.equal(units([], { TSUZURI_CODEGEN_UNITS: undefined }), 0, "an unset TSUZURI_CODEGEN_UNITS is the default, one module");
   assert.ok(units([], { TSUZURI_CODEGEN_UNITS: "split" }) > 3, "TSUZURI_CODEGEN_UNITS=split");
   for (const optimization of ["-O1", "-O2", "-O3"]) {
     const out = join(space.directory, "optimized");
@@ -228,16 +230,23 @@ test("C6 invalid setting", () => {
   assert.equal(space.build([], { env: { TSUZURI_CODEGEN_UNITS: "" } }).result.status, 0);
 });
 
-// `auto` cuts a build only when its IR is large enough for the units to pay: below 4 MiB one unit is faster (a Clang job
-// costs about 8 ms of CPU time per unit), above it the parallel compile wins.
+// `auto` cuts a build only when its IR is large enough for the units to pay: 16 MB (the first build of fewer modules is
+// slower from units by more than an edit of one module saves within a few rebuilds). Unset and empty never cut.
 test("C6 auto threshold", () => {
   const small = workspace(3);
   small.build(["--no-cache"], { env: { TSUZURI_CODEGEN_UNITS: "auto" } });
   assert.equal(small.compiled().units.length, 0);
-  const large = workspace(110);
+  const large = workspace(420);
   const { out } = large.build(["--no-cache"], { env: { TSUZURI_CODEGEN_UNITS: "auto" } });
-  assert.ok(large.compiled().units.length > 110, "a large program is cut under auto");
-  assert.equal(run(out, "12345").stdout, expectedOutput(110, "12345"));
+  assert.ok(large.compiled().units.length > 420, "a large program is cut under auto");
+  assert.equal(run(out, "12345").stdout, expectedOutput(420, "12345"));
+  const slightly = workspace(300);
+  slightly.build(["--no-cache"], { env: { TSUZURI_CODEGEN_UNITS: "auto" } });
+  assert.equal(slightly.compiled().units.length, 0, "a program below the threshold is one module under auto");
+  for (const value of [undefined, ""]) {
+    large.build(["--no-cache"], { env: { TSUZURI_CODEGEN_UNITS: value } });
+    assert.equal(large.compiled().units.length, 0, `the default (${JSON.stringify(value)}) is one module, however large`);
+  }
 });
 
 // C7: the public symbols of the executable are the same. A symbol is public when a link or a loader can see it: the global

@@ -121,6 +121,7 @@ test("GNU time versions and distro UNKNOWN banner", () => {
 test("phase reports and non-overlap", () => {
   const report = '{"time_passes":1,"phases":[{"name":"parse","ms":1}],"total_ms":2}';
   assert.equal(parseTimePasses(`${report}\nother\n${report.replace('"ms":1', '"ms":0.5')}\n`).phases[0].ms, 0.5);
+  for (const name of ["split", "units"]) assert.equal(parseTimePasses(report.replace("parse", name)).phases[0].name, name);
   assert.throws(() => parseTimePasses("nothing"));
   assert.throws(() => parseTimePasses(report.replace('"time_passes":1', '"time_passes":2')));
   assert.throws(() => parseTimePasses(report.replace('"ms":1', '"ms":3')), /overlapping/);
@@ -538,6 +539,9 @@ int main(int argc,char **argv) {
   test("compiler/build phase breakdown", () => {
     assert.deepEqual(breakdown({ phases: [{ name: "load", ms: 1 }, { name: "parse", ms: 2 }, { name: "cache", ms: 3 },
       { name: "tool.clang", ms: 4 }], total_ms: 12 }), { frontend: 3, cache: 3, tools: 4, other: 2 });
+    // The codegen units (PB07): the cut counts with the frontend, the unit cache with the cache.
+    assert.deepEqual(breakdown({ phases: [{ name: "emit", ms: 2 }, { name: "split", ms: 1 }, { name: "units", ms: 3 },
+      { name: "tool.clang", ms: 4 }], total_ms: 11 }), { frontend: 3, cache: 3, tools: 4, other: 1 });
     assert.throws(() => breakdown({ phases: [{ name: "check", ms: 5 }], total_ms: 1 }), /overlapping/);
     assert.deepEqual(breakdown({ phases: [{ name: "parse", ms: 0.001 }], total_ms: 0 }), { frontend: 0.001, cache: 0, tools: 0, other: 0 });
   });

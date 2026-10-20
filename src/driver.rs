@@ -1435,6 +1435,32 @@ fn compile_args(platform: Platform) -> Vec<OsString> {
     arguments
 }
 
+/// The Clang arguments that choose the WebAssembly target and its features for a module or a unit of IR, shared by
+/// the compile of one module and of the units (a feature that is added here reaches both).
+fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec![
+        if options.target == Target::Wasm64 {
+            "--target=wasm64-unknown-unknown"
+        } else {
+            "--target=wasm32-unknown-unknown"
+        }
+        .into(),
+        "-mbulk-memory".into(),
+    ];
+    if options.wasm_threads {
+        arguments.push("-matomics".into());
+    }
+    arguments.push(
+        if options.wasm_simd {
+            "-msimd128"
+        } else {
+            "-mno-simd128"
+        }
+        .into(),
+    );
+    arguments
+}
+
 /// Only the Clang target of a named platform: a link that is not a compile names its target too.
 fn target_args(platform: Platform) -> Vec<OsString> {
     platform
@@ -4032,18 +4058,7 @@ fn build_complete(
                     args.push("-g".into());
                 }
                 if options.target.is_wasm() {
-                    args.extend(
-                        [
-                            "--target=wasm32-unknown-unknown",
-                            "-mbulk-memory",
-                            if options.wasm_simd {
-                                "-msimd128"
-                            } else {
-                                "-mno-simd128"
-                            },
-                        ]
-                        .map(OsString::from),
-                    );
+                    args.extend(wasm_target_args(&options));
                 } else {
                     args.extend(compile_args(platform));
                     if options.cpu == Cpu::Native {
@@ -4396,21 +4411,7 @@ fn build_complete(
             clang.arg("-g");
         }
         if options.target.is_wasm() {
-            clang
-                .arg(if options.target == Target::Wasm64 {
-                    "--target=wasm64-unknown-unknown"
-                } else {
-                    "--target=wasm32-unknown-unknown"
-                })
-                .arg("-mbulk-memory");
-            if options.wasm_threads {
-                clang.arg("-matomics");
-            }
-            clang.arg(if options.wasm_simd {
-                "-msimd128"
-            } else {
-                "-mno-simd128"
-            });
+            clang.args(wasm_target_args(&options));
         } else {
             clang.args(compile_args(platform));
             if options.cpu == Cpu::Native {
@@ -4810,6 +4811,7 @@ fn build_complete(
         }
     }
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
+    units::remove_files(&temporary.path.join("units"));
     temporary.close()?;
     Ok((messages, trap_sites))
 }

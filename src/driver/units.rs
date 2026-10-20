@@ -29,28 +29,31 @@ use crate::llvm::split::{SplitInput, Unit, split};
 pub(super) enum Mode {
     /// The compiler decides: an eligible build of [`AUTO_MIN_BYTES`] of IR or more is split.
     Auto,
-    /// Never: one module, as before PB07.
+    /// Never: one module, as before PB07. This is the default.
     Single,
     /// Every eligible build, however small.
     Split,
 }
 
 /// What an `auto` build needs to be cut into units: the IR text of at least this many bytes. A unit costs a Clang
-/// job of about 8 ms of CPU time whatever its size, so a small program is faster from one module; on the machine of
-/// the measurements (10 cores, `docs/benchmarks.md`) a cold build of 60 to 100 synthetic modules (2.5 to 4.1 MB of IR)
-/// is as fast either way, and the units are faster from there.
-pub(super) const AUTO_MIN_BYTES: usize = 4 << 20;
+/// job of about 8 ms of CPU time and about as much for the declarations that it repeats, so the units spend about
+/// three times the CPU time of one module, and a first build writes thousands of small files besides. On the machine
+/// of the measurements (10 cores shared with other work, `docs/benchmarks.md`) the first build of 400 synthetic
+/// modules (16.6 MB of IR) took 13% (without the cache) to 40% (with it) longer from units, and a rebuild after the
+/// edit of one module took 31% less, so that the units pay back within two rebuilds; below that size they take more.
+pub(super) const AUTO_MIN_BYTES: usize = 16_000_000;
 
 pub(super) fn mode() -> Result<Mode, Diagnostic> {
     mode_of(env::var_os(CODEGEN_UNITS_VARIABLE).as_deref())
 }
 
+/// The mode that a value of the variable names; unset and empty are the default, one module.
 pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
     match value {
-        None => Ok(Mode::Auto),
+        None => Ok(Mode::Single),
         Some(value) => match value.to_str() {
-            Some("" | "auto") => Ok(Mode::Auto),
-            Some("single") => Ok(Mode::Single),
+            Some("" | "single") => Ok(Mode::Single),
+            Some("auto") => Ok(Mode::Auto),
             Some("split") => Ok(Mode::Split),
             _ => Err(driver_error(
                 "E2000",
@@ -183,6 +186,20 @@ struct Lookup {
     /// The metadata of the entry when its time of use is to be written.
     touch: Option<serde_json::Value>,
     message: Option<String>,
+}
+
+/// Deletes the files that a build left in `directory` on several threads: thousands of small files take seconds to
+/// delete one after another on macOS. The directory itself goes with the temporary directory that holds it.
+pub(super) fn remove_files(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let paths: Vec<PathBuf> = entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .collect();
+    parallel(&paths, |path| {
+        let _ = fs::remove_file(path);
+    });
 }
 
 /// The response file that names the objects to link, one quoted path per line (a link of thousands of objects does not
@@ -526,8 +543,9 @@ mod tests {
 
     #[test]
     fn codegen_units_mode_accepts_auto_single_split_and_rejects_others() {
-        assert_eq!(mode_of(None).unwrap(), Mode::Auto);
-        assert_eq!(mode_of(Some(OsStr::new(""))).unwrap(), Mode::Auto);
+        // The default is one module: unset and empty.
+        assert_eq!(mode_of(None).unwrap(), Mode::Single);
+        assert_eq!(mode_of(Some(OsStr::new(""))).unwrap(), Mode::Single);
         assert_eq!(mode_of(Some(OsStr::new("auto"))).unwrap(), Mode::Auto);
         assert_eq!(mode_of(Some(OsStr::new("single"))).unwrap(), Mode::Single);
         assert_eq!(mode_of(Some(OsStr::new("split"))).unwrap(), Mode::Split);
@@ -541,6 +559,18 @@ mod tests {
             mode_of(Some(OsStr::new("Single"))).unwrap_err().code,
             "E2000"
         );
+    }
+
+    #[test]
+    fn remove_files_empties_a_directory_and_tolerates_a_missing_one() {
+        let directory = crate::driver::TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        for index in 0..40 {
+            fs::write(directory.path.join(format!("u{index:05}.o")), b"x").unwrap();
+        }
+        remove_files(&directory.path);
+        assert_eq!(fs::read_dir(&directory.path).unwrap().count(), 0);
+        remove_files(&directory.path.join("missing"));
+        directory.close().unwrap();
     }
 
     #[test]

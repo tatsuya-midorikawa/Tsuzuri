@@ -545,12 +545,14 @@ pub(crate) fn build_key(
         hash.field("linker", linker.as_encoded_bytes());
     }
     // A native executable or object and a wasm32 module may be built from codegen units (PB07), which changes their
-    // bytes: `single`, `auto` and the unset variable keep apart what they make. A build that cannot split has the same
-    // bytes whatever it says, but the key has no need to know which those are.
+    // bytes. Unset, empty and `single` add nothing, so their keys are the ones that were made before the variable
+    // existed; `auto` and `split` keep apart what they make. A build that cannot split has the same bytes whatever the
+    // variable says, but the key has no need to know which those are.
     if matches!(
         (options.target, options.emit),
         (Target::Native, Emit::Executable | Emit::Object) | (Target::Wasm32, Emit::Wasm)
     ) && let Some(units) = std::env::var_os(crate::driver::CODEGEN_UNITS_VARIABLE)
+        .filter(|value| !value.is_empty() && value != "single")
     {
         hash.field("codegen-units", units.as_encoded_bytes());
     }
