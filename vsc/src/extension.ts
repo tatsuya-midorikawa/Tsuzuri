@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { sourcePattern, supportsDebug } from './core';
+import { assertSupportedHost, sourcePattern, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
@@ -14,6 +14,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	if (!vscode.workspace.isTrusted) {
 		return;
 	}
+	assertSupportedHost();
 	const output = vscode.window.createOutputChannel('Tsuzuri');
 	context.subscriptions.push(output);
 	await vscode.commands.executeCommand('setContext', 'tsuzuri.debugAvailable', supportsDebug());

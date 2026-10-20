@@ -5,8 +5,20 @@ import * as path from 'node:path';
 export const sourcePattern = '**/*.{tz,tt,tc}';
 export const excludedPattern = '**/{node_modules,target,toolchain,.git,.tsuzuri,.vscode-test}/**';
 
+const supportedHosts = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
+
+export function supportsHost(platform: string = process.platform, architecture: string = process.arch): boolean {
+	return supportedHosts.includes(`${platform}-${architecture}`);
+}
+
+export function assertSupportedHost(platform: string = process.platform, architecture: string = process.arch): void {
+	if (!supportsHost(platform, architecture)) {
+		throw new Error(`Unsupported Tsuzuri extension host: ${platform}-${architecture}. Supported hosts: ${supportedHosts.join(', ')}.`);
+	}
+}
+
 export function supportsDebug(platform: string = process.platform, architecture: string = process.arch): boolean {
-	return ['darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64'].includes(`${platform}-${architecture}`);
+	return supportsHost(platform, architecture) && !(platform === 'win32' && architecture === 'arm64');
 }
 
 export async function exists(file: string): Promise<boolean> {

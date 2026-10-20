@@ -21,19 +21,20 @@ OS／CPU 別 VSIX にコンパイラとビルド用ツールチェーンを同�
 
 | target | 編集・診断・整形・ビルド・実行・テスト | ソースデバッグ |
 | --- | --- | --- |
-| darwin-x64 | 有効 | CodeLLDB |
 | darwin-arm64 | 有効 | CodeLLDB |
 | linux-x64 | 有効 | CodeLLDB |
 | linux-arm64 | 有効 | CodeLLDB |
 | win32-x64 | 有効 | CodeLLDB |
 | win32-arm64 | 有効 | 未対応。ほかの機能には影響しません |
 
-x86 32-bit は非対応です。Windows ARM64 ではデバッグ用依存を要求せず、デバッグボタンも表示しません。
+対応するのは上の 5 環境だけです。Intel Mac、x86 32-bit、その他の OS／CPU は対象外です。
+拡張機能は起動時に拡張ホストの OS／CPU を検査し、対象外では対応ホストの一覧を含むエラーで停止します。LSP、ビルド、実行、テストは開始せず、開発用の compilerPath／toolchainPath を指定しても対象環境は増えません。
+Windows ARM64 ではデバッグ用依存を要求せず、デバッグボタンも表示しません。
 Linux は glibc ベースの VS Code 対応環境を対象とし、Alpine/musl の拡張ホストは対象外です。生成する Linux プログラムは同梱 musl を使います。
 Remote SSH／WSL／Dev Containers では拡張機能をリモート側へ導入し、その拡張ホストに合う VSIX を選択します。Web 版 VS Code／仮想ワークスペースは対象外です。
 
 **検証状況:** macOS ARM64 では実際の VS Code 上の編集からデバッグまで確認済みです。
-他の OS／CPU の実機試験は、この作業環境では実行していません。6 環境の CI は、そのホスト上のテストに成功した場合だけ VSIX を保存します。
+他の OS／CPU の実機試験は、この作業環境では実行していません。[5 環境の CI](../.github/workflows/vscode.yml) が各ホストでツールチェーン、拡張機能、インストールした VSIX を検証します。配布・起動の対応範囲と、Windows ARM64 のソースデバッグ未対応は区別します。
 OS の最小版は VS Code、同梱 LLVM バイナリ、CodeLLDB の要件をすべて満たす必要があります。別 OS での動作保証をクロスコンパイルだけで主張しません。
 
 ## 編集機能
@@ -94,6 +95,7 @@ cd vsc
 npm ci
 LLVM_PREFIX=/absolute/path/to/llvm21 npm run toolchain
 npm run test:unit
+node ../tests/platforms.mjs
 npm run test:toolchain
 npm test
 npm run vsix
@@ -102,6 +104,7 @@ npm run test:installed
 
 Homebrew の LLVM と lld が別パッケージの場合は `TSUZURI_WASM_LD=/absolute/path/to/wasm-ld` も指定します。
 Windows は環境変数 LLVM_PREFIX に LLVM 21 のインストール先を指定します。ターゲットの CPU と Node／Rust／LLVM の CPU を一致させてください。
+開発・パッケージ作成・再検証・IDE 統合テストのホストも上の 5 環境だけです。対象外では、既存のツールチェーンや VSIX があっても処理の最初にエラーとなり、VS Code の取得やネイティブツールの起動を行いません。
 `npm test` は隔離された VS Code 1.103.2 を取得します。既存 VS Code を使う場合は VSCODE_EXECUTABLE_PATH を実行ファイルの絶対パスにします。
 Linux の GUI なし環境では `xvfb-run -a npm test` を使います。
 
@@ -111,6 +114,7 @@ Windows ARM64 では Zig 0.16.0 がリンク中に異常終了するため、Zig
 ダウンロードは固定 SHA-256 で検証し、ライセンスを同梱します。生成物は git 管理せず、npm の lockfile とビルドスクリプトを管理します。
 
 `npm run vsix` は manifest と全ツールのハッシュを検証してから platform-specific VSIX を作り、アーカイブ内の全ツールのハッシュ・実行権限・必須ファイルを再検証します。
+`npm run vsix:verify` もホストとツールチェーンの OS／CPU を照合します。`npm run test:unit` は起動時と開発用コンパイラ解決時の対象外ホストの拒否、5 環境の機能判定、Windows ARM64 だけのデバッグ無効化を検証します。`tests/platforms.mjs` は配布設定・CI マトリクス・この文書と公開手順の対応表を照合し、対象外での VSIX 作成・再検証と IDE 統合テストの拒否も検証します。CI は各ホストで両方を実行します。
 `dist/tsuzuri-0.1.0-<target>.vsix` と SHA-256 ファイルが成果物です。`npm run vsix:verify` で再検証できます。
 検証は native／WASM O0／O3、同梱物の別パス移動、システム Clang／SDK の遮断、IO、並列テスト、Unicode 診断、複数 root、実際の LLDB 停止と変数を含みます。
 `test:installed` は空の拡張プロファイルへ VSIX をインストールし、開発フォルダーではなく配布物のコードで同じ IDE 試験を行います。macOS ARM64 では VS Code 1.103.2 と作業環境の VS Code で確認済みです。

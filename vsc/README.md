@@ -211,6 +211,7 @@ VS Code 1.103 以降が必要です。
 | Windows | ARM64 | 対応 | 未対応 |
 
 - Intel Mac、32-bit x86、Alpine Linux など musl ベースの環境で動く VS Code、Web 版 VS Code は対象外です。
+- 対象外の OS／CPU では、拡張機能は起動時に対応ホストを示すエラーで停止し、LSP・ビルド・実行・テストを開始しません。開発用コンパイラを設定しても同じです。
 - Remote - SSH、WSL、Dev Containers では、リモート側に拡張機能をインストールしてください。
 - Linux で作る実行ファイルは、同梱の musl を使います。
 - VS Code を使わない環境（CI、サーバー、ほかのエディター）では、同じツールチェーンを CLI の配布物（`tsuzuri-<version>-<host>.tar.gz`）として使えます。導入手順は[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#配布物を使う)を参照してください。

@@ -3,17 +3,64 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { runInNewContext } from 'node:vm';
+import { assertSupportedHost, commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
-test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
-	assert.equal(supportsDebug('win32', 'arm64'), false);
-	assert.equal(supportsDebug('win32', 'ia32'), false);
-	assert.equal(supportsDebug('darwin', 'x64'), false);
-	for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
-		assert.equal(supportsDebug(platform, architecture), true);
+test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
+	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
+	for (const platform of ['darwin', 'linux', 'win32', 'freebsd', 'android', 'aix', 'openbsd', 'sunos', 'web']) {
+		for (const architecture of ['x64', 'arm64', 'ia32', 'arm', 'riscv64', 'ppc64', 's390x']) {
+			const host = `${platform}-${architecture}`;
+			const expected = supported.includes(host);
+			assert.equal(supportsHost(platform, architecture), expected, host);
+			assert.equal(supportsDebug(platform, architecture), expected && host !== 'win32-arm64', host);
+			if (expected) {
+				assert.doesNotThrow(() => assertSupportedHost(platform, architecture), host);
+			} else {
+				assert.throws(() => assertSupportedHost(platform, architecture), {
+					message: `Unsupported Tsuzuri extension host: ${host}. Supported hosts: ${supported.join(', ')}.`,
+				});
+			}
+		}
 	}
+	assert.equal(supportsHost(), supported.includes(`${process.platform}-${process.arch}`));
 	for (const action of ['check', 'build', 'run', 'test', 'wasm'] as const) {
 		assert.ok(commandArguments(action, '/project').length);
+	}
+});
+
+test('unsupported hosts fail activation and toolchain resolution before any IDE or compiler work', async () => {
+	const sources = new Map(await Promise.all(['core', 'extension', 'toolchain'].map(async name =>
+		[name, await readFile(path.join(__dirname, '..', `${name}.js`), 'utf8')] as const)));
+	const modules = new Map<string, Record<string, unknown>>();
+	const unexpected = () => { throw new Error('An unsupported host must not register IDE features or resolve a development compiler.'); };
+	const vscode = {
+		workspace: { isTrusted: true, getConfiguration: unexpected },
+		window: { createOutputChannel: unexpected },
+	};
+	function load(name: string): Record<string, unknown> {
+		const cached = modules.get(name);
+		if (cached) { return cached; }
+		const source = sources.get(name);
+		assert.ok(source);
+		const exports: Record<string, unknown> = {};
+		modules.set(name, exports);
+		runInNewContext(source, {
+			exports,
+			process: { platform: 'darwin', arch: 'x64' },
+			require(id: string) {
+				if (id === 'vscode') { return vscode; }
+				if (id.startsWith('node:')) { return require(id); }
+				if (sources.has(id.slice(2))) { return load(id.slice(2)); }
+				return {};
+			},
+		});
+		return exports;
+	}
+	for (const [module, name] of [['extension', 'activate'], ['toolchain', 'toolchain']]) {
+		const invoke = load(module)[name];
+		assert.ok(typeof invoke === 'function');
+		await assert.rejects(async () => invoke({}), /Unsupported Tsuzuri extension host: darwin-x64\./);
 	}
 });
 

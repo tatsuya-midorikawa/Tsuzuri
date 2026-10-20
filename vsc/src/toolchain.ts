@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { exists, runProcess, ProcessOptions } from './core';
+import { assertSupportedHost, exists, runProcess, ProcessOptions } from './core';
 
 export interface Toolchain {
 	compiler: string;
@@ -13,6 +13,7 @@ export async function toolchain(context: vscode.ExtensionContext, resource?: vsc
 	if (!vscode.workspace.isTrusted) {
 		throw new Error('Trust this workspace before running Tsuzuri.');
 	}
+	assertSupportedHost();
 	const settings = vscode.workspace.getConfiguration('tsuzuri', resource);
 	const root = settings.get<string>('toolchainPath') || context.asAbsolutePath('toolchain');
 	const suffix = process.platform === 'win32' ? '.exe' : '';

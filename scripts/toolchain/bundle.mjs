@@ -35,6 +35,12 @@ export const mingwChecksums = {
 };
 export const llvmTools = ['clang', 'wasm-ld', ...(process.platform === 'darwin' ? ['dsymutil', 'llvm-link'] : []), ...(mingwChecksums[host] ? ['ld.lld'] : [])];
 
+export function assertSupportedHost(value = host) {
+  if (!Object.hasOwn(platforms, value) && !Object.hasOwn(mingwChecksums, value)) {
+    throw new Error(`Unsupported toolchain host: ${value}. Supported hosts: ${[...Object.keys(platforms), ...Object.keys(mingwChecksums)].sort().join(', ')}.`);
+  }
+}
+
 export function run(command, args, capture = false) {
   return execFileSync(command, args, { cwd: repository, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit' });
 }
@@ -119,6 +125,7 @@ export function extractArchive(archive, directory) {
 }
 
 export async function verify(destination) {
+  assertSupportedHost();
   const manifest = JSON.parse(await readFile(path.join(destination, 'manifest.json'), 'utf8'));
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) { throw new Error('Toolchain host mismatch.'); }
   const files = await entries(destination);
@@ -178,7 +185,7 @@ async function crateLicenses(rustHost, licenses) {
 }
 
 export async function bundle(destination) {
-  if (!platforms[host] && !mingwChecksums[host]) { throw new Error(`Unsupported toolchain host: ${host}. x86 (32-bit) hosts are not supported.`); }
+  assertSupportedHost();
   const rustHost = /^host: (.+)$/m.exec(run('rustc', ['-vV'], true))?.[1];
   const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
   if (!rustHost?.startsWith(`${architecture}-`)) { throw new Error(`Rust host ${rustHost} does not match the native toolchain host ${host}.`); }

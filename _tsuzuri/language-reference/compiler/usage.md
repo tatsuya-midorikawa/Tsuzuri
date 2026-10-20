@@ -165,6 +165,8 @@ Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、�
 
 拡張機能を入れると、コンパイラ、LLVM、リンカーが同梱されます。追加のランタイムは要りません。対応は VS Code 1.103 以降で、macOS Arm64、Linux（glibc）x64/Arm64、Windows x64/Arm64 です。Windows Arm64 以外はデバッガーも同梱します。Windows Arm64 は編集・診断・ビルド・実行・テストに対応し、ソースデバッグは未対応です。
 
+拡張機能は起動時に拡張ホストの OS／CPU を検査します。対象外では対応ホストの一覧を示すエラーで停止し、言語サーバーやコンパイラを起動しません。開発用の `compilerPath`・`toolchainPath` を設定しても対象環境は増えません。VSIX の作成と再検証も、対応する 5 環境だけで行えます。
+
 コマンドパレットの **Tsuzuri: New Project** は、同梱コンパイラの `tsuzuri new` で `Main.tz`、`Tsuzuri.toml`、`.gitignore` を作ります。エディター右上の実行は、未保存のファイルを保存してからビルドします。検査、WebAssembly のビルド、Test Explorer、ブレークポイントも拡張側の操作です。設定の `tsuzuri.optimization` の既定は 3 で、デバッグ実行は常に 0 です。
 
 信頼していないフォルダーでは、コンパイラもユーザーのプログラムも起動しません。詳しい操作は [VS Code 拡張の README](../../../vsc/README.md) を見てください。
