@@ -1732,6 +1732,7 @@ PM09（2026-10-20）。関数のフレームを小さくする施策（スタッ
 
 **条件。** Apple M1 Max（10 論理 CPU）、macOS 27.0.1、Apple clang 21.0.0（clang-2100.3.34.2）、Homebrew の LLVM 21（`llvm-objdump`・`wasm-ld`）、rustc 1.98.1、Node.js 20.19.6。1 分の load average は 6〜66（ほかの作業と共有）で、
 フレームの大きさと完走の可否は load に依りませんが、時間は参考値です。after はこのブランチ（コード `6e943a47`）の dev ビルド（SHA-256 `e00182b7…`。コンパイラの最適化水準は、出す IR に影響しません）、before は main `a8875f38` の release ビルド（`35508982…`）です。
+追補（D16・D17）の後の最終版の dev ビルドで、M1 の `tests/fixtures/control`・`tests/fixtures/stack`・`examples/control` の行と `user_drop` を測り直しました（`examples/` と `tests/fixtures/` の 108 プロジェクトの native の IR は、`simd`（印の有無だけ）と `user_drop`（追補で足した関数）以外、`6e943a47` のビルドと同一です）。M2・M3 の after は `6e943a47` のままです。
 生データは `target/perf/PM09-before/`・`target/perf/PM09-after/`（git の管理外）にあります。
 
 ### M1: フレームの大きさ
@@ -1745,20 +1746,26 @@ PM09（2026-10-20）。関数のフレームを小さくする施策（スタッ
 | 同 | `-O3` | 2 | 1,264 → 736 | `deep` 1,264 → 736（−42%） |
 | `tests/fixtures/stack`（相互再帰 5 本） | `-O0` | 121 | 10,144 → 10,064 | `even`・`odd` 48 → 32、`ca`・`cb`・`cc` 64 → 48 |
 | 同 | `-O3` | 8 | 480 → 480 | なし |
-| `tests/fixtures/control` | `-O0` | 735 | 458,896 → 458,752 | 13 関数（`even`・`odd` 48 → 32、`TailCalls.ca`・`cb` 64 → 48 など。いずれも末尾呼び出し） |
-| 同 | `-O3` | 137 → 135 | 297,456 → 297,008 | `Frames.spread` 1,264 → 736、`TailCalls.ping_list` 64 → 0、`tz_tail_lists` 32 → 64、`tz_tail_texts` 0 → 112 |
+| `tests/fixtures/control` | `-O0` | 738 | 459,632 → 459,488 | 13 関数（`even`・`odd` 48 → 32、`TailCalls.ca`・`cb` 64 → 48 など。いずれも末尾呼び出し） |
+| 同 | `-O3` | 139 → 137 | 297,632 → 297,184 | `Frames.spread` 1,264 → 736、`TailCalls.ping_list` 64 → 0（なくなります）、`tz_tail_lists` 32 → 64、`tz_tail_texts` 0 → 112 |
 | `examples/control` | `-O0` | 50 | 5,616 → 5,584 | `even`・`odd` 48 → 32 |
 
 - 印の効果は、展開されない関数の `-O3` に出ます。`deep` の 2 つのリスト（536 と 520 bytes の `alloca`）が同じ場所に重なります。`-O0` は領域を重ねないので変わりません。`frames_disjoint` のように呼び出し元へ展開される関数は、印がなくても `-O3` で 0 bytes です。
-- `-O0` の相互再帰の関数（末尾呼び出しにした関数）は、フレームが 16 bytes 小さくなりました（`even`・`odd` は 33%、`ca`・`cb`・`cc` は 25%）。原因は調べていません。
-- `-O3` で大きくなる関数もあります（`tz_tail_texts` 0 → 112、`tz_tail_lists` 32 → 64。`TailCalls.ping_list` は 64 → 0 に小さくなります）。`TailCalls.tz` の相互再帰が `musttail` になったので、その周りの `-O3` の形が変わったと考えられます。原因は調べていません。実行時間は `control` の測定（M3）と、相互再帰 3 種（`even`／`odd`、3 関数の循環、文字列を持つ `text_even`）を `-O3` で 1 回ずつ動かした単発の実行（user 時間が before 0.097 s、after 0.088 s）で変わっていません。
+- `-O0` の相互再帰の関数（末尾呼び出しにした関数）は、フレームが 16 bytes 小さくなりました（`even`・`odd` は 33%、`ca`・`cb`・`cc` は 25%）。arm64 のアセンブリで確かめた原因は、`bl` が `b` になり、リンクレジスタとフレームポインタ（`x29`・`x30`）を退避する 16 bytes が要らなくなることです（`ca` の IR は `musttail` の有無だけが違います）。x86-64 などほかの CPU のフレームは測っていません。
+- `-O3` で大きくなった関数は、`control` の 2 つです（`tz_tail_lists` 32 → 64、`tz_tail_texts` 0 → 112）。小さくなった関数もあり（`TailCalls.ping_list` 64 → 0、`Frames.spread` 1,264 → 736）、プロジェクトの合計は 448 bytes 減っています。原因は、`-O3` の IR と `opt -print-after-all` の各段の IR で調べました（生データは `target/perf/PM09-after/m1-growth/`）。
+  - `tz_tail_lists` は、基準で別の関数だった `ping_list`（64 bytes。再帰のたびに積まれます）が `tz_tail_lists` へ展開されて 1 つのループになり、その 64 bytes を `tz_tail_lists` が持つようになったものです。深さに比例するスタックがなくなったので、関数ごとの数字は増えても、深い再帰の使用量は減ります。C のホストから呼んだ深さ 100,000 の `tz_tail_lists`（20 回の最小値）は、before 2.34 ms、after 1.27 ms でした。
+  - `tz_tail_texts` の原因は、`musttail` でも寿命の印でもありません。この関数の文字列には印がなく、`musttail` を普通の `call` に替えた IR（解放は呼び出しの前のまま）でも、112 bytes と 6 個の `malloc`・`free` が同じように残ります。原因は、D1 の解放の順序と LLVM の最適化の順番の相互作用です。基準の IR は文字列を呼び出しの後で解放するので、呼び出しは末尾呼び出しではなく、`-O3` はまず連結の複写ループと、使われていない `malloc`・`memcpy`・`free` を消し、そのあとで残った自己再帰を `TailCallElim` でループにします（`tz_tail_texts` は `text_even` を呼ぶだけで、0 bytes）。D1 の順序は解放が呼び出しの前なので、最初の `TailCallElim` の時点で確保がまだ残っていて、呼び出しはすでに末尾呼び出しです。ループにしたあとは確保が消えません（消えない理由は調べていません）。同じ IR の関数に `"disable-tail-calls"="true"` を付けて `TailCallElim` を止めると、確保は消えます。
+  - 実行時間への影響は、`control` の IR の形に限ります。`control` の IR の `tz_tail_texts` を C のホストから呼ぶと、深さ 2,000,000（5 回の最小値。1 分の load average は 12〜19）で before 1.0〜1.1 ms、after 23〜26 ms で、1 反復あたり約 0.5 ns から約 12 ns になります。同じ 2 つの関数だけのプロジェクト（`export` の包みを付けたものと付けないもの）では、before も after も最適化した IR にこの再帰の `malloc`・`free` はなく、`-O3` の実行ファイルは深さ 20,000,000 を user 時間 0.01 s 以下で終えます。ほかの形で起きないことは確かめていません。
+  - 保証を変えない修正の候補はあります。グループの関数に `"disable-tail-calls"="true"` を付けると（`musttail` はそのままです）、`control` の IR で確保が消え、`tz_tail_texts` は 0 bytes、深さ 2,000,000 で 0.75 ms（before 1.1 ms）になります。一方、`-O3` が相互再帰を畳む `TailCallElim` が止まるので、3 関数の循環 `tz_tail_cycle` は深さ 10,000,000 で 2.15 ms から 3.30 ms に遅くなります。グループの関数にある保証のない末尾位置の呼び出しの最適化も止まると考えられます（測っていません）。測ったのは 2 つの形だけなので、採用していません。
 
 **108 プロジェクトの `-O3`・`-O0` の合計**（`examples/` の 13 と `tests/fixtures/` の 107 のうち、IR を作れた 108。すべての関数のフレームの合計）:
 
 | 水準 | before | after | 差 | 大きくなったプロジェクト | 小さくなったプロジェクト |
 | --- | --- | --- | --- | --- | --- |
-| `-O3` | 5,853,600 | 5,853,136 | −464 | 0 | 2（`control` −448、`user_drop` −16） |
-| `-O0` | 12,572,576 | 12,572,256 | −320 | 0 | 5（`control` −144 ほか。末尾呼び出しの関数） |
+| `-O3` | 5,853,936 | 5,853,472 | −464 | 0 | 2（`control` −448、`user_drop` −16） |
+| `-O0` | 12,574,096 | 12,573,776 | −320 | 0 | 5（`control` −144 ほか。末尾呼び出しの関数） |
+
+合計は、ほかの 106 プロジェクトの測定値（`6e943a47` のビルド。2026-10-20）に、現在の fixture で測り直した `control` と `user_drop` の値を足し替えたものです（`control` は `Frames.tz` に、`user_drop` は追補で関数が増えました）。差は、足し替える前と同じ −464・−320 bytes です。
 
 **寿命の印を付ける領域の選び方。** 文字列連結のバッファ（256 bytes）と捕捉環境にも印を付ける版は、同じ 108 プロジェクトの `-O3` で合計が **+23,872 bytes** になりました（大きくなったプロジェクト 6、小さくなったもの 11。`tests/fixtures/stack` の `tsuzuri_main` は 368 → 576、`net_sockets` は 42,448 → 57,408）。
 印のある `alloca` には LLVM のインライナーが自分の印を付けず（`opt -passes=always-inline` で確かめた）、この 2 種類は値がヒープへ移った経路に `end` がないので、展開された呼び出し元では領域が関数の終わりまで生きて、重ならなくなるためです。
@@ -1825,6 +1832,7 @@ native `-O0` の 250 ms 前後は、2,000 万回の末尾呼び出し（`b` の�
 - Binaryen の `wasm-opt`（`--enable-tail-call` を渡す実装だけで、実行は確かめていません）、wasm64 の実行（Node.js 20 は memory64 を既定で持ちません。wasm64 は object の生成だけを確かめました）。
 - ブラウザの WebAssembly エンジン（Node.js 20.19.6 の V8 だけで `return_call` を実行しました）。
 - フレームの大きさの前後比較は、IR を共有する clang の後段の値で、`-O3` のフレーム全体の改善の主張は「展開されない関数で 1 つの再帰関数が 42% 小さくなった」と「108 プロジェクトの合計が −464 bytes（−0.008%）」までです。
+- 相互再帰・文字列・リストを持つ実プログラムの `-O3` の実行時間の前後比較。測ったのは、相互再帰を含まない `control` suite（M3）と、`control` の IR の `tz_tail_texts`・`tz_tail_lists`・`tz_tail_cycle` を C のホストから呼んだ時間（M1）、同じ関数だけの小さなプロジェクト 2 つの実行だけです。`tz_tail_texts` は `control` の IR では after が約 20 倍遅く、その原因と範囲は M1 に書きました。
 
 ## 動的ディスパッチの比較（A14）
 
