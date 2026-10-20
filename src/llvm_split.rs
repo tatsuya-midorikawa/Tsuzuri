@@ -2307,6 +2307,7 @@ entry:
         let mut programs = 0;
         let mut units_made = 0;
         let mut promoted = 0;
+        let (mut tail_calls, mut crossing, mut markers) = (0, 0, 0);
         for parent in ["examples", "benchmarks", "tests/fixtures"] {
             let mut directories: Vec<_> = std::fs::read_dir(root.join(parent))
                 .unwrap()
@@ -2368,12 +2369,23 @@ entry:
                     assert_eq!(units, again, "{} is deterministic", directory.display());
                     units_made += units.len();
                     promoted += assert_reserved_names(&ir, &units);
+                    let tail = assert_tail_calls_and_markers(&units);
+                    tail_calls += tail.calls;
+                    crossing += tail.across;
+                    markers += tail.markers;
                 }
                 programs += 1;
             }
         }
         assert!(programs > 60, "{programs} programs");
         assert!(units_made > 1000, "{units_made} units");
+        // The programs of PM09 have guaranteed tail calls and lifetime markers (the calls between units are those of
+        // `guaranteed_tail_calls_and_lifetime_markers_survive_the_cut`: no program of the repository has a group over
+        // more than one module).
+        assert!(
+            tail_calls > 10 && markers > 100,
+            "{tail_calls} guaranteed tail calls, {crossing} of them across units, {markers} lifetime markers"
+        );
         // The builds with trap information embed the numeric runtime of a program that needs it, whose helpers
         // (`decode`, `power`, ...) have generic names.
         assert!(promoted >= 19, "{promoted} promoted generic names");
@@ -3126,6 +3138,243 @@ entry:
             }
         }
         assert_eq!(tail_calls, 2);
+    }
+
+    /// The result and the parameter types of a `define` or `declare` line, without the linkage words and the names of
+    /// the parameters.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Prototype {
+        name: String,
+        result: String,
+        parameters: Vec<String>,
+    }
+
+    fn prototype(line: &str) -> Prototype {
+        const LINKAGE: [&str; 7] = [
+            "hidden",
+            "internal",
+            "private",
+            "weak",
+            "external",
+            "dso_local",
+            "default",
+        ];
+        let name = first_symbol(line).expect("a function line has a name");
+        let mut before: Vec<&str> = line[..name.start].split_whitespace().skip(1).collect();
+        while before.first().is_some_and(|word| LINKAGE.contains(word)) {
+            before.remove(0);
+        }
+        let rest = &line[name.end..];
+        let open = rest.find('(').expect("a parameter list");
+        let mut depth = 0;
+        let mut start = open + 1;
+        let mut close = open;
+        let mut pieces = Vec::new();
+        for (index, byte) in rest.bytes().enumerate().skip(open) {
+            match byte {
+                b'(' | b'{' | b'[' | b'<' => depth += 1,
+                b')' | b'}' | b']' | b'>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = index;
+                        break;
+                    }
+                }
+                b',' if depth == 1 => {
+                    pieces.push(&rest[start..index]);
+                    start = index + 1;
+                }
+                _ => {}
+            }
+        }
+        pieces.push(&rest[start..close]);
+        let parameters = pieces
+            .into_iter()
+            .filter(|piece| !piece.trim().is_empty())
+            .map(|piece| {
+                let mut words: Vec<&str> = piece.split_whitespace().collect();
+                if words.len() > 1 && words.last().is_some_and(|word| word.starts_with('%')) {
+                    words.pop();
+                }
+                words.join(" ")
+            })
+            .collect();
+        Prototype {
+            name: name.name.to_owned(),
+            result: before.join(" "),
+            parameters,
+        }
+    }
+
+    /// How many guaranteed tail calls (PM09) the units hold, how many of them call a function that another unit
+    /// defines, and how many lifetime markers they call.
+    #[derive(Debug, Default)]
+    struct TailReport {
+        calls: usize,
+        across: usize,
+        markers: usize,
+    }
+
+    /// What the cut must keep of the instructions that PM09 adds. A `musttail` call stays directly before the `ret` of its
+    /// value. A callee that another unit defines is declared, in the unit that calls it, with the result and parameter
+    /// types and ABI attributes of its definition and as many parameters as the caller has (`musttail` needs the same
+    /// prototype). Each unit declares a lifetime intrinsic once when it calls it and never when it does not.
+    fn assert_tail_calls_and_markers(units: &[Unit]) -> TailReport {
+        let mut defined: BTreeMap<String, (usize, Prototype)> = BTreeMap::new();
+        for (index, unit) in units.iter().enumerate() {
+            for line in unit.text.lines().filter(|line| line.starts_with("define ")) {
+                let prototype = prototype(line);
+                defined.insert(prototype.name.clone(), (index, prototype));
+            }
+        }
+        let mut report = TailReport::default();
+        for (index, unit) in units.iter().enumerate() {
+            let lines: Vec<&str> = unit.text.lines().collect();
+            let declarations: Vec<Prototype> = lines
+                .iter()
+                .filter(|line| line.starts_with("declare "))
+                .map(|line| prototype(line))
+                .collect();
+            let mut caller: Option<Prototype> = None;
+            for (number, line) in lines.iter().enumerate() {
+                if line.starts_with("define ") {
+                    caller = Some(prototype(line));
+                }
+                let Some(at) = line.find("musttail call ") else {
+                    continue;
+                };
+                report.calls += 1;
+                let next = lines.get(number + 1).map_or("", |next| next.trim());
+                assert!(
+                    next.starts_with("ret "),
+                    "{}: the line after `{line}` is `{next}`",
+                    unit.name
+                );
+                if let Some(value) = line[..at].trim().strip_suffix('=').map(str::trim) {
+                    assert!(
+                        next.contains(value),
+                        "{}: `{next}` does not return {value}",
+                        unit.name
+                    );
+                }
+                let callee = first_symbol(&line[at..]).expect("a callee").name;
+                let (home, definition) = defined
+                    .get(callee)
+                    .unwrap_or_else(|| panic!("{}: @{callee} is defined in no unit", unit.name));
+                if *home == index {
+                    continue;
+                }
+                report.across += 1;
+                let declaration = declarations
+                    .iter()
+                    .find(|declaration| declaration.name == callee)
+                    .unwrap_or_else(|| panic!("{}: @{callee} is not declared", unit.name));
+                assert_eq!(declaration, definition, "{}: @{callee}", unit.name);
+                let caller = caller.as_ref().expect("a call is inside a function");
+                assert_eq!(
+                    declaration.parameters.len(),
+                    caller.parameters.len(),
+                    "{}: @{callee} is called from @{}",
+                    unit.name,
+                    caller.name
+                );
+            }
+            for which in ["start", "end"] {
+                let name = format!("@llvm.lifetime.{which}.p0(");
+                let calls = lines
+                    .iter()
+                    .filter(|line| line.contains("call void ") && line.contains(&name))
+                    .count();
+                let declares = lines
+                    .iter()
+                    .filter(|line| line.starts_with("declare ") && line.contains(&name))
+                    .count();
+                assert_eq!(declares, usize::from(calls > 0), "{}: {name}", unit.name);
+                report.markers += calls;
+            }
+        }
+        report
+    }
+
+    const TAIL_SOURCES: [(&str, &str); 9] = [
+        (
+            "A.tz",
+            "def rec even :: i64 -> bool\nfn rec even n = if n == 0 then true else B.odd (n - 1)\n",
+        ),
+        (
+            "B.tz",
+            "def rec odd :: i64 -> bool\nfn rec odd n = if n == 0 then false else A.even (n - 1)\n",
+        ),
+        (
+            "C.tz",
+            "def rec ca :: i64 -> i64 -> i64\nfn rec ca n acc = if n == 0 then acc else D.cb (n - 1) (acc + 1)\n",
+        ),
+        (
+            "D.tz",
+            "def rec cb :: i64 -> i64 -> i64\nfn rec cb n acc = if n == 0 then acc else E.cc (n - 1) (acc + 1)\n",
+        ),
+        (
+            "E.tz",
+            "def rec cc :: i64 -> i64 -> i64\nfn rec cc n acc = if n == 0 then acc else C.ca (n - 1) (acc + 1)\n",
+        ),
+        (
+            "Lib.tz",
+            "def rec hop :: i64 -> 'a -> 'a\ndef and skip :: i64 -> 'a -> 'a\nfn rec hop n x = if n == 0 then x else skip (n - 1) x\nand skip n x = if n == 0 then x else hop (n - 1) x\n\ndef rec tick :: i64 -> i64 -> i64\ndef and tock :: i64 -> 'a -> i64\nfn rec tick n acc = if n == 0 then acc else tock (n - 1) (acc + 1)\nand tock n _x = if n == 0 then 100 else tick (n - 1) 5\n",
+        ),
+        (
+            "One.tz",
+            "def run :: i64 -> i64\nfn run n = Lib.hop n 7 + Lib.tock n 7\n\ndef local :: i64 -> i64\nfn local n =\n    let rec ping = \\k acc -> if k == 0 then acc else pong (k - 1) (acc + 1)\n    and pong = \\k acc -> if k == 0 then acc else ping (k - 1) (acc + 2)\n    ping n 0\n\ndef frames :: i64 -> i64\nfn frames n =\n    let xs = [|n, n + 1, n + 2|]\n    List.fold (\\s v -> s + v) 0 xs + List.length xs\n",
+        ),
+        (
+            "Two.tz",
+            "def run :: i64 -> i64\nfn run n = Lib.skip n 9 + Lib.tock (n + 1) 9\n\ndef local :: i64 -> i64\nfn local n =\n    let rec ping = \\k acc -> if k == 0 then acc else pong (k - 1) (acc + 1)\n    and pong = \\k acc -> if k == 0 then acc else ping (k - 1) (acc + 2)\n    ping n 0\n",
+        ),
+        (
+            "Main.tz",
+            "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (One.run 5 + Two.run 5 + One.local 6 + Two.local 6 + One.frames 4 + C.ca 9 0 + Lib.tick 8 0)\n    do! IO.write_line (A.even 100)\n    0\n",
+        ),
+    ];
+
+    /// The groups of functions that call each other in tail position, cut into units with the instructions that PM09 adds
+    /// (`musttail`, lifetime markers, and with `--trap-info` the context argument): functions of one group in different
+    /// modules (`A.even` and `B.odd`, `C.ca`, `D.cb` and `E.cc`), an instance of a generic function that a bucket holds
+    /// and a function of its module (`Lib.tick` and `Lib.tock`), two instances of one generic group, and a pair of local
+    /// functions that two modules have as one.
+    #[test]
+    fn guaranteed_tail_calls_and_lifetime_markers_survive_the_cut() {
+        use crate::llvm::TrapNumbering;
+        for numbering in [None, Some(TrapNumbering::Stable)] {
+            let (ir, modules, _) = executable_ir_with(&TAIL_SOURCES, numbering);
+            let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+            let units = split(&SplitInput {
+                ir: &ir,
+                modules: &modules,
+            })
+            .unwrap();
+            let found = check(&ir, &modules, &units);
+            assert!(found.is_empty(), "{numbering:?}: {}", found.join("\n"));
+            // What the text holds, less the functions that equal ones merge into one (the two copies of the pair of local
+            // functions are one function without trap information, which gives their sites a number of their own).
+            let parsed = parse(&ir).unwrap();
+            let plan = plan(&parsed, &modules.iter().copied().collect()).unwrap();
+            let kept: usize = parsed
+                .functions
+                .iter()
+                .enumerate()
+                .filter(|(id, _)| plan.canonical[*id] == *id)
+                .map(|(_, function)| function.text.matches("musttail call ").count())
+                .sum();
+            let report = assert_tail_calls_and_markers(&units);
+            assert_eq!(report.calls, kept, "{numbering:?}");
+            assert!(
+                ir.matches("musttail call ").count() >= 13,
+                "{numbering:?}: {} guaranteed calls",
+                ir.matches("musttail call ").count()
+            );
+            // `A.even` and `B.odd`, `C.ca` to `D.cb` to `E.cc` to `C.ca`, and `Lib.tick` with the instance of `Lib.tock`.
+            assert!(report.across >= 7, "{numbering:?}: {report:?}");
+            assert!(report.markers > 0, "{numbering:?}: {report:?}");
+        }
     }
 
     #[test]

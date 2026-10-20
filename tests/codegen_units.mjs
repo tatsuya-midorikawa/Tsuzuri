@@ -57,13 +57,22 @@ function workspace(modules = MODULES, files = null) {
     writeProject(project, modules);
   }
   const log = join(directory, "units.log");
+  const callsLog = join(directory, "calls.log");
   const wrapper = join(directory, "clang-wrapper.mjs");
+  // The wrapper logs the .ll files and the command line of every run, and copies the units (u00012.ll) into the directory
+  // that TSUZURI_TEST_CAPTURE names, when it is set.
   writeFileSync(wrapper, `#!${process.execPath}
-import { appendFileSync } from "node:fs";
-import { basename } from "node:path";
+import { appendFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 for (const argument of args) if (/\\.ll$/.test(argument)) appendFileSync(${JSON.stringify(log)}, basename(argument) + "\\n");
+appendFileSync(${JSON.stringify(callsLog)}, JSON.stringify(args) + "\\n");
+const capture = process.env.TSUZURI_TEST_CAPTURE;
+if (capture) {
+  mkdirSync(capture, { recursive: true });
+  for (const argument of args) if (/^u\\d{5}\\.ll$/.test(argument)) copyFileSync(argument, join(capture, argument));
+}
 const result = spawnSync(${JSON.stringify(realClang)}, args, { stdio: "inherit" });
 process.exitCode = result.status ?? 1;
 `);
@@ -79,6 +88,20 @@ process.exitCode = result.status ?? 1;
       writeFileSync(log, "");
       return { units: lines.filter((line) => /^u\d{5}\.ll$/.test(line)), others: lines.filter((line) => !/^u\d{5}\.ll$/.test(line)) };
     },
+    // The arguments of every Clang run since the last call.
+    calls() {
+      const lines = existsSync(callsLog) ? readFileSync(callsLog, "utf8").split("\n").filter(Boolean) : [];
+      writeFileSync(callsLog, "");
+      return lines.map((line) => JSON.parse(line));
+    },
+    // The text of the units that the next build gives Clang (a build with the unit cache compiles only the units that miss it,
+    // so the caller says --no-cache), in the order of the units.
+    captured(build) {
+      const capture = join(directory, `capture-${++sequence}`);
+      const result = build(capture);
+      const names = existsSync(capture) ? readdirSync(capture).filter((name) => /^u\d{5}\.ll$/.test(name)).sort() : [];
+      return { result, units: names.map((name) => readFileSync(join(capture, name), "utf8")) };
+    },
     build(args = [], { env: extra = {}, output = "program", success = true } = {}) {
       const out = join(directory, output);
       const result = execute(compiler, ["build", project, "-O0", ...args, "-o", out], { env: { ...env, ...extra }, success });
@@ -90,6 +113,7 @@ process.exitCode = result.status ?? 1;
     },
   };
   space.compiled();
+  space.calls();
   return space;
 }
 
@@ -770,6 +794,248 @@ test("C16 relative Clang", () => {
   execute(compiler, ["build", small.project, "-O0", "--strip", "-o", cached], { cwd: tools, env });
   assert.equal(small.compiled().units.length, 0, `every one of ${total} units comes from the cache`);
   assert.equal(execute(cached, []).status, 0);
+});
+
+// PM09: the calls between the functions of one recursion are guaranteed tail calls (`musttail`), and a recursion of ten million calls
+// runs in the stack of one call. The units must keep them: a `musttail` call stays directly before the `ret` of its value, and a
+// callee that another unit defines is declared with the prototype of its definition. The groups below are cut over units on
+// purpose: `A.even` and `B.odd`, and `C.ca`, `D.cb` and `E.cc`, are in different modules; `Lib.tick` is in its module and the
+// instance of `Lib.tock` is generated, used by three modules, and placed in a bucket; `Lib.hop` and `Lib.skip` have two
+// instances that the buckets hold; `One.local` and `Two.local` have a pair of local functions that the units keep as one. Some
+// function has a list literal, which gets lifetime markers.
+const TAIL_FILES = {
+  "A.tz": "def rec even :: i64 -> bool\nfn rec even n = if n == 0 then true else B.odd (n - 1)\n",
+  "B.tz": "def rec odd :: i64 -> bool\nfn rec odd n = if n == 0 then false else A.even (n - 1)\n",
+  "C.tz": "def rec ca :: i64 -> i64 -> i64\nfn rec ca n acc = if n == 0 then acc else D.cb (n - 1) (acc + 1)\n",
+  "D.tz": "def rec cb :: i64 -> i64 -> i64\nfn rec cb n acc = if n == 0 then acc else E.cc (n - 1) (acc + 1)\n",
+  "E.tz": "def rec cc :: i64 -> i64 -> i64\nfn rec cc n acc = if n == 0 then acc else C.ca (n - 1) (acc + 1)\n",
+  "Lib.tz": String.raw`def rec hop :: i64 -> 'a -> 'a
+def and skip :: i64 -> 'a -> 'a
+fn rec hop n x = if n == 0 then x else skip (n - 1) x
+and skip n x = if n == 0 then x else hop (n - 1) x
+
+def rec tick :: i64 -> i64 -> i64
+def and tock :: i64 -> 'a -> i64
+fn rec tick n acc = if n == 0 then acc else tock (n - 1) (acc + 1)
+and tock n _x = if n == 0 then 100 else tick (n - 1) 5
+`,
+  "One.tz": String.raw`def run :: i64 -> i64
+fn run n = Lib.hop n 7 + Lib.tock n 7
+
+def local :: i64 -> i64
+fn local n =
+    let rec ping = \k acc -> if k == 0 then acc else pong (k - 1) (acc + 1)
+    and pong = \k acc -> if k == 0 then acc else ping (k - 1) (acc + 2)
+    ping n 0
+
+def frames :: i64 -> i64
+fn frames n =
+    let xs = [|n, n + 1, n + 2|]
+    List.fold (\s v -> s + v) 0 xs + List.length xs
+`,
+  "Two.tz": String.raw`def run :: i64 -> i64
+fn run n = Lib.skip n 9 + Lib.tock (n + 1) 9
+
+def local :: i64 -> i64
+fn local n =
+    let rec ping = \k acc -> if k == 0 then acc else pong (k - 1) (acc + 1)
+    and pong = \k acc -> if k == 0 then acc else ping (k - 1) (acc + 2)
+    ping n 0
+`,
+};
+const TAIL_EXPORTS = `export def tail_ring :: i64 -> i64
+fn tail_ring n = if A.even n then 1 else 0
+
+export def tail_cycle :: i64 -> i64
+fn tail_cycle n = C.ca n 0
+
+export def tail_generic :: i64 -> i64
+fn tail_generic n = One.run n + Two.run n
+
+export def tail_local :: i64 -> i64
+fn tail_local n = One.local n + Two.local n
+
+export def tail_ticks :: i64 -> i64
+fn tail_ticks n = Lib.tick n 0
+
+export def tail_frames :: i64 -> i64
+fn tail_frames n = One.frames n
+`;
+const TAIL_NAMES = ["tail_ring", "tail_cycle", "tail_generic", "tail_local", "tail_ticks", "tail_frames"];
+const TAIL_MAIN = String.raw`
+def main :: unit -> i32 = \() ->
+${TAIL_NAMES.map((name) => `    do! IO.write_line (${name} 10000000)`).join("\n")}
+    0
+`;
+// What the six functions return for a depth of ten million: the parity, the depth, 107 + 14 (the generic groups end in `tock` at an
+// even depth and in `tick` at an odd one), three times five million twice, the tick that ends at `tick 0 5`, and 3n + 6.
+const TAIL_RESULTS = [1n, 10_000_000n, 121n, 30_000_000n, 5n, 30_000_006n];
+
+// The result and the parameter types of a `define` or `declare` line, without the linkage words and the names of the parameters.
+const LINKAGE_WORDS = new Set(["hidden", "internal", "private", "weak", "external", "dso_local", "default"]);
+function prototypeOf(line) {
+  const at = line.indexOf("@");
+  const head = line.slice(0, at).trim().split(/\s+/).slice(1);
+  while (head.length && LINKAGE_WORDS.has(head[0])) head.shift();
+  let end;
+  let name;
+  if (line[at + 1] === '"') {
+    end = line.indexOf('"', at + 2) + 1;
+    name = line.slice(at + 2, end - 1);
+  } else {
+    end = at + 1;
+    while (end < line.length && !/[\s(]/.test(line[end])) end++;
+    name = line.slice(at + 1, end);
+  }
+  const open = line.indexOf("(", end);
+  const pieces = [];
+  let depth = 0;
+  let start = open + 1;
+  let close = open;
+  for (let index = open; index < line.length; index++) {
+    const character = line[index];
+    if ("({[<".includes(character)) depth++;
+    else if (")}]>".includes(character)) {
+      if (--depth === 0) { close = index; break; }
+    } else if (character === "," && depth === 1) {
+      pieces.push(line.slice(start, index));
+      start = index + 1;
+    }
+  }
+  pieces.push(line.slice(start, close));
+  const parameters = pieces.filter((piece) => piece.trim()).map((piece) => {
+    const words = piece.trim().split(/\s+/);
+    if (words.length > 1 && words.at(-1).startsWith("%")) words.pop();
+    return words.join(" ");
+  });
+  return { name, result: head.join(" "), parameters };
+}
+
+// What the units (their texts, in order) hold of the guaranteed tail calls and the lifetime markers, checked as the cut must keep them:
+// every `musttail` call is directly followed by the `ret` of its value; a callee that another unit defines is declared in the unit
+// that calls it, with the result and the parameter types of its definition and as many parameters as the caller has; each unit declares
+// a lifetime intrinsic once when it calls it, and never when it does not.
+function tailCallReport(units) {
+  const defined = new Map();
+  units.forEach((text, unit) => {
+    for (const line of text.split("\n")) if (line.startsWith("define ")) defined.set(prototypeOf(line).name, { unit, ...prototypeOf(line) });
+  });
+  const report = { calls: 0, across: 0, markers: 0, kinds: new Set() };
+  units.forEach((text, unit) => {
+    const lines = text.split("\n");
+    const declarations = lines.filter((line) => line.startsWith("declare ")).map(prototypeOf);
+    let caller = null;
+    lines.forEach((line, index) => {
+      if (line.startsWith("define ")) caller = prototypeOf(line);
+      const at = line.indexOf("musttail call ");
+      if (at < 0) return;
+      report.calls++;
+      const next = (lines[index + 1] ?? "").trim();
+      assert.match(next, /^ret /, `unit ${unit}: the line after \`${line.trim()}\` is \`${next}\``);
+      const value = /^\s*(%[\w.$]+) = /.exec(line)?.[1];
+      if (value) assert.ok(next.includes(value), `unit ${unit}: \`${next}\` does not return ${value}`);
+      const callee = /@("[^"]+"|[^\s(]+)\(/.exec(line.slice(at))[1].replace(/^"|"$/g, "");
+      const definition = defined.get(callee);
+      assert.ok(definition, `unit ${unit}: @${callee} is defined in no unit`);
+      if (definition.unit === unit) return;
+      report.across++;
+      const declaration = declarations.find((candidate) => candidate.name === callee);
+      assert.ok(declaration, `unit ${unit}: @${callee} is not declared`);
+      assert.deepEqual({ result: declaration.result, parameters: declaration.parameters }, { result: definition.result, parameters: definition.parameters }, `unit ${unit}: @${callee}`);
+      assert.equal(declaration.parameters.length, caller.parameters.length, `unit ${unit}: @${callee} is called from @${caller.name}`);
+      report.kinds.add(callee.startsWith("tz.fn.$lambda") ? "lambda" : callee.includes("$mono.") ? "instance" : "function");
+    });
+    for (const which of ["start", "end"]) {
+      const name = `@llvm.lifetime.${which}.p0(`;
+      const calls = lines.filter((line) => line.includes("call void ") && line.includes(name)).length;
+      const declares = lines.filter((line) => line.startsWith("declare ") && line.includes(name)).length;
+      assert.equal(declares, calls > 0 ? 1 : 0, `unit ${unit}: the declarations of ${name}`);
+      report.markers += calls;
+    }
+  });
+  return report;
+}
+
+// C17: a native executable at -O0 whose recursion groups are cut over units runs a depth of ten million in constant stack, with
+// the instructions that PM09 adds kept as they are, for the default, --no-cache, --trap-info (which adds an argument to every call)
+// and -g (a line to each one) builds.
+test("C17 guaranteed tail calls across units", () => {
+  const space = workspace(0, { ...TAIL_FILES, "Main.tz": `${TAIL_EXPORTS}${TAIL_MAIN}` });
+  const expected = TAIL_RESULTS.map((value) => `${value}\n`).join("");
+  const single = space.build(["--no-cache"], { output: "single", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+  assert.equal(execute(single.out, []).stdout, expected, "one module");
+  assert.equal(execute(space.build([], { output: "cached" }).out, []).stdout, expected, "default build");
+  for (const [label, args] of [["--no-cache", ["--no-cache"]], ["--trap-info", ["--trap-info", "--no-cache"]], ["-g", ["-g", "--no-cache"]]]) {
+    const { result, units } = space.captured((capture) => space.build(args, { output: "split", env: { TSUZURI_TEST_CAPTURE: capture } }));
+    assert.ok(units.length > 10, `${label} is cut into ${units.length} units`);
+    assert.equal(execute(result.out, []).stdout, expected, label);
+    const report = tailCallReport(units);
+    // The module cycles (5 calls), `tick` and the instance of `tock` (2), the two instances of `hop` and `skip` (2 when the buckets
+    // differ), and the local pair that the modules share.
+    assert.ok(report.calls >= 11, `${label}: ${report.calls} guaranteed calls`);
+    assert.ok(report.across >= 7, `${label}: ${report.across} of them across units`);
+    assert.ok(report.kinds.has("function") && report.kinds.has("instance"), `${label}: ${[...report.kinds]}`);
+    assert.ok(report.markers > 0, `${label}: lifetime markers`);
+  }
+});
+
+// The tail-call feature of WebAssembly (PM09). The module body is compiled with -mtail-call (-mno-tail-call without the feature), a
+// runtime object with neither; the units get the arguments of the one module, so a unit built with the feature is not the unit built
+// without it, even from the same text; and a recursion over units runs in constant stack, with `return_call`.
+test("C18 wasm32 tail-call across units", () => {
+  if (!available(wasmLd)) return skip("wasm32 builds", wasmLd);
+  const space = workspace(0, { ...TAIL_FILES, "Main.tz": TAIL_EXPORTS });
+  const exportsOf = (path) => {
+    const instance = instantiate(path);
+    return TAIL_NAMES.map((name) => instance[`tz_${name}`](10_000_000n));
+  };
+  for (const [label, extra] of [["", []], ["--trap-info", ["--trap-info"]], ["-g", ["-g"]]]) {
+    const args = ["--target", "wasm32", "--wasm-feature", "tail-call", ...extra, "--no-cache"];
+    const { result, units } = space.captured((capture) => space.build(args, { output: "split.wasm", env: { TSUZURI_TEST_CAPTURE: capture } }));
+    assert.ok(units.length > 10, `${label} is cut into ${units.length} units`);
+    assert.deepEqual(exportsOf(result.out), TAIL_RESULTS, `${label} wasm32 tail-call, units`);
+    const report = tailCallReport(units);
+    assert.ok(report.calls >= 11 && report.across >= 7 && report.kinds.has("instance") && report.markers > 0, `${label}: ${JSON.stringify({ ...report, kinds: [...report.kinds] })}`);
+    const single = space.build(args, { output: "single.wasm", env: { TSUZURI_CODEGEN_UNITS: "single" } });
+    assert.deepEqual(exportsOf(single.out), TAIL_RESULTS, `${label} wasm32 tail-call, one module`);
+  }
+  // Without the feature the IR has no `musttail`, and the units are compiled with -mno-tail-call.
+  space.calls();
+  const plain = space.captured((capture) => space.build(["--target", "wasm32", "--no-cache"], { output: "plain.wasm", env: { TSUZURI_TEST_CAPTURE: capture } }));
+  assert.ok(plain.units.length > 10 && plain.units.every((text) => !text.includes("musttail")));
+  assert.ok(space.calls().filter((args) => args.some((argument) => /^u\d{5}\.ll$/.test(argument))).every((args) => args.includes("-mno-tail-call") && !args.includes("-mtail-call")));
+
+  // The arguments: with the feature every unit is compiled with the arguments of the one module (up to the -c), which has the flag
+  // before and after, a runtime object has no flag of this kind, and the units of the two builds are not shared even where their
+  // text is the same (the compile arguments are part of the key of a unit).
+  const half = workspace(0, HALF_LIBRARY);
+  const unitRuns = (calls) => calls.filter((args) => args.some((argument) => /^u\d{5}\.ll$/.test(argument)));
+  const flagsOf = (args) => args.slice(0, args.indexOf("-c"));
+  const texts = {};
+  const compiledUnits = {};
+  for (const [label, feature] of [["tail-call", ["--wasm-feature", "tail-call"]], ["plain", []]]) {
+    const { units } = half.captured((capture) => half.build(["--target", "wasm32", ...feature], { output: `${label}.wasm`, env: { TSUZURI_TEST_CAPTURE: capture } }));
+    texts[label] = units;
+    const calls = half.calls();
+    const runs = unitRuns(calls);
+    assert.ok(runs.length > 0, label);
+    const flag = label === "plain" ? "-mno-tail-call" : "-mtail-call";
+    const other = label === "plain" ? "-mtail-call" : "-mno-tail-call";
+    for (const args of runs) assert.ok(args.includes(flag) && !args.includes(other), `${label}: ${args.join(" ")}`);
+    // What compiles a runtime object (and what only asks the tool for its version) has neither flag.
+    for (const args of calls.filter((candidate) => candidate.includes("-c") && !unitRuns([candidate]).length)) {
+      assert.ok(!args.includes("-mtail-call") && !args.includes("-mno-tail-call"), `a runtime object is compiled with ${args.join(" ")}`);
+    }
+    compiledUnits[label] = runs.reduce((total, args) => total + args.filter((argument) => /^u\d{5}\.ll$/.test(argument)).length, 0);
+    // The one module is compiled with the same arguments up to the -c.
+    half.build(["--target", "wasm32", ...feature, "--no-cache"], { output: `${label}-single.wasm`, env: { TSUZURI_CODEGEN_UNITS: "single" } });
+    const module = half.calls().find((args) => args.some((argument) => argument.endsWith("module.ll")));
+    assert.deepEqual(flagsOf(runs[0]), flagsOf(module), label);
+  }
+  // The same text from both builds: nothing of the first is a hit of the second, so every unit is compiled again.
+  assert.deepEqual(texts["tail-call"], texts.plain, "the IR of the two builds is the same text");
+  assert.equal(compiledUnits.plain, compiledUnits["tail-call"], "every unit of the second build is compiled, none is taken from the first");
+  assert.equal(half.unitEntries().length, compiledUnits.plain + compiledUnits["tail-call"], "two entries for each text");
 });
 
 // The phases of TSUZURI_TIME_PASSES: the cut, the units, and the wait for Clang, which do not overlap.
