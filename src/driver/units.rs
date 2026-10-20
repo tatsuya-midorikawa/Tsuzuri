@@ -757,6 +757,18 @@ mod tests {
             ..base
         };
         assert!(ok(wasm, host, &Profile::None), "wasm32");
+        // The tail-call feature only adds a flag to the compile of every unit (PM09), which the units share with the module.
+        assert!(
+            ok(
+                BuildOptions {
+                    wasm_tail_call: true,
+                    ..wasm
+                },
+                host,
+                &Profile::None
+            ),
+            "wasm32 with tail-call"
+        );
         assert!(
             ok(
                 BuildOptions {

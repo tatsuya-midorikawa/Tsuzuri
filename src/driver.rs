@@ -3579,9 +3579,11 @@ fn build_complete(
                     options.target == Target::Wasm64,
                     stack_checks,
                     options.wasm_tail_call,
+                    &numbering,
                 )
             })?;
             trap_sites = output.trap_sites;
+            stable_traps = output.stable_sites;
             output.ir
         } else if options.debug_info {
             let output = project.with_trap_sources(|sources| {
@@ -6463,6 +6465,71 @@ mod tests {
             ..BuildOptions::default()
         };
         assert_ne!(text(off), text(tail(Target::Wasm32, Emit::Wasm)));
+    }
+
+    /// The compile of one module and the compile of a unit of it get the same WebAssembly flags from one function, with
+    /// the tail-call flag spelled out either way (PM09), so that the units are what the module would have been.
+    #[test]
+    fn webassembly_compiles_get_the_target_and_feature_flags_of_one_function() {
+        let flags = |options: BuildOptions| -> Vec<String> {
+            wasm_target_args(&options)
+                .iter()
+                .map(|flag| flag.to_string_lossy().into_owned())
+                .collect()
+        };
+        let wasm = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..BuildOptions::default()
+        };
+        assert_eq!(
+            flags(wasm),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-mno-simd128",
+                "-mno-tail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                wasm_tail_call: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-mno-simd128",
+                "-mtail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                wasm_simd: true,
+                wasm_tail_call: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm32-unknown-unknown",
+                "-mbulk-memory",
+                "-msimd128",
+                "-mtail-call"
+            ]
+        );
+        assert_eq!(
+            flags(BuildOptions {
+                target: Target::Wasm64,
+                wasm_threads: true,
+                ..wasm
+            }),
+            [
+                "--target=wasm64-unknown-unknown",
+                "-mbulk-memory",
+                "-matomics",
+                "-mno-simd128",
+                "-mno-tail-call"
+            ]
+        );
     }
 
     #[test]

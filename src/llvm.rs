@@ -907,7 +907,9 @@ fn heap_host_wasm() -> String {
     heap
 }
 
-/// Emits a WASM build with shared-memory threads, 64-bit memory, stack checks, or tail calls.
+/// Emits a WASM build with shared-memory threads, 64-bit memory, stack checks, or tail calls. `numbering` chooses how the
+/// trap sites are numbered from the number of bytes of the program's IR before the instrumentation (`--trap-info`; a
+/// module of tail calls is cut into codegen units like any other wasm32 module, PB07 Phase 2).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_wasm_build(
     module: &CheckedModule,
@@ -919,6 +921,7 @@ pub(crate) fn emit_wasm_build(
     memory64: bool,
     stack_checks: bool,
     tail_call: bool,
+    numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     let (ir, marks) = emit_program(
         module,
@@ -953,7 +956,8 @@ pub(crate) fn emit_wasm_build(
         ir
     };
     if let Some(marks) = marks {
-        traps::instrument(ir, module, marks, sources, true, false)
+        let numbering = numbering(ir.len());
+        traps::instrument_numbered(ir, module, marks, sources, true, false, numbering)
     } else {
         Ok(EmitOutput {
             ir,
@@ -9553,7 +9557,16 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             f16: F16Path::Soft,
         };
         let output = emit_wasm_build(
-            &module, options, &sources, None, true, true, false, false, false,
+            &module,
+            options,
+            &sources,
+            None,
+            true,
+            true,
+            false,
+            false,
+            false,
+            &|_| TrapNumbering::Dense,
         )
         .unwrap();
         // The wrappers of the threads runtime and the unlocked heap define each entry point once.
