@@ -16,7 +16,11 @@
 //!   unit; metadata nodes and attribute groups are copied and renumbered the same way. A global that is not such a
 //!   constant (a variable, a `weak` definition) has one owner unit and is declared `external hidden` elsewhere.
 //! - A definition that was `internal` becomes `hidden`, so the other units can call it and it still leaves no
-//!   public symbol.
+//!   public symbol. A hidden definition is still a global symbol of the link, where it would clash with a host
+//!   object or a library that defines the same name (`power`, `decode`, `store`: the helpers of the numeric runtime
+//!   that a build without runtime objects embeds). So a promoted definition whose name does not start with `tz.`,
+//!   which no C symbol does, is renamed `tz.rt.<name>` in every unit that defines, declares or uses it
+//!   ([`promoted_name`]); the name depends on that name alone, never on which units use it.
 //!
 //! A text with a top-level form that is not listed in [`parse`] is not split (`SplitError`): the driver builds one
 //! unit instead, which is always correct.
@@ -74,8 +78,9 @@ pub struct SplitInput<'a> {
 pub struct Unit {
     pub name: String,
     pub text: String,
-    /// The symbols that this unit defines `hidden` and that were `internal` in the text: a relocatable object that
-    /// is made of the units makes them local again, so that two objects of two programs do not define the same name.
+    /// The symbols that this unit defines `hidden` and that were `internal` in the text, by the names that the unit
+    /// gives them: a relocatable object that is made of the units makes them local again, so that two objects of two
+    /// programs do not define the same name.
     pub localize: Vec<String>,
 }
 
@@ -95,6 +100,10 @@ pub enum SplitError {
         line: usize,
         what: &'static str,
     },
+    /// The name that a promoted definition would get ([`promoted_name`]) is a name of the text already.
+    Collision {
+        name: String,
+    },
 }
 
 impl fmt::Display for SplitError {
@@ -103,6 +112,7 @@ impl fmt::Display for SplitError {
             Self::UnknownLine { line, text } => write!(f, "unknown top-level line {line}: {text}"),
             Self::Unsupported { line, what } => write!(f, "unsupported {what} at line {line}"),
             Self::Malformed { line, what } => write!(f, "malformed {what} at line {line}"),
+            Self::Collision { name } => write!(f, "the reserved name @{name} is already in use"),
         }
     }
 }
@@ -294,6 +304,15 @@ fn push_name(out: &mut String, sigil: char, name: &str) {
     }
 }
 
+/// The name that a unit gives a definition that was `internal` or `private` in the text and that the unit makes
+/// `hidden`, so that the other units can use it. A hidden definition is a global symbol of the object, and the link of
+/// the whole program fails on two definitions of one name, so a generic name (`power`, `decode`, `tzrt_pow5`) must not
+/// be left as it is: a host object or a library may define it too, and one module has it local. The names that the
+/// emitter makes start with `tz.`, which no name in C does, and stay; the others get `tz.rt.` in front.
+fn promoted_name(name: &str) -> Option<String> {
+    (!name.starts_with("tz.")).then(|| format!("tz.rt.{name}"))
+}
+
 /// The length of the type that starts `text` (`i64`, `ptr`, `[5 x ptr]`, `{ i32, i32 }`, `<4 x i32>`, `%tz.string`,
 /// `%"tz.record.A"`), if it is one.
 fn type_len(text: &str) -> Option<usize> {
@@ -383,10 +402,19 @@ struct Global<'a> {
     unnamed: Unnamed,
     /// The `internal` or `private` word, which a definition that other units use turns into `hidden`.
     linkage: Option<Range<usize>>,
+    /// The name of a promoted definition with one owner in the units (`promoted_name`), when it is not `name`.
+    emitted: Option<String>,
     /// Where the type and the initializer start (after `global` or `constant`).
     body: usize,
     /// What another unit declares for a global with one owner.
     declaration: String,
+}
+
+impl Global<'_> {
+    /// The name that the definition has in a unit.
+    fn unit_name(&self) -> &str {
+        self.emitted.as_deref().unwrap_or(self.name)
+    }
 }
 
 #[derive(Debug)]
@@ -461,6 +489,7 @@ impl SplitError {
                 line: line_number(ir, line),
                 what,
             },
+            Self::Collision { name } => Self::Collision { name },
         }
     }
 }
@@ -619,6 +648,13 @@ fn parse_global<'a>(text: &'a str, line: usize) -> Result<Global<'a>, SplitError
     };
     let body = cursor + length;
     let hidden = linkage.local || linkage.hidden;
+    // A variable with one owner that the units make `hidden` from `internal` or `private` (a copied constant is
+    // `private` to every unit, which no link sees).
+    let emitted = if form == GlobalForm::Single && linkage.local {
+        promoted_name(name.name)
+    } else {
+        None
+    };
     let mut declaration = String::new();
     if form == GlobalForm::Single {
         let after = text[body..].trim_start();
@@ -626,7 +662,11 @@ fn parse_global<'a>(text: &'a str, line: usize) -> Result<Global<'a>, SplitError
             line,
             what: "global type",
         })?;
-        push_name(&mut declaration, '@', name.name);
+        push_name(
+            &mut declaration,
+            '@',
+            emitted.as_deref().unwrap_or(name.name),
+        );
         declaration.push_str(" = external ");
         if hidden {
             declaration.push_str("hidden ");
@@ -655,6 +695,7 @@ fn parse_global<'a>(text: &'a str, line: usize) -> Result<Global<'a>, SplitError
         form,
         unnamed,
         linkage: linkage.word,
+        emitted,
         body,
         declaration,
     })
@@ -1166,20 +1207,41 @@ fn place<'a>(
     homes
 }
 
-fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
+fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Result<Plan<'a>, SplitError> {
     let count = parsed.functions.len();
     let mut owners = Vec::with_capacity(count);
     let mut unstable = Vec::new();
+    let mut renamed: Vec<Option<String>> = vec![None; count];
+    // The names that are taken, with the digest of the text they stand for and the function that has it.
+    let mut used: FastMap<String, ([u8; 32], usize)> = FastMap::default();
+    for global in &parsed.globals {
+        if let Some(name) = &global.emitted
+            && parsed.symbols.contains_key(name.as_str())
+        {
+            return Err(SplitError::Collision { name: name.clone() });
+        }
+    }
     for (id, function) in parsed.functions.iter().enumerate() {
         match classify(function.name, modules) {
-            Naming::Stable { module } => owners.push(module),
+            Naming::Stable { module } => {
+                owners.push(module);
+                if function.linkage.word.is_some()
+                    && let Some(name) = promoted_name(function.name)
+                {
+                    if parsed.symbols.contains_key(name.as_str()) {
+                        return Err(SplitError::Collision { name });
+                    }
+                    // A digest of no text, so that a generated function never takes the name.
+                    used.insert(name.clone(), ([0; 32], id));
+                    renamed[id] = Some(name);
+                }
+            }
             Naming::Unstable => {
                 owners.push(None);
                 unstable.push(id);
             }
         }
     }
-    let mut renamed: Vec<Option<String>> = vec![None; count];
     let mut canonical: Vec<usize> = (0..count).collect();
     let nodes: FastMap<usize, usize> = unstable
         .iter()
@@ -1198,8 +1260,6 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
     if !unstable.is_empty() {
         let graph: Vec<Vec<usize>> = unstable.iter().map(|id| edges[*id].clone()).collect();
         let edges = graph;
-        // The names that are taken, with the digest of the text they stand for and the function that has it.
-        let mut used: FastMap<String, ([u8; 32], usize)> = FastMap::default();
         for component in strongly_connected(&edges) {
             let members: Vec<usize> = component.iter().map(|node| unstable[*node]).collect();
             let placeholders: Vec<String> =
@@ -1246,12 +1306,30 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
                     {
                         name = format!("tz.apply.{symbol}.{index}");
                     }
+                    // A definition that a unit makes `hidden` from `internal` has a name of the reserved kind. Such a
+                    // name must not be one of the text either: no function has it, but a generic name that is
+                    // promoted and the name of a generated one could meet.
+                    let reserved = parsed.functions[member]
+                        .linkage
+                        .word
+                        .is_some()
+                        .then(|| promoted_name(&name))
+                        .flatten();
+                    if let Some(reserved) = &reserved {
+                        name.clone_from(reserved);
+                    }
                     // The same name for the same text is one function; for another text (a collision of the
                     // 64 bits of the name) it is another name.
                     let mut candidate = name.clone();
                     let mut number = 1;
                     loop {
                         match used.get(&candidate) {
+                            None if reserved.is_some()
+                                && parsed.symbols.contains_key(candidate.as_str()) =>
+                            {
+                                number += 1;
+                                candidate = format!("{name}.{number}");
+                            }
                             None => {
                                 used.insert(candidate.clone(), (full, member));
                                 break;
@@ -1274,11 +1352,11 @@ fn plan<'a>(parsed: &Parsed<'a>, modules: &FastSet<&str>) -> Plan<'a> {
     let homes = place(
         parsed, &owners, &renamed, &canonical, &unstable, &nodes, &edges,
     );
-    Plan {
+    Ok(Plan {
         renamed,
         homes,
         canonical,
-    }
+    })
 }
 
 fn bucket(name: &str) -> u64 {
@@ -1427,6 +1505,11 @@ impl<'p, 'a> Builder<'p, 'a> {
                     GlobalForm::Single => {
                         if !self.owns_global(id) {
                             self.foreign_globals.insert(id);
+                        }
+                        if let Some(name) = &parsed.globals[id].emitted {
+                            out.push_str(&text[last..token.start]);
+                            push_name(out, '@', name);
+                            last = token.end;
                         }
                     }
                     GlobalForm::External => {
@@ -1646,7 +1729,7 @@ impl<'p, 'a> Builder<'p, 'a> {
             let mut text = global.declaration.clone();
             self.note_types(&text);
             text.push('\n');
-            external_text.insert(global.name.to_owned(), text);
+            external_text.insert(global.unit_name().to_owned(), text);
         }
         let mut copied: Vec<usize> = self.copied_externals.iter().copied().collect();
         copied.sort_unstable();
@@ -1796,7 +1879,7 @@ fn declaration_of(function: &Function<'_>) -> Declaration {
 pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
     let parsed = parse(input.ir)?;
     let modules: FastSet<&str> = input.modules.iter().copied().collect();
-    let plan = plan(&parsed, &modules);
+    let plan = plan(&parsed, &modules)?;
 
     let mut members: BTreeMap<Home<'_>, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
     for (id, _) in parsed.functions.iter().enumerate() {
@@ -1809,7 +1892,7 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
     for (id, global) in parsed.globals.iter().enumerate() {
         if global.form == GlobalForm::Single {
             members
-                .entry(Home::Bucket(bucket(global.name)))
+                .entry(Home::Bucket(bucket(global.unit_name())))
                 .or_default()
                 .1
                 .push(id);
@@ -1846,7 +1929,7 @@ pub fn split(input: &SplitInput<'_>) -> Result<Vec<Unit>, SplitError> {
                 globals
                     .iter()
                     .filter(|&&id| parsed.globals[id].linkage.is_some())
-                    .map(|&id| parsed.globals[id].name.to_owned()),
+                    .map(|&id| parsed.globals[id].unit_name().to_owned()),
             )
             .collect();
         localize.sort_unstable();
@@ -2046,7 +2129,7 @@ entry:
         }
         let original = parse(ir).unwrap();
         let modules: FastSet<&str> = modules.iter().copied().collect();
-        let plan = plan(&original, &modules);
+        let plan = plan(&original, &modules).unwrap();
         let duplicates = (0..original.functions.len())
             .filter(|id| plan.canonical[*id] != *id)
             .count();
@@ -2068,6 +2151,82 @@ entry:
     fn assert_self_contained(ir: &str, units: &[Unit]) {
         let found = check(ir, modules(), units);
         assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    /// The names of the symbols that `text` mentions.
+    fn mentioned(text: &str) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        scan(text, |token| {
+            if token.class == Class::Symbol {
+                names.insert(token.name.to_owned());
+            }
+        });
+        names
+    }
+
+    /// What the units make of the definitions that were `internal` or `private` in `ir` and that a unit makes `hidden`: a
+    /// hidden definition is a global symbol of the object, where a host object or a library may define the same name,
+    /// and a link fails on two definitions of one. So none of them keeps a name that does not start with `tz.` (the
+    /// emitter's own, which no C name has) in any unit, and the units define the `tz.rt.` names of exactly those and
+    /// nothing else. Returns how many definitions have a `tz.rt.` name.
+    fn assert_reserved_names(ir: &str, units: &[Unit]) -> usize {
+        let original = parse(ir).expect("the IR parses");
+        let mut generic: BTreeSet<&str> = original
+            .functions
+            .iter()
+            .filter(|function| function.linkage.word.is_some())
+            .map(|function| function.name)
+            .collect();
+        generic.extend(
+            original
+                .globals
+                .iter()
+                .filter(|global| global.form == GlobalForm::Single && global.linkage.is_some())
+                .map(|global| global.name),
+        );
+        generic.retain(|name| !name.starts_with("tz."));
+        let mut promoted = 0;
+        for unit in units {
+            let mentioned = mentioned(&unit.text);
+            for name in &generic {
+                assert!(
+                    !mentioned.contains(*name),
+                    "{} names @{name}, which was internal",
+                    unit.name
+                );
+            }
+            let parsed = parse(&unit.text).expect("a unit parses");
+            let defined = parsed.functions.iter().map(|function| function.name).chain(
+                parsed
+                    .globals
+                    .iter()
+                    .filter(|global| global.form == GlobalForm::Single)
+                    .map(|global| global.name),
+            );
+            for name in defined {
+                if let Some(origin) = name.strip_prefix("tz.rt.") {
+                    // A name with a serial number became `<name without serials>.h<digest>`.
+                    let known = generic.contains(origin)
+                        || origin.rsplit_once(".h").is_some_and(|(base, _)| {
+                            generic.iter().any(|name| without_serials(name) == base)
+                        });
+                    assert!(
+                        known,
+                        "{} defines @{name}, which no internal definition @{origin} has",
+                        unit.name
+                    );
+                    promoted += 1;
+                }
+            }
+            for name in &unit.localize {
+                assert!(
+                    name.starts_with("tz."),
+                    "{} makes @{name} local, which a host may define",
+                    unit.name
+                );
+            }
+        }
+        promoted
     }
 
     /// A development aid: `PB07_CORPUS=<directory of .ll files> cargo test --lib split_corpus -- --ignored`.
@@ -2147,6 +2306,7 @@ entry:
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut programs = 0;
         let mut units_made = 0;
+        let mut promoted = 0;
         for parent in ["examples", "benchmarks", "tests/fixtures"] {
             let mut directories: Vec<_> = std::fs::read_dir(root.join(parent))
                 .unwrap()
@@ -2207,12 +2367,16 @@ entry:
                     .unwrap();
                     assert_eq!(units, again, "{} is deterministic", directory.display());
                     units_made += units.len();
+                    promoted += assert_reserved_names(&ir, &units);
                 }
                 programs += 1;
             }
         }
         assert!(programs > 60, "{programs} programs");
         assert!(units_made > 1000, "{units_made} units");
+        // The builds with trap information embed the numeric runtime of a program that needs it, whose helpers
+        // (`decode`, `power`, ...) have generic names.
+        assert!(promoted >= 19, "{promoted} promoted generic names");
     }
 
     #[test]
@@ -2537,6 +2701,284 @@ entry:
                 );
             }
         }
+    }
+
+    /// What the numeric runtime that a build embeds has: internal and private definitions under generic names, among
+    /// the names of the emitter, a weak helper, and an exported function.
+    const GENERIC: &str = r#"; Tsuzuri - deterministic LLVM IR
+source_filename = "tsuzuri"
+
+declare i32 @putchar(i32)
+
+@counter = internal global i64 0, align 8
+@"odd name" = internal global i32 0, align 4
+@scratch = private thread_local global i64 0, align 8
+@tz.keep = internal global i64 0, align 8
+@table = internal unnamed_addr constant [2 x i32] [i32 1, i32 2], align 4
+@shared = weak hidden global i64 0, align 8
+@public = global i64 0, align 8
+@users = internal global [2 x ptr] [ptr @power, ptr @decode], align 8
+
+define internal i64 @power(i64 %a) {
+entry:
+  %v0 = call i64 @decode(i64 %a)
+  %v1 = load i64, ptr @counter
+  %v2 = load i32, ptr @"odd name"
+  ret i64 %v0
+}
+
+define private i64 @decode(i64 %a) {
+entry:
+  %v0 = load i64, ptr @scratch
+  %v1 = getelementptr [2 x i32], ptr @table, i32 0, i32 1
+  ret i64 %a
+}
+
+define internal void @"odd fn"() {
+entry:
+  %v0 = load i64, ptr @tz.keep
+  ret void
+}
+
+define internal i64 @tz.fn.Main.f(i64 %arg0) {
+entry:
+  %v0 = call i64 @power(i64 %arg0)
+  call void @"odd fn"()
+  %v1 = load [2 x ptr], ptr @users
+  ret i64 %v0
+}
+
+define internal i64 @tz.fn.Helper.g(i64 %arg0) {
+entry:
+  %v0 = call i64 @decode(i64 %arg0)
+  %v1 = load i64, ptr @scratch
+  %v2 = load i64, ptr @counter
+  %v3 = load i64, ptr @shared
+  ret i64 %v0
+}
+
+define weak hidden i64 @tz_soft_op(i64 %a) {
+entry:
+  ret i64 %a
+}
+
+define i64 @tz_exported(i64 %a) {
+entry:
+  %v0 = load i64, ptr @public
+  ret i64 %a
+}
+
+define i32 @main() {
+entry:
+  %v0 = call i64 @tz.fn.Main.f(i64 1)
+  %v1 = call i64 @tz.fn.Helper.g(i64 1)
+  ret i32 0
+}
+"#;
+
+    /// A hidden definition is a global symbol of the object, so a host object or a library that defines `power` or
+    /// `decode` too fails the link of a program that one module had them local in. What a unit makes `hidden` gets a
+    /// name of the reserved kind, in the unit that defines it, in every unit that declares or uses it, and in the list
+    /// of the symbols to make local; the names that the emitter makes, and what was not internal, stay.
+    #[test]
+    fn promoted_generic_names_get_the_reserved_prefix() {
+        let units = split_text(GENERIC);
+        assert_self_contained(GENERIC, &units);
+        assert_eq!(
+            assert_reserved_names(GENERIC, &units),
+            7,
+            "three functions and four variables are promoted"
+        );
+        // `names` below are the names that were internal and generic: no unit mentions any.
+        let names = [
+            "power", "decode", "odd fn", "counter", "odd name", "scratch", "users",
+        ];
+        for unit in &units {
+            let mentioned = mentioned(&unit.text);
+            for name in names {
+                assert!(!mentioned.contains(name), "{} names @{name}", unit.name);
+            }
+        }
+        let defined = |needle: &str| {
+            units
+                .iter()
+                .filter(|unit| unit.text.lines().any(|line| line.starts_with(needle)))
+                .count()
+        };
+        for needle in [
+            "define hidden i64 @tz.rt.power(i64 %a) {",
+            "define hidden i64 @tz.rt.decode(i64 %a) {",
+            "define hidden void @\"tz.rt.odd fn\"() {",
+            "@tz.rt.counter = hidden global i64 0, align 8",
+            "@\"tz.rt.odd name\" = hidden global i32 0, align 4",
+            "@tz.rt.scratch = hidden thread_local global i64 0, align 8",
+            "@tz.rt.users = hidden global [2 x ptr] [ptr @tz.rt.power, ptr @tz.rt.decode], align 8",
+            // Already reserved, or not internal: as they were.
+            "@tz.keep = hidden global i64 0, align 8",
+            "@shared = weak hidden global i64 0, align 8",
+            "@public = global i64 0, align 8",
+            "define weak hidden i64 @tz_soft_op(i64 %a) {",
+            "define i64 @tz_exported(i64 %a) {",
+            "define i32 @main() {",
+        ] {
+            assert_eq!(defined(needle), 1, "{needle}");
+        }
+        // The units that use them declare them under the same names.
+        let helper = unit(&units, "m.Helper");
+        for needle in [
+            "declare hidden i64 @tz.rt.decode(i64)",
+            "@tz.rt.scratch = external hidden thread_local global i64, align 8",
+            "@tz.rt.counter = external hidden global i64, align 8",
+        ] {
+            assert!(helper.text.contains(needle), "{needle}\n{}", helper.text);
+        }
+        let main = unit(&units, "m.Main");
+        for needle in [
+            "declare hidden i64 @tz.rt.power(i64)",
+            "declare hidden void @\"tz.rt.odd fn\"()",
+            "@tz.rt.users = external hidden global [2 x ptr], align 8",
+        ] {
+            assert!(main.text.contains(needle), "{needle}\n{}", main.text);
+        }
+        // The relocatable object makes exactly these local, under these names.
+        let listed: BTreeSet<&str> = units
+            .iter()
+            .flat_map(|unit| unit.localize.iter().map(String::as_str))
+            .collect();
+        assert_eq!(
+            listed,
+            BTreeSet::from([
+                "tz.rt.power",
+                "tz.rt.decode",
+                "tz.rt.odd fn",
+                "tz.rt.counter",
+                "tz.rt.odd name",
+                "tz.rt.scratch",
+                "tz.rt.users",
+                "tz.keep",
+                "tz.fn.Main.f",
+                "tz.fn.Helper.g",
+            ])
+        );
+        for unit in &units {
+            for name in &unit.localize {
+                assert!(
+                    unit.text.lines().any(|line| {
+                        (line.starts_with("define hidden ") || line.contains(" = hidden "))
+                            && first_symbol(line).is_some_and(|token| token.name == name)
+                    }),
+                    "{name} is not defined hidden in {}",
+                    unit.name
+                );
+            }
+        }
+    }
+
+    /// The new name of a definition depends on that name alone, so the text of the unit that defines it does not change
+    /// with the functions that use it, wherever they are.
+    #[test]
+    fn promoted_names_do_not_depend_on_the_users() {
+        let other = GENERIC.replace(
+            "  %v0 = call i64 @decode(i64 %arg0)\n  %v1 = load i64, ptr @scratch\n  %v2 = load i64, ptr @counter\n  %v3 = load i64, ptr @shared\n  ret i64 %v0\n",
+            "  %v0 = load i64, ptr @shared\n  ret i64 %v0\n",
+        );
+        assert_ne!(other, GENERIC);
+        let before = split_text(GENERIC);
+        let after = split_text(&other);
+        assert_self_contained(&other, &after);
+        let buckets = |units: &[Unit]| -> Vec<Unit> {
+            units
+                .iter()
+                .filter(|unit| unit.name.starts_with("g."))
+                .cloned()
+                .collect()
+        };
+        assert!(!buckets(&before).is_empty());
+        assert_eq!(buckets(&before), buckets(&after));
+        assert_ne!(unit(&before, "m.Helper"), unit(&after, "m.Helper"));
+    }
+
+    /// A promoted name that the text uses already is not made over: the text is not split.
+    #[test]
+    fn a_taken_reserved_name_is_not_split() {
+        let function = |name: &str| {
+            format!("define internal i64 @{name}(i64 %a) {{\nentry:\n  ret i64 %a\n}}\n\n")
+        };
+        let split_of = |ir: String| {
+            split(&SplitInput {
+                ir: &ir,
+                modules: modules(),
+            })
+        };
+        let taken = SplitError::Collision {
+            name: "tz.rt.power".to_owned(),
+        };
+        assert_eq!(
+            split_of(format!("{}{}", function("power"), function("tz.rt.power"))),
+            Err(taken.clone())
+        );
+        assert_eq!(
+            split_of(format!(
+                "@tz.rt.power = global i64 0\n\n{}",
+                function("power")
+            )),
+            Err(taken.clone())
+        );
+        assert_eq!(
+            split_of(format!(
+                "@power = internal global i64 0\n@tz.rt.power = global i64 0\n\n{}",
+                function("tz.fn.Main.f")
+            )),
+            Err(taken)
+        );
+        // Without the clash the same text is split, and a variable with a name of its own is promoted as well.
+        assert!(split_of(format!("{}{}", function("power"), function("tz.rt.other"))).is_ok());
+        let units = split_of(String::from(
+            "@x = internal global i64 0\n@y = global i64 0\n",
+        ))
+        .unwrap();
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.text.contains("@tz.rt.x = hidden global i64 0\n"))
+        );
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.text.contains("@y = global i64 0\n"))
+        );
+    }
+
+    /// A generic name that holds a serial number is named by the hash of its text, with the reserved prefix in front, as
+    /// the generated functions are named.
+    #[test]
+    fn serial_numbers_of_generic_names_are_replaced_and_prefixed() {
+        let program = |serial: u32| {
+            format!(
+                "define internal i64 @helper.{serial}(i64 %a) {{\nentry:\n  ret i64 %a\n}}\n\ndefine internal i64 @tz.fn.Main.f(i64 %arg0) {{\nentry:\n  %v0 = call i64 @helper.{serial}(i64 %arg0)\n  ret i64 %v0\n}}\n"
+            )
+        };
+        let first = split_text(&program(12));
+        let second = split_text(&program(97));
+        assert_eq!(first, second, "the name does not hold the serial number");
+        assert_self_contained(&program(12), &first);
+        assert_eq!(assert_reserved_names(&program(12), &first), 1);
+        let main = unit(&first, "m.Main");
+        assert!(
+            main.text.contains("define hidden i64 @tz.rt.helper.h"),
+            "{}",
+            main.text
+        );
+        assert!(
+            main.localize
+                .iter()
+                .any(|name| name.starts_with("tz.rt.helper.h"))
+        );
+        assert!(
+            !mentioned(&main.text)
+                .iter()
+                .any(|name| name.starts_with("helper"))
+        );
     }
 
     #[test]
