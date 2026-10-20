@@ -57,7 +57,7 @@ flowchart TD
 
 ## 配布物を使う
 
-LLVM を自分で入れずにコンパイラを使うときは、ホスト別の配布物を展開します。macOS と Linux は `tsuzuri-<version>-<host>.tar.gz`、Windows は同じ名前の `.zip` です。`<version>` は `0.1.0` のように、`tsuzuri --version` の版です。`<host>` は `darwin-arm64`、`darwin-x64`、`linux-x64`、`linux-arm64`、`win32-x64`、`win32-arm64` です。
+LLVM を自分で入れずにコンパイラを使うときは、ホスト別の配布物を展開します。macOS と Linux は `tsuzuri-<version>-<host>.tar.gz`、Windows は同じ名前の `.zip` です。`<version>` は `0.1.0` のように、`tsuzuri --version` の版です。`<host>` は `darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`、`win32-arm64` の 5 つだけです。Intel Mac と、ほかの OS・CPU は対象外です（[対応プラットフォーム](platforms.md)）。
 
 アーカイブの最上位には、ディレクトリ `tsuzuri-<version>-<host>/` だけが含まれます。コンパイラは、自分の実行ファイルから 2 つ上に `manifest.json` があるとき、そこを配布物のルートとみなします。Clang や `wasm-ld` は、環境変数、この `bin/`、PATH の順で探します。
 
@@ -116,6 +116,8 @@ node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 
 リポジトリからコンパイラを作るときの要件は次のとおりです。
 
+ビルドホストも Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 に限ります。それ以外は Rust のコンパイルエラーです。WebAssembly への出力は、対応ホスト上のコンパイラで引き続き使えます。
+
 | もの | 版の目安 | 用途 |
 | --- | --- | --- |
 | Rust | 1.85 以降 | コンパイラ本体。`Cargo.toml` の `rust-version` |
@@ -128,6 +130,8 @@ node: path /opt/homebrew/Cellar/node@20/20.19.6/bin/node (v20.19.6)
 ツールの場所は `TSUZURI_CLANG`、`TSUZURI_WASM_LD`、`TSUZURI_LLVM_LINK`、`TSUZURI_DSYMUTIL`、`TSUZURI_WASM_OPT` で指定できます。未設定なら PATH の `clang`、`wasm-ld`、`llvm-link`、`dsymutil`、`wasm-opt` です。`wasm-opt`（Binaryen）は `--wasm-opt` を付けたときだけ使います。
 
 ### macOS
+
+Apple シリコン（Arm64）だけが対象です。
 
 ```sh
 brew install llvm lld
@@ -151,7 +155,7 @@ cargo build --release
 
 Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、それに LLVM の `clang` を用意します。Developer PowerShell で `cargo build --release` します。
 
-コンパイラがネイティブコードを出すとき、ホストが ARM64 なら `--target=aarch64-pc-windows-msvc`、それ以外なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。x64 の Windows は、CI の [Windows MSVC](../../../.github/workflows/windows.yml)（`windows-2022`）が、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で `cargo test` と、native の `-O0`・`-O3` の実行、ビルドキャッシュ、例、WASM threads を確かめます。ARM64 の Windows は、この確認の対象外です。
+コンパイラがネイティブコードを出すとき、ホストが Arm64 なら `--target=aarch64-pc-windows-msvc`、x64 なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。CI の [Windows MSVC](../../../.github/workflows/windows.yml) は、x64 の `windows-2022` と Arm64 の `windows-11-arm` で、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 を使い、`cargo test`、native とホストの MSVC triple の `-O0`・`-O3`、ビルドキャッシュ、例、WASM threads を検証します。
 
 - PowerShell を使ってください。Git Bash では、Git 付属の `link` が MSVC の `link.exe` より先に見つかり、リンクが失敗することがあります。
 - リポジトリは `git clone -c core.autocrlf=false` で取得してください。既定の `core.autocrlf=true` は、テストの入力とランタイムの IR を CRLF にします（CI は無効にしています）。
@@ -159,7 +163,7 @@ Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、�
 
 ## VS Code 拡張
 
-拡張機能を入れると、コンパイラ、LLVM、リンカー、デバッガーが同梱されます。追加のランタイムは要りません。対応は VS Code 1.103 以降で、macOS の x64 と Apple シリコン、Linux（glibc）の x64 と ARM64、Windows x64 です。Windows ARM64 は編集と実行に対応し、デバッグは未対応です。
+拡張機能を入れると、コンパイラ、LLVM、リンカーが同梱されます。追加のランタイムは要りません。対応は VS Code 1.103 以降で、macOS Arm64、Linux（glibc）x64/Arm64、Windows x64/Arm64 です。Windows Arm64 以外はデバッガーも同梱します。Windows Arm64 は編集・診断・ビルド・実行・テストに対応し、ソースデバッグは未対応です。
 
 コマンドパレットの **Tsuzuri: New Project** は、同梱コンパイラの `tsuzuri new` で `Main.tz`、`Tsuzuri.toml`、`.gitignore` を作ります。エディター右上の実行は、未保存のファイルを保存してからビルドします。検査、WebAssembly のビルド、Test Explorer、ブレークポイントも拡張側の操作です。設定の `tsuzuri.optimization` の既定は 3 で、デバッグ実行は常に 0 です。
 

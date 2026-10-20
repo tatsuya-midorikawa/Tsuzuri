@@ -8,7 +8,8 @@ import { commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines,
 test('Windows ARM64 disables only debugging and x86 is not an IDE target', () => {
 	assert.equal(supportsDebug('win32', 'arm64'), false);
 	assert.equal(supportsDebug('win32', 'ia32'), false);
-	for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'x64'], ['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
+	assert.equal(supportsDebug('darwin', 'x64'), false);
+	for (const [platform, architecture] of [['win32', 'x64'], ['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
 		assert.equal(supportsDebug(platform, architecture), true);
 	}
 	for (const action of ['check', 'build', 'run', 'test', 'wasm'] as const) {

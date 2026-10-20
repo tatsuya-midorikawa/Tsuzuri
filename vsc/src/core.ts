@@ -6,7 +6,7 @@ export const sourcePattern = '**/*.{tz,tt,tc}';
 export const excludedPattern = '**/{node_modules,target,toolchain,.git,.tsuzuri,.vscode-test}/**';
 
 export function supportsDebug(platform: string = process.platform, architecture: string = process.arch): boolean {
-	return ['darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64'].includes(`${platform}-${architecture}`);
+	return ['darwin-arm64', 'linux-x64', 'linux-arm64', 'win32-x64'].includes(`${platform}-${architecture}`);
 }
 
 export async function exists(file: string): Promise<boolean> {

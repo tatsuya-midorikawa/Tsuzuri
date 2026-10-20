@@ -7,8 +7,10 @@ import { spawnSync } from "node:child_process";
 if (process.platform !== "win32") throw new Error("Windows E2E requires a Windows host; use TSUZURI_WINDOWS_SDK cargo test --test windows for cross-link validation");
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri.exe");
 const clang = process.env.TSUZURI_CLANG ?? "clang";
+assert.ok(["x64", "arm64"].includes(process.arch), `unsupported Windows architecture: ${process.arch}`);
+const named = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-windows-"));
-const nativeFlags = ["--target=x86_64-pc-windows-msvc", "-fuse-ld=lld", "-Wno-override-module", "-D_CRT_SECURE_NO_WARNINGS"];
+const nativeFlags = [`--target=${named}`, "-fuse-ld=lld", "-Wno-override-module", "-D_CRT_SECURE_NO_WARNINGS"];
 function execute(program, args, success = true, env = {}) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 180000, env: { ...process.env, ...env }, maxBuffer: 8 * 1024 * 1024 });
   assert.ifError(result.error);
@@ -78,8 +80,7 @@ try {
   const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   assert.equal(instance.exports.tz_answer(), 42n);
-  // G15: the machine's own target, named, builds, runs and tests like `--target native` (the tier of x86_64-pc-windows-msvc).
-  const named = "x86_64-pc-windows-msvc";
+  // The machine's own target, named, builds, runs and tests like `--target native`.
   const suite = join(directory, "suite");
   mkdirSync(suite);
   writeFileSync(join(suite, "Main.tz"), 'test "passes" = assert true\ntest "adds" = assert (40 + 2 == 42)\n');

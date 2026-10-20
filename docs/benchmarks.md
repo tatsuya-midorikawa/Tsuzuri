@@ -3,6 +3,8 @@
 **C/C++ と同等以上の実行性能を達成することは Tsuzuri の重要な開発目標ですが、初版においてあらゆるケースでの性能優位を一般的に保証するものではありません。**
 LLVM バックエンドを採用していること自体が直ちに C を上回る性能を意味するわけではなく、生成されるコードの形状、値の不要なコピーの有無、最適化パスの適合度、WebAssembly 実行エンジンの特性、ならびにホスト境界呼び出しの粒度に強く依存します。
 
+現在の対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです（[対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md)）。以下の過去の測定・検証記録には、現在は対象外の Intel Mac や旧 target の結果も含まれます。それらは現在の対応や性能の保証ではありません。
+
 整数ミキサーなどの演算処理における性能上の基盤は、ヒープ動的確保／GC／参照カウントの完全な排除、自己末尾再帰の確実なループ化、型付き LLVM 値の直接利用、デフォルトの `-O3` 最適化、および WebAssembly における不要コードの削除です。
 安全性検査を無効化したり、IEEE 754 の厳密な浮動小数点意味論を犠牲にしたりして、見かけ上の速度を稼ぐような不健全な最適化は行いません。
 
@@ -2142,7 +2144,7 @@ fadd    h1, h2, h1     ; 積と要素の和
 
 NaN のビット（符号とペイロード）を言語の仕様から外せば、置き換えは要らなくなり、上の試作のとおり `f16` は C と同じ時間になる見込みです（この実装では測っていません）。ただし、`f16` の NaN のビットが、経路（WASM のソフトウェア経路と native の `half` 命令）で違うことになります。この費用に値するかは、仕様の判断として残してあり、この実装では変えていません（既存の `f32` と `f64` の NaN のビットは、すでにハードウェア依存です）。
 
-測っていないもの: x86-64（F16C と AVX512-FP16 のどちらも）、Linux と Windows の AArch64、FEAT_FP16 のない CPU の実機（promoted は、その形の命令列を M1 で実行しただけです）、M1 以外の Apple Silicon、ほかの `-O` と `--cpu native`、wasm32（常にソフトウェア経路で、この変更の対象外）。runner は `clock_gettime` のある POSIX の環境なら x86-64 などでも動くはずですが（macOS arm64 以外では実行していません）、hardware は既定の `--cpu generic` の経路（x86-64 ではソフトウェア）で、`--cpu native` の x86-64 の経路は測れません。この節の数値を、それらの機械の性能として扱わないでください。CI の runner（Intel Mac・Linux x86-64・Linux arm64）は `tests/f16_hardware.mjs` で結果のビットを照合するだけで、速度は測りません（共有の runner に速度の合否の閾値は置きません）。
+測っていないもの: x86-64（F16C と AVX512-FP16 のどちらも）、Linux と Windows の AArch64、FEAT_FP16 のない CPU の実機（promoted は、その形の命令列を M1 で実行しただけです）、M1 以外の Apple Silicon、ほかの `-O` と `--cpu native`、wasm32（常にソフトウェア経路で、この変更の対象外）。runner は `clock_gettime` のある POSIX の環境なら x86-64 などでも動くはずですが（macOS arm64 以外では実行していません）、hardware は既定の `--cpu generic` の経路（x86-64 ではソフトウェア）で、`--cpu native` の x86-64 の経路は測れません。この節の数値を、それらの機械の性能として扱わないでください。CI の runner（macOS arm64・Linux x86-64・Linux arm64）は `tests/f16_hardware.mjs` で結果のビットを照合するだけで、速度は測りません（共有の runner に速度の合否の閾値は置きません）。
 
 ## 静的データ（D11 Phase 2）
 
@@ -5494,7 +5496,7 @@ Tsuzuri の IR・WASM・実行コードはさらに fingerprint を照合しま�
 cache は cache の和、tools は外部ツールの和、other は total との差です。各標本で分けてから中央値を計算します。
 小数 3 桁の計時の丸めだけは許容します。参照言語の内訳は分からないので `-` であり、0 ms の意味ではありません。
 最大 RSS は子プロセスの最大の 1 つも含むので、コンパイラ単体の値は check と LLVM IR 出力で読みます。
-CI は macOS／Linux の x64／ARM64 で quick の checksum・記録を検査し、速度を判定しません。
+CI は macOS Arm64 と Linux x64/Arm64 で quick の checksum・記録を検査し、速度を判定しません。
 
 ### ビルド記録（2026-10-14、計上範囲の修正後）
 
@@ -7383,7 +7385,7 @@ PB05・PB06・PM02・PM03・PM04・PR07・PR08 の測定・生成コードの確
 
 ### PB05 デバッグビルド用の高速バックエンド
 
-**実装した経路と、していないこと**: 実装済みは、`--backend fast`（既定は `llvm` のままで、既定の切り替え D12 は行っていません）の次の範囲です。native の `--emit exe|object`（macOS と Linux の AArch64・x86-64、`-O0` だけ。Cranelift 0.121.2）、wasm32 の `--emit wasm|object`（`-O0` だけ。Clang を使わずにコンパイラが WebAssembly の object を書き、`wasm-ld` でリンクする。D13）、`build`・`run`・`test`、`--trap-info`、`-g`（native。DWARF の行情報）、`--allocator small|counting`、`--freestanding`、`--trap-mode return`、`--strip`。計画のまま実装していないのは、Windows のホストで `--backend fast` を使うこと（`E2000`。理由は下の「測っていないこと」）、`--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm`、`--profile-*`、`--target TRIPLE`、wasm32 の SIMD・threads・jspi・webgpu・net・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64 です（いずれも `E2000`）。
+**実装した経路と、していないこと**: 実装済みは、`--backend fast`（既定は `llvm` のままで、既定の切り替え D12 は行っていません）の次の範囲です。native の `--emit exe|object`（macOS Arm64 と Linux x64/Arm64、`-O0` だけ。Cranelift 0.121.2）、wasm32 の `--emit wasm|object`（`-O0` だけ。Clang を使わずにコンパイラが WebAssembly の object を書き、`wasm-ld` でリンクする。D13）、`build`・`run`・`test`、`--trap-info`、`-g`（native。DWARF の行情報）、`--allocator small|counting`、`--freestanding`、`--trap-mode return`、`--strip`。計画のまま実装していないのは、Windows のホストで `--backend fast` を使うこと（`E2000`。理由は下の「測っていないこと」）、`--cpu native`、`-O1` 以上・`-Os`・`-Oz`、`--emit shared|bitcode|llvm`、`--profile-*`、`--target TRIPLE`、wasm32 の SIMD・threads・jspi・webgpu・net・`--wasm-host wasi`・`--wasm-opt`・`-g`、wasm64 です（いずれも `E2000`）。
 
 **環境と条件**: Apple M1 Max（10 core）、macOS 27.0、Apple clang 21.0.0、Node.js 20.19.6、LLVM 21 の単体ツール、`cargo +1.99.0 build --release --features fast-backend --locked` の `target/release/tsuzuri`（native のゲートと、`examples/hello` は `9250638a`、SHA-256 の先頭 `7fc4266f…`。wasm32 のゲートと、カーネルは、前向きの分岐を構造化した `4284f393`）。ほかの 6 つの作業と共有する機械で、1 分の load average は wasm32 のゲートが 10〜17（開始）から 49（終了）、native のゲートが 33（開始）〜20（終了）、native のカーネルが 9〜10、wasm32 のカーネルが 11〜13 でした。数値は参考値で、`llvm` と `fast` を交互に（先に走るほうも交互に）測った 7 標本の中央値と最小〜最大です。生のレコードは `target/perf/PB05/bench-wasm2`・`bench-native`・`kernels-native`・`kernels-wasm2` です（commit しません）。
 
@@ -8408,7 +8410,7 @@ PB05 の節の値は、ほかの作業と共有する機械（load average 10〜
 - 生成コードの実行時間（`benchmarks/control` の 16 kernel。`node benchmarks/run-backend-kernels.mjs COMPILER --out DIR [--target wasm32]`。3 round の中央値の中央値）: native は `llvm -O0` の合計 482.1 ms に対し `fast -O0` が 390.5 ms（0.81 倍。参考に `llvm -O3` は 112.9 ms）、
   object は 40,224 → 11,080 bytes。wasm32 は 411.9 ms に対し 454.4 ms（1.10 倍。`llvm -O3` は 157.9 ms）で、`closure_churn` 1.19 倍・`integer128_mix` 1.25 倍が遅く、module は 11,278 → 15,517 bytes です。16 kernel の checksum は 3 つの build で同じでした。
   wasm32 の配列・リストの loop の構造化（1.3〜1.5 倍の差）は PB05 の節のとおり未対応です。
-- x86-64 の Linux と Intel の macOS では、CI（targets.yml）が `tests/fast_backend.mjs` の default・`programs`・`debug` を実行します（Linux x86-64 の runner で、21 実行ファイルの出力・85 library の export の一致、1,393 関数の行情報の検証、`parity` の 8 suite が通ることを確認済み）。時間は測っていません。
+- macOS Arm64 と Linux x64/Arm64 では、CI（targets.yml）が `tests/fast_backend.mjs` の default・`programs`・`debug` を実行します（Linux x86-64 の runner で、21 実行ファイルの出力・85 library の export の一致、1,393 関数の行情報の検証、`parity` の 8 suite が通ることを確認済み）。時間は測っていません。
 
 #### チケットごとの追認と、追認できなかったこと
 

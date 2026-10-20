@@ -1020,24 +1020,14 @@ impl BuildOptions {
         Ok(())
     }
 
-    /// The options of a named native target (`--target TRIPLE`): what its operating system, or the
-    /// lack of one, and the tools of the machine the compiler runs on can produce.
+    /// The options of a named native target (`--target TRIPLE`): what its operating system and
+    /// the tools of the machine the compiler runs on can produce.
     fn validate_triple(self, triple: Triple) -> Result<(), Diagnostic> {
         let name = triple.name();
         if self.target != Target::Native {
             return Err(driver_error(
                 "E2000",
                 format!("--target {name} names a native target, not WebAssembly"),
-            ));
-        }
-        if triple.is_bare_metal()
-            && !(self.freestanding && matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header))
-        {
-            return Err(driver_error(
-                "E2000",
-                format!(
-                    "{name} has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header"
-                ),
             ));
         }
         // A sysroot that the target cannot read is refused when the build starts, not only at a link.
@@ -1533,17 +1523,12 @@ fn sdk_args_for(
             arguments.extend(["-isysroot".into(), sysroot]);
         }
     } else if let Some(sysroot) = sysroot {
-        if triple.is_msvc() || triple.is_bare_metal() {
+        if triple.is_msvc() {
             return Err(driver_error(
                 "E2000",
                 format!(
-                    "{SYSROOT_VARIABLE} does not apply to {}{}",
+                    "{SYSROOT_VARIABLE} does not apply to {}: the MSVC linker reads the Windows SDK and CRT from the INCLUDE and LIB environment variables",
                     triple.name(),
-                    if triple.is_msvc() {
-                        ": the MSVC linker reads the Windows SDK and CRT from the INCLUDE and LIB environment variables"
-                    } else {
-                        ": a freestanding object reads no C headers or libraries"
-                    }
                 ),
             ));
         }
@@ -1660,24 +1645,12 @@ fn cross_hint(platform: Platform, hint: &str) -> String {
         return hint.to_owned();
     };
     let name = triple.name();
-    // A freestanding object reads no C library, header, or linker: only the compile of IR can fail.
-    if triple.is_bare_metal() {
-        return format!(
-            "cross-compiling to {name} needs a Clang with the {} backend; {hint}",
-            triple.arch_name()
-        );
-    }
     let needs = if platform.mach_o() {
         format!("the SDK for {name}: set {SYSROOT_VARIABLE} to it")
     } else if triple.is_msvc() {
         "the Windows SDK and CRT: set the INCLUDE and LIB environment variables to them, or build the MinGW target with the bundled toolchain".to_owned()
-    } else if triple.has_bundled_c_library() {
-        format!("a sysroot for {name}: use the bundled toolchain, or set {SYSROOT_VARIABLE} to one")
     } else {
-        // The bundled toolchain has no C library for it, and refuses a sysroot.
-        format!(
-            "a sysroot for {name} (the bundled toolchain has none): set {SYSROOT_VARIABLE} to one, with a Clang other than the bundled one"
-        )
+        format!("a sysroot for {name}: use the bundled toolchain, or set {SYSROOT_VARIABLE} to one")
     };
     // LLD, only where `link_args` asks for it: Apple's own linker writes Mach-O on a Mac.
     let linker = if link_args(platform).is_empty() {
@@ -3629,12 +3602,6 @@ fn build_complete(
         if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
-    }
-    if platform.no_red_zone()
-        && options.target == Target::Native
-        && !(options.emit == Emit::Header || options.emit.is_kernel())
-    {
-        text = llvm::with_no_red_zone(text);
     }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
@@ -7426,7 +7393,7 @@ mod tests {
     fn foreign_triple() -> Triple {
         Triple::ALL
             .into_iter()
-            .find(|triple| Some(*triple) != Triple::host() && !triple.is_bare_metal())
+            .find(|triple| Some(*triple) != Triple::host())
             .unwrap()
     }
 
@@ -7448,8 +7415,8 @@ mod tests {
             ["--target=x86_64-unknown-linux-musl", "-fPIC"]
         );
         assert_eq!(
-            args(X86_64FreeBsd),
-            ["--target=x86_64-unknown-freebsd14", "-fPIC"]
+            args(Aarch64LinuxGnu),
+            ["--target=aarch64-unknown-linux-gnu", "-fPIC"]
         );
         assert_eq!(
             args(X86_64WindowsMsvc),
@@ -7461,19 +7428,6 @@ mod tests {
         assert_eq!(
             args(Aarch64WindowsGnu),
             ["--target=aarch64-w64-windows-gnu"]
-        );
-        assert_eq!(
-            args(Riscv64BareMetal),
-            [
-                "--target=riscv64-unknown-none-elf",
-                "-march=rv64gc",
-                "-mabi=lp64d",
-                "-fPIC"
-            ]
-        );
-        assert_eq!(
-            args(X86_64BareMetal),
-            ["--target=x86_64-unknown-none-elf", "-fPIC"]
         );
         // Without a target the arguments are the machine's own, as they always were.
         assert_eq!(
@@ -7512,11 +7466,9 @@ mod tests {
         for (triple, executable, object, shared) in [
             (Aarch64AppleDarwin, "app", "app.o", "app.dylib"),
             (X86_64LinuxGnu, "app", "app.o", "app.so"),
-            (Aarch64LinuxAndroid, "app", "app.o", "app.so"),
-            (X86_64FreeBsd, "app", "app.o", "app.so"),
+            (Aarch64LinuxMusl, "app", "app.o", "app.so"),
             (X86_64WindowsMsvc, "app.exe", "app.obj", "app.dll"),
             (Aarch64WindowsGnu, "app.exe", "app.obj", "app.dll"),
-            (Aarch64AppleIosSim, "app", "app.o", "app.dylib"),
         ] {
             let path = |emit| {
                 BuildOptions {
@@ -7561,11 +7513,11 @@ mod tests {
         );
         // Apple's Clang takes the SDK as -isysroot, and goes on with the macOS one if it is missing.
         assert_eq!(
-            args(Aarch64AppleIos, None),
+            args(Aarch64AppleDarwin, None),
             Ok(vec!["-Werror=incompatible-sysroot".to_owned()])
         );
         assert_eq!(
-            args(Aarch64AppleIos, sysroot()),
+            args(Aarch64AppleDarwin, sysroot()),
             Ok(vec![
                 "-Werror=incompatible-sysroot".to_owned(),
                 "-isysroot".to_owned(),
@@ -7573,7 +7525,7 @@ mod tests {
             ])
         );
         // The targets that read no sysroot say so instead of ignoring it.
-        for triple in [X86_64WindowsMsvc, Riscv64BareMetal] {
+        for triple in [X86_64WindowsMsvc, Aarch64WindowsMsvc] {
             let error = args(triple, sysroot()).unwrap_err();
             assert!(
                 error.starts_with(&format!(
@@ -7703,10 +7655,11 @@ mod tests {
             "{hint}"
         );
         assert!(hint.ends_with("; install Clang"));
-        // An iOS target asks for its SDK, and an MSVC one for INCLUDE and LIB, unless it is the host's own.
+        // A macOS target asks for its SDK, and an MSVC one for INCLUDE and LIB, unless it is the host's own.
         assert!(
-            cross_hint(Platform::new(Some(Triple::Aarch64AppleIos)), "x")
+            cross_hint(Platform::new(Some(Triple::Aarch64AppleDarwin)), "x")
                 .contains("set TSUZURI_SYSROOT to it")
+                || Triple::host() == Some(Triple::Aarch64AppleDarwin)
         );
         assert!(
             cross_hint(Platform::new(Some(Triple::Aarch64WindowsMsvc)), "x").contains("INCLUDE")
@@ -7720,33 +7673,13 @@ mod tests {
                 continue;
             }
             let hint = cross_hint(platform, "x");
-            if triple.is_bare_metal() {
-                assert_eq!(
-                    hint,
-                    format!(
-                        "cross-compiling to {} needs a Clang with the {} backend; x",
-                        triple.name(),
-                        triple.arch_name()
-                    )
-                );
-                continue;
-            }
-            assert_eq!(
-                hint.contains("use the bundled toolchain"),
-                triple.has_bundled_c_library(),
-                "{hint}"
-            );
-            assert_eq!(
-                hint.contains("the bundled toolchain has none"),
-                !triple.has_bundled_c_library(),
-                "{hint}"
-            );
+            assert!(hint.contains("use the bundled toolchain"), "{hint}");
             assert!(hint.contains(", LLD, and"), "{hint}");
         }
-        let apple = Platform::new(Some(Triple::Aarch64AppleIos));
+        let apple = Platform::new(Some(Triple::Aarch64AppleDarwin));
         assert_eq!(
             cross_hint(apple, "x").contains("LLD"),
-            !cfg!(target_os = "macos")
+            apple.cross() && !cfg!(target_os = "macos")
         );
     }
 
@@ -7836,58 +7769,15 @@ mod tests {
             ..options(Emit::Executable, triple)
         };
         assert_eq!(
-            debug(Triple::Aarch64AppleIos).validate().is_err(),
+            debug(Triple::Aarch64AppleDarwin).validate().is_err(),
             !cfg!(target_os = "macos")
         );
         assert_eq!(
             debug(Triple::Aarch64WindowsMsvc).validate().is_err(),
             !cfg!(windows)
         );
-        for triple in [
-            Triple::X86_64LinuxMusl,
-            Triple::X86_64FreeBsd,
-            Triple::X86_64WindowsGnu,
-        ] {
+        for triple in [Triple::X86_64LinuxMusl, Triple::X86_64WindowsGnu] {
             debug(triple).validate().unwrap();
-        }
-    }
-
-    #[test]
-    fn bare_metal_targets_build_only_freestanding_objects() {
-        for triple in Triple::ALL
-            .into_iter()
-            .filter(|triple| triple.is_bare_metal())
-        {
-            let options = |emit, freestanding| BuildOptions {
-                emit,
-                freestanding,
-                allocator: llvm::Allocator::Host,
-                triple: Some(triple),
-                ..BuildOptions::default()
-            };
-            for emit in [Emit::Object, Emit::Llvm, Emit::Header] {
-                options(emit, true).validate().unwrap();
-                let error = options(emit, false).validate().unwrap_err();
-                assert_eq!(
-                    error.message,
-                    format!(
-                        "{} has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header",
-                        triple.name()
-                    )
-                );
-            }
-            // An executable or a shared library needs an operating system, with or without the option.
-            for emit in [Emit::Executable, Emit::Shared] {
-                for freestanding in [false, true] {
-                    assert!(
-                        options(emit, freestanding)
-                            .validate()
-                            .unwrap_err()
-                            .message
-                            .contains("has no operating system")
-                    );
-                }
-            }
         }
     }
 

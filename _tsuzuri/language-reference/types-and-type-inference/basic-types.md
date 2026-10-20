@@ -181,7 +181,7 @@ $"{sum}:{root}:{clipped}:{shown}"
 3.75:1.5:65504:nan
 ```
 
-速度は Apple M1 Max（macOS arm64）でだけ測りました。ソフトウェア実装に比べて約 330〜1,480 倍速く、C の `_Float16` と比べると 1.4〜4.5 倍かかります（`nan` のビットをそろえる補正が主な費用です）。条件と数値は[性能測定](../../../docs/benchmarks.md#f16-のハードウェア経路d10)にあります。x86-64 の `--cpu native`（F16C）と Linux の AArch64 は、CI の runner（Linux x86-64、Intel Mac、Linux arm64）で結果のビットを参照と照合しましたが、速度は測っていません。Linux x86-64 の CI は runner の機能に応じて F16C の `conversions` または AVX512-FP16 の `hardware` を許容し、現時点で `conversions` の実行を確認しています。AVX512-FP16 の `hardware` と Windows の実行は未確認です。
+速度は Apple M1 Max（macOS arm64）でだけ測りました。ソフトウェア実装に比べて約 330〜1,480 倍速く、C の `_Float16` と比べると 1.4〜4.5 倍かかります（`nan` のビットをそろえる補正が主な費用です）。条件と数値は[性能測定](../../../docs/benchmarks.md#f16-のハードウェア経路d10)にあります。x86-64 の `--cpu native`（F16C）と Linux の AArch64 は、CI の runner（Linux x86-64、Linux arm64）で結果のビットを参照と照合しますが、速度は測っていません。Linux x86-64 の CI は runner の機能に応じて F16C の `conversions` または AVX512-FP16 の `hardware` を許容し、現時点で `conversions` の実行を確認しています。AVX512-FP16 の `hardware` と Windows の実行は未確認です。
 
 `Math.sin` や `Math.exp` などの超越関数は、`f32` と `f64` だけです（`Elementary<'a>`）。`f16`、`f128`、`d*` に渡すと `E1005`（`no instance for Elementary<f16>` など）です。これらの超越関数は、ホストの libm ではなく同梱の musl を使います。`f16` の四則演算が musl なわけではありません。
 
@@ -267,4 +267,3 @@ A:2:4
 - [String](../built-in-types-and-modules/string.md)
 - [Utf8String](../built-in-types-and-modules/utf8string.md)
 - [言語リファレンスの目次](../index.md)
-

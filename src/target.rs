@@ -1,7 +1,7 @@
 //! The native targets that `--target` can name, and what a build needs to know about them.
 //!
-//! A [`Triple`] is one of a closed list of 64-bit little-endian targets, spelled as Rust spells
-//! them. A [`Platform`] answers the questions the driver asks where it used to ask `cfg!(windows)`
+//! A [`Triple`] names Windows x64/Arm64, Linux x64/Arm64, or macOS Arm64, spelled as Rust spells
+//! them, with the supported C runtime variants. A [`Platform`] answers the questions the driver asks where it used to ask `cfg!(windows)`
 //! and friends: without a triple it describes the machine the compiler runs on and answers with
 //! the same `cfg!` as before, with a triple it answers from the table below. 32-bit targets are not
 //! in the list: native code generation assumes 64-bit pointers.
@@ -16,13 +16,8 @@ use crate::driver::Target;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
     MacOs,
-    Ios,
     Linux,
-    Android,
-    FreeBsd,
     Windows,
-    /// No operating system: freestanding objects only.
-    BareMetal,
 }
 
 /// The instruction set of a native target.
@@ -30,34 +25,20 @@ pub enum Os {
 pub enum Arch {
     Aarch64,
     X86_64,
-    Riscv64,
 }
 
 /// A target that `--target` names for native output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Triple {
     Aarch64AppleDarwin,
-    X86_64AppleDarwin,
     Aarch64LinuxGnu,
     X86_64LinuxGnu,
     Aarch64WindowsMsvc,
     X86_64WindowsMsvc,
     Aarch64LinuxMusl,
     X86_64LinuxMusl,
-    Riscv64LinuxGnu,
-    Riscv64LinuxMusl,
     Aarch64WindowsGnu,
     X86_64WindowsGnu,
-    Aarch64FreeBsd,
-    X86_64FreeBsd,
-    Aarch64LinuxAndroid,
-    X86_64LinuxAndroid,
-    Aarch64AppleIos,
-    Aarch64AppleIosSim,
-    X86_64AppleIos,
-    Aarch64BareMetal,
-    X86_64BareMetal,
-    Riscv64BareMetal,
 }
 
 /// One row of the target table.
@@ -65,7 +46,7 @@ pub enum Triple {
 struct Spec {
     /// The `--target` spelling.
     name: &'static str,
-    /// The Clang `--target` value. Apple and Android triples carry the oldest OS version the
+    /// The Clang `--target` value. The Apple triple carries the oldest OS version the
     /// runtime is built for, so that the result does not depend on the SDK that happens to be found.
     clang: &'static str,
     /// Further Clang arguments the target needs for code generation.
@@ -107,46 +88,26 @@ const fn msvc(name: &'static str, clang: &'static str, arch: Arch) -> Spec {
 
 impl Triple {
     /// Every target, in the order of the diagnostics.
-    pub const ALL: [Triple; 22] = [
+    pub const ALL: [Triple; 9] = [
         Self::Aarch64AppleDarwin,
-        Self::X86_64AppleDarwin,
         Self::Aarch64LinuxGnu,
         Self::X86_64LinuxGnu,
         Self::Aarch64WindowsMsvc,
         Self::X86_64WindowsMsvc,
         Self::Aarch64LinuxMusl,
         Self::X86_64LinuxMusl,
-        Self::Riscv64LinuxGnu,
-        Self::Riscv64LinuxMusl,
         Self::Aarch64WindowsGnu,
         Self::X86_64WindowsGnu,
-        Self::Aarch64FreeBsd,
-        Self::X86_64FreeBsd,
-        Self::Aarch64LinuxAndroid,
-        Self::X86_64LinuxAndroid,
-        Self::Aarch64AppleIos,
-        Self::Aarch64AppleIosSim,
-        Self::X86_64AppleIos,
-        Self::Aarch64BareMetal,
-        Self::X86_64BareMetal,
-        Self::Riscv64BareMetal,
     ];
 
     const fn spec(self) -> Spec {
-        use Arch::{Aarch64, Riscv64, X86_64};
+        use Arch::{Aarch64, X86_64};
         match self {
             Self::Aarch64AppleDarwin => spec(
                 "aarch64-apple-darwin",
                 "arm64-apple-macosx12.0.0",
                 Os::MacOs,
                 Aarch64,
-                &[],
-            ),
-            Self::X86_64AppleDarwin => spec(
-                "x86_64-apple-darwin",
-                "x86_64-apple-macosx12.0.0",
-                Os::MacOs,
-                X86_64,
                 &[],
             ),
             Self::Aarch64LinuxGnu => spec(
@@ -185,20 +146,6 @@ impl Triple {
                 X86_64,
                 &[],
             ),
-            Self::Riscv64LinuxGnu => spec(
-                "riscv64gc-unknown-linux-gnu",
-                "riscv64-unknown-linux-gnu",
-                Os::Linux,
-                Riscv64,
-                &[],
-            ),
-            Self::Riscv64LinuxMusl => spec(
-                "riscv64gc-unknown-linux-musl",
-                "riscv64-unknown-linux-musl",
-                Os::Linux,
-                Riscv64,
-                &[],
-            ),
             Self::Aarch64WindowsGnu => spec(
                 "aarch64-pc-windows-gnu",
                 "aarch64-w64-windows-gnu",
@@ -212,80 +159,6 @@ impl Triple {
                 Os::Windows,
                 X86_64,
                 &[],
-            ),
-            Self::Aarch64FreeBsd => spec(
-                "aarch64-unknown-freebsd",
-                "aarch64-unknown-freebsd14",
-                Os::FreeBsd,
-                Aarch64,
-                &[],
-            ),
-            Self::X86_64FreeBsd => spec(
-                "x86_64-unknown-freebsd",
-                "x86_64-unknown-freebsd14",
-                Os::FreeBsd,
-                X86_64,
-                &[],
-            ),
-            Self::Aarch64LinuxAndroid => spec(
-                "aarch64-linux-android",
-                "aarch64-linux-android21",
-                Os::Android,
-                Aarch64,
-                &[],
-            ),
-            Self::X86_64LinuxAndroid => spec(
-                "x86_64-linux-android",
-                "x86_64-linux-android21",
-                Os::Android,
-                X86_64,
-                &[],
-            ),
-            Self::Aarch64AppleIos => spec(
-                "aarch64-apple-ios",
-                "arm64-apple-ios13.0",
-                Os::Ios,
-                Aarch64,
-                &[],
-            ),
-            // The first iOS release that runs on an Apple silicon simulator.
-            Self::Aarch64AppleIosSim => spec(
-                "aarch64-apple-ios-sim",
-                "arm64-apple-ios14.0-simulator",
-                Os::Ios,
-                Aarch64,
-                &[],
-            ),
-            Self::X86_64AppleIos => spec(
-                "x86_64-apple-ios",
-                "x86_64-apple-ios13.0-simulator",
-                Os::Ios,
-                X86_64,
-                &[],
-            ),
-            Self::Aarch64BareMetal => spec(
-                "aarch64-unknown-none",
-                "aarch64-unknown-none-elf",
-                Os::BareMetal,
-                Aarch64,
-                &[],
-            ),
-            // The red zone below the stack pointer, which an interrupt handler would overwrite, is
-            // turned off by marking every function in the IR: Clang ignores `-mno-red-zone` for IR.
-            Self::X86_64BareMetal => spec(
-                "x86_64-unknown-none",
-                "x86_64-unknown-none-elf",
-                Os::BareMetal,
-                X86_64,
-                &[],
-            ),
-            // Clang's default for this OS-less triple is soft-float without the F and D extensions.
-            Self::Riscv64BareMetal => spec(
-                "riscv64gc-unknown-none-elf",
-                "riscv64-unknown-none-elf",
-                Os::BareMetal,
-                Riscv64,
-                &["-march=rv64gc", "-mabi=lp64d"],
             ),
         }
     }
@@ -332,7 +205,6 @@ impl Triple {
         match self.spec().arch {
             Arch::Aarch64 => "aarch64",
             Arch::X86_64 => "x86_64",
-            Arch::Riscv64 => "riscv64",
         }
     }
 
@@ -341,39 +213,21 @@ impl Triple {
         self.spec().msvc
     }
 
-    /// A target without an operating system, which only freestanding output serves.
-    pub const fn is_bare_metal(self) -> bool {
-        matches!(self.spec().os, Os::BareMetal)
-    }
-
-    /// Whether the bundled toolchain (Zig) has a C library for the target: every one but Android,
-    /// iOS, and bare metal. For an MSVC target it is MinGW's, which only a Windows launcher links.
-    pub const fn has_bundled_c_library(self) -> bool {
-        !matches!(self.spec().os, Os::Android | Os::Ios | Os::BareMetal)
-    }
-
     /// The target of the machine the compiler runs on, if it is one of these.
     pub fn host() -> Option<Triple> {
         let arm = cfg!(target_arch = "aarch64");
         let x64 = cfg!(target_arch = "x86_64");
-        let riscv = cfg!(target_arch = "riscv64");
         let pick = |on_arm: Triple, on_x64: Triple| arm.then_some(on_arm).or(x64.then_some(on_x64));
-        if cfg!(target_os = "macos") {
-            pick(Self::Aarch64AppleDarwin, Self::X86_64AppleDarwin)
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            Some(Self::Aarch64AppleDarwin)
         } else if cfg!(all(target_os = "linux", target_env = "gnu")) {
             pick(Self::Aarch64LinuxGnu, Self::X86_64LinuxGnu)
-                .or(riscv.then_some(Self::Riscv64LinuxGnu))
         } else if cfg!(all(target_os = "linux", target_env = "musl")) {
             pick(Self::Aarch64LinuxMusl, Self::X86_64LinuxMusl)
-                .or(riscv.then_some(Self::Riscv64LinuxMusl))
         } else if cfg!(all(windows, target_env = "msvc")) {
             pick(Self::Aarch64WindowsMsvc, Self::X86_64WindowsMsvc)
         } else if cfg!(all(windows, target_env = "gnu")) {
             pick(Self::Aarch64WindowsGnu, Self::X86_64WindowsGnu)
-        } else if cfg!(target_os = "freebsd") {
-            pick(Self::Aarch64FreeBsd, Self::X86_64FreeBsd)
-        } else if cfg!(target_os = "android") {
-            pick(Self::Aarch64LinuxAndroid, Self::X86_64LinuxAndroid)
         } else {
             None
         }
@@ -455,7 +309,7 @@ impl Platform {
     /// Mach-O output, whose debug information a dSYM file carries.
     pub const fn mach_o(self) -> bool {
         match self.0 {
-            Some(triple) => matches!(triple.os(), Os::MacOs | Os::Ios),
+            Some(triple) => matches!(triple.os(), Os::MacOs),
             None => cfg!(target_os = "macos"),
         }
     }
@@ -470,16 +324,13 @@ impl Platform {
 
     /// A Linux kernel, with or without its usual C library.
     pub const fn linux_kernel(self) -> bool {
-        match self.0 {
-            Some(triple) => matches!(triple.os(), Os::Linux | Os::Android),
-            None => cfg!(target_os = "linux"),
-        }
+        self.linux()
     }
 
     /// POSIX: the signal handlers and threads of the runtime.
     pub const fn unix(self) -> bool {
         match self.0 {
-            Some(triple) => !matches!(triple.os(), Os::Windows | Os::BareMetal),
+            Some(triple) => !matches!(triple.os(), Os::Windows),
             None => cfg!(unix),
         }
     }
@@ -492,17 +343,13 @@ impl Platform {
         }
     }
 
-    /// The operating system as `std::env::consts::OS` spells it; a bare-metal target has none.
+    /// The operating system as `std::env::consts::OS` spells it.
     pub const fn os_name(self) -> &'static str {
         match self.0 {
             Some(triple) => match triple.os() {
                 Os::MacOs => "macos",
-                Os::Ios => "ios",
                 Os::Linux => "linux",
-                Os::Android => "android",
-                Os::FreeBsd => "freebsd",
                 Os::Windows => "windows",
-                Os::BareMetal => "none",
             },
             None => env::consts::OS,
         }
@@ -523,7 +370,7 @@ impl Platform {
             Some(triple) => match (triple.arch(), triple.os()) {
                 (Arch::X86_64, Os::Windows) => 0,
                 (Arch::X86_64, _) => 0b1110,
-                (Arch::Aarch64, Os::Linux | Os::Android) => 0b11_0000,
+                (Arch::Aarch64, Os::Linux) => 0b11_0000,
                 _ => 0,
             },
             None => {
@@ -545,33 +392,16 @@ impl Platform {
         self.aarch64()
     }
 
-    /// Whether every function is compiled without a red zone: x86-64 without an operating system,
-    /// where interrupts may run on the stack of the code they interrupt.
-    pub const fn no_red_zone(self) -> bool {
-        match self.0 {
-            Some(triple) => matches!((triple.os(), triple.arch()), (Os::BareMetal, Arch::X86_64)),
-            None => false,
-        }
-    }
-
-    /// Whether `src/runtime/os.c` has an implementation for the target: POSIX with the headers of
-    /// macOS, Linux, and FreeBSD. Windows has no implementation (G10 is the execution gate and does
-    /// not include one), the iOS SDK has no `sys/random.h`, and Bionic has `getentropy` and
-    /// `posix_spawn` only from API 28, above the API level of the Android targets.
+    /// Whether `src/runtime/os.c` has an implementation for the target: macOS and Linux.
+    /// Windows has no implementation (G10 is the execution gate and does not include one).
     pub const fn os_apis(self) -> bool {
-        match self.0 {
-            Some(triple) => !matches!(
-                triple.os(),
-                Os::Windows | Os::Ios | Os::Android | Os::BareMetal
-            ),
-            None => !cfg!(windows),
-        }
+        !self.windows()
     }
 
     /// Whether `src/runtime/net.c` has an implementation for the target.
     pub const fn net(self) -> bool {
         match self.0 {
-            Some(triple) => matches!(triple.os(), Os::MacOs | Os::Linux | Os::Windows),
+            Some(_) => true,
             None => cfg!(any(target_os = "macos", target_os = "linux", windows)),
         }
     }
@@ -584,7 +414,7 @@ impl Platform {
     /// Whether the target has threads for `Task.parallel`.
     pub const fn threads(self) -> bool {
         match self.0 {
-            Some(triple) => !triple.is_bare_metal(),
+            Some(_) => true,
             None => cfg!(any(unix, windows)),
         }
     }
@@ -642,7 +472,7 @@ impl Drop for PlatformScope {
 }
 
 /// The command that runs the executables of a target this machine cannot run: `qemu-user`,
-/// Wine, `arch -x86_64`, or a wrapper that starts an emulator or a device.
+/// Wine, or a wrapper that starts an emulator or a device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForeignRunner {
     pub program: OsString,
@@ -683,6 +513,20 @@ mod tests {
 
     #[test]
     fn names_round_trip_and_are_unique() {
+        assert_eq!(
+            Triple::ALL.map(Triple::name),
+            [
+                "aarch64-apple-darwin",
+                "aarch64-unknown-linux-gnu",
+                "x86_64-unknown-linux-gnu",
+                "aarch64-pc-windows-msvc",
+                "x86_64-pc-windows-msvc",
+                "aarch64-unknown-linux-musl",
+                "x86_64-unknown-linux-musl",
+                "aarch64-pc-windows-gnu",
+                "x86_64-pc-windows-gnu",
+            ]
+        );
         let mut seen = std::collections::BTreeSet::new();
         for triple in Triple::ALL {
             assert_eq!(Triple::parse(triple.name()), Some(triple));
@@ -710,22 +554,16 @@ mod tests {
             let spellings: &[&str] = match triple.arch() {
                 Arch::Aarch64 => &["aarch64-", "arm64-"],
                 Arch::X86_64 => &["x86_64-"],
-                Arch::Riscv64 => &["riscv64-"],
             };
             assert!(
                 spellings.iter().any(|prefix| clang.starts_with(prefix)),
                 "{clang}"
             );
             assert_eq!(triple.is_msvc(), clang.ends_with("-windows-msvc"));
-            assert_eq!(triple.is_bare_metal(), clang.ends_with("-none-elf"));
             for argument in triple.clang_arguments() {
                 assert!(argument.starts_with("-m"), "{argument}");
             }
         }
-        assert_eq!(
-            Triple::Riscv64BareMetal.clang_arguments(),
-            ["-march=rv64gc", "-mabi=lp64d"]
-        );
         // A COFF object made for MSVC would otherwise differ by its time stamp from run to run.
         for triple in [Triple::Aarch64WindowsMsvc, Triple::X86_64WindowsMsvc] {
             assert_eq!(
@@ -771,6 +609,19 @@ mod tests {
             "arm64-apple-darwin",
             "aarch64-unknown-haiku",
             "x86_64-linux-gnu",
+            "x86_64-apple-darwin",
+            "riscv64gc-unknown-linux-gnu",
+            "riscv64gc-unknown-linux-musl",
+            "aarch64-unknown-freebsd",
+            "x86_64-unknown-freebsd",
+            "aarch64-linux-android",
+            "x86_64-linux-android",
+            "aarch64-apple-ios",
+            "aarch64-apple-ios-sim",
+            "x86_64-apple-ios",
+            "aarch64-unknown-none",
+            "x86_64-unknown-none",
+            "riscv64gc-unknown-none-elf",
         ] {
             let message = parse_target(wide).unwrap_err();
             assert!(!message.contains("64-bit pointers"), "{message}");
@@ -785,10 +636,6 @@ mod tests {
         let named = Platform::new(Some(host));
         assert!(!named.cross());
         assert_eq!(named.arch_name(), Platform::HOST.arch_name());
-        // An Android host is `target_os = "android"`, which the host checks do not name.
-        if host.os() == Os::Android {
-            return;
-        }
         assert_eq!(named.windows(), Platform::HOST.windows());
         assert_eq!(named.mach_o(), Platform::HOST.mach_o());
         assert_eq!(named.linux(), Platform::HOST.linux());
@@ -820,19 +667,13 @@ mod tests {
                 platform.object_extension(),
                 if platform.windows() { "obj" } else { "o" }
             );
-            assert_eq!(
-                platform.unix(),
-                !matches!(triple.os(), Os::Windows | Os::BareMetal)
-            );
+            assert_eq!(platform.unix(), triple.os() != Os::Windows);
             assert_eq!(platform.hardware_fma(), triple.arch() == Arch::Aarch64);
-            assert_eq!(platform.threads(), !triple.is_bare_metal());
+            assert!(platform.threads());
         }
         for (triple, extension) in [
             (Aarch64AppleDarwin, "dylib"),
-            (Aarch64AppleIosSim, "dylib"),
             (X86_64LinuxMusl, "so"),
-            (Aarch64LinuxAndroid, "so"),
-            (X86_64FreeBsd, "so"),
             (X86_64WindowsGnu, "dll"),
         ] {
             assert_eq!(Platform::new(Some(triple)).shared_extension(), extension);
@@ -840,18 +681,12 @@ mod tests {
         // What `src/runtime/cpu.c` detects: CPUID on x86-64 off Windows, hwcap on a Linux AArch64.
         for (triple, levels) in [
             (X86_64LinuxGnu, 0b1110),
-            (X86_64AppleDarwin, 0b1110),
-            (X86_64FreeBsd, 0b1110),
-            (X86_64LinuxAndroid, 0b1110),
             (X86_64WindowsMsvc, 0),
             (X86_64WindowsGnu, 0),
             (Aarch64LinuxGnu, 0b11_0000),
             (Aarch64LinuxMusl, 0b11_0000),
-            (Aarch64LinuxAndroid, 0b11_0000),
             (Aarch64AppleDarwin, 0),
-            (Aarch64FreeBsd, 0),
             (Aarch64WindowsMsvc, 0),
-            (Riscv64LinuxGnu, 0),
         ] {
             assert_eq!(
                 Platform::new(Some(triple)).cpu_levels(),
@@ -861,7 +696,7 @@ mod tests {
             );
         }
         // The socket and reactor runtimes are written for macOS, Linux, and Windows, and the
-        // operating-system runtime for everything POSIX except iOS and Android.
+        // operating-system runtime for macOS and Linux.
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             assert_eq!(
@@ -873,10 +708,7 @@ mod tests {
             assert_eq!(platform.reactor(), platform.net());
             assert_eq!(
                 platform.os_apis(),
-                !matches!(
-                    triple.os(),
-                    Os::Windows | Os::Ios | Os::Android | Os::BareMetal
-                ),
+                triple.os() != Os::Windows,
                 "{}",
                 triple.name()
             );

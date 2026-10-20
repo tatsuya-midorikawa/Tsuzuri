@@ -445,7 +445,7 @@ LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含�
 
 ### オプションと必要なツール
 
-`--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、bare-metal の target、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
+`--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
 
 C ランタイムを使うプログラム（タスク、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号（`tsuzuri_async_post`）は、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残します。まとめた後に、それが外部の定義のままかを検査し、そうでなければ `E2002` です。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
 
@@ -527,7 +527,7 @@ int32_t tsuzuri_async_post(int64_t operation, int64_t value);
 
 `Async.host` に渡す操作の `start` と `cancel` は、普通の `extern`（`tsuzuri_host_<モジュール>_<名前>`）としてホストが実装します。`tsuzuri_async_poll` は時計を `now` まで進めて計算を再開し、次に poll する時刻を返します。`-1` は計算が残っていないこと、`INT64_MAX` はホストの操作の完了だけを待っていることを表します。規則と C のホストの骨組みは、[Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
 
-`Async.block_on` に到達する実行ファイルと、macOS / Linux の共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルします。POSIX では `-pthread` を付けます。Windows は Win32 の同期（SRWLOCK と条件変数）と `QueryPerformanceCounter` だけを使うので、追加のライブラリは要りません。対応するホストは macOS、Linux、Windows ですが、Windows でコンパイラがリンクするのは実行ファイル（と test / debug-test / bench）だけです。Windows の `--emit shared` は従来どおり `E2000`、runtime を埋め込む COFF の `--emit object` は task・CPU・IO と同じく非対応なので、DLL や静的ライブラリにするときは、LLVM IR を出して、このファイルと一緒に自分でリンクします。それ以外のホスト（FreeBSD などの Unix）は `E2002` で、test / debug-test / bench も同じ対応範囲です。
+`Async.block_on` に到達する実行ファイルと、macOS / Linux の共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルします。POSIX では `-pthread` を付けます。Windows は Win32 の同期（SRWLOCK と条件変数）と `QueryPerformanceCounter` だけを使うので、追加のライブラリは要りません。対応するホストは Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 ですが、Windows でコンパイラがリンクするのは実行ファイル（と test / debug-test / bench）だけです。Windows の `--emit shared` は従来どおり `E2000`、runtime を埋め込む COFF の `--emit object` は task・CPU・IO と同じく非対応なので、DLL や静的ライブラリにするときは、LLVM IR を出して、このファイルと一緒に自分でリンクします。test / debug-test / bench も同じ対応範囲です。
 
 - 実行器はスレッドごとに独立しています。`Task.parallel` の各ワーカーから `Async.block_on` を呼んでも、操作の完了は開始したスレッドへ届きます。`Async.start` を投入したスレッドから poll し、そのスレッドを計算の終了まで生存させます。
 - ほかのスレッドから操作を完了するときは、`tsuzuri_async_post` を使います。受理すると 1 を返して待機を起こし、未知・二重・完了済み・取り消し済みなら 0 です。`tsuzuri_async_complete` は、実行器を動かしているスレッド（コールバックの中を含む）から呼びます。mailbox の確保も選択した Tsuzuri allocator を通り、終了・取り消しで解放されます。

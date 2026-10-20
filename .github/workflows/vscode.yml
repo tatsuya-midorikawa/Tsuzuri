@@ -1,6 +1,6 @@
 name: Tsuzuri IDE
 
-# The extension and its toolchain bundle on the six hosts. They run after every merge to main, on a `vsc-v*` tag and, on a
+# The extension and its toolchain bundle on the five supported hosts. They run after every merge to main, on a `vsc-v*` tag and, on a
 # pull request, with the label `ci:full` (ci.yml is the gate of every pull request).
 
 on:
@@ -31,8 +31,6 @@ jobs:
         include:
           - os: macos-15
             target: darwin-arm64
-          - os: macos-15-intel
-            target: darwin-x64
           - os: ubuntu-24.04
             target: linux-x64
           - os: ubuntu-24.04-arm
@@ -166,7 +164,7 @@ jobs:
       # G16 Phase 3: with the MSVC linker, a `-g` executable gets a PDB beside it that holds the
       # CodeView types and functions and the embedded natvis views. The bundled `tsuzuri-clang`
       # links with MinGW and keeps DWARF only, so this uses the LLVM Clang installed above. Only
-      # x64: CodeLLDB is not bundled for ARM64 Windows, whose MSVC ARM64 toolset is unverified.
+      # x64: CodeLLDB is not bundled for ARM64 Windows.
       - name: Windows PDB and natvis
         if: matrix.target == 'win32-x64'
         shell: pwsh

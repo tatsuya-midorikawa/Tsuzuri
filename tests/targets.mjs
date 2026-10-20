@@ -6,9 +6,7 @@
 // TSUZURI_CLANG              Clang for the host and object checks (as for the other scripts).
 // TSUZURI_CROSS_LINK=1       Also link executables for every foreign target that a cross toolchain can link,
 //                            and fail when one cannot be linked. TSUZURI_CROSS_CLANG names the cross
-//                            toolchain: the bundled `tsuzuri-clang`, which brings Zig. Apple targets
-//                            from macOS use the system Clang and the iPhoneOS and iPhoneSimulator SDKs
-//                            that `xcrun` reports.
+//                            toolchain: the bundled `tsuzuri-clang`, which brings Zig.
 // TSUZURI_CROSS_EXECUTE=1    Also execute foreign executables through an emulator, and fail when there is
 //                            none: qemu-user for the static musl targets on Linux (TSUZURI_RUNNER does
 //                            the work, so the runner hook is exercised for real).
@@ -17,7 +15,7 @@
 // the WebAssembly aliases, and the refusals. It never installs anything and runs no foreign executable
 // without an emulator that is already there.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -39,36 +37,23 @@ if (crossLink && !crossClang) {
 }
 
 // The targets, spelled out independently of the compiler's table: the machine each one is for, the
-// object format, and what the format records. `compiled` is whether Zig has a C library for it.
+// object format, and what the format records.
 const triples = [
   ["aarch64-apple-darwin", { os: "macos", arch: "aarch64", format: "macho", platform: 1, minos: 12 }],
-  ["x86_64-apple-darwin", { os: "macos", arch: "x86_64", format: "macho", platform: 1, minos: 12 }],
   ["aarch64-unknown-linux-gnu", { os: "linux", arch: "aarch64", format: "elf", libc: "gnu" }],
   ["x86_64-unknown-linux-gnu", { os: "linux", arch: "x86_64", format: "elf", libc: "gnu" }],
   ["aarch64-pc-windows-msvc", { os: "windows", arch: "aarch64", format: "coff", libc: "msvc" }],
   ["x86_64-pc-windows-msvc", { os: "windows", arch: "x86_64", format: "coff", libc: "msvc" }],
   ["aarch64-unknown-linux-musl", { os: "linux", arch: "aarch64", format: "elf", libc: "musl" }],
   ["x86_64-unknown-linux-musl", { os: "linux", arch: "x86_64", format: "elf", libc: "musl" }],
-  ["riscv64gc-unknown-linux-gnu", { os: "linux", arch: "riscv64", format: "elf", libc: "gnu" }],
-  ["riscv64gc-unknown-linux-musl", { os: "linux", arch: "riscv64", format: "elf", libc: "musl" }],
   ["aarch64-pc-windows-gnu", { os: "windows", arch: "aarch64", format: "coff", libc: "mingw" }],
   ["x86_64-pc-windows-gnu", { os: "windows", arch: "x86_64", format: "coff", libc: "mingw" }],
-  ["aarch64-unknown-freebsd", { os: "freebsd", arch: "aarch64", format: "elf" }],
-  ["x86_64-unknown-freebsd", { os: "freebsd", arch: "x86_64", format: "elf" }],
-  ["aarch64-linux-android", { os: "android", arch: "aarch64", format: "elf" }],
-  ["x86_64-linux-android", { os: "android", arch: "x86_64", format: "elf" }],
-  ["aarch64-apple-ios", { os: "ios", arch: "aarch64", format: "macho", platform: 2, minos: 13, sdk: "iphoneos" }],
-  ["aarch64-apple-ios-sim", { os: "ios", arch: "aarch64", format: "macho", platform: 7, minos: 14, sdk: "iphonesimulator" }],
-  ["x86_64-apple-ios", { os: "ios", arch: "x86_64", format: "macho", platform: 7, minos: 13, sdk: "iphonesimulator" }],
-  ["aarch64-unknown-none", { os: "none", arch: "aarch64", format: "elf", bare: true }],
-  ["x86_64-unknown-none", { os: "none", arch: "x86_64", format: "elf", bare: true }],
-  ["riscv64gc-unknown-none-elf", { os: "none", arch: "riscv64", format: "elf", bare: true }],
 ];
 const byName = new Map(triples);
 
 const machine = {
-  macho: { aarch64: 0x0100000c, x86_64: 0x01000007 },
-  elf: { aarch64: 183, x86_64: 62, riscv64: 243 },
+  macho: { aarch64: 0x0100000c },
+  elf: { aarch64: 183, x86_64: 62 },
   coff: { aarch64: 0xaa64, x86_64: 0x8664 },
 };
 const expected = { tasks: "21325334000\n", control: "42\n" };
@@ -149,18 +134,9 @@ function check(name, file, kind) {
     assert.equal(found.minos, target.minos, name);
   } else if (target.format === "elf") {
     assert.ok(kind === "object" ? found.type === 1 : [2, 3].includes(found.type), `${name}: e_type ${found.type}`);
-    // The linker may leave a FreeBSD executable at ELFOSABI_NONE, which FreeBSD runs by its interpreter.
-    if (kind === "object") assert.equal(found.osabi, target.os === "freebsd" ? 9 : 0, name);
-    if (target.arch === "riscv64") {
-      // EF_RISCV_RVC, and the float ABI field EF_RISCV_FLOAT_ABI_DOUBLE.
-      assert.equal(found.flags & 0x1, 1, name);
-      assert.equal(found.flags & 0x6, 0x4, `${name}: ${found.flags.toString(16)}`);
-    }
-    if (target.os === "freebsd" && kind === "executable") {
-      assert.ok(found.bytes.includes("/libexec/ld-elf.so.1"), name);
-    }
+    if (kind === "object") assert.equal(found.osabi, 0, name);
     if (target.libc === "gnu" && kind === "executable") {
-      assert.ok(found.bytes.includes(target.arch === "x86_64" ? "/lib64/ld-linux-x86-64.so.2" : target.arch === "aarch64" ? "/lib/ld-linux-aarch64.so.1" : "/lib/ld-linux-riscv64-lp64d.so.1"), name);
+      assert.ok(found.bytes.includes(target.arch === "x86_64" ? "/lib64/ld-linux-x86-64.so.2" : "/lib/ld-linux-aarch64.so.1"), name);
     }
   } else if (kind === "executable") {
     assert.equal(found.type, "executable", name);
@@ -183,8 +159,8 @@ function hostTriple() {
   return `${arch}-unknown-linux-${glibc ? "gnu" : "musl"}`;
 }
 const host = hostTriple();
-const hostArch = byName.get(host).arch;
 assert.ok(byName.has(host), host);
+const hostArch = byName.get(host).arch;
 
 const answer = join(work, "answer");
 mkdirSync(answer);
@@ -225,7 +201,7 @@ try {
   // can make for a target whose headers and linker it does not have.
   const backends = (clang) => spawnSync(clang, ["--print-targets"], { encoding: "utf8" }).stdout.split("\n").map((line) => line.trim().split(/\s+/)[0]);
   const available = new Set(backends(systemClang));
-  const backend = { aarch64: "aarch64", x86_64: "x86-64", riscv64: "riscv64" };
+  const backend = { aarch64: "aarch64", x86_64: "x86-64" };
   for (const [name, target] of triples) {
     if (!available.has(backend[target.arch])) {
       assert.ok(!strict, `${systemClang} has no ${backend[target.arch]} code generator, which ${name} needs`);
@@ -233,8 +209,7 @@ try {
       continue;
     }
     const object = join(work, `${name}.o`);
-    const flags = target.bare ? ["--freestanding", "--allocator", "host"] : [];
-    cli(["build", answer, "--emit", "object", "--no-cache", "--target", name, ...flags, "-o", object], { env: { TSUZURI_CLANG: systemClang } });
+    cli(["build", answer, "--emit", "object", "--no-cache", "--target", name, "-o", object], { env: { TSUZURI_CLANG: systemClang } });
     check(name, object, "object");
     record(name, "object", `${target.format} ${target.arch} object`);
     if (target.libc === "msvc") {
@@ -246,60 +221,11 @@ try {
     }
   }
 
-  // The other Apple architecture links with the Apple tools that are already here.
-  if (process.platform === "darwin") {
-    const other = host === "aarch64-apple-darwin" ? "x86_64-apple-darwin" : "aarch64-apple-darwin";
-    const executable = join(work, `tasks-${other}`);
-    cli(["build", "examples/tasks", "--no-cache", "--target", other, "-o", executable], { env: { TSUZURI_CLANG: systemClang } });
-    check(other, executable, "executable");
-    record(other, "linked", "Mach-O linked with the system Clang");
-    // Rosetta, where it is installed, runs the other architecture through the runner hook.
-    const rosetta = host === "aarch64-apple-darwin" && spawnSync("arch", ["-x86_64", "/usr/bin/true"]).status === 0;
-    if (rosetta) {
-      const run = cli(["run", "examples/tasks", "--no-cache", "--target", other], { env: { TSUZURI_CLANG: systemClang, TSUZURI_RUNNER: "arch -x86_64" } });
-      assert.equal(run.stdout, expected.tasks);
-      record(other, "executed", "through Rosetta (TSUZURI_RUNNER='arch -x86_64')");
-    }
-    // The iOS targets link against an SDK, and they are never run here. Apple's own Clang finds the macOS SDK by itself
-    // and says so when the SDK is wrong (`incompatible-sysroot`), but an older Xcode cannot read the `samesign` of the
-    // IR, so it is used only when it can; otherwise the Clang that was given links, and a missing SDK shows as missing headers.
-    const readsIr = spawnSync("/usr/bin/clang", ["-x", "ir", "-c", "-o", "/dev/null", "-"], { input: "define i1 @f(i64 %a) {\n  %c = icmp samesign ult i64 %a, 4\n  ret i1 %c\n}\n", encoding: "utf8" }).status === 0;
-    const appleClang = readsIr ? "/usr/bin/clang" : systemClang;
-    const sdks = new Map();
-    const developer = process.env.DEVELOPER_DIR ?? "/Applications/Xcode.app/Contents/Developer";
-    const find = (sdk) => {
-      const reported = spawnSync("xcrun", ["--sdk", sdk, "--show-sdk-path"], { encoding: "utf8" });
-      if (reported.status === 0 && reported.stdout.trim()) return reported.stdout.trim();
-      // `xcrun` refuses until the Xcode license is accepted, though the SDK is there.
-      const platform = sdk === "iphoneos" ? "iPhoneOS" : "iPhoneSimulator";
-      const path = join(developer, "Platforms", `${platform}.platform`, "Developer", "SDKs", `${platform}.sdk`);
-      return existsSync(path) ? path : undefined;
-    };
-    for (const [name, target] of triples.filter(([, target]) => target.os === "ios")) {
-      if (!sdks.has(target.sdk)) sdks.set(target.sdk, find(target.sdk));
-      const sdk = sdks.get(target.sdk);
-      if (!sdk) {
-        assert.ok(!crossLink, `${name} needs the ${target.sdk} SDK, which xcrun does not report`);
-        console.log(`${name}: no ${target.sdk} SDK here, so it stays an object`);
-        continue;
-      }
-      const exe = join(work, `tasks-${name}`);
-      cli(["build", "examples/tasks", "--no-cache", "--target", name, "-o", exe], { env: { TSUZURI_CLANG: appleClang, TSUZURI_SYSROOT: sdk } });
-      check(name, exe, "executable");
-      record(name, "linked", `Mach-O linked against ${sdk.split("/").pop()}`);
-      // Without the SDK the build says so instead of linking the macOS libraries.
-      const missing = failure(["build", "examples/tasks", "--no-cache", "--target", name, "-o", join(work, "no-sdk")], { TSUZURI_CLANG: appleClang });
-      assert.equal(missing.code, "E2002", name);
-      if (readsIr) assert.match(missing.message, /incompatible-sysroot/);
-      assert.match(missing.message, /set TSUZURI_SYSROOT to it/);
-    }
-  }
-
   if (crossLink) {
     // The bundled toolchain brings the C library of every target below, so no sysroot is needed.
     const cross = { TSUZURI_CLANG: crossClang };
     for (const [name, target] of triples) {
-      if (name === host || target.bare || target.os === "android" || target.os === "ios" || target.libc === "msvc") continue;
+      if (name === host || target.libc === "msvc") continue;
       const exe = join(work, `tasks-cross-${name}${target.os === "windows" ? ".exe" : ""}`);
       cli(["build", "examples/tasks", "--no-cache", "--target", name, "-o", exe], { env: cross });
       check(name, exe, "executable");
@@ -329,20 +255,12 @@ try {
     const sysroot = failure(["build", "examples/tasks", "--no-cache", "--target", "x86_64-unknown-linux-gnu", "-o", join(work, "sysroot")], { ...cross, TSUZURI_SYSROOT: work });
     assert.equal(sysroot.code, "E2002");
     assert.match(sysroot.message, /cannot use a sysroot/);
-    // Android, iOS and bare metal have no C library in the bundle, but their objects come from it too.
-    for (const [name, target] of triples) {
-      if (!(target.bare || target.os === "android" || target.os === "ios")) continue;
-      const object = join(work, `bundle-${name}.o`);
-      const flags = target.bare ? ["--freestanding", "--allocator", "host"] : [];
-      cli(["build", answer, "--emit", "object", "--no-cache", "--target", name, ...flags, "-o", object], { env: cross });
-      check(name, object, "object");
-    }
     console.log("cross link: every target the bundled toolchain can link was linked and inspected");
   }
 
   if (crossExecute) {
     // qemu-user runs the static musl executables of the other architectures; the runner hook starts it.
-    const qemu = { aarch64: "qemu-aarch64", x86_64: "qemu-x86_64", riscv64: "qemu-riscv64" };
+    const qemu = { aarch64: "qemu-aarch64", x86_64: "qemu-x86_64" };
     const cross = { TSUZURI_CLANG: crossClang };
     assert.equal(process.platform, "linux", "TSUZURI_CROSS_EXECUTE=1 runs qemu-user, which is Linux only");
     for (const [name, target] of triples) {
@@ -375,6 +293,20 @@ try {
   assert.equal(error.message, `unknown target 'x86_64-unknown-haiku'; use native, wasm32, wasm64, or one of ${list}`);
   error = failure(["build", "examples/control", "--target", "i686-pc-windows-msvc"]);
   assert.equal(error.message, `unknown target 'i686-pc-windows-msvc'; 32-bit native targets are not supported because native code generation assumes 64-bit pointers; use native, wasm32, wasm64, or one of ${list}`);
+  for (const name of [
+    "x86_64-apple-darwin",
+    "riscv64gc-unknown-linux-gnu", "riscv64gc-unknown-linux-musl",
+    "aarch64-unknown-freebsd", "x86_64-unknown-freebsd",
+    "aarch64-linux-android", "x86_64-linux-android",
+    "aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios",
+    "aarch64-unknown-none", "x86_64-unknown-none", "riscv64gc-unknown-none-elf",
+  ]) {
+    for (const flags of [[], ["--emit", "object", "--freestanding", "--allocator", "host"]]) {
+      const refused = failure(["build", answer, "--target", name, ...flags]);
+      assert.deepEqual([refused.status, refused.code], [2, "E2000"], name);
+      assert.equal(refused.message, `unknown target '${name}'; use native, wasm32, wasm64, or one of ${list}`);
+    }
+  }
   const foreign = triples.find(([name, target]) => name !== host && target.os === "linux" && target.libc === "gnu")[0];
   error = failure(["test", suite, "--target", foreign]);
   assert.deepEqual([error.status, error.code], [1, "E2000"]);
@@ -384,26 +316,14 @@ try {
   error = failure(["build", "examples/control", "--target", foreign, "--cpu", "native"]);
   assert.deepEqual([error.status, error.code], [2, "E2000"]);
   assert.equal(error.message, `'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to ${foreign}`);
-  error = failure(["build", "examples/control", "--target", "x86_64-unknown-none"]);
-  assert.equal(error.message, "x86_64-unknown-none has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header");
   error = failure(["run", "examples/control", "--target", "wasm32"]);
   assert.equal(error.code, "E2000");
   // The runtimes a target lacks are refused before any tool runs, whatever the host.
   const os = join(work, "os");
   mkdirSync(os);
   writeFileSync(join(os, "Main.tz"), 'def main :: unit -> i32 = \\() ->\n    let! home = Env.var "HOME"\n    0\n');
-  error = failure(["build", os, "--target", "aarch64-apple-ios", "--no-cache", "-o", join(work, "os-ios")]);
-  assert.deepEqual([error.status, error.code], [1, "E2002"]);
-  assert.match(error.message, /not available for aarch64-apple-ios: src\/runtime\/os\.c is written for the headers of macOS, Linux, and FreeBSD/);
-  error = failure(["build", os, "--target", "aarch64-linux-android", "--no-cache", "-o", join(work, "os-android")]);
-  assert.deepEqual([error.status, error.code], [1, "E2002"]);
-  assert.match(error.message, /not available for aarch64-linux-android/);
   error = failure(["build", os, "--target", "x86_64-pc-windows-gnu", "--no-cache", "-o", join(work, "os-windows")]);
   assert.match(error.message, /not supported on Windows yet \(G10\)/);
-  // A freestanding object of a bare-metal target links no C library.
-  const bare = join(work, "bare-metal.ll");
-  cli(["build", answer, "--emit", "llvm", "--target", "x86_64-unknown-none", "--freestanding", "--allocator", "host", "-o", bare]);
-  assert.match(readFileSync(bare, "utf8"), /^define [^\n]* noredzone \{$/m);
 
   const lines = triples.map(([name]) => {
     const found = outcome.get(name);

@@ -1,15 +1,14 @@
 name: Tsuzuri targets
 
 # G15: native targets named with `--target TRIPLE`, cross-linked with the bundled Zig toolchain, and
-# the compiler's tests on the four hosts that ship a toolchain bundle. The documentation's tier table
+# the compiler's tests on the three Linux/macOS hosts that ship a toolchain bundle. The documentation's tier table
 # (_tsuzuri/language-reference/compiler/platforms.md) may claim only what a step of this file checks:
 #   - "executed on a matching runner":  the host's own triple, run by tests/targets.mjs on each job;
-#   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs, and
-#                                       x86_64-apple-darwin, run by Rosetta on the macos-15 job;
+#   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs;
 #   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;
 #   - "object only":                    the triples without a C library in the bundle.
 # Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.
-# These four hosts run after every merge to main that changes the compiler and, on a pull request, with the label `ci:full`
+# These three hosts run after every merge to main that changes the compiler and, on a pull request, with the label `ci:full`
 # (ci.yml is the gate of every pull request).
 
 on:
@@ -48,9 +47,6 @@ jobs:
           - os: macos-15
             host: darwin-arm64
             f16: hardware
-          - os: macos-15-intel
-            host: darwin-x64
-            f16: generic=soft,native=conversions
           - os: ubuntu-24.04
             host: linux-x64
             f16: generic=soft,native=conversions|hardware
@@ -58,10 +54,7 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # The phase-four steps (the fast backend on every host, the compact-string run of the Rust tests on linux-x64) made the hosts
-    # slower. Measured before the dev profile of Cargo.toml used opt-level 1, linux-x64 took about 185 minutes (the Rust tests 55,
-    # and the same run with compact strings 55) and macos-15-intel about 220 (the Rust tests alone 75), the other two hosts 80 to
-    # 110. The steps that have a limit of their own keep it.
+    # The fast backend and the compact-string Rust tests on linux-x64 have step-specific limits too.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
@@ -108,7 +101,7 @@ jobs:
       - name: Build the compiler and the bundled toolchain
         id: bundle
         run: node scripts/toolchain/bundle.mjs target/toolchain
-      # G15: each of the 22 triples reports "executed", "linked only" or "object only". The opt-in
+      # Each of the nine triples reports "executed", "linked only" or "object only". The opt-in
       # variables make a missing cross toolchain or emulator a failure here instead of a skip:
       #   TSUZURI_CROSS_LINK=1     link every target the bundled Zig can link (needs TSUZURI_CROSS_CLANG);
       #   TSUZURI_CROSS_EXECUTE=1  run the static musl targets of the other architectures under qemu-user.
@@ -263,7 +256,7 @@ jobs:
       # take: a CPU that lacks the capability falls back to soft, and TSUZURI_F16_EXPECT turns that
       # fallback into a failure instead of a pass. The AArch64 runners (Apple Silicon, Neoverse) run
       # the full hardware path. The ubuntu-24.04 x86-64 runner must expose F16C, but accepts full hardware
-      # when its VM also exposes AVX512-FP16; macos-15-intel converts with F16C and keeps arithmetic soft.
+      # when its VM also exposes AVX512-FP16.
       - name: f16 paths
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         env:
@@ -382,11 +375,10 @@ jobs:
           export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
           export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
           node tests/stack.mjs target/fast/release/tsuzuri
-      # The wasm32 half does not depend on the host's architecture, and the Intel runner is the slowest, so it is left out there.
       # "wasm" builds every project to a module with both backends, validates it and compares imports, exports and behavior in V8;
       # "parity" runs existing suites with every -O0 build forced onto the fast backend (FAST_FORCE=1) and fails on any difference.
       - name: Fast backend, wasm32 and suite parity (PB05)
-        if: ${{ !cancelled() && steps.fast.outcome == 'success' && matrix.host != 'darwin-x64' }}
+        if: ${{ !cancelled() && steps.fast.outcome == 'success' }}
         timeout-minutes: 60
         env:
           TMPDIR: ${{ runner.temp }}
@@ -404,7 +396,7 @@ jobs:
           name: benchmark-correctness-${{ matrix.host }}
           path: target/perf/ci-*
           if-no-files-found: error
-      # Other tickets' end-to-end steps for these four hosts go here, before the Rust tests: that step takes
+      # Other tickets' end-to-end steps for these three hosts go here, before the Rust tests: that step takes
       # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with
       # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
       #
@@ -437,8 +429,7 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           cargo test --locked --no-fail-fast
       # PB05: the unit tests of the library and the binaries and the two integration tests of the fast backend, built with the feature (the
-      # run above does not compile src/backend). On the four hosts, because the translator emits x86-64 on two of them and AArch64 on the
-      # other two, and only a run on the host's own architecture executes what it emits.
+      # run above does not compile src/backend). All three hosts execute the code of their own architecture.
       - name: Rust tests of the fast backend (PB05)
         if: ${{ !cancelled() }}
         env:

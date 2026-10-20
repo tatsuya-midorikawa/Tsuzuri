@@ -11,7 +11,7 @@
 - `-O0` の native `build`・`run`・`test` と、wasm32 の `build` の待ち時間を短くするときは、`--backend fast` を付けます。LLVM IR を Clang に渡さず、コンパイラ自身が機械語（wasm32 では wasm の命令）にします。既定は `llvm` のままで、`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます（[コード生成器](#コード生成器)）。
 - `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` の待ち時間は、IR を決める単位に分けて、変わらない部分の Clang を省くことでも短くなります。既定では分けません（初回のビルドが長くなるためです）。大きなプログラムで、本体を編集したあとのビルドを短くしたいときは、`TSUZURI_CODEGEN_UNITS=auto` か `split` で選びます（[コード生成の単位](#コード生成の単位codegen-unit)）。
 - `--emit` の既定は、native なら `exe`、`wasm32` / `wasm64` なら `wasm` です。
-- `--target` は `native`、`wasm32`、`wasm64` と、`aarch64-unknown-linux-musl` のような 22 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
+- `--target` は `native`、`wasm32`、`wasm64` と、Windows x64/Arm64・Linux x64/Arm64・macOS Arm64 の 9 個の native の名前を受けます。名前の一覧、tier、リンクの手段は [対応プラットフォームとクロスコンパイル](platforms.md) にあります。
 - リンク入力は、ネイティブ実行ファイルの `build`、`run`、`test` と、共有ライブラリの `--emit shared` だけが受けます。
 - フラグの重複や、サブコマンドとの不一致は終了コード 2 の `E2000` です。
 - ツールの場所は、環境変数、配布物の `bin/`、PATH の順です。
@@ -66,7 +66,7 @@
 | オプション | 既定 | 意味 |
 | --- | --- | --- |
 | `-o` / `--output PATH` | 入力の拡張子を差し替えたパス | 成果物、または `doc` のディレクトリ。親は作られます |
-| `--target native\|wasm32\|wasm64\|TRIPLE` | `native` | `wasm64` は 64-bit の線形メモリです。`TRIPLE` は、`aarch64-apple-darwin` や `x86_64-unknown-linux-musl` のような 22 個の native の名前で、`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です（[一覧](platforms.md#target-の一覧と-tier)）。`native` と違い、Clang に `--target` を渡します |
+| `--target native\|wasm32\|wasm64\|TRIPLE` | `native` | `wasm64` は 64-bit の線形メモリです。`TRIPLE` は対応する 5 環境の 9 個の native の名前で、`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です（[一覧](platforms.md#target-の一覧と-tier)）。`native` と違い、Clang に `--target` を渡します |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bitcode\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | native は `exe`、WASM は `wasm` | 何を残すか |
 
 拡張子は、native の実行ファイルが Windows の target で `.exe`、ほかで空、オブジェクトが Windows の target で `.obj`、ほかで `.o`、LLVM IR が `.ll`、ヘッダーが `.h`、WASM が `.wasm`、WGSL が `.wgsl`、SPIR-V が `.spv`、共有ライブラリが Mach-O の target（macOS、iOS）で `.dylib`、ほかで `.so`、bitcode が `.bc`、バインディングが JavaScript の `.mjs`、C# の `.cs`、Python の `.py`、C++ の `.hpp` です。`--target native` の target は、ビルド機です。
@@ -254,7 +254,7 @@ console.log(await writeProfile(instance)); // prof/default_wasm_<pid>_<n>.profra
 | | `--backend fast` |
 | --- | --- |
 | 最適化 | `-O0` だけです。付けないと `-O0` になります（`test` の既定も `-O0`）。`-O1` 以上、`-Os`、`-Oz` は `llvm` |
-| target | ビルド機の native（macOS と Linux の AArch64・x86-64）と `wasm32` です（[fast の WebAssembly](#fast-の-webassemblywasm32)）。`wasm64`・`--target TRIPLE` は `llvm` |
+| target | ビルド機の native（macOS Arm64、Linux x64/Arm64）と `wasm32` です（[fast の WebAssembly](#fast-の-webassemblywasm32)）。`wasm64`・`--target TRIPLE` は `llvm` |
 | `--emit` | native は `exe` と `object` だけです。wasm32 は `wasm` と `object` だけです。`llvm`・`header`・`shared`・`bitcode`・GPU カーネル・バインディングは `llvm` |
 | 付けられるもの | `--trap-info`、`--strip`（native）、`--no-cache`、`-o`、`--link`・`-l`・`-L`、`--allocator system\|host\|small\|counting`、`--freestanding`、`--trap-mode return`、`--coverage`（`test`）、`-g`（native。関数と行の DWARF。[fast のデバッグ情報](#fast-のデバッグ情報)）、`--wasm-max-memory`・`--wasm-stack-size`（wasm32） |
 | `llvm` に残るもの | `--cpu native`、`--profile-generate`・`--profile-use`、wasm32 の `--wasm-feature`（simd128・threads・jspi・webgpu・net・tail-call）・`--wasm-host wasi`・`--wasm-opt`・`-g`、WebAssembly の target の `test` |
@@ -310,7 +310,7 @@ Tsuzuri の出した IR に翻訳器の知らない命令や型が含まれる�
 - 可変長引数でなく、`byval`・`sret` の引数を持たず、16 個を超える葉を持つ大きな集成体を引数に取らず、結果もメモリ越しではありません。
 - アドレスが、呼び出しの名前以外では取られていません。関数ポインタ越しの呼び出しは、プラットフォームの規約を使うためです。
 
-対象の関数は Cranelift の `tail` 呼び出し規約で定義され、その間の `musttail` 呼び出しと直後の `ret` は、1 つの `return_call` になります。macOS arm64 では、機械語が `bl` ではなく `b` で、深さ 10,000,000 の相互再帰がスタックを増やしません。x86-64 の Linux でも、Docker の Rosetta のエミュレーションで同じテストが通りました。x86-64 の macOS と Linux の arm64 は、`targets.yml` の CI（macOS と Linux の 4 つの host）が実行します（この環境では確かめていません）。ホストが Windows のときは `--backend fast` が `E2000` で、`windows.yml` に `tests/stack.mjs` の step もないので、この翻訳を実行する Windows の CI はありません。対象でない関数の間の `musttail` 呼び出しは、意味が同じ通常の呼び出しで、スタックは増えます。診断は出ません。
+対象の関数は Cranelift の `tail` 呼び出し規約で定義され、その間の `musttail` 呼び出しと直後の `ret` は、1 つの `return_call` になります。macOS arm64 では、機械語が `bl` ではなく `b` で、深さ 10,000,000 の相互再帰がスタックを増やしません。x86-64 の Linux でも、Docker の Rosetta のエミュレーションで同じテストが通りました。`targets.yml` の CI は macOS Arm64・Linux x64/Arm64 の 3 host で実行します。ホストが Windows のときは `--backend fast` が `E2000` で、`windows.yml` に `tests/stack.mjs` の step もないので、この翻訳を実行する Windows の CI はありません。対象でない関数の間の `musttail` 呼び出しは、意味が同じ通常の呼び出しで、スタックは増えます。診断は出ません。
 
 wasm32 の `fast` は、WebAssembly の書き込みが `musttail` を通常の呼び出しにするので、`--wasm-feature tail-call` を `E2000` で拒否します。既定の wasm32 の IR には `musttail` が現れないので、拒否の対象は付けたときだけです。
 
@@ -456,8 +456,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--cpu native` と、ビルド機と違う `--target TRIPLE` | `'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to <triple>` |
 | `--target` の名前が一覧にない（32-bit を含む） | `unknown target '<value>'; use native, wasm32, wasm64, or one of <一覧>`。引数解析で見つかるので終了コード 2 |
 | ビルド機と違う `--target TRIPLE` の `run` や `test` に `TSUZURI_RUNNER` がない | `cannot run <triple> programs on this machine; run the program on a <triple> machine, set TSUZURI_RUNNER to a command that runs <triple> executables (such as qemu-user, Wine, or an emulator wrapper), or use 'tsuzuri build --target <triple>'`（`test` は `tests`） |
-| bare-metal の target が `--freestanding --allocator host` の object・llvm・header でない | `<triple> has no operating system: build it with --freestanding --allocator host and --emit object, llvm, or header` |
-| MSVC か bare-metal の target に `TSUZURI_SYSROOT` | `TSUZURI_SYSROOT does not apply to <triple>: ...` |
+| MSVC の target に `TSUZURI_SYSROOT` | `TSUZURI_SYSROOT does not apply to <triple>: ...` |
 | `--emit bindings-js` が `--target wasm32` でない | `'--emit bindings-js' requires '--target wasm32'` |
 | `--emit bindings-js` に `.wasm` 用のオプション | `--trap-info is not valid for bindings output; pass it when building the .wasm`（各オプション名で同じ形） |
 | `--emit bindings-js` の `-o` が `.mjs` でない | `bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'` |
@@ -482,7 +481,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--backend fast` に `--cpu native` | `--backend fast does not support --cpu native yet; remove it or use --backend llvm` |
 | `--backend fast` に `--profile-generate`・`--profile-use` | `--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use` |
 | macOS で `--backend fast -g --emit object`、C のランタイムが要るプログラム | `--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm`（`E2002`） |
-| `--backend fast` で、ビルド機が macOS・Linux の AArch64・x86-64 でない | `--backend fast is not available on windows-x86_64; use --backend llvm` |
+| `--backend fast` で、ビルド機が macOS Arm64・Linux x64/Arm64 でない | `--backend fast is not available on windows-x86_64; use --backend llvm` |
 | `--backend fast` を、feature なしでビルドした `tsuzuri` に | `this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm` |
 | `bindings-cs` などに共有ライブラリ用のオプション | `--trap-info is not valid for bindings output; pass it when building the shared library`（各オプション名で同じ形） |
 | `bindings-cs` などの `-o` の拡張子が違う | `bindings output must end with '.cs'; its file name, without the extension, names the shared library`（`.py`、`.hpp` も同じ形） |
@@ -641,7 +640,7 @@ IR・header・object・WASM の生成には作用しません。macOS の実行�
 
 | 変数 | 意味 |
 | --- | --- |
-| `TSUZURI_SYSROOT` | 名前を付けた target のランタイムの C のコンパイルとリンクに渡す sysroot。非 Apple の target は `--sysroot=DIR`、Apple の target は `-isysroot DIR`（iOS は SDK のパス）。空は未設定。MSVC と bare-metal の target では `E2000`、同梱ツールチェーンでは `E2002`。キャッシュのキーに入る |
+| `TSUZURI_SYSROOT` | 名前を付けた target のランタイムの C のコンパイルとリンクに渡す sysroot。Linux と MinGW は `--sysroot=DIR`、macOS は `-isysroot DIR`（SDK）。空は未設定。MSVC の target では `E2000`、同梱ツールチェーンでは `E2002`。キャッシュのキーに入る |
 | `TSUZURI_RUNNER` | ビルド機で動かせない target の `run` と `test` が、実行ファイルを起動する前置コマンド。空白で区切った語の並びで、実行ファイルのパスが最後に付く。空は未設定で、ビルド機の target では読まない |
 
 使い方と例は [対応プラットフォームとクロスコンパイル](platforms.md#実行ファイルをリンクする) にあります。

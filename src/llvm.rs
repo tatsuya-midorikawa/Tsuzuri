@@ -167,32 +167,6 @@ pub fn emit_with_export_style(
     })
 }
 
-/// Marks every function `noredzone`, so that the compiled code never stores below its stack
-/// pointer: for x86-64 targets without an operating system, where an interrupt may use the stack of
-/// the code it interrupts. Clang takes this from the IR, not from `-mno-red-zone`.
-pub(crate) fn with_no_red_zone(ir: String) -> String {
-    let mut output = String::with_capacity(ir.len() + ir.len() / 64);
-    for line in ir.split_inclusive('\n') {
-        let body = line.trim_end_matches(['\r', '\n']);
-        match body
-            .strip_suffix(" {")
-            .filter(|_| body.starts_with("define "))
-        {
-            // The attributes come before the metadata attachments, such as `!dbg !12`.
-            Some(header) => {
-                let at = header.find(" !dbg ").unwrap_or(header.len());
-                output.push_str(&header[..at]);
-                output.push_str(" noredzone");
-                output.push_str(&header[at..]);
-                output.push_str(" {");
-                output.push_str(&line[body.len()..]);
-            }
-            None => output.push_str(line),
-        }
-    }
-    output
-}
-
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     let mut output = String::with_capacity(ir.len());
     let mut exports: BTreeSet<_> = module

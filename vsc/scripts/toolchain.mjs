@@ -9,7 +9,6 @@ const codelldb = path.join(extension, 'resources', 'codelldb.vsix');
 const debuggerVersion = '1.12.3';
 export const debuggerChecksums = {
   'darwin-arm64': '2f114a990e1b368dd1dbd33c80c0e719767af2d228391ec0df0571c957f9ac91',
-  'darwin-x64': 'e25cc716b94c62c07fec268ff2785d2b797245b160502baef8b9c970a0c4d8e8',
   'linux-arm64': '0887f67d440554617894266f80706b700907c36b95e6e49d23b95a0e05318101',
   'linux-x64': '1cd7f386598022b51a5b93b9ffa23e812b23f519cfe1833384ec4bef4bfd1be1',
   'win32-x64': 'a916e509308dac817732f63ca604a8b93ed29cd16f38a2fa9f0b64ed58e8f51a',
@@ -92,4 +91,3 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exitCode = 1;
   }
 }
-

@@ -171,13 +171,13 @@ fn time_passes_does_not_change_artifacts() {
         ("wasm", "wasm32", false),
         ("llvm", "x86_64-pc-windows-msvc", false),
         ("wasm", "wasm32", true),
-        ("header", "x86_64-unknown-none", false),
+        ("header", "x86_64-unknown-linux-gnu", false),
     ] {
         for opt in ["-O0", "-O3"] {
             let output = temporary
                 .path()
                 .join(format!("{emit}-{target}-wasi-{wasi}-{opt}"));
-            let source = if emit == "object" || target == "x86_64-unknown-none" {
+            let source = if emit == "object" || target == "x86_64-unknown-linux-gnu" {
                 object_source.to_str().unwrap()
             } else {
                 hello()
@@ -198,7 +198,7 @@ fn time_passes_does_not_change_artifacts() {
             if wasi {
                 args.extend(["--wasm-host", "wasi"]);
             }
-            if target == "x86_64-unknown-none" {
+            if target == "x86_64-unknown-linux-gnu" {
                 args.extend(["--freestanding", "--allocator", "host"]);
             }
             let plain = compiler(&args, None);

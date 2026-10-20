@@ -27,13 +27,12 @@
 | target | ビルドホスト | ソースデバッグ |
 | --- | --- | --- |
 | `darwin-arm64` | macOS / ARM64 | 対応 |
-| `darwin-x64` | macOS / x64 | 対応 |
 | `linux-arm64` | Linux / ARM64 | 対応 |
 | `linux-x64` | Linux / x64 | 対応 |
 | `win32-arm64` | Windows / ARM64 | 未対応。編集・診断・ビルド・実行・テストは有効 |
 | `win32-x64` | Windows / x64 | 対応 |
 
-x86 32-bit、Web、Alpine 用のパッケージは作成しません。
+対応するのは上の 5 環境だけです。Intel Mac、x86 32-bit、Web、Alpine 用のパッケージは作成しません。
 Linux の拡張ホストは glibc ベースの環境を対象にします。
 
 [scripts/package.mjs](scripts/package.mjs) は `process.platform` と `process.arch` から target を決定します。
@@ -196,13 +195,13 @@ node ../scripts/toolchain/smoke.mjs ../target/dist/tsuzuri-0.1.0-darwin-arm64.ta
 
 ## 6. CI で全プラットフォームを作成する
 
-[Tsuzuri IDE ワークフロー](../.github/workflows/vscode.yml)は、6 種類のホストでパッケージ作成と試験を行います。
+[Tsuzuri IDE ワークフロー](../.github/workflows/vscode.yml)は、5 種類のホストでパッケージ作成と試験を行います。
 
 1. 同じ公開用コミットに拡張バージョンと掲載情報を揃えます。
 2. GitHub の **Actions > Tsuzuri IDE > Run workflow** で、そのコミットを含むブランチを選択して実行します。
-3. 6 target のジョブが成功し、特に `Installed VSIX integration` が通ったことを確認します。
+3. 5 target のジョブが成功し、特に `Installed VSIX integration` が通ったことを確認します。
 4. 各ジョブの `tsuzuri-<target>` artifact をダウンロードし、VSIX とチェックサムを保存します。
-5. CLI 配布物は `tsuzuri-cli-<target>` artifact です。各ジョブは archive を展開し、配布物だけの環境で `Standalone archive smoke` を通します。Windows の archive も、同じ smoke を `windows-2022`（x64）と `windows-11-arm`（ARM64）の CI で通します。x64 のコンパイラ本体の Windows での実行（G10）は、[Windows MSVC](../.github/workflows/windows.yml) のワークフローが確かめます。ARM64 は、この `vscode.yml` が確かめる範囲だけが検証済みです。
+5. CLI 配布物は `tsuzuri-cli-<target>` artifact です。各ジョブは archive を展開し、配布物だけの環境で `Standalone archive smoke` を通します。Windows の archive も、同じ smoke を `windows-2022`（x64）と `windows-11-arm`（ARM64）の CI で通します。コンパイラ本体の MSVC での実行は、[Windows MSVC](../.github/workflows/windows.yml) が同じ 2 環境で検証します。
 
 ワークフローは、main への push、`ci:full` ラベルを付けた PR、`vsc-v*` タグの push でも起動します。
 **現在の CI は成果物を保存するだけで、Marketplace には公開しません。** 公開用の認証情報も要求しません。
@@ -276,10 +275,10 @@ npx --no-install vsce publish --azure-credential --packagePath ./dist/tsuzuri-0.
 target はアーカイブのメタデータに含まれます。**公開時に `--target` を付け直さないでください。**
 検証が済んだプラットフォーム別 VSIX を変更せず集め、1台の公開用マシンからアップロードできます。
 
-全6種類を `vsc/dist` に集めた場合の例です。すべて同じバージョンのファイルを明示します。
+全5種類を `vsc/dist` に集めた場合の例です。すべて同じバージョンのファイルを明示します。
 
 ```sh
-npx --no-install vsce publish --packagePath ./dist/tsuzuri-0.1.0-darwin-arm64.vsix ./dist/tsuzuri-0.1.0-darwin-x64.vsix ./dist/tsuzuri-0.1.0-linux-arm64.vsix ./dist/tsuzuri-0.1.0-linux-x64.vsix ./dist/tsuzuri-0.1.0-win32-arm64.vsix ./dist/tsuzuri-0.1.0-win32-x64.vsix
+npx --no-install vsce publish --packagePath ./dist/tsuzuri-0.1.0-darwin-arm64.vsix ./dist/tsuzuri-0.1.0-linux-arm64.vsix ./dist/tsuzuri-0.1.0-linux-x64.vsix ./dist/tsuzuri-0.1.0-win32-arm64.vsix ./dist/tsuzuri-0.1.0-win32-x64.vsix
 ```
 
 Entra ID 方式なら同じコマンドに `--azure-credential` を追加します。

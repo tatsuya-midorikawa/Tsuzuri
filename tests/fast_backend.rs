@@ -626,7 +626,6 @@ fn objects_for_other_machines_have_their_formats() {
     for (target, expected) in [
         ("x86_64-unknown-linux-gnu", "elf 0x3e"),
         ("aarch64-unknown-linux-gnu", "elf 0xb7"),
-        ("x86_64-apple-darwin", "macho 0x1000007"),
         ("aarch64-apple-darwin", "macho 0x100000c"),
         ("x86_64-pc-windows-msvc", "coff 0x8664"),
     ] {
