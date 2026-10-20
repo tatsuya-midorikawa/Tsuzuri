@@ -330,7 +330,7 @@ Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジ�
 | --- | --- |
 | native の実行ファイル（`-O0`）。`run`、`--trap-info`、`-g`、`--strip`、`--cpu native`、`--allocator`、`--link` を付けたものを含む | 分ける |
 | native の `--emit object`（`-O0`） | 分ける。macOS の `-g` の object（`ld -r` が DWARF を捨てるため）と、局所化の道具（macOS は `nmedit`、ほかは `objcopy`）がない機械では分けない |
-| wasm32 の `--emit wasm`（`-O0`）。`--wasm-feature simd128`、`-g`、`--trap-info` を含む | 分ける |
+| wasm32 の `--emit wasm`（`-O0`）。`--wasm-feature simd128`・`tail-call`、`-g`、`--trap-info` を含む | 分ける |
 | `-O1` 以上、`-Os`、`-Oz` | 分けない |
 | `--backend fast` | 分けない（翻訳器が IR 全体を自分で翻訳します） |
 | `--emit llvm`・`header`・`shared`・`bitcode`、wasm32 の `--emit object`、`wasm64`、`--wasm-feature threads` | 分けない |
