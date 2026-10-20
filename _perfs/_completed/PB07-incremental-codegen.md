@@ -818,3 +818,68 @@ D1: 承認済み、既定は `single`（opt-in）。D2〜D3: そのまま。D4�
 | macOS、既定（`single`）、20 suite（e2e・examples・control・primitives・strings・tasks・io・computations・numeric_casts・integer_intrinsics・cache・debug_info・ffi_extensions・trap_boundary・wasm_memory・wasm_simd・host_imports・bindings・server・watch） | すべて通る |
 | 既定の出力 | 変わらない: 29 プログラム（`examples/` 全 13 と `tests/fixtures/` の 16）× 6 設定（`-O0`・`-O3`・`--trap-info`・キャッシュ有り・`--emit llvm`・`--emit object`）の 174 個を基準 `a8875f38` の compiler と比べ、102 個（IR は文字列、実行ファイルと object は fingerprint）が一致し、72 個（入口のない library の実行ファイル）は `E2004` で同じに失敗する |
 | Linux（Ubuntu 24.04 aarch64 の container、LLVM 21.1.8、CI と同じ `LLVM_PREFIX`・`TSUZURI_OBJCOPY`・GNU ld） | `split` の 19 suite（`codegen_units` 24 件・cache・examples・trap_boundary・debug_info・control・tasks・e2e・primitives・strings・numeric_casts・integer_intrinsics・computations・io・cpu_dispatch・wasm_memory・host_imports・bindings・ffi_extensions）と、既定の 18 suite（`codegen_units` 以外）がすべて通る |
+
+## PM09 との統合（2026-10-20）
+
+第 5 フェーズの統合 branch `perf/phase5-codegen-units-and-tail-calls`（`17b78f40`。PM09 の 15 commit。基準は PB07 と同じ `feaa5af3`）を `perf/p5-PB07` へ merge した（`324daf92`）。PM09 は保証された末尾呼び出し（`musttail`）、`llvm.lifetime.start`・`end`、`--wasm-feature tail-call` を足し、PB07 の分割器はその IR を読む。
+
+### 衝突と解消
+
+3 件で、どちらの変更も落とさずに解消した。
+
+| ファイル | 衝突 | 解消 |
+| --- | --- | --- |
+| `src/driver.rs` | wasm の Clang の引数。PB07 は目標と機能の旗を `wasm_target_args` に集め、1 つのモジュールの compile と unit の compile が共有する。PM09 は `-mtail-call`／`-mno-tail-call` を直書きの一覧に足した | 旗を `wasm_target_args` の中に足した。1 つのモジュールも unit も、PM09 が 1 つのモジュールに付ける引数と同じ引数（順序も）になる。runtime の object は引数の一覧が別で、同梱の object を引数の完全一致で選ぶので、旗を受けない |
+| `docs/language.md` | `--backend fast` の段落 | PB07 の「位置表の `id` だけが違う」の注記と、PM09 の「tail-call は `E2000`」の両方を残した |
+| `_tsuzuri/language-reference/compiler/option.md` | 同じ場所への節の追加 | 両方を残した。PM09 の「保証された末尾呼び出しの翻訳」は「コード生成器」の節に属するので先に、PB07 の「コード生成の単位」をあとに置いた |
+
+衝突なしで統合し、中身を確かめたもの: `_perfs/README.md`（PM09 と PB07 の行は、どちらも `done` で `_completed/` を指す）、`README.md`、`docs/architecture.md`、`docs/benchmarks.md`（PM09 の「スタックとフレームの大きさ」と PB07 の「codegen unit による増分ビルド」。見出しの重複はなく、1 つにまとめる必要もない）、`.github/workflows/targets.yml`（PM09 の stack の step 2 つと PB07 の step）、`windows.yml`、`src/llvm.rs`。
+
+### PM09 に合わせた変更
+
+1. **`--wasm-feature tail-call` の旗**: 上のとおり `wasm_target_args` が `-mtail-call`（付けないときは `-mno-tail-call`）を出す。unit の鍵は Clang の引数を含むので（`cache::unit_key_prefix`）、旗だけが違うビルドは、unit のテキストが同じでも object を共有しない。ビルド全体の鍵は `{options:?}` が `wasm_tail_call` を含む（PM09）。
+2. **`--trap-info` を付けた tail-call の wasm32 の module が、分けられていなかった**: PM09 は `--wasm-feature tail-call` の wasm32 をすべて `emit_wasm_build` に通し、この関数は trap site を出現順に番号付けする。分けるビルドは、別のファイルの編集で動かない番号（`TrapNumbering::Stable`）が要るので、`--trap-info` と tail-call を同時に付けたビルドは、気づかないうちに 1 つのモジュールになっていた（結果は正しいが、分けるとした約束と違う）。`emit_wasm_build` が、ほかの emitter と同じに `numbering` を取り、分けるビルドだけ安定した番号を付ける。分けないビルドの IR は PM09 のままで変わらない（下の比較）。
+3. **`musttail` と `llvm.lifetime`**: 分割器の規則は変えていない。本物の IR で確かめた。`musttail call` は関数の本体の文字としてそのまま写り、直後の `ret` を保つ。ほかの unit が定義する呼ばれる側は、定義と同じ結果と引数の型（ABI の属性を含む）で `declare hidden` され、`--trap-info` の文脈の引数 `i32` も同じ。`llvm.lifetime.start`・`end` の `declare`（`#N` の属性グループ付き）は、それを呼ぶ unit に 1 つずつ写り、呼ばない unit には写らない。同じ本体の局所関数の対は 1 つの関数に統合され（`$lambda.h<digest>.0` と `.1`）、別の bucket に入って、unit をまたぐ `musttail` で呼び合う。
+
+### 本物の IR で見た配置
+
+`tests/codegen_units.mjs` の C17 の project（下）の `musttail` は 13 個で、`-g` や `--trap-info` を付けない分割では、同じ本体の局所関数の対が 1 つに統合されて 11 個になり、そのすべてが unit をまたぐ。`--trap-info`（安定した番号）では、局所関数の対はモジュールごとの位置の番号が違うので統合されず、13 個のうち 9 個が unit をまたぐ（局所関数の対はモジュールの unit に残る）。`-g` も、デバッグ情報の位置がモジュールごとに違うので、対は統合されない（2 つの組の digest が別であることを確かめた）。
+
+| 組 | unit |
+| --- | --- |
+| `A.even` と `B.odd`、`C.ca`・`D.cb`・`E.cc`（別のモジュール） | `m.A`・`m.B`・`m.C`・`m.D`・`m.E`（5 個、どの設定でも） |
+| `Lib.tick`（モジュールの関数）と、`Lib.tock` の具体化（3 つのモジュールが使うので bucket） | `m.Lib` と `g.<x>`（2 個、どの設定でも） |
+| `Lib.hop` と `Lib.skip` の具体化（同じ組の 2 つ。生成された名前） | 別の bucket（2 個。同じ組の関数の bucket は名前の hash で決まる） |
+| `One.local` と `Two.local` の同じ局所関数の対 | 既定の設定では統合されて別の bucket、`--trap-info`・`-g` ではモジュールの unit |
+
+### 追加したテスト
+
+| テスト | 内容 |
+| --- | --- |
+| Rust `guaranteed_tail_calls_and_lifetime_markers_survive_the_cut` | 上の組の本物の IR（既定と `--trap-info` の番号）を分ける。`musttail` が `ret` の直前、ほかの unit の呼ばれる側が定義と同じ結果・引数の型で宣言、`llvm.lifetime` の宣言が呼ぶ unit に 1 つずつ。unit に残る `musttail` の数は、統合で消える関数の分を除いた IR の数と一致する |
+| Rust `splits_the_programs_of_the_repository`（拡張） | `examples/`・`benchmarks/`・`tests/fixtures/` の全プログラムの unit で同じ検査（35 個の `musttail`、617 個の `llvm.lifetime` の呼び出し） |
+| Rust `webassembly_compiles_get_the_target_and_feature_flags_of_one_function` | `wasm_target_args` の一覧（既定、tail-call、simd と tail-call、wasm64 と threads） |
+| Rust `split_eligible_matches_the_table`（拡張） | tail-call の wasm32 は分けられる |
+| Node `C17 guaranteed tail calls across units` | 上の組を native の `-O0` で、既定・`--no-cache`・`--trap-info`・`-g` で動かし、深さ 10,000,000 を一定のスタックで走らせる（単一のモジュールと同じ値）。Clang に渡った unit の本文を調べる（Rust と同じ検査） |
+| Node `C18 wasm32 tail-call across units` | 同じ組を wasm32 の `--wasm-feature tail-call`（既定・`--trap-info`・`-g`）で、V8 で深さ 10,000,000 まで動かす。旗: 各 unit の Clang の引数が 1 つのモジュールの `-c` までの引数と同じで、`-mtail-call`（旗なしは `-mno-tail-call`）が付き、runtime の object には付かない。unit の鍵: 同じテキストの unit が、旗の違う 2 つのビルドで共有されず、cache に両方が入る |
+
+C17・C18 は、それぞれ旗を外した（`wasm_target_args` から tail-call を除く）ビルドと、安定した番号のないビルドで失敗する（前者は `WebAssembly 'tail-call' feature not enabled`、後者は `--trap-info` が 0 個の unit）ことを確かめた。`--backend fast` は分けない（`units::eligible` の表）。`tests/stack.mjs` を fast backend の binary で（`TSUZURI_STACK_FAST=1`）、`TSUZURI_CODEGEN_UNITS=split` と既定の両方で動かして通った。
+
+### 検証
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`（既定と `--features fast-backend`） | 通る |
+| `cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 通る |
+| `cargo nextest run --locked` | 1,669 件が通る（2 件は skip） |
+| `cargo nextest run --locked --features fast-backend --test fast_backend --test fast_backend_ops` | 15 件が通る |
+| macOS、`TSUZURI_CODEGEN_UNITS=split` と既定の両方、各 40 suite（stack・e2e・features 19,662 件・examples・control 659 件・primitives・strings・tasks・io・computations・numeric_casts・math 786,051 件・integer_intrinsics・cache・debug_info・cpu_dispatch・ffi_extensions・trap_boundary・trap_return・stack_overflow・user_drop・allocator・small_allocator・os・json・f16_hardware・display_parse・compact_strings・wasm_memory・wasm_heap・wasm_simd・host_imports・host_bindings・bindings・async（Node 24）・server・watch・codegen_units 26 件・prebuilt_runtime・bundle_identity） | すべて通る |
+| `tests/fast_backend.mjs`（`--features fast-backend` の binary） | `split` と既定の両方で通る |
+| `node scripts/check-docs.mjs`（両側で変えた言語リファレンス 9 頁） | 通る（320 link、40 個の例、58 回の native の実行、1 個の test project） |
+| Linux（Ubuntu 24.04 aarch64 の container、LLVM 21.1.8）、`cargo test --lib -- llvm::split driver::units cache:: driver::tests` | 107 件が通る（1 件は ignored） |
+| Linux、`split`: codegen_units 26 件・stack・control・user_drop・cache・debug_info・wasm_simd・e2e・examples、既定: stack・control・user_drop・cache・debug_info・wasm_simd・e2e・examples | すべて通る |
+| 既定（分けない）の出力が PM09 だけの compiler（`17b78f40`）と同じこと | 29 プログラム（`examples/` 全 13 と `tests/fixtures/` の 16）× 10 設定（`-O0`・`-O3`・`--trap-info`・キャッシュ有り・`--emit llvm`・`--emit object`・wasm32・wasm32 の tail-call・同じ `--trap-info`・同じ `-g`）の 290 個を比べ、194 個（IR は文字列、実行ファイル・object・wasm は fingerprint）が一致し、96 個（入口のない library の実行ファイル、wasm32 を作れないプログラム）は同じ診断で同じに失敗する |
+
+### 変更したファイル（統合のあと）
+
+`src/driver.rs`（`wasm_target_args` の tail-call、`emit_wasm_build` の番号の受け渡し、テスト）、`src/driver/units.rs`（適用条件の表のテスト）、`src/llvm.rs`（`emit_wasm_build` の `numbering`）、`src/llvm_split.rs`（テスト）、`tests/codegen_units.mjs`（C17・C18、Clang の包みが引数と unit の本文を残す）、`README.md`・`docs/architecture.md`・`docs/language.md`・`_tsuzuri/language-reference/compiler/option.md`（tail-call の wasm32 も分けること、`musttail` と `llvm.lifetime` の扱い、検証の一覧）、このファイル。
