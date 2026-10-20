@@ -1,7 +1,7 @@
 name: Windows MSVC
 
 # The execution gate of the Windows x64 and Arm64 (MSVC ABI) native targets, on GitHub-hosted
-# windows-2022 and windows-11-arm runners with the Visual Studio 2022 toolset and pinned LLVM 21.1.8.
+# windows-2022 and windows-11-arm runners with MSVC 14.44 (Visual Studio 2022/2026) and pinned LLVM 21.1.8.
 # W1-W8 extend the gate of _features/_completed/G10-windows.md; the tiers in
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
@@ -54,11 +54,13 @@ jobs:
           - os: windows-2022
             host: win32-x64
             arch: x64
+            vs_directory: '2022'
             installer: LLVM-21.1.8-win64.exe
             checksum: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
           - os: windows-11-arm
             host: win32-arm64
             arch: arm64
+            vs_directory: '18'
             installer: LLVM-21.1.8-woa64.exe
             checksum: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
     runs-on: ${{ matrix.os }}
@@ -66,6 +68,7 @@ jobs:
     env:
       GATE_MSVC_TOOLSET: '14.44'
       GATE_WINDOWS_SDK: '10.0.26100.0'
+      GATE_VS_DIRECTORY: ${{ matrix.vs_directory }}
       # The same installer and SHA-256 as vscode.yml.
       LLVM_INSTALLER: ${{ matrix.installer }}
       LLVM_INSTALLER_SHA256: ${{ matrix.checksum }}
@@ -88,7 +91,6 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         with:
           arch: ${{ matrix.arch }}
-          vsversion: '2022'
           toolset: ${{ env.GATE_MSVC_TOOLSET }}
           sdk: ${{ env.GATE_WINDOWS_SDK }}
       # The runner's own LLVM (C:\Program Files\LLVM) changes with the image, so the gate installs its own. The
@@ -133,7 +135,7 @@ jobs:
           if ($clang -notmatch 'clang version 21\.1\.8') { throw "expected LLVM 21.1.8, got: $clang" }
           if ($env:VCToolsVersion -notlike "$($env:GATE_MSVC_TOOLSET).*") { throw "expected MSVC toolset $env:GATE_MSVC_TOOLSET, got: $env:VCToolsVersion" }
           if ($env:WindowsSDKVersion.TrimEnd('\') -ne $env:GATE_WINDOWS_SDK) { throw "expected Windows SDK $env:GATE_WINDOWS_SDK, got: $env:WindowsSDKVersion" }
-          if ($link -notlike "*\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio 2022 MSVC $env:VCToolsVersion: $link" }
+          if ($link -notlike "*\Microsoft Visual Studio\$($env:GATE_VS_DIRECTORY)\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio installation $env:GATE_VS_DIRECTORY MSVC $($env:VCToolsVersion): $link" }
           if ($eol -notmatch 'w/lf') { throw "src/runtime/string.ll is not checked out with LF: $eol" }
       - name: W1 cargo fmt
         run: cargo fmt --all -- --check

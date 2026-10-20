@@ -166,7 +166,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - `ci.yml` は、Linux x64 の Clippy と Rust テストに加え、Windows x64・Arm64、Linux Arm64、macOS Arm64 を型検査します。`tests/platforms.mjs` が配布物と CI マトリクスの対応環境を照合します。
 - `targets.yml` の 3 job は、ホストの実行、9 triple の object の形式と CPU、同梱ツールチェーンの 7 triple のリンク、Linux での qemu-user を検査します。
-- `windows.yml` の 2 job は、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 のタスク、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。
+- `windows.yml` の 2 job は、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 のタスク、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
 - `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Async、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
 
 ## まとめ

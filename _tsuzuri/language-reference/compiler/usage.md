@@ -155,7 +155,7 @@ cargo build --release
 
 Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、それに LLVM の `clang` を用意します。Developer PowerShell で `cargo build --release` します。
 
-コンパイラがネイティブコードを出すとき、ホストが Arm64 なら `--target=aarch64-pc-windows-msvc`、x64 なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。CI の [Windows MSVC](../../../.github/workflows/windows.yml) は、x64 の `windows-2022` と Arm64 の `windows-11-arm` で、LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 を使い、`cargo test`、native とホストの MSVC triple の `-O0`・`-O3`、ビルドキャッシュ、例、WASM threads を検証します。
+コンパイラがネイティブコードを出すとき、ホストが Arm64 なら `--target=aarch64-pc-windows-msvc`、x64 なら `--target=x86_64-pc-windows-msvc` を Clang に渡します。CI の [Windows MSVC](../../../.github/workflows/windows.yml) は、x64 の `windows-2022` と Arm64 の `windows-11-arm` で、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 を使い、`cargo test`、native とホストの MSVC triple の `-O0`・`-O3`、ビルドキャッシュ、例、WASM threads を検証します。Visual Studio は x64 が 2022、Arm64 が 2026 で、いずれも 14.44 toolset を指定します。
 
 - PowerShell を使ってください。Git Bash では、Git 付属の `link` が MSVC の `link.exe` より先に見つかり、リンクが失敗することがあります。
 - リポジトリは `git clone -c core.autocrlf=false` で取得してください。既定の `core.autocrlf=true` は、テストの入力とランタイムの IR を CRLF にします（CI は無効にしています）。

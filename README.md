@@ -823,7 +823,7 @@ cargo build --release
 
 `clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`--emit bitcode` が C ランタイムを IR のまま 1 つにまとめる `llvm-link` は、`TSUZURI_LLVM_LINK` で指定します（なければ、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します）。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。`--profile-use` にディレクトリを渡すときに `.profraw` を merge する `llvm-profdata` は `TSUZURI_LLVM_PROFDATA` で指定します（未設定なら `TSUZURI_CLANG` の Clang の隣、その toolchain の順で探し、PATH は探しません）。
 
-Windows は、CI（`.github/workflows/windows.yml`。x64 は `windows-2022`、Arm64 は `windows-11-arm`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行します。配布物の MinGW は、5 環境の CLI と VSIX を作る `.github/workflows/vscode.yml` が検証します。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
+Windows は、CI（`.github/workflows/windows.yml`。x64 は `windows-2022`、Arm64 は `windows-11-arm`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行します。Visual Studio は x64 が 2022、Arm64 が 2026 で、後者も同梱の 14.44 toolset を使います。配布物の MinGW は、5 環境の CLI と VSIX を作る `.github/workflows/vscode.yml` が検証します。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
 #### クロスコンパイル
 
