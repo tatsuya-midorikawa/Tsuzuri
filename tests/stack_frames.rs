@@ -282,6 +282,44 @@ fn keeps_the_markers_of_locals_that_an_if_chooses_between() {
 }
 
 #[test]
+fn leaves_the_frames_of_simd_vectors_without_markers() {
+    // `layout_bound` gives a vector the portable alignment of at most 8, where wasm32 aligns a
+    // 16-byte vector to 16: the alloca of `[1 x <4 x i32>]` is 48 bytes and its marker would say 40.
+    // No frame that holds a vector, itself or in a record, has markers, on either target.
+    for wasm in [false, true] {
+        let ir = emit(
+            "record Masked { small: i8, mask: mask32x4, vector: i32x4 }
+             def vector_list :: i64 -> i64
+             fn vector_list n = { let v: i32x4 = Simd.splat (n as i32); let xs = [|v|]; List.length xs }
+             def vector_array :: i64 -> i64
+             fn vector_array n = { let v: i32x4 = Simd.splat (n as i32); let xs = [v, v]; xs.length }
+             def masked :: i64 -> i64
+             fn masked n = {
+                 let v: i32x4 = Simd.splat (n as i32);
+                 let mask = Simd.eq v v;
+                 let xs = [Masked { small: 1i8, mask: mask, vector: v }];
+                 xs.length
+             }
+             def plain :: i64 -> i64
+             fn plain n = { let xs = [|n, n|]; List.length xs }",
+            wasm,
+        );
+        for (name, ty) in [
+            ("vector_list", "{ ptr, i64, i64, [1 x <4 x i32>] }"),
+            ("vector_array", "[2 x <4 x i32>]"),
+            ("masked", "[1 x %tz.record.Main.Masked]"),
+        ] {
+            let body = body_of(&ir, name);
+            assert_eq!(allocas(body, ty).len(), 1, "{body}");
+            assert!(!body.contains("@llvm.lifetime."), "{body}");
+        }
+        // A literal without a vector in the same module has them.
+        let plain = body_of(&ir, "plain");
+        assert_eq!(plain.matches("@llvm.lifetime.").count(), 2, "{plain}");
+    }
+}
+
+#[test]
 fn leaves_buffers_and_environments_without_markers_and_skips_unsettled_layouts() {
     for wasm in [false, true] {
         let ir = emit(

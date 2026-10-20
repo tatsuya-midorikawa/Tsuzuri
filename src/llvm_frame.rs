@@ -373,14 +373,16 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Whether every LLVM that builds this code gives a structure that holds `ty` the size that
-    /// `target_layout` works out. Not for a 128-bit number, which x86-64 LLVM before 18 aligns to 8
-    /// instead of 16, nor for a vector wider than 128 bits, which a target aligns by its own rules.
+    /// `target_layout` works out, so that a marker can carry the exact size of the alloca. Not for a
+    /// 128-bit number, which x86-64 LLVM before 18 aligns to 8 instead of 16, nor for a SIMD
+    /// vector: `layout_bound` gives a vector the portable alignment of at most 8 where wasm32
+    /// aligns a 16-byte vector to 16, and a target aligns a wider vector by its own rules.
     fn layout_is_settled(&self, ty: &Type) -> bool {
         !self.module.types().reaches(ty, |ty| {
             matches!(
                 ty,
-                Type::Integer(128, _) | Type::Decimal(128) | Type::Binary(128)
-            ) || matches!(ty, Type::Simd(vector) if vector.bytes() > 16)
+                Type::Integer(128, _) | Type::Decimal(128) | Type::Binary(128) | Type::Simd(_)
+            )
         })
     }
 

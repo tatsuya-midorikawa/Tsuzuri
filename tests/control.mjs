@@ -393,6 +393,13 @@ try {
   const wasmIr = join(temporary, "control-wasm.ll");
   cli(["build", fixture, "--target", "wasm32", "--emit", "llvm", "-o", wasmIr]);
   checkMarkerSizes(readFileSync(wasmIr, "utf8"), ["--target=wasm32-unknown-unknown"]);
+  // The vectors of the simd fixture are laid out by each target: wasm32 aligns a 16-byte vector to 16, which the bounds of
+  // layout_bound do not say, so a frame that holds a vector has no markers, and every other marker is as large as its alloca.
+  for (const [name, buildArguments, targetArguments] of [["native", [], []], ["wasm32", ["--target", "wasm32"], ["--target=wasm32-unknown-unknown"]]]) {
+    const simdIr = join(temporary, `simd-${name}.ll`);
+    cli(["build", join(root, "tests/fixtures/simd"), "--emit", "llvm", ...buildArguments, "-o", simdIr]);
+    checkMarkerSizes(readFileSync(simdIr, "utf8"), targetArguments);
+  }
   let trackedIr = sourceIr.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
   if (sanitizer.length) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, " nounwind sanitize_address");
   writeFileSync(ir, trackedIr);
