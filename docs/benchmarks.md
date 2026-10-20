@@ -1725,6 +1725,115 @@ clang -O2 -I. benchmarks/bounds_shapes/bench.c m0.o -o bench0 && ./bench0
 なお、`-O0`（Tsuzuri のデフォルトビルドではありません）においては `while` ループが約 29% 低速であり、これを改善できるのは `while` 専用の証明規則のみですが、現在の規則体系でこれを実現するには「ループ変数の増分処理が本体の末尾文であること」を厳密に証明するフロー依存の複雑な解析が必要となり、`-O0` デバッグ時のみの限定的な利益に対してコンパイラ複雑度のコストが見合わないと判断しました。
 本測定は Apple M1 Max（arm64 macOS）の 1 台で実施したものであり、x86_64 Linux 環境での測定は未実施です（推測値は記載しません）。
 
+## スタックとフレームの大きさ
+
+PM09（2026-10-20）。関数のフレームを小さくする施策（スタックに置く配列とリストのリテラルの領域への寿命の印、関数ごとの合計の上限）と、同じ再帰グループへの末尾呼び出しの保証（`musttail`、WASM は `--wasm-feature tail-call`）を測りました。
+仕様は [再帰とスタック](language.md#再帰とスタック)、実装は [コンパイラ構成](architecture.md) の「記憶域（スタックとヒープ）」と「末尾再帰」、チケットは [PM09](../_perfs/_completed/PM09-stack-and-tail-calls.md) にあります。
+
+**条件。** Apple M1 Max（10 論理 CPU）、macOS 27.0.1、Apple clang 21.0.0（clang-2100.3.34.2）、Homebrew の LLVM 21（`llvm-objdump`・`wasm-ld`）、rustc 1.98.1、Node.js 20.19.6。1 分の load average は 6〜66（ほかの作業と共有）で、
+フレームの大きさと完走の可否は load に依りませんが、時間は参考値です。after はこのブランチ（コード `6e943a47`）の dev ビルド（SHA-256 `e00182b7…`。コンパイラの最適化水準は、出す IR に影響しません）、before は main `a8875f38` の release ビルド（`35508982…`）です。
+追補（D16・D17）の後の最終版の dev ビルドで、M1 の `tests/fixtures/control`・`tests/fixtures/stack`・`examples/control` の行と `user_drop` を測り直しました（`examples/` と `tests/fixtures/` の 108 プロジェクトの native の IR は、`simd`（印の有無だけ）と `user_drop`（追補で足した関数）以外、`6e943a47` のビルドと同一です）。M2・M3 の after は `6e943a47` のままです。
+生データは `target/perf/PM09-before/`・`target/perf/PM09-after/`（git の管理外）にあります。
+
+### M1: フレームの大きさ
+
+`tsuzuri build <project> --emit llvm` の IR を `clang -x ir -O0|-O3 -c -Wno-override-module -Rpass-analysis=prologepilog` に渡し、remark `N stack bytes in function 'name'` を集めます。IR は `-O` に依らず同じなので、IR を 1 回作り、clang の水準だけを替えます。
+フレームの大きさは clang の後段の値で、インライン展開した関数を含みます。
+
+| プロジェクト | 水準 | 関数 | 合計 bytes（前 → 後） | 変わった関数（前 → 後） |
+| --- | --- | --- | --- | --- |
+| `frames5`（非末尾再帰の `deep`。重ならない 2 つの 64 要素のリスト） | `-O0` | 43 | 6,448 → 6,448 | なし（`deep` は 1,552 のまま） |
+| 同 | `-O3` | 2 | 1,264 → 736 | `deep` 1,264 → 736（−42%） |
+| `tests/fixtures/stack`（相互再帰 5 本） | `-O0` | 121 | 10,144 → 10,064 | `even`・`odd` 48 → 32、`ca`・`cb`・`cc` 64 → 48 |
+| 同 | `-O3` | 8 | 480 → 480 | なし |
+| `tests/fixtures/control` | `-O0` | 738 | 459,632 → 459,488 | 13 関数（`even`・`odd` 48 → 32、`TailCalls.ca`・`cb` 64 → 48 など。いずれも末尾呼び出し） |
+| 同 | `-O3` | 139 → 137 | 297,632 → 297,184 | `Frames.spread` 1,264 → 736、`TailCalls.ping_list` 64 → 0（なくなります）、`tz_tail_lists` 32 → 64、`tz_tail_texts` 0 → 112 |
+| `examples/control` | `-O0` | 50 | 5,616 → 5,584 | `even`・`odd` 48 → 32 |
+
+- 印の効果は、展開されない関数の `-O3` に出ます。`deep` の 2 つのリスト（536 と 520 bytes の `alloca`）が同じ場所に重なります。`-O0` は領域を重ねないので変わりません。`frames_disjoint` のように呼び出し元へ展開される関数は、印がなくても `-O3` で 0 bytes です。
+- `-O0` の相互再帰の関数（末尾呼び出しにした関数）は、フレームが 16 bytes 小さくなりました（`even`・`odd` は 33%、`ca`・`cb`・`cc` は 25%）。arm64 のアセンブリで確かめた原因は、`bl` が `b` になり、リンクレジスタとフレームポインタ（`x29`・`x30`）を退避する 16 bytes が要らなくなることです（`ca` の IR は `musttail` の有無だけが違います）。x86-64 などほかの CPU のフレームは測っていません。
+- `-O3` で大きくなった関数は、`control` の 2 つです（`tz_tail_lists` 32 → 64、`tz_tail_texts` 0 → 112）。小さくなった関数もあり（`TailCalls.ping_list` 64 → 0、`Frames.spread` 1,264 → 736）、プロジェクトの合計は 448 bytes 減っています。原因は、`-O3` の IR と `opt -print-after-all` の各段の IR で調べました（生データは `target/perf/PM09-after/m1-growth/`）。
+  - `tz_tail_lists` は、基準で別の関数だった `ping_list`（64 bytes。再帰のたびに積まれます）が `tz_tail_lists` へ展開されて 1 つのループになり、その 64 bytes を `tz_tail_lists` が持つようになったものです。深さに比例するスタックがなくなったので、関数ごとの数字は増えても、深い再帰の使用量は減ります。C のホストから呼んだ深さ 100,000 の `tz_tail_lists`（20 回の最小値）は、before 2.34 ms、after 1.27 ms でした。
+  - `tz_tail_texts` の原因は、`musttail` でも寿命の印でもありません。この関数の文字列には印がなく、`musttail` を普通の `call` に替えた IR（解放は呼び出しの前のまま）でも、112 bytes と 6 個の `malloc`・`free` が同じように残ります。原因は、D1 の解放の順序と LLVM の最適化の順番の相互作用です。基準の IR は文字列を呼び出しの後で解放するので、呼び出しは末尾呼び出しではなく、`-O3` はまず連結の複写ループと、使われていない `malloc`・`memcpy`・`free` を消し、そのあとで残った自己再帰を `TailCallElim` でループにします（`tz_tail_texts` は `text_even` を呼ぶだけで、0 bytes）。D1 の順序は解放が呼び出しの前なので、最初の `TailCallElim` の時点で確保がまだ残っていて、呼び出しはすでに末尾呼び出しです。ループにしたあとは確保が消えません（消えない理由は調べていません）。同じ IR の関数に `"disable-tail-calls"="true"` を付けて `TailCallElim` を止めると、確保は消えます。
+  - 実行時間への影響は、`control` の IR の形に限ります。`control` の IR の `tz_tail_texts` を C のホストから呼ぶと、深さ 2,000,000（5 回の最小値。1 分の load average は 12〜19）で before 1.0〜1.1 ms、after 23〜26 ms で、1 反復あたり約 0.5 ns から約 12 ns になります。同じ 2 つの関数だけのプロジェクト（`export` の包みを付けたものと付けないもの）では、before も after も最適化した IR にこの再帰の `malloc`・`free` はなく、`-O3` の実行ファイルは深さ 20,000,000 を user 時間 0.01 s 以下で終えます。ほかの形で起きないことは確かめていません。
+  - 保証を変えない修正の候補はあります。グループの関数に `"disable-tail-calls"="true"` を付けると（`musttail` はそのままです）、`control` の IR で確保が消え、`tz_tail_texts` は 0 bytes、深さ 2,000,000 で 0.75 ms（before 1.1 ms）になります。一方、`-O3` が相互再帰を畳む `TailCallElim` が止まるので、3 関数の循環 `tz_tail_cycle` は深さ 10,000,000 で 2.15 ms から 3.30 ms に遅くなります。グループの関数にある保証のない末尾位置の呼び出しの最適化も止まると考えられます（測っていません）。測ったのは 2 つの形だけなので、採用していません。
+
+**108 プロジェクトの `-O3`・`-O0` の合計**（`examples/` の 13 と `tests/fixtures/` の 107 のうち、IR を作れた 108。すべての関数のフレームの合計）:
+
+| 水準 | before | after | 差 | 大きくなったプロジェクト | 小さくなったプロジェクト |
+| --- | --- | --- | --- | --- | --- |
+| `-O3` | 5,853,936 | 5,853,472 | −464 | 0 | 2（`control` −448、`user_drop` −16） |
+| `-O0` | 12,574,096 | 12,573,776 | −320 | 0 | 5（`control` −144 ほか。末尾呼び出しの関数） |
+
+合計は、ほかの 106 プロジェクトの測定値（`6e943a47` のビルド。2026-10-20）に、現在の fixture で測り直した `control` と `user_drop` の値を足し替えたものです（`control` は `Frames.tz` に、`user_drop` は追補で関数が増えました）。差は、足し替える前と同じ −464・−320 bytes です。
+
+**寿命の印を付ける領域の選び方。** 文字列連結のバッファ（256 bytes）と捕捉環境にも印を付ける版は、同じ 108 プロジェクトの `-O3` で合計が **+23,872 bytes** になりました（大きくなったプロジェクト 6、小さくなったもの 11。`tests/fixtures/stack` の `tsuzuri_main` は 368 → 576、`net_sockets` は 42,448 → 57,408）。
+印のある `alloca` には LLVM のインライナーが自分の印を付けず（`opt -passes=always-inline` で確かめた）、この 2 種類は値がヒープへ移った経路に `end` がないので、展開された呼び出し元では領域が関数の終わりまで生きて、重ならなくなるためです。
+バッファだけを外した版は −224 bytes（大きくなったもの 1: `currying` 295,824 → 296,192）、配列とリストだけの版は −592 bytes でした。D2 の規則（`end` は `frame_test` が真の枝だけ）は変えていません。
+
+その版は `match` の枝のリテラルにも印を付けていて、`tests/features.mjs` の `string_library` が wasm32 の `-O3` で失敗しました（`validate_bytes(2)` が `-1` でなく `1`）。`frame_test` は値のアドレスを候補の領域のアドレスと比べ、LLVM のスタックの色分けは寿命の重ならない 9 つの枝の領域のうち 8 つに同じ場所を与えたので、先の枝の比較がどの枝の値でも真になり、IR の最適化が先の枝の中身として畳んだ `[0]` が読まれました（機械語で 8 つの領域が `sp+32` に重なることを確かめました。`-mllvm -no-stack-coloring` を付けると正しい値になります）。
+最終版は、同じ値が持ちうる複数のフレーム（`if` の両方の枝と、複数の arm を持つ `match` の arm の領域）と `let mut` の束縛の領域に印を付けません。この版の合計は上の表のとおり −464 bytes（`string_library` の −128 はなくなりました）で、`frames5` の `deep`（−42%）は変わりません。`-O0` は変わりません。
+
+### M2: 相互再帰の深さ 10,000,000
+
+`tests/fixtures/stack` の `stack_even 10000000`（`bool` を返す 2 関数）と `stack_cycle 10000000`（3 関数の循環）を、完走して正しい値（`1`、`10000000`）を返したかで見ます（`node tests/stack.mjs` が、native・`--backend fast`・`--wasm-feature tail-call` の WASM について値を検査します）。
+
+| 構成 | before | after（最終版。4 回の範囲） |
+| --- | --- | --- |
+| native `-O0` | 失敗（`trap: stack overflow`、SIGABRT。`tsuzuri run` は `E2005`） | 完走（242〜402 ms） |
+| native `-O3` | 完走（213 ms。LLVM が畳む） | 完走（52〜190 ms） |
+| native `--backend fast` `-O0` | 未測定（基準の `fast` 付きの build を作っていない） | 完走（100〜143 ms） |
+| wasm32 `-O0`（既定） | `RangeError`（`Maximum call stack size exceeded`） | `RangeError`（変えていない） |
+| wasm32 `-O0` `--wasm-feature tail-call` | 指定できない | 完走（56〜82 ms） |
+| wasm32 `-O3`（既定） | 完走（19 ms。LLVM が畳む） | 完走（18〜24 ms） |
+| wasm32 `-O3` `--wasm-feature tail-call` | 指定できない | 完走（7〜8 ms） |
+
+時間はプロセスの起動と出力を含む値で、after は最終版（コード `6e943a47`）を 1 分の load average 約 15〜17（15 分の平均は約 32）の機械で 4 回測った範囲です（before は基準のコンパイラ（main `a8875f38`）の 1 回の値）。値の幅が大きいのは共有機の雑音で、改善や悪化の根拠にはなりません。
+native `-O0` の 250 ms 前後は、2,000 万回の末尾呼び出し（`b` の分岐）の時間で、再帰の深さには比例しません。完走するかどうかが、この表の結果です。
+
+### M3: `control` suite の時間（退行がないことの確認）
+
+`node benchmarks/run-control.mjs target/debug/tsuzuri --baseline target/perf/PM09-before/tsuzuri-before --metrics target/perf/PM09-after/control`（15 標本の中央値、native `-O3`、`--cpu generic`、2 回のウォームアップ、順序を回す）。after は印を付けた最初の版（コード `6a538ece`、dev ビルド `ff052563…`）で、最終版では測り直していません（`benchmarks/control` の IR が同一なので、測り直しても同じ code の測定です。下）。load average は開始時 11.0、終了時 9.6 でした。
+
+| 種目 | 規模 | before ms | after ms | after / before |
+| --- | --- | --- | --- | --- |
+| while_mix | 8,000,000 | 13.063 | 12.953 | 0.992 |
+| for_mix | 8,000,000 | 13.081 | 13.064 | 0.999 |
+| tail_mix | 8,000,000 | 12.961 | 12.918 | 0.997 |
+| tail_if_mix | 8,000,000 | 12.931 | 12.916 | 0.999 |
+| tail_builtin_mix | 8,000,000 | 12.945 | 12.991 | 1.003 |
+| match_dispatch | 8,000,000 | 2.587 | 2.587 | 1.000 |
+| array_sum | 4,000,000 | 1.929 | 1.934 | 1.002 |
+| array_index_sum | 4,000,000 | 1.935 | 1.929 | 0.997 |
+| array_copy | 2,000,000 | 1.757 | 1.744 | 0.992 |
+| list_sum | 100,000 | 0.046 | 0.046 | 0.996 |
+| closure_capture | 1,000,000 | 1.960 | 1.971 | 1.006 |
+| closure_churn | 1,000,000 | 6.640 | 6.628 | 0.998 |
+| record_pipeline | 8,000,000 | 12.966 | 12.962 | 1.000 |
+| integer128_mix | 2,000,000 | 5.065 | 5.092 | 1.005 |
+| float32_mix | 4,000,000 | 9.060 | 9.119 | 1.007 |
+| float64_mix | 4,000,000 | 9.120 | 9.084 | 0.996 |
+| 合計 | | 118.046 | 117.936 | 0.999（幾何平均 0.999） |
+
+どの種目も ±0.8% の内側で、変化は見えません。この suite には相互再帰も、フレームに置く領域を重ねられるリテラルも含まれないので、変化がないのは期待どおりで、改善の証拠ではありません。`benchmarks/control` の IR は、before、印を付けた最初の版、最終版の 3 つのコンパイラで byte 単位で同一（SHA-256 `0b53a35b…`）なので、この表の差は同じコードの測定の雑音の幅（約 ±1%）を示します。
+
+### 生成コードの確認
+
+1. 印: `frames5` の IR に `call void @llvm.lifetime.start.p0(i64 536, ptr %v12)`・`...(i64 520, ptr %v257)` と、同じ `alloca` に対する `end` が各 1 つ、`declare void @llvm.lifetime.{start,end}.p0(i64 immarg, ptr)` が各 1 行（ランタイムの IR と結合しても重複しません）。大きさは `alloca { ptr, i64, i64, [N x i64] }` の `24 + 8 N` で、`tests/control.mjs` が clang の畳んだ `sizeof` と native・wasm32 で照合します。
+2. `musttail`: `tests/fixtures/stack` の IR に `musttail call` が 5 つ、各行の次の行が `ret i1 %v..`／`ret i64 %v..` です。native `-O0` の機械語（macOS arm64）は、5 本の呼び出しが `b _tz.fn.Main.odd` のような分岐で、グループの関数どうしの `bl` はありません（`bl` は `main` からの 2 回と、関数値のアダプタ 5 つだけです）。
+3. WASM: `--target wasm32 --emit llvm` の既定の IR に `musttail` は 0 個、`--wasm-feature tail-call` では先頭に `; wasm-feature: tail-call; compile this IR with -mtail-call` があり `musttail call` が 5 個です。`--emit object` の `llvm-objdump -d` で `return_call` は、既定が `-O0`・`-O3` とも 0、`--wasm-feature tail-call` が `-O0` で 5、`-O3` で 0（LLVM が畳むので呼び出しが残りません）です。既定の WASM の IR と `.wasm` は、相互再帰だけのプログラムで before と byte 単位で同一でした。
+4. `--backend fast`: `return_call` は Cranelift の `CallConv::Tail` の関数どうしで、macOS arm64 の機械語は `b` です。`tests/fast_backend.rs` が、深さ 40,000,000 の相互再帰と、スタックで渡す引数（12 個の整数）と、`musttail` 付きのコンパイラ出力プログラムを実行します（`musttail` の翻訳を外すと 3 つとも SIGSEGV で失敗することを確かめました）。
+5. Linux と x86-64（Docker Desktop の Ubuntu 24.04 のコンテナ。clang 21（apt.llvm.org）、rustc 1.99.1、Node.js 24.11.0。arm64 は VM の中で native、x86-64 は Rosetta のエミュレーション）: macOS で `--target x86_64-unknown-linux-gnu`・`aarch64-unknown-linux-gnu` の `--emit object` にした 2 関数と 3 関数の相互再帰（`tests/fixtures/stack` と同じ export）を、コンテナの `cc` で C のホストにリンクして深さ 10,000,000 で実行すると、arm64・x86-64 とも `-O0`・`-O3` で `1 10000000` を返しました。before の `-O0` の object は SIGSEGV（終了 139。スタックは 8 MiB）で、x86-64 の `-O0` の `even` は `jmp tz.fn.Main.odd` で終わります。22 個の `--target` の object は、`-O0`・`-O3` ともコンパイラが作れました（実行はしていません）。x86-64 のコンテナの `cargo test --features fast-backend` では、`tests/fast_backend.rs` 12 件と `tests/fast_backend_ops.rs` 3 件（Cranelift の x86-64 の `return_call`、スタックで渡す 12 個の整数、`tail calls` の group を含む）、`tests/stack_frames.rs`、`tests/tail_recursion.rs` が通り、`tests/stack.mjs`（`TSUZURI_STACK_FAST=1`）、`tests/control.mjs`（659 cases）、`tests/features.mjs` の `string_library`、`tests/fast_backend.mjs programs` が成功しました。
+
+### 測っていないもの
+
+- macOS の x86-64（Intel）の実行、Linux の arm64 の `--backend fast`（Linux のコンテナで確かめたのは x86-64 の `--backend fast` と、arm64・x86-64 の `llvm` の object だけです。上の 5）、ネイティブの Windows の実行。`targets.yml` の macOS と Linux の 4 つの host が、`tests/stack.mjs` と fast backend のテストを実行します。Windows の CI（`windows.yml`）が実行するのは Rust のテスト（IR の形の `tests/tail_recursion.rs`・`tests/stack_frames.rs`）だけで、`tests/stack.mjs` は実行せず、`--backend fast` はホストが Windows のとき `E2000` なので、その翻訳を実行する Windows の CI はありません。
+- `Task.parallel` と WASM threads のワーカーのスタックの大きさと、枯渇の挙動（前から文書にある値で、今回は測っていません）。
+- Binaryen の `wasm-opt`（`--enable-tail-call` を渡す実装だけで、実行は確かめていません）、wasm64 の実行（Node.js 20 は memory64 を既定で持ちません。wasm64 は object の生成だけを確かめました）。
+- ブラウザの WebAssembly エンジン（Node.js 20.19.6 の V8 だけで `return_call` を実行しました）。
+- フレームの大きさの前後比較は、IR を共有する clang の後段の値で、`-O3` のフレーム全体の改善の主張は「展開されない関数で 1 つの再帰関数が 42% 小さくなった」と「108 プロジェクトの合計が −464 bytes（−0.008%）」までです。
+- 相互再帰・文字列・リストを持つ実プログラムの `-O3` の実行時間の前後比較。測ったのは、相互再帰を含まない `control` suite（M3）と、`control` の IR の `tz_tail_texts`・`tz_tail_lists`・`tz_tail_cycle` を C のホストから呼んだ時間（M1）、同じ関数だけの小さなプロジェクト 2 つの実行だけです。`tz_tail_texts` は `control` の IR では after が約 20 倍遅く、その原因と範囲は M1 に書きました。
+
 ## 動的ディスパッチの比較（A14）
 
 `node benchmarks/run-dyn.mjs target/release/tsuzuri [--quick]` は、同じ図形の面積の和を三つの書き方で求めます。`dyn` は `[dyn Shapes.Shape]` の要素ごとに vtable からメソッドを呼び、`union` は union の `match`、`generic` は型ごとの配列を `Shapes.Shape<'a>` 制約のジェネリック関数（単相化）で合計します。

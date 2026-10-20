@@ -49,7 +49,7 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない方針、整数の折り返し・NaN・符号付きゼロ・トラップは、プロファイルの有無で変わらず、旗を付けないビルドの成果物とキャッシュのキーも変わりません。
 プロファイルは IR の関数ごとの制御フローに結び付くので、計装と使用は同じコンパイラ・ソース・Clang・オプションで行います。合わない関数はプロファイルなしで最適化され、`W2001` の 1 行で知らされます。
 
-高速バックエンド（PB05）の `--backend fast` は、`-O0` の native `build`・`run`・`test` と wasm32 の `build` で、Tsuzuri が出す `-O0` の LLVM IR を Clang に渡さずに翻訳器で object にします（native は Cranelift で native の object にし、リンクを Clang に任せます。wasm32 は wasm の命令を直接書く再配置可能な object にし、リンクを `wasm-ld` に任せます）。既定は `--backend llvm` です。IR・診断・終了コード、整数の折り返し・NaN・符号付きゼロ・トラップ・`E2005` の報告・`--trap-info` の位置表は `llvm` と同じで（`llvm` のビルドを codegen unit に分けたときは、位置表の `id` だけが違います）、旗を付けないビルドの IR・object・実行ファイルは変わりません（codegen unit に分けるビルドを除きます。キャッシュのキーには入ります）。`-O0` 以外、native と wasm32 以外の target（`wasm64`・`--target TRIPLE`）、native の `exe`・`object` と wasm32 の `wasm`・`object` 以外の `--emit`、`--cpu native`・`--profile-generate`・`--profile-use`、wasm32 の SIMD・threads・jspi・webgpu・net・`--wasm-host wasi`・`--wasm-opt`・`-g`、Windows のホストは `E2000` で、`--backend llvm` を使います。native の `-g` は関数の名前と行の対応だけの DWARF を書きます（変数と型は `llvm` だけです）。`--allocator small|counting`・`--freestanding`・`--trap-mode return` は、`llvm` と同じ制約のもとで使えます。翻訳できない構成要素は `E2002` です。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます。詳細は [コード生成器](../_tsuzuri/language-reference/compiler/option.md#コード生成器) にあります。
+高速バックエンド（PB05）の `--backend fast` は、`-O0` の native `build`・`run`・`test` と wasm32 の `build` で、Tsuzuri が出す `-O0` の LLVM IR を Clang に渡さずに翻訳器で object にします（native は Cranelift で native の object にし、リンクを Clang に任せます。wasm32 は wasm の命令を直接書く再配置可能な object にし、リンクを `wasm-ld` に任せます）。既定は `--backend llvm` です。IR・診断・終了コード、整数の折り返し・NaN・符号付きゼロ・トラップ・`E2005` の報告・`--trap-info` の位置表は `llvm` と同じで（`llvm` のビルドを codegen unit に分けたときは、位置表の `id` だけが違います）、旗を付けないビルドの IR・object・実行ファイルは変わりません（codegen unit に分けるビルドを除きます。キャッシュのキーには入ります）。`-O0` 以外、native と wasm32 以外の target（`wasm64`・`--target TRIPLE`）、native の `exe`・`object` と wasm32 の `wasm`・`object` 以外の `--emit`、`--cpu native`・`--profile-generate`・`--profile-use`、wasm32 の SIMD・threads・jspi・webgpu・net・tail-call・`--wasm-host wasi`・`--wasm-opt`・`-g`、Windows のホストは `E2000` で、`--backend llvm` を使います。native の `-g` は関数の名前と行の対応だけの DWARF を書きます（変数と型は `llvm` だけです）。`--allocator small|counting`・`--freestanding`・`--trap-mode return` は、`llvm` と同じ制約のもとで使えます。翻訳できない構成要素は `E2002` です。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます。詳細は [コード生成器](../_tsuzuri/language-reference/compiler/option.md#コード生成器) にあります。
 `.profraw` のディレクトリは `llvm-profdata`（`TSUZURI_LLVM_PROFDATA`、Clang の隣、Clang の toolchain の順）で merge し、中身がキャッシュのキーに入ります。Windows、ビルド機と違う `--target`、同梱の `tsuzuri-clang` は受け付けません。
 速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 12〜17% 速く、4 種目が 20〜63% 遅い）。
 詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
@@ -1604,7 +1604,10 @@ Copy 型の要素で構成されたコレクションを値として明示的に
 
 **リソース上限.** スタック上に配置可能なリテラルのデータサイズは、内部の入れ子リテラルを含めて 1 つのリテラルあたり保守的な見積もりで最大 64 KiB までに制限されています
 （各要素は前述の値レイアウト規則に基づき、リストの要素は 16 バイトに要素サイズ（16 の倍数に切り上げ）を加算したサイズで見積もられます。実際の chunk は 24 バイトの header と要素で、16 バイトの要素が 1 つだけのリテラルでは、実際の領域が見積もりを最大 16 バイト上回ります）。
-この制限サイズを超える巨大なリテラルは、コンパイラによって自動的にヒープ領域へと退避配置されます。巨大なデータセットや、深い非末尾再帰の内部で使用する作業データについては、予期せぬスタックオーバーフローを防ぐため明示的に `new` を使用してヒープ上に確保することが推奨されます。
+この制限サイズを超える巨大なリテラルは、コンパイラによって自動的にヒープ領域へと退避配置されます。
+さらに、1 つの関数がスタックフレームに置く領域の合計にも 64 KiB の上限（`MAX_FRAME_BYTES`）があります。数えるのは、スタックに置くと決めた配列・リストのリテラルの見積もり（上と同じ数え方）、文字列連結のバッファ、局所の関数値の捕捉環境で、関数の本体を上から順に処理して加えていきます。次の領域を加えると合計が 64 KiB を超えるときは、そのリテラルは 1 つが 64 KiB 以下でもヒープ領域に置き、ちょうど 64 KiB になるまではスタックに置きます。たとえば、`i64` の 600 要素のリスト（見積もりは 1 つ 19,200 バイト）を 5 つ書いた関数では、先の 3 つがスタックに、残りの 2 つがヒープに置かれます。バッファと捕捉環境には、前に述べた合計 4 KiB の上限が別にあり、この合計に含めて数えます。
+スタックに置いた配列とリストのリテラルの領域は、解放の分岐（値がまだその領域を使っているときの枝）で `llvm.lifetime.end` を出して LLVM に生存範囲を知らせます。`-O1` 以上では、同時に生きていない領域を LLVM が同じ場所に重ねられるので、再帰する関数のフレームが小さくなります。`-O0` では領域を重ねないので、フレームの大きさは変わりません（測り方と結果は [スタックとフレームの大きさ](benchmarks.md#スタックとフレームの大きさ)）。文字列連結のバッファと捕捉環境には印を付けません（`-O3` でインライン展開した呼び出し元のフレームがかえって大きくなったためで、同じ節に数字があります）。同じ値が持ちうる複数の領域（`if` の両方の枝と、複数の枝を持つ `match` が作る領域）と、`let mut` の束縛の領域にも付けません。値がどの領域を使っているかは値のアドレスと領域のアドレスの比較で調べるので、LLVM が寿命の重ならない 2 つの領域に同じ場所を与えると、先に調べる領域の比較が、後の領域を使う値でも真になり、誤った領域を読むためです（印を付けていた版が、wasm32 の `-O3` で `match` の枝のバイト列を取り違えました）。要素の型が 128 bit の数（`i128`・`d128`・`f128`）や SIMD ベクトルに届くリテラルにも付けません。印の大きさは領域の実際の大きさと一致しなければならないのに、128 bit の数の整列は LLVM の版（x86-64 の 18 より前は 8）に、SIMD ベクトルの整列は対象に依り、コンパイラが 1 つの値に確定できないためです。
+巨大なデータセットや、深い非末尾再帰の内部で使用する作業データについては、予期せぬスタックオーバーフローを防ぐため明示的に `new` を使用してヒープ上に確保することが推奨されます。
 プロセスのスタックサイズに関する仕様制限は [再帰とスタック](#再帰とスタック) の記述に準拠します。
 関数値がキャプチャした環境オブジェクトおよび Task オブジェクトは明示的な `new` の対象ではなく、[コンピュテーション式の性能](#コンピュテーション式の性能) の最適化ルール（呼び出し先が既知で外へ脱出しない一時環境はスタック、それ以外はヒープ確保）に従って自動的に決定されます。
 
@@ -3903,7 +3906,52 @@ WASM ターゲットにおいても共通の評価順序、数値仕様、およ
 ただし、借用参照を引数として受け取る関数や、借用参照を保持している可能性のある関数ポインタ値を引数に持つ関数については、参照先のスタックフレームを安全に再利用できないため、このループ化変換は適用されません。
 例外は、ローカルな `let rec` が借用して捕捉した値です。自分への呼び出しがその参照をそのまま渡し直すだけなので、フレームを再利用してもその参照は変わらず、ループになります（[ローカルな `let rec`](#ローカルな-let-rec)）。
 
-関数値を介した間接再帰、複数関数間の相互再帰、および関数の呼び出しから戻った後に後続の演算が続く非末尾再帰については、スタック消費量が $O(1)$ となる定数スタックの保証はありません。
+**保証された末尾呼び出し.** 自分自身への末尾呼び出しはループになります。これに加えて、同じ再帰グループ（互いを名前で直接呼び合う関数の循環。`and` でつないだ関数と、`and` を使わずに直接呼び合う循環）のほかの関数への末尾呼び出しは、次の条件をすべて満たすとき**保証された末尾呼び出し**になります。コンパイラは `musttail` を付けた呼び出しと、その直後の `ret` を出力し、呼び出し元のフレームは呼ばれた関数が動く前になくなります。そのため、ネイティブでは `-O0` を含むどの最適化レベルでも、相互再帰のスタック消費は深さによらず一定です。
+
+- 呼び出しが末尾位置にあります。自己呼び出しと同じ位置（末尾の式ブロック、`if` 分岐、`match` 節、関数ガード、1 引数の `value |> f`）です。
+- 呼び出し先は呼び出し元と同じ再帰グループの関数で、名前で直接呼び、引数をすべて渡します。関数値（クロージャ）を介した呼び出しと部分適用は対象外です。
+- 2 つの関数のどちらも、環境を捕捉せず、`task` の本体ではなく、`@cpu` で版を分けていません。捕捉のないローカルな `let rec` のグループは、トップレベルの関数と同じに扱います。
+- 2 つの関数の引数の機械表現（LLVM の型）が同じで、どちらの引数にも、呼び出し元のフレームを指し得る借用（`ref T`、`ref mut T`、借用を保持し得る関数値）がなく、呼び出し先の結果にもありません。
+- 結果の型が `bool`、`unit`、`char`、`utf8char`、または幅が 64 bit 以下の数（整数、`f16`・`f32`・`f64`、`d32`・`d64`）のいずれかです。関数の型だけで決まり、値の機械表現には依りません。上のどれでもない型の結果は対象外です。たとえば `i128`・`f128`・`d128`、SIMD のベクトル、`string`、`utf8string`、配列、リスト、レコード、タプル、関数値、`Rc`・`Arc`・`extern type` の値と、共用体（再帰する共用体や、中身が 1 つのポインタで表される共用体を含む、すべての共用体）です。
+
+条件を満たさない呼び出しは、今までどおりの通常の関数呼び出しで、診断は出ません。借用を引数に持つ相互再帰や、`string` や共用体を返す相互再帰は、深さに比例してスタックを使います。関数値を介した間接再帰と、呼び出しから戻った後に演算が続く非末尾再帰にも、定数スタックの保証はありません。
+
+```text
+def rec ping :: i64 -> i64 -> i64 = \n acc ->
+    if n == 0 then acc else pong (n - 1) (acc + 1)
+and pong :: i64 -> i64 -> i64 = \n acc ->
+    if n == 0 then acc else ping (n - 1) (acc + 1)
+// ping 10000000 0 は、native の -O0 でも 10000000 を返す（スタックは増えない）
+```
+
+保証された末尾呼び出しの手順は、引数を左から右へ 1 回ずつ評価し、呼び出し元がまだ所有している値をスコープの終わりと同じ順序で解放し、その後で `musttail` 呼び出しと `ret` を出力します。呼び出しの前に、デバッグ情報や解放の行を挟みません。通常の呼び出しは、呼び出しが戻ってから所有値を解放するので、**`Drop` を実装した値のデストラクタは、保証された末尾呼び出しでは呼ばれた関数が動く前に、そうでない呼び出しでは動いた後に実行されます**。次の例では、`Resource` は `id` を持ち、`Drop` を実装したレコードです。`bounce 2` は `102`、`201`、`100` の順に解放し、保証のない呼び出しでは `100`、`201`、`102` の順です。
+
+```text
+def rec bounce :: i64 -> i64
+    def and rebound :: i64 -> i64
+fn rec bounce n =
+    let held = Resource { id: 100 + n }      // Drop を実装した値
+    if n == 0 then held.id else rebound (n - 1)
+and rebound n =
+    let held = Resource { id: 200 + n }
+    if n == 0 then held.id else bounce (n - 1)
+```
+
+呼び出し元のフレームがなくなるので、デバッガのバックトレースには、末尾呼び出しで置き換わった呼び出し元が現れません。`--trap-info` が報告するトラップの位置は、トラップを起こした命令の位置なので変わりません。`--trap-info` と `-g` のビルドも保証を保ちます。
+
+**WebAssembly.** 既定の WASM ビルドは `musttail` を出さず、相互再帰は通常の呼び出しです。`-O3` では LLVM が相互再帰をループにすることがありますが、保証ではありません。WebAssembly の `return_call` 命令には、実行するエンジンが tail call 提案に対応している必要があるため（Node.js 20.19.6 で確かめました。ほかのエンジンは確かめていません）、既定にはできません。`--wasm-feature tail-call`（`build` だけ。wasm32 または wasm64 の object、LLVM IR、WASM 出力）を付けると、保証された末尾呼び出しが `musttail` になり、Clang に `-mtail-call` を渡して `return_call` 命令にします。`--emit llvm` の先頭には `; wasm-feature: tail-call; compile this IR with -mtail-call` と書きます。それ以外の WASM ビルドは Clang に `-mno-tail-call` を明示して渡し、オブジェクトは今までと同じです（Clang の既定が変わっても、既定の WASM の出力に tail call は入りません）。ランタイムのオブジェクト（`numeric`、`math`、`wasi`）は今までと同じ引数でビルドし、`wasm-ld` は tail call を使うオブジェクトとそれらを混ぜてリンクできます（Homebrew の LLVM 21 の `wasm-ld` で確かめました）。`--wasm-opt` には `--enable-tail-call` を渡します（Binaryen は確かめていません）。保証された末尾呼び出しで先に解放する順序は、この機能を付けた WASM でもネイティブと同じです。
+
+**`--backend fast`.** ネイティブの `--backend fast`（`-O0`）は、`musttail` 呼び出しを Cranelift の `return_call` に翻訳します。呼び出し元と呼び出し先の両方が、このオブジェクトが定義する内部の関数で、可変長引数でなく、`byval`・`sret` を持たず、16 個を超える葉を持つ大きな集成体の引数がなく、アドレスを取られていないとき、その組は末尾呼び出し用の規約（Cranelift の `tail`）になります。条件を満たさない関数の間の `musttail` 呼び出しは、意味は同じ通常の呼び出しで、スタックは増えます（診断は出ません）。wasm32 の `--backend fast` は `--wasm-feature tail-call` を `E2000` で拒否します。この backend の WebAssembly 書き込みは、`musttail` を通常の呼び出しにするためです。
+
+**スタックの大きさと枯渇.** 次の値は 2026-10-20 に macOS arm64（Apple clang 21、Node.js 20.19.6）で測ったものです。ほかの OS と CPU、ネイティブの Windows では測っていません。`Task.parallel` のワーカーと WASM の threads のワーカーは、前に述べたとおりで、今回は測っていません。
+
+| 実行環境 | スタックの大きさ | 枯渇したときの動き |
+|---|---|---|
+| ネイティブのメインスレッド | OS の設定（`ulimit -s`。この環境では 8176 KiB） | 再帰を含むプログラムの実行ファイルは、標準エラーに `trap: stack overflow` を出して `abort()` します（`tsuzuri run` は `E2005`） |
+| WASM（既定） | 1 MiB（`--wasm-stack-size`）。呼び出しの深さはエンジンの上限にも従います | V8 は `RangeError: Maximum call stack size exceeded` を投げます（`-O0` の相互再帰、深さ 10,000,000） |
+
+関数のフレームの大きさは、`--emit llvm` の IR を `clang -x ir -Rpass-analysis=prologepilog` に渡して測ります（手順と結果は [スタックとフレームの大きさ](benchmarks.md#スタックとフレームの大きさ)）。
+
 ネイティブ環境におけるスタックサイズの上限は、実行環境の OS 設定（`ulimit -s` など）に依存します。
 WASM ターゲットにおいては、stack-first 配置モデルに基づき、デフォルトで 1 MiB のメインスタックと、16 MiB の線形メモリ最大容量が設定されます。
 `tsuzuri build` および `tsuzuri test` コマンドにおいて `--target wasm32` または `--target wasm64` を指定する場合、`--wasm-max-memory SIZE` オプションによってメモリ最大容量を、`--wasm-stack-size SIZE` によってメインスレッドのスタックサイズを柔軟にカスタマイズ可能です。
@@ -3949,7 +3997,7 @@ def parity :: i64 -> bool = \n ->
   - 借用を持つ閉包は、捕捉した値の持ち主より長く生きられないので、関数から返すと `E1013`（`cannot return a reference to a local value`）です。数値だけを捕捉する `let rec` 関数は返せます。
   - 型変数（`'a`）を含む型の値は捕捉できません（`E1005`）。多相な関数の中の `let rec` には、その値を引数で渡します。
   - 通常のラムダ式が捕捉できない値（`Drop` を実装した型、`Rc` など）は、`let rec` でも `E1005` です。
-- 自分自身への直接の末尾呼び出し（`x |> f` を含む）は、`def rec` と同じくループになります。`-O0` でも変わらず、深さ 1,000,000 の再帰もスタックを使いません。借用した捕捉は、そのまま渡し直すだけなので、ループを妨げません。関数自身の引数が借用（`ref T`）のときは、`def rec` と同じ理由でループになりません。グループのほかのメンバーへの末尾呼び出しと、関数値を介した再帰はループではなく呼び出しで、スタック消費の保証はありません。
+- 自分自身への直接の末尾呼び出し（`x |> f` を含む）は、`def rec` と同じくループになります。`-O0` でも変わらず、深さ 1,000,000 の再帰もスタックを使いません。借用した捕捉は、そのまま渡し直すだけなので、ループを妨げません。関数自身の引数が借用（`ref T`）のときは、`def rec` と同じ理由でループになりません。グループのほかのメンバーへの末尾呼び出しは、グループが何も捕捉しないとき（上の `parity`）に限り、トップレベルの関数と同じく[保証された末尾呼び出し](#再帰とスタック)です。捕捉のあるグループと、関数値を介した再帰は、ループでも保証された末尾呼び出しでもない通常の呼び出しで、スタック消費の保証はありません。
 - 自分の本体の中でしか使わない関数は `W1001` です（グループでは、グループの外から使われないメンバー）。`_` で始まる名前は警告しません。
 - `tsuzuri fmt` は `rec` と `and` を保ち、`and` を `let rec` と同じインデントに置きます。`let` と `let rec`、1 つのグループと 2 つのグループは、別のプログラムとして区別されます。LSP は、自己呼び出しとグループの呼び出しを束縛へ解決するので、定義へ移動・参照の一覧・名前の変更が使えます。REPL では、トップレベルの `let rec ... and ...` が 1 つの項目で、グループの名前の 1 つを再定義するとグループ全体が置き換わります。
 
@@ -4042,7 +4090,7 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 
 `tsuzuri build <path> --emit shared` は、`tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_<name>` だけを export する共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出します。実行ファイルと同じくリンク入力を受け、未解決のシンボルは `E2002` です。Windows（DLL の出力は未対応です。[G10](../_features/_completed/G10-windows.md) の後続の作業です）、`--allocator host`、native 以外のターゲットは `E2000` です。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じ表から C#（`[LibraryImport]`、`SafeHandle` で所有する結果、`ReadOnlySpan<T>` の借用入力、blittable な struct のレコード）、Python（`ctypes`、結果は複製して `tsuzuri_free`）、C++20（C ヘッダーの上の RAII。`std::span`、`std::u16string_view`、`tsuzuri_free` を呼ぶ所有型）のバインディングを出します。どれも引数を C ABI の前に検査し（不正な UTF-8 は呼ぶ前に例外）、`--trap-mode return` を付けると `tsuzuri_try_<name>` を呼んでトラップを各言語の例外にします。付けないと、トラップはプロセスを終わらせます。
 
-`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`、`Async.start` では `tsuzuri_async_poll` と `tsuzuri_async_complete`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*`、`Async.block_on` に届くときの `tsuzuri_async_post`（C ランタイムが定義し、ほかのスレッドから呼べるよう外部のまま残します）は弱い定義です。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
+`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`、`Async.start` では `tsuzuri_async_poll` と `tsuzuri_async_complete`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*`、`Async.block_on` に届くときの `tsuzuri_async_post`（C ランタイムが定義し、ほかのスレッドから呼べるよう外部のまま残します）は弱い定義です。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・tail-call・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 
 ### ホスト提供の allocator
 

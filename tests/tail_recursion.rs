@@ -148,3 +148,467 @@ fn wasm_keeps_stack_machine_argument_scheduling() {
     assert!(!body.contains("call i64 @tz.fn.Main.f("));
     assert!(body.find("sub i64").unwrap() < body.find("call i64 @tz.fn.Main.step(").unwrap());
 }
+
+// PM09: calls that the language guarantees to be tail calls are `musttail` calls.
+
+const EVEN_ODD: &str = "def rec even :: i64 -> bool
+    def and odd :: i64 -> bool
+    fn rec even n = if n == 0 then true else odd (n - 1)
+    and odd n = if n == 0 then false else even (n - 1)";
+
+const CYCLE: &str = "def rec a :: i64 -> i64 -> i64
+    def and b :: i64 -> i64 -> i64
+    def and c :: i64 -> i64 -> i64
+    fn rec a n acc = if n == 0 then acc else b (n - 1) (acc + 1)
+    and b n acc = if n == 0 then acc else c (n - 1) (acc + 2)
+    and c n acc = if n == 0 then acc else a (n - 1) (acc + 3)";
+
+/// Each `musttail call` of `body` with the line after it.
+fn musttail_lines(body: &str) -> Vec<(String, String)> {
+    let lines: Vec<_> = body.lines().collect();
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("musttail call"))
+        .map(|(index, line)| ((*line).to_owned(), lines[index + 1].to_owned()))
+        .collect()
+}
+
+/// The value that a line defines: `  %v5 = ...` is `%v5`.
+fn defined(line: &str) -> &str {
+    line.trim().split_once(" = ").unwrap().0
+}
+
+fn native(source: &str) -> String {
+    let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    let first = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(first, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    first
+}
+
+/// What follows the header of the definition of `@tz.fn.Main.<name>` in `ir`, up to its closing brace:
+/// the first mention of the name may be a call in a function of the same group.
+fn definition(ir: &str, name: &str) -> String {
+    let header = format!("@tz.fn.Main.{name}(");
+    let start = ir
+        .match_indices("define ")
+        .map(|(at, _)| at)
+        .find(|at| {
+            let line = ir[*at..].lines().next().unwrap();
+            line.contains(&header)
+        })
+        .unwrap_or_else(|| panic!("no definition of {name}\n{ir}"));
+    let rest = &ir[start..];
+    let body = rest.split_once(&header).unwrap().1;
+    body.split("\n}").next().unwrap().to_owned()
+}
+
+#[test]
+fn marks_mutual_tail_calls_musttail() {
+    for (source, calls) in [
+        (
+            EVEN_ODD,
+            vec![
+                ("even", "i1 @tz.fn.Main.odd(i64"),
+                ("odd", "i1 @tz.fn.Main.even(i64"),
+            ],
+        ),
+        (
+            CYCLE,
+            vec![
+                ("a", "i64 @tz.fn.Main.b(i64"),
+                ("b", "i64 @tz.fn.Main.c(i64"),
+                ("c", "i64 @tz.fn.Main.a(i64"),
+            ],
+        ),
+    ] {
+        for (name, call) in calls {
+            let body = definition(&native(source), name);
+            let found = musttail_lines(&body);
+            assert_eq!(found.len(), 1, "{body}");
+            let (line, next) = &found[0];
+            assert!(line.contains(&format!("musttail call {call}")), "{body}");
+            // The next line returns the value of the call, and nothing else comes between.
+            assert_eq!(
+                next.trim(),
+                format!(
+                    "ret {} {}",
+                    if name == "even" || name == "odd" {
+                        "i1"
+                    } else {
+                        "i64"
+                    },
+                    defined(line)
+                ),
+                "{body}"
+            );
+        }
+    }
+    // WebAssembly has no tail calls unless the build asks for them: the same program has none.
+    for source in [EVEN_ODD, CYCLE] {
+        let module = analyze(source).unwrap();
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
+        assert!(!ir.contains("musttail"), "{ir}");
+        assert!(ir.contains("call i"), "{ir}");
+    }
+}
+
+#[test]
+fn drops_owned_locals_before_guaranteed_tail_calls() {
+    // The strings are heap strings: a function of a recursion keeps no buffer in its frame.
+    let source = "def rec ping :: i64 -> i64
+        def and pong :: i64 -> i64
+        fn rec ping n = {
+            let s = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+            if n == 0 then s.length else pong (n - 1)
+        }
+        and pong n = {
+            let s = (if n > 0 then \"cd\" else \"cde\") + \"y\";
+            if n == 0 then s.length else ping (n - 1)
+        }";
+    for name in ["ping", "pong"] {
+        let body = definition(&native(source), name);
+        let lines: Vec<_> = body.lines().collect();
+        let call = lines
+            .iter()
+            .position(|line| line.contains("musttail call"))
+            .unwrap();
+        // The string that the function owns is freed before the call, and the `ret` follows it.
+        let freed = lines[..call]
+            .iter()
+            .rposition(|line| line.contains("call void @tz.free("))
+            .unwrap();
+        let argument = lines[..freed]
+            .iter()
+            .rposition(|line| line.contains("sub i64"))
+            .unwrap();
+        assert!(argument < freed && freed < call, "{body}");
+        assert!(lines[call + 1].trim().starts_with("ret i64 "), "{body}");
+        // The call is the only call after the drops: the order is arguments, drops, call, ret.
+        assert!(
+            lines[freed + 1..call]
+                .iter()
+                .all(|line| !line.contains("call ")),
+            "{body}"
+        );
+        // The other way out frees the string before it returns, as an ordinary function does.
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("ret i64 ") && !line.contains("musttail")),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn keeps_ordinary_calls_outside_the_guarantee() {
+    for (what, source, names) in [
+        (
+            "a function of another group",
+            format!("{EVEN_ODD}\ndef asks :: i64 -> bool\nfn asks n = even n"),
+            vec!["asks"],
+        ),
+        (
+            "a result that is not a scalar",
+            "def rec f :: i64 -> string
+             def and g :: i64 -> string
+             fn rec f n = if n == 0 then \"x\" else g (n - 1)
+             and g n = if n == 0 then \"y\" else f (n - 1)"
+                .to_owned(),
+            vec!["f", "g"],
+        ),
+        (
+            "a parameter that holds a borrow",
+            "def rec f :: &i64 -> i64 -> i64
+             def and g :: &i64 -> i64 -> i64
+             fn rec f value n = if n == 0 then *value else g value (n - 1)
+             and g value n = if n == 0 then *value else f value (n - 1)"
+                .to_owned(),
+            vec!["f", "g"],
+        ),
+        (
+            "different parameter types",
+            "def rec f :: i64 -> bool
+             def and g :: i32 -> bool
+             fn rec f n = if n == 0 then true else g (n as i32)
+             and g m = if m == 0 then false else f (m as i64)"
+                .to_owned(),
+            vec!["f", "g"],
+        ),
+        (
+            "a call through a function value",
+            "def rec f :: i64 -> i64
+             fn rec f n = { let next = \\i -> f (i - 1); if n == 0 then 0 else next n }"
+                .to_owned(),
+            vec!["f"],
+        ),
+        (
+            "a call that is not the last thing",
+            "def rec f :: i64 -> i64
+             def and g :: i64 -> i64
+             fn rec f n = if n == 0 then 0 else g (n - 1) + 1
+             and g n = if n == 0 then 0 else f (n - 1) + 1"
+                .to_owned(),
+            vec!["f", "g"],
+        ),
+        (
+            "a different number of parameters",
+            "def rec f :: i64 -> bool
+             def and g :: i64 -> i64 -> bool
+             fn rec f n = if n == 0 then true else g (n - 1) 1
+             and g n m = if n == 0 then false else f (n - m)"
+                .to_owned(),
+            vec!["f", "g"],
+        ),
+    ] {
+        let source = analyze(&source).unwrap_or_else(|error| panic!("{what}\n{error:?}"));
+        let ir = llvm::emit(&source, llvm::Entry::Library).unwrap();
+        for name in names {
+            let body = definition(&ir, name);
+            assert!(!body.contains("musttail"), "{what}\n{body}");
+        }
+    }
+    // A tail call of the function itself is a jump back to its loop, and a call through a name of a
+    // function of the group is a `musttail` call.
+    let body = function_ir(
+        "def rec f :: i64 -> i64 -> i64
+         fn rec f n acc = if n == 0 then acc else f (n - 1) (acc + 1)",
+        "f",
+    );
+    assert!(
+        !body.contains("musttail") && body.contains("br label %loop"),
+        "{body}"
+    );
+}
+
+/// The mutual recursion `f`, `g` that returns `ty` from the two bases, with an owned heap string in each function that its base
+/// case reads.
+fn recursion_returning(ty: &str, prelude: &str, bases: [&str; 2]) -> String {
+    format!(
+        "{prelude}
+         def rec f :: i64 -> {ty}
+         def and g :: i64 -> {ty}
+         fn rec f n = {{
+             let s = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+             if s.length == 0 then {second} else if n == 0 then {first} else g (n - 1)
+         }}
+         and g n = {{
+             let s = (if n > 0 then \"cd\" else \"cde\") + \"y\";
+             if s.length == 0 then {first} else if n == 0 then {second} else f (n - 1)
+         }}",
+        first = bases[0],
+        second = bases[1],
+    )
+}
+
+#[test]
+fn guarantees_the_results_that_the_language_type_names_and_no_other() {
+    // The type of the result decides: a flag, a character, `unit`, or a number of at most 64 bits. The calls of
+    // these are `musttail` calls, and the strings that the functions own are freed before them.
+    for (ty, prelude, bases) in [
+        ("bool", "", ["true", "false"]),
+        ("unit", "", ["()", "()"]),
+        ("char", "", ["'a'", "'b'"]),
+        ("utf8char", "", ["u8'a'", "u8'b'"]),
+        ("i8", "", ["1i8", "2i8"]),
+        ("i8u", "", ["(1 as i8u)", "(2 as i8u)"]),
+        ("i16", "", ["1i16", "2i16"]),
+        ("i16u", "", ["(1 as i16u)", "(2 as i16u)"]),
+        ("i32", "", ["1i32", "2i32"]),
+        ("i32u", "", ["(1 as i32u)", "(2 as i32u)"]),
+        ("i64", "", ["1", "2"]),
+        ("i64u", "", ["(1 as i64u)", "(2 as i64u)"]),
+        ("f16", "", ["1.0f16", "2.0f16"]),
+        ("f32", "", ["1.0f32", "2.0f32"]),
+        ("f64", "", ["1.0", "2.0"]),
+        ("d32", "", ["1.5d32", "2.5d32"]),
+        ("d64", "", ["1.5d64", "2.5d64"]),
+    ] {
+        let ir = native(&recursion_returning(ty, prelude, bases));
+        for (name, other) in [("f", "g"), ("g", "f")] {
+            let body = definition(&ir, name);
+            let found = musttail_lines(&body);
+            assert_eq!(found.len(), 1, "{ty}\n{body}");
+            let (line, next) = &found[0];
+            assert!(
+                line.contains(&format!("@tz.fn.Main.{other}(i64")),
+                "{ty}\n{body}"
+            );
+            assert_eq!(
+                next.trim()
+                    .strip_prefix("ret ")
+                    .map(|rest| rest.split_once(' ').unwrap().1),
+                Some(defined(line)),
+                "{ty}\n{body}"
+            );
+            let lines: Vec<_> = body.lines().collect();
+            let call = lines
+                .iter()
+                .position(|line| line.contains("musttail call"))
+                .unwrap();
+            // The string is freed in the block of the call, before it.
+            let freed = lines[..call]
+                .iter()
+                .rposition(|line| line.contains("call void @tz.free("))
+                .unwrap_or_else(|| panic!("{ty}: no free before the call\n{body}"));
+            assert!(
+                lines[freed..call].iter().all(|line| !line.ends_with(':')),
+                "{ty}\n{body}"
+            );
+        }
+    }
+    // The type of any other result is not guaranteed, whatever its representation: a union is not, be it a tag, a
+    // payload, a niche or a pointer (a recursive union), and neither is a shared pointer or a number of more than
+    // 64 bits. The calls are ordinary calls: the string that the function owns is freed after the call returns.
+    for (ty, prelude, bases) in [
+        ("i128", "", ["1i128", "2i128"]),
+        ("f128", "", ["1.0f128", "2.0f128"]),
+        ("d128", "", ["1.5d128", "2.5d128"]),
+        ("string", "", ["\"x\"", "\"y\""]),
+        ("utf8string", "", ["u8\"x\"", "u8\"y\""]),
+        ("[i64]", "", ["[1, 2]", "[3, 4]"]),
+        ("[|i64|]", "", ["[|1, 2|]", "[|3, 4|]"]),
+        ("i64 * i64", "", ["(1, 2)", "(3, 4)"]),
+        ("i32x4", "", ["Simd.splat 1i32", "Simd.splat 2i32"]),
+        ("P", "record P { a: i64 }", ["P { a: 1 }", "P { a: 2 }"]),
+        ("Color", "union Color = Red | Green", ["Red", "Green"]),
+        (
+            "Pick",
+            "union Pick = Left of i64 | Right of i64 | Neither",
+            ["Left 1", "Neither"],
+        ),
+        (
+            "Maybe<i64>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some 1", "None"],
+        ),
+        (
+            "Maybe<string>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some \"x\"", "None"],
+        ),
+        (
+            "Nat",
+            "union Nat = Zero | Succ of Nat",
+            ["Zero", "Succ Zero"],
+        ),
+        ("Arc<i64>", "", ["Arc.new 1", "Arc.new 2"]),
+        (
+            "Maybe<Arc<i64>>",
+            "union Maybe<'a> = None | Some of 'a",
+            ["Some (Arc.new 1)", "None"],
+        ),
+    ] {
+        let ir = native(&recursion_returning(ty, prelude, bases));
+        for (name, other) in [("f", "g"), ("g", "f")] {
+            let body = definition(&ir, name);
+            assert!(!body.contains("musttail"), "{ty}\n{body}");
+            let lines: Vec<_> = body.lines().collect();
+            let call = lines
+                .iter()
+                .position(|line| {
+                    line.contains("= call ") && line.contains(&format!("@tz.fn.Main.{other}("))
+                })
+                .unwrap_or_else(|| panic!("{ty}: no call of {other}\n{body}"));
+            let ret = call
+                + lines[call..]
+                    .iter()
+                    .position(|line| line.trim().starts_with("ret "))
+                    .unwrap();
+            assert!(
+                lines[call..ret]
+                    .iter()
+                    .any(|line| line.contains("call void @tz.free(")),
+                "{ty}\n{body}"
+            );
+        }
+    }
+}
+
+#[test]
+fn self_tail_calls_stay_loops() {
+    // `f` calls itself and `g`: the call of itself is a jump to its loop, as it was, and the call of `g` is
+    // a `musttail` call.
+    let ir = native(
+        "def rec f :: i64 -> i64 -> i64
+         def and g :: i64 -> i64 -> i64
+         fn rec f n acc = if n == 0 then acc else if n % 2 == 0 then f (n - 1) (acc + 1) else g (n - 1) (acc + 2)
+         and g n acc = if n == 0 then acc else f (n - 1) (acc + 3)",
+    );
+    let body = definition(&ir, "f");
+    let found = musttail_lines(&body);
+    assert_eq!(found.len(), 1, "{body}");
+    assert!(found[0].0.contains("@tz.fn.Main.g("), "{body}");
+    assert!(!body.contains("@tz.fn.Main.f("), "{body}");
+    assert!(body.contains("br label %loop"), "{body}");
+    let body = definition(&ir, "g");
+    assert!(
+        musttail_lines(&body)[0].0.contains("@tz.fn.Main.f("),
+        "{body}"
+    );
+}
+
+#[test]
+fn pipes_into_a_function_of_the_group_are_tail_calls() {
+    let ir = native(
+        "def rec even :: i64 -> bool
+         def and odd :: i64 -> bool
+         fn rec even n = if n == 0 then true else (n - 1) |> odd
+         and odd n = if n == 0 then false else (n - 1) |> even",
+    );
+    for name in ["even", "odd"] {
+        let body = definition(&ir, name);
+        assert_eq!(musttail_lines(&body).len(), 1, "{body}");
+    }
+}
+
+#[test]
+fn native_trap_context_and_debug_builds_keep_the_prototypes_equal() {
+    let module = analyze(EVEN_ODD).unwrap();
+    let sources = [tsuzuri::trap::TrapSource {
+        path: "Main.tz",
+        text: EVEN_ODD,
+    }];
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    // Trap information gives each function an `i32` context as its last parameter and each call an
+    // `i32` argument: the prototypes still match, and the line after the call is still the `ret`.
+    let traced = llvm::emit_with_trap_info(&module, options, &sources).unwrap();
+    for (name, other) in [("even", "odd"), ("odd", "even")] {
+        let body = definition(&traced.ir, name);
+        assert!(
+            body.starts_with("i64 noundef %arg0, i32 %tz.context)"),
+            "{body}"
+        );
+        let found = musttail_lines(&body);
+        assert_eq!(found.len(), 1, "{body}");
+        assert!(
+            found[0]
+                .0
+                .contains(&format!("musttail call i1 @tz.fn.Main.{other}(i64 %v")),
+            "{body}"
+        );
+        assert!(
+            found[0].0.contains(", i32 ") && found[0].0.trim_end().ends_with(')'),
+            "{body}"
+        );
+        assert!(found[0].1.trim().starts_with("ret i1 "), "{body}");
+        assert!(!found[0].0.contains("!tz.site"), "{body}");
+    }
+    // Line tables put a location on the call and on the `ret`; nothing else comes between them.
+    let debugged = llvm::emit_with_debug_info(&module, options, &sources, false, false).unwrap();
+    let body = definition(&debugged.ir, "even");
+    let found = musttail_lines(&body);
+    assert_eq!(found.len(), 1, "{body}");
+    assert!(
+        found[0].0.contains("!dbg") && found[0].1.contains("ret i1") && found[0].1.contains("!dbg")
+    );
+}

@@ -371,8 +371,19 @@ impl<'a> Parser<'a, '_> {
                 self.lex.expect_word("call")?;
                 self.call(dst)
             }
-            // A guaranteed tail call keeps the stack from growing; a plain call would not.
-            "musttail" => bail!("a musttail call"),
+            // A guaranteed tail call: the call is followed by the `ret` of its value, which a
+            // translator that has tail calls turns into one jump (`must_tail`).
+            "musttail" => {
+                self.lex.expect_word("call")?;
+                let before = self.func.insts.len();
+                self.call(dst)?;
+                if self.func.insts.len() == before + 1
+                    && let Some(Inst::Call { must_tail, .. }) = self.func.insts.last_mut()
+                {
+                    *must_tail = true;
+                }
+                Ok(())
+            }
             "br" => self.branch(),
             "icmp" => self.icmp(dst),
             "getelementptr" => self.gep(dst),
@@ -1198,6 +1209,7 @@ impl<'a> Parser<'a, '_> {
             start,
             len,
             variadic,
+            must_tail: false,
         });
         Ok(())
     }

@@ -9,7 +9,7 @@
 //! Moving such a value out of its slot copies the stack parts to the heap first.
 
 use super::*;
-use crate::check::MAX_VALUE_BYTES;
+use crate::check::{MAX_FRAME_BYTES, MAX_VALUE_BYTES};
 
 const STRING_BUFFER_BYTES: usize = 256;
 const MAX_ENVIRONMENT_BYTES: usize = 1024;
@@ -17,25 +17,26 @@ const MAX_FUNCTION_BUFFER_BYTES: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub(super) enum Frame {
-    /// Array elements stored in the alloca `buffer`; one candidate list per element.
+    /// Array elements stored in the alloca `buffer`; one candidate list per element. `bytes` is the
+    /// size of every alloca here, the extent of its lifetime markers (see `lifetime`).
     Array {
         buffer: String,
         elements: Vec<Vec<Frame>>,
+        bytes: Option<usize>,
     },
     /// The storage of a list literal in the alloca `storage`; see `list_stack_storage`.
     List {
         storage: String,
         elements: Vec<Vec<Frame>>,
+        bytes: Option<usize>,
     },
     /// String code units that stay in the literal constant `data`; `word` is the length word of
     /// the string that holds them.
-    String {
-        data: String,
-        word: u64,
-    },
-    Buffer {
-        buffer: String,
-    },
+    String { data: String, word: u64 },
+    /// A concatenation buffer and a closure environment have no lifetime markers: an alloca that
+    /// has them keeps LLVM's inliner from adding its own around the whole body of an inlined
+    /// function, and these two are released on paths that carry no `end` (PM09, `docs/benchmarks.md`).
+    Buffer { buffer: String },
     Environment {
         environment: String,
         ty: String,
@@ -162,7 +163,10 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
     }
 }
 
-/// Stack bytes that `frame_value` would reserve for the literal tree of `expression`.
+/// Stack bytes that `frame_value` would reserve for the literal tree of `expression`. A list counts
+/// a node of 16 bytes and its element for each element, as it did before a list became chunks. The
+/// chunk is a 24-byte header and the elements, which is below this estimate, except for a literal
+/// of one element whose size is a multiple of 16 (above it by at most 16 bytes).
 fn frame_bytes(expression: &TypedExpr, module: &CheckedModule) -> usize {
     let sum = |values: &mut dyn Iterator<Item = &TypedExpr>| {
         values.fold(0usize, |total, value| {
@@ -195,12 +199,23 @@ fn frame_bytes(expression: &TypedExpr, module: &CheckedModule) -> usize {
 }
 
 impl FunctionEmitter<'_, '_> {
+    /// The stack bytes that this function may still reserve: the string buffers and closure
+    /// environments (`reserve_buffer`) and the literals (`frame_value`) share `MAX_FRAME_BYTES`.
+    fn frame_bytes_left(&self) -> usize {
+        MAX_FRAME_BYTES
+            .saturating_sub(self.frame_bytes_used)
+            .saturating_sub(self.buffer_bytes)
+    }
+
     /// Evaluates a value that stays in this frame: a binding's initializer or a temporary operand.
-    /// Literal trees above the value-layout limit keep the heap path to bound stack use.
+    /// A literal tree above the value-layout limit, or one that the function has no room left for
+    /// in its frame, keeps the heap path to bound stack use.
     pub(super) fn frame_value(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
-        if frame_bytes(expression, self.module) > MAX_VALUE_BYTES {
+        let bytes = frame_bytes(expression, self.module);
+        if bytes > MAX_VALUE_BYTES || bytes > self.frame_bytes_left() {
             return (self.expression(expression), Vec::new());
         }
+        self.frame_bytes_used += bytes;
         self.frame_inner(expression)
     }
 
@@ -288,6 +303,7 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&yes);
                 self.cover(crate::coverage::RegionKind::Then, then_branch.span);
                 let facts = self.ranges.enter_condition(self.module, condition);
+                self.unmarked_frames += 1;
                 let (then_value, mut frames) = self.frame_inner(then_branch);
                 self.ranges.leave_condition(facts);
                 let then_end = self.block.clone();
@@ -296,6 +312,7 @@ impl FunctionEmitter<'_, '_> {
                 self.begin(&no);
                 self.cover(crate::coverage::RegionKind::Else, else_branch.span);
                 let (else_value, else_frames) = self.frame_inner(else_branch);
+                self.unmarked_frames -= 1;
                 let else_end = self.block.clone();
                 self.jump(&merge);
                 self.temporaries.truncate(temporary_base);
@@ -341,11 +358,57 @@ impl FunctionEmitter<'_, '_> {
                 .copied()
                 .unwrap_or(true)
             || self.buffer_bytes.saturating_add(bytes) > MAX_FUNCTION_BUFFER_BYTES
+            || bytes > self.frame_bytes_left()
         {
             return false;
         }
         self.buffer_bytes += bytes;
         true
+    }
+
+    /// `layout_bound` for the target: 32-bit pointers on wasm32, the 64-bit layout everywhere else
+    /// (native code assumes 64-bit pointers).
+    fn target_layout(&self, ty: &Type) -> (usize, usize) {
+        layout_bound(ty, self.module, self.globals.wasm && !self.globals.memory64)
+    }
+
+    /// Whether every LLVM that builds this code gives a structure that holds `ty` the size that
+    /// `target_layout` works out, so that a marker can carry the exact size of the alloca. Not for a
+    /// 128-bit number, which x86-64 LLVM before 18 aligns to 8 instead of 16, nor for a SIMD
+    /// vector: `layout_bound` gives a vector the portable alignment of at most 8 where wasm32
+    /// aligns a 16-byte vector to 16, and a target aligns a wider vector by its own rules.
+    fn layout_is_settled(&self, ty: &Type) -> bool {
+        !self.module.types().reaches(ty, |ty| {
+            matches!(
+                ty,
+                Type::Integer(128, _) | Type::Decimal(128) | Type::Binary(128) | Type::Simd(_)
+            )
+        })
+    }
+
+    /// The size of an alloca that holds a header, `(bytes, alignment)`, and `count` slots of
+    /// `element` after it, aligned like their type, or `None` if that size is not settled, or if
+    /// the frame must not have markers.
+    ///
+    /// A frame test compares a value's address with the addresses of the frames that it may
+    /// hold, and LLVM may give two allocas whose lifetimes do not overlap the same stack slot. So
+    /// two frames that one value may hold (the arms of an `if` or a `match`) have no markers
+    /// (`unmarked_frames`): after the merge the test of the first would also pass for a value in
+    /// the second, and the code that the test guards would read the wrong frame.
+    pub(super) fn slots_bytes(
+        &self,
+        header: (usize, usize),
+        element: &Type,
+        count: usize,
+    ) -> Option<usize> {
+        (self.unmarked_frames == 0 && self.layout_is_settled(element)).then(|| {
+            let (size, align) = self.target_layout(element);
+            header
+                .0
+                .next_multiple_of(align)
+                .saturating_add(count.saturating_mul(size))
+                .next_multiple_of(align.max(header.1))
+        })
     }
 
     fn frame_concat(&mut self, left: &TypedExpr, right: &TypedExpr) -> (String, Vec<Frame>) {
@@ -435,6 +498,8 @@ impl FunctionEmitter<'_, '_> {
             "{buffer} = alloca [{} x {ty}], align 16",
             elements.len()
         ));
+        let bytes = self.slots_bytes((0, 1), element, elements.len());
+        self.lifetime(true, &buffer, bytes);
         let mut frames = Vec::with_capacity(elements.len());
         for (index, value) in elements.iter().enumerate() {
             let (value, element_frames) = self.frame_inner(value);
@@ -454,6 +519,7 @@ impl FunctionEmitter<'_, '_> {
             vec![Frame::Array {
                 buffer,
                 elements: frames,
+                bytes,
             }],
         )
     }
@@ -479,6 +545,7 @@ impl FunctionEmitter<'_, '_> {
             vec![Frame::List {
                 storage,
                 elements: frames,
+                bytes: self.list_stack_bytes(element, elements.len()),
             }],
         )
     }
@@ -619,7 +686,7 @@ impl FunctionEmitter<'_, '_> {
     /// True when `value` still holds exactly this frame's storage.
     fn frame_test(&mut self, ty: &Type, value: &str, frame: &Frame) -> String {
         match frame {
-            Frame::Buffer { buffer } => {
+            Frame::Buffer { buffer, .. } => {
                 let llvm = self.ty(ty);
                 let pointer = self.value(format!("extractvalue {llvm} {value}, 0"));
                 let same = self.value(format!("icmp eq ptr {pointer}, {buffer}"));
@@ -634,8 +701,12 @@ impl FunctionEmitter<'_, '_> {
             _ => {}
         }
         let (address, length) = match frame {
-            Frame::Array { buffer, elements } => (buffer.as_str(), elements.len() as u64),
-            Frame::List { storage, elements } => (storage.as_str(), elements.len() as u64),
+            Frame::Array {
+                buffer, elements, ..
+            } => (buffer.as_str(), elements.len() as u64),
+            Frame::List {
+                storage, elements, ..
+            } => (storage.as_str(), elements.len() as u64),
             Frame::String { data, word } => (data.as_str(), *word),
             Frame::Aggregate(_) => unreachable!("aggregates are tested field by field"),
             Frame::Buffer { .. } | Frame::Environment { .. } => unreachable!(),
@@ -704,7 +775,7 @@ impl FunctionEmitter<'_, '_> {
     /// Moves a frame's elements into new heap storage; element ownership moves along bitwise.
     fn heap_copy(&mut self, ty: &Type, value: &str, frame: &Frame) -> String {
         match (ty, frame) {
-            (Type::String | Type::Utf8String, Frame::Buffer { buffer }) => {
+            (Type::String | Type::Utf8String, Frame::Buffer { buffer, .. }) => {
                 let llvm = self.ty(ty);
                 let length = self.value(format!("extractvalue {llvm} {value}, 1"));
                 self.value(format!(
@@ -730,7 +801,12 @@ impl FunctionEmitter<'_, '_> {
                     &ty[1..]
                 ))
             }
-            (Type::Array(element), Frame::Array { buffer, elements }) => {
+            (
+                Type::Array(element),
+                Frame::Array {
+                    buffer, elements, ..
+                },
+            ) => {
                 let length = elements.len().to_string();
                 let (array, data) = self.allocate_array(element, &length);
                 let llvm = self.ty(element);
@@ -751,7 +827,12 @@ impl FunctionEmitter<'_, '_> {
                 }
                 array
             }
-            (Type::List(element), Frame::List { storage, elements }) => {
+            (
+                Type::List(element),
+                Frame::List {
+                    storage, elements, ..
+                },
+            ) => {
                 let length = elements.len().to_string();
                 let llvm = self.ty(element);
                 let builder = self.list_builder(element, &length);
@@ -807,12 +888,51 @@ impl FunctionEmitter<'_, '_> {
             self.branch(&test, &stack, &next);
             self.begin(&stack);
             self.drop_frame_contents(ty, frame);
+            // The stack storage has one owner, which is dropped here, so nothing can read it
+            // again. Frames that a move or an assignment left (the other branch) get no end.
+            self.end_frame(frame);
             self.jump(&done);
             self.begin(&next);
         }
         self.drop_value(ty, value);
         self.jump(&done);
         self.begin(&done);
+    }
+
+    /// Ends the lifetime of the stack storage of `frame`, if it has markers (an array or a list).
+    fn end_frame(&mut self, frame: &Frame) {
+        match frame {
+            Frame::Array {
+                buffer: address,
+                bytes,
+                ..
+            }
+            | Frame::List {
+                storage: address,
+                bytes,
+                ..
+            } => self.lifetime(false, address, *bytes),
+            Frame::String { .. }
+            | Frame::Buffer { .. }
+            | Frame::Environment { .. }
+            | Frame::Aggregate(_) => {}
+        }
+    }
+
+    /// Starts (`start`) or ends the lifetime of the entry-block alloca `address`, so that LLVM can
+    /// give disjoint frames of one function the same stack slot when it optimizes. `bytes` is the
+    /// size of the alloca, which a sanitizer reads as the extent of the marker; a frame without a
+    /// settled size (see `layout_is_settled`) has no markers. Both lines go to `lines` directly:
+    /// `instruction` would number them as trap sites.
+    pub(super) fn lifetime(&mut self, start: bool, address: &str, bytes: Option<usize>) {
+        let Some(bytes) = bytes else { return };
+        let name = if start { "start" } else { "end" };
+        self.intrinsics.insert(format!(
+            "declare void @llvm.lifetime.{name}.p0(i64 immarg, ptr)"
+        ));
+        self.lines.push(format!(
+            "  call void @llvm.lifetime.{name}.p0(i64 {bytes}, ptr {address})"
+        ));
     }
 
     fn drop_frame_contents(&mut self, ty: &Type, frame: &Frame) {
@@ -825,6 +945,7 @@ impl FunctionEmitter<'_, '_> {
                     ty,
                     function,
                     count,
+                    ..
                 },
             ) => {
                 for index in 0..*count {
@@ -838,7 +959,12 @@ impl FunctionEmitter<'_, '_> {
                     }
                 }
             }
-            (Type::Array(element), Frame::Array { buffer, elements }) => {
+            (
+                Type::Array(element),
+                Frame::Array {
+                    buffer, elements, ..
+                },
+            ) => {
                 if !element.needs_drop(&self.module.types()) {
                     return;
                 }
@@ -857,7 +983,12 @@ impl FunctionEmitter<'_, '_> {
                     }
                 }
             }
-            (Type::List(element), Frame::List { storage, elements }) => {
+            (
+                Type::List(element),
+                Frame::List {
+                    storage, elements, ..
+                },
+            ) => {
                 if !element.needs_drop(&self.module.types()) {
                     return;
                 }

@@ -148,9 +148,12 @@ Build options:
                             (WASM build; Async.block_on waits through JavaScript Promise
                             Integration), webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
                             the kernels on that device call the JSPI imports tsuzuri_gpu.open
-                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements), or
+                            and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements),
                             net (wasm32 build with jspi; the Net sockets become imports that
-                            the generated JavaScript bindings implement on Node.js)
+                            the generated JavaScript bindings implement on Node.js), or
+                            tail-call (wasm32 or wasm64 object, LLVM IR, or WASM output; the
+                            guaranteed tail calls become return_call, which Node.js 20 and
+                            current browsers run, so a mutual recursion keeps a flat stack)
     --wasm-host wasi        Lower the standard IO and the File, Dir, Env, Time, Random, and
                             Process APIs to WASI preview1 (wasm32 object or WASM output;
                             the default wasm32 output rejects those APIs)
@@ -422,6 +425,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut wasm_jspi = false;
     let mut wasm_webgpu = false;
     let mut wasm_net = false;
+    let mut wasm_tail_call = false;
     let mut wasm_host = None;
     let mut wasm_max_memory = None;
     let mut wasm_stack_size = None;
@@ -687,7 +691,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         Some("jspi") => &mut wasm_jspi,
                         Some("webgpu") => &mut wasm_webgpu,
                         Some("net") => &mut wasm_net,
-                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', and 'net'; relaxed SIMD is not supported".into()),
+                        Some("tail-call") => &mut wasm_tail_call,
+                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', 'net', and 'tail-call'; relaxed SIMD is not supported".into()),
                     };
                     if *feature {
                         return Err("WASM feature specified more than once".into());
@@ -847,7 +852,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         }
         .into());
     }
-    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net)
+    if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net || wasm_tail_call)
         && action != Action::Build
     {
         return Err("--wasm-feature is only valid with build".into());
@@ -1025,6 +1030,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_jspi,
         wasm_webgpu,
         wasm_net,
+        wasm_tail_call,
         wasm_host,
         wasm_max_memory,
         wasm_stack_size,
@@ -3280,6 +3286,10 @@ mod tests {
                 fast(&["--target", "wasm32", "--wasm-feature", "net"]),
                 wasm_option("--wasm-feature net"),
             ),
+            (
+                fast(&["--target", "wasm32", "--wasm-feature", "tail-call"]),
+                wasm_option("--wasm-feature tail-call"),
+            ),
             (fast(&["--target", "wasm32", "-g"]), wasm_option("-g")),
             (
                 fast(&["--target", "wasm32", "--wasm-opt"]),
@@ -3718,6 +3728,7 @@ mod tests {
             vec!["--debug-output"],
             vec!["--trap-info"],
             vec!["--wasm-feature", "simd128"],
+            vec!["--wasm-feature", "tail-call"],
         ] {
             let mut values = vec!["doc", "Library.tz", "-o", "docs"];
             values.extend(option);
@@ -3901,6 +3912,135 @@ mod tests {
         .options;
         assert!(net.wasm_net && net.wasm_jspi);
         assert!(!parse(&["build", "Main.tz"]).unwrap().options.wasm_net);
+        // `tail-call` (PM09) goes with the other features and with the three outputs that carry
+        // WebAssembly instructions, for wasm32 and wasm64.
+        assert!(!parse(&["build", "Main.tz"]).unwrap().options.wasm_tail_call);
+        for values in [
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "tail-call",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "object",
+                "--wasm-feature",
+                "tail-call",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--emit",
+                "llvm",
+                "--wasm-feature",
+                "tail-call",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm64",
+                "--emit",
+                "llvm",
+                "--wasm-feature",
+                "tail-call",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "threads",
+                "--wasm-feature",
+                "simd128",
+                "--wasm-feature",
+                "tail-call",
+            ],
+            vec![
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "tail-call",
+                "--wasm-host",
+                "wasi",
+            ],
+        ] {
+            assert!(parse(&values).unwrap().options.wasm_tail_call, "{values:?}");
+        }
+        for (values, message) in [
+            (
+                vec!["build", "Main.tz", "--wasm-feature", "tail-call"],
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "header",
+                    "--wasm-feature",
+                    "tail-call",
+                ],
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--emit",
+                    "bindings-js",
+                    "--wasm-feature",
+                    "tail-call",
+                ],
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "tail-call",
+                    "--wasm-feature",
+                    "tail-call",
+                ],
+                "WASM feature specified more than once",
+            ),
+            (
+                vec!["run", "Main.tz", "--wasm-feature", "tail-call"],
+                "--wasm-feature is only valid with build",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "wgsl",
+                    "--wasm-feature",
+                    "tail-call",
+                ],
+                "WGSL output does not use target, CPU, debug, or WASM feature options",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
         for (values, message) in [
             (
                 vec!["run", "Main.tz", "--wasm-feature", "jspi"],
@@ -3971,7 +4111,7 @@ mod tests {
                     "--wasm-feature",
                     "asyncify",
                 ],
-                "supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', and 'net'; relaxed SIMD is not supported",
+                "supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', 'net', and 'tail-call'; relaxed SIMD is not supported",
             ),
             (
                 vec![

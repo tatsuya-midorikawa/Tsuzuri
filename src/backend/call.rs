@@ -1,10 +1,11 @@
 //! Calls: arguments and results through the plan of `abi.rs`.
 
 use cranelift_codegen::ir::{self, InstBuilder, SigRef, Value};
+use cranelift_codegen::isa::CallConv;
 
 use super::abi::{self, Abi, ParamPlan, RetPlan};
 use super::error::{Res, bail};
-use super::func::{CallArg, Callee};
+use super::func::{CallArg, Callee, Inst, NONE, Op};
 use super::lower::{Lower, Place, SymClass, Val};
 use super::module::{Ext, SymKind};
 use super::types::Ty;
@@ -12,6 +13,69 @@ use super::types::Ty;
 enum Target {
     Direct(ir::FuncRef),
     Indirect(SigRef, Value),
+}
+
+impl<'w, 'a> Lower<'w, 'a> {
+    /// Lowers a `musttail call` and the `ret` of its value that follows as one `return_call`,
+    /// which leaves this frame before the callee runs (PM09), and returns whether it did. It does
+    /// when the two functions have the tail convention (`abi::plan_tail`: every parameter by value,
+    /// so nothing the callee reads is in this frame) and the call is a plain call by name. Any other
+    /// call returns `Ok(false)`, and the caller lowers an ordinary call and its `ret`: the program
+    /// runs as it should, but this backend does not keep its stack from growing.
+    pub(super) fn tail_call(&mut self, call: Inst<'a>, ret: Inst<'a>) -> Res<bool> {
+        let Inst::Call {
+            dst,
+            callee: Callee::Direct(id),
+            start,
+            len,
+            variadic: false,
+            ..
+        } = call
+        else {
+            return Ok(false);
+        };
+        let Inst::Ret { val, .. } = ret else {
+            return Ok(false);
+        };
+        let returns_the_call = if dst == NONE {
+            val == Op::NONE
+        } else {
+            val == Op::Local(dst)
+        };
+        let SymClass::Function(callee) = &self.syms[id as usize].class else {
+            return Ok(false);
+        };
+        let supported = |abi: &Abi| {
+            abi.sig.call_conv == CallConv::Tail
+                && abi
+                    .params
+                    .iter()
+                    .all(|plan| !matches!(plan, ParamPlan::Indirect))
+                && !matches!(abi.ret, RetPlan::Sret)
+        };
+        let args = &self.func.call_args[start as usize..(start + len) as usize];
+        if !returns_the_call
+            || !supported(self.abi)
+            || !supported(callee)
+            || callee.params.len() != args.len()
+            || self.abi.sig.returns != callee.sig.returns
+            || args.iter().any(|arg| arg.byval.is_some() || arg.sret)
+        {
+            return Ok(false);
+        }
+        let mut values: Vec<Value> = Vec::new();
+        for (arg, plan) in args.iter().zip(&callee.params) {
+            let value = self.val(arg.op, arg.ty)?;
+            match plan {
+                ParamPlan::Scalar => values.push(self.scalar(value)?),
+                ParamPlan::Leaves(_) => values.extend(self.leaves(value)?),
+                ParamPlan::Indirect => unreachable!("a tail call has no parameter in memory"),
+            }
+        }
+        let function = self.func_ref(id, true)?;
+        self.b.ins().return_call(function, &values);
+        Ok(true)
+    }
 }
 
 impl<'w, 'a> Lower<'w, 'a> {

@@ -41,6 +41,10 @@ mod warnings;
 use polymorph::{Classes, Constraint, Inference, Scheme};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
+/// The most bytes that one function keeps in stack frames in all: its array and list literals, its
+/// string buffers and its closure environments, by the same conservative estimates as the limit of
+/// one literal. What comes after the limit in emission order goes to the heap.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// The longest fixed-length array `[T; N]` (A16): LLVM's translation time grows with large
 /// first-class aggregates passed by value.
 pub const MAX_FIXED_ARRAY_LENGTH: u64 = 1024;

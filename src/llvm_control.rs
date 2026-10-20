@@ -671,7 +671,11 @@ impl FunctionEmitter<'_, '_> {
             } else {
                 let value = match delivered.as_deref_mut() {
                     Some(frames) => {
+                        // Several arms are alternatives for the one value (see `slots_bytes`).
+                        let alternatives = usize::from(arms.len() > 1);
+                        self.unmarked_frames += alternatives;
                         let (value, arm_frames) = self.frame_inner(&arm.body);
+                        self.unmarked_frames -= alternatives;
                         frames.extend(arm_frames);
                         value
                     }

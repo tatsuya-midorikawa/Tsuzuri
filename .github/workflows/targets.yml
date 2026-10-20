@@ -150,6 +150,17 @@ jobs:
           node tests/primitives.mjs target/release/tsuzuri
           node tests/tasks.mjs target/release/tsuzuri
           if [ "$RUNNER_OS" = macOS ]; then node tests/debugger_static.mjs target/release/tsuzuri; fi
+      # PM09: the calls between the functions of one recursion are guaranteed tail calls. tests/stack.mjs runs a mutual recursion of ten
+      # million calls natively and in V8 (with --wasm-feature tail-call), and checks that the default WebAssembly build has no tail call.
+      # llvm-objdump counts the return_call instructions. The same suite runs again with the fast backend below.
+      - name: Stack depth and guaranteed tail calls (PM09)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          node tests/stack.mjs target/release/tsuzuri
       # PM05: the WASM heap alone, the unit tests of the size-class allocator (plain, ASan+UBSan, TSan), --allocator small end
       # to end, and the vec and storage suites with every block of the size classes accounted for.
       - name: WASM heap and size-class allocator
@@ -357,6 +368,20 @@ jobs:
           node tests/fast_backend.mjs programs target/fast/release/tsuzuri
           node tests/fast_backend.mjs debug target/fast/release/tsuzuri
           node tests/server.mjs target/fast/release/tsuzuri
+      # PM09: the translator turns a musttail call into return_call, so the same mutual recursion runs in constant stack with --backend fast.
+      # TSUZURI_STACK_FAST turns a compiler without the backend into a failure instead of a skip.
+      - name: Stack depth with the fast backend (PM09)
+        if: ${{ !cancelled() && steps.fast.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TSUZURI_STACK_FAST: "1"
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
+          export TSUZURI_FAST_CC="$PWD/target/fast/release/tz-fast-cc"
+          node tests/stack.mjs target/fast/release/tsuzuri
       # The wasm32 half does not depend on the host's architecture, and the Intel runner is the slowest, so it is left out there.
       # "wasm" builds every project to a module with both backends, validates it and compares imports, exports and behavior in V8;
       # "parity" runs existing suites with every -O0 build forced onto the fast backend (FAST_FORCE=1) and fails on any difference.

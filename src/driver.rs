@@ -433,6 +433,10 @@ pub struct BuildOptions {
     /// `--wasm-feature net`: the Net sockets are imports of `tsuzuri_net`, which the generated
     /// JavaScript bindings implement on Node.js (E09 Phase 3).
     pub wasm_net: bool,
+    /// `--wasm-feature tail-call`: the calls that the language guarantees to be tail calls are
+    /// WebAssembly `return_call` instructions, so a recursion of several functions runs in the
+    /// stack of one call (PM09). Part of the build cache key through the `Debug` text.
+    pub wasm_tail_call: bool,
     /// `--wasm-host`: lowers the standard IO and the operating-system APIs to the named host.
     pub wasm_host: Option<WasmHost>,
     /// `None` selects [`DEFAULT_WASM_MAX_MEMORY`].
@@ -472,6 +476,7 @@ impl Default for BuildOptions {
             wasm_jspi: false,
             wasm_webgpu: false,
             wasm_net: false,
+            wasm_tail_call: false,
             wasm_host: None,
             wasm_max_memory: None,
             wasm_stack_size: None,
@@ -532,7 +537,8 @@ impl BuildOptions {
                 || self.wasm_threads
                 || self.wasm_jspi
                 || self.wasm_webgpu
-                || self.wasm_net)
+                || self.wasm_net
+                || self.wasm_tail_call)
         {
             return Err(driver_error(
                 "E2000",
@@ -625,6 +631,15 @@ impl BuildOptions {
             return Err(driver_error(
                 "E2000",
                 "--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+            ));
+        }
+        if self.wasm_tail_call
+            && (!self.target.is_wasm()
+                || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
+        {
+            return Err(driver_error(
+                "E2000",
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
             ));
         }
         if self.wasm_host.is_some()
@@ -791,6 +806,7 @@ impl BuildOptions {
             wasm_jspi,
             wasm_webgpu,
             wasm_net,
+            wasm_tail_call,
             wasm_host,
             wasm_max_memory: _,
             wasm_stack_size: _,
@@ -837,13 +853,16 @@ impl BuildOptions {
         }
         if target == Target::Wasm32 {
             // Nothing else of a WebAssembly build changes the IR or the objects that the translator
-            // sees, apart from what the line table of `-g` would need.
+            // sees, apart from what the line table of `-g` would need. The translator makes an
+            // ordinary call of a `musttail` call, so it cannot give the tail-call feature its
+            // guarantee, and the request is an error and not a silent downgrade (PM09).
             let unsupported = [
                 (wasm_simd, "--wasm-feature simd128"),
                 (wasm_threads, "--wasm-feature threads"),
                 (wasm_jspi, "--wasm-feature jspi"),
                 (wasm_webgpu, "--wasm-feature webgpu"),
                 (wasm_net, "--wasm-feature net"),
+                (wasm_tail_call, "--wasm-feature tail-call"),
                 (wasm_host.is_some(), "--wasm-host"),
                 (wasm_opt, "--wasm-opt"),
                 (debug_info, "-g"),
@@ -944,8 +963,8 @@ impl BuildOptions {
             (self.debug_info, "--debug-info"),
             (self.debug_output, "--debug-output"),
             // `threads` selects the glue of a thread pool and `jspi` the Promise-returning glue;
-            // SIMD does not change the glue.
-            (self.wasm_simd, "--wasm-feature"),
+            // SIMD and tail calls do not change the glue.
+            (self.wasm_simd || self.wasm_tail_call, "--wasm-feature"),
             (self.allocator != llvm::Allocator::System, "--allocator"),
         ] {
             if set {
@@ -1435,8 +1454,10 @@ fn compile_args(platform: Platform) -> Vec<OsString> {
     arguments
 }
 
-/// The Clang arguments that choose the WebAssembly target and its features for a module or a unit of IR, shared by
-/// the compile of one module and of the units (a feature that is added here reaches both).
+/// The Clang arguments that choose the WebAssembly target and its features for the body of a module or of a unit of
+/// IR, shared by the compile of one module and of the units (a feature that is added here reaches both). The runtime
+/// objects are compiled with arguments of their own (and prebuilt ones are matched by exactly those), so a feature
+/// that only the IR of the program needs, as `musttail` needs tail calls, stays out of them.
 fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = vec![
         if options.target == Target::Wasm64 {
@@ -1455,6 +1476,16 @@ fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
             "-msimd128"
         } else {
             "-mno-simd128"
+        }
+        .into(),
+    );
+    // The default is explicit, so that a Clang whose generic WebAssembly CPU has the feature still makes the same
+    // code (PM09). The runtime objects have no `musttail` and link with either.
+    arguments.push(
+        if options.wasm_tail_call {
+            "-mtail-call"
+        } else {
+            "-mno-tail-call"
         }
         .into(),
     );
@@ -3530,7 +3561,11 @@ fn build_complete(
             trap_sites = output.trap_sites;
             stable_traps = output.stable_sites;
             output.ir
-        } else if options.wasm_threads || options.target == Target::Wasm64 || stack_checks {
+        } else if options.wasm_threads
+            || options.target == Target::Wasm64
+            || stack_checks
+            || options.wasm_tail_call
+        {
             let output = project.with_trap_sources(|sources| {
                 llvm::emit_wasm_build(
                     module,
@@ -3543,6 +3578,7 @@ fn build_complete(
                     options.wasm_threads,
                     options.target == Target::Wasm64,
                     stack_checks,
+                    options.wasm_tail_call,
                 )
             })?;
             trap_sites = output.trap_sites;
@@ -3605,6 +3641,13 @@ fn build_complete(
         }
         if options.wasm_net {
             text = llvm::with_net_imports(&text);
+        }
+        // The notes tell whoever compiles the IR by hand which flags its instructions need.
+        if options.wasm_tail_call {
+            text.insert_str(
+                0,
+                "; wasm-feature: tail-call; compile this IR with -mtail-call\n",
+            );
         }
         if options.wasm_simd {
             text.insert_str(
@@ -4792,7 +4835,13 @@ fn build_complete(
                 )?,
             );
             if options.wasm_opt {
-                run_wasm_opt(&artifact, &temporary.path, options.wasm_simd, &mut messages)?;
+                run_wasm_opt(
+                    &artifact,
+                    &temporary.path,
+                    options.wasm_simd,
+                    options.wasm_tail_call,
+                    &mut messages,
+                )?;
             }
         }
     }
@@ -5903,6 +5952,7 @@ fn run_wasm_opt(
     artifact: &Path,
     directory: &Path,
     simd: bool,
+    tail_call: bool,
     messages: &mut Vec<String>,
 ) -> Result<(), Diagnostic> {
     let optimized = directory.join("optimized.wasm");
@@ -5920,6 +5970,10 @@ fn run_wasm_opt(
     }
     if simd {
         command.arg("--enable-simd");
+    }
+    // A module with `return_call` does not validate in Binaryen without the feature.
+    if tail_call {
+        command.arg("--enable-tail-call");
     }
     collect_message(
         messages,
@@ -6335,6 +6389,13 @@ mod tests {
             ),
             (
                 BuildOptions {
+                    wasm_tail_call: true,
+                    ..bindings
+                },
+                "--wasm-feature is not valid for bindings output; pass it when building the .wasm",
+            ),
+            (
+                BuildOptions {
                     allocator: llvm::Allocator::Counting,
                     ..bindings
                 },
@@ -6361,6 +6422,47 @@ mod tests {
         assert!(bindings_output_error(Emit::BindingsJs, Path::new(".mjs")).is_some());
         assert!(bindings_output_error(Emit::Wasm, Path::new("f.js")).is_none());
         directory.close().unwrap();
+    }
+
+    #[test]
+    fn validates_the_tail_call_feature_for_the_outputs_with_webassembly_instructions() {
+        let tail = |target, emit| BuildOptions {
+            target,
+            emit,
+            wasm_tail_call: true,
+            ..BuildOptions::default()
+        };
+        assert!(!BuildOptions::default().wasm_tail_call);
+        for (target, emit) in [
+            (Target::Wasm32, Emit::Wasm),
+            (Target::Wasm32, Emit::Object),
+            (Target::Wasm32, Emit::Llvm),
+            (Target::Wasm64, Emit::Wasm),
+            (Target::Wasm64, Emit::Object),
+            (Target::Wasm64, Emit::Llvm),
+        ] {
+            let result = tail(target, emit).validate();
+            assert!(result.is_ok(), "{target:?} {emit:?}: {result:?}");
+        }
+        for (target, emit) in [
+            (Target::Native, Emit::Executable),
+            (Target::Native, Emit::Llvm),
+            (Target::Wasm32, Emit::Header),
+        ] {
+            assert_eq!(
+                tail(target, emit).validate().unwrap_err().message,
+                "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
+                "{target:?} {emit:?}"
+            );
+        }
+        // The option is part of the text that the build cache hashes.
+        let text = |options: BuildOptions| format!("{options:?}");
+        let off = BuildOptions {
+            target: Target::Wasm32,
+            emit: Emit::Wasm,
+            ..BuildOptions::default()
+        };
+        assert_ne!(text(off), text(tail(Target::Wasm32, Emit::Wasm)));
     }
 
     #[test]
@@ -7067,6 +7169,13 @@ mod tests {
                     ..wasm
                 },
                 "--wasm-feature net",
+            ),
+            (
+                BuildOptions {
+                    wasm_tail_call: true,
+                    ..wasm
+                },
+                "--wasm-feature tail-call",
             ),
             (
                 BuildOptions {
