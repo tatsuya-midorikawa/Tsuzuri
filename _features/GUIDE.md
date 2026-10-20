@@ -1005,7 +1005,7 @@ G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に�
 | CLI | `--samples`（bench）・`--coverage`・`--seed`（test）、`test --index N -g -o PATH`（G16） | G18・G16 | いいえ（承認済み・実装済み。D-41） |
 | CLI | `--no-server`（check・build）・`--idle-timeout`（serve） | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_THREADS` | PB04 | いいえ |
-| 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（既定の変更） |
+| 環境変数 | `TSUZURI_CODEGEN_UNITS` | PB07 | はい（承認済み・実装済み。既定は `single` のままで、`auto`・`split` が opt-in） |
 | 環境変数 | `TSUZURI_SERVER_DIR` | PB06 | いいえ（承認済み・実装済み） |
 | 環境変数 | `TSUZURI_SYSROOT`・`TSUZURI_RUNNER`、`TSUZURI_CROSS_LINK`・`TSUZURI_CROSS_CLANG`・`TSUZURI_CROSS_EXECUTE`（テスト用） | G15 | いいえ（承認済み・実装済み。D-45） |
 | 環境変数 | `TSUZURI_F16_EXPECT`（テスト用。`tests/f16_hardware.mjs` だけが読み、コンパイラは読まない） | D10 | いいえ（実装済み。D-45） |

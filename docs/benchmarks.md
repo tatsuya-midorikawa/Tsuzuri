@@ -8399,7 +8399,7 @@ whole-build の hit は、分けない経路と同じコードです。交互の
 #### 実装済みと計画
 
 実装済み（上のとおり測りました）: Phase 1（native の実行ファイル）と、Phase 2 の (a) `--trap-info`（分けるビルドだけ、site の番号をソースのパスと範囲から決める。別のファイルの編集で番号が動かない）、(b) `-g`（unit ごとの DICompileUnit。macOS は dsymutil が同じ object を読む）、(c) wasm32 の `--emit wasm`、(d) native の `--emit object`（`clang -r` のあとに unit が hidden にした symbol だけを局所化）、(e) 生成関数の置き場所（使う関数がすべて 1 つの unit にあるときはその unit）、(f) Windows（ホストは分けません。型は `cargo check --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` で確かめました）。
-計画のまま、または測っていないもの: Windows の実機と `/INCREMENTAL`、Linux x86-64（AArch64 の Ubuntu 24.04 の container で、`tests/codegen_units.mjs` ほか 19 の suite を両方の経路で通しました）、ほかの機械での初回の cache 書き込みの費用、`-O1` 以上、リンカーの増分リンク、500 module を超える大きさで `auto` の閾値を決め直すこと。
+計画のまま、または測っていないもの: Windows の実機と `/INCREMENTAL`、Linux x86-64（AArch64 の Ubuntu 24.04 の container では、`tests/codegen_units.mjs` を含む 19 の suite を `split` と既定の両方で通しました。速度は測っていません）、core の数や負荷が違う機械での値（初回の cache 書き込みの費用と、`auto` の閾値 16 MB）、`-O1` 以上、リンカーの増分リンク。
 
 ## 現実的な次の指標
 
