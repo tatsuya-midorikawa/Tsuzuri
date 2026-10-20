@@ -765,3 +765,56 @@ D1: 承認済み、既定は `single`（opt-in）。D2〜D3: そのまま。D4�
 ### 変更したファイル
 
 `src/llvm_split.rs`（新規）、`src/driver/units.rs`（新規）、`src/driver.rs`、`src/cache.rs`、`src/llvm.rs`、`src/llvm_traps.rs`、`src/server.rs`（テストの期待値）、`tests/codegen_units.mjs`（新規）、`tests/async.mjs`・`fast_backend.mjs`・`llvm_handoff.mjs`・`prebuilt_runtime.mjs`・`bundle_identity.mjs`・`benchmark_report.mjs`、`benchmarks/metrics.mjs`・`run-build.mjs`、`.github/workflows/targets.yml`・`windows.yml`、`docs/architecture.md`・`benchmarks.md`・`language.md`、`README.md`、`_tsuzuri/language-reference/compiler/option.md`・`usage.md`・`languages/strategy.md`、このファイルと `_perfs/README.md`（PB07 の行）、`_features/GUIDE.md`（環境変数 `TSUZURI_CODEGEN_UNITS` の行）。
+
+## 追補（2026-10-20）: 独立したレビューの 2 件（`auto`・`split` だけ）
+
+実装のあとの独立したレビューで、`TSUZURI_CODEGEN_UNITS=auto|split` を選んだときだけの 2 件が見つかった。既定（`single`）の出力は基準 `a8875f38` と変わらない（下の「既定の出力」）。
+
+### 1. ホストの object との symbol の衝突
+
+- 症状: `--no-cache`・`--trap-info`・`-g` のように、数値ランタイムの IR をモジュールに埋め込むビルドで、`--link` するホストの object（や静的ライブラリの member）が `power`・`decode`・`store`・`divide` などの大域 symbol を定義していると、`split` のリンクが `E2002 'clang' failed: duplicate symbol '_power'` で失敗した（1 つのモジュールのビルドは通る）。
+- 原因: 数値ランタイム（`src/runtime/numeric.ll`）の補助関数は `define internal` で、1 つのモジュールでは object の local symbol になる。分割は `internal` を `hidden` にして unit 間の呼び出しを通すが、`hidden` は動的な公開をなくすだけで、リンクでの定義の重複は防がない（ld64 も GNU ld も、2 つの object の同じ名前の大域定義を衝突とする）。
+- 修正（`src/llvm_split.rs`）: unit が `internal`・`private` から `hidden` にする定義（関数と、所有する unit を 1 つにする変数）のうち、名前が `tz.` で始まらないものを `tz.rt.<名前>` に付け替える（`promoted_name`）。`tz.` で始まる名前は emitter のもので、C の名前にはなく、そのままにする。付け替えは、定義・宣言（`declare hidden`・`external hidden`）・参照（本体、変数の初期化子、メタデータ）のどの unit でも同じで、定義の名前だけから決まる。ほかの unit がその定義を使うかどうかでは選ばない（選ぶと、ある unit のテキストがほかの unit に左右される）。付け替えは名前の hash と配置（bucket）より前に決めるので、それらも新しい名前で行い、`Unit.localize`（`--emit object` が局所化する symbol の一覧）も新しい名前を持つ。通し番号を含む名前は、これまでどおり hash で付け替えたあとに `tz.rt.` を付ける。付け替えた名前がテキストにすでにあるときは `SplitError::Collision` で、そのビルドは 1 つのモジュールで行う。`weak` の定義（`tz_soft_*`、`tsuzuri_alloc`、`tsuzuri_trap_hooks`）と `internal` でない定義は、1 つのモジュールでも大域 symbol なので、そのままにする（衝突の性質は同じ）。
+- 影響: 数値ランタイムを埋め込まないビルド（既定の設定のキャッシュ有りのビルドなど）の unit のテキストは変わらない（`examples/hello`・`computations` の `split` で修正の前後の unit の `.ll` が全件一致）。`--no-cache`・`--trap-info`・`-g` の unit のうち、補助関数を持つものだけテキストが変わる。公開 symbol（`nm -gU`）は `single` と同じ。`split` の段の時間（200 module）は 59〜61 ms から 56〜72 ms で、変わらない（負荷のある機械の揺れの範囲）。
+
+### 2. 相対パスの `TSUZURI_CLANG`
+
+- 症状: `TSUZURI_CLANG=./clang-rel`（や `toolchain/bin/clang`）で `split` のビルドが `cannot execute './clang-rel'` で失敗した（1 つのモジュールのビルドは通る）。
+- 原因: unit は unit の一時ディレクトリで動く Clang で、複数の入力を 1 回の `-c` で渡すと object が作業ディレクトリに書かれるため、`Command::current_dir` で一時ディレクトリへ移して起動する。Unix の `Command` は、相対パスのプログラムを移したあとのディレクトリから探す。
+- 修正（`src/driver/units.rs`）: `anchored` が、ディレクトリを含む相対パスをコンパイラの作業ディレクトリからの絶対パスにしてから Clang を起動する。名前だけのときは PATH で探す（作業ディレクトリに依らない）。unit の経路で作業ディレクトリを変えて起動するツールはこの Clang だけで、リンクの Clang・`wasm-ld`・`dsymutil`・`llvm-link`・局所化の道具（`nmedit`・`objcopy`）はコンパイラの作業ディレクトリで動く。
+- 範囲外（変更していない）: ランタイムの object（PB01 の `compile_runtime_object`、`src/driver.rs`）も一時ディレクトリで Clang を起動するので、キャッシュ有りで C のランタイム（`IO`・タスクなど）が要るプログラムのビルドは、相対パスの `TSUZURI_CLANG` で `E2002`（`cannot execute './clang-rel'; runtime objects require Clang ...`）になる。基準 `a8875f38` でも同じに失敗する（既存の問題）。`TSUZURI_CLANG` を絶対パスにすると通る。この経路は PB07 の外なので、そのままにして調整役へ知らせた。リファレンス（`option.md`）には既知の制限として書いた。環境変数で渡る相対パス（`SDKROOT` など）と、PATH の相対のエントリは、Clang の作業ディレクトリが違うので解決先が変わる（扱っていない）。
+
+### `--emit object` と wasm32
+
+- `--emit object`: 局所化の一覧が新しい名前を持つ。`C15` が、数値ランタイムの補助関数と同じ名前を定義するホストの `main` と `split` の object をリンクして動かし、`split` と `single` の object の symbol（`nm -m`・`readelf`）が同じことを確かめる。修正の前も object は局所化されるので衝突しなかった（修正前の binary で `--emit object` の大域 symbol は 15 個で、修正後と同じ）。
+- wasm32: 修正の前も後も、`wasm-ld` の重複は起きない（ランタイムの object に同じ名前の大域がない）。`C15` が `--no-cache` と `--trap-info` の `split` の module を実行して `single` と同じ値を確かめる。
+- 相対パスの Clang: object と wasm32 も同じ経路（`units::build`）なので、`C16` が native の実行ファイル・`--trap-info`・`-g`・object・wasm32 を、Clang の相対パスの 3 通りの場所から確かめる。
+
+### 追加したテストと、修正前に失敗すること
+
+| テスト | 内容 | 修正前の binary |
+| --- | --- | --- |
+| Rust `promoted_generic_names_get_the_reserved_prefix` | 関数・変数・thread_local・引用符の名前・初期化子の参照の付け替え、`tz.` の名前と `weak`・外部の定義はそのまま、宣言、`localize` の一覧 | 失敗（付け替えを無効にして確認） |
+| Rust `promoted_names_do_not_depend_on_the_users` | 使う関数を変えても、定義を持つ bucket の unit のテキストが同じ | 成功（不変の確認） |
+| Rust `a_taken_reserved_name_is_not_split` | `tz.rt.<名前>` がすでにある関数・変数は `SplitError::Collision` | 失敗 |
+| Rust `serial_numbers_of_generic_names_are_replaced_and_prefixed` | 通し番号を含む一般の名前は hash に `tz.rt.` を付ける。通し番号を変えても同じ | 失敗 |
+| Rust `splits_the_programs_of_the_repository`（拡張） | 全プログラムの unit で、`internal` だった一般の名前が残らず、`tz.rt.` の定義がすべて元の定義から来る（19 個以上） | 失敗 |
+| Rust `a_tool_path_with_a_directory_is_anchored_to_the_directory_of_the_compiler` | `anchored` | （新しい関数） |
+| Node `C15 host symbols` | `--link` のホストの object が数値ランタイムの一般の名前をすべて定義する。既定・`--no-cache`・`--trap-info`・`-g`・object・wasm32 | 失敗（`duplicate symbol '_pack'`） |
+| Node `C16 relative Clang` | `./clang-rel`・`toolchain/bin/clang-rel`・`bin/clang-rel` を、それぞれの作業ディレクトリから。native・`--trap-info`・`-g`・object・wasm32 とキャッシュ | 失敗（`cannot execute './clang-rel'`） |
+
+`tests/codegen_units.mjs` は 24 件（22 件 + `C15`・`C16`）。開発の補助として、`TSUZURI_UNITS_ONLY=<正規表現>` が名前の合う件だけを動かす。
+
+### 検証
+
+| 確認 | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`（既定と `--features fast-backend`） | 通る |
+| `cargo check --all-targets --locked --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` | 通る |
+| `cargo nextest run --locked` | 1,646 件が通る（2 件は skip。修正前の 1,641 件に 5 件の追加） |
+| `cargo test --lib -- llvm::split driver::units cache::` | macOS 61 件、Linux aarch64 62 件が通る（1 件は ignored） |
+| `tests/fast_backend.mjs`（既定、`--features fast-backend` の binary） | 通る |
+| macOS、`TSUZURI_CODEGEN_UNITS=split`、39 suite（e2e・features 19,662 件・examples・control・primitives・strings・tasks・io・computations・numeric_casts・math 786,051 件・integer_intrinsics・cache・debug_info・cpu_dispatch・ffi_extensions・trap_boundary・trap_return・stack_overflow・user_drop・allocator・small_allocator・os・json・f16_hardware・display_parse・compact_strings・wasm_memory・wasm_heap・wasm_simd・host_imports・host_bindings・bindings・async（Node 24）・server・watch・codegen_units 24 件・prebuilt_runtime・bundle_identity） | すべて通る |
+| macOS、既定（`single`）、20 suite（e2e・examples・control・primitives・strings・tasks・io・computations・numeric_casts・integer_intrinsics・cache・debug_info・ffi_extensions・trap_boundary・wasm_memory・wasm_simd・host_imports・bindings・server・watch） | すべて通る |
+| 既定の出力 | 変わらない: 29 プログラム（`examples/` 全 13 と `tests/fixtures/` の 16）× 6 設定（`-O0`・`-O3`・`--trap-info`・キャッシュ有り・`--emit llvm`・`--emit object`）の 174 個を基準 `a8875f38` の compiler と比べ、102 個（IR は文字列、実行ファイルと object は fingerprint）が一致し、72 個（入口のない library の実行ファイル）は `E2004` で同じに失敗する |
+| Linux（Ubuntu 24.04 aarch64 の container、LLVM 21.1.8、CI と同じ `LLVM_PREFIX`・`TSUZURI_OBJCOPY`・GNU ld） | `split` の 19 suite（`codegen_units` 24 件・cache・examples・trap_boundary・debug_info・control・tasks・e2e・primitives・strings・numeric_casts・integer_intrinsics・computations・io・cpu_dispatch・wasm_memory・host_imports・bindings・ffi_extensions）と、既定の 18 suite（`codegen_units` 以外）がすべて通る |
