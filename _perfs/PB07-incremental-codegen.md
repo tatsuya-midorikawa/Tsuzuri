@@ -52,7 +52,7 @@ PB07 は IR 以降（unit への分割、unit の object cache、並列コンパ
 
 ### 偵察で測った事実（2026-10-20、参考値）
 
-- Clang の 1 回の仕事: `clang -x ir -O0 -c` は unit 1 つにつき約 8 ms の CPU 時間（cc1 のジョブの準備）と、プロセスの起動に約 7 ms かかる。複数の `.ll` を 1 プロセスに渡しても、cc1 は入力ごとに 1 ジョブである。小さいプログラムの初回のビルドは、分けると遅くなる（`examples/hello` 144 → 211 ms、`examples/computations` 106 → 196 ms、`examples/functional` 173 → 252 ms。`TSUZURI_CODEGEN_UNITS=split`）。損益の分かれ目は、合成プロジェクトで 60〜100 モジュール（IR が 2.5〜4.1 MB）だった。
+- Clang の 1 回の仕事: `clang -x ir -O0 -c` は unit 1 つにつき約 8 ms の CPU 時間（cc1 のジョブの準備）と、プロセスの起動に約 7 ms かかる。複数の `.ll` を 1 プロセスに渡しても、cc1 は入力ごとに 1 ジョブである。小さいプログラムの初回のビルドは、分けると遅くなる（`examples/hello` 144 → 211 ms、`examples/computations` 106 → 196 ms、`examples/functional` 173 → 252 ms。`TSUZURI_CODEGEN_UNITS=split`）。損益の分かれ目は、ほかの処理が少ない時間帯の合成プロジェクトの測定で 60〜100 モジュール（IR が 2.5〜4.1 MB）だった。実装のあと、ほかの処理と共有して負荷が高い機械で、compiler を交互に測り直した結果は分かれ目がずっと大きく（`--no-cache` で 600〜1,000 モジュール、キャッシュを使う初回のビルドでは 1,000 モジュールでも遅い）、下の「実装と検証」の判断のもとになった。
 - 分割自体の費用: 合成 200 モジュール（IR 8.3 MB、219 unit）で、構文解析 14 ms・名前の付け替え（SCC と hash）26 ms・unit の組み立て 16 ms（計 56 ms、release のテスト build、load 約 20）。合成 1,000 モジュールで `split` 段 211 ms・`units` 段 99 ms。
 - unit の IR はすべて Clang を通る: native の 215 本（`-O0`・`-O0 --no-cache`・`--trap-info`・`-g` の実行ファイルと `--emit llvm`）から 3,801 個、wasm32 の 444 本（`-O0`・`--trap-info`・`-g`・SIMD）から 7,844 個の unit を作り、どれも警告なしに `clang -x ir -O0 -c` が通った。
 - macOS の `ld -r` は private extern（hidden）の定義をすべて局所にする（`weak` も）。`-Wl,-keep_private_externs` は逆にすべて残す。`nmedit -R <list>` は、リストの大域 symbol だけを局所にする。2 つの Tsuzuri の object を 1 つのプログラムにリンクすると、`-keep_private_externs` のままでは `duplicate symbol '_other'` になり、`nmedit -R` の後は通る（実験。`target/scratch/pb07/ldr/`）。
@@ -66,7 +66,7 @@ PB07 は IR 以降（unit への分割、unit の object cache、並列コンパ
 3. C のランタイムの object は PB01 のものを再利用する（`c.runtime` は作らない）。
 4. 分割は `build_complete` の IR の変換がすべて終わった後、Clang を呼ぶ直前。whole-build cache の照会は先のまま。
 5. トラップ情報の番号（Phase 2 (a)）: 従来の番号は、プログラム全体で範囲が最初に現れる順（`1 + n × 種類数 + 種類`）で、1 つの編集がその後ろのすべての番号と、`@tz.trap.report` の `switch` を変える。分けるビルドだけ、番号をソースファイルのパスと範囲から決める（`TrapNumbering::Stable`。8,191 ファイル・1 ファイル 16,384 か所まで。超えたら従来の番号で単一 unit）。ファイルごとの報告関数をそのファイルの unit に入れ、番号の block で選ぶ小さい `@tz.trap.report` と `@tz.trap.write` だけを bucket に置く。ランタイムが使う「入口の関数の範囲」には固定の場所（そのファイルの最初の place）を与える（入口の関数の編集でランタイムの unit が変わらないように）。分けないビルドの IR は従来のまま。副表（`sites.json`・`<出力>.trap.json`）は、コードに書いた番号から作る。
-6. 既定の切り替え（D1）は測定で決める。`auto` は、分けられるビルドのうち IR が閾値以上のものだけを分ける（測定で決めた値。下の「実装と検証」）。分けると遅い小さいプログラムは単一 unit のままにする。`B1`（`build -O0 --no-cache`）が before の広がりを超えて遅くなるなら、既定は `single` にして `TSUZURI_CODEGEN_UNITS=split` を opt-in にする（停止条件 8）。
+6. 既定の切り替え（D1）は測定で決める。`auto` は、分けられるビルドのうち IR が閾値以上のものだけを分ける（測定で決めた値。下の「実装と検証」）。分けると遅い小さいプログラムは単一 unit のままにする。`B1`（`build -O0 --no-cache`）が before の広がりを超えて遅くなるなら、既定は `single` にして `TSUZURI_CODEGEN_UNITS=split` を opt-in にする（停止条件 8）。**結果**: `B1` を悪化させないという根拠が 200 module でも 1,000 module でも得られなかった（200 module は交互の測定で +11%、1,000 module は交互の測定で −5%、PX03 の別々の run で +23%）うえ、キャッシュを使う初回のビルドは 1,000 module で +52% だったので、既定は `single`（未設定と空も同じ）にし、`auto`（IR が 16 MB 以上だけ）と `split` を opt-in にした。
 7. 決定性: unit のテキスト・鍵・リンクの順・object は `BTreeMap`・`BTreeSet` だけで決める。unit のコンパイルの出力は組の順に集める。`std::thread::scope` だけを使い（新しい crate・`unsafe`・既定の WASM import なし）、速さの閾値を CI に入れない。
 8. 同値の証拠: 実行ファイルを作るすべての suite（e2e・features・examples・control・primitives・strings・tasks・io・computations・numeric_casts・math・integer_intrinsics・cache・debug_info・cpu_dispatch、トラップと `run` の suite、Phase 2 (c) の wasm の suite）を `TSUZURI_CODEGEN_UNITS=split` と `single` の両方で回す。
 
@@ -74,7 +74,7 @@ PB07 は IR 以降（unit への分割、unit の object cache、並列コンパ
 
 | 決定 | 更新 |
 | --- | --- |
-| D1 | 承認済み。分割の対象は `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g` を含む）。既定の切り替えは測定で決める |
+| D1 | 承認済み。分割の対象は `-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g` を含む）。既定の切り替えは測定で決め、既定は `single`（opt-in）にした（方針 6、下の「実装と検証」） |
 | D2 | そのまま（`-O1` 以上は単一 unit） |
 | D3 | そのまま。単一 unit の経路は常に正しい |
 | D4 | 更新: 生成関数（ラムダ・ジェネリック関数の具体化・特殊化）は、使う関数がすべて 1 つの unit にあるときはその unit、複数のときは名前の hash の bucket。使う側から先に置く（強連結成分の順） |
@@ -84,7 +84,7 @@ PB07 は IR 以降（unit への分割、unit の object cache、並列コンパ
 | D8 | そのまま。miss の unit を大きさでほぼ均等な組に分け、組ごとに Clang 1 プロセスで `-c`。リンクは response file（`objects.rsp`）で毎回 |
 | D9 | 更新: `internal` を `hidden` にする。`--emit object` は、リンクの後にその symbol だけを局所にする（macOS は `nmedit -R`、ほかは `objcopy --localize-symbols`） |
 | D10 | 承認済み。Phase 2 の (a)〜(f) を実装する（下の「Phase 2 の設計」） |
-| D11 | 更新: 値は `auto`・`single`・`split` の 3 つ。`E2000` の文面は `invalid TSUZURI_CODEGEN_UNITS value '<値>'; use 'auto', 'single' or 'split'`。`build_key` には、設定されているときだけ入る |
+| D11 | 更新: 値は `auto`・`single`・`split` の 3 つ。未設定と空は `single`。`E2000` の文面は `invalid TSUZURI_CODEGEN_UNITS value '<値>'; use 'auto', 'single' or 'split'`。`build_key` には `auto`・`split` のときだけ入る（未設定・空・`single` の鍵は PB07 より前と同じ） |
 
 ### Phase 2 の設計
 
@@ -102,7 +102,7 @@ PB07 は IR 以降（unit への分割、unit の object cache、並列コンパ
 - 1・2: 発火した。この節の方針で解いた（未知の形は `SplitError`）。
 - 4: Phase 2 (a) で、emitter の出力（トラップの番号と、`%tz.trap.N` の一時名）がプログラム全体の順序に従うことが原因で unit が変わることを確かめた。人間が Phase 2 を承認しており、直す場所は emitter 本体ではなくトラップ計装の後処理（`src/llvm_traps.rs`）で、分けるビルドだけに効かせる。分けないビルドの IR は変えない。
 - 5: Phase 2 で、分けるビルドの成果物（トラップの番号、object、wasm の module）は、1 つのモジュールのものと byte 単位では違う（関数の並び、hidden な名前、分けたビルドのトラップの番号）。`-O1` 以上と `--emit llvm` の IR は変えない（`cmp` で確かめる。下の「実装と検証」）。
-- 8: 測定で判断する（方針 6）。
+- 8: 測定で判断した（方針 6）。`B1` を悪化させないという根拠が得られなかったので、並列度や unit 数を推測で調整せず、既定を `single` にして分割を opt-in にした。
 
 ### 未検証・制約
 

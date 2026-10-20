@@ -255,11 +255,11 @@ macOS のデバッグ実行ファイルとデバッグ共有ライブラリに�
 
 ### コード生成単位の object cache（PB07）
 
-`-O0` のビルドは、Tsuzuri が出した最終の LLVM IR のテキストを決定的な codegen unit に分け、unit ごとの object を内容で cache し、cache に無い unit だけを Clang で並列にコンパイルして、全 object を 1 回でリンクします。
-対象は native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` で、`--trap-info` と `-g` を付けたものも含みます。`-O1` 以上、`--backend fast`、`--emit shared`・`bitcode`・`llvm`、`--profile-generate`・`--profile-use`、`--trap-mode return`、`--freestanding`、wasm の threads・wasm64・スタック検査、Windows のホスト、`--target TRIPLE` のクロスビルド、`test` と `bench` の runner（別の経路です）は、従来どおり 1 つのモジュールです。
+`-O0` のビルドは、環境変数 `TSUZURI_CODEGEN_UNITS` で `auto` か `split` を選ぶと、Tsuzuri が出した最終の LLVM IR のテキストを決定的な codegen unit に分け、unit ごとの object を内容で cache し、cache に無い unit だけを Clang で並列にコンパイルして、全 object を 1 回でリンクします。既定（`single`）は分けず、従来の 1 つのモジュールのビルドです。
+対象は native の実行ファイルと `--emit object`、wasm32 の `--emit wasm` で、`--trap-info` と `-g` を付けたものも含みます。`-O1` 以上、`--backend fast`、`--emit shared`・`bitcode`・`llvm`、`--profile-generate`・`--profile-use`、`--trap-mode return`、`--freestanding`、wasm の threads・wasm64・スタック検査、Windows のホスト、`--target TRIPLE` のクロスビルド、`test` と `bench` の runner（別の経路です）は、どの値でも 1 つのモジュールです。
 macOS の `-g` の object は、再配置可能リンクが DWARF を捨てるので 1 つのモジュールです。`--emit object` は、native の object を局所化する道具（macOS の `nmedit`、ほかは `objcopy`）がない機械でも 1 つのモジュールです。
-`TSUZURI_CODEGEN_UNITS` は `auto`（未設定と空も同じ）・`single`・`split` を取ります。`single` は分けず、`split` は対象のビルドをどれほど小さくても分け、`auto` は IR が 4 MiB 以上の対象のビルドだけを分けます。unit の数だけ Clang のジョブが増えるので、小さいプログラムは 1 つのモジュールのほうが速いためです（測定は [性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド)）。ほかの値は `E2000` です。
-この環境変数はコンパイラの動作を選ぶだけで、成果物の意味は変わりません。whole-build の cache の鍵には、設定されているときだけ `codegen-units` の欄（値そのまま）が入ります。
+`TSUZURI_CODEGEN_UNITS` は `single`（未設定と空も同じ。既定）・`auto`・`split` を取ります。`single` は分けず、`split` は対象のビルドをどれほど小さくても分け、`auto` は IR が 16 MB 以上の対象のビルドだけを分けます。分けないのが既定なのは、初回のビルドが長くなるからです。unit の数だけ Clang のジョブ（約 8 ms の CPU 時間）と繰り返す宣言が増え、unit 全体は 1 つのモジュールの 3 倍ほどの CPU 時間を使い、cache には小さい object が数千個入ります。測った機械では、1 つのモジュールの本体を編集したあとのビルドが短くなる分で、初回の分を取り戻すのに合成 400 module で 2 回ほどのビルドが要りました（[性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド)）。ほかの値は `E2000` です。
+この環境変数はコンパイラの動作を選ぶだけで、成果物の意味は変わりません。whole-build の cache の鍵には、`auto` か `split` のときだけ `codegen-units` の欄（値そのまま）が入り、未設定・空・`single` の鍵は PB07 より前のものと同じです。
 
 分割は IR のテキストだけを入力にします（`src/llvm_split.rs`。emitter は変えません）。`build_complete` が IR に `without_closure_inlining`・`windows_abi`・`with_no_red_zone` と wasm の `with_*` を適用し、`runtime/wasm.ll` を足し終えたあと、whole-build の cache の照会（従来のまま。当たれば何も走りません）に外れたときに、Clang を呼ぶ直前で分けます。
 
@@ -271,7 +271,7 @@ macOS の `-g` の object は、再配置可能リンクが DWARF を捨てる�
 unit の鍵は、unit のテキスト、Clang の引数（target、最適化、`-g`、CPU・SDK の旗）、Clang の識別（実行ファイルの内容と版）の SHA-256 です。コンパイラ自身の識別は入りません（IR が変われば unit のテキストが変わるためです）。ソースのテキストやパスは、unit のテキストの中にあるもの（トラップのメッセージと DWARF）以外は鍵に入りません。
 object は同じ保存先の `units/` に、成果物の cache と同じ `BuildCache`（マーカー、`0o700`、原子的な rename、大きさと SHA-256 の検証）で入ります。保存先を分けるのは、小さい object が数千個になっても成果物の cache の掃除に影響しないためです。上限は 2 GiB・30 日で、走査は 32,768 エントリまで、1 回の掃除は 1,024 件までです。掃除は保存したビルドのあとに 10 分に 1 回まで、最後に使った時刻の更新も 10 分に 1 回までです。cache に入れるのは object だけで、構文解析・型検査・IR の途中の cache は作りません。
 
-cache に無い unit は、テキストの大きさが等しくなるように組み分けして、少数の Clang プロセスで並列にコンパイルします（`clang -c a.ll b.ll …`。プロセスの数は使える core 数で、`TSUZURI_THREADS` があればその値です）。Clang の出力は組の順に集め、警告のあるものは cache に入れません。リンクは `objects.rsp` の response file に unit の順で書いた object を、単一のモジュールと同じ最終リンクの引数（`dead_strip`、`-Wl,-u,_tz_<export>`、`--strip`、リンク入力、リンカーの選択、`-pthread`）で 1 回行います。ランタイムの object（PB01）は 1 つのモジュールのときと同じものを加えます。
+cache に無い unit は、テキストの大きさが等しくなるように組み分けして、少数の Clang プロセスで並列にコンパイルします（`clang -c a.ll b.ll …`。プロセスの数は使える core 数で、`TSUZURI_THREADS` があればその値です）。Clang の出力は組の順に集め、警告のあるものは cache に入れません。cache の読み出しは、全 unit の鍵の計算と読み（SHA-256 の検証を含みます）を先に終えてから、見つけた object と Clang に渡す `.ll` を書き、コンパイルのあとも、全 object を読んでから entry を書き、最後に最終使用時刻の更新を書きます。macOS では、あるプロセスの別のスレッドがファイルを作っているあいだ、そのプロセスの `open` が 1 桁遅くなり（この機械で 1,000 module の初回のビルドの `units` が 14 s になりました）、読みと書きを分けると 2 s 台になるためです。リンクは `objects.rsp` の response file に unit の順で書いた object を、単一のモジュールと同じ最終リンクの引数（`dead_strip`、`-Wl,-u,_tz_<export>`、`--strip`、リンク入力、リンカーの選択、`-pthread`）で 1 回行います。ランタイムの object（PB01）は 1 つのモジュールのときと同じものを加えます。
 macOS の `-g` は、リンクのあとに `dsymutil` が同じ object を読むので、object は一時ディレクトリに置いたままにします。native の object は `clang -r -nostdlib [-Wl,-keep_private_externs]` で unit の object（と C ランタイム）を 1 つにしたあと、unit が `hidden` にした定義だけ（もとは `internal` のもの）を局所化します。複数の Tsuzuri の object を 1 つのプログラムにリンクしても名前が衝突せず、ホストから見える大域 symbol が 1 つのモジュールのものと同じになるようにするためです。wasm32 は同じ wasm の旗で unit をコンパイルし、`wasm-ld` が runtime の object と unit の object をリンクします。module の import の並びは unit の object のリンクの順に従うので、単一のモジュールのものと違うことがあります（import を名前で渡すホストには影響しません。`tests/async.mjs` は import の並びではなく集合を確かめます）。
 `TSUZURI_TIME_PASSES` の段は `split`（分割。呼び出しスレッド）、`units`（鍵・cache の読み書き・ファイルの書き出し）、`tool.<clang の stem>`（Clang の待ち）です。
 

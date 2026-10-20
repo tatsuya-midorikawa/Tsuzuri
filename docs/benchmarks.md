@@ -8311,6 +8311,96 @@ PB05 の節の値は、ほかの作業と共有する機械（load average 10〜
 - **PM03**: 追認 — 既定が `utf16` のままなので、文字列系の時間・確保は変わりません（C++ の suite の `utf16_*`・`format_parse`、実アプリの `tokenize`・`format_join`・`csv_aggregate` が 0.96〜1.01 倍）。`TSUZURI_STRINGS=compact` はこの比較では測っていません（PM03 の節）。
 - **PB06・PR07・PR08**: 既定のコンパイラの `check` に差はなく（上のフロントエンドの表）、`watch`・`serve`・`--profile-*`・`--emit bitcode` は opt-in で、値は各 subsection にあります。
 
+## 第5フェーズの測定（2026-10-20〜）
+
+PB07 の測定・生成コードの確認の記録です。基準のコンパイラは main の `a8875f38`（第4フェーズの PR #28 の後）です。
+数値は、他の作業が並行して動く共有機（M1 Max）で取った参考値で、各 subsection に条件と負荷を書きます。
+実装済みの経路と計画、測った効果と測っていない効果は、subsection ごとに分けて書きます。共有 CI に速度の合否の閾値は置きません。
+
+### PB07 codegen unit による増分ビルド
+
+**実装した経路と、していないこと**: 実装済みは、`-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g`・SIMD を含む）で、生成した LLVM IR のテキストを決定的な codegen unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に分け、unit ごとの object を `<キャッシュ>/units/` に内容で保存し、保存していない unit だけを少数の Clang プロセスで並列にコンパイルして、全 object を 1 回でリンクする経路です。環境変数 `TSUZURI_CODEGEN_UNITS` が `single`（既定）・`auto`（IR が 16 MB 以上）・`split`（常に）を選びます。**既定は `single` のままです**（下の「既定の判断」）。計画のまま実装していないのは、リンカーの増分リンク（ld64・GNU ld・LLD にありません）、Windows のホストの分割と `link.exe` の `/INCREMENTAL` の評価（実機がなく、測っていません）、`test`・`bench` の runner の分割（`build_complete` の外の別の経路）、`-O1` 以上の分割です。
+
+**環境と条件**: Apple M1 Max（10 core）、macOS 27.0.1、Apple clang 21.0.0、rustc 1.98.1、Node 20.19.6。基準は main `a8875f38` の release（`target/perf/tsuzuri-before`、SHA-256 の先頭 `35508982…`）、after は `cargo build --release --locked` の 2 つで、PX03 の表と交互の測定の前半は `target/perf/tsuzuri-after`（コミット `eabf0566`、`83356398…`。そのときの既定は `auto`・4 MiB で、200・1,000 module は分けるほう）、交互の測定の後半（「最終の binary」）は、既定を `single` にし、unit の作業ディレクトリを並列に消すようにした `1cefdb26` の code の `target/perf/tsuzuri-final`（`b7112575…`）です。ほかの 2 つの作業と共有する機械で、1 分の load average は、PX03 が before で 32（開始）・18（終了。途中の最大 157）、after で 11・18、交互の測定が 14〜62（各表に書きます）でした。標本は各 9 件（1,000 module は 5〜7 件。warm-up 1 件は別に捨てる）の中央値と最小〜最大です。数値は参考値です。この機械のセキュリティ agent は、新しく作ったファイルの最初の `open()` などを遅くするので（下の「キャッシュの読みと書きの順序」）、小さいファイルが数千個になる unit の cache の値は、ほかの機械で小さくなる見込みですが、測っていません。生のレコードは `target/perf/PB07-before`・`PB07-after`・`PB07-after-server` の `build.jsonl`・`projects.json` です（commit しません）。
+
+**測り方**: PX03 は `node benchmarks/run-build.mjs <compiler> --out target/perf/PB07-before|PB07-after --sizes 200,1000 --languages tsuzuri --variants build,build-warm,build-edit-body`（`TSUZURI_TIME_PASSES` の段に `split`・`units` を足したので、runner の段の一覧と `breakdown` は `units` を cache に数えます）。before と after を別の run にすると、機械の負荷の違いが差に入るので、判断には、4 つの compiler や設定を 1 標本ごとに順に動かして、同じ負荷を受けさせる測定も使いました（commit していない scratch の script。同じ synthetic project を 1 つだけ作り、標本ごとに compiler を入れ替えます。「初回」は標本ごとに空の cache、「編集」は真ん中の module の本体を 1 標本ごとに書き換えて前のビルドの cache を使います）。「分けた」は `TSUZURI_CODEGEN_UNITS=split`、「1 つ」は `single`（after の compiler）です。
+
+#### 既定の判断（停止条件 8・G3）
+
+初回のビルド（`build -O0 --no-cache`、B1）の wall の中央値（ms。交互の測定。IR は合成 1 module 約 41.6 KB。before と after の `single` の差は 0〜4% の誤差です）:
+
+| module 数 | IR（MB） | before | 1 つ（after） | 分けた | 分けた／1 つ | load average（1 分） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10 | 0.4 | 261 | 266 | 351 | +32% | 14〜14 |
+| 30 | 1.2 | 408 | 429 | 573 | +34% | 15〜17 |
+| 60 | 2.5 | 601 | 605 | 767 | +27% | 16〜18 |
+| 100 | 4.1 | 918 | 897 | 1,079 | +20% | 19〜24 |
+| 200 | 8.3 | 1,660 | 1,694 | 1,840 | +9% | 23〜31 |
+| 300 | 12.5 | 2,653 | 2,758 | 3,151 | +14% | 20〜32 |
+| 400 | 16.6 | 3,520 | 3,539 | 3,986 | +13% | 27〜40 |
+| 600 | 25 | 6,247（最大 16,009） | 5,407 | 6,368 | +18% | 25〜42 |
+| 1,000 | 41.6 | 8,925 | 8,517 | 8,459 | −1% | 22〜56 |
+
+最終の binary で測り直した値（既定 = 環境変数なし）は、200 module で 1,849（before）・1,884（既定）・2,223（分けた。+20%）、1,000 module で 8,938・8,926・8,901（分けた。0%）でした。before と `single` の差は −5〜+5% の誤差です（600 module の before だけ、外れ値の影響で中央値が 14% 遅くなっています）。`tool.clang` は、200 module では分けると 1 つの module より長く（1,198 → 1,417）、1,000 module では短くなります（4,868 → 3,996）が、`split`・`units` の段と、段の外の時間（unit のファイルの書き込みと後始末）がその分を使います。unit の Clang は、プロセス全体の CPU 時間を 1 つの module の約 2.3 倍にします（1,000 module で 9.2 s → 21.3 s。PX03 の `cpu_time`）。負荷の高い機械では並列の効果が出ません。PX03（別々の run。after は `eabf0566` で、200・1,000 module を分けるほう）では、200 module で 1,622（1,559〜1,965）→ 1,944（1,772〜2,646）、1,000 module で 8,262（7,788〜10,179）→ 10,193（9,532〜13,155）でした。
+
+キャッシュを使う初回のビルド（キャッシュの directory を標本ごとに新しくする。標本ごとに消すと、直前に消した多数のファイルの後始末が次のビルドを遅くします）の wall の中央値（ms）:
+
+| module 数 | before | 1 つ | 分けた | 分けた／1 つ | `units` の段 | 備考 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 100 | 1,255 | 1,266 | 2,946 | +133% | 552 | `eabf0566` の binary |
+| 200 | 1,904 | 1,989 | 3,713 | +87% | 722 | 同上 |
+| 200 | 1,961 | 2,027 | 3,445 | +70% | 820 | 最終の binary |
+| 200 | 2,076 | 2,186（既定） | 3,725 | +70% | 980 | 最終の binary、1 つの project |
+| 400 | 4,160 | 3,983 | 5,706 | +43% | 1,285 | `eabf0566` |
+| 1,000 | 9,273 | 8,814 | 13,401 | +52% | 2,757 | `eabf0566` |
+| 1,000 | 10,747 | 10,445（既定） | 16,455 | +58% | 3,813 | 最終の binary（load 40〜62） |
+
+どの大きさでも、初回のビルドを悪化させないという根拠（G3）は得られませんでした: 600 module までは、分けた中央値が 1 つの module と before の中央値より大きく（`--no-cache` で +9〜+34%）、1,000 module の `--no-cache` は同じ程度（−1%〜0%。PX03 の別の run は +23%）で、キャッシュを使う初回は 1,000 module でも +52〜+58% です。`examples/` の小さい実プログラムは、分けると 1.6〜1.9 倍になります（15 標本の中央値。`examples/hello` 186 → 332 ms、`examples/computations` 125 → 233 ms、`examples/functional` 212 → 336 ms、`examples/tasks` 199 → 326 ms。before と最終の既定は 186・187、125・125、212・206、199・204 ms）。そこで**既定は `single`（分けない）にし、`auto`（IR が 16 MB 以上）と `split` を opt-in に**しました。`auto` の 16 MB は、本体の編集の後のビルドが短くなる分で、初回のビルドの遅れを 1〜2 回の再ビルドで取り戻せる大きさ（400 module で、初回が +1.7 s、編集の後が −1.2〜−1.7 s）です。core の数や負荷が違う機械での値は、測っていません。
+
+#### 本体を編集した後のビルド（B5。G1・G2）
+
+真ん中の module の関数の本体を書き換えた後の wall の中央値（ms。交互の測定。before の cache は、前のビルドの whole-build の entry だけです）:
+
+| module 数 | before | 1 つ | 分けた | 分けた／before | `tool.clang`（before → 分けた） | load average（1 分） |
+| --- | --- | --- | --- | --- | --- | --- |
+| 30 | 466 | 498 | 438 | −6% | 223 → 102 | 39〜44 |
+| 100 | 1,092 | 1,183 | 1,010 | −8% | 583 → 194 | 31〜38 |
+| 200 | 1,874 | 2,019 | 1,415 | −24% | 1,027 → 151 | 30〜33 |
+| 400 | 3,893 | 4,392 | 2,693 | −31% | 2,029 → 188 | 44〜75 |
+| 1,000 | 10,381 | 10,604 | 6,852 | −34% | 5,038 → 247 | 23〜52 |
+
+最終の binary（既定 = 環境変数なし）は、200 module で 1,826（before）・1,975（既定）・1,223（分けた。−33%）、1,000 module で 10,332・10,885・7,163（分けた。−31%）でした。PX03（別々の run）は、200 module で 1,723（1,577〜2,090）→ 1,445（1,310〜1,778）、1,000 module で 8,998（8,747〜10,253）→ 5,426（5,028〜5,714）で、`tool.clang` は 933 → 177 ms と 4,632 → 244 ms、CPU 時間は 1,850 → 1,370 ms と 9,570 → 6,740 ms です。
+
+- **G1（B5 の `tool.clang` ≤ B1 `O0` の `tool.clang` の 15%）**: 1,000 module で満たします（PX03 の 244 ms ÷ 4,533 ms = 5.4%、交互の測定の 247〜254 ms ÷ 4,868〜5,046 ms = 5%）。200 module は 14〜19%（151〜206 ms ÷ 1,097〜1,198 ms）で、限度のあたりです。残るのは編集した module の unit 1 つのコンパイルと、全 object のリンクです。
+- **G2（B5 の wall が before より短い）**: 満たします（200 module で −16〜−33%、1,000 module で −31〜−40%）。ただし 1,000 module の 7.2 s のうち、フロントエンドと emit と cache が約 4.8 s、`split`・`units` が約 1.1 s、Clang が 0.25 s なので、旧版の目標の「1 関数の変更後の `-O0` 再ビルドが 100 ms 級」には届きません。常駐サーバー経由の B5（`build-edit-body-server`、分けた。最終の binary）は、200 module で 1,665 → 1,357 ms（−19%）、1,000 module で 6,312 → 5,738 ms（−9%）で、100 ms 級にはなりません（型検査と IR の生成は毎回やり直します。PB06 の節）。
+- **M3（コンパイルした unit の数）**: 合成 1,000 module で、初回のビルドが 1,019 unit と 2 つのランタイムの object（Clang の入力 1,021 個）、真ん中の module の本体を編集した後のビルドは **1 個**（その module の unit）、変更なしの再ビルドは whole-build の hit で 0 個でした（2 回の編集とも 1 個）。
+- **Phase 2 の各経路の M3**（200 module。初回の入力は 219〜221 個）: `--trap-info`・`-g`・wasm32 の `--emit wasm`・native の `--emit object` のどれも、真ん中の module の本体を編集した後にコンパイルした入力は **1 個**（2 回とも）でした。
+
+#### 変更なしの再ビルド（B4）と `-O3`（G4）
+
+whole-build の hit は、分けない経路と同じコードです。交互の測定（200 module、1 つの project）は before 679・既定 693・分けた 695 ms（load 25〜26）、1,000 module（`eabf0566`）は 4,965・4,734・4,605 ms でした。PX03 の `build-warm` は、200 module で 647 → 706 ms、1,000 module で 4,706 → 4,155 ms で、`-O3` の `build` は 6,269 → 6,339 ms（200 module）、102,006 → 83,676 ms（1,000 module。before の広がりは 84,654〜185,424 ms）で、どれも広がりの中です。`-O3` は分けないので、IR も object も変わりません（下の「生成コードの確認」）。
+
+#### 実 project
+
+`examples/` の 9 本（PX03 の `build` の `-O0`・`-O3` と `build-warm`。この compiler の既定は分けないので、IR が 4 MiB 未満の対象は分けないときの値）は、before と after の差が広がりの中でした（`-O0` の中央値は 144 → 123、162 → 154、193 → 187、217 → 222、178 → 177、224 → 212、154 → 172、162 → 127、186 → 181 ms）。
+
+#### キャッシュの読みと書きの順序（macOS の `open`）
+
+初回の実装は、unit の cache の entry を 1 つずつ「読む、ファイルを書く」の順に処理し、1,000 module の初回のビルドの `units` の段が 14〜15 s かかりました。`sample` で見ると、10 個の worker が時間の 92% を、Clang が書いた object を読む `open()` に使っていました。この機械では、同じ process の別の thread がファイルを作っているあいだ、その process の `open()` が 1 桁遅くなります（1 つの `open()` が 100 ms を超える）。Rust で書いた再現（Clang の組を実際に起動し、1,019 個の object を 10 thread で保存）は、読みと書きを交互にすると 7.2 s、全 object を先に読んでから書くと 1.9 s でした。キャッシュを読む段と、保存する前に object を読む段を、ファイルを書く段より先に全部行うようにして（`BuildCache::read`・`store_files`、最終使用時刻の更新は最後）、1,000 module の初回の `units` は 14〜15 s から 2.1〜3.8 s に、初回のビルドは 27 s から 14 s になりました。ほかの機械で、この遅さがどれだけあるかは測っていません。unit の作業ディレクトリの数千個のファイルは、並列に消します（1 つずつ消すと約 0.5 s〜2.5 s が段の外に出ました）。
+
+#### 生成コードの確認
+
+- **分けない経路の IR は変わりません**: 基準の compiler と after で、`examples/`・`benchmarks/`・`tests/fixtures/` の `--emit llvm`（`-O0`・`-O3`・`-O0 --trap-info`・`-O0 -g` が各 123 本、wasm32 の `-O0` が 118 本）と、Clang に渡る `module.ll`（native の実行ファイルの `-O0`・`-O3`・`--trap-info`・`-g` が各 11 本、wasm32 が 24 本、`--emit object` が 30 本）の text が、`TSUZURI_CODEGEN_UNITS=single` で全件一致しました（両方の compiler でビルドできない project は除きます）。そのときの既定（`auto`・4 MiB）で違ったのは、IR が 5.1 MB で分けた `tests/fixtures/async` の wasm32 と object の 2 件だけです。
+- **unit の object の記号**: `nm -m` で、`_tz.fn.<Module>.<名前>` が `private external`（hidden）、`_tz.unit.<k>` が `non-external` で、`weak`・`external`（hidden でない）の `_tz.` 記号はありません（`tests/codegen_units.mjs` の C7。Linux は `readelf` で HIDDEN）。
+- **公開される記号**: 分けた実行ファイルと `single` の `nm -gU` の集合が一致します（C7。Linux は DEFAULT の大域 symbol。GNU ld は unit の hidden の定義を `GLOBAL HIDDEN` のまま残します）。
+- **命令の同一性**: `examples/computations` の `-O0` を分けた経路と `single` で作り、`llvm-objdump -d --disassemble-symbols=_tz.fn.Main.divide` の 46 命令が、分岐先・呼び出し先の番地を除いて一致しました。実行ファイル全体（486 命令）も、番地を除いた命令の多重集合が一致します。
+- **unit の IR**: native の IR 215 本（実行ファイル 23 本の 4 構成と `--emit llvm` の 123 本）から 3,801 個、wasm32 の IR 444 本から 7,844 個の unit を作り、どれも警告なしに `clang -x ir -O0 -c` が通ります。
+
+#### 実装済みと計画
+
+実装済み（上のとおり測りました）: Phase 1（native の実行ファイル）と、Phase 2 の (a) `--trap-info`（分けるビルドだけ、site の番号をソースのパスと範囲から決める。別のファイルの編集で番号が動かない）、(b) `-g`（unit ごとの DICompileUnit。macOS は dsymutil が同じ object を読む）、(c) wasm32 の `--emit wasm`、(d) native の `--emit object`（`clang -r` のあとに unit が hidden にした symbol だけを局所化）、(e) 生成関数の置き場所（使う関数がすべて 1 つの unit にあるときはその unit）、(f) Windows（ホストは分けません。型は `cargo check --target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc` で確かめました）。
+計画のまま、または測っていないもの: Windows の実機と `/INCREMENTAL`、Linux x86-64（AArch64 の Ubuntu 24.04 の container で、`tests/codegen_units.mjs` ほか 19 の suite を両方の経路で通しました）、ほかの機械での初回の cache 書き込みの費用、`-O1` 以上、リンカーの増分リンク、500 module を超える大きさで `auto` の閾値を決め直すこと。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

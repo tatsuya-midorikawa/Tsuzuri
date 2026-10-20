@@ -14,7 +14,7 @@
 - `watch` は、`check`・`build`・`test` を実行し、そのコマンドが読むファイルが変わるたびにもう一度実行します。各回の出力は、そのコマンドを単独で実行したときと同じです。
 - `serve`（macOS と Linux）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラ・作業ディレクトリ・環境で起動した `check` と `build` は、サーバーが実行して出力を返し、サーバーがなければ（断られても）黙って自分で実行します。出力はサーバーがなくても同じです。`--no-server` でサーバーを使わずに実行できます。
 - 成果物のキャッシュは `build`・`run`・`script`・`repl`、構文解析の結果のキャッシュは `check`・`build`・`run`・`script`・`test`・`bench`・`doc` の既定です。`TSUZURI_CACHE_DIR` と `--no-cache` で制御します。
-- 大きなプログラムの `-O0` のビルドは、既定で codegen unit に分け、変わった unit だけを Clang でコンパイルし直します。`TSUZURI_CODEGEN_UNITS=single` で分けず、`split` で小さいプログラムも分けます（[コード生成の単位](option.md#コード生成の単位codegen-unit)、[unit の object のキャッシュ](#コード生成単位の-object)）。
+- `-O0` のビルドは、`TSUZURI_CODEGEN_UNITS=auto`（IR が大きいときだけ）か `split` を選ぶと、codegen unit に分け、変わった unit だけを Clang でコンパイルし直します。既定（`single`）は分けません（[コード生成の単位](option.md#コード生成の単位codegen-unit)、[unit の object のキャッシュ](#コード生成単位の-object)）。
 - 実行時の分岐の頻度で最適化するには、`build` と `run` に `--profile-generate DIR` を付けて計装し、動かして集めたプロファイルを `--profile-use` で渡して作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。速くなる種目と遅くなる種目があるので、前後を測ります。
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
