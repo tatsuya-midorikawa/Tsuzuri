@@ -699,7 +699,7 @@ Phase 1 の手順との対応: 手順 1（棚卸し）— examples・benchmarks�
 
 ### 偏差
 
-1. **既定は `single`**（ticket の D1・D11 は `auto` を既定にする案）。`B1`（`build -O0 --no-cache`）を悪化させない根拠が得られず（200 module で交互の測定が +9〜+20%、1,000 module は 0%〜+23%）、キャッシュを使う初回のビルドは 1,000 module で +52〜+58% になった。方針 6 に従い、既定を `single` にして `auto`（IR が 16 MB 以上）と `split` を opt-in にした。未設定・空・`single` の whole-build の鍵は PB07 より前と同じで、既定の出力は変わらない。
+1. **既定は `single`**（ticket の D1・D11 は `auto` を既定にする案）。**統合後の再測定**（load average 10〜25。[docs/benchmarks.md](../../docs/benchmarks.md#第5フェーズ統合の最終比較2026-10-20)）では、キャッシュなしの初回（B1）は 200 module 以上で `split` のほうが速く（−9〜−13%）、100 module 以下では遅く（+5〜+16%）、キャッシュありの初回がどの大きさでも遅れる（+8〜+23%）ので、既定は変えませんでした。以下の数字は、再測定の前の、load average 14〜62 の間の測定です。`B1`（`build -O0 --no-cache`）を悪化させない根拠が得られず（200 module で交互の測定が +9〜+20%、1,000 module は 0%〜+23%）、キャッシュを使う初回のビルドは 1,000 module で +52〜+58% になった。方針 6 に従い、既定を `single` にして `auto`（IR が 16 MB 以上）と `split` を opt-in にした。未設定・空・`single` の whole-build の鍵は PB07 より前と同じで、既定の出力は変わらない。
 2. 値は `auto`・`single` に `split` を足した 3 つ（E2000 の文面は 3 つを挙げる）。
 3. 生成関数: 本文が同じものは 1 つの関数に統合する（ticket は `.2` で区別）。`$lambda` などの置き場所の規則（(e)）は Phase 1 に入れた。アダプタの名前は関数の新しい名前に `.<番号>` を付ける（LLDB の整形のため）。
 4. unit の cache は別の root `<cache>/units/`（ticket D7 は同じ root）。走査 32,768・1 回 1,024 件・掃除と最終使用時刻の更新は 10 分に 1 回。キャッシュの読み書きは、macOS の `open` の遅さのため、読みを先に全部行ってから書く（`BuildCache::read`・`store_files`・`touch`）。
