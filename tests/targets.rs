@@ -2,7 +2,7 @@
 //! tools they ask for, and the runner that executes what this machine cannot.
 //!
 //! Nothing here runs a foreign executable. The expected values come from the object formats'
-//! own specifications (ELF gABI and its RISC-V psABI, Apple's `<mach-o/loader.h>` and
+//! own specifications (ELF gABI, Apple's `<mach-o/loader.h>` and
 //! `<mach/machine.h>`, Microsoft's PE/COFF) and not from the compiler's output.
 
 use std::collections::BTreeMap;
@@ -118,7 +118,7 @@ fn native_ir_follows_the_target_it_is_emitted_for() {
         let expected: &[&str] = match (triple.arch(), triple.os()) {
             (Arch::X86_64, Os::Windows) => &[],
             (Arch::X86_64, _) => &["sse4.2", "avx2"],
-            (Arch::Aarch64, Os::Linux | Os::Android) => &["sve"],
+            (Arch::Aarch64, Os::Linux) => &["sve"],
             _ => &[],
         };
         for level in ["sse4.2", "avx2", "sve"] {
@@ -157,10 +157,6 @@ fn the_host_platform_and_its_named_triple_emit_the_same_ir() {
     let Some(host) = Triple::host() else {
         return;
     };
-    // An Android host is `target_os = "android"`, which the host checks do not treat as Linux.
-    if host.os() == Os::Android {
-        return;
-    }
     assert_eq!(
         native_ir(DOT, Platform::HOST),
         native_ir(DOT, Platform::new(Some(host)))
@@ -179,10 +175,7 @@ fn load(directory: &Path, text: &str) -> (Project, tsuzuri::check::CheckedModule
 fn windows_targets_rewrite_exports_on_any_host() {
     let directory = scratch("exports");
     let (project, module) = load(&directory, ANSWER);
-    for triple in Triple::ALL
-        .into_iter()
-        .filter(|triple| !triple.is_bare_metal())
-    {
+    for triple in Triple::ALL {
         let output = directory.join(format!("{}.ll", triple.name()));
         driver::build(
             &module,
@@ -235,10 +228,7 @@ fn msvc_targets_carry_codeview_on_any_host() {
     }
     let directory = scratch("codeview");
     let (project, module) = load(&directory, ANSWER);
-    for triple in Triple::ALL
-        .into_iter()
-        .filter(|triple| !triple.is_bare_metal())
-    {
+    for triple in Triple::ALL {
         let output = directory.join(format!("{}.ll", triple.name()));
         driver::build(
             &module,
@@ -262,70 +252,6 @@ fn msvc_targets_carry_codeview_on_any_host() {
             triple.name()
         );
     }
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn bare_metal_x86_64_objects_have_no_red_zone() {
-    let directory = scratch("redzone");
-    let (project, module) = load(&directory, ANSWER);
-    for triple in Triple::ALL
-        .into_iter()
-        .filter(|triple| triple.is_bare_metal())
-    {
-        let output = directory.join(format!("{}.ll", triple.name()));
-        driver::build(
-            &module,
-            &project,
-            &output,
-            BuildOptions {
-                emit: Emit::Llvm,
-                freestanding: true,
-                allocator: llvm::Allocator::Host,
-                triple: Some(triple),
-                cache: false,
-                ..BuildOptions::default()
-            },
-        )
-        .unwrap();
-        let ir = fs::read_to_string(&output).unwrap();
-        let defines: Vec<_> = ir
-            .lines()
-            .filter(|line| line.starts_with("define "))
-            .collect();
-        assert!(!defines.is_empty());
-        for line in defines {
-            assert_eq!(
-                line.contains(" noredzone"),
-                triple.arch() == Arch::X86_64,
-                "{}: {line}",
-                triple.name()
-            );
-        }
-    }
-    // The marking keeps debug-info attachments after the attributes, where LLVM expects them.
-    let output = directory.join("debug.ll");
-    driver::build(
-        &module,
-        &project,
-        &output,
-        BuildOptions {
-            emit: Emit::Llvm,
-            freestanding: true,
-            allocator: llvm::Allocator::Host,
-            debug_info: true,
-            triple: Some(Triple::X86_64BareMetal),
-            cache: false,
-            ..BuildOptions::default()
-        },
-    )
-    .unwrap();
-    let ir = fs::read_to_string(&output).unwrap();
-    assert!(
-        ir.lines()
-            .any(|line| line.starts_with("define ") && line.contains(" noredzone !dbg !")),
-        "{ir}"
-    );
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -374,9 +300,7 @@ fn objects_have_the_machine_of_their_target() {
         let backend = match triple.arch() {
             Arch::Aarch64 => "aarch64",
             Arch::X86_64 => "x86-64",
-            Arch::Riscv64 => "riscv64",
         };
-        // Apple's Clang has no RISC-V code generator; CI has LLVM's.
         if !has_backend(&clang, backend) {
             assert!(
                 std::env::var_os("CI").is_none(),
@@ -395,12 +319,6 @@ fn objects_have_the_machine_of_their_target() {
             &output,
             BuildOptions {
                 emit: Emit::Object,
-                freestanding: triple.is_bare_metal(),
-                allocator: if triple.is_bare_metal() {
-                    llvm::Allocator::Host
-                } else {
-                    llvm::Allocator::System
-                },
                 triple: Some(triple),
                 cache: false,
                 ..BuildOptions::default()
@@ -409,30 +327,14 @@ fn objects_have_the_machine_of_their_target() {
         .unwrap_or_else(|error| panic!("{}: {}", triple.name(), error.message));
         let bytes = fs::read(&output).unwrap();
         match triple.os() {
-            Os::MacOs | Os::Ios => {
-                // MH_MAGIC_64 as little-endian bytes, CPU_TYPE_ARM64 or CPU_TYPE_X86_64, MH_OBJECT.
+            Os::MacOs => {
+                // MH_MAGIC_64 as little-endian bytes, CPU_TYPE_ARM64, MH_OBJECT.
                 assert_eq!(bytes[..4], [0xcf, 0xfa, 0xed, 0xfe], "{}", triple.name());
-                assert_eq!(
-                    u32_at(&bytes, 4),
-                    if triple.arch() == Arch::Aarch64 {
-                        0x0100_000c
-                    } else {
-                        0x0100_0007
-                    },
-                    "{}",
-                    triple.name()
-                );
+                assert_eq!(u32_at(&bytes, 4), 0x0100_000c, "{}", triple.name());
                 assert_eq!(u32_at(&bytes, 12), 1);
-                // PLATFORM_MACOS 1, PLATFORM_IOS 2, PLATFORM_IOSSIMULATOR 7; `xxxx.yy.zz` nibbles.
+                // PLATFORM_MACOS 1; `xxxx.yy.zz` nibbles.
                 let (platform, minimum) = mach_o_build_version(&bytes);
-                let expected = match triple {
-                    Triple::Aarch64AppleDarwin | Triple::X86_64AppleDarwin => (1, 12 << 16),
-                    Triple::Aarch64AppleIos => (2, 13 << 16),
-                    Triple::Aarch64AppleIosSim => (7, 14 << 16),
-                    Triple::X86_64AppleIos => (7, 13 << 16),
-                    _ => unreachable!(),
-                };
-                assert_eq!((platform, minimum), expected, "{}", triple.name());
+                assert_eq!((platform, minimum), (1, 12 << 16), "{}", triple.name());
             }
             Os::Windows => {
                 // IMAGE_FILE_MACHINE_AMD64 and IMAGE_FILE_MACHINE_ARM64: a COFF object has no DOS header.
@@ -447,8 +349,8 @@ fn objects_have_the_machine_of_their_target() {
                     triple.name()
                 );
             }
-            Os::Linux | Os::Android | Os::FreeBsd | Os::BareMetal => {
-                // ELFCLASS64, ELFDATA2LSB, ET_REL, and EM_AARCH64 183, EM_X86_64 62, EM_RISCV 243.
+            Os::Linux => {
+                // ELFCLASS64, ELFDATA2LSB, ET_REL, and EM_AARCH64 183, EM_X86_64 62.
                 assert_eq!(bytes[..4], *b"\x7fELF", "{}", triple.name());
                 assert_eq!((bytes[4], bytes[5]), (2, 1), "{}", triple.name());
                 assert_eq!(u16_at(&bytes, 16), 1);
@@ -457,25 +359,11 @@ fn objects_have_the_machine_of_their_target() {
                     match triple.arch() {
                         Arch::Aarch64 => 183,
                         Arch::X86_64 => 62,
-                        Arch::Riscv64 => 243,
                     },
                     "{}",
                     triple.name()
                 );
-                // ELFOSABI_FREEBSD marks FreeBSD; the others use ELFOSABI_NONE.
-                assert_eq!(
-                    bytes[7],
-                    if triple.os() == Os::FreeBsd { 9 } else { 0 },
-                    "{}",
-                    triple.name()
-                );
-                if triple.arch() == Arch::Riscv64 {
-                    // EF_RISCV_RVC 0x1 and the float ABI field 0x6: EF_RISCV_FLOAT_ABI_DOUBLE 0x4. Clang
-                    // gives a bare-metal target soft floats unless the compiler asks for the D extension.
-                    let flags = u32_at(&bytes, 48);
-                    assert_eq!(flags & 0x1, 1, "{}", triple.name());
-                    assert_eq!(flags & 0x6, 0x4, "{} {flags:#x}", triple.name());
-                }
+                assert_eq!(bytes[7], 0, "{}", triple.name());
             }
         }
         checked.push(triple.name());
@@ -492,60 +380,37 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
         let linux_host = shim::resolve(Some(clang), "linux", "x86_64");
         let windows_host = shim::resolve(Some(clang), "windows", "x86_64");
         // The compiler's hints advise the bundled toolchain exactly for the targets it links.
-        assert_eq!(
-            windows_host.as_ref().unwrap().zig.is_some(),
-            triple.has_bundled_c_library(),
-            "{}",
-            triple.name()
-        );
-        match triple.os() {
-            // Zig has no C library for these, but their IR still compiles to objects.
-            Os::Android | Os::Ios | Os::BareMetal => {
-                for resolved in [&linux_host, &windows_host] {
-                    let request = resolved.as_ref().unwrap();
-                    assert_eq!(
-                        (request.wasm, request.zig.as_deref(), request.llvm.as_str()),
-                        (false, None, clang)
-                    );
-                }
-            }
-            _ => {
-                let request = windows_host.as_ref().unwrap();
-                let zig = request.zig.as_deref().unwrap();
-                // Zig's target is "<arch>-<os>[-<abi>]": the same machine as the triple.
-                let (arch, rest) = zig.split_once('-').unwrap();
-                assert_eq!(arch, triple.arch_name(), "{}", triple.name());
-                let system = match triple.os() {
-                    Os::MacOs => "macos",
-                    Os::Linux => "linux",
-                    Os::FreeBsd => "freebsd",
-                    Os::Windows => "windows",
-                    _ => unreachable!(),
-                };
-                assert!(rest.starts_with(system), "{}: {zig}", triple.name());
-                if triple.os() == Os::Linux {
-                    assert!(zig.ends_with(if triple.name().ends_with("musl") {
-                        "musl"
-                    } else {
-                        "gnu"
-                    }));
-                }
-                if triple.is_msvc() {
-                    // Only a Windows launcher links MinGW for an MSVC target, and it says so elsewhere.
-                    assert_eq!(
-                        request.llvm,
-                        format!("{}-w64-windows-gnu", triple.arch_name())
-                    );
-                    let message = linux_host.unwrap_err();
-                    assert!(
-                        message.contains("MinGW") && message.contains("-pc-windows-gnu"),
-                        "{message}"
-                    );
-                } else {
-                    assert_eq!(request.llvm, clang, "{}", triple.name());
-                    assert_eq!(linux_host.unwrap(), *request);
-                }
-            }
+        let request = windows_host.as_ref().unwrap();
+        let zig = request.zig.as_deref().unwrap();
+        assert!(!request.wasm);
+        let (arch, rest) = zig.split_once('-').unwrap();
+        assert_eq!(arch, triple.arch_name(), "{}", triple.name());
+        let system = match triple.os() {
+            Os::MacOs => "macos",
+            Os::Linux => "linux",
+            Os::Windows => "windows",
+        };
+        assert!(rest.starts_with(system), "{}: {zig}", triple.name());
+        if triple.os() == Os::Linux {
+            assert!(zig.ends_with(if triple.name().ends_with("musl") {
+                "musl"
+            } else {
+                "gnu"
+            }));
+        }
+        if triple.is_msvc() {
+            assert_eq!(
+                request.llvm,
+                format!("{}-w64-windows-gnu", triple.arch_name())
+            );
+            let message = linux_host.unwrap_err();
+            assert!(
+                message.contains("MinGW") && message.contains("-pc-windows-gnu"),
+                "{message}"
+            );
+        } else {
+            assert_eq!(request.llvm, clang, "{}", triple.name());
+            assert_eq!(linux_host.unwrap(), *request);
         }
     }
     // Without a target, the machine decides exactly as it always has.
@@ -555,12 +420,6 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
             "aarch64",
             "aarch64-macos.12.0",
             "aarch64-apple-macosx12.0.0",
-        ),
-        (
-            "macos",
-            "x86_64",
-            "x86_64-macos.12.0",
-            "x86_64-apple-macosx12.0.0",
         ),
         (
             "linux",
@@ -595,6 +454,7 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
     }
     assert!(shim::resolve(None, "linux", "riscv64").is_err());
     assert!(shim::resolve(None, "freebsd", "x86_64").is_err());
+    assert!(shim::resolve(None, "macos", "x86_64").is_err());
     let wasm = shim::resolve(Some("wasm32-unknown-unknown"), "macos", "aarch64").unwrap();
     assert_eq!(
         (wasm.wasm, wasm.zig.as_deref(), wasm.llvm.as_str()),
@@ -905,10 +765,7 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
     const NET: &str = "def main :: unit -> i32 = \\() ->\n    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))\n    let! outcome = Async.block_on (Net.connect_async address (Maybe.Some 100))\n    do! IO.write_line (Result.is_ok (ref outcome))\n    0\n";
     for (source, name) in [(OS, "os"), (NET, "net")] {
         let setup = setup(name, source);
-        for triple in Triple::ALL
-            .into_iter()
-            .filter(|triple| !triple.is_bare_metal())
-        {
+        for triple in Triple::ALL {
             // A Clang that does not exist: a build that passes the checks fails to start it.
             let output = setup
                 .command(&["build", "--no-cache", "--json", "--target", triple.name()])
@@ -957,18 +814,8 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
             text(&output).1
         };
         if name == "os" {
-            for triple in [Triple::Aarch64AppleIos, Triple::X86_64LinuxAndroid] {
-                assert!(message(triple).contains(&format!(
-                    "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
-                    triple.name()
-                )));
-            }
             assert!(message(Triple::X86_64WindowsGnu).contains(
                 "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10)"
-            ));
-        } else {
-            assert!(message(Triple::X86_64FreeBsd).contains(
-                "the Net socket API is only available for macOS, Linux, and Windows targets; x86_64-unknown-freebsd has no implementation of it"
             ));
         }
         fs::remove_dir_all(setup.root).unwrap();
@@ -980,16 +827,16 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
 fn a_sysroot_the_target_cannot_read_is_refused_before_any_tool_runs() {
     use fake_toolchain::{setup, text};
     let setup = setup("sysroot", "def main :: unit -> i32 = \\() -> 0\n");
-    // An MSVC target and a bare-metal target read no sysroot, whatever the output is.
-    for (triple, extra) in [
-        (Triple::X86_64WindowsMsvc, vec!["--emit", "object"]),
-        (
-            Triple::Riscv64BareMetal,
-            vec!["--emit", "object", "--freestanding", "--allocator", "host"],
-        ),
-    ] {
-        let mut arguments = vec!["build", "--no-cache", "--json", "--target", triple.name()];
-        arguments.extend(extra);
+    for triple in [Triple::X86_64WindowsMsvc, Triple::Aarch64WindowsMsvc] {
+        let arguments = [
+            "build",
+            "--no-cache",
+            "--json",
+            "--target",
+            triple.name(),
+            "--emit",
+            "object",
+        ];
         let output = setup
             .command(&arguments)
             .env("TSUZURI_CLANG", setup.root.join("missing-clang"))
@@ -1020,7 +867,7 @@ fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
     let setup = setup("cache", "let total = 40.0 + 2.0\ntotal\n");
     let mut targets = Triple::ALL
         .into_iter()
-        .filter(|triple| triple.os() == Os::Linux || triple.os() == Os::FreeBsd);
+        .filter(|triple| triple.os() == Os::Linux);
     let (first, second) = (targets.next().unwrap(), targets.next().unwrap());
     let build = |triple: Triple, sysroot: &str| {
         let output = setup

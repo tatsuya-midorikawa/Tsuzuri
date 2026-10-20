@@ -18,7 +18,7 @@
 - **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
-- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。`--target` に `aarch64-unknown-linux-musl` のような名前を渡すと、macOS・Linux・Windows・FreeBSD・Android・iOS・OS を持たない環境の 64-bit の target（22 個）向けにクロスコンパイルできます（同梱ツールチェーンか `TSUZURI_SYSROOT` でリンク）。CI（`.github/workflows/targets.yml` と `windows.yml`）が実行まで確かめる target は一部で、範囲は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
+- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
 - **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
@@ -784,6 +784,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### 必要要件
 
+- **対応 OS / CPU**: Windows x64・Arm64、Linux x64・Arm64、macOS Arm64 のみ（Intel Mac、32-bit、その他の OS / CPU は対象外）
 - **Rust**: 1.85 以降（浮動小数点リテラルの厳密な丸めに `rustc_apfloat` を使用）
 - **LLVM / Clang**: 17 以降（WebAssembly のリンクには `wasm-ld`（LLD）も必要）
 - **Node.js**: 20 以降（WASM テスト・検証用）
@@ -795,7 +796,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### プラットフォーム別のセットアップ
 
-#### macOS (Homebrew)
+#### macOS Arm64 (Homebrew)
 
 ```sh
 brew install llvm lld
@@ -814,7 +815,7 @@ cargo build --release
 #### Windows (MSVC)
 
 LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C++ ツールセット）を用意し、Developer PowerShell 上でビルドを行います。Git Bash では、Git 付属の `link` が MSVC の `link.exe` より先に見つかってリンクが失敗することがあるので、PowerShell を使います。リポジトリは `git clone -c core.autocrlf=false` で取得してください（既定の `core.autocrlf=true` は、fixture とランタイムの IR を CRLF にします）。
-コンパイラは `--target=x86_64-pc-windows-msvc` を指定してネイティブ実行ファイルを生成します。
+コンパイラは、x64 では `--target=x86_64-pc-windows-msvc`、Arm64 では `--target=aarch64-pc-windows-msvc` を指定してネイティブ実行ファイルを生成します。
 
 ```powershell
 cargo build --release
@@ -822,11 +823,11 @@ cargo build --release
 
 `clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`--emit bitcode` が C ランタイムを IR のまま 1 つにまとめる `llvm-link` は、`TSUZURI_LLVM_LINK` で指定します（なければ、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します）。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。`--profile-use` にディレクトリを渡すときに `.profraw` を merge する `llvm-profdata` は `TSUZURI_LLVM_PROFDATA` で指定します（未設定なら `TSUZURI_CLANG` の Clang の隣、その toolchain の順で探し、PATH は探しません）。
 
-x64 の Windows は、CI（`.github/workflows/windows.yml`、`windows-2022`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、Visual Studio 2022 の MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行して確かめています。Windows ARM64 と MinGW のホストの実行は確かめていません。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
+Windows は、CI（`.github/workflows/windows.yml`。x64 は `windows-2022`、Arm64 は `windows-11-arm`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・`cargo test`・`tests/windows.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行します。Visual Studio は x64 が 2022、Arm64 が 2026 で、後者も同梱の 14.44 toolset を使います。配布物の MinGW は、5 環境の CLI と VSIX を作る `.github/workflows/vscode.yml` が検証します。Windows の共有ライブラリ（`--emit shared`）と OS API は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
 #### クロスコンパイル
 
-`--target TRIPLE` でビルド機とは別の OS や CPU 向けのオブジェクト・実行ファイルを作れます。実行ファイルのリンクには、その target の C ヘッダー・C ライブラリ・リンカーが要ります。配布パッケージの同梱ツールチェーン（Zig）は Linux（glibc・musl）・RISC-V Linux・MinGW の Windows・FreeBSD・macOS の 12 個をリンクでき、ほかは環境変数 `TSUZURI_SYSROOT` に SDK か sysroot を渡します。ビルド機で動かせない target の `run`・`test` は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ動きます。何かを取得したり導入したりはしません。
+`--target TRIPLE` で、対応する 5 環境の別 OS や CPU 向けのオブジェクト・実行ファイルを作れます。実行ファイルのリンクには、その target の C ヘッダー・C ライブラリ・リンカーが要ります。同梱ツールチェーン（Zig）は Linux（glibc・musl）の x64/Arm64、MinGW の Windows x64/Arm64、macOS Arm64 の 7 個をクロスリンクできます。MSVC のリンクは Windows SDK と CRT を使います。システムの Clang には `TSUZURI_SYSROOT` で SDK か sysroot を渡せます。ビルド機で動かせない target の `run`・`test` は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ動きます。何かを取得したり導入したりはしません。
 
 ```sh
 tsuzuri build app --target aarch64-unknown-linux-musl -o app-linux-arm64
@@ -868,7 +869,7 @@ tsuzuri lsp
 | オプション | 説明 |
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
-| `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は `aarch64-apple-darwin` や `x86_64-unknown-linux-musl` など 22 個の native の名前で、`tsuzuri --help` に一覧が出ます。32-bit は対象外）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
+| `--target native\|wasm32\|wasm64\|TRIPLE` | ターゲット環境を指定します（既定: `native`。`wasm64` は 64-bit 線形メモリ。`TRIPLE` は対応する 5 環境の 9 個の native の名前で、`tsuzuri --help` に一覧が出ます）。ビルド機で動かせない `TRIPLE` の `run`・`test` は、`TSUZURI_RUNNER` に実行器を指定したときだけ動きます。 |
 | `--emit exe\|object\|llvm\|header\|wasm\|wgsl\|wgsl-relaxed\|spirv\|spirv-relaxed\|shared\|bitcode\|bindings-js\|bindings-cs\|bindings-py\|bindings-cpp` | 出力成果物の種類（既定: native は `exe`、WASM は `wasm`）。`wgsl` は厳密な `i32`／`i32u` の GPU カーネル、`wgsl-relaxed` は緩い `f32` を含むカーネルの WGSL、`spirv` は Vulkan 用の厳密なカーネル（`i32`・`i32u`・`i64`・`i64u`・`f32`）、`spirv-relaxed` は緩い `f32` のカーネルの SPIR-V で、どれも `-O`・`--target`・`--cpu` と併用できません。`bindings-js` は `--target wasm32` で JavaScript のグルー `<name>.mjs` と TypeScript 宣言 `<name>.d.mts` を出します（`--wasm-feature threads` でスレッドプール版）。`shared` は native の共有ライブラリ、`bitcode` は C・C++ のホストが `-flto=thin` で小さな公開関数を inline できる ThinLTO の LLVM bitcode（native と wasm32。同じ Clang でリンクする。C ランタイムを使うプログラムには `llvm-link` が要る）、`bindings-cs`／`bindings-py`／`bindings-cpp` はそれを呼ぶ C#／Python／C++ のバインディングです。 |
 | `-O0` ～ `-O3` | 最適化レベル（既定: `-O3`。高速化のために精度を損なう fast-math などは使用しません）。 |
 | `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで（native の関数値の inline 属性 `alwaysinline` だけは、`-O0`・`-Os`・`-Oz` で外れます）、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
@@ -1036,10 +1037,11 @@ node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
 node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
 node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
-node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 22 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml
-node tests/windows.mjs target/release/tsuzuri.exe   # Windows x64（MSVC）だけ。PowerShell で。native の -O0／-O3、名前を付けた x86_64-pc-windows-msvc の build・run・test、Win32 の task と失敗の注入、トラップの報告、UTF-8、hard link の拒否、既存出力の置換、object の ABI、WASM を確かめる。CI は .github/workflows/windows.yml（cache.mjs・examples.mjs・wasm_threads.mjs・cargo test も）
+node tests/platforms.mjs   # 配布物と CI マトリクスが対応する 5 環境だけを含むこと
+node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 9 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml
+node tests/windows.mjs target/release/tsuzuri.exe   # Windows x64 / Arm64（MSVC）。PowerShell で。native の -O0／-O3、ホストの MSVC triple の build・run・test、Win32 の task と失敗の注入、トラップの報告、UTF-8、hard link の拒否、既存出力の置換、object の ABI、WASM を確かめる。CI は .github/workflows/windows.yml（cache.mjs・examples.mjs・wasm_threads.mjs・cargo test も）
 node tests/cpu_kernels.mjs target/release/tsuzuri
-node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…。各値は `|` で複数許可できる）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Intel Mac・Linux x86-64・Linux arm64 の runner でこのコマンドを実行し、Linux x86-64 の `native` は runner の機能に応じ `conversions` または `hardware` を許可し、現時点で `conversions` の実行を確認済み（AVX512-FP16 の `hardware` 実行は未確認）。実行した経路は参照と照合するが速度は測らない。Windows の実行も未確認。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
+node tests/f16_hardware.mjs target/release/tsuzuri   # f16 の経路（ソフトウェア・F16C の変換・half 命令）を JS の参照実装とビット単位で照合し、実行した経路を表示する（D10）。--quick は件数を減らす。TSUZURI_F16_EXPECT=hardware|conversions|soft（既定の CPU と native を分けるなら generic=…,native=…。各値は `|` で複数許可できる）を付けると、期待した経路が実行されなかったときに失敗する。`.github/workflows/targets.yml` が macOS arm64・Linux x86-64・Linux arm64 の runner でこのコマンドを実行し、Linux x86-64 の `native` は runner の機能に応じ `conversions` または `hardware` を許可し、現時点で `conversions` の実行を確認済み（AVX512-FP16 の `hardware` 実行は未確認）。実行した経路は参照と照合するが速度は測らない。Windows の実行も未確認。cargo test --locked の tests/f16_hardware.rs は clang で生成コードを確かめる
 node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）

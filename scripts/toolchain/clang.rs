@@ -16,19 +16,13 @@ pub struct Request {
 }
 
 /// The Clang targets that the compiler passes for `--target TRIPLE`, with Zig's name for each. Zig
-/// ships the C library of every one of them. The targets of Android, iOS, and bare metal are
-/// missing: Zig has no C library for them, but the LLVM Clang still compiles their IR to objects.
-const NATIVE_TARGETS: [(&str, &str); 14] = [
+/// ships the C library of every one of them, using MinGW for the Windows MSVC triples.
+const NATIVE_TARGETS: [(&str, &str); 9] = [
     ("arm64-apple-macosx12.0.0", "aarch64-macos.12.0"),
-    ("x86_64-apple-macosx12.0.0", "x86_64-macos.12.0"),
     ("aarch64-unknown-linux-gnu", "aarch64-linux-gnu"),
     ("x86_64-unknown-linux-gnu", "x86_64-linux-gnu"),
     ("aarch64-unknown-linux-musl", "aarch64-linux-musl"),
     ("x86_64-unknown-linux-musl", "x86_64-linux-musl"),
-    ("riscv64-unknown-linux-gnu", "riscv64-linux-gnu"),
-    ("riscv64-unknown-linux-musl", "riscv64-linux-musl"),
-    ("aarch64-unknown-freebsd14", "aarch64-freebsd"),
-    ("x86_64-unknown-freebsd14", "x86_64-freebsd"),
     ("aarch64-w64-windows-gnu", "aarch64-windows-gnu"),
     ("x86_64-w64-windows-gnu", "x86_64-windows-gnu"),
     ("aarch64-pc-windows-msvc", "aarch64-windows-gnu"),
@@ -70,6 +64,9 @@ pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, St
             })
         }
         None => {
+            if os == "macos" && arch != "aarch64" {
+                return Err("the macOS toolchain requires ARM64".to_owned());
+            }
             let architecture = match arch {
                 "x86_64" => "x86_64",
                 "aarch64" => "aarch64",

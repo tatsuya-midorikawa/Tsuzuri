@@ -1354,7 +1354,7 @@ match Random.pcg_next_u32 generator with
 - `Os.Error.code` には WASI 仕様の errno 番号が格納されます。ファイルパスは、preopen されたディレクトリのうちスラッシュ `/` 境界で最長一致するプレフィックスを起点として解決され、いずれにも一致しないパスは最初の preopen ディレクトリからの相対パスとして扱われます。`Env.current_dir ()` は最初の preopen ディレクトリ名（例: `/work`）を返し、`Process.run` は `Other` エラーとなります。
 - 動作は Node.js の `node:wasi` 実装を用いて検証されており、システム固有のエラーコード番号の差異を除いてネイティブ環境の実行結果と完全に一致します（なお、WASI preview2 および WebAssembly コンポーネントモデルは現時点で未対応です）。
 
-Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。`src/runtime/os.c` は POSIX の API で書いてあり、Windows 向けの実装がないためで、推測してリンクはしません（OS API を使用しない純粋計算プログラムには影響しません。Windows の x64（MSVC）の実行は、CI の `windows-2022` が `cargo test` と E2E で検証しています。`Net` のソケットは Winsock で対応し、実行は `vscode.yml` の Windows の job が検証します。[G10](../_features/_completed/G10-windows.md)）。`--target` で名指しした Windows、iOS、Android の target も、ビルド機に関係なく同じ `E2002` です。
+Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。`src/runtime/os.c` は POSIX の API で書いてあり、Windows 向けの実装がないためで、推測してリンクはしません（OS API を使用しない純粋計算プログラムには影響しません。Windows x64 と Arm64 の MSVC の実行は、CI の `windows-2022` と `windows-11-arm` が `cargo test` と E2E で検証します。`Net` のソケットは Winsock で対応し、実行は `vscode.yml` の Windows の job が検証します。[G10](../_features/_completed/G10-windows.md)）。`--target` で名指しした Windows の target も、ビルド機に関係なく同じ `E2002` です。対応するネイティブ環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 だけで、それ以外の `--target` は引数解析で `E2000` です。
 
 ### ネットワーク（Net）
 
@@ -3157,7 +3157,7 @@ Simd.sum_lanes shifted
 
 ### CPU ごとの関数の版（`@cpu`）
 
-トップレベル関数の `def` シグネチャの直前（`private` や `export` より前）に `@cpu ["avx2", "sve"]` のように CPU の命令セット名の文字列を並べると、native の exe と object はその関数を命令セットごとにもう一度 compile し、実行時に CPU が対応する最新の版を選びます。名前は `"sse4.2"`、`"avx2"`、`"avx512"`（x86-64、Windows を除く）、`"sve"`、`"sve2"`（AArch64 の Linux と Android）で、build 先（`--target`。既定はビルド機）で選べない名前は無視します。未知の名前、重複、空の並び、`def` 以外への指定は `E0002` です。`cpu` は予約語ではありません。
+トップレベル関数の `def` シグネチャの直前（`private` や `export` より前）に `@cpu ["avx2", "sve"]` のように CPU の命令セット名の文字列を並べると、native の exe と object はその関数を命令セットごとにもう一度 compile し、実行時に CPU が対応する最新の版を選びます。名前は `"sse4.2"`、`"avx2"`、`"avx512"`（Linux x64）、`"sve"`、`"sve2"`（Linux Arm64）で、build 先（`--target`。既定はビルド機）で選べない名前は無視します。未知の名前、重複、空の並び、`def` 以外への指定は `E0002` です。`cpu` は予約語ではありません。
 どの版も同じ型付き IR から作るため、整数の折り返し、浮動小数点の演算順序、NaN、符号付きゼロ、トラップは変わりません。版ごとに 256-bit ベクトルを渡すレジスタが異なるため、引数と結果は 256-bit ベクトルを（レコード、union、タプル、固定長配列の中を含め）持てず、本体は 256-bit ベクトルを渡す関数値を呼べません（いずれも `E1005`。ジェネリック関数は具体化した型で検査します）。256-bit ベクトルを渡して直接呼ぶ関数は同じ命令セットで compile し、それ以外の呼び出し先は portable 版のままです。
 選択は関数ごとに最初の呼び出しで一度だけ行い、テスト用の `TSUZURI_CPU_FORCE` があればその水準以下の同じ系統の版に限ります。WASM、`--emit llvm`、`--freestanding`、および対応する命令セットのない build 先（macOS の AArch64 など）では portable 版だけを作ります。
 
@@ -3679,7 +3679,7 @@ CPU の専用拡張命令や SIMD 命令の活用は純粋にコンパイラ内�
 - 結果が NaN のときは、ハードウェアが返す符号とペイロードを使いません。ソフトウェア経路と同じく、quiet NaN `0x7E00` に、`+`・`-` では左辺、`*`・`/` では両辺の符号の排他的論理和を付けた値にそろえます。`Math.sqrt` は NaN の入力をそのまま返し、負の入力には正の `0x7E00` を返します。`as` は、入力の符号を保った目的の型の quiet NaN を返します。
 - `Math.fma`、`Math.min`／`max`／`clamp`、`Math.floor`／`ceil`／`trunc`／`round`／`round_even`、整数・`f128`・decimal との `as`、表示と解析は、どのビルドでも同梱のソフトウェア経路です。定数評価はコンパイラの中で行います。単項 `-`、`Math.abs`／`copysign`／`is_nan`／`is_infinite`／`is_finite`、`Hash` は、もとから整数のビット演算で、どのビルドでも同じです。
 - `f16` を使わないプログラムの生成物は、この経路の導入前と同一です。WASM の生成物は、`f16` の有無にかかわらず変わらず、`half` 命令も追加の import も持ちません。
-- 速度の測定は macOS arm64（Apple M1 Max）だけです。CI では Intel Mac の F16C 変換、Linux x86-64 の F16C 変換、Linux arm64 の `hardware` を各 runner 上で実行し、参照とビット一致を照合します。Linux x86-64 は runner の機能により `native=conversions|hardware` を許容しますが、AVX512-FP16 の `hardware` 実行は未確認です。Windows の実行も未確認です。条件と数値は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります。
+- 速度の測定は macOS arm64（Apple M1 Max）だけです。CI では macOS arm64 と Linux arm64 の `hardware`、Linux x86-64 の F16C 変換を各 runner 上で実行し、参照とビット一致を照合します。Linux x86-64 は runner の機能により `native=conversions|hardware` を許容しますが、AVX512-FP16 の `hardware` 実行は未確認です。Windows の実行も未確認です。条件と数値は [benchmarks.md](benchmarks.md#f16-のハードウェア経路d10) にあります。
 
 ### 組み込み関数
 
@@ -4074,9 +4074,10 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 
 ### ネイティブのターゲットとクロスコンパイル
 
-`--target` は、`native`（ビルド機。Clang へ `--target` を渡さない）、`wasm32`、`wasm64`、および 64-bit のリトルエンディアンの native の名前を受けます。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です。native の名前は、`aarch64-apple-darwin`、`x86_64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`、`aarch64-pc-windows-msvc`、`x86_64-pc-windows-msvc`、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`、`riscv64gc-unknown-linux-gnu`、`riscv64gc-unknown-linux-musl`、`aarch64-pc-windows-gnu`、`x86_64-pc-windows-gnu`、`aarch64-unknown-freebsd`、`x86_64-unknown-freebsd`、`aarch64-linux-android`、`x86_64-linux-android`、`aarch64-apple-ios`、`aarch64-apple-ios-sim`、`x86_64-apple-ios`、`aarch64-unknown-none`、`x86_64-unknown-none`、`riscv64gc-unknown-none-elf` の 22 個で、大文字小文字を区別し、別名は受け付けません。32-bit の native の target は、native の IR が 64-bit のポインターを前提にするため、`E2000`（`32-bit native targets are not supported because native code generation assumes 64-bit pointers`）です。
-言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`async.c`・Win32 のタスク）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、bare-metal の x86-64 の `noredzone`、出力の拡張子です。`--target native` の出力は、名前を付ける機能を足す前と同じです。
-名前を付けた target の実行ファイルは、同梱ツールチェーン（Zig）か、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。Apple の target は SDK）でリンクします。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。bare-metal の target（`*-unknown-none*`）は、`--freestanding --allocator host` の `object`・`llvm`・`header` だけを受けます。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) にあります。
+コンパイラのホストとネイティブ出力は、Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 環境だけに対応します。ほかの環境でコンパイラをビルドすると Rust のコンパイルエラーです。WebAssembly への出力は維持します。
+`--target` は、`native`（ビルド機。Windows 以外では Clang へ `--target` を渡さない）、`wasm32`、`wasm64`、および 64-bit・リトルエンディアンの native の名前を受けます。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です。native の名前は `aarch64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`、`aarch64-pc-windows-msvc`、`x86_64-pc-windows-msvc`、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`、`aarch64-pc-windows-gnu`、`x86_64-pc-windows-gnu` の 9 個です。Linux の glibc/musl と Windows の MSVC/MinGW を区別し、大文字小文字を区別し、別名は受け付けません。macOS x64、RISC-V、FreeBSD、Android、iOS、bare-metal など、それ以外は `E2000`（`unknown target`）です。32-bit は、native の IR が 64-bit のポインターを前提にする理由も添えます。
+言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`async.c`・Win32 のタスク）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、出力の拡張子です。`--target native` の出力は従来と同じです。
+名前を付けた target の実行ファイルは、同梱ツールチェーンか、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。macOS は SDK）でリンクします。MSVC の SDK と CRT は `INCLUDE` と `LIB` を使います。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) にあります。
 
 ### 生成バインディング
 
@@ -4209,7 +4210,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
-| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows・iOS・Android の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
+| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
 | `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

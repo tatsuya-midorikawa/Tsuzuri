@@ -205,12 +205,12 @@ VS Code 1.103 以降が必要です。
 
 | OS | CPU | 編集・実行・テスト | デバッグ |
 | --- | --- | --- | --- |
-| macOS | x64、Apple シリコン（ARM64） | 対応 | 対応 |
+| macOS | Apple シリコン（ARM64） | 対応 | 対応 |
 | Linux（glibc） | x64、ARM64 | 対応 | 対応 |
 | Windows | x64 | 対応 | 対応 |
 | Windows | ARM64 | 対応 | 未対応 |
 
-- 32-bit x86、Alpine Linux など musl ベースの環境で動く VS Code、Web 版 VS Code は対象外です。
+- Intel Mac、32-bit x86、Alpine Linux など musl ベースの環境で動く VS Code、Web 版 VS Code は対象外です。
 - Remote - SSH、WSL、Dev Containers では、リモート側に拡張機能をインストールしてください。
 - Linux で作る実行ファイルは、同梱の musl を使います。
 - VS Code を使わない環境（CI、サーバー、ほかのエディター）では、同じツールチェーンを CLI の配布物（`tsuzuri-<version>-<host>.tar.gz`）として使えます。導入手順は[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#配布物を使う)を参照してください。

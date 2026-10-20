@@ -4554,26 +4554,16 @@ mod tests {
         // The names are spelled out here, not read from the table that parses them.
         let names = [
             "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
             "aarch64-unknown-linux-gnu",
             "x86_64-unknown-linux-gnu",
             "aarch64-pc-windows-msvc",
             "x86_64-pc-windows-msvc",
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
-            "riscv64gc-unknown-linux-gnu",
-            "riscv64gc-unknown-linux-musl",
             "aarch64-pc-windows-gnu",
             "x86_64-pc-windows-gnu",
-            "aarch64-unknown-freebsd",
-            "x86_64-unknown-freebsd",
-            "aarch64-linux-android",
-            "x86_64-linux-android",
-            "aarch64-apple-ios",
-            "aarch64-apple-ios-sim",
-            "x86_64-apple-ios",
         ];
-        assert_eq!(Triple::names().split(", ").count(), names.len() + 3);
+        assert_eq!(Triple::names().split(", ").count(), names.len());
         for name in names {
             let build = parse(&["build", "app", "--target", name]).unwrap();
             assert_eq!(build.options.target, Target::Native, "{name}");
@@ -4586,30 +4576,6 @@ mod tests {
             assert!(run.options.trap_info);
             let bench = parse(&["bench", "app", "--target", name]).unwrap();
             assert_eq!(bench.options.triple.map(Triple::name), Some(name));
-        }
-        // Bare metal has no executable, so only freestanding output names it.
-        for name in [
-            "aarch64-unknown-none",
-            "x86_64-unknown-none",
-            "riscv64gc-unknown-none-elf",
-        ] {
-            assert!(
-                parse(&["build", "app", "--target", name]).is_err(),
-                "{name}"
-            );
-            let object = parse(&[
-                "build",
-                "app",
-                "--target",
-                name,
-                "--emit",
-                "object",
-                "--freestanding",
-                "--allocator",
-                "host",
-            ])
-            .unwrap();
-            assert_eq!(object.options.triple.map(Triple::name), Some(name));
         }
         // The aliases of WebAssembly select the same code generators, and no triple.
         for (text, target) in [
@@ -4630,6 +4596,19 @@ mod tests {
             "x86_64-linux-gnu",
             "AARCH64-apple-darwin",
             "",
+            "x86_64-apple-darwin",
+            "riscv64gc-unknown-linux-gnu",
+            "riscv64gc-unknown-linux-musl",
+            "aarch64-unknown-freebsd",
+            "x86_64-unknown-freebsd",
+            "aarch64-linux-android",
+            "x86_64-linux-android",
+            "aarch64-apple-ios",
+            "aarch64-apple-ios-sim",
+            "x86_64-apple-ios",
+            "aarch64-unknown-none",
+            "x86_64-unknown-none",
+            "riscv64gc-unknown-none-elf",
         ] {
             assert_eq!(
                 parse(&["build", "app", "--target", value]).unwrap_err(),

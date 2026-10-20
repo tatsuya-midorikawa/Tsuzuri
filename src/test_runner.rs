@@ -150,15 +150,6 @@ fn run_with_timeout(
                 ),
             ));
         }
-        if triple.is_bare_metal() {
-            return Err(driver_error(
-                "E2000",
-                format!(
-                    "{} has no operating system: a test needs an executable, which only a target with one can build",
-                    triple.name()
-                ),
-            ));
-        }
         if options.coverage && platform.cross() {
             return Err(driver_error(
                 "E2000",
@@ -1074,12 +1065,6 @@ pub fn run_benches_linked(
                 "tsuzuri bench measures the machine it runs on and cannot run {0} benchmarks here; run 'tsuzuri bench' on a {0} machine",
                 triple.name()
             ),
-        ));
-    }
-    if options.triple.is_some_and(Triple::is_bare_metal) {
-        return Err(driver_error(
-            "E2000",
-            "a bare-metal target has no operating system to run a benchmark",
         ));
     }
     if options.optimization > 3 {

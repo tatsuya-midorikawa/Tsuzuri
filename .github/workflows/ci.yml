@@ -1,7 +1,7 @@
 name: Tsuzuri CI
 
 # The gate of a pull request, on one Linux host in about 20 minutes: formatting, lints, the Rust tests (cargo-nextest; the
-# dev profile of Cargo.toml is opt-level 1), a type check of the Windows targets, and the end-to-end suites that a compiler
+# dev profile of Cargo.toml is opt-level 1), a type check of all five supported platforms, and the end-to-end suites that a compiler
 # change breaks most often, run on the dev binary. targets.yml, windows.yml and vscode.yml are the slow matrices: they run
 # after every merge to main and, on a pull request, with the label `ci:full`. reference.yml checks the language reference.
 
@@ -16,7 +16,7 @@ on:
       - scripts/**
       - Cargo.*
       - .config/**
-      - .github/workflows/ci.yml
+      - .github/workflows/**
   push:
     branches:
       - main
@@ -43,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, aarch64-unknown-linux-gnu, aarch64-apple-darwin
       - uses: actions/cache@v4
         with:
           path: |
@@ -74,13 +74,17 @@ jobs:
       - name: Clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --locked --all-targets -- -D warnings
-      # Windows-only code is compiled here, not run: AGENTS.md (.github/instructions/ci.instructions.md) asks for it, and
-      # a Windows compile error found by windows.yml costs an hour.
-      - name: Type check of the Windows targets
+      # Linux x64 is checked by Clippy above; the other four platforms are compiled here, not run.
+      - name: Type check of all supported platforms
         if: ${{ !cancelled() }}
         run: |
           cargo check --locked --all-targets --target x86_64-pc-windows-msvc
           cargo check --locked --all-targets --target aarch64-pc-windows-msvc
+          cargo check --locked --all-targets --target aarch64-unknown-linux-gnu
+          cargo check --locked --all-targets --target aarch64-apple-darwin
+      - name: Supported platform and distribution contracts
+        if: ${{ !cancelled() }}
+        run: node tests/platforms.mjs
       # Four MiB per test thread, as in targets.yml and windows.yml.
       - name: Rust tests
         if: ${{ !cancelled() }}

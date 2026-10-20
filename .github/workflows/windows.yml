@@ -1,8 +1,8 @@
 name: Windows MSVC
 
-# G10: the execution gate of the Windows x86-64 (MSVC ABI) native target, on a GitHub-hosted windows-2022
-# runner with the Visual Studio 2022 toolset and the pinned LLVM 21.1.8. W1-W8 are the gate of
-# _features/_completed/G10-windows.md; the tier of x86_64-pc-windows-msvc in
+# The execution gate of the Windows x64 and Arm64 (MSVC ABI) native targets, on GitHub-hosted
+# windows-2022 and windows-11-arm runners with MSVC 14.44 (Visual Studio 2022/2026) and pinned LLVM 21.1.8.
+# W1-W8 extend the gate of _features/_completed/G10-windows.md; the tiers in
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it is the longest step
@@ -16,7 +16,7 @@ name: Windows MSVC
 # tests/lsp_sessions.mjs, tests/async.mjs, tests/net.mjs and the PDB and natvis checks run on Windows in
 # vscode.yml. The Linux and macOS hosts, and the targets that they cross-compile, are in targets.yml.
 # tests/stack.mjs (PM09, guaranteed tail calls) is not a step of this gate: its native half runs a mutual recursion of ten million
-# calls, which no Windows run has checked, so targets.yml runs it on the four Linux and macOS hosts and platforms.md claims it for no
+# calls, which no Windows run has checked, so targets.yml runs it on the three Linux and macOS hosts and platforms.md claims it for no
 # Windows target. cargo test (W3) does run the Rust tests of the IR (tests/tail_recursion.rs, tests/stack_frames.rs).
 # This gate runs after every merge to main and, on a pull request, with the label `ci:full` (ci.yml is the gate of every
 # pull request). `workflow_dispatch` with `fast` set skips W3, so that a branch reads every other step in about 10 minutes.
@@ -46,14 +46,32 @@ concurrency:
 jobs:
   windows:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
-    runs-on: windows-2022
+    name: Windows MSVC (${{ matrix.host }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            host: win32-x64
+            arch: x64
+            vs_directory: '2022'
+            installer: LLVM-21.1.8-win64.exe
+            checksum: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
+          - os: windows-11-arm
+            host: win32-arm64
+            arch: arm64
+            vs_directory: '18'
+            installer: LLVM-21.1.8-woa64.exe
+            checksum: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
       GATE_MSVC_TOOLSET: '14.44'
       GATE_WINDOWS_SDK: '10.0.26100.0'
+      GATE_VS_DIRECTORY: ${{ matrix.vs_directory }}
       # The same installer and SHA-256 as vscode.yml.
-      LLVM_INSTALLER: LLVM-21.1.8-win64.exe
-      LLVM_INSTALLER_SHA256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
+      LLVM_INSTALLER: ${{ matrix.installer }}
+      LLVM_INSTALLER_SHA256: ${{ matrix.checksum }}
     steps:
       # The runner checks out with core.autocrlf=true, which turns the fixtures and src/runtime/*.ll into CRLF.
       - name: Keep LF line endings
@@ -65,10 +83,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - name: Check host architecture
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_HOST) process.exit(1)'
       # The only action from outside actions/ and dtolnay/, so it is pinned to the commit of v1.13.0.
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         with:
-          arch: x64
+          arch: ${{ matrix.arch }}
           toolset: ${{ env.GATE_MSVC_TOOLSET }}
           sdk: ${{ env.GATE_WINDOWS_SDK }}
       # The runner's own LLVM (C:\Program Files\LLVM) changes with the image, so the gate installs its own. The
@@ -113,7 +135,7 @@ jobs:
           if ($clang -notmatch 'clang version 21\.1\.8') { throw "expected LLVM 21.1.8, got: $clang" }
           if ($env:VCToolsVersion -notlike "$($env:GATE_MSVC_TOOLSET).*") { throw "expected MSVC toolset $env:GATE_MSVC_TOOLSET, got: $env:VCToolsVersion" }
           if ($env:WindowsSDKVersion.TrimEnd('\') -ne $env:GATE_WINDOWS_SDK) { throw "expected Windows SDK $env:GATE_WINDOWS_SDK, got: $env:WindowsSDKVersion" }
-          if ($link -notlike "*\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio 2022 MSVC $env:VCToolsVersion: $link" }
+          if ($link -notlike "*\Microsoft Visual Studio\$($env:GATE_VS_DIRECTORY)\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio installation $env:GATE_VS_DIRECTORY MSVC $($env:VCToolsVersion): $link" }
           if ($eol -notmatch 'w/lf') { throw "src/runtime/string.ll is not checked out with LF: $eol" }
       - name: W1 cargo fmt
         run: cargo fmt --all -- --check

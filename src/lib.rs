@@ -1,3 +1,12 @@
+#[cfg(not(any(
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
+compile_error!("Tsuzuri supports only Windows x64/Arm64, Linux x64/Arm64, and macOS Arm64 hosts");
+
 pub mod abi;
 pub mod api_diff;
 #[cfg(feature = "fast-backend")]
