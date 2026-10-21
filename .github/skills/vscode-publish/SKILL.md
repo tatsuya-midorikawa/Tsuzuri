@@ -30,7 +30,7 @@ argument-hint: "[version | patch] [prepare-only]"
 2. main の最新 CI を基準として確認する。`vsc/package.json` の `name`・`publisher`・`version`、lockfile、CHANGELOG、公開済みの版と target を読む。
 3. 既存のリリース branch・PR・`vsc-v<VERSION>` タグ・CI を調べる。公開済み、アップロード済みで検証待ち、まだ存在しない、を区別する。
 4. リポジトリに固定された `vsc/node_modules/.bin/vsce` を使う。依存がなければ lockfile に従い `npm --prefix vsc ci` で復元する。グローバルの別版は使わない。
-5. `vsce show tmidorikawa.tsuzuri --json` で公開状態を確認する。認証は `vsce verify-pat tmidorikawa`、または構成済み Entra ID の `vsce verify-pat tmidorikawa --azure-credential` で確認する。認証がなければ、安全なログインを利用者に依頼する。PAT は `vsce login tmidorikawa` の非表示入力へ利用者が直接入力し、チャットでは受け取らない。
+5. `vsce show tmidorikawa.tsuzuri --json` で公開状態を確認する。**公開を実行する場合だけ**、`vsce verify-pat tmidorikawa`、または構成済み Entra ID の `vsce verify-pat tmidorikawa --azure-credential` で認証を確認する。認証がなければ、安全なログインを利用者に依頼する。PAT は `vsce login tmidorikawa` の非表示入力へ利用者が直接入力し、チャットでは受け取らない。準備・版更新だけの依頼では、公開資格情報の入力を求めない。
 
 ## 2. 版を更新して検証する
 
