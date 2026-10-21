@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-10-21
 
+- Support only Windows x64/ARM64, Linux x64/ARM64, and macOS ARM64. macOS x64 (Intel) packages are no longer released; Windows ARM64 continues to support editing, building, running, and testing without source debugging.
+- Reject unsupported extension hosts before starting the language server or resolving a development compiler, and apply the same host checks to toolchain verification, VSIX creation and verification, and IDE integration tests.
+- Check the five supported platforms consistently across CI, distribution settings, and the development and publishing documentation.
 - New Project asks for the project namespace, checks it with the rules of `tsuzuri new`, and creates the project with the bundled `tsuzuri new`, so `Tsuzuri.toml` always sets `namespace` and `Main.tz` declares it.
 - Highlighting, semantic tokens, and keyword completion for `namespace` and `using` declarations; module completion and go to definition follow namespaces and `using`.
 - Namespace paths use `::` (`namespace Sample::Features`, `Sample::Features::Shape.area`): highlighting colors each namespace segment, completion offers a namespace's modules and namespaces after `::`, details show full names such as `module Demo::Shapes::Circle`, and New Project accepts namespaces such as `Acme::Tools`.
