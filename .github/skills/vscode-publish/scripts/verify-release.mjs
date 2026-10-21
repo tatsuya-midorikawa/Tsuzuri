@@ -70,7 +70,8 @@ export function verifyMarketplace(version, metadata) {
   assert.equal(metadata.extensionName, 'tsuzuri', 'Marketplace name mismatch');
   assert.ok(Array.isArray(metadata.versions), 'Missing Marketplace versions');
   const versions = metadata.versions.filter(item => item.version === version);
-  assert.deepEqual(versions.map(item => item.targetPlatform).sort(), hosts, 'Marketplace target set mismatch');
+  assert.deepEqual(versions.map(item => item.targetPlatform).sort(), hosts,
+    'Marketplace target set mismatch (missing, duplicate, or unexpected targets). If uploads were accepted, inspect propagation before retrying publication.');
   for (const item of versions) {
     assert.ok(Number.isInteger(item.flags), `Invalid Marketplace flags: ${item.targetPlatform}`);
     assert.equal(item.flags & ExtensionVersionFlags.Validated, ExtensionVersionFlags.Validated,

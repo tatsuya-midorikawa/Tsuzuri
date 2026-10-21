@@ -102,6 +102,7 @@ node .github/skills/vscode-publish/scripts/verify-release.mjs marketplace "$VERS
 
 - このコマンドは認証なしの公開カタログの 5 target と各版の Validated フラグを検査し、ログインやトークンの取得は行わない。1 つでも未検証なら失敗する。
 - 検証待ちなら、おおむね 1 分間隔で再確認する。非ゼロ終了の理由を読み、ネットワーク障害や validation エラーを検証待ちと混同しない。長く待つ場合は管理画面や認証済み公式 Gallery API の `validationResultMessage` も調べる。
+- アップロード受理後でも、公開カタログへの反映待ちで target が不足することがある。`target set mismatch` だけを根拠に再アップロードせず、公開ログと管理側の版・target を照合する。余分な target や重複を正常な検証待ちとして扱わない。
 - 検証エラー・手動審査待ちで解決できなければ「アップロード済み・公開確認未完了」と正確に報告する。公開完了を装わず、同じ版を上書きしない。
 - 全 target が成功したら、版・5 target・コミット/タグ・PR・CI run・各 VSIX の SHA-256・検証時刻を公開記録へ残す。検証済み VSIX/sidecar は保持し、scratch の中間 ZIP や補助出力だけを削除する。
 - 最終報告には公開版、Marketplace のリンク、5 環境すべての検証結果、version PR の状態を簡潔に示す。
