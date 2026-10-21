@@ -3,6 +3,8 @@
 この文書は、Tsuzuri の VS Code 拡張を OS／CPU 別の VSIX にまとめ、Visual Studio Marketplace に公開するための手順です。
 利用者向けの操作説明は [README.md](README.md)、開発環境と検証の詳細は [Development.md](Development.md) を参照してください。
 
+Copilot で同じ手順を実行するときは、リポジトリの [vscode-publish スキル](../.github/skills/vscode-publish/SKILL.md) を使えます。`/vscode-publish patch` または「vsc を指定の版に更新して Publish」と依頼すると、版更新、5環境の CI 成果物検証、公開、Marketplace の検証確認を進めます。準備だけの依頼では公開しません。
+
 確認日: 2026-09-29。認証や Marketplace の制約は変更されるため、公開前に[公式の公開ガイド](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)も確認してください。
 
 ## 1. パッケージと公開の違い
@@ -301,6 +303,8 @@ CLI 認証を使わず、[Marketplace の管理画面](https://marketplace.visua
 
 ## 10. 公開後の確認と更新
 
+- `vsce publish` の `Published` や、公開カタログに版が表示されたことだけを完了条件にしません。5 target それぞれの `ExtensionVersionFlags.Validated`（ビットマスク `1`）が必要です。アップロード直後は、カタログに版が見えても一部の target が未検証のことがあります。
+- [公開状態チェッカー](../.github/skills/vscode-publish/scripts/verify-release.mjs) の `marketplace VERSION` は、ログインやトークンの取得を行わず、公開カタログを照会して5 target 全部の検証完了を確認します。未検証なら待って再確認し、同じ版を再アップロードしません。validation エラーや手動審査待ちは、公開完了と区別して報告します。
 - 管理画面で Publisher、バージョン、target の一覧、検証結果を確認する。
 - Marketplace の説明、PNG アイコン、ライセンス、リンクが正しく表示されることを確認する。
 - 対象プラットフォームのクリーンな VS Code からインストールして動作を確認する。
