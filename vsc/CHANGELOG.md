@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 - 2026-10-22
+
+- Require an Apple Silicon (ARM64) Clang when building and verifying the bundled macOS toolchain, and reject Intel macOS launcher hosts and targets even when a target is specified explicitly.
+- Reject Intel macOS Clang targets in `tsuzuri bindgen` before generating bindings, with an explicit supported-platform diagnostic.
+- Align macOS setup instructions and the bundled handbook with Apple Silicon-only support. Windows x64/ARM64, Linux x64/ARM64, and macOS ARM64 remain the five package targets; Windows ARM64 source debugging remains unsupported.
+
 ## 0.1.2 - 2026-10-21
 
 - Support only Windows x64/ARM64, Linux x64/ARM64, and macOS ARM64. macOS x64 (Intel) packages are no longer released; Windows ARM64 continues to support editing, building, running, and testing without source debugging.

@@ -3,7 +3,7 @@
   "displayName": "Tsuzuri",
   "description": "Tsuzuri IDE",
   "icon": "media/icon.png",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "tmidorikawa",
   "license": "Apache-2.0",
   "repository": {"type": "git", "url": "https://github.com/tatsuya-midorikawa/Tsuzuri.git", "directory": "vsc"},
