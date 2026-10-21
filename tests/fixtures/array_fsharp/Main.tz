@@ -50,6 +50,31 @@ fn id_at pairs position =
     match pairs[position] with
     | (id, _) -> id
 
+private def value_at :: ref [(i64 * f64)] -> i64 -> f64
+fn value_at pairs position =
+    match pairs[position] with
+    | (_, value) -> value
+
+private def keyed_count :: ref [((i64 * f64) * i64)] -> i64 -> i64
+fn keyed_count counts position =
+    match counts[position] with
+    | (_, count) -> count
+
+private def keyed_id :: ref [((i64 * f64) * i64)] -> i64 -> i64
+fn keyed_id counts position =
+    match counts[position] with
+    | ((id, _), _) -> id
+
+private def grouped_id :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+fn grouped_id groups position =
+    match groups[position] with
+    | ((id, _), _) -> id
+
+private def grouped_size :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+fn grouped_size groups position =
+    match groups[position] with
+    | (_, members) -> members.length
+
 // ---- Construction ----
 
 test "empty singleton create replicate zero_create init" =
@@ -470,6 +495,40 @@ test "distinct distinct_by except count_by group_by treat every NaN as one value
     eq (group_size (ref groups) 1) 2
     eq (group_size (ref groups) 2) 1
 
+// A tuple that holds a NaN does not equal itself either, but only a NaN is the same as any other NaN:
+// `(0, nan)` and `(1, nan)` are two keys, `(0, nan)` and `(0, nan)` are one.
+test "distinct except count_by group_by keep keys that hold a NaN apart" =
+    let nan = 0.0 / 0.0
+    let pairs = [(0, nan), (1, nan), (0, nan), (2, 1.0), (2, 1.0)]
+    let distinct = Array.distinct pairs
+    eq distinct.length 3
+    eq (id_at (ref distinct) 0) 0
+    eq (id_at (ref distinct) 1) 1
+    eq (id_at (ref distinct) 2) 2
+    let by_id = Array.distinct_by (\p -> match p with | (id, _) -> id) pairs
+    eq by_id.length 3
+    let rest = Array.except [(0, nan)] pairs
+    eq rest.length 2
+    eq (id_at (ref rest) 0) 1
+    eq (id_at (ref rest) 1) 2
+    eq (Array.except pairs [(1, nan), (0, nan), (2, 1.0)]).length 0
+    let counts = Array.count_by (\p -> p) pairs
+    eq counts.length 3
+    eq (keyed_id (ref counts) 0) 0
+    eq (keyed_count (ref counts) 0) 2
+    eq (keyed_id (ref counts) 1) 1
+    eq (keyed_count (ref counts) 1) 1
+    eq (keyed_id (ref counts) 2) 2
+    eq (keyed_count (ref counts) 2) 2
+    let groups = Array.group_by (\p -> p) pairs
+    eq groups.length 3
+    eq (grouped_id (ref groups) 0) 0
+    eq (grouped_size (ref groups) 0) 2
+    eq (grouped_id (ref groups) 1) 1
+    eq (grouped_size (ref groups) 1) 1
+    eq (grouped_id (ref groups) 2) 2
+    eq (grouped_size (ref groups) 2) 2
+
 test "the keyed functions handle a larger array" =
     let values = new [i64](20000, \i -> (i * 7919) % 10007)
     eq (Array.sort_by (\x -> x) values) (Array.sort values)
@@ -532,6 +591,21 @@ test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
     eq (id_at (ref by_key_descending) 1) 3
     eq (id_at (ref by_key_descending) 2) 0
     eq (id_at (ref by_key_descending) 3) 2
+    // Keys that `Ord` orders keep that order, even with a NaN inside: the same as `sort`.
+    let composite = [(0, nan), (1, 0.0)]
+    let by_pair = Array.sort_by (\p -> p) composite
+    let by_sort = Array.sort composite
+    eq (id_at (ref by_pair) 0) (id_at (ref by_sort) 0)
+    eq (id_at (ref by_pair) 1) (id_at (ref by_sort) 1)
+    eq (id_at (ref by_pair) 0) 0
+    let by_pair_descending = Array.sort_by_descending (\p -> p) composite
+    eq (id_at (ref by_pair_descending) 0) 1
+    eq (id_at (ref by_pair_descending) 1) 0
+    // Of two keys that `Ord` leaves unordered, the one that differs from itself goes last.
+    let unordered = [(0, nan), (0, 5.0)]
+    let after = Array.sort_by (\p -> p) unordered
+    eq (value_at (ref after) 0) 5.0
+    Test.is_true (is_nan (value_at (ref after) 1))
 
 test "sort_in_place sort_in_place_by sort_in_place_with" =
     let mut xs = [8, 4, 3, 1, 6, 1]

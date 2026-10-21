@@ -870,79 +870,81 @@ fn to_seqr values = seqr_from values 0
 
 // ---- Duplicates and groups ----
 
-/// Whether `key` equals itself. A NaN does not, and `HashMap` rejects such keys, so the functions below keep every
-/// such key out of their hash tables and treat all of them as one key, as F# does (where `nan` equals `nan` here).
+/// Whether `key` equals itself. A NaN does not, and neither does a tuple or record that holds one. `HashMap` rejects
+/// such keys, so the functions below keep them out of their hash tables and tell them apart by `Hash.hash`, which is
+/// the same for NaNs of any payload. As in F#, every NaN is one value, while `(0, nan)` and `(1, nan)` stay apart.
 private def reflexive :: Eq<'a> => ref 'a -> bool
 fn reflexive key = Eq.eq key key
 
 def distinct :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ['a]
 fn distinct values = distinct_by (\value -> value) values
 
-def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
-fn distinct_by projection values =
-    let mut seen = HashSet.empty()
-    let mut seen_nan = false
+/// The elements of `values`, in order, whose key is not in `known` (reflexive keys) or `known_codes` (the codes of the
+/// others) and has not occurred before.
+private def keep_new :: (Copy<'a>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> HashSet<'key> -> HashSet<i64u> -> ref ['a] -> ['a]
+fn keep_new projection known known_codes values =
+    let mut seen = known
+    let mut seen_codes = known_codes
     let mut kept = Vec.empty()
     let mut index = 0
     while index < values.length do
         let key = projection values[index]
-        if !(reflexive (ref key)) then
-            if !seen_nan then
-                seen_nan = true
+        if reflexive (ref key) then
+            if !(HashSet.contains_ref (ref seen) (ref key)) then
+                seen = HashSet.insert seen key
                 kept = Vec.push kept values[index]
-        elif !(HashSet.contains_ref (ref seen) (ref key)) then
-            seen = HashSet.insert seen key
-            kept = Vec.push kept values[index]
+        else
+            let code = Hash.hash (ref key)
+            if !(HashSet.contains_ref (ref seen_codes) (ref code)) then
+                seen_codes = HashSet.insert seen_codes code
+                kept = Vec.push kept values[index]
         index = index + 1
     Vec.to_array kept
+
+def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
+fn distinct_by projection values = keep_new projection (HashSet.empty()) (HashSet.empty()) values
 
 def except :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ref ['a] -> ['a]
 fn except excluded values =
     let mut seen = HashSet.empty()
-    let mut seen_nan = false
+    let mut seen_codes = HashSet.empty()
     let mut index = 0
     while index < excluded.length do
         let value = excluded[index]
-        if !(reflexive (ref value)) then seen_nan = true
-        elif !(HashSet.contains_ref (ref seen) (ref value)) then seen = HashSet.insert seen value
+        if reflexive (ref value) then
+            if !(HashSet.contains_ref (ref seen) (ref value)) then seen = HashSet.insert seen value
+        else
+            let code = Hash.hash (ref value)
+            if !(HashSet.contains_ref (ref seen_codes) (ref code)) then seen_codes = HashSet.insert seen_codes code
         index = index + 1
-    let mut kept = Vec.empty()
-    index = 0
-    while index < values.length do
-        let value = values[index]
-        if !(reflexive (ref value)) then
-            if !seen_nan then
-                seen_nan = true
-                kept = Vec.push kept values[index]
-        elif !(HashSet.contains_ref (ref seen) (ref value)) then
-            seen = HashSet.insert seen value
-            kept = Vec.push kept values[index]
-        index = index + 1
-    Vec.to_array kept
+    keep_new (\value -> value) seen seen_codes values
 
-/// For every element the number of its key's group, and the distinct keys, both in order of first occurrence. All keys
-/// that differ from themselves (NaN) share one group.
+/// For every element the number of its key's group, and the distinct keys, both in order of first occurrence. Keys that
+/// differ from themselves (see `reflexive`) are grouped by `Hash.hash`.
 private def key_groups :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> ([i64] * ['key])
 fn key_groups projection values =
     let mut groups = HashMap.empty()
+    let mut code_groups = HashMap.empty()
     let mut keys = Vec.empty()
     let mut owners = Vec.empty()
-    let mut nan_group = -1
     let mut index = 0
     while index < values.length do
         let key = projection values[index]
         let mut group = -1
-        if !(reflexive (ref key)) then
-            if nan_group < 0 then
-                nan_group = Vec.length (ref keys)
-                keys = Vec.push keys key
-            group = nan_group
-        else
+        if reflexive (ref key) then
             match HashMap.get_ref (ref groups) (ref key) with
             | Maybe.Some found -> group = found
             | Maybe.None ->
                 group = Vec.length (ref keys)
                 groups = HashMap.insert groups key group
+                keys = Vec.push keys key
+        else
+            let code = Hash.hash (ref key)
+            match HashMap.get_ref (ref code_groups) (ref code) with
+            | Maybe.Some found -> group = found
+            | Maybe.None ->
+                group = Vec.length (ref keys)
+                code_groups = HashMap.insert code_groups code group
                 keys = Vec.push keys key
         owners = Vec.push owners group
         index = index + 1
@@ -1000,14 +1002,15 @@ fn sort_with comparer values = Array.__sort_with (left -> right -> comparer *lef
 private def indices :: i64 -> [i64]
 fn indices count = new [i64](count, \index -> index)
 
-/// Whether a stable sort by key puts `right` before `left`. Keys that differ from themselves (NaN) go last in both
-/// directions, as the elements of `sort` and `sort_descending` do.
+/// Whether a stable sort by key puts `right` before `left`: when `right` strictly precedes `left`, or when neither
+/// strictly precedes the other and only `left` differs from itself. So a NaN key goes last in both directions, as the
+/// elements of `sort` and `sort_descending` do, while keys that `Ord` orders (such as `(0, nan)` and `(1, 0.0)`) keep
+/// that order.
 private def key_takes_right :: Ord<'key> => bool -> ref 'key -> ref 'key -> i64
 fn key_takes_right descending left right =
-    if !(Eq.eq left left) then (if Eq.eq right right then 1i64 else 0i64)
-    elif !(Eq.eq right right) then 0i64
-    elif descending then (if Ord.lt left right then 1i64 else 0i64)
-    else (if Ord.lt right left then 1i64 else 0i64)
+    if (if descending then Ord.lt left right else Ord.lt right left) then 1i64
+    elif !(Eq.eq left left) && Eq.eq right right && !(if descending then Ord.lt right left else Ord.lt left right) then 1i64
+    else 0i64
 
 /// The stable order of the positions of `keys`. The keys arrive by reference so that the comparer captures only a
 /// borrow: capturing an owned array would copy every key at each comparison.
