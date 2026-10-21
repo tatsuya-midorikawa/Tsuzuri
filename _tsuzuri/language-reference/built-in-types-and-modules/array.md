@@ -211,6 +211,8 @@ match Array.partition (\x -> x > 3) words with
 groups=[(0, [3, 9, 6]), (1, [1, 4, 1]), (2, [5, 2])] counts=[(0, 3), (1, 3), (2, 2)] big=[4, 5, 9, 6] small=[3, 1, 1, 2] distinct=[3, 1, 4, 5, 9, 2, 6]
 ```
 
+`distinct`、`distinct_by`、`except`、`count_by`、`group_by` は、F# と同じく NaN を 1 つの値として扱います。`HashMap` はキーが NaN だとトラップしますが、これらの関数は自分自身と等しくないキー（NaN）をハッシュ表に入れず、すべて同じ値（同じグループ）として、最初に現れた位置に置きます。NaN が 1 つだけの配列でもトラップしません。
+
 `scan`、`unfold`、`map_fold` は、途中の状態や生成を扱います。
 
 ```tsuzuri run=running%3D%5B0%2C%203%2C%204%2C%208%2C%209%2C%2014%5D%20doubled%3D%5B5%2C%2010%2C%2020%2C%2040%5D%20tens%3D%5B30%2C%2010%2C%2040%2C%2010%2C%2050%5D%20total%3D14
@@ -416,6 +418,8 @@ F# の並べ替えは、新しい配列を返す関数と、その場で並べ�
 | `Array.sort_with cmp xs` | `Array.sort_in_place_with cmp xs` | `cmp a b` が負・ゼロ・正の `i64` |
 
 どれも安定です。F# は「元の順序が保たれるとは限らない」と書いていますが、保たれる実装はその仕様を満たします。同じキーの要素は、昇順でも降順でも入力の順のままです。`sort_by` と `sort_by_descending` はキーを 1 度だけ計算し、`sort_with` の比較関数は要素を値で受け取ります。
+
+浮動小数点数の NaN は、昇順でも降順でも通常の数値の後ろに置かれ、NaN どうしは入力の順のままです。`sort`、`sort_descending`、`sort_with` は NaN の要素を、`sort_by`、`sort_by_descending`、`sort_in_place_by` は NaN のキーを持つ要素を、同じように最後へ置きます。
 
 ```tsuzuri run=by_score%3D%5B(2%2C%2010)%2C%20(4%2C%2020)%2C%20(1%2C%2030)%2C%20(3%2C%2030)%5D%20best_first%3D%5B(1%2C%2030)%2C%20(3%2C%2030)%2C%20(4%2C%2020)%2C%20(2%2C%2010)%5D%20by_id_desc%3D%5B(4%2C%2020)%2C%20(3%2C%2030)%2C%20(2%2C%2010)%2C%20(1%2C%2030)%5D%20desc%3D%5B3%2C%202%2C%201%5D
 let scores = [(1, 30), (2, 10), (3, 30), (4, 20)]

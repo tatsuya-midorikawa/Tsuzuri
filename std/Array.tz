@@ -870,27 +870,27 @@ fn to_seqr values = seqr_from values 0
 
 // ---- Duplicates and groups ----
 
+/// Whether `key` equals itself. A NaN does not, and `HashMap` rejects such keys, so the functions below keep every
+/// such key out of their hash tables and treat all of them as one key, as F# does (where `nan` equals `nan` here).
+private def reflexive :: Eq<'a> => ref 'a -> bool
+fn reflexive key = Eq.eq key key
+
 def distinct :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ['a]
-fn distinct values =
-    let mut seen = HashSet.empty()
-    let mut kept = Vec.empty()
-    let mut index = 0
-    while index < values.length do
-        let value = values[index]
-        if !(HashSet.contains_ref (ref seen) (ref value)) then
-            seen = HashSet.insert seen value
-            kept = Vec.push kept values[index]
-        index = index + 1
-    Vec.to_array kept
+fn distinct values = distinct_by (\value -> value) values
 
 def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn distinct_by projection values =
     let mut seen = HashSet.empty()
+    let mut seen_nan = false
     let mut kept = Vec.empty()
     let mut index = 0
     while index < values.length do
         let key = projection values[index]
-        if !(HashSet.contains_ref (ref seen) (ref key)) then
+        if !(reflexive (ref key)) then
+            if !seen_nan then
+                seen_nan = true
+                kept = Vec.push kept values[index]
+        elif !(HashSet.contains_ref (ref seen) (ref key)) then
             seen = HashSet.insert seen key
             kept = Vec.push kept values[index]
         index = index + 1
@@ -899,82 +899,92 @@ fn distinct_by projection values =
 def except :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ref ['a] -> ['a]
 fn except excluded values =
     let mut seen = HashSet.empty()
+    let mut seen_nan = false
     let mut index = 0
     while index < excluded.length do
         let value = excluded[index]
-        if !(HashSet.contains_ref (ref seen) (ref value)) then seen = HashSet.insert seen value
+        if !(reflexive (ref value)) then seen_nan = true
+        elif !(HashSet.contains_ref (ref seen) (ref value)) then seen = HashSet.insert seen value
         index = index + 1
     let mut kept = Vec.empty()
     index = 0
     while index < values.length do
         let value = values[index]
-        if !(HashSet.contains_ref (ref seen) (ref value)) then
+        if !(reflexive (ref value)) then
+            if !seen_nan then
+                seen_nan = true
+                kept = Vec.push kept values[index]
+        elif !(HashSet.contains_ref (ref seen) (ref value)) then
             seen = HashSet.insert seen value
             kept = Vec.push kept values[index]
         index = index + 1
     Vec.to_array kept
 
-def count_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> [('key * i64)]
-fn count_by projection values =
+/// For every element the number of its key's group, and the distinct keys, both in order of first occurrence. All keys
+/// that differ from themselves (NaN) share one group.
+private def key_groups :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> ([i64] * ['key])
+fn key_groups projection values =
     let mut groups = HashMap.empty()
     let mut keys = Vec.empty()
-    let mut counts = Vec.empty()
+    let mut owners = Vec.empty()
+    let mut nan_group = -1
     let mut index = 0
     while index < values.length do
         let key = projection values[index]
-        match HashMap.get_ref (ref groups) (ref key) with
-        | Maybe.Some group ->
-            let current = counts[group]
-            counts = Vec.set counts group (current + 1)
-        | Maybe.None ->
-            groups = HashMap.insert groups key (Vec.length (ref keys))
-            keys = Vec.push keys key
-            counts = Vec.push counts 1
+        let mut group = -1
+        if !(reflexive (ref key)) then
+            if nan_group < 0 then
+                nan_group = Vec.length (ref keys)
+                keys = Vec.push keys key
+            group = nan_group
+        else
+            match HashMap.get_ref (ref groups) (ref key) with
+            | Maybe.Some found -> group = found
+            | Maybe.None ->
+                group = Vec.length (ref keys)
+                groups = HashMap.insert groups key group
+                keys = Vec.push keys key
+        owners = Vec.push owners group
         index = index + 1
-    new [('key * i64)](Vec.length (ref keys), group -> (keys[group], counts[group]))
+    (Vec.to_array owners, Vec.to_array keys)
+
+def count_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> [('key * i64)]
+fn count_by projection values =
+    match key_groups projection values with
+    | (owners, keys) ->
+        let mut counts = new [i64](keys.length, \_group -> 0)
+        for owner in owners do
+            let current = counts[owner]
+            Array.write (ref mut counts) owner (current + 1)
+        new [('key * i64)](keys.length, group -> (keys[group], counts[group]))
 
 private def group_values :: Copy<'a> => ref ['a] -> ref [i64] -> i64 -> i64 -> ['a]
 fn group_values values order start size = new ['a](size, offset -> values[order[start + offset]])
 
 def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref ['a] -> [('key * ['a])]
 fn group_by projection values =
-    let mut groups = HashMap.empty()
-    let mut keys = Vec.empty()
-    let mut sizes = Vec.empty()
-    let mut owners = Vec.empty()
-    let mut index = 0
-    while index < values.length do
-        let key = projection values[index]
-        match HashMap.get_ref (ref groups) (ref key) with
-        | Maybe.Some group ->
-            let size = sizes[group]
-            sizes = Vec.set sizes group (size + 1)
-            owners = Vec.push owners group
-        | Maybe.None ->
-            let group = Vec.length (ref keys)
-            groups = HashMap.insert groups key group
-            keys = Vec.push keys key
-            sizes = Vec.push sizes 1
-            owners = Vec.push owners group
-        index = index + 1
-    let count = Vec.length (ref keys)
-    let mut starts = new [i64](count, \_group -> 0)
-    let mut next = 0
-    let mut group = 0
-    while group < count do
-        Array.write (ref mut starts) group next
-        next = next + sizes[group]
-        group = group + 1
-    let mut cursors = copy starts
-    let mut order = new [i64](values.length, \_position -> 0)
-    index = 0
-    while index < values.length do
-        let owner = owners[index]
-        let position = cursors[owner]
-        Array.write (ref mut order) position index
-        Array.write (ref mut cursors) owner (position + 1)
-        index = index + 1
-    new [('key * ['a])](count, member -> (keys[member], group_values values (ref order) starts[member] sizes[member]))
+    match key_groups projection values with
+    | (owners, keys) ->
+        let count = keys.length
+        let mut sizes = new [i64](count, \_group -> 0)
+        for owner in owners do
+            let current = sizes[owner]
+            Array.write (ref mut sizes) owner (current + 1)
+        let mut starts = new [i64](count, \_group -> 0)
+        let mut next = 0
+        let mut group = 0
+        while group < count do
+            Array.write (ref mut starts) group next
+            next = next + sizes[group]
+            group = group + 1
+        let mut cursors = copy starts
+        let mut order = new [i64](values.length, \_position -> 0)
+        for index in 0 .. values.length - 1 do
+            let owner = owners[index]
+            let position = cursors[owner]
+            Array.write (ref mut order) position index
+            Array.write (ref mut cursors) owner (position + 1)
+        new [('key * ['a])](count, member -> (keys[member], group_values values (ref order) starts[member] sizes[member]))
 
 // ---- Sorting ----
 
@@ -990,16 +1000,31 @@ fn sort_with comparer values = Array.__sort_with (left -> right -> comparer *lef
 private def indices :: i64 -> [i64]
 fn indices count = new [i64](count, \index -> index)
 
+/// Whether a stable sort by key puts `right` before `left`. Keys that differ from themselves (NaN) go last in both
+/// directions, as the elements of `sort` and `sort_descending` do.
+private def key_takes_right :: Ord<'key> => bool -> ref 'key -> ref 'key -> i64
+fn key_takes_right descending left right =
+    if !(Eq.eq left left) then (if Eq.eq right right then 1i64 else 0i64)
+    elif !(Eq.eq right right) then 0i64
+    elif descending then (if Ord.lt left right then 1i64 else 0i64)
+    else (if Ord.lt right left then 1i64 else 0i64)
+
+/// The stable order of the positions of `keys`. The keys arrive by reference so that the comparer captures only a
+/// borrow: capturing an owned array would copy every key at each comparison.
+private def key_order :: Ord<'key> => ref ['key] -> bool -> [i64]
+fn key_order keys descending =
+    Array.__sort_with (left -> right -> key_takes_right descending (ref keys[*left]) (ref keys[*right])) (indices keys.length)
+
 def sort_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by projection values =
     let keys = map projection values
-    let order = Array.__sort_with (left -> right -> if Ord.lt (ref keys[*right]) (ref keys[*left]) then 1i64 else 0i64) (indices values.length)
+    let order = key_order (ref keys) false
     new ['a](values.length, position -> values[order[position]])
 
 def sort_by_descending :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by_descending projection values =
     let keys = map projection values
-    let order = Array.__sort_with (left -> right -> if Ord.lt (ref keys[*left]) (ref keys[*right]) then 1i64 else 0i64) (indices values.length)
+    let order = key_order (ref keys) true
     new ['a](values.length, position -> values[order[position]])
 
 private def overwrite :: Copy<'a> => ref mut ['a..] -> ref ['a] -> unit
