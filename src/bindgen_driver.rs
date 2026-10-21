@@ -53,7 +53,7 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         return Err(at_header(driver_error(
             "E2002",
             format!(
-                "bindgen supports only 64-bit LP64 targets (Linux and macOS); '{target}' is not supported"
+                "bindgen supports only 64-bit LP64 targets (Linux x64/ARM64 and macOS ARM64); '{target}' is not supported"
             ),
         )));
     }

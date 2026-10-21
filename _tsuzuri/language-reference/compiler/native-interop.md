@@ -619,7 +619,7 @@ clang app.o sample.c host.c -lm -o host
 
 ### 対応する形
 
-対応するのは 64-bit の Linux と macOS（LP64）だけです。`long` の幅がターゲットで変わるので、`clang -dumpmachine` が Windows や 32-bit を示すと `E2002` です。型は、Clang が表記した型名を typedef 展開してから、次の表と完全に一致するものだけを変換します。
+対応するのは Linux x64/Arm64 と macOS の Apple Silicon（LP64）だけです。`clang -dumpmachine` が Intel macOS・Windows・32-bit を示すと `E2002` です。Intel macOS の Clang を Rosetta で使う場合も受け付けません。型は、Clang が表記した型名を typedef 展開してから、次の表と完全に一致するものだけを変換します。
 
 | C の型 | 引数 | 結果 | struct のフィールド |
 | --- | --- | --- | --- |

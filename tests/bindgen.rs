@@ -104,11 +104,13 @@ fn accepts_only_lp64_targets() {
         "arm64-apple-darwin27.0.0",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
-        "x86_64-apple-macosx14.0.0",
+        "aarch64-apple-macosx14.0.0",
     ] {
         assert!(lp64_target(triple), "{triple}");
     }
     for triple in [
+        "x86_64-apple-darwin27.0.0",
+        "x86_64-apple-macosx14.0.0",
         "x86_64-pc-windows-msvc",
         "x86_64-w64-mingw32",
         "aarch64-pc-windows-msvc",

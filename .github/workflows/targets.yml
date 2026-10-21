@@ -77,6 +77,8 @@ jobs:
         env:
           EXPECTED_HOST: ${{ matrix.host }}
         run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_HOST) process.exit(1)'
+      - name: Supported hosts and Apple Silicon-only macOS
+        run: node tests/platforms.mjs
       # LLVM 21 as in vscode.yml: the system Clang that builds the host's programs and every object, and
       # what the bundle copies. The Linux jobs also install qemu-user, which runs the foreign static
       # musl executables through TSUZURI_RUNNER; nothing is downloaded by the tests themselves.

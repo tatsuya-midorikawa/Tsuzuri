@@ -798,6 +798,8 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 #### macOS Arm64 (Homebrew)
 
+Apple Silicon のネイティブ arm64 環境だけが対象です。Rosetta 上の x64 コンパイラ・拡張ホストは対応しません。CLI・VSIX のツールチェーン作成と再検証では、Clang の既定 target も arm64 であることを確認します。
+
 ```sh
 brew install llvm lld
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"

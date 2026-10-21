@@ -14,6 +14,8 @@ Linux は glibc と musl、Windows の出力は MSVC と MinGW を区別する�
 
 macOS x64（Intel Mac）、32-bit、RISC-V、FreeBSD、Android、iOS、OS を持たない target は対象外です。これらを `--target` に指定すると `E2000` で拒否します。対応環境以外でコンパイラ自体をビルドすると、Rust のコンパイルエラーになります。
 
+macOS は Apple Silicon 上のネイティブ arm64 環境だけです。Rosetta の x64 版 VS Code・Node.js も対象外です。CLI・VSIX のツールチェーンの作成と再検証は Clang の `-dumpmachine` も確認し、Intel macOS の既定 target ならエラーにします。同梱の `tsuzuri-clang` も、明示 target の有無を問わず Intel macOS のホストを拒否し、どの対応ホストからも Intel macOS 向けの生成を受け付けません。
+
 ## この記事のポイント
 
 - `--target native` はビルド機向けです。別の対応環境向けに作るときは、下の表の名前を渡します。

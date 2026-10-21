@@ -462,6 +462,40 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
     );
 }
 
+#[test]
+fn the_bundled_launcher_rejects_intel_macos_hosts_and_targets() {
+    for target in [
+        None,
+        Some("wasm32-unknown-unknown"),
+        Some("aarch64-unknown-linux-gnu"),
+        Some("arm64-apple-macosx12.0.0"),
+    ] {
+        assert_eq!(
+            shim::resolve(target, "macos", "x86_64").unwrap_err(),
+            "the macOS toolchain requires ARM64",
+            "{target:?}"
+        );
+    }
+    for target in [
+        "x86_64-apple-darwin",
+        "x86_64-apple-darwin27.0.0",
+        "x86_64-apple-macos11",
+        "x86_64-apple-macosx12.0.0",
+    ] {
+        for (os, arch) in [
+            ("macos", "aarch64"),
+            ("linux", "x86_64"),
+            ("windows", "aarch64"),
+        ] {
+            assert_eq!(
+                shim::resolve(Some(target), os, arch).unwrap_err(),
+                "the macOS toolchain supports only ARM64 targets",
+                "{target} on {os}-{arch}"
+            );
+        }
+    }
+}
+
 #[cfg(unix)]
 mod fake_toolchain {
     use super::*;
