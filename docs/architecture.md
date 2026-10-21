@@ -645,6 +645,8 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 後続の所有権検査などでエラーが検出された場合でも不完全なインデックスを公開することはなく、以前の正常なインデックスも安全に破棄されます。サーバー機能としては、ホバー（hover）、定義ジャンプ（definition）、およびシンボル検索（symbol）を中心とした堅牢な機能を宣言・提供します。
 動作は `cargo test --locked --test lsp` および `cargo build --release --locked && node tests/lsp_sessions.mjs target/release/tsuzuri` によって検証されています。
 
+VS Code 拡張は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 に限り、`vsc/src/core.ts` の `assertSupportedHost` を起動時とツールチェーン解決の共通境界で呼びます。対象外では言語サーバー・タスク・テストを登録せず、開発用コンパイラも解決しません。デバッグ判定は同じ対応表から Windows Arm64 だけを除外します。同梱物と VSIX の作成・再検証・IDE 統合テストは、`scripts/toolchain/bundle.mjs` の対応表と `assertSupportedHost` を共有します。`vsc/src/test/core.test.ts` と `tests/platforms.mjs` が対象外の拒否、5 環境の対応表・CI マトリクス・開発/公開文書の整合を検証し、`vscode.yml` は各ホストで両方を実行します。
+
 ### REPL
 
 `tsuzuri repl` は再コンパイル型で、JIT も入力を跨ぐ常駐プロセスも持ちません（G13 D1・D13）。セッションは受け付けた宣言とトップレベルの文の**ソース**だけで、入力ごとに「宣言 → 文 → 入力の末尾」の順に `Main.tz` を生成し、`Project::single_main` で読みます。これはファイル・マニフェスト・lockfile を読まず、`stdlib::sources_for` が選んだ std だけを足すので、同じ文字列を `Main.tz` に置いた `tsuzuri run` と同じ検査・IR になります。生成したソースはディスクに書かず、パスは仮想の `<repl>/Main.tz` です（キャッシュのキーとトラップの行に入る）。

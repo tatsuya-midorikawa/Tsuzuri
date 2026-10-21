@@ -1,11 +1,34 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { platforms, mingwChecksums } from '../scripts/toolchain/bundle.mjs';
+import { fileURLToPath } from 'node:url';
+import { assertSupportedHost, platforms, mingwChecksums } from '../scripts/toolchain/bundle.mjs';
 import { debuggerChecksums } from '../vsc/scripts/toolchain.mjs';
 
 const hosts = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
 assert.deepEqual([...Object.keys(platforms), ...Object.keys(mingwChecksums)].sort(), hosts);
 assert.deepEqual(Object.keys(debuggerChecksums).sort(), hosts.filter(host => host !== 'win32-arm64'));
+
+for (const host of hosts) assert.doesNotThrow(() => assertSupportedHost(host));
+for (const host of ['darwin-x64', 'win32-ia32', 'linux-riscv64', 'freebsd-x64', 'android-arm64', 'toString', '__proto__']) {
+  assert.throws(() => assertSupportedHost(host), { message: `Unsupported toolchain host: ${host}. Supported hosts: ${hosts.join(', ')}.` });
+}
+for (const [script, flags] of [
+  ['package', []], ['package', ['--verify']], ['package', ['--scan']],
+  ['toolchain', []], ['toolchain', ['--verify']], ['toolchain', ['--resources']],
+  ['test-extension', []], ['test-extension', ['--installed']],
+]) {
+  const url = new URL(`../vsc/scripts/${script}.mjs`, import.meta.url);
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    Object.defineProperty(process, 'arch', { value: 'x64' });
+    process.argv = [process.execPath, ${JSON.stringify(fileURLToPath(url))}, ...${JSON.stringify(flags)}];
+    await import(${JSON.stringify(url.href)});
+  `], { encoding: 'utf8', timeout: 30_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, `${script} ${flags.join(' ')}: ${result.stdout}\n${result.stderr}`);
+  assert.ok(result.stderr.includes(`Unsupported toolchain host: darwin-x64. Supported hosts: ${hosts.join(', ')}.`), result.stderr);
+}
 
 const runners = {
   'darwin-arm64': 'macos-15',
@@ -24,4 +47,9 @@ for (const [workflow, expected] of [
     .map(([, os, host]) => [host, os]).sort(([left], [right]) => left.localeCompare(right));
   assert.deepEqual(matrix, expected.map(host => [host, runners[host]]), workflow);
 }
-console.log('platforms: exactly five toolchain/CI hosts; Windows Arm64 has no bundled debugger');
+for (const name of ['Development', 'Publishing']) {
+  const source = readFileSync(new URL(`../vsc/${name}.md`, import.meta.url), 'utf8');
+  const documented = [...source.matchAll(/^\| `?((?:darwin|linux|win32)-[a-z0-9]+)`? \|/gm)].map(([, host]) => host).sort();
+  assert.deepEqual(documented, hosts, name);
+}
+console.log('platforms: exactly five toolchain/CI hosts; unsupported VSIX build/verify and IDE test hosts are refused; Windows Arm64 has no bundled debugger');

@@ -94,6 +94,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
           "LLVM_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
       - run: npm ci
+      - name: Supported IDE and distribution platforms
+        run: node ../tests/platforms.mjs
       - run: cargo fmt --manifest-path ../Cargo.toml --check
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
       # PB05: the fast backend is compiled only with its feature. Windows does not run it yet, so this is where its Windows code is checked.

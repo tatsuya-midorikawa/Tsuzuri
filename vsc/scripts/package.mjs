@@ -4,20 +4,23 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { createVSIX, listFiles } from '@vscode/vsce';
+import { assertSupportedHost, host } from '../../scripts/toolchain/bundle.mjs';
 import { debuggerChecksums } from './toolchain.mjs';
 
+assertSupportedHost();
+const { createVSIX, listFiles } = await import('@vscode/vsce');
 const require = createRequire(import.meta.url);
 const yauzl = require('yauzl');
 const { lintFiles } = require('@vscode/vsce/out/secretLint');
 const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(await readFile(path.join(extension, 'package.json'), 'utf8'));
-const target = `${process.platform}-${process.arch}`;
+const target = host;
 const output = path.join(extension, 'dist', `tsuzuri-${manifest.version}-${target}.vsix`);
 await mkdir(path.dirname(output), { recursive: true });
 
 async function verifyArchive(file) {
   const tools = JSON.parse(await readFile(path.join(extension, 'toolchain', 'manifest.json'), 'utf8'));
+  if (tools.platform !== process.platform || tools.arch !== process.arch) { throw new Error('Toolchain host mismatch.'); }
   const expected = new Map(tools.files.map(item => [`extension/toolchain/${item.path}`, item]));
   // CodeLLDB is outside the toolchain manifest; check it against the pinned release digest.
   if (debuggerChecksums[target]) {

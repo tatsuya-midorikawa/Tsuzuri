@@ -1,7 +1,7 @@
 import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bundle, digest, download, host, repository, verify } from '../../scripts/toolchain/bundle.mjs';
+import { assertSupportedHost, bundle, digest, download, host, repository, verify } from '../../scripts/toolchain/bundle.mjs';
 
 const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const destination = path.join(extension, 'toolchain');
@@ -83,6 +83,7 @@ async function resources() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
+    assertSupportedHost();
     if (process.argv.includes('--verify')) { await verify(destination); await verifyDebugger(); }
     else if (process.argv.includes('--resources')) { await resources(); }
     else { await resources(); await bundle(destination); await debuggerPackage(); await verifyDebugger(); }

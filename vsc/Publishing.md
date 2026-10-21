@@ -36,6 +36,7 @@
 Linux の拡張ホストは glibc ベースの環境を対象にします。
 
 [scripts/package.mjs](scripts/package.mjs) は `process.platform` と `process.arch` から target を決定します。
+VSIX 作成と `--verify`／`--scan`、ツールチェーンの作成・再検証、IDE 統合テストは、処理の最初に対応ホストを検査します。対象外では、既存の配布物を再利用しても `Unsupported toolchain host` で失敗します。VSIX の再検証は、ツールチェーンの manifest の OS／CPU がホストと一致することも検査します。
 **各 VSIX は対応する OS／CPU 上で生成し、Node.js・Rust・LLVM の CPU を一致させてください。**
 ARM64 マシンで x64 の Node.js をエミュレーション実行しても、ARM64 パッケージにはなりません。
 Mac で作った VSIX の名前を変更したり、`--target` だけを変更したりして Windows 版として公開しないでください。
@@ -324,6 +325,7 @@ code --install-extension tmidorikawa.tsuzuri
 | `npm run package` の後に VSIX がない | 配布物の生成は `npm run vsix` |
 | `LLVM_PREFIX`／Clang のエラー | LLVM 21 の絶対パス、CPU、Clang の存在。Homebrew は lld の別パスも確認 |
 | `Toolchain host mismatch` | Node.js・Rust・LLVM・同梱物の CPU／OS を一致させ、対象ホストで再生成 |
+| `Unsupported toolchain host` | 上の 5 環境で実行する。Intel Mac や 32-bit などの対象外ホストでは、既存の同梱物の再検証も行わない |
 | ZIP 作成前に非常に長時間かかる | 独自の `npm run vsix` を使用。通常の vsce に巨大な LLVM バイナリの文字列走査をさせない |
 | `Secret scan failed` | 原因を調査して秘密情報を除去する。検査を無効化して公開しない |
 | `401`／`403` | Publisher 権限、認証 ID、PAT の期限・組織・Marketplace Manage scope、認証方式の廃止状況 |

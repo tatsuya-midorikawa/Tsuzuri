@@ -67,6 +67,8 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 
 [vscode.yml](../../../.github/workflows/vscode.yml) は、5 つのホストで CLI archive と VSIX を作成し、展開・インストールした配布物、LSP、Async、Net を検証します。Windows の配布物は MinGW を使い、x64 は LLVM の MSVC でも Async・Net と PDB を検査します。Windows Arm64 の拡張は編集・診断・ビルド・実行・テストに対応しますが、同梱 CodeLLDB がないためソースデバッグは未対応です。
 
+拡張機能の起動とツールチェーンの解決、VSIX の作成・再検証も、上の 5 環境だけを受け付けます。対象外では、開発用コンパイラや既存の配布物を使っても、対応ホストを示すエラーで停止します。
+
 > [!NOTE]
 > tier は CI の job が検査する範囲です。job の成功は、その run の結果で確認してください。別の target や未実装の機能まで保証するものではありません。
 

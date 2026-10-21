@@ -2,8 +2,10 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } from '@vscode/test-electron';
+import { assertSupportedHost } from '../../scripts/toolchain/bundle.mjs';
 
+assertSupportedHost();
+const { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath, runTests } = await import('@vscode/test-electron');
 const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.join(extension, '.vscode-test');
 await mkdir(cache, { recursive: true });
