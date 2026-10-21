@@ -35,6 +35,9 @@ const NATIVE_TARGETS: [(&str, &str); 9] = [
 /// targets name the MSVC runtime, which Zig does not have: only a Windows launcher accepts them,
 /// and it links MinGW for them, as it always has for the target the compiler passes there.
 pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, String> {
+    if os == "macos" && arch != "aarch64" {
+        return Err("the macOS toolchain requires ARM64".to_owned());
+    }
     match target {
         Some("wasm32-unknown-unknown") => Ok(Request {
             wasm: true,
@@ -42,6 +45,12 @@ pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, St
             llvm: "wasm32-unknown-unknown".to_owned(),
         }),
         Some(value) => {
+            if value
+                .strip_prefix("x86_64-apple-")
+                .is_some_and(|system| system.starts_with("darwin") || system.starts_with("macos"))
+            {
+                return Err("the macOS toolchain supports only ARM64 targets".to_owned());
+            }
             let windows_msvc = value.ends_with("-pc-windows-msvc");
             let architecture = value.split('-').next().unwrap_or_default();
             if windows_msvc && os != "windows" {
@@ -64,9 +73,6 @@ pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, St
             })
         }
         None => {
-            if os == "macos" && arch != "aarch64" {
-                return Err("the macOS toolchain requires ARM64".to_owned());
-            }
             let architecture = match arch {
                 "x86_64" => "x86_64",
                 "aarch64" => "aarch64",

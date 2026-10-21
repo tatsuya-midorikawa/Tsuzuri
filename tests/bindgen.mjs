@@ -145,6 +145,21 @@ try {
   rejected(["bindgen", join(fixtures, "basic"), "-o", join(fresh, "X.tz")], "E2001", 1);
   const missing = rejected(["bindgen", header, "-o", join(fresh, "X.tz")], "E2002", 1, { ...process.env, TSUZURI_CLANG: join(root, "no-such-clang") });
   assert.match(missing, /TSUZURI_CLANG/);
+  const intelSource = join(root, "intel-clang.c");
+  const intelClang = join(root, `intel-clang${process.platform === "win32" ? ".exe" : ""}`);
+  writeFileSync(intelSource, `#include <stdio.h>
+#include <string.h>
+int main(int count, char **args) {
+  if (count == 2 && strcmp(args[1], "--version") == 0) { puts("clang version 21.1.8"); return 0; }
+  if (count == 2 && strcmp(args[1], "-dumpmachine") == 0) { puts("x86_64-apple-darwin27.0.0"); return 0; }
+  fputs("unexpected Clang invocation\\n", stderr); return 2;
+}
+`);
+  execute(clang, [intelSource, "-o", intelClang]);
+  const unsupported = rejected(["bindgen", header, "-o", join(fresh, "X.tz")], "E2002", 1, { ...process.env, TSUZURI_CLANG: intelClang });
+  assert.match(unsupported, /bindgen supports only 64-bit LP64 targets \(Linux x64\/ARM64 and macOS ARM64\); 'x86_64-apple-darwin27\.0\.0' is not supported/);
+  assert.doesNotMatch(unsupported, /unexpected Clang invocation/);
+  assert.ok(!existsSync(join(fresh, "X.tz")));
   const broken = join(fresh, "broken.h");
   writeFileSync(broken, "int broken(;\n");
   assert.match(rejected(["bindgen", broken, "-o", join(fresh, "X.tz")], "E2002", 1), /broken\.h:1/);

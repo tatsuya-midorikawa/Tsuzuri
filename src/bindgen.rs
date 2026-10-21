@@ -238,11 +238,12 @@ pub struct Generated {
     pub skipped: Vec<Skipped>,
 }
 
-/// Whether bindgen accepts Clang's target triple: 64-bit x86 and ARM with 64-bit
-/// `long` and pointers (LP64), which excludes Windows (LLP64) and the ILP32 ABIs.
+/// Whether bindgen accepts Clang's target triple: LP64 x86-64/ARM64, excluding
+/// Intel macOS, Windows (LLP64), and the ILP32 ABIs.
 pub fn lp64_target(triple: &str) -> bool {
     let architecture = triple.split('-').next().unwrap_or("");
     matches!(architecture, "x86_64" | "aarch64" | "arm64")
+        && !(architecture == "x86_64" && triple.contains("-apple-"))
         && !["windows", "mingw", "cygwin", "uefi", "gnux32", "ilp32"]
             .iter()
             .any(|system| triple.contains(system))

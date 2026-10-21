@@ -45,6 +45,14 @@ export function run(command, args, capture = false) {
   return execFileSync(command, args, { cwd: repository, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit' });
 }
 
+function verifyClangHost(clang) {
+  if (process.platform !== 'darwin') { return; }
+  const target = run(clang, ['-dumpmachine'], true).trim();
+  if (!/^(?:aarch64|arm64)-apple-(?:darwin|macos)/.test(target)) {
+    throw new Error(`The macOS toolchain requires an Apple Silicon (ARM64) Clang; got ${target}.`);
+  }
+}
+
 export async function exists(file) {
   try { await access(file); return true; } catch { return false; }
 }
@@ -136,6 +144,7 @@ export async function verify(destination) {
     if (!await exists(file)) { throw new Error(`Missing required tool: ${name}`); }
     if (process.platform !== 'win32' && !((await lstat(file)).mode & 0o111)) { throw new Error(`Tool is not executable: ${name}`); }
   }
+  verifyClangHost(path.join(destination, 'bin', `clang${suffix}`));
   for (const file of ['share/lldb/tsuzuri_lldb.py', 'share/natvis/tsuzuri.natvis', 'share/runtime/manifest.json']) {
     if (!await exists(path.join(destination, ...file.split('/')))) { throw new Error(`Missing debugger support file: ${file}`); }
   }
@@ -193,6 +202,7 @@ export async function bundle(destination) {
   if (!llvm || !path.isAbsolute(llvm)) { throw new Error('Set LLVM_PREFIX to an LLVM 21 installation with Clang and LLVM utilities.'); }
   const clang = path.join(llvm, 'bin', `clang${suffix}`);
   if (!/clang version 21\./.test(run(clang, ['--version'], true))) { throw new Error('Use LLVM 21 to match the embedded runtime IR.'); }
+  verifyClangHost(clang);
   const cache = path.join(repository, 'target', 'vsc-downloads');
   await mkdir(cache, { recursive: true });
   await mkdir(path.dirname(destination), { recursive: true });

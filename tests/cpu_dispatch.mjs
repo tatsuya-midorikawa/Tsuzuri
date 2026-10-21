@@ -73,13 +73,4 @@ int main(void) { pthread_t threads[8]; for (int index = 0; index < 8; ++index) a
   assert.match(text, /cmpxchg/);
   assert.match(text, /load atomic/);
   assert.doesNotMatch(text, /ifunc|__cpu_model/);
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    const x86 = join(root, "cpu-x86.ll");
-    execute(clang, ["-target", "x86_64-apple-macos11", "-std=c11", "-O3", "-S", "-emit-llvm", "src/runtime/cpu.c", "-o", x86]);
-    const x86Text = readFileSync(x86, "utf8");
-    assert.match(x86Text, /\+avx2/);
-    assert.match(x86Text, /xgetbv/);
-    assert.doesNotMatch(x86Text, /ifunc|__cpu_model/);
-    console.log("dispatch: x86 variants cross-compiled; execution requires an x86 host");
-  }
 } finally { rmSync(root, { recursive: true, force: true }); }

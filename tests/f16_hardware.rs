@@ -438,11 +438,7 @@ fn half_lowers_without_libcalls_where_the_path_applies() {
             half_libcalls(&sapphire)
         );
         assert!(sapphire.contains("vaddsh") && sapphire.contains("vcvtsd2sh"));
-        for target in [
-            "x86_64-unknown-linux-gnu",
-            "x86_64-pc-windows-msvc",
-            "x86_64-apple-macos",
-        ] {
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
             let text = assembly(&conversions, target, optimization, &["-mf16c"]);
             assert!(
                 half_libcalls(&text).is_empty(),

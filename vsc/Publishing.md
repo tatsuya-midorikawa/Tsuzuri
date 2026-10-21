@@ -41,6 +41,7 @@ Linux の拡張ホストは glibc ベースの環境を対象にします。
 VSIX 作成と `--verify`／`--scan`、ツールチェーンの作成・再検証、IDE 統合テストは、処理の最初に対応ホストを検査します。対象外では、既存の配布物を再利用しても `Unsupported toolchain host` で失敗します。VSIX の再検証は、ツールチェーンの manifest の OS／CPU がホストと一致することも検査します。
 **各 VSIX は対応する OS／CPU 上で生成し、Node.js・Rust・LLVM の CPU を一致させてください。**
 ARM64 マシンで x64 の Node.js をエミュレーション実行しても、ARM64 パッケージにはなりません。
+macOS は Apple Silicon の arm64 環境だけで生成します。Clang の既定 target（`-dumpmachine`）も arm64 であることを、ツールチェーンの作成と再検証で検査します。x64 の Clang を使う既存の同梱物は再利用せず、arm64 で作り直します。
 Mac で作った VSIX の名前を変更したり、`--target` だけを変更したりして Windows 版として公開しないでください。
 
 同じリリースの全プラットフォームでは、ソースのコミット、Publisher、拡張名、拡張バージョンを揃えます。

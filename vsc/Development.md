@@ -28,6 +28,7 @@ OS／CPU 別 VSIX にコンパイラとビルド用ツールチェーンを同�
 | win32-arm64 | 有効 | 未対応。ほかの機能には影響しません |
 
 対応するのは上の 5 環境だけです。Intel Mac、x86 32-bit、その他の OS／CPU は対象外です。
+macOS は Apple Silicon 上のネイティブ arm64 だけです。Rosetta の x64 版 VS Code や Node.js は使わず、ツールチェーンの Clang も `-dumpmachine` が `arm64-apple-*` または `aarch64-apple-*` を返すものを使います。作成と再検証の両方で確認します。
 拡張機能は起動時に拡張ホストの OS／CPU を検査し、対象外では対応ホストの一覧を含むエラーで停止します。LSP、ビルド、実行、テストは開始せず、開発用の compilerPath／toolchainPath を指定しても対象環境は増えません。
 Windows ARM64 ではデバッグ用依存を要求せず、デバッグボタンも表示しません。
 Linux は glibc ベースの VS Code 対応環境を対象とし、Alpine/musl の拡張ホストは対象外です。生成する Linux プログラムは同梱 musl を使います。

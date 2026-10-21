@@ -211,6 +211,7 @@ VS Code 1.103 以降が必要です。
 | Windows | ARM64 | 対応 | 未対応 |
 
 - Intel Mac、32-bit x86、Alpine Linux など musl ベースの環境で動く VS Code、Web 版 VS Code は対象外です。
+- Apple Silicon 上でも、Rosetta で動く x64 版 VS Code は対象外です。arm64 版を使用してください。ツールチェーンの作成と再検証も arm64 の Clang を要求します。
 - 対象外の OS／CPU では、拡張機能は起動時に対応ホストを示すエラーで停止し、LSP・ビルド・実行・テストを開始しません。開発用コンパイラを設定しても同じです。
 - Remote - SSH、WSL、Dev Containers では、リモート側に拡張機能をインストールしてください。
 - Linux で作る実行ファイルは、同梱の musl を使います。

@@ -190,26 +190,33 @@ ${types.map(([name, bits, signed]) => `    for (int pattern = 0; pattern < 5; ++
     }
   }
 
-  // The x86 versions are compiled here, not run: Apple silicon has no x86 or SVE hardware.
-  const x86 = join(work, "cpu-x86.s");
-  execute(clang, ["-target", "x86_64-apple-macos11", "-std=c11", "-O3", "-S", "src/runtime/cpu.c", "-o", x86]);
-  const assembly = readFileSync(x86, "utf8");
-  const body = (name) => assembly.slice(assembly.indexOf(`_${name}:`), assembly.indexOf("\n\t.cfi_endproc", assembly.indexOf(`_${name}:`)));
-  assert.match(body("tz_cpu_min_i32_avx2"), /ymm/);
-  assert.match(body("tz_cpu_sum_i64_avx2"), /ymm/);
-  assert.match(body("tz_cpu_max_i8u_avx512"), /zmm/);
-  assert.doesNotMatch(assembly, /ifunc|__cpu_model/);
-  execute(clang, ["-target", "x86_64-apple-macos11", "-std=c11", "-O0", "-c", "src/runtime/cpu.c", "-o", join(work, "cpu-x86-O0.o")]);
-  // AArch64 Linux reads SVE from the auxiliary vector; minimal C headers stand in for its sysroot.
+  // Cross-compilation uses minimal C headers instead of requiring a Linux sysroot.
   const sysroot = join(work, "sysroot");
   mkdirSync(sysroot);
   writeFileSync(join(sysroot, "stdio.h"), "typedef struct FILE FILE;\nextern FILE *stderr;\nint fputs(const char *, FILE *);\n");
   writeFileSync(join(sysroot, "stdlib.h"), "_Noreturn void abort(void);\nchar *getenv(const char *);\n");
   writeFileSync(join(sysroot, "string.h"), "typedef unsigned long size_t;\nvoid *memcpy(void *, const void *, size_t);\nint strcmp(const char *, const char *);\n");
+  const headers = ["-nostdlibinc", "-isystem", sysroot];
+  const x86 = join(work, "cpu-x86.s");
+  execute(clang, ["-target", "x86_64-unknown-linux-gnu", ...headers, "-std=c11", "-O3", "-S", "src/runtime/cpu.c", "-o", x86]);
+  const assembly = readFileSync(x86, "utf8");
+  const body = (name) => {
+    const start = assembly.indexOf(`${name}:`);
+    const end = assembly.indexOf("\n\t.cfi_endproc", start);
+    assert.ok(start >= 0 && end > start, `missing function body: ${name}`);
+    return assembly.slice(start, end);
+  };
+  assert.match(body("tz_cpu_min_i32_avx2"), /ymm/);
+  assert.match(body("tz_cpu_sum_i64_avx2"), /ymm/);
+  assert.match(body("tz_cpu_max_i8u_avx512"), /zmm/);
+  assert.match(assembly, /xgetbv/);
+  assert.doesNotMatch(assembly, /ifunc|__cpu_model/);
+  execute(clang, ["-target", "x86_64-unknown-linux-gnu", ...headers, "-std=c11", "-O0", "-c", "src/runtime/cpu.c", "-o", join(work, "cpu-x86-O0.o")]);
+  // AArch64 Linux reads SVE from the auxiliary vector.
   const arm = join(work, "cpu-arm-linux.s");
-  execute(clang, ["-target", "aarch64-linux-gnu", "-nostdlibinc", "-isystem", sysroot, "-std=c11", "-O3", "-S", "src/runtime/cpu.c", "-o", arm]);
+  execute(clang, ["-target", "aarch64-linux-gnu", ...headers, "-std=c11", "-O3", "-S", "src/runtime/cpu.c", "-o", arm]);
   assert.match(readFileSync(arm, "utf8"), /getauxval/);
-  console.log("cpu_kernels: x86 variants cross-compiled; execution requires an x86 host");
+  console.log("cpu_kernels: Linux x86 variants cross-compiled; execution requires an x86 host");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
